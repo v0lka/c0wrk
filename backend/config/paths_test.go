@@ -3,6 +3,8 @@ package config
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/v0lka/c0wrk/internal/sysproc"
 )
 
 var testAgentDir = filepath.Join("home", "user", ".c0wrk")
@@ -189,4 +191,14 @@ func TestValidateWithinSessionWorkspace(t *testing.T) {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
+}
+
+// TestDefaultAgentDirMirrorsSysproc pins the duplicated agent-dir literal in
+// internal/sysproc (which cannot import backend/config) to this package's
+// canonical DefaultAgentDir, so the safe git hooks directory created by
+// sysproc.GitCmd always lives under ~/.c0wrk.
+func TestDefaultAgentDirMirrorsSysproc(t *testing.T) {
+	if sysproc.DefaultAgentDirName != DefaultAgentDir {
+		t.Errorf("sysproc.DefaultAgentDirName = %q, want DefaultAgentDir %q", sysproc.DefaultAgentDirName, DefaultAgentDir)
+	}
 }

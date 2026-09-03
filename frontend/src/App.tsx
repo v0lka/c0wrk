@@ -9,6 +9,7 @@ import { WorkDirsModal } from '@/components/chat/WorkDirsModal'
 import { CreateProjectDialog } from '@/components/project/CreateProjectDialog'
 import { ToolInstallSplash } from '@/components/ToolInstallSplash'
 import { UpdateToast } from '@/components/UpdateToast'
+import { GitConfigRiskToast } from '@/components/GitConfigRiskToast'
 import { ExitConfirmDialog } from '@/components/ExitConfirmDialog'
 import { useUpdateChecker } from '@/hooks/useUpdateChecker'
 import { useExitGuard } from '@/hooks/useExitGuard'
@@ -278,6 +279,7 @@ function App() {
       <WorkDirsModal />
       <CreateProjectDialogAlwaysMounted />
       <UpdateToast />
+      <GitConfigRiskToast />
       <ExitConfirmDialog />
     </TooltipProvider>
   )

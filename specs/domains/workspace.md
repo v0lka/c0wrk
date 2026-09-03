@@ -8,7 +8,10 @@ Manages the project workspace: file tree loading, filesystem watching for change
 
 - `core/workspace/watcher.go` — filesystem watcher (fsnotify)
 - `core/workspace/filetree.go` — file tree building logic (lazy listing with git ignores)
-- `core/workspace/git.go` — git CLI wrappers (status, diff, gitignore parsing, branch detection)
+- `core/workspace/git.go` — git CLI wrappers (status, diff, gitignore parsing, branch detection) + the hardened repo-scoped spawn helper `GitCmdInRepo`
+- `core/workspace/gitconfig.go` — exec-free `.git/config` scanner (`ScanGitConfig`): dangerous-key findings, include recording, per-repo neutralizing `-c` set
+- `internal/sysproc/git.go` — hardened git spawn choke point (`GitCmd`): global baseline overrides on every git process
+- `backend/frontend_api_gitconfig_risk.go` — intake scan + global `project:git_config_risk` warning event (`notifyGitConfigRisk`)
 - `backend/frontend_api_workspace.go` — FrontendAPI workspace methods (thin delegation to core/workspace)
 - `core/vectorindex/git.go` — git CLI wrapper for branch detection and branch-change monitoring
 - `core/vectorindex/manager.go` — vector index lifecycle (branch-partitioned collections)
@@ -103,10 +106,20 @@ indexing remain skipped.
 - Status integrated into file tree nodes (icon indicators in UI)
 - `.gitignore` filtering in directory listings uses `git ls-files --others --ignored --exclude-standard --directory -z`. In a git repo `.aiignore` is layered on top of that git-derived set via an `ignore.Resolver` (only `IgnoredByAIIgnore` is OR-merged, so the resolver's negation-less matching cannot override a git `!pattern` un-ignore). In a non-git workspace (including No Project) the resolver is the sole authority for both files. A resolver-construction failure is non-fatal; the listing returns with whatever flags were already computed.
 - `vectorindex.CurrentBranch(ctx, repoPath)` detects the active branch via `git symbolic-ref --short HEAD` (falls back to `git rev-parse --short=12 HEAD` for detached HEAD)
-- All git calls use `exec.CommandContext(ctx, "git", ...)` with stdout/stderr capture; errors are propagated, never swallowed
-- Non-repository paths are distinguished from failures by matching `"not a git repository"` in stderr; a legitimate non-repo returns an empty result, any other error is returned to the caller
+- All git processes are spawned through the hardened choke points — `sysproc.GitCmd` (global baseline overrides) and `GitCmdInRepo` for repo-scoped work (fresh per-repo scan + neutralization, fail-closed); stdout/stderr capture and error propagation are unchanged (errors are never swallowed)
+- Non-repository paths are distinguished from failures by matching `"not a git repository"` in stderr; a legitimate non-repo returns an empty result, any other error is returned to the caller. A repo whose `.git/config` cannot be scanned safely reports as non-repo in the boolean predicates (fail closed) and callers fall back to git-free behavior (`--no-index` diff, no ignore filtering) — never to un-neutralized git
 - The `git` binary is required for CODE mode. Its absence is detected on project switch in `backend/frontend_api_project.go` via `exec.LookPath`, emitting a `runtime_error` event (dismissable toast) and rejecting the switch. CHAT mode (No Project) never invokes git.
 - No Project: `isGitRepo()` returns false (no git operations), `GetGitStatus` returns empty map, `GetFileDiff` returns empty string
+
+### Git Subprocess Hardening
+
+Repositories are untrusted input: a workspace can arrive as files with a hostile `.git/config`, and the config can be planted mid-session. Git executes config-driven programs (hooks, filters, merge drivers, textconv, fsmonitor, signing binaries, editors) on routine operations — including read-only ones — so c0wrk hardens every git process it spawns (full rationale and canary evidence: [ADR-033](../decisions/033-git-subprocess-hardening.md), control-model view: [../architecture/security-model.md](../architecture/security-model.md#git-subprocess-hardening)):
+
+- **Baseline (every git process):** `sysproc.GitCmd` prepends `-c core.fsmonitor=false`, `-c core.hooksPath=<empty safe dir under ~/.c0wrk/git>`, `-c commit.gpgsign=false`, and sets `GIT_EDITOR=true`. `-c` wins over repo config; the repository is never modified.
+- **Per-repo neutralization (every repo-scoped call):** `GitCmdInRepo` scans the config of the repository git itself would discover for the path (the `.git` chain is walked up from the given root, covering workspaces rooted at a subdirectory of a repository) fresh on every invocation (no cache) via `ScanGitConfig` and prepends the scanner's `NeutralizingArgv()` (`-c filter.<n>.process=` + `clean=cat`/`smudge=cat`, `-c merge.<n>.driver=false %O %A %B`, `-c diff.<n>.textconv=cat`, and `-c attr.tree=<empty-tree>` whenever attribute-routed vectors or includes exist). Unscannable config (unreadable, oversized, non-regular file, malformed pointer) → error, no git execution. All repo-scoped call sites in this domain (`git.go`, `vectorindex/git.go`) and the backend git-panel wrappers route through it.
+- **Intake warning:** when a project is switched to or an auxiliary work directory is added, `notifyGitConfigRisk` (`backend/frontend_api_gitconfig_risk.go`) scans the config and emits the global `project:git_config_risk` event when it is not provably clean (dangerous keys, include directives — deliberately not followed — malformed or unreadable config). A clean repo emits nothing. Detection-only: neutralization in the spawn layers holds regardless of the UI.
+- **Agent-side write gate (sp4rk):** mutating file tools refuse-to-execute-silently on any target inside a workspace `.git` tree — a hard `git_internal_path` judge reason forces the confirmation funnel under any group policy, so the agent cannot be steered into planting hooks/filters for later execution outside c0wrk.
+- **Trade-off:** repository-defined hooks and filters — including legitimate ones like git-lfs — never run inside c0wrk; hooks are stripped and the strip is announced in the warning notice (strip-and-warn, never silent, never operation-failing).
 
 ### Vector Index
 
@@ -166,6 +179,8 @@ Filename search is available via the `glob` built-in tool (`github.com/v0lka/sp4
 
 - File tree is always relative to active project's workspace path
 - Watcher emits events only for the active project's workspace
+- Git processes spawned in this domain always carry the sysproc baseline overrides; repo-scoped invocations re-scan the discovered repository's config fresh per call (walking up the `.git` chain like git's own discovery) and fail closed on unscannable configs — repository-defined hooks, fsmonitor daemons, filters, merge drivers, and textconv never execute (see [ADR-033](../decisions/033-git-subprocess-hardening.md))
+- A repository whose `.git/config` cannot be scanned safely is reported as not-a-repo by the boolean predicates, so callers take git-free fallback paths — git never runs un-neutralized
 - Vector index collection is partitioned by git branch and rebuilt when the branch changes
 - Chromem is the source of truth; lexical is a best-effort mirror reconciled via `RebuildLexical`
 - Per-side filters (FilePattern, MustMatch) are applied BEFORE RRF fusion so vector and lexical rank spaces remain comparable
@@ -219,5 +234,7 @@ Filename search is available via the `glob` built-in tool (`github.com/v0lka/sp4
 ## Related Specs
 
 - [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) — workspace RPC surface
-- [../contracts/event-catalog.md](../contracts/event-catalog.md) — workspace:tree_changed, vector_index:status
+- [../contracts/event-catalog.md](../contracts/event-catalog.md) — workspace:tree_changed, vector_index:status, project:git_config_risk
+- [../architecture/security-model.md](../architecture/security-model.md) — Git Subprocess Hardening in the layered control model
+- [../decisions/033-git-subprocess-hardening.md](../decisions/033-git-subprocess-hardening.md) — threat model, neutralization semantics, and trade-offs
 - [tool-system/builtins.md](tool-system/builtins.md) — semantic_search tool

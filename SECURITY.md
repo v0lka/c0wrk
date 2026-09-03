@@ -74,6 +74,7 @@ Entry points where untrusted input or adversarial content reaches the system:
 - **External MCP registries (ASI04)** — dynamically integrated stdio/HTTP MCP servers whose tool descriptions, schemas, and permissions may be forged; configured commands executed as child processes.
 - **Downloaded tool binaries (ASI04)** — `rg`, `uv`, `markitdown` fetched from public URLs by the tool-manager.
 - **In-app self-update / auto-update (ASI04)** — the self-update pipeline (`core/updater/`) downloads a release archive from GitHub Releases, SHA256-verifies it against `SHA256SUMS`, and atomically swaps the install tree via a two-process re-exec (`--self-update`). This is a **supply-chain delivery vector**: a compromised release (archive *and* checksum) or a MITM that breaks TLS could replace the running binary the user executes. Integrity is SHA256-only, fail-closed; artifacts are **unsigned** (no app-pinned signature key). See [ADR-023](./specs/decisions/023-auto-update.md) for the full threat model and accepted trade-offs.
+- **Repository git metadata / app-spawned git subprocesses (ASI04/ASI05)** — a workspace obtained from an untrusted source (clone, archive, npm/tarball drop, native `files:dropped` payload) arrives **as files**, including attacker-authored `.git/config` and `.gitattributes`; git executes config-driven external programs during routine read-only operations (`status`, `diff`, `add`, `commit`), and a live session's `.git/config` can also be planted mid-session. Countermeasures: every git process c0wrk spawns carries safe `-c` overrides; repo-scoped invocations re-scan `.git/config` fresh (no cache) and neutralize what they find, failing closed on unscannable configs; the agent cannot write into `.git` (hard `git_internal_path` reason); the user is warned at intake. See the [App-Spawned Subprocess Hardening](#app-spawned-subprocess-hardening-git) section and [ADR-033](./specs/decisions/033-git-subprocess-hardening.md).
 - **Agent memory stores (ASI06)** — SQLite `session_messages`, the project-scoped vector index, persisted pause/subagent trajectories, RESEARCH artifacts under a workspace-contained root, and persistent blackboard facts.
 - **Prompt-discovered work directories (ASI02/ASI05)** — existing directory paths mentioned by the user may be added to the session's auxiliary roots. Adding a root expands the agent's filesystem reach for that task; containment/symlink/group-policy gates still apply to individual tool calls.
 - **Vector/attachment ingestion (ASI06/ASI10)** — pasted/dropped/selected files and workspace files are parsed, converted, chunked, or embedded. File-size, image-size, conversion-time, chunk-count, and output limits are resource-exhaustion boundaries, not optional tuning conveniences.
@@ -133,6 +134,7 @@ These are inherent architectural trade-offs the design knowingly accepts — not
 | No session-level wall-clock time-box (ASI10)                          | Low      | Accepted trade-off: agent autonomy is bounded by step/loop caps, the 50-turn goal ceiling, and circuit breakers, but there is no hard wall-clock deadline. A long-running session can in principle run indefinitely until those caps hit. |
 | Pre-1.0 breaking-change surface                                       | Low      | Tracked via CHANGELOG semver discipline until 1.0.                                                                            |
 | Self-update ships **unsigned** artifacts verified by SHA256 only (ASI04) | High     | Accepted trade-off (ADR-023): integrity is SHA256-only, fail-closed, with no app-pinned signature key. SHA256 pins the archive to the released bytes but does **not** prove release authorship — a compromised GitHub release (archive *and* matching checksum) would be accepted. Bounded by release-publishing perms + GitHub account security (2FA); mitigated by HTTPS-only/proxy-aware transport, fail-closed verification, `.old` rollback, and `ErrNonStandardLocation` location safety. A signature verifier can be added later via the `Verifier` interface. |
+| Repository hooks and config-driven git programs (incl. git-lfs smudge/clean) never execute inside c0wrk | Low | Accepted security-first trade-off (ADR-033): filters and drivers are distrusted unconditionally — including legitimate ones — so LFS-pointer files appear as raw content and hook-based workflows (husky, pre-commit) do not run. Mitigated by announcing the strip (`project:git_config_risk` notice); workflows needing hooks/LFS run outside c0wrk. |
 
 ---
 
@@ -168,6 +170,22 @@ c0wrk is a local single-user desktop application; there is no multi-tenant authe
 The dependency graph is sizeable: ~368 Go module entries (`go.sum`) and ~701 npm packages (`frontend/package-lock.json`). Key security-relevant dependencies include the LLM SDKs (`openai-go`, `go-anthropic`), the MCP client (`mark3labs/mcp-go`), the vector store (`chromem-go`), the SQLite driver (`modernc.org/sqlite`), and the agent SDK (`github.com/v0lka/sp4rk`).
 
 **Rules:** Pin via lockfiles (`go.sum`, `package-lock.json`) and verify checksums. Evaluate new dependencies for maintenance, license, and transitive risk before adding. External binaries downloaded at runtime MUST be SHA256-verified (the tool-manager's `verifyChecksum` pattern). MCP servers integrated dynamically MUST be treated as untrusted code (see ASI04).
+
+### App-Spawned Subprocess Hardening (Git)
+
+A repository is attacker-controlled data, and `.git/config` is effectively a program-invocation configuration file: git executes config-driven external programs (fsmonitor daemons, hooks, clean/smudge/process filters, merge drivers, textconv, signing binaries, editors) during ordinary operations — including read-only ones like `status` and `diff` — before any trust decision c0wrk makes. Two vectors define the threat class:
+
+- **Repo-arrives-as-files.** A workspace obtained from an untrusted source (clone, archive, package drop, `files:dropped` payload) can arrive pre-armed with hostile `.git/config` keys and a matching `.gitattributes`; the first git call c0wrk runs would otherwise execute attacker-chosen binaries.
+- **Mid-session `.git/config` planting.** Config can be rewritten while a session is live, so any inspect-once-trust-for-the-session scheme is unsound.
+
+Countermeasures (full rationale and canary evidence in [ADR-033](./specs/decisions/033-git-subprocess-hardening.md)):
+
+1. **Global baseline on every git process** — `internal/sysproc.GitCmd` is the single spawn choke point; every invocation gets `-c core.fsmonitor=false`, `-c core.hooksPath=<empty safe dir under ~/.c0wrk/git>`, `-c commit.gpgsign=false`, and `GIT_EDITOR=true` in the environment. Command-line `-c` wins over repo config, so no repository is ever modified.
+2. **Per-repo neutralization, re-scanned per invocation** — `core/workspace.GitCmdInRepo` parses the config of the repository git itself would discover (the `.git` chain is walked up from the given root, covering subdirectory workspaces) fresh on every repo-scoped call (no cache — mid-session planting is neutralized) and prepends `-c` overrides disarming detected filters/merge drivers/textconv, plus the `attr.tree=<empty-tree>` attribute-routing kill; an unscannable config (unreadable, oversized, non-regular file, malformed pointer) fails closed (git is not executed; boolean predicates fall back to git-free paths).
+3. **Intake detection & warning** — opening a repository (project switch, auxiliary work-directory add) scans the config and emits `project:git_config_risk` when it is not *provably* clean (dangerous keys, include directives, malformed or unreadable config), carrying the standing notice that repository-defined hooks never run inside c0wrk. Detection is fail-closed: an unprovable config is a warning, never a silent pass.
+4. **Agent-side `.git` write gate** — the five mutating file tools return a hard `git_internal_path` reason for any target inside a workspace `.git` tree, forcing interactive confirmation under any policy so the agent cannot be steered into planting hooks/filters for later execution outside c0wrk.
+
+**Rules:** Never spawn git outside the hardened choke points (`sysproc.GitCmd`; repo-scoped work goes through `workspace.GitCmdInRepo`). Never treat a repository's `.git/config` as trusted input, and never cache scan results across invocations. Never add a known-filter-name whitelist and call it coverage — unknown names are only covered by the attribute-routing kill. Hook/config-driven-program stripping is unconditional: strip *and* warn, never strip silently, never fail the operation. Legitimate filters (git-lfs) are distrusted like everything else — an accepted functional trade-off.
 
 ### Logging, Monitoring & Incident Response
 
@@ -229,6 +247,7 @@ The unifying principle is **least agency** — grant an agent only the minimum a
 - **Downloaded binaries MUST be SHA256-verified** (`toolmanager` `verifyChecksum`); verification is **fail-closed** — a missing per-platform checksum refuses the binary rather than skipping verification, and checksum mismatches trigger re-download, never silent acceptance.
 - **Pin and vet dependencies.** Lockfiles are the source of truth; review new direct dependencies for maintenance, license, and transitive risk before adding.
 - **Review tool/MCP descriptions for deceptive language** before exposing them to the agent; a malicious description can steer tool selection.
+- **Repository git metadata is untrusted executable config.** A repo that arrives as files can carry hostile `.git/config`/`.gitattributes`, and `.git/config` can be planted mid-session; every git process c0wrk spawns carries safe `-c` overrides, repo-scoped calls re-scan and neutralize per invocation (fail-closed on unscannable configs), and the agent cannot write into workspace `.git` trees. See [App-Spawned Subprocess Hardening](#app-spawned-subprocess-hardening-git) and [ADR-033](./specs/decisions/033-git-subprocess-hardening.md).
 
 ### ASI05 — Unexpected Code Execution
 
@@ -240,6 +259,7 @@ The unifying principle is **least agency** — grant an agent only the minimum a
 - **Symlink traversal is always detected** before policy resolution and forces confirmation — agents must not follow symlinks out of session roots silently.
 - **Argument/command scanning is mandatory** for shell tools; suspicious shell expansions (`$var`, `$(cmd)`, backticks) that can mask paths MUST be flagged in the confirmation dialog.
 - **Ephemeral / scoped execution.** Session temp directories are per-session (`~/.c0wrk/projects/<id>/<session>/temp/`); scratch artifacts are isolated, not global.
+- **Git's own program-invocation keys are neutralized on every spawn.** Repository-configured hooks, fsmonitor daemons, clean/smudge/process filters, merge drivers, textconv, signing binaries, and editors never execute inside c0wrk — hooks are stripped unconditionally and the strip is announced (see ASI04 bullet and [ADR-033](./specs/decisions/033-git-subprocess-hardening.md)); file-tool attempts to plant payloads into a workspace `.git` produce a hard `git_internal_path` confirmation.
 
 ### ASI06 — Memory and Context Poisoning
 
@@ -349,6 +369,7 @@ Any AI coding agent (c0wrk itself, Copilot, Cursor, etc.) working on this reposi
 9. **Run `make build` → `make lint` → `make test`** before declaring done; all three must be clean.
 10. **Never weaken the self-update integrity gate.** The `core/updater/` pipeline is a supply-chain delivery vector (ADR-023): do not make SHA256 verification optional, skip the fail-closed archive removal on mismatch, downgrade HTTPS-only asset/checksum URLs, bypass `ErrNonStandardLocation` validation, or remove the zip-slip/tar-slip traversal guards in extraction.
 11. **Surface contradictions** between instructions and security policy via `ask_user` rather than resolving them silently.
+12. **Never bypass the git subprocess hardening.** Spawn git only via `internal/sysproc.GitCmd` (repo-scoped work via `core/workspace.GitCmdInRepo`, which re-scans `.git/config` fresh on every invocation); never treat repository git config as trusted input, never cache scan results, and never remove or weaken the `.git` write gate (`git_internal_path`) or the `project:git_config_risk` intake warning. See [ADR-033](./specs/decisions/033-git-subprocess-hardening.md).
 
 ---
 

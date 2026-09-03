@@ -37,6 +37,17 @@ func TestCanonicalHardReasonCodes_FromRealBuiltinJudges(t *testing.T) {
 
 	webfetchTool := builtins.NewWebFetchTool(builtins.WebFetchLimits{})
 	readFileTool := builtins.NewReadFileTool()
+	writeFileTool := builtins.NewWriteFileTool()
+
+	ws := t.TempDir()
+	gitTarget, err := json.Marshal(map[string]string{
+		"path":    filepath.Join(ws, ".git", "config"),
+		"content": "evil",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsCtx := sdktools.WithWorkspacePath(ctx, ws)
 
 	tests := append([]canonicalJudgeCase{
 		{
@@ -52,6 +63,11 @@ func TestCanonicalHardReasonCodes_FromRealBuiltinJudges(t *testing.T) {
 		{
 			name:          "read_file unassessable path",
 			outcome:       readFileTool.Judge(ctx, json.RawMessage(`{}`)),
+			wantCanonical: true,
+		},
+		{
+			name:          "write_file git-internal target",
+			outcome:       writeFileTool.Judge(wsCtx, gitTarget),
 			wantCanonical: true,
 		},
 	}, platformShellJudgeCases(t)...)
@@ -90,6 +106,7 @@ func TestCanonicalHardReasonCodes_ClassificationTable(t *testing.T) {
 		{sdktools.ReasonCodeUnassessableURL, true},
 		{sdktools.ReasonCodeUnassessablePath, true},
 		{sdktools.ReasonCodeSymlinkEscape, true},
+		{sdktools.ReasonCodeGitInternal, true},
 		{sdktools.ReasonCodeUnresolvablePathToken, false},
 		{sdktools.ReasonCodeSymlinkSuspicious, false},
 		{sdktools.ReasonCodeOutsideSessionRoots, false},

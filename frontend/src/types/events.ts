@@ -488,6 +488,30 @@ export interface UpdateErrorData {
   readonly message: string
 }
 
+// --- Git-config risk warning payloads ---
+//
+// Mirror the backend DTOs in backend/frontend_api_gitconfig_risk.go
+// (snake_case JSON keys). Emitted when a project switch or an added work
+// directory opens a repository whose .git/config carries dangerous keys;
+// a clean repository emits nothing.
+
+/** One detected dangerous git-config key (or a synthetic marker such as
+ *  "(config unreadable)" for dangers that are not a single key). */
+export interface GitConfigRiskFinding {
+  readonly key: string
+  readonly description: string
+}
+
+/** Payload of the global `project:git_config_risk` event. `notice` is the
+ *  standing backend statement that repository-defined hooks never run inside
+ *  c0wrk — the detected keys are blocked or neutralized on every git call. */
+export interface GitConfigRiskData {
+  readonly path: string
+  readonly source: 'project' | 'workdir'
+  readonly notice: string
+  readonly findings: readonly GitConfigRiskFinding[]
+}
+
 export interface GlobalEventMap {
   readonly 'startup_error': { readonly message: string; readonly error: string; readonly error_code?: string }
   readonly 'runtime_error': { readonly id: string; readonly message: string; readonly error_code?: string }
@@ -505,6 +529,10 @@ export interface GlobalEventMap {
   readonly 'project:renamed': { readonly id: string; readonly name: string }
   readonly 'session:renamed': { readonly id: string; readonly name: string }
   readonly 'project:switched': ProjectInfo
+  /** Dangerous git config detected in a newly opened project or added work
+   *  directory (see backend/frontend_api_gitconfig_risk.go). A clean repo
+   *  emits nothing. */
+  readonly 'project:git_config_risk': GitConfigRiskData
   readonly 'tool_manager:start': ToolManagerStartData
   readonly 'tool_manager:progress': ToolManagerProgressData
   readonly 'tool_manager:done': ToolManagerDoneData
@@ -823,6 +851,19 @@ export type RuntimeError = GlobalEventMap['runtime_error']
 
 export function isRuntimeError(d: unknown): d is RuntimeError {
   return isObj(d) && typeof d.id === 'string' && typeof d.message === 'string'
+}
+
+/** Guard for a `project:git_config_risk` payload (dangerous git config in a
+ *  newly opened project or added work directory). `findings` must be non-empty
+ *  and fully typed — the toast renders each key/description pair directly. */
+export function isGitConfigRiskData(d: unknown): d is GitConfigRiskData {
+  if (!isObj(d)) return false
+  if (typeof d.path !== 'string' || typeof d.notice !== 'string') return false
+  if (d.source !== 'project' && d.source !== 'workdir') return false
+  if (!Array.isArray(d.findings) || d.findings.length === 0) return false
+  return d.findings.every(
+    (f) => isObj(f) && typeof f.key === 'string' && typeof f.description === 'string',
+  )
 }
 
 /** Guard for a `files:dropped` payload (native OS drag-and-drop). */

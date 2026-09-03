@@ -127,6 +127,13 @@ func (f *FrontendAPI) AddWorkDirectory(scope, ownerID, path, description string)
 	}
 
 	f.emitWorkDirsChanged()
+
+	// Intake scan (text-only, exec-free): warn when the added directory is a
+	// repository with a dangerous .git/config. Clean or non-git directories
+	// emit nothing. Only the add path scans — description edits and removals
+	// do not open a new workspace. See frontend_api_gitconfig_risk.go.
+	f.notifyGitConfigRisk(GitConfigRiskSourceWorkdir, path)
+
 	return nil
 }
 

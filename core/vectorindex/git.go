@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/v0lka/c0wrk/internal/sysproc"
+	"github.com/v0lka/c0wrk/core/workspace"
 )
 
 const (
@@ -62,13 +62,22 @@ func CurrentBranch(ctx context.Context, repoPath string) (string, error) {
 }
 
 // runGit runs `git -C repoPath <args...>` and returns trimmed stdout on
-// success. On failure, the returned error includes stderr for diagnosability.
+// success. Every invocation is routed through workspace.GitCmdInRepo, which
+// scans the config of the repository git would discover for repoPath fresh
+// on each call (no caching, so config planted mid-session is covered too)
+// and prepends per-repo neutralizing `-c` overrides for any command-bearing
+// key it finds, on top of the sysproc.GitCmd baseline. On failure, the
+// returned error includes stderr for diagnosability; a config that cannot
+// be scanned safely fails closed (no git execution for that repository).
 func runGit(ctx context.Context, repoPath string, args ...string) (string, error) {
 	full := make([]string, 0, len(args)+2)
 	full = append(full, "-C", repoPath)
 	full = append(full, args...)
 
-	cmd := sysproc.GitCmd(ctx, full...)
+	cmd, err := workspace.GitCmdInRepo(ctx, repoPath, full...)
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

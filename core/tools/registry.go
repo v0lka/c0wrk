@@ -729,13 +729,14 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 // be auto-approved by the strict judge. Canonical codes cover two classes:
 // a security control that fired on unmistakably dangerous behavior (a command
 // blacklist match, an SSRF escape target, a symlink escape out of the
-// session roots) AND an input whose safety the judge is structurally unable
-// to assess — degraded SSRF protection, an undeterminable URL or path —
-// because the judge sees only the prose, not the DNS resolution or filesystem
-// state the deterministic control lacked. Codes are the typed cross-repo
-// contract from sp4rk (sdktools.JudgeReasonCode): prose matching would silently
-// break when sp4rk rewords a reason, an empty/unknown code stays
-// non-canonical (the strict judge may positively clear it).
+// session roots, a write into git internals) AND an input whose safety the
+// judge is structurally unable to assess — degraded SSRF protection, an
+// undeterminable URL or path — because the judge sees only the prose, not the
+// DNS resolution or filesystem state the deterministic control lacked.
+// Codes are the typed cross-repo contract from sp4rk
+// (sdktools.JudgeReasonCode): prose matching would silently break when sp4rk
+// rewords a reason, an empty/unknown code stays non-canonical (the strict
+// judge may positively clear it).
 func isCanonicalHardReason(code sdktools.JudgeReasonCode) bool {
 	switch code {
 	case sdktools.ReasonCodeCommandBlacklist,
@@ -743,7 +744,8 @@ func isCanonicalHardReason(code sdktools.JudgeReasonCode) bool {
 		sdktools.ReasonCodeSSRFDegraded,
 		sdktools.ReasonCodeUnassessableURL,
 		sdktools.ReasonCodeUnassessablePath,
-		sdktools.ReasonCodeSymlinkEscape:
+		sdktools.ReasonCodeSymlinkEscape,
+		sdktools.ReasonCodeGitInternal:
 		return true
 	default:
 		return false

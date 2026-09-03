@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isAgentMetricsData, normalizeAgentMetricsData, isTaskCompleteData, isCompactionFinishedData, isPlanStepPausedData, isSubAgentPausedData } from './events'
+import { isAgentMetricsData, normalizeAgentMetricsData, isTaskCompleteData, isCompactionFinishedData, isPlanStepPausedData, isSubAgentPausedData, isGitConfigRiskData } from './events'
 
 describe('isTaskCompleteData', () => {
     it('accepts valid data with string output', () => {
@@ -238,5 +238,53 @@ describe('isSubAgentPausedData', () => {
         expect(isSubAgentPausedData({ duration: 900 })).toBe(false)
         expect(isSubAgentPausedData(null)).toBe(false)
         expect(isSubAgentPausedData(undefined)).toBe(false)
+    })
+})
+
+describe('isGitConfigRiskData', () => {
+    const valid = {
+        path: '/repo',
+        source: 'project',
+        notice: 'Repository-defined git hooks do not run inside c0wrk.',
+        findings: [{ key: 'core.fsmonitor', description: 'runs a monitor command' }],
+    }
+
+    it('accepts the payload shape the backend emits', () => {
+        expect(isGitConfigRiskData(valid)).toBe(true)
+    })
+
+    it('accepts the workdir source and multiple findings', () => {
+        expect(
+            isGitConfigRiskData({
+                ...valid,
+                source: 'workdir',
+                findings: [
+                    { key: 'core.hookspath', description: 'redirects hooks' },
+                    { key: 'filter.lfs.process', description: 'runs a filter' },
+                ],
+            }),
+        ).toBe(true)
+    })
+
+    it('rejects an empty findings list (event never fires without findings)', () => {
+        expect(isGitConfigRiskData({ ...valid, findings: [] })).toBe(false)
+    })
+
+    it('rejects wrong-typed findings entries', () => {
+        expect(isGitConfigRiskData({ ...valid, findings: [{ key: 1, description: 'x' }] })).toBe(false)
+        expect(isGitConfigRiskData({ ...valid, findings: [{ key: 'k' }] })).toBe(false)
+        expect(isGitConfigRiskData({ ...valid, findings: 'core.fsmonitor' })).toBe(false)
+    })
+
+    it('rejects an unknown source', () => {
+        expect(isGitConfigRiskData({ ...valid, source: 'session' })).toBe(false)
+    })
+
+    it('rejects wrong-typed or missing fields', () => {
+        expect(isGitConfigRiskData({ ...valid, path: 42 })).toBe(false)
+        expect(isGitConfigRiskData({ ...valid, notice: undefined })).toBe(false)
+        expect(isGitConfigRiskData({ path: '/repo', source: 'project' })).toBe(false)
+        expect(isGitConfigRiskData(null)).toBe(false)
+        expect(isGitConfigRiskData(undefined)).toBe(false)
     })
 })

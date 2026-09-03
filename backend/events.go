@@ -51,6 +51,16 @@ const EventSessionRenamed = "session:renamed"
 // EventProjectSwitched is emitted when the active project changes.
 const EventProjectSwitched = "project:switched"
 
+// EventGitConfigRisk is emitted when a project switch or an added auxiliary
+// work directory opens a repository whose .git/config carries dangerous keys
+// (command-bearing filters, merge drivers, textconv, fsmonitor, hooksPath,
+// include directives, ...). The payload is a GitConfigRiskData listing every
+// detected key with a human-readable description plus the standing notice
+// that repository-defined hooks do not run inside c0wrk. A clean config emits
+// nothing. Emitted from notifyGitConfigRisk
+// (backend/frontend_api_gitconfig_risk.go).
+const EventGitConfigRisk = "project:git_config_risk"
+
 // EventWorkspaceTreeChanged is emitted when filesystem changes are detected
 // in the active workspace.
 const EventWorkspaceTreeChanged = "workspace:tree_changed"

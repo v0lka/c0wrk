@@ -352,6 +352,11 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	f.applySavedProjectSwitchState(p.ID)
 	f.emitEvent(EventProjectSwitched, p)
 
+	// Intake scan (text-only, exec-free): warn the user when the freshly
+	// opened workspace's .git/config carries dangerous keys. Emits nothing
+	// for a clean config. See frontend_api_gitconfig_risk.go.
+	f.notifyGitConfigRisk(GitConfigRiskSourceProject, p.WorkspacePath)
+
 	return nil
 }
 

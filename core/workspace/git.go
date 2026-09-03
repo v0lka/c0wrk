@@ -41,18 +41,84 @@ func errNotGitRepo(err error, stderr string) bool {
 	return strings.Contains(s, "not a git repository")
 }
 
+// GitCmdInRepo returns a hardened git [exec.Cmd] for `git <args...>` rooted
+// at the repository (or work tree) at repoPath. It is the repo-scoped layer
+// on top of [sysproc.GitCmd]: before every invocation the config of the
+// repository git itself would discover for repoPath is scanned fresh (no
+// caching — config planted into a repo mid-session is neutralized too; the
+// .git chain is walked up from repoPath, mirroring git's own discovery, so a
+// workspace rooted at a subdirectory of a repository is covered too) and a
+// per-repo set of `-c key=value` overrides is prepended, disarming every
+// command-bearing key the scan finds (clean/smudge/process filters, merge
+// drivers, textconv, attr.tree routing, and more — see [ScanGitConfig] and
+// GitConfigInfo.NeutralizingArgv). The sysproc baseline (fsmonitor,
+// hooksPath, commit signing, GIT_EDITOR) still applies underneath and covers
+// the global, repo-independent vectors.
+//
+// Precedence: `-c key=value` on the command line wins over .git/config, so
+// an attacker-set key is beaten by our override without modifying the
+// repository.
+//
+// The scan is fail-closed: when the config cannot be read or parsed safely
+// (unreadable, oversized, not a regular file — a FIFO would block the open —
+// or a malformed .git pointer) an error is returned and the git command is
+// not constructed — git itself refuses such configs too, and running
+// un-neutralized is never an option. A directory with no .git anywhere on
+// its chain (plain folder, or `git diff --no-index` on a non-repo) yields an
+// empty scan and plain baseline behavior.
+//
+// The returned command defaults to cmd.Dir = repoPath so a caller that
+// forgets to set the working directory still operates inside the intended
+// repository; callers that need a different working directory (none today —
+// repoPath IS the working directory for every repo-scoped invocation) may
+// override it.
+func GitCmdInRepo(ctx context.Context, repoPath string, args ...string) (*exec.Cmd, error) {
+	argv, err := repoNeutralizingArgv(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	all := make([]string, 0, len(argv)+len(args))
+	all = append(all, argv...)
+	all = append(all, args...)
+	cmd := sysproc.GitCmd(ctx, all...)
+	cmd.Dir = repoPath
+	return cmd, nil
+}
+
+// repoNeutralizingArgv scans <repoPath>/.git/config per call and returns the
+// flat "-c key=value" override pairs for every dangerous key found. An empty
+// or missing config yields no overrides.
+func repoNeutralizingArgv(repoPath string) ([]string, error) {
+	info, err := ScanGitConfig(repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("scanning git config for repo %s (fail closed): %w", repoPath, err)
+	}
+	return info.NeutralizingArgv(), nil
+}
+
 // IsGitRepo reports whether dir is inside a git work tree. This function
 // does not cache results — caching is the caller's responsibility if needed.
+// A repository whose config cannot be scanned safely is reported as not a
+// repo (fail closed): every caller treats false by falling back to
+// git-free behavior (--no-index diff, no ignore filtering), never by
+// running git un-neutralized.
 func IsGitRepo(ctx context.Context, dir string) bool {
-	cmd := sysproc.GitCmd(ctx, "-C", dir, "rev-parse", "--is-inside-work-tree")
+	cmd, err := GitCmdInRepo(ctx, dir, "-C", dir, "rev-parse", "--is-inside-work-tree")
+	if err != nil {
+		return false
+	}
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	return cmd.Run() == nil
 }
 
 // IsGitTracked reports whether relPath is tracked by git in dir.
+// Unscannable config counts as not tracked (fail closed, see IsGitRepo).
 func IsGitTracked(ctx context.Context, dir, relPath string) bool {
-	cmd := sysproc.GitCmd(ctx, "ls-files", "--error-unmatch", relPath)
+	cmd, err := GitCmdInRepo(ctx, dir, "ls-files", "--error-unmatch", relPath)
+	if err != nil {
+		return false
+	}
 	cmd.Dir = dir
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -65,7 +131,10 @@ func IsGitTracked(ctx context.Context, dir, relPath string) bool {
 // present.  For backward compatibility the legacy Status/Staged fields
 // reflect the index side when available, falling back to the work tree.
 func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry, error) {
-	cmd := sysproc.GitCmd(ctx, "status", "--porcelain", "-uall")
+	cmd, err := GitCmdInRepo(ctx, repoPath, "status", "--porcelain", "-uall")
+	if err != nil {
+		return nil, err
+	}
 	cmd.Dir = repoPath
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -253,7 +322,10 @@ func BuildReviewDiff(ctx context.Context, repoPath string, contextLines int) (st
 // staged and unstaged changes to tracked files relative to HEAD in a single
 // invocation. Untracked files are not included (they have no index entry).
 func runGitDiffHead(ctx context.Context, dir string, contextLines int) (string, error) {
-	cmd := sysproc.GitCmd(ctx, "diff", "-U"+strconv.Itoa(contextLines), "HEAD")
+	cmd, err := GitCmdInRepo(ctx, dir, "diff", "-U"+strconv.Itoa(contextLines), "HEAD")
+	if err != nil {
+		return "", err
+	}
 	cmd.Dir = dir
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -270,7 +342,10 @@ func runGitDiffHead(ctx context.Context, dir string, contextLines int) (string, 
 // --exclude-standard -z` and splits the NUL-delimited output. Individual
 // files are listed rather than their containing directories.
 func listUntrackedFiles(ctx context.Context, dir string) ([]string, error) {
-	cmd := sysproc.GitCmd(ctx, "ls-files", "--others", "--exclude-standard", "-z")
+	cmd, err := GitCmdInRepo(ctx, dir, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, err
+	}
 	cmd.Dir = dir
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -297,7 +372,10 @@ func runGitDiff(ctx context.Context, dir string, cached bool, relPath string) (s
 	}
 	args = append(args, "--", relPath)
 
-	cmd := sysproc.GitCmd(ctx, args...)
+	cmd, err := GitCmdInRepo(ctx, dir, args...)
+	if err != nil {
+		return "", err
+	}
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -313,14 +391,17 @@ func runGitDiff(ctx context.Context, dir string, cached bool, relPath string) (s
 // against /dev/null. git diff --no-index exits with code 1 when differences
 // exist, so we treat that as success.
 func runGitDiffNoIndex(ctx context.Context, dir, relPath string) (string, error) {
-	cmd := sysproc.GitCmd(ctx, "diff", "--no-index", os.DevNull, relPath)
+	cmd, err := GitCmdInRepo(ctx, dir, "diff", "--no-index", os.DevNull, relPath)
+	if err != nil {
+		return "", err
+	}
 	cmd.Dir = dir
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
@@ -335,7 +416,10 @@ func runGitDiffNoIndex(ctx context.Context, dir, relPath string) (string, error)
 // in the given directory. Returns (nil, nil) when the directory is not a
 // git repository (no filtering) or when there are no ignored paths.
 func GitIgnoredPaths(ctx context.Context, dir string) (map[string]bool, error) {
-	cmd := sysproc.GitCmd(ctx, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
+	cmd, err := GitCmdInRepo(ctx, dir, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
+	if err != nil {
+		return nil, err
+	}
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

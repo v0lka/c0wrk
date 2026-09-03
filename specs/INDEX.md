@@ -31,6 +31,7 @@
 | Small-LLM profile (tuning for small/local models) | [domains/small-llm.md](domains/small-llm.md), [decisions/022-small-llm-profile.md](decisions/022-small-llm-profile.md) |
 | File & image attachments (pending → blackboard / content blocks), vision-assisted document conversion & its egress  | [domains/session-lifecycle.md](domains/session-lifecycle.md), [domains/memory/blackboard.md](domains/memory/blackboard.md) |
 | File tree, vector index, workspace       | [domains/workspace.md](domains/workspace.md)                             |
+| Git subprocess hardening (untrusted repos, `.git/config` vectors, hooks/filters neutralization, `.git` write gate) | [decisions/033-git-subprocess-hardening.md](decisions/033-git-subprocess-hardening.md), [architecture/security-model.md](architecture/security-model.md) (Git Subprocess Hardening), [domains/workspace.md](domains/workspace.md) |
 | Auxiliary work directories               | [architecture/security-model.md](architecture/security-model.md), [contracts/desktop-frontend.md](contracts/desktop-frontend.md) (Work Directories section), [domains/frontend/stores.md](domains/frontend/stores.md) (`workDirsStore`) |
 | Frontend stores, state management        | [domains/frontend/stores.md](domains/frontend/stores.md)                 |
 | Frontend events, streaming               | [domains/frontend/events.md](domains/frontend/events.md)                 |
@@ -80,7 +81,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 
 - [layers.md](architecture/layers.md) - Layer hierarchy, import rules, responsibilities
 - [data-flow.md](architecture/data-flow.md) - Request lifecycle, event flow, config flow
-- [security-model.md](architecture/security-model.md) - c0wrk session-root/auto-approval/symlink layer (engine ToolPolicy/judge/untrusted primitives → canonical in [sp4rk: specs/architecture/security-model.md](https://github.com/v0lka/sp4rk/blob/main/specs/architecture/security-model.md))
+- [security-model.md](architecture/security-model.md) - c0wrk session-root/auto-approval/symlink layer + git subprocess hardening (engine ToolPolicy/judge/untrusted primitives → canonical in [sp4rk: specs/architecture/security-model.md](https://github.com/v0lka/sp4rk/blob/main/specs/architecture/security-model.md))
 
 ### domains/orchestration/
 
@@ -164,3 +165,4 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [030-session-context-restore.md](decisions/030-session-context-restore.md) - Session context restore: saved-first (selection-time persistence), effective activity (newest event, read-side), archived never auto-selected, restart restores the exact last mode/project/session via app_state
 - [031-gowork-repo-root.md](decisions/031-gowork-repo-root.md) - Dual-repo dev flow via repo-root gitignored `go.work` (`use . ../sp4rk`): workspace scoped to the c0wrk subtree instead of leaking into sibling projects → Supersedes ADR-025
 - [032-offline-first-tool-reconciliation.md](decisions/032-offline-first-tool-reconciliation.md) - Offline-first tool reconciliation: two-pass startup (local-only sync pass + background network pass), per-tool failure isolation, no destructive ops without secured replacement bytes → Amends ADR-010
+- [033-git-subprocess-hardening.md](decisions/033-git-subprocess-hardening.md) - Git subprocess hardening for untrusted repositories: global `-c` baseline on every git process, fresh per-repo config re-scan + neutralization (fail-closed), `project:git_config_risk` intake warning, agent-side `.git` write gate; hooks strip-and-warn, LFS distrusted unconditionally (ASI04/ASI05)
