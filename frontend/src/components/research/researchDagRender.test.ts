@@ -2,8 +2,11 @@ import { describe, it, expect } from 'vitest'
 import type { HypothesisGraph } from '@/types/models'
 import {
   NODE_R,
-  NODE_SPACING_X,
-  NODE_SPACING_Y,
+  COLUMN_W,
+  ROW_H,
+  LABEL_GAP_X,
+  LABEL_MAX_CHARS,
+  LABEL_CHAR_W,
   LEFT_PAD,
   TOP_PAD,
   buildParentMap,
@@ -11,7 +14,7 @@ import {
   layoutDag,
   xFor,
   yFor,
-  edgePath,
+  edgePathH,
   statusColorVar,
   formatRate,
   isTerminal,
@@ -142,30 +145,35 @@ describe('assignLevels', () => {
 })
 
 describe('xFor / yFor', () => {
-  it('centers a row within the widest level', () => {
-    // 2 nodes in a row, max breadth 4 → row offset centers them.
-    const center = xFor(0, 2, 4)
-    expect(center).toBe(LEFT_PAD + ((4 - 2) / 2) * NODE_SPACING_X)
+  it('places each depth level in its own left-to-right column', () => {
+    expect(xFor(0)).toBe(LEFT_PAD)
+    expect(xFor(1) - xFor(0)).toBe(COLUMN_W)
+    expect(xFor(2) - xFor(1)).toBe(COLUMN_W)
   })
 
-  it('places the first node of a full row at LEFT_PAD', () => {
-    expect(xFor(0, 3, 3)).toBe(LEFT_PAD)
-  })
-
-  it('steps x by NODE_SPACING_X per index', () => {
-    expect(xFor(1, 3, 3) - xFor(0, 3, 3)).toBe(NODE_SPACING_X)
-  })
-
-  it('steps y by NODE_SPACING_Y per level', () => {
+  it('steps y by ROW_H per row slot', () => {
     expect(yFor(0)).toBe(TOP_PAD)
-    expect(yFor(1) - yFor(0)).toBe(NODE_SPACING_Y)
+    expect(yFor(1) - yFor(0)).toBe(ROW_H)
+  })
+
+  it('sizes columns from the 26-char label budget plus a gap', () => {
+    const labelZone = LABEL_GAP_X + LABEL_MAX_CHARS * LABEL_CHAR_W
+    expect(COLUMN_W).toBe(labelZone + 20)
+    // The label zone stays clear of the next column by the gap.
+    expect(xFor(0) + labelZone).toBeLessThan(xFor(1))
   })
 })
 
-describe('edgePath', () => {
-  it('emits an SVG cubic-bezier path string', () => {
-    const p = edgePath(0, 10, 20, 30)
-    expect(p).toBe('M 0 10 C 0 20 20 20 20 30')
+describe('edgePathH', () => {
+  it('emits a horizontal cubic-bezier path string', () => {
+    const p = edgePathH(0, 10, 40, 30)
+    expect(p).toBe('M 0 10 C 20 10 20 30 40 30')
+  })
+
+  it('keeps each control point level with its endpoint (horizontal flow)', () => {
+    const p = edgePathH(10, 5, 30, 25)
+    // C xm y1, xm y2, x2 y2 with xm = midpoint of x1..x2.
+    expect(p).toBe('M 10 5 C 20 5 20 25 30 25')
   })
 })
 
@@ -200,7 +208,109 @@ describe('layoutDag', () => {
     expect(l.nodes[0]!.status).toBe('confirmed')
   })
 
-  it('emits parent→child edges with parent-bottom / child-top anchors', () => {
+  it('assigns leaves consecutive row slots in DFS order (≥ ROW_H apart)', () => {
+    // Tree: r → x, y ; x → x1, x2 ; y → y1, y2.
+    const l = layoutDag(
+      graphOf(
+        [
+          { id: 'r' },
+          { id: 'x' },
+          { id: 'y' },
+          { id: 'x1' },
+          { id: 'x2' },
+          { id: 'y1' },
+          { id: 'y2' },
+        ],
+        [
+          { from: 'r', to: 'x' },
+          { from: 'r', to: 'y' },
+          { from: 'x', to: 'x1' },
+          { from: 'x', to: 'x2' },
+          { from: 'y', to: 'y1' },
+          { from: 'y', to: 'y2' },
+        ],
+      ),
+    )
+    const leaves = ['x1', 'x2', 'y1', 'y2'].map((id) => l.nodes.find((n) => n.id === id)!)
+    // No two leaves share a row slot.
+    for (let i = 0; i < leaves.length; i++) {
+      for (let j = i + 1; j < leaves.length; j++) {
+        expect(Math.abs(leaves[i]!.y - leaves[j]!.y)).toBeGreaterThanOrEqual(ROW_H)
+      }
+    }
+    // DFS order → x1 above x2 above y1 above y2.
+    expect(leaves[0]!.y).toBeLessThan(leaves[1]!.y)
+    expect(leaves[1]!.y).toBeLessThan(leaves[2]!.y)
+    expect(leaves[2]!.y).toBeLessThan(leaves[3]!.y)
+  })
+
+  it('centers internal nodes on the mean of their children', () => {
+    const l = layoutDag(
+      graphOf(
+        [
+          { id: 'r' },
+          { id: 'x' },
+          { id: 'y' },
+          { id: 'x1' },
+          { id: 'x2' },
+          { id: 'y1' },
+          { id: 'y2' },
+        ],
+        [
+          { from: 'r', to: 'x' },
+          { from: 'r', to: 'y' },
+          { from: 'x', to: 'x1' },
+          { from: 'x', to: 'x2' },
+          { from: 'y', to: 'y1' },
+          { from: 'y', to: 'y2' },
+        ],
+      ),
+    )
+    const byId = new Map(l.nodes.map((n) => [n.id, n]))
+    const x = byId.get('x')!
+    const y = byId.get('y')!
+    const r = byId.get('r')!
+    const x1 = byId.get('x1')!
+    const x2 = byId.get('x2')!
+    const y1 = byId.get('y1')!
+    const y2 = byId.get('y2')!
+    expect(x.y).toBe((x1.y + x2.y) / 2)
+    expect(y.y).toBe((y1.y + y2.y) / 2)
+    expect(r.y).toBe((x.y + y.y) / 2)
+  })
+
+  it('places each node in its depth column (diamond)', () => {
+    // diamond: a → b, a → c, b/c → d
+    const l = layoutDag(
+      graphOf(
+        [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }],
+        [
+          { from: 'a', to: 'b' },
+          { from: 'a', to: 'c' },
+          { from: 'b', to: 'd' },
+          { from: 'c', to: 'd' },
+        ],
+      ),
+    )
+    const byId = new Map(l.nodes.map((n) => [n.id, n]))
+    expect(byId.get('a')!.x).toBe(xFor(0))
+    expect(byId.get('b')!.x).toBe(xFor(1))
+    expect(byId.get('c')!.x).toBe(xFor(1))
+    expect(byId.get('d')!.x).toBe(xFor(2))
+  })
+
+  it('never lets a label zone reach the next column', () => {
+    const l = layoutDag(
+      graphOf([{ id: 'a' }, { id: 'b', title: 'x'.repeat(40), parents: ['a'] }]),
+    )
+    const labelZone = LABEL_GAP_X + LABEL_MAX_CHARS * LABEL_CHAR_W
+    for (const n of l.nodes) {
+      // Longest rendered label stays inside the node's own column.
+      expect(n.x + labelZone).toBeLessThanOrEqual(xFor(n.level + 1))
+    }
+  })
+
+  it('emits parent→child edges with parent-right / child-left anchors', () => {
     const l = layoutDag(
       graphOf([{ id: 'a' }, { id: 'b', parents: ['a'] }]),
     )
@@ -208,17 +318,48 @@ describe('layoutDag', () => {
     const e = l.edges[0]!
     expect(e.from).toBe('a')
     expect(e.to).toBe('b')
-    // child y anchor = child center − radius (top of the node)
-    const child = l.nodes.find((n) => n.id === 'b')!
-    expect(e.y2).toBe(child.y - NODE_R)
-    // parent y anchor = parent center + radius (bottom of the node)
     const parent = l.nodes.find((n) => n.id === 'a')!
-    expect(e.y1).toBe(parent.y + NODE_R)
-    // parent is directly above child (same x), so x anchors coincide.
-    expect(e.x1).toBe(e.x2)
+    const child = l.nodes.find((n) => n.id === 'b')!
+    // Parent right-center → child left-center (left-to-right flow).
+    expect(e.x1).toBe(parent.x + NODE_R)
+    expect(e.y1).toBe(parent.y)
+    expect(e.x2).toBe(child.x - NODE_R)
+    expect(e.y2).toBe(child.y)
+    expect(e.x2).toBeGreaterThan(e.x1)
   })
 
-  it('stacks generations vertically by level', () => {
+  it('renders a diamond with every edge anchored on its endpoints', () => {
+    // a → b, a → c, b → d, c → d : d is visited once (via b) and shared.
+    const l = layoutDag(
+      graphOf(
+        [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }],
+        [
+          { from: 'a', to: 'b' },
+          { from: 'a', to: 'c' },
+          { from: 'b', to: 'd' },
+          { from: 'c', to: 'd' },
+        ],
+      ),
+    )
+    expect(l.nodes).toHaveLength(4)
+    expect(l.edges).toHaveLength(4)
+    const byId = new Map(l.nodes.map((n) => [n.id, n]))
+    for (const e of l.edges) {
+      const parent = byId.get(e.from)!
+      const child = byId.get(e.to)!
+      expect(e.x1).toBe(parent.x + NODE_R)
+      expect(e.y1).toBe(parent.y)
+      expect(e.x2).toBe(child.x - NODE_R)
+      expect(e.y2).toBe(child.y)
+    }
+    // Internal nodes center on their children: b, c → d's slot; a → mean(b, c).
+    const d = byId.get('d')!
+    expect(byId.get('b')!.y).toBe(d.y)
+    expect(byId.get('c')!.y).toBe(d.y)
+    expect(byId.get('a')!.y).toBe((byId.get('b')!.y + byId.get('c')!.y) / 2)
+  })
+
+  it('keeps generations flowing left-to-right', () => {
     const l = layoutDag(
       graphOf([
         { id: 'a' },
@@ -228,7 +369,31 @@ describe('layoutDag', () => {
     )
     const a = l.nodes.find((n) => n.id === 'a')!
     const c = l.nodes.find((n) => n.id === 'c')!
-    expect(c.y).toBeGreaterThan(a.y)
+    expect(c.x).toBeGreaterThan(a.x)
+  })
+
+  it('breaks cycles instead of recursing forever', () => {
+    // a → b → a (cycle). Must terminate with finite positions.
+    const l = layoutDag(
+      graphOf(
+        [{ id: 'a' }, { id: 'b' }],
+        [
+          { from: 'a', to: 'b' },
+          { from: 'b', to: 'a' },
+        ],
+      ),
+    )
+    expect(l.nodes).toHaveLength(2)
+    for (const n of l.nodes) {
+      expect(Number.isFinite(n.x)).toBe(true)
+      expect(Number.isFinite(n.y)).toBe(true)
+    }
+    // Every edge anchors on placed nodes.
+    const byId = new Map(l.nodes.map((n) => [n.id, n]))
+    for (const e of l.edges) {
+      expect(byId.has(e.from)).toBe(true)
+      expect(byId.has(e.to)).toBe(true)
+    }
   })
 
   it('computes positive width/height for a non-empty graph', () => {

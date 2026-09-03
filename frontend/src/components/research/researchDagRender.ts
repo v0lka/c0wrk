@@ -1,13 +1,16 @@
 // Pure render constants + helpers for the RESEARCH hypothesis DAG.
 //
 // Modeled on GitPanel/gitGraphRender.ts: no React/DOM dependencies, fully
-// unit-testable in isolation. The SVG DAG (ResearchDag.tsx) consumes the
-// deterministic `layoutDag` output so geometry, status colors, and edge
+// unit-testable in isolation. The research workspace renders it through the
+// pan/zoom camera in ResearchDagCanvas.tsx (its DagSvg component), consuming
+// the deterministic `layoutDag` output so geometry, status colors, and edge
 // routing live in one source of truth.
 //
 // The hypothesis graph is a DAG where each node may have `parents` (the
-// hypotheses it builds on). Roots (no parents) sit at the top; descendants
-// flow downward by topological depth.
+// hypotheses it builds on). `layoutDag` flows left-to-right: depth columns
+// (roots leftmost, descendants rightward) crossed by row slots — leaves take
+// consecutive slots in DFS order and internal nodes center on their children,
+// so node labels can never overlap by construction.
 
 import type {
   HypothesisGraph,
@@ -18,18 +21,26 @@ import type {
 
 // ── Graph grid geometry ────────────────────────────────────────────────
 
-/** Horizontal pitch between sibling nodes within the same depth level. */
-export const NODE_SPACING_X = 96
-/** Vertical pitch between depth levels (parent → child generations). */
-export const NODE_SPACING_Y = 76
 /** Left padding before the first node center. */
 export const LEFT_PAD = 18
-/** Top padding above the first (root) level. */
+/** Top padding above the first row slot. */
 export const TOP_PAD = 24
 /** Radius of a hypothesis node. */
 export const NODE_R = 6
 /** Extra right/bottom padding so node labels/edges don't clip the SVG box. */
 export const BOX_PAD = 16
+/** Vertical pitch between row slots (one label line plus breathing room). */
+export const ROW_H = 28
+/** Gap between a node circle and its label text (mirrors the DAG view). */
+export const LABEL_GAP_X = NODE_R + 4
+/** Max characters of label text rendered beside a node (26-char truncate budget). */
+export const LABEL_MAX_CHARS = 26
+/** Estimated px per label character at the 11px label font size. */
+export const LABEL_CHAR_W = 6
+/** Breathing room after the label zone before the next column starts. */
+export const COLUMN_GAP = 20
+/** Horizontal pitch between depth columns: 26-char label budget + gap. */
+export const COLUMN_W = LABEL_GAP_X + LABEL_MAX_CHARS * LABEL_CHAR_W + COLUMN_GAP
 
 // ── Status colors (design-token CSS variables) ─────────────────────────
 
@@ -176,21 +187,28 @@ export interface DagLayout {
   height: number
 }
 
-/** X coordinate (px) of a node center given its row index and row breadth. */
-export function xFor(index: number, rowBreadth: number, maxBreadth: number): number {
-  const startOffset = ((maxBreadth - rowBreadth) / 2) * NODE_SPACING_X
-  return LEFT_PAD + startOffset + index * NODE_SPACING_X
+/** X coordinate (px) of a node center: one column per topological depth level. */
+export function xFor(level: number): number {
+  return LEFT_PAD + level * COLUMN_W
 }
 
-/** Y coordinate (px) of a node center given its depth level. */
-export function yFor(level: number): number {
-  return TOP_PAD + level * NODE_SPACING_Y
+/** Y coordinate (px) of a node center for a row slot (fractional slots center internal nodes). */
+export function yFor(slot: number): number {
+  return TOP_PAD + slot * ROW_H
 }
 
 /**
- * Deterministic layered layout for a hypothesis DAG. Groups nodes by depth
- * level, centers each row within the widest level, and emits positioned
- * edges (parent bottom → child top). Pure — no DOM, safe to unit-test.
+ * Deterministic left-to-right layered layout for a hypothesis DAG.
+ *
+ * Columns follow topological depth (roots leftmost, via `xFor`). Rows come
+ * from leaf ordering: a DFS hands each leaf (a node without children) the
+ * next row slot; internal nodes are then placed in reverse topological (DFS
+ * post-) order at the mean of their children's slots, so each subtree owns a
+ * contiguous vertical band and labels cannot overlap by construction.
+ * Cycles are broken by the DFS guard — the first placed node of a cyclic
+ * component finds all of its children unplaced and falls back to its own
+ * row slot instead of averaging nothing.
+ * Pure — no DOM, safe to unit-test.
  */
 export function layoutDag(graph: HypothesisGraph): DagLayout {
   if (graph.nodes.length === 0) {
@@ -198,40 +216,83 @@ export function layoutDag(graph: HypothesisGraph): DagLayout {
   }
 
   const levels = assignLevels(graph)
-  const maxLevel = Math.max(0, ...levels.values())
+  const parentMap = buildParentMap(graph)
 
-  // Group node ids by level, preserving input order for stability.
-  const byLevel = new Map<number, string[]>()
+  // Invert child→parents into deduped parent→children lists (input order).
+  const childrenOf = new Map<string, string[]>()
   for (const node of graph.nodes) {
-    const lvl = levels.get(node.id) ?? 0
-    const row = byLevel.get(lvl)
-    if (row) row.push(node.id)
-    else byLevel.set(lvl, [node.id])
+    const parents = parentMap.get(node.id)
+    if (!parents) continue
+    for (const pid of parents) {
+      const list = childrenOf.get(pid)
+      if (list) {
+        if (!list.includes(node.id)) list.push(node.id)
+      } else {
+        childrenOf.set(pid, [node.id])
+      }
+    }
   }
 
-  const maxBreadth = Math.max(1, ...[...byLevel.values()].map((r) => r.length))
+  // DFS post-order = children before parents (reverse topological order).
+  // Start from parentless roots, then sweep any leftover nodes (pure cycles
+  // have no root) in input order so every node is visited exactly once.
+  const slots = new Map<string, number>()
+  const postOrder: string[] = []
+  const visited = new Set<string>()
+  let nextSlot = 0
+
+  const dfs = (id: string): void => {
+    if (visited.has(id)) return
+    visited.add(id)
+    for (const child of childrenOf.get(id) ?? []) dfs(child)
+    postOrder.push(id)
+    // A leaf (no children) claims the next row slot in DFS order.
+    if (!childrenOf.has(id)) slots.set(id, nextSlot++)
+  }
+
+  for (const node of graph.nodes) {
+    if (!parentMap.has(node.id)) dfs(node.id)
+  }
+  for (const node of graph.nodes) dfs(node.id)
+
+  // Internal nodes: mean of their children's slots (children are placed
+  // already). Cycle guard: if every child is an unplaced back-edge, claim
+  // the next slot rather than averaging nothing.
+  for (const id of postOrder) {
+    if (slots.has(id)) continue
+    let sum = 0
+    let count = 0
+    for (const child of childrenOf.get(id) ?? []) {
+      const slot = slots.get(child)
+      if (slot === undefined) continue
+      sum += slot
+      count++
+    }
+    slots.set(id, count > 0 ? sum / count : nextSlot++)
+  }
+
+  const maxLevel = Math.max(0, ...levels.values())
 
   // Assign x/y to every node.
   const pos = new Map<string, PositionedNode>()
   const nodes: PositionedNode[] = []
   for (const node of graph.nodes) {
     const lvl = levels.get(node.id) ?? 0
-    const row = byLevel.get(lvl) ?? []
-    const index = row.indexOf(node.id)
-    nodes.push({
+    const slot = slots.get(node.id) ?? 0
+    const positioned: PositionedNode = {
       id: node.id,
       title: node.title,
       status: node.status,
       level: lvl,
-      x: xFor(index, row.length, maxBreadth),
-      y: yFor(lvl),
+      x: xFor(lvl),
+      y: yFor(slot),
       result: node.result,
-    })
-    pos.set(node.id, nodes[nodes.length - 1]!)
+    }
+    nodes.push(positioned)
+    pos.set(node.id, positioned)
   }
 
-  // Emit edges (parent → child), parent bottom-center to child top-center.
-  const parentMap = buildParentMap(graph)
+  // Emit edges (parent → child), parent right-center to child left-center.
   const edges: PositionedEdge[] = []
   for (const node of graph.nodes) {
     const child = pos.get(node.id)
@@ -244,25 +305,26 @@ export function layoutDag(graph: HypothesisGraph): DagLayout {
       edges.push({
         from: pid,
         to: node.id,
-        x1: parent.x,
-        y1: parent.y + NODE_R,
-        x2: child.x,
-        y2: child.y - NODE_R,
+        x1: parent.x + NODE_R,
+        y1: parent.y,
+        x2: child.x - NODE_R,
+        y2: child.y,
       })
     }
   }
 
-  const width = LEFT_PAD + maxBreadth * NODE_SPACING_X - (NODE_SPACING_X - BOX_PAD)
-  const height = TOP_PAD + maxLevel * NODE_SPACING_Y + BOX_PAD
+  // Box: last column plus a full label budget; last row slot plus padding.
+  const width = xFor(maxLevel) + LABEL_GAP_X + LABEL_MAX_CHARS * LABEL_CHAR_W + BOX_PAD
+  const height = TOP_PAD + Math.max(0, nextSlot - 1) * ROW_H + BOX_PAD
   return { nodes, edges, width: Math.max(width, 0), height: Math.max(height, 0) }
 }
 
 // ── Edge path ──────────────────────────────────────────────────────────
 
-/** Cubic-bezier path between two points (vertical-leaning curve). */
-export function edgePath(x1: number, y1: number, x2: number, y2: number): string {
-  const ym = (y1 + y2) / 2
-  return `M ${x1} ${y1} C ${x1} ${ym} ${x2} ${ym} ${x2} ${y2}`
+/** Cubic-bezier path between two points (horizontal-leaning curve). */
+export function edgePathH(x1: number, y1: number, x2: number, y2: number): string {
+  const xm = (x1 + x2) / 2
+  return `M ${x1} ${y1} C ${xm} ${y1} ${xm} ${y2} ${x2} ${y2}`
 }
 
 // ── Metrics formatting ─────────────────────────────────────────────────

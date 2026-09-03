@@ -24,117 +24,16 @@ import {
 } from './researchWorkspaceUtils'
 import {
   layoutDag,
-  edgePath,
-  statusColorVar,
   buildDisplayGraph,
   projectDir,
   projectFilePaths,
-  NODE_R,
-  type DagLayout,
 } from './researchDagRender'
+import { ResearchDagCanvas } from './ResearchDagCanvas'
 import type {
   HypothesisGraph,
   HypothesisNode,
   HypothesisStatus,
 } from '@/types/models'
-
-/** Truncate a title for compact SVG labelling. */
-function truncate(s: string, max: number): string {
-  return s.length > max ? `${s.slice(0, max - 1)}…` : s
-}
-
-// ── DAG SVG (lightweight; geometry comes from layoutDag) ───────────────
-
-interface DagSvgProps {
-  layout: DagLayout
-  selectedId: string | null
-  onSelect: (id: string) => void
-}
-
-function DagSvg({ layout, selectedId, onSelect }: DagSvgProps) {
-  // Add room to the right for node titles rendered beside each circle.
-  const width = Math.max(layout.width + 160, 320)
-  const height = Math.max(layout.height, 160)
-
-  return (
-    <svg
-      width={width}
-      height={height}
-      viewBox={`0 0 ${width} ${height}`}
-      role="graphics-document"
-      aria-label="Research hypothesis DAG"
-      className="shrink-0"
-    >
-      {layout.edges.map((e) => (
-        <path
-          key={`${e.from}->${e.to}`}
-          d={edgePath(e.x1, e.y1, e.x2, e.y2)}
-          fill="none"
-          stroke="var(--color-border)"
-          strokeWidth="1.5"
-        />
-      ))}
-
-      {layout.nodes.map((node) => {
-        const selected = node.id === selectedId
-        return (
-          <g
-            key={node.id}
-            role="button"
-            tabIndex={0}
-            data-node-id={node.id}
-            aria-label={`${node.id} ${node.title}`}
-            className="cursor-pointer"
-            onClick={() => onSelect(node.id)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                onSelect(node.id)
-              }
-            }}
-          >
-            {selected && (
-              <circle
-                cx={node.x}
-                cy={node.y}
-                r={NODE_R + 3}
-                fill="none"
-                stroke="var(--color-highlight)"
-                strokeWidth="1.5"
-              />
-            )}
-            <circle
-              cx={node.x}
-              cy={node.y}
-              r={NODE_R}
-              fill={statusColorVar(node.status)}
-              stroke="var(--color-background)"
-              strokeWidth="1"
-            />
-            <text
-              x={node.x - NODE_R - 4}
-              y={node.y - 6}
-              fontSize="9"
-              textAnchor="end"
-              fill="var(--color-muted-foreground)"
-            >
-              {node.id}
-            </text>
-            <text
-              x={node.x + NODE_R + 4}
-              y={node.y + 3.5}
-              fontSize="11"
-              textAnchor="start"
-              fill="var(--color-foreground)"
-            >
-              {truncate(node.title, 26)}
-            </text>
-          </g>
-        )
-      })}
-    </svg>
-  )
-}
 
 // ── Hypothesis detail card (editable status/result/timebox) ───────────
 
@@ -404,7 +303,7 @@ export function ResearchWorkspace() {
 
       {/* Body: DAG + detail card */}
       <div className="flex flex-1 min-h-0">
-        <div className="flex-1 min-w-0 overflow-auto p-2">
+        <div className="relative flex-1 min-w-0">
           {isLoading && graph.nodes.length === 0 ? (
             <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
               Loading…
@@ -414,7 +313,11 @@ export function ResearchWorkspace() {
               No active hypotheses
             </div>
           ) : (
-            <DagSvg layout={layout} selectedId={selectedId} onSelect={selectNode} />
+            <ResearchDagCanvas
+              layout={layout}
+              selectedId={selectedId}
+              onSelect={selectNode}
+            />
           )}
         </div>
 

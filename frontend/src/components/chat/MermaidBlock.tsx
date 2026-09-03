@@ -1,35 +1,12 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type PointerEvent as ReactPointerEvent,
-} from 'react'
+import { useEffect, useLayoutEffect, useState } from 'react'
 import DOMPurify from 'dompurify'
 import { Maximize, ZoomIn, ZoomOut } from 'lucide-react'
 import { useThemeStore } from '@/stores/themeStore'
 import { Button } from '@/components/ui/button'
+import { DEFAULT_ZOOM_STEP, INITIAL_VIEW, usePanZoom } from '@/lib/usePanZoom'
 
 interface MermaidBlockProps {
   code: string
-}
-
-/** Zoom limits and step for the pan/zoom canvas. */
-const MIN_SCALE = 0.2
-const MAX_SCALE = 5
-const ZOOM_STEP = 1.25
-
-interface View {
-  scale: number
-  x: number
-  y: number
-}
-
-const INITIAL_VIEW: View = { scale: 1, x: 0, y: 0 }
-
-function clampScale(value: number): number {
-  return Math.min(MAX_SCALE, Math.max(MIN_SCALE, value))
 }
 
 /**
@@ -43,26 +20,27 @@ function clampScale(value: number): number {
  *   - zoom-in / zoom-out / reset buttons in a floating toolbar.
  *
  * On first paint the diagram is scaled to fit the canvas width (never
- * upscaled); the reset button restores that fit.
+ * upscaled); the reset button restores that fit. All pan/zoom behavior
+ * (anchored zoom, fit, drag-to-pan, wheel handling) lives in the reusable
+ * `usePanZoom` hook.
  */
 export function MermaidBlock({ code }: MermaidBlockProps) {
   const theme = useThemeStore((s) => s.theme)
-  const canvasRef = useRef<HTMLDivElement>(null)
-  const contentRef = useRef<HTMLDivElement>(null)
-  // Mirror of `view` so event handlers read the latest transform without
-  // stale closures or per-frame handler recreation.
-  const viewRef = useRef<View>(INITIAL_VIEW)
-  const dragRef = useRef<{ startX: number; startY: number; ox: number; oy: number } | null>(null)
+  const {
+    view,
+    setView,
+    canvasRef,
+    contentRef,
+    zoomFromCenter,
+    fit,
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onPointerCancel,
+  } = usePanZoom()
 
   const [svgHtml, setSvgHtml] = useState<string | null>(null)
   const [error, setError] = useState(false)
-  const [view, setView] = useState<View>(INITIAL_VIEW)
-  // Keep the ref mirror in sync synchronously after commit so the render phase
-  // stays pure (no side effects) while event handlers and the fit() layout
-  // effect (declared below) always read the latest transform.
-  useLayoutEffect(() => {
-    viewRef.current = view
-  }, [view])
 
   // (Re)render the diagram whenever the source or theme changes.
   useEffect(() => {
@@ -119,113 +97,13 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
       cancelled = true
       document.getElementById(renderId)?.remove()
     }
-  }, [code, theme])
-
-  /**
-   * Scale the diagram so its natural width fits the canvas (never upscaled),
-   * centered within the viewport. Reads the current transform to recover the
-   * scale-1 (natural) size regardless of the active zoom level. If the SVG
-   * has no laid-out width yet (e.g. width="100%" or freshly injected before
-   * layout), falls back to its viewBox / width/height attributes.
-   */
-  const fit = useCallback(() => {
-    const canvas = canvasRef.current
-    const svgEl = contentRef.current?.querySelector('svg')
-    if (!canvas || !svgEl) return
-    const cw = canvas.clientWidth
-    const ch = canvas.clientHeight
-    const rect = svgEl.getBoundingClientRect()
-    const prevScale = viewRef.current.scale || 1
-    let naturalW = rect.width / prevScale
-    let naturalH = rect.height / prevScale
-    // Fall back to the SVG's intrinsic geometry when layout yields 0 (some
-    // diagram types emit width="100%"/no viewBox and collapse before paint).
-    if (!naturalW || !naturalH) {
-      const attrW = parseFloat(svgEl.getAttribute('width') ?? '')
-      const attrH = parseFloat(svgEl.getAttribute('height') ?? '')
-      const vb = svgEl.getAttribute('viewBox')?.split(/[\s,]+/).map(Number)
-      naturalW = naturalW || attrW || vb?.[2] || 0
-      naturalH = naturalH || attrH || vb?.[3] || 0
-    }
-    if (!naturalW || !naturalH || !cw) return
-    const scale = Math.min(1, cw / naturalW)
-    const scaledW = naturalW * scale
-    const scaledH = naturalH * scale
-    setView({ scale, x: (cw - scaledW) / 2, y: Math.max(0, (ch - scaledH) / 2) })
-  }, [])
+  }, [code, theme, setView])
 
   // Fit on first paint of a freshly rendered diagram.
   useLayoutEffect(() => {
     if (!svgHtml) return
     fit()
   }, [svgHtml, fit])
-
-  /** Zoom by `factor`, keeping the viewport point (cx, cy) fixed. */
-  const zoomAt = useCallback((factor: number, cx: number, cy: number) => {
-    setView((prev) => {
-      const scale = clampScale(prev.scale * factor)
-      if (scale === prev.scale) return prev
-      const k = scale / prev.scale
-      return { scale, x: cx - k * (cx - prev.x), y: cy - k * (cy - prev.y) }
-    })
-  }, [])
-
-  const zoomFromCenter = useCallback(
-    (factor: number) => {
-      const rect = canvasRef.current?.getBoundingClientRect()
-      if (!rect) return
-      zoomAt(factor, rect.width / 2, rect.height / 2)
-    },
-    [zoomAt],
-  )
-
-  // Attach a non-passive wheel listener so we can preventDefault and stop the
-  // page from scrolling while zooming the diagram. Only vertical (zoom) input
-  // is intercepted; horizontal trackpad scrolling and plain panning are left
-  // to the browser so the canvas behaves predictably on touchpads.
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const onWheel = (e: WheelEvent) => {
-      // Ignore horizontal-dominant gestures (trackpad two-finger swipe);
-      // let the browser handle them instead of swallowing the input.
-      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return
-      e.preventDefault()
-      const rect = canvas.getBoundingClientRect()
-      zoomAt(
-        e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP,
-        e.clientX - rect.left,
-        e.clientY - rect.top,
-      )
-    }
-    canvas.addEventListener('wheel', onWheel, { passive: false })
-    return () => canvas.removeEventListener('wheel', onWheel)
-  }, [zoomAt])
-
-  const onPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return
-    canvasRef.current?.setPointerCapture(e.pointerId)
-    dragRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      ox: viewRef.current.x,
-      oy: viewRef.current.y,
-    }
-  }, [])
-
-  const onPointerMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current
-    if (!drag) return
-    const dx = e.clientX - drag.startX
-    const dy = e.clientY - drag.startY
-    setView((prev) => ({ ...prev, x: drag.ox + dx, y: drag.oy + dy }))
-  }, [])
-
-  const endDrag = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-    const canvas = canvasRef.current
-    if (canvas?.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId)
-    dragRef.current = null
-  }, [])
 
   if (error) {
     return (
@@ -246,7 +124,7 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
         <Button
           variant="ghost"
           size="icon-xs"
-          onClick={() => zoomFromCenter(1 / ZOOM_STEP)}
+          onClick={() => zoomFromCenter(1 / DEFAULT_ZOOM_STEP)}
           title="Zoom out"
           aria-label="Zoom out"
         >
@@ -261,7 +139,7 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
         <Button
           variant="ghost"
           size="icon-xs"
-          onClick={() => zoomFromCenter(ZOOM_STEP)}
+          onClick={() => zoomFromCenter(DEFAULT_ZOOM_STEP)}
           title="Zoom in"
           aria-label="Zoom in"
         >
@@ -286,8 +164,8 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
         className="mermaid-canvas relative h-[44vh] max-h-[520px] min-h-[160px] w-full cursor-grab touch-none select-none overflow-hidden active:cursor-grabbing"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
       >
         <div
           ref={contentRef}
