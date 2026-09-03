@@ -1,19 +1,28 @@
 import { useEffect, useRef } from 'react'
-import { EditorView } from '@codemirror/view'
+import { EditorView, placeholder as cmPlaceholder } from '@codemirror/view'
 import { EditorState, Compartment } from '@codemirror/state'
 import { markdown } from '@codemirror/lang-markdown'
+import { cn } from '@/lib/utils'
 import { createOneDarkCMTheme } from '@/lib/cmTheme'
 import { useThemeStore } from '@/stores/themeStore'
 
 interface MiniCodeMirrorFieldProps {
   value: string
   onChange: (value: string) => void
+  /** Optional placeholder rendered while the document is empty. */
+  placeholder?: string
+  /**
+   * Tailwind classes merged over the container defaults via twMerge, so
+   * callers can override the height bounds (e.g. `min-h-0 max-h-none flex-1`
+   * to let the field fill a flex column).
+   */
+  className?: string
 }
 
 /**
  * A small editable CodeMirror instance for individual plan fields.
  */
-export function MiniCodeMirrorField({ value, onChange }: MiniCodeMirrorFieldProps) {
+export function MiniCodeMirrorField({ value, onChange, placeholder, className }: MiniCodeMirrorFieldProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const themeCompartment = useRef(new Compartment())
@@ -27,6 +36,7 @@ export function MiniCodeMirrorField({ value, onChange }: MiniCodeMirrorFieldProp
       extensions: [
         EditorView.editable.of(true),
         markdown(),
+        ...(placeholder ? [cmPlaceholder(placeholder)] : []),
         themeCompartment.current.of(createOneDarkCMTheme(theme === 'dark')),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
@@ -77,7 +87,10 @@ export function MiniCodeMirrorField({ value, onChange }: MiniCodeMirrorFieldProp
   return (
     <div
       ref={containerRef}
-      className="min-h-[60px] max-h-[200px] border border-border rounded overflow-auto custom-scrollbar cm-viewer-container"
+      className={cn(
+        'min-h-[60px] max-h-[200px] border border-border rounded overflow-auto custom-scrollbar cm-viewer-container',
+        className,
+      )}
     />
   )
 }

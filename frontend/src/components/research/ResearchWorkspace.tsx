@@ -1,20 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   FlaskConical,
-  FileText,
-  BookMarked,
-  FileCheck2,
   Loader2,
   AlertCircle,
   Save,
+  ExternalLink,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { useResearchStatusEvents } from '@/hooks/useResearchStatusEvents'
 import { useResearchFileWatcher } from '@/hooks/useResearchFileWatcher'
 import { useResearchStore, selectActiveProject } from '@/stores/researchStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { useResize } from '@/hooks/useResize'
+import { ResizeHandle } from '@/components/ResizeHandle'
+import { MiniCodeMirrorField } from '@/components/fileViewer/MiniCodeMirrorField'
 import { updateHypothesis } from '@/api/research'
 import { ResearchToggle } from './ResearchToggle'
 import {
@@ -26,7 +26,7 @@ import {
   layoutDag,
   buildDisplayGraph,
   projectDir,
-  projectFilePaths,
+  hypothesisCardPath,
 } from './researchDagRender'
 import { ResearchDagCanvas } from './ResearchDagCanvas'
 import type {
@@ -45,6 +45,12 @@ const STATUS_OPTIONS: HypothesisStatus[] = [
   'cancelled',
 ]
 
+// Detail-sidebar width bounds (px). The default matches the former w-72
+// (288px); the split is user-resizable via the drag handle / arrow keys.
+const DEFAULT_SIDEBAR_WIDTH = 288
+const SIDEBAR_MIN_WIDTH = 220
+const SIDEBAR_MAX_WIDTH = 560
+
 interface HypothesisCardProps {
   node: HypothesisNode
   draft: HypothesisDraft
@@ -53,6 +59,8 @@ interface HypothesisCardProps {
   saveError: string | null
   onChange: (next: HypothesisDraft) => void
   onSave: () => void
+  /** Open a hypothesis's markdown card in the file viewer. */
+  onOpenCard: (id: string) => void
 }
 
 function HypothesisCard({
@@ -63,26 +71,53 @@ function HypothesisCard({
   saveError,
   onChange,
   onSave,
+  onOpenCard,
 }: HypothesisCardProps) {
-  const parents = (node.parents ?? []).join(', ')
+  const parentIds = node.parents ?? []
 
   return (
-    <div className="flex flex-col gap-3" data-testid="hypothesis-card">
-      <div>
-        <div className="flex items-baseline gap-1.5">
+    <div
+      className="flex h-full min-h-0 flex-col gap-3"
+      data-testid="hypothesis-card"
+    >
+      <div className="shrink-0">
+        {/* The card header (id + title) is itself a hypothesis mention: it
+            opens this hypothesis's markdown card as a sibling viewer tab.
+            The native tooltip carries the full, untruncated title. */}
+        <button
+          type="button"
+          onClick={() => onOpenCard(node.id)}
+          title={node.title}
+          aria-label={`Open ${node.id} markdown card`}
+          className="flex min-w-0 max-w-full items-baseline gap-1.5 rounded-sm text-left underline-offset-2 hover:underline"
+        >
           <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
             {node.id}
           </span>
           <span className="truncate text-xs font-semibold">{node.title}</span>
-        </div>
-        {parents && (
-          <p className="mt-0.5 text-[11px] text-muted-foreground/70">
-            parents: <span className="font-mono text-[10px]">{parents}</span>
+          <ExternalLink className="size-3 shrink-0 self-center text-muted-foreground/60" />
+        </button>
+        {parentIds.length > 0 && (
+          <p className="mt-0.5 flex flex-wrap items-baseline gap-1 text-[11px] text-muted-foreground/70">
+            <span>parents:</span>
+            {parentIds.map((p, i) => (
+              <span key={p} className="flex items-baseline">
+                {i > 0 && <span className="text-muted-foreground/50">,</span>}
+                <button
+                  type="button"
+                  onClick={() => onOpenCard(p)}
+                  title={`Open ${p} markdown card`}
+                  className="rounded-sm font-mono text-[10px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                >
+                  {p}
+                </button>
+              </span>
+            ))}
           </p>
         )}
       </div>
 
-      <label className="flex flex-col gap-1">
+      <label className="flex shrink-0 flex-col gap-1">
         <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
           Status
         </span>
@@ -100,7 +135,7 @@ function HypothesisCard({
         </select>
       </label>
 
-      <label className="flex flex-col gap-1">
+      <label className="flex shrink-0 flex-col gap-1">
         <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
           Timebox
         </span>
@@ -114,22 +149,23 @@ function HypothesisCard({
         />
       </label>
 
-      <label className="flex flex-col gap-1">
-        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+      {/* Result: fills every remaining vertical pixel of the sidebar. The
+          markdown-aware CodeMirror field brings syntax highlighting and the
+          project-wide custom scrollbar (cm-viewer-container). */}
+      <label className="flex min-h-0 flex-1 flex-col gap-1" data-testid="hypothesis-result-field">
+        <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">
           Result
         </span>
-        <textarea
+        <MiniCodeMirrorField
           value={draft.result}
-          onChange={(e) => onChange({ ...draft, result: e.target.value })}
-          aria-label="Hypothesis result"
-          rows={4}
+          onChange={(result) => onChange({ ...draft, result })}
           placeholder="Finding / outcome…"
-          className="w-full resize-y rounded-md border border-input bg-background px-2 py-1 text-xs outline-none focus:border-primary"
+          className="min-h-0 max-h-none flex-1"
         />
       </label>
 
       {saveError && (
-        <p className="text-xs text-destructive" role="alert">
+        <p className="shrink-0 text-xs text-destructive" role="alert">
           {saveError}
         </p>
       )}
@@ -138,7 +174,8 @@ function HypothesisCard({
         type="button"
         onClick={onSave}
         disabled={saving || !dirty}
-        className="inline-flex items-center justify-center gap-1.5 rounded-md bg-primary px-2 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+        data-testid="hypothesis-save"
+        className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md bg-primary px-2 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
       >
         {saving ? (
           <Loader2 className="size-3.5 animate-spin" />
@@ -167,9 +204,11 @@ function ErrorBanner({ message }: { message: string }) {
 /**
  * Research workspace rendered by the file viewer for the synthetic
  * `c0wrk:research` pseudo-path. Shows the incomplete-path hypothesis DAG (with
- * a "hide completed" toggle), an inline editable hypothesis card (status /
- * result / timebox persisted through the t4 UpdateHypothesis RPC), and quick
- * links that open the brief / prior-art / report as sibling read-only tabs.
+ * a "hide completed" toggle) beside a resizable detail sidebar: every
+ * hypothesis mention (the card header and parent ids) opens the corresponding
+ * markdown card as a sibling read-only tab, and the editable card (status /
+ * result / timebox persisted through the t4 UpdateHypothesis RPC) fills the
+ * sidebar height with a markdown-highlighted result editor.
  */
 export function ResearchWorkspace() {
   // Keep the store in sync (full status fetch + incremental graph updates).
@@ -255,14 +294,30 @@ export function ResearchWorkspace() {
     }
   }, [selectedNode, draft])
 
-  // Open a research artifact (brief/prior-art/report) as a sibling read-only
-  // tab in the file viewer. Declared before the early return so the hook order
-  // stays stable across renders.
-  const openReadView = useCallback((filePath: string) => {
-    const store = useFileViewerStore.getState()
-    store.setCollapsed(false)
-    store.openFile(filePath)
-  }, [])
+  // Open a hypothesis's markdown card as a sibling read-only tab in the file
+  // viewer. Declared before the early return so the hook order stays stable
+  // across renders.
+  const dir = project ? projectDir(root, project.id) : ''
+  const openHypothesisCard = useCallback(
+    (id: string) => {
+      const store = useFileViewerStore.getState()
+      store.setCollapsed(false)
+      store.openFile(hypothesisCardPath(rootPath, dir, id))
+    },
+    [rootPath, dir],
+  )
+
+  // Sidebar ↔ DAG split: dragging (or arrow-keying) the border between the
+  // canvas and the sidebar resizes them. Right-side panel → drag left grows
+  // it (direction −1), mirroring the docked file viewer's handle.
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH)
+  const sidebarResize = useResize({
+    initialWidth: sidebarWidth,
+    min: SIDEBAR_MIN_WIDTH,
+    max: SIDEBAR_MAX_WIDTH,
+    direction: -1,
+    onChange: setSidebarWidth,
+  })
 
   // ── RESEARCH off → enable empty state ──────────────────────────────
   if (!enabled) {
@@ -275,9 +330,6 @@ export function ResearchWorkspace() {
       </div>
     )
   }
-
-  const dir = project ? projectDir(root, project.id) : ''
-  const paths = projectFilePaths(rootPath, dir)
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -304,7 +356,7 @@ export function ResearchWorkspace() {
 
       {error && <ErrorBanner message={error} />}
 
-      {/* Body: DAG + detail card */}
+      {/* Body: DAG + resizable detail sidebar */}
       <div className="flex flex-1 min-h-0">
         <div className="relative flex-1 min-w-0">
           {isLoading && graph.nodes.length === 0 ? (
@@ -324,7 +376,16 @@ export function ResearchWorkspace() {
           )}
         </div>
 
-        <div className="w-72 shrink-0 overflow-auto border-l border-border bg-background p-3">
+        <ResizeHandle
+          onMouseDown={sidebarResize.handleMouseDown}
+          onKeyDown={sidebarResize.handleKeyDown}
+        />
+
+        <div
+          data-testid="hypothesis-sidebar"
+          style={{ width: sidebarWidth }}
+          className="flex shrink-0 flex-col overflow-auto border-l border-border bg-background p-3"
+        >
           {selectedNode && draft ? (
             <HypothesisCard
               node={selectedNode}
@@ -334,6 +395,7 @@ export function ResearchWorkspace() {
               saveError={saveError}
               onChange={setDraft}
               onSave={handleSave}
+              onOpenCard={openHypothesisCard}
             />
           ) : (
             <p className="py-8 text-center text-xs text-muted-foreground">
@@ -342,56 +404,6 @@ export function ResearchWorkspace() {
           )}
         </div>
       </div>
-
-      {/* Read views: open brief / prior-art / report as sibling tabs */}
-      <div className="flex shrink-0 flex-wrap items-center gap-1 border-t border-border bg-secondary/20 px-2 py-1.5">
-        <ReadViewLink
-          icon={FileText}
-          label="Brief"
-          onClick={() => openReadView(paths.brief)}
-        />
-        <ReadViewLink
-          icon={BookMarked}
-          label="Prior art"
-          onClick={() => openReadView(paths.priorArt)}
-        />
-        <ReadViewLink
-          icon={FileCheck2}
-          label="Report"
-          disabled={!project?.has_report}
-          onClick={
-            project?.has_report ? () => openReadView(paths.report) : undefined
-          }
-        />
-      </div>
     </div>
-  )
-}
-
-interface ReadViewLinkProps {
-  icon: typeof FileText
-  label: string
-  disabled?: boolean
-  onClick?: () => void
-}
-
-function ReadViewLink({ icon: Icon, label, disabled, onClick }: ReadViewLinkProps) {
-  const interactive = !!onClick && !disabled
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={!interactive}
-      title={interactive ? `Open ${label}` : label}
-      className={cn(
-        'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors',
-        interactive && 'cursor-pointer hover:bg-muted',
-        !interactive && 'cursor-default opacity-60',
-        'text-muted-foreground',
-      )}
-    >
-      <Icon className="size-3" />
-      <span className="uppercase tracking-wide">{label}</span>
-    </button>
   )
 }

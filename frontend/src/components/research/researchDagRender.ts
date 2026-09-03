@@ -684,17 +684,29 @@ export function projectDir(root: ResearchRoot | undefined, projectId: string): s
 }
 
 /**
+ * Absolute path of a single hypothesis's markdown card
+ * (`<base>/hypotheses/<id>.md`) so hypothesis mentions can open the card in
+ * the file viewer. `rootPath` is the absolute research root
+ * (ResearchRoot.path); `dir` is the project subdirectory (from `projectDir`,
+ * "" for the flat layout). Pure and unit-tested.
+ */
+export function hypothesisCardPath(rootPath: string, dir: string, id: string): string {
+  const base = dir ? `${rootPath}/${dir}` : rootPath
+  return `${base}/hypotheses/${id}.md`
+}
+
+/**
  * Build absolute artifact paths for a research project so the panel's quick
  * links can open them in the file viewer. `rootPath` is the absolute research
  * root (ResearchRoot.path); `dir` is the project subdirectory (from
  * `projectDir`, "" for the flat layout). Pure and unit-tested.
  */
 export function projectFilePaths(rootPath: string, dir: string): ResearchFilePaths {
-  const base = dir ? `${rootPath}/${dir}` : rootPath
   return {
-    brief: `${base}/brief.md`,
-    priorArt: `${base}/prior-art.md`,
-    report: `${base}/report.md`,
-    graph: `${base}/hypotheses/graph.md`,
+    brief: `${dir ? `${rootPath}/${dir}` : rootPath}/brief.md`,
+    priorArt: `${dir ? `${rootPath}/${dir}` : rootPath}/prior-art.md`,
+    report: `${dir ? `${rootPath}/${dir}` : rootPath}/report.md`,
+    // The graph "card" shares the hypotheses/ directory with the cards.
+    graph: hypothesisCardPath(rootPath, dir, 'graph'),
   }
 }

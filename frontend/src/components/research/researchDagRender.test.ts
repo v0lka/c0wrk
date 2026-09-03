@@ -27,6 +27,7 @@ import {
   buildDisplayGraph,
   mergePathsToTree,
   projectDir,
+  hypothesisCardPath,
   projectFilePaths,
   type PathEntry,
   type MergedTreeNode,
@@ -751,6 +752,26 @@ describe('projectFilePaths', () => {
     const p = projectFilePaths('/ws/.research', '')
     expect(p.brief).toBe('/ws/.research/brief.md')
     expect(p.graph).toBe('/ws/.research/hypotheses/graph.md')
+  })
+})
+
+describe('hypothesisCardPath', () => {
+  it('builds a nested card path when a directory is given', () => {
+    expect(hypothesisCardPath('/ws/.research', 'R-001-flaw', 'H-002')).toBe(
+      '/ws/.research/R-001-flaw/hypotheses/H-002.md',
+    )
+  })
+
+  it('builds a flat-root card path when no directory is given', () => {
+    expect(hypothesisCardPath('/ws/.research', '', 'H-001')).toBe(
+      '/ws/.research/hypotheses/H-001.md',
+    )
+  })
+
+  it('resolves the graph catalog as the "graph" card', () => {
+    expect(hypothesisCardPath('/ws/.research', 'R-001', 'graph')).toBe(
+      '/ws/.research/R-001/hypotheses/graph.md',
+    )
   })
 })
 
