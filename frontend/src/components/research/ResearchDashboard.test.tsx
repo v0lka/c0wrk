@@ -376,6 +376,23 @@ describe('ResearchLog — rendering + helpers', () => {
     expect(rendered[1]!.textContent).toContain('H-001')
   })
 
+  it('scrolls its own block with the app-wide custom scrollbar', async () => {
+    useResearchStore.getState().loadStatus(makeStatus([
+      { id: '1', kind: 'note', message: 'seeded project', created_at: '2026-01-01T10:00:00Z' },
+    ]), 'p1')
+
+    const container = await render(<ResearchLog />)
+    const root = container.querySelector('[data-testid="research-log"]')!
+    const list = container.querySelector('ul')!
+    // The block fills the remaining panel space and may shrink, so overflow
+    // stays inside the list instead of scrolling the whole dashboard body.
+    expect(root.className).toContain('flex-1')
+    expect(root.className).toContain('min-h-0')
+    expect(list.className).toContain('overflow-y-auto')
+    expect(list.className).toContain('custom-scrollbar')
+    expect(list.className).toContain('min-h-0')
+  })
+
   it('renders an empty state when there are no entries', async () => {
     useResearchStore.getState().loadStatus(makeStatus([]), 'p1')
     const container = await render(<ResearchLog />)

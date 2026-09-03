@@ -29,16 +29,16 @@ export function ResearchLog() {
   return (
     <div
       data-testid="research-log"
-      className="flex shrink-0 flex-col gap-1 border-t border-border pt-2"
+      className="flex min-h-0 flex-1 flex-col gap-1 border-t border-border pt-2"
     >
-      <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+      <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
         Research log
       </span>
 
       {entries.length === 0 ? (
         <p className="text-xs text-muted-foreground/70">No entries yet</p>
       ) : (
-        <ul className="flex flex-col gap-1">
+        <ul className="custom-scrollbar flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
           {entries.map((entry) => {
             const Icon = KIND_ICONS[entry.kind] ?? FileText
             return (
