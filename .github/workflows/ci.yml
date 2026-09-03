@@ -29,7 +29,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install system dependencies
         run: |
@@ -46,7 +48,7 @@ jobs:
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
 
       - name: Install frontend dependencies
-        run: cd frontend && npm install
+        run: cd frontend && npm ci
 
       # npm audit is arch- and OS-independent: run the production-dependency
       # vulnerability gate on the amd64 leg only.
@@ -86,7 +88,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install system dependencies
         run: brew install ripgrep
@@ -98,7 +102,7 @@ jobs:
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
 
       - name: Install frontend dependencies
-        run: cd frontend && npm install
+        run: cd frontend && npm ci
 
       - name: Build frontend assets
         run: cd frontend && npm run build
@@ -139,7 +143,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Set up MinGW-w64 (gcc for CGO)
         id: msys2
@@ -161,7 +167,7 @@ jobs:
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
 
       - name: Install frontend dependencies
-        run: cd frontend && npm install
+        run: cd frontend && npm ci
 
       - name: Build frontend assets
         run: cd frontend && npm run build

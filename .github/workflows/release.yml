@@ -35,7 +35,7 @@ concurrency:
 
 env:
   GO_VERSION: "1.27.0"
-  NODE_VERSION: "22"
+  NODE_VERSION: "24"
   WAILS_VERSION: "v2.15.0"
   # Application version injected into the binary via ldflags on every
   # platform. Resolves to the pushed tag (v*) on tag pushes, or the
@@ -64,7 +64,7 @@ jobs:
         run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
 
       - name: Install frontend dependencies
-        run: cd frontend && npm install
+        run: cd frontend && npm ci
 
       # make build runs `wails build` + fetch-onnx + fetch-embedding-model,
       # producing build/bin/c0wrk-desktop.app with the dylib + models bundled.
@@ -121,7 +121,7 @@ jobs:
         run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
 
       - name: Install frontend dependencies
-        run: cd frontend && npm install
+        run: cd frontend && npm ci
 
       # xvfb-run gives the build a virtual display; make build applies the
       # webkit2_41 tag and fetches ONNX + embedding model into build/bin.
@@ -186,7 +186,7 @@ jobs:
         run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
 
       - name: Install frontend dependencies
-        run: cd frontend && npm install
+        run: cd frontend && npm ci
 
       # On Windows we call wails build directly (no Makefile), then fetch the
       # ONNX Runtime + embedding model via the dedicated PowerShell scripts.

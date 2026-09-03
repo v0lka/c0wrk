@@ -153,7 +153,8 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-package-lock.json
+# Lockfiles: the npm lockfile for frontend/ IS committed (reproducible CI
+# installs via `npm ci`); alternative registries' lockfiles stay untracked.
 yarn.lock
 pnpm-lock.yaml
 
