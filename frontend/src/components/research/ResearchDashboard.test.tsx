@@ -6,7 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { ResearchNextStep } from './ResearchNextStep'
 import { ResearchQuickActions } from './ResearchQuickActions'
 import { ResearchLog } from './ResearchLog'
-import { latestLogEntries, formatLogTime, DEFAULT_LOG_LIMIT } from './researchLogUtils'
+import { latestLogEntries, formatLogTime } from './researchLogUtils'
 import { ResearchQuickMutate } from './ResearchQuickMutate'
 import { ResearchPanel } from './index'
 import { useResearchStore } from '@/stores/researchStore'
@@ -399,7 +399,7 @@ describe('ResearchLog — rendering + helpers', () => {
     expect(container.textContent).toContain('No entries yet')
   })
 
-  it('latestLogEntries caps to the limit and reverses to newest-first', () => {
+  it('latestLogEntries returns every entry, newest first (no cap)', () => {
     const entries = Array.from({ length: 15 }, (_, i) => ({
       id: String(i + 1),
       kind: 'note' as const,
@@ -407,9 +407,29 @@ describe('ResearchLog — rendering + helpers', () => {
       created_at: `2026-01-${String(i + 1).padStart(2, '0')}T10:00:00Z`,
     }))
     const latest = latestLogEntries(entries)
-    expect(latest.length).toBe(DEFAULT_LOG_LIMIT)
+    expect(latest.length).toBe(15)
     expect(latest[0]!.id).toBe('15')
-    expect(latest[latest.length - 1]!.id).toBe('6')
+    expect(latest[latest.length - 1]!.id).toBe('1')
+    // The caller's array order is preserved (reverse operates on a copy).
+    expect(entries[0]!.id).toBe('1')
+  })
+
+  it('renders every log entry — no 10-entry cap in the panel', async () => {
+    const entries = makeLog(
+      Array.from({ length: 15 }, (_, i) => ({
+        id: String(i + 1),
+        kind: 'note' as const,
+        message: `entry ${i + 1}`,
+        created_at: `2026-01-01T10:00:00Z`,
+      })),
+    )
+    useResearchStore.getState().loadStatus(makeStatus(entries), 'p1')
+
+    const container = await render(<ResearchLog />)
+    const rendered = container.querySelectorAll('[data-testid="research-log-entry"]')
+    expect(rendered.length).toBe(15)
+    // Newest first: entry 15 is the top row.
+    expect(rendered[0]!.textContent).toContain('entry 15')
   })
 
   it('formatLogTime trims the ISO string deterministically', () => {
@@ -510,6 +530,21 @@ describe('ResearchPanel — header + View Artifacts', () => {
     const header = container.querySelector<HTMLElement>('span[title="Test Research"]')
     expect(header).not.toBeNull()
     expect(header!.textContent).toBe('Test Research')
+  })
+
+  it('header toggle is an icon-only destructive disable button (no RESEARCH ON label)', async () => {
+    useResearchStore.getState().loadStatus(makeStatus(), 'p1')
+
+    const container = await render(<ResearchPanel />)
+    const toolbar = container.firstElementChild!
+    expect(toolbar.textContent).not.toContain('RESEARCH ON')
+
+    const disable = toolbar.querySelector<HTMLButtonElement>(
+      'button[aria-label="Disable RESEARCH mode"]',
+    )!
+    expect(disable).not.toBeNull()
+    expect(disable.className).toContain('text-destructive')
+    expect(disable.className).not.toContain('text-success')
   })
 
   it('drops the old bottom quick links (no New hypothesis button)', async () => {

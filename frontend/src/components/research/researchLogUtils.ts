@@ -6,17 +6,12 @@
 
 import type { ResearchLogEntry } from '@/types/models'
 
-/** How many of the most recent log entries to surface in the dashboard. */
-export const DEFAULT_LOG_LIMIT = 10
-
-/** Return the most recent `limit` entries, newest first. Pure and unit-tested.
+/** Return all log entries, newest first. Pure and unit-tested.
  *  The log is append-only (entries carry a 1-based file-order `id`), so "latest"
- *  is simply the tail of the array. */
-export function latestLogEntries(
-  log: ResearchLogEntry[],
-  limit = DEFAULT_LOG_LIMIT,
-): ResearchLogEntry[] {
-  return log.slice(-limit).reverse()
+ *  is simply the tail of the array. The dashboard shows every entry — the list
+ *  scrolls inside its own block — so no cap is applied here. */
+export function latestLogEntries(log: ResearchLogEntry[]): ResearchLogEntry[] {
+  return [...log].reverse()
 }
 
 /** Deterministic ISO→`YYYY-MM-DD HH:MM:SS` trim (no locale dependency). */
