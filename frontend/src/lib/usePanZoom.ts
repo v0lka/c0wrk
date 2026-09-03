@@ -170,7 +170,9 @@ interface DragState {
  * transformable content element:
  *   - anchored wheel/button zoom toward cursor or center,
  *   - fit-to-canvas (never upscaled) from natural content size,
- *   - LMB drag-to-pan with pointer capture,
+ *   - LMB drag-to-pan with lazily-engaged pointer capture (capture only
+ *     after the drag threshold, so plain clicks on inner content are never
+ *     retargeted away from their target),
  *   - a didDragRef counter so consumers can suppress the click that follows
  *     a pan gesture.
  *
@@ -267,7 +269,12 @@ export function usePanZoom(options: UsePanZoomOptions = {}): UsePanZoomResult {
 
   const onPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
-    canvasRef.current?.setPointerCapture(e.pointerId)
+    // No pointer capture here: while capture is active the browser retargets
+    // ALL subsequent events of that pointer — including the compatibility
+    // mouse `click` — to the capture element (this canvas), so a plain click
+    // on interactive content inside the canvas (e.g. DAG hypothesis nodes)
+    // would never reach it. Capture is engaged lazily in onPointerMove once
+    // the gesture crosses the drag threshold; see the comment there.
     didDragRef.current = false
     dragRef.current = {
       startX: e.clientX,
@@ -287,6 +294,12 @@ export function usePanZoom(options: UsePanZoomOptions = {}): UsePanZoomResult {
     // in onClick suppress the trailing click.
     if (!didDragRef.current && Math.hypot(dx, dy) > DRAG_CLICK_THRESHOLD_PX) {
       didDragRef.current = true
+      // The gesture is now definitively a pan (not a click), so it is safe —
+      // and necessary — to capture the pointer: tracking continues even when
+      // the pointer leaves the canvas, while any trailing click is already
+      // suppressed via didDragRef. Capturing only here (never on pointerdown)
+      // is what keeps plain clicks on inner content delivered normally.
+      canvasRef.current?.setPointerCapture(e.pointerId)
     }
     setView((prev) => ({ ...prev, x: drag.ox + dx, y: drag.oy + dy }))
   }, [])

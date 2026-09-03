@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest'
+// @vitest-environment jsdom
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { act, createElement } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
 import {
   DEFAULT_MAX_SCALE,
   DEFAULT_MIN_SCALE,
@@ -8,6 +11,7 @@ import {
   clampScale,
   computeFitView,
   isHorizontalWheelGesture,
+  usePanZoom,
   zoomToPoint,
 } from './usePanZoom'
 
@@ -172,5 +176,138 @@ describe('extracted defaults', () => {
     expect(DEFAULT_ZOOM_STEP).toBe(1.25)
     expect(DRAG_CLICK_THRESHOLD_PX).toBe(4)
     expect(INITIAL_VIEW).toEqual({ scale: 1, x: 0, y: 0 })
+  })
+})
+
+// ── Hook interaction: lazy pointer capture ─────────────────────────────
+//
+// Regression guard: pointer capture must NOT be engaged on pointerdown.
+// While capture is active, browsers retarget every event of that pointer —
+// including the compatibility `click` — to the capture element (the canvas
+// itself), so a plain click on interactive content inside the canvas (the
+// Research DAG hypothesis nodes) would never reach its onClick handler.
+// Capture is engaged only once a gesture crosses DRAG_CLICK_THRESHOLD_PX
+// and becomes a pan; plain clicks stay uncaptured and hit their target.
+
+interface Probe {
+  root: Root
+  host: HTMLElement
+  canvas: HTMLDivElement
+  captureSpy: ReturnType<typeof vi.fn>
+}
+
+let cleanup: (() => void) | null = null
+afterEach(() => {
+  cleanup?.()
+  cleanup = null
+})
+
+/** Minimal canvas wired to the hook; view/didDrag mirror into data attrs. */
+function PanProbe() {
+  const {
+    view,
+    canvasRef,
+    didDragRef,
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onPointerCancel,
+  } = usePanZoom()
+  return createElement('div', {
+    ref: canvasRef,
+    'data-testid': 'pan-canvas',
+    'data-x': String(view.x),
+    'data-drag': didDragRef.current ? '1' : '0',
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onPointerCancel,
+  })
+}
+
+function renderProbe(): Probe {
+  const host = document.createElement('div')
+  document.body.appendChild(host)
+  const root = createRoot(host)
+  act(() => {
+    root.render(createElement(PanProbe))
+  })
+  const canvas = host.querySelector<HTMLDivElement>('[data-testid="pan-canvas"]')!
+  // jsdom does not implement pointer capture; spy on the element API so the
+  // tests can assert exactly when the hook engages it.
+  const captureSpy = vi.fn()
+  canvas.setPointerCapture = captureSpy as unknown as typeof canvas.setPointerCapture
+  canvas.releasePointerCapture = vi.fn() as unknown as typeof canvas.releasePointerCapture
+  canvas.hasPointerCapture = (() => false) as unknown as typeof canvas.hasPointerCapture
+  cleanup = () => {
+    act(() => {
+      root.unmount()
+    })
+    host.remove()
+  }
+  return { root, host, canvas, captureSpy }
+}
+
+/** Dispatch a pointer-typed mouse event (React keys off the event type). */
+function firePointer(el: Element, type: string, x: number, y: number, button = 0) {
+  el.dispatchEvent(new MouseEvent(type, { bubbles: true, button, clientX: x, clientY: y }))
+}
+
+describe('usePanZoom lazy pointer capture', () => {
+  it('never captures during a plain (non-dragged) click', () => {
+    const { canvas, captureSpy } = renderProbe()
+    act(() => {
+      firePointer(canvas, 'pointerdown', 100, 100)
+      firePointer(canvas, 'pointermove', 102, 100) // 2px: still a click
+      firePointer(canvas, 'pointerup', 102, 100)
+    })
+    expect(captureSpy).not.toHaveBeenCalled()
+    expect(canvas.getAttribute('data-drag')).toBe('0')
+  })
+
+  it('ignores non-left-button presses entirely', () => {
+    const { canvas, captureSpy } = renderProbe()
+    act(() => {
+      firePointer(canvas, 'pointerdown', 100, 100, 2) // right button
+      firePointer(canvas, 'pointermove', 120, 100)
+      firePointer(canvas, 'pointerup', 120, 100, 2)
+    })
+    expect(captureSpy).not.toHaveBeenCalled()
+    // No drag state was armed, so the view never moved.
+    expect(canvas.getAttribute('data-x')).toBe('0')
+  })
+
+  it('engages capture exactly once when the drag threshold is crossed', () => {
+    const { canvas, captureSpy } = renderProbe()
+    act(() => {
+      firePointer(canvas, 'pointerdown', 100, 100)
+      firePointer(canvas, 'pointermove', 103, 100) // 3px: below threshold
+    })
+    expect(captureSpy).not.toHaveBeenCalled()
+    act(() => {
+      firePointer(canvas, 'pointermove', 106, 100) // 6px: now a pan
+      firePointer(canvas, 'pointermove', 110, 100) // further panning
+    })
+    expect(captureSpy).toHaveBeenCalledTimes(1)
+    expect(canvas.getAttribute('data-drag')).toBe('1')
+    expect(canvas.getAttribute('data-x')).toBe('10')
+  })
+
+  it('re-arms cleanly for the next gesture after pointerup', () => {
+    const { canvas, captureSpy } = renderProbe()
+    act(() => {
+      firePointer(canvas, 'pointerdown', 100, 100)
+      firePointer(canvas, 'pointermove', 106, 100) // pan
+      firePointer(canvas, 'pointerup', 106, 100)
+    })
+    expect(captureSpy).toHaveBeenCalledTimes(1)
+    // The next gesture starts fresh: a plain click must not capture again.
+    act(() => {
+      firePointer(canvas, 'pointerdown', 100, 100)
+      firePointer(canvas, 'pointermove', 102, 100)
+      firePointer(canvas, 'pointerup', 102, 100)
+    })
+    expect(captureSpy).toHaveBeenCalledTimes(1)
+    expect(canvas.getAttribute('data-drag')).toBe('0')
   })
 })

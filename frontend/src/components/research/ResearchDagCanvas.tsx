@@ -150,11 +150,13 @@ export function ResearchDagCanvas({ layout, selectedId, onSelect }: ResearchDagC
     fit()
   }, [layout, fit])
 
-  // Swallow the click that trails a pan gesture: pointer capture keeps the
-  // drag alive even when it starts on a node, so the browser may deliver the
-  // trailing click to whatever node the drag ended over. Stopping it in the
-  // capture phase — before it can reach any node — keeps panning from
-  // changing the selection; plain clicks (didDragRef false) pass through.
+  // Swallow the click that trails a pan gesture: once the drag threshold is
+  // crossed the canvas holds pointer capture, and under capture the browser
+  // retargets the trailing `click` to the canvas itself (per the Pointer
+  // Events spec, compatibility mouse events follow the capture target).
+  // Stopping it in the capture phase — before it can reach any node — keeps
+  // panning from changing the selection; plain clicks (didDragRef false,
+  // never captured) pass through to the node under the cursor.
   const onCanvasClickCapture = useCallback(
     (e: ReactMouseEvent<HTMLDivElement>) => {
       if (!didDragRef.current) return
