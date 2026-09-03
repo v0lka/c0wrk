@@ -160,6 +160,7 @@ function HypothesisCard({
           value={draft.result}
           onChange={(result) => onChange({ ...draft, result })}
           placeholder="Finding / outcome…"
+          lineWrapping
           className="min-h-0 max-h-none flex-1"
         />
       </label>

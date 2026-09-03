@@ -12,6 +12,11 @@ interface MiniCodeMirrorFieldProps {
   /** Optional placeholder rendered while the document is empty. */
   placeholder?: string
   /**
+   * Enable soft word wrap (`EditorView.lineWrapping`) so long lines fold
+   * instead of scrolling horizontally.
+   */
+  lineWrapping?: boolean
+  /**
    * Tailwind classes merged over the container defaults via twMerge, so
    * callers can override the height bounds (e.g. `min-h-0 max-h-none flex-1`
    * to let the field fill a flex column).
@@ -22,7 +27,7 @@ interface MiniCodeMirrorFieldProps {
 /**
  * A small editable CodeMirror instance for individual plan fields.
  */
-export function MiniCodeMirrorField({ value, onChange, placeholder, className }: MiniCodeMirrorFieldProps) {
+export function MiniCodeMirrorField({ value, onChange, placeholder, lineWrapping, className }: MiniCodeMirrorFieldProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const themeCompartment = useRef(new Compartment())
@@ -36,6 +41,7 @@ export function MiniCodeMirrorField({ value, onChange, placeholder, className }:
       extensions: [
         EditorView.editable.of(true),
         markdown(),
+        ...(lineWrapping ? [EditorView.lineWrapping] : []),
         ...(placeholder ? [cmPlaceholder(placeholder)] : []),
         themeCompartment.current.of(createOneDarkCMTheme(theme === 'dark')),
         EditorView.updateListener.of((update) => {
