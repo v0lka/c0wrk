@@ -107,7 +107,7 @@ Three-column panel layout (no router, single-page app). The file viewer can be p
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Resize handles (4px) sit between in-flow panels and on the floating viewer's left edge. Sidebar width/collapse, viewer width/collapse, and viewer pin preference persist through Zustand `persist`/localStorage. The unpinned expanded viewer is a right-aligned absolute overlay over the chat, auto-collapses when pointer or keyboard focus moves outside it, and leaves a 40px in-flow rail for reopening; pinning keeps it as a permanently docked, resizable column.
+Resize handles (4px) sit between in-flow panels and on the floating viewer's left edge. Sidebar width/collapse, viewer width/collapse, and viewer pin preference persist through Zustand `persist`/localStorage. The unpinned expanded viewer is a right-aligned absolute overlay over the chat, auto-collapses when the pointer lands outside it or when keyboard focus leaves it (an outside `focusin` collapses only after the viewer itself held focus — Radix portal menus restore focus to their trigger a tick after an item's `onSelect` opened a file, and that focus-restore must not dismiss the freshly opened viewer), and leaves a 40px in-flow rail for reopening; pinning keeps it as a permanently docked, resizable column.
 
 The native desktop window separately persists validated width, height, and maximized state in `~/.c0wrk/window_state.json`. Frontend resize events debounce `PersistWindowBounds`; desktop shutdown performs a final best-effort save, and the next process launch uses valid stored dimensions (falling back to defaults for missing, malformed, or below-minimum values).
 
@@ -169,7 +169,7 @@ Project switching is orchestrated by `useProjectSwitchState`: it saves source-pr
 - `lastRealProjectId` always tracks the most recent non-No-Project project activated (updated in `setActiveProjectId` when switching to a real project; preserved when switching to No Project)
 - CHAT/CODE toggle switches projects via `switchProject()`; CHAT selects No Project, CODE selects `lastRealProjectId` (or first real project if the last one was deleted)
 - All projects created through the CreateProjectDialog always require an external workspace directory; internal workspaces are reserved for No Project auto-creation
-- An unpinned expanded file viewer overlays the chat and auto-collapses on outside pointer/focus; a pinned viewer remains an in-flow resizable column
+- An unpinned expanded file viewer overlays the chat and auto-collapses on an outside pointerdown, or on focus leaving it once it held focus (a freshly expanded viewer ignores the Radix focus-restore that follows opening a file from a portal menu — e.g. the Research panel's "View artifacts" dropdown); a pinned viewer remains an in-flow resizable column
 - Collapsing an unpinned viewer preserves the unpinned preference and renders a 40px in-flow reopen rail
 - Persisted desktop window dimensions are accepted only at or above the minimum usable size; invalid state falls back to defaults
 

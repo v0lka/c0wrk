@@ -8,8 +8,11 @@ import { ResearchQuickActions } from './ResearchQuickActions'
 import { ResearchLog } from './ResearchLog'
 import { latestLogEntries, formatLogTime, DEFAULT_LOG_LIMIT } from './researchLogUtils'
 import { ResearchQuickMutate } from './ResearchQuickMutate'
+import { ResearchPanel } from './index'
 import { useResearchStore } from '@/stores/researchStore'
 import { useProjectStore } from '@/stores/projectStore'
+import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { RESEARCH_TAB_PATH } from '@/stores/researchStore'
 import { updateHypothesis } from '@/api/research'
 import { buildNextStepPrompt, QUICK_ACTIONS } from './researchActions'
 import type {
@@ -25,6 +28,15 @@ vi.mock('@/hooks/useMessageSender', () => ({
   useMessageSender: () => ({ send: sendSpy, cancel: vi.fn(), isProcessing: false }),
 }))
 
+// The data-sync hooks are side-effect only; stub them so panel tests exercise
+// rendering + dispatch against a seeded store without backend fetches.
+vi.mock('@/hooks/useResearchStatusEvents', () => ({
+  useResearchStatusEvents: () => {},
+}))
+vi.mock('@/hooks/useResearchFileWatcher', () => ({
+  useResearchFileWatcher: () => {},
+}))
+
 vi.mock('@/api/research', () => ({
   getResearchStatus: vi.fn(),
   getResearchGraph: vi.fn(),
@@ -32,6 +44,17 @@ vi.mock('@/api/research', () => ({
   updateHypothesis: vi.fn(),
   createHypothesis: vi.fn(),
 }))
+
+// Radix dropdown positioning observes the trigger with ResizeObserver, which
+// jsdom does not provide (same stub as combobox.test.tsx).
+vi.stubGlobal(
+  'ResizeObserver',
+  class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  },
+)
 
 let activeRoot: Root | null = null
 
@@ -125,6 +148,7 @@ beforeEach(() => {
   vi.mocked(updateHypothesis).mockResolvedValue(makeGraphResponse())
   useProjectStore.setState({ projects: null, activeProjectId: 'p1', lastRealProjectId: 'p1' })
   useResearchStore.getState().reset()
+  useFileViewerStore.setState({ openTabs: [], activeFile: null })
 })
 
 afterEach(() => {
@@ -154,7 +178,13 @@ describe('ResearchNextStep — dispatch', () => {
     })
 
     expect(sendSpy).toHaveBeenCalledTimes(1)
-    expect(sendSpy).toHaveBeenCalledWith(buildNextStepPrompt(nextStep), ['research-experiment'])
+    expect(sendSpy).toHaveBeenCalledWith(
+      buildNextStepPrompt(nextStep),
+      ['research-experiment'],
+      undefined,
+      undefined,
+      { newSession: false },
+    )
   })
 
   it('shows a muted empty card when no recommendation is loaded', async () => {
@@ -180,7 +210,13 @@ describe('ResearchNextStep — dispatch', () => {
       execute.click()
     })
 
-    expect(sendSpy).toHaveBeenCalledWith(buildNextStepPrompt(nextStep), ['research-init'])
+    expect(sendSpy).toHaveBeenCalledWith(
+      buildNextStepPrompt(nextStep),
+      ['research-init'],
+      undefined,
+      undefined,
+      { newSession: false },
+    )
   })
 })
 
@@ -192,6 +228,9 @@ describe('ResearchQuickActions — dispatch', () => {
     QUICK_ACTIONS.forEach((action, i) => {
       expect(buttons[i]!.getAttribute('data-skill')).toBe(action.skill)
     })
+    // The Shift modifier is visible without hovering, not only in tooltips.
+    const hint = container.querySelector('[data-testid="research-shift-hint"]')
+    expect(hint?.textContent).toContain('Shift')
   })
 
   it('dispatches the matching skill for a clicked action', async () => {
@@ -205,10 +244,116 @@ describe('ResearchQuickActions — dispatch', () => {
     })
 
     expect(sendSpy).toHaveBeenCalledTimes(1)
-    const [prompt, skills] = sendSpy.mock.calls[0]!
+    const [prompt, skills, , , options] = sendSpy.mock.calls[0]!
     expect(skills).toEqual(['research-synthesis'])
     expect(typeof prompt).toBe('string')
     expect(prompt.length).toBeGreaterThan(0)
+    expect(options).toEqual({ newSession: false })
+  })
+
+  it('dispatches into a fresh session when Shift is held (quick action)', async () => {
+    const container = await render(<ResearchQuickActions />)
+    const decision = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[data-testid="research-quick-action"]'),
+    ).find((b) => b.getAttribute('data-skill') === 'research-decision')!
+
+    await act(async () => {
+      decision.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))
+    })
+
+    expect(sendSpy).toHaveBeenCalledTimes(1)
+    const [prompt, skills, , , options] = sendSpy.mock.calls[0]!
+    expect(skills).toEqual(['research-decision'])
+    expect(prompt.length).toBeGreaterThan(0)
+    expect(options).toEqual({ newSession: true })
+  })
+
+  it('flips Synthesize to "Update report" (label + prompt) once a report exists', async () => {
+    const status = makeStatus()
+    status.root!.projects[0]!.has_report = true
+    useResearchStore.getState().loadStatus(status, 'p1')
+
+    const container = await render(<ResearchQuickActions />)
+    const synthesize = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[data-testid="research-quick-action"]'),
+    ).find((b) => b.getAttribute('data-skill') === 'research-synthesis')!
+    expect(synthesize.textContent).toContain('Update report')
+
+    await act(async () => {
+      synthesize.click()
+    })
+
+    const [prompt, skills] = sendSpy.mock.calls[0]!
+    expect(skills).toEqual(['research-synthesis'])
+    expect(prompt).toBe('Update the existing research report with the latest results.')
+  })
+})
+
+describe('ResearchQuickActions — Run experiment dropdown', () => {
+  function experimentTrigger(container: HTMLElement): HTMLButtonElement {
+    return Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[data-testid="research-quick-action"]'),
+    ).find((b) => b.getAttribute('data-skill') === 'research-experiment')!
+  }
+
+  async function openExperimentMenu(container: HTMLElement): Promise<HTMLElement> {
+    const trigger = experimentTrigger(container)
+    await act(async () => {
+      trigger.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 10))
+    })
+    const menu = document.body.querySelector('[role="menu"]')
+    expect(menu).not.toBeNull()
+    return menu as HTMLElement
+  }
+
+  it('lists only the active-front hypotheses and dispatches the picked target', async () => {
+    useResearchStore.getState().loadStatus(makeStatus(), 'p1')
+
+    const container = await render(<ResearchQuickActions />)
+    const menu = await openExperimentMenu(container)
+    const items = Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+    // H-001 (open) is on the active front; H-002 (confirmed) is not.
+    expect(items.length).toBe(1)
+    expect(items[0]!.textContent).toContain('H-001')
+    expect(items[0]!.textContent).toContain('Leading hypothesis')
+
+    await act(async () => {
+      items[0]!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      items[0]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(sendSpy).toHaveBeenCalledTimes(1)
+    const [prompt, skills, , , options] = sendSpy.mock.calls[0]!
+    expect(skills).toEqual(['research-experiment'])
+    expect(prompt).toContain('H-001')
+    expect(prompt).toContain('Leading hypothesis')
+    expect(options).toEqual({ newSession: false })
+  })
+
+  it('dispatches into a fresh session when Shift is held on the picked item', async () => {
+    useResearchStore.getState().loadStatus(makeStatus(), 'p1')
+
+    const container = await render(<ResearchQuickActions />)
+    const menu = await openExperimentMenu(container)
+    const item = menu.querySelector<HTMLElement>('[role="menuitem"]')!
+
+    await act(async () => {
+      item.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, shiftKey: true }))
+      item.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const [, , , , options] = sendSpy.mock.calls[0]!
+    expect(options).toEqual({ newSession: true })
+  })
+
+  it('disables the Run experiment trigger when the active front is empty', async () => {
+    const status = makeStatus()
+    status.root!.projects[0]!.metrics.active_front = []
+    useResearchStore.getState().loadStatus(status, 'p1')
+
+    const container = await render(<ResearchQuickActions />)
+    expect(experimentTrigger(container).disabled).toBe(true)
   })
 })
 
@@ -318,5 +463,86 @@ describe('ResearchQuickMutate — status change', () => {
 
     const container = await render(<ResearchQuickMutate />)
     expect(container.querySelector('[data-testid="research-quick-mutate"]')).toBeNull()
+  })
+})
+
+describe('ResearchPanel — header + View Artifacts', () => {
+  function viewArtifactsTrigger(container: HTMLElement): HTMLButtonElement {
+    const el = container.querySelector<HTMLButtonElement>(
+      '[data-testid="research-view-artifacts"]',
+    )
+    expect(el).not.toBeNull()
+    return el!
+  }
+
+  async function openArtifactsMenu(container: HTMLElement): Promise<HTMLElement> {
+    const trigger = viewArtifactsTrigger(container)
+    await act(async () => {
+      trigger.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 10))
+    })
+    const menu = document.body.querySelector('[role="menu"]')
+    expect(menu).not.toBeNull()
+    return menu as HTMLElement
+  }
+
+  it('carries the full project title as a tooltip on the truncated header', async () => {
+    useResearchStore.getState().loadStatus(makeStatus(), 'p1')
+
+    const container = await render(<ResearchPanel />)
+    const header = container.querySelector<HTMLElement>('span[title="Test Research"]')
+    expect(header).not.toBeNull()
+    expect(header!.textContent).toBe('Test Research')
+  })
+
+  it('drops the old bottom quick links (no New hypothesis button)', async () => {
+    useResearchStore.getState().loadStatus(makeStatus(), 'p1')
+
+    const container = await render(<ResearchPanel />)
+    const bottomBar = container.lastElementChild!
+    expect(bottomBar.textContent).not.toContain('New hypothesis')
+    expect(bottomBar.textContent).toContain('View artifacts')
+  })
+
+  it('lists only existing artifacts and opens the picked one', async () => {
+    // total: 2 hypotheses (graph exists); no prior art, no report.
+    useResearchStore.getState().loadStatus(makeStatus(), 'p1')
+
+    const container = await render(<ResearchPanel />)
+    const menu = await openArtifactsMenu(container)
+    const items = Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+    expect(items.map((i) => i.textContent)).toEqual(['Brief', 'Graph'])
+
+    await act(async () => {
+      items[0]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(useFileViewerStore.getState().openTabs).toContain('/root/.research/R-001/brief.md')
+  })
+
+  it('lists all four artifacts when everything exists; Graph opens the workspace tab', async () => {
+    const status = makeStatus()
+    status.root!.projects[0]!.prior_art_count = 3
+    status.root!.projects[0]!.has_report = true
+    useResearchStore.getState().loadStatus(status, 'p1')
+
+    const container = await render(<ResearchPanel />)
+    const menu = await openArtifactsMenu(container)
+    const items = Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+    expect(items.map((i) => i.textContent)).toEqual(['Brief', 'Prior art', 'Graph', 'Report'])
+
+    await act(async () => {
+      items[2]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(useFileViewerStore.getState().activeFile).toBe(RESEARCH_TAB_PATH)
+  })
+
+  it('disables View Artifacts when no artifacts exist at all', async () => {
+    const status = makeStatus()
+    status.root!.projects = []
+    status.root!.active_project_id = ''
+    useResearchStore.getState().loadStatus(status, 'p1')
+
+    const container = await render(<ResearchPanel />)
+    expect(viewArtifactsTrigger(container).disabled).toBe(true)
   })
 })

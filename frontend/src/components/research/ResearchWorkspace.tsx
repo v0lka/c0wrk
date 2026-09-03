@@ -284,7 +284,10 @@ export function ResearchWorkspace() {
       {/* Header: title + hide-completed toggle */}
       <div className="flex items-center gap-2 shrink-0 border-b border-border bg-secondary/30 px-2 py-1">
         <FlaskConical className="size-3.5 shrink-0 text-success" />
-        <span className="truncate text-xs font-medium">
+        <span
+          className="truncate text-xs font-medium"
+          title={project?.brief.title ?? 'Research'}
+        >
           {project?.brief.title ?? 'Research'}
         </span>
         <label className="ml-auto flex shrink-0 cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground">

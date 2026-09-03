@@ -11,10 +11,16 @@ import { useExperimentalStore } from '@/stores/experimentalStore'
  * setEnabled.
  *
  * The fetch is attempted on mount and, if it fails (e.g. the backend is still
- * starting during the splash phase), again on the `backend:ready` event — the
- * same race App.tsx guards against with its listProjects safety net. Without
- * the retry, a transient startup failure would leave experimental features
- * permanently disabled for the whole session.
+ * starting during the splash phase) or resolves with `loaded=false` (the
+ * backend answers RPCs with a zeroed config until Startup finishes), again on
+ * the `backend:ready` event — the same race App.tsx guards against with its
+ * listProjects safety net — and on `config:updated`, emitted by the backend
+ * after every persisted config mutation (see specs/contracts/event-catalog.md).
+ * That second retry covers the residual case where both earlier attempts
+ * failed transiently: the next settings save re-reads the live config
+ * instead of leaving the switch "unknown" until an app restart. Once the
+ * switch has latched, both retries are no-ops — Settings keeps the store in
+ * sync directly.
  */
 export function useExperimentalFeatures(): boolean {
   const enabled = useExperimentalStore((s) => s.enabled)
@@ -38,6 +44,15 @@ export function useExperimentalFeatures(): boolean {
       getConfig()
         .then((cfg) => {
           if (cancelled) return
+          // Startup race: before the backend's Startup finishes, GetConfig
+          // SUCCEEDS with loaded=false (config not yet initialized) and a
+          // zeroed experimental section. Latching that zero would flip the
+          // switch off for the whole session and permanently consume the
+          // one-shot backend:ready retry — the stored `enabled: true` would
+          // appear "not read after restart". Keep the unknown state so the
+          // backend:ready / config:updated retries re-fetch once the config
+          // is live.
+          if (cfg.loaded === false) return
           useExperimentalStore.getState().setEnabled(cfg.experimental?.enabled ?? false)
           useExperimentalStore.getState().setLoaded(true)
         })
@@ -57,11 +72,14 @@ export function useExperimentalFeatures(): boolean {
     }
 
     load()
-    const unsubscribe = subscribe('backend:ready', load)
+    const unsubscribes = [
+      subscribe('backend:ready', load),
+      subscribe('config:updated', load),
+    ]
 
     return () => {
       cancelled = true
-      unsubscribe?.()
+      unsubscribes.forEach((unsubscribe) => unsubscribe?.())
     }
   }, [])
 

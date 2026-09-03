@@ -28,12 +28,25 @@ export function buildNextStepPrompt(nextStep: ResearchNextStep): string {
 }
 
 /** A single quick action: a human label, the research-* skill it activates, and
- *  the constant prompt dispatched alongside the skill. */
+ *  the constant prompt dispatched alongside the skill. `updatePrompt` is the
+ *  alternate prompt dispatched when the action's outcome already exists (e.g.
+ *  synthesize → update report). */
 export interface ResearchQuickAction {
   key: string
   label: string
   skill: string
   prompt: string
+  updatePrompt?: string
+}
+
+/** Build the dispatch prompt for a Run-experiment gesture scoped to a specific
+ *  hypothesis picked from the dropdown: the target id and title are spelled
+ *  out so the skill knows exactly which hypothesis to experiment on. */
+export function buildExperimentPrompt(hypothesis: {
+  id: string
+  title: string
+}): string {
+  return `Run an experiment for hypothesis ${hypothesis.id}: ${hypothesis.title}.`
 }
 
 /** The fixed quick-action row. Each entry maps a research lifecycle gesture to
@@ -71,5 +84,6 @@ export const QUICK_ACTIONS: ResearchQuickAction[] = [
     label: 'Synthesize',
     skill: 'research-synthesis',
     prompt: 'Synthesize the final research report.',
+    updatePrompt: 'Update the existing research report with the latest results.',
   },
 ]

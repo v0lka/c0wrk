@@ -1322,12 +1322,33 @@ func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error
 	return nil
 }
 
-// persistConfig saves the current in-memory config to disk.
+// persistConfig saves the current in-memory config to disk. Every successful
+// config mutation funnels through here, so it is also the single point that
+// announces config changes to the frontend (see emitConfigUpdated).
 func (f *FrontendAPI) persistConfig() error {
 	if f.configPath == "" || f.config == nil {
 		return errors.New("config path or config not set")
 	}
-	return config.Save(f.config, f.configPath)
+	err := config.Save(f.config, f.configPath)
+	// Announce even when the disk write failed: the in-memory config (what
+	// GetConfig serves) has already changed, so refetching consumers stay
+	// consistent with what the backend will report.
+	f.emitConfigUpdated()
+	return err
+}
+
+// emitConfigUpdated notifies the frontend that the config was mutated via an
+// Update* RPC. Dispatched on a fresh goroutine because persistConfig runs
+// under whatever lock its caller holds (configMu.Lock for most setters), and
+// emitEvent is a synchronous Wails webview dispatch — a config lock must
+// never be held across it (readers such as GetConfig would convoy behind the
+// event delivery). Nil-guarded: most tests exercise persistConfig without
+// wiring emitEvent.
+func (f *FrontendAPI) emitConfigUpdated() {
+	if f.emitEvent == nil {
+		return
+	}
+	go f.emitEvent(EventConfigUpdated)
 }
 
 // maskAPIKey returns a masked representation of an API key for display.

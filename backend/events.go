@@ -21,6 +21,17 @@ const EventRuntimeError = "runtime_error"
 // EventBackendReady is emitted when the Go backend finishes initialization.
 const EventBackendReady = "backend:ready"
 
+// EventConfigUpdated is emitted after a config mutation is persisted (any
+// Update* RPC that writes config.yaml: LLM, search, proxy, security,
+// Small-LLM, model overrides, MCP servers, log level, the experimental
+// toggle, trusted git repos, update preferences). No payload — consumers
+// re-read the config via GetConfig. Dispatched asynchronously from
+// persistConfig (backend/frontend_api_config.go) so the Wails dispatch never
+// runs under configMu. Its purpose is recovery for consumers whose initial
+// GetConfig landed during the startup race or failed transiently: they stay
+// "not latched" and retry on this event instead of waiting for a restart.
+const EventConfigUpdated = "config:updated"
+
 // EventToolManagerStart is emitted before managed-tool downloads begin,
 // carrying the list of tools that need to be installed or updated.
 // The frontend uses it to show the tool-install splash screen.

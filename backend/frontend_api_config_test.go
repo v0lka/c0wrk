@@ -2216,6 +2216,29 @@ func (r *eventRecorder) has(name string) bool {
 	return false
 }
 
+// names returns a copy of the captured event names (for failure messages).
+func (r *eventRecorder) names() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.events...)
+}
+
+// waitFor polls for the named event until a 2s deadline. config:updated is
+// dispatched asynchronously (emitConfigUpdated spawns a goroutine so the
+// Wails dispatch never runs under configMu), so tests asserting it must
+// synchronize instead of checking immediately after the RPC returns.
+func (r *eventRecorder) waitFor(t *testing.T, name string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if r.has(name) {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for event %q; captured events: %v", name, r.names())
+}
+
 // newUpdateLLMConfigProjectHarness builds a FrontendAPI wired to a real
 // project store + manager, a temp config file, a mock builder, and an
 // event recorder. The returned project is a freshly created real project
@@ -2263,6 +2286,28 @@ func newUpdateLLMConfigProjectHarness(t *testing.T) (*FrontendAPI, *project.Proj
 	}
 	_ = ctx
 	return f, createdProject, rec, db
+}
+
+// TestUpdateExperimentalFeatures_EmitsConfigUpdated verifies the
+// config:updated announcement: every config mutation funneling through
+// persistConfig emits it (asynchronously) so frontend consumers that are
+// still in the "unknown/not latched" state — e.g. the experimental-features
+// switch whose initial GetConfig landed during the startup race — can
+// re-read the config without an app restart.
+func TestUpdateExperimentalFeatures_EmitsConfigUpdated(t *testing.T) {
+	f, _, rec, db := newUpdateLLMConfigProjectHarness(t)
+	defer func() { _ = db.Close() }()
+
+	if err := f.UpdateExperimentalFeatures(true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rec.waitFor(t, EventConfigUpdated)
+
+	// The toggle itself must be reflected in the served config.
+	if !f.experimentalFeaturesEnabled() {
+		t.Fatal("expected experimental features to be enabled after the update")
+	}
 }
 
 // activeProjectIDOf reads f.activeProjectID under its lock.

@@ -55,7 +55,12 @@ export function ResearchNextStep() {
 
       <button
         type="button"
-        onClick={() => void send(prompt, [nextStep.skill])}
+        onClick={(e) =>
+          void send(prompt, [nextStep.skill], undefined, undefined, {
+            newSession: e.shiftKey,
+          })
+        }
+        title="Execute the recommended next step — Shift = new session"
         className="inline-flex items-center justify-center gap-1.5 self-start rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
       >
         <Play className="size-3.5" />

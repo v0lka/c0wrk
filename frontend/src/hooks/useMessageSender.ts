@@ -12,17 +12,26 @@ import { createSession } from '@/api/sessions'
 import { generateMessageId } from '@/lib/ids'
 import { logger } from '@/lib/logger'
 
+export interface SendOptions {
+  /** Force a fresh session: create + activate a new session and dispatch the
+   *  message there instead of the active/origin one (e.g. the research
+   *  panel's Shift-click gesture). */
+  newSession?: boolean
+}
+
 export interface UseMessageSenderResult {
   /** Send a user message, auto-creating a session if needed.
    *  originSessionId, when provided (non-null), pins the send to the session
    *  the user initiated it from — the caller may have awaited between the
    *  send gesture and this call (e.g. the #agent catalog fetch), and the
-   *  then-active session would be the WRONG target. */
+   *  then-active session would be the WRONG target. `options.newSession`
+   *  overrides the pin and always starts a brand-new session. */
   send: (
     messageText: string,
     activeSkills?: string[],
     activeAgents?: string[],
     originSessionId?: string | null,
+    options?: SendOptions,
   ) => Promise<void>
   /** Cancel the running task in the active session. */
   cancel: () => Promise<void>
@@ -38,14 +47,16 @@ export function useMessageSender(): UseMessageSenderResult {
     activeSkills?: string[],
     activeAgents?: string[],
     originSessionId?: string | null,
+    options?: SendOptions,
   ) => {
     if (!messageText.trim()) return
     setIsProcessing(true)
 
     // The pinned origin session wins; only an explicitly null origin (the
-    // no-session scratch space) falls through to the auto-create flow.
+    // no-session scratch space) falls through to the auto-create flow —
+    // unless the caller forced a fresh session (research Shift-click).
     let sessionId = originSessionId ?? useSessionStore.getState().activeSessionId
-    if (!sessionId) {
+    if (options?.newSession || !sessionId) {
       try {
         const newSession = await createSession()
         useSessionStore.getState().addSession(newSession)
