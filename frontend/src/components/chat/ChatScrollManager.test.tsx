@@ -69,6 +69,7 @@ function renderWithChatStream({ viewportTop, barHeight, targetTop, scrollTop }: 
 
   const viewport = scrollRef.current!
   const [bar, target] = Array.from(viewport.querySelectorAll('[data-bookmark-id]'))
+  if (!bar || !target) throw new Error('sticky bar and bookmarked block must render for geometry mocking')
   vi.spyOn(bar, 'getBoundingClientRect').mockReturnValue(rect({ top: viewportTop + 20, height: barHeight }))
   vi.spyOn(target, 'getBoundingClientRect').mockReturnValue(rect({ top: targetTop, height: 400 }))
   vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(rect({ top: viewportTop, height: 600 }))
