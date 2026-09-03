@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import { useScrollContext } from './ScrollContext'
+import { scrollBlockStartIntoView } from '@/lib/chatScroll'
 import type { ChatMessageUI } from '@/types/messages'
 import { unresolvedReviewPromptIds } from '@/types/messages'
 import { ChatNewActivityBanner } from './ChatNewActivityBanner'
@@ -131,7 +132,7 @@ export function ChatScrollManager({
       const elements = viewport.querySelectorAll(`[data-step-id="${stepId}"]`)
       const target = elements[elements.length - 1]
       if (target) {
-        target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        scrollBlockStartIntoView(viewport, target)
         isAtBottomRef.current = false
       }
     }
@@ -142,7 +143,8 @@ export function ChatScrollManager({
   // Register scroll-to-bookmark callback. Unlike steps, a bookmark key can
   // contain arbitrary characters (plan step ids, tool ids), so match via
   // getAttribute rather than a CSS attribute selector (which would need
-  // escaping and could break on unusual ids).
+  // escaping and could break on unusual ids). The block-start scroll accounts
+  // for the floating sticky user-message bar covering the scrollport top.
   useEffect(() => {
     const scrollToBookmarkFn = (key: string) => {
       const viewport = viewportRef.current
@@ -156,7 +158,7 @@ export function ChatScrollManager({
         }
       }
       if (target) {
-        target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        scrollBlockStartIntoView(viewport, target)
         isAtBottomRef.current = false
       }
     }

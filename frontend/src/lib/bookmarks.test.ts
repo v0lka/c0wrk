@@ -48,12 +48,12 @@ describe('bookmarkDefaultTitle', () => {
     expect(bookmarkDefaultTitle(planStep)).toBe('Step 1: Implement auth')
   })
 
-  it('collapses whitespace and truncates long content', () => {
+  it('collapses whitespace without a fixed-length cap (truncation is CSS-based)', () => {
     const long = 'a'.repeat(200)
     const title = bookmarkDefaultTitle({ kind: 'user', message: { id: 'u', sessionId: 's', type: 'user', content: `  ${long}  `, timestamp: 0 } })
-    expect(title.endsWith('…')).toBe(true)
-    expect(title.length).toBe(81)
+    expect(title).toBe(long)
     expect(title).not.toContain('  ')
+    expect(title).not.toContain('…')
   })
 })
 

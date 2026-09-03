@@ -12,11 +12,13 @@ export function bookmarkKey(item: DisplayItem): string {
   return item.id
 }
 
-/** Collapse whitespace and truncate to a single short line for list display. */
-function collapseTitle(text: string, max = 80): string {
-  const collapsed = text.replace(/\s+/g, ' ').trim()
-  if (collapsed.length <= max) return collapsed
-  return collapsed.slice(0, max).trimEnd() + '…'
+/**
+ * Collapse whitespace to a single short line for list display. No fixed
+ * character cap: visual truncation is CSS-based (ellipsis at panel width) in
+ * BookmarksPanel, so wide panels show more text than narrow ones.
+ */
+function collapseTitle(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
 }
 
 /** Derive a sensible default title for a bookmark created from a chat item. */
