@@ -177,6 +177,8 @@ export function GetTerminalHistory(arg1:string):Promise<Array<session.TerminalCo
 
 export function GetToolList():Promise<Array<backend.ToolInfo>>;
 
+export function GetTrustedGitRepos():Promise<Array<string>>;
+
 export function GetUpdateSettings():Promise<backend.UpdateSettings>;
 
 export function GetVectorIndexStatus():Promise<backend.VectorIndexStatus>;
@@ -236,6 +238,8 @@ export function ReadFileAsDataURL(arg1:string):Promise<string>;
 export function Rebase(arg1:string):Promise<void>;
 
 export function RemoveAttachment(arg1:string,arg2:string):Promise<void>;
+
+export function RemoveTrustedGitRepo(arg1:string):Promise<void>;
 
 export function RenameBookmark(arg1:string,arg2:string,arg3:string):Promise<void>;
 
@@ -312,6 +316,8 @@ export function SwitchProject(arg1:string):Promise<void>;
 export function TerminalInput(arg1:string,arg2:string):Promise<void>;
 
 export function TerminalResize(arg1:string,arg2:number,arg3:number):Promise<void>;
+
+export function TrustGitRepo(arg1:string):Promise<void>;
 
 export function UnstageAll():Promise<void>;
 

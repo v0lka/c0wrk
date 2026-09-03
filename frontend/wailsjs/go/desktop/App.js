@@ -338,6 +338,10 @@ export function GetToolList() {
   return window['go']['desktop']['App']['GetToolList']();
 }
 
+export function GetTrustedGitRepos() {
+  return window['go']['desktop']['App']['GetTrustedGitRepos']();
+}
+
 export function GetUpdateSettings() {
   return window['go']['desktop']['App']['GetUpdateSettings']();
 }
@@ -456,6 +460,10 @@ export function Rebase(arg1) {
 
 export function RemoveAttachment(arg1, arg2) {
   return window['go']['desktop']['App']['RemoveAttachment'](arg1, arg2);
+}
+
+export function RemoveTrustedGitRepo(arg1) {
+  return window['go']['desktop']['App']['RemoveTrustedGitRepo'](arg1);
 }
 
 export function RenameBookmark(arg1, arg2, arg3) {
@@ -608,6 +616,10 @@ export function TerminalInput(arg1, arg2) {
 
 export function TerminalResize(arg1, arg2, arg3) {
   return window['go']['desktop']['App']['TerminalResize'](arg1, arg2, arg3);
+}
+
+export function TrustGitRepo(arg1) {
+  return window['go']['desktop']['App']['TrustGitRepo'](arg1);
 }
 
 export function UnstageAll() {
