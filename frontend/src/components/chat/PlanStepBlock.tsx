@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useContext } from 'react'
 import { Loader2, CheckCircle2, XCircle, RefreshCw, Circle, CirclePause } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { bookmarkKey } from '@/lib/bookmarks'
 import { formatDuration } from '@/lib/formatters'
 import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -87,6 +88,7 @@ export function PlanStepBlock({ item }: PlanStepBlockProps) {
         label={label}
         open={isOpen}
         onOpenChange={(open) => setUserOverride(open)}
+        revealId={bookmarkKey(item)}
         headerExtra={headerExtra}
       >
         <div className={cn('mt-2 border-l-2 rounded pl-3 py-2 space-y-3 min-w-0', borderColor)}>

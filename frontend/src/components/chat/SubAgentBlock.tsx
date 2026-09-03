@@ -1,6 +1,7 @@
 import { useContext, useEffect, useMemo, useState } from 'react'
 import { Bot, Loader2, CheckCircle2, XCircle, CirclePause } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { bookmarkKey } from '@/lib/bookmarks'
 import { formatDuration } from '@/lib/formatters'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
 import { StepTooltip } from './StepTooltip'
@@ -66,6 +67,7 @@ export function SubAgentBlock({ item }: { item: SubAgentItem }) {
       open={isOpen}
       onOpenChange={(open) => setUserOverride(open)}
       statusIcon={statusIcon}
+      revealId={bookmarkKey(item)}
       headerExtra={headerExtra}
     >
       <div className="mt-2 border-l-2 border-border rounded pl-3 py-2 space-y-3 min-w-0">

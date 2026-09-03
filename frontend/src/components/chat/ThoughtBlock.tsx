@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { BrainCircuit } from 'lucide-react'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
+import { bookmarkKey } from '@/lib/bookmarks'
 import { Markdown } from '@/lib/markdownConfig'
 import type { DisplayItem } from '@/types/messages'
 
@@ -23,6 +24,7 @@ export const ThoughtBlock = React.memo(function ThoughtBlock({ item }: { item: T
         <CollapsibleBlock
           icon={<BrainCircuit className="h-3.5 w-3.5" />}
           label="Reasoning"
+          revealId={bookmarkKey(item)}
         >
           <div className="mt-2 pl-3 border-l-2 border-muted min-w-0">
             <Markdown content={displayReasoning} compact />

@@ -4,30 +4,28 @@ import { cn } from '@/lib/utils'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useBookmarkStore, useSessionBookmarks } from '@/stores/bookmarkStore'
 import { bookmarkKey, bookmarkDefaultTitle } from '@/lib/bookmarks'
+import { useChatHoverBookmark } from './chatHoverStore'
 import type { DisplayItem } from '@/types/messages'
 
 interface BookmarkStarProps {
   item: DisplayItem
-  /**
-   * Whether the containing row is hovered. When provided it drives the
-   * unbookmarked star's visibility directly, so that hovering a parent row does
-   * NOT cascade to nested rows (avoids the CSS group-hover leak where a parent
-   * block revealed every descendant star). When omitted it falls back to the
-   * ancestor `group/bm` hover — used by the sticky pinned user message, which
-   * contains no nested bookmarkable rows.
-   */
-  hovered?: boolean
 }
 
 /**
  * BookmarkStar — the per-event bookmark toggle rendered in the left gutter of
  * a chat item (or inside the sticky pinned message).
  *
- * Unbookmarked: an outline star in the same muted color as Copy/Save, revealed
- * on item hover. Bookmarked: a filled yellow star, always visible. Clicking
- * toggles the bookmark in the per-session persistent store.
+ * Unbookmarked: an outline star in the same muted color as Copy/Save, hidden by
+ * default and revealed on hover. Visibility is driven EXCLUSIVELY, and
+ * programmatically, by the {@link chatHoverStore} (a single active bookmark
+ * across the whole chat): a star is visible only when the store's `bookmark`
+ * equals this item's key. An inline `visibility` style (not Tailwind opacity,
+ * not CSS `:hover`) toggles it, and hidden stars are never live hit-targets.
+ *
+ * Bookmarked: a filled yellow star, always visible. Clicking toggles the
+ * bookmark in the per-session persistent store.
  */
-export function BookmarkStar({ item, hovered }: BookmarkStarProps) {
+export function BookmarkStar({ item }: BookmarkStarProps) {
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const bookmarks = useSessionBookmarks(activeSessionId)
   const addBookmark = useBookmarkStore((s) => s.addBookmark)
@@ -50,6 +48,15 @@ export function BookmarkStar({ item, hovered }: BookmarkStarProps) {
     [activeSessionId, isBookmarked, bookmark, key, item, addBookmark, removeBookmark],
   )
 
+  // Programmatic visibility via the single chat hover store. No CSS `:hover` /
+  // `group-hover` / Tailwind opacity classes — see chatHoverStore.ts.
+  const activeBookmark = useChatHoverBookmark()
+  const isActiveReveal = activeBookmark === key
+  const visible = isBookmarked || isActiveReveal
+  const colorClass = isBookmarked
+    ? 'text-highlight hover:text-highlight/70'
+    : 'text-muted-foreground hover:text-foreground'
+
   return (
     <button
       type="button"
@@ -58,19 +65,8 @@ export function BookmarkStar({ item, hovered }: BookmarkStarProps) {
       title={isBookmarked ? 'Remove bookmark' : 'Add bookmark'}
       aria-label={isBookmarked ? 'Remove bookmark' : 'Add bookmark'}
       aria-pressed={isBookmarked}
-      className={cn(
-        'inline-flex items-center justify-center rounded-sm p-0.5 transition-opacity',
-        isBookmarked
-          ? 'opacity-100 text-highlight hover:text-highlight/70'
-          : cn(
-              'text-muted-foreground hover:text-foreground focus-visible:opacity-100',
-              hovered !== undefined
-                ? hovered
-                  ? 'opacity-100'
-                  : 'opacity-0'
-                : 'opacity-0 group-hover/bm:opacity-100',
-            ),
-      )}
+      style={{ visibility: visible ? 'visible' : 'hidden' }}
+      className={cn('inline-flex items-center justify-center rounded-sm p-0.5 shrink-0', colorClass)}
     >
       <Star className="h-3.5 w-3.5" fill={isBookmarked ? 'currentColor' : 'none'} />
     </button>

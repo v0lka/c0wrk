@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react'
 import { Check, X, Loader2, AlertTriangle } from 'lucide-react'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
+import { bookmarkKey } from '@/lib/bookmarks'
 import type { DisplayItem } from '@/types/messages'
 import { useAttachmentName } from '@/stores/attachmentsStore'
 import { resolveCardConfig } from './toolCardRegistry'
@@ -160,6 +161,7 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
       statusIcon={<StatusIcon status={item.status} />}
       badge={<>{cachedBadge}{batchedBadge}{mcpBadge}</>}
       headerExtra={cacheRangeNode}
+      revealId={bookmarkKey(item)}
       defaultOpen={item.status === 'error'}
     >
       <Body

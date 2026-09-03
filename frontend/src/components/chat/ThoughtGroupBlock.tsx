@@ -1,5 +1,6 @@
 import { BrainCircuit } from 'lucide-react'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
+import { bookmarkKey } from '@/lib/bookmarks'
 import { Markdown } from '@/lib/markdownConfig'
 import type { DisplayItem } from '@/types/messages'
 
@@ -14,6 +15,7 @@ export function ThoughtGroupBlock({ item }: ThoughtGroupBlockProps) {
     <CollapsibleBlock
       icon={<BrainCircuit className="h-3.5 w-3.5" />}
       label={`Reasoning (${item.thoughts.length})`}
+      revealId={bookmarkKey(item)}
     >
       <div className="mt-2 pl-3 border-l-2 border-muted space-y-2 min-w-0">
         {item.thoughts.map((t, idx) => {

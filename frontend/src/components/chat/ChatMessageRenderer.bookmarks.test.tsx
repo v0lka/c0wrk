@@ -4,6 +4,8 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 import { ChatMessageRenderer } from './ChatMessageRenderer'
+import { ChatHoverRegion } from './ChatHoverRegion'
+import { chatHoverStore } from './chatHoverStore'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { ChatMessageUI, DisplayItem } from '@/types/messages'
 
@@ -30,18 +32,6 @@ function message(id: string, type: ChatMessageUI['type'], content: string): Chat
   }
 }
 
-function fireMouseOver(el: HTMLElement) {
-  act(() => {
-    el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
-  })
-}
-
-function fireMouseLeave(el: HTMLElement) {
-  act(() => {
-    el.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }))
-  })
-}
-
 describe('ChatMessageRenderer bookmark row hover scoping', () => {
   const planStep: DisplayItem = {
     kind: 'plan_step',
@@ -59,6 +49,9 @@ describe('ChatMessageRenderer bookmark row hover scoping', () => {
 
   beforeEach(() => {
     document.body.replaceChildren()
+    // Reset the single programmatic hover store between tests so a previous
+    // test's hover doesn't bleed in (the store is module-level by design).
+    chatHoverStore.clear()
     // Radix Presence schedules enter/exit animations via requestAnimationFrame,
     // which jsdom lacks; run frames synchronously so CollapsibleContent mounts
     // its children. ResizeObserver is likewise absent in jsdom.
@@ -87,14 +80,28 @@ describe('ChatMessageRenderer bookmark row hover scoping', () => {
     act(() => {
       root!.render(
         <TooltipProvider>
-          <ChatMessageRenderer items={[planStep]} />
+          <ChatHoverRegion>
+            <ChatMessageRenderer items={[planStep]} />
+          </ChatHoverRegion>
         </TooltipProvider>,
       )
     })
 
+  const star = (row: Element) =>
+    row.querySelector<HTMLButtonElement>('button[aria-label="Add bookmark"]')!
+
+  const hoverOver = (el: Element) =>
+    act(() => {
+      el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true }))
+    })
+
+  // The star no longer uses Tailwind opacity classes; visibility is an inline
+  // `visibility` style toggled programmatically from the chat hover store.
+  const starIsVisible = (b: HTMLButtonElement) => b.style.visibility === 'visible'
+  const starIsHidden = (b: HTMLButtonElement) => b.style.visibility === 'hidden'
+
   it('renders a star gutter for the parent collapsible row only when bookmarkable', () => {
     renderStep()
-    // Parent plan_step row carries a data-bookmark-id anchor + its own star.
     const parentRow = container.querySelector('[data-bookmark-id="step-1"]')
     expect(parentRow).not.toBeNull()
     expect(parentRow!.querySelector('button[aria-label="Add bookmark"]')).not.toBeNull()
@@ -110,27 +117,143 @@ describe('ChatMessageRenderer bookmark row hover scoping', () => {
     expect(childRow2!.querySelector('button[aria-label="Add bookmark"]')).not.toBeNull()
   })
 
-  it('reveals only the hovered row star, not nested children stars', () => {
+  it('reveals exactly ONE star at a time: hovering the parent hides every child star', () => {
+    renderStep()
+
+    const parentRow = container.querySelector<HTMLElement>('[data-bookmark-id="step-1"]')!
+    const childRow1 = container.querySelector<HTMLElement>('[data-bookmark-id="child-1"]')!
+    const childRow2 = container.querySelector<HTMLElement>('[data-bookmark-id="child-2"]')!
+
+    hoverOver(parentRow)
+
+    expect(starIsVisible(star(parentRow))).toBe(true)
+    expect(starIsHidden(star(childRow1))).toBe(true)
+    expect(starIsHidden(star(childRow2))).toBe(true)
+  })
+
+  it('hovering an inner child switches the single active star to that child only', () => {
     renderStep()
 
     const parentRow = container.querySelector<HTMLElement>('[data-bookmark-id="step-1"]')!
     const childRow1 = container.querySelector<HTMLElement>('[data-bookmark-id="child-1"]')!
 
-    const parentStar = parentRow.querySelector<HTMLButtonElement>('button[aria-label="Add bookmark"]')!
-    const childStar = childRow1.querySelector<HTMLButtonElement>('button[aria-label="Add bookmark"]')!
+    hoverOver(childRow1)
 
-    // Initially hidden.
-    expect(parentStar.className).toContain('opacity-0')
-    expect(childStar.className).toContain('opacity-0')
+    expect(starIsVisible(star(childRow1))).toBe(true)
+    expect(starIsHidden(star(parentRow))).toBe(true)
+  })
 
-    // Hover the parent row: only the parent star becomes visible.
-    fireMouseOver(parentRow)
-    expect(parentStar.className).toContain('opacity-100')
-    expect(childStar.className).toContain('opacity-0')
+  it('hides the active star when the pointer moves to blank space (no row under it)', () => {
+    renderStep()
 
-    // Leave the parent, hover the child: child star becomes visible.
-    fireMouseLeave(parentRow)
-    fireMouseOver(childRow1)
-    expect(childStar.className).toContain('opacity-100')
+    const parentRow = container.querySelector<HTMLElement>('[data-bookmark-id="step-1"]')!
+    const childRow1 = container.querySelector<HTMLElement>('[data-bookmark-id="child-1"]')!
+
+    hoverOver(parentRow)
+    expect(starIsVisible(star(parentRow))).toBe(true)
+
+    // Move to the region wrapper itself — a non-row area with no
+    // [data-bookmark-id] ancestor. The region div is the only child mounted
+    // directly under the React root container.
+    const region = container.children[0]!
+    hoverOver(region)
+
+    expect(starIsHidden(star(parentRow))).toBe(true)
+    expect(starIsHidden(star(childRow1))).toBe(true)
+  })
+
+  it('anchors exactly ONE chevron per nearest collapsible under the pointer', () => {
+    renderStep()
+
+    const collapsible = container.querySelector<HTMLElement>('[data-chevron-reveal-id]')!
+    expect(collapsible).not.toBeNull()
+    const chevronId = collapsible.dataset.chevronRevealId!
+    const trigger = collapsible.querySelector<HTMLElement>('[data-slot="collapsible-trigger"]')!
+    const chevron = trigger.querySelector<HTMLElement>('span')!
+
+    hoverOver(trigger)
+
+    expect(chevron.style.visibility).toBe('visible')
+    // The revealed chevron id matches the nearest collapsible's id.
+    expect(chevronId).toEqual(collapsible.dataset.chevronRevealId)
+  })
+
+  // Regression: the user-reported symptom was a DOWNWARD sweep accumulating
+  // icons while an UPWARD sweep cleared them. This sweep traverses the DOM
+  // top-to-bottom, and later bottom-to-top, asserting that at every step exactly
+  // one bookmark star and one chevron is lit — never more.
+  it('never lights MORE than one bookmark star anywhere during a top-to-bottom sweep', () => {
+    renderStep()
+
+    const rows = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-bookmark-id]'),
+    )
+    expect(rows.length).toBeGreaterThanOrEqual(3) // parent (step-1) + 2 children
+
+    const allStars = () =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>('button[aria-label="Add bookmark"]'))
+
+    for (const row of rows) {
+      hoverOver(row)
+      const lit = allStars().filter(starIsVisible)
+      expect(lit.length).toBeLessThanOrEqual(1)
+    }
+
+    // Bottom-to-top, the same invariant holds.
+    for (const row of [...rows].reverse()) {
+      hoverOver(row)
+      const lit = allStars().filter(starIsVisible)
+      expect(lit.length).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it('never lights MORE than one chevron anywhere during a sweep', () => {
+    renderStep()
+
+    const collapsibles = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-chevron-reveal-id]'),
+    )
+    expect(collapsibles.length).toBeGreaterThanOrEqual(1)
+
+    const allChevrons = () =>
+      Array.from(
+        container.querySelectorAll<HTMLElement>('[data-slot="collapsible-trigger"] span'),
+      )
+
+    let lit = allChevrons().filter((c) => c.style.visibility === 'visible')
+    expect(lit.length).toBeLessThanOrEqual(1)
+
+    for (const c of collapsibles) {
+      hoverOver(c)
+      lit = allChevrons().filter((c) => c.style.visibility === 'visible')
+      expect(lit.length).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it('hides both the bookmark and the chevron when the pointer leaves the chat', () => {
+    renderStep()
+
+    const parentRow = container.querySelector<HTMLElement>('[data-bookmark-id="step-1"]')!
+    const trigger = parentRow.querySelector<HTMLElement>('[data-slot="collapsible-trigger"]')!
+
+    hoverOver(parentRow)
+    expect(starIsVisible(star(parentRow))).toBe(true)
+
+    // Leaving the region clears the store, hiding everything. React's
+    // onMouseLeave is driven by a mouseout whose relatedTarget is outside the
+    // region, so simulate that (not a bubbled mouseleave).
+    act(() => {
+      const region = container.children[0]!
+      region.dispatchEvent(
+        new MouseEvent('mouseout', {
+          bubbles: true,
+          cancelable: true,
+          relatedTarget: document.body,
+        }),
+      )
+    })
+
+    expect(starIsHidden(star(parentRow))).toBe(true)
+    expect(trigger.querySelector<HTMLElement>('span')!.style.visibility).toBe('hidden')
   })
 })

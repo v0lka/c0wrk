@@ -1,5 +1,6 @@
 import { AlertTriangle } from 'lucide-react'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
+import { bookmarkKey } from '@/lib/bookmarks'
 import type { DisplayItem } from '@/types/messages'
 
 type ReflectionItem = Extract<DisplayItem, { kind: 'reflection' }>
@@ -31,7 +32,7 @@ export function ReflectionBlock({ item }: { item: ReflectionItem }) {
       </div>
       {hasDetails && (
         <div className="mt-1.5">
-          <CollapsibleBlock label="Details">
+          <CollapsibleBlock label="Details" revealId={bookmarkKey(item)}>
             <div className="mt-2 space-y-2 text-xs text-muted-foreground">
               {rootCause && (
                 <div><span className="text-muted-foreground/60">Root cause:</span> {rootCause}</div>

@@ -13,6 +13,7 @@ import { AssistantMessage } from './AssistantMessage'
 import { ActivityIndicator } from './ActivityIndicator'
 import { ChatScrollManager } from './ChatScrollManager'
 import { ChatMessageRenderer, CompactErrorFallback } from './ChatMessageRenderer'
+import { ChatHoverRegion } from './ChatHoverRegion'
 import { ExecutionPanels } from './ExecutionPanels'
 import { BlackboardPanel } from './BlackboardPanel'
 import { BookmarksPanel } from './BookmarksPanel'
@@ -215,7 +216,7 @@ export function ChatArea() {
     <ScrollProvider>
       <div className="relative flex flex-1 flex-col min-h-0 bg-background">
         <ChatScrollManager key={activeSessionId} messages={messages} streamingText={streamingText} scrollRef={scrollRef}>
-          <div className="p-4 space-y-4 min-w-0">
+          <ChatHoverRegion className="p-4 space-y-4 min-w-0">
             <ChatMessageRenderer
               items={displayItems}
               stickyUserMessages
@@ -230,7 +231,7 @@ export function ChatArea() {
                 </>
               )}
             />
-          </div>
+          </ChatHoverRegion>
         </ChatScrollManager>
         <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Panel error</div>}>
           <ExecutionPanels />

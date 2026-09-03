@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React from 'react'
 import type { DisplayItem, DisplayItemKind } from '@/types/messages'
 import { bookmarkKey } from '@/lib/bookmarks'
 import { BookmarkableContext } from './BookmarkableContext'
@@ -88,25 +88,24 @@ export function CompactErrorFallback() {
 const compactErrorFallback = <CompactErrorFallback />
 
 /**
- * BookmarkableRow — a chat item's left gutter + content, with the star's hover
- * scoped to THIS row via React state (not CSS group-hover). Because each row
- * tracks its own hover, hovering a parent block does NOT reveal the stars of
- * nested rows; hovering a child reveals that child's star (and the parent's
- * stays visible, which is acceptable). Hovering the parent's own header shows
- * only the parent's star.
+ * BookmarkableRow — a chat item's left gutter + content.
+ *
+ * The unbookmarked star's visibility is driven by the ChatHoverRegion
+ * controller (single active bookmark across the whole chat). This row carries
+ * `data-bookmark-id={bookmarkKey(item)}`, which the region resolves via
+ * `closest('[data-bookmark-id]')` to reveal exactly the row under the pointer
+ * and hide every other star. The `group` class is retained for other hover
+ * revealers (e.g. the Copy/Save actions in MessageFooter), not for the star.
  */
 function BookmarkableRow({ item, content }: { item: DisplayItem; content: React.ReactNode }) {
-  const [hovered, setHovered] = useState(false)
   const key = bookmarkKey(item)
   return (
     <div
-      className="relative flex items-start gap-2"
       data-bookmark-id={key}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      className="group relative flex items-start gap-2"
     >
       <div className="w-5 shrink-0 flex items-start">
-        <BookmarkStar item={item} hovered={hovered} />
+        <BookmarkStar item={item} />
       </div>
       <div className="min-w-0 flex-1">{content}</div>
     </div>
