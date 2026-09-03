@@ -23,15 +23,19 @@ interface DagSvgProps {
 }
 
 function DagSvg({ layout, selectedId, onSelect }: DagSvgProps) {
-  // Add room to the right for node titles rendered beside each circle.
-  const width = Math.max(layout.width + 160, 320)
-  const height = Math.max(layout.height, 160)
+  // The layout box hugs the painted content — ids hanging left of nodes,
+  // truncated titles right of them — so the camera's fit() centers the
+  // actual graph, and left-hanging ids stay inside the SVG viewport (an SVG
+  // clips its own overflow, so content outside the box is unreachable by
+  // panning). Guards keep width/height positive for degenerate layouts.
+  const w = Math.max(layout.width, 1)
+  const h = Math.max(layout.height, 1)
 
   return (
     <svg
-      width={width}
-      height={height}
-      viewBox={`0 0 ${width} ${height}`}
+      width={w}
+      height={h}
+      viewBox={`${layout.minX} 0 ${w} ${h}`}
       role="graphics-document"
       aria-label="Research hypothesis DAG"
       className="shrink-0"

@@ -37,6 +37,8 @@ export const LABEL_GAP_X = NODE_R + 4
 export const LABEL_MAX_CHARS = 26
 /** Estimated px per label character at the 11px label font size. */
 export const LABEL_CHAR_W = 6
+/** Estimated px per id character at the 9px id font size. */
+export const ID_CHAR_W = 5
 /** Breathing room after the label zone before the next column starts. */
 export const COLUMN_GAP = 20
 /** Horizontal pitch between depth columns: 26-char label budget + gap. */
@@ -183,8 +185,27 @@ export interface PositionedEdge {
 export interface DagLayout {
   nodes: PositionedNode[]
   edges: PositionedEdge[]
+  /**
+   * Left edge of the tight painted-content box, in layout coordinates.
+   * Typically negative: id labels hang LEFT of their node
+   * (`textAnchor="end"` at `node.x - LABEL_GAP_X`), so the box must open
+   * left of x=0 for them to render inside the SVG viewport (an SVG clips
+   * its own overflow, so content outside the box is invisible no matter
+   * how the camera pans).
+   */
+  minX: number
   width: number
   height: number
+}
+
+/** Estimated painted width of a node id label (9px id font). */
+export function idTextWidth(id: string): number {
+  return id.length * ID_CHAR_W
+}
+
+/** Estimated painted width of a node title after the truncate budget (11px label font). */
+export function titleTextWidth(title: string): number {
+  return Math.min(title.length, LABEL_MAX_CHARS) * LABEL_CHAR_W
 }
 
 /** X coordinate (px) of a node center: one column per topological depth level. */
@@ -212,7 +233,7 @@ export function yFor(slot: number): number {
  */
 export function layoutDag(graph: HypothesisGraph): DagLayout {
   if (graph.nodes.length === 0) {
-    return { nodes: [], edges: [], width: 0, height: 0 }
+    return { nodes: [], edges: [], minX: 0, width: 0, height: 0 }
   }
 
   const levels = assignLevels(graph)
@@ -271,8 +292,6 @@ export function layoutDag(graph: HypothesisGraph): DagLayout {
     slots.set(id, count > 0 ? sum / count : nextSlot++)
   }
 
-  const maxLevel = Math.max(0, ...levels.values())
-
   // Assign x/y to every node.
   const pos = new Map<string, PositionedNode>()
   const nodes: PositionedNode[] = []
@@ -313,10 +332,29 @@ export function layoutDag(graph: HypothesisGraph): DagLayout {
     }
   }
 
-  // Box: last column plus a full label budget; last row slot plus padding.
-  const width = xFor(maxLevel) + LABEL_GAP_X + LABEL_MAX_CHARS * LABEL_CHAR_W + BOX_PAD
+  // Box: hug the painted content. Id labels hang LEFT of their node,
+  // truncated titles hang RIGHT (both estimated per character, mirroring the
+  // rendered text), with BOX_PAD breathing room on each side. The tight box
+  // is what the pan/zoom camera fits and centers: a loose one (e.g. the full
+  // 26-char budget after the last column, or a fixed extra allowance) leaves
+  // the fitted graph pushed toward the canvas's left edge with dead space on
+  // the right, and ids drawn at x < 0 are clipped by the SVG itself.
+  let minX = Infinity
+  let maxX = -Infinity
+  for (const node of nodes) {
+    minX = Math.min(minX, node.x - LABEL_GAP_X - idTextWidth(node.id))
+    maxX = Math.max(maxX, node.x + LABEL_GAP_X + titleTextWidth(node.title))
+  }
+  minX -= BOX_PAD
+  const width = maxX + BOX_PAD - minX
   const height = TOP_PAD + Math.max(0, nextSlot - 1) * ROW_H + BOX_PAD
-  return { nodes, edges, width: Math.max(width, 0), height: Math.max(height, 0) }
+  return {
+    nodes,
+    edges,
+    minX,
+    width: Math.max(width, 0),
+    height: Math.max(height, 0),
+  }
 }
 
 // ── Edge path ──────────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ import {
   LABEL_GAP_X,
   LABEL_MAX_CHARS,
   LABEL_CHAR_W,
+  BOX_PAD,
   LEFT_PAD,
   TOP_PAD,
   buildParentMap,
@@ -14,6 +15,8 @@ import {
   layoutDag,
   xFor,
   yFor,
+  idTextWidth,
+  titleTextWidth,
   edgePathH,
   statusColorVar,
   formatRate,
@@ -206,6 +209,51 @@ describe('layoutDag', () => {
     expect(l.nodes[0]!.x).toBe(LEFT_PAD)
     expect(l.nodes[0]!.y).toBe(TOP_PAD)
     expect(l.nodes[0]!.status).toBe('confirmed')
+  })
+
+  it('returns minX 0 for an empty graph', () => {
+    expect(layoutDag(graphOf([])).minX).toBe(0)
+  })
+
+  it('opens the box left of x=0 so left-hanging id labels are not clipped', () => {
+    // Ids render with textAnchor="end" at node.x - LABEL_GAP_X: for the
+    // leftmost column they extend into negative x. The SVG clips its own
+    // overflow, so the box (minX) must include their full painted width.
+    const l = layoutDag(graphOf([{ id: 'H-001', title: 'Root' }]))
+    expect(l.minX).toBe(LEFT_PAD - LABEL_GAP_X - idTextWidth('H-001') - BOX_PAD)
+  })
+
+  it('hugs the painted title extent instead of the full truncate budget', () => {
+    // A short title must produce a tight box — the camera fits and centers
+    // the box, so leftover budget space would push the fitted graph left.
+    const title = 'Root hypothesis'
+    const l = layoutDag(graphOf([{ id: 'a', title }]))
+    expect(title.length).toBeLessThan(LABEL_MAX_CHARS)
+    expect(l.width).toBe(
+      LEFT_PAD + LABEL_GAP_X + titleTextWidth(title) + BOX_PAD - l.minX,
+    )
+  })
+
+  it('caps the title extent at the truncate budget for long titles', () => {
+    const l = layoutDag(graphOf([{ id: 'a', title: 'x'.repeat(LABEL_MAX_CHARS + 10) }]))
+    expect(l.width).toBe(
+      LEFT_PAD + LABEL_GAP_X + LABEL_MAX_CHARS * LABEL_CHAR_W + BOX_PAD - l.minX,
+    )
+  })
+
+  it('uses the deepest right-hand extent across all columns', () => {
+    // Sibling children of one root: the longer title defines the box.
+    const long = 'a'.repeat(20)
+    const l = layoutDag(
+      graphOf([
+        { id: 'a', title: 'x' },
+        { id: 'b', title: 'x', parents: ['a'] },
+        { id: 'c', title: long, parents: ['a'] },
+      ]),
+    )
+    expect(l.width).toBe(
+      LEFT_PAD + COLUMN_W + LABEL_GAP_X + titleTextWidth(long) + BOX_PAD - l.minX,
+    )
   })
 
   it('assigns leaves consecutive row slots in DFS order (≥ ROW_H apart)', () => {
