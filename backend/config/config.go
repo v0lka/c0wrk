@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -516,6 +517,16 @@ type SecurityConfig struct {
 	//   0  = use default (65536)
 	//  -1  = no cap (unlimited — USE WITH CAUTION)
 	AgentsMDMaxBytes int `yaml:"agents_md_max_bytes"`
+
+	// TrustedGitRepos lists repository roots for which the untrusted-git-config
+	// intake warning (the project:git_config_risk event fired on project switch
+	// or work-directory add, see ADR-033 layer 3) has been explicitly
+	// dismissed by the user via the "Trust this repo" action. Entries are
+	// absolute, filepath.Clean-ed paths; matching is exact. Trusting a repo
+	// suppresses ONLY the UI warning — the spawn-layer neutralization (global
+	// baseline + per-repo NeutralizingArgv) remains fully in force.
+	// Default: empty (every suspicious config warns).
+	TrustedGitRepos []string `yaml:"trusted_git_repos,omitempty"`
 }
 
 // GroupPolicyConfig holds per-group security policy configuration
@@ -1098,6 +1109,22 @@ func validate(cfg *Config) error {
 					name, pattern, err,
 				)
 			}
+		}
+	}
+
+	// Validate security.trusted_git_repos: entries must be absolute paths.
+	// They are compared literally (after Clean) against scanned repository
+	// roots, so a relative entry could never match — reject it at load time
+	// rather than leaving dead config.
+	for _, repo := range cfg.Security.TrustedGitRepos {
+		if repo == "" {
+			return errors.New("security.trusted_git_repos must not contain empty paths")
+		}
+		if !filepath.IsAbs(filepath.Clean(repo)) {
+			return fmt.Errorf(
+				"security.trusted_git_repos entry %q must be an absolute path",
+				repo,
+			)
 		}
 	}
 

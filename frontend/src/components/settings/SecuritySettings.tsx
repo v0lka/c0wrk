@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, AlertTriangle, Info, RotateCw } from "lucide-react";
+import { Loader2, AlertTriangle, Info, RotateCw, FolderGit2 } from "lucide-react";
 import { getSecuritySettings, updateSecuritySettings } from "@/api/config";
 import { getToolList } from "@/api/mcp";
 import { logger } from "@/lib/logger";
+import { Button } from "@/components/ui/button";
 import { SecurityGroupCard } from "./SecurityGroupCard";
+import { TrustedReposDialog } from "./TrustedReposDialog";
 import {
   DEFAULT_GROUP_POLICY,
   EXECUTE_GROUP,
@@ -45,6 +47,9 @@ export function SecuritySettings() {
   // Shipped execute-blacklist patterns (read-only, from the backend): the
   // blacklist editor offers them as a one-click restore.
   const [executeDefaults, setExecuteDefaults] = useState<string[]>([]);
+  // Trusted-repositories dialog (git-config intake warnings dismissed with
+  // "Trust this repo") — see TrustedReposDialog.
+  const [trustedOpen, setTrustedOpen] = useState(false);
 
   // Fail-closed load: save() below normalizes the FULL seven-group payload
   // from local state. If the initial load failed, local state is empty and a
@@ -199,6 +204,27 @@ export function SecuritySettings() {
           <span className="text-destructive">{saveError}</span>
         </div>
       )}
+      {/* Trusted repositories (dismissed git-config warnings) */}
+      <div className="flex items-center justify-between gap-3 p-4 rounded-lg border border-border bg-card/50">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">Trusted repositories</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Repositories whose &ldquo;untrusted git configuration&rdquo; warning you dismissed with
+            &ldquo;Trust this repo&rdquo;. Removing an entry re-enables the warning.
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="shrink-0"
+          onClick={() => setTrustedOpen(true)}
+          data-testid="trusted-repos-open"
+        >
+          <FolderGit2 className="h-3.5 w-3.5" />
+          Trusted repos
+        </Button>
+      </div>
+
       {/* Workspace auto-approve toggle */}
       <div className="flex flex-col gap-3 p-4 rounded-lg border border-border bg-card/50">
         <div className="flex items-center gap-3">
@@ -275,6 +301,8 @@ export function SecuritySettings() {
           <strong>Deny</strong> blocks execution. Internal orchestration tools are always allowed and not listed.
         </p>
       </div>
+
+      <TrustedReposDialog open={trustedOpen} onOpenChange={setTrustedOpen} />
     </div>
   );
 }

@@ -3,6 +3,7 @@ package backend
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -287,5 +288,119 @@ func TestAddWorkDirectory_CleanDirDoesNotEmitRiskEvent(t *testing.T) {
 
 	if err := h.api.AddWorkDirectory("session", h.sessionID, dir, "benign"); err != nil {
 		t.Fatalf("AddWorkDirectory: %v", err)
+	}
+}
+
+// --- Trusted repositories (security.trusted_git_repos) ---
+
+// TestNotifyGitConfigRisk_TrustedRepoSuppressed verifies the trust-list
+// carve-out: a repository the user explicitly trusted emits no intake
+// warning; a different armed repository still warns (trust is per exact
+// root — no prefix or subtree semantics); and removing the trust restores
+// the warning on the next open.
+func TestNotifyGitConfigRisk_TrustedRepoSuppressed(t *testing.T) {
+	dir := t.TempDir()
+	writeGitConfig(t, dir, "[core]\n\tfsmonitor = /tmp/evil\n")
+
+	f, _, _ := newTestAPI(t)
+	if err := f.TrustGitRepo(dir); err != nil {
+		t.Fatalf("TrustGitRepo: %v", err)
+	}
+
+	rec := newRiskRecorder(t, f)
+	f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
+	if rec.fired {
+		t.Error("expected no project:git_config_risk for a trusted repository")
+	}
+
+	other := t.TempDir()
+	writeGitConfig(t, other, "[core]\n\tfsmonitor = /tmp/evil\n")
+	rec = newRiskRecorder(t, f)
+	f.notifyGitConfigRisk(GitConfigRiskSourceWorkdir, other)
+	if !rec.fired {
+		t.Error("expected project:git_config_risk for an untrusted repository")
+	}
+
+	if err := f.RemoveTrustedGitRepo(dir); err != nil {
+		t.Fatalf("RemoveTrustedGitRepo: %v", err)
+	}
+	rec = newRiskRecorder(t, f)
+	f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
+	if !rec.fired {
+		t.Error("expected project:git_config_risk after the trust was removed")
+	}
+}
+
+// TestTrustGitRepo_RoundTrip covers the RPC surface: path validation (empty,
+// relative, nonexistent), the idempotent add (a trailing-slash form of an
+// already-trusted root cleans to the same entry), the defensive copy from
+// GetTrustedGitRepos, persistence to config.yaml, and the idempotent remove.
+func TestTrustGitRepo_RoundTrip(t *testing.T) {
+	f, _, cfgPath := newTestAPI(t)
+
+	if err := f.TrustGitRepo(""); err == nil {
+		t.Error("expected error for an empty path")
+	}
+	if err := f.TrustGitRepo("relative/repo"); err == nil {
+		t.Error("expected error for a relative path")
+	}
+	if err := f.TrustGitRepo(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Error("expected error for a nonexistent path")
+	}
+	if got := f.GetTrustedGitRepos(); len(got) != 0 {
+		t.Errorf("GetTrustedGitRepos = %v, want empty after rejected adds", got)
+	}
+
+	dir := t.TempDir()
+	if err := f.TrustGitRepo(dir); err != nil {
+		t.Fatalf("TrustGitRepo: %v", err)
+	}
+	if err := f.TrustGitRepo(dir + string(filepath.Separator)); err != nil {
+		t.Fatalf("TrustGitRepo (trailing-slash form): %v", err)
+	}
+	got := f.GetTrustedGitRepos()
+	if len(got) != 1 || got[0] != dir {
+		t.Fatalf("GetTrustedGitRepos = %v, want exactly [%s]", got, dir)
+	}
+
+	// The returned slice is a copy: mutating it must not touch live config.
+	got[0] = "/mutated"
+	if f.GetTrustedGitRepos()[0] != dir {
+		t.Error("GetTrustedGitRepos leaked the live config slice")
+	}
+
+	// The trusted root survives the persist path (config.yaml on disk).
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+	if !strings.Contains(string(raw), dir) {
+		t.Errorf("persisted config does not contain the trusted repo %s", dir)
+	}
+
+	if err := f.RemoveTrustedGitRepo(dir); err != nil {
+		t.Fatalf("RemoveTrustedGitRepo: %v", err)
+	}
+	if err := f.RemoveTrustedGitRepo(dir); err != nil {
+		t.Fatalf("RemoveTrustedGitRepo (repeat): %v", err)
+	}
+	if got := f.GetTrustedGitRepos(); len(got) != 0 {
+		t.Errorf("GetTrustedGitRepos = %v, want empty after removal", got)
+	}
+}
+
+// TestGitRepoTrusted_NilConfigIsFailClosed: with no config loaded nothing is
+// trusted and nothing can be trusted — the warning path stays on, mirroring
+// the fail-closed direction of the scan itself.
+func TestGitRepoTrusted_NilConfigIsFailClosed(t *testing.T) {
+	f := &FrontendAPI{}
+	if f.gitRepoTrusted("/some/repo") {
+		t.Error("gitRepoTrusted must be false with no config loaded")
+	}
+	if got := f.GetTrustedGitRepos(); len(got) != 0 {
+		t.Errorf("GetTrustedGitRepos = %v, want empty with no config", got)
+	}
+	if err := f.TrustGitRepo(t.TempDir()); err == nil {
+		t.Error("expected error from TrustGitRepo with no config loaded")
 	}
 }

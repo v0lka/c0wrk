@@ -38,6 +38,13 @@ vi.mock('@/api/mcp', () => ({
   ]),
 }))
 
+// The Trusted repos dialog (rendered by SecuritySettings) talks to the
+// git-config-risk API; mocked so the button test never touches Wails.
+vi.mock('@/api/gitConfigRisk', () => ({
+  getTrustedGitRepos: vi.fn().mockResolvedValue(['/Users/dev/repo-a']),
+  removeTrustedGitRepo: vi.fn().mockResolvedValue(undefined),
+}))
+
 import { SecuritySettings } from './SecuritySettings'
 import { getSecuritySettings } from '@/api/config'
 
@@ -205,5 +212,19 @@ describe('SecuritySettings — group schema', () => {
     const execSelect = findSelect('Execute policy')
     // The combobox trigger shows the enforced policy's option label.
     expect(execSelect?.textContent).toContain('User Confirm')
+  })
+
+  it('opens the trusted repositories dialog from the Trusted repos button', async () => {
+    await render()
+
+    const btn = container.querySelector<HTMLButtonElement>('[data-testid="trusted-repos-open"]')
+    expect(btn).not.toBeNull()
+    await act(async () => {
+      btn?.click()
+    })
+
+    // Radix portals the dialog content to document.body.
+    const dlg = document.querySelector('[data-testid="trusted-repos-dialog"]')
+    expect(dlg?.textContent).toContain('/Users/dev/repo-a')
   })
 })
