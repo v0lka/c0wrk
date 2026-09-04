@@ -115,10 +115,11 @@ type App struct {
 	// Production wiring keeps it nil.
 	quitFn func(ctx context.Context)
 
-	// windowShowFn, when non-nil, replaces wailsRuntime.WindowShow in the
-	// close guard. Lets tests run the interception path without a live Wails
-	// runtime (wailsRuntime panics on a foreign context). Production wiring
-	// keeps it nil.
+	// windowShowFn, when non-nil, replaces wailsRuntime.WindowShow in
+	// showWindow — and therefore on every path that reveals the window (the
+	// startup phases, OnDomReady, and the close guard). Lets tests observe
+	// those paths without a live Wails runtime (wailsRuntime panics on a
+	// foreign context). Production wiring keeps it nil.
 	windowShowFn func(ctx context.Context)
 }
 
@@ -245,6 +246,22 @@ func (a *App) emit(eventName string, optionalData ...any) {
 		return
 	}
 	wailsRuntime.EventsEmit(a.ctx, eventName, optionalData...)
+}
+
+// showWindow reveals the main window. Tests can inject a fake by setting
+// a.windowShowFn; production code uses wailsRuntime.WindowShow.
+//
+// Every reveal path funnels through here, and all of them are idempotent:
+// showing an already-visible window is a no-op. The window is created visible
+// (main.go sets no StartHidden), so in a normal start these calls have nothing
+// left to do — they exist so a window that is hidden for any other reason
+// still comes back.
+func (a *App) showWindow(ctx context.Context) {
+	if a.windowShowFn != nil {
+		a.windowShowFn(ctx)
+		return
+	}
+	wailsRuntime.WindowShow(ctx)
 }
 
 // resolvePendingMessage delegates to FrontendAPI.ResolvePendingMessage to mark
