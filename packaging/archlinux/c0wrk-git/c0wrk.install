@@ -1,0 +1,36 @@
+# Post-transaction notes shared by c0wrk-bin and c0wrk-git.
+#
+# Nothing here touches user data: the app creates ~/.c0wrk/config.yaml itself on
+# first launch, and removing it on uninstall would destroy the user's provider
+# credentials, sessions and database.
+
+_c0wrk_notes() {
+	cat <<'MSG'
+
+c0wrk is installed to /opt/c0wrk (the binary, libonnxruntime.so and models/
+must stay in one directory: the app resolves them relative to its own
+executable). Launch it as `c0wrk-desktop` or `c0wrk`.
+
+Configuration and data live in ~/.c0wrk/ and are created on first launch.
+
+The built-in updater cannot install over a distro package: /opt/c0wrk is
+root-owned, so it refuses the in-place swap and leaves the install untouched.
+To stop being notified about updates that pacman will deliver anyway, add to
+~/.c0wrk/config.yaml:
+
+    updates:
+      enabled: false
+
+Optional runtime helpers: ripgrep (faster content search), git (project
+features), wl-clipboard or xclip (clipboard integration).
+
+MSG
+}
+
+post_install() {
+	_c0wrk_notes
+}
+
+post_upgrade() {
+	_c0wrk_notes
+}
