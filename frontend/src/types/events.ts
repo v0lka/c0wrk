@@ -518,9 +518,18 @@ export interface GlobalEventMap {
   readonly 'backend:ready': void
   readonly 'projects:loaded': void
   readonly 'sessions:loaded': void
-  readonly 'workspace:tree_changed': void
-  /** RESEARCH toggle or artifact change (enable/disable, hypothesis/brief/prior-art write). */
+  /** File tree modified (workspace watcher callback). `research_scoped` is
+   *  optional — present only on the RESEARCH-scoped emitter (at least one
+   *  changed path was inside the research directory; the backend's
+   *  emitResearchFileChanged returns true on a partial overlap, because the
+   *  research-only files in the batch are covered by the incremental
+   *  research:file_changed path); consumers use it to defer to that path. */
+  readonly 'workspace:tree_changed': { readonly research_scoped?: boolean }
+  /** RESEARCH mode toggled (enable/disable). */
   readonly 'research:changed': void
+  /** A file inside the research directory changed (hypothesis cards, brief,
+   *  prior-art, graph, log). `paths` is a comma-separated list. */
+  readonly 'research:file_changed': { readonly project_id: string; readonly paths: string }
   readonly 'skills:changed': void
   readonly 'git:status_changed': string
   readonly 'vector_index:status': VectorIndexStatus

@@ -28,14 +28,9 @@ vi.mock('@/hooks/useMessageSender', () => ({
   useMessageSender: () => ({ send: sendSpy, cancel: vi.fn(), isProcessing: false }),
 }))
 
-// The data-sync hooks are side-effect only; stub them so panel tests exercise
-// rendering + dispatch against a seeded store without backend fetches.
-vi.mock('@/hooks/useResearchStatusEvents', () => ({
-  useResearchStatusEvents: () => {},
-}))
-vi.mock('@/hooks/useResearchFileWatcher', () => ({
-  useResearchFileWatcher: () => {},
-}))
+// ResearchPanel is a pure view over researchStore (sync lives in the App-root
+// ResearchEventBridge), so panel tests seed the store directly and exercise
+// rendering + dispatch without backend fetches.
 
 vi.mock('@/api/research', () => ({
   getResearchStatus: vi.fn(),

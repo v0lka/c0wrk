@@ -17,6 +17,10 @@ export function useResearchStatusEvents(): void {
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Watchdog timer for research-scoped tree changes (see the subscription
+  // effect below). Separate from debounceRef so ordinary refreshes never
+  // cancel a pending convergence check and vice versa.
+  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Stable refresh: fetch status for the active project and load it, but only
   // if the project hasn't switched while the fetch was in flight.
@@ -74,15 +78,42 @@ export function useResearchStatusEvents(): void {
       }, 50)
     }
 
+    // Research-scoped watchdog: the incremental path (useResearchFileWatcher
+    // via research:file_changed) owns these changes, so the immediate full
+    // refetch is skipped as an optimization. But that makes the incremental
+    // path a single point of failure — if its event is lost, its RPC fails,
+    // or its update is rejected, nothing else refreshes the panel and it
+    // freezes on stale data (the reported "research log doesn't auto-update"
+    // bug). This delayed check closes the loop: if no successful incremental
+    // sync landed (store.lastGraphSyncAt) since scheduling, run the full
+    // refresh so the panel always converges within a couple of seconds.
+    const RESEARCH_WATCHDOG_DELAY_MS = 1500
+    const scheduleResearchWatchdog = () => {
+      const scheduledAt = Date.now()
+      if (watchdogRef.current !== null) {
+        clearTimeout(watchdogRef.current)
+      }
+      watchdogRef.current = setTimeout(() => {
+        watchdogRef.current = null
+        // A sync stamped at/after scheduling means the incremental path
+        // landed — skip the redundant full fetch.
+        if (useResearchStore.getState().lastGraphSyncAt >= scheduledAt) return
+        refresh()
+      }, RESEARCH_WATCHDOG_DELAY_MS)
+    }
+
     const unsubResearch = subscribe('research:changed', debouncedRefresh)
     const unsubWorkspace = subscribe('workspace:tree_changed', (data: unknown) => {
-      // Skip the full refetch when the change was research-scoped: the
-      // incremental path (useResearchFileWatcher via research:file_changed)
+      // Skip the immediate full refetch when the change was research-scoped:
+      // the incremental path (useResearchFileWatcher via research:file_changed)
       // handles it, so a full status fetch would be redundant. The backend
       // annotates the event with { research_scoped: true } for research dir
       // changes; non-research changes (or the nil/null payload from older
       // emitters) fall through to the normal debounced refresh.
-      if (isResearchScopedChange(data)) return
+      if (isResearchScopedChange(data)) {
+        scheduleResearchWatchdog()
+        return
+      }
       debouncedRefresh()
     })
 
@@ -93,14 +124,20 @@ export function useResearchStatusEvents(): void {
         clearTimeout(debounceRef.current)
         debounceRef.current = null
       }
+      if (watchdogRef.current !== null) {
+        clearTimeout(watchdogRef.current)
+        watchdogRef.current = null
+      }
     }
   }, [refresh])
 }
 
 /** Type guard: returns true when a workspace:tree_changed payload indicates
- *  the change was research-scoped (all changed paths were inside the research
- *  directory). The backend annotates such events with { research_scoped: true }
- *  so this hook can defer to the incremental update path. */
+ *  the change was research-scoped (at least one changed path was inside the
+ *  research directory — the backend's emitResearchFileChanged returns true on
+ *  a partial overlap). The backend annotates such events with
+ *  { research_scoped: true } so this hook can defer to the incremental
+ *  update path. */
 function isResearchScopedChange(data: unknown): boolean {
   if (typeof data !== 'object' || data === null) return false
   return (data as Record<string, unknown>)['research_scoped'] === true

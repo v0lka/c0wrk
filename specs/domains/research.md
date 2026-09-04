@@ -78,9 +78,30 @@ User enables RESEARCH for a real project
 Research artifact changes
   -> recursive workspace watcher batches changed paths
   -> emit research:file_changed for the active project
+     (workspace:tree_changed is annotated research_scoped=true — true when
+      at least one changed path was inside the research root — so the
+      frontend skips its immediate full refetch: the incremental path owns it)
   -> frontend calls GetResearchGraph
   -> parse full root, select active R-NNN, return lightweight graph + metrics
+  -> loadGraph applies the update and follows a changed active R-NNN
+     (the response's PickActiveProject choice is newer than the cached
+      snapshot); an unknown brand-new R-NNN, a snapshot fetched before the
+      store's last sync (stale — a slow fetch resolving after a newer sync
+      must not regress the panel), or a failed RPC falls back to a
+      full GetResearchStatus refetch
+  -> watchdog: the delayed check in useResearchStatusEvents runs a full
+     refetch unless a successful incremental sync (lastGraphSyncAt) landed
+     after the research_scoped tree change — the panel always converges
 ```
+
+Both frontend sync paths are mounted exactly once at the App root
+(`ResearchEventBridge`, gated on `experimental.enabled`); the Research panel
+and the workspace tab are pure views over `researchStore` and never mount the
+hooks themselves (a double mount would duplicate every watchdog and fallback
+refetch). The workspace's hypothesis selection is keyed to the research
+project it was made in (`selectedHypothesisProjectId`): an active-R-NNN
+switch leaves a stale selection — and its unsaved draft — unrendered instead
+of rebinding it to the new project's same-id card.
 
 The canonical nested artifact shape is:
 

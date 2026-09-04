@@ -1,8 +1,6 @@
 import { useCallback } from 'react'
 import { FlaskConical, FolderOpen, ChevronDown, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useResearchStatusEvents } from '@/hooks/useResearchStatusEvents'
-import { useResearchFileWatcher } from '@/hooks/useResearchFileWatcher'
 import { useResearchStore, selectActiveProject } from '@/stores/researchStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import {
@@ -22,9 +20,10 @@ import { projectDir, projectFilePaths } from './researchDagRender'
 /**
  * RESEARCH panel — a control dashboard, not a passive mirror.
  *
- * Modeled on the Git panel: subscribes to research:changed /
- * workspace:tree_changed (full status) and research:file_changed (incremental
- * graph + log) via the side-effect hooks, then renders a compact control
+ * Modeled on the Git panel: a pure view over researchStore (the data sync —
+ * research:changed / workspace:tree_changed full status and
+ * research:file_changed incremental graph + log — is mounted once at the App
+ * root via ResearchEventBridge), rendering a compact control
  * surface — a status/metrics header, the recommended next step with one-click
  * execution, a quick-actions row that dispatches research-* skills, quick
  * status mutations on the active front (t4), and the research log (t1).
@@ -34,13 +33,9 @@ import { projectDir, projectFilePaths } from './researchDagRender'
  * brief / prior-art / graph / report artifacts that actually exist.
  */
 export function ResearchPanel() {
-  // Side-effect hook: keeps researchStore (status + next step) in sync.
-  useResearchStatusEvents()
-
-  // Side-effect hook: incrementally updates the graph, log, and next step when
-  // files inside the research directory change.
-  useResearchFileWatcher()
-
+  // Data sync (research:changed / workspace:tree_changed full status +
+  // research:file_changed incremental graph) lives in the App-root
+  // ResearchEventBridge — this panel is a pure view over researchStore.
   const enabled = useResearchStore((s) => s.status?.enabled ?? false)
   const project = useResearchStore(selectActiveProject)
   const rootPath = useResearchStore((s) => s.status?.research_root ?? '')

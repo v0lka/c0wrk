@@ -14,7 +14,7 @@
 // this incremental path runs.
 
 import { useEffect, useCallback, useRef } from 'react'
-import { getResearchGraph, getResearchNextStep } from '@/api/research'
+import { getResearchGraph, getResearchNextStep, getResearchStatus } from '@/api/research'
 import { subscribe } from '@/api/runtime'
 import { logger } from '@/lib/logger'
 import { useProjectStore } from '@/stores/projectStore'
@@ -38,6 +38,25 @@ export function useResearchFileWatcher(): void {
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Best-effort full status refetch used as the incremental path's fallback:
+  // when loadGraph cannot apply a response (a brand-new R-NNN the store has
+  // never seen) or the lightweight RPC fails, this converges the panel on the
+  // authoritative GetResearchStatus payload. Quiet on failure — the watchdog
+  // in useResearchStatusEvents is the outer safety net.
+  const fullRefresh = useCallback(
+    async (projectId: string) => {
+      try {
+        const status = await getResearchStatus(projectId)
+        if (useProjectStore.getState().activeProjectId === projectId) {
+          useResearchStore.getState().loadStatus(status, projectId)
+        }
+      } catch (err) {
+        logger.debug('[research] fallback status fetch failed:', err)
+      }
+    },
+    [],
+  )
+
   // Stable incremental update: fetch only the graph/metrics for the active
   // project and load it via loadGraph, but only if the project hasn't switched
   // while the fetch was in flight.
@@ -45,21 +64,34 @@ export function useResearchFileWatcher(): void {
     const projectId = activeProjectId
     if (!projectId || !researchEnabled) return
 
+    // Stamp the fetch START: loadGraph rejects snapshots older than the
+    // store's last sync, so a slow incremental fetch that resolves after a
+    // newer sync already landed (e.g. the watchdog's full refresh) can never
+    // regress the panel to stale data.
+    const fetchedAt = Date.now()
     try {
       const graph = await getResearchGraph(projectId)
       // Guard against stale updates after a project toggle: only commit the
       // result if the active project is still the one this fetch targeted.
-      // (researchStore.loadGraph has its own project guard, but only when the
-      // root carries active_project_id — this check is authoritative.)
+      // loadGraph applies the update only when the response names a research
+      // project the store already knows (a brand-new R-NNN — created since
+      // the last full load — needs the full status fetch instead) and when
+      // the snapshot is not older than the store's last sync.
       if (useProjectStore.getState().activeProjectId === projectId) {
-        useResearchStore.getState().loadGraph(graph)
-        logger.debug(
-          '[research] graph updated incrementally',
-          'project',
-          projectId,
-          'nodes',
-          graph.graph.nodes.length,
-        )
+        const applied = useResearchStore.getState().loadGraph(graph, fetchedAt)
+        if (!applied) {
+          // Unknown research project or a stale snapshot — converge via the
+          // full refetch.
+          await fullRefresh(projectId)
+        } else {
+          logger.debug(
+            '[research] graph updated incrementally',
+            'project',
+            projectId,
+            'nodes',
+            graph.graph.nodes.length,
+          )
+        }
       }
 
       // A file change can flip the phase (e.g. a status transition), so the
@@ -74,9 +106,14 @@ export function useResearchFileWatcher(): void {
         logger.debug('[research] incremental next-step fetch failed:', err)
       }
     } catch (err) {
+      // Incremental failure (RPC error, boundary validation) must not leave
+      // the panel stale: fall back to the full status refetch so the panel
+      // still converges (the research-scoped skip in useResearchStatusEvents
+      // means nobody else will).
       logger.debug('[research] incremental graph update failed:', err)
+      await fullRefresh(projectId)
     }
-  }, [activeProjectId, researchEnabled])
+  }, [activeProjectId, researchEnabled, fullRefresh])
 
   // --- Subscribe to research:file_changed (100ms debounce) ---
   // research:file_changed is emitted only for changes inside the research

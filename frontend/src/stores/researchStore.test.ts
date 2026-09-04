@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   useResearchStore,
   selectEnabled,
   selectActiveProject,
+  RESEARCH_SIDEBAR_DEFAULT_WIDTH,
 } from './researchStore'
-import type { ResearchStatus } from '@/types/models'
+import type { ResearchStatus, ResearchGraphResponse, HypothesisDraft } from '@/types/models'
 
 function statusOf(enabled: boolean, projectId = 'proj-1'): ResearchStatus {
   return {
@@ -83,6 +84,266 @@ describe('researchStore', () => {
     expect(useResearchStore.getState().isLoading).toBe(true)
     useResearchStore.getState().setError('err')
     expect(useResearchStore.getState().error).toBe('err')
+  })
+
+  it('reset restores workspace view state defaults (selection, draft, filter, width)', () => {
+    const s = useResearchStore.getState()
+    s.selectHypothesis('h1', { status: 'open', result: 'wip', timebox: '1w' })
+    s.setHideTerminal(true)
+    s.setSidebarWidth(420)
+    useResearchStore.getState().reset()
+
+    const after = useResearchStore.getState()
+    expect(after.selectedHypothesisId).toBeNull()
+    expect(after.selectedHypothesisProjectId).toBeNull()
+    expect(after.hypothesisDraft).toBeNull()
+    expect(after.hideTerminal).toBe(false)
+    expect(after.sidebarWidth).toBe(RESEARCH_SIDEBAR_DEFAULT_WIDTH)
+  })
+})
+
+describe('researchStore — workspace view state', () => {
+  beforeEach(() => {
+    useResearchStore.getState().reset()
+  })
+
+  it('selectHypothesis / setHypothesisDraft / setHideTerminal / setSidebarWidth mutate only their slices', () => {
+    const loadedStatus = statusOf(true)
+    useResearchStore.getState().loadStatus(loadedStatus, 'proj-1')
+    const draft: HypothesisDraft = { status: 'confirmed', result: 'r', timebox: '2w' }
+    useResearchStore.getState().selectHypothesis('h1', draft)
+    expect(useResearchStore.getState().selectedHypothesisId).toBe('h1')
+    // The selection is stamped with the research project it was made in.
+    expect(useResearchStore.getState().selectedHypothesisProjectId).toBe('r1')
+    expect(useResearchStore.getState().hypothesisDraft).toBe(draft)
+
+    // Clearing nulls the composite key together with the draft.
+    useResearchStore.getState().selectHypothesis(null, null)
+    expect(useResearchStore.getState().selectedHypothesisProjectId).toBeNull()
+    useResearchStore.getState().selectHypothesis('h1', draft)
+
+    const next: HypothesisDraft = { status: 'confirmed', result: 'r2', timebox: '2w' }
+    useResearchStore.getState().setHypothesisDraft(next)
+    expect(useResearchStore.getState().hypothesisDraft).toBe(next)
+
+    useResearchStore.getState().setHideTerminal(true)
+    expect(useResearchStore.getState().hideTerminal).toBe(true)
+    useResearchStore.getState().setSidebarWidth(340)
+    expect(useResearchStore.getState().sidebarWidth).toBe(340)
+
+    // Selection/draft edits never touch the loading data slices: the loaded
+    // status object is still the very reference loadStatus stored.
+    const s = useResearchStore.getState()
+    expect(s.status).toBe(loadedStatus)
+    expect(s.error).toBeNull()
+  })
+
+  it('clearing the selection clears the draft with it', () => {
+    useResearchStore.getState().selectHypothesis('h1', {
+      status: 'open',
+      result: 'wip',
+      timebox: '',
+    })
+    useResearchStore.getState().selectHypothesis(null, null)
+    const s = useResearchStore.getState()
+    expect(s.selectedHypothesisId).toBeNull()
+    expect(s.hypothesisDraft).toBeNull()
+  })
+
+  it('loadStatus for a different project drops the selection and draft', () => {
+    useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
+    useResearchStore.getState().selectHypothesis('h1', {
+      status: 'open',
+      result: 'wip',
+      timebox: '',
+    })
+
+    // Project switch: the new status belongs to another project — a generic
+    // node id like 'h1' must not silently reopen the wrong project's card.
+    useResearchStore.getState().loadStatus(statusOf(true, 'proj-2'), 'proj-2')
+    const s = useResearchStore.getState()
+    expect(s.projectId).toBe('proj-2')
+    expect(s.selectedHypothesisId).toBeNull()
+    expect(s.selectedHypothesisProjectId).toBeNull()
+    expect(s.hypothesisDraft).toBeNull()
+  })
+
+  it('loadStatus for the same project keeps the selection and draft (background refresh)', () => {
+    useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
+    const draft: HypothesisDraft = { status: 'in-progress', result: 'wip', timebox: '' }
+    useResearchStore.getState().selectHypothesis('h1', draft)
+
+    useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
+    const s = useResearchStore.getState()
+    expect(s.selectedHypothesisId).toBe('h1')
+    expect(s.selectedHypothesisProjectId).toBe('r1')
+    expect(s.hypothesisDraft).toBe(draft)
+  })
+
+  it('loadGraph never clobbers an in-progress draft', () => {
+    useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
+    useResearchStore.getState().selectHypothesis('h1', {
+      status: 'open',
+      result: 'unsaved edits',
+      timebox: '3d',
+    })
+
+    // Incremental file-change update for the active project arrives while the
+    // user is mid-edit — the draft must survive untouched.
+    useResearchStore.getState().loadGraph({
+      project_id: 'r1',
+      graph: {
+        nodes: [{ id: 'h1', title: 'H1', status: 'confirmed', result: 'external write' }],
+        edges: [],
+      },
+      metrics: {
+        total: 1,
+        by_status: { confirmed: 1 },
+        confirmation_rate: 1,
+        depth: 1,
+        breadth: 1,
+      },
+      has_report: false,
+      log: [],
+    })
+
+    const s = useResearchStore.getState()
+    expect(s.selectedHypothesisId).toBe('h1')
+    expect(s.selectedHypothesisProjectId).toBe('r1')
+    expect(s.hypothesisDraft).toEqual({
+      status: 'open',
+      result: 'unsaved edits',
+      timebox: '3d',
+    })
+  })
+})
+
+describe('researchStore — loadGraph convergence semantics', () => {
+  beforeEach(() => {
+    useResearchStore.getState().reset()
+  })
+
+  function graphOf(projectId: string, logCount: number): ResearchGraphResponse {
+    return {
+      project_id: projectId,
+      graph: { nodes: [], edges: [] },
+      metrics: {
+        total: logCount,
+        by_status: {},
+        confirmation_rate: 0,
+        depth: 0,
+        breadth: 0,
+      },
+      has_report: false,
+      log: Array.from({ length: logCount }, (_, i) => ({
+        id: String(i + 1),
+        kind: 'note',
+        created_at: '2026-01-01T00:00:00Z',
+        message: `entry ${i + 1}`,
+      })),
+    }
+  }
+
+  it('applies an update and stamps lastGraphSyncAt even when the active R-NNN changed since the last full load', () => {
+    // The store's cached active_project_id is a parse snapshot; the fresh
+    // response (backend PickActiveProject) may legitimately name a DIFFERENT
+    // known project — e.g. research-init created R-002 and updated the index.
+    // The old guard rejected such updates forever, freezing the panel.
+    const status = statusOf(true)
+    status.root!.projects.push({
+      ...status.root!.projects[0]!,
+      id: 'r2',
+      log: [],
+    })
+    useResearchStore.getState().loadStatus(status, 'proj-1')
+
+    const applied = useResearchStore.getState().loadGraph(graphOf('r2', 5))
+    expect(applied).toBe(true)
+    const s = useResearchStore.getState()
+    // The active project follows the fresh response…
+    expect(s.status?.root?.active_project_id).toBe('r2')
+    expect(selectActiveProject(s)?.log).toHaveLength(5)
+    // …and the sync stamp moves (the watchdog compares it).
+    expect(s.lastGraphSyncAt).toBeGreaterThan(0)
+  })
+
+  it('keeps the selection keyed to its project when the active R-NNN switches (no silent rebind)', () => {
+    const status = statusOf(true)
+    status.root!.projects.push({
+      ...status.root!.projects[0]!,
+      id: 'r2',
+      log: [],
+    })
+    // r1 must be the active project at selection time (without an explicit
+    // active_project_id the fallback picks the highest-numbered project).
+    status.root!.active_project_id = 'r1'
+    useResearchStore.getState().loadStatus(status, 'proj-1')
+    useResearchStore.getState().selectHypothesis('h1', {
+      status: 'open',
+      result: 'unsaved edits for r1',
+      timebox: '3d',
+    })
+
+    // Same workspace project, but the active research project switches to
+    // r2 (research-init + PickActiveProject). The selection must stay keyed
+    // to r1 — a generic node id like 'h1' exists in r2 as well, and letting
+    // it rebind would pair r1's unsaved draft with r2's card (Save would
+    // then overwrite the wrong project's hypothesis via the active-R-NNN
+    // backend semantics).
+    const applied = useResearchStore.getState().loadGraph(graphOf('r2', 5))
+    expect(applied).toBe(true)
+    const s = useResearchStore.getState()
+    expect(s.status?.root?.active_project_id).toBe('r2')
+    expect(s.selectedHypothesisId).toBe('h1')
+    expect(s.selectedHypothesisProjectId).toBe('r1')
+    expect(s.hypothesisDraft).toEqual({
+      status: 'open',
+      result: 'unsaved edits for r1',
+      timebox: '3d',
+    })
+  })
+
+  it('rejects a snapshot fetched before the last sync (stale) — no apply, no re-stamp', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(1_000)
+      useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
+
+      // A newer sync lands (e.g. the watchdog's full refresh): stamp 2_000.
+      vi.setSystemTime(2_000)
+      useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
+
+      // The slow incremental fetch STARTED at 1_500 — before that stamp —
+      // and only resolves now: applying it would regress the panel to the
+      // older snapshot AND re-stamp it fresh (defusing the watchdog).
+      const applied = useResearchStore.getState().loadGraph(graphOf('r1', 5), 1_500)
+      expect(applied).toBe(false)
+      const s = useResearchStore.getState()
+      expect(s.lastGraphSyncAt).toBe(2_000)
+      expect(selectActiveProject(s)?.log).toHaveLength(0)
+
+      // A fetch started after the last sync applies normally.
+      vi.setSystemTime(2_500)
+      const appliedFresh = useResearchStore.getState().loadGraph(graphOf('r1', 5), 2_100)
+      expect(appliedFresh).toBe(true)
+      expect(selectActiveProject(useResearchStore.getState())?.log).toHaveLength(5)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('returns false (no partial apply) for a brand-new unknown R-NNN — caller must full-refresh', () => {
+    useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
+    const before = useResearchStore.getState().status
+    const applied = useResearchStore.getState().loadGraph(graphOf('r-new', 3))
+    expect(applied).toBe(false)
+    // Untouched — the incremental path cannot render an unknown project.
+    expect(useResearchStore.getState().status).toBe(before)
+  })
+
+  it('loadStatus also stamps lastGraphSyncAt (a full sync is a sync)', () => {
+    useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
+    expect(useResearchStore.getState().lastGraphSyncAt).toBeGreaterThan(0)
   })
 })
 

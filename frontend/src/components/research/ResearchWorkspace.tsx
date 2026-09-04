@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import {
   FlaskConical,
   Loader2,
@@ -7,9 +7,12 @@ import {
   ExternalLink,
 } from 'lucide-react'
 import { logger } from '@/lib/logger'
-import { useResearchStatusEvents } from '@/hooks/useResearchStatusEvents'
-import { useResearchFileWatcher } from '@/hooks/useResearchFileWatcher'
-import { useResearchStore, selectActiveProject } from '@/stores/researchStore'
+import {
+  useResearchStore,
+  selectActiveProject,
+  RESEARCH_SIDEBAR_MIN_WIDTH,
+  RESEARCH_SIDEBAR_MAX_WIDTH,
+} from '@/stores/researchStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useResize } from '@/hooks/useResize'
@@ -20,7 +23,6 @@ import { ResearchToggle } from './ResearchToggle'
 import {
   draftFromNode,
   buildUpdateFields,
-  type HypothesisDraft,
 } from './researchWorkspaceUtils'
 import {
   layoutDag,
@@ -33,6 +35,7 @@ import type {
   HypothesisGraph,
   HypothesisNode,
   HypothesisStatus,
+  HypothesisDraft,
 } from '@/types/models'
 
 // ── Hypothesis detail card (editable status/result/timebox) ───────────
@@ -45,11 +48,8 @@ const STATUS_OPTIONS: HypothesisStatus[] = [
   'cancelled',
 ]
 
-// Detail-sidebar width bounds (px). The default matches the former w-72
-// (288px); the split is user-resizable via the drag handle / arrow keys.
-const DEFAULT_SIDEBAR_WIDTH = 288
-const SIDEBAR_MIN_WIDTH = 220
-const SIDEBAR_MAX_WIDTH = 560
+// Detail-sidebar width bounds live in the research store (RESEARCH_SIDEBAR_*)
+// alongside the persisted width: the split must survive workspace remounts.
 
 interface HypothesisCardProps {
   node: HypothesisNode
@@ -212,10 +212,8 @@ function ErrorBanner({ message }: { message: string }) {
  * sidebar height with a markdown-highlighted result editor.
  */
 export function ResearchWorkspace() {
-  // Keep the store in sync (full status fetch + incremental graph updates).
-  useResearchStatusEvents()
-  useResearchFileWatcher()
-
+  // Data sync (full status + incremental graph updates) lives in the App-root
+  // ResearchEventBridge — this component is a pure view over researchStore.
   const enabled = useResearchStore((s) => s.status?.enabled ?? false)
   const project = useResearchStore(selectActiveProject)
   const root = useResearchStore((s) => s.status?.root)
@@ -223,11 +221,22 @@ export function ResearchWorkspace() {
   const error = useResearchStore((s) => s.error)
   const isLoading = useResearchStore((s) => s.isLoading)
 
-  const [hideTerminal, setHideTerminal] = useState(false)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [draft, setDraft] = useState<HypothesisDraft | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+
+  // Workspace view state (selection, draft, filter, sidebar width) lives in
+  // the research store, not local state: the floating file viewer
+  // auto-collapses on outside focus (and sibling-tab switches unmount the
+  // workspace too), so local state would silently drop the selected vertex,
+  // the open card, and any unsaved draft on every remount.
+  const selectedId = useResearchStore((s) => s.selectedHypothesisId)
+  const selectedProjectId = useResearchStore((s) => s.selectedHypothesisProjectId)
+  const draft = useResearchStore((s) => s.hypothesisDraft)
+  const setHypothesisDraft = useResearchStore((s) => s.setHypothesisDraft)
+  const hideTerminal = useResearchStore((s) => s.hideTerminal)
+  const setHideTerminal = useResearchStore((s) => s.setHideTerminal)
+  const sidebarWidth = useResearchStore((s) => s.sidebarWidth)
+  const setSidebarWidth = useResearchStore((s) => s.setSidebarWidth)
 
   // Full graph drives selection + the editable card; the display graph is a
   // filtered projection for layout/rendering only. Memoised so an absent
@@ -244,28 +253,45 @@ export function ResearchWorkspace() {
   )
   const layout = useMemo(() => layoutDag(displayGraph), [displayGraph])
 
+  // The selection is keyed to the research project it was made in: node ids
+  // (H-001…) are generic and collide across R-NNN projects, so a selection
+  // left over from an earlier active project must not rebind to the current
+  // project's same-id node — an unsaved draft plus Save would then overwrite
+  // ANOTHER project's card. Resolve (and highlight) it only while the key
+  // matches the active project.
+  const selectionIsCurrent = project !== null && selectedProjectId === project.id
   const selectedNode = useMemo(
-    () => graph.nodes.find((n) => n.id === selectedId) ?? null,
-    [graph, selectedId],
+    () =>
+      selectionIsCurrent
+        ? graph.nodes.find((n) => n.id === selectedId) ?? null
+        : null,
+    [graph, selectedId, selectionIsCurrent],
   )
 
-  // Initialise the draft whenever the selection changes (reads the latest
-  // graph via a ref so background file-change updates never clobber an
-  // in-progress edit).
+  // Latest-graph ref: the draft is snapshotted from the live graph at click
+  // time (not via an effect, which would re-run on remount and wipe a
+  // preserved unsaved draft) — so background file-change updates never
+  // clobber an in-progress edit.
   const graphRef = useRef(graph)
   graphRef.current = graph
-  useEffect(() => {
-    setSaveError(null)
-    if (!selectedId) {
-      setDraft(null)
-      return
-    }
-    const node = graphRef.current.nodes.find((n) => n.id === selectedId)
-    setDraft(node ? draftFromNode(node) : null)
-  }, [selectedId])
 
   const selectNode = useCallback((id: string) => {
-    setSelectedId((prev) => (prev === id ? null : id))
+    setSaveError(null)
+    const store = useResearchStore.getState()
+    // Clicking the already-selected node toggles the selection off — compared
+    // as the composite (project, id) key so a stale selection from another
+    // research project never swallows a click on the current project's
+    // same-id node.
+    const activeId = selectActiveProject(store)?.id ?? null
+    if (
+      store.selectedHypothesisProjectId === activeId &&
+      store.selectedHypothesisId === id
+    ) {
+      store.selectHypothesis(null, null)
+      return
+    }
+    const node = graphRef.current.nodes.find((n) => n.id === id)
+    store.selectHypothesis(id, node ? draftFromNode(node) : null)
   }, [])
 
   const dirty = useMemo(() => {
@@ -311,11 +337,10 @@ export function ResearchWorkspace() {
   // Sidebar ↔ DAG split: dragging (or arrow-keying) the border between the
   // canvas and the sidebar resizes them. Right-side panel → drag left grows
   // it (direction −1), mirroring the docked file viewer's handle.
-  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH)
   const sidebarResize = useResize({
     initialWidth: sidebarWidth,
-    min: SIDEBAR_MIN_WIDTH,
-    max: SIDEBAR_MAX_WIDTH,
+    min: RESEARCH_SIDEBAR_MIN_WIDTH,
+    max: RESEARCH_SIDEBAR_MAX_WIDTH,
     direction: -1,
     onChange: setSidebarWidth,
   })
@@ -371,7 +396,7 @@ export function ResearchWorkspace() {
           ) : (
             <ResearchDagCanvas
               layout={layout}
-              selectedId={selectedId}
+              selectedId={selectionIsCurrent ? selectedId : null}
               onSelect={selectNode}
             />
           )}
@@ -394,7 +419,7 @@ export function ResearchWorkspace() {
               saving={saving}
               dirty={dirty}
               saveError={saveError}
-              onChange={setDraft}
+              onChange={setHypothesisDraft}
               onSave={handleSave}
               onOpenCard={openHypothesisCard}
             />

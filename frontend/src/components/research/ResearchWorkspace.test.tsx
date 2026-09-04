@@ -24,15 +24,10 @@ vi.mock('@/api/research', () => ({
   createHypothesis: vi.fn(),
 }))
 
-// The data-sync hooks are side-effect only; stub them so the component tests
-// exercise its own logic (filter toggle + edit persistence) against a seeded
-// store without firing backend fetches on mount.
-vi.mock('@/hooks/useResearchStatusEvents', () => ({
-  useResearchStatusEvents: () => {},
-}))
-vi.mock('@/hooks/useResearchFileWatcher', () => ({
-  useResearchFileWatcher: () => {},
-}))
+// No data-sync hooks are mocked or mounted here: ResearchWorkspace is a pure
+// view over researchStore (sync lives in the App-root ResearchEventBridge),
+// so the tests below seed the store directly and exercise the workspace's
+// own logic against it.
 
 // The RESULT field is a CodeMirror editor. CodeMirror applies user input
 // through DOM mutations + MutationObserver, which cannot be faithfully
@@ -283,6 +278,144 @@ describe('ResearchWorkspace — edit persistence', () => {
       result: 'It works',
       timebox: '2 weeks',
     })
+  })
+})
+
+describe('ResearchWorkspace — remount survival (floating-viewer collapse)', () => {
+  it('keeps the selected vertex, open card, unsaved draft, filter, and sidebar width across unmount/remount', async () => {
+    // Mount 1: select H-001, type an unsaved result edit, enable "Hide
+    // completed", and grow the sidebar via the keyboard handle.
+    const first = await renderWorkspace()
+    await selectNode(first.container, 'H-001')
+    await act(async () => {
+      setResultText(first.container, 'unsaved finding')
+    })
+    const checkbox = first.container.querySelector<HTMLInputElement>(
+      'input[aria-label="Hide completed hypotheses"]',
+    )!
+    await act(async () => {
+      checkbox.click()
+    })
+    const separator = first.container.querySelector<HTMLElement>('[role="separator"]')!
+    await act(async () => {
+      separator.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }),
+      )
+    })
+
+    // The floating (unpinned) file viewer auto-collapses when focus moves
+    // outside it, unmounting the whole panel including the workspace.
+    await act(async () => {
+      first.root.unmount()
+    })
+
+    // Mount 2: expanding the viewer again remounts the workspace.
+    const second = await renderWorkspace()
+
+    // The selection survived: the DAG paints the highlight ring around
+    // H-001 (second circle in the node group)…
+    const circles = second.container.querySelectorAll(
+      '[data-node-id="H-001"] circle',
+    )
+    expect(circles.length).toBe(2)
+    // …and the sidebar card is open for H-001 with the unsaved draft intact.
+    expect(
+      second.container.querySelector('button[aria-label="Open H-001 markdown card"]'),
+    ).not.toBeNull()
+    const result = second.container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Hypothesis result"]',
+    )!
+    expect(result.value).toBe('unsaved finding')
+    // The draft differs from the persisted node → Save stays enabled.
+    const save = second.container.querySelector<HTMLButtonElement>(
+      '[data-testid="hypothesis-save"]',
+    )!
+    expect(save.disabled).toBe(false)
+    // View state survived too: the filter still prunes the terminal node and
+    // the sidebar keeps the keyboard-grown width (288 → 298).
+    expect(second.container.querySelector('[data-node-id="H-002"]')).toBeNull()
+    expect(useResearchStore.getState().hideTerminal).toBe(true)
+    expect(useResearchStore.getState().sidebarWidth).toBe(298)
+  })
+
+  it('still toggles the selection off by clicking the selected node after a remount', async () => {
+    const first = await renderWorkspace()
+    await selectNode(first.container, 'H-001')
+    await act(async () => {
+      first.root.unmount()
+    })
+
+    const second = await renderWorkspace()
+    // Selection restored by the remount…
+    expect(
+      second.container.querySelector('[data-testid="hypothesis-card"]'),
+    ).not.toBeNull()
+    // …and clicking the same node still clears it.
+    await selectNode(second.container, 'H-001')
+    expect(
+      second.container.querySelector('[data-testid="hypothesis-card"]'),
+    ).toBeNull()
+    expect(useResearchStore.getState().selectedHypothesisId).toBeNull()
+  })
+})
+
+describe('ResearchWorkspace — selection is keyed to its research project', () => {
+  /** Seed a second research project (R-002) and make it active — the
+   *  same-workspace-project active-R-NNN transition research-init produces. */
+  function switchActiveProject() {
+    const switched = makeStatus()
+    const r1 = switched.root!.projects[0]!
+    switched.root!.projects.push({
+      ...r1,
+      id: 'R-002',
+      brief: { id: 'R-002', title: 'Follow-up research' },
+    })
+    switched.root!.active_project_id = 'R-002'
+    useResearchStore.getState().loadStatus(switched, 'p1')
+  }
+
+  it('does not rebind a selection (or its unsaved draft) when the active R-NNN switches', async () => {
+    const { container } = await renderWorkspace()
+    await selectNode(container, 'H-001')
+    await act(async () => {
+      setResultText(container, 'unsaved finding for R-001')
+    })
+    expect(container.querySelector('[data-testid="hypothesis-card"]')).not.toBeNull()
+
+    await act(async () => {
+      switchActiveProject()
+    })
+
+    // The stale selection must NOT rebind to R-002's same-id H-001 (which
+    // would let Save overwrite another project's card through the
+    // active-R-NNN backend semantics): no card, no draft editor, and no
+    // highlight ring on the DAG.
+    expect(container.querySelector('[data-testid="hypothesis-card"]')).toBeNull()
+    expect(
+      container.querySelector('textarea[aria-label="Hypothesis result"]'),
+    ).toBeNull()
+    const circles = container.querySelectorAll('[data-node-id="H-001"] circle')
+    expect(circles.length).toBe(1)
+    // …while the store still holds the keyed selection + draft (they render
+    // again only if that project becomes active once more).
+    const s = useResearchStore.getState()
+    expect(s.selectedHypothesisId).toBe('H-001')
+    expect(s.selectedHypothesisProjectId).toBe('R-001')
+    expect(s.hypothesisDraft?.result).toBe('unsaved finding for R-001')
+  })
+
+  it('selecting a node after the switch targets the new active project', async () => {
+    const { container } = await renderWorkspace()
+    await act(async () => {
+      switchActiveProject()
+    })
+
+    await selectNode(container, 'H-001')
+
+    const s = useResearchStore.getState()
+    expect(s.selectedHypothesisId).toBe('H-001')
+    expect(s.selectedHypothesisProjectId).toBe('R-002')
+    expect(container.querySelector('[data-testid="hypothesis-card"]')).not.toBeNull()
   })
 })
 

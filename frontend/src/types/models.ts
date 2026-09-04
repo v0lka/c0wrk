@@ -784,6 +784,17 @@ export interface ResearchNextStep {
   skill: string
 }
 
+/** Editable draft of a hypothesis card's mutable fields (status / result /
+ *  timebox), held between user edits and an explicit Save. UI-level view
+ *  model: lives here (not in a component file) because it is persisted in the
+ *  research store so an unsaved draft survives workspace remounts (floating
+ *  viewer auto-collapse, tab switches). */
+export interface HypothesisDraft {
+  status: string
+  result: string
+  timebox: string
+}
+
 /** Structured field update for an existing hypothesis card (mirrors backend
  *  HypothesisUpdateFields). Omit a field (leave it undefined) to leave it
  *  unchanged; set it to an empty string to clear it. Only the five UI-mutable

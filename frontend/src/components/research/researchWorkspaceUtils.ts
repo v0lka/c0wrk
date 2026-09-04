@@ -8,14 +8,8 @@ import type {
   HypothesisNode,
   HypothesisUpdateFields,
   HypothesisStatus,
+  HypothesisDraft,
 } from '@/types/models'
-
-/** Draft of the editable hypothesis card fields. */
-export interface HypothesisDraft {
-  status: string
-  result: string
-  timebox: string
-}
 
 /** Default status applied when the original node carries an unknown/empty one. */
 const DEFAULT_STATUS = 'open'
