@@ -50,6 +50,7 @@ source=(
 	"jina-v2-small-$_hf_rev.onnx::$_hf_base/model.onnx"
 	"jina-v2-small-tokenizer-$_hf_rev.json::$_hf_base/tokenizer.json"
 	'c0wrk-desktop.desktop'
+	'c0wrk-launcher.sh'
 )
 source_x86_64=("https://github.com/microsoft/onnxruntime/releases/download/v$_onnx_ver/onnxruntime-linux-x64-$_onnx_ver.tgz")
 source_aarch64=("https://github.com/microsoft/onnxruntime/releases/download/v$_onnx_ver/onnxruntime-linux-aarch64-$_onnx_ver.tgz")
@@ -57,7 +58,8 @@ source_aarch64=("https://github.com/microsoft/onnxruntime/releases/download/v$_o
 sha256sums=('SKIP'
             '974fdefe71fc9889258f569132b35acae6278874c8d09dbdf7806d23ad0b4497'
             'e9f999ac74497843ed9f4303246a8f43d9f100ee8aab8e133667903f447ceb48'
-            '38debab7da7def84d2e05efec82f39109930b0e7e94279eb660e4b838cd4350e')
+            '38debab7da7def84d2e05efec82f39109930b0e7e94279eb660e4b838cd4350e'
+            'ea5e0dd85bf9e4b0135146ddd235055c2d07a7c83b293ba02ec6b3cc2ea0d836')
 # Verifying the archive transitively covers the libonnxruntime.so extracted from
 # it, so the Makefile's separate ONNX_LIB_SHA256 has no analogue here.
 sha256sums_x86_64=('2529aef968d0ad0603365054bc46ebefa7f0fe3bc12f28c5f729c99ddffe2a81')
@@ -154,12 +156,14 @@ package() {
 	install -Dm644 build/bin/models/jina-v2-small-tokenizer.json \
 		"$pkgdir/opt/c0wrk/models/jina-v2-small-tokenizer.json"
 
-	# Symlinks, not wrapper scripts: on Linux os.Executable() reads
-	# /proc/self/exe, which is already resolved, so the executable directory is
-	# /opt/c0wrk no matter which name was invoked.
-	install -dm755 "$pkgdir/usr/bin"
-	ln -s /opt/c0wrk/c0wrk-desktop "$pkgdir/usr/bin/c0wrk-desktop"
-	ln -s /opt/c0wrk/c0wrk-desktop "$pkgdir/usr/bin/c0wrk"
+	# A launcher script rather than a plain symlink: it exports
+	# C0WRK_START_HIDDEN=false to sidestep an upstream startup race that can
+	# leave the app running with no visible window (the script explains it in
+	# full). The script ends in exec, so /proc/self/exe — and with it Go's
+	# os.Executable() — still resolves to /opt/c0wrk/c0wrk-desktop, and the app
+	# keeps finding libonnxruntime.so and models/ next to itself.
+	install -Dm755 "$srcdir/c0wrk-launcher.sh" "$pkgdir/usr/bin/c0wrk-desktop"
+	ln -s c0wrk-desktop "$pkgdir/usr/bin/c0wrk"
 
 	install -Dm644 "$srcdir/c0wrk-desktop.desktop" \
 		"$pkgdir/usr/share/applications/c0wrk-desktop.desktop"

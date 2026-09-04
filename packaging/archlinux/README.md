@@ -18,8 +18,8 @@ Everything lands in a single directory under `/opt`:
 /opt/c0wrk/libonnxruntime.so
 /opt/c0wrk/models/jina-v2-small.onnx
 /opt/c0wrk/models/jina-v2-small-tokenizer.json
-/usr/bin/c0wrk-desktop            -> /opt/c0wrk/c0wrk-desktop
-/usr/bin/c0wrk                    -> /opt/c0wrk/c0wrk-desktop
+/usr/bin/c0wrk-desktop            launcher script (see below)
+/usr/bin/c0wrk                    -> c0wrk-desktop
 /usr/share/applications/c0wrk-desktop.desktop
 /usr/share/icons/hicolor/512x512/apps/c0wrk-desktop.png
 /usr/share/licenses/<pkgname>/LICENSE
@@ -30,10 +30,26 @@ library and its embedding models relative to `os.Executable()` — see
 `resolveONNXLibPath` and `resolveModelPath` in `desktop/startup.go`. Splitting
 the tree across `/usr/lib` and `/usr/share` would break both lookups.
 
-The `/usr/bin` entries are symlinks rather than wrapper scripts: on Linux
-`os.Executable()` reads `/proc/self/exe`, which is already fully resolved, so
-the executable directory is `/opt/c0wrk` regardless of which symlink was
-invoked.
+`/usr/bin/c0wrk-desktop` is a small launcher script, not a symlink. It exports
+`C0WRK_START_HIDDEN=false` and then `exec`s the real binary.
+
+The app creates its main window hidden (`StartHidden` in `main.go`) and reveals
+it later from the startup sequence via `runtime.WindowShow`. When the backend
+starts fast enough — a few milliseconds, which is what an unconfigured or
+unparseable `config.yaml` produces — that show request lands before GTK has
+realized the window. It is lost (glib logs `assertion 'GDK_IS_WINDOW (window)'
+failed`), the window stays Withdrawn, and the app runs with a clean startup log
+and no visible window. Creating the window visible up front removes the race;
+the later `WindowShow` calls become no-ops. An explicit `C0WRK_START_HIDDEN`
+from the environment still wins, so upstream's default remains reachable.
+
+This is a workaround for an upstream bug, not a packaging requirement — the
+same race affects the official release archives. Drop the launcher and go back
+to plain symlinks once it is fixed in `desktop/startup_phases.go`.
+
+Because the launcher ends in `exec`, `/proc/self/exe` — and with it Go's
+`os.Executable()` — still points at `/opt/c0wrk/c0wrk-desktop`, so the app keeps
+finding `libonnxruntime.so` and `models/` next to itself.
 
 ## Size
 

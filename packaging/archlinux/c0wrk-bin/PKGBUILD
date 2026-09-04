@@ -34,13 +34,15 @@ source=(
 	"$pkgname-$pkgver-LICENSE::$_rawurl/LICENSE"
 	"$pkgname-$pkgver-appicon.png::$_rawurl/build/appicon.png"
 	'c0wrk-desktop.desktop'
+	'c0wrk-launcher.sh'
 )
 source_x86_64=("$pkgname-$pkgver-x86_64.tar.gz::$_relurl/c0wrk-desktop-linux-amd64.tar.gz")
 source_aarch64=("$pkgname-$pkgver-aarch64.tar.gz::$_relurl/c0wrk-desktop-linux-arm64.tar.gz")
 
 sha256sums=('26a0f4863f365c987a6762b0a48e987136543118989b2f00f2d57c70a45ffd15'
             '2c376e0af62ec11c97a1a931b7c7c3a93eaa3193a362876cc33b09b3ebbe0ee8'
-            '38debab7da7def84d2e05efec82f39109930b0e7e94279eb660e4b838cd4350e')
+            '38debab7da7def84d2e05efec82f39109930b0e7e94279eb660e4b838cd4350e'
+            'ea5e0dd85bf9e4b0135146ddd235055c2d07a7c83b293ba02ec6b3cc2ea0d836')
 # Digests as published in the release's SHA256SUMS asset:
 #   curl -sL https://github.com/v0lka/c0wrk/releases/download/v0.7.3/SHA256SUMS
 sha256sums_x86_64=('7e76639238e760e9007ab95f0d5d2eca8466bdd0c43d9a99a59d3a4c50c886ae')
@@ -58,12 +60,14 @@ package() {
 	install -Dm644 "$srcdir/models/jina-v2-small-tokenizer.json" \
 		"$pkgdir/opt/c0wrk/models/jina-v2-small-tokenizer.json"
 
-	# Symlinks, not wrapper scripts: on Linux os.Executable() reads
-	# /proc/self/exe, which is already resolved, so the executable directory is
-	# /opt/c0wrk no matter which name was invoked.
-	install -dm755 "$pkgdir/usr/bin"
-	ln -s /opt/c0wrk/c0wrk-desktop "$pkgdir/usr/bin/c0wrk-desktop"
-	ln -s /opt/c0wrk/c0wrk-desktop "$pkgdir/usr/bin/c0wrk"
+	# A launcher script rather than a plain symlink: it exports
+	# C0WRK_START_HIDDEN=false to sidestep an upstream startup race that can
+	# leave the app running with no visible window (the script explains it in
+	# full). The script ends in exec, so /proc/self/exe — and with it Go's
+	# os.Executable() — still resolves to /opt/c0wrk/c0wrk-desktop, and the app
+	# keeps finding libonnxruntime.so and models/ next to itself.
+	install -Dm755 "$srcdir/c0wrk-launcher.sh" "$pkgdir/usr/bin/c0wrk-desktop"
+	ln -s c0wrk-desktop "$pkgdir/usr/bin/c0wrk"
 
 	install -Dm644 "$srcdir/c0wrk-desktop.desktop" \
 		"$pkgdir/usr/share/applications/c0wrk-desktop.desktop"
