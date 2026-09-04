@@ -140,16 +140,6 @@ export function ResearchQuickActions() {
           </button>
         )
       })}
-
-      {/* Visible affordance for the Shift modifier (tooltips reveal it only
-          on hover). One muted line for the whole panel — the gesture applies
-          to every dispatch control here and to the next-step Execute button. */}
-      <p
-        data-testid="research-shift-hint"
-        className="w-full shrink-0 text-[10px] text-muted-foreground/70"
-      >
-        Hold Shift to dispatch into a new session
-      </p>
     </div>
   )
 }
