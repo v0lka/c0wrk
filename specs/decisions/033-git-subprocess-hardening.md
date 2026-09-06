@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [034](./034-git-trust-opt-out.md)
 
 Amended 2026-09-05 (post-v0.7.3 review findings [1]/[2]): the original claim
 that `attr.tree=<empty-tree>` kills **all** attribute-routed vectors

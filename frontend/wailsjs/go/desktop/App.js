@@ -246,6 +246,10 @@ export function GetGitStatus(arg1) {
   return window['go']['desktop']['App']['GetGitStatus'](arg1);
 }
 
+export function GetHardenGitRepos() {
+  return window['go']['desktop']['App']['GetHardenGitRepos']();
+}
+
 export function GetLastActiveProjectID() {
   return window['go']['desktop']['App']['GetLastActiveProjectID']();
 }
@@ -348,6 +352,10 @@ export function GetUpdateSettings() {
 
 export function GetVectorIndexStatus() {
   return window['go']['desktop']['App']['GetVectorIndexStatus']();
+}
+
+export function HardenGitRepo(arg1) {
+  return window['go']['desktop']['App']['HardenGitRepo'](arg1);
 }
 
 export function HasDefaultModel() {
@@ -460,6 +468,10 @@ export function Rebase(arg1) {
 
 export function RemoveAttachment(arg1, arg2) {
   return window['go']['desktop']['App']['RemoveAttachment'](arg1, arg2);
+}
+
+export function RemoveHardenGitRepo(arg1) {
+  return window['go']['desktop']['App']['RemoveHardenGitRepo'](arg1);
 }
 
 export function RemoveTrustedGitRepo(arg1) {

@@ -188,3 +188,29 @@ func GitCmd(ctx context.Context, args ...string) (*exec.Cmd, error) {
 	HideConsole(cmd)
 	return cmd, nil
 }
+
+// GitCmdRaw builds a plain git [exec.Cmd] with no safety overrides and no
+// environment hardening: the repository's own .git/config and the inherited
+// environment apply exactly as if git were run from a terminal. It is the
+// escape hatch for repositories the user has explicitly trusted
+// (security.trusted_git_repos, consulted through core/gittrust), where the
+// trust decision deliberately opts the repository back into its own hooks,
+// filters, and signing configuration — the opposite of [GitCmd]'s
+// neutralize-everything baseline.
+//
+// GitCmdRaw still hides the console window on Windows (CREATE_NO_WINDOW):
+// c0wrk-desktop is a GUI-subsystem app, and a trusted repository deserves the
+// same no-flash behavior as the hardened path. It does not set cmd.Env, so
+// the child inherits the parent environment untouched — no GIT_EDITOR pin and
+// no GIT_ATTR_* strip.
+//
+// Use this ONLY through the trust check in core/workspace — never to bypass
+// the neutralization for an untrusted repository.
+func GitCmdRaw(ctx context.Context, args ...string) *exec.Cmd {
+	full := make([]string, 0, len(args)+1)
+	full = append(full, gitBinary)
+	full = append(full, args...)
+	cmd := exec.CommandContext(ctx, full[0], full[1:]...)
+	HideConsole(cmd)
+	return cmd
+}

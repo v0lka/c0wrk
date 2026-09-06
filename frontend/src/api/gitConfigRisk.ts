@@ -10,7 +10,8 @@
 // subscribes to the raw event name (one import path for backend calls) — and
 // the single RPC path for the trusted-repository list that suppresses the
 // warning (Settings → Security → Trusted repos, and the toast's "Trust this
-// repo" action).
+// repo" action) and for the hardened-repository list that keeps a repo
+// permanently neutralized (the inverse of trust).
 
 import { onGlobalEvent, getApp, reportDroppedEvent } from './runtime'
 import { logger } from '@/lib/logger'
@@ -72,6 +73,49 @@ export async function removeTrustedGitRepo(path: string): Promise<void> {
     await app.RemoveTrustedGitRepo(path)
   } catch (err) {
     logger.error('Failed to remove trusted git repository:', err)
+    throw err
+  }
+}
+
+/** Repository roots the user marked hardened — they are always neutralized and
+ *  can never become raw-git eligible. Always returns a string[] (the backend
+ *  never sends null). */
+export async function getHardenGitRepos(): Promise<string[]> {
+  try {
+    const app = getApp()
+    const result = await app.GetHardenGitRepos()
+    if (!isArrayOf(result, isString)) {
+      throw new Error('getHardenGitRepos: backend returned invalid data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to list hardened git repositories:', err)
+    throw err
+  }
+}
+
+/** Mark a repository root as hardened (its intake warning is never suppressed
+ *  and it can never become raw-git eligible). Hardening a root that was
+ *  trusted drops the trust — a root cannot be both. `path` must be the exact
+ *  absolute path the warning carried (risk.path). */
+export async function hardenGitRepo(path: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.HardenGitRepo(path)
+  } catch (err) {
+    logger.error('Failed to harden git repository:', err)
+    throw err
+  }
+}
+
+/** Remove a repository root from the hardened list. Idempotent for absent
+ *  entries. */
+export async function removeHardenGitRepo(path: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.RemoveHardenGitRepo(path)
+  } catch (err) {
+    logger.error('Failed to remove hardened git repository:', err)
     throw err
   }
 }

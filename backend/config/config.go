@@ -488,6 +488,41 @@ const (
 	GroupPolicyDeny        = "deny"         // refuse to execute
 )
 
+// TrustedGitRepo is one entry in security.trusted_git_repos: a repository
+// whose untrusted-git-config intake warning the user has explicitly dismissed.
+// Path is the absolute, filepath.Clean-ed repository work-tree root (the same
+// form TrustGitRepo stores and notifyGitConfigRisk attributes warnings to).
+// Fingerprint identifies the git-config snapshot captured at trust time
+// (stored separately under ~/.c0wrk/git-config-snapshots/, see
+// GitConfigSnapshotsDir) so a later scan can diff against it and reinstate the
+// warning when the config changed after the trust decision. Fingerprint may be
+// empty for entries migrated from the pre-fingerprint string format (a bare
+// path) — those keep suppressing the warning unconditionally until re-trusted.
+type TrustedGitRepo struct {
+	Path        string `yaml:"path"`
+	Fingerprint string `yaml:"fingerprint,omitempty"`
+}
+
+// UnmarshalYAML accepts both the current mapping form ({path, fingerprint})
+// and the legacy string form (a bare absolute path, pre-fingerprint). A legacy
+// string migrates to a Path with an empty Fingerprint, preserving warning
+// suppression for already-trusted repositories without inventing a snapshot
+// that was never captured.
+func (r *TrustedGitRepo) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		r.Path = value.Value
+		r.Fingerprint = ""
+		return nil
+	}
+	type plain TrustedGitRepo
+	var p plain
+	if err := value.Decode(&p); err != nil {
+		return err
+	}
+	*r = TrustedGitRepo(p)
+	return nil
+}
+
 // SecurityConfig holds security settings.
 type SecurityConfig struct {
 	Judge            JudgeConfig            `yaml:"judge"`
@@ -521,12 +556,30 @@ type SecurityConfig struct {
 	// TrustedGitRepos lists repository roots for which the untrusted-git-config
 	// intake warning (the project:git_config_risk event fired on project switch
 	// or work-directory add, see ADR-033 layer 3) has been explicitly
-	// dismissed by the user via the "Trust this repo" action. Entries are
-	// absolute, filepath.Clean-ed paths; matching is exact. Trusting a repo
-	// suppresses ONLY the UI warning — the spawn-layer neutralization (global
-	// baseline + per-repo NeutralizingArgv) remains fully in force.
-	// Default: empty (every suspicious config warns).
-	TrustedGitRepos []string `yaml:"trusted_git_repos,omitempty"`
+	// dismissed by the user via the "Trust this repo" action. Each entry is a
+	// {path, fingerprint} pair: the absolute, filepath.Clean-ed repository
+	// work-tree root and the fingerprint of the git-config snapshot captured
+	// when the user trusted it (empty for entries migrated from the legacy
+	// string format). Matching is exact on the path. Trusting a repo both
+	// suppresses the UI warning AND opts the repository back into its own git
+	// configuration: backend mirrors this list into the process-wide
+	// core/gittrust registry, which the spawn layer consults to run raw git
+	// for the root (sysproc.GitCmdRaw) — so its hooks, filters and signing
+	// apply as they would outside c0wrk. A root that is NOT trusted (or is
+	// hardened, below) keeps the full spawn-layer neutralization.
+	// Default: empty (every suspicious config warns; every repo is hardened).
+	TrustedGitRepos []TrustedGitRepo `yaml:"trusted_git_repos,omitempty"`
+
+	// HardenGitRepos lists repository roots that are always treated as
+	// hardened: their untrusted-git-config intake warning is never suppressed
+	// and they are excluded from the trust list — a root cannot be both
+	// trusted and hardened (validation enforces the mutual exclusion). Entries
+	// are absolute, filepath.Clean-ed paths, matching is exact. Hardening is
+	// the inverse of trust at the spawn layer: a hardened root never becomes
+	// raw-git eligible, so the spawn-layer neutralization stays in force for
+	// it regardless of anything else.
+	// Default: empty.
+	HardenGitRepos []string `yaml:"harden_git_repos,omitempty"`
 }
 
 // GroupPolicyConfig holds per-group security policy configuration
@@ -1112,21 +1165,57 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	// Validate security.trusted_git_repos: entries must be absolute paths.
-	// They are compared literally (after Clean) against scanned repository
-	// roots, so a relative entry could never match — reject it at load time
-	// rather than leaving dead config.
+	// Validate and normalize security.trusted_git_repos and
+	// security.harden_git_repos. Both hold absolute repository roots — compared
+	// literally (after Clean) against scanned work-tree roots — so a relative
+	// entry could never match and is rejected at load time rather than leaving
+	// dead config. Entries are cleaned in place, duplicate roots are rejected,
+	// and the two lists are mutually exclusive: a root cannot be both trusted
+	// (warning suppressed) and hardened (warning forced).
+	seenTrusted := make(map[string]struct{}, len(cfg.Security.TrustedGitRepos))
+	cleanTrusted := make([]TrustedGitRepo, 0, len(cfg.Security.TrustedGitRepos))
 	for _, repo := range cfg.Security.TrustedGitRepos {
-		if repo == "" {
+		if repo.Path == "" {
 			return errors.New("security.trusted_git_repos must not contain empty paths")
 		}
-		if !filepath.IsAbs(filepath.Clean(repo)) {
+		cleaned := filepath.Clean(repo.Path)
+		if !filepath.IsAbs(cleaned) {
 			return fmt.Errorf(
 				"security.trusted_git_repos entry %q must be an absolute path",
+				repo.Path,
+			)
+		}
+		if _, dup := seenTrusted[cleaned]; dup {
+			return fmt.Errorf("security.trusted_git_repos contains duplicate path %q", cleaned)
+		}
+		seenTrusted[cleaned] = struct{}{}
+		cleanTrusted = append(cleanTrusted, TrustedGitRepo{Path: cleaned, Fingerprint: repo.Fingerprint})
+	}
+	cfg.Security.TrustedGitRepos = cleanTrusted
+
+	seenHarden := make(map[string]struct{}, len(cfg.Security.HardenGitRepos))
+	cleanHarden := make([]string, 0, len(cfg.Security.HardenGitRepos))
+	for _, repo := range cfg.Security.HardenGitRepos {
+		if repo == "" {
+			return errors.New("security.harden_git_repos must not contain empty paths")
+		}
+		cleaned := filepath.Clean(repo)
+		if !filepath.IsAbs(cleaned) {
+			return fmt.Errorf(
+				"security.harden_git_repos entry %q must be an absolute path",
 				repo,
 			)
 		}
+		if _, dup := seenHarden[cleaned]; dup {
+			return fmt.Errorf("security.harden_git_repos contains duplicate path %q", cleaned)
+		}
+		if _, conflict := seenTrusted[cleaned]; conflict {
+			return fmt.Errorf("repository %q cannot be both trusted and hardened", cleaned)
+		}
+		seenHarden[cleaned] = struct{}{}
+		cleanHarden = append(cleanHarden, cleaned)
 	}
+	cfg.Security.HardenGitRepos = cleanHarden
 
 	// Validate goal_loop.verification enum.
 	switch cfg.GoalLoop.Verification {

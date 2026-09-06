@@ -131,6 +131,18 @@ func DialogStatePath(agentDir string) string {
 	return filepath.Join(agentDir, "dialog_state.json")
 }
 
+// GitConfigSnapshotsDir returns the directory where per-repository git-config
+// snapshots are stored (~/.c0wrk/git-config-snapshots/). When a repository is
+// trusted, the scan of its .git/config is snapshotted here and a fingerprint
+// (a hash of the snapshot content) is recorded on the trusted entry in
+// config.yaml (security.trusted_git_repos[].fingerprint) so a later scan can
+// diff against the stored snapshot and detect config drift after the trust
+// decision. The directory is lazily created by the writer; this helper only
+// names it.
+func GitConfigSnapshotsDir(agentDir string) string {
+	return filepath.Join(agentDir, "git-config-snapshots")
+}
+
 // ---------------------------------------------------------------------------
 // Per-project paths (agentDir + projectID)
 // ---------------------------------------------------------------------------

@@ -38,11 +38,13 @@ vi.mock('@/api/mcp', () => ({
   ]),
 }))
 
-// The Trusted repos dialog (rendered by SecuritySettings) talks to the
-// git-config-risk API; mocked so the button test never touches Wails.
+// The Trusted/Hardened repos dialogs (rendered by SecuritySettings) talk to
+// the git-config-risk API; mocked so the button tests never touch Wails.
 vi.mock('@/api/gitConfigRisk', () => ({
   getTrustedGitRepos: vi.fn().mockResolvedValue(['/Users/dev/repo-a']),
   removeTrustedGitRepo: vi.fn().mockResolvedValue(undefined),
+  getHardenGitRepos: vi.fn().mockResolvedValue(['/srv/hardened-repo']),
+  removeHardenGitRepo: vi.fn().mockResolvedValue(undefined),
 }))
 
 import { SecuritySettings } from './SecuritySettings'
@@ -226,5 +228,19 @@ describe('SecuritySettings — group schema', () => {
     // Radix portals the dialog content to document.body.
     const dlg = document.querySelector('[data-testid="trusted-repos-dialog"]')
     expect(dlg?.textContent).toContain('/Users/dev/repo-a')
+  })
+
+  it('opens the hardened repositories dialog from the Hardened repos button', async () => {
+    await render()
+
+    const btn = container.querySelector<HTMLButtonElement>('[data-testid="harden-repos-open"]')
+    expect(btn).not.toBeNull()
+    await act(async () => {
+      btn?.click()
+    })
+
+    // Radix portals the dialog content to document.body.
+    const dlg = document.querySelector('[data-testid="harden-repos-dialog"]')
+    expect(dlg?.textContent).toContain('/srv/hardened-repo')
   })
 })

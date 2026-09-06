@@ -1,6 +1,9 @@
 package workspace
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -23,8 +26,10 @@ import (
 // command-relevant section families — core, attr, extensions (model-only:
 // objectformat/worktreeConfig), filter.<name>, merge.<name>, diff.<name>.
 // include/includeIf directives are parsed, logged and recorded but
-// deliberately NOT followed: the included files' contents are unknown, so a
-// config with includes must be treated as partially invisible.
+// deliberately NOT followed by the key scanner: the included files' contents
+// are unknown, so a config with includes must be treated as partially
+// invisible. (ResolveIncludes is the one exception — it follows the directives
+// for trust fingerprinting only, never for key neutralization; see its doc.)
 // NeutralizingOverrides compensates on three fronts: per-name -c pins for
 // every command-bearing driver key visible in the scanned config (a pinned
 // driver is a fixed benign command no matter which routing source — the
@@ -114,6 +119,17 @@ const EmptyTreeSHA256 = "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd7
 const maxGitConfigBytes = 4 << 20 // 4 MiB
 
 const maxGitDirPointerBytes = 4096
+
+// Include-resolution bounds for ResolveIncludes: a hostile repo can chain
+// includes arbitrarily deep or wide. The depth cap, the total file count cap,
+// and the per-file size cap (maxGitConfigBytes, shared with the primary
+// config read) together bound the work so a trust/recheck scan can never be
+// driven into unbounded I/O. These are deliberately generous — real include
+// trees are shallow and small — while still terminating on adversarial input.
+const (
+	maxIncludeDepth = 10
+	maxIncludeFiles = 64
+)
 
 // Finding kinds. These strings are stable identifiers intended for UI
 // rendering by the intake scanner.
@@ -232,6 +248,11 @@ type GitConfigInclude struct {
 	Condition   string // includeIf condition (e.g. "gitdir:~/x/**"); "" for include
 	Path        string // unexpanded path value as written
 	Line        int    // 1-based line number
+	// SourceDir is the absolute directory of the config file that contained
+	// the directive (git resolves a relative include path against it). Empty
+	// for results produced by the pure parser (parseGitConfigData), which has
+	// no file of its own; ScanGitConfigFile fills it.
+	SourceDir string
 }
 
 // GitConfigError is a malformed construct. git itself refuses to run with a
@@ -292,6 +313,34 @@ type GitConfigInfo struct {
 	// attributesFilePath is the last core.attributesFile value ("", or the
 	// verbatim path before ~/ and relative resolution).
 	attributesFilePath string
+
+	// rawSources captures the raw bytes of every source the scan read, in a
+	// stable order (common config, config.worktree overlay, then the
+	// attribute routing sources). Snapshot/Fingerprint serialize these into
+	// a canonical diff-able identity for trust-time snapshots.
+	rawSources []gitConfigSource
+
+	// includeSources captures the raw bytes of every include/includeIf
+	// target resolved by ResolveIncludes, in a stable, deterministic order
+	// (directive order, depth-first). It is populated lazily — only the
+	// trust/recheck path calls ResolveIncludes — so the per-invocation spawn
+	// scan never pays for following includes (ADR-033 rejects following them
+	// there). Snapshot/Fingerprint serialize these after rawSources, binding
+	// the trust decision to the included files' bytes as well.
+	includeSources []gitConfigSource
+}
+
+// gitConfigSource is one raw config/routing source read by the scan, kept for
+// Snapshot/Fingerprint so a trust decision can be bound to the exact bytes
+// the user reviewed rather than re-read (and re-race) the filesystem later.
+type gitConfigSource struct {
+	// kind is a stable short label for the diff header ("config",
+	// "config.worktree", "info/attributes", "core.attributesFile").
+	kind string
+	// path is the absolute path of the source (may be "" for synthetic).
+	path string
+	// data is the raw bytes read from the source.
+	data []byte
 }
 
 // Clean reports that the config is fully visible (no include directives, no
@@ -302,6 +351,404 @@ func (info *GitConfigInfo) Clean() bool {
 		return true
 	}
 	return len(info.Findings) == 0 && len(info.Includes) == 0 && len(info.Errors) == 0
+}
+
+// Snapshot returns a canonical, diff-able byte representation of every source
+// the scan read — the common config, the config.worktree overlay, and the
+// attribute routing sources (info/attributes plus any core.attributesFile
+// target), followed by any include/includeIf targets resolved by
+// ResolveIncludes. Each source is prefixed with a stable header naming its
+// kind and path, so DiffGitConfigSnapshots can attribute a change to the
+// right file. A nil info yields nil. The representation is deterministic for
+// a given set of sources and is what Fingerprint hashes.
+func (info *GitConfigInfo) Snapshot() []byte {
+	if info == nil {
+		return nil
+	}
+	var b strings.Builder
+	for _, src := range info.rawSources {
+		writeSnapshotSource(&b, src)
+	}
+	for _, src := range info.includeSources {
+		writeSnapshotSource(&b, src)
+	}
+	return []byte(b.String())
+}
+
+// writeSnapshotSource serializes one source under a stable "===== kind (path)
+// =====" header, ensuring a trailing newline so the next header always starts
+// on its own line.
+func writeSnapshotSource(b *strings.Builder, src gitConfigSource) {
+	fmt.Fprintf(b, "===== %s (%s) =====\n", src.kind, src.path)
+	b.Write(src.data)
+	if len(src.data) == 0 || src.data[len(src.data)-1] != '\n' {
+		b.WriteByte('\n')
+	}
+}
+
+// Fingerprint returns the SHA-256 hex digest of Snapshot(): a stable identity
+// for the exact configuration the user reviewed at trust time. Comparing the
+// fingerprint of a later scan against the stored value detects any drift in
+// the config, its worktree overlay, the attribute routing sources, or any
+// resolved include target.
+func (info *GitConfigInfo) Fingerprint() string {
+	sum := sha256.Sum256(info.Snapshot())
+	return hex.EncodeToString(sum[:])
+}
+
+// DiffGitConfigSnapshots returns a human-readable unified diff between two
+// snapshots (the previously-trusted state and the current scan). It is "" when
+// the two snapshots are byte-identical. The diff is line-based over the whole
+// canonical snapshot text, so it naturally covers the config, the worktree
+// overlay, and the attribute routing sources in one stream.
+func DiffGitConfigSnapshots(previous, current []byte) string {
+	if bytes.Equal(previous, current) {
+		return ""
+	}
+	a := strings.Split(string(previous), "\n")
+	b := strings.Split(string(current), "\n")
+	return unifiedDiff(a, b)
+}
+
+// ResolveIncludes follows the config's include/includeIf directives for
+// fingerprinting only, reading each target's raw bytes into includeSources so
+// Snapshot/Fingerprint bind the trust decision to the included files too.
+//
+// Scope: unlike the key scanner, which deliberately never follows includes
+// (ADR-033 — an included file's command-bearing keys stay invisible and are
+// compensated by the attr.tree kill), this reads included files purely to
+// fingerprint their bytes, closing the include-hidden drift gap: a post-trust
+// change to any file git reads revokes the trust. It never parses an included
+// file for dangerous keys, never changes NeutralizingOverrides, and is called
+// only from the trust/recheck RPCs — the per-invocation spawn scan stays free
+// of include-following (a hostile repo cannot amplify the hot path's I/O).
+//
+// Condition handling is deliberately conservative (fail-closed): both include
+// and includeIf targets are fingerprinted regardless of their condition. An
+// includeIf whose condition is currently false still contributes its bytes, so
+// a change to it revokes trust — over-reporting in the safe direction, exactly
+// matching the parser's over-report-rather-than-under-report guarantee. This
+// avoids reimplementing git's wildmatch() for the gitdir/onbranch/hasconfig
+// conditions, a wrong implementation of which would SKIP a file git actually
+// reads (the dangerous direction).
+//
+// Bounds and failure handling: recursion is depth-limited (maxIncludeDepth),
+// the total file count is limited (maxIncludeFiles), and each file is size-
+// capped (maxGitConfigBytes) and must be a regular file (openRegularFile
+// refuses FIFOs/devices without blocking). A missing target contributes an
+// empty source so its later appearance changes the fingerprint; an unreadable,
+// oversized, or non-regular target contributes a fixed marker source. None of
+// these is an error — a repo with an unreadable include remains scannable and
+// trustable, and any later change to that target's state still shows as drift.
+func (info *GitConfigInfo) ResolveIncludes(loggers ...*slog.Logger) {
+	if info == nil {
+		return
+	}
+	logger := slog.Default()
+	if len(loggers) > 0 && loggers[0] != nil {
+		logger = loggers[0]
+	}
+	r := &includeResolver{
+		logger:  logger,
+		visited: make(map[string]bool, len(info.Includes)),
+		info:    info,
+	}
+	r.resolveIncludes(info.Includes, 0)
+}
+
+// includeResolver walks include directives depth-first, reading targets and
+// recursing into an included file's own include records, while bounding depth,
+// file count, and per-file size and breaking cycles via a visited set.
+type includeResolver struct {
+	logger  *slog.Logger
+	visited map[string]bool // absolute resolved target paths already handled
+	count   int             // total distinct targets read
+	info    *GitConfigInfo  // top-level info whose includeSources accumulates
+}
+
+func (r *includeResolver) resolveIncludes(includes []GitConfigInclude, depth int) {
+	for i := range includes {
+		r.read(&includes[i], depth)
+	}
+}
+
+func (r *includeResolver) read(inc *GitConfigInclude, depth int) {
+	if depth >= maxIncludeDepth {
+		r.logger.Warn("git config include resolution hit the depth limit; nested includes are not fingerprinted",
+			"path", inc.Path, "line", inc.Line)
+		return
+	}
+	if r.count >= maxIncludeFiles {
+		r.logger.Warn("git config include resolution hit the file-count limit; further includes are not fingerprinted",
+			"path", inc.Path)
+		return
+	}
+	target := resolveIncludePath(inc.Path, inc.SourceDir)
+	if target == "" {
+		return
+	}
+	if r.visited[target] {
+		return
+	}
+	r.visited[target] = true
+	r.count++
+
+	data, err := readCapped(target, maxGitConfigBytes)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		// A missing include is inert (git ignores it); record an empty
+		// source so its later appearance still changes the fingerprint.
+		r.info.includeSources = append(r.info.includeSources, gitConfigSource{kind: "include", path: target})
+		return
+	case err != nil:
+		// Unreadable, oversized, or non-regular: record a marker so a
+		// change to the target's state still shows as drift, without making
+		// the repo untrustable.
+		r.logger.Warn("git config include target could not be fingerprinted", "path", target, "error", err)
+		r.info.includeSources = append(r.info.includeSources, gitConfigSource{kind: "include (unreadable)", path: target})
+		return
+	}
+
+	r.info.includeSources = append(r.info.includeSources, gitConfigSource{kind: "include", path: target, data: data})
+
+	// Recurse into the included file's own include directives so a transitive
+	// change anywhere in the tree revokes trust. The included file is parsed
+	// only for its include records, never for dangerous keys.
+	sub := parseGitConfigData(string(data), r.logger)
+	subDir := filepath.Dir(target)
+	for i := range sub.Includes {
+		sub.Includes[i].SourceDir = subDir
+	}
+	r.resolveIncludes(sub.Includes, depth+1)
+}
+
+// resolveIncludePath resolves an include directive's path value the way git
+// does for include.path/includeIf.<condition>.path: a leading ~/ expands
+// against the home directory, and a relative path resolves against the
+// directory of the config file that contained the directive. Returns "" for a
+// blank value; the result is always filepath.Clean-ed.
+func resolveIncludePath(path, sourceDir string) string {
+	value := strings.TrimSpace(path)
+	if value == "" {
+		return ""
+	}
+	value = expandHomeTilde(value)
+	if !filepath.IsAbs(value) && sourceDir != "" {
+		value = filepath.Join(sourceDir, value)
+	}
+	return filepath.Clean(value)
+}
+
+// expandHomeTilde expands a leading "~" or "~/" to the current user's home
+// directory. Unresolvable homes (and the "~user/" form, which requires a user
+// database lookup) are left verbatim — the target simply will not exist, which
+// is a safe no-op for fingerprinting. Mirrors git's tilde expansion for the
+// current user only.
+func expandHomeTilde(path string) string {
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+		return path
+	}
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+		return path
+	}
+	return path
+}
+
+// diffOp is one operation in a line-level edit script.
+type diffOp struct {
+	kind diffKind
+	text string
+}
+
+type diffKind uint8
+
+const (
+	diffEqual diffKind = iota
+	diffDelete
+	diffInsert
+)
+
+// maxLCSCells bounds the O(mn) LCS table for the minimal diff. Git configs are
+// small (tens to hundreds of lines); beyond this the fallback
+// common-prefix/suffix diff keeps the operation memory-safe and still correct.
+const maxLCSCells = 1_000_000
+
+// maxDiffBytes caps the emitted diff so a pathological config change can never
+// turn the warning payload into a megabyte blob.
+const maxDiffBytes = 32 << 10
+
+// unifiedDiff renders a unified diff (context 3, truncated to maxDiffBytes)
+// between two line slices.
+func unifiedDiff(a, b []string) string {
+	var ops []diffOp
+	if len(a)*len(b) <= maxLCSCells {
+		ops = lcsDiffOps(a, b)
+	} else {
+		ops = trimDiffOps(a, b)
+	}
+	diff := renderUnifiedDiff(ops)
+	if len(diff) > maxDiffBytes {
+		diff = diff[:maxDiffBytes] + "\n... (diff truncated)\n"
+	}
+	return diff
+}
+
+// lcsDiffOps builds a minimal edit script via a longest-common-subsequence
+// dynamic program. O(mn) time and memory — bounded by the caller (maxLCSCells).
+func lcsDiffOps(a, b []string) []diffOp {
+	m, n := len(a), len(b)
+	lcs := make([][]int, m+1)
+	for i := range lcs {
+		lcs[i] = make([]int, n+1)
+	}
+	for i := m - 1; i >= 0; i-- {
+		for j := n - 1; j >= 0; j-- {
+			switch {
+			case a[i] == b[j]:
+				lcs[i][j] = lcs[i+1][j+1] + 1
+			case lcs[i+1][j] >= lcs[i][j+1]:
+				lcs[i][j] = lcs[i+1][j]
+			default:
+				lcs[i][j] = lcs[i][j+1]
+			}
+		}
+	}
+	ops := make([]diffOp, 0, m+n)
+	i, j := 0, 0
+	for i < m && j < n {
+		switch {
+		case a[i] == b[j]:
+			ops = append(ops, diffOp{diffEqual, a[i]})
+			i++
+			j++
+		case lcs[i+1][j] >= lcs[i][j+1]:
+			ops = append(ops, diffOp{diffDelete, a[i]})
+			i++
+		default:
+			ops = append(ops, diffOp{diffInsert, b[j]})
+			j++
+		}
+	}
+	for ; i < m; i++ {
+		ops = append(ops, diffOp{diffDelete, a[i]})
+	}
+	for ; j < n; j++ {
+		ops = append(ops, diffOp{diffInsert, b[j]})
+	}
+	return ops
+}
+
+// trimDiffOps is the memory-safe fallback for very large inputs: it keeps the
+// common prefix and suffix and treats everything in between as deleted+added.
+// Coarser than the LCS diff but always correct.
+func trimDiffOps(a, b []string) []diffOp {
+	p := 0
+	for p < len(a) && p < len(b) && a[p] == b[p] {
+		p++
+	}
+	s := 0
+	for s < len(a)-p && s < len(b)-p && a[len(a)-1-s] == b[len(b)-1-s] {
+		s++
+	}
+	ops := make([]diffOp, 0, len(a)+len(b))
+	for i := 0; i < p; i++ {
+		ops = append(ops, diffOp{diffEqual, a[i]})
+	}
+	for i := p; i < len(a)-s; i++ {
+		ops = append(ops, diffOp{diffDelete, a[i]})
+	}
+	for j := p; j < len(b)-s; j++ {
+		ops = append(ops, diffOp{diffInsert, b[j]})
+	}
+	for i := len(a) - s; i < len(a); i++ {
+		ops = append(ops, diffOp{diffEqual, a[i]})
+	}
+	return ops
+}
+
+// renderUnifiedDiff groups an edit script into hunks (3 lines of context) and
+// renders them as a unified diff with @@ range headers.
+func renderUnifiedDiff(ops []diffOp) string {
+	const ctx = 3
+	changed := make([]bool, len(ops))
+	for i, op := range ops {
+		changed[i] = op.kind != diffEqual
+	}
+	var out strings.Builder
+	out.WriteString("--- previous\n+++ current\n")
+	for i := 0; i < len(ops); {
+		if !changed[i] {
+			i++
+			continue
+		}
+		start, back := i, 0
+		for start > 0 && ops[start-1].kind == diffEqual && back < ctx {
+			start--
+			back++
+		}
+		end := i
+		for end < len(ops) && ops[end].kind != diffEqual {
+			end++
+		}
+		for fwd := 0; fwd < ctx && end < len(ops) && ops[end].kind == diffEqual; fwd++ {
+			end++
+		}
+		oldStart := lineNumberBefore(ops, start, true)
+		newStart := lineNumberBefore(ops, start, false)
+		oldCount, newCount := 0, 0
+		for k := start; k < end; k++ {
+			switch ops[k].kind {
+			case diffInsert:
+				newCount++
+			case diffDelete:
+				oldCount++
+			default:
+				oldCount++
+				newCount++
+			}
+		}
+		fmt.Fprintf(&out, "@@ -%d,%d +%d,%d @@\n", oldStart, oldCount, newStart, newCount)
+		for k := start; k < end; k++ {
+			switch ops[k].kind {
+			case diffDelete:
+				out.WriteString("-" + ops[k].text + "\n")
+			case diffInsert:
+				out.WriteString("+" + ops[k].text + "\n")
+			default:
+				out.WriteString(" " + ops[k].text + "\n")
+			}
+		}
+		i = end
+	}
+	return out.String()
+}
+
+// lineNumberBefore returns the 1-based line number (in the old or new file,
+// per isOld) of the line at ops[pos]. Delete lines count only toward the old
+// numbering, insert lines only toward the new; equal lines count toward both.
+func lineNumberBefore(ops []diffOp, pos int, isOld bool) int {
+	n := 1
+	for k := 0; k < pos; k++ {
+		switch ops[k].kind {
+		case diffDelete:
+			if isOld {
+				n++
+			}
+		case diffInsert:
+			if !isOld {
+				n++
+			}
+		default:
+			n++
+		}
+	}
+	return n
 }
 
 // NeutralizingOverrides derives the per-repo neutralizing `-c` set from the
@@ -726,6 +1173,7 @@ func mergeGitConfigInfo(base, overlay *GitConfigInfo) {
 	}
 	base.Includes = append(base.Includes, overlay.Includes...)
 	base.Errors = append(base.Errors, overlay.Errors...)
+	base.rawSources = append(base.rawSources, overlay.rawSources...)
 	base.repositoryFormatVersion = overlay.repositoryFormatVersion
 	base.objectFormat = overlay.objectFormat
 	base.worktreeConfigEnabled = overlay.worktreeConfigEnabled
@@ -779,6 +1227,7 @@ func scanAttributeSources(repoRoot, commonDir string, info *GitConfigInfo, logge
 			return fmt.Errorf("cannot scan attribute routing source %s (no kill switch exists; fail closed): %w", src.path, err)
 		}
 		info.Findings = append(info.Findings, parseAttributesRouting(string(data), src.label, src.path)...)
+		info.rawSources = append(info.rawSources, gitConfigSource{kind: src.label, path: src.path, data: data})
 	}
 	return nil
 }
@@ -794,11 +1243,7 @@ func resolveAttributesFilePath(raw, repoRoot string) string {
 	if value == "" {
 		return ""
 	}
-	if strings.HasPrefix(value, "~"+string(filepath.Separator)) || value == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
-			value = filepath.Join(home, strings.TrimPrefix(value, "~"))
-		}
-	}
+	value = expandHomeTilde(value)
 	if !filepath.IsAbs(value) {
 		value = filepath.Join(repoRoot, value)
 	}
@@ -907,7 +1352,24 @@ func ScanGitConfigFile(configPath string, loggers ...*slog.Logger) (*GitConfigIn
 	info := parseGitConfigData(string(data), logger)
 	info.ConfigPath = configPath
 	info.GitDir = filepath.Dir(configPath)
+	info.rawSources = []gitConfigSource{{kind: sourceKind(configPath), path: configPath, data: data}}
+	// Every include directive in this file resolves its (possibly relative)
+	// path against this file's directory, so record it for ResolveIncludes.
+	sourceDir := filepath.Dir(configPath)
+	for i := range info.Includes {
+		info.Includes[i].SourceDir = sourceDir
+	}
 	return info, nil
+}
+
+// sourceKind labels a config file path for the snapshot diff header: the
+// per-worktree overlay is distinguishable from the common config by its
+// basename; every other config file reads as the common config.
+func sourceKind(configPath string) string {
+	if filepath.Base(configPath) == "config.worktree" {
+		return "config.worktree"
+	}
+	return "config"
 }
 
 // resolveGitDir resolves the git directory whose config git itself would use

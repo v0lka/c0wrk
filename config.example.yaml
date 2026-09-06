@@ -309,14 +309,24 @@ security:
 
   # Repositories whose "untrusted git configuration" intake warning has been
   # dismissed via the toast's "Trust this repo" action (also manageable from
-  # Settings → Security → Trusted repos). Each entry is an absolute path of a
-  # repository root; matching is exact (paths are compared after cleaning).
-  # Trusting a repo suppresses ONLY the warning toast — the git subprocess
-  # hardening itself (hook stripping, filter/fsmonitor/merge-driver
-  # neutralization on every invocation) stays fully in force. Default: empty
-  # (every suspicious .git/config warns once per open).
+  # Settings → Security → Trusted repos). Each entry is a mapping with an
+  # absolute repository-root `path` (matching is exact, after cleaning) and an
+  # optional `fingerprint` — the hash of the git-config snapshot captured when
+  # the repository was trusted (snapshots live under ~/.c0wrk/git-config-snapshots/),
+  # used to detect config drift after the trust decision. A bare path string
+  # (the legacy pre-fingerprint format) is also accepted and loads as a path
+  # with no fingerprint. Default: empty (every suspicious .git/config warns
+  # once per open).
   # trusted_git_repos:
-  #   - /Users/you/work/my-legit-lfs-repo
+  #   - path: /Users/you/work/my-legit-lfs-repo
+  #     fingerprint: a1b2c3d4
+
+  # Repositories that are ALWAYS treated as hardened: their intake warning is
+  # never suppressed and they are excluded from the trusted list (a root cannot
+  # appear in both lists). Each entry is an absolute repository-root path;
+  # matching is exact (after cleaning). Default: empty.
+  # harden_git_repos:
+  #   - /Users/you/work/untrusted-download
 
   # --- Tool security groups (security.groups) ---
   # Policies are configured per tool GROUP, not per tool name. Every tool

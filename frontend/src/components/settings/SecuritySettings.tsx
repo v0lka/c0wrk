@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, AlertTriangle, Info, RotateCw, FolderGit2 } from "lucide-react";
+import { Loader2, AlertTriangle, Info, RotateCw, FolderGit2, ShieldBan } from "lucide-react";
 import { getSecuritySettings, updateSecuritySettings } from "@/api/config";
 import { getToolList } from "@/api/mcp";
 import { logger } from "@/lib/logger";
 import { Button } from "@/components/ui/button";
 import { SecurityGroupCard } from "./SecurityGroupCard";
 import { TrustedReposDialog } from "./TrustedReposDialog";
+import { HardenReposDialog } from "./HardenReposDialog";
 import {
   DEFAULT_GROUP_POLICY,
   EXECUTE_GROUP,
@@ -50,6 +51,9 @@ export function SecuritySettings() {
   // Trusted-repositories dialog (git-config intake warnings dismissed with
   // "Trust this repo") — see TrustedReposDialog.
   const [trustedOpen, setTrustedOpen] = useState(false);
+  // Hardened-repositories dialog (git-config intake warnings answered with
+  // "Harden") — see HardenReposDialog.
+  const [hardenOpen, setHardenOpen] = useState(false);
 
   // Fail-closed load: save() below normalizes the FULL seven-group payload
   // from local state. If the initial load failed, local state is empty and a
@@ -225,6 +229,28 @@ export function SecuritySettings() {
         </Button>
       </div>
 
+      {/* Hardened repositories (git-config warnings answered with "Harden") */}
+      <div className="flex items-center justify-between gap-3 p-4 rounded-lg border border-border bg-card/50">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">Hardened repositories</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Repositories you marked &ldquo;Harden&rdquo; on the &ldquo;untrusted git
+            configuration&rdquo; warning. They are always neutralized and can never become raw-git
+            eligible. Removing an entry returns the repository to the default intake path.
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="shrink-0"
+          onClick={() => setHardenOpen(true)}
+          data-testid="harden-repos-open"
+        >
+          <ShieldBan className="h-3.5 w-3.5" />
+          Hardened repos
+        </Button>
+      </div>
+
       {/* Workspace auto-approve toggle */}
       <div className="flex flex-col gap-3 p-4 rounded-lg border border-border bg-card/50">
         <div className="flex items-center gap-3">
@@ -303,6 +329,7 @@ export function SecuritySettings() {
       </div>
 
       <TrustedReposDialog open={trustedOpen} onOpenChange={setTrustedOpen} />
+      <HardenReposDialog open={hardenOpen} onOpenChange={setHardenOpen} />
     </div>
   );
 }

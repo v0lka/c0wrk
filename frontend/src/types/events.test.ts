@@ -280,6 +280,22 @@ describe('isGitConfigRiskData', () => {
         expect(isGitConfigRiskData({ ...valid, source: 'session' })).toBe(false)
     })
 
+    it('accepts optional reason and diff (drift payload)', () => {
+        expect(
+            isGitConfigRiskData({
+                ...valid,
+                reason: 'This repository was previously trusted, but its git configuration changed.',
+                diff: '@@ -1 +1 @@\n- old\n+ new',
+            }),
+        ).toBe(true)
+    })
+
+    it('rejects wrong-typed reason or diff', () => {
+        expect(isGitConfigRiskData({ ...valid, reason: 42 })).toBe(false)
+        expect(isGitConfigRiskData({ ...valid, diff: ['not', 'a', 'string'] })).toBe(false)
+        expect(isGitConfigRiskData({ ...valid, diff: null })).toBe(false)
+    })
+
     it('rejects wrong-typed or missing fields', () => {
         expect(isGitConfigRiskData({ ...valid, path: 42 })).toBe(false)
         expect(isGitConfigRiskData({ ...valid, notice: undefined })).toBe(false)

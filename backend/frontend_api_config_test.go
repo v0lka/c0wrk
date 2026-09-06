@@ -202,6 +202,7 @@ func newTestAPI(t *testing.T) (*FrontendAPI, *mockBuilder, string) {
 	f := &FrontendAPI{
 		config:          cfg,
 		configPath:      cfgPath,
+		agentDir:        dir,
 		builderOverride: mock,
 	}
 	return f, mock, cfgPath

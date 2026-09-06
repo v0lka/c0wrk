@@ -1,17 +1,17 @@
-// Trusted repositories dialog — opened from Settings → Security via the
-// "Trusted repos" button.
+// Hardened repositories dialog — opened from Settings → Security via the
+// "Hardened repos" button.
 //
-// Lists the repository roots the user marked trusted through the
-// "Untrusted git configuration detected" toast ("Trust this repo" persists
-// them into security.trusted_git_repos), with a per-entry Remove action.
-// A trusted repository runs raw git (its own hooks, filters and signing apply).
-// Removing a root re-enables the intake warning and the neutralization for
-// that repository. The dialog is read-mostly: entries are ADDED only from the
-// toast, where the scanned path is known; here stale or mistaken entries get
-// pruned.
+// Lists the repository roots the user marked hardened through the
+// "Untrusted git configuration detected" toast ("Harden" persists them into
+// security.harden_git_repos), with a per-entry Remove action. A hardened
+// repository is always neutralized and can never become raw-git eligible;
+// removing a root returns it to the default intake path (it re-warns on the
+// next open if its config is still dangerous). The dialog is read-mostly:
+// entries are ADDED only from the toast, where the scanned path is known; here
+// stale or mistaken entries get pruned.
 
 import { useCallback, useEffect, useState } from 'react'
-import { FolderGit2, Loader2, Trash2 } from 'lucide-react'
+import { Loader2, ShieldBan, Trash2 } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -20,17 +20,17 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { getTrustedGitRepos, removeTrustedGitRepo } from '@/api/gitConfigRisk'
+import { getHardenGitRepos, removeHardenGitRepo } from '@/api/gitConfigRisk'
 import { onGlobalEvent } from '@/api/runtime'
 import { logger } from '@/lib/logger'
 
-interface TrustedReposDialogProps {
+interface HardenReposDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
 }
 
-export function TrustedReposDialog({ open, onOpenChange }: TrustedReposDialogProps) {
-  // null = loading (distinct from [] = none trusted).
+export function HardenReposDialog({ open, onOpenChange }: HardenReposDialogProps) {
+  // null = loading (distinct from [] = none hardened).
   const [repos, setRepos] = useState<string[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [removing, setRemoving] = useState<string | null>(null)
@@ -39,9 +39,9 @@ export function TrustedReposDialog({ open, onOpenChange }: TrustedReposDialogPro
     setError(null)
     setRepos(null)
     try {
-      setRepos(await getTrustedGitRepos())
+      setRepos(await getHardenGitRepos())
     } catch (err) {
-      logger.error('Failed to load trusted repositories:', err)
+      logger.error('Failed to load hardened repositories:', err)
       setError(err instanceof Error ? err.message : String(err))
       setRepos([])
     }
@@ -50,9 +50,9 @@ export function TrustedReposDialog({ open, onOpenChange }: TrustedReposDialogPro
   // Fresh list on every open — entries can also change via the toast while
   // the dialog is closed. While open, `config:updated` (emitted by the
   // backend after EVERY persisted config mutation, including the toast's
-  // "Trust this repo") re-runs the load so entries trusted mid-dialog appear
-  // without a close/reopen. The dialog's own Remove also emits it — the
-  // redundant reload merely re-syncs with the server truth.
+  // "Harden") re-runs the load so entries hardened mid-dialog appear without
+  // a close/reopen. The dialog's own Remove also emits it — the redundant
+  // reload merely re-syncs with the server truth.
   useEffect(() => {
     if (!open) return
     void load()
@@ -65,10 +65,10 @@ export function TrustedReposDialog({ open, onOpenChange }: TrustedReposDialogPro
       setRemoving(path)
       setError(null)
       try {
-        await removeTrustedGitRepo(path)
+        await removeHardenGitRepo(path)
         setRepos((prev) => (prev ?? []).filter((p) => p !== path))
       } catch (err) {
-        logger.error('Failed to remove trusted repository:', err)
+        logger.error('Failed to remove hardened repository:', err)
         setError(err instanceof Error ? err.message : String(err))
       } finally {
         setRemoving(null)
@@ -79,19 +79,21 @@ export function TrustedReposDialog({ open, onOpenChange }: TrustedReposDialogPro
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md" data-testid="trusted-repos-dialog">
+      <DialogContent className="sm:max-w-md" data-testid="harden-repos-dialog">
         <DialogHeader>
-          <DialogTitle>Trusted repositories</DialogTitle>
+          <DialogTitle>Hardened repositories</DialogTitle>
           <DialogDescription>
-            Repositories whose &ldquo;untrusted git configuration&rdquo; warning you answered with
-            &ldquo;Trust this repo&rdquo;. A trusted repository runs raw git — its own hooks, filters
-            and signing apply. Removing an entry re-enables the warning and the neutralization for
-            that repository. A repository cannot be both trusted and hardened.
+            Repositories you marked &ldquo;Harden&rdquo; on the &ldquo;untrusted git
+            configuration&rdquo; warning. They are always neutralized on every git invocation and
+            can never become raw-git eligible — repository-defined hooks, filters and signing never
+            run inside c0wrk for them. Removing an entry returns the repository to the default
+            intake path (its warning re-appears on the next open if the configuration is still
+            dangerous). A repository cannot be both trusted and hardened.
           </DialogDescription>
         </DialogHeader>
 
         {error && (
-          <p className="text-xs text-destructive" data-testid="trusted-repos-error">
+          <p className="text-xs text-destructive" data-testid="harden-repos-error">
             {error}
           </p>
         )}
@@ -103,10 +105,10 @@ export function TrustedReposDialog({ open, onOpenChange }: TrustedReposDialogPro
           </div>
         ) : repos.length === 0 ? (
           <div className="flex flex-col items-center gap-2 py-6 text-center">
-            <FolderGit2 className="h-6 w-6 text-muted-foreground" />
+            <ShieldBan className="h-6 w-6 text-muted-foreground" />
             <p className="text-sm text-muted-foreground">
-              No trusted repositories. Dismiss a git-configuration warning with
-              &ldquo;Trust this repo&rdquo; and it will appear here.
+              No hardened repositories. Answer &ldquo;Harden&rdquo; on a git-configuration warning
+              and the repository will appear here.
             </p>
           </div>
         ) : (
@@ -125,7 +127,7 @@ export function TrustedReposDialog({ open, onOpenChange }: TrustedReposDialogPro
                   aria-label={`Remove ${path}`}
                   onClick={() => void handleRemove(path)}
                   disabled={removing !== null}
-                  data-testid={`trusted-repo-remove-${repos.indexOf(path)}`}
+                  data-testid={`harden-repo-remove-${repos.indexOf(path)}`}
                 >
                   {removing === path ? (
                     <Loader2 className="size-3.5 animate-spin" />

@@ -991,3 +991,62 @@ func TestResolveWorkTreeRoot(t *testing.T) {
 		t.Errorf("ResolveWorkTreeRoot(\"\") = %q, want \"\"", got)
 	}
 }
+
+// TestDiffGitConfigSnapshots pins the line-level diff used for trust drift:
+// identical snapshots yield "", and a change is rendered as a unified diff
+// that attributes removed and added lines.
+func TestDiffGitConfigSnapshots(t *testing.T) {
+	if got := DiffGitConfigSnapshots([]byte("a\nb\nc\n"), []byte("a\nb\nc\n")); got != "" {
+		t.Errorf("identical snapshots must diff to \"\", got %q", got)
+	}
+	got := DiffGitConfigSnapshots([]byte("a\nb\nc\n"), []byte("a\nx\nc\n"))
+	if !strings.Contains(got, "-b") {
+		t.Errorf("diff should mark the removed line with '-', got %q", got)
+	}
+	if !strings.Contains(got, "+x") {
+		t.Errorf("diff should mark the added line with '+', got %q", got)
+	}
+}
+
+// TestGitConfigSnapshotFingerprint pins that the fingerprint is a stable,
+// content-bound identity over the raw scanned sources (config + any captured
+// attribute/overlay sources), and changes when the config content changes.
+func TestGitConfigSnapshotFingerprint(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+	write := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write("[core]\n\tfsmonitor = /tmp/evil\n")
+	a, err := ScanGitConfigFile(configPath)
+	if err != nil {
+		t.Fatalf("ScanGitConfigFile: %v", err)
+	}
+	if a.Fingerprint() == "" {
+		t.Fatal("expected a non-empty fingerprint")
+	}
+	if got := string(a.Snapshot()); !strings.Contains(got, "config") || !strings.Contains(got, "fsmonitor") {
+		t.Errorf("snapshot should carry the config header and raw content, got %q", got)
+	}
+
+	b, err := ScanGitConfigFile(configPath)
+	if err != nil {
+		t.Fatalf("ScanGitConfigFile (re-scan): %v", err)
+	}
+	if a.Fingerprint() != b.Fingerprint() {
+		t.Error("fingerprint must be stable for identical content")
+	}
+
+	write("[core]\n\tfsmonitor = /tmp/evil\n\thooksPath = .evil-hooks\n")
+	c, err := ScanGitConfigFile(configPath)
+	if err != nil {
+		t.Fatalf("ScanGitConfigFile (changed): %v", err)
+	}
+	if a.Fingerprint() == c.Fingerprint() {
+		t.Error("fingerprint must change when the config content changes")
+	}
+}

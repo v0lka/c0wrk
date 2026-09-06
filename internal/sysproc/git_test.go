@@ -174,3 +174,26 @@ func TestGitCmdRefusesSpawnOnUnresolvableHome(t *testing.T) {
 		t.Errorf("error should state the fail-closed direction, got: %v", err)
 	}
 }
+
+// TestGitCmdRawSkipsOverridesAndHardening pins the raw escape hatch: argv is
+// exactly [git, <args...>] (no -c core.fsmonitor/hooksPath/gpgsign baseline,
+// no NeutralizingArgv) and cmd.Env is nil (inherit the parent environment —
+// no GIT_EDITOR pin, no GIT_ATTR_* strip), the opposite of GitCmd.
+func TestGitCmdRawSkipsOverridesAndHardening(t *testing.T) {
+	layerArgs := []string{"-C", filepath.Join(t.TempDir(), "repo"), "diff", "HEAD"}
+	cmd := GitCmdRaw(context.Background(), layerArgs...)
+
+	want := append([]string{gitBinary}, layerArgs...)
+	if !slices.Equal(cmd.Args, want) {
+		t.Errorf("GitCmdRaw argv = %q, want %q (no -c overrides)", cmd.Args, want)
+	}
+
+	// The raw path must leave cmd.Env nil: nil inherits the parent
+	// environment untouched, so any inherited GIT_EDITOR / GIT_ATTR_* stays
+	// effective and no GIT_EDITOR=true pin is appended — the inverse of
+	// GitCmd's hardenedGitEnv. A non-nil Env here would prove hardening
+	// leaked into the raw path.
+	if cmd.Env != nil {
+		t.Errorf("GitCmdRaw must leave cmd.Env nil (inherit parent env), got %d entries: %q", len(cmd.Env), cmd.Env)
+	}
+}

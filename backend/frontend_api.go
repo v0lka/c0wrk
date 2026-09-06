@@ -206,6 +206,12 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 		quitApp:         cfg.QuitApp,
 	}
 
+	// Mirror the trusted-repo list into the process-wide git trust registry
+	// (core/gittrust), which core/workspace consults to decide whether a
+	// repository may spawn raw git. Nothing is trusted when config is nil or
+	// the list is empty (fail-closed).
+	f.syncGitTrustRegistry()
+
 	// Start watchers for global skill directories (those outside any
 	// workspace). Changes invalidate the skill cache and emit skills:changed
 	// so the frontend autocomplete refreshes without an app restart.

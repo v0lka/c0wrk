@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/core/gittrust"
 )
 
 // writeGitConfig creates dir/.git/config with the given content. The scan is
@@ -657,5 +660,220 @@ func TestSwitchProject_AlreadyActiveStillScansGitConfigRisk(t *testing.T) {
 	}
 	if riskEvents != 2 {
 		t.Errorf("risk events after already-active re-selection = %d, want 2 (intake scan re-run)", riskEvents)
+	}
+}
+
+// --- Trust snapshot + fingerprint recheck (step_3 RPC) ---
+
+// TestTrustGitRepo_StoresFingerprintAndSnapshot pins acceptance (1): trusting
+// a repo records the work-tree root plus a non-empty fingerprint of the
+// scanned configuration, stores the snapshot bytes under the snapshots dir,
+// and (via the existing registry test) enables raw git for the root.
+func TestTrustGitRepo_StoresFingerprintAndSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	writeGitConfig(t, dir, "[core]\n\tfsmonitor = /tmp/evil\n")
+
+	f, _, _ := newTestAPI(t)
+	if err := f.TrustGitRepo(dir); err != nil {
+		t.Fatalf("TrustGitRepo: %v", err)
+	}
+
+	if len(f.config.Security.TrustedGitRepos) != 1 {
+		t.Fatalf("trusted repos = %v, want exactly one", f.config.Security.TrustedGitRepos)
+	}
+	entry := f.config.Security.TrustedGitRepos[0]
+	if entry.Path != dir {
+		t.Errorf("trusted path = %q, want %q", entry.Path, dir)
+	}
+	if entry.Fingerprint == "" {
+		t.Error("expected a non-empty fingerprint on the trusted entry")
+	}
+	snap := filepath.Join(config.GitConfigSnapshotsDir(f.agentDir), entry.Fingerprint)
+	if _, err := os.Stat(snap); err != nil {
+		t.Errorf("expected snapshot file %s: %v", snap, err)
+	}
+}
+
+// TestHardenGitRepo_RoundTripAndMutualExclusion pins acceptance (2): the
+// HardenGitRepo / GetHardenGitRepos / RemoveHardenGitRepo RPCs validate and
+// deduplicate paths, return defensive copies, are idempotent, and harden/trust
+// are mutually exclusive in both directions.
+func TestHardenGitRepo_RoundTripAndMutualExclusion(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	if err := f.HardenGitRepo(""); err == nil {
+		t.Error("expected error for an empty path")
+	}
+	if err := f.HardenGitRepo("relative/repo"); err == nil {
+		t.Error("expected error for a relative path")
+	}
+	if got := f.GetHardenGitRepos(); len(got) != 0 {
+		t.Errorf("GetHardenGitRepos = %v, want empty after rejected adds", got)
+	}
+
+	dir := t.TempDir()
+	if err := f.HardenGitRepo(dir); err != nil {
+		t.Fatalf("HardenGitRepo: %v", err)
+	}
+	if err := f.HardenGitRepo(dir + string(filepath.Separator)); err != nil {
+		t.Fatalf("HardenGitRepo (trailing-slash form): %v", err)
+	}
+	got := f.GetHardenGitRepos()
+	if len(got) != 1 || got[0] != dir {
+		t.Fatalf("GetHardenGitRepos = %v, want exactly [%s]", got, dir)
+	}
+	got[0] = "/mutated"
+	if f.GetHardenGitRepos()[0] != dir {
+		t.Error("GetHardenGitRepos leaked the live config slice")
+	}
+
+	// Hardening is the inverse of trust: trusting a hardened repo drops the
+	// hardening, and hardening a trusted repo drops the trust.
+	if err := f.TrustGitRepo(dir); err != nil {
+		t.Fatalf("TrustGitRepo (from hardened): %v", err)
+	}
+	if got := f.GetHardenGitRepos(); len(got) != 0 {
+		t.Errorf("GetHardenGitRepos = %v, want empty after trusting a hardened repo", got)
+	}
+	if got := f.GetTrustedGitRepos(); len(got) != 1 || got[0] != dir {
+		t.Errorf("GetTrustedGitRepos = %v, want exactly [%s]", got, dir)
+	}
+
+	if err := f.HardenGitRepo(dir); err != nil {
+		t.Fatalf("HardenGitRepo (from trusted): %v", err)
+	}
+	if got := f.GetTrustedGitRepos(); len(got) != 0 {
+		t.Errorf("GetTrustedGitRepos = %v, want empty after hardening a trusted repo", got)
+	}
+
+	if err := f.RemoveHardenGitRepo(dir); err != nil {
+		t.Fatalf("RemoveHardenGitRepo: %v", err)
+	}
+	if err := f.RemoveHardenGitRepo(dir); err != nil {
+		t.Fatalf("RemoveHardenGitRepo (repeat): %v", err)
+	}
+	if got := f.GetHardenGitRepos(); len(got) != 0 {
+		t.Errorf("GetHardenGitRepos = %v, want empty after removal", got)
+	}
+}
+
+// TestNotifyGitConfigRisk_TrustedRepoDriftEvictsAndWarns pins acceptance (3)
+// and (4): a trusted repo with an unchanged config stays silent; once its
+// config changes the next open evicts the trust (raw git disabled again) and
+// emits a warning carrying a drift reason and a diff of the change.
+func TestNotifyGitConfigRisk_TrustedRepoDriftEvictsAndWarns(t *testing.T) {
+	dir := t.TempDir()
+	writeGitConfig(t, dir, "[core]\n\tfsmonitor = /tmp/evil\n")
+
+	f, _, _ := newTestAPI(t)
+	if err := f.TrustGitRepo(dir); err != nil {
+		t.Fatalf("TrustGitRepo: %v", err)
+	}
+
+	// Unchanged config: no event.
+	rec := newRiskRecorder(t, f)
+	f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
+	if rec.fired {
+		t.Error("expected no event for a trusted repo with an unchanged config")
+	}
+
+	// Change the config: evict + warn with diff + reason.
+	writeGitConfig(t, dir, "[core]\n\tfsmonitor = /tmp/evil\n\thooksPath = .evil-hooks\n")
+	rec = newRiskRecorder(t, f)
+	f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
+	if !rec.fired {
+		t.Fatal("expected project:git_config_risk after the trusted config changed")
+	}
+	if rec.data.Reason == "" {
+		t.Error("expected a drift reason in the payload")
+	}
+	if rec.data.Diff == "" {
+		t.Error("expected a diff in the payload")
+	}
+	if !strings.Contains(rec.data.Diff, "hooksPath") {
+		t.Errorf("diff should mention the added key, got: %q", rec.data.Diff)
+	}
+	if got := f.GetTrustedGitRepos(); len(got) != 0 {
+		t.Errorf("trusted repos after drift = %v, want empty (evicted)", got)
+	}
+	if gittrust.IsTrusted(dir) {
+		t.Error("expected the repo to be unregistered from the git trust registry after drift")
+	}
+}
+
+// TestNotifyGitConfigRisk_TrustedRepoDriftCoversAttributes pins acceptance (5):
+// the trust snapshot (and therefore the drift diff) covers the attribute
+// routing sources, not just the .git/config file — changing info/attributes
+// after trust must be detected and shown in the diff.
+func TestNotifyGitConfigRisk_TrustedRepoDriftCoversAttributes(t *testing.T) {
+	dir := t.TempDir()
+	writeGitConfig(t, dir, "[core]\n\tfsmonitor = /tmp/evil\n")
+	infoPath := filepath.Join(dir, ".git", "info", "attributes")
+	if err := os.MkdirAll(filepath.Dir(infoPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(infoPath, []byte("*.bin filter=lfs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f, _, _ := newTestAPI(t)
+	if err := f.TrustGitRepo(dir); err != nil {
+		t.Fatalf("TrustGitRepo: %v", err)
+	}
+
+	if err := os.WriteFile(infoPath, []byte("*.bin filter=lfs\n*.dat filter=evil\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := newRiskRecorder(t, f)
+	f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
+	if !rec.fired {
+		t.Fatal("expected project:git_config_risk after the attribute routing changed")
+	}
+	if !strings.Contains(rec.data.Diff, "info/attributes") {
+		t.Errorf("diff should attribute the change to info/attributes, got: %q", rec.data.Diff)
+	}
+	if !strings.Contains(rec.data.Diff, "filter=evil") {
+		t.Errorf("diff should show the added routing line, got: %q", rec.data.Diff)
+	}
+}
+
+// TestNotifyGitConfigRisk_TrustedRepoDriftCoversIncludes pins the include-hidden
+// drift fix at the intake surface: a repo whose config includes another file
+// has that file bound into the trust snapshot, so changing only the included
+// file after trust evicts the trust and warns with a diff attributing the
+// change to the include target.
+func TestNotifyGitConfigRisk_TrustedRepoDriftCoversIncludes(t *testing.T) {
+	dir := t.TempDir()
+	extra := filepath.Join(dir, "extra.conf")
+	if err := os.WriteFile(extra, []byte("[filter \"x\"]\n\tclean = /tmp/evil.sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeGitConfig(t, dir, "[include]\n\tpath = "+extra+"\n")
+
+	f, _, _ := newTestAPI(t)
+	if err := f.TrustGitRepo(dir); err != nil {
+		t.Fatalf("TrustGitRepo: %v", err)
+	}
+
+	// Change only the included file, leaving .git/config byte-identical.
+	if err := os.WriteFile(extra, []byte("[filter \"x\"]\n\tclean = /tmp/other.sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := newRiskRecorder(t, f)
+	f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
+	if !rec.fired {
+		t.Fatal("expected project:git_config_risk after the included file changed")
+	}
+	if rec.data.Reason == "" {
+		t.Error("expected a drift reason in the payload")
+	}
+	if !strings.Contains(rec.data.Diff, "extra.conf") {
+		t.Errorf("diff should attribute the change to the include target, got: %q", rec.data.Diff)
+	}
+	if got := f.GetTrustedGitRepos(); len(got) != 0 {
+		t.Errorf("trusted repos after included-file drift = %v, want empty (evicted)", got)
+	}
+	if gittrust.IsTrusted(dir) {
+		t.Error("expected the repo to be unregistered from the git trust registry after included-file drift")
 	}
 }

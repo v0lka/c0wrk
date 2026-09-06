@@ -131,6 +131,8 @@ export function GetGitHistory():Promise<Array<workspace.GitHistoryCommit>>;
 
 export function GetGitStatus(arg1:string):Promise<Record<string, workspace.GitStatusEntry>>;
 
+export function GetHardenGitRepos():Promise<Array<string>>;
+
 export function GetLastActiveProjectID():Promise<string>;
 
 export function GetLogLevel():Promise<string>;
@@ -182,6 +184,8 @@ export function GetTrustedGitRepos():Promise<Array<string>>;
 export function GetUpdateSettings():Promise<backend.UpdateSettings>;
 
 export function GetVectorIndexStatus():Promise<backend.VectorIndexStatus>;
+
+export function HardenGitRepo(arg1:string):Promise<void>;
 
 export function HasDefaultModel():Promise<boolean>;
 
@@ -238,6 +242,8 @@ export function ReadFileAsDataURL(arg1:string):Promise<string>;
 export function Rebase(arg1:string):Promise<void>;
 
 export function RemoveAttachment(arg1:string,arg2:string):Promise<void>;
+
+export function RemoveHardenGitRepo(arg1:string):Promise<void>;
 
 export function RemoveTrustedGitRepo(arg1:string):Promise<void>;
 
