@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -94,7 +95,11 @@ func TestCredentialStore_PersistsEncryptedCredentialAcrossRestart(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Stat() error = %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows has no Unix permission bits — files always report 0666 regardless
+	// of the mode requested at creation. The 0600 restriction is enforced by
+	// ACL inheritance on Windows, not POSIX bits, so only verify them on
+	// Unix-like systems.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("credential mode = %o, want 600", info.Mode().Perm())
 	}
 }
