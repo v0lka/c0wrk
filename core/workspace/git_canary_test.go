@@ -258,11 +258,11 @@ func TestCanaryTextconvNeutered(t *testing.T) {
 // remains correct.
 func TestCanaryLegitFilterStillCompletes(t *testing.T) {
 	f := newCanaryFixture(t, "data v1\n")
-	filterPath, filterLog := f.canary.PlantPassthrough(t, "lfs-clean")
-	f.repo.AppendConfig(t, "[filter \"lfs\"]\n"+
+	filterPath, filterLog := f.canary.PlantPassthrough(t, "c0wrk-passthrough-clean")
+	f.repo.AppendConfig(t, "[filter \"c0wrk-passthrough\"]\n"+
 		"\tclean = "+filterPath+"\n"+
 		"\tsmudge = "+filterPath+"\n")
-	f.repo.Write(t, ".gitattributes", "*.txt filter=lfs\n")
+	f.repo.Write(t, ".gitattributes", "*.txt filter=c0wrk-passthrough\n")
 	f.repo.Write(t, "file.txt", "data v2\n")
 
 	diff, err := GetFileDiffInRepo(f.ctx, f.repo.Root, "file.txt")
