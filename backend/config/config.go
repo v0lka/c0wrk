@@ -48,6 +48,7 @@ type Config struct {
 
 	// Experimental gates features that are still under active development as a
 	// single master switch (all-or-nothing). When disabled, every gated feature
+	// (RESEARCH mode, the Small-LLM profile, and ChatGPT subscription sign-in)
 	// is treated as off and its UI affordances are hidden. Default: off.
 	Experimental ExperimentalConfig `yaml:"experimental"`
 
@@ -235,8 +236,33 @@ type LLMConfig struct {
 	OpenAICompatible    map[string]OpenAICompatibleConfig    `yaml:"openai_compatible"`
 	AnthropicCompatible map[string]AnthropicCompatibleConfig `yaml:"anthropic_compatible"`
 	ChatGPT             ChatGPTConfig                        `yaml:"chatgpt"`
+	Subscriptions       SubscriptionProvidersConfig          `yaml:"subscriptions"`
 	Models              map[string]ModelOverride             `yaml:"models"`
 	Retry               LLMRetryConfig                       `yaml:"retry"`
+}
+
+// SubscriptionProvidersConfig contains public connection metadata only. Access
+// and refresh tokens are held exclusively in the encrypted CredentialStore.
+type SubscriptionProvidersConfig struct {
+	ChatGPT SubscriptionProviderConfig `yaml:"chatgpt"`
+	Kimi    SubscriptionProviderConfig `yaml:"kimi"`
+}
+
+// SubscriptionProviderConfig configures an operator-approved managed service.
+// No field is a credential. ChatGPT is additionally gated by experimental.enabled.
+type SubscriptionProviderConfig struct {
+	Enabled          bool     `yaml:"enabled"`
+	BaseURL          string   `yaml:"base_url"`
+	AuthorizationURL string   `yaml:"authorization_url"`
+	TokenURL         string   `yaml:"token_url"`
+	ClientID         string   `yaml:"client_id"`
+	Scopes           []string `yaml:"scopes"`
+	Models           []string `yaml:"models"`
+	// EnabledModels is the user-selected subset of the subscription catalogue.
+	// nil preserves the full catalogue for existing configurations; an explicit
+	// empty list intentionally hides every model without touching credentials.
+	EnabledModels []string `yaml:"enabled_models"`
+	AccountHeader string   `yaml:"account_header"`
 }
 
 // AnthropicConfig holds Anthropic provider configuration.
@@ -681,8 +707,8 @@ var envVarPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 // it exposes every gated feature and disabling it hides every gated feature.
 type ExperimentalConfig struct {
 	// Enabled is the master switch for experimental features. When false, every
-	// gated feature (RESEARCH mode, the Small-LLM profile) is treated as off.
-	// Default: false.
+	// gated feature (RESEARCH mode, the Small-LLM profile, and ChatGPT
+	// subscription sign-in) is treated as off. Default: false.
 	Enabled bool `yaml:"enabled"`
 }
 

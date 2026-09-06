@@ -114,13 +114,22 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 			Models:  cfg.Models,
 		}
 	}
+	if f.subscriptions != nil {
+		if catalog := f.subscriptions.catalog("chatgpt"); len(catalog) > 0 {
+			resp.Subscriptions = []SubscriptionProviderModels{{
+				Provider: "chatgpt_subscription",
+				Models:   catalog,
+				Enabled:  f.subscriptions.models("chatgpt"),
+			}}
+		}
+	}
 	return resp
 }
 
 // collectAllModels iterates all enabled provider models and builds ModelInfo
-// entries. When reg is non-nil, family and reasoning metadata are resolved
-// from the registry. When reg is nil (registry not yet initialized), models
-// are returned without metadata so the frontend still sees configured models.
+// entries. Managed subscription models are included only while their encrypted
+// credential record is present; they are never copied into the API-key config.
+// When reg is non-nil, family and reasoning metadata are resolved from the registry.
 //
 // GUARANTEE: collectAllModels is network-free — it resolves every model via
 // ModelRegistry.ResolveLocal, which serves overrides, built-ins, fuzzy
@@ -138,6 +147,11 @@ func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 	// GetAllProviderConfigs returns providers in deterministic order
 	// (anthropic, chatgpt, then sorted openai_compatible, then sorted anthropic_compatible).
 	providers := f.config.LLM.GetAllProviderConfigs()
+	if f.subscriptions != nil {
+		if models := f.subscriptions.models("chatgpt"); len(models) > 0 {
+			providers = append(providers, config.ProviderWithModels{Name: "chatgpt_subscription", Models: models})
+		}
+	}
 
 	seen := make(map[string]bool) // dedupe by composite "provider/model"
 	var result []ModelInfo
@@ -179,6 +193,18 @@ func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 		}
 	}
 	return result
+}
+
+func subscriptionModelEnabled(enabled, catalog []string, model string) bool {
+	if enabled == nil {
+		enabled = catalog
+	}
+	for _, configured := range enabled {
+		if configured == model {
+			return true
+		}
+	}
+	return false
 }
 
 // UpdateLLMConfig updates the full LLM configuration atomically:
@@ -272,12 +298,37 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		}
 	}
 
+	if req.SubscriptionModels != nil {
+		if enabled, ok := req.SubscriptionModels["chatgpt_subscription"]; ok {
+			if f.subscriptions == nil {
+				f.configMu.Unlock()
+				return errors.New("subscription sign-in is unavailable")
+			}
+			catalog := make(map[string]struct{})
+			for _, model := range f.subscriptions.catalog("chatgpt") {
+				catalog[model] = struct{}{}
+			}
+			for _, model := range enabled {
+				if _, known := catalog[model]; !known {
+					f.configMu.Unlock()
+					return fmt.Errorf("unknown ChatGPT subscription model %q", model)
+				}
+			}
+			candidate.Subscriptions.ChatGPT.EnabledModels = slices.Compact(slices.Clone(enabled))
+		}
+	}
+
 	// A first-run config intentionally has no default until setup finishes.
 	// Once a default exists, however, every candidate must still resolve after
 	// all requested provider/model replacements have been applied. Validate
 	// before committing so a dangling replacement cannot change any state.
 	if candidate.DefaultModel != "" {
-		if _, _, err := candidate.ResolveDefaultModelProvider(); err != nil {
+		provider, model, managed := llm.ParseCompositeModelID(candidate.DefaultModel)
+		if managed && provider == "chatgpt_subscription" && f.subscriptions != nil && f.subscriptions.connected("chatgpt") && subscriptionModelEnabled(candidate.Subscriptions.ChatGPT.EnabledModels, f.subscriptions.catalog("chatgpt"), model) {
+			// A connected managed subscription owns this model. Its credentials
+			// intentionally live outside YAML, so config-only resolution cannot
+			// validate it; the candidate's selected model list must contain it.
+		} else if _, _, err := candidate.ResolveDefaultModelProvider(); err != nil {
 			f.configMu.Unlock()
 			return fmt.Errorf("invalid LLM configuration: default_model would be unresolved: %w", err)
 		}
@@ -352,6 +403,9 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 	if b := f.builder(); b != nil {
 		f.configMu.RLock()
 		fresh := ToBuilderConfig(f.config)
+		if f.subscriptions != nil {
+			f.subscriptions.augment(fresh)
+		}
 		b.RebuildJudge(fresh)
 		rebuildErr := b.RebuildRouter(fresh)
 		f.configMu.RUnlock()
@@ -456,7 +510,11 @@ func (f *FrontendAPI) UpdateExperimentalFeatures(enabled bool) error {
 	// Rebuild the LLM router so the Small-LLM profile (sampling overrides,
 	// tool matching, context management) is applied or removed immediately.
 	if b := f.builder(); b != nil {
-		if err := b.RebuildRouter(ToBuilderConfig(f.config)); err != nil {
+		routerCfg := ToBuilderConfig(f.config)
+		if f.subscriptions != nil {
+			f.subscriptions.augment(routerCfg)
+		}
+		if err := b.RebuildRouter(routerCfg); err != nil {
 			f.log().Warn("failed to rebuild LLM router after experimental-features toggle", "error", err)
 		}
 	}
@@ -768,7 +826,11 @@ func (f *FrontendAPI) UpdateSmallLLMConfig(cfg SmallLLMConfigResponse) error {
 
 	// Rebuild the LLM router so the updated profile applies without restart.
 	if b := f.builder(); b != nil {
-		if err := b.RebuildRouter(ToBuilderConfig(f.config)); err != nil {
+		routerCfg := ToBuilderConfig(f.config)
+		if f.subscriptions != nil {
+			f.subscriptions.augment(routerCfg)
+		}
+		if err := b.RebuildRouter(routerCfg); err != nil {
 			f.log().Warn("failed to rebuild LLM router after small-LLM config update", "error", err)
 		}
 	}
@@ -1318,6 +1380,9 @@ func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error
 	// Rebuild the LLM router so the new override takes effect for new sessions.
 	if b := f.builder(); b != nil {
 		bcfg := ToBuilderConfig(f.config)
+		if f.subscriptions != nil {
+			f.subscriptions.augment(bcfg)
+		}
 		if err := b.RebuildRouter(bcfg); err != nil {
 			f.log().Warn("failed to rebuild LLM router after model config update", "error", err)
 		}

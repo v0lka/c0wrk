@@ -46,6 +46,10 @@ export function CancelSessionCompaction(arg1) {
   return window['go']['desktop']['App']['CancelSessionCompaction'](arg1);
 }
 
+export function CancelSubscriptionLogin(arg1) {
+  return window['go']['desktop']['App']['CancelSubscriptionLogin'](arg1);
+}
+
 export function CancelTask(arg1) {
   return window['go']['desktop']['App']['CancelTask'](arg1);
 }
@@ -88,6 +92,10 @@ export function ConfirmExit() {
 
 export function ConfirmGoal(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['desktop']['App']['ConfirmGoal'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function ConnectSubscription(arg1) {
+  return window['go']['desktop']['App']['ConnectSubscription'](arg1);
 }
 
 export function CreateBranch(arg1, arg2) {
@@ -334,6 +342,10 @@ export function GetStepOutput(arg1, arg2) {
   return window['go']['desktop']['App']['GetStepOutput'](arg1, arg2);
 }
 
+export function GetSubscriptionStatuses() {
+  return window['go']['desktop']['App']['GetSubscriptionStatuses']();
+}
+
 export function GetTerminalHistory(arg1) {
   return window['go']['desktop']['App']['GetTerminalHistory'](arg1);
 }
@@ -404,6 +416,10 @@ export function ListSessions() {
 
 export function ListSkills() {
   return window['go']['desktop']['App']['ListSkills']();
+}
+
+export function LogoutSubscription(arg1) {
+  return window['go']['desktop']['App']['LogoutSubscription'](arg1);
 }
 
 export function Merge(arg1) {

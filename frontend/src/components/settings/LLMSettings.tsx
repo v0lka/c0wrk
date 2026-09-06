@@ -8,6 +8,8 @@ import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
 import { FixedProviderForms } from './providers/FixedProviderForms'
 import { OpenAICompatibleProviderForms } from './providers/OpenAICompatibleProviderForms'
+import { SubscriptionProviders } from './SubscriptionProviders'
+import { useExperimentalFeatures } from '@/hooks/useExperimentalFeatures'
 
 // ---------------------------------------------------------------------------
 // Provider name validation
@@ -49,12 +51,15 @@ export function LLMSettings({
   onSettingsSaved?: () => void
   onDefaultModelChange?: (model: string) => void
 }) {
+  const experimentalEnabled = useExperimentalFeatures()
   const {
     defaultModel,
     providerConfigs,
+    allModels,
     openaiCompatibleProviderNames,
     anthropicCompatibleProviderNames,
     isLoading,
+    reload,
     setDefaultModel,
     updateProviderConfig,
     toggleModel,
@@ -128,23 +133,15 @@ export function LLMSettings({
     })
   }
 
-  // Collect all enabled models across all providers for the global default
-  // dropdown. Each entry carries its composite "provider/name" selector (the
-  // value sent to the backend) plus the bare name shown to the user. When the
-  // same bare name is exposed by more than one provider, the option label is
-  // disambiguated with the provider key so the user can tell them apart.
-  const allEnabledModels = useMemo(() => {
-    const result: { id: string; model: string; provider: string }[] = []
-    for (const p of Object.keys(providerConfigs)) {
-      const cfg = providerConfigs[p]
-      if (cfg) {
-        for (const m of cfg.models) {
-          result.push({ id: compositeModelId(p, m), model: m, provider: p })
-        }
-      }
-    }
-    return result
-  }, [providerConfigs])
+  // GetConfig's all_models is authoritative: it includes both API-key models
+  // and models made available by a connected managed subscription.
+  const allEnabledModels = useMemo(() => (
+    allModels.map(({ provider, name }) => ({
+      id: compositeModelId(provider, name),
+      model: name,
+      provider,
+    }))
+  ), [allModels])
 
   // Bare names that appear under more than one provider — their dropdown
   // options are suffixed with the provider key for disambiguation.
@@ -195,6 +192,15 @@ export function LLMSettings({
           </p>
         )}
       </div>
+
+      {/* Managed subscription lifecycle is experimental and separate from API keys. */}
+      {experimentalEnabled && (
+        <SubscriptionProviders
+          isExpanded={expandedProviders.has('chatgpt_subscription')}
+          onToggle={() => toggleExpanded('chatgpt_subscription')}
+          onConnected={reload}
+        />
+      )}
 
       {/* Fixed Provider Accordions */}
       <FixedProviderForms

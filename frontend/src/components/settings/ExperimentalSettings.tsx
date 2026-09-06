@@ -8,9 +8,9 @@ import { Toggle } from './SmallLLMControls'
 
 /**
  * General-tab control for the master experimental-features switch. A single
- * toggle governs all gated features (RESEARCH mode + Small-LLM settings);
- * when disabled their UI affordances are hidden and the backend treats each
- * feature as off.
+ * toggle governs all gated features (RESEARCH mode, the Small-LLM settings,
+ * and ChatGPT subscription sign-in); when disabled their UI affordances are
+ * hidden and the backend treats each feature as off.
  */
 export function ExperimentalSettings() {
   const enabled = useExperimentalFeatures()
@@ -40,7 +40,7 @@ export function ExperimentalSettings() {
         onChange={handleChange}
         disabled={!loaded || saving}
         label={enabled ? 'Enabled' : 'Disabled'}
-        description="Enable RESEARCH mode and the Small-LLM settings tab. When disabled, these features are hidden and treated as off."
+        description="Enable experimental RESEARCH mode, ChatGPT subscription sign-in, and the Small-LLM settings tab. When disabled, these features are hidden and treated as off."
       />
     </div>
   )

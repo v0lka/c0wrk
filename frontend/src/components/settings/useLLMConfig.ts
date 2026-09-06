@@ -3,7 +3,7 @@ import { getConfig } from '@/api/config'
 import { logger } from '@/lib/logger'
 import { FIXED_PROVIDERS, type CompatibleType } from '@/lib/llm-providers'
 import { compositeModelId, isCompositeModelId, decomposeCompositeModelId } from '@/lib/modelId'
-import type { ConfigProviderFull } from '@/types/models'
+import type { ConfigProviderFull, ModelInfo } from '@/types/models'
 import { useLLMConfigSave } from './useLLMConfigSave'
 
 export interface ProviderConfig {
@@ -26,11 +26,14 @@ const defaultProviderConfigs: Record<string, ProviderConfig> = Object.fromEntrie
 interface UseLLMConfigResult {
     defaultModel: string
     providerConfigs: Record<string, ProviderConfig>
+    /** All currently selectable models, including connected managed subscriptions. */
+    allModels: ModelInfo[]
     /** Names of providers loaded from the openai_compatible map (non-fixed providers). */
     openaiCompatibleProviderNames: Set<string>
     /** Names of providers loaded from the anthropic_compatible map. */
     anthropicCompatibleProviderNames: Set<string>
     isLoading: boolean
+    reload: () => Promise<void>
     setDefaultModel: (model: string) => void
     updateProviderConfig: (provider: string, updates: Partial<ProviderConfig>) => void
     toggleModel: (provider: string, model: string) => void
@@ -99,6 +102,15 @@ export function defaultModelIsValid(
     return Object.values(configs).some((cfg) => cfg?.models.includes(defaultModel))
 }
 
+function selectableModelIsValid(
+    defaultModel: string,
+    configs: Record<string, ProviderConfig>,
+    models: ModelInfo[],
+): boolean {
+    if (defaultModelIsValid(defaultModel, configs)) return true
+    return models.some((info) => compositeModelId(info.provider, info.name) === defaultModel)
+}
+
 /**
  * Manages LLM config state: loading, default model, per-provider config, and model toggling.
  * Persistence is delegated to useLLMConfigSave (fixes #1, #7, #8).
@@ -106,6 +118,7 @@ export function defaultModelIsValid(
 export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?: (model: string) => void): UseLLMConfigResult {
     const [defaultModel, setDefaultModelState] = useState('')
     const [providerConfigs, setProviderConfigs] = useState<Record<string, ProviderConfig>>({})
+    const [allModels, setAllModels] = useState<ModelInfo[]>([])
     const [openaiCompatibleProviderNames, setOpenaiCompatibleProviderNames] = useState<Set<string>>(new Set())
     const [anthropicCompatibleProviderNames, setAnthropicCompatibleProviderNames] = useState<Set<string>>(new Set())
     const [isLoading, setIsLoading] = useState(true)
@@ -113,6 +126,8 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
     // Mutable ref for providerConfigs so setDefaultModel stays stable (fix #5).
     const configsRef = useRef(providerConfigs)
     configsRef.current = providerConfigs
+    const allModelsRef = useRef(allModels)
+    allModelsRef.current = allModels
 
     // Mutable ref for the onDefaultModelChange callback so loadConfig (and the
     // provider mutators below) stay stable while still reporting the effective
@@ -123,7 +138,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
     const { debouncedSave, cancelDebouncedSave, buildSafeUpdates } = useLLMConfigSave(onSettingsSaved)
 
     const persistWhenDefaultIsValid = useCallback((model: string, configs: Record<string, ProviderConfig>) => {
-        if (!defaultModelIsValid(model, configs)) {
+        if (!selectableModelIsValid(model, configs, allModelsRef.current)) {
             // Keep the edited provider list locally until the user selects an
             // enabled replacement default. This also cancels a timer queued
             // before the default was removed, preventing an invalid RPC.
@@ -139,6 +154,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
             const llm = result?.llm
             if (llm) {
                 const rawDefault = llm.default_model || ''
+                const selectableModels = Array.isArray(llm.all_models) ? llm.all_models : []
                 const configs: Record<string, ProviderConfig> = {}
                 const openaiNames = new Set<string>()
                 const anthropicNames = new Set<string>()
@@ -176,15 +192,17 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
                 // pointing at a removed/disabled model is treated as empty so
                 // the settings dialog can block close until a new one is picked.
                 const normalized = normalizeDefaultModel(rawDefault, configs)
-                const effective = defaultModelIsValid(normalized, configs) ? normalized : ''
+                const effective = selectableModelIsValid(normalized, configs, selectableModels) ? normalized : ''
                 setDefaultModelState(effective)
                 setProviderConfigs(configs)
+                setAllModels(selectableModels)
                 setOpenaiCompatibleProviderNames(openaiNames)
                 setAnthropicCompatibleProviderNames(anthropicNames)
                 onDefaultModelChangeRef.current?.(effective)
             } else {
                 setDefaultModelState('')
                 setProviderConfigs({ ...defaultProviderConfigs })
+                setAllModels([])
                 setOpenaiCompatibleProviderNames(new Set())
                 setAnthropicCompatibleProviderNames(new Set())
                 onDefaultModelChangeRef.current?.('')
@@ -297,9 +315,11 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
     return {
         defaultModel,
         providerConfigs,
+        allModels,
         openaiCompatibleProviderNames,
         anthropicCompatibleProviderNames,
         isLoading,
+        reload: loadConfig,
         setDefaultModel,
         updateProviderConfig,
         toggleModel,

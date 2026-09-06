@@ -239,10 +239,16 @@ type BuilderLLMConfig struct {
 
 // BuilderProviderConfig holds configuration for a single LLM provider.
 type BuilderProviderConfig struct {
-	ProviderType string   // Go provider type: "anthropic", "openai"
+	ProviderType string   // Go provider type: "anthropic", "openai", or managed subscription profile
 	APIKey       string   // raw value (may contain ${ENV_VAR})
 	BaseURL      string   // raw value
 	Models       []string // enabled models for this one provider
+	// TokenResolver is supplied by the host for managed subscriptions. It is
+	// deliberately absent from serialized config and contains no static secret.
+	TokenResolver llm.AccessTokenResolver
+	// AccountHeader configures the documented account-routing header for a
+	// managed provider; it is public metadata, never a token.
+	AccountHeader string
 	// OutputTokenReserve overrides the output-token budget for every model of
 	// this provider (0 = inherit the global executor.output_token_reserve).
 	// It is seeded into the model-registry overrides as ModelMetadata.OutputLimit,

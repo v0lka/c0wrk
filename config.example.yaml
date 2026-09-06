@@ -63,9 +63,21 @@ llm:
     #   models:
     #     - "claude-sonnet-4-20250514"
 
+  # ChatGPT API-key access (OpenAI Platform, never paste a key in this file).
   chatgpt:
     api_key: "${OPENAI_API_KEY}"
     models: []
+
+  # ChatGPT subscription model visibility. This is not credential storage: OAuth
+  # tokens are kept only in the encrypted OS-secure-store-backed credential
+  # store, and sign-in is initiated from Settings while experimental.enabled is
+  # true. Omit enabled_models to expose the full curated subscription catalogue;
+  # set it to an explicit list to show only chosen models.
+  #
+  # subscriptions:
+  #   chatgpt:
+  #     enabled_models:
+  #       - "gpt-6-astra"
 
   # Override built-in model metadata per model name. Every field is optional and
   # uses a sentinel value meaning "inherit the built-in default": 0 for integers,
@@ -788,6 +800,7 @@ orchestration:
 # every gated feature and treats each as off. Gated features today:
 #   - RESEARCH mode (the left-sidebar research panel)
 #   - the Small-LLM profile settings tab
+#   - ChatGPT subscription sign-in and subscription-model settings
 #
 # experimental:
 #   # Master switch. Default: false (all experimental features off).

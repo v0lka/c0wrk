@@ -131,6 +131,13 @@ func DialogStatePath(agentDir string) string {
 	return filepath.Join(agentDir, "dialog_state.json")
 }
 
+// CredentialsDir returns the isolated directory holding encrypted subscription
+// credential state. The per-install encryption key is deliberately stored in
+// the system secure store, never in this directory or config.yaml.
+func SubscriptionCredentialsDir(agentDir string) string {
+	return filepath.Join(agentDir, "subscription-credentials")
+}
+
 // GitConfigSnapshotsDir returns the directory where per-repository git-config
 // snapshots are stored (~/.c0wrk/git-config-snapshots/). When a repository is
 // trusted, the scan of its .git/config is snapshotted here and a fingerprint

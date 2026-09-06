@@ -347,12 +347,19 @@ export interface ModelInfo {
   } | null
 }
 
+export interface SubscriptionProviderModels {
+  provider: string
+  models: string[]
+  enabled: string[]
+}
+
 export interface ConfigLLMResponse {
   default_model: string  // single, global, cross-provider
   anthropic: ConfigProviderFull
   openai_compatible: Record<string, ConfigProviderFull>
   anthropic_compatible: Record<string, ConfigProviderFull>
   chatgpt: ConfigProviderFull
+  subscriptions?: SubscriptionProviderModels[]
   all_models: ModelInfo[]
   models_ready: boolean
 }
@@ -390,6 +397,7 @@ export interface LLMFullConfigRequest {
   openai_compatible?: Record<string, ProviderConfigRequest>
   anthropic_compatible?: Record<string, ProviderConfigRequest>
   chatgpt?: ProviderConfigRequest
+  subscription_models?: Record<string, string[]>
 }
 
 /** A model's capability flags: which features it supports. */

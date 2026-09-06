@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -2123,12 +2124,32 @@ func TestSmallLLMConfig_RoundTrip_FullProfileLossless(t *testing.T) {
 
 func TestGetConfig_MasksAPIKeys(t *testing.T) {
 	f, _, _ := newTestAPI(t)
+	f.config.LLM.ChatGPT.APIKey = "chatgpt-secret-must-not-reach-rpc"
+	f.config.LLM.OpenAICompatible = map[string]config.OpenAICompatibleConfig{
+		"kimi": {APIKey: "kimi-secret-must-not-reach-rpc", BaseURL: "https://api.example.invalid/v1", Models: []string{"kimi-test"}},
+	}
+
 	resp := f.GetConfig()
 	if !resp.Loaded {
 		t.Fatal("expected Loaded=true")
 	}
 	if resp.LLM.Anthropic.APIKey != maskedAPIKey {
-		t.Errorf("API key not masked: got %q", resp.LLM.Anthropic.APIKey)
+		t.Errorf("Anthropic API key not masked: got %q", resp.LLM.Anthropic.APIKey)
+	}
+	if resp.LLM.ChatGPT.APIKey != maskedAPIKey {
+		t.Errorf("ChatGPT API key not masked: got %q", resp.LLM.ChatGPT.APIKey)
+	}
+	kimi, ok := resp.LLM.OpenAICompatible["kimi"]
+	if !ok {
+		t.Fatal("expected Kimi OpenAI-compatible config in response")
+	}
+	if kimi.APIKey != maskedAPIKey {
+		t.Errorf("Kimi API key not masked: got %q", kimi.APIKey)
+	}
+	for _, secret := range []string{"chatgpt-secret-must-not-reach-rpc", "kimi-secret-must-not-reach-rpc"} {
+		if strings.Contains(fmt.Sprintf("%+v", resp), secret) {
+			t.Errorf("GetConfig response disclosed API key %q", secret)
+		}
 	}
 }
 

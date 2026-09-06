@@ -147,6 +147,27 @@ describe('ModelCombobox portal', () => {
     expect(defaultOption?.textContent).not.toContain('GLM-5.2-FP8')
   })
 
+  it('renders and selects a connected ChatGPT subscription model', () => {
+    spies.configData.allModels = [
+      { name: 'claude-sonnet', provider: 'anthropic', family: 'anthropic', vision: true },
+      { name: 'gpt-5.4', provider: 'chatgpt_subscription', family: 'openai_flagship', vision: true },
+    ]
+    act(() => {
+      root.render(<ModelCombobox />)
+    })
+
+    openDropdown()
+    const listbox = document.body.querySelector('[role="listbox"]') as HTMLDivElement
+    expect(listbox.textContent).toContain('ChatGPT subscription')
+    const buttons = listbox.querySelectorAll('button')
+    act(() => {
+      buttons[buttons.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(useInputModeStore.getState().selectedModel).toBe('chatgpt_subscription/gpt-5.4')
+    expect(spies.setDefaultModel).toHaveBeenCalledWith('chatgpt_subscription/gpt-5.4')
+  })
+
   it('selects a model and closes when a portaled option is clicked', () => {
     openDropdown()
     const options = document.body.querySelectorAll('[role="listbox"] button')

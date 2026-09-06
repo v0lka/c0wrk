@@ -31,6 +31,8 @@ export function CancelGoal(arg1:string,arg2:string):Promise<void>;
 
 export function CancelSessionCompaction(arg1:string):Promise<void>;
 
+export function CancelSubscriptionLogin(arg1:string):Promise<void>;
+
 export function CancelTask(arg1:string):Promise<void>;
 
 export function CancelUnfinishedTask(arg1:string):Promise<void>;
@@ -52,6 +54,8 @@ export function CompactSessionContext(arg1:string,arg2:string):Promise<void>;
 export function ConfirmExit():Promise<void>;
 
 export function ConfirmGoal(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
+
+export function ConnectSubscription(arg1:string):Promise<backend.SubscriptionLoginResponse>;
 
 export function CreateBranch(arg1:string,arg2:string):Promise<void>;
 
@@ -175,6 +179,8 @@ export function GetSmallLLMConfig():Promise<backend.SmallLLMConfigResponse>;
 
 export function GetStepOutput(arg1:string,arg2:string):Promise<string>;
 
+export function GetSubscriptionStatuses():Promise<Array<backend.SubscriptionStatus>>;
+
 export function GetTerminalHistory(arg1:string):Promise<Array<session.TerminalCommand>>;
 
 export function GetToolList():Promise<Array<backend.ToolInfo>>;
@@ -210,6 +216,8 @@ export function ListSessionWorkDirectories(arg1:string):Promise<Array<project.Wo
 export function ListSessions():Promise<Array<session.SessionInfo>>;
 
 export function ListSkills():Promise<Array<backend.SkillDescriptorDTO>>;
+
+export function LogoutSubscription(arg1:string):Promise<void>;
 
 export function Merge(arg1:string):Promise<void>;
 

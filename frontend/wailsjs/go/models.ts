@@ -242,6 +242,22 @@ export namespace backend {
 		    return a;
 		}
 	}
+	export class SubscriptionProviderModels {
+	    provider: string;
+	    models: string[];
+	    enabled: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SubscriptionProviderModels(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.provider = source["provider"];
+	        this.models = source["models"];
+	        this.enabled = source["enabled"];
+	    }
+	}
 	export class ConfigProviderFull {
 	    api_key: string;
 	    base_url?: string;
@@ -264,6 +280,7 @@ export namespace backend {
 	    openai_compatible: Record<string, ConfigProviderFull>;
 	    anthropic_compatible: Record<string, ConfigProviderFull>;
 	    chatgpt: ConfigProviderFull;
+	    subscriptions: SubscriptionProviderModels[];
 	    all_models: ModelInfo[];
 	    models_ready: boolean;
 	
@@ -278,6 +295,7 @@ export namespace backend {
 	        this.openai_compatible = this.convertValues(source["openai_compatible"], ConfigProviderFull, true);
 	        this.anthropic_compatible = this.convertValues(source["anthropic_compatible"], ConfigProviderFull, true);
 	        this.chatgpt = this.convertValues(source["chatgpt"], ConfigProviderFull);
+	        this.subscriptions = this.convertValues(source["subscriptions"], SubscriptionProviderModels);
 	        this.all_models = this.convertValues(source["all_models"], ModelInfo);
 	        this.models_ready = source["models_ready"];
 	    }
@@ -471,6 +489,7 @@ export namespace backend {
 	    openai_compatible?: Record<string, ProviderConfigRequest>;
 	    anthropic_compatible?: Record<string, ProviderConfigRequest>;
 	    chatgpt?: ProviderConfigRequest;
+	    subscription_models?: Record<string, Array<string>>;
 	
 	    static createFrom(source: any = {}) {
 	        return new LLMFullConfigRequest(source);
@@ -483,6 +502,7 @@ export namespace backend {
 	        this.openai_compatible = this.convertValues(source["openai_compatible"], ProviderConfigRequest, true);
 	        this.anthropic_compatible = this.convertValues(source["anthropic_compatible"], ProviderConfigRequest, true);
 	        this.chatgpt = this.convertValues(source["chatgpt"], ProviderConfigRequest);
+	        this.subscription_models = source["subscription_models"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1169,6 +1189,39 @@ export namespace backend {
 	
 	
 	
+	export class SubscriptionLoginResponse {
+	    authorization_url: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SubscriptionLoginResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.authorization_url = source["authorization_url"];
+	    }
+	}
+	
+	export class SubscriptionStatus {
+	    provider: string;
+	    connected: boolean;
+	    connecting: boolean;
+	    available: boolean;
+	    message?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SubscriptionStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.provider = source["provider"];
+	        this.connected = source["connected"];
+	        this.connecting = source["connecting"];
+	        this.available = source["available"];
+	        this.message = source["message"];
+	    }
+	}
 	export class ToolInfo {
 	    name: string;
 	    description: string;

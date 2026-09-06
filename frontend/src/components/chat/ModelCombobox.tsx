@@ -26,6 +26,8 @@ function providerLabel(provider: string): string {
       return 'Anthropic'
     case 'chatgpt':
       return 'ChatGPT'
+    case 'chatgpt_subscription':
+      return 'ChatGPT subscription'
     default:
       return provider
   }

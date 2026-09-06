@@ -93,8 +93,11 @@ type Application struct {
 	// construction (desktop wires it once its pending-confirmation map is ready).
 	goalProposer coretools.GoalProposer
 
-	// hitlHandler is captured for the orchestrator factory closure.
 	hitlHandler agent.HITLHandler
+
+	// subscriptions is shared with FrontendAPI so startup and runtime router
+	// construction resolve the same encrypted managed-provider credentials.
+	subscriptions *subscriptionManager
 }
 
 func (app *Application) log() *slog.Logger {
@@ -113,6 +116,12 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 		hitlHandler:  cfg.HITLHandler,
 		goalProposer: cfg.GoalProposer,
 	}
+	app.subscriptions = newSubscriptionManager(cfg.AgentDir, func() (config.SubscriptionProvidersConfig, bool) {
+		if cfg.Config == nil {
+			return config.SubscriptionProvidersConfig{}, false
+		}
+		return cfg.Config.LLM.Subscriptions, cfg.Config.Experimental.Enabled
+	})
 
 	// 1. Event persister (SQLite persistence, separate from UI emission).
 	app.persister = session.NewEventPersister(cfg.SessionStore)
@@ -128,6 +137,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 
 	// 3. OrchestratorBuilder (owns registry, gateway, router, judge).
 	builderCfg := ToBuilderConfig(cfg.Config)
+	app.subscriptions.augment(builderCfg)
 	// Managed venv interpreter (imports markitdown) enables vision-assisted
 	// document conversion. Machine-local fact, resolved LAZILY: the
 	// tool-manager installs the venv asynchronously after startup, so probing
@@ -222,6 +232,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	// 5. Orchestrator factory closure for the session manager.
 	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		orchCfg := ToBuilderConfig(cfg.Config)
+		app.subscriptions.augment(orchCfg)
 		// The lazy python probe is consumed at tool registration (builder
 		// creation); propagate it here as well so any future Build-side
 		// consumer sees the closure instead of a zero value.

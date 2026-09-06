@@ -48,6 +48,12 @@ type ModelInfo struct {
 	Reasoning *ReasoningInfo `json:"reasoning,omitempty"` // nil = family doesn't support reasoning
 }
 
+type SubscriptionProviderModels struct {
+	Provider string   `json:"provider"`
+	Models   []string `json:"models"`  // full built-in catalogue
+	Enabled  []string `json:"enabled"` // user-selected visible subset
+}
+
 // ConfigLLMResponse holds sanitised LLM provider info.
 type ConfigLLMResponse struct {
 	DefaultModel        string                        `json:"default_model"` // global, cross-provider
@@ -55,6 +61,7 @@ type ConfigLLMResponse struct {
 	OpenAICompatible    map[string]ConfigProviderFull `json:"openai_compatible"`
 	AnthropicCompatible map[string]ConfigProviderFull `json:"anthropic_compatible"`
 	ChatGPT             ConfigProviderFull            `json:"chatgpt"`
+	Subscriptions       []SubscriptionProviderModels  `json:"subscriptions"`
 	AllModels           []ModelInfo                   `json:"all_models"`   // flat list of all enabled models with family + reasoning metadata
 	ModelsReady         bool                          `json:"models_ready"` // false during async LLM init; true once registry is wired
 }
@@ -85,6 +92,7 @@ type LLMFullConfigRequest struct {
 	OpenAICompatible    map[string]ProviderConfigRequest `json:"openai_compatible,omitempty"`
 	AnthropicCompatible map[string]ProviderConfigRequest `json:"anthropic_compatible,omitempty"`
 	ChatGPT             *ProviderConfigRequest           `json:"chatgpt,omitempty"`
+	SubscriptionModels  map[string][]string              `json:"subscription_models,omitempty"`
 }
 
 // ProviderConfigRequest holds a single provider's configuration.

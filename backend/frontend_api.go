@@ -147,6 +147,10 @@ type FrontendAPI struct {
 	// accessor. Used by tests to substitute a fake appBuilder so config/MCP
 	// mutations can be verified without the real LLM router or MCP gateway.
 	builderOverride appBuilder
+
+	// subscriptions owns encrypted credential lifecycle and produces only
+	// short-lived host-side token resolvers for the LLM builder.
+	subscriptions *subscriptionManager
 }
 
 // TerminalManager is the interface for the terminal subsystem.
@@ -205,6 +209,19 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 		appCtx:          cfg.AppCtx,
 		quitApp:         cfg.QuitApp,
 	}
+	if cfg.App != nil && cfg.App.subscriptions != nil {
+		f.subscriptions = cfg.App.subscriptions
+	} else {
+		f.subscriptions = newSubscriptionManager(cfg.AgentDir, func() (config.SubscriptionProvidersConfig, bool) {
+			f.configMu.RLock()
+			defer f.configMu.RUnlock()
+			if f.config == nil {
+				return config.SubscriptionProvidersConfig{}, false
+			}
+			return f.config.LLM.Subscriptions, f.config.Experimental.Enabled
+		})
+	}
+	f.subscriptions.onConnected = f.rebuildSubscriptionRouter
 
 	// Mirror the trusted-repo list into the process-wide git trust registry
 	// (core/gittrust), which core/workspace consults to decide whether a
