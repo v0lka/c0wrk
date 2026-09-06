@@ -105,7 +105,15 @@ func mainImpl() int {
 		MinWidth:         1024,
 		MinHeight:        600,
 		BackgroundColour: options.NewRGB(40, 44, 52),
-		StartHidden:      os.Getenv("C0WRK_START_HIDDEN") != "false",
+		// The window is deliberately NOT created hidden. Wails applies
+		// StartHidden by queueing a hide on the platform UI loop *after* the
+		// webview starts loading, while OnStartup already runs concurrently on
+		// its own goroutine — so a fast backend start gets its WindowShow calls
+		// queued ahead of that hide, the hide executes last, and the window
+		// stays withdrawn for the life of the process. Starting visible removes
+		// the race: the window is mapped synchronously by Wails before its UI
+		// loop begins. Nothing is lost — desktop/startup_phases.go revealed the
+		// window unconditionally within a millisecond of startup anyway.
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
@@ -119,6 +127,7 @@ func mainImpl() int {
 			DisableWebViewDrop: true,
 		},
 		OnStartup:  app.Startup,
+		OnDomReady: app.DomReady,
 		OnShutdown: app.Shutdown,
 		// Close guard: every quit path (window close button, Cmd+Q / the OS
 		// quit menu, runtime.Quit — including the updater's quit) funnels

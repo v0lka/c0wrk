@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/v0lka/c0wrk/backend"
 	"github.com/v0lka/c0wrk/backend/config"
@@ -168,15 +167,13 @@ func (a *App) initTools(ctx context.Context, log *slog.Logger) (toolsBinPath str
 		},
 	})
 
-	// Show the window unconditionally at the start of tool initialization so
-	// the frontend has time to mount and subscribe to events before
-	// backend:ready fires in Phase 5. On first run this reveals the
-	// tool-install splash; on subsequent runs it prevents the race where
-	// backend:ready is emitted before the frontend subscribes, which would
-	// leave the app stuck on the spinner forever.
-	// WindowShow is idempotent — calling it again in emitBackendReady is a
-	// no-op when the window is already visible.
-	wailsRuntime.WindowShow(ctx)
+	// Show the window unconditionally at the start of tool initialization.
+	// The window is already visible — main.go creates it that way on purpose
+	// (see the StartHidden note there) — so this is a no-op in a normal start.
+	// It is kept as a safety net: a window hidden for any other reason must
+	// still be back before the tool-install splash and backend:ready need it.
+	// showWindow is idempotent; emitBackendReady calls it again harmlessly.
+	a.showWindow(ctx)
 
 	// Early detection: check which tools need installing BEFORE doing any work.
 	needed, needsErr := mgr.NeedsInstall()
@@ -957,20 +954,19 @@ func (a *App) buildFrontendAPI(
 // emitBackendReady fires the EventBackendReady event with cached projects
 // when available, falling back to a fresh ListProjects call. The signal tells
 // the frontend that all synchronous backend subsystems are wired up.
-// WindowShow is called unconditionally — when the window was already shown
-// for tool installation this is a no-op; when no tools were needed this is
-// the first time the window becomes visible.
+// showWindow is called unconditionally and is idempotent — the window is
+// created visible, so this is the last of several no-op safety nets rather
+// than the moment the window appears.
 //
 // filterNoProject strips the No Project pseudo-project from the emitted list
 // regardless of whether projects come from cache or a fresh query.
 // This is used when LLM is unconfigured to prevent the frontend from
 // auto-loading No Project before the settings dialog is shown.
 func (a *App) emitBackendReady(cachedProjects []project.ProjectInfo, projectMgr *project.Manager, filterNoProject bool, log *slog.Logger) {
-	// When the window is still hidden (no tools needed installing), show it now.
-	// WindowShow is idempotent: if already visible (tools were installed), it's a no-op.
+	// Last safety-net reveal before the frontend is told the backend is up.
 	// Guard against nil ctx in tests (no Wails lifecycle).
 	if a.ctx != nil {
-		wailsRuntime.WindowShow(a.ctx)
+		a.showWindow(a.ctx)
 	}
 
 	// Collect projects from cache or fresh query, applying No Project filter if
