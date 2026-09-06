@@ -3,11 +3,10 @@ package desktop
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strconv"
 	"testing"
 	"time"
 
@@ -17,168 +16,128 @@ import (
 	"github.com/v0lka/c0wrk/backend/session"
 )
 
-// criticalPathBudget returns the per-platform budget for the startup
-// critical-path tests. The default 500ms guards against regressions on the
-// fast dev path (Linux/macOS). Windows needs far more headroom because CI
-// runners there are notably slower for SQLite cold starts (NTFS file
-// creation, Defender scanning, and modernc.org/sqlite CGO-free overhead),
-// which otherwise makes the test flap.
+// BenchmarkStartupCriticalPath measures the synchronous startup work that
+// precedes application construction: applying defaults, opening the database,
+// initializing stores, and preloading projects and sessions. It deliberately
+// excludes Wails context, ONNX models, the MCP gateway, and network I/O.
 //
-// The budget may be overridden with the C0WRK_STARTUP_BUDGET_MS environment
-// variable (a positive integer of milliseconds). This lets CI operators
-// tune per-runner hardware without code changes, and lets a developer
-// verify the guard locally at any threshold.
-func criticalPathBudget() time.Duration {
-	if raw := os.Getenv("C0WRK_STARTUP_BUDGET_MS"); raw != "" {
-		if ms, err := strconv.Atoi(raw); err == nil && ms > 0 {
-			return time.Duration(ms) * time.Millisecond
-		}
-	}
-	if runtime.GOOS == "windows" {
-		return 5 * time.Second
-	}
-	return 500 * time.Millisecond
+// Run it explicitly with `make bench-startup`. Benchmarks report stable,
+// comparable ns/op and allocation metrics rather than failing the unit suite
+// based on wall-clock time, which varies with CI runner load.
+func BenchmarkStartupCriticalPath(b *testing.B) {
+	b.Run("empty_database", benchmarkStartupCriticalPathEmpty)
+	b.Run("preload_seeded_data", benchmarkStartupCriticalPathWithData)
 }
 
-// TestCriticalPathBudget verifies that the synchronous startup phases
-// (database, stores, project/session preload) complete within the
-// platform budget (see criticalPathBudget).
-//
-// This acts as a regression guardrail: if a new blocking operation is
-// accidentally added to the critical path, this test will catch the
-// budget violation.
-//
-// The test exercises the same subsystems as Startup phases 2-4 but
-// without Wails context, ONNX models, MCP gateway, or network I/O.
-func TestCriticalPathBudget(t *testing.T) {
-	budget := criticalPathBudget()
+func benchmarkStartupCriticalPathEmpty(b *testing.B) {
+	baseDir := b.TempDir()
+	log := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	dir := t.TempDir()
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		// Each iteration needs a new database to model a cold startup. Creating
+		// and removing its parent fixture is excluded from the measured path.
+		b.StopTimer()
+		dir := filepath.Join(baseDir, fmt.Sprintf("run-%d", i))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			b.Fatalf("MkdirAll(%q): %v", dir, err)
+		}
+		b.StartTimer()
 
-	start := time.Now()
+		cfg := &config.Config{}
+		config.ApplyDefaults(cfg)
 
-	// ── Phase 2 equivalent: config with defaults ───────────────────
-	cfg := &config.Config{}
-	config.ApplyDefaults(cfg)
-	_ = cfg // configuration loaded (database path is now fixed via config.DatabasePath)
-
-	// ── Phase 3 equivalent: database ────────────────────────────────
-	dbPath := filepath.Join(dir, "test.db")
-	db, err := backend.OpenDatabase(dbPath, log)
-	if err != nil {
-		t.Fatalf("OpenDatabase: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	// ── Phase 4 equivalent: stores + preload ────────────────────────
-	projStore, err := project.NewSQLiteProjectStore(db)
-	if err != nil {
-		t.Fatalf("NewSQLiteProjectStore: %v", err)
-	}
-
-	sessStore, err := session.NewSQLiteSessionStore(db)
-	if err != nil {
-		t.Fatalf("NewSQLiteSessionStore: %v", err)
-	}
-
-	projectsDir := filepath.Join(dir, "projects")
-	if mkErr := os.MkdirAll(projectsDir, 0o755); mkErr != nil {
-		t.Fatalf("MkdirAll projects: %v", mkErr)
-	}
-
-	projectMgr := project.NewManager(projStore, dir, nil)
-
-	projects, err := projectMgr.ListProjects()
-	if err != nil {
-		t.Fatalf("ListProjects: %v", err)
-	}
-
-	// If projects existed, the startup would also pre-load sessions for
-	// the most recent one. Simulate that path even with an empty DB.
-	if len(projects) > 0 {
-		_, err = sessStore.ListSessionsByProject(context.Background(), projects[0].ID)
+		db, err := backend.OpenDatabase(filepath.Join(dir, "startup.db"), log)
 		if err != nil {
-			t.Fatalf("ListSessionsByProject: %v", err)
+			b.Fatalf("OpenDatabase: %v", err)
 		}
-	}
+		projStore, err := project.NewSQLiteProjectStore(db)
+		if err != nil {
+			_ = db.Close()
+			b.Fatalf("NewSQLiteProjectStore: %v", err)
+		}
+		sessStore, err := session.NewSQLiteSessionStore(db)
+		if err != nil {
+			_ = db.Close()
+			b.Fatalf("NewSQLiteSessionStore: %v", err)
+		}
+		projectMgr := project.NewManager(projStore, dir, nil)
+		projects, err := projectMgr.ListProjects()
+		if err != nil {
+			_ = db.Close()
+			b.Fatalf("ListProjects: %v", err)
+		}
+		if len(projects) > 0 {
+			if _, err := sessStore.ListSessionsByProject(context.Background(), projects[0].ID); err != nil {
+				_ = db.Close()
+				b.Fatalf("ListSessionsByProject: %v", err)
+			}
+		}
 
-	elapsed := time.Since(start)
-	t.Logf("critical-path budget test completed in %v (budget: %v)", elapsed, budget)
-
-	if elapsed > budget {
-		t.Fatalf("critical path exceeded budget: took %v, allowed %v", elapsed, budget)
+		b.StopTimer()
+		if err := db.Close(); err != nil {
+			b.Fatalf("db.Close: %v", err)
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			b.Fatalf("RemoveAll(%q): %v", dir, err)
+		}
+		b.StartTimer()
 	}
 }
 
-// TestCriticalPathBudget_WithData is a heavier variant that populates
-// the database before measuring the preload phase, ensuring that the
-// budget holds even when projects and sessions exist.
-func TestCriticalPathBudget_WithData(t *testing.T) {
-	budget := criticalPathBudget()
+func benchmarkStartupCriticalPathWithData(b *testing.B) {
+	dir := b.TempDir()
+	log := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	dir := t.TempDir()
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-
-	// Setup: database + stores (not timed — this is fixture creation).
-	dbPath := filepath.Join(dir, "test.db")
-	db, err := backend.OpenDatabase(dbPath, log)
+	// Fixture creation is not part of preload timing.
+	db, err := backend.OpenDatabase(filepath.Join(dir, "startup.db"), log)
 	if err != nil {
-		t.Fatalf("OpenDatabase: %v", err)
+		b.Fatalf("OpenDatabase: %v", err)
 	}
-	defer func() { _ = db.Close() }()
+	b.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			b.Errorf("db.Close: %v", err)
+		}
+	})
 
 	projStore, err := project.NewSQLiteProjectStore(db)
 	if err != nil {
-		t.Fatalf("NewSQLiteProjectStore: %v", err)
+		b.Fatalf("NewSQLiteProjectStore: %v", err)
 	}
-
 	sessStore, err := session.NewSQLiteSessionStore(db)
 	if err != nil {
-		t.Fatalf("NewSQLiteSessionStore: %v", err)
+		b.Fatalf("NewSQLiteSessionStore: %v", err)
 	}
-
 	projectMgr := project.NewManager(projStore, dir, nil)
 
-	// Seed data: create a project and a handful of sessions.
 	proj, err := projectMgr.CreateProject("bench-project", "")
 	if err != nil {
-		t.Fatalf("CreateProject: %v", err)
+		b.Fatalf("CreateProject: %v", err)
 	}
-
 	now := time.Now().UTC().Format(time.RFC3339)
 	for i := 0; i < 10; i++ {
-		sErr := sessStore.SaveSession(context.Background(), session.SessionInfo{
+		if err := sessStore.SaveSession(context.Background(), session.SessionInfo{
 			ID:        fmt.Sprintf("sess-%d", i),
 			ProjectID: proj.ID,
 			Name:      fmt.Sprintf("Session %d", i),
 			CreatedAt: now,
-		})
-		if sErr != nil {
-			t.Fatalf("SaveSession[%d]: %v", i, sErr)
+		}); err != nil {
+			b.Fatalf("SaveSession(%d): %v", i, err)
 		}
 	}
 
-	// ── Timed section: simulate the preload critical path ───────────
-	start := time.Now()
-
-	projects, err := projectMgr.ListProjects()
-	if err != nil {
-		t.Fatalf("ListProjects: %v", err)
-	}
-	if len(projects) == 0 {
-		t.Fatal("expected at least 1 project")
-	}
-
-	_, err = sessStore.ListSessionsByProject(context.Background(), projects[0].ID)
-	if err != nil {
-		t.Fatalf("ListSessionsByProject: %v", err)
-	}
-
-	elapsed := time.Since(start)
-	t.Logf("preload with data completed in %v (budget: %v)", elapsed, budget)
-
-	if elapsed > budget {
-		t.Fatalf("preload exceeded budget: took %v, allowed %v", elapsed, budget)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		projects, err := projectMgr.ListProjects()
+		if err != nil {
+			b.Fatalf("ListProjects: %v", err)
+		}
+		if len(projects) == 0 {
+			b.Fatal("ListProjects returned no seeded project")
+		}
+		if _, err := sessStore.ListSessionsByProject(context.Background(), projects[0].ID); err != nil {
+			b.Fatalf("ListSessionsByProject: %v", err)
+		}
 	}
 }

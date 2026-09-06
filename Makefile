@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt-check vulncheck dev-desktop bump fetch-onnx fetch-embedding-model clean-onnx clean frontend-deps
+.PHONY: build test bench-startup lint fmt-check vulncheck dev-desktop bump fetch-onnx fetch-embedding-model clean-onnx clean frontend-deps
 
 # govulncheck version pinned for reproducible vulnerability scans (CI runs the
 # same `make vulncheck` command; upgrade deliberately, both repos in lockstep).
@@ -157,6 +157,12 @@ build: frontend-deps
 test:
 	go test ./...
 	cd frontend && npm test
+
+# Explicit startup performance check. It is intentionally not part of `test`
+# or CI's `go test ./...`: benchmark wall-clock metrics depend on host load.
+# Compare ns/op and allocs/op across controlled runs to detect regressions.
+bench-startup:
+	go test ./desktop -run '^$$' -bench '^BenchmarkStartupCriticalPath$$' -benchmem
 
 lint: fmt-check
 	golangci-lint run

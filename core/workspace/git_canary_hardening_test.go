@@ -244,8 +244,9 @@ func TestCanaryIncludeHiddenSSHCommandNeutered(t *testing.T) {
 // TestCanaryIncludeHiddenDiffExternalNeutered hides diff.external in an
 // included file. The include record derives the name-independent
 // diff.external= (empty) kill — which beats file config no matter where the
-// key is defined — so `git diff --cached` through GitCmdInRepo renders the
-// staged change without executing the hidden command.
+// key is defined. Patch-producing callers must also pass --no-ext-diff: Git
+// otherwise tries to execute the deliberately empty override. The hardened
+// diff must render the staged change without executing the hidden command.
 func TestCanaryIncludeHiddenDiffExternalNeutered(t *testing.T) {
 	skipUnlessAttrTreeCapableGit(t)
 	f := newCanaryFixture(t, "hello\n")
@@ -258,7 +259,7 @@ func TestCanaryIncludeHiddenDiffExternalNeutered(t *testing.T) {
 	}
 	f.repo.AppendConfig(t, "[include]\n\tpath = "+extra+"\n")
 
-	cmd, err := GitCmdInRepo(f.ctx, f.repo.Root, "diff", "--cached")
+	cmd, err := GitCmdInRepo(f.ctx, f.repo.Root, "diff", "--no-ext-diff", "--cached")
 	if err != nil {
 		t.Fatalf("GitCmdInRepo: %v", err)
 	}
@@ -266,23 +267,18 @@ func TestCanaryIncludeHiddenDiffExternalNeutered(t *testing.T) {
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	if err := cmd.Run(); err != nil {
-		// Fail-closed is acceptable: an external-diff refusal must never
-		// become an execution.
-		t.Logf("diff --cached (fail-closed tolerated): %s", out.String())
-	} else if !contains(out.String(), "+changed") {
-		t.Logf("diff output: %s", out.String())
+		t.Fatalf("hardened diff --no-ext-diff --cached: %v (%s)", err, out.String())
+	}
+	if !contains(out.String(), "+changed") {
+		t.Fatalf("hardened diff missing staged change:\n%s", out.String())
 	}
 	f.canary.RequireNotFired(t)
 
-	// Non-vacuity control: raw git diff --cached executes the hidden
-	// external command.
-	control := gittest.NewCanary(t)
-	controlScript := control.Plant(t, "hiddendiff", gittest.HookBody)
-	if err := os.WriteFile(extra, []byte("[diff]\n\texternal = "+controlScript+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// Non-vacuity control: without the hardened argv, raw git executes the
+	// include-hidden external command. This proves the protected run above
+	// was not merely a benign fixture.
 	runRawGitControl(t, f.repo.Root, "", "diff", "--cached")
-	if !control.Fired(t) {
-		t.Fatalf("the control canary must fire under raw git; fixture was not armed")
+	if !f.canary.Fired(t) {
+		t.Fatal("raw git control must execute the include-hidden external diff command")
 	}
 }
