@@ -97,7 +97,12 @@ func TestSeedSkills_AssetsEmbedded(t *testing.T) {
 
 // TestSeedSkills_IdempotentSameVersion verifies re-seeding with an unchanged
 // pack version skips everything and preserves existing (possibly user-edited)
-// content byte-for-byte.
+// content byte-for-byte. A same-version skill whose content diverges from the
+// pack (the user edit below) is hash-diff'd against the embedded pack,
+// preserved untouched, and reported as Modified — never Current (a spoofed
+// marker must not masquerade as the pack, review finding [44]) and never
+// silently overwritten (acceptance: an edit on top of the pack is not
+// re-clobbered).
 func TestSeedSkills_IdempotentSameVersion(t *testing.T) {
 	dest := t.TempDir()
 
@@ -120,11 +125,18 @@ func TestSeedSkills_IdempotentSameVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second SeedSkills: %v", err)
 	}
-	if len(second.Seeded) != 0 || len(second.Current) != 7 {
-		t.Fatalf("second pass: Seeded=%v Current=%v, want Seeded=0 Current=7", second.Seeded, second.Current)
+	if len(second.Seeded) != 0 || len(second.Updated) != 0 {
+		t.Fatalf("second pass: Seeded=%v Updated=%v, want both empty", second.Seeded, second.Updated)
+	}
+	if len(second.Current) != 6 {
+		t.Fatalf("second pass: Current=%v, want the 6 unedited skills", second.Current)
+	}
+	if len(second.Modified) != 1 || second.Modified[0] != "research-init" {
+		t.Fatalf("second pass: Modified=%v, want [research-init]", second.Modified)
 	}
 
-	// The user edit must survive unchanged (same-version skip preserves edits).
+	// The user edit must survive unchanged (same-version divergence is never
+	// silently overwritten).
 	got, err := os.ReadFile(edited)
 	if err != nil {
 		t.Fatalf("read edited: %v", err)

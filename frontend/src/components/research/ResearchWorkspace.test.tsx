@@ -20,6 +20,7 @@ import type {
 vi.mock('@/api/research', () => ({
   getResearchStatus: vi.fn(),
   getResearchGraph: vi.fn(),
+  getResearchNextStep: vi.fn(),
   updateHypothesis: vi.fn(),
   createHypothesis: vi.fn(),
 }))
@@ -33,22 +34,36 @@ vi.mock('@/api/research', () => ({
 // through DOM mutations + MutationObserver, which cannot be faithfully
 // simulated in jsdom; stub it with a plain controlled textarea (same
 // value/onChange contract) so the tests exercise the workspace's own data
-// flow — draft → dirty → buildUpdateFields → updateHypothesis.
-vi.mock('@/components/fileViewer/MiniCodeMirrorField', () => ({
-  MiniCodeMirrorField: ({
-    value,
-    onChange,
-  }: {
-    value: string
-    onChange: (v: string) => void
-  }) => (
-    <textarea
-      aria-label="Hypothesis result"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-    />
-  ),
-}))
+// flow — draft → dirty → buildUpdateFields → updateHypothesis. The stub also
+// counts MOUNTS: the workspace keys the card on the hypothesis id, so every
+// selection switch must remount the editor — a fresh CodeMirror instance
+// whose doc/cursor/history (and any mount-time capture) never leak across
+// cards.
+const editorMounts = vi.hoisted(() => ({ count: 0 }))
+
+vi.mock('@/components/fileViewer/MiniCodeMirrorField', async () => {
+  const { useEffect } = await import('react')
+  return {
+    MiniCodeMirrorField: ({
+      value,
+      onChange,
+    }: {
+      value: string
+      onChange: (v: string) => void
+    }) => {
+      useEffect(() => {
+        editorMounts.count += 1
+      }, [])
+      return (
+        <textarea
+          aria-label="Hypothesis result"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      )
+    },
+  }
+})
 
 function makeStatus(): ResearchStatus {
   return {
@@ -137,6 +152,7 @@ afterEach(() => {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  editorMounts.count = 0
   vi.mocked(getResearchStatus).mockResolvedValue(makeStatus())
   vi.mocked(getResearchGraph).mockResolvedValue(makeGraphResponse())
   vi.mocked(updateHypothesis).mockResolvedValue(makeGraphResponse())
@@ -200,12 +216,14 @@ describe('ResearchWorkspace — edit persistence', () => {
       node.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    // Change the status to 'confirmed'.
+    // Change the status to 'in-progress' — a legal open → in-progress move;
+    // the select only offers the current status and its legal targets (the
+    // backend state machine rejects every other jump).
     const select = container.querySelector<HTMLSelectElement>(
       'select[aria-label="Hypothesis status"]',
     )!
     await act(async () => {
-      select.value = 'confirmed'
+      select.value = 'in-progress'
       select.dispatchEvent(new Event('change', { bubbles: true }))
     })
 
@@ -220,9 +238,11 @@ describe('ResearchWorkspace — edit persistence', () => {
       await new Promise((r) => setTimeout(r, 0))
     })
 
-    // Only the changed status field is sent; result/timebox are omitted.
-    expect(updateHypothesis).toHaveBeenCalledWith('p1', 'H-001', {
-      status: 'confirmed',
+    // Only the changed status field is sent; result/timebox are omitted. The
+    // call carries the expected research project ([19]) resolved fresh from
+    // the store at save time.
+    expect(updateHypothesis).toHaveBeenCalledWith('p1', 'R-001', 'H-001', {
+      status: 'in-progress',
     })
   })
 
@@ -274,9 +294,69 @@ describe('ResearchWorkspace — edit persistence', () => {
     })
 
     // Only the changed fields (result + timebox) are sent; status is unchanged.
-    expect(updateHypothesis).toHaveBeenCalledWith('p1', 'H-001', {
+    expect(updateHypothesis).toHaveBeenCalledWith('p1', 'R-001', 'H-001', {
       result: 'It works',
       timebox: '2 weeks',
+    })
+  })
+
+  it('offers only the legal status transitions in the card select', async () => {
+    const { container } = await renderWorkspace()
+    await selectNode(container, 'H-001')
+
+    // H-001 is 'open': the select must offer open → in-progress/cancelled
+    // and hide illegal jumps (e.g. open → confirmed) the backend rejects.
+    const select = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="Hypothesis status"]',
+    )!
+    expect(Array.from(select.options).map((o) => o.value)).toEqual([
+      'open',
+      'in-progress',
+      'cancelled',
+    ])
+  })
+})
+
+describe('ResearchWorkspace — card drafts are isolated per hypothesis', () => {
+  it("editing one card never writes the other card's fields", async () => {
+    const { container } = await renderWorkspace()
+
+    // Card 1: edit H-001's result.
+    await selectNode(container, 'H-001')
+    expect(editorMounts.count).toBe(1)
+    await act(async () => {
+      setResultText(container, 'H-001 finding')
+    })
+    expect(useResearchStore.getState().hypothesisDraft).toEqual({
+      status: 'open',
+      result: 'H-001 finding',
+      timebox: '',
+    })
+
+    // Card 2: switch to H-002 and edit its result. The draft must rebase on
+    // H-002's OWN snapshot — H-001's status/result/timebox must not bleed
+    // into it (the historical bug: an editor instance reused across cards
+    // kept a mount-time onChange closure that spread the FIRST card's draft
+    // over every later card).
+    await selectNode(container, 'H-002')
+    // The card subtree is keyed by hypothesis id → the editor REMOUNTS.
+    expect(editorMounts.count).toBe(2)
+    await act(async () => {
+      setResultText(container, 'H-002 finding')
+    })
+    expect(useResearchStore.getState().hypothesisDraft).toEqual({
+      status: 'confirmed', // H-002's own status, not H-001's
+      result: 'H-002 finding',
+      timebox: '',
+    })
+
+    // Card 1 again: re-selecting H-001 re-snapshots from the (unchanged)
+    // graph — H-001's own original fields, with no H-002 values either.
+    await selectNode(container, 'H-001')
+    expect(useResearchStore.getState().hypothesisDraft).toEqual({
+      status: 'open',
+      result: '',
+      timebox: '',
     })
   })
 })

@@ -146,6 +146,13 @@ export interface UsePanZoomResult {
    * swallow the event) so drag-to-pan does not register as a click.
    */
   didDragRef: RefObject<boolean>
+  /**
+   * True while a pointer gesture is active (from pointerdown until
+   * pointerup/pointer cancel). Read it inside effects that would reset the
+   * camera (e.g. an auto-fit) so a geometry refresh landing mid-drag never
+   * yanks the viewport out from under the user.
+   */
+  isPanningRef: RefObject<boolean>
   /** Zoom by `factor`, keeping the viewport point (cx, cy) fixed. */
   zoomAt: (factor: number, cx: number, cy: number) => void
   /** Zoom by `factor` around the canvas center. */
@@ -168,11 +175,18 @@ interface DragState {
 /**
  * Reusable pan/zoom state machine for a fixed-size canvas viewport holding a
  * transformable content element:
- *   - anchored wheel/button zoom toward cursor or center,
+ *   - anchored wheel/button zoom toward cursor or center (zero-delta wheel
+ *     events are ignored, not zoomed),
  *   - fit-to-canvas (never upscaled) from natural content size,
- *   - LMB drag-to-pan with lazily-engaged pointer capture (capture only
- *     after the drag threshold, so plain clicks on inner content are never
- *     retargeted away from their target),
+ *   - primary-pointer-only LMB drag-to-pan with lazily-engaged pointer
+ *     capture (capture only after the drag threshold, so plain clicks on
+ *     inner content are never retargeted away from their target),
+ *   - stale-drag guards: a pointermove with no primary button held clears
+ *     the armed drag, and a window-level pointerup/pointercancel fallback
+ *     covers releases the canvas cannot see before capture engages — so the
+ *     canvas never pans on a bare hover,
+ *   - rAF-coalesced pan commits: at most one React state write per animation
+ *     frame during a drag, with `viewRef` always current,
  *   - a didDragRef counter so consumers can suppress the click that follows
  *     a pan gesture.
  *
@@ -191,6 +205,18 @@ export function usePanZoom(options: UsePanZoomOptions = {}): UsePanZoomResult {
   const viewRef = useRef<View>(INITIAL_VIEW)
   const didDragRef = useRef<boolean>(false)
   const dragRef = useRef<DragState | null>(null)
+  // Gesture-lifetime flag: true between pointerdown and pointerup/cancel so
+  // consumers can defer camera resets (auto-fit) until the gesture ends.
+  const isPanningRef = useRef<boolean>(false)
+  // Detach callback for the window-level end-of-gesture fallback ([7]b),
+  // active from pointerdown until pointer capture takes over (or the gesture
+  // ends). Kept in a ref so every drag-end path can tear it down idempotently.
+  const detachWindowEndRef = useRef<(() => void) | null>(null)
+  // rAF-coalesced pan commits ([26]b): `pendingViewRef` holds the latest
+  // transform computed during the drag; `rafIdRef` tracks the scheduled flush
+  // so at most one React state write happens per animation frame.
+  const pendingViewRef = useRef<View | null>(null)
+  const rafIdRef = useRef<number | null>(null)
 
   // Keep the caller-provided natural-size accessor in a ref so `fit` (and the
   // handlers/effects built on it) stay referentially stable even when
@@ -207,6 +233,18 @@ export function usePanZoom(options: UsePanZoomOptions = {}): UsePanZoomResult {
   // effect in consumers always read the latest transform.
   useLayoutEffect(() => {
     viewRef.current = view
+    // A committed view that differs from a still-pending drag frame means an
+    // external write (consumer setView / fit / zoom) landed mid-drag — e.g.
+    // MermaidBlock resetting the camera for a freshly rendered diagram. The
+    // external write is the newer intent: drop the pending frame instead of
+    // letting it overwrite the reset one animation frame later.
+    if (pendingViewRef.current && pendingViewRef.current !== view) {
+      pendingViewRef.current = null
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current)
+        rafIdRef.current = null
+      }
+    }
   }, [view])
 
   /**
@@ -230,7 +268,10 @@ export function usePanZoom(options: UsePanZoomOptions = {}): UsePanZoomResult {
   /** Zoom by `factor`, keeping the viewport point (cx, cy) fixed. */
   const zoomAt = useCallback(
     (factor: number, cx: number, cy: number) => {
-      setView((prev) => zoomToPoint(prev, factor, cx, cy, minScale, maxScale) ?? prev)
+      // Read the ref mirror (not React state) so a zoom landing while a drag
+      // frame is still pending composes on the freshest transform.
+      const next = zoomToPoint(viewRef.current, factor, cx, cy, minScale, maxScale)
+      if (next) setView(next)
     },
     [minScale, maxScale],
   )
@@ -255,6 +296,10 @@ export function usePanZoom(options: UsePanZoomOptions = {}): UsePanZoomResult {
       // Ignore horizontal-dominant gestures (trackpad two-finger swipe);
       // let the browser handle them instead of swallowing the input.
       if (isHorizontalWheelGesture(e.deltaX, e.deltaY)) return
+      // Zero-delta events (trackpad momentum tails on Chromium-derived
+      // engines) carry no input at all: ignore them instead of preventDefault
+      // and zooming out one extra step.
+      if (e.deltaX === 0 && e.deltaY === 0) return
       e.preventDefault()
       const rect = canvas.getBoundingClientRect()
       zoomAt(
@@ -267,48 +312,179 @@ export function usePanZoom(options: UsePanZoomOptions = {}): UsePanZoomResult {
     return () => canvas.removeEventListener('wheel', onWheel)
   }, [zoomAt, zoomStep])
 
-  const onPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return
-    // No pointer capture here: while capture is active the browser retargets
-    // ALL subsequent events of that pointer — including the compatibility
-    // mouse `click` — to the capture element (this canvas), so a plain click
-    // on interactive content inside the canvas (e.g. DAG hypothesis nodes)
-    // would never reach it. Capture is engaged lazily in onPointerMove once
-    // the gesture crosses the drag threshold; see the comment there.
-    didDragRef.current = false
-    dragRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      ox: viewRef.current.x,
-      oy: viewRef.current.y,
+  /**
+   * rAF-coalesced state commit for the drag path ([26]b): `viewRef` updates
+   * synchronously (every synchronous reader — drag math, zoom, fit — sees the
+   * latest transform) while the React state write is deferred to at most one
+   * per animation frame, so a 60-120Hz pointer stream re-renders the consumer
+   * once per frame instead of once per event. React state remains the source
+   * of truth, so an unrelated re-render mid-drag can never paint a stale
+   * transform (unlike an imperative style-write scheme).
+   */
+  const commitView = useCallback((next: View) => {
+    viewRef.current = next
+    pendingViewRef.current = next
+    if (rafIdRef.current === null) {
+      rafIdRef.current = requestAnimationFrame(() => {
+        rafIdRef.current = null
+        const pending = pendingViewRef.current
+        pendingViewRef.current = null
+        if (pending) setView(pending)
+      })
     }
   }, [])
 
-  const onPointerMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current
-    if (!drag) return
-    const dx = e.clientX - drag.startX
-    const dy = e.clientY - drag.startY
-    // Drag-distance counter: once the pointer has travelled further than the
-    // click threshold, the gesture is a pan — consumers checking didDragRef
-    // in onClick suppress the trailing click.
-    if (!didDragRef.current && Math.hypot(dx, dy) > DRAG_CLICK_THRESHOLD_PX) {
-      didDragRef.current = true
-      // The gesture is now definitively a pan (not a click), so it is safe —
-      // and necessary — to capture the pointer: tracking continues even when
-      // the pointer leaves the canvas, while any trailing click is already
-      // suppressed via didDragRef. Capturing only here (never on pointerdown)
-      // is what keeps plain clicks on inner content delivered normally.
-      canvasRef.current?.setPointerCapture(e.pointerId)
+  /** Commit a still-pending drag frame synchronously (used at gesture end). */
+  const flushPendingView = useCallback(() => {
+    if (rafIdRef.current !== null) {
+      cancelAnimationFrame(rafIdRef.current)
+      rafIdRef.current = null
     }
-    setView((prev) => ({ ...prev, x: drag.ox + dx, y: drag.oy + dy }))
+    const pending = pendingViewRef.current
+    pendingViewRef.current = null
+    if (pending) setView(pending)
   }, [])
 
-  const endDrag = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-    const canvas = canvasRef.current
-    if (canvas?.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId)
-    dragRef.current = null
+  /** Detach the window-level end-of-gesture fallback (idempotent). */
+  const detachWindowEnd = useCallback(() => {
+    detachWindowEndRef.current?.()
+    detachWindowEndRef.current = null
   }, [])
+
+  /**
+   * End the gesture: release capture when held, commit any pending drag
+   * frame, clear the armed drag, and tear down the window fallback. Takes the
+   * raw pointerId so both React canvas handlers and native window listeners
+   * can call it.
+   */
+  const finishDrag = useCallback(
+    (pointerId: number) => {
+      detachWindowEnd()
+      const canvas = canvasRef.current
+      if (canvas?.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId)
+      if (dragRef.current) flushPendingView()
+      dragRef.current = null
+      isPanningRef.current = false
+    },
+    [detachWindowEnd, flushPendingView],
+  )
+
+  /**
+   * While a drag is armed but pointer capture is not yet engaged, the
+   * pointerup can land outside the canvas (press near the panel edge, drift a
+   * few pixels onto the floating zoom toolbar / resize handle, release): the
+   * canvas never sees that event and the armed drag would pan the content on
+   * every later hover move. A window-level capture-phase pointerup /
+   * pointercancel listener closes that gap. It is detached once capture takes
+   * over in onPointerMove — from then on the canvas receives every event of
+   * the pointer directly, and didDragRef (flipped at the same moment) must
+   * stay untouched so the trailing click stays suppressed.
+   */
+  const attachWindowEnd = useCallback(() => {
+    if (detachWindowEndRef.current) return
+    const onWindowUp = (ev: PointerEvent) => {
+      // An auxiliary button released while the primary is still held must
+      // not end the pan — only the primary button's release does.
+      if ((ev.buttons & 1) !== 0) return
+      finishDrag(ev.pointerId)
+    }
+    const onWindowCancel = (ev: PointerEvent) => finishDrag(ev.pointerId)
+    window.addEventListener('pointerup', onWindowUp, true)
+    window.addEventListener('pointercancel', onWindowCancel, true)
+    detachWindowEndRef.current = () => {
+      window.removeEventListener('pointerup', onWindowUp, true)
+      window.removeEventListener('pointercancel', onWindowCancel, true)
+    }
+  }, [finishDrag])
+
+  // A mid-gesture unmount must neither leave window listeners attached nor
+  // fire a post-unmount rAF state commit.
+  useEffect(
+    () => () => {
+      detachWindowEnd()
+      if (rafIdRef.current !== null) cancelAnimationFrame(rafIdRef.current)
+    },
+    [detachWindowEnd],
+  )
+
+  const onPointerDown = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0) return
+      // Multi-pointer guard: only the primary pointer (first mouse button,
+      // first touch point, dominant pen contact) drives the pan — a second
+      // finger landing mid-gesture must not re-arm the drag origin and make
+      // the pan jump to the new pointer's delta.
+      if (!e.isPrimary) return
+      // No pointer capture here: while capture is active the browser retargets
+      // ALL subsequent events of that pointer — including the compatibility
+      // mouse `click` — to the capture element (this canvas), so a plain click
+      // on interactive content inside the canvas (e.g. DAG hypothesis nodes)
+      // would never reach it. Capture is engaged lazily in onPointerMove once
+      // the gesture crosses the drag threshold; see the comment there.
+      didDragRef.current = false
+      isPanningRef.current = true
+      dragRef.current = {
+        startX: e.clientX,
+        startY: e.clientY,
+        ox: viewRef.current.x,
+        oy: viewRef.current.y,
+      }
+      // Window-level release fallback for the pre-capture window ([7]b).
+      attachWindowEnd()
+    },
+    [attachWindowEnd],
+  )
+
+  const onPointerMove = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current
+      if (!drag) return
+      // Stale-drag guard ([7]a): a pointermove with the primary button no
+      // longer held means the release happened where no pointerup could reach
+      // this canvas (e.g. released outside the OS window before capture
+      // engaged). Clear the armed drag instead of panning on a bare hover.
+      if ((e.buttons & 1) === 0) {
+        finishDrag(e.pointerId)
+        return
+      }
+      const dx = e.clientX - drag.startX
+      const dy = e.clientY - drag.startY
+      // Drag-distance counter: once the pointer has travelled further than the
+      // click threshold, the gesture is a pan — consumers checking didDragRef
+      // in onClick suppress the trailing click.
+      if (!didDragRef.current && Math.hypot(dx, dy) > DRAG_CLICK_THRESHOLD_PX) {
+        didDragRef.current = true
+        // The gesture is now definitively a pan (not a click), so it is safe —
+        // and necessary — to capture the pointer: tracking continues even when
+        // the pointer leaves the canvas, while any trailing click is already
+        // suppressed via didDragRef. Capturing only here (never on pointerdown)
+        // is what keeps plain clicks on inner content delivered normally.
+        canvasRef.current?.setPointerCapture(e.pointerId)
+        // Capture now delivers every event of this pointer straight to the
+        // canvas; the window-level release fallback is no longer needed.
+        detachWindowEnd()
+      }
+      commitView({ scale: viewRef.current.scale, x: drag.ox + dx, y: drag.oy + dy })
+    },
+    [finishDrag, detachWindowEnd, commitView],
+  )
+
+  const onPointerUp = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      // Only the primary button's release ends the drag; releasing an
+      // auxiliary button mid-pan (buttons still include the primary) keeps
+      // the gesture alive.
+      if ((e.buttons & 1) === 0) finishDrag(e.pointerId)
+    },
+    [finishDrag],
+  )
+
+  const onPointerCancel = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      finishDrag(e.pointerId)
+    },
+    [finishDrag],
+  )
 
   return {
     view,
@@ -317,12 +493,13 @@ export function usePanZoom(options: UsePanZoomOptions = {}): UsePanZoomResult {
     contentRef,
     viewRef,
     didDragRef,
+    isPanningRef,
     zoomAt,
     zoomFromCenter,
     fit,
     onPointerDown,
     onPointerMove,
-    onPointerUp: endDrag,
-    onPointerCancel: endDrag,
+    onPointerUp,
+    onPointerCancel,
   }
 }

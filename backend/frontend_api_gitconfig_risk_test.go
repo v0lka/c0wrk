@@ -90,6 +90,56 @@ func TestNotifyGitConfigRisk_DangerousKeysEmitted(t *testing.T) {
 	}
 }
 
+// TestNotifyGitConfigRisk_TransportKeysCovered pins the post-v0.7.3
+// review [40]/[55] closure at the intake surface: the Git panel's remote
+// operations (pull/push/fetch) and the plain git diff porcelain make
+// core.sshCommand, core.askPass, the credential helpers and diff.external
+// reachable, so their findings must reach the warning with the corrected
+// texts (Git-panel reachability, per-key neutralization) instead of the old
+// "not reachable" reassurance, and the standing notice must state that
+// remote operations are covered too.
+func TestNotifyGitConfigRisk_TransportKeysCovered(t *testing.T) {
+	dir := t.TempDir()
+	writeGitConfig(t, dir, "[core]\n\tsshCommand = /tmp/evil-ssh.sh\n\taskPass = /tmp/evil-ask.sh\n"+
+		"[credential]\n\thelper = /tmp/evil-cred.sh\n"+
+		"[credential \"https://x.example\"]\n\thelper = /tmp/evil-cred-url.sh\n"+
+		"[diff]\n\texternal = /tmp/evil-ext.sh\n")
+
+	f := &FrontendAPI{}
+	rec := newRiskRecorder(t, f)
+	f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
+
+	if !rec.fired {
+		t.Fatal("expected project:git_config_risk to be emitted for transport-bearing keys")
+	}
+	if !strings.Contains(rec.data.Notice, "remote operations (pull, push, fetch)") {
+		t.Errorf("notice must state remote-operation coverage: %q", rec.data.Notice)
+	}
+	keys := map[string]string{}
+	for _, fin := range rec.data.Findings {
+		keys[fin.Key] = fin.Description
+	}
+	for key, phrase := range map[string]string{
+		"core.sshcommand":                     "Git panel's remote RPCs",
+		"core.askpass":                        "Git panel's remote RPCs",
+		"credential.helper":                   "resets",
+		"credential.https://x.example.helper": "credential.https://x.example.helper= (empty)",
+		"diff.external":                       "BY DEFAULT",
+	} {
+		desc, ok := keys[key]
+		if !ok {
+			t.Errorf("expected finding for %q, got findings %v", key, rec.data.Findings)
+			continue
+		}
+		if !strings.Contains(desc, phrase) {
+			t.Errorf("%s description must mention %q: %q", key, phrase, desc)
+		}
+		if strings.Contains(desc, "not reachable") || strings.Contains(desc, "only executes with the --ext-diff flag") {
+			t.Errorf("%s description carries a stale false claim: %q", key, desc)
+		}
+	}
+}
+
 func TestNotifyGitConfigRisk_CleanRepoSilent(t *testing.T) {
 	t.Run("no git dir at all", func(t *testing.T) {
 		f := &FrontendAPI{}
@@ -132,6 +182,60 @@ func TestNotifyGitConfigRisk_IncludeDirectiveFailsClosed(t *testing.T) {
 	if !found {
 		t.Errorf("expected an include-directive finding, got %+v", rec.data.Findings)
 	}
+}
+
+// TestNotifyGitConfigRisk_AttributesDisabledDisclosure pins the review-[56]c
+// closure at the intake surface: while include directives keep the blanket
+// attr.tree kill engaged, the warning must carry an explicit
+// "(attributes disabled)" entry disclosing the collateral (eol/CRLF
+// normalization off → falsely-modified files) — and in narrow mode (a
+// visible filter pinned by name, no includes) the entry must NOT appear,
+// because benign attributes keep working there.
+func TestNotifyGitConfigRisk_AttributesDisabledDisclosure(t *testing.T) {
+	t.Run("include engages attr.tree: disclosure present", func(t *testing.T) {
+		dir := t.TempDir()
+		writeGitConfig(t, dir, "[include]\n\tpath = ~/.gitconfig-evil\n")
+
+		f := &FrontendAPI{}
+		rec := newRiskRecorder(t, f)
+		f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
+
+		if !rec.fired {
+			t.Fatal("expected project:git_config_risk for a config with includes")
+		}
+		var desc string
+		for _, fin := range rec.data.Findings {
+			if fin.Key == "(attributes disabled)" {
+				desc = fin.Description
+			}
+		}
+		if desc == "" {
+			t.Fatalf("expected an (attributes disabled) finding, got %+v", rec.data.Findings)
+		}
+		for _, phrase := range []string{"attribute interpretation", "normalization", "modified"} {
+			if !strings.Contains(desc, phrase) {
+				t.Errorf("disclosure must mention %q: %q", phrase, desc)
+			}
+		}
+	})
+
+	t.Run("narrow mode (visible filter): no disclosure", func(t *testing.T) {
+		dir := t.TempDir()
+		writeGitConfig(t, dir, "[filter \"lfs\"]\n\tclean = git-lfs clean -- %f\n")
+
+		f := &FrontendAPI{}
+		rec := newRiskRecorder(t, f)
+		f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
+
+		if !rec.fired {
+			t.Fatal("expected project:git_config_risk for a filter-configured repo")
+		}
+		for _, fin := range rec.data.Findings {
+			if fin.Key == "(attributes disabled)" {
+				t.Errorf("narrow mode must not claim attributes are disabled: %+v", rec.data.Findings)
+			}
+		}
+	})
 }
 
 func TestNotifyGitConfigRisk_MalformedConfigFailsClosed(t *testing.T) {
@@ -402,5 +506,156 @@ func TestGitRepoTrusted_NilConfigIsFailClosed(t *testing.T) {
 	}
 	if err := f.TrustGitRepo(t.TempDir()); err == nil {
 		t.Error("expected error from TrustGitRepo with no config loaded")
+	}
+}
+
+// TestNotifyGitConfigRisk_AttributeRoutingSourcesEmitted covers the
+// post-v0.7.3 [1]a closure surface: .git/info/attributes routing and
+// core.attributesFile must reach the intake warning alongside the include
+// directive that hides the driver definition, and an unscannable routing
+// source (no kill-switch exists) must fail closed into the unreadable
+// warning instead of staying silent.
+func TestNotifyGitConfigRisk_AttributeRoutingSourcesEmitted(t *testing.T) {
+	dir := t.TempDir()
+	writeGitConfig(t, dir, "[include]\n\tpath = /abs/extra.conf\n")
+	infoPath := filepath.Join(dir, ".git", "info", "attributes")
+	if err := os.MkdirAll(filepath.Dir(infoPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(infoPath, []byte("*.txt filter=x merge=m\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &FrontendAPI{}
+	rec := newRiskRecorder(t, f)
+	f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
+
+	if !rec.fired {
+		t.Fatal("expected project:git_config_risk to be emitted")
+	}
+	keys := map[string]string{}
+	for _, fin := range rec.data.Findings {
+		keys[fin.Key] = fin.Description
+	}
+	for _, want := range []string{"(include directive)", "info/attributes:filter=x", "info/attributes:merge=m"} {
+		if keys[want] == "" {
+			t.Errorf("expected finding %q, got findings %v", want, rec.data.Findings)
+		}
+	}
+
+	// Fail closed: an info/attributes that exists but cannot be scanned is
+	// itself a warning — the attributes mechanism has no config kill-switch.
+	unscannable := t.TempDir()
+	writeGitConfig(t, unscannable, "[core]\n\tfsmonitor = false\n")
+	if err := os.MkdirAll(filepath.Join(unscannable, ".git", "info", "attributes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f2 := &FrontendAPI{}
+	rec2 := newRiskRecorder(t, f2)
+	f2.notifyGitConfigRisk(GitConfigRiskSourceProject, unscannable)
+	if !rec2.fired {
+		t.Fatal("expected a fail-closed warning for an unscannable info/attributes")
+	}
+	if len(rec2.data.Findings) != 1 || rec2.data.Findings[0].Key != "(config unreadable)" {
+		t.Errorf("findings = %+v, want the single (config unreadable) marker", rec2.data.Findings)
+	}
+}
+
+// TestNotifyGitConfigRisk_AttributesAndTrustsRepoRoot pins review [52]:
+// the scan walks up from a subdirectory workspace to the parent
+// repository's config, so the warning must be attributed to — and trust
+// keyed on — the repository's WORK-TREE ROOT, not the scanned
+// subdirectory. Trusting any path inside a repository must silence the
+// warning for every other open of that repository, and removal must prune
+// the stored root even when handed the subdirectory form.
+func TestNotifyGitConfigRisk_AttributesAndTrustsRepoRoot(t *testing.T) {
+	repo := t.TempDir()
+	writeGitConfig(t, repo, "[core]\n\tfsmonitor = /tmp/evil\n")
+	sub := filepath.Join(repo, "sub", "dir")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Warning attribution: the subdirectory open warns under the repo root.
+	f := &FrontendAPI{}
+	rec := newRiskRecorder(t, f)
+	f.notifyGitConfigRisk(GitConfigRiskSourceWorkdir, sub)
+	if !rec.fired {
+		t.Fatal("expected the parent repository's armed config to warn")
+	}
+	if rec.data.Path != repo {
+		t.Errorf("risk.Path = %q, want the work-tree root %q", rec.data.Path, repo)
+	}
+
+	// Trust entered via the SUBDIRECTORY normalizes to the same root...
+	f2, _, _ := newTestAPI(t)
+	if err := f2.TrustGitRepo(sub); err != nil {
+		t.Fatalf("TrustGitRepo(subdir): %v", err)
+	}
+	trusted := f2.GetTrustedGitRepos()
+	if len(trusted) != 1 || trusted[0] != repo {
+		t.Fatalf("stored trusted repos = %v, want exactly [%s]", trusted, repo)
+	}
+
+	// ...so both a subdirectory re-open and a direct root open stay silent.
+	recSub := newRiskRecorder(t, f2)
+	f2.notifyGitConfigRisk(GitConfigRiskSourceWorkdir, sub)
+	if recSub.fired {
+		t.Error("warning re-fired for a trusted repository opened at a subdirectory")
+	}
+	recRoot := newRiskRecorder(t, f2)
+	f2.notifyGitConfigRisk(GitConfigRiskSourceProject, repo)
+	if recRoot.fired {
+		t.Error("warning fired for the trusted repository root itself")
+	}
+
+	// Removal via the subdirectory prunes the stored root entry.
+	if err := f2.RemoveTrustedGitRepo(sub); err != nil {
+		t.Fatalf("RemoveTrustedGitRepo(subdir): %v", err)
+	}
+	if got := f2.GetTrustedGitRepos(); len(got) != 0 {
+		t.Errorf("trusted repos after removal = %v, want empty", got)
+	}
+}
+
+// TestSwitchProject_AlreadyActiveStillScansGitConfigRisk pins review [57]:
+// re-selecting the already-active project re-emits project:switched AND
+// re-runs the intake risk scan — a .git/config planted since the last scan
+// must warn on the next re-selection, not only after a real project switch.
+func TestSwitchProject_AlreadyActiveStillScansGitConfigRisk(t *testing.T) {
+	h := newProjectSwitchHarness(t)
+	defer h.close(t)
+	writeGitConfig(t, h.workspace, "[core]\n\tfsmonitor = /tmp/evil\n")
+
+	// Same activation-path scaffolding as the existing SwitchProject tests.
+	h.api.builderOverride = &mockBuilder{}
+	t.Cleanup(func() {
+		h.api.watcherMu.Lock()
+		defer h.api.watcherMu.Unlock()
+		if h.api.watcher != nil {
+			_ = h.api.watcher.Close()
+			h.api.watcher = nil
+		}
+	})
+
+	riskEvents := 0
+	h.api.emitEvent = func(name string, _ ...any) {
+		if name == EventGitConfigRisk {
+			riskEvents++
+		}
+	}
+
+	if err := h.api.SwitchProject(h.projectID); err != nil {
+		t.Fatalf("first SwitchProject: %v", err)
+	}
+	if riskEvents != 1 {
+		t.Fatalf("risk events after first switch = %d, want 1", riskEvents)
+	}
+
+	if err := h.api.SwitchProject(h.projectID); err != nil {
+		t.Fatalf("already-active SwitchProject: %v", err)
+	}
+	if riskEvents != 2 {
+		t.Errorf("risk events after already-active re-selection = %d, want 2 (intake scan re-run)", riskEvents)
 	}
 }

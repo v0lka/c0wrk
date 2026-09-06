@@ -313,3 +313,111 @@ func TestTruncateHistory(t *testing.T) {
 		t.Fatalf("expected 0 messages, got %d", len(got))
 	}
 }
+
+// TestDropFailedExchangeTail verifies the injection-time mirror of
+// appendHistory's retry collapse ([45]): a trailing failed exchange of the
+// given request is dropped, while cancelled notes, non-matching requests, and
+// short histories are preserved.
+func TestDropFailedExchangeTail(t *testing.T) {
+	failedTail := []llm.Message{
+		{Role: "user", Content: "earlier question"},
+		{Role: "assistant", Content: "earlier answer"},
+		{Role: "user", Content: "retry me"},
+		{Role: "assistant", Content: HistoryNoteFailed("llm unavailable")},
+	}
+
+	// Matching failed tail → dropped.
+	got := dropFailedExchangeTail(failedTail, "retry me")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 messages after dropping the failed tail, got %d: %+v", len(got), got)
+	}
+	if got[1].Content != "earlier answer" {
+		t.Errorf("unexpected tail after drop: %+v", got[1])
+	}
+
+	// Cancelled tail → kept (appendHistory does not collapse cancellations).
+	cancelled := []llm.Message{
+		{Role: "user", Content: "retry me"},
+		{Role: "assistant", Content: HistoryNoteCancelled},
+	}
+	if got := dropFailedExchangeTail(cancelled, "retry me"); len(got) != 2 {
+		t.Errorf("cancelled tail must be kept, got %d messages", len(got))
+	}
+
+	// Different request → kept.
+	if got := dropFailedExchangeTail(failedTail, "another message"); len(got) != 4 {
+		t.Errorf("non-matching failed tail must be kept, got %d messages", len(got))
+	}
+
+	// Empty request / short history → unchanged.
+	if got := dropFailedExchangeTail(failedTail, ""); len(got) != 4 {
+		t.Errorf("empty request must keep history, got %d messages", len(got))
+	}
+	short := []llm.Message{{Role: "user", Content: "retry me"}}
+	if got := dropFailedExchangeTail(short, "retry me"); len(got) != 1 {
+		t.Errorf("short history must be kept, got %d messages", len(got))
+	}
+}
+
+// TestResume_InjectedHistoryDropsFailedExchangeTail verifies the [45] wiring:
+// Resume injects the conversation history alongside a taskMessage that repeats
+// the original request; when the history tail is the recorded failure of that
+// exact request, the tail must be dropped from the injected history so the
+// model does not see the same request twice with a failure marker in between.
+// Earlier dialogue must survive the drop.
+func TestResume_InjectedHistoryDropsFailedExchangeTail(t *testing.T) {
+	var capturedCM *mockContextManager
+	captureFactory := func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string, _ ...orchestration.PruningOverride) ContextManager {
+		cm := &mockContextManager{systemPrompt: systemPrompt}
+		capturedCM = cm
+		return cm
+	}
+
+	mockLLM := &mockLLMCaller{responses: []*llm.ChatResponse{
+		executorFinishResponse("Resumed and finished"),
+	}}
+	registry := createTestRegistry()
+	orchestrator := NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
+		Router:         newCoreRouter(mockLLM, 5),
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   llm.NewSimpleTokenCounter(),
+		ContextFactory: captureFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
+
+	prior := []llm.Message{
+		{Role: "user", Content: "first task"},
+		{Role: "assistant", Content: "first answer"},
+		{Role: "user", Content: "failed task"},
+		{Role: "assistant", Content: HistoryNoteFailed("conductor LLM unavailable")},
+	}
+	orchestrator.SetConversationHistory(prior)
+
+	bb := orchestration.NewMapBlackboard()
+	bb.SetOriginalRequest("failed task")
+
+	if _, err := orchestrator.Resume(context.Background(), bb, nil, "", nil, nil, ""); err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	if capturedCM == nil {
+		t.Fatal("context factory was not invoked")
+	}
+	injected := capturedCM.priorConversation
+	if len(injected) != 2 {
+		t.Fatalf("expected 2 injected messages (failed tail dropped), got %d: %+v", len(injected), injected)
+	}
+	var got strings.Builder
+	for _, msg := range injected {
+		got.WriteString(msg.Content)
+		got.WriteString("\n")
+	}
+	if !strings.Contains(got.String(), "first task") || !strings.Contains(got.String(), "first answer") {
+		t.Errorf("prior dialogue lost by the failed-tail drop; got:\n%s", got.String())
+	}
+	if strings.Contains(got.String(), "Task failed before completion") {
+		t.Errorf("failed-exchange tail leaked into the injected history; got:\n%s", got.String())
+	}
+}

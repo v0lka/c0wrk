@@ -3,17 +3,28 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-const { apiMocks } = vi.hoisted(() => ({
+const { apiMocks, onGlobalEventMock, capturedHandlers } = vi.hoisted(() => ({
   apiMocks: {
     getTrustedGitRepos: vi.fn<() => Promise<string[]>>(),
     removeTrustedGitRepo: vi.fn<(path: string) => Promise<void>>(),
   },
+  // Capture onGlobalEvent handlers by event name so tests can emit
+  // config:updated (the backend's post-persist signal) at the dialog.
+  capturedHandlers: new Map<string, () => void>(),
+  onGlobalEventMock: vi.fn((name: string, handler: () => void) => {
+    capturedHandlers.set(name, handler)
+    return () => {
+      capturedHandlers.delete(name)
+    }
+  }),
 }))
 
 vi.mock('@/api/gitConfigRisk', () => ({
   getTrustedGitRepos: apiMocks.getTrustedGitRepos,
   removeTrustedGitRepo: apiMocks.removeTrustedGitRepo,
 }))
+
+vi.mock('@/api/runtime', () => ({ onGlobalEvent: onGlobalEventMock }))
 
 vi.mock('@/lib/logger', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -38,6 +49,8 @@ describe('TrustedReposDialog', () => {
     apiMocks.getTrustedGitRepos.mockReset()
     apiMocks.removeTrustedGitRepo.mockReset()
     apiMocks.getTrustedGitRepos.mockResolvedValue([])
+    onGlobalEventMock.mockClear()
+    capturedHandlers.clear()
     container = document.createElement('div')
     document.body.replaceChildren(container)
     root = createRoot(container)
@@ -110,5 +123,30 @@ describe('TrustedReposDialog', () => {
     expect(document.querySelector('[data-testid="trusted-repos-error"]')?.textContent).toContain(
       'rpc unavailable',
     )
+  })
+
+  it('reloads the list on config:updated while open (a repo trusted via the toast mid-dialog)', async () => {
+    // The backend emits config:updated after EVERY persisted config mutation,
+    // including the "Untrusted git configuration" toast's "Trust this repo".
+    // While the dialog is open, that signal must refresh the list — without
+    // it the entry appears only after a close/reopen and the user may
+    // conclude the trust action failed.
+    apiMocks.getTrustedGitRepos
+      .mockResolvedValueOnce([]) // initial load on open: nothing trusted
+      .mockResolvedValueOnce(['/srv/newly-trusted']) // reload after the toast's persist
+    await renderDialog(root, true)
+    expect(dialog()?.textContent).toContain('No trusted repositories')
+
+    await act(async () => {
+      capturedHandlers.get('config:updated')?.()
+    })
+
+    expect(apiMocks.getTrustedGitRepos).toHaveBeenCalledTimes(2)
+    expect(dialog()?.textContent).toContain('/srv/newly-trusted')
+  })
+
+  it('does not subscribe to config:updated while closed', async () => {
+    await renderDialog(root, false)
+    expect(capturedHandlers.has('config:updated')).toBe(false)
   })
 })

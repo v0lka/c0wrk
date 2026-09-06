@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { getTrustedGitRepos, removeTrustedGitRepo } from '@/api/gitConfigRisk'
+import { onGlobalEvent } from '@/api/runtime'
 import { logger } from '@/lib/logger'
 
 interface TrustedReposDialogProps {
@@ -45,9 +46,15 @@ export function TrustedReposDialog({ open, onOpenChange }: TrustedReposDialogPro
   }, [])
 
   // Fresh list on every open — entries can also change via the toast while
-  // the dialog is closed.
+  // the dialog is closed. While open, `config:updated` (emitted by the
+  // backend after EVERY persisted config mutation, including the toast's
+  // "Trust this repo") re-runs the load so entries trusted mid-dialog appear
+  // without a close/reopen. The dialog's own Remove also emits it — the
+  // redundant reload merely re-syncs with the server truth.
   useEffect(() => {
-    if (open) void load()
+    if (!open) return
+    void load()
+    return onGlobalEvent('config:updated', () => void load())
   }, [open, load])
 
   const handleRemove = useCallback(

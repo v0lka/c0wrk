@@ -1180,7 +1180,14 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// (resumeSteps) was visible. The goal-loop resume path already injects the
 	// truncated history (see resumeGoalLoop); the plain Conductor path must
 	// match so follow-up references to earlier exchanges survive a resume.
-	conversationHistory := truncateHistory(o.historySnapshot(), o.config.ConductorHistoryWindow)
+	//
+	// A trailing failed exchange of the original request (recorded by
+	// recordConversationOutcome when the task failed) is dropped first: the
+	// resumed taskMessage repeats the original request, and keeping the failed
+	// tail would show the model the same request twice with a failure marker
+	// in between — the injection-time mirror of appendHistory's retry collapse
+	// (dropFailedExchangeTail).
+	conversationHistory := truncateHistory(dropFailedExchangeTail(o.historySnapshot(), bb.GetOriginalRequest()), o.config.ConductorHistoryWindow)
 
 	execResult, err := o.runConductor(ctx, taskMessage, bb, availableTools, plansDir, conversationHistory, resumeSteps, resumeContentBlocks, nudge, forceCompactionStrategy, resumedWithPlan)
 	// Cooperative pause: a clean, recoverable checkpoint — not a failure.
@@ -1871,6 +1878,33 @@ func (o *Orchestrator) appendHistory(retryMessage string, msgs ...llm.Message) {
 	o.conversationHistory = append(o.conversationHistory, msgs...)
 }
 
+// dropFailedExchangeTail returns history with a trailing failed exchange for
+// the given request removed — the injection-time mirror of appendHistory's
+// retry collapse. A resume (or a same-message retry entering as a fresh
+// workflow) injects the conversation history alongside the task message,
+// which repeats the original request; when the history tail is the recorded
+// failure of that exact request (user message + HistoryNoteFailed assistant
+// note), the model would otherwise see the same request twice with a failure
+// marker in between. Cancelled exchanges ([HistoryNoteCancelled]) are kept:
+// appendHistory does not collapse them either, and a cancelled task's record
+// is legitimate dialogue context. Returns history unchanged when request is
+// empty or the tail does not match.
+func dropFailedExchangeTail(history []llm.Message, request string) []llm.Message {
+	if request == "" {
+		return history
+	}
+	n := len(history)
+	if n < 2 {
+		return history
+	}
+	prev, last := history[n-2], history[n-1]
+	if prev.Role == "user" && prev.Content == request &&
+		last.Role == "assistant" && strings.HasPrefix(last.Content, historyNoteFailedPrefix) {
+		return history[:n-2]
+	}
+	return history
+}
+
 // HistoryNoteCancelled is the assistant-side conversation-history note
 // recorded when a task is cancelled before completion. The backend uses the
 // same note when reconstructing history from the message store so live and
@@ -2189,7 +2223,12 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	// sessions don't overflow the Conductor's context. The most recent
 	// messages are kept — they carry the dialogue context the agent needs
 	// to understand follow-up references (e.g. "implement variant a").
-	conductorHistory := truncateHistory(o.historySnapshot(), o.config.ConductorHistoryWindow)
+	// A trailing failed exchange of this exact message (recorded when its
+	// previous run failed) is dropped first — the task message repeats the
+	// request, so the model must not see it twice with a failure marker in
+	// between (dropFailedExchangeTail, the injection-time mirror of
+	// appendHistory's retry collapse).
+	conductorHistory := truncateHistory(dropFailedExchangeTail(o.historySnapshot(), message), o.config.ConductorHistoryWindow)
 
 	plansDir := opts.SessionPlansDir
 	execResult, err := o.runConductor(ctx, conductorMessage, bb, availableTools, plansDir, conductorHistory, nil, contentBlocks, "", "", false)

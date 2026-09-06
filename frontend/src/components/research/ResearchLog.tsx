@@ -1,14 +1,19 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import {
   FlaskConical,
   Split,
   RefreshCw,
   FileText,
+  ChevronDown,
   type LucideIcon,
 } from 'lucide-react'
 import type { LogKind } from '@/types/models'
 import { useResearchStore, selectActiveLog } from '@/stores/researchStore'
-import { latestLogEntries, formatLogTime } from './researchLogUtils'
+import {
+  latestLogEntries,
+  formatLogTime,
+  RESEARCH_LOG_RENDER_CAP,
+} from './researchLogUtils'
 
 const KIND_ICONS: Record<LogKind, LucideIcon> = {
   experiment: FlaskConical,
@@ -21,10 +26,21 @@ const KIND_ICONS: Record<LogKind, LucideIcon> = {
  * Research log — the most recent `log.md` entries for the active project (t1).
  * Reads `selectActiveLog` (a stable store reference) so it re-renders when the
  * log is refreshed via `loadStatus`/`loadGraph` on research:file_changed.
+ *
+ * [20]b: research logs are append-only and grow for the project's lifetime,
+ * so the list renders the newest RESEARCH_LOG_RENDER_CAP entries by default
+ * and expands on demand — one DOM node per entry would otherwise re-render
+ * on every log refresh.
  */
 export function ResearchLog() {
   const log = useResearchStore(selectActiveLog)
-  const entries = useMemo(() => latestLogEntries(log), [log])
+  const [showAll, setShowAll] = useState(false)
+
+  const total = log.length
+  const entries = useMemo(
+    () => latestLogEntries(log, showAll ? undefined : RESEARCH_LOG_RENDER_CAP),
+    [log, showAll],
+  )
 
   return (
     <div
@@ -67,6 +83,19 @@ export function ResearchLog() {
             )
           })}
         </ul>
+      )}
+
+      {!showAll && total > RESEARCH_LOG_RENDER_CAP && (
+        <button
+          type="button"
+          data-testid="research-log-show-all"
+          onClick={() => setShowAll(true)}
+          title="Render every log entry for this project"
+          className="inline-flex shrink-0 items-center gap-1 self-start rounded px-1 py-0.5 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ChevronDown className="size-3" />
+          Show all {total} entries
+        </button>
       )}
     </div>
   )

@@ -24,6 +24,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/v0lka/sp4rk/pathutil"
 )
 
 // HypothesisUpdate is the set of optional field updates for an existing
@@ -121,6 +123,65 @@ func ValidateTransition(from, to HypothesisStatus) error {
 }
 
 // ---------------------------------------------------------------------------
+// Value escaping (round-trip contract with parser.go)
+// ---------------------------------------------------------------------------
+
+// escapeCell renders a raw field value into a single-line Markdown table-cell
+// value: newlines fold to "<br>" (a row must stay one line — the parser reads
+// tables line by line) and literal pipes escape to "\|" (an unescaped pipe
+// would split the cell). The parser's splitCells/unescapeCell reverses both,
+// so written values parse back exactly.
+func escapeCell(v string) string {
+	if strings.ContainsAny(v, "|\n\r") {
+		v = foldBR(v)
+		v = strings.ReplaceAll(v, "|", `\|`)
+	}
+	return v
+}
+
+// foldBR replaces any newline flavor (and surrounding spaces) with the
+// Markdown line-break marker "<br>", used wherever a value must be written
+// onto a single line (table cells, the **Finding:** line, Mermaid labels).
+func foldBR(v string) string {
+	v = strings.ReplaceAll(v, "\r\n", "\n")
+	v = strings.ReplaceAll(v, "\r", "\n")
+	return strings.ReplaceAll(v, "\n", "<br>")
+}
+
+// foldTitle collapses a short-label value (a card / catalog / Mermaid title)
+// to a single line by turning newlines into spaces. Titles are labels, not
+// content: folding them identically at every write site (card H1, catalog
+// cell, Mermaid label) keeps write → parse → write byte-stable instead of
+// letting one site render "<br>" where the others render a space.
+func foldTitle(v string) string {
+	if !strings.ContainsAny(v, "\n\r") {
+		return v
+	}
+	v = strings.ReplaceAll(v, "\r\n", "\n")
+	v = strings.ReplaceAll(v, "\r", "\n")
+	fields := strings.Fields(v)
+	return strings.Join(fields, " ")
+}
+
+// escapeMermaidLabel renders a raw title into a Mermaid quoted label
+// ("H001[\"H-001: <label>\"]"): newlines fold to "<br>", a literal pipe
+// becomes "#124;" (the pipe character is edge-label syntax in Mermaid), and a
+// double quote becomes "#quot;". Those escapes are exactly what keeps the
+// written line matching mermaidNodeLineRe — whose label group is [^"]* on a
+// single line — so a quoted label containing pipes or quotes still parses
+// back; unescapeMermaidLabel (parser.go) reverses them.
+func escapeMermaidLabel(v string) string {
+	v = foldBR(v)
+	if strings.Contains(v, "|") {
+		v = strings.ReplaceAll(v, "|", "#124;")
+	}
+	if strings.Contains(v, `"`) {
+		v = strings.ReplaceAll(v, `"`, "#quot;")
+	}
+	return v
+}
+
+// ---------------------------------------------------------------------------
 // Card content rewriting (pure)
 // ---------------------------------------------------------------------------
 
@@ -135,7 +196,7 @@ func setCardHeading(content, id, title string) string {
 		if len(m) < 2 || NormalizeID(m[1]) != id {
 			continue
 		}
-		lines[i] = fmt.Sprintf("# %s: %s", id, title)
+		lines[i] = fmt.Sprintf("# %s: %s", id, foldTitle(title))
 		return strings.Join(lines, "\n")
 	}
 	return content
@@ -145,8 +206,13 @@ func setCardHeading(content, id, title string) string {
 // in the card's front-matter table. It returns the updated content. When the
 // field row does not exist it is inserted after the last existing field row,
 // so updating e.g. "Decision" on a card that never recorded one still works.
+// When the card carries no field table at all (no bolded field row anywhere),
+// a minimal "| Field | Value |" table is inserted after the card H1 so the
+// update can never be silently dropped. The value is escaped via escapeCell,
+// keeping the row single-line and pipe-safe; the parser reverses the escape.
 func setTableField(content, fieldName, value string) string {
 	target := "**" + fieldName + "**"
+	escaped := escapeCell(value)
 	lines := strings.Split(content, "\n")
 
 	// Replace an existing row.
@@ -156,7 +222,7 @@ func setTableField(content, fieldName, value string) string {
 		}
 		cells := splitCells(line)
 		if len(cells) >= 2 && cells[0] == target {
-			lines[i] = "| " + target + " | " + value + " |"
+			lines[i] = "| " + target + " | " + escaped + " |"
 			return strings.Join(lines, "\n")
 		}
 	}
@@ -172,25 +238,60 @@ func setTableField(content, fieldName, value string) string {
 			lastFieldRow = i
 		}
 	}
-	if lastFieldRow == -1 {
-		return content
+	if lastFieldRow != -1 {
+		newRow := "| " + target + " | " + escaped + " |"
+		result := make([]string, 0, len(lines)+1)
+		result = append(result, lines[:lastFieldRow+1]...)
+		result = append(result, newRow)
+		result = append(result, lines[lastFieldRow+1:]...)
+		return strings.Join(result, "\n")
 	}
-	newRow := "| " + target + " | " + value + " |"
-	result := make([]string, 0, len(lines)+1)
-	result = append(result, lines[:lastFieldRow+1]...)
-	result = append(result, newRow)
-	result = append(result, lines[lastFieldRow+1:]...)
+
+	// No field table at all: insert a minimal one after the card H1 (or at the
+	// top when the card has no H1), so the field update always lands somewhere
+	// parseable instead of being silently dropped.
+	table := []string{
+		"| Field | Value |",
+		"|---|---|",
+		"| " + target + " | " + escaped + " |",
+	}
+	insertAt := -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, "# ") {
+			insertAt = i
+			break
+		}
+	}
+	result := make([]string, 0, len(lines)+len(table)+2)
+	if insertAt == -1 {
+		// No H1: the table becomes the head of the file.
+		result = append(result, table...)
+		result = append(result, "")
+		result = append(result, lines...)
+		return strings.Join(result, "\n")
+	}
+	result = append(result, lines[:insertAt+1]...)
+	result = append(result, "")
+	result = append(result, table...)
+	if insertAt+1 < len(lines) && strings.TrimSpace(lines[insertAt+1]) != "" {
+		result = append(result, "")
+	}
+	result = append(result, lines[insertAt+1:]...)
 	return strings.Join(result, "\n")
 }
 
 // setFinding sets the card's recorded finding (**Finding:** line). When no
 // finding line exists yet it is inserted into the Result section (or appended
-// as a fresh Result section when the card has none).
+// as a fresh Result section when the card has none). The value is escaped via
+// escapeCell — folded to a single line (newlines → "<br>") and pipe-safe —
+// because the parser's findingRe reads exactly one line; extractFinding
+// reverses the escape, so multi-line findings round-trip.
 func setFinding(content, value string) string {
+	folded := escapeCell(value)
 	lines := strings.Split(content, "\n")
 	for i, line := range lines {
 		if strings.Contains(line, "**Finding:**") {
-			lines[i] = "**Finding:** " + value
+			lines[i] = "**Finding:** " + folded
 			return strings.Join(lines, "\n")
 		}
 	}
@@ -202,13 +303,13 @@ func setFinding(content, value string) string {
 		}
 		result := make([]string, 0, len(lines)+1)
 		result = append(result, lines[:i+1]...)
-		result = append(result, "", "**Finding:** "+value)
+		result = append(result, "", "**Finding:** "+folded)
 		result = append(result, lines[i+1:]...)
 		return strings.Join(result, "\n")
 	}
 
 	// No Result section at all: append one.
-	return strings.TrimRight(content, "\n") + "\n\n## Result\n\n**Finding:** " + value + "\n"
+	return strings.TrimRight(content, "\n") + "\n\n## Result\n\n**Finding:** " + folded + "\n"
 }
 
 // rewriteCard applies the given updates to a card's Markdown content.
@@ -251,7 +352,11 @@ func mermaidClass(s HypothesisStatus) string {
 var mermaidNodeLineRe = regexp.MustCompile(`^(\s*)(H\d+)\s*\["([^"]*)"\]\s*(?:::+([A-Za-z_]+))?`)
 
 // updateMermaidNode updates the label and/or CSS class of one node in the
-// Mermaid diagram (matching by canonical ID).
+// Mermaid diagram (matching by canonical ID). The existing label is unescaped
+// (unescapeMermaidLabel) before its title is reused, and any written label is
+// re-escaped (escapeMermaidLabel) — the pair keeps lines matching
+// mermaidNodeLineRe (single-line, [^"]* label) while round-tripping titles
+// that contain quotes, pipes, or newlines.
 func updateMermaidNode(content, id string, title, status *string) string {
 	lines := strings.Split(content, "\n")
 	for i, line := range lines {
@@ -259,7 +364,7 @@ func updateMermaidNode(content, id string, title, status *string) string {
 		if len(m) < 3 || NormalizeID(m[2]) != id {
 			continue
 		}
-		label := m[3]
+		label := unescapeMermaidLabel(m[3])
 		curTitle := label
 		if idx := strings.Index(label, ":"); idx >= 0 {
 			curTitle = strings.TrimSpace(label[idx+1:])
@@ -275,7 +380,7 @@ func updateMermaidNode(content, id string, title, status *string) string {
 		if class != "" {
 			suffix = ":::" + class
 		}
-		lines[i] = m[1] + m[2] + `["` + id + ": " + curTitle + `"]` + suffix
+		lines[i] = m[1] + m[2] + `["` + id + ": " + escapeMermaidLabel(foldTitle(curTitle)) + `"]` + suffix
 		return strings.Join(lines, "\n")
 	}
 	return content
@@ -335,13 +440,20 @@ func buildCatalogRow(id, title string, status HypothesisStatus, decision string,
 	if par == "" {
 		par = "—"
 	}
-	return joinCells([]string{link, title, st, dec, par})
+	return joinCells([]string{link, foldTitle(title), st, dec, par})
 }
 
 // joinCells re-joins trimmed cells into a pipe-delimited Markdown row with
-// surrounding spaces, matching the canonical catalog/table formatting.
+// surrounding spaces, matching the canonical catalog/table formatting. Every
+// cell is escaped (escapeCell): cells here are logical values (as parsed by
+// splitCells or freshly supplied), and the escape keeps a cell containing a
+// pipe or newline from corrupting the row — splitCells reverses it on parse.
 func joinCells(cells []string) string {
-	return "| " + strings.Join(cells, " | ") + " |"
+	escaped := make([]string, len(cells))
+	for i, c := range cells {
+		escaped[i] = escapeCell(c)
+	}
+	return "| " + strings.Join(escaped, " | ") + " |"
 }
 
 // addCatalogRow inserts a new catalog row: it replaces the "*No hypotheses
@@ -378,6 +490,17 @@ func addCatalogRow(content, id, title string, status HypothesisStatus, decision 
 		lastDataRow = i
 	}
 	if lastDataRow == -1 {
+		// No data rows and no placeholder: a table that carries only the
+		// header + separator rows. Insert directly after that separator so
+		// the first catalog row lands inside the (empty) table instead of
+		// being silently dropped.
+		if sepIdx := catalogSeparatorRow(lines); sepIdx != -1 {
+			result := make([]string, 0, len(lines)+1)
+			result = append(result, lines[:sepIdx+1]...)
+			result = append(result, newRow)
+			result = append(result, lines[sepIdx+1:]...)
+			return strings.Join(result, "\n")
+		}
 		return content
 	}
 	result := make([]string, 0, len(lines)+1)
@@ -385,6 +508,42 @@ func addCatalogRow(content, id, title string, status HypothesisStatus, decision 
 	result = append(result, newRow)
 	result = append(result, lines[lastDataRow+1:]...)
 	return strings.Join(result, "\n")
+}
+
+// catalogSeparatorRow locates the separator row of the Hypothesis Catalog
+// table: the "|---|" line directly following the catalog header row (first
+// cell "ID" plus a "Status" column). It returns the index of that separator
+// line, or -1 when no such header + separator pair exists — in that case the
+// caller has no table to insert into and leaves the content unchanged.
+func catalogSeparatorRow(lines []string) int {
+	for i := 0; i+1 < len(lines); i++ {
+		if !strings.HasPrefix(strings.TrimSpace(lines[i]), "|") {
+			continue
+		}
+		header := splitCells(lines[i])
+		if !isCatalogHeaderRow(header) {
+			continue
+		}
+		if sep := splitCells(lines[i+1]); isSeparatorRow(sep) {
+			return i + 1
+		}
+	}
+	return -1
+}
+
+// isCatalogHeaderRow reports whether the cells form the catalog table's header
+// row: a leading "ID" column and a "Status" column (case-insensitive), as in
+// "| ID | Hypothesis | Status | Decision | Parent(s) |".
+func isCatalogHeaderRow(cells []string) bool {
+	if len(cells) < 3 || !strings.EqualFold(cells[0], "id") {
+		return false
+	}
+	for _, c := range cells[1:] {
+		if strings.EqualFold(c, "status") {
+			return true
+		}
+	}
+	return false
 }
 
 // addMermaidNodeAndEdges inserts a new node (with its parent edges) into the
@@ -409,7 +568,7 @@ func addMermaidNodeAndEdges(content, id, title string, status HypothesisStatus, 
 	}
 
 	nodeToken := strings.ReplaceAll(id, "-", "")
-	nodeLine := fmt.Sprintf("    %s[\"%s: %s\"]:::%s", nodeToken, id, title, mermaidClass(status))
+	nodeLine := fmt.Sprintf("    %s[\"%s: %s\"]:::%s", nodeToken, id, escapeMermaidLabel(foldTitle(title)), mermaidClass(status))
 	edgeLines := make([]string, 0, len(parents))
 	for _, p := range parents {
 		edgeLines = append(edgeLines, fmt.Sprintf("    %s --> %s", strings.ReplaceAll(p, "-", ""), nodeToken))
@@ -457,16 +616,21 @@ func buildCardContent(id, title, statement, criterion, timebox, created string, 
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "# %s: %s\n\n", id, title)
+	fmt.Fprintf(&b, "# %s: %s\n\n", id, foldTitle(title))
 	b.WriteString("| Field | Value |\n")
 	b.WriteString("|---|---|\n")
 	fmt.Fprintf(&b, "| **Identifier** | %s |\n", id)
 	fmt.Fprintf(&b, "| **Status** | %s |\n", string(status))
-	fmt.Fprintf(&b, "| **Timebox** | %s |\n", timeboxVal)
+	fmt.Fprintf(&b, "| **Timebox** | %s |\n", escapeCell(timeboxVal))
 	fmt.Fprintf(&b, "| **Parent(s)** | %s |\n", parentsVal)
 	fmt.Fprintf(&b, "| **Created** | %s |\n", created)
-	b.WriteString("| **Completed** | — |\n")
-	fmt.Fprintf(&b, "| **Decision** | %s |\n", decisionVal)
+	if status.IsTerminal() {
+		// A card created directly in a terminal state completed today.
+		fmt.Fprintf(&b, "| **Completed** | %s |\n", time.Now().Format("2006-01-02"))
+	} else {
+		b.WriteString("| **Completed** | — |\n")
+	}
+	fmt.Fprintf(&b, "| **Decision** | %s |\n", escapeCell(decisionVal))
 	b.WriteString("\n## Statement\n\n")
 	b.WriteString(statement)
 	b.WriteString("\n\n## Verification Criterion\n\n")
@@ -544,8 +708,15 @@ func maxHypothesisNumber(projectDir string) int {
 // ActiveProjectDir returns the absolute path of the active R-NNN project
 // directory under a research root, using the same selection rule as
 // PickActiveProject (latest index entry, else highest-numbered directory).
-// It handles both the canonical nested layout (R-NNN-short-name/) and the flat
-// single-project layout. It returns an error when no project exists yet.
+// The directory comes straight from the parse (ResearchProject.Dir) — the
+// very directory the parser read — so a brief/dir ID divergence (a typo in
+// the brief's "# [R-NNN]" header, a renamed/copied project directory, or two
+// directories normalizing to the same R-NNN) cannot redirect mutations to a
+// different project than the one the panel renders. The legacy name-matching
+// path remains only as a fallback for hand-constructed models whose Dir was
+// never set. It handles both the canonical nested layout (R-NNN-short-name/)
+// and the flat single-project layout. It returns an error when no project
+// exists yet.
 func ActiveProjectDir(researchRoot string) (string, error) {
 	root, err := ParseResearchRoot(researchRoot)
 	if err != nil {
@@ -556,6 +727,12 @@ func ActiveProjectDir(researchRoot string) (string, error) {
 		return "", errors.New("no active research project (no R-NNN directory yet)")
 	}
 
+	// Primary path: the directory the parser actually read this project from.
+	if active.Dir != "" {
+		return active.Dir, nil
+	}
+
+	// Fallback for parsed-before-Dir models: resolve by directory-name ID.
 	entries, err := os.ReadDir(researchRoot)
 	if err != nil {
 		return "", err
@@ -564,7 +741,7 @@ func ActiveProjectDir(researchRoot string) (string, error) {
 		if !e.IsDir() {
 			continue
 		}
-		if normalizeResearchID(e.Name()) == active.ID {
+		if NormalizeResearchID(e.Name()) == active.ID {
 			return filepath.Join(researchRoot, e.Name()), nil
 		}
 	}
@@ -575,10 +752,59 @@ func ActiveProjectDir(researchRoot string) (string, error) {
 	return "", fmt.Errorf("active research project directory for %q not found", active.ID)
 }
 
+// ProjectDir returns the absolute path of the research project whose parsed ID
+// is rid under researchRoot. It resolves through the same parse the panel
+// renders (brief-preferred IDs, ResearchProject.Dir), so the returned
+// directory is the one the parser actually read. When rid is the ACTIVE
+// research project (PickActiveProject — the single selection rule the
+// orchestrator and the frontend panel share), the active project's Dir wins:
+// duplicate directories can normalize to the same R-NNN (a copy under another
+// name), and without this preference the first sorted match could silently
+// diverge from the duplicate the panel renders and mutations would write to a
+// different project's copy. The first-match loop remains only as the fallback
+// for non-active IDs. It doubles as the ownership
+// check for mutation callers that carry a caller-expected R-NNN: an id that
+// does not live under this root — e.g. a research project belonging to
+// ANOTHER project's research root — does not resolve here and is rejected
+// before any file is touched.
+func ProjectDir(researchRoot, rid string) (string, error) {
+	rid = NormalizeResearchID(rid)
+	if rid == "" {
+		return "", errors.New("invalid research project id (want R-NNN)")
+	}
+
+	root, err := ParseResearchRoot(researchRoot)
+	if err != nil {
+		return "", err
+	}
+	// Prefer the active project's Dir — the same directory the panel
+	// renders and ActiveProjectDir resolves — so a caller-mutated card in
+	// the visible project never lands in a different duplicate of the
+	// same R-NNN.
+	if active := PickActiveProject(root); active != nil && active.ID == rid && active.Dir != "" {
+		return active.Dir, nil
+	}
+	for _, p := range root.Projects {
+		if p.ID == rid && p.Dir != "" {
+			return p.Dir, nil
+		}
+	}
+	return "", fmt.Errorf("research project %q not found under %q", rid, researchRoot)
+}
+
 // UpdateHypothesis applies an update to an existing hypothesis card and its
 // graph entries. It is atomic-ish: validation (including the status-transition
 // check) happens before any write, and each file is written via temp+rename.
-func UpdateHypothesis(projectDir, id string, upd HypothesisUpdate) error {
+// researchRoot is the containment root every written target is validated
+// against (see writeFilesAtomic); projectDir is the active R-NNN directory
+// (research.ActiveProjectDir).
+//
+// Side effects beyond the card + graph: a transition into a terminal status
+// (confirmed / refuted / cancelled) stamps the card's Completed field with
+// today's date when it is still empty, and real status changes plus recorded
+// decisions are appended to log.md as status_change / decision entries — in
+// the same atomic write as the card and graph.
+func UpdateHypothesis(researchRoot, projectDir, id string, upd HypothesisUpdate) error {
 	id = NormalizeID(id)
 	if id == "" {
 		return errors.New("invalid hypothesis id")
@@ -605,22 +831,64 @@ func UpdateHypothesis(projectDir, id string, upd HypothesisUpdate) error {
 	}
 
 	// Normalize and validate the status before any mutation.
+	var newStatus HypothesisStatus
 	if upd.Status != nil {
-		ns := NormalizeStatus(*upd.Status)
-		if err := ValidateTransition(node.Status, ns); err != nil {
+		newStatus = NormalizeStatus(*upd.Status)
+		if err := ValidateTransition(node.Status, newStatus); err != nil {
 			return err
 		}
-		s := string(ns)
+		s := string(newStatus)
 		upd.Status = &s
+	}
+	// Titles are single-line labels: fold once here so the card H1, catalog
+	// cell, and Mermaid label all render the identical folded spelling.
+	if upd.Title != nil {
+		t := foldTitle(*upd.Title)
+		upd.Title = &t
 	}
 
 	newCard := rewriteCard(cardContent, id, upd)
 	newGraph := rewriteGraphForUpdate(graphContent, id, upd)
 
-	if err := writeFilesAtomic(map[string][]byte{
+	// A real transition into a terminal status completes the hypothesis today
+	// (unless a completion date is already recorded — never overwrite it).
+	statusChanged := upd.Status != nil && newStatus != node.Status
+	if statusChanged && newStatus.IsTerminal() && dashToEmpty(extractField(cardContent, "Completed")) == "" {
+		newCard = setTableField(newCard, "Completed", time.Now().Format("2006-01-02"))
+	}
+
+	files := map[string][]byte{
 		cardPath:  []byte(newCard),
 		graphPath: []byte(newGraph),
-	}); err != nil {
+	}
+
+	// Research log: one status_change entry per real transition, one decision
+	// entry per recorded decision — appended to log.md within the same atomic
+	// write, so card, graph, and log never disagree.
+	decisionLogged := upd.Decision != nil && strings.TrimSpace(*upd.Decision) != ""
+	if statusChanged || decisionLogged {
+		logPath := filepath.Join(projectDir, "log.md")
+		logContent, _ := readFile(logPath)
+		now := time.Now().UTC().Format(time.RFC3339)
+		if statusChanged {
+			msg := fmt.Sprintf("Moved %s from %s to %s.", id, node.Status, newStatus)
+			if node.Status == "" {
+				msg = fmt.Sprintf("Set %s to %s.", id, newStatus)
+			}
+			if logContent, err = appendLogEntryContent(logContent, LogKindStatusChange, id, now, msg); err != nil {
+				return fmt.Errorf("failed to stage research log entry: %w", err)
+			}
+		}
+		if decisionLogged {
+			msg := fmt.Sprintf("Decision: %s.", strings.TrimSpace(*upd.Decision))
+			if logContent, err = appendLogEntryContent(logContent, LogKindDecision, id, now, msg); err != nil {
+				return fmt.Errorf("failed to stage research log entry: %w", err)
+			}
+		}
+		files[logPath] = []byte(logContent)
+	}
+
+	if err := writeFilesAtomic(researchRoot, files); err != nil {
 		return fmt.Errorf("failed to write hypothesis update: %w", err)
 	}
 	return nil
@@ -628,12 +896,17 @@ func UpdateHypothesis(projectDir, id string, upd HypothesisUpdate) error {
 
 // CreateHypothesis creates a new hypothesis card (assigning the next H-NNN id)
 // and updates the graph (Mermaid node + edges + catalog row). It returns the
-// new canonical ID.
-func CreateHypothesis(projectDir string, nh NewHypothesis) (string, error) {
+// new canonical ID. researchRoot is the containment root every written target
+// is validated against (see writeFilesAtomic); projectDir is the active R-NNN
+// directory (research.ActiveProjectDir).
+func CreateHypothesis(researchRoot, projectDir string, nh NewHypothesis) (string, error) {
 	title := strings.TrimSpace(nh.Title)
 	if title == "" {
 		return "", errors.New("new hypothesis requires a title")
 	}
+	// Titles are single-line labels everywhere they are written (card H1,
+	// catalog cell, Mermaid label); fold once up front.
+	title = foldTitle(title)
 
 	status := nh.Status
 	if status == "" {
@@ -682,7 +955,7 @@ func CreateHypothesis(projectDir string, nh NewHypothesis) (string, error) {
 	newGraph := addMermaidNodeAndEdges(graphContent, id, title, status, parents)
 	newGraph = addCatalogRow(newGraph, id, title, status, nh.Decision, parents)
 
-	if err := writeFilesAtomic(map[string][]byte{
+	if err := writeFilesAtomic(researchRoot, map[string][]byte{
 		filepath.Join(hypDir, id+".md"):   []byte(cardContent),
 		filepath.Join(hypDir, "graph.md"): []byte(newGraph),
 	}); err != nil {
@@ -691,18 +964,182 @@ func CreateHypothesis(projectDir string, nh NewHypothesis) (string, error) {
 	return id, nil
 }
 
-// ensureGraphSkeleton returns graphContent when it already contains both the
-// Mermaid diagram fence and a Hypothesis Catalog table (the two structures the
-// mutation helpers operate on), and otherwise a fresh skeleton containing both.
-// This guarantees CreateHypothesis never writes an empty or malformed graph.md
-// when the file is missing or corrupted: the node/edge and catalog-row helpers
-// are no-ops when their target structure is absent, so a missing graph would
-// otherwise be written back out empty.
-func ensureGraphSkeleton(graphContent string) string {
-	if strings.Contains(graphContent, "```mermaid") && strings.Contains(graphContent, "Hypothesis Catalog") {
-		return graphContent
+// ---------------------------------------------------------------------------
+// Research log (log.md) writing
+// ---------------------------------------------------------------------------
+
+// AppendLogEntry appends one entry (experiment / decision / status_change /
+// note) to the research log at <projectDir>/log.md, creating the file with the
+// standard "# Research Log" preamble when it does not exist. Existing entries
+// are never rewritten — the log is append-only. The write goes through
+// writeFilesAtomic (temp file + rename, containment-checked against
+// researchRoot), like every other research mutation. An empty CreatedAt
+// defaults to the current UTC time in RFC 3339 (the YYYY-MM-DDTHH:MM:SSZ form
+// the skills prescribe); an unknown Kind or a non-ISO-8601 timestamp is an
+// error and leaves the log untouched.
+func AppendLogEntry(researchRoot, projectDir string, entry ResearchLogEntry) error {
+	logPath := filepath.Join(projectDir, "log.md")
+	current, _ := readFile(logPath)
+	next, err := appendLogEntryContent(current, entry.Kind, entry.HypothesisID, entry.CreatedAt, entry.Message)
+	if err != nil {
+		return err
 	}
-	return graphSkeleton()
+	if err := writeFilesAtomic(researchRoot, map[string][]byte{logPath: []byte(next)}); err != nil {
+		return fmt.Errorf("failed to append research log entry: %w", err)
+	}
+	return nil
+}
+
+// appendLogEntryContent is the pure half of AppendLogEntry: it renders one
+// entry onto a log.md's current content and returns the new content. The
+// heading follows ParseLog's contract ("## <kind> <created_at> [<H-NNN>]");
+// message lines that would themselves parse as entry headings ("## ...") are
+// demoted to "### ..." subheadings so the entry's body is never truncated.
+func appendLogEntryContent(content string, kind LogKind, hypothesisID, createdAt, message string) (string, error) {
+	k, ok := normalizeLogKind(string(kind))
+	if !ok {
+		return "", fmt.Errorf("unknown research log kind %q", string(kind))
+	}
+	createdAt = strings.TrimSpace(createdAt)
+	if createdAt == "" {
+		createdAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if !looksLikeTimestamp(createdAt) {
+		return "", fmt.Errorf("research log timestamp %q carries no ISO 8601 date (want a YYYY-MM-DD prefix)", createdAt)
+	}
+
+	heading := "## " + string(k) + " " + createdAt
+	if hypID := NormalizeID(hypothesisID); hypID != "" {
+		heading += " " + hypID
+	}
+
+	var b strings.Builder
+	if base := strings.TrimRight(content, "\n"); base == "" {
+		b.WriteString("# Research Log\n\n")
+	} else {
+		b.WriteString(base)
+		b.WriteString("\n\n")
+	}
+	b.WriteString(heading)
+	b.WriteString("\n\n")
+	b.WriteString(demoteLevelTwoHeadings(strings.TrimRight(message, "\n")))
+	b.WriteString("\n")
+	return b.String(), nil
+}
+
+// demoteLevelTwoHeadings rewrites message lines starting with "## " as "### "
+// subheadings. ParseLog reserves level-2 headings for entry headings: an
+// undemoted "## ..." line inside a message would terminate the entry and
+// silently drop the remainder of the body. Level-3 headings parse as message
+// text, and demoting is stable across write → parse → write.
+func demoteLevelTwoHeadings(message string) string {
+	if !strings.Contains(message, "## ") {
+		return message
+	}
+	lines := strings.Split(message, "\n")
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, "## ") {
+			lines[i] = "### " + strings.TrimSpace(strings.TrimPrefix(t, "## "))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// ensureGraphSkeleton guarantees graphContent carries both structures the
+// mutation helpers operate on — the Mermaid diagram fence and a Hypothesis
+// Catalog table. Content that already has both is returned unchanged. When a
+// structure is missing, ONLY that section is inserted (the Mermaid section
+// before the catalog heading, the catalog section after the diagram fence),
+// so free-form notes, headings, and any other surviving data in a malformed
+// or partially written graph.md are preserved rather than wiped by a fresh
+// skeleton. A blank file gets the full skeleton (nothing to preserve).
+func ensureGraphSkeleton(graphContent string) string {
+	hasMermaid := strings.Contains(graphContent, "```mermaid")
+	hasCatalog := strings.Contains(graphContent, "Hypothesis Catalog")
+	switch {
+	case hasMermaid && hasCatalog:
+		return graphContent
+	case !hasMermaid && !hasCatalog:
+		if strings.TrimSpace(graphContent) == "" {
+			return graphSkeleton()
+		}
+		// Neither structure, but the file carries content: insert the diagram
+		// first, then hang the catalog off the freshly inserted fence.
+		return insertCatalogSection(insertMermaidSection(graphContent))
+	case !hasMermaid:
+		return insertMermaidSection(graphContent)
+	default:
+		return insertCatalogSection(graphContent)
+	}
+}
+
+// mermaidSection renders the standalone Diagram section (heading + fenced
+// Mermaid block with the status classDefs and no nodes) inserted by
+// ensureGraphSkeleton when a graph.md lacks a diagram.
+func mermaidSection() string {
+	return "## Diagram\n\n" + "```mermaid\n" + `graph TD
+    classDef confirmed fill:#4CAF50,color:#fff
+    classDef refuted fill:#F44336,color:#fff
+    classDef in_progress fill:#FF9800,color:#fff
+    classDef open fill:#2196F3,color:#fff
+    classDef cancelled fill:#9E9E9E,color:#fff
+
+    %% Add hypothesis nodes here as they are created.
+` + "```\n"
+}
+
+// catalogSection renders the standalone Hypothesis Catalog section (heading +
+// header row + separator + placeholder) inserted by ensureGraphSkeleton when a
+// graph.md lacks a catalog table.
+func catalogSection() string {
+	return "## Hypothesis Catalog\n\n| ID | Hypothesis | Status | Decision | Parent(s) |\n|---|---|---|---|---|\n| *No hypotheses yet.* | | | | |\n"
+}
+
+// insertMermaidSection inserts the Diagram section before the Hypothesis
+// Catalog heading when present (the diagram belongs above the catalog), else
+// appends it at the end with a blank-line separation.
+func insertMermaidSection(content string) string {
+	section := mermaidSection()
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if !strings.Contains(sectionHeadingLower(line), "hypothesis catalog") {
+			continue
+		}
+		result := make([]string, 0, len(lines)+strings.Count(section, "\n")+2)
+		result = append(result, lines[:i]...)
+		result = append(result, "")
+		result = append(result, strings.Split(strings.TrimRight(section, "\n"), "\n")...)
+		result = append(result, "")
+		result = append(result, lines[i:]...)
+		return strings.Join(result, "\n")
+	}
+	return strings.TrimRight(content, "\n") + "\n\n" + section
+}
+
+// insertCatalogSection inserts the Hypothesis Catalog section directly after
+// the Mermaid block's closing fence when a diagram is present (the catalog
+// belongs below it), else appends it at the end with a blank-line separation.
+func insertCatalogSection(content string) string {
+	section := catalogSection()
+	lines := strings.Split(content, "\n")
+	inFence := false
+	for i, line := range lines {
+		t := strings.TrimSpace(line)
+		if t == "```mermaid" {
+			inFence = true
+			continue
+		}
+		if inFence && t == "```" {
+			result := make([]string, 0, len(lines)+strings.Count(section, "\n")+2)
+			result = append(result, lines[:i+1]...)
+			result = append(result, "")
+			result = append(result, strings.Split(strings.TrimRight(section, "\n"), "\n")...)
+			result = append(result, lines[i+1:]...)
+			return strings.Join(result, "\n")
+		}
+	}
+	return strings.TrimRight(content, "\n") + "\n\n" + section
 }
 
 // graphSkeleton renders a minimal, well-formed graph.md with an empty Mermaid
@@ -739,7 +1176,19 @@ func graphSkeleton() string {
 // every target untouched; only the rename phase — near-instant and per-file
 // atomic — can produce a partial state, which no two-file scheme can avoid
 // without a filesystem transaction.
-func writeFilesAtomic(files map[string][]byte) error {
+//
+// researchRoot is the containment root (SECURITY.md: RESEARCH artifacts stay
+// strictly inside the project workspace). Every target is symlink-resolved
+// and checked against the resolved root BEFORE any staging: a symlinked
+// intermediate directory under the root (e.g.
+// .research/R-001-x/hypotheses -> /Users/x/Documents) would otherwise be
+// followed by os.CreateTemp/os.Rename and redirect the write outside the
+// workspace — the same escape the write_file tool rejects with
+// ReasonCodeSymlinkEscape. Staging and renaming then use the RESOLVED target,
+// so the location that was validated is exactly the location written and a
+// directory swap between check and write cannot re-introduce a different
+// symlink chain.
+func writeFilesAtomic(researchRoot string, files map[string][]byte) error {
 	type stagedFile struct {
 		target string
 		tmp    string
@@ -759,8 +1208,20 @@ func writeFilesAtomic(files map[string][]byte) error {
 	}
 	sort.Strings(paths)
 
+	// Resolve and containment-check every target before touching the disk:
+	// a rejection here leaves all files untouched.
+	resolved := make(map[string]string, len(paths))
 	for _, p := range paths {
-		tmp, err := os.CreateTemp(filepath.Dir(p), ".hyp-*.tmp")
+		rp, err := resolveTargetWithinRoot(researchRoot, p)
+		if err != nil {
+			return err
+		}
+		resolved[p] = rp
+	}
+
+	for _, p := range paths {
+		rp := resolved[p]
+		tmp, err := os.CreateTemp(filepath.Dir(rp), ".hyp-*.tmp")
 		if err != nil {
 			return err
 		}
@@ -775,7 +1236,7 @@ func writeFilesAtomic(files map[string][]byte) error {
 		if err := os.Chmod(tmpName, 0o644); err != nil {
 			return err
 		}
-		staged = append(staged, stagedFile{target: p, tmp: tmpName})
+		staged = append(staged, stagedFile{target: rp, tmp: tmpName})
 	}
 
 	for _, s := range staged {
@@ -784,4 +1245,37 @@ func writeFilesAtomic(files map[string][]byte) error {
 		}
 	}
 	return nil
+}
+
+// resolveTargetWithinRoot symlink-resolves the containment root and the
+// target (EvalSymlinks on the root and on the target's directory — the file
+// itself may not exist yet) and re-checks pathutil.IsWithinPath immediately
+// before the caller stages (CreateTemp) and renames. It returns the resolved
+// target path — the on-disk location the caller may safely write. It fails
+// closed: an unresolvable root/directory or any containment mismatch is an
+// error, so a symlinked intermediate directory can never stage a temp file
+// outside the workspace.
+func resolveTargetWithinRoot(researchRoot, target string) (string, error) {
+	if researchRoot == "" {
+		return "", errors.New("research write rejected: empty research root")
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(researchRoot)
+	if err != nil {
+		return "", fmt.Errorf("research root %q not resolvable: %w", researchRoot, err)
+	}
+	dir, base := filepath.Dir(target), filepath.Base(target)
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", fmt.Errorf("research write target directory %q not resolvable: %w", dir, err)
+	}
+	resolvedTarget := filepath.Join(resolvedDir, base)
+
+	contained, withinErr := pathutil.IsWithinPath(resolvedRoot, resolvedTarget)
+	if withinErr != nil {
+		return "", fmt.Errorf("research write containment check failed for %q: %w", target, withinErr)
+	}
+	if !contained {
+		return "", fmt.Errorf("research write target %q resolves to %q, outside the research root %q (symlinked intermediate directory?)", target, resolvedTarget, researchRoot)
+	}
+	return resolvedTarget, nil
 }

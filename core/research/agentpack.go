@@ -4,16 +4,26 @@
 // skill-pack (skillpack.go) so a research step can be delegated via the
 // `#research` mention or delegate(agent:"research").
 //
-// Seeding is idempotent and non-destructive to user-authored profiles:
-//   - A brand-new profile directory is written together with a sidecar
-//     `.seed-version` marker recording the pack version that produced it.
-//   - An existing directory whose marker equals the current pack version is
-//     left untouched (re-enabling with the same version preserves any user
-//     edits made to the seeded profile).
-//   - An existing directory whose marker differs from the current pack
-//     version is overwritten in full (a pack upgrade) and re-marked.
-//   - An existing directory with NO marker is treated as user-owned and is
-//     never clobbered.
+// Seeding is idempotent, crash-safe, and non-destructive to user-authored
+// profiles. Classification compares the CONTENT HASH of the on-disk tree
+// against the embedded pack (never mtime/size, never the marker alone):
+//   - Writes are staged into a hidden sibling temp directory and swapped in
+//     with a single rename, so an interrupted run can never leave a
+//     truncated tree at the destination; leftovers from a hard kill are
+//     swept on the next run.
+//   - A directory whose content equals the pack is Current and left
+//     untouched; a missing or stale `.seed-version` marker on such a
+//     directory is re-stamped.
+//   - A pack-marked truncated subset of the pack (an interrupted write — the
+//     "marker + truncated tree" state that a marker-first ordering would
+//     produce) is repaired, never classified Current.
+//   - A pack-marked directory at the current version whose content diverges
+//     from the pack was edited locally (or its marker was spoofed): it is
+//     preserved untouched and reported as Modified.
+//   - A pack-marked directory from an older pack version is overwritten in
+//     full (a pack upgrade) and re-marked.
+//   - An existing directory with NO marker whose content differs from the
+//     pack is user-owned and never clobbered.
 //
 // Because seeded profiles land in the project-local `.agents/agents`
 // directory — which both ListAgents and the per-session AgentManager always
@@ -60,9 +70,10 @@ const AgentSeedVersion = "1"
 // output. It mirrors SeedSkillsResult.
 type SeedAgentsResult struct {
 	Seeded    []string // newly written (directory did not exist)
-	Updated   []string // overwritten to the current pack version
-	Current   []string // already at the current version; left untouched
-	Preserved []string // user-owned (no marker); left untouched
+	Updated   []string // overwritten to the current pack version (upgrade or truncated-tree repair)
+	Current   []string // content matches the pack; left untouched
+	Preserved []string // user-owned (no marker, content differs); left untouched
+	Modified  []string // pack-marked but content diverges (user edit or spoofed marker); left untouched
 }
 
 // ResearchAgentNames returns the sorted names of the research Subagent
@@ -91,8 +102,9 @@ func ResearchAgentNames() []string {
 // destination must be a real, writable filesystem path.
 //
 // The function is safe to call repeatedly (idempotent): see the package docs
-// for the version-marker rules. It never overwrites a directory that lacks a
-// pack marker (user-authored profiles are preserved).
+// for the classification rules. It never overwrites a directory that lacks a
+// pack marker unless its content is byte-identical to the pack (in which case
+// only the marker is re-stamped).
 func SeedAgents(destAgentsDir string, logger *slog.Logger) (*SeedAgentsResult, error) {
 	if destAgentsDir == "" {
 		return nil, errors.New("research.SeedAgents: destAgentsDir is empty")
@@ -100,6 +112,10 @@ func SeedAgents(destAgentsDir string, logger *slog.Logger) (*SeedAgentsResult, e
 	if err := os.MkdirAll(destAgentsDir, 0o755); err != nil {
 		return nil, fmt.Errorf("research.SeedAgents: create agents dir %q: %w", destAgentsDir, err)
 	}
+
+	// Sweep away staging/backup leftovers from a previous interrupted run
+	// (a hard kill can leave hidden sibling dirs behind; see stageAndSwap).
+	sweepSeedLeftovers(destAgentsDir)
 
 	result := &SeedAgentsResult{}
 	names := ResearchAgentNames()
@@ -121,56 +137,53 @@ func SeedAgents(destAgentsDir string, logger *slog.Logger) (*SeedAgentsResult, e
 			"updated", len(result.Updated),
 			"current", len(result.Current),
 			"preserved", len(result.Preserved),
+			"modified", len(result.Modified),
 		)
 	}
 	return result, nil
 }
 
-// seedOneAgent handles a single embedded profile: decides the action from the
-// destination's marker state and performs the write when required. It reuses
-// the seedAction enum, seedVersionFile, readSeedVersion, and dirExists helpers
-// from skillpack.go (same package), but stamps the agent-pack version via
-// writeAgentSeedVersion.
+// seedOneAgent handles a single embedded profile: classifies the destination
+// by content hash against the embedded pack and performs the required write
+// via the crash-safe staging swap (see seedstaging.go). It reuses the
+// seedAction enum and the staging helpers from skillpack.go/seedstaging.go
+// (same package).
 func seedOneAgent(name, target string, logger *slog.Logger) (seedAction, error) {
-	hasMarker, existingVersion := readSeedVersion(target)
-	dirExists := dirExists(target)
-
-	// User-owned directory: never clobber, regardless of re-enable.
-	if dirExists && !hasMarker {
+	st, packHash, err := inspectSeedTarget(agentPackFS, agentEmbedRoot, name, target)
+	if err != nil {
+		return actionSeed, err
+	}
+	action, restamp := classifySeed(st, packHash, AgentSeedVersion)
+	switch action {
+	case actionPreserve:
 		if logger != nil {
 			logger.Debug("research agent preserved (user-owned)", "agent", name, "dir", target)
 		}
 		return actionPreserve, nil
-	}
-
-	// Already at current version: skip to preserve user edits.
-	if hasMarker && existingVersion == AgentSeedVersion {
+	case actionModified:
+		if logger != nil {
+			logger.Info("research agent profile locally modified; preserved", "agent", name, "dir", target)
+		}
+		return actionModified, nil
+	case actionCurrent:
+		if restamp {
+			if err := writeMarkerAtomic(target, AgentSeedVersion); err != nil {
+				return actionCurrent, err
+			}
+		}
 		return actionCurrent, nil
 	}
-
-	// Either new, or a version bump: write the embedded tree afresh. On an
-	// update, clear the directory first so stale files do not linger.
-	if dirExists {
-		if err := os.RemoveAll(target); err != nil {
-			return actionSeed, fmt.Errorf("clear stale dir: %w", err)
-		}
+	if err := stageAndSwap(name, target, AgentSeedVersion, func(stagingDir string) error {
+		return writeAgentEmbedTree(name, stagingDir)
+	}); err != nil {
+		return action, err
 	}
-	if err := writeAgentEmbedTree(name, target); err != nil {
-		return actionSeed, err
-	}
-	if err := writeAgentSeedVersion(target); err != nil {
-		return actionSeed, err
-	}
-
-	if hasMarker {
-		return actionUpdate, nil
-	}
-	return actionSeed, nil
+	return action, nil
 }
 
-// writeAgentEmbedTree writes the embedded subtree for one profile to target,
+// writeAgentEmbedTree writes the embedded subtree for one profile to dest,
 // creating intermediate directories as needed. embed paths use forward slashes.
-func writeAgentEmbedTree(name, target string) error {
+func writeAgentEmbedTree(name, dest string) error {
 	srcRoot := path.Join(agentEmbedRoot, name)
 	return fs.WalkDir(agentPackFS, srcRoot, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -180,27 +193,19 @@ func writeAgentEmbedTree(name, target string) error {
 		// converted to the host separator. The walk root itself maps to ".".
 		rel := strings.TrimPrefix(p, srcRoot)
 		rel = strings.TrimPrefix(rel, "/")
-		dest := target
+		target := dest
 		if rel != "" {
-			dest = filepath.Join(target, filepath.FromSlash(rel))
+			target = filepath.Join(dest, filepath.FromSlash(rel))
 		}
 		if d.IsDir() {
-			return os.MkdirAll(dest, 0o755)
+			return os.MkdirAll(target, 0o755)
 		}
 		data, rerr := agentPackFS.ReadFile(p)
 		if rerr != nil {
 			return rerr
 		}
-		return os.WriteFile(dest, data, 0o644)
+		return seedWriteFile(target, data, 0o644)
 	})
-}
-
-// writeAgentSeedVersion stamps the agent-pack version into the profile
-// directory. It is version-aware (unlike writeSeedVersion, which stamps the
-// skill-pack version) so the two packs can bump independently.
-func writeAgentSeedVersion(target string) error {
-	markerPath := filepath.Join(target, seedVersionFile)
-	return os.WriteFile(markerPath, []byte(AgentSeedVersion), 0o644)
 }
 
 // appendAgentResult records a profile name under the bucket for its action.
@@ -214,6 +219,8 @@ func appendAgentResult(r *SeedAgentsResult, action seedAction, name string) {
 		r.Current = append(r.Current, name)
 	case actionPreserve:
 		r.Preserved = append(r.Preserved, name)
+	case actionModified:
+		r.Modified = append(r.Modified, name)
 	}
 }
 
@@ -223,4 +230,5 @@ func sortAgentResult(r *SeedAgentsResult) {
 	sort.Strings(r.Updated)
 	sort.Strings(r.Current)
 	sort.Strings(r.Preserved)
+	sort.Strings(r.Modified)
 }

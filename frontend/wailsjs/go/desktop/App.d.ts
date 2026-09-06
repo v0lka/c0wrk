@@ -327,7 +327,7 @@ export function UnwatchDirectory(arg1:string):Promise<void>;
 
 export function UpdateExperimentalFeatures(arg1:boolean):Promise<void>;
 
-export function UpdateHypothesis(arg1:string,arg2:string,arg3:backend.HypothesisUpdateFields):Promise<backend.ResearchGraphDTO>;
+export function UpdateHypothesis(arg1:string,arg2:string,arg3:string,arg4:backend.HypothesisUpdateFields):Promise<backend.ResearchGraphDTO>;
 
 export function UpdateLLMConfig(arg1:backend.LLMFullConfigRequest):Promise<void>;
 

@@ -95,10 +95,12 @@ describe('ChatMessageRenderer bookmark row hover scoping', () => {
       el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true }))
     })
 
-  // The star no longer uses Tailwind opacity classes; visibility is an inline
-  // `visibility` style toggled programmatically from the chat hover store.
-  const starIsVisible = (b: HTMLButtonElement) => b.style.visibility === 'visible'
-  const starIsHidden = (b: HTMLButtonElement) => b.style.visibility === 'hidden'
+  // The star hides via opacity + pointer-events classes, NOT an inline
+  // `visibility: hidden` style — that would drop the button from the tab order
+  // and make it unreachable for keyboard users (see BookmarkStar).
+  const starIsVisible = (b: HTMLButtonElement) => b.classList.contains('opacity-100')
+  const starIsHidden = (b: HTMLButtonElement) =>
+    b.classList.contains('opacity-0') && b.classList.contains('pointer-events-none')
 
   it('renders a star gutter for the parent collapsible row only when bookmarkable', () => {
     renderStep()
@@ -228,6 +230,30 @@ describe('ChatMessageRenderer bookmark row hover scoping', () => {
       lit = allChevrons().filter((c) => c.style.visibility === 'visible')
       expect(lit.length).toBeLessThanOrEqual(1)
     }
+  })
+
+  it('keeps unbookmarked stars keyboard-accessible while hidden (a11y regression)', () => {
+    renderStep()
+    const parentRow = container.querySelector<HTMLElement>('[data-bookmark-id="step-1"]')!
+    const s = star(parentRow)
+
+    // No inline `visibility` style — that would remove the button from the
+    // tab order entirely (the regression this test pins).
+    expect(s.style.visibility).toBe('')
+
+    // Hidden (not bookmarked, no hover): faked with opacity + pointer-events.
+    expect(starIsHidden(s)).toBe(true)
+    expect(starIsVisible(s)).toBe(false)
+
+    // The hidden button is still focusable — keyboard users can reach it.
+    act(() => s.focus())
+    expect(document.activeElement).toBe(s)
+
+    // Keyboard focus restores both visibility and hit-testing via classes
+    // (Tailwind compiles `focus-visible:opacity-100` etc. to a stylesheet
+    // rule; jsdom cannot apply it, so pin the classes on the element).
+    expect(s.className).toContain('focus-visible:opacity-100')
+    expect(s.className).toContain('focus-visible:pointer-events-auto')
   })
 
   it('hides both the bookmark and the chevron when the pointer leaves the chat', () => {

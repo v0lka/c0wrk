@@ -310,6 +310,12 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 			f.log().Warn("SwitchProject: project not found while already active; skipped project:switched re-emit", "project", id)
 		default:
 			f.emitEvent(EventProjectSwitched, p)
+			// Re-run the intake scan on the already-active path too
+			// (review [57]): a .git/config planted since the last scan
+			// must warn on the next re-selection, not only after a real
+			// switch. Cheap (a bounded text parse) and detection-only —
+			// the spawn layer re-scans per invocation regardless.
+			f.notifyGitConfigRisk(GitConfigRiskSourceProject, p.WorkspacePath)
 		}
 		return nil
 	}

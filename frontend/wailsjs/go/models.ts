@@ -813,6 +813,7 @@ export namespace backend {
 	    updated: string[];
 	    current: string[];
 	    preserved: string[];
+	    modified: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ResearchSeedResultDTO(source);
@@ -824,6 +825,7 @@ export namespace backend {
 	        this.updated = source["updated"];
 	        this.current = source["current"];
 	        this.preserved = source["preserved"];
+	        this.modified = source["modified"];
 	    }
 	}
 	export class ResearchStatusDTO {
@@ -1609,6 +1611,7 @@ export namespace research {
 	    status: string;
 	    parents?: string[];
 	    timebox?: string;
+	    completed?: string;
 	    result?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -1622,6 +1625,7 @@ export namespace research {
 	        this.status = source["status"];
 	        this.parents = source["parents"];
 	        this.timebox = source["timebox"];
+	        this.completed = source["completed"];
 	        this.result = source["result"];
 	    }
 	}
@@ -1718,6 +1722,7 @@ export namespace research {
 	}
 	export class ResearchProject {
 	    id: string;
+	    dir?: string;
 	    brief: Brief;
 	    graph: HypothesisGraph;
 	    metrics: Metrics;
@@ -1732,6 +1737,7 @@ export namespace research {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
+	        this.dir = source["dir"];
 	        this.brief = this.convertValues(source["brief"], Brief);
 	        this.graph = this.convertValues(source["graph"], HypothesisGraph);
 	        this.metrics = this.convertValues(source["metrics"], Metrics);

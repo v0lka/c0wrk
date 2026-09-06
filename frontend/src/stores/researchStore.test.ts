@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import {
   useResearchStore,
   selectEnabled,
@@ -304,32 +304,24 @@ describe('researchStore — loadGraph convergence semantics', () => {
   })
 
   it('rejects a snapshot fetched before the last sync (stale) — no apply, no re-stamp', () => {
-    vi.useFakeTimers()
-    try {
-      vi.setSystemTime(1_000)
-      useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
+    useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
 
-      // A newer sync lands (e.g. the watchdog's full refresh): stamp 2_000.
-      vi.setSystemTime(2_000)
-      useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
+    // A newer sync lands (e.g. the watchdog's full refresh): seq → 2.
+    useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
 
-      // The slow incremental fetch STARTED at 1_500 — before that stamp —
-      // and only resolves now: applying it would regress the panel to the
-      // older snapshot AND re-stamp it fresh (defusing the watchdog).
-      const applied = useResearchStore.getState().loadGraph(graphOf('r1', 5), 1_500)
-      expect(applied).toBe(false)
-      const s = useResearchStore.getState()
-      expect(s.lastGraphSyncAt).toBe(2_000)
-      expect(selectActiveProject(s)?.log).toHaveLength(0)
+    // The slow incremental fetch STARTED at seq 1 — before that sync — and
+    // only resolves now: applying it would regress the panel to the older
+    // snapshot AND re-stamp it fresh (defusing the watchdog).
+    const applied = useResearchStore.getState().loadGraph(graphOf('r1', 5), 1)
+    expect(applied).toBe(false)
+    const s = useResearchStore.getState()
+    expect(s.graphSyncSeq).toBe(2)
+    expect(selectActiveProject(s)?.log).toHaveLength(0)
 
-      // A fetch started after the last sync applies normally.
-      vi.setSystemTime(2_500)
-      const appliedFresh = useResearchStore.getState().loadGraph(graphOf('r1', 5), 2_100)
-      expect(appliedFresh).toBe(true)
-      expect(selectActiveProject(useResearchStore.getState())?.log).toHaveLength(5)
-    } finally {
-      vi.useRealTimers()
-    }
+    // A fetch started after the last sync applies normally.
+    const appliedFresh = useResearchStore.getState().loadGraph(graphOf('r1', 5), 2)
+    expect(appliedFresh).toBe(true)
+    expect(selectActiveProject(useResearchStore.getState())?.log).toHaveLength(5)
   })
 
   it('returns false (no partial apply) for a brand-new unknown R-NNN — caller must full-refresh', () => {
@@ -344,6 +336,88 @@ describe('researchStore — loadGraph convergence semantics', () => {
   it('loadStatus also stamps lastGraphSyncAt (a full sync is a sync)', () => {
     useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
     expect(useResearchStore.getState().lastGraphSyncAt).toBeGreaterThan(0)
+  })
+
+  it('loadGraph clears a stuck error and isLoading when it applies — a successful incremental sync is a successful sync', () => {
+    useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
+    // A previously failed status fetch left an error behind, and a refresh
+    // cycle left the spinner on — nothing on the loadStatus path clears
+    // them once the incremental path takes over.
+    useResearchStore.getState().setError('previous fetch failed')
+    useResearchStore.getState().setLoading(true)
+
+    const applied = useResearchStore.getState().loadGraph(graphOf('r1', 3))
+    expect(applied).toBe(true)
+    const s = useResearchStore.getState()
+    expect(s.error).toBeNull()
+    expect(s.isLoading).toBe(false)
+    // The graph itself landed too.
+    expect(selectActiveProject(s)?.log).toHaveLength(3)
+  })
+
+  it('loadStatus for a different project drops the recommended next step (cross-project), same-project keeps it', () => {
+    const nextStep = {
+      project_id: 'r1',
+      action: 'research-hypothesis' as const,
+      reason: 'add a competing hypothesis',
+      skill: 'research-hypothesis',
+    }
+    useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
+    useResearchStore.getState().loadNextStep(nextStep)
+    expect(useResearchStore.getState().nextStep).not.toBeNull()
+
+    // Project switch: the recommendation is phase-derived per project and
+    // its refetch is best-effort — the OLD project's card must not survive
+    // the switch (a failed next-step fetch would leave it rendering
+    // indefinitely).
+    useResearchStore.getState().loadStatus(statusOf(true, 'proj-2'), 'proj-2')
+    expect(useResearchStore.getState().nextStep).toBeNull()
+
+    // A same-project background reload keeps the current recommendation —
+    // ordinary refreshes must not blank the card between fetches.
+    useResearchStore.getState().loadNextStep({ ...nextStep, project_id: 'r1' })
+    useResearchStore.getState().loadStatus(statusOf(true, 'proj-2'), 'proj-2')
+    expect(useResearchStore.getState().nextStep).not.toBeNull()
+  })
+
+  it('last-write-wins: stale full-refresh and mutation payloads (older seq tickets) are rejected wholesale', () => {
+    // Direction 1 — a mutation that started before a newer full sync must
+    // not overwrite it: the watchdog's full refresh and the file-watcher's
+    // fallback both write via loadStatus, so its ticket guard covers them.
+    useResearchStore.getState().loadStatus(statusOf(true), 'proj-1') // seq → 1
+    const watchdogTicket = useResearchStore.getState().graphSyncSeq // captured at fetch START (= 1)
+    // …the user's quick-mutation lands first (seq → 2)…
+    useResearchStore.getState().loadGraph(graphOf('r1', 5), 1)
+    // …then the watchdog's pre-mutation snapshot resolves last — rejected.
+    const statusApplied = useResearchStore.getState().loadStatus(
+      statusOf(true),
+      'proj-1',
+      watchdogTicket,
+    )
+    expect(statusApplied).toBe(false)
+    let s = useResearchStore.getState()
+    expect(selectActiveProject(s)?.log).toHaveLength(5) // mutation survived
+    expect(s.graphSyncSeq).toBe(2)
+
+    // Direction 2 — a mutation response resolving after a newer sync must
+    // not regress the panel either (the old wall-clock guard never covered
+    // mutations: they applied unconditionally).
+    const mutationTicket = useResearchStore.getState().graphSyncSeq // = 2
+    // …a newer sync lands while the mutation RPC is in flight (seq → 3)…
+    useResearchStore.getState().loadGraph(graphOf('r1', 4), 2)
+    // …then the mutation's (older) response resolves last — rejected.
+    const mutationApplied = useResearchStore.getState().loadGraph(
+      graphOf('r1', 0),
+      mutationTicket,
+    )
+    expect(mutationApplied).toBe(false)
+    s = useResearchStore.getState()
+    expect(selectActiveProject(s)?.log).toHaveLength(4) // the newer sync's data
+    expect(s.graphSyncSeq).toBe(3)
+
+    // A write whose ticket is current applies normally afterwards.
+    expect(useResearchStore.getState().loadGraph(graphOf('r1', 7), 3)).toBe(true)
+    expect(selectActiveProject(useResearchStore.getState())?.log).toHaveLength(7)
   })
 })
 

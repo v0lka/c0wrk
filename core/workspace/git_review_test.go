@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -106,5 +107,71 @@ func TestBuildReviewDiff_CleanTree(t *testing.T) {
 	}
 	if diff != "" {
 		t.Errorf("expected empty diff for clean tree, got:\n%s", diff)
+	}
+}
+
+// TestBuildReviewDiff_ScansOncePerOperation pins review [15]: one
+// BuildReviewDiff operation (diff HEAD + ls-files + one --no-index diff per
+// untracked file — formerly N+2 rescans) shares a single config scan taken
+// before its first git invocation, while a SECOND operation rescans (no
+// cross-operation cache: freshness per user operation is the security
+// property).
+func TestBuildReviewDiff_ScansOncePerOperation(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	gitWrite(t, dir, "committed.txt", "v2\n") // tracked change
+	gitWrite(t, dir, "u1.txt", "one\n")
+	gitWrite(t, dir, "u2.txt", "two\n")
+	gitWrite(t, dir, "u3.txt", "three\n")
+
+	var scans atomic.Int64
+	orig := scanGitConfigFn
+	scanGitConfigFn = func(repoRoot string) (*GitConfigInfo, error) {
+		scans.Add(1)
+		return orig(repoRoot)
+	}
+	t.Cleanup(func() { scanGitConfigFn = orig })
+
+	diff, err := BuildReviewDiff(context.Background(), dir, 3)
+	if err != nil {
+		t.Fatalf("BuildReviewDiff: %v", err)
+	}
+	if !strings.Contains(diff, "+v2") || !strings.Contains(diff, "u1.txt") || !strings.Contains(diff, "u3.txt") {
+		t.Fatalf("diff lost tracked or untracked content:\n%s", diff)
+	}
+	if got := scans.Load(); got != 1 {
+		t.Errorf("config scans for one BuildReviewDiff = %d, want exactly 1 (operation-local memo, review [15])", got)
+	}
+
+	if _, err := BuildReviewDiff(context.Background(), dir, 3); err != nil {
+		t.Fatalf("second BuildReviewDiff: %v", err)
+	}
+	if got := scans.Load(); got != 2 {
+		t.Errorf("config scans after second BuildReviewDiff = %d, want 2 (no cross-operation cache)", got)
+	}
+}
+
+// TestGetFileDiff_ScanFailureErrorsFailClosed pins the reworded contract of
+// review [53]: when a repository's config cannot be scanned, the boolean
+// predicates report not-a-repo and the caller takes its non-repo path — but
+// that fallback is degraded, not silently git-free. The --no-index diff
+// runs inside the repository directory and still consults repo config, so
+// it spawns through the same fresh scan and the failure resurfaces as an
+// error instead of producing output. git never runs un-neutralized.
+func TestGetFileDiff_ScanFailureErrorsFailClosed(t *testing.T) {
+	dir := t.TempDir()
+	// .git/config as a directory: readCapped refuses non-regular files on
+	// every platform, so the scan fails.
+	if err := os.MkdirAll(filepath.Join(dir, ".git", "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitWrite(t, dir, "file.txt", "content\n")
+
+	_, err := GetFileDiff(context.Background(), dir, "file.txt")
+	if err == nil {
+		t.Fatal("expected a fail-closed error from the --no-index fallback, got a diff")
+	}
+	if !strings.Contains(err.Error(), "fail closed") {
+		t.Errorf("error should surface the fail-closed scan failure, got: %v", err)
 	}
 }

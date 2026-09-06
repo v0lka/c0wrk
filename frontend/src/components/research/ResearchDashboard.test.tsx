@@ -223,9 +223,12 @@ describe('ResearchQuickActions — dispatch', () => {
     QUICK_ACTIONS.forEach((action, i) => {
       expect(buttons[i]!.getAttribute('data-skill')).toBe(action.skill)
     })
-    // The Shift modifier is visible without hovering, not only in tooltips.
-    const hint = container.querySelector('[data-testid="research-shift-hint"]')
-    expect(hint?.textContent).toContain('Shift')
+    // The Shift modifier is advertised in tooltips (the former always-visible
+    // hint element was removed in 41d332f); the experiment dropdown's title
+    // varies with hypothesis availability instead.
+    const titles = Array.from(buttons).map((b) => b.getAttribute('title'))
+    for (const t of titles) expect((t ?? '').length).toBeGreaterThan(0)
+    expect(titles.some((t) => (t ?? '').includes('Shift'))).toBe(true)
   })
 
   it('dispatches the matching skill for a clicked action', async () => {
@@ -449,7 +452,7 @@ describe('ResearchQuickMutate — status change', () => {
       await new Promise((r) => setTimeout(r, 0))
     })
 
-    expect(updateHypothesis).toHaveBeenCalledWith('p1', 'H-001', { status: 'in-progress' })
+    expect(updateHypothesis).toHaveBeenCalledWith('p1', 'R-001', 'H-001', { status: 'in-progress' })
   })
 
   it('does not offer illegal status transitions', async () => {

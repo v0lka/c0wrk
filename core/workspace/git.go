@@ -53,7 +53,10 @@ func errNotGitRepo(err error, stderr string) bool {
 // drivers, textconv, attr.tree routing, and more — see [ScanGitConfig] and
 // GitConfigInfo.NeutralizingArgv). The sysproc baseline (fsmonitor,
 // hooksPath, commit signing, GIT_EDITOR) still applies underneath and covers
-// the global, repo-independent vectors.
+// the global, repo-independent vectors. The one sanctioned deviation from
+// per-invocation scanning is operation-local memoization (see gitScanMemo,
+// review [15]): a single logical operation reuses the scan taken before its
+// first git invocation; sharing a scan across operations stays forbidden.
 //
 // Precedence: `-c key=value` on the command line wins over .git/config, so
 // an attacker-set key is beaten by our override without modifying the
@@ -73,35 +76,126 @@ func errNotGitRepo(err error, stderr string) bool {
 // repoPath IS the working directory for every repo-scoped invocation) may
 // override it.
 func GitCmdInRepo(ctx context.Context, repoPath string, args ...string) (*exec.Cmd, error) {
-	argv, err := repoNeutralizingArgv(repoPath)
+	return gitCmdInRepoScanned(ctx, newGitScanMemo(repoPath), args...)
+}
+
+// gitScanMemo carries ONE ScanGitConfig through a single logical operation
+// (review [15]). GitCmdInRepo scans fresh per invocation — the deliberate
+// no-caching design that neutralizes config planted mid-session — but a
+// multi-invocation operation such as BuildReviewDiff (one `git diff HEAD`,
+// one `ls-files`, plus one `git diff --no-index` per untracked file)
+// amplified that into N+2 full config re-reads per review, which a hostile
+// 4 MiB config turns into gigabytes of reads on a user-facing path. An
+// operation takes the scan before its FIRST git invocation and reuses it
+// for the rest; sharing across operations remains forbidden — freshness
+// per user operation is the security property. Not safe for concurrent use.
+type gitScanMemo struct {
+	path string
+	done bool
+	info *GitConfigInfo
+	err  error
+}
+
+func newGitScanMemo(repoPath string) *gitScanMemo {
+	return &gitScanMemo{path: repoPath}
+}
+
+// argv returns the flat "-c key=value" override pairs for every dangerous
+// key found, scanning the repository config at most once.
+func (m *gitScanMemo) argv() ([]string, error) {
+	if !m.done {
+		m.info, m.err = scanGitConfigFn(m.path)
+		if m.err != nil {
+			m.err = fmt.Errorf("scanning git config for repo %s (fail closed): %w", m.path, m.err)
+		}
+		m.done = true
+	}
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.info.NeutralizingArgv(), nil
+}
+
+// scanGitConfigFn is the scan seam gitScanMemo goes through; in-package
+// tests swap it to observe scan counts. Production always uses ScanGitConfig.
+var scanGitConfigFn = func(repoRoot string) (*GitConfigInfo, error) {
+	return ScanGitConfig(repoRoot)
+}
+
+// gitCmdInRepoScanned is GitCmdInRepo over an operation-scoped scan memo:
+// the memo's repository path is the command's working directory, exactly
+// like GitCmdInRepo's repoPath.
+func gitCmdInRepoScanned(ctx context.Context, scan *gitScanMemo, args ...string) (*exec.Cmd, error) {
+	argv, err := scan.argv()
 	if err != nil {
 		return nil, err
+	}
+	if scan.info != nil && len(scan.info.Includes) > 0 {
+		// Include-bearing configs lean on the attr.tree kill for driver
+		// names hidden in included files, and attr.tree exists only since
+		// git 2.45 — older git silently ignores the key, which would leave
+		// the invisible drivers live. Fail closed instead of running git
+		// with a dead neutralization (the version is probed once and
+		// cached; see gitversion.go).
+		if err := requireAttrTreeCapableGit(); err != nil {
+			return nil, err
+		}
 	}
 	all := make([]string, 0, len(argv)+len(args))
 	all = append(all, argv...)
 	all = append(all, args...)
-	cmd := sysproc.GitCmd(ctx, all...)
-	cmd.Dir = repoPath
+	cmd, err := sysproc.GitCmd(ctx, all...)
+	if err != nil {
+		return nil, err
+	}
+	if scan.info.NeedsWorkTreeEnvPin() {
+		// core.worktree redirects where checkout/reset write tracked
+		// files, and no -c form beats it (verified on git 2.50.1) — the
+		// one channel that outranks the key is the GIT_WORK_TREE
+		// environment variable. Pin it to the work-tree root git would
+		// discover from the repository path, so writes land where the
+		// user pointed c0wrk, never at the config's absolute path.
+		// Discovery failing while a worktree finding exists means the
+		// chain changed under us — fail closed rather than spawn git
+		// honoring the hostile key.
+		root := ResolveWorkTreeRoot(scan.path)
+		if root == "" {
+			return nil, fmt.Errorf(
+				"pinning GIT_WORK_TREE for repo %s (fail closed): core.worktree is set but no work-tree root can be discovered",
+				scan.path)
+		}
+		cmd.Env = pinGitEnv(cmd.Env, "GIT_WORK_TREE", root)
+	}
+	cmd.Dir = scan.path
 	return cmd, nil
 }
 
-// repoNeutralizingArgv scans <repoPath>/.git/config per call and returns the
-// flat "-c key=value" override pairs for every dangerous key found. An empty
-// or missing config yields no overrides.
-func repoNeutralizingArgv(repoPath string) ([]string, error) {
-	info, err := ScanGitConfig(repoPath)
-	if err != nil {
-		return nil, fmt.Errorf("scanning git config for repo %s (fail closed): %w", repoPath, err)
+// pinGitEnv replaces any inherited NAME=... entry in env with name=value,
+// appending the pin exactly once. glibc's getenv resolves duplicate names
+// to the FIRST entry, so a pin merely appended after an inherited value
+// would be silently void — the same strip-then-append reasoning as
+// sysproc's GIT_EDITOR handling (hardenedGitEnv).
+func pinGitEnv(env []string, name, value string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if strings.HasPrefix(kv, name+"=") {
+			continue
+		}
+		out = append(out, kv)
 	}
-	return info.NeutralizingArgv(), nil
+	return append(out, name+"="+value)
 }
 
 // IsGitRepo reports whether dir is inside a git work tree. This function
 // does not cache results — caching is the caller's responsibility if needed.
 // A repository whose config cannot be scanned safely is reported as not a
-// repo (fail closed): every caller treats false by falling back to
-// git-free behavior (--no-index diff, no ignore filtering), never by
-// running git un-neutralized.
+// repo (fail closed): callers then take their non-repo paths, but those
+// paths are degraded rather than silently git-free — every git invocation,
+// `--no-index` included, goes through GitCmdInRepo and its fresh scan (a
+// `--no-index` run inside a repository directory still consults repo
+// config; verified on git 2.50.1: an armed diff.external executes there
+// without --no-ext-diff), so the same scan failure resurfaces as an error
+// from the fallback itself. git is never run un-neutralized (review [53]).
 func IsGitRepo(ctx context.Context, dir string) bool {
 	cmd, err := GitCmdInRepo(ctx, dir, "-C", dir, "rev-parse", "--is-inside-work-tree")
 	if err != nil {
@@ -246,20 +340,23 @@ func GetFileDiff(ctx context.Context, repoPath, relPath string) (string, error) 
 func GetFileDiffInRepo(ctx context.Context, repoPath, relPath string) (string, error) {
 	var result strings.Builder
 
-	staged, err := runGitDiff(ctx, repoPath, true, relPath)
+	// Fresh scan per invocation here (the review [15] memo is scoped to
+	// BuildReviewDiff's multi-spawn operation; this single-file surface
+	// keeps the original per-call freshness).
+	staged, err := runGitDiff(ctx, newGitScanMemo(repoPath), true, relPath)
 	if err != nil {
 		return "", fmt.Errorf("git diff --cached: %w", err)
 	}
 	result.WriteString(staged)
 
-	unstaged, err := runGitDiff(ctx, repoPath, false, relPath)
+	unstaged, err := runGitDiff(ctx, newGitScanMemo(repoPath), false, relPath)
 	if err != nil {
 		return "", fmt.Errorf("git diff: %w", err)
 	}
 	result.WriteString(unstaged)
 
 	if result.Len() == 0 && !IsGitTracked(ctx, repoPath, relPath) {
-		untrackedDiff, untrackedErr := runGitDiffNoIndex(ctx, repoPath, relPath)
+		untrackedDiff, untrackedErr := runGitDiffNoIndex(ctx, newGitScanMemo(repoPath), relPath)
 		if untrackedErr != nil {
 			return "", fmt.Errorf("git diff --no-index: %w", untrackedErr)
 		}
@@ -274,7 +371,7 @@ func GetFileDiffInRepo(ctx context.Context, repoPath, relPath string) (string, e
 // responsible for determining that the path is not in a git repo (e.g. via
 // a cached check) — this function does not call IsGitRepo.
 func GetFileDiffNoRepo(ctx context.Context, repoPath, relPath string) (string, error) {
-	diff, err := runGitDiffNoIndex(ctx, repoPath, relPath)
+	diff, err := runGitDiffNoIndex(ctx, newGitScanMemo(repoPath), relPath)
 	if err != nil {
 		return "", fmt.Errorf("git diff --no-index: %w", err)
 	}
@@ -297,18 +394,24 @@ func GetFileDiffNoRepo(ctx context.Context, repoPath, relPath string) (string, e
 func BuildReviewDiff(ctx context.Context, repoPath string, contextLines int) (string, error) {
 	var result strings.Builder
 
-	tracked, err := runGitDiffHead(ctx, repoPath, contextLines)
+	// One scan for the whole operation (review [15]): the tracked diff,
+	// the untracked listing and every per-file --no-index diff below share
+	// this memo instead of re-reading the config N+2 times. The memo dies
+	// with the operation — the next BuildReviewDiff rescans.
+	scan := newGitScanMemo(repoPath)
+
+	tracked, err := runGitDiffHead(ctx, scan, contextLines)
 	if err != nil {
 		return "", fmt.Errorf("git diff HEAD: %w", err)
 	}
 	result.WriteString(tracked)
 
-	untracked, err := listUntrackedFiles(ctx, repoPath)
+	untracked, err := listUntrackedFiles(ctx, scan)
 	if err != nil {
 		return "", fmt.Errorf("listing untracked files: %w", err)
 	}
 	for _, rel := range untracked {
-		d, dErr := runGitDiffNoIndex(ctx, repoPath, rel)
+		d, dErr := runGitDiffNoIndex(ctx, scan, rel)
 		if dErr != nil {
 			return "", fmt.Errorf("git diff --no-index %s: %w", rel, dErr)
 		}
@@ -318,15 +421,19 @@ func BuildReviewDiff(ctx context.Context, repoPath string, contextLines int) (st
 	return result.String(), nil
 }
 
-// runGitDiffHead runs `git diff -U{contextLines} HEAD`, which reports both
-// staged and unstaged changes to tracked files relative to HEAD in a single
-// invocation. Untracked files are not included (they have no index entry).
-func runGitDiffHead(ctx context.Context, dir string, contextLines int) (string, error) {
-	cmd, err := GitCmdInRepo(ctx, dir, "diff", "-U"+strconv.Itoa(contextLines), "HEAD")
+// runGitDiffHead runs `git diff --no-ext-diff -U{contextLines} HEAD`, which
+// reports both staged and unstaged changes to tracked files relative to HEAD
+// in a single invocation. Untracked files are not included (they have no
+// index entry). --no-ext-diff disables external diff drivers (diff.external
+// and attribute-routed diff.<n>.command): the git diff porcelain executes
+// them BY DEFAULT (verified on git 2.50.1), so the flag — paired with the
+// scan's per-key -c diff.* kills on every GitCmdInRepo invocation — both
+// neutralizes the vector and keeps this call's patch output usable.
+func runGitDiffHead(ctx context.Context, scan *gitScanMemo, contextLines int) (string, error) {
+	cmd, err := gitCmdInRepoScanned(ctx, scan, "diff", "--no-ext-diff", "-U"+strconv.Itoa(contextLines), "HEAD")
 	if err != nil {
 		return "", err
 	}
-	cmd.Dir = dir
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = nil
@@ -341,12 +448,11 @@ func runGitDiffHead(ctx context.Context, dir string, contextLines int) (string, 
 // .gitignore via --exclude-standard. It runs `git ls-files --others
 // --exclude-standard -z` and splits the NUL-delimited output. Individual
 // files are listed rather than their containing directories.
-func listUntrackedFiles(ctx context.Context, dir string) ([]string, error) {
-	cmd, err := GitCmdInRepo(ctx, dir, "ls-files", "--others", "--exclude-standard", "-z")
+func listUntrackedFiles(ctx context.Context, scan *gitScanMemo) ([]string, error) {
+	cmd, err := gitCmdInRepoScanned(ctx, scan, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, err
 	}
-	cmd.Dir = dir
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = nil
@@ -364,19 +470,21 @@ func listUntrackedFiles(ctx context.Context, dir string) ([]string, error) {
 	return files, nil
 }
 
-// runGitDiff executes a git diff command and returns its output.
-func runGitDiff(ctx context.Context, dir string, cached bool, relPath string) (string, error) {
-	args := []string{"diff"}
+// runGitDiff executes a git diff command and returns its output. --no-ext-diff
+// disables external diff drivers (diff.external / diff.<n>.command), which
+// the git diff porcelain executes by default (verified on git 2.50.1); the
+// scan's per-key -c diff.* kills neutralize them for every other invocation.
+func runGitDiff(ctx context.Context, scan *gitScanMemo, cached bool, relPath string) (string, error) {
+	args := []string{"diff", "--no-ext-diff"}
 	if cached {
 		args = append(args, "--cached")
 	}
 	args = append(args, "--", relPath)
 
-	cmd, err := GitCmdInRepo(ctx, dir, args...)
+	cmd, err := gitCmdInRepoScanned(ctx, scan, args...)
 	if err != nil {
 		return "", err
 	}
-	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -389,13 +497,15 @@ func runGitDiff(ctx context.Context, dir string, cached bool, relPath string) (s
 
 // runGitDiffNoIndex produces a diff for an untracked file by comparing it
 // against /dev/null. git diff --no-index exits with code 1 when differences
-// exist, so we treat that as success.
-func runGitDiffNoIndex(ctx context.Context, dir, relPath string) (string, error) {
-	cmd, err := GitCmdInRepo(ctx, dir, "diff", "--no-index", os.DevNull, relPath)
+// exist, so we treat that as success. --no-ext-diff disables external diff
+// drivers here too: run inside the repository, --no-index still honors repo
+// config, so an armed diff.external would otherwise execute (verified on git
+// 2.50.1).
+func runGitDiffNoIndex(ctx context.Context, scan *gitScanMemo, relPath string) (string, error) {
+	cmd, err := gitCmdInRepoScanned(ctx, scan, "diff", "--no-ext-diff", "--no-index", os.DevNull, relPath)
 	if err != nil {
 		return "", err
 	}
-	cmd.Dir = dir
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout

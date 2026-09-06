@@ -56,8 +56,25 @@ export function ResearchNextStep() {
       <button
         type="button"
         onClick={(e) =>
-          void send(prompt, [nextStep.skill], undefined, undefined, {
-            newSession: e.shiftKey,
+          // [22]a: send() renders sendMessage failures in-chat itself, but
+          // RETHROWS when the auto-created session fails (the splash race);
+          // surface that on the research panel's error banner (the research
+          // store), not a global toast.
+          // Promise.resolve: tolerate a sender that returns void (defensive
+          // — the real send is async, but mocks/type skew must not crash
+          // the click).
+          Promise.resolve(
+            send(prompt, [nextStep.skill], undefined, undefined, {
+              newSession: e.shiftKey,
+            }),
+          ).catch((err) => {
+            useResearchStore
+              .getState()
+              .setError(
+                `Failed to dispatch ${nextStep.skill}: ${
+                  err instanceof Error ? err.message : 'unknown error'
+                }`,
+              )
           })
         }
         title="Execute the recommended next step — Shift = new session"

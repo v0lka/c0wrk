@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -342,4 +343,197 @@ func TestGitCmdInRepoFailClosedOnUnscannableConfig(t *testing.T) {
 
 func contains(haystack, needle string) bool {
 	return strings.Contains(haystack, needle)
+}
+
+// scanRequireFinding asserts ScanGitConfig(root) reports a finding of the
+// given kind (fixture sanity for canary tests whose hostile keys live in
+// files other than the repo root's own .git/config).
+func scanRequireFinding(t *testing.T, root, kind string) {
+	t.Helper()
+	info, err := ScanGitConfig(root)
+	if err != nil {
+		t.Fatalf("ScanGitConfig(%s): %v", root, err)
+	}
+	for i := range info.Findings {
+		if info.Findings[i].Kind == kind {
+			return
+		}
+	}
+	t.Fatalf("fixture not armed as expected: no %q finding in scan of %s", kind, root)
+}
+
+// TestCanaryWorktreeCommonConfigNeutered covers review finding [2]: a linked
+// worktree whose COMMON config (main/.git/config) arms a canary filter while
+// the old scanner looked only at the nonexistent worktrees/<n>/config. The
+// scan must see the common config through the worktree's commondir, derive
+// the neutralizing set, and a git add inside the worktree through
+// GitCmdInRepo must stage the file without ever executing the filter.
+func TestCanaryWorktreeCommonConfigNeutered(t *testing.T) {
+	f := newCanaryFixture(t, "hello\n")
+	wt := filepath.Join(t.TempDir(), "wt")
+	f.repo.Git(t, "worktree", "add", wt, "-b", "wtbranch")
+
+	script := f.canary.Plant(t, "wtfilter", gittest.FilterBody)
+	f.repo.AppendConfig(t, "[filter \"canary\"]\n"+
+		"\tprocess = "+script+"\n"+
+		"\tclean = "+script+"\n"+
+		"\tsmudge = "+script+"\n")
+	// Routing from inside the linked worktree.
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, ".gitattributes"), []byte("*.txt filter=canary\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "file.txt"), []byte("hello\nchanged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scanRequireFinding(t, wt, GitConfigFindingFilter)
+
+	cmd, err := GitCmdInRepo(f.ctx, wt, "add", "file.txt")
+	if err != nil {
+		t.Fatalf("GitCmdInRepo(worktree): %v", err)
+	}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("add in linked worktree failed: %v (%s)", err, out.String())
+	}
+	f.canary.RequireNotFired(t)
+
+	status, err := GitStatus(f.ctx, wt)
+	if err != nil {
+		t.Fatalf("GitStatus(worktree): %v", err)
+	}
+	// file.txt is tracked (inherited from the main branch HEAD): a staged
+	// modification reports IndexStatus M with an empty worktree status.
+	if entry, ok := status[filepath.Join(wt, "file.txt")]; !ok || entry.IndexStatus != "M" {
+		t.Fatalf("file was not staged in the worktree: %+v", status)
+	}
+	f.canary.RequireNotFired(t)
+}
+
+// TestCanaryIncludeHiddenFilterViaInfoAttributesNeutered covers review
+// finding [1]a: the filter definition lives in an included file the scanner
+// cannot read, and the routing comes from .git/info/attributes — a source
+// attr.tree does not cover (verified: the canary fires under the exact old
+// override set). The scan must record the include, scan the routing file,
+// and pin the routed name so git add executes nothing.
+func TestCanaryIncludeHiddenFilterViaInfoAttributesNeutered(t *testing.T) {
+	skipUnlessAttrTreeCapableGit(t)
+	f := newCanaryFixture(t, "hello\n")
+	script := f.canary.Plant(t, "hiddenfilter", gittest.FilterBody)
+	extra := filepath.Join(f.repo.Root, "extra.conf")
+	if err := os.WriteFile(extra, []byte("[filter \"x\"]\n\tclean = "+script+"\n\tsmudge = "+script+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.repo.AppendConfig(t, "[include]\n\tpath = "+extra+"\n")
+	infoAttrs := filepath.Join(f.repo.GitDir(), "info", "attributes")
+	if err := os.MkdirAll(filepath.Dir(infoAttrs), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(infoAttrs, []byte("*.txt filter=x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.repo.Write(t, "file.txt", "hello\nchanged\n")
+	scanRequireFinding(t, f.repo.Root, GitConfigFindingAttrRouting)
+
+	cmd, err := GitCmdInRepo(f.ctx, f.repo.Root, "add", "file.txt")
+	if err != nil {
+		t.Fatalf("GitCmdInRepo: %v", err)
+	}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("add failed: %v (%s)", err, out.String())
+	}
+	f.canary.RequireNotFired(t)
+}
+
+// TestCanaryAttributesFileRoutingNeutered is the core.attributesFile variant
+// of [1]a: git 2.50.1 respects the key from repository config, attr.tree
+// does not cover the source, and the verified closure is the empty -c
+// override (which also beats a definition hidden in an included file) plus
+// the name pin for everything the routing file routes.
+func TestCanaryAttributesFileRoutingNeutered(t *testing.T) {
+	f := newCanaryFixture(t, "hello\n")
+	script := f.canary.Plant(t, "attrfilefilter", gittest.FilterBody)
+	attrsFile := filepath.Join(t.TempDir(), "attrs")
+	if err := os.WriteFile(attrsFile, []byte("*.txt filter=q\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.repo.AppendConfig(t, "[core]\n\tattributesFile = "+attrsFile+"\n[filter \"q\"]\n\tclean = "+script+"\n\tsmudge = "+script+"\n")
+	f.repo.Write(t, "file.txt", "hello\nchanged\n")
+	scanRequireFinding(t, f.repo.Root, GitConfigFindingAttributesFile)
+
+	cmd, err := GitCmdInRepo(f.ctx, f.repo.Root, "add", "file.txt")
+	if err != nil {
+		t.Fatalf("GitCmdInRepo: %v", err)
+	}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("add failed: %v (%s)", err, out.String())
+	}
+	f.canary.RequireNotFired(t)
+}
+
+// TestCanarySHA256RepoAttrTreeNeutered covers review finding [1]d: on a
+// SHA-256 repository the SHA-1 empty tree is a verified silent no-op, so the
+// attr.tree kill must use the SHA-256 empty tree. The fixture arms a visible
+// filter routed from the worktree .gitattributes — exactly the routing the
+// (wrong) SHA-1 constant would leave live.
+func TestCanarySHA256RepoAttrTreeNeutered(t *testing.T) {
+	gittest.RequirePOSIXShell(t)
+	gittest.RequireGit(t)
+	skipUnlessAttrTreeCapableGit(t)
+	root := filepath.Join(t.TempDir(), "sha256repo")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.CommandContext(context.Background(), "git", "-C", root, "init", "-b", "main", "--object-format=sha256").Run(); err != nil {
+		t.Skipf("git lacks --object-format=sha256 support: %v", err)
+	}
+	repo := &gittest.Repo{Root: root}
+	repo.Git(t, "config", "user.email", "c0wrk-fixture@example.invalid")
+	repo.Git(t, "config", "user.name", "c0wrk fixture")
+	repo.Git(t, "config", "commit.gpgsign", "false")
+	repo.Write(t, "file.txt", "hello\n")
+	repo.Git(t, "add", ".")
+	repo.Git(t, "commit", "-m", "initial")
+
+	f := &canaryFixture{t: t, ctx: context.Background(), repo: repo, canary: gittest.NewCanary(t)}
+	f.canary.RequireArmed(t)
+	script := f.canary.Plant(t, "sha256filter", gittest.FilterBody)
+	// The include keeps the attr.tree kill engaged (narrow mode, review
+	// [56]: a visible filter alone no longer derives it), so the SHA-256
+	// empty-tree selection stays under test.
+	repo.AppendConfig(t, "[filter \"x\"]\n\tclean = "+script+"\n\tsmudge = "+script+"\n[include]\n\tpath = extra.conf\n")
+	repo.Write(t, ".gitattributes", "*.txt filter=x\n")
+	repo.Write(t, "file.txt", "hello\nchanged\n")
+
+	// Self-validating discriminator: the derived set must carry the SHA-256
+	// empty tree (the SHA-1 constant is inert here and the canary would run).
+	info, err := ScanGitConfig(root)
+	if err != nil {
+		t.Fatalf("ScanGitConfig: %v", err)
+	}
+	if !slices.Contains(overrideArgvs(info), "attr.tree="+EmptyTreeSHA256) {
+		t.Fatalf("overrides = %v, want attr.tree=%s", overrideArgvs(info), EmptyTreeSHA256)
+	}
+
+	cmd, err := GitCmdInRepo(f.ctx, root, "add", "file.txt")
+	if err != nil {
+		t.Fatalf("GitCmdInRepo: %v", err)
+	}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("add failed: %v (%s)", err, out.String())
+	}
+	f.canary.RequireNotFired(t)
 }

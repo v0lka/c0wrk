@@ -97,6 +97,33 @@ describe('stickyBarOverlaying', () => {
     expect(stickyBarOverlaying(viewport, target)).toBeNull()
   })
 
+  // Finding [50]: with several sticky bars (one per turn) and the target being
+  // a bar itself, the loop's self-comparison broke out early while `nearest`
+  // still held the PREVIOUS turn's bar — wrongly returning that sibling.
+  it('returns null, not the previous turn\'s bar, when the target is itself a sticky bar among several', () => {
+    const { viewport } = makeViewport()
+    const bar1 = stickyBar()
+    const bar2 = stickyBar()
+    // BookmarksPanel navigates to the key UserMessage anchors on its sticky
+    // div — the resolved element IS bar2 of the second turn.
+    bar2.setAttribute('data-bookmark-id', 'user-2')
+    const later = bookmarkRow('evt-2')
+    viewport.append(bar1, bar2, later)
+
+    expect(stickyBarOverlaying(viewport, bar2)).toBeNull()
+  })
+
+  it('returns the preceding bar for a normal target even in a multi-turn chat', () => {
+    const { viewport } = makeViewport()
+    const bar1 = stickyBar()
+    const bar2 = stickyBar()
+    const target = bookmarkRow('evt-2')
+    const bar3 = stickyBar()
+    viewport.append(bar1, bar2, target, bar3)
+
+    expect(stickyBarOverlaying(viewport, target)).toBe(bar2)
+  })
+
   it('exposes the marker selector used to find floating bars', () => {
     expect(STICKY_USER_MESSAGE_SELECTOR).toBe('[data-sticky-user-message]')
   })
@@ -165,6 +192,21 @@ describe('scrollBlockStartIntoView', () => {
     scrollBlockStartIntoView(viewport, bar)
 
     expect(scrollTo).toHaveBeenCalledWith({ top: 50 + (150 - 100), behavior: 'smooth' })
+  })
+
+  it('does not subtract a previous turn\'s bar when scrolling to a sticky bar in a multi-turn chat (finding [50])', () => {
+    const { viewport, scrollTo } = makeViewport(500)
+    const bar1 = withRect(stickyBar(), { top: 100, height: 80 })
+    const bar2 = withRect(stickyBar(), { top: 1500, height: 80 })
+    const later = withRect(bookmarkRow('evt-2'), { top: 3000, height: 400 })
+    withRect(viewport, { top: 100, height: 600 })
+    viewport.append(bar1, bar2, later)
+
+    scrollBlockStartIntoView(viewport, bar2)
+
+    // Plain top alignment only: 500 + (1500 - 100) = 1900 — bar1's height must
+    // NOT be subtracted (it is a sibling bar, not an overlay of this target).
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1900, behavior: 'smooth' })
   })
 
   it('clamps the resulting scroll position at zero', () => {

@@ -638,8 +638,8 @@ export function UpdateExperimentalFeatures(arg1) {
   return window['go']['desktop']['App']['UpdateExperimentalFeatures'](arg1);
 }
 
-export function UpdateHypothesis(arg1, arg2, arg3) {
-  return window['go']['desktop']['App']['UpdateHypothesis'](arg1, arg2, arg3);
+export function UpdateHypothesis(arg1, arg2, arg3, arg4) {
+  return window['go']['desktop']['App']['UpdateHypothesis'](arg1, arg2, arg3, arg4);
 }
 
 export function UpdateLLMConfig(arg1) {

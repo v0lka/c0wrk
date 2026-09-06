@@ -20,17 +20,12 @@ import {
   edgePathH,
   statusColorVar,
   formatRate,
-  isTerminal,
-  findAllRootToLeafPaths,
-  findIncompletePaths,
-  filterPaths,
+  buildChildrenMap,
   buildDisplayGraph,
-  mergePathsToTree,
+  layoutSignature,
   projectDir,
   hypothesisCardPath,
   projectFilePaths,
-  type PathEntry,
-  type MergedTreeNode,
 } from './researchDagRender'
 
 function graphOf(
@@ -98,6 +93,56 @@ describe('buildParentMap', () => {
       ],
     )
     expect(buildParentMap(g)).toEqual(new Map([['b', ['a']]]))
+  })
+
+  it('unions explicit edges with declared parents (partial graphs)', () => {
+    // Only the H1→H2 edge exists while H3 merely declares parents:['H1']:
+    // both relations must resolve so layout and path traversal agree.
+    const g = graphOf(
+      [{ id: 'H1' }, { id: 'H2' }, { id: 'H3', parents: ['H1'] }],
+      [{ from: 'H1', to: 'H2' }],
+    )
+    expect(buildParentMap(g)).toEqual(
+      new Map([
+        ['H2', ['H1']],
+        ['H3', ['H1']],
+      ]),
+    )
+  })
+
+  it('dedupes a parent declared both as an edge and in node.parents', () => {
+    const g = graphOf(
+      [{ id: 'a' }, { id: 'b', parents: ['a'] }],
+      [{ from: 'a', to: 'b' }],
+    )
+    expect(buildParentMap(g)).toEqual(new Map([['b', ['a']]]))
+  })
+})
+
+describe('buildChildrenMap', () => {
+  it('unions edges and declared parents, deduped in first-seen order', () => {
+    const g = graphOf(
+      [{ id: 'a' }, { id: 'b', parents: ['a'] }, { id: 'c' }, { id: 'd', parents: ['c', 'a'] }],
+      [{ from: 'a', to: 'c' }],
+    )
+    expect(buildChildrenMap(g)).toEqual(
+      new Map([
+        // Edges register before declared parents (first-seen order).
+        ['a', ['c', 'b', 'd']],
+        ['c', ['d']],
+      ]),
+    )
+  })
+
+  it('drops self-loops and references to unknown ids', () => {
+    const g = graphOf(
+      [{ id: 'a' }, { id: 'b', parents: ['ghost', 'b'] }],
+      [
+        { from: 'a', to: 'ghost' },
+        { from: 'a', to: 'a' },
+      ],
+    )
+    expect(buildChildrenMap(g)).toEqual(new Map())
   })
 })
 
@@ -401,11 +446,15 @@ describe('layoutDag', () => {
       expect(e.x2).toBe(child.x - NODE_R)
       expect(e.y2).toBe(child.y)
     }
-    // Internal nodes center on their children: b, c → d's slot; a → mean(b, c).
+    // Separation post-pass: b and c share child d, so their raw child means
+    // coincide at d's slot; the pass keeps b on the shared slot, pushes c one
+    // slot down (minimal one-slot gap), then re-centers a on the final pair.
     const d = byId.get('d')!
-    expect(byId.get('b')!.y).toBe(d.y)
-    expect(byId.get('c')!.y).toBe(d.y)
-    expect(byId.get('a')!.y).toBe((byId.get('b')!.y + byId.get('c')!.y) / 2)
+    const b = byId.get('b')!
+    const c = byId.get('c')!
+    expect(b.y).toBe(d.y)
+    expect(c.y).toBe(b.y + ROW_H)
+    expect(byId.get('a')!.y).toBe((b.y + c.y) / 2)
   })
 
   it('keeps generations flowing left-to-right', () => {
@@ -450,272 +499,112 @@ describe('layoutDag', () => {
     expect(l.width).toBeGreaterThan(0)
     expect(l.height).toBeGreaterThan(0)
   })
-})
 
-// ── findAllRootToLeafPaths ──────────────────────────────────────────────
+  // ── Regression ([67]): same-level nodes never share a row band ──
 
-describe('findAllRootToLeafPaths', () => {
-  it('returns [] for an empty graph', () => {
-    expect(findAllRootToLeafPaths(graphOf([]))).toEqual([])
-  })
-
-  it('emits a single-node path for a lone root', () => {
-    const paths = findAllRootToLeafPaths(graphOf([{ id: 'h1' }]))
-    expect(paths).toHaveLength(1)
-    expect(paths[0]!.path).toHaveLength(1)
-    expect(paths[0]!.path[0]!.node.id).toBe('h1')
-    expect(paths[0]!.path[0]!.depth).toBe(0)
-  })
-
-  it('emits one path for a linear chain', () => {
-    const paths = findAllRootToLeafPaths(
-      graphOf(
-        [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
-        [
-          { from: 'a', to: 'b' },
-          { from: 'b', to: 'c' },
-        ],
-      ),
-    )
-    expect(paths).toHaveLength(1)
-    expect(paths[0]!.path.map((p) => p.node.id)).toEqual(['a', 'b', 'c'])
-    expect(paths[0]!.path[0]!.depth).toBe(0)
-    expect(paths[0]!.path[1]!.depth).toBe(1)
-    expect(paths[0]!.path[2]!.depth).toBe(2)
-  })
-
-  it('emits multiple paths for branching (binary tree)', () => {
-    const paths = findAllRootToLeafPaths(
-      graphOf(
-        [{ id: 'root' }, { id: 'left' }, { id: 'right' }],
-        [
-          { from: 'root', to: 'left' },
-          { from: 'root', to: 'right' },
-        ],
-      ),
-    )
-    expect(paths).toHaveLength(2)
-    // Both paths start at root.
-    expect(paths[0]!.path[0]!.node.id).toBe('root')
-    expect(paths[1]!.path[0]!.node.id).toBe('root')
-    // Leaves are left and right (sorted).
-    expect(paths[0]!.path[1]!.node.id).toBe('left')
-    expect(paths[1]!.path[1]!.node.id).toBe('right')
-  })
-
-  it('correctly enumerates a diamond (shared descendant in both paths)', () => {
-    // a → b, a → c, b/d → d, c → d
-    const paths = findAllRootToLeafPaths(
-      graphOf(
-        [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }],
-        [
-          { from: 'a', to: 'b' },
-          { from: 'a', to: 'c' },
-          { from: 'b', to: 'd' },
-          { from: 'c', to: 'd' },
-        ],
-      ),
-    )
-    expect(paths).toHaveLength(2)
-    expect(paths[0]!.path.map((p) => p.node.id)).toEqual(['a', 'b', 'd'])
-    expect(paths[1]!.path.map((p) => p.node.id)).toEqual(['a', 'c', 'd'])
-  })
-
-  it('sorts sibling branches by id for stable ordering', () => {
-    const paths = findAllRootToLeafPaths(
-      graphOf(
-        [{ id: 'root' }, { id: 'z' }, { id: 'm' }],
-        [
-          { from: 'root', to: 'z' },
-          { from: 'root', to: 'm' },
-        ],
-      ),
-    )
-    // Siblings sorted by id → 'm' before 'z'.
-    expect(paths[0]!.path[1]!.node.id).toBe('m')
-    expect(paths[1]!.path[1]!.node.id).toBe('z')
-  })
-
-  it('breaks cycles instead of recursing forever', () => {
-    // a → b → a (cycle). Must terminate.
-    const paths = findAllRootToLeafPaths(
-      graphOf(
-        [{ id: 'a' }, { id: 'b' }],
-        [
-          { from: 'a', to: 'b' },
-          { from: 'b', to: 'a' },
-        ],
-      ),
-    )
-    // Both nodes form paths (cycle boundary stops further expansion).
-    expect(paths.length).toBeGreaterThanOrEqual(1)
-    // No node appears twice in the same path.
-    for (const p of paths) {
-      const ids = p.path.map((n) => n.node.id)
-      const unique = new Set(ids)
-      expect(unique.size).toBe(ids.length)
+  /** Invariant helper: nodes in the same depth column are ≥ ROW_H apart. */
+  function expectNoSameLevelOverlap(l: ReturnType<typeof layoutDag>): void {
+    const byLevel = new Map<number, number[]>()
+    for (const n of l.nodes) {
+      const ys = byLevel.get(n.level)
+      if (ys) ys.push(n.y)
+      else byLevel.set(n.level, [n.y])
     }
-  })
-
-  it('appends orphans (no parents, no children) as single-node paths', () => {
-    // 'b' has a parent reference to a non-existent node; it has no known
-    // parents so it becomes a root and is emitted as its own path.
-    const paths = findAllRootToLeafPaths(graphOf([{ id: 'b', parents: ['ghost'] }]))
-    expect(paths).toHaveLength(1)
-    expect(paths[0]!.path[0]!.node.id).toBe('b')
-  })
-
-  it('emits each node in every path it belongs to (diamond-safe)', () => {
-    // a → b → d, a → c → d
-    // Node 'd' appears in both paths.
-    const paths = findAllRootToLeafPaths(
-      graphOf(
-        [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }],
-        [
-          { from: 'a', to: 'b' },
-          { from: 'a', to: 'c' },
-          { from: 'b', to: 'd' },
-          { from: 'c', to: 'd' },
-        ],
-      ),
-    )
-    const dCount = paths.reduce(
-      (acc, p) => acc + (p.path.some((n) => n.node.id === 'd') ? 1 : 0),
-      0,
-    )
-    expect(dCount).toBe(2)
-  })
-})
-
-// ── isTerminal ─────────────────────────────────────────────────────────
-
-describe('isTerminal', () => {
-  it('returns true only for confirmed/refuted/cancelled', () => {
-    expect(isTerminal('confirmed')).toBe(true)
-    expect(isTerminal('refuted')).toBe(true)
-    expect(isTerminal('cancelled')).toBe(true)
-  })
-
-  it('returns false for in-flight and unknown statuses', () => {
-    expect(isTerminal('open')).toBe(false)
-    expect(isTerminal('in-progress')).toBe(false)
-    expect(isTerminal('bogus')).toBe(false)
-  })
-})
-
-// ── findIncompletePaths ────────────────────────────────────────────────
-
-describe('findIncompletePaths', () => {
-  it('returns [] for an empty graph', () => {
-    expect(findIncompletePaths(graphOf([]))).toEqual([])
-  })
-
-  it('drops an all-terminal path', () => {
-    const paths = findIncompletePaths(
-      graphOf([
-        { id: 'a', status: 'confirmed' },
-        { id: 'b', status: 'refuted', parents: ['a'] },
-      ]),
-    )
-    expect(paths).toEqual([])
-  })
-
-  it('keeps a path containing at least one non-terminal node', () => {
-    const paths = findIncompletePaths(
-      graphOf([
-        { id: 'a', status: 'confirmed' },
-        { id: 'b', status: 'open', parents: ['a'] },
-      ]),
-    )
-    expect(paths).toHaveLength(1)
-    expect(paths[0]!.path.map((t) => t.node.id)).toEqual(['a', 'b'])
-  })
-
-  it('drops fully-terminal paths while keeping mixed ones in the same graph', () => {
-    // Two independent chains: a (terminal) → b (terminal); x (terminal) → y (open)
-    const paths = findIncompletePaths(
-      graphOf([
-        { id: 'a', status: 'confirmed' },
-        { id: 'b', status: 'refuted', parents: ['a'] },
-        { id: 'x', status: 'confirmed' },
-        { id: 'y', status: 'open', parents: ['x'] },
-      ]),
-    )
-    expect(paths).toHaveLength(1)
-    expect(paths[0]!.path.map((t) => t.node.id)).toEqual(['x', 'y'])
-  })
-
-  it('keeps both paths of a diamond with a non-terminal convergence node', () => {
-    // a(open) → b(confirmed), a(open) → c(confirmed), b/c → d(open)
-    const paths = findIncompletePaths(
-      graphOf(
-        [
-          { id: 'a', status: 'open' },
-          { id: 'b', status: 'confirmed', parents: ['a'] },
-          { id: 'c', status: 'confirmed', parents: ['a'] },
-          { id: 'd', status: 'open', parents: ['b', 'c'] },
-        ],
-      ),
-    )
-    expect(paths).toHaveLength(2)
-    expect(paths[0]!.path.map((t) => t.node.id)).toEqual(['a', 'b', 'd'])
-    expect(paths[1]!.path.map((t) => t.node.id)).toEqual(['a', 'c', 'd'])
-  })
-})
-
-// ── filterPaths ────────────────────────────────────────────────────────
-
-describe('filterPaths', () => {
-  function pathFromIds(
-    nodes: { id: string; title?: string; status?: string }[],
-  ): PathEntry {
-    return {
-      path: nodes.map((n, depth) => ({
-        node: { id: n.id, title: n.title ?? n.id, status: n.status ?? 'open' },
-        depth,
-      })),
+    for (const ys of byLevel.values()) {
+      for (let i = 0; i < ys.length; i++) {
+        for (let j = i + 1; j < ys.length; j++) {
+          expect(Math.abs(ys[i]! - ys[j]!)).toBeGreaterThanOrEqual(ROW_H)
+        }
+      }
     }
   }
 
-  it('returns paths unchanged when hideTerminal is false/omitted', () => {
-    const paths = [pathFromIds([{ id: 'a' }, { id: 'b', status: 'confirmed' }])]
-    expect(filterPaths(paths)).toBe(paths)
-    expect(filterPaths(paths, { hideTerminal: false })).toBe(paths)
+  it('separates diamond siblings so their labels never overlap', () => {
+    // Regression: two parents sharing the same children used to land on the
+    // identical point (b.y === c.y === d.y) and visually merge into one node.
+    const l = layoutDag(
+      graphOf(
+        [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }],
+        [
+          { from: 'a', to: 'b' },
+          { from: 'a', to: 'c' },
+          { from: 'b', to: 'd' },
+          { from: 'c', to: 'd' },
+        ],
+      ),
+    )
+    const byId = new Map(l.nodes.map((n) => [n.id, n]))
+    expect(Math.abs(byId.get('b')!.y - byId.get('c')!.y)).toBeGreaterThanOrEqual(ROW_H)
+    expectNoSameLevelOverlap(l)
   })
 
-  it('prunes terminal nodes when hideTerminal is true', () => {
-    const paths = [
-      pathFromIds([
-        { id: 'a', status: 'open' },
-        { id: 'b', status: 'confirmed' },
-        { id: 'c', status: 'in-progress' },
-      ]),
-    ]
-    const out = filterPaths(paths, { hideTerminal: true })
-    expect(out).toHaveLength(1)
-    expect(out[0]!.path.map((t) => t.node.id)).toEqual(['a', 'c'])
-    // Depths are re-indexed to stay contiguous after pruning.
-    expect(out[0]!.path[0]!.depth).toBe(0)
-    expect(out[0]!.path[1]!.depth).toBe(1)
+  it('separates a fan of same-mean siblings and grows the box to fit them', () => {
+    // r → {p1,p2,p3} → d: all three parents average d's single leaf slot.
+    // They must be pushed apart, and the height must cover the pushed-down
+    // tail even though only one leaf slot was ever claimed.
+    const l = layoutDag(
+      graphOf(
+        [
+          { id: 'r' },
+          { id: 'p1' },
+          { id: 'p2' },
+          { id: 'p3' },
+          { id: 'd', parents: ['p1', 'p2', 'p3'] },
+        ],
+        [
+          { from: 'r', to: 'p1' },
+          { from: 'r', to: 'p2' },
+          { from: 'r', to: 'p3' },
+        ],
+      ),
+    )
+    const byId = new Map(l.nodes.map((n) => [n.id, n]))
+    expect(byId.get('p2')!.y).toBe(byId.get('p1')!.y + ROW_H)
+    expect(byId.get('p3')!.y).toBe(byId.get('p1')!.y + 2 * ROW_H)
+    // r re-centers on the separated fan.
+    expect(byId.get('r')!.y).toBe((byId.get('p1')!.y + byId.get('p3')!.y) / 2)
+    // The box must extend past the pushed-down sibling (max slot 2, not the
+    // single leaf slot) so the whole fan stays reachable by the fitted camera.
+    expect(l.height).toBe(TOP_PAD + 2 * ROW_H + BOX_PAD)
+    expectNoSameLevelOverlap(l)
   })
 
-  it('drops paths left empty after pruning', () => {
-    const paths = [pathFromIds([{ id: 'a', status: 'confirmed' }])]
-    expect(filterPaths(paths, { hideTerminal: true })).toEqual([])
+  it('keeps the no-overlap invariant on a layered-diamond cluster', () => {
+    // Two stacked diamonds a→{b,c}→{e,f}→g: every internal node's raw child
+    // mean is 0; re-centering and separation must interleave correctly.
+    const l = layoutDag(
+      graphOf(
+        [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'e' }, { id: 'f' }, { id: 'g' }],
+        [
+          { from: 'a', to: 'b' },
+          { from: 'a', to: 'c' },
+          { from: 'b', to: 'e' },
+          { from: 'c', to: 'e' },
+          { from: 'b', to: 'f' },
+          { from: 'c', to: 'f' },
+          { from: 'e', to: 'g' },
+          { from: 'f', to: 'g' },
+        ],
+      ),
+    )
+    expectNoSameLevelOverlap(l)
+    // All four same-level pairs are genuinely separated.
+    const byId = new Map(l.nodes.map((n) => [n.id, n]))
+    expect(Math.abs(byId.get('b')!.y - byId.get('c')!.y)).toBeGreaterThanOrEqual(ROW_H)
+    expect(Math.abs(byId.get('e')!.y - byId.get('f')!.y)).toBeGreaterThanOrEqual(ROW_H)
+  })
+})
+
+describe('layoutSignature', () => {
+  it('is stable across content-identical layouts built as fresh objects', () => {
+    const build = () => layoutDag(graphOf([{ id: 'a' }, { id: 'b', parents: ['a'] }]))
+    expect(layoutSignature(build())).toBe(layoutSignature(build()))
   })
 
-  it('keeps non-empty pruned paths while dropping empty ones', () => {
-    const paths = [
-      pathFromIds([{ id: 'a', status: 'refuted' }]), // all-terminal → dropped
-      pathFromIds([
-        { id: 'x', status: 'open' },
-        { id: 'y', status: 'cancelled' },
-        { id: 'z', status: 'open' },
-      ]),
-    ]
-    const out = filterPaths(paths, { hideTerminal: true })
-    expect(out).toHaveLength(1)
-    expect(out[0]!.path.map((t) => t.node.id)).toEqual(['x', 'z'])
+  it('changes when the painted geometry changes', () => {
+    const base = layoutDag(graphOf([{ id: 'a' }, { id: 'b', parents: ['a'] }]))
+    const wider = layoutDag(graphOf([{ id: 'a' }, { id: 'b', parents: ['a'] }, { id: 'c', parents: ['a'] }]))
+    expect(layoutSignature(wider)).not.toBe(layoutSignature(base))
   })
 })
 
@@ -775,484 +664,6 @@ describe('hypothesisCardPath', () => {
   })
 })
 
-// ── mergePathsToTree ────────────────────────────────────────────────────
-
-describe('mergePathsToTree', () => {
-  // ── Helper to build a PathEntry from node ids ──
-  function pathFromIds(
-    nodes: { id: string; title?: string; status?: string }[],
-  ): PathEntry {
-    return {
-      path: nodes.map((n, depth) => ({
-        node: { id: n.id, title: n.title ?? n.id, status: n.status ?? 'open' },
-        depth,
-      })),
-    }
-  }
-
-  // ── Empty / single-path edge cases ──
-
-  it('returns [] for empty input', () => {
-    expect(mergePathsToTree([])).toEqual([])
-  })
-
-  it('returns a single-node tree for a single-node path', () => {
-    const paths = [pathFromIds([{ id: 'a' }])]
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    expect(tree[0]!.node.id).toBe('a')
-    expect(tree[0]!.children).toEqual([])
-  })
-
-  it('returns a linear chain for a single linear path', () => {
-    const paths = [pathFromIds([{ id: 'a' }, { id: 'b' }, { id: 'c' }])]
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    expect(tree[0]!.node.id).toBe('a')
-    expect(tree[0]!.children).toHaveLength(1)
-    expect(tree[0]!.children[0]!.node.id).toBe('b')
-    expect(tree[0]!.children[0]!.children).toHaveLength(1)
-    expect(tree[0]!.children[0]!.children[0]!.node.id).toBe('c')
-    expect(tree[0]!.children[0]!.children[0]!.children).toEqual([])
-  })
-
-  // ── Disjoint paths (no shared prefixes) ──
-
-  it('handles two completely disjoint paths', () => {
-    const paths = [
-      pathFromIds([{ id: 'a' }, { id: 'b' }]),
-      pathFromIds([{ id: 'x' }, { id: 'y' }]),
-    ]
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(2)
-    const ids = tree.map((n) => n.node.id)
-    expect(ids).toContain('a')
-    expect(ids).toContain('x')
-    // Each root has exactly one child.
-    expect(tree.find((n) => n.node.id === 'a')!.children).toHaveLength(1)
-    expect(tree.find((n) => n.node.id === 'a')!.children[0]!.node.id).toBe('b')
-    expect(tree.find((n) => n.node.id === 'x')!.children).toHaveLength(1)
-    expect(tree.find((n) => n.node.id === 'x')!.children[0]!.node.id).toBe('y')
-  })
-
-  // ── Paths sharing a single common prefix (root) ──
-
-  it('merges two paths sharing only the root', () => {
-    const paths = [
-      pathFromIds([{ id: 'root' }, { id: 'left' }]),
-      pathFromIds([{ id: 'root' }, { id: 'right' }]),
-    ]
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    expect(tree[0]!.node.id).toBe('root')
-    expect(tree[0]!.children).toHaveLength(2)
-    const childIds = tree[0]!.children.map((c) => c.node.id).sort()
-    expect(childIds).toEqual(['left', 'right'])
-  })
-
-  it('merges three paths sharing only the root', () => {
-    const paths = [
-      pathFromIds([{ id: 'root' }, { id: 'a' }]),
-      pathFromIds([{ id: 'root' }, { id: 'b' }]),
-      pathFromIds([{ id: 'root' }, { id: 'c' }]),
-    ]
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    expect(tree[0]!.node.id).toBe('root')
-    expect(tree[0]!.children).toHaveLength(3)
-    expect(tree[0]!.children.map((c) => c.node.id).sort()).toEqual(['a', 'b', 'c'])
-  })
-
-  // ── Paths sharing multiple levels of prefixes ──
-
-  it('merges paths sharing a two-level prefix', () => {
-    // root → mid → a
-    // root → mid → b
-    const paths = [
-      pathFromIds([{ id: 'root' }, { id: 'mid' }, { id: 'a' }]),
-      pathFromIds([{ id: 'root' }, { id: 'mid' }, { id: 'b' }]),
-    ]
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    expect(tree[0]!.node.id).toBe('root')
-    expect(tree[0]!.children).toHaveLength(1)
-    expect(tree[0]!.children[0]!.node.id).toBe('mid')
-    expect(tree[0]!.children[0]!.children).toHaveLength(2)
-    const leafIds = tree[0]!.children[0]!.children.map((c) => c.node.id).sort()
-    expect(leafIds).toEqual(['a', 'b'])
-  })
-
-  it('merges paths sharing a three-level prefix', () => {
-    const paths = [
-      pathFromIds([{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }]),
-      pathFromIds([{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'e' }]),
-    ]
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    // a → b → c → {d, e}
-    expect(tree[0]!.node.id).toBe('a')
-    expect(tree[0]!.children).toHaveLength(1)
-    expect(tree[0]!.children[0]!.node.id).toBe('b')
-    expect(tree[0]!.children[0]!.children).toHaveLength(1)
-    expect(tree[0]!.children[0]!.children[0]!.node.id).toBe('c')
-    expect(tree[0]!.children[0]!.children[0]!.children).toHaveLength(2)
-    const leafIds = tree[0]!.children[0]!.children[0]!.children
-      .map((c) => c.node.id)
-      .sort()
-    expect(leafIds).toEqual(['d', 'e'])
-  })
-
-  // ── Paths where one is fully contained in another ──
-
-  it('handles a path that is a prefix of another (linear containment)', () => {
-    // [a, b] is fully contained in [a, b, c]
-    const paths = [
-      pathFromIds([{ id: 'a' }, { id: 'b' }]),
-      pathFromIds([{ id: 'a' }, { id: 'b' }, { id: 'c' }]),
-    ]
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    expect(tree[0]!.node.id).toBe('a')
-    expect(tree[0]!.children).toHaveLength(1)
-    expect(tree[0]!.children[0]!.node.id).toBe('b')
-    // b has one child: c (the extra leaf from the longer path)
-    expect(tree[0]!.children[0]!.children).toHaveLength(1)
-    expect(tree[0]!.children[0]!.children[0]!.node.id).toBe('c')
-  })
-
-  it('handles multiple paths where one is the longest prefix', () => {
-    // [a, b, c] is a prefix of [a, b, c, d]; [a, b] is also a prefix
-    const paths = [
-      pathFromIds([{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }]),
-      pathFromIds([{ id: 'a' }, { id: 'b' }, { id: 'c' }]),
-      pathFromIds([{ id: 'a' }, { id: 'b' }]),
-    ]
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    expect(tree[0]!.node.id).toBe('a')
-    expect(tree[0]!.children).toHaveLength(1)
-    expect(tree[0]!.children[0]!.node.id).toBe('b')
-    expect(tree[0]!.children[0]!.children).toHaveLength(1)
-    expect(tree[0]!.children[0]!.children[0]!.node.id).toBe('c')
-    expect(tree[0]!.children[0]!.children[0]!.children).toHaveLength(1)
-    expect(tree[0]!.children[0]!.children[0]!.children[0]!.node.id).toBe('d')
-  })
-
-  // ── Diamond DAG (shared descendant) ──
-
-  it('merges a diamond correctly (shared descendant appears once)', () => {
-    // a → b → d
-    // a → c → d
-    // The flat paths are [a,b,d] and [a,c,d]. After merge:
-    // a has children b and c; both b and c have one child d (shared).
-    const paths = [
-      pathFromIds([{ id: 'a' }, { id: 'b' }, { id: 'd' }]),
-      pathFromIds([{ id: 'a' }, { id: 'c' }, { id: 'd' }]),
-    ]
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    expect(tree[0]!.node.id).toBe('a')
-    expect(tree[0]!.children).toHaveLength(2)
-    const childIds = tree[0]!.children.map((c) => c.node.id).sort()
-    expect(childIds).toEqual(['b', 'c'])
-    // b's child is d
-    const bNode = tree[0]!.children.find((c) => c.node.id === 'b')!
-    expect(bNode.children).toHaveLength(1)
-    expect(bNode.children[0]!.node.id).toBe('d')
-    expect(bNode.children[0]!.children).toEqual([])
-    // c's child is also d (a separate tree node instance, sharing id)
-    const cNode = tree[0]!.children.find((c) => c.node.id === 'c')!
-    expect(cNode.children).toHaveLength(1)
-    expect(cNode.children[0]!.node.id).toBe('d')
-  })
-
-  // ── Complex DAG branches ──
-
-  it('handles a complex DAG with multiple merge points', () => {
-    // a → b → d → f
-    //    ↘ c → e ↗
-    // a → x → y
-    // Paths: [a,b,d,f], [a,b,c,e], [a,x,y]
-    const paths = [
-      pathFromIds([{ id: 'a' }, { id: 'b' }, { id: 'd' }, { id: 'f' }]),
-      pathFromIds([{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'e' }]),
-      pathFromIds([{ id: 'a' }, { id: 'x' }, { id: 'y' }]),
-    ]
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    expect(tree[0]!.node.id).toBe('a')
-    expect(tree[0]!.children).toHaveLength(2) // b, x
-    const aChildren = tree[0]!.children.map((c) => c.node.id).sort()
-    expect(aChildren).toEqual(['b', 'x'])
-
-    // b has children d and c
-    const bNode = tree[0]!.children.find((c) => c.node.id === 'b')!
-    expect(bNode.children).toHaveLength(2)
-    const bChildren = bNode.children.map((c) => c.node.id).sort()
-    expect(bChildren).toEqual(['c', 'd'])
-
-    // d has child f
-    const dNode = bNode.children.find((c) => c.node.id === 'd')!
-    expect(dNode.children).toHaveLength(1)
-    expect(dNode.children[0]!.node.id).toBe('f')
-
-    // c has child e
-    const cNode = bNode.children.find((c) => c.node.id === 'c')!
-    expect(cNode.children).toHaveLength(1)
-    expect(cNode.children[0]!.node.id).toBe('e')
-
-    // x has child y
-    const xNode = tree[0]!.children.find((c) => c.node.id === 'x')!
-    expect(xNode.children).toHaveLength(1)
-    expect(xNode.children[0]!.node.id).toBe('y')
-  })
-
-  it('handles a star graph (single root, many leaves)', () => {
-    const paths = [
-      pathFromIds([{ id: 'root' }, { id: 'l1' }]),
-      pathFromIds([{ id: 'root' }, { id: 'l2' }]),
-      pathFromIds([{ id: 'root' }, { id: 'l3' }]),
-      pathFromIds([{ id: 'root' }, { id: 'l4' }]),
-      pathFromIds([{ id: 'root' }, { id: 'l5' }]),
-    ]
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    expect(tree[0]!.node.id).toBe('root')
-    expect(tree[0]!.children).toHaveLength(5)
-    const leafIds = tree[0]!.children.map((c) => c.node.id).sort()
-    expect(leafIds).toEqual(['l1', 'l2', 'l3', 'l4', 'l5'])
-  })
-
-  it('handles a full binary tree of depth 3', () => {
-    // root → l → ll
-    //        ↘ lr
-    //    ↘ r → rl
-    //        ↘ rr
-    const paths = [
-      pathFromIds([{ id: 'root' }, { id: 'l' }, { id: 'll' }]),
-      pathFromIds([{ id: 'root' }, { id: 'l' }, { id: 'lr' }]),
-      pathFromIds([{ id: 'root' }, { id: 'r' }, { id: 'rl' }]),
-      pathFromIds([{ id: 'root' }, { id: 'r' }, { id: 'rr' }]),
-    ]
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    expect(tree[0]!.node.id).toBe('root')
-    expect(tree[0]!.children).toHaveLength(2)
-    const rootChildren = tree[0]!.children.map((c) => c.node.id).sort()
-    expect(rootChildren).toEqual(['l', 'r'])
-
-    const lNode = tree[0]!.children.find((c) => c.node.id === 'l')!
-    expect(lNode.children).toHaveLength(2)
-    expect(lNode.children.map((c) => c.node.id).sort()).toEqual(['ll', 'lr'])
-
-    const rNode = tree[0]!.children.find((c) => c.node.id === 'r')!
-    expect(rNode.children).toHaveLength(2)
-    expect(rNode.children.map((c) => c.node.id).sort()).toEqual(['rl', 'rr'])
-  })
-
-  // ── Preserving node data ──
-
-  it('preserves node title and status in the merged tree', () => {
-    const paths = [
-      pathFromIds([
-        { id: 'a', title: 'Alpha', status: 'confirmed' },
-        { id: 'b', title: 'Beta', status: 'open' },
-      ]),
-    ]
-    const tree = mergePathsToTree(paths)
-    expect(tree[0]!.node.title).toBe('Alpha')
-    expect(tree[0]!.node.status).toBe('confirmed')
-    expect(tree[0]!.children[0]!.node.title).toBe('Beta')
-    expect(tree[0]!.children[0]!.node.status).toBe('open')
-  })
-
-  it('preserves node data through deep merge', () => {
-    const paths = [
-      pathFromIds([
-        { id: 'a', title: 'A', status: 'confirmed' },
-        { id: 'b', title: 'B', status: 'in-progress' },
-        { id: 'c', title: 'C', status: 'refuted' },
-      ]),
-    ]
-    const tree = mergePathsToTree(paths)
-    expect(tree[0]!.node.title).toBe('A')
-    expect(tree[0]!.children[0]!.node.title).toBe('B')
-    expect(tree[0]!.children[0]!.children[0]!.node.title).toBe('C')
-    expect(tree[0]!.node.status).toBe('confirmed')
-    expect(tree[0]!.children[0]!.node.status).toBe('in-progress')
-    expect(tree[0]!.children[0]!.children[0]!.node.status).toBe('refuted')
-  })
-
-  // ── Depth tracking ──
-
-  it('preserves depth values from the original paths', () => {
-    const paths = [
-      pathFromIds([{ id: 'a' }, { id: 'b' }, { id: 'c' }]),
-    ]
-    const tree = mergePathsToTree(paths)
-    const aNode = tree[0]!
-    // Depth is tracked via the TreeNode wrapper in PathEntry,
-    // but MergedTreeNode itself doesn't store depth — it's implicit via tree structure.
-    // This test verifies the tree structure is correct (depth = nesting level).
-    expect(aNode.children).toHaveLength(1)
-    expect(aNode.children[0]!.children).toHaveLength(1)
-    expect(aNode.children[0]!.children[0]!.children).toHaveLength(0)
-  })
-
-  // ── Duplicate path entries ──
-
-  it('handles duplicate paths gracefully (no duplication in tree)', () => {
-    const paths = [
-      pathFromIds([{ id: 'a' }, { id: 'b' }]),
-      pathFromIds([{ id: 'a' }, { id: 'b' }]),
-    ]
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    expect(tree[0]!.node.id).toBe('a')
-    expect(tree[0]!.children).toHaveLength(1)
-    expect(tree[0]!.children[0]!.node.id).toBe('b')
-    expect(tree[0]!.children[0]!.children).toEqual([])
-  })
-
-  // ── Paths with same prefix but different lengths ──
-
-  it('handles paths with overlapping but not identical prefixes', () => {
-    // [a, b, c] and [a, b, d] share prefix [a, b]
-    const paths = [
-      pathFromIds([{ id: 'a' }, { id: 'b' }, { id: 'c' }]),
-      pathFromIds([{ id: 'a' }, { id: 'b' }, { id: 'd' }]),
-      pathFromIds([{ id: 'a' }, { id: 'x' }]),
-    ]
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    expect(tree[0]!.node.id).toBe('a')
-    expect(tree[0]!.children).toHaveLength(2)
-    const aChildren = tree[0]!.children.map((c) => c.node.id).sort()
-    expect(aChildren).toEqual(['b', 'x'])
-
-    const bNode = tree[0]!.children.find((c) => c.node.id === 'b')!
-    expect(bNode.children).toHaveLength(2)
-    const bChildren = bNode.children.map((c) => c.node.id).sort()
-    expect(bChildren).toEqual(['c', 'd'])
-  })
-
-  // ── PathEntry with empty path ──
-
-  it('skips PathEntry with empty path array', () => {
-    const paths: PathEntry[] = [
-      { path: [] },
-      pathFromIds([{ id: 'a' }]),
-      { path: [] },
-    ]
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    expect(tree[0]!.node.id).toBe('a')
-  })
-
-  // ── Integration: mergePathsToTree + findAllRootToLeafPaths ──
-
-  it('produces a merged tree equivalent to the DAG structure', () => {
-    // Build a graph: a → b, a → c, b → d, c → d
-    // Paths: [a,b,d], [a,c,d]
-    // Merged tree: a has children b, c; b has child d; c has child d
-    const graph = graphOf(
-      [
-        { id: 'a' },
-        { id: 'b', parents: ['a'] },
-        { id: 'c', parents: ['a'] },
-        { id: 'd', parents: ['b', 'c'] },
-      ],
-    )
-    const paths = findAllRootToLeafPaths(graph)
-    expect(paths).toHaveLength(2)
-
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    expect(tree[0]!.node.id).toBe('a')
-    expect(tree[0]!.children).toHaveLength(2)
-
-    const childIds = tree[0]!.children.map((c) => c.node.id).sort()
-    expect(childIds).toEqual(['b', 'c'])
-
-    const bNode = tree[0]!.children.find((c) => c.node.id === 'b')!
-    expect(bNode.children).toHaveLength(1)
-    expect(bNode.children[0]!.node.id).toBe('d')
-
-    const cNode = tree[0]!.children.find((c) => c.node.id === 'c')!
-    expect(cNode.children).toHaveLength(1)
-    expect(cNode.children[0]!.node.id).toBe('d')
-  })
-
-  it('produces a single-node tree for a graph with one node', () => {
-    const graph = graphOf([{ id: 'solo' }])
-    const paths = findAllRootToLeafPaths(graph)
-    expect(paths).toHaveLength(1)
-
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    expect(tree[0]!.node.id).toBe('solo')
-    expect(tree[0]!.children).toEqual([])
-  })
-
-  it('produces correct tree for a deep linear chain', () => {
-    const nodes = Array.from({ length: 10 }, (_, i) => ({
-      id: `n${i}`,
-      parents: i > 0 ? [`n${i - 1}`] : undefined,
-    }))
-    const graph = graphOf(nodes)
-    const paths = findAllRootToLeafPaths(graph)
-    expect(paths).toHaveLength(1)
-
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(1)
-    expect(tree[0]!.node.id).toBe('n0')
-    // Verify chain depth
-    let current: MergedTreeNode | null = tree[0]!
-    for (let i = 1; i <= 9; i++) {
-      expect(current!.children).toHaveLength(1)
-      current = current!.children[0]!
-      expect(current!.node.id).toBe(`n${i}`)
-    }
-  })
-
-  it('handles a graph with multiple roots', () => {
-    // Two independent chains: a → b and x → y
-    const graph = graphOf([
-      { id: 'a' },
-      { id: 'b', parents: ['a'] },
-      { id: 'x' },
-      { id: 'y', parents: ['x'] },
-    ])
-    const paths = findAllRootToLeafPaths(graph)
-    expect(paths).toHaveLength(2)
-
-    const tree = mergePathsToTree(paths)
-    expect(tree).toHaveLength(2)
-    const rootIds = tree.map((n) => n.node.id).sort()
-    expect(rootIds).toEqual(['a', 'x'])
-  })
-
-  // ── Algorithm correctness: node reuse ──
-
-  it('reuses the same node object when a path revisits an existing prefix', () => {
-    // [a, b, c] then [a, b, d] — 'a' and 'b' should be reused, not duplicated
-    const paths = [
-      pathFromIds([{ id: 'a' }, { id: 'b' }, { id: 'c' }]),
-      pathFromIds([{ id: 'a' }, { id: 'b' }, { id: 'd' }]),
-    ]
-    const tree = mergePathsToTree(paths)
-    // 'a' appears once at root
-    expect(tree).toHaveLength(1)
-    // 'b' appears once as child of 'a'
-    expect(tree[0]!.children).toHaveLength(1)
-    expect(tree[0]!.children[0]!.node.id).toBe('b')
-    // 'b' has two children: c and d
-    expect(tree[0]!.children[0]!.children).toHaveLength(2)
-    const bChildren = tree[0]!.children[0]!.children.map((c) => c.node.id).sort()
-    expect(bChildren).toEqual(['c', 'd'])
-  })
-})
-
 describe('buildDisplayGraph', () => {
   it('returns the input graph unchanged when hideTerminal is false', () => {
     const g = graphOf([{ id: 'a' }, { id: 'b', parents: ['a'] }])
@@ -1306,5 +717,55 @@ describe('buildDisplayGraph', () => {
     const filtered = buildDisplayGraph(g, { hideTerminal: true })
     expect(filtered.nodes.map((n) => n.id).sort()).toEqual(['a', 'b'])
     expect(filtered.edges).toEqual([{ from: 'a', to: 'b' }])
+  })
+
+  it('computes the incomplete frontier of a diamond without path enumeration', () => {
+    // a(open) → {b,c}(terminal) → d(open): the frontier is {a, d}; every
+    // explicit edge touches a pruned node, so none survive. Computed
+    // directly, in O(N+E).
+    const g = graphOf(
+      [
+        { id: 'a', status: 'open' },
+        { id: 'b', status: 'confirmed', parents: ['a'] },
+        { id: 'c', status: 'refuted', parents: ['a'] },
+        { id: 'd', status: 'in-progress', parents: ['b', 'c'] },
+      ],
+      [
+        { from: 'a', to: 'b' },
+        { from: 'a', to: 'c' },
+        { from: 'b', to: 'd' },
+        { from: 'c', to: 'd' },
+      ],
+    )
+    const filtered = buildDisplayGraph(g, { hideTerminal: true })
+    expect(filtered.nodes.map((n) => n.id).sort()).toEqual(['a', 'd'])
+    expect(filtered.edges).toEqual([])
+  })
+
+  it('handles a deep layered diamond in linear time (no path blow-up)', () => {
+    // 14 stacked diamonds: 2^14 = 16384 root→leaf paths for the former
+    // enumeration. The direct frontier computation stays O(N+E); the test
+    // doubles as a guard against reintroducing path enumeration here.
+    const nodes: { id: string; status?: string; parents?: string[] }[] = [{ id: 'L0a' }]
+    const edges: { from: string; to: string }[] = []
+    for (let i = 0; i < 14; i++) {
+      const [prevX, prevY] = [`L${i}a`, `L${i}b`]
+      const [nextX, nextY] = [`L${i + 1}a`, `L${i + 1}b`]
+      nodes.push(
+        { id: nextX, status: i % 2 === 0 ? 'confirmed' : 'open', parents: [prevX, prevY] },
+        { id: nextY, status: i % 2 === 0 ? 'open' : 'confirmed', parents: [prevX, prevY] },
+      )
+      edges.push(
+        { from: prevX, to: nextX },
+        { from: prevX, to: nextY },
+        { from: prevY, to: nextX },
+        { from: prevY, to: nextY },
+      )
+    }
+    const g = graphOf(nodes, edges)
+    const filtered = buildDisplayGraph(g, { hideTerminal: true })
+    // Every node sits in a mixed chain: open nodes survive, terminal drop.
+    const openIds = nodes.filter((n) => n.status !== 'confirmed').map((n) => n.id)
+    expect(filtered.nodes.map((n) => n.id).sort()).toEqual(openIds.slice().sort())
   })
 })

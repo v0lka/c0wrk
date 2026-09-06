@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useLayoutEffect, useMemo, type MouseEvent as ReactMouseEvent } from 'react'
 import { Maximize, ZoomIn, ZoomOut } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DEFAULT_ZOOM_STEP, usePanZoom } from '@/lib/usePanZoom'
@@ -6,6 +6,8 @@ import {
   edgePathH,
   statusColorVar,
   NODE_R,
+  LABEL_MAX_CHARS,
+  layoutSignature,
   type DagLayout,
 } from './researchDagRender'
 
@@ -104,7 +106,9 @@ function DagSvg({ layout, selectedId, onSelect }: DagSvgProps) {
               textAnchor="start"
               fill="var(--color-foreground)"
             >
-              {truncate(node.title, 26)}
+              {/* Same budget the layout's column pitch and box math derive
+                  from (LABEL_MAX_CHARS) — kept in lockstep via one constant. */}
+              {truncate(node.title, LABEL_MAX_CHARS)}
             </text>
           </g>
         )
@@ -126,8 +130,9 @@ export interface ResearchDagCanvasProps {
  * `overflow-auto` scroll with drag-to-pan, cursor-anchored wheel zoom, and a
  * floating zoom toolbar (− / percentage / + / fit). All pan/zoom behavior
  * (anchored zoom, fit, drag, wheel, click-suppression counter) lives in the
- * reusable `usePanZoom` hook; on first paint — and whenever the layout
- * changes — the DAG is scaled to fit the canvas width (never upscaled).
+ * reusable `usePanZoom` hook; on first paint — and whenever the painted
+ * geometry actually changes — the DAG is scaled to fit the canvas width
+ * (never upscaled).
  */
 export function ResearchDagCanvas({ layout, selectedId, onSelect }: ResearchDagCanvasProps) {
   const {
@@ -137,18 +142,27 @@ export function ResearchDagCanvas({ layout, selectedId, onSelect }: ResearchDagC
     fit,
     zoomFromCenter,
     didDragRef,
+    isPanningRef,
     onPointerDown,
     onPointerMove,
     onPointerUp,
     onPointerCancel,
   } = usePanZoom()
 
-  // Fit on first paint and whenever the layout changes (graph updates or the
-  // hide-completed toggle resize the SVG). `fit` is referentially stable, so
-  // a mere re-render (e.g. selection change) never resets the camera.
+  // Fit on first paint and whenever the PAINTED GEOMETRY changes (graph
+  // updates or the hide-completed toggle resize the SVG). The store replaces
+  // `project.graph` with a fresh object on every applied update, so keying on
+  // layout identity would re-fit even content-identical refreshes — snapping
+  // the viewport back to fit mid-exploration. The cheap geometric signature
+  // only changes when nodes/edges actually move. A refresh landing while the
+  // user is mid-drag is skipped entirely; the next real geometry change
+  // re-fits. `fit` is referentially stable, so a mere re-render (e.g.
+  // selection change) never resets the camera.
+  const geometrySig = useMemo(() => layoutSignature(layout), [layout])
   useLayoutEffect(() => {
+    if (isPanningRef.current) return
     fit()
-  }, [layout, fit])
+  }, [geometrySig, isPanningRef, fit])
 
   // Swallow the click that trails a pan gesture: once the drag threshold is
   // crossed the canvas holds pointer capture, and under capture the browser

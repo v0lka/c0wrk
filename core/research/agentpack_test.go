@@ -80,8 +80,9 @@ func TestSeedAgents_EmbedsResearchProfile(t *testing.T) {
 }
 
 // TestSeedAgents_IdempotentSameVersion verifies re-seeding with an unchanged
-// pack version skips everything and preserves existing (possibly user-edited)
-// content byte-for-byte.
+// pack version preserves existing (possibly user-edited) content byte-for-byte:
+// a same-version profile whose content diverges from the pack is hash-diff'd,
+// preserved, and reported as Modified — never Current, never overwritten.
 func TestSeedAgents_IdempotentSameVersion(t *testing.T) {
 	dest := t.TempDir()
 
@@ -104,8 +105,14 @@ func TestSeedAgents_IdempotentSameVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second SeedAgents: %v", err)
 	}
-	if len(second.Seeded) != 0 || len(second.Current) != 1 {
-		t.Fatalf("second pass: Seeded=%v Current=%v, want Seeded=0 Current=1", second.Seeded, second.Current)
+	if len(second.Seeded) != 0 || len(second.Updated) != 0 {
+		t.Fatalf("second pass: Seeded=%v Updated=%v, want both empty", second.Seeded, second.Updated)
+	}
+	if len(second.Current) != 0 {
+		t.Fatalf("second pass: Current=%v, want empty", second.Current)
+	}
+	if len(second.Modified) != 1 || second.Modified[0] != "research" {
+		t.Fatalf("second pass: Modified=%v, want [research]", second.Modified)
 	}
 
 	// The user edit must survive unchanged (same-version skip preserves edits).

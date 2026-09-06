@@ -4,6 +4,127 @@
 
 Accepted
 
+Amended 2026-09-05 (post-v0.7.3 review findings [1]/[2]): the original claim
+that `attr.tree=<empty-tree>` kills **all** attribute-routed vectors
+overclaimed — it covers only the in-tree `.gitattributes` source. The
+amendment (implemented in `core/workspace/gitconfig.go` and
+`internal/sysproc/git.go`): `.git/info/attributes` and `core.attributesFile`
+(verified live from repository config on git 2.50.1) are themselves scanned
+and every routed driver name is pinned by the same `-c` overrides, which beat
+file config wherever the driver is defined (including included files);
+`core.attributesFile=` (empty) disables that source; an attribute source that
+exists but cannot be scanned fails closed (the attributes mechanism has no
+kill-switch). The empty-tree constant is now selected by object format
+(`extensions.objectformat=sha256` needs the SHA-256 empty tree — the SHA-1
+hash is a verified silent no-op there), unknown formats fail closed, linked
+worktrees resolve `commondir` and scan the common config plus the enabled
+`config.worktree` overlay with git's merge semantics, and the spawn
+environment strips the `GIT_ATTR_*` family so `GIT_ATTR_SOURCE` cannot
+reroute the attribute source.
+
+Amended 2026-09-05 (post-v0.7.3 review findings [40]/[55]): the layer-2
+reachability analysis had assumed local-only git usage, but the Git panel
+ships remote operations (Pull/Push/Fetch RPCs) and the plain `git diff`
+porcelain executes external diff drivers **by default** (verified on git
+2.50.1: `diff.external` and attribute-routed `diff.<n>.command` fire with no
+`--ext-diff` flag — `--no-ext-diff` is what disables them). The scanner now
+scans the `credential` section as well and emits per-key neutralizations:
+`core.sshCommand=ssh` (restores the default ssh binary so remote operations
+keep working; an empty value aborts them), `core.askPass=`,
+`credential.helper=` (an empty value resets the accumulated helper list —
+the `-c` layer is read after every file, so the reset covers generic and
+URL-specific helpers; a per-URL `credential.<url>.helper=` pin re-asserts
+it), `diff.external=` and `diff.<n>.command=` (fail-closed kills), while
+every porcelain `git diff` call site passes `--no-ext-diff` so its output
+stays usable (post-v0.7.4 this covers `GenerateCommitMessage`, both
+`GetFileDiffHunks` legs, and `BuildReviewDiff`'s `diff HEAD`/`--no-index`
+legs; the one patch producer left without the flag — plumbing `diff-tree
+-p` in `GetCommitDiff` — executes no external drivers absent an explicit
+`--ext-diff`, verified on git 2.50.1). The intake notice and finding texts were corrected
+accordingly (the old "not reachable"/"only with --ext-diff" claims were
+factually false).
+
+Amended 2026-09-05 (post-v0.7.3 review finding [56]): the blanket
+`attr.tree` kill was narrowed to fail-closed-scan coverage. It used to
+engage whenever any attribute-routed vector *or include* existed, which
+disabled benign attributes too — empirically confirmed on git 2.50.1, a
+clean CRLF-normalized repository (`.gitattributes` `* text=auto`) showed
+` M file.txt` and a 2/2 whole-file numstat diff under the kill, so
+legitimate filter-configured repositories (e.g. a local `git lfs install`)
+got persistently false-modified statuses and inflated diff statistics with
+no indication why. Now that the [1] closure scans and name-pins every
+routing source `attr.tree` does not cover (`.git/info/attributes`,
+`core.attributesFile`) and per-name `-c` pins beat file config wherever the
+driver is defined (the in-tree `.gitattributes` routing included), visible
+driver names no longer derive the blanket kill: they are neutralized by
+name with benign eol/text attributes left intact (a side benefit on git
+older than 2.45, where `attr.tree` is a silent no-op but the pins still
+work). The kill remains engaged for the one case per-name pins cannot
+cover — include directives that may hide driver definitions routed from
+the in-tree `.gitattributes` — and while it is active the intake warning
+carries an `(attributes disabled)` finding disclosing the collateral
+(eol/CRLF normalization off, files may be reported as modified though
+unchanged). The decision's no-whitelist rule is unchanged: the name pins
+cover only names the scan can see, which is exactly why the kill stays for
+includes.
+
+Amended 2026-09-06 (post-v0.7.4 review — four verified gaps): the prior
+review re-verified the attack surface behaviorally on git 2.50.1 and found
+four live vectors under the then-current override set, now closed in
+`core/workspace/gitconfig.go` / `core/workspace/git.go`:
+
+1. **core.gitProxy** executes on every `git://` fetch/push even under the
+   full baseline argv, and no value of the key neutralizes it (empty
+   included). It is now a command-bearing finding neutralized by
+   `-c protocol.git.allow=never` — the transport family is forbidden, the
+   operation fails closed with "transport 'git' not allowed" instead of
+   executing the repository's proxy (canary-verified; note git resolves
+   duplicate `core.gitProxy` values first-wins, which the pin makes moot).
+   ext:: and similar exotic transports remain denied by git's own protocol
+   defaults.
+2. **core.worktree** redirects where `checkout`/`reset --hard` write
+   tracked files to any configured absolute path outside the workspace; no
+   `-c` form beats it (an empty value is ignored too). It is now a finding
+   neutralized by pinning the spawn environment's `GIT_WORK_TREE` to the
+   work-tree root git would discover from the repository path (the one
+   channel that outranks the config key; canary-verified — writes stay
+   inside the repository root). The pin is finding-gated so legitimate
+   worktree-using setups are untouched.
+3. **Include-hidden transport/diff keys**: a `core.sshCommand` or
+   `diff.external` defined in an included file is invisible to the scan,
+   and the includes-only pins (attr.tree + core.attributesFile) did not
+   stop execution on fetch / `git diff --cached`. Include-bearing configs
+   now additionally emit the name-independent pins `core.sshCommand=ssh`,
+   `core.askPass=`, `credential.helper=`, `diff.external=` (the exact
+   values the finding-driven path uses; `-c` beats file config wherever
+   the key is defined). Deliberately NOT unconditional — a `-c` pin beats
+   the user's own global config too.
+4. **attr.tree version gate**: `attr.tree` exists only since git 2.45
+   (Ubuntu 22.04 ships 2.34, RHEL 9 ships 2.43) and older git silently
+   ignores it, which would leave include-hidden attribute-routed drivers
+   live while the neutralization reports coverage. The git version is now
+   resolved once per process (cached, through the same hardened
+   `sysproc.GitCmd` chokepoint, injectable in tests) and `GitCmdInRepo`
+   **fails closed with a clear error for include-bearing configs when the
+   resolved version is < 2.45 or unresolvable** — refusing to run git
+   rather than running it with a dead neutralization.
+
+Remaining residuals, enumerated honestly: **(a)** `core.pager` stays the
+one command-bearing core key without any override (c0wrk always pipes git
+output; a pager runs only on a terminal); **(b)** include-hidden keys
+outside the four name-independent pins have no per-key cover — an included
+file defining a `filter`/`merge`/`textconv` driver name routed from the
+in-tree `.gitattributes` is covered only by `attr.tree`, which is exactly
+why the ≥ 2.45 gate refuses to run at all on older git, and an included
+file defining `core.pager` (or any future command-bearing key unknown to
+the scanner) executes as it would outside c0wrk — includes remain a
+detection-grade signal the intake warning surfaces; **(c)** the
+`GIT_WORK_TREE` pin is finding-gated, so a `core.worktree` defined only in
+an included file is not pinned (the scan cannot see it; the same
+include-warning applies); **(d)** usability trade-offs, not security gaps:
+`git://` remotes fail closed while `core.gitProxy` is present, and
+include-bearing repositories are unusable in c0wrk on git < 2.45.
+
 ## Context
 
 c0wrk runs git constantly in CODE mode: status, diff, log, ignore filtering, branch detection, the git panel. Every one of those invocations executes inside a repository the user pointed the app at — and **a repository is attacker-controlled data**. `.git/config` is effectively a program-invocation configuration file: git executes config-driven external programs during ordinary *read-only* operations (`status`, `diff`, `add`, `checkout`, even `commit`), before any trust decision c0wrk makes. Two concrete vectors motivated this decision:
@@ -38,15 +159,15 @@ and `GIT_EDITOR=true` is pinned in the environment — replacing, not appending 
 - `-c diff.<name>.textconv=cat` per armed textconv;
 - `-c attr.tree=<empty-tree SHA>` whenever any attribute-routed vector exists **or** the config contained `include`/`includeIf` directives — the attribute-routing kill is the only coverage for attacker-chosen *unknown* names (see the no-whitelist rule below).
 
-**Re-parse rationale (no caching).** The scan is deliberately re-run for every git invocation. The mid-session planting vector makes a cached scan a TOCTOU liability: any invalidation scheme (mtime, inode, watcher) races the writer, and a watcher over `.git` adds lifecycle complexity for no gain. The scan is a bounded (4 MiB cap; 4 KiB pointer cap) pure-text parse, so correctness costs microseconds; there is no cache to invalidate and no stale-trust window. Canary integration tests prove the property directly: a filter planted *between* two git calls on one long-lived caller is neutralized on the second call.
+**Re-parse rationale (no caching).** The scan is deliberately re-run for every git invocation. The mid-session planting vector makes a cached scan a TOCTOU liability: any invalidation scheme (mtime, inode, watcher) races the writer, and a watcher over `.git` adds lifecycle complexity for no gain. The scan is a bounded (4 MiB cap; 4 KiB pointer cap) pure-text parse, so correctness costs microseconds; there is no cache to invalidate and no stale-trust window. Canary integration tests prove the property directly: a filter planted *between* two git calls on one long-lived caller is neutralized on the second call. The one sanctioned narrowing (review [15]): a *single logical operation* that spawns git multiple times — `BuildReviewDiff`'s `diff HEAD` + `ls-files` + per-untracked-file `--no-index` legs, formerly N+2 rescans and O(N × 4 MiB) reads with a hostile config — shares one scan taken before its first invocation (`gitScanMemo`). Freshness is preserved per user operation; cross-operation sharing remains forbidden.
 
-Semantics are fail-closed: an unreadable, oversized, non-regular (a FIFO planted as `.git/config` would block the open forever — the scan runs synchronously on the `SwitchProject` RPC path — so anything but a regular file is refused), or malformed-pointer config returns an error and **git is not executed at all**; boolean predicates (`IsGitRepo`, `IsGitTracked`) treat scan failure as "not a repo" so callers fall back to git-free paths (`--no-index` diffs, no ignore filtering) — never to un-neutralized git. A directory with no `.git` anywhere on its chain yields an empty scan and plain baseline behavior (keeps `git diff --no-index` working on non-repos). The helper also defaults `cmd.Dir` to the repository (defense-in-depth for callers that forget it). All repo-scoped call sites route through this helper: `core/workspace/git.go` (8 sites), `core/vectorindex/git.go` (`runGit`), and the backend git-panel wrappers (`backend/frontend_api_git.go`).
+Semantics are fail-closed: an unreadable, oversized, non-regular (a FIFO planted as `.git/config` would block the open forever — the scan runs synchronously on the `SwitchProject` RPC path — so anything but a regular file is refused, checked by fstat on the already-open non-blocking descriptor with no Stat→Open TOCTOU window, review [14]), or malformed-pointer config returns an error and **git is not executed at all**; boolean predicates (`IsGitRepo`, `IsGitTracked`) treat scan failure as "not a repo", but the non-repo fallbacks are degraded rather than silently git-free — every git invocation, `--no-index` diffs included, spawns through the same fresh scan (a `--no-index` run inside a repository directory still consults repo config; verified on git 2.50.1: an armed diff.external executes there without `--no-ext-diff`), so the scan failure resurfaces as an error from the fallback itself instead of producing output — never un-neutralized git (review [53]). A directory with no `.git` anywhere on its chain yields an empty scan and plain baseline behavior (keeps `git diff --no-index` working on non-repos). The helper also defaults `cmd.Dir` to the repository (defense-in-depth for callers who forget it). All repo-scoped call sites route through this helper: `core/workspace/git.go` (8 sites), `core/vectorindex/git.go` (`runGit`), and the backend git-panel wrappers (`backend/frontend_api_git.go`).
 
 ### 3. Detection and user warning at intake
 
 `backend/frontend_api_gitconfig_risk.go` `notifyGitConfigRisk` scans a repository when it is **opened** — on project switch (`SwitchProject`, after `project:switched`) and on adding an auxiliary work directory (`AddWorkDirectory`, after `workdirs:changed`) — using the same exec-free parser, and emits the global `project:git_config_risk` event when the config is **not provably clean** (`GitConfigInfo.Clean()` is false: dangerous keys, include directives, parse errors, or an unreadable config). A clean, fully visible config emits nothing. Detection is fail-closed in the same direction as prevention: an unprovable config (includes not followed, malformed constructs git itself would refuse, unreadable file) is *warned about*, never presented as clean. The payload carries the standing notice: *"Repository-defined git hooks do not run inside c0wrk: hooks and the config-driven programs listed below are blocked or neutralized on every git invocation c0wrk makes. Continue only if you trust this repository."* The scanner is intentionally detection-only: neutralization lives in the spawn layers (1 and 2), which hold regardless of whether any UI is listening.
 
-**User-controlled trust list (warning suppression only).** The warning carries three actions: *Trust this repo* (persists the repository root into `security.trusted_git_repos` via the `TrustGitRepo` RPC — `notifyGitConfigRisk` then emits nothing for that exact root on future opens), *Ignore* (closes the toast; the warning reappears on the next open), and *Fix* (starts a chat task describing the exact findings so the agent can clean the config up; agent edits inside `.git` still hit the layer-4 write gate). The list is managed from Settings → Security → *Trusted repos* (`GetTrustedGitRepos` / `RemoveTrustedGitRepo`). Matching is exact on `filepath.Clean`-ed absolute roots — deliberately no prefix/subtree semantics, so trusting one root never covers a different repository nested inside it — and with no config loaded nothing is trusted (fail-closed). Suppression affects **only the UI warning**: the spawn-layer neutralization (layers 1-2) stays fully in force for trusted and untrusted repositories alike, because the trust decision attests the user's assessment of intent, not a claim that the config is harmless.
+**User-controlled trust list (warning suppression only).** The warning carries three actions: *Trust this repo* (persists the repository's work-tree root into `security.trusted_git_repos` via the `TrustGitRepo` RPC — the root is resolved from the given path with `workspace.ResolveWorkTreeRoot`, review [52], so trusting a subdirectory workspace trusts the whole repository the scan walked up to, and the warning payload carries that same root — `notifyGitConfigRisk` then emits nothing for that exact root on future opens, whether reopened at the root or from any subdirectory), *Ignore* (closes the toast; the warning reappears on the next open), and *Fix* (starts a chat task describing the exact findings so the agent can clean the config up; agent edits inside `.git` still hit the layer-4 write gate). The list is managed from Settings → Security → *Trusted repos* (`GetTrustedGitRepos` / `RemoveTrustedGitRepo`). Matching is exact on `filepath.Clean`-ed absolute roots — deliberately no prefix/subtree semantics, so trusting one root never covers a different repository nested inside it — and with no config loaded nothing is trusted (fail-closed). Suppression affects **only the UI warning**: the spawn-layer neutralization (layers 1-2) stays fully in force for trusted and untrusted repositories alike, because the trust decision attests the user's assessment of intent, not a claim that the config is harmless.
 
 ### 4. Agent-side `.git` write gate (sp4rk)
 

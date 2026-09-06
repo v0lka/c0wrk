@@ -13,6 +13,11 @@ package backend
 // visible config emits nothing; anything that makes the config suspicious
 // (dangerous keys, include directives, malformed or unreadable config) fails
 // closed into a warning — the same fail-closed signal as GitConfigInfo.Clean.
+// While the blanket attribute-interpretation kill (attr.tree) is part of the
+// derived neutralization — the include case, where driver names may be
+// hidden from the scan — the warning also discloses that activation and its
+// collateral: benign eol/CRLF normalization is off, so text files may be
+// reported as falsely modified (review [56]).
 //
 // Repositories the user explicitly trusted (security.trusted_git_repos,
 // maintained by the TrustGitRepo / RemoveTrustedGitRepo / GetTrustedGitRepos
@@ -36,10 +41,13 @@ const (
 )
 
 // gitConfigRiskNotice is the standing safety note carried with every warning.
-// It states explicitly that repository-defined hooks never run inside c0wrk:
-// the detected keys are blocked or neutralized on every git invocation c0wrk
-// makes, so the warning informs without implying the config executed.
-const gitConfigRiskNotice = "Repository-defined git hooks do not run inside c0wrk: hooks and the config-driven programs listed below are blocked or neutralized on every git invocation c0wrk makes. Continue only if you trust this repository."
+// It states explicitly that repository-defined hooks never run inside c0wrk
+// and that the config-driven programs listed in the findings are blocked or
+// neutralized on every git invocation c0wrk makes — including the Git
+// panel's remote operations (pull/push/fetch), whose transport keys
+// (core.sshCommand, core.askPass, credential helpers) carry their own
+// neutralizations. The warning informs without implying the config executed.
+const gitConfigRiskNotice = "Repository-defined git hooks do not run inside c0wrk: the config-driven programs listed below are blocked or neutralized on every git invocation c0wrk makes, remote operations (pull, push, fetch) included. Continue only if you trust this repository."
 
 // GitConfigRiskFinding is one detected danger, as delivered to the frontend.
 type GitConfigRiskFinding struct {
@@ -54,7 +62,10 @@ type GitConfigRiskFinding struct {
 
 // GitConfigRiskData is the payload of the global project:git_config_risk event.
 type GitConfigRiskData struct {
-	// Path is the scanned repository or work-directory root.
+	// Path is the repository WORK-TREE ROOT the warning is attributed to
+	// (resolved from the scanned project workspace or work directory via
+	// workspace.ResolveWorkTreeRoot, review [52] — the scan walks up to the
+	// parent repository, so attribution and trust key on its root).
 	Path string `json:"path"`
 	// Source is "project" (project switch) or "workdir" (added auxiliary
 	// working directory).
@@ -71,8 +82,11 @@ type GitConfigRiskData struct {
 // stored entries and the probe are compared as filepath.Clean-ed strings —
 // an exact match, deliberately without prefix/subtree semantics: trust is per
 // repository root, so a decision for one root must never silently cover a
-// different repository nested inside it (or the parent it lives in). With no
-// config loaded nothing is trusted (fail-closed: the warning stays on).
+// different repository nested inside it (or the parent it lives in). Since
+// review [52] both sides are the repository WORK-TREE ROOT: callers pass the
+// root resolved by workspace.ResolveWorkTreeRoot, and TrustGitRepo stores
+// that same form. With no config loaded nothing is trusted (fail-closed: the
+// warning stays on).
 func (f *FrontendAPI) gitRepoTrusted(path string) bool {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
@@ -107,12 +121,18 @@ func (f *FrontendAPI) GetTrustedGitRepos() []string {
 
 // TrustGitRepo marks a repository root as trusted: the
 // "untrusted git configuration detected" intake warning is no longer emitted
-// for it. The path must be an existing absolute directory; it is stored in
-// filepath.Clean form — the same normalization the trusted check compares
-// against, so what the toast displayed (risk.path) is exactly what matches
-// on the next scan. Idempotent: trusting an already-trusted root is a no-op.
-// Trust suppresses ONLY the warning; the spawn-layer neutralization (ADR-033
-// layers 1-2) stays fully in force regardless.
+// for it. The path must be an existing absolute directory. What is stored is
+// the WORK-TREE ROOT resolved from that path (review [52]): the intake
+// warning is attributed to the repository root the scan discovered (the
+// scan walks up from subdirectory workspaces), so trust must key on the
+// same root — trusting any path inside a repository trusts that whole
+// repository, and a future open of the root (or any other subdirectory of
+// it) stays silent, exactly as ADR-033 documents. When no repository is
+// discoverable from the path, the cleaned path itself is stored (the
+// fail-closed pairing with the warning's fallback attribution). Idempotent:
+// trusting an already-trusted root is a no-op. Trust suppresses ONLY the
+// warning; the spawn-layer neutralization (ADR-033 layers 1-2) stays fully
+// in force regardless.
 func (f *FrontendAPI) TrustGitRepo(path string) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -128,6 +148,12 @@ func (f *FrontendAPI) TrustGitRepo(path string) error {
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("repository path is not a directory: %s", cleaned)
+	}
+	// Normalize to the repository work-tree root — the same form
+	// notifyGitConfigRisk attributes warnings to, so what the toast
+	// displayed (risk.path) round-trips through the trust check.
+	if root := workspace.ResolveWorkTreeRoot(cleaned); root != "" {
+		cleaned = root
 	}
 
 	f.configMu.Lock()
@@ -151,12 +177,20 @@ func (f *FrontendAPI) TrustGitRepo(path string) error {
 // RemoveTrustedGitRepo removes a repository root from the trusted list; its
 // intake warning returns on the next open. Idempotent: removing an absent
 // entry is a no-op (the settings dialog also uses it to prune stale paths).
+// Both the given path's work-tree root and the exact cleaned path are
+// removed when they differ, so entries stored before the root normalization
+// (review [52]) — or a subdirectory path passed by hand — still prune
+// cleanly instead of becoming unremovable zombies.
 func (f *FrontendAPI) RemoveTrustedGitRepo(path string) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return errors.New("path is required")
 	}
 	cleaned := filepath.Clean(path)
+	candidates := []string{cleaned}
+	if root := workspace.ResolveWorkTreeRoot(cleaned); root != "" && root != cleaned {
+		candidates = append(candidates, root)
+	}
 
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
@@ -167,7 +201,14 @@ func (f *FrontendAPI) RemoveTrustedGitRepo(path string) error {
 	kept := make([]string, 0, len(f.config.Security.TrustedGitRepos))
 	removed := false
 	for _, trusted := range f.config.Security.TrustedGitRepos {
-		if filepath.Clean(trusted) == cleaned {
+		match := false
+		for _, c := range candidates {
+			if filepath.Clean(trusted) == c {
+				match = true
+				break
+			}
+		}
+		if match {
 			removed = true
 			continue
 		}
@@ -193,12 +234,26 @@ func (f *FrontendAPI) RemoveTrustedGitRepo(path string) error {
 // synchronous: the scan is a bounded text parse, and emitting after the
 // project:switched / workdirs:changed events keeps the UI narrative
 // ("opened, then warned") stable. No-op when no emitter is wired (tests).
+//
+// The warning and the trust check are attributed to the repository's
+// WORK-TREE ROOT, not the given path (review [52]): the scan itself walks up
+// to the parent repository, so a workspace opened at a subdirectory must be
+// warned under — and trusted as — the repository root it actually belongs
+// to, exactly as ADR-033 and the security model describe. TrustGitRepo
+// normalizes through the same workspace.ResolveWorkTreeRoot, so both sides
+// always agree. The scan still runs on the given path: relative
+// core.attributesFile values anchor where git actually runs (the workspace
+// directory), not the repository root.
 func (f *FrontendAPI) notifyGitConfigRisk(source, path string) {
 	if f.emitEvent == nil {
 		return
 	}
-	if f.gitRepoTrusted(path) {
-		f.log().Debug("git-config risk warning suppressed: repository is trusted", "path", path)
+	displayPath := path
+	if root := workspace.ResolveWorkTreeRoot(path); root != "" {
+		displayPath = root
+	}
+	if f.gitRepoTrusted(displayPath) {
+		f.log().Debug("git-config risk warning suppressed: repository is trusted", "path", displayPath)
 		return
 	}
 	info, err := workspace.ScanGitConfig(path, f.log())
@@ -206,13 +261,13 @@ func (f *FrontendAPI) notifyGitConfigRisk(source, path string) {
 		// Fail closed: an unreadable or oversized config cannot be proven
 		// safe, so it is itself a warning.
 		f.emitEvent(EventGitConfigRisk, GitConfigRiskData{
-			Path:   path,
+			Path:   displayPath,
 			Source: source,
 			Notice: gitConfigRiskNotice,
 			Findings: []GitConfigRiskFinding{{
 				Key: "(config unreadable)",
 				Description: fmt.Sprintf(
-					"The git configuration at %s could not be read (%v). Treat this repository as untrusted.", path, err),
+					"The git configuration of the repository at %s could not be read (%v). Treat this repository as untrusted.", displayPath, err),
 			}},
 		})
 		return
@@ -252,8 +307,26 @@ func (f *FrontendAPI) notifyGitConfigRisk(source, path string) {
 		})
 	}
 
+	// Review [56]c: surface the blanket attribute-interpretation kill while
+	// it is active. In narrow mode (visible drivers pinned by name) benign
+	// attributes keep working and nothing is added; only the include case —
+	// where driver names may be hidden from the scan — still engages
+	// attr.tree, and its collateral is disclosed here so a user staring at
+	// falsely-modified CRLF files knows why.
+	if info.AttributesInterpretationDisabled() {
+		findings = append(findings, GitConfigRiskFinding{
+			Key: "(attributes disabled)",
+			Description: "The configuration is not fully visible (include directives), so c0wrk " +
+				"additionally disables ALL git attribute interpretation for its operations as a " +
+				"precaution. Benign attributes stop working too: eol/CRLF text normalization is off, " +
+				"so text files may be reported as modified (with whole-file diff statistics) even " +
+				"though their content is unchanged. This affects only how c0wrk reads the " +
+				"repository; no repository-defined program executes.",
+		})
+	}
+
 	f.emitEvent(EventGitConfigRisk, GitConfigRiskData{
-		Path:     path,
+		Path:     displayPath,
 		Source:   source,
 		Notice:   gitConfigRiskNotice,
 		Findings: findings,

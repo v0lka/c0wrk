@@ -4,17 +4,17 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 // --- Mock the backend boundary so tests never touch the Wails runtime ---
-const { configMocks, subscribeMock } = vi.hoisted(() => ({
+const { configMocks, onGlobalEventMock } = vi.hoisted(() => ({
   configMocks: {
     getConfig: vi.fn(),
   },
-  // Typed to the real subscribe() signature (event name + handler) so
+  // Typed to the real onGlobalEvent() signature (event name + handler) so
   // mockImplementation below type-checks under `tsc -b`.
-  subscribeMock: vi.fn((_name: string, _handler: () => void) => () => {}),
+  onGlobalEventMock: vi.fn((_name: string, _handler: () => void) => () => {}),
 }))
 
 vi.mock('@/api/config', () => ({ getConfig: configMocks.getConfig }))
-vi.mock('@/api/runtime', () => ({ subscribe: subscribeMock }))
+vi.mock('@/api/runtime', () => ({ onGlobalEvent: onGlobalEventMock }))
 vi.mock('@/lib/logger', () => ({
   logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }))
@@ -45,7 +45,7 @@ let container: HTMLDivElement | null = null
 
 /** Handlers captured per event name (the hook subscribes to several). */
 const capturedHandlers = new Map<string, () => void>()
-subscribeMock.mockImplementation((name: string, handler: () => void) => {
+onGlobalEventMock.mockImplementation((name: string, handler: () => void) => {
   capturedHandlers.set(name, handler)
   return () => {}
 })
@@ -85,7 +85,7 @@ function fireConfigUpdated(): void {
 
 beforeEach(() => {
   configMocks.getConfig.mockReset()
-  subscribeMock.mockClear()
+  onGlobalEventMock.mockClear()
   capturedHandlers.clear()
   useExperimentalStore.setState({ enabled: false, loaded: false })
 })
@@ -113,8 +113,8 @@ describe('useExperimentalFeatures', () => {
     expect(useExperimentalStore.getState().loaded).toBe(true)
     expect(configMocks.getConfig).toHaveBeenCalledTimes(1)
     // The hook subscribes to both retry triggers.
-    expect(subscribeMock).toHaveBeenCalledWith('backend:ready', expect.any(Function))
-    expect(subscribeMock).toHaveBeenCalledWith('config:updated', expect.any(Function))
+    expect(onGlobalEventMock).toHaveBeenCalledWith('backend:ready', expect.any(Function))
+    expect(onGlobalEventMock).toHaveBeenCalledWith('config:updated', expect.any(Function))
   })
 
   it('does NOT latch when the backend answers loaded=false during startup', async () => {

@@ -9,9 +9,11 @@ import { useSyncExternalStore } from 'react'
  * block automatically hides whatever was shown before. Moving the pointer off
  * the chat clears both via {@link clear}.
  *
- * There is deliberately NO CSS `:hover` / `group-hover` / Tailwind opacity
- * involvement. Visibility is driven purely by this store: each star/chevron
- * reads the field it cares about and toggles an inline `visibility` style.
+ * There is deliberately NO CSS `:hover` / `group-hover` involvement.
+ * Visibility is driven purely by this store: each star/chevron reads the field
+ * it cares about and hides itself (the chevron via an inline `visibility`
+ * style; the star via `opacity-0 pointer-events-none` classes so it stays
+ * keyboard-focusable — see BookmarkStar).
  * That is the fix for the "stuck after a fast mouse-out" bug — nothing is left
  * to the browser's hover cascade, and a hidden icon is never a live hit-target.
  */

@@ -83,6 +83,18 @@ type FrontendAPI struct {
 	// activeProjectMu so it stays in sync with project switches.
 	activeResearchRoot string
 
+	// Research hypothesis mutations. researchRootsMu guards researchRootMus,
+	// which holds one mutex per research root path. Each per-root mutex
+	// serializes the whole load→mutate→write chain of the UpdateHypothesis /
+	// CreateHypothesis RPCs (Wails runs each binding call in its own
+	// goroutine) so concurrent calls on one root cannot interleave their
+	// read-modify-write of card+graph (lost updates) or duplicate the max+1
+	// H-NNN id assignment of CreateHypothesis. Per-root granularity keeps
+	// mutations on unrelated projects concurrent. In-process only — a second
+	// app instance sharing a workspace has no cross-process lock.
+	researchRootsMu sync.Mutex
+	researchRootMus map[string]*sync.Mutex
+
 	// Skill cache (invalidated on project switch)
 	skillCache            []SkillDescriptorDTO
 	skillCacheGen         uint64 // atomic — bumped to invalidate

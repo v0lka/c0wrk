@@ -733,6 +733,7 @@ export interface ResearchSeedResult {
   updated: string[]
   current: string[]
   preserved: string[]
+  modified: string[]
 }
 
 /** View model for GetResearchStatus: toggle state + parsed research root. */

@@ -31,11 +31,15 @@ export function useResearchStatusEvents(): void {
       return
     }
     useResearchStore.getState().setLoading(true)
+    // [60] LWW ticket: capture the sync sequence at fetch START so the store
+    // can reject this payload when a newer sync (watchdog, file-watcher
+    // fallback, or a direct mutation) lands while the fetch is in flight.
+    const startedSeq = useResearchStore.getState().graphSyncSeq
     try {
       const status = await getResearchStatus(projectId)
       // Guard against stale fetches after a project switch.
       if (useProjectStore.getState().activeProjectId === projectId) {
-        useResearchStore.getState().loadStatus(status, projectId)
+        useResearchStore.getState().loadStatus(status, projectId, startedSeq)
       }
     } catch (err) {
       // Stale-guard the error path too: a project switch while the fetch was

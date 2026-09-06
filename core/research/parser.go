@@ -42,13 +42,50 @@ func NormalizeID(raw string) string {
 	return "H-" + m[1]
 }
 
-// normalizeResearchID canonicalizes a research identifier to "R-001".
-func normalizeResearchID(raw string) string {
+// NormalizeResearchID canonicalizes a research identifier to "R-001".
+func NormalizeResearchID(raw string) string {
 	m := ridRe.FindStringSubmatch(raw)
 	if m == nil {
 		return ""
 	}
 	return "R-" + m[1]
+}
+
+// researchIDNumber extracts the numeric part of a canonical research ID
+// ("R-010" → 10, "R10" → 10). It returns ok=false when the ID carries no
+// R-NNN number (an unrecognized/unparsed identifier).
+func researchIDNumber(id string) (int, bool) {
+	m := ridRe.FindStringSubmatch(id)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// compareResearchIDs orders research IDs numerically (R-2 before R-10) rather
+// than lexicographically ("R-10" would sort before "R-2"), with a
+// lexicographic tie-break so the order stays deterministic for equal numbers
+// (e.g. two directories normalizing to the same R-NNN after a copy) and for
+// IDs without a numeric part. Numeric order is what "highest-numbered R-NNN"
+// consumers (PickActiveProject fallback, ActiveProjectDir) rely on: unpadded
+// manual directory names must not flip the selection.
+func compareResearchIDs(a, b string) int {
+	na, aok := researchIDNumber(a)
+	nb, bok := researchIDNumber(b)
+	switch {
+	case aok && bok && na != nb:
+		return na - nb
+	case aok && !bok:
+		return -1 // numbered sorts before non-numbered
+	case !aok && bok:
+		return 1
+	default:
+		return strings.Compare(a, b)
+	}
 }
 
 // parseParentList extracts the canonical parent IDs from a free-form string
@@ -75,17 +112,62 @@ func parseParentList(raw string) []string {
 }
 
 // splitCells splits a single Markdown table row (with leading/trailing pipes)
-// into its trimmed cell values.
+// into its trimmed cell values. Pipes escaped as "\|" (the escape the writer
+// layer emits for cell values that contain a literal pipe) are NOT split on,
+// and each cell is unescaped back to its logical value (see unescapeCell), so
+// writer → parser round-trips preserve pipes and multi-line values exactly.
 func splitCells(row string) []string {
 	row = strings.TrimSpace(row)
 	row = strings.TrimPrefix(row, "|")
-	row = strings.TrimSuffix(row, "|")
-	parts := strings.Split(row, "|")
+	// Trim the trailing pipe only when it is unescaped: a value ending in an
+	// escaped pipe ("... a \|") keeps its pipe.
+	if strings.HasSuffix(row, "|") && !strings.HasSuffix(row, `\|`) {
+		row = row[:len(row)-1]
+	}
+	parts := splitUnescapedPipes(row)
 	cells := make([]string, 0, len(parts))
 	for _, p := range parts {
-		cells = append(cells, strings.TrimSpace(p))
+		cells = append(cells, strings.TrimSpace(unescapeCell(p)))
 	}
 	return cells
+}
+
+// splitUnescapedPipes splits s on "|" characters that are not preceded by a
+// backslash. A "\|" pair stays inside the surrounding cell; the unescape step
+// then reduces it to a literal pipe.
+func splitUnescapedPipes(s string) []string {
+	parts := make([]string, 0, strings.Count(s, "|")+1)
+	start := 0
+	prev := rune(0)
+	for i, r := range s {
+		if r == '|' && prev != '\\' {
+			parts = append(parts, s[start:i])
+			start = i + 1
+		}
+		prev = r
+	}
+	return append(parts, s[start:])
+}
+
+// unfoldBR converts the writer's newline fold marker "<br>" back into a real
+// newline. Values written into any single-line context (table cells, the
+// **Finding:** line, Mermaid labels) carry folded newlines; this restores the
+// logical multi-line value on parse.
+func unfoldBR(v string) string {
+	if !strings.Contains(v, "<br>") {
+		return v
+	}
+	return strings.ReplaceAll(v, "<br>", "\n")
+}
+
+// unescapeCell reverses the writer's escapeCell (writer.go): "\|" becomes a
+// literal pipe and "<br>" a newline, so a value that was escaped to fit the
+// single-line Markdown-row contract parses back to its original form.
+func unescapeCell(v string) string {
+	if !strings.Contains(v, `\|`) && !strings.Contains(v, "<br>") {
+		return v
+	}
+	return unfoldBR(strings.ReplaceAll(v, `\|`, "|"))
 }
 
 // isSeparatorRow reports whether a table row is a delimiter row like
@@ -173,18 +255,20 @@ func extractSection(content, heading string) string {
 
 // extractField extracts the value cell of a row in a two-column Markdown table
 // whose first cell is **fieldName** (Markdown bold), e.g. "| **Status** | open |".
-// Returns "" if the field is absent.
+// Returns "" if the field is absent. It splits through splitCells, so values
+// written with escaped pipes / folded newlines (writer escapeCell) are
+// unescaped to their logical form.
 func extractField(content, fieldName string) string {
 	target := "**" + fieldName + "**"
 	for _, line := range strings.Split(content, "\n") {
 		if !strings.HasPrefix(line, "|") {
 			continue
 		}
-		cells := strings.Split(line, "|")
-		if len(cells) < 4 || strings.TrimSpace(cells[1]) != target {
+		cells := splitCells(line)
+		if len(cells) < 2 || cells[0] != target {
 			continue
 		}
-		return strings.TrimSpace(cells[2])
+		return cells[1]
 	}
 	return ""
 }
@@ -217,14 +301,14 @@ var briefTitleRe = regexp.MustCompile(`(?m)^#\s+\[(R-?\d+)\]\s*(.*)$`)
 func ParseBrief(content string) Brief {
 	b := Brief{}
 	if m := briefTitleRe.FindStringSubmatch(content); m != nil {
-		b.ID = normalizeResearchID(m[1])
+		b.ID = NormalizeResearchID(m[1])
 		b.Title = strings.TrimSpace(m[2])
 	}
 	// ID fallback: the canonical H1 is "# [R-NNN] Title", but some briefs use a
 	// descriptive H1 ("# Research Brief: ...") and carry the ID only in the
 	// Identifier table field. Fall back to that field when the H1 had no bracket.
 	if b.ID == "" {
-		b.ID = normalizeResearchID(extractField(content, "Identifier"))
+		b.ID = NormalizeResearchID(extractField(content, "Identifier"))
 	}
 	// Title fallback: when the H1 is descriptive rather than the bracket form,
 	// use the H1 text (with common "Research Brief:"/"Brief:" prefixes stripped)
@@ -302,6 +386,7 @@ func ParseCard(content string) (HypothesisNode, error) {
 		node.Status = NormalizeStatus(v)
 	}
 	node.Timebox = dashToEmpty(extractField(content, "Timebox"))
+	node.Completed = dashToEmpty(extractField(content, "Completed"))
 	if parents := parseParentList(extractField(content, "Parent(s)")); len(parents) > 0 {
 		node.Parents = parents
 	}
@@ -313,13 +398,15 @@ func ParseCard(content string) (HypothesisNode, error) {
 // It prefers an explicit "**Finding:** value" line; failing that it returns
 // the trimmed section body with placeholder/italic lines removed. Returns ""
 // when there is no recorded result (template placeholder or absent section).
+// The explicit line is single-line by contract (findingRe), so the writer's
+// escapes (folded newlines "<br>", escaped pipes "\|") are reversed here.
 func extractFinding(content string) string {
 	body := extractSection(content, "Result")
 	if body == "" {
 		return ""
 	}
 	if m := findingRe.FindStringSubmatch(body); m != nil {
-		return dashToEmpty(m[1])
+		return dashToEmpty(unescapeCell(m[1]))
 	}
 	// Free-form result body: drop italic placeholders and empty lines.
 	var kept []string
@@ -351,6 +438,22 @@ var mermaidNodeRe = regexp.MustCompile(`\b(H\d+)\s*\["([^"]*)"\]\s*(?:::+([A-Za-
 
 // mermaidEdgeRe matches a Mermaid edge: H001 --> H002.
 var mermaidEdgeRe = regexp.MustCompile(`\b(H\d+)\s*-->\s*(H\d+)\b`)
+
+// unescapeMermaidLabel reverses the writer's escapeMermaidLabel (writer.go):
+// "#quot;" becomes a literal double quote, "#124;" a literal pipe, and "<br>"
+// a newline. The escapes exist so a label containing those characters still
+// matches mermaidNodeRe / mermaidNodeLineRe (whose label group is [^"]* and
+// whose line is single-line) while parsing back to the original title.
+// A literal "#quot;"/"#124;"/"<br>" that was already in the value is stable
+// across the escape → unescape cycle.
+func unescapeMermaidLabel(v string) string {
+	if !strings.Contains(v, "#quot;") && !strings.Contains(v, "#124;") && !strings.Contains(v, "<br>") {
+		return v
+	}
+	v = strings.ReplaceAll(v, "#quot;", `"`)
+	v = strings.ReplaceAll(v, "#124;", "|")
+	return strings.ReplaceAll(v, "<br>", "\n")
+}
 
 // mermaidNode is an intermediate parse of one Mermaid node line.
 type mermaidNode struct {
@@ -394,7 +497,9 @@ func ParseMermaidGraph(content string) ([]mermaidNode, []HypothesisEdge) {
 		if id == "" {
 			continue
 		}
-		label := m[2]
+		// Undo the writer's label escaping (#quot;/#124;/<br>) so the parsed
+		// title is the logical value, not the escaped diagram spelling.
+		label := unescapeMermaidLabel(m[2])
 		title := label
 		// Labels look like "H-001: Short title"; strip the leading ID.
 		if idx := strings.Index(label, ":"); idx >= 0 {
@@ -541,6 +646,9 @@ func BuildGraph(mermaidNodes []mermaidNode, mermaidEdges []HypothesisEdge, catal
 		if c.Timebox != "" {
 			n.Timebox = c.Timebox
 		}
+		if c.Completed != "" {
+			n.Completed = c.Completed
+		}
 		if c.Result != "" {
 			n.Result = c.Result
 		}
@@ -646,9 +754,9 @@ func ParseIndex(content string) []IndexEntry {
 	for _, m := range indexLinkRe.FindAllStringSubmatch(content, -1) {
 		text := strings.TrimSpace(m[1])
 		path := strings.TrimSpace(m[2])
-		id := normalizeResearchID(path)
+		id := NormalizeResearchID(path)
 		if id == "" {
-			id = normalizeResearchID(text)
+			id = NormalizeResearchID(text)
 		}
 		if id == "" {
 			continue
@@ -663,7 +771,7 @@ func ParseIndex(content string) []IndexEntry {
 	// Fallback: bare R-NNN tokens (e.g. a plain list with no links).
 	if len(entries) == 0 {
 		for _, m := range ridRe.FindAllStringSubmatch(content, -1) {
-			id := normalizeResearchID(m[0])
+			id := NormalizeResearchID(m[0])
 			if id == "" {
 				continue
 			}
@@ -751,7 +859,14 @@ func isNumeric(s string) bool {
 // identifier in either "H-001" or "H001" spelling (case-insensitive). The
 // message body is the block of lines following the heading until the next
 // heading or end of file.
-var logEntryHeadingRe = regexp.MustCompile(`(?i)^##\s+(\S+)\s+(\S+)(?:\s+(H-?\d+))?\s*$`)
+//
+// The trailing (?:\s+.*)? tolerates free-form annotation after the structural
+// tokens (e.g. "## experiment 2025-04-02T10:15:00Z H-001 (final pass)"): the
+// log is model-authored free text following a skill template, and a strict
+// end-anchor would silently drop the whole entry AND its body from the
+// Research panel. The annotation itself is ignored — only the three
+// structural groups are captured.
+var logEntryHeadingRe = regexp.MustCompile(`(?i)^##\s+(\S+)\s+(\S+)(?:\s+(H-?\d+))?(?:\s+.*)?$`)
 
 // normalizeLogKind canonicalizes a log-kind token to its LogKind constant.
 // It returns ok=false for an unrecognized kind, which the parser treats as
@@ -868,7 +983,16 @@ func ParseLog(content string) []ResearchLogEntry {
 // flags (whether the synthesis report exists, how many prior-art entries are
 // cataloged). It is what the Research panel renders for one project.
 type ResearchProject struct {
-	ID            string             `json:"id"`
+	ID string `json:"id"`
+	// Dir is the absolute path of the project directory this project was
+	// parsed from — the directory that actually holds its brief.md,
+	// hypotheses/, etc. It is threaded through by ParseProject/ParseResearchRoot
+	// so mutation entry points (ActiveProjectDir) resolve the SAME directory
+	// the parser read, instead of re-deriving it by matching directory names
+	// against the (brief-preferred) ID — a brief/dir ID mismatch or duplicate
+	// R-NNN directory names must not redirect mutations to a sibling project.
+	// Empty for hand-constructed models that were never parsed from disk.
+	Dir           string             `json:"dir,omitempty"`
 	Brief         Brief              `json:"brief"`
 	Graph         HypothesisGraph    `json:"graph"`
 	Metrics       Metrics            `json:"metrics"`
@@ -912,8 +1036,9 @@ func PickActiveProject(root *ResearchRoot) *ResearchProject {
 			}
 		}
 	}
-	// Fallback: ParseResearchRoot appends projects in directory-read order
-	// (sorted by name), so the last is the highest-numbered R-NNN.
+	// Fallback: ParseResearchRoot sorts projects in numeric R-NNN order
+	// (compareResearchIDs — R-2 before R-10), so the last is the
+	// highest-numbered R-NNN even for unpadded directory names.
 	if len(root.Projects) > 0 {
 		return root.Projects[len(root.Projects)-1]
 	}
@@ -967,11 +1092,12 @@ func ParseProject(projectPath string) (*ResearchProject, error) {
 
 	id := brief.ID
 	if id == "" {
-		id = normalizeResearchID(filepath.Base(projectPath))
+		id = NormalizeResearchID(filepath.Base(projectPath))
 	}
 
 	return &ResearchProject{
 		ID:            id,
+		Dir:           projectPath,
 		Brief:         brief,
 		Graph:         graph,
 		Metrics:       ComputeMetrics(&graph),
@@ -1033,7 +1159,7 @@ func ParseResearchRoot(rootPath string) (*ResearchRoot, error) {
 		if !e.IsDir() {
 			continue
 		}
-		if normalizeResearchID(e.Name()) == "" {
+		if NormalizeResearchID(e.Name()) == "" {
 			continue // not an R-NNN project directory
 		}
 		project, perr := ParseProject(filepath.Join(rootPath, e.Name()))
@@ -1060,7 +1186,17 @@ func ParseResearchRoot(rootPath string) (*ResearchRoot, error) {
 		}
 	}
 
-	sort.Slice(root.Projects, func(i, j int) bool { return root.Projects[i].ID < root.Projects[j].ID })
+	// Numeric R-NNN order (R-2 before R-10 — compareResearchIDs), with the
+	// parsed directory as the tie-break so duplicate IDs (two directories
+	// normalizing to the same R-NNN after a copy) keep a deterministic order:
+	// PickActiveProject's "last = active" then resolves to one stable
+	// directory (the same one ActiveProjectDir returns via ResearchProject.Dir).
+	sort.Slice(root.Projects, func(i, j int) bool {
+		if c := compareResearchIDs(root.Projects[i].ID, root.Projects[j].ID); c != 0 {
+			return c < 0
+		}
+		return root.Projects[i].Dir < root.Projects[j].Dir
+	})
 
 	// Compute the active project once at parse time so every consumer
 	// (orchestrator research context, frontend panel) reads the same value.

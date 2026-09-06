@@ -30,6 +30,14 @@ export const STICKY_USER_MESSAGE_SELECTOR = '[data-sticky-user-message]'
  * fully visible because the bar itself sticks there.
  */
 export function stickyBarOverlaying(viewport: HTMLElement, target: Element): Element | null {
+  // The target itself being a sticky bar (a bookmark anchored ON a pinned
+  // user message — UserMessage puts `data-bookmark-id` on the sticky div)
+  // needs no overlay compensation: aligned to the top, the bar is already
+  // fully visible. This must be decided BEFORE the loop: comparing a bar with
+  // itself yields 0 (neither PRECEDING nor FOLLOWING), so the loop would break
+  // out early while `nearest` still holds the PREVIOUS turn's bar — returning
+  // that sibling would subtract a foreign bar's height (finding [50]).
+  if (target.matches(STICKY_USER_MESSAGE_SELECTOR)) return null
   let nearest: Element | null = null
   const bars = viewport.querySelectorAll(STICKY_USER_MESSAGE_SELECTOR)
   for (const bar of Array.from(bars)) {

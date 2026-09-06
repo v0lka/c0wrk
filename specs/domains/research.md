@@ -70,7 +70,8 @@ User enables RESEARCH for a real project
      and reject an explicit root outside the workspace
   -> create root and recursively watch its current/future directories
   -> seed seven research-* skills into <workspace>/.agents/skills
-     using per-skill .seed-version markers
+     (content-hash-verified, staged + atomically swapped) and the research
+     Subagent Profile into <workspace>/.agents/agents
   -> persist ProjectInfo.ResearchRoot
   -> invalidate the skill cache and rescan running project sessions
   -> parse the root and emit research:changed
@@ -134,13 +135,17 @@ Metrics are derived from the reconciled graph:
 - The persisted research root is absolute and contained within the project workspace; the default root is `<workspace>/.research`.
 - Enabling is idempotent: it may reparse, reseed, repersist, rescan, and re-emit without duplicating domain state.
 - Disabling clears the persisted toggle and recursive watch while preserving research artifacts and seeded skills.
-- Skill seeding preserves every existing skill directory without a `.seed-version` marker, preserves same-version seeded directories, and replaces only marked directories from an older pack version.
+- Skill/agent seeding classifies each destination by CONTENT HASH against the embedded pack (never mtime/size, never the marker alone): content equal to the pack is Current (a missing/stale `.seed-version` marker on it is re-stamped); a pack-marked truncated subset of the pack (interrupted write) is repaired; a pack-marked same-version directory whose content diverges from the pack is a local edit (or a spoofed marker) — preserved untouched and reported `Modified`; a marker-less diverging directory is user-owned and preserved; a marker from an older pack version is overwritten in full.
+- Seeding writes are crash-safe: each entry is staged in a hidden sibling temp directory and swapped in with a single rename, so an interrupted run never leaves a truncated tree at the destination; staging/backup leftovers from a hard kill are swept on the next seeding run.
 - Skill-seeding failure is logged while the research toggle remains enabled; `SeedResult` reports per-skill outcomes only when seeding returns a result.
 - Root/project parsing is best-effort: malformed or missing optional artifacts do not invalidate other parseable projects or cards.
 - Hypothesis nodes and edges are normalized, de-duplicated, and deterministically ordered; malformed cycles terminate metric traversal without unbounded recursion.
 - The recursive watcher covers existing and newly created subdirectories beneath the active research root.
 - `GetResearchGraph` and `GetResearchStatus` parse the same full root; the graph RPC reduces wire payload, not parse cost.
 - The active-project selection rule is shared by backend orchestration and frontend presentation.
+- Hypothesis mutation RPCs (`UpdateHypothesis`/`CreateHypothesis`) serialize their whole load→mutate→write chain under one mutex per research root (per `FrontendAPI`), so concurrent calls cannot lose card/graph updates or duplicate the max+1 H-NNN id assignment. The lock is in-process only — a second app instance sharing a workspace is not covered.
+- `UpdateHypothesis` carries the caller's expected R-NNN and resolves it inside the requesting project's own research root before mutating: a foreign or malformed R-NNN is rejected before any file is touched, and the update targets the expected project rather than blindly following the backend's active one (which may have changed since the caller loaded its graph).
+- `ResearchNextStepDTO.project_id` (and `ResearchGraphDTO.project_id`) are dual-namespace by design: they name the recommendation's/graph's subject — the active R-NNN when one exists, the c0wrk project UUID otherwise (the pre-R-NNN setup state). They are not stable identities for the requesting c0wrk project; frontend state keying must not rely on them across a project switch (the research store drops the recommendation and selection on cross-project loads instead).
 
 ## Configuration
 
@@ -149,7 +154,7 @@ Metrics are derived from the reconciled graph:
 | `experimental.enabled` | `false` | Master gate for RESEARCH and other experimental features |
 | `ProjectInfo.ResearchRoot` | empty (disabled) | Persisted per-project absolute research root |
 | Enable `rootPath` | `<workspace>/.research` | Optional explicit root; must remain inside the workspace |
-| Skill-pack seed version | `1` (`research.CurrentSeedVersion`) | Marker version controlling updates of pack-owned skill directories |
+| Skill-pack seed version | `2` (`research.CurrentSeedVersion`) | Pack version stamped into `.seed-version` markers; agent-pack version (`research.AgentSeedVersion`, `1`) bumps independently |
 
 ## Extension Points
 

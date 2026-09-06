@@ -8,6 +8,7 @@ import type {
   ResearchNextStep,
   HypothesisUpdateFields,
   NewHypothesisCard,
+  HypothesisNode,
 } from '@/types/models'
 
 /**
@@ -104,18 +105,26 @@ export async function getResearchNextStep(projectId: string): Promise<ResearchNe
 
 /**
  * Update an existing hypothesis card and its graph entries (Mermaid node +
- * catalog row) for a project's active R-NNN. Returns the refreshed graph.
+ * catalog row) for a research project. Returns the refreshed graph.
+ *
+ * `researchId` is the caller's EXPECTED research project (R-NNN) — the one
+ * its UI snapshot resolved the hypothesis against. The backend validates it
+ * against the project's own research root and targets exactly this project
+ * (not the backend's possibly-moved active one), closing the cross-R-NNN
+ * save race where H-001-style ids collide across projects.
+ *
  * Status transitions are validated by the backend (no backward transitions);
  * an illegal transition rejects the whole call and leaves the files unchanged.
  */
 export async function updateHypothesis(
   projectId: string,
+  researchId: string,
   hypothesisId: string,
   fields: HypothesisUpdateFields,
 ): Promise<ResearchGraphResponse> {
   try {
     const app = getApp()
-    const result = await app.UpdateHypothesis(projectId, hypothesisId, fields)
+    const result = await app.UpdateHypothesis(projectId, researchId, hypothesisId, fields)
     if (!isResearchGraphResponse(result)) {
       throw new Error('Invalid research graph response from backend')
     }
@@ -161,9 +170,11 @@ function isArrayOrMissing(v: unknown): v is unknown[] | null | undefined {
   return v === undefined || v === null || Array.isArray(v)
 }
 
-/** Validate the fields the research UI actually consumes so a malformed
+/** Validate the array-shaped fields the research UI consumes so a malformed
  *  backend payload fails closed at the RPC boundary instead of rendering as
- *  an uncaught store exception later. */
+ *  an uncaught store exception later. Node/edge ENTRY shapes are additionally
+ *  validated in the normalize step below, which drops malformed entries
+ *  (per-entry fail-closed) rather than rejecting the whole payload. */
 function isResearchStatus(v: unknown): v is ResearchStatus {
   if (!isRecord(v)) return false
   if (typeof v['enabled'] !== 'boolean') return false
@@ -214,16 +225,36 @@ function isResearchNextStep(v: unknown): v is ResearchNextStep {
   return true
 }
 
+/**
+ * A hypothesis node is well-typed when every field the research UI consumes
+ * has the declared shape: id/title/status (layout crashes on a non-string
+ * title in `titleTextWidth`), and the optional `parents` adjacency list.
+ * Malformed entries are dropped at the boundary instead of crashing the DAG
+ * render path on a backend bug/version skew.
+ */
+function isHypothesisNode(v: unknown): v is HypothesisNode {
+  if (!isRecord(v)) return false
+  if (typeof v['id'] !== 'string') return false
+  if (typeof v['title'] !== 'string') return false
+  if (typeof v['status'] !== 'string') return false
+  if (v['parents'] !== undefined && v['parents'] !== null) {
+    if (!Array.isArray(v['parents'])) return false
+    if (v['parents'].some((p) => typeof p !== 'string')) return false
+  }
+  return true
+}
+
 /** Normalize backend `null` slice fields to `[]` so downstream store/UI code
- *  can rely on the declared array types (e.g. `.map`, `.length`). The graph
- *  path (normalizeResearchGraphResponse) normalizes only a single graph; the
+ *  can rely on the declared array types (e.g. `.map`, `.length`). Malformed
+ *  node entries are dropped here (per-entry fail-closed). The graph path
+ *  (normalizeResearchGraphResponse) normalizes only a single graph; the
  *  status path carries a project list, so every project's graph must be
  *  normalized the same way. */
 function normalizeResearchStatus(status: ResearchStatus): ResearchStatus {
   if (status.root) {
     status.root.projects ??= []
     for (const project of status.root.projects) {
-      project.graph.nodes ??= []
+      project.graph.nodes = (project.graph.nodes ?? []).filter(isHypothesisNode)
       project.graph.edges ??= []
       project.log ??= []
     }
@@ -232,7 +263,7 @@ function normalizeResearchStatus(status: ResearchStatus): ResearchStatus {
 }
 
 function normalizeResearchGraphResponse(res: ResearchGraphResponse): ResearchGraphResponse {
-  res.graph.nodes ??= []
+  res.graph.nodes = (res.graph.nodes ?? []).filter(isHypothesisNode)
   res.graph.edges ??= []
   res.log ??= []
   return res

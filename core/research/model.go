@@ -122,6 +122,11 @@ type HypothesisNode struct {
 	// calendar dates), preserved verbatim for rendering.
 	Timebox string `json:"timebox,omitempty"`
 
+	// Completed is the card's completion date (YYYY-MM-DD), set when the
+	// hypothesis reaches a terminal status (confirmed / refuted / cancelled).
+	// Empty while the hypothesis is open or in-progress.
+	Completed string `json:"completed,omitempty"`
+
 	// Result is the recorded finding from the card's Result section (the
 	// **Finding:** value). Empty until the experiment completes.
 	Result string `json:"result,omitempty"`

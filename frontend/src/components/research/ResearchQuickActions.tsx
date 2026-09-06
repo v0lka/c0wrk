@@ -65,8 +65,25 @@ export function ResearchQuickActions() {
   // the selection and consumed by the select handler.
   const shiftRef = useRef(false)
 
+  // [22]a: send() renders sendMessage failures in-chat itself, but RETHROWS
+  // when the auto-created session fails (the documented splash race). The
+  // rejection is surfaced on the research panel's own error banner (the
+  // research store) — deliberately NOT a global toast, which could fire
+  // while the user is typing into the chat input.
   const dispatch = (prompt: string, skill: string, newSession: boolean) =>
-    void send(prompt, [skill], undefined, undefined, { newSession })
+    // Promise.resolve: tolerate a sender that returns void (defensive — the
+    // real send is async, but mocks/type skew must not crash the click).
+    Promise.resolve(
+      send(prompt, [skill], undefined, undefined, { newSession }),
+    ).catch((err) => {
+      useResearchStore
+        .getState()
+        .setError(
+          `Failed to dispatch ${skill}: ${
+            err instanceof Error ? err.message : 'unknown error'
+          }`,
+        )
+    })
 
   return (
     <div

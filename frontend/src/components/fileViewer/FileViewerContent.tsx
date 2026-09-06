@@ -7,6 +7,7 @@ import { PlanEditor } from '@/components/fileViewer/PlanEditor'
 import { ReviewPage } from '@/components/review/ReviewPage'
 import { ResearchWorkspace } from '@/components/research/ResearchWorkspace'
 import { RESEARCH_TAB_PATH } from '@/stores/researchStore'
+import { useExperimentalFeatures } from '@/hooks/useExperimentalFeatures'
 import { useSessionStore } from '@/stores/sessionStore'
 import type { HunkDiffInfo } from '@/types/models'
 
@@ -24,6 +25,7 @@ export function FileViewerContent() {
   const openTabs = useFileViewerStore((s) => s.openTabs)
   const highlightLine = useFileViewerStore((s) => s.highlightLine)
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
+  const experimentalEnabled = useExperimentalFeatures()
 
   // Subscribes to the active file and workspace tree changes.
   useFileViewerData(activeFile, openTabs)
@@ -45,9 +47,11 @@ export function FileViewerContent() {
   }
 
   // Research workspace: synthetic pseudo-path renders the hypothesis DAG with
-  // an inline editable card instead of a raw file.
+  // an inline editable card instead of a raw file. Never rendered when the
+  // experimental switch is off — the tab itself is closed on the off
+  // transition, and this gate keeps even a lingering tab inert.
   if (activeFile === RESEARCH_TAB_PATH) {
-    return <ResearchWorkspace />
+    return experimentalEnabled ? <ResearchWorkspace /> : null
   }
 
   const fileData = files[activeFile]

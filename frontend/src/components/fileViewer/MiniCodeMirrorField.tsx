@@ -33,20 +33,44 @@ export function MiniCodeMirrorField({ value, onChange, placeholder, lineWrapping
   const themeCompartment = useRef(new Compartment())
   const theme = useThemeStore((s) => s.theme)
 
+  // The view is created exactly once per mount (effect below), so the update
+  // listener must call the LATEST onChange through a ref: capturing the
+  // mount-time callback would freeze whatever mutable state the caller's
+  // handler closed over at mount (e.g. an editable draft object), and every
+  // later keystroke would silently write that stale state back — reverting
+  // sibling-field edits made after mount, or another card's fields entirely
+  // when the same field instance is reused across selections.
+  const onChangeRef = useRef(onChange)
+  onChangeRef.current = onChange
+
+  // Creation-time snapshot of the doc/config props. The view must NOT be
+  // recreated when they change (a value-driven re-run would rebuild the
+  // editor on every keystroke and drop the cursor), so the mount effect
+  // reads them through this ref and stays dependency-free; later changes
+  // flow through the sync effects below.
+  const mountPropsRef = useRef({ value, placeholder, lineWrapping, theme })
+
   useEffect(() => {
     if (!containerRef.current) return
 
+    const {
+      value: initialDoc,
+      placeholder: initialPlaceholder,
+      lineWrapping: initialLineWrapping,
+      theme: initialTheme,
+    } = mountPropsRef.current
+
     const state = EditorState.create({
-      doc: value,
+      doc: initialDoc,
       extensions: [
         EditorView.editable.of(true),
         markdown(),
-        ...(lineWrapping ? [EditorView.lineWrapping] : []),
-        ...(placeholder ? [cmPlaceholder(placeholder)] : []),
-        themeCompartment.current.of(createOneDarkCMTheme(theme === 'dark')),
+        ...(initialLineWrapping ? [EditorView.lineWrapping] : []),
+        ...(initialPlaceholder ? [cmPlaceholder(initialPlaceholder)] : []),
+        themeCompartment.current.of(createOneDarkCMTheme(initialTheme === 'dark')),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
-            onChange(update.state.doc.toString())
+            onChangeRef.current(update.state.doc.toString())
           }
         }),
       ],
@@ -63,7 +87,6 @@ export function MiniCodeMirrorField({ value, onChange, placeholder, lineWrapping
       view.destroy()
       viewRef.current = null
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Re-resolve the CodeMirror theme on app theme change (see CodeMirrorFileViewer).

@@ -48,12 +48,19 @@ describe('bookmarkDefaultTitle', () => {
     expect(bookmarkDefaultTitle(planStep)).toBe('Step 1: Implement auth')
   })
 
-  it('collapses whitespace without a fixed-length cap (truncation is CSS-based)', () => {
+  it('collapses whitespace and caps persisted titles at ~200 chars', () => {
     const long = 'a'.repeat(200)
     const title = bookmarkDefaultTitle({ kind: 'user', message: { id: 'u', sessionId: 's', type: 'user', content: `  ${long}  `, timestamp: 0 } })
+    // Exactly at the cap: kept verbatim, whitespace collapsed.
     expect(title).toBe(long)
     expect(title).not.toContain('  ')
     expect(title).not.toContain('…')
+
+    // Beyond the cap: truncated to the cap with an ellipsis marker. The title
+    // is display-only (navigation uses event_key), so a bounded title is safe.
+    const over = bookmarkDefaultTitle({ kind: 'user', message: { id: 'u', sessionId: 's', type: 'user', content: 'a'.repeat(500), timestamp: 0 } })
+    expect(over.length).toBeLessThanOrEqual(201)
+    expect(over).toBe(`${'a'.repeat(200)}…`)
   })
 })
 

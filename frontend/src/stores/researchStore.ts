@@ -64,11 +64,26 @@ interface ResearchState {
    *  path landed — if it did not, a full refetch runs as a fallback so the
    *  panel always converges (see useResearchStatusEvents). */
   lastGraphSyncAt: number
+  /** Monotonic sequence stamped on every successful graph-bearing write
+   *  (loadStatus and loadGraph alike). Callers capture it as a "ticket" when
+   *  a fetch or mutation STARTS and pass it back; the store rejects any
+   *  write whose ticket is older than the current counter — last-write-wins
+   *  by initiation order. Wall-clock stamps cannot express this: three
+   *  overlapping sources (the status-events watchdog's full refresh, the
+   *  file-watcher's fallback fullRefresh, and direct hypothesis mutations)
+   *  can start and finish out of order, and a fetch that started BEFORE a
+   *  newer sync but resolves AFTER it must never overwrite the newer data. */
+  graphSyncSeq: number
 }
 
 interface ResearchActions {
-  /** Replace the parsed status, stamping it with the projectId it belongs to. */
-  loadStatus: (status: ResearchStatus, projectId: string) => void
+  /** Replace the parsed status, stamping it with the projectId it belongs
+   *  to. `startedSeq` (optional) is the store's graphSyncSeq captured when
+   *  the caller STARTED fetching; when given and older than the store's
+   *  current sequence, a newer sync landed while the fetch was in flight and
+   *  this (older) payload is rejected wholesale — last-write-wins. Returns
+   *  true when applied, false when rejected as stale. */
+  loadStatus: (status: ResearchStatus, projectId: string, startedSeq?: number) => boolean
   /** Replace the recommended next research action for the active project. */
   loadNextStep: (nextStep: ResearchNextStep) => void
   /** Select a hypothesis on the workspace DAG (or clear with null). The
@@ -84,21 +99,24 @@ interface ResearchActions {
   /** Resize the workspace's detail sidebar (px, clamped by the caller). */
   setSidebarWidth: (width: number) => void
   /** Incrementally update only the active project's graph, metrics, brief,
-   *  and has_report fields. Preserves status, projectId, isLoading, error.
-   *  Used by the file-change update path to avoid full refetches.
-   *  `fetchedAt` (optional, wall-clock ms) is when the caller STARTED
-   *  fetching this snapshot; when given and older than the store's last
-   *  successful sync (lastGraphSyncAt), the snapshot is stale — a slow
-   *  incremental fetch resolving after a newer sync (e.g. the watchdog's
-   *  full refresh) — and is rejected wholesale so it can neither regress
-   *  the panel nor re-stamp itself fresh (which would defuse the watchdog).
+   *  and has_report fields. Preserves status, projectId, and the selection;
+   *  clears error and isLoading (a successful incremental sync is a
+   *  successful sync — leaving a stale error or spinner stuck is worse than
+   *  clearing them). Used by the file-change update path and direct
+   *  hypothesis mutations to avoid full refetches.
+   *  `startedSeq` (optional) is the store's graphSyncSeq captured when the
+   *  caller STARTED the fetch/mutation; when given and older than the
+   *  store's current sequence, a newer sync landed while this one was in
+   *  flight and the snapshot is rejected wholesale — last-write-wins (it
+   *  must neither regress the panel nor re-stamp itself fresh, which would
+   *  defuse the watchdog).
    *  Returns true when the update was applied. Returns false when it cannot
-   *  be applied incrementally (no root yet, a stale fetchedAt, or the
+   *  be applied incrementally (no root yet, a stale startedSeq, or the
    *  response naming a research project the store has never seen — e.g. a
    *  brand-new R-NNN created since the last full load): the caller must
    *  then run a full status refetch so the panel converges instead of
    *  freezing on stale data. */
-  loadGraph: (graphResponse: ResearchGraphResponse, fetchedAt?: number) => boolean
+  loadGraph: (graphResponse: ResearchGraphResponse, startedSeq?: number) => boolean
   setLoading: (loading: boolean) => void
   setToggling: (toggling: boolean) => void
   setError: (error: string | null) => void
@@ -130,6 +148,7 @@ const initialState: ResearchState = {
   hideTerminal: false,
   sidebarWidth: RESEARCH_SIDEBAR_DEFAULT_WIDTH,
   lastGraphSyncAt: 0,
+  graphSyncSeq: 0,
 }
 
 // --- Store ---
@@ -137,27 +156,43 @@ const initialState: ResearchState = {
 export const useResearchStore = create<ResearchStore>((set) => ({
   ...initialState,
 
-  loadStatus: (status, projectId) =>
-    set((state) => ({
-      status,
-      projectId,
-      isLoading: false,
-      error: null,
-      lastGraphSyncAt: Date.now(),
-      // A different project's status never inherits the previous project's
-      // hypothesis selection: node ids (H-001…) are generic and could collide
-      // across projects, silently opening the wrong card. Same-project
-      // reloads (research:changed refreshes, toggle) keep the selection —
-      // same-project active-R-NNN transitions are handled by the composite
-      // selection key (selectedHypothesisProjectId) instead.
-      ...(state.projectId && state.projectId !== projectId
-        ? {
-            selectedHypothesisId: null,
-            selectedHypothesisProjectId: null,
-            hypothesisDraft: null,
-          }
-        : {}),
-    })),
+  loadStatus: (status, projectId, startedSeq) => {
+    // Returns false when a newer sync already landed (stale payload) — see
+    // the interface doc.
+    let applied = false
+    set((state) => {
+      if (startedSeq !== undefined && startedSeq < state.graphSyncSeq) {
+        return state
+      }
+      applied = true
+      return {
+        status,
+        projectId,
+        isLoading: false,
+        error: null,
+        lastGraphSyncAt: Date.now(),
+        graphSyncSeq: state.graphSyncSeq + 1,
+        // A different project's status never inherits the previous project's
+        // hypothesis selection: node ids (H-001…) are generic and could collide
+        // across projects, silently opening the wrong card. The recommended
+        // next step is dropped too — it is phase-derived per project, and the
+        // next-step fetch is best-effort (a failure would otherwise leave the
+        // OLD project's recommendation rendering indefinitely). Same-project
+        // reloads (research:changed refreshes, toggle) keep both —
+        // same-project active-R-NNN transitions are handled by the composite
+        // selection key (selectedHypothesisProjectId) instead.
+        ...(state.projectId && state.projectId !== projectId
+          ? {
+              selectedHypothesisId: null,
+              selectedHypothesisProjectId: null,
+              hypothesisDraft: null,
+              nextStep: null,
+            }
+          : {}),
+      }
+    })
+    return applied
+  },
 
   loadNextStep: (nextStep) => set({ nextStep }),
 
@@ -178,7 +213,7 @@ export const useResearchStore = create<ResearchStore>((set) => ({
 
   setSidebarWidth: (width) => set({ sidebarWidth: width }),
 
-  loadGraph: (graphResponse, fetchedAt) => {
+  loadGraph: (graphResponse, startedSeq) => {
     // Returns false when a full refetch is required instead (see interface).
     // The anti-stale-project guard intentionally compares the response's
     // R-NNN against the projects the STORE knows — not against the store's
@@ -195,11 +230,11 @@ export const useResearchStore = create<ResearchStore>((set) => ({
       if (!root || root.projects.length === 0) return state
 
       // Staleness guard (see the interface doc): reject snapshots whose
-      // fetch STARTED before the store's last successful sync — applying one
-      // would both regress the panel to older data and stamp it fresh,
-      // defusing the watchdog. Signal the caller to converge via a full
-      // status refetch instead.
-      if (fetchedAt !== undefined && fetchedAt < state.lastGraphSyncAt) {
+      // fetch/mutation STARTED before the store's last successful sync —
+      // applying one would both regress the panel to older data and stamp it
+      // fresh, defusing the watchdog. Signal the caller to converge via a
+      // full status refetch instead.
+      if (startedSeq !== undefined && startedSeq < state.graphSyncSeq) {
         return state
       }
 
@@ -233,7 +268,17 @@ export const useResearchStore = create<ResearchStore>((set) => ({
       // source of truth than the store's cached active_project_id).
       const newRoot = { ...root, projects, active_project_id: graphResponse.project_id }
       const newStatus = { ...state.status!, root: newRoot }
-      return { status: newStatus, lastGraphSyncAt: Date.now() }
+      return {
+        status: newStatus,
+        lastGraphSyncAt: Date.now(),
+        graphSyncSeq: state.graphSyncSeq + 1,
+        // A successful incremental sync IS a successful sync: clear any
+        // error left behind by a previously failed fetch and any in-flight
+        // loading flag, or they stick forever — nothing else clears them
+        // once the panel is already rendering fresh graph data.
+        error: null,
+        isLoading: false,
+      }
     })
     return applied
   },

@@ -145,9 +145,12 @@ func TestAddMermaidNodeAndEdges(t *testing.T) {
 
 // setupProjectDir builds a minimal research project directory (nested layout)
 // with a brief, an hypotheses/graph.md, and a single open hypothesis card.
-func setupProjectDir(t *testing.T) string {
+// It returns the research root and the project directory under it, matching
+// the mutation entry points' (researchRoot, projectDir) signature.
+func setupProjectDir(t *testing.T) (root, dir string) {
 	t.Helper()
-	dir := filepath.Join(t.TempDir(), "R-001-test")
+	root = t.TempDir()
+	dir = filepath.Join(root, "R-001-test")
 	hypDir := filepath.Join(dir, "hypotheses")
 	if err := os.MkdirAll(hypDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -217,18 +220,21 @@ Recover >= 95% of modules.
 	if err := os.WriteFile(filepath.Join(hypDir, "H-001.md"), []byte(card), 0o644); err != nil {
 		t.Fatalf("card: %v", err)
 	}
-	return dir
+	if err := os.WriteFile(filepath.Join(hypDir, "H-001.md"), []byte(card), 0o644); err != nil {
+		t.Fatalf("card: %v", err)
+	}
+	return root, dir
 }
 
 func TestUpdateHypothesis_RoundTrip(t *testing.T) {
-	dir := setupProjectDir(t)
+	root, dir := setupProjectDir(t)
 
 	status := "in-progress"
 	title := "Refined bundle parsing"
 	result := "Recovered 97% of modules."
 	decision := "continue"
 	timebox := "8 days"
-	err := UpdateHypothesis(dir, "H-001", HypothesisUpdate{
+	err := UpdateHypothesis(root, dir, "H-001", HypothesisUpdate{
 		Status:   &status,
 		Title:    &title,
 		Result:   &result,
@@ -273,14 +279,14 @@ func TestUpdateHypothesis_RoundTrip(t *testing.T) {
 }
 
 func TestUpdateHypothesis_InvalidTransitionLeavesFilesUnchanged(t *testing.T) {
-	dir := setupProjectDir(t)
+	root, dir := setupProjectDir(t)
 
 	// First move open → confirmed directly (illegal: must go through in-progress).
 	cardBefore, _ := os.ReadFile(filepath.Join(dir, "hypotheses", "H-001.md"))
 	graphBefore, _ := os.ReadFile(filepath.Join(dir, "hypotheses", "graph.md"))
 
 	bad := "confirmed"
-	if err := UpdateHypothesis(dir, "H-001", HypothesisUpdate{Status: &bad}); err == nil {
+	if err := UpdateHypothesis(root, dir, "H-001", HypothesisUpdate{Status: &bad}); err == nil {
 		t.Fatal("expected error for open→confirmed, got nil")
 	}
 
@@ -295,19 +301,19 @@ func TestUpdateHypothesis_InvalidTransitionLeavesFilesUnchanged(t *testing.T) {
 }
 
 func TestUpdateHypothesis_MissingID(t *testing.T) {
-	dir := setupProjectDir(t)
-	if err := UpdateHypothesis(dir, "H-999", HypothesisUpdate{}); err == nil {
+	root, dir := setupProjectDir(t)
+	if err := UpdateHypothesis(root, dir, "H-999", HypothesisUpdate{}); err == nil {
 		t.Fatal("expected error for missing hypothesis id")
 	}
-	if err := UpdateHypothesis(dir, "bogus", HypothesisUpdate{}); err == nil {
+	if err := UpdateHypothesis(root, dir, "bogus", HypothesisUpdate{}); err == nil {
 		t.Fatal("expected error for invalid hypothesis id")
 	}
 }
 
 func TestCreateHypothesis_RoundTrip(t *testing.T) {
-	dir := setupProjectDir(t)
+	root, dir := setupProjectDir(t)
 
-	id, err := CreateHypothesis(dir, NewHypothesis{
+	id, err := CreateHypothesis(root, dir, NewHypothesis{
 		Title:                 "Runtime interception",
 		Statement:             "Intercepting fetch captures exfil.",
 		VerificationCriterion: "Captures all requests.",
@@ -352,8 +358,8 @@ func TestCreateHypothesis_RoundTrip(t *testing.T) {
 }
 
 func TestCreateHypothesis_UnknownParentRejected(t *testing.T) {
-	dir := setupProjectDir(t)
-	if _, err := CreateHypothesis(dir, NewHypothesis{
+	root, dir := setupProjectDir(t)
+	if _, err := CreateHypothesis(root, dir, NewHypothesis{
 		Title:   "Bad parent",
 		Parents: []string{"H-999"},
 	}); err == nil {
@@ -375,7 +381,7 @@ func TestCreateHypothesis_MissingGraphGeneratesSkeleton(t *testing.T) {
 		t.Fatalf("brief: %v", err)
 	}
 
-	id, err := CreateHypothesis(dir, NewHypothesis{Title: "First"})
+	id, err := CreateHypothesis(filepath.Dir(dir), dir, NewHypothesis{Title: "First"})
 	if err != nil {
 		t.Fatalf("CreateHypothesis: %v", err)
 	}
@@ -406,8 +412,8 @@ func TestCreateHypothesis_MissingGraphGeneratesSkeleton(t *testing.T) {
 }
 
 func TestCreateHypothesis_EmptyTitleRejected(t *testing.T) {
-	dir := setupProjectDir(t)
-	if _, err := CreateHypothesis(dir, NewHypothesis{}); err == nil {
+	root, dir := setupProjectDir(t)
+	if _, err := CreateHypothesis(root, dir, NewHypothesis{}); err == nil {
 		t.Fatal("expected error for empty title")
 	}
 }

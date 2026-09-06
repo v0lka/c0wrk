@@ -19,8 +19,11 @@ interface BookmarkStarProps {
  * default and revealed on hover. Visibility is driven EXCLUSIVELY, and
  * programmatically, by the {@link chatHoverStore} (a single active bookmark
  * across the whole chat): a star is visible only when the store's `bookmark`
- * equals this item's key. An inline `visibility` style (not Tailwind opacity,
- * not CSS `:hover`) toggles it, and hidden stars are never live hit-targets.
+ * equals this item's key. Tailwind opacity + pointer-events classes (not CSS
+ * `:hover`) toggle it: hidden stars are never live hit-targets
+ * (`pointer-events-none`) yet remain focusable, so keyboard users can tab to
+ * them and `focus-visible:` restores visibility (WCAG 2.1.1 — a plain
+ * `visibility: hidden` would drop the button from the tab order entirely).
  *
  * Bookmarked: a filled yellow star, always visible. Clicking toggles the
  * bookmark in the per-session persistent store.
@@ -49,13 +52,18 @@ export function BookmarkStar({ item }: BookmarkStarProps) {
   )
 
   // Programmatic visibility via the single chat hover store. No CSS `:hover` /
-  // `group-hover` / Tailwind opacity classes — see chatHoverStore.ts.
+  // `group-hover` — see chatHoverStore.ts. `opacity-0 pointer-events-none`
+  // (instead of `visibility: hidden`) keeps the button in the tab order;
+  // `focus-visible:` restores it for keyboard users.
   const activeBookmark = useChatHoverBookmark()
   const isActiveReveal = activeBookmark === key
   const visible = isBookmarked || isActiveReveal
   const colorClass = isBookmarked
     ? 'text-highlight hover:text-highlight/70'
     : 'text-muted-foreground hover:text-foreground'
+  const visibilityClass = visible
+    ? 'opacity-100'
+    : 'opacity-0 pointer-events-none focus-visible:opacity-100 focus-visible:pointer-events-auto'
 
   return (
     <button
@@ -65,8 +73,11 @@ export function BookmarkStar({ item }: BookmarkStarProps) {
       title={isBookmarked ? 'Remove bookmark' : 'Add bookmark'}
       aria-label={isBookmarked ? 'Remove bookmark' : 'Add bookmark'}
       aria-pressed={isBookmarked}
-      style={{ visibility: visible ? 'visible' : 'hidden' }}
-      className={cn('inline-flex items-center justify-center rounded-sm p-0.5 shrink-0', colorClass)}
+      className={cn(
+        'inline-flex items-center justify-center rounded-sm p-0.5 shrink-0',
+        colorClass,
+        visibilityClass,
+      )}
     >
       <Star className="h-3.5 w-3.5" fill={isBookmarked ? 'currentColor' : 'none'} />
     </button>

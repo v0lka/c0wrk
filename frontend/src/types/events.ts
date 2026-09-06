@@ -518,6 +518,11 @@ export interface GlobalEventMap {
   readonly 'backend:ready': void
   readonly 'projects:loaded': void
   readonly 'sessions:loaded': void
+  /** A config mutation was persisted via an Update* RPC (trusted git repos,
+   *  the experimental toggle, LLM/search/proxy settings, …). No payload —
+   *  consumers re-read via GetConfig (backend/frontend_api_config.go
+   *  `persistConfig`; event-catalog.md row 16). */
+  readonly 'config:updated': void
   /** File tree modified (workspace watcher callback). `research_scoped` is
    *  optional — present only on the RESEARCH-scoped emitter (at least one
    *  changed path was inside the research directory; the backend's

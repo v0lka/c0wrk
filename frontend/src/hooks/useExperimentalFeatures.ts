@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { getConfig } from '@/api/config'
-import { subscribe } from '@/api/runtime'
+import { onGlobalEvent } from '@/api/runtime'
 import { logger } from '@/lib/logger'
 import { useExperimentalStore } from '@/stores/experimentalStore'
 
@@ -73,8 +73,8 @@ export function useExperimentalFeatures(): boolean {
 
     load()
     const unsubscribes = [
-      subscribe('backend:ready', load),
-      subscribe('config:updated', load),
+      onGlobalEvent('backend:ready', load),
+      onGlobalEvent('config:updated', load),
     ]
 
     return () => {

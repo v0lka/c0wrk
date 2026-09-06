@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -314,7 +315,6 @@ func TestParseGitConfig_Duplicates(t *testing.T) {
 	}
 	got := overrideArgvs(info)
 	want := []string{
-		"attr.tree=" + EmptyTreeSHA1,
 		"filter.dup.clean=cat",
 		"filter.dup.process=",
 		"filter.dup.smudge=cat",
@@ -354,10 +354,24 @@ func TestParseGitConfig_IncludesIgnoredAndLogged(t *testing.T) {
 		t.Errorf("log should name the include path: %s", logged)
 	}
 	// Includes mean the config is an incomplete view: compensate with the
-	// attribute-routing kill.
+	// attribute-routing kill for the in-tree source AND the empty
+	// core.attributesFile override for the one routing source an included
+	// file could arm invisibly (verified on git 2.50.1: -c beats the key
+	// wherever it was defined), plus the name-independent transport/diff
+	// pins for the command-bearing keys an included file may set
+	// invisibly (each reusing the exact value the finding-driven path
+	// uses for that key).
 	got := overrideArgvs(info)
-	if len(got) != 1 || got[0] != "attr.tree="+EmptyTreeSHA1 {
-		t.Errorf("overrides with includes = %v, want [attr.tree=empty tree]", got)
+	want := []string{
+		"attr.tree=" + EmptyTreeSHA1,
+		"core.askPass=",
+		"core.attributesFile=",
+		"core.sshCommand=ssh",
+		"credential.helper=",
+		"diff.external=",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("overrides with includes = %v, want %v", got, want)
 	}
 	if info.Clean() {
 		t.Error("config with includes must not be Clean")
@@ -380,16 +394,66 @@ func TestParseGitConfig_CoreKeys(t *testing.T) {
 		if f.BaselineCovered {
 			t.Errorf("%s must not claim baseline coverage", key)
 		}
-		if len(f.Overrides) != 0 {
-			t.Errorf("%s must not produce overrides: %+v", key, f.Overrides)
-		}
 		if f.Description == "" {
 			t.Errorf("%s must carry a human-readable description", key)
 		}
 	}
-	// Baseline-covered-only config needs no per-repo overrides.
-	if ov := info.NeutralizingOverrides(); ov != nil {
-		t.Errorf("baseline-covered config produced overrides: %v", ov)
+	// The pager stays override-less (c0wrk always pipes git output); the
+	// transport keys carry their verified per-key neutralizations now
+	// (post-v0.7.3 review [40]).
+	if f := finding(t, info, "core.pager"); len(f.Overrides) != 0 {
+		t.Errorf("core.pager must not produce overrides: %+v", f.Overrides)
+	}
+	if f := finding(t, info, "core.sshcommand"); len(f.Overrides) != 1 || f.Overrides[0].Argv() != "core.sshCommand=ssh" {
+		t.Errorf("core.sshcommand overrides = %+v", f.Overrides)
+	}
+	if f := finding(t, info, "core.askpass"); len(f.Overrides) != 1 || f.Overrides[0].Argv() != "core.askPass=" {
+		t.Errorf("core.askpass overrides = %+v", f.Overrides)
+	}
+	// Baseline-covered-only config needs no per-repo overrides; the
+	// transport keys above are the only override carriers here.
+	got := overrideArgvs(info)
+	want := []string{"core.askPass=", "core.sshCommand=ssh"}
+	if !slices.Equal(got, want) {
+		t.Errorf("overrides = %v, want %v", got, want)
+	}
+}
+
+// TestParseGitConfig_GitProxyAndWorkTreeKeys pins the classification of the
+// two post-v0.7.4 core keys: core.gitProxy carries the
+// protocol.git.allow=never transport kill, and core.worktree carries no -c
+// override at all (its neutralization is the GIT_WORK_TREE env pin
+// GitCmdInRepo applies — the only channel that outranks the config key).
+func TestParseGitConfig_GitProxyAndWorkTreeKeys(t *testing.T) {
+	src := "[core]\n\tgitProxy = /tmp/evil-proxy.sh\n\tworktree = /tmp/outside\n"
+	info := parseTestConfig(t, src)
+	gp := finding(t, info, "core.gitproxy")
+	if gp.Kind != GitConfigFindingGitProxy || gp.BaselineCovered {
+		t.Errorf("gitProxy finding = %+v", gp)
+	}
+	if len(gp.Overrides) != 1 || gp.Overrides[0].Argv() != "protocol.git.allow=never" {
+		t.Errorf("gitProxy overrides = %+v", gp.Overrides)
+	}
+	if !contains(gp.Description, "protocol.git.allow=never") {
+		t.Errorf("gitProxy description must state the kill: %q", gp.Description)
+	}
+	wt := finding(t, info, "core.worktree")
+	if wt.Kind != GitConfigFindingWorkTree || wt.BaselineCovered {
+		t.Errorf("worktree finding = %+v", wt)
+	}
+	if len(wt.Overrides) != 0 {
+		t.Errorf("worktree must carry no -c override (env channel): %+v", wt.Overrides)
+	}
+	if !contains(wt.Description, "GIT_WORK_TREE") {
+		t.Errorf("worktree description must state the env pin: %q", wt.Description)
+	}
+	if !info.NeedsWorkTreeEnvPin() {
+		t.Error("NeedsWorkTreeEnvPin must report true for a config carrying core.worktree")
+	}
+	got := overrideArgvs(info)
+	want := []string{"protocol.git.allow=never"}
+	if !slices.Equal(got, want) {
+		t.Errorf("overrides = %v, want %v", got, want)
 	}
 }
 
@@ -401,20 +465,77 @@ func TestParseGitConfig_DiffVariants(t *testing.T) {
 	if len(tc.Overrides) != 1 || tc.Overrides[0].Argv() != "diff.tc.textconv=cat" {
 		t.Errorf("textconv overrides = %+v", tc.Overrides)
 	}
-	// External diff drivers only run with --ext-diff: finding, no override.
-	for _, key := range []string{"diff.tc.command", "diff.external"} {
-		f := finding(t, info, key)
-		if len(f.Overrides) != 0 {
-			t.Errorf("%s produced overrides: %+v", key, f.Overrides)
-		}
+	// External diff drivers execute on plain git diff by default (verified
+	// on git 2.50.1), so both forms carry a per-key empty kill (review [55]).
+	if f := finding(t, info, "diff.tc.command"); len(f.Overrides) != 1 || f.Overrides[0].Argv() != "diff.tc.command=" {
+		t.Errorf("diff.tc.command overrides = %+v", f.Overrides)
+	}
+	if f := finding(t, info, "diff.external"); len(f.Overrides) != 1 || f.Overrides[0].Argv() != "diff.external=" {
+		t.Errorf("diff.external overrides = %+v", f.Overrides)
 	}
 	if len(info.Findings) != 3 {
 		t.Errorf("findings = %+v, want 3 (wordRegex ignored)", info.Findings)
 	}
 	got := overrideArgvs(info)
-	want := []string{"attr.tree=" + EmptyTreeSHA1, "diff.tc.textconv=cat"}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+	want := []string{"diff.external=", "diff.tc.command=", "diff.tc.textconv=cat"}
+	if !slices.Equal(got, want) {
 		t.Errorf("overrides = %v, want %v", got, want)
+	}
+}
+
+// TestParseGitConfig_TransportKeys_Texts pins the corrected finding texts
+// and override wiring for the network-transport and external-diff keys the
+// post-v0.7.3 review proved reachable (findings [40]/[55]): the old texts
+// declared them unreachable ("c0wrk only runs local git operations") or
+// gated on --ext-diff, both factually false for the Git panel's remote RPCs
+// (Pull/Push/Fetch) and the plain git diff porcelain.
+func TestParseGitConfig_TransportKeys_Texts(t *testing.T) {
+	src := "[core]\n\tsshCommand = /tmp/evil-ssh.sh\n\taskPass = /tmp/evil-ask.sh\n" +
+		"[credential]\n\thelper = /tmp/evil-cred.sh\n" +
+		"[credential \"https://x.example\"]\n\thelper = /tmp/evil-cred-url.sh\n" +
+		"[diff]\n\texternal = /tmp/evil-ext.sh\n"
+	info := parseTestConfig(t, src)
+
+	ssh := finding(t, info, "core.sshcommand")
+	if !strings.Contains(ssh.Description, "Git panel's remote RPCs") {
+		t.Errorf("sshCommand description must state Git-panel reachability: %q", ssh.Description)
+	}
+	if !strings.Contains(ssh.Description, "core.sshCommand=ssh") {
+		t.Errorf("sshCommand description must state the exact override: %q", ssh.Description)
+	}
+	ask := finding(t, info, "core.askpass")
+	if !strings.Contains(ask.Description, "Git panel's remote RPCs") {
+		t.Errorf("askPass description must state Git-panel reachability: %q", ask.Description)
+	}
+
+	cred := finding(t, info, "credential.helper")
+	if cred.Kind != GitConfigFindingCredential || cred.Subsection != "" {
+		t.Errorf("credential.helper finding = %+v", cred)
+	}
+	if !strings.Contains(cred.Description, "resets") {
+		t.Errorf("credential.helper description must explain the reset semantics: %q", cred.Description)
+	}
+	credURL := finding(t, info, "credential.https://x.example.helper")
+	if credURL.Kind != GitConfigFindingCredential || credURL.Subsection != "https://x.example" {
+		t.Errorf("credential.<url>.helper finding = %+v", credURL)
+	}
+	if !strings.Contains(credURL.Description, "credential.https://x.example.helper= (empty)") {
+		t.Errorf("credential.<url>.helper description must state the per-URL pin: %q", credURL.Description)
+	}
+
+	ext := finding(t, info, "diff.external")
+	if !strings.Contains(ext.Description, "BY DEFAULT") {
+		t.Errorf("diff.external description must state default execution: %q", ext.Description)
+	}
+
+	// The stale local-only claim must be gone from every description.
+	for i := range info.Findings {
+		if strings.Contains(info.Findings[i].Description, "only runs local git operations") {
+			t.Errorf("stale local-only claim in %s: %q", info.Findings[i].FullKey, info.Findings[i].Description)
+		}
+		if strings.Contains(info.Findings[i].Description, "only executes with the --ext-diff flag") {
+			t.Errorf("stale --ext-diff-gating claim in %s: %q", info.Findings[i].FullKey, info.Findings[i].Description)
+		}
 	}
 }
 
@@ -441,19 +562,52 @@ func TestNeutralizingOverrides_Matrix(t *testing.T) {
 		{"empty", "", nil},
 		{"benign", "[core]\n\tquotepath = off\n", nil},
 		{"fsmonitor only (baseline-covered)", "[core]\n\tfsmonitor = /tmp/evil.sh\n", nil},
+		// Narrow mode (review [56]): visible driver names are neutralized by
+		// per-name pins, which cover every routing source — the in-tree
+		// .gitattributes included — so no blanket attr.tree kill (and its
+		// benign-attribute collateral) is derived for them.
 		{"filter", "[filter \"x\"]\n\tprocess = /tmp/evil.sh\n", []string{
-			et, "filter.x.clean=cat", "filter.x.process=", "filter.x.smudge=cat"}},
+			"filter.x.clean=cat", "filter.x.process=", "filter.x.smudge=cat"}},
 		{"filter clean only", "[filter \"x\"]\n\tclean = /tmp/evil.sh\n", []string{
-			et, "filter.x.clean=cat", "filter.x.process=", "filter.x.smudge=cat"}},
+			"filter.x.clean=cat", "filter.x.process=", "filter.x.smudge=cat"}},
 		{"merge driver", "[merge \"drv\"]\n\tdriver = /tmp/evil.sh %O %A %B\n", []string{
-			et, "merge.drv.driver=false %O %A %B"}},
+			"merge.drv.driver=false %O %A %B"}},
 		{"textconv", "[diff \"tc\"]\n\ttextconv = /tmp/evil.sh\n", []string{
-			et, "diff.tc.textconv=cat"}},
-		{"external diff", "[diff]\n\texternal = /tmp/evil.sh\n", []string{et}},
+			"diff.tc.textconv=cat"}},
+		{"external diff", "[diff]\n\texternal = /tmp/evil.sh\n", []string{
+			"diff.external="}},
+		{"named diff driver command", "[diff \"d\"]\n\tcommand = /tmp/evil.sh\n", []string{
+			"diff.d.command="}},
+		{"ssh command", "[core]\n\tsshCommand = /tmp/evil.sh\n", []string{
+			"core.sshCommand=ssh"}},
+		{"askpass", "[core]\n\taskPass = /tmp/evil.sh\n", []string{
+			"core.askPass="}},
+		{"credential helper", "[credential]\n\thelper = /tmp/evil.sh\n", []string{
+			"credential.helper="}},
+		{"credential url helper", "[credential \"https://x.example\"]\n\thelper = /tmp/evil.sh\n", []string{
+			"credential.helper=", "credential.https://x.example.helper="}},
+		// core.gitProxy executes on git:// transports with no neutralizable
+		// value of its own; the transport-family allowlist key is the kill.
+		{"git proxy", "[core]\n\tgitProxy = /tmp/evil-proxy.sh\n", []string{
+			"protocol.git.allow=never"}},
+		// core.worktree redirects tracked-file writes outside the workspace
+		// and no -c form beats it; the neutralization is the GIT_WORK_TREE
+		// env pin GitCmdInRepo applies, so the argv set stays empty here.
+		{"worktree (env-channel only)", "[core]\n\tworktree = /outside\n", nil},
 		{"attacker attr.tree is beaten", "[attr]\n\ttree = deadbeef\n", []string{et}},
-		{"includes only", "[include]\n\tpath = x\n", []string{et}},
+		// Includes are the one case per-name pins cannot cover (an included
+		// file may hide a driver name routed from the in-tree .gitattributes):
+		// the blanket kill stays engaged there ([1] compensation, [56] scope),
+		// and the name-independent pins cover the command-bearing keys an
+		// included file may arm invisibly.
+		{"includes only", "[include]\n\tpath = x\n", []string{
+			et, "core.askPass=", "core.attributesFile=", "core.sshCommand=ssh",
+			"credential.helper=", "diff.external="}},
+		{"filter plus include keeps attr.tree", "[filter \"x\"]\n\tprocess = e\n[include]\n\tpath = y\n", []string{
+			et, "core.askPass=", "core.attributesFile=", "core.sshCommand=ssh",
+			"credential.helper=", "diff.external=",
+			"filter.x.clean=cat", "filter.x.process=", "filter.x.smudge=cat"}},
 		{"two filters", "[filter \"a\"]\n\tprocess = e\n[filter \"b\"]\n\tclean = e\n", []string{
-			et,
 			"filter.a.clean=cat", "filter.a.process=", "filter.a.smudge=cat",
 			"filter.b.clean=cat", "filter.b.process=", "filter.b.smudge=cat",
 		}},
@@ -742,5 +896,98 @@ func TestParseGitConfig_NoProcessExecution(t *testing.T) {
 		if bytes.Contains(src, []byte(banned)) {
 			t.Errorf("gitconfig.go references %q — the parser must never execute processes", banned)
 		}
+	}
+}
+
+// TestParseGitConfig_FSMonitorHookDeadKeyText pins review [13]: git 2.50.1
+// ignores core.fsmonitorHook entirely (a command planted there never
+// executes — verified empirically in the review), so the finding text must
+// not imply reachability or claim an executing alias of core.fsmonitor. The
+// key stays reported belt-and-braces, and the baseline flag stays true: if
+// any git version ever honors the legacy key again, -c core.fsmonitor=false
+// keeps it inert.
+func TestParseGitConfig_FSMonitorHookDeadKeyText(t *testing.T) {
+	info := parseTestConfig(t, "[core]\n\tfsmonitorHook = /tmp/evil-hook.sh\n")
+	f := finding(t, info, "core.fsmonitorhook")
+	if f.Kind != GitConfigFindingFSMonitor {
+		t.Errorf("kind = %q, want %q", f.Kind, GitConfigFindingFSMonitor)
+	}
+	if !f.BaselineCovered {
+		t.Error("fsmonitorHook should stay baseline-covered (belt-and-braces)")
+	}
+	if !strings.Contains(f.Description, "ignores") {
+		t.Errorf("description should state git ignores the key: %q", f.Description)
+	}
+	for _, stale := range []string{"deprecated alias of core.fsmonitor", "executed on index refresh"} {
+		if strings.Contains(f.Description, stale) {
+			t.Errorf("description still implies reachability (%q): %q", stale, f.Description)
+		}
+	}
+}
+
+// TestParseGitConfig_NewlineInQuotedValueRecorded pins review [63]: a raw
+// newline inside a quoted value makes git refuse the whole file ("fatal:
+// bad config line 2" — verified on git 2.50.1), so the parser must record
+// an Error even when the config carries no dangerous keys; otherwise
+// Clean() stays true for a config git rejects wholesale and the intake
+// never warns. Findings for in-scope keys must still be reported (the
+// over-report direction is preserved).
+func TestParseGitConfig_NewlineInQuotedValueRecorded(t *testing.T) {
+	// Benign config whose only anomaly is the raw newline: must NOT be Clean.
+	info := parseTestConfig(t, "[user]\n\tname = \"a\nb\"\n")
+	if len(info.Errors) == 0 {
+		t.Fatal("expected a parse error for a raw newline inside a quoted value")
+	}
+	if info.Clean() {
+		t.Error("a config git refuses wholesale must not be Clean()")
+	}
+	if e := info.Errors[0]; e.Line != 2 || !strings.Contains(e.Message, "newline") {
+		t.Errorf("error = %+v, want line 2 mentioning the newline (git reports \"bad config line 2\")", e)
+	}
+
+	// Armed key with the same anomaly: the finding is still reported.
+	armed := parseTestConfig(t, "[core]\n\thooksPath = \"/tmp/a\nb\"\n")
+	if finding(t, armed, "core.hookspath") == nil {
+		t.Error("expected the hooksPath finding to survive the newline error")
+	}
+	if armed.Clean() {
+		t.Error("armed config with a raw newline must not be Clean()")
+	}
+}
+
+// TestResolveWorkTreeRoot pins review [52]'s discovery helper: the work-tree
+// root is the first directory on the chain with a .git entry — a directory
+// for plain repositories, a "gitdir:" pointer file for linked worktrees —
+// resolved lexically (no symlink evaluation) so the root stays in the path
+// form the user gave.
+func TestResolveWorkTreeRoot(t *testing.T) {
+	// Plain repository, queried from the root and from a nested
+	// subdirectory: both resolve to the repository root.
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	deep := filepath.Join(repo, "a", "b", "c")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{repo, deep} {
+		if got := ResolveWorkTreeRoot(p); got != repo {
+			t.Errorf("ResolveWorkTreeRoot(%s) = %q, want %q", p, got, repo)
+		}
+	}
+
+	// A linked worktree carries .git as a pointer file: the worktree root
+	// itself is the answer, not the main repository.
+	_, wt := worktreeFixture(t)
+	if got := ResolveWorkTreeRoot(wt); got != wt {
+		t.Errorf("ResolveWorkTreeRoot(worktree) = %q, want the worktree root %q", got, wt)
+	}
+
+	// No .git anywhere on the chain: "" (callers fall back to the path).
+	bare := t.TempDir()
+	if got := ResolveWorkTreeRoot(bare); got != "" {
+		t.Errorf("ResolveWorkTreeRoot(non-repo) = %q, want \"\"", got)
+	}
+	if got := ResolveWorkTreeRoot(""); got != "" {
+		t.Errorf("ResolveWorkTreeRoot(\"\") = %q, want \"\"", got)
 	}
 }

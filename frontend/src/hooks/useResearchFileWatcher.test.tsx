@@ -28,9 +28,11 @@ vi.mock('@/api/runtime', () => ({
 
 // --- Mock @/api/research ---
 
+const statusMock = vi.fn<(projectId: string) => Promise<ResearchStatus>>()
 const graphMock = vi.fn<(projectId: string) => Promise<ResearchGraphResponse>>()
 const nextStepMock = vi.fn<(projectId: string) => Promise<ResearchNextStep>>()
 vi.mock('@/api/research', () => ({
+  getResearchStatus: (projectId: string) => statusMock(projectId),
   getResearchGraph: (projectId: string) => graphMock(projectId),
   getResearchNextStep: (projectId: string) => nextStepMock(projectId),
 }))
@@ -117,6 +119,7 @@ describe('useResearchFileWatcher — event → store update', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     handlers.clear()
+    statusMock.mockReset().mockResolvedValue(makeStatus(1))
     graphMock.mockReset()
     nextStepMock.mockReset()
     useProjectStore.setState({ activeProjectId: 'p1' })
@@ -197,6 +200,93 @@ describe('useResearchFileWatcher — event → store update', () => {
     })
 
     expect(selectActiveLog(useResearchStore.getState())).toHaveLength(3)
+
+    await unmount()
+  })
+
+  it('the fullRefresh fallback also refreshes the recommended next step', async () => {
+    // The incremental graph RPC fails → updateGraph falls back to fullRefresh
+    // and skips its own next-step fetch (the catch path returns early). The
+    // fallback must refresh the recommendation too: without it, a phase
+    // change that flipped during those file edits leaves the dashboard
+    // rendering a stale next step — within the same project, potentially
+    // indefinitely.
+    graphMock.mockRejectedValue(new Error('rpc down'))
+    statusMock.mockResolvedValue(makeStatus(4))
+    const freshNextStep = {
+      project_id: 'R-002',
+      action: 'research-decision',
+      reason: 'phase moved to decision',
+      skill: 'research-decision',
+    } as ResearchNextStep
+    nextStepMock.mockResolvedValue(freshNextStep)
+
+    const unmount = await mountProbe()
+
+    await act(async () => {
+      handlers.get('research:file_changed')!({ project_id: 'p1', paths: '/ws/.research/log.md' })
+      await vi.advanceTimersByTimeAsync(150)
+    })
+
+    // The fallback converged the status…
+    expect(statusMock).toHaveBeenCalledWith('p1')
+    expect(selectActiveLog(useResearchStore.getState())).toHaveLength(4)
+    // …and refreshed the recommendation alongside it.
+    expect(nextStepMock).toHaveBeenCalledWith('p1')
+    expect(useResearchStore.getState().nextStep).toBe(freshNextStep)
+
+    await unmount()
+  })
+
+  it('falls back to a full status refetch when the graph response names an unknown research project', async () => {
+    // loadGraph returns false when the response names an R-NNN the store has
+    // never seen (a brand-new project created since the last full load) —
+    // the incremental path must converge the panel via GetResearchStatus
+    // instead of freezing on stale data. The mock factory entry for
+    // getResearchStatus exists precisely so this branch is really driven
+    // (an undefined mock would throw inside fullRefresh and be swallowed by
+    // its own catch, making the test pass vacuously).
+    const unknown = makeGraphResponse(5)
+    unknown.project_id = 'R-999' // the store only knows R-002
+    graphMock.mockResolvedValue(unknown)
+    nextStepMock.mockResolvedValue({} as ResearchNextStep)
+    statusMock.mockResolvedValue(makeStatus(4))
+
+    const unmount = await mountProbe()
+
+    await act(async () => {
+      handlers.get('research:file_changed')!({ project_id: 'p1', paths: '/ws/.research/log.md' })
+      await vi.advanceTimersByTimeAsync(150)
+    })
+
+    // The incremental fetch ran, could not be applied…
+    expect(graphMock).toHaveBeenCalledWith('p1')
+    // …so the full status refetch converged the panel on the authoritative
+    // payload (log length 4 from the status, not 5 from the rejected graph).
+    expect(statusMock).toHaveBeenCalledWith('p1')
+    expect(selectActiveLog(useResearchStore.getState())).toHaveLength(4)
+
+    await unmount()
+  })
+
+  it('falls back quietly when the incremental graph RPC rejects, leaving no error in the store', async () => {
+    // The catch path of updateGraph: an RPC failure must converge the panel
+    // via the full status refetch WITHOUT surfacing a user-visible error —
+    // the fallback is an implementation detail, not a failure state.
+    graphMock.mockRejectedValue(new Error('rpc down'))
+    nextStepMock.mockResolvedValue({} as ResearchNextStep)
+    statusMock.mockResolvedValue(makeStatus(2))
+
+    const unmount = await mountProbe()
+
+    await act(async () => {
+      handlers.get('research:file_changed')!({ project_id: 'p1', paths: '/ws/.research/log.md' })
+      await vi.advanceTimersByTimeAsync(150)
+    })
+
+    expect(statusMock).toHaveBeenCalledWith('p1')
+    expect(selectActiveLog(useResearchStore.getState())).toHaveLength(2)
+    expect(useResearchStore.getState().error).toBeNull()
 
     await unmount()
   })

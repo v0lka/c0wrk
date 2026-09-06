@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -23,7 +24,10 @@ func wantSafeHooksDir(t *testing.T) string {
 }
 
 func TestGitCmdPrependsSafetyOverrides(t *testing.T) {
-	cmd := GitCmd(context.Background(), "status", "--porcelain", "-uall")
+	cmd, err := GitCmd(context.Background(), "status", "--porcelain", "-uall")
+	if err != nil {
+		t.Fatalf("GitCmd: %v", err)
+	}
 	want := []string{
 		gitBinary,
 		"-c", "core.fsmonitor=false",
@@ -38,7 +42,10 @@ func TestGitCmdPrependsSafetyOverrides(t *testing.T) {
 
 func TestGitCmdTailMatchesUnhardenedArgv(t *testing.T) {
 	layerArgs := []string{"-C", filepath.Join(t.TempDir(), "repo"), "diff", "HEAD"}
-	cmd := GitCmd(context.Background(), layerArgs...)
+	cmd, err := GitCmd(context.Background(), layerArgs...)
+	if err != nil {
+		t.Fatalf("GitCmd: %v", err)
+	}
 
 	// The layer's arguments survive unmodified after the override block,
 	// matching the unhardened argv minus its leading binary name.
@@ -50,7 +57,11 @@ func TestGitCmdTailMatchesUnhardenedArgv(t *testing.T) {
 	if cmd.Args[0] != gitBinary {
 		t.Errorf("argv[0] = %q, want %q", cmd.Args[0], gitBinary)
 	}
-	if want := len(layerArgs) + len(gitSafetyOverrides()) + 1; len(cmd.Args) != want {
+	overrides, err := gitSafetyOverrides()
+	if err != nil {
+		t.Fatalf("gitSafetyOverrides: %v", err)
+	}
+	if want := len(layerArgs) + len(overrides) + 1; len(cmd.Args) != want {
 		t.Errorf("hardened argv length = %d, want %d (nothing dropped or duplicated)", len(cmd.Args), want)
 	}
 }
@@ -61,7 +72,10 @@ func TestGitCmdEnvPreservesParentAndForcesEditor(t *testing.T) {
 	// duplicate entries glibc's getenv (Linux) resolves to the first
 	// occurrence, so appending on top would void the pin.
 	t.Setenv("GIT_EDITOR", "inherited-editor")
-	cmd := GitCmd(context.Background(), "log", "--oneline")
+	cmd, err := GitCmd(context.Background(), "log", "--oneline")
+	if err != nil {
+		t.Fatalf("GitCmd: %v", err)
+	}
 
 	foundSentinel, editorEntries := false, 0
 	for _, e := range cmd.Env {
@@ -82,8 +96,35 @@ func TestGitCmdEnvPreservesParentAndForcesEditor(t *testing.T) {
 	}
 }
 
+func TestGitCmdEnvStripsAttributeEnvVars(t *testing.T) {
+	// GIT_ATTR_SOURCE (documented, git 2.50.1) redirects where git reads
+	// attributes from — the same knob as attr.tree, so an inherited value
+	// could reroute the neutralizing empty tree; GIT_ATTR_SYSTEM and
+	// GIT_ATTR_GLOBAL name additional attributes files. The whole GIT_ATTR_*
+	// family must be stripped from every spawned git process.
+	t.Setenv("GIT_ATTR_SOURCE", "HEAD~1")
+	t.Setenv("GIT_ATTR_SYSTEM", "/tmp/evil-attrs")
+	t.Setenv("GIT_ATTR_GLOBAL", "/tmp/evil-attrs")
+	t.Setenv("GIT_ATTR_FUTURE_KNOB", "1") // prefix strip covers additions
+	cmd, err := GitCmd(context.Background(), "check-attr", "filter", "--", "file.txt")
+	if err != nil {
+		t.Fatalf("GitCmd: %v", err)
+	}
+	for _, e := range cmd.Env {
+		if strings.HasPrefix(e, "GIT_ATTR_") {
+			t.Errorf("cmd.Env still carries an attribute environment entry: %q", e)
+		}
+	}
+	// The rest of the hardening (GIT_EDITOR pin) is untouched.
+	if !slices.Contains(cmd.Env, gitEditorEnv) {
+		t.Errorf("cmd.Env lost the %s pin", gitEditorEnv)
+	}
+}
+
 func TestGitCmdCreatesSafeHooksDir(t *testing.T) {
-	GitCmd(context.Background()) // trigger the sync.Once resolution
+	if _, err := GitCmd(context.Background()); err != nil { // trigger the sync.Once resolution
+		t.Fatalf("GitCmd: %v", err)
+	}
 	dir := wantSafeHooksDir(t)
 	st, err := os.Stat(dir)
 	if err != nil {
@@ -91,5 +132,45 @@ func TestGitCmdCreatesSafeHooksDir(t *testing.T) {
 	}
 	if !st.IsDir() {
 		t.Errorf("safe hooks path %s is not a directory", dir)
+	}
+}
+
+// resetSafeHooksCacheForTest drops the process-wide sync.Once resolution
+// cache so a test can observe a fresh resolution under a manipulated
+// environment, and restores a clean cache afterwards.
+func resetSafeHooksCacheForTest(t *testing.T) {
+	t.Helper()
+	reset := func() {
+		gitSafeHooksOnce = sync.Once{}
+		gitSafeHooksDir = ""
+		gitSafeHooksErr = nil
+	}
+	reset()
+	t.Cleanup(reset)
+}
+
+// TestGitCmdRefusesSpawnOnUnresolvableHome pins review [42]: when the home
+// directory cannot be resolved there is no safe absolute core.hooksPath —
+// the old "." fallback produced a RELATIVE hooksPath that git resolved
+// inside the repository, letting a planted .c0wrk/git/safe-hooks/pre-commit
+// become the "safe" hook. GitCmd must fail closed: no command, an error.
+func TestGitCmdRefusesSpawnOnUnresolvableHome(t *testing.T) {
+	// Empty (not just unset) env vars make os.UserHomeDir fail on every
+	// platform (unix: $HOME; windows: USERPROFILE / HOMEDRIVE+HOMEPATH).
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
+	resetSafeHooksCacheForTest(t)
+
+	cmd, err := GitCmd(context.Background(), "status")
+	if err == nil {
+		t.Fatal("expected GitCmd to refuse the spawn when home is unresolvable")
+	}
+	if cmd != nil {
+		t.Errorf("expected a nil cmd on refusal, got %+v", cmd)
+	}
+	if !strings.Contains(err.Error(), "fail closed") {
+		t.Errorf("error should state the fail-closed direction, got: %v", err)
 	}
 }

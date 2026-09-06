@@ -21,6 +21,7 @@ import { GoalProposalPanel } from './GoalProposalPanel'
 import { ThoughtGroupBlock } from './ThoughtGroupBlock'
 import { ChecklistCard } from './ChecklistCard'
 import { BookmarkStar } from './BookmarkStar'
+import { BookmarkableRow } from './BookmarkableRow'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { CheckCircle2, Minimize2, BookOpen } from 'lucide-react'
 
@@ -86,31 +87,6 @@ export function CompactErrorFallback() {
 }
 
 const compactErrorFallback = <CompactErrorFallback />
-
-/**
- * BookmarkableRow — a chat item's left gutter + content.
- *
- * The unbookmarked star's visibility is driven by the ChatHoverRegion
- * controller (single active bookmark across the whole chat). This row carries
- * `data-bookmark-id={bookmarkKey(item)}`, which the region resolves via
- * `closest('[data-bookmark-id]')` to reveal exactly the row under the pointer
- * and hide every other star. The `group` class is retained for other hover
- * revealers (e.g. the Copy/Save actions in MessageFooter), not for the star.
- */
-function BookmarkableRow({ item, content }: { item: DisplayItem; content: React.ReactNode }) {
-  const key = bookmarkKey(item)
-  return (
-    <div
-      data-bookmark-id={key}
-      className="group relative flex items-start gap-2"
-    >
-      <div className="w-5 shrink-0 flex items-start">
-        <BookmarkStar item={item} />
-      </div>
-      <div className="min-w-0 flex-1">{content}</div>
-    </div>
-  )
-}
 
 function renderItem(item: DisplayItem, stickyUserMessage: boolean, bookmarkable: boolean): React.ReactNode {
   const key = bookmarkKey(item)

@@ -12,7 +12,7 @@
 // warning (Settings → Security → Trusted repos, and the toast's "Trust this
 // repo" action).
 
-import { onGlobalEvent, getApp } from './runtime'
+import { onGlobalEvent, getApp, reportDroppedEvent } from './runtime'
 import { logger } from '@/lib/logger'
 import { isGitConfigRiskData } from '@/types/events'
 import { isArrayOf } from '@/types/guards'
@@ -26,7 +26,12 @@ const isString = (v: unknown): v is string => typeof v === 'string'
  *  crashing the handler. Returns an unsubscribe function. */
 export function onGitConfigRisk(cb: (data: GitConfigRiskData) => void): () => void {
   return onGlobalEvent('project:git_config_risk', (data) => {
-    if (data && isGitConfigRiskData(data)) cb(data)
+    if (!data || !isGitConfigRiskData(data)) {
+      // Module convention: malformed emissions must never disappear silently.
+      reportDroppedEvent('project:git_config_risk', data)
+      return
+    }
+    cb(data)
   })
 }
 
