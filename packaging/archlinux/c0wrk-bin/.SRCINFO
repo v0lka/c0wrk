@@ -1,0 +1,37 @@
+pkgbase = c0wrk-bin
+	pkgdesc = Agentic desktop workspace for research, coding and writing (prebuilt release binary)
+	pkgver = 0.7.3
+	pkgrel = 1
+	url = https://github.com/v0lka/c0wrk
+	install = c0wrk.install
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	depends = gtk3
+	depends = webkit2gtk-4.1
+	depends = glib2
+	depends = gdk-pixbuf2
+	depends = libsoup3
+	optdepends = ripgrep: faster content search (otherwise downloaded into ~/.c0wrk on demand)
+	optdepends = git: repository-aware project features
+	optdepends = wl-clipboard: clipboard integration on Wayland
+	optdepends = xclip: clipboard integration on X11
+	provides = c0wrk=0.7.3
+	conflicts = c0wrk
+	conflicts = c0wrk-git
+	options = !strip
+	options = !debug
+	source = c0wrk-bin-0.7.3-LICENSE::https://raw.githubusercontent.com/v0lka/c0wrk/v0.7.3/LICENSE
+	source = c0wrk-bin-0.7.3-appicon.png::https://raw.githubusercontent.com/v0lka/c0wrk/v0.7.3/build/appicon.png
+	source = c0wrk-desktop.desktop
+	source = c0wrk-launcher.sh
+	sha256sums = 26a0f4863f365c987a6762b0a48e987136543118989b2f00f2d57c70a45ffd15
+	sha256sums = 2c376e0af62ec11c97a1a931b7c7c3a93eaa3193a362876cc33b09b3ebbe0ee8
+	sha256sums = 38debab7da7def84d2e05efec82f39109930b0e7e94279eb660e4b838cd4350e
+	sha256sums = ea5e0dd85bf9e4b0135146ddd235055c2d07a7c83b293ba02ec6b3cc2ea0d836
+	source_x86_64 = c0wrk-bin-0.7.3-x86_64.tar.gz::https://github.com/v0lka/c0wrk/releases/download/v0.7.3/c0wrk-desktop-linux-amd64.tar.gz
+	sha256sums_x86_64 = 7e76639238e760e9007ab95f0d5d2eca8466bdd0c43d9a99a59d3a4c50c886ae
+	source_aarch64 = c0wrk-bin-0.7.3-aarch64.tar.gz::https://github.com/v0lka/c0wrk/releases/download/v0.7.3/c0wrk-desktop-linux-arm64.tar.gz
+	sha256sums_aarch64 = 89c80a6413feaaf995ef3d9998f3bd097bae28b79ea674e5c2a6b0e7b0718e33
+
+pkgname = c0wrk-bin

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=c0wrk
+GenericName=Agentic Workspace
+Comment=Agentic desktop workspace for research, coding and writing
+Exec=c0wrk-desktop
+Icon=c0wrk-desktop
+Terminal=false
+Categories=Development;IDE;
+Keywords=agent;llm;ai;coding;research;
+StartupNotify=true
+StartupWMClass=c0wrk-desktop

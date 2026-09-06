@@ -1,0 +1,173 @@
+# Maintainer: c0wrk Team <https://github.com/v0lka/c0wrk>
+
+pkgname=c0wrk-git
+pkgver=0.7.3.r11.g11c46b7
+pkgrel=1
+pkgdesc='Agentic desktop workspace for research, coding and writing (built from git)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/v0lka/c0wrk'
+license=('MIT')
+# Every library the binary links directly (objdump -p ... NEEDED), listed
+# explicitly rather than relying on gtk3/webkit2gtk-4.1 to pull them in.
+depends=('gtk3' 'webkit2gtk-4.1' 'glib2' 'gdk-pixbuf2' 'libsoup3')
+makedepends=('go' 'nodejs' 'npm' 'git' 'pkgconf' 'gtk3' 'webkit2gtk-4.1')
+optdepends=(
+	'ripgrep: faster content search (otherwise downloaded into ~/.c0wrk on demand)'
+	'git: repository-aware project features'
+	'wl-clipboard: clipboard integration on Wayland'
+	'xclip: clipboard integration on X11'
+)
+provides=("c0wrk=${pkgver%%.r*}")
+conflicts=('c0wrk' 'c0wrk-bin')
+install='c0wrk.install'
+# libonnxruntime.so is an upstream prebuilt shared object; leave it untouched.
+# With !strip there is nothing to split into a debug package either.
+options=('!strip' '!debug')
+
+# Build inputs pinned to exactly what the upstream Makefile pins, so the
+# runtime assets shipped here are the same bytes an official release ships.
+# Keep these in lockstep with ONNX_VERSION, EMBEDDING_MODEL_SHA256 and
+# EMBEDDING_TOKENIZER_SHA256 in the repo Makefile.
+_onnx_ver=1.28.1
+_wails_ver=v2.15.0
+# Hugging Face revision of jinaai/jina-embeddings-v2-small-en. The Makefile
+# fetches from the moving `main` branch; pinning the commit here means a branch
+# update cannot invalidate the digests below out from under makepkg.
+_hf_rev=44e7d1d6caec8c883c2d4b207588504d519788d0
+_hf_base="https://huggingface.co/jinaai/jina-embeddings-v2-small-en/resolve/$_hf_rev"
+
+case "$CARCH" in
+	x86_64)  _onnx_arch=x64 ;;
+	aarch64) _onnx_arch=aarch64 ;;
+esac
+_onnx_dir="onnxruntime-linux-$_onnx_arch-$_onnx_ver"
+
+# ONNX Runtime and the embedding model are declared as sources rather than left
+# to `make fetch-onnx` / `make fetch-embedding-model`, which would download
+# inside build(). makepkg fetches, verifies and caches them instead.
+source=(
+	"$pkgname::git+$url.git"
+	"jina-v2-small-$_hf_rev.onnx::$_hf_base/model.onnx"
+	"jina-v2-small-tokenizer-$_hf_rev.json::$_hf_base/tokenizer.json"
+	'c0wrk-desktop.desktop'
+	'c0wrk-launcher.sh'
+)
+source_x86_64=("https://github.com/microsoft/onnxruntime/releases/download/v$_onnx_ver/onnxruntime-linux-x64-$_onnx_ver.tgz")
+source_aarch64=("https://github.com/microsoft/onnxruntime/releases/download/v$_onnx_ver/onnxruntime-linux-aarch64-$_onnx_ver.tgz")
+
+sha256sums=('SKIP'
+            '974fdefe71fc9889258f569132b35acae6278874c8d09dbdf7806d23ad0b4497'
+            'e9f999ac74497843ed9f4303246a8f43d9f100ee8aab8e133667903f447ceb48'
+            '38debab7da7def84d2e05efec82f39109930b0e7e94279eb660e4b838cd4350e'
+            'ea5e0dd85bf9e4b0135146ddd235055c2d07a7c83b293ba02ec6b3cc2ea0d836')
+# Verifying the archive transitively covers the libonnxruntime.so extracted from
+# it, so the Makefile's separate ONNX_LIB_SHA256 has no analogue here.
+sha256sums_x86_64=('2529aef968d0ad0603365054bc46ebefa7f0fe3bc12f28c5f729c99ddffe2a81')
+sha256sums_aarch64=('53bab9a5c6ae198b7be75663b780c64caa388d30257fac458c71fbff0a82e98e')
+
+pkgver() {
+	cd "$srcdir/$pkgname"
+	git describe --long --tags --abbrev=7 | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
+}
+
+prepare() {
+	cd "$srcdir/$pkgname"
+
+	# Wails CLI pinned to the version the release workflow uses, installed into
+	# a build-local GOPATH. Keeps the package free of an AUR makedepend.
+	export GOPATH="$srcdir/gopath"
+	export GOWORK=off
+	# -modcacherw must be set for EVERY go invocation that populates the module
+	# cache, prepare() included. Without it the cache under $srcdir is written
+	# read-only and makepkg cannot clean $srcdir afterwards: `makepkg -C` and
+	# repeat builds then fail with "permission denied" while removing $srcdir.
+	export GOFLAGS='-mod=readonly -modcacherw'
+	go install "github.com/wailsapp/wails/v2/cmd/wails@$_wails_ver"
+
+	# npm ci honours package-lock.json, matching CI exactly. `wails build` would
+	# otherwise run `npm install` and resolve fresh versions.
+	npm --prefix frontend ci
+
+	go mod download
+}
+
+# No check(): the Go test suite reaches for the network and for configured LLM
+# endpoints, so it cannot run unattended inside makepkg.
+
+build() {
+	cd "$srcdir/$pkgname"
+
+	export GOPATH="$srcdir/gopath"
+	export PATH="$GOPATH/bin:$PATH"
+	export CGO_CPPFLAGS="${CPPFLAGS}"
+	export CGO_CFLAGS="${CFLAGS}"
+	export CGO_CXXFLAGS="${CXXFLAGS}"
+	export CGO_LDFLAGS="${LDFLAGS}"
+	export GOFLAGS='-buildmode=pie -trimpath -mod=readonly -modcacherw'
+	# go.mod carries a stale note about building through a parent-directory
+	# go.work; force resolution from the module proxy instead.
+	export GOWORK=off
+
+	# Same version string the Makefile derives for a local build: the full
+	# `git describe`, not the bare tag. A build 11 commits past v0.7.3 must not
+	# claim to be v0.7.3.
+	local _ldflags _version _commit _date
+	_version=$(git describe --tags --always --dirty)
+	_commit=$(git rev-parse --short HEAD)
+	_date=$(date -u -d "@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%dT%H:%M:%SZ)
+	_ldflags="-X github.com/v0lka/c0wrk/core/version.Version=$_version"
+	_ldflags+=" -X github.com/v0lka/c0wrk/core/version.GitCommit=$_commit"
+	_ldflags+=" -X github.com/v0lka/c0wrk/core/version.BuildDate=$_date"
+
+	# webkit2_41 is the tag the Makefile applies on Linux; webkit2gtk-4.1 is
+	# what Arch ships.
+	#
+	# No xvfb-run here, unlike the release workflow: `wails build` on Linux only
+	# runs npm and go, and completes fine with no DISPLAY. Verified by building
+	# this package under `env -u DISPLAY -u WAYLAND_DISPLAY`.
+	#
+	# Note that version.BuildDate will not survive into the binary: nothing
+	# reads it (only version.Version and version.GitCommit are consumed, by
+	# backend/crashlog), so the -trimpath/-buildmode=pie link drops it as dead
+	# data. It is still set here to keep the invocation identical to upstream's.
+	wails build -tags webkit2_41 -ldflags "$_ldflags"
+
+	# Drop the pinned runtime assets next to the freshly built binary, mirroring
+	# what `make fetch-onnx` / `make fetch-embedding-model` would have produced.
+	install -Dm755 "$srcdir/$_onnx_dir/lib/libonnxruntime.so.$_onnx_ver" \
+		build/bin/libonnxruntime.so
+	install -Dm644 "$srcdir/jina-v2-small-$_hf_rev.onnx" \
+		build/bin/models/jina-v2-small.onnx
+	install -Dm644 "$srcdir/jina-v2-small-tokenizer-$_hf_rev.json" \
+		build/bin/models/jina-v2-small-tokenizer.json
+}
+
+package() {
+	cd "$srcdir/$pkgname"
+
+	# Everything the app needs at runtime must sit in ONE directory: the binary
+	# resolves libonnxruntime.so and models/ relative to its own executable
+	# (desktop/startup.go resolveONNXLibPath / resolveModelPath). Splitting the
+	# tree across /usr/lib and /usr/share would break both lookups.
+	install -Dm755 build/bin/c0wrk-desktop "$pkgdir/opt/c0wrk/c0wrk-desktop"
+	install -Dm755 build/bin/libonnxruntime.so "$pkgdir/opt/c0wrk/libonnxruntime.so"
+	install -Dm644 build/bin/models/jina-v2-small.onnx \
+		"$pkgdir/opt/c0wrk/models/jina-v2-small.onnx"
+	install -Dm644 build/bin/models/jina-v2-small-tokenizer.json \
+		"$pkgdir/opt/c0wrk/models/jina-v2-small-tokenizer.json"
+
+	# A launcher script rather than a plain symlink: it exports
+	# C0WRK_START_HIDDEN=false to sidestep an upstream startup race that can
+	# leave the app running with no visible window (the script explains it in
+	# full). The script ends in exec, so /proc/self/exe — and with it Go's
+	# os.Executable() — still resolves to /opt/c0wrk/c0wrk-desktop, and the app
+	# keeps finding libonnxruntime.so and models/ next to itself.
+	install -Dm755 "$srcdir/c0wrk-launcher.sh" "$pkgdir/usr/bin/c0wrk-desktop"
+	ln -s c0wrk-desktop "$pkgdir/usr/bin/c0wrk"
+
+	install -Dm644 "$srcdir/c0wrk-desktop.desktop" \
+		"$pkgdir/usr/share/applications/c0wrk-desktop.desktop"
+	install -Dm644 build/appicon.png \
+		"$pkgdir/usr/share/icons/hicolor/512x512/apps/c0wrk-desktop.png"
+	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

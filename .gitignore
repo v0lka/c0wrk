@@ -197,3 +197,20 @@ tmp/
 # Local only docs
 # TODO.md
 build/darwin/Info.dev.plist
+
+# =============================================================================
+# Arch Linux packaging (makepkg working files)
+# =============================================================================
+packaging/archlinux/*/src/
+packaging/archlinux/*/pkg/
+packaging/archlinux/*/*.pkg.tar*
+packaging/archlinux/*/*.log
+# Downloaded sources: release tarballs, ONNX Runtime archive, embedding model.
+packaging/archlinux/*/*.tar.gz
+packaging/archlinux/*/*.tgz
+packaging/archlinux/*/*.onnx
+packaging/archlinux/*/*-LICENSE
+packaging/archlinux/*/*appicon.png
+packaging/archlinux/*/*tokenizer*.json
+# makepkg keeps the git source clone next to the PKGBUILD.
+packaging/archlinux/c0wrk-git/c0wrk-git/
