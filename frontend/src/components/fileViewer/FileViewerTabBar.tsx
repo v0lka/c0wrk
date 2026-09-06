@@ -88,6 +88,7 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
             const isActive = path === activeFile;
             return (
               <button
+                key={path}
                 data-file-path={path}
                 className={cn(
                   "group flex items-center gap-1 px-2 py-1 h-full text-xs whitespace-nowrap select-none",

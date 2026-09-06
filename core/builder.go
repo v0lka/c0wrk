@@ -1764,7 +1764,6 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 			BaseURL:       cfg.ExpandEnvVars(pc.BaseURL),
 			Models:        pc.Models,
 			TokenResolver: pc.TokenResolver,
-			AccountHeader: pc.AccountHeader,
 		})
 	}
 	// Also include any providers not in the standard order (e.g. future additions).
@@ -1786,7 +1785,6 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 			BaseURL:       cfg.ExpandEnvVars(pc.BaseURL),
 			Models:        pc.Models,
 			TokenResolver: pc.TokenResolver,
-			AccountHeader: pc.AccountHeader,
 		})
 	}
 

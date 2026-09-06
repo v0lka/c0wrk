@@ -17,7 +17,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/openai/openai-go v1.12.0
 	github.com/philippgille/chromem-go v0.7.0
-	github.com/v0lka/sp4rk v0.0.0-20260906034325-1aae644ece9e
+	github.com/v0lka/sp4rk v0.0.0-20260906172250-90188e175705
 	github.com/wailsapp/wails/v2 v2.15.0
 	github.com/zalando/go-keyring v0.2.6
 	golang.org/x/image v0.45.0

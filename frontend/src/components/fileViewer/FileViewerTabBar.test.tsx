@@ -22,12 +22,15 @@ import { RESEARCH_TAB_PATH } from '@/stores/researchStore'
 let root: Root | null = null
 let container: HTMLDivElement | null = null
 
-function renderBar(): void {
+async function renderBar(): Promise<void> {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
-  act(() => {
+  await act(async () => {
     root!.render(<FileViewerTabBar onToggleCollapse={() => {}} />)
+    // Flush the microtask that resolves getFileIcon → setFileIcon/setFetched
+    // so the resulting state update is wrapped in act(...).
+    await Promise.resolve()
   })
 }
 
@@ -51,8 +54,8 @@ describe('FileViewerTabBar — research pseudo-path icon', () => {
     container = null
   })
 
-  it('renders the flask icon for the research tab without any getFileIcon RPC for it', () => {
-    renderBar()
+  it('renders the flask icon for the research tab without any getFileIcon RPC for it', async () => {
+    await renderBar()
 
     // The research tab shows the flask (success-tinted svg)…
     expect(document.querySelector('.text-success')).not.toBeNull()
@@ -64,7 +67,7 @@ describe('FileViewerTabBar — research pseudo-path icon', () => {
     expect(useFileViewerStore.getState().fileIcons[RESEARCH_TAB_PATH]).toBeUndefined()
   })
 
-  it('skips the icon RPC for any c0wrk:-prefixed pseudo-path (hook-level prefix guard)', () => {
+  it('skips the icon RPC for any c0wrk:-prefixed pseudo-path (hook-level prefix guard)', async () => {
     // A hypothetical future pseudo-tab: the tab bar special-cases only
     // RESEARCH_TAB_PATH at the call site, so this tab DOES run TabFileIcon
     // → useFileIcon. The hook's prefix-level guard must still prevent both
@@ -74,7 +77,7 @@ describe('FileViewerTabBar — research pseudo-path icon', () => {
       openTabs: [futureTab, '/ws/main.go'],
       activeFile: futureTab,
     })
-    renderBar()
+    await renderBar()
 
     expect(getFileIconMock).toHaveBeenCalledTimes(1)
     expect(getFileIconMock).toHaveBeenCalledWith('/ws/main.go')

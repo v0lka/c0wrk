@@ -324,13 +324,16 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 	// before committing so a dangling replacement cannot change any state.
 	if candidate.DefaultModel != "" {
 		provider, model, managed := llm.ParseCompositeModelID(candidate.DefaultModel)
-		if managed && provider == "chatgpt_subscription" && f.subscriptions != nil && f.subscriptions.connected("chatgpt") && subscriptionModelEnabled(candidate.Subscriptions.ChatGPT.EnabledModels, f.subscriptions.catalog("chatgpt"), model) {
-			// A connected managed subscription owns this model. Its credentials
-			// intentionally live outside YAML, so config-only resolution cannot
-			// validate it; the candidate's selected model list must contain it.
-		} else if _, _, err := candidate.ResolveDefaultModelProvider(); err != nil {
-			f.configMu.Unlock()
-			return fmt.Errorf("invalid LLM configuration: default_model would be unresolved: %w", err)
+		// A connected managed subscription owns its models. Their credentials
+		// intentionally live outside YAML, so config-only resolution cannot
+		// validate them; the candidate's selected model list must contain the
+		// model instead.
+		managedValid := managed && provider == "chatgpt_subscription" && f.subscriptions != nil && f.subscriptions.connected("chatgpt") && subscriptionModelEnabled(candidate.Subscriptions.ChatGPT.EnabledModels, f.subscriptions.catalog("chatgpt"), model)
+		if !managedValid {
+			if _, _, err := candidate.ResolveDefaultModelProvider(); err != nil {
+				f.configMu.Unlock()
+				return fmt.Errorf("invalid LLM configuration: default_model would be unresolved: %w", err)
+			}
 		}
 	}
 

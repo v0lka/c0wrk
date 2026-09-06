@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -236,9 +235,9 @@ func (m *subscriptionManager) cancel(provider string) {
 }
 func (m *subscriptionManager) exchange(ctx context.Context, provider string, cfg config.SubscriptionProviderConfig, code, verifier string) error {
 	vals := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "client_id": {cfg.ClientID}, "code_verifier": {verifier}, "redirect_uri": {chatGPTRedirectURI}}
-	return m.tokenRequest(ctx, provider, cfg, vals)
+	return m.tokenRequest(ctx, provider, cfg, vals, "")
 }
-func (m *subscriptionManager) tokenRequest(ctx context.Context, provider string, cfg config.SubscriptionProviderConfig, vals url.Values) error {
+func (m *subscriptionManager) tokenRequest(ctx context.Context, provider string, cfg config.SubscriptionProviderConfig, vals url.Values, preserveRefreshToken string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.TokenURL, strings.NewReader(vals.Encode()))
 	if err != nil {
 		return errors.New("token request failed")
@@ -263,9 +262,17 @@ func (m *subscriptionManager) tokenRequest(ctx context.Context, provider string,
 	if json.Unmarshal(body, &result) != nil || result.AccessToken == "" {
 		return errors.New("sign-in returned invalid credentials")
 	}
+	// Some token endpoints rotate refresh tokens on every exchange while others
+	// return one only on the initial authorization. When a refresh response
+	// omits the refresh token, keep the prior value so a future refresh does not
+	// fail because the stored credential lost its refresh token.
+	refreshToken := result.RefreshToken
+	if refreshToken == "" {
+		refreshToken = preserveRefreshToken
+	}
 	credential := credentials.Credential{
 		AccessToken:  result.AccessToken,
-		RefreshToken: result.RefreshToken,
+		RefreshToken: refreshToken,
 		AccountID:    chatGPTAccountID(result.IDToken, result.AccessToken),
 		Residency:    chatGPTResidency(result.AccessToken),
 	}
@@ -276,9 +283,6 @@ func (m *subscriptionManager) tokenRequest(ctx context.Context, provider string,
 		return errors.New("could not securely save sign-in")
 	}
 	return nil
-}
-func (m *subscriptionManager) ResolveAccessToken(ctx context.Context, force bool) (llm.AccessToken, error) {
-	return llm.AccessToken{}, errors.New("provider-specific resolver required")
 }
 
 type managedResolver struct {
@@ -298,7 +302,7 @@ func (r managedResolver) ResolveAccessToken(ctx context.Context, force bool) (ll
 			return llm.AccessToken{}, errors.New("sign-in required")
 		}
 		vals := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {credential.RefreshToken}, "client_id": {cfg.ClientID}}
-		if err := r.manager.tokenRequest(ctx, r.provider, cfg, vals); err != nil {
+		if err := r.manager.tokenRequest(ctx, r.provider, cfg, vals, credential.RefreshToken); err != nil {
 			return llm.AccessToken{}, errors.New("sign-in required")
 		}
 		credential, err = r.manager.store.Load(r.provider, subscriptionAccount)
@@ -407,15 +411,6 @@ func sameModelSet(left, right []string) bool {
 	return true
 }
 
-func (m *subscriptionManager) hasModel(provider, model string) bool {
-	for _, configured := range m.models(provider) {
-		if configured == model {
-			return true
-		}
-	}
-	return false
-}
-
 func (m *subscriptionManager) augment(b *core.BuilderConfig) {
 	cfg, available := m.providerConfig("chatgpt")
 	if b.LLM.ProviderConfigs == nil {
@@ -436,5 +431,3 @@ func pkceChallenge(v string) string {
 	s := sha256.Sum256([]byte(v))
 	return base64.RawURLEncoding.EncodeToString(s[:])
 }
-
-var _ = fmt.Sprintf

@@ -262,7 +262,6 @@ type SubscriptionProviderConfig struct {
 	// nil preserves the full catalogue for existing configurations; an explicit
 	// empty list intentionally hides every model without touching credentials.
 	EnabledModels []string `yaml:"enabled_models"`
-	AccountHeader string   `yaml:"account_header"`
 }
 
 // AnthropicConfig holds Anthropic provider configuration.
