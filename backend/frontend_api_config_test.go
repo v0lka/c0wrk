@@ -339,52 +339,155 @@ func TestUpdateLLMConfig_NilConfig(t *testing.T) {
 	}
 }
 
-// TestUpdateLLMConfig_ClearsDanglingDefaultOnProviderRemoval verifies that
-// deleting the provider that owned the default model (without naming a new
-// default in the same request) clears the now-invalid default_model rather
-// than persisting a dangling selector. The settings dialog then blocks close
-// until the user picks a new default.
-func TestUpdateLLMConfig_ClearsDanglingDefaultOnProviderRemoval(t *testing.T) {
-	f, _, _ := newTestAPI(t)
+func TestUpdateLLMConfig_RollsBackWhenPersistFails(t *testing.T) {
+	f, mock, cfgPath := newTestAPI(t)
+	f.configPath = filepath.Join(filepath.Dir(cfgPath), "missing", "config.yaml")
 
-	// Seed an OpenAI-compatible provider that owns the default model, using a
-	// composite selector so ResolveDefaultModelProvider can pin the provider.
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "claude-3-sonnet",
+		Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
+	})
+	if err == nil {
+		t.Fatal("expected persist failure")
+	}
+	if got := f.config.LLM.DefaultModel; got != "claude-3-opus" {
+		t.Errorf("default_model after failed persist = %q, want claude-3-opus", got)
+	}
+	if got := f.config.LLM.Anthropic.Models; !slices.Equal(got, []string{"claude-3-opus"}) {
+		t.Errorf("anthropic models after failed persist = %v, want [claude-3-opus]", got)
+	}
+	if mock.rebuildJudgeCalls != 0 {
+		t.Errorf("RebuildJudge calls after failed persist = %d, want 0", mock.rebuildJudgeCalls)
+	}
+	if mock.rebuildRouterCalls != 0 {
+		t.Errorf("RebuildRouter calls after failed persist = %d, want 0", mock.rebuildRouterCalls)
+	}
+}
+
+// TestUpdateLLMConfig_RejectsDanglingDefaultOnProviderRemoval verifies that
+// deleting the provider that owns an already-valid default model without a
+// replacement is rejected before it can mutate memory, YAML, or the router.
+func TestUpdateLLMConfig_RejectsDanglingDefaultOnProviderRemoval(t *testing.T) {
+	f, mock, cfgPath := newTestAPI(t)
+
+	// Seed a persisted, valid composite default whose provider is about to be
+	// removed. A byte-for-byte YAML comparison catches an accidental save.
 	f.config.LLM.OpenAICompatible = map[string]config.OpenAICompatibleConfig{
 		"lmstudio": {BaseURL: "http://localhost:1234/v1", Models: []string{"gpt-4"}},
 	}
 	f.config.LLM.DefaultModel = "lmstudio/gpt-4"
-
-	// Remove the provider without setting a new default. An empty
-	// default_model is normally skipped, but the re-validation step must
-	// clear the now-unresolvable default.
-	err := f.UpdateLLMConfig(LLMFullConfigRequest{
-		OpenAICompatible: map[string]ProviderConfigRequest{},
-	})
+	if err := config.Save(f.config, cfgPath); err != nil {
+		t.Fatalf("failed to save initial config: %v", err)
+	}
+	beforeYAML, err := os.ReadFile(cfgPath)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("failed to read initial config: %v", err)
 	}
 
-	if f.config.LLM.DefaultModel != "" {
-		t.Errorf("default_model = %q, want \"\" after owning provider removed", f.config.LLM.DefaultModel)
+	err = f.UpdateLLMConfig(LLMFullConfigRequest{
+		OpenAICompatible: map[string]ProviderConfigRequest{},
+	})
+	if err == nil {
+		t.Fatal("expected dangling default replacement to be rejected")
+	}
+	if !strings.Contains(err.Error(), "default_model") {
+		t.Errorf("UpdateLLMConfig(provider removal) error = %q, want diagnostic mentioning default_model", err)
+	}
+
+	if got := f.config.LLM.DefaultModel; got != "lmstudio/gpt-4" {
+		t.Errorf("default_model after rejected provider removal = %q, want lmstudio/gpt-4", got)
+	}
+	if _, ok := f.config.LLM.OpenAICompatible["lmstudio"]; !ok {
+		t.Error("openai_compatible provider was removed despite rejected update")
+	}
+	if mock.rebuildJudgeCalls != 0 {
+		t.Errorf("RebuildJudge calls after rejected provider removal = %d, want 0", mock.rebuildJudgeCalls)
+	}
+	if mock.rebuildRouterCalls != 0 {
+		t.Errorf("RebuildRouter calls after rejected provider removal = %d, want 0", mock.rebuildRouterCalls)
+	}
+	afterYAML, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to read config after rejected update: %v", err)
+	}
+	if !slices.Equal(afterYAML, beforeYAML) {
+		t.Error("config YAML changed after rejected provider removal")
 	}
 }
 
-// TestUpdateLLMConfig_ClearsDanglingDefaultOnModelDisabled verifies that
-// disabling the single model backing the default (in a fixed provider) clears
-// the dangling default_model.
-func TestUpdateLLMConfig_ClearsDanglingDefaultOnModelDisabled(t *testing.T) {
-	f, _, _ := newTestAPI(t)
-	// Default harness: default_model "claude-3-opus" owned by anthropic.
+// TestUpdateLLMConfig_RejectsDanglingDefaultOnModelDisabled verifies that
+// removing the model behind an existing default without a replacement is
+// rejected atomically.
+func TestUpdateLLMConfig_RejectsDanglingDefaultOnModelDisabled(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		Anthropic: &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
+	})
+	if err == nil {
+		t.Fatal("expected disabling the default model to be rejected")
+	}
+	if got := f.config.LLM.DefaultModel; got != "claude-3-opus" {
+		t.Errorf("default_model after rejected model replacement = %q, want claude-3-opus", got)
+	}
+	if got := f.config.LLM.Anthropic.Models; !slices.Equal(got, []string{"claude-3-opus"}) {
+		t.Errorf("anthropic models after rejected model replacement = %v, want [claude-3-opus]", got)
+	}
+	if mock.rebuildRouterCalls != 0 {
+		t.Errorf("RebuildRouter calls after rejected model replacement = %d, want 0", mock.rebuildRouterCalls)
+	}
+}
+
+// TestUpdateLLMConfig_AcceptsReplacementDefaultWithNewModels verifies that a
+// single request can replace an existing default and its backing models.
+func TestUpdateLLMConfig_AcceptsReplacementDefaultWithNewModels(t *testing.T) {
+	f, mock, cfgPath := newTestAPI(t)
+
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "claude-3-sonnet",
+		Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
+	})
+	if err != nil {
+		t.Fatalf("UpdateLLMConfig(replacement default) unexpected error: %v", err)
+	}
+	if got := f.config.LLM.DefaultModel; got != "claude-3-sonnet" {
+		t.Errorf("default_model after replacement = %q, want claude-3-sonnet", got)
+	}
+	if got := f.config.LLM.Anthropic.Models; !slices.Equal(got, []string{"claude-3-sonnet"}) {
+		t.Errorf("anthropic models after replacement = %v, want [claude-3-sonnet]", got)
+	}
+	if mock.rebuildJudgeCalls != 1 {
+		t.Errorf("RebuildJudge calls after replacement = %d, want 1", mock.rebuildJudgeCalls)
+	}
+	if mock.rebuildRouterCalls != 1 {
+		t.Errorf("RebuildRouter calls after replacement = %d, want 1", mock.rebuildRouterCalls)
+	}
+	persisted, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to load persisted replacement config: %v", err)
+	}
+	if got := persisted.LLM.DefaultModel; got != "claude-3-sonnet" {
+		t.Errorf("persisted default_model after replacement = %q, want claude-3-sonnet", got)
+	}
+}
+
+// TestUpdateLLMConfig_AllowsInitialEmptyDefault verifies that first-run
+// partial setup remains allowed until a user selects a default model.
+func TestUpdateLLMConfig_AllowsInitialEmptyDefault(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+	f.config.LLM.DefaultModel = ""
 
 	err := f.UpdateLLMConfig(LLMFullConfigRequest{
 		Anthropic: &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
 	})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("UpdateLLMConfig(initial empty default) unexpected error: %v", err)
 	}
-
-	if f.config.LLM.DefaultModel != "" {
-		t.Errorf("default_model = %q, want \"\" after backing model disabled", f.config.LLM.DefaultModel)
+	if got := f.config.LLM.DefaultModel; got != "" {
+		t.Errorf("default_model after initial partial setup = %q, want empty", got)
+	}
+	if mock.rebuildRouterCalls != 1 {
+		t.Errorf("RebuildRouter calls for initial partial setup = %d, want 1", mock.rebuildRouterCalls)
 	}
 }
 

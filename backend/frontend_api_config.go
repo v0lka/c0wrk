@@ -186,13 +186,14 @@ func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 //
 // Locking layout: the whole update runs under saveMu so debounced saves apply
 // strictly in submission order (mutation → persist → rebuild never interleave
-// between two calls). Inside that, configMu is held only for the fast config
-// mutation — the expensive follow-up work (YAML persist, No-Project
-// provisioning) runs with configMu released, and the judge/router rebuilds run
-// under a shared configMu.RLock with a freshly re-snapshotted config: RLock
-// readers are never convoyed behind a rebuild, yet writers are excluded
-// between snapshot and rebuild so the router can never be rolled back to a
-// snapshot that predates a concurrent config writer's changes.
+// between two calls). configMu protects candidate validation, the atomic YAML
+// commit/rollback, and the capture of the committed default. The expensive
+// follow-up work (No-Project provisioning) runs with configMu released, and
+// the judge/router rebuilds run under a shared configMu.RLock with a freshly
+// re-snapshotted config: RLock readers are never convoyed behind a rebuild,
+// yet writers are excluded between snapshot and rebuild so the router can
+// never be rolled back to a snapshot that predates a concurrent config
+// writer's changes.
 func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 	f.saveMu.Lock()
 	defer f.saveMu.Unlock()
@@ -203,18 +204,23 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		return errors.New("config not initialized")
 	}
 
-	// Update default model
+	// Build the proposed LLM state separately. A rejected request must not
+	// leak partial provider mutations to GetConfig, YAML, or the router.
+	previous := f.config.LLM
+	candidate := previous
+
+	// An empty default_model means "leave it unchanged": debounced partial
+	// updates use that sentinel while the initial setup has no default yet.
 	if req.DefaultModel != "" {
-		f.config.LLM.DefaultModel = req.DefaultModel
+		candidate.DefaultModel = req.DefaultModel
 	}
 
-	// Update each provider's models list and credentials
 	if req.Anthropic != nil {
 		if req.Anthropic.Models != nil {
-			f.config.LLM.Anthropic.Models = req.Anthropic.Models
+			candidate.Anthropic.Models = req.Anthropic.Models
 		}
 		if req.Anthropic.APIKey != "" && req.Anthropic.APIKey != maskedAPIKey {
-			f.config.LLM.Anthropic.APIKey = req.Anthropic.APIKey
+			candidate.Anthropic.APIKey = req.Anthropic.APIKey
 		}
 	}
 	if req.OpenAICompatible != nil {
@@ -222,7 +228,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		for name, ocReq := range req.OpenAICompatible {
 			apiKey := ocReq.APIKey
 			outputReserve := 0
-			if existing, ok := f.config.LLM.OpenAICompatible[name]; ok {
+			if existing, ok := candidate.OpenAICompatible[name]; ok {
 				if apiKey == maskedAPIKey || apiKey == "" {
 					apiKey = existing.APIKey
 				}
@@ -235,14 +241,14 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 				OutputTokenReserve: outputReserve,
 			}
 		}
-		f.config.LLM.OpenAICompatible = newMap
+		candidate.OpenAICompatible = newMap
 	}
 	if req.AnthropicCompatible != nil {
 		newMap := make(map[string]config.AnthropicCompatibleConfig, len(req.AnthropicCompatible))
 		for name, acReq := range req.AnthropicCompatible {
 			apiKey := acReq.APIKey
 			outputReserve := 0
-			if existing, ok := f.config.LLM.AnthropicCompatible[name]; ok {
+			if existing, ok := candidate.AnthropicCompatible[name]; ok {
 				if apiKey == maskedAPIKey || apiKey == "" {
 					apiKey = existing.APIKey
 				}
@@ -255,51 +261,49 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 				OutputTokenReserve: outputReserve,
 			}
 		}
-		f.config.LLM.AnthropicCompatible = newMap
+		candidate.AnthropicCompatible = newMap
 	}
 	if req.ChatGPT != nil {
 		if req.ChatGPT.Models != nil {
-			f.config.LLM.ChatGPT.Models = req.ChatGPT.Models
+			candidate.ChatGPT.Models = req.ChatGPT.Models
 		}
 		if req.ChatGPT.APIKey != "" && req.ChatGPT.APIKey != maskedAPIKey {
-			f.config.LLM.ChatGPT.APIKey = req.ChatGPT.APIKey
+			candidate.ChatGPT.APIKey = req.ChatGPT.APIKey
 		}
 	}
 
-	// Invariant: after provider changes, the persisted default model must
-	// still resolve to a model that is enabled in some provider. If the
-	// provider/model that owned the default was removed or had its model
-	// disabled, clear it instead of persisting a dangling selector — a stale
-	// default would fail router validation. The settings dialog blocks close
-	// until the user picks a new default, so this never leaves the app in a
-	// state where LLM calls have no target model.
-	//
-	// Note: an incoming empty `default_model` is intentionally ignored above
-	// (to avoid wiping a valid selection during debounced partial edits), so
-	// this re-validation is the only path that clears a now-invalid default.
-	if f.config.LLM.DefaultModel != "" {
-		if _, _, err := f.config.LLM.ResolveDefaultModelProvider(); err != nil {
-			f.config.LLM.DefaultModel = ""
+	// A first-run config intentionally has no default until setup finishes.
+	// Once a default exists, however, every candidate must still resolve after
+	// all requested provider/model replacements have been applied. Validate
+	// before committing so a dangling replacement cannot change any state.
+	if candidate.DefaultModel != "" {
+		if _, _, err := candidate.ResolveDefaultModelProvider(); err != nil {
+			f.configMu.Unlock()
+			return fmt.Errorf("invalid LLM configuration: default_model would be unresolved: %w", err)
 		}
+	}
+
+	f.config.LLM = candidate
+
+	// Persist while configMu is held so a failed disk write can restore the
+	// exact prior LLM state before any reader, rebuild, or frontend RPC result
+	// observes the candidate. Defer the config-updated event until the write
+	// succeeds: a failed update must be indistinguishable from a rejected
+	// request to consumers.
+	if err := config.Save(f.config, f.configPath); err != nil {
+		f.config.LLM = previous
+		f.configMu.Unlock()
+		return fmt.Errorf("failed to persist LLM config: %w", err)
 	}
 
 	// Capture the provisioning guard here — after the unlock, f.config must
 	// only be touched under configMu again.
 	defaultModel := f.config.LLM.DefaultModel
 	f.configMu.Unlock()
+	f.emitConfigUpdated()
 
 	// --- Heavy work below runs OUTSIDE configMu (readers stay responsive) ---
 	// saveMu is still held, so concurrent UpdateLLMConfig calls are serialized.
-
-	// Persist under a read lock: the YAML write must see a consistent config
-	// and must not race other config writers (which mutate under configMu.Lock),
-	// but holding RLock keeps every other reader flowing during the disk I/O.
-	f.configMu.RLock()
-	persistErr := f.persistConfig()
-	f.configMu.RUnlock()
-	if persistErr != nil {
-		f.log().Warn("failed to persist LLM config", "error", persistErr)
-	}
 
 	// Clear any config load errors since settings are now valid
 	f.configMu.Lock()

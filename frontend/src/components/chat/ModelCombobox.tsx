@@ -64,6 +64,18 @@ export function ModelCombobox({ disabled = false }: { disabled?: boolean }) {
   const { isOpen, setIsOpen, containerRef, menuRef } = useDropdown(disabled)
 
   const triggerRef = useRef<HTMLButtonElement>(null)
+  // The first model pick starts immediately; while it is in flight, later
+  // picks are chained here so backend mutations retain user click order.
+  const pendingDefaultSavesRef = useRef(0)
+  const defaultSaveQueueRef = useRef<Promise<void>>(Promise.resolve())
+  // Every local choice gets a monotonically increasing version. A queued save
+  // may update the rollback point only when it still represents the user's
+  // latest choice; otherwise a later pick (including "Default") wins.
+  const selectionVersionRef = useRef(0)
+  // Keep the last selection confirmed by a successful backend save separate
+  // from the optimistic store value. A queued request must never use a prior
+  // optimistic choice as rollback state: that prior request may fail too.
+  const confirmedSelectedModelRef = useRef<string | null>(useInputModeStore.getState().selectedModel)
   const [position, setPosition] = useState<DropdownPosition | null>(null)
 
   // Convert ModelInfo[] → ModelEntry[] (flat list of enabled models per provider).
@@ -82,12 +94,22 @@ export function ModelCombobox({ disabled = false }: { disabled?: boolean }) {
     return entries
   }, [modelInfos])
 
+  // Resolve the global default_model (which may be a composite "provider/name"
+  // or a legacy bare name) to the composite id of the entry it actually points
+  // at. A config refresh can temporarily contain a default that no longer has
+  // an enabled entry; do not display that stale name in the chat selector.
+  const effectiveDefaultId = useMemo(() => {
+    if (!defaultModel) return null
+    const info = findModelInfo(modelInfos, defaultModel)
+    return info ? compositeModelId(info.provider, info.name) : null
+  }, [modelInfos, defaultModel])
+
   // Build display label. selectedModel is a composite id (or null = default).
-  // The global default_model may itself be a composite "provider/name" or a
-  // legacy bare name — show only the bare model name to the user.
+  // Only show the global default's bare name after it resolves to an enabled
+  // entry. This avoids advertising a model that is no longer selectable.
   const displayLabel = selectedModel
     ? bareModel(selectedModel)
-    : defaultModel
+    : effectiveDefaultId
       ? `Default: ${bareModel(defaultModel)}`
       : 'Select model…'
 
@@ -103,17 +125,6 @@ export function ModelCombobox({ disabled = false }: { disabled?: boolean }) {
     }
     return map
   }, [allModels])
-
-  // Resolve the global default_model (which may be a composite "provider/name"
-  // or a legacy bare name) to the composite id of the entry it actually points
-  // at, so the "default" badge lands on exactly one provider's entry — even
-  // when the same bare name is exposed by multiple providers. Mirrors the
-  // backend's bare-name resolution (first match in deterministic order).
-  const effectiveDefaultId = useMemo(() => {
-    if (!defaultModel) return null
-    const info = findModelInfo(modelInfos, defaultModel)
-    return info ? compositeModelId(info.provider, info.name) : null
-  }, [modelInfos, defaultModel])
 
   const isLoading = !loaded
 
@@ -166,25 +177,48 @@ export function ModelCombobox({ disabled = false }: { disabled?: boolean }) {
   // uses the picked model immediately, even before the rebuilt router
   // propagates.
   //
-  // Race handling: if the persist fails, the override is rolled back to its
-  // previous value so the selector never advertises a default that was not
-  // actually saved — otherwise the UI would show the picked model while the
-  // backend default stayed unchanged, silently reverting on the next "Default"
-  // selection or restart. The previous value is read fresh from the store
-  // (not the render-scoped `selectedModel`) so it reflects any intervening
-  // pick at click time. The config cache is invalidated on settle regardless,
-  // so every consumer re-syncs with the actual backend state.
+  // Race handling: save requests run in click order. A failed request only
+  // rolls back a still-active optimistic selection to the most recent value
+  // confirmed by the backend; it never restores an earlier optimistic choice
+  // that may itself be queued to fail. The config cache is invalidated on
+  // settle regardless, so every consumer re-syncs with backend state.
   const handleSelectModel = (id: string) => {
-    const prev = useInputModeStore.getState().selectedModel
+    const selectionVersion = ++selectionVersionRef.current
     setSelectedModel(id)
     setIsOpen(false)
-    setDefaultModel(id)
-      .catch(() => {
-        // Persist failed: reconcile the override. setDefaultModel (api/config)
-        // already logs the error, so nothing to surface here.
-        setSelectedModel(prev)
+    const persist = async () => {
+      try {
+        await setDefaultModel(id)
+        if (selectionVersionRef.current === selectionVersion) {
+          confirmedSelectedModelRef.current = id
+        }
+      } catch {
+        // A later click may have selected another model while this request was
+        // in flight. Only this request's still-current optimistic value may be
+        // reverted; an older rejection must not overwrite that newer choice.
+        if (selectionVersionRef.current === selectionVersion && useInputModeStore.getState().selectedModel === id) {
+          setSelectedModel(confirmedSelectedModelRef.current)
+        }
+      } finally {
+        invalidateConfigCache()
+      }
+    }
+
+    // Start the first request immediately for responsive feedback. Only later
+    // selections wait for it, preserving click order without delaying a lone
+    // selection to a microtask.
+    const enqueue = () => {
+      pendingDefaultSavesRef.current += 1
+      if (pendingDefaultSavesRef.current === 1) {
+        defaultSaveQueueRef.current = persist()
+      } else {
+        defaultSaveQueueRef.current = defaultSaveQueueRef.current.then(persist)
+      }
+      defaultSaveQueueRef.current = defaultSaveQueueRef.current.finally(() => {
+        pendingDefaultSavesRef.current -= 1
       })
-      .finally(() => invalidateConfigCache())
+    }
+    enqueue()
   }
 
   return (
@@ -230,10 +264,19 @@ export function ModelCombobox({ disabled = false }: { disabled?: boolean }) {
               <button
                 type="button"
                 className={`flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted ${!selectedModel ? 'bg-primary/10 font-medium' : ''}`}
-                onClick={() => { setSelectedModel(null); setIsOpen(false) }}
+                onClick={() => {
+                  // "Default" is an immediately valid local choice (null =
+                  // use the persisted global default). Invalidate every
+                  // queued override before fixing the fallback, so a late
+                  // success cannot overwrite it after this user choice.
+                  selectionVersionRef.current += 1
+                  confirmedSelectedModelRef.current = null
+                  setSelectedModel(null)
+                  setIsOpen(false)
+                }}
               >
                 <span className="flex-1 text-left">
-                  Default{defaultModel ? ` (${bareModel(defaultModel)})` : ''}
+                  Default{effectiveDefaultId ? ` (${bareModel(defaultModel)})` : ''}
                 </span>
                 {!selectedModel && (
                   <span className="text-[10px] text-primary">active</span>

@@ -120,7 +120,18 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
     const onDefaultModelChangeRef = useRef(onDefaultModelChange)
     onDefaultModelChangeRef.current = onDefaultModelChange
 
-    const { debouncedSave, buildSafeUpdates, saveFullConfig } = useLLMConfigSave(onSettingsSaved)
+    const { debouncedSave, cancelDebouncedSave, buildSafeUpdates } = useLLMConfigSave(onSettingsSaved)
+
+    const persistWhenDefaultIsValid = useCallback((model: string, configs: Record<string, ProviderConfig>) => {
+        if (!defaultModelIsValid(model, configs)) {
+            // Keep the edited provider list locally until the user selects an
+            // enabled replacement default. This also cancels a timer queued
+            // before the default was removed, preventing an invalid RPC.
+            cancelDebouncedSave()
+            return
+        }
+        debouncedSave(model, configs)
+    }, [cancelDebouncedSave, debouncedSave])
 
     const loadConfig = useCallback(async () => {
         try {
@@ -180,11 +191,8 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
             }
         } catch (error) {
             logger.error('Failed to load LLM config:', error)
-            setDefaultModelState('')
-            setProviderConfigs({ ...defaultProviderConfigs })
-            setOpenaiCompatibleProviderNames(new Set())
-            setAnthropicCompatibleProviderNames(new Set())
-            onDefaultModelChangeRef.current?.('')
+            // Preserve the last successfully loaded provider state. A transient
+            // or validation error must not make custom providers disappear.
         } finally {
             setIsLoading(false)
         }
@@ -194,9 +202,9 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
 
     const setDefaultModel = useCallback((model: string) => {
         setDefaultModelState(model)
-        onDefaultModelChange?.(model)
-        debouncedSave(model, configsRef.current)
-    }, [debouncedSave, onDefaultModelChange])
+        onDefaultModelChangeRef.current?.(model)
+        persistWhenDefaultIsValid(model, configsRef.current)
+    }, [persistWhenDefaultIsValid])
 
     const updateProviderConfig = useCallback((provider: string, updates: Partial<ProviderConfig>) => {
         // Compute next state outside the setState updater so side effects
@@ -211,8 +219,8 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         const updated = { ...existing, ...safeUpdates }
         const next = { ...prev, [provider]: updated }
         setProviderConfigs(next)
-        debouncedSave(defaultModel, next)
-    }, [defaultModel, debouncedSave, buildSafeUpdates])
+        persistWhenDefaultIsValid(defaultModel, next)
+    }, [defaultModel, persistWhenDefaultIsValid, buildSafeUpdates])
 
     const toggleModel = useCallback((provider: string, model: string) => {
         // Compute next state outside the setState updater so side effects are
@@ -237,8 +245,8 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
             setDefaultModelState(effectiveDefault)
             onDefaultModelChangeRef.current?.(effectiveDefault)
         }
-        debouncedSave(effectiveDefault, next)
-    }, [defaultModel, debouncedSave])
+        persistWhenDefaultIsValid(effectiveDefault, next)
+    }, [defaultModel, persistWhenDefaultIsValid])
 
     const addProvider = useCallback((name: string, config: ProviderConfig) => {
         // Compute next state outside the setState updater so the save RPC is
@@ -246,8 +254,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         // once, notably StrictMode in dev).
         const next = { ...configsRef.current, [name]: config }
         setProviderConfigs(next)
-        // Save immediately so the new provider is persisted.
-        saveFullConfig(defaultModel, next)
+        persistWhenDefaultIsValid(defaultModel, next)
         // Track the compatible provider under the correct transport set so it
         // is saved to the right backend map (openai_compatible vs anthropic_compatible).
         if (config.type === 'anthropic') {
@@ -255,13 +262,13 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         } else {
             setOpenaiCompatibleProviderNames((prev) => new Set(prev).add(name))
         }
-    }, [defaultModel, saveFullConfig])
+    }, [defaultModel, persistWhenDefaultIsValid])
 
     const deleteProvider = useCallback((name: string) => {
-        // Compute next state outside the setState updater so the save RPC and
+        // Compute next state outside the setState updater so persistence and
         // parent default-model notification are not invoked during render
         // (React may run a state updater more than once, notably StrictMode in
-        // dev, which would otherwise duplicate the non-debounced saveFullConfig).
+        // dev, which would otherwise duplicate the save RPC).
         const next = { ...configsRef.current }
         delete next[name]
         // If the deleted provider owned the default, clear it so the
@@ -274,8 +281,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
             setDefaultModelState(effectiveDefault)
             onDefaultModelChangeRef.current?.(effectiveDefault)
         }
-        // Save immediately so the deletion is persisted.
-        saveFullConfig(effectiveDefault, next)
+        persistWhenDefaultIsValid(effectiveDefault, next)
         setOpenaiCompatibleProviderNames((prev) => {
             const next = new Set(prev)
             next.delete(name)
@@ -286,7 +292,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
             next.delete(name)
             return next
         })
-    }, [defaultModel, saveFullConfig])
+    }, [defaultModel, persistWhenDefaultIsValid])
 
     return {
         defaultModel,

@@ -189,6 +189,11 @@ export function LLMSettings({
           The default model is used when no per-message override is set. It must
           be enabled in at least one provider below.
         </p>
+        {!defaultModel && (
+          <p className="text-xs text-destructive" role="alert">
+            Choose a default model to save your provider changes.
+          </p>
+        )}
       </div>
 
       {/* Fixed Provider Accordions */}
