@@ -1,0 +1,98 @@
+name: Packaging
+
+# Validates the Arch Linux packages without building them. Two cheap gates:
+#
+#   pins  — c0wrk-git copies ONNX/model digests from the Makefile and the Wails
+#           version from release.yml. Nothing bumps those copies automatically,
+#           so a Makefile change silently breaks the package until a user tries
+#           to build it. This catches that at PR time.
+#   arch  — .SRCINFO is generated metadata and goes stale the moment a PKGBUILD
+#           is edited by hand; AUR serves it as-is, so a stale one misleads
+#           every consumer. namcap and desktop-file-validate come along for the
+#           ride since the Arch container is already up.
+#
+# Actually building the packages is deliberately out of scope: c0wrk-bin would
+# pull ~200 MB of release archives and c0wrk-git would compile the whole app.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packaging/**"
+      - "Makefile"
+      - ".github/workflows/packaging.yml"
+      - ".github/workflows/release.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "packaging/**"
+      - "Makefile"
+      - ".github/workflows/packaging.yml"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pins:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # Reads the Makefile by asking make to evaluate it, so the ifeq blocks
+      # keyed on uname resolve exactly as they would during a real build.
+      - name: Check c0wrk-git pins against Makefile and release.yml
+        run: packaging/archlinux/check-pins.sh
+
+      # shellcheck ships preinstalled on the GitHub ubuntu images.
+      - name: Lint packaging scripts
+        run: shellcheck packaging/archlinux/*.sh packaging/archlinux/*/c0wrk-launcher.sh
+
+  arch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container: archlinux:base-devel
+    steps:
+      # git is needed by actions/checkout; the rest are the validators. Done
+      # before checkout so the action has git available.
+      - name: Install validators
+        run: pacman -Syu --noconfirm --needed git namcap desktop-file-utils
+
+      - uses: actions/checkout@v4
+
+      # makepkg refuses to run as root, and the container's default user is
+      # root. Everything below runs as an unprivileged user that owns the tree.
+      - name: Create unprivileged build user
+        run: |
+          useradd -m builder
+          chown -R builder "$GITHUB_WORKSPACE"
+
+      # .SRCINFO is what the AUR reads. If it disagrees with the PKGBUILD the
+      # AUR shows wrong versions, dependencies or sources, so regenerate it and
+      # require a byte-identical result.
+      - name: .SRCINFO matches PKGBUILD
+        run: |
+          set -eu
+          status=0
+          for pkg in c0wrk-bin c0wrk-git; do
+            dir="$GITHUB_WORKSPACE/packaging/archlinux/$pkg"
+            su builder -c "cd '$dir' && makepkg --printsrcinfo" > "/tmp/$pkg.SRCINFO"
+            if ! diff -u "$dir/.SRCINFO" "/tmp/$pkg.SRCINFO"; then
+              echo "::error file=packaging/archlinux/$pkg/.SRCINFO::stale — regenerate with 'makepkg --printsrcinfo > .SRCINFO'"
+              status=1
+            fi
+          done
+          exit $status
+
+      - name: namcap
+        run: |
+          set -eu
+          for pkg in c0wrk-bin c0wrk-git; do
+            echo "--- $pkg ---"
+            su builder -c "namcap '$GITHUB_WORKSPACE/packaging/archlinux/$pkg/PKGBUILD'"
+          done
+
+      - name: Validate desktop entries
+        run: desktop-file-validate packaging/archlinux/*/c0wrk-desktop.desktop

@@ -69,41 +69,90 @@ makepkg -si
 it installs the Wails CLI into a build-local GOPATH so no AUR dependency is
 required.
 
-## Updating c0wrk-bin for a new release
+## Automation
 
-1. Bump `pkgver`, reset `pkgrel=1`.
-2. Replace the two `sha256sums_*` archive digests with the values published in
-   the release's `SHA256SUMS` asset:
-   ```bash
-   curl -sL https://github.com/v0lka/c0wrk/releases/download/vX.Y.Z/SHA256SUMS
-   ```
-3. Refresh the `LICENSE` and `appicon.png` digests only if those files changed.
-4. Regenerate `.SRCINFO`:
-   ```bash
-   makepkg --printsrcinfo > .SRCINFO
-   ```
+Releases are frequent enough that none of the per-release bookkeeping below is
+meant to be done by hand. Two scripts do it, and CI runs both.
 
-## Updating the pinned build inputs in c0wrk-git
+| Script | Does | Runs |
+|---|---|---|
+| `bump-bin.sh <tag>` | Points `c0wrk-bin` at a release: rewrites `_tag`, resets `pkgrel`, refreshes every `sha256sums` entry, regenerates `.SRCINFO`. | `Packaging bump` workflow, called by `release.yml` after each release; also on demand. |
+| `check-pins.sh` | Fails if `c0wrk-git`'s pinned build inputs have drifted from the `Makefile` or `release.yml`. | `Packaging` workflow, on every PR touching `packaging/` or the `Makefile`. |
 
-The ONNX Runtime archive and the embedding model are fetched by `makepkg` from
-`source=()` with digests copied verbatim from the repository `Makefile`
-(`ONNX_SHA256`, `EMBEDDING_MODEL_SHA256`, `EMBEDDING_TOKENIZER_SHA256`). When
-upstream bumps `ONNX_VERSION` or the model, copy the new values across and bump
-`_onnx_ver` / `_hf_rev` accordingly.
+Both are ordinary scripts — run them locally the same way CI does.
+
+### Updating c0wrk-bin for a new release
+
+```bash
+packaging/archlinux/bump-bin.sh v0.8.0
+```
+
+Archive digests come from the release's own `SHA256SUMS` asset rather than from
+downloading 200 MB and hashing it locally: faster, and a stronger claim — the
+PKGBUILD asserts the bytes upstream published, not the bytes one machine
+happened to fetch. `LICENSE` and the icon are not covered by `SHA256SUMS`, so
+they are fetched and hashed; local files are hashed from the working tree.
+
+The script needs `makepkg` for `.SRCINFO`. Without it the PKGBUILD is still
+updated but the script exits non-zero, so CI cannot ship a stale `.SRCINFO`.
+
+`pkgver` is derived from `_tag`, not stored separately. Arch forbids `-` in
+`pkgver`, so a prerelease tag like `v0.7-beta` becomes `0.7_beta` while the
+download URLs keep using the real tag.
+
+### Updating the pinned build inputs in c0wrk-git
+
+`c0wrk-git` needs no per-release edit — its `pkgver()` derives from
+`git describe`. What it does need is for its pinned inputs to keep matching
+their sources of truth:
+
+| PKGBUILD | Source of truth |
+|---|---|
+| `_onnx_ver`, `sha256sums_x86_64`, `sha256sums_aarch64` | `Makefile`: `ONNX_VERSION`, `ONNX_SHA256` |
+| model and tokenizer digests | `Makefile`: `EMBEDDING_MODEL_SHA256`, `EMBEDDING_TOKENIZER_SHA256` |
+| `_wails_ver` | `release.yml`: `WAILS_VERSION` |
+
+Nothing propagates those automatically, and a mismatch is invisible until
+somebody builds the package — so `check-pins.sh` asserts it on every PR. It
+reads the `Makefile` by asking `make` to evaluate the variables for a given
+platform, so the `ifeq` blocks keyed on `uname` resolve exactly as they would
+during a real build, and it reads the PKGBUILD by sourcing it. Neither side is
+pattern-matched.
+
+When a pin does change, copy the new value across, bump `_onnx_ver` or
+`_hf_rev`, and regenerate `.SRCINFO`.
 
 Unlike the `Makefile`, the model URL pins an explicit Hugging Face revision
 instead of `main`, so a moving branch cannot silently invalidate the digest.
 
 ## Publishing to the AUR
 
-Each directory is a self-contained AUR package. Copy it into the AUR clone,
-commit `PKGBUILD`, `.SRCINFO` and the auxiliary files, and push:
+Neither package is registered on the AUR yet. The first push has to be done by
+hand — the AUR creates a package repository on first push and there is no way to
+bootstrap that from CI:
 
 ```bash
 git clone ssh://aur@aur.archlinux.org/c0wrk-bin.git
-cp c0wrk-bin/{PKGBUILD,.SRCINFO,c0wrk-desktop.desktop,c0wrk.install} c0wrk-bin.git/
+cp c0wrk-bin/{PKGBUILD,.SRCINFO,c0wrk-desktop.desktop,c0wrk.install,c0wrk-launcher.sh} c0wrk-bin.git/
 ```
 
-The `.desktop` and `.install` files are duplicated in both directories on
-purpose — AUR repositories are flat and cannot reference files outside
-themselves.
+After that, CI can keep it current. The `Packaging bump` workflow pushes both
+packages to the AUR, but only once the secrets exist — with none set it prints
+what it skipped and moves on.
+
+| Secret | Required | Purpose |
+|---|---|---|
+| `AUR_SSH_KEY` | for AUR publishing | Private SSH key whose public half is on the AUR account. Its presence is what enables the publish step. |
+| `AUR_KNOWN_HOSTS` | no, but preferred | Output of `ssh-keyscan aur.archlinux.org`. Without it the host keys are learned on first contact, which the job cannot verify. |
+| `PACKAGING_PR_TOKEN` | no | PAT used to push the branch and open the PR. Without it the default `GITHUB_TOKEN` is used, which works — but GitHub does not run workflows on events authored by `GITHUB_TOKEN`, so the packaging PR gets no CI. |
+
+Using `GITHUB_TOKEN` also requires *Allow GitHub Actions to create and approve
+pull requests* to be enabled in the repository's Actions settings.
+
+The file list pushed to the AUR comes from `git ls-files`, so build artifacts
+and downloaded sources sitting in the working tree can never leak into the AUR
+repository.
+
+The `.desktop`, `.install` and launcher files are duplicated in both package
+directories on purpose — AUR repositories are flat and cannot reference files
+outside themselves.

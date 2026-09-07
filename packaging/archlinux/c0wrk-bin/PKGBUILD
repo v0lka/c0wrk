@@ -1,7 +1,13 @@
 # Maintainer: c0wrk Team <https://github.com/v0lka/c0wrk>
 
 pkgname=c0wrk-bin
-pkgver=0.7.3
+# Upstream release tag this package repackages. pkgver is derived from it
+# rather than the other way round: Arch forbids '-' in pkgver, so a prerelease
+# tag like v0.7-beta has to become 0.7_beta, while every download URL must keep
+# using the real tag. packaging/archlinux/bump-bin.sh rewrites _tag on release.
+_tag=v0.7.3
+pkgver=${_tag#v}
+pkgver=${pkgver//-/_}
 pkgrel=1
 pkgdesc='Agentic desktop workspace for research, coding and writing (prebuilt release binary)'
 arch=('x86_64' 'aarch64')
@@ -24,8 +30,8 @@ install='c0wrk.install'
 # sources to attach a debug package to.
 options=('!strip' '!debug')
 
-_relurl="$url/releases/download/v$pkgver"
-_rawurl="https://raw.githubusercontent.com/v0lka/c0wrk/v$pkgver"
+_relurl="$url/releases/download/$_tag"
+_rawurl="https://raw.githubusercontent.com/v0lka/c0wrk/$_tag"
 
 # The upstream tarball is flat (its members are ./c0wrk-desktop, ./models/, ...)
 # so it extracts straight into $srcdir. The download is renamed to carry the

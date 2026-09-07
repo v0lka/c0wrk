@@ -262,3 +262,24 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: release-assets/*
+
+  # Point the Arch packaging at the release that was just published.
+  #
+  # Split into its own workflow rather than inlined here so the same bump can be
+  # re-run by hand for any tag — to recover from a failed PR step, or to publish
+  # to the AUR once that secret exists.
+  #
+  # Real tag pushes only. A workflow_dispatch run of this workflow publishes a
+  # throwaway test release (v0.0.0-test by default), and opening a packaging PR
+  # for that would be pure noise; use the Packaging bump workflow's own dispatch
+  # for a manual bump.
+  packaging:
+    needs: [release]
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/packaging-bump.yml
+    with:
+      tag: ${{ github.ref_name }}
+    permissions:
+      contents: write
+      pull-requests: write
+    secrets: inherit
