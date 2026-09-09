@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1088,18 +1089,36 @@ func (a *App) startVectorIndexBackground(
 			cacheFingerprint = ""
 		}
 
+		// ONNX execution provider. Proof-of-concept knob: C0WRK_ONNX_EP selects
+		// the provider ("cuda" for GPU inference, unset/"cpu" for the default)
+		// and C0WRK_ONNX_DEVICE the GPU index. Deliberately environment-only —
+		// GPU inference additionally requires a CUDA-enabled ONNX Runtime next
+		// to the executable, so it is not something a config default can turn on
+		// safely. Once the shipping story exists, this moves to vector_index.*
+		// with a CPU fallback; today a broken CUDA setup fails loudly below.
+		onnxProvider := os.Getenv("C0WRK_ONNX_EP")
+		onnxDevice, deviceErr := strconv.Atoi(os.Getenv("C0WRK_ONNX_DEVICE"))
+		if deviceErr != nil {
+			onnxDevice = 0
+		}
 		emb, embErr := embedding.NewEmbedder(embedding.EmbedderConfig{
-			ModelPath:      modelPath,
-			TokenizerPath:  tokenizerPath,
-			LibraryPath:    libraryPath,
-			MaxSeqLength:   maxSeqLength,
-			HiddenDim:      hiddenDim,
-			BatchSize:      cfg.VectorIndex.EmbeddingBatchSize,
-			IntraOpThreads: cfg.VectorIndex.EmbeddingThreads,
-			Logger:         log,
+			ModelPath:         modelPath,
+			TokenizerPath:     tokenizerPath,
+			LibraryPath:       libraryPath,
+			MaxSeqLength:      maxSeqLength,
+			HiddenDim:         hiddenDim,
+			BatchSize:         cfg.VectorIndex.EmbeddingBatchSize,
+			IntraOpThreads:    cfg.VectorIndex.EmbeddingThreads,
+			ExecutionProvider: onnxProvider,
+			DeviceID:          onnxDevice,
+			Logger:            log,
 		})
 		if embErr != nil {
-			log.Warn("vector search unavailable", "error", embErr)
+			log.Warn("vector search unavailable",
+				"error", embErr,
+				"executionProvider", onnxProvider,
+				"deviceID", onnxDevice,
+				"library", libraryPath)
 			a.emit("vector_index:status", map[string]any{"available": false, "reason": embErr.Error()})
 			return
 		}
