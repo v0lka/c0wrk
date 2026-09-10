@@ -128,6 +128,8 @@ timeouts:
   bashWaitDelay: 5 # seconds
   ripgrepTimeout: 60 # seconds
   webFetchTimeout: 30 # seconds
+  webFetchProxyTimeout: 30 # seconds; per-attempt web fetch timeout when the proxy is enabled
+  webFetchRetries: 2 # retry count (not seconds); each retry doubles the active web fetch timeout
   webSearchTimeout: 30 # seconds
   persistenceTimeout: 5 # seconds
 ```

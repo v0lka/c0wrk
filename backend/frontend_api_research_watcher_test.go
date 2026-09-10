@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/research"
 	"github.com/v0lka/c0wrk/core/workspace"
@@ -125,13 +125,17 @@ func TestResearchFileChanged_NestedSubdir(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // openResearchTestDB opens an in-memory SQLite DB with the pragmas the
-// project store expects (mirrors openProjectSwitchTestDB).
+// project store expects (mirrors openProjectSwitchTestDB). Connections are
+// capped at one: an in-memory DB is per-connection, so a second pooled
+// connection would see an empty database (no tables) — which concurrent RPC
+// tests (goroutines sharing the FrontendAPI) would hit immediately.
 func openResearchTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("failed to open test db: %v", err)
 	}
+	db.SetMaxOpenConns(1)
 	if _, err := db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL"); err != nil {
 		_ = db.Close()
 		t.Fatalf("failed to enable WAL: %v", err)
@@ -143,26 +147,11 @@ func openResearchTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// researchMutationTestFrontend builds a FrontendAPI wired with a real project
-// manager (backed by an in-memory SQLite store, experimental features enabled)
-// and a project whose workspace contains a minimal nested research root
-// (R-001-test with one open hypothesis). It returns the API, the project ID,
-// and the research root path.
-func researchMutationTestFrontend(t *testing.T) (api *FrontendAPI, projectID, root string) {
+// seedResearchGraphAndCard writes a minimal hypotheses/graph.md (Mermaid node
+// + catalog row) and one open H-001 card into hypDir.
+func seedResearchGraphAndCard(t *testing.T, hypDir string) {
 	t.Helper()
-	base := t.TempDir()
-	ws := filepath.Join(base, "ws")
-	researchRoot := filepath.Join(ws, ".research")
-
-	hypDir := filepath.Join(researchRoot, "R-001-test", "hypotheses")
-	if err := os.MkdirAll(hypDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	brief := "# [R-001] Test\n"
-	if err := os.WriteFile(filepath.Join(researchRoot, "R-001-test", "brief.md"), []byte(brief), 0o644); err != nil {
-		t.Fatalf("brief: %v", err)
-	}
-	graph := `# Hypothesis Graph — R-001
+	graph := `# Hypothesis Graph
 
 ## Diagram
 
@@ -223,6 +212,41 @@ Recover >= 95% of modules.
 	if err := os.WriteFile(filepath.Join(hypDir, "H-001.md"), []byte(card), 0o644); err != nil {
 		t.Fatalf("card: %v", err)
 	}
+}
+
+// seedResearchProjectDir writes a minimal research project directory
+// (brief + graph + one open H-001 card) under root/dirName. The brief's
+// R-NNN header is derived from dirName so the parsed project ID always
+// matches the directory numbering.
+func seedResearchProjectDir(t *testing.T, root, dirName string) {
+	t.Helper()
+	rid := research.NormalizeResearchID(dirName)
+	if rid == "" {
+		t.Fatalf("seed dir %q carries no R-NNN id", dirName)
+	}
+	hypDir := filepath.Join(root, dirName, "hypotheses")
+	if err := os.MkdirAll(hypDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	brief := fmt.Sprintf("# [%s] Test\n", rid)
+	if err := os.WriteFile(filepath.Join(root, dirName, "brief.md"), []byte(brief), 0o644); err != nil {
+		t.Fatalf("brief: %v", err)
+	}
+	seedResearchGraphAndCard(t, hypDir)
+}
+
+// researchMutationTestFrontend builds a FrontendAPI wired with a real project
+// manager (backed by an in-memory SQLite store)
+// and a project whose workspace contains a minimal nested research root
+// (R-001-test with one open hypothesis). It returns the API, the project ID,
+// and the research root path.
+func researchMutationTestFrontend(t *testing.T) (api *FrontendAPI, projectID, root string) {
+	t.Helper()
+	base := t.TempDir()
+	ws := filepath.Join(base, "ws")
+	researchRoot := filepath.Join(ws, ".research")
+
+	seedResearchProjectDir(t, researchRoot, "R-001-test")
 
 	db := openResearchTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
@@ -242,7 +266,6 @@ Recover >= 95% of modules.
 	mgr := project.NewManager(store, base, nil)
 	f := &FrontendAPI{
 		projectManager: mgr,
-		config:         &config.Config{Experimental: config.ExperimentalConfig{Enabled: true}},
 		emitEvent:      func(_ string, _ ...any) {},
 	}
 	return f, "proj-1", researchRoot
@@ -258,10 +281,18 @@ func TestResearchRPC_UpdateAndCreateRoundTrip(t *testing.T) {
 	status := "in-progress"
 	title := "Refined bundle parsing"
 	result := "Recovered 97% of modules."
-	dto, err := f.UpdateHypothesis(projectID, "H-001", HypothesisUpdateFields{
-		Status: &status,
-		Title:  &title,
-		Result: &result,
+	decision := "continue"
+	statement := "Multi-line statement.\n\nSecond paragraph."
+	criterion := "Recover >= 95% of modules."
+	notes := "Run 1: passed."
+	dto, err := f.UpdateHypothesis(projectID, "R-001", "H-001", HypothesisUpdateFields{
+		Status:                &status,
+		Title:                 &title,
+		Result:                &result,
+		Decision:              &decision,
+		Statement:             &statement,
+		VerificationCriterion: &criterion,
+		ExperimentNotes:       &notes,
 	})
 	if err != nil {
 		t.Fatalf("UpdateHypothesis: %v", err)
@@ -287,6 +318,27 @@ func TestResearchRPC_UpdateAndCreateRoundTrip(t *testing.T) {
 	}
 	if n.Title != title || n.Result != result {
 		t.Errorf("title/result = %q/%q, want %q/%q", n.Title, n.Result, title, result)
+	}
+	if n.Decision != decision {
+		t.Errorf("decision = %q, want %q", n.Decision, decision)
+	}
+	if n.Statement != statement {
+		t.Errorf("statement = %q, want %q", n.Statement, statement)
+	}
+	if n.VerificationCriterion != criterion {
+		t.Errorf("verification criterion = %q, want %q", n.VerificationCriterion, criterion)
+	}
+	if n.ExperimentNotes != notes {
+		t.Errorf("experiment notes = %q, want %q", n.ExperimentNotes, notes)
+	}
+	// The refreshed graph DTO carries the long-form fields too.
+	dtoNode := findDTONode(dto, "H-001")
+	if dtoNode == nil {
+		t.Fatal("H-001 missing from the response graph")
+	}
+	if dtoNode.Statement != statement || dtoNode.VerificationCriterion != criterion ||
+		dtoNode.ExperimentNotes != notes || dtoNode.Decision != decision {
+		t.Errorf("DTO long-form fields = %+v", dtoNode)
 	}
 
 	// Create H-002 as a child of H-001.
@@ -321,6 +373,46 @@ func TestResearchRPC_UpdateAndCreateRoundTrip(t *testing.T) {
 	if !foundEdge {
 		t.Errorf("edge H-001→H-002 missing; edges=%v", proj2.Graph.Edges)
 	}
+
+	// Parents update through the RPC: clear H-002's parents and verify the
+	// reconciled graph drops the edge (card row + Mermaid + catalog sync).
+	none := []string{}
+	if _, err := f.UpdateHypothesis(projectID, "R-001", "H-002", HypothesisUpdateFields{Parents: &none}); err != nil {
+		t.Fatalf("UpdateHypothesis parents: %v", err)
+	}
+	proj3, err := research.ParseProject(projectDir)
+	if err != nil {
+		t.Fatalf("ParseProject after parents update: %v", err)
+	}
+	if n3 := proj3.Graph.Node("H-002"); n3 == nil {
+		t.Fatal("H-002 missing after parents update")
+	} else if len(n3.Parents) != 0 {
+		t.Errorf("H-002 parents after clear = %v, want none", n3.Parents)
+	}
+	for _, e := range proj3.Graph.Edges {
+		if e.From == "H-001" && e.To == "H-002" {
+			t.Errorf("edge H-001→H-002 survived the parents clear; edges=%v", proj3.Graph.Edges)
+		}
+	}
+
+	// A rejected parents update (unknown parent) leaves files unchanged.
+	unknown := []string{"H-999"}
+	if _, err := f.UpdateHypothesis(projectID, "R-001", "H-002", HypothesisUpdateFields{Parents: &unknown}); err == nil {
+		t.Fatal("expected error for unknown parent")
+	}
+}
+
+// findDTONode locates a hypothesis node in a ResearchGraphDTO response.
+func findDTONode(dto *ResearchGraphDTO, id string) *research.HypothesisNode {
+	if dto == nil {
+		return nil
+	}
+	for i := range dto.Graph.Nodes {
+		if dto.Graph.Nodes[i].ID == id {
+			return &dto.Graph.Nodes[i]
+		}
+	}
+	return nil
 }
 
 // TestResearchRPC_RejectsInvalidInput verifies the guards: illegal/backward
@@ -340,7 +432,7 @@ func TestResearchRPC_RejectsInvalidInput(t *testing.T) {
 
 	// Illegal transition: open → confirmed (must go through in-progress).
 	bad := "confirmed"
-	if _, err := f.UpdateHypothesis(projectID, "H-001", HypothesisUpdateFields{Status: &bad}); err == nil {
+	if _, err := f.UpdateHypothesis(projectID, "R-001", "H-001", HypothesisUpdateFields{Status: &bad}); err == nil {
 		t.Fatal("expected error for open→confirmed")
 	}
 
@@ -354,10 +446,10 @@ func TestResearchRPC_RejectsInvalidInput(t *testing.T) {
 	}
 
 	// Missing / invalid hypothesis ids.
-	if _, err := f.UpdateHypothesis(projectID, "H-999", HypothesisUpdateFields{}); err == nil {
+	if _, err := f.UpdateHypothesis(projectID, "R-001", "H-999", HypothesisUpdateFields{}); err == nil {
 		t.Error("expected error for missing hypothesis id")
 	}
-	if _, err := f.UpdateHypothesis(projectID, "not-an-id", HypothesisUpdateFields{}); err == nil {
+	if _, err := f.UpdateHypothesis(projectID, "R-001", "not-an-id", HypothesisUpdateFields{}); err == nil {
 		t.Error("expected error for invalid hypothesis id")
 	}
 }
@@ -389,11 +481,10 @@ func TestResearchRPC_RejectsOutOfWorkspaceRoot(t *testing.T) {
 	mgr := project.NewManager(store, base, nil)
 	f := &FrontendAPI{
 		projectManager: mgr,
-		config:         &config.Config{Experimental: config.ExperimentalConfig{Enabled: true}},
 		emitEvent:      func(_ string, _ ...any) {},
 	}
 
-	if _, err := f.UpdateHypothesis("proj-out", "H-001", HypothesisUpdateFields{}); err == nil {
+	if _, err := f.UpdateHypothesis("proj-out", "R-001", "H-001", HypothesisUpdateFields{}); err == nil {
 		t.Fatal("expected error for out-of-workspace research root")
 	}
 	if _, err := f.CreateHypothesis("proj-out", NewHypothesisCard{Title: "X"}); err == nil {

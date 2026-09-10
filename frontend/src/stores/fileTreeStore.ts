@@ -23,6 +23,10 @@ interface FileTreeState {
    *  "Reveal in Workspace" so the target node is scrolled into view and
    *  visually marked. Cleared on user interaction in the tree. */
   selectedPath: string | null
+  /** Error message from the last failed root directory listing. Set instead
+   *  of caching an empty entry list (which rendered as a silently "empty"
+   *  workspace with no retry path); cleared on any successful root reload. */
+  rootLoadError: string | null
 }
 
 interface FileTreeActions {
@@ -41,6 +45,7 @@ interface FileTreeActions {
   /** Mark the given file path as the "current" tree selection (highlight +
    *  scroll target). Pass null to clear. */
   setSelectedPath: (path: string | null) => void
+  setRootLoadError: (error: string | null) => void
   /** Ensure every directory in `dirs` is expanded (idempotent — never
    *  collapses an already-expanded dir, unlike toggleDir). Used by
    *  "Reveal in Workspace" to open the ancestor chain. */
@@ -62,6 +67,7 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
   flatEntries: [],
   flatEntriesRoot: null,
   selectedPath: null,
+  rootLoadError: null,
 
   setRootPath: (path) => set({ rootPath: path }),
 
@@ -138,9 +144,12 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
     flatEntries: [],
     flatEntriesRoot: null,
     selectedPath: null,
+    rootLoadError: null,
   }),
 
   setSelectedPath: (path) => set({ selectedPath: path }),
+
+  setRootLoadError: (error) => set({ rootLoadError: error }),
 
   expandDirs: (dirs) => set((s) => {
     const next = { ...s.expandedDirs }

@@ -1,4 +1,4 @@
-import type { ProjectInfo, VectorIndexStatus, PasteKind } from '@/types/models'
+import type { ProjectInfo, VectorIndexStatus, PasteKind, CompactionAvailability } from '@/types/models'
 import { isObj, has, isArrayOf } from '@/types/guards'
 
 // Re-export isObj/has from guards for backward compatibility
@@ -93,16 +93,17 @@ export interface CompactionStartedData { strategy: string }
  * user-owned pause (never stolen; see the backend's session.pauseOwner) — a
  * paused checkpoint remains that the UI never saw (session_paused is
  * suppressed while compacting), so the client must re-apply the paused state.
- * compaction_noop is the post-flow no-op verdict recomputed by the backend on
- * the CURRENT history: true after a successful compaction (the dialogue now
- * fits the target) and after the nothing_compacted outcome; the untouched
- * history's own verdict after a cancelled/failed flow. The client refreshes
- * the compact button's disabled state from it without a status refetch.
+ * compaction_availability is the post-flow per-strategy prediction recomputed
+ * by the backend on the CURRENT history: whether each strategy would actually
+ * shrink the dialogue now, plus its predicted reclaim. After a successful
+ * compaction or a no-op outcome every strategy reports available=false; a
+ * cancelled/failed flow carries the untouched history's own verdict. The
+ * client refreshes the compact menu from it without a status refetch.
  */
 export interface CompactionFinishedData {
   strategy: string; success: boolean; cancelled?: boolean; error?: string
   before_percent: number; after_percent: number; resumed?: boolean; paused_without_resume?: boolean
-  nothing_compacted?: boolean; deferred_to_resume?: boolean; compaction_noop?: boolean
+  nothing_compacted?: boolean; deferred_to_resume?: boolean; compaction_availability?: CompactionAvailability[]
 }
 export interface SessionTokensData { session_input_tokens: number; session_output_tokens: number; model: string; family: string; fill_percent?: number; used_tokens?: number; max_tokens?: number }
 export interface AssistantChunkData { content: string; accumulated_content?: string }
@@ -148,7 +149,6 @@ export interface ToolJudgeResponseData { confirm_id: string; reasoning?: string;
 export interface ToolJudgePhaseData { tool: string }
 export interface TerminalOutputData { data: string }
 export interface SkillsActivatedData { skills: string[] }
-export interface ToolsAssignedData { tools: string[] }
 
 /** Per-run agent quality counters, as emitted in the `agent_metrics` event
  *  payload on task finish/abort. Mirrors the Go `AgentMetricsData` struct. */
@@ -400,7 +400,6 @@ export interface SessionEventMap {
    *  shutdown, StartTerminalInDir restarts). */
   readonly terminal_exited: void
   readonly skills_activated: SkillsActivatedData
-  readonly tools_assigned: ToolsAssignedData
   readonly agent_metrics: AgentMetricsData
   readonly blackboard_updated: BlackboardUpdatedData
   readonly step_todo_update: StepTodoUpdateData
@@ -504,12 +503,24 @@ export interface GitConfigRiskFinding {
 
 /** Payload of the global `project:git_config_risk` event. `notice` is the
  *  standing backend statement that repository-defined hooks never run inside
- *  c0wrk — the detected keys are blocked or neutralized on every git call. */
+ *  c0wrk — the detected keys are blocked or neutralized on every git call.
+ *  `reason` and `diff` are present only when the warning fired for a
+ *  repository that was previously trusted but whose configuration changed
+ *  since the trust decision (the trust was evicted and the repository
+ *  returned to the hardened default); they are absent for ordinary
+ *  first-time intake warnings. */
 export interface GitConfigRiskData {
   readonly path: string
   readonly source: 'project' | 'workdir'
   readonly notice: string
   readonly findings: readonly GitConfigRiskFinding[]
+  /** Set when the warning fired because a previously-trusted repository's
+   *  configuration drifted (trust revoked). Empty/absent for first-time
+   *  intake warnings. */
+  readonly reason?: string
+  /** Human-readable unified diff between the trusted snapshot and the current
+   *  configuration (absent for first-time intake warnings). */
+  readonly diff?: string
 }
 
 export interface GlobalEventMap {
@@ -518,9 +529,23 @@ export interface GlobalEventMap {
   readonly 'backend:ready': void
   readonly 'projects:loaded': void
   readonly 'sessions:loaded': void
-  readonly 'workspace:tree_changed': void
-  /** RESEARCH toggle or artifact change (enable/disable, hypothesis/brief/prior-art write). */
+  /** A config mutation was persisted via an Update* RPC (trusted git repos,
+   *  the experimental toggle, LLM/search/proxy settings, …). No payload —
+   *  consumers re-read via GetConfig (backend/frontend_api_config.go
+   *  `persistConfig`; event-catalog.md row 16). */
+  readonly 'config:updated': void
+  /** File tree modified (workspace watcher callback). `research_scoped` is
+   *  optional — present only on the RESEARCH-scoped emitter (at least one
+   *  changed path was inside the research directory; the backend's
+   *  emitResearchFileChanged returns true on a partial overlap, because the
+   *  research-only files in the batch are covered by the incremental
+   *  research:file_changed path); consumers use it to defer to that path. */
+  readonly 'workspace:tree_changed': { readonly research_scoped?: boolean }
+  /** RESEARCH mode toggled (enable/disable). */
   readonly 'research:changed': void
+  /** A file inside the research directory changed (hypothesis cards, brief,
+   *  prior-art, graph, log). `paths` is a comma-separated list. */
+  readonly 'research:file_changed': { readonly project_id: string; readonly paths: string }
   readonly 'skills:changed': void
   readonly 'git:status_changed': string
   readonly 'vector_index:status': VectorIndexStatus
@@ -637,7 +662,15 @@ export function isCompactionFinishedData(d: unknown): d is CompactionFinishedDat
   // older payloads and non-no-op flows simply omit them).
   if ('nothing_compacted' in d && d.nothing_compacted !== undefined && typeof d.nothing_compacted !== 'boolean') return false
   if ('deferred_to_resume' in d && d.deferred_to_resume !== undefined && typeof d.deferred_to_resume !== 'boolean') return false
-  if ('compaction_noop' in d && d.compaction_noop !== undefined && typeof d.compaction_noop !== 'boolean') return false
+  if ('compaction_availability' in d && d.compaction_availability !== undefined && !isArrayOf(d.compaction_availability, isCompactionAvailability)) return false
+  return true
+}
+export function isCompactionAvailability(d: unknown): d is CompactionAvailability {
+  if (!isObj(d) || !has(d, 'strategy', 'available', 'reclaim_tokens', 'exact')) return false
+  if (typeof (d as Record<string, unknown>).strategy !== 'string') return false
+  if (typeof (d as Record<string, unknown>).available !== 'boolean') return false
+  if (typeof (d as Record<string, unknown>).reclaim_tokens !== 'number') return false
+  if (typeof (d as Record<string, unknown>).exact !== 'boolean') return false
   return true
 }
 export function isSessionTokensData(d: unknown): d is SessionTokensData { return isObj(d) && has(d, 'session_input_tokens', 'session_output_tokens') }
@@ -648,7 +681,6 @@ export function isTaskFailedResumableData(d: unknown): d is TaskFailedResumableD
 }
 export function isTerminalOutputData(d: unknown): d is TerminalOutputData { return isObj(d) && typeof d.data === 'string' }
 export function isSkillsActivatedData(d: unknown): d is SkillsActivatedData { return isObj(d) && Array.isArray(d.skills) }
-export function isToolsAssignedData(d: unknown): d is ToolsAssignedData { return isObj(d) && Array.isArray(d.tools) }
 
 function isAgentMetricsCounters(v: unknown): v is AgentMetricsCounters {
   if (!isObj(v)) return false
@@ -861,6 +893,8 @@ export function isGitConfigRiskData(d: unknown): d is GitConfigRiskData {
   if (typeof d.path !== 'string' || typeof d.notice !== 'string') return false
   if (d.source !== 'project' && d.source !== 'workdir') return false
   if (!Array.isArray(d.findings) || d.findings.length === 0) return false
+  if (d.reason !== undefined && typeof d.reason !== 'string') return false
+  if (d.diff !== undefined && typeof d.diff !== 'string') return false
   return d.findings.every(
     (f) => isObj(f) && typeof f.key === 'string' && typeof f.description === 'string',
   )

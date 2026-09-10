@@ -138,7 +138,14 @@ export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProp
             onReady?.(sessionId)
         }).catch((err) => {
             logger.error('Failed to start terminal:', err)
+            // Mark the shell dead so the lazy-resurrection paths (click,
+            // keystroke, panel re-activation) retry the start instead of
+            // leaving a permanently blank terminal: without this, a failed
+            // initial start could never be retried because endedRef stayed
+            // false and terminalInput would just error "no terminal".
+            endedRef.current = true
             term.writeln(`\r\n\x1b[31mFailed to start terminal: ${err instanceof Error ? err.message : String(err)}\x1b[0m`)
+            term.writeln('\r\n\x1b[2mClick the terminal or type to retry.\x1b[0m')
             onReady?.(sessionId)
         })
 
@@ -210,6 +217,11 @@ export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProp
             })
             .catch((err) => {
                 logger.error('Failed to restart terminal in directory:', err)
+                // Mark dead for the same reason as the initial-start catch:
+                // StartTerminalInDir stopped any previous shell, so after a
+                // failed restart there is no live PTY to fall back to — only
+                // the resurrection paths can bring one back.
+                endedRef.current = true
                 termRef.current?.writeln(
                     `\r\n\x1b[31mFailed to start terminal: ${err instanceof Error ? err.message : String(err)}\x1b[0m`,
                 )

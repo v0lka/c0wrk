@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -515,6 +516,103 @@ func TestCreateTablesMigrationResearchRootIdempotent(t *testing.T) {
 	}
 }
 
+func TestCreateTablesMigrationResearchPinsIdempotent(t *testing.T) {
+	db := openTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	// First call creates tables + migrates the column in.
+	store1, err := NewSQLiteProjectStore(db)
+	if err != nil {
+		t.Fatalf("first NewSQLiteProjectStore: %v", err)
+	}
+	if !store1.columnExists("projects", "research_pins") {
+		t.Fatal("research_pins column should exist after migration")
+	}
+
+	// Second construction must be a no-op (idempotent) — not error.
+	store2, err := NewSQLiteProjectStore(db)
+	if err != nil {
+		t.Fatalf("second NewSQLiteProjectStore should be idempotent, got: %v", err)
+	}
+	if !store2.columnExists("projects", "research_pins") {
+		t.Fatal("research_pins column should still exist after re-migration")
+	}
+
+	// The migrated column must round-trip correctly after re-migration.
+	proj := ProjectInfo{
+		ID:            "idempotent-pins",
+		Name:          "Idempotent Pins",
+		WorkspacePath: "/tmp/idem-pins",
+		ResearchPins: ResearchPins{
+			Research:   []string{"R-001/report.md"},
+			Hypotheses: map[string][]string{"H-001": {"R-001/report.md"}},
+		},
+		CreatedAt: "2024-01-15T10:00:00Z",
+	}
+	if err := store2.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to save project: %v", err)
+	}
+	loaded, err := store2.LoadProject(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to load project: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.ResearchPins, proj.ResearchPins) {
+		t.Errorf("ResearchPins round-trip after re-migration: got %+v, want %+v", loaded.ResearchPins, proj.ResearchPins)
+	}
+}
+
+func TestCreateTablesMigrationResearchPins_LegacyTableUpgraded(t *testing.T) {
+	db := openTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	// Simulate a database written by an older build: the projects table
+	// predates the research_pins column (research_root already exists).
+	const legacySchema = `
+	CREATE TABLE projects (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		workspace_path TEXT NOT NULL,
+		is_external BOOLEAN NOT NULL DEFAULT 0,
+		research_root TEXT,
+		created_at TIMESTAMP NOT NULL,
+		last_active_at TIMESTAMP
+	);`
+	if _, err := db.ExecContext(context.Background(), legacySchema); err != nil {
+		t.Fatalf("failed to create legacy projects table: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), `
+		INSERT INTO projects (id, name, workspace_path, is_external, research_root, created_at, last_active_at)
+		VALUES (?, ?, ?, 0, ?, ?, ?)`,
+		"legacy-proj", "Legacy", "/tmp/legacy", "/tmp/legacy/.research",
+		"2024-01-01T10:00:00Z", "2024-01-02T10:00:00Z"); err != nil {
+		t.Fatalf("failed to seed legacy project: %v", err)
+	}
+
+	store, err := NewSQLiteProjectStore(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteProjectStore on legacy db: %v", err)
+	}
+	if !store.columnExists("projects", "research_pins") {
+		t.Fatal("research_pins column should exist after migrating a legacy table")
+	}
+
+	// Existing rows survive the migration: research_root is preserved and
+	// pins coalesce to the zero value from NULL.
+	loaded, err := store.LoadProject(context.Background(), "legacy-proj")
+	if err != nil {
+		t.Fatalf("failed to load legacy project: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("legacy project should survive migration")
+	}
+	if loaded.ResearchRoot != "/tmp/legacy/.research" {
+		t.Errorf("legacy ResearchRoot should survive migration, got %q", loaded.ResearchRoot)
+	}
+	if !reflect.DeepEqual(loaded.ResearchPins, ResearchPins{}) {
+		t.Errorf("legacy project should have zero ResearchPins, got %+v", loaded.ResearchPins)
+	}
+}
+
 func TestSaveProjectResearchRoot_Upsert(t *testing.T) {
 	store, _, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -560,6 +658,145 @@ func TestSaveProjectResearchRoot_Upsert(t *testing.T) {
 	}
 	if loaded.IsResearch {
 		t.Error("IsResearch should be false after clearing ResearchRoot")
+	}
+}
+
+func TestSaveProjectResearchPins_RoundTrip(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	proj := ProjectInfo{
+		ID:            "proj-pins",
+		Name:          "Pins Project",
+		WorkspacePath: "/tmp/pins",
+		ResearchRoot:  "/tmp/pins/.research",
+		ResearchPins: ResearchPins{
+			Research: []string{"R-001/report.md", "R-002/brief.md"},
+			Hypotheses: map[string][]string{
+				"H-001": {"R-001/cards/c-1.md"},
+				"H-002": {"R-002/report.md", "R-002/cards/c-2.md"},
+			},
+		},
+		CreatedAt: "2024-01-15T10:00:00Z",
+	}
+	if err := store.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to save project: %v", err)
+	}
+
+	loaded, err := store.LoadProject(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to load project: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("loaded project should not be nil")
+	}
+	if !reflect.DeepEqual(loaded.ResearchPins, proj.ResearchPins) {
+		t.Errorf("ResearchPins mismatch: got %+v, want %+v", loaded.ResearchPins, proj.ResearchPins)
+	}
+
+	// ListProjects must carry the same pins.
+	listed, err := store.ListProjects(context.Background())
+	if err != nil {
+		t.Fatalf("failed to list projects: %v", err)
+	}
+	found := false
+	for _, p := range listed {
+		if p.ID != proj.ID {
+			continue
+		}
+		found = true
+		if !reflect.DeepEqual(p.ResearchPins, proj.ResearchPins) {
+			t.Errorf("ListProjects ResearchPins mismatch: got %+v, want %+v", p.ResearchPins, proj.ResearchPins)
+		}
+	}
+	if !found {
+		t.Fatalf("project %q missing from ListProjects", proj.ID)
+	}
+}
+
+func TestSaveProjectResearchPins_EmptyStoresNull(t *testing.T) {
+	store, db, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	proj := ProjectInfo{
+		ID:            "proj-no-pins",
+		Name:          "No Pins",
+		WorkspacePath: "/tmp/no-pins",
+		CreatedAt:     "2024-01-15T10:00:00Z",
+	}
+	if err := store.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to save project: %v", err)
+	}
+
+	// The column stores NULL, not an empty JSON blob.
+	var stored sql.NullString
+	if err := db.QueryRowContext(context.Background(),
+		`SELECT research_pins FROM projects WHERE id = ?`, proj.ID).Scan(&stored); err != nil {
+		t.Fatalf("failed to read research_pins: %v", err)
+	}
+	if stored.Valid {
+		t.Errorf("research_pins should be NULL for empty pins, got %q", stored.String)
+	}
+
+	loaded, err := store.LoadProject(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to load project: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.ResearchPins, ResearchPins{}) {
+		t.Errorf("ResearchPins should be the zero value, got %+v", loaded.ResearchPins)
+	}
+}
+
+func TestSaveProjectResearchPins_Upsert(t *testing.T) {
+	store, db, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Create without pins.
+	proj := ProjectInfo{
+		ID:            "upsert-pins",
+		Name:          "Upsert Pins",
+		WorkspacePath: "/tmp/upsert-pins",
+		CreatedAt:     "2024-01-15T10:00:00Z",
+	}
+	if err := store.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to save project: %v", err)
+	}
+
+	// Upsert: pin a research document and a hypothesis card.
+	proj.ResearchPins = ResearchPins{
+		Research:   []string{"R-001/report.md"},
+		Hypotheses: map[string][]string{"H-001": {"R-001/cards/c-1.md"}},
+	}
+	if err := store.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to upsert project with pins: %v", err)
+	}
+	loaded, err := store.LoadProject(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to load project: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.ResearchPins, proj.ResearchPins) {
+		t.Errorf("ResearchPins after pin: got %+v, want %+v", loaded.ResearchPins, proj.ResearchPins)
+	}
+
+	// Upsert again: clear all pins — the column must fall back to NULL.
+	proj.ResearchPins = ResearchPins{}
+	if err := store.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to upsert project to clear pins: %v", err)
+	}
+	loaded, err = store.LoadProject(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to load project after clear: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.ResearchPins, ResearchPins{}) {
+		t.Errorf("ResearchPins should be zero after clear, got %+v", loaded.ResearchPins)
+	}
+	var stored sql.NullString
+	if err := db.QueryRowContext(context.Background(),
+		`SELECT research_pins FROM projects WHERE id = ?`, proj.ID).Scan(&stored); err != nil {
+		t.Fatalf("failed to read research_pins after clear: %v", err)
+	}
+	if stored.Valid {
+		t.Errorf("research_pins should be NULL after clearing pins, got %q", stored.String)
 	}
 }
 

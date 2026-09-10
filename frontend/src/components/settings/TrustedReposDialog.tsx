@@ -4,9 +4,11 @@
 // Lists the repository roots the user marked trusted through the
 // "Untrusted git configuration detected" toast ("Trust this repo" persists
 // them into security.trusted_git_repos), with a per-entry Remove action.
-// Removing a root re-enables the intake warning for that repository. The
-// dialog is read-mostly: entries are ADDED only from the toast, where the
-// scanned path is known; here stale or mistaken entries get pruned.
+// A trusted repository runs raw git (its own hooks, filters and signing apply).
+// Removing a root re-enables the intake warning and the neutralization for
+// that repository. The dialog is read-mostly: entries are ADDED only from the
+// toast, where the scanned path is known; here stale or mistaken entries get
+// pruned.
 
 import { useCallback, useEffect, useState } from 'react'
 import { FolderGit2, Loader2, Trash2 } from 'lucide-react'
@@ -19,6 +21,7 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { getTrustedGitRepos, removeTrustedGitRepo } from '@/api/gitConfigRisk'
+import { onGlobalEvent } from '@/api/runtime'
 import { logger } from '@/lib/logger'
 
 interface TrustedReposDialogProps {
@@ -45,9 +48,15 @@ export function TrustedReposDialog({ open, onOpenChange }: TrustedReposDialogPro
   }, [])
 
   // Fresh list on every open — entries can also change via the toast while
-  // the dialog is closed.
+  // the dialog is closed. While open, `config:updated` (emitted by the
+  // backend after EVERY persisted config mutation, including the toast's
+  // "Trust this repo") re-runs the load so entries trusted mid-dialog appear
+  // without a close/reopen. The dialog's own Remove also emits it — the
+  // redundant reload merely re-syncs with the server truth.
   useEffect(() => {
-    if (open) void load()
+    if (!open) return
+    void load()
+    return onGlobalEvent('config:updated', () => void load())
   }, [open, load])
 
   const handleRemove = useCallback(
@@ -74,9 +83,10 @@ export function TrustedReposDialog({ open, onOpenChange }: TrustedReposDialogPro
         <DialogHeader>
           <DialogTitle>Trusted repositories</DialogTitle>
           <DialogDescription>
-            Repositories whose &ldquo;untrusted git configuration&rdquo; warning you dismissed with
-            &ldquo;Trust this repo&rdquo;. Removing an entry re-enables the warning for that
-            repository. Git subprocess hardening stays active for every repository either way.
+            Repositories whose &ldquo;untrusted git configuration&rdquo; warning you answered with
+            &ldquo;Trust this repo&rdquo;. A trusted repository runs raw git — its own hooks, filters
+            and signing apply. Removing an entry re-enables the warning and the neutralization for
+            that repository. A repository cannot be both trusted and hardened.
           </DialogDescription>
         </DialogHeader>
 

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import { useScrollContext } from './ScrollContext'
+import { scrollBlockStartIntoView } from '@/lib/chatScroll'
 import type { ChatMessageUI } from '@/types/messages'
 import { unresolvedReviewPromptIds } from '@/types/messages'
 import { ChatNewActivityBanner } from './ChatNewActivityBanner'
@@ -10,6 +11,14 @@ interface ChatScrollManagerProps {
   scrollRef: React.RefObject<HTMLDivElement | null>
   children: React.ReactNode
 }
+
+// After an explicit bookmark/step navigation, stick-to-bottom auto-scroll is
+// suppressed for this window. During the smooth scroll's first frames the
+// recorded scroll state still says "at bottom" (the passive scroll handler
+// only updates it as frames land), so an assistant_chunk arriving
+// mid-navigation would otherwise yank the viewport straight back to the bottom
+// and abort the navigation (finding [27]).
+const NAVIGATION_AUTO_SCROLL_SUPPRESS_MS = 500
 
 export function ChatScrollManager({
   messages,
@@ -29,6 +38,8 @@ export function ChatScrollManager({
   // chat to the bottom so the request is fully visible even if the user had
   // scrolled up to read earlier output.
   const prevReviewPromptIdsRef = useRef<Set<string>>(new Set())
+  // Timestamp until which bookmark/step navigation suppresses auto-scroll.
+  const suppressAutoScrollUntilRef = useRef(0)
   const [hasNewActivity, setHasNewActivity] = useState(false)
 
   const scrollToBottom = useCallback(() => {
@@ -78,7 +89,9 @@ export function ChatScrollManager({
   // latest content; on incremental content growth, stick to the bottom only if
   // the user was already there. A freshly-appearing review-mode prompt is an
   // exception: it requires a user decision, so the chat is forced to the
-  // bottom to reveal it even when the user had scrolled away.
+  // bottom to reveal it even when the user had scrolled away. Both behaviors
+  // are suppressed for a short window after an explicit bookmark/step
+  // navigation (see NAVIGATION_AUTO_SCROLL_SUPPRESS_MS).
   useLayoutEffect(() => {
     const viewport = viewportRef.current
     if (!viewport) return
@@ -99,14 +112,19 @@ export function ChatScrollManager({
     } else {
       const prev = prevScrollState.current
       const wasAtBottom = prev.scrollTop + prev.clientHeight >= prev.scrollHeight - 50
+      // An explicit bookmark/step navigation just moved the viewport: hold off
+      // on any auto-scroll until its smooth animation settles, otherwise the
+      // stale "was at bottom" baseline (or a fresh review prompt) would snap
+      // the chat back to the bottom mid-navigation.
+      const navigationSuppressed = Date.now() < suppressAutoScrollUntilRef.current
 
-      if (hasNewReviewPrompt) {
+      if (hasNewReviewPrompt && !navigationSuppressed) {
         // A fresh review-mode prompt needs a user decision — reveal it even
         // when the user had scrolled away from the bottom.
         viewport.scrollTop = viewport.scrollHeight
         isAtBottomRef.current = true
         setHasNewActivity(false)
-      } else if (wasAtBottom) {
+      } else if (wasAtBottom && !navigationSuppressed) {
         viewport.scrollTop = viewport.scrollHeight
         isAtBottomRef.current = true
       } else {
@@ -131,8 +149,9 @@ export function ChatScrollManager({
       const elements = viewport.querySelectorAll(`[data-step-id="${stepId}"]`)
       const target = elements[elements.length - 1]
       if (target) {
-        target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        scrollBlockStartIntoView(viewport, target)
         isAtBottomRef.current = false
+        suppressAutoScrollUntilRef.current = Date.now() + NAVIGATION_AUTO_SCROLL_SUPPRESS_MS
       }
     }
     setScrollToStep(scrollToStepFn)
@@ -142,7 +161,8 @@ export function ChatScrollManager({
   // Register scroll-to-bookmark callback. Unlike steps, a bookmark key can
   // contain arbitrary characters (plan step ids, tool ids), so match via
   // getAttribute rather than a CSS attribute selector (which would need
-  // escaping and could break on unusual ids).
+  // escaping and could break on unusual ids). The block-start scroll accounts
+  // for the floating sticky user-message bar covering the scrollport top.
   useEffect(() => {
     const scrollToBookmarkFn = (key: string) => {
       const viewport = viewportRef.current
@@ -156,8 +176,9 @@ export function ChatScrollManager({
         }
       }
       if (target) {
-        target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        scrollBlockStartIntoView(viewport, target)
         isAtBottomRef.current = false
+        suppressAutoScrollUntilRef.current = Date.now() + NAVIGATION_AUTO_SCROLL_SUPPRESS_MS
       }
     }
     setScrollToBookmark(scrollToBookmarkFn)

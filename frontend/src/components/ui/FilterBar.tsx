@@ -1,4 +1,5 @@
 import { Regex } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import type { FilterMode } from '@/lib/pathFilter'
@@ -13,6 +14,9 @@ interface FilterBarProps {
    * "Filter files" → "Filter files... (glob)".
    */
   placeholder?: string
+  /** Optional content rendered after the mode toggle (e.g. a refresh
+   *  action owned by the embedding panel). */
+  rightSlot?: ReactNode
 }
 
 /**
@@ -20,7 +24,7 @@ interface FilterBarProps {
  * switches between glob and regex matching modes. Shared by the file-tree
  * panel and the git history panel so the filter UX stays identical.
  */
-export function FilterBar({ value, onChange, mode, onToggleMode, placeholder }: FilterBarProps) {
+export function FilterBar({ value, onChange, mode, onToggleMode, placeholder, rightSlot }: FilterBarProps) {
   const label = placeholder ?? 'Filter'
   return (
     <div className="flex shrink-0 gap-1 border-b border-border px-2 py-1">
@@ -39,6 +43,7 @@ export function FilterBar({ value, onChange, mode, onToggleMode, placeholder }: 
       >
         <Regex className="size-3.5" />
       </Button>
+      {rightSlot}
     </div>
   )
 }

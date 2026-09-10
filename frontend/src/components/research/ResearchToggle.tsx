@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import { FlaskConical, Loader2 } from 'lucide-react'
+import { FlaskConical, Loader2, Power, PowerOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { enableResearch, disableResearch } from '@/api/research'
@@ -88,27 +88,33 @@ export function ResearchToggle({ variant = 'button', className }: ResearchToggle
     )
   }
 
+  // Compact toolbar control: an icon-only power button. While RESEARCH is on
+  // (the only place this variant renders — the enabled panel header) it reads
+  // as a destructive-toned "power off" affordance with no text label; the
+  // muted "power on" look is a defensive fallback for the off state.
   return (
     <button
       type="button"
       onClick={handleToggle}
       disabled={isToggling}
       title={enabled ? 'Disable RESEARCH mode' : 'Enable RESEARCH mode'}
+      aria-label={enabled ? 'Disable RESEARCH mode' : 'Enable RESEARCH mode'}
       aria-pressed={enabled}
       className={cn(
-        'inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-xs transition-colors disabled:opacity-50',
+        'inline-flex shrink-0 items-center justify-center rounded-md p-1 transition-colors disabled:opacity-50',
         enabled
-          ? 'text-success hover:bg-success/10'
+          ? 'text-destructive hover:bg-destructive/10'
           : 'text-muted-foreground hover:bg-muted',
         className,
       )}
     >
       {isToggling ? (
         <Loader2 className="size-3.5 shrink-0 animate-spin" />
+      ) : enabled ? (
+        <PowerOff className="size-3.5 shrink-0" />
       ) : (
-        <FlaskConical className="size-3.5 shrink-0" />
+        <Power className="size-3.5 shrink-0" />
       )}
-      <span className="whitespace-nowrap">RESEARCH {enabled ? 'ON' : 'OFF'}</span>
     </button>
   )
 }

@@ -73,6 +73,8 @@ export function DeleteRemoteBranch(arg1:string,arg2:string):Promise<string>;
 
 export function DeleteRemoteTag(arg1:string,arg2:string):Promise<string>;
 
+export function DeleteResearch(arg1:string,arg2:string):Promise<backend.ResearchStatusDTO>;
+
 export function DeleteReviewComment(arg1:string):Promise<void>;
 
 export function DeleteSession(arg1:string):Promise<void>;
@@ -131,6 +133,8 @@ export function GetGitHistory():Promise<Array<workspace.GitHistoryCommit>>;
 
 export function GetGitStatus(arg1:string):Promise<Record<string, workspace.GitStatusEntry>>;
 
+export function GetHardenGitRepos():Promise<Array<string>>;
+
 export function GetLastActiveProjectID():Promise<string>;
 
 export function GetLogLevel():Promise<string>;
@@ -151,7 +155,7 @@ export function GetRebaseMergeState():Promise<workspace.MergeRebaseState>;
 
 export function GetResearchGraph(arg1:string):Promise<backend.ResearchGraphDTO>;
 
-export function GetResearchNextStep(arg1:string):Promise<backend.ResearchNextStepDTO>;
+export function GetResearchNextStep(arg1:string,arg2:string):Promise<backend.ResearchNextStepDTO>;
 
 export function GetResearchStatus(arg1:string):Promise<backend.ResearchStatusDTO>;
 
@@ -182,6 +186,8 @@ export function GetTrustedGitRepos():Promise<Array<string>>;
 export function GetUpdateSettings():Promise<backend.UpdateSettings>;
 
 export function GetVectorIndexStatus():Promise<backend.VectorIndexStatus>;
+
+export function HardenGitRepo(arg1:string):Promise<void>;
 
 export function HasDefaultModel():Promise<boolean>;
 
@@ -239,6 +245,8 @@ export function Rebase(arg1:string):Promise<void>;
 
 export function RemoveAttachment(arg1:string,arg2:string):Promise<void>;
 
+export function RemoveHardenGitRepo(arg1:string):Promise<void>;
+
 export function RemoveTrustedGitRepo(arg1:string):Promise<void>;
 
 export function RenameBookmark(arg1:string,arg2:string,arg3:string):Promise<void>;
@@ -281,9 +289,15 @@ export function SearchVectorStore(arg1:backend.SearchRequest):Promise<Array<back
 
 export function SendMessage(arg1:string,arg2:string,arg3:Array<string>,arg4:Array<string>,arg5:string,arg6:string,arg7:boolean,arg8:string,arg9:boolean):Promise<void>;
 
+export function SetActiveResearch(arg1:string,arg2:string):Promise<backend.ResearchStatusDTO>;
+
+export function SetHypothesisPinned(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
+
 export function SetLogLevel(arg1:string):Promise<void>;
 
 export function SetModelConfig(arg1:string,arg2:backend.ModelConfigRequest):Promise<void>;
+
+export function SetResearchPinned(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 
 export function SetReviewStatus(arg1:string,arg2:string):Promise<void>;
 
@@ -327,7 +341,7 @@ export function UnwatchDirectory(arg1:string):Promise<void>;
 
 export function UpdateExperimentalFeatures(arg1:boolean):Promise<void>;
 
-export function UpdateHypothesis(arg1:string,arg2:string,arg3:backend.HypothesisUpdateFields):Promise<backend.ResearchGraphDTO>;
+export function UpdateHypothesis(arg1:string,arg2:string,arg3:string,arg4:backend.HypothesisUpdateFields):Promise<backend.ResearchGraphDTO>;
 
 export function UpdateLLMConfig(arg1:backend.LLMFullConfigRequest):Promise<void>;
 

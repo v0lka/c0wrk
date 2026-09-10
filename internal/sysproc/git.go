@@ -2,6 +2,7 @@ package sysproc
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,6 +41,17 @@ const (
 	// GIT_EDITOR=true on top of an inherited GIT_EDITOR would leave the
 	// inherited value effective and silently void the pin.
 	gitEditorEnvVar = "GIT_EDITOR"
+
+	// gitAttrEnvPrefix is the prefix of git's attribute-environment
+	// variables. GIT_ATTR_SOURCE (documented) redirects where git reads
+	// attributes from — the same knob as attr.tree, which an inherited value
+	// could reroute away from the neutralizing empty tree; GIT_ATTR_SYSTEM
+	// and GIT_ATTR_GLOBAL name additional attributes files. None of them are
+	// attacker-controllable in c0wrk's launch model, but a poisoned parent
+	// environment (or a future git adding another GIT_ATTR_* knob) must not
+	// be able to resurrect attribute-routed command execution, so the whole
+	// prefix is stripped from every spawned git process.
+	gitAttrEnvPrefix = "GIT_ATTR_"
 )
 
 var (
@@ -49,6 +61,10 @@ var (
 
 	// gitSafeHooksDir caches the resolved absolute hooksPath.
 	gitSafeHooksDir string
+
+	// gitSafeHooksErr caches the resolution failure (unresolvable home
+	// dir): the spawn must keep refusing, not fall back.
+	gitSafeHooksErr error
 )
 
 // resolveGitSafeHooksDir returns the absolute path of the empty directory
@@ -57,17 +73,27 @@ var (
 // use. Creation is best-effort: git treats a nonexistent hooksPath exactly
 // like an empty one — hooks are silently skipped, with no fallback to the
 // repository's own .git/hooks — so a creation failure never downgrades to
-// repo-controlled hooks.
-func resolveGitSafeHooksDir() string {
+// repo-controlled hooks. Home resolution is NOT best-effort (review [42]):
+// when os.UserHomeDir fails there is no absolute safe location, and the old
+// "." fallback would have handed git a RELATIVE hooksPath that resolves
+// inside the repository — letting a planted .c0wrk/git/safe-hooks/pre-commit
+// become the "safe" hook. The error fails closed through GitCmd: no git
+// process is spawned at all.
+func resolveGitSafeHooksDir() (string, error) {
 	gitSafeHooksOnce.Do(func() {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			home = "."
-		}
-		gitSafeHooksDir = filepath.Join(home, DefaultAgentDirName, GitSafeHooksSegment)
-		_ = os.MkdirAll(gitSafeHooksDir, 0o700)
+		gitSafeHooksDir, gitSafeHooksErr = resolveGitSafeHooksDirUncached()
 	})
-	return gitSafeHooksDir
+	return gitSafeHooksDir, gitSafeHooksErr
+}
+
+func resolveGitSafeHooksDirUncached() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve home directory for the safe git hooks path (fail closed: a relative core.hooksPath would resolve inside the repository): %w", err)
+	}
+	dir := filepath.Join(home, DefaultAgentDirName, GitSafeHooksSegment)
+	_ = os.MkdirAll(dir, 0o700)
+	return dir, nil
 }
 
 // gitSafetyOverrides returns the argv prefix GitCmd prepends to every git
@@ -82,12 +108,19 @@ func resolveGitSafeHooksDir() string {
 //     other operations.
 //   - commit.gpgsign=false: never invokes a repository-configured signing
 //     binary during commit.
-func gitSafetyOverrides() []string {
+//
+// It fails closed when the safe hooks dir cannot be resolved (unresolvable
+// home dir, review [42]) — callers must refuse to spawn git.
+func gitSafetyOverrides() ([]string, error) {
+	hooksDir, err := resolveGitSafeHooksDir()
+	if err != nil {
+		return nil, err
+	}
 	return []string{
 		"-c", "core.fsmonitor=false",
-		"-c", "core.hooksPath=" + resolveGitSafeHooksDir(),
+		"-c", "core.hooksPath=" + hooksDir,
 		"-c", "commit.gpgsign=false",
-	}
+	}, nil
 }
 
 // UnhardenedGitArgv builds the plain argv git would receive without the
@@ -102,15 +135,17 @@ func UnhardenedGitArgv(args ...string) []string {
 }
 
 // hardenedGitEnv returns the environment for a git child process: the parent
-// environment with any inherited GIT_EDITOR stripped, then GIT_EDITOR=true
-// appended exactly once. The strip is not cosmetic — with duplicate entries
-// glibc's getenv (Linux) resolves to the FIRST occurrence, so an inherited
-// GIT_EDITOR would win over the appended pin and re-open the editor vector.
+// environment with any inherited GIT_EDITOR and GIT_ATTR_* variables
+// stripped, then GIT_EDITOR=true appended exactly once. The GIT_EDITOR strip
+// is not cosmetic — with duplicate entries glibc's getenv (Linux) resolves
+// to the FIRST occurrence, so an inherited GIT_EDITOR would win over the
+// appended pin and re-open the editor vector. The GIT_ATTR_* strip closes
+// the attribute-routing environment family (see gitAttrEnvPrefix).
 func hardenedGitEnv() []string {
 	parent := os.Environ()
 	env := make([]string, 0, len(parent)+1)
 	for _, kv := range parent {
-		if strings.HasPrefix(kv, gitEditorEnvVar+"=") {
+		if strings.HasPrefix(kv, gitEditorEnvVar+"=") || strings.HasPrefix(kv, gitAttrEnvPrefix) {
 			continue
 		}
 		env = append(env, kv)
@@ -118,7 +153,10 @@ func hardenedGitEnv() []string {
 	return append(env, gitEditorEnv)
 }
 
-// GitCmd creates a hardened git [exec.Cmd].
+// GitCmd creates a hardened git [exec.Cmd], or refuses to spawn git at all
+// (nil cmd + error) when the safe hooks directory cannot be resolved: an
+// unresolvable home dir has no safe absolute core.hooksPath, and git must
+// never run without the baseline (review [42]).
 //
 // Every invocation carries safety overrides that neutralize
 // repository-controlled code execution regardless of the repo's .git/config
@@ -136,14 +174,43 @@ func hardenedGitEnv() []string {
 //
 // Use this helper for every git invocation so neither protection can be
 // forgotten. For non-git child processes apply [HideConsole] directly.
-func GitCmd(ctx context.Context, args ...string) *exec.Cmd {
-	overrides := gitSafetyOverrides()
+func GitCmd(ctx context.Context, args ...string) (*exec.Cmd, error) {
+	overrides, err := gitSafetyOverrides()
+	if err != nil {
+		return nil, err
+	}
 	full := make([]string, 0, len(args)+len(overrides)+1)
 	full = append(full, gitBinary)
 	full = append(full, overrides...)
 	full = append(full, args...)
 	cmd := exec.CommandContext(ctx, full[0], full[1:]...)
 	cmd.Env = hardenedGitEnv()
+	HideConsole(cmd)
+	return cmd, nil
+}
+
+// GitCmdRaw builds a plain git [exec.Cmd] with no safety overrides and no
+// environment hardening: the repository's own .git/config and the inherited
+// environment apply exactly as if git were run from a terminal. It is the
+// escape hatch for repositories the user has explicitly trusted
+// (security.trusted_git_repos, consulted through core/gittrust), where the
+// trust decision deliberately opts the repository back into its own hooks,
+// filters, and signing configuration — the opposite of [GitCmd]'s
+// neutralize-everything baseline.
+//
+// GitCmdRaw still hides the console window on Windows (CREATE_NO_WINDOW):
+// c0wrk-desktop is a GUI-subsystem app, and a trusted repository deserves the
+// same no-flash behavior as the hardened path. It does not set cmd.Env, so
+// the child inherits the parent environment untouched — no GIT_EDITOR pin and
+// no GIT_ATTR_* strip.
+//
+// Use this ONLY through the trust check in core/workspace — never to bypass
+// the neutralization for an untrusted repository.
+func GitCmdRaw(ctx context.Context, args ...string) *exec.Cmd {
+	full := make([]string, 0, len(args)+1)
+	full = append(full, gitBinary)
+	full = append(full, args...)
+	cmd := exec.CommandContext(ctx, full[0], full[1:]...)
 	HideConsole(cmd)
 	return cmd
 }

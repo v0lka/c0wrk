@@ -7,23 +7,13 @@ import (
 	"github.com/v0lka/c0wrk/core/smallllm"
 )
 
-// TestSmallLLMDefaultMaxToolsFitsGuaranteedSet pins the invariant that the
-// shipped defaults are self-consistent under the slot-budget semantics: the
-// guaranteed set (default always-present ∪ protected orchestration tools; MCP
-// tools join at runtime) must fit the default max_tools, otherwise
-// validateSmallLLMConfig would reject the defaults out of the box.
-func TestSmallLLMDefaultMaxToolsFitsGuaranteedSet(t *testing.T) {
-	cfg := &Config{}
-	ApplyDefaults(cfg)
-
-	const defaultMaxTools = 16
-	if cfg.SmallLLM.EssentialTools.MaxTools != defaultMaxTools {
-		t.Fatalf("default small_llm.essential_tools.max_tools = %d, want %d",
-			cfg.SmallLLM.EssentialTools.MaxTools, defaultMaxTools)
-	}
-
-	// Guaranteed set = default always-present (12) ∪ protected (5, of which
-	// 4 overlap with the pins) = 13 unique tools.
+// TestSmallLLMDefaultAlwaysPresentUnionProtected pins the invariant that the
+// shipped default always-present list ∪ the protected orchestration tools
+// (finish, store_fact, search_facts, ask_user, update_checklist; 4 of the 5
+// overlap the pins) is exactly the 13-tool guaranteed core. The static
+// selection (smallllm.SelectTools) serves exactly this union — the user's
+// pins, the protected tools, and every MCP tool — with no slot budget.
+func TestSmallLLMDefaultAlwaysPresentUnionProtected(t *testing.T) {
 	guaranteed := make(map[string]struct{}, 16)
 	for _, n := range defaultSmallLLMAlwaysPresent {
 		guaranteed[n] = struct{}{}
@@ -40,10 +30,6 @@ func TestSmallLLMDefaultMaxToolsFitsGuaranteedSet(t *testing.T) {
 		slices.Sort(names)
 		t.Fatalf("expected %d unique guaranteed tools from the defaults, got %d: %v",
 			wantGuaranteed, len(guaranteed), names)
-	}
-	if len(guaranteed) > cfg.SmallLLM.EssentialTools.MaxTools {
-		t.Errorf("default guaranteed set (%d tools) must fit the default max_tools (%d)",
-			len(guaranteed), cfg.SmallLLM.EssentialTools.MaxTools)
 	}
 }
 

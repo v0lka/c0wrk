@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { create } from 'zustand'
 import type { ChatMessageUI } from '@/types/messages'
-import type { TokenInfo } from '@/types/models'
+import type { TokenInfo, CompactionAvailability } from '@/types/models'
 import { HITL_PROMPT_TYPES } from '@/lib/hitlTypes'
 
 // Re-export types and grouping functions so existing imports continue to work
@@ -37,20 +37,20 @@ interface ChatState {
   // terminal events (session_paused/task_complete/task_cancelled/error) and
   // by the runtime reconcile once the task is no longer active.
   pausing: Record<string, boolean>
-  // Manual context compaction in flight per session: sessionId -> true while
+  // Manual compaction in flight per session: sessionId -> true while
   // the backend compact flow runs (input locked, compact button → cancel
   // button). Cleared by compaction_finished and reconciled from the runtime
   // status snapshot on session switch/restart.
   compacting: Record<string, boolean>
-  // Manual compaction would be a no-op per session: sessionId -> true when the
-  // backend predicts a manual compaction cannot shrink the conversation
-  // history (it already fits the compaction target) — the compact button
-  // renders disabled with an explanatory tooltip. Absent key = unknown/false
-  // (fail-open: the button stays clickable). Set from the runtime-status
-  // snapshot (reconcile/refetch), refreshed by compaction_finished, and
-  // re-evaluated by the targeted refetch after terminal task events (a
-  // finished task grew the history past the target again).
-  compactionNoOp: Record<string, boolean>
+  // Per-strategy manual-compaction prediction per session: sessionId -> the
+  // ordered availability list the backend computed for the session's current
+  // conversation history. Each entry says whether that strategy would actually
+  // shrink the dialogue now and how many tokens it would reclaim. Absent key =
+  // unknown (fail-open: every strategy shown clickable). Set from the
+  // runtime-status snapshot (reconcile/refetch), refreshed by
+  // compaction_finished, and re-evaluated by the targeted refetch after
+  // terminal task events (a finished task grew the history again).
+  compactionAvailability: Record<string, CompactionAvailability[]>
   // Context fill per step, keyed by session then step: sessionId -> stepId -> fill percent.
   // Nested per-session: plan step ids (step_1, ...) are NOT globally unique
   // across sessions, and fills must survive session switches (A→B→A) — the
@@ -91,7 +91,7 @@ interface ChatActions {
   setPaused: (sessionId: string, paused: boolean) => void
   setPausing: (sessionId: string, pausing: boolean) => void
   setCompacting: (sessionId: string, compacting: boolean) => void
-  setCompactionNoOp: (sessionId: string, noOp: boolean) => void
+  setCompactionAvailability: (sessionId: string, availability: CompactionAvailability[]) => void
   setStepContextFill: (sessionId: string, stepId: string, fill: number) => void
   clearStepContextFill: (sessionId: string) => void
   setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
@@ -166,7 +166,7 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   paused: {},
   pausing: {},
   compacting: {},
-  compactionNoOp: {},
+  compactionAvailability: {},
   stepContextFill: {},
   sessionTokens: {},
   runtimeEventAt: {},
@@ -430,25 +430,13 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
     }
   }),
 
-  // Manual compaction would be a no-op: the compact button renders disabled
-  // with an explanatory tooltip. Absent key = unknown/false (fail-open — the
-  // button stays clickable). Stamps runtimeEventAt like setCompacting.
-  setCompactionNoOp: (sessionId, noOp) => set((s) => {
-    if (!noOp) {
-      if (!(sessionId in s.compactionNoOp)) {
-        return { runtimeEventAt: { ...s.runtimeEventAt, [sessionId]: Date.now() } }
-      }
-      const { [sessionId]: _noOp, ...rest } = s.compactionNoOp
-      return {
-        compactionNoOp: rest,
-        runtimeEventAt: { ...s.runtimeEventAt, [sessionId]: Date.now() },
-      }
-    }
-    return {
-      compactionNoOp: { ...s.compactionNoOp, [sessionId]: true },
-      runtimeEventAt: { ...s.runtimeEventAt, [sessionId]: Date.now() },
-    }
-  }),
+  // Per-strategy manual-compaction prediction: replaces the compact menu's
+  // availability list (absent key = unknown/fail-open — every strategy shows
+  // clickable). Stamps runtimeEventAt like setCompacting.
+  setCompactionAvailability: (sessionId, availability) => set((s) => ({
+    compactionAvailability: { ...s.compactionAvailability, [sessionId]: availability },
+    runtimeEventAt: { ...s.runtimeEventAt, [sessionId]: Date.now() },
+  })),
 
   setStepContextFill: (sessionId, stepId, fill) => set((s) => ({
     stepContextFill: {

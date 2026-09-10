@@ -6,17 +6,23 @@
 
 import type { ResearchLogEntry } from '@/types/models'
 
-/** How many of the most recent log entries to surface in the dashboard. */
-export const DEFAULT_LOG_LIMIT = 10
+/** Default render cap for the research log ([20]b). Logs are append-only and
+ *  grow for the project's lifetime; rendering every entry puts one DOM node
+ *  per entry into the panel. The log renders the newest entries up to this
+ *  cap with a "show all" expansion for the rest. */
+export const RESEARCH_LOG_RENDER_CAP = 100
 
-/** Return the most recent `limit` entries, newest first. Pure and unit-tested.
- *  The log is append-only (entries carry a 1-based file-order `id`), so "latest"
- *  is simply the tail of the array. */
+/** Return log entries, newest first. Pure and unit-tested.
+ *  The log is append-only (entries carry a 1-based file-order `id`), so
+ *  "latest" is simply the tail of the array. `cap` (optional) limits the
+ *  result to the newest `cap` entries — the dashboard renders capped by
+ *  default and expands on demand. */
 export function latestLogEntries(
   log: ResearchLogEntry[],
-  limit = DEFAULT_LOG_LIMIT,
+  cap?: number,
 ): ResearchLogEntry[] {
-  return log.slice(-limit).reverse()
+  const reversed = [...log].reverse()
+  return cap === undefined ? reversed : reversed.slice(0, cap)
 }
 
 /** Deterministic ISO→`YYYY-MM-DD HH:MM:SS` trim (no locale dependency). */

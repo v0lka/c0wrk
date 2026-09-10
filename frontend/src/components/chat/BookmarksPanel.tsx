@@ -16,8 +16,9 @@ import type { DisplayItem } from '@/types/messages'
 
 /**
  * BookmarksPanel — collapsible panel above the message input listing the active
- * session's bookmarks. Each row shows a shortened title (with a hover preview
- * of the event rendered as in chat), an inline rename affordance and a delete
+ * session's bookmarks. Each row shows the full bookmark title clipped to the
+ * panel width (CSS ellipsis, no fixed character cap; a hover preview of the
+ * event is rendered as in chat), an inline rename affordance and a delete
  * action, mirroring the session-list item actions. Clicking a row scrolls the
  * chat to the bookmarked event.
  */
@@ -78,7 +79,7 @@ export function BookmarksPanel({ displayItems }: { displayItems: DisplayItem[] }
           <span className="text-xs text-muted-foreground">{bookmarks.length}</span>
         </button>
         {open && (
-          <div className="max-h-48 overflow-y-auto px-2 pb-2 custom-scrollbar">
+          <div className="max-h-48 overflow-y-auto px-3 pb-2 custom-scrollbar">
             {bookmarks.map((b) => (
               <BookmarkRow
                 key={b.id}
@@ -148,7 +149,7 @@ function BookmarkRow({
   }
 
   return (
-    <div className="group/item relative flex w-full items-center gap-2 rounded-sm px-2 py-1 text-sm hover:bg-muted/50">
+    <div className="group/item relative flex w-full items-center gap-2 py-0.5 pl-2 border-l border-border text-xs hover:bg-muted/40 transition-colors">
       <Tooltip>
         <TooltipTrigger asChild>
           <button
@@ -156,7 +157,6 @@ function BookmarkRow({
             onClick={onNavigate}
             disabled={!onNavigate}
             className="min-w-0 flex-1 truncate text-left text-foreground"
-            title={bookmark.title}
           >
             {bookmark.title}
           </button>

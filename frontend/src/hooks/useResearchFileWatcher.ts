@@ -18,7 +18,8 @@ import { getResearchGraph, getResearchNextStep } from '@/api/research'
 import { subscribe } from '@/api/runtime'
 import { logger } from '@/lib/logger'
 import { useProjectStore } from '@/stores/projectStore'
-import { useResearchStore } from '@/stores/researchStore'
+import { useResearchStore, selectActiveHypothesisId } from '@/stores/researchStore'
+import { applyGraphOrRefresh, fullResearchRefresh } from '@/components/research/applyGraphOrRefresh'
 
 /** Type guard for the research:file_changed event payload. The backend emits
  *  { project_id: string, paths: string (comma-separated) }; only project_id is
@@ -39,34 +40,38 @@ export function useResearchFileWatcher(): void {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Stable incremental update: fetch only the graph/metrics for the active
-  // project and load it via loadGraph, but only if the project hasn't switched
-  // while the fetch was in flight.
+  // project and apply it through the SHARED convergence helper
+  // (applyGraphOrRefresh — the same path the direct mutation sites use,
+  // [18]b), but only if the project hasn't switched while the fetch was in
+  // flight. The full-status fallback lives in the helper too
+  // (fullResearchRefresh) and also refreshes the recommended next step.
   const updateGraph = useCallback(async () => {
     const projectId = activeProjectId
     if (!projectId || !researchEnabled) return
 
+    // [60] LWW ticket: stamp the sync sequence at fetch START so the store
+    // can reject snapshots older than its last successful sync — a slow
+    // incremental fetch that resolves after a newer sync landed (the
+    // watchdog's full refresh or a direct mutation) can never regress the
+    // panel to stale data.
+    const startedSeq = useResearchStore.getState().graphSyncSeq
     try {
       const graph = await getResearchGraph(projectId)
-      // Guard against stale updates after a project toggle: only commit the
-      // result if the active project is still the one this fetch targeted.
-      // (researchStore.loadGraph has its own project guard, but only when the
-      // root carries active_project_id — this check is authoritative.)
-      if (useProjectStore.getState().activeProjectId === projectId) {
-        useResearchStore.getState().loadGraph(graph)
-        logger.debug(
-          '[research] graph updated incrementally',
-          'project',
-          projectId,
-          'nodes',
-          graph.graph.nodes.length,
-        )
-      }
+      // [18]b: the active-project guard, the incremental apply, and the
+      // full-refetch fallback are owned by the shared helper.
+      await applyGraphOrRefresh(graph, projectId, startedSeq)
 
       // A file change can flip the phase (e.g. a status transition), so the
-      // recommendation must be refreshed alongside the graph. Best-effort:
-      // a failure leaves the previous recommendation in place.
+      // recommendation must be refreshed alongside the graph — scoped to the
+      // dashboard's CURRENT hypothesis card (resolved AFTER the graph apply
+      // so the fetch follows the fresh reconciliation; '' degrades to the
+      // project-level recommendation). Best-effort: a failure leaves the
+      // previous recommendation in place.
       try {
-        const nextStep = await getResearchNextStep(projectId)
+        const nextStep = await getResearchNextStep(
+          projectId,
+          selectActiveHypothesisId(useResearchStore.getState()),
+        )
         if (useProjectStore.getState().activeProjectId === projectId) {
           useResearchStore.getState().loadNextStep(nextStep)
         }
@@ -74,7 +79,12 @@ export function useResearchFileWatcher(): void {
         logger.debug('[research] incremental next-step fetch failed:', err)
       }
     } catch (err) {
+      // Incremental failure (RPC error, boundary validation) must not leave
+      // the panel stale: fall back to the full status refetch so the panel
+      // still converges (the research-scoped skip in useResearchStatusEvents
+      // means nobody else will).
       logger.debug('[research] incremental graph update failed:', err)
+      await fullResearchRefresh(projectId)
     }
   }, [activeProjectId, researchEnabled])
 

@@ -860,6 +860,44 @@ func TestBuildSystemPrompt_SmallLLMLite_SwapsDirectiveAndAppendsFewShot(t *testi
 	}
 }
 
+// TestBuildSystemPrompt_SmallLLMLite_SingleEditVerifyCycle verifies the
+// single-source invariant for the Edit → Verify Cycle guidance: with the full
+// lite bundle active (Lite + ReasoningScaffold + FewShot), the assembled
+// prompt must contain the 'Edit → Verify Cycle' heading exactly once — it
+// lives only in OrchestratorSystemLite; the scaffold and few-shot blocks must
+// not duplicate it.
+func TestBuildSystemPrompt_SmallLLMLite_SingleEditVerifyCycle(t *testing.T) {
+	ctx := tools.WithWorkspacePath(WithSmallLLMLite(context.Background()), "/ws")
+	got := buildSystemPrompt(ctx, "do the thing", llmModelMetaForTests())
+
+	if n := strings.Count(got, "Edit → Verify Cycle"); n != 1 {
+		t.Errorf("assembled lite prompt contains 'Edit → Verify Cycle' %d times; want exactly 1", n)
+	}
+}
+
+// TestEditVerifyCycleExactlyOnceInFullAndLiteDirectives extends the
+// single-source invariant to both core directives: the verbose
+// OrchestratorSystem and the compact OrchestratorSystemLite must each carry
+// the 'Edit → Verify Cycle' guidance exactly once, and the assembled
+// master-OFF (full) prompt must contain it exactly once as well — the
+// [verify_on_edit] read-and-fix-before-done contract applies on both prompt
+// paths with identical wording.
+func TestEditVerifyCycleExactlyOnceInFullAndLiteDirectives(t *testing.T) {
+	if n := strings.Count(prompts.OrchestratorSystem, "Edit → Verify Cycle"); n != 1 {
+		t.Errorf("OrchestratorSystem contains 'Edit → Verify Cycle' %d times; want exactly 1", n)
+	}
+	if n := strings.Count(prompts.OrchestratorSystemLite, "Edit → Verify Cycle"); n != 1 {
+		t.Errorf("OrchestratorSystemLite contains 'Edit → Verify Cycle' %d times; want exactly 1", n)
+	}
+
+	// End-to-end: the assembled full (master-OFF) prompt must carry the
+	// section exactly once too.
+	got := buildSystemPrompt(tools.WithWorkspacePath(context.Background(), "/ws"), "do the thing", llmModelMetaForTests())
+	if n := strings.Count(got, "Edit → Verify Cycle"); n != 1 {
+		t.Errorf("assembled full prompt contains 'Edit → Verify Cycle' %d times; want exactly 1", n)
+	}
+}
+
 // TestBuildSystemPrompt_SmallLLM_SubTogglesIndependent proves the FewShot and
 // ReasoningScaffold sub-toggles are independently honored (the SF-2 wiring
 // fix): with Lite on but each sub-toggle off, the corresponding block must be

@@ -52,6 +52,18 @@ export interface SessionInfo {
   readonly unfinished_task_status?: string
 }
 
+/** Per-strategy manual-compaction prediction (mirrors the backend's
+ *  core.CompactionAvailability): is this strategy currently available (would
+ *  it actually shrink the conversation history right now), how many tokens it
+ *  would reclaim, and whether that reclaim is exact (sliding_window — a dry
+ *  run) or a forecast (LLM-backed strategies). */
+export interface CompactionAvailability {
+  readonly strategy: string
+  readonly available: boolean
+  readonly reclaim_tokens: number
+  readonly exact: boolean
+}
+
 export interface ChatMessage {
   readonly id: number
   readonly session_id: string
@@ -490,7 +502,6 @@ export interface SecuritySettingsResponse {
 export interface SmallLLMEssentialTools {
   enabled: boolean
   always_present: string[]
-  max_tools: number
   /** Replace builtin tool descriptions with one-line compact variants. */
   compact_descriptions: boolean
   /**
@@ -651,6 +662,16 @@ export type HypothesisStatus =
 /** Category of a research-log entry (see core/research LogKind). */
 export type LogKind = 'experiment' | 'decision' | 'status_change' | 'note'
 
+/**
+ * Iteration decision vocabulary from the research methodology
+ * (research-decision skill): after each experiment the researcher chooses
+ * continue / pivot / kill / fork. Unlike the status, the backend stores the
+ * card's Decision field verbatim (no validation), so a card may carry a
+ * legacy free-text value — node/draft/update fields stay `string` and only
+ * the editor's option list is fixed (see hypothesisDecision.ts).
+ */
+export type HypothesisDecision = 'continue' | 'pivot' | 'kill' | 'fork'
+
 export interface HypothesisNode {
   id: string
   title: string
@@ -658,6 +679,12 @@ export interface HypothesisNode {
   parents?: string[]
   timebox?: string
   result?: string
+  /** Long-form card sections (verbatim Markdown bodies, core/research). */
+  statement?: string
+  verification_criterion?: string
+  experiment_notes?: string
+  /** Iteration decision (continue / pivot / kill / fork); '' while undecided. */
+  decision?: string
 }
 
 export interface HypothesisEdge {
@@ -733,6 +760,7 @@ export interface ResearchSeedResult {
   updated: string[]
   current: string[]
   preserved: string[]
+  modified: string[]
 }
 
 /** View model for GetResearchStatus: toggle state + parsed research root. */
@@ -742,6 +770,17 @@ export interface ResearchStatus {
   research_root: string
   root?: ResearchRoot
   seed_result?: ResearchSeedResult
+  /** Pinned research projects — brief paths, research-root-relative with
+   *  forward slashes (`R-NNN-<slug>/brief.md`), mirrored from the persisted
+   *  project pins. Optional on the wire (older payloads omit it); the RPC
+   *  boundary normalizes it to `[]`. */
+  pinned_research?: string[]
+  /** Pinned hypothesis cards keyed by hypothesis id (H-NNN): each entry
+   *  lists the pinned card paths (`R-NNN-<slug>/hypotheses/H-NNN.md`) —
+   *  the same H-NNN exists across R-NNN projects, so one key can carry
+   *  cards from several research projects. Optional on the wire; the RPC
+   *  boundary normalizes it to `{}`. */
+  pinned_hypotheses?: Record<string, string[]>
 }
 
 /** Lightweight response for GetResearchGraph: only the hypothesis graph,
@@ -784,16 +823,41 @@ export interface ResearchNextStep {
   skill: string
 }
 
+/** Editable draft of a hypothesis card's mutable fields (title / parents /
+ *  status / decision / statement / verification criterion / experiment
+ *  notes / timebox / result), held between user edits and an explicit Save.
+ *  `parents` is the raw comma-separated input from the card's field — the
+ *  change-set derivation parses it into ids before sending. UI-level view
+ *  model: lives here (not in a component file) because it is persisted in the
+ *  research store so an unsaved draft survives workspace remounts (floating
+ *  viewer auto-collapse, tab switches). */
+export interface HypothesisDraft {
+  title: string
+  parents: string
+  status: string
+  decision: string
+  statement: string
+  verification_criterion: string
+  experiment_notes: string
+  timebox: string
+  result: string
+}
+
 /** Structured field update for an existing hypothesis card (mirrors backend
  *  HypothesisUpdateFields). Omit a field (leave it undefined) to leave it
- *  unchanged; set it to an empty string to clear it. Only the five UI-mutable
- *  fields are exposed. */
+ *  unchanged; set it to an empty string to clear it. */
 export interface HypothesisUpdateFields {
   title?: string
   status?: HypothesisStatus
   result?: string
   timebox?: string
   decision?: string
+  statement?: string
+  verification_criterion?: string
+  experiment_notes?: string
+  /** Replaces the card's parent set; validated server-side (existence, no
+   *  self-reference, no cycle) before any write. An empty array clears it. */
+  parents?: string[]
 }
 
 /** Structured input for creating a new hypothesis card (mirrors backend

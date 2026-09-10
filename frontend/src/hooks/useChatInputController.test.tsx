@@ -499,3 +499,103 @@ describe('send locked during attachment uploads', () => {
     expect(controllerRef.current!.attachmentsUploading).toBe(false)
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Resume on a paused session: a typed message must not be dropped
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('handleResume nudge-resume', () => {
+  it('sends the typed message through the send flow instead of dropping it', async () => {
+    render()
+    await act(async () => {
+      useChatStore.setState({ paused: { 'sess-a': true } })
+    })
+    await type('nudge text')
+
+    sendMock.mockResolvedValue(undefined)
+    await act(async () => {
+      await controllerRef.current!.handleResume()
+    })
+
+    // The message went through the normal send flow — the backend's
+    // SendMessage routes a send into a paused session to a nudge-resume
+    // (persisting it with is_nudge, exactly like pressing Enter)…
+    expect(sendMock).toHaveBeenCalledOnce()
+    expect(sendMock).toHaveBeenCalledWith('nudge text', [], [], 'sess-a')
+    // …the editor was cleared (the text lives on as the sent message)…
+    expect(editorText()).toBe('')
+    expect(slice('sess-a')?.draft).toBe('')
+    // …and the plain-resume RPC was never fired.
+    expect(apiMocks.chat.resumeSession).not.toHaveBeenCalled()
+  })
+
+  it('resumes without a nudge when the input is empty', async () => {
+    render()
+    await act(async () => {
+      useChatStore.setState({ paused: { 'sess-a': true } })
+    })
+
+    await act(async () => {
+      await controllerRef.current!.handleResume()
+    })
+
+    expect(apiMocks.chat.resumeSession).toHaveBeenCalledOnce()
+    expect(apiMocks.chat.resumeSession).toHaveBeenCalledWith('sess-a', '', '', '')
+    expect(sendMock).not.toHaveBeenCalled()
+    // Optimistic paused→active flip (the session leaves the paused state —
+    // "not paused" is encoded as an absent key in the store).
+    expect(useChatStore.getState().paused['sess-a']).toBeUndefined()
+    expect(useChatStore.getState().taskActive['sess-a']).toBe(true)
+  })
+
+  it('treats a whitespace-only draft as empty (plain resume)', async () => {
+    render()
+    await act(async () => {
+      useChatStore.setState({ paused: { 'sess-a': true } })
+    })
+    await type('   ')
+
+    await act(async () => {
+      await controllerRef.current!.handleResume()
+    })
+
+    expect(sendMock).not.toHaveBeenCalled()
+    expect(apiMocks.chat.resumeSession).toHaveBeenCalledOnce()
+  })
+
+  it('does not send the hidden chat draft when resuming from terminal mode', async () => {
+    render()
+    await act(async () => {
+      useChatStore.setState({ paused: { 'sess-a': true } })
+    })
+    await type('leftover draft')
+    await act(async () => {
+      useInputModeStore.setState({ mode: 'terminal' })
+    })
+
+    await act(async () => {
+      await controllerRef.current!.handleResume()
+    })
+
+    // Terminal mode hides the chat editor: Resume is a plain resume and the
+    // (invisible) draft stays untouched for the next chat-mode visit.
+    expect(sendMock).not.toHaveBeenCalled()
+    expect(apiMocks.chat.resumeSession).toHaveBeenCalledOnce()
+    expect(slice('sess-a')?.draft).toBe('leftover draft')
+  })
+
+  it('restores the paused state when the plain resume RPC fails', async () => {
+    render()
+    await act(async () => {
+      useChatStore.setState({ paused: { 'sess-a': true } })
+    })
+    apiMocks.chat.resumeSession.mockRejectedValueOnce(new Error('resume rpc down'))
+
+    await act(async () => {
+      await controllerRef.current!.handleResume()
+    })
+
+    expect(useChatStore.getState().paused['sess-a']).toBe(true)
+    expect(useChatStore.getState().taskActive['sess-a']).toBe(false)
+  })
+})

@@ -16,8 +16,10 @@ interface Metric {
 
 /**
  * Compact metrics row: confirmation rate, hypothesis budget (total),
- * structural depth, and the active research front. Reads only the parsed
- * metrics object — all formatting goes through the pure `formatRate`.
+ * structural depth, and the size of the active research front (the count of
+ * unfinished hypotheses — the ids themselves live in the DAG/workspace).
+ * Reads only the parsed metrics object — all formatting goes through the pure
+ * `formatRate`.
  */
 export function ResearchMetricsRow({ metrics }: ResearchMetricsRowProps) {
   const items = useMemo<Metric[]>(() => {
@@ -43,7 +45,7 @@ export function ResearchMetricsRow({ metrics }: ResearchMetricsRowProps) {
       },
       {
         label: 'Active front',
-        value: active.length > 0 ? active.join(', ') : '—',
+        value: String(active.length),
         Icon: Activity,
         tone: 'text-primary',
       },

@@ -564,6 +564,20 @@ body {
     display: none;
 }
 
+/* Editable CodeMirror fields (MiniCodeMirrorField) opt back into the caret:
+   the container carries both classes and the compound selector
+   outspecifies the viewer-only pair above — no !important. Input-like
+   padding replaces the viewer's 1rem so the field reads as a text area. */
+.cm-viewer-container.cm-editable-field .cm-content {
+    caret-color: var(--color-foreground);
+    padding: 0.25rem 0.5rem;
+}
+
+.cm-viewer-container.cm-editable-field .cm-cursor,
+.cm-viewer-container.cm-editable-field .cm-dropCursor {
+    display: block;
+}
+
 .cm-viewer-container .cm-lineNumbers .cm-gutterElement {
     min-width: 3rem;
     padding: 0 0.75rem 0 0;

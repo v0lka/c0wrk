@@ -100,3 +100,27 @@ describe('fileTreeStore — toggleDir cache invalidation', () => {
     expect(useFileTreeStore.getState().loadingDirs['/ws/src/sub']).toBeUndefined()
   })
 })
+
+describe('fileTreeStore — rootLoadError', () => {
+  beforeEach(() => {
+    useFileTreeStore.getState().clearTree()
+  })
+
+  it('starts null, holds a failure message, and clears on success signal', () => {
+    expect(useFileTreeStore.getState().rootLoadError).toBeNull()
+
+    useFileTreeStore.getState().setRootLoadError('path outside project workspace')
+    expect(useFileTreeStore.getState().rootLoadError).toBe('path outside project workspace')
+
+    useFileTreeStore.getState().setRootLoadError(null)
+    expect(useFileTreeStore.getState().rootLoadError).toBeNull()
+  })
+
+  it('is reset by clearTree (project switch / unmount path)', () => {
+    useFileTreeStore.getState().setRootLoadError('boom')
+    expect(useFileTreeStore.getState().rootLoadError).toBe('boom')
+
+    useFileTreeStore.getState().clearTree()
+    expect(useFileTreeStore.getState().rootLoadError).toBeNull()
+  })
+})

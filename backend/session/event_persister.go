@@ -193,8 +193,6 @@ func (p *EventPersister) Persist(evt Event) {
 		}
 	case "skills_activated":
 		role = "status"
-	case "tools_assigned":
-		role = "status"
 	case "agent_metrics":
 		role = "status"
 	case "step_todo_update":

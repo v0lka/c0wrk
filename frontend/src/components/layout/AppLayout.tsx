@@ -7,6 +7,7 @@ import { Sidebar } from './Sidebar'
 import { ChatArea } from '@/components/chat/ChatArea'
 import { StatusBar } from '@/components/layout/StatusBar'
 import { FileViewerPanel } from '@/components/fileViewer/FileViewerPanel'
+import { createFloatingViewerOutsideHandler } from './floatingViewerOutside'
 import { getApp, isWailsReady, subscribe } from '@/api/runtime'
 import { logger } from '@/lib/logger'
 
@@ -20,99 +21,11 @@ const COLLAPSED_WIDTH = 40
 const WINDOW_PERSIST_DEBOUNCE_MS = 400
 
 /**
- * Resolve the control that opened a Radix popper portal (dropdown menu, select,
- * popover, …). Radix renders such popovers in a portal at `document.body`, so a
- * plain `node.contains(target)` check can't tell that the popover logically
- * belongs to a control inside the floating viewer — which would collapse the
- * viewer the moment one of its popovers opens (e.g. the review/file hunk
- * comboboxes). The portal wrapper holds the content element; Radix pairs that
- * content with its trigger via `id` / `aria-controls`, so we walk back to the
- * trigger and re-test containment against the viewer.
+ * The outside-pointer/focus collapse rules for the floating viewer (including
+ * the Radix portal heuristics and the focus-restore guard) live in
+ * ./floatingViewerOutside.ts — extracted so they are unit-testable without
+ * rendering the app shell.
  */
-function resolveRadixPortalTrigger(target: Node | null): Element | null {
-  const element = target instanceof Element ? target : (target?.parentElement ?? null)
-  const wrapper = element?.closest('[data-radix-popper-content-wrapper]')
-  if (!wrapper) return null
-  const content = wrapper.firstElementChild
-  if (!(content instanceof HTMLElement) || !content.id) return null
-  return document.querySelector(`[aria-controls="${content.id}"]`)
-}
-
-/** Whether a node is the document root (`<body>`/`<html>`). */
-function isDocumentRoot(node: Node): boolean {
-  return node === document.body || node === document.documentElement
-}
-
-/** Extract viewport client coordinates from a pointer/mouse event, if present. */
-function getClientPoint(event: Event): { x: number; y: number } | null {
-  const e = event as { clientX?: number; clientY?: number }
-  if (typeof e.clientX === 'number' && typeof e.clientY === 'number') {
-    return { x: e.clientX, y: e.clientY }
-  }
-  return null
-}
-
-/**
- * Whether an open Radix popper (menu/select/popover) whose trigger lives inside
- * the viewer is currently mounted. While one is open, Radix's modal layer sets
- * `pointer-events: none` on `<body>` and, on dismissal, briefly moves focus to
- * the document root before restoring it to the trigger — both surface as events
- * whose target is `<body>`/`<html>`, which must not collapse the viewer.
- */
-function hasOpenRadixPopupInside(viewer: HTMLElement): boolean {
-  const wrappers = document.querySelectorAll('[data-radix-popper-content-wrapper]')
-  for (const wrapper of wrappers) {
-    const content = wrapper.firstElementChild
-    if (!(content instanceof HTMLElement) || !content.id) continue
-    if (content.getAttribute('data-state') !== 'open') continue
-    const trigger = document.querySelector(`[aria-controls="${content.id}"]`)
-    if (trigger && viewer.contains(trigger)) return true
-  }
-  return false
-}
-
-/**
- * Whether a pointer/focus event is considered "inside" the floating viewer:
- *  - directly in its DOM subtree, or
- *  - inside a Radix portal whose trigger (the `aria-controls` owner) is inside
- *    the viewer, or
- *  - a `pointerdown` whose coordinates land over the viewer — Radix modal
- *    popovers redirect the target to the document root by disabling pointer
- *    events on `<body>`, so the *target* is unreliable while the *point* is
- *    still over the viewer (this is what makes a re-click on a hunk combobox
- *    collapse the panel), or
- *  - a `focusin` on the document root while a viewer-anchored popup is open
- *    (Radix restores focus to the trigger a tick later; the root focus is a
- *    transient artefact of closing the popup).
- */
-function isInsideViewer(target: Node, viewer: HTMLElement, event?: Event): boolean {
-  if (viewer.contains(target)) return true
-
-  const trigger = resolveRadixPortalTrigger(target)
-  if (trigger !== null && viewer.contains(trigger)) return true
-
-  if (event?.type === 'pointerdown') {
-    const point = getClientPoint(event)
-    if (point) {
-      const rect = viewer.getBoundingClientRect()
-      if (
-        point.x >= rect.left &&
-        point.x <= rect.right &&
-        point.y >= rect.top &&
-        point.y <= rect.bottom
-      ) {
-        return true
-      }
-    }
-  }
-
-  if (event?.type === 'focusin' && isDocumentRoot(target) && hasOpenRadixPopupInside(viewer)) {
-    return true
-  }
-
-  return false
-}
-
 export function AppLayout() {
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useUIStore((s) => s.toggleSidebarCollapsed)
@@ -194,20 +107,18 @@ export function AppLayout() {
   // keyboard) lands anywhere outside it. Disabled while pinned or already
   // collapsed. This keeps the floating panel from permanently covering the
   // chat on narrow displays — it recedes as soon as the user works elsewhere.
-  // Radix popovers opened from inside the viewer render in a portal outside its
-  // DOM subtree; `isInsideViewer` accounts for them so interacting with their
-  // content (e.g. picking a hunk) — and re-clicking the trigger to close them —
-  // doesn't collapse the panel.
+  // The decision rules (Radix popper portal heuristics + the guard that only
+  // an actual focus *exit* from the viewer collapses it — Radix menus restore
+  // focus to their trigger a tick after an item's onSelect opened the viewer)
+  // live in ./floatingViewerOutside.ts. The handler is recreated on every
+  // re-expansion, which resets its "viewer held focus" state.
   const floating = !viewerPinned && !viewerCollapsed
   useEffect(() => {
     if (!floating) return
-    const node = floatingViewerRef.current
-    const handleOutside = (e: Event) => {
-      const target = e.target as Node | null
-      if (node && target && !isInsideViewer(target, node, e)) {
-        setViewerCollapsed(true)
-      }
-    }
+    const handleOutside = createFloatingViewerOutsideHandler(
+      () => floatingViewerRef.current,
+      () => setViewerCollapsed(true),
+    )
     document.addEventListener('pointerdown', handleOutside)
     document.addEventListener('focusin', handleOutside)
     return () => {

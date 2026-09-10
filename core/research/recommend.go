@@ -1,5 +1,9 @@
 package research
 
+import (
+	"strings"
+)
+
 // RecommendNextStep derives the single recommended next research action for a
 // research project from its current phase — encoded entirely in the project's
 // hypothesis-graph metrics and report flag. It is a pure function (no I/O)
@@ -108,5 +112,54 @@ func RecommendNextStep(project *ResearchProject) Recommendation {
 		Action: ActionDecision,
 		Reason: "all hypotheses are decided and the report exists — decide the next direction (continue/pivot/kill/fork)",
 		Skill:  string(ActionDecision),
+	}
+}
+
+// RecommendNextStepForHypothesis derives the recommendation like
+// RecommendNextStep, but scoped to a specific hypothesis: when a particular
+// hypothesis is selected (the dashboard's current card), the next action
+// targets THAT hypothesis rather than the project-wide front. It is a pure
+// function (no I/O), like RecommendNextStep.
+//
+// The hypothesis-scoped precedence is:
+//
+//  1. no project, no/unknown hypothesis ID, or a hypothesis that is not in
+//     the project's graph → the plain RecommendNextStep result
+//  2. open / in-progress hypothesis → research-experiment on it (it is on
+//     the active front by definition)
+//  3. terminal hypothesis with no recorded Decision → research-decision on
+//     it (its results await an iteration decision: continue / pivot / kill /
+//     fork)
+//  4. otherwise (a terminal hypothesis already carrying a Decision) → the
+//     plain RecommendNextStep result
+func RecommendNextStepForHypothesis(project *ResearchProject, hypothesisID string) Recommendation {
+	if project == nil {
+		return RecommendNextStep(nil)
+	}
+	id := NormalizeID(hypothesisID)
+	if id == "" {
+		return RecommendNextStep(project)
+	}
+	node := project.Graph.Node(id)
+	if node == nil {
+		return RecommendNextStep(project)
+	}
+	switch {
+	case node.Status.IsActive():
+		return Recommendation{
+			Action: ActionExperiment,
+			Target: node.ID,
+			Reason: "hypothesis " + node.ID + " is " + string(node.Status) + " — run an experiment against it",
+			Skill:  string(ActionExperiment),
+		}
+	case node.Status.IsTerminal() && strings.TrimSpace(node.Decision) == "":
+		return Recommendation{
+			Action: ActionDecision,
+			Target: node.ID,
+			Reason: "hypothesis " + node.ID + " is " + string(node.Status) + " with no recorded decision — review its results and decide the next direction (continue/pivot/kill/fork)",
+			Skill:  string(ActionDecision),
+		}
+	default:
+		return RecommendNextStep(project)
 	}
 }

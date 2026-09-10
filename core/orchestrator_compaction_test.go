@@ -45,9 +45,12 @@ func (s *compactionSpyEmitter) ContextFill(percent float64, used, maxTokens int,
 // a model registry with a 1000-token test model, and configurable compaction
 // settings + LLM caller.
 //
-// Token-budget arithmetic shared by the tests below: window 1000 − output
-// limit 100 − safety margin 5% (50) → effective base 850; the unset
-// ManualTargetPercent falls back to 30 → SDK budget 850×30/100 = 255 tokens.
+// Manual compaction is PURELY STRUCTURAL: each strategy applies its
+// message-count window (sliding KeepFirst+KeepLast, summarization KeepLast,
+// hierarchical ratios) — token counts never gate the no-op decision. With the
+// harness config (sliding 2+4, summarization keep_last 4) the per-strategy
+// verbatim floors are: sliding 6, summarization 4, hierarchical 2 (default
+// ratios 0.4/0.3).
 func newCompactionTestOrchestrator(llmCaller interface {
 	Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error)
 }) (*Orchestrator, *compactionSpyEmitter) {
@@ -69,7 +72,8 @@ func newCompactionTestOrchestrator(llmCaller interface {
 			// 1000-token window in the effective-base math.
 			"test-model": {ContextWindow: 1000, OutputLimit: 100, Family: "test"},
 		}),
-		config: cfg,
+		config:             cfg,
+		compactionForecast: resolveCompactionForecast(BuilderCompactionForecast{}),
 	}
 	if llmCaller != nil {
 		o.llm = llmCaller
@@ -88,31 +92,17 @@ func compactionHistory(n int) []llm.Message {
 	return msgs
 }
 
-// lightHistory builds pairs of tiny messages ("hi!" ≈ 6/8 tokens) for
-// token-budget no-op tests: many messages, few tokens — 17 pairs (34
-// messages) total ≈ 238 tokens, under the 255-token budget yet far past the
-// count-based window (KeepFirst+KeepLast = 6).
+// lightHistory builds pairs of tiny messages ("hi!" ≈ 6/8 tokens). Under the
+// OLD token-budget semantics many such messages (17 pairs = 34 messages ≈ 238
+// tokens) were a no-op because the token count fit the 30% budget; under the
+// NEW purely-structural semantics the message COUNT decides, so the same
+// 34-message history is compactable by every strategy.
 func lightHistory(pairs int) []llm.Message {
 	msgs := make([]llm.Message, 0, pairs*2)
 	for i := 0; i < pairs; i++ {
 		msgs = append(msgs,
 			llm.Message{Role: "user", Content: "hi!"},
 			llm.Message{Role: "assistant", Content: "hi!"},
-		)
-	}
-	return msgs
-}
-
-// heavyHistory builds pairs of heavy messages sized by contentChars: 380
-// chars → ~100/102 tokens per message (~202/pair); 192 chars → ~53/55
-// tokens per message (~108/pair).
-func heavyHistory(pairs, contentChars int) []llm.Message {
-	body := strings.Repeat("x", contentChars)
-	msgs := make([]llm.Message, 0, pairs*2)
-	for i := 0; i < pairs; i++ {
-		msgs = append(msgs,
-			llm.Message{Role: "user", Content: body},
-			llm.Message{Role: "assistant", Content: body},
 		)
 	}
 	return msgs
@@ -153,8 +143,8 @@ func TestCompactConversationHistory_UnknownStrategyKeepsHistory(t *testing.T) {
 
 func TestCompactConversationHistory_NoOpReturnsErrNothingCompacted(t *testing.T) {
 	o, spy := newCompactionTestOrchestrator(nil)
-	// 4 messages ≈ 144 tokens — within the 255-token budget (30% of the
-	// 850-token effective window): token-budget mode returns them verbatim.
+	// 4 messages — within sliding's 2+4 window: structural mode returns them
+	// verbatim (the prediction's WillCompact is exact and false).
 	hist := compactionHistory(2)
 	o.SetConversationHistory(hist)
 
@@ -174,100 +164,27 @@ func TestCompactConversationHistory_NoOpReturnsErrNothingCompacted(t *testing.T)
 	}
 }
 
-// TestCompactConversationHistory_LongLightHistoryWithinTargetIsNoOp pins the
-// token-budget no-op semantics: a LONG but LIGHT history — 34 messages
-// totaling ≈238 tokens, under the 255-token budget (30% of the 850-token
-// effective window) yet far past the count-based window (KeepFirst+KeepLast
-// = 6) — must return ErrNothingCompacted. In token-budget mode the no-op
-// decision is made on tokens alone; the message count is irrelevant.
-func TestCompactConversationHistory_LongLightHistoryWithinTargetIsNoOp(t *testing.T) {
+// TestCompactConversationHistory_LongLightHistoryCompacts pins the fix that
+// the whole refactor exists for: a LONG but LIGHT history — 34 messages, tiny
+// tokens — must compact. The OLD token-budget gate (30% of the window) made
+// this a no-op because the TOKEN count fit the budget even though the MESSAGE
+// count far exceeded every strategy's window; the new purely-structural mode
+// decides on message counts, so it compacts.
+func TestCompactConversationHistory_LongLightHistoryCompacts(t *testing.T) {
 	o, spy := newCompactionTestOrchestrator(nil)
-	hist := lightHistory(17) // 34 messages ≈ 238 tokens ≤ 255 budget
-	o.SetConversationHistory(hist)
-
-	before, after, err := o.CompactConversationHistory(context.Background(), "sliding_window")
-	if !errors.Is(err, ErrNothingCompacted) {
-		t.Fatalf("expected ErrNothingCompacted for a history within the target budget, got %v", err)
-	}
-	if before != 0 || after != 0 {
-		t.Errorf("no-op must return zero percentages, got %.1f/%.1f", before, after)
-	}
-	if got := o.ConversationHistory(); len(got) != len(hist) {
-		t.Fatalf("history must be untouched on no-op, got %d of %d messages", len(got), len(hist))
-	}
-	if len(spy.compactions) != 0 || len(spy.fills) != 0 {
-		t.Fatal("no events may be emitted when nothing was compacted")
-	}
-}
-
-// TestCompactConversationHistory_ShortHeavyHistoryAboveTargetCompacts is the
-// budget wiring's core scenario: a SHORT but HEAVY history — 6 messages ≈606
-// tokens, exactly at the count-based window (KeepFirst 2 + KeepLast 4, where
-// the count-based fallback would no-op) yet far over the 255-token budget —
-// must compact, and the result must land within the target on both bases
-// (afterPercent ≤ 30).
-func TestCompactConversationHistory_ShortHeavyHistoryAboveTargetCompacts(t *testing.T) {
-	o, spy := newCompactionTestOrchestrator(nil)
-	hist := heavyHistory(3, 380) // 6 messages ≈ 606 tokens > 255 budget
+	hist := lightHistory(17) // 34 messages
 	o.SetConversationHistory(hist)
 
 	before, after, err := o.CompactConversationHistory(context.Background(), "sliding_window")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("a 34-message history must compact in structural mode, got %v", err)
 	}
 	got := o.ConversationHistory()
 	if len(got) >= len(hist) {
-		t.Fatalf("an over-budget history must compact, got %d of %d messages", len(got), len(hist))
+		t.Fatalf("a 34-message history must compact, got %d of %d messages", len(got), len(hist))
 	}
 	if got[len(got)-1].Content != hist[len(hist)-1].Content {
 		t.Error("last message must be preserved")
-	}
-	// afterPercent ≤ target: the compacted history fits the budget (the
-	// effective-base target); the display-base return value is computed
-	// against the LARGER advertised window, so it is within the target too.
-	const budgetTokens = 255 // 850 × 30%
-	if gotTokens := llm.NewSimpleTokenCounter().CountMessages(got); gotTokens > budgetTokens {
-		t.Errorf("compacted history must fit the %d-token budget, got %d", budgetTokens, gotTokens)
-	}
-	if after > defaultManualTargetPercent {
-		t.Errorf("after percent %.2f exceeds the %d%% target", after, defaultManualTargetPercent)
-	}
-	if before <= after {
-		t.Errorf("expected fill reduction, got %.1f → %.1f", before, after)
-	}
-	if len(spy.compactions) != 1 || len(spy.fills) != 1 {
-		t.Error("a real compaction must emit the compaction card + refreshed fill")
-	}
-}
-
-// TestCompactConversationHistory_TwelveHeavyMessagesAt75PercentWindowCompacts
-// pins the acceptance scenario "12 heavy messages ≈75% of the window": 12
-// messages ≈648 tokens ≈ 76% of the 850-token effective window — below the
-// executor's compaction thresholds, but over the 30% manual target (255
-// tokens) — so a user-triggered compaction must actually compact it and land
-// within the target.
-func TestCompactConversationHistory_TwelveHeavyMessagesAt75PercentWindowCompacts(t *testing.T) {
-	o, spy := newCompactionTestOrchestrator(nil)
-	hist := heavyHistory(6, 192) // 12 messages ≈ 648 tokens ≈ 76% of 850
-	o.SetConversationHistory(hist)
-
-	before, after, err := o.CompactConversationHistory(context.Background(), "sliding_window")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	got := o.ConversationHistory()
-	if len(got) >= len(hist) {
-		t.Fatalf("a ~75%%-fill history is over the 30%% target and must compact, got %d of %d messages", len(got), len(hist))
-	}
-	if got[len(got)-1].Content != hist[len(hist)-1].Content {
-		t.Error("last message must be preserved")
-	}
-	const budgetTokens = 255 // 850 × 30%
-	if gotTokens := llm.NewSimpleTokenCounter().CountMessages(got); gotTokens > budgetTokens {
-		t.Errorf("compacted history must fit the %d-token budget, got %d", budgetTokens, gotTokens)
-	}
-	if after > defaultManualTargetPercent {
-		t.Errorf("after percent %.2f exceeds the %d%% target", after, defaultManualTargetPercent)
 	}
 	if before <= after {
 		t.Errorf("expected fill reduction, got %.1f → %.1f", before, after)
@@ -287,15 +204,11 @@ func TestCompactConversationHistory_SlidingWindowReplacesHistoryAndEmits(t *test
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// History replaced — token-budget mode sizes the verbatim zones as budget
-	// shares (budget 255, harness arithmetic in newCompactionTestOrchestrator):
-	// head share 0.15×255 = 38 tokens fits only the 32-token first message
-	// (the 40-token second busts it) → 1 head; tail share 0.8×255 = 204 fits
-	// the 4-message (144-token) tail capped at KeepLast=4. Result:
-	// 1 head + 1 omission note + 4 tail = 6 messages.
+	// History replaced — structural mode sizes the window in MESSAGES:
+	// keepFirst 2 + omission note + keepLast 4 = 7 messages.
 	got := o.ConversationHistory()
-	if len(got) != 6 {
-		t.Fatalf("expected 6 compacted messages, got %d", len(got))
+	if len(got) != 7 {
+		t.Fatalf("expected 7 compacted messages (2 head + note + 4 tail), got %d", len(got))
 	}
 	if got[len(got)-1].Content != hist[len(hist)-1].Content {
 		t.Error("last message must be preserved")
@@ -342,29 +255,37 @@ func TestCompactConversationHistory_SlidingWindowReplacesHistoryAndEmits(t *test
 	}
 }
 
-// TestCompactConversationHistory_NilTokenCounterSkipsNoOpDetection verifies
-// the no-op detection guard: without a token counter the token equality is
-// vacuous (0 == 0) and the check would degrade to length-only, misclassifying
-// a real same-length content-rewriting compaction as a no-op and silently
-// dropping it. The guard skips the detection entirely — the compacted history
-// is always swapped and the events emitted; an identical result is a harmless
-// idempotent swap.
-func TestCompactConversationHistory_NilTokenCounterSkipsNoOpDetection(t *testing.T) {
+// TestCompactConversationHistory_NilTokenCounterStillCompacts verifies the
+// structural no-op decision does not need a token counter: the prediction's
+// WillCompact is exact regardless. A nil counter still compacts an
+// over-window history (reporting zero percentages) and still returns
+// ErrNothingCompacted for an under-window one.
+func TestCompactConversationHistory_NilTokenCounterStillCompacts(t *testing.T) {
 	o, spy := newCompactionTestOrchestrator(nil)
 	o.tokenCounter = nil
-	hist := compactionHistory(2) // 4 messages — within KeepFirst(2)+KeepLast(4): nothing would drop
-	o.SetConversationHistory(hist)
 
+	// Under the window (4 messages ≤ sliding 6): structural no-op.
+	hist := compactionHistory(2)
+	o.SetConversationHistory(hist)
+	if _, _, err := o.CompactConversationHistory(context.Background(), "sliding_window"); !errors.Is(err, ErrNothingCompacted) {
+		t.Fatalf("under-window history must no-op without a counter, got %v", err)
+	}
+	if len(spy.compactions) != 0 || len(spy.fills) != 0 {
+		t.Fatal("no events may be emitted for a no-op")
+	}
+
+	// Over the window: compacts, zero percentages (no counter → unknown).
+	hist = compactionHistory(30)
+	o.SetConversationHistory(hist)
 	before, after, err := o.CompactConversationHistory(context.Background(), "sliding_window")
 	if err != nil {
-		t.Fatalf("nil token counter must skip the no-op detection, got error: %v", err)
+		t.Fatalf("over-window history must compact without a counter, got %v", err)
 	}
-	if len(spy.compactions) != 1 || len(spy.fills) != 1 {
-		t.Error("events must be emitted when the no-op detection is skipped")
-	}
-	// No counter → no token counts → both percentage bases report unknown (0).
 	if before != 0 || after != 0 {
 		t.Errorf("expected 0 percentages without a token counter, got %.1f/%.1f", before, after)
+	}
+	if len(spy.compactions) != 1 || len(spy.fills) != 1 {
+		t.Error("events must be emitted for a real compaction")
 	}
 }
 
@@ -434,12 +355,76 @@ func TestCompactConversationHistory_ZeroWindowYieldsZeroPercent(t *testing.T) {
 	if len(spy.compactions) != 1 || len(spy.fills) != 1 {
 		t.Error("events must still be emitted without a known window")
 	}
-	// Unknown window → budget 0 → sp4rk's count-based fallback with the exact
-	// pre-budget behavior: the count-mode window shape (2 head + 1 note +
-	// 4 tail = 7 messages), not a budget-share shape.
+	// Structural window is independent of the model window: 2 head + note +
+	// 4 tail = 7 messages.
 	if got := o.ConversationHistory(); len(got) != 7 {
-		t.Errorf("unknown window must keep the count-mode behavior: expected 7 messages, got %d", len(got))
+		t.Errorf("structural window must not depend on the model window: expected 7 messages, got %d", len(got))
 	}
+}
+
+// fixedCounter is a deterministic token counter for refine tests: every message
+// counts as exactly `fixedCounter` tokens, so zone token sums are controlled by
+// message counts alone.
+type fixedCounter int
+
+func (c fixedCounter) Count(_ string) int                   { return int(c) }
+func (c fixedCounter) CountMessages(msgs []llm.Message) int { return int(c) * len(msgs) }
+
+// TestRefineCompactionForecast pins the EWMA calibration: a summarization
+// compaction whose summaries occupied half the summarized input refines the
+// SummarizationRatio toward 0.5; hierarchical refines the distant and middle
+// ratios INDEPENDENTLY from their own zones' observed ratios; sliding_window
+// never calibrates; a zero summarized-input leaves the forecast untouched.
+func TestRefineCompactionForecast(t *testing.T) {
+	o, _ := newCompactionTestOrchestrator(nil)
+	o.tokenCounter = fixedCounter(100)
+
+	// summarization: 10 messages (1000 tokens), 200 verbatim → 800 summarized;
+	// 6-message output (600 tokens) → summaries at 400 → observed 0.5.
+	o.refineCompactionForecast("summarization", fixedMessages(10), fixedMessages(6), 200)
+	got := o.CompactionForecast()
+	// EWMA from the 0.3 seed: 0.3 + 0.3*(0.5-0.3) = 0.36.
+	if math.Abs(got.SummarizationRatio-0.36) > 0.0001 {
+		t.Errorf("SummarizationRatio = %.4f, want 0.36", got.SummarizationRatio)
+	}
+
+	// hierarchical, default ratios 0.4/0.3/0.3 over 5 messages: distant=2,
+	// middle=1, recent=2. Compacted = [1 distant summary] + [1 middle summary]
+	// + [2 recent verbatim] = 4 messages. With 100 tokens/message the distant
+	// zone observed ratio is 100/200 = 0.5 and the middle zone 100/100 = 1.0 —
+	// each field calibrates from its OWN zone, not one aggregate.
+	o.refineCompactionForecast("hierarchical", fixedMessages(5), fixedMessages(4), 200)
+	got = o.CompactionForecast()
+	// distant: 0.15 + 0.3*(0.5-0.15) = 0.255; middle: 0.3 + 0.3*(1.0-0.3) = 0.51.
+	if math.Abs(got.HierarchicalDistantRatio-0.255) > 0.0001 {
+		t.Errorf("HierarchicalDistantRatio = %.4f, want 0.255 (0.15 + 0.3*0.35)", got.HierarchicalDistantRatio)
+	}
+	if math.Abs(got.HierarchicalMiddleRatio-0.51) > 0.0001 {
+		t.Errorf("HierarchicalMiddleRatio = %.4f, want 0.51 (0.3 + 0.3*0.7)", got.HierarchicalMiddleRatio)
+	}
+
+	// sliding_window never calibrates.
+	before := o.CompactionForecast()
+	o.refineCompactionForecast("sliding_window", fixedMessages(10), fixedMessages(6), 200)
+	if o.CompactionForecast() != before {
+		t.Error("sliding_window must not calibrate the forecast")
+	}
+
+	// Zero summarized input → nothing to learn (2 messages = 200 tokens, all
+	// verbatim).
+	before = o.CompactionForecast()
+	o.refineCompactionForecast("summarization", fixedMessages(2), fixedMessages(2), 200)
+	if o.CompactionForecast() != before {
+		t.Error("zero summarized input must leave the forecast untouched")
+	}
+}
+
+func fixedMessages(n int) []llm.Message {
+	msgs := make([]llm.Message, n)
+	for i := range msgs {
+		msgs[i] = llm.Message{Role: "user", Content: "x"}
+	}
+	return msgs
 }
 
 // compactionSummarizePromptForTest mirrors the embedded prompt identity used
@@ -449,170 +434,113 @@ func compactionSummarizePromptForTest() string {
 	return coreprompts.CompactionSummarize
 }
 
-func TestManualCompactionWouldNoOp_EmptyHistory(t *testing.T) {
-	o, _ := newCompactionTestOrchestrator(nil)
-	if !o.ManualCompactionWouldNoOp() {
-		t.Error("empty history must predict a no-op (nothing to compact)")
+// availability returns the availability entry for the named strategy, failing
+// the test if it is absent.
+func availability(t *testing.T, avail []CompactionAvailability, strategy string) CompactionAvailability {
+	t.Helper()
+	for _, a := range avail {
+		if a.Strategy == strategy {
+			return a
+		}
 	}
-	// The empty verdict holds in the fallback mode too (no registry).
-	o.modelRegistry = nil
-	if !o.ManualCompactionWouldNoOp() {
-		t.Error("empty history must predict a no-op in the fallback mode too")
+	t.Fatalf("strategy %q not present in availability %+v", strategy, avail)
+	return CompactionAvailability{}
+}
+
+func TestManualCompactionAvailability_EmptyHistory(t *testing.T) {
+	o, _ := newCompactionTestOrchestrator(nil)
+	avail := o.ManualCompactionAvailability()
+	if len(avail) != 3 {
+		t.Fatalf("expected 3 strategies, got %d", len(avail))
+	}
+	for _, a := range avail {
+		if a.Available {
+			t.Errorf("%s: empty history must not be available", a.Strategy)
+		}
 	}
 }
 
-func TestManualCompactionWouldNoOp_BudgetMode(t *testing.T) {
+func TestManualCompactionAvailability_ShortHistoryAllUnavailable(t *testing.T) {
+	// 2 messages: under every strategy's window (sliding 6, summarization 4,
+	// hierarchical 2) — nothing is available.
 	o, _ := newCompactionTestOrchestrator(nil)
-	// Budget arithmetic (see harness comment): effective base 850, unset
-	// target → 30 → budget 255 tokens.
-	// 34 light messages ≈ 238 tokens ≤ 255 — within budget → no-op.
-	o.SetConversationHistory(lightHistory(17))
-	if !o.ManualCompactionWouldNoOp() {
-		t.Error("history within the token budget must predict a no-op")
-	}
-	// 6 heavy messages ≈ 606 tokens > 255 — above budget → would compact.
-	o.SetConversationHistory(heavyHistory(3, 380))
-	if o.ManualCompactionWouldNoOp() {
-		t.Error("history above the token budget must not predict a no-op")
-	}
-}
-
-func TestManualCompactionWouldNoOp_FallbackMode(t *testing.T) {
-	// Unknown window (no registry): the count-mode fallback, predicted by
-	// the conservative length bound len ≤ 2.
-	o, _ := newCompactionTestOrchestrator(nil)
-	o.modelRegistry = nil
 	o.SetConversationHistory(lightHistory(1)) // 2 messages
-	if !o.ManualCompactionWouldNoOp() {
-		t.Error("two messages without a known window must predict a no-op")
-	}
-	o.SetConversationHistory(lightHistory(2)) // 4 messages — token-trivial but long
-	if o.ManualCompactionWouldNoOp() {
-		t.Error("more than two messages without a known window must not predict a no-op")
-	}
-
-	// Nil token counter: same fallback bound even with a known window (the
-	// SDK cannot run budget mode without a counter).
-	o2, _ := newCompactionTestOrchestrator(nil)
-	o2.tokenCounter = nil
-	o2.SetConversationHistory(lightHistory(1))
-	if !o2.ManualCompactionWouldNoOp() {
-		t.Error("nil counter must fall back to the strategy-zone bound: 2 messages → no-op")
-	}
-	o2.SetConversationHistory(lightHistory(2))
-	if o2.ManualCompactionWouldNoOp() {
-		t.Error("nil counter must fall back to the strategy-zone bound: 4 messages → not a no-op")
+	for _, a := range o.ManualCompactionAvailability() {
+		if a.Available {
+			t.Errorf("%s: 2 messages must be unavailable", a.Strategy)
+		}
 	}
 }
 
-func TestManualCompactionWouldNoOp_TinyWindowBudgetRoundsToZero(t *testing.T) {
-	// A window so tiny the budget rounds to zero runs the real compaction in
-	// the count-mode fallback — the predicate must mirror that (the
-	// strategy-zone bound), not the (vacuous) token comparison against
-	// budget 0.
+func TestManualCompactionAvailability_PerStrategyVerdicts(t *testing.T) {
+	// 34 light messages: over EVERY window — all three available. Reclaim is
+	// positive and sliding is exact (dry run) while the LLM strategies are
+	// forecasts.
 	o, _ := newCompactionTestOrchestrator(nil)
-	o.modelRegistry = llm.NewModelRegistry(map[string]llm.ModelMetadata{
-		// 10 − 7 output − 10×5% safety (=0) → effective 3; 3×30/100 = 0.
-		"test-model": {ContextWindow: 10, OutputLimit: 7, Family: "test"},
-	})
-	o.SetConversationHistory(lightHistory(1)) // len 2
-	if !o.ManualCompactionWouldNoOp() {
-		t.Error("zero budget on a tiny window must use the strategy-zone fallback: 2 messages → no-op")
+	o.SetConversationHistory(lightHistory(17)) // 34 messages
+
+	avail := o.ManualCompactionAvailability()
+	for _, a := range avail {
+		if !a.Available {
+			t.Errorf("%s: 34 messages must be available", a.Strategy)
+		}
+		if a.ReclaimTokens <= 0 {
+			t.Errorf("%s: expected positive reclaim, got %d", a.Strategy, a.ReclaimTokens)
+		}
 	}
-	o.SetConversationHistory(lightHistory(2)) // len 4
-	if o.ManualCompactionWouldNoOp() {
-		t.Error("zero budget on a tiny window must use the strategy-zone fallback: 4 messages → not a no-op")
+	if got := availability(t, avail, "sliding_window"); !got.Exact {
+		t.Error("sliding_window reclaim must be exact (dry run)")
+	}
+	if got := availability(t, avail, "summarization"); got.Exact {
+		t.Error("summarization reclaim must be a forecast (not exact)")
+	}
+	if got := availability(t, avail, "hierarchical"); got.Exact {
+		t.Error("hierarchical reclaim must be a forecast (not exact)")
 	}
 }
 
-func TestManualCompactionWouldNoOp_FallbackBoundTracksStrategyZones(t *testing.T) {
-	// The fallback bound is the MINIMUM of the strategies' verbatim floors,
-	// each resolved with sp4rk's zero-value defaults. With the harness
-	// config (sliding 2+4, summarization keep_last 4, hierarchical default
-	// ratios 0.4/0.3) the floors are 6/4/2 → bound 2 — the same verdicts as
-	// the old hard-coded 2, now derived from the config.
+func TestManualCompactionAvailability_StructuralVerdictIndependentOfWindow(t *testing.T) {
+	// The availability is structural — a known model window does NOT change
+	// it. A 34-message history is compactable with and without a registry.
 	o, _ := newCompactionTestOrchestrator(nil)
-	o.modelRegistry = nil // unknown window → count-mode fallback
-	if got := o.manualCompactionNoOpLength(); got != 2 {
-		t.Fatalf("default-zone bound = %d, want 2 (min of sliding 6, summarization 4, hierarchical 2)", got)
-	}
+	o.SetConversationHistory(lightHistory(17))
 
-	// Exotic zone: summarization keep_last 1 tightens the bound to 1 — a
-	// two-message history is genuinely compactable (its first message gets
-	// summarized), so the button must stay enabled instead of being
-	// disabled by a stale hard-coded 2.
-	o.config.Compaction.Summarization.KeepLast = 1
-	if got := o.manualCompactionNoOpLength(); got != 1 {
-		t.Fatalf("summarization keep_last=1 bound = %d, want 1", got)
-	}
-	o.SetConversationHistory(lightHistory(1)) // len 2
-	if o.ManualCompactionWouldNoOp() {
-		t.Error("2 messages must NOT predict a no-op when summarization keep_last=1 — the history is compactable")
-	}
+	withWindow := o.ManualCompactionAvailability()
+	o.modelRegistry = nil
+	withoutWindow := o.ManualCompactionAvailability()
 
-	// Exotic ratio: a hierarchical distant ratio ≥ 0.5 fills the distant
-	// zone at n=2, dropping that floor to 1 as well.
-	o2, _ := newCompactionTestOrchestrator(nil)
-	o2.modelRegistry = nil
-	o2.config.Compaction.Hierarchical.DistantRatio = 0.5
-	if got := o2.manualCompactionNoOpLength(); got != 1 {
-		t.Fatalf("hierarchical distant_ratio=0.5 bound = %d, want 1", got)
-	}
-
-	// Wider zones widen the bound: tiny hierarchical ratios (0.1/0.1 →
-	// floor 9) with the default 2+4/keep_last 4 zones lift the bound to
-	// min(6, 4, 9) = 4 — a 4-message history is verbatim under every
-	// strategy, so the prediction correctly disables the button.
-	o3, _ := newCompactionTestOrchestrator(nil)
-	o3.modelRegistry = nil
-	o3.config.Compaction.Hierarchical.DistantRatio = 0.1
-	o3.config.Compaction.Hierarchical.MiddleRatio = 0.1
-	if got := o3.manualCompactionNoOpLength(); got != 4 {
-		t.Fatalf("widened-zone bound = %d, want 4 (min of sliding 6, summarization 4, hierarchical 9)", got)
-	}
-	o3.SetConversationHistory(lightHistory(2)) // len 4
-	if !o3.ManualCompactionWouldNoOp() {
-		t.Error("4 messages must predict a no-op when every strategy keeps them verbatim")
-	}
-	o3.SetConversationHistory(lightHistory(3)) // len 6 > summarization floor 4
-	if o3.ManualCompactionWouldNoOp() {
-		t.Error("6 messages exceed the summarization keep_last=4 floor → not a no-op")
+	for i := range withWindow {
+		if withWindow[i].Available != withoutWindow[i].Available {
+			t.Errorf("%s: availability must not depend on the model window (with=%v, without=%v)",
+				withWindow[i].Strategy, withWindow[i].Available, withoutWindow[i].Available)
+		}
 	}
 }
 
-func TestManualCompactionWouldNoOp_FallbackBoundSoundAgainstSDK(t *testing.T) {
-	// The bound must never claim a no-op for a history the SDK would really
-	// compact (fail-open is only sound when every claimed no-op is real):
-	// summarization with keep_last=1 rewrites a two-message history (the
-	// first message becomes a summary block), so the prediction must say
-	// "would compact" AND the real fallback-mode compaction must not return
-	// ErrNothingCompacted.
-	caller := &mockLLMCaller{
-		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			return &llm.ChatResponse{Message: llm.Message{Role: "assistant", Content: "SUMMARY"}}, nil
-		},
-	}
-	o, _ := newCompactionTestOrchestrator(caller)
-	o.modelRegistry = nil // unknown window → count-mode fallback for the real compaction too
+func TestManualCompactionAvailability_TracksStrategyConfig(t *testing.T) {
+	// Exotic config: summarization keep_last 1 makes a 2-message history
+	// compactable by summarization (the first message gets summarized) while
+	// sliding (2+4) and hierarchical (default ratios → floor 2) stay verbatim.
+	o, _ := newCompactionTestOrchestrator(nil)
 	o.config.Compaction.Summarization.KeepLast = 1
-	o.SetConversationHistory(lightHistory(1)) // len 2
+	o.SetConversationHistory(lightHistory(1)) // 2 messages
 
-	if o.ManualCompactionWouldNoOp() {
-		t.Fatal("predicted no-op, but keep_last=1 summarization rewrites a 2-message history")
+	avail := o.ManualCompactionAvailability()
+	if got := availability(t, avail, "summarization"); !got.Available {
+		t.Error("keep_last=1 summarization must be available for 2 messages")
 	}
-	if _, _, err := o.CompactConversationHistory(context.Background(), "summarization"); errors.Is(err, ErrNothingCompacted) {
-		t.Fatal("the SDK must really compact this history — the fail-open prediction was justified")
+	if got := availability(t, avail, "sliding_window"); got.Available {
+		t.Error("sliding (2+4) must stay unavailable for 2 messages")
 	}
 }
 
-func TestManualCompactionWouldNoOp_ConcurrentWithHistoryWriters(t *testing.T) {
-	// The predicate runs on Wails-RPC goroutines (the runtime status poll,
+func TestManualCompactionAvailability_ConcurrentWithHistoryWriters(t *testing.T) {
+	// The prediction runs on Wails-RPC goroutines (the runtime status poll,
 	// the post-flow recomputation after ResumeTask) while the request
 	// goroutine appends the outcome exchange — every read must go through
 	// historyMu. Hammer writers and readers concurrently; `go test -race`
 	// turns any unsynchronized access into a failure.
 	o, _ := newCompactionTestOrchestrator(nil)
-	o.modelRegistry = nil // fallback mode: full length/token walk over the snapshot
 
 	const writers, iterations = 4, 200
 	var wg sync.WaitGroup
@@ -622,7 +550,7 @@ func TestManualCompactionWouldNoOp_ConcurrentWithHistoryWriters(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < iterations; i++ {
 				o.appendHistory("", llm.Message{Role: "assistant", Content: "tick"})
-				_ = o.ManualCompactionWouldNoOp()
+				_ = o.ManualCompactionAvailability()
 				_ = o.historySnapshot()
 			}
 		}()
@@ -638,7 +566,7 @@ func TestModelIdentity_ConcurrentReadersAndWriters(t *testing.T) {
 	// The model-identity fields (config.Model / config.ReasoningEffort) are
 	// written by the request goroutine (ApplyRequestOverrides /
 	// SetReasoningEffort) and read from Wails-RPC goroutines (the runtime
-	// status poll → ManualCompactionWouldNoOp → contextBases) — the exact
+	// status poll → ManualCompactionAvailability → contextBases) — the exact
 	// cross-goroutine window historyMu covers for the history. All access
 	// goes through the modelMu-guarded accessors; `go test -race` turns any
 	// unsynchronized access into a failure.
@@ -664,35 +592,35 @@ func TestModelIdentity_ConcurrentReadersAndWriters(t *testing.T) {
 		_ = o.currentModel()
 		_ = o.currentReasoningEffort()
 		_, _ = o.contextBases()
-		_ = o.ManualCompactionWouldNoOp()
+		_ = o.ManualCompactionAvailability()
 	}
 	wg.Wait()
 }
 
-func TestManualCompactionWouldNoOp_AgreesWithCompactionOutcome(t *testing.T) {
-	// The prediction must match what CompactConversationHistory actually
-	// does: a predicted no-op returns ErrNothingCompacted; a predicted
-	// compaction succeeds (and afterwards the flag flips to true).
+func TestManualCompactionAvailability_AgreesWithCompactionOutcome(t *testing.T) {
+	// The per-strategy availability must match what CompactConversationHistory
+	// actually does: an unavailable strategy returns ErrNothingCompacted; an
+	// available one compacts.
 	o, _ := newCompactionTestOrchestrator(nil)
 
-	// Within budget → no-op both in prediction and in outcome.
-	o.SetConversationHistory(lightHistory(17))
-	if !o.ManualCompactionWouldNoOp() {
-		t.Fatal("setup: light history must predict a no-op")
+	// Under sliding's window → unavailable AND ErrNothingCompacted.
+	o.SetConversationHistory(lightHistory(2)) // 4 messages ≤ sliding 6
+	if got := availability(t, o.ManualCompactionAvailability(), "sliding_window"); got.Available {
+		t.Fatal("setup: 4 messages must be unavailable for sliding")
 	}
 	if _, _, err := o.CompactConversationHistory(context.Background(), "sliding_window"); !errors.Is(err, ErrNothingCompacted) {
-		t.Fatalf("predicted no-op but compaction returned %v", err)
+		t.Fatalf("unavailable strategy but compaction returned %v", err)
 	}
 
-	// Above budget → compacts, and the post-compaction state flips the flag.
-	o.SetConversationHistory(heavyHistory(3, 380))
-	if o.ManualCompactionWouldNoOp() {
-		t.Fatal("setup: heavy history must not predict a no-op")
+	// Over the window → available, compacts, and the history shrinks.
+	o.SetConversationHistory(lightHistory(17))
+	if got := availability(t, o.ManualCompactionAvailability(), "sliding_window"); !got.Available {
+		t.Fatal("setup: 34 messages must be available for sliding")
 	}
 	if _, _, err := o.CompactConversationHistory(context.Background(), "sliding_window"); err != nil {
-		t.Fatalf("predicted compaction failed: %v", err)
+		t.Fatalf("available strategy failed: %v", err)
 	}
-	if !o.ManualCompactionWouldNoOp() {
-		t.Error("after a successful compaction the compacted history must predict a no-op")
+	if got := len(o.ConversationHistory()); got >= 34 {
+		t.Fatalf("compaction must shrink the history, got %d", got)
 	}
 }

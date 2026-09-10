@@ -15,6 +15,15 @@ import (
 // Defined in core/types.go; re-exported here for convenience.
 const NoProjectID = core.NoProjectID
 
+// ResearchPins is the per-project set of pinned research artifacts shown in
+// the RESEARCH UI. Research lists pinned research document paths (relative to
+// the project's research root); Hypotheses maps a hypothesis id (H-NNN) to the
+// pinned card paths belonging to that hypothesis.
+type ResearchPins struct {
+	Research   []string            `json:"research"`
+	Hypotheses map[string][]string `json:"hypotheses"`
+}
+
 // ProjectInfo is the public-facing project metadata.
 type ProjectInfo struct {
 	ID            string `json:"id"`
@@ -27,6 +36,11 @@ type ProjectInfo struct {
 	// mode enabled. It is nil/empty when RESEARCH is disabled so the column
 	// stores NULL and the toggle survives restarts.
 	ResearchRoot string `json:"research_root"`
+	// ResearchPins holds the per-project pinned research artifacts for the
+	// RESEARCH UI: pinned document paths (Research) and pinned card paths per
+	// hypothesis id (Hypotheses). The zero value (or an all-empty value)
+	// persists as NULL so absent pins round-trip as absent.
+	ResearchPins ResearchPins `json:"research_pins"`
 	// IsResearch is a derived flag: true when this is a real project (not the
 	// No Project pseudo-project) with a non-empty ResearchRoot. It is computed
 	// on read (LoadProject/ListProjects), not persisted.

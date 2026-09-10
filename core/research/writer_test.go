@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -85,6 +86,47 @@ func TestSetFinding_ReplaceAndInsert(t *testing.T) {
 	}
 }
 
+func TestSetSection_ReplaceAndInsertAndClear(t *testing.T) {
+	card := "# H-001: Title\n\n## Statement\n\nold statement\n\n## Verification Criterion\n\nold criterion\n\n## Result\n\n**Finding:** —\n"
+
+	// Replace an existing section body, multi-line, verbatim.
+	got := setSection(card, "Statement", "line one\nline two")
+	if !strings.Contains(got, "## Statement\n\nline one\nline two\n\n## Verification Criterion") {
+		t.Fatalf("Statement not replaced:\n%s", got)
+	}
+	if strings.Contains(got, "old statement") {
+		t.Fatalf("old statement still present:\n%s", got)
+	}
+	// Later sections are preserved.
+	if !strings.Contains(got, "## Verification Criterion\n\nold criterion") {
+		t.Fatalf("later section clobbered:\n%s", got)
+	}
+
+	// Heading match mirrors the parser's Contains semantics (decorations ok).
+	got = setSection(card, "Verification Criterion", "new criterion")
+	if !strings.Contains(got, "## Verification Criterion\n\nnew criterion") {
+		t.Fatalf("decorated heading not matched:\n%s", got)
+	}
+
+	// Append a section that does not exist.
+	got2 := setSection(card, "Experiment Notes", "notes body")
+	if !strings.Contains(got2, "## Experiment Notes\n\nnotes body") {
+		t.Fatalf("Experiment Notes not appended:\n%s", got2)
+	}
+
+	// Clear to empty: the heading stays, the body goes.
+	got3 := setSection(card, "Statement", "")
+	if !strings.Contains(got3, "## Statement") {
+		t.Fatalf("Statement heading dropped:\n%s", got3)
+	}
+	if strings.Contains(got3, "old statement") {
+		t.Fatalf("body not cleared:\n%s", got3)
+	}
+	if !strings.Contains(got3, "## Verification Criterion") {
+		t.Fatalf("later section dropped on clear:\n%s", got3)
+	}
+}
+
 func TestUpdateMermaidNode_LabelAndClass(t *testing.T) {
 	graph := "```mermaid\ngraph TD\n    H001[\"H-001: Old title\"]:::open\n    H001 --> H002\n```\n"
 	title := "New title"
@@ -145,9 +187,12 @@ func TestAddMermaidNodeAndEdges(t *testing.T) {
 
 // setupProjectDir builds a minimal research project directory (nested layout)
 // with a brief, an hypotheses/graph.md, and a single open hypothesis card.
-func setupProjectDir(t *testing.T) string {
+// It returns the research root and the project directory under it, matching
+// the mutation entry points' (researchRoot, projectDir) signature.
+func setupProjectDir(t *testing.T) (root, dir string) {
 	t.Helper()
-	dir := filepath.Join(t.TempDir(), "R-001-test")
+	root = t.TempDir()
+	dir = filepath.Join(root, "R-001-test")
 	hypDir := filepath.Join(dir, "hypotheses")
 	if err := os.MkdirAll(hypDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -217,18 +262,21 @@ Recover >= 95% of modules.
 	if err := os.WriteFile(filepath.Join(hypDir, "H-001.md"), []byte(card), 0o644); err != nil {
 		t.Fatalf("card: %v", err)
 	}
-	return dir
+	if err := os.WriteFile(filepath.Join(hypDir, "H-001.md"), []byte(card), 0o644); err != nil {
+		t.Fatalf("card: %v", err)
+	}
+	return root, dir
 }
 
 func TestUpdateHypothesis_RoundTrip(t *testing.T) {
-	dir := setupProjectDir(t)
+	root, dir := setupProjectDir(t)
 
 	status := "in-progress"
 	title := "Refined bundle parsing"
 	result := "Recovered 97% of modules."
 	decision := "continue"
 	timebox := "8 days"
-	err := UpdateHypothesis(dir, "H-001", HypothesisUpdate{
+	err := UpdateHypothesis(root, dir, "H-001", HypothesisUpdate{
 		Status:   &status,
 		Title:    &title,
 		Result:   &result,
@@ -273,14 +321,14 @@ func TestUpdateHypothesis_RoundTrip(t *testing.T) {
 }
 
 func TestUpdateHypothesis_InvalidTransitionLeavesFilesUnchanged(t *testing.T) {
-	dir := setupProjectDir(t)
+	root, dir := setupProjectDir(t)
 
 	// First move open → confirmed directly (illegal: must go through in-progress).
 	cardBefore, _ := os.ReadFile(filepath.Join(dir, "hypotheses", "H-001.md"))
 	graphBefore, _ := os.ReadFile(filepath.Join(dir, "hypotheses", "graph.md"))
 
 	bad := "confirmed"
-	if err := UpdateHypothesis(dir, "H-001", HypothesisUpdate{Status: &bad}); err == nil {
+	if err := UpdateHypothesis(root, dir, "H-001", HypothesisUpdate{Status: &bad}); err == nil {
 		t.Fatal("expected error for open→confirmed, got nil")
 	}
 
@@ -295,19 +343,220 @@ func TestUpdateHypothesis_InvalidTransitionLeavesFilesUnchanged(t *testing.T) {
 }
 
 func TestUpdateHypothesis_MissingID(t *testing.T) {
-	dir := setupProjectDir(t)
-	if err := UpdateHypothesis(dir, "H-999", HypothesisUpdate{}); err == nil {
+	root, dir := setupProjectDir(t)
+	if err := UpdateHypothesis(root, dir, "H-999", HypothesisUpdate{}); err == nil {
 		t.Fatal("expected error for missing hypothesis id")
 	}
-	if err := UpdateHypothesis(dir, "bogus", HypothesisUpdate{}); err == nil {
+	if err := UpdateHypothesis(root, dir, "bogus", HypothesisUpdate{}); err == nil {
 		t.Fatal("expected error for invalid hypothesis id")
 	}
 }
 
-func TestCreateHypothesis_RoundTrip(t *testing.T) {
-	dir := setupProjectDir(t)
+// writeCardOnly writes a hypothesis card without touching graph.md — a
+// card-only hypothesis the reconciler still picks up (cards ∪ catalog ∪
+// Mermaid), used to exercise parent updates that must ADD a Mermaid node
+// definition.
+func writeCardOnly(t *testing.T, dir, id, title string) {
+	t.Helper()
+	card := "# " + id + ": " + title + "\n\n" +
+		"| Field | Value |\n|---|---|\n" +
+		"| **Identifier** | " + id + " |\n" +
+		"| **Status** | open |\n" +
+		"| **Timebox** | — |\n" +
+		"| **Parent(s)** | — |\n" +
+		"| **Created** | 2025-04-02 |\n" +
+		"| **Completed** | — |\n" +
+		"| **Decision** | — |\n\n" +
+		"## Statement\n\ns\n\n## Verification Criterion\n\nc\n\n" +
+		"## Experiment Notes\n\n*Not yet started.*\n\n## Result\n\n**Finding:** —\n"
+	if err := os.WriteFile(filepath.Join(dir, "hypotheses", id+".md"), []byte(card), 0o644); err != nil {
+		t.Fatalf("card %s: %v", id, err)
+	}
+}
 
-	id, err := CreateHypothesis(dir, NewHypothesis{
+func TestUpdateHypothesis_LongFormSectionsRoundTrip(t *testing.T) {
+	root, dir := setupProjectDir(t)
+
+	statement := "Multi-line statement.\n\nSecond paragraph."
+	criterion := "Recover >= 95% of modules\non the fixture corpus."
+	notes := "Run 1: crashed.\nRun 2: passed."
+	decision := "pivot"
+	err := UpdateHypothesis(root, dir, "H-001", HypothesisUpdate{
+		Statement:             &statement,
+		VerificationCriterion: &criterion,
+		ExperimentNotes:       &notes,
+		Decision:              &decision,
+	})
+	if err != nil {
+		t.Fatalf("UpdateHypothesis: %v", err)
+	}
+
+	proj, err := ParseProject(dir)
+	if err != nil {
+		t.Fatalf("ParseProject: %v", err)
+	}
+	n := proj.Graph.Node("H-001")
+	if n == nil {
+		t.Fatal("H-001 missing after update")
+	}
+	if n.Statement != statement {
+		t.Errorf("Statement = %q, want %q", n.Statement, statement)
+	}
+	if n.VerificationCriterion != criterion {
+		t.Errorf("VerificationCriterion = %q, want %q", n.VerificationCriterion, criterion)
+	}
+	if n.ExperimentNotes != notes {
+		t.Errorf("ExperimentNotes = %q, want %q", n.ExperimentNotes, notes)
+	}
+	if n.Decision != decision {
+		t.Errorf("Decision = %q, want %q", n.Decision, decision)
+	}
+
+	// Clearing a section round-trips to empty (placeholder semantics).
+	empty := ""
+	if err := UpdateHypothesis(root, dir, "H-001", HypothesisUpdate{ExperimentNotes: &empty}); err != nil {
+		t.Fatalf("UpdateHypothesis clear: %v", err)
+	}
+	proj, _ = ParseProject(dir)
+	if n := proj.Graph.Node("H-001"); n == nil || n.ExperimentNotes != "" {
+		t.Errorf("cleared ExperimentNotes = %q, want empty", proj.Graph.Node("H-001").ExperimentNotes)
+	}
+}
+
+func TestUpdateHypothesis_ParentsRoundTrip(t *testing.T) {
+	root, dir := setupProjectDir(t)
+
+	// Create H-002 with parent H-001 (card + Mermaid node/edge + catalog row).
+	if _, err := CreateHypothesis(root, dir, NewHypothesis{Title: "Endpoint extraction", Parents: []string{"H-001"}}); err != nil {
+		t.Fatalf("CreateHypothesis: %v", err)
+	}
+
+	graphPath := filepath.Join(dir, "hypotheses", "graph.md")
+	cardPath := filepath.Join(dir, "hypotheses", "H-002.md")
+
+	// Clear H-002's parents: the Mermaid edge, the card row, and the catalog
+	// column must all drop back to the root state.
+	none := []string{}
+	if err := UpdateHypothesis(root, dir, "H-002", HypothesisUpdate{Parents: &none}); err != nil {
+		t.Fatalf("UpdateHypothesis clear parents: %v", err)
+	}
+	graphStr := string(mustRead(t, graphPath))
+	cardStr := string(mustRead(t, cardPath))
+	if strings.Contains(graphStr, "H001 --> H002") {
+		t.Errorf("mermaid edge not removed:\n%s", graphStr)
+	}
+	if !strings.Contains(graphStr, "| — |") {
+		t.Errorf("catalog Parent(s) column not cleared:\n%s", graphStr)
+	}
+	if !strings.Contains(cardStr, "| **Parent(s)** | — |") {
+		t.Errorf("card Parent(s) row not cleared:\n%s", cardStr)
+	}
+	proj, _ := ParseProject(dir)
+	if n := proj.Graph.Node("H-002"); n == nil || len(n.Parents) != 0 {
+		t.Errorf("parsed parents after clear = %+v, want none", proj.Graph.Node("H-002").Parents)
+	}
+
+	// Set the parent back: edge re-added, rows updated.
+	h1 := []string{"H-001"}
+	if err := UpdateHypothesis(root, dir, "H-002", HypothesisUpdate{Parents: &h1}); err != nil {
+		t.Fatalf("UpdateHypothesis set parents: %v", err)
+	}
+	graphStr = string(mustRead(t, graphPath))
+	cardStr = string(mustRead(t, cardPath))
+	if !strings.Contains(graphStr, "H001 --> H002") {
+		t.Errorf("mermaid edge not re-added:\n%s", graphStr)
+	}
+	if !strings.Contains(graphStr, "| [H-002](H-002.md) | Endpoint extraction | open | — | H-001 |") {
+		t.Errorf("catalog row parents not updated:\n%s", graphStr)
+	}
+	if !strings.Contains(cardStr, "| **Parent(s)** | H-001 |") {
+		t.Errorf("card Parent(s) row not updated:\n%s", cardStr)
+	}
+	proj, _ = ParseProject(dir)
+	if n := proj.Graph.Node("H-002"); n == nil {
+		t.Fatal("H-002 missing")
+	} else if !reflect.DeepEqual(n.Parents, []string{"H-001"}) {
+		t.Errorf("parsed parents = %+v, want [H-001]", n.Parents)
+	}
+}
+
+func TestUpdateHypothesis_ParentsCardOnlyGetsMermaidNode(t *testing.T) {
+	root, dir := setupProjectDir(t)
+
+	// H-002 exists only as a card (absent from Mermaid and the catalog);
+	// making it a parent of H-001 must ADD its Mermaid node definition so
+	// the new edge never references an undefined token.
+	writeCardOnly(t, dir, "H-002", "Card-only sibling")
+
+	parents := []string{"H-002"}
+	if err := UpdateHypothesis(root, dir, "H-001", HypothesisUpdate{Parents: &parents}); err != nil {
+		t.Fatalf("UpdateHypothesis: %v", err)
+	}
+
+	graphStr := string(mustRead(t, filepath.Join(dir, "hypotheses", "graph.md")))
+	if !strings.Contains(graphStr, `H002["H-002: Card-only sibling"]:::open`) {
+		t.Errorf("card-only parent's mermaid node not added:\n%s", graphStr)
+	}
+	if !strings.Contains(graphStr, "H002 --> H001") {
+		t.Errorf("mermaid edge not added:\n%s", graphStr)
+	}
+	proj, _ := ParseProject(dir)
+	if n := proj.Graph.Node("H-001"); n == nil {
+		t.Fatal("H-001 missing")
+	} else if !reflect.DeepEqual(n.Parents, []string{"H-002"}) {
+		t.Errorf("parsed parents = %+v, want [H-002]", n.Parents)
+	}
+}
+
+func TestUpdateHypothesis_ParentsValidation(t *testing.T) {
+	root, dir := setupProjectDir(t)
+	if _, err := CreateHypothesis(root, dir, NewHypothesis{Title: "Endpoint extraction", Parents: []string{"H-001"}}); err != nil {
+		t.Fatalf("CreateHypothesis: %v", err)
+	}
+
+	cardPath := filepath.Join(dir, "hypotheses", "H-001.md")
+	graphPath := filepath.Join(dir, "hypotheses", "graph.md")
+	cardBefore := mustRead(t, cardPath)
+	graphBefore := mustRead(t, graphPath)
+
+	// Self-parent.
+	self := []string{"H-001"}
+	if err := UpdateHypothesis(root, dir, "H-001", HypothesisUpdate{Parents: &self}); err == nil {
+		t.Fatal("expected error for self-parent")
+	}
+	// Unknown parent.
+	unknown := []string{"H-999"}
+	if err := UpdateHypothesis(root, dir, "H-001", HypothesisUpdate{Parents: &unknown}); err == nil {
+		t.Fatal("expected error for unknown parent")
+	}
+	// Cycle: H-001 → H-002 exists; making H-002 a parent of H-001 closes a loop.
+	cycle := []string{"H-002"}
+	if err := UpdateHypothesis(root, dir, "H-001", HypothesisUpdate{Parents: &cycle}); err == nil {
+		t.Fatal("expected error for cycle-creating parent")
+	}
+
+	// A rejected parent set leaves both files byte-for-byte unchanged.
+	if !bytes.Equal(cardBefore, mustRead(t, cardPath)) {
+		t.Error("card changed despite rejected parents")
+	}
+	if !bytes.Equal(graphBefore, mustRead(t, graphPath)) {
+		t.Error("graph changed despite rejected parents")
+	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return b
+}
+
+func TestCreateHypothesis_RoundTrip(t *testing.T) {
+	root, dir := setupProjectDir(t)
+
+	id, err := CreateHypothesis(root, dir, NewHypothesis{
 		Title:                 "Runtime interception",
 		Statement:             "Intercepting fetch captures exfil.",
 		VerificationCriterion: "Captures all requests.",
@@ -352,8 +601,8 @@ func TestCreateHypothesis_RoundTrip(t *testing.T) {
 }
 
 func TestCreateHypothesis_UnknownParentRejected(t *testing.T) {
-	dir := setupProjectDir(t)
-	if _, err := CreateHypothesis(dir, NewHypothesis{
+	root, dir := setupProjectDir(t)
+	if _, err := CreateHypothesis(root, dir, NewHypothesis{
 		Title:   "Bad parent",
 		Parents: []string{"H-999"},
 	}); err == nil {
@@ -375,7 +624,7 @@ func TestCreateHypothesis_MissingGraphGeneratesSkeleton(t *testing.T) {
 		t.Fatalf("brief: %v", err)
 	}
 
-	id, err := CreateHypothesis(dir, NewHypothesis{Title: "First"})
+	id, err := CreateHypothesis(filepath.Dir(dir), dir, NewHypothesis{Title: "First"})
 	if err != nil {
 		t.Fatalf("CreateHypothesis: %v", err)
 	}
@@ -406,8 +655,8 @@ func TestCreateHypothesis_MissingGraphGeneratesSkeleton(t *testing.T) {
 }
 
 func TestCreateHypothesis_EmptyTitleRejected(t *testing.T) {
-	dir := setupProjectDir(t)
-	if _, err := CreateHypothesis(dir, NewHypothesis{}); err == nil {
+	root, dir := setupProjectDir(t)
+	if _, err := CreateHypothesis(root, dir, NewHypothesis{}); err == nil {
 		t.Fatal("expected error for empty title")
 	}
 }

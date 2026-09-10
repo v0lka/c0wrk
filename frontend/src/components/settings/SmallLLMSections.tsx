@@ -73,16 +73,9 @@ export function EssentialToolsSection({ slice, patch, open, onOpenChange }: Sect
             lockedValues={locked}
           />
           <p className="text-xs text-muted-foreground">
-            Locked tools are protected and always included. The budget below limits router-matched
-            tools on top of the guaranteed set; guaranteed tools are never trimmed. Default is 16, 0
-            disables the limit.
+            Locked tools are protected and always included. The assigned set is exactly this
+            selection plus every connected MCP server's tools.
           </p>
-          <NumberField
-            label="Max tools"
-            value={slice.max_tools}
-            onChange={(max_tools) => patch({ max_tools })}
-            min={0}
-          />
           <Toggle
             checked={slice.compact_descriptions}
             onChange={(compact_descriptions) => patch({ compact_descriptions })}

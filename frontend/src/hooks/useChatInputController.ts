@@ -341,11 +341,27 @@ export function useChatInputController(): ChatInputController {
     }
   }, [activeSessionId])
 
-  // Resume a paused task (no nudge). The backend's session_resumed/task_resumed
-  // events reconcile. The user's current model/reasoning selection is forwarded
+  // Resume a paused task. Text typed into the (unlocked, visible) chat input
+  // is NOT dropped: a Resume click with a draft is a nudge-resume — it routes
+  // through the normal send flow (handleSend → SendMessage), which the backend
+  // detects as a paused task and resumes with the text as a trailing user
+  // turn (persisted with is_nudge metadata), exactly like pressing Enter. An
+  // empty input (or terminal mode, where the chat editor is hidden) resumes
+  // without a nudge; the backend's session_resumed/task_resumed events
+  // reconcile. The user's current model/reasoning selection is forwarded
   // so a switch made before resuming is honored (same semantics as a fresh send).
   const handleResume = useCallback(async () => {
     if (!activeSessionId) return
+    if (mode === 'chat' && editor.getText().trim()) {
+      // Delegate to the send flow so the optimistic user card + nudge badge,
+      // the editor clearing, the attachment in-flight guard and the failure
+      // rollback (text restored, paused state re-entered) all match an Enter
+      // send exactly. Passing the text as resumeSession's nudge instead would
+      // skip persistence (the message would vanish on reload) and duplicate
+      // the optimistic-UI/rollback logic.
+      await handleSend()
+      return
+    }
     const modelOverride = useInputModeStore.getState().selectedModel ?? ''
     const reasoningOverride = useInputModeStore.getState().selectedReasoning ?? ''
     useChatStore.getState().setPaused(activeSessionId, false)
@@ -357,7 +373,7 @@ export function useChatInputController(): ChatInputController {
       useChatStore.getState().setPaused(activeSessionId, true)
       useChatStore.getState().setTaskActive(activeSessionId, false)
     }
-  }, [activeSessionId])
+  }, [activeSessionId, mode, editor, handleSend])
 
   const handleOptimize = useCallback(async () => {
     // Capture the origin session at click time: every store write below —

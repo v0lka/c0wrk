@@ -2876,6 +2876,97 @@ func TestRestoreSession_GetSessionWorkspacePath(t *testing.T) {
 	}
 }
 
+// TestWorkspacePathFor_StoreOnlyNoRestore verifies that WorkspacePathFor
+// resolves a store-only session's workspace WITHOUT the lazy restore: the
+// session must not appear in the in-memory map afterwards. This is the
+// property that keeps read-only RPC surfaces (terminal start) off the heavy
+// restore path — the restore's unbounded store reads on the single SQLite
+// connection are what made terminal starts hang behind active sessions'
+// write load.
+func TestWorkspacePathFor_StoreOnlyNoRestore(t *testing.T) {
+	mgr, _, store := restoreTestManager(t)
+
+	seedSession(t, store, "ws-path-lookup", testProjectID, "WS Path Lookup", false)
+
+	wsPath, ok := mgr.WorkspacePathFor(context.Background(), "ws-path-lookup")
+	if !ok {
+		t.Fatal("WorkspacePathFor should succeed for a store-only session")
+	}
+	if wsPath == "" {
+		t.Error("workspace path should not be empty")
+	}
+
+	mgr.mu.RLock()
+	_, inMemory := mgr.sessions["ws-path-lookup"]
+	mgr.mu.RUnlock()
+	if inMemory {
+		t.Fatal("WorkspacePathFor must not lazily restore the session into memory")
+	}
+}
+
+// TestWorkspacePathFor_InMemorySession verifies the in-memory fast path
+// returns the session's workspace without touching the store.
+func TestWorkspacePathFor_InMemorySession(t *testing.T) {
+	mgr, _, _ := restoreTestManager(t)
+
+	ws := testWorkspacePath(t)
+	info, err := mgr.CreateSession(testProjectID, ws)
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	wsPath, ok := mgr.WorkspacePathFor(context.Background(), info.ID)
+	if !ok {
+		t.Fatal("WorkspacePathFor should succeed for an in-memory session")
+	}
+	if wsPath != ws {
+		t.Errorf("workspace path = %q, want %q", wsPath, ws)
+	}
+}
+
+// TestWorkspacePathFor_MissingSession verifies unknown sessions return false
+// without erroring.
+func TestWorkspacePathFor_MissingSession(t *testing.T) {
+	mgr, _, _ := restoreTestManager(t)
+
+	if _, ok := mgr.WorkspacePathFor(context.Background(), "no-such-session"); ok {
+		t.Fatal("WorkspacePathFor should return false for a missing session")
+	}
+}
+
+// TestWorkspacePathFor_NoProjectDerivesPerSessionWorkspace verifies that a
+// No Project session resolves to its isolated per-session workspace (created
+// on demand), mirroring getOrRestoreSession — not the shared project-level
+// directory.
+func TestWorkspacePathFor_NoProjectDerivesPerSessionWorkspace(t *testing.T) {
+	mgr, _, store := restoreTestManager(t)
+
+	seedSession(t, store, "noproject-lookup", project.NoProjectID, "No Project Lookup", false)
+
+	wsPath, ok := mgr.WorkspacePathFor(context.Background(), "noproject-lookup")
+	if !ok {
+		t.Fatal("WorkspacePathFor should succeed for a No Project session")
+	}
+	want := config.NoProjectSessionWorkspace(mgr.agentDir, "noproject-lookup")
+	if abs, err := filepath.Abs(want); err == nil {
+		want = abs
+	}
+	if wsPath != want {
+		t.Errorf("workspace path = %q, want per-session workspace %q", wsPath, want)
+	}
+	if info, err := os.Stat(wsPath); err != nil || !info.IsDir() {
+		t.Errorf("per-session workspace should exist as a directory: %v", err)
+	}
+
+	// And still no restore side effect.
+	mgr.mu.RLock()
+	_, inMemory := mgr.sessions["noproject-lookup"]
+	mgr.mu.RUnlock()
+	if inMemory {
+		t.Fatal("WorkspacePathFor must not lazily restore the session into memory")
+	}
+}
+
 // TestRestoreSession_CancelTask verifies that CancelTask on a restored session
 // returns the expected "no active task" error (not "session not found").
 func TestRestoreSession_CancelTask(t *testing.T) {

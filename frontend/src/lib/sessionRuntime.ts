@@ -134,13 +134,15 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
     store.setCompacting(sessionId, status.compacting === true)
   }
 
-  // Manual compaction would be a no-op: mirror the backend's prediction so
-  // the compact button renders disabled (with its tooltip) for a history
-  // already within the compaction target. Absent field (older backend)
-  // resolves to false — fail-open, the button stays clickable. Skipped when
-  // a live compaction_finished already refreshed the prediction.
+  // Manual compaction availability: mirror the backend's per-strategy
+  // prediction so the compact menu enables exactly the strategies that would
+  // actually shrink the dialogue and disables the rest with a reason. Absent
+  // field (older backend) leaves the menu fail-open. Skipped when a live
+  // compaction_finished already refreshed the prediction.
   if (!hasFresherLiveState) {
-    store.setCompactionNoOp(sessionId, status.compaction_noop === true)
+    if (status.compaction_availability !== undefined) {
+      store.setCompactionAvailability(sessionId, status.compaction_availability)
+    }
   }
 
   // The compaction flow owns the session: the task it paused shows neither
@@ -484,21 +486,21 @@ export function reconcilePendingActions(sessionId: string, pending: PendingActio
  * Targeted refresh of the compaction no-op flag (the compact button's
  * disabled state) after an event that changed the conversation history
  * WITHOUT a session switch — a finished task appended its exchange to the
- * history, so a previously-no-op session may now be compactable again.
+ * history, so a previously-unavailable strategy may now be compactable again.
  * reconcileRuntimeStatus above only runs on history load (ChatArea), so
  * terminal task events call this instead.
  *
  * Deliberately narrow: fetches the runtime status and applies ONLY
- * compactionNoOp — the full reconcile is load-time logic (stale-prompt
+ * compactionAvailability — the full reconcile is load-time logic (stale-prompt
  * resolution, resume banners) that must not run from an event handler.
- * Best-effort: on RPC failure the flag keeps its previous value until the
+ * Best-effort: on RPC failure the menu keeps its previous value until the
  * next reconcile/refetch.
  */
-export function refreshCompactionNoOp(sessionId: string): void {
+export function refreshCompactionAvailability(sessionId: string): void {
   getSessionRuntimeStatus(sessionId)
     .then((status) => {
-      if (!status) return
-      useChatStore.getState().setCompactionNoOp(sessionId, status.compaction_noop === true)
+      if (!status || status.compaction_availability === undefined) return
+      useChatStore.getState().setCompactionAvailability(sessionId, status.compaction_availability)
     })
     .catch(() => { /* best-effort — see doc comment */ })
 }

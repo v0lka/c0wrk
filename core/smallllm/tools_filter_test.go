@@ -60,35 +60,26 @@ func fullToolSet() []sdktools.ToolDescriptor {
 	}
 }
 
-func TestSelectTools_KeepsMatchedPlusProtectedPlusMCP(t *testing.T) {
-	matched := []string{"read_file", "write_file", "bash_exec", "ripgrep"}
-	got := SelectTools(fullToolSet(), matched, nil, 0)
-	names := descriptorNames(got)
+func TestSelectTools_StaticUnionOfPinsProtectedAndMCP(t *testing.T) {
+	pins := []string{"read_file", "write_file", "bash_exec", "ripgrep"}
+	got := SelectTools(fullToolSet(), pins)
 
-	// Matched names are kept.
-	for _, n := range matched {
-		if !contains(names, n) {
-			t.Errorf("matched tool %q should be kept; got %v", n, names)
-		}
+	// The result is exactly pins ∪ protected ∪ MCP — nothing more (no
+	// unpinned core tools, no orchestration tools), nothing less.
+	want := []string{
+		"ask_user", "bash_exec", "finish", "get_code_snippet",
+		"mcp_linter", "read_file", "ripgrep", "search_facts",
+		"search_graph", "store_fact", "update_checklist", "write_file",
 	}
-	// Protected tools kept even though not in matched.
-	for _, n := range []string{"finish", "store_fact", "search_facts", "ask_user", "update_checklist"} {
-		if !contains(names, n) {
-			t.Errorf("protected tool %q should be kept; got %v", n, names)
-		}
-	}
-	// MCP tools kept even though not in matched.
-	for _, n := range []string{"search_graph", "get_code_snippet", "mcp_linter"} {
-		if !contains(names, n) {
-			t.Errorf("MCP tool %q should be kept; got %v", n, names)
-		}
+	if diff := cmp.Diff(want, descriptorNames(got)); diff != "" {
+		t.Errorf("static selection must be exactly pins ∪ protected ∪ MCP:\n%s", diff)
 	}
 }
 
 func TestSelectTools_KeepsAlwaysPresent(t *testing.T) {
-	// alwaysPresent lists a tool that is neither matched nor protected nor MCP,
-	// yet it must survive because the user pinned it.
-	got := SelectTools(fullToolSet(), []string{"read_file"}, []string{"create_directory"}, 0)
+	// alwaysPresent lists a tool that is neither protected nor MCP, yet it
+	// must survive because the user pinned it.
+	got := SelectTools(fullToolSet(), []string{"create_directory"})
 	names := descriptorNames(got)
 	if !contains(names, "create_directory") {
 		t.Errorf("alwaysPresent tool must be kept; got %v", names)
@@ -96,7 +87,7 @@ func TestSelectTools_KeepsAlwaysPresent(t *testing.T) {
 }
 
 func TestSelectTools_ExcludesOrchestrationTools(t *testing.T) {
-	got := SelectTools(fullToolSet(), []string{"read_file"}, nil, 0)
+	got := SelectTools(fullToolSet(), []string{"read_file"})
 	names := descriptorNames(got)
 
 	excluded := []string{
@@ -111,21 +102,21 @@ func TestSelectTools_ExcludesOrchestrationTools(t *testing.T) {
 }
 
 func TestSelectTools_DedupsByName(t *testing.T) {
-	// Duplicate matched names + duplicate descriptors must not produce dupes.
+	// Duplicate pins + duplicate descriptors must not produce dupes.
 	all := []sdktools.ToolDescriptor{
 		{Name: "read_file", SourceCategory: sdktools.SourceCategoryCore},
 		{Name: "read_file", SourceCategory: sdktools.SourceCategoryCore},
 		{Name: "finish", SourceCategory: sdktools.SourceCategoryCore},
 	}
-	got := SelectTools(all, []string{"read_file", "read_file"}, nil, 0)
+	got := SelectTools(all, []string{"read_file", "read_file"})
 	names := descriptorNames(got)
 	if len(names) != 2 {
 		t.Errorf("expected 2 tools after dedup, got %d %v", len(names), names)
 	}
 }
 
-func TestSelectTools_AlwaysPreservesFinishEvenWhenUnmatched(t *testing.T) {
-	got := SelectTools(fullToolSet(), nil, nil, 0)
+func TestSelectTools_AlwaysPreservesFinishEvenWhenUnpinned(t *testing.T) {
+	got := SelectTools(fullToolSet(), nil)
 	names := descriptorNames(got)
 	if !contains(names, finishToolName) {
 		t.Errorf("finish must always be preserved; got %v", names)
@@ -133,15 +124,15 @@ func TestSelectTools_AlwaysPreservesFinishEvenWhenUnmatched(t *testing.T) {
 }
 
 func TestSelectTools_EmptyInput(t *testing.T) {
-	got := SelectTools(nil, []string{"read_file"}, []string{"read_file"}, 0)
+	got := SelectTools(nil, []string{"read_file"})
 	if len(got) != 0 {
 		t.Errorf("nil input should yield empty output; got %v", descriptorNames(got))
 	}
 }
 
 func TestSelectTools_PreservesAllMCPTools(t *testing.T) {
-	// Even with empty matched/alwaysPresent, every MCP tool survives.
-	got := SelectTools(fullToolSet(), nil, nil, 0)
+	// Even with empty pins, every MCP tool survives.
+	got := SelectTools(fullToolSet(), nil)
 	names := descriptorNames(got)
 	for _, m := range []string{"search_graph", "get_code_snippet", "mcp_linter"} {
 		if !contains(names, m) {
@@ -150,103 +141,25 @@ func TestSelectTools_PreservesAllMCPTools(t *testing.T) {
 	}
 }
 
-func TestSelectTools_MaxToolsZeroMeansUnlimited(t *testing.T) {
-	// maxTools == 0 disables the cap; nothing is trimmed.
-	matched := []string{"read_file", "write_file", "edit_file", "bash_exec"}
-	got := SelectTools(fullToolSet(), matched, nil, 0)
-	names := descriptorNames(got)
-	for _, n := range matched {
-		if !contains(names, n) {
-			t.Errorf("with maxTools=0, matched %q must be kept; got %v", n, names)
-		}
-	}
-}
-
-func TestSelectTools_MaxToolsTrimsNonProtected(t *testing.T) {
-	// With a tight budget, guaranteed (protected + MCP) tools survive and
-	// non-protected matched tools fill the remaining slots in registry order.
-	matched := []string{"read_file", "write_file", "edit_file", "bash_exec"}
-	got := SelectTools(fullToolSet(), matched, nil, 9)
-	// Guaranteed base = finish, store_fact, search_facts, ask_user,
-	// update_checklist (5 protected) + search_graph, get_code_snippet,
-	// mcp_linter (3 MCP) = 8, never trimmed.
-	// Free slots = 9 - 8 = 1 → exactly one matched tool fits, and it is the
-	// first one in REGISTRY order (read_file), regardless of the matched-list
-	// order.
-	if len(got) > 9 {
-		t.Fatalf("result must not exceed maxTools=9; got %d (%v)", len(got), descriptorNames(got))
-	}
-	names := descriptorNames(got)
-	// Protected + MCP always survive the cap.
-	for _, n := range []string{
-		"finish", "store_fact", "search_facts", "ask_user", "update_checklist",
-		"search_graph", "get_code_snippet", "mcp_linter",
-	} {
-		if !contains(names, n) {
-			t.Errorf("protected/MCP tool %q must survive the cap; got %v", n, names)
-		}
-	}
-	// Exactly one non-protected matched tool fits: read_file (registry index 0).
-	for _, n := range matched {
-		kept := contains(names, n)
-		if n == "read_file" && !kept {
-			t.Errorf("the single free slot must go to read_file (first in registry order); got %v", names)
-		}
-		if n != "read_file" && kept {
-			t.Errorf("matched %q must be dropped once free slots are exhausted; got %v", n, names)
-		}
-	}
-}
-
-func TestSelectTools_MaxToolsBudgetExceededByProtectedAlone(t *testing.T) {
-	// When the guaranteed set alone exceeds maxTools, it is still returned in
-	// full (guaranteed is never trimmed) and matched tools get zero slots.
-	// Config validation rejects such profiles up front; SelectTools is the
-	// runtime defense in depth.
-	got := SelectTools(fullToolSet(), []string{"read_file", "write_file"}, nil, 2)
-	// Guaranteed = protected (5) + MCP (3) = 8 > 2, so all 8 survive (the
-	// result legitimately exceeds maxTools), matched tools are dropped.
-	if len(got) != 8 {
-		t.Fatalf("expected all 8 guaranteed survivors (never trimmed, even over budget); got %d (%v)", len(got), descriptorNames(got))
-	}
-	names := descriptorNames(got)
-	for _, n := range []string{"read_file", "write_file"} {
-		if contains(names, n) {
-			t.Errorf("non-protected matched %q must be dropped when budget is exhausted by protected; got %v", n, names)
-		}
-	}
-}
-
-func TestSelectTools_MaxToolsNoTrimWhenUnderBudget(t *testing.T) {
-	// A generous budget leaves the union unchanged.
-	matched := []string{"read_file", "write_file"}
-	got := SelectTools(fullToolSet(), matched, nil, 100)
-	// Union = matched(2) + protected(5) + MCP(3) = 10.
-	if len(got) != 10 {
-		t.Errorf("under-budget result should be unchanged at 10; got %d (%v)", len(got), descriptorNames(got))
-	}
-}
-
 func TestSelectTools_UnionDedupAcrossSources(t *testing.T) {
-	// A tool that is BOTH matched and alwaysPresent is kept exactly once.
-	got := SelectTools(fullToolSet(), []string{"read_file"}, []string{"read_file"}, 0)
+	// A tool that is BOTH pinned and protected is kept exactly once.
+	got := SelectTools(fullToolSet(), []string{"finish"})
 	names := descriptorNames(got)
 	count := 0
 	for _, n := range names {
-		if n == "read_file" {
+		if n == "finish" {
 			count++
 		}
 	}
 	if count != 1 {
-		t.Errorf("read_file in both matched and alwaysPresent must appear once; got %d", count)
+		t.Errorf("finish in both pins and protected must appear once; got %d", count)
 	}
 }
 
 // defaultAlwaysPresent mirrors backend/config.defaultSmallLLMAlwaysPresent.
 // Duplicated here (rather than imported) because core must not depend on the
-// backend layer; the backend test
-// TestDefaultSmallLLMAlwaysPresentFitsDefaultMaxTools pins the default list
-// against the shipped defaults.
+// backend layer; the backend tests pin the default list against the shipped
+// defaults.
 func defaultAlwaysPresent() []string {
 	return []string{
 		"read_file", "write_file", "edit_file", "list_directory",
@@ -256,7 +169,7 @@ func defaultAlwaysPresent() []string {
 }
 
 // coreToolSet is the registry subset with the MCP tools stripped, for tests
-// that reason about slot arithmetic without runtime-dependent MCP counts.
+// that reason about the static selection without runtime-dependent MCP counts.
 func coreToolSet() []sdktools.ToolDescriptor {
 	all := fullToolSet()
 	out := make([]sdktools.ToolDescriptor, 0, len(all))
@@ -268,19 +181,17 @@ func coreToolSet() []sdktools.ToolDescriptor {
 	return out
 }
 
-func TestSelectTools_DefaultAlwaysPresentAtDefaultBudget(t *testing.T) {
+func TestSelectTools_DefaultAlwaysPresentSelection(t *testing.T) {
 	// The default always-present list (12) unioned with the 5 protected
-	// tools (4 overlap → 13 unique guaranteed) must fit the default budget of
-	// 16 with room left for router-matched slots. With no MCP tools
-	// registered, free slots = 16 - 13 = 3, filled in registry order.
-	matched := []string{"web_search", "web_fetch", "create_directory", "delegate"}
-	got := SelectTools(coreToolSet(), matched, defaultAlwaysPresent(), 16)
+	// tools (4 overlap → 13 unique). Unpinned core tools and orchestration
+	// tools stay excluded.
+	got := SelectTools(coreToolSet(), defaultAlwaysPresent())
 	names := descriptorNames(got)
 
-	// Every guaranteed tool is present: the 12 default always-present pins…
+	// Every default pin is present…
 	for _, n := range defaultAlwaysPresent() {
 		if !contains(names, n) {
-			t.Errorf("default always-present %q must never be trimmed; got %v", n, names)
+			t.Errorf("default always-present %q must never be dropped; got %v", n, names)
 		}
 	}
 	// …plus update_checklist (protected, not among the default pins).
@@ -288,81 +199,98 @@ func TestSelectTools_DefaultAlwaysPresentAtDefaultBudget(t *testing.T) {
 		t.Errorf("protected update_checklist must always be present; got %v", names)
 	}
 
-	// The 3 free slots go to the first matched tools in registry order
-	// (web_search, web_fetch, create_directory); delegate is out of luck, and
-	// no unmatched orchestration tool leaks in.
-	for _, n := range []string{"web_search", "web_fetch", "create_directory"} {
-		if !contains(names, n) {
-			t.Errorf("matched %q must fill a free slot (registry order); got %v", n, names)
+	// Unpinned core tools and orchestration tools stay excluded.
+	for _, ex := range []string{"web_search", "web_fetch", "create_directory", "delegate", "reflect", "propose_goal"} {
+		if contains(names, ex) {
+			t.Errorf("unpinned tool %q must stay excluded; got %v", ex, names)
 		}
 	}
-	if contains(names, "delegate") {
-		t.Errorf("matched delegate exceeds the free slots; got %v", names)
-	}
-	if contains(names, "reflect") || contains(names, "propose_goal") {
-		t.Errorf("unmatched orchestration tools must stay excluded; got %v", names)
-	}
-	if len(got) != 16 {
-		t.Errorf("expected 13 guaranteed + 3 matched = 16; got %d (%v)", len(got), names)
+	if len(got) != 13 {
+		t.Errorf("expected 12 pins ∪ 5 protected = 13 unique tools; got %d (%v)", len(got), names)
 	}
 }
 
-func TestSelectTools_GuaranteedExceedingBudgetNeverTrimmed(t *testing.T) {
-	// guaranteed > maxTools → SelectTools must NOT trim the guaranteed set.
-	// validateSmallLLMConfig rejects such configs up front; this pins the
-	// runtime behavior as defense in depth. Non-protected always-present
-	// tools are guaranteed too and must survive.
-	always := []string{"read_file", "write_file", "bash_exec", "web_search"} // 4, none protected
-	got := SelectTools(fullToolSet(), []string{"semantic_search", "glob"}, always, 5)
-	// Guaranteed = always(4) ∪ protected(5) ∪ MCP(3) = 12 > 5 → all 12 kept,
-	// matched dropped, and the result legitimately exceeds the budget.
-	if len(got) != 12 {
-		t.Fatalf("guaranteed set of 12 must survive the budget of 5 intact; got %d (%v)", len(got), descriptorNames(got))
+func TestSelectTools_RegistryOrderPreserved(t *testing.T) {
+	// Emission preserves the input registry order (not sorted, not
+	// pin-list order) and repeated calls return the same result.
+	got := SelectTools(coreToolSet(), defaultAlwaysPresent())
+	want := []string{
+		"read_file", "list_directory", "glob", "ripgrep",
+		"semantic_search", "write_file", "edit_file", "bash_exec",
+		"finish", "store_fact", "search_facts", "ask_user",
+		"update_checklist",
 	}
-	names := descriptorNames(got)
-	for _, n := range always { // includes the non-protected web_search
-		if !contains(names, n) {
-			t.Errorf("always-present %q is guaranteed and must never be trimmed; got %v", n, names)
-		}
+	names := make([]string, 0, len(got))
+	for _, d := range got {
+		names = append(names, d.Name)
 	}
-	for _, n := range ProtectedToolNames() {
-		if !contains(names, n) {
-			t.Errorf("protected %q must never be trimmed; got %v", n, names)
-		}
+	if diff := cmp.Diff(want, names); diff != "" {
+		t.Errorf("selection must preserve registry order:\n%s", diff)
 	}
-	if !contains(names, "mcp_linter") || !contains(names, "search_graph") || !contains(names, "get_code_snippet") {
-		t.Errorf("MCP tools are guaranteed and must never be trimmed; got %v", names)
+	again := SelectTools(coreToolSet(), defaultAlwaysPresent())
+	againNames := make([]string, 0, len(again))
+	for _, d := range again {
+		againNames = append(againNames, d.Name)
 	}
-	for _, n := range []string{"semantic_search", "glob"} {
-		if contains(names, n) {
-			t.Errorf("matched %q must get zero slots when guaranteed alone exceeds the budget; got %v", n, names)
-		}
+	if diff := cmp.Diff(names, againNames); diff != "" {
+		t.Errorf("selection must be deterministic across calls:\n%s", diff)
 	}
 }
 
-func TestSelectTools_MatchedFillFreeSlotsInRegistryOrder(t *testing.T) {
-	// Matched tools fill only the free slots left after the guaranteed set,
-	// chosen deterministically by REGISTRY order — not by the order of the
-	// matched slice — and repeated calls return the same result.
-	all := coreToolSet()
-	// Guaranteed = 5 protected tools → free slots = 6 - 5 = 1.
-	matched := []string{"web_fetch", "read_file", "write_file"}
-	got := SelectTools(all, matched, nil, 6)
+func TestSelectTools_ExtraGuaranteedKeepsUnmatchedDelegate(t *testing.T) {
+	// The turn requested subagents: delegate is passed as extra-guaranteed
+	// and must survive the narrowing even though it is neither pinned, nor
+	// protected, nor MCP-sourced.
+	got := SelectTools(fullToolSet(), []string{"read_file"}, "delegate")
 	names := descriptorNames(got)
-	if len(got) != 6 {
-		t.Fatalf("expected 5 guaranteed + 1 matched = 6; got %d (%v)", len(got), names)
+	if !contains(names, "delegate") {
+		t.Errorf("extra-guaranteed delegate must be kept even when unpinned; got %v", names)
 	}
 	if !contains(names, "read_file") {
-		t.Errorf("the single free slot must go to read_file (first matched in registry order); got %v", names)
+		t.Errorf("pinned tool must still be kept; got %v", names)
 	}
-	for _, n := range []string{"web_fetch", "write_file"} {
-		if contains(names, n) {
-			t.Errorf("matched %q must be dropped once free slots are exhausted; got %v", n, names)
+	// Only the requested guarantee opens the door: unrelated orchestration
+	// tools stay excluded.
+	for _, ex := range []string{"declare_plan", "execute_plan", "reflect", "propose_goal"} {
+		if contains(names, ex) {
+			t.Errorf("unrelated orchestration tool %q must stay excluded; got %v", ex, names)
 		}
 	}
-	// Deterministic regardless of matched-list order and across repetitions.
-	again := SelectTools(all, []string{"write_file", "web_fetch", "read_file"}, nil, 6)
-	if diff := cmp.Diff(names, descriptorNames(again)); diff != "" {
-		t.Errorf("selection must be deterministic regardless of matched-list order:\n%s", diff)
+}
+
+func TestSelectTools_NoExtraGuaranteedIsNoOp(t *testing.T) {
+	// Zero or nil extra names must reproduce the selection exactly.
+	pins := []string{"read_file", "write_file"}
+	base := SelectTools(fullToolSet(), pins)
+	var nilExtra []string
+	withNilSpread := SelectTools(fullToolSet(), pins, nilExtra...)
+	if diff := cmp.Diff(descriptorNames(base), descriptorNames(withNilSpread)); diff != "" {
+		t.Errorf("nil extraGuaranteed must be a no-op:\n%s", diff)
+	}
+	// In particular delegate (conductor-only) stays excluded without the
+	// turn-scoped guarantee.
+	if names := descriptorNames(base); contains(names, "delegate") {
+		t.Errorf("delegate must stay excluded without extraGuaranteed; got %v", names)
+	}
+}
+
+func TestSelectTools_ExtraGuaranteedDedupsWithPinned(t *testing.T) {
+	// A tool that is both pinned and extra-guaranteed appears exactly once.
+	got := SelectTools(fullToolSet(), []string{"read_file", "delegate"}, "delegate")
+	count := 0
+	for _, d := range got {
+		if d.Name == "delegate" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("delegate must appear exactly once; got %d (%v)", count, descriptorNames(got))
+	}
+
+	// An extra-guaranteed name matching nothing registered is a silent no-op:
+	// a guarantee cannot invent a tool.
+	ghost := SelectTools(fullToolSet(), []string{"read_file"}, "no_such_tool")
+	if names := descriptorNames(ghost); contains(names, "no_such_tool") {
+		t.Errorf("unregistered extra-guaranteed name must not invent a tool; got %v", names)
 	}
 }

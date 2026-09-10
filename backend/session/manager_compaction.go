@@ -32,6 +32,28 @@ var ErrSessionCompacting = errors.New("session is compacting context — wait fo
 // churn) with a clear error instead of failing mid-flow.
 var validCompactionStrategies = []string{"sliding_window", "summarization", "hierarchical"}
 
+// compactionForecastStateKey returns the app_state key under which the
+// EWMA-calibrated compression-ratio forecast is persisted for a given model
+// (JSON-encoded sdkmemory.CompactionForecast), so the calibration survives app
+// restarts. The forecast is model-specific — different models summarize at
+// different compression ratios — so the key is scoped by model; an empty model
+// (nothing resolved yet) falls back to the legacy unscoped key.
+func compactionForecastStateKey(model string) string {
+	if model == "" {
+		return "compaction_forecast"
+	}
+	return "compaction_forecast:" + model
+}
+
+// compactionForecastState is the JSON-serializable mirror of
+// sdkmemory.CompactionForecast used for app_state persistence. It carries the
+// same three ratios; zero values mean "use the config seed" on load.
+type compactionForecastState struct {
+	SummarizationRatio       float64 `json:"summarization_ratio"`
+	HierarchicalDistantRatio float64 `json:"hierarchical_distant_ratio"`
+	HierarchicalMiddleRatio  float64 `json:"hierarchical_middle_ratio"`
+}
+
 // compactMarkerRole is the persisted ChatMessage role marking a manual context
 // compaction. The row renders as the existing context-compaction card on
 // reload (chatUtils maps the role) and carries the compacted history snapshot
@@ -241,6 +263,9 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 			// Non-fatal: the in-memory history is already compacted; only the
 			// restart-restore falls back to the full history.
 		}
+		// Persist the EWMA-calibrated forecast so the compression-ratio
+		// calibration survives restarts. Best-effort, like the marker.
+		m.persistCompactionForecast(orch)
 	}
 
 	// Release the compacting window BEFORE the auto-resume so ResumeTask is
@@ -299,27 +324,27 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 	if err != nil {
 		errMsg = err.Error()
 	}
-	// Post-flow no-op verdict for the client (the compact button's disabled
-	// state), recomputed on the orchestrator's CURRENT history: a successful
-	// compaction left the dialogue within the target → true; a no-op outcome
-	// changed nothing → true; a cancelled/failed flow left the history
-	// untouched → its own verdict.
-	compactionNoOp := orch.ManualCompactionWouldNoOp()
+	// Post-flow per-strategy availability verdict for the client (the compact
+	// menu), recomputed on the orchestrator's CURRENT history: a successful
+	// compaction left the dialogue under every strategy's window → all
+	// unavailable; a no-op outcome changed nothing → all unavailable; a
+	// cancelled/failed flow left the history untouched → its own verdict.
+	availability := orch.ManualCompactionAvailability()
 	m.emitFunc(Event{
 		SessionID: sessionID,
 		Type:      "compaction_finished",
 		Data: CompactionFinishedEventData{
-			Strategy:            strategy,
-			Success:             err == nil && !cancelled,
-			Cancelled:           cancelled,
-			Error:               errMsg,
-			BeforePercent:       before,
-			AfterPercent:        after,
-			Resumed:             resumed,
-			PausedWithoutResume: pausedWithoutResume,
-			NothingCompacted:    nothingCompacted,
-			DeferredToResume:    deferredToResume,
-			CompactionNoOp:      compactionNoOp,
+			Strategy:               strategy,
+			Success:                err == nil && !cancelled,
+			Cancelled:              cancelled,
+			Error:                  errMsg,
+			BeforePercent:          before,
+			AfterPercent:           after,
+			Resumed:                resumed,
+			PausedWithoutResume:    pausedWithoutResume,
+			NothingCompacted:       nothingCompacted,
+			DeferredToResume:       deferredToResume,
+			CompactionAvailability: availability,
 		},
 	})
 }
@@ -394,6 +419,74 @@ func (m *Manager) persistCompactionMarker(sessionID string, orch *core.Orchestra
 		Metadata:  metaJSON,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+// persistCompactionForecast writes the orchestrator's EWMA-calibrated
+// compression-ratio forecast to app_state so the calibration survives an app
+// restart. Best-effort: a failed write only loses the incremental calibration
+// (the next compaction re-seeds from config and re-learns), never the compacted
+// history itself.
+func (m *Manager) persistCompactionForecast(orch *core.Orchestrator) {
+	m.mu.RLock()
+	store := m.projectStore
+	m.mu.RUnlock()
+	if store == nil {
+		return // no persistence — in-memory calibration is still effective
+	}
+	f := orch.CompactionForecast()
+	state := compactionForecastState{
+		SummarizationRatio:       f.SummarizationRatio,
+		HierarchicalDistantRatio: f.HierarchicalDistantRatio,
+		HierarchicalMiddleRatio:  f.HierarchicalMiddleRatio,
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		m.log().Warn("manual compaction: failed to marshal forecast", "error", err)
+		return
+	}
+	if err := store.SaveAppState(context.Background(), compactionForecastStateKey(orch.CurrentModel()), string(raw)); err != nil {
+		m.log().Warn("manual compaction: failed to persist forecast", "error", err)
+	}
+}
+
+// loadCompactionForecast reads a previously persisted compression-ratio
+// forecast from app_state and applies it to the orchestrator, overriding the
+// config seed. A missing key, an unparsable value, or an absent store leaves
+// the orchestrator's config-seeded forecast untouched (the seed is a valid
+// conservative default). Zero fields are ignored, so a partially persisted
+// state keeps the config seed for the missing ratios.
+func (m *Manager) loadCompactionForecast(orch *core.Orchestrator) {
+	m.mu.RLock()
+	store := m.projectStore
+	m.mu.RUnlock()
+	if store == nil {
+		return
+	}
+	raw, err := store.LoadAppState(context.Background(), compactionForecastStateKey(orch.CurrentModel()))
+	if err != nil || raw == "" {
+		if err != nil {
+			m.log().Warn("manual compaction: failed to load forecast", "error", err)
+		}
+		return
+	}
+	var state compactionForecastState
+	if err := json.Unmarshal([]byte(raw), &state); err != nil {
+		m.log().Warn("manual compaction: unparsable forecast state", "error", err)
+		return
+	}
+	// Merge onto the current (config-seeded) forecast: only non-zero persisted
+	// ratios override, so a partial state preserves the seed for the rest.
+	f := orch.CompactionForecast()
+	if state.SummarizationRatio > 0 {
+		f.SummarizationRatio = state.SummarizationRatio
+	}
+	if state.HierarchicalDistantRatio > 0 {
+		f.HierarchicalDistantRatio = state.HierarchicalDistantRatio
+	}
+	if state.HierarchicalMiddleRatio > 0 {
+		f.HierarchicalMiddleRatio = state.HierarchicalMiddleRatio
+	}
+	orch.SetCompactionForecast(f)
 }
 
 // compactedHistoryFromMarker parses the compacted history snapshot embedded in

@@ -1690,15 +1690,17 @@ type SessionRuntimeStatus struct {
 	// Compacting is true while a manual context compaction is in flight. The
 	// UI locks the input and swaps the compact button for a cancel button.
 	Compacting bool `json:"compacting"`
-	// CompactionNoOp is true when a manual compaction of the session's
-	// current conversation history is guaranteed to change nothing (the
-	// dialogue already fits the manual-compaction target — see
-	// Orchestrator.ManualCompactionWouldNoOp). The UI disables the compact
-	// button with an explanatory tooltip. Fail-open: false whenever the
-	// session or its orchestrator is not in memory — a status poll must
-	// never guess "disabled"; a pointless click simply reports the existing
-	// nothing_compacted outcome.
-	CompactionNoOp bool `json:"compaction_noop"`
+	// CompactionAvailability is the per-strategy manual-compaction prediction
+	// for the session's current conversation history (see
+	// Orchestrator.ManualCompactionAvailability): whether each strategy would
+	// actually shrink the dialogue right now, how many tokens it would reclaim,
+	// and whether that reclaim is exact or a forecast. The UI enables the
+	// compact button when at least one strategy is available and disables (with
+	// a reason) the strategies that would not shrink the dialogue. Fail-open:
+	// empty whenever the session or its orchestrator is not in memory — a status
+	// poll must never guess "disabled"; a pointless click simply reports the
+	// existing nothing_compacted outcome.
+	CompactionAvailability []core.CompactionAvailability `json:"compaction_availability"`
 	// Activity is the session's last user-facing activity label
 	// ("Thinking...", "Routing request...", "Generating response...", ...)
 	// tracked by the emitter. It lets the frontend replace the frozen
@@ -1749,7 +1751,7 @@ func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatu
 			status.Streaming = emitter.StreamingActive()
 		}
 		if orch != nil {
-			status.CompactionNoOp = orch.ManualCompactionWouldNoOp()
+			status.CompactionAvailability = orch.ManualCompactionAvailability()
 		}
 	}
 

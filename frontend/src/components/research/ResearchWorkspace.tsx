@@ -1,193 +1,62 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo } from 'react'
+import { FlaskConical } from 'lucide-react'
 import {
-  FlaskConical,
-  FileText,
-  BookMarked,
-  FileCheck2,
-  Loader2,
-  AlertCircle,
-  Save,
-} from 'lucide-react'
-import { cn } from '@/lib/utils'
-import { logger } from '@/lib/logger'
-import { useResearchStatusEvents } from '@/hooks/useResearchStatusEvents'
-import { useResearchFileWatcher } from '@/hooks/useResearchFileWatcher'
-import { useResearchStore, selectActiveProject } from '@/stores/researchStore'
-import { useProjectStore } from '@/stores/projectStore'
-import { useFileViewerStore } from '@/stores/fileViewerStore'
-import { updateHypothesis } from '@/api/research'
+  useResearchStore,
+  selectActiveProject,
+  RESEARCH_CARD_MIN_HEIGHT,
+  RESEARCH_CARD_MAX_HEIGHT,
+} from '@/stores/researchStore'
+import { useResize } from '@/hooks/useResize'
+import { ResizeHandle } from '@/components/ResizeHandle'
 import { ResearchToggle } from './ResearchToggle'
-import {
-  draftFromNode,
-  buildUpdateFields,
-  type HypothesisDraft,
-} from './researchWorkspaceUtils'
-import {
-  layoutDag,
-  buildDisplayGraph,
-  projectDir,
-  projectFilePaths,
-} from './researchDagRender'
+import { HypothesisCard } from './HypothesisCard'
+import { ErrorBanner } from './ResearchBanner'
+import { useHypothesisEditor } from './useHypothesisEditor'
+import { layoutDag, buildDisplayGraph } from './researchDagRender'
 import { ResearchDagCanvas } from './ResearchDagCanvas'
-import type {
-  HypothesisGraph,
-  HypothesisNode,
-  HypothesisStatus,
-} from '@/types/models'
+import type { HypothesisGraph } from '@/types/models'
 
-// ── Hypothesis detail card (editable status/result/timebox) ───────────
-
-const STATUS_OPTIONS: HypothesisStatus[] = [
-  'open',
-  'in-progress',
-  'confirmed',
-  'refuted',
-  'cancelled',
-]
-
-interface HypothesisCardProps {
-  node: HypothesisNode
-  draft: HypothesisDraft
-  saving: boolean
-  dirty: boolean
-  saveError: string | null
-  onChange: (next: HypothesisDraft) => void
-  onSave: () => void
-}
-
-function HypothesisCard({
-  node,
-  draft,
-  saving,
-  dirty,
-  saveError,
-  onChange,
-  onSave,
-}: HypothesisCardProps) {
-  const parents = (node.parents ?? []).join(', ')
-
-  return (
-    <div className="flex flex-col gap-3" data-testid="hypothesis-card">
-      <div>
-        <div className="flex items-baseline gap-1.5">
-          <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-            {node.id}
-          </span>
-          <span className="truncate text-xs font-semibold">{node.title}</span>
-        </div>
-        {parents && (
-          <p className="mt-0.5 text-[11px] text-muted-foreground/70">
-            parents: <span className="font-mono text-[10px]">{parents}</span>
-          </p>
-        )}
-      </div>
-
-      <label className="flex flex-col gap-1">
-        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-          Status
-        </span>
-        <select
-          value={draft.status}
-          onChange={(e) => onChange({ ...draft, status: e.target.value })}
-          aria-label="Hypothesis status"
-          className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs outline-none focus:border-primary"
-        >
-          {STATUS_OPTIONS.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <label className="flex flex-col gap-1">
-        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-          Timebox
-        </span>
-        <input
-          type="text"
-          value={draft.timebox}
-          onChange={(e) => onChange({ ...draft, timebox: e.target.value })}
-          aria-label="Hypothesis timebox"
-          placeholder="e.g. 2 weeks"
-          className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs outline-none focus:border-primary"
-        />
-      </label>
-
-      <label className="flex flex-col gap-1">
-        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-          Result
-        </span>
-        <textarea
-          value={draft.result}
-          onChange={(e) => onChange({ ...draft, result: e.target.value })}
-          aria-label="Hypothesis result"
-          rows={4}
-          placeholder="Finding / outcome…"
-          className="w-full resize-y rounded-md border border-input bg-background px-2 py-1 text-xs outline-none focus:border-primary"
-        />
-      </label>
-
-      {saveError && (
-        <p className="text-xs text-destructive" role="alert">
-          {saveError}
-        </p>
-      )}
-
-      <button
-        type="button"
-        onClick={onSave}
-        disabled={saving || !dirty}
-        className="inline-flex items-center justify-center gap-1.5 rounded-md bg-primary px-2 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-      >
-        {saving ? (
-          <Loader2 className="size-3.5 animate-spin" />
-        ) : (
-          <Save className="size-3.5" />
-        )}
-        Save
-      </button>
-    </div>
-  )
-}
-
-// ── Error banner ──────────────────────────────────────────────────────
-
-function ErrorBanner({ message }: { message: string }) {
-  return (
-    <div className="flex items-center gap-1.5 shrink-0 px-3 py-1.5 text-xs text-destructive bg-destructive/10 border-b border-destructive/20">
-      <AlertCircle className="size-3.5 shrink-0" />
-      <span className="truncate">{message}</span>
-    </div>
-  )
-}
+// Bottom card-panel height bounds live in the research store
+// (RESEARCH_CARD_*_HEIGHT) alongside the persisted height: the split must
+// survive workspace remounts.
 
 // ── ResearchWorkspace (the file-viewer tab content) ────────────────────
 
 /**
  * Research workspace rendered by the file viewer for the synthetic
- * `c0wrk:research` pseudo-path. Shows the incomplete-path hypothesis DAG (with
- * a "hide completed" toggle), an inline editable hypothesis card (status /
- * result / timebox persisted through the t4 UpdateHypothesis RPC), and quick
- * links that open the brief / prior-art / report as sibling read-only tabs.
+ * `c0wrk:research` pseudo-path. Horizontal split: the incomplete-path
+ * hypothesis DAG (with a "hide completed" toggle) fills the full width of
+ * the upper area, and the editable card of the selected hypothesis fills
+ * the full width of the lower area (resizable via the divider). Every
+ * hypothesis mention in the card header opens the corresponding markdown
+ * card as a sibling read-only tab, and the card edits (title / parents /
+ * status / decision / statement / verification criterion / experiment
+ * notes / timebox / result — persisted through the t4 UpdateHypothesis RPC)
+ * render in markdown-highlighted editors. The header carries the RESEARCH
+ * mode toggle (disable), so the workspace tab remains usable even when the
+ * sidebar panel is hidden.
  */
 export function ResearchWorkspace() {
-  // Keep the store in sync (full status fetch + incremental graph updates).
-  useResearchStatusEvents()
-  useResearchFileWatcher()
-
+  // Data sync (full status + incremental graph updates) lives in the App-root
+  // ResearchEventBridge — this component is a pure view over researchStore.
   const enabled = useResearchStore((s) => s.status?.enabled ?? false)
   const project = useResearchStore(selectActiveProject)
-  const root = useResearchStore((s) => s.status?.root)
-  const rootPath = useResearchStore((s) => s.status?.research_root ?? '')
   const error = useResearchStore((s) => s.error)
   const isLoading = useResearchStore((s) => s.isLoading)
 
-  const [hideTerminal, setHideTerminal] = useState(false)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [draft, setDraft] = useState<HypothesisDraft | null>(null)
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState<string | null>(null)
+  // Workspace view state (selection, draft, filter, card height) lives in
+  // the research store, not local state: the floating file viewer
+  // auto-collapses on outside focus (and sibling-tab switches unmount the
+  // workspace too), so local state would silently drop the selected vertex,
+  // the open card, and any unsaved draft on every remount.
+  const selectedId = useResearchStore((s) => s.selectedHypothesisId)
+  const selectedProjectId = useResearchStore((s) => s.selectedHypothesisProjectId)
+  const draft = useResearchStore((s) => s.hypothesisDraft)
+  const setHypothesisDraft = useResearchStore((s) => s.setHypothesisDraft)
+  const hideTerminal = useResearchStore((s) => s.hideTerminal)
+  const setHideTerminal = useResearchStore((s) => s.setHideTerminal)
+  const cardHeight = useResearchStore((s) => s.cardHeight)
+  const setCardHeight = useResearchStore((s) => s.setCardHeight)
 
   // Full graph drives selection + the editable card; the display graph is a
   // filtered projection for layout/rendering only. Memoised so an absent
@@ -204,65 +73,39 @@ export function ResearchWorkspace() {
   )
   const layout = useMemo(() => layoutDag(displayGraph), [displayGraph])
 
+  // The selection is keyed to the research project it was made in: node ids
+  // (H-001…) are generic and collide across R-NNN projects, so a selection
+  // left over from an earlier active project must not rebind to the current
+  // project's same-id node — an unsaved draft plus Save would then overwrite
+  // ANOTHER project's card. Resolve (and highlight) it only while the key
+  // matches the active project.
+  const selectionIsCurrent = project !== null && selectedProjectId === project.id
   const selectedNode = useMemo(
-    () => graph.nodes.find((n) => n.id === selectedId) ?? null,
-    [graph, selectedId],
+    () =>
+      selectionIsCurrent
+        ? graph.nodes.find((n) => n.id === selectedId) ?? null
+        : null,
+    [graph, selectedId, selectionIsCurrent],
   )
 
-  // Initialise the draft whenever the selection changes (reads the latest
-  // graph via a ref so background file-change updates never clobber an
-  // in-progress edit).
-  const graphRef = useRef(graph)
-  graphRef.current = graph
-  useEffect(() => {
-    setSaveError(null)
-    if (!selectedId) {
-      setDraft(null)
-      return
-    }
-    const node = graphRef.current.nodes.find((n) => n.id === selectedId)
-    setDraft(node ? draftFromNode(node) : null)
-  }, [selectedId])
+  // Card editing (selection clicks, dirty, save round-trip, open-card link).
+  // Called before the early return below so the hook order stays stable.
+  const { saving, saveError, selectNode, dirty, handleSave, openHypothesisCard } =
+    useHypothesisEditor(graph, selectedNode, draft)
 
-  const selectNode = useCallback((id: string) => {
-    setSelectedId((prev) => (prev === id ? null : id))
-  }, [])
-
-  const dirty = useMemo(() => {
-    if (!selectedNode || !draft) return false
-    return Object.keys(buildUpdateFields(selectedNode, draft)).length > 0
-  }, [selectedNode, draft])
-
-  const handleSave = useCallback(async () => {
-    const projectId = useProjectStore.getState().activeProjectId
-    if (!projectId || !selectedNode || !draft) return
-    const fields = buildUpdateFields(selectedNode, draft)
-    if (Object.keys(fields).length === 0) return
-    setSaving(true)
-    setSaveError(null)
-    try {
-      const res = await updateHypothesis(projectId, selectedNode.id, fields)
-      // Apply the refreshed graph so the DAG + metrics reflect the mutation.
-      useResearchStore.getState().loadGraph(res)
-      // Keep the selection; the store now carries the persisted values.
-    } catch (err) {
-      logger.error('Failed to update hypothesis:', err)
-      setSaveError(
-        err instanceof Error ? err.message : 'Failed to update hypothesis',
-      )
-    } finally {
-      setSaving(false)
-    }
-  }, [selectedNode, draft])
-
-  // Open a research artifact (brief/prior-art/report) as a sibling read-only
-  // tab in the file viewer. Declared before the early return so the hook order
-  // stays stable across renders.
-  const openReadView = useCallback((filePath: string) => {
-    const store = useFileViewerStore.getState()
-    store.setCollapsed(false)
-    store.openFile(filePath)
-  }, [])
+  // DAG ↔ card split: dragging (or arrow-keying) the horizontal divider
+  // between the canvas and the card panel resizes them. The divider IS the
+  // card's top edge, so it must follow the pointer/keys: dragging it up
+  // grows the card into the canvas area (direction -1 on the y axis —
+  // dragging down shrinks it back).
+  const cardResize = useResize({
+    initialWidth: cardHeight,
+    min: RESEARCH_CARD_MIN_HEIGHT,
+    max: RESEARCH_CARD_MAX_HEIGHT,
+    direction: -1,
+    axis: 'y',
+    onChange: setCardHeight,
+  })
 
   // ── RESEARCH off → enable empty state ──────────────────────────────
   if (!enabled) {
@@ -276,15 +119,15 @@ export function ResearchWorkspace() {
     )
   }
 
-  const dir = project ? projectDir(root, project.id) : ''
-  const paths = projectFilePaths(rootPath, dir)
-
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* Header: title + hide-completed toggle */}
+      {/* Header: title + hide-completed toggle + mode toggle (disable) */}
       <div className="flex items-center gap-2 shrink-0 border-b border-border bg-secondary/30 px-2 py-1">
         <FlaskConical className="size-3.5 shrink-0 text-success" />
-        <span className="truncate text-xs font-medium">
+        <span
+          className="truncate text-xs font-medium"
+          title={project?.brief.title ?? 'Research'}
+        >
           {project?.brief.title ?? 'Research'}
         </span>
         <label className="ml-auto flex shrink-0 cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -297,13 +140,14 @@ export function ResearchWorkspace() {
           />
           Hide completed
         </label>
+        <ResearchToggle variant="button" />
       </div>
 
       {error && <ErrorBanner message={error} />}
 
-      {/* Body: DAG + detail card */}
-      <div className="flex flex-1 min-h-0">
-        <div className="relative flex-1 min-w-0">
+      {/* Body: DAG above + resizable card panel below (full width each) */}
+      <div className="flex flex-1 min-h-0 flex-col">
+        <div className="relative flex-1 min-h-0">
           {isLoading && graph.nodes.length === 0 ? (
             <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
               Loading…
@@ -315,22 +159,43 @@ export function ResearchWorkspace() {
           ) : (
             <ResearchDagCanvas
               layout={layout}
-              selectedId={selectedId}
+              nodes={displayGraph.nodes}
+              selectedId={selectionIsCurrent ? selectedId : null}
               onSelect={selectNode}
             />
           )}
         </div>
 
-        <div className="w-72 shrink-0 overflow-auto border-l border-border bg-background p-3">
+        <ResizeHandle
+          orientation="horizontal"
+          onMouseDown={cardResize.handleMouseDown}
+          onKeyDown={cardResize.handleKeyDown}
+        />
+
+        {/* Card panel: owns the vertical scroll — the whole card (header,
+            field table, sections, Save) scrolls together inside it. */}
+        <div
+          data-testid="hypothesis-sidebar"
+          style={{ height: cardHeight }}
+          className="flex shrink-0 flex-col overflow-auto custom-scrollbar border-t border-border bg-background p-3"
+        >
           {selectedNode && draft ? (
+            // key on the hypothesis id: switching cards REMOUNTS the card
+            // subtree, so nothing captured at mount time (the CodeMirror
+            // view — its doc, cursor, history — or any mount-time closure)
+            // can leak from one hypothesis's editor into the next one's.
+            // Without it React reconciles both cards as the same instance
+            // and reuses the previous card's editor.
             <HypothesisCard
+              key={selectedNode.id}
               node={selectedNode}
               draft={draft}
               saving={saving}
               dirty={dirty}
               saveError={saveError}
-              onChange={setDraft}
+              onChange={setHypothesisDraft}
               onSave={handleSave}
+              onOpenCard={openHypothesisCard}
             />
           ) : (
             <p className="py-8 text-center text-xs text-muted-foreground">
@@ -339,56 +204,6 @@ export function ResearchWorkspace() {
           )}
         </div>
       </div>
-
-      {/* Read views: open brief / prior-art / report as sibling tabs */}
-      <div className="flex shrink-0 flex-wrap items-center gap-1 border-t border-border bg-secondary/20 px-2 py-1.5">
-        <ReadViewLink
-          icon={FileText}
-          label="Brief"
-          onClick={() => openReadView(paths.brief)}
-        />
-        <ReadViewLink
-          icon={BookMarked}
-          label="Prior art"
-          onClick={() => openReadView(paths.priorArt)}
-        />
-        <ReadViewLink
-          icon={FileCheck2}
-          label="Report"
-          disabled={!project?.has_report}
-          onClick={
-            project?.has_report ? () => openReadView(paths.report) : undefined
-          }
-        />
-      </div>
     </div>
-  )
-}
-
-interface ReadViewLinkProps {
-  icon: typeof FileText
-  label: string
-  disabled?: boolean
-  onClick?: () => void
-}
-
-function ReadViewLink({ icon: Icon, label, disabled, onClick }: ReadViewLinkProps) {
-  const interactive = !!onClick && !disabled
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={!interactive}
-      title={interactive ? `Open ${label}` : label}
-      className={cn(
-        'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors',
-        interactive && 'cursor-pointer hover:bg-muted',
-        !interactive && 'cursor-default opacity-60',
-        'text-muted-foreground',
-      )}
-    >
-      <Icon className="size-3" />
-      <span className="uppercase tracking-wide">{label}</span>
-    </button>
   )
 }

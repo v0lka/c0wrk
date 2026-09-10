@@ -28,7 +28,7 @@ vi.mock('@/api/runtime', () => ({
   reportDroppedEvent: vi.fn(),
 }))
 
-// Terminal handlers call refreshCompactionNoOp → getSessionRuntimeStatus.
+// Terminal handlers call refreshCompactionAvailability → getSessionRuntimeStatus.
 // Stub the RPC (null status = no-op) so the node-free test never touches
 // the Wails-backed wrapper.
 vi.mock('@/api/chat', () => ({

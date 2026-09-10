@@ -27,9 +27,9 @@ Engine file: `github.com/v0lka/sp4rk/agent/router/router.go` (Router struct, `Ro
 
 The `mode` field from the prior pipeline is removed (the Conductor decides execution granularity via `delegate` or not). The `needs_clarification` field **still exists** on the sp4rk `RoutingDecision` type, but c0wrk **ignores** it (`core/orchestrator_handle.go`: "Router.NeedsClarification is ignored: the Conductor decides when to ask") — clarification is a Conductor tool call (`ask_user`), not a routing-driven pipeline branch.
 
-### Tool Matching (optional, gated on the Small-LLM profile)
+### Tool Matching (not used — removed)
 
-When semantic tool selection is enabled (`coreRouter.SetToolMatching`, gated on `small_llm.enabled && small_llm.essential_tools.enabled` — see [../small-llm.md](../small-llm.md)), the router additionally classifies which tools are relevant to the task and returns them in `RoutingDecision.MatchedTools`. The router system prompt's `TOOL-MATCHING` and `JSON-OUTPUT-SCHEMA` placeholders are resolved conditionally based on this flag; when disabled both resolve to empty/default content and the router output carries no `matched_tools` field (behavior unchanged). `MatchedTools` feeds the Small-LLM essential-tools narrowing in `HandleMessage`. When the profile is off, `MatchedTools` is empty and unused.
+c0wrk does **not** use the sp4rk router's semantic tool matching: `coreRouter.SetToolMatching` is never called, so the `TOOL-MATCHING` and `JSON-OUTPUT-SCHEMA` prompt placeholders resolve to empty/default content and the routing output carries no `matched_tools` field. The Small-LLM essential-tools narrowing is a static selection over the operator's pins, the protected tools, and every MCP tool (see [../small-llm.md](../small-llm.md) and [ADR-035](../../decisions/035-remove-small-llm-tool-budget.md)); `RoutingDecision.MatchedTools` exists on the sp4rk type but stays empty and unconsumed.
 
 ### Domain → Compaction Strategy (c0wrk consumption)
 
@@ -71,7 +71,7 @@ In No Project (CHAT) mode, `SetNoProjectMode()` disables only `semantic_search` 
 
 - LLM call failure → return error (no fallback routing)
 - JSON parse failure → one retry with repair prompt asking the LLM to fix its JSON
-- Second parse failure → return error — except when the Small-LLM essential-tools/tool-matching profile is enabled (`smallLLMToolMatchingEnabled`): the orchestrator then continues with a default routing decision (`RoutingDecision{Domain: general, Complexity: defaultResumeComplexity}`, logged/emitted "Routing fallback: unparseable routing JSON — continuing with default routing") and the tool filter degrades to the full tool set. The unprofiled path errors as documented.
+- Second parse failure → return error — except when the Small-LLM essential-tools variant is enabled: the orchestrator then continues with a default routing decision (`RoutingDecision{Domain: general, Complexity: defaultResumeComplexity}`, logged/emitted "Routing fallback: unparseable routing JSON — continuing with default routing") and the essential-tools filter still applies its static selection (the tool set is never re-expanded to the full registry). The unprofiled path errors as documented.
 
 (Validation rules — domain clamping, complexity range, skill dedup — are engine behavior; see the sp4rk router spec.)
 
@@ -82,7 +82,7 @@ In No Project (CHAT) mode, `SetNoProjectMode()` disables only `semantic_search` 
 - The router never modifies the tool registry or any state (pure classification)
 - c0wrk never branches on `RoutingDecision.NeedsClarification` (explicitly ignored in `orchestrator_handle.go`); clarification is a Conductor responsibility via `ask_user`. The field may still be set by the engine, but it drives no c0wrk pipeline branch.
 - User-specified skills are merged with router-matched skills in the orchestrator, not in the router
-- Tool matching (`MatchedTools`) is only emitted when the Small-LLM profile's essential-tools variant is active (`coreRouter.SetToolMatching`); when off, the router never modifies the tool set and `MatchedTools` is empty
+- Tool matching is never enabled: `SetToolMatching` is not called, `MatchedTools` stays empty and unconsumed (ADR-035); the router never modifies the tool set
 
 ## Related Specs
 
@@ -90,5 +90,5 @@ In No Project (CHAT) mode, `SetNoProjectMode()` disables only `semantic_search` 
 - [README.md](README.md) — orchestration overview
 - [conductor.md](conductor.md) — routing decision feeds the Conductor
 - [../memory/compaction.md](../memory/compaction.md) — domain → strategy mapping
-- [../small-llm.md](../small-llm.md) — tool matching consumed by the essential-tools narrowing
+- [../small-llm.md](../small-llm.md) — essential-tools narrowing applies a static tool selection; router tool matching is not used
 - [../../decisions/012-conductor-orchestration-pipeline.md](../../decisions/012-conductor-orchestration-pipeline.md) — rationale for removing mode/clarification

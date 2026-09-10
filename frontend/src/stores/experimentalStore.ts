@@ -2,9 +2,9 @@ import { create } from 'zustand'
 
 /**
  * Master experimental-features switch, loaded once from GetConfig and updated
- * in place when the user toggles it in Settings. Consumers (research icon,
- * Small-LLM settings tab) read `enabled` reactively so hiding/revealing happens
- * within the same session without a reload.
+ * in place when the user toggles it in Settings. The only gated feature today
+ * is the Small-LLM profile: its settings tab reads `enabled` reactively so
+ * hiding/revealing happens within the same session without a reload.
  */
 interface ExperimentalState {
   enabled: boolean

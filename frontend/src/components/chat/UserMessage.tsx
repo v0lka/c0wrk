@@ -133,6 +133,7 @@ export function UserMessage({ item, sticky = false, bookmarkStar }: UserMessageP
       className="group sticky top-0 z-10"
       data-message-id={item.message.id}
       data-bookmark-id={item.message.id}
+      data-sticky-user-message=""
     >
       {bookmarkStar && (
         <div className="absolute left-0 top-2 z-10">

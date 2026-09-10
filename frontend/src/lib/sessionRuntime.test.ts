@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { reconcileRuntimeStatus, reconcilePendingActions, refreshCompactionNoOp, stalePromptMatchField } from './sessionRuntime'
+import { reconcileRuntimeStatus, reconcilePendingActions, refreshCompactionAvailability, stalePromptMatchField } from './sessionRuntime'
 import { handleSessionPausedEvent, handleSessionResumedEvent } from '@/hooks/events/sessionLifecycleHandlers'
 import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -7,9 +7,9 @@ import type { ChatMessageUI } from '@/types/messages'
 import { getSessionRuntimeStatus } from '@/api/chat'
 import type { PendingActionsResponse } from '@/api/chat'
 
-// refreshCompactionNoOp calls the runtime-status RPC — stub it (the module
-// also re-exports window-touching wails wrappers, so a factory mock keeps the
-// node-env test free of the real module).
+// refreshCompactionAvailability calls the runtime-status RPC — stub it (the
+// module also re-exports window-touching wails wrappers, so a factory mock
+// keeps the node-env test free of the real module).
 vi.mock('@/api/chat', () => ({
   getSessionRuntimeStatus: vi.fn(),
 }))
@@ -26,7 +26,7 @@ function resetStore(): void {
     paused: {},
     pausing: {},
     compacting: {},
-    compactionNoOp: {},
+    compactionAvailability: {},
     runtimeEventAt: {},
     taskFlagsEventAt: {},
   })
@@ -52,28 +52,38 @@ function sessionMessages(): ChatMessageUI[] {
 describe('reconcileRuntimeStatus', () => {
   beforeEach(resetStore)
 
-  it('mirrors the compaction_noop prediction into the per-session store flag', () => {
-    // The backend predicts a manual compaction would change nothing — the
-    // compact button must render disabled for this session after the
-    // reconcile (session switch/restart).
-    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false, paused: false, compaction_noop: true })
-    expect(useChatStore.getState().compactionNoOp[SESSION]).toBe(true)
+  it('mirrors the compaction_availability prediction into the per-session store', () => {
+    // The backend predicts which strategies would actually shrink the dialogue;
+    // the compact menu must reflect it after the reconcile (session switch).
+    const avail = [
+      { strategy: 'sliding_window', available: true, reclaim_tokens: 120, exact: true },
+      { strategy: 'summarization', available: false, reclaim_tokens: 0, exact: false },
+      { strategy: 'hierarchical', available: false, reclaim_tokens: 0, exact: false },
+    ]
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false, paused: false, compaction_availability: avail })
+    expect(useChatStore.getState().compactionAvailability[SESSION]).toEqual(avail)
   })
 
-  it('clears a stale no-op flag when the backend reports compactable again', () => {
-    // A finished task grew the history past the target while unobserved; the
-    // fresh snapshot reports compaction_noop=false and the reconcile must
-    // lift a previously-disabled button.
-    useChatStore.setState({ compactionNoOp: { [SESSION]: true } })
-    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false, paused: false, compaction_noop: false })
-    expect(useChatStore.getState().compactionNoOp[SESSION]).toBeUndefined()
+  it('replaces the availability list when the backend reports a new prediction', () => {
+    const before = [
+      { strategy: 'sliding_window', available: false, reclaim_tokens: 0, exact: true },
+    ]
+    const after = [
+      { strategy: 'sliding_window', available: true, reclaim_tokens: 800, exact: true },
+    ]
+    useChatStore.setState({ compactionAvailability: { [SESSION]: before } })
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false, paused: false, compaction_availability: after })
+    expect(useChatStore.getState().compactionAvailability[SESSION]).toEqual(after)
   })
 
-  it('treats an absent compaction_noop field as fail-open (flag cleared)', () => {
-    // Older backend without the field must not leave a stale disabled state.
-    useChatStore.setState({ compactionNoOp: { [SESSION]: true } })
+  it('leaves the availability untouched when the field is absent (fail-open)', () => {
+    // Older backend without the field must not clobber an existing menu.
+    const existing = [
+      { strategy: 'sliding_window', available: true, reclaim_tokens: 10, exact: true },
+    ]
+    useChatStore.setState({ compactionAvailability: { [SESSION]: existing } })
     reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false, paused: false })
-    expect(useChatStore.getState().compactionNoOp[SESSION]).toBeUndefined()
+    expect(useChatStore.getState().compactionAvailability[SESSION]).toEqual(existing)
   })
 
   it('replaces a frozen activity label with the backend-tracked phase for an active session', () => {    // Reproduces the "Routing request..." stuck bug: the label froze when the
@@ -549,46 +559,59 @@ describe('stalePromptMatchField', () => {
   })
 })
 
-describe('refreshCompactionNoOp', () => {
+describe('refreshCompactionAvailability', () => {
   beforeEach(() => {
     vi.mocked(getSessionRuntimeStatus).mockReset()
     resetStore()
   })
 
-  it('applies the fetched verdict (true and false)', async () => {
+  it('applies the fetched availability', async () => {
+    const avail = [
+      { strategy: 'sliding_window', available: false, reclaim_tokens: 0, exact: true },
+    ]
     vi.mocked(getSessionRuntimeStatus).mockResolvedValue({
       active: false,
       has_unfinished_task: false,
       paused: false,
-      compaction_noop: true,
+      compaction_availability: avail,
     })
-    refreshCompactionNoOp(SESSION)
-    await vi.waitFor(() => expect(useChatStore.getState().compactionNoOp[SESSION]).toBe(true))
+    refreshCompactionAvailability(SESSION)
+    await vi.waitFor(() => expect(useChatStore.getState().compactionAvailability[SESSION]).toEqual(avail))
 
-    // A finished task grew the history past the target: the refetch lifts the
-    // disabled state without a session switch.
+    const updated = [
+      { strategy: 'sliding_window', available: true, reclaim_tokens: 500, exact: true },
+    ]
     vi.mocked(getSessionRuntimeStatus).mockResolvedValue({
       active: false,
       has_unfinished_task: false,
       paused: false,
-      compaction_noop: false,
+      compaction_availability: updated,
     })
-    refreshCompactionNoOp(SESSION)
-    await vi.waitFor(() => expect(useChatStore.getState().compactionNoOp[SESSION]).toBeUndefined())
+    refreshCompactionAvailability(SESSION)
+    await vi.waitFor(() => expect(useChatStore.getState().compactionAvailability[SESSION]).toEqual(updated))
   })
 
-  it('keeps the previous flag when the RPC fails or returns null (best-effort)', async () => {
-    useChatStore.setState({ compactionNoOp: { [SESSION]: true } })
+  it('keeps the previous availability when the RPC fails, returns null, or omits the field (best-effort)', async () => {
+    const existing = [
+      { strategy: 'sliding_window', available: true, reclaim_tokens: 5, exact: true },
+    ]
+    useChatStore.setState({ compactionAvailability: { [SESSION]: existing } })
 
     vi.mocked(getSessionRuntimeStatus).mockResolvedValue(null)
-    refreshCompactionNoOp(SESSION)
+    refreshCompactionAvailability(SESSION)
     await vi.waitFor(() => expect(getSessionRuntimeStatus).toHaveBeenCalled())
-    expect(useChatStore.getState().compactionNoOp[SESSION]).toBe(true)
+    expect(useChatStore.getState().compactionAvailability[SESSION]).toEqual(existing)
+
+    // An absent field on a valid status must also be a no-op.
+    vi.mocked(getSessionRuntimeStatus).mockResolvedValue({ active: false, has_unfinished_task: false, paused: false })
+    refreshCompactionAvailability(SESSION)
+    await vi.waitFor(() => expect(getSessionRuntimeStatus).toHaveBeenCalled())
+    expect(useChatStore.getState().compactionAvailability[SESSION]).toEqual(existing)
 
     vi.mocked(getSessionRuntimeStatus).mockRejectedValue(new Error('rpc down'))
-    refreshCompactionNoOp(SESSION)
+    refreshCompactionAvailability(SESSION)
     await vi.waitFor(() => expect(getSessionRuntimeStatus).toHaveBeenCalled())
-    expect(useChatStore.getState().compactionNoOp[SESSION]).toBe(true)
+    expect(useChatStore.getState().compactionAvailability[SESSION]).toEqual(existing)
   })
 })
 

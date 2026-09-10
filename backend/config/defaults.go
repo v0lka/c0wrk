@@ -128,12 +128,12 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Executor.Compaction.SafetyMarginPercent == 0 {
 		cfg.Executor.Compaction.SafetyMarginPercent = 5
 	}
-	// Manual compaction target: the fill % of the context window that a
-	// user-triggered compaction aims to compact the history down to. Unset
-	// (0) falls back to 30%.
-	if cfg.Executor.Compaction.ManualTargetPercent == 0 {
-		cfg.Executor.Compaction.ManualTargetPercent = 30
-	}
+	// Compression-ratio forecast seeds for manual-compaction prediction. Zero
+	// fields are left unset here: the core layer resolves them to sp4rk's
+	// conservative defaults (0.3 / 0.15 / 0.3) — mirroring what the prediction
+	// already does for a zero CompactionForecast. Applying them here would
+	// double-default and make an explicit "0" (an invalid ratio) indistinguishable
+	// from "unset".
 
 	// Compaction thresholds defaults
 	if cfg.Executor.Compaction.Thresholds.PredictivePercent == 0 {
@@ -300,6 +300,12 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Timeouts.WebFetchTimeout == 0 {
 		cfg.Timeouts.WebFetchTimeout = 30
 	}
+	if cfg.Timeouts.WebFetchProxyTimeout == 0 {
+		cfg.Timeouts.WebFetchProxyTimeout = 30
+	}
+	if cfg.Timeouts.WebFetchRetries == 0 {
+		cfg.Timeouts.WebFetchRetries = 2
+	}
 	if cfg.Timeouts.WebSearchTimeout == 0 {
 		cfg.Timeouts.WebSearchTimeout = 30
 	}
@@ -415,14 +421,6 @@ func ApplyDefaults(cfg *Config) {
 	// a rebuild once enabled.
 	if cfg.SmallLLM.EssentialTools.AlwaysPresent == nil {
 		cfg.SmallLLM.EssentialTools.AlwaysPresent = defaultSmallLLMAlwaysPresent
-	}
-	if cfg.SmallLLM.EssentialTools.MaxTools == 0 {
-		// Slot budget for router-matched tools on top of the never-trimmed
-		// guaranteed set: always_present (12) ∪ protected (5, 4 overlap) =
-		// 13 unique tools, MCP joins at runtime. 16 leaves 3 free slots with
-		// the default always-present list; validateSmallLLMConfig rejects
-		// configs where the guaranteed set alone exceeds the budget.
-		cfg.SmallLLM.EssentialTools.MaxTools = 16
 	}
 	// Sampling numeric parameters are deliberately NOT seeded: zero means
 	// "inherit the vendor preset" (see SmallLLMSamplingConfig). Seeding a

@@ -142,7 +142,11 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 				MaxSummarizeTokens:  cfg.Executor.Compaction.MaxSummarizeTokens,
 				ObservationTruncate: cfg.Executor.Compaction.ObservationTruncate,
 				SafetyMarginPercent: cfg.Executor.Compaction.SafetyMarginPercent,
-				ManualTargetPercent: cfg.Executor.Compaction.ManualTargetPercent,
+				Forecast: core.BuilderCompactionForecast{
+					SummarizationRatio:       cfg.Executor.Compaction.Forecast.SummarizationRatio,
+					HierarchicalDistantRatio: cfg.Executor.Compaction.Forecast.HierarchicalDistantRatio,
+					HierarchicalMiddleRatio:  cfg.Executor.Compaction.Forecast.HierarchicalMiddleRatio,
+				},
 			},
 			ToolResultBudget: core.BuilderToolResultBudget{
 				HardCapTokens:   cfg.Executor.ToolResultBudget.HardCapTokens,
@@ -210,7 +214,6 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			EssentialTools: core.BuilderSmallLLMEssentialConfig{
 				Enabled:             cfg.SmallLLM.EssentialTools.Enabled,
 				AlwaysPresent:       cfg.SmallLLM.EssentialTools.AlwaysPresent,
-				MaxTools:            cfg.SmallLLM.EssentialTools.MaxTools,
 				CompactDescriptions: cfg.SmallLLM.EssentialTools.CompactDescriptions,
 			},
 			Sampling: core.BuilderSmallLLMSampling{
@@ -252,12 +255,14 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			PerToolTruncation:   convertTruncationMap(cfg.ToolLimits.PerToolTruncation),
 		},
 		Timeouts: core.BuilderTimeoutsConfig{
-			BashMaxTimeout:    cfg.Timeouts.BashMaxTimeout,
-			BashWaitDelay:     cfg.Timeouts.BashWaitDelay,
-			RipgrepTimeout:    cfg.Timeouts.RipgrepTimeout,
-			WebFetchTimeout:   cfg.Timeouts.WebFetchTimeout,
-			WebSearchTimeout:  cfg.Timeouts.WebSearchTimeout,
-			LLMRequestTimeout: cfg.Timeouts.LLMRequestTimeout,
+			BashMaxTimeout:       cfg.Timeouts.BashMaxTimeout,
+			BashWaitDelay:        cfg.Timeouts.BashWaitDelay,
+			RipgrepTimeout:       cfg.Timeouts.RipgrepTimeout,
+			WebFetchTimeout:      cfg.Timeouts.WebFetchTimeout,
+			WebFetchProxyTimeout: cfg.Timeouts.WebFetchProxyTimeout,
+			WebFetchRetries:      cfg.Timeouts.WebFetchRetries,
+			WebSearchTimeout:     cfg.Timeouts.WebSearchTimeout,
+			LLMRequestTimeout:    cfg.Timeouts.LLMRequestTimeout,
 		},
 		Proxy: proxy.Config{
 			Enabled:      cfg.Proxy.Enabled,

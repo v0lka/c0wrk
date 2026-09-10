@@ -6,6 +6,8 @@ Accepted
 
 > **Drift note (2026-08-25, vibespec-check):** The negative consequence "TopP is a config value that does nothing today" is resolved — TopP is now wired end-to-end (core/builder.go sampling override; serialized by all sp4rk providers) with tests asserting explicit-value override.
 
+> **Drift note (2026-09-09):** The Essential Tools variant's `max_tools` budget, semantic router tool matching, and the `tools_assigned` / over-budget diagnostics have been removed — see [ADR-035](./035-remove-small-llm-tool-budget.md), which partially supersedes this decision. With the Essential Tools variant active the assigned set is now a static union (`always_present` ∪ protected orchestration tools ∪ every MCP tool ∪ turn-scoped extra guarantees) with no budget and no router matching. The remaining ADR-022 decisions (master/sub-toggle gating, pure selection, Lite directive, sampling, loop hardening, context management) stand unchanged.
+
 ## Context
 
 c0wrk is designed around frontier-class models with large context windows, dense tool schemas, verbose system prompts, and loose sampling. When an operator points it at a "small" (low-capacity / cheaper) LLM — a local model on LM Studio, a lightweight hosted model, or a budget tier — the same configuration actively hurts: every prompt carries the full JSON schema of every advertised tool, the verbose orchestrator directive exceeds what an SLM can hold in working memory, default sampling drifts into repetition, and the baseline circuit-breaker thresholds let a looping small model burn the token budget before it is caught.
@@ -16,7 +18,7 @@ There is no reliable signal to auto-detect "small" from a model name or context 
 
 Introduce a **Small-LLM profile**: a master toggle (`small_llm.enabled`, manual only — no auto-detection) gating five independently sub-toggled variants, each addressing one dimension of small-model overhead:
 
-1. **Essential Tools** — narrow the visible tool set via semantic router matching + a user-pinned always-present list + a protected orchestration base (finish, fact memory, ask_user) + every MCP tool, with an optional `max_tools` budget. Reduces per-prompt schema overhead.
+1. **Essential Tools** — narrow the visible tool set via a user-pinned always-present list + a protected orchestration base (finish, fact memory, ask_user) + every MCP tool. Reduces per-prompt schema overhead. *(Superseded in part by [ADR-035](./035-remove-small-llm-tool-budget.md): the semantic router matching and optional `max_tools` budget were removed — the assigned set is now a static union, no budget, no router matching.)*
 2. **System Prompt Simplification** — a "Lite" core-directive swap (compact `OrchestratorSystemLite`), with optional reasoning-scaffold and few-shot blocks appended (both require Lite). The injection-defense section is never touched.
 3. **Sampling Overrides** — per-parameter overrides (temperature, top_p, top_k, repetition_penalty, presence_penalty) layered on top of the per-family vendor preset, plus an optional reasoning-effort seed. Unset (zero) parameters inherit the vendor preset; the original constant-temperature replacement (seeded to 0.1) was reverted after it clobbered vendor-tuned presets (the 27-30B regression).
 4. **Loop Hardening** — tighter circuit-breaker thresholds so repetition/no-progress is caught sooner.

@@ -142,14 +142,19 @@ desktop/startup.go (background goroutine, after EventBackendReady):
 
 ## Startup Sequence
 
-Application startup follows a phased approach. The window starts hidden (gated by the `C0WRK_START_HIDDEN` env var) and is revealed unconditionally during Phase 2 so the frontend mounts and subscribes to events before `backend:ready`:
+Application startup follows a phased approach. **The window is created visible — never with `StartHidden`.** Wails applies `StartHidden` by queueing a hide on the platform UI loop *after* the webview starts loading, while `OnStartup` already runs concurrently on its own goroutine. A fast backend start therefore gets its `WindowShow` calls queued ahead of that hide, the hide executes last, and the window stays withdrawn for the life of the process — a clean startup log and no window. Starting visible removes the race: Wails maps the window synchronously before its UI loop begins.
+
+The reveals below all remain, but as idempotent safety nets rather than the moment the window appears. `OnDomReady` is the one that carries a guarantee: it fires after window setup has finished, so unlike the reveals issued from the `OnStartup` goroutine it can never be overtaken by that setup.
 
 ```
 main.go:
   ├─ LoadWindowBounds(~/.c0wrk/window_state.json)
   │   └─ valid width/height + maximized state seed Wails options;
   │      missing/malformed/below-minimum dimensions use defaults
-  └─ wails.Run(options.App{StartHidden: os.Getenv("C0WRK_START_HIDDEN") != "false", ...})
+  └─ wails.Run(options.App{  // no StartHidden — see the race note above
+       OnStartup:  app.Startup,
+       OnDomReady: app.DomReady,   → showWindow() — post-window-setup guarantee
+       OnShutdown: app.Shutdown, ...})
   ↓
 Phase 0: resolve agent directory
 Phase 1: shell env + logger (<50ms)
@@ -157,8 +162,8 @@ Phase 2: config + tools (parallel, up to 3-10 min on first run)
   │
   ├─ config.ResolveAndLoad() — YAML parse + env expansion + defaults
   └─ initTools()
-      ├─ wailsRuntime.WindowShow(ctx) — window shown unconditionally so the
-      │   frontend mounts and subscribes to events before backend:ready
+      ├─ a.showWindow(ctx) — idempotent safety net; the window is already
+      │   visible, so this only matters if something else hid it
       ├─ Manager.NeedsInstall() — quick check (.versions + binary existence)
       ├─ if tools needed: emit tool_manager:start(tools)  → frontend shows splash
       ├─ EnsureCriticalTools(AllowNetwork:false)  (always runs; strictly local:
@@ -178,8 +183,8 @@ Phase 4: stores + preload (~100ms)
 Phase 5: application + frontend API (~150ms)
   ↓
 emitBackendReady():
-  ├─ WindowShow(ctx)  (idempotent no-op if already visible — window is shown
-  │   unconditionally in initTools, so this is always a no-op in practice)
+  ├─ showWindow(ctx)  (last idempotent safety net; the window is created
+  │   visible and initTools already re-showed it, so this is always a no-op)
   └─ emit backend:ready
 ```
 

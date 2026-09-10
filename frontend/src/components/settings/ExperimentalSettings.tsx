@@ -7,10 +7,10 @@ import { logger } from '@/lib/logger'
 import { Toggle } from './SmallLLMControls'
 
 /**
- * General-tab control for the master experimental-features switch. A single
- * toggle governs all gated features (RESEARCH mode + Small-LLM settings);
- * when disabled their UI affordances are hidden and the backend treats each
- * feature as off.
+ * General-tab control for the master experimental-features switch. The switch
+ * gates only the Small-LLM settings tab: when disabled, that tab is hidden
+ * and the backend treats the Small-LLM profile as off. RESEARCH mode is
+ * always available and is unaffected by this toggle.
  */
 export function ExperimentalSettings() {
   const enabled = useExperimentalFeatures()
@@ -40,7 +40,7 @@ export function ExperimentalSettings() {
         onChange={handleChange}
         disabled={!loaded || saving}
         label={enabled ? 'Enabled' : 'Disabled'}
-        description="Enable RESEARCH mode and the Small-LLM settings tab. When disabled, these features are hidden and treated as off."
+        description="Enable the Small-LLM settings tab. When disabled, that tab is hidden and the Small-LLM profile is treated as off. RESEARCH mode is always available."
       />
     </div>
   )

@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/tools"
 )
 
@@ -94,12 +93,9 @@ func TestSmallLLM_Integration_MasterOn_ComposesLitePromptFewShotInjectionDefense
 		t.Error("integration: verbose OrchestratorSystem leaked into the lite prompt")
 	}
 
-	// ── TOOLS: narrowed by router-matched + always-present + protected + MCP ──
+	// ── TOOLS: narrowed to the static selection (always-present + protected + MCP) ──
 	in := smallLLMTestTools()
-	got := o.applySmallLLMToolFilter(in, &router.RoutingDecision{
-		Domain:       router.DomainCode,
-		MatchedTools: []string{"read_file", "write_file", "bash_exec"},
-	})
+	got := o.applySmallLLMToolFilter(in)
 	if len(got) >= len(in) {
 		t.Errorf("integration: master-ON tool set not reduced: got %d tools, input %d", len(got), len(in))
 	}
@@ -107,17 +103,19 @@ func TestSmallLLM_Integration_MasterOn_ComposesLitePromptFewShotInjectionDefense
 	for _, n := range sortedToolNames(got) {
 		set[n] = struct{}{}
 	}
-	// Matched code tools + always-present (store_fact) + protected (finish) +
-	// MCP all survive SelectTools.
-	for _, keep := range []string{"read_file", "write_file", "bash_exec", "finish", "store_fact", "mcp_linter"} {
+	// Always-present (store_fact) + protected (finish) + MCP all survive
+	// SelectTools.
+	for _, keep := range []string{"finish", "store_fact", "mcp_linter"} {
 		if _, ok := set[keep]; !ok {
 			t.Errorf("integration: %q should survive selection; got %v", keep, sortedToolNames(got))
 		}
 	}
-	// web_search is neither matched nor always-present nor protected nor MCP,
-	// so SelectTools drops it.
-	if _, ok := set["web_search"]; ok {
-		t.Errorf("integration: web_search should be dropped (not matched/protected/MCP); got %v", sortedToolNames(got))
+	// Unpinned core tools (neither always-present nor protected nor MCP) are
+	// dropped by the static selection.
+	for _, drop := range []string{"read_file", "write_file", "bash_exec", "web_search"} {
+		if _, ok := set[drop]; ok {
+			t.Errorf("integration: %q should be dropped (not pinned/protected/MCP); got %v", drop, sortedToolNames(got))
+		}
 	}
 }
 
@@ -190,7 +188,7 @@ func TestSmallLLM_Integration_MasterOff_ByteIdenticalPromptAndFullToolset(t *tes
 
 	// TOOLS: full set returned untouched.
 	in := smallLLMTestTools()
-	got := oOff.applySmallLLMToolFilter(in, &router.RoutingDecision{Domain: router.DomainCode})
+	got := oOff.applySmallLLMToolFilter(in)
 	if len(got) != len(in) {
 		t.Errorf("master OFF: expected full tool set (%d tools untouched), got %d", len(in), len(got))
 	}

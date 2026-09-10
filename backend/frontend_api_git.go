@@ -1120,11 +1120,14 @@ func (f *FrontendAPI) GenerateCommitMessage() (string, error) {
 	}
 
 	// Obtain the full staged diff in a single git invocation. Using
-	// `git diff --staged` (rather than concatenating per-file diffs)
-	// gives the model an accurate, deduplicated view of the staged
-	// changeset and avoids the unstaged portions that per-file diff
-	// would otherwise include.
-	diff, err := f.runGitCmd(repoPath, "diff", "--staged")
+	// `git diff --no-ext-diff --staged` (rather than concatenating
+	// per-file diffs) gives the model an accurate, deduplicated view of
+	// the staged changeset and avoids the unstaged portions that per-file
+	// diff would otherwise include. --no-ext-diff disables external diff
+	// drivers (diff.external / diff.<n>.command), which the git diff
+	// porcelain executes by default (verified on git 2.50.1); the scanner's
+	// per-key -c diff.* kills neutralize them on every git invocation.
+	diff, err := f.runGitCmd(repoPath, "diff", "--no-ext-diff", "--staged")
 	if err != nil {
 		f.log().Error("GenerateCommitMessage: git diff --staged failed",
 			"err", err, "repo", repoPath)
@@ -2106,14 +2109,16 @@ func (f *FrontendAPI) GetFileDiffHunks(filePath string) ([]HunkDiffInfo, error) 
 		return nil, err
 	}
 
-	// Staged changes: HEAD vs index.
-	stagedDiff, err := f.runGitCmd(repoPath, "diff", "--cached", "--", relPath)
+	// Staged changes: HEAD vs index. --no-ext-diff disables external
+	// diff drivers (diff.external / diff.<n>.command), mirroring
+	// GenerateCommitMessage's hardened diff invocation.
+	stagedDiff, err := f.runGitCmd(repoPath, "diff", "--no-ext-diff", "--cached", "--", relPath)
 	if err != nil {
 		return nil, err
 	}
 
 	// Unstaged changes: index vs worktree.
-	unstagedDiff, err := f.runGitCmd(repoPath, "diff", "--", relPath)
+	unstagedDiff, err := f.runGitCmd(repoPath, "diff", "--no-ext-diff", "--", relPath)
 	if err != nil {
 		return nil, err
 	}

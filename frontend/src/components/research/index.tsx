@@ -1,40 +1,44 @@
 import { useCallback } from 'react'
-import { FlaskConical, FileText, BookMarked, FileCheck2, Plus, AlertCircle } from 'lucide-react'
+import { FlaskConical, FolderOpen, ChevronDown, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useResearchStatusEvents } from '@/hooks/useResearchStatusEvents'
-import { useResearchFileWatcher } from '@/hooks/useResearchFileWatcher'
 import { useResearchStore, selectActiveProject } from '@/stores/researchStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from '@/components/ui/dropdown-menu'
 import { ResearchToggle } from './ResearchToggle'
 import { ResearchMetricsRow } from './ResearchMetrics'
 import { ResearchNextStep } from './ResearchNextStep'
+import { ResearchHypothesisPicker } from './ResearchHypothesisPicker'
 import { ResearchQuickActions } from './ResearchQuickActions'
-import { ResearchQuickMutate } from './ResearchQuickMutate'
 import { ResearchLog } from './ResearchLog'
+import { ResearchProjectPicker } from './ResearchProjectPicker'
 import { projectDir, projectFilePaths } from './researchDagRender'
 
 /**
  * RESEARCH panel — a control dashboard, not a passive mirror.
  *
- * Modeled on the Git panel: subscribes to research:changed /
- * workspace:tree_changed (full status) and research:file_changed (incremental
- * graph + log) via the side-effect hooks, then renders a compact control
- * surface — a status/metrics header, the recommended next step with one-click
- * execution, a quick-actions row that dispatches research-* skills, quick
- * status mutations on the active front (t4), and the research log (t1).
+ * Modeled on the Git panel: a pure view over researchStore (the data sync —
+ * research:changed / workspace:tree_changed full status and
+ * research:file_changed incremental graph + log — is mounted once at the App
+ * root via ResearchEventBridge), rendering a compact control
+ * surface — a header with the research-project picker (active R-NNN switch,
+ * pins, delete) and the research-init plus button, the status/metrics row,
+ * the recommended next step with one-click execution, the current-hypothesis
+ * picker (selection, status flip, Create hypothesis), the quick-actions row
+ * that dispatches research-* skills, and the research log (t1).
  *
- * The hypothesis tree/DAG presentation moved to the Research workspace tab
- * (t5); the bottom links remain for opening the brief / prior-art / graph /
- * report artifacts.
+ * The hypothesis tree/DAG presentation lives in the Research workspace tab
+ * (t5); the bottom bar is a single View Artifacts dropdown that opens the
+ * brief / prior-art / graph / report artifacts that actually exist.
  */
 export function ResearchPanel() {
-  // Side-effect hook: keeps researchStore (status + next step) in sync.
-  useResearchStatusEvents()
-
-  // Side-effect hook: incrementally updates the graph, log, and next step when
-  // files inside the research directory change.
-  useResearchFileWatcher()
-
+  // Data sync (research:changed / workspace:tree_changed full status +
+  // research:file_changed incremental graph) lives in the App-root
+  // ResearchEventBridge — this panel is a pure view over researchStore.
   const enabled = useResearchStore((s) => s.status?.enabled ?? false)
   const project = useResearchStore(selectActiveProject)
   const rootPath = useResearchStore((s) => s.status?.research_root ?? '')
@@ -70,23 +74,35 @@ export function ResearchPanel() {
   }
 
   const metrics = project?.metrics
-  const brief = project?.brief
 
   // Resolve artifact paths for the quick links (brief/prior-art/report/graph).
   const dir = project ? projectDir(root, project.id) : ''
   const paths = projectFilePaths(rootPath, dir)
 
+  // Artifacts that actually exist: brief (a parsed project implies brief.md),
+  // prior art (a non-placeholder catalog has entries), the graph (at least one
+  // hypothesis), and the report. Items carry nothing but the artifact name.
+  const artifactItems: { label: string; onClick: () => void }[] = []
+  if (project) {
+    artifactItems.push({ label: 'Brief', onClick: () => openArtifact(paths.brief) })
+  }
+  if ((project?.prior_art_count ?? 0) > 0) {
+    artifactItems.push({ label: 'Prior art', onClick: () => openArtifact(paths.priorArt) })
+  }
+  if ((metrics?.total ?? 0) > 0) {
+    artifactItems.push({ label: 'Graph', onClick: openResearchTab })
+  }
+  if (project?.has_report) {
+    artifactItems.push({ label: 'Report', onClick: () => openArtifact(paths.report) })
+  }
+
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* Toolbar: title + mode toggle (disable) */}
+      {/* Toolbar: flask + research-project picker (active R-NNN switch,
+          pins, delete) + research-init plus button */}
       <div className="flex items-center gap-2 px-2 py-1 min-h-[32px] shrink-0 border-b border-border bg-secondary/30">
         <FlaskConical className="size-3.5 shrink-0 text-success" />
-        <span className="truncate text-xs font-medium">
-          {brief?.title ?? 'Research'}
-        </span>
-        <div className="ml-auto shrink-0">
-          <ResearchToggle variant="button" />
-        </div>
+        <ResearchProjectPicker />
       </div>
 
       {error && <ErrorBanner message={error} />}
@@ -101,47 +117,44 @@ export function ResearchPanel() {
           <>
             {metrics && <ResearchMetricsRow metrics={metrics} />}
             <ResearchNextStep />
+            <ResearchHypothesisPicker />
             <ResearchQuickActions />
-            <ResearchQuickMutate />
             <ResearchLog />
           </>
         )}
       </div>
 
-      {/* Quick links: brief / prior-art / graph / report / +hypothesis — all clickable */}
-      <div className="flex shrink-0 flex-wrap items-center gap-1 border-t border-border bg-secondary/20 px-2 py-1.5">
-        <QuickLink
-          icon={FileText}
-          label="Brief"
-          value={brief?.title ?? '—'}
-          onClick={() => openArtifact(paths.brief)}
-        />
-        <QuickLink
-          icon={BookMarked}
-          label="Prior art"
-          value={String(project?.prior_art_count ?? 0)}
-          onClick={() => openArtifact(paths.priorArt)}
-        />
-        <QuickLink
-          icon={FileText}
-          label="Graph"
-          value=""
-          onClick={openResearchTab}
-        />
-        <QuickLink
-          icon={FileCheck2}
-          label="Report"
-          value={project?.has_report ? 'ready' : 'none'}
-          tone={project?.has_report ? 'text-success' : 'text-muted-foreground'}
-          onClick={project?.has_report ? () => openArtifact(paths.report) : undefined}
-        />
-        <QuickLink
-          icon={Plus}
-          label="New hypothesis"
-          value=""
-          primary
-          onClick={openResearchTab}
-        />
+      {/* View Artifacts: one dropdown listing the artifacts that exist */}
+      <div className="flex shrink-0 items-center gap-1 border-t border-border bg-secondary/20 px-2 py-1.5">
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            data-testid="research-view-artifacts"
+            disabled={artifactItems.length === 0}
+            title={
+              artifactItems.length === 0
+                ? 'No research artifacts yet'
+                : 'Open a research artifact'
+            }
+            className={cn(
+              'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors',
+              'text-muted-foreground',
+              artifactItems.length > 0
+                ? 'cursor-pointer hover:bg-muted'
+                : 'cursor-default opacity-60',
+            )}
+          >
+            <FolderOpen className="size-3" />
+            <span className="uppercase tracking-wide">View artifacts</span>
+            <ChevronDown className="size-3" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            {artifactItems.map((item) => (
+              <DropdownMenuItem key={item.label} onSelect={item.onClick}>
+                {item.label}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </div>
   )
@@ -153,45 +166,5 @@ function ErrorBanner({ message }: { message: string }) {
       <AlertCircle className="size-3.5 shrink-0" />
       <span className="truncate">{message}</span>
     </div>
-  )
-}
-
-interface QuickLinkProps {
-  icon: typeof FileText
-  label: string
-  value: string
-  tone?: string
-  primary?: boolean
-  muted?: boolean
-  onClick?: () => void
-}
-
-function QuickLink({ icon: Icon, label, value, tone, primary, muted, onClick }: QuickLinkProps) {
-  const interactive = !!onClick
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={!interactive}
-      title={interactive ? `Open ${label}` : label}
-      className={cn(
-        'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors',
-        interactive && 'cursor-pointer hover:bg-muted',
-        !interactive && 'cursor-default',
-        primary
-          ? 'font-medium text-success hover:bg-success/10'
-          : muted
-            ? 'text-muted-foreground/70'
-            : 'text-muted-foreground',
-      )}
-    >
-      <Icon className={cn('size-3', tone)} />
-      <span className="uppercase tracking-wide">{label}</span>
-      {value && (
-        <span className="max-w-[80px] truncate font-medium text-foreground">
-          {value}
-        </span>
-      )}
-    </button>
   )
 }

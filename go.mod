@@ -4,7 +4,7 @@
 // remove this note.
 module github.com/v0lka/c0wrk
 
-go 1.27.0
+go 1.27.1
 
 require (
 	github.com/UserExistsError/conpty v0.1.4
@@ -17,7 +17,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/openai/openai-go v1.12.0
 	github.com/philippgille/chromem-go v0.7.0
-	github.com/v0lka/sp4rk v0.0.0-20260903172534-56704944f861
+	github.com/v0lka/sp4rk v0.0.0-20260909120503-5e2a0349d02d
 	github.com/wailsapp/wails/v2 v2.15.0
 	golang.org/x/image v0.45.0
 	golang.org/x/mod v0.40.0

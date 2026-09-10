@@ -23,7 +23,7 @@ type ConfigResponse struct {
 
 // ExperimentalSettingsResponse exposes the master experimental-features switch
 // to the settings UI. It carries no feature-specific state by design — the
-// switch is all-or-nothing.
+// switch is all-or-nothing and gates only the Small-LLM profile.
 type ExperimentalSettingsResponse struct {
 	Enabled bool `json:"enabled"`
 }
@@ -220,7 +220,6 @@ type SmallLLMConfigResponse struct {
 type SmallLLMEssentialToolsResp struct {
 	Enabled             bool     `json:"enabled"`
 	AlwaysPresent       []string `json:"always_present"`
-	MaxTools            int      `json:"max_tools"`
 	CompactDescriptions bool     `json:"compact_descriptions"`
 	ProtectedTools      []string `json:"protected_tools"`
 }

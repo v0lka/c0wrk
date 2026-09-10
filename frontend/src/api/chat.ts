@@ -3,7 +3,8 @@
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
 import { isChatMessage, isTokenInfo, isArrayOf } from '@/types/guards'
-import type { ChatMessage, TokenInfo } from '@/types/models'
+import { isCompactionAvailability } from '@/types/events'
+import type { ChatMessage, TokenInfo, CompactionAvailability } from '@/types/models'
 
 /**
  * Send a user message to the session's agent.
@@ -171,14 +172,14 @@ export interface SessionRuntimeStatus {
   /** True while a manual context compaction is in flight. */
   compacting?: boolean
   /**
-   * True when a manual compaction of the session's conversation history is
-   * guaranteed to change nothing (the dialogue already fits the
-   * manual-compaction target) — the compact button renders disabled with an
-   * explanatory tooltip. Absent/undefined (older backend, unknown session)
-   * fails OPEN: the button stays clickable and a pointless click reports the
-   * existing nothing_compacted outcome.
+   * Per-strategy manual-compaction prediction for the session's current
+   * conversation history (see backend GetSessionRuntimeStatus): whether each
+   * strategy would actually shrink the dialogue right now, plus its predicted
+   * reclaim. Absent/undefined (older backend, unknown session) fails OPEN: the
+   * compact menu shows every strategy clickable, and a pointless click reports
+   * the existing nothing_compacted outcome.
    */
-  compaction_noop?: boolean
+  compaction_availability?: CompactionAvailability[]
   /**
    * Live activity label tracked by the backend emitter ("Thinking...",
    * "Routing request...", "Generating response...", ...). Authoritative only
@@ -194,9 +195,9 @@ function isSessionRuntimeStatus(d: unknown): d is SessionRuntimeStatus {
   return typeof d === 'object' && d !== null
     && typeof (d as Record<string, unknown>).active === 'boolean'
     && typeof (d as Record<string, unknown>).has_unfinished_task === 'boolean'
-    && (!('compaction_noop' in d)
-      || (d as Record<string, unknown>).compaction_noop === undefined
-      || typeof (d as Record<string, unknown>).compaction_noop === 'boolean')
+    && (!('compaction_availability' in d)
+      || (d as Record<string, unknown>).compaction_availability === undefined
+      || isArrayOf((d as Record<string, unknown>).compaction_availability, isCompactionAvailability))
     && (!('compacting' in d)
       || (d as Record<string, unknown>).compacting === undefined
       || typeof (d as Record<string, unknown>).compacting === 'boolean')

@@ -221,7 +221,16 @@ executor:
     maxSummarizeTokens: 16000 # Max tokens for summarization LLM calls
     observationTruncate: 500 # Characters to truncate observations in summaries
     safetyMarginPercent: 5 # % of context window reserved as safety margin
-    manualTargetPercent: 30 # Target context fill (%) user-triggered manual compaction aims to reach; 0/unset falls back to 30
+    # Compression-ratio forecast seeds for manual-compaction prediction. Each
+    # ratio is the expected fraction of a summarized block's input tokens that
+    # the summary occupies; they seed an EWMA refined after each real
+    # compaction. The forecast only affects the predicted reclaim number shown
+    # in the compact menu — never strategy availability (an exact verdict).
+    # 0/unset falls back to sp4rk's defaults (0.3 / 0.15 / 0.3).
+    forecast:
+      summarization_ratio: 0.3 # summarization + hierarchical middle zone
+      hierarchical_distant_ratio: 0.15 # hierarchical distant zone (one aggressive summary)
+      hierarchical_middle_ratio: 0.3 # hierarchical middle zone (per-block summaries)
 
   # --- Tool Result Budget ---------------------------------------------------
   tool_result_budget:
@@ -309,14 +318,24 @@ security:
 
   # Repositories whose "untrusted git configuration" intake warning has been
   # dismissed via the toast's "Trust this repo" action (also manageable from
-  # Settings → Security → Trusted repos). Each entry is an absolute path of a
-  # repository root; matching is exact (paths are compared after cleaning).
-  # Trusting a repo suppresses ONLY the warning toast — the git subprocess
-  # hardening itself (hook stripping, filter/fsmonitor/merge-driver
-  # neutralization on every invocation) stays fully in force. Default: empty
-  # (every suspicious .git/config warns once per open).
+  # Settings → Security → Trusted repos). Each entry is a mapping with an
+  # absolute repository-root `path` (matching is exact, after cleaning) and an
+  # optional `fingerprint` — the hash of the git-config snapshot captured when
+  # the repository was trusted (snapshots live under ~/.c0wrk/git-config-snapshots/),
+  # used to detect config drift after the trust decision. A bare path string
+  # (the legacy pre-fingerprint format) is also accepted and loads as a path
+  # with no fingerprint. Default: empty (every suspicious .git/config warns
+  # once per open).
   # trusted_git_repos:
-  #   - /Users/you/work/my-legit-lfs-repo
+  #   - path: /Users/you/work/my-legit-lfs-repo
+  #     fingerprint: a1b2c3d4
+
+  # Repositories that are ALWAYS treated as hardened: their intake warning is
+  # never suppressed and they are excluded from the trusted list (a root cannot
+  # appear in both lists). Each entry is an absolute repository-root path;
+  # matching is exact (after cleaning). Default: empty.
+  # harden_git_repos:
+  #   - /Users/you/work/untrusted-download
 
   # --- Tool security groups (security.groups) ---
   # Policies are configured per tool GROUP, not per tool name. Every tool
@@ -524,6 +543,8 @@ timeouts:
   bashWaitDelay: 5 # Wait delay for bash process cleanup
   ripgrepTimeout: 60 # Timeout for ripgrep searches
   webFetchTimeout: 30 # Timeout for web page fetching
+  webFetchProxyTimeout: 30 # Timeout for web page fetching when the proxy is enabled. 0 = use default 30s
+  webFetchRetries: 2 # Retries for failed web page fetches; each retry doubles the active timeout (webFetchTimeout, or webFetchProxyTimeout when proxy is on). 0 = use default 2
   webSearchTimeout: 30 # Timeout for web search queries
   persistenceTimeout: 5 # Timeout for persistence (DB) operations
   llmRequestTimeout: 600 # Timeout for a single LLM API call in the main chat loop (10 min). 0 = use default 600s
@@ -775,12 +796,11 @@ orchestration:
 # ---------------------------------------------------------------------------
 # Master switch for features that are still under active development. It is
 # all-or-nothing: enabling it exposes every gated feature, disabling it hides
-# every gated feature and treats each as off. Gated features today:
-#   - RESEARCH mode (the left-sidebar research panel)
-#   - the Small-LLM profile settings tab
+# every gated feature and treats each as off. The only gated feature today:
+#   - the Small-LLM profile settings tab (small_llm.*)
 #
 # experimental:
-#   # Master switch. Default: false (all experimental features off).
+#   # Master switch. Default: false (Small-LLM profile off).
 #   enabled: false
 
 # ---------------------------------------------------------------------------
@@ -834,19 +854,20 @@ orchestration:
 #   enabled: false
 #
 #   # --- Essential Tools -----------------------------------------------------
-#   # Narrows the visible tool set for the model via semantic tool selection.
-#   # The router selects the tools relevant to the current task; this variant
-#   # exposes only that matched set (plus the user's always-present picks, the
-#   # protected base, and every MCP tool), reducing the JSON-schema/token
-#   # overhead injected into every prompt. There is no fixed allow-list and no
-#   # domain-specific narrowing — the router and the user decide relevance.
+#   # Narrows the visible tool set for the model via a static selection.
+#   # When active, the assigned set is a static union: the operator's
+#   # always-present picks below, the protected orchestration base
+#   # (finish, memory, ask_user), every connected MCP server's tools, and
+#   # any turn-scoped guarantees — emitted in registry order. There is no
+#   # router matching and no slot budget: nothing in the set is ever
+#   # trimmed, so a partially-exposed MCP server never happens.
 #   essential_tools:
 #     # Gates this variant in addition to the master `enabled` toggle above
 #     # (selection is applied only when both are on).
 #     enabled: false
-#     # Tools always kept regardless of router selection. Protected tools
-#     # (finish, memory, ask_user, MCP) are always included and cannot be
-#     # removed.
+#     # Tools always kept in the assigned set. Protected tools (finish,
+#     # memory, ask_user) and every MCP tool are always included as well and
+#     # cannot be removed.
 #     always_present:
 #       - read_file
 #       - write_file
@@ -860,22 +881,6 @@ orchestration:
 #       - search_facts
 #       - ask_user
 #       - finish
-#     # Slot budget for router-matched tools. The guaranteed set — always
-#     # present ∪ protected (finish, memory, ask_user) ∪ every MCP tool — is
-#     # NEVER trimmed: at most max_tools − len(guaranteed) router-matched
-#     # tools are kept, filled in registry order. Validation rejects a cap
-#     # smaller than the guaranteed set itself. 0 = unlimited. Default: 16.
-#     # A persisted cap below the guaranteed count (possible with configs
-#     # saved by older builds) is raised to it automatically on save, so a
-#     # stale config self-heals instead of rejecting every settings change.
-#     # WARNING: this budget cannot cap the guaranteed set — the 12 default
-#     # always-present tools ∪ 5 protected (4 overlap → 13 unique) plus
-#     # EVERY MCP-sourced tool are never trimmed. Several MCP servers can
-#     # push the tool set past the ~10–20-tool safe zone where tool-selection
-#     # accuracy measurably degrades. Trim always_present or the MCP server
-#     # list to compensate. See specs/domains/small-llm.md and
-#     # docs/small-llm-defaults-research.md.
-#     max_tools: 16
 #     # Replace every known builtin's full description (rubric:
 #     # purpose/when-to-use/inputs/outputs/example/anti-example, 480-1100
 #     # chars) with a one-line compact variant while this variant is active —
@@ -912,6 +917,14 @@ orchestration:
 #     # seeds "medium" — so enabling this variant with no explicit values
 #     # lowers the reasoning depth from the inherited vendor default
 #     # (xhigh on qwen thinking models) to medium.
+#     # Mode-mismatch caveat: the inherited qwen preset is the official
+#     # thinking-mode recipe (temperature 1.0 / top_p 0.95 / top_k 20), and
+#     # the preset is family-keyed with no per-mode signal. If this variant
+#     # turns thinking off (reasoning_effort: "off"), the inherited numeric
+#     # preset still remains the thinking recipe — for instruct-style
+#     # (non-thinking) operation set the values explicitly: temperature 0.7,
+#     # top_p 0.80, top_k 20 and presence_penalty 1.5 (the official instruct
+#     # recipe). Rationale: docs/small-llm-defaults-research.md (R2).
 #     # Generation temperature (lower = more deterministic). When set, must
 #     # be > 0. Default: inherit the vendor preset.
 #     temperature: 0

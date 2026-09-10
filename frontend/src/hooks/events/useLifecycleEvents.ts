@@ -5,7 +5,7 @@ import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import {
   isRoutingData, isStepData, isRetryData, isStepRetryData,
-  isServiceData, isSkillsActivatedData, isToolsAssignedData,
+  isServiceData, isSkillsActivatedData,
   isAgentMetricsData,
 } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
@@ -169,24 +169,8 @@ export function useLifecycleEvents(sessionId: string | null): void {
       }),
     )
 
-    // --- tools_assigned ---
-    // Emitted when the Small-LLM domain narrowing curates the session's tool
-    // set. Mirrors the skills_activated card so the user sees which tools were
-    // assigned for the current task.
-    cleanups.push(
-      onSessionEvent(sessionId, 'tools_assigned', (data) => {
-        if (!isToolsAssignedData(data)) { reportDroppedEvent('tools_assigned', data); return }
-        const toolList = data.tools.join(', ')
-        useChatStore.getState().addMessage(sessionId, {
-          id: generateMessageId(),
-          sessionId,
-          type: 'status',
-          content: `Tools assigned: ${toolList}`,
-          metadata: { tools: data.tools },
-          timestamp: Date.now(),
-        })
-      }),
-    )
+    // --- tools_assigned (removed): Small-LLM tool narrowing is silent and
+    // deterministic — no per-task tool cards are surfaced in the chat.
 
     return () => cleanups.forEach(fn => fn())
   }, [sessionId])

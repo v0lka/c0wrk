@@ -5,7 +5,7 @@ import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isContextFillData, isContextCompactionData, isSessionTokensData, isCompactionStartedData, isCompactionFinishedData } from '@/types/events'
 import type { ContextFillData } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
-import type { TokenInfo } from '@/types/models'
+import type { TokenInfo, CompactionAvailability } from '@/types/models'
 import { generateMessageId } from '@/lib/ids'
 
 /** Minimal store surface handleContextFill needs — the chatStore subset. */
@@ -62,7 +62,7 @@ export function handleContextFill(store: ContextFillStore, sessionId: string, da
 /** Minimal store surface the manual-compaction handlers need. */
 export interface CompactionStore {
   setCompacting: (sessionId: string, compacting: boolean) => void
-  setCompactionNoOp: (sessionId: string, noOp: boolean) => void
+  setCompactionAvailability: (sessionId: string, availability: CompactionAvailability[]) => void
   setActivityStatus: (sessionId: string, status: string | null) => void
   setPausing: (sessionId: string, pausing: boolean) => void
   setPaused: (sessionId: string, paused: boolean) => void
@@ -105,13 +105,15 @@ export function handleCompactionStarted(store: CompactionStore, sessionId: strin
 export function handleCompactionFinished(
   store: CompactionStore,
   sessionId: string,
-  data: { success?: boolean; error?: string; cancelled?: boolean; resumed?: boolean; paused_without_resume?: boolean; nothing_compacted?: boolean; deferred_to_resume?: boolean; compaction_noop?: boolean },
+  data: { success?: boolean; error?: string; cancelled?: boolean; resumed?: boolean; paused_without_resume?: boolean; nothing_compacted?: boolean; deferred_to_resume?: boolean; compaction_availability?: CompactionAvailability[] },
 ): void {
   store.setCompacting(sessionId, false)
-  // Post-flow no-op verdict from the backend: refresh the compact button's
-  // disabled state without a status refetch (absent on older payloads →
-  // fail-open, the button stays clickable).
-  store.setCompactionNoOp(sessionId, data.compaction_noop === true)
+  // Post-flow per-strategy availability from the backend: refresh the compact
+  // menu without a status refetch (absent on older payloads → fail-open, every
+  // strategy stays clickable).
+  if (data.compaction_availability !== undefined) {
+    store.setCompactionAvailability(sessionId, data.compaction_availability)
+  }
   if (data.paused_without_resume) {
     // Same transitions as handleSessionPausedEvent: unlock into the paused
     // state so the Resume/Stop controls appear. A compaction error keeps its

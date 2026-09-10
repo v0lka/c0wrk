@@ -211,12 +211,6 @@ type BuilderSmallLLMEssentialConfig struct {
 	// always preserved regardless, and the guaranteed set is never trimmed.
 	AlwaysPresent []string
 
-	// MaxTools caps the router-matched slots: at most
-	// maxTools − len(guaranteed) matched tools are kept, where guaranteed =
-	// always-present ∪ protected ∪ MCP. The guaranteed set itself is never
-	// trimmed (validation rejects configs where it alone exceeds MaxTools).
-	MaxTools int
-
 	// CompactDescriptions swaps full builtin tool descriptions for one-line
 	// compact variants (small-LLM essential-tools extension).
 	CompactDescriptions bool
@@ -334,10 +328,28 @@ type BuilderCompactionConfig struct {
 	ObservationTruncate int
 	SafetyMarginPercent int
 
-	// ManualTargetPercent is the target context fill (in % of the context
-	// window) that user-triggered manual compaction aims to reach. Zero means
-	// "unset" — the consumer falls back to 30.
-	ManualTargetPercent int
+	// Forecast carries the compression-ratio forecasts for the LLM-backed
+	// manual-compaction strategies. They seed the orchestrator's EWMA
+	// calibration state (refined after each manual compaction); zero fields
+	// fall back to sp4rk's conservative defaults. The forecast affects ONLY
+	// the predicted reclaim number shown in the compact menu — never whether
+	// a strategy is available (that is an exact structural verdict).
+	Forecast BuilderCompactionForecast
+}
+
+// BuilderCompactionForecast holds the compression-ratio forecast seeds for
+// manual compaction prediction. Each ratio is the expected fraction of a
+// summarized block's input tokens that the summary occupies.
+type BuilderCompactionForecast struct {
+	// SummarizationRatio feeds the "summarization" strategy and hierarchical's
+	// middle zone (default 0.3).
+	SummarizationRatio float64
+	// HierarchicalDistantRatio feeds hierarchical's distant zone — one
+	// aggressive summary over a large block (default 0.15).
+	HierarchicalDistantRatio float64
+	// HierarchicalMiddleRatio feeds hierarchical's middle zone — per-block
+	// summaries (default 0.3).
+	HierarchicalMiddleRatio float64
 }
 
 // BuilderSlidingWindow configures sliding-window compaction.
@@ -523,10 +535,12 @@ type BuilderToolTruncationConfig struct {
 
 // BuilderTimeoutsConfig holds timeout values (in seconds).
 type BuilderTimeoutsConfig struct {
-	BashMaxTimeout    int
-	BashWaitDelay     int
-	RipgrepTimeout    int
-	WebFetchTimeout   int
-	WebSearchTimeout  int
-	LLMRequestTimeout int
+	BashMaxTimeout       int
+	BashWaitDelay        int
+	RipgrepTimeout       int
+	WebFetchTimeout      int
+	WebFetchProxyTimeout int // seconds; per-attempt web fetch timeout when the proxy is enabled
+	WebFetchRetries      int // retry count (not seconds); each retry doubles the active web fetch timeout
+	WebSearchTimeout     int
+	LLMRequestTimeout    int
 }

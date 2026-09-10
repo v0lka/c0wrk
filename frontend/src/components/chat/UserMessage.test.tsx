@@ -61,6 +61,8 @@ describe('UserMessage non-sticky mode', () => {
     expect(message?.querySelector('[aria-expanded]')).toBeNull()
     // Footer is present in full mode.
     expect(message?.textContent).toContain('A long user message')
+    // The inline bubble is not a floating bar — no sticky marker.
+    expect(message?.hasAttribute('data-sticky-user-message')).toBe(false)
   })
 })
 
@@ -92,6 +94,20 @@ describe('UserMessage sticky mode', () => {
     expect(bubble?.textContent).toBe('A long user message')
     // No footer rendered while collapsed.
     expect(message?.textContent).not.toMatch(/\d{2}:\d{2}/)
+  })
+
+  it('marks the floating row for sticky-aware chat scrolling in both states', () => {
+    const container = renderUser(true)
+    const message = findStickyRow(container)
+    expect(message?.hasAttribute('data-sticky-user-message')).toBe(true)
+
+    // The marker survives expand/collapse — the scroll offset is measured
+    // live from the row, so both heights stay accounted for.
+    const trigger = message?.querySelector('[role="button"]') as Element
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(findStickyRow(container)?.hasAttribute('data-sticky-user-message')).toBe(true)
   })
 
   it('expands to the full message on click, then collapses again on click', () => {

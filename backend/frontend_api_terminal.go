@@ -4,10 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/sp4rk/pathutil"
 )
+
+// terminalPathLookupTimeout bounds the session workspace lookup in
+// StartTerminal/StartTerminalInDir. The lookup is read-only (see
+// Manager.WorkspacePathFor) but still shares the app's single SQLite
+// connection with every write of every active session; the bound turns
+// connection-pool queuing into a prompt, retryable error instead of an
+// indefinitely spinning terminal loader.
+const terminalPathLookupTimeout = 10 * time.Second
 
 // StartTerminal starts a new PTY-backed shell for the given session.
 // Terminals are kept alive per-session for the whole app lifetime (the UI
@@ -28,7 +37,7 @@ func (f *FrontendAPI) StartTerminal(sessionID string) error {
 		return nil
 	}
 
-	workDir, ok := f.app.Manager().GetSessionWorkspacePath(sessionID)
+	workDir, ok := f.workspacePathForTerminal(sessionID)
 	if !ok {
 		return errors.New("session not found")
 	}
@@ -37,6 +46,20 @@ func (f *FrontendAPI) StartTerminal(sessionID string) error {
 		return fmt.Errorf("failed to start terminal: %w", err)
 	}
 	return nil
+}
+
+// workspacePathForTerminal resolves the session's workspace path through the
+// read-only Manager.WorkspacePathFor lookup. Deliberately NOT
+// GetSessionWorkspacePath: that helper lazily restores the session, building
+// a full orchestrator per start — and its unbounded store reads, serialized
+// behind active sessions' writes on the single SQLite connection, are what
+// made terminal starts hang for minutes while bash_exec storms ran. On
+// timeout or store failure the bool is false and the caller reports a
+// retryable error.
+func (f *FrontendAPI) workspacePathForTerminal(sessionID string) (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), terminalPathLookupTimeout)
+	defer cancel()
+	return f.app.Manager().WorkspacePathFor(ctx, sessionID)
 }
 
 // StartTerminalInDir starts a PTY-backed shell for the given session in the
@@ -52,7 +75,7 @@ func (f *FrontendAPI) StartTerminalInDir(sessionID, workDir string) error {
 		return errors.New("session manager not initialized")
 	}
 
-	wsPath, ok := f.app.Manager().GetSessionWorkspacePath(sessionID)
+	wsPath, ok := f.workspacePathForTerminal(sessionID)
 	if !ok {
 		return errors.New("session not found")
 	}

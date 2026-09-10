@@ -186,8 +186,8 @@ export async function updateSmallLLMConfig(config: SmallLLMConfigResponse): Prom
 
 /**
  * Toggle the master experimental-features switch. The backend persists the
- * change and applies the effective Small-LLM profile immediately; RESEARCH
- * mode is gated at its RPC boundary.
+ * change and applies the effective Small-LLM profile immediately; the switch
+ * gates only the Small-LLM profile (RESEARCH is always available).
  */
 export async function updateExperimentalFeatures(enabled: boolean): Promise<void> {
   try {

@@ -1,6 +1,11 @@
 import { useState, useCallback } from 'react'
 import { useReviewStore, hunkCommentKey } from '@/stores/reviewStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { useChatStore } from '@/stores/chatStore'
+import { useSessionStore } from '@/stores/sessionStore'
+import { useAttachmentsStore, EMPTY_ATTACHMENTS } from '@/stores/attachmentsStore'
+import { buildUserMessageMeta } from '@/lib/userMessageMeta'
+import { generateMessageId } from '@/lib/ids'
 import * as reviewApi from '@/api/review'
 import * as gitApi from '@/api/git'
 import * as chatApi from '@/api/chat'
@@ -84,6 +89,45 @@ export function useReviewActions(sessionId: string) {
       }
       const commentsText = parts.join('\n\n')
 
+      // Present the feedback as a user message optimistically. The chat
+      // renders user messages from its own optimistic copy only — the
+      // message_received event the backend emits is intentionally ignored by
+      // the UI (normal sends add the card in useMessageSender before the
+      // RPC). A review submit bypasses the chat input, so it must add the
+      // card itself; without this the feedback the agent is already working
+      // on stays invisible until a session reload brings in the persisted
+      // row. Mirrors useMessageSender: task-state handling for the three
+      // dispatch paths (fresh / nudge-resume / live interjection) and a full
+      // rollback when the send is rejected.
+      const wasPaused = useChatStore.getState().paused[sessionId] ?? false
+      const isRunning = useChatStore.getState().taskActive[sessionId] ?? false
+      const wasActivity = useChatStore.getState().activityStatus[sessionId] ?? null
+      const pendingAttachments =
+        useAttachmentsStore.getState().attachmentsBySession[sessionId] ?? EMPTY_ATTACHMENTS
+      const metadata = buildUserMessageMeta(false, pendingAttachments, wasPaused || isRunning)
+      const optimisticId = generateMessageId()
+      useChatStore.getState().addMessage(sessionId, {
+        id: optimisticId,
+        sessionId,
+        type: 'user',
+        content: commentsText,
+        metadata,
+        timestamp: Date.now(),
+      })
+      useSessionStore.getState().touchSession(sessionId)
+      if (wasPaused) {
+        // Nudge-resume: optimistically leave the paused state (input
+        // re-locks, Pause/Stop return).
+        useChatStore.getState().setPaused(sessionId, false)
+        useChatStore.getState().setTaskActive(sessionId, true)
+        useChatStore.getState().setActivityStatus(sessionId, 'Processing...')
+      }
+      if (!wasPaused && !isRunning) {
+        // Fresh task: mark active and show the activity label.
+        useChatStore.getState().setTaskActive(sessionId, true)
+        useChatStore.getState().setActivityStatus(sessionId, 'Processing...')
+      }
+
       // Send the review message FIRST — it is the only carrier of the review
       // text. If it throws, the review must stay intact so the user can retry.
       // Earlier versions cleared comments and set status='submitted' before
@@ -97,6 +141,13 @@ export function useReviewActions(sessionId: string) {
       try {
         await chatApi.sendMessage(sessionId, commentsText, [], [], '', '', false, '', true)
       } catch (err) {
+        // Roll back the optimistic card and restore the exact pre-send task
+        // state (mirrors useMessageSender's rollback): the feedback text
+        // lives on in the review buffer, which stays intact for a retry.
+        useChatStore.getState().removeMessage(sessionId, optimisticId)
+        useChatStore.getState().setTaskActive(sessionId, isRunning)
+        useChatStore.getState().setPaused(sessionId, wasPaused)
+        useChatStore.getState().setActivityStatus(sessionId, wasActivity)
         exitReviewLoop(sessionId)
         throw err
       }

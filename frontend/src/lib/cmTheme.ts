@@ -41,23 +41,30 @@ export function createOneDarkHighlightStyle(): HighlightStyle {
 }
 
 /**
- * Read-only One Dark theme for the file viewer.
- * Cursor and caret are hidden. The gutter uses an opaque background so that
- * horizontally scrolling code is hidden behind the sticky line-number column
- * rather than showing through it (colliding with the numbers).
+ * One Dark theme for the file viewer and the small editable fields.
+ *
+ * By default the theme is tuned for the READ-ONLY file viewer: cursor and
+ * caret are hidden (an editable-looking caret in a read-only viewer is a
+ * lie). Pass `{ editable: true }` for editable CodeMirror instances
+ * (MiniCodeMirrorField) — the caret and cursor become visible so the field
+ * reads as editable.
  *
  * Colors are resolved from CSS custom properties at call time, so callers must
  * re-create (via a Compartment reconfigure) whenever the active theme changes.
  * The `isDark` flag is passed through to CodeMirror so its built-in defaults
  * (selection layer, autocomplete text, color-scheme) match the active palette.
  */
-export function createOneDarkCMTheme(isDark: boolean = true): Extension {
+export function createOneDarkCMTheme(
+  isDark: boolean = true,
+  opts: { editable?: boolean } = {},
+): Extension {
   const fg = getCSSVar('--color-foreground')
   const gutterFg = getCSSVar('--color-hljs-comment')
   // Match the file-viewer panel background so the sticky gutter masks code
   // scrolling beneath it. Falls back to transparent if the var is unset.
   const gutterBg = getCSSVar('--color-background') || 'transparent'
   const selection = getCSSVar('--color-muted')
+  const editable = opts.editable === true
 
   const theme = EditorView.theme({
     '&': {
@@ -65,13 +72,15 @@ export function createOneDarkCMTheme(isDark: boolean = true): Extension {
       color: fg,
     },
     '.cm-content': {
-      caretColor: 'transparent',
+      // Editable fields must show a caret — an invisible one makes the field
+      // read as readonly even though typing works.
+      caretColor: editable ? fg : 'transparent',
       fontFamily: "'SauceCodePro NF', Menlo, Monaco, 'Courier New', monospace",
       lineHeight: '1.25rem',
     },
-    '.cm-cursor, .cm-dropCursor': {
-      display: 'none',
-    },
+    ...(editable
+      ? { '.cm-cursor': { borderLeftColor: fg } }
+      : { '.cm-cursor, .cm-dropCursor': { display: 'none' } }),
     '&.cm-focused .cm-selectionBackground, .cm-selectionBackground': {
       backgroundColor: selection,
     },

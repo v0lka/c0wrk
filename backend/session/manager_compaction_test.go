@@ -51,6 +51,17 @@ func (s *recordingCompactionStore) SaveMessage(_ context.Context, msg ChatMessag
 	return nil
 }
 
+// findAvailability returns the availability entry for the named strategy from
+// a compaction_availability payload, or a zero entry when absent.
+func findAvailability(avail []core.CompactionAvailability, strategy string) core.CompactionAvailability {
+	for _, a := range avail {
+		if a.Strategy == strategy {
+			return a
+		}
+	}
+	return core.CompactionAvailability{Strategy: strategy}
+}
+
 func (s *recordingCompactionStore) savedMessages() []ChatMessage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -141,8 +152,8 @@ func TestCompactSessionContext_IdleSession(t *testing.T) {
 	if fin.NothingCompacted {
 		t.Error("a 60-message history must actually compact — nothing_compacted must be false")
 	}
-	if !fin.CompactionNoOp {
-		t.Error("after a successful compaction the dialogue fits the target — compaction_noop must be true")
+	if avail := findAvailability(fin.CompactionAvailability, "sliding_window"); !avail.Available {
+		t.Error("a compacted 7-message history is still over sliding's 6-window — sliding must stay available")
 	}
 	if fin.DeferredToResume {
 		t.Error("no paused task existed — nothing to defer to a resume")
@@ -204,8 +215,8 @@ func TestCompactSessionContext_NoOpIdleSession(t *testing.T) {
 	if !fin.NothingCompacted {
 		t.Error("expected nothing_compacted=true for a history within the limits")
 	}
-	if !fin.CompactionNoOp {
-		t.Error("a no-op outcome changed nothing — compaction_noop must be true")
+	if avail := findAvailability(fin.CompactionAvailability, "sliding_window"); avail.Available {
+		t.Error("a no-op outcome changed nothing — sliding must report unavailable")
 	}
 	if fin.DeferredToResume {
 		t.Error("no paused task existed — nothing to defer to a resume")
@@ -667,7 +678,6 @@ func (s *resumeCompactionSpyEmitter) GoalStatus(_ map[string]any)               
 func (s *resumeCompactionSpyEmitter) GoalProgress(_ map[string]any)                                {}
 func (s *resumeCompactionSpyEmitter) ReplanFailed(_ error)                                         {}
 func (s *resumeCompactionSpyEmitter) SkillsActivated(_ []string)                                   {}
-func (s *resumeCompactionSpyEmitter) ToolsAssigned(_ []string)                                     {}
 func (s *resumeCompactionSpyEmitter) StepTodoUpdate(_ string, _ []agent.TodoItem)                  {}
 func (s *resumeCompactionSpyEmitter) MemoryRead(_ int, _ string)                                   {}
 
@@ -1009,37 +1019,37 @@ func TestConvertChatMessages_MarkerWithoutSnapshotIsNoop(t *testing.T) {
 	}
 }
 
-// TestGetSessionRuntimeStatus_CompactionNoOp verifies the runtime-status
-// snapshot surfaces the orchestrator's manual-compaction no-op prediction:
-// false for a history above the manual-compaction budget (button enabled),
-// true for one within it (button disabled), and FAIL-OPEN false whenever the
-// orchestrator is unknown (bare session, never-initialized session) or the
-// session is not in memory at all.
-func TestGetSessionRuntimeStatus_CompactionNoOp(t *testing.T) {
-	t.Run("history above budget → false", func(t *testing.T) {
-		// 30 pairs ≈ 60 messages ≈ 510 tokens > the 255-token budget
-		// (effective base 850 × 30%): a compaction would shrink it.
+// TestGetSessionRuntimeStatus_CompactionAvailability verifies the
+// runtime-status snapshot surfaces the orchestrator's per-strategy
+// manual-compaction availability: available for a history over a strategy's
+// window, unavailable for one under it, and FAIL-OPEN (empty list) whenever
+// the orchestrator is unknown (bare session, never-initialized session) or
+// the session is not in memory at all.
+func TestGetSessionRuntimeStatus_CompactionAvailability(t *testing.T) {
+	t.Run("history over the window → available", func(t *testing.T) {
+		// 30 pairs = 60 messages > sliding's 2+4 window: a compaction would
+		// shrink it, so sliding reports available.
 		manager, sess, _, _, _ := newCompactionTestManagerWithHistory(t, 30, nil)
 		status, err := manager.GetSessionRuntimeStatus(sess.ID)
 		if err != nil {
 			t.Fatalf("GetSessionRuntimeStatus failed: %v", err)
 		}
-		if status.CompactionNoOp {
-			t.Error("history above the budget must report compaction_noop=false")
+		if got := findAvailability(status.CompactionAvailability, "sliding_window"); !got.Available {
+			t.Error("a 60-message history must report sliding available")
 		}
 	})
-	t.Run("history within budget → true", func(t *testing.T) {
-		// 2 pairs = 4 messages ≈ 34 tokens ≤ 255: a compaction would no-op.
+	t.Run("history under the window → unavailable", func(t *testing.T) {
+		// 2 pairs = 4 messages ≤ sliding's 2+4 window: a compaction would no-op.
 		manager, sess, _, _, _ := newCompactionTestManagerWithHistory(t, 2, nil)
 		status, err := manager.GetSessionRuntimeStatus(sess.ID)
 		if err != nil {
 			t.Fatalf("GetSessionRuntimeStatus failed: %v", err)
 		}
-		if !status.CompactionNoOp {
-			t.Error("history within the budget must report compaction_noop=true")
+		if got := findAvailability(status.CompactionAvailability, "sliding_window"); got.Available {
+			t.Error("a 4-message history must report sliding unavailable")
 		}
 	})
-	t.Run("no orchestrator → fail-open false", func(t *testing.T) {
+	t.Run("no orchestrator → fail-open empty", func(t *testing.T) {
 		manager, _, _ := testManager(t)
 		manager.mu.Lock()
 		manager.sessions["sess-bare"] = &Session{ID: "sess-bare"}
@@ -1048,18 +1058,18 @@ func TestGetSessionRuntimeStatus_CompactionNoOp(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetSessionRuntimeStatus failed: %v", err)
 		}
-		if status.CompactionNoOp {
-			t.Error("a session without an orchestrator must fail open (compaction_noop=false)")
+		if len(status.CompactionAvailability) != 0 {
+			t.Error("a session without an orchestrator must fail open (empty availability)")
 		}
 	})
-	t.Run("unknown session → fail-open false", func(t *testing.T) {
+	t.Run("unknown session → fail-open empty", func(t *testing.T) {
 		manager, _, _ := testManager(t)
 		status, err := manager.GetSessionRuntimeStatus("sess-unknown")
 		if err != nil {
 			t.Fatalf("GetSessionRuntimeStatus failed: %v", err)
 		}
-		if status.CompactionNoOp {
-			t.Error("an unknown session must fail open (compaction_noop=false)")
+		if len(status.CompactionAvailability) != 0 {
+			t.Error("an unknown session must fail open (empty availability)")
 		}
 	})
 }

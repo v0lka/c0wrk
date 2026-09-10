@@ -22,9 +22,6 @@ interface FileViewerTabBarProps {
 
 function TabFileIcon({ path }: { path: string }) {
   const iconData = useFileIcon(path);
-  if (path === RESEARCH_TAB_PATH) {
-    return <FlaskConical className="size-3.5 text-success" />
-  }
   return <FileIcon isDir={false} icon={iconData?.icon} iconColor={iconData?.icon_color} />;
 }
 
@@ -91,6 +88,7 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
             const isActive = path === activeFile;
             return (
               <button
+                key={path}
                 data-file-path={path}
                 className={cn(
                   "group flex items-center gap-1 px-2 py-1 h-full text-xs whitespace-nowrap select-none",
@@ -103,7 +101,14 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
                 onContextMenu={(e) => handleTabContextMenu(e, path)}
               >
                 <span className="shrink-0">
-                  <TabFileIcon path={path} />
+                  {/* Research pseudo-path: render the icon directly. TabFileIcon
+                      must not run for it — useFileIcon would fire a getFileIcon
+                      RPC for a non-file path and persist a junk fileIcons entry. */}
+                  {path === RESEARCH_TAB_PATH ? (
+                    <FlaskConical className="size-3.5 text-success" />
+                  ) : (
+                    <TabFileIcon path={path} />
+                  )}
                 </span>
                 <span className="truncate max-w-30">{name}</span>
                 <span

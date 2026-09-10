@@ -143,7 +143,9 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
         <>
           {/* Pause (running) / Resume (paused) flank the Stop button. A
               cooperative pause unlocks the input for a nudge-resume; Resume
-              re-enters the task without a nudge. While a pause is in flight
+              with a typed message sends it as the nudge (the send flow
+              resumes the paused task with the text — see handleResume),
+              without one it re-enters the task plainly. While a pause is in flight
               (between the Pause click and the session_paused event) the
               action button is a NON-CLICKABLE spinner: the ReAct loop is
               still stopping, so neither Pause nor Resume is meaningful and

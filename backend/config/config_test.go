@@ -1983,28 +1983,49 @@ security:
 	}
 }
 
-// TestConfigValidation_TrustedGitReposPaths verifies security.trusted_git_repos:
-// absolute entries load verbatim, while relative or empty entries are rejected
-// at load time — entries are compared literally (after Clean) against scanned
-// repository roots, so a relative entry could never match and is dead config.
-func TestConfigValidation_TrustedGitReposPaths(t *testing.T) {
-	t.Run("absolute paths load verbatim", func(t *testing.T) {
+// TestConfigValidation_TrustedGitRepos verifies the security.trusted_git_repos
+// schema: each entry is a {path, fingerprint} mapping (absolute path + optional
+// snapshot fingerprint). Paths are cleaned in place; relative, empty, and
+// duplicate entries are rejected at load time.
+func TestConfigValidation_TrustedGitRepos(t *testing.T) {
+	t.Run("mapping entries load with fingerprint", func(t *testing.T) {
 		repoOne := filepath.Join(os.TempDir(), "trusted-repo-one")
 		repoTwo := filepath.Join(os.TempDir(), "trusted-repo-two")
 		content := securityGroupsTestBase + fmt.Sprintf(`
 security:
   trusted_git_repos:
-    - %s
-    - %s
+    - path: %s
+      fingerprint: fp-one
+    - path: %s
 `, repoOne, repoTwo)
 
 		cfg, err := Load(writeTestConfig(t, content))
 		if err != nil {
 			t.Fatalf("Load() failed: %v", err)
 		}
-		want := []string{repoOne, repoTwo}
+		want := []TrustedGitRepo{
+			{Path: repoOne, Fingerprint: "fp-one"},
+			{Path: repoTwo},
+		}
 		if !reflect.DeepEqual(cfg.Security.TrustedGitRepos, want) {
 			t.Errorf("TrustedGitRepos = %v, want %v", cfg.Security.TrustedGitRepos, want)
+		}
+	})
+
+	t.Run("paths are cleaned in place", func(t *testing.T) {
+		repoOne := filepath.Join(os.TempDir(), "trusted-repo-one")
+		content := securityGroupsTestBase + fmt.Sprintf(`
+security:
+  trusted_git_repos:
+    - path: %s/
+`, repoOne)
+
+		cfg, err := Load(writeTestConfig(t, content))
+		if err != nil {
+			t.Fatalf("Load() failed: %v", err)
+		}
+		if got := cfg.Security.TrustedGitRepos[0].Path; got != repoOne {
+			t.Errorf("TrustedGitRepos[0].Path = %q, want cleaned %q", got, repoOne)
 		}
 	})
 
@@ -2012,7 +2033,7 @@ security:
 		content := securityGroupsTestBase + `
 security:
   trusted_git_repos:
-    - relative/repo
+    - path: relative/repo
 `
 		_, err := Load(writeTestConfig(t, content))
 		if err == nil {
@@ -2023,11 +2044,11 @@ security:
 		}
 	})
 
-	t.Run("empty entry rejected", func(t *testing.T) {
+	t.Run("empty path rejected", func(t *testing.T) {
 		content := securityGroupsTestBase + `
 security:
   trusted_git_repos:
-    - ""
+    - path: ""
 `
 		_, err := Load(writeTestConfig(t, content))
 		if err == nil {
@@ -2037,6 +2058,147 @@ security:
 			t.Errorf("expected error to mention empty paths, got: %v", err)
 		}
 	})
+
+	t.Run("duplicate path rejected", func(t *testing.T) {
+		repoOne := filepath.Join(os.TempDir(), "trusted-repo-one")
+		content := securityGroupsTestBase + fmt.Sprintf(`
+security:
+  trusted_git_repos:
+    - path: %s
+    - path: %s/
+`, repoOne, repoOne)
+
+		_, err := Load(writeTestConfig(t, content))
+		if err == nil {
+			t.Fatal("expected validation error for a duplicate trusted_git_repos entry")
+		}
+		if !contains(err.Error(), "duplicate path") {
+			t.Errorf("expected error to mention duplicate paths, got: %v", err)
+		}
+	})
+}
+
+// TestConfigValidation_TrustedGitReposLegacyStringMigrates verifies the legacy
+// string form of security.trusted_git_repos (a bare absolute path, written by
+// older builds) migrates transparently: each string becomes a path with no
+// fingerprint, so already-trusted repositories keep their warning suppression.
+func TestConfigValidation_TrustedGitReposLegacyStringMigrates(t *testing.T) {
+	repoOne := filepath.Join(os.TempDir(), "trusted-repo-one")
+	repoTwo := filepath.Join(os.TempDir(), "trusted-repo-two")
+	content := securityGroupsTestBase + fmt.Sprintf(`
+security:
+  trusted_git_repos:
+    - %s
+    - %s
+`, repoOne, repoTwo)
+
+	cfg, err := Load(writeTestConfig(t, content))
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	want := []TrustedGitRepo{
+		{Path: repoOne},
+		{Path: repoTwo},
+	}
+	if !reflect.DeepEqual(cfg.Security.TrustedGitRepos, want) {
+		t.Errorf("TrustedGitRepos = %v, want %v", cfg.Security.TrustedGitRepos, want)
+	}
+}
+
+// TestConfigValidation_HardenGitRepos verifies the security.harden_git_repos
+// list: absolute entries load (and are cleaned in place), while relative,
+// empty, and duplicate entries are rejected.
+func TestConfigValidation_HardenGitRepos(t *testing.T) {
+	t.Run("absolute paths load verbatim", func(t *testing.T) {
+		repoOne := filepath.Join(os.TempDir(), "harden-repo-one")
+		repoTwo := filepath.Join(os.TempDir(), "harden-repo-two")
+		content := securityGroupsTestBase + fmt.Sprintf(`
+security:
+  harden_git_repos:
+    - %s
+    - %s/
+`, repoOne, repoTwo)
+
+		cfg, err := Load(writeTestConfig(t, content))
+		if err != nil {
+			t.Fatalf("Load() failed: %v", err)
+		}
+		want := []string{repoOne, repoTwo}
+		if !reflect.DeepEqual(cfg.Security.HardenGitRepos, want) {
+			t.Errorf("HardenGitRepos = %v, want %v", cfg.Security.HardenGitRepos, want)
+		}
+	})
+
+	t.Run("relative path rejected", func(t *testing.T) {
+		content := securityGroupsTestBase + `
+security:
+  harden_git_repos:
+    - relative/repo
+`
+		_, err := Load(writeTestConfig(t, content))
+		if err == nil {
+			t.Fatal("expected validation error for a relative harden_git_repos entry")
+		}
+		if !contains(err.Error(), "must be an absolute path") {
+			t.Errorf("expected error to mention absolute paths, got: %v", err)
+		}
+	})
+
+	t.Run("empty entry rejected", func(t *testing.T) {
+		content := securityGroupsTestBase + `
+security:
+  harden_git_repos:
+    - ""
+`
+		_, err := Load(writeTestConfig(t, content))
+		if err == nil {
+			t.Fatal("expected validation error for an empty harden_git_repos entry")
+		}
+		if !contains(err.Error(), "must not contain empty paths") {
+			t.Errorf("expected error to mention empty paths, got: %v", err)
+		}
+	})
+
+	t.Run("duplicate path rejected", func(t *testing.T) {
+		repoOne := filepath.Join(os.TempDir(), "harden-repo-one")
+		content := securityGroupsTestBase + fmt.Sprintf(`
+security:
+  harden_git_repos:
+    - %s
+    - %s/
+`, repoOne, repoOne)
+
+		_, err := Load(writeTestConfig(t, content))
+		if err == nil {
+			t.Fatal("expected validation error for a duplicate harden_git_repos entry")
+		}
+		if !contains(err.Error(), "duplicate path") {
+			t.Errorf("expected error to mention duplicate paths, got: %v", err)
+		}
+	})
+}
+
+// TestConfigValidation_TrustedHardenMutualExclusion verifies a repository root
+// cannot appear in both security.trusted_git_repos and
+// security.harden_git_repos — the two lists are mutually exclusive (trusted
+// suppresses the warning, hardened forces it).
+func TestConfigValidation_TrustedHardenMutualExclusion(t *testing.T) {
+	repoOne := filepath.Join(os.TempDir(), "shared-repo")
+	content := securityGroupsTestBase + fmt.Sprintf(`
+security:
+  trusted_git_repos:
+    - path: %s
+  harden_git_repos:
+    - %s/
+`, repoOne, repoOne)
+
+	_, err := Load(writeTestConfig(t, content))
+	if err == nil {
+		t.Fatal("expected validation error for a root in both trusted and harden lists")
+	}
+	if !contains(err.Error(), "cannot be both trusted and hardened") {
+		t.Errorf("expected error to mention mutual exclusion, got: %v", err)
+	}
 }
 
 // TestConfigValidation_RejectsSystemSecurityGroup verifies that the reserved

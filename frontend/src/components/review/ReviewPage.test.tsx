@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import type { ReactNode } from 'react'
+import { TooltipProvider } from '@/components/ui/tooltip'
 
 // vi.mock factories are hoisted, so the mock objects must be created via
 // vi.hoisted() to be accessible inside the factory.
@@ -119,6 +120,46 @@ describe('ReviewPage — working-tree sync with the Git panel "Changes" section'
       vi.advanceTimersByTime(1)
     })
     expect(reviewMocks.getReviewDiff).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps state identity on a silent re-fetch with identical content (no-op events)', async () => {
+    const diff = [
+      {
+        path: 'a.txt',
+        old_path: '',
+        hunks: [
+          { old_start: 1, new_start: 1, raw: '@@ -1,2 +1,3 @@\n ctx\n-old\n+new\n+added' },
+        ],
+      },
+    ]
+    reviewMocks.getReviewDiff.mockResolvedValue(diff)
+    // The ReviewHeader renders Radix Tooltips (hunk combobox path labels),
+    // which require a provider — the app supplies one at the root.
+    render(
+      <TooltipProvider>
+        <ReviewPage sessionId="s1" />
+      </TooltipProvider>,
+    )
+    await flush()
+
+    // Grab the rendered hunk DOM node and its initial content — the node the
+    // user would be selecting text in.
+    const hunkEl = document.querySelector('[data-review-hunk]')
+    expect(hunkEl).toBeTruthy()
+    const contentBefore = hunkEl!.textContent
+
+    // A structurally-identical (but fresh) response object arrives from a
+    // background event: setDiff must be skipped entirely, so the DOM node is
+    // never re-rendered and an in-progress selection survives.
+    const freshEqual = structuredClone(diff)
+    reviewMocks.getReviewDiff.mockResolvedValue(freshEqual)
+    await act(async () => {
+      handlers['workspace:tree_changed']?.()
+      vi.advanceTimersByTime(200)
+    })
+    expect(reviewMocks.getReviewDiff).toHaveBeenCalledTimes(2)
+    expect(document.querySelector('[data-review-hunk]')).toBe(hunkEl)
+    expect(document.querySelector('[data-review-hunk]')!.textContent).toBe(contentBefore)
   })
 
   it('coalesces git:status_changed + workspace:tree_changed into one re-fetch', async () => {

@@ -7,6 +7,7 @@ import { useReviewStore } from '@/stores/reviewStore'
 import { logger } from '@/lib/logger'
 import { ReviewHeader } from './ReviewHeader'
 import { FileReviewBlock } from './FileReviewBlock'
+import { sameReviewDiff } from './diffParsing'
 
 interface ReviewPageProps {
   /** Active session id — required for the interactive working-tree review. */
@@ -18,6 +19,8 @@ interface ReviewPageProps {
 export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
   const readOnly = !!commitSha
   const [diff, setDiff] = useState<reviewApi.ReviewFileDiff[]>([])
+  /** Mirrors `diff` for the fetchDiff no-op guard (stable callback, no stale closure). */
+  const diffRef = useRef<reviewApi.ReviewFileDiff[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const loadReview = useReviewStore((s) => s.loadReview)
@@ -32,13 +35,23 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
       const result = commitSha
         ? await reviewApi.getCommitDiff(commitSha)
         : await reviewApi.getReviewDiff()
-      setDiff(result)
+      // No-op guard: when the re-fetch is structurally identical to what is
+      // already rendered (the common case for background events that did not
+      // actually change the tree), keep the previous state objects. This
+      // preserves referential identity for every memo/prop downstream, so
+      // nothing re-renders and an in-progress text selection survives.
+      const unchanged = sameReviewDiff(diffRef.current, result)
+      if (!unchanged) {
+        diffRef.current = result
+        setDiff(result)
+      }
       // Only an explicit (non-silent) load resets the hunk cursor. A silent
       // background re-fetch (git stage/discard/commit during a review) must
-      // preserve the user's current position rather than snapping to the top.
+      // preserve the user's current position rather than snapping to the top
+      // — and an unchanged diff must not touch the cursor at all.
       if (!silent) {
         setCurrentHunk(0)
-      } else {
+      } else if (!unchanged) {
         // Clamp the cursor into range in case the re-fetch shrank the diff
         // (e.g. the user discarded/committed hunks). The scroll-tracker
         // recomputes from the DOM shortly after, so this is just to avoid a

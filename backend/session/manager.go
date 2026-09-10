@@ -33,6 +33,15 @@ type contextKey string
 // SessionIDKey is the context key for the session ID.
 const SessionIDKey contextKey = "session_id"
 
+// restoreDBReadTimeout bounds the two store reads at the head of a lazy
+// session restore (session row + project workspace). Both share the app's
+// single SQLite connection with all writes of all active sessions; without a
+// deadline a read queuing behind a write storm parks the restore — and, via
+// the restoreInFlight single-flight, every concurrent waiter — indefinitely.
+// Fifteen seconds is orders of magnitude above the normal point-read latency
+// and turns contention into a prompt, retryable error instead of a hang.
+const restoreDBReadTimeout = 15 * time.Second
+
 // ContextWithSessionID returns a new context with the session ID attached.
 func ContextWithSessionID(ctx context.Context, sessionID string) context.Context {
 	return context.WithValue(ctx, SessionIDKey, sessionID)
@@ -447,17 +456,28 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		return nil, nil
 	}
 
-	// Load session metadata from the persistent store.
-	info, err := store.LoadSession(context.Background(), id)
+	// Load session metadata from the persistent store, then resolve the
+	// project workspace — both go through the app's single SQLite connection
+	// (see OpenDatabase). Under heavy write load from active sessions these
+	// reads can queue at the connection pool; context.Background() would wait
+	// indefinitely, so bound the pair with a generous deadline and let the
+	// caller surface a retryable error instead of hanging. Restore is
+	// side-effect-free up to this point, so a timeout simply aborts cleanly
+	// and a later attempt retries from scratch.
+	restoreReadCtx, restoreReadCancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
+	info, err := store.LoadSession(restoreReadCtx, id)
 	if err != nil {
+		restoreReadCancel()
 		return nil, fmt.Errorf("failed to load session from store: %w", err)
 	}
 	if info == nil {
+		restoreReadCancel()
 		return nil, nil // session does not exist in DB either
 	}
 
 	// Resolve workspace path for the session's project.
 	workspacePath, err := resolver(info.ProjectID)
+	restoreReadCancel()
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve workspace for project %s: %w", info.ProjectID, err)
 	}
@@ -656,6 +676,11 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 			}
 		}
 	}
+
+	// Restore the EWMA-calibrated compression-ratio forecast (persisted after
+	// each manual compaction) so the calibration survives restarts; a missing
+	// or unparsable state leaves the config seed untouched.
+	m.loadCompactionForecast(orchestrator)
 
 	// Restore the continuation anchor from the task store so the next user
 	// message continues the previous task via PlanContinuation (which receives
@@ -1232,6 +1257,76 @@ func (m *Manager) GetSessionWorkspacePath(id string) (string, bool) {
 		return "", false
 	}
 	return sess.WorkspacePath, true
+}
+
+// WorkspacePathFor returns the workspace path for a session WITHOUT the full
+// lazy restore performed by GetSession: no orchestrator build, no session
+// insertion into m.sessions, no event wiring. In-memory sessions are read
+// directly; otherwise exactly two point reads hit the store (the session row
+// and the project workspace via the resolver).
+//
+// This exists for read-only RPC surfaces — most notably StartTerminal — where
+// triggering a full restore caused a real-world hang: the restore path's DB
+// reads used context.Background() and share the app's single SQLite
+// connection with every write of every active session (message persistence,
+// task/blackboard saves). Under a bash_exec storm from concurrent sessions
+// those reads could queue behind the write load for minutes, and the
+// restoreInFlight single-flight then parked every retry on the same stuck
+// restore — the terminal spinner never cleared.
+//
+// The ctx bounds BOTH store reads (sql.DB pool waits honor it), so callers
+// can turn contention into a prompt, retryable error instead of an indefinite
+// hang. The No Project per-session workspace derivation mirrors
+// getOrRestoreSession, including directory creation — the caller needs a
+// usable working directory.
+func (m *Manager) WorkspacePathFor(ctx context.Context, id string) (string, bool) {
+	// Fast path: in-memory session.
+	m.mu.RLock()
+	sess, ok := m.sessions[id]
+	var workspacePath string
+	if ok {
+		workspacePath = sess.WorkspacePath
+	}
+	m.mu.RUnlock()
+	if ok {
+		return workspacePath, true
+	}
+
+	// Read-only slow path: store + resolver snapshots, no restore side
+	// effects. Snapshot under read lock, use outside it (same pattern as
+	// getOrRestoreSession).
+	m.mu.RLock()
+	store := m.sessionStore
+	resolver := m.projectResolver
+	m.mu.RUnlock()
+	if store == nil || resolver == nil {
+		return "", false
+	}
+
+	info, err := store.LoadSession(ctx, id)
+	if err != nil || info == nil {
+		return "", false
+	}
+
+	workspacePath, err = resolver(info.ProjectID)
+	if err != nil {
+		return "", false
+	}
+
+	// For No Project, each session gets its own isolated workspace — re-derive
+	// it here exactly like getOrRestoreSession so a path lookup never points a
+	// terminal at the shared project-level directory.
+	if info.ProjectID == project.NoProjectID {
+		workspacePath = config.NoProjectSessionWorkspace(m.agentDir, id)
+		if absPath, absErr := filepath.Abs(workspacePath); absErr == nil {
+			workspacePath = absPath
+		}
+		if mkErr := os.MkdirAll(workspacePath, 0o755); mkErr != nil {
+			m.log().Warn("failed to ensure per-session workspace on path lookup",
+				"session_id", id, "error", mkErr)
+		}
+	}
+	return workspacePath, true
 }
 
 // ListSessions returns metadata for all sessions, sorted by LastActiveAt descending.

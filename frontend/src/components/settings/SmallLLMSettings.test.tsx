@@ -25,7 +25,6 @@ const baseConfig = {
   essential_tools: {
     enabled: true,
     always_present: ['finish', 'read_file'],
-    max_tools: 16,
     compact_descriptions: false,
     protected_tools: ['ask_user', 'finish'],
   },
@@ -200,12 +199,14 @@ describe('SmallLLMSettings — context section', () => {
   })
 })
 
-describe('SmallLLMSettings — essential tools budget & locked tools', () => {
-  it('documents the budget semantics and renders protected tools as locked', async () => {
+describe('SmallLLMSettings — essential tools static selection & locked tools', () => {
+  it('documents the static selection and renders protected tools as locked', async () => {
     await render()
     const text = container.textContent ?? ''
-    expect(text).toContain('router-matched')
-    expect(text).toContain('never trimmed')
+    // The assigned set is the selection + system + all MCP; no budget copy.
+    expect(text).toContain("every connected MCP server's tools")
+    expect(text).not.toContain('router-matched')
+    expect(text).not.toContain('never trimmed')
 
     // Protected tools render as locked chips: no remove button, lock glyph.
     const lockedChip = chipFor('finish')
@@ -234,11 +235,14 @@ describe('SmallLLMSettings — essential tools budget & locked tools', () => {
 
 describe('SmallLLMSettings — inline validation errors', () => {
   it('shows the backend validation error next to the form and reverts local state', async () => {
+    getSmallLLMConfigMock.mockResolvedValue(
+      structuredClone({ ...baseConfig, context: { ...baseConfig.context, enabled: true } }),
+    )
     await render()
     updateSmallLLMConfigMock.mockRejectedValue(new Error('keep_last must be >= 2'))
 
-    await setField(field('Max tools')!, '3')
-    await blur(field('Max tools')!)
+    await setField(field('Keep last')!, '4')
+    await blur(field('Keep last')!)
     await act(async () => {
       await Promise.resolve()
       await Promise.resolve()
@@ -248,6 +252,6 @@ describe('SmallLLMSettings — inline validation errors', () => {
     expect(text).toContain('keep_last must be >= 2')
     // Config was reloaded from the backend (reverted).
     expect(getSmallLLMConfigMock).toHaveBeenCalledTimes(2)
-    expect(field('Max tools')?.value).toBe('16')
+    expect(field('Keep last')?.value).toBe('6')
   })
 })

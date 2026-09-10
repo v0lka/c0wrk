@@ -189,10 +189,19 @@ func TestParseCard_FullCard(t *testing.T) {
 | **Timebox** | 5 days |
 | **Parent(s)** | H-009, H-010 |
 | **Created** | 2025-04-02 |
+| **Decision** | continue |
 
 ## Statement
 
 Bundles can be parsed.
+
+## Verification Criterion
+
+A parser recovers 90% of modules on the fixture corpus.
+
+## Experiment Notes
+
+Ran the parser against the corpus twice.
 
 ## Result
 
@@ -220,6 +229,100 @@ Bundles can be parsed.
 	}
 	if node.Result != "Recovered 97% of modules." {
 		t.Errorf("Result = %q", node.Result)
+	}
+	if node.Statement != "Bundles can be parsed." {
+		t.Errorf("Statement = %q", node.Statement)
+	}
+	if node.VerificationCriterion != "A parser recovers 90% of modules on the fixture corpus." {
+		t.Errorf("VerificationCriterion = %q", node.VerificationCriterion)
+	}
+	if node.ExperimentNotes != "Ran the parser against the corpus twice." {
+		t.Errorf("ExperimentNotes = %q", node.ExperimentNotes)
+	}
+	if node.Decision != "continue" {
+		t.Errorf("Decision = %q", node.Decision)
+	}
+}
+
+func TestParseCard_LongFormSectionsPlaceholdersAndAbsence(t *testing.T) {
+	// A fresh template card: Experiment Notes carries the italic placeholder
+	// and Result the placeholder + dash finding — every long-form section
+	// must read as "" so template boilerplate never surfaces as editable
+	// content. Statement and Verification Criterion are absent entirely.
+	content := `# H-002: Fresh hypothesis
+
+| Field | Value |
+|---|---|
+| **Identifier** | H-002 |
+| **Status** | open |
+| **Timebox** | — |
+| **Parent(s)** | — |
+| **Created** | 2025-04-02 |
+| **Completed** | — |
+| **Decision** | — |
+
+## Statement
+
+## Verification Criterion
+
+## Experiment Notes
+
+*Not yet started.*
+
+## Result
+
+*Filled upon completion.*
+
+**Finding:** —
+
+**Prototype / Proof:** —
+`
+	node, err := ParseCard(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if node.Statement != "" {
+		t.Errorf("Statement should be empty, got %q", node.Statement)
+	}
+	if node.VerificationCriterion != "" {
+		t.Errorf("VerificationCriterion should be empty, got %q", node.VerificationCriterion)
+	}
+	if node.ExperimentNotes != "" {
+		t.Errorf("ExperimentNotes should drop the placeholder, got %q", node.ExperimentNotes)
+	}
+	if node.Result != "" {
+		t.Errorf("Result should be empty, got %q", node.Result)
+	}
+	if node.Decision != "" {
+		t.Errorf("Decision should drop the dash placeholder, got %q", node.Decision)
+	}
+}
+
+func TestParseCard_SectionBodyKeepsRealItalicContent(t *testing.T) {
+	// A body whose FIRST line is real content is preserved verbatim — even
+	// when later lines are italics. Only an all-placeholder body reads as "".
+	content := `# H-003: Notes with emphasis
+
+| Field | Value |
+|---|---|
+| **Identifier** | H-003 |
+| **Status** | in-progress |
+
+## Experiment Notes
+
+First run crashed on chunk 4.
+
+*Reminder: rerun with tracing enabled.*
+
+## Result
+`
+	node, err := ParseCard(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "First run crashed on chunk 4.\n\n*Reminder: rerun with tracing enabled.*"
+	if node.ExperimentNotes != want {
+		t.Errorf("ExperimentNotes = %q, want %q", node.ExperimentNotes, want)
 	}
 }
 
@@ -824,8 +927,9 @@ func TestParseResearchRoot_MissingDirIsError(t *testing.T) {
 	}
 }
 
-// TestParseResearchRoot_FlatSingleProject covers a research root that holds a
-// single project's artifacts directly at its top level (the "flat" layout):
+// TestParseResearchRoot_FlatRootYieldsNoProjects covers a research root that
+// holds a single project's artifacts directly at its top level (the "flat"
+// layout):
 //
 //	root/
 //	├── brief.md
@@ -834,12 +938,10 @@ func TestParseResearchRoot_MissingDirIsError(t *testing.T) {
 //	    ├── graph.md
 //	    └── H-001.md
 //
-// This shape is non-conformant with the canonical nested layout
-// (R-NNN-short-name/ wrapper), but it arises in practice (e.g. a dedicated
-// single-project directory, or a root populated by an earlier workflow). The
-// parser must surface it as a single project instead of rendering an empty
-// panel.
-func TestParseResearchRoot_FlatSingleProject(t *testing.T) {
+// Only the canonical nested layout (projects in R-NNN-short-name/
+// subdirectories) is recognized: a flat root parses as a root with no
+// projects, so the panel renders an empty state for it.
+func TestParseResearchRoot_FlatRootYieldsNoProjects(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile := func(name, body string) {
@@ -867,32 +969,19 @@ func TestParseResearchRoot_FlatSingleProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseResearchRoot: %v", err)
 	}
-	if len(parsed.Projects) != 1 {
-		t.Fatalf("Projects = %d, want 1 (flat project must be discovered): %+v",
+	if len(parsed.Projects) != 0 {
+		t.Fatalf("Projects = %d, want 0 (flat root is not a project): %+v",
 			len(parsed.Projects), parsed.Projects)
 	}
-	p := parsed.Projects[0]
-	if p.ID != "R-007" {
-		t.Errorf("project ID = %q, want R-007 (from brief)", p.ID)
-	}
-	if p.Brief.Title != "Flat Project" {
-		t.Errorf("Brief.Title = %q, want \"Flat Project\"", p.Brief.Title)
-	}
-	if p.PriorArtCount != 2 {
-		t.Errorf("PriorArtCount = %d, want 2", p.PriorArtCount)
-	}
-	if len(p.Graph.Nodes) != 1 {
-		t.Fatalf("Graph.Nodes = %d, want 1: %+v", len(p.Graph.Nodes), p.Graph.Nodes)
-	}
-	if p.Graph.Nodes[0].ID != "H-001" {
-		t.Errorf("node ID = %q, want H-001", p.Graph.Nodes[0].ID)
+	if parsed.ActiveProjectID != "" {
+		t.Errorf("ActiveProjectID = %q, want empty (no projects)", parsed.ActiveProjectID)
 	}
 }
 
-// TestParseResearchRoot_NestedUnaffected confirms the flat-layout fallback
-// does not fire when the canonical nested layout is present: a root with an
-// R-NNN subdirectory is parsed via the nested path only (no spurious second
-// project from the root itself).
+// TestParseResearchRoot_NestedUnaffected confirms root-level artifacts are
+// ignored when the canonical nested layout is present: a root with an R-NNN
+// subdirectory is parsed via the nested path only, and a stray brief.md at
+// the root level never adds a second project.
 func TestParseResearchRoot_NestedUnaffected(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "R-001-x"), 0o755); err != nil {
@@ -912,7 +1001,7 @@ func TestParseResearchRoot_NestedUnaffected(t *testing.T) {
 		t.Fatalf("ParseResearchRoot: %v", err)
 	}
 	if len(parsed.Projects) != 1 {
-		t.Fatalf("Projects = %d, want exactly 1 (nested only, no flat duplicate): %+v",
+		t.Fatalf("Projects = %d, want exactly 1 (nested only, root artifacts ignored): %+v",
 			len(parsed.Projects), parsed.Projects)
 	}
 	if parsed.Projects[0].ID != "R-001" {

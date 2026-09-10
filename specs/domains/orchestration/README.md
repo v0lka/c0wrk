@@ -89,7 +89,7 @@ type RoutingDecision struct {
     Complexity         int      // 1-5
     NeedsClarification bool     // present on the type; c0wrk does not branch on it
     MatchedSkills      []string
-    MatchedTools       []string // semantic tool selection (Small-LLM essential-tools profile)
+    MatchedTools       []string // present on the sp4rk type; stays empty and unconsumed (ADR-035)
 }
 
 // Handle options
@@ -166,9 +166,10 @@ HandleMessage(ctx, message, sessionID, opts)
 │
 ├─ 4a. Small-LLM essential-tools filter (non-goal path only):
 │     → When small_llm.enabled AND essential_tools.enabled, narrow the
-│       available tool set via smallllm.SelectTools (router-matched +
-│       always-present + protected base + every MCP tool, capped by
-│       max_tools). Emit tools_assigned. No-op when the profile is off.
+│       available tool set via smallllm.SelectTools (static union:
+│       always-present + protected base + every MCP tool + turn-scoped
+│       guarantees; no budget, no router matching, no events emitted).
+│       No-op when the profile is off.
 │     → Goal mode returns before this point and is never narrowed.
 │
 ├─ 5. Build Conductor:

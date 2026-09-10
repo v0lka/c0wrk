@@ -1,13 +1,18 @@
-import { useCallback, useLayoutEffect, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useLayoutEffect, useMemo, type MouseEvent as ReactMouseEvent } from 'react'
 import { Maximize, ZoomIn, ZoomOut } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DEFAULT_ZOOM_STEP, usePanZoom } from '@/lib/usePanZoom'
+import { StepTooltip } from '@/components/chat/StepTooltip'
 import {
   edgePathH,
   statusColorVar,
   NODE_R,
+  LABEL_MAX_CHARS,
+  layoutSignature,
+  hypothesisTooltipMarkdown,
   type DagLayout,
 } from './researchDagRender'
+import type { HypothesisNode } from '@/types/models'
 
 /** Truncate a title for compact SVG labelling. */
 function truncate(s: string, max: number): string {
@@ -20,18 +25,28 @@ interface DagSvgProps {
   layout: DagLayout
   selectedId: string | null
   onSelect: (id: string) => void
+  /**
+   * Full display-graph nodes keyed by id — the hover-tooltip content source.
+   * Layout nodes carry only painted geometry fields (id / title / status /
+   * result); the Markdown hypothesis card needs the long-form sections.
+   */
+  nodesById: Map<string, HypothesisNode>
 }
 
-function DagSvg({ layout, selectedId, onSelect }: DagSvgProps) {
-  // Add room to the right for node titles rendered beside each circle.
-  const width = Math.max(layout.width + 160, 320)
-  const height = Math.max(layout.height, 160)
+function DagSvg({ layout, selectedId, onSelect, nodesById }: DagSvgProps) {
+  // The layout box hugs the painted content — ids hanging left of nodes,
+  // truncated titles right of them — so the camera's fit() centers the
+  // actual graph, and left-hanging ids stay inside the SVG viewport (an SVG
+  // clips its own overflow, so content outside the box is unreachable by
+  // panning). Guards keep width/height positive for degenerate layouts.
+  const w = Math.max(layout.width, 1)
+  const h = Math.max(layout.height, 1)
 
   return (
     <svg
-      width={width}
-      height={height}
-      viewBox={`0 0 ${width} ${height}`}
+      width={w}
+      height={h}
+      viewBox={`${layout.minX} 0 ${w} ${h}`}
       role="graphics-document"
       aria-label="Research hypothesis DAG"
       className="shrink-0"
@@ -46,63 +61,80 @@ function DagSvg({ layout, selectedId, onSelect }: DagSvgProps) {
         />
       ))}
 
-      {layout.nodes.map((node) => {
-        const selected = node.id === selectedId
+      {/* Hover tooltips mirror the plan-step hover card (chat StepTooltip:
+          default provider delay, markdown content, viewport-aware scrollable
+          bubble — Radix portals it to document.body, so the pan/zoom
+          transform never scales or clips it). Panning self-suppresses: the
+          trigger's onPointerDown closes an open tooltip, and once the drag
+          threshold engages pointer capture the browser retargets subsequent
+          events to the canvas, so no other node's tooltip can open mid-drag;
+          on release the hover re-arms naturally. The native SVG <title> is
+          gone — it would double up with the custom tooltip. */}
+      {layout.nodes.map((layoutNode) => {
+        const selected = layoutNode.id === selectedId
+        const node = nodesById.get(layoutNode.id)
         return (
-          <g
-            key={node.id}
-            role="button"
-            tabIndex={0}
-            data-node-id={node.id}
-            aria-label={`${node.id} ${node.title}`}
-            className="cursor-pointer"
-            onClick={() => onSelect(node.id)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                onSelect(node.id)
-              }
-            }}
+          <StepTooltip
+            key={layoutNode.id}
+            // Layout and content are built from the same display graph, so
+            // the lookup always resolves; the bare-title fallback is purely
+            // defensive.
+            description={node ? hypothesisTooltipMarkdown(node) : layoutNode.title}
           >
-            {/* Native tooltip: the full (untruncated) title. */}
-            <title>{node.title}</title>
-            {selected && (
+            <g
+              role="button"
+              tabIndex={0}
+              data-node-id={layoutNode.id}
+              aria-label={`${layoutNode.id} ${layoutNode.title}`}
+              className="cursor-pointer"
+              onClick={() => onSelect(layoutNode.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  onSelect(layoutNode.id)
+                }
+              }}
+            >
+              {selected && (
+                <circle
+                  cx={layoutNode.x}
+                  cy={layoutNode.y}
+                  r={NODE_R + 3}
+                  fill="none"
+                  stroke="var(--color-highlight)"
+                  strokeWidth="1.5"
+                />
+              )}
               <circle
-                cx={node.x}
-                cy={node.y}
-                r={NODE_R + 3}
-                fill="none"
-                stroke="var(--color-highlight)"
-                strokeWidth="1.5"
+                cx={layoutNode.x}
+                cy={layoutNode.y}
+                r={NODE_R}
+                fill={statusColorVar(layoutNode.status)}
+                stroke="var(--color-background)"
+                strokeWidth="1"
               />
-            )}
-            <circle
-              cx={node.x}
-              cy={node.y}
-              r={NODE_R}
-              fill={statusColorVar(node.status)}
-              stroke="var(--color-background)"
-              strokeWidth="1"
-            />
-            <text
-              x={node.x - NODE_R - 4}
-              y={node.y - 6}
-              fontSize="9"
-              textAnchor="end"
-              fill="var(--color-muted-foreground)"
-            >
-              {node.id}
-            </text>
-            <text
-              x={node.x + NODE_R + 4}
-              y={node.y + 3.5}
-              fontSize="11"
-              textAnchor="start"
-              fill="var(--color-foreground)"
-            >
-              {truncate(node.title, 26)}
-            </text>
-          </g>
+              <text
+                x={layoutNode.x - NODE_R - 4}
+                y={layoutNode.y - 6}
+                fontSize="9"
+                textAnchor="end"
+                fill="var(--color-muted-foreground)"
+              >
+                {layoutNode.id}
+              </text>
+              <text
+                x={layoutNode.x + NODE_R + 4}
+                y={layoutNode.y + 3.5}
+                fontSize="11"
+                textAnchor="start"
+                fill="var(--color-foreground)"
+              >
+                {/* Same budget the layout's column pitch and box math derive
+                    from (LABEL_MAX_CHARS) — kept in lockstep via one constant. */}
+                {truncate(layoutNode.title, LABEL_MAX_CHARS)}
+              </text>
+            </g>
+          </StepTooltip>
         )
       })}
     </svg>
@@ -113,6 +145,11 @@ function DagSvg({ layout, selectedId, onSelect }: DagSvgProps) {
 
 export interface ResearchDagCanvasProps {
   layout: DagLayout
+  /**
+   * The display graph's full hypothesis nodes (same ids as `layout.nodes` —
+   * both derive from it): the source of the hover-tooltip Markdown card.
+   */
+  nodes: HypothesisNode[]
   selectedId: string | null
   onSelect: (id: string) => void
 }
@@ -122,10 +159,16 @@ export interface ResearchDagCanvasProps {
  * `overflow-auto` scroll with drag-to-pan, cursor-anchored wheel zoom, and a
  * floating zoom toolbar (− / percentage / + / fit). All pan/zoom behavior
  * (anchored zoom, fit, drag, wheel, click-suppression counter) lives in the
- * reusable `usePanZoom` hook; on first paint — and whenever the layout
- * changes — the DAG is scaled to fit the canvas width (never upscaled).
+ * reusable `usePanZoom` hook; on first paint — and whenever the painted
+ * geometry actually changes — the DAG is scaled to fit the canvas width
+ * (never upscaled). Hovering a node opens a custom tooltip with the
+ * hypothesis's Markdown card (the plan-step hover pattern); it is driven by
+ * the full nodes prop, not the painted geometry.
  */
-export function ResearchDagCanvas({ layout, selectedId, onSelect }: ResearchDagCanvasProps) {
+export function ResearchDagCanvas({ layout, nodes, selectedId, onSelect }: ResearchDagCanvasProps) {
+  // id → full node for the hover tooltips. `nodes` is a stable memo from the
+  // workspace (displayGraph.nodes), so this rebuilds only on graph changes.
+  const nodesById = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes])
   const {
     view,
     canvasRef,
@@ -133,24 +176,35 @@ export function ResearchDagCanvas({ layout, selectedId, onSelect }: ResearchDagC
     fit,
     zoomFromCenter,
     didDragRef,
+    isPanningRef,
     onPointerDown,
     onPointerMove,
     onPointerUp,
     onPointerCancel,
   } = usePanZoom()
 
-  // Fit on first paint and whenever the layout changes (graph updates or the
-  // hide-completed toggle resize the SVG). `fit` is referentially stable, so
-  // a mere re-render (e.g. selection change) never resets the camera.
+  // Fit on first paint and whenever the PAINTED GEOMETRY changes (graph
+  // updates or the hide-completed toggle resize the SVG). The store replaces
+  // `project.graph` with a fresh object on every applied update, so keying on
+  // layout identity would re-fit even content-identical refreshes — snapping
+  // the viewport back to fit mid-exploration. The cheap geometric signature
+  // only changes when nodes/edges actually move. A refresh landing while the
+  // user is mid-drag is skipped entirely; the next real geometry change
+  // re-fits. `fit` is referentially stable, so a mere re-render (e.g.
+  // selection change) never resets the camera.
+  const geometrySig = useMemo(() => layoutSignature(layout), [layout])
   useLayoutEffect(() => {
+    if (isPanningRef.current) return
     fit()
-  }, [layout, fit])
+  }, [geometrySig, isPanningRef, fit])
 
-  // Swallow the click that trails a pan gesture: pointer capture keeps the
-  // drag alive even when it starts on a node, so the browser may deliver the
-  // trailing click to whatever node the drag ended over. Stopping it in the
-  // capture phase — before it can reach any node — keeps panning from
-  // changing the selection; plain clicks (didDragRef false) pass through.
+  // Swallow the click that trails a pan gesture: once the drag threshold is
+  // crossed the canvas holds pointer capture, and under capture the browser
+  // retargets the trailing `click` to the canvas itself (per the Pointer
+  // Events spec, compatibility mouse events follow the capture target).
+  // Stopping it in the capture phase — before it can reach any node — keeps
+  // panning from changing the selection; plain clicks (didDragRef false,
+  // never captured) pass through to the node under the cursor.
   const onCanvasClickCapture = useCallback(
     (e: ReactMouseEvent<HTMLDivElement>) => {
       if (!didDragRef.current) return
@@ -214,7 +268,12 @@ export function ResearchDagCanvas({ layout, selectedId, onSelect }: ResearchDagC
           className="absolute left-0 top-0 origin-top-left"
           style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
         >
-          <DagSvg layout={layout} selectedId={selectedId} onSelect={onSelect} />
+          <DagSvg
+            layout={layout}
+            selectedId={selectedId}
+            onSelect={onSelect}
+            nodesById={nodesById}
+          />
         </div>
       </div>
     </div>

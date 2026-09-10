@@ -17,13 +17,27 @@ var ErrNothingToCompact = errors.New("orchestrator: conversation history is empt
 
 // ErrNothingCompacted is returned by CompactConversationHistory when the
 // strategy left the conversation history unchanged (same message count and
-// token estimate) — the dialogue already fits within the manual-compaction
-// budget: the target share of the effective context window
-// (Compaction.ManualTargetPercent, default 30%) when the window is known, or
-// the strategy's message-count limits in the unknown-window fallback. There
-// is nothing to compact; the history is NOT swapped and no events are
-// emitted: nothing changed.
+// token estimate) — the dialogue is already under the strategy's structural
+// message-count window, so there is nothing to compact. The history is NOT
+// swapped and no events are emitted: nothing changed.
 var ErrNothingCompacted = errors.New("orchestrator: conversation history already within compaction limits — nothing to compact")
+
+// manualCompactionStrategies is the ordered catalog of manual-compaction
+// strategies surfaced to the compact button's menu. The order is stable (it
+// matches the frontend COMPACTION_STRATEGIES order) and must stay in sync with
+// sp4rk's CompactConversationHistory strategy names.
+var manualCompactionStrategies = []string{"sliding_window", "summarization", "hierarchical"}
+
+// CompactionAvailability is the per-strategy prediction surfaced to the UI: is
+// this strategy currently available (would it actually shrink the dialogue),
+// how many tokens it would reclaim, and whether that reclaim is exact
+// (sliding_window — a dry run) or a forecast (LLM-backed strategies).
+type CompactionAvailability struct {
+	Strategy      string `json:"strategy"`
+	Available     bool   `json:"available"`
+	ReclaimTokens int    `json:"reclaim_tokens"`
+	Exact         bool   `json:"exact"`
+}
 
 // CompactConversationHistory compacts the session's cross-task conversation
 // history (o.conversationHistory — the user/assistant dialogue injected into
@@ -37,17 +51,15 @@ var ErrNothingCompacted = errors.New("orchestrator: conversation history already
 // dialogue. The UI message history is untouched — compaction affects only what
 // the LLM sees.
 //
-// The strategy runs in sp4rk's token-budget mode whenever the model's
-// effective context window is known: the budget is the target share of that
-// window (Compaction.ManualTargetPercent, default 30%) — the fill level the
-// compaction aims to bring the history down to. A history already within the
-// budget is returned verbatim regardless of its message count (→
-// ErrNothingCompacted); an over-budget one is compacted so the result fits
-// the budget, each strategy sizing its verbatim zones as budget shares (the
-// single documented exception: a last message that alone exceeds the budget
-// is still kept — the never-remove-last invariant outranks the ceiling). An
-// unknown window (or a nil token counter) passes budget 0 and sp4rk applies
-// its historical message-count-based behavior unchanged.
+// The strategy runs in sp4rk's PURELY STRUCTURAL mode: each strategy applies
+// its configured message-count window exactly, with no token-budget sizing and
+// no token trim. A history the strategy leaves unchanged (too short for its
+// window) is returned verbatim → ErrNothingCompacted. There is no "target
+// fill" to compact toward — compaction reclaims whatever the strategy's window
+// reclaims, so the button's availability is predicted per strategy by
+// ManualCompactionAvailability (sp4rk PredictCompaction), and the compact menu
+// offers exactly the strategies whose prediction says they will shrink the
+// dialogue.
 //
 // Percentages are computed in two bases. The EMITTED values
 // (ContextCompaction chat card + the refreshed ContextFill status bar) use
@@ -82,20 +94,22 @@ func (o *Orchestrator) CompactConversationHistory(ctx context.Context, strategy 
 		return 0, 0, errors.New("orchestrator: compaction strategy is required")
 	}
 
-	// Resolve the token bases BEFORE the compaction call: the effective base
-	// doubles as the manual-compaction budget — the strategy runs in sp4rk's
-	// token-budget mode against the target share of the window the executor
-	// manages against. An unknown window (or a target that rounds down to a
-	// zero budget on a tiny window) yields budget 0: sp4rk's historical
-	// message-count-based fallback, byte-for-byte the pre-budget behavior.
+	// Resolve the token bases BEFORE the compaction call; the effective base
+	// feeds the EMITTER calls and the display base the RETURNED percentages.
 	effectiveMax, displayMax := o.contextBases()
-	targetPercent := o.manualCompactionTargetPercent()
-	budgetTokens := 0
-	if effectiveMax > 0 {
-		budgetTokens = effectiveMax * targetPercent / 100
+
+	// Capture the verbatim-token anchor from the prediction BEFORE compacting:
+	// the EWMA calibration needs it to isolate the summarized portion
+	// (summarizedInput = before − verbatim) from the kept-verbatim portion.
+	pred, predErr := sdkmemory.PredictCompaction(history, strategy, o.manualCompactionConfig(), o.manualCompactionDeps())
+	if predErr != nil {
+		return 0, 0, fmt.Errorf("orchestrator: predicting compaction: %w", predErr)
+	}
+	if !pred.WillCompact {
+		return 0, 0, ErrNothingCompacted
 	}
 
-	compacted, err := sdkmemory.CompactConversationHistory(ctx, history, budgetTokens, strategy, o.manualCompactionConfig(), o.manualCompactionDeps())
+	compacted, err := sdkmemory.CompactConversationHistory(ctx, history, strategy, o.manualCompactionConfig(), o.manualCompactionDeps())
 	if err != nil {
 		return 0, 0, fmt.Errorf("orchestrator: compacting conversation history: %w", err)
 	}
@@ -116,16 +130,14 @@ func (o *Orchestrator) CompactConversationHistory(ctx context.Context, strategy 
 	}
 
 	// No-op detection: the strategy left the history unchanged (same message
-	// count, same token estimate) — the dialogue already fits within the
-	// manual-compaction budget (or, in the unknown-window fallback, the
-	// strategy's message-count limits). Return the sentinel WITHOUT swapping the history or
-	// emitting: both are exactly what they were before the call. The token
-	// counter is a hard prerequisite: without one the token equality is
-	// vacuous (0 == 0) and the check degrades to length-only — a real
-	// compaction that only rewrote message CONTENT at the same length would
-	// be misdetected as a no-op and silently dropped. So with no counter the
-	// detection is skipped and the compacted history is always swapped in
-	// (an identical result is a harmless idempotent swap).
+	// count, same token estimate). Return the sentinel WITHOUT swapping the
+	// history or emitting: both are exactly what they were before the call.
+	// The token counter is a hard prerequisite: without one the token equality
+	// is vacuous (0 == 0) and the check degrades to length-only — a real
+	// compaction that only rewrote message CONTENT at the same length would be
+	// misdetected as a no-op and silently dropped. So with no counter the
+	// detection is skipped and the compacted history is always swapped in (an
+	// identical result is a harmless idempotent swap).
 	if o.tokenCounter != nil && len(compacted) == len(history) && afterTokens == beforeTokens {
 		return 0, 0, ErrNothingCompacted
 	}
@@ -147,13 +159,13 @@ func (o *Orchestrator) CompactConversationHistory(ctx context.Context, strategy 
 	// Swap in the compacted history only after a successful compaction.
 	o.setConversationHistory(compacted)
 
-	// The log carries the display basis — the numbers the user sees — plus
-	// the target the budget was derived from (budget 0 documents the
-	// count-based fallback on an unknown window).
+	// Refine the compression-ratio forecast with the observed result (LLM
+	// strategies only — sliding_window is exact and needs no calibration).
+	o.refineCompactionForecast(strategy, history, compacted, pred.VerbatimTokens)
+
+	// The log carries the display basis — the numbers the user sees.
 	o.logInfo("manual context compaction",
 		"strategy", strategy,
-		"target_percent", targetPercent,
-		"budget_tokens", budgetTokens,
 		"before_percent", roundFill(beforePercent),
 		"after_percent", roundFill(afterPercent),
 		"messages", len(compacted))
@@ -166,134 +178,40 @@ func (o *Orchestrator) CompactConversationHistory(ctx context.Context, strategy 
 	return beforePercent, afterPercent, nil
 }
 
-// defaultManualTargetPercent is the manual-compaction target fallback for an
-// unset (zero) Compaction.ManualTargetPercent — the core mirror carries no
-// builder-time default, so the consumer resolves it here, mirroring backend
-// config's ApplyDefaults.
-const defaultManualTargetPercent = 30
-
-// manualCompactionTargetPercent resolves the manual-compaction target: the
-// context-fill percentage of the effective window a user-triggered compaction
-// aims to compact the history down to (the SDK budget is effectiveMax ×
-// target / 100). Zero (unset) falls back to defaultManualTargetPercent.
-func (o *Orchestrator) manualCompactionTargetPercent() int {
-	if p := o.config.Compaction.ManualTargetPercent; p > 0 {
-		return p
-	}
-	return defaultManualTargetPercent
-}
-
-// ManualCompactionWouldNoOp reports whether a manual compaction of the
-// CURRENT conversation history is guaranteed to leave it unchanged — the
-// dialogue already fits the manual-compaction target (or is too short for
-// any strategy to shrink). The session layer surfaces it as
-// SessionRuntimeStatus.CompactionNoOp / CompactionFinishedEventData.
-// CompactionNoOp so the UI can disable the compact button with an
-// explanatory tooltip. It is a pure prediction: no strategy runs, nothing is
-// swapped, no events fire. Safe to call from any goroutine (the runtime
-// status poll runs on a Wails-RPC goroutine while a request may be finishing
-// — the history is read via historySnapshot).
+// ManualCompactionAvailability reports, for EVERY manual-compaction strategy,
+// whether applying it right now would actually shrink the conversation history
+// (a pure prediction — no strategy runs, nothing is swapped, no events fire).
+// The session layer surfaces it as
+// SessionRuntimeStatus.CompactionAvailability / CompactionFinishedEventData.
+// CompactionAvailability so the UI can enable the compact button and disable
+// (with a reason) exactly the strategies that would not shrink the dialogue.
 //
-// The mode mirrors CompactConversationHistory's budget resolution exactly:
-// with a known effective window AND a token counter, the budget is
-// effectiveMax × manualCompactionTargetPercent / 100 and a history whose
-// token count fits the budget is returned verbatim by every strategy (the
-// documented budget-mode contract) — that is a no-op by definition. Any
-// other setup falls to the count-mode fallback (unknown window, nil counter,
-// or a window so tiny the budget rounds to zero), predicted conservatively
-// by length: a history at or below manualCompactionNoOpLength — the largest
-// length every strategy returns verbatim — is a guaranteed no-op, while
-// longer histories are left enabled (fail-open: a pointless click reports
-// the existing nothing_compacted outcome). An empty history trivially
-// qualifies — there is nothing to compact at all.
-func (o *Orchestrator) ManualCompactionWouldNoOp() bool {
+// Each strategy's Available verdict is EXACT (sp4rk PredictCompaction's
+// WillCompact — a non-empty summarized/omitted zone); the ReclaimTokens is an
+// exact dry-run for sliding_window and a forecast (from the EWMA-calibrated
+// CompactionForecast) for the LLM-backed strategies — the forecast never
+// affects availability. Safe to call from any goroutine: the history is read
+// via historySnapshot and the forecast via compactionForecastSnapshot.
+func (o *Orchestrator) ManualCompactionAvailability() []CompactionAvailability {
 	history := o.historySnapshot()
-	if len(history) == 0 {
-		return true
-	}
-	if o.tokenCounter != nil {
-		if effectiveMax, _ := o.contextBases(); effectiveMax > 0 {
-			budgetTokens := effectiveMax * o.manualCompactionTargetPercent() / 100
-			if budgetTokens > 0 {
-				return o.tokenCounter.CountMessages(history) <= budgetTokens
-			}
+	cfg := o.manualCompactionConfig()
+	deps := o.manualCompactionDeps()
+
+	out := make([]CompactionAvailability, 0, len(manualCompactionStrategies))
+	for _, strategy := range manualCompactionStrategies {
+		avail := CompactionAvailability{Strategy: strategy}
+		pred, err := sdkmemory.PredictCompaction(history, strategy, cfg, deps)
+		if err == nil {
+			avail.Available = pred.WillCompact
+			avail.ReclaimTokens = pred.Reclaim
+			avail.Exact = pred.Exact
 		}
+		// On a prediction error (should not happen for the fixed strategy
+		// catalog) the strategy stays unavailable — fail-closed, matching
+		// CompactConversationHistory's unknown-strategy error.
+		out = append(out, avail)
 	}
-	return len(history) <= o.manualCompactionNoOpLength()
-}
-
-// manualCompactionNoOpLength is the count-mode fallback bound for
-// ManualCompactionWouldNoOp: the largest history length that EVERY strategy
-// is guaranteed to return verbatim in sp4rk's fallback mode (budget 0 /
-// nil counter), i.e. the minimum of the strategies' verbatim floors — a
-// length only one strategy shrinks is not a guaranteed no-op, because the
-// user may pick any strategy in the compact menu:
-//
-//   - sliding_window: verbatim while len ≤ KeepFirst'+KeepLast' (its count
-//     window);
-//   - summarization: verbatim while len ≤ KeepLast' (everything older is
-//     summarized);
-//   - hierarchical: verbatim while both summary zones are empty (see
-//     hierarchicalNoOpLength).
-//
-// Primed values use the same zero-value defaults sp4rk applies
-// (memory/compaction_conversation.go), so the bound tracks the effective
-// strategy config: with c0wrk's defaults it evaluates to 2 (the
-// hierarchical floor), and exotic configs (e.g. summarization keep_last: 1)
-// tighten it instead of wrongly disabling the button for a compactable
-// history. The bound never exceeds any strategy's floor, so claiming a
-// no-op at or below it is always sound (fail-open otherwise).
-func (o *Orchestrator) manualCompactionNoOpLength() int {
-	cc := o.config.Compaction
-
-	keepFirst := cc.SlidingWindow.KeepFirst
-	if keepFirst <= 0 {
-		keepFirst = 3
-	}
-	keepLast := cc.SlidingWindow.KeepLast
-	if keepLast <= 0 {
-		keepLast = 10
-	}
-	slidingFloor := keepFirst + keepLast
-
-	summarizationKeepLast := cc.Summarization.KeepLast
-	if summarizationKeepLast <= 0 {
-		summarizationKeepLast = 5
-	}
-
-	hierarchicalFloor := hierarchicalNoOpLength(cc.Hierarchical.DistantRatio, cc.Hierarchical.MiddleRatio)
-
-	return min(slidingFloor, summarizationKeepLast, hierarchicalFloor)
-}
-
-// hierarchicalNoOpLength mirrors sp4rk's fallback-mode hierarchical zone math
-// (memory/compaction_conversation.go: compactConversationHierarchical) to
-// find the largest history length whose distant+middle zones are both empty —
-// the strategy returns such histories verbatim ("nothing to summarize").
-// Zones are int(n·ratio); the zone-shrink clamps cannot empty them for
-// n ≥ 2 once either zone count reaches 1, so the first n where
-// int(n·distant)+int(n·middle) ≥ 1 marks the boundary (both counts are
-// monotone in n). Ratios ≤ 0 fall back to sp4rk's defaults (0.4/0.3), the
-// same clamp the SDK applies. A single message is never compacted (the
-// clamps empty both zones), so the floor starts at 1; the search is capped —
-// a ratio so tiny that no n ≤ cap fills a zone yields cap, which only
-// under-claims (fail-open) and is dominated by the other strategies' floors
-// in the min() long before that.
-func hierarchicalNoOpLength(distantRatio, middleRatio float64) int {
-	distant, middle := distantRatio, middleRatio
-	if distant <= 0 {
-		distant = 0.4
-	}
-	if middle <= 0 {
-		middle = 0.3
-	}
-	const searchCap = 128
-	for n := 2; n <= searchCap; n++ {
-		if int(float64(n)*distant)+int(float64(n)*middle) >= 1 {
-			return n - 1
-		}
-	}
-	return searchCap
+	return out
 }
 
 // manualCompactionConfig builds the sp4rk strategy config from the
@@ -327,12 +245,14 @@ func (o *Orchestrator) manualCompactionConfig() sdkmemory.CompactionConfig {
 // manualCompactionDeps builds the summarization dependencies for manual
 // compaction, mirroring buildContextFactory: the session's tracking caller
 // (via o.llm — the logged wrapper) so compaction tokens are counted in session
-// totals, the shared token counter for block-size bounding, and the
-// deterministic compaction call purpose.
+// totals, the shared token counter for block-size bounding, the deterministic
+// compaction call purpose, and the EWMA-calibrated compression-ratio forecast
+// (prediction-only — CompactConversationHistory ignores it).
 func (o *Orchestrator) manualCompactionDeps() sdkmemory.CompactionDeps {
 	return sdkmemory.CompactionDeps{
 		TokenCounter:       o.tokenCounter,
 		MaxSummarizeTokens: o.config.Compaction.MaxSummarizeTokens,
+		Forecast:           o.compactionForecastSnapshot(),
 		Summarize: func(ctx context.Context, blockText string) (string, error) {
 			if o.llm == nil {
 				return "", errors.New("compaction summarize: LLM caller not available")
@@ -392,6 +312,121 @@ func (o *Orchestrator) contextBases() (effectiveMax, displayMax int) {
 		return 0, window
 	}
 	return effective, window
+}
+
+// resolveCompactionForecast maps a BuilderCompactionForecast seed onto a
+// sp4rk CompactionForecast, falling back to sp4rk's conservative defaults for
+// zero fields. This runs once at construction (the seed); the live value is
+// refined on o.compactionForecast after each manual compaction.
+func resolveCompactionForecast(seed BuilderCompactionForecast) sdkmemory.CompactionForecast {
+	f := sdkmemory.CompactionForecast{
+		SummarizationRatio:       seed.SummarizationRatio,
+		HierarchicalDistantRatio: seed.HierarchicalDistantRatio,
+		HierarchicalMiddleRatio:  seed.HierarchicalMiddleRatio,
+	}
+	// Zero fields fall back to the same conservative defaults the prediction
+	// applies (0.3 / 0.15 / 0.3), so a zero-valued seed equals "use defaults".
+	if f.SummarizationRatio <= 0 {
+		f.SummarizationRatio = 0.3
+	}
+	if f.HierarchicalDistantRatio <= 0 {
+		f.HierarchicalDistantRatio = 0.15
+	}
+	if f.HierarchicalMiddleRatio <= 0 {
+		f.HierarchicalMiddleRatio = 0.3
+	}
+	return f
+}
+
+// compactionForecastSnapshot returns the current EWMA-calibrated forecast.
+// Safe to call from any goroutine.
+func (o *Orchestrator) compactionForecastSnapshot() sdkmemory.CompactionForecast {
+	o.forecastMu.Lock()
+	defer o.forecastMu.Unlock()
+	return o.compactionForecast
+}
+
+// CompactionForecast returns the current EWMA-calibrated compression-ratio
+// forecast (the session layer persists it after each manual compaction so the
+// calibration survives restarts). Safe to call from any goroutine.
+func (o *Orchestrator) CompactionForecast() sdkmemory.CompactionForecast {
+	return o.compactionForecastSnapshot()
+}
+
+// SetCompactionForecast replaces the forecast (the session-restore path loads
+// a previously persisted calibration into the orchestrator before it accepts
+// requests). Safe to call from any goroutine.
+func (o *Orchestrator) SetCompactionForecast(f sdkmemory.CompactionForecast) {
+	o.forecastMu.Lock()
+	defer o.forecastMu.Unlock()
+	o.compactionForecast = f
+}
+
+// compactionForecastEWMAAlpha is the EWMA smoothing factor for refining the
+// compression-ratio forecast after each manual compaction. A lower value
+// tracks the long-run average more slowly (more stable, less reactive to one
+// outlier); 0.3 is a conventional default.
+const compactionForecastEWMAAlpha = 0.3
+
+// refineCompactionForecast updates the EWMA-calibrated compression-ratio
+// forecast from the observed result of a just-completed manual compaction.
+// sliding_window is exact (no LLM) and needs no calibration. For the LLM
+// strategies each forecast field is calibrated from its OWN zone's observed
+// ratio — the summarization strategy from its whole summarized portion, and
+// the hierarchical strategy's distant and middle zones independently (the two
+// zones compress at different rates: one aggressive summary over a large block
+// vs. per-block summaries, so a single aggregate ratio would erase the
+// distinction between them). A zone with no summarized input leaves its field
+// untouched.
+func (o *Orchestrator) refineCompactionForecast(strategy string, history, compacted []llm.Message, verbatimTokens int) {
+	if strategy == "sliding_window" || o.tokenCounter == nil {
+		return
+	}
+	afterTokens := o.tokenCounter.CountMessages(compacted)
+
+	o.forecastMu.Lock()
+	defer o.forecastMu.Unlock()
+	blend := func(current *float64, summarizedInput, summaryOutput int) {
+		if summarizedInput <= 0 {
+			return // nothing was summarized — nothing to learn
+		}
+		if summaryOutput < 0 {
+			summaryOutput = 0
+		}
+		// observed ratio = what fraction of the summarized input the summaries
+		// occupied. Clamp to (0, 1]: a summary is never smaller than 0 tokens
+		// and never larger than its input (a ratio > 1 would predict growth).
+		observed := float64(summaryOutput) / float64(summarizedInput)
+		if observed <= 0 {
+			observed = 0.01
+		}
+		if observed > 1 {
+			observed = 1
+		}
+		*current += compactionForecastEWMAAlpha * (observed - *current)
+	}
+
+	switch strategy {
+	case "summarization":
+		summarizedInput := o.tokenCounter.CountMessages(history) - verbatimTokens
+		summaryOutput := afterTokens - verbatimTokens
+		blend(&o.compactionForecast.SummarizationRatio, summarizedInput, summaryOutput)
+	case "hierarchical":
+		distant, middle := sdkmemory.ConversationHierarchicalZones(len(history), o.manualCompactionConfig())
+		// The compacted output is [distant summary (1)] + [middle summaries] +
+		// [recent verbatim]: the distant zone always collapses to exactly ONE
+		// summary (the first message), so its observed ratio is the first
+		// message's tokens over the whole distant zone's tokens. The middle
+		// summaries are everything after that first summary and before the
+		// verbatim tail — back them out by subtraction rather than re-deriving
+		// the block count.
+		distantInput := o.tokenCounter.CountMessages(history[:distant])
+		distantOutput := o.tokenCounter.CountMessages(compacted[:1])
+		middleInput := o.tokenCounter.CountMessages(history[distant : distant+middle])
+		middleOutput := afterTokens - verbatimTokens - distantOutput
+		blend(&o.compactionForecast.HierarchicalDistantRatio, distantInput, distantOutput)
+		blend(&o.compactionForecast.HierarchicalMiddleRatio, middleInput, middleOutput)
+	}
 }
 
 // roundFill clamps a fill percentage to [0, 100] for logging.

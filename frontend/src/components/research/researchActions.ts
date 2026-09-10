@@ -28,26 +28,69 @@ export function buildNextStepPrompt(nextStep: ResearchNextStep): string {
 }
 
 /** A single quick action: a human label, the research-* skill it activates, and
- *  the constant prompt dispatched alongside the skill. */
+ *  the constant prompt dispatched alongside the skill. `updatePrompt` is the
+ *  alternate prompt dispatched when the action's outcome already exists (e.g.
+ *  synthesize → update report). */
 export interface ResearchQuickAction {
   key: string
   label: string
   skill: string
   prompt: string
+  updatePrompt?: string
 }
 
-/** The fixed quick-action row. Each entry maps a research lifecycle gesture to
- *  the research-* skill that implements it. "Create hypothesis" and "Record
- *  result" both activate `research-hypothesis` (per its SKILL.md it owns
- *  "formulating a new hypothesis" and "recording experiment results / status"),
- *  differentiated only by the dispatched prompt. */
+/** Build the dispatch prompt for a Run-experiment gesture scoped to a specific
+ *  hypothesis: the target id and title are spelled out so the skill knows
+ *  exactly which hypothesis to experiment on. */
+export function buildExperimentPrompt(hypothesis: {
+  id: string
+  title: string
+}): string {
+  return `Run an experiment for hypothesis ${hypothesis.id}: ${hypothesis.title}.`
+}
+
+/** Build the dispatch prompt for a Record-result gesture scoped to a specific
+ *  hypothesis: the target id and title are spelled out so the skill records
+ *  the experiment result on the right card. */
+export function buildRecordResultPrompt(hypothesis: {
+  id: string
+  title: string
+}): string {
+  return `Record the result of the last experiment for hypothesis ${hypothesis.id}: ${hypothesis.title}, and update its status.`
+}
+
+/** Build the dispatch prompt for a Decision gesture scoped to a specific
+ *  hypothesis: the target id and title are spelled out so the review decides
+ *  that card's next direction. */
+export function buildDecisionPrompt(hypothesis: {
+  id: string
+  title: string
+}): string {
+  return `Review the results for hypothesis ${hypothesis.id}: ${hypothesis.title} and decide the next direction (continue, pivot, kill, or fork).`
+}
+
+/** The Create-hypothesis gesture rendered by the ResearchHypothesisPicker's
+ *  plus button: dispatches `research-hypothesis` (which owns "formulating a
+ *  new hypothesis" per its SKILL.md) with a constant prompt. Kept here (not
+ *  in QUICK_ACTIONS, which renders only the panel's four lifecycle buttons)
+ *  so every dispatched prompt stays in this auditable module. */
+export const CREATE_HYPOTHESIS_ACTION: ResearchQuickAction = {
+  key: 'hypothesis',
+  label: 'Create hypothesis',
+  skill: 'research-hypothesis',
+  prompt: 'Create a new hypothesis.',
+}
+
+/** The fixed quick-action row: one button per research lifecycle gesture,
+ *  each mapped to the research-* skill that implements it. "Record result"
+ *  activates `research-hypothesis` (per its SKILL.md it owns "recording
+ *  experiment results / status"), differentiated from Create hypothesis only
+ *  by the dispatched prompt. Enablement is derived from the dashboard's
+ *  selected hypothesis and the project's graph state (see
+ *  ResearchQuickActions): Run experiment requires an open/in-progress
+ *  selected card, Record result an in-progress one, Decision at least one
+ *  terminal hypothesis, and Synthesize at least one hypothesis at all. */
 export const QUICK_ACTIONS: ResearchQuickAction[] = [
-  {
-    key: 'hypothesis',
-    label: 'Create hypothesis',
-    skill: 'research-hypothesis',
-    prompt: 'Create a new hypothesis.',
-  },
   {
     key: 'experiment',
     label: 'Run experiment',
@@ -71,5 +114,6 @@ export const QUICK_ACTIONS: ResearchQuickAction[] = [
     label: 'Synthesize',
     skill: 'research-synthesis',
     prompt: 'Synthesize the final research report.',
+    updatePrompt: 'Update the existing research report with the latest results.',
   },
 ]

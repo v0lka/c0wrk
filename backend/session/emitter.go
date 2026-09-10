@@ -1118,20 +1118,6 @@ func (e *EventEmitter) SkillsActivated(skillNames []string) {
 	})
 }
 
-// ToolsAssigned emits a tools_assigned event listing the tools curated for the
-// session by Small-LLM domain narrowing (mirrors SkillsActivated's card).
-func (e *EventEmitter) ToolsAssigned(toolNames []string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.emitEvent(Event{
-		SessionID: e.sessionID,
-		Type:      "tools_assigned",
-		Data: ToolsAssignedData{
-			Tools: toolNames,
-		},
-	})
-}
-
 // SetSmallLLMProfile snapshots the Small-LLM profile state the session runs
 // under; it annotates the "agent_metrics" payload so measurements can be
 // grouped by active optimization variants. Metrics are collected regardless —

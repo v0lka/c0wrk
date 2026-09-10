@@ -12,11 +12,24 @@ export function bookmarkKey(item: DisplayItem): string {
   return item.id
 }
 
-/** Collapse whitespace and truncate to a single short line for list display. */
-function collapseTitle(text: string, max = 80): string {
+/**
+ * Persisted bookmark titles are capped at this many characters (after
+ * whitespace collapse). Titles are display-only — navigation targets the
+ * bookmark's event_key and the preview renders the full item via
+ * ChatMessageRenderer — so the cap only bounds what is stored per bookmark
+ * (finding [29]).
+ */
+const TITLE_MAX_CHARS = 200
+
+/**
+ * Collapse whitespace to a single short line for list display and cap the
+ * persisted length at {@link TITLE_MAX_CHARS} (plus an ellipsis marker).
+ * Truncation beyond that is CSS-based (ellipsis at panel width) in
+ * BookmarksPanel, so wide panels show more text than narrow ones.
+ */
+function collapseTitle(text: string): string {
   const collapsed = text.replace(/\s+/g, ' ').trim()
-  if (collapsed.length <= max) return collapsed
-  return collapsed.slice(0, max).trimEnd() + '…'
+  return collapsed.length > TITLE_MAX_CHARS ? `${collapsed.slice(0, TITLE_MAX_CHARS)}…` : collapsed
 }
 
 /** Derive a sensible default title for a bookmark created from a chat item. */

@@ -151,6 +151,24 @@ func (a *App) reloadFrontend(ctx context.Context) {
 	wailsRuntime.WindowReloadApp(ctx)
 }
 
+// DomReady is the Wails OnDomReady hook: it fires from the webview once the
+// document is ready, which is necessarily after Wails has finished setting up
+// the window on the platform UI loop.
+//
+// That ordering is the point. Every other reveal happens from the OnStartup
+// goroutine, which Wails launches *before* it finishes window setup — the
+// hidden-window race this app hit was exactly a window operation from that
+// goroutine being overtaken by a later one from the setup path. Creating the
+// window visible (main.go) is the fix; this hook is the guarantee, the one
+// reveal that can never be raced by window setup.
+//
+// It also fires again on every frontend reload (see reloadFrontend), which is
+// harmless: showWindow on a visible window is a no-op.
+func (a *App) DomReady(ctx context.Context) {
+	a.log().Debug("frontend DOM ready")
+	a.showWindow(ctx)
+}
+
 // Startup is called when the Wails app starts.
 func (a *App) Startup(ctx context.Context) {
 	// Catch any unrecovered panic during startup so a stack trace lands in

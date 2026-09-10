@@ -11,19 +11,20 @@ import { useInputModeStore } from '@/stores/inputModeStore'
 const spies = vi.hoisted(() => ({
   setDefaultModel: vi.fn<(model: string) => Promise<void>>(),
   invalidateConfigCache: vi.fn(),
-}))
-
-// Mock the config hook so the combobox renders synchronously with canned
-// models, without touching the Wails backend.
-vi.mock('@/hooks/useConfigData', () => ({
-  useConfigData: () => ({
+  configData: {
     allModels: [
       { name: 'claude-sonnet', provider: 'anthropic', family: 'anthropic', vision: true },
       { name: 'gpt-4o', provider: 'chatgpt', family: 'chatgpt', vision: true },
     ],
     defaultModel: 'claude-sonnet',
     loaded: true,
-  }),
+  },
+}))
+
+// Mock the config hook so the combobox renders synchronously with canned
+// models, without touching the Wails backend.
+vi.mock('@/hooks/useConfigData', () => ({
+  useConfigData: () => spies.configData,
   invalidateConfigCache: spies.invalidateConfigCache,
 }) as typeof import('@/hooks/useConfigData'))
 
@@ -42,6 +43,12 @@ let root: Root
 
 beforeEach(() => {
   useInputModeStore.setState({ selectedModel: null })
+  spies.configData.allModels = [
+    { name: 'claude-sonnet', provider: 'anthropic', family: 'anthropic', vision: true },
+    { name: 'gpt-4o', provider: 'chatgpt', family: 'chatgpt', vision: true },
+  ]
+  spies.configData.defaultModel = 'claude-sonnet'
+  spies.configData.loaded = true
   spies.setDefaultModel.mockReset()
   // By default the persist succeeds; individual tests override with
   // mockRejectedValue to exercise the failure path.
@@ -119,6 +126,27 @@ describe('ModelCombobox portal', () => {
     expect(document.body.querySelector('[role="listbox"]')).toBeNull()
   })
 
+  it('does not display a stale global default that is no longer selectable', () => {
+    spies.configData.allModels = [
+      { name: 'deepseek-v4', provider: 'PT', family: 'deepseek', vision: false },
+      { name: 'zai-org/GLM-5.3', provider: 'PT', family: 'glm', vision: false },
+    ]
+    spies.configData.defaultModel = 'PT/zai-org/GLM-5.2-FP8'
+
+    act(() => {
+      root.render(<ModelCombobox />)
+    })
+
+    const trigger = container.querySelector('button')
+    expect(trigger?.textContent).toContain('Select model…')
+    expect(trigger?.textContent).not.toContain('GLM-5.2-FP8')
+
+    openDropdown()
+    const defaultOption = document.body.querySelector('[role="listbox"] button')
+    expect(defaultOption?.textContent).toBe('Defaultactive')
+    expect(defaultOption?.textContent).not.toContain('GLM-5.2-FP8')
+  })
+
   it('selects a model and closes when a portaled option is clicked', () => {
     openDropdown()
     const options = document.body.querySelectorAll('[role="listbox"] button')
@@ -180,6 +208,139 @@ describe('ModelCombobox default-model persistence', () => {
     expect(useInputModeStore.getState().selectedModel).toBeNull()
     expect(spies.setDefaultModel).not.toHaveBeenCalled()
     expect(spies.invalidateConfigCache).not.toHaveBeenCalled()
+  })
+
+  it('does not let an older failed persist roll back a newer model choice', async () => {
+    let rejectFirst!: (reason?: unknown) => void
+    let resolveSecond!: () => void
+    spies.setDefaultModel
+      .mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectFirst = reject }))
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveSecond = resolve }))
+
+    openDropdown()
+    let options = document.body.querySelectorAll('[role="listbox"] button')
+    act(() => {
+      // Pick gpt-4o first; its request remains in flight.
+      options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    openDropdown()
+    options = document.body.querySelectorAll('[role="listbox"] button')
+    act(() => {
+      // Then select claude-sonnet before the first request settles.
+      options[1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(useInputModeStore.getState().selectedModel).toBe('anthropic/claude-sonnet')
+    expect(spies.setDefaultModel).toHaveBeenCalledTimes(1)
+
+    await act(async () => { rejectFirst(new Error('older request failed')) })
+    await vi.waitFor(() => {
+      expect(spies.setDefaultModel).toHaveBeenCalledTimes(2)
+    })
+    await act(async () => { resolveSecond() })
+
+    expect(useInputModeStore.getState().selectedModel).toBe('anthropic/claude-sonnet')
+  })
+
+  it('keeps Default as rollback state after an earlier save settles late', async () => {
+    let resolveFirst!: () => void
+    let rejectSecond!: (reason?: unknown) => void
+    spies.setDefaultModel
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveFirst = resolve }))
+      .mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectSecond = reject }))
+
+    openDropdown()
+    let options = document.body.querySelectorAll('[role="listbox"] button')
+    act(() => {
+      options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    openDropdown()
+    options = document.body.querySelectorAll('[role="listbox"] button')
+    act(() => {
+      // Cancel the optimistic pick before its persistence succeeds.
+      options[0]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await act(async () => { resolveFirst() })
+
+    openDropdown()
+    options = document.body.querySelectorAll('[role="listbox"] button')
+    act(() => {
+      options[1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await vi.waitFor(() => {
+      expect(spies.setDefaultModel).toHaveBeenCalledTimes(2)
+    })
+    await act(async () => { rejectSecond(new Error('second request failed')) })
+
+    await vi.waitFor(() => {
+      expect(useInputModeStore.getState().selectedModel).toBeNull()
+    })
+  })
+
+  it('uses the effective backend default when a later queued selection fails', async () => {
+    let resolveFirst!: () => void
+    let rejectSecond!: (reason?: unknown) => void
+    spies.setDefaultModel
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveFirst = resolve }))
+      .mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectSecond = reject }))
+
+    openDropdown()
+    let options = document.body.querySelectorAll('[role="listbox"] button')
+    act(() => {
+      options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    openDropdown()
+    options = document.body.querySelectorAll('[role="listbox"] button')
+    act(() => {
+      options[1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    await act(async () => { resolveFirst() })
+    await vi.waitFor(() => {
+      expect(spies.setDefaultModel).toHaveBeenCalledTimes(2)
+    })
+    await act(async () => { rejectSecond(new Error('second request failed')) })
+
+    await vi.waitFor(() => {
+      // The first backend save succeeded, so null delegates to its actual
+      // default instead of retaining the rejected second override.
+      expect(useInputModeStore.getState().selectedModel).toBeNull()
+    })
+  })
+
+  it('rolls back queued failed selections to the last backend-confirmed value', async () => {
+    let rejectFirst!: (reason?: unknown) => void
+    let rejectSecond!: (reason?: unknown) => void
+    spies.setDefaultModel
+      .mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectFirst = reject }))
+      .mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectSecond = reject }))
+
+    openDropdown()
+    let options = document.body.querySelectorAll('[role="listbox"] button')
+    act(() => {
+      options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    openDropdown()
+    options = document.body.querySelectorAll('[role="listbox"] button')
+    act(() => {
+      options[1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(useInputModeStore.getState().selectedModel).toBe('anthropic/claude-sonnet')
+
+    await act(async () => { rejectFirst(new Error('first request failed')) })
+    await vi.waitFor(() => {
+      expect(spies.setDefaultModel).toHaveBeenCalledTimes(2)
+    })
+    await act(async () => { rejectSecond(new Error('second request failed')) })
+
+    await vi.waitFor(() => {
+      // Neither request persisted, so the override must return to the initial
+      // confirmed value (null = use the existing backend default), not gpt-4o.
+      expect(useInputModeStore.getState().selectedModel).toBeNull()
+    })
   })
 
   it('still invalidates the cache even if persist rejects', async () => {

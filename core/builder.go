@@ -153,7 +153,7 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, p
 
 	// 0. Build proxy client (fast — no network, just config parsing)
 	if cfg.Proxy.Enabled {
-		proxyClient, err := proxy.BuildClient(cfg.Proxy, 30*time.Second, logger)
+		proxyClient, err := proxy.BuildClient(cfg.Proxy, time.Duration(cfg.Timeouts.WebFetchProxyTimeout)*time.Second, logger)
 		if err != nil {
 			logger.Warn("failed to build proxy client, proceeding without proxy", "error", err)
 		} else {
@@ -545,10 +545,8 @@ func (b *OrchestratorBuilder) Build(
 		SmallLLM: SmallLLMSettings{
 			Enabled: cfg.SmallLLM.Enabled,
 			EssentialTools: SmallLLMEssentialSettings{
-				Enabled:       cfg.SmallLLM.EssentialTools.Enabled,
-				AlwaysPresent: cfg.SmallLLM.EssentialTools.AlwaysPresent,
-				MaxTools:      cfg.SmallLLM.EssentialTools.MaxTools,
-
+				Enabled:             cfg.SmallLLM.EssentialTools.Enabled,
+				AlwaysPresent:       cfg.SmallLLM.EssentialTools.AlwaysPresent,
 				CompactDescriptions: cfg.SmallLLM.EssentialTools.CompactDescriptions,
 			},
 			SystemPrompt: SmallLLMSystemPromptSettings{
@@ -844,7 +842,7 @@ func (b *OrchestratorBuilder) RebuildProxy(ctx context.Context, cfg *BuilderConf
 		// SetGlobalEnv (the user has explicitly switched proxy off).
 		proxy.ClearEnvVars()
 	} else {
-		proxyClient, err := proxy.BuildClient(cfg.Proxy, 30*time.Second, b.logger)
+		proxyClient, err := proxy.BuildClient(cfg.Proxy, time.Duration(cfg.Timeouts.WebFetchProxyTimeout)*time.Second, b.logger)
 		if err != nil {
 			return fmt.Errorf("building proxy client: %w", err)
 		}
@@ -883,6 +881,7 @@ func (b *OrchestratorBuilder) RebuildProxy(ctx context.Context, cfg *BuilderConf
 func (b *OrchestratorBuilder) UpdateWebTools(cfg *BuilderConfig) {
 	fetchLimits := builtins.WebFetchLimits{
 		Timeout: time.Duration(cfg.Timeouts.WebFetchTimeout) * time.Second,
+		Retries: cfg.Timeouts.WebFetchRetries,
 	}
 	b.mu.RLock()
 	pc := b.proxyClient
@@ -2083,13 +2082,6 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 	coreRouter.SetReasoningEffort(b.reasoningEffort)
 	coreReflector.SetReasoningEffort(b.reasoningEffort)
 
-	// Enable semantic tool selection in the router when the SmallLLM master
-	// toggle and the EssentialTools variant are both active. When enabled, the
-	// router prompt includes a tool-selection instruction and the matched_tools
-	// field in its JSON output schema; the conductor then narrows its advertised
-	// tool set accordingly.
-	coreRouter.SetToolMatching(cfg.SmallLLM.Enabled && cfg.SmallLLM.EssentialTools.Enabled)
-
 	return coreRouter, coreReflector, nil
 }
 
@@ -2561,6 +2553,7 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 		},
 		WebFetchLimits: builtins.WebFetchLimits{
 			Timeout: time.Duration(cfg.Timeouts.WebFetchTimeout) * time.Second,
+			Retries: cfg.Timeouts.WebFetchRetries,
 		},
 		WebSearchLimits: builtins.WebSearchLimits{
 			MaxResults: cfg.ToolLimits.WebSearchMaxResults,

@@ -11,17 +11,15 @@ The Small-LLM profile is a set of optimizations applied when running the Conduct
 - `backend/configadapter.go` — `ToBuilderConfig` copies `SmallLLMConfig` into `core.BuilderSmallLLMConfig` (core never imports `backend/config`)
 - `core/builderconfig.go` — `BuilderSmallLLMConfig` + sub-structs (the core-layer mirror)
 - `core/builder.go` — `applySmallLLMPresets` (seeds builder-level reasoning effort), `applyLoopHardening` (overrides circuit-breaker thresholds), `applyContextManagement` (overrides compaction/pruning/reserve on the executor config), `resolveSamplingFunc` (overrides router sampling temperature)
-- `core/smallllm/tools_filter.go` — pure, deterministic `SelectTools` + `ProtectedToolNames` (tool-set assembly + budget enforcement)
-- `core/orchestrator.go` — `SmallLLMSettings` mirror on `OrchestratorConfig`; `applySmallLLMToolFilter` (the single call site in `HandleMessage`)
+- `core/smallllm/tools_filter.go` — pure, deterministic `SelectTools` (with turn-scoped `extraGuaranteed` names) + `ProtectedToolNames` (static tool-set assembly)
+- `core/orchestrator.go` — `SmallLLMSettings` mirror on `OrchestratorConfig`; `applySmallLLMToolFilter` (the single call site in `HandleMessage`) and `smallLLMAgentGuaranteedTools` (turn-scoped delegate guarantee)
 - `core/orchestrator_handle.go` — `prepareRequestContext` carries the SystemPrompt sub-toggle flags into context
 - `core/orchestrator_goal.go` — the essential-tools filter is intentionally NOT applied in goal mode
 - `core/systemprompt.go` — `buildSystemPromptWith` swaps the OrchestratorSystem directive for OrchestratorSystemLite and appends the scaffold / few-shot blocks
 - `core/prompts/orchestrator_lite.md` — compact core directive (the Lite swap)
 - `core/prompts/orchestrator_lite_scaffold.md` — three-step reasoning scaffold
 - `core/prompts/orchestrator_lite_fewshot.md` — curated worked-example ReAct cycles
-- `core/router_adapter.go` / `core/builder.go` — `coreRouter.SetToolMatching(...)` enables semantic tool selection in the router
 - `backend/frontend_api_config.go` — `GetSmallLLMConfig` / `UpdateSmallLLMConfig` (RPC surface) + `validateSmallLLMConfig`
-- `backend/session/events.go` — `ToolsAssignedData`; `backend/session/emitter.go` — `ToolsAssigned`; `backend/session/event_persister.go` — `tools_assigned` → role `status`
 - `frontend/src/components/settings/SmallLLMSettings.tsx` / `SmallLLMControls.tsx` / `SmallLLMSections.tsx` — settings UI
 
 ## Core Types
@@ -53,23 +51,20 @@ Every variant is gated by BOTH the master `SmallLLM.Enabled` toggle AND its own 
 
 ### Essential Tools (narrowing)
 
-Narrows the Conductor's advertised tool set once per task (before the ReAct loop, in `HandleMessage`) to reduce per-prompt JSON-schema/token overhead. Selection is purely semantic — there is no domain-specific allow-list. `smallllm.SelectTools` unions four sources:
+Narrows the Conductor's advertised tool set once per task (before the ReAct loop, in `HandleMessage`) to reduce per-prompt JSON-schema/token overhead. Selection is purely static — there is no router matching, no quantitative budget, and no domain-specific allow-list; the operator's selection IS the narrowing. `smallllm.SelectTools` unions four sources:
 
-1. **router-matched tools** — `routing.MatchedTools` (the router classifies which tools are relevant to the task; semantic tool selection must be enabled in the router via `coreRouter.SetToolMatching`, itself gated on the master toggle + the EssentialTools variant).
-2. **always-present tools** — the operator's pinned list (`essential_tools.always_present`).
-3. **protected orchestration tools** — `finish`, `store_fact`, `search_facts`, `ask_user`, `update_checklist` (never dropped).
-4. **every MCP-sourced tool** — user-installed, outside the orchestration-noise problem.
+1. **always-present tools** — the operator's pinned list (`essential_tools.always_present`).
+2. **protected orchestration tools** — `finish`, `store_fact`, `search_facts`, `ask_user`, `update_checklist` (never dropped).
+3. **every MCP-sourced tool** — user-installed, always included whole (a server's tools are never partially dropped).
+4. **turn-scoped extra guarantees** — e.g. `delegate` when the task's directives require it (see below).
 
-The tool population is split into two classes with different budget semantics:
+The assigned set is exactly this union — nothing more, nothing less — emitted in registry order. Every tool in it is guaranteed and never trimmed: the pins are explicit operator choices, MCP tools are user-installed integrations, and the protected set carries the completion channel; dropping any of it would silently break a pinned workflow, a user-installed MCP server, or the conductor loop's ability to terminate. There is no slot budget and no over-budget concept: the set cannot be "too large" for the mechanism itself (the operator controls its size through the selection and the installed MCP servers; the 10–20-tool selection-accuracy safe zone from `docs/small-llm-defaults-research.md` remains operator-side guidance, not an enforced guard).
 
-- **guaranteed** — always-present ∪ protected ∪ MCP-sourced. This set is NEVER trimmed: it reflects explicit user/operator choices (pins, user-installed integrations) and the completion channel, so dropping any of it would silently break a pinned workflow.
-- **router-matched** — fills the free slots left after the guaranteed set: at most `max_tools − len(guaranteed)` of them are kept, in registry order. When `max_tools = 0` the cap is unlimited.
+**Turn-scoped delegate guarantee.** When the task context carries requested subagents — an explicit `#agent-name` mention, surfaced to the model as the `## Requested Subagents` directive that mandates delegation via `delegate(agent: ...)` — the orchestrator passes `["delegate"]` into `smallllm.SelectTools` as the turn-scoped `extraGuaranteed` set (`smallLLMAgentGuaranteedTools` in `core/orchestrator.go`). The name joins the set for that task alone, and unknown names are silently ignored. This closes the cross-feature gap where an active `#agent` mention could meet a narrowed tool set that lacks the `delegate` tool the directive requires.
 
-Because guaranteed tools are never trimmed, the result can legitimately exceed `max_tools` when the guaranteed set alone is larger than the budget. `validateSmallLLMConfig` rejects such profiles up front with an actionable message (`max_tools` must be ≥ the guaranteed count, which is `always_present ∪ protected` — MCP tools join at runtime and cannot be validated ahead of time); `SelectTools` itself is the runtime defense in depth and never trims a guaranteed tool. A stale persisted cap below the guaranteed count (older shipped defaults could produce one — the protected set grows across versions while stored values do not shrink) is reconciled on save: `UpdateSmallLLMConfig` raises `max_tools` to the guaranteed count before validation and logs the adjustment, so the profile self-heals instead of locking the settings panel (the protected tools are locked chips the user cannot un-pin). The curated set is surfaced as a `tools_assigned` event (a `status` card mirroring `skills_activated`).
+**Compact descriptions.** With `compact_descriptions` on, every known builtin's full rubric description (purpose/when-to-use/inputs/outputs/example/anti-example, 480-1100 chars) is replaced by a one-line compact variant; unknown tools (e.g. MCP) keep their original descriptions.
 
-**WARNING — the guaranteed set ∪ MCP can breach the 10–20-tool safe zone.** With the shipped defaults the guaranteed set alone is 13 tools: the 12 `defaultSmallLLMAlwaysPresent` entries ∪ the 5 protected (`finish`, `store_fact`, `search_facts`, `ask_user`, `update_checklist`; 4 of the 5 overlap the always-present list). Every MCP-sourced tool joins the guaranteed set at runtime and is never trimmed either — and `max_tools` does not protect against this, because it budgets router-matched slots only: the guaranteed set may exceed it, and validation only rejects a cap below the static `always_present ∪ protected` count (MCP tools join at runtime and cannot be validated ahead of time). Externally, tool-selection accuracy holds in a 10–20-tools-per-reasoning-context safe zone and degrades above it, with production unreliability reported at 40–50 tools; on the peer-reviewed RAG-MCP benchmark, routing to a retrieved subset tripled selection accuracy (13.62% → 43.13%) and cut prompt tokens by >50%. Several installed MCP servers therefore push the curated set past the safe zone with no guard rail firing. Mitigation is operator-side: trim `always_present` toward the protected core, or rationalize the number of installed MCP servers and their tools. Evidence base: `docs/small-llm-defaults-research.md` (R6).
-
-**Compact descriptions.** With `compact_descriptions` on, every known builtin's full rubric description (purpose/when-to-use/inputs/outputs/example/anti-example, 480-1100 chars) is replaced by a one-line compact variant; unknown tools (e.g. MCP) keep their original descriptions. Compaction is applied to the curated set AND to the selection-fallback set — the degradation guard that keeps the full, unfiltered tool list when semantic selection fails — because the fallback ships the largest descriptor payload and benefits most from one-liners.
+**No chat surfaced events.** The narrowing is a silent, deterministic background step: it emits no `tools_assigned` card and no budget diagnostics into the chat (the former `tools_assigned` event and `small_llm_tool_budget_overflow` diagnostic were removed alongside the `max_tools` budget — see [../decisions/035-remove-small-llm-tool-budget.md](../decisions/035-remove-small-llm-tool-budget.md)).
 
 **Goal mode is never narrowed.** The only filter call site is `HandleMessage`'s non-goal path, which runs AFTER the goal-mode early return. Goal mode deliberately keeps the full tool set (the goal-loop tools, including the verifier-required `declare_verification`, would otherwise be dropped by `SelectTools`).
 
@@ -77,7 +72,7 @@ Because guaranteed tools are never trimmed, the result can legitimately exceed `
 
 Shrinks the system prompt injected for a small model. Applied in `buildSystemPromptWith` (gated on the context-carried profile from `prepareRequestContext`):
 
-- **Lite** — swaps the verbose `OrchestratorSystem` core directive for the compact `OrchestratorSystemLite` directive. The lite directive drops verbose operational docs (truncation internals, fact-memory mechanics, checklist/table mechanics, progress-tracking internals) that an SLM cannot hold. It carries NO injection-defense content — that section is injected separately and unchanged (strict constraint).
+- **Lite** — swaps the verbose `OrchestratorSystem` core directive for the compact `OrchestratorSystemLite` directive. The lite directive drops verbose operational docs (checklist/table mechanics, progress-tracking internals) that an SLM cannot hold, but keeps compact versions of the behavioral guards that must never be lost: a short **Git Policy** (no state-modifying git commands unless explicitly requested — the behavioral layer above the `execute` group's `user_confirm` policy) and the **Efficiency Hints** micro-hints (truncated-output mechanics via `tool_result_read`, fact-memory discipline — `store_fact` early/often, `search_facts` before a new sub-step — and `[MCP]`-tool priority, plus files-are-deliverables and minimal shell output). The `Edit → Verify Cycle` section appears exactly once in the lite directive and exactly once in the full directive. It carries NO injection-defense content — that section is injected separately and unchanged (strict constraint).
 - **ReasoningScaffold** — appends a three-step thought template (goal → tool choice + rationale → exact args). Only honored when Lite is on.
 - **FewShot** — appends curated worked-example ReAct cycles (correct tool-call format, tool choice, error recovery, finish). Only honored when Lite is on.
 
@@ -136,16 +131,15 @@ core/builder.go: NewOrchestratorBuilder
   ├─ applySmallLLMPresets  → builder reasoning-effort default
   ├─ buildRouter           → resolveSamplingFunc (temperature override)
   │                        + applyContextManagement (router fallback executor)
-  ├─ buildCoreAgents       → coreRouter.SetToolMatching (router tool selection)
-  │                        + applyContextManagement (subagent context factory)
+  ├─ buildCoreAgents       → applyContextManagement (subagent context factory)
   └─ Build                 → applyLoopHardening (circuit-breaker thresholds)
                            + applyContextManagement (orchestrator executor)
                               + OrchestratorConfig.SmallLLMSettings
        │
        ▼
 per-session Orchestrator.HandleMessage (non-goal path):
-  ├─ applySmallLLMToolFilter (ONCE) → smallllm.SelectTools
-  │     → emit tools_assigned event
+  ├─ applySmallLLMToolFilter (ONCE) → smallllm.SelectTools (static union,
+  │     silent — no events emitted)
   └─ prepareRequestContext → withSmallLLMPromptProfile (ctx flags)
        → buildSystemPromptWith → Lite swap + scaffold + few-shot
 ```
@@ -156,9 +150,11 @@ per-session Orchestrator.HandleMessage (non-goal path):
 - The experimental-features master switch (`experimental.enabled`) gates the whole profile at the `ToBuilderConfig` boundary: when off, the builder sees `SmallLLM.Enabled = false` regardless of the stored `small_llm.enabled`, so the profile is inert for every session. The stored value is preserved so re-enabling experimental features restores the prior profile.
 - Each variant is independently gated by BOTH the master toggle and its own sub-toggle (defense-in-depth).
 - The essential-tools filter runs exactly once per task, before the non-goal ReAct loop starts; it is never applied in goal mode.
-- **The guaranteed set (always-present ∪ protected ∪ MCP) is never trimmed.** `max_tools` is a slot budget for router-matched tools only: at most `max_tools − len(guaranteed)` matched tools are kept, filled deterministically in registry order. The result may exceed `max_tools` when the guaranteed set alone is larger than the budget.
-- `finish` and the fact-memory / human-interaction tools are always preserved regardless of the matched set, always-present list, or `max_tools` budget; every MCP-sourced tool is always kept.
-- `validateSmallLLMConfig` rejects an enabled profile whose guaranteed count (`always_present ∪ protected`) exceeds `max_tools` (unless `max_tools = 0`), so a guaranteed tool can never be silently lost — neither by trimming nor by a budget that is unsatisfiable by construction.
+- **The assigned set is exactly always-present ∪ protected ∪ MCP ∪ turn-scoped guarantees, in registry order.** There is no slot budget and no router matching: nothing in the assigned set is ever trimmed, and the filter emits no events.
+- A task whose context carries requested subagents (an explicit `#agent` mention) always has `delegate` in its curated tool set, even though it is neither pinned nor MCP-sourced.
+- The lite directive retains the compact Git Policy and the Efficiency Hints micro-hints (truncated-output mechanics, fact-memory discipline, MCP priority); the `Edit → Verify Cycle` section appears exactly once in each of the lite and full directives.
+- `finish` and the fact-memory / human-interaction tools are always preserved regardless of the always-present list; every MCP-sourced tool is always kept whole.
+- Tool narrowing emits nothing into the chat: no `tools_assigned` card, no budget diagnostics (removed with the `max_tools` budget — see [../decisions/035-remove-small-llm-tool-budget.md](../decisions/035-remove-small-llm-tool-budget.md)).
 - The injection-defense section is never removed or altered by the Lite swap (strict constraint); the lite directive carries no injection-defense content because it is injected separately and unchanged.
 - FewShot and ReasoningScaffold are only honored when Lite is active (both are tailored to the lite directive's style).
 - Specialized runs (goal derivation) are never swapped to the lite orchestrator directive.
@@ -176,9 +172,8 @@ From `config.yaml` (via BuilderConfig → OrchestratorConfig). The authoritative
 | --------- | ------- | ----------- |
 | `small_llm.enabled` | false | Master toggle. Manual only — no auto-detection. |
 | `small_llm.essential_tools.enabled` | false | Gates the essential-tools variant. |
-| `small_llm.essential_tools.always_present` | `defaultSmallLLMAlwaysPresent` (read_file, write_file, edit_file, list_directory, glob, ripgrep, bash_exec, semantic_search, store_fact, search_facts, ask_user, finish) | Tools always kept regardless of router selection. May be empty (protected + MCP tools are always kept implicitly). |
-| `small_llm.essential_tools.max_tools` | 16 | Slot budget for router-matched tools: at most `max_tools − len(guaranteed)` matched tools are kept (registry order). The guaranteed set (always-present ∪ protected ∪ MCP) is never trimmed; validation rejects a cap below its size. 0 = unlimited. The budget cannot cap the guaranteed set itself — see the guaranteed-set WARNING under Variants. |
-| `small_llm.essential_tools.compact_descriptions` | false | Replace every known builtin's full description (480-1100-char rubric) with a one-line compact variant while the variant is active; unknown tools (e.g. MCP) keep their original descriptions. Applies to the curated set and to the selection-fallback set alike. |
+| `small_llm.essential_tools.always_present` | `defaultSmallLLMAlwaysPresent` (read_file, write_file, edit_file, list_directory, glob, ripgrep, bash_exec, semantic_search, store_fact, search_facts, ask_user, finish) | Tools always kept. May be empty (protected + MCP tools are always kept implicitly). The assigned set is this list ∪ protected ∪ every MCP tool. |
+| `small_llm.essential_tools.compact_descriptions` | false | Replace every known builtin's full description (480-1100-char rubric) with a one-line compact variant while the variant is active; unknown tools (e.g. MCP) keep their original descriptions. |
 | `small_llm.system_prompt.lite` | false | Swap the verbose core directive for the compact lite directive. |
 | `small_llm.system_prompt.few_shot` | false | Append worked-example ReAct cycles (requires Lite). |
 | `small_llm.system_prompt.reasoning_scaffold` | false | Append three-step thought template (requires Lite). |
@@ -210,17 +205,18 @@ The small-LLM profile is editable at runtime via the settings UI. See [../contra
 
 - **New variant** — add a sub-config to `SmallLLMConfig` (`backend/config/config.go`), mirror it in `BuilderSmallLLMConfig` (`core/builderconfig.go`), copy it in `configadapter.ToBuilderConfig`, apply it in a dedicated `apply*` helper in `core/builder.go`, gate it on BOTH the master toggle and its own sub-toggle, validate it in `validateSmallLLMConfig`, and document it in `config.example.yaml` and the Configuration table above.
 - **New sampling knob** — extend `SmallLLMSamplingConfig` and `BuilderSmallLLMSampling` with inherit-by-default semantics (zero = vendor preset), wire it through `resolveSamplingFunc` into the corresponding sp4rk `ChatRequest` field, and range-check it in `validateSmallLLMConfig`.
-- **New protected tool** — add it to `protectedToolNames` in `core/smallllm/tools_filter.go`. The guaranteed-set floor grows with it: `UpdateSmallLLMConfig` self-heals stale caps, but the shipped `max_tools` default should be revisited (see the guaranteed-set WARNING in Variants).
+- **New protected tool** — add it to `protectedToolNames` in `core/smallllm/tools_filter.go`. The protected core grows with it; the locked chips in the settings UI follow automatically (the UI renders `ProtectedToolNames` from the RPC payload).
 
 ## Related Specs
 
 - [orchestration/README.md](orchestration/README.md) — HandleMessage flow where the essential-tools filter applies
 - [orchestration/conductor.md](orchestration/conductor.md) — Conductor system prompt (the Lite swap target)
-- [orchestration/router.md](orchestration/router.md) — semantic tool matching gated on this profile
+- [orchestration/router.md](orchestration/router.md) — routing (domain/complexity/skills); router tool matching is NOT used by the narrowing
 - [orchestration/executor.md](orchestration/executor.md) — circuit breakers (the loop-hardening target)
 - [memory/compaction.md](memory/compaction.md) — compaction semantics (the context-management override target)
 - [llm-providers.md](llm-providers.md) — LLM router / sampling (the sampling override target)
 - [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) — `GetSmallLLMConfig` / `UpdateSmallLLMConfig` RPC
-- [../contracts/event-catalog.md](../contracts/event-catalog.md) — `tools_assigned` event
+- [../contracts/event-catalog.md](../contracts/event-catalog.md) — session event catalog (`tools_assigned` was removed)
 - [../decisions/022-small-llm-profile.md](../decisions/022-small-llm-profile.md) — rationale for the variant-and-master-toggle design
-- [../../docs/small-llm-defaults-research.md](../../docs/small-llm-defaults-research.md) — external-evidence review behind every profile default; the evidence base for the `medium` reasoning-effort default, the 16384 output-token reserve, `presence_penalty`, and the guaranteed-set WARNING
+- [../decisions/035-remove-small-llm-tool-budget.md](../decisions/035-remove-small-llm-tool-budget.md) — removal of the `max_tools` budget, router tool matching, and the tool chat cards
+- [../../docs/small-llm-defaults-research.md](../../docs/small-llm-defaults-research.md) — external-evidence review behind every profile default; the evidence base for the `medium` reasoning-effort default, the 16384 output-token reserve, `presence_penalty`, and the 10–20-tool selection-accuracy guidance

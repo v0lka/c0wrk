@@ -5,6 +5,8 @@
 - **Target model:** Qwen3.8-27B-MTP (27B dense, hybrid attention, vision, native MTP head; thinking ON by default, `reasoning_effort` xhigh/medium/low).
 - **Method:** each default is checked against (a) the official Qwen3.8-27B model card and vendor docs, (b) independent measurements and industry practice (vLLM, Unsloth, WorkOS, Pydantic, LangChain, Anthropic, peer-reviewed arXiv), and (c) c0wrk/sp4rk source code. Verdicts: ✅ confirmed · ⚠️ partially refuted · ❌ refuted · ➕ gap (missing parameter).
 
+> **Note (2026-09-09):** `essential_tools.max_tools`, router tool matching, and the over-budget diagnostic were **removed** by [ADR-035](../specs/decisions/035-remove-small-llm-tool-budget.md). The `max_tools` table row, its detailed analysis, and the R6 entries below are retained for provenance but are now moot by construction; the 10–20-tool selection-accuracy evidence survives as operator-side guidance in `specs/domains/small-llm.md`.
+
 ## Executive Summary
 
 Of the 27 defaults, **23 are confirmed** by external sources (including all master toggles, loop-hardening thresholds, compaction knobs, tool-narrowing and system-prompt defaults). **3 are refuted for Qwen3.8-27B in thinking mode** — the inherited sp4rk qwen temperature preset (0.6 is the Qwen3-2507-era value; official thinking value is 1.0), `reasoning_effort: ""` (inherits xhigh, measured at 22,276 reasoning tokens / 21 min for a trivial SVG), and `output_token_reserve: 8192` (reasoning traces alone span 3.7K–22.3K tokens; the generation ceiling is the resolved per-model/per-provider `OutputLimit`, not this reserve — see R4). **1 gap**: `presence_penalty` (Qwen's recommended anti-repetition lever, 0–2) is absent from the sampling variant although the field already exists in sp4rk's request model. Overall confidence: **High** — every verdict is backed by the official model card plus at least one independent source.
@@ -16,7 +18,7 @@ Of the 27 defaults, **23 are confirmed** by external sources (including all mast
 | 1 | `small_llm.enabled` | `false` | — | ✅ | manual-only by design; model is AA ~52, not a 7B [1][6] |
 | 2 | `essential_tools.enabled` | `false` | — | ✅ | opt-in per variant; dual-gate design |
 | 3 | `essential_tools.always_present` | 12 tools | all | ✅ | routing subset ideal 5–15 [15]; guaranteed set = 13 unique |
-| 4 | `essential_tools.max_tools` | `16` | all | ✅ | safe zone 10–20/context [15]; selection accuracy collapses above [15][16][17] |
+| 4 | `essential_tools.max_tools` | ~~`16`~~ | — | ➖ removed | budget removed in ADR-035 (static tool selection, no slot count); the 10–20-tool selection-accuracy evidence [15][16][17] survives as operator-side guidance |
 | 5 | `essential_tools.compact_descriptions` | `false` | — | ✅ | "tool documentation is a prompt, not a comment" [15][21] |
 | 6 | `system_prompt.lite` | `false` | — | ✅ | model post-trained for popular harnesses, incl. Claude Code's large prompt [1][6] |
 | 7 | `system_prompt.few_shot` | `false` | — | ✅ | helps weaker models [20]; marginal for harness-trained 27B; A/B candidate |
@@ -53,11 +55,11 @@ Of the 27 defaults, **23 are confirmed** by external sources (including all mast
 
 **`always_present` = 12 tools (read_file, write_file, edit_file, list_directory, glob, ripgrep, bash_exec, semantic_search, store_fact, search_facts, ask_user, finish) — ✅ confirmed.** The guaranteed set (12 always-present ∪ 5 protected: finish, memory, ask_user, MCP; 4 overlap → 13 unique) lands inside the externally documented ideal routing subset of 5–15 tools per reasoning context [15]. The list covers exactly one capability per workflow stage (read → edit → search → run → persist → interact → finish), matching the "single responsibility, no overlapping descriptions" guidance in [15][21].
 
-**`max_tools: 16` — ✅ confirmed.** Independent synthesis puts the practical "safe zone" at 10–20 tools per reasoning context, with degradation beginning above it and production unreliability at 40–50 [15]; Berkeley Function-Calling-Leaderboard-style degradation is described as a property of attention over large discrete choice sets, not of a specific model [15]. Peer-reviewed evidence: on the RAG-MCP benchmark, exposing only a retrieved subset tripled tool-selection accuracy (13.62% → 43.13%) and cut prompt tokens by >50% [16]; at 100+ tools accuracy collapses to ~13%, near random [17]. 16 sits mid-safe-zone with 3 free slots for router-matched tools on top of the 13-tool guaranteed set.
+**`max_tools: 16` — ➖ removed (ADR-035).** The parameter no longer exists: tool narrowing is now a static selection with no slot budget, so the "safe zone" sizing below is moot as a config value. The underlying selection-accuracy evidence is retained for provenance — independent synthesis puts the practical "safe zone" at 10–20 tools per reasoning context, with degradation beginning above it and production unreliability at 40–50 [15]; Berkeley Function-Calling-Leaderboard-style degradation is described as a property of attention over large discrete choice sets, not of a specific model [15]. Peer-reviewed evidence: on the RAG-MCP benchmark, exposing only a retrieved subset tripled tool-selection accuracy (13.62% → 43.13%) and cut prompt tokens by >50% [16]; at 100+ tools accuracy collapses to ~13%, near random [17]. This now informs only the operator-side 10–20-tool guidance in `specs/domains/small-llm.md`, not an enforced guard.
 
 **`compact_descriptions: false` — ✅ confirmed (conservative).** A tool description is read by the model at inference time to decide whether to call the tool — "documentation is a prompt, not a comment"; explicitly stating when *not* to use a tool is often more valuable than the positive case [15][21]. A typical schema costs only 150–400 tokens [15], so the saving from one-liners is small relative to the selection-accuracy risk. Keeping full descriptions is the right default; compaction remains an operator option.
 
-**Risk to document (R6):** the guaranteed set is never trimmed and all MCP tools join it at runtime, while `max_tools` only budgets router-matched slots. Several MCP servers can silently push the context past the 20-tool cliff documented in [15] — `validateSmallLLMConfig` only rejects configs where the guaranteed set *alone* exceeds the budget. A documented warning (and/or a surfaced metric) is warranted.
+**Risk to document (R6):** ➖ moot by construction. With the `max_tools` budget removed (ADR-035) there is no over-budget condition to detect: the guaranteed set is never trimmed and all MCP tools join it by design, with sizing left entirely to the operator (the 10–20-tool guidance above).
 
 ### System prompt (3 values) — `config.example.yaml:824–867`
 
@@ -193,3 +195,27 @@ Code references: `backend/config/defaults.go:411–472` (profile defaults), `:88
 3. **presence_penalty=1.5 behavior in long agentic sessions** on Qwen3.8-27B (language-mixing risk noted by Qwen [1]) — measure before recommending a non-inherit default.
 4. **Few-shot/lite prompt marginal effect on a harness-post-trained 27B** — A/B candidate, not a default change.
 5. **MTP acceptance rate as a sampling-health proxy** — a falling speculative-acceptance rate signals deviation from the trained distribution; consider surfacing it as a metric.
+
+## Addendum (2026-09-08): code-level verification follow-up
+
+A follow-up verification pass against the actual code (`backend/config/defaults.go`, `config.example.yaml`, `core/prompts/*`, `core/systemprompt.go`, `core/smallllm/tools_filter.go`, sp4rk `prompt/sampling.go`, `llm/provider_openai.go`, `llm/modelregistry.go`) confirmed **all 27 defaults unchanged** and closed the open items of this review.
+
+**Recommendation ledger (R1–R6):**
+
+| ID | Status | Verified at |
+|---|---|---|
+| R1 | ✅ closed in sp4rk — qwen `reasoning_effort` is native per-request for Qwen 3.8+ (`applyQwenReasoning` + `IsQwen38OrLater`); `off` → `enable_thinking: false` | `sp4rk/llm/provider_openai.go:364` |
+| R2 | ✅ closed in sp4rk — qwen preset is 1.0 / 0.95 / 20 (official thinking recipe). The preset is family-keyed with no mode signal, so instruct-mode values (0.7 / 0.80 / top_k 20 + presence_penalty 1.5) must be set explicitly when thinking is off — now documented by the mode-mismatch note in `config.example.yaml` (`small_llm.sampling`) | `sp4rk/prompt/sampling.go:53–68` |
+| R3 | ✅ closed — `ApplyDefaults` seeds an unset `reasoning_effort` to `medium` | `backend/config/defaults.go` |
+| R4 | ✅ reformulated — the reserve is a fallback-tier knob, not the generation ceiling; the catalog-check below (gap #5) removes the residual "catalog truncates the answer" concern for the target model | — |
+| R5 | ✅ closed — `presence_penalty` added to `small_llm.sampling` (range [0, 2]; unset = field not sent) | `backend/config`, `config.example.yaml` |
+| R6 | ➖ moot by construction — the `max_tools` budget was removed in ADR-035; there is no over-budget condition to signal | — |
+
+**Follow-up gap ledger (lite-prompt / integration verification, gaps #1–#6):**
+
+1. **Git Policy lost in lite** — closed: compact Git Policy restored in `core/prompts/orchestrator_lite.md`.
+2. **Micro-hints missing in lite** (truncated-output mechanics, fact-memory discipline, MCP priority) — closed: added in `orchestrator_lite.md`.
+3. **Edit→Verify Cycle asymmetry** (duplicated ×3 across lite/scaffold/few-shot, absent from the full directive) — closed: deduplicated to exactly one occurrence per directive and added to `orchestrator_system.md`; the few-shot structural defect fixed.
+4. **`delegate` not guaranteed under tool narrowing** — closed: `smallllm.SelectTools` accepts turn-scoped `extraGuaranteed` names and the orchestrator passes `["delegate"]` whenever the task context carries requested subagents (`core/smallllm/tools_filter.go`, `core/orchestrator.go`).
+5. **Catalog ceiling for the target model** — **closed by catalog inspection, no code change**: sp4rk `llm/modelregistry.go:1912` carries `qwen/qwen3.8-27b` with `ContextWindow: 262144` / `OutputLimit: 65536` (plus Reasoning/Attachment/Temperature/ToolCall capabilities). The ceiling comfortably covers the measured 3.7K–22.3K reasoning traces, so `output_token_reserve` stays the fallback-tier knob it was reformulated to be (R4).
+6. **Guaranteed-set over-budget silence (R6)** — moot by construction: the `max_tools` budget and its over-budget diagnostic were removed in ADR-035, so there is no over-budget condition to signal.

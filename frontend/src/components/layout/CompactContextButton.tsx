@@ -22,18 +22,23 @@ import { logger } from '@/lib/logger'
  * chosen strategy starts CompactSessionContext (the backend pauses a running
  * task first — exactly like the Pause button — compacts, then auto-resumes).
  * While a compaction is in flight the button swaps to a cancel affordance.
+ *
+ * Availability is per strategy: the backend predicts whether each strategy
+ * would actually shrink the conversation history right now (an exact
+ * structural verdict). The button is enabled when at least one strategy is
+ * available; unavailable strategies are shown disabled with their reason, and
+ * available ones carry a predicted "reclaims ~N tokens" hint. Absent/unknown
+ * availability (older backend) fails OPEN — every strategy is clickable.
  */
 export function CompactContextButton() {
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const compacting = useChatStore((s) =>
     activeSessionId ? s.compacting[activeSessionId] ?? false : false,
   )
-  // Backend-predicted no-op (the dialogue already fits the compaction target):
-  // the button is disabled with an explanatory tooltip. Absent key/undefined
-  // (unknown, older backend) fails OPEN — the button stays clickable and a
-  // pointless click reports the backend's nothing_compacted outcome.
-  const compactionNoOp = useChatStore((s) =>
-    activeSessionId ? s.compactionNoOp[activeSessionId] === true : false,
+  // Backend-predicted per-strategy availability (absent key/undefined → unknown,
+  // fail-open). Direct store reference from a selector — stable identity.
+  const availability = useChatStore((s) =>
+    activeSessionId ? s.compactionAvailability[activeSessionId] : undefined,
   )
 
   const startCompaction = useCallback(
@@ -82,24 +87,11 @@ export function CompactContextButton() {
     )
   }
 
-  // Guaranteed no-op: a manual compaction cannot shrink the dialogue (it is
-  // already under the compaction target), so the strategy menu is replaced by
-  // a disabled button with the explanation. Fail-open: an unknown verdict
-  // (undefined) never lands here — the dropdown stays available.
-  if (compactionNoOp) {
-    return (
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        disabled
-        title="Context is already under the compaction target"
-        aria-label="Compact context (already under the compaction target)"
-        className="h-6 w-6 shrink-0 text-muted-foreground/50"
-      >
-        <Shrink className="size-3.5" />
-      </Button>
-    )
-  }
+  // Availability is only known after the first runtime-status reconcile.
+  // Fail-open: an unknown verdict (undefined) never disables anything.
+  const known = availability ?? []
+  const anyAvailable = known.length === 0 || known.some((a) => a.available)
+  const availabilityByStrategy = new Map(known.map((a) => [a.strategy, a]))
 
   return (
     <DropdownMenu>
@@ -107,9 +99,14 @@ export function CompactContextButton() {
         <Button
           variant="ghost"
           size="icon-xs"
-          title="Compact context"
-          aria-label="Compact context"
-          className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+          disabled={!anyAvailable}
+          title={
+            anyAvailable
+              ? 'Compact context'
+              : 'Nothing to compact — every strategy would leave the context unchanged'
+          }
+          aria-label={anyAvailable ? 'Compact context' : 'Compact context (nothing to compact)'}
+          className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground disabled:text-muted-foreground/50"
         >
           <Shrink className="size-3.5" />
         </Button>
@@ -117,20 +114,33 @@ export function CompactContextButton() {
       <DropdownMenuContent side="top" align="end" className="w-72">
         <DropdownMenuLabel>Compact context</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {COMPACTION_STRATEGIES.map(({ id, name, hint, tooltip, icon: Icon }) => (
-          <DropdownMenuItem
-            key={id}
-            title={tooltip}
-            onClick={() => void startCompaction(id)}
-            className="gap-2 cursor-pointer"
-          >
-            <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-            <span className="flex min-w-0 flex-col">
-              <span className="text-xs font-medium">{name}</span>
-              <span className="text-[10px] text-muted-foreground">{hint}</span>
-            </span>
-          </DropdownMenuItem>
-        ))}
+        {COMPACTION_STRATEGIES.map(({ id, name, hint, tooltip, icon: Icon }) => {
+          const avail = availabilityByStrategy.get(id)
+          // Fail-open: an unknown strategy (older backend, no availability
+          // snapshot) is clickable; a known-unavailable one is disabled with
+          // its reason.
+          const available = avail === undefined || avail.available
+          const reason = !available
+            ? 'Would not shrink the context right now — the dialogue already fits this strategy'
+            : avail && avail.reclaim_tokens > 0
+              ? `Reclaims ~${avail.reclaim_tokens.toLocaleString()} tokens${avail.exact ? '' : ' (estimated)'}`
+              : tooltip
+          return (
+            <DropdownMenuItem
+              key={id}
+              title={reason}
+              disabled={!available}
+              onClick={() => void startCompaction(id)}
+              className="gap-2 cursor-pointer data-[disabled]:cursor-not-allowed"
+            >
+              <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="flex min-w-0 flex-col">
+                <span className="text-xs font-medium">{name}</span>
+                <span className="text-[10px] text-muted-foreground">{hint}</span>
+              </span>
+            </DropdownMenuItem>
+          )
+        })}
       </DropdownMenuContent>
     </DropdownMenu>
   )

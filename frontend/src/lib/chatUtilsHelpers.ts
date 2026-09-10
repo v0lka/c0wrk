@@ -174,7 +174,8 @@ export function reconstructContent(role: string, rawContent: string, meta: Recor
       }
       // tools_assigned events follow the same persistence path: the persister
       // writes the raw JSON payload ({"tools":[...]}) as content. Reconstruct
-      // the live handler's "Tools assigned: …" text on reload.
+      // the "Tools assigned: …" text on reload for messages saved by older
+      // builds (the live handler was removed in ADR-035).
       if (isArrayOf(meta.tools, (s): s is string => typeof s === 'string')) {
         return `Tools assigned: ${meta.tools.join(', ')}`
       }

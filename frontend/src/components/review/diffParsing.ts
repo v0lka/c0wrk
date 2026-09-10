@@ -5,11 +5,63 @@
  * side-by-side alignment logic can be unit-tested in isolation.
  */
 
+/**
+ * Diff-parsing types for review components.
+ *
+ * React/DOM-free so the parsing and alignment logic is unit-testable in
+ * isolation. The shapes mirror the backend's ReviewFileDiff/ReviewHunk JSON
+ * (see api/review.ts) — duplicated as a minimal local interface so this
+ * module keeps no dependency on the API layer.
+ */
+export interface ReviewHunkLike {
+  old_start: number
+  new_start: number
+  raw: string
+}
+
+export interface ReviewFileDiffLike {
+  path: string
+  old_path?: string
+  hunks: ReviewHunkLike[]
+}
+
 export interface DiffLine {
   type: 'add' | 'del' | 'context' | 'header' | 'noNewline'
   text: string
   oldNum: number | null
   newNum: number | null
+}
+
+/**
+ * Structural equality check for a re-fetched review diff against the one
+ * currently rendered. Two diffs are equal when every file (path, old_path)
+ * carries the same hunks in the same order (old_start, new_start, raw body).
+ * Used as the no-op guard in ReviewPage's fetchDiff so background events that
+ * did not actually change the tree produce zero state updates — every
+ * downstream memo (parse, highlight, grouping) keys off these values, so
+ * keeping the previous object identities prevents any re-render and preserves
+ * an in-progress text selection in the diff tables.
+ *
+ * React/DOM-free so it is unit-testable alongside the other diff utilities.
+ */
+export function sameReviewDiff(
+  a: ReviewFileDiffLike[],
+  b: ReviewFileDiffLike[],
+): boolean {
+  if (a === b) return true
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const fa = a[i]!
+    const fb = b[i]!
+    if (fa.path !== fb.path || fa.old_path !== fb.old_path) return false
+    if (fa.hunks.length !== fb.hunks.length) return false
+    for (let j = 0; j < fa.hunks.length; j++) {
+      const ha = fa.hunks[j]!
+      const hb = fb.hunks[j]!
+      if (ha.old_start !== hb.old_start || ha.new_start !== hb.new_start || ha.raw !== hb.raw) return false
+    }
+  }
+  return true
 }
 
 export function parseHunkRaw(raw: string, oldStart: number, newStart: number): DiffLine[] {

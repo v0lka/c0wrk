@@ -11,6 +11,8 @@ interface UseLLMConfigSaveResult {
   saveFullConfig: (defModel: string, configs: Record<string, ProviderConfig>) => void
   /** Debounced wrapper around saveFullConfig (300 ms). */
   debouncedSave: (defModel: string, configs: Record<string, ProviderConfig>) => void
+  /** Cancel a queued debounced save before it can persist stale state. */
+  cancelDebouncedSave: () => void
   /** Strip masked API key placeholder before merging into existing config. */
   buildSafeUpdates: (existing: ProviderConfig, updates: Partial<ProviderConfig>) => Partial<ProviderConfig>
 }
@@ -57,12 +59,12 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
         }
       }
 
-      if (Object.keys(openaiCompatible).length > 0) {
-        req.openai_compatible = openaiCompatible
-      }
-      if (Object.keys(anthropicCompatible).length > 0) {
-        req.anthropic_compatible = anthropicCompatible
-      }
+      // This is a full-form replacement payload: transmit both compatible
+      // provider maps even when empty. On the backend, nil means "leave this
+      // map unchanged", while {} means "replace it with no providers"; omitting
+      // an empty map would make deleting the last compatible provider impossible.
+      req.openai_compatible = openaiCompatible
+      req.anthropic_compatible = anthropicCompatible
 
       updateLLMConfig(req as LLMFullConfigRequest)
         .then(() => {
@@ -83,10 +85,17 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
     [saveFullConfig],
   )
 
+  const cancelDebouncedSave = useCallback(() => {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current)
+      debounceRef.current = null
+    }
+  }, [])
+
   // Cleanup debounce timer on unmount.
   useEffect(() => () => {
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-  }, [])
+    cancelDebouncedSave()
+  }, [cancelDebouncedSave])
 
   // --- buildSafeUpdates --------------------------------------------------------
   const buildSafeUpdates = useCallback(
@@ -100,5 +109,5 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
     [],
   )
 
-  return { saveFullConfig, debouncedSave, buildSafeUpdates }
+  return { saveFullConfig, debouncedSave, cancelDebouncedSave, buildSafeUpdates }
 }

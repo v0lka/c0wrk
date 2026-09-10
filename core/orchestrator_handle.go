@@ -300,12 +300,12 @@ func (o *Orchestrator) routeAndActivateSkills(
 
 	routing, err := o.router.Route(ctx, routingMessage, availableTools, o.historySnapshot(), routerSkills)
 	if err != nil {
-		// Small-LLM degradation path: when semantic tool matching is enabled
-		// and the routing JSON is unparseable even after the router's
+		// Small-LLM degradation path: when the essential-tools narrowing is
+		// active and the routing JSON is unparseable even after the router's
 		// built-in repair retry, fail safe instead of failing the task —
 		// continue with a default routing decision. The tool filter then
-		// falls back to the full tool set (applySmallLLMToolFilter).
-		if errors.Is(err, router.ErrRoutingParse) && o.smallLLMToolMatchingEnabled() {
+		// applies its static selection (applySmallLLMToolFilter).
+		if errors.Is(err, router.ErrRoutingParse) && o.smallLLMEssentialToolsEnabled() {
 			if o.logger != nil {
 				o.logger.Warn("orchestrator: routing decision unparseable after repair retry; continuing with default routing",
 					"error", err)

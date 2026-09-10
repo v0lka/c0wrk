@@ -218,11 +218,13 @@ func TestBuilder_Build_FullPipeline(t *testing.T) {
 			},
 		},
 		Timeouts: BuilderTimeoutsConfig{
-			BashMaxTimeout:   120,
-			BashWaitDelay:    2,
-			RipgrepTimeout:   30,
-			WebFetchTimeout:  30,
-			WebSearchTimeout: 30,
+			BashMaxTimeout:       120,
+			BashWaitDelay:        2,
+			RipgrepTimeout:       30,
+			WebFetchTimeout:      30,
+			WebFetchProxyTimeout: 30,
+			WebFetchRetries:      2,
+			WebSearchTimeout:     30,
 		},
 		ToolLimits: BuilderToolLimitsConfig{
 			ReadDefaultLines:    100,

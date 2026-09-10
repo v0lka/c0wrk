@@ -84,11 +84,7 @@ func (a *App) ShouldPreventClose(_ context.Context) bool {
 	// request. a.emit tolerates a nil ctx (Startup not run yet) by dropping
 	// the event with a warning, but that window cannot have active sessions.
 	if a.ctx != nil {
-		if a.windowShowFn != nil {
-			a.windowShowFn(a.ctx)
-		} else {
-			wailsRuntime.WindowShow(a.ctx)
-		}
+		a.showWindow(a.ctx)
 	}
 	a.emit(EventAppExitRequested, exitGuardPayload{
 		Sessions:      active,

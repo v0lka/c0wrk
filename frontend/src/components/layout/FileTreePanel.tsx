@@ -7,9 +7,10 @@ import { useSessionStore } from '@/stores/sessionStore'
 import { listDirectory, getGitStatus, watchDirectory, unwatchDirectory, getSessionWorkspace } from '@/api/workspace'
 import { subscribe } from '@/api/runtime'
 import { FilterBar } from '@/components/ui/FilterBar'
+import { Button } from '@/components/ui/button'
 import { FileIcon } from './FileIcon'
 import { FileTreeContextMenu } from './FileTreeContextMenu'
-import { ChevronRight, Loader2, FolderTree } from 'lucide-react'
+import { ChevronRight, Loader2, FolderTree, RotateCw, TriangleAlert } from 'lucide-react'
 import { useFileSearch } from '@/hooks/useFileSearch'
 import type { FileEntry, GitStatusEntry } from '@/types/models'
 
@@ -85,6 +86,53 @@ export function collectDirsToReload(
   expandedDirs: Record<string, true>,
 ): string[] {
   return Array.from(new Set([rootPath, ...Object.keys(expandedDirs)]))
+}
+
+/** Human-readable message for a rejected listDirectory/getGitStatus call.
+ *  Wails rejections arrive as Error objects or plain strings. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function describeListError(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message
+  if (typeof err === 'string' && err) return err
+  return 'Failed to list directory'
+}
+
+/**
+ * Reload the root directory and every expanded subdirectory from the current
+ * store state, then refresh git status. Shared by the `workspace:tree_changed`
+ * subscription, the error-state Retry action and the manual Refresh button so
+ * all three paths behave identically. A root listing failure is surfaced via
+ * `rootLoadError` (with the message) instead of being cached as an empty
+ * entry list — the old behavior rendered a silently "empty" workspace that
+ * never recovered, because a static workspace emits no tree_changed events.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export async function reloadWorkspaceTree(): Promise<void> {
+  const state = useFileTreeStore.getState()
+  const rootPath = state.rootPath
+  if (!rootPath) return
+  const dirs = collectDirsToReload(rootPath, state.expandedDirs)
+  await Promise.all(
+    dirs.map((dir) =>
+      listDirectory(dir)
+        .then((entries) => {
+          state.setEntries(dir, entries)
+          if (dir === rootPath) state.setRootLoadError(null)
+        })
+        .catch((err) => {
+          // Nested dirs may have been removed — only the root failure is
+          // user-visible state; nested failures keep their cached children.
+          if (dir === rootPath) state.setRootLoadError(describeListError(err))
+        }),
+    ),
+  )
+  const projectState = useProjectStore.getState()
+  const activeProject = projectState.projects?.find((p) => p.id === projectState.activeProjectId)
+  if (activeProject?.is_no_project !== true) {
+    getGitStatus(rootPath)
+      .then(useFileTreeStore.getState().setGitStatus)
+      .catch(() => { })
+  }
 }
 
 function TreeNode({ entry, depth, gitStatus, propagatedPaths, onContextMenu }: TreeNodeProps) {
@@ -206,6 +254,8 @@ export function FileTreePanel() {
   const setGitStatus = useFileTreeStore((s) => s.setGitStatus)
   const clearTree = useFileTreeStore((s) => s.clearTree)
   const searchEntries = useFileTreeStore((s) => s.searchEntries)
+  const rootLoadError = useFileTreeStore((s) => s.rootLoadError)
+  const setRootLoadError = useFileTreeStore((s) => s.setRootLoadError)
 
   const [contextMenu, setContextMenu] = useState<{ entry: FileEntry; x: number; y: number } | null>(null)
 
@@ -281,8 +331,18 @@ export function FileTreePanel() {
     setRootPath(workspacePath)
     const ops: Promise<unknown>[] = [
       listDirectory(workspacePath)
-        .then((entries) => { if (!cancelled) setEntries(workspacePath, entries) })
-        .catch(() => { if (!cancelled) setEntries(workspacePath, []) }),
+        .then((entries) => {
+          if (!cancelled) {
+            setEntries(workspacePath, entries)
+            setRootLoadError(null)
+          }
+        })
+        .catch((err) => {
+          // Surface the failure instead of caching an empty listing: a
+          // silently empty tree never self-heals (a static workspace emits
+          // no tree_changed events) and offers no recovery affordance.
+          if (!cancelled) setRootLoadError(describeListError(err))
+        }),
     ]
     // Start watching the workspace root for changes.
     ops.push(watchDirectory(workspacePath))
@@ -298,7 +358,7 @@ export function FileTreePanel() {
       cancelled = true
       unwatchDirectory(workspacePath).catch(() => { })
     }
-  }, [workspacePath, isNoProject, activeProjectId, clearTree, setRootPath, setEntries, setGitStatus])
+  }, [workspacePath, isNoProject, activeProjectId, clearTree, setRootPath, setEntries, setRootLoadError, setGitStatus])
 
   // Refresh on workspace:tree_changed — reload the root AND every expanded
   // subdirectory so changes inside open folders are reflected, not just the
@@ -307,25 +367,10 @@ export function FileTreePanel() {
   // never appeared until the user collapsed and re-expanded it.
   useEffect(() => {
     const unsub = subscribe('workspace:tree_changed', () => {
-      const state = useFileTreeStore.getState()
-      const rp = state.rootPath
-      if (!rp) return
-      // Root plus every expanded directory path, deduplicated.
-      const dirs = collectDirsToReload(rp, state.expandedDirs)
-      for (const dir of dirs) {
-        listDirectory(dir)
-          .then((entries) => setEntries(dir, entries))
-          .catch(() => { /* dir may have been removed — ignore */ })
-      }
-      const activeProject = useProjectStore.getState().projects?.find(
-        (p) => p.id === useProjectStore.getState().activeProjectId
-      )
-      if (activeProject?.is_no_project !== true) {
-        getGitStatus(rp).then(setGitStatus).catch(() => { })
-      }
+      void reloadWorkspaceTree()
     })
     return unsub
-  }, [setEntries, setGitStatus])
+  }, [])
 
   const isFiltering = filterText.trim().length > 0
   const displayEntries = isFiltering ? searchEntries : rootEntries
@@ -338,6 +383,17 @@ export function FileTreePanel() {
         mode={filterMode}
         onToggleMode={toggleFilterMode}
         placeholder="Filter files"
+        rightSlot={
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2"
+            title="Refresh file tree"
+            onClick={() => { void reloadWorkspaceTree() }}
+          >
+            <RotateCw className="size-3.5" />
+          </Button>
+        }
       />
       {isInvalidFilter ? (
         <p className="flex-1 p-4 text-center text-xs text-destructive">Invalid regex</p>
@@ -349,6 +405,19 @@ export function FileTreePanel() {
         </div>
       ) : isFiltering ? (
         <p className="flex-1 p-4 text-center text-xs text-muted-foreground">No matching files</p>
+      ) : rootLoadError ? (
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 p-4 text-center">
+          <TriangleAlert className="size-8 text-destructive/60" />
+          <p className="max-w-full break-words text-xs text-muted-foreground">{rootLoadError}</p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => { void reloadWorkspaceTree() }}
+          >
+            <RotateCw className="size-3.5" />
+            Retry
+          </Button>
+        </div>
       ) : activeProjectId ? (
         <div className="flex-1 flex items-center justify-center">
           <FolderTree className="size-12 text-muted-foreground/30" />

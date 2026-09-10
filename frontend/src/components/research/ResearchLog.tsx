@@ -1,14 +1,19 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import {
   FlaskConical,
   Split,
   RefreshCw,
   FileText,
+  ChevronDown,
   type LucideIcon,
 } from 'lucide-react'
 import type { LogKind } from '@/types/models'
 import { useResearchStore, selectActiveLog } from '@/stores/researchStore'
-import { latestLogEntries, formatLogTime } from './researchLogUtils'
+import {
+  latestLogEntries,
+  formatLogTime,
+  RESEARCH_LOG_RENDER_CAP,
+} from './researchLogUtils'
 
 const KIND_ICONS: Record<LogKind, LucideIcon> = {
   experiment: FlaskConical,
@@ -21,24 +26,35 @@ const KIND_ICONS: Record<LogKind, LucideIcon> = {
  * Research log — the most recent `log.md` entries for the active project (t1).
  * Reads `selectActiveLog` (a stable store reference) so it re-renders when the
  * log is refreshed via `loadStatus`/`loadGraph` on research:file_changed.
+ *
+ * [20]b: research logs are append-only and grow for the project's lifetime,
+ * so the list renders the newest RESEARCH_LOG_RENDER_CAP entries by default
+ * and expands on demand — one DOM node per entry would otherwise re-render
+ * on every log refresh.
  */
 export function ResearchLog() {
   const log = useResearchStore(selectActiveLog)
-  const entries = useMemo(() => latestLogEntries(log), [log])
+  const [showAll, setShowAll] = useState(false)
+
+  const total = log.length
+  const entries = useMemo(
+    () => latestLogEntries(log, showAll ? undefined : RESEARCH_LOG_RENDER_CAP),
+    [log, showAll],
+  )
 
   return (
     <div
       data-testid="research-log"
-      className="flex shrink-0 flex-col gap-1 border-t border-border pt-2"
+      className="flex min-h-0 flex-1 flex-col gap-1 border-t border-border pt-2"
     >
-      <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+      <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
         Research log
       </span>
 
       {entries.length === 0 ? (
         <p className="text-xs text-muted-foreground/70">No entries yet</p>
       ) : (
-        <ul className="flex flex-col gap-1">
+        <ul className="custom-scrollbar flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
           {entries.map((entry) => {
             const Icon = KIND_ICONS[entry.kind] ?? FileText
             return (
@@ -67,6 +83,19 @@ export function ResearchLog() {
             )
           })}
         </ul>
+      )}
+
+      {!showAll && total > RESEARCH_LOG_RENDER_CAP && (
+        <button
+          type="button"
+          data-testid="research-log-show-all"
+          onClick={() => setShowAll(true)}
+          title="Render every log entry for this project"
+          className="inline-flex shrink-0 items-center gap-1 self-start rounded px-1 py-0.5 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ChevronDown className="size-3" />
+          Show all {total} entries
+        </button>
       )}
     </div>
   )

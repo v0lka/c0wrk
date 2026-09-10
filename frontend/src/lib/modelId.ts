@@ -56,6 +56,40 @@ export function decomposeCompositeModelId(
 }
 
 /**
+ * A model reference — the minimal structural shape every model list shares
+ * (useConfigData's ModelInfo, the settings dialog's draft provider configs).
+ * Used by {@link findModelRef} so model resolution works for any list whose
+ * entries carry a bare name and a provider key.
+ */
+export interface ModelRef {
+  name: string
+  provider: string
+}
+
+/**
+ * Find the entry for an effective model selector in a list of model refs.
+ *
+ * The selector may be:
+ *  - a composite id `"provider/name"` — resolved to the exact provider + bare
+ *    name, so two providers exposing the same bare name are distinguished; or
+ *  - a bare model name — resolved to the first matching model across providers
+ *    (mirrors the backend's bare-name resolution, where the first match wins).
+ *
+ * Returns `undefined` when no model matches (e.g. the selector is empty,
+ * stale, or refers to a disabled model).
+ */
+export function findModelRef<T extends ModelRef>(
+  models: readonly T[],
+  selector: string,
+): T | undefined {
+  if (!selector) return undefined
+  if (isCompositeModelId(selector)) {
+    return models.find((m) => compositeModelId(m.provider, m.name) === selector)
+  }
+  return models.find((m) => m.name === selector)
+}
+
+/**
  * Find the {@link ModelInfo} for an effective model selector.
  *
  * The selector may be:
@@ -71,9 +105,5 @@ export function findModelInfo(
   models: ModelInfo[],
   selector: string,
 ): ModelInfo | undefined {
-  if (!selector) return undefined
-  if (isCompositeModelId(selector)) {
-    return models.find((m) => compositeModelId(m.provider, m.name) === selector)
-  }
-  return models.find((m) => m.name === selector)
+  return findModelRef(models, selector)
 }

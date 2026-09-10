@@ -9,8 +9,9 @@
 // The hypothesis graph is a DAG where each node may have `parents` (the
 // hypotheses it builds on). `layoutDag` flows left-to-right: depth columns
 // (roots leftmost, descendants rightward) crossed by row slots — leaves take
-// consecutive slots in DFS order and internal nodes center on their children,
-// so node labels can never overlap by construction.
+// consecutive slots in DFS order and internal nodes center on their children;
+// a separation post-pass then enforces a one-slot gap between same-level
+// nodes (diamond siblings), so labels can never overlap by construction.
 
 import type {
   HypothesisGraph,
@@ -18,6 +19,7 @@ import type {
   HypothesisStatus,
   ResearchRoot,
 } from '@/types/models'
+import { decisionLabel, DECISION_UNDECIDED } from './hypothesisDecision'
 
 // ── Graph grid geometry ────────────────────────────────────────────────
 
@@ -37,6 +39,8 @@ export const LABEL_GAP_X = NODE_R + 4
 export const LABEL_MAX_CHARS = 26
 /** Estimated px per label character at the 11px label font size. */
 export const LABEL_CHAR_W = 6
+/** Estimated px per id character at the 9px id font size. */
+export const ID_CHAR_W = 5
 /** Breathing room after the label zone before the next column starts. */
 export const COLUMN_GAP = 20
 /** Horizontal pitch between depth columns: 26-char label budget + gap. */
@@ -62,23 +66,6 @@ export function statusColorVar(status: string): string {
   }
 }
 
-/** A stable Tailwind text-color class mirroring `statusColorVar`. */
-export function statusTextClass(status: string): string {
-  switch (status as HypothesisStatus | string) {
-    case 'open':
-      return 'text-info'
-    case 'in-progress':
-      return 'text-warning'
-    case 'confirmed':
-      return 'text-success'
-    case 'refuted':
-      return 'text-destructive'
-    case 'cancelled':
-    default:
-      return 'text-muted-foreground'
-  }
-}
-
 /**
  * True only for the three terminal lifecycle statuses (confirmed, refuted,
  * cancelled). Everything else (`open`, `in-progress`, or unknown) is still in
@@ -88,36 +75,96 @@ export function isTerminal(status: string): boolean {
   return status === 'confirmed' || status === 'refuted' || status === 'cancelled'
 }
 
+// ── Node hover-tooltip card ────────────────────────────────────────────
+
+/**
+ * Build the Markdown content of a hypothesis node's hover tooltip — a
+ * compact Markdown card mirroring the methodology card template (writer.go
+ * buildCardContent): an `id: title` heading (the card file's `#` H1), a
+ * Status / Decision / Timebox / Parents meta line, then the long-form
+ * sections in the card's order (Statement / Verification Criterion /
+ * Experiment Notes / Result). Section bodies are the node's verbatim
+ * Markdown — they render through the shared sanitized Markdown pipeline
+ * (TooltipMarkdown), same as the plan-step description tooltip this mirrors.
+ * Empty sections are omitted, so a barely-filled hypothesis stays a tight
+ * card instead of a wall of placeholders (the card FILE keeps those).
+ * Pure — no DOM — and unit-tested.
+ */
+export function hypothesisTooltipMarkdown(node: HypothesisNode): string {
+  const meta = [
+    `**Status:** ${node.status}`,
+    `**Decision:** ${decisionLabel(node.decision ?? DECISION_UNDECIDED)}`,
+    ...(node.timebox ? [`**Timebox:** ${node.timebox}`] : []),
+    `**Parents:** ${(node.parents ?? []).join(', ') || '—'}`,
+  ].join(' · ')
+
+  const sections = (
+    [
+      ['Statement', node.statement],
+      ['Verification Criterion', node.verification_criterion],
+      ['Experiment Notes', node.experiment_notes],
+      ['Result', node.result],
+    ] as const
+  )
+    .filter(([, body]) => (body ?? '').trim() !== '')
+    .map(([label, body]) => `**${label}**\n\n${body!.trim()}`)
+
+  // The heading is composed from plain short fields, so collapse whitespace
+  // to keep it one line; long-form section bodies stay verbatim — they are
+  // Markdown by design.
+  const title = node.title.replace(/\s+/g, ' ').trim()
+
+  return [`### ${node.id}: ${title}`, meta, ...sections].join('\n\n')
+}
+
 // ── Adjacency ──────────────────────────────────────────────────────────
 
 /**
- * Build a `childId → parentId[]` map for the graph. Edges use `from` (parent)
- * → `to` (child); when there are no explicit edges, node `parents` arrays are
- * used instead. Unknown parent ids are dropped so a dangling reference never
- * crashes the layout.
+ * Build the shared `parentId → childId[]` adjacency for a graph, UNIONING
+ * explicit `edges` with declared `node.parents` — both encode the same
+ * parent→child relation, and a partially-synced graph (cards vs graph.md)
+ * may carry only one form, so either source alone would resolve a different
+ * DAG. One builder serves layout, level assignment, and path traversal, so
+ * every consumer agrees on the graph's shape. References to unknown ids and
+ * self-loops are dropped; duplicates are deduped in first-seen order.
  */
-export function buildParentMap(graph: HypothesisGraph): Map<string, string[]> {
+export function buildChildrenMap(graph: HypothesisGraph): Map<string, string[]> {
   const known = new Set(graph.nodes.map((n) => n.id))
   const map = new Map<string, string[]>()
+  const addChild = (parent: string, child: string): void => {
+    if (parent === child || !known.has(parent) || !known.has(child)) return
+    const list = map.get(parent)
+    if (list) {
+      if (!list.includes(child)) list.push(child)
+    } else {
+      map.set(parent, [child])
+    }
+  }
+  for (const edge of graph.edges) addChild(edge.from, edge.to)
+  for (const node of graph.nodes) {
+    for (const p of node.parents ?? []) addChild(p, node.id)
+  }
+  return map
+}
 
-  if (graph.edges.length > 0) {
-    for (const edge of graph.edges) {
-      if (!known.has(edge.from) || !known.has(edge.to)) continue
-      const list = map.get(edge.to)
+/**
+ * Build a `childId → parentId[]` map for the graph by inverting the shared
+ * adjacency (`buildChildrenMap`): explicit edges UNIONED with node `parents`
+ * declarations. Unknown parent ids are dropped by the builder, so a dangling
+ * reference never crashes the layout.
+ */
+export function buildParentMap(graph: HypothesisGraph): Map<string, string[]> {
+  const childrenOf = buildChildrenMap(graph)
+  const map = new Map<string, string[]>()
+  for (const [parent, kids] of childrenOf) {
+    for (const kid of kids) {
+      const list = map.get(kid)
       if (list) {
-        if (!list.includes(edge.from)) list.push(edge.from)
+        if (!list.includes(parent)) list.push(parent)
       } else {
-        map.set(edge.to, [edge.from])
+        map.set(kid, [parent])
       }
     }
-    return map
-  }
-
-  // Fall back to node.parents.
-  for (const node of graph.nodes) {
-    if (!node.parents || node.parents.length === 0) continue
-    const parents = node.parents.filter((p) => known.has(p))
-    if (parents.length > 0) map.set(node.id, parents)
   }
   return map
 }
@@ -183,8 +230,27 @@ export interface PositionedEdge {
 export interface DagLayout {
   nodes: PositionedNode[]
   edges: PositionedEdge[]
+  /**
+   * Left edge of the tight painted-content box, in layout coordinates.
+   * Typically negative: id labels hang LEFT of their node
+   * (`textAnchor="end"` at `node.x - LABEL_GAP_X`), so the box must open
+   * left of x=0 for them to render inside the SVG viewport (an SVG clips
+   * its own overflow, so content outside the box is invisible no matter
+   * how the camera pans).
+   */
+  minX: number
   width: number
   height: number
+}
+
+/** Estimated painted width of a node id label (9px id font). */
+export function idTextWidth(id: string): number {
+  return id.length * ID_CHAR_W
+}
+
+/** Estimated painted width of a node title after the truncate budget (11px label font). */
+export function titleTextWidth(title: string): number {
+  return Math.min(title.length, LABEL_MAX_CHARS) * LABEL_CHAR_W
 }
 
 /** X coordinate (px) of a node center: one column per topological depth level. */
@@ -202,36 +268,28 @@ export function yFor(slot: number): number {
  *
  * Columns follow topological depth (roots leftmost, via `xFor`). Rows come
  * from leaf ordering: a DFS hands each leaf (a node without children) the
- * next row slot; internal nodes are then placed in reverse topological (DFS
+ * next row slot; internal nodes are placed in reverse topological (DFS
  * post-) order at the mean of their children's slots, so each subtree owns a
- * contiguous vertical band and labels cannot overlap by construction.
- * Cycles are broken by the DFS guard — the first placed node of a cyclic
- * component finds all of its children unplaced and falls back to its own
- * row slot instead of averaging nothing.
+ * contiguous vertical band. Because same-level parents with equal child
+ * means — the canonical diamond — would otherwise land on the identical
+ * point, a final post-pass walks levels deepest-first, re-centers internal
+ * nodes on their children's final slots, and pushes same-level nodes down
+ * until every pair is at least one row slot apart, so node labels can never
+ * overlap by construction. Cycles are broken by the DFS guard — the first
+ * placed node of a cyclic component finds all of its children unplaced and
+ * falls back to its own row slot instead of averaging nothing.
  * Pure — no DOM, safe to unit-test.
  */
 export function layoutDag(graph: HypothesisGraph): DagLayout {
   if (graph.nodes.length === 0) {
-    return { nodes: [], edges: [], width: 0, height: 0 }
+    return { nodes: [], edges: [], minX: 0, width: 0, height: 0 }
   }
 
   const levels = assignLevels(graph)
   const parentMap = buildParentMap(graph)
-
-  // Invert child→parents into deduped parent→children lists (input order).
-  const childrenOf = new Map<string, string[]>()
-  for (const node of graph.nodes) {
-    const parents = parentMap.get(node.id)
-    if (!parents) continue
-    for (const pid of parents) {
-      const list = childrenOf.get(pid)
-      if (list) {
-        if (!list.includes(node.id)) list.push(node.id)
-      } else {
-        childrenOf.set(pid, [node.id])
-      }
-    }
-  }
+  // Shared union adjacency (edges ∪ declared parents) — the same map the
+  // path utilities resolve, so layout and traversal agree on the DAG.
+  const childrenOf = buildChildrenMap(graph)
 
   // DFS post-order = children before parents (reverse topological order).
   // Start from parentless roots, then sweep any leftover nodes (pure cycles
@@ -271,7 +329,53 @@ export function layoutDag(graph: HypothesisGraph): DagLayout {
     slots.set(id, count > 0 ? sum / count : nextSlot++)
   }
 
-  const maxLevel = Math.max(0, ...levels.values())
+  // Separation + re-center post-pass. Same-level parents with equal child
+  // means — the canonical diamond a→{b,c}→d — would otherwise land on the
+  // identical point and visually merge into one node. Walk levels
+  // deepest-first so internal nodes re-center on their children's FINAL
+  // slots, then push same-level nodes down (minimal displacement, order
+  // preserved) until every pair is at least one row slot apart.
+  const byLevel = new Map<number, string[]>()
+  let maxLevel = 0
+  for (const node of graph.nodes) {
+    const lvl = levels.get(node.id) ?? 0
+    if (lvl > maxLevel) maxLevel = lvl
+    const list = byLevel.get(lvl)
+    if (list) list.push(node.id)
+    else byLevel.set(lvl, [node.id])
+  }
+  let maxSlot = 0
+  for (let lvl = maxLevel; lvl >= 0; lvl--) {
+    const ids = byLevel.get(lvl)
+    if (!ids) continue
+    // Re-center internal nodes on their children's current slots. Deeper
+    // levels are final by now; same-level children (cycle back-edges) are
+    // read at their pre-sweep values, keeping the pass finite.
+    for (const id of ids) {
+      if (!childrenOf.has(id)) continue
+      let sum = 0
+      let count = 0
+      for (const child of childrenOf.get(id) ?? []) {
+        const slot = slots.get(child)
+        if (slot === undefined) continue
+        sum += slot
+        count++
+      }
+      if (count > 0) slots.set(id, sum / count)
+    }
+    // Separate the level: stable sort by slot (ties keep input order), then
+    // push each node down to the nearest slot restoring the one-slot gap.
+    const order = ids
+      .map((id) => ({ id, slot: slots.get(id) ?? 0 }))
+      .sort((p, q) => p.slot - q.slot)
+    let prev = Number.NEGATIVE_INFINITY
+    for (const item of order) {
+      if (item.slot < prev + 1) item.slot = prev + 1
+      prev = item.slot
+      slots.set(item.id, item.slot)
+      if (item.slot > maxSlot) maxSlot = item.slot
+    }
+  }
 
   // Assign x/y to every node.
   const pos = new Map<string, PositionedNode>()
@@ -313,10 +417,48 @@ export function layoutDag(graph: HypothesisGraph): DagLayout {
     }
   }
 
-  // Box: last column plus a full label budget; last row slot plus padding.
-  const width = xFor(maxLevel) + LABEL_GAP_X + LABEL_MAX_CHARS * LABEL_CHAR_W + BOX_PAD
-  const height = TOP_PAD + Math.max(0, nextSlot - 1) * ROW_H + BOX_PAD
-  return { nodes, edges, width: Math.max(width, 0), height: Math.max(height, 0) }
+  // Box: hug the painted content. Id labels hang LEFT of their node,
+  // truncated titles hang RIGHT (both estimated per character, mirroring the
+  // rendered text), with BOX_PAD breathing room on each side. The tight box
+  // is what the pan/zoom camera fits and centers: a loose one (e.g. the full
+  // 26-char budget after the last column, or a fixed extra allowance) leaves
+  // the fitted graph pushed toward the canvas's left edge with dead space on
+  // the right, and ids drawn at x < 0 are clipped by the SVG itself.
+  let minX = Infinity
+  let maxX = -Infinity
+  for (const node of nodes) {
+    minX = Math.min(minX, node.x - LABEL_GAP_X - idTextWidth(node.id))
+    maxX = Math.max(maxX, node.x + LABEL_GAP_X + titleTextWidth(node.title))
+  }
+  minX -= BOX_PAD
+  const width = maxX + BOX_PAD - minX
+  // Height follows the deepest FINAL slot: the separation pass can push
+  // same-level nodes past the last leaf slot, so nextSlot would undercount.
+  const height = TOP_PAD + maxSlot * ROW_H + BOX_PAD
+  return {
+    nodes,
+    edges,
+    minX,
+    width: Math.max(width, 0),
+    height: Math.max(height, 0),
+  }
+}
+
+/**
+ * Cheap geometric signature of a layout: node ids/positions, edge
+ * endpoints/anchors, and the fitted box. Two layouts with the same signature
+ * paint identically, so a camera auto-fit keyed on this string fires only
+ * when the geometry actually changed — not on every content-identical
+ * refresh (the store replaces `project.graph` with a fresh object per
+ * applied update, so layout IDENTITY changes constantly while the painted
+ * graph usually does not). O(N+E) string build, memo-friendly. Pure.
+ */
+export function layoutSignature(layout: DagLayout): string {
+  const nodes = layout.nodes.map((n) => `${n.id}@${n.x},${n.y}`).join('|')
+  const edges = layout.edges
+    .map((e) => `${e.from}>${e.to}@${e.x1},${e.y1},${e.x2},${e.y2}`)
+    .join('|')
+  return `${layout.minX},${layout.width},${layout.height};${nodes};${edges}`
 }
 
 // ── Edge path ──────────────────────────────────────────────────────────
@@ -338,252 +480,6 @@ export function formatRate(rate: number): string {
   return `${Math.round(rate * 100)}%`
 }
 
-// ── Hypothesis paths (root-to-leaf enumeration) ───────────────────────
-
-/** A hypothesis plus its depth in the path (0 for roots). */
-export interface TreeNode {
-  node: HypothesisNode
-  depth: number
-}
-
-/**
- * A single root-to-leaf path through the hypothesis DAG.
- * Each entry in `path` is a `{ node, depth }` where depth is the index
- * within the path (0 = most-general ancestor, path.length - 1 = leaf).
- */
-export interface PathEntry {
-  /** Ordered sequence of nodes from root (index 0) to leaf (last index). */
-  path: TreeNode[]
-}
-
-// ── Merged tree (shared-prefix collapse) ──────────────────────────────
-
-/**
- * A node in the merged hypothesis tree. Shares a single `node` instance
- * across all paths that pass through it, and collects its descendants in
- * `children` — eliminating the duplication that the flat path list produces.
- */
-export interface MergedTreeNode {
-  node: HypothesisNode
-  children: MergedTreeNode[]
-}
-
-/**
- * Convert a flat list of root-to-leaf paths into a single merged tree
- * where shared prefixes are collapsed into one node.
- *
- * **Algorithm:** Walk each path depth-first, inserting nodes into the tree.
- * When a node with the same `id` already exists at the expected depth,
- * reuse it (the depth is identical because the DAG guarantees a unique
- * topological level for each node). Otherwise create a new child node.
- *
- * **Complexity:** O(Σ path_length × branching_factor) — proportional to the
- * total number of path entries, not O(N²). Each insertion is O(1) because
- * we traverse the existing tree depth-by-depth and match by node id at each
- * level.
- *
- * Pure — no DOM — and unit-tested.
- */
-export function mergePathsToTree(paths: PathEntry[]): MergedTreeNode[] {
-  if (paths.length === 0) return []
-
-  const roots: MergedTreeNode[] = []
-
-  for (const entry of paths) {
-    const path = entry.path
-    if (path.length === 0) continue
-
-    let depth = 0
-    let parent: MergedTreeNode | null = null
-
-    for (const treeNode of path) {
-      const nodeId = treeNode.node.id
-
-      if (depth === 0) {
-        // Root level: look for an existing root with this id.
-        let found = roots.find((r) => r.node.id === nodeId)
-        if (!found) {
-          found = { node: treeNode.node, children: [] }
-          roots.push(found)
-        }
-        parent = found
-        depth = 1
-      } else {
-        // Non-root: look for this node among parent's children at the
-        // expected depth.
-        let child: MergedTreeNode | undefined = parent!.children.find((c) => c.node.id === nodeId)
-        if (!child) {
-          child = { node: treeNode.node, children: [] }
-          parent!.children.push(child)
-        }
-        parent = child
-        depth++
-      }
-    }
-  }
-
-  return roots
-}
-
-/**
- * Enumerate all root-to-leaf paths in the hypothesis DAG.
- *
- * A *root* is any node with no parents (in-degree 0). A *leaf* is any node
- * with no children (out-degree 0). Every maximal chain root → … → leaf is
- * emitted as a `PathEntry`.
- *
- * **Algorithm:** DFS from every root, tracking an on-path visited set to
- * break cycles. When a node has no unvisited children, the current path is
- * a complete root-to-leaf path and is appended to the result.
- *
- * **Diamond-safe:** because the visited set is cleared on backtrack, a
- * node that sits at the convergence of multiple branches appears in
- * *every* path that reaches it — which is the correct enumeration semantics.
- *
- * **Cycle-safe:** the on-path set prevents infinite recursion on malformed
- * graphs with back-edges.
- *
- * Pure — no DOM — and unit-tested.
- */
-export function findAllRootToLeafPaths(graph: HypothesisGraph): PathEntry[] {
-  if (graph.nodes.length === 0) return []
-
-  const known = new Set(graph.nodes.map((n) => n.id))
-  const childrenOf = new Map<string, string[]>()
-  const addChild = (parent: string, child: string) => {
-    if (parent === child) return
-    const arr = childrenOf.get(parent)
-    if (arr) {
-      if (!arr.includes(child)) arr.push(child)
-    } else {
-      childrenOf.set(parent, [child])
-    }
-  }
-  // Union of explicit edges and declared parents (matches BuildGraph's edge
-  // reconciliation) so the tree is complete for partial graphs.
-  for (const e of graph.edges) {
-    if (known.has(e.from) && known.has(e.to)) addChild(e.from, e.to)
-  }
-  for (const n of graph.nodes) {
-    for (const p of n.parents ?? []) {
-      if (known.has(p)) addChild(p, n.id)
-    }
-  }
-
-  const hasParent = new Set<string>()
-  for (const kids of childrenOf.values()) {
-    for (const k of kids) hasParent.add(k)
-  }
-
-  // Roots: nodes with no parent.
-  const roots = graph.nodes
-    .filter((n) => !hasParent.has(n.id))
-    .map((n) => n.id)
-    .sort()
-
-  // If no roots exist (all nodes have parents → cycle), treat all nodes as
-  // potential starting points.
-  const startingNodes = roots.length > 0 ? roots : graph.nodes.map((n) => n.id).sort()
-
-  const result: PathEntry[] = []
-
-  // DFS from each root, collecting complete root→leaf paths.
-  const onPath = new Set<string>()
-  const currentPath: string[] = []
-
-  const dfs = (id: string) => {
-    onPath.add(id)
-    currentPath.push(id)
-
-    const kids = (childrenOf.get(id) ?? []).slice().sort()
-    const unvisitedKids = kids.filter((c) => !onPath.has(c))
-
-    if (unvisitedKids.length === 0) {
-      // Leaf (or all children already on-path → cycle boundary).
-      // Emit the current path.
-      result.push({
-        path: currentPath.map((nid, depth) => ({
-          node: graph.nodes.find((n) => n.id === nid)!,
-          depth,
-        })),
-      })
-    } else {
-      for (const c of unvisitedKids) {
-        dfs(c)
-      }
-    }
-
-    currentPath.pop()
-    onPath.delete(id)
-  }
-
-  for (const r of startingNodes) {
-    if (!onPath.has(r)) dfs(r)
-  }
-
-  // Defensive: append any orphan not reached from a root as a single-node path.
-  const reached = new Set<string>()
-  for (const entry of result) {
-    for (const tn of entry.path) reached.add(tn.node.id)
-  }
-  for (const n of graph.nodes) {
-    if (!reached.has(n.id)) {
-      result.push({
-        path: [{ node: n, depth: 0 }],
-      })
-    }
-  }
-
-  return result
-}
-
-// ── Incomplete-path filtering ─────────────────────────────────────────
-
-/**
- * Enumerate only the *incomplete* root-to-leaf paths — those that still
- * contain at least one non-terminal node (`open` / `in-progress`). Paths whose
- * nodes are all terminal (`confirmed` / `refuted` / `cancelled`) are fully
- * worked and are dropped. Empty graph → `[]`.
- *
- * Reuses `findAllRootToLeafPaths`; pure and unit-tested.
- */
-export function findIncompletePaths(graph: HypothesisGraph): PathEntry[] {
-  return findAllRootToLeafPaths(graph).filter((entry) =>
-    entry.path.some((t) => !isTerminal(t.node.status)),
-  )
-}
-
-/** Options for `filterPaths`. */
-export interface FilterPathsOptions {
-  /**
-   * When true, terminal (`confirmed` / `refuted` / `cancelled`) nodes are
-   * pruned from each path, and paths that become empty are dropped. Defaults
-   * to false (paths returned unchanged).
-   */
-  hideTerminal?: boolean
-}
-
-/**
- * Filter an already-enumerated path list for rendering. With
- * `hideTerminal: true`, terminal nodes are removed from each path (depths are
- * re-indexed so the pruned path stays a valid `PathEntry`). Paths left empty
- * by pruning are dropped. With `hideTerminal` false/omitted the input is
- * returned unchanged. Pure — no DOM — and unit-tested.
- */
-export function filterPaths(
-  paths: PathEntry[],
-  options: FilterPathsOptions = {},
-): PathEntry[] {
-  if (!options.hideTerminal) return paths
-  const result: PathEntry[] = []
-  for (const entry of paths) {
-    const kept = entry.path.filter((t) => !isTerminal(t.node.status))
-    if (kept.length === 0) continue
-    result.push({ path: kept.map((t, depth) => ({ node: t.node, depth })) })
-  }
-  return result
-}
-
 // ── Display-graph filtering (terminal-hide toggle) ────────────────────
 
 /** Options for `buildDisplayGraph`. */
@@ -595,11 +491,13 @@ export interface FilterGraphOptions {
 /**
  * Build the graph to render, optionally hiding terminal (completed) nodes.
  *
- * With `hideTerminal: true` the input graph is reduced to the *incomplete
- * frontier*: fully-terminal root→leaf paths are dropped (via
- * `findIncompletePaths`) and terminal nodes inside the remaining mixed paths
- * are pruned (via `filterPaths`), so completed hypotheses disappear from the
- * active front. The surviving node ids become the filtered node set, and only
+ * With `hideTerminal: true` the graph is reduced to the *incomplete
+ * frontier* — computed directly in O(N+E) instead of enumerating every
+ * root→leaf path (exponential in diamond depth): a path is incomplete iff
+ * it contains at least one non-terminal node, and terminal pruning removes
+ * exactly the terminal nodes, so a node survives iff it is itself
+ * non-terminal (every node lies on at least one maximal chain, and any
+ * chain through a non-terminal node is incomplete by definition). Only
  * edges whose both endpoints survive are kept. With `hideTerminal`
  * false/omitted the input graph is returned unchanged (reference equality).
  *
@@ -610,12 +508,8 @@ export function buildDisplayGraph(
   options: FilterGraphOptions = {},
 ): HypothesisGraph {
   if (!options.hideTerminal) return graph
-  const paths = filterPaths(findIncompletePaths(graph), { hideTerminal: true })
-  const ids = new Set<string>()
-  for (const entry of paths) {
-    for (const t of entry.path) ids.add(t.node.id)
-  }
-  const nodes = graph.nodes.filter((n) => ids.has(n.id))
+  const nodes = graph.nodes.filter((n) => !isTerminal(n.status))
+  const ids = new Set(nodes.map((n) => n.id))
   const edges = graph.edges.filter((e) => ids.has(e.from) && ids.has(e.to))
   return { nodes, edges }
 }
@@ -646,17 +540,69 @@ export function projectDir(root: ResearchRoot | undefined, projectId: string): s
 }
 
 /**
+ * Absolute path of a single hypothesis's markdown card
+ * (`<base>/hypotheses/<id>.md`) so hypothesis mentions can open the card in
+ * the file viewer. `rootPath` is the absolute research root
+ * (ResearchRoot.path); `dir` is the project subdirectory (from `projectDir`,
+ * "" for the flat layout). Pure and unit-tested.
+ */
+export function hypothesisCardPath(rootPath: string, dir: string, id: string): string {
+  const base = dir ? `${rootPath}/${dir}` : rootPath
+  return `${base}/hypotheses/${id}.md`
+}
+
+/**
  * Build absolute artifact paths for a research project so the panel's quick
  * links can open them in the file viewer. `rootPath` is the absolute research
  * root (ResearchRoot.path); `dir` is the project subdirectory (from
  * `projectDir`, "" for the flat layout). Pure and unit-tested.
  */
 export function projectFilePaths(rootPath: string, dir: string): ResearchFilePaths {
-  const base = dir ? `${rootPath}/${dir}` : rootPath
   return {
-    brief: `${base}/brief.md`,
-    priorArt: `${base}/prior-art.md`,
-    report: `${base}/report.md`,
-    graph: `${base}/hypotheses/graph.md`,
+    brief: `${dir ? `${rootPath}/${dir}` : rootPath}/brief.md`,
+    priorArt: `${dir ? `${rootPath}/${dir}` : rootPath}/prior-art.md`,
+    report: `${dir ? `${rootPath}/${dir}` : rootPath}/report.md`,
+    // The graph "card" shares the hypotheses/ directory with the cards.
+    graph: hypothesisCardPath(rootPath, dir, 'graph'),
   }
+}
+
+// ── Pin resolution (match persisted pin paths to projects / cards) ──────
+
+/**
+ * True when a research-root-relative pin path (e.g.
+ * "R-001-slug/brief.md" or "R-001-slug/hypotheses/H-001.md") belongs to the
+ * research project directory `dir` ("" = the flat single-project root, where
+ * pin paths carry no directory component). Pure and unit-tested.
+ */
+export function pinPathInDir(pinPath: string, dir: string): boolean {
+  if (dir === '') return !pinPath.includes('/')
+  return pinPath.startsWith(`${dir}/`)
+}
+
+/**
+ * True when a research project (R-NNN) is pinned: at least one persisted pin
+ * path lies inside the project's directory (a pinned research records its
+ * brief path). Pure and unit-tested.
+ */
+export function isResearchProjectPinned(
+  pinnedResearch: readonly string[],
+  dir: string,
+): boolean {
+  return pinnedResearch.some((p) => pinPathInDir(p, dir))
+}
+
+/**
+ * True when a hypothesis card is pinned FOR the given research project
+ * directory: the persisted pin map is keyed by hypothesis id (H-NNN), but the
+ * same H-NNN exists across R-NNN projects (one key can carry several
+ * projects' card paths), so the directory prefix — not the key alone —
+ * decides whether THIS project's card is pinned. Pure and unit-tested.
+ */
+export function isHypothesisPinned(
+  pinnedHypotheses: Readonly<Record<string, readonly string[]>>,
+  hypothesisId: string,
+  dir: string,
+): boolean {
+  return (pinnedHypotheses[hypothesisId] ?? []).some((p) => pinPathInDir(p, dir))
 }

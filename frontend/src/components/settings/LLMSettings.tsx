@@ -1,11 +1,12 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useRef } from 'react'
 import { useLLMConfig } from './useLLMConfig'
 import { Plus, X } from 'lucide-react'
 import { FIXED_PROVIDERS } from '@/lib/llm-providers'
-import { compositeModelId } from '@/lib/modelId'
+import type { ModelRef } from '@/lib/modelId'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
+import { ModelPickerMenu } from '@/components/ui/ModelPickerMenu'
 import { FixedProviderForms } from './providers/FixedProviderForms'
 import { OpenAICompatibleProviderForms } from './providers/OpenAICompatibleProviderForms'
 
@@ -63,6 +64,12 @@ export function LLMSettings({
   } = useLLMConfig(onSettingsSaved, onDefaultModelChange)
 
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set())
+
+  // Portal target for the default-model picker's menu: the settings modal is
+  // a Radix dialog that sets pointer-events:none on <body>, which would make
+  // a document.body portal inert — portaling into this container keeps the
+  // menu interactive inside the dialog.
+  const settingsContainerRef = useRef<HTMLDivElement>(null)
 
   // --- Add-provider form state -------------------------------------------
   const [showAddForm, setShowAddForm] = useState(false)
@@ -128,37 +135,23 @@ export function LLMSettings({
     })
   }
 
-  // Collect all enabled models across all providers for the global default
-  // dropdown. Each entry carries its composite "provider/name" selector (the
-  // value sent to the backend) plus the bare name shown to the user. When the
-  // same bare name is exposed by more than one provider, the option label is
-  // disambiguated with the provider key so the user can tell them apart.
+  // All enabled models across all providers for the global default picker,
+  // built from the DRAFT provider configs so a just-toggled model is
+  // immediately selectable (or droppable) without saving first. Each entry
+  // carries its composite "provider/name" selector (the value sent to the
+  // backend) plus the bare name shown to the user.
   const allEnabledModels = useMemo(() => {
-    const result: { id: string; model: string; provider: string }[] = []
+    const result: ModelRef[] = []
     for (const p of Object.keys(providerConfigs)) {
       const cfg = providerConfigs[p]
       if (cfg) {
         for (const m of cfg.models) {
-          result.push({ id: compositeModelId(p, m), model: m, provider: p })
+          result.push({ name: m, provider: p })
         }
       }
     }
     return result
   }, [providerConfigs])
-
-  // Bare names that appear under more than one provider — their dropdown
-  // options are suffixed with the provider key for disambiguation.
-  const duplicateBareNames = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const { model } of allEnabledModels) {
-      counts.set(model, (counts.get(model) ?? 0) + 1)
-    }
-    const dupes = new Set<string>()
-    for (const [model, count] of counts) {
-      if (count > 1) dupes.add(model)
-    }
-    return dupes
-  }, [allEnabledModels])
 
   if (isLoading) {
     return (
@@ -169,26 +162,34 @@ export function LLMSettings({
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-6" ref={settingsContainerRef}>
       {/* Global Default Model */}
       <div className="flex flex-col gap-2">
         <label className="text-sm font-medium">Default Model</label>
-        <Combobox
+        <ModelPickerMenu
           ariaLabel="Default model"
+          models={allEnabledModels}
+          defaultModel={defaultModel}
+          loaded={!isLoading}
           value={defaultModel}
-          onChange={setDefaultModel}
-          options={[
-            { value: '', label: '— Select a default model —' },
-            ...allEnabledModels.map(({ id, model, provider }) => ({
-              value: id,
-              label: duplicateBareNames.has(model) ? `${model} (${provider})` : model,
-            })),
-          ]}
+          onSelect={(id) => { if (id) setDefaultModel(id) }}
+          // A "use the default" entry would be self-referential here — this
+          // picker IS the default. An empty selection stays surfaced by the
+          // warning below until a concrete model is picked.
+          hideDefaultOption
+          menuHeading="Default model"
+          portalContainer={settingsContainerRef.current}
+          className="w-full h-9 text-sm px-3 max-w-none"
         />
         <p className="text-xs text-muted-foreground">
           The default model is used when no per-message override is set. It must
           be enabled in at least one provider below.
         </p>
+        {!defaultModel && (
+          <p className="text-xs text-destructive" role="alert">
+            Choose a default model to save your provider changes.
+          </p>
+        )}
       </div>
 
       {/* Fixed Provider Accordions */}

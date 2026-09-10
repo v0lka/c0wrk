@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
+	"sync"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
@@ -44,6 +47,18 @@ type ResearchStatusDTO struct {
 	// outcome of seeding the research skill-pack into the project's local
 	// .agents/skills directory. Nil for GetResearchStatus / DisableResearch.
 	SeedResult *ResearchSeedResultDTO `json:"seed_result,omitempty"`
+
+	// PinnedResearch lists the project's pinned research document paths —
+	// each the brief of a pinned R-NNN, relative to the research root with
+	// forward slashes (mirrors the persisted ProjectInfo.ResearchPins).
+	// Always non-nil (empty slice, not null) so the wire shape is stable.
+	PinnedResearch []string `json:"pinned_research"`
+
+	// PinnedHypotheses maps a hypothesis id (H-NNN) to the pinned card paths
+	// belonging to that hypothesis (relative to the research root, forward
+	// slashes). The value is a list because the same H-NNN exists across
+	// R-NNN projects. Always non-nil (empty map, not null).
+	PinnedHypotheses map[string][]string `json:"pinned_hypotheses"`
 }
 
 // ResearchGraphDTO is the lightweight response for GetResearchGraph. It
@@ -78,18 +93,27 @@ type ResearchMetrics struct {
 }
 
 // ResearchSeedResultDTO mirrors research.SeedSkillsResult for the frontend:
-// which skills were newly seeded, overwritten, left current, or preserved
-// (user-owned).
+// which skills were newly seeded, overwritten, left current, preserved
+// (user-owned), or modified (pack-marked but locally diverged).
 type ResearchSeedResultDTO struct {
 	Seeded    []string `json:"seeded"`
 	Updated   []string `json:"updated"`
 	Current   []string `json:"current"`
 	Preserved []string `json:"preserved"`
+	Modified  []string `json:"modified"`
 }
 
 // ResearchNextStepDTO is the small response for GetResearchNextStep: the single
 // recommended next research action for the active project's current phase.
 // Target is empty when the action is not scoped to a single hypothesis.
+//
+// ProjectID is DUAL-NAMESPACE BY DESIGN (documented in
+// specs/domains/research.md): it names the SUBJECT of the recommendation —
+// the active R-NNN when one exists, the c0wrk project UUID otherwise (the
+// research-init setup state, before any R-NNN exists). It is NOT a stable
+// identity for the requesting c0wrk project: frontend consumers must not
+// key cross-project state off this field alone (the research store guards
+// project switches itself and drops the recommendation on switch).
 type ResearchNextStepDTO struct {
 	ProjectID string `json:"project_id"`
 	Action    string `json:"action"`
@@ -100,15 +124,21 @@ type ResearchNextStepDTO struct {
 
 // HypothesisUpdateFields is the structured update payload for UpdateHypothesis.
 // Pointer fields distinguish "leave unchanged" (nil) from "set to empty"
-// (a non-nil pointer to ""). Only the five UI-mutable fields are exposed;
-// identifier, statement, verification criterion, created, and completed are
-// not editable through this path.
+// (a non-nil pointer to "" / an empty Parents slice). Identifier, created,
+// and completed are not editable through this path.
 type HypothesisUpdateFields struct {
 	Title    *string `json:"title,omitempty"`
 	Status   *string `json:"status,omitempty"`
 	Result   *string `json:"result,omitempty"`
 	Timebox  *string `json:"timebox,omitempty"`
 	Decision *string `json:"decision,omitempty"`
+	// Long-form card sections (verbatim Markdown bodies).
+	Statement             *string `json:"statement,omitempty"`
+	VerificationCriterion *string `json:"verification_criterion,omitempty"`
+	ExperimentNotes       *string `json:"experiment_notes,omitempty"`
+	// Parents replaces the card's parent set; validated server-side
+	// (existence, no self-reference, no cycle) before any write.
+	Parents *[]string `json:"parents,omitempty"`
 }
 
 // NewHypothesisCard is the structured create payload for CreateHypothesis.
@@ -140,9 +170,6 @@ type NewHypothesisCard struct {
 func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatusDTO, error) {
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
-	}
-	if !f.experimentalFeaturesEnabled() {
-		return nil, errors.New("experimental features are disabled")
 	}
 	if f.projectManager == nil || f.projStore == nil {
 		return nil, errors.New("project subsystem not initialized")
@@ -184,10 +211,22 @@ func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatu
 
 	// Track the active research root so the workspace watcher callback can
 	// emit research:file_changed events for file modifications inside it.
+	// Mirror DisableResearch's guard: the active-project trio drives
+	// CreateSession, ListSessions, resolveWorkspacePath (file tree), git
+	// status, and the skills-cache key, and EnableResearch may legitimately be
+	// invoked for a project that is NOT the active one (a stale project id
+	// during a project-switch race, or any non-UI binding caller). Writing the
+	// trio unconditionally would silently retarget those operations without
+	// any of the project-switch flow (no watcher swap, no project:switched
+	// event, no session refresh). Research-root tracking is only needed for
+	// the ACTIVE project's watcher; the persisted proj.ResearchRoot below
+	// makes a later switch to this project pick the root up anyway
+	// (switchProject sets activeResearchRoot from the project record).
 	f.activeProjectMu.Lock()
-	f.activeProjectID = projectID
-	f.activeProjectPath = proj.WorkspacePath
-	f.activeResearchRoot = researchRoot
+	if f.activeProjectID == projectID {
+		f.activeProjectPath = proj.WorkspacePath
+		f.activeResearchRoot = researchRoot
+	}
 	f.activeProjectMu.Unlock()
 
 	// Recursively watch the research artifact tree so the file watcher
@@ -219,7 +258,8 @@ func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatu
 		f.log().Info("research.EnableResearch: skills seeded",
 			"project_id", projectID,
 			"seeded", len(seedRes.Seeded), "updated", len(seedRes.Updated),
-			"current", len(seedRes.Current), "preserved", len(seedRes.Preserved))
+			"current", len(seedRes.Current), "preserved", len(seedRes.Preserved),
+			"modified", len(seedRes.Modified))
 	}
 
 	// Seed the built-in research Subagent Profile into the project's local
@@ -238,7 +278,8 @@ func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatu
 		f.log().Info("research.EnableResearch: agents seeded",
 			"project_id", projectID,
 			"seeded", len(agentSeedRes.Seeded), "updated", len(agentSeedRes.Updated),
-			"current", len(agentSeedRes.Current), "preserved", len(agentSeedRes.Preserved))
+			"current", len(agentSeedRes.Current), "preserved", len(agentSeedRes.Preserved),
+			"modified", len(agentSeedRes.Modified))
 	}
 
 	// Persist the research root on the project.
@@ -277,6 +318,7 @@ func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatu
 		Root:         root,
 		SeedResult:   toSeedResultDTO(seedRes),
 	}
+	applyResearchPins(status, proj.ResearchPins)
 
 	f.emitEvent(EventResearchChanged, map[string]string{
 		"project_id": projectID,
@@ -363,12 +405,6 @@ func (f *FrontendAPI) GetResearchStatus(projectID string) (*ResearchStatusDTO, e
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}
-	if !f.experimentalFeaturesEnabled() {
-		return &ResearchStatusDTO{
-			Enabled:   false,
-			ProjectID: projectID,
-		}, nil
-	}
 	if f.projectManager == nil {
 		return nil, errors.New("project subsystem not initialized")
 	}
@@ -380,19 +416,23 @@ func (f *FrontendAPI) GetResearchStatus(projectID string) (*ResearchStatusDTO, e
 
 	// Empty state when no research root is persisted.
 	if proj.ResearchRoot == "" {
-		return &ResearchStatusDTO{
+		status := &ResearchStatusDTO{
 			Enabled:   false,
 			ProjectID: projectID,
-		}, nil
+		}
+		applyResearchPins(status, proj.ResearchPins)
+		return status, nil
 	}
 
 	root := f.parseResearchRootBestEffort(proj.ResearchRoot)
-	return &ResearchStatusDTO{
+	status := &ResearchStatusDTO{
 		Enabled:      true,
 		ProjectID:    projectID,
 		ResearchRoot: proj.ResearchRoot,
 		Root:         root,
-	}, nil
+	}
+	applyResearchPins(status, proj.ResearchPins)
+	return status, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -409,11 +449,6 @@ func (f *FrontendAPI) GetResearchStatus(projectID string) (*ResearchStatusDTO, e
 func (f *FrontendAPI) GetResearchGraph(projectID string) (*ResearchGraphDTO, error) {
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
-	}
-	if !f.experimentalFeaturesEnabled() {
-		return &ResearchGraphDTO{
-			ProjectID: projectID,
-		}, nil
 	}
 	if f.projectManager == nil {
 		return nil, errors.New("project subsystem not initialized")
@@ -485,16 +520,19 @@ func researchGraphDTOFromProject(active *research.ResearchProject) *ResearchGrap
 // ---------------------------------------------------------------------------
 
 // GetResearchNextStep returns the single recommended next research action for
-// a project, derived from the active R-NNN's current phase. When there is no
-// active R-NNN yet (an empty research root, a root with no projects, or
-// RESEARCH not enabled), it returns the setup recommendation (research-init)
-// rather than an error, so the dashboard always has a next step to show.
-func (f *FrontendAPI) GetResearchNextStep(projectID string) (*ResearchNextStepDTO, error) {
+// a project, derived from the active R-NNN's current phase. A non-empty
+// hypothesisID scopes the recommendation to THAT hypothesis (the dashboard's
+// selected card) via RecommendNextStepForHypothesis: an open/in-progress
+// hypothesis recommends an experiment on it, a terminal hypothesis without a
+// recorded Decision recommends deciding on it. An empty hypothesisID means
+// the project-level recommendation; an unknown hypothesis id (or one already
+// carrying a Decision) falls back to it too. When there is no active R-NNN
+// yet (an empty research root, a root with no projects, or RESEARCH not
+// enabled), it returns the setup recommendation (research-init) rather than
+// an error, so the dashboard always has a next step to show.
+func (f *FrontendAPI) GetResearchNextStep(projectID, hypothesisID string) (*ResearchNextStepDTO, error) {
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
-	}
-	if !f.experimentalFeaturesEnabled() {
-		return f.setupNextStep(projectID), nil
 	}
 	if f.projectManager == nil {
 		return nil, errors.New("project subsystem not initialized")
@@ -512,7 +550,7 @@ func (f *FrontendAPI) GetResearchNextStep(projectID string) (*ResearchNextStepDT
 
 	root := f.parseResearchRootBestEffort(proj.ResearchRoot)
 	active := research.PickActiveProject(root) // handles nil root → nil
-	rec := research.RecommendNextStep(active)
+	rec := research.RecommendNextStepForHypothesis(active, hypothesisID)
 
 	// Report the active R-NNN as the subject of the recommendation when one
 	// exists; otherwise fall back to the requested project ID.
@@ -530,8 +568,7 @@ func (f *FrontendAPI) GetResearchNextStep(projectID string) (*ResearchNextStepDT
 }
 
 // setupNextStep returns the research-init setup recommendation for a project
-// that has no active R-NNN yet (RESEARCH disabled, experimental features off,
-// or an empty research root).
+// that has no active R-NNN yet (RESEARCH disabled, or an empty research root).
 func (f *FrontendAPI) setupNextStep(projectID string) *ResearchNextStepDTO {
 	rec := research.RecommendNextStep(nil)
 	return &ResearchNextStepDTO{
@@ -548,13 +585,22 @@ func (f *FrontendAPI) setupNextStep(projectID string) *ResearchNextStepDTO {
 // ---------------------------------------------------------------------------
 
 // UpdateHypothesis applies a structured update to a hypothesis card and its
-// graph entries for the active R-NNN of a project, then returns the refreshed
-// graph. Status transitions are validated against the methodology's state
-// machine (open → in-progress → confirmed/refuted/cancelled; no backward
-// transitions); an illegal transition returns an error and leaves the card and
-// graph unchanged.
-func (f *FrontendAPI) UpdateHypothesis(projectID, hypothesisID string, fields HypothesisUpdateFields) (*ResearchGraphDTO, error) {
-	researchRoot, err := f.researchRootForMutation(projectID)
+// graph entries for the research project (R-NNN) named by researchID, then
+// returns that project's refreshed graph. researchID must identify a research
+// project that lives under the requesting project's research root: a foreign
+// R-NNN (one belonging to another project's root) does not resolve there and
+// is rejected before any file is touched, and the update targets the caller's
+// expected project instead of blindly following the backend's active one —
+// which may have moved on since the caller loaded its graph (cross-project /
+// cross-R-NNN save race). Status transitions are validated against the
+// methodology's state machine (open → in-progress → confirmed/refuted/
+// cancelled; no backward transitions); a Parents update is validated against
+// the reconciled graph (parents must exist, no self-reference, no cycle) and
+// synchronized across the card's Parent(s) row, the Mermaid incoming edges,
+// and the catalog's Parent(s) column. Any invalid update returns an error
+// and leaves the card and graph unchanged.
+func (f *FrontendAPI) UpdateHypothesis(projectID, researchID, hypothesisID string, fields HypothesisUpdateFields) (*ResearchGraphDTO, error) {
+	researchRoot, _, err := f.researchRootForMutation(projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -563,20 +609,39 @@ func (f *FrontendAPI) UpdateHypothesis(projectID, hypothesisID string, fields Hy
 	if hid == "" {
 		return nil, errors.New("invalid hypothesis id")
 	}
+	rid := research.NormalizeResearchID(researchID)
+	if rid == "" {
+		return nil, errors.New("invalid research project id (want R-NNN)")
+	}
 
-	projectDir, err := research.ActiveProjectDir(researchRoot)
+	// Serialize the whole load→mutate→write chain on this root: concurrent
+	// UpdateHypothesis/CreateHypothesis calls otherwise interleave their
+	// read-modify-write of card+graph (lost updates, torn card-vs-graph
+	// writes) and race the max+1 H-NNN id assignment of CreateHypothesis.
+	mu := f.researchMutationMu(researchRoot)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Ownership check: resolve the expected R-NNN inside the REQUESTING
+	// project's root. A research project of another project's root does not
+	// resolve here and is rejected before any mutation runs.
+	projectDir, err := research.ProjectDir(researchRoot, rid)
 	if err != nil {
 		return nil, err
 	}
 
 	upd := research.HypothesisUpdate{
-		Title:    fields.Title,
-		Status:   fields.Status,
-		Result:   fields.Result,
-		Timebox:  fields.Timebox,
-		Decision: fields.Decision,
+		Title:                 fields.Title,
+		Status:                fields.Status,
+		Result:                fields.Result,
+		Timebox:               fields.Timebox,
+		Decision:              fields.Decision,
+		Statement:             fields.Statement,
+		VerificationCriterion: fields.VerificationCriterion,
+		ExperimentNotes:       fields.ExperimentNotes,
+		Parents:               fields.Parents,
 	}
-	if err := research.UpdateHypothesis(projectDir, hid, upd); err != nil {
+	if err := research.UpdateHypothesis(researchRoot, projectDir, hid, upd); err != nil {
 		return nil, err
 	}
 
@@ -586,24 +651,31 @@ func (f *FrontendAPI) UpdateHypothesis(projectID, hypothesisID string, fields Hy
 		filepath.Join(hypDir, "graph.md"),
 	})
 
-	return f.researchGraphAfterMutation(researchRoot), nil
+	return f.researchGraphAfterMutation(researchRoot, rid), nil
 }
 
 // CreateHypothesis creates a new hypothesis card (assigning the next H-NNN id)
 // and updates the graph (Mermaid node + edges + catalog row) for the active
-// R-NNN of a project, returning the refreshed graph.
+// R-NNN of a project, returning the refreshed graph. The whole
+// resolve→allocate→write chain runs under the per-root mutation mutex so
+// concurrent creators cannot both observe the same max H-NNN and overwrite
+// each other's card (lost update / duplicate id).
 func (f *FrontendAPI) CreateHypothesis(projectID string, newCard NewHypothesisCard) (*ResearchGraphDTO, error) {
-	researchRoot, err := f.researchRootForMutation(projectID)
+	researchRoot, _, err := f.researchRootForMutation(projectID)
 	if err != nil {
 		return nil, err
 	}
+
+	mu := f.researchMutationMu(researchRoot)
+	mu.Lock()
+	defer mu.Unlock()
 
 	projectDir, err := research.ActiveProjectDir(researchRoot)
 	if err != nil {
 		return nil, err
 	}
 
-	hid, err := research.CreateHypothesis(projectDir, research.NewHypothesis{
+	hid, err := research.CreateHypothesis(researchRoot, projectDir, research.NewHypothesis{
 		Title:                 newCard.Title,
 		Statement:             newCard.Statement,
 		VerificationCriterion: newCard.VerificationCriterion,
@@ -620,47 +692,395 @@ func (f *FrontendAPI) CreateHypothesis(projectID string, newCard NewHypothesisCa
 		filepath.Join(hypDir, "graph.md"),
 	})
 
-	return f.researchGraphAfterMutation(researchRoot), nil
+	// rid "" → the response follows the active project, which is exactly the
+	// project CreateHypothesis just wrote into.
+	return f.researchGraphAfterMutation(researchRoot, ""), nil
 }
 
-// researchRootForMutation loads the project, verifies experimental features are
-// on and RESEARCH is enabled, and returns the project's research root with
-// workspace containment enforced (SECURITY.md) — defense in depth even though
-// the root was already validated at enable time.
-func (f *FrontendAPI) researchRootForMutation(projectID string) (string, error) {
-	if projectID == "" {
-		return "", errors.New("project_id is required")
+// ---------------------------------------------------------------------------
+// SetActiveResearch / DeleteResearch / pins
+// ---------------------------------------------------------------------------
+
+// SetActiveResearch makes the research project (R-NNN) named by researchID the
+// active one for a project by rewriting the research root's index.md so the
+// project's row becomes the last table entry — the chronological
+// "last entry = active" rule PickActiveProject applies (a missing row is
+// appended, a missing index.md created with the canonical skeleton). Like the
+// hypothesis mutations, the whole resolve→write chain runs under the per-root
+// mutation mutex, the research root is workspace-containment-checked, and rid
+// must resolve under the REQUESTING project's root — a foreign R-NNN (one
+// belonging to another project's root) is rejected before any file is touched.
+// It returns the refreshed research status (with the new active project's
+// graph and the project's pins) and emits a research:changed event
+// (action="active_changed").
+func (f *FrontendAPI) SetActiveResearch(projectID, researchID string) (*ResearchStatusDTO, error) {
+	researchRoot, proj, err := f.researchRootForMutation(projectID)
+	if err != nil {
+		return nil, err
 	}
-	if !f.experimentalFeaturesEnabled() {
-		return "", errors.New("experimental features are disabled")
+	rid := research.NormalizeResearchID(researchID)
+	if rid == "" {
+		return nil, errors.New("invalid research project id (want R-NNN)")
+	}
+
+	// Serialize against concurrent root mutations: activation rewrites
+	// index.md, which hypothesis mutations and deletions read.
+	mu := f.researchMutationMu(researchRoot)
+	mu.Lock()
+	defer mu.Unlock()
+
+	if err := research.SetActiveResearch(researchRoot, rid); err != nil {
+		return nil, err
+	}
+
+	root := f.parseResearchRootBestEffort(researchRoot)
+	status := &ResearchStatusDTO{
+		Enabled:      true,
+		ProjectID:    projectID,
+		ResearchRoot: researchRoot,
+		Root:         root,
+	}
+	applyResearchPins(status, proj.ResearchPins)
+
+	f.emitEvent(EventResearchChanged, map[string]string{
+		"project_id": projectID,
+		"action":     "active_changed",
+	})
+
+	return status, nil
+}
+
+// DeleteResearch removes the research project (R-NNN) named by researchID from
+// a project's research root: every index.md entry line referencing it, then
+// its R-NNN-* directory tree in full. rid must resolve under the REQUESTING
+// project's root (the ownership check runs before any file is touched), and
+// the core-layer deletion is containment-checked (a symlinked or escaping
+// project directory is rejected). Pins referencing the deleted project — its
+// brief in the pinned research list and its cards in the pinned hypotheses
+// map — are removed from ProjectInfo.ResearchPins and the cleaned record is
+// persisted. It returns the refreshed research status (the remaining
+// projects, with the next active one selected by the index rule) and emits a
+// research:changed event (action="project_deleted").
+func (f *FrontendAPI) DeleteResearch(projectID, researchID string) (*ResearchStatusDTO, error) {
+	if f.projStore == nil {
+		return nil, errors.New("project subsystem not initialized")
+	}
+	researchRoot, proj, err := f.researchRootForMutation(projectID)
+	if err != nil {
+		return nil, err
+	}
+	rid := research.NormalizeResearchID(researchID)
+	if rid == "" {
+		return nil, errors.New("invalid research project id (want R-NNN)")
+	}
+
+	mu := f.researchMutationMu(researchRoot)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Ownership check BEFORE deleting — once the directory is gone the id no
+	// longer resolves. The resolved directory also fixes the pin prefix
+	// cleaned below.
+	projectDir, err := research.ProjectDir(researchRoot, rid)
+	if err != nil {
+		return nil, err
+	}
+	pinDir, err := filepath.Rel(researchRoot, projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve project directory %q against the research root: %w", projectDir, err)
+	}
+	pinDir = filepath.ToSlash(pinDir)
+
+	if err := research.DeleteResearchProject(researchRoot, rid); err != nil {
+		return nil, err
+	}
+
+	// Clean the deleted R-NNN's pins (its brief + its hypothesis cards) and
+	// persist the cleaned record. proj is a fresh load owned by this call, so
+	// the in-place pin cleanup is safe.
+	pins, pinsChanged := removePinnedUnderDir(proj.ResearchPins, pinDir)
+	if pinsChanged {
+		proj.ResearchPins = pins
+		if err := f.projStore.SaveProject(context.Background(), *proj); err != nil {
+			return nil, fmt.Errorf("failed to persist cleaned research pins: %w", err)
+		}
+	}
+
+	root := f.parseResearchRootBestEffort(researchRoot)
+	status := &ResearchStatusDTO{
+		Enabled:      true,
+		ProjectID:    projectID,
+		ResearchRoot: researchRoot,
+		Root:         root,
+	}
+	applyResearchPins(status, proj.ResearchPins)
+
+	f.emitEvent(EventResearchChanged, map[string]string{
+		"project_id": projectID,
+		"action":     "project_deleted",
+	})
+
+	return status, nil
+}
+
+// SetResearchPinned pins (or unpins) the research project (R-NNN) named by
+// researchID for a project: pinning records the project's brief document path
+// (relative to the research root, forward slashes) in
+// ProjectInfo.ResearchPins.Research; unpinning removes it. rid must resolve
+// under the REQUESTING project's root — a foreign or unknown R-NNN is rejected
+// before anything is touched. Both directions are idempotent. No event is
+// emitted: the caller's resolved promise is its refresh signal.
+func (f *FrontendAPI) SetResearchPinned(projectID, researchID string, pinned bool) error {
+	if f.projStore == nil {
+		return errors.New("project subsystem not initialized")
+	}
+	researchRoot, proj, err := f.researchRootForMutation(projectID)
+	if err != nil {
+		return err
+	}
+	rid := research.NormalizeResearchID(researchID)
+	if rid == "" {
+		return errors.New("invalid research project id (want R-NNN)")
+	}
+
+	// Serialize pin updates against the root mutations that also rewrite
+	// pins: DeleteResearch cleans this R-NNN's pins under the same lock, and
+	// without it a concurrent pin toggle would save a stale pins snapshot and
+	// resurrect the deleted project's pins (lost update).
+	mu := f.researchMutationMu(researchRoot)
+	mu.Lock()
+	defer mu.Unlock()
+
+	projectDir, err := research.ProjectDir(researchRoot, rid)
+	if err != nil {
+		return err
+	}
+	briefPath := researchDocRelPath(researchRoot, projectDir, "brief.md")
+
+	next, changed := togglePinnedPath(proj.ResearchPins.Research, briefPath, pinned)
+	if !changed {
+		return nil // already in the requested state
+	}
+	proj.ResearchPins.Research = next
+	if err := f.projStore.SaveProject(context.Background(), *proj); err != nil {
+		return fmt.Errorf("failed to persist research pins: %w", err)
+	}
+	return nil
+}
+
+// SetHypothesisPinned pins (or unpins) the hypothesis card (H-NNN) named by
+// hypothesisID within the research project (R-NNN) named by researchID:
+// pinning records the card's path (relative to the research root, forward
+// slashes) under ProjectInfo.ResearchPins.Hypotheses[hypothesisID]; unpinning
+// removes it and drops the key when its list becomes empty. The list-per-key
+// shape supports the same H-NNN pinned across several R-NNN projects. rid must
+// resolve under the REQUESTING project's root. Pinning additionally requires
+// the card file to exist (no pins to phantom cards); unpinning deliberately
+// works for a card whose file has since been deleted, so stale pins are
+// always removable. Both directions are idempotent. No event is emitted.
+func (f *FrontendAPI) SetHypothesisPinned(projectID, researchID, hypothesisID string, pinned bool) error {
+	if f.projStore == nil {
+		return errors.New("project subsystem not initialized")
+	}
+	researchRoot, proj, err := f.researchRootForMutation(projectID)
+	if err != nil {
+		return err
+	}
+	hid := research.NormalizeID(hypothesisID)
+	if hid == "" {
+		return errors.New("invalid hypothesis id")
+	}
+	rid := research.NormalizeResearchID(researchID)
+	if rid == "" {
+		return errors.New("invalid research project id (want R-NNN)")
+	}
+
+	mu := f.researchMutationMu(researchRoot)
+	mu.Lock()
+	defer mu.Unlock()
+
+	projectDir, err := research.ProjectDir(researchRoot, rid)
+	if err != nil {
+		return err
+	}
+	cardPath := researchDocRelPath(researchRoot, projectDir, path.Join("hypotheses", hid+".md"))
+
+	if pinned {
+		// Fail closed against pinning a card that does not exist — the pin
+		// would render as a permanently broken entry.
+		if _, err := os.Stat(filepath.Join(projectDir, "hypotheses", hid+".md")); err != nil {
+			return fmt.Errorf("hypothesis card %s not found in %s: %w", hid, rid, err)
+		}
+	}
+
+	next, changed := togglePinnedPath(proj.ResearchPins.Hypotheses[hid], cardPath, pinned)
+	if !changed {
+		return nil // already in the requested state
+	}
+	if len(next) == 0 {
+		delete(proj.ResearchPins.Hypotheses, hid)
+	} else {
+		if proj.ResearchPins.Hypotheses == nil {
+			proj.ResearchPins.Hypotheses = make(map[string][]string)
+		}
+		proj.ResearchPins.Hypotheses[hid] = next
+	}
+	if err := f.projStore.SaveProject(context.Background(), *proj); err != nil {
+		return fmt.Errorf("failed to persist research pins: %w", err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// pin path helpers (pure)
+// ---------------------------------------------------------------------------
+
+// researchDocRelPath renders the pin-path form of a research document inside a
+// project directory: the directory's path relative to the research root
+// (forward slashes) joined with name. Pins store root-relative forward-slash
+// paths — the same style as index.md brief links — so they are stable across
+// platforms. It falls back to the directory's base name when the relative
+// path cannot be computed.
+func researchDocRelPath(researchRoot, projectDir, name string) string {
+	rel, err := filepath.Rel(researchRoot, projectDir)
+	if err != nil {
+		rel = filepath.Base(projectDir)
+	}
+	return path.Join(filepath.ToSlash(rel), name)
+}
+
+// togglePinnedPath adds p to list when pinned (idempotently — an already
+// present pin is a no-op) or removes every occurrence when unpinned. It
+// returns the next list and whether it changed.
+func togglePinnedPath(list []string, p string, pinned bool) ([]string, bool) {
+	if pinned {
+		for _, existing := range list {
+			if existing == p {
+				return list, false
+			}
+		}
+		return append(list, p), true
+	}
+	kept := make([]string, 0, len(list))
+	removed := false
+	for _, existing := range list {
+		if existing == p {
+			removed = true
+			continue
+		}
+		kept = append(kept, existing)
+	}
+	if !removed {
+		return list, false
+	}
+	return kept, true
+}
+
+// removePinnedUnderDir drops every pinned path under dir — a research project
+// directory relative to the research root — from pins: entries in the pinned
+// research list and card paths in every hypothesis entry, dropping hypothesis
+// keys whose list becomes empty. It returns the cleaned pins and whether
+// anything changed. The Hypotheses map is mutated in place; callers must own
+// the passed pins.
+func removePinnedUnderDir(pins project.ResearchPins, dir string) (project.ResearchPins, bool) {
+	prefix := dir + "/"
+	changed := false
+
+	keptResearch := make([]string, 0, len(pins.Research))
+	for _, p := range pins.Research {
+		if strings.HasPrefix(p, prefix) {
+			changed = true
+			continue
+		}
+		keptResearch = append(keptResearch, p)
+	}
+	pins.Research = keptResearch
+
+	for hid, cards := range pins.Hypotheses {
+		keptCards := make([]string, 0, len(cards))
+		for _, c := range cards {
+			if strings.HasPrefix(c, prefix) {
+				changed = true
+				continue
+			}
+			keptCards = append(keptCards, c)
+		}
+		if len(keptCards) == 0 {
+			delete(pins.Hypotheses, hid)
+		} else {
+			pins.Hypotheses[hid] = keptCards
+		}
+	}
+	return pins, changed
+}
+
+// researchMutationMu returns the mutex serializing hypothesis mutations for a
+// research root, creating it on first use (see the researchRootsMu /
+// researchRootMus field docs in frontend_api.go for the rationale).
+func (f *FrontendAPI) researchMutationMu(researchRoot string) *sync.Mutex {
+	f.researchRootsMu.Lock()
+	defer f.researchRootsMu.Unlock()
+	if f.researchRootMus == nil {
+		f.researchRootMus = make(map[string]*sync.Mutex)
+	}
+	mu := f.researchRootMus[researchRoot]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		f.researchRootMus[researchRoot] = mu
+	}
+	return mu
+}
+
+// researchRootForMutation loads the project, verifies RESEARCH is enabled, and
+// returns the project's research root (with
+// workspace containment enforced — SECURITY.md; defense in depth even though
+// the root was already validated at enable time) together with the loaded
+// project record, whose ResearchPins feed the RPC responses. Callers that
+// persist the project back must additionally check projStore themselves (this
+// helper only requires the read path).
+func (f *FrontendAPI) researchRootForMutation(projectID string) (string, *project.ProjectInfo, error) {
+	if projectID == "" {
+		return "", nil, errors.New("project_id is required")
 	}
 	if f.projectManager == nil {
-		return "", errors.New("project subsystem not initialized")
+		return "", nil, errors.New("project subsystem not initialized")
 	}
 
 	proj, err := f.loadProjectForResearch(projectID)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if proj.ResearchRoot == "" {
-		return "", errors.New("RESEARCH mode is not enabled for this project")
+		return "", nil, errors.New("RESEARCH mode is not enabled for this project")
 	}
 
 	contained, withinErr := config.IsWithinPath(proj.WorkspacePath, proj.ResearchRoot)
 	if withinErr != nil {
-		return "", fmt.Errorf("failed to validate research root containment: %w", withinErr)
+		return "", nil, fmt.Errorf("failed to validate research root containment: %w", withinErr)
 	}
 	if !contained {
-		return "", fmt.Errorf("research root %q must be inside the project workspace %q", proj.ResearchRoot, proj.WorkspacePath)
+		return "", nil, fmt.Errorf("research root %q must be inside the project workspace %q", proj.ResearchRoot, proj.WorkspacePath)
 	}
-	return proj.ResearchRoot, nil
+	return proj.ResearchRoot, proj, nil
 }
 
 // researchGraphAfterMutation re-parses the research root after a mutation and
-// returns the active project's graph DTO (or an empty DTO when the root is not
-// yet parseable — which should not happen right after a successful write).
-func (f *FrontendAPI) researchGraphAfterMutation(researchRoot string) *ResearchGraphDTO {
+// returns a graph DTO. When rid names a parsed project, that project's graph
+// is returned — a save targeting a non-active R-NNN must not flip the panel
+// to the active project's graph. An empty rid (or one that no longer resolves)
+// falls back to the active project, matching CreateHypothesis's active-target
+// semantics. An empty DTO is returned when the root is not yet parseable —
+// which should not happen right after a successful write.
+func (f *FrontendAPI) researchGraphAfterMutation(researchRoot, rid string) *ResearchGraphDTO {
 	root := f.parseResearchRootBestEffort(researchRoot)
+	if root == nil {
+		return &ResearchGraphDTO{}
+	}
+	for _, p := range root.Projects {
+		if p.ID == rid {
+			return researchGraphDTOFromProject(p)
+		}
+	}
 	active := research.PickActiveProject(root) // handles nil root → nil
 	if active == nil {
 		return &ResearchGraphDTO{}
@@ -718,5 +1138,23 @@ func toSeedResultDTO(r *research.SeedSkillsResult) *ResearchSeedResultDTO {
 		Updated:   r.Updated,
 		Current:   r.Current,
 		Preserved: r.Preserved,
+		Modified:  r.Modified,
 	}
+}
+
+// applyResearchPins fills a ResearchStatusDTO's pin fields from the project's
+// persisted pins. Collections are copied and normalized to non-nil so the wire
+// shape is a stable empty slice/map instead of null (the frontend's boundary
+// guard accepts both, but a stable shape keeps consumers simple).
+func applyResearchPins(dto *ResearchStatusDTO, pins project.ResearchPins) {
+	pinned := make([]string, len(pins.Research))
+	copy(pinned, pins.Research)
+	hypotheses := make(map[string][]string, len(pins.Hypotheses))
+	for hid, cards := range pins.Hypotheses {
+		paths := make([]string, len(cards))
+		copy(paths, cards)
+		hypotheses[hid] = paths
+	}
+	dto.PinnedResearch = pinned
+	dto.PinnedHypotheses = hypotheses
 }

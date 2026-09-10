@@ -16,10 +16,9 @@ import (
 //
 // The router system prompt uses conditional placeholders (TOOL-MATCHING and
 // JSON-OUTPUT-SCHEMA) that the SDK resolves based on the router's tool-matching
-// flag. Semantic tool selection is enabled externally via SetToolMatching from
-// buildCoreAgents, gated on the SmallLLM master toggle and EssentialTools
-// variant; when disabled both placeholders resolve to empty/default content and
-// behavior is unchanged.
+// flag. Semantic tool matching is NOT used: the Small-LLM essential-tools
+// narrowing is a static selection (smallllm.SelectTools), so the flag stays
+// off and both placeholders resolve to empty/default content.
 func newCoreRouter(caller agent.LLMCaller, historyWindow int) *router.Router {
 	return router.New(caller, router.Config{
 		SystemPrompt:          prompts.RouterSystem,

@@ -435,6 +435,10 @@ export namespace backend {
 	    result?: string;
 	    timebox?: string;
 	    decision?: string;
+	    statement?: string;
+	    verification_criterion?: string;
+	    experiment_notes?: string;
+	    parents?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new HypothesisUpdateFields(source);
@@ -447,6 +451,10 @@ export namespace backend {
 	        this.result = source["result"];
 	        this.timebox = source["timebox"];
 	        this.decision = source["decision"];
+	        this.statement = source["statement"];
+	        this.verification_criterion = source["verification_criterion"];
+	        this.experiment_notes = source["experiment_notes"];
+	        this.parents = source["parents"];
 	    }
 	}
 	export class ProviderConfigRequest {
@@ -813,6 +821,7 @@ export namespace backend {
 	    updated: string[];
 	    current: string[];
 	    preserved: string[];
+	    modified: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ResearchSeedResultDTO(source);
@@ -824,6 +833,7 @@ export namespace backend {
 	        this.updated = source["updated"];
 	        this.current = source["current"];
 	        this.preserved = source["preserved"];
+	        this.modified = source["modified"];
 	    }
 	}
 	export class ResearchStatusDTO {
@@ -832,6 +842,8 @@ export namespace backend {
 	    research_root: string;
 	    root?: research.ResearchRoot;
 	    seed_result?: ResearchSeedResultDTO;
+	    pinned_research: string[];
+	    pinned_hypotheses: Record<string, Array<string>>;
 	
 	    static createFrom(source: any = {}) {
 	        return new ResearchStatusDTO(source);
@@ -844,6 +856,8 @@ export namespace backend {
 	        this.research_root = source["research_root"];
 	        this.root = this.convertValues(source["root"], research.ResearchRoot);
 	        this.seed_result = this.convertValues(source["seed_result"], ResearchSeedResultDTO);
+	        this.pinned_research = source["pinned_research"];
+	        this.pinned_hypotheses = source["pinned_hypotheses"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1105,7 +1119,6 @@ export namespace backend {
 	export class SmallLLMEssentialToolsResp {
 	    enabled: boolean;
 	    always_present: string[];
-	    max_tools: number;
 	    compact_descriptions: boolean;
 	    protected_tools: string[];
 	
@@ -1117,7 +1130,6 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.enabled = source["enabled"];
 	        this.always_present = source["always_present"];
-	        this.max_tools = source["max_tools"];
 	        this.compact_descriptions = source["compact_descriptions"];
 	        this.protected_tools = source["protected_tools"];
 	    }
@@ -1285,6 +1297,29 @@ export namespace backend {
 	        this.lexical_score = source["lexical_score"];
 	        this.vector_rank = source["vector_rank"];
 	        this.lexical_rank = source["lexical_rank"];
+	    }
+	}
+
+}
+
+export namespace core {
+	
+	export class CompactionAvailability {
+	    strategy: string;
+	    available: boolean;
+	    reclaim_tokens: number;
+	    exact: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CompactionAvailability(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.strategy = source["strategy"];
+	        this.available = source["available"];
+	        this.reclaim_tokens = source["reclaim_tokens"];
+	        this.exact = source["exact"];
 	    }
 	}
 
@@ -1510,6 +1545,20 @@ export namespace mcp {
 
 export namespace project {
 	
+	export class ResearchPins {
+	    research: string[];
+	    hypotheses: Record<string, Array<string>>;
+	
+	    static createFrom(source: any = {}) {
+	        return new ResearchPins(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.research = source["research"];
+	        this.hypotheses = source["hypotheses"];
+	    }
+	}
 	export class ProjectInfo {
 	    id: string;
 	    name: string;
@@ -1517,6 +1566,7 @@ export namespace project {
 	    is_external: boolean;
 	    is_no_project: boolean;
 	    research_root: string;
+	    research_pins: ResearchPins;
 	    is_research: boolean;
 	    created_at: string;
 	    last_active_at: string;
@@ -1533,11 +1583,31 @@ export namespace project {
 	        this.is_external = source["is_external"];
 	        this.is_no_project = source["is_no_project"];
 	        this.research_root = source["research_root"];
+	        this.research_pins = this.convertValues(source["research_pins"], ResearchPins);
 	        this.is_research = source["is_research"];
 	        this.created_at = source["created_at"];
 	        this.last_active_at = source["last_active_at"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
+	
 	export class WorkDirectoryRecord {
 	    id: string;
 	    path: string;
@@ -1609,7 +1679,12 @@ export namespace research {
 	    status: string;
 	    parents?: string[];
 	    timebox?: string;
+	    completed?: string;
 	    result?: string;
+	    statement?: string;
+	    verification_criterion?: string;
+	    experiment_notes?: string;
+	    decision?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new HypothesisNode(source);
@@ -1622,7 +1697,12 @@ export namespace research {
 	        this.status = source["status"];
 	        this.parents = source["parents"];
 	        this.timebox = source["timebox"];
+	        this.completed = source["completed"];
 	        this.result = source["result"];
+	        this.statement = source["statement"];
+	        this.verification_criterion = source["verification_criterion"];
+	        this.experiment_notes = source["experiment_notes"];
+	        this.decision = source["decision"];
 	    }
 	}
 	export class HypothesisGraph {
@@ -1718,6 +1798,7 @@ export namespace research {
 	}
 	export class ResearchProject {
 	    id: string;
+	    dir?: string;
 	    brief: Brief;
 	    graph: HypothesisGraph;
 	    metrics: Metrics;
@@ -1732,6 +1813,7 @@ export namespace research {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
+	        this.dir = source["dir"];
 	        this.brief = this.convertValues(source["brief"], Brief);
 	        this.graph = this.convertValues(source["graph"], HypothesisGraph);
 	        this.metrics = this.convertValues(source["metrics"], Metrics);
@@ -2058,7 +2140,7 @@ export namespace session {
 	    unfinished_task_id?: string;
 	    paused: boolean;
 	    compacting: boolean;
-	    compaction_noop: boolean;
+	    compaction_availability: core.CompactionAvailability[];
 	    activity?: string;
 	    streaming: boolean;
 	
@@ -2073,10 +2155,28 @@ export namespace session {
 	        this.unfinished_task_id = source["unfinished_task_id"];
 	        this.paused = source["paused"];
 	        this.compacting = source["compacting"];
-	        this.compaction_noop = source["compaction_noop"];
+	        this.compaction_availability = this.convertValues(source["compaction_availability"], core.CompactionAvailability);
 	        this.activity = source["activity"];
 	        this.streaming = source["streaming"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class TerminalCommand {
 	    id: number;

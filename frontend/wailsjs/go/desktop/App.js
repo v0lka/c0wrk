@@ -130,6 +130,10 @@ export function DeleteRemoteTag(arg1, arg2) {
   return window['go']['desktop']['App']['DeleteRemoteTag'](arg1, arg2);
 }
 
+export function DeleteResearch(arg1, arg2) {
+  return window['go']['desktop']['App']['DeleteResearch'](arg1, arg2);
+}
+
 export function DeleteReviewComment(arg1) {
   return window['go']['desktop']['App']['DeleteReviewComment'](arg1);
 }
@@ -246,6 +250,10 @@ export function GetGitStatus(arg1) {
   return window['go']['desktop']['App']['GetGitStatus'](arg1);
 }
 
+export function GetHardenGitRepos() {
+  return window['go']['desktop']['App']['GetHardenGitRepos']();
+}
+
 export function GetLastActiveProjectID() {
   return window['go']['desktop']['App']['GetLastActiveProjectID']();
 }
@@ -286,8 +294,8 @@ export function GetResearchGraph(arg1) {
   return window['go']['desktop']['App']['GetResearchGraph'](arg1);
 }
 
-export function GetResearchNextStep(arg1) {
-  return window['go']['desktop']['App']['GetResearchNextStep'](arg1);
+export function GetResearchNextStep(arg1, arg2) {
+  return window['go']['desktop']['App']['GetResearchNextStep'](arg1, arg2);
 }
 
 export function GetResearchStatus(arg1) {
@@ -348,6 +356,10 @@ export function GetUpdateSettings() {
 
 export function GetVectorIndexStatus() {
   return window['go']['desktop']['App']['GetVectorIndexStatus']();
+}
+
+export function HardenGitRepo(arg1) {
+  return window['go']['desktop']['App']['HardenGitRepo'](arg1);
 }
 
 export function HasDefaultModel() {
@@ -462,6 +474,10 @@ export function RemoveAttachment(arg1, arg2) {
   return window['go']['desktop']['App']['RemoveAttachment'](arg1, arg2);
 }
 
+export function RemoveHardenGitRepo(arg1) {
+  return window['go']['desktop']['App']['RemoveHardenGitRepo'](arg1);
+}
+
 export function RemoveTrustedGitRepo(arg1) {
   return window['go']['desktop']['App']['RemoveTrustedGitRepo'](arg1);
 }
@@ -546,12 +562,24 @@ export function SendMessage(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9
   return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
 }
 
+export function SetActiveResearch(arg1, arg2) {
+  return window['go']['desktop']['App']['SetActiveResearch'](arg1, arg2);
+}
+
+export function SetHypothesisPinned(arg1, arg2, arg3, arg4) {
+  return window['go']['desktop']['App']['SetHypothesisPinned'](arg1, arg2, arg3, arg4);
+}
+
 export function SetLogLevel(arg1) {
   return window['go']['desktop']['App']['SetLogLevel'](arg1);
 }
 
 export function SetModelConfig(arg1, arg2) {
   return window['go']['desktop']['App']['SetModelConfig'](arg1, arg2);
+}
+
+export function SetResearchPinned(arg1, arg2, arg3) {
+  return window['go']['desktop']['App']['SetResearchPinned'](arg1, arg2, arg3);
 }
 
 export function SetReviewStatus(arg1, arg2) {
@@ -638,8 +666,8 @@ export function UpdateExperimentalFeatures(arg1) {
   return window['go']['desktop']['App']['UpdateExperimentalFeatures'](arg1);
 }
 
-export function UpdateHypothesis(arg1, arg2, arg3) {
-  return window['go']['desktop']['App']['UpdateHypothesis'](arg1, arg2, arg3);
+export function UpdateHypothesis(arg1, arg2, arg3, arg4) {
+  return window['go']['desktop']['App']['UpdateHypothesis'](arg1, arg2, arg3, arg4);
 }
 
 export function UpdateLLMConfig(arg1) {

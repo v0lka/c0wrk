@@ -12,7 +12,7 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore, selectIsNoProject } from '@/stores/projectStore'
 import * as reviewApi from '@/api/review'
 import { generateMessageId } from '@/lib/ids'
-import { refreshCompactionNoOp } from '@/lib/sessionRuntime'
+import { refreshCompactionAvailability } from '@/lib/sessionRuntime'
 import type { ChatMessageUI } from '@/types/messages'
 import { handleSessionPausedEvent, handleSessionResumedEvent } from './sessionLifecycleHandlers'
 
@@ -133,7 +133,7 @@ export function useChatEvents(sessionId: string | null): void {
         useSessionStore.getState().setUnfinishedTask(sessionId, false)
         // The failed exchange still grew the conversation history — refresh
         // the compaction no-op flag (the compact button's disabled state).
-        refreshCompactionNoOp(sessionId)
+        refreshCompactionAvailability(sessionId)
       }),
     )
 
@@ -157,7 +157,7 @@ export function useChatEvents(sessionId: string | null): void {
         // (the orchestrator records the outcome before this event fires), so
         // a previously-no-op session may be compactable again — refresh the
         // compaction no-op flag (the compact button's disabled state).
-        refreshCompactionNoOp(sessionId)
+        refreshCompactionAvailability(sessionId)
         if (data.output) {
           // Dedup: in the implicit text-only finish path the executor streams
           // the answer via assistant_done (already flushed to a permanent
@@ -272,7 +272,7 @@ export function useChatEvents(sessionId: string | null): void {
         // message + cancellation note), so a previously-no-op session may be
         // compactable again — refresh the compaction no-op flag (the compact
         // button's disabled state), mirroring task_complete / error.
-        refreshCompactionNoOp(sessionId)
+        refreshCompactionAvailability(sessionId)
         store.addMessage(sessionId, {
           id: generateMessageId(),
           sessionId,

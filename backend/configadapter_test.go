@@ -209,3 +209,34 @@ func TestToBuilderConfig_ProviderOutputTokenReserve(t *testing.T) {
 		t.Errorf("other OutputTokenReserve = %d, want 0 (inherit)", got)
 	}
 }
+
+// TestToBuilderConfig_WebFetchTimeouts verifies the config→builder mapping for
+// the web fetch timeout/retry knobs: the proxy-path timeout and the retry
+// count flow into BuilderTimeoutsConfig so both reach sp4rk's web_fetch tool
+// (each retry doubles the effective client timeout).
+func TestToBuilderConfig_WebFetchTimeouts(t *testing.T) {
+	cfg := &config.Config{}
+	config.ApplyDefaults(cfg)
+
+	bc := ToBuilderConfig(cfg)
+	if got := bc.Timeouts.WebFetchTimeout; got != 30 {
+		t.Errorf("WebFetchTimeout default = %d, want 30", got)
+	}
+	if got := bc.Timeouts.WebFetchProxyTimeout; got != 30 {
+		t.Errorf("WebFetchProxyTimeout default = %d, want 30", got)
+	}
+	if got := bc.Timeouts.WebFetchRetries; got != 2 {
+		t.Errorf("WebFetchRetries default = %d, want 2", got)
+	}
+
+	cfg.Timeouts.WebFetchProxyTimeout = 45
+	cfg.Timeouts.WebFetchRetries = 3
+
+	bc = ToBuilderConfig(cfg)
+	if got := bc.Timeouts.WebFetchProxyTimeout; got != 45 {
+		t.Errorf("WebFetchProxyTimeout = %d, want 45", got)
+	}
+	if got := bc.Timeouts.WebFetchRetries; got != 3 {
+		t.Errorf("WebFetchRetries = %d, want 3", got)
+	}
+}

@@ -202,6 +202,7 @@ func newTestAPI(t *testing.T) (*FrontendAPI, *mockBuilder, string) {
 	f := &FrontendAPI{
 		config:          cfg,
 		configPath:      cfgPath,
+		agentDir:        dir,
 		builderOverride: mock,
 	}
 	return f, mock, cfgPath
@@ -338,52 +339,155 @@ func TestUpdateLLMConfig_NilConfig(t *testing.T) {
 	}
 }
 
-// TestUpdateLLMConfig_ClearsDanglingDefaultOnProviderRemoval verifies that
-// deleting the provider that owned the default model (without naming a new
-// default in the same request) clears the now-invalid default_model rather
-// than persisting a dangling selector. The settings dialog then blocks close
-// until the user picks a new default.
-func TestUpdateLLMConfig_ClearsDanglingDefaultOnProviderRemoval(t *testing.T) {
-	f, _, _ := newTestAPI(t)
+func TestUpdateLLMConfig_RollsBackWhenPersistFails(t *testing.T) {
+	f, mock, cfgPath := newTestAPI(t)
+	f.configPath = filepath.Join(filepath.Dir(cfgPath), "missing", "config.yaml")
 
-	// Seed an OpenAI-compatible provider that owns the default model, using a
-	// composite selector so ResolveDefaultModelProvider can pin the provider.
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "claude-3-sonnet",
+		Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
+	})
+	if err == nil {
+		t.Fatal("expected persist failure")
+	}
+	if got := f.config.LLM.DefaultModel; got != "claude-3-opus" {
+		t.Errorf("default_model after failed persist = %q, want claude-3-opus", got)
+	}
+	if got := f.config.LLM.Anthropic.Models; !slices.Equal(got, []string{"claude-3-opus"}) {
+		t.Errorf("anthropic models after failed persist = %v, want [claude-3-opus]", got)
+	}
+	if mock.rebuildJudgeCalls != 0 {
+		t.Errorf("RebuildJudge calls after failed persist = %d, want 0", mock.rebuildJudgeCalls)
+	}
+	if mock.rebuildRouterCalls != 0 {
+		t.Errorf("RebuildRouter calls after failed persist = %d, want 0", mock.rebuildRouterCalls)
+	}
+}
+
+// TestUpdateLLMConfig_RejectsDanglingDefaultOnProviderRemoval verifies that
+// deleting the provider that owns an already-valid default model without a
+// replacement is rejected before it can mutate memory, YAML, or the router.
+func TestUpdateLLMConfig_RejectsDanglingDefaultOnProviderRemoval(t *testing.T) {
+	f, mock, cfgPath := newTestAPI(t)
+
+	// Seed a persisted, valid composite default whose provider is about to be
+	// removed. A byte-for-byte YAML comparison catches an accidental save.
 	f.config.LLM.OpenAICompatible = map[string]config.OpenAICompatibleConfig{
 		"lmstudio": {BaseURL: "http://localhost:1234/v1", Models: []string{"gpt-4"}},
 	}
 	f.config.LLM.DefaultModel = "lmstudio/gpt-4"
-
-	// Remove the provider without setting a new default. An empty
-	// default_model is normally skipped, but the re-validation step must
-	// clear the now-unresolvable default.
-	err := f.UpdateLLMConfig(LLMFullConfigRequest{
-		OpenAICompatible: map[string]ProviderConfigRequest{},
-	})
+	if err := config.Save(f.config, cfgPath); err != nil {
+		t.Fatalf("failed to save initial config: %v", err)
+	}
+	beforeYAML, err := os.ReadFile(cfgPath)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("failed to read initial config: %v", err)
 	}
 
-	if f.config.LLM.DefaultModel != "" {
-		t.Errorf("default_model = %q, want \"\" after owning provider removed", f.config.LLM.DefaultModel)
+	err = f.UpdateLLMConfig(LLMFullConfigRequest{
+		OpenAICompatible: map[string]ProviderConfigRequest{},
+	})
+	if err == nil {
+		t.Fatal("expected dangling default replacement to be rejected")
+	}
+	if !strings.Contains(err.Error(), "default_model") {
+		t.Errorf("UpdateLLMConfig(provider removal) error = %q, want diagnostic mentioning default_model", err)
+	}
+
+	if got := f.config.LLM.DefaultModel; got != "lmstudio/gpt-4" {
+		t.Errorf("default_model after rejected provider removal = %q, want lmstudio/gpt-4", got)
+	}
+	if _, ok := f.config.LLM.OpenAICompatible["lmstudio"]; !ok {
+		t.Error("openai_compatible provider was removed despite rejected update")
+	}
+	if mock.rebuildJudgeCalls != 0 {
+		t.Errorf("RebuildJudge calls after rejected provider removal = %d, want 0", mock.rebuildJudgeCalls)
+	}
+	if mock.rebuildRouterCalls != 0 {
+		t.Errorf("RebuildRouter calls after rejected provider removal = %d, want 0", mock.rebuildRouterCalls)
+	}
+	afterYAML, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to read config after rejected update: %v", err)
+	}
+	if !slices.Equal(afterYAML, beforeYAML) {
+		t.Error("config YAML changed after rejected provider removal")
 	}
 }
 
-// TestUpdateLLMConfig_ClearsDanglingDefaultOnModelDisabled verifies that
-// disabling the single model backing the default (in a fixed provider) clears
-// the dangling default_model.
-func TestUpdateLLMConfig_ClearsDanglingDefaultOnModelDisabled(t *testing.T) {
-	f, _, _ := newTestAPI(t)
-	// Default harness: default_model "claude-3-opus" owned by anthropic.
+// TestUpdateLLMConfig_RejectsDanglingDefaultOnModelDisabled verifies that
+// removing the model behind an existing default without a replacement is
+// rejected atomically.
+func TestUpdateLLMConfig_RejectsDanglingDefaultOnModelDisabled(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		Anthropic: &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
+	})
+	if err == nil {
+		t.Fatal("expected disabling the default model to be rejected")
+	}
+	if got := f.config.LLM.DefaultModel; got != "claude-3-opus" {
+		t.Errorf("default_model after rejected model replacement = %q, want claude-3-opus", got)
+	}
+	if got := f.config.LLM.Anthropic.Models; !slices.Equal(got, []string{"claude-3-opus"}) {
+		t.Errorf("anthropic models after rejected model replacement = %v, want [claude-3-opus]", got)
+	}
+	if mock.rebuildRouterCalls != 0 {
+		t.Errorf("RebuildRouter calls after rejected model replacement = %d, want 0", mock.rebuildRouterCalls)
+	}
+}
+
+// TestUpdateLLMConfig_AcceptsReplacementDefaultWithNewModels verifies that a
+// single request can replace an existing default and its backing models.
+func TestUpdateLLMConfig_AcceptsReplacementDefaultWithNewModels(t *testing.T) {
+	f, mock, cfgPath := newTestAPI(t)
+
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "claude-3-sonnet",
+		Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
+	})
+	if err != nil {
+		t.Fatalf("UpdateLLMConfig(replacement default) unexpected error: %v", err)
+	}
+	if got := f.config.LLM.DefaultModel; got != "claude-3-sonnet" {
+		t.Errorf("default_model after replacement = %q, want claude-3-sonnet", got)
+	}
+	if got := f.config.LLM.Anthropic.Models; !slices.Equal(got, []string{"claude-3-sonnet"}) {
+		t.Errorf("anthropic models after replacement = %v, want [claude-3-sonnet]", got)
+	}
+	if mock.rebuildJudgeCalls != 1 {
+		t.Errorf("RebuildJudge calls after replacement = %d, want 1", mock.rebuildJudgeCalls)
+	}
+	if mock.rebuildRouterCalls != 1 {
+		t.Errorf("RebuildRouter calls after replacement = %d, want 1", mock.rebuildRouterCalls)
+	}
+	persisted, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to load persisted replacement config: %v", err)
+	}
+	if got := persisted.LLM.DefaultModel; got != "claude-3-sonnet" {
+		t.Errorf("persisted default_model after replacement = %q, want claude-3-sonnet", got)
+	}
+}
+
+// TestUpdateLLMConfig_AllowsInitialEmptyDefault verifies that first-run
+// partial setup remains allowed until a user selects a default model.
+func TestUpdateLLMConfig_AllowsInitialEmptyDefault(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+	f.config.LLM.DefaultModel = ""
 
 	err := f.UpdateLLMConfig(LLMFullConfigRequest{
 		Anthropic: &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
 	})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("UpdateLLMConfig(initial empty default) unexpected error: %v", err)
 	}
-
-	if f.config.LLM.DefaultModel != "" {
-		t.Errorf("default_model = %q, want \"\" after backing model disabled", f.config.LLM.DefaultModel)
+	if got := f.config.LLM.DefaultModel; got != "" {
+		t.Errorf("default_model after initial partial setup = %q, want empty", got)
+	}
+	if mock.rebuildRouterCalls != 1 {
+		t.Errorf("RebuildRouter calls for initial partial setup = %d, want 1", mock.rebuildRouterCalls)
 	}
 }
 
@@ -1394,7 +1498,6 @@ func validSmallLLMConfig() SmallLLMConfigResponse {
 		EssentialTools: SmallLLMEssentialToolsResp{
 			Enabled:       true,
 			AlwaysPresent: []string{"read_file", "edit_file"},
-			MaxTools:      8,
 		},
 		SystemPrompt: SmallLLMSystemPromptResp{Lite: true},
 		Sampling: SmallLLMSamplingResp{
@@ -1429,7 +1532,6 @@ func TestGetSmallLLMConfig_ReturnsCurrentConfig(t *testing.T) {
 	// confirm they round-trip through the DTO.
 	f.config.SmallLLM.Enabled = true
 	f.config.SmallLLM.EssentialTools.Enabled = true
-	f.config.SmallLLM.EssentialTools.MaxTools = 7
 
 	got := f.GetSmallLLMConfig()
 
@@ -1438,9 +1540,6 @@ func TestGetSmallLLMConfig_ReturnsCurrentConfig(t *testing.T) {
 	}
 	if !got.EssentialTools.Enabled {
 		t.Error("EssentialTools.Enabled = false, want true")
-	}
-	if got.EssentialTools.MaxTools != 7 {
-		t.Errorf("MaxTools = %d, want 7", got.EssentialTools.MaxTools)
 	}
 	// AlwaysPresent should be a non-nil slice (JSON [] not null).
 	if got.EssentialTools.AlwaysPresent == nil {
@@ -1478,9 +1577,6 @@ func TestUpdateSmallLLMConfig_PersistsAndRebuilds(t *testing.T) {
 	if !f.config.SmallLLM.Enabled {
 		t.Error("SmallLLM.Enabled not applied")
 	}
-	if f.config.SmallLLM.EssentialTools.MaxTools != 8 {
-		t.Errorf("MaxTools = %d, want 8", f.config.SmallLLM.EssentialTools.MaxTools)
-	}
 }
 
 func TestUpdateSmallLLMConfig_NilConfig(t *testing.T) {
@@ -1500,7 +1596,7 @@ func TestUpdateSmallLLMConfig_PersistFailureRestoresInMemory(t *testing.T) {
 
 	// Establish a known baseline.
 	baseline := validSmallLLMConfig()
-	baseline.EssentialTools.MaxTools = 9
+	baseline.EssentialTools.AlwaysPresent = []string{"read_file"}
 	if err := f.UpdateSmallLLMConfig(baseline); err != nil {
 		t.Fatalf("baseline setup failed: %v", err)
 	}
@@ -1510,18 +1606,17 @@ func TestUpdateSmallLLMConfig_PersistFailureRestoresInMemory(t *testing.T) {
 	f.configPath = ""
 
 	change := validSmallLLMConfig()
-	// Must stay valid under validateSmallLLMConfig (guaranteed = 7 ≤ 10) so
-	// the persist step itself is what fails, not validation.
-	change.EssentialTools.MaxTools = 10
+	// Must stay valid under validateSmallLLMConfig so the persist step itself
+	// is what fails, not validation.
+	change.EssentialTools.AlwaysPresent = []string{"read_file", "edit_file"}
 	err := f.UpdateSmallLLMConfig(change)
 	if err == nil {
 		t.Fatal("expected error when persist fails")
 	}
 
 	// In-memory config must be restored to the baseline, not the rejected change.
-	if f.config.SmallLLM.EssentialTools.MaxTools != 9 {
-		t.Errorf("in-memory MaxTools = %d, want 9 (baseline restored on persist failure)",
-			f.config.SmallLLM.EssentialTools.MaxTools)
+	if got := f.config.SmallLLM.EssentialTools.AlwaysPresent; len(got) != 1 || got[0] != "read_file" {
+		t.Errorf("in-memory AlwaysPresent = %v, want [read_file] (baseline restored on persist failure)", got)
 	}
 	// RebuildRouter must not have been called for the failed update.
 	if mock.rebuildRouterCalls != baselineCalls {
@@ -1553,73 +1648,6 @@ func TestUpdateSmallLLMConfig_EmptyAlwaysPresentAllowed(t *testing.T) {
 	}
 	if _, statErr := os.Stat(cfgPath); statErr != nil {
 		t.Error("config file should have been written on success")
-	}
-}
-
-func TestUpdateSmallLLMConfig_NegativeMaxTools(t *testing.T) {
-	f, mock, _ := newTestAPI(t)
-
-	cfg := validSmallLLMConfig()
-	cfg.EssentialTools.MaxTools = -1
-
-	err := f.UpdateSmallLLMConfig(cfg)
-	if err == nil {
-		t.Fatal("expected error for negative max_tools")
-	}
-	if f.config.SmallLLM.Enabled {
-		t.Error("config was mutated despite validation error")
-	}
-	if mock.rebuildRouterCalls != 0 {
-		t.Errorf("RebuildRouter called %d times, want 0", mock.rebuildRouterCalls)
-	}
-}
-
-// TestUpdateSmallLLMConfig_SelfHealsMaxToolsBelowGuaranteed pins the
-// save-time reconciliation: a cap below the guaranteed set is unenforceable
-// (guaranteed tools are never trimmed), so instead of rejecting the save —
-// which locked the settings panel behind a hand-editable-only error — the
-// update path raises the cap to the guaranteed count. See
-// TestReconcileSmallLLMCap_Passthrough for the sentinel/negative guards and
-// TestValidateSmallLLMConfig_RejectsCapBelowGuaranteed for the retained
-// validator safety net.
-func TestUpdateSmallLLMConfig_SelfHealsMaxToolsBelowGuaranteed(t *testing.T) {
-	f, mock, _ := newTestAPI(t)
-
-	// validSmallLLMConfig pins 2 tools; the guaranteed set is
-	// 2 always-present ∪ 5 protected (no overlap) = 7. A cap of 6 would
-	// leave zero router-matched slots and the never-trimmed guaranteed set
-	// would exceed the budget — the save reconciles it to 7.
-	cfg := validSmallLLMConfig()
-	cfg.EssentialTools.MaxTools = 6
-
-	if err := f.UpdateSmallLLMConfig(cfg); err != nil {
-		t.Fatalf("save must succeed after reconciliation, got: %v", err)
-	}
-	if got := f.config.SmallLLM.EssentialTools.MaxTools; got != 7 {
-		t.Errorf("MaxTools = %d, want 7 (raised to the guaranteed count)", got)
-	}
-	if mock.rebuildRouterCalls != 1 {
-		t.Errorf("RebuildRouter called %d times, want 1", mock.rebuildRouterCalls)
-	}
-}
-
-// TestValidateSmallLLMConfig_RejectsCapBelowGuaranteed keeps the validator's
-// safety net covered: reconcileSmallLLMCap normally prevents this state from
-// reaching validation via UpdateSmallLLMConfig, but the validator remains the
-// invariant's single source of truth for any future caller.
-func TestValidateSmallLLMConfig_RejectsCapBelowGuaranteed(t *testing.T) {
-	cfg := validSmallLLMConfig()
-	cfg.EssentialTools.MaxTools = 6
-
-	err := validateSmallLLMConfig(cfg)
-	if err == nil {
-		t.Fatal("expected validator error when max_tools is below the guaranteed tool count")
-	}
-	if !strings.Contains(err.Error(), "guaranteed tool count") {
-		t.Errorf("error should explain the guaranteed-count constraint, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "max_tools") {
-		t.Errorf("error should name max_tools, got: %v", err)
 	}
 }
 
@@ -1856,7 +1884,6 @@ func TestSmallLLMConfig_RoundTrip_FullProfileLossless(t *testing.T) {
 		EssentialTools: SmallLLMEssentialToolsResp{
 			Enabled:       true,
 			AlwaysPresent: []string{"read_file", "edit_file", "bash_exec", "semantic_search"},
-			MaxTools:      11,
 		},
 		SystemPrompt: SmallLLMSystemPromptResp{
 			Lite:              true,
@@ -1909,9 +1936,6 @@ func TestSmallLLMConfig_RoundTrip_FullProfileLossless(t *testing.T) {
 	// Essential tools.
 	if got.EssentialTools.Enabled != want.EssentialTools.Enabled {
 		t.Errorf("EssentialTools.Enabled = %v, want %v", got.EssentialTools.Enabled, want.EssentialTools.Enabled)
-	}
-	if got.EssentialTools.MaxTools != want.EssentialTools.MaxTools {
-		t.Errorf("EssentialTools.MaxTools = %d, want %d", got.EssentialTools.MaxTools, want.EssentialTools.MaxTools)
 	}
 	// always_present round-trips the user-chosen tools losslessly AND carries
 	// the protected orchestration tools unioned in by smallLLMToResponse (so
@@ -2216,6 +2240,29 @@ func (r *eventRecorder) has(name string) bool {
 	return false
 }
 
+// names returns a copy of the captured event names (for failure messages).
+func (r *eventRecorder) names() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.events...)
+}
+
+// waitFor polls for the named event until a 2s deadline. config:updated is
+// dispatched asynchronously (emitConfigUpdated spawns a goroutine so the
+// Wails dispatch never runs under configMu), so tests asserting it must
+// synchronize instead of checking immediately after the RPC returns.
+func (r *eventRecorder) waitFor(t *testing.T, name string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if r.has(name) {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for event %q; captured events: %v", name, r.names())
+}
+
 // newUpdateLLMConfigProjectHarness builds a FrontendAPI wired to a real
 // project store + manager, a temp config file, a mock builder, and an
 // event recorder. The returned project is a freshly created real project
@@ -2263,6 +2310,28 @@ func newUpdateLLMConfigProjectHarness(t *testing.T) (*FrontendAPI, *project.Proj
 	}
 	_ = ctx
 	return f, createdProject, rec, db
+}
+
+// TestUpdateExperimentalFeatures_EmitsConfigUpdated verifies the
+// config:updated announcement: every config mutation funneling through
+// persistConfig emits it (asynchronously) so frontend consumers that are
+// still in the "unknown/not latched" state — e.g. the experimental-features
+// switch whose initial GetConfig landed during the startup race — can
+// re-read the config without an app restart.
+func TestUpdateExperimentalFeatures_EmitsConfigUpdated(t *testing.T) {
+	f, _, rec, db := newUpdateLLMConfigProjectHarness(t)
+	defer func() { _ = db.Close() }()
+
+	if err := f.UpdateExperimentalFeatures(true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rec.waitFor(t, EventConfigUpdated)
+
+	// The toggle itself must be reflected in the served config.
+	if !f.experimentalFeaturesEnabled() {
+		t.Fatal("expected experimental features to be enabled after the update")
+	}
 }
 
 // activeProjectIDOf reads f.activeProjectID under its lock.

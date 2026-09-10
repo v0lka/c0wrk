@@ -186,13 +186,14 @@ func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 //
 // Locking layout: the whole update runs under saveMu so debounced saves apply
 // strictly in submission order (mutation → persist → rebuild never interleave
-// between two calls). Inside that, configMu is held only for the fast config
-// mutation — the expensive follow-up work (YAML persist, No-Project
-// provisioning) runs with configMu released, and the judge/router rebuilds run
-// under a shared configMu.RLock with a freshly re-snapshotted config: RLock
-// readers are never convoyed behind a rebuild, yet writers are excluded
-// between snapshot and rebuild so the router can never be rolled back to a
-// snapshot that predates a concurrent config writer's changes.
+// between two calls). configMu protects candidate validation, the atomic YAML
+// commit/rollback, and the capture of the committed default. The expensive
+// follow-up work (No-Project provisioning) runs with configMu released, and
+// the judge/router rebuilds run under a shared configMu.RLock with a freshly
+// re-snapshotted config: RLock readers are never convoyed behind a rebuild,
+// yet writers are excluded between snapshot and rebuild so the router can
+// never be rolled back to a snapshot that predates a concurrent config
+// writer's changes.
 func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 	f.saveMu.Lock()
 	defer f.saveMu.Unlock()
@@ -203,18 +204,23 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		return errors.New("config not initialized")
 	}
 
-	// Update default model
+	// Build the proposed LLM state separately. A rejected request must not
+	// leak partial provider mutations to GetConfig, YAML, or the router.
+	previous := f.config.LLM
+	candidate := previous
+
+	// An empty default_model means "leave it unchanged": debounced partial
+	// updates use that sentinel while the initial setup has no default yet.
 	if req.DefaultModel != "" {
-		f.config.LLM.DefaultModel = req.DefaultModel
+		candidate.DefaultModel = req.DefaultModel
 	}
 
-	// Update each provider's models list and credentials
 	if req.Anthropic != nil {
 		if req.Anthropic.Models != nil {
-			f.config.LLM.Anthropic.Models = req.Anthropic.Models
+			candidate.Anthropic.Models = req.Anthropic.Models
 		}
 		if req.Anthropic.APIKey != "" && req.Anthropic.APIKey != maskedAPIKey {
-			f.config.LLM.Anthropic.APIKey = req.Anthropic.APIKey
+			candidate.Anthropic.APIKey = req.Anthropic.APIKey
 		}
 	}
 	if req.OpenAICompatible != nil {
@@ -222,7 +228,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		for name, ocReq := range req.OpenAICompatible {
 			apiKey := ocReq.APIKey
 			outputReserve := 0
-			if existing, ok := f.config.LLM.OpenAICompatible[name]; ok {
+			if existing, ok := candidate.OpenAICompatible[name]; ok {
 				if apiKey == maskedAPIKey || apiKey == "" {
 					apiKey = existing.APIKey
 				}
@@ -235,14 +241,14 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 				OutputTokenReserve: outputReserve,
 			}
 		}
-		f.config.LLM.OpenAICompatible = newMap
+		candidate.OpenAICompatible = newMap
 	}
 	if req.AnthropicCompatible != nil {
 		newMap := make(map[string]config.AnthropicCompatibleConfig, len(req.AnthropicCompatible))
 		for name, acReq := range req.AnthropicCompatible {
 			apiKey := acReq.APIKey
 			outputReserve := 0
-			if existing, ok := f.config.LLM.AnthropicCompatible[name]; ok {
+			if existing, ok := candidate.AnthropicCompatible[name]; ok {
 				if apiKey == maskedAPIKey || apiKey == "" {
 					apiKey = existing.APIKey
 				}
@@ -255,51 +261,49 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 				OutputTokenReserve: outputReserve,
 			}
 		}
-		f.config.LLM.AnthropicCompatible = newMap
+		candidate.AnthropicCompatible = newMap
 	}
 	if req.ChatGPT != nil {
 		if req.ChatGPT.Models != nil {
-			f.config.LLM.ChatGPT.Models = req.ChatGPT.Models
+			candidate.ChatGPT.Models = req.ChatGPT.Models
 		}
 		if req.ChatGPT.APIKey != "" && req.ChatGPT.APIKey != maskedAPIKey {
-			f.config.LLM.ChatGPT.APIKey = req.ChatGPT.APIKey
+			candidate.ChatGPT.APIKey = req.ChatGPT.APIKey
 		}
 	}
 
-	// Invariant: after provider changes, the persisted default model must
-	// still resolve to a model that is enabled in some provider. If the
-	// provider/model that owned the default was removed or had its model
-	// disabled, clear it instead of persisting a dangling selector — a stale
-	// default would fail router validation. The settings dialog blocks close
-	// until the user picks a new default, so this never leaves the app in a
-	// state where LLM calls have no target model.
-	//
-	// Note: an incoming empty `default_model` is intentionally ignored above
-	// (to avoid wiping a valid selection during debounced partial edits), so
-	// this re-validation is the only path that clears a now-invalid default.
-	if f.config.LLM.DefaultModel != "" {
-		if _, _, err := f.config.LLM.ResolveDefaultModelProvider(); err != nil {
-			f.config.LLM.DefaultModel = ""
+	// A first-run config intentionally has no default until setup finishes.
+	// Once a default exists, however, every candidate must still resolve after
+	// all requested provider/model replacements have been applied. Validate
+	// before committing so a dangling replacement cannot change any state.
+	if candidate.DefaultModel != "" {
+		if _, _, err := candidate.ResolveDefaultModelProvider(); err != nil {
+			f.configMu.Unlock()
+			return fmt.Errorf("invalid LLM configuration: default_model would be unresolved: %w", err)
 		}
+	}
+
+	f.config.LLM = candidate
+
+	// Persist while configMu is held so a failed disk write can restore the
+	// exact prior LLM state before any reader, rebuild, or frontend RPC result
+	// observes the candidate. Defer the config-updated event until the write
+	// succeeds: a failed update must be indistinguishable from a rejected
+	// request to consumers.
+	if err := config.Save(f.config, f.configPath); err != nil {
+		f.config.LLM = previous
+		f.configMu.Unlock()
+		return fmt.Errorf("failed to persist LLM config: %w", err)
 	}
 
 	// Capture the provisioning guard here — after the unlock, f.config must
 	// only be touched under configMu again.
 	defaultModel := f.config.LLM.DefaultModel
 	f.configMu.Unlock()
+	f.emitConfigUpdated()
 
 	// --- Heavy work below runs OUTSIDE configMu (readers stay responsive) ---
 	// saveMu is still held, so concurrent UpdateLLMConfig calls are serialized.
-
-	// Persist under a read lock: the YAML write must see a consistent config
-	// and must not race other config writers (which mutate under configMu.Lock),
-	// but holding RLock keeps every other reader flowing during the disk I/O.
-	f.configMu.RLock()
-	persistErr := f.persistConfig()
-	f.configMu.RUnlock()
-	if persistErr != nil {
-		f.log().Warn("failed to persist LLM config", "error", persistErr)
-	}
 
 	// Clear any config load errors since settings are now valid
 	f.configMu.Lock()
@@ -431,10 +435,8 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 
 // UpdateExperimentalFeatures toggles the master experimental-features switch
 // at runtime. It persists the change and rebuilds the LLM router so the
-// Small-LLM profile (one of the gated features) takes effect for new sessions
-// without an app restart. RESEARCH mode is gated at its RPC boundary instead
-// (EnableResearch / GetResearchStatus / GetResearchGraph), so no rebuild is
-// needed for it here.
+// Small-LLM profile (the gated feature) takes effect for new sessions without
+// an app restart.
 func (f *FrontendAPI) UpdateExperimentalFeatures(enabled bool) error {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
@@ -450,7 +452,8 @@ func (f *FrontendAPI) UpdateExperimentalFeatures(enabled bool) error {
 	}
 
 	// Rebuild the LLM router so the Small-LLM profile (sampling overrides,
-	// tool matching, context management) is applied or removed immediately.
+	// essential-tools narrowing, context management) is applied or removed
+	// immediately.
 	if b := f.builder(); b != nil {
 		if err := b.RebuildRouter(ToBuilderConfig(f.config)); err != nil {
 			f.log().Warn("failed to rebuild LLM router after experimental-features toggle", "error", err)
@@ -725,22 +728,6 @@ func (f *FrontendAPI) UpdateSmallLLMConfig(cfg SmallLLMConfigResponse) error {
 		return errors.New("config not initialized")
 	}
 
-	// Reconcile a stale slot budget BEFORE validation (systemic fix): a
-	// config persisted by an older build can carry a max_tools below the
-	// guaranteed set (always_present ∪ protected) — e.g. update_checklist
-	// moved into the protected set and grew the union past an old cap, while
-	// the stored always_present list kept stale entries. validateSmallLLMConfig
-	// would then reject EVERY save from the settings panel — including a bare
-	// master-toggle flip — with no UI-only remedy (the protected tools are
-	// locked chips the user cannot un-pin), locking the profile behind a
-	// hand-edited YAML. The guaranteed set is never trimmed at runtime
-	// anyway, so raising the cap to its size only makes the stored budget
-	// honest; the next successful persist writes the reconciled value.
-	if r := reconcileSmallLLMCap(&cfg); r.from != r.to {
-		f.log().Info("small-LLM: max_tools was below the guaranteed tool count; raised to the guaranteed set size (stale config reconciled)",
-			"from", r.from, "to", r.to)
-	}
-
 	// Validate before mutation — a bad payload must not partially overwrite
 	// the persisted config.
 	if err := validateSmallLLMConfig(cfg); err != nil {
@@ -794,34 +781,10 @@ var validSmallLLMReasoningEfforts = map[string]struct{}{
 // Returns an error for any constraint violation; the caller must reject the
 // update without mutating config when this returns non-nil.
 func validateSmallLLMConfig(cfg SmallLLMConfigResponse) error {
-	// Essential tools: a non-empty curated set and sane tool cap are required
-	// when the variant is active.
-	if cfg.EssentialTools.Enabled {
-		// always_present may be empty: protected orchestration tools
-		// (finish, fact memory, ask_user) and every MCP tool are always kept
-		// implicitly by SelectTools, so an empty list is valid. max_tools is a
-		// slot budget (0 = unlimited) and must simply be non-negative.
-		if cfg.EssentialTools.MaxTools < 0 {
-			return fmt.Errorf("small_llm.essential_tools.max_tools must be non-negative, got %d", cfg.EssentialTools.MaxTools)
-		}
-		// The guaranteed set (always_present ∪ protected orchestration tools;
-		// MCP tools join at runtime) is never trimmed by SelectTools, so a cap
-		// smaller than the guaranteed count would leave zero router-matched
-		// slots and the result would silently exceed the budget. Reject up
-		// front with an actionable message. Note: UpdateSmallLLMConfig
-		// reconciles stale caps to the guaranteed count BEFORE calling this
-		// validator (see reconcileSmallLLMCap), so the save path self-heals
-		// instead of failing; this check remains the invariant's safety net.
-		if cfg.EssentialTools.MaxTools > 0 {
-			guaranteed := unionAlwaysPresent(cfg.EssentialTools.AlwaysPresent, smallllm.ProtectedToolNames())
-			if len(guaranteed) > cfg.EssentialTools.MaxTools {
-				return fmt.Errorf(
-					"small_llm.essential_tools.max_tools (%d) is smaller than the guaranteed tool count (%d = always_present ∪ protected orchestration tools); guaranteed tools are never trimmed — raise max_tools, trim always_present, or set max_tools to 0 for unlimited",
-					cfg.EssentialTools.MaxTools, len(guaranteed),
-				)
-			}
-		}
-	}
+	// Essential tools: always_present may be empty — protected orchestration
+	// tools (finish, fact memory, ask_user) and every MCP tool are always
+	// kept implicitly by SelectTools. No essential-tools-specific constraints
+	// remain (the max_tools slot budget was removed).
 
 	// Sampling: each parameter uses zero as the "inherit the vendor preset"
 	// sentinel, so zero is always valid. Any explicitly set (non-zero) value
@@ -921,7 +884,6 @@ func smallLLMToResponse(c config.SmallLLMConfig) SmallLLMConfigResponse {
 		EssentialTools: SmallLLMEssentialToolsResp{
 			Enabled:             c.EssentialTools.Enabled,
 			AlwaysPresent:       nonNilStringSlice(unionAlwaysPresent(c.EssentialTools.AlwaysPresent, smallllm.ProtectedToolNames())),
-			MaxTools:            c.EssentialTools.MaxTools,
 			CompactDescriptions: c.EssentialTools.CompactDescriptions,
 			// Read-only metadata so the UI can render protected tools as
 			// locked chips without duplicating the backend list. Ignored on
@@ -971,7 +933,6 @@ func responseToSmallLLM(r SmallLLMConfigResponse) config.SmallLLMConfig {
 		EssentialTools: config.EssentialToolsConfig{
 			Enabled:             r.EssentialTools.Enabled,
 			AlwaysPresent:       r.EssentialTools.AlwaysPresent,
-			MaxTools:            r.EssentialTools.MaxTools,
 			CompactDescriptions: r.EssentialTools.CompactDescriptions,
 		},
 		SystemPrompt: config.SystemPromptConfig{
@@ -1007,34 +968,6 @@ func responseToSmallLLM(r SmallLLMConfigResponse) config.SmallLLMConfig {
 			OutputTokenReserve:  r.Context.OutputTokenReserve,
 		},
 	}
-}
-
-// capReconciliation reports a max_tools adjustment made by
-// reconcileSmallLLMCap: from == to means no change was needed.
-type capReconciliation struct {
-	from int
-	to   int
-}
-
-// reconcileSmallLLMCap raises EssentialTools.MaxTools to the guaranteed tool
-// count (always_present ∪ protected orchestration tools) when a stale
-// persisted cap sits below it. Guaranteed tools are never trimmed by
-// SelectTools, so a cap below that count is unenforceable — it only breaks
-// validation (see UpdateSmallLLMConfig). Negative caps and the unlimited
-// sentinel (0) are passed through untouched: validation still rejects
-// negatives and honors 0 as unlimited.
-func reconcileSmallLLMCap(cfg *SmallLLMConfigResponse) capReconciliation {
-	et := &cfg.EssentialTools
-	if et.MaxTools <= 0 {
-		return capReconciliation{from: et.MaxTools, to: et.MaxTools}
-	}
-	guaranteed := len(unionAlwaysPresent(et.AlwaysPresent, smallllm.ProtectedToolNames()))
-	if guaranteed <= et.MaxTools {
-		return capReconciliation{from: et.MaxTools, to: et.MaxTools}
-	}
-	from := et.MaxTools
-	et.MaxTools = guaranteed
-	return capReconciliation{from: from, to: guaranteed}
 }
 
 // GetLogLevel returns the current log level.
@@ -1322,12 +1255,33 @@ func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error
 	return nil
 }
 
-// persistConfig saves the current in-memory config to disk.
+// persistConfig saves the current in-memory config to disk. Every successful
+// config mutation funnels through here, so it is also the single point that
+// announces config changes to the frontend (see emitConfigUpdated).
 func (f *FrontendAPI) persistConfig() error {
 	if f.configPath == "" || f.config == nil {
 		return errors.New("config path or config not set")
 	}
-	return config.Save(f.config, f.configPath)
+	err := config.Save(f.config, f.configPath)
+	// Announce even when the disk write failed: the in-memory config (what
+	// GetConfig serves) has already changed, so refetching consumers stay
+	// consistent with what the backend will report.
+	f.emitConfigUpdated()
+	return err
+}
+
+// emitConfigUpdated notifies the frontend that the config was mutated via an
+// Update* RPC. Dispatched on a fresh goroutine because persistConfig runs
+// under whatever lock its caller holds (configMu.Lock for most setters), and
+// emitEvent is a synchronous Wails webview dispatch — a config lock must
+// never be held across it (readers such as GetConfig would convoy behind the
+// event delivery). Nil-guarded: most tests exercise persistConfig without
+// wiring emitEvent.
+func (f *FrontendAPI) emitConfigUpdated() {
+	if f.emitEvent == nil {
+		return
+	}
+	go f.emitEvent(EventConfigUpdated)
 }
 
 // maskAPIKey returns a masked representation of an API key for display.

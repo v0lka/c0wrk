@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { handleContextFill, handleCompactionStarted, handleCompactionFinished, type ContextFillStore } from '@/hooks/events/useContextEvents'
 import type { ContextFillData } from '@/types/events'
-import type { TokenInfo } from '@/types/models'
+import type { TokenInfo, CompactionAvailability } from '@/types/models'
 
 interface Recorded {
   stepFill: Array<{ sessionId: string; stepId: string; fill: number }>
@@ -81,7 +81,7 @@ describe('handleContextFill', () => {
 describe('handleCompactionStarted / handleCompactionFinished', () => {
   interface CompactionRecorded {
     compacting: Array<{ sessionId: string; value: boolean }>
-    compactionNoOp: Array<{ sessionId: string; value: boolean }>
+    compactionAvailability: Array<{ sessionId: string; value: CompactionAvailability[] }>
     activity: Array<{ sessionId: string; status: string | null }>
     pausing: Array<{ sessionId: string; value: boolean }>
     paused: Array<{ sessionId: string; value: boolean }>
@@ -89,11 +89,11 @@ describe('handleCompactionStarted / handleCompactionFinished', () => {
   }
 
   function makeCompactionStore() {
-    const recorded: CompactionRecorded = { compacting: [], compactionNoOp: [], activity: [], pausing: [], paused: [], taskActive: [] }
+    const recorded: CompactionRecorded = { compacting: [], compactionAvailability: [], activity: [], pausing: [], paused: [], taskActive: [] }
     return {
       recorded,
       setCompacting: (sessionId: string, value: boolean) => { recorded.compacting.push({ sessionId, value }) },
-      setCompactionNoOp: (sessionId: string, value: boolean) => { recorded.compactionNoOp.push({ sessionId, value }) },
+      setCompactionAvailability: (sessionId: string, value: CompactionAvailability[]) => { recorded.compactionAvailability.push({ sessionId, value }) },
       setActivityStatus: (sessionId: string, status: string | null) => { recorded.activity.push({ sessionId, status }) },
       setPausing: (sessionId: string, value: boolean) => { recorded.pausing.push({ sessionId, value }) },
       setPaused: (sessionId: string, value: boolean) => { recorded.paused.push({ sessionId, value }) },
@@ -161,18 +161,22 @@ describe('handleCompactionStarted / handleCompactionFinished', () => {
     expect(store.recorded.activity).toEqual([{ sessionId: 'sess-1', status: null }])
   })
 
-  it('finished mirrors the backend compaction_noop verdict into the store (absent → fail-open false)', () => {
-    // The post-flow no-op verdict refreshes the compact button's disabled
-    // state without a status refetch: true after a successful compaction /
-    // no-op outcome, the untouched history's verdict after cancelled/error.
-    // An absent field (older backend) must resolve to false (fail-open).
+  it('finished mirrors the backend compaction_availability into the store (absent → no update)', () => {
+    // The post-flow per-strategy availability refreshes the compact menu
+    // without a status refetch. An absent field (older backend) must not
+    // touch the store (fail-open — the menu keeps its previous value).
+    const avail = [
+      { strategy: 'sliding_window', available: false, reclaim_tokens: 0, exact: true },
+      { strategy: 'summarization', available: true, reclaim_tokens: 500, exact: false },
+      { strategy: 'hierarchical', available: true, reclaim_tokens: 900, exact: false },
+    ]
     const store = makeCompactionStore()
-    handleCompactionFinished(store, 'sess-1', { success: true, resumed: false, compaction_noop: true })
-    expect(store.recorded.compactionNoOp).toEqual([{ sessionId: 'sess-1', value: true }])
+    handleCompactionFinished(store, 'sess-1', { success: true, resumed: false, compaction_availability: avail })
+    expect(store.recorded.compactionAvailability).toEqual([{ sessionId: 'sess-1', value: avail }])
 
     const store2 = makeCompactionStore()
     handleCompactionFinished(store2, 'sess-1', { success: false, error: 'boom' })
-    expect(store2.recorded.compactionNoOp).toEqual([{ sessionId: 'sess-1', value: false }])
+    expect(store2.recorded.compactionAvailability).toHaveLength(0)
   })
 
   it('finished on failure releases the lock and surfaces the failure label', () => {

@@ -122,9 +122,30 @@ type HypothesisNode struct {
 	// calendar dates), preserved verbatim for rendering.
 	Timebox string `json:"timebox,omitempty"`
 
+	// Completed is the card's completion date (YYYY-MM-DD), set when the
+	// hypothesis reaches a terminal status (confirmed / refuted / cancelled).
+	// Empty while the hypothesis is open or in-progress.
+	Completed string `json:"completed,omitempty"`
+
 	// Result is the recorded finding from the card's Result section (the
 	// **Finding:** value). Empty until the experiment completes.
 	Result string `json:"result,omitempty"`
+
+	// Statement is the falsifiable assertion from the card's
+	// "## Statement" section, preserved verbatim.
+	Statement string `json:"statement,omitempty"`
+
+	// VerificationCriterion is the "what constitutes confirmation" text from
+	// the card's "## Verification Criterion" section, preserved verbatim.
+	VerificationCriterion string `json:"verification_criterion,omitempty"`
+
+	// ExperimentNotes is the body of the card's "## Experiment Notes"
+	// section, preserved verbatim.
+	ExperimentNotes string `json:"experiment_notes,omitempty"`
+
+	// Decision is the iteration decision (continue / pivot / kill / fork)
+	// from the card's **Decision** field row. Empty while undecided.
+	Decision string `json:"decision,omitempty"`
 }
 
 // HypothesisEdge is a directed parent→child relationship in the hypothesis

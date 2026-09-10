@@ -368,6 +368,11 @@ func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 // them with a subdued color.
 //
 // Delegates to core/workspace.ListDirFlat / ListDirRecursive and attaches icons.
+//
+// Failure semantics: a git error while computing the ignored-paths set does
+// not fail the listing — the RPC degrades to flag-less entries (warn logged).
+// Only containment violations and an unreadable directory itself are fatal,
+// so a broken repository state can never blank the file tree.
 func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode, error) {
 	f.activeProjectMu.RLock()
 	projectPath := f.activeProjectPath
@@ -407,9 +412,22 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 	var ignoredPaths map[string]bool
 	isRepo := f.isGitRepo(absRoot)
 	if isRepo {
-		ignoredPaths, err = workspace.GitIgnoredPaths(f.ctx(), absRoot)
-		if err != nil {
-			return nil, err
+		ignored, gitErr := workspace.GitIgnoredPaths(f.ctx(), absRoot)
+		if gitErr != nil {
+			// Degrade instead of failing the whole listing: the ignore set
+			// only drives cosmetic GitIgnored flags in the tree, so a broken
+			// git index or a transiently failing repo must not blank the
+			// user's file explorer (the frontend caches a rejected root
+			// listing as empty with no retry). Proceed flag-less and warn —
+			// mirroring the non-fatal treatment of ignore.Resolver
+			// construction failures below. The git spawn itself already went
+			// through the hardened GitCmdInRepo path; no security property
+			// is relaxed by dropping the flags.
+			f.log().Warn("failed to list git-ignored paths; listing without ignore flags",
+				"dir", absDir, "error", gitErr)
+			ignoredPaths = nil
+		} else {
+			ignoredPaths = ignored
 		}
 	}
 

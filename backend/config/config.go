@@ -46,9 +46,9 @@ type Config struct {
 	// is exposed so behaviour can be tuned without a rebuild.
 	SmallLLM SmallLLMConfig `yaml:"small_llm"`
 
-	// Experimental gates features that are still under active development as a
-	// single master switch (all-or-nothing). When disabled, every gated feature
-	// is treated as off and its UI affordances are hidden. Default: off.
+	// Experimental gates the Small-LLM profile, which is still under active
+	// development, as a single master switch. When disabled, the profile is
+	// treated as off and its UI affordances are hidden. Default: off.
 	Experimental ExperimentalConfig `yaml:"experimental"`
 
 	// Updates configures the automatic "check for updates" subsystem that runs
@@ -416,14 +416,26 @@ type VerifyOnEditConfig struct {
 
 // CompactionConfig holds context compaction settings.
 type CompactionConfig struct {
-	SlidingWindow       SlidingWindowConfig  `yaml:"sliding_window"`
-	Summarization       SummarizationConfig  `yaml:"summarization"`
-	Hierarchical        HierarchicalConfig   `yaml:"hierarchical"`
-	Thresholds          CompactionThresholds `yaml:"thresholds"`
-	MaxSummarizeTokens  int                  `yaml:"maxSummarizeTokens"`  // max tokens for summarization LLM calls (default: 16000)
-	ObservationTruncate int                  `yaml:"observationTruncate"` // chars to truncate observations in summaries (default: 500)
-	SafetyMarginPercent int                  `yaml:"safetyMarginPercent"` // % of context window reserved as safety margin (default: 5)
-	ManualTargetPercent int                  `yaml:"manualTargetPercent"` // target context fill % user-triggered manual compaction aims to reach (default: 30)
+	SlidingWindow       SlidingWindowConfig      `yaml:"sliding_window"`
+	Summarization       SummarizationConfig      `yaml:"summarization"`
+	Hierarchical        HierarchicalConfig       `yaml:"hierarchical"`
+	Thresholds          CompactionThresholds     `yaml:"thresholds"`
+	MaxSummarizeTokens  int                      `yaml:"maxSummarizeTokens"`  // max tokens for summarization LLM calls (default: 16000)
+	ObservationTruncate int                      `yaml:"observationTruncate"` // chars to truncate observations in summaries (default: 500)
+	SafetyMarginPercent int                      `yaml:"safetyMarginPercent"` // % of context window reserved as safety margin (default: 5)
+	Forecast            CompactionForecastConfig `yaml:"forecast"`            // compression-ratio forecast seeds for manual-compaction prediction
+}
+
+// CompactionForecastConfig holds the compression-ratio forecast seeds used to
+// predict the effect of the LLM-backed manual-compaction strategies. They seed
+// an EWMA that is refined after each real compaction; the forecast affects only
+// the predicted reclaim number in the compact menu, never strategy availability
+// (which is an exact structural verdict). Zero values fall back to sp4rk's
+// conservative defaults.
+type CompactionForecastConfig struct {
+	SummarizationRatio       float64 `yaml:"summarization_ratio"`        // summarization + hierarchical middle (default: 0.3)
+	HierarchicalDistantRatio float64 `yaml:"hierarchical_distant_ratio"` // hierarchical distant zone (default: 0.15)
+	HierarchicalMiddleRatio  float64 `yaml:"hierarchical_middle_ratio"`  // hierarchical middle zone (default: 0.3)
 }
 
 // CompactionThresholds defines context window usage thresholds for compaction triggers.
@@ -488,6 +500,41 @@ const (
 	GroupPolicyDeny        = "deny"         // refuse to execute
 )
 
+// TrustedGitRepo is one entry in security.trusted_git_repos: a repository
+// whose untrusted-git-config intake warning the user has explicitly dismissed.
+// Path is the absolute, filepath.Clean-ed repository work-tree root (the same
+// form TrustGitRepo stores and notifyGitConfigRisk attributes warnings to).
+// Fingerprint identifies the git-config snapshot captured at trust time
+// (stored separately under ~/.c0wrk/git-config-snapshots/, see
+// GitConfigSnapshotsDir) so a later scan can diff against it and reinstate the
+// warning when the config changed after the trust decision. Fingerprint may be
+// empty for entries migrated from the pre-fingerprint string format (a bare
+// path) — those keep suppressing the warning unconditionally until re-trusted.
+type TrustedGitRepo struct {
+	Path        string `yaml:"path"`
+	Fingerprint string `yaml:"fingerprint,omitempty"`
+}
+
+// UnmarshalYAML accepts both the current mapping form ({path, fingerprint})
+// and the legacy string form (a bare absolute path, pre-fingerprint). A legacy
+// string migrates to a Path with an empty Fingerprint, preserving warning
+// suppression for already-trusted repositories without inventing a snapshot
+// that was never captured.
+func (r *TrustedGitRepo) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		r.Path = value.Value
+		r.Fingerprint = ""
+		return nil
+	}
+	type plain TrustedGitRepo
+	var p plain
+	if err := value.Decode(&p); err != nil {
+		return err
+	}
+	*r = TrustedGitRepo(p)
+	return nil
+}
+
 // SecurityConfig holds security settings.
 type SecurityConfig struct {
 	Judge            JudgeConfig            `yaml:"judge"`
@@ -521,12 +568,30 @@ type SecurityConfig struct {
 	// TrustedGitRepos lists repository roots for which the untrusted-git-config
 	// intake warning (the project:git_config_risk event fired on project switch
 	// or work-directory add, see ADR-033 layer 3) has been explicitly
-	// dismissed by the user via the "Trust this repo" action. Entries are
-	// absolute, filepath.Clean-ed paths; matching is exact. Trusting a repo
-	// suppresses ONLY the UI warning — the spawn-layer neutralization (global
-	// baseline + per-repo NeutralizingArgv) remains fully in force.
-	// Default: empty (every suspicious config warns).
-	TrustedGitRepos []string `yaml:"trusted_git_repos,omitempty"`
+	// dismissed by the user via the "Trust this repo" action. Each entry is a
+	// {path, fingerprint} pair: the absolute, filepath.Clean-ed repository
+	// work-tree root and the fingerprint of the git-config snapshot captured
+	// when the user trusted it (empty for entries migrated from the legacy
+	// string format). Matching is exact on the path. Trusting a repo both
+	// suppresses the UI warning AND opts the repository back into its own git
+	// configuration: backend mirrors this list into the process-wide
+	// core/gittrust registry, which the spawn layer consults to run raw git
+	// for the root (sysproc.GitCmdRaw) — so its hooks, filters and signing
+	// apply as they would outside c0wrk. A root that is NOT trusted (or is
+	// hardened, below) keeps the full spawn-layer neutralization.
+	// Default: empty (every suspicious config warns; every repo is hardened).
+	TrustedGitRepos []TrustedGitRepo `yaml:"trusted_git_repos,omitempty"`
+
+	// HardenGitRepos lists repository roots that are always treated as
+	// hardened: their untrusted-git-config intake warning is never suppressed
+	// and they are excluded from the trust list — a root cannot be both
+	// trusted and hardened (validation enforces the mutual exclusion). Entries
+	// are absolute, filepath.Clean-ed paths, matching is exact. Hardening is
+	// the inverse of trust at the spawn layer: a hardened root never becomes
+	// raw-git eligible, so the spawn-layer neutralization stays in force for
+	// it regardless of anything else.
+	// Default: empty.
+	HardenGitRepos []string `yaml:"harden_git_repos,omitempty"`
 }
 
 // GroupPolicyConfig holds per-group security policy configuration
@@ -577,6 +642,8 @@ type TimeoutsConfig struct {
 	BashWaitDelay            int `yaml:"bashWaitDelay"`            // seconds, default: 5
 	RipgrepTimeout           int `yaml:"ripgrepTimeout"`           // seconds, default: 60
 	WebFetchTimeout          int `yaml:"webFetchTimeout"`          // seconds, default: 30
+	WebFetchProxyTimeout     int `yaml:"webFetchProxyTimeout"`     // seconds, default: 30 — per-attempt web fetch timeout used when the proxy is enabled
+	WebFetchRetries          int `yaml:"webFetchRetries"`          // retry count (not seconds) for failed web fetches; each retry doubles the active timeout (webFetchTimeout, or webFetchProxyTimeout when the proxy is on), default: 2
 	WebSearchTimeout         int `yaml:"webSearchTimeout"`         // seconds, default: 30
 	PersistenceTimeout       int `yaml:"persistenceTimeout"`       // seconds, default: 5
 	LLMRequestTimeout        int `yaml:"llmRequestTimeout"`        // seconds, default: 600 (10 min) — main chat loop
@@ -623,13 +690,12 @@ type AgentsConfig struct {
 // envVarPattern matches ${ENV_VAR} patterns for substitution.
 var envVarPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 
-// ExperimentalConfig gates experimental features behind a single master switch.
+// ExperimentalConfig gates the Small-LLM profile behind a single master switch.
 // It is all-or-nothing by design: there is no per-feature toggle, so enabling
-// it exposes every gated feature and disabling it hides every gated feature.
+// it exposes the profile and disabling it hides it.
 type ExperimentalConfig struct {
-	// Enabled is the master switch for experimental features. When false, every
-	// gated feature (RESEARCH mode, the Small-LLM profile) is treated as off.
-	// Default: false.
+	// Enabled is the master switch for the Small-LLM profile. When false, the
+	// profile is treated as off regardless of its own toggles. Default: false.
 	Enabled bool `yaml:"enabled"`
 }
 
@@ -675,16 +741,10 @@ type EssentialToolsConfig struct {
 	Enabled bool `yaml:"enabled"`
 
 	// AlwaysPresent is the allow-list of tool names always exposed when this
-	// variant is active. Tools not in this list are hidden from the model
-	// unless the router matches them into a free slot.
+	// variant is active. Tools not in this list are hidden from the model.
+	// Protected orchestration tools and all MCP tools are always preserved
+	// regardless, and the selection is never trimmed.
 	AlwaysPresent []string `yaml:"always_present"`
-
-	// MaxTools caps the router-matched slots: at most
-	// maxTools − len(guaranteed) matched tools are kept, where guaranteed =
-	// always-present ∪ protected ∪ MCP. The guaranteed set itself is never
-	// trimmed (validateSmallLLMConfig rejects configs where it alone exceeds
-	// MaxTools).
-	MaxTools int `yaml:"max_tools"`
 
 	// CompactDescriptions replaces every known builtin's full rubric
 	// description with a one-line compact variant while this variant is
@@ -1112,21 +1172,57 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	// Validate security.trusted_git_repos: entries must be absolute paths.
-	// They are compared literally (after Clean) against scanned repository
-	// roots, so a relative entry could never match — reject it at load time
-	// rather than leaving dead config.
+	// Validate and normalize security.trusted_git_repos and
+	// security.harden_git_repos. Both hold absolute repository roots — compared
+	// literally (after Clean) against scanned work-tree roots — so a relative
+	// entry could never match and is rejected at load time rather than leaving
+	// dead config. Entries are cleaned in place, duplicate roots are rejected,
+	// and the two lists are mutually exclusive: a root cannot be both trusted
+	// (warning suppressed) and hardened (warning forced).
+	seenTrusted := make(map[string]struct{}, len(cfg.Security.TrustedGitRepos))
+	cleanTrusted := make([]TrustedGitRepo, 0, len(cfg.Security.TrustedGitRepos))
 	for _, repo := range cfg.Security.TrustedGitRepos {
-		if repo == "" {
+		if repo.Path == "" {
 			return errors.New("security.trusted_git_repos must not contain empty paths")
 		}
-		if !filepath.IsAbs(filepath.Clean(repo)) {
+		cleaned := filepath.Clean(repo.Path)
+		if !filepath.IsAbs(cleaned) {
 			return fmt.Errorf(
 				"security.trusted_git_repos entry %q must be an absolute path",
+				repo.Path,
+			)
+		}
+		if _, dup := seenTrusted[cleaned]; dup {
+			return fmt.Errorf("security.trusted_git_repos contains duplicate path %q", cleaned)
+		}
+		seenTrusted[cleaned] = struct{}{}
+		cleanTrusted = append(cleanTrusted, TrustedGitRepo{Path: cleaned, Fingerprint: repo.Fingerprint})
+	}
+	cfg.Security.TrustedGitRepos = cleanTrusted
+
+	seenHarden := make(map[string]struct{}, len(cfg.Security.HardenGitRepos))
+	cleanHarden := make([]string, 0, len(cfg.Security.HardenGitRepos))
+	for _, repo := range cfg.Security.HardenGitRepos {
+		if repo == "" {
+			return errors.New("security.harden_git_repos must not contain empty paths")
+		}
+		cleaned := filepath.Clean(repo)
+		if !filepath.IsAbs(cleaned) {
+			return fmt.Errorf(
+				"security.harden_git_repos entry %q must be an absolute path",
 				repo,
 			)
 		}
+		if _, dup := seenHarden[cleaned]; dup {
+			return fmt.Errorf("security.harden_git_repos contains duplicate path %q", cleaned)
+		}
+		if _, conflict := seenTrusted[cleaned]; conflict {
+			return fmt.Errorf("repository %q cannot be both trusted and hardened", cleaned)
+		}
+		seenHarden[cleaned] = struct{}{}
+		cleanHarden = append(cleanHarden, cleaned)
 	}
+	cfg.Security.HardenGitRepos = cleanHarden
 
 	// Validate goal_loop.verification enum.
 	switch cfg.GoalLoop.Verification {

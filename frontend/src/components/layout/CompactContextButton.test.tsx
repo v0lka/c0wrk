@@ -34,7 +34,7 @@ describe('CompactContextButton', () => {
     document.body.replaceChildren(container)
     root = createRoot(container)
     useSessionStore.setState({ activeSessionId: 'sess-1' })
-    useChatStore.setState({ compacting: {}, compactionNoOp: {} })
+    useChatStore.setState({ compacting: {}, compactionAvailability: {} })
   })
 
   // Unmount before the next test's beforeEach store updates run: the rendered
@@ -73,41 +73,52 @@ describe('CompactContextButton', () => {
     expect(container.querySelector('button[title="Compact context"]')).toBeNull()
   })
 
-  it('renders disabled with the under-target tooltip when a no-op is predicted', () => {
-    // The backend predicts a manual compaction cannot shrink the dialogue —
-    // the strategy menu is replaced by a disabled button with the reason.
-    useChatStore.setState({ compactionNoOp: { 'sess-1': true } })
+  it('renders disabled with the nothing-to-compact tooltip when no strategy is available', () => {
+    // The backend predicts every strategy would leave the dialogue unchanged —
+    // the compact trigger is disabled with the reason.
+    useChatStore.setState({
+      compactionAvailability: {
+        'sess-1': [
+          { strategy: 'sliding_window', available: false, reclaim_tokens: 0, exact: true },
+          { strategy: 'summarization', available: false, reclaim_tokens: 0, exact: false },
+          { strategy: 'hierarchical', available: false, reclaim_tokens: 0, exact: false },
+        ],
+      },
+    })
     render()
     const btn = container.querySelector<HTMLButtonElement>(
-      'button[title="Context is already under the compaction target"]',
+      'button[title="Nothing to compact — every strategy would leave the context unchanged"]',
     )
     expect(btn).not.toBeNull()
     expect(btn!.disabled).toBe(true)
-    // The dropdown trigger is gone.
-    expect(container.querySelector('button[title="Compact context"]')).toBeNull()
+    // No cancel affordance.
     expect(container.querySelector('button[title="Cancel compaction"]')).toBeNull()
   })
 
-  it('fails open when the no-op verdict is unknown (absent key)', () => {
+  it('fails open when availability is unknown (absent key)', () => {
     // Undefined verdict (older backend / not yet fetched) must NOT disable
     // the button — the normal strategy menu stays available.
-    useChatStore.setState({ compactionNoOp: {} })
+    useChatStore.setState({ compactionAvailability: {} })
     render()
     expect(container.querySelector('button[title="Compact context"]')).not.toBeNull()
     expect(
-      container.querySelector('button[title="Context is already under the compaction target"]'),
+      container.querySelector('button[title="Nothing to compact — every strategy would leave the context unchanged"]'),
     ).toBeNull()
   })
 
-  it('keeps the cancel affordance while compacting even when a no-op is predicted', () => {
+  it('keeps the cancel affordance while compacting even when no strategy is available', () => {
     // A compaction is in flight — the cancel affordance wins over the
-    // disabled no-op state (the flow must remain interruptable).
-    useChatStore.setState({ compacting: { 'sess-1': true }, compactionNoOp: { 'sess-1': true } })
+    // disabled state (the flow must remain interruptable).
+    useChatStore.setState({
+      compacting: { 'sess-1': true },
+      compactionAvailability: {
+        'sess-1': [
+          { strategy: 'sliding_window', available: false, reclaim_tokens: 0, exact: true },
+        ],
+      },
+    })
     render()
     expect(container.querySelector('button[title="Cancel compaction"]')).not.toBeNull()
-    expect(
-      container.querySelector('button[title="Context is already under the compaction target"]'),
-    ).toBeNull()
   })
 
   it('renders nothing interactive missing — hidden session keeps idle state', () => {
