@@ -512,13 +512,18 @@ type VectorEmbedderInfo struct {
 	EffectiveProvider string
 
 	// RequestedProvider is the config value passed to the embedder:
-	// "auto" | "cpu" | "cuda". Differs from EffectiveProvider exactly when a
-	// fallback happened.
+	// "auto" | "cpu" | "cuda". Diverges from EffectiveProvider for every
+	// "auto" request (auto is resolved to the winner at creation —
+	// auto→cuda is a success, auto→cpu is Auto's expected degradation)
+	// and for an explicit "cuda" degrading to CPU after init failure —
+	// only the latter is a fallback, and only that path sets
+	// FallbackReason.
 	RequestedProvider string
 
-	// FallbackReason carries why the effective provider deviates from the
-	// requested one (CUDA init failure text), empty when there was no
-	// fallback. Surfaced in the status for diagnostics.
+	// FallbackReason carries why an explicit "cuda" request degraded to
+	// the CPU provider (CUDA init failure text). Empty otherwise — the
+	// "auto" degradation cause is WARN-logged at startup and is not part
+	// of the status payload. Surfaced in the status for diagnostics.
 	FallbackReason string
 
 	// CUDAVerified is the external nvidia-smi verdict — true when the driver
@@ -562,16 +567,18 @@ type VectorIndexStatus struct {
 	// ExecutionProvider is the ONNX Runtime execution provider the embedder
 	// effectively runs on: "cpu" or "cuda" — never "auto" ("auto" is resolved
 	// once, at embedder creation; the winner is reported here). Empty when no
-	// embedder exists (model files missing or creation failed). Surfaced for a
-	// future UI; comparing it with RequestedExecutionProvider is how a
-	// CUDA→CPU fallback is detected (ADR-042).
+	// embedder exists (model files missing or creation failed). Comparing it
+	// with RequestedExecutionProvider classifies the outcome (ADR-042): an
+	// explicit "cuda" landing on "cpu" is a fallback; an "auto" request always
+	// diverges (it is resolved to a winner), so auto→cuda is a success and
+	// auto→cpu is Auto's expected degradation.
 	ExecutionProvider string `json:"execution_provider,omitempty"`
 
 	// RequestedExecutionProvider is the config value (auto|cpu|cuda) the
-	// embedder was created with. It differs from ExecutionProvider exactly
-	// when a fallback happened: "auto" degrading on a CPU-only machine
-	// (WARN-only) or an explicit "cuda" falling back to CPU after init
-	// failure (WARN + runtime_error toast).
+	// embedder was created with. Diverges from ExecutionProvider for every
+	// "auto" request (auto is resolved to the winner) and for an explicit
+	// "cuda" degrading to CPU after init failure (WARN + runtime_error
+	// toast) — only the latter is a fallback.
 	RequestedExecutionProvider string `json:"requested_execution_provider,omitempty"`
 
 	// CUDAVerified is the external nvidia-smi verdict, set only when the
@@ -582,9 +589,11 @@ type VectorIndexStatus struct {
 	// embedder never initialized).
 	CUDAVerified *bool `json:"cuda_verified,omitempty"`
 
-	// ProviderFallbackReason explains why the effective provider deviates
-	// from the requested one (CUDA init failure text). Empty when the
-	// requested provider was honored.
+	// ProviderFallbackReason explains why an explicit "cuda" request
+	// degraded to the CPU provider (CUDA init failure text). Empty when the
+	// requested provider was honored — and empty on the auto→cpu
+	// degradation path, whose concrete cause is WARN-logged at startup and
+	// does not travel in the status payload.
 	ProviderFallbackReason string `json:"provider_fallback_reason,omitempty"`
 
 	// DeviceID is the ONNX device index the running embedder was created

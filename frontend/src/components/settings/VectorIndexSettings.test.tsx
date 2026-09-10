@@ -333,6 +333,56 @@ describe('VectorIndexSettings — diagnostics', () => {
     expect(container.querySelector('[data-testid="vector-cuda-verified-badge"]')).toBeNull()
   })
 
+  it('treats Auto resolving to CUDA as a success — no fallback UI', async () => {
+    useVectorIndexStore.setState({
+      status: statusWith({
+        requested_execution_provider: 'auto',
+        execution_provider: 'cuda',
+        cuda_verified: true,
+      }),
+    })
+    await render()
+    await flush()
+
+    const provider = container.querySelector('[data-testid="vector-diagnostics-provider"]')
+    expect(provider).not.toBeNull()
+    expect(provider!.textContent).toContain('Auto')
+    expect(provider!.textContent).toContain('→')
+    expect(provider!.textContent).toContain('CUDA')
+
+    // Auto winning with CUDA is the best outcome, not a fallback: no
+    // warning block, no info note, no "unknown reason" anywhere.
+    expect(container.querySelector('[data-testid="vector-fallback-reason"]')).toBeNull()
+    expect(container.querySelector('[data-testid="vector-auto-cpu-note"]')).toBeNull()
+    expect(text()).not.toContain('Fell back')
+    expect(text()).not.toContain('unknown reason')
+  })
+
+  it('shows the expected-degradation info note (not a warning) for Auto → CPU', async () => {
+    useVectorIndexStore.setState({
+      status: statusWith({
+        requested_execution_provider: 'auto',
+        execution_provider: 'cpu',
+        // No provider_fallback_reason on this path: the concrete cause is
+        // WARN-logged at startup only, never part of the status payload.
+      }),
+    })
+    await render()
+    await flush()
+
+    const note = container.querySelector('[data-testid="vector-auto-cpu-note"]')
+    expect(note).not.toBeNull()
+    expect(note!.textContent).toContain('Auto resolved to the CPU provider')
+    expect(note!.textContent).toContain('not an error')
+
+    // The info note replaces the warning-styled fallback block entirely.
+    expect(container.querySelector('[data-testid="vector-fallback-reason"]')).toBeNull()
+    expect(text()).not.toContain('Fell back')
+    expect(text()).not.toContain('unknown reason')
+    // No CUDA badge on a CPU embedder.
+    expect(container.querySelector('[data-testid="vector-cuda-verified-badge"]')).toBeNull()
+  })
+
   it('renders the cuda_verified badge with the driver-probe verdict', async () => {
     useVectorIndexStore.setState({
       status: statusWith({

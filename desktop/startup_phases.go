@@ -1116,9 +1116,11 @@ func (a *App) startVectorIndexBackground(
 		}
 		emb, embErr := embedding.NewEmbedder(embCfg)
 		// embedderInfo feeds the execution-provider facts into every
-		// vector-index status payload; requested/effective diverging is the
-		// fallback signal a future UI can render (ADR-042 observability
-		// contract).
+		// vector-index status payload; the explicit-cuda→cpu fallback (the
+		// only true fallback — an "auto" request always resolves to a
+		// winner, so auto→cuda is a success and auto→cpu is Auto's expected
+		// degradation) is what the settings UI renders from the
+		// requested/effective pair (ADR-042 observability contract).
 		embedderInfo := backend.VectorEmbedderInfo{RequestedProvider: requestedProvider, DeviceID: onnxDevice}
 		if embErr != nil && requestedProvider == config.VectorIndexProviderCUDA {
 			// Explicit "cuda" that cannot come up must not silently kill
