@@ -1023,6 +1023,132 @@ func TestUpdateSearchSettings_PersistsAndRebuilds(t *testing.T) {
 	}
 }
 
+// --- UpdateVectorIndexSettings ---
+
+// TestUpdateVectorIndexSettings_PersistsAndRoundTrips verifies that a valid
+// update mutates the in-memory config, survives a Load round-trip from disk,
+// and is served back by GetConfig's vector_index block.
+func TestUpdateVectorIndexSettings_PersistsAndRoundTrips(t *testing.T) {
+	f, _, cfgPath := newTestAPI(t)
+
+	err := f.UpdateVectorIndexSettings(VectorIndexSettingsResponse{
+		ExecutionProvider: config.VectorIndexProviderCUDA,
+		DeviceID:          2,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// In-memory state applied.
+	if got := f.config.VectorIndex.ExecutionProvider; got != config.VectorIndexProviderCUDA {
+		t.Errorf("in-memory execution_provider = %q, want %q", got, config.VectorIndexProviderCUDA)
+	}
+	if got := f.config.VectorIndex.DeviceID; got != 2 {
+		t.Errorf("in-memory device_id = %d, want 2", got)
+	}
+
+	// Persisted file round-trips through Load.
+	reloaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to reload persisted config: %v", err)
+	}
+	if got := reloaded.VectorIndex.ExecutionProvider; got != config.VectorIndexProviderCUDA {
+		t.Errorf("persisted execution_provider = %q, want %q", got, config.VectorIndexProviderCUDA)
+	}
+	if got := reloaded.VectorIndex.DeviceID; got != 2 {
+		t.Errorf("persisted device_id = %d, want 2", got)
+	}
+
+	// GetConfig exposes the vector_index block.
+	resp := f.GetConfig()
+	if got := resp.VectorIndex.ExecutionProvider; got != config.VectorIndexProviderCUDA {
+		t.Errorf("GetConfig execution_provider = %q, want %q", got, config.VectorIndexProviderCUDA)
+	}
+	if got := resp.VectorIndex.DeviceID; got != 2 {
+		t.Errorf("GetConfig device_id = %d, want 2", got)
+	}
+}
+
+// TestUpdateVectorIndexSettings_InvalidValuesRejectedBeforeWrite verifies
+// that an invalid provider or a negative device id is rejected BEFORE any
+// mutation or disk write: the in-memory config keeps its prior values and
+// the persisted file remains loadable with those prior values (a restart
+// can never brick the app on a rejected request).
+func TestUpdateVectorIndexSettings_InvalidValuesRejectedBeforeWrite(t *testing.T) {
+	f, _, cfgPath := newTestAPI(t)
+
+	// Seed a known-good persisted state first.
+	if err := f.UpdateVectorIndexSettings(VectorIndexSettingsResponse{
+		ExecutionProvider: config.VectorIndexProviderCPU,
+		DeviceID:          1,
+	}); err != nil {
+		t.Fatalf("failed to seed valid state: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		req      VectorIndexSettingsResponse
+		wantPart string
+	}{
+		{
+			name:     "unknown provider",
+			req:      VectorIndexSettingsResponse{ExecutionProvider: "tpu", DeviceID: 1},
+			wantPart: "vector_index.execution_provider",
+		},
+		{
+			name:     "empty provider",
+			req:      VectorIndexSettingsResponse{ExecutionProvider: "", DeviceID: 1},
+			wantPart: "vector_index.execution_provider",
+		},
+		{
+			name:     "negative device id",
+			req:      VectorIndexSettingsResponse{ExecutionProvider: config.VectorIndexProviderCUDA, DeviceID: -1},
+			wantPart: "vector_index.device_id",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := f.UpdateVectorIndexSettings(tt.req)
+			if err == nil {
+				t.Fatal("expected error for invalid settings")
+			}
+			if !strings.Contains(err.Error(), tt.wantPart) {
+				t.Errorf("error %q does not mention %q", err.Error(), tt.wantPart)
+			}
+
+			// In-memory state untouched.
+			if got := f.config.VectorIndex.ExecutionProvider; got != config.VectorIndexProviderCPU {
+				t.Errorf("in-memory execution_provider mutated to %q, want %q", got, config.VectorIndexProviderCPU)
+			}
+			if got := f.config.VectorIndex.DeviceID; got != 1 {
+				t.Errorf("in-memory device_id mutated to %d, want 1", got)
+			}
+
+			// Persisted file still loads cleanly with the prior values.
+			reloaded, loadErr := config.Load(cfgPath)
+			if loadErr != nil {
+				t.Fatalf("persisted config no longer loadable after rejected update: %v", loadErr)
+			}
+			if got := reloaded.VectorIndex.ExecutionProvider; got != config.VectorIndexProviderCPU {
+				t.Errorf("persisted execution_provider = %q, want %q (unchanged)", got, config.VectorIndexProviderCPU)
+			}
+			if got := reloaded.VectorIndex.DeviceID; got != 1 {
+				t.Errorf("persisted device_id = %d, want 1 (unchanged)", got)
+			}
+		})
+	}
+}
+
+func TestUpdateVectorIndexSettings_NilConfig(t *testing.T) {
+	f := &FrontendAPI{}
+	err := f.UpdateVectorIndexSettings(VectorIndexSettingsResponse{
+		ExecutionProvider: config.VectorIndexProviderCPU,
+	})
+	if err == nil {
+		t.Fatal("expected error when config is nil")
+	}
+}
+
 // --- UpdateProxySettings ---
 
 func TestUpdateProxySettings_PersistsAndRebuilds(t *testing.T) {

@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
   getLogLevel: vi.fn(),
   hasDefaultModel: vi.fn(),
+  listVectorIndexGPUs: vi.fn(),
 }))
 
 vi.mock('@/api/config', () => ({
@@ -18,6 +19,11 @@ vi.mock('@/api/config', () => ({
   getConfig: mocks.getConfig,
   getLogLevel: mocks.getLogLevel,
   hasDefaultModel: mocks.hasDefaultModel,
+}))
+
+// VectorIndexSettings (General tab) probes the GPU list on mount.
+vi.mock('@/api/vector', () => ({
+  listVectorIndexGPUs: mocks.listVectorIndexGPUs,
 }))
 
 import { SettingsModal } from './SettingsModal'
@@ -53,6 +59,7 @@ beforeEach(() => {
   mocks.getConfig.mockResolvedValue({ loaded: true, llm: {} })
   mocks.getLogLevel.mockResolvedValue('info')
   mocks.hasDefaultModel.mockResolvedValue(true)
+  mocks.listVectorIndexGPUs.mockResolvedValue([])
   useSettingsStore.setState({ open: false, activeTab: 'general' })
   container = document.createElement('div')
   document.body.appendChild(container)

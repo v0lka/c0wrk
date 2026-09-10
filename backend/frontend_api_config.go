@@ -39,6 +39,10 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 			Provider: f.config.Search.Provider,
 			APIKey:   maskAPIKey(f.config.Search.APIKey),
 		},
+		VectorIndex: VectorIndexSettingsResponse{
+			ExecutionProvider: f.config.VectorIndex.ExecutionProvider,
+			DeviceID:          f.config.VectorIndex.DeviceID,
+		},
 		Proxy: ProxySettingsResponse{
 			Enabled:    f.config.Proxy.Enabled,
 			URL:        proxy.MaskURL(f.config.Proxy.URL),
@@ -397,6 +401,52 @@ func (f *FrontendAPI) UpdateSearchSettings(settings SearchSettingsRequest) error
 	// Rebuild web search tool via the backend builder.
 	if b := f.builder(); b != nil {
 		b.UpdateSearchTool(ToBuilderConfig(f.config, f.modelProfilesCatalog()))
+	}
+
+	return nil
+}
+
+// UpdateVectorIndexSettings updates the vector-index embedding settings
+// (ONNX Runtime execution provider + GPU device id). It deliberately has NO
+// hot application: the embedder is created once per process (after
+// EventBackendReady), so the new provider/device only takes effect after an
+// app restart. This RPC validates, mutates, and persists — nothing else.
+func (f *FrontendAPI) UpdateVectorIndexSettings(settings VectorIndexSettingsResponse) error {
+	f.configMu.Lock()
+	defer f.configMu.Unlock()
+
+	if f.config == nil {
+		return errors.New("config not initialized")
+	}
+
+	// Validate BEFORE any mutation: a rejected request must leave both the
+	// in-memory config and the YAML file untouched (the file stays loadable,
+	// so a restart cannot brick the app on a bad value). The error text
+	// mirrors the load-time validate() wording so the user gets the same
+	// actionable guidance in the settings UI as on startup.
+	switch settings.ExecutionProvider {
+	case config.VectorIndexProviderAuto, config.VectorIndexProviderCPU, config.VectorIndexProviderCUDA:
+		// valid
+	default:
+		return fmt.Errorf(
+			"vector_index.execution_provider %q is not valid; must be one of: %s, %s, %s",
+			settings.ExecutionProvider,
+			config.VectorIndexProviderAuto, config.VectorIndexProviderCPU, config.VectorIndexProviderCUDA,
+		)
+	}
+	if settings.DeviceID < 0 {
+		return fmt.Errorf(
+			"vector_index.device_id %d is not valid; must be >= 0",
+			settings.DeviceID,
+		)
+	}
+
+	f.config.VectorIndex.ExecutionProvider = settings.ExecutionProvider
+	f.config.VectorIndex.DeviceID = settings.DeviceID
+
+	if err := f.persistConfig(); err != nil {
+		f.log().Warn("failed to persist vector index settings", "error", err)
+		return fmt.Errorf("failed to persist vector index settings: %w", err)
 	}
 
 	return nil

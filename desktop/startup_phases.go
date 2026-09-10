@@ -1119,7 +1119,7 @@ func (a *App) startVectorIndexBackground(
 		// vector-index status payload; requested/effective diverging is the
 		// fallback signal a future UI can render (ADR-042 observability
 		// contract).
-		embedderInfo := backend.VectorEmbedderInfo{RequestedProvider: requestedProvider}
+		embedderInfo := backend.VectorEmbedderInfo{RequestedProvider: requestedProvider, DeviceID: onnxDevice}
 		if embErr != nil && requestedProvider == config.VectorIndexProviderCUDA {
 			// Explicit "cuda" that cannot come up must not silently kill
 			// vector search: continue on the CPU provider so search stays
