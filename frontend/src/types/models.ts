@@ -284,14 +284,17 @@ export interface VectorIndexStatus {
    * "cpu" or "cuda" — never "auto" ("auto" is resolved once, at embedder
    * creation; the winner is reported here). Absent when no embedder
    * exists (model files missing or creation failed). Comparing it with
-   * requested_execution_provider is how a CUDA→CPU fallback is detected.
+   * requested_execution_provider classifies the outcome: an explicit
+   * "cuda" landing on "cpu" is a fallback; "auto" always diverges (it is
+   * resolved to either winner), so auto→cuda is a success and auto→cpu
+   * is Auto's expected degradation.
    */
   execution_provider?: string
   /**
    * Config value ("auto"|"cpu"|"cuda") the embedder was created with.
-   * Differs from execution_provider exactly when a fallback happened:
-   * "auto" degrading on a CPU-only machine (WARN-only) or an explicit
-   * "cuda" falling back to CPU after init failure (WARN + toast).
+   * Diverges from execution_provider for every "auto" request (auto is
+   * resolved to the winner) and for an explicit "cuda" degrading to CPU
+   * after init failure (WARN + toast) — only the latter is a fallback.
    */
   requested_execution_provider?: string
   /**
