@@ -90,6 +90,7 @@ type Checker struct {
 	logger  *slog.Logger
 	goos    string
 	goarch  string
+	flavor  Flavor
 	baseURL string // API origin; defaults to "https://api.github.com" (HTTPS-only). Overridable by in-package tests.
 }
 
@@ -119,6 +120,7 @@ func NewChecker(cfg Config, client *http.Client, logger *slog.Logger) *Checker {
 		logger:  logger,
 		goos:    goos,
 		goarch:  goarch,
+		flavor:  CurrentFlavor(),
 		baseURL: "https://api.github.com",
 	}
 }
@@ -144,6 +146,15 @@ func NewCheckerWithProxy(cfg Config, proxyCfg proxy.Config, logger *slog.Logger)
 func (c *Checker) WithPlatform(goos, goarch string) *Checker {
 	c.goos = goos
 	c.goarch = goarch
+	return c
+}
+
+// WithFlavor overrides the packaging flavor used for asset selection.
+// Returns the receiver for chaining. Flavors only diverge on linux/amd64
+// (cpu vs cuda13, ADR-036); on every other platform the flavor is ignored
+// because the release matrix ships a single archive there.
+func (c *Checker) WithFlavor(flavor Flavor) *Checker {
+	c.flavor = flavor
 	return c
 }
 
@@ -221,9 +232,15 @@ func (c *Checker) evaluate(rel githubRelease) (Result, error) {
 		return res, nil
 	}
 
-	asset, err := SelectAsset(rel.Assets, c.goos, c.goarch)
+	c.logger.Debug("updater: selecting release asset",
+		"goos", c.goos,
+		"goarch", c.goarch,
+		"flavor", string(c.flavor),
+	)
+
+	asset, err := SelectAsset(rel.Assets, c.goos, c.goarch, c.flavor)
 	if err != nil {
-		return res, fmt.Errorf("select asset for %s/%s: %w", c.goos, c.goarch, err)
+		return res, fmt.Errorf("select asset for %s/%s (%s): %w", c.goos, c.goarch, c.flavor, err)
 	}
 
 	res.Available = true

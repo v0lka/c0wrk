@@ -276,7 +276,7 @@ This section describes how to cut a release of **c0wrk**, the artifact inventory
 
 ### Cutting a release
 
-Releases are produced by the `release.yml` GitHub Actions workflow. It builds the app for all four platforms and publishes a GitHub Release with auto-generated notes and four downloadable artifacts.
+Releases are produced by the `release.yml` GitHub Actions workflow. It builds the app for all platforms and publishes a GitHub Release with auto-generated notes and five downloadable artifacts (four platform archives plus the opt-in CUDA 13 flavor of Linux amd64).
 
 **Standard flow: tag and push**
 
@@ -288,8 +288,8 @@ git push origin v0.1.0
 What happens next:
 
 1. Pushing a tag named `v*` triggers the **Release** workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml)).
-2. The workflow builds the app for **4 targets** (macOS arm64, Linux amd64/arm64, Windows amd64), injects the release tag plus commit/build time into `core/version`, and bundles the ONNX Runtime shared library and embedding models.
-3. It generates a `SHA256SUMS` file for the four archives and publishes a GitHub Release tied to that tag with auto-generated release notes.
+2. The workflow builds the app for **4 targets** (macOS arm64, Linux amd64/arm64, Windows amd64) plus a CUDA-13 GPU flavor of Linux amd64, injects the release tag plus commit/build time into `core/version`, and bundles the ONNX Runtime shared library and embedding models.
+3. It generates a `SHA256SUMS` file for the five archives and publishes a GitHub Release tied to that tag with auto-generated release notes.
 
 Verify the result under **Releases** → your tag, then promote / announce the release URL.
 
@@ -308,16 +308,17 @@ To exercise the workflow without cutting a real release:
 
 ### Artifact inventory
 
-Each release publishes four platform archives plus `SHA256SUMS`. Unzip/extract the archive matching your OS and architecture.
+Each release publishes five platform archives plus `SHA256SUMS`. Unzip/extract the archive matching your OS and architecture.
 
 | Filename                              | Target                       | Contents                                                                          |
 | ------------------------------------- | ---------------------------- | --------------------------------------------------------------------------------- |
 | `c0wrk-desktop-macos-arm64.zip`       | macOS (Apple Silicon, arm64) | `c0wrk-desktop.app` bundle with bundled `libonnxruntime.dylib` + embedding models |
 | `c0wrk-desktop-linux-amd64.tar.gz`    | Linux (amd64)                | `c0wrk-desktop` binary + `libonnxruntime.so` + embedding models                   |
+| `c0wrk-desktop-linux-amd64-cuda13.tar.gz` | Linux (amd64, NVIDIA GPU) | `c0wrk-desktop` binary + CUDA-13-flavored `libonnxruntime.so` + CUDA provider libraries + embedding models |
 | `c0wrk-desktop-linux-arm64.tar.gz`    | Linux (arm64)                | `c0wrk-desktop` binary + `libonnxruntime.so` + embedding models                   |
 | `c0wrk-desktop-windows-amd64.zip`     | Windows (amd64)              | `c0wrk-desktop.exe` + `onnxruntime.dll` + embedding models                        |
 
-> The ONNX Runtime shared library and the quantized embedding model + tokenizer are bundled so vector search works out of the box — no extra download step is required on the user's machine. The in-app updater verifies the selected archive fail-closed against `SHA256SUMS`; artifacts are still unsigned, so the checksum establishes release-byte integrity but not authorship if the release account and checksum are both compromised.
+> The ONNX Runtime shared library and the quantized embedding model + tokenizer are bundled so vector search works out of the box — no extra download step is required on the user's machine. The in-app updater verifies the selected archive fail-closed against `SHA256SUMS`; artifacts are still unsigned, so the checksum establishes release-byte integrity but not authorship if the release account and checksum are both compromised. The updater is flavor-aware: a cuda13 install only ever updates from the cuda13 archive and vice versa ([ADR-043](specs/decisions/043-cuda-release-artifact.md)).
 
 End-user installation steps for each platform live in [README.md](README.md).
 

@@ -39,12 +39,13 @@ Prebuilt desktop builds are published on the [GitHub Releases](https://github.co
 
 Every release also publishes `SHA256SUMS`. The in-app updater downloads over HTTPS, refuses an archive with a missing or mismatched SHA256 entry, stages an install-tree swap, and keeps a `.old` rollback copy. SHA256 proves that the downloaded archive matches the bytes published with the release; because the artifacts are unsigned, it does **not** prove release authorship if the release account and checksums are compromised. Updates and automatic checks can be disabled independently in Settings or under `updates` in `~/.c0wrk/config.yaml`.
 
-Each release bundles four platform archives:
+Each release bundles five platform archives:
 
 | Artifact                           | Target                |
 | ---------------------------------- | --------------------- |
 | `c0wrk-desktop-macos-arm64.zip`    | macOS (Apple Silicon) |
 | `c0wrk-desktop-linux-amd64.tar.gz` | Linux (amd64)         |
+| `c0wrk-desktop-linux-amd64-cuda13.tar.gz` | Linux (amd64, NVIDIA GPU) |
 | `c0wrk-desktop-linux-arm64.tar.gz` | Linux (arm64)         |
 | `c0wrk-desktop-windows-amd64.zip`  | Windows (amd64)       |
 
@@ -83,6 +84,17 @@ The ONNX Runtime library and the embedding models ship inside every archive, so 
 **arm64**: download `c0wrk-desktop-linux-arm64.tar.gz` instead; the steps are
 identical to amd64, including the `LD_LIBRARY_PATH` note if the binary cannot
 find `libonnxruntime.so`.
+
+**NVIDIA GPU (cuda13)**: for GPU-accelerated embeddings on amd64, download
+`c0wrk-desktop-linux-amd64-cuda13.tar.gz` instead of the plain amd64 archive.
+The steps are identical, but this variant additionally requires an NVIDIA GPU
+with a recent driver and the **CUDA 13 runtime** (`libcudart.so.13`, cuBLAS,
+cuRAND — on Ubuntu install `cuda-toolkit-13-x` or the CUDA 13 runtime
+packages). Without the CUDA 13 runtime the app still runs; the vector index
+falls back to the CPU provider (a warning is logged and shown at startup).
+The in-app updater always updates within the same flavor: a cuda13 install
+receives cuda13 archives, a regular install receives regular ones — switching
+between them means manually installing the other archive.
 
 **Runtime dependencies** (end users only need these shared libraries, not the `-dev` packages):
 
