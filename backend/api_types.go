@@ -490,6 +490,38 @@ type ToolInfo struct {
 	Policy string `json:"policy"`
 }
 
+// VectorEmbedderInfo carries the embedder's execution-provider facts from the
+// one-shot desktop background init into every VectorIndexStatus payload. It is
+// written once (embedder creation outcome) and never mutated afterwards, so the
+// values stay consistent across all subsequent status emissions.
+type VectorEmbedderInfo struct {
+	// EffectiveProvider is the provider inference actually runs on: "cpu" or
+	// "cuda" — "auto" is resolved at embedder creation and never leaks here.
+	EffectiveProvider string
+
+	// RequestedProvider is the config value passed to the embedder:
+	// "auto" | "cpu" | "cuda". Differs from EffectiveProvider exactly when a
+	// fallback happened.
+	RequestedProvider string
+
+	// FallbackReason carries why the effective provider deviates from the
+	// requested one (CUDA init failure text), empty when there was no
+	// fallback. Surfaced in the status for diagnostics.
+	FallbackReason string
+
+	// CUDAVerified is the external nvidia-smi verdict — true when the driver
+	// lists this process among CUDA compute apps. Nil when the probe did not
+	// run (CPU embedder, embedder unavailable, probe skipped).
+	CUDAVerified *bool
+}
+
+// IsZero reports whether any fact has been recorded. True when the background
+// init has not (yet) populated the info — e.g. no embedder exists at all.
+func (i VectorEmbedderInfo) IsZero() bool {
+	return i.EffectiveProvider == "" && i.RequestedProvider == "" &&
+		i.FallbackReason == "" && i.CUDAVerified == nil
+}
+
 // VectorIndexStatus describes the current state of the vector index for the frontend.
 type VectorIndexStatus struct {
 	State        string   `json:"state"`
@@ -499,7 +531,35 @@ type VectorIndexStatus struct {
 	CurrentFile  string   `json:"current_file"`
 	Branch       string   `json:"branch"`
 	Phase        string   `json:"phase"`   // "both" | "embedding" | "lexical"
-	Indices      []string `json:"indices"` // e.g. ["vector", "lexical"]
+	Indices      []string `json:"indices"` // e.g. ["vector", "lexical"
+
+	// ExecutionProvider is the ONNX Runtime execution provider the embedder
+	// effectively runs on: "cpu" or "cuda" — never "auto" ("auto" is resolved
+	// once, at embedder creation; the winner is reported here). Empty when no
+	// embedder exists (model files missing or creation failed). Surfaced for a
+	// future UI; comparing it with RequestedExecutionProvider is how a
+	// CUDA→CPU fallback is detected (ADR-042).
+	ExecutionProvider string `json:"execution_provider,omitempty"`
+
+	// RequestedExecutionProvider is the config value (auto|cpu|cuda) the
+	// embedder was created with. It differs from ExecutionProvider exactly
+	// when a fallback happened: "auto" degrading on a CPU-only machine
+	// (WARN-only) or an explicit "cuda" falling back to CPU after init
+	// failure (WARN + runtime_error toast).
+	RequestedExecutionProvider string `json:"requested_execution_provider,omitempty"`
+
+	// CUDAVerified is the external nvidia-smi verdict, set only when the
+	// effective provider is "cuda" and the startup verification probe ran:
+	// true = the driver lists this process among CUDA compute apps; false =
+	// absent (possible silent CPU fallback inside the CUDA-capable build).
+	// Nil when no probe ran (CPU embedder, embedder unavailable, or the
+	// embedder never initialized).
+	CUDAVerified *bool `json:"cuda_verified,omitempty"`
+
+	// ProviderFallbackReason explains why the effective provider deviates
+	// from the requested one (CUDA init failure text). Empty when the
+	// requested provider was honored.
+	ProviderFallbackReason string `json:"provider_fallback_reason,omitempty"`
 }
 
 // VectorStoreEntry represents a single chunk from the vector store for the frontend.

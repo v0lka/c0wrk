@@ -1,37 +1,43 @@
-# GPU-инференс эмбеддера: исследование и рабочий PoC
+# Embedder GPU inference: investigation and working PoC
 
-**Дата:** 2026-09-09 (восстановлено 2026-09-10)
-**Статус:** PoC работает и собран. В продукт не перенесён.
-**Машина:** Zabarch — RTX 5060 Ti 16 ГБ (Blackwell, sm_120) + RTX 2060 6 ГБ, CUDA 13.3, драйвер 610.57.04
+> **Ported into the product on 2026-09-10 — see [ADR-042](../specs/decisions/042-gpu-embedding-provider.md).**
+> This document remains the research journal (measurements, dead ends, reproduction);
+> product decisions — configuration knobs, fallback semantics, packaging, stamps — are described
+> in the ADR and in `specs/domains/workspace.md` (Embedding Execution Provider section).
+
+**Date:** 2026-09-09 (restored 2026-09-10)
+**Status:** PoC works and is built. Ported into the product on 2026-09-10 (see ADR-042).
+**Machine:** Zabarch — RTX 5060 Ti 16 GB (Blackwell, sm_120) + RTX 2060 6 GB, CUDA 13.3, driver 610.57.04
 
 ---
 
 ## TL;DR
 
-Индексация считалась на CPU, хотя рядом с бинарником лежала GPU-сборка `libonnxruntime.so`.
-Причин оказалось три, и каждая по отдельности достаточна, чтобы GPU не заработала:
+Indexing ran on the CPU even though a GPU build of `libonnxruntime.so` was sitting right next to
+the binary. There turned out to be three causes, and each one alone is enough to keep the GPU from
+working:
 
-1. **CUDA execution provider никто не включал.** ONNX Runtime не выбирает GPU сам — без явного
-   `AppendExecutionProviderCUDA` он исполняет граф на CPU EP, какая бы сборка библиотеки ни была
-   подложена.
-2. **Приложение грузило другую библиотеку.** Установленный пакет держит CPU-сборку в `/opt/c0wrk`,
-   а файлы в `build/bin` при запуске через лаунчер не читаются вообще.
-3. **(Обнаружено после включения EP)** CUDA EP заводит `PerThreadContext` — cuBLAS-хендл с
-   workspace, ~1 ГБ видеопамяти — на **каждый OS-поток**, который входит в `Session.Run`.
-   Go гоняет горутины по потокам, карта заполняется за секунды индексации, и инференс падает с
-   `CUBLAS failure 3: the resource allocation failed`.
+1. **Nobody enabled the CUDA execution provider.** ONNX Runtime does not pick the GPU by itself —
+   without an explicit `AppendExecutionProviderCUDA` it executes the graph on the CPU EP, no
+   matter which build of the library is placed next to the app.
+2. **The app was loading a different library.** The installed package keeps the CPU build in
+   `/opt/c0wrk`, and files in `build/bin` are not read at all when launching via the launcher.
+3. **(Found after enabling the EP)** The CUDA EP creates a `PerThreadContext` — a cuBLAS handle
+   with its own workspace, ~1 GB of video memory — for **every OS thread** that enters
+   `Session.Run`. Go migrates goroutines across threads freely, the map fills up within seconds of
+   indexing, and inference dies with `CUBLAS failure 3: the resource allocation failed`.
 
-Всё три починены в PoC. Замер на jina-v2-small, батч 32 × 512 токенов: **1.61 с на CPU → 0.078 с на
-GPU, ≈20×**. Потребление видеопамяти после исправления — плоские ~4 ГБ, без роста.
+All three are fixed in the PoC. Measured on jina-v2-small, batch 32 × 512 tokens: **1.61 s on CPU
+→ 0.078 s on GPU, ≈20×**. Video memory consumption after the fix is a flat ~4 GB, no growth.
 
 ---
 
-## Симптом и как он выглядел
+## The symptom and what it looked like
 
-Изначально: индексация грузит CPU, GPU простаивает. Никаких ошибок в логах — всё «работает».
+Initially: indexing loads the CPU, the GPU idles. No errors in the logs — everything "works".
 
-После включения CUDA EP: эмбеддер стартует, сессии создаются, первые ~64 эмбеддинга проходят,
-дальше лавина одинаковых ошибок и индекс не строится.
+After enabling the CUDA EP: the embedder starts, sessions get created, the first ~64 embeddings
+pass, then an avalanche of identical errors and the index never builds.
 
 ```
 {"level":"WARN","msg":"per-text embedding failed; document will be dropped",
@@ -44,18 +50,18 @@ GPU, ≈20×**. Потребление видеопамяти после исп�
 {"level":"WARN","msg":"incremental indexing failed","error":"adding document batch: ..."}
 ```
 
-Ключ к разгадке — `cuda_execution_provider.cc:231`, конструктор `PerThreadContext`. Не «модель не
-влезла», а «кончились ресурсы при создании ещё одного per-thread контекста».
+The key to the puzzle is `cuda_execution_provider.cc:231`, the `PerThreadContext` constructor. Not
+"the model didn't fit" but "resources ran out while creating yet another per-thread context".
 
 ---
 
-## Причина 1: провайдер не добавляется
+## Cause 1: the provider is never added
 
-ONNX Runtime по умолчанию использует CPU execution provider. GPU включается только явным
-добавлением провайдера в `SessionOptions` перед созданием сессии.
+ONNX Runtime uses the CPU execution provider by default. The GPU is enabled only by explicitly
+appending the provider to `SessionOptions` before creating the session.
 
 ```
-             БЫЛО                                    НУЖНО
+             BEFORE                                   NEEDED
    ┌──────────────────────────────┐        ┌──────────────────────────────┐
    │ SetSharedLibraryPath(...)    │        │ SetSharedLibraryPath(...)    │
    │ InitializeEnvironment()      │        │ InitializeEnvironment()      │
@@ -63,7 +69,7 @@ ONNX Runtime по умолчанию использует CPU execution provider
    │ opts = NewSessionOptions()   │        │ opts = NewSessionOptions()   │
    │ opts.SetIntraOpNumThreads(N) │        │ opts.SetIntraOpNumThreads(N) │
    │                              │        │ cuda = NewCUDAProviderOpts() │
-   │        ничего                │        │ opts.AppendExecutionProvi... │
+   │        nothing               │        │ opts.AppendExecutionProvi... │
    ├──────────────────────────────┤        ├──────────────────────────────┤
    │ NewAdvancedSession(..., opts)│        │ NewAdvancedSession(..., opts)│
    └──────────────┬───────────────┘        └──────────────┬───────────────┘
@@ -71,155 +77,159 @@ ONNX Runtime по умолчанию использует CPU execution provider
             CPUExecutionProvider                   CUDAExecutionProvider
 ```
 
-Строки `AppendExecutionProvider` не было **нигде** ни в c0wrk, ни в sp4rk. Единственное, что
-настраивалось, — число intra-op потоков в `sp4rk/embedding/onnx.go:buildSessionOptions`, причём при
-`intraOpThreads <= 0` функция возвращала `nil` и сессия создавалась с нулевыми опциями.
+There was no `AppendExecutionProvider` line **anywhere** — neither in c0wrk nor in sp4rk. The only
+thing being configured was the number of intra-op threads in
+`sp4rk/embedding/onnx.go:buildSessionOptions`, and with `intraOpThreads <= 0` the function
+returned `nil` and the session was created with zero options.
 
-Точка создания сессии неэкспортирована (`buildSessionOptions`, `newONNXSession`), поэтому c0wrk до
-неё не дотягивается — **правка обязана идти в sp4rk**.
-
----
-
-## Причина 2: грузилась не та библиотека
-
-`resolveONNXLibPath()` в `desktop/startup.go` ищет `libonnxruntime.so` рядом с исполняемым файлом.
-Обёртка `/usr/bin/c0wrk-desktop` делает `exec /opt/c0wrk/c0wrk-desktop`, так что `os.Executable()`
-указывает в `/opt/c0wrk` — а там CPU-сборка из пакета `c0wrk-bin-0.7.3` (24.3 МБ против 27.6 МБ у
-GPU-сборки).
-
-**Для PoC запускать только `build/bin/c0wrk-desktop` напрямую**, не `c0wrk` из меню. Чтобы GPU
-работала через лаунчер, в `/opt/c0wrk` нужно положить и новый бинарник, и GPU-библиотеки
-(`libonnxruntime.so` + `libonnxruntime_providers_cuda.so` + `libonnxruntime_providers_shared.so`).
+The session-creation point is unexported (`buildSessionOptions`, `newONNXSession`), so c0wrk
+cannot reach it — **the change has to go into sp4rk**.
 
 ---
 
-## Причина 3: per-thread CUDA-контексты (главная и неочевидная)
+## Cause 2: the wrong library was being loaded
 
-CUDA EP в ONNX Runtime держит отдельное состояние на каждый OS-поток, который вызывает
-`Session.Run`: свой cuBLAS-хендл со своим workspace. Go-планировщик свободно перемещает горутины
-между потоками, а `EmbedDocuments` вызывается из разных горутин индексатора. Мьютекс `Embedder.mu`
-сериализует вызовы, но **не привязывает их к потоку** — вызовы строго последовательны и при этом
-приходят со всё новых потоков.
+`resolveONNXLibPath()` in `desktop/startup.go` looks for `libonnxruntime.so` next to the
+executable. The `/usr/bin/c0wrk-desktop` wrapper does `exec /opt/c0wrk/c0wrk-desktop`, so
+`os.Executable()` points into `/opt/c0wrk` — which holds the CPU build from the
+`c0wrk-bin-0.7.3` package (24.3 MB vs 27.6 MB for the GPU build).
 
-Замер: 60 инференсов batch=32, меняется только то, с какого потока приходит вызов.
+**For the PoC, launch `build/bin/c0wrk-desktop` directly**, never the `c0wrk` from the menu. For
+the GPU to work through the launcher, `/opt/c0wrk` must contain both the new binary and the GPU
+libraries (`libonnxruntime.so` + `libonnxruntime_providers_cuda.so` +
+`libonnxruntime_providers_shared.so`).
+
+---
+
+## Cause 3: per-thread CUDA contexts (the main one, and non-obvious)
+
+The CUDA EP in ONNX Runtime keeps separate state per OS thread that calls `Session.Run`: its own
+cuBLAS handle with its own workspace. The Go scheduler freely migrates goroutines between threads,
+and `EmbedDocuments` is called from different goroutines of the indexer. The `Embedder.mu` mutex
+serializes the calls but **does not pin them to a thread** — the calls are strictly sequential and
+yet keep arriving from new threads.
+
+Measurement: 60 inferences with batch=32, the only variable being which thread the call arrives
+from.
 
 ```
-        GPU used (MiB), RTX 5060 Ti 16 ГБ
-16000 ┤                    ╭──────────────────  новый поток на вызов
-      │              ╭─────╯                    (потолок → CUBLAS failure 3)
+        GPU used (MiB), RTX 5060 Ti 16 GB
+16000 ┤                    ╭──────────────────  new thread per call
+      │              ╭─────╯                    (ceiling → CUBLAS failure 3)
 12000 ┤         ╭────╯
       │     ╭───╯
  8000 ┤  ╭──╯
-      │╭─╯        ╭──────────────────────────   один поток: плато 5969
+      │╭─╯        ╭──────────────────────────   single thread: plateau 5969
  4000 ┤╯   ╭──────╯
-      │────────────────────────────────────────  закреплённый поток: ровно 3792
+      │────────────────────────────────────────  pinned thread: exactly 3792
     0 ┼────┬────┬────┬────┬────┬────┬────┬────
-      0    10   20   30   40   50   60  прогонов
+      0    10   20   30   40   50   60  runs
 ```
 
-| сценарий | GPU used: старт → плато | вывод |
+| scenario | GPU used: start → plateau | conclusion |
 |---|---|---|
-| один OS-поток | 1755 → **5969** MiB | арена ORT растёт и стабилизируется |
-| новый поток на каждый вызов | 1755 → **15839** MiB за ~20 прогонов | ~1 ГБ на поток, карта кончается |
-| закреплённый поток, вызовы с 60 разных | 1854 → **3792** MiB, плоско | лечение |
+| one OS thread | 1755 → **5969** MiB | the ORT arena grows and stabilizes |
+| new thread per call | 1755 → **15839** MiB in ~20 runs | ~1 GB per thread, the card runs out |
+| pinned thread, calls from 60 different ones | 1854 → **3792** MiB, flat | the fix |
 
-**Лечение:** все обращения к ONNX Runtime исполняются на одном закреплённом
-`runtime.LockOSThread()`-потоке.
-
----
-
-## Дохлые ветки (не тратьте на них время)
-
-- **`arena_extend_strategy: kSameAsRequested`** — проверено, не помогает. Рост тот же: 11573 MiB к
-  10-му прогону. Значит растёт не арена аллокатора, а именно контексты.
-- **`gpu_mem_limit`** — не пробовал и не советую как решение: он ограничит арену, но не количество
-  cuBLAS-хендлов, и просто превратит переполнение в отказ аллокации раньше.
-- **Установка cuDNN** — **не нужна**. Проверено: cuDNN в системе нет вообще, CUDA EP грузит
-  `libcudnn.so` лениво через `dlopen`, а в jina-v2 (BERT-like: MatMul/Gemm/LayerNorm/Softmax) нет ни
-  одного cuDNN-ядра. Сессия создаётся и считает без него. `ldd` на
-  `libonnxruntime_providers_cuda.so` подтверждает: cuDNN нет среди `NEEDED`.
-- **Переменная окружения ORT для выбора провайдера** — такой нет. Только API.
+**The fix:** every touch of ONNX Runtime executes on a single pinned
+`runtime.LockOSThread()` thread.
 
 ---
 
-## Проверенные факты об окружении
+## Dead ends (don't waste time on them)
 
-- `libonnxruntime_providers_cuda.so` слинкована с `libcudart.so.13`, `libcublas.so.13`,
-  `libcublasLt.so.13`, `libcurand.so.10` — это **CUDA 13** сборка, совпадает с установленным
-  `/opt/cuda` 13.3. cu12-сборка бы не поднялась.
-- ORT 1.28.1, `libonnxruntime_providers_shared.so` лежит рядом — рантайм находит провайдеры
-  `dlopen`'ом из каталога основной библиотеки.
-- RTX 5060 Ti (Blackwell, sm_120) поддерживается: сессия создаётся и считает корректно.
-- sha256 рабочей GPU-сборки: `4680895afc920629c16fd4aea9d04e1b40cf6d66cbb1495dead4953de9377e6c`
-  (27 668 560 байт). Полезно для сверки после `make`.
+- **`arena_extend_strategy: kSameAsRequested`** — verified, doesn't help. The growth is the same:
+  11573 MiB by the 10th run. So it's not the allocator arena that grows, it's the contexts.
+- **`gpu_mem_limit`** — didn't try it and don't recommend it as a solution: it caps the arena but
+  not the number of cuBLAS handles, and would merely turn the overflow into an allocation failure
+  sooner.
+- **Installing cuDNN** — **not needed**. Verified: cuDNN isn't in the system at all, the CUDA EP
+  loads `libcudnn.so` lazily via `dlopen`, and jina-v2 (BERT-like: MatMul/Gemm/LayerNorm/Softmax)
+  has no cuDNN kernels at all. The session is created and computes without it. `ldd` on
+  `libonnxruntime_providers_cuda.so` confirms: no cuDNN among `NEEDED`.
+- **An ORT environment variable to pick the provider** — there is none. API only.
 
-### ⚠️ Ловушка со стампом версии
+---
 
-`Makefile` короткозамыкает установку ORT, сравнивая `build/bin/.onnxruntime-version` с
-`ONNX_VERSION` (`Makefile:212`). Сейчас в стампе лежит `1.28.1-gpu`, а `ONNX_VERSION` = `1.28.1` —
-**значения не совпадают, и `make build` молча скачает CPU-архив поверх GPU-библиотеки.**
+## Verified facts about the environment
 
-Пока это не решено, собирать в обход `fetch-onnx`:
+- `libonnxruntime_providers_cuda.so` is linked against `libcudart.so.13`, `libcublas.so.13`,
+  `libcublasLt.so.13`, `libcurand.so.10` — this is a **CUDA 13** build, matching the installed
+  `/opt/cuda` 13.3. A cu12 build would not have come up.
+- ORT 1.28.1, `libonnxruntime_providers_shared.so` is next to it — the runtime finds the
+  providers by `dlopen`ing them from the main library's directory.
+- RTX 5060 Ti (Blackwell, sm_120) is supported: the session is created and computes correctly.
+- sha256 of the working GPU build: `4680895afc920629c16fd4aea9d04e1b40cf6d66cbb1495dead4953de9377e6c`
+  (27 668 560 bytes). Useful for cross-checking after `make`.
+
+### ⚠️ The version stamp trap
+
+The `Makefile` short-circuits the ORT install by comparing `build/bin/.onnxruntime-version`
+against `ONNX_VERSION` (`Makefile:212`). Right now the stamp holds `1.28.1-gpu` while
+`ONNX_VERSION` = `1.28.1` — **the values differ, so `make build` would silently download the CPU
+archive over the GPU libraries.**
+
+Until this is resolved, build bypassing `fetch-onnx`:
 
 ```bash
 wails build -tags webkit2_41 -ldflags "-X github.com/v0lka/c0wrk/core/version.Version=$(git describe --tags --dirty) -X github.com/v0lka/c0wrk/core/version.GitCommit=$(git rev-parse --short HEAD) -X github.com/v0lka/c0wrk/core/version.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ```
 
-Либо привести стамп к `1.28.1` (тогда защита снова работает, но пропадает пометка, что это
-GPU-вариант), либо — правильнее — научить `Makefile` варианту сборки с GPU, чтобы стамп и
-ожидаемое значение сходились. Это часть задачи упаковки ниже.
+Either bring the stamp back to `1.28.1` (then the guard works again but the marker that this is
+the GPU flavor is lost), or — better — teach the `Makefile` a GPU build flavor so the stamp and
+the expected value converge. That's part of the packaging task below.
 
 ---
 
-## Что изменено
+## What was changed
 
-### `/home/zab/Git/sp4rk` (не закоммичено, ветка от `5e2a034`)
+### `/home/zab/Git/sp4rk` (not committed, branch off `5e2a034`)
 
 **`embedding/onnx.go`**
-- Константы `ExecutionProviderCPU = "cpu"`, `ExecutionProviderCUDA = "cuda"`.
-- Новая сигнатура: `buildSessionOptions(provider string, deviceID, intraOpThreads int)`.
-  Ранний возврат `nil, nil` теперь срабатывает **только** для CPU — для CUDA опции нужны всегда,
-  независимо от числа потоков.
-- Функция `appendCUDAProvider(opts, deviceID)`: `NewCUDAProviderOptions` → `Update{device_id}` →
-  `AppendExecutionProviderCUDA` → `Destroy`. Опции провайдера уничтожаются сразу после append —
-  владение не передаётся сессии.
-- Неизвестное значение провайдера отвергается ошибкой, а не деградирует до CPU.
+- Constants `ExecutionProviderCPU = "cpu"`, `ExecutionProviderCUDA = "cuda"`.
+- New signature: `buildSessionOptions(provider string, deviceID, intraOpThreads int)`.
+  The early `nil, nil` return now fires **only** for CPU — for CUDA the options are always needed,
+  regardless of the thread count.
+- Function `appendCUDAProvider(opts, deviceID)`: `NewCUDAProviderOptions` → `Update{device_id}` →
+  `AppendExecutionProviderCUDA` → `Destroy`. The provider options are destroyed right after the
+  append — ownership is not transferred to the session.
+- An unknown provider value is rejected with an error instead of degrading to CPU.
 
-**`embedding/runner.go`** (новый)
-- `ortRunner`: горутина с `runtime.LockOSThread()` (никогда не разблокируется), небуферизованный
-  канал `chan func()`, метод `do(fn)` синхронно исполняет задание на этом потоке, `stop()` закрывает
-  канал.
-- Паника внутри задания перехватывается на потоке исполнителя и перебрасывается вызывающему. Если
-  дать ей улететь, горутина исполнителя умрёт и все последующие `do` зависнут навсегда на канале,
-  который никто не читает. c0wrk рассчитывает на свой `recover` в горутине векторного индекса.
+**`embedding/runner.go`** (new)
+- `ortRunner`: a goroutine with `runtime.LockOSThread()` (never unlocked), an unbuffered
+  `chan func()`, a `do(fn)` method that synchronously executes the job on that thread, and a
+  `stop()` that closes the channel.
+- A panic inside a job is caught on the worker thread and rethrown to the caller. If it were
+  allowed to escape, the worker goroutine would die and every subsequent `do` would hang forever
+  on a channel nobody reads. c0wrk relies on its own `recover` in the vector-index goroutine.
 
 **`embedding/embedder.go`**
-- Поля `ExecutionProvider string` и `DeviceID int` в `EmbedderConfig`.
-- Поле `runner *ortRunner` в `Embedder`; создаётся в `NewEmbedder` **только** при GPU-провайдере,
-  при CPU остаётся `nil`.
-- Хелперы `runOnORTThread(r, fn)` (свободная функция, нужна до создания `Embedder`) и
-  `(*Embedder).onORTThread(fn)`. При `nil` исполнителе вызывают `fn()` напрямую — CPU-путь не
-  меняется.
-- Через исполнитель проходят **все** касания ORT: `initONNXRuntime`, `buildSessionOptions`,
-  создание fast-path сессии, ленивое создание batch-сессии (`ensureBatchSession`), оба пути
-  инференса (`e.sess.run` для одиночного текста и `e.batchSess.runBatch` для батча), и весь
-  teardown в `Close` одним заданием — после чего исполнитель останавливается.
-- Провайдер и device id попали в лог `embedder initialized`.
+- Fields `ExecutionProvider string` and `DeviceID int` in `EmbedderConfig`.
+- Field `runner *ortRunner` in `Embedder`; created in `NewEmbedder` **only** for the GPU provider,
+  stays `nil` for CPU.
+- Helpers `runOnORTThread(r, fn)` (a free function, needed before the `Embedder` exists) and
+  `(*Embedder).onORTThread(fn)`. With a `nil` runner they call `fn()` directly — the CPU path is
+  unchanged.
+- **All** ORT touches go through the runner: `initONNXRuntime`, `buildSessionOptions`,
+  fast-path session creation, lazy batch-session creation (`ensureBatchSession`), both inference
+  paths (`e.sess.run` for a single text and `e.batchSess.runBatch` for a batch), and the whole
+  teardown in `Close` as one job — after which the runner is stopped.
+- Provider and device id made it into the `embedder initialized` log.
 
-**`embedding/runner_test.go`** (новый) — 4 теста: единственный поток при вызовах с 20 разных,
-отсутствие параллелизма, выживание исполнителя после паники с пробросом её вызывающему, инлайн-путь
-при `nil`. Проходят под `-race -count=2`.
+**`embedding/runner_test.go`** (new) — 4 tests: starting the runner, executing a job, panic
+propagation, stopping.
 
-**`embedding/embedder_test.go`** — существующие `TestBuildSessionOptions_*` переписаны под новую
-сигнатуру, добавлен `TestBuildSessionOptions_UnknownProvider`.
+**`embedding/embedder_test.go`** — the existing `TestBuildSessionOptions_*` rewritten for the new
+signature, plus `TestBuildSessionOptions_UnknownProvider` added.
 
-### `/home/zab/Git/c0wrk` (не закоммичено, ветка `embedding-gpu-support`)
+### `/home/zab/Git/c0wrk` (not committed, branch `embedding-gpu-support`)
 
-**`desktop/startup_phases.go`** — в `startVectorIndexBackground` читаются `C0WRK_ONNX_EP` и
-`C0WRK_ONNX_DEVICE` (через `strconv.Atoi`, при ошибке 0) и прокидываются в `EmbedderConfig`. Лог
-ошибки создания эмбеддера расширен: провайдер, device id, путь к библиотеке.
+**`desktop/startup_phases.go`** — in `startVectorIndexBackground`, `C0WRK_ONNX_EP` and
+`C0WRK_ONNX_DEVICE` are read (via `strconv.Atoi`, 0 on error) and passed into `EmbedderConfig`.
+The embedder-creation error log was extended: provider, device id, library path.
 
-**`go.work`** (новый, в `.gitignore`) — по ADR-031 лежит в корне c0wrk:
+**`go.work`** (new, in `.gitignore`) — per ADR-031 it lives in the c0wrk root:
 
 ```
 go 1.27.1
@@ -232,110 +242,115 @@ use (
 
 ---
 
-## Как собрать и запустить
+## How to build and run
 
-Сборка — см. ловушку со стампом выше. Запуск:
+Building — see the version stamp trap above. Running:
 
 ```bash
 C0WRK_ONNX_EP=cuda ./build/bin/c0wrk-desktop
 ```
 
-- `C0WRK_ONNX_EP` — `cuda` или `cpu`. Не задана = CPU, поведение прежнее.
-- `C0WRK_ONNX_DEVICE` — индекс GPU, по умолчанию `0` (RTX 5060 Ti). `1` — RTX 2060.
-- Фоллбэка на CPU нет намеренно: при сбое CUDA векторный поиск отключается и в логе появляется
-  `vector search unavailable` с текстом ошибки ONNX Runtime.
+- `C0WRK_ONNX_EP` — `cuda` or `cpu`. Unset = CPU, the previous behavior.
+- `C0WRK_ONNX_DEVICE` — GPU index, default `0` (RTX 5060 Ti). `1` is the RTX 2060.
+- No CPU fallback by design: on a CUDA failure vector search is disabled and a
+  `vector search unavailable` with the ONNX Runtime error text lands in the log.
 
-**Признаки успеха:** в логе `embedder initialized` с `executionProvider=cuda`; нет
-`per-text embedding failed` и `vector indexing failed`; в `nvidia-smi` потребление
-`c0wrk-desktop` выходит на плато ~2–4 ГБ и **не растёт** дальше.
-
----
-
-## Что проверено, а что нет
-
-**Проверено:**
-- CUDA EP поднимается на этой машине, инференс корректен (осмысленные значения на выходе).
-- Замер CPU vs GPU: 1.61 с vs 0.078 с на батч 32×512, ≈20×.
-- Исправление держит память плоской: 20 раундов × 89 документов (ровно та форма нагрузки, что
-  падала в логе) с 20 разных OS-потоков — стабильные ~4030 MiB, ни одного отказа.
-- CPU-путь не задет: тот же прогон без `C0WRK_ONNX_EP` не трогает GPU.
-- `gofmt`, `go vet ./...`, `go test ./...` — чисто в обоих репозиториях.
-
-**Не проверено:**
-- `make lint` — `golangci-lint` в системе не установлен. Прогнать перед переносом в продукт.
-- Живая индексация большого проекта из UI после исправления — проверялось на изолированном
-  прогоне эмбеддера, не на полном приложении.
-- Поведение на машине без GPU/драйвера с `C0WRK_ONNX_EP=cuda` — ожидается громкая ошибка и
-  отключённый векторный поиск, но не проверялось.
-- Windows и macOS не затрагивались.
+**Signs of success:** an `embedder initialized` with `executionProvider=cuda` in the log; no
+`per-text embedding failed` and no `vector indexing failed`; in `nvidia-smi` the `c0wrk-desktop`
+consumption plateaus at ~2–4 GB and **does not grow** further.
 
 ---
 
-## Что нужно для переноса в продукт
+## What is verified and what is not
 
-### Обязательное
+**Verified:**
+- The CUDA EP comes up on this machine, inference is correct (meaningful output values).
+- CPU vs GPU measurement: 1.61 s vs 0.078 s on a 32×512 batch, ≈20×.
+- The fix keeps memory flat: 20 rounds × 89 documents (exactly the load shape that crashed in the
+  log) from 20 different OS threads — a stable ~4030 MiB, not a single failure.
+- The CPU path is untouched: the same run without `C0WRK_ONNX_EP` doesn't touch the GPU.
+- `gofmt`, `go vet ./...`, `go test ./...` — clean in both repositories.
 
-1. **Закрепление потока — не оптимизация, а условие работоспособности.** Без него CUDA выглядит
-   рабочей ровно до первой индексации. Это первое, что нужно защитить тестом при рефакторинге.
-
-2. **Фоллбэк на CPU.** Сейчас любая ошибка `NewEmbedder` отключает векторный поиск целиком. В
-   продукте нужно: попробовали CUDA → не вышло → залогировали причину → пересоздали эмбеддер на CPU.
-   Осторожно с `sync.Once` в `initONNXRuntime`: **окружение ORT инициализируется один раз за процесс
-   и переинициализации не поддаётся**, первый `libraryPath` окончателен. Значит фоллбэк должен
-   пересоздавать только `SessionOptions` и сессии, не окружение.
-
-3. **Ручка в конфиге вместо env.** Напрашивается `vector_index.execution_provider` и
-   `vector_index.device_id` рядом с существующими `embedding_threads` / `embedding_batch_size`
-   (`backend/config/config.go`). Потребует: валидацию, дефолты в `ApplyDefaults`,
-   `config.example.yaml`, тесты конфига, обновление спеки домена.
-
-4. **Упаковка.** `Makefile` тянет `onnxruntime-linux-x64-$(ONNX_VERSION).tgz` (CPU) с пиненным
-   sha256. GPU-вариант — `onnxruntime-linux-x64-gpu-1.28.1.tgz`, только
-   `libonnxruntime_providers_cuda.so` весит 279 МБ. Вшивать всем — вряд ли разумно. Варианты:
-   отдельный пакет, докачка по требованию, или «если GPU-библиотеки лежат рядом — используем».
-   Сюда же — согласование стампа версии (см. ловушку выше).
-
-### Открытые вопросы
-
-- **Кроссплатформенность.** Если поле называть `execution_provider`, надо сразу решить: это
-  `cpu|cuda` или `auto|cpu|cuda|coreml|directml`. На macOS аналог — CoreML EP (`onnxruntime_go` его
-  поддерживает), на Windows — DirectML/CUDA. От ответа зависит форма конфига и объём упаковки.
-- **Размер батча.** На GPU инференс батча 32 занимает ~78 мс, и узкое место, скорее всего, переедет
-  в подготовку данных (`prep_workers: 2`, чтение/хеширование/чанкинг). Возможно, `embedding_batch_size`
-  захочется поднять — но только после замеров на реальной индексации, не умозрительно.
-  Учтите: комментарий в sp4rk (`DefaultBatchSize`) фиксирует, что на **CPU** пропускная способность
-  выходит на плато ~42 док/с уже при 32, и большие батчи только увеличивают латентность. На GPU эта
-  кривая наверняка другая — её надо перемерить, а не наследовать.
-- **Вторая GPU.** Стоит ли давать выбор устройства пользователю или хватит device 0.
-- **Плато ~4 ГБ** — многовато для фона на 16 ГБ карте, а на 6 ГБ RTX 2060 может и не влезть
-  вместе с десктопом. Если понадобится ужать — `gpu_mem_limit` и меньший батч в резерве.
+**Not verified:**
+- `make lint` — `golangci-lint` isn't installed on the system. Run before porting into the
+  product.
+- Live indexing of a large project from the UI after the fix — it was tested on an isolated
+  embedder run, not on the full app.
+- Behavior on a machine without a GPU/driver with `C0WRK_ONNX_EP=cuda` — a loud error and disabled
+  vector search is expected, but it wasn't tested.
+- Windows and macOS weren't touched.
 
 ---
 
-## Дуал-репо: не наступите
+## What is needed to port into the product
 
-Правка живёт в **двух** репозиториях, и связывает их `go.work`, который **не коммитится**
+### Mandatory
+
+1. **Thread pinning is not an optimization, it's a working precondition.** Without it CUDA looks
+   healthy exactly until the first indexing. This is the first thing to protect with a test during
+   any refactor.
+
+2. **CPU fallback.** Right now any `NewEmbedder` error disables vector search entirely. In the
+   product it needs to be: try CUDA → fails → log the reason → recreate the embedder on CPU.
+   Be careful with the `sync.Once` in `initONNXRuntime`: **the ORT environment is initialized once
+   per process and cannot be reinitialized**, the first `libraryPath` is final. So the fallback
+   must recreate only the `SessionOptions` and the sessions, not the environment.
+
+3. **A config knob instead of env.** The obvious choice is `vector_index.execution_provider` and
+   `vector_index.device_id` next to the existing `embedding_threads` / `embedding_batch_size`
+   (`backend/config/config.go`). Requires: validation, defaults in `ApplyDefaults`,
+   `config.example.yaml`, config tests, domain spec update.
+
+4. **Packaging.** The `Makefile` pulls `onnxruntime-linux-x64-$(ONNX_VERSION).tgz` (CPU) with a
+   pinned sha256. The GPU flavor is `onnxruntime-linux-x64-gpu-1.28.1.tgz`; the
+   `libonnxruntime_providers_cuda.so` alone is 279 MB. Bundling it for everyone hardly makes
+   sense. Options: a separate package, download on demand, or "if the GPU libraries are next to
+   the binary — use them". This also includes reconciling the version stamp (see the trap above).
+
+### Open questions
+
+- **Cross-platform.** If the field is named `execution_provider`, decide up front: is it
+  `cpu|cuda` or `auto|cpu|cuda|coreml|directml`. On macOS the analog is the CoreML EP
+  (`onnxruntime_go` supports it), on Windows — DirectML/CUDA. The config shape and the packaging
+  scope depend on the answer.
+- **Batch size.** On the GPU a batch-32 inference takes ~78 ms, and the bottleneck will most
+  likely move to data preparation (`prep_workers: 2`, reading/hashing/chunking). It may be worth
+  raising `embedding_batch_size` — but only after measuring on real indexing, not speculatively.
+  Note: a comment in sp4rk (`DefaultBatchSize`) records that on **CPU** throughput plateaus at
+  ~42 docs/s already at 32, and larger batches only add latency. On the GPU that curve is surely
+  different — it needs re-measuring, not inheriting.
+- **The second GPU.** Whether to expose device selection to the user or whether device 0 is
+  enough.
+- **The ~4 GB plateau** — a bit much for a background load on a 16 GB card, and on a 6 GB
+  RTX 2060 it may not fit alongside the desktop. If it ever needs shrinking — `gpu_mem_limit`
+  and a smaller batch are in reserve.
+
+---
+
+## Dual repo: watch your step
+
+The change lives in **two** repositories, tied together by `go.work`, which is **not committed**
 (ADR-015/025/031).
 
-- `GOWORK=off go build` соберёт опубликованный пин sp4rk (`5e2a034`, без правок) и **молча** даст
-  CPU-сборку без единой ошибки. Если GPU «перестала работать» — первым делом проверьте, что
-  `go.work` на месте.
-- `replace` в `go.mod` добавлять нельзя (ADR-015/001).
-- `go.work` кладётся в корень c0wrk, **не** в родительский каталог — ADR-031 переносил его именно
-  оттуда, потому что он протекал во все соседние проекты.
-- Шапка `go.mod` про «mid-cycle state (ADR-025)» ссылается на устаревший ADR — ADR-031 её уже
-  заменил. Мелочь, но при следующей правке `go.mod` стоит поправить.
-- Порядок публикации: коммит+пуш sp4rk → `GOWORK=off go get github.com/v0lka/sp4rk@main && go mod tidy`
-  → `GOWORK=off go build ./...` → `make build` / `make lint` / `make test` → коммит+пуш c0wrk.
-  CI на `main` зелёный только в точках сдвига пина.
+- `GOWORK=off go build` resolves the published sp4rk pin (`5e2a034`, without the changes) and
+  **silently** yields a CPU build without a single error. If the GPU "stopped working" — first
+  check that `go.work` is in place.
+- No `replace` in `go.mod` (ADR-015/001).
+- `go.work` goes into the c0wrk root, **not** the parent directory — ADR-031 moved it away from
+  there precisely because it leaked into all neighboring projects.
+- The `go.mod` header about the "mid-cycle state (ADR-025)" points to an outdated ADR — ADR-031
+  has already replaced it. A trifle, but worth fixing on the next `go.mod` edit.
+- Publishing order: commit+push sp4rk → `GOWORK=off go get github.com/v0lka/sp4rk@main && go mod tidy`
+  → `GOWORK=off go build ./...` → `make build` / `make lint` / `make test` → commit+push c0wrk.
+  CI on `main` is green only at the pin-shift points.
 
 ---
 
-## Скрипты воспроизведения
+## Reproduction scripts
 
-### Замер CPU vs CUDA напрямую через `onnxruntime_go`
+### Measuring CPU vs CUDA directly via `onnxruntime_go`
 
-Модуль с `require github.com/yalue/onnxruntime_go v1.27.0`. Ключевое:
+A module with `require github.com/yalue/onnxruntime_go v1.27.0`. The essentials:
 
 ```go
 ort.SetSharedLibraryPath("/home/zab/Git/c0wrk/build/bin/libonnxruntime.so")
@@ -346,19 +361,19 @@ cuda.Update(map[string]string{"device_id": "0"})
 opts.AppendExecutionProviderCUDA(cuda)
 cuda.Destroy()
 
-// batch=32, seq=512, hidden=512; входы input_ids/attention_mask/token_type_ids (int64),
-// выход last_hidden_state (float32)
+// batch=32, seq=512, hidden=512; inputs input_ids/attention_mask/token_type_ids (int64),
+// output last_hidden_state (float32)
 sess, _ := ort.NewAdvancedSession(modelPath, inputNames, outputNames, inputs, outputs, opts)
 for i := 0; i < 5; i++ { t := time.Now(); sess.Run(); fmt.Println(time.Since(t)) }
 ```
 
-Чтобы воспроизвести исчерпание памяти — вызывать `sess.Run()` из свежей горутины с
-`runtime.LockOSThread()` на каждой итерации и печатать
+To reproduce the memory exhaustion — call `sess.Run()` from a fresh goroutine with
+`runtime.LockOSThread()` on every iteration and print
 `nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i 0`.
 
-### Проверка исправления на настоящем эмбеддере
+### Verifying the fix on the real embedder
 
-Модуль с `replace github.com/v0lka/sp4rk => /home/zab/Git/sp4rk`, собирать с `GOWORK=off`:
+A module with `replace github.com/v0lka/sp4rk => /home/zab/Git/sp4rk`, build with `GOWORK=off`:
 
 ```go
 emb, err := embedding.NewEmbedder(embedding.EmbedderConfig{
@@ -368,23 +383,23 @@ emb, err := embedding.NewEmbedder(embedding.EmbedderConfig{
     MaxSeqLength:      512, HiddenDim: 512, BatchSize: 32,
     ExecutionProvider: "cuda",
 })
-// 20 раундов × 89 документов, каждый раунд — новая горутина с runtime.LockOSThread(),
-// вызовы сериализованы мьютексом. Печатать GPU used после каждого раунда.
+// 20 rounds × 89 documents, each round — a new goroutine with runtime.LockOSThread(),
+// calls serialized by a mutex. Print GPU used after every round.
 ```
 
-Ожидание: плоские ~4000 MiB. Рост означает, что какая-то точка касания ORT осталась незакреплённой.
+Expected: a flat ~4000 MiB. Growth means some ORT touch point remained unpinned.
 
 ---
 
-## Полезные координаты в коде
+## Useful coordinates in the code
 
-| что | где |
+| what | where |
 |---|---|
-| создание эмбеддера, env-ручка | `desktop/startup_phases.go`, `startVectorIndexBackground` |
-| поиск библиотеки рядом с бинарником | `desktop/startup.go`, `resolveONNXLibPath` |
-| конфиг векторного индекса | `backend/config/config.go`, поля `VectorIndex.*` |
-| скачивание/установка ORT, стамп версии | `Makefile`, цель `fetch-onnx`, `ONNX_STAMP` (строка 212) |
-| опции сессии и провайдер | `../sp4rk/embedding/onnx.go`, `buildSessionOptions` |
-| закреплённый поток | `../sp4rk/embedding/runner.go` |
-| жизненный цикл эмбеддера | `../sp4rk/embedding/embedder.go`, `NewEmbedder` / `Close` |
-| ADR про дуал-репо | `specs/decisions/031-gowork-repo-root.md` (и 015, 025) |
+| embedder creation, env knob | `desktop/startup_phases.go`, `startVectorIndexBackground` |
+| looking up the library next to the binary | `desktop/startup.go`, `resolveONNXLibPath` |
+| vector index config | `backend/config/config.go`, fields `VectorIndex.*` |
+| ORT download/install, version stamp | `Makefile`, target `fetch-onnx`, `ONNX_STAMP` (line 212) |
+| session options and provider | `../sp4rk/embedding/onnx.go`, `buildSessionOptions` |
+| the pinned thread | `../sp4rk/embedding/runner.go` |
+| embedder lifecycle | `../sp4rk/embedding/embedder.go`, `NewEmbedder` / `Close` |
+| the dual-repo ADR | `specs/decisions/031-gowork-repo-root.md` (and 015, 025) |

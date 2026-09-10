@@ -1,4 +1,4 @@
-// mid-cycle state (ADR-025): this working tree consumes unpublished sp4rk
+// mid-cycle state (ADR-031): this working tree consumes unpublished sp4rk
 // APIs; build via the parent-dir go.work. Release step: commit+push sp4rk,
 // then `GOWORK=off go get github.com/v0lka/sp4rk@main && go mod tidy` and
 // remove this note.

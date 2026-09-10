@@ -1480,6 +1480,10 @@ export namespace backend {
 	    branch: string;
 	    phase: string;
 	    indices: string[];
+	    execution_provider?: string;
+	    requested_execution_provider?: string;
+	    cuda_verified?: boolean;
+	    provider_fallback_reason?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new VectorIndexStatus(source);
@@ -1495,6 +1499,10 @@ export namespace backend {
 	        this.branch = source["branch"];
 	        this.phase = source["phase"];
 	        this.indices = source["indices"];
+	        this.execution_provider = source["execution_provider"];
+	        this.requested_execution_provider = source["requested_execution_provider"];
+	        this.cuda_verified = source["cuda_verified"];
+	        this.provider_fallback_reason = source["provider_fallback_reason"];
 	    }
 	}
 	export class VectorStoreEntry {

@@ -461,6 +461,15 @@ func ApplyDefaults(cfg *Config) {
 		cfg.VectorIndex.ParkCapacity = &v
 	}
 
+	// Execution provider. The empty string (a config written before the
+	// knob existed, or no vector_index block at all) normalizes to "auto".
+	// DeviceID has no defaulting to do: its zero value (0) is already the
+	// valid "first GPU" default; only invalid negatives are rejected by
+	// validate().
+	if cfg.VectorIndex.ExecutionProvider == "" {
+		cfg.VectorIndex.ExecutionProvider = VectorIndexProviderAuto
+	}
+
 	// Proxy defaults
 	if cfg.Proxy.BypassList == nil {
 		cfg.Proxy.BypassList = []string{"localhost", "127.0.0.1"}

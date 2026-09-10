@@ -294,6 +294,24 @@ type VectorIndexConfig struct {
 	// on a RAM-rich machine to make frequent project hopping instant, and
 	// lower it (or set 0) on a constrained one to cap resident memory.
 	ParkCapacity *int `yaml:"park_capacity"`
+
+	// ExecutionProvider selects the ONNX Runtime execution provider the
+	// embedding model runs on: VectorIndexProviderAuto ("auto"),
+	// VectorIndexProviderCPU ("cpu") or VectorIndexProviderCUDA ("cuda").
+	// The empty string (a config written before the knob existed) is
+	// normalized to "auto" by ApplyDefaults: try the NVIDIA CUDA provider
+	// and fall back to the CPU provider when CUDA is not usable. "cpu"
+	// always runs on the CPU; "cuda" targets an NVIDIA GPU. Both "auto"
+	// and "cuda" additionally require a GPU (CUDA-enabled) ONNX Runtime
+	// build sitting next to the executable — see config.example.yaml.
+	// Invalid values are rejected at load time by validate().
+	ExecutionProvider string `yaml:"execution_provider"`
+
+	// DeviceID is the GPU device index used when ExecutionProvider
+	// resolves to CUDA. Defaults to 0 (the first GPU) — the right choice
+	// on single-GPU machines. It is ignored by the CPU provider. Negative
+	// values are rejected at load time by validate().
+	DeviceID int `yaml:"device_id"`
 }
 
 // VectorIndexContentFilterConfig is the YAML surface of the pre-chunk content
@@ -356,6 +374,19 @@ func (c VectorIndexContentFilterConfig) ResolveContentFilter() vectorindex.Conte
 	}
 	return resolved
 }
+
+// Vector index embedding execution provider values
+// (VectorIndexConfig.ExecutionProvider).
+const (
+	// VectorIndexProviderAuto tries the CUDA provider and falls back to
+	// the CPU provider when CUDA is not usable. The default.
+	VectorIndexProviderAuto = "auto"
+	// VectorIndexProviderCPU always runs embedding inference on the CPU.
+	VectorIndexProviderCPU = "cpu"
+	// VectorIndexProviderCUDA runs embedding inference on an NVIDIA GPU
+	// via the CUDA execution provider.
+	VectorIndexProviderCUDA = "cuda"
+)
 
 // LLMConfig holds LLM provider configuration with fixed provider schema.
 type LLMConfig struct {
@@ -1536,6 +1567,29 @@ func validate(cfg *Config) error {
 		return fmt.Errorf(
 			"e2s.repeat_nudge_threshold (%d) must be <= e2s.repeat_abort_threshold (%d) so a nudge always precedes the abort",
 			cfg.E2S.RepeatNudgeThreshold, cfg.E2S.RepeatAbortThreshold,
+		)
+	}
+
+	// Validate vector_index.execution_provider enum. ApplyDefaults has
+	// already normalized the empty string to "auto", so anything else
+	// here is a user-authored value.
+	switch cfg.VectorIndex.ExecutionProvider {
+	case VectorIndexProviderAuto, VectorIndexProviderCPU, VectorIndexProviderCUDA:
+		// valid
+	default:
+		return fmt.Errorf(
+			"vector_index.execution_provider %q is not valid; must be one of: %s, %s, %s",
+			cfg.VectorIndex.ExecutionProvider,
+			VectorIndexProviderAuto, VectorIndexProviderCPU, VectorIndexProviderCUDA,
+		)
+	}
+
+	// Validate vector_index.device_id. 0 (the first GPU) is the default;
+	// negative indexes have no meaning.
+	if cfg.VectorIndex.DeviceID < 0 {
+		return fmt.Errorf(
+			"vector_index.device_id %d is not valid; must be >= 0",
+			cfg.VectorIndex.DeviceID,
 		)
 	}
 
