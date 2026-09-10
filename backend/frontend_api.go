@@ -549,6 +549,7 @@ func (f *FrontendAPI) applyEmbedderInfo(st *VectorIndexStatus) {
 	st.RequestedExecutionProvider = info.RequestedProvider
 	st.ProviderFallbackReason = info.FallbackReason
 	st.CUDAVerified = info.CUDAVerified
+	st.DeviceID = info.DeviceID
 }
 
 // getVectorManager returns the vector index manager (may be nil if not yet initialized).

@@ -20,6 +20,7 @@ type ConfigResponse struct {
 	Proxy         ProxySettingsResponse         `json:"proxy"`
 	Experimental  ExperimentalSettingsResponse  `json:"experimental"`
 	ModelProfiles ModelProfilesSettingsResponse `json:"model_profiles"`
+	VectorIndex   VectorIndexSettingsResponse   `json:"vector_index"`
 }
 
 // ExperimentalSettingsResponse exposes the master experimental-features switch
@@ -84,6 +85,17 @@ type ConfigProviderFull struct {
 type ConfigSearchResp struct {
 	Provider string `json:"provider"`
 	APIKey   string `json:"api_key"`
+}
+
+// VectorIndexSettingsResponse holds the vector-index embedding settings for
+// the frontend: which ONNX Runtime execution provider the embedder runs on
+// ("auto" | "cpu" | "cuda") and the GPU device index used when the provider
+// resolves to CUDA. Changing these requires an app restart to take effect —
+// the embedder is created once per process — so the update path only
+// validates and persists them; it never touches the vector manager.
+type VectorIndexSettingsResponse struct {
+	ExecutionProvider string `json:"execution_provider"`
+	DeviceID          int    `json:"device_id"`
 }
 
 // LLMSettingsRequest holds LLM settings from the frontend.
@@ -513,13 +525,27 @@ type VectorEmbedderInfo struct {
 	// lists this process among CUDA compute apps. Nil when the probe did not
 	// run (CPU embedder, embedder unavailable, probe skipped).
 	CUDAVerified *bool
+
+	// DeviceID is the ONNX device index the embedder was created with
+	// (vector_index.device_id). Paired with the provider fields so a future
+	// UI can detect restart-pending: the config's device_id diverging from
+	// this value means the running embedder predates the config change.
+	// 0 is the valid "first GPU" default, not a "missing" marker — the
+	// desktop init always writes it alongside RequestedProvider, which is
+	// what keeps IsZero sound despite 0 being indistinguishable from the
+	// zero value.
+	DeviceID int
 }
 
 // IsZero reports whether any fact has been recorded. True when the background
 // init has not (yet) populated the info — e.g. no embedder exists at all.
+// DeviceID participates in the check for non-zero values only: 0 is a valid
+// device index (first GPU) and cannot alone distinguish "recorded" from
+// "missing"; the desktop init always records RequestedProvider together with
+// DeviceID, so the provider fields carry the populated/not-populated signal.
 func (i VectorEmbedderInfo) IsZero() bool {
 	return i.EffectiveProvider == "" && i.RequestedProvider == "" &&
-		i.FallbackReason == "" && i.CUDAVerified == nil
+		i.FallbackReason == "" && i.CUDAVerified == nil && i.DeviceID == 0
 }
 
 // VectorIndexStatus describes the current state of the vector index for the frontend.
@@ -560,6 +586,15 @@ type VectorIndexStatus struct {
 	// from the requested one (CUDA init failure text). Empty when the
 	// requested provider was honored.
 	ProviderFallbackReason string `json:"provider_fallback_reason,omitempty"`
+
+	// DeviceID is the ONNX device index the running embedder was created
+	// with (vector_index.device_id at embedder-creation time). Surfaced for
+	// restart-pending detection: comparing it with the live config's
+	// device_id shows the running embedder predates a config change (the
+	// embedder and its ONNX session are created once per process — ADR-036).
+	// Omitted when 0 (the default "first GPU") — a UI treating 0 as the
+	// default must read absence as 0.
+	DeviceID int `json:"device_id,omitempty"`
 }
 
 // VectorStoreEntry represents a single chunk from the vector store for the frontend.
@@ -598,6 +633,16 @@ type SearchRequest struct {
 	FilePattern string   `json:"file_pattern"`
 	MustMatch   []string `json:"must_match"`
 	Mode        string   `json:"mode"`
+}
+
+// GPUDeviceResponse describes one GPU visible to the NVIDIA driver, for the
+// vector-index settings UI (populating the execution-provider device picker).
+// It mirrors embedding.GPUDevice as a plain DTO rather than re-exporting the
+// SDK type through the Wails bindings, keeping the frontend contract owned
+// by this package.
+type GPUDeviceResponse struct {
+	Index int    `json:"index"`
+	Name  string `json:"name"`
 }
 
 // OptimizePromptResponse holds the result of prompt optimization for the frontend.

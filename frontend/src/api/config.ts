@@ -3,7 +3,7 @@
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
 import { isConfigResponse, isSecuritySettingsResponse, isModelProfilesResponse } from '@/types/guards'
-import type { ConfigResponse, SecuritySettingsResponse, LLMFullConfigRequest, SearchSettingsRequest, ProxySettingsRequest, ModelConfigResponse, ModelConfigRequest, ModelProfilesResponse, ModelProfileUpdateRequest } from '@/types/models'
+import type { ConfigResponse, SecuritySettingsResponse, LLMFullConfigRequest, SearchSettingsRequest, ProxySettingsRequest, ModelConfigResponse, ModelConfigRequest, ModelProfilesResponse, ModelProfileUpdateRequest, VectorIndexSettingsResponse } from '@/types/models'
 
 /** Sentinel value returned by backend when an API key is configured but should not be displayed */
 export const MASKED_API_KEY = '***configured***'
@@ -122,6 +122,25 @@ export async function updateSearchSettings(settings: SearchSettingsRequest): Pro
     await app.UpdateSearchSettings(settings)
   } catch (err) {
     logger.error('Failed to update search settings:', err)
+    throw err
+  }
+}
+
+/**
+ * Persist the vector-index embedding settings (ONNX Runtime execution
+ * provider + GPU device id). The backend validates BEFORE mutating or
+ * writing: an invalid provider or a negative device id leaves both the
+ * in-memory config and the YAML file untouched. There is deliberately NO
+ * hot application — the embedder is created once per process (after
+ * EventBackendReady), so the new provider/device only takes effect after
+ * an app restart. Callers should invalidate the config cache afterwards.
+ */
+export async function updateVectorIndexSettings(settings: VectorIndexSettingsResponse): Promise<void> {
+  try {
+    const app = getApp()
+    await app.UpdateVectorIndexSettings(settings)
+  } catch (err) {
+    logger.error('Failed to update vector index settings:', err)
     throw err
   }
 }

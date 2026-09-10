@@ -263,6 +263,13 @@ export type SearchMode = 'hybrid' | 'vector' | 'lexical'
 
 export type IndexPhase = 'both' | 'embedding' | 'lexical'
 
+/**
+ * ONNX Runtime execution provider for the vector-index embedder
+ * (vector_index.execution_provider config knob). "auto" tries CUDA and
+ * falls back to CPU; "cpu" forces CPU; "cuda" targets an NVIDIA GPU.
+ */
+export type ExecutionProvider = 'auto' | 'cpu' | 'cuda'
+
 export interface VectorIndexStatus {
   state: 'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable'
   progress: number
@@ -272,6 +279,55 @@ export interface VectorIndexStatus {
   branch?: string
   phase?: IndexPhase
   indices?: string[]
+  /**
+   * ONNX Runtime execution provider the embedder effectively runs on:
+   * "cpu" or "cuda" — never "auto" ("auto" is resolved once, at embedder
+   * creation; the winner is reported here). Absent when no embedder
+   * exists (model files missing or creation failed). Comparing it with
+   * requested_execution_provider is how a CUDA→CPU fallback is detected.
+   */
+  execution_provider?: string
+  /**
+   * Config value ("auto"|"cpu"|"cuda") the embedder was created with.
+   * Differs from execution_provider exactly when a fallback happened:
+   * "auto" degrading on a CPU-only machine (WARN-only) or an explicit
+   * "cuda" falling back to CPU after init failure (WARN + toast).
+   */
+  requested_execution_provider?: string
+  /**
+   * External nvidia-smi verdict, present only when the effective provider
+   * is "cuda" and the startup verification probe ran: true = the driver
+   * lists this process among CUDA compute apps; false = absent (possible
+   * silent CPU fallback inside the CUDA-capable build). Absent when no
+   * probe ran (CPU embedder, embedder unavailable, never initialized).
+   */
+  cuda_verified?: boolean
+  /**
+   * Why the effective provider deviates from the requested one (CUDA init
+   * failure text). Absent/empty when the requested provider was honored.
+   */
+  provider_fallback_reason?: string
+  /**
+   * ONNX device index the running embedder was created with
+   * (vector_index.device_id at embedder-creation time), for
+   * restart-pending detection: a live config device_id diverging from
+   * this value means the running embedder predates the config change.
+   * Omitted when 0 (the default "first GPU") — read absence as 0.
+   */
+  device_id?: number
+}
+
+/**
+ * One GPU visible to the NVIDIA driver, for the vector-index settings UI
+ * (populating the execution-provider device picker). Mirrors the backend's
+ * GPUDeviceResponse (which mirrors sp4rk's embedding.GPUDevice): `index`
+ * is the driver-assigned ordinal ("0" is the primary GPU — the ONNX device
+ * index used by vector_index.device_id); `name` is the informational
+ * product name ("NVIDIA GeForce RTX 5060 Ti").
+ */
+export interface GPUDeviceResponse {
+  index: number
+  name: string
 }
 
 export interface VectorStoreEntry {
@@ -387,12 +443,27 @@ export interface ConfigSearchResp {
   api_key: string
 }
 
+/**
+ * vector_index embedding settings block in ConfigResponse: which ONNX
+ * Runtime execution provider the embedder runs on ("auto" | "cpu" |
+ * "cuda") and the GPU device index used when the provider resolves to
+ * CUDA. Changing these requires an app restart to take effect (the
+ * embedder is created once per process); the update path only validates
+ * and persists them.
+ */
+export interface VectorIndexSettingsResponse {
+  execution_provider: ExecutionProvider
+  device_id: number
+}
+
 export interface ConfigResponse {
   loaded: boolean
   log_level: string
   config_errors: string[]
   llm: ConfigLLMResponse
   search: ConfigSearchResp
+  /** Optional so older payloads/mocks without the block stay compatible. */
+  vector_index?: VectorIndexSettingsResponse
   proxy: ProxySettingsResponse
   /** Optional to keep existing typed mocks/test fixtures compatible. */
   experimental?: ConfigExperimentalResponse

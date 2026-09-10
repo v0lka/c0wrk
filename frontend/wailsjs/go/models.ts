@@ -345,6 +345,20 @@ export namespace backend {
 	        this.tls_cert_dir = source["tls_cert_dir"];
 	    }
 	}
+	export class VectorIndexSettingsResponse {
+	    execution_provider: string;
+	    device_id: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new VectorIndexSettingsResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.execution_provider = source["execution_provider"];
+	        this.device_id = source["device_id"];
+	    }
+	}
 	export class ConfigSearchResp {
 	    provider: string;
 	    api_key: string;
@@ -365,6 +379,7 @@ export namespace backend {
 	    config_errors: string[];
 	    llm: ConfigLLMResponse;
 	    search: ConfigSearchResp;
+	    vector_index: VectorIndexSettingsResponse;
 	    proxy: ProxySettingsResponse;
 	    experimental: ExperimentalSettingsResponse;
 	    model_profiles: ModelProfilesSettingsResponse;
@@ -380,6 +395,7 @@ export namespace backend {
 	        this.config_errors = source["config_errors"];
 	        this.llm = this.convertValues(source["llm"], ConfigLLMResponse);
 	        this.search = this.convertValues(source["search"], ConfigSearchResp);
+	        this.vector_index = this.convertValues(source["vector_index"], VectorIndexSettingsResponse);
 	        this.proxy = this.convertValues(source["proxy"], ProxySettingsResponse);
 	        this.experimental = this.convertValues(source["experimental"], ExperimentalSettingsResponse);
 	        this.model_profiles = this.convertValues(source["model_profiles"], ModelProfilesSettingsResponse);
@@ -429,6 +445,20 @@ export namespace backend {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	
+	    }
+	}
+	export class GPUDeviceResponse {
+	    index: number;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new GPUDeviceResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.index = source["index"];
+	        this.name = source["name"];
 	    }
 	}
 	export class GroupPolicyResponse {
@@ -1471,6 +1501,7 @@ export namespace backend {
 	        this.operator_enabled = source["operator_enabled"];
 	    }
 	}
+	
 	export class VectorIndexStatus {
 	    state: string;
 	    progress: number;
@@ -1484,6 +1515,7 @@ export namespace backend {
 	    requested_execution_provider?: string;
 	    cuda_verified?: boolean;
 	    provider_fallback_reason?: string;
+	    device_id?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new VectorIndexStatus(source);
@@ -1503,6 +1535,7 @@ export namespace backend {
 	        this.requested_execution_provider = source["requested_execution_provider"];
 	        this.cuda_verified = source["cuda_verified"];
 	        this.provider_fallback_reason = source["provider_fallback_reason"];
+	        this.device_id = source["device_id"];
 	    }
 	}
 	export class VectorStoreEntry {

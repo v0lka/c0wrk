@@ -16,6 +16,7 @@ import { SessionStatsSettings } from './SessionStatsSettings'
 import { LLMSettings } from './LLMSettings'
 import { ModelProfilesSettings } from './ModelProfilesSettings'
 import { SearchSettings } from './SearchSettings'
+import { VectorIndexSettings } from './VectorIndexSettings'
 import { MCPSettings } from './MCPSettings'
 import { SecuritySettings } from './SecuritySettings'
 import { UpdateSettings } from './UpdateSettings'
@@ -211,6 +212,10 @@ export function SettingsModal() {
               <div className="border-t border-border pt-4">
                 <h3 className="text-sm font-medium mb-3">HTTP Proxy</h3>
                 <ProxySettings />
+              </div>
+              <div className="border-t border-border pt-4">
+                <h3 className="text-sm font-medium mb-3">Vector Index</h3>
+                <VectorIndexSettings />
               </div>
             </div>
           </TabsContent>
