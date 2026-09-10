@@ -833,6 +833,50 @@ orchestration:
 # (embedding) side of the index. The lexical/BM25 side is pure Go and
 # unaffected by this knob.
 #
+# Embedding execution provider (GPU support). The embedding model runs on
+# the ONNX Runtime; this selects which execution provider (device class)
+# it uses:
+#
+#   execution_provider: auto  # default (also what an unset/empty value
+#                             # normalizes to): try the NVIDIA CUDA
+#                             # provider and fall back to the CPU provider
+#                             # when CUDA is not usable. When the CUDA
+#                             # attempt fails, a WARN is logged and
+#                             # indexing/search continues on the CPU —
+#                             # never a hard failure and never a silent
+#                             # switch.
+#   execution_provider: cpu   # always run on the CPU provider.
+#   execution_provider: cuda  # run on an NVIDIA GPU via the CUDA
+#                             # execution provider. If CUDA cannot come
+#                             # up (no GPU build, no driver, bad device
+#                             # id), the vector index falls back to the
+#                             # CPU provider so search stays available —
+#                             # but loudly: a WARN log, a dismissable
+#                             # runtime-error toast (error_code
+#                             # "vector_cuda_fallback"), and the
+#                             # requested-vs-effective provider mismatch
+#                             # recorded in every vector-index status
+#                             # payload. The fallback is never silent.
+#
+#   device_id: 0              # GPU index used when the CUDA provider is
+#                             # active (default 0 = the first GPU, which
+#                             # is what most machines want; ignored by
+#                             # the CPU provider). Must be >= 0.
+#
+# GPU requirements — "auto" and "cuda" only use the GPU when a CUDA-
+# enabled ONNX Runtime build sits next to the executable (the standard
+# `make build` / `make fetch-onnx` downloads the CPU-only build; fetch
+# the GPU variant with `make fetch-onnx-gpu`, Linux x64 only). The GPU
+# build additionally needs an NVIDIA driver and the CUDA provider
+# libraries that ship beside the runtime library. On any other platform,
+# or with the CPU build in place, "auto" quietly resolves to the CPU
+# provider.
+#
+# Changing either knob requires an app restart: the provider is chosen
+# once when the embedder is created at startup and the ONNX session is
+# not re-created afterwards. Values are validated at config load — an
+# unknown execution_provider or a negative device_id is a load error.
+#
 # Indexing throughput / latency knobs:
 #
 #   embedding_batch_size: 32   # rows per ONNX batch inference (default).
@@ -1004,6 +1048,8 @@ orchestration:
 #   hybrid_vector_score_ratio: 0.25
 #   hybrid_lexical_score_ratio: 0.1
 #   embedding_threads: 0
+#   execution_provider: auto
+#   device_id: 0
 #   embedding_batch_size: 32
 #   embedding_cache_max_bytes: 536870912
 #   prep_workers: 2

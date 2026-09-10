@@ -57,6 +57,89 @@ func TestGetVectorIndexStatus_NoProjectUnavailable(t *testing.T) {
 	}
 }
 
+// TestGetVectorIndexStatus_EmbedderInfoSurfaced pins the ADR-042
+// observability contract on the RPC path: once the desktop background init
+// has recorded the embedder's execution-provider facts, every status —
+// including the unavailable/No-Project variants — carries the effective and
+// requested provider (and the CUDA verification verdict when probed), so a
+// CUDA→CPU fallback is detectable from the status alone.
+func TestGetVectorIndexStatus_EmbedderInfoSurfaced(t *testing.T) {
+	verified := true
+	f := &FrontendAPI{
+		appCtx:          context.Background,
+		activeProjectID: project.NoProjectID,
+		vectorEmbedderInfo: VectorEmbedderInfo{
+			EffectiveProvider: "cuda",
+			RequestedProvider: "cuda",
+			FallbackReason:    "",
+			CUDAVerified:      &verified,
+		},
+	}
+
+	st := f.GetVectorIndexStatus()
+	if st.State != "unavailable" {
+		t.Fatalf("expected state %q, got %q", "unavailable", st.State)
+	}
+	if st.ExecutionProvider != "cuda" {
+		t.Errorf("ExecutionProvider = %q, want cuda", st.ExecutionProvider)
+	}
+	if st.RequestedExecutionProvider != "cuda" {
+		t.Errorf("RequestedExecutionProvider = %q, want cuda", st.RequestedExecutionProvider)
+	}
+	if st.CUDAVerified == nil || !*st.CUDAVerified {
+		t.Errorf("CUDAVerified = %v, want pointer to true", st.CUDAVerified)
+	}
+	if st.ProviderFallbackReason != "" {
+		t.Errorf("ProviderFallbackReason = %q, want empty for honored request", st.ProviderFallbackReason)
+	}
+}
+
+// TestGetVectorIndexStatus_FallbackFieldsSurfaced pins the fallback variant:
+// requested cuda, effective cpu (explicit-cuda loud fallback), with the cause
+// recorded — the payload a future UI renders as "running on CPU, GPU setup
+// broken".
+func TestGetVectorIndexStatus_FallbackFieldsSurfaced(t *testing.T) {
+	f := &FrontendAPI{
+		appCtx:          context.Background,
+		activeProjectID: project.NoProjectID,
+		vectorEmbedderInfo: VectorEmbedderInfo{
+			EffectiveProvider: "cpu",
+			RequestedProvider: "cuda",
+			FallbackReason:    "AppendExecutionProvider_CUDA: provider library missing",
+		},
+	}
+
+	st := f.GetVectorIndexStatus()
+	if st.ExecutionProvider != "cpu" {
+		t.Errorf("ExecutionProvider = %q, want cpu (fallback)", st.ExecutionProvider)
+	}
+	if st.RequestedExecutionProvider != "cuda" {
+		t.Errorf("RequestedExecutionProvider = %q, want cuda", st.RequestedExecutionProvider)
+	}
+	if st.ProviderFallbackReason == "" {
+		t.Error("ProviderFallbackReason empty, want the CUDA failure cause")
+	}
+	if st.CUDAVerified != nil {
+		t.Errorf("CUDAVerified = %v, want nil (no probe on CPU embedder)", st.CUDAVerified)
+	}
+}
+
+// TestGetVectorIndexStatus_NoEmbedderInfoKeepsFieldsEmpty pins the
+// pre-init/broken-init shape: without recorded embedder info the provider
+// fields stay empty (omitted from JSON), matching the legacy payload shape.
+func TestGetVectorIndexStatus_NoEmbedderInfoKeepsFieldsEmpty(t *testing.T) {
+	f := &FrontendAPI{
+		appCtx:          context.Background,
+		activeProjectID: project.NoProjectID,
+	}
+
+	st := f.GetVectorIndexStatus()
+	if st.ExecutionProvider != "" || st.RequestedExecutionProvider != "" ||
+		st.ProviderFallbackReason != "" || st.CUDAVerified != nil {
+		t.Errorf("provider fields not empty without embedder info: %+v", st)
+	}
+}
+
 // newStuckVectorAPI returns a FrontendAPI whose vector manager has a
 // never-ready service (no SetProject/SetReady), simulating a stuck full
 // index, with the given search wait timeout knob.

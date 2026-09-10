@@ -122,7 +122,9 @@ func (f *FrontendAPI) GetVectorIndexStatus() VectorIndexStatus {
 	// unavailable state so the frontend UI reflects the dormant subsystem
 	// (neither "building" nor "ready").
 	if f.isNoProject() {
-		return VectorIndexStatus{State: "unavailable", Indices: []string{}}
+		st := VectorIndexStatus{State: "unavailable", Indices: []string{}}
+		f.applyEmbedderInfo(&st)
+		return st
 	}
 
 	result := VectorIndexStatus{}
@@ -130,6 +132,7 @@ func (f *FrontendAPI) GetVectorIndexStatus() VectorIndexStatus {
 	vm := f.getVectorManager()
 	if vm == nil {
 		result.State = "unavailable"
+		f.applyEmbedderInfo(&result)
 		return result
 	}
 
@@ -151,6 +154,7 @@ func (f *FrontendAPI) GetVectorIndexStatus() VectorIndexStatus {
 	indices := make([]string, 0, 2)
 	if svc == nil {
 		result.Indices = indices
+		f.applyEmbedderInfo(&result)
 		return result
 	}
 	if svc.GetCollection() != nil {
@@ -161,6 +165,7 @@ func (f *FrontendAPI) GetVectorIndexStatus() VectorIndexStatus {
 	}
 	result.Indices = indices
 
+	f.applyEmbedderInfo(&result)
 	return result
 }
 

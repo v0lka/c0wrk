@@ -209,6 +209,13 @@ type FrontendAPI struct {
 	// manager becomes available. Nil when no setup is pending.
 	deferredVectorProject *project.ProjectInfo
 
+	// vectorEmbedderInfo records the embedder's execution-provider facts for
+	// vector-index status payloads (effective/requested provider, CUDA
+	// verification verdict). Written once by desktop's background init and
+	// read by every VectorIndexStatus producer; guarded by vectorManagerMu
+	// to avoid a third lock for the same lifecycle.
+	vectorEmbedderInfo VectorEmbedderInfo
+
 	// Self-update state. updateMu guards lastCheckResult and
 	// downloadedArchivePath, which carry data across the stateful
 	// CheckForUpdates → DownloadUpdate → ApplyUpdate RPC sequence.
@@ -511,6 +518,37 @@ func (l *FrontendAPILifecycle) SetVectorManager(m *vectorindex.Manager) {
 	l.f.vectorManagerMu.Lock()
 	l.f.vectorManager = m
 	l.f.vectorManagerMu.Unlock()
+}
+
+// SetVectorEmbedderInfo records the embedder's execution-provider facts
+// (effective/requested provider, CUDA verification verdict) for inclusion in
+// every subsequent VectorIndexStatus payload. Called once by desktop's
+// background vector init after the embedder creation outcome is known —
+// including the unavailable paths, where the info makes the failure
+// self-explanatory in the status (which provider was asked for and why it did
+// not come up). Thread-safe.
+func (l *FrontendAPILifecycle) SetVectorEmbedderInfo(info VectorEmbedderInfo) {
+	l.f.vectorManagerMu.Lock()
+	l.f.vectorEmbedderInfo = info
+	l.f.vectorManagerMu.Unlock()
+}
+
+// applyEmbedderInfo fills the execution-provider fields of a VectorIndexStatus
+// from the stored embedder info. Called by every status producer before
+// emitting, so the provider facts stay consistent across all status variants
+// (success, unavailable, failure-reason). Zero-value fields remain empty and
+// are omitted from the JSON payload.
+func (f *FrontendAPI) applyEmbedderInfo(st *VectorIndexStatus) {
+	f.vectorManagerMu.RLock()
+	info := f.vectorEmbedderInfo
+	f.vectorManagerMu.RUnlock()
+	if info.IsZero() {
+		return
+	}
+	st.ExecutionProvider = info.EffectiveProvider
+	st.RequestedExecutionProvider = info.RequestedProvider
+	st.ProviderFallbackReason = info.FallbackReason
+	st.CUDAVerified = info.CUDAVerified
 }
 
 // getVectorManager returns the vector index manager (may be nil if not yet initialized).

@@ -2446,6 +2446,175 @@ vector_index:
 	}
 }
 
+// TestVectorIndexConfig_ExecutionProvider_YAMLRoundTrip covers YAML parsing
+// of the execution provider / device knobs. Pure struct-level parsing: an
+// unset or explicitly empty execution_provider stays "" here — the
+// normalization to "auto" happens in ApplyDefaults (covered by
+// TestVectorIndexConfig_ExecutionProvider_Defaults below).
+func TestVectorIndexConfig_ExecutionProvider_YAMLRoundTrip(t *testing.T) {
+	tests := []struct {
+		name         string
+		yaml         string
+		wantProvider string
+		wantDeviceID int
+	}{
+		{
+			name:         "unset provider and device parse as zero values",
+			yaml:         "hybrid: true\n",
+			wantProvider: "",
+			wantDeviceID: 0,
+		},
+		{
+			name:         "cuda with device 1",
+			yaml:         "execution_provider: cuda\ndevice_id: 1\n",
+			wantProvider: "cuda",
+			wantDeviceID: 1,
+		},
+		{
+			name:         "cpu keeps device id parseable but irrelevant",
+			yaml:         "execution_provider: cpu\ndevice_id: 3\n",
+			wantProvider: "cpu",
+			wantDeviceID: 3,
+		},
+		{
+			name:         "explicit empty provider string",
+			yaml:         "execution_provider: \"\"\ndevice_id: 0\n",
+			wantProvider: "",
+			wantDeviceID: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg VectorIndexConfig
+			if err := yaml.Unmarshal([]byte(tt.yaml), &cfg); err != nil {
+				t.Fatalf("yaml.Unmarshal() failed: %v", err)
+			}
+			if cfg.ExecutionProvider != tt.wantProvider {
+				t.Errorf("ExecutionProvider = %q, want %q", cfg.ExecutionProvider, tt.wantProvider)
+			}
+			if cfg.DeviceID != tt.wantDeviceID {
+				t.Errorf("DeviceID = %d, want %d", cfg.DeviceID, tt.wantDeviceID)
+			}
+		})
+	}
+
+	// Round-trip: set values must survive marshal + unmarshal unchanged.
+	original := VectorIndexConfig{ExecutionProvider: "cuda", DeviceID: 1}
+	data, err := yaml.Marshal(&original)
+	if err != nil {
+		t.Fatalf("yaml.Marshal() failed: %v", err)
+	}
+
+	var restored VectorIndexConfig
+	if err := yaml.Unmarshal(data, &restored); err != nil {
+		t.Fatalf("yaml.Unmarshal() failed: %v", err)
+	}
+	if restored.ExecutionProvider != "cuda" {
+		t.Errorf("round-tripped ExecutionProvider = %q, want cuda", restored.ExecutionProvider)
+	}
+	if restored.DeviceID != 1 {
+		t.Errorf("round-tripped DeviceID = %d, want 1", restored.DeviceID)
+	}
+}
+
+// TestVectorIndexConfig_ExecutionProvider_Defaults pins the defaulting
+// contract: an unset (or empty) execution_provider normalizes to "auto",
+// an explicit value is preserved, and device_id's zero value is already
+// the valid default (nothing to normalize).
+func TestVectorIndexConfig_ExecutionProvider_Defaults(t *testing.T) {
+	// Zero-value config (no vector_index block at all).
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+	if cfg.VectorIndex.ExecutionProvider != VectorIndexProviderAuto {
+		t.Errorf("default execution_provider = %q, want %q", cfg.VectorIndex.ExecutionProvider, VectorIndexProviderAuto)
+	}
+	if cfg.VectorIndex.DeviceID != 0 {
+		t.Errorf("default device_id = %d, want 0", cfg.VectorIndex.DeviceID)
+	}
+
+	// Explicit values survive ApplyDefaults untouched.
+	cfg = &Config{VectorIndex: VectorIndexConfig{ExecutionProvider: "cuda", DeviceID: 2}}
+	ApplyDefaults(cfg)
+	if cfg.VectorIndex.ExecutionProvider != "cuda" {
+		t.Errorf("ApplyDefaults clobbered explicit execution_provider: got %q, want cuda", cfg.VectorIndex.ExecutionProvider)
+	}
+	if cfg.VectorIndex.DeviceID != 2 {
+		t.Errorf("ApplyDefaults clobbered explicit device_id: got %d, want 2", cfg.VectorIndex.DeviceID)
+	}
+
+	// An explicit empty string normalizes to "auto" as well.
+	cfg = &Config{VectorIndex: VectorIndexConfig{ExecutionProvider: ""}}
+	ApplyDefaults(cfg)
+	if cfg.VectorIndex.ExecutionProvider != VectorIndexProviderAuto {
+		t.Errorf("empty execution_provider = %q, want %q (normalized to auto)", cfg.VectorIndex.ExecutionProvider, VectorIndexProviderAuto)
+	}
+}
+
+// TestVectorIndexConfig_ExecutionProvider_Validation verifies that the
+// full Load path rejects unknown provider values and negative device ids
+// with actionable error messages, and accepts every valid combination.
+func TestVectorIndexConfig_ExecutionProvider_Validation(t *testing.T) {
+	valid := []struct {
+		name     string
+		provider string
+		deviceID int
+	}{
+		{name: "auto default device", provider: "auto", deviceID: 0},
+		{name: "cpu", provider: "cpu", deviceID: 0},
+		{name: "cuda device 0", provider: "cuda", deviceID: 0},
+		{name: "cuda device 1", provider: "cuda", deviceID: 1},
+	}
+	for _, tt := range valid {
+		t.Run("valid/"+tt.name, func(t *testing.T) {
+			content := fmt.Sprintf(`%s
+vector_index:
+  execution_provider: %s
+  device_id: %d
+`, securityGroupsTestBase, tt.provider, tt.deviceID)
+			cfg, err := Load(writeTestConfig(t, content))
+			if err != nil {
+				t.Fatalf("Load() failed for execution_provider=%s device_id=%d: %v", tt.provider, tt.deviceID, err)
+			}
+			if cfg.VectorIndex.ExecutionProvider != tt.provider {
+				t.Errorf("execution_provider = %q, want %q", cfg.VectorIndex.ExecutionProvider, tt.provider)
+			}
+			if cfg.VectorIndex.DeviceID != tt.deviceID {
+				t.Errorf("device_id = %d, want %d", cfg.VectorIndex.DeviceID, tt.deviceID)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name     string
+		yaml     string
+		wantPart string
+	}{
+		{
+			name:     "unknown provider tpu",
+			yaml:     "vector_index:\n  execution_provider: tpu\n",
+			wantPart: "vector_index.execution_provider",
+		},
+		{
+			name:     "negative device id",
+			yaml:     "vector_index:\n  device_id: -1\n",
+			wantPart: "vector_index.device_id",
+		},
+	}
+	for _, tt := range invalid {
+		t.Run("invalid/"+tt.name, func(t *testing.T) {
+			content := securityGroupsTestBase + tt.yaml
+			_, err := Load(writeTestConfig(t, content))
+			if err == nil {
+				t.Fatalf("expected validation error, got nil")
+			}
+			if !contains(err.Error(), tt.wantPart) {
+				t.Errorf("expected error to mention %q, got: %v", tt.wantPart, err)
+			}
+		})
+	}
+}
+
 // TestGoalLoopConfig_DefaultsToIndependent verifies that goal_loop.verification
 // defaults to "independent" when not specified in the config.
 func TestGoalLoopConfig_DefaultsToIndependent(t *testing.T) {
