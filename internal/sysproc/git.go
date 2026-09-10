@@ -52,7 +52,26 @@ const (
 	// be able to resurrect attribute-routed command execution, so the whole
 	// prefix is stripped from every spawned git process.
 	gitAttrEnvPrefix = "GIT_ATTR_"
+
+	// gitLocaleEnv pins the C locale on every hardened git process so its
+	// output is deterministic. git localizes stderr ("Ваши локальные
+	// изменения … будут перезаписаны" vs "Your local changes … would be
+	// overwritten") and date formats (%ad weekday/month names) after the
+	// user's environment; the backend matches that English text to select
+	// friendly errors (isLocalChangesOverwritten, isBranchAlreadyExists in
+	// backend/frontend_api_git.go) and the frontend parses %ad dates with
+	// new Date(), which cannot read non-English weekday/month names. A
+	// non-English user locale silently broke both.
+	gitLocaleEnv = "LC_ALL=C"
+
+	// gitLocaleEnvPrefixes are the prefixes of inherited locale variables
+	// stripped before the pin is appended: LANG, LANGUAGE, and the whole
+	// LC_* family (which includes LC_ALL itself). Same duplicate-entry
+	// reasoning as GIT_EDITOR — glibc resolves duplicate names to the FIRST
+	// entry, so stripping before appending is what makes the pin effective.
 )
+
+var gitLocaleEnvPrefixes = []string{"LC_", "LANG=", "LANGUAGE="}
 
 var (
 	// gitSafeHooksOnce guards the one-time resolution and creation of the
@@ -135,22 +154,36 @@ func UnhardenedGitArgv(args ...string) []string {
 }
 
 // hardenedGitEnv returns the environment for a git child process: the parent
-// environment with any inherited GIT_EDITOR and GIT_ATTR_* variables
-// stripped, then GIT_EDITOR=true appended exactly once. The GIT_EDITOR strip
-// is not cosmetic — with duplicate entries glibc's getenv (Linux) resolves
-// to the FIRST occurrence, so an inherited GIT_EDITOR would win over the
-// appended pin and re-open the editor vector. The GIT_ATTR_* strip closes
-// the attribute-routing environment family (see gitAttrEnvPrefix).
+// environment with any inherited GIT_EDITOR, GIT_ATTR_*, and locale variables
+// stripped, then GIT_EDITOR=true and LC_ALL=C appended exactly once each.
+// The GIT_EDITOR strip is not cosmetic — with duplicate entries glibc's
+// getenv (Linux) resolves to the FIRST occurrence, so an inherited
+// GIT_EDITOR would win over the appended pin and re-open the editor vector.
+// The GIT_ATTR_* strip closes the attribute-routing environment family (see
+// gitAttrEnvPrefix). The locale pins (see gitLocaleEnv) make git's stderr
+// and date output deterministic English regardless of the user's desktop
+// locale, which the backend's friendly-error matchers and the frontend's
+// date parsing both rely on.
 func hardenedGitEnv() []string {
 	parent := os.Environ()
-	env := make([]string, 0, len(parent)+1)
+	env := make([]string, 0, len(parent)+2)
 	for _, kv := range parent {
 		if strings.HasPrefix(kv, gitEditorEnvVar+"=") || strings.HasPrefix(kv, gitAttrEnvPrefix) {
 			continue
 		}
+		stripped := false
+		for _, p := range gitLocaleEnvPrefixes {
+			if strings.HasPrefix(kv, p) {
+				stripped = true
+				break
+			}
+		}
+		if stripped {
+			continue
+		}
 		env = append(env, kv)
 	}
-	return append(env, gitEditorEnv)
+	return append(env, gitEditorEnv, gitLocaleEnv)
 }
 
 // GitCmd creates a hardened git [exec.Cmd], or refuses to spawn git at all

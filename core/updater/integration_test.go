@@ -104,13 +104,15 @@ func integrationServer(t *testing.T, assetName string) (srv *httptest.Server, ma
 
 // pipelineChecker builds a Checker whose API base + asset host both point at
 // the integration server, fixed to the *running* platform so the selected
-// asset matches the archive the server actually serves.
+// asset matches the archive the server actually serves. The flavor is pinned
+// to CPU: the server only serves the canonical asset, and pinning keeps the
+// scenario deterministic even if the host tree were GPU-flavored.
 func pipelineChecker(t *testing.T, srv *httptest.Server, current string) *Checker {
 	t.Helper()
 	goos, goarch := CurrentPlatform()
 	c := NewChecker(Config{CurrentVersion: current}, srv.Client(), nil)
 	c.baseURL = srv.URL
-	c.WithPlatform(goos, goarch)
+	c.WithPlatform(goos, goarch).WithFlavor(FlavorCPU)
 	return c
 }
 
@@ -132,8 +134,10 @@ func TestPipeline_CheckDownloadVerifyStage_E2E(t *testing.T) {
 	}
 
 	// Only platforms in the release matrix have a canonical asset to serve.
+	// The running installation is CPU-flavored in tests (no CUDA provider
+	// library next to the test binary), matching the Checker default.
 	goos, goarch := CurrentPlatform()
-	assetName, err := AssetNameForPlatform(goos, goarch)
+	assetName, err := AssetNameFor(goos, goarch, FlavorCPU)
 	if err != nil {
 		t.Skipf("no canonical release asset for %s/%s: %v", goos, goarch, err)
 	}
@@ -239,7 +243,7 @@ func TestPipeline_TamperedChecksumAbortsBeforeStage(t *testing.T) {
 		t.Skip("integration smoke test in -short mode")
 	}
 	goos, goarch := CurrentPlatform()
-	assetName, err := AssetNameForPlatform(goos, goarch)
+	assetName, err := AssetNameFor(goos, goarch, FlavorCPU)
 	if err != nil {
 		t.Skipf("no canonical release asset for %s/%s: %v", goos, goarch, err)
 	}
@@ -338,7 +342,7 @@ func TestPipeline_SkippedVersionSuppressesUpdate(t *testing.T) {
 		t.Skip("integration smoke test in -short mode")
 	}
 	goos, goarch := CurrentPlatform()
-	assetName, err := AssetNameForPlatform(goos, goarch)
+	assetName, err := AssetNameFor(goos, goarch, FlavorCPU)
 	if err != nil {
 		t.Skipf("no canonical release asset for %s/%s: %v", goos, goarch, err)
 	}

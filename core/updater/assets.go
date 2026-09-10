@@ -1,5 +1,6 @@
 // Package updater checks for newer c0wrk-desktop releases published on
-// GitHub and selects the downloadable asset matching the running platform.
+// GitHub and selects the downloadable asset matching the running platform
+// and packaging flavor.
 //
 // The package is intentionally decoupled from transport and version sources:
 // the HTTP client is injected (so corporate proxies configured via the
@@ -15,7 +16,7 @@ import (
 )
 
 // ErrNoAssetForPlatform is returned when no release asset matches the
-// current GOOS/GOARCH combination.
+// current GOOS/GOARCH/flavor combination.
 var ErrNoAssetForPlatform = errors.New("no asset for platform")
 
 // platformSpec describes a single supported build target and the release
@@ -23,61 +24,73 @@ var ErrNoAssetForPlatform = errors.New("no asset for platform")
 type platformSpec struct {
 	goos     string // GOOS value, e.g. "darwin"
 	goarch   string // GOARCH value, e.g. "arm64"
+	flavor   Flavor // packaging flavor the asset carries; FlavorCPU everywhere, plus FlavorCUDA13 on linux/amd64
 	basename string // canonical asset filename, e.g. "c0wrk-desktop-macos-arm64.zip"
-	token    string // stable substring used to match an asset regardless of version, e.g. "macos-arm64"
+	token    string // suffix token used to match an asset regardless of version, e.g. "macos-arm64"
 }
 
 // supportedPlatforms mirrors the build matrix in .github/workflows/release.yml.
 // The asset names are produced by the "Package …" steps of each platform job.
+// linux/amd64 is listed twice: the default CPU flavor and the opt-in CUDA 13
+// flavor (ADR-036), whose archive name appends "-cuda13" after the arch token.
 //
-//	darwin/arm64  → c0wrk-desktop-macos-arm64.zip   (ditto of the .app bundle)
-//	linux/amd64   → c0wrk-desktop-linux-amd64.tar.gz
-//	linux/arm64   → c0wrk-desktop-linux-arm64.tar.gz
-//	windows/amd64 → c0wrk-desktop-windows-amd64.zip
+//	darwin/arm64       → c0wrk-desktop-macos-arm64.zip   (ditto of the .app bundle)
+//	linux/amd64 cpu    → c0wrk-desktop-linux-amd64.tar.gz
+//	linux/amd64 cuda13 → c0wrk-desktop-linux-amd64-cuda13.tar.gz
+//	linux/arm64        → c0wrk-desktop-linux-arm64.tar.gz
+//	windows/amd64      → c0wrk-desktop-windows-amd64.zip
 var supportedPlatforms = []platformSpec{
-	{goos: "darwin", goarch: "arm64", basename: "c0wrk-desktop-macos-arm64.zip", token: "macos-arm64"},
-	{goos: "linux", goarch: "amd64", basename: "c0wrk-desktop-linux-amd64.tar.gz", token: "linux-amd64"},
-	{goos: "linux", goarch: "arm64", basename: "c0wrk-desktop-linux-arm64.tar.gz", token: "linux-arm64"},
-	{goos: "windows", goarch: "amd64", basename: "c0wrk-desktop-windows-amd64.zip", token: "windows-amd64"},
+	{goos: "darwin", goarch: "arm64", flavor: FlavorCPU, basename: "c0wrk-desktop-macos-arm64.zip", token: "macos-arm64"},
+	{goos: "linux", goarch: "amd64", flavor: FlavorCPU, basename: "c0wrk-desktop-linux-amd64.tar.gz", token: "linux-amd64"},
+	{goos: "linux", goarch: "amd64", flavor: FlavorCUDA13, basename: "c0wrk-desktop-linux-amd64-cuda13.tar.gz", token: "linux-amd64-cuda13"},
+	{goos: "linux", goarch: "arm64", flavor: FlavorCPU, basename: "c0wrk-desktop-linux-arm64.tar.gz", token: "linux-arm64"},
+	{goos: "windows", goarch: "amd64", flavor: FlavorCPU, basename: "c0wrk-desktop-windows-amd64.zip", token: "windows-amd64"},
 }
 
-// AssetNameForPlatform returns the canonical release asset filename for the
-// given GOOS/GOARCH pair. It returns ErrNoAssetForPlatform when the platform
-// is not part of the release matrix (e.g. linux/riscv64, darwin/amd64).
-func AssetNameForPlatform(goos, goarch string) (string, error) {
+// AssetNameFor returns the canonical release asset filename for the given
+// GOOS/GOARCH pair and packaging flavor. It returns ErrNoAssetForPlatform
+// when the combination is not part of the release matrix (e.g.
+// linux/riscv64, darwin/amd64, or a CUDA flavor on a platform that ships no
+// flavor variants).
+func AssetNameFor(goos, goarch string, flavor Flavor) (string, error) {
 	for _, p := range supportedPlatforms {
-		if p.goos == goos && p.goarch == goarch {
+		if p.goos == goos && p.goarch == goarch && p.flavor == flavor {
 			return p.basename, nil
 		}
 	}
 	return "", ErrNoAssetForPlatform
 }
 
-// platformToken returns the stable substring identifying the asset for a
-// platform, or "" when unsupported. It is used to match against the filenames
+// platformToken returns the suffix identifying the asset for a platform and
+// flavor, or "" when unsupported. It is used to match against the filenames
 // returned by the GitHub API, which embed the version in some flows.
-func platformToken(goos, goarch string) string {
+func platformToken(goos, goarch string, flavor Flavor) string {
 	for _, p := range supportedPlatforms {
-		if p.goos == goos && p.goarch == goarch {
+		if p.goos == goos && p.goarch == goarch && p.flavor == flavor {
 			return p.token
 		}
 	}
 	return ""
 }
 
-// SelectAsset picks the release asset whose name matches the given platform.
+// SelectAsset picks the release asset whose name matches the given platform
+// and packaging flavor.
 //
 // Matching is exact-first: it prefers the canonical archive filename for the
-// platform (compared case-insensitively against either the asset's Name or the
-// filename portion of its BrowserDownloadURL). Only when that exact name is
-// absent does it fall back to a substring match on the platform token, and that
-// fallback is restricted to recognised archive extensions so that companion
-// files (detached signatures, checksums) never win over the archive itself.
+// platform+flavor (compared case-insensitively against either the asset's Name
+// or the filename portion of its BrowserDownloadURL). Only when that exact
+// name is absent does it fall back to a token match, and that fallback is
+// anchored: the filename must end with "<token><archive-extension>" so that
+// companion files (detached signatures, checksums) and differently-flavored
+// archives never win over the archive itself. The anchoring is load-bearing
+// for the CPU flavor on linux/amd64: its token "linux-amd64" is a substring
+// of the CUDA asset name "…-linux-amd64-cuda13.tar.gz", and a plain Contains
+// match would silently hand a CPU installation a CUDA archive (or vice versa).
 //
-// It returns ErrNoAssetForPlatform when the platform is unsupported or when no
-// asset in the release matches it.
-func SelectAsset(assets []ReleaseAsset, goos, goarch string) (ReleaseAsset, error) {
-	basename, err := AssetNameForPlatform(goos, goarch)
+// It returns ErrNoAssetForPlatform when the platform+flavor is unsupported or
+// when no asset in the release matches it.
+func SelectAsset(assets []ReleaseAsset, goos, goarch string, flavor Flavor) (ReleaseAsset, error) {
+	basename, err := AssetNameFor(goos, goarch, flavor)
 	if err != nil {
 		return ReleaseAsset{}, err
 	}
@@ -91,15 +104,15 @@ func SelectAsset(assets []ReleaseAsset, goos, goarch string) (ReleaseAsset, erro
 		}
 	}
 
-	// Second pass: fall back to the platform token, but only within the
-	// filename (never the whole URL) and only for archive files.
-	token := strings.ToLower(platformToken(goos, goarch))
+	// Second pass: fall back to the platform token as an anchored suffix
+	// "<token><ext>", checked only within the filename (never the whole URL).
+	token := strings.ToLower(platformToken(goos, goarch, flavor))
 	for _, a := range assets {
 		name := assetFilename(a)
 		if name == "" {
 			continue
 		}
-		if isArchiveName(name) && strings.Contains(name, token) {
+		if matchesTokenExt(name, token) {
 			return a, nil
 		}
 	}
@@ -136,14 +149,19 @@ func urlPathBasename(rawurl string) string {
 }
 
 // archiveExtensions lists the archive suffixes produced by the release matrix
-// (.github/workflows/release.yml). Only files with one of these suffixes are
-// eligible for token-based matching.
+// (.github/workflows/release.yml). Only files ending in "<token><ext>" with
+// one of these extensions are eligible for token-based matching.
 var archiveExtensions = []string{".zip", ".tar.gz"}
 
-// isArchiveName reports whether name ends with a recognised archive extension.
-func isArchiveName(name string) bool {
+// matchesTokenExt reports whether name ends with the token immediately
+// followed by a recognised archive extension. Requiring the token to sit
+// flush against the extension anchors the match at the end of the filename:
+// "linux-amd64" matches "c0wrk-desktop-linux-amd64.tar.gz" but NOT
+// "c0wrk-desktop-linux-amd64-cuda13.tar.gz", whose arch token is followed by
+// the "-cuda13" flavor infix. A substring Contains has no such guarantee.
+func matchesTokenExt(name, token string) bool {
 	for _, ext := range archiveExtensions {
-		if strings.HasSuffix(name, ext) {
+		if strings.HasSuffix(name, token+ext) {
 			return true
 		}
 	}

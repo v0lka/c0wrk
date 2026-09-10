@@ -121,6 +121,41 @@ func TestGitCmdEnvStripsAttributeEnvVars(t *testing.T) {
 	}
 }
 
+// TestGitCmdEnvPinsCLocale pins the locale contract: every inherited locale
+// variable (LANG, LANGUAGE, LC_ALL, LC_*) is stripped and replaced by exactly
+// one LC_ALL=C entry. git localizes stderr and %ad date names after the
+// user's locale; the backend matches English stderr for friendly errors and
+// the frontend parses %ad dates with new Date(), so a non-C locale (e.g.
+// LANG=ru_RU.UTF-8) silently broke both. As with GIT_EDITOR, the strip
+// matters: glibc resolves duplicate names to the FIRST entry.
+func TestGitCmdEnvPinsCLocale(t *testing.T) {
+	t.Setenv("LANG", "ru_RU.UTF-8")
+	t.Setenv("LANGUAGE", "ru")
+	t.Setenv("LC_ALL", "ru_RU.UTF-8")
+	t.Setenv("LC_MESSAGES", "ru_RU.UTF-8")
+	cmd, err := GitCmd(context.Background(), "log", "--oneline")
+	if err != nil {
+		t.Fatalf("GitCmd: %v", err)
+	}
+
+	localeEntries := 0
+	for _, e := range cmd.Env {
+		switch {
+		case e == gitLocaleEnv:
+			localeEntries++
+		case strings.HasPrefix(e, "LANG="), strings.HasPrefix(e, "LANGUAGE="), strings.HasPrefix(e, "LC_"):
+			t.Errorf("cmd.Env still carries an inherited locale entry: %q", e)
+		}
+	}
+	if localeEntries != 1 {
+		t.Errorf("cmd.Env carries %d %s entries, want exactly 1", localeEntries, gitLocaleEnv)
+	}
+	// The rest of the hardening (GIT_EDITOR pin) is untouched.
+	if !slices.Contains(cmd.Env, gitEditorEnv) {
+		t.Errorf("cmd.Env lost the %s pin", gitEditorEnv)
+	}
+}
+
 func TestGitCmdCreatesSafeHooksDir(t *testing.T) {
 	if _, err := GitCmd(context.Background()); err != nil { // trigger the sync.Once resolution
 		t.Fatalf("GitCmd: %v", err)

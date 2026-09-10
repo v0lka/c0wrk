@@ -866,11 +866,16 @@ orchestration:
 # GPU requirements — "auto" and "cuda" only use the GPU when a CUDA-
 # enabled ONNX Runtime build sits next to the executable (the standard
 # `make build` / `make fetch-onnx` downloads the CPU-only build; fetch
-# the GPU variant with `make fetch-onnx-gpu`, Linux x64 only). The GPU
-# build additionally needs an NVIDIA driver and the CUDA provider
-# libraries that ship beside the runtime library. On any other platform,
-# or with the CPU build in place, "auto" quietly resolves to the CPU
-# provider.
+# the GPU variant with `make fetch-onnx-gpu`, Linux x64 only — or
+# install the release archive
+# `c0wrk-desktop-linux-amd64-cuda13.tar.gz`, which bundles the GPU
+# flavor). The GPU build additionally needs an NVIDIA driver and the
+# CUDA 13 runtime (`libcudart.so.13`, cuBLAS, cuRAND) plus the CUDA
+# provider libraries that ship beside the runtime library. On any other
+# platform, or with the CPU build in place, "auto" quietly resolves to
+# the CPU provider. The in-app updater always updates within the same
+# flavor — a cuda13 install receives cuda13 archives and vice versa
+# (switching flavors is a manual reinstall).
 #
 # Changing either knob requires an app restart: the provider is chosen
 # once when the embedder is created at startup and the ONNX session is

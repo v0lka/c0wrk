@@ -1,8 +1,10 @@
 package updater
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -393,6 +395,162 @@ func TestCheck_SelectsCorrectAssetPerPlatform(t *testing.T) {
 				t.Errorf("AssetName = %q, want %q", res.AssetName, tc.wantAsset)
 			}
 		})
+	}
+}
+
+// linuxFlavorAssets mirrors a release carrying BOTH linux/amd64 flavors.
+func linuxFlavorAssets(tag string) []ReleaseAsset {
+	base := "https://github.com/v0lka/c0wrk/releases/download/" + tag + "/"
+	return []ReleaseAsset{
+		{Name: "c0wrk-desktop-linux-amd64.tar.gz", BrowserDownloadURL: base + "c0wrk-desktop-linux-amd64.tar.gz"},
+		{Name: "c0wrk-desktop-linux-amd64-cuda13.tar.gz", BrowserDownloadURL: base + "c0wrk-desktop-linux-amd64-cuda13.tar.gz"},
+	}
+}
+
+// TestCheck_FlavorSelection drives the full Checker path (Check → evaluate →
+// SelectAsset) for the linux/amd64 flavor split: a CPU-flavored checker picks
+// the CPU archive, a cuda13-flavored checker picks the cuda13 archive, and a
+// cuda13 checker fails closed with ErrNoAssetForPlatform when the release
+// ships no cuda13 asset rather than silently downgrading to the CPU archive.
+func TestCheck_FlavorSelection(t *testing.T) {
+	t.Parallel()
+
+	t.Run("cpu flavor picks the cpu archive when both are present", func(t *testing.T) {
+		t.Parallel()
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(releasePayload("v2.0.0", linuxFlavorAssets("v2.0.0")...)))
+		}))
+		defer ts.Close()
+
+		c := newTestChecker(t, ts, "v1.0.0", "")
+		c.WithPlatform("linux", "amd64").WithFlavor(FlavorCPU)
+		res, err := c.Check(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res.AssetName != "c0wrk-desktop-linux-amd64.tar.gz" {
+			t.Fatalf("AssetName = %q, want the plain CPU archive", res.AssetName)
+		}
+	})
+
+	t.Run("cuda13 flavor picks the cuda13 archive", func(t *testing.T) {
+		t.Parallel()
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(releasePayload("v2.0.0", linuxFlavorAssets("v2.0.0")...)))
+		}))
+		defer ts.Close()
+
+		c := newTestChecker(t, ts, "v1.0.0", "")
+		c.WithPlatform("linux", "amd64").WithFlavor(FlavorCUDA13)
+		res, err := c.Check(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res.AssetName != "c0wrk-desktop-linux-amd64-cuda13.tar.gz" {
+			t.Fatalf("AssetName = %q, want the cuda13 archive", res.AssetName)
+		}
+	})
+
+	t.Run("cuda13 flavor without a cuda13 asset fails closed", func(t *testing.T) {
+		t.Parallel()
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(releasePayload("v2.0.0",
+				ReleaseAsset{Name: "c0wrk-desktop-linux-amd64.tar.gz", BrowserDownloadURL: "https://x/c0wrk-desktop-linux-amd64.tar.gz"},
+			)))
+		}))
+		defer ts.Close()
+
+		c := newTestChecker(t, ts, "v1.0.0", "")
+		c.WithPlatform("linux", "amd64").WithFlavor(FlavorCUDA13)
+		res, err := c.Check(context.Background())
+		if err == nil {
+			t.Fatal("expected an error, not a silent \"no update\" when the flavor's asset is missing")
+		}
+		if !errors.Is(err, ErrNoAssetForPlatform) {
+			t.Fatalf("expected ErrNoAssetForPlatform, got %v", err)
+		}
+		if res.Available {
+			t.Fatalf("Available = true with a failed asset selection, want false")
+		}
+	})
+
+	t.Run("asset selection error carries the flavor", func(t *testing.T) {
+		t.Parallel()
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(releasePayload("v2.0.0",
+				ReleaseAsset{Name: "c0wrk-desktop-linux-amd64.tar.gz", BrowserDownloadURL: "https://x/c0wrk-desktop-linux-amd64.tar.gz"},
+			)))
+		}))
+		defer ts.Close()
+
+		c := newTestChecker(t, ts, "v1.0.0", "")
+		c.WithPlatform("linux", "amd64").WithFlavor(FlavorCUDA13)
+		_, err := c.Check(context.Background())
+		if err == nil {
+			t.Fatal("expected an asset-selection error")
+		}
+		// The flavor must be observable in the error so a missing-flavor
+		// release is diagnosable from logs alone (update:error path).
+		if !strings.Contains(err.Error(), "cuda13") {
+			t.Fatalf("error %q does not mention the cuda13 flavor", err)
+		}
+	})
+}
+
+// TestChecker_FlavorDefaults pins the checker's flavor wiring: NewChecker
+// snapshots CurrentFlavor() without any explicit flavor argument, and
+// WithFlavor overrides that default in place (chainable, same receiver).
+func TestChecker_FlavorDefaults(t *testing.T) {
+	t.Parallel()
+
+	c := NewChecker(Config{CurrentVersion: "v1.0.0"}, nil, nil)
+	if c.flavor != CurrentFlavor() {
+		t.Fatalf("NewChecker flavor = %q, want CurrentFlavor() = %q", c.flavor, CurrentFlavor())
+	}
+
+	// WithFlavor must override the detected default and return the receiver
+	// for chaining (symmetric to WithPlatform).
+	returned := c.WithFlavor(FlavorCUDA13)
+	if returned != c {
+		t.Fatal("WithFlavor must return the receiver for chaining")
+	}
+	if c.flavor != FlavorCUDA13 {
+		t.Fatalf("flavor after WithFlavor = %q, want %q", c.flavor, FlavorCUDA13)
+	}
+
+	// Switching back to CPU must also stick.
+	c.WithFlavor(FlavorCPU)
+	if c.flavor != FlavorCPU {
+		t.Fatalf("flavor after WithFlavor(FlavorCPU) = %q, want %q", c.flavor, FlavorCPU)
+	}
+}
+
+// TestCheck_DebugLogsSelection verifies the asset-selection debug log is
+// emitted with goos/goarch/flavor, so the flavor a running installation used
+// is observable from logs alone (per ADR-036 flavor diagnostics).
+func TestCheck_DebugLogsSelection(t *testing.T) {
+	t.Parallel()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(releasePayload("v2.0.0", linuxFlavorAssets("v2.0.0")...)))
+	}))
+	defer ts.Close()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	c := NewChecker(Config{CurrentVersion: "v1.0.0"}, ts.Client(), logger)
+	c.baseURL = ts.URL
+	c.WithPlatform("linux", "amd64").WithFlavor(FlavorCUDA13)
+
+	if _, err := c.Check(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	logged := buf.String()
+	for _, want := range []string{"goos=linux", "goarch=amd64", "flavor=cuda13"} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("debug log missing %q; logged: %s", want, logged)
+		}
 	}
 }
 
