@@ -1,4 +1,4 @@
-.PHONY: build test bench-startup lint fmt-check vulncheck dev-desktop dev-frontend bump fetch-onnx fetch-onnx-gpu fetch-embedding-model clean-onnx clean frontend-deps
+.PHONY: build build-gpu test bench-startup lint fmt-check vulncheck dev-desktop dev-frontend bump fetch-onnx fetch-onnx-gpu fetch-embedding-model clean-onnx clean frontend-deps
 
 # govulncheck version pinned for reproducible vulnerability scans (CI runs the
 # same `make vulncheck` command; upgrade deliberately, both repos in lockstep).
@@ -210,6 +210,17 @@ frontend-deps:
 build: frontend-deps
 	$(WAILS_APPICON_STAGE)wails build $(WAILS_TAGS) -ldflags "$(VERSION_LDFLAGS)"
 	$(MAKE) fetch-onnx
+	$(MAKE) fetch-embedding-model
+
+# GPU (CUDA 13) flavor of `build`: identical steps, except the ONNX Runtime
+# fetch installs the GPU libraries (fetch-onnx-gpu) instead of the CPU ones.
+# Order matters: wails build runs first, then the GPU fetch REPLACES the CPU
+# flavor per the stamp policy above (make build alone would reinstall the CPU
+# flavor on a stamp mismatch). Linux x64 only — fetch-onnx-gpu fails closed
+# elsewhere, so this target does too.
+build-gpu: frontend-deps
+	$(WAILS_APPICON_STAGE)wails build $(WAILS_TAGS) -ldflags "$(VERSION_LDFLAGS)"
+	$(MAKE) fetch-onnx-gpu
 	$(MAKE) fetch-embedding-model
 
 test:
