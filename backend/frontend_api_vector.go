@@ -216,7 +216,7 @@ func (f *FrontendAPI) ReindexVectorIndex() error {
 // driver reports right now, not what the embedder was created with (the
 // embedder's facts travel in VectorIndexStatus via applyEmbedderInfo).
 func (f *FrontendAPI) ListVectorIndexGPUs() ([]GPUDeviceResponse, error) {
-	devices, err := embedding.ListGPUDevices()
+	devices, err := embedding.ListGPUDevices(f.ctx())
 	if err != nil {
 		return nil, err
 	}

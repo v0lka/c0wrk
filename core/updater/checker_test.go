@@ -527,7 +527,7 @@ func TestChecker_FlavorDefaults(t *testing.T) {
 
 // TestCheck_DebugLogsSelection verifies the asset-selection debug log is
 // emitted with goos/goarch/flavor, so the flavor a running installation used
-// is observable from logs alone (per ADR-036 flavor diagnostics).
+// is observable from logs alone (per ADR-042 flavor diagnostics).
 func TestCheck_DebugLogsSelection(t *testing.T) {
 	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

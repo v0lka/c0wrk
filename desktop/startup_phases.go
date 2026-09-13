@@ -1279,7 +1279,7 @@ func (a *App) verifyEmbedderGPU(emb *embedding.Embedder, log *slog.Logger) bool 
 			"error", err,
 			"hint", "embedder stays enabled; real searches may fail if this persists")
 	}
-	inUse, err := embedding.GPUInUse()
+	inUse, err := embedding.GPUInUse(ctx)
 	if err != nil {
 		// Probe failure ≠ "not on GPU": treated as unverified, cuda_verified
 		// stays false, and the user still gets a WARN — a missing verdict is

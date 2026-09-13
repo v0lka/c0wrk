@@ -9,7 +9,7 @@ import (
 // Flavor identifies which ONNX Runtime packaging a running installation
 // carries: the default CPU flavor or the opt-in CUDA 13 flavor. The flavor
 // does NOT live in the binary — the executable is byte-identical across
-// flavors — but in the install tree: `make fetch-onnx-gpu` (ADR-036) drops
+// flavors — but in the install tree: `make fetch-onnx-gpu` (ADR-042) drops
 // the CUDA provider library next to the binary, and that file's presence is
 // the only install-time signal of a GPU-flavored tree.
 //
@@ -23,9 +23,9 @@ const (
 	// execution provider only, no GPU libraries in the install tree.
 	FlavorCPU Flavor = "cpu"
 
-	// FlavorCUDA13 is the opt-in GPU flavor (ADR-036): a CUDA 13-flavored
+	// FlavorCUDA13 is the opt-in GPU flavor (ADR-042): a CUDA 13-flavored
 	// ONNX Runtime with libonnxruntime_providers_cuda.so installed next to
-	// the binary. One CUDA major is pinned deliberately (see ADR-036
+	// the binary. One CUDA major is pinned deliberately (see ADR-042
 	// "Packaging: separate opt-in target, cuda13 flavor only") — a cuda12
 	// flavor is explicitly not supported.
 	FlavorCUDA13 Flavor = "cuda13"
