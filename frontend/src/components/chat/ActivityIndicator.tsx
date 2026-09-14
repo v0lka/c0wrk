@@ -16,10 +16,11 @@ export function ActivityIndicator() {
 
   return (
     <div className="flex items-center gap-2 px-4 py-2 text-xs text-muted-foreground">
-      <span className="relative flex h-2 w-2">
-        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-info opacity-75" />
-        <span className="relative inline-flex rounded-full h-2 w-2 bg-primary" />
-      </span>
+      {/* ADR-045: opacity-only pulse (same animation as the label text).
+          No transform-based ping — under WebKitGTK software rendering that
+          re-rasterizes every frame and burns CPU (opacity is compositor-
+          cheap). */}
+      <span className="inline-flex rounded-full h-2 w-2 bg-primary animate-pulse" />
       <span className="animate-pulse">{label}</span>
     </div>
   )

@@ -20,14 +20,11 @@ function dotLabel(side: 'vector' | 'lexical', dot: DotState): string {
 function Dot({ state, label }: { state: DotState; label: string }) {
   return (
     <span className="relative flex size-2.5 shrink-0" title={label} aria-label={label}>
-      {state === 'active' && (
-        <span className="absolute inline-flex size-full animate-ping rounded-full bg-info opacity-75" />
-      )}
       <span
         className={cn(
-          'relative inline-flex size-2.5 rounded-full',
+          'inline-flex size-2.5 rounded-full',
           state === 'green' && 'bg-success',
-          state === 'active' && 'bg-info',
+          state === 'active' && 'bg-info animate-pulse',
           state === 'idle' && 'bg-muted-foreground/40',
         )}
       />
