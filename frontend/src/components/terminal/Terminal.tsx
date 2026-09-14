@@ -106,7 +106,17 @@ export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProp
         term.loadAddon(fitAddon)
 
         term.open(container)
-        fitAddon.fit()
+        // The initial fit is guarded like every later one: FitAddon reads
+        // renderer cell dimensions (`_renderService.dimensions`) that may not
+        // be measured yet when the container is not laid out — an unguarded
+        // throw here would crash the input shell (effect errors propagate to
+        // the ErrorBoundary). The ResizeObserver + delayed handleResize below
+        // re-fit once the container has a real size.
+        try {
+            fitAddon.fit()
+        } catch {
+            // FitAddon can throw if terminal is not fully initialized
+        }
         term.focus()
 
         term.onData((data) => {
@@ -189,10 +199,18 @@ export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProp
     // Apply palette changes to the live terminal without restarting the session.
     // xterm.js re-renders when its theme option is reassigned, so switching the
     // palette updates the running terminal in place.
+    //
+    // Assign ONLY the keys being changed. Since xterm v6 the public options
+    // setter MERGES the assigned object's keys and validates every key against
+    // the constructor-only list — `cols`/`rows`/`rendererType` are readonly
+    // after construction. Spreading the current options back through the
+    // assignment drags those readonly keys through the setter and throws
+    // `Option "cols" can only be set in the constructor`, which on mount
+    // crashed the whole input shell ("Input error" fallback).
     useEffect(() => {
         const term = termRef.current
         if (term) {
-            term.options = { ...term.options, theme: palette }
+            term.options = { theme: palette }
         }
     }, [palette])
 
