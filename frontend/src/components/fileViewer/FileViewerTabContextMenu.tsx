@@ -136,7 +136,7 @@ export function FileViewerTabContextMenu({ path, position, onClose }: FileViewer
   }, [position, onClose])
 
   const menuItemClass = cn(
-    'relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
+    'relative flex w-full select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
     'hover:bg-muted/50 focus:bg-muted/50 disabled:opacity-50 disabled:pointer-events-none',
     '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg]:text-muted-foreground',
   )

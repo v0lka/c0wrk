@@ -58,3 +58,47 @@ describe('Markdown mermaid block wiring', () => {
     expect(pre?.querySelector('code')?.className).toContain('language-go')
   })
 })
+
+describe('Markdown heading anchors', () => {
+  let container: HTMLElement
+  let root: Root
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.replaceChildren(container)
+    root = createRoot(container)
+  })
+
+  function render(content: string) {
+    return act(async () => {
+      root.render(<Markdown content={content} />)
+    })
+  }
+
+  it('does not wrap headings in anchor links (dead self-referencing affordance)', async () => {
+    await render('# Title\n\n## Sub Section\n')
+    const h1 = container.querySelector('h1')
+    const h2 = container.querySelector('h2')
+    expect(h1?.textContent).toBe('Title')
+    expect(h2?.textContent).toBe('Sub Section')
+    // No autolink wrapper: a heading anchor points at the heading itself,
+    // so the pointer cursor / underline promised a click that did nothing.
+    expect(h1?.querySelector('a')).toBeNull()
+    expect(h2?.querySelector('a')).toBeNull()
+  })
+
+  it('keeps rehype-slug ids so explicit #anchor links have targets', async () => {
+    await render('## Sub Section\n')
+    // rehype-sanitize's defaultSchema prefixes ids with 'user-content-' to
+    // prevent DOM clobbering — assert the exact rendered value.
+    expect(container.querySelector('h2')?.id).toBe('user-content-sub-section')
+  })
+
+  it('still renders explicit [#anchor](#…) links as real anchors', async () => {
+    await render('[jump](#sub-section)')
+    const a = container.querySelector('a')
+    expect(a?.getAttribute('href')).toBe('#sub-section')
+    expect(a?.textContent).toBe('jump')
+  })
+})
+

@@ -29,14 +29,19 @@ interface PlanStepItemProps {
 function PlanStepItem({ item, onClick }: PlanStepItemProps) {
   const hasDescription = !!item.description && item.description !== item.title
 
+  // Non-clickable rows (no scroll target available) render as a plain div:
+  // a <button> would pick up the global `button { cursor: pointer }` base
+  // rule and promise interaction it cannot deliver.
+  const Wrapper = onClick ? 'button' : 'div'
+
   return (
-    <button
+    <Wrapper
       className={cn(
         'block w-full text-left px-1 -mx-1 rounded transition-colors border-0 bg-transparent',
         onClick && 'hover:bg-muted/50 cursor-pointer',
       )}
       onClick={onClick}
-      type="button"
+      {...(onClick ? { type: 'button' as const } : {})}
     >
       <div className="flex items-center gap-1 h-[24px] w-full text-left">
         <span className="w-3.5 shrink-0" />
@@ -51,7 +56,7 @@ function PlanStepItem({ item, onClick }: PlanStepItemProps) {
           </span>
         )}
       </div>
-    </button>
+    </Wrapper>
   )
 }
 

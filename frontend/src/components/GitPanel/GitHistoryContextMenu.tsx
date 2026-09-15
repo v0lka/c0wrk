@@ -63,7 +63,7 @@ function tagNamesFromRefs(refs: string[]): string[] {
 
 /** Shared class for a menu button (mirrors GitFileContextMenu item styling). */
 const itemClass =
-  'relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg:not([class*=\'text-\'])]:text-muted-foreground'
+  'relative flex w-full select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg:not([class*=\'text-\'])]:text-muted-foreground'
 
 // ---------------------------------------------------------------------------
 // Submenu — a self-contained hover-driven nested menu. Opens on mouseenter,

@@ -142,7 +142,7 @@ The identifier is derived from the repository's **absolute path**: replace every
 
 ### Stack
 
-React 19 + TypeScript ~5.7 + Vite 6 + Tailwind CSS v4 + Zustand 5. UI primitives from shadcn/ui (new-york style) + Radix UI. Icons via lucide-react. Markdown rendered with react-markdown 10 + remark-gfm/emoji/breaks + rehype-highlight/sanitize/external-links/slug/autolink-headings. Syntax highlighting via highlight.js 11 (selective language registration). Mermaid 11 lazy-loaded for diagrams. In-app code/markdown editing via CodeMirror 6 (`@codemirror/*` + `@lezer/highlight`). Embedded terminal via xterm.js (`@xterm/xterm` v6 + `@xterm/addon-fit`). Virtualized lists via `@tanstack/react-virtual`. Character-level diffs via `diff` v9. File tree icons via Nerd Fonts (`@m234/nerd-fonts`, SauceCodePro NF).
+React 19 + TypeScript ~5.7 + Vite 6 + Tailwind CSS v4 + Zustand 5. UI primitives from shadcn/ui (new-york style) + Radix UI. Icons via lucide-react. Markdown rendered with react-markdown 10 + remark-gfm/emoji/breaks + rehype-highlight/sanitize/external-links/slug. Syntax highlighting via highlight.js 11 (selective language registration). Mermaid 11 lazy-loaded for diagrams. In-app code/markdown editing via CodeMirror 6 (`@codemirror/*` + `@lezer/highlight`). Embedded terminal via xterm.js (`@xterm/xterm` v6 + `@xterm/addon-fit`). Virtualized lists via `@tanstack/react-virtual`. Character-level diffs via `diff` v9. File tree icons via Nerd Fonts (`@m234/nerd-fonts`, SauceCodePro NF).
 
 ### Layout
 

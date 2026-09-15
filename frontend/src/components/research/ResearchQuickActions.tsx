@@ -183,7 +183,7 @@ export function ResearchQuickActions() {
             }
             className={cn(
               ACTION_BUTTON_CLASS,
-              'disabled:cursor-default disabled:opacity-50 disabled:hover:bg-background',
+              'disabled:opacity-50',
             )}
           >
             <Icon className="size-3.5 text-muted-foreground" />

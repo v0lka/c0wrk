@@ -121,7 +121,7 @@ export function EditableCombobox({
             aria-label={`${ariaLabel} presets`}
             disabled={disabled}
             title={`${ariaLabel} presets`}
-            className="flex size-6 shrink-0 cursor-default items-center justify-center rounded-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground disabled:opacity-50"
+            className="flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground disabled:opacity-50"
           >
             <ChevronDownIcon className="size-4" />
           </button>
