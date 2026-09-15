@@ -356,3 +356,172 @@ func TestValidatePlanTasks_CyclesRejected(t *testing.T) {
 		t.Errorf("valid DAG rejected: %v", err)
 	}
 }
+
+// dependsOnTask builds a schema-valid task that depends on the given ids.
+func dependsOnTask(id string, deps ...string) map[string]any {
+	return map[string]any{
+		"id":          id,
+		"summary":     "Step " + id,
+		"description": "Do " + id,
+		"depends_on":  deps,
+	}
+}
+
+// marshalAwaitApprovalInput builds a declare_plan JSON input in await_approval mode.
+func marshalAwaitApprovalInput(t *testing.T, tasks ...map[string]any) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{"mode": "await_approval", "tasks": tasks})
+	if err != nil {
+		t.Fatalf("marshal input: %v", err)
+	}
+	return raw
+}
+
+// approveFunc returns an ApprovalFunc that always answers with the given decision.
+func approveFunc(decision string) ApprovalFunc {
+	return func(_ context.Context, _, _ string) (string, string, error) {
+		return decision, "", nil
+	}
+}
+
+// TestPlanExecutionWaves pins the Kahn layering and its rendering: independent
+// steps share one wave in declaration order, a chain yields one wave per step,
+// and a diamond layers the independent middle siblings together.
+func TestPlanExecutionWaves(t *testing.T) {
+	t.Run("independent steps share one wave in declaration order", func(t *testing.T) {
+		waves := planExecutionWaves([]PlanTaskInput{
+			{ID: "step_1", Summary: "s", Description: "d"},
+			{ID: "step_3", Summary: "s", Description: "d"},
+			{ID: "step_2", Summary: "s", Description: "d"},
+		})
+		if got, want := formatExecutionWaves(waves), "Execution waves: 1=[step_1, step_3, step_2]"; got != want {
+			t.Errorf("echo = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a chain yields one wave per step", func(t *testing.T) {
+		waves := planExecutionWaves([]PlanTaskInput{
+			{ID: "step_1", Summary: "s", Description: "d"},
+			{ID: "step_2", Summary: "s", Description: "d", DependsOn: []string{"step_1"}},
+			{ID: "step_3", Summary: "s", Description: "d", DependsOn: []string{"step_2"}},
+		})
+		if got, want := formatExecutionWaves(waves), "Execution waves: 1=[step_1] · 2=[step_2] · 3=[step_3]"; got != want {
+			t.Errorf("echo = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("diamond layers independent siblings together", func(t *testing.T) {
+		waves := planExecutionWaves([]PlanTaskInput{
+			{ID: "a", Summary: "s", Description: "d"},
+			{ID: "b", Summary: "s", Description: "d", DependsOn: []string{"a"}},
+			{ID: "c", Summary: "s", Description: "d", DependsOn: []string{"a"}},
+			{ID: "d", Summary: "s", Description: "d", DependsOn: []string{"b", "c"}},
+		})
+		if got, want := formatExecutionWaves(waves), "Execution waves: 1=[a] · 2=[b, c] · 3=[d]"; got != want {
+			t.Errorf("echo = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestDeclarePlan_SingleWaveEchoAndHint: a multi-step plan with no dependencies
+// collapses into one wave — the result carries the wave echo plus a non-blocking
+// hint (IsError=false) warning that every step will run concurrently.
+func TestDeclarePlan_SingleWaveEchoAndHint(t *testing.T) {
+	publisher := &stubPlanPublisher{}
+	ctx := WithPlanPublisher(context.Background(), publisher)
+
+	res, err := NewDeclarePlanTool(nil).Execute(ctx, marshalPlanInput(t,
+		validTask("step_1"), validTask("step_2"), validTask("step_3"),
+	))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("single-wave hint must be non-blocking (IsError=false), got: %+v", res)
+	}
+	if !strings.Contains(res.Content, "Execution waves: 1=[step_1, step_2, step_3]") {
+		t.Errorf("result should echo the single wave, got: %q", res.Content)
+	}
+	if !strings.Contains(res.Content, "single parallel wave") {
+		t.Errorf("result should carry the single-wave hint, got: %q", res.Content)
+	}
+	if publisher.publishCalls != 1 {
+		t.Errorf("expected exactly 1 publish, got %d", publisher.publishCalls)
+	}
+}
+
+// TestDeclarePlan_MultiWaveEchoNoHint: a chain renders one wave per step and
+// must NOT carry the single-wave hint.
+func TestDeclarePlan_MultiWaveEchoNoHint(t *testing.T) {
+	publisher := &stubPlanPublisher{}
+	ctx := WithPlanPublisher(context.Background(), publisher)
+
+	res, err := NewDeclarePlanTool(nil).Execute(ctx, marshalPlanInput(t,
+		validTask("step_1"),
+		dependsOnTask("step_2", "step_1"),
+		dependsOnTask("step_3", "step_2"),
+	))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error result: %+v", res)
+	}
+	if !strings.Contains(res.Content, "Execution waves: 1=[step_1] · 2=[step_2] · 3=[step_3]") {
+		t.Errorf("result should echo all three waves, got: %q", res.Content)
+	}
+	if strings.Contains(res.Content, "single parallel wave") {
+		t.Errorf("multi-wave plan must not carry the single-wave hint, got: %q", res.Content)
+	}
+}
+
+// TestDeclarePlan_SingleStepNoHint: a one-step plan is trivially one wave; the
+// hint must not fire (nothing to run concurrently).
+func TestDeclarePlan_SingleStepNoHint(t *testing.T) {
+	publisher := &stubPlanPublisher{}
+	ctx := WithPlanPublisher(context.Background(), publisher)
+
+	res, err := NewDeclarePlanTool(nil).Execute(ctx, validDeclarePlanInput(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error result: %+v", res)
+	}
+	if !strings.Contains(res.Content, "Execution waves: 1=[step_1]") {
+		t.Errorf("result should echo the single-step wave, got: %q", res.Content)
+	}
+	if strings.Contains(res.Content, "single parallel wave") {
+		t.Errorf("single-step plan must not carry the hint, got: %q", res.Content)
+	}
+}
+
+// TestDeclarePlan_AwaitApprovalNoHint: in await_approval mode the single-wave
+// hint is suppressed (the user is already reviewing the plan), while the wave
+// echo may still be surfaced on approval.
+func TestDeclarePlan_AwaitApprovalNoHint(t *testing.T) {
+	publisher := &stubPlanPublisher{}
+	ctx := WithPlanPublisher(context.Background(), publisher)
+
+	res, err := NewDeclarePlanTool(approveFunc("approve")).Execute(ctx, marshalAwaitApprovalInput(t,
+		validTask("step_1"), validTask("step_2"), validTask("step_3"),
+	))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("approve must be a non-error result, got: %+v", res)
+	}
+	if strings.Contains(res.Content, "single parallel wave") {
+		t.Errorf("await_approval must not surface the single-wave hint, got: %q", res.Content)
+	}
+	if !strings.Contains(res.Content, "Plan approved by user") {
+		t.Errorf("approve result missing approval confirmation, got: %q", res.Content)
+	}
+	if !strings.Contains(res.Content, "Execution waves: 1=[step_1, step_2, step_3]") {
+		t.Errorf("wave echo should be present on approval, got: %q", res.Content)
+	}
+	if publisher.publishCalls != 1 {
+		t.Errorf("expected exactly 1 publish, got %d", publisher.publishCalls)
+	}
+}

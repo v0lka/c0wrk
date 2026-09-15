@@ -116,20 +116,32 @@ declare_plan.Execute(ctx, input)
   │    ├─ Set plan on the blackboard (bb.SetPlan)
   │    └─ Mark plan declared in planRunState (activates the delegate orthogonality guard)
   │
+  ├─ planExecutionWaves(tasks): Kahn-layer the validated depends_on DAG into
+  │    execution waves (wave 1 = dependency-free steps; steps inside a wave
+  │    keep declaration order). formatExecutionWaves renders the echo:
+  │    "Execution waves: 1=[step_1, step_3] · 2=[step_2] · 3=[step_4]"
+  │
   ├─ If mode == "await_approval":
   │    ├─ Call ApprovalFunc (wired from BuiltinToolsConfig.PlanApprovalFunc;
   │    │   NOT AskUserFunc) with (planPath, planMarkdown)
   │    ├─ Block until the user responds via the plan_approval_response
   │    │   frontend→backend event (desktop approval resolver)
-  │    ├─ On "approve":          return ToolResult{ success content }
+  │    ├─ On "approve":          return ToolResult{ success content + wave echo }
   │    ├─ On "request_changes":  return ToolResult{ content incl. feedback }
   │    │   (the Conductor revises and calls declare_plan again)
   │    └─ On "abandon":          return ToolResult{ IsError: true }
   │
-  └─ If mode == "present": return ToolResult{ informational content }
+  └─ If mode == "present": return ToolResult{ informational content + wave echo;
+       plus, when the multi-step plan collapsed into a single wave, a non-blocking
+       single-wave hint }
 ```
 
 Direction: Conductor → `declare_plan` tool → `PlanPublisher` (blackboard + emitter + plan file) + (optionally) `ApprovalFunc`. The plan flows to the UI via the `PlanGenerated` event; when `await_approval`, a `plan_review_ready` pending action is surfaced and the user's decision flows back through the `plan_approval_response` frontend→backend event, resolved by the desktop approval resolver into the `ApprovalFunc` callback.
+
+**Behavioral notes:**
+
+- **Execution-wave echo:** every successful call (both modes) appends the plan's execution waves to the tool result. Waves are computed by Kahn-layering the validated `depends_on` DAG (`planExecutionWaves`, rendered by `formatExecutionWaves`): wave 1 holds every dependency-free step, wave N+1 holds the steps whose prerequisites all completed in waves ≤ N, and steps inside a wave keep their declaration order. The echo looks like `Execution waves: 1=[step_1, step_3] · 2=[step_2] · 3=[step_4]` and makes an under-specified dependency graph visible to the Conductor *before* `execute_plan` fans the steps into concurrency. Acyclicity is guaranteed upstream by `validatePlanTasks`, so the layering is always total.
+- **Single-wave hint (present only):** when a multi-step plan collapses into a single wave (every step dependency-free, so all run concurrently) the `present` result additionally carries a **non-blocking** hint (`IsError: false`): *"All N steps are in a single parallel wave — every step will run concurrently. If any step consumes another's output, re-declare with depends_on before executing."* The hint never fires for a one-step plan, and it is suppressed in `await_approval` mode (the user is already reviewing the plan there; only the wave echo is surfaced, on approval). Validation-error, continuation-hint, `request_changes`, and `abandon` paths are unchanged.
 
 ### `execute_plan`
 

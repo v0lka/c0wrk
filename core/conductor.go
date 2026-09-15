@@ -2218,12 +2218,13 @@ func conductorGuidanceForComplexity(complexity int) string {
 	default:
 		// complexity >= 2: the Conductor decides for itself whether to plan.
 		// Planning is recommended (not required) above complexity 3 or when the
-		// task decomposes into a DAG of independent steps; the only mandatory
-		// trigger is the skill clause above.
+		// task decomposes into ordered steps; the only mandatory trigger is the
+		// skill clause above.
 		return skillClause +
 			"## Conductor Guidance\n" +
 			"You are the Conductor: you own this task end-to-end. You decide whether this task needs a plan.\n\n" +
-			"Planning is RECOMMENDED (not required) when complexity is high (>3) OR when the task can be solved more efficiently by decomposing it into a DAG of independent steps — call declare_plan with mode=await_approval so the user signs off before any implementation, then execute_plan runs the steps in dependency-ordered parallel waves after approval. Use mode=present (display-only) only for low-stakes progress-shaping. Otherwise handle it plan-less: proceed inline, or delegate coherent units to subagents. The decision is yours — weigh whether user sign-off or parallelism genuinely helps before planning.\n\n" +
+			"Planning is RECOMMENDED (not required) when complexity is high (>3) OR when the task decomposes into ordered steps — call declare_plan with mode=await_approval so the user signs off before any implementation, then execute_plan runs the steps in dependency-ordered parallel waves after approval. Use mode=present (display-only) only for low-stakes progress-shaping. Otherwise handle it plan-less: proceed inline, or delegate coherent units to subagents. The decision is yours — weigh whether user sign-off or parallelism genuinely helps before planning.\n\n" +
+			"Declare depends_on whenever a step consumes another step's output, artifacts, or decisions. A step with no depends_on runs CONCURRENTLY with its siblings — an omitted link is a correctness bug, not a harmless omission. When unsure, declare the dependency (a spurious edge only serializes; a missing edge runs the steps in parallel).\n\n" +
 			"If you go plan-less, you MUST build a checklist (update_checklist with an empty step_id) at the start and report progress on each item as you complete it.\n\n" +
 			"You MAY call delegate to break coherent units of work into isolated subagents — to keep your context lean or to parallelize work. Each delegate also builds its own checklist and reports progress. delegate does NOT require a plan. When a named subagent fits the work (see the \"Available Subagents\" section), target it via delegate(agent: \"name\") so the work runs with that agent's specialty and tool budget. If the user named specific subagents via #mentions (see \"Requested Subagents\"), you MUST delegate the corresponding work to those agents rather than handling it inline.\n\n" +
 			"When the trajectory looks wrong, call reflect.\n\n" +
