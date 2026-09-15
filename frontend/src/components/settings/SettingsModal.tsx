@@ -33,9 +33,49 @@ import appIconUrl from '../../../../build/appicon.svg'
  * Shared classes for every tab's scroll container. `pr-2` keeps a small
  * horizontal gutter between the scrolling content and the app-wide
  * `.custom-scrollbar` scrollbar, which otherwise sits flush against the
- * text and visually merges with it.
+ * text and visually merges with it. `min-w-0` lets the column shrink inside
+ * the horizontal flex row (nav + content) instead of overflowing it.
  */
-const TAB_CONTENT_CLASS = 'mt-4 overflow-y-auto min-h-0 custom-scrollbar pr-2'
+const TAB_CONTENT_CLASS = 'overflow-y-auto min-h-0 min-w-0 custom-scrollbar pr-2'
+
+/**
+ * Left section nav (the vertical `TabsList`). The shared `TabsList` /
+ * `TabsTrigger` chrome is a filled, rounded track with a raised active pill —
+ * not what a quiet sidebar index wants. So the list drops the track entirely
+ * (`bg-transparent p-0`) and opens up the vertical rhythm (`gap-3`), while the
+ * per-trigger `TAB_TRIGGER_CLASS` below strips the state-dependent
+ * background/shadow chrome and the 1px frame so the entries sit directly on
+ * the dialog surface.
+ */
+const TAB_LIST_CLASS =
+  'h-fit w-40 shrink-0 flex-col items-stretch justify-start gap-3 bg-transparent p-0'
+
+/**
+ * One entry in the left section nav. Beyond dropping the pill chrome, the
+ * active/inactive text colors are swapped: inactive entries keep the
+ * full-contrast foreground (the former active color) and the active entry
+ * recedes to a muted tone (the former inactive color), distinguished by its
+ * bold weight (`data-[state=active]:font-bold`) rather than by color. Labels
+ * are uppercased at the trigger level so the `text-xs` span inherits it.
+ *
+ * `border-0` removes the shared trigger's 1px frame. The base trigger already
+ * requests `border-transparent`, but that color utility cannot win here:
+ * index.css ships an UNLAYERED `* { border-color: var(--color-border) }` rule,
+ * and in CSS cascade layers an unlayered declaration outranks a layered one
+ * regardless of specificity — so Tailwind's layered `border-transparent` is
+ * overridden and the frame paints in the theme border color. Zeroing the
+ * border WIDTH is what actually removes it (no unlayered rule touches
+ * border-width). The hover background highlight (`hover:bg-muted/50`,
+ * inherited from the shared trigger) is intentionally left intact.
+ */
+const TAB_TRIGGER_CLASS = [
+  'flex-initial h-auto min-w-0 gap-2 uppercase border-0',
+  'text-foreground dark:text-foreground',
+  'data-[state=active]:bg-transparent data-[state=active]:text-foreground/60',
+  'dark:data-[state=active]:bg-transparent dark:data-[state=active]:text-muted-foreground',
+  'data-[state=active]:font-bold',
+  'group-data-[variant=default]/tabs-list:data-[state=active]:shadow-none',
+].join(' ')
 
 export function SettingsModal() {
   const open = useSettingsStore((s) => s.open)
@@ -117,7 +157,7 @@ export function SettingsModal() {
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        className="sm:max-w-[600px] max-h-[calc(var(--ui-vh)*0.8)] flex flex-col overflow-hidden"
+        className="sm:max-w-[600px] h-[calc(var(--ui-vh)*0.8)] flex flex-col overflow-hidden"
         showCloseButton={false}
         // No DialogDescription in this panel; opt out explicitly so Radix
         // does not warn about the missing description (and does not point
@@ -147,52 +187,51 @@ export function SettingsModal() {
           </div>
         )}
 
+        {/* The dialog's own `gap-4` spaces the children, so the banner needs
+            no extra margins; it spans the full width above the nav + content
+            row. */}
+        <ConfigWarningBanner refreshKey={bannerRefreshKey} />
+
         <Tabs
           value={activeTab}
           onValueChange={(v) => setActiveTab(v as typeof activeTab)}
-          className="mt-4 flex-1 flex flex-col overflow-hidden min-h-0"
+          orientation="vertical"
+          className="mt-4 flex-1 flex-row gap-4 overflow-hidden min-h-0"
         >
-          <ConfigWarningBanner className="mb-2" refreshKey={bannerRefreshKey} />
-          {/*
-            Content-sized triggers spread edge-to-edge with `justify-between`
-            so the gap between adjacent labels is identical everywhere. An
-            equal-width `grid` instead let the widest label (Appearance)
-            overflow its track and eat into the neighbouring gaps.
-          */}
-          <TabsList className="flex w-full justify-between">
-            <TabsTrigger value="general" className="flex-initial min-w-0 gap-1">
+          <TabsList className={TAB_LIST_CLASS}>
+            <TabsTrigger value="general" className={TAB_TRIGGER_CLASS}>
               <Settings className="h-4 w-4" />
-              <span className="hidden sm:inline text-xs">General</span>
+              <span className="text-xs">General</span>
             </TabsTrigger>
-            <TabsTrigger value="appearance" className="flex-initial min-w-0 gap-1">
+            <TabsTrigger value="appearance" className={TAB_TRIGGER_CLASS}>
               <Palette className="h-4 w-4" />
-              <span className="hidden sm:inline text-xs">Appearance</span>
+              <span className="text-xs">Appearance</span>
             </TabsTrigger>
-            <TabsTrigger value="llm" className="flex-initial min-w-0 gap-1">
+            <TabsTrigger value="llm" className={TAB_TRIGGER_CLASS}>
               <Brain className="h-4 w-4" />
-              <span className="hidden sm:inline text-xs">LLM</span>
+              <span className="text-xs">LLM</span>
             </TabsTrigger>
             {/* Model Profiles is a first-class settings tab, independent of the
                 experimental-features switch (that gate covers only E2S). */}
-            <TabsTrigger value="model-profiles" className="flex-initial min-w-0 gap-1">
+            <TabsTrigger value="model-profiles" className={TAB_TRIGGER_CLASS}>
               <Gauge className="h-4 w-4" />
-              <span className="hidden sm:inline text-xs">Model Profiles</span>
+              <span className="text-xs">Model Profiles</span>
             </TabsTrigger>
-            <TabsTrigger value="search" className="flex-initial min-w-0 gap-1">
+            <TabsTrigger value="search" className={TAB_TRIGGER_CLASS}>
               <Search className="h-4 w-4" />
-              <span className="hidden sm:inline text-xs">Search</span>
+              <span className="text-xs">Search</span>
             </TabsTrigger>
-            <TabsTrigger value="mcp" className="flex-initial min-w-0 gap-1">
+            <TabsTrigger value="mcp" className={TAB_TRIGGER_CLASS}>
               <Server className="h-4 w-4" />
-              <span className="hidden sm:inline text-xs">MCP</span>
+              <span className="text-xs">MCP</span>
             </TabsTrigger>
-            <TabsTrigger value="security" className="flex-initial min-w-0 gap-1">
+            <TabsTrigger value="security" className={TAB_TRIGGER_CLASS}>
               <Shield className="h-4 w-4" />
-              <span className="hidden sm:inline text-xs">Security</span>
+              <span className="text-xs">Security</span>
             </TabsTrigger>
-            <TabsTrigger value="about" className="flex-initial min-w-0 gap-1">
+            <TabsTrigger value="about" className={TAB_TRIGGER_CLASS}>
               <Info className="h-4 w-4" />
-              <span className="hidden sm:inline text-xs">About</span>
+              <span className="text-xs">About</span>
             </TabsTrigger>
           </TabsList>
 
@@ -257,12 +296,12 @@ export function SettingsModal() {
                 />
                 <div>
                   <h3 className="font-semibold">c0wrk</h3>
-                  <p className="text-sm text-muted-foreground">Desktop AI Coding Agent</p>
+                  <p className="text-sm text-muted-foreground">Desktop AI assistant</p>
                 </div>
               </div>
               <div className="text-sm text-muted-foreground space-y-2">
-                <p>An AI-powered coding assistant with multi-agent orchestration.</p>
-                <p>Built with warmth, love, and AI.</p>
+                <p>An AI-powered desktop assistant for research and development.</p>
+                <p>Built with warmth, love, and c0wrk ❤️</p>
               </div>
               <UpdateSettings />
             </div>
