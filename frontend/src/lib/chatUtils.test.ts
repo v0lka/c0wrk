@@ -882,6 +882,61 @@ describe('groupMessages — pause checkpoints', () => {
     expect(step.children).toHaveLength(2)
   })
 
+  it('reuses an interrupted (still-running) plan_step block on the re-emitted resume plan_step_start (no isRetry duplicate)', () => {
+    const result = groupMessages([
+      makeUI({
+        id: 'plan-1',
+        type: 'plan',
+        content: '',
+        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup' }] },
+      }),
+      // The step started, then the process died / crashed before any terminal
+      // event (plan_step_complete / plan_step_paused) was persisted — so the
+      // block survives the restart still open and 'running'.
+      makeUI({ id: 'start-1', type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
+      makeUI({ type: 'tool_call', metadata: { tool: 'write_file', plan_step_id: 'step-0', args: '{}', completed: true } }),
+      // The restarted run re-emits plan_step_start for the same step_id (the
+      // emitter's dedupe is per-process and was lost). It must continue the
+      // SAME open block — an interruption is a checkpoint, not a retry.
+      makeUI({ id: 'start-2', type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
+      makeUI({ type: 'tool_call', metadata: { tool: 'read_file', plan_step_id: 'step-0', args: '{}', completed: true } }),
+      makeUI({ type: 'plan_step_complete', metadata: { step_id: 'step-0', success: true, duration: 5000 } }),
+    ])
+
+    const steps = result.items.filter((it) => it.kind === 'plan_step')
+    expect(steps).toHaveLength(1)
+    const step = steps[0] as { status: string; isRetry?: boolean; children: Array<{ kind: string }> }
+    expect(step.isRetry).toBeUndefined()
+    expect(step.status).toBe('completed')
+    // Children from both the pre-crash and post-restart attempts nest together.
+    expect(step.children).toHaveLength(2)
+  })
+
+  it('still opens a fresh isRetry block when a FAILED step is re-run on resume', () => {
+    // Contrast with the interruption case above: a cooperative failure is
+    // terminal (plan_step_complete removed the block from openSteps), so a
+    // resumed re-run legitimately opens a separate retry block.
+    const result = groupMessages([
+      makeUI({
+        id: 'plan-1',
+        type: 'plan',
+        content: '',
+        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup' }] },
+      }),
+      makeUI({ id: 'start-1', type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
+      makeUI({ id: 'done-1', type: 'plan_step_complete', metadata: { step_id: 'step-0', success: false, duration: 1000, error: 'boom' } }),
+      makeUI({ id: 'start-2', type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
+      makeUI({ id: 'done-2', type: 'plan_step_complete', metadata: { step_id: 'step-0', success: true, duration: 2000 } }),
+    ])
+
+    const steps = result.items.filter((it) => it.kind === 'plan_step')
+    expect(steps).toHaveLength(2)
+    expect((steps[0] as { status: string }).status).toBe('failed')
+    const retry = steps[1] as { status: string; isRetry?: boolean }
+    expect(retry.isRetry).toBe(true)
+    expect(retry.status).toBe('completed')
+  })
+
   it('flips a subagent block to paused on subagent_paused (pure delegate run)', () => {
     const result = groupMessages([
       makeUI({ type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),
