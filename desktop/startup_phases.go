@@ -1120,7 +1120,7 @@ func (a *App) startVectorIndexBackground(
 		// only true fallback — an "auto" request always resolves to a
 		// winner, so auto→cuda is a success and auto→cpu is Auto's expected
 		// degradation) is what the settings UI renders from the
-		// requested/effective pair (ADR-042 observability contract).
+		// requested/effective pair (ADR-045 observability contract).
 		embedderInfo := backend.VectorEmbedderInfo{RequestedProvider: requestedProvider, DeviceID: onnxDevice}
 		if embErr != nil && requestedProvider == config.VectorIndexProviderCUDA {
 			// Explicit "cuda" that cannot come up must not silently kill

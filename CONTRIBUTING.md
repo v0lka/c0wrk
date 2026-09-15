@@ -318,7 +318,7 @@ Each release publishes five platform archives plus `SHA256SUMS`. Unzip/extract t
 | `c0wrk-desktop-linux-arm64.tar.gz`    | Linux (arm64)                | `c0wrk-desktop` binary + `libonnxruntime.so` + embedding models                   |
 | `c0wrk-desktop-windows-amd64.zip`     | Windows (amd64)              | `c0wrk-desktop.exe` + `onnxruntime.dll` + embedding models                        |
 
-> The ONNX Runtime shared library and the quantized embedding model + tokenizer are bundled so vector search works out of the box — no extra download step is required on the user's machine. The in-app updater verifies the selected archive fail-closed against `SHA256SUMS`; artifacts are still unsigned, so the checksum establishes release-byte integrity but not authorship if the release account and checksum are both compromised. The updater is flavor-aware: a cuda13 install only ever updates from the cuda13 archive and vice versa ([ADR-043](specs/decisions/043-cuda-release-artifact.md)).
+> The ONNX Runtime shared library and the quantized embedding model + tokenizer are bundled so vector search works out of the box — no extra download step is required on the user's machine. The in-app updater verifies the selected archive fail-closed against `SHA256SUMS`; artifacts are still unsigned, so the checksum establishes release-byte integrity but not authorship if the release account and checksum are both compromised. The updater is flavor-aware: a cuda13 install only ever updates from the cuda13 archive and vice versa ([ADR-046](specs/decisions/046-cuda-release-artifact.md)).
 
 End-user installation steps for each platform live in [README.md](README.md).
 

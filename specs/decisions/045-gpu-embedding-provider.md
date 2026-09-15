@@ -1,4 +1,4 @@
-# ADR-042: GPU Embedding Execution Provider (CUDA, auto with loud fallback)
+# ADR-045: GPU Embedding Execution Provider (CUDA, auto with loud fallback)
 
 ## Status
 
