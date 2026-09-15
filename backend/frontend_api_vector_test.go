@@ -57,7 +57,7 @@ func TestGetVectorIndexStatus_NoProjectUnavailable(t *testing.T) {
 	}
 }
 
-// TestGetVectorIndexStatus_EmbedderInfoSurfaced pins the ADR-042
+// TestGetVectorIndexStatus_EmbedderInfoSurfaced pins the ADR-045
 // observability contract on the RPC path: once the desktop background init
 // has recorded the embedder's execution-provider facts, every status —
 // including the unavailable/No-Project variants — carries the effective and

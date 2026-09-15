@@ -568,7 +568,7 @@ type VectorIndexStatus struct {
 	// effectively runs on: "cpu" or "cuda" — never "auto" ("auto" is resolved
 	// once, at embedder creation; the winner is reported here). Empty when no
 	// embedder exists (model files missing or creation failed). Comparing it
-	// with RequestedExecutionProvider classifies the outcome (ADR-042): an
+	// with RequestedExecutionProvider classifies the outcome (ADR-045): an
 	// explicit "cuda" landing on "cpu" is a fallback; an "auto" request always
 	// diverges (it is resolved to a winner), so auto→cuda is a success and
 	// auto→cpu is Auto's expected degradation.
@@ -600,7 +600,7 @@ type VectorIndexStatus struct {
 	// with (vector_index.device_id at embedder-creation time). Surfaced for
 	// restart-pending detection: comparing it with the live config's
 	// device_id shows the running embedder predates a config change (the
-	// embedder and its ONNX session are created once per process — ADR-042).
+	// embedder and its ONNX session are created once per process — ADR-045).
 	// Omitted when 0 (the default "first GPU") — a UI treating 0 as the
 	// default must read absence as 0.
 	DeviceID int `json:"device_id,omitempty"`

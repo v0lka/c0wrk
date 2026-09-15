@@ -32,7 +32,7 @@ type platformSpec struct {
 // supportedPlatforms mirrors the build matrix in .github/workflows/release.yml.
 // The asset names are produced by the "Package …" steps of each platform job.
 // linux/amd64 is listed twice: the default CPU flavor and the opt-in CUDA 13
-// flavor (ADR-042), whose archive name appends "-cuda13" after the arch token.
+// flavor (ADR-045), whose archive name appends "-cuda13" after the arch token.
 //
 //	darwin/arm64       → c0wrk-desktop-macos-arm64.zip   (ditto of the .app bundle)
 //	linux/amd64 cpu    → c0wrk-desktop-linux-amd64.tar.gz

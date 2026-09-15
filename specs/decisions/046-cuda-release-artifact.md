@@ -1,4 +1,4 @@
-# ADR-043: CUDA Release Artifact (linux/amd64, flavor-pinned updates)
+# ADR-046: CUDA Release Artifact (linux/amd64, flavor-pinned updates)
 
 ## Status
 
@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-[ADR-042](042-gpu-embedding-provider.md) added the GPU embedding execution
+[ADR-045](045-gpu-embedding-provider.md) added the GPU embedding execution
 provider and the opt-in `make fetch-onnx-gpu` packaging target (cuda13 flavor
 only), but explicitly deferred shipping the GPU flavor in official release
 archives: the CUDA-flavored ONNX Runtime is a ~240 MiB download, and its
@@ -23,7 +23,7 @@ a matching CUDA major version. Since then two things changed:
    CPU archive carries no CUDA provider libraries, so applying a regular
    update silently strips the GPU flavor: the provider library disappears
    from the install tree, `execution_provider: auto` quietly resolves to CPU,
-   and the user is back to the exact failure mode ADR-042 was written to
+   and the user is back to the exact failure mode ADR-045 was written to
    eliminate — GPU idle, no signal.
 
 ADR-023's release matrix publishes four platform archives
@@ -58,7 +58,7 @@ vice versa. A release that carries no asset for the running flavor is a hard
 - **Download size is real but bounded.** The CUDA archive is ~240 MiB
   against ~25 MiB for the CPU one. Nobody downloads it by accident: it is a
   named, opt-in asset on the release page.
-- **CUDA major pinning is already decided** (ADR-042): one flavor, cuda13.
+- **CUDA major pinning is already decided** (ADR-045): one flavor, cuda13.
   This ADR does not reopen that.
 
 ## Decision
@@ -97,7 +97,7 @@ vice versa. A release that carries no asset for the running flavor is a hard
 
 **Positive:**
 
-- GPU users get in-app updates that preserve the GPU flavor; the ADR-042
+- GPU users get in-app updates that preserve the GPU flavor; the ADR-045
   deferred item "packaging the GPU flavor into official release archives" is
   closed.
 - The silent CPU-downgrade-on-update trap is eliminated by construction:
@@ -136,16 +136,16 @@ vice versa. A release that carries no asset for the running flavor is a hard
   use, and need its own trust anchoring — a second, weaker update channel.
 - **CPU fallback with a warning on flavor loss.** Rejected: it silently
   removes capability the user explicitly installed (the GPU flavor is
-  opt-in) and recreates the "GPU idle, user uninformed" failure mode ADR-042
+  opt-in) and recreates the "GPU idle, user uninformed" failure mode ADR-045
   was written to kill; the WARN lives in logs most users never open.
 - **Silent CPU fallback.** Rejected for the same reason, only louder: this
-  is exactly the silent-slide behavior ADR-042's research documented and
+  is exactly the silent-slide behavior ADR-045's research documented and
   rejected; preserving it in the updater would contradict the reason the
   flavor system exists.
 
 ## Related Specs
 
-- [ADR-042](042-gpu-embedding-provider.md) — GPU embedding execution
+- [ADR-045](045-gpu-embedding-provider.md) — GPU embedding execution
   provider, cuda13-only packaging, flavor-aware version stamps (this ADR
   closes its deferred "official release packaging" item and widens the
   release matrix).
