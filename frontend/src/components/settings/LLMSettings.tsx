@@ -197,43 +197,9 @@ export function LLMSettings({
         )}
       </div>
 
-      {/* Fixed Provider Accordions */}
-      <FixedProviderForms
-        providerConfigs={providerConfigs}
-        expandedProviders={expandedProviders}
-        onToggle={toggleExpanded}
-        onConfigChange={updateProviderConfig}
-        onToggleModel={toggleModel}
-        defaultModel={defaultModel}
-      />
-
-      {/* OpenAI-Compatible Provider Accordions */}
-      <OpenAICompatibleProviderForms
-        providerNames={openaiCompatibleProviderNames}
-        providerConfigs={providerConfigs}
-        expandedProviders={expandedProviders}
-        onToggle={toggleExpanded}
-        onConfigChange={updateProviderConfig}
-        onToggleModel={toggleModel}
-        onDelete={deleteProvider}
-        defaultModel={defaultModel}
-        labelPrefix="OpenAI Compatible"
-      />
-
-      {/* Anthropic-Compatible Provider Accordions */}
-      <OpenAICompatibleProviderForms
-        providerNames={anthropicCompatibleProviderNames}
-        providerConfigs={providerConfigs}
-        expandedProviders={expandedProviders}
-        onToggle={toggleExpanded}
-        onConfigChange={updateProviderConfig}
-        onToggleModel={toggleModel}
-        onDelete={deleteProvider}
-        defaultModel={defaultModel}
-        labelPrefix="Anthropic Compatible"
-      />
-
-      {/* Add compatible provider */}
+      {/* Add compatible provider — kept directly below the default-model
+          field so the "add a provider" action sits with the model selection
+          rather than at the very bottom of the section. */}
       <div className="flex flex-col gap-3">
         {!showAddForm && (
           <Button
@@ -337,6 +303,42 @@ export function LLMSettings({
           </div>
         )}
       </div>
+
+      {/* Fixed Provider Accordions */}
+      <FixedProviderForms
+        providerConfigs={providerConfigs}
+        expandedProviders={expandedProviders}
+        onToggle={toggleExpanded}
+        onConfigChange={updateProviderConfig}
+        onToggleModel={toggleModel}
+        defaultModel={defaultModel}
+      />
+
+      {/* OpenAI-Compatible Provider Accordions */}
+      <OpenAICompatibleProviderForms
+        providerNames={openaiCompatibleProviderNames}
+        providerConfigs={providerConfigs}
+        expandedProviders={expandedProviders}
+        onToggle={toggleExpanded}
+        onConfigChange={updateProviderConfig}
+        onToggleModel={toggleModel}
+        onDelete={deleteProvider}
+        defaultModel={defaultModel}
+        labelPrefix="OpenAI Compatible"
+      />
+
+      {/* Anthropic-Compatible Provider Accordions */}
+      <OpenAICompatibleProviderForms
+        providerNames={anthropicCompatibleProviderNames}
+        providerConfigs={providerConfigs}
+        expandedProviders={expandedProviders}
+        onToggle={toggleExpanded}
+        onConfigChange={updateProviderConfig}
+        onToggleModel={toggleModel}
+        onDelete={deleteProvider}
+        defaultModel={defaultModel}
+        labelPrefix="Anthropic Compatible"
+      />
     </div>
   )
 }
