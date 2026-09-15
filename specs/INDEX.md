@@ -28,6 +28,7 @@
 | LLM providers, model registry, tokens    | [domains/llm-providers.md](domains/llm-providers.md)                     |
 | Session create/resume/persist/fork       | [domains/session-lifecycle.md](domains/session-lifecycle.md), [decisions/030-session-context-restore.md](decisions/030-session-context-restore.md) |
 | Crash/exit diagnostics (panic capture, unclean-shutdown detection, why the app quit) | [domains/crash-logging.md](domains/crash-logging.md) |
+| Linux webview GPU policy (`C0WRK_WEBVIEW_GPU_POLICY` env override, Wails enum/C mismatch compensation) | [domains/webview-gpu-policy.md](domains/webview-gpu-policy.md) |
 | Goal mode (multi-turn objective loop)    | [domains/goal-mode.md](domains/goal-mode.md), [decisions/019-goal-mode.md](decisions/019-goal-mode.md), [decisions/042-goal-mode-slm-essential-tools-gate.md](decisions/042-goal-mode-slm-essential-tools-gate.md) |
 | E2S mode (explicit execution state, bounded-context loop) | [domains/e2s.md](domains/e2s.md), [decisions/039-e2s-explicit-execution-state.md](decisions/039-e2s-explicit-execution-state.md), [decisions/040-e2s-stabilization.md](decisions/040-e2s-stabilization.md) |
 | Model Profiles (tuning for local / mid-size models) | [domains/model-profiles.md](domains/model-profiles.md), [decisions/041-slm-profiles.md](decisions/041-slm-profiles.md), [decisions/022-small-llm-profile.md](decisions/022-small-llm-profile.md), [decisions/042-goal-mode-slm-essential-tools-gate.md](decisions/042-goal-mode-slm-essential-tools-gate.md), [decisions/044-model-profiles-out-of-experimental.md](decisions/044-model-profiles-out-of-experimental.md) |
@@ -113,6 +114,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 
 - [llm-providers.md](domains/llm-providers.md) - Thin c0wrk wiring note (provider config → core/builder → sp4rk Router)
 - [crash-logging.md](domains/crash-logging.md) - Crash & exit diagnostics: fd-level stderr capture (panic/signal dumps), liveness marker, unclean-shutdown detection at next start, visible shutdown records
+- [webview-gpu-policy.md](domains/webview-gpu-policy.md) - Linux webview hardware-acceleration policy: `C0WRK_WEBVIEW_GPU_POLICY` env override (`always`/`on-demand`/`never`, default `never`), explicit never pinning vs Wails' nil-options workaround (wails#2977), and the Go-enum/C-layer mismatch compensation for the pinned Wails v2.15.0 with numeric test pins
 - [git-auto-fetch.md](domains/git-auto-fetch.md) - Automatic background git fetch: three triggers (project switch incl. app startup, periodic ticker, window focus) through one gated quiet-failure funnel; config `git.auto_fetch` / `git.auto_fetch_interval`
 - [session-lifecycle.md](domains/session-lifecycle.md) - Session and task lifecycle
 - [goal-mode.md](domains/goal-mode.md) - Goal mode: multi-turn agent-driven loop over a user-approved success condition (derivation → approval → self-eval loop, budgets, anti-spin, pause/resume)

@@ -131,6 +131,11 @@ func mainImpl() int {
 			EnableFileDrop:     true,
 			DisableWebViewDrop: true,
 		},
+		// Linux-only webview hardware-acceleration policy, overridable via
+		// C0WRK_WEBVIEW_GPU_POLICY (always | on-demand | never; default
+		// never — the workaround Wails itself applies for wails#2977).
+		// Returns nil on macOS/Windows, leaving those platforms untouched.
+		Linux:      desktop.WebviewGpuPolicyOptions(slog.Default()),
 		OnStartup:  app.Startup,
 		OnDomReady: app.DomReady,
 		OnShutdown: app.Shutdown,
