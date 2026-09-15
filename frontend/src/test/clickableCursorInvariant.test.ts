@@ -33,6 +33,17 @@ import { join, relative } from 'node:path'
 const SRC_DIR = fileURLToPath(new URL('..', import.meta.url))
 const INDEX_CSS = join(SRC_DIR, 'index.css')
 
+/**
+ * POSIX-normalized repo-relative path of `file` (forward slashes on every
+ * platform). `relative()` emits `path.sep`-separated segments, so using its
+ * raw output as an allowlist key breaks on Windows (`components\chat\…` never
+ * equals the `components/chat/…` entry — the same file then reports as both
+ * "not allowlisted" AND "stale allowlist entry" at once).
+ */
+function toPosixPath(file: string): string {
+  return relative(SRC_DIR, file).split(/[\\/]/).join('/')
+}
+
 /** Files allowed to contain `cursor-default`, with the EXACT occurrence
  *  count they must contain. Exact counts keep the list self-maintaining:
  *  removing an allowlisted row (or adding a new one) fails the guard, so
@@ -109,7 +120,7 @@ describe('cursor policy invariant', () => {
     const seenAllowlist = new Set<string>()
 
     for (const file of sources) {
-      const rel = relative(SRC_DIR, file)
+      const rel = toPosixPath(file)
       const count = countOccurrences(readFileSync(file, 'utf8'), 'cursor-default')
       if (count === 0) continue
 
@@ -133,5 +144,25 @@ describe('cursor policy invariant', () => {
     }
 
     expect(violations, violations.join('\n')).toEqual([])
+  })
+
+  it('allowlist matching is separator-agnostic (Windows-safe)', () => {
+    // Regression guard for the CI failure on Windows: `relative()` emits
+    // backslash-separated paths there, and a raw lookup against the
+    // forward-slash allowlist keys turned the same file into both a
+    // "not allowlisted" violation and a "stale allowlist entry" at once.
+    expect(toPosixPath(join(SRC_DIR, 'components', 'chat', 'BlackboardPanel.tsx'))).toBe(
+      'components/chat/BlackboardPanel.tsx',
+    )
+    // A Windows-style segmented path normalizes to the same key.
+    expect('components\\chat\\BlackboardPanel.tsx'.split(/[\\/]/).join('/')).toBe(
+      'components/chat/BlackboardPanel.tsx',
+    )
+    // The allowlisted file is actually found by the walk (i.e. the key
+    // matches on THIS platform too), so the entry can never silently rot.
+    const walked = collectSources(SRC_DIR).map(toPosixPath)
+    for (const key of Object.keys(CURSOR_DEFAULT_ALLOWLIST)) {
+      expect(walked, `allowlist key not found by the source walk: ${key}`).toContain(key)
+    }
   })
 })
