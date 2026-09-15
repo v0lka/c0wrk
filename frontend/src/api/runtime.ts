@@ -27,6 +27,7 @@ declare global {
       ClipboardSetText(text: string): Promise<boolean>
       BrowserOpenURL(url: string): void
       WindowSetTitle(title: string): void
+      LogError(message: string): void
     }
   }
 }
@@ -43,6 +44,7 @@ export function getRuntime(): {
   ClipboardSetText(text: string): Promise<boolean>
   BrowserOpenURL(url: string): void
   WindowSetTitle(title: string): void
+  LogError(message: string): void
 } {
   if (typeof window === 'undefined' || !window.runtime) {
     throw new Error('Wails runtime is not available')
@@ -110,6 +112,23 @@ export function clipboardSetText(text: string): Promise<boolean> {
 export function setWindowTitle(title: string): void {
   if (typeof window === 'undefined' || !window.runtime) return
   getRuntime().WindowSetTitle(title)
+}
+
+/** Forward a diagnostic message to the Go process log (`wails.log`).
+ *
+ *  Mirrors the Wails runtime's `LogError`, which routes through the Go
+ *  `logger.Logger` wired into `wails.Run` (`Logger: wlog`, see main.go →
+ *  desktop/wails_logger.go) and lands in a persistent `<logDir>/wails.log`.
+ *  The webview console is NOT persisted in the packaged app (WebKitGTK writes
+ *  no console output to disk), so a crash that only reaches `console.error`
+ *  leaves no trace once the process exits — this is the channel that survives.
+ *
+ *  Unlike the RPC/runtime wrappers that throw, this NO-OPS when the runtime is
+ *  absent (vitest, SSR), mirroring `setWindowTitle`: a diagnostics call made
+ *  from an error path must never itself turn into a failure. */
+export function logError(message: string): void {
+  if (typeof window === 'undefined' || !window.runtime) return
+  getRuntime().LogError(message)
 }
 
 /** Open a URL in the user's default system browser.

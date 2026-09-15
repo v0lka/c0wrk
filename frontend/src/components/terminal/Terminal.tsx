@@ -106,7 +106,17 @@ export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProp
         term.loadAddon(fitAddon)
 
         term.open(container)
-        fitAddon.fit()
+        // The initial fit is guarded like every later one: FitAddon reads
+        // renderer cell dimensions (`_renderService.dimensions`) that may not
+        // be measured yet when the container is not laid out — an unguarded
+        // throw here would crash the input shell (effect errors propagate to
+        // the ErrorBoundary). The ResizeObserver + delayed handleResize below
+        // re-fit once the container has a real size.
+        try {
+            fitAddon.fit()
+        } catch {
+            // FitAddon can throw if terminal is not fully initialized
+        }
         term.focus()
 
         term.onData((data) => {

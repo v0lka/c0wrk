@@ -8,6 +8,13 @@ vi.mock('@/lib/logger', () => ({
   logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }))
 
+const { reportCrashMock } = vi.hoisted(() => ({
+  reportCrashMock: vi.fn<(error: unknown, info?: { componentStack?: string | null }) => void>(),
+}))
+vi.mock('@/lib/crashDiagnostics', () => ({
+  reportCrash: reportCrashMock,
+}))
+
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 
 function Boom({ explode }: { explode: boolean }) {
@@ -66,5 +73,20 @@ describe('ErrorBoundary', () => {
     })
     expect(container.textContent).toContain('OK')
     expect(container.textContent).not.toContain('FALLBACK')
+  })
+
+  it('reports a caught crash to the persistent diagnostics bridge', () => {
+    reportCrashMock.mockClear()
+    render(boundary({ explode: true }))
+
+    const calls = reportCrashMock.mock.calls
+    expect(calls).toHaveLength(1)
+    const [firstCall] = calls
+    if (!firstCall) throw new Error('reportCrash was not called')
+    const reported = firstCall[0]
+    expect(reported).toBeInstanceOf(Error)
+    expect((reported as Error).message).toBe('boom')
+    // The component stack is forwarded so the dump is actually diagnosable.
+    expect(firstCall[1]?.componentStack).toBeTruthy()
   })
 })
