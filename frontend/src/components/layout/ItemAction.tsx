@@ -38,7 +38,7 @@ export function ItemAction({ label, onClick, disabled, disabledReason, children 
             onClick={onClick}
             disabled={disabled}
             className={cn(
-              'rounded p-0.5',
+              'rounded p-0.5 transition-colors enabled:hover:bg-accent/20 enabled:active:bg-accent/30',
               disabled && 'pointer-events-none opacity-30',
             )}
           >
