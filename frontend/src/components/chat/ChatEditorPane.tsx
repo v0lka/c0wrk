@@ -2,6 +2,7 @@ import { useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { Maximize2, Minimize2 } from 'lucide-react'
 import { TerminalPanel } from '@/components/terminal/TerminalPanel'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { cn } from '@/lib/utils'
 import type { ChatInputController } from '@/hooks/useChatInputController'
 
@@ -14,10 +15,20 @@ interface ChatEditorPaneProps {
  * (CodeMirror container) and terminal panel are stacked absolutely so mode
  * switching does not unmount the underlying editor — the terminal pane only
  * mounts when its session id is set.
+ *
+ * The terminal pane is wrapped in its OWN error boundary: it wraps a
+ * third-party xterm.js instance and is the most likely input subcomponent to
+ * throw, and a failure there must not take down the input shell — the toolbar
+ * above stays interactive, so the user can switch modes and recover. The
+ * boundary resets when the session or mode changes, so a transient failure
+ * does not stick for the app lifetime (React error boundaries never retry on
+ * their own). The chat editor is deliberately NOT wrapped: unmounting the
+ * CodeMirror container would detach the EditorView's host node and leave the
+ * editor blank after a reset.
  */
 export function ChatEditorPane({ controller }: ChatEditorPaneProps) {
   const inputAreaRef = useRef<HTMLDivElement>(null)
-  const { editor, mode, isExpanded, toggleExpanded, isInputDisabled, activeSessionId } = controller
+  const { editor, mode, isExpanded, toggleExpanded, isInputDisabled, activeSessionId, setMode } = controller
 
   return (
     <div className="flex-1 min-h-0 px-3 py-1 relative">
@@ -49,7 +60,19 @@ export function ChatEditorPane({ controller }: ChatEditorPaneProps) {
         'absolute inset-0 px-3 pb-1',
         mode !== 'terminal' && 'opacity-0 pointer-events-none -z-10',
       )}>
-        <TerminalPanel sessionId={activeSessionId} visible={mode === 'terminal'} />
+        <ErrorBoundary
+          resetKeys={[activeSessionId, mode]}
+          fallback={(
+            <div className="flex h-full flex-col items-center justify-center gap-2 px-3 text-center text-xs text-destructive">
+              <span>The terminal failed to start. Your chat input is unaffected.</span>
+              <Button variant="outline" size="sm" onClick={() => setMode('chat')}>
+                Back to chat
+              </Button>
+            </div>
+          )}
+        >
+          <TerminalPanel sessionId={activeSessionId} visible={mode === 'terminal'} />
+        </ErrorBoundary>
       </div>
     </div>
   )

@@ -3,6 +3,7 @@ import { useChatStore, useSessionMessages } from '@/stores/chatStore'
 import { useBookmarkStore } from '@/stores/bookmarkStore'
 import { groupMessages, chatMessageToUI, rebuildPlanFromHistory, rebuildGoalFromHistory, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow, isRoutingRequestRow } from '@/lib/chatUtils'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useInputModeStore } from '@/stores/inputModeStore'
 import { usePlanStore } from '@/stores/planStore'
 import { useGoalStore } from '@/stores/goalStore'
 import { getSessionHistory, getSessionRuntimeStatus, getPendingActions, resolveStalePrompt } from '@/api/chat'
@@ -33,6 +34,11 @@ export function ChatArea() {
   const isArchived = useSessionStore(s =>
     s.sessions?.find(sess => sess.id === s.activeSessionId)?.archived ?? false
   )
+  // Input mode is selected here (not just inside ChatInput) so the input
+  // shell's error boundary can reset when the user flips chat↔terminal: a
+  // caught error otherwise sticks for the lifetime of the mount and the input
+  // stays replaced by its fallback even after the cause is gone.
+  const inputMode = useInputModeStore(s => s.mode)
   const messages = useSessionMessages(activeSessionId)
   const streamingText = useChatStore(s => activeSessionId ? s.streamingText[activeSessionId] : undefined)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -196,7 +202,10 @@ export function ChatArea() {
           <ExecutionPanels />
           <BlackboardPanel />
         </ErrorBoundary>
-        <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Input error</div>}>
+        <ErrorBoundary
+          resetKeys={[activeSessionId, inputMode, isArchived]}
+          fallback={<div className="text-xs text-destructive p-2">Input error</div>}
+        >
           {inputShell}
         </ErrorBoundary>
       </div>
@@ -229,7 +238,10 @@ export function ChatArea() {
           <BlackboardPanel />
           <BookmarksPanel displayItems={displayItems} />
         </ErrorBoundary>
-        <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Input error</div>}>
+        <ErrorBoundary
+          resetKeys={[activeSessionId, inputMode, isArchived]}
+          fallback={<div className="text-xs text-destructive p-2">Input error</div>}
+        >
           {inputShell}
         </ErrorBoundary>
       </div>

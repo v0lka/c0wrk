@@ -200,17 +200,17 @@ export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProp
     // xterm.js re-renders when its theme option is reassigned, so switching the
     // palette updates the running terminal in place.
     //
-    // Assign ONLY the keys being changed. Since xterm v6 the public options
-    // setter MERGES the assigned object's keys and validates every key against
-    // the constructor-only list — `cols`/`rows`/`rendererType` are readonly
-    // after construction. Spreading the current options back through the
-    // assignment drags those readonly keys through the setter and throws
-    // `Option "cols" can only be set in the constructor`, which on mount
-    // crashed the whole input shell ("Input error" fallback).
+    // Assign ONLY `theme` — never spread `term.options` back into the setter.
+    // xterm 6's public options object also exposes the constructor-only
+    // `cols`/`rows`, and re-assigning them through the options setter throws
+    // `Option "cols" can only be set in the constructor`. That throw used to
+    // escape the terminal's mount effect, hit the chat-input ErrorBoundary and
+    // replace the WHOLE input panel with "Input error" on every terminal open
+    // (persisting across reloads because terminal mode is persisted).
     useEffect(() => {
         const term = termRef.current
         if (term) {
-            term.options = { theme: palette }
+            term.options.theme = palette
         }
     }, [palette])
 
