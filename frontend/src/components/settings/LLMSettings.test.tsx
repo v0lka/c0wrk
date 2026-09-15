@@ -159,3 +159,63 @@ describe('LLMSettings default-model picker (shared ModelPickerMenu)', () => {
     expect(listbox!.parentElement).not.toBe(document.body)
   })
 })
+
+describe('LLMSettings section order', () => {
+  /** Renders the panel and returns the panel container. */
+  async function renderPanel(): Promise<void> {
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <LLMSettings />
+        </TooltipProvider>,
+      )
+    })
+    await flush()
+  }
+
+  it('places Add compatible provider directly after the default-model field, above the provider lists', async () => {
+    await renderPanel()
+
+    const buttons = Array.from(container.querySelectorAll('button'))
+    const addBtn = buttons.find(
+      (b) => (b.textContent ?? '').trim() === 'Add compatible provider',
+    )
+    expect(addBtn).toBeDefined()
+
+    const defaultTrigger = container.querySelector('button[aria-label="Default model"]')
+    expect(defaultTrigger).not.toBeNull()
+
+    // Rendered AFTER the default-model picker (the "после поля выбора
+    // дефолтной модели" requirement)…
+    expect(
+      defaultTrigger!.compareDocumentPosition(addBtn!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+
+    // …and BEFORE the first provider accordion (Anthropic is a fixed provider
+    // present in the mocked config) — i.e. it no longer trails the lists.
+    const anthropicAccordion = buttons.find((b) =>
+      /^Anthropic\d+ models? enabled$/.test((b.textContent ?? '').trim()),
+    )
+    expect(anthropicAccordion).toBeDefined()
+    expect(
+      addBtn!.compareDocumentPosition(anthropicAccordion!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+
+  it('opens the add-provider form in place, still above the provider lists', async () => {
+    await renderPanel()
+
+    const addBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => (b.textContent ?? '').trim() === 'Add compatible provider',
+    )
+    expect(addBtn).toBeDefined()
+
+    await act(async () => {
+      addBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    const form = container.querySelector('h4')
+    expect(form?.textContent).toBe('New compatible provider')
+  })
+})

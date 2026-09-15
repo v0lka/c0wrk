@@ -329,3 +329,97 @@ describe('SettingsModal Model Profiles tab (independent of the experimental swit
     expect(tabLabels()).toContain('Model Profiles')
   })
 })
+
+describe('SettingsModal layout: vertical left nav and fixed height', () => {
+  it('lays the section nav out vertically on the left', async () => {
+    useSettingsStore.setState({ open: true, activeTab: 'general' })
+    act(() => {
+      root.render(<SettingsModal />)
+    })
+    await flush()
+
+    const tabs = document.body.querySelector<HTMLElement>('[data-slot="tabs"]')
+    expect(tabs).not.toBeNull()
+    expect(tabs!.getAttribute('data-orientation')).toBe('vertical')
+
+    const list = document.body.querySelector<HTMLElement>('[data-slot="tabs-list"]')
+    expect(list).not.toBeNull()
+    // A column, not the previous edge-to-edge horizontal strip.
+    expect(list!.className).toContain('flex-col')
+    expect(list!.className).not.toContain('justify-between')
+    // Fixed-width column pinned to the left of the scrolling content.
+    expect(list!.className).toContain('w-40')
+    expect(list!.className).toContain('shrink-0')
+
+    // Section labels stay visible in the sidebar (no sm-gated hiding).
+    const labels = Array.from(
+      document.body.querySelectorAll<HTMLElement>('[data-slot="tabs-trigger"] span'),
+    ).map((s) => s.textContent)
+    expect(labels).toContain('General')
+    expect(labels).toContain('Model Profiles')
+    labels.forEach((l) => expect(l).not.toBe(''))
+  })
+
+  it('styles the nav as a transparent caps index with a bold, color-swapped active entry', async () => {
+    useSettingsStore.setState({ open: true, activeTab: 'general' })
+    act(() => {
+      root.render(<SettingsModal />)
+    })
+    await flush()
+
+    const list = document.body.querySelector<HTMLElement>('[data-slot="tabs-list"]')
+    expect(list).not.toBeNull()
+    const listClasses = list!.className.split(/\s+/)
+    // Transparent track (the filled `bg-muted` pill is gone) with a wider
+    // vertical gap between the entries (was gap-1).
+    expect(listClasses).toContain('bg-transparent')
+    expect(listClasses).not.toContain('bg-muted')
+    expect(listClasses).toContain('gap-3')
+    expect(listClasses).not.toContain('gap-1')
+
+    const triggers = Array.from(
+      document.body.querySelectorAll<HTMLElement>('[data-slot="tabs-trigger"]'),
+    )
+    expect(triggers.length).toBeGreaterThan(0)
+    for (const trigger of triggers) {
+      const classes = trigger.className.split(/\s+/)
+      // Caps labels.
+      expect(classes).toContain('uppercase')
+      // Active entry: bold, with no state-dependent background left.
+      expect(classes).toContain('data-[state=active]:font-bold')
+      expect(classes).toContain('data-[state=active]:bg-transparent')
+      expect(classes).not.toContain('data-[state=active]:bg-background')
+      // No frame around the entries. The shared trigger's 1px border is
+      // removed by zeroing its WIDTH (`border-0`): the unlayered
+      // `* { border-color }` rule in index.css outranks the layered
+      // `border-transparent` utility, so a color-only override would leave
+      // the frame painted in the theme border color.
+      expect(classes).toContain('border-0')
+      expect(classes).not.toContain('border')
+      // ...while the dark hover highlight is deliberately retained.
+      expect(classes).toContain('hover:bg-muted/50')
+      // Colors swapped: inactive keeps the full-contrast foreground (the
+      // former active color); active recedes to a muted tone (the former
+      // inactive color).
+      expect(classes).toContain('text-foreground')
+      expect(classes).toContain('data-[state=active]:text-foreground/60')
+      expect(classes).not.toContain('text-foreground/60')
+      expect(classes).not.toContain('data-[state=active]:text-foreground')
+    }
+  })
+
+  it('pins the dialog to a fixed height equal to its former maximum height', async () => {
+    useSettingsStore.setState({ open: true, activeTab: 'general' })
+    act(() => {
+      root.render(<SettingsModal />)
+    })
+    await flush()
+
+    const content = document.body.querySelector<HTMLElement>('[data-slot="dialog-content"]')
+    expect(content).not.toBeNull()
+    // Fixed height == the height the dialog could previously grow to (0.8 of
+    // the zoom-corrected viewport), instead of a content-driven max-height.
+    expect(content!.className).toContain('h-[calc(var(--ui-vh)*0.8)]')
+    expect(content!.className).not.toContain('max-h-[calc(var(--ui-vh)*0.8)]')
+  })
+})
