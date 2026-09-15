@@ -18,7 +18,7 @@ require (
 	github.com/gorilla/css v1.0.1
 	github.com/openai/openai-go v1.12.0
 	github.com/philippgille/chromem-go v0.7.0
-	github.com/v0lka/sp4rk v0.15.1-0.20260915091004-baff2f7cdd8d
+	github.com/v0lka/sp4rk v0.15.1-0.20260915171157-232f222ed6f4
 	github.com/wailsapp/wails/v2 v2.15.0
 	golang.org/x/image v0.45.0
 	golang.org/x/mod v0.40.0
