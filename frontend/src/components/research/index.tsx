@@ -140,7 +140,7 @@ export function ResearchPanel() {
               'text-muted-foreground',
               artifactItems.length > 0
                 ? 'cursor-pointer hover:bg-muted'
-                : 'cursor-default opacity-60',
+                : 'opacity-60',
             )}
           >
             <FolderOpen className="size-3" />

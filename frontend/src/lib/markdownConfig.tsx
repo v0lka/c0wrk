@@ -4,7 +4,6 @@ import remarkGfm from 'remark-gfm'
 import remarkEmoji from 'remark-emoji'
 import remarkBreaks from 'remark-breaks'
 import rehypeSlug from 'rehype-slug'
-import rehypeAutolinkHeadings from 'rehype-autolink-headings'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeExternalLinks from 'rehype-external-links'
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
@@ -42,8 +41,12 @@ const customSanitizeSchema = {
 const remarkPlugins: PluggableList = [remarkGfm, remarkEmoji, remarkBreaks]
 
 const rehypePlugins: PluggableList = [
+  // rehype-slug keeps heading ids so explicit `[text](#heading)` links
+  // inside a document still scroll to their target. No autolink plugin:
+  // wrapping every heading in an <a href="#self"> showed a pointer cursor
+  // and a hover underline, but clicking did nothing (the anchor target is
+  // the heading itself) — a dead affordance with no URL bar to copy from.
   rehypeSlug,
-  [rehypeAutolinkHeadings, { behavior: 'wrap' }],
   rehypeHighlight,
   [rehypeExternalLinks, { target: '_blank', rel: ['noopener', 'noreferrer'] }],
   [rehypeSanitize, customSanitizeSchema],

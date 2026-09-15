@@ -230,6 +230,54 @@ body {
     box-shadow: none;
 }
 
+/* ==========================================================================
+   Cursor Policy — interactive elements
+   Everything clickable shows the pointer cursor; disabled controls show
+   not-allowed. Native browser defaults (default arrow on buttons, text
+   caret on selects) are replaced by explicit rules so the whole app has a
+   consistent, obvious "this is clickable" affordance.
+   Lives in @layer base: any utility class (cursor-wait, cursor-grab, …)
+   still overrides it where a component needs an intentional exception.
+   Radix disabled items use pointer-events:none, so their cursor cannot be
+   changed without altering behaviour — out of scope here.
+   ========================================================================== */
+
+@layer base {
+    /* Interactive form controls and ARIA widgets — enabled state */
+    button:not(:disabled),
+    input[type="button"]:not(:disabled),
+    input[type="submit"]:not(:disabled),
+    input[type="reset"]:not(:disabled),
+    input[type="checkbox"]:not(:disabled),
+    input[type="radio"]:not(:disabled),
+    input[type="color"]:not(:disabled),
+    select:not(:disabled),
+    summary,
+    label:not(:disabled),
+    [role="button"]:not([aria-disabled="true"]),
+    [role="menuitem"]:not([aria-disabled="true"]),
+    [role="menuitemcheckbox"]:not([aria-disabled="true"]),
+    [role="menuitemradio"]:not([aria-disabled="true"]),
+    [role="option"]:not([aria-disabled="true"]),
+    [role="tab"]:not([aria-disabled="true"]),
+    [role="checkbox"]:not([aria-disabled="true"]),
+    [role="radio"]:not([aria-disabled="true"]),
+    [role="switch"]:not([aria-disabled="true"]),
+    [role="combobox"]:not([aria-disabled="true"]),
+    [role="link"]:not([aria-disabled="true"]),
+    [role="treeitem"]:not([aria-disabled="true"]) {
+        cursor: pointer;
+    }
+
+    /* Interactive controls — disabled state */
+    button:disabled,
+    input:disabled,
+    select:disabled,
+    [aria-disabled="true"] {
+        cursor: not-allowed;
+    }
+}
+
 /* Resize drag state — applied via class toggle from useResize hook */
 .resize-dragging {
     cursor: col-resize;
@@ -368,12 +416,6 @@ body {
 
 .prose a:hover {
     text-decoration: underline;
-}
-
-/* Heading anchor links — inherit heading color, no underline */
-.prose :where(h1, h2, h3, h4, h5, h6) a {
-    text-decoration: none;
-    color: inherit;
 }
 
 /* Inline code (not inside pre blocks) */

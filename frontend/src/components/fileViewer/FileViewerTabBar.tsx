@@ -75,6 +75,20 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
     [setActiveFile, scrollToTab],
   );
 
+  // Middle-click closes the tab — browser-native semantics, so the user
+  // doesn't have to aim at the 12px close X. `onAuxClick` fires for non-
+  // primary buttons only (left click keeps its `onClick` activation path),
+  // and preventDefault() suppresses the UA's default middle-click behaviour
+  // (autoscroll / text selection) without affecting anything else.
+  const handleTabAuxClick = useCallback(
+    (e: React.MouseEvent<HTMLButtonElement>, path: string) => {
+      if (e.button !== 1) return;
+      e.preventDefault();
+      closeFile(path);
+    },
+    [closeFile],
+  );
+
   if (openTabs.length === 0) return null;
 
   return (
@@ -98,6 +112,7 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
                     : "text-muted-foreground hover:bg-muted/30 hover:text-foreground",
                 )}
                 onClick={() => handleTabClick(path)}
+                onAuxClick={(e) => handleTabAuxClick(e, path)}
                 onContextMenu={(e) => handleTabContextMenu(e, path)}
               >
                 <span className="shrink-0">

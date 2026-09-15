@@ -133,7 +133,7 @@ export function FileViewerContextMenu({ reference, selectedText, position, onClo
         role="menuitem"
         onClick={handleAddToChat}
         className={cn(
-          'relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
+          'relative flex w-full select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
           'hover:bg-muted/50 focus:bg-muted/50',
           '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg]:text-muted-foreground',
         )}
@@ -152,7 +152,7 @@ export function FileViewerContextMenu({ reference, selectedText, position, onClo
         }
         onClick={findSimilarReady ? handleFindSimilar : undefined}
         className={cn(
-          'relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
+          'relative flex w-full select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
           findSimilarReady && 'hover:bg-muted/50 focus:bg-muted/50',
           !findSimilarReady && 'cursor-not-allowed opacity-50',
           '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg]:text-muted-foreground',

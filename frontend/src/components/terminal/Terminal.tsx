@@ -323,5 +323,5 @@ export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProp
         termRef.current?.focus()
     }
 
-    return <div ref={containerRef} className="w-full h-full" onClick={handleClick} />
+    return <div ref={containerRef} className="w-full h-full cursor-pointer" onClick={handleClick} />
 }
