@@ -68,14 +68,19 @@ func waitForBackgroundPasses(t *testing.T, mgr *Manager, svc *Service) {
 // corpus must be handed back to the OS immediately.
 func TestInitProject_FullIndexFreesOSMemory(t *testing.T) {
 	var calls atomic.Int32
+	// Register the index temp dir BEFORE newMemFreeManager's svc.Close
+	// cleanup: t.Cleanup is LIFO, so svc.Close runs first and releases the
+	// bleve lexical store (.bolt/.zap) handles before TempDir's RemoveAll.
+	// Windows refuses to delete files that still have open handles (EBUSY).
+	viDir := filepath.Join(t.TempDir(), "vi")
+	ws := t.TempDir()
 	mgr, svc := newMemFreeManager(t, &calls)
 
-	ws := t.TempDir()
 	if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644); err != nil {
 		t.Fatalf("write a.go: %v", err)
 	}
 
-	if err := mgr.SwitchProject("project-a", ws, filepath.Join(t.TempDir(), "vi"), ProjectCallbacks{}); err != nil {
+	if err := mgr.SwitchProject("project-a", ws, viDir, ProjectCallbacks{}); err != nil {
 		t.Fatalf("SwitchProject: %v", err)
 	}
 	waitForBackgroundPasses(t, mgr, svc)
@@ -94,15 +99,19 @@ func TestInitProject_FullIndexFreesOSMemory(t *testing.T) {
 // and a forced full GC per such pass would burn CPU for no memory win.
 func TestReindex_IncrementalDoesNotFreeOSMemory(t *testing.T) {
 	var calls atomic.Int32
+	// Register the index temp dir BEFORE newMemFreeManager's svc.Close
+	// cleanup (t.Cleanup is LIFO): svc.Close must release the bleve
+	// .bolt/.zap handles before TempDir's RemoveAll on Windows.
+	viDir := filepath.Join(t.TempDir(), "vi")
+	ws := t.TempDir()
 	mgr, svc := newMemFreeManager(t, &calls)
 
-	ws := t.TempDir()
 	if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644); err != nil {
 		t.Fatalf("write a.go: %v", err)
 	}
 
 	// Initial full index (seam fires once for the full pass).
-	if err := mgr.SwitchProject("project-a", ws, filepath.Join(t.TempDir(), "vi"), ProjectCallbacks{}); err != nil {
+	if err := mgr.SwitchProject("project-a", ws, viDir, ProjectCallbacks{}); err != nil {
 		t.Fatalf("SwitchProject: %v", err)
 	}
 	waitForBackgroundPasses(t, mgr, svc)
@@ -132,12 +141,16 @@ func TestReindex_IncrementalDoesNotFreeOSMemory(t *testing.T) {
 // corpus just like the initial pass.
 func TestReindex_EmptyCollectionFullPassFreesOSMemory(t *testing.T) {
 	var calls atomic.Int32
+	// Register the index temp dir BEFORE newMemFreeManager's svc.Close
+	// cleanup (t.Cleanup is LIFO): svc.Close must release the bleve
+	// .bolt/.zap handles before TempDir's RemoveAll on Windows.
+	viDir := filepath.Join(t.TempDir(), "vi")
 	mgr, svc := newMemFreeManager(t, &calls)
 
 	// Empty workspace: the collection stays empty after the init pass, so a
 	// manual Reindex takes the IndexFull branch deterministically.
 	ws := t.TempDir()
-	if err := mgr.SwitchProject("project-a", ws, filepath.Join(t.TempDir(), "vi"), ProjectCallbacks{}); err != nil {
+	if err := mgr.SwitchProject("project-a", ws, viDir, ProjectCallbacks{}); err != nil {
 		t.Fatalf("SwitchProject: %v", err)
 	}
 	waitForBackgroundPasses(t, mgr, svc)

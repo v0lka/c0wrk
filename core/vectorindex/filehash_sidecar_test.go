@@ -1167,12 +1167,17 @@ func TestBrowseWithFilter_NoEmbeddingCall(t *testing.T) {
 			embedCalls.Add(1)
 			return []float32{0.1, 0.2, 0.3, 0.4}, nil
 		}
+		// Register the index temp dir BEFORE the svc.Close cleanup: t.Cleanup
+		// is LIFO, so svc.Close runs first and releases the bleve lexical
+		// store (.bolt/.zap) handles before TempDir's RemoveAll. Windows
+		// refuses to delete files that still have open handles (EBUSY).
+		projectDir := t.TempDir()
 		svc, err := NewService(ServiceConfig{EmbeddingFunc: embed})
 		if err != nil {
 			t.Fatalf("NewService: %v", err)
 		}
 		t.Cleanup(func() { _ = svc.Close() })
-		if err := svc.SetProject("proj", t.TempDir()); err != nil {
+		if err := svc.SetProject("proj", projectDir); err != nil {
 			t.Fatalf("SetProject: %v", err)
 		}
 		if err := svc.SwitchBranch(context.Background(), "main"); err != nil {

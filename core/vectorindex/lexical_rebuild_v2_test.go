@@ -110,6 +110,11 @@ func newLexicalRebuildFixture(t *testing.T, embedCalls *atomic.Int32) (*Service,
 	t.Helper()
 	const maxChunkSize, overlap = 120, 10
 	fp := ChunkerFingerprint(maxChunkSize, overlap, resolveContentFilterConfig(nil).Fingerprint())
+	// Register the index temp dir BEFORE the svc.Close cleanup: t.Cleanup is
+	// LIFO, so svc.Close runs first and releases the bleve lexical store
+	// (.bolt/.zap) handles before TempDir's RemoveAll. Windows refuses to
+	// delete files that still have open handles (EBUSY).
+	viDir := t.TempDir()
 	svc, err := NewService(ServiceConfig{
 		EmbeddingFunc:      countingEmbed4(embedCalls),
 		EmbeddingDimension: 4,
@@ -119,7 +124,6 @@ func newLexicalRebuildFixture(t *testing.T, embedCalls *atomic.Int32) (*Service,
 		t.Fatalf("NewService: %v", err)
 	}
 	t.Cleanup(func() { _ = svc.Close() })
-	viDir := t.TempDir()
 	if err := svc.SetProject("proj", viDir); err != nil {
 		t.Fatalf("SetProject: %v", err)
 	}

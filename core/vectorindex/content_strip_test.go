@@ -216,6 +216,10 @@ func TestSearchModes_ReconstructContentFromFiles(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Rel(%s): %v", r.FilePath, err)
 			}
+			// stripFixtureFiles is keyed with forward slashes while
+			// filepath.Rel yields the OS-native separator (backslashes on
+			// Windows); normalize so nested fixtures (lib/util.go) resolve.
+			rel = filepath.ToSlash(rel)
 			want, ok := stripFixtureFiles[rel]
 			if !ok {
 				t.Fatalf("%s mode returned unexpected file %s", mode, r.FilePath)
