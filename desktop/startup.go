@@ -289,6 +289,17 @@ func (a *App) Startup(ctx context.Context) {
 	// log of THIS run even when a non-default log_level swapped the file.
 	crashlog.ReportUncleanShutdown(log, logDir)
 
+	// ── GC memory soft limit (runtime.memory_soft_limit_mb) ──────────
+	// A GOMEMLIMIT-style soft GC target caps the heap's steady-state
+	// growth: with the default GOGC=100, the live-heap spike of a full
+	// project re-index roughly doubles the resident set and hands it back
+	// to the OS only lazily. Set once here — after config load and the
+	// logger re-init (so the decision is logged to the right log) and
+	// strictly before background indexing starts (Phase 6), so the limit
+	// governs the very first indexing pass. An explicit GOMEMLIMIT env
+	// var takes priority over AUTO mode; see memlimit.go.
+	setupMemorySoftLimit(cfg.Runtime.MemorySoftLimitMB, log)
+
 	// ── Phase 3: Database + Terminal Manager (parallel) ───────────────
 	dbPath := config.DatabasePath(agentDir)
 	var db *sql.DB

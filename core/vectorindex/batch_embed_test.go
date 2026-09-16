@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"path/filepath"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -341,8 +344,14 @@ func TestAddDocuments_BatchVsLegacy_Equivalence(t *testing.T) {
 				if err != nil {
 					t.Fatalf("batch GetByID(%s): %v", doc.ID, err)
 				}
-				if l.Content != b.Content {
-					t.Errorf("doc %s content differs: legacy=%q batch=%q", doc.ID, l.Content, b.Content)
+				if l.Content != doc.Content {
+					t.Errorf("doc %s legacy content = %q; want the original %q (legacy path keeps content)", doc.ID, l.Content, doc.Content)
+				}
+				// The batch path commits with a pre-populated embedding, so
+				// strippedForCommit drops the content — it is reconstructed
+				// lazily from the source file at search time instead.
+				if b.Content != "" {
+					t.Errorf("doc %s batch content = %q; want empty (content stripped on the batch path)", doc.ID, b.Content)
 				}
 				if !reflect.DeepEqual(l.Metadata, b.Metadata) {
 					t.Errorf("doc %s metadata differs: legacy=%v batch=%v", doc.ID, l.Metadata, b.Metadata)
@@ -875,5 +884,113 @@ func TestNewManager_BatchEmbedder_ForwardedToService(t *testing.T) {
 	t.Cleanup(func() { mgrLegacy.Shutdown() })
 	if mgrLegacy.service.batchEmbedder != nil {
 		t.Error("nil ManagerConfig.BatchEmbedder must stay nil on the Service (legacy path)")
+	}
+}
+
+// gappedSetDocs builds one file's chunk documents with production-shaped IDs
+// (DocumentID grammar) and sidecar metadata (content_hash + file_size +
+// file_mtime_unix_nano), with the chunk at poisonIdx carrying the POISON
+// marker so the per-text fallback drops exactly that chunk.
+func gappedSetDocs(file string, n, poisonIdx int) []chromem.Document {
+	docs := make([]chromem.Document, n)
+	for i := range docs {
+		content := fmt.Sprintf("chunk %d of %s", i, file)
+		if i == poisonIdx {
+			content = "chunk POISON \xff\xfeq"
+		}
+		docs[i] = chromem.Document{
+			ID:      DocumentID(file, i),
+			Content: content,
+			Metadata: map[string]string{
+				"file_path":            file,
+				"file_name":            filepath.Base(file),
+				"content_hash":         "hash-" + file,
+				"file_size":            strconv.Itoa(len(content)),
+				"file_mtime_unix_nano": "1700000000000000000",
+			},
+		}
+	}
+	return docs
+}
+
+// TestAddDocuments_BatchEmbedder_PoisonedChunkGapsSidecarSet pins the
+// AddDocuments write path of the sidecar's 5th field: the committed
+// chunk-index set is derived from the committed documents' IDs with the
+// poison-dropped chunk excluded — here "L:0,1,3,4" for a 5-chunk file whose
+// chunk 2 was dropped.
+func TestAddDocuments_BatchEmbedder_PoisonedChunkGapsSidecarSet(t *testing.T) {
+	fb := &fakeBatchEmbedder{poisonSubstr: "POISON"}
+	svc := newBatchTestService(t, fb, 50, nil, nil)
+
+	file := "/ws/gapped.go"
+	docs := gappedSetDocs(file, 5, 2)
+	svc.AcquireWriteLock()
+	err := svc.AddDocuments(context.Background(), docs, nil)
+	svc.ReleaseWriteLock()
+	if err != nil {
+		t.Fatalf("AddDocuments: %v", err)
+	}
+	if got := svc.current.collection.Count(); got != 4 {
+		t.Fatalf("collection Count = %d; want 4 (poisoned chunk dropped)", got)
+	}
+
+	svc.mu.RLock()
+	entry := svc.current.fileHashes[file]
+	svc.mu.RUnlock()
+	if entry == "" {
+		t.Fatal("no sidecar entry for the gapped file")
+	}
+	if _, _, _, ok := parseFileHashEntry(entry); !ok {
+		t.Fatalf("gapped entry does not parse: %q", entry)
+	}
+	set, ok := fileHashEntryChunkSet(entry)
+	if !ok {
+		t.Fatalf("gapped entry carries no chunk set: %q", entry)
+	}
+	want := []int{0, 1, 3, 4}
+	if !slices.Equal(set, want) {
+		t.Errorf("gapped entry set = %v, want %v (entry %q)", set, want, entry)
+	}
+}
+
+// TestDocumentAccumulator_PublishesCommittedChunkSet pins the accumulator's
+// publish step (publishFileIfComplete): the sidecar entry it records carries
+// exactly the IDs that committed — the poison-dropped chunk's index is
+// absent even though the file still publishes (its completed counter was
+// advanced by the drop).
+func TestDocumentAccumulator_PublishesCommittedChunkSet(t *testing.T) {
+	fb := &fakeBatchEmbedder{poisonSubstr: "POISON"}
+	svc := newBatchTestService(t, fb, 50, nil, nil)
+
+	file := "/ws/acc-gapped.go"
+	docs := gappedSetDocs(file, 5, 2)
+	acc := newDocumentAccumulator(svc, nil)
+
+	svc.AcquireWriteLock()
+	err := acc.addFile(context.Background(), docs, lexicalBatchTestDocs(docs))
+	if err == nil {
+		err = acc.finish(context.Background())
+	}
+	svc.ReleaseWriteLock()
+	if err != nil {
+		t.Fatalf("accumulator: %v", err)
+	}
+	if got := svc.current.collection.Count(); got != 4 {
+		t.Fatalf("collection Count = %d; want 4 (poisoned chunk dropped)", got)
+	}
+
+	svc.mu.RLock()
+	entry := svc.current.fileHashes[file]
+	svc.mu.RUnlock()
+	if entry == "" {
+		t.Fatal("accumulator published no sidecar entry")
+	}
+	set, ok := fileHashEntryChunkSet(entry)
+	if !ok {
+		t.Fatalf("accumulator entry carries no chunk set: %q", entry)
+	}
+	want := []int{0, 1, 3, 4}
+	if !slices.Equal(set, want) {
+		t.Errorf("accumulator entry set = %v, want %v (entry %q)", set, want, entry)
 	}
 }

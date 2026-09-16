@@ -2274,6 +2274,13 @@ func TestVectorIndexConfig_TuningKnobs_Defaults(t *testing.T) {
 	if gotPark != 3 {
 		t.Errorf("default park_capacity = %d, want 3", gotPark)
 	}
+	gotBudget := int64(-1)
+	if cfg.VectorIndex.ParkBudgetMb != nil {
+		gotBudget = *cfg.VectorIndex.ParkBudgetMb
+	}
+	if gotBudget != 1024 {
+		t.Errorf("default park_budget_mb = %d, want 1024", gotBudget)
+	}
 }
 
 // TestVectorIndexConfig_TuningKnobs_YAMLRoundTrip covers YAML parsing of
@@ -2290,6 +2297,7 @@ vector_index:
   chunk_overlap: 120
   search_wait_timeout_ms: 0
   park_capacity: 7
+  park_budget_mb: 2048
 `
 	var cfg Config
 	if err := yaml.Unmarshal([]byte(src), &cfg); err != nil {
@@ -2316,6 +2324,9 @@ vector_index:
 	if cfg.VectorIndex.ParkCapacity == nil || *cfg.VectorIndex.ParkCapacity != 7 {
 		t.Errorf("explicit park_capacity must parse verbatim, got %v", cfg.VectorIndex.ParkCapacity)
 	}
+	if cfg.VectorIndex.ParkBudgetMb == nil || *cfg.VectorIndex.ParkBudgetMb != 2048 {
+		t.Errorf("explicit park_budget_mb must parse verbatim, got %v", cfg.VectorIndex.ParkBudgetMb)
+	}
 
 	// ApplyDefaults must fill in unset knobs but PRESERVE the explicit
 	// fail-fast sentinel (an unset key resolves to 3000 instead — covered
@@ -2332,6 +2343,9 @@ vector_index:
 	}
 	if cfg.VectorIndex.ParkCapacity == nil || *cfg.VectorIndex.ParkCapacity != 7 {
 		t.Errorf("ApplyDefaults must not overwrite an explicit park_capacity, got %v", cfg.VectorIndex.ParkCapacity)
+	}
+	if cfg.VectorIndex.ParkBudgetMb == nil || *cfg.VectorIndex.ParkBudgetMb != 2048 {
+		t.Errorf("ApplyDefaults must not overwrite an explicit park_budget_mb, got %v", cfg.VectorIndex.ParkBudgetMb)
 	}
 
 	// Marshal → unmarshal round-trip preserves every knob verbatim.
@@ -2364,6 +2378,9 @@ vector_index:
 	if restored.VectorIndex.ParkCapacity == nil || *restored.VectorIndex.ParkCapacity != 7 {
 		t.Errorf("round-tripped park_capacity = %v, want 7", restored.VectorIndex.ParkCapacity)
 	}
+	if restored.VectorIndex.ParkBudgetMb == nil || *restored.VectorIndex.ParkBudgetMb != 2048 {
+		t.Errorf("round-tripped park_budget_mb = %v, want 2048", restored.VectorIndex.ParkBudgetMb)
+	}
 }
 
 // TestVectorIndexConfig_ParkCapacity_DisableSentinel pins that an explicit
@@ -2394,6 +2411,51 @@ vector_index:
 	}
 	if *cfg.VectorIndex.ParkCapacity != 0 {
 		t.Errorf("explicit park_capacity: 0 must survive as the disable sentinel, got %d", *cfg.VectorIndex.ParkCapacity)
+	}
+}
+
+// TestVectorIndexConfig_ParkBudget_Sentinels pins the pointer-int64 semantics
+// of park_budget_mb through the full Load path (defaults + validation): an
+// explicit negative survives as the "budget disabled" sentinel (park_capacity
+// alone bounds the LRU), while an explicit 0 is rejected as ambiguous —
+// distinct from an unset key, which resolves to 1024 (covered by
+// TestVectorIndexConfig_TuningKnobs_Defaults).
+func TestVectorIndexConfig_ParkBudget_Sentinels(t *testing.T) {
+	const disable = `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+vector_index:
+  park_budget_mb: -1
+`
+	configPath := writeTestConfig(t, disable)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() with the disable sentinel failed: %v", err)
+	}
+	if cfg.VectorIndex.ParkBudgetMb == nil {
+		t.Fatal("park_budget_mb should be non-nil after Load")
+	}
+	if *cfg.VectorIndex.ParkBudgetMb != -1 {
+		t.Errorf("explicit park_budget_mb: -1 must survive as the disable sentinel, got %d", *cfg.VectorIndex.ParkBudgetMb)
+	}
+
+	const ambiguous = `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+vector_index:
+  park_budget_mb: 0
+`
+	configPath = writeTestConfig(t, ambiguous)
+	if _, err := Load(configPath); err == nil {
+		t.Error("Load() with park_budget_mb: 0 must fail validation (ambiguous), got nil error")
 	}
 }
 
@@ -3578,5 +3640,138 @@ git:
 	}
 	if cfg.Git.AutoFetch == nil || !*cfg.Git.AutoFetch {
 		t.Errorf("Expected default git.auto_fetch true, got %v", cfg.Git.AutoFetch)
+	}
+}
+
+// TestRuntimeConfig_MemorySoftLimit_TriState pins the load semantics of
+// runtime.memory_soft_limit_mb: unset decodes to the auto sentinel (0), an
+// explicit positive value survives verbatim, and -1 (off) survives as the
+// disable sentinel. Anything below -1 is a typo, not a sentinel, and must
+// fail validation.
+func TestRuntimeConfig_MemorySoftLimit_TriState(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		want    int
+		wantErr bool
+	}{
+		{
+			name: "unset decodes to auto sentinel",
+			yaml: `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+`,
+			want: DefaultMemorySoftLimitMB,
+		},
+		{
+			name: "explicit zero is auto too",
+			yaml: `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+runtime:
+  memory_soft_limit_mb: 0
+`,
+			want: 0,
+		},
+		{
+			name: "explicit MiB value",
+			yaml: `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+runtime:
+  memory_soft_limit_mb: 2048
+`,
+			want: 2048,
+		},
+		{
+			name: "off sentinel",
+			yaml: `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+runtime:
+  memory_soft_limit_mb: -1
+`,
+			want: -1,
+		},
+		{
+			name: "below -1 is rejected",
+			yaml: `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+runtime:
+  memory_soft_limit_mb: -10
+`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := writeTestConfig(t, tt.yaml)
+
+			cfg, err := Load(configPath)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Load() expected validation error, got nil (value %d)", cfg.Runtime.MemorySoftLimitMB)
+				}
+				if !strings.Contains(err.Error(), "runtime.memory_soft_limit_mb") {
+					t.Errorf("error should name the offending key, got %q", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() failed: %v", err)
+			}
+			if cfg.Runtime.MemorySoftLimitMB != tt.want {
+				t.Errorf("runtime.memory_soft_limit_mb = %d, want %d", cfg.Runtime.MemorySoftLimitMB, tt.want)
+			}
+		})
+	}
+}
+
+// TestRuntimeConfig_MemorySoftLimit_RoundTrip verifies the knob survives a
+// Save→Load cycle for both the explicit-MiB and the off-sentinel values, so
+// a config written by the app reloads with the operator's intent intact.
+func TestRuntimeConfig_MemorySoftLimit_RoundTrip(t *testing.T) {
+	for _, value := range []int{2048, -1} {
+		cfg := &Config{}
+		ApplyDefaults(cfg)
+		cfg.LLM.DefaultModel = "claude-3-haiku"
+		cfg.LLM.Anthropic.APIKey = "test-key"
+		cfg.LLM.Anthropic.Models = []string{"claude-3-haiku"}
+		cfg.Runtime.MemorySoftLimitMB = value
+
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := Save(cfg, path); err != nil {
+			t.Fatalf("Save(value %d) failed: %v", value, err)
+		}
+
+		loaded, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load(value %d) failed: %v", value, err)
+		}
+		if loaded.Runtime.MemorySoftLimitMB != value {
+			t.Errorf("round-trip of %d got %d", value, loaded.Runtime.MemorySoftLimitMB)
+		}
 	}
 }

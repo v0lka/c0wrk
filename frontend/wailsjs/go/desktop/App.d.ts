@@ -157,6 +157,8 @@ export function GetModelProfiles():Promise<backend.ModelProfilesResponse>;
 
 export function GetPendingActions(arg1:string):Promise<desktop.PendingActionsResponse>;
 
+export function GetProcessMemory():Promise<number>;
+
 export function GetProjectSwitchState(arg1:string):Promise<backend.ProjectUIStateResponse>;
 
 export function GetProjectUIState(arg1:string):Promise<backend.ProjectUIStateResponse>;

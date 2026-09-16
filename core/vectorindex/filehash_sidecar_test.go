@@ -3,9 +3,12 @@ package vectorindex
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -115,12 +118,14 @@ func TestSwitchBranch_FileHashMigrationIsAsync(t *testing.T) {
 		{ID: "d1", Content: "alpha", Metadata: map[string]string{"file_path": filepath.Join(dir, "a.go"), "content_hash": "hA"}},
 		{ID: "d2", Content: "beta", Metadata: map[string]string{"file_path": filepath.Join(dir, "b.go"), "content_hash": "hB"}},
 	}
-	a.AcquireWriteLock()
-	if err := a.AddDocuments(context.Background(), docs, nil); err != nil {
-		a.ReleaseWriteLock()
-		t.Fatalf("AddDocuments A: %v", err)
+	// Seed via raw chromem, NOT Service.AddDocuments: the service commit
+	// path now strips per-file metadata (see strippedForCommit), while the
+	// migration under test exists precisely for PRE-upgrade collections
+	// whose documents still carry content_hash in their stored metadata.
+	// Embeddings come from the (gate-open) chromem-side embedding func.
+	if err := a.current.collection.AddDocuments(context.Background(), docs, 1); err != nil {
+		t.Fatalf("chromem AddDocuments A: %v", err)
 	}
-	a.ReleaseWriteLock()
 	if err := a.Close(); err != nil {
 		t.Fatalf("Close A: %v", err)
 	}
@@ -272,6 +277,276 @@ func TestParseFileHashEntry(t *testing.T) {
 		if got := fileHashEntryChunkerFP(entry); got != "" {
 			t.Errorf("fileHashEntryChunkerFP(%q) = %q, want empty", entry, got)
 		}
+	}
+}
+
+// legacyParseFileHashEntry is a FROZEN COPY of parseFileHashEntry exactly as
+// it was before the 5th (chunk-set) field existed. It emulates the parser
+// inside an older binary reading a sidecar written by a newer one; see
+// TestFileHashEntry_OldParserTreatsFiveFieldAsLegacy.
+func legacyParseFileHashEntry(entry string) (hash string, size, mtimeUnixNano int64, ok bool) {
+	parts := strings.Split(entry, fileHashEntrySep)
+	if len(parts) != 3 && len(parts) != 4 {
+		return entry, 0, 0, false // legacy bare hash
+	}
+	size, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return parts[0], 0, 0, false
+	}
+	mtime, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil {
+		return parts[0], 0, 0, false
+	}
+	return parts[0], size, mtime, true
+}
+
+// TestFileHashEntry_OldParserTreatsFiveFieldAsLegacy pins the downgrade
+// story for mixed-version sidecars: a 5-field entry (new format, with the
+// committed chunk-index set) is rejected by the OLD grammar — which accepts
+// only 3 or 4 fields — so an older binary treats it as a legacy bare hash.
+// That is slower but correct: ValidateCollection falls back to the full
+// read+hash comparison, the whole-entry string never equals the computed
+// content hash, the file is re-indexed once, and the entry is rewritten in
+// the old binary's format (self-healing, no data loss).
+func TestFileHashEntry_OldParserTreatsFiveFieldAsLegacy(t *testing.T) {
+	fiveField := "abc123|42|1700000000000000000|d42c1bb0ded8|L:0,2"
+	contiguous := "abc123|42|1700000000000000000|d42c1bb0ded8|3"
+	for _, entry := range []string{fiveField, contiguous} {
+		_, _, _, ok := legacyParseFileHashEntry(entry)
+		if ok {
+			t.Errorf("old parser accepted 5-field entry %q; want legacy rejection", entry)
+		}
+	}
+	// The new parser accepts both shapes the old one rejects.
+	for _, entry := range []string{fiveField, contiguous} {
+		if _, _, _, ok := parseFileHashEntry(entry); !ok {
+			t.Errorf("new parser rejected 5-field entry %q", entry)
+		}
+	}
+	// 4-field entries remain readable by BOTH parsers (upgrade-safe).
+	entry := "abc123|42|1700000000000000000|d42c1bb0ded8"
+	if _, _, _, ok := legacyParseFileHashEntry(entry); !ok {
+		t.Error("old parser rejected 4-field entry")
+	}
+	if _, _, _, ok := parseFileHashEntry(entry); !ok {
+		t.Error("new parser rejected 4-field entry")
+	}
+}
+
+// TestChunkSetCodec covers the 5th sidecar field's codec: contiguous sets
+// encode as the bare chunk count, gapped sets (poison-dropped chunks) as
+// "L:<indices>", the empty set as "0", and parsing inverts every encoding.
+// Malformed values are rejected so the entry downgrades to legacy.
+func TestChunkSetCodec(t *testing.T) {
+	encodeCases := []struct {
+		name    string
+		indices []int
+		want    string
+		wantSet []int // canonical set the encoding must parse back to
+	}{
+		{name: "empty set", indices: nil, want: "0", wantSet: []int{}},
+		{name: "single chunk", indices: []int{0}, want: "1", wantSet: []int{0}},
+		{name: "contiguous", indices: []int{0, 1, 2, 3}, want: "4", wantSet: []int{0, 1, 2, 3}},
+		{name: "gapped (poison drop)", indices: []int{0, 2, 3}, want: "L:0,2,3", wantSet: []int{0, 2, 3}},
+		{name: "single gapped survivor", indices: []int{5}, want: "L:5", wantSet: []int{5}},
+		{name: "tail dropped", indices: []int{0, 1}, want: "2", wantSet: []int{0, 1}},
+		{name: "unsorted input normalizes", indices: []int{3, 0, 2, 0}, want: "L:0,2,3", wantSet: []int{0, 2, 3}},
+	}
+	for _, tc := range encodeCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := encodeChunkIndices(tc.indices); got != tc.want {
+				t.Fatalf("encodeChunkIndices(%v) = %q, want %q", tc.indices, got, tc.want)
+			}
+			// Round-trip: parsing the encoding yields an equivalent set.
+			parsed, ok := parseChunkIndices(tc.want)
+			if !ok {
+				t.Fatalf("parseChunkIndices(%q) rejected its own encoding", tc.want)
+			}
+			if !slices.Equal(parsed, tc.wantSet) {
+				t.Fatalf("round-trip of %q = %v, want %v", tc.want, parsed, tc.wantSet)
+			}
+		})
+	}
+
+	parseCases := []struct {
+		field string
+		want  []int
+		ok    bool
+	}{
+		{field: "3", want: []int{0, 1, 2}, ok: true},
+		{field: "0", want: []int{}, ok: true},
+		{field: "L:0,1,3", want: []int{0, 1, 3}, ok: true},
+		{field: "L:7", want: []int{7}, ok: true},
+		{field: "L:0,1,2,3", want: []int{0, 1, 2, 3}, ok: true},
+		{field: "", ok: false},
+		{field: "x", ok: false},
+		{field: "-1", ok: false},
+		{field: "1.5", ok: false},
+		{field: "L:", ok: false},
+		{field: "L:0,,2", ok: false},
+		{field: "L:-1", ok: false},
+		{field: "L:0,x", ok: false},
+		{field: "9999999999", ok: false}, // over maxChunkSetEntries: no allocation bomb
+	}
+	for _, tc := range parseCases {
+		t.Run("parse "+tc.field, func(t *testing.T) {
+			got, ok := parseChunkIndices(tc.field)
+			if ok != tc.ok {
+				t.Fatalf("parseChunkIndices(%q) ok = %v, want %v", tc.field, ok, tc.ok)
+			}
+			if !ok {
+				return
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("parseChunkIndices(%q) = %v, want %v", tc.field, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFileHashEntryChunkSet covers the entry-level accessor for the 5th
+// field: 5-field entries expose their set, every older shape reports
+// "unknown", and a malformed 5th field downgrades the whole entry to legacy
+// in parseFileHashEntry (strict grammar).
+func TestFileHashEntryChunkSet(t *testing.T) {
+	if got, ok := fileHashEntryChunkSet("abc123|42|1700000000000000000|d42c1bb0ded8|L:0,2"); !ok || !slices.Equal(got, []int{0, 2}) {
+		t.Errorf("fileHashEntryChunkSet(gapped) = %v (ok=%v), want [0 2]", got, ok)
+	}
+	if got, ok := fileHashEntryChunkSet("abc123|42|1700000000000000000|d42c1bb0ded8|3"); !ok || !slices.Equal(got, []int{0, 1, 2}) {
+		t.Errorf("fileHashEntryChunkSet(contiguous) = %v (ok=%v), want [0 1 2]", got, ok)
+	}
+	if got, ok := fileHashEntryChunkSet("abc123|42|1700000000000000000|d42c1bb0ded8|0"); !ok || len(got) != 0 {
+		t.Errorf("fileHashEntryChunkSet(empty) = %v (ok=%v), want empty set", got, ok)
+	}
+	for _, entry := range []string{
+		"abc123",
+		"abc123|42",
+		"abc123|42|1700000000000000000",
+		"abc123|42|1700000000000000000|d42c1bb0ded8",
+		"",
+	} {
+		if got, ok := fileHashEntryChunkSet(entry); ok {
+			t.Errorf("fileHashEntryChunkSet(%q) = %v, want unknown", entry, got)
+		}
+	}
+
+	// Strict grammar: a malformed 5th field ("extra" is neither N nor L:…)
+	// downgrades the entry to legacy in the structural parser, exactly like
+	// an old binary would.
+	bad := "abc123|42|1700000000000000000|d42c1bb0ded8|extra"
+	if _, _, _, ok := parseFileHashEntry(bad); ok {
+		t.Error("parseFileHashEntry accepted a malformed 5th field; want legacy downgrade")
+	}
+	if got, ok := fileHashEntryChunkSet(bad); ok {
+		t.Errorf("fileHashEntryChunkSet(malformed) = %v, want unknown", got)
+	}
+
+	// The chunker fingerprint of a 5-field entry is still readable.
+	if got := fileHashEntryChunkerFP("abc123|42|1700000000000000000|d42c1bb0ded8|3"); got != "d42c1bb0ded8" {
+		t.Errorf("fileHashEntryChunkerFP(5-field) = %q, want d42c1bb0ded8", got)
+	}
+}
+
+// TestUpsertFileHashesFiltered_DerivesChunkSetFromIDs pins how the committed
+// chunk-index set is derived on the write side: from the documents' ID
+// suffixes, with dropped (poisoned) chunks excluded, and with the entry left
+// set-less when any ID falls outside the DocumentID grammar. A file whose
+// every chunk was dropped still records an entry (empty set) so it is not
+// re-reported as new forever.
+func TestUpsertFileHashesFiltered_DerivesChunkSetFromIDs(t *testing.T) {
+	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc()})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+	md := func(path, hash string) map[string]string {
+		return map[string]string{
+			"file_path":            path,
+			"content_hash":         hash,
+			"file_size":            "10",
+			"file_mtime_unix_nano": "1700000000000000000",
+		}
+	}
+	doc := func(path, hash, id string) chromem.Document {
+		return chromem.Document{ID: id, Metadata: md(path, hash)}
+	}
+
+	gappedPath, droppedPath, legacyPath := "/ws/gapped.go", "/ws/dropped.go", "/ws/legacy.go"
+	docs := []chromem.Document{
+		doc(gappedPath, "hG", DocumentID(gappedPath, 0)),
+		doc(gappedPath, "hG", DocumentID(gappedPath, 2)),
+		doc(gappedPath, "hG", DocumentID(gappedPath, 3)),
+		doc(droppedPath, "hD", DocumentID(droppedPath, 0)),
+		doc(droppedPath, "hD", DocumentID(droppedPath, 1)), // poisoned → dropped
+		doc(legacyPath, "hL", "doc-0001"),                  // non-DocumentID grammar
+	}
+	dropped := map[string]struct{}{DocumentID(droppedPath, 1): {}}
+
+	svc.AcquireWriteLock()
+	svc.upsertFileHashesFiltered(docs, dropped)
+	svc.ReleaseWriteLock()
+
+	svc.mu.RLock()
+	entries := map[string]string{}
+	for k, v := range svc.current.fileHashes {
+		entries[k] = v
+	}
+	svc.mu.RUnlock()
+
+	setOf := func(path string) []int {
+		t.Helper()
+		entry, exists := entries[path]
+		if !exists {
+			t.Fatalf("no sidecar entry for %s", path)
+		}
+		if _, _, _, ok := parseFileHashEntry(entry); !ok {
+			t.Fatalf("entry for %s does not parse: %q", path, entry)
+		}
+		set, ok := fileHashEntryChunkSet(entry)
+		if !ok {
+			t.Fatalf("entry for %s carries no chunk set: %q", path, entry)
+		}
+		return set
+	}
+
+	if got := setOf(gappedPath); !slices.Equal(got, []int{0, 2, 3}) {
+		t.Errorf("gapped file set = %v, want [0 2 3]", got)
+	}
+	if got := setOf(droppedPath); !slices.Equal(got, []int{0}) {
+		t.Errorf("poison-dropped file set = %v, want [0]", got)
+	}
+	// Non-DocumentID IDs leave the set unknown: the entry parses (4-field)
+	// but carries no 5th field, so collectDocumentIDs falls back to Query.
+	entry := entries[legacyPath]
+	if _, _, _, ok := parseFileHashEntry(entry); !ok {
+		t.Fatalf("legacy-grammar entry does not parse: %q", entry)
+	}
+	if _, ok := fileHashEntryChunkSet(entry); ok {
+		t.Errorf("non-DocumentID IDs must leave the set unknown: %q", entry)
+	}
+
+	// A file whose every chunk was dropped still records an entry with the
+	// empty set "0" — otherwise it would be re-reported as new on every pass.
+	allDropped := "/ws/all-dropped.go"
+	allDroppedDocs := []chromem.Document{
+		doc(allDropped, "hA", DocumentID(allDropped, 0)),
+		doc(allDropped, "hA", DocumentID(allDropped, 1)),
+	}
+	allDroppedSet := map[string]struct{}{
+		DocumentID(allDropped, 0): {},
+		DocumentID(allDropped, 1): {},
+	}
+	svc.AcquireWriteLock()
+	svc.upsertFileHashesFiltered(allDroppedDocs, allDroppedSet)
+	svc.ReleaseWriteLock()
+	svc.mu.RLock()
+	entry = svc.current.fileHashes[allDropped]
+	svc.mu.RUnlock()
+	if entry == "" {
+		t.Fatal("fully poison-dropped file lost its sidecar entry")
+	}
+	if got, ok := fileHashEntryChunkSet(entry); !ok || len(got) != 0 {
+		t.Errorf("fully poison-dropped file set = %v (ok=%v), want empty known set", got, ok)
 	}
 }
 
@@ -628,7 +903,9 @@ func TestSwitchBranch_RoundTripsNewSidecarFormat(t *testing.T) {
 		t.Fatalf("SwitchBranch(main): %v", err)
 	}
 
-	wantEntry := newFormatEntry(t, content, info)
+	// The entry now carries the 5th field: the committed chunk-index set
+	// derived from the document ID ("d:0" → one chunk, index 0 → "1").
+	wantEntry := newFormatEntry(t, content, info) + fileHashEntrySep + "1"
 
 	// In-memory round-trip: the entry parses with identical components.
 	svc.mu.RLock()
@@ -640,6 +917,9 @@ func TestSwitchBranch_RoundTripsNewSidecarFormat(t *testing.T) {
 	gotHash, gotSize, gotMtime, ok := parseFileHashEntry(gotEntry)
 	if !ok || gotHash != computeHash(content) || gotSize != info.Size() || gotMtime != info.ModTime().UnixNano() {
 		t.Fatalf("round-tripped entry does not parse to the original components: %q", gotEntry)
+	}
+	if gotSet, setOK := fileHashEntryChunkSet(gotEntry); !setOK || len(gotSet) != 1 || gotSet[0] != 0 {
+		t.Fatalf("round-tripped entry chunk set = %v (ok=%v), want [0]", gotSet, setOK)
 	}
 
 	// On-disk round-trip: the persisted sidecar JSON stores the new format.
@@ -844,5 +1124,210 @@ func TestValidateCollection_PeriodicFullHashRevalidation(t *testing.T) {
 	}
 	if got := reads.Load(); got != 0 {
 		t.Fatalf("post-reset pass must skip content reads; got %d", got)
+	}
+}
+
+// TestBrowseWithFilter_NoEmbeddingCall pins the embedding-free Browse path:
+// when the embedding dimension is known, enumerating the collection must go
+// through QueryEmbedding with a fixed unit vector — the embedding function
+// (one ONNX inference per Browse, previously paid for the " " query text)
+// must not run at all, and the requested topK documents are still returned.
+// The dimension-0 sub-test pins the guard: an unknown dimension keeps the
+// embedding-bearing space-query path.
+func TestBrowseWithFilter_NoEmbeddingCall(t *testing.T) {
+	newBrowsedService := func(t *testing.T) (*Service, *atomic.Int32) {
+		t.Helper()
+		var embedCalls atomic.Int32
+		embed := func(_ context.Context, _ string) ([]float32, error) {
+			embedCalls.Add(1)
+			return []float32{0.1, 0.2, 0.3, 0.4}, nil
+		}
+		svc, err := NewService(ServiceConfig{EmbeddingFunc: embed})
+		if err != nil {
+			t.Fatalf("NewService: %v", err)
+		}
+		t.Cleanup(func() { _ = svc.Close() })
+		if err := svc.SetProject("proj", t.TempDir()); err != nil {
+			t.Fatalf("SetProject: %v", err)
+		}
+		if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
+			t.Fatalf("SwitchBranch: %v", err)
+		}
+		ws := t.TempDir()
+		files := []string{"a.go", "b.go", "c.go"}
+		docs := make([]chromem.Document, 0, 6)
+		for _, name := range files {
+			path := filepath.Join(ws, name)
+			for chunk := range 2 {
+				docs = append(docs, chromem.Document{
+					ID:      DocumentID(path, chunk),
+					Content: fmt.Sprintf("chunk %d of %s", chunk, name),
+					Metadata: map[string]string{
+						"file_path": path,
+						"file_name": name,
+						"language":  "go",
+					},
+				})
+			}
+		}
+		svc.AcquireWriteLock()
+		if err := svc.AddDocuments(context.Background(), docs, nil); err != nil {
+			svc.ReleaseWriteLock()
+			t.Fatalf("AddDocuments: %v", err)
+		}
+		svc.ReleaseWriteLock()
+		svc.SetReady(true)
+		return svc, &embedCalls
+	}
+
+	t.Run("known dimension: no embedding call, returns topK", func(t *testing.T) {
+		svc, embedCalls := newBrowsedService(t)
+		svc.embeddingDimension = 4
+		embedCalls.Store(0)
+
+		results, err := svc.BrowseWithFilter(context.Background(), 4, "")
+		if err != nil {
+			t.Fatalf("BrowseWithFilter: %v", err)
+		}
+		if got := embedCalls.Load(); got != 0 {
+			t.Errorf("Browse invoked the embedding function %d times; want 0 (unit-vector enumeration)", got)
+		}
+		if len(results) != 4 {
+			t.Fatalf("Browse returned %d results; want topK=4", len(results))
+		}
+		for _, r := range results {
+			if r.FilePath == "" || r.Content == "" {
+				t.Errorf("hollow browse result: %+v", r)
+			}
+		}
+
+		// The non-blocking form must behave identically on a ready index.
+		embedCalls.Store(0)
+		results, err = svc.BrowseWithFilterNoWait(context.Background(), 6, "")
+		if err != nil {
+			t.Fatalf("BrowseWithFilterNoWait: %v", err)
+		}
+		if got := embedCalls.Load(); got != 0 {
+			t.Errorf("BrowseWithFilterNoWait invoked the embedding function %d times; want 0", got)
+		}
+		if len(results) != 6 {
+			t.Fatalf("BrowseWithFilterNoWait returned %d results; want 6", len(results))
+		}
+	})
+
+	t.Run("known dimension: file filter still narrows without embedding", func(t *testing.T) {
+		svc, embedCalls := newBrowsedService(t)
+		svc.embeddingDimension = 4
+		embedCalls.Store(0)
+
+		results, err := svc.BrowseWithFilter(context.Background(), 10, "**/b.go")
+		if err != nil {
+			t.Fatalf("BrowseWithFilter: %v", err)
+		}
+		if got := embedCalls.Load(); got != 0 {
+			t.Errorf("filtered Browse invoked the embedding function %d times; want 0", got)
+		}
+		if len(results) != 2 {
+			t.Fatalf("filtered Browse returned %d results; want the 2 chunks of b.go", len(results))
+		}
+		for _, r := range results {
+			if r.FileName != "b.go" {
+				t.Errorf("filtered Browse leaked %s", r.FileName)
+			}
+		}
+	})
+
+	t.Run("unknown dimension: keeps the embedding-bearing query", func(t *testing.T) {
+		svc, embedCalls := newBrowsedService(t)
+		// embeddingDimension stays 0 (unset ServiceConfig) → legacy path.
+		embedCalls.Store(0)
+
+		results, err := svc.BrowseWithFilter(context.Background(), 3, "")
+		if err != nil {
+			t.Fatalf("BrowseWithFilter: %v", err)
+		}
+		if got := embedCalls.Load(); got != 1 {
+			t.Errorf("legacy Browse invoked the embedding function %d times; want exactly 1 (the \" \" query)", got)
+		}
+		if len(results) != 3 {
+			t.Fatalf("legacy Browse returned %d results; want 3", len(results))
+		}
+	})
+}
+
+// TestFileHashMigration_UsesUnitVectorQuery pins the other embedding-free
+// enumeration path: the background sidecar migration
+// (migrateFileHashes → queryCollectionFileHashes) must enumerate the
+// collection via QueryEmbedding with the unit vector when the embedding
+// dimension is known — no inference for the query itself.
+func TestFileHashMigration_UsesUnitVectorQuery(t *testing.T) {
+	dir := t.TempDir()
+
+	var embedCalls atomic.Int32
+	embed := func(_ context.Context, _ string) ([]float32, error) {
+		embedCalls.Add(1)
+		return []float32{0.1, 0.2, 0.3, 0.4}, nil
+	}
+
+	// Build a persisted non-empty collection (the AddDocuments calls embed
+	// per document on the legacy path — irrelevant here).
+	a, err := NewService(ServiceConfig{EmbeddingFunc: embed, EmbeddingDimension: 4})
+	if err != nil {
+		t.Fatalf("NewService A: %v", err)
+	}
+	if err := a.SetProject("proj", dir); err != nil {
+		t.Fatalf("SetProject A: %v", err)
+	}
+	if err := a.SwitchBranch(context.Background(), "main"); err != nil {
+		t.Fatalf("SwitchBranch A: %v", err)
+	}
+	docs := []chromem.Document{
+		{ID: "m1", Content: "alpha", Metadata: map[string]string{"file_path": filepath.Join(dir, "a.go"), "content_hash": "hA"}},
+		{ID: "m2", Content: "beta", Metadata: map[string]string{"file_path": filepath.Join(dir, "b.go"), "content_hash": "hB"}},
+	}
+	// Seed via raw chromem (full metadata persists) — the migration under
+	// test targets pre-upgrade collections; the service commit path now
+	// strips content_hash from stored documents (see strippedForCommit).
+	if err := a.current.collection.AddDocuments(context.Background(), docs, 1); err != nil {
+		t.Fatalf("chromem AddDocuments A: %v", err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatalf("Close A: %v", err)
+	}
+
+	// Upgrade scenario: collection present, sidecar absent.
+	if err := os.Remove(filepath.Join(dir, "file_hashes_"+collectionName("main")+".json")); err != nil {
+		t.Fatalf("remove sidecar: %v", err)
+	}
+
+	b, err := NewService(ServiceConfig{EmbeddingFunc: embed, EmbeddingDimension: 4})
+	if err != nil {
+		t.Fatalf("NewService B: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	if err := b.SetProject("proj", dir); err != nil {
+		t.Fatalf("SetProject B: %v", err)
+	}
+	embedCalls.Store(0)
+	if err := b.SwitchBranch(context.Background(), "main"); err != nil {
+		t.Fatalf("SwitchBranch B: %v", err)
+	}
+	if err := b.WaitFileHashMigration(context.Background()); err != nil {
+		t.Fatalf("WaitFileHashMigration: %v", err)
+	}
+
+	// The migration enumerated the collection with QueryEmbedding: no
+	// inference at all.
+	if got := embedCalls.Load(); got != 0 {
+		t.Errorf("migration invoked the embedding function %d times; want 0 (unit-vector enumeration)", got)
+	}
+	b.mu.RLock()
+	hashes, herr := b.getCollectionFileHashes()
+	b.mu.RUnlock()
+	if herr != nil {
+		t.Fatalf("getCollectionFileHashes: %v", herr)
+	}
+	if hashes[filepath.Join(dir, "a.go")] != "hA" || hashes[filepath.Join(dir, "b.go")] != "hB" {
+		t.Errorf("unexpected migrated hashes: %v", hashes)
 	}
 }

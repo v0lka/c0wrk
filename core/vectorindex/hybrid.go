@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -251,14 +252,20 @@ func (s *Service) hybridSearch(ctx context.Context, opts SearchOptions, wait boo
 		}
 	}
 
+	// One content resolver per search call: must-match filtering and final
+	// top-K hydration reconstruct chunk text from the source files (stored
+	// documents carry no content — see strippedForCommit), with a per-call
+	// path cache shared by both retrieval sides.
+	resolver := newContentResolver(s.maxFileSize)
+
 	// Dispatch to the appropriate path.
 	switch effectiveMode {
 	case ModeVector:
-		return s.vectorOnlySearch(ctx, col, baseQuery, topK, opts.FilePattern, mustMatch)
+		return s.vectorOnlySearch(ctx, col, baseQuery, topK, opts.FilePattern, mustMatch, resolver)
 	case ModeLexical:
-		return s.lexicalOnlySearch(ctx, col, lex, baseQuery, topK, opts.FilePattern, mustMatch)
+		return s.lexicalOnlySearch(ctx, col, lex, baseQuery, topK, opts.FilePattern, mustMatch, resolver)
 	case ModeHybrid:
-		return s.hybridSearchRRF(ctx, col, lex, baseQuery, topK, opts.FilePattern, mustMatch)
+		return s.hybridSearchRRF(ctx, col, lex, baseQuery, topK, opts.FilePattern, mustMatch, resolver)
 	default:
 		return nil, fmt.Errorf("unknown search mode %q", mode)
 	}
@@ -273,6 +280,7 @@ func (s *Service) vectorOnlySearch(
 	topK int,
 	filePattern string,
 	mustMatch []string,
+	resolver *contentResolver,
 ) ([]SearchResult, error) {
 	fanout := hybridFanout(topK, s.hybridConfig)
 	count := col.Count()
@@ -291,7 +299,7 @@ func (s *Service) vectorOnlySearch(
 	out := make([]SearchResult, 0, len(results))
 	rank := 0
 	for _, r := range results {
-		if !passesFilters(r, filePattern, mustMatch, s.logger) {
+		if !passesFilters(r, filePattern, mustMatch, resolver, s.logger) {
 			continue
 		}
 		rank++
@@ -303,6 +311,7 @@ func (s *Service) vectorOnlySearch(
 	if len(out) > topK {
 		out = out[:topK]
 	}
+	hydrateSearchContent(out, resolver)
 	return out, nil
 }
 
@@ -316,6 +325,7 @@ func (s *Service) lexicalOnlySearch(
 	topK int,
 	filePattern string,
 	mustMatch []string,
+	resolver *contentResolver,
 ) ([]SearchResult, error) {
 	fanout := hybridFanout(topK, s.hybridConfig)
 	hits, err := lex.Query(ctx, query, fanout)
@@ -334,7 +344,7 @@ func (s *Service) lexicalOnlySearch(
 			continue
 		}
 		r := chromem.Result{ID: doc.ID, Metadata: doc.Metadata, Content: doc.Content}
-		if !passesFilters(r, filePattern, mustMatch, s.logger) {
+		if !passesFilters(r, filePattern, mustMatch, resolver, s.logger) {
 			continue
 		}
 		rank++
@@ -347,6 +357,7 @@ func (s *Service) lexicalOnlySearch(
 	if len(out) > topK {
 		out = out[:topK]
 	}
+	hydrateSearchContent(out, resolver)
 	return out, nil
 }
 
@@ -371,6 +382,7 @@ func (s *Service) hybridSearchRRF(
 	topK int,
 	filePattern string,
 	mustMatch []string,
+	resolver *contentResolver,
 ) ([]SearchResult, error) {
 	fanout := hybridFanout(topK, s.hybridConfig)
 
@@ -414,8 +426,8 @@ func (s *Service) hybridSearchRRF(
 	// applied pre-fusion (see "Design invariants").
 	agg := make(map[string]*fusedEntry, len(vecResults)+len(lexHits))
 
-	aggregateVectorHits(agg, vecResults, filePattern, mustMatch, s.hybridConfig, s.logger)
-	aggregateLexicalHits(ctx, col, agg, lexHits, filePattern, mustMatch, s.hybridConfig, s.logger)
+	aggregateVectorHits(agg, vecResults, filePattern, mustMatch, s.hybridConfig, s.logger, resolver)
+	aggregateLexicalHits(ctx, col, agg, lexHits, filePattern, mustMatch, s.hybridConfig, s.logger, resolver)
 
 	out := make([]SearchResult, 0, len(agg))
 	for _, e := range agg {
@@ -435,6 +447,7 @@ func (s *Service) hybridSearchRRF(
 	if len(out) > topK {
 		out = out[:topK]
 	}
+	hydrateSearchContent(out, resolver)
 	return out, nil
 }
 
@@ -457,12 +470,13 @@ func aggregateVectorHits(
 	mustMatch []string,
 	hc HybridConfig,
 	logger *slog.Logger,
+	resolver *contentResolver,
 ) {
 	// First pass: path/mustmatch filter, collect survivors + top sim.
 	survivors := make([]chromem.Result, 0, len(vecResults))
 	var maxSim float32
 	for _, r := range vecResults {
-		if !passesFilters(r, filePattern, mustMatch, logger) {
+		if !passesFilters(r, filePattern, mustMatch, resolver, logger) {
 			continue
 		}
 		survivors = append(survivors, r)
@@ -512,6 +526,7 @@ func aggregateLexicalHits(
 	mustMatch []string,
 	hc HybridConfig,
 	logger *slog.Logger,
+	resolver *contentResolver,
 ) {
 	type survivor struct {
 		h       lexical.Hit
@@ -530,7 +545,7 @@ func aggregateLexicalHits(
 				continue
 			}
 			r := chromem.Result{ID: doc.ID, Metadata: doc.Metadata, Content: doc.Content}
-			if !passesFilters(r, filePattern, mustMatch, logger) {
+			if !passesFilters(r, filePattern, mustMatch, resolver, logger) {
 				continue
 			}
 			entry = &fusedEntry{result: r}
@@ -607,7 +622,15 @@ func matchFilePathPattern(pattern, filePath string) bool {
 
 // passesFilters returns true if the chromem result satisfies both the
 // file-path glob filter (if any) and all must-match tokens.
-func passesFilters(r chromem.Result, filePattern string, mustMatch []string, logger *slog.Logger) bool {
+//
+// Must-match checks the result's stored content first; documents committed
+// with a pre-populated embedding store none (see strippedForCommit), so for
+// them the chunk text is reconstructed from the source file via resolver —
+// lazily, only when a must-match token actually needs it. The resolver's
+// per-call path cache keeps multi-token checks over the same chunk at one
+// file read, and a missing/unreadable file yields the placeholder (which
+// contains no user token, so such hits fail the filter rather than match).
+func passesFilters(r chromem.Result, filePattern string, mustMatch []string, resolver *contentResolver, logger *slog.Logger) bool {
 	if filePattern != "" {
 		fp := r.Metadata["file_path"]
 		if !matchFilePathPattern(filePattern, fp) {
@@ -618,7 +641,16 @@ func passesFilters(r chromem.Result, filePattern string, mustMatch []string, log
 		if tok == "" {
 			continue
 		}
-		if !strings.Contains(r.Content, tok) {
+		if strings.Contains(r.Content, tok) {
+			continue
+		}
+		content := r.Content
+		if content == "" && resolver != nil {
+			startLine, _ := strconv.Atoi(r.Metadata["start_line"])
+			endLine, _ := strconv.Atoi(r.Metadata["end_line"])
+			content = resolver.chunkContent(r.Metadata["file_path"], startLine, endLine)
+		}
+		if !strings.Contains(content, tok) {
 			return false
 		}
 	}

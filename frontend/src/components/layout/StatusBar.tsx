@@ -11,6 +11,7 @@ import { IndexingStatus } from "./IndexingStatus";
 import { ContextFillStatus } from "./ContextFillStatus";
 import { CompactContextButton } from "./CompactContextButton";
 import { GoalStatusIndicator } from "./GoalStatusIndicator";
+import { ProcessMemoryStatus } from "./ProcessMemoryStatus";
 
 function Sep() {
   return <Separator orientation="vertical" className="mx-1 h-4" />;
@@ -82,6 +83,11 @@ export function StatusBar() {
           <IndexingStatus />
         </>
       )}
+
+      {/* Live process memory (RSS) — last block, always visible including
+          No Project mode (memory usage is process-wide, not per-project) */}
+      <Sep />
+      <ProcessMemoryStatus />
     </div>
   );
 }

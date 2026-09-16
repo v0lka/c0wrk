@@ -468,6 +468,14 @@ func ApplyDefaults(cfg *Config) {
 		v := vectorindex.DefaultParkCapacity
 		cfg.VectorIndex.ParkCapacity = &v
 	}
+	// ParkBudgetMb is a pointer-int64: nil (unset) resolves to the default
+	// of 1024 MiB, while an explicit negative is preserved as the
+	// "budget disabled" sentinel (park_capacity alone bounds the LRU). An
+	// explicit 0 is NOT defaulted here — validate() rejects it as ambiguous.
+	if cfg.VectorIndex.ParkBudgetMb == nil {
+		v := vectorindex.DefaultParkBudgetBytes >> 20
+		cfg.VectorIndex.ParkBudgetMb = &v
+	}
 
 	// Execution provider. The empty string (a config written before the
 	// knob existed, or no vector_index block at all) normalizes to "auto".
@@ -560,6 +568,13 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Git.AutoFetchInterval == "" {
 		cfg.Git.AutoFetchInterval = "2m"
 	}
+
+	// Runtime defaults need no mutation: runtime.memory_soft_limit_mb is a
+	// tri-state int whose zero value already IS the default (0 = auto — the
+	// desktop layer derives the soft limit from physical RAM, see
+	// desktop/memlimit.go; >0 = explicit MiB; -1 = off). Documented here so
+	// default hunters find it; the sentinel is pinned by
+	// DefaultMemorySoftLimitMB and validated in validate().
 }
 
 // gitShellWord matches one shell word whose value may embed whitespace via

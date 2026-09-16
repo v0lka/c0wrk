@@ -76,6 +76,11 @@ type FrontendAPI struct {
 	// helpers; nil in production, where the real workspace functions run.
 	gitStatusFn  func(root string) (map[string]GitStatusEntry, error)
 	gitIgnoredFn func(root string) (map[string]bool, error)
+	// readProcessRSSFn, when non-nil, overrides the resident-set-size read
+	// behind GetProcessMemory (frontend_api_system.go). Test-only seam (nil
+	// in production, where readProcessRSS from processmem.go runs), mirroring
+	// gitStatusFn.
+	readProcessRSSFn func() (uint64, error)
 	// remoteOpMu serializes remote git operations (pull/push/fetch) so that
 	// only one network operation runs at a time per app instance.
 	remoteOpMu sync.Mutex

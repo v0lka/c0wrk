@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	chromem "github.com/philippgille/chromem-go"
 
@@ -416,5 +417,226 @@ func TestService_ParkConcurrentSwitches(t *testing.T) {
 	}
 	if svc.current.projectID != "" && seen[svc.current.projectID] {
 		t.Errorf("current project %q is also present in the park LRU", svc.current.projectID)
+	}
+}
+
+// installParkBudgetEstimator swaps the estimateStateBytes seam for a fixed
+// per-project footprint so budget-eviction tests can simulate
+// multi-hundred-MiB parked states without materializing them. Restores the
+// original on cleanup. Safe because the package's tests run sequentially
+// (only the Telemetry tests opt into t.Parallel, and they never touch seams).
+func installParkBudgetEstimator(t *testing.T, bytesByID map[string]int64) {
+	t.Helper()
+	orig := estimateStateBytes
+	estimateStateBytes = func(ps *projectState, _ int) int64 {
+		if ps == nil {
+			return 0
+		}
+		return bytesByID[ps.projectID]
+	}
+	t.Cleanup(func() { estimateStateBytes = orig })
+}
+
+// installFreeOSMemoryRecorder swaps the freeOSMemory seam for a recorder and
+// returns a channel receiving one value per call. The eviction path invokes
+// the seam in its own goroutine, so tests wait on the channel with a timeout
+// (assertFreeOSMemoryCalled).
+func installFreeOSMemoryRecorder(t *testing.T) <-chan struct{} {
+	t.Helper()
+	orig := freeOSMemory
+	called := make(chan struct{}, 16)
+	freeOSMemory = func() { called <- struct{}{} }
+	t.Cleanup(func() { freeOSMemory = orig })
+	return called
+}
+
+// assertFreeOSMemoryCalled waits for the asynchronous freeOSMemory nudge that
+// follows an actual eviction.
+func assertFreeOSMemoryCalled(t *testing.T, called <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-called:
+	case <-time.After(5 * time.Second):
+		t.Fatal("freeOSMemory seam was not called after an eviction")
+	}
+}
+
+// parkBudgetSwitchProject drives the standard open-a-project flow used by the
+// budget tests: SetProject + SwitchBranch, so the state gains a branch (and
+// with it a flushable file-hash sidecar).
+func parkBudgetSwitchProject(t *testing.T, svc *Service, id, dir string) {
+	t.Helper()
+	if err := svc.SetProject(id, dir); err != nil {
+		t.Fatalf("SetProject %s: %v", id, err)
+	}
+	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
+		t.Fatalf("SwitchBranch %s: %v", id, err)
+	}
+}
+
+// TestService_ParkBudgetEvictsOldest is the byte-budget seam acceptance test:
+// with every state estimated at ~600 MiB and a 1024 MiB budget, parking the
+// second state (cumulative 1200 MiB > budget) evicts the OLDEST parked state
+// while the freshly parked one stays; capacity 3 alone would have kept both.
+func TestService_ParkBudgetEvictsOldest(t *testing.T) {
+	sixHundredMiB := int64(600) << 20
+	installParkBudgetEstimator(t, map[string]int64{
+		"A": sixHundredMiB,
+		"B": sixHundredMiB,
+		"C": sixHundredMiB,
+	})
+
+	base := t.TempDir()
+	svc, err := NewService(ServiceConfig{
+		EmbeddingFunc:   fakeEmbeddingFunc(),
+		ParkCapacity:    3, // generous: only the byte budget may evict
+		ParkBudgetBytes: 1024 << 20,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+
+	for _, id := range []string{"A", "B", "C"} {
+		parkBudgetSwitchProject(t, svc, id, filepath.Join(base, id))
+	}
+
+	// Parking B left [A] (600 MiB ≤ 1024 MiB). Parking C pushed the sum to
+	// 1200 MiB > budget, so the OLDEST (A) was evicted; B (fresh) remains
+	// parked and C is current.
+	if ids := parkedIDs(svc); len(ids) != 1 || ids[0] != "B" {
+		t.Fatalf("parked = %v, want [B] (A must be evicted by the byte budget)", ids)
+	}
+	if svc.current.projectID != "C" {
+		t.Fatalf("current = %q, want C", svc.current.projectID)
+	}
+}
+
+// TestService_ParkBudgetNegativeCapacityOnly pins the negative disable
+// sentinel at the service layer: with ParkBudgetBytes < 0 the byte estimate
+// never evicts anything and the LRU is bounded by park_capacity alone.
+func TestService_ParkBudgetNegativeCapacityOnly(t *testing.T) {
+	sixHundredMiB := int64(600) << 20
+	installParkBudgetEstimator(t, map[string]int64{
+		"A": sixHundredMiB,
+		"B": sixHundredMiB,
+		"C": sixHundredMiB,
+	})
+
+	base := t.TempDir()
+	svc, err := NewService(ServiceConfig{
+		EmbeddingFunc:   fakeEmbeddingFunc(),
+		ParkCapacity:    3,
+		ParkBudgetBytes: -1,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+
+	for _, id := range []string{"A", "B", "C"} {
+		parkBudgetSwitchProject(t, svc, id, filepath.Join(base, id))
+	}
+
+	// The summed 1200 MiB estimate would exceed the 1024 MiB default budget,
+	// but a negative budget disables the byte bound: nothing is evicted and
+	// the capacity-3 LRU holds both A and B (C is current).
+	if ids := parkedIDs(svc); len(ids) != 2 || ids[0] != "A" || ids[1] != "B" {
+		t.Fatalf("parked = %v, want [A B] (negative budget: capacity alone applies)", ids)
+	}
+}
+
+// TestService_ParkBudgetEvictionFlushesSidecarAndFreesMemory verifies the
+// budget-eviction contract end to end: the evicted state's file-hash sidecar
+// is flushed to disk (the same contract a capacity eviction honours) and the
+// freeOSMemory seam is invoked asynchronously so the freed RAM is returned
+// to the OS.
+func TestService_ParkBudgetEvictionFlushesSidecarAndFreesMemory(t *testing.T) {
+	called := installFreeOSMemoryRecorder(t)
+	installParkBudgetEstimator(t, map[string]int64{
+		"A": 100,
+		"B": 1000,
+		"C": 1,
+	})
+
+	base := t.TempDir()
+	dirA := filepath.Join(base, "A")
+
+	svc, err := NewService(ServiceConfig{
+		EmbeddingFunc:   fakeEmbeddingFunc(),
+		ParkCapacity:    5, // generous: only the byte budget may evict
+		ParkBudgetBytes: 1024,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+
+	parkBudgetSwitchProject(t, svc, "A", dirA)
+	parkAddDocs(t, svc, dirA, "a.go", "hashA")
+
+	// Park A by switching to B (100 ≤ 1024: stays parked), then remove A's
+	// sidecar so the budget eviction's flush is observable on disk.
+	parkBudgetSwitchProject(t, svc, "B", filepath.Join(base, "B"))
+	sidecarA := filepath.Join(dirA, "file_hashes_branch_main.json")
+	if err := os.Remove(sidecarA); err != nil {
+		t.Fatalf("removing A sidecar to make the eviction flush observable: %v", err)
+	}
+
+	// Park B by switching to C: 100 + 1000 > 1024 → A (oldest) evicted by the
+	// byte budget alone (capacity 5 is nowhere near exceeded).
+	parkBudgetSwitchProject(t, svc, "C", filepath.Join(base, "C"))
+
+	if ids := parkedIDs(svc); len(ids) != 1 || ids[0] != "B" {
+		t.Fatalf("parked = %v, want [B] (A must be evicted by the byte budget)", ids)
+	}
+
+	data, err := os.ReadFile(sidecarA)
+	if err != nil {
+		t.Fatalf("budget-evicted A's sidecar was not flushed to disk: %v", err)
+	}
+	var m map[string]string
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("evicted sidecar is not valid JSON: %v", err)
+	}
+	if m[filepath.Join(dirA, "a.go")] == "" {
+		t.Errorf("budget-evicted sidecar is missing A's entry; got %v", m)
+	}
+
+	assertFreeOSMemoryCalled(t, called)
+}
+
+// TestService_ParkDisabledDespiteBudget pins that park_capacity: 0 (the
+// zero value here) disables parking entirely even when a byte budget is
+// configured: every switch reopens the persistent DB and nothing is parked.
+func TestService_ParkDisabledDespiteBudget(t *testing.T) {
+	counter := installPersistentDBOpenCounter(t)
+
+	// Storage roots before the Close-cleanup registration (t.Cleanup is
+	// LIFO): svc.Close must release the lexical handles before the TempDir
+	// RemoveAll, or the unlink fails on Windows.
+	dirA := filepath.Join(t.TempDir(), "A")
+	dirB := filepath.Join(t.TempDir(), "B")
+
+	// ParkCapacity left at its zero value (parking disabled) while a budget
+	// is present: the budget must not resurrect parking.
+	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc(), ParkBudgetBytes: 1 << 20})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+
+	parkBudgetSwitchProject(t, svc, "A", dirA)
+	parkAddDocs(t, svc, dirA, "a.go", "hashA")
+
+	parkBudgetSwitchProject(t, svc, "B", dirB)
+	if len(svc.parked) != 0 {
+		t.Errorf("parked = %d, want 0 (park_capacity 0 disables parking regardless of the budget)", len(svc.parked))
+	}
+
+	// Returning to A reopens it — there is no parked state to restore from.
+	parkBudgetSwitchProject(t, svc, "A", dirA)
+	if got := counter.count(dirA); got != 2 {
+		t.Errorf("persistent DB for A opened %d times, want 2 (reopen expected)", got)
 	}
 }

@@ -1239,7 +1239,13 @@ func (a *App) startVectorIndexBackground(
 			// vector-index state resident (vector_index.park_capacity;
 			// resolved default 3, explicit 0 disables parking).
 			ParkCapacity: derefInt(cfg.VectorIndex.ParkCapacity),
-			Logger:       log,
+			// ParkBudgetBytes: cumulative resident-memory budget for the
+			// park LRU (vector_index.park_budget_mb → bytes; resolved
+			// default 1024 MiB, explicit negative disables the byte budget
+			// — park_capacity alone). The arithmetic shift keeps the
+			// negative disable sentinel negative.
+			ParkBudgetBytes: derefInt64(cfg.VectorIndex.ParkBudgetMb) << 20,
+			Logger:          log,
 		})
 		if err != nil {
 			log.Warn("vector search unavailable", "error", err)
@@ -1321,6 +1327,17 @@ func derefFloat(p *float64) float64 {
 // pointer-int vector-index sentinel (search_wait_timeout_ms: unset → default,
 // explicit 0 → fail-fast) into a plain value for vectorindex.ManagerConfig.
 func derefInt(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// derefInt64 returns *p when p is non-nil, else 0. Used to convert the
+// pointer-int64 vector-index park budget (park_budget_mb: unset → applied
+// default, explicit negative → disable sentinel) into plain bytes for
+// vectorindex.ManagerConfig.
+func derefInt64(p *int64) int64 {
 	if p == nil {
 		return 0
 	}

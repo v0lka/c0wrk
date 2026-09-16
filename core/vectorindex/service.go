@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,27 @@ import (
 // from the park LRU does NOT reopen (and therefore re-gob-decode) its
 // persistent DB. Production code must never reassign it.
 var newPersistentDB = chromem.NewPersistentDB
+
+// estimateStateBytes approximates the resident memory a parked project state
+// keeps alive: one embedding vector (embeddingDimension float32s) plus a
+// coarse ~1 KiB per-document allowance covering the chromem document (content,
+// metadata, map entry) and its lock-step bleve lexical entry. It is a package
+// variable — not a method — purely as a test seam (mirroring newPersistentDB):
+// tests swap it to simulate multi-hundred-MiB states without materializing
+// them. Production code must never reassign it.
+var estimateStateBytes = func(ps *projectState, embeddingDimension int) int64 {
+	if ps == nil || ps.collection == nil {
+		return 0
+	}
+	return int64(ps.collection.Count()) * (int64(embeddingDimension)*4 + 1024)
+}
+
+// freeOSMemory is a test seam over debug.FreeOSMemory: an actual park
+// eviction schedules it (as its own goroutine, off the service lock) so the
+// potentially hundreds of MiB a parked state kept resident are returned to
+// the OS promptly instead of lingering until the next natural GC cycle.
+// Tests swap it to observe the call without a real stop-the-world pause.
+var freeOSMemory = debug.FreeOSMemory
 
 // ServiceConfig holds configuration for creating a Service.
 type ServiceConfig struct {
@@ -99,6 +121,18 @@ type ServiceConfig struct {
 	// DB from scratch. Resolved from vector_index.park_capacity (default 3).
 	ParkCapacity int
 
+	// ParkBudgetBytes is the cumulative byte budget for the park LRU
+	// (vector_index.park_budget_mb, converted to bytes by desktop startup):
+	// right after a state is appended, the oldest parked states are evicted
+	// while the summed estimateStateBytes of the LRU exceeds the budget, so
+	// the effective bound is min(ParkCapacity, ParkBudgetBytes). Like
+	// ParkCapacity, NO default is applied here: the config layer resolves an
+	// unset key to 1024 MiB, while 0 (or negative — the config disable
+	// sentinel) keeps ParkCapacity as the only bound, which is also the
+	// zero-value behaviour for test literals. ParkCapacity <= 0 still
+	// disables parking entirely regardless of this budget.
+	ParkBudgetBytes int64
+
 	// Logger for structured logging.
 	Logger *slog.Logger
 
@@ -170,6 +204,21 @@ type projectState struct {
 	// treat every file as new. Not guarded by mu on its own; it is only read
 	// and written while holding the owning Service's mu.
 	sidecarReloadOnRestore bool
+
+	// contentlessCh is closed when this branch's one-time content-less
+	// migration has settled (completed, nothing to do, or abandoned on
+	// park/close/branch switch). WaitContentlessMigration selects on it.
+	// nil before the first SwitchBranch; closedChan when no migration is
+	// needed (marker present, empty collection, or in-memory state).
+	contentlessCh chan struct{}
+
+	// contentlessCancel cancels an in-flight migrateContentless goroutine
+	// (on branch switch / project switch / close / rebuild).
+	contentlessCancel context.CancelFunc
+
+	// contentlessPending is true while the background content-less migration
+	// is in flight for the current branch.
+	contentlessPending atomic.Bool
 }
 
 // Service manages chromem-go collections with git-branch awareness,
@@ -196,6 +245,12 @@ type Service struct {
 	// from vector_index.park_capacity (default 3). 0 (or negative) disables
 	// parking. See ServiceConfig.ParkCapacity.
 	parkCapacity int
+
+	// parkBudgetBytes is the cumulative byte budget for the park LRU
+	// (vector_index.park_budget_mb → bytes). 0 (or negative) disables
+	// budget-based eviction — parkCapacity alone bounds the LRU. See
+	// ServiceConfig.ParkBudgetBytes.
+	parkBudgetBytes int64
 
 	embeddingFunc chromem.EmbeddingFunc
 	batchEmbedder BatchEmbedder
@@ -270,6 +325,7 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		embeddingDimension:        cfg.EmbeddingDimension,
 		embeddingCacheMaxBytes:    cfg.EmbeddingCacheMaxBytes,
 		parkCapacity:              cfg.ParkCapacity,
+		parkBudgetBytes:           cfg.ParkBudgetBytes,
 	}
 	// current starts as an empty in-memory state so every accessor (including
 	// the lock-free GetCollection/GetDB) is safe before the first SetProject.
@@ -340,6 +396,12 @@ func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...
 			ps.sidecarReloadOnRestore = false
 			s.loadFileHashes()
 		}
+		// A content-less migration cancelled by the park must replay: the
+		// marker is only written on full completion, and SwitchBranch on the
+		// restored state early-returns (same branch, live collection), so
+		// this is the re-entry point. No-op when the marker already exists
+		// or the collection is empty.
+		s.maybeMigrateContentlessLocked()
 		s.logger.Info("project restored from park", "projectID", projectID)
 		return nil
 	}
@@ -397,7 +459,13 @@ func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...
 //   - parking disabled (parkCapacity <= 0) or the state is not a real project
 //     (the empty in-memory No-Project state) → close it;
 //   - otherwise → push it onto the LRU, evicting the oldest state(s) when the
-//     capacity is exceeded.
+//     capacity is exceeded and then, while the summed estimated resident bytes
+//     of the parked states exceed the byte budget, oldest-first until the sum
+//     fits (a state larger than the whole budget evicts everything, itself
+//     included).
+//
+// An actual eviction (by capacity or budget) schedules the freeOSMemory seam
+// asynchronously so the freed RAM is returned to the OS promptly.
 //
 // After the call s.current holds a fresh empty state (never nil, so the
 // lock-free GetCollection/GetDB readers can never dereference nil);
@@ -431,6 +499,15 @@ func (s *Service) parkCurrentLocked() {
 		ps.migrationCancel()
 		ps.migrationCancel = nil
 	}
+	// A parked state's in-flight content-less migration is abandoned the
+	// same way: it re-triggers on the next restore (SetProject) or open
+	// (loadFileHashes → maybeMigrateContentlessLocked). Its per-window
+	// flushes take s.mu.RLock, so they cannot interleave with this critical
+	// section.
+	if ps.contentlessCancel != nil {
+		ps.contentlessCancel()
+		ps.contentlessCancel = nil
+	}
 
 	if s.parkCapacity <= 0 || ps.projectPath == "" {
 		// Parking disabled, or nothing worth keeping (the empty in-memory
@@ -440,11 +517,43 @@ func (s *Service) parkCurrentLocked() {
 	}
 
 	s.parked = append(s.parked, ps)
-	// Evict least-recently-parked states beyond the LRU capacity.
+	// Evict least-recently-parked states: first beyond the LRU capacity,
+	// then — while the cumulative estimated footprint of the parked states
+	// exceeds the byte budget — oldest-first until the sum fits. The
+	// effective bound is min(capacity, budget); the victim is always
+	// parked[0], the oldest.
+	evicted := false
 	for len(s.parked) > s.parkCapacity {
 		s.evictLocked(s.parked[0])
 		s.parked = s.parked[1:]
+		evicted = true
 	}
+	if s.parkBudgetBytes > 0 {
+		for len(s.parked) > 0 && s.parkedBytesLocked() > s.parkBudgetBytes {
+			s.evictLocked(s.parked[0])
+			s.parked = s.parked[1:]
+			evicted = true
+		}
+	}
+	if evicted {
+		// The freed states can hold hundreds of MiB of vectors and lexical
+		// index entries. Return them to the OS promptly: debug.FreeOSMemory
+		// forces a full GC cycle (stop-the-world), so run it in its own
+		// goroutine — the func value is captured now, the goroutine never
+		// takes s.mu, and the lock is released the moment
+		// parkCurrentLocked returns.
+		go freeOSMemory()
+	}
+}
+
+// parkedBytesLocked sums the estimated resident footprints of the parked
+// states (see estimateStateBytes). The caller must hold s.mu.
+func (s *Service) parkedBytesLocked() int64 {
+	var total int64
+	for _, ps := range s.parked {
+		total += estimateStateBytes(ps, s.embeddingDimension)
+	}
+	return total
 }
 
 // takeParkedLocked returns and removes the parked state matching
@@ -488,6 +597,11 @@ func (s *Service) closeStateLocked(ps *projectState) {
 	ps.collection = nil
 	ps.fileHashes = nil
 	ps.migrationCh = nil
+	if ps.contentlessCancel != nil {
+		ps.contentlessCancel()
+		ps.contentlessCancel = nil
+	}
+	ps.contentlessCh = nil
 	ps.currentBranch = ""
 }
 
@@ -511,8 +625,9 @@ func (s *Service) evictLocked(ps *projectState) {
 }
 
 // Browse returns up to topK chunks from the current collection without semantic
-// ordering. It uses a space query to enumerate documents (the same approach used
-// by getCollectionFileHashes). Blocks via WaitReady if the index is not yet ready.
+// ordering. It enumerates documents with a fixed unit-vector query (no ONNX
+// inference) when the embedding dimension is known, falling back to the space
+// query otherwise. Blocks via WaitReady if the index is not yet ready.
 func (s *Service) Browse(ctx context.Context, topK int) ([]SearchResult, error) {
 	return s.BrowseWithFilter(ctx, topK, "")
 }
@@ -531,6 +646,23 @@ func (s *Service) BrowseWithFilter(ctx context.Context, topK int, fileFilter str
 // the call cannot block them until the pass finishes.
 func (s *Service) BrowseWithFilterNoWait(ctx context.Context, topK int, fileFilter string) ([]SearchResult, error) {
 	return s.browseWithFilter(ctx, topK, fileFilter, false)
+}
+
+// unitQueryVector returns a unit vector along the first axis of the
+// configured embedding dimension, for embedding-free enumeration queries
+// (chromem QueryEmbedding), or nil when the dimension is unknown (0) — in
+// which case callers keep the embedding-bearing text-query path. Browse-style
+// callers promise no semantic ordering, so the arbitrary-but-deterministic
+// ranking a unit vector induces is equivalent to the space-query it replaces.
+// The dimension is fixed at construction (never mutated), so no lock is
+// required.
+func (s *Service) unitQueryVector() []float32 {
+	if s.embeddingDimension <= 0 {
+		return nil
+	}
+	vec := make([]float32, s.embeddingDimension)
+	vec[0] = 1
+	return vec
 }
 
 // browseWithFilter implements BrowseWithFilter; wait selects the blocking
@@ -560,7 +692,20 @@ func (s *Service) browseWithFilter(ctx context.Context, topK int, fileFilter str
 		topK = count
 	}
 
-	results, err := s.current.collection.Query(ctx, " ", topK, nil, nil)
+	// Embedding-free enumeration: with a known embedding dimension the query
+	// vector can be a fixed unit vector instead of embedding " ", removing
+	// one ONNX inference per Browse. (QueryEmbedding also skips the query
+	// text entirely.) Ranking under a unit vector is arbitrary — Browse
+	// promises no semantic ordering — exactly like the space-query it
+	// replaces; the fileFilter below still narrows the returned set.
+	// dim == 0 (dimension unknown) keeps the embedding-bearing path.
+	var results []chromem.Result
+	var err error
+	if unitVec := s.unitQueryVector(); unitVec != nil {
+		results, err = s.current.collection.QueryEmbedding(ctx, unitVec, topK, nil, nil)
+	} else {
+		results, err = s.current.collection.Query(ctx, " ", topK, nil, nil)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("browsing collection: %w", err)
 	}
@@ -577,6 +722,11 @@ func (s *Service) browseWithFilter(ctx context.Context, topK int, fileFilter str
 
 		out = append(out, sr)
 	}
+
+	// Committed documents store no chunk text; fill Content from the source
+	// files for the (already topK-bounded) returned set. One resolver per
+	// call, so each distinct file is read at most once.
+	hydrateSearchContent(out, newContentResolver(s.maxFileSize))
 
 	return out, nil
 }
@@ -860,13 +1010,23 @@ func (s *Service) Close() error {
 }
 
 // resultToSearchResult converts a chromem-go Result to a SearchResult.
+// Content is passed through as-is: committed documents store no chunk text
+// (see strippedForCommit), so the caller hydrates the final top-K from the
+// source files via hydrateSearchContent. FileName is derived from FilePath —
+// documents no longer store a file_name metadata field.
 func resultToSearchResult(r chromem.Result) SearchResult {
 	startLine, _ := strconv.Atoi(r.Metadata["start_line"])
 	endLine, _ := strconv.Atoi(r.Metadata["end_line"])
 
+	fp := r.Metadata["file_path"]
+	fileName := ""
+	if fp != "" {
+		fileName = filepath.Base(fp)
+	}
+
 	return SearchResult{
-		FilePath:  r.Metadata["file_path"],
-		FileName:  r.Metadata["file_name"],
+		FilePath:  fp,
+		FileName:  fileName,
 		Content:   r.Content,
 		Score:     r.Similarity,
 		StartLine: startLine,
