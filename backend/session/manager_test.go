@@ -57,6 +57,69 @@ func testWorkspacePath(t *testing.T) string {
 	return t.TempDir()
 }
 
+// retryRemoveAll removes dir, absorbing a transient "directory not empty"
+// (ENOTEMPTY) error by retrying within a bounded budget.
+//
+// Go's testing package applies exactly this bounded retry to the Windows
+// "Access is denied." variant of the spurious teardown error (see
+// testing.removeAll) but, on Unix, removes the per-test temp *parent* with a
+// single non-retrying os.RemoveAll. A background goroutine that appends one
+// entry to a directory while RemoveAll is walking it makes the final rmdir
+// fail with ENOTEMPTY — the classic "TempDir RemoveAll cleanup: unlinkat ...
+// directory not empty" flake (golang/go#43547, #20841). It needs CPU
+// starvation to land, which is why it shows up on the few-vCPU macOS CI runner
+// and not on a local multi-core box.
+func retryRemoveAll(dir string) error {
+	// Mirror testing.removeAll's shape: a hard budget with an exponentially
+	// growing sleep between attempts.
+	const budget = 2 * time.Second
+	var (
+		start     time.Time
+		nextSleep = 1 * time.Millisecond
+	)
+	for {
+		err := os.RemoveAll(dir)
+		if err == nil || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if start.IsZero() {
+			start = time.Now()
+		} else if d := time.Since(start) + nextSleep; d >= budget {
+			return err
+		}
+		time.Sleep(nextSleep)
+		nextSleep *= 2
+	}
+}
+
+// runtimeTempDir creates a fresh directory under the OS temp root and registers
+// a retrying cleanup for it, returning the directory path.
+//
+// Use it instead of t.TempDir() in tests that hand the directory to a Manager
+// whose Shutdown runs via t.Cleanup: t.TempDir()'s per-test temp *parent* is
+// torn down by testing's single non-retrying os.RemoveAll, so any entry a
+// not-yet-joined background goroutine appends during teardown fails the whole
+// test with "TempDir RemoveAll cleanup: ... directory not empty" (see
+// retryRemoveAll). Every directory created here is removed with the bounded
+// retry instead, so that benign temporal race cannot fail the test.
+//
+// Cleanup order still matters: register the manager's Shutdown cleanup AFTER
+// the last runtimeTempDir call so the LIFO order stops the manager before its
+// directories are removed.
+func runtimeTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "c0wrk-session-test-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := retryRemoveAll(dir); err != nil {
+			t.Errorf("temp dir RemoveAll cleanup: %v", err)
+		}
+	})
+	return dir
+}
+
 // drainEvents drains all pending events from the channel.
 func drainEvents(ch chan Event) {
 	for {

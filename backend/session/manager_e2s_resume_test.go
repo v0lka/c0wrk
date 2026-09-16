@@ -38,10 +38,10 @@ func TestResumeTask_RestartResumesE2STaskWithRestoredSigma(t *testing.T) {
 		t.Fatalf("marshal seeded state: %v", err)
 	}
 
-	ws := testWorkspacePath(t)
+	ws := runtimeTempDir(t)
 	eventChan := make(chan Event, 100)
 	caller := &e2sRecordingLLM{}
-	mgr := NewManager(functionalOrchestratorFactory(caller), func(e Event) { eventChan <- e }, t.TempDir())
+	mgr := NewManager(functionalOrchestratorFactory(caller), func(e Event) { eventChan <- e }, runtimeTempDir(t))
 	t.Cleanup(mgr.Shutdown)
 	mgr.SetTaskStore(store)
 	mgr.SetSessionStore(sessions)
@@ -116,10 +116,10 @@ func TestResumeTask_E2STerminalStateNotResumed(t *testing.T) {
 		t.Fatalf("marshal seeded state: %v", err)
 	}
 
-	ws := testWorkspacePath(t)
+	ws := runtimeTempDir(t)
 	eventChan := make(chan Event, 100)
 	caller := &e2sRecordingLLM{}
-	mgr := NewManager(functionalOrchestratorFactory(caller), func(e Event) { eventChan <- e }, t.TempDir())
+	mgr := NewManager(functionalOrchestratorFactory(caller), func(e Event) { eventChan <- e }, runtimeTempDir(t))
 	t.Cleanup(mgr.Shutdown)
 	mgr.SetTaskStore(store)
 	mgr.SetSessionStore(sessions)
@@ -168,9 +168,9 @@ func TestAbandonE2SIfUnfinished_CancelsNonTerminalState(t *testing.T) {
 	store := newInMemoryTaskStore()
 	sessions := newMockSessionStore()
 
-	ws := testWorkspacePath(t)
+	ws := runtimeTempDir(t)
 	eventChan := make(chan Event, 100)
-	mgr := NewManager(functionalOrchestratorFactory(&e2sRecordingLLM{}), func(e Event) { eventChan <- e }, t.TempDir())
+	mgr := NewManager(functionalOrchestratorFactory(&e2sRecordingLLM{}), func(e Event) { eventChan <- e }, runtimeTempDir(t))
 	t.Cleanup(mgr.Shutdown)
 	mgr.SetTaskStore(store)
 	mgr.SetSessionStore(sessions)
@@ -232,9 +232,9 @@ func TestAbandonUnfinishedTaskForE2S_TerminalizesStateAndClearsMatchingAnchor(t 
 	store := newInMemoryTaskStore()
 	sessions := newMockSessionStore()
 
-	ws := testWorkspacePath(t)
+	ws := runtimeTempDir(t)
 	eventChan := make(chan Event, 100)
-	mgr := NewManager(functionalOrchestratorFactory(&e2sRecordingLLM{}), func(e Event) { eventChan <- e }, t.TempDir())
+	mgr := NewManager(functionalOrchestratorFactory(&e2sRecordingLLM{}), func(e Event) { eventChan <- e }, runtimeTempDir(t))
 	t.Cleanup(mgr.Shutdown)
 	mgr.SetTaskStore(store)
 	mgr.SetSessionStore(sessions)
@@ -315,9 +315,9 @@ func TestAbandonUnfinishedTaskForE2S_KeepsUnrelatedAnchor(t *testing.T) {
 	store := newInMemoryTaskStore()
 	sessions := newMockSessionStore()
 
-	ws := testWorkspacePath(t)
+	ws := runtimeTempDir(t)
 	eventChan := make(chan Event, 100)
-	mgr := NewManager(functionalOrchestratorFactory(&e2sRecordingLLM{}), func(e Event) { eventChan <- e }, t.TempDir())
+	mgr := NewManager(functionalOrchestratorFactory(&e2sRecordingLLM{}), func(e Event) { eventChan <- e }, runtimeTempDir(t))
 	t.Cleanup(mgr.Shutdown)
 	mgr.SetTaskStore(store)
 	mgr.SetSessionStore(sessions)
