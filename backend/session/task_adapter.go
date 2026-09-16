@@ -429,6 +429,40 @@ func (f *unitStoreFacade) SaveUnit(rec units.UnitRecord) error {
 	return f.us.SaveTaskUnit(context.Background(), toTaskUnitRecord(rec))
 }
 
+// unitStatusSettler is the optional targeted-status capability a unit task
+// store may implement. When present, the facade settles through a single
+// column-scoped conditional UPDATE (SQLiteSessionStore implements it);
+// otherwise it falls back to a whole-record load-mutate-save, which is correct
+// but — like SaveUnit — can drop a concurrent writer's spec/steps.
+type unitStatusSettler interface {
+	SettleTaskUnitStatusIfInFlight(ctx context.Context, taskID, namespace, unitID, status string) (bool, error)
+}
+
+// SettleUnitStatusIfInFlight implements units.Store: it transitions a unit's
+// status only while the unit is still in flight (pending/running), touching the
+// status column alone.
+func (f *unitStoreFacade) SettleUnitStatusIfInFlight(taskID, namespace, id string, status units.UnitStatus) (bool, error) {
+	if ss, ok := f.us.(unitStatusSettler); ok {
+		return ss.SettleTaskUnitStatusIfInFlight(context.Background(), taskID, namespace, id, string(status))
+	}
+	recs, err := f.us.LoadTaskUnits(context.Background(), taskID)
+	if err != nil {
+		return false, err
+	}
+	for _, rec := range recs {
+		if rec.UnitID != id || rec.Namespace != namespace {
+			continue
+		}
+		if !units.UnitStatus(rec.Status).InFlight() {
+			return false, nil
+		}
+		rec.Status = string(status)
+		rec.UpdatedAt = time.Now().UTC()
+		return true, f.us.SaveTaskUnit(context.Background(), rec)
+	}
+	return false, nil
+}
+
 // LoadUnits returns every unit persisted under a task, across all namespaces.
 func (f *unitStoreFacade) LoadUnits(taskID string) ([]units.UnitRecord, error) {
 	recs, err := f.us.LoadTaskUnits(context.Background(), taskID)

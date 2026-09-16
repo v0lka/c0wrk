@@ -72,11 +72,38 @@ func (s UnitStatus) Valid() bool {
 }
 
 // Terminal reports whether s is a status a unit cannot leave (a terminal
-// outcome). A completed, failed or interrupted unit is finished; pending,
-// running and paused units are still in flight.
+// outcome): completed or failed.
+//
+// `interrupted` is deliberately NON-terminal: it marks a unit left unfinished
+// by a crash/app exit, and the resume funnel must relaunch it (fresh, since it
+// carries no checkpoint) rather than replay it as a finished outcome. The
+// funnel's classification (resumeUnit.terminal) is defined in terms of this
+// method, so this is the single definition of "finished".
 func (s UnitStatus) Terminal() bool {
 	switch s {
-	case UnitStatusCompleted, UnitStatusFailed, UnitStatusInterrupted:
+	case UnitStatusCompleted, UnitStatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// InFlight reports whether s is a status a unit occupies while it is still
+// executing or awaiting execution (pending or running). It is the predicate the
+// "settle an abandoned unit on read" path uses: only an in-flight unit on a
+// non-executing task was abandoned by a crash/app exit.
+func (s UnitStatus) InFlight() bool {
+	return s == UnitStatusPending || s == UnitStatusRunning
+}
+
+// Container reports whether the kind is a CONTAINER record — a unit that groups
+// other units (the task root, a goal-verification pass) rather than being
+// relaunchable execution work itself. Containers are excluded wherever units
+// are enumerated as work: the resume funnel never relaunches them, and the
+// session-runtime snapshot must not surface (or settle) them either.
+func (k UnitKind) Container() bool {
+	switch k {
+	case UnitKindTask, UnitKindGoalVerification:
 		return true
 	default:
 		return false
@@ -110,13 +137,24 @@ type UnitRecord struct {
 // is readable by the other when they target the same task.
 //
 // This is the single write/read API: SaveUnit upserts a whole record (spec +
-// status + steps) and LoadUnits returns every unit persisted under a task,
-// across all namespaces. Implementations live outside this package so the
-// contract stays free of storage dependencies.
+// status + steps), SettleUnitStatusIfInFlight performs a column-scoped
+// conditional status transition, and LoadUnits returns every unit persisted
+// under a task, across all namespaces. Implementations live outside this
+// package so the contract stays free of storage dependencies.
 type Store interface {
 	// SaveUnit inserts or replaces a unit record (keyed by task + namespace +
 	// id). It must be safe for concurrent use.
 	SaveUnit(rec UnitRecord) error
+	// SettleUnitStatusIfInFlight transitions the unit identified by
+	// (taskID, namespace, id) to status, updating ONLY its status column, and
+	// reports whether the row was actually transitioned. The write is applied
+	// only while the unit is still in flight (pending/running), so it is
+	// idempotent under concurrent callers — exactly one of them observes the
+	// transition and emits, the rest are no-ops — and because it never rewrites
+	// spec/steps/topology it cannot drop another writer's rebuild spec or resume
+	// checkpoint the way SaveUnit's whole-record upsert can. An id that does not
+	// exist, or is already out of flight, reports (false, nil).
+	SettleUnitStatusIfInFlight(taskID, namespace, id string, status UnitStatus) (bool, error)
 	// LoadUnits returns every unit persisted for a task, ordered by creation
 	// time. It returns an empty slice (not an error) when none exist.
 	LoadUnits(taskID string) ([]UnitRecord, error)
@@ -167,8 +205,23 @@ type ledger struct {
 	store     Store
 	taskID    string
 	namespace string
-	mem       map[string]UnitRecord
+	// mem holds this ledger's own writes, keyed by key(id) — the namespace is
+	// part of the key, so a mainline ledger (namespace "") and an isolated one
+	// (the goal verifier) cannot resolve each other's same-id units.
+	mem map[string]UnitRecord
+	// loaded caches the store's records for this task after the first by-id
+	// lookup that misses mem, keyed like mem. It makes a batch of Begin /
+	// Checkpoint / Settle calls (a plan arm registering every step, a resume
+	// wave settling every abandoned unit) pay ONE task-wide store read instead
+	// of one per call. List always reads the store, so it stays authoritative
+	// for a full enumeration; a record another writer adds after this ledger's
+	// first read is not visible to get.
+	loaded   map[string]UnitRecord
+	loadedOK bool
 }
+
+// key is the in-memory identity of a unit: its namespace qualifies its id.
+func (l *ledger) key(id string) string { return l.namespace + "\x00" + id }
 
 // NewLedger builds a unit ledger scoped to one task and namespace. This is the
 // ISOLATED constructor: an isolated execution context (such as the goal
@@ -189,6 +242,15 @@ func NewLedger(store Store, taskID, namespace string) Ledger {
 }
 
 // Begin implements Ledger.
+//
+// Re-registration is idempotent for the durable record: a unit can be
+// registered more than once for the same task (the plan arm re-registers every
+// step on each execute_plan, a resumed run re-registers its delegates), and the
+// record it lands on may already carry a rebuild spec, a resume checkpoint, a
+// settled status and a creation timestamp. Begin therefore preserves what the
+// caller did not supply instead of clobbering it — overwriting a checkpoint, or
+// re-stamping created_at, would make the single durable record assert something
+// untrue and shift created_at-ordered reads.
 func (l *ledger) Begin(rec UnitRecord) error {
 	if rec.ID == "" {
 		return ErrUnitIDRequired
@@ -200,11 +262,28 @@ func (l *ledger) Begin(rec UnitRecord) error {
 	if l.namespace != "" {
 		rec.Namespace = l.namespace
 	}
+	// A status the caller stated explicitly is validated up front; an absent one
+	// defaults to pending below and never overwrites a durable status.
+	explicitStatus := rec.Status != ""
+	if explicitStatus && !rec.Status.Valid() {
+		return fmt.Errorf("units: invalid status %q for unit %s", rec.Status, rec.ID)
+	}
+	if prev, ok := l.get(rec.ID); ok {
+		if rec.CreatedAt.IsZero() {
+			rec.CreatedAt = prev.CreatedAt
+		}
+		if len(rec.Spec) == 0 {
+			rec.Spec = prev.Spec
+		}
+		if len(rec.Steps) == 0 {
+			rec.Steps = prev.Steps
+		}
+		if !explicitStatus && prev.Status != "" {
+			rec.Status = prev.Status
+		}
+	}
 	if rec.Status == "" {
 		rec.Status = UnitStatusPending
-	}
-	if !rec.Status.Valid() {
-		return fmt.Errorf("units: invalid status %q for unit %s", rec.Status, rec.ID)
 	}
 	if rec.CreatedAt.IsZero() {
 		rec.CreatedAt = now
@@ -212,7 +291,7 @@ func (l *ledger) Begin(rec UnitRecord) error {
 	rec.UpdatedAt = now
 
 	l.mu.Lock()
-	l.mem[rec.ID] = rec
+	l.mem[l.key(rec.ID)] = rec
 	l.mu.Unlock()
 
 	return l.persist(rec)
@@ -257,8 +336,8 @@ func (l *ledger) List() ([]UnitRecord, error) {
 	}
 	// The in-memory overlay wins: a write that the store rejected (or that had
 	// no store to reach) is still visible to the writer.
-	for id, rec := range l.mem {
-		byKey[rec.Namespace+"\x00"+id] = rec
+	for k, rec := range l.mem {
+		byKey[k] = rec
 	}
 	l.mu.Unlock()
 
@@ -286,21 +365,33 @@ func (l *ledger) update(id string, fn func(*UnitRecord)) error {
 	rec.UpdatedAt = time.Now().UTC()
 
 	l.mu.Lock()
-	l.mem[id] = rec
+	l.mem[l.key(id)] = rec
 	l.mu.Unlock()
 
 	return l.persist(rec)
 }
 
-// get returns the unit with the given id, preferring the in-memory overlay and
-// falling back to the store.
+// get returns the unit with the given id in the ledger's OWN namespace,
+// preferring the in-memory overlay, then the cached store load, then the store.
+// Namespace equality is required in every tier: an id is only unique within a
+// namespace, so a mainline ledger (namespace "") must never resolve a
+// goal-verifier unit that happens to share the id — resolving it would settle
+// (and persist) the WRONG row, leaving the intended one un-settled.
 func (l *ledger) get(id string) (UnitRecord, bool) {
+	k := l.key(id)
+
 	l.mu.Lock()
-	rec, ok := l.mem[id]
-	l.mu.Unlock()
-	if ok {
+	if rec, ok := l.mem[k]; ok {
+		l.mu.Unlock()
 		return rec, true
 	}
+	if l.loadedOK {
+		rec, ok := l.loaded[k]
+		l.mu.Unlock()
+		return rec, ok
+	}
+	l.mu.Unlock()
+
 	if l.store == nil {
 		return UnitRecord{}, false
 	}
@@ -308,12 +399,15 @@ func (l *ledger) get(id string) (UnitRecord, bool) {
 	if err != nil {
 		return UnitRecord{}, false
 	}
+	l.mu.Lock()
+	l.loaded = make(map[string]UnitRecord, len(recs))
 	for _, r := range recs {
-		if r.ID == id && (l.namespace == "" || r.Namespace == l.namespace) {
-			return r, true
-		}
+		l.loaded[r.Namespace+"\x00"+r.ID] = r
 	}
-	return UnitRecord{}, false
+	l.loadedOK = true
+	rec, ok := l.loaded[k]
+	l.mu.Unlock()
+	return rec, ok
 }
 
 // persist writes rec through the store when one is configured. A nil store is

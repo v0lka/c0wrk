@@ -46,6 +46,21 @@ func (f *fakeStore) LoadUnits(taskID string) ([]UnitRecord, error) {
 	return out, nil
 }
 
+// SettleUnitStatusIfInFlight mirrors the production targeted update: only an
+// in-flight unit is transitioned, and only its status changes.
+func (f *fakeStore) SettleUnitStatusIfInFlight(taskID, namespace, id string, status UnitStatus) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := fakeKey(taskID, namespace, id)
+	rec, ok := f.recs[k]
+	if !ok || !rec.Status.InFlight() {
+		return false, nil
+	}
+	rec.Status = status
+	f.recs[k] = rec
+	return true, nil
+}
+
 func (f *fakeStore) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -243,19 +258,199 @@ type storeProvider struct{ store Store }
 
 func (p *storeProvider) UnitStore() Store { return p.store }
 
-// TestLedgerStatusTerminal documents the Terminal classification used by
-// callers to decide whether a unit is finished.
+// TestLedgerStatusTerminal documents the Terminal classification used by the
+// resume funnel to decide whether a unit is finished. `interrupted` is
+// deliberately NOT terminal — it is a crash/app-exit marker the funnel
+// relaunches fresh — so only a genuine outcome (completed/failed) is finished.
 func TestLedgerStatusTerminal(t *testing.T) {
-	terminal := []UnitStatus{UnitStatusCompleted, UnitStatusFailed, UnitStatusInterrupted}
+	terminal := []UnitStatus{UnitStatusCompleted, UnitStatusFailed}
 	for _, s := range terminal {
 		if !s.Terminal() {
 			t.Errorf("%q should be terminal", s)
 		}
 	}
-	inFlight := []UnitStatus{UnitStatusPending, UnitStatusRunning, UnitStatusPaused}
-	for _, s := range inFlight {
+	nonTerminal := []UnitStatus{UnitStatusPending, UnitStatusRunning, UnitStatusPaused, UnitStatusInterrupted}
+	for _, s := range nonTerminal {
 		if s.Terminal() {
 			t.Errorf("%q should not be terminal", s)
 		}
+	}
+
+	// InFlight is the "abandoned by a crash" predicate: only a registered-not-
+	// started or actively-running unit can have been abandoned in flight.
+	inFlight := []UnitStatus{UnitStatusPending, UnitStatusRunning}
+	for _, s := range inFlight {
+		if !s.InFlight() {
+			t.Errorf("%q should be in flight", s)
+		}
+	}
+	settled := []UnitStatus{UnitStatusPaused, UnitStatusCompleted, UnitStatusFailed, UnitStatusInterrupted}
+	for _, s := range settled {
+		if s.InFlight() {
+			t.Errorf("%q should not be in flight", s)
+		}
+	}
+}
+
+// TestLedgerNamespaceScopedIdentity pins the fix for the namespace-blind
+// lookup: a unit id is only unique WITHIN a namespace, so settling through a
+// ledger whose in-memory overlay is empty (the post-restart shape) must resolve
+// the row in the ledger's OWN namespace — never a same-id row an isolated
+// context wrote under the same task.
+func TestLedgerNamespaceScopedIdentity(t *testing.T) {
+	store := newFakeStore()
+	mainline := NewLedger(store, "task-ns", "")
+	isolated := NewLedger(store, "task-ns", "goal_verification")
+
+	mainSpec := json.RawMessage(`{"who":"mainline"}`)
+	verSpec := json.RawMessage(`{"who":"verifier"}`)
+	if err := mainline.Begin(UnitRecord{ID: "del_1", Kind: UnitKindSubagent, Status: UnitStatusRunning, Spec: mainSpec}); err != nil {
+		t.Fatalf("mainline Begin: %v", err)
+	}
+	if err := isolated.Begin(UnitRecord{ID: "del_1", Kind: UnitKindSubagent, Status: UnitStatusRunning, Spec: verSpec}); err != nil {
+		t.Fatalf("isolated Begin: %v", err)
+	}
+	if err := isolated.Settle("del_1", UnitStatusPaused); err != nil {
+		t.Fatalf("isolated Settle: %v", err)
+	}
+
+	// A FRESH mainline ledger has an empty overlay, so the settle has to
+	// resolve the row from the store — the path where an id-only match could
+	// pick the verifier's row.
+	fresh := NewLedger(store, "task-ns", "")
+	if err := fresh.Settle("del_1", UnitStatusCompleted); err != nil {
+		t.Fatalf("fresh mainline Settle: %v", err)
+	}
+
+	// Read the DURABLE rows (not a ledger's List, whose own-write overlay would
+	// mask the store).
+	recs, err := store.LoadUnits("task-ns")
+	if err != nil {
+		t.Fatalf("LoadUnits: %v", err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("LoadUnits returned %d units, want 2 (one per namespace)", len(recs))
+	}
+	byNS := map[string]UnitRecord{}
+	for _, rec := range recs {
+		byNS[rec.Namespace] = rec
+	}
+	if got := byNS[""].Status; got != UnitStatusCompleted {
+		t.Errorf("mainline del_1 status = %q, want completed", got)
+	}
+	if got := byNS["goal_verification"].Status; got != UnitStatusPaused {
+		t.Errorf("verifier del_1 status = %q, want paused (a mainline settle must never touch it)", got)
+	}
+	if string(byNS[""].Spec) != string(mainSpec) || string(byNS["goal_verification"].Spec) != string(verSpec) {
+		t.Errorf("specs crossed namespaces: mainline=%s verifier=%s", byNS[""].Spec, byNS["goal_verification"].Spec)
+	}
+
+	// Same guard the other way round: a fresh isolated ledger resolves the
+	// verifier row, not the mainline one.
+	freshIso := NewLedger(store, "task-ns", "goal_verification")
+	if err := freshIso.Settle("del_1", UnitStatusInterrupted); err != nil {
+		t.Fatalf("fresh isolated Settle: %v", err)
+	}
+	recs, _ = store.LoadUnits("task-ns")
+	for _, rec := range recs {
+		if rec.Namespace == "" && rec.Status != UnitStatusCompleted {
+			t.Errorf("isolated settle clobbered the mainline row: status = %q", rec.Status)
+		}
+		if rec.Namespace == "goal_verification" && rec.Status != UnitStatusInterrupted {
+			t.Errorf("verifier del_1 status = %q, want interrupted", rec.Status)
+		}
+	}
+}
+
+// TestLedgerBeginPreservesDurableState pins the idempotent re-registration
+// contract: Begin over an existing record must preserve its creation time,
+// rebuild spec, resume checkpoint and settled status — only metadata the caller
+// actually supplies (and cannot already be there) may change.
+func TestLedgerBeginPreservesDurableState(t *testing.T) {
+	store := newFakeStore()
+	l := NewLedger(store, "task-rereg", "")
+
+	spec := json.RawMessage(`{"task":{"id":"del_1"}}`)
+	if err := l.Begin(UnitRecord{ID: "del_1", Kind: UnitKindSubagent, Status: UnitStatusRunning, Spec: spec}); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := l.Checkpoint("del_1", []agent.Step{{Thought: "prior"}, {Thought: "more"}}); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
+	}
+	if err := l.Settle("del_1", UnitStatusPaused); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	before, _ := l.List()
+	createdAt := before[0].CreatedAt
+
+	// The plan arm's shape: re-register with no status, spec or steps.
+	if err := l.Begin(UnitRecord{ID: "del_1", Kind: UnitKindSubagent}); err != nil {
+		t.Fatalf("re-Begin: %v", err)
+	}
+
+	after, err := l.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	got := after[0]
+	if !got.CreatedAt.Equal(createdAt) {
+		t.Errorf("created_at = %v, want it preserved (%v)", got.CreatedAt, createdAt)
+	}
+	if string(got.Spec) != string(spec) {
+		t.Errorf("spec = %s, want it preserved (%s)", got.Spec, spec)
+	}
+	if got.Status != UnitStatusPaused {
+		t.Errorf("status = %q, want the durable paused status preserved, not reset to pending", got.Status)
+	}
+	var steps []agent.Step
+	if err := json.Unmarshal(got.Steps, &steps); err != nil {
+		t.Fatalf("unmarshal checkpoint: %v", err)
+	}
+	if len(steps) != 2 || steps[0].Thought != "prior" {
+		t.Errorf("checkpoint = %+v, want the two stored thoughts", steps)
+	}
+}
+
+// TestStoreSettleUnitStatusIfInFlight pins the targeted settle contract the
+// session-runtime snapshot relies on: only an in-flight unit transitions, the
+// report is the transition itself (so concurrent callers have one winner), and
+// spec/checkpoint survive untouched.
+func TestStoreSettleUnitStatusIfInFlight(t *testing.T) {
+	store := newFakeStore()
+	l := NewLedger(store, "task-if", "")
+	if err := l.Begin(UnitRecord{ID: "u1", Kind: UnitKindSubagent, Status: UnitStatusRunning, Spec: json.RawMessage(`{"a":1}`)}); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := l.Checkpoint("u1", []agent.Step{{Thought: "x"}}); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
+	}
+
+	changed, err := store.SettleUnitStatusIfInFlight("task-if", "", "u1", UnitStatusInterrupted)
+	if err != nil || !changed {
+		t.Fatalf("SettleUnitStatusIfInFlight = %v/%v, want true/nil", changed, err)
+	}
+	// Idempotent: the racing second caller observes no transition.
+	if changed, err := store.SettleUnitStatusIfInFlight("task-if", "", "u1", UnitStatusInterrupted); err != nil || changed {
+		t.Errorf("second settle = %v/%v, want false/nil (already settled)", changed, err)
+	}
+	// An unknown id and a wrong namespace are no-ops.
+	if changed, _ := store.SettleUnitStatusIfInFlight("task-if", "other", "u1", UnitStatusInterrupted); changed {
+		t.Error("a wrong namespace must not settle")
+	}
+	if changed, _ := store.SettleUnitStatusIfInFlight("task-if", "", "missing", UnitStatusInterrupted); changed {
+		t.Error("an unknown id must not settle")
+	}
+
+	recs, _ := store.LoadUnits("task-if")
+	got := recs[0]
+	if got.Status != UnitStatusInterrupted {
+		t.Errorf("status = %q, want interrupted", got.Status)
+	}
+	if len(got.Spec) == 0 {
+		t.Error("targeted settle must not drop the rebuild spec")
+	}
+	var steps []agent.Step
+	if err := json.Unmarshal(got.Steps, &steps); err != nil || len(steps) != 1 {
+		t.Errorf("targeted settle dropped the checkpoint: %s (err %v)", got.Steps, err)
 	}
 }

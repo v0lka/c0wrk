@@ -22,6 +22,7 @@ function resetStore(): void {
     runtimeEventAt: {},
     taskFlagsEventAt: {},
     workUnitStatus: {},
+    workUnitEventAt: {},
   })
 }
 
@@ -71,10 +72,23 @@ describe('reconcileWorkUnits', () => {
     expect(useChatStore.getState().workUnitStatus[SESSION]).toEqual(overlay)
   })
 
-  it('clears the overlay when the snapshot is empty/absent', () => {
+  it('distinguishes "no data" from "no units"', () => {
     reconcileWorkUnits(SESSION, [{ step_id: 'del_1', status: 'paused' }])
-    expect(reconcileWorkUnits(SESSION, undefined)).toEqual({})
+    // An ABSENT snapshot is no data (an older backend / no durable units): the
+    // overlay must be left alone, not silently cleared.
+    expect(reconcileWorkUnits(SESSION, undefined)).toEqual({ del_1: 'paused' })
+    expect(useChatStore.getState().workUnitStatus[SESSION]).toEqual({ del_1: 'paused' })
+    // An EMPTY snapshot is the backend's authoritative "no reconcilable units".
+    expect(reconcileWorkUnits(SESSION, [])).toEqual({})
     expect(useChatStore.getState().workUnitStatus[SESSION]).toEqual({})
+  })
+
+  it('does not let a stale snapshot clobber a fresher live settlement', () => {
+    // The snapshot was read a moment before the settle event landed.
+    const snapshotReadAt = Date.now() - 1000
+    useChatStore.getState().settleWorkUnit(SESSION, 'del_live', 'interrupted')
+    reconcileWorkUnits(SESSION, [{ step_id: 'del_live', status: 'running' }], snapshotReadAt)
+    expect(useChatStore.getState().workUnitStatus[SESSION]).toEqual({ del_live: 'interrupted' })
   })
 })
 
@@ -124,6 +138,18 @@ describe('groupMessages with the work-unit overlay', () => {
     const messages = [uiMsg('launch-del_4', 'subagent_launch', { step_id: 'del_4', description: 'x' })]
     reconcileWorkUnits(SESSION, [{ step_id: 'other', status: 'interrupted' }])
     expect(subagentStatus(messages, 'del_4')).toBe('running')
+  })
+
+  it('never overrides a message-derived paused block', () => {
+    // A cooperatively paused subagent: the pause event set the block 'paused',
+    // while a stale snapshot entry (seeded from an active load) still says
+    // running. The overlay must not resurrect the spinner on a resumable block.
+    const messages = [
+      uiMsg('launch-del_p', 'subagent_launch', { step_id: 'del_p', description: 'pausable' }),
+      uiMsg('pause-del_p', 'subagent_paused', { step_id: 'del_p' }),
+    ]
+    reconcileWorkUnits(SESSION, [{ step_id: 'del_p', status: 'running' }])
+    expect(subagentStatus(messages, 'del_p')).toBe('paused')
   })
 })
 

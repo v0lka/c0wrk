@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { usePlanStore } from './planStore'
 import type { AgentMetricsData } from '@/types/events'
+import type { PlanGroup, PlanItem } from '@/types/models'
 
 const metrics: AgentMetricsData = {
   finish: 'full',
@@ -43,5 +44,51 @@ describe('planStore sessionStats (agent_metrics)', () => {
     usePlanStore.getState().setSessionStats('s1', { lastAgentMetrics: metrics })
     usePlanStore.getState().setSessionStats('s2', { routingDomain: 'plan' })
     expect(usePlanStore.getState().sessionStats['s2']?.lastAgentMetrics).toBeUndefined()
+  })
+})
+
+describe('planStore applyWorkUnitStatuses (durable work-unit reconcile)', () => {
+  const plan = (statuses: PlanItem['status'][]): PlanGroup => ({
+    id: 'plan-1',
+    items: statuses.map((status, i) => ({
+      id: `step_${i + 1}`,
+      title: `step ${i + 1}`,
+      description: `d${i + 1}`,
+      status,
+      dependsOn: [] as string[],
+    })),
+    completedCount: 0,
+    failedCount: 0,
+    totalCount: statuses.length,
+  })
+
+  beforeEach(() => {
+    usePlanStore.setState({ planGroups: [] })
+  })
+
+  it('corrects a still-running step the ledger settled as interrupted', () => {
+    usePlanStore.getState().setPlan(plan(['completed', 'running']))
+    usePlanStore.getState().applyWorkUnitStatuses({ step_2: 'interrupted' })
+    const items = usePlanStore.getState().planGroups[0]!.items
+    expect(items[0]!.status).toBe('completed')
+    expect(items[1]!.status).toBe('interrupted')
+    // Counts stay derived from the corrected items.
+    expect(usePlanStore.getState().planGroups[0]!.completedCount).toBe(1)
+  })
+
+  it('never regresses a step that is not running', () => {
+    usePlanStore.getState().setPlan(plan(['completed', 'paused', 'failed']))
+    usePlanStore.getState().applyWorkUnitStatuses({
+      step_1: 'interrupted', step_2: 'running', step_3: 'interrupted',
+    })
+    const items = usePlanStore.getState().planGroups[0]!.items
+    expect(items.map((i) => i.status)).toEqual(['completed', 'paused', 'failed'])
+  })
+
+  it('is a no-op (stable reference) when nothing changes', () => {
+    usePlanStore.getState().setPlan(plan(['running']))
+    const before = usePlanStore.getState().planGroups
+    usePlanStore.getState().applyWorkUnitStatuses({})
+    expect(usePlanStore.getState().planGroups).toBe(before)
   })
 })

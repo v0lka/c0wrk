@@ -22,6 +22,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -199,5 +200,57 @@ func TestRecoveryContract_GoalTurnErrorIsResumableFailure(t *testing.T) {
 	}
 	if recovered.Status != orchestration.ExecutionStatusSuccess {
 		t.Errorf("recovered.Status = %q, want %q (Resume must recover the errored goal)", recovered.Status, orchestration.ExecutionStatusSuccess)
+	}
+}
+
+// TestRecoveryContract_GoalTurnErrorRespectsTurnBudget pins the budget guard on
+// the turn-error retry: a retry spends a real turn, so an erroring goal with a
+// user-set MaxTurns must NOT run MaxTurns + goalTurnMaxErrorRetries turns. The
+// loop halts at the budget with the goal left ACTIVE (still resumable).
+func TestRecoveryContract_GoalTurnErrorRespectsTurnBudget(t *testing.T) {
+	o := newGoalTestOrchestrator()
+	runner := &mockGoalTurnRunner{errAllTurns: true}
+	o.goalTurnRunner = runner.run
+
+	gs := &goal.GoalState{
+		Status: goal.StatusActive, Condition: "ship it",
+		Budget: goal.GoalBudget{MaxTurns: 2},
+	}
+	loopResult, paused := o.runGoalTurns(context.Background(), "msg", orchestration.NewMapBlackboard(), nil, "", nil, gs, runner.run)
+	if loopResult.Status != goal.StatusActive || paused {
+		t.Fatalf("runGoalTurns status = %q, paused = %v, want %q / false", loopResult.Status, paused, goal.StatusActive)
+	}
+	if runner.calls != 2 {
+		t.Errorf("turn attempts = %d, want exactly the MaxTurns budget (2) — the retry must not outrun it", runner.calls)
+	}
+	if gs.LastError == "" {
+		t.Error("gs.LastError is empty, want the recorded turn error (the cause stays recoverable)")
+	}
+}
+
+// TestRecoveryContract_GoalCancelIsNotATurnError pins the cancel classification:
+// a user cancel landing after a retried turn error must NOT be reported as
+// "stopped after a turn error" (the stale marker must be cleared).
+func TestRecoveryContract_GoalCancelIsNotATurnError(t *testing.T) {
+	o := newGoalTestOrchestrator()
+	runner := &mockGoalTurnRunner{turnErrs: []error{errors.New("provider unavailable")}}
+	o.goalTurnRunner = runner.run
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel as soon as the first (erroring) turn has run: the loop retries,
+	// re-checks the context at the top of the next turn, and breaks as a cancel.
+	runner.onTurn = func(int) { cancel() }
+
+	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "ship it"}
+	loopResult, paused := o.runGoalTurns(ctx, "msg", orchestration.NewMapBlackboard(), nil, "", nil, gs, runner.run)
+	if paused {
+		t.Fatal("paused = true, want false (a cancel is not a pause)")
+	}
+	if gs.LastError != "" {
+		t.Errorf("gs.LastError = %q, want it cleared on a cancel", gs.LastError)
+	}
+	mapped := o.goalLoopResult("", orchestration.NewMapBlackboard(), nil, loopResult.Status, gs.Condition, paused, gs.LastError)
+	if mapped.Status == orchestration.ExecutionStatusFailed {
+		t.Errorf("mapped task status = %q, want a cancel/partial — never the turn-error failure", mapped.Status)
 	}
 }

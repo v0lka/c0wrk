@@ -1,7 +1,9 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"sync"
 
@@ -177,12 +179,21 @@ func (s *unitSink) warn(op, id string, err error) {
 }
 
 // unitStatusFor maps a settled outcome's error onto the durable unit status.
-// A cooperative pause is a recoverable checkpoint (paused, not failed); any
-// other non-nil error is a failure; a nil error is a completion.
+//
+// A cooperative pause is a recoverable checkpoint (paused, not failed). A
+// CANCELLATION is an abandonment, not a failure of the unit: a graceful app
+// exit or a task cancel leaves the delegation mid-flight, exactly like the
+// crash the ledger's `interrupted` status exists for. Mapping it to `failed`
+// would make the unit terminal, so the resume funnel would DROP the in-flight
+// delegated work instead of relaunching it fresh — whether abandoned work is
+// recovered would then depend only on whether the exit was graceful. Any other
+// non-nil error is a failure; a nil error is a completion.
 func unitStatusFor(execErr error) units.UnitStatus {
 	switch {
 	case isPaused(execErr):
 		return units.UnitStatusPaused
+	case errors.Is(execErr, context.Canceled), errors.Is(execErr, context.DeadlineExceeded):
+		return units.UnitStatusInterrupted
 	case execErr != nil:
 		return units.UnitStatusFailed
 	default:

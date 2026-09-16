@@ -378,8 +378,11 @@ export interface PlanItem {
   description?: string
   summary?: string
   /** 'paused': cooperative pause checkpoint — started but unfinished;
-   *  untouched steps keep 'pending'. */
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'paused'
+   *  untouched steps keep 'pending'. 'interrupted': the durable unit ledger
+   *  settled the step as abandoned by a crash/app exit (a restart left it in
+   *  flight with no terminal event) — NOT a completion, so it renders as a
+   *  distinct stopped state rather than a permanent running spinner. */
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'paused' | 'interrupted'
   duration?: number
   dependsOn: string[]
 }

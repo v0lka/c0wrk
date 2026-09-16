@@ -96,16 +96,39 @@ export function workUnitBlockStatus(status: string): WorkUnitBlockStatus | null 
  * delegate or plan-step block renders its true state after a restart/session
  * load instead of a stale "running" (its replayed history carries no terminal
  * event). The overlay is consumed by groupMessages. Returns the overlay stored
- * (also handy for tests).
+ * (also handy for tests, and for the plan-panel reconcile).
+ *
+ * `snapshotReadAt` is the time the caller read the status (before the RPC
+ * resolved). A live `work_unit_settled` / fresh-launch clear that landed after
+ * that read is fresher than the snapshot's view of that step, so those entries
+ * are carried over rather than overwritten with the older status.
  */
 export function reconcileWorkUnits(
   sessionId: string,
   units: WorkUnitSnapshot[] | undefined,
+  snapshotReadAt?: number,
 ): Record<string, WorkUnitBlockStatus> {
+  const state = useChatStore.getState()
+  // No DATA is not the same as no UNITS: an absent snapshot (an older backend,
+  // or a task with no durable unit storage) must leave the overlay alone rather
+  // than silently clearing entries live events recorded.
+  if (units === undefined) return state.workUnitStatus[sessionId] ?? {}
+
+  const liveAt = state.workUnitEventAt[sessionId] ?? {}
   const overlay: Record<string, WorkUnitBlockStatus> = {}
-  for (const unit of units ?? []) {
+  if (snapshotReadAt !== undefined) {
+    for (const [stepId, status] of Object.entries(state.workUnitStatus[sessionId] ?? {})) {
+      if ((liveAt[stepId] ?? 0) > snapshotReadAt) overlay[stepId] = status
+    }
+  }
+  for (const unit of units) {
     const status = workUnitBlockStatus(unit.status)
-    if (status) overlay[unit.step_id] = status
+    if (!status) continue
+    // A live write for THIS step that landed after the read wins over the
+    // snapshot's older view; overwriting would roll a settled block back to the
+    // stale 'running' this reconciliation exists to remove.
+    if (snapshotReadAt !== undefined && (liveAt[unit.step_id] ?? 0) > snapshotReadAt) continue
+    overlay[unit.step_id] = status
   }
   useChatStore.getState().setWorkUnitStatus(sessionId, overlay)
   return overlay
@@ -115,13 +138,14 @@ export function reconcileWorkUnits(
  * A live `work_unit_settled` event: a unit was explicitly settled because the
  * resume funnel will not relaunch it (an abandoned in-flight unit → interrupted).
  * Record it in the overlay so a live view aligns immediately; the reload path
- * gets the same fact from the work-unit snapshot.
+ * gets the same fact from the work-unit snapshot. Written through the store
+ * action (not setWorkUnitStatus) so it also stamps workUnitEventAt — this is
+ * LIVE knowledge, and an in-flight snapshot read before it must not outrank it.
  */
 export function applyWorkUnitSettled(sessionId: string, stepId: string, status: string): void {
   const blockStatus = workUnitBlockStatus(status)
   if (!stepId || !blockStatus) return
-  const current = useChatStore.getState().workUnitStatus[sessionId] ?? {}
-  useChatStore.getState().setWorkUnitStatus(sessionId, { ...current, [stepId]: blockStatus })
+  useChatStore.getState().settleWorkUnit(sessionId, stepId, blockStatus)
 }
 
 /**

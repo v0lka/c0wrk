@@ -148,6 +148,61 @@ func TestUnitLedger_MainlineAndIsolatedShareTask(t *testing.T) {
 	}
 }
 
+// TestSettleTaskUnitStatusIfInFlight_TargetedAndConditional verifies the
+// column-scoped conditional settle the session-runtime snapshot uses: it
+// transitions only an in-flight unit, reports the transition (so concurrent
+// callers have exactly one winner), and leaves the spec and checkpoint — the
+// columns a whole-record upsert could drop — untouched.
+func TestSettleTaskUnitStatusIfInFlight_TargetedAndConditional(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+	const taskID = "task-targeted-settle"
+	newUnitTestTask(t, store, sessionID, taskID)
+
+	adapter := NewTaskStoreAdapter(store)
+	us := adapter.UnitStore()
+	l := units.NewLedger(us, taskID, "")
+	if err := l.Begin(units.UnitRecord{ID: "u1", Kind: units.UnitKindSubagent, Status: units.UnitStatusRunning, Spec: json.RawMessage(`{"a":1}`)}); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := l.Checkpoint("u1", []agent.Step{{Thought: "kept"}}); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
+	}
+
+	changed, err := us.SettleUnitStatusIfInFlight(taskID, "", "u1", units.UnitStatusInterrupted)
+	if err != nil || !changed {
+		t.Fatalf("SettleUnitStatusIfInFlight = %v/%v, want true/nil", changed, err)
+	}
+	if changed, err := us.SettleUnitStatusIfInFlight(taskID, "", "u1", units.UnitStatusInterrupted); err != nil || changed {
+		t.Errorf("second settle = %v/%v, want false/nil (already out of flight)", changed, err)
+	}
+	if changed, _ := us.SettleUnitStatusIfInFlight(taskID, "other", "u1", units.UnitStatusInterrupted); changed {
+		t.Error("a wrong namespace must not settle")
+	}
+	if changed, _ := us.SettleUnitStatusIfInFlight(taskID, "", "missing", units.UnitStatusInterrupted); changed {
+		t.Error("an unknown id must not settle")
+	}
+
+	rows, err := store.LoadTaskUnits(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("LoadTaskUnits: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %+v, want 1", rows)
+	}
+	row := rows[0]
+	if row.Status != "interrupted" {
+		t.Errorf("status = %q, want interrupted", row.Status)
+	}
+	if string(row.Spec) != `{"a":1}` {
+		t.Errorf("spec = %s, want it preserved (a targeted settle must not drop it)", row.Spec)
+	}
+	var steps []agent.Step
+	if err := json.Unmarshal(row.Steps, &steps); err != nil || len(steps) != 1 || steps[0].Thought != "kept" {
+		t.Errorf("steps = %s (err %v), want the stored checkpoint preserved", row.Steps, err)
+	}
+}
+
 // TestTaskUnits_MigrationAdditiveAndIdempotent verifies the migration is
 // additive: re-running table creation (as a later app open would) leaves
 // existing unit rows intact.

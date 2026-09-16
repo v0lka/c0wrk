@@ -369,7 +369,11 @@ type mockGoalTurnRunner struct {
 	// ExecutionResult — simulating the universal pause signal tripping the
 	// conductor's executor mid-turn (ExecutionStatusPaused).
 	pauseAtTurn int
-	calls       int
+	// onTurn, when set, is invoked at the end of every turn — the hook a test
+	// uses to change the world between turns (e.g. cancel the context after a
+	// turn so the loop's next top-of-loop check observes it).
+	onTurn func(turn int)
+	calls  int
 }
 
 func (m *mockGoalTurnRunner) run(
@@ -387,6 +391,9 @@ func (m *mockGoalTurnRunner) run(
 	toolCalls := 0
 	if turn-1 < len(m.turnCalls) {
 		toolCalls = m.turnCalls[turn-1]
+	}
+	if m.onTurn != nil {
+		defer m.onTurn(turn)
 	}
 	// Declare the configured verdict into the sink, if any.
 	if turn-1 < len(m.turnVerds) && m.turnVerds[turn-1] != nil {

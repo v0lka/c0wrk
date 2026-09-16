@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/v0lka/c0wrk/core/units"
 )
@@ -29,6 +30,7 @@ func TestGetSessionRuntimeStatus_WorkUnitSnapshot(t *testing.T) {
 	// makes the snapshot relevant after a restart.
 	newUnitTestTask(t, store, sessionID, taskID)
 
+	const containerID = "goal_verification"
 	ledger := units.NewLedger(NewTaskStoreAdapter(store).UnitStore(), taskID, "")
 	mustBegin := func(id string, status units.UnitStatus) {
 		t.Helper()
@@ -40,6 +42,12 @@ func TestGetSessionRuntimeStatus_WorkUnitSnapshot(t *testing.T) {
 	mustBegin("del_paused", units.UnitStatusPaused)
 	mustBegin("del_interrupted", units.UnitStatusRunning)
 	mustBegin("del_pending", units.UnitStatusPending)
+	// A goal-verification CONTAINER: not execution work. It must neither appear
+	// in the snapshot (the frontend has no chat block for it) nor be settled
+	// (that would durably assert a finished pass was abandoned).
+	if err := ledger.Begin(units.UnitRecord{ID: containerID, Kind: units.UnitKindGoalVerification, Status: units.UnitStatusRunning}); err != nil {
+		t.Fatalf("Begin(container): %v", err)
+	}
 
 	status, err := manager.GetSessionRuntimeStatus(sessionID)
 	if err != nil {
@@ -59,7 +67,10 @@ func TestGetSessionRuntimeStatus_WorkUnitSnapshot(t *testing.T) {
 		kinds[u.StepID] = u.Kind
 	}
 	if len(got) != 4 {
-		t.Fatalf("work_units = %+v, want 4 entries", status.WorkUnits)
+		t.Fatalf("work_units = %+v, want 4 entries (containers excluded)", status.WorkUnits)
+	}
+	if _, ok := got[containerID]; ok {
+		t.Errorf("the goal_verification container leaked into the snapshot: %+v", status.WorkUnits)
 	}
 	want := map[string]string{
 		"del_done":        "completed",
@@ -94,6 +105,9 @@ func TestGetSessionRuntimeStatus_WorkUnitSnapshot(t *testing.T) {
 	}
 	if persisted["del_paused"] != "paused" {
 		t.Errorf("persisted del_paused = %q, want paused (must not be settled)", persisted["del_paused"])
+	}
+	if persisted[containerID] != "running" {
+		t.Errorf("persisted container = %q, want running (a container is never settled on read)", persisted[containerID])
 	}
 
 	// An explicit settle event was emitted for each abandoned unit (and only
@@ -151,5 +165,69 @@ func TestGetSessionRuntimeStatus_WorkUnitsGracefulDegradation(t *testing.T) {
 	}
 	if status.HasUnfinishedTask || len(status.WorkUnits) != 0 {
 		t.Errorf("status = %+v, want idle with no work units", status)
+	}
+}
+
+// TestGetSessionRuntimeStatus_PausedTaskUnitsNotSettled pins the pause
+// distinction: a cooperatively PAUSED task is not executing, but it is not
+// abandoned either — its untouched units are exactly what Resume runs. So the
+// snapshot must leave them in flight and durably settle nothing (a settle would
+// record a false fact and paint a phantom "interrupted" on steps Resume will
+// actually execute).
+func TestGetSessionRuntimeStatus_PausedTaskUnitsNotSettled(t *testing.T) {
+	manager, events, _ := testManager(t)
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+	manager.SetTaskStore(store)
+
+	const taskID = "task-paused-units"
+	if err := store.SaveTask(context.Background(), TaskRecord{
+		ID: taskID, SessionID: sessionID, OriginalRequest: "req", Status: "paused", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveTask: %v", err)
+	}
+
+	ledger := units.NewLedger(NewTaskStoreAdapter(store).UnitStore(), taskID, "")
+	if err := ledger.Begin(units.UnitRecord{ID: "step_tail", Kind: units.UnitKindPlanStep, Status: units.UnitStatusPending}); err != nil {
+		t.Fatalf("Begin(step_tail): %v", err)
+	}
+	if err := ledger.Begin(units.UnitRecord{ID: "del_live", Kind: units.UnitKindSubagent, Status: units.UnitStatusRunning}); err != nil {
+		t.Fatalf("Begin(del_live): %v", err)
+	}
+
+	status, err := manager.GetSessionRuntimeStatus(sessionID)
+	if err != nil {
+		t.Fatalf("GetSessionRuntimeStatus: %v", err)
+	}
+	if !status.Paused {
+		t.Fatalf("status.Paused = false, want true for a paused task")
+	}
+	got := map[string]string{}
+	for _, u := range status.WorkUnits {
+		got[u.StepID] = u.Status
+	}
+	if got["step_tail"] != "pending" || got["del_live"] != "running" {
+		t.Errorf("work_units = %+v, want the paused task's units left in flight", status.WorkUnits)
+	}
+
+	// Nothing was durably settled, and no settle event was emitted.
+	rows, err := store.LoadTaskUnits(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("LoadTaskUnits: %v", err)
+	}
+	for _, r := range rows {
+		if r.Status == "interrupted" {
+			t.Errorf("unit %s was settled interrupted for a PAUSED task", r.UnitID)
+		}
+	}
+	for {
+		select {
+		case e := <-events:
+			if e.Type == "work_unit_settled" {
+				t.Fatalf("unexpected work_unit_settled for a paused task: %+v", e.Data)
+			}
+		default:
+			return
+		}
 	}
 }

@@ -1019,10 +1019,14 @@ type HandleResult struct {
 - Recovery is ledger-driven: every execution unit (plan step, subagent,
   goal-verification delegate) has one durable record in the task's unit ledger
   (`core/units`); the `conductorLauncher` is its single writer and `Resume`
-  settles every non-terminal unit uniformly (paused → relaunch seeded,
-  not-started/running/**interrupted** → relaunch fresh, terminal → replay). An
-  interrupted unit is never dropped, and a verifier unit is scoped by
-  `(namespace, depth)` so it never shares a registry with a mainline delegation.
+  settles every non-terminal **mainline** unit uniformly (paused → relaunch
+  seeded, not-started/running/**interrupted** → relaunch fresh, terminal →
+  replay), reconciling each ledger status against the blackboard outcome and any
+  stored checkpoint first. An interrupted unit is never dropped. A unit recorded
+  in an isolated context's namespace (the goal verifier's) is **not** relaunched
+  by that funnel — the loop that owns it re-derives the pass — so an isolated
+  outcome can never land on the live task blackboard and the isolated work is
+  never duplicated.
   See [ADR-048](../decisions/048-unified-recovery-ledger.md).
 - `GetSessionRuntimeStatus(sessionID)` exposes `{active,
   has_unfinished_task, unfinished_task_id, paused, activity, streaming, work_units}`; the frontend calls it after
@@ -1031,14 +1035,23 @@ type HandleResult struct {
   `work_units` is the durable ledger snapshot for the session's resumable task
   (`[{step_id, kind?, status, parent_id?}]`, `status` a durable unit status);
   before returning it, an in-flight unit (`pending`/`running`) on a task that is
-  **not** executing is explicitly settled `interrupted` (a durable ledger write
-  plus a transient `work_unit_settled` event) — a `paused` unit is a resumable
-  checkpoint and is left untouched, and a live task never settles. The settle is
-  idempotent. The reconcile maps this snapshot onto the replayed paused/
-  interrupted delegate & plan-step chat blocks (`reconcileWorkUnits` +
-  `groupMessages`' work-unit overlay) so an abandoned unit never stays a
-  misleading `running` block; a live `subagent_launch`/`plan_step_start` for the
-  same `step_id` clears the overlay entry. The `activity` /
+  **not** executing and is **not** cooperatively paused is explicitly settled
+  `interrupted` (a transient `work_unit_settled` event plus a column-scoped
+  conditional ledger write that touches only the status column, so it can never
+  drop a checkpoint another writer set and racing pollers settle once) — a
+  `paused` unit is a resumable checkpoint and is left untouched, a paused
+  TASK settles nothing (its untouched tail units are exactly what `Resume`
+  runs), a live task never settles, and container kinds (`task`,
+  `goal_verification`) are excluded entirely (not relaunchable work, and the
+  frontend has no block for them). The settle is idempotent. The reconcile maps
+  this snapshot onto the replayed paused/interrupted delegate & plan-step chat
+  blocks (`reconcileWorkUnits` + `groupMessages`' work-unit overlay) AND onto the
+  execution plan panel (`planStore.applyWorkUnitStatuses`) so an abandoned unit
+  never stays a misleading `running` block in either view; a live
+  `subagent_launch`/`plan_step_start` for the same `step_id` clears the overlay
+  entry, a live `work_unit_settled` outranks a snapshot read before it, and a
+  snapshot that is ABSENT is treated as "no data" (leaving the overlay alone)
+  rather than "no units". The `activity` /
   `streaming` fields are the backend-tracked live snapshot (emitter
   `activityState`): `activity` is the last user-facing phase label
   ("Thinking...", "Routing request...", ...) and `streaming` reports an open

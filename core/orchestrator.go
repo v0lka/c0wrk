@@ -1537,11 +1537,13 @@ type resumeUnit struct {
 	// unit under the parent it was spawned by (a goal-verifier delegate is
 	// parented under the verifier unit).
 	parentID string
-	// scope keys the wave registry group a unit settles in. It separates an
-	// isolated context's units (the goal verifier records under its own
-	// namespace) from the mainline's, so a verifier delegate scoped to its
-	// parent can never share a registry — or collide by id — with a mainline
-	// delegation.
+	// scope keys the wave registry group a unit settles in. Every unit the
+	// mainline funnel enumerates is in the mainline namespace (""), because an
+	// ISOLATED context's units — the goal verifier records under its own
+	// namespace — are filtered out before normalization (relaunching them here
+	// would write the isolated pass's outcome onto the live task blackboard and
+	// duplicate the work the goal loop re-derives). The field is retained so a
+	// group is still keyed by (scope, depth) rather than depth alone.
 	scope   string
 	depth   int
 	status  units.UnitStatus
@@ -1552,17 +1554,22 @@ type resumeUnit struct {
 
 // relaunchable reports whether the funnel must (re)launch the unit — every
 // non-terminal unit. A paused unit resumes from its checkpoint; a not-started
-// (pending), running or interrupted unit is relaunched FRESH (it carries no
-// usable checkpoint — it was abandoned before one was taken).
+// (pending), running or interrupted unit is relaunched FRESH. A unit whose
+// status reads as running/interrupted but that carries a durable checkpoint is
+// normalized to paused during the ledger read, so a relaunch never discards a
+// usable checkpoint.
 func (u resumeUnit) relaunchable() bool {
 	return !u.terminal()
 }
 
 // terminal reports whether the unit already reached a final outcome
 // (completed or failed). A terminal unit is REPLAYED into the wave registries
-// so dependency resolution sees it — it is never re-run.
+// so dependency resolution sees it — it is never re-run. It delegates to the
+// units package, which owns the single definition of "finished": an
+// `interrupted` unit is deliberately NOT terminal (the funnel relaunches it
+// fresh), while `paused` is a checkpoint the funnel resumes.
 func (u resumeUnit) terminal() bool {
-	return u.status == units.UnitStatusCompleted || u.status == units.UnitStatusFailed
+	return u.status.Terminal()
 }
 
 // paused reports whether the unit carries a resumable checkpoint.
@@ -1571,11 +1578,17 @@ func (u resumeUnit) paused() bool {
 }
 
 // resumeUnitsForBlackboard enumerates every unit the resume funnel must settle
-// for a restored task: the durable ledger's units (all kinds, depths and
-// namespaces — including a goal verifier's, which only the ledger holds),
-// merged with any legacy delegation specs a task persisted before the ledger
-// still carries. Ledger units win by id, so a unit recorded in both places is
-// never settled twice.
+// for a restored task: the durable ledger's MAINLINE units merged with any
+// legacy delegation specs a task persisted before the ledger still carries.
+// Ledger units win by id, so a unit recorded in both places is never settled
+// twice.
+//
+// Ledger units recorded by an ISOLATED context (the goal verifier's namespace)
+// are deliberately not enumerated: an isolated pass is re-derived by the loop
+// that owns it, its outcome must never land on the live task blackboard, and a
+// resume wave that relaunched it would duplicate work nobody consumes. Its
+// durable status is still surfaced through the session-runtime work-unit
+// snapshot.
 //
 // A ledger read failure is not fatal: the legacy specs (and the plan arm) still
 // work, so the resume proceeds with whatever it can see.
@@ -1604,14 +1617,15 @@ func resumeLedgerFromBlackboard(bb orchestration.Blackboard) units.Ledger {
 	return nil
 }
 
-// resumeUnitsFromLedger enumerates the ledger's units for the task. Every unit
-// is normalized into a resumeUnit, so the funnel above settles all kinds,
-// depths and namespaces uniformly. Container units (the task root and the
+// resumeUnitsFromLedger enumerates the ledger's MAINLINE units for the task.
+// Every unit is normalized into a resumeUnit, so the funnel above settles all
+// kinds and depths uniformly. Container units (the task root and the
 // goal-verification pass itself) and plan-step units are skipped: plan steps
 // are owned by the plan arm (the DAG engine), and a container is not a
 // relaunchable execution unit. A unit whose rebuild spec cannot be decoded is
 // skipped too — without a spec it could never be relaunched (its status is
-// still surfaced by the session-runtime work-unit snapshot).
+// still surfaced by the session-runtime work-unit snapshot). Units recorded in
+// an isolated namespace are skipped as well — see resumeUnitsForBlackboard.
 func resumeUnitsFromLedger(ledger units.Ledger, bb orchestration.Blackboard) ([]resumeUnit, error) {
 	if ledger == nil {
 		return nil, nil
@@ -1623,6 +1637,11 @@ func resumeUnitsFromLedger(ledger units.Ledger, bb orchestration.Blackboard) ([]
 	out := make([]resumeUnit, 0, len(recs))
 	for _, rec := range recs {
 		if !relaunchableUnitKind(rec.Kind) {
+			continue
+		}
+		// An isolated context's unit (the goal verifier's namespace) is not
+		// this funnel's work: the mainline ledger writes under "".
+		if rec.Namespace != "" {
 			continue
 		}
 		// A unit without a stored rebuild spec cannot be re-launched, so the
@@ -1655,16 +1674,40 @@ func resumeUnitsFromLedger(ledger units.Ledger, bb orchestration.Blackboard) ([]
 				u.steps = steps
 			}
 		}
-		// The blackboard carries the mainline value view (output/error); an
-		// isolated context's failure has none, so synthesize an error for it so
-		// a replay still reports the dependency as failed, not completed.
+		// Reconcile the ledger status with the OTHER durable evidence, because
+		// the ledger is not the only record: persistUnitOutcome writes the
+		// blackboard first and the ledger second (both best-effort), so a crash
+		// between the two writes — or a failed ledger write — leaves them
+		// disagreeing. Classifying from rec.Status alone would then relaunch a
+		// unit FRESH whose delegation had actually COMPLETED (re-running its
+		// side effects), or discard a checkpoint that did land.
 		outcomeKnown := false
 		if bb != nil {
 			if sr, ok := bb.GetStepResult(rec.ID); ok {
 				u.output, u.execErr = sr.FullOutput, sr.Error
 				outcomeKnown = true
+				switch {
+				case isPaused(sr.Error):
+					u.status = units.UnitStatusPaused
+				case sr.Error != nil:
+					u.status = units.UnitStatusFailed
+				default:
+					u.status = units.UnitStatusCompleted
+				}
 			}
 		}
+		// A durable checkpoint with no matching settle is a paused checkpoint:
+		// Checkpoint and Settle are separate writes, so the checkpoint can land
+		// without the status transition. Resume from it instead of re-running
+		// the trajectory's already-completed steps. (A terminal status is left
+		// untouched — a completed/failed unit carries its outcome, not a
+		// resumable checkpoint.)
+		if len(u.steps) > 0 && u.status.InFlight() {
+			u.status = units.UnitStatusPaused
+		}
+		// An isolated context's failure has no blackboard outcome to lift, so
+		// synthesize an error for it so a replay still reports the dependency
+		// as failed, not completed.
 		if !outcomeKnown && u.status == units.UnitStatusFailed {
 			u.execErr = fmt.Errorf("unit %q failed in a previous run", rec.ID)
 		}
@@ -1732,7 +1775,10 @@ func legacyResumeUnits(specs []tools.DelegationSpec, bb orchestration.Blackboard
 // (NewDelegationRegistryWithDepth): a relaunched delegation resumes at its real
 // position in the re-delegation hierarchy, so the maxRedelegDepth cap is
 // measured from the original depth rather than being reset to 0 — a
-// pause/resume cycle must not grant extra re-delegation levels.
+// pause/resume cycle must not grant extra re-delegation levels. Only mainline
+// units reach here (see resumeUnitsFromLedger), so the replay below is
+// scope-consistent by construction; it still filters on scope so a unit can
+// never be replayed into a group it does not belong to.
 //
 // Classification is uniform for every kind/depth/namespace:
 //   - paused           → relaunch, seeded with the checkpoint trajectory
@@ -1790,7 +1836,17 @@ func (o *Orchestrator) resumeUnits(
 	pausedAgain := false
 	for _, k := range keys {
 		registry := tools.NewDelegationRegistryWithDepth(k.depth)
+		// Replay only the terminal units of THIS group's scope. A unit's
+		// namespace keys its registry group, so replaying another scope's unit
+		// here would (a) contradict the isolation guarantee the ledger exists to
+		// provide and (b) make the group's own RegisterTask below collide on the
+		// id, leaving the registry entry carrying the FOREIGN unit's summary and
+		// DependsOn — so the group's dependency resolution would evaluate a unit
+		// that is not in the group.
 		for _, s := range settled {
+			if s.scope != k.scope {
+				continue
+			}
 			mode := s.task.Mode
 			if mode == "" {
 				mode = "blocking"
@@ -1838,8 +1894,15 @@ func (o *Orchestrator) resumeUnits(
 			// Register the relaunched task itself so its lifecycle transitions
 			// (Start/Complete from Launch) are not silent no-ops and the
 			// registry state matches what actually runs. Safe against the
-			// terminal replay above: classification is exclusive per id.
-			_ = registry.RegisterTask(t)
+			// terminal replay above: classification is exclusive per id, and the
+			// replay is scope-scoped.
+			if err := registry.RegisterTask(t); err != nil {
+				// Swallowing this would leave the group's dependency resolution
+				// evaluating another entry's summary/DependsOn for this id —
+				// surface the conflict instead.
+				o.logWarn("resume_task: failed to register relaunched unit in its wave registry",
+					"unit", t.ID, "scope", k.scope, "depth", k.depth, "error", err)
+			}
 		}
 		results := launcher.Launch(ctx, tasks, registry)
 		for _, r := range results {

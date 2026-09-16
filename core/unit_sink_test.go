@@ -64,6 +64,19 @@ func (s *memUnitStore) LoadUnits(taskID string) ([]units.UnitRecord, error) {
 	return out, nil
 }
 
+func (s *memUnitStore) SettleUnitStatusIfInFlight(taskID, namespace, id string, status units.UnitStatus) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := namespace + "\x00" + id
+	rec, ok := s.byTask[taskID][key]
+	if !ok || !rec.Status.InFlight() {
+		return false, nil
+	}
+	rec.Status = status
+	s.byTask[taskID][key] = rec
+	return true, nil
+}
+
 // unitStoreTaskStore is a TaskPersistence that also exposes a UnitStore — the
 // shape the production *session.TaskStoreAdapter has, and what
 // units.StoreFrom(deps.taskStore) extracts.

@@ -145,21 +145,22 @@ func TestResumeFunnel_InterruptedUnitRelaunchedFresh(t *testing.T) {
 	}
 }
 
-// TestResumeFunnel_VerifierPausedUnitRelaunched is acceptance criterion 2: a
-// goal-verification delegate that paused — recorded ONLY in the ledger, under
-// the verifier namespace and parented under the verifier unit — is relaunched.
-// The verifier's container unit is scoped to its parent: it is NOT itself a
-// relaunchable unit.
-func TestResumeFunnel_VerifierPausedUnitRelaunched(t *testing.T) {
+// TestResumeFunnel_VerifierUnitNotRelaunchedByMainlineFunnel pins the isolation
+// guarantee ACROSS RESUME: a goal-verification unit — namespaced, recorded only
+// in the ledger, parent-linked under the verifier container — is NOT relaunched
+// by the mainline resume wave. The goal loop re-derives its own verification
+// pass, so a wave relaunch would duplicate work nobody consumes AND write the
+// isolated pass's outcome onto the LIVE task blackboard, inverting the
+// isolation the run-time verifier path guarantees. The verifier's container is
+// not relaunchable either.
+func TestResumeFunnel_VerifierUnitNotRelaunchedByMainlineFunnel(t *testing.T) {
 	checkpoint := []agent.Step{{
 		Thought:     "prior",
 		Action:      llm.ToolCall{ID: "c1", Name: "bash_exec", Input: json.RawMessage(`{"command":"echo hi","timeout":"5s"}`)},
 		Observation: "hi",
 	}}
 	caller := &pauseScriptLLM{script: []pauseScriptStep{
-		// Wave: the paused verifier delegate resumes from its checkpoint.
-		{respond: executorFinishResponse("verifier del done")},
-		// The resumed conductor's only LLM call: finish.
+		// The resumed conductor's only LLM call: finish — no wave runs.
 		{respond: executorFinishResponse("all done")},
 	}}
 	o, emitter, rec, recStore := newFunnelOrchestrator(t, caller)
@@ -182,23 +183,21 @@ func TestResumeFunnel_VerifierPausedUnitRelaunched(t *testing.T) {
 		t.Fatalf("Resume status = %q, want success", res.Status)
 	}
 	if n := emitter.launchCount(verifierUnitID); n != 0 {
-		t.Errorf("SubAgentLaunch for the verifier container = %d, want 0 (a container is scoped to its parent, not relaunchable)", n)
+		t.Errorf("SubAgentLaunch for the verifier container = %d, want 0 (a container is never relaunchable)", n)
 	}
-	if n := emitter.launchCount("del_v"); n != 1 {
-		t.Errorf("SubAgentLaunch for the paused verifier delegate del_v = %d, want 1", n)
+	if n := emitter.launchCount("del_v"); n != 0 {
+		t.Errorf("SubAgentLaunch for the paused verifier delegate del_v = %d, want 0 (an isolated unit is not the mainline funnel's work)", n)
 	}
-	if sr, ok := bb.GetStepResult("del_v"); !ok || sr.Error != nil || sr.FullOutput != "verifier del done" {
-		t.Fatalf("del_v after resume = %+v (ok=%v), want completed with output", sr, ok)
+	// The isolation guarantee holds across resume: the mainline blackboard never
+	// receives the isolated pass's delegation step result.
+	if sr, ok := bb.GetStepResult("del_v"); ok {
+		t.Errorf("mainline blackboard received the verifier delegate's step result = %+v, want none (isolation leak)", sr)
 	}
-	// The ledger checkpoint was lifted and seeded into the relaunched subagent.
-	seeded := 0
+	// No context manager was seeded from the verifier checkpoint either.
 	for _, cm := range rec.snapshot() {
 		if s := cm.SeededSteps(); len(s) == 1 && s[0].Action.Name == "bash_exec" {
-			seeded++
+			t.Error("a context manager was seeded from the verifier checkpoint — the isolated unit was relaunched")
 		}
-	}
-	if seeded != 1 {
-		t.Errorf("context managers seeded with the del_v ledger checkpoint = %d, want exactly 1 (the resumed verifier delegate)", seeded)
 	}
 }
 
@@ -278,5 +277,89 @@ func TestResumeFunnel_LegacyInterruptedSpecRelaunched(t *testing.T) {
 	}
 	if sr, ok := bb.GetStepResult("del_1"); !ok || sr.Error != nil || sr.FullOutput != "del_1 done" {
 		t.Fatalf("del_1 after resume = %+v (ok=%v), want completed with output", sr, ok)
+	}
+}
+
+// TestResumeFunnel_BlackboardOutcomeWinsOverLedgerStatus pins the reconciliation
+// of the two durable writes. persistUnitOutcome persists the blackboard FIRST
+// and the ledger SECOND (both best-effort), so a crash in between leaves the
+// blackboard holding a SUCCESSFUL outcome while the ledger still says `running`.
+// Classifying from the ledger status alone would relaunch the delegation FRESH
+// — re-running side effects it already performed.
+func TestResumeFunnel_BlackboardOutcomeWinsOverLedgerStatus(t *testing.T) {
+	caller := &pauseScriptLLM{script: []pauseScriptStep{
+		// The resumed conductor's only LLM call: finish — no wave runs.
+		{respond: executorFinishResponse("all done")},
+	}}
+	o, emitter, _, recStore := newFunnelOrchestrator(t, caller)
+
+	bb := newUnitLedgerBB("task-funnel-diverged", recStore)
+	bb.SetOriginalRequest("delegate the work")
+	// The delegation completed on the blackboard; the ledger settle never landed.
+	bb.SetStepResult("del_1", "del_1 done", nil, nil)
+	seedLedgerUnit(t, bb, "", "del_1", units.UnitKindSubagent, units.UnitStatusRunning, "", 0,
+		coretools.DelegationTask{ID: "del_1", Summary: "s", Task: "do work"}, nil)
+
+	ctx := WithComplexity(WithDomain(context.Background(), "general"), 1)
+	res, err := o.Resume(ctx, bb, nil, t.TempDir(), nil, nil, "")
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.Status != orchestration.ExecutionStatusSuccess {
+		t.Fatalf("Resume status = %q, want success", res.Status)
+	}
+	if n := emitter.launchCount("del_1"); n != 0 {
+		t.Errorf("SubAgentLaunch for the already-completed del_1 = %d, want 0 (a blackboard success must never be relaunched fresh)", n)
+	}
+	if sr, ok := bb.GetStepResult("del_1"); !ok || sr.Error != nil || sr.FullOutput != "del_1 done" {
+		t.Fatalf("del_1 after resume = %+v (ok=%v), want its completed outcome untouched", sr, ok)
+	}
+}
+
+// TestResumeFunnel_CheckpointWithoutSettleResumesPaused pins the other half of
+// the reconciliation: Checkpoint and Settle are SEPARATE ledger writes, so a
+// crash between them leaves a stored checkpoint with a non-terminal status. The
+// funnel must resume from that checkpoint rather than relaunching fresh and
+// throwing the trajectory away.
+func TestResumeFunnel_CheckpointWithoutSettleResumesPaused(t *testing.T) {
+	checkpoint := []agent.Step{{
+		Thought:     "prior",
+		Action:      llm.ToolCall{ID: "c1", Name: "bash_exec", Input: json.RawMessage(`{"command":"echo hi","timeout":"5s"}`)},
+		Observation: "hi",
+	}}
+	caller := &pauseScriptLLM{script: []pauseScriptStep{
+		// Wave: del_1 resumes from its checkpoint.
+		{respond: executorFinishResponse("del_1 done")},
+		// The resumed conductor's only LLM call: finish.
+		{respond: executorFinishResponse("all done")},
+	}}
+	o, emitter, rec, recStore := newFunnelOrchestrator(t, caller)
+
+	bb := newUnitLedgerBB("task-funnel-checkpoint", recStore)
+	bb.SetOriginalRequest("do the delegated work")
+	// The checkpoint landed; the paused settle did not: the ledger still says
+	// running.
+	seedLedgerUnit(t, bb, "", "del_1", units.UnitKindSubagent, units.UnitStatusRunning, "", 0,
+		coretools.DelegationTask{ID: "del_1", Summary: "s", Task: "do work"}, checkpoint)
+
+	ctx := WithComplexity(WithDomain(context.Background(), "general"), 1)
+	res, err := o.Resume(ctx, bb, nil, t.TempDir(), nil, nil, "")
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.Status != orchestration.ExecutionStatusSuccess {
+		t.Fatalf("Resume status = %q, want success", res.Status)
+	}
+	if n := emitter.launchCount("del_1"); n != 1 {
+		t.Errorf("SubAgentLaunch for del_1 = %d, want 1", n)
+	}
+	seeded := 0
+	for _, cm := range rec.snapshot() {
+		if s := cm.SeededSteps(); len(s) == 1 && s[0].Action.Name == "bash_exec" {
+			seeded++
+		}
+	}
+	if seeded != 1 {
+		t.Errorf("context managers seeded from the stored checkpoint = %d, want 1 (a durable checkpoint must not be discarded)", seeded)
 	}
 }

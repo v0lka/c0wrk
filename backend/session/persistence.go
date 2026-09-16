@@ -1789,6 +1789,27 @@ func (s *SQLiteSessionStore) SaveTaskUnit(ctx context.Context, rec TaskUnitRecor
 	return nil
 }
 
+// SettleTaskUnitStatusIfInFlight transitions a unit's status ONLY while it is
+// still in flight (pending/running), leaving spec/steps/created_at untouched.
+// It reports whether a row was actually transitioned, so concurrent callers
+// racing to settle the same abandoned unit have exactly one winner. The
+// in-flight source set mirrors units.UnitStatus.InFlight.
+func (s *SQLiteSessionStore) SettleTaskUnitStatusIfInFlight(ctx context.Context, taskID, namespace, unitID, status string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE task_units SET status = ?, updated_at = ?
+		WHERE task_id = ? AND namespace = ? AND unit_id = ? AND status IN ('pending', 'running')`,
+		status, time.Now().UTC(), taskID, namespace, unitID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("failed to settle task unit status: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("failed to read task unit settle result: %w", err)
+	}
+	return n > 0, nil
+}
+
 // LoadTaskUnits loads every durable unit persisted under a task, ordered by
 // creation time. Returns an empty slice when none have been persisted.
 func (s *SQLiteSessionStore) LoadTaskUnits(ctx context.Context, taskID string) ([]TaskUnitRecord, error) {

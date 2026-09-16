@@ -141,8 +141,13 @@ export function ChatArea() {
         for (const msg of reconcileRuntimeStatus(activeSessionId, status, statusReadAt)) staleResolved.push(msg)
         // Align paused/interrupted delegate & plan-step blocks with the durable
         // work-unit snapshot (rendered via groupMessages). Runs AFTER the
-        // history merge so the blocks exist to be corrected.
-        reconcileWorkUnits(activeSessionId, status.work_units)
+        // history merge so the blocks exist to be corrected. statusReadAt
+        // guards against a live settlement that landed after this snapshot was
+        // read, and the same overlay repairs the execution plan panel — rebuilt
+        // from the replayed history, it would otherwise keep spinning a step the
+        // ledger settled as interrupted.
+        const workUnitOverlay = reconcileWorkUnits(activeSessionId, status.work_units, statusReadAt)
+        usePlanStore.getState().applyWorkUnitStatuses(workUnitOverlay)
       }
       if (pending) {
         for (const msg of reconcilePendingActions(activeSessionId, pending)) staleResolved.push(msg)

@@ -50,6 +50,18 @@ func (s *recordingUnitStore) LoadUnits(string) ([]units.UnitRecord, error) {
 	return out, nil
 }
 
+func (s *recordingUnitStore) SettleUnitStatusIfInFlight(_, _, id string, status units.UnitStatus) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.recs[id]
+	if !ok || !rec.Status.InFlight() {
+		return false, nil
+	}
+	rec.Status = status
+	s.recs[id] = rec
+	return true, nil
+}
+
 func (s *recordingUnitStore) get(id string) (units.UnitRecord, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

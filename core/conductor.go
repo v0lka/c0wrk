@@ -527,29 +527,44 @@ type conductorLauncher struct {
 	// blocking/async delegates and redelegations (spec at register, running at
 	// start, paused+steps at checkpoint, completed/failed at settle).
 	// RunConductor wires the mainline ledger from the blackboard; the
-	// resume-wave launcher leaves it nil and derives one lazily via unitLedger.
+	// resume-wave launcher leaves it nil and derives one lazily via unitLedger,
+	// which memoizes the derived instance so a unit's registration and its
+	// later settle always land in the SAME ledger (and share its overlay).
 	// Nil (or a ledger with no store) degrades to in-memory / no-op writes, so
 	// every write is nil-safe.
+	//
+	// This field is set at CONSTRUCTION only; the lazily derived ledger lives in
+	// derivedLedger below, so the unsynchronized read here can never race a
+	// write. Neither field is ever reassigned after the launcher is shared.
 	ledger units.Ledger
+	// ledgerOnce memoizes the lazily derived ledger so the derivation is
+	// executed exactly once and its result is safely published.
+	ledgerOnce sync.Once
+	// derivedLedger caches the ledger lazily derived from the blackboard.
+	derivedLedger units.Ledger
 }
 
 // unitLedger returns the ledger this launcher writes unit lifecycle through.
 // It prefers the explicitly wired ledger (RunConductor) and otherwise derives
-// one from the blackboard, so a launcher built by the resume wave — which does
-// not wire a ledger — still records its units. A non-persistable blackboard
-// has no durable unit store, so this returns nil and every write becomes a
-// no-op.
+// one from the blackboard, MEMOIZING the derived instance: a launcher built by
+// the resume wave does not wire a ledger, and building a fresh one on each call
+// would put a unit's Begin and its later settle in different ledger instances —
+// losing the shared in-memory overlay, paying a store reload per transition,
+// and (for a supported store-less blackboard) making every get return
+// not-found so every launcher unit write silently no-ops.
+//
+// A blackboard that is not persistable has no durable unit store, so this
+// returns nil and every write becomes a no-op.
 func (l *conductorLauncher) unitLedger() units.Ledger {
 	if l.ledger != nil {
 		return l.ledger
 	}
-	if l.bb == nil {
-		return nil
-	}
-	if pbb, ok := l.bb.(PersistableBlackboard); ok {
-		return NewBlackboardLedger(pbb)
-	}
-	return nil
+	l.ledgerOnce.Do(func() {
+		if pbb, ok := l.bb.(PersistableBlackboard); ok {
+			l.derivedLedger = NewBlackboardLedger(pbb)
+		}
+	})
+	return l.derivedLedger
 }
 
 // markUnitRunning records a unit's "running at start" transition in the ledger.

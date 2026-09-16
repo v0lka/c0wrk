@@ -92,6 +92,13 @@ interface ChatState {
   // the block status then comes from the replayed messages alone. A step's
   // entry is dropped when a fresh live launch proves the unit running again.
   workUnitStatus: Record<string, Record<string, WorkUnitBlockStatus>>
+  // Timestamp of the last LIVE work-unit write for a step (a `work_unit_settled`
+  // settlement, or a fresh-launch clear), keyed like workUnitStatus:
+  // sessionId -> stepId -> Date.now(). reconcileWorkUnits compares a step's
+  // stamp against the time its snapshot was read to tell live knowledge from
+  // the snapshot's older view of the same step (the snapshot is read BEFORE it
+  // resolves, so a live event landing in that window is fresher).
+  workUnitEventAt: Record<string, Record<string, number>>
 }
 
 interface ChatActions {
@@ -115,6 +122,7 @@ interface ChatActions {
   clearStepContextFill: (sessionId: string) => void
   setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
   setWorkUnitStatus: (sessionId: string, status: Record<string, WorkUnitBlockStatus>) => void
+  settleWorkUnit: (sessionId: string, stepId: string, status: WorkUnitBlockStatus) => void
   clearWorkUnitStep: (sessionId: string, stepId: string) => void
 }
 
@@ -208,6 +216,7 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   runtimeEventAt: {},
   taskFlagsEventAt: {},
   workUnitStatus: {},
+  workUnitEventAt: {},
 
   addMessage: (sessionId, message) => set((s) => {
     const sessionIndex = s.messages[sessionId] ?? {}
@@ -548,19 +557,42 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   // Replace the session's durable work-unit overlay wholesale: the snapshot is
   // authoritative for the whole session at load time. Deliberately does NOT
   // stamp runtimeEventAt/taskFlagsEventAt — the overlay is a fallback
-  // consulted by groupMessages, not a live flag competing with events.
+  // consulted by groupMessages, not a live flag competing with events — and it
+  // does not stamp workUnitEventAt either: only a LIVE write may outrank a
+  // snapshot, and reconcileWorkUnits is what compares the two.
   setWorkUnitStatus: (sessionId, status) => set((s) => ({
     workUnitStatus: { ...s.workUnitStatus, [sessionId]: status },
+  })),
+
+  // Merge ONE step's overlay entry from a live `work_unit_settled` event and
+  // stamp workUnitEventAt for that step, so a snapshot read before the event
+  // cannot roll the step back to its stale value.
+  settleWorkUnit: (sessionId, stepId, status) => set((s) => ({
+    workUnitStatus: {
+      ...s.workUnitStatus,
+      [sessionId]: { ...s.workUnitStatus[sessionId], [stepId]: status },
+    },
+    workUnitEventAt: {
+      ...s.workUnitEventAt,
+      [sessionId]: { ...s.workUnitEventAt[sessionId], [stepId]: Date.now() },
+    },
   })),
 
   // Drop one step's overlay entry. A fresh live launch (subagent_launch /
   // plan_step_start) proves the unit is running again, so the stale
   // paused/interrupted snapshot must stop overriding the block; a no-op when
-  // the session/step has no entry.
+  // the session/step has no entry. The clear is a LIVE write too, so it stamps
+  // workUnitEventAt — an older snapshot must not re-add the entry.
   clearWorkUnitStep: (sessionId, stepId) => set((s) => {
     const session = s.workUnitStatus[sessionId]
     if (!session || !(stepId in session)) return s
     const { [stepId]: _dropped, ...rest } = session
-    return { workUnitStatus: { ...s.workUnitStatus, [sessionId]: rest } }
+    return {
+      workUnitStatus: { ...s.workUnitStatus, [sessionId]: rest },
+      workUnitEventAt: {
+        ...s.workUnitEventAt,
+        [sessionId]: { ...s.workUnitEventAt[sessionId], [stepId]: Date.now() },
+      },
+    }
   }),
 }))

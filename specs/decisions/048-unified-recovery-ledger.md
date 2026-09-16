@@ -79,11 +79,20 @@ type Store interface { // one persistence seam
 
 `Spec` and `Steps` are **opaque JSON owned by the caller**, so a new unit kind
 rides the same record with no schema change. `UnitStatus.Terminal()` is the
-single definition of "finished" (`completed`/`failed`/`interrupted`); `paused`,
-`pending` and `running` are still in flight. `interrupted` is deliberately
-distinct from `paused`: it is a unit left unfinished by a crash/app exit and
-carries **no explicit resume intent**, whereas `paused` is a cooperative
-checkpoint the resume path owns.
+single definition of "finished" — `completed`/`failed` only. `interrupted` is
+deliberately **not** terminal: it is a unit left unfinished by a crash/app exit
+and carries **no explicit resume intent**, whereas `paused` is a cooperative
+checkpoint the resume path owns, and the funnel must relaunch an interrupted
+unit rather than replay it as an outcome. `UnitStatus.InFlight()`
+(`pending`/`running`) is the "abandoned in flight" predicate the settle-on-read
+uses, and `UnitKind.Container()` (`task`/`goal_verification`) marks a record
+that groups other units rather than being relaunchable work. Two smaller
+correctness contracts sit alongside: `Begin` is **idempotent for an existing
+record** (a re-registration preserves the durable `CreatedAt`, `Spec`, `Steps`
+and status it does not restate, so re-registering the plan arm cannot wipe a
+checkpoint), and every by-id lookup is **namespace-scoped** (an id is only
+unique within a namespace, so a mainline ledger can never settle an isolated
+context's same-id row).
 
 Two constructors, one shared task scope:
 
@@ -155,12 +164,22 @@ deepest-first, and classifies **uniformly**:
   (never re-run) so dependency resolution still sees them.
 
 Container kinds (`task`, `goal_verification`), plan-step units (owned by the
-plan arm) and tool units are skipped. Because a verifier delegate is recorded
-with `ParentID = goal_verification` in the `goal_verification` namespace, the
-funnel keys its registry group by `(scope, depth)`, so a verifier unit settles in
-its own scope and never shares a registry — or collides by id — with a mainline
-delegation. A relaunch that pauses again re-checkpoints the wave (unchanged
-behavior).
+plan arm) and tool units are skipped. Units recorded in an **isolated
+namespace** (the goal verifier's) are skipped as well: an isolated pass is
+re-derived by the loop that owns it, so relaunching it from the mainline funnel
+would write its outcome onto the **live task blackboard** — inverting the
+run-time isolation guarantee the verifier depends on — and duplicate work
+nobody consumes. Its durable status is still surfaced through `work_units`. The
+funnel therefore enumerates MAINLINE units only, keys each registry group by
+`(scope, depth)`, filters the terminal replay to the group's own scope, and logs
+(instead of swallowing) a registration collision. Because the blackboard write
+and the ledger write are two separate best-effort writes, a unit's ledger status
+is **reconciled with the other durable evidence** before classification: the
+blackboard outcome wins when present (pause sentinel → `paused`, error →
+`failed`, success → `completed`), and a stored checkpoint with a non-terminal
+status is treated as `paused` — so a crash between the two writes can neither
+relaunch completed work fresh nor discard a valid checkpoint. A relaunch that
+pauses again re-checkpoints the wave (unchanged behavior).
 
 ### One read path on the frontend — the ledger is the snapshot
 
@@ -168,12 +187,19 @@ behavior).
 ([manager_execution.go](../../backend/session/manager_execution.go)):
 `workUnitSnapshot` reads the session's durable ledger (via
 `NewTaskStoreAdapter(ts).UnitStore()`). **Explicit settle on read:** a unit left
-in flight (`pending`/`running`) on a task that is **not** executing was abandoned
-by a crash/app exit, so it is settled `interrupted` (a durable ledger write plus
-a transient `work_unit_settled` event); a **paused** unit is a resumable
-checkpoint the resume funnel owns and is **left untouched**; a live task never
-settles. The call is idempotent — once terminal, later polls neither write nor
-emit.
+in flight (`pending`/`running`) on a task that is **not** executing **and is not
+cooperatively paused** was abandoned by a crash/app exit, so it is settled
+`interrupted` — a transient `work_unit_settled` event plus a **column-scoped
+conditional** store write (`Store.SettleUnitStatusIfInFlight`) that touches only
+the status column while the unit is still in flight. A **paused** unit is a
+resumable checkpoint the resume funnel owns and is **left untouched**; a
+cooperatively **paused TASK** settles nothing (its untouched tail units are
+exactly what `Resume` runs); container kinds (`task`, `goal_verification`) are
+excluded exactly as the funnel excludes them; a live task never settles. The
+call is idempotent — once out of flight, later polls neither write nor emit —
+and the conditional write makes that hold even when pollers race, while being
+unable to drop a spec or checkpoint another writer set. The same overlay also
+repairs the execution plan panel, not just the chat blocks.
 
 The frontend reconciles the same ledger back onto the replayed chat blocks
 ([sessionRuntime.ts](../../frontend/src/lib/sessionRuntime.ts)): `reconcileWorkUnits`
@@ -207,7 +233,9 @@ settlement funnel and the read snapshot.
   frontend snapshot) reads the same ledger, so the three readers can no longer
   disagree.
 - An interrupted delegate is now recovered rather than dropped, and the UI can no
-  longer show a permanent phantom `running` block after a restart.
+  longer show a permanent phantom `running` block after a restart — in the chat
+  tree AND in the execution plan panel, and never by overriding a live
+  cooperative `paused` block.
 - The goal verifier's units are durable without giving it a persistent
   blackboard: the isolated pass writes through a namespaced, parent-linked sink,
   so verifier work survives a restart and a cooperative pause is no longer
@@ -229,9 +257,11 @@ settlement funnel and the read snapshot.
   frontend state; the reconcile must stay idempotent and must never downgrade a
   message-derived terminal status (guarded by tests).
 - `GetSessionRuntimeStatus` now performs a **write** (the explicit
-  `interrupted` settle) on what had been a read-only call. It is idempotent and
-  confined to units on a task that is not executing, but the call is no longer
-  side-effect-free.
+  `interrupted` settle) on what had been a read-only call. It is idempotent,
+  column-scoped (only the status column, conditional on the unit still being in
+  flight) and confined to units on a task that is neither executing nor paused,
+  so it cannot drop another writer's data — but the call is no longer
+  side-effect-free, and its doc comment says so.
 
 ## Alternatives Considered
 

@@ -589,6 +589,16 @@ const goalVerifierDefaultRejectReason = "the independent verifier could not conf
 // the loop forever. The counter is per-incident: a clean turn resets it.
 const goalTurnMaxErrorRetries = 2
 
+// goalTurnBudgetSpent reports whether the goal's turn budget is used up. An
+// unlimited budget (MaxTurns == 0) is never spent — the user controls it via
+// pause/stop, and the anti-spin blocked_idle halt is the only non-numeric
+// guard. It is the single budget predicate, consulted both by the loop's tail
+// budget check and by the turn-error retry guard (a retry spends a real turn,
+// so it must not push the run past MaxTurns).
+func goalTurnBudgetSpent(gs *goal.GoalState) bool {
+	return gs.Budget.MaxTurns > 0 && gs.TurnCount >= gs.Budget.MaxTurns
+}
+
 // runGoalTurns is the turn-iteration core of the goal loop, extracted so it can
 // be unit-tested with a mock turn runner and a pre-built GoalState (bypassing
 // the LLM-driven deriveGoal). It mutates and returns gs.
@@ -684,25 +694,38 @@ func (o *Orchestrator) runGoalTurns(
 		// verdict/anti-spin/budget logic so a cancel always takes precedence
 		// over those outcomes.
 		if ctx.Err() != nil {
+			// A cancel is not a turn failure. Clear any error marker a retried
+			// turn left behind, because goalLoopResult maps a non-empty turn
+			// error to ExecutionStatusFailed ("stopped after a turn error") —
+			// reporting a user cancel that way would be a lie.
+			gs.LastError = ""
 			break
 		}
 		// Turn error (LLM/provider/transport or execution failure). Branch BEFORE
 		// the verdict, anti-spin, and budget logic: an errored turn did not go
 		// idle, so it must never be misclassified as blocked_idle, and it must
 		// not terminate the goal as a bare "partial". Retry a BOUNDED number of
-		// times (the typical error is transient); once the retries are exhausted,
-		// break leaving the goal ACTIVE (non-terminal) and record the cause on
-		// gs.LastError so goalLoopResult surfaces a RESUMABLE failure carrying the
-		// concrete reason — a later Resume re-enters this loop and retries.
+		// times (the typical error is transient), but never past the turn budget:
+		// a retry spends a real turn, so ignoring the budget would let a goal run
+		// MaxTurns + goalTurnMaxErrorRetries turns. Once the retries are
+		// exhausted — or the budget has no headroom left — break leaving the goal
+		// ACTIVE (non-terminal) and record the cause on gs.LastError so
+		// goalLoopResult surfaces a RESUMABLE failure carrying the concrete
+		// reason; a later Resume re-enters this loop and retries.
 		if terr != nil {
 			gs.LastError = terr.Error()
 			consecutiveErrors++
-			if consecutiveErrors <= goalTurnMaxErrorRetries {
+			budgetSpent := goalTurnBudgetSpent(gs)
+			if consecutiveErrors <= goalTurnMaxErrorRetries && !budgetSpent {
 				o.logInfo("goal_loop: turn errored, retrying", "turn", turn, "attempt", consecutiveErrors, "max_retries", goalTurnMaxErrorRetries, "error", terr)
+				// A retried turn is a real turn, so it reports progress like any
+				// other; the `continue` skips only the budget check at the loop's
+				// tail (which the guard above has already honoured).
+				o.emitGoalProgress(ctx, gs)
 				o.emitGoalStatus(ctx, gs)
 				continue
 			}
-			o.logInfo("goal_loop: turn errored, halting as a resumable failure", "turn", turn, "attempts", consecutiveErrors, "error", terr)
+			o.logInfo("goal_loop: turn errored, halting as a resumable failure", "turn", turn, "attempts", consecutiveErrors, "budget_spent", budgetSpent, "error", terr)
 			o.emitGoalStatus(ctx, gs)
 			break
 		}
@@ -845,7 +868,7 @@ func (o *Orchestrator) runGoalTurns(
 		// An unlimited budget (MaxTurns == 0) never hits this — the user
 		// controls it via pause/stop, and the anti-spin blocked_idle halt is
 		// the only non-numeric guard.
-		if gs.Budget.MaxTurns > 0 && gs.TurnCount >= gs.Budget.MaxTurns {
+		if goalTurnBudgetSpent(gs) {
 			gs.Status = goal.StatusExhausted
 			o.logInfo("goal_loop: turn budget exhausted", "turn", gs.TurnCount, "max", gs.Budget.MaxTurns)
 			o.emitGoalStatus(ctx, gs)

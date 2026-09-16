@@ -312,7 +312,13 @@ export function groupMessages(messages: ChatMessageUI[], workUnitStatus?: Record
       if (item.kind !== 'plan_step' && item.kind !== 'subagent') continue
       const snapshotStatus = workUnitStatus[item.stepId]
       if (!snapshotStatus) continue
-      if (item.status === 'completed' || item.status === 'failed') continue
+      // A message-derived terminal status (completed/failed) AND a live
+      // cooperative pause are authoritative: the overlay only FILLS IN what the
+      // replayed history lacks, so it must never move a block back out of a
+      // state the actual run put it in. Without the 'paused' guard a paused
+      // (fully resumable) block whose snapshot entry reads running/interrupted
+      // would keep a spinner / show a wrong status for the rest of the view.
+      if (item.status === 'completed' || item.status === 'failed' || item.status === 'paused') continue
       if (item.status !== snapshotStatus) item.status = snapshotStatus
     }
   }
