@@ -263,37 +263,31 @@ func writeFileT(t *testing.T, dir, name, content string) {
 // ─── Periodic auto-fetch ticker tests (git.auto_fetch_interval) ──────────
 
 // tickRecorder captures ticker-loop dispatches — the trigger name and the
-// timestamp of every tick — so tests can observe both that ticks happen and
-// how fast they come without touching git or the network.
+// number of ticks — so tests can observe that ticks happen, how many come in
+// a window, and with which trigger, without touching git or the network.
 type tickRecorder struct {
 	mu     sync.Mutex
-	ticks  []time.Time
+	n      int
 	reason string
 }
 
 func (r *tickRecorder) record(trigger string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.ticks = append(r.ticks, time.Now())
+	r.n++
 	r.reason = trigger
 }
 
 func (r *tickRecorder) count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return len(r.ticks)
+	return r.n
 }
 
 func (r *tickRecorder) lastReason() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.reason
-}
-
-func (r *tickRecorder) snapshot() []time.Time {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]time.Time(nil), r.ticks...)
 }
 
 // TestAutoFetchInterval_Resolution verifies the interval resolution order:
@@ -356,31 +350,45 @@ func TestAutoFetchInterval_Resolution(t *testing.T) {
 }
 
 // TestStartAutoFetch_TicksAtInterval verifies the ticker dispatches into the
-// funnel with the "ticker" trigger and never faster than the configured
-// interval (seam-shortened to 40ms for test speed).
+// funnel with the "ticker" trigger and no faster than the configured rate
+// (seam-shortened to 40ms for test speed).
 func TestStartAutoFetch_TicksAtInterval(t *testing.T) {
 	f, _ := newAutoFetchAPI(t.TempDir(), "proj-1", nil)
-	f.autoFetchIntervalOverride = 40 * time.Millisecond
+	const interval = 40 * time.Millisecond
+	f.autoFetchIntervalOverride = interval
 	rec := &tickRecorder{}
 	f.autoFetchTickFn = rec.record
 
 	f.Lifecycle().StartAutoFetch()
 	t.Cleanup(func() { f.Lifecycle().Cleanup() })
 
-	pollUntil(t, 5*time.Second, func() bool { return rec.count() >= 3 },
-		"ticker did not fire 3 times within 5s")
+	pollUntil(t, 5*time.Second, func() bool { return rec.count() >= 1 },
+		"ticker did not fire within 5s")
 
 	if got := rec.lastReason(); got != "ticker" {
 		t.Errorf("tick trigger = %q, want %q", got, "ticker")
 	}
-	// A time.Ticker never fires faster than its period; allow a small
-	// tolerance for timer granularity. This is the "at most one fetch per
-	// interval" guarantee of the periodic loop.
-	ticks := rec.snapshot()
-	for i := 1; i < len(ticks); i++ {
-		if gap := ticks[i].Sub(ticks[i-1]); gap < 32*time.Millisecond {
-			t.Errorf("ticks %d→%d gap = %v, want >= 32ms (interval 40ms)", i-1, i, gap)
-		}
+
+	// The "at most one dispatch per interval" guarantee is checked as an
+	// UPPER BOUND on the dispatch count inside a fixed window — never as a
+	// per-gap minimum. A per-gap minimum is unsound for a time.Ticker: the
+	// ticker holds an ABSOLUTE schedule, so a delivery delayed by the
+	// scheduler (routine on a loaded CI runner) is followed by the next
+	// already-due slot, and adjacent gaps drop well below the period (a 40ms
+	// ticker measured ~24ms gaps under load) even though the long-run rate
+	// stays exactly the period. A count ceiling is immune to that: a delay
+	// can only push ticks later, i.e. lower the count, so it can never cause
+	// a false failure here — while an implementation that genuinely fired
+	// faster than the period would blow past the ceiling (2x rate → ~2x the
+	// dispatches).
+	const window = 20 * interval
+	start := rec.count()
+	time.Sleep(window)
+	dispatches := rec.count() - start
+
+	maxDispatches := int(window/interval) + 2 // + slack for a tick on the window edge
+	if dispatches > maxDispatches {
+		t.Errorf("dispatches in %v = %d, want <= %d (interval %v)", window, dispatches, maxDispatches, interval)
 	}
 }
 
