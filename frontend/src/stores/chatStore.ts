@@ -1,11 +1,11 @@
 import { useMemo } from 'react'
 import { create } from 'zustand'
-import type { ChatMessageUI } from '@/types/messages'
+import type { ChatMessageUI, WorkUnitBlockStatus } from '@/types/messages'
 import type { TokenInfo, CompactionAvailability } from '@/types/models'
 import { HITL_PROMPT_TYPES } from '@/lib/hitlTypes'
 
 // Re-export types and grouping functions so existing imports continue to work
-export type { MessageType, ChatMessageUI, DisplayItem, GroupedMessages } from '@/types/messages'
+export type { MessageType, ChatMessageUI, DisplayItem, GroupedMessages, WorkUnitBlockStatus } from '@/types/messages'
 export { groupMessages } from '@/lib/chatUtils'
 
 // --- State types ---
@@ -83,6 +83,33 @@ interface ChatState {
   // ever set them), while a live pause/resume/terminal transition (which
   // stamps THIS map) must never be reverted by an older snapshot.
   taskFlagsEventAt: Record<string, number>
+  // Durable work-unit status per session, keyed by step id: sessionId ->
+  // stepId -> block status. Written by the session-load reconciliation
+  // (reconcileWorkUnits) from GetSessionRuntimeStatus.work_units so a
+  // paused/interrupted delegate or plan-step block renders its true state
+  // instead of a stale "running" after a restart/session load (the replayed
+  // history has no terminal event for it). Absent key = no snapshot knowledge;
+  // the block status then comes from the replayed messages alone. A step's
+  // entry is dropped when a fresh live launch proves the unit running again.
+  workUnitStatus: Record<string, Record<string, WorkUnitBlockStatus>>
+  // Timestamp of the last LIVE work-unit write for a step (a `work_unit_settled`
+  // settlement, or a fresh-launch clear), keyed like workUnitStatus:
+  // sessionId -> stepId -> Date.now(). reconcileWorkUnits compares a step's
+  // stamp against the time its snapshot was read to tell live knowledge from
+  // the snapshot's older view of the same step (the snapshot is read BEFORE it
+  // resolves, so a live event landing in that window is fresher).
+  workUnitEventAt: Record<string, Record<string, number>>
+  // Paged-history bookkeeping per session. History is loaded one page at a
+  // time (backend GetSessionHistory with a keyset cursor) so opening a session
+  // with tens of thousands of rows only fetches the tail. `historyCursor` is
+  // the opaque cursor to fetch the PRECEDING page ("" once the oldest page is
+  // loaded / before the first page), `historyHasMore` is whether older pages
+  // remain, and `historyLoading` is true while a page fetch is in flight
+  // (scroll-up loading must not fire concurrently). Absent keys mean the
+  // session's history has not been paged yet.
+  historyCursor: Record<string, string>
+  historyHasMore: Record<string, boolean>
+  historyLoading: Record<string, boolean>
 }
 
 interface ChatActions {
@@ -92,6 +119,14 @@ interface ChatActions {
   upsertChecklistMessage: (sessionId: string, message: ChatMessageUI) => void
   setMessages: (sessionId: string, messages: ChatMessageUI[]) => void
   mergeHistoryMessages: (sessionId: string, history: ChatMessageUI[], loadStartedAt: number) => void
+  /** Record the paging cursor + hasMore for a session after a history page
+   *  load (cursor "" and hasMore false when the oldest page was reached). */
+  setHistoryPageMeta: (sessionId: string, cursor: string, hasMore: boolean) => void
+  /** Toggle the in-flight flag guarding concurrent older-page fetches. */
+  setHistoryLoading: (sessionId: string, loading: boolean) => void
+  /** Prepend an older history page (deduped by id, ascending) and advance the
+   *  paging cursor. Existing (newer) messages and any live messages are kept. */
+  prependHistoryMessages: (sessionId: string, messages: ChatMessageUI[], cursor: string, hasMore: boolean) => void
   setStreamingText: (sessionId: string, text: string) => void
   appendStreamingText: (sessionId: string, delta: string) => void
   clearStreamingText: (sessionId: string) => void
@@ -105,6 +140,9 @@ interface ChatActions {
   setStepContextFill: (sessionId: string, stepId: string, fill: number) => void
   clearStepContextFill: (sessionId: string) => void
   setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
+  setWorkUnitStatus: (sessionId: string, status: Record<string, WorkUnitBlockStatus>) => void
+  settleWorkUnit: (sessionId: string, stepId: string, status: WorkUnitBlockStatus) => void
+  clearWorkUnitStep: (sessionId: string, stepId: string) => void
 }
 
 // --- Helpers ---
@@ -165,6 +203,20 @@ export function useSessionMessages(sessionId: string | null): ChatMessageUI[] {
   }, [messageOrder, messageIndex])
 }
 
+// Stable empty overlay so the hook never allocates a new object per render
+// (AGENTS.md: selectors must return referentially stable values).
+const EMPTY_WORK_UNIT_STATUS: Record<string, WorkUnitBlockStatus> = {}
+
+/**
+ * Hook returning a session's durable work-unit status overlay (stepId -> block
+ * status) for {@link groupMessages}. Returns a stable empty object when the
+ * session has no snapshot, and the store's own object otherwise (a direct
+ * store reference — no per-call allocation).
+ */
+export function useSessionWorkUnits(sessionId: string | null): Record<string, WorkUnitBlockStatus> {
+  return useChatStore(s => (sessionId ? s.workUnitStatus[sessionId] : undefined)) ?? EMPTY_WORK_UNIT_STATUS
+}
+
 // --- Store ---
 
 export const useChatStore = create<ChatState & ChatActions>((set) => ({
@@ -182,6 +234,11 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   sessionTokens: {},
   runtimeEventAt: {},
   taskFlagsEventAt: {},
+  workUnitStatus: {},
+  workUnitEventAt: {},
+  historyCursor: {},
+  historyHasMore: {},
+  historyLoading: {},
 
   addMessage: (sessionId, message) => set((s) => {
     const sessionIndex = s.messages[sessionId] ?? {}
@@ -323,6 +380,51 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
     return {
       messages: { ...s.messages, [sessionId]: indexMessages(merged) },
       messageOrder: { ...s.messageOrder, [sessionId]: merged.map(m => m.id) },
+    }
+  }),
+
+  // Record the paging cursor/hasMore after a history page load. Kept separate
+  // from mergeHistoryMessages so the (older) prepend path and the (newest)
+  // initial path share one place that owns the cursor contract.
+  setHistoryPageMeta: (sessionId, cursor, hasMore) => set((s) => ({
+    historyCursor: { ...s.historyCursor, [sessionId]: cursor },
+    historyHasMore: { ...s.historyHasMore, [sessionId]: hasMore },
+  })),
+
+  // In-flight guard for older-page fetches. Clearing deletes the key so no
+  // state change is emitted for sessions that were never loading (keeps the
+  // map reference stable — React #185).
+  setHistoryLoading: (sessionId, loading) => set((s) => {
+    if (!loading) {
+      if (!(sessionId in s.historyLoading)) return s
+      const { [sessionId]: _drop, ...rest } = s.historyLoading
+      return { historyLoading: rest }
+    }
+    return { historyLoading: { ...s.historyLoading, [sessionId]: true } }
+  }),
+
+  // Prepend an OLDER page of history before the current messages. Rows already
+  // present (by id) are skipped so a re-fetch or an overlap cannot duplicate a
+  // message; the page's own stream order is preserved ahead of what is already
+  // loaded. Advances the cursor atomically with the message insert so the next
+  // scroll-up fetches the page before this one.
+  prependHistoryMessages: (sessionId, messages, cursor, hasMore) => set((s) => {
+    const existingIndex = s.messages[sessionId] ?? {}
+    const existingOrder = s.messageOrder[sessionId] ?? []
+    const known = new Set(existingOrder)
+    const prepend: ChatMessageUI[] = []
+    for (const m of messages) {
+      if (known.has(m.id)) continue
+      known.add(m.id)
+      prepend.push(m)
+    }
+    const nextIndex = { ...existingIndex }
+    for (const m of prepend) nextIndex[m.id] = m
+    return {
+      messages: { ...s.messages, [sessionId]: nextIndex },
+      messageOrder: { ...s.messageOrder, [sessionId]: [...prepend.map(m => m.id), ...existingOrder] },
+      historyCursor: { ...s.historyCursor, [sessionId]: cursor },
+      historyHasMore: { ...s.historyHasMore, [sessionId]: hasMore },
     }
   }),
 
@@ -516,6 +618,48 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
     const existing = s.sessionTokens[sessionId]
     return {
       sessionTokens: { ...s.sessionTokens, [sessionId]: { ...existing, ...tokens } as TokenInfo },
+    }
+  }),
+
+  // Replace the session's durable work-unit overlay wholesale: the snapshot is
+  // authoritative for the whole session at load time. Deliberately does NOT
+  // stamp runtimeEventAt/taskFlagsEventAt — the overlay is a fallback
+  // consulted by groupMessages, not a live flag competing with events — and it
+  // does not stamp workUnitEventAt either: only a LIVE write may outrank a
+  // snapshot, and reconcileWorkUnits is what compares the two.
+  setWorkUnitStatus: (sessionId, status) => set((s) => ({
+    workUnitStatus: { ...s.workUnitStatus, [sessionId]: status },
+  })),
+
+  // Merge ONE step's overlay entry from a live `work_unit_settled` event and
+  // stamp workUnitEventAt for that step, so a snapshot read before the event
+  // cannot roll the step back to its stale value.
+  settleWorkUnit: (sessionId, stepId, status) => set((s) => ({
+    workUnitStatus: {
+      ...s.workUnitStatus,
+      [sessionId]: { ...s.workUnitStatus[sessionId], [stepId]: status },
+    },
+    workUnitEventAt: {
+      ...s.workUnitEventAt,
+      [sessionId]: { ...s.workUnitEventAt[sessionId], [stepId]: Date.now() },
+    },
+  })),
+
+  // Drop one step's overlay entry. A fresh live launch (subagent_launch /
+  // plan_step_start) proves the unit is running again, so the stale
+  // paused/interrupted snapshot must stop overriding the block; a no-op when
+  // the session/step has no entry. The clear is a LIVE write too, so it stamps
+  // workUnitEventAt — an older snapshot must not re-add the entry.
+  clearWorkUnitStep: (sessionId, stepId) => set((s) => {
+    const session = s.workUnitStatus[sessionId]
+    if (!session || !(stepId in session)) return s
+    const { [stepId]: _dropped, ...rest } = session
+    return {
+      workUnitStatus: { ...s.workUnitStatus, [sessionId]: rest },
+      workUnitEventAt: {
+        ...s.workUnitEventAt,
+        [sessionId]: { ...s.workUnitEventAt[sessionId], [stepId]: Date.now() },
+      },
     }
   }),
 }))

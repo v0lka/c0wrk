@@ -64,11 +64,41 @@ describe('SubAgentBlock', () => {
     expect(state()).toBe('closed')
   })
 
+  // --- failure reason surfaced in the header (mirrors PlanStepBlock) ---
+
+  it('renders the failure reason in the header when failed', () => {
+    render(makeSub({ status: 'failed', error: 'max steps exceeded', duration: 3000 }))
+    expect(container.textContent).toContain('max steps exceeded')
+    // The reason is a settled header hint, not an auto-expanded body.
+    expect(state()).toBe('closed')
+  })
+
+  it('does not render a stale error hint when the block completed', () => {
+    render(makeSub({ status: 'completed', error: 'stale reason', duration: 3000 }))
+    expect(container.textContent).not.toContain('stale reason')
+  })
+
   it('expands its body when the user clicks the header', () => {
     render(makeSub({ status: 'completed', children: [CHILD] }))
     act(() => {
       trigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     expect(state()).toBe('open')
+  })
+
+  // --- work-unit recovery statuses (applied by the session-load reconciliation) ---
+
+  it('renders the interrupted status with an "— interrupted" hint', () => {
+    render(makeSub({ status: 'interrupted' }))
+    expect(container.textContent).toContain('interrupted')
+    // A settled-looking row, not an auto-expanded body.
+    expect(state()).toBe('closed')
+  })
+
+  it('renders a paused delegate with its distinct warning status icon', () => {
+    render(makeSub({ status: 'paused' }))
+    expect(container.querySelector('svg.text-warning')).not.toBeNull()
+    // Paused is not interrupted: no stale "interrupted" hint.
+    expect(container.textContent).not.toContain('interrupted')
   })
 })

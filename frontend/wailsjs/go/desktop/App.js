@@ -334,8 +334,8 @@ export function GetSecuritySettings() {
   return window['go']['desktop']['App']['GetSecuritySettings']();
 }
 
-export function GetSessionHistory(arg1) {
-  return window['go']['desktop']['App']['GetSessionHistory'](arg1);
+export function GetSessionHistory(arg1, arg2, arg3) {
+  return window['go']['desktop']['App']['GetSessionHistory'](arg1, arg2, arg3);
 }
 
 export function GetSessionRuntimeStatus(arg1) {
@@ -432,6 +432,8 @@ export function ListThemes() {
 
 export function ListVectorIndexGPUs() {
   return window['go']['desktop']['App']['ListVectorIndexGPUs']();
+}
+
 export function Merge(arg1) {
   return window['go']['desktop']['App']['Merge'](arg1);
 }

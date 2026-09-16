@@ -301,6 +301,20 @@ export namespace backend {
 		}
 	}
 	
+	export class VectorIndexSettingsResponse {
+	    execution_provider: string;
+	    device_id: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new VectorIndexSettingsResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.execution_provider = source["execution_provider"];
+	        this.device_id = source["device_id"];
+	    }
+	}
 	export class ModelProfilesSettingsResponse {
 	    enabled: boolean;
 	    essential_tools_enabled: boolean;
@@ -345,20 +359,6 @@ export namespace backend {
 	        this.tls_cert_dir = source["tls_cert_dir"];
 	    }
 	}
-	export class VectorIndexSettingsResponse {
-	    execution_provider: string;
-	    device_id: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new VectorIndexSettingsResponse(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.execution_provider = source["execution_provider"];
-	        this.device_id = source["device_id"];
-	    }
-	}
 	export class ConfigSearchResp {
 	    provider: string;
 	    api_key: string;
@@ -379,10 +379,10 @@ export namespace backend {
 	    config_errors: string[];
 	    llm: ConfigLLMResponse;
 	    search: ConfigSearchResp;
-	    vector_index: VectorIndexSettingsResponse;
 	    proxy: ProxySettingsResponse;
 	    experimental: ExperimentalSettingsResponse;
 	    model_profiles: ModelProfilesSettingsResponse;
+	    vector_index: VectorIndexSettingsResponse;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigResponse(source);
@@ -395,10 +395,10 @@ export namespace backend {
 	        this.config_errors = source["config_errors"];
 	        this.llm = this.convertValues(source["llm"], ConfigLLMResponse);
 	        this.search = this.convertValues(source["search"], ConfigSearchResp);
-	        this.vector_index = this.convertValues(source["vector_index"], VectorIndexSettingsResponse);
 	        this.proxy = this.convertValues(source["proxy"], ProxySettingsResponse);
 	        this.experimental = this.convertValues(source["experimental"], ExperimentalSettingsResponse);
 	        this.model_profiles = this.convertValues(source["model_profiles"], ModelProfilesSettingsResponse);
+	        this.vector_index = this.convertValues(source["vector_index"], VectorIndexSettingsResponse);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2307,6 +2307,40 @@ export namespace session {
 	        this.data = source["data"];
 	    }
 	}
+	export class HistoryPage {
+	    messages: ChatMessage[];
+	    next_cursor: string;
+	    has_more: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new HistoryPage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.messages = this.convertValues(source["messages"], ChatMessage);
+	        this.next_cursor = source["next_cursor"];
+	        this.has_more = source["has_more"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class PasteResult {
 	    kind: string;
 	    text?: string;
@@ -2405,6 +2439,24 @@ export namespace session {
 	        this.unfinished_task_status = source["unfinished_task_status"];
 	    }
 	}
+	export class WorkUnitStatus {
+	    step_id: string;
+	    kind?: string;
+	    status: string;
+	    parent_id?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkUnitStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.step_id = source["step_id"];
+	        this.kind = source["kind"];
+	        this.status = source["status"];
+	        this.parent_id = source["parent_id"];
+	    }
+	}
 	export class SessionRuntimeStatus {
 	    active: boolean;
 	    has_unfinished_task: boolean;
@@ -2415,6 +2467,7 @@ export namespace session {
 	    compaction_availability: core.CompactionAvailability[];
 	    activity?: string;
 	    streaming: boolean;
+	    work_units?: WorkUnitStatus[];
 	
 	    static createFrom(source: any = {}) {
 	        return new SessionRuntimeStatus(source);
@@ -2431,6 +2484,7 @@ export namespace session {
 	        this.compaction_availability = this.convertValues(source["compaction_availability"], core.CompactionAvailability);
 	        this.activity = source["activity"];
 	        this.streaming = source["streaming"];
+	        this.work_units = this.convertValues(source["work_units"], WorkUnitStatus);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -37,6 +37,18 @@ type Delegation struct {
 	CompletedAt time.Time
 }
 
+// DelegationKind classifies what a registered delegation spec represents. The
+// spec emitted at register time carries it so a unit-ledger writer can stamp
+// the matching unit kind without decoding the task.
+type DelegationKind string
+
+const (
+	// DelegationKindSubagent is a delegated subagent (the delegate tool).
+	DelegationKindSubagent DelegationKind = "subagent"
+	// DelegationKindPlanStep is a single step of a declared plan.
+	DelegationKindPlanStep DelegationKind = "plan_step"
+)
+
 // DelegationSpec is the persistable form of a delegation task: everything the
 // system needs to rebuild and re-launch the subagent after a pause — without
 // any LLM decision. The registry fires its spec sink (when wired) at
@@ -49,6 +61,10 @@ type DelegationSpec struct {
 	Task     DelegationTask `json:"task"`
 	ParentID string         `json:"parent_id,omitempty"`
 	Depth    int            `json:"depth,omitempty"`
+	// Kind classifies the spec (a delegated subagent vs a plan step) so a
+	// unit-ledger writer can stamp the right unit kind at register time. Empty
+	// is treated as DelegationKindSubagent.
+	Kind DelegationKind `json:"kind,omitempty"`
 }
 
 // DelegationRegistry tracks active and completed delegations for one
@@ -116,13 +132,26 @@ func (r *DelegationRegistry) SetSpecSink(parentID string, sink func(DelegationSp
 // RegisterTask registers a full delegation task (delegate-tool form) and
 // fires the spec sink when one is wired, persisting everything a later resume
 // needs to rebuild the subagent. The registry entry itself stays lean (ID,
-// summary, deps, mode) — the full task lives on in the emitted spec.
+// summary, deps, mode) — the full task lives on in the emitted spec. The
+// emitted spec is stamped DelegationKindSubagent.
 func (r *DelegationRegistry) RegisterTask(t DelegationTask) error {
+	return r.RegisterTaskKind(DelegationKindSubagent, t)
+}
+
+// RegisterTaskKind is RegisterTask with an explicit unit kind. The plan-step
+// path registers its steps with DelegationKindPlanStep so the register-time
+// unit-ledger writer records them as plan-step units; the delegate tool uses
+// RegisterTask (DelegationKindSubagent). The registry entry itself stays lean
+// (ID, summary, deps, mode) — the full task lives on in the emitted spec.
+func (r *DelegationRegistry) RegisterTaskKind(kind DelegationKind, t DelegationTask) error {
 	if t.Mode == "" {
 		t.Mode = "blocking"
 	}
 	if err := r.Register(t.ID, t.Summary, t.DependsOn, t.Mode); err != nil {
 		return err
+	}
+	if kind == "" {
+		kind = DelegationKindSubagent
 	}
 	r.mu.Lock()
 	sink := r.specSink
@@ -130,7 +159,7 @@ func (r *DelegationRegistry) RegisterTask(t DelegationTask) error {
 	depth := r.depth
 	r.mu.Unlock()
 	if sink != nil {
-		sink(DelegationSpec{Task: t, ParentID: parentID, Depth: depth})
+		sink(DelegationSpec{Task: t, ParentID: parentID, Depth: depth, Kind: kind})
 	}
 	return nil
 }

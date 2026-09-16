@@ -18,9 +18,6 @@ export function useLifecycleEvents(sessionId: string | null): void {
 
     const cleanups: Array<() => void> = []
 
-    // Track step-start message IDs so step_complete can update the correct one.
-    const stepIdMap = new Map<number, string>()
-
     // --- routing ---
     cleanups.push(
       onSessionEvent(sessionId, 'routing', (data) => {
@@ -41,33 +38,25 @@ export function useLifecycleEvents(sessionId: string | null): void {
     )
 
     // --- step_start ---
+    // Step markers are pure activity signals: they only drive the live activity
+    // label. They are deliberately NOT stored as chat messages — groupMessages
+    // drops both `thinking` and `step_done` (no display item is produced) and
+    // the backend no longer ships them in paged history. A row per step would
+    // otherwise bloat the store and the grouping pass of a long run without
+    // ever rendering.
     cleanups.push(
       onSessionEvent(sessionId, 'step_start', (data) => {
         if (!isStepData(data)) { reportDroppedEvent('step_start', data); return }
         useChatStore.getState().setActivityStatus(sessionId, 'Thinking...')
-        const id = generateMessageId()
-        stepIdMap.set(data.step_num, id)
-        useChatStore.getState().addMessage(sessionId, {
-          id,
-          sessionId,
-          type: 'thinking',
-          content: `Step ${data.step_num || ''}...`,
-          timestamp: Date.now(),
-        })
       }),
     )
 
     // --- step_complete ---
+    // No store write (there is no `thinking` marker to settle, see above). The
+    // listener is kept for payload validation / dropped-event telemetry.
     cleanups.push(
       onSessionEvent(sessionId, 'step_complete', (data) => {
-        if (!isStepData(data)) { reportDroppedEvent('step_complete', data); return }
-        const msgId = stepIdMap.get(data.step_num)
-        if (msgId) {
-          useChatStore.getState().updateMessage(sessionId, msgId, {
-            type: 'step_done',
-          })
-          stepIdMap.delete(data.step_num)
-        }
+        if (!isStepData(data)) reportDroppedEvent('step_complete', data)
       }),
     )
 

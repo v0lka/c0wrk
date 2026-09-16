@@ -10,7 +10,10 @@ import (
 // TestSerializePlan_HeaderIncludesStepID verifies that each step header
 // carries the step ID — `# Step N (id): summary` — so the human reviewer
 // sees the identifiers that DependsOn references target and empty or broken
-// IDs stand out during plan approval (incident plan-f713b5 follow-up).
+// IDs stand out during plan approval (incident plan-f713b5 follow-up). It
+// also verifies that a "Depends on" line sits directly under the header:
+// the step's dependencies comma-separated, or exactly "Depends on: (none)"
+// when the step has none, making the flattened plan's edges explicit.
 func TestSerializePlan_HeaderIncludesStepID(t *testing.T) {
 	plan := &orchestration.Plan{
 		Steps: []orchestration.PlanStep{
@@ -34,9 +37,13 @@ func TestSerializePlan_HeaderIncludesStepID(t *testing.T) {
 	want := strings.Join([]string{
 		"# Step 1 (step_1_nudge_cache): Warm the compile cache",
 		"",
+		"Depends on: (none)",
+		"",
 		"Run a no-op build so later measurements are stable.",
 		"",
 		"# Step 2 (step_2_measure): Measure build time",
+		"",
+		"Depends on: step_1_nudge_cache",
 		"",
 		"Time a clean build and record the result.",
 		"",

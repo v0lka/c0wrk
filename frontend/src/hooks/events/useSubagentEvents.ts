@@ -61,7 +61,7 @@ export function useSubagentEvents(sessionId: string | null): void {
           sessionId,
           type: 'subagent_complete',
           content: '',
-          metadata: { step_id: data.step_id, success: data.success, duration: data.duration, plan_step_id: data.plan_step_id },
+          metadata: { step_id: data.step_id, success: data.success, duration: data.duration, ...(data.error ? { error: data.error } : {}), plan_step_id: data.plan_step_id },
           timestamp: Date.now(),
         })
       }),

@@ -9,6 +9,7 @@ import (
 
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/units"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -61,6 +62,12 @@ type PersistentBlackboard struct {
 	// auto-resume wave via the DelegationSpecReader capability.
 	delegationSpecsMu sync.RWMutex
 	delegationSpecs   []tools.DelegationSpec
+
+	// unitLedger is the ledger-backed durable unit ledger for this task (the
+	// MAINLINE unit ledger). It is built once via unitLedgerOnce and cached so
+	// its in-memory overlay survives across callers.
+	unitLedgerOnce sync.Once
+	unitLedger     units.Ledger
 }
 
 // persistOp is a single persistence operation sent to the worker goroutine.
@@ -524,6 +531,28 @@ func (pb *PersistentBlackboard) DelegationSpecs() []tools.DelegationSpec {
 	pb.delegationSpecsMu.RLock()
 	defer pb.delegationSpecsMu.RUnlock()
 	return pb.delegationSpecs
+}
+
+// UnitStore returns the durable unit store backing this blackboard's task, or
+// nil when the underlying store has no unit persistence. It implements
+// core.UnitStoreProvider so the mainline unit ledger can be built from the
+// blackboard (core.NewBlackboardLedger).
+func (pb *PersistentBlackboard) UnitStore() units.Store {
+	if p, ok := pb.store.(interface{ UnitStore() units.Store }); ok {
+		return p.UnitStore()
+	}
+	return nil
+}
+
+// UnitLedger returns the ledger-backed durable unit ledger for this task's
+// blackboard — the MAINLINE unit ledger. It is built once and cached so the
+// ledger's in-memory overlay survives across callers, and degrades to a
+// best-effort in-memory ledger when the store has no unit persistence.
+func (pb *PersistentBlackboard) UnitLedger() units.Ledger {
+	pb.unitLedgerOnce.Do(func() {
+		pb.unitLedger = units.NewLedger(pb.UnitStore(), pb.taskID, "")
+	})
+	return pb.unitLedger
 }
 
 // ---------------------------------------------------------------------------

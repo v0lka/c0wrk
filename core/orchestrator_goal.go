@@ -13,6 +13,7 @@ import (
 	"github.com/v0lka/c0wrk/core/goal"
 	"github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/units"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/llm"
@@ -352,7 +353,7 @@ func (o *Orchestrator) runGoalLoop(
 		// Pass the computed routing (not nil) so finalizeResult does not clobber
 		// the routing decision persisted above — the other two goalLoopResult
 		// call sites (end of runGoalLoop / resumeGoalLoop) pass the real value.
-		return o.goalLoopResult(conductorMessage, bb, routing, goal.StatusActive, "", false), nil
+		return o.goalLoopResult(conductorMessage, bb, routing, goal.StatusActive, "", false, ""), nil
 	}
 
 	// Resolve the budget: the per-message override sets MaxTurns when present;
@@ -400,7 +401,7 @@ func (o *Orchestrator) runGoalLoop(
 	if gs.LastVerdict != nil && gs.LastVerdict.Reason != "" {
 		out = gs.LastVerdict.Reason
 	}
-	return o.goalLoopResult(out, bb, routing, gs.Status, gs.Condition, paused), nil
+	return o.goalLoopResult(out, bb, routing, gs.Status, gs.Condition, paused, gs.LastError), nil
 }
 
 // resumeGoalLoop re-enters the goal loop from a persisted, non-terminal
@@ -550,7 +551,7 @@ func (o *Orchestrator) resumeGoalLoop(
 	if gs.LastVerdict != nil && gs.LastVerdict.Reason != "" {
 		out = gs.LastVerdict.Reason
 	}
-	return o.goalLoopResult(out, bb, routing, gs.Status, gs.Condition, paused), nil
+	return o.goalLoopResult(out, bb, routing, gs.Status, gs.Condition, paused, gs.LastError), nil
 }
 
 // persistGoalStateBestEffort persists the goal state for the current task so a
@@ -579,6 +580,24 @@ func (o *Orchestrator) persistGoalStateBestEffort(bb orchestration.Blackboard, g
 // verdict the verifier rejected without supplying a concrete reason (e.g. a nil
 // outcome). It surfaces a clear, actionable explanation to the next agent turn.
 const goalVerifierDefaultRejectReason = "the independent verifier could not confirm the goal's success condition is met"
+
+// goalTurnMaxErrorRetries bounds how many CONSECUTIVE turn errors the goal loop
+// tolerates before it stops retrying and halts the run as a resumable failure.
+// A turn error is typically transient (an LLM/provider hiccup, a dropped
+// request, a transport timeout), so retrying immediately lets the loop recover
+// without user intervention; the bound keeps a persistent failure from spinning
+// the loop forever. The counter is per-incident: a clean turn resets it.
+const goalTurnMaxErrorRetries = 2
+
+// goalTurnBudgetSpent reports whether the goal's turn budget is used up. An
+// unlimited budget (MaxTurns == 0) is never spent — the user controls it via
+// pause/stop, and the anti-spin blocked_idle halt is the only non-numeric
+// guard. It is the single budget predicate, consulted both by the loop's tail
+// budget check and by the turn-error retry guard (a retry spends a real turn,
+// so it must not push the run past MaxTurns).
+func goalTurnBudgetSpent(gs *goal.GoalState) bool {
+	return gs.Budget.MaxTurns > 0 && gs.TurnCount >= gs.Budget.MaxTurns
+}
 
 // runGoalTurns is the turn-iteration core of the goal loop, extracted so it can
 // be unit-tested with a mock turn runner and a pre-built GoalState (bypassing
@@ -611,6 +630,14 @@ func (o *Orchestrator) runGoalTurns(
 	turnRunner func(ctx context.Context, turn int, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message, deps conductorDeps) (toolCallCount int, result *orchestration.ExecutionResult, err error),
 ) (*goal.GoalState, bool) {
 	var paused bool
+	// consecutiveErrors counts consecutive turns that returned an error without
+	// a clean completion, for the bounded retry below. A clean turn resets it.
+	consecutiveErrors := 0
+	// Clear any stale error carried over from a prior run (a resumed goal loads
+	// gs.LastError from persistence). From here on it reflects only THIS
+	// invocation's turns, so it can never misclassify a run that broke before
+	// (or without) an error as a resumable failure.
+	gs.LastError = ""
 
 	for gs.Status == goal.StatusActive {
 		if ctx.Err() != nil {
@@ -625,6 +652,15 @@ func (o *Orchestrator) runGoalTurns(
 		}
 
 		turn := gs.TurnCount + 1
+		// Charge the turn up front (before the run) so the per-turn system
+		// prompt renders the CURRENT turn number rather than the previous one.
+		// The goal-mode budget line (renderGoalModeVolatile) reads gs.TurnCount,
+		// so incrementing only AFTER the run made every turn — turn 1 included —
+		// render "turn 0": the UI's initial snapshot never advanced and the agent
+		// could not tell which turn it was on. Incrementing here keeps the prompt
+		// honest and the UI in step with the loop. (A retried errored turn still
+		// charges a real turn: the top-of-loop increment runs again on the retry.)
+		gs.TurnCount = turn
 		o.logInfo("goal_loop: starting turn", "turn", turn)
 
 		// Build per-turn deps with a fresh verdict sink and counting wrappers.
@@ -639,12 +675,20 @@ func (o *Orchestrator) runGoalTurns(
 		// goal-turn edit would duplicate what the executor of the underlying
 		// task already reports.
 		deps.verifyOnEdit = nil
+		// A goal turn is ONE bounded attempt. Marking declare_goal_status as a
+		// stop tool ends this turn's run the moment the agent declares its
+		// verdict (agent.Executor stop-tool terminator), so the loop reads the
+		// verdict and advances to the next turn. Without it the agent — told to
+		// keep going until the condition holds — performs the whole goal,
+		// including its own verification loop, inside a single unbounded turn:
+		// TurnCount never advances (the UI sits on turn 0), and the turn budget
+		// (MaxTurns) never engages.
+		deps.stopTools = []string{"declare_goal_status"}
 
 		toolCalls, execResult, terr := turnRunner(
 			tools.WithGoalStatusSink(WithGoalState(ctx, gs), sink),
 			turn, message, bb, availableTools, plansDir, conversationHistory, deps,
 		)
-		gs.TurnCount = turn
 
 		// Cooperative pause (mid-turn): the universal pause signal tripped at
 		// a step boundary inside this turn's conductor run, so the turn result
@@ -667,8 +711,46 @@ func (o *Orchestrator) runGoalTurns(
 		// verdict/anti-spin/budget logic so a cancel always takes precedence
 		// over those outcomes.
 		if ctx.Err() != nil {
+			// A cancel is not a turn failure. Clear any error marker a retried
+			// turn left behind, because goalLoopResult maps a non-empty turn
+			// error to ExecutionStatusFailed ("stopped after a turn error") —
+			// reporting a user cancel that way would be a lie.
+			gs.LastError = ""
 			break
 		}
+		// Turn error (LLM/provider/transport or execution failure). Branch BEFORE
+		// the verdict, anti-spin, and budget logic: an errored turn did not go
+		// idle, so it must never be misclassified as blocked_idle, and it must
+		// not terminate the goal as a bare "partial". Retry a BOUNDED number of
+		// times (the typical error is transient), but never past the turn budget:
+		// a retry spends a real turn, so ignoring the budget would let a goal run
+		// MaxTurns + goalTurnMaxErrorRetries turns. Once the retries are
+		// exhausted — or the budget has no headroom left — break leaving the goal
+		// ACTIVE (non-terminal) and record the cause on gs.LastError so
+		// goalLoopResult surfaces a RESUMABLE failure carrying the concrete
+		// reason; a later Resume re-enters this loop and retries.
+		if terr != nil {
+			gs.LastError = terr.Error()
+			consecutiveErrors++
+			budgetSpent := goalTurnBudgetSpent(gs)
+			if consecutiveErrors <= goalTurnMaxErrorRetries && !budgetSpent {
+				o.logInfo("goal_loop: turn errored, retrying", "turn", turn, "attempt", consecutiveErrors, "max_retries", goalTurnMaxErrorRetries, "error", terr)
+				// A retried turn is a real turn, so it reports progress like any
+				// other; the `continue` skips only the budget check at the loop's
+				// tail (which the guard above has already honoured).
+				o.emitGoalProgress(ctx, gs)
+				o.emitGoalStatus(ctx, gs)
+				continue
+			}
+			o.logInfo("goal_loop: turn errored, halting as a resumable failure", "turn", turn, "attempts", consecutiveErrors, "budget_spent", budgetSpent, "error", terr)
+			o.emitGoalStatus(ctx, gs)
+			break
+		}
+		// Clean turn: clear the error marker and reset the consecutive-error
+		// counter so the retry bound is per-incident, not cumulative.
+		consecutiveErrors = 0
+		gs.LastError = ""
+
 		// The verification marker described the PREVIOUS turn's met attempt and
 		// has now been rendered into THIS turn's system prompt (built inside
 		// turnRunner → RunConductor from this same gs pointer). Clear it so the
@@ -718,6 +800,24 @@ func (o *Orchestrator) runGoalTurns(
 					break
 				}
 				outcome, verr := verifier(ctx, gs, v, message, execResultOutput(execResult), bb, availableTools, deps)
+				// A cooperative pause INSIDE the verification pass suspends the
+				// REQUEST; it does not reject the met claim. The verifier's
+				// isolated Conductor run carries the same universal pause signal
+				// as every other run; when it trips at a step boundary the
+				// verifier reports the pause sentinel and declares NO verdict —
+				// the condition was neither confirmed nor refuted. Map it to a
+				// pause of the request: leave the goal ACTIVE and set paused=true
+				// (goalLoopResult → ExecutionStatusPaused → the manager emits
+				// session_paused) so Resume re-enters the loop and re-runs
+				// verification, settling the verifier's units. NEVER synthesize a
+				// not_met verdict from an interrupted verification. Checked BEFORE
+				// the confirm/reject branches so a paused pass cannot fall through
+				// to the rejection path below (which would synthesize not_met).
+				if isPaused(verr) {
+					o.logInfo("goal_loop: verifier paused by signal (goal stays active)", "turn", turn)
+					paused = true
+					break
+				}
 				if outcome != nil && outcome.Confirmed {
 					gs.LastVerification = "confirmed"
 					// Surface the verifier's structured outcome (reason + evidence)
@@ -785,7 +885,7 @@ func (o *Orchestrator) runGoalTurns(
 		// An unlimited budget (MaxTurns == 0) never hits this — the user
 		// controls it via pause/stop, and the anti-spin blocked_idle halt is
 		// the only non-numeric guard.
-		if gs.Budget.MaxTurns > 0 && gs.TurnCount >= gs.Budget.MaxTurns {
+		if goalTurnBudgetSpent(gs) {
 			gs.Status = goal.StatusExhausted
 			o.logInfo("goal_loop: turn budget exhausted", "turn", gs.TurnCount, "max", gs.Budget.MaxTurns)
 			o.emitGoalStatus(ctx, gs)
@@ -794,21 +894,30 @@ func (o *Orchestrator) runGoalTurns(
 
 		o.emitGoalProgress(ctx, gs)
 		o.emitGoalStatus(ctx, gs)
-		_ = terr // a turn error does not abort the loop; the agent may recover next turn
-		_ = execResult
 	}
 	return gs, paused
 }
 
-// execResultOutput extracts the met turn's work product (Output) from the
-// turn-runner's ExecutionResult. It is threaded into the verifier so the fresh
-// verification blackboard can be seeded with the real work product (via
-// SetFinalResult) — eliminating the "no final result recorded" symptom the
-// verifier's read_final_result previously hit when run on a fresh blackboard.
-// A nil result yields the empty string (the verifier seeds nothing).
+// execResultOutput extracts the met turn's work product from the turn-runner's
+// ExecutionResult. It is threaded into the verifier so the fresh verification
+// blackboard can be seeded with the real work product (via SetFinalResult) —
+// eliminating the "no final result recorded" symptom the verifier's
+// read_final_result previously hit when run on a fresh blackboard.
+//
+// A goal turn ends on the declare_goal_status STOP TOOL (see runGoalTurns), so
+// ExecutionResult.Output holds only the tool's short confirmation string
+// ("Verdict recorded: …"), not the turn's modeled output. The model's own final
+// text is preserved separately in ExecutionResult.Summary (the executor captures
+// the assistant message at the stop-tool termination), so Summary is preferred;
+// a run that ended on `finish` (or ran without a stop tool) has an empty Summary
+// and falls back to Output. A nil result yields the empty string (the verifier
+// seeds nothing).
 func execResultOutput(r *orchestration.ExecutionResult) string {
 	if r == nil {
 		return ""
+	}
+	if r.Summary != "" {
+		return r.Summary
 	}
 	return r.Output
 }
@@ -873,7 +982,15 @@ func resolveGoalBudget(override *goal.GoalBudget) goal.GoalBudget {
 // pause (paused=true) overrides the default to ExecutionStatusPaused so
 // finalizeResult→persistTaskOutcome marks the task paused (resumable) and the
 // manager emits session_paused instead of a degraded task_complete.
-func (o *Orchestrator) goalLoopResult(output string, bb orchestration.Blackboard, routing *router.RoutingDecision, status goal.GoalStatus, condition string, paused bool) *HandleResult {
+//
+// turnErr, when non-empty, is the error that halted the loop (a turn returned
+// an error and the bounded retries were exhausted). It overrides the default
+// to a RESUMABLE FAILURE — ExecutionStatusFailed, which persistTaskOutcome
+// marks "failed" (still resumable) and the manager maps to a
+// task_failed_resumable banner — instead of a misleading "partial". The goal
+// itself stays non-terminal (active), so Resume re-enters the loop and retries;
+// the error reason becomes the task output so the UI shows WHY the run stopped.
+func (o *Orchestrator) goalLoopResult(output string, bb orchestration.Blackboard, routing *router.RoutingDecision, status goal.GoalStatus, condition string, paused bool, turnErr string) *HandleResult {
 	execResult := &orchestration.ExecutionResult{Output: output}
 	switch status {
 	case goal.StatusMet:
@@ -882,10 +999,20 @@ func (o *Orchestrator) goalLoopResult(output string, bb orchestration.Blackboard
 		execResult.Status = orchestration.ExecutionStatusFailed
 	case goal.StatusCancelled:
 		execResult.Status = orchestration.ExecutionStatusCancelled
-	default: // active, blocked_idle (pause/derivation path)
-		if paused {
+	default: // active, blocked_idle (pause / derivation / turn-error path)
+		switch {
+		case paused:
 			execResult.Status = orchestration.ExecutionStatusPaused
-		} else {
+		case turnErr != "":
+			// A goal-loop turn ERRORED and the loop halted without meeting the
+			// goal (bounded retries exhausted). Surface a resumable failure and
+			// carry the concrete cause as the task output — mirroring the E2S
+			// convention of an explicit, honest output rather than echoing the
+			// user's own message. The goal is left active (non-terminal) by
+			// runGoalTurns, so Resume re-enters the loop and retries.
+			execResult.Status = orchestration.ExecutionStatusFailed
+			execResult.Output = fmt.Sprintf("Goal run stopped after a turn error: %s\n\nThe goal is still active — resume to retry from the checkpoint.", turnErr)
+		default:
 			execResult.Status = orchestration.ExecutionStatusPartial
 		}
 	}
@@ -1253,7 +1380,8 @@ func renderReportedEvidence(verdict *goal.Verdict) string {
 // (orchestration.NewMapBlackboard), NOT the goal loop's blackboard, so it is a
 // genuinely separate execution context with no leak of the still-active goal
 // task's incomplete state. It is seeded with lastTurnOutput (the met turn's
-// work product) via SetFinalResult, so the verifier's own read_final_result
+// modeled output — ExecutionResult.Summary, falling back to Output; see
+// execResultOutput) via SetFinalResult, so the verifier's own read_final_result
 // returns the real work — eliminating the "no final result recorded" symptom
 // that arose when a fresh-context verifier could not reach the goal task's
 // output. The reported-evidence injection (renderReportedEvidence into the
@@ -1272,13 +1400,23 @@ func renderReportedEvidence(verdict *goal.Verdict) string {
 // delegate in re_derivation). A pass that ends WITHOUT declaring a verdict
 // (nil sink) is treated as a REJECT — the condition could not be independently
 // confirmed (e.g. the pass hit the step budget or errored before declaring).
+//
+// PAUSE EXCEPTION: when the pass ended in a COOPERATIVE PAUSE without declaring
+// a CONFIRMED verdict (the universal pause signal tripped inside the pass), the
+// verifier returns the pause sentinel (agent.ErrPaused) with a NIL outcome
+// rather than a synthetic reject. The goal loop maps that to a pause of the
+// request — the goal stays ACTIVE and Resume re-enters to re-run verification —
+// so an interrupted verification is never misread as "the condition could not
+// be confirmed" and never surfaces as a rejected met verdict (see runGoalTurns'
+// met branch). A CONFIRMED verdict still wins: a trailing pause cannot undo a
+// successful verification.
 func (o *Orchestrator) defaultGoalVerifier(
 	ctx context.Context,
 	gs *goal.GoalState,
 	verdict *goal.Verdict,
 	message string,
 	lastTurnOutput string,
-	_ orchestration.Blackboard,
+	bb orchestration.Blackboard,
 	availableTools []sdktools.ToolDescriptor,
 	deps conductorDeps,
 ) (*tools.VerificationOutcome, error) {
@@ -1289,15 +1427,27 @@ func (o *Orchestrator) defaultGoalVerifier(
 	deps = o.buildConductorDeps(deps.conversationHistory, nil)
 	deps.resumeSteps = nil
 
+	// Inject a ledger-bound unit sink so this ISOLATED run still persists its
+	// units — the verification pass itself and every delegation it spawns — as
+	// durable, namespaced, parent-linked records under the goal task it is
+	// judging. The sink is derived from the goal loop's blackboard (bb, the
+	// task being verified) and the run's task store; it is nil when bb carries
+	// no task id, in which case RunConductor falls back to its
+	// blackboard-derived wiring unchanged. The sink writes ONLY to the ledger:
+	// the verifier keeps running on the fresh seeded MapBlackboard built below,
+	// so the live task's incomplete state never leaks into its LLM view.
+	deps.unitSink = o.verifierUnitSink(bb, gs, deps)
+
 	// Run on a FRESH blackboard so the verifier is a genuinely separate
 	// execution context — it does not inherit the still-active goal task's
 	// incomplete state (partial plan, pending step outputs, etc.). Seed it with
-	// the met turn's work product (lastTurnOutput) via SetFinalResult so the
-	// verifier's own read_final_result returns the real work, not "no final
-	// result recorded" — the broken-dependency symptom that arose when a
-	// fresh-context verifier could not reach the goal task's output. The
-	// original request is seeded too so the fresh blackboard mirrors a normal
-	// task's initial state.
+	// the met turn's work product (lastTurnOutput — the model's final text, or
+	// the turn output when the run ended on `finish`; see execResultOutput) via
+	// SetFinalResult so the verifier's own read_final_result returns the real
+	// work, not the stop tool's confirmation, and not "no final result recorded"
+	// — the broken-dependency symptom that arose when a fresh-context verifier
+	// could not reach the goal task's output. The original request is seeded too
+	// so the fresh blackboard mirrors a normal task's initial state.
 	verifierBB := orchestration.NewMapBlackboard()
 	verifierBB.SetOriginalRequest(message)
 	if lastTurnOutput != "" {
@@ -1344,14 +1494,42 @@ func (o *Orchestrator) defaultGoalVerifier(
 	sink := &memVerificationSink{}
 	verifierCtx := tools.WithVerificationSink(ctx, sink)
 
-	if _, err := RunConductor(verifierCtx, message, verifierBB, verifierTools, deps, ""); err != nil {
-		if o.logger != nil {
-			o.logger.Debug("goal verification conductor run returned error", "error", err)
-		}
+	runResult, runErr := RunConductor(verifierCtx, message, verifierBB, verifierTools, deps, "")
+
+	// A CONFIRMED verdict wins outright: the verification completed its job, so
+	// a pause that tripped afterwards (at a later step boundary) must not undo a
+	// successful verification.
+	if outcome := sink.Last(); outcome != nil && outcome.Confirmed {
+		return outcome, nil
 	}
 
+	// The pass declared no CONFIRMED verdict and ended in a COOPERATIVE PAUSE:
+	// the universal pause signal (the same PauseChecker every conductor run
+	// carries) tripped at a step boundary inside the verifier's own executor —
+	// or inside a re_derivation delegate it spawned. The condition was neither
+	// confirmed nor refuted; the pass was INTERRUPTED, not finished. Report the
+	// pause sentinel so runGoalTurns SUSPENDS the goal (leaves it ACTIVE)
+	// instead of synthesizing a not_met rejection. Checked BEFORE the reject
+	// below so a paused pass can NEVER surface as a rejected met verdict — even
+	// when the pass managed to declare a non-confirmed outcome just before the
+	// pause tripped.
+	if pausedRun(runErr, runResult) {
+		if o.logger != nil {
+			o.logger.Info("goal verification conductor run paused (goal stays active)", "error", runErr)
+		}
+		return nil, agent.ErrPaused
+	}
+
+	// A declared (non-confirmed) verdict stands — an explicit reject is a
+	// genuine verdict, not a pause artifact.
 	if outcome := sink.Last(); outcome != nil {
 		return outcome, nil
+	}
+
+	if runErr != nil {
+		if o.logger != nil {
+			o.logger.Debug("goal verification conductor run returned error", "error", runErr)
+		}
 	}
 
 	// The verifier never declared a verdict. Treat as a REJECT — the condition
@@ -1367,6 +1545,21 @@ func (o *Orchestrator) defaultGoalVerifier(
 		Reason:     reason,
 		DeclaredAt: time.Now(),
 	}, nil
+}
+
+// verifierUnitSink builds the ledger-bound unit sink for one goal-verification
+// pass, scoped to the goal task the verifier is judging (the task id on the
+// goal loop's blackboard) and the run's task store. It returns nil when the
+// blackboard carries no task id — an in-memory-only run has nothing to persist
+// under — so the verifier degrades to exactly its previous behavior. The store
+// is extracted via units.StoreFrom, so a task store without unit persistence
+// yields a best-effort in-memory ledger instead of an error.
+func (o *Orchestrator) verifierUnitSink(bb orchestration.Blackboard, gs *goal.GoalState, deps conductorDeps) *unitSink {
+	pbb, ok := bb.(PersistableBlackboard)
+	if !ok {
+		return nil
+	}
+	return newVerifierUnitSink(pbb.TaskID(), units.StoreFrom(deps.taskStore), gs, deps.logger)
 }
 
 // resolveGoalVerifier returns the configured goal verifier, falling back to

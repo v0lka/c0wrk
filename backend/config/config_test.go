@@ -2044,8 +2044,11 @@ func TestCreateDefault_CreatesFileWithDefaults(t *testing.T) {
 	}
 
 	// Returned config must have defaults applied.
-	if cfg.LogLevel != "DEBUG" {
-		t.Errorf("LogLevel = %q, want 'DEBUG'", cfg.LogLevel)
+	if cfg.LogLevel != "INFO" {
+		t.Errorf("LogLevel = %q, want 'INFO'", cfg.LogLevel)
+	}
+	if cfg.Agents.MaxParallelSubagents != 4 {
+		t.Errorf("Agents.MaxParallelSubagents = %d, want 4", cfg.Agents.MaxParallelSubagents)
 	}
 	if got := cfg.Security.Groups[ToolGroupExecute].Policy; got != GroupPolicyUserConfirm {
 		t.Errorf("execute group policy = %q, want %q", got, GroupPolicyUserConfirm)

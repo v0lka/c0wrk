@@ -49,7 +49,7 @@ The complexity score informs the Conductor's system-prompt guidance on whether t
 | Complexity band | Conductor guidance |
 | --------------- | ------------------ |
 | `<= 1` (simple) | Handle inline — read files, search, answer, call `finish`. No checklist, `delegate`, or plan needed. |
-| `>= 2` | The Conductor decides whether to plan. Planning is RECOMMENDED (not required) when complexity is high (`> 3`) OR the task decomposes into a DAG of independent steps — `declare_plan` then `execute_plan`. Otherwise handle it plan-less: proceed inline or `delegate` coherent units to subagents. A plan-less path MUST open a checklist (`update_checklist` with empty `step_id`). |
+| `>= 2` | The Conductor decides whether to plan. Planning is RECOMMENDED (not required) when complexity is high (`> 3`) OR the task decomposes into ordered steps — `declare_plan` then `execute_plan`. A plan MUST declare `depends_on` whenever a step consumes another step's output, artifacts, or decisions: a step with no `depends_on` runs CONCURRENTLY with its siblings, so an omitted link is a correctness bug (a spurious edge only serializes; a missing edge runs the steps in parallel). Otherwise handle it plan-less: proceed inline or `delegate` coherent units to subagents. A plan-less path MUST open a checklist (`update_checklist` with empty `step_id`). |
 
 Regardless of band, a global skill-prescribed clause overrides the bands when an active skill mandates an approval gate (`declare_plan` with `await_approval`), and the `>= 2` band carries the planning-vs-delegation orthogonality reminder (`declare_plan` and `delegate` must not be mixed).
 

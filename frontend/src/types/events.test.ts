@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isAgentMetricsData, normalizeAgentMetricsData, isTaskCompleteData, isCompactionFinishedData, isPlanStepPausedData, isSubAgentPausedData, isGitConfigRiskData, isE2SStateData, isE2SSigma } from './events'
+import { isAgentMetricsData, normalizeAgentMetricsData, isTaskCompleteData, isCompactionFinishedData, isPlanStepCompleteData, isPlanStepPausedData, isSubAgentPausedData, isSubAgentCompleteData, isGitConfigRiskData, isE2SStateData, isE2SSigma } from './events'
 
 describe('isTaskCompleteData', () => {
     it('accepts valid data with string output', () => {
@@ -287,6 +287,44 @@ describe('isSubAgentPausedData', () => {
         expect(isSubAgentPausedData({ duration: 900 })).toBe(false)
         expect(isSubAgentPausedData(null)).toBe(false)
         expect(isSubAgentPausedData(undefined)).toBe(false)
+    })
+})
+
+describe('isPlanStepCompleteData', () => {
+    it('accepts the payload shape the backend emits, with and without an error', () => {
+        expect(isPlanStepCompleteData({ step_id: 'step_1', success: true, duration: 900, progress: 1, current_step_index: -1, completed_count: 1, total_count: 3 })).toBe(true)
+        expect(isPlanStepCompleteData({ step_id: 'step_1', success: false, duration: 900, error: 'boom' })).toBe(true)
+    })
+
+    it('rejects a malformed optional error without dropping the rest', () => {
+        expect(isPlanStepCompleteData({ step_id: 'step_1', success: false, duration: 900, error: 42 })).toBe(false)
+        expect(isPlanStepCompleteData({ step_id: 'step_1', success: false, duration: 900, error: { nested: true } })).toBe(false)
+        expect(isPlanStepCompleteData({ step_id: 'step_1' })).toBe(false)
+    })
+
+    it('rejects a missing or non-numeric required duration', () => {
+        expect(isPlanStepCompleteData({ step_id: 'step_1', success: true })).toBe(false)
+        expect(isPlanStepCompleteData({ step_id: 'step_1', success: true, duration: '900' })).toBe(false)
+    })
+})
+
+describe('isSubAgentCompleteData', () => {
+    it('accepts the payload shape the backend emits', () => {
+        expect(isSubAgentCompleteData({ step_id: 'delegate-1', success: true, duration: 900 })).toBe(true)
+        // The optional failure reason is attached only on failure.
+        expect(isSubAgentCompleteData({ step_id: 'delegate-1', success: false, duration: 900, error: 'boom' })).toBe(true)
+    })
+
+    it('rejects wrong-typed or missing fields', () => {
+        expect(isSubAgentCompleteData({ step_id: 'delegate-1' })).toBe(false)
+        expect(isSubAgentCompleteData({ success: true, duration: 900 })).toBe(false)
+        expect(isSubAgentCompleteData({ step_id: 'delegate-1', success: false, duration: 900, error: 42 })).toBe(false)
+        // The required `duration` is validated symmetrically with the optional
+        // `error` above (fail-closed for both).
+        expect(isSubAgentCompleteData({ step_id: 'delegate-1', success: true })).toBe(false)
+        expect(isSubAgentCompleteData({ step_id: 'delegate-1', success: true, duration: '900' })).toBe(false)
+        expect(isSubAgentCompleteData(null)).toBe(false)
+        expect(isSubAgentCompleteData(undefined)).toBe(false)
     })
 })
 

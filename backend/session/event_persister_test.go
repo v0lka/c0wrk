@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/project"
 )
@@ -59,6 +60,9 @@ func (s *captureStore) UpsertStepTodoUpdate(_ context.Context, sessionID, stepID
 }
 func (s *captureStore) LoadMessages(_ context.Context, _ string) ([]ChatMessage, error) {
 	return nil, nil
+}
+func (s *captureStore) LoadMessagesPage(_ context.Context, _ string, _ int, _ *MessageCursor) ([]ChatMessage, bool, error) {
+	return nil, false, nil
 }
 func (s *captureStore) DeleteMessages(_ context.Context, _ string) error { return nil }
 func (s *captureStore) ResolvePendingMessage(_ context.Context, _, _, _, _ string, _ map[string]any) error {
@@ -491,4 +495,101 @@ func TestEventPersister_ServicePhaseGatesPersistence(t *testing.T) {
 			t.Errorf("role = %q, want %q", rows[0].Role, "status")
 		}
 	})
+}
+
+// blockingStore blocks SaveMessage on gate until it is closed, so a test can
+// prove that Persist does not run the store write on the caller's goroutine.
+type blockingStore struct {
+	captureStore
+	gate chan struct{}
+}
+
+func (s *blockingStore) SaveMessage(ctx context.Context, msg ChatMessage) error {
+	<-s.gate
+	return s.captureStore.SaveMessage(ctx, msg)
+}
+
+// TestEventPersister_AsyncWriterDoesNotBlockOnStore verifies acceptance
+// criterion 2: once StartWriter is called, Persist returns without running the
+// SQLite write on the emitting goroutine. The store write is held open, yet
+// Persist must still return promptly.
+func TestEventPersister_AsyncWriterDoesNotBlockOnStore(t *testing.T) {
+	store := &blockingStore{gate: make(chan struct{})}
+	p := NewEventPersister(store)
+	p.StartWriter()
+	defer p.Close()
+
+	done := make(chan struct{})
+	go func() {
+		p.Persist(Event{SessionID: "s1", Type: "assistant_done", Data: AssistantDoneEventData{Content: "hi"}})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Persist returned while the store write is still blocked → the write
+		// ran on the single-writer goroutine, not the caller's.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Persist blocked on the store write (ran synchronously on the caller)")
+	}
+
+	close(store.gate)
+	p.Flush()
+
+	if rows := store.snapshot(); len(rows) != 1 {
+		t.Fatalf("expected the queued write to complete after unblocking, got %d rows", len(rows))
+	}
+}
+
+// TestEventPersister_CloseDrainsQueuedWrites verifies acceptance criterion 3:
+// queued writes are not lost — closing the persister drains everything.
+func TestEventPersister_CloseDrainsQueuedWrites(t *testing.T) {
+	store := &captureStore{}
+	p := NewEventPersister(store)
+	p.StartWriter()
+
+	const n = 200
+	for i := 0; i < n; i++ {
+		p.Persist(Event{SessionID: "s1", Type: "tool_call", Data: map[string]any{"i": i}})
+	}
+	p.Close() // must drain, not drop
+
+	if rows := store.snapshot(); len(rows) != n {
+		t.Fatalf("expected %d persisted rows after Close, got %d", n, len(rows))
+	}
+}
+
+// TestEventPersister_AsyncWriterPreservesOrderAndDedup verifies the async path
+// keeps the synchronous dedup semantics: the dedup decision is made on the
+// caller in emit order, so task_complete is still collapsed against the
+// preceding assistant_done.
+func TestEventPersister_AsyncWriterPreservesOrderAndDedup(t *testing.T) {
+	store := &captureStore{}
+	p := NewEventPersister(store)
+	p.StartWriter()
+	defer p.Close()
+
+	const answer = "final answer"
+	p.Persist(Event{SessionID: "s1", Type: "assistant_done", Data: AssistantDoneEventData{Content: answer}})
+	p.Persist(Event{SessionID: "s1", Type: "task_complete", Data: TaskCompleteData{Output: answer, Success: true}})
+	p.Flush()
+
+	if rows := store.assistantRows(); len(rows) != 1 {
+		t.Fatalf("expected 1 assistant row (dedup through the writer), got %d: %+v", len(rows), rows)
+	}
+}
+
+// TestEventPersister_FlushWithoutWriterIsNoop verifies Flush is safe when no
+// writer has been started (the synchronous, test/non-desktop mode).
+func TestEventPersister_FlushWithoutWriterIsNoop(t *testing.T) {
+	store := &captureStore{}
+	p := NewEventPersister(store)
+
+	p.Persist(Event{SessionID: "s1", Type: "assistant_done", Data: AssistantDoneEventData{Content: "sync"}})
+	p.Flush()
+	p.Close()
+
+	if rows := store.snapshot(); len(rows) != 1 {
+		t.Fatalf("expected 1 synchronously persisted row, got %d", len(rows))
+	}
 }

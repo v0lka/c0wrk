@@ -10,12 +10,12 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-const toolDeclarePlanDescription = `Purpose: publish the task roadmap — ordered steps with acceptance criteria — for user sign-off before implementation.
-Use when: the user asked to plan first or the task is multi-step; call once before acting. Steps may carry an agent field for a subagent. Dependencies reference step ids; independent steps run in parallel. Approved plans are append-only: add at the end only, never edit or delete.
-Inputs: mode (optional: "present" | "await_approval" — await_approval when sign-off is risky or a skill requires it; present for low-stakes display-only); tasks: array of {id (stable, e.g. step_1), summary (5-7 word label), description (What/How/Where/Acceptance criteria), depends_on (prerequisite ids), agent (optional Subagent Profile name)}.
-Outputs: "present" displays the plan and continues; "await_approval" blocks until the user approves, requests changes, or abandons; on "request changes" feedback is returned; revise and re-declare.
+const toolDeclarePlanDescription = `Purpose: publish the task roadmap — ordered steps with acceptance criteria — for user sign-off.
+Use when: the user asked to plan first or the task is multi-step; call once before acting. Declare depends_on whenever a step consumes another step's output, artifacts, or decisions; a step with no depends_on runs CONCURRENTLY with its siblings, so an omitted link is a correctness bug, not a harmless omission. When unsure, declare the dependency: a spurious edge only serializes, a missing edge runs the steps in parallel. Approved plans are append-only: never edit or delete.
+Inputs: mode ("present" | "await_approval"); tasks: array of {id (e.g. step_1), summary (label), description (What/How/Where/AC), depends_on (prerequisite ids), agent (Subagent name)}.
+Outputs: "present" displays the plan and continues; "await_approval" blocks for approval.
 Example: step 1 "write failing tests", step 2 "implement" with depends_on ["step_1"].
-Anti-example: never implement before approval in await_approval mode; single-step tasks need no plan; never rewrite approved steps; append corrections instead.`
+Anti-example: a flat plan whose step 1 "write failing tests" and step 2 "implement" both omit depends_on — step 2 consumes step 1's tests yet runs CONCURRENTLY and fails. Also: never implement before approval; single-step tasks need no plan.`
 
 // PlanPublisher serializes a plan, persists it to the session plans directory,
 // emits the PlanGenerated event, and sets the plan on the blackboard.
@@ -53,6 +53,29 @@ type PlanContinuation interface {
 	PlanContinuation() bool
 }
 
+// planAbandoner is an OPTIONAL capability of the PlanPublisher: it lets
+// declare_plan react to the user abandoning a plan at the approval prompt.
+// Publishing a plan for review marks the run's plan workflow active (see
+// conductorPublisher.Publish), which disables delegate, rejects a standalone
+// (empty step_id) checklist, and lets execute_plan run the plan's steps — all
+// correct while the plan awaits approval, but wrong once the user abandons it.
+// The implementation therefore does two things: it releases the workflow so
+// the model can act plan-less again, and it settles the abandoned plan's steps
+// so the plan panel does not leave them pending forever (the run is no longer
+// plan-active, so the finish-fallback sweep no longer reaches them).
+//
+// It is deliberately a parameterless, one-directional capability: the only
+// transition declare_plan ever needs to trigger is abandonment. Re-activation
+// is owned by Publish (every publish marks the workflow active), so no
+// SetPlanWorkflowActive(true) path exists to drift out of use.
+//
+// Implemented by the core conductorPublisher and detected by declare_plan via
+// a type assertion, so this package stays decoupled from core: a publisher
+// that does not implement it (or a nil publisher) is simply left as-is.
+type planAbandoner interface {
+	AbandonPlan()
+}
+
 // DeclarePlanTool publishes a roadmap and optionally blocks for user approval.
 type DeclarePlanTool struct {
 	*sdktools.BaseTool
@@ -85,7 +108,7 @@ func NewDeclarePlanTool(approvalFunc ApprovalFunc) *DeclarePlanTool {
 					"id": {"type": "string", "description": "Unique task identifier (e.g. step_1)"},
 					"summary": {"type": "string", "description": "5-7 word label for UI display"},
 					"description": {"type": "string", "description": "Full task description with What/How/Where/Acceptance Criteria"},
-					"depends_on": {"type": "array", "items": {"type": "string"}, "description": "IDs of tasks that must complete before this one"},
+					"depends_on": {"type": "array", "items": {"type": "string"}, "description": "IDs of tasks that must complete before this one. A step with no depends_on runs CONCURRENTLY with its siblings — declare the dependency whenever this step consumes another step's output, artifacts, or decisions; an omitted link is a correctness bug, not a harmless omission (a spurious edge only serializes; a missing edge runs the steps in parallel)."},
 					"agent": {"type": "string", "description": "Optional Subagent Profile name to execute this step with (e.g. \"code-reviewer\"). When set, the step runs with that profile's system prompt, tools, max-steps, and model instead of the orchestrator defaults. Omit for a generic step."}
 				},
 				"required": ["id", "summary", "description"]
@@ -219,6 +242,90 @@ func planDependencyCycle(tasks []PlanTaskInput) string {
 	return fmt.Sprintf("depends_on contains a dependency cycle involving: %s — a plan must be a DAG (reorder or remove the cyclic depends_on entries)", strings.Join(stuck, ", "))
 }
 
+// planExecutionWaves partitions a valid plan's steps into execution waves:
+// wave 1 holds every dependency-free step, wave N+1 holds the steps whose
+// prerequisites all live in waves <= N (Kahn's algorithm by layers). Each wave
+// is therefore the maximal set of steps that may run concurrently, and the
+// steps inside a wave keep their declaration order. Acyclicity is guaranteed
+// upstream by validatePlanTasks, which rejects cyclic plans before this runs.
+func planExecutionWaves(tasks []PlanTaskInput) [][]string {
+	n := len(tasks)
+	index := make(map[string]int, n)
+	for i, task := range tasks {
+		index[strings.TrimSpace(task.ID)] = i
+	}
+	// pending[i] counts task i's still-unmet prerequisites; dependents[j]
+	// lists the tasks that name j in their depends_on.
+	pending := make([]int, n)
+	dependents := make([][]int, n)
+	for i, task := range tasks {
+		seen := make(map[string]struct{}, len(task.DependsOn))
+		for _, dep := range task.DependsOn {
+			id := strings.TrimSpace(dep)
+			j, ok := index[id]
+			if !ok || j == i {
+				continue
+			}
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			pending[i]++
+			dependents[j] = append(dependents[j], i)
+		}
+	}
+	placed := make([]bool, n)
+	waves := make([][]string, 0, n)
+	for done := 0; done < n; {
+		var wave []string
+		var ready []int
+		for i, task := range tasks {
+			if !placed[i] && pending[i] == 0 {
+				wave = append(wave, strings.TrimSpace(task.ID))
+				ready = append(ready, i)
+			}
+		}
+		if len(ready) == 0 {
+			// Unreachable for a validated plan (cycles are rejected before
+			// this runs); emit the leftovers rather than spin forever.
+			for i, task := range tasks {
+				if !placed[i] {
+					wave = append(wave, strings.TrimSpace(task.ID))
+					ready = append(ready, i)
+				}
+			}
+		}
+		for _, i := range ready {
+			placed[i] = true
+			done++
+		}
+		for _, i := range ready {
+			for _, dep := range dependents[i] {
+				pending[dep]--
+			}
+		}
+		waves = append(waves, wave)
+	}
+	return waves
+}
+
+// formatExecutionWaves renders planExecutionWaves as a compact echo, e.g.
+// "Execution waves: 1=[step_1, step_3] · 2=[step_2] · 3=[step_4]". Each wave
+// lists its step ids in declaration order.
+func formatExecutionWaves(waves [][]string) string {
+	rendered := make([]string, len(waves))
+	for i, wave := range waves {
+		rendered[i] = fmt.Sprintf("%d=[%s]", i+1, strings.Join(wave, ", "))
+	}
+	return "Execution waves: " + strings.Join(rendered, " · ")
+}
+
+// singleWaveHint warns that a multi-step plan collapsed into one concurrent
+// wave, so every step will run in parallel unless dependencies are declared.
+func singleWaveHint(steps int) string {
+	return fmt.Sprintf("All %d steps are in a single parallel wave — every step will run concurrently. If any step consumes another's output, re-declare with depends_on before executing.", steps)
+}
+
 func (t *DeclarePlanTool) Execute(ctx context.Context, input json.RawMessage) (sdktools.ToolResult, error) {
 	var params declarePlanInput
 	if err := json.Unmarshal(input, &params); err != nil {
@@ -265,8 +372,20 @@ func (t *DeclarePlanTool) Execute(ctx context.Context, input json.RawMessage) (s
 		return sdktools.ErrorResult("declare_plan: failed to publish plan: %v", err), nil
 	}
 
+	// Echo the plan's execution waves back to the model so a mis-declared
+	// dependency graph is visible before execute_plan runs. Steps were already
+	// validated (validatePlanTasks guarantees a DAG), so the layering is total.
+	waves := planExecutionWaves(params.Tasks)
+	waveEcho := formatExecutionWaves(waves)
+
 	if mode == "present" {
-		return sdktools.ToolResult{Content: fmt.Sprintf("Plan published to %s and displayed in the plan panel. Execution continues.", planPath)}, nil
+		// A plan whose steps collapse into one wave runs fully concurrently,
+		// so a multi-step single-wave plan also carries a non-blocking hint.
+		content := fmt.Sprintf("Plan published to %s and displayed in the plan panel. Execution continues.\n\n%s", planPath, waveEcho)
+		if len(waves) == 1 && len(params.Tasks) > 1 {
+			content += "\n\n" + singleWaveHint(len(params.Tasks))
+		}
+		return sdktools.ToolResult{Content: content}, nil
 	}
 
 	if t.approvalFunc == nil {
@@ -280,7 +399,7 @@ func (t *DeclarePlanTool) Execute(ctx context.Context, input json.RawMessage) (s
 
 	switch decision {
 	case "approve":
-		return sdktools.ToolResult{Content: "Plan approved by user. Proceeding with implementation."}, nil
+		return sdktools.ToolResult{Content: "Plan approved by user. Proceeding with implementation.\n\n" + waveEcho}, nil
 	case "request_changes":
 		msg := "User requested changes to the plan."
 		if feedback != "" {
@@ -289,6 +408,22 @@ func (t *DeclarePlanTool) Execute(ctx context.Context, input json.RawMessage) (s
 		msg += "\n\nRevise the plan and call declare_plan again with the updated tasks."
 		return sdktools.ToolResult{Content: msg}, nil
 	case "abandon":
+		// Release the plan workflow this run acquired when the plan was
+		// published for review (conductorPublisher.Publish marks it declared)
+		// AND settle the abandoned plan's steps as terminal. An abandoned plan
+		// must not leave the run locked: delegate stays disabled, a standalone
+		// (empty step_id) checklist is rejected, execute_plan is willing to run
+		// the abandoned draft, and — because the run is no longer plan-active —
+		// the finish-fallback sweep would never reach the abandoned plan's
+		// steps, so they would otherwise stay "pending" in the plan panel
+		// forever. The plan itself stays on the blackboard as a historical
+		// artifact (not cleared here). approve/present (Publish already marked)
+		// and request_changes (the model re-declares, so delegate correctly
+		// stays disabled) leave the workflow active. Detected via the optional
+		// planAbandoner capability, so a publisher without it is unaffected.
+		if ab, ok := publisher.(planAbandoner); ok {
+			ab.AbandonPlan()
+		}
 		return sdktools.ToolResult{Content: "User abandoned the plan. Do not proceed with implementation unless the user gives new instructions.", IsError: true}, nil
 	default:
 		return sdktools.ToolResult{Content: fmt.Sprintf("Approval callback returned unknown decision %q; treating as request_changes.", decision)}, nil

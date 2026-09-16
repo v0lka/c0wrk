@@ -133,13 +133,12 @@ security:
 2. Disabled-tools check (No Project mode) — applies to ALL tools incl. system
 3. group == system → execute immediately (bypasses everything below)
 4. [PostExecuteHook deferred]
-5. Extra shell blacklist (per-session) — hard block, reason names the pattern
-6. PreExecuteHook (e.g. index-ready gate)
-7. Group policy deny → hard block
-8. Safety signals gathered once:
+5. PreExecuteHook (e.g. index-ready gate)
+6. Group policy deny → hard block
+7. Safety signals gathered once:
      tool Judge outcome (hard: blacklist / SSRF; soft: path containment)
      + symlink analysis (escape / unresolvable = hard; in-roots = not a concern)
-9. Branch on effective group policy:
+8. Branch on effective group policy:
    allow        → hard reason ⇒ confirm with DisableJudge=true (never passes
                   Smart Approve); soft reason ⇒ Smart Approve may allow, else
                   confirm; clean ⇒ execute

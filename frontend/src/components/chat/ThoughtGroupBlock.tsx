@@ -1,6 +1,8 @@
+import { memo } from 'react'
 import { BrainCircuit } from 'lucide-react'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
 import { bookmarkKey } from '@/lib/bookmarks'
+import { areDisplayItemsEqual } from '@/lib/displayItemStability'
 import { Markdown } from '@/lib/markdownConfig'
 import type { DisplayItem } from '@/types/messages'
 
@@ -10,7 +12,7 @@ interface ThoughtGroupBlockProps {
   item: ThoughtGroupItem
 }
 
-export function ThoughtGroupBlock({ item }: ThoughtGroupBlockProps) {
+export const ThoughtGroupBlock = memo(function ThoughtGroupBlock({ item }: ThoughtGroupBlockProps) {
   return (
     <CollapsibleBlock
       icon={<BrainCircuit className="h-3.5 w-3.5" />}
@@ -36,4 +38,4 @@ export function ThoughtGroupBlock({ item }: ThoughtGroupBlockProps) {
       </div>
     </CollapsibleBlock>
   )
-}
+}, (prev, next) => prev.item === next.item || areDisplayItemsEqual(prev.item, next.item))

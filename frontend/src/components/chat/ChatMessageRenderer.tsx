@@ -117,6 +117,25 @@ function renderItem(item: DisplayItem, stickyUserMessage: boolean, bookmarkable:
   return <BookmarkableRow key={key} item={item} content={content} />
 }
 
+/**
+ * Renders ONE display item with the exact same registry + bookmark wrapping as
+ * the sequential list. Exported so the virtualized chat list can mount only the
+ * items currently in the viewport (bounded DOM) while rendering each identically.
+ * In virtualized mode messages are absolutely positioned per row, so the
+ * sticky-pinned user message is not applied (it relies on normal flow).
+ */
+export function ChatItem({
+  item,
+  sticky = false,
+  bookmarkable = true,
+}: {
+  item: DisplayItem
+  sticky?: boolean
+  bookmarkable?: boolean
+}) {
+  return <>{renderItem(item, sticky, bookmarkable)}</>
+}
+
 function groupIntoStickyTurns(items: DisplayItem[]): DisplayItem[][] {
   const groups: DisplayItem[][] = []
 

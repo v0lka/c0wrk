@@ -1,6 +1,7 @@
 import { GitBranch, RotateCcw, Activity } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { memo, type ReactNode } from 'react'
 import type { DisplayItem } from '@/types/messages'
+import { areDisplayItemsEqual } from '@/lib/displayItemStability'
 import { domainLabels, complexityStars } from '@/constants/routingLabels'
 
 type ServiceItem = Extract<DisplayItem, { kind: 'service' }>
@@ -33,7 +34,7 @@ function formatRoutingContent(metadata?: Record<string, unknown>): ReactNode {
   )
 }
 
-export function ServiceMessage({ item }: ServiceMessageProps) {
+export const ServiceMessage = memo(function ServiceMessage({ item }: ServiceMessageProps) {
   const Icon = variantConfig[item.variant].icon
   const isRouting = item.variant === 'routing' && item.metadata?.domain && item.metadata?.complexity
 
@@ -45,4 +46,4 @@ export function ServiceMessage({ item }: ServiceMessageProps) {
       </span>
     </div>
   )
-}
+}, (prev, next) => prev.item === next.item || areDisplayItemsEqual(prev.item, next.item))

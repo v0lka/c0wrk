@@ -10,9 +10,9 @@ c0wrk provides tool infrastructure for the agent on top of sp4rk's `Tool`/`ToolR
 - `core/tools/registry_canonical_reasons_test.go` — drift guard for the ADR-026 cross-repo contract: drives the real sp4rk builtin judges so a dropped/reworded `JudgeReasonCode` fails CI instead of silently making a canonical hard reason clearable
 - `core/tools/registry_symlink.go` — symlink detection/traversal integration calling sp4rk `DetectSymlinksInToolInput`
 - `core/tools/builtin_registration.go` — `RegisterBuiltinTools` function + `BuiltinToolsConfig`
-- `core/tools/registry_unattended.go` — `ExecuteUnattended(ctx, name, input)`: second execution entry point, used by verify-on-edit; enforces structural input validation (`sdktools.ValidateToolInput`), disabled tools, execute-group deny, and the extra shell blacklist; never model-facing (see [../verify-on-edit.md](../verify-on-edit.md))
+- `core/tools/registry_unattended.go` — `ExecuteUnattended(ctx, name, input)`: second execution entry point, used by verify-on-edit; enforces structural input validation (`sdktools.ValidateToolInput`), disabled tools, and execute-group deny; never model-facing (see [../verify-on-edit.md](../verify-on-edit.md))
 - `core/tools/askuser.go` / `core/tools/askuser_types.go` — c0wrk-specific `ask_user` tool + AskUser request/response types (moved out of sp4rk per ADR-011)
-- `core/toolnames.go` — tool name constants, `NoProjectDisabledTools`, `NoProjectShellBlacklist`
+- `core/toolnames.go` — tool name constants, `NoProjectDisabledTools`
 - `core/toolmanager/` — manages external binary dependencies (`rg`, `uv`, `markitdown`), auto-downloaded on first run (see ADR-010)
 
 Engine files (`github.com/v0lka/sp4rk/tools/tool.go`, `safety.go`, `registry.go`, `judge.go`, `github.com/v0lka/sp4rk/security/wrap.go`, `github.com/v0lka/sp4rk/tools/mcp/gateway.go`) are documented in [the sp4rk tool-system spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/README.md).
@@ -39,7 +39,6 @@ Engine files (`github.com/v0lka/sp4rk/tools/tool.go`, `safety.go`, `registry.go`
 │  + RegisterWithSource()   filtered registration       │
 │  + SetDisabledTools()     block tools by name (e.g., No Project) │
 │  + DisabledTools()        read disabled-tool set       │
-│  + SetExtraShellBlacklist() runtime shell command blacklist      │
 │  + ExecuteUnattended()    unattended execution path (verify-on-edit); │
 │                           never model-facing                          │
 └─────────────────────────────────────────────────────┘
@@ -57,11 +56,10 @@ core ToolRegistry.Execute(ctx, name, input)
 ├─ 3. Disabled tool (No Project mode)? → return error result (applies to ALL tools including system-group)
 ├─ 4. Tool's group == system? → execute immediately (bypass remaining policy/judge/hook checks)
 ├─ 5. PostExecuteHook deferred (runs on every later return path)
-├─ 6. Extra shell blacklist match? → return error result (per-session runtime restriction via SetExtraShellBlacklist; reason names the matched pattern)
-├─ 7. PreExecuteHook (blocking gate, e.g., index ready)
-├─ 8. Group policy == deny? → return error result (hard block, names the group)
-├─ 9. Gather safety signals once: tool Judge outcome (hard: blacklist/SSRF; soft: path containment) + symlink analysis (escape/unresolvable = hard; in-roots = not a concern)
-└─ 10. Branch on the tool's GROUP policy:
+├─ 6. PreExecuteHook (blocking gate, e.g., index ready)
+├─ 7. Group policy == deny? → return error result (hard block, names the group)
+├─ 8. Gather safety signals once: tool Judge outcome (hard: blacklist/SSRF; soft: path containment) + symlink analysis (escape/unresolvable = hard; in-roots = not a concern)
+└─ 9. Branch on the tool's GROUP policy:
       ├─ allow → hard reason ⇒ smartApproveOrConfirm (Hard) — the unified funnel:
       │           the strict judge is consulted (hard-bias); a canonical reason
       │           (blacklist, SSRF, symlink escape, unassessable input) is
@@ -143,7 +141,6 @@ Note: `security.*` keys use `snake_case`; `toolLimits.*` and `timeouts.*` keys u
 - `ToolJudger` interface — per-tool safety evaluation (implement on tool struct)
 - New built-in tools: implement the sp4rk `Tool` interface, set `Untrusted: true` on `BaseTool` if output comes from external sources, register in `RegisterBuiltinTools` (c0wrk-specific tools like `ask_user` go in `core/tools/`) — see [builtins.md](builtins.md)
 - To disable tools at runtime (e.g., for No Project mode): call `SetDisabledTools(names)` on the core registry; all tools including internal ones are blocked at execution time
-- To add runtime shell command restrictions: call `SetExtraShellBlacklist(patterns)` on the core registry; patterns are compiled regexps checked before the shell-exec tool (`bash_exec` on Unix, `posh_exec` on Windows) executes
 
 ## Related Specs
 

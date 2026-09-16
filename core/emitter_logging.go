@@ -133,9 +133,9 @@ func (l *loggingEmitter) SubAgentLaunch(stepID, description string) {
 	l.inner.SubAgentLaunch(stepID, description)
 }
 
-func (l *loggingEmitter) SubAgentComplete(stepID string, success bool, duration time.Duration) {
-	l.logger.Debug("subagent: complete", "stepID", stepID, "success", success, "durationMs", duration.Milliseconds())
-	l.inner.SubAgentComplete(stepID, success, duration)
+func (l *loggingEmitter) SubAgentComplete(stepID string, success bool, duration time.Duration, errMsg string) {
+	l.logger.Debug("subagent: complete", "stepID", stepID, "success", success, "durationMs", duration.Milliseconds(), "errMsg", errMsg)
+	l.inner.SubAgentComplete(stepID, success, duration, errMsg)
 }
 
 func (l *loggingEmitter) SubAgentPaused(stepID string, duration time.Duration) {

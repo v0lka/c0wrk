@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -236,5 +237,50 @@ func TestValidateDelegationTasks_RejectsUnknownToolsField(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "local-mcp") {
 		t.Errorf("error should list valid groups, got %q", err.Error())
+	}
+}
+
+// TestValidateDelegationTasks_RejectsOversizedBatch verifies the delegate batch
+// cap: a call carrying more than maxDelegationBatchSize tasks is rejected in
+// full (before any subagent launches) rather than queueing an unbounded number
+// of subagent goroutines. The schema's tasks.maxItems must mirror the same
+// constant so the model sees the constraint up front.
+func TestValidateDelegationTasks_RejectsOversizedBatch(t *testing.T) {
+	registry := NewDelegationRegistry()
+
+	makeBatch := func(n int) []DelegationTask {
+		batch := make([]DelegationTask, n)
+		for i := range batch {
+			batch[i] = DelegationTask{ID: fmt.Sprintf("del_%d", i), Summary: "s", Task: "t"}
+		}
+		return batch
+	}
+
+	// Exactly at the cap is accepted.
+	if err := validateDelegationTasks(makeBatch(maxDelegationBatchSize), registry, nil); err != nil {
+		t.Fatalf("a batch of exactly %d tasks must be accepted, got: %v", maxDelegationBatchSize, err)
+	}
+
+	// One over the cap is rejected with an actionable message.
+	err := validateDelegationTasks(makeBatch(maxDelegationBatchSize+1), registry, nil)
+	if err == nil {
+		t.Fatal("expected rejection for an oversized batch, got nil")
+	}
+	if !strings.Contains(err.Error(), "too many tasks") {
+		t.Errorf("error should explain the batch cap, got %q", err.Error())
+	}
+
+	// The schema must advertise the same cap.
+	raw := NewDelegateTool().InputSchema()
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("delegate schema is not valid JSON: %v", err)
+	}
+	tasksProp, _ := parsed["properties"].(map[string]any)["tasks"].(map[string]any)
+	if got := tasksProp["maxItems"]; got != float64(maxDelegationBatchSize) {
+		t.Errorf("schema tasks.maxItems = %v, want %d (must mirror the runtime cap)", got, maxDelegationBatchSize)
+	}
+	if got := tasksProp["minItems"]; got != float64(1) {
+		t.Errorf("schema tasks.minItems = %v, want 1", got)
 	}
 }

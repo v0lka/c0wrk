@@ -29,7 +29,7 @@ export interface ChatAPI {
   sendMessage(sessionId: string, text: string, mode: string, activeSkills?: string[], activeAgents?: string[], modelOverride?: string, reasoningOverride?: string): Promise<void>
   cancelTask(sessionId: string): Promise<void>
   cancelUnfinishedTask(sessionId: string): Promise<void>
-  getSessionHistory(sessionId: string): Promise<ChatMessage[]>
+  getSessionHistory(sessionId: string, limit?: number, before?: string): Promise<{ messages: ChatMessage[]; next_cursor: string; has_more: boolean }>
   getSessionTokens(sessionId: string): Promise<TokenInfo>
   resumeTask(sessionId: string, modelOverride?: string, reasoningOverride?: string): Promise<void>
 }

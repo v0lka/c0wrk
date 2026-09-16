@@ -82,13 +82,20 @@ export function handlePlanStepStart(
   // Their checklist updates still flow to the chat as DisplayItem.kind='checklist';
   // only the plan_step block is suppressed.
   if (!info && !description && !summary) return
-  // Re-entry of a paused step: a resume re-emits plan_step_start for a step
-  // whose paused block is still open (the pause handler keeps it in openSteps).
-  // Continue the SAME block instead of opening an isRetry duplicate — a pause
-  // is a recoverable checkpoint, not a retry. The re-emitted start flips the
-  // block back to 'running'; the eventual plan_step_complete settles it.
+  // Re-entry of an already-open step: a resume re-emits plan_step_start for a
+  // step whose block is still open and unfinished — either cooperatively
+  // PAUSED (the pause handler keeps it in openSteps) or left RUNNING by an
+  // abrupt interruption (a crash/restart: the step started but no terminal
+  // event was ever persisted, and the restarted process re-emits the start
+  // because the emitter's dedupe is per-process). Continue the SAME block
+  // instead of opening an isRetry duplicate — a pause or an interruption is a
+  // recoverable checkpoint, not a retry. The re-emitted start keeps/flips the
+  // block to 'running'; the eventual plan_step_complete settles it.
+  //
+  // A genuinely FAILED step is unaffected: plan_step_complete removed it from
+  // openSteps, so its re-run still opens a fresh isRetry block.
   const open = openSteps.get(stepId)
-  if (open && open.kind === 'plan_step' && open.status === 'paused') {
+  if (open && open.kind === 'plan_step' && (open.status === 'paused' || open.status === 'running')) {
     open.status = 'running'
     return
   }
@@ -175,6 +182,9 @@ export function handleSubAgentComplete(
   if (!step) return
   step.status = (meta?.success as boolean) ? 'completed' : 'failed'
   if (meta?.duration !== undefined) step.duration = meta.duration as number
+  // Surface the failure reason (present only when success is false), mirroring
+  // handlePlanStepComplete — the SubAgentBlock header renders it.
+  if (!meta?.success && meta?.error) step.error = meta.error as string
   // Remove from openSteps so late-arriving children no longer nest under a
   // completed subagent. In the plan_step→subagent conversion flow the
   // subsequent plan_step_complete becomes a no-op for openSteps (the step is

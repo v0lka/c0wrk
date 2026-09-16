@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"sync"
 
 	sdktools "github.com/v0lka/sp4rk/tools"
@@ -85,7 +84,6 @@ type ToolRegistry struct {
 	postExecuteHook            PostExecuteHook
 	toolFilter                 ToolFilter
 	disabledTools              map[string]bool
-	extraShellBlacklist        []*regexp.Regexp
 	logger                     *slog.Logger
 	autoApproveWorkspaceWrites bool
 	smartApprove               bool
@@ -151,7 +149,6 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 		preExecuteHook:             r.preExecuteHook,
 		postExecuteHook:            r.postExecuteHook,
 		toolFilter:                 r.toolFilter,
-		extraShellBlacklist:        r.extraShellBlacklist, // shared (compiled regexps are read-only)
 		logger:                     r.logger,
 		autoApproveWorkspaceWrites: r.autoApproveWorkspaceWrites,
 		smartApprove:               r.smartApprove,
@@ -173,7 +170,8 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 }
 
 // SetDisabledTools sets tool names that are blocked from execution.
-// Used by No Project mode to disable code-oriented tools.
+// Used by No Project mode to disable index-dependent tools (semantic_search —
+// no vector index exists without a project).
 // An empty or nil map clears all disabled tools.
 // The caller's map is deep-copied so future mutations to it do not affect the registry.
 func (r *ToolRegistry) SetDisabledTools(names map[string]bool) {
@@ -202,26 +200,6 @@ func (r *ToolRegistry) DisabledTools() map[string]bool {
 		out[k] = v
 	}
 	return out
-}
-
-// SetExtraShellBlacklist compiles and stores additional shell command blacklist
-// patterns checked at execution time. This allows per-session blacklist
-// augmentation (e.g., No Project mode blocks development tools) without
-// re-registering the shared shell-exec tool instance (bash_exec/posh_exec).
-// An empty or nil slice clears the extra blacklist.
-func (r *ToolRegistry) SetExtraShellBlacklist(patterns []string) error {
-	compiled := make([]*regexp.Regexp, 0, len(patterns))
-	for _, p := range patterns {
-		re, err := regexp.Compile(p)
-		if err != nil {
-			return fmt.Errorf("invalid extra shell blacklist pattern %q: %w", p, err)
-		}
-		compiled = append(compiled, re)
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.extraShellBlacklist = compiled
-	return nil
 }
 
 // SetLogger sets the logger for the tool registry. If nil, slog.Default() is used.
@@ -369,8 +347,8 @@ func (r *ToolRegistry) SetPreExecuteHook(hook PreExecuteHook) {
 // execution error. The hook is registered via defer after the tool-not-found,
 // disabled-tool, and system-group early returns, so it fires only for tools
 // that reach policy/security resolution: successful execution, policy denials,
-// pre-execute-hook errors, blacklist blocks, and user-confirmation outcomes
-// (allow/deny). It does NOT fire when the tool is not found, disabled, or a
+// pre-execute-hook errors, and user-confirmation outcomes (allow/deny). It
+// does NOT fire when the tool is not found, disabled, or a
 // system tool. The hook should filter on err, result.IsError, and toolName to
 // avoid unnecessary work.
 func (r *ToolRegistry) SetPostExecuteHook(hook PostExecuteHook) {
@@ -413,16 +391,14 @@ func (r *ToolRegistry) RegisterWithSource(tool sdktools.Tool, source string) {
 //     array items),
 //  2. disabled tools (No Project mode) — applies to every tool, system included,
 //  3. system group → execute directly (internal orchestration tools),
-//  4. extra shell blacklist (No Project) — hard block; the reason names the
-//     matched pattern,
-//  5. pre-execute hook,
-//  6. group policy deny → block,
-//  7. group policy allow: tool Judge + symlink signals — a HARD reason
+//  4. pre-execute hook,
+//  5. group policy deny → block,
+//  6. group policy allow: tool Judge + symlink signals — a HARD reason
 //     (command blacklist, SSRF, symlink escape) forces a confirmation the
 //     advisory judge cannot weaken; a SOFT reason (path containment) goes to
 //     Smart Approve and confirms unless the strict judge allows; a clean call
 //     executes,
-//  8. group policy user_confirm: local_write tools with
+//  7. group policy user_confirm: local_write tools with
 //     auto_approve_workspace_writes whose paths resolve inside the session
 //     roots execute; everything else goes through Smart Approve (never around
 //     a hard reason) and otherwise confirms.
@@ -458,7 +434,6 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	// bypass so that tools like semantic_search are blocked at execution time too.
 	r.mu.RLock()
 	disabled := r.disabledTools
-	extraShellBL := r.extraShellBlacklist
 	r.mu.RUnlock()
 	if disabled != nil && disabled[name] {
 		r.log().Warn("security: tool blocked in No Project mode", "tool", name, "reason", "disabled_in_no_project")
@@ -488,19 +463,6 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		}()
 	}
 
-	// Gate 4: extra shell blacklist (per-session, e.g. No Project mode) — a
-	// hard block that no policy can weaken. Applies to all shell-exec tools
-	// (bash_exec, posh_exec); the reason names the matched pattern so the user
-	// can see which rule fired.
-	if pattern, command := matchExtraShellBlacklist(name, input, extraShellBL); pattern != "" {
-		r.log().Warn("security: shell command blocked by No Project extra blacklist",
-			"tool", name, "command", command, "pattern", pattern)
-		return sdktools.ToolResult{
-			Content: fmt.Sprintf("command %q is not available in No Project mode (matched blacklist pattern %q)", command, pattern),
-			IsError: true,
-		}, nil
-	}
-
 	// Get source for hooks and the strict judge.
 	source := r.GetToolSource(name)
 
@@ -516,7 +478,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 
 	group := sdktools.ToolGroupOf(tool)
 
-	// Gate 6: group policy deny — a hard block.
+	// Gate 5: group policy deny — a hard block.
 	policy := r.groupPolicy(group)
 	if policy == sdktools.PolicyAlwaysDeny {
 		r.log().Warn("security: tool blocked by group policy (deny)", "tool", name, "group", string(group))
@@ -758,28 +720,6 @@ func isCanonicalHardReason(code sdktools.JudgeReasonCode) bool {
 	default:
 		return false
 	}
-}
-
-// matchExtraShellBlacklist checks a shell-exec tool's command against extra
-// per-session blacklist patterns. It returns the matched pattern and the
-// command, or empty strings when nothing matched (a command-less or
-// unparseable input never matches).
-func matchExtraShellBlacklist(name string, input json.RawMessage, patterns []*regexp.Regexp) (pattern, command string) {
-	if !sdktools.IsShellExecTool(name) || len(patterns) == 0 {
-		return "", ""
-	}
-	var params struct {
-		Command string `json:"command"`
-	}
-	if err := json.Unmarshal(input, &params); err != nil || params.Command == "" {
-		return "", ""
-	}
-	for _, re := range patterns {
-		if re.MatchString(params.Command) {
-			return re.String(), params.Command
-		}
-	}
-	return "", ""
 }
 
 // defaultConfirmReason returns a human-readable explanation of why a tool whose

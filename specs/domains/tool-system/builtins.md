@@ -6,7 +6,7 @@ c0wrk registers sp4rk's built-in tools plus the c0wrk-specific `ask_user` tool a
 
 ## Key Files
 
-- `core/tools/builtin_registration.go` — `RegisterBuiltinTools(registry, cfg)` + `BuiltinToolsConfig`; merges the config `ShellBlacklist` with `BuiltinToolsConfig.ExtraShellBlacklist` (left unset by the config-driven path today) and passes the merged list to the platform-specific `newShellExecTool` (the No-Project extra patterns are applied at runtime, not at registration)
+- `core/tools/builtin_registration.go` — `RegisterBuiltinTools(registry, cfg)` + `BuiltinToolsConfig`; passes the config `ShellBlacklist` to the platform-specific `newShellExecTool`
 - `core/tools/shelltool_unix.go` / `core/tools/shelltool_windows.go` — build-tag split for the shell-exec tool constructor (`builtins.NewBashExecToolWithTimeouts` on Unix, `builtins.NewPoshExecToolWithTimeouts` on Windows); sp4rk's `bash.go`/`posh.go` are mutually exclusive per OS
 - `core/tools/read_file_doc.go` — c0wrk `ReadFileDocTool` wrapper over sp4rk `ReadFileTool` that converts document formats (pdf, docx, pptx, xlsx, odt, html, htm) to markdown via `core/markitdown`; implements sp4rk's `ContentBackedReader` so converted results are content-backed cached
 - `core/tools/askuser.go` / `core/tools/askuser_types.go` — c0wrk-specific `ask_user` tool + AskUser request/response types (moved out of sp4rk per ADR-011)
@@ -41,7 +41,7 @@ c0wrk's registered tools, their capability group (ADR-024 — drives policy and 
 | `list_step_outputs`   | Agent     | `system` | no        | List completed step results                        |
 | `read_step_output`    | Agent     | `system` | no        | Read specific step output                          |
 | `read_final_result`   | Agent     | `system` | no        | Read the prior task's final result from the blackboard |
-| `update_checklist`    | Agent     | `system` | no        | Update checklist for current step or standalone. Rejects standalone (empty step_id) when a plan is declared via a `ChecklistGuard` in context. |
+| `update_checklist`    | Agent     | `system` | no        | Update checklist for current step or standalone. A context `ChecklistGuard` rejects **starting** a standalone (empty step_id) checklist once a plan is active in the run, but keeps accepting one already begun earlier in the run. |
 | `declare_step_complete` | Agent   | `system` | no        | Signal inline plan step completion (emits `plan_step_complete`) |
 | `store_fact`          | Agent     | `system` | no        | Store fact to blackboard                           |
 | `search_facts`        | Agent     | `system` | no        | Search blackboard facts                            |
@@ -66,7 +66,7 @@ The shell-execution tool is platform-specific: sp4rk's `bash.go` is `//go:build 
 - `core/tools/shelltool_unix.go` → `builtins.NewBashExecToolWithTimeouts` → registers `bash_exec`
 - `core/tools/shelltool_windows.go` → `builtins.NewPoshExecToolWithTimeouts` → registers `posh_exec`
 
-Both expose the same constructor signature `newShellExecTool(blacklist, timeouts)`; the caller (`RegisterBuiltinTools`) merges the config `ShellBlacklist` with `BuiltinToolsConfig.ExtraShellBlacklist` (unset on the config-driven path today) and passes the merged list. The No-Project extra patterns (`core/toolnames.go` `NoProjectShellBlacklist`) are NOT merged at registration — they are applied at runtime via `Orchestrator.SetNoProjectMode` → `ToolRegistry.SetExtraShellBlacklist`. The registered name differs per platform, so all name-keyed configuration and policy lookups resolve through `core.activeShellToolName()` (`bash_exec` on Unix, `posh_exec` on Windows) — see [Blacklist / Policy Key](#blacklist--policy-key) below and [../../architecture/security-model.md](../../architecture/security-model.md).
+Both expose the same constructor signature `newShellExecTool(blacklist, timeouts)`; the caller (`RegisterBuiltinTools`) passes the config `ShellBlacklist` to the platform-specific constructor. The registered name differs per platform, so all name-keyed configuration and policy lookups resolve through `core.activeShellToolName()` (`bash_exec` on Unix, `posh_exec` on Windows) — see [Blacklist / Policy Key](#blacklist--policy-key) below and [../../architecture/security-model.md](../../architecture/security-model.md).
 
 Prompt data references the shell tool through the `{shell_tool}` placeholder rather than a hardcoded name, so tool-priority guidance always points at the tool actually registered on the current platform. The placeholder is resolved by `prompts.SubstituteShellTool` at each prompt-assembly call site (`core/systemprompt.go`); the embedded prompt vars are kept as raw templates (placeholder recoverable).
 

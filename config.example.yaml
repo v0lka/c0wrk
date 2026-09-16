@@ -6,7 +6,7 @@
 # ===========================================================
 
 # Logging level: DEBUG, INFO, WARN, ERROR
-log_level: "DEBUG"
+log_level: "INFO"
 
 # ---------------------------------------------------------------------------
 # LLM Provider Configuration
@@ -152,6 +152,13 @@ agents:
     - "~/.c0wrk/.agents/agents" # c0wrk-specific subagent profiles directory
   # Note: in addition to the directories above, the current project's
   # `.agents/agents` directory is always scanned automatically (highest priority).
+  #
+  # Maximum number of subagents running concurrently, applied to every
+  # dispatch path (one shared limit): the delegate tool — both its blocking
+  # batches and its async launches — and plan waves. Bounding concurrency
+  # bounds the peak rate of subagent lifecycle events and simultaneous LLM
+  # calls / tool executions. Default: 4. Omitted or 0 → 4.
+  max_parallel_subagents: 4
 
 # ---------------------------------------------------------------------------
 # Memory / Persistence

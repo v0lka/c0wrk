@@ -11,12 +11,12 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-const toolDeclareGoalStatusDescription = `Purpose: declare the final status of the session goal — the terminal verdict that ends the loop.
-Use when: exactly once, after the verification pass has checked the goal condition. Treat the condition literally. No tool calls may follow this one.
+const toolDeclareGoalStatusDescription = `Purpose: declare your verdict on the active goal and END the current turn.
+Use when: at the end of this turn's bounded attempt — exactly once per turn. Calling this tool ends your turn: the goal loop reads the verdict, charges the turn budget, and starts the next turn with the accumulated context. Report your own assessment only; do NOT run the goal's verification yourself — an independent verifier re-checks every "met" claim after you declare it. Make no tool calls after this one.
 Inputs: status ("met" | "not_met" | "blocked"); reason (narrative: what was done, what remains, or what blocks); evidence (array of {type, ref, summary} artifacts — REQUIRED when status="met").
-Outputs: the verdict is recorded and the session loop terminates.
-Example: status "met" with evidence citing the test run that proves the condition.
-Anti-example: not for intermediate progress (report in replies); never before verification ran; never more than once; "not_met" means keep working, "blocked" means external input is required.`
+Outputs: the verdict is recorded and the current turn ends.
+Example: status "met" with evidence citing the artifacts your work produced (changed files, command output you observed).
+Anti-example: not for intermediate progress (report in replies); never more than once per turn; never as your own verification pass; "not_met" means keep working next turn, "blocked" means external input is required.`
 
 // GoalStatusSink is the context-injected destination for self-evaluation
 // verdicts. The goal loop (runGoalLoop) injects a concrete sink into the

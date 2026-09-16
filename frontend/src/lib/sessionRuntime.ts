@@ -16,11 +16,11 @@
  * persist that resolution to the backend (otherwise the prompts reappear on
  * the next reload).
  */
-import type { PendingActionsResponse, SessionRuntimeStatus } from '@/api/chat'
+import type { PendingActionsResponse, SessionRuntimeStatus, WorkUnitSnapshot } from '@/api/chat'
 import { getSessionRuntimeStatus } from '@/api/chat'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import { useGoalStore } from '@/stores/goalStore'
-import type { ChatMessageUI, MessageType } from '@/types/messages'
+import type { ChatMessageUI, MessageType, WorkUnitBlockStatus } from '@/types/messages'
 import { HITL_PROMPT_TYPES } from '@/lib/hitlTypes'
 
 /** Message content for the synthetic resume banner injected on reload. */
@@ -69,7 +69,87 @@ function resolveStaleHitlPrompts(sessionId: string): ChatMessageUI[] {
 }
 
 /**
- * Align chat-store state for `sessionId` with the backend runtime status.
+ * Maps a durable work-unit status onto the block status the chat renders. A
+ * 'pending' unit (registered but never started) has no pending visual on a
+ * subagent block, so it renders as 'running'; every other status maps through
+ * unchanged. Returns null for an unknown/malformed status so the caller skips
+ * it rather than writing a bogus overlay entry.
+ */
+export function workUnitBlockStatus(status: string): WorkUnitBlockStatus | null {
+  switch (status) {
+    case 'running':
+    case 'paused':
+    case 'completed':
+    case 'failed':
+    case 'interrupted':
+      return status
+    case 'pending':
+      return 'running'
+    default:
+      return null
+  }
+}
+
+/**
+ * Align the chat store's work-unit overlay for `sessionId` with the durable
+ * snapshot from GetSessionRuntimeStatus.work_units, so a paused/interrupted
+ * delegate or plan-step block renders its true state after a restart/session
+ * load instead of a stale "running" (its replayed history carries no terminal
+ * event). The overlay is consumed by groupMessages. Returns the overlay stored
+ * (also handy for tests, and for the plan-panel reconcile).
+ *
+ * `snapshotReadAt` is the time the caller read the status (before the RPC
+ * resolved). A live `work_unit_settled` / fresh-launch clear that landed after
+ * that read is fresher than the snapshot's view of that step, so those entries
+ * are carried over rather than overwritten with the older status.
+ */
+export function reconcileWorkUnits(
+  sessionId: string,
+  units: WorkUnitSnapshot[] | undefined,
+  snapshotReadAt?: number,
+): Record<string, WorkUnitBlockStatus> {
+  const state = useChatStore.getState()
+  // No DATA is not the same as no UNITS: an absent snapshot (an older backend,
+  // or a task with no durable unit storage) must leave the overlay alone rather
+  // than silently clearing entries live events recorded.
+  if (units === undefined) return state.workUnitStatus[sessionId] ?? {}
+
+  const liveAt = state.workUnitEventAt[sessionId] ?? {}
+  const overlay: Record<string, WorkUnitBlockStatus> = {}
+  if (snapshotReadAt !== undefined) {
+    for (const [stepId, status] of Object.entries(state.workUnitStatus[sessionId] ?? {})) {
+      if ((liveAt[stepId] ?? 0) > snapshotReadAt) overlay[stepId] = status
+    }
+  }
+  for (const unit of units) {
+    const status = workUnitBlockStatus(unit.status)
+    if (!status) continue
+    // A live write for THIS step that landed after the read wins over the
+    // snapshot's older view; overwriting would roll a settled block back to the
+    // stale 'running' this reconciliation exists to remove.
+    if (snapshotReadAt !== undefined && (liveAt[unit.step_id] ?? 0) > snapshotReadAt) continue
+    overlay[unit.step_id] = status
+  }
+  useChatStore.getState().setWorkUnitStatus(sessionId, overlay)
+  return overlay
+}
+
+/**
+ * A live `work_unit_settled` event: a unit was explicitly settled because the
+ * resume funnel will not relaunch it (an abandoned in-flight unit → interrupted).
+ * Record it in the overlay so a live view aligns immediately; the reload path
+ * gets the same fact from the work-unit snapshot. Written through the store
+ * action (not setWorkUnitStatus) so it also stamps workUnitEventAt — this is
+ * LIVE knowledge, and an in-flight snapshot read before it must not outrank it.
+ */
+export function applyWorkUnitSettled(sessionId: string, stepId: string, status: string): void {
+  const blockStatus = workUnitBlockStatus(status)
+  if (!stepId || !blockStatus) return
+  useChatStore.getState().settleWorkUnit(sessionId, stepId, blockStatus)
+}
+
+/**
+ * Reconcile the chat-store state for `sessionId` with the backend runtime status.
  *
  * - `active` → restore the "task running" flag (input disabled, no false idle).
  * - not active + unfinished task persisted → ensure an unresolved

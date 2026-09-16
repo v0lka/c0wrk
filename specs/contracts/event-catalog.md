@@ -54,7 +54,7 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 | -------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------ | ---------------------- |
 | `routing`            | `{mode, domain, complexity}`                                                                                         | useLifecycleEvents | Routing decision made  |
 | `plan_generated`     | `{step_count, steps[], progress, current_step_index, completed_count, total_count}`                                  | usePlanEvents      | Plan created           |
-| `plan_step_start`    | `{step_id, description, summary, progress, current_step_index, completed_count, total_count}`                        | usePlanEvents      | Step execution started |
+| `plan_step_start`    | `{step_id, description, summary, progress, current_step_index, completed_count, total_count}`                        | usePlanEvents      | Step execution started. Re-emitted on a resume for a still-open, unfinished step (cooperative-pause re-entry, or a crash/restart interruption whose block was left `running` — the emitter's dedupe is per-process): the UI continues the SAME chat plan_step block instead of opening an `isRetry` duplicate, and the plan-panel item is updated in place by `step_id` (see [rendering.md](../domains/frontend/rendering.md) § Grouping Logic) |
 | `plan_step_complete` | `{step_id, success, duration (ms), progress, current_step_index, completed_count, total_count, error?}`              | usePlanEvents      | Step finished          |
 | `plan_step_paused`   | `{step_id, duration (ms), progress, current_step_index, completed_count, total_count, error?}` (no `success` field — a pause is not a completion) | usePlanEvents | Step stopped at a cooperative pause checkpoint (executor `ErrPaused` → `ExecutionStatusPaused`) — a recoverable state, NOT a failure or completion: `completed_count`/`planCompletedSet` are untouched and the step stays started-but-unfinished; a Resume re-enters it from the blackboard checkpoint. Persisted (role `plan_step_paused`) with full metadata (`step_id`, `duration`, `error?`) so the paused checkpoint reappears after a restart. Live handler flips the plan-panel item and the chat plan_step block to `paused` (untouched steps stay `pending`); reload replays the persisted row through `rebuildPlanFromHistory`/`groupMessages` |
 | `reflection`         | `{summary, insights, suggested_action, root_cause, failure_analysis, action_plan, reasoning, attempt, max_attempts}` | useChatEvents      | Failure analyzed       |
@@ -127,8 +127,9 @@ See [../domains/goal-mode.md](../domains/goal-mode.md).
 | Event Type          | Payload                                                             | Handler Hook      | Description             |
 | ------------------- | ------------------------------------------------------------------- | ----------------- | ----------------------- |
 | `subagent_launch`   | `{step_id, description}`                                            | useSubagentEvents | Subagent started        |
-| `subagent_complete` | `{step_id, success, duration (ms)}`                                 | useSubagentEvents | Subagent finished       |
+| `subagent_complete` | `{step_id, success, duration (ms), error?}`                         | useSubagentEvents | Subagent finished       |
 | `subagent_paused`   | `{step_id, duration (ms)}`                                          | useSubagentEvents | Delegated subagent stopped at a cooperative pause checkpoint (sp4rk `RunSubAgent` emits this instead of `subagent_complete(success=false)` when the child run hits `ErrPaused`) — recoverable, not a failure; the trajectory-so-far is preserved for Resume. Emitted only for pure `delegate` runs: when the subagent executes a plan step, the `planStepEventTranslator` intercepts this and re-emits `plan_step_paused` on the root emitter instead. Persisted (role `subagent_paused`) so the pause survives a restart. Live handler adds a durable chat row that flips the subagent block to `paused` (delegated steps are not tracked in the plan panel); the grouping replay restores it on reload |
+| `work_unit_settled` | `{step_id, status, reason?}`                                        | useWorkUnitEvents | A durable work unit was explicitly settled because the resume funnel will not relaunch it (an in-flight unit abandoned by a crash/app exit is settled `interrupted`). **Transient** (not persisted) — the durable source is the unit ledger surfaced as `GetSessionRuntimeStatus.work_units`, which the session-load reconciliation (`reconcileWorkUnits`, `lib/sessionRuntime.ts`) uses to align paused/interrupted delegate & plan-step chat blocks (rendered via `groupMessages`' work-unit overlay) so they do not stay misleadingly `running`. This event is the LIVE half (a settle observed while the session is open); a live `subagent_launch`/`plan_step_start` for the same `step_id` clears the overlay entry (proof the unit is running again). Payload `status` is a durable unit status (`running \| paused \| completed \| failed \| interrupted`); `reason` is a human-readable cause. See [ADR-048](../decisions/048-unified-recovery-ledger.md) |
 | `skills_activated`  | `{skills: string[]}`                                                | useLifecycleEvents | Skills matched for task |
 | `agent_metrics`     | `{finish, parse_errors, invalid_tool_calls, nudges{repeat,same_tool,fruitless,parse,truncation}, aborts{repeat,same_tool,fruitless,parse,truncation}, steps, output_tokens, model_profiles{enabled, profile?, profile_kind?, variants[]}}` — the shared `AgentMetricsCounters` struct always serializes `truncation` for BOTH `nudges` and `aborts` (0 default); the `model_profiles` block's `profile` (id slug) and `profile_kind` (`predefined`\|`custom`) identity fields are omitempty — present whenever a profile was recorded, absent in payloads from sessions that never got one (and in legacy persisted rows), so consumers ignoring them keep working | useLifecycleEvents | Aggregated per-run agent quality report emitted once on task finish/abort (`finish`: `full`\|`partial`\|`failed`\|`aborted`\|`cancelled`). Counters are accumulated by the session-layer aggregator from `executor_diagnostic` events (loop-detector nudges/aborts, parse-error nudges, truncation aborts), `tool_result` error events (`invalid_tool_calls` — results the executor classified as an invalid tool call: malformed input, unknown tool, structurally invalid batch, or argument-validation rejection, distinct from runtime errors and policy refusals), `step_start`, and session token totals. The `model_profiles` block annotates the run with the active Model Profiles feature: the master toggle, the active profile's identity (`profile` id + `profile_kind`, reported even when the toggle is off — the profile id is the same `model_profiles.active_profile`/`active_id` the settings surface uses, resolved with the same generic fallback), and the active variant list. Collected and persisted for every run regardless of the Model Profiles feature or UI settings (role `status`). Rendered nowhere in the chat: live and reload both write the latest report to `planStore.sessionStats.lastAgentMetrics` (ExecutionPanels stats row); the stats row itself is opt-in — the user enables it in Settings → General ("Session Statistics", off by default), which gates display only, never collection; on reload the row restores that store and is filtered out of the message list (see `lastAgentMetricsFromHistory`, which normalizes older persisted rows missing `invalid_tool_calls`/`truncation` by defaulting them to 0 and drops malformed/absent profile fields). |
 | `step_todo_update`  | `{step_id?, items: {text, checked}[], completed_count, total_count}` | usePlanEvents     | Checklist update (step_id optional — empty for standalone Conductor checklist without a declared plan). Persisted (role `step_todo_update`) via `UpsertStepTodoUpdate`: the latest update per `step_id` supersedes the previous persisted row in place, so history holds one row per step_id instead of one per tool-call update |
@@ -197,6 +198,47 @@ See [../domains/goal-mode.md](../domains/goal-mode.md).
 | `plan_approval_response` | frontend → backend | `{request_id, decision, feedback?}` (`approve` / `request_changes` / `abandon`; `feedback` non-empty when `request_changes`) (see `PlanApprovalResponsePayload`) | User's decision on a plan awaiting review (`declare_plan` mode=`await_approval`). Resolves the pending plan-review action surfaced by `plan_review_ready` |
 | `goal_proposal_response` | frontend → backend | `{request_id, decision, condition?, verify?, verification_mode?}` (`approve` / `cancel`) | User's sign-off on a proposed goal. `verification_mode` overrides the derivation-chosen mode. Both the event path and the RPC path (`ConfirmGoal`/`CancelGoal`) funnel through a single resolver on the desktop pending map. See [../domains/goal-mode.md](../domains/goal-mode.md). |
 
+## Event Batching (session events)
+
+High-frequency session events do **not** reach the frontend as individual Wails
+events. The desktop layer buffers them (`desktop/event_batcher.go`) between the
+UI emitter (`buildUIEmitFunc`) and the raw transport (`a.emit`), then delivers
+them as **one** `c0wrk:events:batch` Wails event per ~16ms flush. This keeps the
+AppKit main thread's `evaluateJavaScript` calls off the per-event critical path
+(the dominant source of streaming jank).
+
+Envelope payload:
+
+```json
+{ "events": [ { "name": "session:<id>:<type>", "args": [<payload>] }, ... ] }
+```
+
+Rules:
+
+- **Transient (latest-wins) events** — `assistant_chunk`, `session_tokens`,
+  `context_fill`, `agent_metrics`, `step_todo_update` — coalesce: two adjacent
+  queued events sharing a `session+type` stream key collapse to the last payload.
+  The stream key is refined by the event's scope discriminator (`plan_step_id`
+  for scoped chunks/fills, `step_id` for checklists) so concurrent streams never
+  clobber each other. Safe because these events carry a full snapshot (e.g.
+  `assistant_chunk` ships `accumulated_content`, not a delta).
+- **Content events** are queued verbatim: every event is delivered exactly once,
+  in order.
+- **Barrier events** (`task_complete`, `task_cancelled`, `error`,
+  `task_failed_resumable`, `ask_user`, `tool_confirm`, `step_limit`,
+  `plan_review_ready`, `goal_proposal`) force an immediate flush, and the batcher
+  is flushed + stopped at app shutdown — no queued event is lost.
+- **Global events** (all non-session-scoped events) are emitted individually and
+  are not batched.
+
+The frontend `subscribe` (`frontend/src/api/runtime.ts`) registers each callback
+in a fan-out registry **and** installs a single `c0wrk:events:batch` listener
+(`EVENT_BATCH_NAME`); batched events are fanned back out to the per-event
+handlers with unchanged semantics (order, payload, null filtering). It also keeps
+a direct per-event `EventsOn` registration so individually-emitted events still
+arrive. Batched events are never also emitted individually, so a handler fires
+exactly once per event.
+
 ## Event Handling Pattern (Frontend)
 
 ```
@@ -204,6 +246,9 @@ useSessionEvents(sessionId)
   ├─ Subscribes to all session events on mount
   ├─ Dispatches to type-specific handler hooks
   └─ Unsubscribes on unmount / session change
+
+Delivery: batched session events arrive inside one c0wrk:events:batch envelope
+  → runtime.ts fans them out to the per-event subscribers above
 
 Each handler:
   1. Type guard validates payload structure
@@ -227,6 +272,10 @@ assistant_done event (once):
 ## Breaking Change Checklist
 
 - New event type: Go emitter method + event data struct + TS interface + type guard + handler hook
+  - If the new event is high-frequency, add it to the coalescing set in
+    `sessionEventCoalesceKey` (`desktop/event_batcher.go`) with a stream
+    discriminator when it is scope-partitioned; add it to `isImmediateFlushEvent`
+    if it settles a task or blocks on user input
 - Modified payload: update Go struct + TS interface + type guard + handler logic
 - Removed event: remove emitter method + remove TS type + remove handler subscription
 - Renamed event: update BOTH Go event name constant AND all frontend `EventsOn` calls

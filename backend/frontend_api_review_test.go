@@ -426,9 +426,11 @@ func TestSaveReviewPrompt_PersistsAndResolves(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	defer func() { _ = db.Close() }()
-	// Mirror production's connection-pool and pragma config (see OpenDatabase):
-	// a single pooled connection (MaxOpenConns(1)) is the regime where a
-	// read cursor held open during a follow-up UPDATE would deadlock. WAL +
+	// Deliberately pin the pool to a single connection (MaxOpenConns(1)): that
+	// is the regime where a read cursor held open during a follow-up UPDATE
+	// would deadlock, so this exercises the store's "close the cursor before
+	// writing" guard. Production runs a wider WAL pool (see
+	// backend.OpenDatabase), but the guard must hold here too. WAL +
 	// busy_timeout keep the single connection usable, and foreign_keys=ON
 	// matches production so a constraint violation from SaveReviewPrompt
 	// would surface here too.

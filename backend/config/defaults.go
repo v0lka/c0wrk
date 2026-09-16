@@ -61,9 +61,10 @@ var defaultModelProfilesAlwaysPresent = []string{
 
 // ApplyDefaults sets default values for zero-value fields in the configuration.
 func ApplyDefaults(cfg *Config) {
-	// Log level defaults to DEBUG for maximum diagnostic visibility.
+	// Log level defaults to INFO — the production default. DEBUG is verbose
+	// (per-step reasoning, raw tool payloads) and is opt-in via config.yaml.
 	if cfg.LogLevel == "" {
-		cfg.LogLevel = "DEBUG"
+		cfg.LogLevel = "INFO"
 	}
 
 	// Skills discovery defaults (nil => apply defaults; empty slice => user
@@ -76,6 +77,13 @@ func ApplyDefaults(cfg *Config) {
 	// => user explicitly opted out of base dirs, keep it empty). Mirrors skills.
 	if cfg.Agents.Dirs == nil {
 		cfg.Agents.Dirs = append([]string(nil), defaultAgentDirs...)
+	}
+
+	// Subagent concurrency cap. 4 is a safe default: enough parallelism to
+	// overlap independent work, few enough to avoid a burst of simultaneous
+	// LLM calls / tool executions and the event-rate spike they cause.
+	if cfg.Agents.MaxParallelSubagents == 0 {
+		cfg.Agents.MaxParallelSubagents = 4
 	}
 
 	// LLM retry defaults — keep this in sync with the sp4rk Router defaults

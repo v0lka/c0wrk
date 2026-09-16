@@ -73,7 +73,7 @@ func TestPlanStepEventTranslator_SubAgentComplete_EmitsPlanStepCompleteOnRoot(t 
 	}
 
 	dur := 5 * time.Second
-	translator.SubAgentComplete("step_2", true, dur)
+	translator.SubAgentComplete("step_2", true, dur, "")
 
 	if len(root.planStepCompletes) != 1 {
 		t.Fatalf("expected 1 PlanStepComplete on root, got %d", len(root.planStepCompletes))
@@ -88,6 +88,39 @@ func TestPlanStepEventTranslator_SubAgentComplete_EmitsPlanStepCompleteOnRoot(t 
 	// Scoped copy should not receive PlanStepComplete
 	if len(scoped.planStepCompletes) != 0 {
 		t.Errorf("expected 0 PlanStepComplete on scoped copy, got %d", len(scoped.planStepCompletes))
+	}
+}
+
+// TestPlanStepEventTranslator_SubAgentComplete_ForwardsErrorReason verifies the
+// translator carries the subagent failure reason into PlanStepComplete's errMsg
+// (instead of the previous hard-coded ""), so a failed subagent-backed plan
+// step surfaces its reason to the UI.
+func TestPlanStepEventTranslator_SubAgentComplete_ForwardsErrorReason(t *testing.T) {
+	root := &scopableMockEmitter{}
+	scoped, ok := root.WithPlanStepID("step_2").(*scopableMockEmitter)
+	if !ok {
+		t.Fatal("expected *scopableMockEmitter from WithPlanStepID")
+	}
+	translator := &planStepEventTranslator{
+		Emitter: scoped,
+		root:    root,
+		summary: "Step 2",
+	}
+
+	translator.SubAgentComplete("step_2", false, time.Second, "subagent blew up")
+
+	if len(root.planStepCompletes) != 1 {
+		t.Fatalf("expected 1 PlanStepComplete on root, got %d", len(root.planStepCompletes))
+	}
+	pc := root.planStepCompletes[0]
+	if pc.stepID != "step_2" {
+		t.Errorf("expected step_id 'step_2', got %q", pc.stepID)
+	}
+	if pc.success {
+		t.Errorf("expected success=false")
+	}
+	if pc.errMsg != "subagent blew up" {
+		t.Errorf("expected errMsg forwarded into PlanStepComplete, got %q", pc.errMsg)
 	}
 }
 

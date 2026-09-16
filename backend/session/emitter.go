@@ -734,18 +734,25 @@ func (e *EventEmitter) SubAgentLaunch(stepID, description string) {
 	})
 }
 
-// SubAgentComplete emits a subagent completion event.
-func (e *EventEmitter) SubAgentComplete(stepID string, success bool, duration time.Duration) {
+// SubAgentComplete emits a subagent completion event. errMsg carries the
+// failure reason for a failed subagent ("" on success) and is surfaced as the
+// "error" field so the UI can render why a delegated subagent failed. Mirrors
+// PlanStepComplete.
+func (e *EventEmitter) SubAgentComplete(stepID string, success bool, duration time.Duration, errMsg string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	data := map[string]any{
+		"step_id":  stepID,
+		"success":  success,
+		"duration": duration.Milliseconds(),
+	}
+	if errMsg != "" {
+		data["error"] = errMsg
+	}
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "subagent_complete",
-		Data: map[string]any{
-			"step_id":  stepID,
-			"success":  success,
-			"duration": duration.Milliseconds(),
-		},
+		Data:      data,
 	})
 }
 

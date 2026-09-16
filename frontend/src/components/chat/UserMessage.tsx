@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { Target, FileText, ImageIcon, Zap } from 'lucide-react'
 import type { DisplayItem } from '@/types/messages'
+import { areDisplayItemsEqual } from '@/lib/displayItemStability'
 import { UserMessageContent } from '@/components/chat/UserMessageContent'
 import { MessageFooter } from '@/components/chat/MessageFooter'
 import { UserMessageMetaBadges } from '@/components/chat/UserMessageMetaBadges'
@@ -81,7 +82,7 @@ function CollapsedMessageIndicators({
  * buttons in the session list — so the transition reads as a smooth fade rather
  * than a hard clip.
  */
-export function UserMessage({ item, sticky = false, bookmarkStar }: UserMessageProps) {
+export const UserMessage = memo(function UserMessage({ item, sticky = false, bookmarkStar }: UserMessageProps) {
   const { content, timestamp, metadata } = item.message
   const meta = parseUserMessageMeta(metadata)
   const formattedTime = new Date(timestamp).toLocaleTimeString([], {
@@ -179,4 +180,18 @@ export function UserMessage({ item, sticky = false, bookmarkStar }: UserMessageP
       <div className="pointer-events-none h-6 bg-gradient-to-b from-background to-transparent" />
     </div>
   )
+}, userMessagePropsEqual)
+
+/**
+ * Memoized so an unchanged user message is not re-rendered when a sibling
+ * message changes (its Markdown/segments are re-parsed on every render). The
+ * `bookmarkStar` prop is a fresh element each render, so it is compared by
+ * presence only — its content derives entirely from `item`, which is compared
+ * structurally.
+ */
+function userMessagePropsEqual(prev: UserMessageProps, next: UserMessageProps): boolean {
+  if (prev.sticky !== next.sticky) return false
+  if (Boolean(prev.bookmarkStar) !== Boolean(next.bookmarkStar)) return false
+  if (prev.item === next.item) return true
+  return areDisplayItemsEqual(prev.item, next.item)
 }

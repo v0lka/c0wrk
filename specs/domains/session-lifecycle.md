@@ -45,7 +45,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `backend/session/manager_goal.go` — SetGoalProposalResolver, ResolveGoalProposal
 - `backend/frontend_api_session.go` — FrontendAPI.PauseSession/ResumeSession (session-level pause/resume RPC surface)
 - `backend/frontend_api_goal.go` — FrontendAPI.ConfirmGoal/CancelGoal (goal RPC surface)
-- `core/toolnames.go` — NoProjectDisabledTools, NoProjectShellBlacklist constants
+- `core/toolnames.go` — NoProjectDisabledTools constants
 - `backend/project/manager.go` — EnsureNoProject (pseudo-project lifecycle)
 
 ## Flow
@@ -415,10 +415,28 @@ persisted non-terminal `GoalState` is loaded and passed to
 `orchestrator.Resume`).
 
 - `Orchestrator.Resume` guards on `goalState != nil && !goalState.Status.IsTerminal()`: a terminal goal (`met`/`exhausted`/`cancelled`) falls through to the normal resume path and is never re-entered.
-- A cooperative session-pause leaves the goal `active` (pause is task-level), so on resume the turn loop's `for gs.Status == active` guard enters directly; a `blocked_idle` goal is re-activated to `active` first. The prior trajectory is seeded into the first resumed turn only (subsequent turns rely on the Conductor's accumulated trajectory).
+- A cooperative session-pause leaves the goal `active` (pause is task-level), so on resume the turn loop's `for gs.Status == active` guard enters directly; a `blocked_idle` goal is re-activated to `active` first. A **turn-error halt** (bounded retries exhausted) also leaves the goal `active`, so the task is a resumable failure and Resume re-enters the loop and retries. The prior trajectory is seeded into the first resumed turn only (subsequent turns rely on the Conductor's accumulated trajectory).
 - The universal pause signal is installed fresh for the resumed request (`installPauseSignal`) and cleared on exit, so a stale signal from the prior run cannot affect a future request.
 
 See [goal-mode.md](goal-mode.md) for the full goal-mode lifecycle, budgets, anti-spin, and the [Pause is Session-Level](goal-mode.md#pause-is-session-level-universal-pause-signal) section.
+
+#### Unified recovery ledger
+
+`Resume` recovers work from ONE durable record per execution unit — the **unit
+ledger** ([`core/units`](../../core/units/units.go), persisted to the additive
+`task_units` table). Every mainline plan step / delegated subagent and every
+goal-verification delegate is written by a single writer (the `conductorLauncher`;
+the verifier through its namespaced [`unitSink`](../../core/unit_sink.go)), and on
+resume `resumePausedWork` → `resumeUnits` enumerates the ledger (merged with
+legacy delegation specs for pre-ledger tasks) and settles every non-terminal unit
+**uniformly** — `paused` → relaunch seeded from its checkpoint,
+`not-started`/`running`/**`interrupted`** → relaunch fresh, `completed`/`failed`
+→ replay, never re-run. An **interrupted** unit (abandoned by a crash/app exit)
+is therefore relaunched rather than silently marked failed, and the goal
+verifier's units survive a restart. The same ledger is surfaced to the UI as the
+`work_units` field of `GetSessionRuntimeStatus` (below). See
+[ADR-048](../decisions/048-unified-recovery-ledger.md) and
+[delegation.md](orchestration/delegation.md#durable-unit-ledger-and-resume-relaunch).
 
 `recordResumeOutcome` appends **only the assistant side** of the resumed
 execution to the in-memory conversation history — no user/assistant pair is
@@ -745,7 +763,8 @@ The `backend/session/persistence.go` defines the `SessionStore` interface:
 | `UpdateSessionTokens(ctx, id, input, output, model, family, fillPercent)` | Update accumulated token counts, model info, and context-fill %  |
 | `UpdateSessionActivity(ctx, id)`                             | Update last_active_at timestamp to now                           |
 | `SaveMessage(ctx, msg)`                                      | Insert a new chat message                                        |
-| `LoadMessages(ctx, sessionID)`                               | Load all messages for session (ordered by created_at)            |
+| `LoadMessages(ctx, sessionID)`                               | Load all messages for session (ordered by created_at) — used by history restore      |
+| `LoadMessagesPage(ctx, sessionID, limit, before)`            | Keyset page of messages ordered `(created_at, id)` ASC, strictly before the opaque cursor `before` (nil = newest/tail page); returns `(messages, hasMore, error)`. Excludes non-content activity rows (`thinking`, `step_done`) that never render |
 | `DeleteMessages(ctx, sessionID)`                             | Delete all messages for session                                  |
 | `ResolvePendingMessage(ctx, sessionID, role, matchField, matchValue, extra)` | Patch metadata of the most recent matching HITL message (tool_confirm/ask_user/step_limit/plan_review) as resolved so it doesn't reappear as pending on reload |
 | `UpsertStepTodoUpdate(ctx, sessionID, stepID, msg)` | Replace/insert the persisted `step_todo_update` message for `stepID` (preserving id and created_at so the checklist keeps its stream position on reload); the Conductor emits one after every tool call, so upserting bounds `session_messages` growth |
@@ -998,10 +1017,42 @@ type HandleResult struct {
   `completion`, `failed_steps`). A degraded completion (`success=false`) is
   always followed by `task_failed_resumable` or a `service` warning — never
   delivered as a silent visual success (`Manager.emitTaskComplete`).
+- Recovery is ledger-driven: every execution unit (plan step, subagent,
+  goal-verification delegate) has one durable record in the task's unit ledger
+  (`core/units`); the `conductorLauncher` is its single writer and `Resume`
+  settles every non-terminal **mainline** unit uniformly (paused → relaunch
+  seeded, not-started/running/**interrupted** → relaunch fresh, terminal →
+  replay), reconciling each ledger status against the blackboard outcome and any
+  stored checkpoint first. An interrupted unit is never dropped. A unit recorded
+  in an isolated context's namespace (the goal verifier's) is **not** relaunched
+  by that funnel — the loop that owns it re-derives the pass — so an isolated
+  outcome can never land on the live task blackboard and the isolated work is
+  never duplicated.
+  See [ADR-048](../decisions/048-unified-recovery-ledger.md).
 - `GetSessionRuntimeStatus(sessionID)` exposes `{active,
-  has_unfinished_task, unfinished_task_id, paused, activity, streaming}`; the frontend calls it after
+  has_unfinished_task, unfinished_task_id, paused, activity, streaming, work_units}`; the frontend calls it after
   every history load to reconcile UI state (running/paused flags, resume banner,
-  stale step_limit prompts) instead of defaulting to idle. The `activity` /
+  stale step_limit prompts, work units) instead of defaulting to idle.
+  `work_units` is the durable ledger snapshot for the session's resumable task
+  (`[{step_id, kind?, status, parent_id?}]`, `status` a durable unit status);
+  before returning it, an in-flight unit (`pending`/`running`) on a task that is
+  **not** executing and is **not** cooperatively paused is explicitly settled
+  `interrupted` (a transient `work_unit_settled` event plus a column-scoped
+  conditional ledger write that touches only the status column, so it can never
+  drop a checkpoint another writer set and racing pollers settle once) — a
+  `paused` unit is a resumable checkpoint and is left untouched, a paused
+  TASK settles nothing (its untouched tail units are exactly what `Resume`
+  runs), a live task never settles, and container kinds (`task`,
+  `goal_verification`) are excluded entirely (not relaunchable work, and the
+  frontend has no block for them). The settle is idempotent. The reconcile maps
+  this snapshot onto the replayed paused/interrupted delegate & plan-step chat
+  blocks (`reconcileWorkUnits` + `groupMessages`' work-unit overlay) AND onto the
+  execution plan panel (`planStore.applyWorkUnitStatuses`) so an abandoned unit
+  never stays a misleading `running` block in either view; a live
+  `subagent_launch`/`plan_step_start` for the same `step_id` clears the overlay
+  entry, a live `work_unit_settled` outranks a snapshot read before it, and a
+  snapshot that is ABSENT is treated as "no data" (leaving the overlay alone)
+  rather than "no units". The `activity` /
   `streaming` fields are the backend-tracked live snapshot (emitter
   `activityState`): `activity` is the last user-facing phase label
   ("Thinking...", "Routing request...", ...) and `streaming` reports an open

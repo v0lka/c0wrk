@@ -1,4 +1,4 @@
-import { CheckCircle2, Circle, Loader2, XCircle, Clock, CirclePause } from 'lucide-react'
+import { CheckCircle2, Circle, Loader2, XCircle, Clock, CirclePause, CircleSlash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatDuration } from '@/lib/formatters'
 import { usePlanStore } from '@/stores/planStore'
@@ -14,6 +14,11 @@ function StatusIcon({ status }: { status: PlanItem['status'] }) {
       return <Loader2 className="h-3.5 w-3.5 text-info animate-spin shrink-0" />
     case 'paused':
       return <CirclePause className="h-3.5 w-3.5 text-warning shrink-0" />
+    case 'interrupted':
+      // Abandoned in flight (a restart/crash settled the durable unit): a
+      // stopped, hollow marker in the warning tone instead of the spinner this
+      // panel would otherwise show forever.
+      return <CircleSlash2 className="h-3.5 w-3.5 text-warning shrink-0" />
     case 'pending':
       return <Circle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
     case 'failed':

@@ -67,6 +67,15 @@ type App struct {
 	// without a live Wails runtime (W-19/W-23). Production wiring keeps it nil.
 	wailsEmit func(eventName string, optionalData ...any)
 
+	// batcherPtr holds the lazily-created event batcher that sits between the
+	// session-event producers and the raw transport (a.emit). It coalesces
+	// transient streaming events and delivers content events as one
+	// c0wrk:events:batch envelope per ~16ms flush, keeping evaluateJavaScript
+	// calls off the AppKit main thread's critical path. batcherOnce guards the
+	// one-time construction. See event_batcher.go.
+	batcherOnce sync.Once
+	batcherPtr  atomic.Pointer[EventBatcher]
+
 	// reloadAppFn, when non-nil, is used in place of wailsRuntime.WindowReloadApp
 	// by (*App).reloadFrontend. Lets tests observe the deferred wake reload
 	// without a live Wails runtime. Production wiring keeps it nil.

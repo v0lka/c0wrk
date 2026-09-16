@@ -144,7 +144,7 @@ A checklist tracks the **sub-tasks of the single step you are currently executin
    - **Executing a step inline (as the Conductor)** — pass the `step_id` of the plan step you are working on.
    - **Running as a delegated subagent** — omit `step_id`; it is inferred from context.
    - **No declared plan (standalone task)** — omit `step_id`. The checklist renders as a standalone card.
-   - **Never** call `update_checklist` without a `step_id` when you have declared a plan — a standalone checklist is for plan-less tasks only.
+   - **Never** start a standalone checklist (no `step_id`) while a plan is active — a standalone checklist is for plan-less tasks only. A standalone checklist you began earlier (before the plan became active) may keep being updated: the plan-less work you already laid out stays valid while you refine it into plan steps.
 5. **Do NOT call `update_checklist` for steps you delegate** — the subagent maintains its own checklist for that step. Your job is to call `delegate` (or `declare_step_complete` when finishing an inline step), not to manage the delegatee's checklist.
 6. **Mark inline steps complete with `declare_step_complete`** — when you finish an inline plan step, call `declare_step_complete` with the `step_id`. Do NOT call this for delegated steps — delegation progress is tracked automatically via SubAgentLaunch/SubAgentComplete events.
 

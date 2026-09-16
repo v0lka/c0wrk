@@ -56,6 +56,32 @@ func (r *emitRecorder) snapshot() []emittedEvent {
 	return out
 }
 
+// flattenEmittedBatches expands any recorded c0wrk:events:batch envelopes into
+// the individual events they carried (preserving order) and passes through
+// non-batched events unchanged. Session events now travel through the batcher,
+// so assertions about individual events must read the flattened view.
+func flattenEmittedBatches(t *testing.T, events []emittedEvent) []emittedEvent {
+	t.Helper()
+	out := make([]emittedEvent, 0, len(events))
+	for _, ev := range events {
+		if ev.Name != eventBatchEventName {
+			out = append(out, ev)
+			continue
+		}
+		if len(ev.Data) != 1 {
+			t.Fatalf("batch event carries %d data args, want 1: %+v", len(ev.Data), ev)
+		}
+		env, ok := ev.Data[0].(batchEnvelope)
+		if !ok {
+			t.Fatalf("batch payload type = %T, want batchEnvelope", ev.Data[0])
+		}
+		for _, inner := range env.Events {
+			out = append(out, emittedEvent{Name: inner.Name, Data: inner.Args})
+		}
+	}
+	return out
+}
+
 // --- initDatabase ---
 
 func TestInitDatabase_CreatesSchema(t *testing.T) {
@@ -755,8 +781,11 @@ func TestBuildUIEmitFunc_SessionRenamedEmitsGlobal(t *testing.T) {
 			NewName: "Meaningful Title",
 		},
 	})
+	// Events flow through the batching transport; force the flush so the
+	// assertions see the delivered envelope.
+	a.flushEvents()
 
-	events := rec.snapshot()
+	events := flattenEmittedBatches(t, rec.snapshot())
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events (session-scoped + global), got %d: %+v", len(events), events)
 	}
@@ -788,8 +817,9 @@ func TestBuildUIEmitFunc_NonRenameEmitsOnlyScoped(t *testing.T) {
 
 	// A regular event must emit only the session-scoped event, no global echo.
 	emit(session.Event{SessionID: "s1", Type: "finishing"})
+	a.flushEvents()
 
-	events := rec.snapshot()
+	events := flattenEmittedBatches(t, rec.snapshot())
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
 	}

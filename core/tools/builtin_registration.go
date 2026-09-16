@@ -16,13 +16,12 @@ import (
 // All limit and callback types are imported directly from their source packages
 // per ADR-008 (no type re-exports).
 type BuiltinToolsConfig struct {
-	FileLimits          builtins.FileLimits
-	RipgrepLimits       builtins.RipgrepLimits
-	WebFetchLimits      builtins.WebFetchLimits
-	WebSearchLimits     builtins.WebSearchLimits
-	BashTimeouts        builtins.BashTimeouts
-	ShellBlacklist      []string
-	ExtraShellBlacklist []string
+	FileLimits      builtins.FileLimits
+	RipgrepLimits   builtins.RipgrepLimits
+	WebFetchLimits  builtins.WebFetchLimits
+	WebSearchLimits builtins.WebSearchLimits
+	BashTimeouts    builtins.BashTimeouts
+	ShellBlacklist  []string
 
 	// Search provider configuration.
 	SearchProvider string
@@ -63,14 +62,11 @@ type BuiltinToolsConfig struct {
 
 // RegisterBuiltinTools creates and registers all built-in tools into the registry.
 func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error {
-	// Shell execution (bash_exec on Unix, posh_exec on Windows).
-	// Merge configured blacklist with any extra patterns; the platform-specific
-	// constructor call lives in shelltool_{unix,windows}.go behind build tags,
-	// because sp4rk's bash.go and posh.go are mutually exclusive per OS.
-	allBlacklist := make([]string, 0, len(cfg.ShellBlacklist)+len(cfg.ExtraShellBlacklist))
-	allBlacklist = append(allBlacklist, cfg.ShellBlacklist...)
-	allBlacklist = append(allBlacklist, cfg.ExtraShellBlacklist...)
-	shellTool, err := newShellExecTool(allBlacklist, cfg.BashTimeouts)
+	// Shell execution (bash_exec on Unix, posh_exec on Windows). The
+	// platform-specific constructor call lives in shelltool_{unix,windows}.go
+	// behind build tags, because sp4rk's bash.go and posh.go are mutually
+	// exclusive per OS.
+	shellTool, err := newShellExecTool(cfg.ShellBlacklist, cfg.BashTimeouts)
 	if err != nil {
 		return fmt.Errorf("shell tool: %w", err)
 	}

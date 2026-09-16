@@ -122,11 +122,15 @@ export interface TaskCompleteData {
   failed_steps?: number
 }
 export interface SubAgentLaunchData { step_id: string; description: string; plan_step_id?: string }
-export interface SubAgentCompleteData { step_id: string; success: boolean; duration: number; plan_step_id?: string }
+export interface SubAgentCompleteData { step_id: string; success: boolean; duration: number; error?: string; plan_step_id?: string }
 /** Cooperative pause checkpoint for pure delegate runs (recoverable, not a
  *  failure — no success field; Resume restores the trajectory). For plan-step
  *  subagents the backend translator re-emits plan_step_paused instead. */
 export interface SubAgentPausedData { step_id: string; duration: number }
+/** Explicit settlement of a durable work unit the resume funnel will not
+ *  relaunch (an abandoned in-flight unit → interrupted). Transient: the durable
+ *  source is GetSessionRuntimeStatus.work_units. */
+export interface WorkUnitSettledData { step_id: string; status: string; reason?: string }
 export interface RetryData { attempt: number; max_attempts: number }
 export interface StepRetryData { step_id: string; attempt: number; max_attempts: number }
 export interface ServiceData { content: string; phase?: string }
@@ -441,6 +445,9 @@ export interface SessionEventMap {
   /** Cooperative pause checkpoint for a pure delegate run (plan-step
    *  subagents surface as plan_step_paused via the backend translator). */
   readonly subagent_paused: SubAgentPausedData
+  /** Explicit settlement of a durable work unit the resume funnel will not
+   *  relaunch (abandoned in-flight → interrupted). Transient. */
+  readonly work_unit_settled: WorkUnitSettledData
   readonly context_fill: ContextFillData
   readonly context_compaction: ContextCompactionData
   readonly compaction_started: CompactionStartedData
@@ -674,6 +681,11 @@ export function isPlanData(d: unknown): d is PlanData { return isObj(d) && has(d
 export function isPlanStepStartData(d: unknown): d is PlanStepStartData { return isObj(d) && has(d, 'step_id') }
 export function isPlanStepCompleteData(d: unknown): d is PlanStepCompleteData {
   if (!isObj(d) || !has(d, 'step_id', 'success')) return false
+  // Validate the required `duration` (a non-number would reach formatDuration)
+  // and the optional failure reason symmetrically with isSubAgentCompleteData /
+  // isPlanStepPausedData — fail-closed for both fields.
+  if (typeof d.duration !== 'number') return false
+  if ('error' in d && d.error !== undefined && typeof d.error !== 'string') return false
   // Validate optional progress fields when present.
   if ('progress' in d && d.progress !== undefined && typeof d.progress !== 'number') return false
   if ('current_step_index' in d && d.current_step_index !== undefined && typeof d.current_step_index !== 'number') return false
@@ -723,11 +735,30 @@ export function isRetryData(d: unknown): d is RetryData { return isObj(d) && has
 export function isStepRetryData(d: unknown): d is StepRetryData { return isObj(d) && has(d, 'step_id', 'attempt', 'max_attempts') }
 export function isServiceData(d: unknown): d is ServiceData { return isObj(d) && has(d, 'content') }
 export function isSubAgentLaunchData(d: unknown): d is SubAgentLaunchData { return isObj(d) && has(d, 'step_id') }
-export function isSubAgentCompleteData(d: unknown): d is SubAgentCompleteData { return isObj(d) && has(d, 'step_id', 'success') }
+export function isSubAgentCompleteData(d: unknown): d is SubAgentCompleteData {
+  if (!isObj(d) || !has(d, 'step_id', 'success')) return false
+  // Validate the REQUIRED fields symmetrically with isSubAgentPausedData — a
+  // non-numeric duration would otherwise reach formatDuration and render a
+  // broken time. Keeping this fail-closed alongside the optional `error` check
+  // below avoids the asymmetry where a present-day-valid payload passes but a
+  // malformed required field slips through.
+  if (typeof d.duration !== 'number') return false
+  // Optional failure reason — the backend attaches it only when the subagent
+  // failed; reject a malformed (non-string) value rather than letting it reach
+  // the block.
+  const err = d.error
+  if (err !== undefined && typeof err !== 'string') return false
+  return true
+}
 export function isSubAgentPausedData(d: unknown): d is SubAgentPausedData {
   if (!isObj(d) || !has(d, 'step_id', 'duration')) return false
   if (typeof d.duration !== 'number') return false
   return true
+}
+export function isWorkUnitSettledData(d: unknown): d is WorkUnitSettledData {
+  return isObj(d) && has(d, 'step_id', 'status')
+    && typeof (d as Record<string, unknown>).step_id === 'string'
+    && typeof (d as Record<string, unknown>).status === 'string'
 }
 export function isContextFillData(d: unknown): d is ContextFillData { return isObj(d) && has(d, 'fill_percent', 'status') }
 export function isContextCompactionData(d: unknown): d is ContextCompactionData { return isObj(d) && has(d, 'before_percent', 'after_percent') }

@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState, useContext } from 'react'
-import { Loader2, CheckCircle2, XCircle, RefreshCw, Circle, CirclePause } from 'lucide-react'
+import { memo, useEffect, useMemo, useState, useContext } from 'react'
+import { Loader2, CheckCircle2, XCircle, RefreshCw, Circle, CirclePause, CircleSlash } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { bookmarkKey } from '@/lib/bookmarks'
+import { areDisplayItemsEqual } from '@/lib/displayItemStability'
 import { formatDuration } from '@/lib/formatters'
 import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -17,7 +18,7 @@ interface PlanStepBlockProps {
   item: PlanStepItem
 }
 
-export function PlanStepBlock({ item }: PlanStepBlockProps) {
+export const PlanStepBlock = memo(function PlanStepBlock({ item }: PlanStepBlockProps) {
   const { stepId, stepNum, title, description, status, duration, error, isRetry, children } = item
   // Plan groups are rebuilt per session switch, so the displayed steps always
   // belong to the active session. The nested lookup returns a primitive
@@ -43,6 +44,9 @@ export function PlanStepBlock({ item }: PlanStepBlockProps) {
     completed: { border: 'border-success',      Icon: CheckCircle2, iconClass: 'text-success' },
     failed:    { border: 'border-destructive',  Icon: XCircle,      iconClass: 'text-destructive' },
     paused:    { border: 'border-warning',      Icon: CirclePause,  iconClass: 'text-warning' },
+    // Abandoned before it settled (crash/app exit) — applied by the session-load
+    // work-unit reconciliation, never by a live event.
+    interrupted: { border: 'border-border',     Icon: CircleSlash,  iconClass: 'text-muted-foreground' },
     pending:   { border: 'border-border',       Icon: Circle,       iconClass: 'text-muted-foreground' },
   } as const
 
@@ -58,6 +62,9 @@ export function PlanStepBlock({ item }: PlanStepBlockProps) {
       {isRetry && <RefreshCw className="h-3 w-3 text-warning" />}
       {status === 'failed' && error && (
         <span className="text-xs text-destructive truncate min-w-0" title={error}>— {error}</span>
+      )}
+      {status === 'interrupted' && (
+        <span className="text-xs text-muted-foreground truncate min-w-0">— interrupted</span>
       )}
       {typeof stepContextFill === 'number' && (
         <span className="text-xs text-muted-foreground ml-2">{Math.round(stepContextFill)}%</span>
@@ -98,4 +105,4 @@ export function PlanStepBlock({ item }: PlanStepBlockProps) {
       </CollapsibleBlock>
     </div>
   )
-}
+}, (prev, next) => prev.item === next.item || areDisplayItemsEqual(prev.item, next.item))

@@ -529,6 +529,10 @@ type BuilderOrchestrationConfig struct {
 	// MaxRedelegationDepth caps recursive delegation when allow_redelegate is
 	// true (ASI07-R6). Default 2.
 	MaxRedelegationDepth int
+	// MaxParallelSubagents caps how many subagents run concurrently, shared by
+	// the delegate tool and plan waves (single sp4rk RunSubAgentsParallel
+	// chokepoint). <= 0 resolves to the Orchestrator default (4).
+	MaxParallelSubagents int
 }
 
 // BuilderGoalLoopConfig holds goal-loop settings.
