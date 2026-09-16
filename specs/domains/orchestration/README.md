@@ -248,8 +248,8 @@ There is no `executionMode` toggle. The Conductor chooses its own granularity ba
 - requestInFlight (atomic.Bool) enforces the "one active request per `*Orchestrator`" invariant: HandleMessage CompareAndSwap's it to true on entry and stores false on defer; a concurrent caller is refused with `ErrRequestInFlight`.
 - conversationHistory is updated for every terminal outcome of HandleMessage and Resume.
 - When the assistant output contains tool-call syntax printed as text (failure-mode detected by `agent.DetectToolCallSyntaxInContent`), the history records a `HistoryNoteFailed(...)` note instead of the hallucinated text.
-- isNoProject: routing domain "code" is overridden to "general" after classification.
-- SetNoProjectMode(): disables code tools and adds extended bash command blacklist on the core tool registry.
+- isNoProject: index-dependent tools are disabled (semantic_search) and verify-on-edit is suppressed; the routing domain is NOT overridden (code-flavored CHAT questions route as "code").
+- SetNoProjectMode(): disables index-dependent tools (semantic_search — no vector index exists without a project) on the core tool registry.
 - Model Profiles essential-tools filter: when active it runs exactly once per task on the Conductor path (before the ReAct loop) and inside the E2S branch (`runE2SWithState`), but never in goal mode; `finish` and the fact-memory / human-interaction tools always survive. The profile is strictly additive — every variant is inert when its master/sub-toggle is off. See [../model-profiles.md](../model-profiles.md).
 
 ## Configuration

@@ -813,7 +813,7 @@ type OrchestratorDeps struct {
 	VectorSearchWaitDisabled bool
 	SkillManager             *skills.SkillManager // optional, for skill discovery and activation
 	AgentManager             *agents.AgentManager // optional, for subagent discovery ("Available/Requested Subagents" prompt sections); nil-safe
-	CoreToolRegistry         *tools.ToolRegistry  // per-session registry for No-Project tool disabling and the extra shell blacklist
+	CoreToolRegistry         *tools.ToolRegistry  // per-session registry for No-Project tool disabling
 	ModelSwitcher            *llm.Router          // raw LLM router for per-message model override
 	JudgeSync                func()               // optional: re-binds the session's tool judge to the session router after a model switch (session-pinning; nil-safe)
 

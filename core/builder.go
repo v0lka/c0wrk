@@ -717,7 +717,7 @@ func (b *OrchestratorBuilder) Build(
 		VectorSearchWaitDisabled: b.vectorSearchWaitDisabled,
 		SkillManager:             sessionSkillMgr,
 		AgentManager:             sessionAgentMgr,
-		CoreToolRegistry:         sessionRegistry, // per-session registry (No-Project tool disabling, extra shell blacklist)
+		CoreToolRegistry:         sessionRegistry, // per-session registry (No-Project tool disabling)
 		JudgeSync:                syncSessionJudge,
 		ToolCache:                toolCache,
 		PerToolTruncation:        perToolTruncation,

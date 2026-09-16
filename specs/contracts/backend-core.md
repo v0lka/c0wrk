@@ -18,7 +18,7 @@
 | `RoutingDecision`     | github.com/v0lka/sp4rk/agent/router | core → backend | Routing classification                |
 | `Plan`, `PlanStep`    | github.com/v0lka/sp4rk/orchestration (direct) | core → backend | Plan structure                        |
 | `ToolPolicy`          | github.com/v0lka/sp4rk/tools      | backend → core | Security policy values                |
-| `BuiltinToolsConfig`  | core/tools     | backend → core | Tool limits/config (incl. ExtraShellBlacklist). Per-tool truncation lives in `BuilderConfig.ToolLimits.PerToolTruncation`, not `BuiltinToolsConfig`. |
+| `BuiltinToolsConfig`  | core/tools     | backend → core | Tool limits/config. Per-tool truncation lives in `BuilderConfig.ToolLimits.PerToolTruncation`, not `BuiltinToolsConfig`. |
 | `StepDumpTracker`     | github.com/v0lka/sp4rk/orchestration (direct) | backend → core | Per-step LLM dump file manager        |
 | `Manager`             | core/vectorindex | core → backend | Vector index management (embedding, search, git monitoring) |
 | `terminal.Manager`    | core/terminal  | core → backend | PTY/ConPTY lifecycle, shell env, I/O (Unix PTY or Windows ConPTY, selected by build tag)         |
@@ -125,7 +125,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 | Pending image attachments | backend → core | `HandleOptions.PendingImages` (user-attached images, png/jpg/jpeg/gif/webp, as `[]llm.ContentBlock` base64 image blocks; injected into the context window as image content — NOT routed through the blackboard, which is markdown/text-only — see [../domains/session-lifecycle.md](../domains/session-lifecycle.md)) |
 | Vision params for document conversion | core → backend | `Orchestrator.ResolveVisionOptions()` — per-call markitdown vision connection params for the model currently active on the session's router (nil when the model must not caption); called per document by the backend attachment flow. The in-task counterpart is a resolver attached to the task context by `prepareRequestContext`/`Resume` (see [../domains/session-lifecycle.md](../domains/session-lifecycle.md)) |
 | Managed venv interpreter (vision conversion) | backend → core | `BuilderConfig.MarkitdownPythonPath` — closure over `toolmanager.VenvPythonPath`, injected in `backend/application.go` (NOT via `ToBuilderConfig`); lazily probed at first converter init because the tool-manager installs the venv asynchronously after startup |
-| Available tools config | backend → core | `BuiltinToolsConfig` (incl. ExtraShellBlacklist). Per-tool truncation via `BuilderConfig.ToolLimits.PerToolTruncation`. |
+| Available tools config | backend → core | `BuiltinToolsConfig`. Per-tool truncation via `BuilderConfig.ToolLimits.PerToolTruncation`. |
 | No Project mode        | backend → core | `Orchestrator.SetNoProjectMode()` (disables `semantic_search` — no vector index without a project) |
 | Tool cache config      | backend → core | `BuilderConfig.ToolResultBudget.CacheTTLSeconds` |
 | Security policies (incl. Smart Approve) | backend → core | `BuilderConfig.Security` (carries `Groups map[string]BuilderGroupPolicy` — the group-policy schema, ADR-024 — plus `SmartApprove`, `AutoApproveWorkspaceWrites`, `JudgeModel`, `InjectionDefenseEnabled`) |

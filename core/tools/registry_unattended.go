@@ -22,9 +22,8 @@ import (
 //     keys, JSON types, unknown keys, recursively into nested objects and
 //     array items),
 //  2. disabled tools (No Project mode),
-//  3. the per-session extra shell blacklist (No Project mode),
-//  4. group policy deny,
-//  5. hard safety reasons from the tool's Judge + symlink detection (command
+//  3. group policy deny,
+//  4. hard safety reasons from the tool's Judge + symlink detection (command
 //     blacklist, SSRF, symlink escapes) — a hard reason BLOCKS here, because
 //     there is no confirmation flow to escalate to.
 //
@@ -57,7 +56,6 @@ func (r *ToolRegistry) ExecuteUnattended(ctx context.Context, name string, input
 	// Gate 2: disabled tools (No Project mode).
 	r.mu.RLock()
 	disabled := r.disabledTools
-	extraShellBL := r.extraShellBlacklist
 	r.mu.RUnlock()
 	if disabled != nil && disabled[name] {
 		r.log().Warn("security: unattended tool blocked in No Project mode", "tool", name)
@@ -67,19 +65,9 @@ func (r *ToolRegistry) ExecuteUnattended(ctx context.Context, name string, input
 		}, nil
 	}
 
-	// Gate 3: extra shell blacklist — hard block that no policy can weaken.
-	if pattern, command := matchExtraShellBlacklist(name, input, extraShellBL); pattern != "" {
-		r.log().Warn("security: unattended shell command blocked by extra blacklist",
-			"tool", name, "command", command, "pattern", pattern)
-		return sdktools.ToolResult{
-			Content: fmt.Sprintf("command %q blocked by blacklist (matched pattern %q)", command, pattern),
-			IsError: true,
-		}, nil
-	}
-
 	group := sdktools.ToolGroupOf(tool)
 
-	// Gate 4: group policy deny.
+	// Gate 3: group policy deny.
 	if policy := r.groupPolicy(group); policy == sdktools.PolicyAlwaysDeny {
 		r.log().Warn("security: unattended tool blocked by group policy (deny)", "tool", name, "group", string(group))
 		return sdktools.ToolResult{
@@ -88,7 +76,7 @@ func (r *ToolRegistry) ExecuteUnattended(ctx context.Context, name string, input
 		}, nil
 	}
 
-	// Gate 5: hard safety reasons block outright (no confirmation flow here).
+	// Gate 4: hard safety reasons block outright (no confirmation flow here).
 	judgeOutcome := judgeToolCall(ctx, tool, input)
 	symlinkReason, symlinkCode := r.symlinkHardReason(ctx, name, tool, input)
 	reasons := splitSafetyReasons(judgeOutcome, symlinkReason, symlinkCode)

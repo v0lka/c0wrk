@@ -45,7 +45,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `backend/session/manager_goal.go` — SetGoalProposalResolver, ResolveGoalProposal
 - `backend/frontend_api_session.go` — FrontendAPI.PauseSession/ResumeSession (session-level pause/resume RPC surface)
 - `backend/frontend_api_goal.go` — FrontendAPI.ConfirmGoal/CancelGoal (goal RPC surface)
-- `core/toolnames.go` — NoProjectDisabledTools, NoProjectShellBlacklist constants
+- `core/toolnames.go` — NoProjectDisabledTools constants
 - `backend/project/manager.go` — EnsureNoProject (pseudo-project lifecycle)
 
 ## Flow

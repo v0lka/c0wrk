@@ -57,9 +57,8 @@ The command ALWAYS originates from user configuration, never from model output �
 
 1. structural input validation (`sdktools.ValidateToolInput` — required keys, declared types, unknown keys, recursively into nested objects and array items),
 2. disabled tools (No Project mode),
-3. per-session extra shell blacklist,
-4. execute-group policy `deny`,
-5. hard safety reasons (judge + symlink detection) — a hard reason blocks outright because there is no confirmation flow to escalate to.
+3. execute-group policy `deny`,
+4. hard safety reasons (judge + symlink detection) — a hard reason blocks outright because there is no confirmation flow to escalate to.
 
 Deliberately skipped (input is fixed config, not model output): pre/post-execute hooks, advisory judging of soft reasons, HITL confirmation. `ExecuteUnattended` must never be wired into a model-facing tool-execution path.
 

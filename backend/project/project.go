@@ -10,8 +10,8 @@ import (
 )
 
 // NoProjectID is the well-known identifier for the "No Project" pseudo-project.
-// Sessions under this project receive per-session workspaces and code-oriented
-// tools are disabled.
+// Sessions under this project receive per-session workspaces and index-dependent
+// tools (semantic_search) are disabled.
 // Defined in core/types.go; re-exported here for convenience.
 const NoProjectID = core.NoProjectID
 

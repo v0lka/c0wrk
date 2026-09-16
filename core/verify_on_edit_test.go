@@ -197,32 +197,3 @@ func TestOrchestrator_VerifyOnEditForMode_Gates(t *testing.T) {
 		t.Error("No Project (CHAT) mode must suppress verify-on-edit")
 	}
 }
-
-// TestEditVerifyRunner_BlacklistedCommand proves the security posture holds
-// even for config-authored commands: the extra shell blacklist (No Project
-// mode hardening) blocks the unattended execution path fail-closed, marking
-// the verification as failed (IsError) rather than silently skipping policy.
-func TestEditVerifyRunner_BlacklistedCommand(t *testing.T) {
-	ws := t.TempDir()
-	registry := newVerifyTestRegistry(t)
-	if err := registry.SetExtraShellBlacklist([]string{`^forbidden-verify-cmd`}); err != nil {
-		t.Fatalf("SetExtraShellBlacklist: %v", err)
-	}
-	runner := buildEditVerifyRunner(registry, ws, "forbidden-verify-cmd --run", "30s", 0, nil)
-	if runner == nil {
-		t.Fatal("runner is nil for configured command")
-	}
-	res := runner(context.Background())
-	if res.Err != nil {
-		t.Fatalf("unexpected Err: %v", res.Err)
-	}
-	if res.ExitCode == 0 {
-		t.Errorf("blacklisted command must not report success: %+v", res)
-	}
-	if !strings.Contains(res.Output, "blocked") {
-		t.Errorf("output should state the block, got %q", res.Output)
-	}
-	if res.TimedOut {
-		t.Errorf("blacklist block is not a timeout")
-	}
-}

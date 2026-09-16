@@ -5,7 +5,6 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -105,50 +104,6 @@ func TestBashExec_AllowGroup_InRootPath_AutoApproved(t *testing.T) {
 	}
 	if result.IsError {
 		t.Errorf("expected successful execution, got error: %s", result.Content)
-	}
-}
-
-// TestExtraShellBlacklist_HardBlockNamesPattern verifies the No Project extra
-// shell blacklist is an unconditional hard block — even when the execute
-// group is widened to allow and Smart Approve is on — and that the block
-// reason names the matched pattern so the user can see which rule fired.
-func TestExtraShellBlacklist_HardBlockNamesPattern(t *testing.T) {
-	registry := NewToolRegistry()
-	tool, err := builtins.NewBashExecTool(nil)
-	if err != nil {
-		t.Fatalf("NewBashExecTool: %v", err)
-	}
-	registry.Register(tool)
-
-	const pattern = `^go\s+build\b`
-	if err := registry.SetExtraShellBlacklist([]string{pattern}); err != nil {
-		t.Fatalf("SetExtraShellBlacklist: %v", err)
-	}
-	// Policy leniency must not matter: the blacklist is a hard gate.
-	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
-		sdktools.GroupExecute: sdktools.PolicyAlwaysAllow,
-	})
-	registry.SetSmartApprove(true)
-
-	confirmCalled := false
-	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
-		confirmCalled = true
-		return sdktools.ConfirmAllowOnce, nil
-	})
-
-	ctx := sdktools.WithWorkspacePath(context.Background(), t.TempDir())
-	result, err := registry.Execute(ctx, "bash_exec", json.RawMessage(`{"command":"go build ./..."}`))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Fatal("expected the blacklisted command to be hard-blocked")
-	}
-	if confirmCalled {
-		t.Error("the extra blacklist blocks outright — confirmation must not be offered")
-	}
-	if !strings.Contains(result.Content, fmt.Sprintf("%q", pattern)) {
-		t.Errorf("expected the block reason to contain the matched pattern %q (quoted), got %q", pattern, result.Content)
 	}
 }
 

@@ -699,7 +699,8 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		return nil, fmt.Errorf("failed to create orchestrator for restored session: %w", err)
 	}
 
-	// Configure No Project mode: disable code tools + extended bash blacklist.
+	// Configure No Project mode: disable index-dependent tools (semantic_search
+	// — no vector index exists without a project).
 	if info.ProjectID == project.NoProjectID {
 		orchestrator.SetNoProjectMode()
 	}
@@ -1070,7 +1071,8 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 	}
 	phaseMark("orchestrator_build")
 
-	// Configure No Project mode: disable code tools + extended bash blacklist.
+	// Configure No Project mode: disable index-dependent tools (semantic_search
+	// — no vector index exists without a project).
 	if projectID == project.NoProjectID {
 		orchestrator.SetNoProjectMode()
 	}
