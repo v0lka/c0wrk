@@ -52,6 +52,16 @@ const (
 	// project keeps its chromem DB + bleve index in memory) against the
 	// avoided chromem gob-decode + index reload on the return path.
 	DefaultParkCapacity = 3
+
+	// DefaultParkBudgetBytes is the default cumulative byte budget of the
+	// park LRU (vector_index.park_budget_mb, expressed in MiB there):
+	// 1024 MiB. A parked state keeps its chromem documents (one vector
+	// each) and its bleve lexical index resident; once the summed estimated
+	// footprint (see Service estimateStateBytes) of the parked states
+	// crosses the budget, the oldest are evicted, so RAM-rich machines can
+	// raise it alongside park_capacity. The config-layer disable sentinel
+	// is negative; resolved bytes <= 0 keep park_capacity as the only bound.
+	DefaultParkBudgetBytes int64 = 1024 << 20
 )
 
 // DefaultEmbeddingBatchSize mirrors sp4rk's embedding.DefaultBatchSize — the
@@ -150,6 +160,16 @@ type ManagerConfig struct {
 	// zero value deliberately means "disabled" for zero-value literals
 	// (tests). Production always carries the resolved value.
 	ParkCapacity int
+
+	// ParkBudgetBytes is the cumulative byte budget for the park LRU
+	// (vector_index.park_budget_mb → bytes, resolved by desktop startup):
+	// right after a state is parked, the oldest parked states are evicted
+	// while the summed estimated footprint exceeds the budget — the
+	// effective bound is min(ParkCapacity, ParkBudgetBytes). 0 (or
+	// negative — the config-layer disable sentinel) applies ParkCapacity
+	// alone; like ParkCapacity, NO default is applied here. Forwarded
+	// verbatim to ServiceConfig.ParkBudgetBytes.
+	ParkBudgetBytes int64
 
 	Logger    *slog.Logger
 	Telemetry *Telemetry
@@ -355,6 +375,7 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		ChunkerFingerprint:        ChunkerFingerprint(maxChunkSize, chunkOverlap, resolveContentFilterConfig(cfg.ContentFilter).Fingerprint()),
 		ContentFilter:             cfg.ContentFilter,
 		ParkCapacity:              cfg.ParkCapacity,
+		ParkBudgetBytes:           cfg.ParkBudgetBytes,
 	})
 	if err != nil {
 		return nil, err
@@ -701,6 +722,17 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 		if col == nil || col.Count() == 0 {
 			m.logger.Info("empty collection, running full index", "project", projectID)
 			idxErr = indexer.IndexFull(indexCtx, workspacePath)
+			// A full pass allocates the whole corpus transiently (chunk
+			// buffers, embedding batches, chromem/bleve documents); return
+			// the spike to the OS right here instead of waiting for the
+			// scavenger. Runs in this background goroutine holding no
+			// locks — IndexFull's AddDocuments released the service write
+			// lock before returning. Gated on success: a cancelled or failed
+			// pass (switch/Shutdown, batch error) allocated little and must
+			// not burn a stop-the-world GC cycle.
+			if idxErr == nil {
+				m.freeOSMemoryAfterFullIndex()
+			}
 		} else {
 			// Reconciliation: if the chromem collection has data but the
 			// lexical index is empty (e.g. the project was indexed before
@@ -749,7 +781,13 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 			go func() {
 				if bsErr := indexer.HandleBranchSwitch(indexCtx, workspacePath, newBranch); bsErr != nil {
 					m.logger.Warn("branch switch indexing failed", "error", bsErr)
+					return
 				}
+				// HandleBranchSwitch runs a FULL index when the target branch's
+				// collection is empty; return that spike to the OS like the
+				// other full-pass call sites. A no-op switch (existing
+				// collection) just pays one extra scavenge on a rare event.
+				m.freeOSMemoryAfterFullIndex()
 			}()
 		},
 		m.logger,
@@ -1061,6 +1099,20 @@ func (m *Manager) NotReadyError() error {
 	return errors.New(NotReadyMessage(m.GetIndexStatus()))
 }
 
+// freeOSMemoryAfterFullIndex returns the transient allocations of a
+// completed FULL indexing pass to the OS through the package-level
+// freeOSMemory seam (runtime/debug.FreeOSMemory — a forced GC cycle plus
+// scavenge), the SAME seam the park-eviction and content-less-migration
+// paths use (see service.go). Sharing one seam means a test swaps a single
+// variable. Incremental passes deliberately do NOT call it: they allocate
+// proportionally to the changed files, and a forced full GC per debounce
+// flush would burn CPU for no memory win. Call only from background
+// goroutines, never under s.mu or m.mu — FreeOSMemory blocks for a full GC
+// cycle and would stall every lock holder.
+func (m *Manager) freeOSMemoryAfterFullIndex() {
+	freeOSMemory()
+}
+
 // Reindex triggers a full reindex of the vector index for the active project.
 // It reconciles the current index against the workspace, re-indexing only
 // changed/new/deleted files; when no index exists yet (empty collection) it
@@ -1110,6 +1162,12 @@ func (m *Manager) Reindex(ctx context.Context) error {
 		if col == nil || col.Count() == 0 {
 			m.logger.Info("empty collection, running full index")
 			idxErr = idx.IndexFull(indexCtx, workspacePath)
+			// Same rationale as the initProject pass above (including the
+			// success gate): a completed full build's transient allocations go
+			// back to the OS immediately; no locks are held here.
+			if idxErr == nil {
+				m.freeOSMemoryAfterFullIndex()
+			}
 		} else {
 			m.logger.Info("existing collection found, running incremental index")
 			idxErr = idx.IndexIncremental(indexCtx, workspacePath)

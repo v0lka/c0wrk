@@ -1239,7 +1239,14 @@ func (a *App) startVectorIndexBackground(
 			// vector-index state resident (vector_index.park_capacity;
 			// resolved default 3, explicit 0 disables parking).
 			ParkCapacity: derefInt(cfg.VectorIndex.ParkCapacity),
-			Logger:       log,
+			// ParkBudgetBytes: cumulative resident-memory budget for the
+			// park LRU (vector_index.park_budget_mb → bytes; resolved
+			// default 1024 MiB, explicit -1 disables the byte budget
+			// — park_capacity alone). A nil pointer (should not happen:
+			// ApplyDefaults always resolves it) still yields the 1024 MiB
+			// default rather than a fail-open zero budget.
+			ParkBudgetBytes: derefParkBudgetBytes(cfg.VectorIndex.ParkBudgetMb),
+			Logger:          log,
 		})
 		if err != nil {
 			log.Warn("vector search unavailable", "error", err)
@@ -1325,6 +1332,20 @@ func derefInt(p *int) int {
 		return 0
 	}
 	return *p
+}
+
+// derefParkBudgetBytes converts vector_index.park_budget_mb (MiB) into the
+// byte budget for vectorindex.ManagerConfig. A nil pointer (unset) resolves to
+// vectorindex.DefaultParkBudgetBytes — the documented 1024 MiB default — rather
+// than 0, because the service reads a zero budget as "no byte budget" (so the
+// old derefInt64(nil)<<20 fail-open silently dropped the ceiling). A non-nil
+// value is scaled MiB→bytes verbatim, preserving the negative -1 "byte budget
+// disabled" sentinel.
+func derefParkBudgetBytes(p *int64) int64 {
+	if p == nil {
+		return vectorindex.DefaultParkBudgetBytes
+	}
+	return *p << 20
 }
 
 // startUpdateCheckerBackground reaps stale updater artifacts from a prior

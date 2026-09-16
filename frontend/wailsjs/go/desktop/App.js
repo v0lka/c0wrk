@@ -298,6 +298,10 @@ export function GetPendingActions(arg1) {
   return window['go']['desktop']['App']['GetPendingActions'](arg1);
 }
 
+export function GetProcessMemory() {
+  return window['go']['desktop']['App']['GetProcessMemory']();
+}
+
 export function GetProjectSwitchState(arg1) {
   return window['go']['desktop']['App']['GetProjectSwitchState'](arg1);
 }

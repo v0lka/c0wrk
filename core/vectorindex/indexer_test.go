@@ -7,11 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	chromem "github.com/philippgille/chromem-go"
 
 	"github.com/v0lka/sp4rk/ignore"
 )
@@ -1383,4 +1387,122 @@ func TestIndexFull_PrepWorkersOverlap(t *testing.T) {
 		t.Error("expected both files to be prepared concurrently by 2 prep workers; " +
 			"chunking appeared strictly serial")
 	}
+}
+
+// TestCollectDocumentIDs_SidecarMatchesQueryPath pins the equivalence of the
+// two collectDocumentIDs paths on a fixture that includes a gapped file
+// (chunk 1 poison-dropped at index time, so its sidecar entry carries
+// "L:0,2"): the sidecar arithmetic path (DocumentID(path, i) over the
+// entry's committed chunk-index set) must return exactly the same ID set the
+// full-collection Query path enumerates. It also pins the fallback: a
+// legacy-grammar entry (no chunk set) sends the request through the Query
+// path instead of guessing.
+func TestCollectDocumentIDs_SidecarMatchesQueryPath(t *testing.T) {
+	svc := setupTestService(t)
+	ws := t.TempDir()
+
+	newDoc := func(path string, chunk int, content string) chromem.Document {
+		return chromem.Document{
+			ID:      DocumentID(path, chunk),
+			Content: content,
+			Metadata: map[string]string{
+				"file_path":            path,
+				"file_name":            filepath.Base(path),
+				"content_hash":         computeHash([]byte(content)),
+				"file_size":            strconv.Itoa(len(content)),
+				"file_mtime_unix_nano": "1700000000000000000",
+				"start_line":           "1",
+				"end_line":             "1",
+				"language":             "go",
+			},
+		}
+	}
+
+	// gapped.go: chunks 0 and 2 committed, chunk 1 poison-dropped (never
+	// added); contiguous.go: chunks 0..2 committed.
+	gapped := filepath.Join(ws, "gapped.go")
+	contiguous := filepath.Join(ws, "contiguous.go")
+	legacy := filepath.Join(ws, "legacy.go")
+
+	docs := []chromem.Document{
+		newDoc(gapped, 0, "gapped chunk zero"),
+		newDoc(gapped, 2, "gapped chunk two"),
+		newDoc(contiguous, 0, "contiguous chunk zero"),
+		newDoc(contiguous, 1, "contiguous chunk one"),
+		newDoc(contiguous, 2, "contiguous chunk two"),
+	}
+	svc.AcquireWriteLock()
+	if err := svc.AddDocuments(context.Background(), docs, nil); err != nil {
+		svc.ReleaseWriteLock()
+		t.Fatalf("AddDocuments: %v", err)
+	}
+	// Seed a legacy entry (no chunk set) directly: it must force the Query
+	// path rather than arithmetic.
+	svc.current.fileHashes[legacy] = "legacyhash"
+	svc.ReleaseWriteLock()
+
+	// The gapped file's entry must actually be gapped — otherwise this test
+	// would not exercise the hole-aware arithmetic.
+	svc.mu.RLock()
+	gappedEntry := svc.current.fileHashes[gapped]
+	svc.mu.RUnlock()
+	if set, ok := fileHashEntryChunkSet(gappedEntry); !ok || !reflect.DeepEqual(set, []int{0, 2}) {
+		t.Fatalf("gapped file entry %q carries set %v (ok=%v); want [0 2]", gappedEntry, set, ok)
+	}
+
+	indexer := NewIndexer(IndexerConfig{Service: svc, HashFn: fakeHashFunc, ChunkFn: fakeChunkFunc})
+
+	sortIDs := func(ids []string) []string {
+		out := append([]string(nil), ids...)
+		slices.Sort(out)
+		return out
+	}
+
+	t.Run("sidecar path equals query path", func(t *testing.T) {
+		paths := []string{gapped, contiguous}
+		indexer.service.AcquireWriteLock()
+		fastIDs, err := indexer.collectDocumentIDs(context.Background(), paths)
+		indexer.service.ReleaseWriteLock()
+		if err != nil {
+			t.Fatalf("collectDocumentIDs: %v", err)
+		}
+		queryIDs, err := indexer.collectDocumentIDsViaQuery(context.Background(), paths)
+		if err != nil {
+			t.Fatalf("collectDocumentIDsViaQuery: %v", err)
+		}
+		if got, want := len(fastIDs), 5; got != want {
+			t.Fatalf("sidecar path returned %d IDs (%v), want %d", got, fastIDs, want)
+		}
+		if !reflect.DeepEqual(sortIDs(fastIDs), sortIDs(queryIDs)) {
+			t.Fatalf("sidecar IDs %v != query IDs %v", sortIDs(fastIDs), sortIDs(queryIDs))
+		}
+		// The arithmetic must be literally DocumentID(path, i) over the sets.
+		expected := []string{
+			DocumentID(gapped, 0), DocumentID(gapped, 2),
+			DocumentID(contiguous, 0), DocumentID(contiguous, 1), DocumentID(contiguous, 2),
+		}
+		if !reflect.DeepEqual(sortIDs(fastIDs), sortIDs(expected)) {
+			t.Fatalf("sidecar IDs %v != DocumentID arithmetic %v", sortIDs(fastIDs), sortIDs(expected))
+		}
+	})
+
+	t.Run("mixed request with set-less entry falls back to query path", func(t *testing.T) {
+		paths := []string{gapped, legacy}
+		indexer.service.AcquireWriteLock()
+		ids, err := indexer.collectDocumentIDs(context.Background(), paths)
+		indexer.service.ReleaseWriteLock()
+		if err != nil {
+			t.Fatalf("collectDocumentIDs: %v", err)
+		}
+		// The Query path sees only gapped.go documents (legacy.go has none in
+		// the collection) — the gapped file's two IDs, not three.
+		if got := len(ids); got != 2 {
+			t.Fatalf("collectDocumentIDs over set-less entry returned %d IDs (%v), want 2", got, ids)
+		}
+		for _, id := range ids {
+			if id != DocumentID(gapped, 0) && id != DocumentID(gapped, 2) {
+				t.Errorf("unexpected ID %q", id)
+			}
+		}
+	})
 }

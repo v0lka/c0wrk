@@ -1021,6 +1021,24 @@ orchestration:
 #                              # persistent DB from scratch (the historical
 #                              # behaviour). Negative is treated as 0.
 #
+#   park_budget_mb: 1024       # cumulative RAM budget (MiB) for ALL parked
+#                              # states (default 1024). Right after a state
+#                              # is parked, the OLDEST parked states are
+#                              # evicted — sidecar flushed, freed RAM nudged
+#                              # back to the OS — while the summed ESTIMATED
+#                              # footprints exceed the budget. The estimate
+#                              # is documents × (embedding dims × 4 B +
+#                              # 1 KiB): coarse, but proportional to the true
+#                              # vector + lexical footprint, so a few huge
+#                              # indexes stop monopolizing the LRU at the
+#                              # expense of many small ones. The effective
+#                              # bound is min(park_capacity, park_budget_mb).
+#                              # -1 disables the byte budget (park_capacity
+#                              # alone); 0 is rejected at load as ambiguous and
+#                              # values below -1 are rejected as typos (only -1
+#                              # disables); park_capacity: 0 still disables
+#                              # parking entirely regardless of the budget.
+#
 #   max_chunks_per_file: 4000  # upper bound on chunks one file may contribute
 #                              # to an index pass (default 4000). Files that
 #                              # exceed it are skipped wholesale (WARN) — a
@@ -1069,6 +1087,7 @@ orchestration:
 #   chunk_overlap: 200
 #   search_wait_timeout_ms: 3000
 #   park_capacity: 3
+#   park_budget_mb: 1024
 #   max_file_size: 4194304
 #   max_chunk_size: 1500
 #   max_chunks_per_file: 4000
@@ -1316,3 +1335,36 @@ orchestration:
 #   # run is aborted as a spin. Must be >= the nudge threshold so the model
 #   # always gets at least one nudge first. Default: 5.
 #   repeat_abort_threshold: 5
+
+# ---------------------------------------------------------------------------
+# Go runtime tunables (process-level; consumed once at startup)
+# ---------------------------------------------------------------------------
+runtime:
+  # Soft memory limit for the Go runtime (debug.SetMemoryLimit) — a GC
+  # target, NOT a hard cap: the heap may exceed it under live-set pressure,
+  # the GC just runs more often. Without it the default GOGC=100 lets the
+  # transient spike of a full project re-index roughly double the resident
+  # set, and the memory is returned to the OS only lazily. The app also
+  # forces a GC + scavenge (debug.FreeOSMemory) after every full indexing
+  # pass regardless of this knob.
+  #
+  # Values:
+  #   0 (or omitted) — AUTO: 50% of the machine's physical RAM, clamped to
+  #                    [2 GiB, 8 GiB]. Unknown RAM falls back to the 2 GiB
+  #                    floor.
+  #   > 0            — explicit limit in MiB, applied verbatim.
+  #   -1             — OFF: no soft limit is set at all.
+  #   < -1           — rejected at config load (a typo, not a sentinel: only
+  #                    -1 means off).
+  #   > 2 PiB        — rejected at config load (the MiB→bytes shift would
+  #                    overflow int64 and silently drop the limit).
+  #
+  # A GOMEMLIMIT environment variable that the Go runtime actually saw at
+  # PROCESS START takes priority over AUTO mode (the runtime already applied
+  # it); an explicit positive value here still wins over that env var for this
+  # app. A GOMEMLIMIT injected later by login-shell env loading (macOS Finder
+  # launch) was never read by the runtime, so it does NOT defer here — AUTO
+  # applies instead.
+  # Default: 0 (auto).
+  memory_soft_limit_mb: 0
+
