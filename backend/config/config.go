@@ -159,12 +159,14 @@ type GitConfig struct {
 	AutoFetchInterval string `yaml:"auto_fetch_interval"`
 }
 
-// DefaultMemorySoftLimitMB is the default for RuntimeConfig.MemorySoftLimitMB:
-// 0 selects AUTO mode — the desktop layer derives a Go runtime soft memory
-// limit (GOMEMLIMIT-style GC target) from the machine's physical RAM,
-// clamp(50% RAM, 2 GiB..8 GiB). The named constant pins the sentinel so the
-// config layer, the example file, and the consumer cannot drift apart.
-const DefaultMemorySoftLimitMB = 0
+// maxMemoryLimitMiB bounds the MiB-valued memory knobs
+// (runtime.memory_soft_limit_mb and vector_index.park_budget_mb). Consumers
+// convert MiB→bytes with `<< 20`, which overflows int64 to a negative above
+// this ceiling — a negative SetMemoryLimit is ignored by the runtime (the soft
+// limit silently disappears) and a negative park budget reads as "budget
+// disabled". 1<<31 MiB = 2 PiB, far above any real machine, so it only catches
+// unit mix-ups (e.g. a byte value entered as MiB).
+const maxMemoryLimitMiB = 1 << 31
 
 // RuntimeConfig holds process-level runtime tunables that govern the Go
 // runtime itself rather than any agent subsystem (desktop/startup.go consumes
@@ -173,9 +175,9 @@ type RuntimeConfig struct {
 	// MemorySoftLimitMB configures the Go runtime soft memory limit
 	// (debug.SetMemoryLimit — a GC target, NOT a hard cap: the heap may
 	// exceed it under live-set pressure; the GC just runs more often).
-	// Without it GOGC=100 lets transient spikes (a full project
-	// re-indexembedding the whole corpus) double the resident set, and the
-	// memory is never handed back to the OS promptly.
+	// Without it, GOGC=100 lets transient spikes — a full project
+	// re-index (embedding the whole corpus) — double the resident set, and
+	// the memory is never handed back to the OS promptly.
 	//
 	// Values:
 	//   0 (or unset, the default) — AUTO: 50% of physical RAM, clamped to
@@ -335,9 +337,11 @@ type VectorIndexConfig struct {
 	// min(park_capacity, park_budget_mb): capacity still applies, and an
 	// explicit park_capacity: 0 still disables parking entirely regardless
 	// of the budget. It is a pointer-int64 so an unset key resolves to the
-	// default of 1024 while an explicit negative is preserved as the
-	// "budget disabled" sentinel (park_capacity alone bounds the LRU). An
-	// explicit 0 is rejected by validate() as ambiguous.
+	// default of 1024 while an explicit -1 is preserved as the "budget
+	// disabled" sentinel (park_capacity alone bounds the LRU). An explicit
+	// 0 is rejected by validate() as ambiguous and any value below -1 is
+	// rejected as a typo (only -1 disables), mirroring
+	// runtime.memory_soft_limit_mb.
 	ParkBudgetMb *int64 `yaml:"park_budget_mb"`
 
 	// ExecutionProvider selects the ONNX Runtime execution provider the
@@ -1651,22 +1655,46 @@ func validate(cfg *Config) error {
 	// resolved an unset key to the 1024 MiB default, so an explicit 0 here
 	// is a hand-authored value. Zero is ambiguous — read literally, a zero
 	// budget would evict every non-empty parked state the moment it parks —
-	// so it is rejected: use a positive budget, or a negative value to
-	// disable the byte budget (park_capacity alone).
-	if cfg.VectorIndex.ParkBudgetMb != nil && *cfg.VectorIndex.ParkBudgetMb == 0 {
-		return errors.New(
-			"vector_index.park_budget_mb must be > 0, or < 0 to disable the byte budget; 0 is ambiguous",
-		)
+	// so it is rejected: use a positive budget, or -1 to disable the byte
+	// budget (park_capacity alone). Only -1 is a legal negative, mirroring
+	// runtime.memory_soft_limit_mb; anything below it is a typo, not a
+	// sentinel, and fails fast rather than silently disabling the budget.
+	if budget := cfg.VectorIndex.ParkBudgetMb; budget != nil {
+		switch {
+		case *budget == 0:
+			return errors.New(
+				"vector_index.park_budget_mb must be > 0, or -1 to disable the byte budget; 0 is ambiguous",
+			)
+		case *budget < -1:
+			return fmt.Errorf(
+				"vector_index.park_budget_mb must be -1 (disabled) or a positive MiB value, got %d",
+				*budget,
+			)
+		case *budget > maxMemoryLimitMiB:
+			return fmt.Errorf(
+				"vector_index.park_budget_mb %d exceeds the maximum of %d MiB (2 PiB); the MiB→bytes shift would overflow",
+				*budget, maxMemoryLimitMiB,
+			)
+		}
 	}
 
 	// Validate runtime.memory_soft_limit_mb. The field is a tri-state int:
 	// 0 (or unset) = auto, >0 = explicit MiB, -1 = off. Only -1 is a legal
 	// negative — anything below it is a typo (e.g. -10), not a sentinel, and
-	// fails fast at load rather than silently selecting auto mode.
+	// fails fast at load rather than silently selecting auto mode. The upper
+	// bound guards the int64 MiB→bytes shift in the consumer
+	// (desktop/memlimit.go), which overflows to a negative — and a negative
+	// SetMemoryLimit is ignored by the runtime, silently dropping the limit.
 	if cfg.Runtime.MemorySoftLimitMB < -1 {
 		return fmt.Errorf(
 			"runtime.memory_soft_limit_mb must be -1 (off), 0/unset (auto), or a positive MiB value, got %d",
 			cfg.Runtime.MemorySoftLimitMB,
+		)
+	}
+	if cfg.Runtime.MemorySoftLimitMB > maxMemoryLimitMiB {
+		return fmt.Errorf(
+			"runtime.memory_soft_limit_mb %d exceeds the maximum of %d MiB (2 PiB); the MiB→bytes shift would overflow",
+			cfg.Runtime.MemorySoftLimitMB, maxMemoryLimitMiB,
 		)
 	}
 

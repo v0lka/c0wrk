@@ -3,7 +3,8 @@
 // Tests for the StatusBar composition contract: the live process-memory
 // indicator is the last right-hand block, separated from the vector-index
 // block, and stays visible in No Project mode while the index block is
-// hidden.
+// hidden. When the indicator has no sample it renders nothing at all — in
+// particular no stray separator is left after the last visible block.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { act } from 'react'
@@ -52,6 +53,14 @@ vi.mock('@/stores/fileViewerStore', () => ({
     selector(fileViewerStoreState),
 }))
 
+// The real ProcessMemoryStatus is rendered; only its data source is stubbed
+// so the composition (indicator + its leading separator) is exercised for
+// real. `rss` is mutated per test to cover the hidden case.
+const processMemoryState: { rss: number | null } = { rss: 1_234_567_896 }
+vi.mock('@/hooks/useProcessMemory', () => ({
+  useProcessMemory: () => processMemoryState.rss,
+}))
+
 // --- Child-component mocks (text markers; Separator as a countable stub) ---
 
 vi.mock('@/components/ui/separator', () => ({
@@ -61,7 +70,6 @@ vi.mock('./IndexingStatus', () => ({ IndexingStatus: () => <span>IDX</span> }))
 vi.mock('./ContextFillStatus', () => ({ ContextFillStatus: () => <span>FILL</span> }))
 vi.mock('./CompactContextButton', () => ({ CompactContextButton: () => <span>COMPACT</span> }))
 vi.mock('./GoalStatusIndicator', () => ({ GoalStatusIndicator: () => null }))
-vi.mock('./ProcessMemoryStatus', () => ({ ProcessMemoryStatus: () => <span>RSS</span> }))
 
 import { StatusBar } from './StatusBar'
 
@@ -76,6 +84,7 @@ const render = () =>
 beforeEach(() => {
   projectStoreState.projects = [{ id: 'p1', is_no_project: false }]
   projectStoreState.activeProjectId = 'p1'
+  processMemoryState.rss = 1_234_567_896
   container = document.createElement('div')
   document.body.replaceChildren(container)
   root = createRoot(container)
@@ -106,7 +115,20 @@ describe('StatusBar process-memory placement', () => {
     const text = container.textContent ?? ''
     expect(text).not.toContain('IDX')
     expect(text).toContain('RSS')
-    // Only the unconditional RSS separator remains.
+    // Only the RSS indicator's separator remains.
     expect(container.querySelectorAll('[data-testid="sep"]')).toHaveLength(1)
+  })
+
+  it('renders no stray separator when the memory sample is unavailable', () => {
+    processMemoryState.rss = null
+
+    render()
+
+    const text = container.textContent ?? ''
+    expect(text).toContain('IDX')
+    expect(text).not.toContain('RSS')
+    // Only the index block's separator remains, and nothing trails it.
+    expect(container.querySelectorAll('[data-testid="sep"]')).toHaveLength(1)
+    expect(container.lastElementChild?.textContent).toBe('IDX')
   })
 })

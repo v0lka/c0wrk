@@ -173,12 +173,45 @@ func parseFileHashEntry(entry string) (hash string, size, mtimeUnixNano int64, o
 	if len(parts) == 5 {
 		// Strict grammar: a 5th field that is not a valid chunk set
 		// downgrades the whole entry to legacy (full read+hash fallback)
-		// instead of silently carrying an unusable set.
-		if _, valid := parseChunkIndices(parts[4]); !valid {
+		// instead of silently carrying an unusable set. Use the
+		// allocation-free validity check: parseFileHashEntry runs once per
+		// file on the per-pass stat fast path and does not need the set, so
+		// materializing one here would generate O(files × chunkCount)
+		// throwaway ints.
+		if !validChunkIndicesField(parts[4]) {
 			return parts[0], 0, 0, false
 		}
 	}
 	return parts[0], size, mtime, true
+}
+
+// validChunkIndicesField reports whether field is a well-formed 5th sidecar
+// field WITHOUT materializing the index set (unlike parseChunkIndices, which
+// allocates a []int of size N for the contiguous form). The grammar is
+// identical to parseChunkIndices; only the list form ("L:…") allocates, and
+// only its split parts.
+func validChunkIndicesField(field string) bool {
+	if field == "" {
+		return false
+	}
+	if rest, ok := strings.CutPrefix(field, chunkSetListPrefix); ok {
+		if rest == "" {
+			return false
+		}
+		parts := strings.Split(rest, ",")
+		if len(parts) > maxChunkSetEntries {
+			return false
+		}
+		for _, p := range parts {
+			v, err := strconv.Atoi(p)
+			if err != nil || v < 0 {
+				return false
+			}
+		}
+		return true
+	}
+	n, err := strconv.Atoi(field)
+	return err == nil && n >= 0 && n <= maxChunkSetEntries
 }
 
 // fileHashEntryChunkerFP returns the chunker-configuration fingerprint field
@@ -711,6 +744,19 @@ func (ps *projectState) contentlessMarkerPath() string {
 	return filepath.Join(ps.projectPath, "contentless_"+collectionName(ps.currentBranch)+".done")
 }
 
+// contentlessMarkerExists reports whether this state's content-less migration
+// marker is present on disk (the collection is certified stripped). Used to
+// decide whether an empty sidecar is trustworthy (see loadFileHashes). Caller
+// must hold s.mu.
+func contentlessMarkerExists(ps *projectState) bool {
+	marker := ps.contentlessMarkerPath()
+	if marker == "" {
+		return false
+	}
+	_, err := os.Stat(marker)
+	return err == nil
+}
+
 // loadFileHashes populates the CURRENT state's fileHashes for the active
 // branch from the sidecar on disk. If the sidecar is absent, the backfill is
 // deferred to a short-lived background goroutine (see migrateFileHashes) so
@@ -729,6 +775,10 @@ func (s *Service) loadFileHashes() {
 	// caller still holds s.mu.
 	defer s.maybeMigrateContentlessLocked()
 
+	// Reset the backfill-failure flag: this load either trusts a usable on-disk
+	// sidecar or starts a fresh backfill (which re-sets the flag on failure).
+	ps.fileHashMigrationFailed.Store(false)
+
 	// Cancel any in-flight migration left over from a previous branch and
 	// reset its signal channel. The branch's content-less migration is
 	// abandoned the same way — its documents belong to the outgoing
@@ -743,15 +793,25 @@ func (s *Service) loadFileHashes() {
 		ps.contentlessCancel = nil
 	}
 
-	// Fast path: a usable sidecar exists on disk.
+	// Fast path: a usable sidecar exists on disk. An EMPTY sidecar for a
+	// non-empty collection is trusted only once the collection is certified
+	// content-less (the migration marker exists) — a stripped collection's
+	// backfill can recover no hashes, so re-running it every open would be
+	// pure waste, and the next index pass repopulates the sidecar from the
+	// files. While the marker is ABSENT an empty sidecar is NOT trusted: it is
+	// either the empty placeholder a previous backfill installed while in
+	// flight, or a backfill that failed and left no entries — so the backfill
+	// below re-settles it (see fileHashMigrationFailed).
 	if path := ps.fileHashesPath(); path != "" {
 		if data, err := os.ReadFile(path); err == nil {
 			var m map[string]string
 			if jsonErr := json.Unmarshal(data, &m); jsonErr == nil {
-				ps.fileHashes = m
-				ps.fileHashMigrationPending.Store(false)
-				ps.migrationCh = closedChan()
-				return
+				if len(m) > 0 || contentlessMarkerExists(ps) {
+					ps.fileHashes = m
+					ps.fileHashMigrationPending.Store(false)
+					ps.migrationCh = closedChan()
+					return
+				}
 			}
 		}
 	}
@@ -821,6 +881,13 @@ func (s *Service) migrateFileHashes(ctx context.Context, ps *projectState, branc
 
 	hashes, qErr := ps.queryCollectionFileHashes(ctx, s.unitQueryVector())
 	if qErr != nil {
+		if ps.migrationCh == done {
+			// The backfill did not complete: ps.fileHashes stays the untrusted
+			// empty placeholder. Flag it so park/eviction never persists that
+			// empty sidecar and the content-less migration does not certify the
+			// collection from it.
+			ps.fileHashMigrationFailed.Store(true)
+		}
 		s.logger.Warn("failed to migrate file-hash sidecar from collection", "error", qErr)
 		clearIfCurrent()
 		return
@@ -832,6 +899,18 @@ func (s *Service) migrateFileHashes(ctx context.Context, ps *projectState, branc
 	}
 	ps.fileHashes = hashes
 	ps.fileHashMigrationPending.Store(false)
+	ps.fileHashMigrationFailed.Store(false)
+	if len(hashes) == 0 {
+		// A non-empty collection with zero recoverable hashes means every
+		// committed document was already stripped (its metadata no longer
+		// carries content_hash) OR the sidecar was lost and the documents are
+		// content-less by construction. Either way the sidecar cannot be
+		// rebuilt from the collection here; warn so a lost sidecar is visible
+		// (the files will be re-embedded on the next validation pass).
+		s.logger.Warn("file-hash sidecar migration produced no entries for a non-empty collection; "+
+			"if the sidecar was lost the project will be re-indexed",
+			"branch", branch, "documents", ps.collection.Count())
+	}
 	if err := ps.saveFileHashes(); err != nil {
 		s.logger.Warn("failed to persist file-hash sidecar after migration", "error", err)
 	}
@@ -866,19 +945,14 @@ func closedChan() chan struct{} {
 	return c
 }
 
-// contentlessProbeGapTolerance bounds how many consecutive GetByID misses
-// may end the chunk-index scan of a sidecar entry whose committed chunk-index
-// set is unknown (legacy entries written without the 5th field). Chunks
-// dropped by the poisoned-text fallback leave isolated holes in an otherwise
-// contiguous run, so the scan bridges short gaps instead of stopping at the
-// first miss.
+// contentlessProbeGapTolerance bounds how many consecutive GetByID misses may
+// end the chunk-index scan of a sidecar entry whose committed chunk-index set
+// is unknown (legacy entries written without the 5th field). Chunks dropped by
+// the poisoned-text fallback leave isolated holes in an otherwise contiguous
+// run, so the scan bridges short gaps instead of stopping at the first miss.
+// The tolerance applies only AFTER the first committed chunk is found; a
+// leading run of dropped chunks does not end the scan (see migrateContentless).
 const contentlessProbeGapTolerance = 8
-
-// contentlessProbeChunkCap bounds the chunk indices probed for a sidecar
-// entry with an unknown committed set. It mirrors the per-file chunk cap the
-// indexer enforces; for real files the gap tolerance above stops the scan
-// far earlier, so this is only a corrupt-sidecar backstop.
-const contentlessProbeChunkCap = DefaultMaxChunksPerFile
 
 // writeContentlessMarker best-effort writes the zero-byte migration marker.
 // A failed write never fails the caller: it only costs one no-op probe pass
@@ -917,7 +991,6 @@ func (s *Service) maybeMigrateContentlessLocked() {
 	}
 
 	settle := func() {
-		ps.contentlessPending.Store(false)
 		ps.contentlessCh = closedChan()
 	}
 
@@ -952,7 +1025,6 @@ func (s *Service) maybeMigrateContentlessLocked() {
 	// the sidecar to settle, so a collection that still needs its file-hash
 	// backfill is enumerated for the sidecar FIRST (its full per-file
 	// metadata intact) and stripped afterwards.
-	ps.contentlessPending.Store(true)
 	done := make(chan struct{})
 	ps.contentlessCh = done
 	branch := ps.currentBranch
@@ -1004,6 +1076,17 @@ func (s *Service) migrateContentless(ctx context.Context, ps *projectState, bran
 		}
 	}
 
+	// A failed sidecar backfill leaves ps.fileHashes as an untrusted empty
+	// placeholder: the migration cannot distinguish "nothing trackable" from
+	// "the backfill did not complete", and the marker it would write forbids
+	// replay — so certifying the collection would permanently keep the fat
+	// legacy documents of a collection that was never actually empty. Abandon
+	// without the marker; the next open replays. (park/eviction already refuse
+	// to persist the empty placeholder — see fileHashMigrationFailed.)
+	if ps.fileHashMigrationFailed.Load() {
+		return
+	}
+
 	// Snapshot the sidecar entries and the collection pointer. The snapshot
 	// is immutable for the rest of the pass; per-window re-checks below
 	// verify the live state still matches it.
@@ -1020,12 +1103,22 @@ func (s *Service) migrateContentless(ctx context.Context, ps *projectState, bran
 	s.mu.RUnlock()
 
 	if len(entries) == 0 {
-		// Nothing sidecar-tracked (e.g. documents whose metadata never
-		// carried content_hash are invisible to the sidecar by design): the
-		// commit path owns every future document, so the marker still
-		// applies.
-		s.finishContentless(ctx, ps, branch, done, 0, 0)
+		// Nothing sidecar-tracked. Reaching here means the backfill above
+		// either completed successfully (so "empty" genuinely means no
+		// content-bearing document — documents whose metadata never carried
+		// content_hash are invisible to the sidecar by design) or was not
+		// needed; a failed backfill returned before this point. The commit
+		// path owns every future document, so the marker still applies.
+		s.finishContentless(ctx, ps, branch, 0, 0)
 		return
+	}
+
+	// probeCap bounds the legacy-entry scan: the indexer never commits more
+	// than max_chunks_per_file chunks for a file, so this many indices covers
+	// every chunk it could hold (see contentlessProbeGapTolerance).
+	probeCap := s.maxChunksPerFile
+	if probeCap <= 0 {
+		probeCap = DefaultMaxChunksPerFile
 	}
 
 	paths := make([]string, 0, len(entries))
@@ -1075,16 +1168,12 @@ func (s *Service) migrateContentless(ctx context.Context, ps *projectState, bran
 		return flush()
 	}
 
-	// abandon settles the pending flag (only when THIS migration is still
-	// registered on ps) and surfaces non-cancellation failures: a cancelled
-	// or superseded migration is an expected lifecycle event, a genuine
-	// commit error deserves a WARN. No marker is written either way, so the
-	// next open replays the idempotent probe.
+	// abandon surfaces non-cancellation failures: a cancelled or superseded
+	// migration is an expected lifecycle event, a genuine commit error deserves
+	// a WARN. No marker is written either way, so the next open replays the
+	// idempotent probe.
 	abandon := func(err error) {
 		s.mu.Lock()
-		if ps.contentlessCh == done {
-			ps.contentlessPending.Store(false)
-		}
 		silent := ctx.Err() != nil || ps.currentBranch != branch || ps.collection == nil
 		s.mu.Unlock()
 		if !silent {
@@ -1129,18 +1218,28 @@ func (s *Service) migrateContentless(ctx context.Context, ps *projectState, bran
 			}
 			continue
 		}
-		// Legacy entry (no 5th field): scan chunk indices 0.. upward,
-		// bridging gaps up to contentlessProbeGapTolerance consecutive
-		// misses (poison-dropped chunks) and bounded by
-		// contentlessProbeChunkCap.
-		misses := 0
-		for i := 0; i < contentlessProbeChunkCap && misses < contentlessProbeGapTolerance; i++ {
+		// Legacy entry (no 5th field): scan chunk indices from 0 upward, bounded
+		// by the configured per-file cap (probeCap — the indexer never commits
+		// more than max_chunks_per_file chunks, so the range is exhaustive).
+		// After the first committed chunk, stop once
+		// contentlessProbeGapTolerance consecutive misses are seen (bridging
+		// isolated poison-dropped holes). BEFORE the first hit, keep scanning
+		// to the cap so a leading run of dropped chunks (a garbage file head)
+		// cannot hide the committed chunks beyond it.
+		misses, hits := 0, 0
+		for i := 0; i < probeCap; i++ {
 			doc, err := col.GetByID(ctx, DocumentID(fp, i))
 			if err != nil {
-				misses++
+				if hits > 0 {
+					misses++
+					if misses >= contentlessProbeGapTolerance {
+						break
+					}
+				}
 				continue
 			}
 			misses = 0
+			hits++
 			probed++
 			if doc.Content == "" {
 				continue
@@ -1158,7 +1257,7 @@ func (s *Service) migrateContentless(ctx context.Context, ps *projectState, bran
 		return
 	}
 
-	s.finishContentless(ctx, ps, branch, done, probed, stripped)
+	s.finishContentless(ctx, ps, branch, probed, stripped)
 }
 
 // finishContentless finalizes a completed migration: it clears the pending
@@ -1167,11 +1266,8 @@ func (s *Service) migrateContentless(ctx context.Context, ps *projectState, bran
 // cycle churns the whole collection's documents; the transient spike is
 // handed back to the OS right away, off the service lock — same as the park
 // eviction path). Caller must NOT hold s.mu.
-func (s *Service) finishContentless(ctx context.Context, ps *projectState, branch string, done chan struct{}, probed, stripped int) {
+func (s *Service) finishContentless(ctx context.Context, ps *projectState, branch string, probed, stripped int) {
 	s.mu.Lock()
-	if ps.contentlessCh == done {
-		ps.contentlessPending.Store(false)
-	}
 	if ctx.Err() != nil || ps.currentBranch != branch || ps.collection == nil {
 		s.mu.Unlock()
 		return
@@ -1242,8 +1338,11 @@ func (ps *projectState) saveFileHashes() error {
 // disk. The committed chunk-index set (5th field) is derived from the
 // documents' IDs ("<pathHash>:<idx>", see DocumentID); IDs in droppedIDs
 // (the poisoned-text fallback) are excluded, so the set mirrors exactly the
-// chunks the collection holds. A file whose every chunk was dropped still
-// gets an entry (with the empty set "0") — otherwise ValidateCollection
+// chunks the collection holds. When the file already has a set-bearing entry
+// (an earlier AddDocuments call for the same file), the new indices are
+// UNIONED with the recorded set rather than replacing it, so a file committed
+// across two calls is not truncated. A file whose every chunk was dropped
+// still gets an entry (with the empty set "0") — otherwise ValidateCollection
 // would report it as new on every pass and re-index it forever.
 //
 // It deliberately does NOT persist on every call: a
@@ -1279,7 +1378,23 @@ func (s *Service) upsertFileHashesFiltered(docs []chromem.Document, droppedIDs m
 		fu.ids = append(fu.ids, d.ID)
 	}
 	for fp, fu := range perFile {
-		s.current.fileHashes[fp] = s.composeFileHashEntryInfo(fu.info, fu.ids)
+		// Merge with any committed set already recorded for this file. A file's
+		// chunks may reach the service through more than one AddDocuments call
+		// (the method does not enforce one-call-per-file), and a straight
+		// overwrite would record only the last call's indices — under-
+		// representing the collection, so sidecarDocumentIDs would under-delete
+		// and RebuildLexical v2 emit too few lexical documents.
+		ids := fu.ids
+		if existing, ok := s.current.fileHashes[fp]; ok {
+			if prevSet, prevOK := fileHashEntryChunkSet(existing); prevOK {
+				merged := make([]string, 0, len(prevSet)+len(ids))
+				for _, i := range prevSet {
+					merged = append(merged, DocumentID(fp, i))
+				}
+				ids = append(merged, ids...)
+			}
+		}
+		s.current.fileHashes[fp] = s.composeFileHashEntryInfo(fu.info, ids)
 	}
 }
 
@@ -1370,11 +1485,11 @@ func (s *Service) RebuildCollection(ctx context.Context) error {
 		s.current.contentlessCancel()
 		s.current.contentlessCancel = nil
 	}
-	s.current.contentlessPending.Store(false)
 	s.current.contentlessCh = closedChan()
 	s.writeContentlessMarker(s.current.contentlessMarkerPath())
 	s.current.fileHashes = make(map[string]string)
 	s.current.fileHashMigrationPending.Store(false)
+	s.current.fileHashMigrationFailed.Store(false)
 	s.current.migrationCh = closedChan()
 	if err := s.current.saveFileHashes(); err != nil {
 		s.logger.Warn("failed to persist file-hash sidecar after rebuild", "error", err)

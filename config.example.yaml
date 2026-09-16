@@ -1033,9 +1033,10 @@ orchestration:
 #                              # indexes stop monopolizing the LRU at the
 #                              # expense of many small ones. The effective
 #                              # bound is min(park_capacity, park_budget_mb).
-#                              # Negative disables the byte budget
-#                              # (park_capacity alone); 0 is rejected at load
-#                              # as ambiguous; park_capacity: 0 still disables
+#                              # -1 disables the byte budget (park_capacity
+#                              # alone); 0 is rejected at load as ambiguous and
+#                              # values below -1 are rejected as typos (only -1
+#                              # disables); park_capacity: 0 still disables
 #                              # parking entirely regardless of the budget.
 #
 #   max_chunks_per_file: 4000  # upper bound on chunks one file may contribute
@@ -1355,10 +1356,15 @@ runtime:
   #   -1             — OFF: no soft limit is set at all.
   #   < -1           — rejected at config load (a typo, not a sentinel: only
   #                    -1 means off).
+  #   > 2 PiB        — rejected at config load (the MiB→bytes shift would
+  #                    overflow int64 and silently drop the limit).
   #
-  # An explicit GOMEMLIMIT environment variable takes priority over AUTO
-  # mode (the Go runtime already applied it at process start); an explicit
-  # positive value here still wins over the env var for this app.
+  # A GOMEMLIMIT environment variable that the Go runtime actually saw at
+  # PROCESS START takes priority over AUTO mode (the runtime already applied
+  # it); an explicit positive value here still wins over that env var for this
+  # app. A GOMEMLIMIT injected later by login-shell env loading (macOS Finder
+  # launch) was never read by the runtime, so it does NOT defer here — AUTO
+  # applies instead.
   # Default: 0 (auto).
   memory_soft_limit_mb: 0
 

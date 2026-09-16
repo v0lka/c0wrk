@@ -79,6 +79,18 @@ type ServiceConfig struct {
 	// (4 MiB) when zero. Configurable via vector_index.max_file_size.
 	MaxFileSize int64
 
+	// MaxChunkSize is the chunker's maximum chunk size in characters, mirrored
+	// here so content reconstruction can bound a reconstructed chunk to a
+	// chunk-sized payload (see contentResolver). Defaults to DefaultMaxChunkSize
+	// (1500) when zero. Configurable via vector_index.max_chunk_size.
+	MaxChunkSize int
+
+	// MaxChunksPerFile is the indexer's per-file chunk cap, mirrored here so the
+	// content-less migration's legacy-entry probe scans every index a file
+	// could have committed. Defaults to DefaultMaxChunksPerFile (4000) when
+	// zero. Configurable via vector_index.max_chunks_per_file.
+	MaxChunksPerFile int
+
 	// EmbeddingBatchSize is the fixed row capacity of the embedder's batch
 	// ONNX session (sp4rk embedding.EmbedderConfig.BatchSize), forwarded
 	// from ManagerConfig by the Manager. The embedder itself is constructed
@@ -174,6 +186,16 @@ type projectState struct {
 	// (collection → file_hashes) is in flight for the current branch.
 	fileHashMigrationPending atomic.Bool
 
+	// fileHashMigrationFailed is true when the last sidecar backfill for this
+	// branch failed (the collection enumeration errored), so ps.fileHashes is
+	// an untrusted empty placeholder rather than "nothing trackable". It gates
+	// two decisions: the empty sidecar is NOT persisted on park/eviction (it
+	// would make the next open trust an empty map), and the content-less
+	// migration does NOT write its marker (an empty entry set would certify a
+	// collection whose legacy documents still carry content — see finding
+	// migrateContentless). Cleared at the start of every loadFileHashes.
+	fileHashMigrationFailed atomic.Bool
+
 	// migrationCh is closed when the current branch's sidecar has settled
 	// (loaded, empty, or migrated). WaitFileHashMigration selects on it.
 	// nil before the first SwitchBranch.
@@ -215,10 +237,6 @@ type projectState struct {
 	// contentlessCancel cancels an in-flight migrateContentless goroutine
 	// (on branch switch / project switch / close / rebuild).
 	contentlessCancel context.CancelFunc
-
-	// contentlessPending is true while the background content-less migration
-	// is in flight for the current branch.
-	contentlessPending atomic.Bool
 }
 
 // Service manages chromem-go collections with git-branch awareness,
@@ -280,6 +298,17 @@ type Service struct {
 	// ServiceConfig.MaxFileSize.
 	maxFileSize int64
 
+	// maxChunkSize is the resolved vector_index.max_chunk_size used to bound
+	// reconstructed chunk content (see contentResolver.maxChunkSize). See
+	// ServiceConfig.MaxChunkSize.
+	maxChunkSize int
+
+	// maxChunksPerFile is the resolved vector_index.max_chunks_per_file, the
+	// per-file chunk cap the indexer enforces. The content-less migration's
+	// legacy-entry probe uses it as its scan bound so no committed chunk is
+	// missed (see migrateContentless). See ServiceConfig.MaxChunksPerFile.
+	maxChunksPerFile int
+
 	// embeddingBatchSize is the resolved batch row capacity for the
 	// batched-embedding path. See ServiceConfig.EmbeddingBatchSize.
 	embeddingBatchSize int
@@ -334,6 +363,16 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		s.maxFileSize = cfg.MaxFileSize
 	} else {
 		s.maxFileSize = DefaultMaxIndexableFileSize
+	}
+	if cfg.MaxChunkSize > 0 {
+		s.maxChunkSize = cfg.MaxChunkSize
+	} else {
+		s.maxChunkSize = DefaultMaxChunkSize
+	}
+	if cfg.MaxChunksPerFile > 0 {
+		s.maxChunksPerFile = cfg.MaxChunksPerFile
+	} else {
+		s.maxChunksPerFile = DefaultMaxChunksPerFile
 	}
 	if cfg.EmbeddingBatchSize > 0 {
 		s.embeddingBatchSize = cfg.EmbeddingBatchSize
@@ -392,16 +431,21 @@ func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...
 			// (see parkCurrentLocked); re-settle it — a disk read, or a fresh
 			// background migration when the collection is non-empty and no
 			// sidecar exists — so ValidateCollection sees a complete hash map
-			// rather than re-embedding every file.
+			// rather than re-embedding every file. loadFileHashes settles the
+			// content-less migration itself (deferred
+			// maybeMigrateContentlessLocked), so the explicit call below is
+			// skipped on this path to avoid cancelling and restarting the
+			// migration it just started.
 			ps.sidecarReloadOnRestore = false
 			s.loadFileHashes()
+		} else {
+			// A content-less migration cancelled by the park must replay: the
+			// marker is only written on full completion, and SwitchBranch on the
+			// restored state early-returns (same branch, live collection), so
+			// this is the re-entry point. No-op when the marker already exists
+			// or the collection is empty.
+			s.maybeMigrateContentlessLocked()
 		}
-		// A content-less migration cancelled by the park must replay: the
-		// marker is only written on full completion, and SwitchBranch on the
-		// restored state early-returns (same branch, live collection), so
-		// this is the re-entry point. No-op when the marker already exists
-		// or the collection is empty.
-		s.maybeMigrateContentlessLocked()
 		s.logger.Info("project restored from park", "projectID", projectID)
 		return nil
 	}
@@ -489,7 +533,11 @@ func (s *Service) parkCurrentLocked() {
 	// next restore re-settles the sidecar (loadFileHashes) instead of trusting
 	// the placeholder.
 	if ps.fileHashes != nil && ps.currentBranch != "" {
-		if ps.fileHashMigrationPending.Load() {
+		if ps.fileHashMigrationPending.Load() || ps.fileHashMigrationFailed.Load() {
+			// Either a migration is still in flight, or the last one failed and
+			// ps.fileHashes is an untrusted empty placeholder: never persist it
+			// (an empty sidecar on disk would be trusted by the next open and
+			// re-embed every file); re-settle on restore instead.
 			ps.sidecarReloadOnRestore = true
 		} else if err := ps.saveFileHashes(); err != nil {
 			s.logger.Warn("failed to persist file-hash sidecar on project switch", "error", err)
@@ -612,7 +660,8 @@ func (s *Service) evictLocked(ps *projectState) {
 	if ps == nil {
 		return
 	}
-	if ps.fileHashes != nil && ps.currentBranch != "" && !ps.fileHashMigrationPending.Load() {
+	if ps.fileHashes != nil && ps.currentBranch != "" &&
+		!ps.fileHashMigrationPending.Load() && !ps.fileHashMigrationFailed.Load() {
 		if err := ps.saveFileHashes(); err != nil {
 			s.logger.Warn("failed to persist file-hash sidecar on park eviction", "error", err)
 		}
@@ -678,14 +727,15 @@ func (s *Service) browseWithFilter(ctx context.Context, topK int, fileFilter str
 	}
 
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	if s.current.collection == nil {
+		s.mu.RUnlock()
 		return nil, errors.New("no collection available; call SetProject and SwitchBranch first")
 	}
 
 	count := s.current.collection.Count()
 	if count == 0 {
+		s.mu.RUnlock()
 		return []SearchResult{}, nil
 	}
 	if topK > count {
@@ -706,6 +756,7 @@ func (s *Service) browseWithFilter(ctx context.Context, topK int, fileFilter str
 	} else {
 		results, err = s.current.collection.Query(ctx, " ", topK, nil, nil)
 	}
+	s.mu.RUnlock()
 	if err != nil {
 		return nil, fmt.Errorf("browsing collection: %w", err)
 	}
@@ -724,9 +775,12 @@ func (s *Service) browseWithFilter(ctx context.Context, topK int, fileFilter str
 	}
 
 	// Committed documents store no chunk text; fill Content from the source
-	// files for the (already topK-bounded) returned set. One resolver per
-	// call, so each distinct file is read at most once.
-	hydrateSearchContent(out, newContentResolver(s.maxFileSize))
+	// files for the (already topK-bounded) returned set. Hydration reads source
+	// files, so it runs AFTER the read lock is released — holding it would
+	// block a concurrent indexing writer for the duration of the reads. One
+	// resolver per call, so each distinct file is read at most once within the
+	// cache budget.
+	hydrateSearchContent(out, newContentResolver(s.maxFileSize, s.maxChunkSize))
 
 	return out, nil
 }

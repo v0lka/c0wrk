@@ -331,6 +331,31 @@ func TestFileHashEntry_OldParserTreatsFiveFieldAsLegacy(t *testing.T) {
 	if _, _, _, ok := parseFileHashEntry(entry); !ok {
 		t.Error("new parser rejected 4-field entry")
 	}
+
+	// Tie the frozen copy to production so it cannot drift into a tautology:
+	// on every 3-/4-field input the two parsers must AGREE, and on every
+	// 5-field input they must DISAGREE (legacy rejects, current accepts). A
+	// change to either grammar that broke the downgrade story fails here.
+	for _, in := range []string{
+		"abc123",
+		"abc123|42|1700000000000000000",
+		"abc123|42|1700000000000000000|d42c1bb0ded8",
+	} {
+		lh, ls, lm, lok := legacyParseFileHashEntry(in)
+		nh, ns, nm, nok := parseFileHashEntry(in)
+		if lok != nok || lh != nh || ls != ns || lm != nm {
+			t.Errorf("parsers disagree on %q: legacy=(%q,%d,%d,%v) current=(%q,%d,%d,%v)",
+				in, lh, ls, lm, lok, nh, ns, nm, nok)
+		}
+	}
+	for _, in := range []string{fiveField, contiguous} {
+		if _, _, _, lok := legacyParseFileHashEntry(in); lok {
+			t.Errorf("legacy parser accepted 5-field %q; want rejection", in)
+		}
+		if _, _, _, nok := parseFileHashEntry(in); !nok {
+			t.Errorf("current parser rejected 5-field %q; want acceptance", in)
+		}
+	}
 }
 
 // TestChunkSetCodec covers the 5th sidecar field's codec: contiguous sets

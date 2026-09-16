@@ -2,7 +2,6 @@ package desktop
 
 import (
 	"log/slog"
-	"os"
 	"runtime/debug"
 )
 
@@ -19,11 +18,12 @@ import (
 //     GC just runs more often) — applied once at startup, after config load
 //     and before background indexing starts (see startup.go).
 //  2. debug.FreeOSMemory — forced GC + scavenge after the transient spikes
-//     (full indexing passes; see core/vectorindex/manager.go's
-//     freeOSMemoryFn seam).
+//     (full indexing passes, park evictions, the content-less migration; see
+//     core/vectorindex's single freeOSMemory seam).
 
 const (
-	// memLimitAutoFraction is the share of physical RAM used by AUTO mode.
+	// memLimitAutoFractionDenom is the denominator of the share of physical
+	// RAM used by AUTO mode: a value of 2 means 1/2 = 50% of RAM.
 	memLimitAutoFractionDenom = 2 // 1/2 = 50%
 
 	// memLimitAutoMinBytes / memLimitAutoMaxBytes clamp the AUTO value:
@@ -38,7 +38,7 @@ const (
 const (
 	memLimitSourceConfig = "config" // explicit runtime.memory_soft_limit_mb (>0)
 	memLimitSourceAuto   = "auto"   // derived from physical RAM
-	memLimitSourceEnv    = "env"    // deferred to an existing GOMEMLIMIT
+	memLimitSourceEnv    = "env"    // deferred to a GOMEMLIMIT seen at process start
 	memLimitSourceOff    = "off"    // disabled via runtime.memory_soft_limit_mb: -1
 )
 
@@ -73,10 +73,15 @@ func computeAutoMemoryLimit(totalRAMBytes int64) int64 {
 //  2. An explicit positive config value (>0 MiB) wins — app-specific config
 //     is the most specific expression of intent for THIS app, so it also
 //     overrides a GOMEMLIMIT env var (logged as an override).
-//  3. AUTO mode (0/unset): an existing GOMEMLIMIT env var takes priority —
-//     the Go runtime already applied it at process start, and overriding an
-//     operator-level env setting from inside the app would silently discard
-//     it. Without the env var, the limit is derived from physical RAM.
+//  3. AUTO mode (0/unset): a GOMEMLIMIT env var that the Go runtime actually
+//     saw at PROCESS START takes priority — the runtime already applied it,
+//     and overriding an operator-level env setting from inside the app would
+//     silently discard it. Only a value present before the login shell is
+//     sourced counts: a GOMEMLIMIT injected later by shell-env loading was
+//     never read by the runtime, so it does NOT defer here — that case falls
+//     through to the RAM-derived limit. Callers pass that captured value as
+//     gomemlimitEnv (see setupMemorySoftLimit). Without a runtime-seen env
+//     var, the limit is derived from physical RAM.
 func resolveMemoryLimit(cfgSoftLimitMB int, totalRAMBytes int64, gomemlimitEnv string) memoryLimitDecision {
 	switch {
 	case cfgSoftLimitMB < 0: // -1 = off sentinel (validation rejects < -1)
@@ -100,8 +105,9 @@ func resolveMemoryLimit(cfgSoftLimitMB int, totalRAMBytes int64, gomemlimitEnv s
 
 // applyMemorySoftLimit applies the decision through the injectable setter
 // (runtime/debug.SetMemoryLimit in production; a recorder in tests) and logs
-// what was decided. The decision is never silent: every branch logs, so the
-// effective GC target is always visible in the startup/session log.
+// what was decided. The decision is never silent: every branch logs
+// source=auto|config|env|off and total_ram_mib, so the effective GC target is
+// always machine-parseable in the startup/session log regardless of source.
 func applyMemorySoftLimit(
 	decision memoryLimitDecision,
 	totalRAMBytes int64,
@@ -110,40 +116,62 @@ func applyMemorySoftLimit(
 	set func(int64) int64,
 	log *slog.Logger,
 ) {
+	// total_ram_mib is reported on every branch; an unknown total is rendered
+	// as the literal "unknown" (mirroring the AUTO branch's historical shape).
+	totalRAMAttr := any("unknown")
+	if ramKnown {
+		totalRAMAttr = totalRAMBytes >> 20
+	}
 	switch decision.Source {
 	case memLimitSourceOff:
-		log.Info("memory soft limit disabled by config (runtime.memory_soft_limit_mb: -1)")
+		attrs := []any{"source", decision.Source, "total_ram_mib", totalRAMAttr}
+		msg := "memory soft limit disabled by config (runtime.memory_soft_limit_mb: -1)"
+		if gomemlimitEnv != "" {
+			// A GOMEMLIMIT the runtime applied at process start cannot be
+			// unset from inside the process: -1 disables only the app's own
+			// limit, not that one.
+			msg += "; the app's own limit is disabled, but a GOMEMLIMIT the Go runtime applied at process start stays in force"
+			attrs = append(attrs, "gomemlimit", gomemlimitEnv)
+		}
+		log.Info(msg, attrs...)
 	case memLimitSourceEnv:
-		log.Info("GOMEMLIMIT environment variable set; keeping it and skipping the auto memory soft limit",
-			"gomemlimit", gomemlimitEnv)
+		log.Info("GOMEMLIMIT was present at process start; keeping it and skipping the auto memory soft limit",
+			"source", decision.Source,
+			"gomemlimit", gomemlimitEnv,
+			"total_ram_mib", totalRAMAttr,
+		)
 	case memLimitSourceConfig:
 		if gomemlimitEnv != "" {
-			// Explicit config beats the env var for this app; say so.
+			// Explicit config beats the runtime-seen env var for this app; say so.
 			log.Info("GOMEMLIMIT environment variable is overridden by an explicit runtime.memory_soft_limit_mb",
 				"gomemlimit", gomemlimitEnv)
 		}
-		log.Info("memory soft limit set", "limit_mib", decision.Limit>>20, "source", decision.Source)
+		log.Info("memory soft limit set",
+			"limit_mib", decision.Limit>>20,
+			"source", decision.Source,
+			"total_ram_mib", totalRAMAttr,
+		)
 		set(decision.Limit)
 	default: // auto
-		attrs := []any{"limit_mib", decision.Limit >> 20, "source", decision.Source}
-		if ramKnown {
-			attrs = append(attrs, "total_ram_mib", totalRAMBytes>>20)
-		} else {
-			attrs = append(attrs, "total_ram_mib", "unknown")
-		}
-		log.Info("memory soft limit set", attrs...)
+		log.Info("memory soft limit set",
+			"limit_mib", decision.Limit>>20,
+			"source", decision.Source,
+			"total_ram_mib", totalRAMAttr,
+		)
 		set(decision.Limit)
 	}
 }
 
 // setupMemorySoftLimit is the startup entry point: resolve the decision from
-// the loaded config, the machine's physical RAM, and the environment, then
-// apply it. Called from Startup right after Phase 2 (config load + logger
-// re-init) and strictly before background indexing begins, so the limit
-// governs the very first indexing pass.
-func setupMemorySoftLimit(cfgSoftLimitMB int, log *slog.Logger) {
+// the loaded config, the machine's physical RAM, and runtimeSeenGomemlimit —
+// the GOMEMLIMIT value the Go runtime actually saw at process start, captured
+// in Startup BEFORE the login shell is sourced (a shell-exported GOMEMLIMIT
+// the runtime never read must not spuriously defer the decision) — then apply
+// it. Called from Startup right after Phase 2 (config load + logger re-init)
+// and strictly before background indexing begins, so the limit governs the
+// very first indexing pass.
+func setupMemorySoftLimit(cfgSoftLimitMB int, runtimeSeenGomemlimit string, log *slog.Logger) {
 	totalRAM, ramKnown := physicalMemoryBytes()
-	gomemlimitEnv := os.Getenv("GOMEMLIMIT")
-	decision := resolveMemoryLimit(cfgSoftLimitMB, totalRAM, gomemlimitEnv)
-	applyMemorySoftLimit(decision, totalRAM, ramKnown, gomemlimitEnv, debug.SetMemoryLimit, log)
+	decision := resolveMemoryLimit(cfgSoftLimitMB, totalRAM, runtimeSeenGomemlimit)
+	applyMemorySoftLimit(decision, totalRAM, ramKnown, runtimeSeenGomemlimit, debug.SetMemoryLimit, log)
 }

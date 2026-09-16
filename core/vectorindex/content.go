@@ -37,15 +37,39 @@ func contentUnavailablePlaceholder(filePath string) string {
 //     bound the indexer applies before indexing a file at all).
 //   - Per-call cache: one resolver instance serves one logical operation
 //     (one search call, one lexical rebuild pass); within that lifetime each
-//     path is read at most once, and a known-unreadable path is never
-//     re-read.
+//     path is read at most once while the cache budget lasts, and a
+//     known-unreadable path is never re-read. The retained byte total is
+//     capped (contentResolverCacheBudgetBytes), so a large candidate fanout
+//     cannot pin unbounded memory.
 //   - Lazy: nothing is read until content is actually requested.
 //
 // A contentResolver is NOT safe for concurrent use; each search call
 // creates its own instance (the parallel vector/lexical queries in hybrid
 // search complete before any filtering or hydration touches the resolver).
+// contentResolverCacheBudgetBytes bounds the total source bytes a single
+// resolver retains (see contentResolver.cachedBytes). A must-match filter
+// reconstructs content for every pre-fusion candidate, and after the
+// content-less migration every candidate has empty stored content, so the
+// per-call cache could otherwise retain the whole candidate fanout (up to
+// hybridFanout topK files, each ≤ max_file_size). Past the budget the resolver
+// stops caching (a later request for a path re-reads it) rather than growing
+// without bound; correctness is unaffected.
+const contentResolverCacheBudgetBytes int64 = 8 << 20
+
+// contentReconstructionTruncationMarker terminates a reconstructed chunk that
+// exceeded the reconstruction bound (see contentResolver.maxChunkSize).
+const contentReconstructionTruncationMarker = "…"
+
 type contentResolver struct {
 	maxFileSize int64
+	// maxChunkSize is the configured vector_index.max_chunk_size. A chunk's
+	// stored text never exceeds it, so a reconstruction longer than a small
+	// multiple of it is the line-boundary overshoot of a fixed-size split on
+	// a very long line (a minified asset / one-line JSON, where every chunk's
+	// start_line == end_line == 1): the whole line, up to max_file_size. The
+	// reconstruction is capped at 2× maxChunkSize so a hit stays proportional
+	// to a chunk. 0 disables the cap (tests with hand-built docs).
+	maxChunkSize int
 	// lines caches path → the file's content split on "\n" (line N is
 	// lines[N-1]; a trailing newline yields a final "" element that line
 	// ranges never select). A present-but-nil entry never occurs: paths
@@ -55,17 +79,26 @@ type contentResolver struct {
 	// permission, directory, …). They resolve to the placeholder for the
 	// resolver's whole lifetime.
 	failed map[string]struct{}
+	// cachedBytes is the running total of source bytes currently retained in
+	// lines; once it reaches cacheBudgetBytes the resolver stops caching.
+	cachedBytes int64
+	// cacheBudgetBytes is the retention cap (contentResolverCacheBudgetBytes
+	// in production).
+	cacheBudgetBytes int64
 }
 
 // newContentResolver creates a resolver for one logical operation. A
-// non-positive maxFileSize disables the read bound (tests with hand-built
-// docs); the production wiring always passes the service's resolved
-// DefaultMaxIndexableFileSize-or-configured bound.
-func newContentResolver(maxFileSize int64) *contentResolver {
+// non-positive maxFileSize disables the read bound and a non-positive
+// maxChunkSize disables the reconstruction cap (both for tests with hand-built
+// docs); the production wiring passes the service's resolved
+// DefaultMaxIndexableFileSize-or-configured bound and its max_chunk_size.
+func newContentResolver(maxFileSize int64, maxChunkSize int) *contentResolver {
 	return &contentResolver{
-		maxFileSize: maxFileSize,
-		lines:       make(map[string][]string),
-		failed:      make(map[string]struct{}),
+		maxFileSize:      maxFileSize,
+		maxChunkSize:     maxChunkSize,
+		lines:            make(map[string][]string),
+		failed:           make(map[string]struct{}),
+		cacheBudgetBytes: contentResolverCacheBudgetBytes,
 	}
 }
 
@@ -104,12 +137,38 @@ func (cr *contentResolver) chunkContentOK(filePath string, startLine, endLine in
 	if startLine > len(lines) {
 		return "", false
 	}
-	return strings.Join(lines[startLine-1:endLine], "\n"), true
+	content := strings.Join(lines[startLine-1:endLine], "\n")
+	// A fixed-size split landing mid-line makes the line range a superset of
+	// the embedded chunk, and for a single-line file (start == end == 1) the
+	// "range" is the whole line — up to max_file_size. Bound the result so a
+	// search hit stays proportional to a chunk (see maxChunkSize).
+	if cr.maxChunkSize > 0 {
+		content = truncateRunes(content, 2*cr.maxChunkSize)
+	}
+	return content, true
+}
+
+// truncateRunes returns s truncated to at most limit runes, appending the
+// reconstruction truncation marker when anything was dropped. It never splits
+// a rune. A non-positive limit is a no-op.
+func truncateRunes(s string, limit int) string {
+	if limit <= 0 {
+		return s
+	}
+	n := 0
+	for i := range s {
+		if n == limit {
+			return s[:i] + contentReconstructionTruncationMarker
+		}
+		n++
+	}
+	return s
 }
 
 // fileLines returns the file's lines, reading (bounded) at most once per
-// path per resolver lifetime. ok is false when the read fails; the failure
-// is cached so repeated hits on the same dead path cost nothing.
+// path per resolver lifetime while the cache budget lasts. ok is false when
+// the read fails; the failure is cached so repeated hits on the same dead
+// path cost nothing.
 func (cr *contentResolver) fileLines(filePath string) ([]string, bool) {
 	if lines, cached := cr.lines[filePath]; cached {
 		return lines, true
@@ -123,7 +182,13 @@ func (cr *contentResolver) fileLines(filePath string) ([]string, bool) {
 		return nil, false
 	}
 	lines := strings.Split(string(data), "\n")
-	cr.lines[filePath] = lines
+	// Retain the read only while the running total stays under the budget;
+	// past it the bytes are used for this request and dropped, so a large
+	// must-match candidate fanout cannot pin hundreds of MB per search.
+	if cr.cachedBytes+int64(len(data)) <= cr.cacheBudgetBytes {
+		cr.lines[filePath] = lines
+		cr.cachedBytes += int64(len(data))
+	}
 	return lines, true
 }
 

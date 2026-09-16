@@ -1460,7 +1460,9 @@ func TestCollectDocumentIDs_SidecarMatchesQueryPath(t *testing.T) {
 
 	t.Run("sidecar path equals query path", func(t *testing.T) {
 		paths := []string{gapped, contiguous}
+		indexer.service.AcquireWriteLock()
 		fastIDs, err := indexer.collectDocumentIDs(context.Background(), paths)
+		indexer.service.ReleaseWriteLock()
 		if err != nil {
 			t.Fatalf("collectDocumentIDs: %v", err)
 		}
@@ -1486,7 +1488,9 @@ func TestCollectDocumentIDs_SidecarMatchesQueryPath(t *testing.T) {
 
 	t.Run("mixed request with set-less entry falls back to query path", func(t *testing.T) {
 		paths := []string{gapped, legacy}
+		indexer.service.AcquireWriteLock()
 		ids, err := indexer.collectDocumentIDs(context.Background(), paths)
+		indexer.service.ReleaseWriteLock()
 		if err != nil {
 			t.Fatalf("collectDocumentIDs: %v", err)
 		}

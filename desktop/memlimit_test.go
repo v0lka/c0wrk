@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+
+	"github.com/v0lka/c0wrk/core/vectorindex"
 )
 
 const gib = int64(1) << 30
@@ -159,6 +161,12 @@ func TestApplyMemorySoftLimit_SetterAndLogging(t *testing.T) {
 		if !strings.Contains(out, "GOMEMLIMIT") {
 			t.Errorf("env deferral must be logged, got: %s", out)
 		}
+		if !strings.Contains(out, "source=env") {
+			t.Errorf("env branch must log a machine-parseable source=, got: %s", out)
+		}
+		if !strings.Contains(out, "total_ram_mib=16384") {
+			t.Errorf("env branch must log total RAM, got: %s", out)
+		}
 	})
 
 	t.Run("off sentinel sets nothing and says so", func(t *testing.T) {
@@ -175,7 +183,52 @@ func TestApplyMemorySoftLimit_SetterAndLogging(t *testing.T) {
 		if !strings.Contains(out, "disabled by config") {
 			t.Errorf("off sentinel must be logged, got: %s", out)
 		}
+		if !strings.Contains(out, "source=off") {
+			t.Errorf("off branch must log a machine-parseable source=, got: %s", out)
+		}
+		if !strings.Contains(out, "total_ram_mib=16384") {
+			t.Errorf("off branch must log total RAM, got: %s", out)
+		}
 	})
+
+	t.Run("off sentinel alongside a runtime-seen GOMEMLIMIT explains it stays in force", func(t *testing.T) {
+		out := captureLogs(func(log *slog.Logger) {
+			applyMemorySoftLimit(
+				memoryLimitDecision{Source: memLimitSourceOff},
+				16*gib, true, "4GiB", func(int64) int64 { return 0 }, log,
+			)
+		})
+		if !strings.Contains(out, "stays in force") {
+			t.Errorf("off+env must explain the runtime GOMEMLIMIT stays in force, got: %s", out)
+		}
+	})
+}
+
+// TestDerefParkBudgetBytes pins the nil→default contract: an unset
+// park_budget_mb (nil pointer) must resolve to the documented 1024 MiB default
+// rather than 0 (which the service reads as "byte budget disabled"), while a
+// non-nil value is scaled MiB→bytes verbatim — preserving the negative -1
+// disable sentinel.
+func TestDerefParkBudgetBytes(t *testing.T) {
+	if got := derefParkBudgetBytes(nil); got != vectorindex.DefaultParkBudgetBytes {
+		t.Errorf("derefParkBudgetBytes(nil) = %d, want %d (the 1024 MiB default)",
+			got, vectorindex.DefaultParkBudgetBytes)
+	}
+	if vectorindex.DefaultParkBudgetBytes != 1024<<20 {
+		t.Errorf("vectorindex.DefaultParkBudgetBytes = %d, want %d (1024 MiB)",
+			vectorindex.DefaultParkBudgetBytes, int64(1024)<<20)
+	}
+
+	explicit := int64(2048)
+	if got := derefParkBudgetBytes(&explicit); got != 2048<<20 {
+		t.Errorf("derefParkBudgetBytes(&2048) = %d, want %d", got, int64(2048)<<20)
+	}
+
+	disabled := int64(-1)
+	if got := derefParkBudgetBytes(&disabled); got != -1<<20 {
+		t.Errorf("derefParkBudgetBytes(&-1) = %d, want %d (the disable sentinel stays negative)",
+			got, int64(-1)<<20)
+	}
 }
 
 // TestPhysicalMemoryBytes_Sanity is a smoke test for the platform probe on

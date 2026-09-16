@@ -2416,8 +2416,10 @@ vector_index:
 
 // TestVectorIndexConfig_ParkBudget_Sentinels pins the pointer-int64 semantics
 // of park_budget_mb through the full Load path (defaults + validation): an
-// explicit negative survives as the "budget disabled" sentinel (park_capacity
-// alone bounds the LRU), while an explicit 0 is rejected as ambiguous —
+// explicit -1 survives as the "budget disabled" sentinel (park_capacity alone
+// bounds the LRU), while an explicit 0 is rejected as ambiguous and any value
+// below -1 (only -1 disables, mirroring memory_soft_limit_mb) or above the
+// 2 PiB ceiling (which would overflow the MiB→bytes shift) is rejected —
 // distinct from an unset key, which resolves to 1024 (covered by
 // TestVectorIndexConfig_TuningKnobs_Defaults).
 func TestVectorIndexConfig_ParkBudget_Sentinels(t *testing.T) {
@@ -2456,6 +2458,40 @@ vector_index:
 	configPath = writeTestConfig(t, ambiguous)
 	if _, err := Load(configPath); err == nil {
 		t.Error("Load() with park_budget_mb: 0 must fail validation (ambiguous), got nil error")
+	}
+
+	// Only -1 disables the byte budget, mirroring memory_soft_limit_mb: a
+	// value below it is a typo, not a sentinel, and must fail fast at load.
+	const belowSentinel = `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+vector_index:
+  park_budget_mb: -2
+`
+	configPath = writeTestConfig(t, belowSentinel)
+	if _, err := Load(configPath); err == nil {
+		t.Error("Load() with park_budget_mb: -2 must fail validation (only -1 disables), got nil error")
+	}
+
+	// A value above the 2 PiB ceiling is rejected so the MiB→bytes shift cannot
+	// overflow to a negative, which the service would read as "budget disabled".
+	const aboveCeiling = `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+vector_index:
+  park_budget_mb: 4294967296
+`
+	configPath = writeTestConfig(t, aboveCeiling)
+	if _, err := Load(configPath); err == nil {
+		t.Error("Load() with park_budget_mb: 4294967296 must fail validation (above the 2 PiB ceiling), got nil error")
 	}
 }
 
@@ -3665,7 +3701,7 @@ llm:
     models:
       - claude-3-haiku
 `,
-			want: DefaultMemorySoftLimitMB,
+			want: 0,
 		},
 		{
 			name: "explicit zero is auto too",
@@ -3720,6 +3756,20 @@ llm:
       - claude-3-haiku
 runtime:
   memory_soft_limit_mb: -10
+`,
+			wantErr: true,
+		},
+		{
+			name: "above the 2 PiB ceiling is rejected",
+			yaml: `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+runtime:
+  memory_soft_limit_mb: 4294967296
 `,
 			wantErr: true,
 		},

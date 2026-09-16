@@ -256,7 +256,7 @@ func (s *Service) hybridSearch(ctx context.Context, opts SearchOptions, wait boo
 	// top-K hydration reconstruct chunk text from the source files (stored
 	// documents carry no content — see strippedForCommit), with a per-call
 	// path cache shared by both retrieval sides.
-	resolver := newContentResolver(s.maxFileSize)
+	resolver := newContentResolver(s.maxFileSize, s.maxChunkSize)
 
 	// Dispatch to the appropriate path.
 	switch effectiveMode {
@@ -628,8 +628,12 @@ func matchFilePathPattern(pattern, filePath string) bool {
 // them the chunk text is reconstructed from the source file via resolver —
 // lazily, only when a must-match token actually needs it. The resolver's
 // per-call path cache keeps multi-token checks over the same chunk at one
-// file read, and a missing/unreadable file yields the placeholder (which
-// contains no user token, so such hits fail the filter rather than match).
+// file read. A file that cannot be reconstructed (missing / unreadable) is
+// treated as a filter MISS — not matched against the diagnostic placeholder
+// text — so must_match excludes deleted files from filtered results (the
+// placeholder embeds the absolute path and the words content/source/file/
+// missing/unreadable; substring-testing it would admit such a file whenever a
+// token happened to be a substring of the path or the diagnostics).
 func passesFilters(r chromem.Result, filePattern string, mustMatch []string, resolver *contentResolver, logger *slog.Logger) bool {
 	if filePattern != "" {
 		fp := r.Metadata["file_path"]
@@ -648,7 +652,14 @@ func passesFilters(r chromem.Result, filePattern string, mustMatch []string, res
 		if content == "" && resolver != nil {
 			startLine, _ := strconv.Atoi(r.Metadata["start_line"])
 			endLine, _ := strconv.Atoi(r.Metadata["end_line"])
-			content = resolver.chunkContent(r.Metadata["file_path"], startLine, endLine)
+			reconstructed, ok := resolver.chunkContentOK(r.Metadata["file_path"], startLine, endLine)
+			if !ok {
+				// The source file is gone or unreadable: there is no text to
+				// match against, so the hit fails the filter rather than
+				// matching the placeholder's own words/path.
+				return false
+			}
+			content = reconstructed
 		}
 		if !strings.Contains(content, tok) {
 			return false

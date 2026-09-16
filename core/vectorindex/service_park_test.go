@@ -512,10 +512,10 @@ func TestService_ParkBudgetEvictsOldest(t *testing.T) {
 	}
 }
 
-// TestService_ParkBudgetNegativeCapacityOnly pins the negative disable
+// TestService_ParkBudgetNegativeDisablesByteBudget pins the negative disable
 // sentinel at the service layer: with ParkBudgetBytes < 0 the byte estimate
 // never evicts anything and the LRU is bounded by park_capacity alone.
-func TestService_ParkBudgetNegativeCapacityOnly(t *testing.T) {
+func TestService_ParkBudgetNegativeDisablesByteBudget(t *testing.T) {
 	sixHundredMiB := int64(600) << 20
 	installParkBudgetEstimator(t, map[string]int64{
 		"A": sixHundredMiB,

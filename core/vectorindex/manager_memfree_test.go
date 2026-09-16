@@ -13,7 +13,7 @@ import (
 )
 
 // newMemFreeManager builds a Manager literal (the established test
-// construction) whose freeOSMemoryFn seam records calls into counter instead
+// construction) whose freeOSMemory seam records calls into counter instead
 // of running the real runtime/debug.FreeOSMemory, so the tests assert WHEN
 // the seam fires without paying a forced GC cycle.
 func newMemFreeManager(t *testing.T, counter *atomic.Int32) (*Manager, *Service) {
@@ -31,14 +31,18 @@ func newMemFreeManager(t *testing.T, counter *atomic.Int32) (*Manager, *Service)
 		}
 	})
 
+	// Swap the single package-level freeOSMemory seam (the same one the park
+	// eviction and content-less migration use) so the tests assert WHEN the
+	// seam fires without paying a forced GC cycle.
+	orig := freeOSMemory
+	freeOSMemory = func() { counter.Add(1) }
+	t.Cleanup(func() { freeOSMemory = orig })
+
 	mgr := &Manager{
 		service: svc,
 		logger:  slog.New(slog.DiscardHandler),
 		chunkFn: defaultChunkFn,
 		hashFn:  embedding.ComputeFileHash,
-		freeOSMemoryFn: func() {
-			counter.Add(1)
-		},
 	}
 	return mgr, svc
 }

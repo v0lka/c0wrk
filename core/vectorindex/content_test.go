@@ -15,7 +15,7 @@ func TestContentResolver_ReconstructsLineRange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cr := newContentResolver(0)
+	cr := newContentResolver(0, 0)
 
 	// Middle range.
 	if got, ok := cr.chunkContentOK(path, 2, 3); !ok || got != "line2\nline3" {
@@ -47,7 +47,7 @@ func TestContentResolver_ReconstructsLineRange(t *testing.T) {
 }
 
 func TestContentResolver_MissingFileYieldsPlaceholder(t *testing.T) {
-	cr := newContentResolver(0)
+	cr := newContentResolver(0, 0)
 	got := cr.chunkContent("/definitely/not/there.go", 1, 2)
 	if got == "" {
 		t.Fatal("placeholder must not be empty")
@@ -75,7 +75,7 @@ func TestContentResolver_BoundedRead(t *testing.T) {
 	// Bound of 25 bytes: 2×11 bytes cover the first two full lines, the
 	// remaining 3 bytes are the partial third line — the resolver sees
 	// exactly the bounded prefix.
-	cr := newContentResolver(25)
+	cr := newContentResolver(25, 0)
 	got := cr.chunkContent(path, 1, 5)
 	if got != "0123456789\n0123456789\n012" {
 		t.Errorf("bounded reconstruction = %q", got)
@@ -85,7 +85,7 @@ func TestContentResolver_BoundedRead(t *testing.T) {
 func TestContentResolver_UnreadableFileYieldsPlaceholder(t *testing.T) {
 	dir := t.TempDir()
 	// A directory: stat-succeeds, read fails.
-	got := newContentResolver(0).chunkContent(dir, 1, 2)
+	got := newContentResolver(0, 0).chunkContent(dir, 1, 2)
 	if !strings.Contains(got, contentUnavailablePrefix) {
 		t.Errorf("directory read should yield placeholder, got %q", got)
 	}
@@ -101,7 +101,7 @@ func TestHydrateSearchContent_KeepsStoredContent(t *testing.T) {
 		{FilePath: path, StartLine: 1, EndLine: 1, Content: "kept"},
 		{FilePath: path, StartLine: 1, EndLine: 1, Content: ""},
 	}
-	hydrateSearchContent(results, newContentResolver(0))
+	hydrateSearchContent(results, newContentResolver(0, 0))
 	if results[0].Content != "kept" {
 		t.Errorf("stored content was overwritten: %q", results[0].Content)
 	}

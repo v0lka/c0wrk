@@ -384,6 +384,20 @@ func (idx *Indexer) HandleBranchSwitch(ctx context.Context, workspacePath, newBr
 	return idx.IndexIncremental(ctx, workspacePath)
 }
 
+// sanitizeChunkContent replaces undecodable UTF-8 byte sequences with U+FFFD
+// so the chunker/tokenizer can process the bytes. It reports whether anything
+// was replaced. Callers MUST hash the RAW bytes first (ValidateCollection
+// re-hashes raw bytes for unchanged-file detection), then pass the content
+// through here before chunking, so every path that derives chunk boundaries
+// (processFile, lexicalDocsForSidecarFile) sees the same bytes and reproduces
+// the same deterministic IDs.
+func sanitizeChunkContent(content []byte) ([]byte, bool) {
+	if utf8.Valid(content) {
+		return content, false
+	}
+	return bytes.ToValidUTF8(content, []byte("\uFFFD")), true
+}
+
 // processFile reads a file, computes its hash, chunks it, and returns
 // parallel chromem and lexical document slices keyed by the same shared
 // document ID.
@@ -457,10 +471,17 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 	// intentionally covers the RAW on-disk bytes: ValidateCollection
 	// re-hashes raw bytes for unchanged-file detection, and hashing anything
 	// else would mark every sanitized file stale on the next pass.
-	if !utf8.Valid(content) {
+	//
+	// This MUST be the same hash-raw-then-sanitize-then-chunk sequence the
+	// sidecar-driven lexical rebuild uses (lexicalDocsForSidecarFile): both
+	// derive the deterministic DocumentID from the chunk boundaries, which
+	// only coincide when both chunk the SANITIZED bytes. Sharing this helper
+	// keeps the two paths from drifting.
+	sanitized, wasSanitized := sanitizeChunkContent(content)
+	if wasSanitized {
 		idx.logger.Debug("sanitizing non-UTF-8 file content before indexing", "path", filePath)
-		content = bytes.ToValidUTF8(content, []byte("�"))
 	}
+	content = sanitized
 
 	chunks, err := idx.chunkFn(filePath, content, idx.maxChunkSize, idx.overlap)
 	if err != nil {
@@ -873,6 +894,26 @@ func (idx *Indexer) indexPrepared(ctx context.Context, paths []string, o indexPi
 	return progress, nil
 }
 
+// lexicalSkipNoFingerprint and lexicalSkipUnknownSet are the skip reasons the
+// incremental pass will NOT repair: a fingerprint-less / set-less entry stays
+// that way (ValidateCollection's stat fast path keeps treating the file as
+// seen), so no later pass writes its lexical documents. Any such skip forces
+// RebuildLexical to also run the collection-enumeration fallback, which
+// recovers those files' chunks from stored metadata.
+const (
+	lexicalSkipNoFingerprint = "entry carries no chunker fingerprint"
+	lexicalSkipUnknownSet    = "committed chunk set unknown"
+)
+
+// lexicalSkipUnrepairable reports whether reason is a skip the incremental
+// pass will not repair (see lexicalSkipNoFingerprint / lexicalSkipUnknownSet).
+// A "content changed", "file unreadable", "chunker failure" or "chunk set
+// exceeds re-chunked count" skip IS repaired when the incremental pass next
+// re-indexes the file, so it does not force the fallback.
+func lexicalSkipUnrepairable(reason string) bool {
+	return reason == lexicalSkipNoFingerprint || reason == lexicalSkipUnknownSet
+}
+
 // RebuildLexical rebuilds the per-branch lexical index from scratch. It is
 // used as a one-time backfill when a project that was indexed before the
 // BM25 upgrade is opened (the manager invokes it when the chromem collection
@@ -940,7 +981,7 @@ func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 	idx.logger.Info("starting sidecar-driven lexical backfill", "files", len(paths), "chunks", count)
 
 	batch := make([]lexical.Doc, 0, addDocumentBatchSize)
-	processed, skipped := 0, 0
+	processed, skipped, unrepairable := 0, 0, 0
 	// flush commits one window of lexical documents under the service write
 	// lock (bleve mutation convention; the read/hash/chunk prep above stays
 	// lock-free so searches are not blocked for the pass duration).
@@ -967,6 +1008,9 @@ func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 		docs, reason := idx.lexicalDocsForSidecarFile(fp, hashes[fp])
 		if reason != "" {
 			skipped++
+			if lexicalSkipUnrepairable(reason) {
+				unrepairable++
+			}
 			idx.logger.Debug("lexical rebuild skipped file", "path", fp, "reason", reason)
 		} else {
 			batch = append(batch, docs...)
@@ -983,16 +1027,19 @@ func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 		return err
 	}
 
-	if processed == 0 {
-		// Every entry was ineligible — the expected shape right after a
-		// sidecar backfill from legacy documents (entries carry no chunker
-		// fingerprint, so equivalence with the stored chunks cannot be
-		// certified). Fall back to the collection enumeration, which recovers
-		// chunk boundaries from stored metadata; this transitional net keeps
-		// pre-upgrade projects from ending up with a permanently empty
-		// lexical index.
-		idx.logger.Info("lexical rebuild: no sidecar-eligible files, using collection enumeration",
-			"sidecar_files", len(paths), "skipped", skipped)
+	if processed == 0 || unrepairable > 0 {
+		// Every entry was ineligible, OR at least one entry was skipped for a
+		// reason the incremental pass will NOT repair (a fingerprint-less /
+		// set-less legacy row — the mixed-sidecar case: some entries carry the
+		// active fingerprint, others were backfilled without one). The
+		// incremental pass leaves such files alone (ValidateCollection's stat
+		// fast path still treats them as seen), so their lexical documents
+		// would never be written. Fall back to the collection enumeration,
+		// which recovers chunk boundaries from stored metadata; it re-upserts
+		// the sidecar-eligible files too (same deterministic IDs, idempotent),
+		// so every stored chunk gets a lexical entry in one pass.
+		idx.logger.Info("lexical rebuild: sidecar left files without a usable fingerprint/set; using collection enumeration",
+			"sidecar_files", len(paths), "skipped", skipped, "unrepairable", unrepairable)
 		return idx.rebuildLexicalFromCollection(ctx, lex, col, count)
 	}
 	if skipped > 0 {
@@ -1026,14 +1073,14 @@ func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 func (idx *Indexer) lexicalDocsForSidecarFile(filePath, entry string) (docs []lexical.Doc, reason string) {
 	entryFP := fileHashEntryChunkerFP(entry)
 	if entryFP == "" {
-		return nil, "entry carries no chunker fingerprint"
+		return nil, lexicalSkipNoFingerprint
 	}
 	if entryFP != idx.service.chunkerFingerprint {
 		return nil, "chunker fingerprint mismatch (file was chunked under a different configuration)"
 	}
 	set, ok := fileHashEntryChunkSet(entry)
 	if !ok {
-		return nil, "committed chunk set unknown"
+		return nil, lexicalSkipUnknownSet
 	}
 
 	content, err := readBounded(filePath, idx.maxFileSize)
@@ -1043,6 +1090,12 @@ func (idx *Indexer) lexicalDocsForSidecarFile(filePath, entry string) (docs []le
 	if hash := computeHash(content); hash != fileHashEntryHash(entry) {
 		return nil, "content changed since indexing"
 	}
+
+	// Sanitize exactly as processFile did before chunking, or the re-chunk
+	// would split on different rune/byte positions for a non-UTF-8 file and
+	// emit text for a shifted span (breaking the "same deterministic IDs"
+	// invariant). See sanitizeChunkContent.
+	content, _ = sanitizeChunkContent(content)
 
 	chunks, err := idx.chunkFn(filePath, content, idx.maxChunkSize, idx.overlap)
 	if err != nil {
@@ -1085,12 +1138,15 @@ func (idx *Indexer) lexicalDocsForSidecarFile(filePath, entry string) (docs []le
 // chunker configuration is unknown — at the cost of materializing the whole
 // collection (embedding vectors included) in one Query.
 //
-// The caller must not hold s.mu; this method acquires the write lock
-// internally to prevent concurrent mutation of the lexical index.
+// Concurrency: the enumeration runs under a SHORT read lock (so a concurrent
+// park/close cannot free the collection mid-Query), and the materialized
+// results are then reconstructed and upserted WITHOUT the lock, each bleve
+// upsert window taking the write lock only around the lex.Upsert call. This
+// mirrors the v2 sidecar path and keeps searches from being blocked for the
+// whole pass (which now also includes per-file disk reads).
+//
+// The caller must not hold s.mu.
 func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexical.Index, col *chromem.Collection, count int) error {
-	idx.service.AcquireWriteLock()
-	defer idx.service.ReleaseWriteLock()
-
 	idx.onProgress(PhaseLexical, IndexStateIndexing, 0, count, "")
 	idx.logger.Info("starting lexical backfill (collection enumeration)", "chunks", count)
 
@@ -1098,6 +1154,9 @@ func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexica
 	// ranked by similarity (the ranking is irrelevant here — we only need
 	// to enumerate every document for the lexical backfill). Prefer the
 	// embedding-free unit-vector enumeration when the dimension is known.
+	// Held under a short read lock so a concurrent park/close cannot free the
+	// collection mid-Query; released before any reconstruction or upsert.
+	idx.service.mu.RLock()
 	var results []chromem.Result
 	var err error
 	if unitVec := idx.service.unitQueryVector(); unitVec != nil {
@@ -1105,8 +1164,21 @@ func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexica
 	} else {
 		results, err = col.Query(ctx, " ", count, nil, nil)
 	}
+	idx.service.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("enumerating collection for lexical rebuild: %w", err)
+	}
+
+	// upsertWindow commits one bleve window under the service write lock (the
+	// bleve mutation convention); the reconstruction around it stays lock-free
+	// so searches are not blocked for the pass duration.
+	upsertWindow := func(window []lexical.Doc) error {
+		started := time.Now()
+		idx.service.AcquireWriteLock()
+		upErr := lex.Upsert(ctx, window)
+		idx.service.ReleaseWriteLock()
+		idx.telemetry.observe(StageBleveUpsert, len(window), time.Since(started))
+		return upErr
 	}
 
 	// Documents committed with a pre-populated embedding store no content
@@ -1117,7 +1189,7 @@ func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexica
 	// the placeholder marker — bleve entries with placeholder text would
 	// surface as bogus lexical hits; the deletion reconciliation removes
 	// such documents on the next incremental pass anyway.
-	resolver := newContentResolver(idx.maxFileSize)
+	resolver := newContentResolver(idx.maxFileSize, idx.maxChunkSize)
 	skippedUnreadable := 0
 
 	batch := make([]lexical.Doc, 0, addDocumentBatchSize)
@@ -1144,7 +1216,7 @@ func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexica
 			Content:  content,
 		})
 		if len(batch) >= addDocumentBatchSize {
-			if upErr := lex.Upsert(ctx, batch); upErr != nil {
+			if upErr := upsertWindow(batch); upErr != nil {
 				return fmt.Errorf("lexical upsert batch: %w", upErr)
 			}
 			batch = batch[:0]
@@ -1153,7 +1225,7 @@ func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexica
 		idx.onProgress(PhaseLexical, IndexStateIndexing, processed, count, r.Metadata["file_path"])
 	}
 	if len(batch) > 0 {
-		if upErr := lex.Upsert(ctx, batch); upErr != nil {
+		if upErr := upsertWindow(batch); upErr != nil {
 			return fmt.Errorf("lexical final upsert: %w", upErr)
 		}
 	}
@@ -1198,8 +1270,10 @@ func (idx *Indexer) collectDocumentIDs(ctx context.Context, filePaths []string) 
 
 // collectDocumentIDsViaQuery is the Query-based enumeration collectDocumentIDs
 // falls back to when a requested file's sidecar entry lacks its committed
-// chunk-index set: one broad space-query over the whole collection, filtered
-// to the requested file paths. It embeds the query text (one inference).
+// chunk-index set: one broad enumeration over the whole collection, filtered
+// to the requested file paths. Like every sibling enumeration site it uses the
+// embedding-free unit-vector query (QueryEmbedding) when the dimension is
+// known, so enumeration costs no ONNX inference.
 func (idx *Indexer) collectDocumentIDsViaQuery(ctx context.Context, filePaths []string) ([]string, error) {
 	col := idx.service.GetCollection()
 	if col == nil {
@@ -1211,7 +1285,13 @@ func (idx *Indexer) collectDocumentIDsViaQuery(ctx context.Context, filePaths []
 		return nil, nil
 	}
 
-	results, err := col.Query(ctx, " ", count, nil, nil)
+	var results []chromem.Result
+	var err error
+	if unitVec := idx.service.unitQueryVector(); unitVec != nil {
+		results, err = col.QueryEmbedding(ctx, unitVec, count, nil, nil)
+	} else {
+		results, err = col.Query(ctx, " ", count, nil, nil)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("querying collection for document IDs: %w", err)
 	}

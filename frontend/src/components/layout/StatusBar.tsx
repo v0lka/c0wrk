@@ -85,8 +85,10 @@ export function StatusBar() {
       )}
 
       {/* Live process memory (RSS) — last block, always visible including
-          No Project mode (memory usage is process-wide, not per-project) */}
-      <Sep />
+          No Project mode (memory usage is process-wide, not per-project).
+          The component owns its leading separator and returns null (separator
+          included) until the first sample arrives, so a hidden indicator never
+          leaves a stray separator at the right edge. */}
       <ProcessMemoryStatus />
     </div>
   );

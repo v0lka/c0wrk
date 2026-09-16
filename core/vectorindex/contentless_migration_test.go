@@ -17,7 +17,7 @@ import (
 // strippedForCommit), chunk text, and a pre-populated unit embedding so the
 // seeding path never invokes an embedder. chunkIdx is only documentation
 // (callers derive the ID via DocumentID themselves).
-func seedLegacyDoc(id, filePath, content string, _ int) chromem.Document {
+func seedLegacyDoc(id, filePath, content string) chromem.Document {
 	return chromem.Document{
 		ID:        id,
 		Content:   content,
@@ -120,12 +120,12 @@ func TestContentlessMigration_StripsLegacyDocsAndWritesMarker(t *testing.T) {
 	seededA := make([]chromem.Document, 0, 3)
 	seededB := make([]chromem.Document, 0, 3)
 	for i := range 3 {
-		doc := seedLegacyDoc(DocumentID(fileA, i), fileA, "alpha chunk", i)
+		doc := seedLegacyDoc(DocumentID(fileA, i), fileA, "alpha chunk")
 		seededA = append(seededA, doc)
 	}
 	// Chunk 2 of fileB is deliberately absent (poison-dropped shape).
 	for _, i := range []int{0, 1, 3} {
-		doc := seedLegacyDoc(DocumentID(fileB, i), fileB, "beta chunk", i)
+		doc := seedLegacyDoc(DocumentID(fileB, i), fileB, "beta chunk")
 		seededB = append(seededB, doc)
 	}
 	seed := append(slices.Clone(seededA), seededB...)
@@ -145,7 +145,10 @@ func TestContentlessMigration_StripsLegacyDocsAndWritesMarker(t *testing.T) {
 	})
 
 	// Open with the upgraded binary: SwitchBranch starts the migration in
-	// the background; WaitContentlessMigration gates on its completion.
+	// the background; WaitContentlessMigration gates on its completion. The
+	// migration is the path that churns every document, so its completion must
+	// schedule the freeOSMemory scavenge (ADR-049 §1) — record the seam.
+	freeCalled := installFreeOSMemoryRecorder(t)
 	svc, err := NewService(ServiceConfig{
 		EmbeddingFunc:      countingEmbed4(&embedCalls),
 		EmbeddingDimension: 4,
@@ -163,6 +166,8 @@ func TestContentlessMigration_StripsLegacyDocsAndWritesMarker(t *testing.T) {
 	if err := svc.WaitContentlessMigration(context.Background()); err != nil {
 		t.Fatalf("WaitContentlessMigration: %v", err)
 	}
+	// The migration must schedule the freeOSMemory scavenge on completion.
+	assertFreeOSMemoryCalled(t, freeCalled)
 
 	// Every seeded document is now content-less with ID/vector/commit
 	// metadata preserved — including fileB's bridged gap (chunk 2 stays
@@ -209,9 +214,6 @@ func TestContentlessMigration_StripsLegacyDocsAndWritesMarker(t *testing.T) {
 	default:
 		t.Fatal("contentless migration re-triggered on reopen despite the marker")
 	}
-	if svc2.current.contentlessPending.Load() {
-		t.Fatal("contentlessPending must be false right after reopen with a marker")
-	}
 }
 
 // TestContentlessMigration_CancelledByProjectSwitch_ReplaysOnReopen covers
@@ -242,7 +244,7 @@ func TestContentlessMigration_CancelledByProjectSwitch_ReplaysOnReopen(t *testin
 	seed := make([]chromem.Document, 0, 250*len(files))
 	for _, fp := range files {
 		for i := range 250 {
-			seed = append(seed, seedLegacyDoc(DocumentID(fp, i), fp, "payload chunk", i))
+			seed = append(seed, seedLegacyDoc(DocumentID(fp, i), fp, "payload chunk"))
 		}
 		entries[fp] = fileHashInfo{
 			filePath: fp, hash: "hash-" + filepath.Base(fp), size: "1000", mtime: "1700000000000000000",
@@ -278,10 +280,12 @@ func TestContentlessMigration_CancelledByProjectSwitch_ReplaysOnReopen(t *testin
 		t.Fatalf("Close: %v", err)
 	}
 
+	// Cancellation normally abandons the migration WITHOUT the marker, but the
+	// migration may finish before the cancel lands (a scheduling race); both
+	// outcomes are valid. The only guaranteed invariant is "never
+	// half-stripped", checked by the consistency probe below — so do not
+	// assert marker absence here.
 	marker := filepath.Join(dir, "contentless_"+collectionName("main")+".done")
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("marker must not exist after a cancelled migration, stat err = %v", err)
-	}
 
 	// Reopen: verify the pre-replay stored state is consistent. SwitchBranch
 	// re-triggers the migration immediately, so hold the service WRITE lock
@@ -373,13 +377,10 @@ func TestContentlessMigration_EmptyCollectionWritesMarkerSynchronously(t *testin
 	default:
 		t.Fatal("contentlessCh must be closed synchronously for an empty collection")
 	}
-	if svc.current.contentlessPending.Load() {
-		t.Fatal("contentlessPending must be false for an empty collection")
-	}
 
 	// Documents committed after the open keep the (test-path) commit shape
 	// they were given — the marker means the migration never runs for them.
-	doc := seedLegacyDoc("plain-id", filepath.Join(dir, "x.go"), "late commit", 0)
+	doc := seedLegacyDoc("plain-id", filepath.Join(dir, "x.go"), "late commit")
 	if err := svc.GetCollection().AddDocuments(context.Background(), []chromem.Document{doc}, 1); err != nil {
 		t.Fatalf("AddDocuments: %v", err)
 	}

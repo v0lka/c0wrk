@@ -347,6 +347,25 @@ func TestSearch_MissingFileYieldsPlaceholder(t *testing.T) {
 	})
 
 	t.Run("must-match excludes the deleted file", func(t *testing.T) {
+		// Positive control: an unfiltered vector search must include the
+		// deleted file, otherwise the exclusion assertions below are vacuous
+		// (the result set could be empty for unrelated reasons).
+		unfiltered, err := svc.HybridSearch(context.Background(), SearchOptions{Query: "Add", TopK: 5, Mode: ModeVector})
+		if err != nil {
+			t.Fatalf("unfiltered vector search over deleted file: %v", err)
+		}
+		var candidateSeen bool
+		for _, r := range unfiltered {
+			if r.FilePath == removed {
+				candidateSeen = true
+			}
+		}
+		if !candidateSeen {
+			t.Fatalf("deleted file %s was not a candidate; the exclusion assertions would be vacuous", removed)
+		}
+
+		// A token present in the deleted file's real content (absent from the
+		// surviving files) is filtered out.
 		results, err := svc.HybridSearch(context.Background(), SearchOptions{
 			Query:     "Add",
 			TopK:      5,
@@ -359,6 +378,29 @@ func TestSearch_MissingFileYieldsPlaceholder(t *testing.T) {
 		for _, r := range results {
 			if r.FilePath == removed {
 				t.Errorf("must-match admitted the deleted file %s via its placeholder", removed)
+			}
+		}
+
+		// A token that IS a substring of the placeholder diagnostic must also
+		// exclude the deleted file: must-match treats an unreconstructable file
+		// as a filter MISS rather than matching the placeholder's own words.
+		// (Regression pin: substring-testing the placeholder admitted the file.)
+		placeholderToken := "unavailable"
+		if !strings.Contains(contentUnavailablePlaceholder(removed), placeholderToken) {
+			t.Fatalf("test setup: placeholder %q does not contain %q", contentUnavailablePlaceholder(removed), placeholderToken)
+		}
+		substr, err := svc.HybridSearch(context.Background(), SearchOptions{
+			Query:     "Add",
+			TopK:      5,
+			Mode:      ModeVector,
+			MustMatch: []string{placeholderToken},
+		})
+		if err != nil {
+			t.Fatalf("placeholder-substring must-match search: %v", err)
+		}
+		for _, r := range substr {
+			if r.FilePath == removed {
+				t.Errorf("must-match admitted the deleted file %s because a token matched its placeholder text", removed)
 			}
 		}
 	})

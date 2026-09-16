@@ -213,6 +213,17 @@ func (a *App) Startup(ctx context.Context) {
 	// ══════════════════════════════════════════════════════════════════
 
 	startTime := time.Now()
+
+	// Capture GOMEMLIMIT exactly as the Go runtime saw it at PROCESS START.
+	// The runtime reads GOMEMLIMIT once, before main runs, so only a value
+	// present HERE was actually applied. config.LoadShellEnvironment (Phase 1)
+	// later sources the user's login shell and os.Setenv's any missing var —
+	// on a Finder-launched macOS app that can inject a GOMEMLIMIT exported in
+	// ~/.zshrc which the runtime never read. Deferring the soft-limit decision
+	// to such a var would leave NO limit in force, so setupMemorySoftLimit uses
+	// only this captured value (see memlimit.go).
+	runtimeSeenGomemlimit := os.Getenv("GOMEMLIMIT")
+
 	a.ctx = ctx
 
 	// ── Restore maximized window state ───────────────────────────────
@@ -297,8 +308,9 @@ func (a *App) Startup(ctx context.Context) {
 	// logger re-init (so the decision is logged to the right log) and
 	// strictly before background indexing starts (Phase 6), so the limit
 	// governs the very first indexing pass. An explicit GOMEMLIMIT env
-	// var takes priority over AUTO mode; see memlimit.go.
-	setupMemorySoftLimit(cfg.Runtime.MemorySoftLimitMB, log)
+	// var takes priority over AUTO mode; a shell-injected one does not; see
+	// memlimit.go.
+	setupMemorySoftLimit(cfg.Runtime.MemorySoftLimitMB, runtimeSeenGomemlimit, log)
 
 	// ── Phase 3: Database + Terminal Manager (parallel) ───────────────
 	dbPath := config.DatabasePath(agentDir)

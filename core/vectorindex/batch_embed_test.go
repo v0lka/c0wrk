@@ -280,7 +280,7 @@ func TestAddDocuments_BatchEmbedder_SubBatchChunkBounds(t *testing.T) {
 	}
 }
 
-// TestAddDocuments_BatchVsLegacy_Equivalence verifies the batch path stores
+// TestAddDocuments_BatchVsLegacy_MetadataAndEmbeddingEquivalence verifies the batch path stores
 // equivalent document sets compared to the legacy per-document path: same
 // content, same metadata, same file-hash sidecar, and equivalent embeddings.
 //
@@ -294,7 +294,7 @@ func TestAddDocuments_BatchEmbedder_SubBatchChunkBounds(t *testing.T) {
 //     Dot-product scoring against the (always normalized) query embedding
 //     makes the batch representation the strictly-correct cosine; assert
 //     exact direction parallelism instead of byte equality.
-func TestAddDocuments_BatchVsLegacy_Equivalence(t *testing.T) {
+func TestAddDocuments_BatchVsLegacy_MetadataAndEmbeddingEquivalence(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		l2Normalize bool

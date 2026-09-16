@@ -573,8 +573,8 @@ func ApplyDefaults(cfg *Config) {
 	// tri-state int whose zero value already IS the default (0 = auto — the
 	// desktop layer derives the soft limit from physical RAM, see
 	// desktop/memlimit.go; >0 = explicit MiB; -1 = off). Documented here so
-	// default hunters find it; the sentinel is pinned by
-	// DefaultMemorySoftLimitMB and validated in validate().
+	// default hunters find it; the AUTO value (0) and the OFF sentinel (-1)
+	// are validated in validate().
 }
 
 // gitShellWord matches one shell word whose value may embed whitespace via

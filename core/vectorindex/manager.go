@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -294,17 +293,6 @@ type Manager struct {
 	// closeFn is called during Shutdown to release the embedder (if provided).
 	closeFn func() error
 
-	// freeOSMemoryFn is the seam for returning transient indexing
-	// allocations to the OS (runtime/debug.FreeOSMemory: forced GC cycle +
-	// scavenge). It defaults to debug.FreeOSMemory in NewManager and is a
-	// plain field so in-package tests can substitute a call recorder; a nil
-	// seam (zero-value Manager literals used by tests and older
-	// constructions) is a no-op. Called ONLY from background indexing
-	// goroutines after a FULL indexing pass (IndexFull), never while holding
-	// s.mu or m.mu — FreeOSMemory blocks for a full GC cycle and would stall
-	// every lock holder for its duration. See freeOSMemoryAfterFullIndex.
-	freeOSMemoryFn func()
-
 	// shutdownGrace overrides shutdownIndexGracePeriod when non-zero, so
 	// tests can verify the bounded-wait Shutdown logic — and that SwitchProject
 	// ignores this bound entirely (it never drains initWG) — without waiting
@@ -409,7 +397,6 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		debounce:           cfg.Debounce,
 		searchWaitTimeout:  cfg.SearchWaitTimeout,
 		closeFn:            cfg.CloseFn,
-		freeOSMemoryFn:     debug.FreeOSMemory,
 	}, nil
 }
 
@@ -740,8 +727,12 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 			// the spike to the OS right here instead of waiting for the
 			// scavenger. Runs in this background goroutine holding no
 			// locks — IndexFull's AddDocuments released the service write
-			// lock before returning.
-			m.freeOSMemoryAfterFullIndex()
+			// lock before returning. Gated on success: a cancelled or failed
+			// pass (switch/Shutdown, batch error) allocated little and must
+			// not burn a stop-the-world GC cycle.
+			if idxErr == nil {
+				m.freeOSMemoryAfterFullIndex()
+			}
 		} else {
 			// Reconciliation: if the chromem collection has data but the
 			// lexical index is empty (e.g. the project was indexed before
@@ -790,7 +781,13 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 			go func() {
 				if bsErr := indexer.HandleBranchSwitch(indexCtx, workspacePath, newBranch); bsErr != nil {
 					m.logger.Warn("branch switch indexing failed", "error", bsErr)
+					return
 				}
+				// HandleBranchSwitch runs a FULL index when the target branch's
+				// collection is empty; return that spike to the OS like the
+				// other full-pass call sites. A no-op switch (existing
+				// collection) just pays one extra scavenge on a rare event.
+				m.freeOSMemoryAfterFullIndex()
 			}()
 		},
 		m.logger,
@@ -1103,19 +1100,17 @@ func (m *Manager) NotReadyError() error {
 }
 
 // freeOSMemoryAfterFullIndex returns the transient allocations of a
-// completed FULL indexing pass to the OS through the freeOSMemoryFn seam
-// (runtime/debug.FreeOSMemory — a forced GC cycle plus scavenge). Incremental
-// passes deliberately do NOT call it: they allocate proportionally to the
-// changed files, and a forced full GC per debounce flush would burn CPU for
-// no memory win. Nil-guarded so zero-value Manager literals (tests, older
-// constructions) no-op instead of panicking. Call only from background
+// completed FULL indexing pass to the OS through the package-level
+// freeOSMemory seam (runtime/debug.FreeOSMemory — a forced GC cycle plus
+// scavenge), the SAME seam the park-eviction and content-less-migration
+// paths use (see service.go). Sharing one seam means a test swaps a single
+// variable. Incremental passes deliberately do NOT call it: they allocate
+// proportionally to the changed files, and a forced full GC per debounce
+// flush would burn CPU for no memory win. Call only from background
 // goroutines, never under s.mu or m.mu — FreeOSMemory blocks for a full GC
 // cycle and would stall every lock holder.
 func (m *Manager) freeOSMemoryAfterFullIndex() {
-	if m.freeOSMemoryFn == nil {
-		return
-	}
-	m.freeOSMemoryFn()
+	freeOSMemory()
 }
 
 // Reindex triggers a full reindex of the vector index for the active project.
@@ -1167,10 +1162,12 @@ func (m *Manager) Reindex(ctx context.Context) error {
 		if col == nil || col.Count() == 0 {
 			m.logger.Info("empty collection, running full index")
 			idxErr = idx.IndexFull(indexCtx, workspacePath)
-			// Same rationale as the initProject pass above: a full build's
-			// transient allocations go back to the OS immediately. No locks
-			// are held here.
-			m.freeOSMemoryAfterFullIndex()
+			// Same rationale as the initProject pass above (including the
+			// success gate): a completed full build's transient allocations go
+			// back to the OS immediately; no locks are held here.
+			if idxErr == nil {
+				m.freeOSMemoryAfterFullIndex()
+			}
 		} else {
 			m.logger.Info("existing collection found, running incremental index")
 			idxErr = idx.IndexIncremental(indexCtx, workspacePath)
