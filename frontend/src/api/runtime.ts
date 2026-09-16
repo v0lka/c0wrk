@@ -66,6 +66,65 @@ export function getApp(): any {
   return window.go.desktop.App
 }
 
+/**
+ * Wails event name under which the backend delivers BATCHED frontend events.
+ * MUST match eventBatchEventName in desktop/event_batcher.go. The desktop layer
+ * coalesces transient streaming events and drains the rest as one envelope per
+ * ~16ms flush, so the AppKit main thread performs one evaluateJavaScript call
+ * per flush instead of one per event. The payload is a BatchEnvelope:
+ * `{events: [{name, args}, ...]}`.
+ */
+export const EVENT_BATCH_NAME = 'c0wrk:events:batch'
+
+interface BatchEnvelopeEntry {
+  name: string
+  args?: unknown[]
+}
+
+interface BatchEnvelope {
+  events?: BatchEnvelopeEntry[]
+}
+
+/**
+ * Per-event callback registry. Every `subscribe` callback is registered here so
+ * an event arriving inside a batch envelope can be fanned out to the exact same
+ * handlers — preserving per-event semantics (order, payload, null filtering)
+ * while collapsing the transport to one call per flush.
+ */
+const batchListeners = new Map<string, Set<(...data: unknown[]) => void>>()
+let batchListenerInstalled = false
+
+function dispatchBatchedEvent(name: string, args: unknown[]): void {
+  const handlers = batchListeners.get(name)
+  if (!handlers || handlers.size === 0) return
+  // Snapshot: a handler may unsubscribe (session switch) during iteration.
+  for (const handler of Array.from(handlers)) {
+    try {
+      handler(...args)
+    } catch (err) {
+      logger.warn(`[events] handler for batched event "${name}" threw`, err)
+    }
+  }
+}
+
+/** Install the single envelope listener the first time anything subscribes. */
+function installBatchListener(): void {
+  if (batchListenerInstalled) return
+  if (typeof window === 'undefined' || !window.runtime) return
+  batchListenerInstalled = true
+  window.runtime.EventsOn(EVENT_BATCH_NAME, (...data: unknown[]) => {
+    const envelope = data[0] as BatchEnvelope | undefined
+    if (!envelope || !Array.isArray(envelope.events)) {
+      logger.warn('[events] dropped malformed batch envelope', envelope)
+      return
+    }
+    for (const entry of envelope.events) {
+      if (!entry || typeof entry.name !== 'string') continue
+      dispatchBatchedEvent(entry.name, entry.args ?? [])
+    }
+  })
+}
+
 /** Subscribe to a Wails event; returns an unsubscribe function */
 export function subscribe(eventName: string, callback: (...data: unknown[]) => void): () => void {
   if (typeof window === 'undefined' || !window.runtime) {
@@ -74,7 +133,27 @@ export function subscribe(eventName: string, callback: (...data: unknown[]) => v
     return () => {}
   }
   const rt = getRuntime()
-  return rt.EventsOn(eventName, callback)
+
+  // Register in the fan-out registry so events delivered inside a
+  // c0wrk:events:batch envelope reach this callback, and make sure the single
+  // envelope listener exists.
+  let handlers = batchListeners.get(eventName)
+  if (!handlers) {
+    handlers = new Set()
+    batchListeners.set(eventName, handlers)
+  }
+  handlers.add(callback)
+  installBatchListener()
+
+  // Also register directly with the Wails runtime: individually-emitted events
+  // (every non-batched global event) still reach the callback. Batched session
+  // events are never emitted individually, so a callback fires exactly once per
+  // event — never twice.
+  const unsubscribeDirect = rt.EventsOn(eventName, callback)
+  return () => {
+    handlers?.delete(callback)
+    unsubscribeDirect()
+  }
 }
 
 /** Emit a Wails event */

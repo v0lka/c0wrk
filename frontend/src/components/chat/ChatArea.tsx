@@ -1,20 +1,22 @@
 import { useEffect, useRef, useMemo } from 'react'
 import { useChatStore, useSessionMessages, useSessionWorkUnits } from '@/stores/chatStore'
 import { useBookmarkStore } from '@/stores/bookmarkStore'
-import { groupMessages, chatMessageToUI, rebuildPlanFromHistory, rebuildGoalFromHistory, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow, isRoutingRequestRow } from '@/lib/chatUtils'
+import { groupMessages, stabilizeDisplayItems, chatMessageToUI, rebuildPlanFromHistory, rebuildGoalFromHistory, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow, isRoutingRequestRow } from '@/lib/chatUtils'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { usePlanStore } from '@/stores/planStore'
 import { useGoalStore } from '@/stores/goalStore'
 import { getSessionHistory, getSessionRuntimeStatus, getPendingActions, resolveStalePrompt } from '@/api/chat'
 import { useTaskFlagRestore } from '@/hooks/useTaskFlagRestore'
+import { useOlderHistoryLoader, HISTORY_PAGE_SIZE } from '@/hooks/useHistoryPagination'
 import { reconcileRuntimeStatus, reconcilePendingActions, reconcileWorkUnits, stalePromptMatchField } from '@/lib/sessionRuntime'
 import { generateMessageId } from '@/lib/ids'
-import type { ChatMessageUI } from '@/types/messages'
+import type { ChatMessageUI, DisplayItem } from '@/types/messages'
 import { AssistantMessage } from './AssistantMessage'
 import { ActivityIndicator } from './ActivityIndicator'
 import { ChatScrollManager } from './ChatScrollManager'
 import { ChatMessageRenderer, CompactErrorFallback } from './ChatMessageRenderer'
+import { VirtualizedChatList } from './VirtualizedChatList'
 import { ChatHoverRegion } from './ChatHoverRegion'
 import { ExecutionPanels } from './ExecutionPanels'
 import { BlackboardPanel } from './BlackboardPanel'
@@ -25,6 +27,9 @@ import { ScrollProvider } from './ScrollContext'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { MessageCircle } from 'lucide-react'
 import { logger } from '@/lib/logger'
+
+/** Top-level display-item count above which the transcript is virtualized. */
+const CHAT_VIRTUALIZE_THRESHOLD = 60
 
 export function ChatArea() {
   const activeSessionId = useSessionStore(s => s.activeSessionId)
@@ -46,6 +51,9 @@ export function ChatArea() {
   const workUnits = useSessionWorkUnits(activeSessionId)
   const streamingText = useChatStore(s => activeSessionId ? s.streamingText[activeSessionId] : undefined)
   const scrollRef = useRef<HTMLDivElement>(null)
+  // Baseline for transcript stabilization (see the displayItems memo below):
+  // the previous committed item tree, reused for identity-stable items.
+  const prevItemsRef = useRef<DisplayItem[]>([])
 
   // Load persisted history on session change, then reconcile the chat store
   // against the backend runtime status and pending-action set AFTER the merge.
@@ -62,6 +70,11 @@ export function ChatArea() {
   // own chain takes over). This is equivalent to `useLatestAsync.wrap` but
   // spans a multi-step await sequence.
   useEffect(() => {
+    // A session switch invalidates the stabilization baseline: the new
+    // session's items must not be compared against the old one's (their keys
+    // may even collide). Dropping the baseline also releases the previous
+    // session's item tree.
+    prevItemsRef.current = []
     if (!activeSessionId) {
       usePlanStore.getState().clearPlan()
       return
@@ -71,9 +84,12 @@ export function ChatArea() {
     let cancelled = false
 
     ;(async () => {
-      let history: Awaited<ReturnType<typeof getSessionHistory>>
+      let page: Awaited<ReturnType<typeof getSessionHistory>>
       try {
-        history = await getSessionHistory(activeSessionId)
+        // Load only the NEWEST page. Older pages are fetched on demand as the
+        // user scrolls up (useOlderHistoryLoader), so opening a session with a
+        // very long history does not read or render the whole row set.
+        page = await getSessionHistory(activeSessionId, HISTORY_PAGE_SIZE, '')
       } catch (err) {
         if (cancelled) return
         logger.error('Failed to load session history:', err)
@@ -89,6 +105,11 @@ export function ChatArea() {
       }
       if (cancelled) return
 
+      // Record the paging cursor/hasMore so useOlderHistoryLoader knows whether
+      // (and from where) to fetch the preceding page on scroll-up.
+      useChatStore.getState().setHistoryPageMeta(activeSessionId, page.next_cursor, page.has_more)
+
+      const history = page.messages
       if (history.length > 0) {
         // Filter out "event_unknown" rows — transient UI events
         // (attachments:changed, session_pinned, etc.) that leaked into the DB
@@ -175,12 +196,30 @@ export function ChatArea() {
   // being reverted by an older status snapshot).
   useTaskFlagRestore(activeSessionId)
 
+  // Page OLDER history in as the user scrolls toward the top. The newest page
+  // was already loaded by the effect above; this walks backwards using the
+  // store's keyset cursor (no-op until hasMore, and while a fetch is in flight).
+  useOlderHistoryLoader(activeSessionId, scrollRef)
+
   // Load bookmarks for the active session (bookmarks are isolated per session).
   useEffect(() => {
     if (activeSessionId) void useBookmarkStore.getState().loadBookmarks(activeSessionId)
   }, [activeSessionId])
 
-  const { items: displayItems } = useMemo(() => groupMessages(messages, workUnits), [messages, workUnits])
+  // groupMessages rebuilds the WHOLE item tree on every store change (a new
+  // message, a resolved confirmation, a streamed tail), handing every block a
+  // brand-new `item` object. Stabilize the tree against the previous output so
+  // items that did not change keep their object identity — that identity is
+  // what lets the memoized message blocks skip re-rendering (and re-parsing
+  // their Markdown) when a single message changes. The ref is updated after the
+  // commit (not during render, which React StrictMode would double-invoke).
+  const displayItems = useMemo(() => {
+    const grouped = groupMessages(messages, workUnits).items
+    return stabilizeDisplayItems(prevItemsRef.current, grouped)
+  }, [messages, workUnits])
+  useEffect(() => {
+    prevItemsRef.current = displayItems
+  }, [displayItems])
 
   if (!activeSessionId) {
     return (
@@ -196,6 +235,26 @@ export function ChatArea() {
   }
 
   const hasContent = messages.length > 0 || !!streamingText
+
+  // Above this many top-level display items the transcript is virtualized: only
+  // the rows intersecting the viewport (+ overscan) mount, so the DOM node count
+  // is bounded by the viewport rather than by the history length. Below the
+  // threshold the plain renderer is used so the sticky-pinned user message keeps
+  // working (absolute positioning disables position:sticky).
+  const shouldVirtualize = displayItems.length > CHAT_VIRTUALIZE_THRESHOLD
+
+  // Streaming text + activity indicator render below the transcript in both
+  // modes (outside the virtualized window, so the live tail is never unmounted).
+  const trailingContent = (
+    <>
+      {streamingText && (
+        <ErrorBoundary fallback={<CompactErrorFallback />}>
+          <AssistantMessage content={streamingText} isStreaming />
+        </ErrorBoundary>
+      )}
+      <ActivityIndicator />
+    </>
+  )
 
   // Archived sessions are read-only: swap the input shell for an "Archived"
   // banner. Hoisted into a single const so the archived gate lives in one
@@ -230,20 +289,19 @@ export function ChatArea() {
       <div className="relative flex flex-1 flex-col min-h-0 bg-background">
         <ChatScrollManager key={activeSessionId} messages={messages} streamingText={streamingText} scrollRef={scrollRef}>
           <ChatHoverRegion className="p-4 space-y-4 min-w-0">
-            <ChatMessageRenderer
-              items={displayItems}
-              stickyUserMessages
-              trailingContent={(
-                <>
-                  {streamingText && (
-                    <ErrorBoundary fallback={<CompactErrorFallback />}>
-                      <AssistantMessage content={streamingText} isStreaming />
-                    </ErrorBoundary>
-                  )}
-                  <ActivityIndicator />
-                </>
-              )}
-            />
+            {shouldVirtualize ? (
+              <VirtualizedChatList
+                items={displayItems}
+                scrollRef={scrollRef}
+                trailingContent={trailingContent}
+              />
+            ) : (
+              <ChatMessageRenderer
+                items={displayItems}
+                stickyUserMessages
+                trailingContent={trailingContent}
+              />
+            )}
           </ChatHoverRegion>
         </ChatScrollManager>
         <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Panel error</div>}>

@@ -21,6 +21,16 @@ Outputs: progress events per subagent; blocking tasks return output in this resu
 Example: two independent refactors as two tasks without depends_on — they run in parallel.
 Anti-example: no re-delegation from inside a subagent unless allow_redelegate is set; not for sequential steps (chain via depends_on or run inline); delegating does not replace reading key files yourself.`
 
+// maxDelegationBatchSize bounds how many tasks a single delegate call may
+// carry. The concurrency cap (agents.max_parallel_subagents) limits how many
+// RUN at once, but a call requesting hundreds of tasks would still queue
+// hundreds of subagent goroutines and register hundreds of units — a cheap
+// resource-exhaustion vector. Beyond this bound the model must split the work
+// across several delegate calls. The schema's maxItems mirrors this constant
+// so the model sees the constraint up front; the runtime error below names it
+// explicitly when exceeded.
+const maxDelegationBatchSize = 16
+
 // delegateSchemaTemplate is the delegate tool's JSON schema. The
 // tasks[].tools group-token enum is injected from the SDK group table at
 // construction time (see delegateGroupEnumJSON) so it can never drift from
@@ -31,6 +41,7 @@ const delegateSchemaTemplate = `{
 		"tasks": {
 			"type": "array",
 			"minItems": 1,
+			"maxItems": __MAX_TASKS__,
 			"items": {
 				"type": "object",
 				"properties": {
@@ -152,9 +163,14 @@ func NewDelegateTool() *DelegateTool {
 			ToolName:        "delegate",
 			ToolDescription: toolDelegateDescription,
 			Schema: json.RawMessage(strings.Replace(
-				delegateSchemaTemplate,
-				`"__GROUP_TOKENS__"`,
-				delegateGroupEnumJSON(),
+				strings.Replace(
+					delegateSchemaTemplate,
+					`"__GROUP_TOKENS__"`,
+					delegateGroupEnumJSON(),
+					1,
+				),
+				"__MAX_TASKS__",
+				strconv.Itoa(maxDelegationBatchSize),
 				1,
 			)),
 			Policy: sdktools.PolicyAlwaysAllow,
@@ -371,6 +387,9 @@ func validateDelegationGroupToken(s string) error {
 // with no resolver in context is rejected so a requested profile is never
 // silently ignored.
 func validateDelegationTasks(tasks []DelegationTask, registry *DelegationRegistry, agentResolver AgentResolver) error {
+	if len(tasks) > maxDelegationBatchSize {
+		return fmt.Errorf("too many tasks: %d (max %d per delegate call) — split the work across multiple delegate calls", len(tasks), maxDelegationBatchSize)
+	}
 	ids := make(map[string]int, len(tasks))
 	for i, task := range tasks {
 		if task.ID == "" {

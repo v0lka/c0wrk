@@ -1,4 +1,6 @@
+import React from 'react'
 import type { DisplayItem } from '@/types/messages'
+import { areDisplayItemsEqual } from '@/lib/displayItemStability'
 import { MarkdownViewer } from '@/components/MarkdownViewer'
 import { MessageFooter } from '@/components/chat/MessageFooter'
 
@@ -8,7 +10,18 @@ interface AssistantMessageProps {
   isStreaming?: boolean
 }
 
-export function AssistantMessage({ item, content: rawContent, isStreaming }: AssistantMessageProps) {
+/**
+ * Memoized so a message that did not change is not re-rendered (and its
+ * Markdown not re-parsed) when a sibling message is appended or updated. The
+ * comparator compares the item's stable payload (`item.message` identity) and
+ * the plain `content`/`isStreaming` props instead of the item object identity,
+ * which `groupMessages` rebuilds on every store change.
+ */
+export const AssistantMessage = React.memo(function AssistantMessage({
+  item,
+  content: rawContent,
+  isStreaming,
+}: AssistantMessageProps) {
   const text = rawContent ?? item?.message.content ?? ''
   const timestamp = item?.message.timestamp
   const formattedTime = timestamp
@@ -29,4 +42,17 @@ export function AssistantMessage({ item, content: rawContent, isStreaming }: Ass
       )}
     </div>
   )
+}, assistantMessagePropsEqual)
+
+function assistantMessagePropsEqual(
+  prev: AssistantMessageProps,
+  next: AssistantMessageProps,
+): boolean {
+  if (prev.isStreaming !== next.isStreaming) return false
+  // Streaming bubbles carry `content` (not `item`); the finished bubble carries
+  // `item`. Both are compared by value / stable message identity.
+  if (prev.content !== next.content) return false
+  if (prev.item === next.item) return true
+  if (!prev.item || !next.item) return false
+  return areDisplayItemsEqual(prev.item, next.item)
 }

@@ -175,7 +175,7 @@ export function GetReviewDiff():Promise<Array<workspace.ReviewFileDiff>>;
 
 export function GetSecuritySettings():Promise<backend.SecuritySettingsResponse>;
 
-export function GetSessionHistory(arg1:string):Promise<Array<session.ChatMessage>>;
+export function GetSessionHistory(arg1:string,arg2:number,arg3:string):Promise<session.HistoryPage>;
 
 export function GetSessionRuntimeStatus(arg1:string):Promise<session.SessionRuntimeStatus>;
 
@@ -224,6 +224,7 @@ export function ListSkills():Promise<Array<backend.SkillDescriptorDTO>>;
 export function ListThemes():Promise<Array<backend.ThemeDTO>>;
 
 export function ListVectorIndexGPUs():Promise<Array<backend.GPUDeviceResponse>>;
+
 export function Merge(arg1:string):Promise<void>;
 
 export function OptimizePrompt(arg1:string):Promise<backend.OptimizePromptResponse>;

@@ -80,8 +80,12 @@ type Application struct {
 	builder   *core.OrchestratorBuilder
 	manager   *session.Manager
 	persister *session.EventPersister
-	titleGen  *session.TitleGenerator
-	logger    *slog.Logger
+	// tokenPersist coalesces session-token updates and writes them through the
+	// persister's single writer, off the emitter's goroutine. Nil when no
+	// session store is configured.
+	tokenPersist *tokenPersister
+	titleGen     *session.TitleGenerator
+	logger       *slog.Logger
 
 	// agentDir (~/.c0wrk) locates the model-profile custom-profile store used to
 	// resolve the effective profile on every builder-config conversion.
@@ -120,14 +124,29 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	}
 
 	// 1. Event persister (SQLite persistence, separate from UI emission).
+	// Start its single-writer goroutine so Persist never runs SQLite I/O on the
+	// event-emit goroutine.
 	app.persister = session.NewEventPersister(cfg.SessionStore)
+	app.persister.StartWriter()
 
 	// 2. Combined emit function: UI emission + persistence.
+	//
+	// Persistence is offloaded to the persister's single-writer goroutine, so
+	// this (the emit goroutine) never blocks on SQLite. Terminal events double as
+	// a durability checkpoint: the write queue (and any coalesced token updates)
+	// is drained at task end so a completed task's messages are on disk before
+	// the app can be killed.
 	emitFunc := func(evt session.Event) {
 		if cfg.UIEmitFunc != nil {
 			cfg.UIEmitFunc(evt)
 		}
 		app.persister.Persist(evt)
+		if terminalPersistTypes[evt.Type] {
+			if app.tokenPersist != nil {
+				app.tokenPersist.Flush()
+			}
+			app.persister.Flush()
+		}
 	}
 	app.emitFunc = emitFunc
 
@@ -247,13 +266,17 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	// 6. Session manager.
 	manager := session.NewManager(factory, emitFunc, cfg.AgentDir)
 	if cfg.SessionStore != nil {
-		manager.SetTokenPersist(func(sessionID string, inputTokens, outputTokens int, model, family string, fillPercent float64) {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			if err := cfg.SessionStore.UpdateSessionTokens(ctx, sessionID, inputTokens, outputTokens, model, family, fillPercent); err != nil {
-				app.log().Warn("failed to persist session tokens", "session", sessionID, "error", err)
-			}
-		})
+		// Coalesce the per-LLM-call token reports into at most one UPDATE per
+		// session per interval, written through the persistence single writer so
+		// the emitter's goroutine never waits on SQLite.
+		app.tokenPersist = newTokenPersister(
+			cfg.SessionStore,
+			app.persister.SubmitWrite,
+			tokenPersistInterval,
+			tokenPersistTimeout,
+			app.log(),
+		)
+		manager.SetTokenPersist(app.tokenPersist.Record)
 	}
 	if cfg.TaskStore != nil {
 		manager.SetTaskStore(cfg.TaskStore)
@@ -406,16 +429,36 @@ func (app *Application) GroupPolicies() map[sdktools.ToolGroup]sdktools.ToolPoli
 	return app.builder.ToolRegistry().GroupPolicies()
 }
 
-// Shutdown stops all managed resources (manager, MCP gateway).
+// Shutdown stops all managed resources (manager, persistence pipeline, MCP
+// gateway).
 func (app *Application) Shutdown() {
 	if app.manager != nil {
 		app.manager.Shutdown()
+	}
+	// Drain the persistence pipeline AFTER the manager has stopped every task
+	// goroutine (so nothing new is enqueued): flush the coalesced token updates,
+	// then drain the event-write queue so no pending write is lost on exit.
+	if app.tokenPersist != nil {
+		app.tokenPersist.Close()
+	}
+	if app.persister != nil {
+		app.persister.Close()
 	}
 	if app.builder != nil {
 		if err := app.builder.StopGateway(); err != nil {
 			app.log().Error("failed to stop MCP gateway", "error", err)
 		}
 	}
+}
+
+// terminalPersistTypes lists the task-terminal event types after which the async
+// persistence pipeline is drained. Draining here — rather than on every event —
+// keeps the emit path non-blocking during a run while still making a finished
+// task's messages durable promptly.
+var terminalPersistTypes = map[string]bool{
+	"task_complete":         true,
+	"task_failed_resumable": true,
+	"task_cancelled":        true,
 }
 
 // ---------------------------------------------------------------------------

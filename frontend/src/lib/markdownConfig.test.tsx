@@ -21,6 +21,7 @@ vi.mock('mermaid', () => ({
 }))
 
 import { Markdown } from './markdownConfig'
+import { markdownCacheStats, resetMarkdownCache } from './markdownCache'
 
 describe('Markdown mermaid block wiring', () => {
   let container: HTMLElement
@@ -99,6 +100,53 @@ describe('Markdown heading anchors', () => {
     const a = container.querySelector('a')
     expect(a?.getAttribute('href')).toBe('#sub-section')
     expect(a?.textContent).toBe('jump')
+  })
+})
+
+describe('Markdown parse cache', () => {
+  beforeEach(() => {
+    document.body.replaceChildren()
+    resetMarkdownCache()
+  })
+
+  // Mount a fresh Markdown (a fresh mount cannot be short-circuited by memo, so
+  // it exercises the cache path exactly as a re-render of an existing message
+  // would).
+  function renderOnce(content: string): { container: HTMLElement; unmount: () => void } {
+    const div = document.createElement('div')
+    document.body.appendChild(div)
+    const root = createRoot(div)
+    act(() => {
+      root.render(<Markdown content={content} />)
+    })
+    return { container: div, unmount: () => act(() => root.unmount()) }
+  }
+
+  it('parses each distinct content once and serves repeats from the cache', () => {
+    const first = renderOnce('# Cache me')
+    // The cached node still resolves to correct DOM.
+    expect(first.container.querySelector('h1')?.textContent).toBe('Cache me')
+    first.unmount()
+    expect(markdownCacheStats()).toMatchObject({ misses: 1, hits: 0 })
+
+    const second = renderOnce('# Cache me')
+    expect(second.container.querySelector('h1')?.textContent).toBe('Cache me')
+    second.unmount()
+    // The repeat re-used the parsed node — no second parse.
+    expect(markdownCacheStats()).toMatchObject({ misses: 1, hits: 1 })
+
+    const third = renderOnce('# Different')
+    third.unmount()
+    expect(markdownCacheStats().misses).toBe(2)
+  })
+
+  it('bounds the cache with LRU eviction', () => {
+    for (let i = 0; i < 205; i++) {
+      renderOnce(`# doc ${i}`).unmount()
+    }
+    const stats = markdownCacheStats()
+    expect(stats.misses).toBe(205)
+    expect(stats.size).toBeLessThanOrEqual(200)
   })
 })
 

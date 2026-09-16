@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState, useContext } from 'react'
+import { memo, useEffect, useMemo, useState, useContext } from 'react'
 import { Loader2, CheckCircle2, XCircle, RefreshCw, Circle, CirclePause, CircleSlash } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { bookmarkKey } from '@/lib/bookmarks'
+import { areDisplayItemsEqual } from '@/lib/displayItemStability'
 import { formatDuration } from '@/lib/formatters'
 import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -17,7 +18,7 @@ interface PlanStepBlockProps {
   item: PlanStepItem
 }
 
-export function PlanStepBlock({ item }: PlanStepBlockProps) {
+export const PlanStepBlock = memo(function PlanStepBlock({ item }: PlanStepBlockProps) {
   const { stepId, stepNum, title, description, status, duration, error, isRetry, children } = item
   // Plan groups are rebuilt per session switch, so the displayed steps always
   // belong to the active session. The nested lookup returns a primitive
@@ -104,4 +105,4 @@ export function PlanStepBlock({ item }: PlanStepBlockProps) {
       </CollapsibleBlock>
     </div>
   )
-}
+}, (prev, next) => prev.item === next.item || areDisplayItemsEqual(prev.item, next.item))

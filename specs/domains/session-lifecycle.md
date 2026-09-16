@@ -763,7 +763,8 @@ The `backend/session/persistence.go` defines the `SessionStore` interface:
 | `UpdateSessionTokens(ctx, id, input, output, model, family, fillPercent)` | Update accumulated token counts, model info, and context-fill %  |
 | `UpdateSessionActivity(ctx, id)`                             | Update last_active_at timestamp to now                           |
 | `SaveMessage(ctx, msg)`                                      | Insert a new chat message                                        |
-| `LoadMessages(ctx, sessionID)`                               | Load all messages for session (ordered by created_at)            |
+| `LoadMessages(ctx, sessionID)`                               | Load all messages for session (ordered by created_at) — used by history restore      |
+| `LoadMessagesPage(ctx, sessionID, limit, before)`            | Keyset page of messages ordered `(created_at, id)` ASC, strictly before the opaque cursor `before` (nil = newest/tail page); returns `(messages, hasMore, error)`. Excludes non-content activity rows (`thinking`, `step_done`) that never render |
 | `DeleteMessages(ctx, sessionID)`                             | Delete all messages for session                                  |
 | `ResolvePendingMessage(ctx, sessionID, role, matchField, matchValue, extra)` | Patch metadata of the most recent matching HITL message (tool_confirm/ask_user/step_limit/plan_review) as resolved so it doesn't reappear as pending on reload |
 | `UpsertStepTodoUpdate(ctx, sessionID, stepID, msg)` | Replace/insert the persisted `step_todo_update` message for `stepID` (preserving id and created_at so the checklist keeps its stream position on reload); the Conductor emits one after every tool call, so upserting bounds `session_messages` growth |

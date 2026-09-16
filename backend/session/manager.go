@@ -516,15 +516,16 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	}
 
 	// Load session metadata from the persistent store, then resolve the
-	// project workspace — both go through the app's single SQLite connection
-	// (see OpenDatabase). Under heavy write load from active sessions these
-	// reads can queue at the connection pool; context.Background() would wait
-	// indefinitely, so bound the session read with a generous deadline (the
-	// resolver's own project read is separately deadline-bounded where it is
-	// installed, in buildFrontendAPI) and let the caller surface a retryable
-	// error instead of hanging. Restore is side-effect-free up to this point,
-	// so a timeout simply aborts cleanly and a later attempt retries from
-	// scratch.
+	// project workspace — both go through the app's shared SQLite pool
+	// (see OpenDatabase). WAL plus a multi-connection pool let these reads
+	// proceed alongside an active agent's writes, but a saturated pool (many
+	// concurrent readers) can still make a read wait for a connection;
+	// context.Background() would wait indefinitely, so bound the session read
+	// with a generous deadline (the resolver's own project read is separately
+	// deadline-bounded where it is installed, in buildFrontendAPI) and let the
+	// caller surface a retryable error instead of hanging. Restore is
+	// side-effect-free up to this point, so a timeout simply aborts cleanly and
+	// a later attempt retries from scratch.
 	restoreReadCtx, restoreReadCancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
 	info, err := store.LoadSession(restoreReadCtx, id)
 	if err != nil {

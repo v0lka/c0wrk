@@ -1,11 +1,12 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { CheckSquare, Square, ListChecks, ChevronDown, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { areDisplayItemsEqual } from '@/lib/displayItemStability'
 import type { DisplayItem } from '@/types/messages'
 
 type ChecklistItem = Extract<DisplayItem, { kind: 'checklist' }>
 
-export function ChecklistCard({ item }: { item: ChecklistItem }) {
+export const ChecklistCard = memo(function ChecklistCard({ item }: { item: ChecklistItem }) {
   const completed = item.items.filter(i => i.checked).length
   const allDone = completed === item.items.length
   const [open, setOpen] = useState(true)
@@ -47,4 +48,4 @@ export function ChecklistCard({ item }: { item: ChecklistItem }) {
       )}
     </div>
   )
-}
+}, (prev, next) => prev.item === next.item || areDisplayItemsEqual(prev.item, next.item))

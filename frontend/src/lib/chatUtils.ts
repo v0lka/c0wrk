@@ -15,6 +15,11 @@ import {
 
 export { collapseThoughts } from './chatUtilsHelpers'
 
+// Structural identity + reuse for the re-grouped item tree (see the module doc
+// in displayItemStability.ts). Re-exported here so chat consumers keep a single
+// import surface for grouping helpers.
+export { areDisplayItemsEqual, stabilizeDisplayItems } from './displayItemStability'
+
 // Role-to-type mapping for history conversion.
 // The key type is narrowed to known backend roles for compile-time safety (S-35).
 type ChatRole = 'user' | 'assistant' | 'tool_call' | 'tool_result'

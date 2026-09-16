@@ -16,6 +16,13 @@ type EventPersister struct {
 	mu     sync.RWMutex
 	logger *slog.Logger
 
+	// writer is the dedicated single-writer goroutine that performs store
+	// writes off the caller's goroutine. Nil until StartWriter is called; while
+	// nil, writes run inline (see SubmitWrite), which keeps the persister fully
+	// synchronous for unit tests and any embedder that does not opt into async
+	// persistence. Guarded by mu.
+	writer *singleWriter
+
 	// assistantMu guards lastAssistantContent: per-session tracking of the most
 	// recent assistant_done content. Used to dedup task_complete against the
 	// streamed answer in the implicit text-only finish path (where the executor
@@ -278,26 +285,195 @@ func (p *EventPersister) Persist(evt Event) {
 		content = string(metadata)
 	}
 
+	// The store writes below are offloaded to the dedicated single-writer
+	// goroutine (when one is running, see SubmitWrite) so the goroutine emitting
+	// the UI event never blocks on SQLite. Every mapping/dedup decision above
+	// still runs synchronously on the caller, preserving the exact emit order.
+	createdAt := time.Now().UTC().Format(time.RFC3339)
+	store := p.store
+
 	if isStepTodoUpdate {
-		if err := p.store.UpsertStepTodoUpdate(context.Background(), evt.SessionID, stepTodoStepID, ChatMessage{
+		p.SubmitWrite(func() {
+			if err := store.UpsertStepTodoUpdate(context.Background(), evt.SessionID, stepTodoStepID, ChatMessage{
+				SessionID: evt.SessionID,
+				Role:      role,
+				Content:   content,
+				Metadata:  metadata,
+				CreatedAt: createdAt,
+			}); err != nil {
+				p.log().Error("failed to persist step_todo_update message", "session", evt.SessionID, "step_id", stepTodoStepID, "error", err)
+			}
+		})
+		return
+	}
+
+	p.SubmitWrite(func() {
+		if err := store.SaveMessage(context.Background(), ChatMessage{
 			SessionID: evt.SessionID,
 			Role:      role,
 			Content:   content,
 			Metadata:  metadata,
-			CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			CreatedAt: createdAt,
 		}); err != nil {
-			p.log().Error("failed to persist step_todo_update message", "session", evt.SessionID, "step_id", stepTodoStepID, "error", err)
+			p.log().Error("failed to persist event message", "type", evt.Type, "session", evt.SessionID, "error", err)
 		}
+	})
+}
+
+// queueHighWater is the pending-write depth at which a warning is logged. It is
+// not a hard limit: the queue is unbounded so that a burst of events (e.g. many
+// subagents emitting concurrently) is never dropped and the emit path is never
+// blocked — the warning only surfaces a pathological write/consume imbalance.
+const queueHighWater = 4096
+
+// singleWriter serializes store writes onto one dedicated goroutine. It makes
+// the caller's Submit non-blocking (a mutex-guarded append) so the event-emit
+// path never waits on SQLite, while guaranteeing that SQLite only ever sees one
+// writer at a time and that no write is lost: the queue is drained on Flush and
+// on Close, and a Submit that races shutdown is run inline rather than dropped.
+type singleWriter struct {
+	mu              sync.Mutex
+	cond            *sync.Cond
+	queue           []func()
+	closed          bool
+	highWaterLogged bool
+	logger          *slog.Logger
+	wg              sync.WaitGroup
+}
+
+func newSingleWriter(logger *slog.Logger) *singleWriter {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	w := &singleWriter{logger: logger}
+	w.cond = sync.NewCond(&w.mu)
+	w.wg.Add(1)
+	go w.run()
+	return w
+}
+
+// Submit enqueues op without blocking on I/O. Only a brief mutex hold precedes
+// the append, so the caller is never delayed by SQLite.
+func (w *singleWriter) Submit(op func()) {
+	if op == nil {
 		return
 	}
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		// Writer is shutting down: run inline so a late write is not lost.
+		op()
+		return
+	}
+	w.queue = append(w.queue, op)
+	if len(w.queue) >= queueHighWater && !w.highWaterLogged {
+		w.highWaterLogged = true
+		w.logger.Warn("persistence write queue depth is high; writes are outpacing SQLite", "depth", len(w.queue))
+	}
+	w.mu.Unlock()
+	w.cond.Signal()
+}
 
-	if err := p.store.SaveMessage(context.Background(), ChatMessage{
-		SessionID: evt.SessionID,
-		Role:      role,
-		Content:   content,
-		Metadata:  metadata,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
-	}); err != nil {
-		p.log().Error("failed to persist event message", "type", evt.Type, "session", evt.SessionID, "error", err)
+// flush blocks until every op submitted before this call has been processed.
+func (w *singleWriter) flush() {
+	done := make(chan struct{})
+	w.Submit(func() { close(done) })
+	<-done
+}
+
+// close drains remaining ops and stops the worker. Idempotent.
+func (w *singleWriter) close() {
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	w.closed = true
+	w.mu.Unlock()
+	w.cond.Signal()
+	w.wg.Wait()
+}
+
+func (w *singleWriter) run() {
+	defer w.wg.Done()
+	for {
+		w.mu.Lock()
+		for len(w.queue) == 0 && !w.closed {
+			w.cond.Wait()
+		}
+		if len(w.queue) == 0 { // closed and fully drained
+			w.mu.Unlock()
+			return
+		}
+		op := w.queue[0]
+		w.queue[0] = nil
+		w.queue = w.queue[1:]
+		if len(w.queue) == 0 {
+			w.queue = nil // release the backing array
+			w.highWaterLogged = false
+		}
+		w.mu.Unlock()
+		w.runOp(op)
+	}
+}
+
+// runOp executes a queued write, isolating a panic so a single bad write can
+// never kill the writer goroutine (which would otherwise wedge Flush/Close).
+func (w *singleWriter) runOp(op func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			w.logger.Error("recovered from panic while persisting write", "panic", r)
+		}
+	}()
+	op()
+}
+
+// StartWriter launches the dedicated single-writer goroutine. After this call,
+// Persist schedules its store writes on that goroutine and returns immediately,
+// so the goroutine emitting the UI event never blocks on SQLite. Idempotent.
+func (p *EventPersister) StartWriter() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.writer != nil {
+		return
+	}
+	p.writer = newSingleWriter(p.logger)
+}
+
+// SubmitWrite schedules op on the single-writer goroutine, or runs it inline
+// when no writer is running (unit tests / non-desktop embedders). It never
+// blocks on SQLite I/O.
+func (p *EventPersister) SubmitWrite(op func()) {
+	p.mu.RLock()
+	w := p.writer
+	p.mu.RUnlock()
+	if w == nil {
+		op()
+		return
+	}
+	w.Submit(op)
+}
+
+// Flush blocks until every write submitted before this call has been processed
+// (a no-op when no writer is running). It is the durability checkpoint used at
+// task completion and during shutdown.
+func (p *EventPersister) Flush() {
+	p.mu.RLock()
+	w := p.writer
+	p.mu.RUnlock()
+	if w != nil {
+		w.flush()
+	}
+}
+
+// Close drains any queued writes and stops the single-writer goroutine.
+// Idempotent; after Close, Persist falls back to inline writes.
+func (p *EventPersister) Close() {
+	p.mu.Lock()
+	w := p.writer
+	p.writer = nil
+	p.mu.Unlock()
+	if w != nil {
+		w.close()
 	}
 }

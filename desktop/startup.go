@@ -533,6 +533,11 @@ func (a *App) Shutdown(ctx context.Context) {
 	// from a crash (the exact ambiguity that motivated crash logging).
 	a.log().Info("application shutdown: starting graceful shutdown")
 
+	// Flush any events still queued in the batcher and stop its loop before
+	// teardown, so a quit never drops the last batch of a run. Events emitted
+	// after this point are delivered synchronously.
+	a.stopEventBatcher()
+
 	// Persist the final window geometry so a normal quit preserves the size
 	// even if no resize fired this session. Best-effort: a torn-down context
 	// makes this a no-op, and the debounced frontend saves already captured

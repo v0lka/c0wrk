@@ -198,6 +198,47 @@ See [../domains/goal-mode.md](../domains/goal-mode.md).
 | `plan_approval_response` | frontend → backend | `{request_id, decision, feedback?}` (`approve` / `request_changes` / `abandon`; `feedback` non-empty when `request_changes`) (see `PlanApprovalResponsePayload`) | User's decision on a plan awaiting review (`declare_plan` mode=`await_approval`). Resolves the pending plan-review action surfaced by `plan_review_ready` |
 | `goal_proposal_response` | frontend → backend | `{request_id, decision, condition?, verify?, verification_mode?}` (`approve` / `cancel`) | User's sign-off on a proposed goal. `verification_mode` overrides the derivation-chosen mode. Both the event path and the RPC path (`ConfirmGoal`/`CancelGoal`) funnel through a single resolver on the desktop pending map. See [../domains/goal-mode.md](../domains/goal-mode.md). |
 
+## Event Batching (session events)
+
+High-frequency session events do **not** reach the frontend as individual Wails
+events. The desktop layer buffers them (`desktop/event_batcher.go`) between the
+UI emitter (`buildUIEmitFunc`) and the raw transport (`a.emit`), then delivers
+them as **one** `c0wrk:events:batch` Wails event per ~16ms flush. This keeps the
+AppKit main thread's `evaluateJavaScript` calls off the per-event critical path
+(the dominant source of streaming jank).
+
+Envelope payload:
+
+```json
+{ "events": [ { "name": "session:<id>:<type>", "args": [<payload>] }, ... ] }
+```
+
+Rules:
+
+- **Transient (latest-wins) events** — `assistant_chunk`, `session_tokens`,
+  `context_fill`, `agent_metrics`, `step_todo_update` — coalesce: two adjacent
+  queued events sharing a `session+type` stream key collapse to the last payload.
+  The stream key is refined by the event's scope discriminator (`plan_step_id`
+  for scoped chunks/fills, `step_id` for checklists) so concurrent streams never
+  clobber each other. Safe because these events carry a full snapshot (e.g.
+  `assistant_chunk` ships `accumulated_content`, not a delta).
+- **Content events** are queued verbatim: every event is delivered exactly once,
+  in order.
+- **Barrier events** (`task_complete`, `task_cancelled`, `error`,
+  `task_failed_resumable`, `ask_user`, `tool_confirm`, `step_limit`,
+  `plan_review_ready`, `goal_proposal`) force an immediate flush, and the batcher
+  is flushed + stopped at app shutdown — no queued event is lost.
+- **Global events** (all non-session-scoped events) are emitted individually and
+  are not batched.
+
+The frontend `subscribe` (`frontend/src/api/runtime.ts`) registers each callback
+in a fan-out registry **and** installs a single `c0wrk:events:batch` listener
+(`EVENT_BATCH_NAME`); batched events are fanned back out to the per-event
+handlers with unchanged semantics (order, payload, null filtering). It also keeps
+a direct per-event `EventsOn` registration so individually-emitted events still
+arrive. Batched events are never also emitted individually, so a handler fires
+exactly once per event.
+
 ## Event Handling Pattern (Frontend)
 
 ```
@@ -205,6 +246,9 @@ useSessionEvents(sessionId)
   ├─ Subscribes to all session events on mount
   ├─ Dispatches to type-specific handler hooks
   └─ Unsubscribes on unmount / session change
+
+Delivery: batched session events arrive inside one c0wrk:events:batch envelope
+  → runtime.ts fans them out to the per-event subscribers above
 
 Each handler:
   1. Type guard validates payload structure
@@ -228,6 +272,10 @@ assistant_done event (once):
 ## Breaking Change Checklist
 
 - New event type: Go emitter method + event data struct + TS interface + type guard + handler hook
+  - If the new event is high-frequency, add it to the coalescing set in
+    `sessionEventCoalesceKey` (`desktop/event_batcher.go`) with a stream
+    discriminator when it is scope-partitioned; add it to `isImmediateFlushEvent`
+    if it settles a task or blocks on user input
 - Modified payload: update Go struct + TS interface + type guard + handler logic
 - Removed event: remove emitter method + remove TS type + remove handler subscription
 - Renamed event: update BOTH Go event name constant AND all frontend `EventsOn` calls

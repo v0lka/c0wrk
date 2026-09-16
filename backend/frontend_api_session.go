@@ -567,12 +567,52 @@ func (f *FrontendAPI) GetSessionRuntimeStatus(id string) (session.SessionRuntime
 	return f.app.Manager().GetSessionRuntimeStatus(id)
 }
 
-// GetSessionHistory returns chat history for a session.
-func (f *FrontendAPI) GetSessionHistory(id string) ([]session.ChatMessage, error) {
-	if f.store != nil {
-		return f.store.LoadMessages(context.Background(), id)
+// Default and maximum page sizes for GetSessionHistory. The default keeps the
+// first load of a session bounded (the UI fetches the newest page on open and
+// pages older content in on scroll-up); the cap protects against an
+// accidentally huge page request.
+const (
+	sessionHistoryDefaultLimit = 200
+	sessionHistoryMaxLimit     = 2000
+)
+
+// normalizeSessionHistoryLimit clamps a requested page size: non-positive
+// falls back to the default, and oversized is capped.
+func normalizeSessionHistoryLimit(limit int) int {
+	if limit <= 0 {
+		return sessionHistoryDefaultLimit
 	}
-	return []session.ChatMessage{}, nil
+	if limit > sessionHistoryMaxLimit {
+		return sessionHistoryMaxLimit
+	}
+	return limit
+}
+
+// GetSessionHistory returns ONE page of chat history for a session, oldest-first
+// within the page. The first call (before == "") returns the NEWEST page; pass
+// the returned NextCursor back as `before` to fetch the preceding page, so the
+// UI never has to load a whole session at once. limit<=0 uses the default and
+// is clamped to the maximum. Non-content activity rows (thinking, step_done)
+// are omitted. A malformed cursor is rejected instead of paging from the wrong
+// offset.
+func (f *FrontendAPI) GetSessionHistory(id string, limit int, before string) (*session.HistoryPage, error) {
+	if f.store == nil {
+		return &session.HistoryPage{Messages: []session.ChatMessage{}}, nil
+	}
+	cursor, err := session.DecodeMessageCursor(before)
+	if err != nil {
+		return nil, err
+	}
+	msgs, hasMore, err := f.store.LoadMessagesPage(context.Background(), id, normalizeSessionHistoryLimit(limit), cursor)
+	if err != nil {
+		return nil, err
+	}
+	page := &session.HistoryPage{Messages: msgs, HasMore: hasMore}
+	if len(msgs) > 0 {
+		oldest := msgs[0]
+		page.NextCursor = session.EncodeMessageCursor(session.MessageCursor{CreatedAt: oldest.CreatedAt, ID: oldest.ID})
+	}
+	return page, nil
 }
 
 // GetBlackboardState returns the current blackboard state for a session.

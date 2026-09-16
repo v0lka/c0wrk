@@ -252,6 +252,7 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
 			MaxJudgeCacheSize:         cfg.Orchestration.MaxJudgeCacheSize,
 			MaxRedelegationDepth:      cfg.Orchestration.MaxRedelegationDepth,
+			MaxParallelSubagents:      cfg.Agents.MaxParallelSubagents,
 		},
 		GoalLoop: core.BuilderGoalLoopConfig{
 			Verification: cfg.GoalLoop.Verification,

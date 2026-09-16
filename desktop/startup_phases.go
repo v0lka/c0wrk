@@ -333,7 +333,8 @@ func (a *App) initTerminalManager(log *slog.Logger, userEnv map[string]string) *
 	return terminal.NewManager(a.ctx, log,
 		func(sessionID string, data []byte) {
 			eventName := fmt.Sprintf("session:%s:terminal_output", sessionID)
-			a.emit(eventName, map[string]string{"data": base64.StdEncoding.EncodeToString(data)})
+			encoded := base64.StdEncoding.EncodeToString(data)
+			a.emitBatchedEvent(eventName, []any{map[string]string{"data": encoded}}, "", false, len(encoded))
 		},
 		func(sessionID string) {
 			// Natural shell exit (user typed `exit` / shell crashed). The UI
@@ -341,7 +342,7 @@ func (a *App) initTerminalManager(log *slog.Logger, userEnv map[string]string) *
 			// the shell lazily on next activation. Empty-object payload so it
 			// passes the frontend's null-payload event filter.
 			eventName := fmt.Sprintf("session:%s:terminal_exited", sessionID)
-			a.emit(eventName, map[string]string{})
+			a.emitBatchedEvent(eventName, []any{map[string]string{}}, "", false, 0)
 		},
 		env,
 	)
@@ -421,17 +422,24 @@ func (a *App) preloadProjectsAndSessions(projectMgr *project.Manager, sessStore 
 func (a *App) buildUIEmitFunc() func(session.Event) {
 	return func(evt session.Event) {
 		eventName := fmt.Sprintf("session:%s:%s", evt.SessionID, evt.Type)
-		a.emit(eventName, evt.Data)
+		// Route through the event batcher: transient streaming events coalesce
+		// (latest-wins) and content events queue in order, so the AppKit main
+		// thread sees one evaluateJavaScript flush per ~16ms instead of one per
+		// event. Settlement/HITL events force an immediate flush.
+		a.emitBatchedEvent(eventName, []any{evt.Data},
+			sessionEventCoalesceKey(evt.Type, evt.Data), isImmediateFlushEvent(evt.Type), 0)
 		// session_renamed is a session-list metadata change (it mirrors the
 		// global project:renamed event). Re-emit it globally so the sidebar
 		// updates the title even when the renamed session is NOT the active
 		// one — e.g. when background auto-titling completes after the user has
 		// already switched to another session. Without this, the session-scoped
 		// event has no listener and the title stays stale until a project
-		// switch or app reload.
+		// switch or app reload. Emitted through the same batch so its ordering
+		// relative to the session-scoped counterpart is preserved.
 		if evt.Type == "session_renamed" {
 			if rd, ok := evt.Data.(session.SessionRenamedData); ok {
-				a.emit(backend.EventSessionRenamed, map[string]string{"id": rd.ID, "name": rd.NewName})
+				a.emitBatchedEvent(backend.EventSessionRenamed,
+					[]any{map[string]string{"id": rd.ID, "name": rd.NewName}}, "", false, 0)
 			}
 		}
 		a.log().Debug("desktop: Wails EventsEmit called", "eventName", eventName)

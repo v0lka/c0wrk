@@ -845,6 +845,14 @@ type AgentsConfig struct {
 	// Dirs lists subagent profile discovery directories in priority order
 	// (highest first). Paths may be absolute or relative to the agent dir.
 	Dirs []string `yaml:"dirs"`
+
+	// MaxParallelSubagents caps how many subagents execute concurrently,
+	// enforced at the single sp4rk RunSubAgentsParallel chokepoint shared by
+	// the delegate tool and plan waves. <= 0 resolves to the default (4) in
+	// ApplyDefaults. Bounding concurrency bounds the peak rate of subagent
+	// lifecycle events (and the burst of concurrent LLM calls / tool
+	// executions) without changing results or their order.
+	MaxParallelSubagents int `yaml:"max_parallel_subagents"`
 }
 
 // envVarPattern matches ${ENV_VAR} patterns for substitution.

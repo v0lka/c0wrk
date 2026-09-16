@@ -34,6 +34,12 @@ export function ChatScrollManager({
   // freshly-reset flag marks the first layout effect of each session switch.
   const isInitialMountRef = useRef(true)
   const prevScrollState = useRef({ scrollTop: 0, scrollHeight: 0, clientHeight: 0 })
+  // Message count + tail id from the previous run. A count increase with an
+  // unchanged tail id means an OLDER page was prepended above the viewport
+  // (chunked history loading) rather than new activity appearing at the bottom.
+  // That must not raise the "New activity" pill or yank the scroll position.
+  const prevCountRef = useRef(0)
+  const prevLastIdRef = useRef('')
   // IDs of review_prompt messages that still needed a decision the last time
   // the auto-scroll effect ran. A newly-appearing unresolved prompt forces the
   // chat to the bottom so the request is fully visible even if the user had
@@ -103,6 +109,14 @@ export function ChatScrollManager({
       [...currentReviewPromptIds].some((id) => !prevReviewPromptIdsRef.current.has(id))
     prevReviewPromptIdsRef.current = currentReviewPromptIds
 
+    const lastId = messages.length > 0 ? messages[messages.length - 1]!.id : ''
+    const prependedOlder =
+      !isInitialMountRef.current &&
+      messages.length > prevCountRef.current &&
+      lastId === prevLastIdRef.current
+    prevCountRef.current = messages.length
+    prevLastIdRef.current = lastId
+
     if (isInitialMountRef.current) {
       // New session selected — always reveal the most recent messages so
       // stick-to-bottom engages without the user having to scroll down first.
@@ -119,7 +133,11 @@ export function ChatScrollManager({
       // the chat back to the bottom mid-navigation.
       const navigationSuppressed = Date.now() < suppressAutoScrollUntilRef.current
 
-      if (hasNewReviewPrompt && !navigationSuppressed) {
+      if (prependedOlder) {
+        // Older page(s) prepended above the viewport: leave the viewport where
+        // it is (useOlderHistoryLoader re-anchors it) and do not raise the
+        // new-activity pill — nothing new appeared at the bottom.
+      } else if (hasNewReviewPrompt && !navigationSuppressed) {
         // A fresh review-mode prompt needs a user decision — reveal it even
         // when the user had scrolled away from the bottom.
         viewport.scrollTop = viewport.scrollHeight

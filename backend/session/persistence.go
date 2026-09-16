@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -101,6 +102,15 @@ type SessionStore interface {
 	// Message operations
 	SaveMessage(ctx context.Context, msg ChatMessage) error
 	LoadMessages(ctx context.Context, sessionID string) ([]ChatMessage, error)
+	// LoadMessagesPage loads at most limit messages ordered ascending
+	// (created_at, id) that strictly precede the keyset cursor `before`. A nil
+	// cursor returns the NEWEST page (the tail of the session), which is what
+	// the UI loads first; passing the oldest row's cursor fetches the page
+	// before it. hasMore is true when older messages remain. Non-content
+	// activity rows (thinking, step_done) are excluded: the chat never renders
+	// them (frontend groupMessages drops both), so shipping them would only
+	// inflate the payload and the frontend store of a long session.
+	LoadMessagesPage(ctx context.Context, sessionID string, limit int, before *MessageCursor) (messages []ChatMessage, hasMore bool, err error)
 	DeleteMessages(ctx context.Context, sessionID string) error
 	// ResolvePendingMessage patches the metadata of the most recent message
 	// with the given role whose metadata[matchField] == matchValue, merging
@@ -775,6 +785,136 @@ func (s *SQLiteSessionStore) LoadMessages(ctx context.Context, sessionID string)
 	return messages, nil
 }
 
+// MessageCursor is a keyset-pagination cursor over the canonical message order
+// (created_at ASC, id ASC). CreatedAt is the RFC3339 UTC timestamp and ID the
+// autoincrement row id of the oldest message already loaded. It is encoded as
+// an opaque token (EncodeMessageCursor) that the frontend echoes back verbatim
+// as the `before` argument of GetSessionHistory, keeping the wire format an
+// implementation detail of this package.
+type MessageCursor struct {
+	CreatedAt string `json:"created_at"`
+	ID        int64  `json:"id"`
+}
+
+// HistoryPage is one page of a session's chat history returned by the paged
+// GetSessionHistory RPC. Messages are ordered oldest-first; NextCursor is the
+// opaque token to pass back as `before` for the preceding page ("" when the
+// page is empty), and HasMore reports whether older messages remain.
+type HistoryPage struct {
+	Messages   []ChatMessage `json:"messages"`
+	NextCursor string        `json:"next_cursor"`
+	HasMore    bool          `json:"has_more"`
+}
+
+// EncodeMessageCursor renders a cursor as the opaque "<created_at>|<id>" token
+// the frontend round-trips as `before`. created_at is a fixed-format UTC
+// RFC3339 string (no "|"), so splitting on the LAST "|" is unambiguous.
+func EncodeMessageCursor(c MessageCursor) string {
+	return c.CreatedAt + "|" + strconv.FormatInt(c.ID, 10)
+}
+
+// DecodeMessageCursor parses a token produced by EncodeMessageCursor. An empty
+// token yields (nil, nil) — "newest page". A malformed token is a hard error so
+// the caller rejects it rather than silently paging from the wrong offset
+// (which would duplicate or skip rows).
+func DecodeMessageCursor(token string) (*MessageCursor, error) {
+	if token == "" {
+		return nil, nil
+	}
+	i := strings.LastIndex(token, "|")
+	if i <= 0 || i == len(token)-1 {
+		return nil, fmt.Errorf("invalid history cursor %q", token)
+	}
+	id, err := strconv.ParseInt(token[i+1:], 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid history cursor id: %w", err)
+	}
+	return &MessageCursor{CreatedAt: token[:i], ID: id}, nil
+}
+
+// nonContentMessageRolesSQL lists the persisted roles that never produce a
+// display item (frontend groupMessages: 'thinking' and 'step_done' fall through
+// with no case). Paged history filters them out so a long session's payload and
+// frontend store stay bounded by real content rather than per-step activity
+// noise. They are still persisted (the executor emits them every step) — only
+// the read path drops them.
+const nonContentMessageRolesSQL = `('thinking', 'step_done')`
+
+// LoadMessagesPage implements keyset pagination over session_messages. The query
+// mirrors LoadMessages' canonical (created_at ASC, id ASC) order and fetches
+// the newest `limit` rows strictly older than `before` by walking that order
+// DESC with LIMIT limit+1 (the extra row detects hasMore without a second COUNT
+// query), then reverses to ascending. id participates in the comparison so
+// same-second rows (created_at has second granularity) page without overlap or
+// gaps.
+func (s *SQLiteSessionStore) LoadMessagesPage(ctx context.Context, sessionID string, limit int, before *MessageCursor) ([]ChatMessage, bool, error) {
+	if limit <= 0 {
+		return []ChatMessage{}, false, nil
+	}
+
+	where := `WHERE session_id = ? AND role NOT IN ` + nonContentMessageRolesSQL
+	args := []any{sessionID}
+	if before != nil {
+		// Row-value comparison: strictly before the cursor in (created_at, id).
+		where += ` AND (created_at, id) < (?, ?)`
+		args = append(args, before.CreatedAt, before.ID)
+	}
+	args = append(args, limit+1)
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, session_id, role, content, reasoning_content, tool_calls, metadata, created_at
+		FROM session_messages
+		`+where+`
+		ORDER BY created_at DESC, id DESC
+		LIMIT ?`, args...)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to load message page: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			s.log().Warn("failed to close database rows", "error", cerr)
+		}
+	}()
+
+	messages := []ChatMessage{}
+	for rows.Next() {
+		var msg ChatMessage
+		var metadataStr string
+		var reasoningStr, toolCallsStr sql.NullString
+		if err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &msg.Content, &reasoningStr, &toolCallsStr, &metadataStr, &msg.CreatedAt); err != nil {
+			return nil, false, fmt.Errorf("failed to scan message: %w", err)
+		}
+		if reasoningStr.Valid && reasoningStr.String != "" {
+			v := reasoningStr.String
+			msg.ReasoningContent = &v
+		}
+		if toolCallsStr.Valid && toolCallsStr.String != "" {
+			raw := json.RawMessage(toolCallsStr.String)
+			msg.ToolCalls = &raw
+		}
+		if metadataStr != "" {
+			msg.Metadata = json.RawMessage(metadataStr)
+		} else {
+			msg.Metadata = json.RawMessage("{}")
+		}
+		messages = append(messages, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("error iterating message page: %w", err)
+	}
+
+	hasMore := len(messages) > limit
+	if hasMore {
+		messages = messages[:limit]
+	}
+	// The query walked newest-first; flip to the ascending order the frontend
+	// (and the live event stream) expects.
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
+	return messages, hasMore, nil
+}
+
 // DeleteMessages deletes all messages for a session.
 func (s *SQLiteSessionStore) DeleteMessages(ctx context.Context, sessionID string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM session_messages WHERE session_id = ?`, sessionID)
@@ -826,11 +966,12 @@ func (s *SQLiteSessionStore) ResolvePendingMessage(ctx context.Context, sessionI
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("error iterating messages: %w", err)
 	}
-	// Release the pooled connection before the UPDATE below. With a single
-	// pooled connection (the production config: db.SetMaxOpenConns(1)), holding
-	// the read cursor open while issuing ExecContext would deadlock — the UPDATE
-	// blocks waiting for the very connection the cursor still holds. Closing
-	// here frees it first; the deferred Close below is an idempotent safety net.
+	// Release the read cursor before the UPDATE below so it does not keep a
+	// pool connection checked out for the duration of the write. The read and
+	// the write are separate autocommit transactions either way (WAL lets a
+	// writer proceed without blocking readers), but freeing the cursor promptly
+	// keeps connections available under concurrency. The deferred Close below
+	// is an idempotent safety net.
 	if cerr := rows.Close(); cerr != nil {
 		s.log().Warn("failed to close database rows", "error", cerr)
 	}
@@ -899,10 +1040,10 @@ func (s *SQLiteSessionStore) UpsertStepTodoUpdate(ctx context.Context, sessionID
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("error iterating messages: %w", err)
 	}
-	// Release the pooled connection before the write below. With a single pooled
-	// connection (the production config: db.SetMaxOpenConns(1)), holding the read
-	// cursor open while issuing ExecContext would deadlock — the UPDATE blocks
-	// waiting for the very connection the cursor still holds.
+	// Release the read cursor before the write below so it does not keep a pool
+	// connection checked out for the duration of the write (the read and write
+	// are separate autocommit transactions; WAL lets a writer proceed without
+	// blocking readers).
 	if cerr := rows.Close(); cerr != nil {
 		s.log().Warn("failed to close database rows", "error", cerr)
 	}
@@ -1325,25 +1466,35 @@ func (s *SQLiteSessionStore) SaveTaskStep(ctx context.Context, taskID string, st
 // AddTaskReflection appends a reflection JSON object to the task's reflections array.
 func (s *SQLiteSessionStore) AddTaskReflection(ctx context.Context, taskID string, reflectionJSON json.RawMessage) error {
 	// BEGIN IMMEDIATE prevents SQLITE_BUSY from deferred->write upgrade in WAL mode.
-	// NOTE: the raw BEGIN/COMMIT (rather than *sql.Tx) is only safe because the
-	// connection pool is pinned to a single connection via db.SetMaxOpenConns(1)
-	// (see backend.OpenDatabase) — this guarantees the BEGIN and its subsequent
-	// statements share one connection. Raising MaxOpenConns would break this and
-	// must be accompanied by a switch to *sql.Tx (which pins its own connection).
-	_, err := s.db.ExecContext(ctx, "BEGIN IMMEDIATE")
+	// The raw BEGIN/COMMIT is pinned to a single pooled connection via s.db.Conn:
+	// with a multi-connection pool (see backend.OpenDatabase) a bare
+	// ExecContext("BEGIN IMMEDIATE") could run on one connection while the SELECT
+	// and UPDATE run on others, splitting the transaction. BEGIN IMMEDIATE (over
+	// a deferred *sql.Tx) takes the write lock up front so the follow-up UPDATE
+	// cannot fail with SQLITE_BUSY on a deferred->write upgrade.
+	conn, err := s.db.Conn(ctx)
 	if err != nil {
+		return fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer func() {
+		if cerr := conn.Close(); cerr != nil {
+			s.log().Warn("failed to release task reflection connection", "error", cerr)
+		}
+	}()
+
+	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	//nolint:errcheck // Rollback on error is best-effort.
 	defer func() {
 		if err != nil {
-			s.db.ExecContext(context.Background(), "ROLLBACK")
+			conn.ExecContext(context.Background(), "ROLLBACK")
 		}
 	}()
 
 	// Read current reflections, append, write back.
 	var current string
-	err = s.db.QueryRowContext(ctx, `SELECT reflections FROM tasks WHERE id = ?`, taskID).Scan(&current)
+	err = conn.QueryRowContext(ctx, `SELECT reflections FROM tasks WHERE id = ?`, taskID).Scan(&current)
 	if err != nil {
 		return fmt.Errorf("failed to read task reflections: %w", err)
 	}
@@ -1362,12 +1513,12 @@ func (s *SQLiteSessionStore) AddTaskReflection(ctx context.Context, taskID strin
 		return err
 	}
 
-	_, err = s.db.ExecContext(ctx, `UPDATE tasks SET reflections = ? WHERE id = ?`, string(updated), taskID)
+	_, err = conn.ExecContext(ctx, `UPDATE tasks SET reflections = ? WHERE id = ?`, string(updated), taskID)
 	if err != nil {
 		return fmt.Errorf("failed to update task reflections: %w", err)
 	}
 
-	_, err = s.db.ExecContext(ctx, "COMMIT")
+	_, err = conn.ExecContext(ctx, "COMMIT")
 	if err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}

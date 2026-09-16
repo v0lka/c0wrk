@@ -99,6 +99,17 @@ interface ChatState {
   // the snapshot's older view of the same step (the snapshot is read BEFORE it
   // resolves, so a live event landing in that window is fresher).
   workUnitEventAt: Record<string, Record<string, number>>
+  // Paged-history bookkeeping per session. History is loaded one page at a
+  // time (backend GetSessionHistory with a keyset cursor) so opening a session
+  // with tens of thousands of rows only fetches the tail. `historyCursor` is
+  // the opaque cursor to fetch the PRECEDING page ("" once the oldest page is
+  // loaded / before the first page), `historyHasMore` is whether older pages
+  // remain, and `historyLoading` is true while a page fetch is in flight
+  // (scroll-up loading must not fire concurrently). Absent keys mean the
+  // session's history has not been paged yet.
+  historyCursor: Record<string, string>
+  historyHasMore: Record<string, boolean>
+  historyLoading: Record<string, boolean>
 }
 
 interface ChatActions {
@@ -108,6 +119,14 @@ interface ChatActions {
   upsertChecklistMessage: (sessionId: string, message: ChatMessageUI) => void
   setMessages: (sessionId: string, messages: ChatMessageUI[]) => void
   mergeHistoryMessages: (sessionId: string, history: ChatMessageUI[], loadStartedAt: number) => void
+  /** Record the paging cursor + hasMore for a session after a history page
+   *  load (cursor "" and hasMore false when the oldest page was reached). */
+  setHistoryPageMeta: (sessionId: string, cursor: string, hasMore: boolean) => void
+  /** Toggle the in-flight flag guarding concurrent older-page fetches. */
+  setHistoryLoading: (sessionId: string, loading: boolean) => void
+  /** Prepend an older history page (deduped by id, ascending) and advance the
+   *  paging cursor. Existing (newer) messages and any live messages are kept. */
+  prependHistoryMessages: (sessionId: string, messages: ChatMessageUI[], cursor: string, hasMore: boolean) => void
   setStreamingText: (sessionId: string, text: string) => void
   appendStreamingText: (sessionId: string, delta: string) => void
   clearStreamingText: (sessionId: string) => void
@@ -217,6 +236,9 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   taskFlagsEventAt: {},
   workUnitStatus: {},
   workUnitEventAt: {},
+  historyCursor: {},
+  historyHasMore: {},
+  historyLoading: {},
 
   addMessage: (sessionId, message) => set((s) => {
     const sessionIndex = s.messages[sessionId] ?? {}
@@ -358,6 +380,51 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
     return {
       messages: { ...s.messages, [sessionId]: indexMessages(merged) },
       messageOrder: { ...s.messageOrder, [sessionId]: merged.map(m => m.id) },
+    }
+  }),
+
+  // Record the paging cursor/hasMore after a history page load. Kept separate
+  // from mergeHistoryMessages so the (older) prepend path and the (newest)
+  // initial path share one place that owns the cursor contract.
+  setHistoryPageMeta: (sessionId, cursor, hasMore) => set((s) => ({
+    historyCursor: { ...s.historyCursor, [sessionId]: cursor },
+    historyHasMore: { ...s.historyHasMore, [sessionId]: hasMore },
+  })),
+
+  // In-flight guard for older-page fetches. Clearing deletes the key so no
+  // state change is emitted for sessions that were never loading (keeps the
+  // map reference stable — React #185).
+  setHistoryLoading: (sessionId, loading) => set((s) => {
+    if (!loading) {
+      if (!(sessionId in s.historyLoading)) return s
+      const { [sessionId]: _drop, ...rest } = s.historyLoading
+      return { historyLoading: rest }
+    }
+    return { historyLoading: { ...s.historyLoading, [sessionId]: true } }
+  }),
+
+  // Prepend an OLDER page of history before the current messages. Rows already
+  // present (by id) are skipped so a re-fetch or an overlap cannot duplicate a
+  // message; the page's own stream order is preserved ahead of what is already
+  // loaded. Advances the cursor atomically with the message insert so the next
+  // scroll-up fetches the page before this one.
+  prependHistoryMessages: (sessionId, messages, cursor, hasMore) => set((s) => {
+    const existingIndex = s.messages[sessionId] ?? {}
+    const existingOrder = s.messageOrder[sessionId] ?? []
+    const known = new Set(existingOrder)
+    const prepend: ChatMessageUI[] = []
+    for (const m of messages) {
+      if (known.has(m.id)) continue
+      known.add(m.id)
+      prepend.push(m)
+    }
+    const nextIndex = { ...existingIndex }
+    for (const m of prepend) nextIndex[m.id] = m
+    return {
+      messages: { ...s.messages, [sessionId]: nextIndex },
+      messageOrder: { ...s.messageOrder, [sessionId]: [...prepend.map(m => m.id), ...existingOrder] },
+      historyCursor: { ...s.historyCursor, [sessionId]: cursor },
+      historyHasMore: { ...s.historyHasMore, [sessionId]: hasMore },
     }
   }),
 

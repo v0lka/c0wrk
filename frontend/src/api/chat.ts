@@ -53,15 +53,47 @@ export async function cancelTask(sessionId: string): Promise<void> {
   }
 }
 
-export async function getSessionHistory(sessionId: string): Promise<ChatMessage[]> {
+/** One page of a session's chat history (backend GetSessionHistory). Messages
+ *  are ordered oldest-first within the page. */
+export interface SessionHistoryPage {
+  messages: ChatMessage[]
+  /** Opaque keyset cursor; pass back as `before` to fetch the preceding
+   *  (older) page. Empty string when the page is empty. */
+  next_cursor: string
+  /** True when older messages remain before this page. */
+  has_more: boolean
+}
+
+const EMPTY_HISTORY_PAGE: SessionHistoryPage = { messages: [], next_cursor: '', has_more: false }
+
+// isSessionHistoryPage validates the paged-history response. Go marshals a nil
+// slice to JSON null, so a session with no history legitimately arrives as
+// {messages: null, ...} — treat null as an empty list rather than rejecting.
+function isSessionHistoryPage(d: unknown): d is SessionHistoryPage {
+  if (typeof d !== 'object' || d === null) return false
+  const o = d as Record<string, unknown>
+  const msgs = o.messages
+  return (msgs === undefined || msgs === null || (Array.isArray(msgs) && isArrayOf(msgs, isChatMessage)))
+    && typeof o.next_cursor === 'string'
+    && typeof o.has_more === 'boolean'
+}
+
+/**
+ * Fetch one page of a session's chat history. The first call (before === "")
+ * returns the NEWEST page; pass the returned `next_cursor` back as `before` to
+ * walk older pages, so a long session is never loaded in one shot. `limit<=0`
+ * lets the backend apply its default.
+ */
+export async function getSessionHistory(sessionId: string, limit = 0, before = ''): Promise<SessionHistoryPage> {
   try {
     const app = getApp()
-    const result = await app.GetSessionHistory(sessionId)
-    if (!isArrayOf(result, isChatMessage)) {
-      logger.error('getSessionHistory: unexpected response shape, returning []', result)
-      return []
+    const result = await app.GetSessionHistory(sessionId, limit, before)
+    if (!isSessionHistoryPage(result)) {
+      logger.error('getSessionHistory: unexpected response shape, returning empty page', result)
+      return EMPTY_HISTORY_PAGE
     }
-    return result
+    // Normalize a Go nil slice (JSON null) to an empty array for consumers.
+    return { messages: result.messages ?? [], next_cursor: result.next_cursor, has_more: result.has_more }
   } catch (err) {
     logger.error('Failed to get session history:', err)
     throw err

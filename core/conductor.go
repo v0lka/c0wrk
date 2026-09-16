@@ -413,8 +413,12 @@ type conductorDeps struct {
 	reflector        *reflector.Reflector
 	maxRedelegDepth  int
 	maxDepCtxChars   int
-	reasoningEffort  string
-	preWarningPct    int
+	// maxParallelSubagents caps concurrent subagents, enforced at the single
+	// sp4rk RunSubAgentsParallel chokepoint both the delegate tool and plan
+	// waves funnel through (see conductorLauncher.runSubAgentsParallel).
+	maxParallelSubagents int
+	reasoningEffort      string
+	preWarningPct        int
 
 	// lifecycle is the inline plan-step lifecycle tracker. It is created in
 	// RunConductor (from emitter + blackboard) and threaded in here so the
@@ -1043,6 +1047,16 @@ type planStepOutcome struct {
 	err    error
 }
 
+// runSubAgentsParallel is the SINGLE dispatch point through which both the
+// plan-wave path (defaultPlanStepWave) and the blocking-delegate path
+// (runRegularBlocking) launch their subagents. It applies the configured
+// max-parallel cap here, once, so the limit holds for every delegation kind —
+// plan-wave and delegate alike — instead of being re-implemented per path.
+// A zero/unset cap is passed through as "unlimited" (the sp4rk default).
+func (l *conductorLauncher) runSubAgentsParallel(ctx context.Context, tasks []agent.SubAgentTask) []agent.SubAgentResult {
+	return agent.RunSubAgentsParallel(ctx, tasks, agent.WithMaxParallelSubagents(l.deps.maxParallelSubagents))
+}
+
 // defaultPlanStepWave is the production wave dispatcher: it builds an isolated
 // subagent executor per ready step and runs the wave concurrently via
 // agent.RunSubAgentsParallel. Steps whose task construction fails are returned
@@ -1084,7 +1098,7 @@ func (l *conductorLauncher) defaultPlanStepWave(ctx context.Context, ready []orc
 		subTasks = append(subTasks, st)
 	}
 
-	for _, sr := range agent.RunSubAgentsParallel(ctx, subTasks) {
+	for _, sr := range l.runSubAgentsParallel(ctx, subTasks) {
 		if isPaused(sr.Error) {
 			l.persistUnitOutcome(sr.StepID, sr.Output, sr.Error, sr.Steps)
 			outcomes = append(outcomes, planStepOutcome{
@@ -1440,7 +1454,7 @@ func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tool
 		return buildFailures
 	}
 
-	subResults := agent.RunSubAgentsParallel(subCtx, subTasks)
+	subResults := l.runSubAgentsParallel(subCtx, subTasks)
 	out := make([]tools.DelegationResult, 0, len(subResults)+len(buildFailures))
 	out = append(out, buildFailures...)
 	for _, sr := range subResults {
@@ -2842,33 +2856,34 @@ func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orch
 // propose_goal tool can reach the desktop approval flow during derivation.
 func (o *Orchestrator) buildConductorDeps(conversationHistory []llm.Message, resumeSteps []agent.Step) conductorDeps {
 	return conductorDeps{
-		contextFactory:      o.contextFactory,
-		toolExec:            o.toolExec,
-		toolRegistry:        o.toolRegistry,
-		disabledTools:       o.disabledToolNames(),
-		llm:                 o.llm,
-		modelRegistry:       o.modelRegistry,
-		model:               o.currentModel(),
-		tokenCounter:        o.tokenCounter,
-		emitter:             o.emitter,
-		logger:              o.logger,
-		trackingCaller:      o.trackingCaller,
-		providerName:        o.providerName,
-		stepDumpTracker:     o.stepDumpTracker,
-		toolCache:           o.toolCache,
-		perToolTrunc:        o.perToolTrunc,
-		toolResultBudget:    o.toolResultBudget,
-		circuitBreaker:      o.circuitBreaker,
-		hitlHandler:         o.config.HITLHandler,
-		reflector:           o.reflector,
-		maxRedelegDepth:     o.config.MaxRedelegationDepth,
-		maxDepCtxChars:      o.config.MaxDependencyContextChars,
-		reasoningEffort:     o.currentReasoningEffort(),
-		preWarningPct:       o.config.PreWarningPercent,
-		conversationHistory: conversationHistory,
-		taskStore:           o.taskStore,
-		resumeSteps:         resumeSteps,
-		goalProposer:        o.goalProposer,
+		contextFactory:       o.contextFactory,
+		toolExec:             o.toolExec,
+		toolRegistry:         o.toolRegistry,
+		disabledTools:        o.disabledToolNames(),
+		llm:                  o.llm,
+		modelRegistry:        o.modelRegistry,
+		model:                o.currentModel(),
+		tokenCounter:         o.tokenCounter,
+		emitter:              o.emitter,
+		logger:               o.logger,
+		trackingCaller:       o.trackingCaller,
+		providerName:         o.providerName,
+		stepDumpTracker:      o.stepDumpTracker,
+		toolCache:            o.toolCache,
+		perToolTrunc:         o.perToolTrunc,
+		toolResultBudget:     o.toolResultBudget,
+		circuitBreaker:       o.circuitBreaker,
+		hitlHandler:          o.config.HITLHandler,
+		reflector:            o.reflector,
+		maxRedelegDepth:      o.config.MaxRedelegationDepth,
+		maxDepCtxChars:       o.config.MaxDependencyContextChars,
+		maxParallelSubagents: o.config.MaxParallelSubagents,
+		reasoningEffort:      o.currentReasoningEffort(),
+		preWarningPct:        o.config.PreWarningPercent,
+		conversationHistory:  conversationHistory,
+		taskStore:            o.taskStore,
+		resumeSteps:          resumeSteps,
+		goalProposer:         o.goalProposer,
 		// agentResolver exposes the discovered Subagent Profiles to the
 		// Conductor context so buildSubAgentTask can apply a requested
 		// profile. Built from the agentManager; nil-safe when none configured

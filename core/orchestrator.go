@@ -184,6 +184,7 @@ type OrchestratorConfig struct {
 	KeepFirst                 int    // for sliding window compaction
 	KeepLast                  int    // for sliding window compaction
 	MaxDependencyContextChars int    // max chars for dependency context in delegation tasks (default: 8000)
+	MaxParallelSubagents      int    // cap on concurrent subagents, shared by delegate and plan waves (default: 4)
 	Model                     string // active model name for ModelRegistry.Resolve()
 
 	// Compaction carries the full executor compaction settings (Model Profiles
@@ -867,6 +868,9 @@ type OrchestratorDeps struct {
 func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrator {
 	if cfg.MaxRedelegationDepth == 0 {
 		cfg.MaxRedelegationDepth = 2
+	}
+	if cfg.MaxParallelSubagents == 0 {
+		cfg.MaxParallelSubagents = 4
 	}
 	if cfg.KeepFirst == 0 {
 		cfg.KeepFirst = 3

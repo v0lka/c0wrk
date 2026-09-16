@@ -1,6 +1,8 @@
+import { memo } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
 import { bookmarkKey } from '@/lib/bookmarks'
+import { areDisplayItemsEqual } from '@/lib/displayItemStability'
 import type { DisplayItem } from '@/types/messages'
 
 type ReflectionItem = Extract<DisplayItem, { kind: 'reflection' }>
@@ -11,7 +13,7 @@ const actionBadgeColors: Record<string, string> = {
   abort: 'bg-destructive/15 text-destructive border-destructive/30',
 }
 
-export function ReflectionBlock({ item }: { item: ReflectionItem }) {
+export const ReflectionBlock = memo(function ReflectionBlock({ item }: { item: ReflectionItem }) {
   const { summary, suggestedAction, rootCause, failureAnalysis, actionPlan, reasoning, hypotheses, attempt, maxAttempts } = item
   const badgeColor = actionBadgeColors[suggestedAction] ?? 'bg-muted text-muted-foreground border-border'
   const hasDetails = rootCause || actionPlan || failureAnalysis || reasoning || hypotheses.length > 0
@@ -60,4 +62,4 @@ export function ReflectionBlock({ item }: { item: ReflectionItem }) {
       )}
     </div>
   )
-}
+}, (prev, next) => prev.item === next.item || areDisplayItemsEqual(prev.item, next.item))

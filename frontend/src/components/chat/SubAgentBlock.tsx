@@ -1,7 +1,8 @@
-import { useContext, useEffect, useMemo, useState } from 'react'
+import { memo, useContext, useEffect, useMemo, useState } from 'react'
 import { Bot, Loader2, CheckCircle2, XCircle, CirclePause, CircleSlash } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { bookmarkKey } from '@/lib/bookmarks'
+import { areDisplayItemsEqual } from '@/lib/displayItemStability'
 import { formatDuration } from '@/lib/formatters'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
 import { StepTooltip } from './StepTooltip'
@@ -21,7 +22,7 @@ const statusConfig = {
   interrupted: { Icon: CircleSlash, iconClass: 'text-muted-foreground' },
 } as const
 
-export function SubAgentBlock({ item }: { item: SubAgentItem }) {
+export const SubAgentBlock = memo(function SubAgentBlock({ item }: { item: SubAgentItem }) {
   const { stepId, description, status, duration, error, children } = item
   const bookmarkable = useContext(BookmarkableContext)
 
@@ -81,4 +82,4 @@ export function SubAgentBlock({ item }: { item: SubAgentItem }) {
       </div>
     </CollapsibleBlock>
   )
-}
+}, (prev, next) => prev.item === next.item || areDisplayItemsEqual(prev.item, next.item))

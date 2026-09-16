@@ -1,4 +1,4 @@
-import { isValidElement, useEffect, useMemo, useState, type AnchorHTMLAttributes, type ReactNode } from 'react'
+import { isValidElement, memo, useEffect, useMemo, useState, type AnchorHTMLAttributes, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkEmoji from 'remark-emoji'
@@ -15,6 +15,7 @@ import { EXTERNAL_SRC_RE, candidateImagePaths } from '@/lib/markdownImageResolve
 import { resolveChatWorkspaceRoot } from '@/lib/chatWorkspaceRoot'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { MermaidBlock } from '@/components/chat/MermaidBlock'
+import { getMarkdownNode } from './markdownCache'
 import type { PluggableList } from 'unified'
 
 // Custom sanitize schema — extends default to allow highlight.js classes,
@@ -261,13 +262,33 @@ interface MarkdownProps {
   workspaceRoot?: string | null
 }
 
-export function Markdown({ content, className, compact, baseFilePath, workspaceRoot }: MarkdownProps) {
-  const components = useMemo(
-    () => createMarkdownComponents(baseFilePath, workspaceRoot),
-    [baseFilePath, workspaceRoot],
-  )
-  return (
-    <div className={cn('prose prose-sm max-w-none', compact && 'prose-xs', className)}>
+// --- Parsed-markdown node cache ---------------------------------------------
+//
+// The bounded LRU of parsed render nodes lives in ./markdownCache (its own
+// module: this file exports a component, so it must not also export
+// non-components without breaking React Fast Refresh). Caching the mounted
+// `<ReactMarkdown>` ELEMENT by (content, resolution variant) lets React bail
+// out of re-rendering that subtree — an identical element carries an identical
+// `props` object, so `beginWork` short-circuits and the parse never runs again.
+
+/**
+ * Markdown renderer.
+ *
+ * Memoized on its props so an unchanged `content` short-circuits before the
+ * parse; a re-render that does happen still reuses the cached parse node, so
+ * the remark/rehype pipeline never runs twice for the same input.
+ */
+export const Markdown = memo(
+  function Markdown({ content, className, compact, baseFilePath, workspaceRoot }: MarkdownProps) {
+    const components = useMemo(
+      () => createMarkdownComponents(baseFilePath, workspaceRoot),
+      [baseFilePath, workspaceRoot],
+    )
+    // Two different documents must not share a parse node — relative image and
+    // local-file resolution depend on the base path — so the variant (base file
+    // + workspace root) is part of the key, not just the content.
+    const key = `${baseFilePath ?? ''}\u0000${workspaceRoot ?? ''}\u0001${content}`
+    const body = getMarkdownNode(key, () => (
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
@@ -275,6 +296,17 @@ export function Markdown({ content, className, compact, baseFilePath, workspaceR
       >
         {content}
       </ReactMarkdown>
-    </div>
-  )
-}
+    ))
+    return (
+      <div className={cn('prose prose-sm max-w-none', compact && 'prose-xs', className)}>
+        {body}
+      </div>
+    )
+  },
+  (prev, next) =>
+    prev.content === next.content &&
+    prev.className === next.className &&
+    prev.compact === next.compact &&
+    prev.baseFilePath === next.baseFilePath &&
+    prev.workspaceRoot === next.workspaceRoot,
+)
