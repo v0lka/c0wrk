@@ -394,6 +394,27 @@ func TestBuildSystemPrompt_GoalTurnCompletionReplacesSingleStep(t *testing.T) {
 	}
 }
 
+// TestBuildSystemPrompt_GoalTurnReplacesPlanContextOnFreshTurn verifies the
+// goal-turn completion directive also replaces the plan-context block on a FRESH
+// goal turn. prepareRequestContext always sets PlanModeKey, so without the goal
+// branch first the mode selector would emit OrchestratorPlanContext — a block
+// that frames the run as one step of a larger plan ending in `finish`, which
+// contradicts goal mode's per-turn protocol (a turn ends on declare_goal_status).
+// This locks in the (documented) decision that the plan-context block is
+// intentionally replaced on goal runs — fresh and resumed alike.
+func TestBuildSystemPrompt_GoalTurnReplacesPlanContextOnFreshTurn(t *testing.T) {
+	gs := &goal.GoalState{Condition: "Ship it.", VerifyClause: "go test ./... exits 0"}
+	ctx := WithGoalState(context.WithValue(context.Background(), PlanModeKey, true), gs)
+
+	sysprompt := buildSystemPrompt(ctx, "do the thing", llmModelMetaForTests())
+	if !strings.Contains(sysprompt, "operating in goal mode") {
+		t.Error("expected the goal-turn completion directive on a fresh goal run")
+	}
+	if strings.Contains(sysprompt, "Plan Context") {
+		t.Error("the plan-context block must be replaced by the goal-turn directive on a goal run")
+	}
+}
+
 func TestBuildSystemPrompt_ReviewSection_PresentWhenActive(t *testing.T) {
 	ctx := WithReviewMode(context.Background())
 

@@ -2288,3 +2288,34 @@ func TestRunConductor_StopToolEndsTurn(t *testing.T) {
 		t.Errorf("sink verdict = %+v, want not_met (the declared verdict was captured before the run ended)", v)
 	}
 }
+
+// TestExecResultOutput_PrefersSummary verifies the independent verifier's seed
+// (lastTurnOutput) is the met turn's modeled output, not the stop tool's short
+// confirmation: a goal turn ends on the declare_goal_status STOP TOOL, so
+// ExecutionResult.Output holds only the confirmation string while the model's
+// final text is preserved in Summary. The seed must prefer Summary so the
+// verifier's read_final_result returns the real work, falling back to Output
+// only for a run that ended on `finish` (or without a stop tool).
+func TestExecResultOutput_PrefersSummary(t *testing.T) {
+	tests := []struct {
+		name string
+		in   *orchestration.ExecutionResult
+		want string
+	}{
+		{"nil result yields empty", nil, ""},
+		{"summary wins over the stop-tool confirmation", &orchestration.ExecutionResult{
+			Output:  "Verdict recorded: goal MET with 1 evidence item(s). done.",
+			Summary: "I implemented X and ran go test ./... which exits 0",
+		}, "I implemented X and ran go test ./... which exits 0"},
+		{"falls back to output when summary is empty (finish path)", &orchestration.ExecutionResult{
+			Output: "the finish answer",
+		}, "the finish answer"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := execResultOutput(tt.in); got != tt.want {
+				t.Errorf("execResultOutput = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

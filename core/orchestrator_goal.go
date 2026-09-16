@@ -898,15 +898,26 @@ func (o *Orchestrator) runGoalTurns(
 	return gs, paused
 }
 
-// execResultOutput extracts the met turn's work product (Output) from the
-// turn-runner's ExecutionResult. It is threaded into the verifier so the fresh
-// verification blackboard can be seeded with the real work product (via
-// SetFinalResult) — eliminating the "no final result recorded" symptom the
-// verifier's read_final_result previously hit when run on a fresh blackboard.
-// A nil result yields the empty string (the verifier seeds nothing).
+// execResultOutput extracts the met turn's work product from the turn-runner's
+// ExecutionResult. It is threaded into the verifier so the fresh verification
+// blackboard can be seeded with the real work product (via SetFinalResult) —
+// eliminating the "no final result recorded" symptom the verifier's
+// read_final_result previously hit when run on a fresh blackboard.
+//
+// A goal turn ends on the declare_goal_status STOP TOOL (see runGoalTurns), so
+// ExecutionResult.Output holds only the tool's short confirmation string
+// ("Verdict recorded: …"), not the turn's modeled output. The model's own final
+// text is preserved separately in ExecutionResult.Summary (the executor captures
+// the assistant message at the stop-tool termination), so Summary is preferred;
+// a run that ended on `finish` (or ran without a stop tool) has an empty Summary
+// and falls back to Output. A nil result yields the empty string (the verifier
+// seeds nothing).
 func execResultOutput(r *orchestration.ExecutionResult) string {
 	if r == nil {
 		return ""
+	}
+	if r.Summary != "" {
+		return r.Summary
 	}
 	return r.Output
 }
@@ -1369,7 +1380,8 @@ func renderReportedEvidence(verdict *goal.Verdict) string {
 // (orchestration.NewMapBlackboard), NOT the goal loop's blackboard, so it is a
 // genuinely separate execution context with no leak of the still-active goal
 // task's incomplete state. It is seeded with lastTurnOutput (the met turn's
-// work product) via SetFinalResult, so the verifier's own read_final_result
+// modeled output — ExecutionResult.Summary, falling back to Output; see
+// execResultOutput) via SetFinalResult, so the verifier's own read_final_result
 // returns the real work — eliminating the "no final result recorded" symptom
 // that arose when a fresh-context verifier could not reach the goal task's
 // output. The reported-evidence injection (renderReportedEvidence into the
@@ -1429,12 +1441,13 @@ func (o *Orchestrator) defaultGoalVerifier(
 	// Run on a FRESH blackboard so the verifier is a genuinely separate
 	// execution context — it does not inherit the still-active goal task's
 	// incomplete state (partial plan, pending step outputs, etc.). Seed it with
-	// the met turn's work product (lastTurnOutput) via SetFinalResult so the
-	// verifier's own read_final_result returns the real work, not "no final
-	// result recorded" — the broken-dependency symptom that arose when a
-	// fresh-context verifier could not reach the goal task's output. The
-	// original request is seeded too so the fresh blackboard mirrors a normal
-	// task's initial state.
+	// the met turn's work product (lastTurnOutput — the model's final text, or
+	// the turn output when the run ended on `finish`; see execResultOutput) via
+	// SetFinalResult so the verifier's own read_final_result returns the real
+	// work, not the stop tool's confirmation, and not "no final result recorded"
+	// — the broken-dependency symptom that arose when a fresh-context verifier
+	// could not reach the goal task's output. The original request is seeded too
+	// so the fresh blackboard mirrors a normal task's initial state.
 	verifierBB := orchestration.NewMapBlackboard()
 	verifierBB.SetOriginalRequest(message)
 	if lastTurnOutput != "" {
