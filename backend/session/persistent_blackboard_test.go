@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"sync"
@@ -214,13 +215,16 @@ func (m *mockTaskPersistence) ReactivateTask(taskID string) error {
 // Tests
 // ---------------------------------------------------------------------------
 
-func testLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+// testLogger returns a text-format logger for tests that need the nil-safe
+// logging path wired: it writes records at Error level and above to w. Pass
+// os.Stderr for visible output, io.Discard to keep a test quiet.
+func testLogger(w io.Writer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
 func TestPersistentBlackboard_SetOriginalRequest(t *testing.T) {
 	mock := &mockTaskPersistence{}
-	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger(os.Stderr))
 
 	pb.SetOriginalRequest("build a CLI tool")
 
@@ -243,7 +247,7 @@ func TestPersistentBlackboard_SetOriginalRequest(t *testing.T) {
 
 func TestPersistentBlackboard_SetPlan(t *testing.T) {
 	mock := &mockTaskPersistence{}
-	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger(os.Stderr))
 
 	plan := &orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "step_1", Description: "write code"}}}
 	pb.SetPlan(plan)
@@ -264,7 +268,7 @@ func TestPersistentBlackboard_SetPlan(t *testing.T) {
 
 func TestPersistentBlackboard_SetStepResult(t *testing.T) {
 	mock := &mockTaskPersistence{}
-	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger(os.Stderr))
 
 	testErr := errors.New("step failed")
 	steps := []agent.Step{{Thought: "thinking"}}
@@ -299,7 +303,7 @@ func TestPersistentBlackboard_SetStepResult(t *testing.T) {
 
 func TestPersistentBlackboard_AddReflection(t *testing.T) {
 	mock := &mockTaskPersistence{}
-	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger(os.Stderr))
 
 	r := orchestration.Reflection{Summary: "things went wrong", SuggestedAction: "retry"}
 	pb.AddReflection(r)
@@ -323,7 +327,7 @@ func TestPersistentBlackboard_AddReflection(t *testing.T) {
 
 func TestPersistentBlackboard_SetFinalResult(t *testing.T) {
 	mock := &mockTaskPersistence{}
-	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger(os.Stderr))
 
 	pb.SetFinalResult("task completed")
 
@@ -342,7 +346,7 @@ func TestPersistentBlackboard_SetFinalResult(t *testing.T) {
 
 func TestPersistentBlackboard_CompleteTask(t *testing.T) {
 	mock := &mockTaskPersistence{}
-	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger(os.Stderr))
 
 	pb.SetFinalResult("all done")
 	pb.CompleteTask(3)
@@ -366,7 +370,7 @@ func TestPersistentBlackboard_CompleteTask(t *testing.T) {
 
 func TestPersistentBlackboard_FailTask(t *testing.T) {
 	mock := &mockTaskPersistence{}
-	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger(os.Stderr))
 
 	pb.FailTask()
 
@@ -382,7 +386,7 @@ func TestPersistentBlackboard_FailTask(t *testing.T) {
 
 func TestPersistentBlackboard_ReadDelegation(t *testing.T) {
 	mock := &mockTaskPersistence{}
-	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger(os.Stderr))
 
 	// Populate via MapBlackboard-level writes
 	pb.SetOriginalRequest("req")
@@ -417,7 +421,7 @@ func TestPersistentBlackboard_ReadDelegation(t *testing.T) {
 
 func TestPersistentBlackboard_BestEffortErrors(t *testing.T) {
 	mock := &mockTaskPersistence{persistError: errors.New("storage down")}
-	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger(os.Stderr))
 
 	// All write methods should NOT panic even though persistence fails
 	pb.SetOriginalRequest("req")
@@ -450,7 +454,7 @@ func TestPersistentBlackboard_NilLogger(t *testing.T) {
 
 func TestPersistentBlackboard_SetRouting(t *testing.T) {
 	mock := &mockTaskPersistence{}
-	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger(os.Stderr))
 
 	routing := &router.RoutingDecision{Domain: "code", Complexity: 3}
 	pb.SetRouting(routing)
@@ -490,7 +494,7 @@ func TestRestoreBlackboard(t *testing.T) {
 		},
 	}
 
-	pb, err := RestoreBlackboard("t1", "s1", mock, testLogger())
+	pb, err := RestoreBlackboard("t1", "s1", mock, testLogger(os.Stderr))
 	if err != nil {
 		t.Fatalf("RestoreBlackboard failed: %v", err)
 	}
@@ -526,7 +530,7 @@ func TestRestoreBlackboard(t *testing.T) {
 func TestRestoreBlackboard_NotFound(t *testing.T) {
 	mock := &mockTaskPersistence{loadState: nil, loadErr: nil}
 
-	pb, err := RestoreBlackboard("t1", "s1", mock, testLogger())
+	pb, err := RestoreBlackboard("t1", "s1", mock, testLogger(os.Stderr))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -538,7 +542,7 @@ func TestRestoreBlackboard_NotFound(t *testing.T) {
 func TestRestoreBlackboard_Error(t *testing.T) {
 	mock := &mockTaskPersistence{loadErr: errors.New("db error")}
 
-	_, err := RestoreBlackboard("t1", "s1", mock, testLogger())
+	_, err := RestoreBlackboard("t1", "s1", mock, testLogger(os.Stderr))
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -546,7 +550,7 @@ func TestRestoreBlackboard_Error(t *testing.T) {
 
 func TestPersistentBlackboard_NotifyChanged(t *testing.T) {
 	mock := &mockTaskPersistence{}
-	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger(os.Stderr))
 
 	var changes []string
 	var mu sync.Mutex
@@ -583,7 +587,7 @@ func TestPersistentBlackboard_NotifyChanged(t *testing.T) {
 
 func TestPersistentBlackboard_NotifyChanged_NilSafe(t *testing.T) {
 	mock := &mockTaskPersistence{}
-	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger(os.Stderr))
 
 	// No callback set — should not panic.
 	pb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "s1", Description: "d"}}})
@@ -608,7 +612,7 @@ func TestPersistentBlackboard_StoreFact_PersistsAllUnderConcurrentBurst(t *testi
 	// overflow the 8-slot buffer. Total drain time (~240ms) stays far below the
 	// 5s enqueue deadline, so the assertion is timing-robust.
 	mock := &mockTaskPersistence{factDelay: 20 * time.Millisecond}
-	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger(os.Stderr))
 
 	var factNotifications atomic.Int64
 	pb.SetOnChanged(func(changeType string) {
@@ -647,7 +651,7 @@ func TestPersistentBlackboard_StoreFact_PersistsAllUnderConcurrentBurst(t *testi
 // the frontend refetch reads SQLite and would show state without the fact.
 func TestPersistentBlackboard_StoreFact_NoNotifyWhenPersistFails(t *testing.T) {
 	mock := &mockTaskPersistence{persistError: errors.New("db locked")}
-	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger(os.Stderr))
 
 	var factNotifications atomic.Int64
 	pb.SetOnChanged(func(changeType string) {
@@ -673,7 +677,7 @@ func TestPersistentBlackboard_StoreFact_NoNotifyWhenPersistFails(t *testing.T) {
 func TestPersistentBlackboard_StoreFact_NoNotifyWhenPersistTimesOut(t *testing.T) {
 	block := make(chan struct{})
 	mock := &mockTaskPersistence{factBlock: block}
-	pb := NewPersistentBlackboardWithTimeout("t1", "s1", mock, testLogger(), 50*time.Millisecond)
+	pb := NewPersistentBlackboardWithTimeout("t1", "s1", mock, testLogger(os.Stderr), 50*time.Millisecond)
 
 	var factNotifications atomic.Int64
 	pb.SetOnChanged(func(changeType string) {

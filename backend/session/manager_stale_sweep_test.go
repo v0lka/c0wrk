@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"os"
 	"sync"
 	"testing"
 
@@ -100,7 +101,7 @@ func TestEmitTaskComplete_SuccessSweepsStaleUnfinishedTasks(t *testing.T) {
 	result := &core.HandleResult{
 		Output:     "done",
 		Status:     orchestration.ExecutionStatusSuccess,
-		Blackboard: NewPersistentBlackboard("task-done", "sess-1", NewTaskStoreAdapter(store), testLogger()),
+		Blackboard: NewPersistentBlackboard("task-done", "sess-1", NewTaskStoreAdapter(store), testLogger(os.Stderr)),
 	}
 	manager.emitTaskComplete("sess-1", result, nil)
 
@@ -153,7 +154,7 @@ func TestEmitTaskComplete_SuccessNoSweepWithoutOrphans(t *testing.T) {
 	result := &core.HandleResult{
 		Output:     "done",
 		Status:     orchestration.ExecutionStatusSuccess,
-		Blackboard: NewPersistentBlackboard("task-done", "sess-1", NewTaskStoreAdapter(store), testLogger()),
+		Blackboard: NewPersistentBlackboard("task-done", "sess-1", NewTaskStoreAdapter(store), testLogger(os.Stderr)),
 	}
 	manager.emitTaskComplete("sess-1", result, nil)
 

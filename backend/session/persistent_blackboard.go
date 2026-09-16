@@ -309,6 +309,21 @@ func (pb *PersistentBlackboard) Shutdown(timeout time.Duration) {
 	}
 }
 
+// persistenceWorkerStopped reports whether the background persistence worker
+// has already exited — through a terminal finalizer
+// (CompleteTask/FailTask/CancelTask) or a Shutdown call. The session manager
+// uses it to prune finished blackboards from its shutdown tracking list: a
+// stopped worker no longer needs joining, while a live one (running or paused
+// task) is exactly what Shutdown must stop.
+func (pb *PersistentBlackboard) persistenceWorkerStopped() bool {
+	select {
+	case <-pb.persistDone:
+		return true
+	default:
+		return false
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Write method overrides
 // ---------------------------------------------------------------------------

@@ -100,8 +100,8 @@ func retryRemoveAll(dir string) error {
 // runtimeTempDir creates a fresh directory under the OS temp root and registers
 // a retrying cleanup for it, returning the directory path.
 //
-// Use it instead of runtimeTempDir(t) in tests that hand the directory to a Manager
-// whose Shutdown runs via t.Cleanup: runtimeTempDir(t)'s per-test temp *parent* is
+// Use it instead of t.TempDir() in tests that hand the directory to a Manager
+// whose Shutdown runs via t.Cleanup: t.TempDir()'s per-test temp *parent* is
 // torn down by testing's single non-retrying os.RemoveAll, so any entry a
 // not-yet-joined background goroutine appends during teardown fails the whole
 // test with "TempDir RemoveAll cleanup: ... directory not empty" (see

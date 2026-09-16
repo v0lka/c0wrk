@@ -2,17 +2,10 @@ package session
 
 import (
 	"io"
-	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
 )
-
-// newDiscardLogger returns a logger that swallows every record, for tests that
-// only need the nil-safe logging path to be wired.
-func newDiscardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
 
 // TestBackgroundTracker_CloseAndWaitJoinsTrackedGoroutines pins the core
 // contract Shutdown relies on: closeAndWait does not report success while a
@@ -58,6 +51,50 @@ func TestBackgroundTracker_CloseAndWaitJoinsTrackedGoroutines(t *testing.T) {
 	// A second close on a drained tracker is a no-op that returns immediately.
 	if !tr.closeAndWait(time.Second) {
 		t.Fatal("second closeAndWait() = false on a drained tracker; want true")
+	}
+}
+
+// TestBackgroundTracker_EarlyDrainDoesNotCloseZero pins the fix for the
+// early-drain bug: a tracked goroutine finishing while the tracker is still
+// open must not close the zero channel, because spawn never reopens it — a
+// stale closed zero would let a later closeAndWait return true immediately
+// while a freshly spawned goroutine is still running. This sequence matches
+// the real manager: StartEnvInfoCollection's goroutine finishes in
+// milliseconds at startup, long before Shutdown joins a long-lived goroutine
+// (title generation, deferred temp-dir removal).
+func TestBackgroundTracker_EarlyDrainDoesNotCloseZero(t *testing.T) {
+	tr := newBackgroundTracker()
+
+	// Phase 1: a short-lived goroutine drains the counter to zero while the
+	// tracker is still open.
+	shortDone := make(chan struct{})
+	if !tr.spawn(func() { close(shortDone) }) {
+		t.Fatal("spawn() = false before close; want true")
+	}
+	<-shortDone
+
+	// Phase 2: a goroutine that is still running at close time. closeAndWait
+	// must NOT report success while it runs — the drained-to-zero event from
+	// phase 1 must not satisfy the wait.
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	if !tr.spawn(func() {
+		close(blocked)
+		<-release
+	}) {
+		t.Fatal("spawn() = false before close; want true")
+	}
+	<-blocked
+
+	if tr.closeAndWait(20 * time.Millisecond) {
+		t.Fatal("closeAndWait() = true while a goroutine spawned after an early drain was still running; want false")
+	}
+
+	// Phase 3: after the blocked goroutine finishes, the (already closed)
+	// tracker reports success.
+	close(release)
+	if !tr.closeAndWait(5 * time.Second) {
+		t.Fatal("closeAndWait() = false after every tracked goroutine finished; want true")
 	}
 }
 
@@ -137,7 +174,7 @@ func TestManager_Shutdown_StopsTrackedBlackboardWorker(t *testing.T) {
 	m := NewManager(nil, func(Event) {}, runtimeTempDir(t))
 	m.stopTimeout = 5 * time.Second
 
-	pb := NewPersistentBlackboard("task-bg", "sess-bg", NewTaskStoreAdapter(newInMemoryTaskStore()), newDiscardLogger())
+	pb := NewPersistentBlackboard("task-bg", "sess-bg", NewTaskStoreAdapter(newInMemoryTaskStore()), testLogger(io.Discard))
 	m.trackBlackboard(pb)
 
 	var ran atomic.Int32
@@ -161,7 +198,7 @@ func TestManager_Shutdown_StopsTrackedBlackboardWorker(t *testing.T) {
 // the manager's join depends on: Shutdown returns only once the worker has
 // drained and exited, and a repeat call is harmless.
 func TestPersistentBlackboard_Shutdown_DrainsAndIsIdempotent(t *testing.T) {
-	pb := NewPersistentBlackboard("task-drain", "sess-drain", NewTaskStoreAdapter(newInMemoryTaskStore()), newDiscardLogger())
+	pb := NewPersistentBlackboard("task-drain", "sess-drain", NewTaskStoreAdapter(newInMemoryTaskStore()), testLogger(io.Discard))
 
 	var drained atomic.Int32
 	if err := pb.persistSafe("queued", func() error { drained.Add(1); return nil }); err != nil {
@@ -181,4 +218,107 @@ func TestPersistentBlackboard_Shutdown_DrainsAndIsIdempotent(t *testing.T) {
 
 	// Idempotent: a second call must not block or panic.
 	pb.Shutdown(time.Second)
+}
+
+// TestManager_RestoreBlackboardTracked_StopsWorkerOnShutdown pins the
+// invariant every manager-side restore path relies on: a blackboard returned
+// by restoreBlackboardTracked has its persistence worker registered with the
+// manager, so Shutdown stops it even though the restored task never reaches a
+// terminal finalizer (the paused/abandoned resume case).
+func TestManager_RestoreBlackboardTracked_StopsWorkerOnShutdown(t *testing.T) {
+	m := NewManager(nil, func(Event) {}, runtimeTempDir(t))
+	m.stopTimeout = 5 * time.Second
+	t.Cleanup(m.Shutdown)
+
+	adapter := NewTaskStoreAdapter(newInMemoryTaskStore())
+	if err := adapter.PersistNewTask("task-restore", "sess-restore", "interrupted work"); err != nil {
+		t.Fatalf("PersistNewTask error = %v", err)
+	}
+
+	pb, err := m.restoreBlackboardTracked("task-restore", "sess-restore", adapter, testLogger(io.Discard))
+	if err != nil {
+		t.Fatalf("restoreBlackboardTracked error = %v", err)
+	}
+	if pb == nil {
+		t.Fatal("restoreBlackboardTracked returned nil blackboard for a persisted task")
+	}
+
+	m.Shutdown()
+
+	select {
+	case <-pb.persistDone:
+	default:
+		t.Fatal("Shutdown left the restored blackboard's persistence worker running")
+	}
+}
+
+// TestManager_TrackBlackboard_PrunesFinishedWorkers pins the bounded-growth
+// contract of the blackboard registry: tracking a new blackboard drops
+// entries whose worker already exited through a terminal finalizer, while
+// live workers (e.g. a paused task's) stay registered for Shutdown to stop.
+func TestManager_TrackBlackboard_PrunesFinishedWorkers(t *testing.T) {
+	m := NewManager(nil, func(Event) {}, runtimeTempDir(t))
+	m.stopTimeout = 5 * time.Second
+	t.Cleanup(m.Shutdown)
+
+	adapter := NewTaskStoreAdapter(newInMemoryTaskStore())
+
+	finished := NewPersistentBlackboard("task-finished", "sess-prune", adapter, testLogger(io.Discard))
+	finished.CompleteTask(1) // terminal finalizer stops the worker
+	select {
+	case <-finished.persistDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("persistence worker did not exit after CompleteTask")
+	}
+
+	live := NewPersistentBlackboard("task-live", "sess-prune", adapter, testLogger(io.Discard))
+
+	m.trackBlackboard(finished)
+	m.trackBlackboard(live)
+
+	m.mu.RLock()
+	tracked := make([]*PersistentBlackboard, len(m.blackboards))
+	copy(tracked, m.blackboards)
+	m.mu.RUnlock()
+
+	if len(tracked) != 1 || tracked[0] != live {
+		t.Fatalf("tracked blackboards after pruning = %v; want only the live one", tracked)
+	}
+}
+
+// TestManager_StopBackground_SharesOneBudgetAcrossBlackboards pins the
+// shared-budget contract: N stuck persistence workers add up to at most one
+// stopTimeout in total, not N × stopTimeout. Two workers whose op blocks
+// forever would cost 2×stopTimeout under a per-blackboard budget; the margins
+// below separate the two behaviors comfortably.
+func TestManager_StopBackground_SharesOneBudgetAcrossBlackboards(t *testing.T) {
+	const budget = 400 * time.Millisecond
+	m := NewManager(nil, func(Event) {}, runtimeTempDir(t))
+	m.stopTimeout = budget
+
+	block := make(chan struct{})
+	defer close(block) // let the stuck workers drain once the test is done
+
+	adapter := NewTaskStoreAdapter(newInMemoryTaskStore())
+	for _, taskID := range []string{"task-stuck-1", "task-stuck-2"} {
+		pb := NewPersistentBlackboard(taskID, "sess-budget", adapter, testLogger(io.Discard))
+		// Enqueue directly into the worker channel (buffered) so the worker
+		// picks the op up and blocks in fn without any caller waiting on it.
+		pb.persistCh <- persistOp{
+			operation: "block",
+			fn:        func() error { <-block; return nil },
+			done:      make(chan error, 1),
+		}
+		m.trackBlackboard(pb)
+	}
+
+	start := time.Now()
+	m.stopBackground()
+	elapsed := time.Since(start)
+
+	// Shared budget: both stuck workers together must stay inside one budget
+	// plus scheduling slack (a per-blackboard budget would need 2×budget).
+	if limit := 2 * budget; elapsed >= limit {
+		t.Fatalf("stopBackground took %v with two stuck workers; want < %v (one shared budget)", elapsed, limit)
+	}
 }

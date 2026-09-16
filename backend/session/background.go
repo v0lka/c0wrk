@@ -59,13 +59,17 @@ func (t *backgroundTracker) spawn(fn func()) bool {
 	return true
 }
 
-// finish records that one tracked goroutine returned, closing zero when the
-// last one drains.
+// finish records that one tracked goroutine returned. It closes zero only
+// once the tracker is closed: a transient drain to zero (every short-lived
+// goroutine finished while the tracker is still open) must NOT close zero,
+// because spawn does not reopen it — a closed zero would make every later
+// closeAndWait return immediately, pretending goroutines that spawned
+// afterwards have been joined.
 func (t *backgroundTracker) finish() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.n--
-	if t.n == 0 {
+	if t.n == 0 && t.closed {
 		t.closeZeroLocked()
 	}
 }

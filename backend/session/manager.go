@@ -302,36 +302,77 @@ func (m *Manager) spawnBackground(fn func()) bool {
 	return m.bg.spawn(fn)
 }
 
-// trackBlackboard registers a PersistentBlackboard built by the per-session
-// BlackboardFactory so Shutdown can stop its persistence worker.
+// trackBlackboard registers a PersistentBlackboard built or restored by the
+// manager so Shutdown can stop its persistence worker. Blackboards whose
+// worker already exited (their task reached a terminal finalizer) are pruned
+// on the way in: they are dead weight for Shutdown, and keeping them would
+// grow the slice without bound in a long-lived process — one entry per task,
+// hundreds of tasks per active session. Live workers (running or paused
+// tasks) are kept; stopping those is exactly what Shutdown is for.
 func (m *Manager) trackBlackboard(pb *PersistentBlackboard) {
 	if pb == nil {
 		return
 	}
 	m.mu.Lock()
-	m.blackboards = append(m.blackboards, pb)
+	live := make([]*PersistentBlackboard, 0, len(m.blackboards)+1)
+	for _, b := range m.blackboards {
+		if !b.persistenceWorkerStopped() {
+			live = append(live, b)
+		}
+	}
+	live = append(live, pb)
+	m.blackboards = live
 	m.mu.Unlock()
 }
 
+// restoreBlackboardTracked restores a persisted blackboard and registers it
+// with the manager so Shutdown stops its persistence worker. Every
+// manager-side RestoreBlackboard call must go through this helper: a restored
+// blackboard spawns its own persistence worker, and an untracked one whose
+// task never reaches a terminal finalizer (paused or abandoned, e.g. along
+// the resume paths) would leak that worker past Shutdown.
+func (m *Manager) restoreBlackboardTracked(taskID, sessionID string, store core.TaskPersistence, logger *slog.Logger, opts ...orchestration.MapBlackboardOption) (*PersistentBlackboard, error) {
+	pbb, err := RestoreBlackboard(taskID, sessionID, store, logger, opts...)
+	if pbb != nil {
+		m.trackBlackboard(pbb)
+	}
+	return pbb, err
+}
+
 // stopBackground closes the background tracker (refusing any further spawn),
-// waits for every in-flight manager-owned goroutine within stopTimeout, and
-// then stops the persistence worker of every blackboard the manager built.
+// waits for every in-flight manager-owned goroutine, and then stops the
+// persistence worker of every blackboard the manager built.
 //
-// It is called once, from Shutdown. Waiting on the tracker is bounded: a
-// goroutine that ignores its cancellation (e.g. a stuck filesystem walk) does
-// not extend shutdown past the budget.
+// Both phases share one stopTimeout budget: each blackboard is stopped with
+// the time remaining after the tracker join, so N stuck workers add up to at
+// most one stopTimeout in total instead of N × stopTimeout.
+//
+// Waiting is bounded: a goroutine that ignores its cancellation (e.g. a stuck
+// filesystem walk) does not extend shutdown past the budget. A task goroutine
+// whose join in Shutdown timed out may still restore a blackboard and
+// register it after a snapshot was taken, so the stop loop re-drains the
+// registry until it stays empty; once the deadline has passed, the exhausted
+// budget makes the extra Shutdown calls return without waiting, keeping the
+// loop bounded.
+//
+// It is called once, from Shutdown.
 func (m *Manager) stopBackground() {
+	deadline := time.Now().Add(m.stopTimeout)
 	if !m.bg.closeAndWait(m.stopTimeout) {
 		m.log().Warn("timed out waiting for background goroutines to stop")
 	}
 
-	m.mu.Lock()
-	blackboards := m.blackboards
-	m.blackboards = nil
-	m.mu.Unlock()
-
-	for _, pb := range blackboards {
-		pb.Shutdown(m.stopTimeout)
+	for {
+		m.mu.Lock()
+		blackboards := m.blackboards
+		m.blackboards = nil
+		m.mu.Unlock()
+		if len(blackboards) == 0 {
+			return
+		}
+		for _, pb := range blackboards {
+			pb.Shutdown(time.Until(deadline))
+		}
 	}
 }
 
@@ -779,7 +820,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		emitFn := m.emitFunc
 		capturedSessionID := id
 		orchestrator.SetBlackboardRestoreFunc(func(taskID, sessionID string, store core.TaskPersistence, logger *slog.Logger, opts ...orchestration.MapBlackboardOption) (core.PersistableBlackboard, error) {
-			pbb, err := RestoreBlackboard(taskID, sessionID, store, logger, opts...)
+			pbb, err := m.restoreBlackboardTracked(taskID, sessionID, store, logger, opts...)
 			if pbb != nil {
 				pbb.SetOnChanged(func(changeType string) {
 					emitFn(Event{
@@ -1152,7 +1193,7 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 		emitFn := m.emitFunc
 		capturedSessionID := id
 		orchestrator.SetBlackboardRestoreFunc(func(taskID, sessionID string, store core.TaskPersistence, logger *slog.Logger, opts ...orchestration.MapBlackboardOption) (core.PersistableBlackboard, error) {
-			pbb, err := RestoreBlackboard(taskID, sessionID, store, logger, opts...)
+			pbb, err := m.restoreBlackboardTracked(taskID, sessionID, store, logger, opts...)
 			if pbb != nil {
 				pbb.SetOnChanged(func(changeType string) {
 					emitFn(Event{

@@ -844,7 +844,7 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 		// Tracked by the manager and derived from its shutdown context: the
 		// goroutine writes through the session dump file, so Shutdown must be
 		// able to abort it and wait for it before closing that handle.
-		m.spawnBackground(func() {
+		titleSpawned := m.spawnBackground(func() {
 			if dumpFile != nil {
 				defer func() { _ = dumpFile.Close() }()
 			}
@@ -869,6 +869,14 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 				}
 			}
 		})
+		if !titleSpawned && dumpFile != nil {
+			// Shutdown closed the tracker concurrently, so the closure never
+			// runs and its deferred close never happens. DumpFile duplicated
+			// the descriptor for the closure to own; close it here or it leaks
+			// until process exit (and on Windows it blocks the dump file's
+			// removal from the agent dir).
+			_ = dumpFile.Close()
+		}
 	}
 
 	// Launch goroutine to handle the message
@@ -1200,7 +1208,7 @@ func (m *Manager) tryContinueInterruptedTask(
 	}
 
 	// Restore the blackboard (facts / step results) for the interrupted task.
-	bb, err := RestoreBlackboard(taskID, id, adapter, nil)
+	bb, err := m.restoreBlackboardTracked(taskID, id, adapter, nil)
 	if err != nil {
 		m.log().Warn("continue-interrupted-task: failed to restore blackboard; falling back to fresh task", "session", id, "error", err)
 		return false
@@ -1363,7 +1371,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	}
 
 	// Load task state and restore blackboard.
-	bb, err := RestoreBlackboard(taskID, id, adapter, nil)
+	bb, err := m.restoreBlackboardTracked(taskID, id, adapter, nil)
 	if err != nil {
 		return fmt.Errorf("failed to restore blackboard: %w", err)
 	}
