@@ -9,13 +9,19 @@
 // replaces the store, so no local refetch is needed (same model as workDirs).
 
 import { useCallback, type MouseEvent } from 'react'
-import { FileText, Image as ImageIcon, Loader2, X } from 'lucide-react'
+import { FileText, Image as ImageIcon, Loader2, Microscope, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAttachments, useAttachmentUploads } from '@/stores/attachmentsStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { removeAttachment } from '@/api/attachments'
 import { cancelAttachmentUpload } from '@/lib/attachmentUploads'
 import { emit } from '@/api/runtime'
+import { useMessageSender } from '@/hooks/useMessageSender'
+import {
+  STUDY_PAPER_SKILL,
+  DEFAULT_STUDY_MODE,
+  buildStudyAttachmentPrompt,
+} from '@/components/papers/paperActions'
 import { formatBytes } from '@/lib/formatters'
 import { logger } from '@/lib/logger'
 import type { AttachmentInfoUI, AttachmentUploadUI } from '@/types/models'
@@ -23,11 +29,17 @@ import type { AttachmentInfoUI, AttachmentUploadUI } from '@/types/models'
 function AttachmentChip({
   attachment,
   onRemove,
+  onStudy,
 }: {
   attachment: AttachmentInfoUI
   onRemove: (id: string) => void
+  onStudy: (attachment: AttachmentInfoUI) => void
 }): React.JSX.Element {
   const isImage = attachment.isImage === true && attachment.thumbnail
+  // The `study-paper` skill accepts a PDF (and only a PDF) among documents;
+  // other document types get no Study affordance at all (fail-closed: an
+  // unsupported format never offers a dispatch).
+  const isPdf = attachment.format.toLowerCase() === 'pdf'
   return (
     <span
       className="inline-flex items-center gap-1 max-w-[220px] h-6 pl-2 pr-1 rounded-md border border-border bg-muted/40 text-xs text-foreground"
@@ -45,6 +57,21 @@ function AttachmentChip({
       <span className="truncate">{attachment.originalName}</span>
       <span className="text-muted-foreground shrink-0">({attachment.format})</span>
       <span className="text-muted-foreground shrink-0">{formatBytes(attachment.sizeBytes)}</span>
+      {isPdf && (
+        <button
+          type="button"
+          data-testid="attachment-study"
+          onClick={(e: MouseEvent) => {
+            e.stopPropagation()
+            onStudy(attachment)
+          }}
+          className="inline-flex items-center justify-center size-4 rounded-sm text-muted-foreground hover:text-foreground hover:bg-muted"
+          title="Study this paper"
+          aria-label={`Study paper ${attachment.originalName}`}
+        >
+          <Microscope className="size-3" />
+        </button>
+      )}
       <button
         type="button"
         onClick={(e: MouseEvent) => {
@@ -69,6 +96,7 @@ export function AttachmentChips(): React.JSX.Element | null {
   // Optimistic in-flight uploads render as spinner chips ahead of the staged
   // list; their X cancels the upload (placeholder + staged file removed).
   const uploads = useAttachmentUploads(activeSessionId)
+  const { send } = useMessageSender()
 
   const handleRemove = useCallback(
     async (id: string) => {
@@ -95,6 +123,32 @@ export function AttachmentChips(): React.JSX.Element | null {
     [activeSessionId],
   )
 
+  // --- Study this paper (PDF attachments only) ---
+  // Dispatch the `study-paper` skill at the default depth, referencing the
+  // staged PDF by name (documents expose no on-disk path). send() reports its
+  // own send failures in-chat; it rethrows only on the auto-create-session
+  // splash race, which is surfaced as a runtime error (no panel banner here).
+  const handleStudy = useCallback(
+    (attachment: AttachmentInfoUI) => {
+      Promise.resolve(
+        send(
+          buildStudyAttachmentPrompt(attachment.originalName, DEFAULT_STUDY_MODE),
+          [STUDY_PAPER_SKILL],
+          undefined,
+          undefined,
+          { newSession: false },
+        ),
+      ).catch((err) => {
+        logger.error('Failed to dispatch study-paper:', err)
+        emit('runtime_error', {
+          id: crypto.randomUUID(),
+          message: 'Failed to start studying the paper',
+        })
+      })
+    },
+    [send],
+  )
+
   if (attachments.length === 0 && uploads.length === 0) return null
 
   return (
@@ -103,7 +157,7 @@ export function AttachmentChips(): React.JSX.Element | null {
         <UploadingChip key={u.id} upload={u} onCancel={handleCancelUpload} />
       ))}
       {attachments.map((a) => (
-        <AttachmentChip key={a.id} attachment={a} onRemove={handleRemove} />
+        <AttachmentChip key={a.id} attachment={a} onRemove={handleRemove} onStudy={handleStudy} />
       ))}
     </div>
   )

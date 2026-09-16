@@ -16,7 +16,7 @@ vi.hoisted(() => {
 })
 
 import { useFileViewerStore } from '@/stores/fileViewerStore'
-import { useUIStore, selectWorkspaceTab, SIDEBAR_MIN, SIDEBAR_MAX } from '@/stores/uiStore'
+import { useUIStore, selectWorkspaceTab, selectResearchSegment, SIDEBAR_MIN, SIDEBAR_MAX } from '@/stores/uiStore'
 
 const SIDEBAR_STORAGE_KEY = 'c0wrk-sidebar-collapsed'
 const FILE_VIEWER_STORAGE_KEY = 'c0wrk-file-viewer'
@@ -201,7 +201,7 @@ describe('per-project workspace tab persistence', () => {
   })
 
   it('persist version is 5', () => {
-    expect(useUIStore.persist.getOptions().version).toBe(5)
+    expect(useUIStore.persist.getOptions().version).toBe(6)
   })
 
   it('same-version corrupt tab values are dropped on rehydrate (merge, not migrate)', async () => {
@@ -219,7 +219,7 @@ describe('per-project workspace tab persistence', () => {
           showSessionStats: false,
           workspaceTabByProject: { p1: 'git', p2: 'graph' },
         },
-        version: 5,
+        version: 6,
       }),
     )
 
@@ -263,7 +263,7 @@ describe('per-project workspace tab persistence', () => {
   })
 
   it('migrate validates workspaceTabByProject entry-by-entry and drops unknown tab values', async () => {
-    // A payload written by a hypothetical newer build (version > 5) carrying
+    // A payload written by a hypothetical newer build (version > 6) carrying
     // an unknown tab ('graph') and a non-string value alongside valid ones:
     // the migration must keep only the known values, mirroring the
     // fail-closed mergeGitPanel contract — an unknown tab matches no
@@ -283,7 +283,7 @@ describe('per-project workspace tab persistence', () => {
             p4: 42,
           },
         },
-        version: 6,
+        version: 7,
       }),
     )
 
@@ -339,6 +339,123 @@ describe('per-project workspace tab persistence', () => {
     expect(useUIStore.getState().workspaceTabByProject).toEqual({
       p1: 'git',
       p2: 'research',
+    })
+  })
+})
+
+describe('per-project research segment persistence', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    useUIStore.setState({ researchSegmentByProject: {} })
+  })
+
+  it('setResearchSegment changes only the targeted project', () => {
+    useUIStore.setState({
+      researchSegmentByProject: { p1: 'dashboard', p2: 'dashboard' },
+    })
+
+    useUIStore.getState().setResearchSegment('p1', 'papers')
+
+    const map = useUIStore.getState().researchSegmentByProject
+    expect(map.p1).toBe('papers')
+    expect(map.p2).toBe('dashboard')
+  })
+
+  it('selectResearchSegment defaults to "dashboard"', () => {
+    expect(selectResearchSegment({ researchSegmentByProject: {} }, 'missing')).toBe('dashboard')
+    expect(selectResearchSegment({ researchSegmentByProject: {} }, null)).toBe('dashboard')
+
+    useUIStore.setState({ researchSegmentByProject: { p1: 'papers' } })
+    expect(selectResearchSegment(useUIStore.getState(), 'p1')).toBe('papers')
+    expect(selectResearchSegment(useUIStore.getState(), 'p2')).toBe('dashboard')
+  })
+
+  it('setResearchSegment is a no-op when the segment is unchanged', () => {
+    useUIStore.setState({ researchSegmentByProject: { p1: 'papers' } })
+    const before = useUIStore.getState().researchSegmentByProject
+
+    useUIStore.getState().setResearchSegment('p1', 'papers')
+
+    expect(useUIStore.getState().researchSegmentByProject).toBe(before)
+  })
+
+  it("dropProjectTabs also forgets a project's research segment", () => {
+    useUIStore.setState({
+      workspaceTabByProject: { p1: 'research', p2: 'research' },
+      researchSegmentByProject: { p1: 'papers', p2: 'dashboard' },
+    })
+
+    useUIStore.getState().dropProjectTabs('p1')
+
+    expect(useUIStore.getState().workspaceTabByProject).toEqual({ p2: 'research' })
+    expect(useUIStore.getState().researchSegmentByProject).toEqual({ p2: 'dashboard' })
+  })
+
+  it('same-version corrupt segment values are dropped on rehydrate (merge)', async () => {
+    localStorage.setItem(
+      SIDEBAR_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          sidebarCollapsed: false,
+          sidebarWidth: 240,
+          chatSessionListRatio: 0.5,
+          showSessionStats: false,
+          workspaceTabByProject: { p1: 'research' },
+          researchSegmentByProject: { p1: 'papers', p2: 'reader', p3: 7 },
+        },
+        version: 6,
+      }),
+    )
+
+    await useUIStore.persist.rehydrate()
+
+    const state = useUIStore.getState()
+    expect(state.researchSegmentByProject).toEqual({ p1: 'papers' })
+    // The dropped project falls back to the default segment via the selector.
+    expect(selectResearchSegment(state, 'p2')).toBe('dashboard')
+  })
+
+  it('migrates a v5 payload: keeps sidebar fields and yields an empty segment map', async () => {
+    localStorage.setItem(
+      SIDEBAR_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          sidebarCollapsed: true,
+          sidebarWidth: 250,
+          chatSessionListRatio: 0.3,
+          showSessionStats: true,
+          workspaceTabByProject: { p1: 'research' },
+        },
+        version: 5,
+      }),
+    )
+
+    await useUIStore.persist.rehydrate()
+
+    const state = useUIStore.getState()
+    expect(state.sidebarCollapsed).toBe(true)
+    expect(state.workspaceTabByProject).toEqual({ p1: 'research' })
+    expect(state.researchSegmentByProject).toEqual({})
+  })
+
+  it('persist round-trip preserves the per-project segment map', async () => {
+    useUIStore.getState().setResearchSegment('p1', 'papers')
+    useUIStore.getState().setResearchSegment('p2', 'dashboard')
+
+    const persisted = localStorage.getItem(SIDEBAR_STORAGE_KEY)
+    expect(JSON.parse(persisted ?? '{}').state.researchSegmentByProject).toEqual({
+      p1: 'papers',
+      p2: 'dashboard',
+    })
+
+    useUIStore.setState({ researchSegmentByProject: {} })
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, persisted!)
+
+    await useUIStore.persist.rehydrate()
+
+    expect(useUIStore.getState().researchSegmentByProject).toEqual({
+      p1: 'papers',
+      p2: 'dashboard',
     })
   })
 })

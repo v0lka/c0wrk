@@ -1,0 +1,39 @@
+# ADR-050: Papers library — vendored study-paper pack, hybrid global seeding, and the research-root library location
+
+## Status
+
+Accepted
+
+## Context
+
+c0wrk gained a paper-study capability: a user can hand the agent a research paper (a PDF, an arXiv/DOI reference, or a pasted abstract) and get structured understanding — triage skim, deep appraisal, method reproduction, multi-paper comparison, and teaching with flashcards — which the agent records as durable, workspace-contained artifacts.
+
+Three questions had to be answered before the feature could land, because the answers constrain the data model, the watcher wiring, the RPC surface, and the frontend:
+
+1. **Where does the skill come from?** The methodology is large and non-trivial (a mode table, extraction/fidelity rules, statistics/benchmark rules, appraisal templates, comparison and flashcard templates, plus optional stdlib-only Python helper scripts for fetching and citation-graph lookup). It also needs c0wrk-specific additions: the `flashcards.md` and `comparison-matrix.md` assets that the backend parses, and the `literature.py` helper that the backend invokes.
+2. **How and where is it seeded?** RESEARCH mode already seeds a project-local methodology pack into `<workspace>/.agents/skills` when a project opts in ([research.md](../domains/research.md)). That model is wrong for paper study: the capability is useful in any project and in No-Project (CHAT) sessions, and it must be available without opting into the RESEARCH methodology.
+3. **Where do the produced artifacts live?** They need a workspace-contained home that is stable whether or not a research project exists.
+
+## Decision
+
+**1. The `study-paper` skill is vendored (forked into) the repository as an embedded, independently-versioned pack.** The skill sources live at `core/papers/skills/study-paper/` and are embedded via `core/papers/skillpack.go`. c0wrk maintains the copy in-tree (rather than depending on an external skill registry) so the seeded skill can carry the c0wrk-specific assets (`flashcards.md`, `comparison-matrix.md`) and the `literature.py` helper, and so the pack can be version-stamped and refreshed atomically. The skill's `SKILL.md` front matter follows the research-skill convention (`name` / `description` / `metadata`) and carries no separate `license` field. The pack's seed version (`papers.CurrentSeedVersion`) is deliberately separate from the research pack's (`research.CurrentSeedVersion`), so the two packs bump and refresh independently.
+
+**2. The pack is seeded "hybrid" — once, globally, at application startup.** `backend.seedPapersSkillPack(cfg.AgentDir)` materializes the pack into the GLOBAL agent skills directory (`config.SkillsDir(agentDir)` = `~/.c0wrk/.agents/skills`) before the global skill watchers start. Because that directory is one of `config.defaultSkillDirs` and is watched, the seeded `study-paper` skill enters the `ListSkills` catalog automatically (no catalog change) and becomes discoverable by every project and every session — independent of the RESEARCH toggle and of any `R-NNN` project. Seeding is idempotent, crash-safe (staged in a hidden sibling temp dir, swapped in with a single rename), and non-destructive to user-authored or user-edited skills (classification is by content hash against the embedded pack, never mtime/size, never the marker alone). A seeding failure is logged but never fatal to startup; an empty agent dir is a no-op.
+
+**3. The library lives at `<research-root>/papers/` — a global sibling of the research projects.** `<research-root>` is the persisted `ProjectInfo.ResearchRoot` when RESEARCH is enabled, otherwise the default `<workspace>/.research`. Each paper is a directory `<research-root>/papers/<slug>/` containing its card (`paper.md`), note (`note.md`), appraisal (`appraisal.md`), and — when the skill produces them — a flashcards deck (`flashcards.md`) and a literature graph (`literature.json`). Multi-paper comparisons are a second global sibling, `<research-root>/comparisons/<slug>.md`. The library belongs to no single `R-NNN` project; a paper links to research only through its card's `research_ids` (H-NNN), which the read RPCs resolve to the owning project(s) when the research root is parseable. The library is read and watched **independently of the RESEARCH toggle** (hybrid mode): a paper edit emits `papers:changed` even when RESEARCH is off. Papers are available only for real projects (the No Project pseudo-project is rejected), and every RPC enforces workspace containment on the research root and the library.
+
+## Consequences
+
+- The paper-study capability is available in every project and in No-Project sessions without opting into RESEARCH, and survives a RESEARCH toggle off; the seeded skill is discovered through the existing global skill watcher path with no catalog wiring.
+- Vendoring the skill keeps the c0wrk-specific assets and the `literature.py` helper under the same content-hash-verified, atomically-swapped seeding contract as the research pack, at the cost of maintaining the copy in-tree (a skill update is a repo change plus a `CurrentSeedVersion` bump).
+- A single library location shared by all projects in a workspace means the `papers/` and `comparisons/` trees are global; the watcher, the containment checks, and the frontend library loader all key off the effective research root rather than a per-paper owner.
+- The library is a documented sibling of the `R-NNN-*` projects but is NOT parsed by the research parser, so it cannot corrupt or be corrupted by research-graph parsing; it has its own `core/papers` model and RPCs.
+- The `comparisons/` directory is watched alongside `papers/` in hybrid mode (RESEARCH off) and shares the single `papers:changed` event: a comparison write invalidates through the same library-sync key the Compare section subscribes to, so no second watcher, event, or RPC was introduced for a directory that changes rarely.
+
+## Alternatives Considered
+
+- **Fetch the skill from an external registry at runtime.** Rejected: c0wrk must ship a deterministic, offline-capable skill surface, and the c0wrk-specific assets/helper would still have to be layered on — a network dependency plus a merge step, for no benefit.
+- **Seed the skill per-project (mirroring the RESEARCH pack's project-local seeding).** Rejected: the capability would be invisible in every project until seeded and unavailable in No-Project sessions, and it would couple a general capability to the per-project RESEARCH toggle.
+- **Seed into a project-local `.agents/skills` and also require RESEARCH.** Rejected for the same reason — it makes a generally useful skill gated and project-scoped.
+- **Store papers inside the active `R-NNN-<slug>/` research project (or in a dedicated top-level `.papers/` root).** Rejected: papers predate and outlive any single research project, a research project can be deleted, and a separate root would fragment the watcher/containment story. The research root is already workspace-contained and already has the `index.md`/`R-NNN` sibling layout the library slots into.
+- **Give comparisons their own RPC and event.** Rejected as unnecessary: a comparison is a plain Markdown artifact under the same research root, so the frontend reads it through the existing workspace file RPCs and reuses the `papers:changed` refresh (the Compare section subscribes to the library-sync key) rather than a bespoke RPC/event pair. The directory is watched through the same watcher as the paper library.

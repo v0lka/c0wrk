@@ -294,6 +294,14 @@ export function GetModelProfiles() {
   return window['go']['desktop']['App']['GetModelProfiles']();
 }
 
+export function GetPaper(arg1, arg2) {
+  return window['go']['desktop']['App']['GetPaper'](arg1, arg2);
+}
+
+export function GetPapers(arg1) {
+  return window['go']['desktop']['App']['GetPapers'](arg1);
+}
+
 export function GetPendingActions(arg1) {
   return window['go']['desktop']['App']['GetPendingActions'](arg1);
 }
@@ -502,6 +510,10 @@ export function Rebase(arg1) {
   return window['go']['desktop']['App']['Rebase'](arg1);
 }
 
+export function RecordFlashcardReview(arg1, arg2, arg3, arg4) {
+  return window['go']['desktop']['App']['RecordFlashcardReview'](arg1, arg2, arg3, arg4);
+}
+
 export function ReindexVectorIndex() {
   return window['go']['desktop']['App']['ReindexVectorIndex']();
 }
@@ -556,6 +568,10 @@ export function ResumeTask(arg1, arg2, arg3) {
 
 export function RunBackgroundUpdateCheck() {
   return window['go']['desktop']['App']['RunBackgroundUpdateCheck']();
+}
+
+export function RunPaperLiterature(arg1, arg2) {
+  return window['go']['desktop']['App']['RunPaperLiterature'](arg1, arg2);
 }
 
 export function SaveMessageAsMarkdown(arg1) {
@@ -624,6 +640,10 @@ export function SetModelConfig(arg1, arg2) {
 
 export function SetModelProfilesEnabled(arg1) {
   return window['go']['desktop']['App']['SetModelProfilesEnabled'](arg1);
+}
+
+export function SetPaperPinned(arg1, arg2, arg3) {
+  return window['go']['desktop']['App']['SetPaperPinned'](arg1, arg2, arg3);
 }
 
 export function SetResearchPinned(arg1, arg2, arg3) {

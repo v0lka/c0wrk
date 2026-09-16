@@ -14,10 +14,16 @@ vi.mock('@/hooks/useFileViewerData', () => ({ useFileViewerData: vi.fn() }))
 vi.mock('@/components/research/ResearchWorkspace', () => ({
   ResearchWorkspace: () => <div data-testid="research-workspace" />,
 }))
+vi.mock('@/components/papers/PaperWorkspace', () => ({
+  PaperWorkspace: ({ slug }: { slug: string }) => (
+    <div data-testid="paper-workspace" data-slug={slug} />
+  ),
+}))
 
 import { FileViewerContent } from './FileViewerContent'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { RESEARCH_TAB_PATH } from '@/stores/researchStore'
+import { PAPER_TAB_PREFIX } from '@/stores/paperStore'
 import { useExperimentalStore } from '@/stores/experimentalStore'
 
 let root: Root | null = null
@@ -62,5 +68,30 @@ describe('FileViewerContent — research tab always available', () => {
     useExperimentalStore.setState({ enabled: false, loaded: true })
     renderContent()
     expect(document.querySelector('[data-testid="research-workspace"]')).not.toBeNull()
+  })
+})
+
+describe('FileViewerContent — paper tab routing', () => {
+  it('routes the c0wrk:paper:<slug> prefix to the paper workspace with the slug', () => {
+    const path = `${PAPER_TAB_PREFIX}vaswani-2017-attention`
+    act(() => {
+      useFileViewerStore.setState({ openTabs: [path], activeFile: path, files: {} })
+    })
+    renderContent()
+    const el = document.querySelector('[data-testid="paper-workspace"]')
+    expect(el).not.toBeNull()
+    expect(el?.getAttribute('data-slug')).toBe('vaswani-2017-attention')
+  })
+
+  it('renders nothing for a bare paper prefix (empty slug)', () => {
+    act(() => {
+      useFileViewerStore.setState({
+        openTabs: [PAPER_TAB_PREFIX],
+        activeFile: PAPER_TAB_PREFIX,
+        files: {},
+      })
+    })
+    renderContent()
+    expect(document.querySelector('[data-testid="paper-workspace"]')).toBeNull()
   })
 })

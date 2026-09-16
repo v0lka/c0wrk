@@ -158,6 +158,22 @@ type FrontendAPI struct {
 	// activeProjectMu so it stays in sync with project switches.
 	activeResearchRoot string
 
+	// activePapersRoot holds the active paper-library root path
+	// (<research-root>/papers; empty for the No Project pseudo-project).
+	// Tracked separately from activeResearchRoot because the papers library
+	// must be watched regardless of the RESEARCH toggle: RESEARCH may be off
+	// (hybrid mode) while the library still exists at the default root.
+	// Guarded by activeProjectMu so it stays in sync with project switches.
+	activePapersRoot string
+
+	// activeComparisonsRoot holds the active multi-paper comparison root path
+	// (<research-root>/comparisons; empty for the No Project pseudo-project).
+	// Like the paper library it is a global subdirectory of the research root
+	// and must be watched regardless of the RESEARCH toggle, so a comparison
+	// artifact written in hybrid mode (RESEARCH off) still refreshes the UI.
+	// Guarded by activeProjectMu so it stays in sync with project switches.
+	activeComparisonsRoot string
+
 	// Research hypothesis mutations. researchRootsMu guards researchRootMus,
 	// which holds one mutex per research root path. Each per-root mutex
 	// serializes the whole load→mutate→write chain of the UpdateHypothesis /
@@ -313,6 +329,14 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 	// repository may spawn raw git. Nothing is trusted when config is nil or
 	// the list is empty (fail-closed).
 	f.syncGitTrustRegistry()
+
+	// Seed the built-in paper-study skill-pack into the GLOBAL agent skills
+	// directory (config.SkillsDir(agentDir) = ~/.c0wrk/.agents/skills) so the
+	// `study-paper` skill is available in every project (hybrid global
+	// seeding), independent of RESEARCH mode. Runs before the global skill
+	// watchers start so the seeded tree is covered by them. Idempotent and
+	// non-destructive (see core/papers); a no-op when agentDir is empty.
+	f.seedPapersSkillPack(cfg.AgentDir)
 
 	// Start watchers for global skill directories (those outside any
 	// workspace). Changes invalidate the skill cache and emit skills:changed

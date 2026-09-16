@@ -1029,6 +1029,145 @@ export namespace backend {
 	        this.used_context = source["used_context"];
 	    }
 	}
+	export class PaperResearchLinkDTO {
+	    hypothesis_id: string;
+	    research_id: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PaperResearchLinkDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hypothesis_id = source["hypothesis_id"];
+	        this.research_id = source["research_id"];
+	    }
+	}
+	export class PaperDTO {
+	    id: string;
+	    slug: string;
+	    title: string;
+	    authors: string[];
+	    year: number;
+	    venue: string;
+	    identifiers: papers.Identifier[];
+	    mode: string;
+	    reading: string;
+	    verdict: string;
+	    confidence: string;
+	    research_ids: string[];
+	    anchors: papers.Anchor[];
+	    claims: papers.Claim[];
+	    red_flags: papers.RedFlag[];
+	    uncertainties: papers.Uncertainty[];
+	    dir: string;
+	    card_path: string;
+	    pinned: boolean;
+	    linked_research: PaperResearchLinkDTO[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PaperDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.slug = source["slug"];
+	        this.title = source["title"];
+	        this.authors = source["authors"];
+	        this.year = source["year"];
+	        this.venue = source["venue"];
+	        this.identifiers = this.convertValues(source["identifiers"], papers.Identifier);
+	        this.mode = source["mode"];
+	        this.reading = source["reading"];
+	        this.verdict = source["verdict"];
+	        this.confidence = source["confidence"];
+	        this.research_ids = source["research_ids"];
+	        this.anchors = this.convertValues(source["anchors"], papers.Anchor);
+	        this.claims = this.convertValues(source["claims"], papers.Claim);
+	        this.red_flags = this.convertValues(source["red_flags"], papers.RedFlag);
+	        this.uncertainties = this.convertValues(source["uncertainties"], papers.Uncertainty);
+	        this.dir = source["dir"];
+	        this.card_path = source["card_path"];
+	        this.pinned = source["pinned"];
+	        this.linked_research = this.convertValues(source["linked_research"], PaperResearchLinkDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PaperLiteratureDTO {
+	    status: string;
+	    message: string;
+	    path: string;
+	    content: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PaperLiteratureDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.status = source["status"];
+	        this.message = source["message"];
+	        this.path = source["path"];
+	        this.content = source["content"];
+	    }
+	}
+	
+	export class PapersDTO {
+	    project_id: string;
+	    research_root: string;
+	    root: string;
+	    papers: PaperDTO[];
+	    pinned: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PapersDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.project_id = source["project_id"];
+	        this.research_root = source["research_root"];
+	        this.root = source["root"];
+	        this.papers = this.convertValues(source["papers"], PaperDTO);
+	        this.pinned = source["pinned"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ProjectUIStateRequest {
 	    project_id: string;
 	    saved_session_id: string;
@@ -1229,6 +1368,7 @@ export namespace backend {
 	    seed_result?: ResearchSeedResultDTO;
 	    pinned_research: string[];
 	    pinned_hypotheses: Record<string, Array<string>>;
+	    pinned_papers: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ResearchStatusDTO(source);
@@ -1243,6 +1383,7 @@ export namespace backend {
 	        this.seed_result = this.convertValues(source["seed_result"], ResearchSeedResultDTO);
 	        this.pinned_research = source["pinned_research"];
 	        this.pinned_hypotheses = source["pinned_hypotheses"];
+	        this.pinned_papers = source["pinned_papers"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1814,11 +1955,95 @@ export namespace mcp {
 
 }
 
+export namespace papers {
+	
+	export class Anchor {
+	    label?: string;
+	    ref?: string;
+	    note?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Anchor(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.label = source["label"];
+	        this.ref = source["ref"];
+	        this.note = source["note"];
+	    }
+	}
+	export class Claim {
+	    claim: string;
+	    evidence?: string;
+	    location?: string;
+	    stance?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Claim(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.claim = source["claim"];
+	        this.evidence = source["evidence"];
+	        this.location = source["location"];
+	        this.stance = source["stance"];
+	    }
+	}
+	export class Identifier {
+	    scheme: string;
+	    value: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Identifier(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.scheme = source["scheme"];
+	        this.value = source["value"];
+	    }
+	}
+	export class RedFlag {
+	    flag: string;
+	    detail?: string;
+	    severity?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RedFlag(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.flag = source["flag"];
+	        this.detail = source["detail"];
+	        this.severity = source["severity"];
+	    }
+	}
+	export class Uncertainty {
+	    item: string;
+	    detail?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Uncertainty(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.item = source["item"];
+	        this.detail = source["detail"];
+	    }
+	}
+
+}
+
 export namespace project {
 	
 	export class ResearchPins {
 	    research: string[];
 	    hypotheses: Record<string, Array<string>>;
+	    papers?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ResearchPins(source);
@@ -1828,6 +2053,7 @@ export namespace project {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.research = source["research"];
 	        this.hypotheses = source["hypotheses"];
+	        this.papers = source["papers"];
 	    }
 	}
 	export class ProjectInfo {

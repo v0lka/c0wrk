@@ -13,6 +13,7 @@
 // scroll together — nothing is pinned outside the scroll region.
 import { Loader2, Save, ExternalLink } from 'lucide-react'
 import { MiniCodeMirrorField } from '@/components/fileViewer/MiniCodeMirrorField'
+import { InformingPapers } from './InformingPapers'
 import { statusOptions } from './hypothesisStatus'
 import { decisionOptions, decisionLabel } from './hypothesisDecision'
 import { parseParentIds } from './researchWorkspaceUtils'
@@ -235,6 +236,12 @@ export function HypothesisCard({
           onChange={(result) => onChange({ ...draft, result })}
         />
       </div>
+
+      {/* Reverse link: the papers whose cards name this hypothesis — a pure
+          client-side projection over paperStore × the graph (see
+          lib/papersByHypothesis.ts). Read-only; renders nothing when the
+          hypothesis has no informing paper. */}
+      <InformingPapers hypothesisId={node.id} />
 
       {saveError && (
         <p className="text-xs text-destructive" role="alert">

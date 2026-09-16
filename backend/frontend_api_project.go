@@ -475,6 +475,16 @@ func (f *FrontendAPI) switchProjectActivate(p *project.ProjectInfo) {
 	// previously-active project and stops cross-project research:file_changed
 	// events.
 	f.activeResearchRoot = p.ResearchRoot
+	// Track the paper-library root (<effective research root>/papers)
+	// independently of the RESEARCH toggle, so the workspace watcher can emit
+	// papers:changed even when RESEARCH is off — the library is a global
+	// subdirectory of the research root that outlives any R-NNN. Empty for the
+	// No Project pseudo-project (papersRootForProject).
+	f.activePapersRoot = papersRootForProject(p)
+	// Track the comparisons root (<effective research root>/comparisons) with
+	// the same independence from the RESEARCH toggle: comparisons is a global
+	// sibling of the paper library and must be watched in hybrid mode too.
+	f.activeComparisonsRoot = comparisonsRootForProject(p)
 	f.activeProjectMu.Unlock()
 
 	// Invalidate cached skill list since project-local skills may differ.
@@ -564,6 +574,8 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 		f.activeProjectMu.RLock()
 		snapProjectID := f.activeProjectID
 		snapResearchRoot := f.activeResearchRoot
+		snapPapersRoot := f.activePapersRoot
+		snapComparisonsRoot := f.activeComparisonsRoot
 		f.activeProjectMu.RUnlock()
 
 		// Emit research:file_changed for any changed path inside the research
@@ -572,6 +584,12 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 		// frontend's full-refetch path skips when the incremental path will
 		// handle the update, avoiding a redundant double fetch.
 		researchScoped := f.emitResearchFileChanged(snapResearchRoot, snapProjectID, changedPaths)
+		// Emit papers:changed for any changed path inside the paper library or
+		// the comparisons directory. Independent of the research emitter
+		// above: both roots are watched even with RESEARCH off, so an edit to
+		// a paper card or a comparison artifact still refreshes the Papers /
+		// Compare surfaces in hybrid mode.
+		f.emitPapersChanged(snapPapersRoot, snapComparisonsRoot, snapProjectID, changedPaths)
 		f.emitEvent(EventWorkspaceTreeChanged, map[string]bool{
 			"research_scoped": researchScoped,
 		})
@@ -628,6 +646,41 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 	if researchRoot != "" {
 		if err := watcher.WatchTree(researchRoot); err != nil {
 			f.log().Debug("failed to watch research tree", "root", researchRoot, "error", err)
+		}
+	}
+
+	// Recursively watch the paper library INDEPENDENTLY of the research
+	// toggle. The library lives at <research-root>/papers and must be
+	// watched even when RESEARCH is off (hybrid mode) or when no R-NNN
+	// exists, so a paper edit still emits papers:changed. When RESEARCH is
+	// on this is a no-op (the research WatchTree above already covers
+	// papers/); when it is off it is the only thing watching the library.
+	// The directory is created if missing so a not-yet-used library is still
+	// watched — and so a later first paper write is detected.
+	papersRoot := papersRootForProject(p)
+	if papersRoot != "" {
+		if mkErr := os.MkdirAll(papersRoot, 0o755); mkErr != nil {
+			f.log().Debug("failed to create paper library for watcher",
+				"root", papersRoot, "error", mkErr)
+		} else if wErr := watcher.WatchTree(papersRoot); wErr != nil {
+			f.log().Debug("failed to watch paper library", "root", papersRoot, "error", wErr)
+		}
+	}
+
+	// Recursively watch the multi-paper comparisons directory for the SAME
+	// reason: it is a global sibling of the paper library under the research
+	// root and must be watched independently of the RESEARCH toggle, so a
+	// comparison artifact written in hybrid (RESEARCH off) mode still emits
+	// papers:changed and refreshes the Compare section. When RESEARCH is on
+	// this is a no-op (the research WatchTree above already covers it). The
+	// directory is created if missing so a later first write is detected.
+	comparisonsRoot := comparisonsRootForProject(p)
+	if comparisonsRoot != "" {
+		if mkErr := os.MkdirAll(comparisonsRoot, 0o755); mkErr != nil {
+			f.log().Debug("failed to create comparisons dir for watcher",
+				"root", comparisonsRoot, "error", mkErr)
+		} else if wErr := watcher.WatchTree(comparisonsRoot); wErr != nil {
+			f.log().Debug("failed to watch comparisons dir", "root", comparisonsRoot, "error", wErr)
 		}
 	}
 }
@@ -700,9 +753,15 @@ func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
 		f.activeProjectMu.RLock()
 		snapProjectID := f.activeProjectID
 		snapResearchRoot := f.activeResearchRoot
+		snapPapersRoot := f.activePapersRoot
+		snapComparisonsRoot := f.activeComparisonsRoot
 		f.activeProjectMu.RUnlock()
 
 		researchScoped := f.emitResearchFileChanged(snapResearchRoot, snapProjectID, changedPaths)
+		// No Project has no paper library or comparisons dir
+		// (activePapersRoot/activeComparisonsRoot are empty), so this is a
+		// no-op here; kept for parity with the CODE-mode callback.
+		f.emitPapersChanged(snapPapersRoot, snapComparisonsRoot, snapProjectID, changedPaths)
 		f.emitEvent(EventWorkspaceTreeChanged, map[string]bool{
 			"research_scoped": researchScoped,
 		})

@@ -626,6 +626,12 @@ export interface GlobalEventMap {
   /** A file inside the research directory changed (hypothesis cards, brief,
    *  prior-art, graph, log). `paths` is a comma-separated list. */
   readonly 'research:file_changed': { readonly project_id: string; readonly paths: string }
+  /** A file inside the paper library (`<research-root>/papers/`) changed — a
+   *  paper card, note, or appraisal written or edited. `paths` is a
+   *  comma-separated list of changed absolute paths. Fires INDEPENDENTLY of the
+   *  RESEARCH toggle (the library is watched even in hybrid mode and regardless
+   *  of any R-NNN), unlike `research:file_changed`. */
+  readonly 'papers:changed': { readonly project_id: string; readonly paths: string }
   readonly 'skills:changed': void
   readonly 'git:status_changed': string
   readonly 'vector_index:status': VectorIndexStatus

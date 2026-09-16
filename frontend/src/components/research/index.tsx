@@ -3,6 +3,8 @@ import { FlaskConical, FolderOpen, ChevronDown, AlertCircle } from 'lucide-react
 import { cn } from '@/lib/utils'
 import { useResearchStore, selectActiveProject } from '@/stores/researchStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { useProjectStore } from '@/stores/projectStore'
+import { useUIStore, selectResearchSegment, type ResearchSegment } from '@/stores/uiStore'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -16,7 +18,58 @@ import { ResearchHypothesisPicker } from './ResearchHypothesisPicker'
 import { ResearchQuickActions } from './ResearchQuickActions'
 import { ResearchLog } from './ResearchLog'
 import { ResearchProjectPicker } from './ResearchProjectPicker'
+import { PriorArtRow } from './PriorArtRow'
+import { DanglingPaperLinks } from './InformingPapers'
 import { projectDir, projectFilePaths } from './researchDagRender'
+import { PapersView } from '@/components/papers/PapersView'
+
+/** The Research panel's two segments: the research control Dashboard vs the
+ *  literature (Papers) library. The paper library lives independently of the
+ *  RESEARCH toggle, so the segment is reachable in both states. */
+const RESEARCH_SEGMENTS: ReadonlyArray<{ value: ResearchSegment; label: string }> = [
+  { value: 'dashboard', label: 'Dashboard' },
+  { value: 'papers', label: 'Papers' },
+]
+
+/** Segmented control [Dashboard | Papers], persisted per project in uiStore. */
+function ResearchSegmentControl({
+  active,
+  onSelect,
+}: {
+  active: ResearchSegment
+  onSelect: (segment: ResearchSegment) => void
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Research view"
+      data-testid="research-segment"
+      className="flex shrink-0 items-center gap-0.5 border-b border-border bg-secondary/20 px-1.5 py-1"
+    >
+      {RESEARCH_SEGMENTS.map((segment) => {
+        const selected = active === segment.value
+        return (
+          <button
+            key={segment.value}
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            data-testid={`research-segment-${segment.value}`}
+            onClick={() => onSelect(segment.value)}
+            className={cn(
+              'flex-1 rounded px-2 py-0.5 text-[11px] transition-colors',
+              selected
+                ? 'bg-background text-foreground shadow-sm'
+                : 'text-muted-foreground hover:bg-muted/50',
+            )}
+          >
+            {segment.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
 
 /**
  * RESEARCH panel — a control dashboard, not a passive mirror.
@@ -30,6 +83,9 @@ import { projectDir, projectFilePaths } from './researchDagRender'
  * the recommended next step with one-click execution, the current-hypothesis
  * picker (selection, status flip, Create hypothesis), the quick-actions row
  * that dispatches research-* skills, and the research log (t1).
+ *
+ * A segmented control switches between this Dashboard and the Papers view (the
+ * literature library), persisted per project in uiStore.
  *
  * The hypothesis tree/DAG presentation lives in the Research workspace tab
  * (t5); the bottom bar is a single View Artifacts dropdown that opens the
@@ -46,6 +102,18 @@ export function ResearchPanel() {
   const error = useResearchStore((s) => s.error)
   const isLoading = useResearchStore((s) => s.isLoading)
 
+  // The segment is remembered per project; '' / null id falls back to the
+  // Dashboard.
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  const segment = useUIStore((s) => selectResearchSegment(s, activeProjectId))
+  const setResearchSegment = useUIStore((s) => s.setResearchSegment)
+  const selectSegment = useCallback(
+    (next: ResearchSegment) => {
+      if (activeProjectId !== null) setResearchSegment(activeProjectId, next)
+    },
+    [activeProjectId, setResearchSegment],
+  )
+
   // Open a research artifact file in the file viewer (path-agnostic ReadFile).
   const openArtifact = useCallback((filePath: string) => {
     const store = useFileViewerStore.getState()
@@ -61,14 +129,23 @@ export function ResearchPanel() {
     store.openResearch()
   }, [])
 
-  // ── RESEARCH off → toggle empty state ────────────────────────────────
+  const segmentControl = (
+    <ResearchSegmentControl active={segment} onSelect={selectSegment} />
+  )
+
+  // ── RESEARCH off → Papers library or the toggle empty state ───────────
   if (!enabled) {
     return (
-      <div className="flex flex-1 flex-col min-h-0">
+      <div className="flex h-full flex-col min-h-0">
+        {segmentControl}
         {error && <ErrorBanner message={error} />}
-        <div className="flex flex-1 items-center justify-center min-h-0">
-          <ResearchToggle variant="card" />
-        </div>
+        {segment === 'papers' ? (
+          <PapersView />
+        ) : (
+          <div className="flex flex-1 items-center justify-center min-h-0">
+            <ResearchToggle variant="card" />
+          </div>
+        )}
       </div>
     )
   }
@@ -105,57 +182,72 @@ export function ResearchPanel() {
         <ResearchProjectPicker />
       </div>
 
+      {segmentControl}
+
       {error && <ErrorBanner message={error} />}
 
-      {/* Control dashboard body */}
-      <div className="flex-1 min-h-0 overflow-auto px-1.5 py-1.5 flex flex-col gap-2">
-        {isLoading && !project ? (
-          <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
-            Loading…
-          </div>
-        ) : (
-          <>
-            {metrics && <ResearchMetricsRow metrics={metrics} />}
-            <ResearchNextStep />
-            <ResearchHypothesisPicker />
-            <ResearchQuickActions />
-            <ResearchLog />
-          </>
-        )}
-      </div>
-
-      {/* View Artifacts: one dropdown listing the artifacts that exist */}
-      <div className="flex shrink-0 items-center gap-1 border-t border-border bg-secondary/20 px-2 py-1.5">
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            data-testid="research-view-artifacts"
-            disabled={artifactItems.length === 0}
-            title={
-              artifactItems.length === 0
-                ? 'No research artifacts yet'
-                : 'Open a research artifact'
-            }
-            className={cn(
-              'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors',
-              'text-muted-foreground',
-              artifactItems.length > 0
-                ? 'cursor-pointer hover:bg-muted'
-                : 'opacity-60',
+      {segment === 'papers' ? (
+        <PapersView />
+      ) : (
+        <>
+          {/* Control dashboard body */}
+          <div className="flex-1 min-h-0 overflow-auto px-1.5 py-1.5 flex flex-col gap-2">
+            {isLoading && !project ? (
+              <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
+                Loading…
+              </div>
+            ) : (
+              <>
+                {metrics && <ResearchMetricsRow metrics={metrics} />}
+                <ResearchNextStep />
+                <ResearchHypothesisPicker />
+                <ResearchQuickActions />
+                {project && (project.prior_art_count ?? 0) > 0 && (
+                  <PriorArtRow path={paths.priorArt} count={project.prior_art_count} />
+                )}
+                {/* Reverse-link integrity: paper cards naming an H-NNN that
+                    resolves to no hypothesis — the dangling bucket of the
+                    paperStore × graph projection (renders nothing when clean). */}
+                <DanglingPaperLinks />
+                <ResearchLog />
+              </>
             )}
-          >
-            <FolderOpen className="size-3" />
-            <span className="uppercase tracking-wide">View artifacts</span>
-            <ChevronDown className="size-3" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start">
-            {artifactItems.map((item) => (
-              <DropdownMenuItem key={item.label} onSelect={item.onClick}>
-                {item.label}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
+          </div>
+
+          {/* View Artifacts: one dropdown listing the artifacts that exist */}
+          <div className="flex shrink-0 items-center gap-1 border-t border-border bg-secondary/20 px-2 py-1.5">
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                data-testid="research-view-artifacts"
+                disabled={artifactItems.length === 0}
+                title={
+                  artifactItems.length === 0
+                    ? 'No research artifacts yet'
+                    : 'Open a research artifact'
+                }
+                className={cn(
+                  'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors',
+                  'text-muted-foreground',
+                  artifactItems.length > 0
+                    ? 'cursor-pointer hover:bg-muted'
+                    : 'opacity-60',
+                )}
+              >
+                <FolderOpen className="size-3" />
+                <span className="uppercase tracking-wide">View artifacts</span>
+                <ChevronDown className="size-3" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                {artifactItems.map((item) => (
+                  <DropdownMenuItem key={item.label} onSelect={item.onClick}>
+                    {item.label}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </>
+      )}
     </div>
   )
 }

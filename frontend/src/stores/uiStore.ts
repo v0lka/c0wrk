@@ -24,6 +24,17 @@ export type WorkspaceTab = 'explorer' | 'git' | 'semantics' | 'research'
 export type WorkspaceTabByProject = Record<string, WorkspaceTab>
 
 /**
+ * The Research panel's inner segment: the research control Dashboard vs the
+ * literature ("papers") library. Independent of the RESEARCH toggle — the
+ * paper library lives in the research root whether or not RESEARCH is on — so
+ * the segment is remembered per project just like the workspace tab.
+ */
+export type ResearchSegment = 'dashboard' | 'papers'
+
+/** Active research segment per project id. Persisted so each project remembers its own segment. */
+export type ResearchSegmentByProject = Record<string, ResearchSegment>
+
+/**
  * Valid WorkspaceTab values — used by the persist `merge` (and the `migrate`
  * version step) to validate persisted state entry-by-entry (mirrors
  * GIT_PANEL_TAB_VALUES in gitPanelStore): an unknown/corrupt tab value
@@ -34,6 +45,13 @@ export type WorkspaceTabByProject = Record<string, WorkspaceTab>
  */
 const WORKSPACE_TAB_VALUES = new Set<WorkspaceTab>(['explorer', 'git', 'semantics', 'research'])
 
+/**
+ * Valid ResearchSegment values — validated entry-by-entry on every rehydrate
+ * (same fail-closed contract as WORKSPACE_TAB_VALUES): an unknown/corrupt
+ * segment value falls back to the default rather than rendering a blank panel.
+ */
+const RESEARCH_SEGMENT_VALUES = new Set<ResearchSegment>(['dashboard', 'papers'])
+
 interface UIState {
   sidebarCollapsed: boolean
   /**
@@ -41,6 +59,12 @@ interface UIState {
    * projects restores each project's last-viewed tab.
    */
   workspaceTabByProject: WorkspaceTabByProject
+  /**
+   * Active Research-panel segment, keyed by project id. Persisted so switching
+   * projects restores each project's last-viewed segment (research Dashboard vs
+   * Papers library).
+   */
+  researchSegmentByProject: ResearchSegmentByProject
   /**
    * Sidebar width in pixels (the expanded width; a collapsed sidebar renders at
    * a fixed rail width). Persisted so the user's chosen proportion survives
@@ -66,6 +90,8 @@ interface UIActions {
   setSidebarCollapsed: (collapsed: boolean) => void
   toggleSidebarCollapsed: () => void
   setWorkspaceTab: (projectId: string, tab: WorkspaceTab) => void
+  /** Set the Research panel's inner segment for a project (dashboard | papers). */
+  setResearchSegment: (projectId: string, segment: ResearchSegment) => void
   /** Forget the remembered tab for a single project (e.g. on project delete). */
   dropProjectTabs: (projectId: string) => void
   setSidebarWidth: (width: number) => void
@@ -87,6 +113,22 @@ export function selectWorkspaceTab(
 ): WorkspaceTab {
   if (projectId === null || projectId === undefined) return DEFAULT_WORKSPACE_TAB
   return state.workspaceTabByProject[projectId] ?? DEFAULT_WORKSPACE_TAB
+}
+
+/** Default Research-panel segment when a project has no remembered segment yet. */
+export const DEFAULT_RESEARCH_SEGMENT: ResearchSegment = 'dashboard'
+
+/**
+ * Pure selector: resolve a project's Research-panel segment, defaulting to
+ * `'dashboard'` when the project has no remembered segment or when no project
+ * is active — safe to call with a null/undefined id.
+ */
+export function selectResearchSegment(
+  state: Pick<UIState, 'researchSegmentByProject'>,
+  projectId: string | null | undefined,
+): ResearchSegment {
+  if (projectId === null || projectId === undefined) return DEFAULT_RESEARCH_SEGMENT
+  return state.researchSegmentByProject[projectId] ?? DEFAULT_RESEARCH_SEGMENT
 }
 
 // --- Store ---
@@ -112,6 +154,7 @@ export function mergeUIStore(
     chatSessionListRatio?: unknown
     showSessionStats?: unknown
     workspaceTabByProject?: unknown
+    researchSegmentByProject?: unknown
   }
   const workspaceTabByProject: WorkspaceTabByProject = {}
   if (
@@ -123,6 +166,19 @@ export function mergeUIStore(
     )) {
       if (WORKSPACE_TAB_VALUES.has(tab as WorkspaceTab)) {
         workspaceTabByProject[projectId] = tab as WorkspaceTab
+      }
+    }
+  }
+  const researchSegmentByProject: ResearchSegmentByProject = {}
+  if (
+    p.researchSegmentByProject !== null &&
+    typeof p.researchSegmentByProject === 'object'
+  ) {
+    for (const [projectId, segment] of Object.entries(
+      p.researchSegmentByProject as Record<string, unknown>,
+    )) {
+      if (RESEARCH_SEGMENT_VALUES.has(segment as ResearchSegment)) {
+        researchSegmentByProject[projectId] = segment as ResearchSegment
       }
     }
   }
@@ -139,6 +195,7 @@ export function mergeUIStore(
     showSessionStats:
       typeof p.showSessionStats === 'boolean' ? p.showSessionStats : current.showSessionStats,
     workspaceTabByProject,
+    researchSegmentByProject,
   }
 }
 
@@ -147,6 +204,7 @@ export const useUIStore = create<UIState & UIActions>()(
     (set) => ({
       sidebarCollapsed: false,
       workspaceTabByProject: {},
+      researchSegmentByProject: {},
       sidebarWidth: getDefaultSidebarWidth(),
       chatSessionListRatio: 0.5,
       showSessionStats: false,
@@ -163,11 +221,27 @@ export const useUIStore = create<UIState & UIActions>()(
           : { workspaceTabByProject: { ...s.workspaceTabByProject, [projectId]: tab } }
       )),
 
+      setResearchSegment: (projectId, segment) => set((s) => (
+        s.researchSegmentByProject[projectId] === segment
+          ? s
+          : { researchSegmentByProject: { ...s.researchSegmentByProject, [projectId]: segment } }
+      )),
+
       dropProjectTabs: (projectId) => set((s) => {
-        if (!(projectId in s.workspaceTabByProject)) return s
-        const next = { ...s.workspaceTabByProject }
-        delete next[projectId]
-        return { workspaceTabByProject: next }
+        const hasTab = projectId in s.workspaceTabByProject
+        const hasSegment = projectId in s.researchSegmentByProject
+        if (!hasTab && !hasSegment) return s
+        let workspaceTabByProject = s.workspaceTabByProject
+        if (hasTab) {
+          workspaceTabByProject = { ...workspaceTabByProject }
+          delete workspaceTabByProject[projectId]
+        }
+        let researchSegmentByProject = s.researchSegmentByProject
+        if (hasSegment) {
+          researchSegmentByProject = { ...researchSegmentByProject }
+          delete researchSegmentByProject[projectId]
+        }
+        return { workspaceTabByProject, researchSegmentByProject }
       }),
 
       setSidebarWidth: (width) => set({ sidebarWidth: clamp(width, SIDEBAR_MIN, SIDEBAR_MAX) }),
@@ -180,7 +254,7 @@ export const useUIStore = create<UIState & UIActions>()(
     }),
     {
       name: 'c0wrk-sidebar-collapsed',
-      version: 5,
+      version: 6,
       // Bump version and implement migration when adding/removing/renaming persisted fields.
       migrate: (persistedState, _version) => {
         const prev = (persistedState ?? {}) as {
@@ -189,11 +263,14 @@ export const useUIStore = create<UIState & UIActions>()(
           sidebarWidth?: number
           showSessionStats?: boolean
           workspaceTabByProject?: WorkspaceTabByProject
+          researchSegmentByProject?: ResearchSegmentByProject
         }
         // v1→v2 added chatSessionListRatio; v2→v3 added sidebarWidth;
         // v3→v4 added showSessionStats (default off — the stats row is
         // opt-in); v4→v5 replaced the transient workspaceTab scalar with the
-        // per-project workspaceTabByProject map. On every migration (and fresh
+        // per-project workspaceTabByProject map; v5→v6 added the per-project
+        // researchSegmentByProject map (Research panel: dashboard | papers).
+        // On every migration (and fresh
         // installs) missing fields take their creator default; persist's
         // shallow merge already covers fresh installs, but explicit defaults
         // here make the migration resilient to partial data.
@@ -212,12 +289,24 @@ export const useUIStore = create<UIState & UIActions>()(
             }
           }
         }
+        const researchSegmentByProject: ResearchSegmentByProject = {}
+        if (
+          prev.researchSegmentByProject !== null &&
+          typeof prev.researchSegmentByProject === 'object'
+        ) {
+          for (const [projectId, segment] of Object.entries(prev.researchSegmentByProject)) {
+            if (RESEARCH_SEGMENT_VALUES.has(segment as ResearchSegment)) {
+              researchSegmentByProject[projectId] = segment as ResearchSegment
+            }
+          }
+        }
         return {
           sidebarCollapsed: prev.sidebarCollapsed ?? false,
           chatSessionListRatio: prev.chatSessionListRatio ?? 0.5,
           sidebarWidth: prev.sidebarWidth ?? getDefaultSidebarWidth(),
           showSessionStats: prev.showSessionStats ?? false,
           workspaceTabByProject,
+          researchSegmentByProject,
         }
       },
       // merge (not just migrate) validates on every rehydrate — see mergeUIStore.
@@ -228,6 +317,7 @@ export const useUIStore = create<UIState & UIActions>()(
         chatSessionListRatio: state.chatSessionListRatio,
         showSessionStats: state.showSessionStats,
         workspaceTabByProject: state.workspaceTabByProject,
+        researchSegmentByProject: state.researchSegmentByProject,
       }),
     }
   )

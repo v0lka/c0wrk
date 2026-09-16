@@ -14,7 +14,14 @@ RESEARCH mode is a project-scoped methodology workspace for maintaining research
 - `core/research/skills/` - embedded `research-*` skill sources
 - `backend/frontend_api_research.go` - enable/disable/status/graph RPC behavior, persistence, and skill rescan
 - `backend/frontend_api_project.go` - recursive research-tree watcher integration and incremental file-change emission
-- `frontend/src/components/research/index.tsx` - Research panel and graph/status presentation
+- `frontend/src/components/research/index.tsx` - Research panel (the `[Dashboard | Papers]` segmented control + graph/status presentation)
+- `frontend/src/components/papers/PapersView.tsx` - Papers segment: the `study-paper` invocation surface over the studied-paper list, plus multi-select ("Compare selected", enabled at ≥2 papers) that dispatches a library comparison
+- `frontend/src/components/papers/CompareMatrix.tsx` - paper Compare section renderer: a multi-paper comparison artifact (`<research-root>/comparisons/<slug>.md`) rendered as the papers table + dimension × paper matrix + the fairness / agreement / gaps / synthesis-verdict sections (pure parsing in `frontend/src/lib/paperComparison.ts`)
+- `frontend/src/components/papers/useComparisons.ts` - loads every comparison artifact under `<research-root>/comparisons/` for the Compare section
+
+- `frontend/src/components/research/PriorArtRow.tsx` - the research dashboard's prior-art row: Open (the raw `prior-art.md`) plus Deep read (dispatches `study-paper` at the forced deep-appraisal depth over the catalog's referenced works)
+- `frontend/src/components/papers/paperActions.ts` - the audit module for every paper-study dispatch prompt — the Papers panel's field/row gestures AND the invoke-from-anywhere surfaces (the file-tree PDF menu, the chat-attachment Study action, the prior-art Deep read)
+- `frontend/src/lib/papersByHypothesis.ts` - the reverse paper ← hypothesis projection (pure `buildPapersByHypothesis` fold + `useInformingPapers`/`useDanglingPaperLinks` hooks); `frontend/src/components/research/InformingPapers.tsx` - its two rendered faces (the hypothesis card's "Informing papers (N)" section and the research dashboard's dangling-link warning)
 
 ## Core Types
 
@@ -98,9 +105,12 @@ Research artifact changes
 
 Both frontend sync paths are mounted exactly once at the App root
 (`ResearchEventBridge`); the Research panel
-and the workspace tab are pure views over `researchStore` and never mount the
+and the workspace tab are pure views over `researchStore` (and the panel's
+Papers segment over `paperStore`) and never mount the
 hooks themselves (a double mount would duplicate every watchdog and fallback
-refetch). The workspace's hypothesis selection is keyed to the research
+refetch). The bridge additionally mounts `usePapersEvents`, which loads the
+active project's paper library and re-fetches it on `papers:changed` — the
+library is watched independently of the RESEARCH toggle (hybrid mode). The workspace's hypothesis selection is keyed to the research
 project it was made in (`selectedHypothesisProjectId`): an active-R-NNN
 switch leaves a stale selection — and its unsaved draft — unrendered instead
 of rebinding it to the new project's same-id card.
@@ -120,6 +130,8 @@ The canonical nested artifact shape is:
 ```
 
 Missing optional artifacts produce a valid partial model: an empty hypothesis graph and zero metrics are normal states.
+
+The paper library and multi-paper comparisons are global siblings of the research projects — both direct children of `<research-root>`: `papers/<slug>/` (the studied-paper cards) and `comparisons/<slug>.md` (one multi-paper comparison artifact per set, written by the study-paper Compare intent).
 
 The active project is the project referenced by the last chronological `index.md` entry when that project exists; otherwise it is the highest-numbered parsed `R-NNN` directory. `ResearchRoot.ActiveProjectID`, orchestrator research context, and the frontend panel all use this selection rule.
 
@@ -156,6 +168,8 @@ Metrics are derived from the reconciled graph:
 - `RecommendNextStepForHypothesis` scopes the next-step recommendation to one hypothesis: open/in-progress → `research-experiment` on it; terminal without a recorded Decision → `research-decision` on it; otherwise (unknown hypothesis, nil project, empty ID, or a terminal hypothesis already carrying a Decision) the plain `RecommendNextStep` result. `GetResearchNextStep(projectID, hypothesisID)` exposes this at the RPC boundary: an empty `hypothesisID` means the project-level recommendation.
 - `ResearchNextStepDTO.project_id` (and `ResearchGraphDTO.project_id`) are dual-namespace by design: they name the recommendation's/graph's subject — the active R-NNN when one exists, the c0wrk project UUID otherwise (the pre-R-NNN setup state). They are not stable identities for the requesting c0wrk project; frontend state keying must not rely on them across a project switch (the research store drops the recommendation and selection on cross-project loads instead).
 
+- Every `study-paper` dispatch surface is fail-closed: the file-tree "Study this paper…" item renders only for PDFs, the chat-attachment Study action only on PDF attachments, and the prior-art Deep-read row only when the active project has prior art — an unavailable input never offers a dispatch, and the file tree's depth picker dispatches nothing unless a depth is chosen.
+
 ## Configuration
 
 | Parameter | Default | Description |
@@ -172,8 +186,18 @@ Metrics are derived from the reconciled graph:
 - Add a research artifact by extending `ParseProject`; preserve the best-effort partial-state contract.
 - Change watcher payloads or RPC DTOs only with matching updates to the desktop/frontend and event contracts.
 
+## Informing papers (hypothesis ← paper)
+
+The literature library and the hypothesis graph are wired in ONE direction end-to-end: a paper card declares `research_ids` (H-NNN), the backend resolves each to the owning R-NNN project(s) (`PaperDTO.linked_research`), and the paper's Overview renders them as "Research links". The reverse question — "which papers inform H-003?" — has no stored artifact and no RPC; it is DERIVED on the frontend by a pure fold of the two already-live stores (`paperStore.papers` × the hypothesis graph), keeping the paper cards as the single source of truth.
+
+- `frontend/src/lib/papersByHypothesis.ts` — `buildPapersByHypothesis(papers, nodes)` folds `research_ids × node ids` into `{ byHypothesis: Map<H-NNN, PaperRecord[]>, dangling: Map<H-NNN, PaperRecord[]>, informedCount, danglingCount }`. `normalizeHypothesisId` makes the join spelling-tolerant (`h-3` / `H-03` / `H-003` → `H-003`); a paper contributes at most one entry per distinct normalized id. An id that matches no node feeds the `dangling` bucket (surfaced, never silently dropped). `collectHypothesisNodes(root)` unions the nodes of EVERY project of the root — the paper library is global across the root while a graph node is scoped to one R-NNN, so an id must match a node in ANY project to count as resolved (otherwise a paper legitimately citing another project's hypothesis would be misreported as dangling).
+- Hooks — `usePapersByHypothesis()`, `useInformingPapers(id)` and `useDanglingPaperLinks()` read only DIRECT store references (the `papers` array, the `root` object) and allocate exclusively inside `useMemo` (React #185: a Zustand selector must never allocate an array/object).
+- Render — `InformingPapers` is the hypothesis card's read-only "Informing papers (N)" list (renders nothing at zero); `DanglingPaperLinks` is the research dashboard's warning for cards that name a nonexistent H-NNN. Every entry opens the paper's reader tab through the file viewer's synthetic paper pseudo-path (`openPaper(slug)` → `c0wrk:paper:<slug>`).
+- The projection adds no RPC and no persisted file: it is a pure client-side view over already-live state.
+
 ## Related Specs
 
+- [papers.md](papers.md) - the paper ("literature") library: studied-paper cards, flashcards, the literature graph, and multi-paper comparisons, plus the globally-seeded `study-paper` skill-pack (the RESEARCH panel's Papers segment)
 - [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) - RESEARCH RPC surface and DTO boundary
 - [../contracts/event-catalog.md](../contracts/event-catalog.md) - `research:changed` and `research:file_changed` events
 - [architecture/security-model.md](../architecture/security-model.md) - workspace containment and untrusted persisted artifacts

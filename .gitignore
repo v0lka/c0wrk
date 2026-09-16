@@ -173,6 +173,10 @@ dist/
 coverage/
 .nyc_output/
 
+# Python bytecode (e.g. from the bundled study-paper skill scripts)
+__pycache__/
+*.py[cod]
+
 # Environment variables
 .env.local
 .env.*.local
