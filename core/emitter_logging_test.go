@@ -32,8 +32,8 @@ func (s *spyEmitter) ToolResult(n, ci, l int, p string, e bool) {
 }
 func (s *spyEmitter) StepComplete(n int, d time.Duration) { s.record("StepComplete", n, d) }
 func (s *spyEmitter) SubAgentLaunch(id, desc string)      { s.record("SubAgentLaunch", id, desc) }
-func (s *spyEmitter) SubAgentComplete(id string, ok bool, d time.Duration) {
-	s.record("SubAgentComplete", id, ok, d)
+func (s *spyEmitter) SubAgentComplete(id string, ok bool, d time.Duration, errMsg string) {
+	s.record("SubAgentComplete", id, ok, d, errMsg)
 }
 func (s *spyEmitter) SubAgentPaused(id string, d time.Duration) {
 	s.record("SubAgentPaused", id, d)
@@ -142,7 +142,7 @@ func TestLoggingEmitter_DelegatesToInner(t *testing.T) {
 		{"ToolResult", func(e Emitter) { e.ToolResult(1, 0, 100, "ok", false) }, "ToolResult"},
 		{"StepComplete", func(e Emitter) { e.StepComplete(1, dur) }, "StepComplete"},
 		{"SubAgentLaunch", func(e Emitter) { e.SubAgentLaunch("s1", "desc") }, "SubAgentLaunch"},
-		{"SubAgentComplete", func(e Emitter) { e.SubAgentComplete("s1", true, dur) }, "SubAgentComplete"},
+		{"SubAgentComplete", func(e Emitter) { e.SubAgentComplete("s1", true, dur, "") }, "SubAgentComplete"},
 		{"SubAgentPaused", func(e Emitter) { e.SubAgentPaused("s1", dur) }, "SubAgentPaused"},
 		{"AssistantChunk", func(e Emitter) { e.AssistantChunk("hi") }, "AssistantChunk"},
 		{"AssistantDone", func(e Emitter) { e.AssistantDone("hi", 10, 20) }, "AssistantDone"},

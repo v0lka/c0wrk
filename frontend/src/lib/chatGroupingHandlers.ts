@@ -182,6 +182,9 @@ export function handleSubAgentComplete(
   if (!step) return
   step.status = (meta?.success as boolean) ? 'completed' : 'failed'
   if (meta?.duration !== undefined) step.duration = meta.duration as number
+  // Surface the failure reason (present only when success is false), mirroring
+  // handlePlanStepComplete — the SubAgentBlock header renders it.
+  if (!meta?.success && meta?.error) step.error = meta.error as string
   // Remove from openSteps so late-arriving children no longer nest under a
   // completed subagent. In the plan_step→subagent conversion flow the
   // subsequent plan_step_complete becomes a no-op for openSteps (the step is

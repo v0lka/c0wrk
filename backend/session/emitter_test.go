@@ -381,7 +381,7 @@ func TestEventEmitterSubAgentComplete(t *testing.T) {
 
 	emitter := NewEventEmitter("test-session", emit)
 	duration := 5 * time.Second
-	emitter.SubAgentComplete("step_1", true, duration)
+	emitter.SubAgentComplete("step_1", true, duration, "")
 
 	if received.Type != "subagent_complete" {
 		t.Errorf("expected type 'subagent_complete', got %q", received.Type)
@@ -399,6 +399,38 @@ func TestEventEmitterSubAgentComplete(t *testing.T) {
 	}
 	if data["duration"] != int64(5000) {
 		t.Errorf("expected duration 5000, got %v", data["duration"])
+	}
+	// A successful subagent must NOT carry an "error" field.
+	if _, ok := data["error"]; ok {
+		t.Errorf("expected no 'error' field on success, got %v", data["error"])
+	}
+}
+
+// TestEventEmitterSubAgentComplete_WithError verifies that a failed
+// SubAgentComplete surfaces the failure reason as the "error" field, mirroring
+// PlanStepComplete.
+func TestEventEmitterSubAgentComplete_WithError(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.SubAgentComplete("step_1", false, 2*time.Second, "subagent blew up")
+
+	if received.Type != "subagent_complete" {
+		t.Errorf("expected type 'subagent_complete', got %q", received.Type)
+	}
+
+	data, ok := received.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
+	}
+	if data["success"] != false {
+		t.Errorf("expected success false, got %v", data["success"])
+	}
+	if data["error"] != "subagent blew up" {
+		t.Errorf("expected error 'subagent blew up', got %v", data["error"])
 	}
 }
 
@@ -793,7 +825,7 @@ func TestEventEmitterAllMethods(t *testing.T) {
 	emitter.ToolResult(1, 0, 100, "", false)
 	emitter.StepComplete(1, time.Second)
 	emitter.SubAgentLaunch("step_1", "Do something")
-	emitter.SubAgentComplete("step_1", true, time.Second)
+	emitter.SubAgentComplete("step_1", true, time.Second, "")
 	emitter.Reflection(&orchestration.Reflection{Summary: "Something went wrong", Hypotheses: []string{"Issue found"}}, 1, 3)
 	emitter.Retry(2, 3)
 	emitter.ContextFill(75.5, 75500, 100000, "compact", "step_1")

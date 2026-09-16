@@ -2129,8 +2129,8 @@ func (t *planStepEventTranslator) SubAgentLaunch(stepID, description string) {
 	t.root.PlanStepStart(stepID, description, t.summary)
 }
 
-func (t *planStepEventTranslator) SubAgentComplete(stepID string, success bool, duration time.Duration) {
-	t.root.PlanStepComplete(stepID, success, duration, "")
+func (t *planStepEventTranslator) SubAgentComplete(stepID string, success bool, duration time.Duration, errMsg string) {
+	t.root.PlanStepComplete(stepID, success, duration, errMsg)
 }
 
 func (t *planStepEventTranslator) SubAgentPaused(stepID string, duration time.Duration) {

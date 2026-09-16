@@ -64,6 +64,20 @@ describe('SubAgentBlock', () => {
     expect(state()).toBe('closed')
   })
 
+  // --- failure reason surfaced in the header (mirrors PlanStepBlock) ---
+
+  it('renders the failure reason in the header when failed', () => {
+    render(makeSub({ status: 'failed', error: 'max steps exceeded', duration: 3000 }))
+    expect(container.textContent).toContain('max steps exceeded')
+    // The reason is a settled header hint, not an auto-expanded body.
+    expect(state()).toBe('closed')
+  })
+
+  it('does not render a stale error hint when the block completed', () => {
+    render(makeSub({ status: 'completed', error: 'stale reason', duration: 3000 }))
+    expect(container.textContent).not.toContain('stale reason')
+  })
+
   it('expands its body when the user clicks the header', () => {
     render(makeSub({ status: 'completed', children: [CHILD] }))
     act(() => {

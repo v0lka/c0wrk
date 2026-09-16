@@ -962,6 +962,18 @@ describe('groupMessages — pause checkpoints', () => {
     expect((sub as { duration?: number }).duration).toBe(3000)
   })
 
+  it('attaches the failure reason to a failed subagent_complete block', () => {
+    const result = groupMessages([
+      makeUI({ type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),
+      makeUI({ type: 'subagent_complete', metadata: { step_id: 'delegate-1', success: false, duration: 3000, error: 'max steps exceeded' } }),
+    ])
+
+    const sub = result.items.find((it) => it.kind === 'subagent') as { status: string; error?: string }
+    expect(sub).toBeDefined()
+    expect(sub.status).toBe('failed')
+    expect(sub.error).toBe('max steps exceeded')
+  })
+
   it('resumes a paused subagent in the SAME block on the first post-pause child', () => {
     const result = groupMessages([
       makeUI({ type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),

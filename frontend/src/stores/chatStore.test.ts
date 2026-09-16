@@ -597,13 +597,29 @@ describe('groupMessages', () => {
     })
     const complete = makeUI({
       type: 'subagent_complete',
-      metadata: { step_id: 'sa1', success: false, duration: 5000 },
+      metadata: { step_id: 'sa1', success: false, duration: 5000, error: 'subagent exited with code 1' },
     })
     const result = groupMessages([launch, complete])
     expect(result.items).toHaveLength(1)
     const sub = result.items[0]! as DisplayItem & { kind: 'subagent' }
     expect(sub.status).toBe('failed')
     expect(sub.duration).toBe(5000)
+    expect(sub.error).toBe('subagent exited with code 1')
+  })
+
+  it('does not attach an error to a successful subagent_complete', () => {
+    const launch = makeUI({
+      type: 'subagent_launch',
+      metadata: { step_id: 'sa1', description: 'Research code' },
+    })
+    const complete = makeUI({
+      type: 'subagent_complete',
+      metadata: { step_id: 'sa1', success: true, duration: 3000, error: 'stale reason' },
+    })
+    const result = groupMessages([launch, complete])
+    const sub = result.items[0]! as DisplayItem & { kind: 'subagent' }
+    expect(sub.status).toBe('completed')
+    expect(sub.error).toBeUndefined()
   })
 
   it('preserves subagent duration from subagent_complete', () => {
