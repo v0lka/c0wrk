@@ -9,9 +9,10 @@
 
 import { useCallback, useEffect, useRef } from 'react'
 import type { RefObject } from 'react'
-import { useChatStore } from '@/stores/chatStore'
+import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import { getSessionHistory } from '@/api/chat'
 import { chatMessageToUI, isPersistableHistoryMessage, isAgentMetricsRow, isRoutingRequestRow } from '@/lib/chatUtils'
+import { restorePlanAndGoalFromHistory, applyWorkUnitOverlayToPlan, restoreAgentMetricsIfAbsent } from '@/lib/sessionStoreRestore'
 import { logger } from '@/lib/logger'
 
 /** Number of messages fetched per page (the initial tail page and each older
@@ -28,41 +29,57 @@ const LOAD_OLDER_THRESHOLD_PX = 400
  * reached. After a successful prepend the viewport is re-anchored (scrollTop
  * grows by the inserted height) so the content the user was reading stays put
  * instead of jumping as older rows appear above it.
+ *
+ * Because a prepended page can carry the rows a store rebuild needs (the plan
+ * declaration, goal snapshots, the metrics report), the plan panel / goal badge
+ * / stats row are rebuilt from the accumulated messages after each prepend —
+ * otherwise the Execution Panels stay empty for a session longer than one page.
  */
 export function useOlderHistoryLoader(
   sessionId: string | null,
   scrollRef: RefObject<HTMLElement | null>,
 ): void {
-  // Granular selectors return primitives — referentially stable (AGENTS.md).
+  // Granular selector returns a primitive — referentially stable (AGENTS.md).
+  // It is only the trigger that re-runs the effect (and the at-top load) once
+  // the newest-page RPC has recorded whether older pages exist; the guard and
+  // cursor are read synchronously from the store inside loadOlder.
   const hasMore = useChatStore(s => (sessionId ? s.historyHasMore[sessionId] : undefined)) ?? false
-  const cursor = useChatStore(s => (sessionId ? s.historyCursor[sessionId] : undefined)) ?? ''
-  const loading = useChatStore(s => (sessionId ? s.historyLoading[sessionId] : undefined)) ?? false
 
-  // Latest values for the (once-per-session) scroll listener, which must not
-  // re-subscribe on every cursor/loading change.
-  const stateRef = useRef({ hasMore, cursor, loading })
-  stateRef.current = { hasMore, cursor, loading }
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
 
   const loadOlder = useCallback(async () => {
     const sid = sessionIdRef.current
     if (!sid) return
-    const st = stateRef.current
-    if (!st.hasMore || st.loading) return
+    // Read the guard AND the cursor synchronously from the store: the render
+    // snapshot lags a store write by a render, so two fast scroll events could
+    // both pass a ref-based guard and fetch the same page twice. The store is
+    // the single source of truth here.
     const store = useChatStore.getState()
+    if (!store.historyHasMore[sid] || store.historyLoading[sid]) return
+    const cursor = store.historyCursor[sid] ?? ''
     store.setHistoryLoading(sid, true)
     const el = scrollRef.current
     const heightBefore = el?.scrollHeight ?? 0
     try {
-      const page = await getSessionHistory(sid, HISTORY_PAGE_SIZE, st.cursor)
+      const page = await getSessionHistory(sid, HISTORY_PAGE_SIZE, cursor)
       // Discard the result if the user switched sessions meanwhile.
       if (sessionIdRef.current !== sid) return
-      const ui = page.messages
-        .filter(isPersistableHistoryMessage)
-        .map(chatMessageToUI)
-        .filter(m => !isAgentMetricsRow(m) && !isRoutingRequestRow(m))
+      const rows = page.messages.filter(isPersistableHistoryMessage).map(chatMessageToUI)
+      const ui = rows.filter(m => !isAgentMetricsRow(m) && !isRoutingRequestRow(m))
       useChatStore.getState().prependHistoryMessages(sid, ui, page.next_cursor, page.has_more)
+      // Rebuild the session stores from the messages accumulated so far — the
+      // plan declaration and goal snapshots may live on this (older) page.
+      // Guarded on the page actually carrying an anchor row so an ordinary
+      // content page does not trigger a needless full replay + clearPlan.
+      const hasPlanAnchor = ui.some(m => m.type === 'plan')
+      const hasGoalAnchor = ui.some(m => m.type === 'goal_status' || m.type === 'goal_proposal')
+      if (hasPlanAnchor || hasGoalAnchor) {
+        restorePlanAndGoalFromHistory(sid, selectSessionMessages(useChatStore.getState(), sid))
+        applyWorkUnitOverlayToPlan(sid)
+      }
+      // Metrics: only fill in when the store has none (a newer page wins).
+      restoreAgentMetricsIfAbsent(sid, rows)
       // Re-anchor after the DOM has laid out the prepended rows.
       if (el) {
         requestAnimationFrame(() => {
@@ -73,7 +90,12 @@ export function useOlderHistoryLoader(
     } catch (err) {
       logger.error('Failed to load older session history:', err)
     } finally {
-      if (sessionIdRef.current === sid) useChatStore.getState().setHistoryLoading(sid, false)
+      // Clear the in-flight flag UNCONDITIONALLY for sid. It is keyed by sid,
+      // so clearing even after a session switch is safe — and it is required:
+      // a session switch during the await would otherwise leave
+      // historyLoading[sid] stuck true, blocking older-page loading in this
+      // session until an app restart.
+      useChatStore.getState().setHistoryLoading(sid, false)
     }
   }, [scrollRef])
 

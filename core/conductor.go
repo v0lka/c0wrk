@@ -413,9 +413,11 @@ type conductorDeps struct {
 	reflector        *reflector.Reflector
 	maxRedelegDepth  int
 	maxDepCtxChars   int
-	// maxParallelSubagents caps concurrent subagents, enforced at the single
-	// sp4rk RunSubAgentsParallel chokepoint both the delegate tool and plan
-	// waves funnel through (see conductorLauncher.runSubAgentsParallel).
+	// maxParallelSubagents caps concurrent subagents. It is enforced through
+	// the launcher's shared limiter (conductorLauncher.subagentSlots), which
+	// every dispatch path acquires from — the plan-wave and blocking-delegate
+	// fan-out (runSubAgentsParallel) and the per-task async launches
+	// (launchAsync) alike. <= 0 means unlimited.
 	maxParallelSubagents int
 	reasoningEffort      string
 	preWarningPct        int
@@ -610,6 +612,18 @@ type conductorLauncher struct {
 	ledgerOnce sync.Once
 	// derivedLedger caches the ledger lazily derived from the blackboard.
 	derivedLedger units.Ledger
+
+	// slots is the launcher-wide subagent concurrency limiter: a buffered
+	// channel whose capacity is deps.maxParallelSubagents (nil = unlimited).
+	// It is the SINGLE limiter every subagent execution acquires a slot from —
+	// both the wave/batch fan-out (runSubAgentsParallel) and the per-task async
+	// launches (launchAsync) — so the configured cap holds across ALL dispatch
+	// paths and across paths running at the same time (a wave that mixes async
+	// and blocking tasks cannot exceed it here). Lazily built by subagentSlots
+	// from the configured cap so a launcher constructed directly (tests) still
+	// honors it; the once-guard publishes it safely to the concurrent callers.
+	slotsOnce sync.Once
+	slots     chan struct{}
 }
 
 // unitLedger returns the ledger this launcher writes unit lifecycle through.
@@ -1047,14 +1061,81 @@ type planStepOutcome struct {
 	err    error
 }
 
-// runSubAgentsParallel is the SINGLE dispatch point through which both the
-// plan-wave path (defaultPlanStepWave) and the blocking-delegate path
-// (runRegularBlocking) launch their subagents. It applies the configured
-// max-parallel cap here, once, so the limit holds for every delegation kind —
-// plan-wave and delegate alike — instead of being re-implemented per path.
-// A zero/unset cap is passed through as "unlimited" (the sp4rk default).
+// subagentSlots returns the launcher-wide subagent concurrency limiter,
+// building it once from deps.maxParallelSubagents. A cap <= 0 means
+// "unlimited" (returns nil, so no slot accounting happens).
+func (l *conductorLauncher) subagentSlots() chan struct{} {
+	l.slotsOnce.Do(func() {
+		if n := l.deps.maxParallelSubagents; n > 0 {
+			l.slots = make(chan struct{}, n)
+		}
+	})
+	return l.slots
+}
+
+// acquireSubagentSlot blocks until a running slot is free (no-op when the
+// limiter is unlimited). Every acquire must be paired with exactly one
+// releaseSubagentSlot once the subagent settles.
+func (l *conductorLauncher) acquireSubagentSlot() {
+	if slots := l.subagentSlots(); slots != nil {
+		slots <- struct{}{}
+	}
+}
+
+// releaseSubagentSlot frees a running slot (no-op when unlimited).
+func (l *conductorLauncher) releaseSubagentSlot() {
+	if slots := l.subagentSlots(); slots != nil {
+		<-slots
+	}
+}
+
+// runSubAgentsParallel is the SINGLE fan-out through which both the plan-wave
+// path (defaultPlanStepWave) and the blocking-delegate path
+// (runRegularBlocking) launch their subagents. Every worker acquires a slot
+// from the launcher-wide limiter (subagentSlots) — the SAME limiter the async
+// launches (launchAsync) acquire from — so agents.max_parallel_subagents caps
+// concurrency across every dispatch path, and across paths running at the same
+// time, instead of once per call. Results are returned in input order.
+//
+// When the cap is unset (<= 0) the fan-out is delegated to the SDK's
+// agent.RunSubAgentsParallel, which is unbounded in that case.
+//
+// The workers mirror agent.RunSubAgentsParallel's shape (one goroutine per
+// task, one running slot per worker) but acquire the launcher's shared limiter
+// rather than the SDK's per-call semaphore — that sharing is exactly what lets
+// the cap span separate dispatch paths. agent.RunSubAgent already runs each
+// subagent on its own goroutine with panic recovery, so this only schedules
+// and collects.
+//
+// No slot-holder here can itself delegate: the plan-wave path runs under
+// subagentCtx (delegation machinery stripped) and the blocking path receives
+// only non-redelegating tasks (runBlocking splits the redelegating ones out to
+// runRedelegBlocking, which is intentionally NOT gated). So an active slot
+// never waits on a nested launch for a slot it is itself holding — the shared
+// limiter cannot deadlock on nested delegation.
 func (l *conductorLauncher) runSubAgentsParallel(ctx context.Context, tasks []agent.SubAgentTask) []agent.SubAgentResult {
-	return agent.RunSubAgentsParallel(ctx, tasks, agent.WithMaxParallelSubagents(l.deps.maxParallelSubagents))
+	if len(tasks) == 0 {
+		return nil
+	}
+	slots := l.subagentSlots()
+	if slots == nil {
+		return agent.RunSubAgentsParallel(ctx, tasks)
+	}
+
+	results := make([]agent.SubAgentResult, len(tasks))
+	var wg sync.WaitGroup
+	for i := range tasks {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			slots <- struct{}{}        // acquire a running slot
+			defer func() { <-slots }() // release it once this subagent settles
+			t := tasks[i]
+			results[i] = <-agent.RunSubAgent(ctx, t.StepID, t.Executor, t.CM, t.TaskTools, t.TaskDesc, t.Emitter, t.TodoUpdateFunc)
+		}(i)
+	}
+	wg.Wait()
+	return results
 }
 
 // defaultPlanStepWave is the production wave dispatcher: it builds an isolated
@@ -1590,6 +1671,13 @@ func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationT
 
 	go func() {
 		defer cancel()
+		// Bound the async fan-out by the launcher-wide limiter: acquire a
+		// running slot before the subagent starts and hold it until it settles,
+		// exactly as the blocking/plan-wave fan-out does. Without this an async
+		// delegate call (up to maxDelegationBatchSize tasks) would start every
+		// task at once, ignoring agents.max_parallel_subagents.
+		l.acquireSubagentSlot()
+		defer l.releaseSubagentSlot()
 		ch := agent.RunSubAgent(asyncCtx, t.ID, subTask.Executor, subTask.CM, subTask.TaskTools, subTask.TaskDesc, subTask.Emitter, subTask.TodoUpdateFunc)
 		select {
 		case sr := <-ch:

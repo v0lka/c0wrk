@@ -41,10 +41,11 @@ vi.mock('@/stores/sessionStore', async () => {
 vi.mock('@/stores/chatStore', () => ({
   useChatStore: Object.assign(
     () => undefined,
-    { getState: () => ({ addMessage: vi.fn(), mergeHistoryMessages: vi.fn(), setTaskActive: vi.fn(), setHistoryPageMeta: vi.fn() }) },
+    { getState: () => ({ addMessage: vi.fn(), mergeHistoryMessages: vi.fn(), setTaskActive: vi.fn(), setHistoryPageMeta: vi.fn(), setHistoryLoading: vi.fn(), historyCursor: {}, historyHasMore: {}, historyLoading: {}, workUnitStatus: {} }) },
   ),
   useSessionMessages: () => [],
   useSessionWorkUnits: () => ({}),
+  selectSessionMessages: () => [],
 }))
 
 // --- planStore: ChatArea calls usePlanStore.getState().clearPlan() in an effect ---

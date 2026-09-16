@@ -16,10 +16,19 @@ import type { ReactElement } from 'react'
 import type { ChatMessageUI, DisplayItem } from '@/types/messages'
 import type { SessionInfo } from '@/types/models'
 
-const { messagesRef, EMPTY_WORK_UNITS, itemsCaptured } = vi.hoisted(() => ({
+const { messagesRef, EMPTY_WORK_UNITS, itemsCaptured, chatStoreFns, chatStoreState } = vi.hoisted(() => ({
   messagesRef: { current: [] as ChatMessageUI[] },
   EMPTY_WORK_UNITS: {} as Record<string, never>,
   itemsCaptured: [] as DisplayItem[][],
+  chatStoreFns: {
+    addMessage: vi.fn(),
+    mergeHistoryMessages: vi.fn(),
+    setHistoryPageMeta: vi.fn(),
+    setHistoryLoading: vi.fn(),
+    setTaskActive: vi.fn(),
+  },
+  // Paging bookkeeping maps the real hook reads off the store snapshot.
+  chatStoreState: { historyCursor: {}, historyHasMore: {}, historyLoading: {}, workUnitStatus: {} },
 }))
 
 vi.mock('@/components/MarkdownViewer', () => ({
@@ -35,15 +44,11 @@ vi.mock('./VirtualizedChatList', () => ({
 
 vi.mock('@/stores/chatStore', () => ({
   useChatStore: Object.assign(() => undefined, {
-    getState: () => ({
-      addMessage: vi.fn(),
-      mergeHistoryMessages: vi.fn(),
-      setHistoryPageMeta: vi.fn(),
-      setTaskActive: vi.fn(),
-    }),
+    getState: () => ({ ...chatStoreFns, ...chatStoreState }),
   }),
   useSessionMessages: () => messagesRef.current,
   useSessionWorkUnits: () => EMPTY_WORK_UNITS,
+  selectSessionMessages: () => messagesRef.current,
 }))
 
 vi.mock('@/stores/sessionStore', async () => {
@@ -147,6 +152,7 @@ describe('ChatArea transcript stability', () => {
     root = null
     messagesRef.current = []
     itemsCaptured.length = 0
+    for (const fn of Object.values(chatStoreFns)) fn.mockClear()
     useSessionStore.setState({ sessions: [session()], activeSessionId: 's1' })
   })
 
@@ -201,5 +207,16 @@ describe('ChatArea transcript stability', () => {
     expect(second[60]).toBe(first[60])
     // …while the changed item is a fresh object.
     expect(second[5]).not.toBe(first[5])
+  })
+
+  it('resets the session paging bookkeeping before loading the newest page (finding #2b)', async () => {
+    messagesRef.current = makeMessages(3)
+    render(<Harness />)
+    await flushEffects()
+
+    // A cursor/hasMore left over from an earlier visit must not be reused, and
+    // an in-flight flag left set must not block older-page loading.
+    expect(chatStoreFns.setHistoryPageMeta).toHaveBeenCalledWith('s1', '', false)
+    expect(chatStoreFns.setHistoryLoading).toHaveBeenCalledWith('s1', false)
   })
 })

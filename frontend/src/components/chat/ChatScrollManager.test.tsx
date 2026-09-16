@@ -8,6 +8,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChatScrollManager } from './ChatScrollManager'
 import { ScrollProvider, useScrollContext } from './ScrollContext'
+import type { ChatVirtualizerHandle } from '@/lib/chatVirtualizer'
 import type { ChatMessageUI } from '@/types/messages'
 
 let root: Root | null = null
@@ -259,5 +260,127 @@ describe('ChatScrollManager navigation suppresses auto-scroll', () => {
     expect(h.scrollTopWrites()).toEqual([])
 
     vi.useRealTimers()
+  })
+})
+
+// Finding #4: the virtualized transcript mounts only visible rows, so the
+// DOM-based lookup in ChatScrollManager finds nothing for an off-screen step or
+// bookmark. With a virtualizer handle supplied, navigation must scroll the
+// virtualizer to the row first, then position it once it has mounted.
+describe('ChatScrollManager virtualized navigation', () => {
+  function renderVirtualized(
+    handle: ChatVirtualizerHandle,
+    child: React.ReactNode = <div />,
+  ): HTMLElement {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const scrollRef: React.RefObject<HTMLDivElement | null> = { current: null }
+    root = createRoot(container)
+    act(() => {
+      root!.render(
+        <ScrollProvider>
+          <Probe />
+          <ChatScrollManager
+            messages={[]}
+            streamingText={undefined}
+            scrollRef={scrollRef}
+            virtualizerRef={{ current: handle }}
+          >
+            {child}
+          </ChatScrollManager>
+        </ScrollProvider>,
+      )
+    })
+    return scrollRef.current!
+  }
+
+  it('scrolls the virtualizer to an unmounted step, then positions it', () => {
+    // Run the deferred positioning synchronously so the assertion is deterministic.
+    const rafSpy = vi
+      .spyOn(globalThis, 'requestAnimationFrame')
+      .mockImplementation((cb) => { cb(0); return 0 as unknown as number })
+    const viewportHolder: { current: HTMLElement | null } = { current: null }
+    const handle: ChatVirtualizerHandle = {
+      scrollToStep: vi.fn((stepId: string) => {
+        // The virtualizer mounts the row: model that by inserting the target.
+        const el = document.createElement('div')
+        el.setAttribute('data-step-id', stepId)
+        vi.spyOn(el, 'getBoundingClientRect').mockReturnValue(rect({ top: 3000, height: 400 }))
+        viewportHolder.current!.appendChild(el)
+        return true
+      }),
+      scrollToKey: vi.fn(() => false),
+    }
+    const viewport = renderVirtualized(handle)
+    viewportHolder.current = viewport
+    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(rect({ top: 100, height: 600 }))
+    Object.defineProperty(viewport, 'scrollTop', { value: 500, writable: true, configurable: true })
+    const scrollTo = vi.fn()
+    viewport.scrollTo = scrollTo as unknown as typeof viewport.scrollTo
+
+    act(() => navigateStep!('step-9'))
+
+    expect(handle.scrollToStep).toHaveBeenCalledWith('step-9')
+    // No sticky bar in this render → plain top alignment: 500 + (3000 - 100).
+    expect(scrollTo).toHaveBeenCalledWith({ top: 3400, behavior: 'smooth' })
+    rafSpy.mockRestore()
+  })
+
+  it('positions an already-mounted target without consulting the virtualizer', () => {
+    const handle: ChatVirtualizerHandle = { scrollToStep: vi.fn(() => false), scrollToKey: vi.fn(() => false) }
+    const viewport = renderVirtualized(handle, <div data-step-id="step-9" />)
+    const target = viewport.querySelector('[data-step-id]')!
+    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue(rect({ top: 3000, height: 400 }))
+    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(rect({ top: 100, height: 600 }))
+    Object.defineProperty(viewport, 'scrollTop', { value: 500, writable: true, configurable: true })
+    const scrollTo = vi.fn()
+    viewport.scrollTo = scrollTo as unknown as typeof viewport.scrollTo
+
+    act(() => navigateStep!('step-9'))
+
+    expect(handle.scrollToStep).not.toHaveBeenCalled()
+    expect(scrollTo).toHaveBeenCalledWith({ top: 3400, behavior: 'smooth' })
+  })
+
+  it('does nothing when the target is unmounted and the virtualizer cannot find it', () => {
+    const handle: ChatVirtualizerHandle = { scrollToStep: vi.fn(() => false), scrollToKey: vi.fn(() => false) }
+    const viewport = renderVirtualized(handle)
+    Object.defineProperty(viewport, 'scrollTop', { value: 500, writable: true, configurable: true })
+    const scrollTo = vi.fn()
+    viewport.scrollTo = scrollTo as unknown as typeof viewport.scrollTo
+
+    act(() => navigateStep!('step-9'))
+
+    expect(handle.scrollToStep).toHaveBeenCalledWith('step-9')
+    expect(scrollTo).not.toHaveBeenCalled()
+  })
+
+  it('navigates to an unmounted bookmark via the virtualizer', () => {
+    const rafSpy = vi
+      .spyOn(globalThis, 'requestAnimationFrame')
+      .mockImplementation((cb) => { cb(0); return 0 as unknown as number })
+    const viewportHolder: { current: HTMLElement | null } = { current: null }
+    const handle: ChatVirtualizerHandle = {
+      scrollToStep: vi.fn(() => false),
+      scrollToKey: vi.fn((key: string) => {
+        const el = document.createElement('div')
+        el.setAttribute('data-bookmark-id', key)
+        vi.spyOn(el, 'getBoundingClientRect').mockReturnValue(rect({ top: 2000, height: 400 }))
+        viewportHolder.current!.appendChild(el)
+        return true
+      }),
+    }
+    const viewport = renderVirtualized(handle)
+    viewportHolder.current = viewport
+    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(rect({ top: 100, height: 600 }))
+    Object.defineProperty(viewport, 'scrollTop', { value: 0, writable: true, configurable: true })
+    const scrollTo = vi.fn()
+    viewport.scrollTo = scrollTo as unknown as typeof viewport.scrollTo
+
+    act(() => navigateBookmark!('evt-9'))
+
+    expect(handle.scrollToKey).toHaveBeenCalledWith('evt-9')
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1900, behavior: 'smooth' })
+    rafSpy.mockRestore()
   })
 })

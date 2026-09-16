@@ -115,7 +115,8 @@ func TestDefaultPlanStepWave_HonorsMaxParallelSubagents(t *testing.T) {
 // TestRunRegularBlocking_HonorsMaxParallelSubagents proves the delegate path
 // honors the SAME cap: a batch of blocking delegations must not run more than
 // the configured number of subagents concurrently. Together with the plan-wave
-// test this covers the shared single-limit requirement for both call kinds.
+// test this covers the shared single-limit requirement for both batch call
+// kinds.
 func TestRunRegularBlocking_HonorsMaxParallelSubagents(t *testing.T) {
 	const (
 		n     = 6
@@ -140,5 +141,55 @@ func TestRunRegularBlocking_HonorsMaxParallelSubagents(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&probe.maxActive); got != limit {
 		t.Errorf("delegate blocking ran %d subagents concurrently, want exactly %d (cap must bind)", got, limit)
+	}
+}
+
+// TestLaunchAsync_HonorsMaxParallelSubagents proves the async delegate path
+// honors the SAME cap. runWave dispatches mode:"async" tasks to launchAsync,
+// which runs each on its own background goroutine — without the shared limiter
+// a single delegate call (up to maxDelegationBatchSize tasks) would start them
+// all at once. The cap must bind there too, so this asserts the async fan-out
+// never exceeds it.
+func TestLaunchAsync_HonorsMaxParallelSubagents(t *testing.T) {
+	const (
+		n     = 6
+		limit = 2
+	)
+	probe := &concurrencyProbe{target: limit}
+	l := newLimitTestLauncher(probe, limit)
+
+	registry := tools.NewDelegationRegistry()
+	tasks := make([]tools.DelegationTask, n)
+	for i := range tasks {
+		id := fmt.Sprintf("a%d", i)
+		tasks[i] = tools.DelegationTask{ID: id, Summary: "s", Task: "t", Mode: "async"}
+		if err := registry.Register(id, "s", nil, "async"); err != nil {
+			t.Fatalf("register %s: %v", id, err)
+		}
+	}
+
+	// Launch returns as soon as every async task is dispatched (each reports
+	// "running"); the subagents keep running in the background.
+	results := l.Launch(limitTestCtx(), tasks, registry)
+	if len(results) != n {
+		t.Fatalf("got %d results, want %d", len(results), n)
+	}
+	for _, r := range results {
+		if r.Status != tools.DelegationStatusRunning {
+			t.Fatalf("async delegation %s status = %v, want running", r.ID, r.Status)
+		}
+	}
+
+	// Wait for every background subagent to settle before reading the peak.
+	deadline := time.Now().Add(5 * time.Second)
+	for len(registry.ListPending()) > 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if pending := registry.ListPending(); len(pending) > 0 {
+		t.Fatalf("async delegations did not settle before deadline: %v", pending)
+	}
+
+	if got := atomic.LoadInt32(&probe.maxActive); got != limit {
+		t.Errorf("delegate async ran %d subagents concurrently, want exactly %d (cap must bind)", got, limit)
 	}
 }

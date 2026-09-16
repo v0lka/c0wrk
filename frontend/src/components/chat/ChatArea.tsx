@@ -1,11 +1,12 @@
 import { useEffect, useRef, useMemo } from 'react'
 import { useChatStore, useSessionMessages, useSessionWorkUnits } from '@/stores/chatStore'
 import { useBookmarkStore } from '@/stores/bookmarkStore'
-import { groupMessages, stabilizeDisplayItems, chatMessageToUI, rebuildPlanFromHistory, rebuildGoalFromHistory, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow, isRoutingRequestRow } from '@/lib/chatUtils'
+import { groupMessages, stabilizeDisplayItems, chatMessageToUI, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow, isRoutingRequestRow } from '@/lib/chatUtils'
+import { restorePlanAndGoalFromHistory } from '@/lib/sessionStoreRestore'
+import type { ChatVirtualizerHandle } from '@/lib/chatVirtualizer'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { usePlanStore } from '@/stores/planStore'
-import { useGoalStore } from '@/stores/goalStore'
 import { getSessionHistory, getSessionRuntimeStatus, getPendingActions, resolveStalePrompt } from '@/api/chat'
 import { useTaskFlagRestore } from '@/hooks/useTaskFlagRestore'
 import { useOlderHistoryLoader, HISTORY_PAGE_SIZE } from '@/hooks/useHistoryPagination'
@@ -51,6 +52,10 @@ export function ChatArea() {
   const workUnits = useSessionWorkUnits(activeSessionId)
   const streamingText = useChatStore(s => activeSessionId ? s.streamingText[activeSessionId] : undefined)
   const scrollRef = useRef<HTMLDivElement>(null)
+  // Imperative navigation handle for the virtualized transcript. ChatScrollManager
+  // reads it to reach step/bookmark targets outside the mounted row window;
+  // VirtualizedChatList registers it (null while the transcript is not virtualized).
+  const chatVirtualizerRef = useRef<ChatVirtualizerHandle | null>(null)
   // Baseline for transcript stabilization (see the displayItems memo below):
   // the previous committed item tree, reused for identity-stable items.
   const prevItemsRef = useRef<DisplayItem[]>([])
@@ -80,6 +85,14 @@ export function ChatArea() {
       return
     }
     usePlanStore.getState().clearPlan()
+    // Reset this session's paging bookkeeping BEFORE the newest-page RPC: the
+    // store survives session switches, so a cursor/hasMore left over from an
+    // earlier visit would otherwise be reused by an early scroll-up (skipping a
+    // slice of history), and an in-flight flag left set by a fetch interrupted
+    // by that switch would block older-page loading permanently. The RPC below
+    // overwrites both with the page's real values.
+    useChatStore.getState().setHistoryPageMeta(activeSessionId, '', false)
+    useChatStore.getState().setHistoryLoading(activeSessionId, false)
     const loadStartedAt = Date.now()
     let cancelled = false
 
@@ -136,11 +149,10 @@ export function ChatArea() {
         // Merge (not replace) so live events delivered while the RPC was in
         // flight — e.g. a terminal `error` — are not clobbered.
         useChatStore.getState().mergeHistoryMessages(activeSessionId, chatMessages, loadStartedAt)
-        rebuildPlanFromHistory(chatMessages, usePlanStore.getState())
-        // Rebuild the goal store from persisted goal_status snapshots so the
-        // status-bar badge and the settled goal card's verdict survive a reload
-        // (live goal_status events are not replayed on session load).
-        rebuildGoalFromHistory(chatMessages, useGoalStore.getState(), useGoalStore.getState().activeGoal[activeSessionId])
+        // Rebuild the plan panel and goal badge from the merged history. The
+        // plan declaration may sit on an OLDER page than the one just loaded,
+        // so this also re-runs as older pages stream in (useOlderHistoryLoader).
+        restorePlanAndGoalFromHistory(activeSessionId, chatMessages)
       }
 
       // Reconcile AFTER the merge so the store is populated. Fetch the
@@ -287,13 +299,14 @@ export function ChatArea() {
   return (
     <ScrollProvider>
       <div className="relative flex flex-1 flex-col min-h-0 bg-background">
-        <ChatScrollManager key={activeSessionId} messages={messages} streamingText={streamingText} scrollRef={scrollRef}>
+        <ChatScrollManager key={activeSessionId} messages={messages} streamingText={streamingText} scrollRef={scrollRef} virtualizerRef={chatVirtualizerRef}>
           <ChatHoverRegion className="p-4 space-y-4 min-w-0">
             {shouldVirtualize ? (
               <VirtualizedChatList
                 items={displayItems}
                 scrollRef={scrollRef}
                 trailingContent={trailingContent}
+                virtualizerRef={chatVirtualizerRef}
               />
             ) : (
               <ChatMessageRenderer

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react
 import { useScrollContext } from './ScrollContext'
 import { scrollBlockStartIntoView } from '@/lib/chatScroll'
 import { cssEscape } from '@/lib/cssEscape'
+import type { ChatVirtualizerHandle } from '@/lib/chatVirtualizer'
 import type { ChatMessageUI } from '@/types/messages'
 import { unresolvedReviewPromptIds } from '@/types/messages'
 import { ChatNewActivityBanner } from './ChatNewActivityBanner'
@@ -11,6 +12,12 @@ interface ChatScrollManagerProps {
   streamingText: string | undefined
   scrollRef: React.RefObject<HTMLDivElement | null>
   children: React.ReactNode
+  /**
+   * Handle to the virtualized transcript's navigation API (null/absent when the
+   * transcript is not virtualized). Used to reach a target whose DOM node is
+   * outside the mounted row window.
+   */
+  virtualizerRef?: React.RefObject<ChatVirtualizerHandle | null>
 }
 
 // After an explicit bookmark/step navigation, stick-to-bottom auto-scroll is
@@ -26,6 +33,7 @@ export function ChatScrollManager({
   streamingText,
   scrollRef,
   children,
+  virtualizerRef,
 }: ChatScrollManagerProps) {
   const { setScrollToStep, setScrollToBookmark } = useScrollContext()
   const isAtBottomRef = useRef(true)
@@ -160,27 +168,62 @@ export function ChatScrollManager({
     }
   }, [messages, streamingText])
 
-  // Register scroll-to-step callback
-  useEffect(() => {
-    const scrollToStepFn = (stepId: string) => {
+  // Shared navigation driver for the step/bookmark callbacks. Resolves the
+  // target element and, when found, aligns its block start below the floating
+  // sticky bar and arms the auto-scroll suppression window.
+  //
+  // In a virtualized transcript the target row may be unmounted: a DOM lookup
+  // then finds nothing. In that case the optional `scrollVirtualizer` callback
+  // scrolls the virtualizer to the row, mounting it; the positioning then runs
+  // on the next frame, once the row has committed.
+  const navigateTo = useCallback(
+    (
+      resolveTarget: (viewport: HTMLElement) => Element | null,
+      scrollVirtualizer?: () => boolean,
+    ) => {
       const viewport = viewportRef.current
       if (!viewport) return
-      // Step ids originate from LLM-authored declare_plan payloads and can
-      // contain selector metacharacters (quotes, backslashes) — escape the
-      // id before interpolating it into the attribute selector, or the
-      // querySelectorAll call throws a SyntaxError DOMException and the
-      // navigation silently dies inside the click handler.
-      const elements = viewport.querySelectorAll(`[data-step-id="${cssEscape(stepId)}"]`)
-      const target = elements[elements.length - 1]
-      if (target) {
+      const position = () => {
+        const target = resolveTarget(viewport)
+        if (!target) return
         scrollBlockStartIntoView(viewport, target)
         isAtBottomRef.current = false
         suppressAutoScrollUntilRef.current = Date.now() + NAVIGATION_AUTO_SCROLL_SUPPRESS_MS
       }
+      // Already mounted (short/non-virtualized transcript, or an on-screen row):
+      // position it directly.
+      if (resolveTarget(viewport)) {
+        position()
+        return
+      }
+      // Not mounted: let the virtualizer bring the row into the window, then
+      // position it after the re-render commits.
+      if (scrollVirtualizer && scrollVirtualizer()) {
+        requestAnimationFrame(position)
+      }
+    },
+    [],
+  )
+
+  // Register scroll-to-step callback
+  useEffect(() => {
+    const scrollToStepFn = (stepId: string) => {
+      navigateTo(
+        (viewport) => {
+          // Step ids originate from LLM-authored declare_plan payloads and can
+          // contain selector metacharacters (quotes, backslashes) — escape the
+          // id before interpolating it into the attribute selector, or the
+          // querySelectorAll call throws a SyntaxError DOMException and the
+          // navigation silently dies inside the click handler.
+          const elements = viewport.querySelectorAll(`[data-step-id="${cssEscape(stepId)}"]`)
+          return elements[elements.length - 1] ?? null
+        },
+        () => virtualizerRef?.current?.scrollToStep(stepId) ?? false,
+      )
     }
     setScrollToStep(scrollToStepFn)
     return () => setScrollToStep(null)
-  }, [setScrollToStep])
+  }, [setScrollToStep, navigateTo, virtualizerRef])
 
   // Register scroll-to-bookmark callback. Unlike steps, a bookmark key can
   // contain arbitrary characters (plan step ids, tool ids), so match via
@@ -189,25 +232,19 @@ export function ChatScrollManager({
   // for the floating sticky user-message bar covering the scrollport top.
   useEffect(() => {
     const scrollToBookmarkFn = (key: string) => {
-      const viewport = viewportRef.current
-      if (!viewport) return
-      const elements = viewport.querySelectorAll('[data-bookmark-id]')
-      let target: Element | null = null
-      for (const el of Array.from(elements)) {
-        if (el.getAttribute('data-bookmark-id') === key) {
-          target = el
-          break
-        }
-      }
-      if (target) {
-        scrollBlockStartIntoView(viewport, target)
-        isAtBottomRef.current = false
-        suppressAutoScrollUntilRef.current = Date.now() + NAVIGATION_AUTO_SCROLL_SUPPRESS_MS
-      }
+      navigateTo(
+        (viewport) => {
+          for (const el of Array.from(viewport.querySelectorAll('[data-bookmark-id]'))) {
+            if (el.getAttribute('data-bookmark-id') === key) return el
+          }
+          return null
+        },
+        () => virtualizerRef?.current?.scrollToKey(key) ?? false,
+      )
     }
     setScrollToBookmark(scrollToBookmarkFn)
     return () => setScrollToBookmark(null)
-  }, [setScrollToBookmark])
+  }, [setScrollToBookmark, navigateTo, virtualizerRef])
 
   return (
     <div className="flex-1 min-w-0 overflow-auto custom-scrollbar" ref={scrollRef}>

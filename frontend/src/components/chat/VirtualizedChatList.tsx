@@ -1,7 +1,9 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { useLayoutEffect, useRef } from 'react'
 import type { ReactNode, RefObject } from 'react'
 import type { DisplayItem } from '@/types/messages'
 import { bookmarkKey } from '@/lib/bookmarks'
+import { indexOfKey, indexOfStep, type ChatVirtualizerHandle } from '@/lib/chatVirtualizer'
 import { ChatItem } from './ChatMessageRenderer'
 
 /**
@@ -25,11 +27,19 @@ export function VirtualizedChatList({
   scrollRef,
   trailingContent,
   bookmarkable = true,
+  virtualizerRef,
 }: {
   items: DisplayItem[]
   scrollRef: RefObject<HTMLElement | null>
   trailingContent?: ReactNode
   bookmarkable?: boolean
+  /**
+   * Optional handle sink: when provided, the list registers an imperative
+   * navigation handle here so ChatScrollManager can scroll to a row that is
+   * outside the mounted window (the virtualizer mounts only visible rows, so a
+   * DOM lookup cannot find an off-screen step/bookmark target).
+   */
+  virtualizerRef?: React.RefObject<ChatVirtualizerHandle | null>
 }) {
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -43,6 +53,36 @@ export function VirtualizedChatList({
       return item ? bookmarkKey(item) : index
     },
   })
+
+  // Latest items for the (once-registered) navigation handle, so scrolling to a
+  // target always resolves against the current tree without re-registering.
+  const itemsRef = useRef(items)
+  itemsRef.current = items
+
+  // Register the imperative navigation handle. `scrollToIndex` re-renders the
+  // virtualizer window around the target row, which mounts it; the caller then
+  // positions it with the sticky-bar compensation.
+  useLayoutEffect(() => {
+    if (!virtualizerRef) return
+    const handle: ChatVirtualizerHandle = {
+      scrollToKey: (key) => {
+        const index = indexOfKey(itemsRef.current, key)
+        if (index < 0) return false
+        virtualizer.scrollToIndex(index, { align: 'start' })
+        return true
+      },
+      scrollToStep: (stepId) => {
+        const index = indexOfStep(itemsRef.current, stepId)
+        if (index < 0) return false
+        virtualizer.scrollToIndex(index, { align: 'start' })
+        return true
+      },
+    }
+    virtualizerRef.current = handle
+    return () => {
+      if (virtualizerRef.current === handle) virtualizerRef.current = null
+    }
+  }, [virtualizerRef, virtualizer])
 
   return (
     <>

@@ -13,6 +13,8 @@ import type { DisplayItem } from '@/types/messages'
 // (large) item count — mirrors what overscan gives at runtime.
 const WINDOW = 8
 
+const { scrollToIndexMock } = vi.hoisted(() => ({ scrollToIndexMock: vi.fn() }))
+
 vi.mock('@tanstack/react-virtual', () => ({
   useVirtualizer: (options: { count: number; getItemKey: (i: number) => string | number }) => {
     const end = Math.min(WINDOW, options.count)
@@ -26,6 +28,7 @@ vi.mock('@tanstack/react-virtual', () => ({
       getVirtualItems: () => items,
       getTotalSize: () => options.count * 100,
       measureElement: () => {},
+      scrollToIndex: scrollToIndexMock,
     }
   },
 }))
@@ -35,6 +38,7 @@ vi.mock('./ChatMessageRenderer', () => ({
 }))
 
 import { VirtualizedChatList } from './VirtualizedChatList'
+import type { ChatVirtualizerHandle } from '@/lib/chatVirtualizer'
 
 function makeItems(n: number): DisplayItem[] {
   return Array.from({ length: n }, (_, i) => ({
@@ -74,5 +78,43 @@ describe('VirtualizedChatList', () => {
       />,
     )
     expect(c.querySelector('[data-testid="tail"]')).not.toBeNull()
+  })
+
+  it('registers a navigation handle that scrolls the virtualizer to the target row', () => {
+    scrollToIndexMock.mockClear()
+    const items: DisplayItem[] = [
+      { kind: 'assistant', message: { id: 'm0', sessionId: 's1', type: 'assistant', content: 'a', metadata: {}, timestamp: 0 } },
+      { kind: 'plan_step', id: 'p1', stepId: 'step_1', stepNum: 1, title: 't', status: 'completed', children: [] },
+      { kind: 'assistant', message: { id: 'm2', sessionId: 's1', type: 'assistant', content: 'b', metadata: {}, timestamp: 0 } },
+    ]
+    const ref: { current: ChatVirtualizerHandle | null } = { current: null }
+    render(<VirtualizedChatList items={items} scrollRef={{ current: null }} virtualizerRef={ref} />)
+
+    const handle = ref.current!
+    expect(handle).not.toBeNull()
+
+    // A plan-step target maps to its own row index.
+    expect(handle.scrollToStep('step_1')).toBe(true)
+    expect(scrollToIndexMock).toHaveBeenCalledWith(1, { align: 'start' })
+
+    // A bookmark key maps to the row carrying it.
+    scrollToIndexMock.mockClear()
+    expect(handle.scrollToKey('m2')).toBe(true)
+    expect(scrollToIndexMock).toHaveBeenCalledWith(2, { align: 'start' })
+
+    // An unknown target is not found and does not scroll.
+    scrollToIndexMock.mockClear()
+    expect(handle.scrollToStep('missing')).toBe(false)
+    expect(handle.scrollToKey('missing')).toBe(false)
+    expect(scrollToIndexMock).not.toHaveBeenCalled()
+  })
+
+  it('clears the registered navigation handle on unmount', () => {
+    const ref: { current: ChatVirtualizerHandle | null } = { current: null }
+    render(<VirtualizedChatList items={makeItems(10)} scrollRef={{ current: null }} virtualizerRef={ref} />)
+    expect(ref.current).not.toBeNull()
+    act(() => { root?.unmount() })
+    root = null
+    expect(ref.current).toBeNull()
   })
 })

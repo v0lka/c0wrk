@@ -136,7 +136,8 @@ export function ChatItem({
   return <>{renderItem(item, sticky, bookmarkable)}</>
 }
 
-function groupIntoStickyTurns(items: DisplayItem[]): DisplayItem[][] {  const groups: DisplayItem[][] = []
+function groupIntoStickyTurns(items: DisplayItem[]): DisplayItem[][] {
+  const groups: DisplayItem[][] = []
 
   for (const item of items) {
     if (item.kind === 'user' || groups.length === 0) {

@@ -847,8 +847,9 @@ type AgentsConfig struct {
 	Dirs []string `yaml:"dirs"`
 
 	// MaxParallelSubagents caps how many subagents execute concurrently,
-	// enforced at the single sp4rk RunSubAgentsParallel chokepoint shared by
-	// the delegate tool and plan waves. <= 0 resolves to the default (4) in
+	// enforced through the launcher's shared limiter that every dispatch path
+	// acquires from — the delegate tool (blocking batches and async launches
+	// alike) and plan waves. <= 0 resolves to the default (4) in
 	// ApplyDefaults. Bounding concurrency bounds the peak rate of subagent
 	// lifecycle events (and the burst of concurrent LLM calls / tool
 	// executions) without changing results or their order.
