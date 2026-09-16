@@ -71,4 +71,20 @@ describe('SubAgentBlock', () => {
     })
     expect(state()).toBe('open')
   })
+
+  // --- work-unit recovery statuses (applied by the session-load reconciliation) ---
+
+  it('renders the interrupted status with an "— interrupted" hint', () => {
+    render(makeSub({ status: 'interrupted' }))
+    expect(container.textContent).toContain('interrupted')
+    // A settled-looking row, not an auto-expanded body.
+    expect(state()).toBe('closed')
+  })
+
+  it('renders a paused delegate with its distinct warning status icon', () => {
+    render(makeSub({ status: 'paused' }))
+    expect(container.querySelector('svg.text-warning')).not.toBeNull()
+    // Paused is not interrupted: no stale "interrupted" hint.
+    expect(container.textContent).not.toContain('interrupted')
+  })
 })

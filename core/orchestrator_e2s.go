@@ -11,6 +11,7 @@ import (
 	"github.com/v0lka/c0wrk/core/e2s"
 	"github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/units"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -447,7 +448,11 @@ func (o *Orchestrator) runE2SWithState(
 	// wave can rebuild in-flight delegations after a pause or shutdown.
 	// Without the sink a resumed E2S run silently drops its delegated work.
 	if taskID != "" && deps.taskStore != nil {
-		wireDelegationSpecSink(registry, "", taskID, deps.taskStore, deps.logger)
+		var unitLedger units.Ledger
+		if pbb, ok := bb.(PersistableBlackboard); ok {
+			unitLedger = NewBlackboardLedger(pbb)
+		}
+		wireDelegationSpecSink(registry, unitLedger, "", taskID, deps.taskStore, deps.logger)
 	}
 	trajStore := newCompositeTrajectoryStore(trajHolder, taskID, deps.taskStore, deps.logger)
 	defer trajStore.Flush()

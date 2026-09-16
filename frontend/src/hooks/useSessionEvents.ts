@@ -10,6 +10,7 @@ import { useChatEvents } from './events/useChatEvents'
 import { useLifecycleEvents } from './events/useLifecycleEvents'
 import { useContextEvents } from './events/useContextEvents'
 import { useSubagentEvents } from './events/useSubagentEvents'
+import { useWorkUnitEvents } from './events/useWorkUnitEvents'
 import { useActionEvents } from './events/useActionEvents'
 import { useBlackboardEvents } from './events/useBlackboardEvents'
 import { useAttachmentEvents } from './events/useAttachmentEvents'
@@ -66,6 +67,7 @@ export function useSessionEvents(sessionId: string | null): void {
   useLifecycleEvents(sessionId)
   useContextEvents(sessionId)
   useSubagentEvents(sessionId)
+  useWorkUnitEvents(sessionId)
   useActionEvents(sessionId)
   useBlackboardEvents(sessionId)
   useAttachmentEvents(sessionId)

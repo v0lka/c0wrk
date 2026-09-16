@@ -229,7 +229,11 @@ func (p *EventPersister) Persist(evt Event) {
 		// renders as garbage JSON text on session reload.
 		"attachments:changed",
 		"session_pinned", "session_unpinned",
-		"session_archived", "session_unarchived":
+		"session_archived", "session_unarchived",
+		// Work-unit settlement is transient: the durable source is the unit
+		// ledger surfaced via GetSessionRuntimeStatus.work_units, so persisting
+		// this event would only add a dead row on reload.
+		"work_unit_settled":
 		return // transient — no persistence needed
 	case "plan_review_ready":
 		role = "plan_review"

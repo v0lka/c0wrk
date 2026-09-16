@@ -94,6 +94,19 @@ type ErrorData struct {
 	Error     string `json:"error"`
 }
 
+// WorkUnitSettledData is the payload for "work_unit_settled" events. It is
+// emitted when a durable execution unit is explicitly settled because the
+// resume funnel will not relaunch it — an abandoned (in-flight) unit of a task
+// that is no longer executing is settled as interrupted, so a live view can
+// align the delegate/plan-step chat block instead of leaving it "running".
+// Transient: the durable source is the unit ledger surfaced via
+// GetSessionRuntimeStatus.work_units, so the event is not persisted.
+type WorkUnitSettledData struct {
+	StepID string `json:"step_id"`
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+}
+
 // --- Tool confirmation payloads ---
 
 // ToolConfirmPayload is sent to the frontend when a tool needs user confirmation.

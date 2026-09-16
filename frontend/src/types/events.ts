@@ -127,6 +127,10 @@ export interface SubAgentCompleteData { step_id: string; success: boolean; durat
  *  failure — no success field; Resume restores the trajectory). For plan-step
  *  subagents the backend translator re-emits plan_step_paused instead. */
 export interface SubAgentPausedData { step_id: string; duration: number }
+/** Explicit settlement of a durable work unit the resume funnel will not
+ *  relaunch (an abandoned in-flight unit → interrupted). Transient: the durable
+ *  source is GetSessionRuntimeStatus.work_units. */
+export interface WorkUnitSettledData { step_id: string; status: string; reason?: string }
 export interface RetryData { attempt: number; max_attempts: number }
 export interface StepRetryData { step_id: string; attempt: number; max_attempts: number }
 export interface ServiceData { content: string; phase?: string }
@@ -441,6 +445,9 @@ export interface SessionEventMap {
   /** Cooperative pause checkpoint for a pure delegate run (plan-step
    *  subagents surface as plan_step_paused via the backend translator). */
   readonly subagent_paused: SubAgentPausedData
+  /** Explicit settlement of a durable work unit the resume funnel will not
+   *  relaunch (abandoned in-flight → interrupted). Transient. */
+  readonly work_unit_settled: WorkUnitSettledData
   readonly context_fill: ContextFillData
   readonly context_compaction: ContextCompactionData
   readonly compaction_started: CompactionStartedData
@@ -728,6 +735,11 @@ export function isSubAgentPausedData(d: unknown): d is SubAgentPausedData {
   if (!isObj(d) || !has(d, 'step_id', 'duration')) return false
   if (typeof d.duration !== 'number') return false
   return true
+}
+export function isWorkUnitSettledData(d: unknown): d is WorkUnitSettledData {
+  return isObj(d) && has(d, 'step_id', 'status')
+    && typeof (d as Record<string, unknown>).step_id === 'string'
+    && typeof (d as Record<string, unknown>).status === 'string'
 }
 export function isContextFillData(d: unknown): d is ContextFillData { return isObj(d) && has(d, 'fill_percent', 'status') }
 export function isContextCompactionData(d: unknown): d is ContextCompactionData { return isObj(d) && has(d, 'before_percent', 'after_percent') }

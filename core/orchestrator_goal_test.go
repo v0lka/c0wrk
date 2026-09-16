@@ -360,6 +360,11 @@ func newGoalTestOrchestrator() *Orchestrator {
 type mockGoalTurnRunner struct {
 	turnVerds []*goal.Verdict // verdict to declare on turn N (1-based)
 	turnCalls []int           // tool-call count to report on turn N (1-based)
+	// turnErrs, when a non-nil entry exists for a turn (1-based), makes that
+	// turn return the error — simulating an LLM/provider/transport or execution
+	// failure. errAllTurns, when true, makes EVERY turn return a generic error.
+	turnErrs    []error
+	errAllTurns bool
 	// pauseAtTurn, when > 0, makes that turn (1-based) return a paused
 	// ExecutionResult — simulating the universal pause signal tripping the
 	// conductor's executor mid-turn (ExecutionStatusPaused).
@@ -388,6 +393,13 @@ func (m *mockGoalTurnRunner) run(
 		if sink := tools.GoalStatusSinkFrom(ctx); sink != nil {
 			sink.Declare(*m.turnVerds[turn-1])
 		}
+	}
+	// Simulate a turn error (an LLM/provider/transport or execution failure).
+	if m.errAllTurns {
+		return toolCalls, &orchestration.ExecutionResult{Status: orchestration.ExecutionStatusFailed}, errors.New("turn failed: provider unavailable")
+	}
+	if turn-1 < len(m.turnErrs) && m.turnErrs[turn-1] != nil {
+		return toolCalls, &orchestration.ExecutionResult{Status: orchestration.ExecutionStatusFailed}, m.turnErrs[turn-1]
 	}
 	// Simulate the conductor pausing mid-turn at the configured turn.
 	if m.pauseAtTurn > 0 && turn == m.pauseAtTurn {
@@ -573,6 +585,124 @@ func TestRunGoalTurns_AgentBlockedVerdict(t *testing.T) {
 	}
 	if result.LastVerdict == nil || result.LastVerdict.Status != "blocked" {
 		t.Errorf("LastVerdict = %+v, want blocked", result.LastVerdict)
+	}
+}
+
+// TestRunGoalTurns_TurnErrorHaltsAsResumableFailure verifies the core acceptance
+// criterion: a turn that ERRORS (LLM/provider/transport or execution failure)
+// must NOT be misclassified as an idle turn (blocked_idle). The loop retries a
+// bounded number of times, then halts leaving the goal ACTIVE (non-terminal) so
+// the task is a resumable failure, recording the reason on gs.LastError.
+func TestRunGoalTurns_TurnErrorHaltsAsResumableFailure(t *testing.T) {
+	o := newGoalTestOrchestrator()
+	// Idle tool/verdict shape: 0 tool calls and no verdict — exactly the shape
+	// the anti-spin check would otherwise turn into blocked_idle.
+	runner := &mockGoalTurnRunner{errAllTurns: true}
+	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "ship it"}
+	bb := orchestration.NewMapBlackboard()
+
+	result, paused := o.runGoalTurns(
+		context.Background(), "msg", bb, nil, "", nil, gs, runner.run,
+	)
+
+	if result.Status != goal.StatusActive {
+		t.Fatalf("Status = %q, want %q (an errored turn must not be terminal, blocked_idle, or partial)", result.Status, goal.StatusActive)
+	}
+	if result.Status == goal.StatusBlockedIdle {
+		t.Fatalf("Status = %q — an errored turn must never become blocked_idle", result.Status)
+	}
+	if paused {
+		t.Error("paused = true, want false (an error is not a cooperative pause)")
+	}
+	if result.LastError == "" {
+		t.Error("LastError is empty, want the turn error reason so goalLoopResult can surface it")
+	}
+	// The bounded retry: 1 initial attempt + goalTurnMaxErrorRetries retries.
+	if want := 1 + goalTurnMaxErrorRetries; runner.calls != want {
+		t.Errorf("turn attempts = %d, want %d (bounded retry)", runner.calls, want)
+	}
+}
+
+// TestRunGoalTurns_TurnErrorRetriesThenRecovers verifies the bounded retry
+// actually retries: a transient turn error is followed by a later turn that
+// succeeds, so the loop recovers in place instead of halting.
+func TestRunGoalTurns_TurnErrorRetriesThenRecovers(t *testing.T) {
+	o := newGoalTestOrchestrator()
+	runner := &mockGoalTurnRunner{
+		// Turn 1 errors; turn 2 declares "met".
+		turnErrs:  []error{errors.New("transient provider error")},
+		turnVerds: []*goal.Verdict{nil, metVerdict("recovered")},
+		turnCalls: []int{0, 2},
+	}
+	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "ship it"}
+	bb := orchestration.NewMapBlackboard()
+
+	result, _ := o.runGoalTurns(
+		context.Background(), "msg", bb, nil, "", nil, gs, runner.run,
+	)
+
+	if result.Status != goal.StatusMet {
+		t.Fatalf("Status = %q, want %q (the retry must let the loop recover)", result.Status, goal.StatusMet)
+	}
+	if runner.calls != 2 {
+		t.Errorf("turn attempts = %d, want 2 (one error retried, then a met turn)", runner.calls)
+	}
+	if result.LastError != "" {
+		t.Errorf("LastError = %q, want empty after a clean turn", result.LastError)
+	}
+}
+
+// TestRunGoalTurns_ErroredTurnVerdictNotHonored verifies the error branch runs
+// BEFORE the verdict/anti-spin logic: a turn that both declares a verdict AND
+// errors is treated as an error (retried, then halted active), so its verdict
+// cannot terminate the goal as met NOR flip it to blocked_idle.
+func TestRunGoalTurns_ErroredTurnVerdictNotHonored(t *testing.T) {
+	o := newGoalTestOrchestrator()
+	runner := &mockGoalTurnRunner{
+		// Every turn declares "blocked" and errors — the error must win.
+		errAllTurns: true,
+		turnVerds:   []*goal.Verdict{{Status: "blocked", Reason: "need user input", DeclaredAt: time.Now()}},
+		turnCalls:   []int{2},
+	}
+	gs := &goal.GoalState{Status: goal.StatusActive}
+	bb := orchestration.NewMapBlackboard()
+
+	result, _ := o.runGoalTurns(
+		context.Background(), "msg", bb, nil, "", nil, gs, runner.run,
+	)
+
+	if result.Status != goal.StatusActive {
+		t.Fatalf("Status = %q, want %q (an errored turn's verdict must not win)", result.Status, goal.StatusActive)
+	}
+	if result.Status == goal.StatusBlockedIdle {
+		t.Fatal("an errored turn declaring \"blocked\" must never become blocked_idle")
+	}
+	if result.LastVerdict != nil {
+		t.Errorf("LastVerdict = %+v, want nil (an errored turn's verdict is not honored)", result.LastVerdict)
+	}
+}
+
+// TestRunGoalTurns_IdleTurnWithoutErrorIsBlockedIdle pins the contrast with the
+// turn-error cases: a genuinely idle turn (0 tool calls, no verdict, NO error)
+// still halts as blocked_idle.
+func TestRunGoalTurns_IdleTurnWithoutErrorIsBlockedIdle(t *testing.T) {
+	o := newGoalTestOrchestrator()
+	runner := &mockGoalTurnRunner{turnCalls: []int{0}} // no error
+	gs := &goal.GoalState{Status: goal.StatusActive}
+	bb := orchestration.NewMapBlackboard()
+
+	result, _ := o.runGoalTurns(
+		context.Background(), "msg", bb, nil, "", nil, gs, runner.run,
+	)
+
+	if result.Status != goal.StatusBlockedIdle {
+		t.Fatalf("Status = %q, want %q (an idle turn with no error still goes blocked_idle)", result.Status, goal.StatusBlockedIdle)
+	}
+	if result.LastError != "" {
+		t.Errorf("LastError = %q, want empty (no error occurred)", result.LastError)
+	}
+	if runner.calls != 1 {
+		t.Errorf("turn attempts = %d, want 1 (no retry without an error)", runner.calls)
 	}
 }
 
@@ -795,6 +925,59 @@ func TestResumeGoalLoop_ActiveGoalResumes(t *testing.T) {
 	}
 	if result.Status != orchestration.ExecutionStatusSuccess {
 		t.Errorf("result status = %q, want success", result.Status)
+	}
+}
+
+// TestResumeGoalLoop_TurnErrorSurfacesResumableFailure is the end-to-end
+// acceptance test for the errored-turn contract on the resume path: a goal
+// whose turns keep erroring returns a RESUMABLE FAILURE (ExecutionStatusFailed,
+// not "partial" and never blocked_idle), leaves the goal non-terminal (active)
+// so a later Resume re-enters the loop, and carries the concrete error reason
+// as the output. A subsequent resume with a healthy turn runner then recovers.
+func TestResumeGoalLoop_TurnErrorSurfacesResumableFailure(t *testing.T) {
+	o := newGoalTestOrchestrator()
+	o.goalTurnRunner = (&mockGoalTurnRunner{errAllTurns: true}).run
+
+	gs := &goal.GoalState{
+		Condition: "ship it",
+		Status:    goal.StatusActive,
+		CreatedAt: time.Now(),
+	}
+	bb := orchestration.NewMapBlackboard()
+	routing := &router.RoutingDecision{Domain: "general", Complexity: 3}
+
+	result, err := o.resumeGoalLoop(
+		context.Background(), "continue", bb, nil, "", routing, gs, nil, "", "",
+	)
+	if err != nil {
+		t.Fatalf("resumeGoalLoop returned error: %v", err)
+	}
+	if result.Status != orchestration.ExecutionStatusFailed {
+		t.Fatalf("result.Status = %q, want %q (a resumable failure — never partial/blocked_idle)", result.Status, orchestration.ExecutionStatusFailed)
+	}
+	if !strings.Contains(result.Output, "provider unavailable") {
+		t.Errorf("result.Output = %q, want it to carry the turn error reason", result.Output)
+	}
+	// The goal stays non-terminal (active) so Resume re-enters the loop.
+	if gs.Status != goal.StatusActive {
+		t.Errorf("goal status = %q, want %q (non-terminal, so Resume re-enters)", gs.Status, goal.StatusActive)
+	}
+	if gs.LastError == "" {
+		t.Error("gs.LastError is empty, want the recorded turn error")
+	}
+
+	// Resume recovers: with a healthy turn runner the loop re-enters and reaches
+	// "met" — the goal was left active, so the `for gs.Status == active` guard
+	// enters directly.
+	o.goalTurnRunner = (&goalSeedRecorder{}).run
+	recovered, err := o.resumeGoalLoop(
+		context.Background(), "continue", bb, nil, "", routing, gs, nil, "", "",
+	)
+	if err != nil {
+		t.Fatalf("second resumeGoalLoop returned error: %v", err)
+	}
+	if recovered.Status != orchestration.ExecutionStatusSuccess {
+		t.Errorf("recovered.Status = %q, want %q (Resume must recover the errored goal)", recovered.Status, orchestration.ExecutionStatusSuccess)
 	}
 }
 
@@ -1155,7 +1338,7 @@ func TestGoalLoopResult_MapsStatus(t *testing.T) {
 		{goal.StatusBlockedIdle, orchestration.ExecutionStatusPartial},
 	}
 	for _, tc := range cases {
-		result := o.goalLoopResult("out", bb, nil, tc.status, "cond", false)
+		result := o.goalLoopResult("out", bb, nil, tc.status, "cond", false, "")
 		if result.Status != tc.want {
 			t.Errorf("goalLoopResult(%q).Status = %q, want %q", tc.status, result.Status, tc.want)
 		}
@@ -1164,9 +1347,20 @@ func TestGoalLoopResult_MapsStatus(t *testing.T) {
 	// A cooperative mid-turn pause (paused=true) overrides the active→partial
 	// default so the task is persisted as paused (resumable) and the manager
 	// emits session_paused instead of a degraded task_complete/resumable banner.
-	pausedResult := o.goalLoopResult("out", bb, nil, goal.StatusActive, "cond", true)
+	pausedResult := o.goalLoopResult("out", bb, nil, goal.StatusActive, "cond", true, "")
 	if pausedResult.Status != orchestration.ExecutionStatusPaused {
 		t.Errorf("goalLoopResult(active, paused=true).Status = %q, want %q", pausedResult.Status, orchestration.ExecutionStatusPaused)
+	}
+
+	// A turn error (turnErr non-empty) on a non-terminal goal overrides the
+	// active→partial default to a RESUMABLE FAILURE (failed), never "partial",
+	// and carries the concrete cause as the task output.
+	errResult := o.goalLoopResult("out", bb, nil, goal.StatusActive, "cond", false, "provider unavailable")
+	if errResult.Status != orchestration.ExecutionStatusFailed {
+		t.Errorf("goalLoopResult(active, turnErr set).Status = %q, want %q", errResult.Status, orchestration.ExecutionStatusFailed)
+	}
+	if !strings.Contains(errResult.Output, "provider unavailable") {
+		t.Errorf("goalLoopResult(active, turnErr set).Output = %q, want it to carry the error reason", errResult.Output)
 	}
 }
 

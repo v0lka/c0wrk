@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/units"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/reflector"
 	"github.com/v0lka/sp4rk/agents"
@@ -163,15 +164,46 @@ func newCompositeTrajectoryStore(memory *trajectoryHolder, taskID string, store 
 }
 
 // wireDelegationSpecSink installs a persistence sink on a delegation registry
-// so every delegation registered in it is persisted as a full spec (task text,
-// tools, agent profile, mode, deps, parent/depth). parentID is "" for the
-// root registry (top-level delegations) or the delegating subagent's step ID
-// for child registries (allow_redelegate). Best-effort and synchronous: the
-// spec is tiny (a single row), and the delegation must be resumable even if
-// the app dies immediately after registration — a background queue could
-// drop it. Persistence failures are logged, never propagated.
-func wireDelegationSpecSink(registry *tools.DelegationRegistry, parentID, taskID string, store TaskPersistence, logger *slog.Logger) {
+// so every unit registered in it is recorded at register time (spec at
+// register) — both in the durable unit ledger and, when a task store is
+// supplied, as the legacy DelegationSpec the Resume auto-resume wave rebuilds
+// from. parentID is "" for the root registry (top-level delegations) or the
+// delegating subagent's step ID for child registries (allow_redelegate).
+//
+// The unit ledger is the single writer of unit lifecycle; this sink is where
+// registration (the "spec at register" transition) enters it. The ledger kind
+// is derived from the spec's Kind (subagent vs plan step). A nil ledger (a
+// non-persistable blackboard) degrades to the legacy spec persistence only.
+// Plan-step registries pass a nil task store: their units are rebuilt from the
+// blackboard plan, and writing plan steps into the delegation-spec store would
+// corrupt the resume wave. Best-effort and synchronous: the spec is tiny (a
+// single row), and the delegation must be resumable even if the app dies
+// immediately after registration — a background queue could drop it.
+// Persistence failures are logged, never propagated.
+func wireDelegationSpecSink(registry *tools.DelegationRegistry, ledger units.Ledger, parentID, taskID string, store TaskPersistence, logger *slog.Logger) {
 	registry.SetSpecSink(parentID, func(spec tools.DelegationSpec) {
+		// Unit ledger — spec at register.
+		if ledger != nil {
+			var raw json.RawMessage
+			if data, err := json.Marshal(spec); err == nil {
+				raw = data
+			}
+			if err := ledger.Begin(units.UnitRecord{
+				ID:       spec.Task.ID,
+				Kind:     unitKindForDelegation(spec.Kind),
+				ParentID: spec.ParentID,
+				Depth:    spec.Depth,
+				Spec:     raw,
+			}); err != nil && logger != nil {
+				logger.Debug("unit ledger begin failed (unit stays in-memory only)",
+					"task_id", taskID, "unit_id", spec.Task.ID, "error", err)
+			}
+		}
+		// Legacy delegation-spec persistence — the record the Resume wave reads.
+		// Skipped for plan steps (nil store), which are rebuilt from the plan.
+		if store == nil {
+			return
+		}
 		if err := store.PersistDelegationSpec(taskID, spec); err != nil {
 			if logger != nil {
 				logger.Warn("persist delegation spec failed (delegation remains in-memory; it cannot be auto-resumed after this run)",
@@ -179,6 +211,17 @@ func wireDelegationSpecSink(registry *tools.DelegationRegistry, parentID, taskID
 			}
 		}
 	})
+}
+
+// unitKindForDelegation maps a delegation-spec kind to its unit-ledger kind.
+// DelegationKindSubagent (and the empty zero value) map to UnitKindSubagent.
+func unitKindForDelegation(kind tools.DelegationKind) units.UnitKind {
+	switch kind {
+	case tools.DelegationKindPlanStep:
+		return units.UnitKindPlanStep
+	default:
+		return units.UnitKindSubagent
+	}
 }
 
 // Sync updates the in-memory holder synchronously (so the reflect tool sees
@@ -338,6 +381,18 @@ type conductorDeps struct {
 	// purely in-memory.
 	taskStore TaskPersistence
 
+	// unitSink, when non-nil, is the ledger-bound persistence sink for an
+	// ISOLATED Conductor run (the goal verifier). Such a run has no
+	// PersistableBlackboard to hang the usual delegation-spec / step-result
+	// persistence off — its blackboard is a throwaway seeded MapBlackboard —
+	// so RunConductor wires the registry's spec sink from this deps field
+	// INSTEAD of from bb.(PersistableBlackboard), and the launcher records the
+	// settled units (spec + resume checkpoint) through it. The sink writes only
+	// to the ledger, so the run's LLM view stays its isolated blackboard and
+	// the live task's incomplete state cannot leak in. Nil = derive the sink
+	// from the blackboard/store as before (the mainline path).
+	unitSink *unitSink
+
 	// resumeSteps holds pre-existing ReAct steps for resuming an interrupted
 	// task from a checkpoint. When non-empty, RunConductor sets
 	// ConductorConfig.ResumeSteps so the sp4rk engine seeds the
@@ -467,6 +522,67 @@ type conductorLauncher struct {
 	// guard) reflects only plans declared via declare_plan, not restored ones.
 	// Nil only under direct (test) construction — see HasDeclaredPlan fallback.
 	planState *planRunState
+	// ledger is the durable unit ledger this launcher writes every unit's
+	// lifecycle through — the SINGLE writer of unit lifecycle for plan steps,
+	// blocking/async delegates and redelegations (spec at register, running at
+	// start, paused+steps at checkpoint, completed/failed at settle).
+	// RunConductor wires the mainline ledger from the blackboard; the
+	// resume-wave launcher leaves it nil and derives one lazily via unitLedger.
+	// Nil (or a ledger with no store) degrades to in-memory / no-op writes, so
+	// every write is nil-safe.
+	ledger units.Ledger
+}
+
+// unitLedger returns the ledger this launcher writes unit lifecycle through.
+// It prefers the explicitly wired ledger (RunConductor) and otherwise derives
+// one from the blackboard, so a launcher built by the resume wave — which does
+// not wire a ledger — still records its units. A non-persistable blackboard
+// has no durable unit store, so this returns nil and every write becomes a
+// no-op.
+func (l *conductorLauncher) unitLedger() units.Ledger {
+	if l.ledger != nil {
+		return l.ledger
+	}
+	if l.bb == nil {
+		return nil
+	}
+	if pbb, ok := l.bb.(PersistableBlackboard); ok {
+		return NewBlackboardLedger(pbb)
+	}
+	return nil
+}
+
+// markUnitRunning records a unit's "running at start" transition in the ledger.
+func (l *conductorLauncher) markUnitRunning(id string) {
+	ledger := l.unitLedger()
+	if ledger == nil {
+		return
+	}
+	_ = ledger.Settle(id, units.UnitStatusRunning)
+}
+
+// settleUnit records a unit's terminal status in the ledger without touching
+// the blackboard. Used for outcomes that never produced a step result: build
+// failures, context cancellation, and unsatisfiable dependencies.
+func (l *conductorLauncher) settleUnit(id string, execErr error) {
+	l.recordUnitLedger(id, execErr, nil)
+}
+
+// recordUnitLedger durably records a settled unit — its resume checkpoint (the
+// ReAct steps) and its terminal status — through the launcher's ledger and, for
+// an ISOLATED run, through the ledger-bound unit sink (the goal verifier). Both
+// writes are best-effort. Ids the isolated sink never registered are ignored,
+// so a mainline plan-step outcome can never synthesize a phantom verifier unit.
+func (l *conductorLauncher) recordUnitLedger(id string, execErr error, steps []agent.Step) {
+	if ledger := l.unitLedger(); ledger != nil {
+		if len(steps) > 0 {
+			_ = ledger.Checkpoint(id, steps)
+		}
+		_ = ledger.Settle(id, unitStatusFor(execErr))
+	}
+	if l.deps.unitSink != nil {
+		l.deps.unitSink.record(id, execErr, steps)
+	}
 }
 
 // HasDeclaredPlan implements tools.PlanChecker. Returns true when the plan
@@ -579,6 +695,11 @@ func (l *conductorLauncher) Execute(ctx context.Context, stepIDs []string) ([]to
 	// SEPARATE from the Conductor's main delegation registry — plan steps are
 	// not delegations and should not appear in cancel_delegation.
 	localReg := tools.NewDelegationRegistry()
+	// Plan steps register through the same spec sink as delegates so their unit
+	// lifecycle enters the ledger at register time (spec at register). The task
+	// store is nil: plan steps are rebuilt from the blackboard plan, so writing
+	// them into the delegation-spec store would corrupt the resume wave.
+	wireDelegationSpecSink(localReg, l.unitLedger(), "", "", nil, l.deps.logger)
 
 	// indexByID preserves plan-declaration order for deterministic result
 	// ordering (map iteration is randomised, so the aggregated result would
@@ -589,7 +710,18 @@ func (l *conductorLauncher) Execute(ctx context.Context, stepIDs []string) ([]to
 
 	for i, step := range plan.Steps {
 		indexByID[step.ID] = i
-		if err := localReg.Register(step.ID, step.Summary, step.DependsOn, "blocking"); err != nil {
+		// RegisterTaskKind (rather than Register) so the registration sink fires
+		// and the step's unit record (kind plan_step, spec = the step) enters the
+		// ledger at register time. The registry entry itself is identical to a
+		// plain Register.
+		if err := localReg.RegisterTaskKind(tools.DelegationKindPlanStep, tools.DelegationTask{
+			ID:        step.ID,
+			Summary:   step.Summary,
+			Task:      step.Description,
+			DependsOn: step.DependsOn,
+			Mode:      "blocking",
+			Agent:     step.Agent,
+		}); err != nil {
 			return nil, fmt.Errorf("register plan step %q: %w", step.ID, err)
 		}
 
@@ -599,6 +731,7 @@ func (l *conductorLauncher) Execute(ctx context.Context, stepIDs []string) ([]to
 		if !forced[step.ID] {
 			if sr, ok := l.successfulStepResult(step.ID); ok {
 				localReg.Complete(step.ID, sr.FullOutput, nil, sr.Steps)
+				l.settleUnit(step.ID, nil)
 				results = append(results, tools.PlanStepResult{
 					StepID: step.ID, Summary: step.Summary,
 					Status: "completed", Output: sr.FullOutput,
@@ -631,6 +764,7 @@ func (l *conductorLauncher) Execute(ctx context.Context, stepIDs []string) ([]to
 	for len(pending) > 0 {
 		if ctx.Err() != nil {
 			for id, step := range pending {
+				l.settleUnit(id, ctx.Err())
 				results = append(results, tools.PlanStepResult{
 					StepID: id, Summary: step.Summary,
 					Status: "failed", Error: ctx.Err(),
@@ -655,6 +789,7 @@ func (l *conductorLauncher) Execute(ctx context.Context, stepIDs []string) ([]to
 			// finish fallback does not double-complete.
 			for id, step := range pending {
 				err := fmt.Errorf("step %q: dependencies could not be satisfied (upstream failure)", id)
+				l.settleUnit(id, err)
 				results = append(results, tools.PlanStepResult{
 					StepID: id, Summary: step.Summary,
 					Status: "failed", Error: err,
@@ -679,7 +814,7 @@ func (l *conductorLauncher) Execute(ctx context.Context, stepIDs []string) ([]to
 
 			if isPaused(oc.err) {
 				localReg.CompletePaused(oc.stepID, oc.output, oc.steps)
-				l.bb.SetStepResult(oc.stepID, oc.output, oc.err, oc.steps)
+				l.persistUnitOutcome(oc.stepID, oc.output, oc.err, oc.steps)
 				results = append(results, tools.PlanStepResult{
 					StepID: oc.stepID, Summary: step.Summary,
 					Status: "paused", Output: oc.output, Error: oc.err,
@@ -693,7 +828,7 @@ func (l *conductorLauncher) Execute(ctx context.Context, stepIDs []string) ([]to
 			}
 
 			localReg.Complete(oc.stepID, oc.output, oc.err, oc.steps)
-			l.bb.SetStepResult(oc.stepID, oc.output, oc.err, oc.steps)
+			l.persistUnitOutcome(oc.stepID, oc.output, oc.err, oc.steps)
 
 			status := "completed"
 			if oc.err != nil {
@@ -859,16 +994,18 @@ func (l *conductorLauncher) defaultPlanStepWave(ctx context.Context, ready []orc
 			// planStepEventTranslator did not emit PlanStepStart/Complete.
 			// Emit a terminal pair directly so the step is not left "pending".
 			l.emitNeverStartedStep(step.ID, err.Error())
+			l.settleUnit(step.ID, err)
 			outcomes = append(outcomes, planStepOutcome{stepID: step.ID, err: err})
 			continue
 		}
 		registry.Start(step.ID, nil)
+		l.markUnitRunning(step.ID)
 		subTasks = append(subTasks, st)
 	}
 
 	for _, sr := range agent.RunSubAgentsParallel(ctx, subTasks) {
 		if isPaused(sr.Error) {
-			l.bb.SetStepResult(sr.StepID, sr.Output, sr.Error, sr.Steps)
+			l.persistUnitOutcome(sr.StepID, sr.Output, sr.Error, sr.Steps)
 			outcomes = append(outcomes, planStepOutcome{
 				stepID: sr.StepID,
 				output: sr.Output,
@@ -950,6 +1087,7 @@ func (l *conductorLauncher) Launch(ctx context.Context, tasks []tools.Delegation
 		if ctx.Err() != nil {
 			for id := range pending {
 				registry.Complete(id, "", ctx.Err(), nil)
+				l.settleUnit(id, ctx.Err())
 				results = append(results, tools.DelegationResult{ID: id, Status: tools.DelegationStatusCancelled, Error: ctx.Err()})
 			}
 			return results
@@ -965,6 +1103,7 @@ func (l *conductorLauncher) Launch(ctx context.Context, tasks []tools.Delegation
 			for id := range pending {
 				err := fmt.Errorf("delegation %q: dependencies could not be satisfied", id)
 				registry.Complete(id, "", err, nil)
+				l.settleUnit(id, err)
 				results = append(results, tools.DelegationResult{ID: id, Status: tools.DelegationStatusFailed, Error: err})
 			}
 			return results
@@ -1182,6 +1321,23 @@ func (l *conductorLauncher) pausedCheckpoint(stepID string) (orchestration.StepR
 	return sr, true
 }
 
+// persistUnitOutcome mirrors a settled delegation/plan-step outcome onto the
+// run's blackboard (which stays the in-memory view read by read_step_output and
+// the resume path) and records it durably through the launcher's ledger.
+//
+// The blackboard write happens unconditionally, so the run's own
+// read_step_output and any in-run resume read keep working. The ledger write —
+// the resume checkpoint plus the terminal status (paused / failed / completed)
+// — is what makes a spawned delegation's pause checkpoint survive a restart: on
+// the mainline it lands in the blackboard-backed unit ledger; on an isolated run
+// (the goal verifier, whose throwaway seeded MapBlackboard is never persisted)
+// it lands in the ledger-bound unit sink instead. Both are best-effort: a
+// persistence failure is logged, never propagated.
+func (l *conductorLauncher) persistUnitOutcome(id, output string, execErr error, steps []agent.Step) {
+	l.bb.SetStepResult(id, output, execErr, steps)
+	l.recordUnitLedger(id, execErr, steps)
+}
+
 func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tools.DelegationTask, registry *tools.DelegationRegistry) []tools.DelegationResult {
 	subCtx := subagentCtx(ctx)
 	subTasks := make([]agent.SubAgentTask, 0, len(tasks))
@@ -1190,10 +1346,12 @@ func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tool
 		st, err := l.buildSubAgentTask(subCtx, t, registry, l.scopeEvents(t.ID))
 		if err != nil {
 			registry.Complete(t.ID, "", err, nil)
+			l.settleUnit(t.ID, err)
 			buildFailures = append(buildFailures, tools.DelegationResult{ID: t.ID, Status: tools.DelegationStatusFailed, Error: err})
 			continue
 		}
 		registry.Start(t.ID, nil)
+		l.markUnitRunning(t.ID)
 		subTasks = append(subTasks, st)
 	}
 
@@ -1206,7 +1364,7 @@ func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tool
 	out = append(out, buildFailures...)
 	for _, sr := range subResults {
 		if isPaused(sr.Error) {
-			l.bb.SetStepResult(sr.StepID, sr.Output, sr.Error, sr.Steps)
+			l.persistUnitOutcome(sr.StepID, sr.Output, sr.Error, sr.Steps)
 			registry.CompletePaused(sr.StepID, sr.Output, sr.Steps)
 			out = append(out, tools.DelegationResult{ID: sr.StepID, Status: tools.DelegationStatusPaused, Output: sr.Output, Error: sr.Error})
 			continue
@@ -1216,7 +1374,7 @@ func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tool
 			execErr = sr.Error
 		}
 		registry.Complete(sr.StepID, sr.Output, execErr, sr.Steps)
-		l.bb.SetStepResult(sr.StepID, sr.Output, execErr, sr.Steps)
+		l.persistUnitOutcome(sr.StepID, sr.Output, execErr, sr.Steps)
 		status := tools.DelegationStatusCompleted
 		if execErr != nil {
 			status = tools.DelegationStatusFailed
@@ -1230,6 +1388,7 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 	if registry.Depth() >= l.deps.maxRedelegDepth {
 		err := fmt.Errorf("delegation %q: allow_redelegate requested at depth %d but cap is %d", t.ID, registry.Depth(), l.deps.maxRedelegDepth)
 		registry.Complete(t.ID, "", err, nil)
+		l.settleUnit(t.ID, err)
 		return tools.DelegationResult{ID: t.ID, Status: tools.DelegationStatusFailed, Error: err}
 	}
 
@@ -1239,10 +1398,14 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 	// Persist sub-delegation specs with this subagent's step ID as the parent,
 	// so a resume wave can rebuild nested paused delegations and order
 	// children before their parents. Mirrors the root-registry wiring in
-	// RunConductor (same taskID/store resolution via the blackboard).
-	if pbb, ok := l.bb.(PersistableBlackboard); ok {
+	// RunConductor: an isolated run's ledger-bound unit sink wins (its
+	// blackboard carries no task id), otherwise resolve the task/store from the
+	// blackboard.
+	if l.deps.unitSink != nil {
+		l.deps.unitSink.wire(childReg, t.ID)
+	} else if pbb, ok := l.bb.(PersistableBlackboard); ok {
 		if tid := pbb.TaskID(); tid != "" && l.deps.taskStore != nil {
-			wireDelegationSpecSink(childReg, t.ID, tid, l.deps.taskStore, l.deps.logger)
+			wireDelegationSpecSink(childReg, l.unitLedger(), t.ID, tid, l.deps.taskStore, l.deps.logger)
 		}
 	}
 	taskCtx := tools.WithDelegationRegistry(ctx, childReg)
@@ -1271,6 +1434,7 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 	st, err := l.buildSubAgentTask(taskCtx, t, registry, l.scopeEvents(t.ID))
 	if err != nil {
 		registry.Complete(t.ID, "", err, nil)
+		l.settleUnit(t.ID, err)
 		return tools.DelegationResult{ID: t.ID, Status: tools.DelegationStatusFailed, Error: err}
 	}
 
@@ -1290,11 +1454,12 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 	}
 
 	registry.Start(t.ID, nil)
+	l.markUnitRunning(t.ID)
 	ch := agent.RunSubAgent(taskCtx, t.ID, st.Executor, st.CM, redelegTools, st.TaskDesc, st.Emitter, st.TodoUpdateFunc)
 	sr := <-ch
 
 	if isPaused(sr.Error) {
-		l.bb.SetStepResult(t.ID, sr.Output, sr.Error, sr.Steps)
+		l.persistUnitOutcome(t.ID, sr.Output, sr.Error, sr.Steps)
 		registry.CompletePaused(t.ID, sr.Output, sr.Steps)
 		return tools.DelegationResult{ID: t.ID, Status: tools.DelegationStatusPaused, Output: sr.Output, Error: sr.Error}
 	}
@@ -1304,7 +1469,7 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 		execErr = sr.Error
 	}
 	registry.Complete(t.ID, sr.Output, execErr, sr.Steps)
-	l.bb.SetStepResult(t.ID, sr.Output, execErr, sr.Steps)
+	l.persistUnitOutcome(t.ID, sr.Output, execErr, sr.Steps)
 	status := tools.DelegationStatusCompleted
 	if execErr != nil {
 		status = tools.DelegationStatusFailed
@@ -1320,11 +1485,13 @@ func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationT
 	subTask, err := l.buildSubAgentTask(ctx, t, registry, l.scopeEvents(t.ID))
 	if err != nil {
 		registry.Complete(t.ID, "", err, nil)
+		l.settleUnit(t.ID, err)
 		return tools.DelegationResult{ID: t.ID, Status: tools.DelegationStatusFailed, Error: err}
 	}
 
 	asyncCtx, cancel := context.WithCancel(ctx)
 	registry.Start(t.ID, cancel)
+	l.markUnitRunning(t.ID)
 
 	go func() {
 		defer cancel()
@@ -1332,7 +1499,7 @@ func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationT
 		select {
 		case sr := <-ch:
 			if isPaused(sr.Error) {
-				l.bb.SetStepResult(t.ID, sr.Output, sr.Error, sr.Steps)
+				l.persistUnitOutcome(t.ID, sr.Output, sr.Error, sr.Steps)
 				registry.CompletePaused(t.ID, sr.Output, sr.Steps)
 				return
 			}
@@ -1341,9 +1508,10 @@ func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationT
 				execErr = sr.Error
 			}
 			registry.Complete(t.ID, sr.Output, execErr, sr.Steps)
-			l.bb.SetStepResult(t.ID, sr.Output, execErr, sr.Steps)
+			l.persistUnitOutcome(t.ID, sr.Output, execErr, sr.Steps)
 		case <-asyncCtx.Done():
 			registry.Complete(t.ID, "", asyncCtx.Err(), nil)
+			l.settleUnit(t.ID, asyncCtx.Err())
 		}
 	}()
 
@@ -2301,8 +2469,17 @@ func RunConductor(
 	// auto-resume wave can rebuild it — without any LLM decision. Best-effort
 	// (mirrors the trajectory store): a persistence failure is logged, never
 	// propagated.
-	if taskID != "" && deps.taskStore != nil {
-		wireDelegationSpecSink(registry, "", taskID, deps.taskStore, deps.logger)
+	//
+	// An isolated run (the goal verifier) carries a ledger-bound unit sink
+	// instead: its blackboard is a throwaway seeded MapBlackboard with no task
+	// id, so the blackboard-derived wiring below would silently persist
+	// nothing. When the sink is present it WINS — the run's delegations are
+	// recorded as durable, namespaced, parent-linked units, while the run's own
+	// blackboard stays non-persistent (the isolation guarantee).
+	if deps.unitSink != nil {
+		deps.unitSink.wire(registry, deps.unitSink.parentID)
+	} else if taskID != "" && deps.taskStore != nil {
+		wireDelegationSpecSink(registry, launcher.unitLedger(), "", taskID, deps.taskStore, deps.logger)
 	}
 
 	// Derive compaction strategy from routing domain + complexity.

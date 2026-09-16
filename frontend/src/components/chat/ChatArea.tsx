@@ -1,5 +1,5 @@
 import { useEffect, useRef, useMemo } from 'react'
-import { useChatStore, useSessionMessages } from '@/stores/chatStore'
+import { useChatStore, useSessionMessages, useSessionWorkUnits } from '@/stores/chatStore'
 import { useBookmarkStore } from '@/stores/bookmarkStore'
 import { groupMessages, chatMessageToUI, rebuildPlanFromHistory, rebuildGoalFromHistory, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow, isRoutingRequestRow } from '@/lib/chatUtils'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -8,7 +8,7 @@ import { usePlanStore } from '@/stores/planStore'
 import { useGoalStore } from '@/stores/goalStore'
 import { getSessionHistory, getSessionRuntimeStatus, getPendingActions, resolveStalePrompt } from '@/api/chat'
 import { useTaskFlagRestore } from '@/hooks/useTaskFlagRestore'
-import { reconcileRuntimeStatus, reconcilePendingActions, stalePromptMatchField } from '@/lib/sessionRuntime'
+import { reconcileRuntimeStatus, reconcilePendingActions, reconcileWorkUnits, stalePromptMatchField } from '@/lib/sessionRuntime'
 import { generateMessageId } from '@/lib/ids'
 import type { ChatMessageUI } from '@/types/messages'
 import { AssistantMessage } from './AssistantMessage'
@@ -40,6 +40,10 @@ export function ChatArea() {
   // stays replaced by its fallback even after the cause is gone.
   const inputMode = useInputModeStore(s => s.mode)
   const messages = useSessionMessages(activeSessionId)
+  // Durable work-unit overlay (stepId -> block status) from the last session
+  // load; consumed by groupMessages to align paused/interrupted delegate &
+  // plan-step blocks. A stable store reference (no per-render allocation).
+  const workUnits = useSessionWorkUnits(activeSessionId)
   const streamingText = useChatStore(s => activeSessionId ? s.streamingText[activeSessionId] : undefined)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -135,6 +139,10 @@ export function ChatArea() {
       const staleResolved: ChatMessageUI[] = []
       if (status) {
         for (const msg of reconcileRuntimeStatus(activeSessionId, status, statusReadAt)) staleResolved.push(msg)
+        // Align paused/interrupted delegate & plan-step blocks with the durable
+        // work-unit snapshot (rendered via groupMessages). Runs AFTER the
+        // history merge so the blocks exist to be corrected.
+        reconcileWorkUnits(activeSessionId, status.work_units)
       }
       if (pending) {
         for (const msg of reconcilePendingActions(activeSessionId, pending)) staleResolved.push(msg)
@@ -167,7 +175,7 @@ export function ChatArea() {
     if (activeSessionId) void useBookmarkStore.getState().loadBookmarks(activeSessionId)
   }, [activeSessionId])
 
-  const { items: displayItems } = useMemo(() => groupMessages(messages), [messages])
+  const { items: displayItems } = useMemo(() => groupMessages(messages, workUnits), [messages, workUnits])
 
   if (!activeSessionId) {
     return (

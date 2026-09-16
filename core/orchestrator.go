@@ -4,6 +4,7 @@ package core
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,6 +23,7 @@ import (
 	"github.com/v0lka/c0wrk/core/modelprofiles"
 	"github.com/v0lka/c0wrk/core/research"
 	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/units"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/reflector"
 	"github.com/v0lka/sp4rk/agent/router"
@@ -1421,10 +1423,14 @@ const waveSummaryOutputCap = 300
 //     policy) continues through the same DAG engine execute_plan uses:
 //     already-successful steps are replayed, paused steps re-dispatch with
 //     their checkpointed trajectories seeded, unstarted steps run.
-//   - Paused delegates are rebuilt from their persisted specs and re-launched
-//     with the SAME ids (so their chat blocks continue), depth-ordered so a
-//     re-delegating parent resumes only after its children settled, with the
-//     children's outcomes appended to the parent's task text.
+//   - Every delegation unit the task's durable ledger holds — mainline or
+//     goal-verification, at any depth — is settled uniformly: a paused unit is
+//     relaunched from its checkpoint, a not-started/interrupted unit is
+//     relaunched fresh, and an already-terminal unit is replayed (never
+//     re-run). Units keep their SAME ids (so their chat blocks continue), are
+//     depth-ordered so a re-delegating parent resumes only after its children
+//     settled, with the children's outcomes appended to the parent's task
+//     text.
 //
 // A pause that re-trips mid-wave checkpoints cleanly (pausedAgain=true) and
 // the caller ends the Resume without any LLM call. Settled outcomes are
@@ -1438,25 +1444,25 @@ const waveSummaryOutputCap = 300
 // latest steering (the wave runs before the conductor's first LLM call, so
 // the nudge would otherwise arrive too late to steer it).
 func (o *Orchestrator) resumePausedWork(ctx context.Context, bb orchestration.Blackboard, nudge string) (resumeWaveOutcome, error) {
-	specs := delegationSpecsFromBlackboard(bb)
-	planStepIDs := planStepIDSet(bb)
+	// One funnel, one enumeration: every unit the task still has in flight —
+	// across all kinds, depths and namespaces, including the units a
+	// goal-verification pass recorded under its own namespace — is lifted from
+	// the durable unit ledger (with a legacy-spec fallback for tasks persisted
+	// before the ledger existed) and settled uniformly below.
+	unitsToSettle := o.resumeUnitsForBlackboard(bb)
 
-	hasPausedDelegates := false
-	for _, spec := range specs {
-		if planStepIDs[spec.Task.ID] {
-			continue // the plan branch owns plan-step checkpoints
-		}
-		if sr, ok := bb.GetStepResult(spec.Task.ID); ok && isPaused(sr.Error) {
-			hasPausedDelegates = true
-			break
+	relaunchable := 0
+	for _, u := range unitsToSettle {
+		if u.relaunchable() {
+			relaunchable++
 		}
 	}
 	continuablePlan := planHasUnreachedSteps(bb)
-	if !continuablePlan && !hasPausedDelegates {
+	if !continuablePlan && relaunchable == 0 {
 		return resumeWaveOutcome{}, nil
 	}
 
-	o.logInfo("resume_task: auto-resume wave starting", "continuable_plan", continuablePlan, "paused_delegates", hasPausedDelegates)
+	o.logInfo("resume_task: auto-resume wave starting", "continuable_plan", continuablePlan, "relaunchable_units", relaunchable)
 
 	deps := o.buildConductorDeps(nil, nil)
 	planState := newPlanRunState(true)
@@ -1470,16 +1476,17 @@ func (o *Orchestrator) resumePausedWork(ctx context.Context, bb orchestration.Bl
 
 	// Branch 1 — continue the plan through the DAG engine.
 	if continuablePlan {
-		// Snapshot the plan steps already successful BEFORE the wave
-		// (mirroring hasPausedDelegates' scan): Execute replays those as
-		// skipped "completed" results, and the wave summary must not re-list
-		// work that finished normally in an earlier run — each resume would
-		// otherwise grow the task message by one factually wrong "settled by
-		// the system" line per completed step.
-		preWaveSuccess := make(map[string]bool, len(planStepIDs))
-		for id := range planStepIDs {
-			if sr, ok := bb.GetStepResult(id); ok && sr.Error == nil {
-				preWaveSuccess[id] = true
+		// Snapshot the plan steps already successful BEFORE the wave: Execute
+		// replays those as skipped "completed" results, and the wave summary
+		// must not re-list work that finished normally in an earlier run —
+		// each resume would otherwise grow the task message by one factually
+		// wrong "settled by the system" line per completed step.
+		preWaveSuccess := make(map[string]bool)
+		if plan := bb.GetPlan(); plan != nil {
+			for _, step := range plan.Steps {
+				if sr, ok := bb.GetStepResult(step.ID); ok && sr.Error == nil {
+					preWaveSuccess[step.ID] = true
+				}
 			}
 		}
 		results, err := launcher.Execute(ctx, nil)
@@ -1500,9 +1507,10 @@ func (o *Orchestrator) resumePausedWork(ctx context.Context, bb orchestration.Bl
 		}
 	}
 
-	// Branch 2 — rebuild and re-launch paused delegates (depth-ordered).
-	if hasPausedDelegates && !outcome.pausedAgain {
-		pausedAgain, err := o.resumePausedDelegates(ctx, bb, launcher, specs, planStepIDs, nudge, &sb)
+	// Branch 2 — settle the enumerated units through the single ledger funnel
+	// (deepest scope first, so children settle before their parents).
+	if relaunchable > 0 && !outcome.pausedAgain {
+		pausedAgain, err := o.resumeUnits(ctx, bb, launcher, unitsToSettle, nudge, &sb)
 		if err != nil {
 			return outcome, err
 		}
@@ -1515,112 +1523,297 @@ func (o *Orchestrator) resumePausedWork(ctx context.Context, bb orchestration.Bl
 	return outcome, nil
 }
 
-// settledDelegation is a spec whose outcome is already terminal: either it
-// settled in the prior run (completed/failed) or it never checkpointed
-// (crash-interrupted, represented as a failed entry with a factual reason).
-// These are replayed into each wave registry as terminal states — they are
-// never relaunched.
-type settledDelegation struct {
-	task    tools.DelegationTask
+// resumeUnit is one execution unit the resume funnel settles, normalized from
+// the durable unit ledger (the primary source: it carries the rebuild spec,
+// the parent/depth topology, the lifecycle status AND the resume checkpoint)
+// and, for a task persisted before the ledger existed, from the legacy
+// delegation-spec store. Normalizing both sources into one shape is what lets
+// the funnel settle every unit UNIFORMLY — a mainline delegate, a goal-verifier
+// delegate, a nested sub-delegation — without branching on where it came from.
+type resumeUnit struct {
+	id   string
+	task tools.DelegationTask
+	// parentID is the delegating unit's id (empty at top level); it scopes a
+	// unit under the parent it was spawned by (a goal-verifier delegate is
+	// parented under the verifier unit).
+	parentID string
+	// scope keys the wave registry group a unit settles in. It separates an
+	// isolated context's units (the goal verifier records under its own
+	// namespace) from the mainline's, so a verifier delegate scoped to its
+	// parent can never share a registry — or collide by id — with a mainline
+	// delegation.
+	scope   string
+	depth   int
+	status  units.UnitStatus
+	steps   []agent.Step
 	output  string
 	execErr error
-	steps   []agent.Step
 }
 
-// resumePausedDelegates re-launches the paused delegations recorded in specs,
-// depth-ordered (children before parents), settling their results on the
-// blackboard through the launcher's normal completion paths.
+// relaunchable reports whether the funnel must (re)launch the unit — every
+// non-terminal unit. A paused unit resumes from its checkpoint; a not-started
+// (pending), running or interrupted unit is relaunched FRESH (it carries no
+// usable checkpoint — it was abandoned before one was taken).
+func (u resumeUnit) relaunchable() bool {
+	return !u.terminal()
+}
+
+// terminal reports whether the unit already reached a final outcome
+// (completed or failed). A terminal unit is REPLAYED into the wave registries
+// so dependency resolution sees it — it is never re-run.
+func (u resumeUnit) terminal() bool {
+	return u.status == units.UnitStatusCompleted || u.status == units.UnitStatusFailed
+}
+
+// paused reports whether the unit carries a resumable checkpoint.
+func (u resumeUnit) paused() bool {
+	return u.status == units.UnitStatusPaused
+}
+
+// resumeUnitsForBlackboard enumerates every unit the resume funnel must settle
+// for a restored task: the durable ledger's units (all kinds, depths and
+// namespaces — including a goal verifier's, which only the ledger holds),
+// merged with any legacy delegation specs a task persisted before the ledger
+// still carries. Ledger units win by id, so a unit recorded in both places is
+// never settled twice.
 //
-// Each depth group gets its OWN registry created at that depth
-// (NewDelegationRegistryWithDepth): a relaunched delegation resumes at its
-// real position in the re-delegation hierarchy, so the maxRedelegDepth cap is
+// A ledger read failure is not fatal: the legacy specs (and the plan arm) still
+// work, so the resume proceeds with whatever it can see.
+func (o *Orchestrator) resumeUnitsForBlackboard(bb orchestration.Blackboard) []resumeUnit {
+	ledger := resumeLedgerFromBlackboard(bb)
+	unitsToSettle, err := resumeUnitsFromLedger(ledger, bb)
+	if err != nil {
+		o.logWarn("resume_task: unit ledger unreadable — falling back to legacy delegation specs", "error", err)
+		unitsToSettle = nil
+	}
+	seen := make(map[string]bool, len(unitsToSettle))
+	for _, u := range unitsToSettle {
+		seen[u.id] = true
+	}
+	return append(unitsToSettle, legacyResumeUnits(delegationSpecsFromBlackboard(bb), bb, seen)...)
+}
+
+// resumeLedgerFromBlackboard derives the mainline unit ledger from a
+// persistable blackboard (nil for a non-persistable one, which has no durable
+// unit store). It prefers a blackboard-cached ledger so the funnel reads
+// exactly what the prior run wrote.
+func resumeLedgerFromBlackboard(bb orchestration.Blackboard) units.Ledger {
+	if pbb, ok := bb.(PersistableBlackboard); ok {
+		return NewBlackboardLedger(pbb)
+	}
+	return nil
+}
+
+// resumeUnitsFromLedger enumerates the ledger's units for the task. Every unit
+// is normalized into a resumeUnit, so the funnel above settles all kinds,
+// depths and namespaces uniformly. Container units (the task root and the
+// goal-verification pass itself) and plan-step units are skipped: plan steps
+// are owned by the plan arm (the DAG engine), and a container is not a
+// relaunchable execution unit. A unit whose rebuild spec cannot be decoded is
+// skipped too — without a spec it could never be relaunched (its status is
+// still surfaced by the session-runtime work-unit snapshot).
+func resumeUnitsFromLedger(ledger units.Ledger, bb orchestration.Blackboard) ([]resumeUnit, error) {
+	if ledger == nil {
+		return nil, nil
+	}
+	recs, err := ledger.List()
+	if err != nil {
+		return nil, fmt.Errorf("resume: list units: %w", err)
+	}
+	out := make([]resumeUnit, 0, len(recs))
+	for _, rec := range recs {
+		if !relaunchableUnitKind(rec.Kind) {
+			continue
+		}
+		// A unit without a stored rebuild spec cannot be re-launched, so the
+		// funnel skips it (its status is still surfaced by the session-runtime
+		// work-unit snapshot).
+		if len(rec.Spec) == 0 {
+			continue
+		}
+		var spec tools.DelegationSpec
+		if err := json.Unmarshal(rec.Spec, &spec); err != nil {
+			continue
+		}
+		u := resumeUnit{
+			id:       rec.ID,
+			task:     spec.Task,
+			parentID: rec.ParentID,
+			scope:    rec.Namespace,
+			depth:    rec.Depth,
+			status:   rec.Status,
+		}
+		if u.task.ID == "" {
+			u.task.ID = rec.ID
+		}
+		// The resume checkpoint lives in the ledger: the verifier's isolated
+		// pass has no persistent blackboard to hold it, so the ledger is the
+		// only durable copy for those units.
+		if len(rec.Steps) > 0 {
+			var steps []agent.Step
+			if err := json.Unmarshal(rec.Steps, &steps); err == nil {
+				u.steps = steps
+			}
+		}
+		// The blackboard carries the mainline value view (output/error); an
+		// isolated context's failure has none, so synthesize an error for it so
+		// a replay still reports the dependency as failed, not completed.
+		outcomeKnown := false
+		if bb != nil {
+			if sr, ok := bb.GetStepResult(rec.ID); ok {
+				u.output, u.execErr = sr.FullOutput, sr.Error
+				outcomeKnown = true
+			}
+		}
+		if !outcomeKnown && u.status == units.UnitStatusFailed {
+			u.execErr = fmt.Errorf("unit %q failed in a previous run", rec.ID)
+		}
+		out = append(out, u)
+	}
+	return out, nil
+}
+
+// relaunchableUnitKind reports whether a ledger unit of this kind is a
+// relaunchable execution unit the funnel settles. Plan steps are excluded (the
+// plan arm owns them), as are the task root and the goal-verification pass
+// (containers, not relaunchable work), and tool units.
+func relaunchableUnitKind(kind units.UnitKind) bool {
+	switch kind {
+	case units.UnitKindSubagent, "":
+		// "" is the documented default for a delegation (unitKindForDelegation
+		// maps it to subagent), so a unit recorded without an explicit kind is
+		// still a delegate.
+		return true
+	default:
+		return false
+	}
+}
+
+// legacyResumeUnits lifts a task's legacy delegation specs into resume units so
+// a task persisted before the durable unit ledger existed still resumes. A spec
+// whose id the ledger already covers is skipped (the ledger unit is
+// authoritative). A spec with no blackboard step result never took a
+// checkpoint — the crash-interrupted case — and is classified interrupted,
+// which the funnel now RELAUNCHES FRESH instead of marking failed.
+func legacyResumeUnits(specs []tools.DelegationSpec, bb orchestration.Blackboard, seen map[string]bool) []resumeUnit {
+	var out []resumeUnit
+	for _, spec := range specs {
+		if spec.Task.ID == "" || seen[spec.Task.ID] {
+			continue
+		}
+		seen[spec.Task.ID] = true
+		u := resumeUnit{
+			id:       spec.Task.ID,
+			task:     spec.Task,
+			parentID: spec.ParentID,
+			depth:    spec.Depth,
+			status:   units.UnitStatusInterrupted,
+		}
+		if sr, ok := bb.GetStepResult(spec.Task.ID); ok {
+			switch {
+			case isPaused(sr.Error):
+				u.status = units.UnitStatusPaused
+			case sr.Error != nil:
+				u.status = units.UnitStatusFailed
+			default:
+				u.status = units.UnitStatusCompleted
+			}
+			u.output, u.execErr, u.steps = sr.FullOutput, sr.Error, sr.Steps
+		}
+		out = append(out, u)
+	}
+	return out
+}
+
+// resumeUnits settles every unit the funnel enumerated. Units are grouped by
+// (scope, depth) and processed deepest-first: a child lives in a deeper (or, at
+// equal depth, a distinct scope) group, so it settles BEFORE the parent that
+// consumes its outcome. Each group gets its OWN registry created at its depth
+// (NewDelegationRegistryWithDepth): a relaunched delegation resumes at its real
+// position in the re-delegation hierarchy, so the maxRedelegDepth cap is
 // measured from the original depth rather than being reset to 0 — a
-// pause/resume cycle must not grant extra re-delegation levels. Already
-// settled specs are replayed into that registry (via Register — no spec sink:
-// the wave registry never persists, the specs are already in the store, and
-// re-firing the sink would shift created_at ordering) so dependency
-// resolution sees them.
-func (o *Orchestrator) resumePausedDelegates(
+// pause/resume cycle must not grant extra re-delegation levels.
+//
+// Classification is uniform for every kind/depth/namespace:
+//   - paused           → relaunch, seeded with the checkpoint trajectory
+//   - not-started /
+//     interrupted      → relaunch fresh (no usable checkpoint)
+//   - terminal         → replay into the group registry (never re-run)
+//
+// Terminal units are replayed via Register (NOT RegisterTask) so a spec sink
+// can never re-fire: the wave registry never persists, the specs are already
+// durably stored, and re-firing the sink would shift created_at ordering.
+// Register's signature carries everything the replay needs (id, summary, deps,
+// mode); the mode default mirrors RegisterTask, so the registry entry is
+// byte-for-byte identical to a sinkless RegisterTask call.
+func (o *Orchestrator) resumeUnits(
 	ctx context.Context,
 	bb orchestration.Blackboard,
 	launcher *conductorLauncher,
-	specs []tools.DelegationSpec,
-	planStepIDs map[string]bool,
+	unitsToSettle []resumeUnit,
 	nudge string,
 	sb *strings.Builder,
 ) (bool, error) {
-	pausedByDepth := make(map[int][]tools.DelegationSpec)
-	var settled []settledDelegation
-	for _, spec := range specs {
-		if planStepIDs[spec.Task.ID] {
+	type groupKey struct {
+		scope string
+		depth int
+	}
+	groups := make(map[groupKey][]resumeUnit)
+	var settled []resumeUnit
+	for _, u := range unitsToSettle {
+		if u.terminal() {
+			settled = append(settled, u)
 			continue
 		}
-		sr, ok := bb.GetStepResult(spec.Task.ID)
-		switch {
-		case !ok:
-			// The delegation never settled (crashed mid-flight — no
-			// checkpoint). Deterministically mark it failed so dependents
-			// unblock with a clear reason instead of hanging; the conductor
-			// re-delegates it as fresh work. The failure is also surfaced in
-			// the wave summary so the model knows the work never ran —
-			// dependents would otherwise only see "dependencies could not
-			// be satisfied" with no cause.
-			err := fmt.Errorf("delegation %q did not checkpoint (interrupted); re-delegate the work if still needed", spec.Task.ID)
-			settled = append(settled, settledDelegation{task: spec.Task, execErr: err})
-			writeWaveSummaryLine(sb, spec.Task.ID, "interrupted", "", err)
-		case isPaused(sr.Error):
-			pausedByDepth[spec.Depth] = append(pausedByDepth[spec.Depth], spec)
-		default:
-			// Settled in the prior run: replayed into the wave registries so
-			// this wave's dependency resolution sees it as
-			// completed/failed.
-			settled = append(settled, settledDelegation{task: spec.Task, output: sr.FullOutput, execErr: sr.Error, steps: sr.Steps})
-		}
+		k := groupKey{scope: u.scope, depth: u.depth}
+		groups[k] = append(groups[k], u)
+	}
+	if len(groups) == 0 {
+		return false, nil
 	}
 
-	depths := make([]int, 0, len(pausedByDepth))
-	for d := range pausedByDepth {
-		depths = append(depths, d)
+	keys := make([]groupKey, 0, len(groups))
+	for k := range groups {
+		keys = append(keys, k)
 	}
-	// Descending: children live in deeper registries (a redelegating parent's
-	// child registry is registry.Depth()+1), so they must settle BEFORE the
-	// parents that consume their outcomes.
-	slices.SortFunc(depths, func(a, b int) int { return cmp.Compare(b, a) })
+	// Deepest first: children live in deeper registries (a redelegating
+	// parent's child registry is registry.Depth()+1), so they must settle
+	// BEFORE the parents that consume their outcomes. Scope breaks the tie
+	// deterministically.
+	slices.SortFunc(keys, func(a, b groupKey) int {
+		if a.depth != b.depth {
+			return cmp.Compare(b.depth, a.depth)
+		}
+		return cmp.Compare(a.scope, b.scope)
+	})
 
 	pausedAgain := false
-	for _, depth := range depths {
-		registry := tools.NewDelegationRegistryWithDepth(depth)
-		// Replaying a settled spec uses Register (NOT RegisterTask) so the
-		// spec sink can never re-fire, matching the comment above: even if a
-		// future change wires a sink onto wave registries, re-persisting
-		// already-stored specs would shift created_at ordering. Register's
-		// signature carries everything the replay needs (id, summary, deps,
-		// mode); the mode default mirrors RegisterTask so the registry entry
-		// is byte-for-byte identical to a sinkless RegisterTask call.
+	for _, k := range keys {
+		registry := tools.NewDelegationRegistryWithDepth(k.depth)
 		for _, s := range settled {
 			mode := s.task.Mode
 			if mode == "" {
 				mode = "blocking"
 			}
-			if err := registry.Register(s.task.ID, s.task.Summary, s.task.DependsOn, mode); err == nil {
-				registry.Complete(s.task.ID, s.output, s.execErr, s.steps)
+			if err := registry.Register(s.id, s.task.Summary, s.task.DependsOn, mode); err == nil {
+				registry.Complete(s.id, s.output, s.execErr, s.steps)
 			}
 		}
 
-		waveSpecs := pausedByDepth[depth]
-		tasks := make([]tools.DelegationTask, 0, len(waveSpecs))
-		for _, spec := range waveSpecs {
-			t := spec.Task
+		groupUnits := groups[k]
+		tasks := make([]tools.DelegationTask, 0, len(groupUnits))
+		for _, u := range groupUnits {
+			t := u.task
 			// The wave settles everything deterministically before the
 			// conductor's first LLM call: even an originally-async delegation
 			// re-launches blocking-in-wave (its async-ness was a property of
 			// the original run's context, not of the work itself).
 			t.Mode = "blocking"
 			// A re-delegating parent resumes only after its children settled
-			// (deeper registries first). Surface their outcomes in the
-			// parent's task text so its first LLM call sees them without
-			// extra discovery.
-			if childSummary := childDelegationOutcomes(bb, specs, spec.Task.ID); childSummary != "" {
+			// (deeper groups first). Surface their outcomes in the parent's
+			// task text so its first LLM call sees them without extra
+			// discovery.
+			if childSummary := childDelegationOutcomes(bb, unitsToSettle, u.id); childSummary != "" {
 				t.Task += childSummary
 			}
 			// Resume-with-nudge: the user's steering must reach the
@@ -1629,15 +1822,23 @@ func (o *Orchestrator) resumePausedDelegates(
 			if nudge != "" {
 				t.Task += "\n\n## User follow-up provided on resume\n\n" + nudge
 			}
+			// Seed the checkpoint onto the blackboard before the launch: the
+			// launcher seeds a resumed subagent from the blackboard's paused
+			// step result (pausedCheckpoint). The mainline blackboard already
+			// holds its own checkpoint; an isolated-context unit (a
+			// goal-verifier delegate) does not, so its durable ledger
+			// checkpoint is lifted here. A not-started/interrupted unit has no
+			// checkpoint and is deliberately relaunched fresh.
+			if u.paused() {
+				if sr, ok := bb.GetStepResult(u.id); !ok || !isPaused(sr.Error) {
+					bb.SetStepResult(u.id, "", agent.ErrPaused, u.steps)
+				}
+			}
 			tasks = append(tasks, t)
-			// Register the relaunched task itself so its lifecycle
-			// transitions (Start/Complete from Launch) are not silent no-ops
-			// and the registry state matches what actually runs. Safe against
-			// the settled replay above: classification is exclusive per id.
-			// Invariant: a paused spec's own dependencies were already
-			// terminal in the prior run — a dependency that paused left the
-			// dependent never-started (crash-interrupted, classified above) —
-			// so registration order within the group cannot matter.
+			// Register the relaunched task itself so its lifecycle transitions
+			// (Start/Complete from Launch) are not silent no-ops and the
+			// registry state matches what actually runs. Safe against the
+			// terminal replay above: classification is exclusive per id.
 			_ = registry.RegisterTask(t)
 		}
 		results := launcher.Launch(ctx, tasks, registry)
@@ -1655,15 +1856,15 @@ func (o *Orchestrator) resumePausedDelegates(
 }
 
 // childDelegationOutcomes builds a bounded factual digest of the settled
-// sub-delegations spawned by the given parent step (specs with ParentID ==
+// sub-delegations spawned by the given parent unit (units whose parentID ==
 // parentID), for injection into the parent's resumed task text.
-func childDelegationOutcomes(bb orchestration.Blackboard, specs []tools.DelegationSpec, parentID string) string {
+func childDelegationOutcomes(bb orchestration.Blackboard, unitsToSettle []resumeUnit, parentID string) string {
 	var sb strings.Builder
-	for _, spec := range specs {
-		if spec.ParentID != parentID {
+	for _, u := range unitsToSettle {
+		if u.parentID != parentID {
 			continue
 		}
-		sr, ok := bb.GetStepResult(spec.Task.ID)
+		sr, ok := bb.GetStepResult(u.id)
 		if !ok {
 			continue
 		}
@@ -1672,7 +1873,7 @@ func childDelegationOutcomes(bb orchestration.Blackboard, specs []tools.Delegati
 			status = "failed"
 		}
 		var line strings.Builder
-		fmt.Fprintf(&line, "- %s: %s", spec.Task.ID, status)
+		fmt.Fprintf(&line, "- %s: %s", u.id, status)
 		if detail := waveDetail(sr.FullOutput, sr.Error); detail != "" {
 			line.WriteString(" — " + detail)
 		}
@@ -1724,21 +1925,6 @@ func delegationSpecsFromBlackboard(bb orchestration.Blackboard) []tools.Delegati
 		return nil
 	}
 	return reader.DelegationSpecs()
-}
-
-// planStepIDSet returns the set of step IDs of the blackboard's declared plan
-// (nil map when no plan). Membership disambiguates plan-step checkpoints
-// (owned by the plan branch) from delegate checkpoints.
-func planStepIDSet(bb orchestration.Blackboard) map[string]bool {
-	plan := bb.GetPlan()
-	if plan == nil || len(plan.Steps) == 0 {
-		return nil
-	}
-	ids := make(map[string]bool, len(plan.Steps))
-	for _, step := range plan.Steps {
-		ids[step.ID] = true
-	}
-	return ids
 }
 
 // planHasUnreachedSteps reports whether the blackboard carries a declared plan

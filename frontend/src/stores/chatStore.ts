@@ -1,11 +1,11 @@
 import { useMemo } from 'react'
 import { create } from 'zustand'
-import type { ChatMessageUI } from '@/types/messages'
+import type { ChatMessageUI, WorkUnitBlockStatus } from '@/types/messages'
 import type { TokenInfo, CompactionAvailability } from '@/types/models'
 import { HITL_PROMPT_TYPES } from '@/lib/hitlTypes'
 
 // Re-export types and grouping functions so existing imports continue to work
-export type { MessageType, ChatMessageUI, DisplayItem, GroupedMessages } from '@/types/messages'
+export type { MessageType, ChatMessageUI, DisplayItem, GroupedMessages, WorkUnitBlockStatus } from '@/types/messages'
 export { groupMessages } from '@/lib/chatUtils'
 
 // --- State types ---
@@ -83,6 +83,15 @@ interface ChatState {
   // ever set them), while a live pause/resume/terminal transition (which
   // stamps THIS map) must never be reverted by an older snapshot.
   taskFlagsEventAt: Record<string, number>
+  // Durable work-unit status per session, keyed by step id: sessionId ->
+  // stepId -> block status. Written by the session-load reconciliation
+  // (reconcileWorkUnits) from GetSessionRuntimeStatus.work_units so a
+  // paused/interrupted delegate or plan-step block renders its true state
+  // instead of a stale "running" after a restart/session load (the replayed
+  // history has no terminal event for it). Absent key = no snapshot knowledge;
+  // the block status then comes from the replayed messages alone. A step's
+  // entry is dropped when a fresh live launch proves the unit running again.
+  workUnitStatus: Record<string, Record<string, WorkUnitBlockStatus>>
 }
 
 interface ChatActions {
@@ -105,6 +114,8 @@ interface ChatActions {
   setStepContextFill: (sessionId: string, stepId: string, fill: number) => void
   clearStepContextFill: (sessionId: string) => void
   setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
+  setWorkUnitStatus: (sessionId: string, status: Record<string, WorkUnitBlockStatus>) => void
+  clearWorkUnitStep: (sessionId: string, stepId: string) => void
 }
 
 // --- Helpers ---
@@ -165,6 +176,20 @@ export function useSessionMessages(sessionId: string | null): ChatMessageUI[] {
   }, [messageOrder, messageIndex])
 }
 
+// Stable empty overlay so the hook never allocates a new object per render
+// (AGENTS.md: selectors must return referentially stable values).
+const EMPTY_WORK_UNIT_STATUS: Record<string, WorkUnitBlockStatus> = {}
+
+/**
+ * Hook returning a session's durable work-unit status overlay (stepId -> block
+ * status) for {@link groupMessages}. Returns a stable empty object when the
+ * session has no snapshot, and the store's own object otherwise (a direct
+ * store reference — no per-call allocation).
+ */
+export function useSessionWorkUnits(sessionId: string | null): Record<string, WorkUnitBlockStatus> {
+  return useChatStore(s => (sessionId ? s.workUnitStatus[sessionId] : undefined)) ?? EMPTY_WORK_UNIT_STATUS
+}
+
 // --- Store ---
 
 export const useChatStore = create<ChatState & ChatActions>((set) => ({
@@ -182,6 +207,7 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   sessionTokens: {},
   runtimeEventAt: {},
   taskFlagsEventAt: {},
+  workUnitStatus: {},
 
   addMessage: (sessionId, message) => set((s) => {
     const sessionIndex = s.messages[sessionId] ?? {}
@@ -517,5 +543,24 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
     return {
       sessionTokens: { ...s.sessionTokens, [sessionId]: { ...existing, ...tokens } as TokenInfo },
     }
+  }),
+
+  // Replace the session's durable work-unit overlay wholesale: the snapshot is
+  // authoritative for the whole session at load time. Deliberately does NOT
+  // stamp runtimeEventAt/taskFlagsEventAt — the overlay is a fallback
+  // consulted by groupMessages, not a live flag competing with events.
+  setWorkUnitStatus: (sessionId, status) => set((s) => ({
+    workUnitStatus: { ...s.workUnitStatus, [sessionId]: status },
+  })),
+
+  // Drop one step's overlay entry. A fresh live launch (subagent_launch /
+  // plan_step_start) proves the unit is running again, so the stale
+  // paused/interrupted snapshot must stop overriding the block; a no-op when
+  // the session/step has no entry.
+  clearWorkUnitStep: (sessionId, stepId) => set((s) => {
+    const session = s.workUnitStatus[sessionId]
+    if (!session || !(stepId in session)) return s
+    const { [stepId]: _dropped, ...rest } = session
+    return { workUnitStatus: { ...s.workUnitStatus, [sessionId]: rest } }
   }),
 }))

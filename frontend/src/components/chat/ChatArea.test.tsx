@@ -44,6 +44,7 @@ vi.mock('@/stores/chatStore', () => ({
     { getState: () => ({ addMessage: vi.fn(), mergeHistoryMessages: vi.fn(), setTaskActive: vi.fn() }) },
   ),
   useSessionMessages: () => [],
+  useSessionWorkUnits: () => ({}),
 }))
 
 // --- planStore: ChatArea calls usePlanStore.getState().clearPlan() in an effect ---

@@ -11,6 +11,7 @@ import (
 	"github.com/v0lka/c0wrk/core/e2s"
 	"github.com/v0lka/c0wrk/core/goal"
 	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/units"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -400,4 +401,90 @@ func (a *TaskStoreAdapter) GetUnfinishedTaskID(sessionID string) (string, error)
 // needs the latest task row regardless of its lifecycle state.
 func (a *TaskStoreAdapter) GetLatestTaskID(sessionID string) (string, error) {
 	return a.store.GetLatestTaskID(context.Background(), sessionID)
+}
+
+// ---------------------------------------------------------------------------
+// Durable unit ledger facade (core/units.Store)
+// ---------------------------------------------------------------------------
+
+// unitTaskStore is the optional unit-persistence capability a TaskStore may
+// implement. It is asserted rather than added to the TaskStore interface so
+// stores that predate the unit ledger — and their test doubles — keep
+// compiling unchanged; a store without it simply has no durable unit storage.
+type unitTaskStore interface {
+	SaveTaskUnit(ctx context.Context, rec TaskUnitRecord) error
+	LoadTaskUnits(ctx context.Context, taskID string) ([]TaskUnitRecord, error)
+}
+
+// unitStoreFacade adapts a task store's optional unit persistence to the
+// core/units.Store contract — the facade over existing storage that the unit
+// ledger writes through. It reuses the store's SQLite session database (the
+// same connection pool and tasks-table lifecycle as every other task record).
+type unitStoreFacade struct {
+	us unitTaskStore
+}
+
+// SaveUnit persists a unit record (spec + status + steps) for a task.
+func (f *unitStoreFacade) SaveUnit(rec units.UnitRecord) error {
+	return f.us.SaveTaskUnit(context.Background(), toTaskUnitRecord(rec))
+}
+
+// LoadUnits returns every unit persisted under a task, across all namespaces.
+func (f *unitStoreFacade) LoadUnits(taskID string) ([]units.UnitRecord, error) {
+	recs, err := f.us.LoadTaskUnits(context.Background(), taskID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]units.UnitRecord, 0, len(recs))
+	for _, rec := range recs {
+		out = append(out, fromTaskUnitRecord(rec))
+	}
+	return out, nil
+}
+
+// UnitStore returns the durable unit store backing this task store, or nil
+// when the underlying store does not provide unit persistence. The nil return
+// is the graceful-degradation signal: a core/units ledger built on it falls
+// back to best-effort in-memory operation. This is the ISOLATED-context entry
+// point — an isolated executor (e.g. the goal verifier) wraps its task store
+// with NewTaskStoreAdapter and calls this to obtain a store for units.NewLedger.
+func (a *TaskStoreAdapter) UnitStore() units.Store {
+	if us, ok := a.store.(unitTaskStore); ok {
+		return &unitStoreFacade{us: us}
+	}
+	return nil
+}
+
+// toTaskUnitRecord maps a core/units record onto its persisted form.
+func toTaskUnitRecord(rec units.UnitRecord) TaskUnitRecord {
+	return TaskUnitRecord{
+		TaskID:    rec.TaskID,
+		UnitID:    rec.ID,
+		Namespace: rec.Namespace,
+		Kind:      string(rec.Kind),
+		ParentID:  rec.ParentID,
+		Depth:     rec.Depth,
+		Status:    string(rec.Status),
+		Spec:      rec.Spec,
+		Steps:     rec.Steps,
+		CreatedAt: rec.CreatedAt,
+		UpdatedAt: rec.UpdatedAt,
+	}
+}
+
+// fromTaskUnitRecord maps a persisted unit back onto its core/units form.
+func fromTaskUnitRecord(rec TaskUnitRecord) units.UnitRecord {
+	return units.UnitRecord{
+		ID:        rec.UnitID,
+		TaskID:    rec.TaskID,
+		Namespace: rec.Namespace,
+		Kind:      units.UnitKind(rec.Kind),
+		ParentID:  rec.ParentID,
+		Depth:     rec.Depth,
+		Status:    units.UnitStatus(rec.Status),
+		Spec:      rec.Spec,
+		Steps:     rec.Steps,
+		CreatedAt: rec.CreatedAt,
+		UpdatedAt: rec.UpdatedAt,
+	}
 }

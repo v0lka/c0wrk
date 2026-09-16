@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useContext } from 'react'
-import { Loader2, CheckCircle2, XCircle, RefreshCw, Circle, CirclePause } from 'lucide-react'
+import { Loader2, CheckCircle2, XCircle, RefreshCw, Circle, CirclePause, CircleSlash } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { bookmarkKey } from '@/lib/bookmarks'
 import { formatDuration } from '@/lib/formatters'
@@ -43,6 +43,9 @@ export function PlanStepBlock({ item }: PlanStepBlockProps) {
     completed: { border: 'border-success',      Icon: CheckCircle2, iconClass: 'text-success' },
     failed:    { border: 'border-destructive',  Icon: XCircle,      iconClass: 'text-destructive' },
     paused:    { border: 'border-warning',      Icon: CirclePause,  iconClass: 'text-warning' },
+    // Abandoned before it settled (crash/app exit) — applied by the session-load
+    // work-unit reconciliation, never by a live event.
+    interrupted: { border: 'border-border',     Icon: CircleSlash,  iconClass: 'text-muted-foreground' },
     pending:   { border: 'border-border',       Icon: Circle,       iconClass: 'text-muted-foreground' },
   } as const
 
@@ -58,6 +61,9 @@ export function PlanStepBlock({ item }: PlanStepBlockProps) {
       {isRetry && <RefreshCw className="h-3 w-3 text-warning" />}
       {status === 'failed' && error && (
         <span className="text-xs text-destructive truncate min-w-0" title={error}>— {error}</span>
+      )}
+      {status === 'interrupted' && (
+        <span className="text-xs text-muted-foreground truncate min-w-0">— interrupted</span>
       )}
       {typeof stepContextFill === 'number' && (
         <span className="text-xs text-muted-foreground ml-2">{Math.round(stepContextFill)}%</span>

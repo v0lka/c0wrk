@@ -80,4 +80,17 @@ describe('PlanStepBlock', () => {
     })
     expect(state()).toBe('open')
   })
+
+  // --- work-unit recovery statuses (applied by the session-load reconciliation) ---
+
+  it('renders an interrupted step with an "— interrupted" hint', () => {
+    render(makeStep({ status: 'interrupted', children: [CHILD] }))
+    expect(container.textContent).toContain('interrupted')
+    expect(state()).toBe('closed')
+  })
+
+  it('gives a paused step the warning status icon', () => {
+    render(makeStep({ status: 'paused', children: [CHILD] }))
+    expect(container.querySelector('svg.text-warning')).not.toBeNull()
+  })
 })

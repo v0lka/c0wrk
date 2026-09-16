@@ -108,6 +108,109 @@ func TestRunGoalTurns_MetConfirmed_Terminates(t *testing.T) {
 	}
 }
 
+// TestRunGoalTurns_VerifierPaused_SuspendsGoal verifies the headline pause
+// criterion for the verification path: when the verifier's isolated pass ends
+// in a COOPERATIVE PAUSE (it reports the pause sentinel and declares NO
+// verdict), runGoalTurns suspends the request — paused=true, the goal stays
+// ACTIVE — and does NOT synthesize a not_met rejection from the interrupted
+// verification. The paused goal runs no extra agent turn.
+func TestRunGoalTurns_VerifierPaused_SuspendsGoal(t *testing.T) {
+	o := newVerificationTestOrchestrator()
+	// The verifier reports the pause sentinel (the in-memory agent.ErrPaused the
+	// universal pause signal produces) with a NIL outcome — the pass was
+	// interrupted, so nothing was confirmed or rejected.
+	verifierCalls := 0
+	o.goalVerifier = func(_ context.Context, _ *goal.GoalState, _ *goal.Verdict, _, _ string, _ orchestration.Blackboard, _ []sdktools.ToolDescriptor, _ conductorDeps) (*tools.VerificationOutcome, error) {
+		verifierCalls++
+		return nil, agent.ErrPaused
+	}
+
+	runner := &mockGoalTurnRunner{
+		turnVerds: []*goal.Verdict{metVerdict("done")},
+		turnCalls: []int{2},
+	}
+	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "ship it"}
+	bb := orchestration.NewMapBlackboard()
+
+	result, paused := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, runner.run)
+
+	if !paused {
+		t.Fatal("paused = false, want true (a paused verification must suspend the request)")
+	}
+	if result.Status != goal.StatusActive {
+		t.Fatalf("Status = %q, want %q (the goal stays ACTIVE on a verifier pause)", result.Status, goal.StatusActive)
+	}
+	// No synthesized not_met: the met verdict stands (verification was
+	// interrupted, not rejected).
+	if result.LastVerdict != nil && result.LastVerdict.Status == "not_met" {
+		t.Fatalf("LastVerdict = %+v, want NO synthesized not_met from a paused verification", result.LastVerdict)
+	}
+	if result.LastVerification == "rejected" {
+		t.Errorf("LastVerification = %q, want it NOT to be a rejection", result.LastVerification)
+	}
+	if verifierCalls != 1 {
+		t.Errorf("expected exactly 1 verifier pass, got %d", verifierCalls)
+	}
+	// A paused verification must not run an extra agent turn.
+	if runner.calls != 1 {
+		t.Errorf("expected exactly 1 agent turn, got %d", runner.calls)
+	}
+	if result.TurnCount != 1 {
+		t.Errorf("TurnCount = %d, want 1", result.TurnCount)
+	}
+}
+
+// TestRunGoalTurns_VerifierPauseThenResumeSettles verifies the resume half of
+// the criterion: after a verifier pause leaves the goal ACTIVE, re-entering
+// runGoalTurns (exactly what Resume does) runs the next agent turn and, when the
+// verifier now settles, terminates the goal — the interrupted verification is
+// re-run and resolved, never left permanently unresolved.
+func TestRunGoalTurns_VerifierPauseThenResumeSettles(t *testing.T) {
+	o := newVerificationTestOrchestrator()
+	verifierCalls := 0
+	o.goalVerifier = func(_ context.Context, _ *goal.GoalState, _ *goal.Verdict, _, _ string, _ orchestration.Blackboard, _ []sdktools.ToolDescriptor, _ conductorDeps) (*tools.VerificationOutcome, error) {
+		verifierCalls++
+		if verifierCalls == 1 {
+			return nil, agent.ErrPaused // first pass pauses
+		}
+		return &tools.VerificationOutcome{Confirmed: true, Reason: "settled on resume", DeclaredAt: time.Now()}, nil
+	}
+
+	// Turn 1 declares met (verifier pauses). Turn 2 declares met again and the
+	// resumed verifier confirms.
+	runner := &mockGoalTurnRunner{
+		turnVerds: []*goal.Verdict{metVerdict("done"), metVerdict("done again")},
+		turnCalls: []int{2, 2},
+	}
+	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "ship it"}
+	bb := orchestration.NewMapBlackboard()
+
+	// First run: turn 1 declares met; the verifier pauses → goal stays active.
+	gs1, paused := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, runner.run)
+	if !paused {
+		t.Fatal("first run: paused = false, want true")
+	}
+	if gs1.Status != goal.StatusActive {
+		t.Fatalf("first run: Status = %q, want %q", gs1.Status, goal.StatusActive)
+	}
+
+	// Resume: re-enter with the same (still active) goal. Turn 2 declares met
+	// and the verifier now confirms → the goal settles as met.
+	gs2, paused2 := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs1, runner.run)
+	if paused2 {
+		t.Fatal("second run (resume): paused = true, want the resumed verification to settle")
+	}
+	if gs2.Status != goal.StatusMet {
+		t.Fatalf("second run (resume): Status = %q, want %q (resume must settle the verifier)", gs2.Status, goal.StatusMet)
+	}
+	if verifierCalls != 2 {
+		t.Errorf("expected 2 verifier passes (paused, then settled), got %d", verifierCalls)
+	}
+	if runner.calls != 2 {
+		t.Errorf("expected 2 agent turns (one per run), got %d", runner.calls)
+	}
+}
+
 // TestRunGoalTurns_MetRejected_Continues verifies the headline acceptance
 // criterion: a met verdict the verifier REJECTS does NOT terminate the goal.
 // The loop continues, the turn counter is unaffected (no extra turn for the

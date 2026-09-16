@@ -326,6 +326,88 @@ func TestDefaultGoalVerifier_ExecutableMode_SelectsExecutableDirective(t *testin
 	}
 }
 
+// TestDefaultGoalVerifier_PausedRunReturnsPauseSentinel verifies the pause
+// exception in the production independent verifier: when the verifier's
+// isolated Conductor pass ends in a COOPERATIVE PAUSE (the universal pause
+// signal trips at a step boundary), defaultGoalVerifier reports the pause
+// sentinel with a NIL outcome — it does NOT synthesize a not_met reject. This
+// is the verifier-side half of the contract runGoalTurns maps to a pause of the
+// request (goal stays ACTIVE) instead of a rejected met verdict.
+func TestDefaultGoalVerifier_PausedRunReturnsPauseSentinel(t *testing.T) {
+	// Arm the pause signal before the run: the executor checks it at the FIRST
+	// step boundary (before its first LLM call), so the pass pauses immediately
+	// and no LLM/tool scripting is needed.
+	o := newVerifierTestOrchestrator(t, nil, &mockToolExecutor{results: map[string]sdktools.ToolResult{}})
+	release := o.installPauseSignal()
+	defer release()
+	o.PauseSession()
+
+	gs := &goal.GoalState{
+		Status:           goal.StatusActive,
+		Condition:        "the bug is fixed",
+		VerifyClause:     "no error",
+		VerificationMode: goal.VerificationModeExecutable,
+	}
+	deps := o.buildConductorDeps(nil, nil)
+	outcome, err := o.defaultGoalVerifier(context.Background(), gs, &goal.Verdict{Status: "met"}, "msg", "work product", orchestration.NewMapBlackboard(), nil, deps)
+
+	if !isPaused(err) {
+		t.Fatalf("err = %v, want the cooperative-pause sentinel (a paused pass must report a pause, not a reject)", err)
+	}
+	if outcome != nil {
+		t.Fatalf("outcome = %+v, want nil (a paused pass must not synthesize a verdict)", outcome)
+	}
+}
+
+// TestDefaultGoalVerifier_ConfirmedWinsOverTrailingPause pins the ordering
+// inside defaultGoalVerifier: a CONFIRMED verdict is returned even when a
+// cooperative pause trips right after the declaration (at the next step
+// boundary). A trailing pause must not discard a completed verification. The
+// complementary rule — a non-confirmed outcome declared just before a pause is
+// NOT surfaced as a rejected verdict — is pinned by the pause-sentinel test
+// above (a paused pass returns the pause sentinel, not a reject).
+func TestDefaultGoalVerifier_ConfirmedWinsOverTrailingPause(t *testing.T) {
+	var o *Orchestrator
+	exec := &mockToolExecutor{
+		results: map[string]sdktools.ToolResult{},
+		executeFn: func(ctx context.Context, name string, _ json.RawMessage) (sdktools.ToolResult, error) {
+			if name == "declare_verification" {
+				if sink := ctools.VerificationSinkFrom(ctx); sink != nil {
+					sink.Declare(ctools.VerificationOutcome{Confirmed: true, Reason: "verified independently"})
+				}
+				// Arm the pause so it trips at the NEXT step boundary — AFTER the
+				// declaration. The confirmation must still win.
+				o.PauseSession()
+			}
+			return sdktools.ToolResult{Content: "ok"}, nil
+		},
+	}
+	o = newVerifierTestOrchestrator(t, []llm.ToolCall{
+		{ID: "c1", Name: "declare_verification", Input: json.RawMessage(`{"confirmed":true,"reason":"verified independently"}`)},
+	}, exec)
+	release := o.installPauseSignal()
+	defer release()
+
+	available := []sdktools.ToolDescriptor{
+		{Name: "declare_verification"}, {Name: "finish"},
+	}
+	gs := &goal.GoalState{
+		Status:           goal.StatusActive,
+		Condition:        "the bug is fixed",
+		VerifyClause:     "no error",
+		VerificationMode: goal.VerificationModeExecutable,
+	}
+	deps := o.buildConductorDeps(nil, nil)
+	outcome, err := o.defaultGoalVerifier(context.Background(), gs, &goal.Verdict{Status: "met"}, "msg", "work", orchestration.NewMapBlackboard(), available, deps)
+
+	if err != nil {
+		t.Fatalf("err = %v, want nil (a confirmed verdict must win over a trailing pause)", err)
+	}
+	if outcome == nil || !outcome.Confirmed {
+		t.Fatalf("outcome = %+v, want a CONFIRMED verdict", outcome)
+	}
+}
+
 // truncate returns the first n runes of s, with an ellipsis if truncated.
 func truncate(s string, n int) string {
 	if len([]rune(s)) <= n {

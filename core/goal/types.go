@@ -151,6 +151,15 @@ type GoalState struct {
 	TurnCount        int        `json:"turn_count"`   // turns spent so far
 	Status           GoalStatus `json:"status"`       // current lifecycle state
 	LastVerdict      *Verdict   `json:"last_verdict"` // most recent self-evaluation verdict (nil = none yet)
+	// LastError records the reason the most recent goal-loop turn FAILED with an
+	// error (an LLM/provider/transport or execution failure), or "" when the
+	// last turn completed cleanly. It lets the loop halt a persistently-errored
+	// turn as a RESUMABLE failure — carrying the concrete cause so the UI shows
+	// WHY the run stopped and Resume can retry — instead of misclassifying the
+	// errored turn as an idle turn (blocked_idle) or a bare "partial". It is
+	// cleared to "" at the top of every clean turn, so it always describes the
+	// immediately-preceding failure.
+	LastError string `json:"last_error"`
 	// LastVerification records the outcome of the independent verifier on the
 	// most recent "met" verdict attempt: "" (no verification ran / a fresh
 	// turn), "confirmed", "rejected", or "off" (verification disabled). It is

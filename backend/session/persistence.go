@@ -277,6 +277,31 @@ func (s *SQLiteSessionStore) createTables() error {
 		PRIMARY KEY (task_id, delegation_id)
 	);
 
+	-- task_units is the durable per-unit ledger (core/units). A unit is one
+	-- execution unit — a plan step, a delegated subagent, a goal-verification
+	-- pass — carrying its kind, topology (parent/depth), lifecycle status, a
+	-- rebuild spec and a resume checkpoint. It is keyed by task + namespace +
+	-- unit id so a mainline ledger and an isolated ledger (e.g. the goal
+	-- verifier) can share one task without their ids colliding. The CREATE
+	-- TABLE IF NOT EXISTS is the migration for databases created before the
+	-- unit ledger existed: it adds the table on the next open without touching
+	-- any existing row (additive only).
+	CREATE TABLE IF NOT EXISTS task_units (
+		task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+		unit_id TEXT NOT NULL,
+		namespace TEXT NOT NULL DEFAULT '',
+		kind TEXT NOT NULL DEFAULT '',
+		parent_id TEXT NOT NULL DEFAULT '',
+		depth INTEGER NOT NULL DEFAULT 0,
+		status TEXT NOT NULL DEFAULT 'pending',
+		spec TEXT NOT NULL DEFAULT '',
+		steps TEXT NOT NULL DEFAULT '[]',
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL,
+		PRIMARY KEY (task_id, namespace, unit_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_task_units_task_id ON task_units(task_id);
+
 	CREATE TABLE IF NOT EXISTS terminal_commands (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -1166,6 +1191,25 @@ type TaskDelegationRecord struct {
 	CreatedAt    time.Time       `json:"created_at"`
 }
 
+// TaskUnitRecord is a persisted durable unit (core/units.UnitRecord): one
+// execution unit with its kind, parent/depth topology, lifecycle status, a
+// rebuild spec and a resume checkpoint. Namespace keeps a mainline ledger and
+// an isolated ledger (e.g. the goal verifier) from colliding on unit ids while
+// both write under the same task.
+type TaskUnitRecord struct {
+	TaskID    string          `json:"task_id"`
+	UnitID    string          `json:"unit_id"`
+	Namespace string          `json:"namespace"`
+	Kind      string          `json:"kind"`
+	ParentID  string          `json:"parent_id"`
+	Depth     int             `json:"depth"`
+	Status    string          `json:"status"`
+	Spec      json.RawMessage `json:"spec"`
+	Steps     json.RawMessage `json:"steps"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+}
+
 // ---------------------------------------------------------------------------
 // TaskStore interface
 // ---------------------------------------------------------------------------
@@ -1720,6 +1764,61 @@ func (s *SQLiteSessionStore) LoadDelegationSpecs(ctx context.Context, taskID str
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("failed to iterate delegation specs: %w", err)
+	}
+	return recs, nil
+}
+
+// SaveTaskUnit inserts or replaces a durable unit (core/units.UnitRecord) for a
+// task, keyed by task + namespace + unit id. An empty checkpoint is coerced to
+// an empty JSON array so the column always holds valid JSON.
+func (s *SQLiteSessionStore) SaveTaskUnit(ctx context.Context, rec TaskUnitRecord) error {
+	steps := rec.Steps
+	if len(steps) == 0 {
+		steps = emptyJSONArray
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT OR REPLACE INTO task_units
+			(task_id, unit_id, namespace, kind, parent_id, depth, status, spec, steps, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rec.TaskID, rec.UnitID, rec.Namespace, rec.Kind, rec.ParentID, rec.Depth,
+		rec.Status, string(rec.Spec), string(steps), rec.CreatedAt, rec.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save task unit: %w", err)
+	}
+	return nil
+}
+
+// LoadTaskUnits loads every durable unit persisted under a task, ordered by
+// creation time. Returns an empty slice when none have been persisted.
+func (s *SQLiteSessionStore) LoadTaskUnits(ctx context.Context, taskID string) ([]TaskUnitRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT task_id, unit_id, namespace, kind, parent_id, depth, status, spec, steps, created_at, updated_at
+		FROM task_units WHERE task_id = ? ORDER BY created_at, unit_id`, taskID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load task units: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			s.log().Warn("failed to close database rows", "error", err)
+		}
+	}()
+
+	var recs []TaskUnitRecord
+	for rows.Next() {
+		var rec TaskUnitRecord
+		var specStr, stepsStr string
+		if err := rows.Scan(&rec.TaskID, &rec.UnitID, &rec.Namespace, &rec.Kind, &rec.ParentID, &rec.Depth,
+			&rec.Status, &specStr, &stepsStr, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan task unit: %w", err)
+		}
+		rec.Spec = json.RawMessage(specStr)
+		rec.Steps = json.RawMessage(stepsStr)
+		recs = append(recs, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate task units: %w", err)
 	}
 	return recs, nil
 }

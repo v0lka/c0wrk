@@ -12,7 +12,11 @@ Delegation is an **execution** mechanism, not a planning one. It has its own UI 
 
 - `core/tools/delegate.go` — `delegate` tool implementation
 - `core/tools/cancel_delegation.go` — `cancel_delegation` tool (async cancellation)
-- `core/tools/delegation_registry.go` — Delegation Registry (active/completed delegations per Conductor run)
+- `core/tools/delegation_registry.go` — Delegation Registry (active/completed delegations per Conductor run; the per-run in-memory view, not the durable record)
+- `core/units/units.go` — the durable per-unit record + `Ledger`/`Store` contract (`UnitRecord`, `UnitKind`, `UnitStatus`, `NewBlackboardLedger`, `units.NewLedger`) — see [ADR-048](../../decisions/048-unified-recovery-ledger.md)
+- `core/conductor.go` — `conductorLauncher`, the single writer of unit lifecycle (`unitLedger()`, `markUnitRunning`, `persistUnitOutcome` → `recordUnitLedger`, `settleUnit`)
+- `core/unit_sink.go` — the ledger-bound sink for the goal verifier's isolated pass (namespace `goal_verification`, parent-linked under a `goal_verification` container unit)
+- `core/orchestrator.go` — `Resume` / `resumePausedWork` / `resumeUnits`: the ledger-driven settlement funnel
 - `github.com/v0lka/sp4rk/agent/subagent.go` — `RunSubAgent` / `RunSubAgentsParallel` (the primitive that runs an isolated executor in a goroutine)
 - `github.com/v0lka/sp4rk/orchestration/dag.go` — `FindReadySteps` and DAG traversal (reused for dependency resolution)
 - `github.com/v0lka/sp4rk/orchestration/types.go` — `Plan` and `PlanStep` types (reused as delegation task descriptors)
@@ -148,6 +152,26 @@ When the same ID is built again after session resume:
 
 This behavior is shared by direct `delegate` tasks and the subagents underlying `execute_plan`, because both use `conductorLauncher.buildSubAgentTask`. The resumed subagent retains its isolated ContextManager and tool budget; only its own checkpoint is restored.
 
+### Durable Unit Ledger and Resume Relaunch
+
+The blackboard `StepResult` above is the **in-memory value view** of a delegation. Durable recovery rides a second, purpose-built record: the **unit ledger**. See [ADR-048](../../decisions/048-unified-recovery-ledger.md) for why recovery was unified around it.
+
+**The record.** [`core/units`](../../../core/units/units.go) defines one durable record per execution unit — `UnitRecord{ID, TaskID, Namespace, Kind, ParentID, Depth, Status, Spec, Steps}` — with `Kind` ∈ `task | plan_step | subagent | goal_verification | tool` and `Status` ∈ `pending | running | paused | completed | failed | interrupted`. `Spec` is the opaque **rebuild spec** (enough to relaunch the unit without an LLM decision) and `Steps` is the opaque **resume checkpoint** (a JSON `[]agent.Step`). `UnitStatus.Terminal()` is the single definition of "finished" (`completed`/`failed`/`interrupted`); `interrupted` is a unit left unfinished by a crash/app exit and carries **no** resume intent — unlike `paused` — so the funnel relaunches it fresh. One write/read API (`Ledger`: `Begin`/`Checkpoint`/`Settle`/`List`) over one store seam (`Store`: `SaveUnit`/`LoadUnits`), persisted to the additive `task_units` table in the session SQLite DB (`TaskStoreAdapter.UnitStore()`, cached on the persistent blackboard). Two constructors share one task scope: `NewBlackboardLedger(bb)` for the mainline and `units.NewLedger(store, taskID, namespace)` for an isolated context (the goal verifier). A store-less run degrades to an in-memory ledger.
+
+**One writer.** The `conductorLauncher` owns every transition: `wireDelegationSpecSink` registers via `ledger.Begin(...)`; `markUnitRunning` → `Settle(running)`; `persistUnitOutcome` writes the blackboard mirror **and** `recordUnitLedger` (`Checkpoint(steps)` + `Settle(paused|failed|completed)`); `settleUnit` records an outcome with no step result (build failure, cancellation, unsatisfiable dependency). Wired at every plan-step, blocking-delegate, redelegation and async-delegate site. A goal-verification pass writes through the ledger-bound [`unitSink`](../../../core/unit_sink.go) in the `goal_verification` namespace, parent-linked under a `goal_verification` container unit.
+
+**One funnel on Resume.** `Orchestrator.Resume` ([orchestrator.go](../../../core/orchestrator.go)) enumerates the task's durable ledger (merged with legacy delegation specs for pre-ledger tasks; ledger units win by id) and settles every non-terminal unit **uniformly**, grouped by `(scope = namespace, depth)` deepest-first:
+
+| Ledger status | Resume action |
+| ------------- | ------------- |
+| `paused` | relaunch **seeded** from the checkpoint (lifted onto the blackboard so `buildSubAgentTask` seeds the subagent) |
+| `not-started` / `running` / `interrupted` | relaunch **fresh** (the former *"interrupted ⇒ mark failed, never relaunch"* branch is **gone**) |
+| `completed` / `failed` | **replay** into the wave registry so dependency resolution sees them — never re-run |
+
+Container kinds (`task`, `goal_verification`), plan-step units (owned by the plan arm) and tool units are skipped. A verifier delegate lives in its own `(scope, depth)` group, so it can never share a registry — or collide by id — with a mainline delegation. A relaunch that pauses again re-checkpoints the wave (unchanged).
+
+**One read path.** The same ledger is surfaced to the frontend as `GetSessionRuntimeStatus.work_units`; the session-load reconciliation (`reconcileWorkUnits`) aligns paused/interrupted delegate and plan-step chat blocks so an abandoned unit never stays a misleading `running` block. See [session-lifecycle.md](../session-lifecycle.md#unified-recovery-ledger) and the `work_unit_settled` / `work_units` entries in [event-catalog.md](../../contracts/event-catalog.md).
+
 ### `cancel_delegation` Tool
 
 ```
@@ -257,6 +281,7 @@ The **combined** context is tail-truncated to `OrchestratorConfig.MaxDependencyC
 - A subagent never shares its `ContextManager` with the Conductor or with other subagents.
 - Every subagent Executor receives the session pause checker; a cooperative pause stores the subagent's partial trajectory in its blackboard `StepResult` with `agent.ErrPaused`.
 - A resumed paused subagent seeds the same checkpoint into both a `StepSeedable` ContextManager and the Executor; step numbering and the returned trajectory continue from the checkpoint. A non-seedable ContextManager fails task construction before launch.
+- The durable **unit ledger** is the recovery source of truth. The `conductorLauncher` is its single writer; `Resume` enumerates it and settles every non-terminal unit uniformly (paused → relaunch seeded, not-started/running/**interrupted** → relaunch fresh, terminal → replay); a verifier unit is scoped by `(namespace, depth)` so it never shares a registry with a mainline delegation. An `interrupted` unit is never marked failed without a relaunch attempt (see [Durable Unit Ledger and Resume Relaunch](#durable-unit-ledger-and-resume-relaunch)).
 - The `system` group (agent-infrastructure/meta tools) is always included in a subagent's toolset regardless of the `tools` field; toolsets resolve from capability groups via `resolveTaskTools` (`core/conductor.go`) — see [ADR-024](../../decisions/024-group-policies.md).
 - `delegate`, `cancel_delegation` are available to a subagent only when `allow_redelegate` is true; `declare_plan` and `reflect` remain Conductor-only.
 - Recursive delegation depth never exceeds `OrchestratorConfig.MaxRedelegationDepth`.

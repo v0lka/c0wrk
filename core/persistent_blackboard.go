@@ -5,6 +5,7 @@ import (
 
 	"github.com/v0lka/c0wrk/core/goal"
 	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/units"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -44,6 +45,49 @@ type BlackboardRestoreFunc func(taskID, sessionID string, store TaskPersistence,
 // the capability simply have no resumable delegates (plan-only tasks).
 type DelegationSpecReader interface {
 	DelegationSpecs() []tools.DelegationSpec
+}
+
+// UnitStoreProvider is an optional PersistableBlackboard capability exposing
+// the durable unit store backing the task's blackboard. NewBlackboardLedger
+// type-asserts against it to build the mainline unit ledger; a blackboard
+// without the capability (or whose store has no unit persistence) yields a
+// best-effort in-memory ledger.
+type UnitStoreProvider interface {
+	UnitStore() units.Store
+}
+
+// UnitLedgerProvider is an optional PersistableBlackboard capability exposing
+// the blackboard's cached mainline unit ledger. NewBlackboardLedger prefers it
+// so every caller shares one ledger (and its in-memory overlay).
+type UnitLedgerProvider interface {
+	UnitLedger() units.Ledger
+}
+
+// NewBlackboardLedger builds the MAINLINE unit ledger from a persistent
+// blackboard. It derives the ledger's task from the blackboard's TaskID() and
+// its store from the optional UnitStoreProvider capability, so units it writes
+// land in the same task as an isolated context's ledger and are readable by
+// both.
+//
+// It never fails: a nil blackboard, a blackboard without the store capability,
+// or a store without unit persistence all yield a best-effort in-memory
+// ledger, so callers need not special-case persistence availability. When the
+// blackboard exposes a cached ledger (UnitLedgerProvider) that instance is
+// returned so all callers share one ledger.
+func NewBlackboardLedger(bb PersistableBlackboard) units.Ledger {
+	if bb == nil {
+		return units.NewLedger(nil, "", "")
+	}
+	if p, ok := bb.(UnitLedgerProvider); ok {
+		if l := p.UnitLedger(); l != nil {
+			return l
+		}
+	}
+	var store units.Store
+	if p, ok := bb.(UnitStoreProvider); ok {
+		store = p.UnitStore()
+	}
+	return units.NewLedger(store, bb.TaskID(), "")
 }
 
 // ---------------------------------------------------------------------------

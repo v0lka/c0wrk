@@ -1,4 +1,4 @@
-import type { ChatMessageUI, MessageType, DisplayItem, GroupedMessages } from '@/types/messages'
+import type { ChatMessageUI, MessageType, DisplayItem, GroupedMessages, WorkUnitBlockStatus } from '@/types/messages'
 import type { ChatMessage, PlanGroup, PlanItem } from '@/types/models'
 import type { AgentMetricsData } from '@/types/events'
 import { normalizeAgentMetricsData, isGoalStatusData } from '@/types/events'
@@ -150,8 +150,16 @@ export function isRoutingRequestRow(msg: ChatMessageUI): boolean {
     && msg.metadata?.phase === 'orchestration'
 }
 
-/** Transform a flat list of ChatMessageUI into a display-ready tree. */
-export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
+/** Transform a flat list of ChatMessageUI into a display-ready tree.
+ *
+ * `workUnitStatus` is the durable work-unit overlay from the session-load
+ * reconciliation (chatStore.workUnitStatus, keyed by step id). It is applied
+ * LAST so a paused/interrupted unit whose replayed messages carry no terminal
+ * event renders its true state instead of a stale "running". A message-derived
+ * terminal status (completed/failed) is authoritative and never downgraded;
+ * only a non-terminal block (running/paused) can be corrected by the snapshot.
+ */
+export function groupMessages(messages: ChatMessageUI[], workUnitStatus?: Record<string, WorkUnitBlockStatus>): GroupedMessages {
   const items: DisplayItem[] = []
   const openSteps = new Map<string, StepLikeItem>()
   const stepIdCounts = new Map<string, number>()
@@ -294,6 +302,18 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
   for (const item of items) {
     if (item.kind === 'plan_step' || item.kind === 'subagent') {
       item.children = collapseThoughts(dedupThoughtVsAnswer(item.children))
+    }
+  }
+  // Apply the durable work-unit overlay last (see the doc comment above).
+  // Subagent / plan-step blocks are always root-level items, so a single pass
+  // over `items` covers them.
+  if (workUnitStatus) {
+    for (const item of items) {
+      if (item.kind !== 'plan_step' && item.kind !== 'subagent') continue
+      const snapshotStatus = workUnitStatus[item.stepId]
+      if (!snapshotStatus) continue
+      if (item.status === 'completed' || item.status === 'failed') continue
+      if (item.status !== snapshotStatus) item.status = snapshotStatus
     }
   }
   return { items: collapseThoughts(dedupThoughtVsAnswer(items)) }

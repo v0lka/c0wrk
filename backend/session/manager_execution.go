@@ -19,6 +19,7 @@ import (
 	e2spkg "github.com/v0lka/c0wrk/core/e2s"
 	goalpkg "github.com/v0lka/c0wrk/core/goal"
 	coretools "github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/units"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/ignore"
@@ -1771,6 +1772,32 @@ type SessionRuntimeStatus struct {
 	// the session was in the background would otherwise render a frozen
 	// partial answer forever (the full answer arrives via history reload).
 	Streaming bool `json:"streaming"`
+	// WorkUnits is the durable work-unit snapshot for the session's resumable
+	// task (see Manager.workUnitSnapshot). The frontend reconciles chat blocks
+	// against it after a restart/session load so a delegate or plan step that
+	// was paused or interrupted before the app exited renders as paused or
+	// interrupted instead of a misleading "running" (the replayed history has
+	// no terminal event for it). Empty when there is no resumable task or no
+	// durable unit storage.
+	WorkUnits []WorkUnitStatus `json:"work_units,omitempty"`
+}
+
+// WorkUnitStatus is one durable execution unit as reported to the frontend for
+// chat-block reconciliation after a restart or session load. StepID is the
+// same id the subagent_launch/plan_step_start chat events carry, so the
+// frontend maps it straight onto the block it names and aligns the rendered
+// status.
+type WorkUnitStatus struct {
+	// StepID is the unit's id — for a delegation or plan step, the step id.
+	StepID string `json:"step_id"`
+	// Kind classifies the unit ("subagent", "plan_step", "goal_verification",
+	// "task", "tool"); advisory metadata for the reader.
+	Kind string `json:"kind,omitempty"`
+	// Status is the effective lifecycle state ("pending", "running", "paused",
+	// "completed", "failed", "interrupted").
+	Status string `json:"status"`
+	// ParentID is the unit's parent (empty for a top-level unit).
+	ParentID string `json:"parent_id,omitempty"`
 }
 
 // GetSessionRuntimeStatus returns whether a task is currently running in the
@@ -1845,7 +1872,91 @@ func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatu
 		}
 	}
 
+	// Durable work-unit snapshot for the resumable task: folded into the same
+	// status round-trip the frontend already performs on session load, so chat
+	// blocks can be reconciled without an extra RPC. Units the resume funnel
+	// will not relaunch (abandoned in flight by a crash/app exit) are settled
+	// explicitly as interrupted here.
+	if status.HasUnfinishedTask && status.UnfinishedTaskID != "" {
+		status.WorkUnits = m.workUnitSnapshot(sessionID, status.UnfinishedTaskID, status.Active)
+	}
+
 	return status, nil
+}
+
+// workUnitSnapshot returns the durable work-unit ledger for a task as the
+// frontend-facing snapshot used to reconcile chat blocks after a restart or
+// session load.
+//
+// A unit left non-terminal in flight (pending or running) by a task that is no
+// longer executing was abandoned by a crash or app exit: the resume funnel does
+// not relaunch it, so it is explicitly settled as interrupted through the
+// ledger and a "work_unit_settled" event is emitted for any live view. The
+// settle is idempotent — once terminal, later polls neither write nor emit.
+//
+// active reports whether the task is currently executing in memory; a live
+// task's running units are genuinely running and are never settled. A paused
+// unit is an explicit resumable checkpoint the resume funnel owns, so it is
+// left untouched. A task with no durable unit storage (older store, test
+// double) yields an empty snapshot.
+func (m *Manager) workUnitSnapshot(sessionID, taskID string, active bool) []WorkUnitStatus {
+	if taskID == "" {
+		return nil
+	}
+	m.mu.RLock()
+	ts := m.taskStore
+	m.mu.RUnlock()
+	if ts == nil {
+		return nil
+	}
+	store := NewTaskStoreAdapter(ts).UnitStore()
+	if store == nil {
+		return nil // no durable unit storage — nothing to reconcile
+	}
+	recs, err := store.LoadUnits(taskID)
+	if err != nil {
+		m.log().Warn("failed to load work units", "session", sessionID, "task", taskID, "error", err)
+		return nil
+	}
+	if len(recs) == 0 {
+		return nil
+	}
+
+	out := make([]WorkUnitStatus, 0, len(recs))
+	for _, rec := range recs {
+		status := rec.Status
+		// Abandoned in flight: settle as interrupted (a paused unit is a
+		// resumable checkpoint the funnel owns, so it is NOT settled here).
+		if !active && (status == units.UnitStatusRunning || status == units.UnitStatusPending) {
+			settled := units.UnitStatusInterrupted
+			l := units.NewLedger(store, taskID, rec.Namespace)
+			if err := l.Settle(rec.ID, settled); err != nil {
+				m.log().Warn("failed to settle abandoned work unit", "session", sessionID, "unit", rec.ID, "error", err)
+			} else {
+				m.EmitSessionEvent(sessionID, "work_unit_settled", WorkUnitSettledData{
+					StepID: rec.ID,
+					Status: string(settled),
+					Reason: "unit was abandoned before it settled",
+				})
+			}
+			status = settled
+		}
+		out = append(out, WorkUnitStatus{
+			StepID:   rec.ID,
+			Kind:     string(rec.Kind),
+			Status:   string(status),
+			ParentID: rec.ParentID,
+		})
+	}
+	// Deterministic order (the store returns creation order); sort by status
+	// then id so repeated polls produce a stable payload.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Status != out[j].Status {
+			return out[i].Status < out[j].Status
+		}
+		return out[i].StepID < out[j].StepID
+	})
+	return out
 }
 
 // ActiveSessionInfo identifies a session that currently has live background

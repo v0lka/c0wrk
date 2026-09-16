@@ -1,5 +1,5 @@
 import { useContext, useEffect, useMemo, useState } from 'react'
-import { Bot, Loader2, CheckCircle2, XCircle, CirclePause } from 'lucide-react'
+import { Bot, Loader2, CheckCircle2, XCircle, CirclePause, CircleSlash } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { bookmarkKey } from '@/lib/bookmarks'
 import { formatDuration } from '@/lib/formatters'
@@ -16,6 +16,9 @@ const statusConfig = {
   completed: { Icon: CheckCircle2, iconClass: 'text-success' },
   failed:    { Icon: XCircle,      iconClass: 'text-destructive' },
   paused:    { Icon: CirclePause,  iconClass: 'text-warning' },
+  // Abandoned before it settled (crash/app exit) — applied by the session-load
+  // work-unit reconciliation, never by a live event.
+  interrupted: { Icon: CircleSlash, iconClass: 'text-muted-foreground' },
 } as const
 
 export function SubAgentBlock({ item }: { item: SubAgentItem }) {
@@ -51,6 +54,9 @@ export function SubAgentBlock({ item }: { item: SubAgentItem }) {
     <>
       {status === 'failed' && error && (
         <span className="text-xs text-destructive truncate min-w-0" title={error}>— {error}</span>
+      )}
+      {status === 'interrupted' && (
+        <span className="text-xs text-muted-foreground truncate min-w-0">— interrupted</span>
       )}
       {duration !== undefined && (
         <span className="ml-auto text-xs text-muted-foreground/50 bg-muted/50 px-1.5 py-0.5 rounded shrink-0">

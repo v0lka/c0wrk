@@ -169,6 +169,18 @@ export async function cancelUnfinishedTask(sessionId: string): Promise<void> {
   }
 }
 
+/** One durable execution unit's lifecycle, as reported by
+ *  GetSessionRuntimeStatus.work_units (see backend workUnitSnapshot). StepID is
+ *  the same id the subagent_launch/plan_step_start chat events carry. */
+export interface WorkUnitSnapshot {
+  step_id: string
+  /** Unit classification: 'subagent' | 'plan_step' | 'goal_verification' | ... */
+  kind?: string
+  /** 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'interrupted' */
+  status: string
+  parent_id?: string
+}
+
 /** Live/persisted execution state of a session (see backend GetSessionRuntimeStatus). */
 export interface SessionRuntimeStatus {
   active: boolean
@@ -200,6 +212,22 @@ export interface SessionRuntimeStatus {
   activity?: string
   /** True while an assistant stream is open (chunk without the closing done). */
   streaming?: boolean
+  /**
+   * Durable work-unit snapshot for the session's resumable task (see backend
+   * GetSessionRuntimeStatus). The session-load reconciliation aligns
+   * paused/interrupted delegate & plan-step chat blocks against it so they do
+   * not render a stale "running" after a restart. Absent (older backend / no
+   * resumable task) leaves the blocks driven by the replayed messages alone.
+   */
+  work_units?: WorkUnitSnapshot[]
+}
+
+// isWorkUnitSnapshot validates one work-unit entry: a step id and a status are
+// required; kind/parent_id are optional metadata.
+function isWorkUnitSnapshot(u: unknown): u is WorkUnitSnapshot {
+  return typeof u === 'object' && u !== null
+    && typeof (u as Record<string, unknown>).step_id === 'string'
+    && typeof (u as Record<string, unknown>).status === 'string'
 }
 
 function isSessionRuntimeStatus(d: unknown): d is SessionRuntimeStatus {
@@ -221,6 +249,10 @@ function isSessionRuntimeStatus(d: unknown): d is SessionRuntimeStatus {
     && (!('activity' in d)
       || (d as Record<string, unknown>).activity === undefined
       || typeof (d as Record<string, unknown>).activity === 'string')
+    && (!('work_units' in d)
+      || (d as Record<string, unknown>).work_units === undefined
+      || (d as Record<string, unknown>).work_units === null
+      || isArrayOf((d as Record<string, unknown>).work_units, isWorkUnitSnapshot))
 }
 
 /**
