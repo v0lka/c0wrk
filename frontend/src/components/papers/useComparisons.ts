@@ -9,9 +9,12 @@
 //
 // The directory is listed ONCE and every present `*.md` file is read, so an
 // absent comparisons directory is a clean empty state rather than an error, and
-// a partially written set still renders what exists.
+// a partially written set still renders what exists. A `refreshKey` re-run for
+// the SAME directory keeps the previously loaded set in place (a library sync
+// must not unmount an open matrix); only a directory CHANGE re-enters the
+// loading state.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { listDirectory, readFile } from '@/api/workspace'
 import { logger } from '@/lib/logger'
 
@@ -23,14 +26,12 @@ export const COMPARISONS_DIRNAME = 'comparisons'
 export interface ComparisonArtifact {
   /** The artifact's slug (its file name without the `.md` extension). */
   slug: string
-  fileName: string
   content: string
+  /** A read error message when the file exists but could not be read. */
   error: string | null
 }
 
 export interface ComparisonsState {
-  /** The absolute comparisons directory ('' when no research root is known). */
-  dir: string
   loading: boolean
   items: ComparisonArtifact[]
 }
@@ -44,35 +45,46 @@ function messageOf(err: unknown): string {
 }
 
 /** Join a research root with the comparisons subdirectory ('' when the root is
- *  unknown). Exported so the Compare section can render the path it looked at. */
-export function comparisonsDirFor(researchRoot: string): string {
+ *  unknown). */
+function comparisonsDirFor(researchRoot: string): string {
   const root = researchRoot.replace(/[\\/]+$/, '')
   return root === '' ? '' : joinPath(root, COMPARISONS_DIRNAME)
 }
 
 /**
  * Load every comparison artifact under `<researchRoot>/comparisons`. A listing
- * failure (typically a not-yet-created directory) is non-fatal: the state
- * degrades to an empty item list so the Compare section renders its empty
- * state. `refreshKey` (optional) forces a reload when it changes — pass a
- * value that bumps on library refresh (e.g. the paper store's `lastSyncAt`) so
- * a newly written comparison appears without reopening the tab.
+ * failure (typically a not-yet-created directory) is non-fatal: on a FIRST load
+ * the state degrades to an empty item list; on a REFRESH the previously rendered
+ * set is kept rather than downgraded. `refreshKey` (optional) forces a reload
+ * when it changes — pass a value that bumps on library refresh (e.g. the paper
+ * store's `lastSyncAt`) so a newly written comparison appears without reopening
+ * the tab.
  */
 export function useComparisons(researchRoot: string, refreshKey = 0): ComparisonsState {
   const dir = comparisonsDirFor(researchRoot)
   const [state, setState] = useState<ComparisonsState>(() => ({
-    dir,
     loading: dir !== '',
     items: [],
   }))
+  // The directory whose set is currently loaded ('' when none). Only a change of
+  // directory discards the loaded set.
+  const loadedDirRef = useRef<string | null>(null)
 
   useEffect(() => {
     if (dir === '') {
-      setState({ dir: '', loading: false, items: [] })
+      loadedDirRef.current = null
+      setState({ loading: false, items: [] })
       return
     }
     let cancelled = false
-    setState({ dir, loading: true, items: [] })
+    if (loadedDirRef.current !== dir) {
+      // A new directory: nothing to keep, show the loader with an empty set.
+      setState({ loading: true, items: [] })
+    } else {
+      // A refresh of the SAME directory: keep the rendered set (an open matrix
+      // must not unmount / flash "Loading…" on every library sync).
+      setState((prev) => ({ loading: true, items: prev.items }))
+    }
     void (async () => {
       try {
         const entries = await listDirectory(dir)
@@ -85,16 +97,23 @@ export function useComparisons(researchRoot: string, refreshKey = 0): Comparison
             const slug = file.name.replace(/\.md$/i, '')
             try {
               const content = await readFile(joinPath(dir, file.name))
-              return { slug, fileName: file.name, content, error: null }
+              return { slug, content, error: null }
             } catch (err) {
-              return { slug, fileName: file.name, content: '', error: messageOf(err) }
+              return { slug, content: '', error: messageOf(err) }
             }
           }),
         )
-        if (!cancelled) setState({ dir, loading: false, items })
+        if (cancelled) return
+        loadedDirRef.current = dir
+        setState({ loading: false, items })
       } catch (err) {
         logger.warn('Failed to list the comparisons directory:', err)
-        if (!cancelled) setState({ dir, loading: false, items: [] })
+        if (cancelled) return
+        // Keep what was already rendered when this was a refresh of the same
+        // directory; only a first-load failure degrades to the empty state.
+        setState((prev) =>
+          loadedDirRef.current === dir ? { loading: false, items: prev.items } : { loading: false, items: [] },
+        )
       }
     })()
     return () => {

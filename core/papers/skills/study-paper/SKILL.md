@@ -36,9 +36,16 @@ Do not silently escalate a "summarize this" into a full review, and do not answe
 | If the user wants to… | Mode | Primary output |
 | --- | --- | --- |
 | Decide whether to read at all | **Skim** | map + contributions + TL;DR + ≤3 red flags + reading decision |
+| Read the paper in full and verify its claims | **Deep** | complete read + a claim→evidence check on every load-bearing claim |
+| Read the paper as one of a broader set | **Survey** | the paper's place among a set + a cross-paper comparison |
 | Understand whether it is sound | **Review** | full appraisal + statistics / reproducibility audit |
 | Rebuild the method | **Implement** | method decomposition + equations + hyperparameters + data + gotchas |
 | Learn the ideas | **Teach** | multi-level explanation + glossary + Socratic questions + flashcards |
+
+**Skim**, **Deep**, and **Survey** name the engagement depths — how much of the
+paper (and how many papers) you read; **Review**, **Implement**, and **Teach** are
+the skill's own working modes. They sit on one shallow → deep axis, and the card's
+`mode` field records whichever token names the depth you actually reached.
 
 Regulate depth continuously:
 
@@ -52,7 +59,7 @@ Regulate depth continuously:
 - **Ask when ambiguous.** If the request could reasonably sit in two modes, ask
   which depth is wanted before writing a long answer.
 
-## The mandatory critical layer (applies to ALL four modes)
+## The mandatory critical layer (applies to ALL modes)
 
 Every mode ends by passing through the same critical layer. Do this even when the
 user only asked to "explain" or "summarize" — a reader who cannot see the
@@ -69,7 +76,7 @@ weaknesses has not been served.
    the available source, or dependent on assumptions — explicitly, rather than
    quietly filling the gap.
 
-The layer is **required in all four modes**; only its length varies.
+The layer is **required in every mode**; only its length varies.
 
 ## Source-anchor discipline
 
@@ -101,6 +108,12 @@ Pick one voice per statement and make the voice unmistakable. Never blend them.
 If you cannot tell which voice a sentence is in, rewrite it until you can.
 
 ## Modes
+
+The four workflows below are the skill's own working modes. The card's `mode`
+field also accepts the engagement depths **Deep** and **Survey** (see "Choose the
+mode"), so record whichever of the six tokens best names the depth you reached —
+`deep` for a full read whose claims you verified, `survey` for a read as one of a
+set.
 
 ### Mode 1 — Skim (triage)
 
@@ -182,7 +195,9 @@ Goal: the reader genuinely understands the ideas — and their limits.
 4. **Work an example** — a concrete walkthrough or toy instance of the core idea.
 5. **Ask Socratic questions** — probing questions *with* answers, aimed at likely
    misconceptions.
-6. **Provide flashcards** — question/answer pairs for spaced repetition.
+6. **Provide flashcards** — write question/answer pairs for spaced repetition to
+   `<research-root>/papers/<slug>/flashcards.md`, using the
+   [assets/flashcards.md](assets/flashcards.md) shape.
 7. **Apply the critical layer** — teach what the paper claims versus what it
    shows; weave the ≤3 red flags and uncertainty flags into the explanation
    rather than bolting them on.
@@ -197,25 +212,43 @@ workflow above.
 ### Where artifacts live
 
 Write the reading artifacts under the active RESEARCH root, in a per-paper slug
-directory holding three files:
+directory. Every paper carries three core files; Teach mode adds a flashcards
+deck, and a reading may also drop the optional per-paper artifacts below:
 
 ```
 <research-root>/papers/<slug>/
-├── paper.md       # identity card — YAML front-matter (the paper's metadata)
-├── note.md        # evidence note — claim→evidence, red flags, uncertainty
-└── appraisal.md   # appraisal sheet — verdict + confidence
+├── paper.md        # identity card — YAML front-matter (the paper's metadata)
+├── note.md         # evidence note — claim→evidence, red flags, uncertainty
+├── appraisal.md    # appraisal sheet — verdict + confidence
+├── flashcards.md   # flashcard deck (Teach only) — card table + append-only review log
+├── source.md       # (optional) the extracted source text (PDF → Markdown)
+├── literature.md   # (optional) the literature-context note (predecessors / citing / contradictions)
+└── comparison.md   # (optional) a per-paper comparison note (comparison-matrix.md is also accepted)
 ```
 
-- `<research-root>` is the project's research root (c0wrk sets it when RESEARCH
-  mode is enabled; it defaults to `<workspace>/.research`). If no research root
-  is available, ask the user where to write, or fall back to `papers/<slug>/`
-  inside the current workspace.
+Multi-paper comparison artifacts live in a sibling of the per-paper tree, one
+Markdown file per comparison set:
+
+```
+<research-root>/comparisons/<slug>.md   # one comparison matrix per set
+```
+
+- `<research-root>` is the project's research root: the persisted
+  `ProjectInfo.ResearchRoot` when RESEARCH is enabled, otherwise the default
+  `<workspace>/.research`. The library is always read from
+  `<research-root>/papers/<slug>/` (and comparisons from
+  `<research-root>/comparisons/<slug>.md`); the app resolves no other location,
+  so never write a bare `papers/` beside the workspace root.
 - `<slug>` is the paper's directory name: a stable kebab-case identifier. Prefer
   `<first-author>-<year>-<short-title>` (e.g. `vaswani-2017-attention`); when an
   identifier is more natural, `arxiv-1706.03762` is fine. Choose the slug once
   and reuse it whenever you return to the same paper.
+- `source.md`, `literature.md`, and `comparison.md` are OPTIONAL per-paper
+  artifacts: write them when the reading produces them (an extracted source, a
+  literature-context note, a single-paper comparison) and omit them otherwise —
+  the app renders each section's empty state when the file is absent.
 
-These three files are c0wrk's paper-library format and are read back verbatim by
+These files are c0wrk's paper-library format and are read back verbatim by
 the app, so keep their shapes exactly as follows.
 
 ### `paper.md` — the identity card
@@ -234,7 +267,7 @@ venue: <venue or "preprint">
 identifiers:
   - {scheme: arxiv, value: "1706.03762"}
   - {scheme: doi,   value: "10.1145/..."}
-mode: skim | review | implement | teach
+mode: skim | deep | survey | review | implement | teach
 reading: full | selective | skip
 verdict: accepted | rejected | uncertain
 confidence: low | medium | high
@@ -279,13 +312,14 @@ a new section (and a new claim row) that says so instead of editing the old one.
 ### Tools
 
 - **PDF → Markdown**: use c0wrk's managed `markitdown` CLI (already on `PATH`),
-  writing the extraction to a scratch file (not one of the three artifacts),
-  e.g. `markitdown paper.pdf > extracted.md`, then apply the fidelity guidance in
+  writing the extraction to the paper's `source.md`, e.g.
+  `markitdown paper.pdf > <research-root>/papers/<slug>/source.md`, then apply the
+  fidelity guidance in
   [references/extraction-and-fidelity.md](references/extraction-and-fidelity.md).
   markitdown is the supported converter — do not reach for a bundled script.
 - **Optional lookups**: run `scripts/fetch_paper.py` and `scripts/literature.py`
   with Python 3 (c0wrk's managed Python toolchain is available), e.g.
-  `python3 <skill-dir>/scripts/fetch_paper.py --arxiv 1706.03762`. Both are
+  `python3 <skill-dir>/scripts/fetch_paper.py arXiv:1706.03762`. Both are
   stdlib-only and need no extra installs. They are convenience only — the
   workflow runs without them.
 

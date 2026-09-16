@@ -85,8 +85,12 @@ function splitSections(content: string): MdSection[] {
   return sections
 }
 
+/** Resolve a template section by title, considering only NON-title headings
+ *  (level > 1). The H1 is `# Paper Comparison Matrix — <model-authored topic>`,
+ *  so a topic containing a section keyword (`… agree?`, `Closing the gaps…`)
+ *  must not hijack the lookup on document order. */
 function findSection(sections: MdSection[], pattern: RegExp): MdSection | null {
-  return sections.find((section) => pattern.test(section.title)) ?? null
+  return sections.find((section) => section.level > 1 && pattern.test(section.title)) ?? null
 }
 
 /** Lowercase + strip Markdown emphasis for header matching. */
@@ -101,6 +105,14 @@ function norm(s: string): string {
  *  labels ([Analyst] / [Unknown]) are preserved — they carry meaning. */
 function cleanCell(s: string): string {
   return s.replace(/\*\*/g, '').replace(/[`_]/g, '').trim()
+}
+
+/** Whether `haystack` (already lowercased) contains `token` as a whole token,
+ *  so `arxiv:1706.0376` does not match inside `arxiv:1706.03762`. */
+function containsToken(haystack: string, token: string): boolean {
+  if (token === '') return false
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?![a-z0-9])`).test(haystack)
 }
 
 function colIndex(header: string[], pattern: RegExp): number {
@@ -273,25 +285,56 @@ export interface ComparisonMentionPaper {
 }
 
 /**
- * Whether a comparison artifact refers to a paper. A comparison names the
- * papers it covers in its "Papers under comparison" table — by internal id,
- * slug, card path, a bibliographic identifier (scheme:value) or the title — so
- * a match on any of these (≥3 chars, case-insensitive) counts. Used by the
- * paper workspace's Compare section to show only the comparisons this paper
- * takes part in.
+ * Whether a comparison artifact counts `paper` among its participants. A
+ * comparison names its participants in its "Papers under comparison" table, so
+ * the check is scoped to that table: each row's id / short name / citation is
+ * compared to the paper's id, slug, card path, title and `scheme:value`
+ * identifiers by normalised EQUALITY (plus a bounded `scheme:value` match
+ * inside a citation cell). A paper merely mentioned in the fairness notes,
+ * matrix cells or verdict prose — or whose title is a token of another paper's
+ * text — is NOT a participant, so it simply does not appear in that paper's
+ * Compare section (fail-closed). Used by the paper workspace's Compare section.
  */
 export function comparisonMentionsPaper(
   content: string,
   paper: ComparisonMentionPaper,
 ): boolean {
-  const haystack = content.toLowerCase()
-  const needles: string[] = [paper.slug, paper.id, paper.card_path]
+  const { papers } = parseComparison(content)
+  if (papers.length === 0) return false
+
+  const identities = new Set<string>()
+  const add = (value: string | undefined): void => {
+    const normalized = (value ?? '').trim().toLowerCase()
+    if (normalized !== '') identities.add(normalized)
+  }
+  add(paper.id)
+  add(paper.slug)
+  add(paper.card_path)
+  add(paper.title)
   for (const identifier of paper.identifiers) {
-    if (identifier.value !== '') needles.push(`${identifier.scheme}:${identifier.value}`)
+    if (identifier.value.trim() !== '') {
+      add(`${identifier.scheme}:${identifier.value}`)
+      add(identifier.value)
+    }
   }
-  if (needles.some((needle) => needle.length >= 3 && haystack.includes(needle.toLowerCase()))) {
-    return true
+
+  for (const row of papers) {
+    if (
+      identities.has(row.id.trim().toLowerCase()) ||
+      identities.has(row.shortName.trim().toLowerCase()) ||
+      identities.has(row.citation.trim().toLowerCase())
+    ) {
+      return true
+    }
+    // A citation cell may embed a `scheme:value` alongside other bibliographic
+    // text (e.g. "arXiv:1706.03762 [cs]"). Match it as a whole token so
+    // `arxiv:1706.0376` does not match inside `arxiv:1706.03762`.
+    for (const identifier of paper.identifiers) {
+      const schemeValue = `${identifier.scheme}:${identifier.value}`.trim().toLowerCase()
+      if (schemeValue.length >= 3 && containsToken(row.citation.toLowerCase(), schemeValue)) {
+        return true
+      }
+    }
   }
-  const title = paper.title.trim().toLowerCase()
-  return title.length >= 4 && haystack.includes(title)
+  return false
 }

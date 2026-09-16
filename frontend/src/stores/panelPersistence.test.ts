@@ -200,7 +200,7 @@ describe('per-project workspace tab persistence', () => {
     expect(useUIStore.getState().workspaceTabByProject).toEqual({ p2: 'research' })
   })
 
-  it('persist version is 5', () => {
+  it('persist version matches the current schema', () => {
     expect(useUIStore.persist.getOptions().version).toBe(6)
   })
 

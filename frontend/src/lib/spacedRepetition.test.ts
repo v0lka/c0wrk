@@ -1,19 +1,18 @@
 // Tests for lib/spacedRepetition.ts — the pure interval scheduler.
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type { ReviewEntry } from './flashcards'
 import {
   addDays,
   advanceIndex,
   INTERVAL_SCHEDULE_DAYS,
   intervalDays,
-  isDue,
-  lastDueDate,
   MAX_INTERVAL_INDEX,
   scheduleAfter,
   stateForIndex,
   stateFromReviews,
   stageForIndex,
+  todayLocalISO,
 } from './spacedRepetition'
 
 function review(grade: ReviewEntry['grade'], nextDue = '', date = '2024-01-01'): ReviewEntry {
@@ -77,19 +76,6 @@ describe('addDays', () => {
   })
 })
 
-describe('isDue', () => {
-  it('treats a due date on or before today as due', () => {
-    expect(isDue('2024-01-05', '2024-01-05')).toBe(true)
-    expect(isDue('2024-01-05', '2024-01-06')).toBe(true)
-    expect(isDue('2024-01-05', '2024-01-04')).toBe(false)
-  })
-
-  it('never reports due for an empty/invalid date', () => {
-    expect(isDue('', '2024-01-01')).toBe(false)
-    expect(isDue('whenever', '2024-01-01')).toBe(false)
-  })
-})
-
 describe('scheduleAfter', () => {
   it('schedules a new card one day out on its first review', () => {
     const next = scheduleAfter(stateForIndex(-1), 'good', '2024-01-01')
@@ -125,10 +111,22 @@ describe('stateFromReviews', () => {
   })
 })
 
-describe('lastDueDate', () => {
-  it('returns the most recent recorded due date, or empty', () => {
-    expect(lastDueDate([review('good', '2024-01-05'), review('hard', '')])).toBe('2024-01-05')
-    expect(lastDueDate([review('good', '2024-01-05'), review('hard', '2024-02-01')])).toBe('2024-02-01')
-    expect(lastDueDate([])).toBe('')
+describe('todayLocalISO', () => {
+  it('returns the LOCAL calendar date, not the UTC one', () => {
+    const realTZ = process.env.TZ
+    try {
+      // A non-UTC zone so the local and UTC calendar dates can diverge.
+      process.env.TZ = 'Asia/Kolkata' // UTC+5:30
+      vi.useFakeTimers()
+      // 2024-03-05T19:00:00Z is 2024-03-06 00:30 local (UTC+5:30).
+      vi.setSystemTime(new Date('2024-03-05T19:00:00Z'))
+      expect(todayLocalISO()).toBe('2024-03-06')
+      // The UTC spelling of the same instant is the PREVIOUS day — the bug this
+      // guards against.
+      expect(new Date().toISOString().slice(0, 10)).toBe('2024-03-05')
+    } finally {
+      vi.useRealTimers()
+      process.env.TZ = realTZ
+    }
   })
 })

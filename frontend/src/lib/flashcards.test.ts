@@ -45,19 +45,20 @@ const DECK = `# Flashcards — Attention Is All You Need
 `
 
 describe('parseFlashcards', () => {
-  it('parses the card table with every field, skipping the placeholder row', () => {
+  it('parses the card table with every field, treating id-carrying rows as cards', () => {
     const deck = parseFlashcards(DECK)
-    expect(deck.cards).toHaveLength(3)
+    expect(deck.cards).toHaveLength(4)
     expect(deck.cards[0]).toEqual({
       id: 'P1-01',
       front: 'What replaces recurrence?',
       back: 'Self-attention',
       anchor: '§3',
       tag: 'architecture',
-      stage: 'new',
     })
-    expect(deck.cards[1]!.stage).toBe('learning')
-    expect(deck.cards[2]!.stage).toBe('review')
+    expect(deck.cards[1]!.front).toBe('How many attention heads?')
+    // The not-yet-filled row still carries an id, so it is a card (the identity
+    // is id-based and shared with the Go writer) — it just has no content yet.
+    expect(deck.cards[3]).toEqual({ id: 'P1-04', front: '', back: '', anchor: '', tag: '' })
   })
 
   it('parses the review log and normalizes the grade case', () => {
@@ -88,7 +89,7 @@ describe('parseFlashcards', () => {
       '| ID | Front | Back |\n| - | - | - |\n| A1 | q | a |',
     )
     expect(deck.cards).toHaveLength(1)
-    expect(deck.cards[0]!.stage).toBe('new')
+    expect(deck.cards[0]!.id).toBe('A1')
     expect(deck.reviews).toEqual([])
   })
 
@@ -102,14 +103,28 @@ describe('parseFlashcards', () => {
     const deck = parseFlashcards(
       '| Stage | Back (answer) | Front (question) | ID | Note |\n| - | - | - | - | - |\n| review | A | Q | X9 | extra |',
     )
+    expect(deck.cards[0]).toEqual({ id: 'X9', front: 'Q', back: 'A', anchor: '', tag: '' })
+  })
+
+  it('gives an id-less deck empty card ids (no positional fallback)', () => {
+    const deck = parseFlashcards(
+      '| Front | Back |\n| - | - |\n| a question | an answer |',
+    )
+    expect(deck.cards).toHaveLength(1)
     expect(deck.cards[0]).toEqual({
-      id: 'X9',
-      front: 'Q',
-      back: 'A',
+      id: '',
+      front: 'a question',
+      back: 'an answer',
       anchor: '',
       tag: '',
-      stage: 'review',
     })
+  })
+
+  it('does not claim Card ID / Reference / Tags as id/anchor/tag (anchored, word-boundary)', () => {
+    const deck = parseFlashcards(
+      '| Card ID | Front | Back | Reference | Tags |\n| - | - | - | - | - |\n| X9 | q | a | §3 | arch |',
+    )
+    expect(deck.cards[0]).toEqual({ id: '', front: 'q', back: 'a', anchor: '', tag: '' })
   })
 })
 
@@ -127,5 +142,12 @@ describe('normalizeStage / normalizeGrade', () => {
     expect(normalizeGrade('EASY')).toBe('easy')
     expect(normalizeGrade('perfect')).toBe('')
     expect(normalizeGrade('')).toBe('')
+  })
+
+  it('strips Markdown emphasis/punctuation (mirrors the Go normalizers)', () => {
+    expect(normalizeStage('**review**')).toBe('review')
+    expect(normalizeStage('`learning`.')).toBe('learning')
+    expect(normalizeGrade('`good`')).toBe('good')
+    expect(normalizeGrade('**easy**.')).toBe('easy')
   })
 })

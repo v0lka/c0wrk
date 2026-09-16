@@ -82,6 +82,18 @@ describe('normalizeStrength', () => {
     expect(normalizeStrength('')).toBe('unknown')
     expect(normalizeStrength('n/a')).toBe('unknown')
   })
+
+  it('classifies a negated verdict as absent, not present (Issue 42)', () => {
+    expect(normalizeStrength('not present')).toBe('absent')
+    expect(normalizeStrength('no evidence present')).toBe('absent')
+    expect(normalizeStrength('No evidence present')).toBe('absent')
+  })
+
+  it('does not fold a word that merely contains a verdict token (Issue 42)', () => {
+    expect(normalizeStrength('unrepresented')).toBe('unknown')
+    // A negator AFTER the verdict is not a negation of it.
+    expect(normalizeStrength('present, no caveats')).toBe('present')
+  })
 })
 
 describe('parseEvidenceMatrix', () => {
@@ -198,5 +210,40 @@ describe('parseCriticalLayer', () => {
 
   it('returns an empty layer for empty inputs', () => {
     expect(parseCriticalLayer('', '')).toEqual({ evidence: [], redFlags: [], uncertainties: [] })
+  })
+})
+
+describe('list fallback — bold items and title markers (Issues 43 / 49)', () => {
+  it('keeps a bold-led list item instead of treating it as a new label (Issue 43)', () => {
+    const note = `## 7. Open questions
+
+- **Data leakage** is not ruled out.
+- **Compute budget** unverifiable.
+`
+    expect(parseUncertainties(note).map((i) => i.item)).toEqual([
+      'Data leakage is not ruled out.',
+      'Compute budget unverifiable.',
+    ])
+  })
+
+  it('does not let a marker keyword in the H1 title open a section (Issue 49)', () => {
+    const note = `# Reading Note — Uncertainty Quantification in Deep Learning
+
+## 2. Contributions
+
+- The model reports calibrated uncertainty.
+- Trained on a new benchmark.
+
+## 7. Critical layer
+
+## 8. TL;DR
+`
+    // The title's "Uncertainty" must not start the section; the §2 bullets that
+    // merely mention "uncertainty" must not be harvested.
+    expect(parseUncertainties(note)).toEqual([])
+  })
+
+  it('still ends a bold section label at the next label (Issue 43 guard)', () => {
+    expect(parseRedFlags(NOTE_LISTS)).toHaveLength(2)
   })
 })

@@ -95,7 +95,17 @@ offered, record "absent".
   - …
 - **Red flags** (carry down from §7):
   - …
-- **Verdict:** accept / weak accept / borderline / weak reject / reject — or, for
-  a software / system paper: use / use with caveats / avoid.
-- **Confidence in this verdict** (low / medium / high) — and why:
+
+Record the verdict and your confidence in the table below (kept in sync with
+`paper.md`). Use the canonical tokens — `accepted` / `rejected` / `uncertain`
+for the verdict (accept or weak accept → `accepted`; reject or weak reject →
+`rejected`; borderline → `uncertain`) and `low` / `medium` / `high` for the
+confidence. The sheet is parsed structurally, so write the token, not an option
+list.
+
+| Field | Value |
+| --- | --- |
+| Verdict | |
+| Confidence in this verdict | |
+
 - **What evidence would change the verdict:**

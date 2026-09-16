@@ -75,6 +75,54 @@ describe('classifyAnchor', () => {
   })
 })
 
+describe('classifyAnchor — sub-labels and algorithms (Issues 41 / 100)', () => {
+  it('keeps a figure/table sub-label suffix as part of the token', () => {
+    expect(classifyAnchor('Fig. 2a')).toEqual({ kind: 'figure', token: '2a' })
+    expect(classifyAnchor('Figure 2a')).toEqual({ kind: 'figure', token: '2a' })
+    expect(classifyAnchor('Tab. 3b')).toEqual({ kind: 'table', token: '3b' })
+    expect(classifyAnchor('Table 3b')).toEqual({ kind: 'table', token: '3b' })
+  })
+
+  it('recognises an algorithm anchor (Alg. N / Algorithm N)', () => {
+    expect(classifyAnchor('Alg. 2')).toEqual({ kind: 'algorithm', token: '2' })
+    expect(classifyAnchor('Alg 2')).toEqual({ kind: 'algorithm', token: '2' })
+    expect(classifyAnchor('Algorithm 2')).toEqual({ kind: 'algorithm', token: '2' })
+  })
+
+  it('refuses a bare algorithm keyword (no false jump)', () => {
+    expect(classifyAnchor('Algorithm')).toBeNull()
+    // "algorithmic" merely STARTS with the keyword.
+    expect(classifyAnchor('algorithmic complexity')).toEqual({
+      kind: 'text',
+      token: 'algorithmic complexity',
+    })
+  })
+})
+
+describe('resolveAnchor — sub-labels, sub-numbers and algorithms (Issues 41 / 100 / 106)', () => {
+  it('resolves a sub-labelled figure/table to its own caption', () => {
+    expect(resolveAnchor('Figure 2a: Overview\n\nFigure 2: Main', anchor('', 'Fig. 2a'))!.line).toBe(0)
+    expect(resolveAnchor('Table 3b: Results.', anchor('', 'Table 3b'))!.line).toBe(0)
+  })
+
+  it('does not jump from Fig. 2 to a sub-numbered float (Issue 106)', () => {
+    expect(resolveAnchor('Figure 2.1: sub one\n\nFigure 2: main', anchor('', 'Fig. 2'))!.line).toBe(2)
+    expect(resolveAnchor('Table 3.1: a\n\nTable 3: b', anchor('', 'Tab. 3'))!.line).toBe(2)
+    expect(resolveAnchor('Equation (1.2): a\n\nEquation (1): b', anchor('', 'Eq. 1'))!.line).toBe(2)
+  })
+
+  it('does not alias a bare Fig. 2 to a sub-labelled Figure 2a', () => {
+    expect(resolveAnchor('Figure 2a: Overview', anchor('', 'Fig. 2'))).toBeNull()
+  })
+
+  it('resolves an algorithm anchor and refuses a bare algorithm keyword', () => {
+    const src = '# Paper\n\nAlgorithm 2: Training loop\n\nAlgorithm 1: Inference\n\nFigure 3: Results\n'
+    expect(resolveAnchor(src, anchor('', 'Alg. 2'))!.line).toBe(2)
+    expect(resolveAnchor(src, anchor('', 'Algorithm 1'))!.line).toBe(4)
+    expect(resolveAnchor(src, anchor('', 'Algorithm'))).toBeNull()
+  })
+})
+
 describe('sectionHeadingMatches', () => {
   it('matches a section number but not its subsections', () => {
     expect(sectionHeadingMatches('3. Method', '3')).toBe(true)

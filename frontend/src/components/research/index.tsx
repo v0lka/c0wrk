@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, type ReactNode } from 'react'
 import { FlaskConical, FolderOpen, ChevronDown, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useResearchStore, selectActiveProject } from '@/stores/researchStore'
@@ -31,7 +31,18 @@ const RESEARCH_SEGMENTS: ReadonlyArray<{ value: ResearchSegment; label: string }
   { value: 'papers', label: 'Papers' },
 ]
 
-/** Segmented control [Dashboard | Papers], persisted per project in uiStore. */
+/** Stable ids wiring each tab to its panel (ARIA tabs pattern). */
+function segmentTabId(value: ResearchSegment): string {
+  return `research-segment-tab-${value}`
+}
+function segmentPanelId(value: ResearchSegment): string {
+  return `research-segment-panel-${value}`
+}
+
+/** Segmented control [Dashboard | Papers], persisted per project in uiStore.
+ *  Implements the ARIA tabs pattern: `role="tab"` carries `aria-controls` to the
+ *  `role="tabpanel"` rendered by {@link SegmentPanel}, and the tablist provides
+ *  roving tabindex + Left/Right/Home/End navigation. */
 function ResearchSegmentControl({
   active,
   onSelect,
@@ -39,11 +50,43 @@ function ResearchSegmentControl({
   active: ResearchSegment
   onSelect: (segment: ResearchSegment) => void
 }) {
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const values = RESEARCH_SEGMENTS.map((segment) => segment.value)
+    const currentIndex = values.indexOf(active)
+    let nextIndex: number
+    switch (e.key) {
+      case 'ArrowRight':
+        nextIndex = (currentIndex + 1) % values.length
+        break
+      case 'ArrowLeft':
+        nextIndex = (currentIndex - 1 + values.length) % values.length
+        break
+      case 'Home':
+        nextIndex = 0
+        break
+      case 'End':
+        nextIndex = values.length - 1
+        break
+      default:
+        return
+    }
+    e.preventDefault()
+    const next = values[nextIndex]
+    if (next === undefined) return
+    onSelect(next)
+    // Move focus with the roving tabindex so the newly selected tab receives it.
+    e.currentTarget
+      .querySelector<HTMLElement>(`[data-testid="research-segment-${next}"]`)
+      ?.focus()
+  }
+
   return (
     <div
       role="tablist"
       aria-label="Research view"
+      aria-orientation="horizontal"
       data-testid="research-segment"
+      onKeyDown={onKeyDown}
       className="flex shrink-0 items-center gap-0.5 border-b border-border bg-secondary/20 px-1.5 py-1"
     >
       {RESEARCH_SEGMENTS.map((segment) => {
@@ -53,7 +96,10 @@ function ResearchSegmentControl({
             key={segment.value}
             type="button"
             role="tab"
+            id={segmentTabId(segment.value)}
             aria-selected={selected}
+            aria-controls={segmentPanelId(segment.value)}
+            tabIndex={selected ? 0 : -1}
             data-testid={`research-segment-${segment.value}`}
             onClick={() => onSelect(segment.value)}
             className={cn(
@@ -67,6 +113,29 @@ function ResearchSegmentControl({
           </button>
         )
       })}
+    </div>
+  )
+}
+
+/** The `role="tabpanel"` for one segment, associated with its tab through
+ *  `aria-labelledby`/`aria-controls` (the ARIA tabs pattern). */
+function SegmentPanel({
+  segment,
+  className,
+  children,
+}: {
+  segment: ResearchSegment
+  className?: string
+  children: ReactNode
+}) {
+  return (
+    <div
+      role="tabpanel"
+      id={segmentPanelId(segment)}
+      aria-labelledby={segmentTabId(segment)}
+      className={className}
+    >
+      {children}
     </div>
   )
 }
@@ -140,11 +209,16 @@ export function ResearchPanel() {
         {segmentControl}
         {error && <ErrorBanner message={error} />}
         {segment === 'papers' ? (
-          <PapersView />
+          <SegmentPanel segment="papers" className="flex min-h-0 flex-1 flex-col">
+            <PapersView />
+          </SegmentPanel>
         ) : (
-          <div className="flex flex-1 items-center justify-center min-h-0">
+          <SegmentPanel
+            segment="dashboard"
+            className="flex min-h-0 flex-1 items-center justify-center"
+          >
             <ResearchToggle variant="card" />
-          </div>
+          </SegmentPanel>
         )}
       </div>
     )
@@ -187,9 +261,11 @@ export function ResearchPanel() {
       {error && <ErrorBanner message={error} />}
 
       {segment === 'papers' ? (
-        <PapersView />
+        <SegmentPanel segment="papers" className="flex min-h-0 flex-1 flex-col">
+          <PapersView />
+        </SegmentPanel>
       ) : (
-        <>
+        <SegmentPanel segment="dashboard" className="flex min-h-0 flex-1 flex-col">
           {/* Control dashboard body */}
           <div className="flex-1 min-h-0 overflow-auto px-1.5 py-1.5 flex flex-col gap-2">
             {isLoading && !project ? (
@@ -246,7 +322,7 @@ export function ResearchPanel() {
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
-        </>
+        </SegmentPanel>
       )}
     </div>
   )

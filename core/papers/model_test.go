@@ -13,6 +13,13 @@ func TestNormalizePaperID(t *testing.T) {
 		"":        "",
 		"nope":    "",
 		"title-x": "",
+		// Anchored: a slug or directory base that merely contains a `p-<n>` run
+		// must NOT mint a spurious canonical id (issue 14).
+		"deep-2":     "",
+		"group-2":    "",
+		"clip-2":     "",
+		"setup-1":    "",
+		"P-001-beta": "",
 	}
 	for in, want := range cases {
 		if got := NormalizePaperID(in); got != want {
@@ -29,6 +36,9 @@ func TestNormalizeResearchID(t *testing.T) {
 		"H-10":  "H-010",
 		"":      "",
 		"xyz":   "",
+		// Anchored: "path-1" must not normalize to H-001 (issue 14).
+		"path-1":  "",
+		"graph-3": "",
 	}
 	for in, want := range cases {
 		if got := NormalizeResearchID(in); got != want {
@@ -147,13 +157,15 @@ func TestPaperLibraryGetAndByResearchID(t *testing.T) {
 
 func TestNormalizeModeAndReading(t *testing.T) {
 	modes := map[string]Mode{
-		"skim":      ModeSkim,
-		"deep":      ModeDeep,
-		"survey":    ModeSurvey,
-		"review":    ModeReview,
-		"Implement": ModeImplement,
-		"TEACH":     ModeTeach,
-		"weird":     Mode("weird"), // unknown tokens pass verbatim
+		"skim":       ModeSkim,
+		"deep":       ModeDeep,
+		"survey":     ModeSurvey,
+		"review":     ModeReview,
+		"Implement":  ModeImplement,
+		"TEACH":      ModeTeach,
+		"**review**": ModeReview,    // Markdown emphasis is stripped (issue 47/67)
+		"`deep`.":    ModeDeep,      // emphasis + surrounding punctuation stripped
+		"weird":      Mode("weird"), // unknown tokens pass verbatim
 	}
 	for in, want := range modes {
 		if got := NormalizeMode(in); got != want {

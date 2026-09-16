@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useRef, useState } from 'react'
+import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
 import { Terminal, Copy, Eye, EyeOff, History, Loader2, Microscope, ChevronLeft } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useMessageSender } from '@/hooks/useMessageSender'
@@ -64,8 +64,27 @@ export function FileTreeContextMenu({
   const menuRef = useRef<HTMLDivElement>(null)
   const [isIgnoring, setIsIgnoring] = useState(false)
   const relativePath = toRelativePath(entry.path, workspaceRoot ?? undefined)
+  // Whether the "Study this paper…" reading-depth picker has replaced the main
+  // item list. Declared here so the placement below can re-measure when it flips.
+  const [studyOpen, setStudyOpen] = useState(false)
+
+  // The placement hook recomputes only when the anchor identity changes (or on
+  // window resize). Flipping `studyOpen` swaps the menu's contents for the
+  // TALLER depth picker without moving the pointer, so the anchor identity must
+  // track it: otherwise the flip/clamp decision is made against the stale
+  // (shorter) height and the picker can grow past the window bottom. `reseed`
+  // carries that state into the identity (the hook ignores the extra field).
+  const anchorX = position?.x
+  const anchorY = position?.y
+  const anchor = useMemo(
+    () =>
+      anchorX === undefined || anchorY === undefined
+        ? null
+        : { x: anchorX, y: anchorY, reseed: studyOpen },
+    [anchorX, anchorY, studyOpen],
+  )
   // Zoom-corrected, viewport-clamped placement (left/top in layout px).
-  const menuPosition = useCursorMenuPosition(position, menuRef)
+  const menuPosition = useCursorMenuPosition(anchor, menuRef)
 
   // Git-only actions ("Add to .gitignore", "View History") make no sense in
   // a project whose workspace is not a git repository — the Git panel does
@@ -82,7 +101,6 @@ export function FileTreeContextMenu({
   // with the file path and the chosen depth.
   const { send } = useMessageSender()
   const isPdf = !entry.is_dir && entry.path.toLowerCase().endsWith('.pdf')
-  const [studyOpen, setStudyOpen] = useState(false)
 
   // Drop the depth picker whenever the menu retargets another entry or closes
   // (the position prop is a fresh object per open; x/y pin the actual point,

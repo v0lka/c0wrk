@@ -46,9 +46,11 @@ type paperFrontOut struct {
 // Rendering
 // ---------------------------------------------------------------------------
 
-// RenderPaperMD renders rec's paper.md card: a YAML front-matter block carrying
-// the identity fields. It is the inverse of ParsePaperMD.
-func RenderPaperMD(rec PaperRecord) string {
+// RenderPaperMD renders rec's paper.md card, returning the document and an
+// error. It is the inverse of ParsePaperMD. A YAML marshal failure is returned
+// rather than silently emitting a card whose entire front matter is empty (every
+// identity field dropped).
+func RenderPaperMD(rec PaperRecord) (string, error) {
 	out := paperFrontOut{
 		ID:          rec.ID,
 		Slug:        rec.Slug,
@@ -66,15 +68,13 @@ func RenderPaperMD(rec PaperRecord) string {
 	}
 	data, err := yaml.Marshal(out)
 	if err != nil {
-		// The shape above cannot fail to marshal; guard anyway so a future
-		// field addition cannot panic the writer.
-		data = nil
+		return "", fmt.Errorf("rendering paper.md front matter: %w", err)
 	}
 	var b strings.Builder
 	b.WriteString("---\n")
 	b.Write(data)
 	b.WriteString("---\n")
-	return b.String()
+	return b.String(), nil
 }
 
 // RenderNoteMD renders rec's note.md: the claim→evidence, red-flags, and
@@ -139,11 +139,17 @@ func WritePaper(libraryRoot string, rec PaperRecord) error {
 	if slug == "" {
 		return errors.New("paper write rejected: record has neither a valid slug, title, nor id")
 	}
+	// Render before touching the filesystem, so a render failure leaves the
+	// directory tree untouched.
+	paperMD, err := RenderPaperMD(rec)
+	if err != nil {
+		return err
+	}
 	if _, err := ensurePaperDir(libraryRoot, slug); err != nil {
 		return err
 	}
 	files := map[string][]byte{
-		artifactPath(libraryRoot, slug, PaperFileName):     []byte(RenderPaperMD(rec)),
+		artifactPath(libraryRoot, slug, PaperFileName):     []byte(paperMD),
 		artifactPath(libraryRoot, slug, NoteFileName):      []byte(RenderNoteMD(rec)),
 		artifactPath(libraryRoot, slug, AppraisalFileName): []byte(RenderAppraisalMD(rec)),
 	}
@@ -158,6 +164,9 @@ func WritePaper(libraryRoot string, rec PaperRecord) error {
 // creating the paper directory when absent. The target is symlink-resolved and
 // containment-checked against the library root through writeFilesAtomic, so a
 // symlinked paper directory can never redirect the write outside the library.
+// It is the public deck-writer API (the inverse of ParseFlashcards, paired with
+// RenderFlashcards); keeping it exported is intentional even though the running
+// app currently only appends reviews through RecordCardReview.
 func WriteFlashcards(libraryRoot, slug string, deck Deck) error {
 	if !ValidSlug(slug) {
 		return fmt.Errorf("flashcard write rejected: unsafe slug %q", slug)
@@ -173,23 +182,27 @@ func WriteFlashcards(libraryRoot, slug string, deck Deck) error {
 // the card's Stage, then writes the whole document atomically and
 // containment-checked against the library root. The deck must already exist:
 // the review is an append onto an authored document, never a fresh deck, so a
-// missing flashcards.md is an error. An unknown card id (no row), an unknown
-// grade, or a deck with no review-log table is rejected before any write —
-// leaving the file byte-for-byte unchanged.
+// missing flashcards.md is an error. The deck is read and validated before
+// anything is created, so an unknown card id (no row), an unknown grade, a
+// review log with no grade column, or a missing deck is rejected without
+// writing a byte or conjuring a stray paper directory.
 func RecordCardReview(libraryRoot, slug, cardID string, grade Grade, date string) error {
 	if !ValidSlug(slug) {
 		return fmt.Errorf("flashcard review rejected: unsafe slug %q", slug)
 	}
-	if _, err := ensurePaperDir(libraryRoot, slug); err != nil {
-		return err
-	}
 	target := artifactPath(libraryRoot, slug, FlashcardFileName)
+	// Read (and thereby validate the deck's existence) before creating anything.
 	content, err := os.ReadFile(target)
 	if err != nil {
 		return fmt.Errorf("flashcard review rejected: no deck to review: %w", err)
 	}
 	updated, err := ApplyReview(string(content), cardID, grade, date)
 	if err != nil {
+		return err
+	}
+	// Only now, with a valid updated document in hand, create/verify the paper
+	// directory and write atomically.
+	if _, err := ensurePaperDir(libraryRoot, slug); err != nil {
 		return err
 	}
 	return writeFilesAtomic(libraryRoot, map[string][]byte{target: []byte(updated)})

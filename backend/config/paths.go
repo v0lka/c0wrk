@@ -389,14 +389,6 @@ func PaperLibraryPath(workspacePath string) string {
 	return PaperLibraryPathIn(ProjectResearchPath(workspacePath))
 }
 
-// PaperDir returns the directory of a single paper (identified by its slug)
-// inside the project's paper library: <workspacePath>/.research/papers/<slug>.
-// slug is expected to be a validated single path component (see core/papers
-// ValidSlug); this helper does not re-validate it.
-func PaperDir(workspacePath, slug string) string {
-	return filepath.Join(PaperLibraryPath(workspacePath), slug)
-}
-
 // ComparisonDirName is the research-root subdirectory holding multi-paper
 // comparison artifacts. It sits beside the paper library (papers/) because a
 // comparison spans papers from across the library and therefore belongs to no

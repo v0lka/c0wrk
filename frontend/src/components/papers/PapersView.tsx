@@ -10,7 +10,7 @@
 // compare, pin/unpin, and suggest hypotheses from the paper's gaps (which
 // auto-pins the paper as prior art).
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   FileText,
   Microscope,
@@ -26,6 +26,7 @@ import {
   usePapersError,
   usePapersLoading,
   usePapersResearchRoot,
+  selectPapersProjectId,
   togglePaperPin,
   ensurePaperPinned,
 } from '@/stores/paperStore'
@@ -242,6 +243,11 @@ export function PapersView() {
   const error = usePapersError()
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const isNoProject = useProjectStore(selectIsNoProject)
+  // The project the loaded library actually belongs to. On a project switch the
+  // store keeps the departed project's papers until the new GetPapers resolves,
+  // so the list is gated on it matching the active project (see below).
+  const loadedProjectId = usePaperStore(selectPapersProjectId)
+  const libraryReady = loadedProjectId !== null && loadedProjectId === activeProjectId
 
   const [reference, setReference] = useState('')
   const [mode, setMode] = useState<StudyMode>('auto')
@@ -264,6 +270,16 @@ export function PapersView() {
     })
   }, [papers])
 
+  // Paper ids are per-project `P-NNN` and collide across projects, so a
+  // selection made in one project must not survive a switch to another (it would
+  // silently build a comparison over the new project's same-numbered papers).
+  const lastLoadedProject = useRef(loadedProjectId)
+  useEffect(() => {
+    if (lastLoadedProject.current === loadedProjectId) return
+    lastLoadedProject.current = loadedProjectId
+    setSelectedIds([])
+  }, [loadedProjectId])
+
   const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) =>
       prev.includes(id) ? prev.filter((entry) => entry !== id) : [...prev, id],
@@ -275,29 +291,42 @@ export function PapersView() {
   // [22]a pattern (see ResearchQuickActions): send() renders its own send
   // failures in-chat but RETHROWS when the auto-created session fails (the
   // documented splash race) — surface that on the paper store's error line.
+  // Resolves to whether the dispatch succeeded, so callers can restore the input
+  // they would otherwise have discarded; a project switch while the dispatch was
+  // in flight must not write into the new project's error slot.
   const dispatch = useCallback(
-    (prompt: string, skill: string, newSession: boolean) => {
-      Promise.resolve(
+    (prompt: string, skill: string, newSession: boolean): Promise<boolean> => {
+      const projectIdBefore = usePaperStore.getState().projectId
+      return Promise.resolve(
         send(prompt, [skill], undefined, undefined, { newSession }),
-      ).catch((err) => {
-        usePaperStore
-          .getState()
-          .setError(
-            `Failed to dispatch ${skill}: ${
-              err instanceof Error ? err.message : 'unknown error'
-            }`,
-          )
-      })
+      ).then(
+        () => true,
+        (err) => {
+          if (usePaperStore.getState().projectId === projectIdBefore) {
+            usePaperStore
+              .getState()
+              .setError(
+                `Failed to dispatch ${skill}: ${
+                  err instanceof Error ? err.message : 'unknown error'
+                }`,
+              )
+          }
+          return false
+        },
+      )
     },
     [send],
   )
 
   const study = useCallback(
-    (newSession: boolean) => {
+    async (newSession: boolean) => {
       const ref = reference.trim()
       if (ref === '') return
-      dispatch(buildStudyPrompt(ref, mode), STUDY_PAPER_SKILL, newSession)
-      setReference('')
+      const ok = await dispatch(buildStudyPrompt(ref, mode), STUDY_PAPER_SKILL, newSession)
+      // Restore the field when the dispatch failed (mirrors the app's own send
+      // path, which restores text on failure) so the pasted reference is never
+      // silently lost.
+      if (ok) setReference('')
     },
     [reference, mode, dispatch],
   )
@@ -310,26 +339,34 @@ export function PapersView() {
   }, [])
 
   const deepenPaper = useCallback(
-    (paper: PaperRecord, newSession: boolean) =>
-      dispatch(buildDeepenPrompt(paper), STUDY_PAPER_SKILL, newSession),
+    (paper: PaperRecord, newSession: boolean) => {
+      void dispatch(buildDeepenPrompt(paper), STUDY_PAPER_SKILL, newSession)
+    },
     [dispatch],
   )
 
   const comparePaper = useCallback(
-    (paper: PaperRecord, newSession: boolean) =>
-      dispatch(buildComparePrompt(paper), STUDY_PAPER_SKILL, newSession),
+    (paper: PaperRecord, newSession: boolean) => {
+      void dispatch(buildComparePrompt(paper), STUDY_PAPER_SKILL, newSession)
+    },
     [dispatch],
   )
 
   // Compare the selected papers (≥2), in library order, writing one comparison
   // artifact under the research root's `comparisons/` directory. Clears the
-  // selection on dispatch so the gesture cannot be repeated by accident.
+  // selection on a successful dispatch so the gesture cannot be repeated by
+  // accident — but keeps it when the dispatch fails, so the ticked papers are
+  // not lost to a rejected send.
   const compareSelected = useCallback(
-    (newSession: boolean) => {
+    async (newSession: boolean) => {
       const chosen = papers.filter((paper) => selectedSet.has(paper.id))
       if (chosen.length < 2) return
-      dispatch(buildCompareSelectedPrompt(chosen, researchRoot), STUDY_PAPER_SKILL, newSession)
-      setSelectedIds([])
+      const ok = await dispatch(
+        buildCompareSelectedPrompt(chosen, researchRoot),
+        STUDY_PAPER_SKILL,
+        newSession,
+      )
+      if (ok) setSelectedIds([])
     },
     [papers, selectedSet, researchRoot, dispatch],
   )
@@ -339,7 +376,7 @@ export function PapersView() {
       // E5 — auto-pin the paper as prior art (idempotent: a no-op when the paper
       // is already pinned, so repeat gestures never duplicate the pin).
       void ensurePaperPinned(paper.id)
-      dispatch(buildProposeHypothesisPrompt(paper), RESEARCH_HYPOTHESIS_SKILL, newSession)
+      void dispatch(buildProposeHypothesisPrompt(paper), RESEARCH_HYPOTHESIS_SKILL, newSession)
     },
     [dispatch],
   )
@@ -371,7 +408,7 @@ export function PapersView() {
             placeholder="arXiv ID, DOI, URL, or PDF path"
             onChange={(e) => setReference(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') study(e.shiftKey)
+              if (e.key === 'Enter') void study(e.shiftKey)
             }}
             className={INPUT_CLASS}
           />
@@ -380,7 +417,7 @@ export function PapersView() {
             data-testid="papers-invoke-study"
             disabled={reference.trim() === ''}
             title="Study this paper (Shift = new session)"
-            onClick={(e) => study(e.shiftKey)}
+            onClick={(e) => void study(e.shiftKey)}
             className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-[11px] text-foreground transition-colors hover:bg-muted disabled:opacity-50"
           >
             Study
@@ -413,7 +450,7 @@ export function PapersView() {
         </div>
       )}
 
-      {papers.length > 0 && (
+      {libraryReady && papers.length > 0 && (
         <div
           data-testid="papers-selection"
           className="flex shrink-0 items-center gap-1 border-b border-border px-1.5 py-1 text-[10px] text-muted-foreground"
@@ -446,7 +483,7 @@ export function PapersView() {
                   ? 'Compare the selected papers (Shift = new session)'
                   : 'Select at least 2 papers to compare'
               }
-              onClick={(e) => compareSelected(e.shiftKey)}
+              onClick={(e) => void compareSelected(e.shiftKey)}
               className="inline-flex items-center gap-0.5 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-foreground transition-colors hover:bg-muted disabled:opacity-50"
             >
               <GitCompare className="size-3" />
@@ -457,7 +494,7 @@ export function PapersView() {
       )}
 
       <div className="min-h-0 flex-1 overflow-auto px-1.5 py-1.5">
-        {isLoading && papers.length === 0 ? (
+        {!libraryReady || (isLoading && papers.length === 0) ? (
           <Hint testId="papers-loading">Loading…</Hint>
         ) : papers.length === 0 ? (
           <Hint testId="papers-empty">

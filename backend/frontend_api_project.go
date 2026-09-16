@@ -552,14 +552,11 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 	}
 
 	// CODE mode: tear down the previous watcher and create a new one scoped
-	// to the project workspace.
-	// Read the research root from the TARGET project (p), not from the active
-	// fields: watcher setup now runs BEFORE switchProjectActivate commits the
-	// new project, so f.activeResearchRoot still holds the PREVIOUS project's
-	// root here. Taking p.ResearchRoot directly keeps the watcher scoped to
-	// the destination without acquiring activeProjectMu at all.
-	researchRoot := p.ResearchRoot
-
+	// to the project workspace. The effective research root is derived from
+	// the TARGET project (p) at the end of this function, not from the active
+	// fields: watcher setup runs BEFORE switchProjectActivate commits the new
+	// project, so f.activeResearchRoot still holds the PREVIOUS project's root
+	// here.
 	f.watcherMu.Lock()
 	defer f.watcherMu.Unlock()
 	if f.watcher != nil {
@@ -636,51 +633,26 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 	}
 	f.watcher = watcher
 
-	// Recursively watch the research artifact tree so edits to hypothesis
-	// cards, the brief, prior-art, or graph files (which live in nested
-	// subdirectories like .research/R-NNN/hypotheses/) are detected. The
-	// workspace watcher is NOT recursive (fsnotify only reports events for
-	// explicitly-added directories), so without this the research panel
-	// never receives research:file_changed and does not auto-update. New
-	// subdirectories created inside the tree are auto-added by the watcher.
-	if researchRoot != "" {
-		if err := watcher.WatchTree(researchRoot); err != nil {
-			f.log().Debug("failed to watch research tree", "root", researchRoot, "error", err)
-		}
-	}
-
-	// Recursively watch the paper library INDEPENDENTLY of the research
-	// toggle. The library lives at <research-root>/papers and must be
-	// watched even when RESEARCH is off (hybrid mode) or when no R-NNN
-	// exists, so a paper edit still emits papers:changed. When RESEARCH is
-	// on this is a no-op (the research WatchTree above already covers
-	// papers/); when it is off it is the only thing watching the library.
-	// The directory is created if missing so a not-yet-used library is still
-	// watched — and so a later first paper write is detected.
-	papersRoot := papersRootForProject(p)
-	if papersRoot != "" {
-		if mkErr := os.MkdirAll(papersRoot, 0o755); mkErr != nil {
-			f.log().Debug("failed to create paper library for watcher",
-				"root", papersRoot, "error", mkErr)
-		} else if wErr := watcher.WatchTree(papersRoot); wErr != nil {
-			f.log().Debug("failed to watch paper library", "root", papersRoot, "error", wErr)
-		}
-	}
-
-	// Recursively watch the multi-paper comparisons directory for the SAME
-	// reason: it is a global sibling of the paper library under the research
-	// root and must be watched independently of the RESEARCH toggle, so a
-	// comparison artifact written in hybrid (RESEARCH off) mode still emits
-	// papers:changed and refreshes the Compare section. When RESEARCH is on
-	// this is a no-op (the research WatchTree above already covers it). The
-	// directory is created if missing so a later first write is detected.
-	comparisonsRoot := comparisonsRootForProject(p)
-	if comparisonsRoot != "" {
-		if mkErr := os.MkdirAll(comparisonsRoot, 0o755); mkErr != nil {
-			f.log().Debug("failed to create comparisons dir for watcher",
-				"root", comparisonsRoot, "error", mkErr)
-		} else if wErr := watcher.WatchTree(comparisonsRoot); wErr != nil {
-			f.log().Debug("failed to watch comparisons dir", "root", comparisonsRoot, "error", wErr)
+	// Recursively watch the project's EFFECTIVE research root — the persisted
+	// ResearchRoot when RESEARCH is on, else the default <workspace>/.research.
+	// This single recursive root covers the research artifact tree (hypothesis
+	// cards, the brief, prior-art, and graph files that live in nested
+	// subdirectories like .research/R-NNN/hypotheses/), the paper library
+	// (<root>/papers), and the comparisons directory (<root>/comparisons) — so
+	// a paper or comparison edit still emits papers:changed in hybrid mode
+	// (RESEARCH off) or before any R-NNN exists.
+	//
+	// The workspace watcher is NOT recursive (fsnotify only reports events for
+	// explicitly-added directories), and WatchTree registers the root as a
+	// recursive root, so subdirectories created later — including .research
+	// itself, then papers/ and comparisons/ — are auto-added on their first
+	// write. Crucially this creates NOTHING on disk at switch time: selecting a
+	// project no longer materializes .research/papers and .research/comparisons
+	// in the user's repository (which surfaced as untracked entries in git
+	// status / the file tree and as spurious workspace:tree_changed events).
+	if effectiveRoot := effectiveResearchRoot(p); effectiveRoot != "" {
+		if err := watcher.WatchTree(effectiveRoot); err != nil {
+			f.log().Debug("failed to watch research tree", "root", effectiveRoot, "error", err)
 		}
 	}
 }

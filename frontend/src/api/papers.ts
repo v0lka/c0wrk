@@ -311,14 +311,6 @@ export function normalizePaperLibrary(v: unknown): PaperLibrary {
   }
 }
 
-/** Validate + normalize a single GetPaper response. Throws when the payload is
- *  not a well-formed paper. */
-export function normalizePaperRecord(v: unknown): PaperRecord {
-  const record = normalizePaper(v)
-  if (record === null) throw new Error('Invalid paper response from backend')
-  return record
-}
-
 /** Type guard for the `papers:changed` event payload (event boundary
  *  validation, mirroring the RPC guards). */
 export function isPapersChangedPayload(v: unknown): v is PapersChangedPayload {
@@ -339,17 +331,6 @@ export async function getPapers(projectId: string): Promise<PaperLibrary> {
     return normalizePaperLibrary(await app.GetPapers(projectId))
   } catch (err) {
     logger.error('Failed to get paper library:', err)
-    throw err
-  }
-}
-
-/** Get a single paper by id (`P-NNN`, normalized) or slug. */
-export async function getPaper(projectId: string, paperId: string): Promise<PaperRecord> {
-  try {
-    const app = getApp()
-    return normalizePaperRecord(await app.GetPaper(projectId, paperId))
-  } catch (err) {
-    logger.error('Failed to get paper:', err)
     throw err
   }
 }

@@ -173,12 +173,15 @@ func TestWritePaperContainmentSymlinkEscape(t *testing.T) {
 // TestRenderPaperMDCarriesReadingAndVerdict guards the writer side of the two
 // axes: the reading decision and the soundness verdict are both rendered.
 func TestRenderPaperMDCarriesReadingAndVerdict(t *testing.T) {
-	md := RenderPaperMD(PaperRecord{
+	md, err := RenderPaperMD(PaperRecord{
 		Title:   "T",
 		Mode:    ModeReview,
 		Reading: ReadingSelective,
 		Verdict: VerdictAccepted,
 	})
+	if err != nil {
+		t.Fatalf("RenderPaperMD: %v", err)
+	}
 	for _, want := range []string{"mode: review", "reading: selective", "verdict: accepted"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("RenderPaperMD missing %q:\n%s", want, md)

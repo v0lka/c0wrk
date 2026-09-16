@@ -16,8 +16,11 @@ package papers
 
 import (
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,13 +34,16 @@ import (
 // ---------------------------------------------------------------------------
 
 // frontMatter splits a Markdown document into its YAML front matter — the block
-// between the leading "---" fences — and the body. ok is false when the
-// document does not open with a front-matter fence, in which case fm is empty
-// and body is the whole input. A leading UTF-8 BOM is tolerated.
+// between the leading "---" fence and the next fence ("---" or "...") — and the
+// body. ok is false when the document does not open with a front-matter fence,
+// in which case fm is empty and body is the whole input. A leading UTF-8 BOM is
+// tolerated.
 //
-// An unterminated fence is recovered best-effort: the remainder is treated as
-// front matter (a truncated card must not lose its fields) and the body is
-// empty.
+// Either delimiter terminates the block, so a card written by the package
+// writer (`---` … `---`, the shape the study-paper skill documents) splits
+// correctly and its body reaches the caller. An unterminated fence is recovered
+// best-effort: the remainder is treated as front matter (a truncated card must
+// not lose its fields) and the body is empty.
 func frontMatter(content string) (fm, body string, ok bool) {
 	s := strings.TrimPrefix(content, "\ufeff")
 	lines := strings.Split(s, "\n")
@@ -48,15 +54,18 @@ func frontMatter(content string) (fm, body string, ok bool) {
 		return "", content, false
 	}
 	for i := 1; i < len(lines); i++ {
-		if k := fenceKind(lines[i]); k == fenceClose {
+		// Any fence line closes the block — "---" or "...". Without this a
+		// `---`-delimited card never terminates and its body (and the
+		// documented title fallback) is lost.
+		if k := fenceKind(lines[i]); k != fenceNone {
 			return strings.Join(lines[1:i], "\n"), strings.Join(lines[i+1:], "\n"), true
 		}
 	}
 	return strings.Join(lines[1:], "\n"), "", true
 }
 
-// fenceKind classifies a line as a front-matter fence opener ("---"), closer
-// ("---" or "..."), or not a fence at all.
+// fenceKind classifies a line as a front-matter fence ("---" or "..."; either
+// delimits the block at the opener and at the closer) or not a fence at all.
 func fenceKind(line string) int {
 	switch strings.TrimSpace(strings.TrimRight(line, "\r")) {
 	case "---":
@@ -158,7 +167,7 @@ func parseFrontMatterFallback(fm string) paperFrontMatter {
 			}
 		case "year":
 			if meta.Year == 0 {
-				if n, err := strconv.Atoi(leadingDigits(value)); err == nil {
+				if n, ok := recoverYear(value); ok {
 					meta.Year = flexibleInt(n)
 				}
 			}
@@ -223,6 +232,27 @@ func leadingDigits(s string) string {
 	return s[:i]
 }
 
+// fullYearRe matches the first four-digit run anywhere in a scalar, so a
+// qualifier-prefixed year ("c. 2017", "circa 2017") is recovered.
+var fullYearRe = regexp.MustCompile(`\d{4}`)
+
+// recoverYear extracts a year from a scalar value: a leading digit run when
+// present ("2017", "2017-06"), else the first four-digit run anywhere
+// ("c. 2017" → 2017). ok is false when no year can be recovered.
+func recoverYear(s string) (int, bool) {
+	if d := leadingDigits(s); d != "" {
+		if n, err := strconv.Atoi(d); err == nil {
+			return n, true
+		}
+	}
+	if d := fullYearRe.FindString(s); d != "" {
+		if n, err := strconv.Atoi(d); err == nil {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
 // ---------------------------------------------------------------------------
 // Tolerant YAML scalar/list types
 // ---------------------------------------------------------------------------
@@ -258,7 +288,8 @@ func (l *stringList) UnmarshalYAML(node *yaml.Node) error {
 }
 
 // flexibleInt is an int that also accepts a quoted scalar or a date-like
-// scalar ("2017", "2017-06", "c. 2017"), recovering the leading number.
+// scalar ("2017", "2017-06", "c. 2017"), recovering the year when one is
+// present.
 type flexibleInt int
 
 // UnmarshalYAML implements yaml.Unmarshaler.
@@ -266,20 +297,11 @@ func (n *flexibleInt) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind != yaml.ScalarNode {
 		return nil
 	}
-	v := strings.TrimSpace(node.Value)
-	if v == "" {
-		*n = 0
+	if year, ok := recoverYear(node.Value); ok {
+		*n = flexibleInt(year)
 		return nil
 	}
-	if iv, err := strconv.Atoi(v); err == nil {
-		*n = flexibleInt(iv)
-		return nil
-	}
-	if d := leadingDigits(v); d != "" {
-		if iv, err := strconv.Atoi(d); err == nil {
-			*n = flexibleInt(iv)
-		}
-	}
+	*n = 0
 	return nil
 }
 
@@ -678,18 +700,66 @@ func headingHasAny(heading string, tokens []string) bool {
 	return false
 }
 
-// columnIndex returns the index of the first header cell matching any name
-// (case-insensitive substring), or -1 when none matches.
+// columnIndex returns the index of the first header cell matching any name, or
+// -1 when none matches. Matching is case-insensitive and anchored to word
+// boundaries (see columnNameMatches), mirroring the frontend twin's
+// word-boundary regexes in frontend/src/lib/flashcards.ts.
 func columnIndex(header []string, names ...string) int {
 	for i, h := range header {
 		hn := strings.ToLower(strings.Trim(h, "*_` "))
 		for _, n := range names {
-			if strings.Contains(hn, n) {
+			if columnNameMatches(hn, n) {
 				return i
 			}
 		}
 	}
 	return -1
+}
+
+// columnNameMatches reports whether a cleaned, lower-cased header cell matches a
+// column-name token with the same anchored/word-boundary semantics as the
+// frontend twin (frontend/src/lib/flashcards.ts pickColumn): the token must not
+// be embedded inside a longer word, so "Reference" does not match "ref" and
+// "Tags" does not match "tag". The token "id" is additionally anchored to the
+// START of the cell (mirroring the frontend's `/^id\b/`), so "Card ID" does not
+// resolve to the id column.
+func columnNameMatches(hn, name string) bool {
+	n := strings.ToLower(strings.Trim(name, "*_` "))
+	if n == "" {
+		return false
+	}
+	if n == "id" {
+		if !strings.HasPrefix(hn, "id") {
+			return false
+		}
+		rest := hn[len("id"):]
+		return rest == "" || !isWordByte(rest[0])
+	}
+	for from := 0; from < len(hn); {
+		j := strings.Index(hn[from:], n)
+		if j < 0 {
+			return false
+		}
+		start := from + j
+		beforeOK := start == 0 || !isWordByte(hn[start-1])
+		end := start + len(n)
+		afterOK := end >= len(hn) || !isWordByte(hn[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		from = start + 1
+	}
+	return false
+}
+
+// isWordByte reports whether b is a word character for the purposes of
+// columnNameMatches (ASCII letters, digits, and underscore — the same class the
+// frontend's `\b` word boundary uses).
+func isWordByte(b byte) bool {
+	return b == '_' ||
+		(b >= 'a' && b <= 'z') ||
+		(b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9')
 }
 
 // colOr returns columnIndex(header, names...) when it resolves, else the
@@ -790,16 +860,20 @@ func ParseNote(content string) (claims []Claim, redFlags []RedFlag, uncertaintie
 	return parseClaims(tables), parseRedFlags(tables), parseUncertainties(tables)
 }
 
-// parseClaims extracts the claim→evidence table.
+// parseClaims extracts the claim→evidence table. Columns are resolved
+// exclusively (each pick excludes the indices already claimed), so on the
+// bundled note template's §5 matrix — whose "claim" and "evidence" headers sit
+// in different cells that both contain the word "claim" — the Evidence column
+// cannot re-select the Claim cell.
 func parseClaims(tables []mdTable) []Claim {
 	t, ok := pickTable(tables, []string{"claim"}, []string{"claim", "assertion", "finding"})
 	if !ok {
 		return nil
 	}
 	ic := colOr(t.Header, 0, "claim", "assertion", "finding", "statement")
-	ie := colOr(t.Header, 1, "evidence", "support", "supporting")
-	il := columnIndex(t.Header, "location", "source", "anchor", "ref", "where")
-	is := columnIndex(t.Header, "stance", "relation", "agrees")
+	ie := columnIndexExcept(t.Header, []int{ic}, "evidence", "support", "supporting")
+	il := columnIndexExcept(t.Header, []int{ic, ie}, "location", "source", "anchor", "ref", "where")
+	is := columnIndexExcept(t.Header, []int{ic, ie, il}, "stance", "relation", "agrees")
 	var out []Claim
 	for _, row := range t.Rows {
 		c := Claim{
@@ -878,7 +952,7 @@ func ParseAppraisal(content string) (Verdict, Confidence) {
 			if verdict == "" {
 				verdict = kv.value
 			}
-		case "confidence", "confidence level", "certainty":
+		case "confidence", "confidence level", "certainty", "confidence in this verdict":
 			if conf == "" {
 				conf = kv.value
 			}
@@ -958,12 +1032,16 @@ func normalizeKey(s string) string {
 // artifact content can parse without touching disk. The paper.md card supplies
 // the identity fields; note.md supplies claims/red flags/uncertainty; and
 // appraisal.md supplies the verdict/confidence — which, being the dedicated
-// appraisal sheet, wins over a conflicting value in the front matter.
+// appraisal sheet, wins over a conflicting value in the front matter. The
+// verdict override is applied only when the appraisal value resolves to a
+// canonical constant, so a template/placeholder value that merely parses as
+// text (e.g. the option list `accept / weak accept / …`) can never overwrite
+// the card's own verdict.
 func ParsePaper(paperMD, noteMD, appraisalMD string) PaperRecord {
 	rec := ParsePaperMD(paperMD)
 	rec.Claims, rec.RedFlags, rec.Uncertainties = ParseNote(noteMD)
 	if v, c := ParseAppraisal(appraisalMD); v != "" || c != "" {
-		if v != "" {
+		if isCanonicalVerdict(v) {
 			rec.Verdict = v
 		}
 		if c != "" {
@@ -973,26 +1051,43 @@ func ParsePaper(paperMD, noteMD, appraisalMD string) PaperRecord {
 	return rec
 }
 
+// isCanonicalVerdict reports whether v is one of the canonical verdict
+// constants (as opposed to a verbatim hand-authored value or a placeholder).
+func isCanonicalVerdict(v Verdict) bool {
+	switch v {
+	case VerdictAccepted, VerdictRejected, VerdictUncertain:
+		return true
+	default:
+		return false
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Filesystem orchestrators (read-only)
 // ---------------------------------------------------------------------------
 
-// readFile reads a file's contents, returning ("", false) when the file is
-// missing or unreadable — a missing optional artifact is a normal partial
-// state, not a failure. Parsing is rendering-only; mutation lives in the
+// readFile reads a file's contents. A missing artifact is a normal partial
+// state, so fs.ErrNotExist yields ("", false, nil); any other error (a
+// permission failure, a corrupted/dangling symlink, or a path that is itself a
+// directory) is a genuine failure and is propagated rather than silently folded
+// into "artifact absent". Parsing is rendering-only; mutation lives in the
 // writer, which uses its own strict reads.
-func readFile(path string) (string, bool) {
+func readFile(path string) (body string, ok bool, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", false
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("reading paper artifact %q: %w", path, err)
 	}
-	return string(data), true
+	return string(data), true, nil
 }
 
 // ParsePaperDir parses a single paper directory. It is fully best-effort: each
 // of the three artifacts is optional, so a directory carrying only paper.md (or
 // even nothing) parses cleanly into a record holding whatever was present. Only
-// a missing or unreadable directory itself is an error.
+// a missing or unreadable directory itself, or an artifact that exists but
+// cannot be read, is an error.
 func ParsePaperDir(dir string) (*PaperRecord, error) {
 	rec, _, err := parsePaperDir(dir)
 	return rec, err
@@ -1000,7 +1095,8 @@ func ParsePaperDir(dir string) (*PaperRecord, error) {
 
 // parsePaperDir is ParsePaperDir plus a presence flag: had reports whether the
 // directory carried at least one of the three artifacts. ParseLibraryDir uses
-// it to skip stray non-paper directories.
+// it to skip stray non-paper directories. A missing artifact is not an error; an
+// artifact that exists but cannot be read is propagated.
 func parsePaperDir(dir string) (*PaperRecord, bool, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
@@ -1010,20 +1106,35 @@ func parsePaperDir(dir string) (*PaperRecord, bool, error) {
 		return nil, false, errors.New("paper path is not a directory: " + dir)
 	}
 
-	paperMD, hasPaper := readFile(filepath.Join(dir, PaperFileName))
-	noteMD, hasNote := readFile(filepath.Join(dir, NoteFileName))
-	appraisalMD, hasAppraisal := readFile(filepath.Join(dir, AppraisalFileName))
+	paperMD, hasPaper, err := readFile(filepath.Join(dir, PaperFileName))
+	if err != nil {
+		return nil, false, err
+	}
+	noteMD, hasNote, err := readFile(filepath.Join(dir, NoteFileName))
+	if err != nil {
+		return nil, false, err
+	}
+	appraisalMD, hasAppraisal, err := readFile(filepath.Join(dir, AppraisalFileName))
+	if err != nil {
+		return nil, false, err
+	}
 
 	rec := ParsePaper(paperMD, noteMD, appraisalMD)
 	rec.Dir = dir
 	// Derive a fallback identity from the directory name: its base is the slug
-	// the writer used, and may also be a P-NNN id.
+	// the writer used, and may also be a P-NNN id. When neither yields a
+	// canonical id the directory-derived slug is used, so the record always
+	// carries a deterministic, non-empty id (the frontend keys records on it).
 	base := filepath.Base(dir)
 	if rec.Slug == "" {
 		rec.Slug = base
 	}
 	if rec.ID == "" {
-		rec.ID = NormalizePaperID(base)
+		if id := NormalizePaperID(base); id != "" {
+			rec.ID = id
+		} else {
+			rec.ID = rec.Slug
+		}
 	}
 	return &rec, hasPaper || hasNote || hasAppraisal, nil
 }

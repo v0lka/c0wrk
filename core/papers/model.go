@@ -138,30 +138,34 @@ const (
 	ReadingSkip Reading = "skip"
 )
 
-// NormalizeMode canonicalizes a mode token (lower-cased, trimmed). Known
-// values map to their constants; anything else is returned lower-cased so it
-// is preserved rather than dropped. The known set spans both vocabularies the
-// skill writes — the engagement depths (skim/deep/survey) and the skill's own
-// modes (review/implement/teach) — so a card written with either token survives
-// the round trip instead of losing its mode badge.
+// normalizeValueToken lower-cases a raw scalar/table value and strips
+// surrounding Markdown emphasis and punctuation (asterisk, underscore, backtick,
+// space and dot), so an emphasised cell such as a bolded "review" folds the same
+// as a bare "review". It is the single value-normalizer shared by every value
+// fold in the package (mode/reading/verdict/confidence here, and stage/grade in
+// flashcards.go), so header and value folding cannot drift.
+func normalizeValueToken(raw string) string {
+	return strings.ToLower(strings.Trim(cleanLine(raw), "*_` ."))
+}
+
+// NormalizeMode normalizes a mode token: lower-cased, trimmed, and stripped of
+// surrounding Markdown emphasis/punctuation. It performs NO validation or
+// canonicalization — the skill's mode vocabulary (skim/deep/survey/review/
+// implement/teach) and any hand-authored value are all passed through verbatim,
+// so a custom mode is preserved rather than dropped (and no dead enum-list
+// switch implies a filtering this function does not perform).
 func NormalizeMode(raw string) Mode {
-	s := strings.ToLower(strings.TrimSpace(raw))
-	switch Mode(s) {
-	case ModeSkim, ModeDeep, ModeSurvey, ModeReview, ModeImplement, ModeTeach:
-		return Mode(s)
-	default:
-		return Mode(s)
-	}
+	return Mode(normalizeValueToken(raw))
 }
 
 // NormalizeReading canonicalizes a reading-decision token (lower-cased,
-// trimmed), folding the phrase forms the skill writes in prose ("read in full",
-// "read selectively") onto the canonical constants, and folding the "no reading
-// decision" spellings ("n/a", "none", "-", "") to the empty value. An
-// unrecognized value is returned lower-cased so callers can still render it.
+// trimmed, emphasis/punctuation stripped), folding the phrase forms the skill
+// writes in prose ("read in full", "read selectively") onto the canonical
+// constants, and folding the "no reading decision" spellings ("n/a", "none",
+// "-", "") to the empty value. An unrecognized value is returned lower-cased so
+// callers can still render it.
 func NormalizeReading(raw string) Reading {
-	s := strings.ToLower(strings.TrimSpace(raw))
-	s = strings.Trim(s, "*_` .")
+	s := normalizeValueToken(raw)
 	switch s {
 	case "full", "read in full", "read fully", "in full":
 		return ReadingFull
@@ -181,8 +185,7 @@ func NormalizeReading(raw string) Reading {
 // the input and folds common synonyms onto the canonical constants; an
 // unrecognized value is returned lower-cased so callers can still render it.
 func NormalizeVerdict(raw string) Verdict {
-	s := strings.ToLower(strings.TrimSpace(raw))
-	s = strings.Trim(s, "*_` .")
+	s := normalizeValueToken(raw)
 	switch s {
 	case "accepted", "accept", "confirmed", "confirm", "reproducible", "sound",
 		"weak accept", "weak-accept":
@@ -201,8 +204,7 @@ func NormalizeVerdict(raw string) Verdict {
 // synonyms ("med", "moderate") onto the canonical constants. An unrecognized
 // value is returned lower-cased.
 func NormalizeConfidence(raw string) Confidence {
-	s := strings.ToLower(strings.TrimSpace(raw))
-	s = strings.Trim(s, "*_` .")
+	s := normalizeValueToken(raw)
 	switch s {
 	case "low", "weak":
 		return ConfidenceLow
@@ -215,13 +217,16 @@ func NormalizeConfidence(raw string) Confidence {
 	}
 }
 
-// paperIDRe matches a library-local paper identifier, e.g. "P-001".
-var paperIDRe = regexp.MustCompile(`(?i)P-?(\d+)`)
+// paperIDRe matches a whole library-local paper identifier, e.g. "P-001". It is
+// anchored at both ends so a slug or directory base that merely contains a
+// `p-<n>` run (e.g. "group-2") does not mint a spurious canonical id.
+var paperIDRe = regexp.MustCompile(`(?i)^P-?(\d+)$`)
 
-// researchIDRe matches a research-hypothesis reference (H-NNN) as recorded in a
-// paper's research_ids list. It is intentionally a local copy of the research
-// package's spelling rule so core/papers does not depend on core/research.
-var researchIDRe = regexp.MustCompile(`(?i)H-?(\d+)`)
+// researchIDRe matches a whole research-hypothesis reference (H-NNN) as recorded
+// in a paper's research_ids list. It is intentionally a local copy of the
+// research package's spelling rule so core/papers does not depend on
+// core/research, and is anchored at both ends for the same reason as paperIDRe.
+var researchIDRe = regexp.MustCompile(`(?i)^H-?(\d+)$`)
 
 // NormalizePaperID canonicalizes a paper identifier to its zero-padded,
 // hyphenated, upper-case form ("P-001"). It accepts "P001", "P-001", "P1" and
@@ -471,11 +476,6 @@ func (r PaperRecord) ResolvedSlug() string {
 	return ""
 }
 
-// IsAppraised reports whether the record carries an appraisal verdict.
-func (r PaperRecord) IsAppraised() bool {
-	return r.Verdict != ""
-}
-
 // PaperLibrary is a parsed paper library: the library root directory and every
 // paper record under it, sorted deterministically. An empty library (no papers
 // yet) is a valid partial state.
@@ -525,6 +525,10 @@ func (l *PaperLibrary) Get(key string) *PaperRecord {
 // ByResearchID returns every paper linked to the given research-hypothesis
 // reference (H-NNN), in library order. The reference is normalized, so "h1"
 // and "H-001" select the same papers. The result is nil when nothing matches.
+//
+// This is public, spec-owned API: it is the documented H-NNN → papers selector
+// (specs/domains/papers.md) and is exercised by the package tests. Keep it even
+// though today's backend links papers to hypotheses through its own helper.
 func (l *PaperLibrary) ByResearchID(researchID string) []*PaperRecord {
 	want := NormalizeResearchID(researchID)
 	if l == nil || want == "" {

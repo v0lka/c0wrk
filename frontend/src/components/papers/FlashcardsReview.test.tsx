@@ -223,4 +223,52 @@ describe('FlashcardsReview', () => {
     click('[data-testid="paper-flashcards-rate-good"]')
     expect(mockedRecordFlashcardReview).not.toHaveBeenCalled()
   })
+
+  it('does not reset an in-progress review when the same paper’s deck content changes (write-back refetch)', () => {
+    usePaperStore.getState().loadLibrary({
+      project_id: 'p1',
+      research_root: '/ws/.research',
+      root: '/ws/.research/papers',
+      papers: [paperRecordOf('P-001')],
+      pinned: [],
+    })
+    mockedRecordFlashcardReview.mockResolvedValue(undefined)
+
+    // A persistent root so the review state survives a prop update (a remount
+    // would reset it regardless).
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const localRoot = createRoot(host)
+    const view = (content: string) => (
+      <FlashcardsReview
+        artifact={artifactOf(content)}
+        testId="paper-flashcards"
+        emptyText="No flashcards recorded for this paper yet."
+        today="2024-01-10"
+        paperId="P-001"
+        resetKey="P-001"
+      />
+    )
+
+    act(() => {
+      localRoot.render(view(DECK))
+    })
+    click('[data-testid="paper-flashcards-reveal"]')
+    click('[data-testid="paper-flashcards-rate-good"]')
+    expect(q('[data-testid="paper-flashcards-progress"]')?.textContent).toBe('Card 2 / 3')
+
+    // The grade is written back to flashcards.md and the watcher's refetch
+    // re-reads the deck with the new review-log row — the SAME paper's content
+    // changes. A content-keyed reset would jump back to "Card 1 / 3"; keyed on
+    // the paper identity the review stays where it was.
+    act(() => {
+      localRoot.render(view(`${DECK}| P1-01 | 2024-01-10 | good | 2024-01-13 |\n`))
+    })
+    expect(q('[data-testid="paper-flashcards-progress"]')?.textContent).toBe('Card 2 / 3')
+    expect(mockedRecordFlashcardReview).toHaveBeenCalledWith('p1', 'P-001', 'P1-01', 'good')
+
+    act(() => {
+      localRoot.unmount()
+    })
+  })
 })

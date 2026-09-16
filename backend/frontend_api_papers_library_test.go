@@ -423,11 +423,12 @@ func TestEmitPapersChanged_ScopesToLibrary(t *testing.T) {
 	}
 }
 
-// TestPapersFileChanged_EmitsWithoutResearch is the acceptance test for the
-// hybrid path: with RESEARCH OFF, a paper-card edit still emits papers:changed
-// (the library is watched independently of the toggle), while
-// research:file_changed stays silent. It mirrors the production CODE-mode
-// watcher callback (switchProjectSetupWatcher).
+// TestPapersFileChanged_EmitsWithoutResearch covers the hybrid path through a
+// test-built watcher: with RESEARCH OFF, a paper-card edit still emits
+// papers:changed (the library is watched independently of the toggle), while
+// research:file_changed stays silent. The PRODUCTION watcher wiring in
+// switchProjectSetupWatcher is covered separately by
+// TestSwitchProjectSetupWatcher_WatchesHybridLibrary (Issue 107).
 func TestPapersFileChanged_EmitsWithoutResearch(t *testing.T) {
 	base := t.TempDir()
 	ws := filepath.Join(base, "project", "workspace")
@@ -506,12 +507,12 @@ func TestPapersFileChanged_EmitsWithoutResearch(t *testing.T) {
 	}
 }
 
-// TestComparisonsFileChanged_EmitsWithoutResearch is the hybrid acceptance test
-// for the comparisons sibling: with RESEARCH OFF, writing
-// <research-root>/comparisons/<slug>.md still emits papers:changed (the
-// comparisons directory is watched independently of the toggle), so the Compare
-// section refreshes without reopening the tab. It mirrors the production
-// CODE-mode watcher callback (switchProjectSetupWatcher).
+// TestComparisonsFileChanged_EmitsWithoutResearch covers the hybrid path for the
+// comparisons sibling through a test-built watcher: with RESEARCH OFF, writing
+// <research-root>/comparisons/<slug>.md still emits papers:changed, so the
+// Compare section refreshes without reopening the tab. The PRODUCTION watcher
+// wiring in switchProjectSetupWatcher is covered separately by
+// TestSwitchProjectSetupWatcher_WatchesHybridLibrary (Issue 107).
 func TestComparisonsFileChanged_EmitsWithoutResearch(t *testing.T) {
 	base := t.TempDir()
 	ws := filepath.Join(base, "project", "workspace")
@@ -663,5 +664,245 @@ func TestDisableResearch_RewatchesPaperLibrary(t *testing.T) {
 	}
 	if researchChanged.Load() != 0 {
 		t.Error("research:file_changed must not fire once RESEARCH is disabled")
+	}
+}
+
+// TestSetPaperPinned_UnpinAfterDirectoryDeleted pins Issue 5: a pinned paper
+// whose whole directory was deleted (so lib.Get returns nil) must still be
+// unpinnable — otherwise the persisted pin is orphaned forever (no other RPC
+// removes a paper pin).
+func TestSetPaperPinned_UnpinAfterDirectoryDeleted(t *testing.T) {
+	api, projectID, ws, _ := papersTestFrontend(t, "", project.ResearchPins{})
+	libraryRoot := config.PaperLibraryPath(ws)
+	dir := seedTestPaper(t, libraryRoot, papers.PaperRecord{
+		ID: "P-001", Slug: "gone", Title: "Gone",
+	})
+	if err := api.SetPaperPinned(projectID, "P-001", true); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+	if got := researchPinsOf(t, api, projectID).Papers; len(got) != 1 || got[0] != "papers/gone/paper.md" {
+		t.Fatalf("pins = %v, want [papers/gone/paper.md]", got)
+	}
+
+	// Delete the entire paper directory: lib.Get("P-001") is now nil.
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("remove paper dir: %v", err)
+	}
+	if err := api.SetPaperPinned(projectID, "gone", false); err != nil {
+		t.Fatalf("unpin after the directory was deleted: %v", err)
+	}
+	if got := researchPinsOf(t, api, projectID).Papers; len(got) != 0 {
+		t.Fatalf("stale pin survived the directory deletion: %v", got)
+	}
+}
+
+// TestSetPaperPinned_UnpinByStoredCardPath pins the path-keyed half of Issue 5's
+// fix: a caller may pass the stored card path itself (what a
+// pinned-but-missing list would do), and the pin must still be removed even
+// though no record resolves.
+func TestSetPaperPinned_UnpinByStoredCardPath(t *testing.T) {
+	api, projectID, ws, _ := papersTestFrontend(t, "", project.ResearchPins{})
+	libraryRoot := config.PaperLibraryPath(ws)
+	dir := seedTestPaper(t, libraryRoot, papers.PaperRecord{
+		ID: "P-001", Slug: "gone", Title: "Gone",
+	})
+	if err := api.SetPaperPinned(projectID, "P-001", true); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("remove paper dir: %v", err)
+	}
+	if err := api.SetPaperPinned(projectID, "papers/gone/paper.md", false); err != nil {
+		t.Fatalf("unpin by the stored card path: %v", err)
+	}
+	if got := researchPinsOf(t, api, projectID).Papers; len(got) != 0 {
+		t.Fatalf("stale pin survived: %v", got)
+	}
+}
+
+// TestSetPaperPinned_UnpinAfterDirectoryRenamed pins Issue 53: a pin whose card
+// directory was renamed (slug changed) while the card kept its declared
+// identity must still be removable — the stored pin keys off the old path, so
+// matching on the current on-disk card path alone silently leaves it.
+func TestSetPaperPinned_UnpinAfterDirectoryRenamed(t *testing.T) {
+	api, projectID, ws, _ := papersTestFrontend(t, "", project.ResearchPins{})
+	libraryRoot := config.PaperLibraryPath(ws)
+	dir := seedTestPaper(t, libraryRoot, papers.PaperRecord{
+		ID: "P-001", Slug: "old-slug", Title: "Renamed",
+	})
+	if err := api.SetPaperPinned(projectID, "P-001", true); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+	if got := researchPinsOf(t, api, projectID).Papers; len(got) != 1 || got[0] != "papers/old-slug/paper.md" {
+		t.Fatalf("pins = %v, want [papers/old-slug/paper.md]", got)
+	}
+
+	// Rename the directory; the card (id + declared slug) is preserved, so
+	// lib.Get("P-001") resolves to the NEW directory while the stored pin still
+	// keys off the old path.
+	if err := os.Rename(dir, filepath.Join(libraryRoot, "new-slug")); err != nil {
+		t.Fatalf("rename paper dir: %v", err)
+	}
+	if err := api.SetPaperPinned(projectID, "P-001", false); err != nil {
+		t.Fatalf("unpin after the directory was renamed: %v", err)
+	}
+	if got := researchPinsOf(t, api, projectID).Papers; len(got) != 0 {
+		t.Fatalf("stale pin survived the rename: %v", got)
+	}
+}
+
+// TestGetPapers_UnreadableLibraryIsAnError pins Issue 37: an unreadable library
+// root (anything other than "does not exist") must surface an error rather than
+// degrade to an empty library indistinguishable from "no papers studied yet".
+func TestGetPapers_UnreadableLibraryIsAnError(t *testing.T) {
+	api, projectID, ws, _ := papersTestFrontend(t, "", project.ResearchPins{})
+	// Put a regular FILE where the library DIRECTORY is expected — a genuine
+	// read failure (not fs.ErrNotExist).
+	libraryRoot := config.PaperLibraryPath(ws)
+	if err := os.MkdirAll(filepath.Dir(libraryRoot), 0o755); err != nil {
+		t.Fatalf("mkdir research root: %v", err)
+	}
+	if err := os.WriteFile(libraryRoot, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write library path: %v", err)
+	}
+
+	if _, err := api.GetPapers(projectID); err == nil {
+		t.Fatal("GetPapers must surface an unreadable library root, not render it as empty")
+	}
+	if _, err := api.GetPaper(projectID, "P-001"); err == nil {
+		t.Fatal("GetPaper must surface an unreadable library root")
+	}
+}
+
+// TestResearchRPC_EnableResearchOffKeysEffectiveRootMutex pins Issue 2: while
+// RESEARCH is off the effective research root is the default
+// <workspace>/.research, and EnableResearch must serialize on THAT mutex — the
+// same one the paper writers (SetPaperPinned / RecordFlashcardReview /
+// RunPaperLiterature) lock, or a concurrent pin's full-row save can clobber the
+// enable (projects-row lost update).
+func TestResearchRPC_EnableResearchOffKeysEffectiveRootMutex(t *testing.T) {
+	api, projectID, ws, effectiveRoot := papersTestFrontend(t, "", project.ResearchPins{})
+
+	// Premise: the effective root (what the paper writers lock) is the default
+	// research path, distinct from the raw (empty) persisted root.
+	if want := config.ProjectResearchPath(ws); effectiveRoot != want {
+		t.Fatalf("effective root = %q, want the default %q", effectiveRoot, want)
+	}
+
+	mu := api.researchMutationMu(effectiveRoot)
+	mu.Lock()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := api.EnableResearch(projectID, "")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		mu.Unlock()
+		t.Fatalf("EnableResearch completed while the effective-root mutex was held externally: %v", err)
+	case <-time.After(300 * time.Millisecond):
+		// Still parked on the mutex — the serialization holds.
+	}
+	mu.Unlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("EnableResearch: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("EnableResearch did not finish after the mutex was released")
+	}
+
+	final, err := api.projectManager.GetProject(projectID)
+	if err != nil {
+		t.Fatalf("reload project: %v", err)
+	}
+	if final.ResearchRoot != effectiveRoot {
+		t.Errorf("research root = %q after enable, want %q", final.ResearchRoot, effectiveRoot)
+	}
+}
+
+// TestSwitchProjectSetupWatcher_WatchesHybridLibrary is the production-wiring
+// acceptance test for Issue 107: it drives the REAL f.switchProjectSetupWatcher
+// for a CODE project (RESEARCH off) and asserts a paper-card and a comparison
+// write under the effective research root still emit papers:changed. The two
+// self-wiring tests above build their own watcher, so the production WatchTree
+// call in switchProjectSetupWatcher had no coverage and could regress silently.
+func TestSwitchProjectSetupWatcher_WatchesHybridLibrary(t *testing.T) {
+	base := t.TempDir()
+	ws := filepath.Join(base, "project", "workspace")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatalf("mkdir ws: %v", err)
+	}
+
+	var papersChanged atomic.Int32
+	f := &FrontendAPI{
+		agentDir: base,
+		emitEvent: func(name string, _ ...any) {
+			if name == EventPapersChanged {
+				papersChanged.Add(1)
+			}
+		},
+	}
+	// The production callback snapshots the active fields (set by
+	// switchProjectActivate in the real switch); set them directly so this test
+	// stays focused on the watcher wiring.
+	p := &project.ProjectInfo{ID: "proj-1", Name: "Hybrid", WorkspacePath: ws}
+	f.activeProjectMu.Lock()
+	f.activeProjectID = p.ID
+	f.activeProjectPath = ws
+	f.activeResearchRoot = "" // RESEARCH off — hybrid mode
+	f.activePapersRoot = papersRootForProject(p)
+	f.activeComparisonsRoot = comparisonsRootForProject(p)
+	f.activeProjectMu.Unlock()
+	t.Cleanup(func() {
+		f.watcherMu.Lock()
+		if f.watcher != nil {
+			_ = f.watcher.Close()
+		}
+		f.watcherMu.Unlock()
+	})
+
+	f.switchProjectSetupWatcher(p)
+	f.watcherMu.Lock()
+	created := f.watcher != nil
+	f.watcherMu.Unlock()
+	if !created {
+		t.Fatal("switchProjectSetupWatcher did not create a watcher for a CODE project")
+	}
+
+	// Issue 52: nothing is materialized at switch time.
+	if _, err := os.Stat(config.ProjectResearchPath(ws)); !os.IsNotExist(err) {
+		t.Fatalf("switchProjectSetupWatcher materialized .research: err=%v", err)
+	}
+
+	// A paper-card write under the effective research root — with RESEARCH off
+	// and the tree created on demand — must emit papers:changed.
+	cardDir := filepath.Join(config.PaperLibraryPath(ws), "vaswani-2017-attention")
+	if err := os.MkdirAll(cardDir, 0o755); err != nil {
+		t.Fatalf("mkdir card dir: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond) // let the recursive root auto-add the new tree
+	if err := os.WriteFile(filepath.Join(cardDir, papers.PaperFileName), []byte("---\nid: P-001\n---\n"), 0o644); err != nil {
+		t.Fatalf("write card: %v", err)
+	}
+	if !waitForEmission(&papersChanged, 1, 3*time.Second) {
+		t.Fatal("papers:changed NOT emitted via the production switchProjectSetupWatcher wiring (hybrid mode)")
+	}
+
+	// The comparisons sibling is watched through the same production wiring.
+	comparisonsRoot := config.ComparisonsPath(ws)
+	if err := os.MkdirAll(comparisonsRoot, 0o755); err != nil {
+		t.Fatalf("mkdir comparisons dir: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if err := os.WriteFile(filepath.Join(comparisonsRoot, "a-vs-b.md"), []byte("# A vs B\n"), 0o644); err != nil {
+		t.Fatalf("write comparison: %v", err)
+	}
+	if !waitForEmission(&papersChanged, 2, 3*time.Second) {
+		t.Fatal("papers:changed NOT emitted for a comparison write via the production wiring")
 	}
 }

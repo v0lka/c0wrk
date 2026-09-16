@@ -148,7 +148,49 @@ describe('parseComparison — degradation', () => {
   })
 })
 
-describe('comparisonMentionsPaper', () => {
+describe('parseComparison — heading hijack (Issue 46)', () => {
+  it('does not let a topic keyword hijack the agreements/gaps sections', () => {
+    const doc = `# Paper Comparison Matrix — Do the papers agree?
+
+## 1. Papers under comparison
+
+| ID | Short name | Citation / identifier | One-line summary |
+| --- | --- | --- | --- |
+| P-001 | A | arxiv:1 | a |
+
+## 2. Comparison matrix
+
+| Dimension | P-001 |
+| --- | --- |
+| core | x |
+
+## 4. Where the papers agree / disagree
+
+| Point | Agree / disagree | Papers & anchors |
+| --- | --- | --- |
+| X | agree | P-001 §1 |
+`
+    const parsed = parseComparison(doc)
+    expect(parsed.matrix).toHaveLength(1)
+    expect(parsed.agreements).toHaveLength(1)
+  })
+
+  it('resolves a "# Comparison Matrix — topic" H1 that drops the "Paper" prefix', () => {
+    const doc = `# Comparison Matrix — Sparse vs dense
+
+## 2. Comparison matrix
+
+| Dimension | P-001 |
+| --- | --- |
+| core | x |
+`
+    const parsed = parseComparison(doc)
+    expect(parsed.hasMatrix).toBe(true)
+    expect(parsed.columns).toEqual(['P-001'])
+  })
+})
+
+describe('comparisonMentionsPaper (Issue 44 — scoped to the participants table)', () => {
   const paper: ComparisonMentionPaper = {
     id: 'P-002',
     slug: 'longformer-2020',
@@ -157,18 +199,67 @@ describe('comparisonMentionsPaper', () => {
     identifiers: [{ scheme: 'arxiv', value: '2004.05150' }],
   }
 
-  it('matches on the internal id present in the artifact', () => {
+  it('matches a paper listed in the "Papers under comparison" table', () => {
     expect(comparisonMentionsPaper(COMPARISON, paper)).toBe(true)
   })
 
-  it('matches on an identifier (scheme:value)', () => {
-    const content = 'a comparison that only cites arxiv:2004.05150'
+  it('matches via a citation identifier embedded in the table cell', () => {
+    const content = `# Paper Comparison Matrix — x
+
+## 1. Papers under comparison
+
+| ID | Short name | Citation / identifier | One-line summary |
+| --- | --- | --- | --- |
+| P-002 | Longformer | arXiv:2004.05150 [cs] | sparse attention |
+`
     expect(comparisonMentionsPaper(content, paper)).toBe(true)
   })
 
-  it('matches on the slug or the title', () => {
-    expect(comparisonMentionsPaper('see papers/longformer-2020/paper.md', paper)).toBe(true)
-    expect(comparisonMentionsPaper('the Longformer approach', paper)).toBe(true)
+  it('does not match a paper merely mentioned in the fairness notes', () => {
+    const content = `# Paper Comparison Matrix — encoders
+
+## 1. Papers under comparison
+
+| ID | Short name | Citation / identifier | One-line summary |
+| --- | --- | --- | --- |
+| P-001 | RoBERTa | arxiv:1907.11692 | robustly optimized encoder |
+| P-003 | GPT | arxiv:2005.14165 | autoregressive LM |
+
+## 3. Fairness & comparability notes
+
+- RoBERTa builds on BERT but is compared only with GPT here.
+`
+    const bert: ComparisonMentionPaper = {
+      id: 'P-002',
+      slug: 'bidirectional-encoders',
+      title: 'BERT',
+      card_path: 'papers/bidirectional-encoders/paper.md',
+      identifiers: [{ scheme: 'arxiv', value: '1810.04805' }],
+    }
+    expect(comparisonMentionsPaper(content, bert)).toBe(false)
+  })
+
+  it('does not match on an identifier substring', () => {
+    const content = `# Paper Comparison Matrix — x
+
+## 1. Papers under comparison
+
+| ID | Short name | Citation / identifier | One-line summary |
+| --- | --- | --- | --- |
+| P-005 | Baseline | arxiv:1706.03762 | dense attention |
+`
+    const other: ComparisonMentionPaper = {
+      id: 'P-006',
+      slug: 'short-id',
+      title: 'Another',
+      card_path: 'papers/short-id/paper.md',
+      identifiers: [{ scheme: 'arxiv', value: '1706.0376' }],
+    }
+    expect(comparisonMentionsPaper(content, other)).toBe(false)
+  })
+
+  it('does not match a prose-only artifact with no participants table', () => {
+    expect(comparisonMentionsPaper('a note that mentions arxiv:2004.05150', paper)).toBe(false)
   })
 
   it('does not match an unrelated artifact', () => {

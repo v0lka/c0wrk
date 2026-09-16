@@ -2,6 +2,8 @@ package backend
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -66,9 +68,22 @@ func TestSeedPapersSkillPack_SeedsGlobalSkillsDir(t *testing.T) {
 }
 
 // TestSeedPapersSkillPack_EmptyAgentDirIsNoop pins the guard: an empty agentDir
-// (the test/default case) must be a silent no-op, never a write to the real
-// user home.
+// (the test/default case) must be a silent no-op — never a write to the real
+// user home, and never a write into the current working directory. Because
+// config.SkillsDir("") resolves to the RELATIVE ".agents/skills", a missing
+// guard would materialize ".agents" under the test's working directory, so the
+// test runs from a fresh temp CWD and asserts nothing was created.
 func TestSeedPapersSkillPack_EmptyAgentDirIsNoop(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+
 	f := &FrontendAPI{}
 	f.seedPapersSkillPack("")
+
+	if _, err := os.Stat(filepath.Join(cwd, ".agents")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("seedPapersSkillPack(\"\") wrote into the working directory (stat .agents: %v)", err)
+	}
+	if _, err := os.Stat(config.SkillsDir("")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("seedPapersSkillPack(\"\") created the relative skills dir %q (stat: %v)", config.SkillsDir(""), err)
+	}
 }

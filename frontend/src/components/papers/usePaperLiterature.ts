@@ -9,11 +9,16 @@
 //
 // The directory is listed ONCE to learn whether the file exists, then only the
 // present file is read (mirrors usePaperArtifacts), and `reload()` re-runs the
-// probe after a successful lookup writes a fresh file.
+// probe after a successful lookup writes a fresh file. The probe is ALSO keyed
+// to the paper store's library sync (its `lastSyncAt`), so a `literature.json`
+// written by the helper in a chat session (which emits `papers:changed`) refreshes
+// the graph without the user reopening the tab — the same refresh contract the
+// sibling `usePaperArtifacts`/`useComparisons` loaders honour.
 
 import { useCallback, useEffect, useState } from 'react'
 import { listDirectory, readFile } from '@/api/workspace'
 import { logger } from '@/lib/logger'
+import { selectPapersSyncAt, usePaperStore } from '@/stores/paperStore'
 
 /** The literature helper's output file name inside a paper directory. */
 export const LITERATURE_JSON_FILE = 'literature.json'
@@ -36,20 +41,29 @@ function joinPath(dir: string, name: string): string {
 }
 
 function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
+  return String(err instanceof Error ? err.message : err)
 }
 
 /**
  * Load `<dir>/literature.json`. A directory-listing failure degrades to
  * "missing" (non-fatal); a read failure on a present file surfaces as
  * `readError`. `reload` re-probes, keyed by an internal nonce.
+ *
+ * `refreshKey` re-probes when it changes. When omitted, the hook falls back to
+ * the paper store's library-sync stamp, so a skill-written `literature.json`
+ * refreshes the graph automatically (the paper workspace need not thread one).
  */
-export function usePaperLiterature(dir: string): {
+export function usePaperLiterature(
+  dir: string,
+  refreshKey?: number,
+): {
   artifact: LiteratureArtifact
   reload: () => void
 } {
   const [artifact, setArtifact] = useState<LiteratureArtifact>(ABSENT)
   const [nonce, setNonce] = useState(0)
+  const syncAt = usePaperStore(selectPapersSyncAt)
+  const key = refreshKey ?? syncAt
 
   const reload = useCallback(() => setNonce((n) => n + 1), [])
 
@@ -85,7 +99,7 @@ export function usePaperLiterature(dir: string): {
     return () => {
       cancelled = true
     }
-  }, [dir, nonce])
+  }, [dir, nonce, key])
 
   return { artifact, reload }
 }

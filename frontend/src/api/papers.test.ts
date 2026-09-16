@@ -14,7 +14,6 @@ vi.mock('@/lib/logger', () => ({
 }))
 
 import {
-  getPaper,
   getPapers,
   isPapersChangedPayload,
   normalizePaperLibrary,
@@ -232,27 +231,6 @@ describe('normalizePaperLibrary', () => {
   it('throws on non-object input', () => {
     expect(() => normalizePaperLibrary(null)).toThrow('Invalid papers response from backend')
     expect(() => normalizePaperLibrary('nope')).toThrow('Invalid papers response from backend')
-  })
-})
-
-describe('getPaper boundary validation', () => {
-  beforeEach(() => {
-    delete mockApp.GetPaper
-  })
-
-  it('returns a normalized single record', async () => {
-    mockApp.GetPaper = vi.fn(() => Promise.resolve(wirePaper()))
-
-    const record = await getPaper('p1', 'P-001')
-
-    expect(record.id).toBe('P-001')
-    expect(record.anchors[0]).toEqual({ label: 'sec 3', ref: 'p.4', note: '' })
-  })
-
-  it('throws when the payload is malformed', async () => {
-    mockApp.GetPaper = vi.fn(() => Promise.resolve({ id: 'P-001' }))
-
-    await expect(getPaper('p1', 'P-001')).rejects.toThrow('Invalid paper response from backend')
   })
 })
 

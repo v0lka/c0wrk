@@ -6,17 +6,17 @@
 // paper's extracted source text (source.md) and scroll to it.
 //
 // The resolution is deliberately CONSERVATIVE. It first recognises the anchor's
-// SHAPE (section, figure, table, equation, or a verbatim quote) and only then
-// reports a hit on a confident structural match. Anything it cannot classify
-// confidently — a bare number, a page pointer, a structural keyword without a
-// number, or a too-short quote — resolves to `null`, so the UI degrades to an
-// honest "not found" instead of jumping to a wrong line.
+// SHAPE (section, figure, table, equation, algorithm, or a verbatim quote) and
+// only then reports a hit on a confident structural match. Anything it cannot
+// classify confidently — a bare number, a page pointer, a structural keyword
+// without a number, or a too-short quote — resolves to `null`, so the UI
+// degrades to an honest "not found" instead of jumping to a wrong line.
 //
 // Pure over strings: no React, no DOM, no I/O.
 
 import type { PaperAnchor } from '@/api/papers'
 
-export type AnchorKind = 'section' | 'figure' | 'table' | 'equation' | 'text'
+export type AnchorKind = 'section' | 'figure' | 'table' | 'equation' | 'algorithm' | 'text'
 
 export interface AnchorHit {
   /** 0-based line index into the source document. */
@@ -54,15 +54,19 @@ export function classifyAnchor(ref: string): Classified | null {
 
   let m = /^(?:§+\s*|sec(?:tion)?\.?\s*)(\d+(?:\.\d+)*)/i.exec(s)
   if (m) return { kind: 'section', token: m[1]! }
-  m = /^fig(?:ure)?\.?\s*(\d+)/i.exec(s)
+  // Figures/tables carry an optional sub-label suffix (`Fig. 2a`, `Table 3b`),
+  // which is part of the reference: `2a` targets a DIFFERENT float than `2`.
+  m = /^fig(?:ure)?\.?\s*(\d+[a-z]?)/i.exec(s)
   if (m) return { kind: 'figure', token: m[1]! }
-  m = /^tab(?:le)?\.?\s*(\d+)/i.exec(s)
+  m = /^tab(?:le)?\.?\s*(\d+[a-z]?)/i.exec(s)
   if (m) return { kind: 'table', token: m[1]! }
   m = /^eq(?:uation)?\.?\s*\(?(\d+)\)?/i.exec(s)
   if (m) return { kind: 'equation', token: m[1]! }
+  m = /^alg(?:orithm)?\.?\s*(\d+)/i.exec(s)
+  if (m) return { kind: 'algorithm', token: m[1]! }
 
   // A structural keyword on its own is too weak to anchor on.
-  if (/^(?:fig(?:ure)?|tab(?:le)?|eq(?:uation)?|sec(?:tion)?|§)\b/i.test(s)) return null
+  if (/^(?:fig(?:ure)?|tab(?:le)?|eq(?:uation)?|sec(?:tion)?|alg(?:orithm)?|§)\b/i.test(s)) return null
 
   return { kind: 'text', token: s }
 }
@@ -81,9 +85,24 @@ export function sectionHeadingMatches(text: string, token: string): boolean {
   return re.test(text)
 }
 
-function numberedLineRe(kind: 'figure' | 'table' | 'equation', token: string): RegExp {
-  const word = kind === 'figure' ? 'fig(?:ure)?' : kind === 'table' ? 'tab(?:le)?' : 'eq(?:uation)?'
-  return new RegExp(`\\b${word}\\.?\\s*\\(?${escapeRe(token)}\\)?\\b`, 'i')
+/** Trailing boundary for a float reference: forbid a following word character
+ *  or a sub-number, so a digits-only token (`Fig. 2`) never matches `Figure 2a`
+ *  or `Figure 2.1`, and a sub-labelled token (`Fig. 2a`) never matches `2ab`. */
+const NUMBER_END = '(?![\\w]|\\.\\d)'
+
+function numberedLineRe(
+  kind: 'figure' | 'table' | 'equation' | 'algorithm',
+  token: string,
+): RegExp {
+  const word =
+    kind === 'figure'
+      ? 'fig(?:ure)?'
+      : kind === 'table'
+        ? 'tab(?:le)?'
+        : kind === 'algorithm'
+          ? 'alg(?:orithm)?'
+          : 'eq(?:uation)?'
+  return new RegExp(`\\b${word}\\.?\\s*\\(?${escapeRe(token)}\\)?${NUMBER_END}`, 'i')
 }
 
 function resolveNeedle(lines: string[], needle: string): AnchorHit | null {
@@ -99,7 +118,7 @@ function resolveNeedle(lines: string[], needle: string): AnchorHit | null {
     return null
   }
 
-  if (kind === 'figure' || kind === 'table' || kind === 'equation') {
+  if (kind === 'figure' || kind === 'table' || kind === 'equation' || kind === 'algorithm') {
     const re = numberedLineRe(kind, token)
     for (let i = 0; i < lines.length; i++) {
       if (re.test(lines[i]!)) return { line: i, kind, needle }

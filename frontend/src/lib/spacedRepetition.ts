@@ -113,6 +113,21 @@ function toISODate(date: Date): string {
   return date.toISOString().slice(0, 10)
 }
 
+/**
+ * The LOCAL calendar date as `YYYY-MM-DD`, built from the local getters — NOT
+ * `toISOString()`, which is UTC. The backend records a flashcard review under
+ * `time.Now().Format("2006-01-02")` (the LOCAL date), so the frontend's default
+ * 'today' seed must be local too or a review near midnight lands on the wrong
+ * calendar day. (Pure date ARITHMETIC stays in UTC via `addDays`/`toISODate`.)
+ */
+export function todayLocalISO(): string {
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 /** Add `days` to a `YYYY-MM-DD` date, returning `YYYY-MM-DD`. An unparseable
  *  input is returned unchanged (the caller shows it verbatim). */
 export function addDays(iso: string, days: number): string {
@@ -120,13 +135,6 @@ export function addDays(iso: string, days: number): string {
   if (date === null) return iso
   date.setUTCDate(date.getUTCDate() + days)
   return toISODate(date)
-}
-
-/** Whether a card is due on or before `today` (invalid/empty dates are never
- *  due — the caller falls back to the card's recorded stage). */
-export function isDue(nextDue: string, today: string): boolean {
-  if (parseISODate(nextDue) === null || parseISODate(today) === null) return false
-  return nextDue.trim() <= today.trim()
 }
 
 /** Schedule a review of a card at `state` graded `grade` on `today`. */
@@ -151,13 +159,4 @@ export function stateFromReviews(reviews: ReviewEntry[]): ReviewState {
     index = advanceIndex(index, entry.grade)
   }
   return stateForIndex(index)
-}
-
-/** The due date a card's log most recently produced ('' when it has none). */
-export function lastDueDate(reviews: ReviewEntry[]): string {
-  for (let i = reviews.length - 1; i >= 0; i--) {
-    const due = reviews[i]!.nextDue.trim()
-    if (due !== '') return due
-  }
-  return ''
 }

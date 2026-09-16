@@ -28,9 +28,9 @@ DEPENDENCIES
 
 EXIT CODES
     0  resolved successfully
-    1  input unrecognised, or it could not be resolved
-    2  network unavailable
-    3  unexpected problem
+    1  input unrecognised, or it could not be resolved (also: any unexpected error)
+    2  network unavailable (no source could be reached at all)
+    3  could not write the --out file
 
 USAGE
     python3 fetch_paper.py 10.1038/nature12373
@@ -55,11 +55,22 @@ USER_AGENT = "study-paper-fetch/1.0"
 DEFAULT_TIMEOUT = 20
 
 ATOM_NS = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
-DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"'<>]+", re.IGNORECASE)
+# A DOI admits `<`/`>` (legacy SICI form); wrapping markdown/bracket/backtick
+# chars are stripped from the captured value's trailing edge in classify().
+DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"']+", re.IGNORECASE)
 ARXIV_OLD_RE = re.compile(r"^[a-z\-]+(?:\.[A-Z]{2})?/\d{7}(v\d+)?$")
-META_TAG_RE = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
-LINK_TAG_RE = re.compile(r"<link\b[^>]*>", re.IGNORECASE)
-ATTR_RE = re.compile(r"([a-zA-Z:_-]+)\s*=\s*(\"[^\"]*\"|'[^']*')")
+# Quote-aware tag patterns: a `>` inside a quoted attribute value must not end
+# the tag early (an unquoted attribute value cannot itself contain `>`).
+META_TAG_RE = re.compile(r"<meta\b(?:[^>\"']|\"[^\"]*\"|'[^']*')*>", re.IGNORECASE)
+LINK_TAG_RE = re.compile(r"<link\b(?:[^>\"']|\"[^\"]*\"|'[^']*')*>", re.IGNORECASE)
+# Attribute values may be double-quoted, single-quoted, or bare/unquoted.
+ATTR_RE = re.compile(r"([a-zA-Z:_-]+)\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)")
+# Wrapper characters a captured DOI may carry when pasted from markdown.
+_DOI_WRAPPERS = ".,;:)]}>'\"`*"
+# Citation-meta keys that legitimately repeat (one tag per author).
+_AUTHOR_META_KEYS = ("citation_author", "dc.creator")
+# Declared page charset (`<meta charset=…>` / `Content-Type` sniff).
+_CHARSET_RE = re.compile(rb"charset\s*=\s*[\"']?\s*([a-zA-Z0-9._-]+)", re.IGNORECASE)
 
 
 class ResolveError(Exception):
@@ -78,11 +89,16 @@ class NetError(Exception):
 # low-level HTTP
 # --------------------------------------------------------------------------- #
 
-def http_get(url, timeout=DEFAULT_TIMEOUT, accept="application/json"):
+def _user_agent(email=None):
+    """Build the request UA, adding a polite-pool contact when one is known."""
+    return "%s (mailto:%s)" % (USER_AGENT, email) if email else USER_AGENT
+
+
+def http_get(url, timeout=DEFAULT_TIMEOUT, accept="application/json", user_agent=None):
     """Return the response body, or raise NetError with a classified kind."""
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": USER_AGENT, "Accept": accept},
+        headers={"User-Agent": user_agent or USER_AGENT, "Accept": accept},
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -97,8 +113,8 @@ def http_get(url, timeout=DEFAULT_TIMEOUT, accept="application/json"):
         raise NetError("cannot reach %s (%s)" % (url, exc), kind="network")
 
 
-def get_json(url, timeout):
-    raw = http_get(url, timeout=timeout, accept="application/json")
+def get_json(url, timeout, user_agent=None):
+    raw = http_get(url, timeout=timeout, accept="application/json", user_agent=user_agent)
     try:
         return json.loads(raw.decode("utf-8", "replace"))
     except ValueError as exc:
@@ -116,7 +132,9 @@ def collapse(text):
 def strip_markup(text):
     if not text:
         return None
-    return collapse(re.sub(r"<[^>]+>", " ", html.unescape(text)))
+    # Strip tags BEFORE unescaping entities: an escaped literal (``&lt;a,b&gt;``)
+    # must not be mistaken for markup and deleted.
+    return collapse(html.unescape(re.sub(r"<[^>]+>", " ", text)))
 
 
 def _first_year(text):
@@ -135,7 +153,9 @@ def _strip_doi(doi):
 def _attrs(tag):
     result = {}
     for name, raw_value in ATTR_RE.findall(tag):
-        result[name.lower()] = raw_value[1:-1]
+        if raw_value[:1] in ("\"", "'"):
+            raw_value = raw_value[1:-1]
+        result[name.lower()] = raw_value
     return result
 
 
@@ -148,6 +168,9 @@ def classify(raw):
     value = raw.strip()
     if not value:
         raise ResolveError("empty input")
+    # A leading ``arXiv:``/``arxiv:`` defeats the anchored old-style id regex
+    # below (degrading a prefixed id to a title search), so drop it first.
+    value = re.sub(r"^arxiv\s*:\s*", "", value, flags=re.IGNORECASE).strip()
     lowered = value.lower()
 
     match = re.search(r"arxiv[:\s/]*(\d{4}\.\d{4,5})(v\d+)?", lowered)
@@ -160,7 +183,7 @@ def classify(raw):
 
     match = DOI_RE.search(value)
     if match:
-        return "doi", match.group(0).rstrip(").,;")
+        return "doi", match.group(0).rstrip(_DOI_WRAPPERS)
 
     if lowered.startswith("http://") or lowered.startswith("https://"):
         return "url", value
@@ -236,9 +259,11 @@ def _crossref_author(author):
     return name or (author.get("name") or "").strip() or None
 
 
-def lookup_crossref(doi, timeout):
+def lookup_crossref(doi, timeout, email=None):
     url = "https://api.crossref.org/works/" + urllib.parse.quote(doi, safe="/")
-    message = get_json(url, timeout).get("message")
+    if email:
+        url += "?" + urllib.parse.urlencode({"mailto": email})
+    message = get_json(url, timeout, user_agent=_user_agent(email)).get("message")
     if not message:
         raise ResolveError("Crossref has no record for %s" % doi)
 
@@ -288,6 +313,7 @@ def _openalex_record(work, match="identifier"):
     best = work.get("best_oa_location") or {}
     record["pdf"] = best.get("pdf_url") or open_access.get("oa_url")
     record["oa_status"] = open_access.get("oa_status")
+    record["is_oa"] = open_access.get("is_oa")
     return record
 
 
@@ -346,22 +372,62 @@ def lookup_unpaywall(doi, email, timeout):
     return record
 
 
-def _parse_meta(html):
+def _parse_meta(page_html):
+    """Return ``<meta>`` key -> content, values left HTML-escaped.
+
+    Values stay escaped so a downstream ``strip_markup`` pass cannot mistake an
+    escaped literal (``&lt;a,b&gt;``) for a real tag; callers unescape at the
+    point of use. Repeated keys (``citation_author``/``dc.creator``) accumulate
+    into a list so a multi-author page keeps every author.
+    """
     values = {}
-    for tag in META_TAG_RE.findall(html):
+    for tag in META_TAG_RE.findall(page_html):
         attrs = _attrs(tag)
         key = (attrs.get("name") or attrs.get("property") or attrs.get("http-equiv") or "").strip().lower()
         content = attrs.get("content")
-        if key and content:
-            values.setdefault(key, html.unescape(content).strip())
+        if not key or not content:
+            continue
+        if key in _AUTHOR_META_KEYS:
+            values.setdefault(key, []).append(content.strip())
+        else:
+            values.setdefault(key, content.strip())
     return values
 
 
-def _find_pdf_link(html):
-    for tag in LINK_TAG_RE.findall(html):
+def _meta_raw(meta, *keys):
+    for key in keys:
+        value = meta.get(key)
+        if value:
+            return value
+    return None
+
+
+def _meta_text(meta, *keys):
+    raw = _meta_raw(meta, *keys)
+    return html.unescape(raw).strip() if raw else None
+
+
+def _decode_html(raw):
+    """Decode a landing page with its declared charset, then safe fallbacks."""
+    declared = None
+    match = _CHARSET_RE.search(raw[:4096])
+    if match:
+        declared = match.group(1).decode("ascii", "ignore")
+    for charset in (declared, "utf-8", "cp1252", "latin-1"):
+        if not charset:
+            continue
+        try:
+            return raw.decode(charset)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return raw.decode("utf-8", "replace")
+
+
+def _find_pdf_link(page_html):
+    for tag in LINK_TAG_RE.findall(page_html):
         attrs = _attrs(tag)
         if (attrs.get("type") or "").lower() == "application/pdf" and attrs.get("href"):
-            return attrs["href"]
+            return html.unescape(attrs["href"])
     return None
 
 
@@ -374,22 +440,29 @@ def lookup_url(url, timeout):
     if raw[:5] == b"%PDF-":
         return {"kind": "pdf", "url": url, "pdf": url}
 
-    html = raw[:400000].decode("utf-8", "replace")
-    meta = _parse_meta(html)
+    page_html = _decode_html(raw[:400000])
+    meta = _parse_meta(page_html)
     record = {"kind": "url", "url": url}
-    record["title"] = meta.get("citation_title") or meta.get("og:title") or meta.get("dc.title")
-    record["authors"] = [
-        value for key, value in meta.items() if key in ("citation_author", "dc.creator")
-    ]
+    record["title"] = _meta_text(meta, "citation_title", "og:title", "dc.title")
+    authors = []
+    for key in _AUTHOR_META_KEYS:
+        for value in meta.get(key) or []:
+            name = html.unescape(value).strip()
+            if name:
+                authors.append(name)
+    record["authors"] = authors
     record["year"] = _first_year(
-        meta.get("citation_publication_date") or meta.get("citation_date") or meta.get("dc.date")
+        _meta_text(meta, "citation_publication_date", "citation_date", "dc.date")
     )
-    record["venue"] = meta.get("citation_journal_title") or meta.get("og:site_name")
-    record["doi"] = _strip_doi(meta.get("citation_doi"))
-    record["pdf"] = meta.get("citation_pdf_url") or _find_pdf_link(html)
+    record["venue"] = _meta_text(meta, "citation_journal_title", "og:site_name")
+    record["doi"] = _strip_doi(_meta_text(meta, "citation_doi"))
+    pdf_href = _meta_text(meta, "citation_pdf_url") or _find_pdf_link(page_html)
+    record["pdf"] = urllib.parse.urljoin(url, pdf_href) if pdf_href else None
     record["abstract"] = strip_markup(
-        meta.get("citation_abstract") or meta.get("og:description") or meta.get("description")
+        _meta_raw(meta, "citation_abstract", "og:description", "description")
     )
+    if not (record.get("title") or record.get("doi") or record.get("pdf")):
+        raise ResolveError("no citation metadata found on %s" % url)
     return record
 
 
@@ -404,13 +477,30 @@ def _pick(*values):
     return None
 
 
+def _pick_count(*values):
+    """Like ``_pick`` but prefer a real non-zero count over a peer's 0.
+
+    OpenAlex reports 0 whenever its underlying list is absent, so a plain
+    first-wins pick would let that 0 mask Crossref's verified count.
+    """
+    chosen = None
+    for value in values:
+        if value is None:
+            continue
+        if chosen is None:
+            chosen = value
+        elif not chosen and value:
+            chosen = value
+    return chosen
+
+
 def _year_from_arxiv(arxiv):
     return _first_year((arxiv or {}).get("published"))
 
 
 def resolve(raw, email, timeout):
     """Resolve the input and return the merged JSON record."""
-    state = {"notes": [], "sources": [], "network_failures": 0, "network_error": None}
+    state = {"notes": [], "sources": [], "reached": 0, "network_failures": 0, "network_error": None}
 
     def attempt(label, function):
         try:
@@ -420,12 +510,17 @@ def resolve(raw, email, timeout):
             if exc.kind == "network":
                 state["network_failures"] += 1
                 state["network_error"] = str(exc)
+            else:
+                # The server answered (bad status/body): the source was reached.
+                state["reached"] += 1
             return None
         except (ResolveError, ValueError, KeyError, TypeError) as exc:
             state["notes"].append("%s: %s" % (label, exc))
+            state["reached"] += 1
             return None
         if value is not None:
             state["sources"].append(label)
+            state["reached"] += 1
         return value
 
     kind, identifier = classify(raw)
@@ -435,21 +530,21 @@ def resolve(raw, email, timeout):
         arxiv = attempt("arXiv", lambda: lookup_arxiv(identifier, timeout))
         doi = (arxiv or {}).get("doi")
         if doi:
-            crossref = attempt("Crossref", lambda: lookup_crossref(doi, timeout))
+            crossref = attempt("Crossref", lambda: lookup_crossref(doi, timeout, email))
             openalex = attempt("OpenAlex", lambda: lookup_openalex("https://doi.org/" + doi, timeout, email))
         if not openalex and (arxiv or {}).get("title"):
             openalex = attempt("OpenAlex", lambda: search_openalex(arxiv["title"], timeout, email))
     elif kind == "doi":
-        crossref = attempt("Crossref", lambda: lookup_crossref(identifier, timeout))
+        crossref = attempt("Crossref", lambda: lookup_crossref(identifier, timeout, email))
         openalex = attempt("OpenAlex", lambda: lookup_openalex("https://doi.org/" + identifier, timeout, email))
     else:
         page = attempt("landing page", lambda: lookup_url(identifier, timeout))
         if page and page.get("kind") == "url":
             doi = page.get("doi")
             if doi:
-                crossref = attempt("Crossref", lambda: lookup_crossref(doi, timeout))
+                crossref = attempt("Crossref", lambda: lookup_crossref(doi, timeout, email))
                 openalex = attempt("OpenAlex", lambda: lookup_openalex("https://doi.org/" + doi, timeout, email))
-            elif page.get("title"):
+            if not openalex and page.get("title"):
                 openalex = attempt("OpenAlex", lambda: search_openalex(page["title"], timeout, email))
 
     # An OpenAlex record resolved by identifier is trustworthy; one resolved by a
@@ -469,6 +564,7 @@ def resolve(raw, email, timeout):
         value(crossref, "doi"),
         value(oa_confident, "doi"),
         value(arxiv, "doi"),
+        value(page, "doi"),
         identifier if kind == "doi" else None,
     )
     if doi and email:
@@ -492,7 +588,7 @@ def resolve(raw, email, timeout):
         "authors": _pick(*author_order),
         "year": _pick(*year_order),
         "venue": _pick(value(crossref, "venue"), value(oa_confident, "venue"), value(page, "venue"), value(oa_search, "venue")),
-        "abstract": _pick(value(arxiv, "abstract"), value(crossref, "abstract"), value(oa_confident, "abstract"), value(oa_search, "abstract"), value(page, "abstract")),
+        "abstract": _pick(value(arxiv, "abstract"), value(crossref, "abstract"), value(oa_confident, "abstract"), value(page, "abstract"), value(oa_search, "abstract")),
         "landing_url": _pick(value(page, "url"), value(arxiv, "url"), value(crossref, "url")),
     }
 
@@ -500,7 +596,7 @@ def resolve(raw, email, timeout):
     for link in [
         (page or {}).get("pdf") if page else None,
         (arxiv or {}).get("pdf"),
-        (openalex or {}).get("pdf"),
+        (oa_confident or {}).get("pdf"),
         (unpaywall or {}).get("pdf"),
     ] + ((unpaywall or {}).get("oa_locations") or []):
         if link and link not in candidates:
@@ -518,17 +614,20 @@ def resolve(raw, email, timeout):
     open_access = {
         "best_pdf": candidates[0] if candidates else None,
         "candidates": candidates,
-        "oa_status": _pick((openalex or {}).get("oa_status"), (unpaywall or {}).get("oa_status")),
-        "is_oa": (unpaywall or {}).get("is_oa"),
+        "oa_status": _pick((oa_confident or {}).get("oa_status"), (unpaywall or {}).get("oa_status")),
+        "is_oa": _pick((oa_confident or {}).get("is_oa"), (unpaywall or {}).get("is_oa"), (oa_search or {}).get("is_oa")),
     }
 
     counts = {
-        "referenced_works": _pick(value(oa_confident, "reference_count"), value(openalex, "reference_count"), value(crossref, "reference_count")),
-        "cited_by": _pick(value(oa_confident, "cited_by_count"), value(openalex, "cited_by_count"), value(crossref, "cited_by_count")),
+        "referenced_works": _pick_count(value(oa_confident, "reference_count"), value(crossref, "reference_count")),
+        "cited_by": _pick_count(value(oa_confident, "cited_by_count"), value(crossref, "cited_by_count")),
     }
 
     if not state["sources"]:
-        if state["network_failures"]:
+        # Only claim an outage when NO source answered at all: a source that
+        # answered with an HTTP error was reached, so a mixed outcome is a
+        # resolution failure (exit 1), not a network outage.
+        if state["network_failures"] and not state["reached"]:
             raise NetError(
                 "network unavailable; no source could be reached. Last error: %s"
                 % state["network_error"],
@@ -556,6 +655,14 @@ def resolve(raw, email, timeout):
 # --------------------------------------------------------------------------- #
 
 def main(argv=None):
+    # ensure_ascii=False emits raw Unicode; force UTF-8 so a non-UTF-8 stdout
+    # (Windows console, C/ASCII locale, PYTHONIOENCODING=ascii) cannot kill the
+    # documented direct-run path with an uncaught UnicodeEncodeError.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser(
         description="Resolve a paper reference to metadata and an open-access PDF link (optional helper)."
     )
@@ -577,16 +684,15 @@ def main(argv=None):
     try:
         record = resolve(args.reference, args.email, args.timeout)
     except NetError as exc:
-        if exc.kind == "network":
-            sys.stderr.write("network unavailable: %s\n" % exc)
-            sys.stderr.write(
-                "This helper must reach api.openalex.org / api.crossref.org / "
-                "export.arxiv.org. Resolve the paper without the helper, or retry "
-                "when the network is back.\n"
-            )
-            return 2
-        sys.stderr.write("API error: %s\n" % exc)
-        return 1
+        # Only kind="network" escapes resolve() today (attempt() turns every
+        # other NetError into a note), so this is the sole NetError boundary.
+        sys.stderr.write("network unavailable: %s\n" % exc)
+        sys.stderr.write(
+            "This helper must reach api.openalex.org / api.crossref.org / "
+            "export.arxiv.org. Resolve the paper without the helper, or retry "
+            "when the network is back.\n"
+        )
+        return 2
     except ResolveError as exc:
         sys.stderr.write("could not resolve: %s\n" % exc)
         return 1

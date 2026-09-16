@@ -155,20 +155,32 @@ function cell(row: string[], i: number): string {
   return i >= 0 && i < row.length ? (row[i] ?? '').trim() : ''
 }
 
+/** A negator that PRECEDES a positive verdict (within a few words) — "not
+ *  present", "no evidence present" — inverts that verdict. A negator that
+ *  follows the verdict ("present, no caveats") does not. */
+const NEGATED_POSITIVE = /\b(?:not|no|none|without|never)\b(?:\s+\S+){0,3}\s+(?:present|weak)\b|n['’]t\s+(?:present|weak)\b/
+
 /** Fold a raw evidence-strength cell to its verdict. A cell naming more than
  *  one verdict (the template's "present / weak / absent" placeholder) is
- *  ambiguous and folds to 'unknown' rather than guessing. */
+ *  ambiguous and folds to 'unknown' rather than guessing. A NEGATED verdict
+ *  ("not present" / "no evidence present") is inverted — a negated phrase
+ *  contains the positive token, so it must not classify as that verdict. */
 export function normalizeStrength(raw: string): EvidenceStrength {
   const s = raw.toLowerCase()
-  if (s === '') return 'unknown'
-  const absent = s.includes('absent')
-  const weak = s.includes('weak')
-  const present = s.includes('present')
-  if ([absent, weak, present].filter(Boolean).length > 1) return 'unknown'
+  if (s.trim() === '') return 'unknown'
+  // Whole-word tokens: "unrepresented" / "presence" must not collide with the
+  // verdict words they merely contain.
+  const absent = /\babsent\b/.test(s)
+  const weak = /\bweak\b/.test(s)
+  const present = /\bpresent\b/.test(s)
+  if ([absent, weak, present].filter(Boolean).length !== 1) return 'unknown'
+  if (NEGATED_POSITIVE.test(s)) {
+    // "not present" / "no evidence present" → the evidence is absent.
+    return present ? 'absent' : 'unknown'
+  }
   if (absent) return 'absent'
   if (weak) return 'weak'
-  if (present) return 'present'
-  return 'unknown'
+  return 'present'
 }
 
 // --- Evidence matrix ---
@@ -280,10 +292,26 @@ export function parseUncertainties(content: string): UncertaintyChip[] {
   return parseUncertaintyList(content)
 }
 
+/** The critical-layer labels the templates use for the red-flag / uncertainty
+ *  sections. A bold lead-in naming one of these is a section LABEL, not a
+ *  list item. */
+const SECTION_LABEL = /red flag|concern|weakness|uncertain|unknown|open question|limitation/
+
+/** Whether a trimmed line is a *pure* bold label — its bold text spans the
+ *  whole line (an optional trailing colon aside), e.g. `- **Red flags:**`.
+ *  A bold lead-in followed by prose (`- **Data leakage** is not ruled out.`)
+ *  is a list ITEM, not a label. */
+const PURE_BOLD_LABEL = /^[-*+]?\s*\*\*(.+?)\*\*\s*:?\s*$/
+
 /** Collect the list items of the section whose heading OR bold marker line
  *  matches `marker`. Covers both the canonical note.md tables' list-shaped
  *  cousins (the templates write the critical layer as bullets under a heading
- *  or a bold label, e.g. `- **Red flags (≤3, ranked by severity):**`). */
+ *  or a bold label, e.g. `- **Red flags (≤3, ranked by severity):**`).
+ *
+ *  A section only starts on a sub-heading (level ≥ 2) or a bold label — never
+ *  on the document H1 (`# Reading Note — <paper title>`), whose model-authored
+ *  title may itself contain a marker word. A bold-led list ITEM inside the
+ *  section is kept as an item rather than mistaken for a new label. */
 function listItemsOfSection(content: string, marker: RegExp): string[] {
   const lines = content.split('\n')
   const items: string[] = []
@@ -295,7 +323,8 @@ function listItemsOfSection(content: string, marker: RegExp): string[] {
     if (heading) {
       const level = heading[1]!.length
       const text = heading[2]!.replace(/[*_`]/g, '').toLowerCase()
-      if (marker.test(text)) {
+      // The H1 carries the paper title; a marker in it must not open a section.
+      if (level >= 2 && marker.test(text)) {
         inSection = true
         stopLevel = level
         continue
@@ -311,9 +340,13 @@ function listItemsOfSection(content: string, marker: RegExp): string[] {
         stopLevel = 6
         continue
       }
-      // Another bold label ends the previous list.
-      if (inSection) inSection = false
-      continue
+      // A bold LABEL — a pure `**…**` line, or a bold lead-in naming another
+      // critical-layer label — ends the previous list. A bold lead-in that
+      // merely starts a list ITEM does not: fall through and keep it as one.
+      if (inSection && (PURE_BOLD_LABEL.test(trimmed) || SECTION_LABEL.test(text))) {
+        inSection = false
+        continue
+      }
     }
     if (!inSection) continue
     const item = /^\s*(?:[-*+]|\d+[.)])\s+(.*)$/.exec(raw)

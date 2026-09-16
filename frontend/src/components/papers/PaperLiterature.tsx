@@ -9,7 +9,7 @@
 // Python / no script / no seed), render a distinct message rather than an empty
 // graph. Nothing is fabricated — the graph is drawn only from a parsed file.
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Network, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { PaperRecord, PaperLiteratureResult, PaperLiteratureStatus } from '@/api/papers'
@@ -159,11 +159,17 @@ export function PaperLiterature({ paper, markdownArtifact, baseFilePath }: Paper
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [run, setRun] = useState<PaperLiteratureResult | null>(null)
   const [running, setRunning] = useState(false)
+  // Identity token of the paper the in-flight run belongs to. Bumped whenever
+  // the displayed paper changes, so a ~90 s-bounded RPC that resolves after a
+  // paper switch can never apply paper A's run status under paper B.
+  const runIdentityRef = useRef(0)
 
   // A different paper in the same tab starts clean.
   useEffect(() => {
+    runIdentityRef.current += 1
     setSelectedId(null)
     setRun(null)
+    setRunning(false)
   }, [paper.slug])
 
   const parsed = useMemo(() => parseLiteratureJson(artifact.raw), [artifact.raw])
@@ -181,13 +187,21 @@ export function PaperLiterature({ paper, markdownArtifact, baseFilePath }: Paper
       setRun({ status: 'error', message: 'No active project.', path: '', content: '' })
       return
     }
+    // Capture the paper identity at click time; the result is dropped unless the
+    // displayed paper is still the one that started the run (mirrors the
+    // `cancelled` flag in usePaperLiterature and the projectId re-check in the
+    // store's async writers).
+    const identity = runIdentityRef.current
+    const isCurrent = (): boolean => runIdentityRef.current === identity
     setRunning(true)
     void (async () => {
       try {
         const result = await runPaperLiterature(projectId, paper.id)
+        if (!isCurrent()) return
         setRun(result)
         if (result.status === 'ok') reload()
       } catch (err) {
+        if (!isCurrent()) return
         setRun({
           status: 'error',
           message: err instanceof Error ? err.message : 'The lookup request failed.',
@@ -195,7 +209,7 @@ export function PaperLiterature({ paper, markdownArtifact, baseFilePath }: Paper
           content: '',
         })
       } finally {
-        setRunning(false)
+        if (isCurrent()) setRunning(false)
       }
     })()
   }, [projectId, paper.id, reload])

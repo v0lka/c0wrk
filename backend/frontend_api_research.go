@@ -59,13 +59,6 @@ type ResearchStatusDTO struct {
 	// slashes). The value is a list because the same H-NNN exists across
 	// R-NNN projects. Always non-nil (empty map, not null).
 	PinnedHypotheses map[string][]string `json:"pinned_hypotheses"`
-
-	// PinnedPapers lists the project's pinned paper-card document paths —
-	// each the paper.md of a pinned paper in the library, relative to the
-	// research root with forward slashes, e.g. "papers/<slug>/paper.md"
-	// (mirrors the persisted ProjectInfo.ResearchPins.Papers). Always
-	// non-nil (empty slice, not null) so the wire shape is stable.
-	PinnedPapers []string `json:"pinned_papers"`
 }
 
 // ResearchGraphDTO is the lightweight response for GetResearchGraph. It
@@ -247,12 +240,24 @@ func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatu
 	// Recursively watch the research artifact tree so the file watcher
 	// detects edits to hypothesis cards / brief / graph in nested
 	// subdirectories (.research/R-NNN/hypotheses/…). The watcher was created
-	// at project-switch time but did not watch the research tree (research
-	// was off then); add it now. Best-effort: a nil watcher (e.g. early in
+	// at project-switch time (which registered the EFFECTIVE research root as a
+	// recursive root — the default <workspace>/.research when RESEARCH was off)
+	// so it did not watch the newly-activated tree; add it now. Unwatch the
+	// previous effective root first when it differs: fsnotify watches persist
+	// until Remove/Close, so a stale watch on the now-inactive default-root tree
+	// would leak for the app's lifetime and fire spurious
+	// workspace:tree_changed events. Best-effort: a nil watcher (e.g. early in
 	// startup) is skipped — switchProjectSetupWatcher picks it up on the next
 	// project switch.
+	prevResearchRoot := effectiveResearchRoot(proj)
 	f.watcherMu.Lock()
 	if f.watcher != nil {
+		if prevResearchRoot != "" && prevResearchRoot != researchRoot {
+			if uerr := f.watcher.UnwatchTree(prevResearchRoot); uerr != nil {
+				f.log().Debug("failed to unwatch previous research tree on enable",
+					"root", prevResearchRoot, "error", uerr)
+			}
+		}
 		if werr := f.watcher.WatchTree(researchRoot); werr != nil {
 			f.log().Debug("failed to watch research tree on enable",
 				"root", researchRoot, "error", werr)
@@ -298,16 +303,19 @@ func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatu
 	}
 
 	// Persist the research root on the project. All writers of the projects
-	// row serialize on the per-root research mutation mutex, keyed by the root
-	// the row carries BEFORE this mutation (the pin RPCs and DisableResearch
-	// load the row and lock that same root): keying on the NEW root instead
-	// would take a different mutex during an explicit-root re-enable and let a
-	// concurrent pin's save land on a stale snapshot. Inside the lock this
-	// save re-loads the row, verifies the root did not change meanwhile, and
-	// merges only ResearchRoot — a full-row save of the snapshot taken before
-	// seeding would clobber a pin toggle committed meanwhile (the projects-row
-	// lost update).
-	persistMu := f.researchMutationMu(proj.ResearchRoot)
+	// row serialize on the per-EFFECTIVE-research-root research mutation mutex
+	// — the same key the paper writers (SetPaperPinned / RecordFlashcardReview /
+	// RunPaperLiterature) derive from papersReadContextFor, which is the
+	// persisted root when RESEARCH is on and the default <workspace>/.research
+	// when it is off. Keying on the raw ResearchRoot instead would, while
+	// RESEARCH is off, take the "" mutex and let a concurrent pin save land on a
+	// stale snapshot (the projects-row lost update). Keying on the NEW root
+	// would likewise take a different mutex during an explicit-root re-enable.
+	// Inside the lock this save re-loads the row, verifies the root did not
+	// change meanwhile (the sentinel below), and merges only ResearchRoot — a
+	// full-row save of the snapshot taken before seeding would clobber a pin
+	// toggle committed meanwhile.
+	persistMu := f.researchMutationMu(effectiveResearchRoot(proj))
 	persistMu.Lock()
 	persistProj, err := f.loadProjectForResearch(projectID)
 	if err != nil {
@@ -387,13 +395,13 @@ func (f *FrontendAPI) DisableResearch(projectID string) error {
 		return err
 	}
 
-	// Clear the toggle. Take the same per-root mutation mutex the pin RPCs
-	// and EnableResearch serialize on (keyed by the root observed on the
-	// loaded row), re-load the row inside the lock, and merge only this
-	// clear: a pin committed while we waited on the mutex survives the save
-	// instead of being overwritten by a stale full-row snapshot (the
-	// projects-row lost update).
-	mu := f.researchMutationMu(proj.ResearchRoot)
+	// Clear the toggle. Take the same per-EFFECTIVE-research-root mutation
+	// mutex the pin RPCs, EnableResearch, and the paper writers serialize on
+	// (effectiveResearchRoot, so every writer of this row agrees on one key),
+	// re-load the row inside the lock, and merge only this clear: a pin
+	// committed while we waited on the mutex survives the save instead of being
+	// overwritten by a stale full-row snapshot (the projects-row lost update).
+	mu := f.researchMutationMu(effectiveResearchRoot(proj))
 	mu.Lock()
 	fresh, err := f.loadProjectForResearch(projectID)
 	if err != nil {
@@ -419,21 +427,19 @@ func (f *FrontendAPI) DisableResearch(projectID string) error {
 	// research:file_changed events. Only activeResearchRoot is cleared — the
 	// active project ID/path must be preserved so git, workspace, and session
 	// operations continue to target the correct project after toggling
-	// RESEARCH off. The paper-library root is RETRACKED (not cleared): the
-	// library follows the effective research root, which falls back to the
-	// default once the toggle is cleared, and it must keep being watched so a
+	// RESEARCH off. The paper-library / comparisons roots are RETRACKED (not
+	// cleared): both follow the effective research root, which falls back to
+	// the default once the toggle is cleared, and must keep being watched so a
 	// paper edit still emits papers:changed with RESEARCH off.
 	f.activeProjectMu.Lock()
 	researchRootToUnwatch := ""
-	papersRootToWatch := ""
-	comparisonsRootToWatch := ""
+	researchRootToWatch := ""
 	if f.activeProjectID == projectID {
 		researchRootToUnwatch = f.activeResearchRoot
 		f.activeResearchRoot = ""
-		papersRootToWatch = papersRootForProject(fresh)
-		f.activePapersRoot = papersRootToWatch
-		comparisonsRootToWatch = comparisonsRootForProject(fresh)
-		f.activeComparisonsRoot = comparisonsRootToWatch
+		f.activePapersRoot = papersRootForProject(fresh)
+		f.activeComparisonsRoot = comparisonsRootForProject(fresh)
+		researchRootToWatch = effectiveResearchRoot(fresh)
 	}
 	f.activeProjectMu.Unlock()
 
@@ -452,39 +458,21 @@ func (f *FrontendAPI) DisableResearch(projectID string) error {
 		f.watcherMu.Unlock()
 	}
 
-	// The paper library lives INSIDE the research tree, so the UnwatchTree
-	// above removed its watch too. Re-watch it at its (default-root) location
-	// so the library stays watched independently of the toggle — the whole
-	// point of the separate papers watch. Best-effort: a nil watcher (early
-	// startup) is skipped and switchProjectSetupWatcher re-establishes it on
-	// the next project switch.
-	if papersRootToWatch != "" {
+	// The paper library and the comparisons directory both live INSIDE the
+	// research tree, so the UnwatchTree above removed their watches too.
+	// Re-watch the effective (now default) research root as a recursive root so
+	// both subtrees stay watched independently of the toggle — and do so
+	// WITHOUT creating any directory: the recursive root auto-adds papers/ and
+	// comparisons/ when they are first written, so the toggle-off path no
+	// longer materializes them in the user's repository. Best-effort: a nil
+	// watcher (early startup) is skipped and switchProjectSetupWatcher
+	// re-establishes it on the next project switch.
+	if researchRootToWatch != "" {
 		f.watcherMu.Lock()
 		if f.watcher != nil {
-			if mkErr := os.MkdirAll(papersRootToWatch, 0o755); mkErr != nil {
-				f.log().Debug("failed to create paper library for watcher on disable",
-					"root", papersRootToWatch, "error", mkErr)
-			} else if wErr := f.watcher.WatchTree(papersRootToWatch); wErr != nil {
-				f.log().Debug("failed to re-watch paper library on disable",
-					"root", papersRootToWatch, "error", wErr)
-			}
-		}
-		f.watcherMu.Unlock()
-	}
-
-	// The comparisons directory also lives INSIDE the research tree, so the
-	// UnwatchTree above removed its watch too. Re-watch it at its (now
-	// default-root) location so a comparison artifact written with RESEARCH
-	// off still emits papers:changed. Best-effort, like the papers re-watch.
-	if comparisonsRootToWatch != "" {
-		f.watcherMu.Lock()
-		if f.watcher != nil {
-			if mkErr := os.MkdirAll(comparisonsRootToWatch, 0o755); mkErr != nil {
-				f.log().Debug("failed to create comparisons dir for watcher on disable",
-					"root", comparisonsRootToWatch, "error", mkErr)
-			} else if wErr := f.watcher.WatchTree(comparisonsRootToWatch); wErr != nil {
-				f.log().Debug("failed to re-watch comparisons dir on disable",
-					"root", comparisonsRootToWatch, "error", wErr)
+			if wErr := f.watcher.WatchTree(researchRootToWatch); wErr != nil {
+				f.log().Debug("failed to re-watch research tree on disable",
+					"root", researchRootToWatch, "error", wErr)
 			}
 		}
 		f.watcherMu.Unlock()
@@ -1326,9 +1314,6 @@ func applyResearchPins(dto *ResearchStatusDTO, pins project.ResearchPins) {
 		copy(paths, cards)
 		hypotheses[hid] = paths
 	}
-	pinnedPapers := make([]string, len(pins.Papers))
-	copy(pinnedPapers, pins.Papers)
 	dto.PinnedResearch = pinned
 	dto.PinnedHypotheses = hypotheses
-	dto.PinnedPapers = pinnedPapers
 }

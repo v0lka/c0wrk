@@ -73,8 +73,21 @@ type PaperLiteratureDTO struct {
 
 // RunPaperLiterature runs the study-paper literature helper for a paper and
 // writes <paper-dir>/literature.json. It returns an explicit status for every
-// non-success outcome; an error is reserved for an unknown paper or a
-// containment violation. See the block comment above for the rationale.
+// non-success outcome; an error is reserved for an unknown paper, a containment
+// violation, or a research-root change observed while waiting (see below). See
+// the block comment above for the rationale.
+//
+// Concurrency: the paper is resolved and containment-checked under a SHORT hold
+// of the per-effective-research-root mutation mutex (re-loading the row so a
+// concurrent Enable/DisableResearch that moved the root is rejected with
+// errResearchRootChanged, mirroring SetPaperPinned/RecordFlashcardReview). The
+// mutex is RELEASED before the network-bound helper runs: the helper writes no
+// projects row, so holding the row-mutation mutex across its whole run (up to
+// literatureRunTimeout) would head-of-line-block every pin/flashcard/research
+// mutation on the project. The single shared resource is the paper's own
+// literature.json, so concurrent lookups of the SAME paper are serialized on a
+// per-paper-directory guard instead — lookups of other papers, and the
+// projects-row writers, stay concurrent.
 func (f *FrontendAPI) RunPaperLiterature(projectID, paperID string) (*PaperLiteratureDTO, error) {
 	if strings.TrimSpace(paperID) == "" {
 		return nil, errors.New("paper id or slug is required")
@@ -83,9 +96,10 @@ func (f *FrontendAPI) RunPaperLiterature(projectID, paperID string) (*PaperLiter
 	if err != nil {
 		return nil, err
 	}
-	rec := f.parsePaperLibrary(rctx.libraryRoot).Get(paperID)
-	if rec == nil {
-		return nil, fmt.Errorf("paper %q not found in the library", paperID)
+
+	rec, err := f.resolvePaperForLiterature(projectID, paperID, rctx)
+	if err != nil {
+		return nil, err
 	}
 
 	seed := literatureSeed(rec)
@@ -112,17 +126,53 @@ func (f *FrontendAPI) RunPaperLiterature(projectID, paperID string) (*PaperLiter
 		}, nil
 	}
 
-	// Serialize the write against the same per-research-root mutation mutex that
-	// guards SetPaperPinned / RecordFlashcardReview (and the research pin RPCs /
-	// Enable/DisableResearch): the helper rewrites literature.json inside the
-	// paper directory, so a lookup must not interleave with a pin or flashcard
-	// write that re-resolves the same library. The lock is held for the whole
-	// helper run (it owns the atomic write), so a concurrent toggle waits for it.
+	// Serialize concurrent lookups of the SAME paper on a per-directory guard
+	// (a distinct mutex key) so two "Refresh" clicks cannot interleave their
+	// atomic writes to the one shared literature.json — without holding the
+	// projects-row mutex for the run. See the method doc for the rationale.
+	guard := f.researchMutationMu(paperRunMuKey(rec.Dir))
+	guard.Lock()
+	defer guard.Unlock()
+
+	return runLiteratureHelper(pythonPath, scriptPath, seed, rec.Dir), nil
+}
+
+// paperRunMuKey namespaces the per-paper lookup guard in the shared
+// researchMutationMu map. The prefix cannot collide with a research root key
+// (roots are absolute paths).
+func paperRunMuKey(paperDir string) string {
+	return "paper-run\x00" + paperDir
+}
+
+// resolvePaperForLiterature resolves and containment-checks the paper record
+// for RunPaperLiterature under a SHORT hold of the per-effective-research-root
+// row-mutation mutex. It re-loads the project row so a concurrent
+// Enable/DisableResearch that moved the research root is rejected with
+// errResearchRootChanged (mirroring SetPaperPinned/RecordFlashcardReview), then
+// re-resolves the record from the pre-lock, containment-checked library root.
+// The mutex is released before the network-bound helper runs.
+func (f *FrontendAPI) resolvePaperForLiterature(projectID, paperID string, rctx *papersReadContext) (*papers.PaperRecord, error) {
 	mu := f.researchMutationMu(rctx.researchRoot)
 	mu.Lock()
 	defer mu.Unlock()
 
-	return runLiteratureHelper(pythonPath, scriptPath, seed, rec.Dir), nil
+	fresh, err := f.loadProjectForResearch(projectID)
+	if err != nil {
+		return nil, err
+	}
+	if fresh.ResearchRoot != rctx.project.ResearchRoot {
+		return nil, errResearchRootChanged
+	}
+
+	lib, err := f.parsePaperLibrary(rctx.libraryRoot)
+	if err != nil {
+		return nil, err
+	}
+	rec := lib.Get(paperID)
+	if rec == nil {
+		return nil, fmt.Errorf("paper %q not found in the library", paperID)
+	}
+	return rec, nil
 }
 
 // literatureScriptPath resolves the seeded study-paper helper script, or "" when
@@ -169,8 +219,15 @@ func literatureSeed(rec *papers.PaperRecord) string {
 }
 
 // runLiteratureHelper is the testable seam: it invokes `pythonPath scriptPath
-// seed --format json --out <paperDir>/literature.json` and maps the process
-// outcome to an explicit DTO. It never returns an error — a failed run is data.
+// --format json --timeout <n> --out <paperDir>/literature.json -- <seed>` and
+// maps the process outcome to an explicit DTO. It never returns an error — a
+// failed run is data.
+//
+// The seed is passed after a `--` terminator so a seed that begins with `-`
+// (a title/identifier) is never parsed by argparse as an option, and the exit
+// code is only trusted together with its stderr marker (see
+// classifyLiteratureExit): CPython exits 1 on an uncaught exception and argparse
+// exits 2 on a usage error, so the bare codes are ambiguous.
 func runLiteratureHelper(pythonPath, scriptPath, seed, paperDir string) *PaperLiteratureDTO {
 	outPath := filepath.Join(paperDir, papers.LiteratureFileName)
 
@@ -182,16 +239,18 @@ func runLiteratureHelper(pythonPath, scriptPath, seed, paperDir string) *PaperLi
 		ctx,
 		pythonPath,
 		scriptPath,
-		seed,
 		"--format", "json",
 		"--timeout", strconv.Itoa(literatureHTTPTimeout),
 		"--out", outPath,
+		"--",
+		seed,
 	)
 	cmd.Stdout = io.Discard // --out writes the payload to the file
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
-	message := tailMessage(stderr.String())
+	rawStderr := stderr.String()
+	message := tailMessage(rawStderr)
 
 	if ctx.Err() == context.DeadlineExceeded {
 		return &PaperLiteratureDTO{
@@ -203,14 +262,7 @@ func runLiteratureHelper(pythonPath, scriptPath, seed, paperDir string) *PaperLi
 		status := litStatusError
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			switch exitErr.ExitCode() {
-			case 2:
-				status = litStatusOffline
-			case 1:
-				status = litStatusUnresolved
-			case 3:
-				status = litStatusRateLimited
-			}
+			status = classifyLiteratureExit(exitErr.ExitCode(), rawStderr)
 		}
 		if message == "" {
 			message = err.Error()
@@ -231,6 +283,31 @@ func runLiteratureHelper(pythonPath, scriptPath, seed, paperDir string) *PaperLi
 		Path:    outPath,
 		Content: string(content),
 	}
+}
+
+// classifyLiteratureExit maps the helper's process exit code to a status,
+// keyed on the diagnostic marker the helper writes to stderr. The bare exit
+// codes are ambiguous — literature.py returns 1/2/3 for "could not resolve the
+// seed" / network failure / rate-limit-or-write-failure, but CPython also exits
+// 1 on an uncaught exception and argparse exits 2 on a usage error — so a code
+// is only accepted as the documented one when its stderr marker is present;
+// anything else is a generic error.
+func classifyLiteratureExit(code int, stderr string) string {
+	switch code {
+	case 1:
+		if strings.Contains(stderr, "could not resolve the seed:") {
+			return litStatusUnresolved
+		}
+	case 2:
+		if strings.Contains(stderr, "network unavailable:") {
+			return litStatusOffline
+		}
+	case 3:
+		if strings.Contains(stderr, "rate limited:") {
+			return litStatusRateLimited
+		}
+	}
+	return litStatusError
 }
 
 // tailMessage trims a helper stderr dump and caps it to the last

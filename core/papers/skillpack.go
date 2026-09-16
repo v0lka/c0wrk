@@ -70,7 +70,7 @@ const embedRoot = "skills"
 // existing seeded copies should be refreshed on the next startup. It is
 // deliberately separate from the research pack's version (see
 // core/research.CurrentSeedVersion) so the two packs bump independently.
-const CurrentSeedVersion = "2"
+const CurrentSeedVersion = "3"
 
 // seedVersionFile is the sidecar marker filename written into every seeded
 // skill directory. Its presence identifies a directory as pack-seeded (and

@@ -207,6 +207,55 @@ describe('PapersView — invocation surface', () => {
     expect(usePaperStore.getState().error).toContain('Failed to dispatch')
     expect(usePaperStore.getState().error).toContain('runtime not ready')
   })
+
+  it('restores the Study field when the dispatch fails', async () => {
+    sendMock.mockRejectedValue(new Error('runtime not ready'))
+    const container = await render()
+
+    await act(async () => {
+      setInputValue(container, 'Study paper', '10.1145/xyz')
+    })
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="papers-invoke-study"]')!.click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    // The pasted reference is not silently discarded on the failure path.
+    const input = container.querySelector<HTMLInputElement>('[data-testid="papers-invoke-input"]')!
+    expect(input.value).toBe('10.1145/xyz')
+    expect(usePaperStore.getState().error).toContain('Failed to dispatch')
+  })
+
+  it('does not write a dispatch failure into another project’s error slot', async () => {
+    usePaperStore.getState().loadLibrary(makeLibrary([makePaper()], 'p1'))
+    let rejectSend: (err: unknown) => void = () => {}
+    sendMock.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectSend = reject
+      }),
+    )
+    const container = await render()
+
+    await act(async () => {
+      setInputValue(container, 'Study paper', '1706.03762')
+    })
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="papers-invoke-study"]')!.click()
+    })
+
+    // The project switches while the dispatch is still in flight.
+    await act(async () => {
+      useProjectStore.setState({ activeProjectId: 'p2' })
+      usePaperStore.getState().loadLibrary(makeLibrary([], 'p2'))
+    })
+    await act(async () => {
+      rejectSend(new Error('runtime not ready'))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    // Guarded: the failure is NOT written into project p2's error slot.
+    expect(usePaperStore.getState().error).toBeNull()
+  })
 })
 
 describe('PapersView — the paper list', () => {
@@ -254,6 +303,20 @@ describe('PapersView — the paper list', () => {
     useProjectStore.setState({ projects: null, activeProjectId: null, lastRealProjectId: null })
     const container = await render()
     expect(container.querySelector('[data-testid="papers-no-project"]')).not.toBeNull()
+  })
+
+  it('does not render the previous project’s papers during a project switch', async () => {
+    usePaperStore.getState().loadLibrary(makeLibrary([makePaper()], 'p1'))
+    const container = await render()
+    expect(container.querySelectorAll('[data-testid="paper-row"]')).toHaveLength(1)
+
+    // The active project changes immediately; the store still holds p1's
+    // library until the new GetPapers resolves. The stale rows must not render.
+    await act(async () => {
+      useProjectStore.setState({ activeProjectId: 'p2' })
+    })
+    expect(container.querySelectorAll('[data-testid="paper-row"]')).toHaveLength(0)
+    expect(container.querySelector('[data-testid="papers-loading"]')).not.toBeNull()
   })
 })
 
@@ -530,5 +593,45 @@ describe('PapersView — multi-select comparison', () => {
       '1 selected',
     )
     expect(compareButton(container).disabled).toBe(true)
+  })
+
+  it('clears the selection when the loaded library switches project', async () => {
+    const container = await render()
+    await act(async () => {
+      checkbox(container, 'P-001').click()
+      checkbox(container, 'P-002').click()
+    })
+    expect(container.querySelector('[data-testid="papers-selection-count"]')!.textContent).toBe(
+      '2 selected',
+    )
+
+    // Project B's library carries the same colliding ids; the selection must not
+    // survive the switch and silently build a comparison over unselected papers.
+    await act(async () => {
+      useProjectStore.setState({ activeProjectId: 'p2' })
+      usePaperStore.getState().loadLibrary(makeLibrary([p1, p2], 'p2'))
+    })
+    expect(container.querySelector('[data-testid="papers-selection-count"]')!.textContent).toBe(
+      '0 selected',
+    )
+    expect(compareButton(container).disabled).toBe(true)
+  })
+
+  it('keeps the selection when a Compare-selected dispatch fails', async () => {
+    sendMock.mockRejectedValue(new Error('runtime not ready'))
+    const container = await render()
+    await act(async () => {
+      checkbox(container, 'P-001').click()
+      checkbox(container, 'P-002').click()
+    })
+    await act(async () => {
+      compareButton(container).click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    // The ticked papers are not deselected when the dispatch is rejected.
+    expect(container.querySelector('[data-testid="papers-selection-count"]')!.textContent).toBe(
+      '2 selected',
+    )
+    expect(usePaperStore.getState().error).toContain('Failed to dispatch')
   })
 })

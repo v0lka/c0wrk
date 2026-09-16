@@ -180,15 +180,6 @@ func TestPaperLibraryPath(t *testing.T) {
 	}
 }
 
-func TestPaperDir(t *testing.T) {
-	ws := filepath.Join(testAgentDir, "projects", "proj-123", WorkspaceSegment)
-	got := PaperDir(ws, "attention-is-all-you-need")
-	want := filepath.Join(ws, ".research", "papers", "attention-is-all-you-need")
-	if got != want {
-		t.Errorf("PaperDir: got %q, want %q", got, want)
-	}
-}
-
 func TestComparisonsPath(t *testing.T) {
 	ws := filepath.Join(testAgentDir, "projects", "proj-123", WorkspaceSegment)
 	got := ComparisonsPath(ws)

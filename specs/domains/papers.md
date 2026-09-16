@@ -18,7 +18,7 @@ The paper ("literature") library is a per-project, workspace-contained store of 
 - `backend/frontend_api_skills.go` - `seedPapersSkillPack(agentDir)` (the startup global seed; a no-op on an empty agent dir) and the skill cache.
 - `backend/frontend_api.go` - calls `seedPapersSkillPack(cfg.AgentDir)` before the global skill watchers start.
 - `backend/frontend_api_project.go` - the workspace-watcher integration that emits `papers:changed` for the paper library.
-- `backend/config/paths.go` - the path helpers `PaperLibraryPathIn`/`PaperLibraryPath`/`PaperDir` and `ComparisonDirName`/`ComparisonsPathIn`/`ComparisonsPath`.
+- `backend/config/paths.go` - the path helpers `PaperLibraryPathIn`/`PaperLibraryPath` and `ComparisonDirName`/`ComparisonsPathIn`/`ComparisonsPath`.
 - `frontend/src/api/papers.ts` - the RPC wrappers plus the boundary normalizers (`normalizePaperLibrary`/`normalizePaperRecord`/`normalizePaperLiteratureResult`).
 - `frontend/src/stores/paperStore.ts` - the paper-library state and its sync functions (see [frontend/stores.md](frontend/stores.md)).
 - `frontend/src/hooks/usePapersEvents.ts` - loads the active project's library and refetches it on `papers:changed`.
@@ -38,12 +38,15 @@ The paper ("literature") library is a per-project, workspace-contained store of 
       note.md           claims / red flags / uncertainties tables
       appraisal.md      verdict + confidence sheet
       flashcards.md     card table + append-only review log   (study-paper Teach mode)
+      source.md         (optional) extracted source text       (PDF → Markdown extraction)
+      literature.md     (optional) literature-context note     (predecessors / citing / contradictions)
+      comparison.md     (optional) per-paper comparison note   (single-paper form; comparison-matrix.md also accepted)
       literature.json   predecessor / citing / contradiction graph (literature.py output)
   comparisons/
     <slug>.md           multi-paper comparison (study-paper Compare intent)
 ```
 
-`<research-root>` is the persisted `ProjectInfo.ResearchRoot` when RESEARCH is enabled, otherwise the default `<workspace>/.research`. `papers/` and `comparisons/` are direct children of the root — global siblings of the `R-NNN-<slug>/` research projects, owned by no single project. `paper.md`, `note.md`, and `appraisal.md` are the `PaperArtifacts` set (the front matter card and the two Markdown sheets the writer owns); `flashcards.md` and `literature.json` are additionally produced by the skill/helper and are NOT part of `PaperArtifacts`.
+`<research-root>` is the persisted `ProjectInfo.ResearchRoot` when RESEARCH is enabled, otherwise the default `<workspace>/.research`. `papers/` and `comparisons/` are direct children of the root — global siblings of the `R-NNN-<slug>/` research projects, owned by no single project. `paper.md`, `note.md`, and `appraisal.md` are the `PaperArtifacts` set (the front matter card and the two Markdown sheets the writer owns); `flashcards.md`, `literature.json`, and the OPTIONAL per-paper artifacts `source.md` (the extracted source text), `literature.md` (the literature-context note) and `comparison.md` (a single-paper comparison) are additionally produced by the skill/helper and are NOT part of the backend `PaperArtifacts`.
 
 ## Core Types
 
@@ -153,7 +156,7 @@ Literature lookup ("Run lookup" in the Literature section)
 | Library location | `<research-root>/papers` | Global sibling of the `R-NNN-*` projects; `<research-root>` is the persisted `ProjectInfo.ResearchRoot` or `<workspace>/.research` |
 | Comparisons location | `<research-root>/comparisons` | One `<slug>.md` per comparison set (`config.ComparisonDirName`) |
 | Global skill seed dir | `~/.c0wrk/.agents/skills` (`config.SkillsDir(agentDir)`) | Destination of the startup paper-pack seed; one of `config.defaultSkillDirs` |
-| `papers.CurrentSeedVersion` | `2` | Pack version stamped into each seeded skill's `.seed-version` marker; bump to refresh marked copies |
+| `papers.CurrentSeedVersion` | `3` | Pack version stamped into each seeded skill's `.seed-version` marker; bump to refresh marked copies |
 | Literature run timeout | `90s` wall clock; `20s` per HTTP request | Bounds `RunPaperLiterature`; the helper owns its per-request timeout |
 | Literature message cap | `600` runes | Truncation of the helper's stderr tail in `PaperLiteratureDTO.Message` |
 | Flashcards interval ladder | `1, 3, 7, 16, 35` days | `papers.IntervalScheduleDays` (mirrored in `spacedRepetition.ts`) |

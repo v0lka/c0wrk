@@ -68,6 +68,11 @@ func TestRecordCardReviewRejectsMissingDeck(t *testing.T) {
 	if err := RecordCardReview(root, "no-such-paper", "P1-01", GradeGood, "2024-01-10"); err == nil {
 		t.Error("expected a missing deck to be rejected")
 	}
+	// A rejected review must not create the paper directory (issue 48): the deck
+	// is read before anything is created.
+	if _, err := os.Stat(filepath.Join(root, "no-such-paper")); !os.IsNotExist(err) {
+		t.Errorf("a rejected review left a stray paper directory (stat err = %v)", err)
+	}
 }
 
 func TestRecordCardReviewRejectsUnsafeSlug(t *testing.T) {
@@ -83,11 +88,22 @@ func TestWriteFlashcardsRoundTrip(t *testing.T) {
 	if err := WriteFlashcards(root, "demo", deck); err != nil {
 		t.Fatalf("WriteFlashcards: %v", err)
 	}
+	// Also write a card so ParsePaperDir has an artifact that can fail the test:
+	// the parsed record's id/slug must survive the write, and the library lookup
+	// must find it.
+	if err := WritePaper(root, PaperRecord{ID: "P-001", Slug: "demo", Title: "Demo"}); err != nil {
+		t.Fatalf("WritePaper: %v", err)
+	}
 	got, err := ParsePaperDir(filepath.Join(root, "demo"))
 	if err != nil {
 		t.Fatalf("ParsePaperDir: %v", err)
 	}
-	_ = got // the card artifact is optional; the deck is asserted directly below.
+	if got.ID != "P-001" || got.Slug != "demo" || got.Title != "Demo" {
+		t.Errorf("parsed card = %+v, want id P-001 slug demo title Demo", got)
+	}
+	if rec := (&PaperLibrary{Papers: []*PaperRecord{got}}).Get("demo"); rec != got {
+		t.Error("library lookup by slug did not return the parsed record")
+	}
 	raw, err := os.ReadFile(filepath.Join(root, "demo", FlashcardFileName))
 	if err != nil {
 		t.Fatalf("read deck: %v", err)

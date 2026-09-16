@@ -1368,7 +1368,6 @@ export namespace backend {
 	    seed_result?: ResearchSeedResultDTO;
 	    pinned_research: string[];
 	    pinned_hypotheses: Record<string, Array<string>>;
-	    pinned_papers: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ResearchStatusDTO(source);
@@ -1383,7 +1382,6 @@ export namespace backend {
 	        this.seed_result = this.convertValues(source["seed_result"], ResearchSeedResultDTO);
 	        this.pinned_research = source["pinned_research"];
 	        this.pinned_hypotheses = source["pinned_hypotheses"];
-	        this.pinned_papers = source["pinned_papers"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

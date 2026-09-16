@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -128,7 +129,10 @@ func (f *FrontendAPI) GetPapers(projectID string) (*PapersDTO, error) {
 	if err != nil {
 		return nil, err
 	}
-	lib := f.parsePaperLibrary(ctx.libraryRoot)
+	lib, err := f.parsePaperLibrary(ctx.libraryRoot)
+	if err != nil {
+		return nil, err
+	}
 	links := f.researchLinkIndex(ctx.researchRoot)
 	pinned := paperPinSet(ctx.project.ResearchPins.Papers)
 
@@ -156,7 +160,10 @@ func (f *FrontendAPI) GetPaper(projectID, paperID string) (*PaperDTO, error) {
 	if err != nil {
 		return nil, err
 	}
-	lib := f.parsePaperLibrary(ctx.libraryRoot)
+	lib, err := f.parsePaperLibrary(ctx.libraryRoot)
+	if err != nil {
+		return nil, err
+	}
 	rec := lib.Get(paperID)
 	if rec == nil {
 		return nil, fmt.Errorf("paper %q not found in the library", paperID)
@@ -172,13 +179,15 @@ func (f *FrontendAPI) GetPaper(projectID, paperID string) (*PaperDTO, error) {
 // "papers/<slug>/paper.md") in ProjectInfo.ResearchPins.Papers; unpinning
 // removes it. Both directions are idempotent. Pinning additionally requires the
 // card file to exist (no pins to phantom papers); unpinning deliberately works
-// for a paper whose card has since been deleted, so stale pins stay removable.
-// No event is emitted — the caller's resolved promise is its refresh signal.
+// for a paper whose card has since been deleted — or whose whole directory was
+// deleted or renamed (the stale pin is matched by its normalized path/key, not
+// only the current on-disk card path) — so stale pins stay removable. No event
+// is emitted — the caller's resolved promise is its refresh signal.
 //
-// The update serializes on the same per-research-root mutex as the research
-// pin RPCs and Enable/DisableResearch (all writers of the projects row), and
-// merges only the pins delta under that lock, so a concurrent row save cannot
-// clobber it (or vice versa).
+// The update serializes on the same per-effective-research-root mutex as the
+// research pin RPCs and Enable/DisableResearch (all writers of the projects
+// row), and merges only the pins delta under that lock, so a concurrent row
+// save cannot clobber it (or vice versa).
 func (f *FrontendAPI) SetPaperPinned(projectID, paperID string, pinned bool) error {
 	if f.projStore == nil {
 		return errors.New("project subsystem not initialized")
@@ -208,21 +217,41 @@ func (f *FrontendAPI) SetPaperPinned(projectID, paperID string, pinned bool) err
 		return errResearchRootChanged
 	}
 
-	lib := f.parsePaperLibrary(ctx.libraryRoot)
+	lib, err := f.parsePaperLibrary(ctx.libraryRoot)
+	if err != nil {
+		return err
+	}
 	rec := lib.Get(paperID)
+
+	if !pinned {
+		// Unpin tolerates a paper that no longer resolves: its directory may
+		// have been deleted (lib.Get == nil) or renamed while the card kept its
+		// declared slug, so the stored pin still keys off the old path. Drop
+		// every pin referring to this paper by the resolved record's card paths
+		// and the normalized key instead of erroring on a nil record — no other
+		// RPC removes a paper pin, so a failure here orphans it forever.
+		next, changed := removePaperPin(fresh.ResearchPins.Papers, paperID, rec)
+		if !changed {
+			return nil // already in the requested state
+		}
+		fresh.ResearchPins.Papers = next
+		if err := f.projStore.SaveProject(context.Background(), *fresh); err != nil {
+			return fmt.Errorf("failed to persist paper pins: %w", err)
+		}
+		return nil
+	}
+
+	// Pinning fails closed: the paper must resolve AND its card file must exist
+	// (no pins to phantom papers).
 	if rec == nil {
 		return fmt.Errorf("paper %q not found in the library", paperID)
 	}
 	cardPath := paperCardRelPath(ctx.researchRoot, rec)
-
-	if pinned {
-		// Fail closed against pinning a paper whose card does not exist.
-		if _, statErr := os.Stat(filepath.Join(rec.Dir, papers.PaperFileName)); statErr != nil {
-			return fmt.Errorf("paper card for %q not found: %w", paperID, statErr)
-		}
+	if _, statErr := os.Stat(filepath.Join(rec.Dir, papers.PaperFileName)); statErr != nil {
+		return fmt.Errorf("paper card for %q not found: %w", paperID, statErr)
 	}
 
-	next, changed := togglePinnedPath(fresh.ResearchPins.Papers, cardPath, pinned)
+	next, changed := togglePinnedPath(fresh.ResearchPins.Papers, cardPath, true)
 	if !changed {
 		return nil // already in the requested state
 	}
@@ -231,6 +260,41 @@ func (f *FrontendAPI) SetPaperPinned(projectID, paperID string, pinned bool) err
 		return fmt.Errorf("failed to persist paper pins: %w", err)
 	}
 	return nil
+}
+
+// removePaperPin removes every pin entry that refers to the paper identified by
+// key (an id, a slug, or even a stored pin path). It matches on the resolved
+// record's on-disk and declared card paths, on the slugified key, and on the
+// raw key itself. Matching these normalized forms — rather than the exact
+// on-disk card path alone — is what lets a stale pin still be removed after the
+// paper's directory was deleted (rec == nil) or renamed while the card kept its
+// declared slug. It returns the next list and whether anything changed.
+func removePaperPin(pins []string, key string, rec *papers.PaperRecord) ([]string, bool) {
+	candidates := map[string]bool{}
+	add := func(rel string) {
+		if rel = path.Clean(strings.TrimSpace(rel)); rel != "" && rel != "." {
+			candidates[rel] = true
+		}
+	}
+	add(key)
+	if slug := papers.Slugify(key); slug != "" {
+		add(path.Join("papers", slug, papers.PaperFileName))
+	}
+	if rec != nil {
+		add(path.Join("papers", filepath.Base(rec.Dir), papers.PaperFileName))
+		add(path.Join("papers", rec.Slug, papers.PaperFileName))
+		add(path.Join("papers", rec.ResolvedSlug(), papers.PaperFileName))
+	}
+	next := make([]string, 0, len(pins))
+	changed := false
+	for _, p := range pins {
+		if candidates[path.Clean(filepath.ToSlash(p))] {
+			changed = true
+			continue
+		}
+		next = append(next, p)
+	}
+	return next, changed
 }
 
 // RecordFlashcardReview records a self-grade for one flashcard of a paper: it
@@ -277,7 +341,10 @@ func (f *FrontendAPI) RecordFlashcardReview(projectID, paperID, cardID, grade st
 		return errResearchRootChanged
 	}
 
-	lib := f.parsePaperLibrary(ctx.libraryRoot)
+	lib, err := f.parsePaperLibrary(ctx.libraryRoot)
+	if err != nil {
+		return err
+	}
 	rec := lib.Get(paperID)
 	if rec == nil {
 		return fmt.Errorf("paper %q not found in the library", paperID)
@@ -439,19 +506,25 @@ func (f *FrontendAPI) papersReadContextFor(projectID string) (*papersReadContext
 	return &papersReadContext{project: proj, researchRoot: researchRoot, libraryRoot: libraryRoot}, nil
 }
 
-// parsePaperLibrary parses a library root best-effort: a missing or unreadable
-// directory (a library that has not been created yet) yields an empty library
-// rather than an error, so the Papers panel renders an empty state. A genuine
-// read error is logged and degraded the same way — partial content is the norm
-// for a hand-edited library.
-func (f *FrontendAPI) parsePaperLibrary(libraryRoot string) *papers.PaperLibrary {
+// parsePaperLibrary parses a library root. A library that has not been created
+// yet (the root does not exist) is the legitimate empty state and yields an
+// empty library. Any OTHER error (permissions, I/O, a stale mount, or a path
+// that is not a directory) is a genuine read failure and is returned rather
+// than silently degraded to an empty library: collapsing the two made an
+// unreadable library indistinguishable from "no papers studied yet", hiding
+// the failure from the Papers panel. The failure is also logged at Warn so it
+// is visible at the default log level.
+func (f *FrontendAPI) parsePaperLibrary(libraryRoot string) (*papers.PaperLibrary, error) {
 	lib, err := papers.ParseLibraryDir(libraryRoot)
 	if err != nil {
-		f.log().Debug("GetPapers: paper library not yet parseable",
+		if errors.Is(err, fs.ErrNotExist) {
+			return &papers.PaperLibrary{Root: libraryRoot}, nil
+		}
+		f.log().Warn("paper library is unreadable",
 			"root", libraryRoot, "error", err)
-		return &papers.PaperLibrary{Root: libraryRoot}
+		return nil, fmt.Errorf("failed to read paper library %q: %w", libraryRoot, err)
 	}
-	return lib
+	return lib, nil
 }
 
 // toPaperDTO normalizes a parsed record into the wire shape: string enums,
@@ -488,14 +561,24 @@ func (f *FrontendAPI) toPaperDTO(rec *papers.PaperRecord, researchRoot string, p
 // the card file name, e.g. "papers/<slug>/paper.md". The slug is taken from the
 // actual directory on disk (not the record's ResolvedSlug) so the pin path
 // always matches the directory the writer and watcher use. It falls back to the
-// directory's base name when the relative path cannot be computed.
+// directory's base name when the relative path cannot be computed (the
+// containment check uses the centralized path API rather than the forbidden
+// filepath.Rel + strings.HasPrefix idiom — always use the constants/helpers
+// from config/pathutil).
 func paperCardRelPath(researchRoot string, rec *papers.PaperRecord) string {
 	dir := rec.Dir
-	rel, err := filepath.Rel(researchRoot, dir)
-	if err != nil || rel == "" || rel == "." || strings.HasPrefix(rel, "..") {
+	rel := ""
+	if researchRoot != "" {
+		if contained, err := config.IsWithinPath(researchRoot, dir); err == nil && contained {
+			if r, relErr := filepath.Rel(researchRoot, dir); relErr == nil && r != "" && r != "." {
+				rel = filepath.ToSlash(r)
+			}
+		}
+	}
+	if rel == "" {
 		rel = filepath.Base(dir)
 	}
-	return path.Join(filepath.ToSlash(rel), papers.PaperFileName)
+	return path.Join(rel, papers.PaperFileName)
 }
 
 // researchLinkIndex maps every hypothesis id (H-NNN) in the project's research

@@ -6,10 +6,13 @@
 //   ## 2. Cards        | ID | Front (question) | Back (answer) | Anchor | Tag | Stage |
 //   ## 3. Review log   | ID | Date | Grade | Next due |
 //
-// The plain Markdown tables carry the review state (Stage, and the append-only
-// grade history) that the backend's structured PaperRecord does NOT capture —
-// PaperRecord models the card, not the deck — so the reader re-parses the raw
-// artifact here to drive interactive review.
+// The plain Markdown tables carry the review state (the append-only grade
+// history, which the reader replays to derive each card's stage) that the
+// backend's structured PaperRecord does NOT capture — PaperRecord models the
+// card, not the deck — so the reader re-parses the raw artifact here to drive
+// interactive review. The cards table's Stage column is write-only from this
+// module's perspective: the stage is DERIVED from the review log (see
+// lib/spacedRepetition.ts) and never read from the parsed card.
 //
 // Everything in this module is PURE over strings — no React, no DOM, no I/O —
 // so the deck extraction is unit-testable on fixtures. Table parsing is shared
@@ -36,8 +39,6 @@ export interface Flashcard {
   anchor: string
   /** Topic / concept tag, for filtering. */
   tag: string
-  /** The recorded stage; unknown/absent folds to `new`. */
-  stage: FlashcardStage
 }
 
 /** One row of the review log. */
@@ -67,6 +68,16 @@ function norm(s: string): string {
     .trim()
 }
 
+/**
+ * Normalize a cell VALUE (as opposed to a header): Markdown emphasis and
+ * surrounding punctuation are stripped, then lower-cased and trimmed. Mirrors
+ * the Go parser's shared value-normalizer, so a `**review**` or "`good`." cell
+ * folds the same on both sides of the boundary.
+ */
+function normValue(s: string): string {
+  return norm(s).replace(/^\.+|\.+$/g, '')
+}
+
 /** First header index matching any pattern, skipping already-used indices. */
 function pickColumn(header: string[], patterns: RegExp, exclude: number[] = []): number {
   for (let i = 0; i < header.length; i++) {
@@ -85,14 +96,17 @@ const FRONT_COL = /front|question|prompt/
 const BACK_COL = /back|answer/
 const ANCHOR_COL = /anchor|source|location|\bref\b|where|page/
 const TAG_COL = /\btag\b|topic|concept|\blabel\b/
-const STAGE_COL = /stage|state|status/
 const DATE_COL = /date|when/
 const GRADE_COL = /grade|rating|result/
 const NEXT_DUE_COL = /next|\bdue\b/
 
-/** Fold a raw stage token to its canonical value (unknown/blank → `new`). */
+/** Fold a raw stage token to its canonical value (unknown/blank → `new`).
+ *  Emphasis/punctuation are stripped so a `**review**` cell folds like
+ *  `review` — matching the Go parser's NormalizeStage. Kept as the documented
+ *  cross-boundary mirror even though the deck's Stage column is derived from the
+ *  review log and is no longer surfaced on the parsed card (see `Flashcard`). */
 export function normalizeStage(raw: string): FlashcardStage {
-  const s = norm(raw)
+  const s = normValue(raw)
   switch (s) {
     case 'learning':
     case 'learn':
@@ -108,9 +122,11 @@ export function normalizeStage(raw: string): FlashcardStage {
   }
 }
 
-/** Fold a raw grade token to its canonical value (unknown/blank → ''). */
+/** Fold a raw grade token to its canonical value (unknown/blank → '').
+ *  Emphasis/punctuation are stripped so a "`good`" cell folds like `good` —
+ *  matching the Go parser's NormalizeGrade. */
 export function normalizeGrade(raw: string): FlashcardGrade | '' {
-  const s = norm(raw)
+  const s = normValue(raw)
   switch (s) {
     case 'again':
     case 'hard':
@@ -140,22 +156,18 @@ function parseCardTable(t: MarkdownTable): Flashcard[] {
   const backIdx = pickColumn(t.header, BACK_COL)
   const anchorIdx = pickColumn(t.header, ANCHOR_COL, [idIdx, frontIdx, backIdx])
   const tagIdx = pickColumn(t.header, TAG_COL, [idIdx, frontIdx, backIdx, anchorIdx])
-  const stageIdx = pickColumn(t.header, STAGE_COL, [idIdx, frontIdx, backIdx, anchorIdx, tagIdx])
   const cards: Flashcard[] = []
   for (const row of t.rows) {
     const id = cell(row, idIdx)
-    const front = cell(row, frontIdx)
-    const back = cell(row, backIdx)
-    // A row with neither a prompt nor an answer is the template's placeholder
-    // (e.g. `| P1-04 | | | | | new |`), not a card.
-    if (front === '' && back === '') continue
+    // Card-row identity (shared with the Go parser's isCardRow): a data row is a
+    // card unless the deck carries an id column and the row's id cell is empty.
+    if (idIdx >= 0 && id === '') continue
     cards.push({
       id,
-      front,
-      back,
+      front: cell(row, frontIdx),
+      back: cell(row, backIdx),
       anchor: cell(row, anchorIdx),
       tag: cell(row, tagIdx),
-      stage: normalizeStage(cell(row, stageIdx)),
     })
   }
   return cards

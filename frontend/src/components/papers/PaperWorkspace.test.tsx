@@ -19,13 +19,31 @@ vi.mock('@/hooks/useMessageSender', () => ({
   useMessageSender: () => ({ send: sendMock, cancel: vi.fn(), isProcessing: false }),
 }))
 
-// The artifact loader is mocked so each test pins the on-disk state it needs.
+// The artifact loader: most tests pin the on-disk state through `artifactsHolder`
+// (set before render). The "round-trip" test clears it to drive the REAL loader
+// (against the mocked workspace RPCs below), so a refresh-key bump re-runs the
+// load — the regression it guards.
 const { artifactsHolder } = vi.hoisted(() => ({
   artifactsHolder: { current: null as unknown },
 }))
-vi.mock('./usePaperArtifacts', () => ({
-  usePaperArtifacts: () => artifactsHolder.current,
+vi.mock('@/api/workspace', () => ({
+  // Pending by default: with the holder override in place the real loader's
+  // probe never resolves, so it schedules no state update outside act.
+  listDirectory: vi.fn(() => new Promise(() => {})),
+  readFile: vi.fn(() => new Promise(() => {})),
 }))
+vi.mock('./usePaperArtifacts', async () => {
+  const actual = await vi.importActual<typeof import('./usePaperArtifacts')>('./usePaperArtifacts')
+  return {
+    ...actual,
+    // Invoke the real loader unconditionally (hooks rules) and prefer a test's
+    // pinned artifacts when it supplied them.
+    usePaperArtifacts: (dir: string, refreshKey?: number): PaperArtifacts => {
+      const loaded = actual.usePaperArtifacts(dir, refreshKey)
+      return (artifactsHolder.current ?? loaded) as PaperArtifacts
+    },
+  }
+})
 
 // The research-root comparisons loader is mocked the same way, so each test
 // pins which library comparisons (if any) the paper takes part in.
@@ -46,6 +64,7 @@ vi.mock('@/lib/markdownConfig', () => ({
 
 import { PaperWorkspace } from './PaperWorkspace'
 import type { PaperArtifacts, PaperArtifact, PaperSectionId } from './usePaperArtifacts'
+import { listDirectory, readFile } from '@/api/workspace'
 import { usePaperStore } from '@/stores/paperStore'
 import { setPaperPinned, type PaperRecord } from '@/api/papers'
 import {
@@ -184,6 +203,14 @@ async function clickAsync(selector: string): Promise<void> {
   })
 }
 
+/** Let the (real) artifact loader's mocked workspace RPCs settle. */
+async function flushArtifacts(): Promise<void> {
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+  })
+}
+
 const activeSection = (): string | null | undefined =>
   document.querySelector('[data-testid="paper-sections"] [data-active="true"]')?.getAttribute(
     'data-testid',
@@ -219,6 +246,22 @@ describe('PaperWorkspace', () => {
     }
     expect(activeSection()).toBe('paper-section-overview')
     expect(document.querySelector('[data-testid="paper-identity"]')).not.toBeNull()
+  })
+
+  it('exposes the active section to assistive tech via aria-current', () => {
+    render()
+    const current = (): string | null | undefined =>
+      document
+        .querySelector('[data-testid="paper-sections"] [aria-current="true"]')
+        ?.getAttribute('data-testid')
+    expect(document.querySelector('[data-testid="paper-section-note"]')?.getAttribute('aria-current')).toBeNull()
+    expect(current()).toBe('paper-section-overview')
+
+    click('[data-testid="paper-section-note"]')
+    expect(current()).toBe('paper-section-note')
+    expect(
+      document.querySelector('[data-testid="paper-section-overview"]')?.getAttribute('aria-current'),
+    ).toBeNull()
   })
 
   it('renders the reading badge alongside mode/verdict/confidence in the overview', () => {
@@ -377,26 +420,27 @@ describe('PaperWorkspace — deepening & hypothesis bridge (E4/E5)', () => {
     expect(setPaperPinned).toHaveBeenCalledWith('p1', 'P-001', true)
   })
 
-  it('keeps every previous section when a deepen appends a new one (round-trip)', () => {
-    artifactsHolder.current = artifactsOf({
-      note: { fileName: 'note.md', content: 'Note v1', loading: false, missing: false, error: null },
-      appraisal: {
-        fileName: 'appraisal.md',
-        content: 'Appraisal v1',
-        loading: false,
-        missing: false,
-        error: null,
-      },
-      literature: {
-        fileName: 'literature.md',
-        content: 'Literature appended',
-        loading: false,
-        missing: false,
-        error: null,
-      },
+  it('keeps every previous section when a deepen appends a new one (round-trip)', async () => {
+    // Drive the REAL loader (mocked workspace RPCs, not the hook) so the
+    // refresh-key bump genuinely re-runs the load — the regression this guards
+    // is a rebuild that drops the previously parsed sections (the stub could
+    // never fail on it).
+    artifactsHolder.current = null
+    const dir = paperRecord().dir
+    const fileEntry = (name: string) => ({ name, path: `${dir}/${name}`, is_dir: false })
+    vi.mocked(listDirectory).mockResolvedValue([fileEntry('note.md'), fileEntry('appraisal.md')])
+    vi.mocked(readFile).mockImplementation(async (path: string) => {
+      if (path.endsWith('note.md')) return 'Note v1'
+      if (path.endsWith('appraisal.md')) return 'Appraisal v1'
+      // A card-less deck falls back to the plain Markdown render.
+      if (path.endsWith('flashcards.md')) return '# Flashcards\n\nNo tables here.'
+      return ''
     })
+
     render()
-    // The sections written before the deepen are still present…
+    await flushArtifacts()
+
+    // The sections written before the deepen are present…
     click('[data-testid="paper-section-note"]')
     expect(document.querySelector('[data-testid="paper-note-markdown"]')?.textContent).toContain(
       'Note v1',
@@ -405,11 +449,52 @@ describe('PaperWorkspace — deepening & hypothesis bridge (E4/E5)', () => {
     expect(
       document.querySelector('[data-testid="paper-appraisal-markdown"]')?.textContent,
     ).toContain('Appraisal v1')
-    // …and the newly appended section is built out on top of them.
-    click('[data-testid="paper-section-literature"]')
+
+    // The deepen appends flashcards.md; the library sync bumps the refresh key,
+    // which re-runs the loader against the now-larger directory.
+    vi.mocked(listDirectory).mockResolvedValue([
+      fileEntry('note.md'),
+      fileEntry('appraisal.md'),
+      fileEntry('flashcards.md'),
+    ])
+    await act(async () => {
+      usePaperStore.setState({ lastSyncAt: usePaperStore.getState().lastSyncAt + 1 })
+    })
+    await flushArtifacts()
+
+    // …the prior sections survive the rebuild…
+    click('[data-testid="paper-section-note"]')
+    expect(document.querySelector('[data-testid="paper-note-markdown"]')?.textContent).toContain(
+      'Note v1',
+    )
+    click('[data-testid="paper-section-appraisal"]')
     expect(
-      document.querySelector('[data-testid="paper-literature-markdown"]')?.textContent,
-    ).toContain('Literature appended')
+      document.querySelector('[data-testid="paper-appraisal-markdown"]')?.textContent,
+    ).toContain('Appraisal v1')
+    // …and the appended section is built out on top of them (a card-less deck
+    // renders through the Markdown fallback).
+    click('[data-testid="paper-section-flashcards"]')
+    expect(
+      document.querySelector('[data-testid="paper-flashcards-markdown"]')?.textContent,
+    ).toContain('No tables here.')
+
+    // Restore the default (pending) RPCs so the later suites' render of the real
+    // loader schedules no state update outside act.
+    vi.mocked(listDirectory).mockReturnValue(new Promise(() => {}))
+    vi.mocked(readFile).mockReturnValue(new Promise(() => {}))
+  })
+
+  it('renders a dispatch failure raised from the paper tab inline', async () => {
+    // The failure lands on paperStore.error, whose only other renderer is the
+    // Research panel's Papers segment — a different surface. This tab must show
+    // it itself so a failed "Go deeper" is never invisible.
+    sendMock.mockRejectedValue(new Error('runtime not ready'))
+    render()
+    await clickAsync('[data-testid="paper-go-deeper"]')
+    const alert = document.querySelector('[data-testid="paper-workspace-error"]')
+    expect(alert).not.toBeNull()
+    expect(alert?.textContent).toContain('Failed to dispatch')
+    expect(alert?.textContent).toContain('runtime not ready')
   })
 })
 
@@ -512,5 +597,20 @@ describe('PaperWorkspace — Compare section (multi-paper comparisons)', () => {
     render()
     click('[data-testid="paper-section-compare"]')
     expect(document.querySelector('[data-testid="paper-compare-loading"]')).not.toBeNull()
+  })
+
+  it('surfaces a comparison whose file could not be read (Issue 23)', () => {
+    // An unreadable comparison has empty content, so it never matches the paper;
+    // without the notice the section would silently look like "no comparisons".
+    comparisonsHolder.current = {
+      dir: '/ws/.research/comparisons',
+      loading: false,
+      items: [{ slug: 'broken', content: '', error: 'EACCES: permission denied' }],
+    }
+    render()
+    click('[data-testid="paper-section-compare"]')
+    const notice = document.querySelector('[data-testid="paper-compare-error"]')
+    expect(notice).not.toBeNull()
+    expect(notice?.textContent).toContain('could not read broken.md')
   })
 })

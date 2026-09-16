@@ -75,9 +75,11 @@ type Deck struct {
 }
 
 // NormalizeStage folds a raw stage token to its canonical value; an unknown or
-// blank token maps to StageNew.
+// blank token maps to StageNew. Emphasis/punctuation are stripped via the shared
+// value-normalizer, so a `**review**` cell folds like `review` — matching the
+// frontend twin's normalizeStage.
 func NormalizeStage(raw string) FlashcardStage {
-	switch strings.ToLower(cleanLine(raw)) {
+	switch normalizeValueToken(raw) {
 	case "learning", "learn":
 		return StageLearning
 	case "review", "reviewing", "graduated":
@@ -88,9 +90,11 @@ func NormalizeStage(raw string) FlashcardStage {
 }
 
 // NormalizeGrade folds a raw grade token to its canonical value; an unknown or
-// blank token maps to "" (an ungraded review row).
+// blank token maps to "" (an ungraded review row). Emphasis/punctuation are
+// stripped via the shared value-normalizer, so a "`good`" cell folds like
+// `good` — matching the frontend twin's normalizeGrade.
 func NormalizeGrade(raw string) Grade {
-	switch strings.ToLower(cleanLine(raw)) {
+	switch normalizeValueToken(raw) {
 	case "again":
 		return GradeAgain
 	case "hard":
@@ -129,8 +133,8 @@ func isReviewHeader(header []string) bool {
 
 // ParseFlashcards parses a flashcards.md document into its deck. Best-effort
 // and total: a document with no recognizable table yields an empty deck, and a
-// row carrying neither a prompt nor an answer (the template's placeholder) is
-// skipped.
+// data row without an id (when the deck carries an id column) is not a card row
+// — see isCardRow, the identity shared with the writer.
 func ParseFlashcards(content string) Deck {
 	var deck Deck
 	for _, t := range parseTables(content) {
@@ -145,26 +149,36 @@ func ParseFlashcards(content string) Deck {
 	return deck
 }
 
+// isCardRow is the single card-row identity shared by the reader (parseCards)
+// and the writer (ApplyReview): a table data row — the header and separator rows
+// are already excluded — is a card row when its id cell is non-empty, or when
+// the table carries no id column at all. It mirrors frontend/src/lib/
+// flashcards.ts so both sides see the same deck.
+func isCardRow(cells []string, idIdx int) bool {
+	return idIdx < 0 || cellAt(cells, idIdx) != ""
+}
+
 func parseCards(t mdTable) []Card {
-	idIdx := colOr(t.Header, 0, "id")
+	// The id column is resolved by name only (no positional fallback): an absent
+	// id column stays absent and yields empty card ids, exactly as the frontend
+	// twin does (pickColumn returns -1), so a `| Front | Back |` deck has the
+	// same card identities on both sides.
+	idIdx := columnIndex(t.Header, "id")
 	frontIdx := colOr(t.Header, 0, "front", "question", "prompt")
 	backIdx := colOr(t.Header, 1, "back", "answer")
 	anchorIdx := columnIndexExcept(t.Header, []int{idIdx, frontIdx, backIdx}, "anchor", "source", "location", "ref", "where", "page")
-	// Resolve Stage before Tag: "stage" contains the substring "tag", so a
-	// tag-first pick would misclaim a Tag-less deck's Stage column.
+	// Resolve Stage before Tag so a Stage cell is never claimed by a tag name.
 	stageIdx := columnIndexExcept(t.Header, []int{idIdx, frontIdx, backIdx, anchorIdx}, "stage", "state", "status")
 	tagIdx := columnIndexExcept(t.Header, []int{idIdx, frontIdx, backIdx, anchorIdx, stageIdx}, "tag", "topic", "concept", "label")
 	var out []Card
 	for _, row := range t.Rows {
-		front := cellAt(row, frontIdx)
-		back := cellAt(row, backIdx)
-		if front == "" && back == "" {
+		if !isCardRow(row, idIdx) {
 			continue
 		}
 		out = append(out, Card{
 			ID:     cellAt(row, idIdx),
-			Front:  front,
-			Back:   back,
+			Front:  cellAt(row, frontIdx),
+			Back:   cellAt(row, backIdx),
 			Anchor: cellAt(row, anchorIdx),
 			Tag:    cellAt(row, tagIdx),
 			Stage:  NormalizeStage(cellAt(row, stageIdx)),
@@ -174,7 +188,7 @@ func parseCards(t mdTable) []Card {
 }
 
 func parseReviews(t mdTable) []ReviewEntry {
-	idIdx := colOr(t.Header, 0, "id")
+	idIdx := columnIndex(t.Header, "id")
 	dateIdx := columnIndexExcept(t.Header, []int{idIdx}, "date", "when")
 	gradeIdx := columnIndexExcept(t.Header, []int{idIdx, dateIdx}, "grade", "rating", "result")
 	dueIdx := columnIndexExcept(t.Header, []int{idIdx, dateIdx, gradeIdx}, "next", "due")
@@ -193,7 +207,8 @@ func parseReviews(t mdTable) []ReviewEntry {
 }
 
 // columnIndexExcept is columnIndex over the header cells whose index is not in
-// exclude (used so a later pick never re-selects an earlier column).
+// exclude (used so a later pick never re-selects an earlier column). Matching
+// uses the same anchored/word-boundary semantics as columnIndex.
 func columnIndexExcept(header []string, exclude []int, names ...string) int {
 	for i, h := range header {
 		if containsInt(exclude, i) {
@@ -201,7 +216,7 @@ func columnIndexExcept(header []string, exclude []int, names ...string) int {
 		}
 		hn := strings.ToLower(strings.Trim(h, "*_` "))
 		for _, n := range names {
-			if strings.Contains(hn, n) {
+			if columnNameMatches(hn, n) {
 				return i
 			}
 		}
@@ -225,7 +240,9 @@ func containsInt(list []int, v int) bool {
 // RenderFlashcards renders a deck to a canonical flashcards.md document. It is
 // the inverse of ParseFlashcards for the two data tables (the skill's prose
 // sections are not reproduced — the writer's mutation PATH instead edits the
-// existing document in place; see ApplyReview).
+// existing document in place; see ApplyReview). This is public, spec-owned API
+// (specs/contracts/desktop-frontend.md names the RenderFlashcards/ParseFlashcards
+// pair) and is exercised by the round-trip tests.
 func RenderFlashcards(deck Deck) string {
 	var b strings.Builder
 	b.WriteString("# Flashcards\n\n")
@@ -383,7 +400,8 @@ func tableBlocks(lines []string) []tableBlock {
 // ApplyReview edits a flashcards.md document in place: it appends a review-log
 // row for cardID graded on date and updates that card's Stage cell, leaving all
 // other content (including the skill's prose) byte-for-byte intact. It fails
-// closed when the deck has no card row for cardID or no review-log table.
+// closed when the deck has no card row for cardID, no review-log table, or a
+// review-log header without a grade column (which could not record the grade).
 func ApplyReview(content, cardID string, grade Grade, date string) (string, error) {
 	if strings.TrimSpace(cardID) == "" {
 		return "", errors.New("flashcard review rejected: empty card id")
@@ -415,11 +433,13 @@ func ApplyReview(content, cardID string, grade Grade, date string) (string, erro
 		return "", errors.New("flashcard review rejected: no review-log table found")
 	}
 
-	// Locate the card row and its stage column.
+	// Locate the card row and its stage column. The id column is resolved by
+	// name only (no positional fallback), matching the reader and the frontend.
 	header := splitCells(cleanLine(lines[cardsBlock.start]))
-	idIdx := colOr(header, 0, "id")
+	idIdx := columnIndex(header, "id")
 	stageIdx := columnIndex(header, "stage", "state", "status")
 	cardRow := -1
+	// Scan data rows only (the header and separator sit at start and start+1).
 	for i := cardsBlock.start + 2; i < cardsBlock.end; i++ {
 		if cellAt(splitCells(cleanLine(lines[i])), idIdx) == cardID {
 			cardRow = i
@@ -445,14 +465,27 @@ func ApplyReview(content, cardID string, grade Grade, date string) (string, erro
 		newCardLine = joinCells(cells)
 	}
 
-	// Build the review row against the log's own header width.
+	// Build the review row against the log's own header, resolving each field to
+	// a DISTINCT column (columnIndexExcept excludes the indices already claimed)
+	// so a `next`/`due` header can never reclaim the grade cell. A log whose
+	// header carries no grade-like column cannot record the grade at all, so the
+	// review is rejected rather than persisted with the grade silently dropped.
 	rHeader := splitCells(cleanLine(lines[reviewBlock.start]))
+	if !headerMatches(rHeader, "grade", "rating", "result") {
+		return "", errors.New("flashcard review rejected: review log has no grade column")
+	}
 	row := make([]string, len(rHeader))
+	var claimed []int
 	set := func(names []string, fallback int, value string) {
-		idx := colOr(rHeader, fallback, names...)
-		if idx >= 0 && idx < len(row) {
-			row[idx] = value
+		idx := columnIndexExcept(rHeader, claimed, names...)
+		if idx < 0 {
+			if fallback < 0 || fallback >= len(row) || containsInt(claimed, fallback) {
+				return
+			}
+			idx = fallback
 		}
+		row[idx] = value
+		claimed = append(claimed, idx)
 	}
 	set([]string{"id"}, 0, cardID)
 	set([]string{"date", "when"}, 1, date)

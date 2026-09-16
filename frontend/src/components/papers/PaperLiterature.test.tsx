@@ -20,7 +20,7 @@ import { runPaperLiterature } from '@/api/papers'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { PaperLiterature } from './PaperLiterature'
 import { usePaperStore } from '@/stores/paperStore'
-import type { PaperRecord } from '@/api/papers'
+import type { PaperLiteratureResult, PaperRecord } from '@/api/papers'
 import type { PaperArtifact } from './usePaperArtifacts'
 
 const RAW = JSON.stringify({
@@ -279,5 +279,57 @@ describe('PaperLiterature', () => {
     })
     await flush()
     expect(runPaperLiterature).toHaveBeenCalledTimes(2)
+  })
+
+  it('drops a run result that resolves after the paper changes (identity guard)', async () => {
+    vi.mocked(listDirectory).mockResolvedValue([])
+    let resolveRun: (result: PaperLiteratureResult) => void = () => {}
+    vi.mocked(runPaperLiterature).mockReturnValue(
+      new Promise<PaperLiteratureResult>((resolve) => {
+        resolveRun = resolve
+      }),
+    )
+    const other: PaperRecord = {
+      ...PAPER,
+      id: 'P-002',
+      slug: 'other',
+      dir: '/ws/.research/papers/other',
+    }
+
+    const ownContainer = document.createElement('div')
+    document.body.appendChild(ownContainer)
+    const ownRoot = createRoot(ownContainer)
+    const view = (paper: PaperRecord) => (
+      <TooltipProvider>
+        <PaperLiterature paper={paper} markdownArtifact={ABSENT_MARKDOWN} />
+      </TooltipProvider>
+    )
+
+    act(() => {
+      ownRoot.render(view(PAPER))
+    })
+    await flush()
+    act(() => {
+      ownContainer
+        .querySelector<HTMLElement>('[data-testid="literature-run"]')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    // The displayed paper changes before the ~90 s-bounded RPC resolves.
+    act(() => {
+      ownRoot.render(view(other))
+    })
+    await act(async () => {
+      resolveRun({ status: 'offline', message: 'late result', path: '', content: '' })
+      await Promise.resolve()
+    })
+
+    // Paper A's late status is dropped, not rendered under paper B.
+    expect(ownContainer.querySelector('[data-testid="literature-run-status"]')).toBeNull()
+
+    act(() => {
+      ownRoot.unmount()
+    })
+    ownContainer.remove()
   })
 })

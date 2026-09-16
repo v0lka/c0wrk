@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -298,7 +299,11 @@ func TestReadingAndVerdictAreDistinctAxes(t *testing.T) {
 func TestRenderRoundTrip(t *testing.T) {
 	rec := ParsePaper(fullPaperMD, fullNoteMD, fullAppraisalMD)
 
-	re := ParsePaper(RenderPaperMD(rec), RenderNoteMD(rec), RenderAppraisalMD(rec))
+	paperMD, err := RenderPaperMD(rec)
+	if err != nil {
+		t.Fatalf("RenderPaperMD: %v", err)
+	}
+	re := ParsePaper(paperMD, RenderNoteMD(rec), RenderAppraisalMD(rec))
 	if !reflect.DeepEqual(rec, re) {
 		t.Errorf("round-trip mismatch:\n got %+v\nwant %+v", re, rec)
 	}
@@ -387,5 +392,208 @@ func writeFixtureDir(t *testing.T, dir, paper, note, appraisal string) {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// TestFrontMatterClosingFence pins issue 13: a `---`-delimited card (the shape
+// the package writer emits and the study-paper skill documents) splits
+// correctly, so the body — and the documented title fallback — is not lost.
+func TestFrontMatterClosingFence(t *testing.T) {
+	fm, body, ok := frontMatter("---\nid: P-001\ntitle: T\n---\n# Heading\nrest\n")
+	if !ok {
+		t.Fatal("frontMatter did not recognize a --- delimited block")
+	}
+	if !strings.Contains(fm, "id: P-001") || strings.Contains(fm, "# Heading") {
+		t.Errorf("fm = %q, want only the front matter", fm)
+	}
+	if !strings.Contains(body, "# Heading") {
+		t.Errorf("body = %q, want the markdown body", body)
+	}
+
+	// A `---`-delimited card with no title: the body heading is the fallback.
+	rec := ParsePaperMD("---\nid: P-001\n---\n# Heading From Body\n")
+	if rec.Title != "Heading From Body" {
+		t.Errorf("Title = %q, want %q (body-heading fallback)", rec.Title, "Heading From Body")
+	}
+
+	// A title-less record round-trips through the writer/reader pair.
+	in := PaperRecord{ID: "P-002", Year: 2020}
+	md, err := RenderPaperMD(in)
+	if err != nil {
+		t.Fatalf("RenderPaperMD: %v", err)
+	}
+	out := ParsePaperMD(md)
+	if out.ID != "P-002" || out.Year != 2020 {
+		t.Errorf("title-less round-trip = %+v, want id P-002 year 2020", out)
+	}
+}
+
+// TestParseAppraisalConfidenceKey pins issue 4: the bundled template's
+// "Confidence in this verdict" label is a recognized key.
+func TestParseAppraisalConfidenceKey(t *testing.T) {
+	v, c := ParseAppraisal("# Review\n\n- **Verdict:** accepted\n- **Confidence in this verdict:** high\n")
+	if v != VerdictAccepted || c != ConfidenceHigh {
+		t.Errorf("got (%q, %q), want (accepted, high)", v, c)
+	}
+}
+
+// TestAppraisalPlaceholderDoesNotOverrideVerdict pins issue 15: a
+// template-authored placeholder value (the options list) must not overwrite the
+// card's valid verdict; a canonical appraisal verdict still wins.
+func TestAppraisalPlaceholderDoesNotOverrideVerdict(t *testing.T) {
+	card := "---\ntitle: T\nverdict: accepted\nconfidence: low\n---\n"
+	placeholder := "# Review\n\n- **Verdict:** accept / weak accept / borderline / weak reject / reject — or, for\n  a software / system paper: use / use with caveats / avoid.\n"
+	if rec := ParsePaper(card, "", placeholder); rec.Verdict != VerdictAccepted {
+		t.Errorf("Verdict = %q, want accepted (placeholder must not override)", rec.Verdict)
+	}
+	canonical := "# Review\n\n| Field | Value |\n| --- | --- |\n| Verdict | rejected |\n"
+	if rec := ParsePaper(card, "", canonical); rec.Verdict != VerdictRejected {
+		t.Errorf("Verdict = %q, want rejected (canonical appraisal wins)", rec.Verdict)
+	}
+}
+
+// TestParseNoteTemplateColumns pins issue 16: on the note template's §5 matrix
+// the Claim and Evidence columns resolve to different cells.
+func TestParseNoteTemplateColumns(t *testing.T) {
+	md := "# Note\n\n" +
+		"| Contribution | Claim the evidence is meant to support | Evidence offered (experiment / result / proof) | **Anchor** (section) | Evidence strength | [Analyst] verdict |\n" +
+		"| --- | --- | --- | --- | --- | --- |\n" +
+		"| C1 | the claim text | the ACTUAL evidence text | 3.2 | present | yes |\n"
+	claims, _, _ := ParseNote(md)
+	if len(claims) != 1 {
+		t.Fatalf("claims = %+v, want 1", claims)
+	}
+	if claims[0].Claim != "the claim text" {
+		t.Errorf("Claim = %q, want %q", claims[0].Claim, "the claim text")
+	}
+	if claims[0].Evidence != "the ACTUAL evidence text" {
+		t.Errorf("Evidence = %q, want the evidence column (not the claim cell)", claims[0].Evidence)
+	}
+	if claims[0].Claim == claims[0].Evidence {
+		t.Error("Claim and Evidence resolved to the same cell")
+	}
+}
+
+// TestParsePaperFlexibleYear pins issue 33: a qualifier-prefixed year is
+// recovered, both through the YAML type and the fallback scanner.
+func TestParsePaperFlexibleYear(t *testing.T) {
+	for in, want := range map[string]int{
+		"c. 2017":    2017,
+		"circa 1999": 1999,
+		"2018":       2018,
+		"2018-06":    2018,
+	} {
+		rec := ParsePaperMD("---\ntitle: T\nyear: " + in + "\n---\n")
+		if rec.Year != want {
+			t.Errorf("year %q → %d, want %d", in, rec.Year, want)
+		}
+	}
+	rec := ParsePaperMD("---\ntitle: T\nyear: c. 2017\nauthors: [unterminated\n---\n")
+	if rec.Year != 2017 {
+		t.Errorf("fallback year = %d, want 2017", rec.Year)
+	}
+}
+
+// TestParsePaperDirDerivesNonEmptyID pins issue 35: an id-less card in a
+// non-P-NNN directory still yields a deterministic, non-empty, unique id (the
+// slug), and a slug such as `group-2` is never canonicalized to P-002.
+func TestParsePaperDirDerivesNonEmptyID(t *testing.T) {
+	root := t.TempDir()
+	lib := filepath.Join(root, "papers")
+	for _, name := range []string{"vaswani-2017-attention", "group-2"} {
+		dir := filepath.Join(lib, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, PaperFileName), []byte("---\ntitle: "+name+"\n---\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := ParseLibraryDir(lib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Papers) != 2 {
+		t.Fatalf("papers = %d, want 2", len(got.Papers))
+	}
+	ids := map[string]bool{}
+	for _, p := range got.Papers {
+		if p.ID == "" {
+			t.Errorf("paper %+v has an empty id", p)
+		}
+		if ids[p.ID] {
+			t.Errorf("duplicate derived id %q", p.ID)
+		}
+		ids[p.ID] = true
+	}
+	for _, p := range got.Papers {
+		if p.Slug == "group-2" && p.ID == "P-002" {
+			t.Error("group-2 was spuriously canonicalized to P-002")
+		}
+	}
+}
+
+// TestParsePaperDirSurfacesUnreadableArtifact pins issue 58: an artifact that
+// exists but cannot be read is a genuine error, not silently "absent".
+func TestParsePaperDirSurfacesUnreadableArtifact(t *testing.T) {
+	dir := t.TempDir()
+	// A directory named paper.md makes os.ReadFile fail (EISDIR) rather than
+	// reporting ErrNotExist on every platform.
+	if err := os.MkdirAll(filepath.Join(dir, PaperFileName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParsePaperDir(dir); err == nil {
+		t.Error("expected an error for an unreadable artifact")
+	}
+}
+
+// readBundledAsset reads a file from the embedded study-paper skill pack.
+func readBundledAsset(t *testing.T, parts ...string) string {
+	t.Helper()
+	p := filepath.ToSlash(filepath.Join(append([]string{embedRoot, "study-paper", "assets"}, parts...)...))
+	data, err := skillPackFS.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read bundled asset %s: %v", p, err)
+	}
+	return string(data)
+}
+
+// TestBundledAppraisalTemplateDoesNotOverwrite pins issues 4 and 15 against the
+// shipped template: an unfilled appraisal.md resolves no verdict and no
+// confidence, so it can never overwrite the card's own values, while a filled
+// "Confidence in this verdict" cell is recognized.
+func TestBundledAppraisalTemplateDoesNotOverwrite(t *testing.T) {
+	tmpl := readBundledAsset(t, "appraisal-template.md")
+	if v, c := ParseAppraisal(tmpl); v != "" || c != "" {
+		t.Errorf("unfilled template parsed to (%q, %q), want empty", v, c)
+	}
+	card := "---\ntitle: T\nverdict: accepted\nconfidence: high\n---\n"
+	if rec := ParsePaper(card, "", tmpl); rec.Verdict != VerdictAccepted || rec.Confidence != ConfidenceHigh {
+		t.Errorf("template overwrote the card: (%q, %q)", rec.Verdict, rec.Confidence)
+	}
+	filled := strings.Replace(tmpl, "| Confidence in this verdict | |", "| Confidence in this verdict | low |", 1)
+	if _, c := ParseAppraisal(filled); c != ConfidenceLow {
+		t.Errorf("filled template confidence = %q, want low", c)
+	}
+}
+
+// TestBundledNoteTemplateHasStructTables pins issue 29: the shipped note
+// template carries the Red Flags / Uncertainty tables the parser reads, so a
+// filled note built from it yields structured red flags and uncertainties (the
+// paperGaps path).
+func TestBundledNoteTemplateHasStructTables(t *testing.T) {
+	tmpl := readBundledAsset(t, "note-template.md")
+	filled := strings.Replace(tmpl,
+		"| Flag | Detail | Severity |\n| --- | --- | --- |\n| | | |",
+		"| Flag | Detail | Severity |\n| --- | --- | --- |\n| Single seed | one run only | high |", 1)
+	filled = strings.Replace(filled,
+		"| Item | Detail |\n| --- | --- |\n| | |",
+		"| Item | Detail |\n| --- | --- |\n| Long sequences | untested past 512 |", 1)
+	_, flags, unc := ParseNote(filled)
+	if len(flags) != 1 || flags[0].Flag != "Single seed" || flags[0].Severity != "high" {
+		t.Errorf("flags = %+v, want the filled red flag", flags)
+	}
+	if len(unc) != 1 || unc[0].Item != "Long sequences" {
+		t.Errorf("uncertainties = %+v, want the filled uncertainty", unc)
 	}
 }

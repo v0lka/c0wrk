@@ -2,11 +2,13 @@
 // `flashcards.md` deck.
 //
 // The deck (cards + review log) is parsed from the raw artifact (lib/flashcards)
-// and driven by the pure interval scheduler (lib/spacedRepetition). Review is
-// READ-ONLY here: the session's grades live in component state and the computed
-// next-due date is shown per card — nothing is written back to disk. An artifact
-// that carries no recognizable card table falls back to the plain Markdown
-// render (via PaperMarkdownSection), so an unparsed deck is never hidden.
+// and driven by the pure interval scheduler (lib/spacedRepetition). With an
+// owner paper (`paperId`) each grade is written back to the deck through the
+// store (`commitFlashcardReview` → RecordFlashcardReview appends a row to
+// flashcards.md, which the watcher's refetch reads back); without one the review
+// stays purely local. An artifact that carries no recognizable card table falls
+// back to the plain Markdown render (via PaperMarkdownSection), so an unparsed
+// deck is never hidden.
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { parseFlashcards, reviewsForCard, type FlashcardGrade } from '@/lib/flashcards'
@@ -15,6 +17,7 @@ import {
   intervalDays,
   scheduleAfter,
   stateFromReviews,
+  todayLocalISO,
   type ReviewState,
 } from '@/lib/spacedRepetition'
 import { cn } from '@/lib/utils'
@@ -32,8 +35,13 @@ interface FlashcardsReviewProps {
   /** Review date (`YYYY-MM-DD`); defaults to today. Injectable for tests. */
   today?: string
   /** When set, each grade is written back to the deck through the store (the
-   *  read-only review becomes a persisted one). Omitted → a pure local review. */
+   *  local review becomes a persisted one). Omitted → a pure local review. */
   paperId?: string
+  /** Identity of the paper this deck belongs to; changing it starts a clean
+   *  review. Defaults to the deck content (a pure local review with no owner
+   *  paper has no identity). The deck itself ALWAYS re-derives from
+   *  `artifact.content`. */
+  resetKey?: string
 }
 
 const GRADES: ReadonlyArray<{ grade: FlashcardGrade; label: string; className: string }> = [
@@ -50,7 +58,7 @@ const STAGE_BADGE: Record<ReviewState['stage'], string> = {
 }
 
 function todayISO(): string {
-  return new Date().toISOString().slice(0, 10)
+  return todayLocalISO()
 }
 
 export function FlashcardsReview({
@@ -60,6 +68,7 @@ export function FlashcardsReview({
   testId,
   today: todayProp,
   paperId,
+  resetKey: resetKeyProp,
 }: FlashcardsReviewProps) {
   const fallback = (
     <PaperMarkdownSection
@@ -78,13 +87,19 @@ export function FlashcardsReview({
   const [results, setResults] = useState<Record<number, { grade: FlashcardGrade; dueDate: string }>>({})
   const [finished, setFinished] = useState(false)
 
-  // A different artifact in the same tab starts a clean session.
+  // A different PAPER in the same tab starts a clean review. Keyed on the paper
+  // identity — never on `artifact.content`: the review writes its own grades
+  // back to flashcards.md, so the watcher's refetch changes the content of the
+  // SAME paper and a content-keyed reset would restart the review at card 1
+  // (a persisted review could never complete). The deck still re-derives from
+  // the content above.
+  const resetKey = resetKeyProp ?? artifact.content
   useEffect(() => {
     setIndex(0)
     setFlipped(false)
     setResults({})
     setFinished(false)
-  }, [artifact.content])
+  }, [resetKey])
 
   const rate = useCallback(
     (grade: FlashcardGrade, state: ReviewState, cardIndex: number) => {

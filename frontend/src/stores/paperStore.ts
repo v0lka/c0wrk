@@ -1,27 +1,26 @@
 // Paper library store — the single source of truth for the Papers panel.
 //
 // Owns the loaded library (per project), the id-keyed per-paper record index,
-// the pinned card paths, the reader selection, the panel view mode and the RPC
-// invoke-state (loading / mutating / error). Backend sync lives in the
-// module-level fetchers at the bottom (fetchPaperLibrary / applyPapersChanged)
-// so the zustand reducer stays pure and trivially testable.
+// the pinned card paths and the RPC invoke-state (loading / mutating / error).
+// Backend sync lives in the module-level fetchers at the bottom
+// (fetchPaperLibrary) so the zustand reducer stays pure and trivially testable.
+//
+// The reader surface is the file-viewer tab: `openPaper`/`PAPER_TAB_PREFIX` →
+// `FileViewerContent` → `PaperWorkspace`, which resolves its record with
+// `usePaperBySlug` and reads the library/error/research-root through the hooks
+// below. `PapersView` is a pure view over the same store.
 //
 // Selector stability (React #185): every selector returns a PRIMITIVE or a
-// DIRECT store reference — never a freshly allocated array/object. Derived
-// collections (pinned, filtered) are computed with useMemo in the hooks below,
-// outside the selector.
+// DIRECT store reference — never a freshly allocated array/object.
 
-import { useMemo } from 'react'
 import { create } from 'zustand'
 import {
-  getPaper,
   getPapers,
   recordFlashcardReview,
   setPaperPinned,
   type FlashcardGrade,
   type PaperLibrary,
   type PaperRecord,
-  type PapersChangedPayload,
 } from '@/api/papers'
 import { logger } from '@/lib/logger'
 
@@ -40,10 +39,6 @@ export function paperTabPath(slug: string): string {
   return `${PAPER_TAB_PREFIX}${slug}`
 }
 
-/** Panel presentation mode: browsing the library index vs reading the
- *  selected paper. */
-export type PaperViewMode = 'library' | 'reader'
-
 // --- State types ---
 
 interface PaperState {
@@ -55,49 +50,45 @@ interface PaperState {
   root: string
   /** The normalized library, in backend order. */
   papers: PaperRecord[]
-  /** Per-paper records indexed by paper id (an O(1) lookup for the reader and
-   *  the pin toggles). Entries are the SAME objects as in `papers` — a refresh
-   *  reuses the previous object whenever a paper's content is unchanged, so
-   *  memoized consumers stay referentially stable. */
+  /** Per-paper records indexed by paper id (an O(1) lookup for the pin
+   *  toggles). Entries are the SAME objects as in `papers` — a refresh reuses
+   *  the previous object whenever a paper's content is unchanged, so memoized
+   *  consumers stay referentially stable. */
   records: Record<string, PaperRecord>
   /** Pinned card paths (research-root-relative, forward slashes). */
   pinned: string[]
-  /** The paper selected in the reader (null = none). Stored here (not in
-   *  component state) so the selection survives panel remounts. A dangling id
-   *  (the paper vanished) resolves to null in `useSelectedPaper` and is
-   *  dropped by the next library load. */
-  selectedPaperId: string | null
-  /** Panel presentation mode. Reset to 'library' on a cross-project load. */
-  mode: PaperViewMode
   /** True while a library fetch is in flight (initial load + event refresh). */
   isLoading: boolean
   /** True while a pin mutation is in flight. */
   isMutating: boolean
   /** Last RPC error; null when clean. */
   error: string | null
-  /** Wall-clock ms of the last successfully applied library. Lets a consumer
-   *  (e.g. a status-events watchdog) verify an event-driven refresh landed. */
+  /** Wall-clock ms of the last successfully applied library. This is the
+   *  refresh key `PaperWorkspace` passes to `usePaperArtifacts`/
+   *  `useComparisons`/`usePaperLiterature`, so a `papers:changed` sync rebuilds
+   *  the paper's artifact sections after the study-paper skill appends to a
+   *  card. There is NO convergence watchdog consumer: the library is refreshed
+   *  only on a project switch and on a RECEIVED `papers:changed` (see
+   *  `usePapersEvents`), so a dropped/coalesced watcher event is not recovered
+   *  until the next event or switch. */
   lastSyncAt: number
 }
 
 interface PaperActions {
   /** Replace the loaded library (stamping the project it belongs to). Applies
    *  INCREMENTALLY: unchanged paper records keep their previous object
-   *  identity, the reader selection survives while its paper still exists, and
-   *  `mode` is preserved — only a CROSS-PROJECT load resets the project-scoped
-   *  state (selection + mode) along with the data. */
+   *  identity. A CROSS-PROJECT load also clears the invoke-state (a stuck
+   *  `isMutating` from the departed project must not survive). */
   loadLibrary: (library: PaperLibrary) => void
-  /** Upsert a single fetched paper record (GetPaper / a pin RPC result) into
-   *  the library and the per-paper index without touching the rest. */
+  /** Upsert a single fetched paper record into the library and the per-paper
+   *  index without touching the rest. */
   loadPaper: (record: PaperRecord) => void
-  /** Select the paper shown in the reader (or clear with null). */
-  selectPaper: (id: string | null) => void
-  /** Switch the panel presentation mode. */
-  setMode: (mode: PaperViewMode) => void
   setLoading: (loading: boolean) => void
   setMutating: (mutating: boolean) => void
   setError: (error: string | null) => void
-  /** Clear everything (project switch to No Project, panel teardown). */
+  /** Clear everything (project switch to No Project, panel teardown) AND
+   *  invalidate any in-flight library fetch so it cannot repopulate the store
+   *  it just cleared. */
   reset: () => void
 }
 
@@ -118,8 +109,6 @@ const initialState: PaperState = {
   papers: EMPTY_PAPERS,
   records: EMPTY_RECORDS,
   pinned: EMPTY_PINNED,
-  selectedPaperId: null,
-  mode: 'library',
   isLoading: false,
   isMutating: false,
   error: null,
@@ -151,9 +140,8 @@ export const usePaperStore = create<PaperStore>((set) => ({
 
   loadLibrary: (library) =>
     set((state) => {
-      // A different project's library never inherits the previous project's
-      // selection or mode (paper ids/slugs collide across projects, and a
-      // reader left open on a foreign paper would render stale content).
+      // A different project's library must not inherit the previous project's
+      // per-paper index (paper ids/slugs collide across projects).
       const crossProject = state.projectId !== null && state.projectId !== library.project_id
       const previous = crossProject ? EMPTY_RECORDS : state.records
 
@@ -169,10 +157,6 @@ export const usePaperStore = create<PaperStore>((set) => ({
         return next
       })
 
-      const selected = state.selectedPaperId
-      const selectedPaperId =
-        !crossProject && selected !== null && records[selected] !== undefined ? selected : null
-
       return {
         projectId: library.project_id,
         researchRoot: library.research_root,
@@ -180,9 +164,11 @@ export const usePaperStore = create<PaperStore>((set) => ({
         papers,
         records,
         pinned: library.pinned,
-        selectedPaperId,
-        mode: crossProject ? 'library' : state.mode,
         isLoading: false,
+        // A project-scoped load always clears the mutation flag: a pin that was
+        // in flight for the departed project must not leave the new project's
+        // panel stuck "mutating".
+        isMutating: false,
         error: null,
         lastSyncAt: Date.now(),
       }
@@ -201,17 +187,19 @@ export const usePaperStore = create<PaperStore>((set) => ({
       }
     }),
 
-  selectPaper: (id) => set({ selectedPaperId: id }),
-
-  setMode: (mode) => set({ mode }),
-
   setLoading: (isLoading) => set({ isLoading }),
 
   setMutating: (isMutating) => set({ isMutating }),
 
   setError: (error) => set({ error, isLoading: false, isMutating: false }),
 
-  reset: () => set(initialState),
+  reset: () => {
+    // Invalidate every in-flight library fetch (bumping the ticket makes them
+    // stale) BEFORE clearing, so a slow fetch for the departed project cannot
+    // resolve later and repopulate the store that was just cleared.
+    invalidatePendingFetches()
+    set(initialState)
+  },
 }))
 
 // --- Selectors (pure; stable references — never allocate in a selector) ---
@@ -221,24 +209,9 @@ export function selectPapers(state: PaperStore): PaperRecord[] {
   return state.papers
 }
 
-/** The pinned card paths. A direct store reference. */
-export function selectPinnedPaperPaths(state: PaperStore): string[] {
-  return state.pinned
-}
-
 /** The project the loaded library belongs to (null when nothing is loaded). */
 export function selectPapersProjectId(state: PaperStore): string | null {
   return state.projectId
-}
-
-/** The selected paper id (primitive). */
-export function selectSelectedPaperId(state: PaperStore): string | null {
-  return state.selectedPaperId
-}
-
-/** The panel presentation mode (primitive). */
-export function selectPaperViewMode(state: PaperStore): PaperViewMode {
-  return state.mode
 }
 
 /** True while a library fetch is in flight (primitive). */
@@ -246,7 +219,8 @@ export function selectPapersLoading(state: PaperStore): boolean {
   return state.isLoading
 }
 
-/** True while a pin mutation is in flight (primitive). */
+/** True while a pin mutation is in flight (primitive). The pin control can use
+ *  it to disable itself while a mutation is in flight. */
 export function selectPapersMutating(state: PaperStore): boolean {
   return state.isMutating
 }
@@ -264,16 +238,11 @@ export function selectPapersSyncAt(state: PaperStore): number {
   return state.lastSyncAt
 }
 
-// --- Custom hooks (granular selectors + useMemo for derived collections) ---
+// --- Custom hooks (granular selectors) ---
 
 /** The loaded library. */
 export function usePapers(): PaperRecord[] {
   return usePaperStore(selectPapers)
-}
-
-/** The pinned card paths. */
-export function usePinnedPaperPaths(): string[] {
-  return usePaperStore(selectPinnedPaperPaths)
 }
 
 /** True while a library fetch is in flight. */
@@ -286,24 +255,11 @@ export function usePapersError(): string | null {
   return usePaperStore(selectPapersError)
 }
 
-/** The panel presentation mode. */
-export function usePaperViewMode(): PaperViewMode {
-  return usePaperStore(selectPaperViewMode)
-}
-
 /** The loaded library's effective research root ('' when nothing is loaded).
  *  The paper workspace uses it to locate the research-root-level comparison
  *  artifacts (`<research-root>/comparisons/`). A primitive — stable. */
 export function usePapersResearchRoot(): string {
   return usePaperStore((state) => state.researchRoot)
-}
-
-/** The paper selected in the reader, or null. Returns a DIRECT reference out
- *  of the per-paper index — no allocation in the selector. */
-export function useSelectedPaper(): PaperRecord | null {
-  return usePaperStore((state) =>
-    state.selectedPaperId === null ? null : state.records[state.selectedPaperId] ?? null,
-  )
 }
 
 /** The paper with the given slug from the loaded library, or null. Returns a
@@ -314,120 +270,91 @@ export function usePaperBySlug(slug: string): PaperRecord | null {
   return usePaperStore((state) => state.papers.find((paper) => paper.slug === slug) ?? null)
 }
 
-/** Pinned papers in library order. Derived with useMemo OUTSIDE the selector
- *  (the selectors only read two direct references) so React 19 never sees a
- *  freshly allocated array snapshot. Returns the library array itself when
- *  nothing is pinned. */
-export function usePinnedPapers(): PaperRecord[] {
-  const papers = usePaperStore(selectPapers)
-  const pinned = usePaperStore(selectPinnedPaperPaths)
-  return useMemo(() => {
-    if (pinned.length === 0) return papers
-    const pinnedSet = new Set(pinned)
-    return papers.filter((paper) => pinnedSet.has(paper.card_path))
-  }, [papers, pinned])
-}
-
-/** The library filtered by a case-insensitive query over title/slug/venue/
- *  authors. Derived with useMemo outside the selector; an empty query returns
- *  the library array unchanged. */
-export function useFilteredPapers(query: string): PaperRecord[] {
-  const papers = usePaperStore(selectPapers)
-  return useMemo(() => {
-    const needle = query.trim().toLowerCase()
-    if (needle === '') return papers
-    return papers.filter(
-      (paper) =>
-        paper.title.toLowerCase().includes(needle) ||
-        paper.slug.toLowerCase().includes(needle) ||
-        paper.venue.toLowerCase().includes(needle) ||
-        paper.authors.some((author) => author.toLowerCase().includes(needle)),
-    )
-  }, [papers, query])
-}
-
 // --- Backend sync (module-level; the store reducer stays pure) ---
 
 /** Ticket of the last-STARTED library fetch. A fetch applies its payload only
  *  while it is still the newest one, so a slow fetch for a project the user has
- *  already switched away from can never clobber the newer project's library
- *  (last-write-wins by initiation order — the same convergence rule the
- *  research store documents). */
+ *  already switched away from — or one still in flight when the panel was reset
+ *  — can never clobber the newer state (last-write-wins by initiation order). */
 let latestFetch = 0
 
+/** Invalidate every in-flight library fetch. Bumping the ticket makes any fetch
+ *  started before this call stale, so `reset()` can drop a fetch that would
+ *  otherwise repopulate the cleared store. */
+export function invalidatePendingFetches(): void {
+  latestFetch += 1
+}
+
 /**
- * Fetch and apply the library for a project. Never throws: a failure is
- * recorded in `error` (the panel renders it) and the previous library is kept.
- * Called on project switch and on every `papers:changed` event.
+ * Fetch and apply the library for a project. Never throws. Returns `true` when
+ * the fetched payload was actually APPLIED, `false` when it failed or was
+ * superseded by a newer fetch / a `reset()` — so a caller can tell an applied
+ * invalidation from a dropped one. On failure the previous library is kept and
+ * the error is recorded (the panel renders it).
  */
-export async function fetchPaperLibrary(projectId: string): Promise<void> {
+export async function fetchPaperLibrary(projectId: string): Promise<boolean> {
   const ticket = ++latestFetch
   usePaperStore.getState().setLoading(true)
   try {
     const library = await getPapers(projectId)
-    // A superseded fetch (a newer load started while this one was in flight)
-    // is dropped wholesale; it must neither apply stale data nor clear the
-    // spinner the newest fetch still owns.
-    if (ticket !== latestFetch) return
+    // A superseded fetch (a newer load started, or the store was reset, while
+    // this one was in flight) is dropped wholesale; it must neither apply stale
+    // data nor clear the spinner the newest fetch still owns.
+    if (ticket !== latestFetch) return false
     usePaperStore.getState().loadLibrary(library)
+    return true
   } catch (err) {
-    if (ticket !== latestFetch) return
+    if (ticket !== latestFetch) return false
     usePaperStore
       .getState()
       .setError(err instanceof Error ? err.message : 'Failed to load paper library')
+    return false
   }
 }
 
-/**
- * Refetch and apply ONE paper (GetPaper) without reloading the whole library —
- * the per-paper incremental path (re-reading the card the user is viewing, or
- * a targeted refresh). No-op without a loaded library or for an unknown paper.
- * Never throws; a failure is recorded in `error` and the previous record kept.
- */
-export async function refreshPaper(paperId: string): Promise<void> {
-  const state = usePaperStore.getState()
-  const { projectId } = state
-  if (projectId === null || state.records[paperId] === undefined) return
-  try {
-    const record = await getPaper(projectId, paperId)
-    // A project switch while the RPC was in flight must not splice the old
-    // project's paper into the new library.
-    const after = usePaperStore.getState()
-    if (after.projectId !== projectId) return
-    after.loadPaper(record)
-  } catch (err) {
-    const after = usePaperStore.getState()
-    if (after.projectId !== projectId) return
-    after.setError(err instanceof Error ? err.message : 'Failed to refresh the paper')
-  }
-}
+/** Paper ids whose pin RPC is currently in flight. Guards against a rapid
+ *  repeat (a double-click, or a duplicate dispatch) firing a second, redundant
+ *  pin RPC before the first resolves. */
+const pinTogglesInFlight = new Set<string>()
 
 /**
  * Pin or unpin the paper in the loaded library. The RPC emits no event, so the
  * resolved promise is the refresh signal: the local record + pinned list are
  * updated from the authoritative pin state on success. No-op without a loaded
- * library or an unknown paper.
+ * library or an unknown paper, and while an identical toggle is already in
+ * flight (a re-entry guard, symmetric with `ensurePaperPinned`).
  */
 export async function togglePaperPin(paperId: string, pinned: boolean): Promise<void> {
   const state = usePaperStore.getState()
   const { projectId } = state
-  const record = state.records[paperId]
-  if (projectId === null || record === undefined) return
+  if (projectId === null || state.records[paperId] === undefined) return
+  if (pinTogglesInFlight.has(paperId)) return
+  pinTogglesInFlight.add(paperId)
   state.setMutating(true)
   try {
     await setPaperPinned(projectId, paperId, pinned)
+    // A project switch (or reset) while the RPC was in flight must not write the
+    // old project's pin into the new project's library.
+    const after = usePaperStore.getState()
+    if (after.projectId !== projectId) return
+    // Re-read the record AFTER the await so a card that a concurrent
+    // `papers:changed` refetch refreshed in the meantime is not reverted by the
+    // pre-await snapshot (only the `pinned` flag is folded in).
+    const current = after.records[paperId] ?? state.records[paperId]
+    if (current !== undefined) after.loadPaper({ ...current, pinned })
   } catch (err) {
-    usePaperStore
-      .getState()
-      .setError(err instanceof Error ? err.message : 'Failed to update the paper pin')
-    return
+    // Only the project that issued the RPC may receive its failure — a switch
+    // while the write was in flight must not surface the old project's error in
+    // the new project's panel.
+    const after = usePaperStore.getState()
+    if (after.projectId !== projectId) return
+    after.setError(err instanceof Error ? err.message : 'Failed to update the paper pin')
+  } finally {
+    pinTogglesInFlight.delete(paperId)
+    // Always clear the mutation flag — even on the early returns above — so a
+    // project switch mid-flight cannot leave the panel stuck "mutating".
+    usePaperStore.getState().setMutating(false)
   }
-  // A project switch (or reset) while the RPC was in flight must not write the
-  // old project's pin into the new project's library.
-  const after = usePaperStore.getState()
-  if (after.projectId !== projectId) return
-  after.loadPaper({ ...record, pinned })
-  after.setMutating(false)
 }
 
 /** Paper ids whose auto-pin RPC is currently in flight. Guards against a rapid
@@ -460,8 +387,9 @@ export async function ensurePaperPinned(paperId: string): Promise<void> {
  * the grade to the paper's flashcards.md deck atomically and advances the card's
  * stage; the component keeps its own optimistic result and the watcher's
  * `papers:changed` refetch re-reads the deck. No-op without a loaded library, for
- * an unknown paper, or for a card-less id. Never throws: a failure is a log
- * warning (the deck stays as-is on the next refetch).
+ * an unknown paper, or for a card-less id. Never throws: a failure is reported
+ * on the store's error line (rendered by the workspace / panel) so the user is
+ * not shown an optimistic grade that silently reverts on the next refetch.
  */
 export async function commitFlashcardReview(
   paperId: string,
@@ -475,20 +403,12 @@ export async function commitFlashcardReview(
     await recordFlashcardReview(projectId, paperId, cardId, grade)
   } catch (err) {
     logger.warn('Failed to record the flashcard review:', err)
+    // Only write the failure into the store if the same project is still loaded
+    // (a switch while the grade was in flight must not surface it elsewhere).
+    const after = usePaperStore.getState()
+    if (after.projectId !== projectId) return
+    after.setError(
+      err instanceof Error ? err.message : 'Failed to record the flashcard review',
+    )
   }
-}
-
-/**
- * Apply a `papers:changed` event. Events for any project other than the loaded
- * one (a late event after a project switch, or another project's library) are
- * ignored; a matching event INVALIDATES the library by refetching it — the
- * full refetch is deliberate, because a single changed path cannot distinguish
- * an edit from a new or DELETED paper. Returns true when the loaded library was
- * invalidated. The caller (an events hook) may debounce rapid bursts.
- */
-export async function applyPapersChanged(event: PapersChangedPayload): Promise<boolean> {
-  const { projectId } = usePaperStore.getState()
-  if (projectId === null || event.project_id !== projectId) return false
-  await fetchPaperLibrary(projectId)
-  return true
 }

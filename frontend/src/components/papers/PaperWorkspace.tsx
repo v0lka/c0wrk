@@ -21,6 +21,7 @@ import type { PaperAnchor, PaperRecord } from '@/api/papers'
 import {
   usePaperStore,
   usePaperBySlug,
+  usePapersError,
   usePapersResearchRoot,
   selectPapersSyncAt,
   ensurePaperPinned,
@@ -110,6 +111,10 @@ function NotFound({ slug }: { slug: string }) {
 export function PaperWorkspace({ slug }: { slug: string }) {
   const paper = usePaperBySlug(slug)
   const syncAt = usePaperStore(selectPapersSyncAt)
+  // A dispatch failure ("Go deeper" / "Hypotheses from gaps") is recorded on the
+  // paper store; this tab must render it itself — its only other renderer is the
+  // Research panel's Papers segment, a different surface the user may never open.
+  const error = usePapersError()
   const researchRoot = usePapersResearchRoot()
   const dir = paper?.dir ?? ''
   const artifacts = usePaperArtifacts(dir, syncAt)
@@ -142,6 +147,14 @@ export function PaperWorkspace({ slug }: { slug: string }) {
     [comparisons.items, paper],
   )
 
+  // Comparisons whose file could not be read (content '' so they never match a
+  // paper). Surfaced as a notice instead of silently falling through to the
+  // empty state — a read error must not look like "no comparisons".
+  const erroredComparisons = useMemo(
+    () => comparisons.items.filter((item) => item.error !== null),
+    [comparisons.items],
+  )
+
   const onAnchorSelect = useCallback(
     (anchor: PaperAnchor, index: number) => {
       const hit = resolveAnchor(artifacts.source.content, anchor)
@@ -163,15 +176,28 @@ export function PaperWorkspace({ slug }: { slug: string }) {
   // paper store's error line instead of dropping it.
   const dispatch = useCallback(
     (prompt: string, skill: string) => {
-      void Promise.resolve(send(prompt, [skill])).catch((err) => {
-        usePaperStore
-          .getState()
-          .setError(
-            `Failed to dispatch ${skill}: ${
-              err instanceof Error ? err.message : 'unknown error'
-            }`,
-          )
-      })
+      // Snapshot the loaded project so a switch while the dispatch is in flight
+      // cannot write this failure into the new project's error slot (the store's
+      // own async writers guard for exactly this).
+      const projectIdBefore = usePaperStore.getState().projectId
+      const stillSameProject = (): boolean =>
+        usePaperStore.getState().projectId === projectIdBefore
+      void Promise.resolve(send(prompt, [skill])).then(
+        () => {
+          // A successful (re)dispatch clears a stale failure banner.
+          if (stillSameProject()) usePaperStore.getState().setError(null)
+        },
+        (err) => {
+          if (!stillSameProject()) return
+          usePaperStore
+            .getState()
+            .setError(
+              `Failed to dispatch ${skill}: ${
+                err instanceof Error ? err.message : 'unknown error'
+              }`,
+            )
+        },
+      )
     },
     [send],
   )
@@ -233,6 +259,15 @@ export function PaperWorkspace({ slug }: { slug: string }) {
         )}
       </header>
 
+      {error !== null && (
+        <div
+          data-testid="paper-workspace-error"
+          className="shrink-0 border-b border-destructive/20 bg-destructive/10 px-2 py-1 text-[11px] text-destructive"
+        >
+          {error}
+        </div>
+      )}
+
       <nav
         data-testid="paper-sections"
         className="flex shrink-0 items-center gap-0.5 overflow-x-auto no-scrollbar border-b border-border px-1 py-0.5"
@@ -243,6 +278,7 @@ export function PaperWorkspace({ slug }: { slug: string }) {
             type="button"
             data-testid={`paper-section-${s.id}`}
             data-active={section === s.id}
+            aria-current={section === s.id ? 'true' : undefined}
             onClick={() => setSection(s.id)}
             className={cn(
               'shrink-0 rounded px-1.5 py-0.5 text-[11px] transition-colors',
@@ -289,28 +325,43 @@ export function PaperWorkspace({ slug }: { slug: string }) {
             >
               Loading…
             </p>
-          ) : relevantComparisons.length > 0 ? (
-            <div
-              data-testid="paper-compare-comparisons"
-              className="min-h-0 flex-1 overflow-auto custom-scrollbar"
-            >
-              {relevantComparisons.map((comparison) => (
-                <CompareMatrix
-                  key={comparison.slug}
-                  slug={comparison.slug}
-                  content={comparison.content}
-                />
-              ))}
-            </div>
           ) : (
-            // No library comparison involves this paper: fall back to the paper's
-            // own recorded comparison artifact (the older per-paper form).
-            <PaperMarkdownSection
-              artifact={artifacts.compare}
-              testId="paper-compare"
-              emptyText="No comparison recorded for this paper yet."
-              baseFilePath={baseFilePath(artifacts.compare.fileName)}
-            />
+            <>
+              {erroredComparisons.length > 0 && (
+                <div
+                  data-testid="paper-compare-error"
+                  className="shrink-0 border-b border-destructive/20 bg-destructive/10 px-2 py-1 text-[11px] text-destructive"
+                >
+                  {erroredComparisons.map((comparison) => (
+                    <p key={comparison.slug}>could not read {comparison.slug}.md</p>
+                  ))}
+                </div>
+              )}
+              {relevantComparisons.length > 0 ? (
+                <div
+                  data-testid="paper-compare-comparisons"
+                  className="min-h-0 flex-1 overflow-auto custom-scrollbar"
+                >
+                  {relevantComparisons.map((comparison) => (
+                    <CompareMatrix
+                      key={comparison.slug}
+                      slug={comparison.slug}
+                      content={comparison.content}
+                    />
+                  ))}
+                </div>
+              ) : (
+                // No library comparison involves this paper: fall back to the
+                // paper's own recorded comparison artifact (the older per-paper
+                // form).
+                <PaperMarkdownSection
+                  artifact={artifacts.compare}
+                  testId="paper-compare"
+                  emptyText="No comparison recorded for this paper yet."
+                  baseFilePath={baseFilePath(artifacts.compare.fileName)}
+                />
+              )}
+            </>
           ))}
         {section === 'flashcards' && (
           <FlashcardsReview
@@ -319,6 +370,7 @@ export function PaperWorkspace({ slug }: { slug: string }) {
             emptyText="No flashcards recorded for this paper yet."
             baseFilePath={baseFilePath(artifacts.flashcards.fileName)}
             paperId={paper.id}
+            resetKey={paper.id}
           />
         )}
         {section === 'source' && (
