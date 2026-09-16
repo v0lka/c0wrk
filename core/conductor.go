@@ -573,6 +573,17 @@ type conductorDeps struct {
 	// final user message after the seeded step history in the very next LLM
 	// call. Set per-resume; empty for fresh tasks (the default no-nudge path).
 	nudge string
+
+	// stopTools names ordinary tool calls that TERMINATE this run (the turn)
+	// when they execute successfully — threaded to ConductorConfig.StopTools →
+	// executor.SetStopTools. The goal loop sets it to `declare_goal_status` for
+	// every per-turn working run, so a goal turn ends the moment the agent
+	// declares its verdict: the loop then advances turn-by-turn (TurnCount
+	// increments, the UI leaves turn 0) and the turn budget is enforced instead
+	// of the agent packing the whole goal — including its own verification loop
+	// — into a single unbounded turn. Empty (default) changes nothing: every
+	// ordinary tool keeps the run going.
+	stopTools []string
 }
 
 // conductorLauncher implements tools.DelegationLauncher by building a fresh
@@ -2824,6 +2835,7 @@ func RunConductor(
 		UserMessageSource:          deps.userMessageSource,
 		VerifyOnEdit:               deps.verifyOnEdit,
 		VerifyOnEditMaxOutputChars: deps.verifyOnEditMaxOutputChars,
+		StopTools:                  deps.stopTools,
 	}
 
 	var events agent.Events = &agent.NoopEvents{}

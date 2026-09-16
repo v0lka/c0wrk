@@ -387,6 +387,19 @@ func renderGoalModeSection(gs *goal.GoalState) string {
 // cacheable prefix.
 const goalStaticBudgetNote = "Budget tracked per turn — see the volatile progress line below."
 
+// goalTurnCompletionDirective replaces the generic single-step "## Completion"
+// directive on goal runs. Goal mode is multi-turn: one turn is ONE bounded
+// attempt, and the turn ends when the agent declares its verdict via
+// declare_goal_status (an executor stop tool — see runGoalTurns /
+// Executor.SetStopTools), not by `finish`. Emitting the single-step directive
+// ("call finish when you have completed your work") on a goal turn contradicts
+// the per-turn protocol: it reads as "one turn is the whole task", so the agent
+// keeps calling tools until the condition holds and crams the entire goal —
+// including its own verification loop — into a single unbounded turn, leaving
+// the loop's turn counter and turn budget untouched. The details live in the
+// goal-mode section (renderGoalModeStatic), which follows this block.
+const goalTurnCompletionDirective = "## Completion\nYou are operating in goal mode. A turn is ONE bounded attempt: when you have finished this attempt, call the `declare_goal_status` tool with your verdict and STOP — that call ends the turn and hands control back to the goal loop, which charges the budget and starts the next turn with the accumulated context. Do not keep calling tools after it, and do not try to complete the whole goal in a single turn."
+
 // renderGoalModeStatic builds the session-invariant goal-mode prompt section
 // from an active GoalState: the condition, verify clause, and evidence mandate.
 // It substitutes a static budget note for the per-turn budget line, so the
@@ -654,9 +667,20 @@ func buildSystemPromptWith(ctx context.Context, userMessage string, modelMeta ll
 	// their own completion semantics in their core directive, so the
 	// plan/completion block and goal sections are omitted for them.
 	if !spec.specialized {
-		if ctx.Value(PlanModeKey) != nil {
+		switch {
+		case gs != nil:
+			// Goal runs define their own per-turn completion semantics: a turn
+			// ends when the agent declares its verdict (declare_goal_status is a
+			// stop tool — see runGoalTurns), not by `finish`. The generic
+			// single-step "call finish when done" directive would contradict the
+			// per-turn protocol — it invites the agent to treat one turn as the
+			// whole task and keep working until the condition holds — so it is
+			// replaced here. The goal section appended below carries the full
+			// protocol (one bounded attempt per turn, verdict ends the turn).
+			b.Core(goalTurnCompletionDirective)
+		case ctx.Value(PlanModeKey) != nil:
 			b.Core(prompts.SubstituteShellTool(prompts.OrchestratorPlanContext))
-		} else {
+		default:
 			b.Core("## Completion\nYou are operating in single-step mode. When you have completed your work, you MUST call the `finish` tool with your final answer. Do not simply respond with text — the system only recognizes task completion through an explicit `finish` tool call.")
 		}
 

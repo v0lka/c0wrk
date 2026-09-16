@@ -106,7 +106,17 @@ for gs.Status == active:
   │     before derivation (re-routing a continuation misclassifies it; see Routing Invariant)
   │   — tool executor wrapped in countingToolExec (per-turn tool-call count for anti-spin)
   │   — context carries a fresh GoalStatusSink (declare_goal_status writes into it)
-  │   — context carries the GoalState (WithGoalState) so the system prompt renders the goal
+  │   — context carries the GoalState (WithGoalState) so the system prompt renders the goal.
+  │     TurnCount is charged UP FRONT: turn N runs with gs.TurnCount == N, so the
+  │     rendered budget line reads "turn N/…" (an earlier version incremented only
+  │     AFTER the run, so every turn — turn 1 included — rendered "turn 0")
+  │   — the turn's deps mark declare_goal_status as a STOP TOOL (conductorDeps.stopTools
+  │     → ConductorConfig.StopTools → agent.Executor.SetStopTools): the moment the agent
+  │     declares its verdict the run ENDS (Finished=true, the verdict call's observation
+  │     as the turn output), so the turn is ONE bounded attempt. Without it the agent —
+  │     prompted to keep going until the condition holds — packs the whole goal,
+  │     including its own verification loop, into a single unbounded turn: TurnCount
+  │     never advances (the UI sits on turn 0) and MaxTurns never engages
   │   — the universal pause-checker reads activePause at each step boundary:
   │     PauseSession flips it → the conductor stops mid-turn with ErrPaused →
   │     ExecutionStatusPaused; runGoalTurns sees the paused turn result and
@@ -176,9 +186,11 @@ That enriched context is then threaded into **`deriveGoal` and every goal turn**
 
 ## Self-Evaluation: `declare_goal_status`
 
-The single channel through which the loop learns a structured verdict is the `declare_goal_status` tool (a `system`-group tool — bypasses policy and the tool judge). It writes a typed `goal.Verdict` into the per-turn `GoalStatusSink`; the loop reads the sink after each turn.
+The single channel through which the loop learns a structured verdict is the `declare_goal_status` tool (a `system`-group tool — bypasses policy and the tool judge). It writes a typed `goal.Verdict` into the per-turn `GoalStatusSink`; the loop reads the sink after each turn. The tool is also the turn's **stop tool**: a successful call ends the turn's `Executor.Run`, and the loop charges the turn budget and advances.
 
 **Evidence mandate**: declaring status `"met"` **requires non-empty evidence** — at least one `{type, ref, summary}` artifact (changed file path, test output, command result). Enforced at the tool boundary so a bare "done" can never terminate the goal loop without a concrete, inspectable artifact. The tool executor does **not** validate inputs against the JSON schema, so the check rejects both an absent array **and** a present-but-empty entry (e.g. `evidence:[{}]` or `evidence:[{"ref":""}]`): each entry must have non-empty `type`, `ref`, and `summary` after trimming. A `met` verdict that fails this check is rejected with an error and the loop keeps iterating.
+
+**The working agent does NOT act as its own verifier.** The evidence mandate asks it to cite the artifacts its work produced or that it observed — it is **not** asked to run a private verification cycle over the Verify Clause (that clause is the *independent verifier's* test; see § Independent Verification). The prompt (goal_mode.md § *Evidence Mandate*) explicitly says so, because prompting the working agent to self-verify makes it re-run the clause, fix, and re-run inside a single turn — the exact behavior that defeated the turn boundary. The agent declares its honest assessment with evidence; the independent verifier re-checks every `met`.
 
 The agent is self-evaluating its own work — see the ADR for the rationale (self-agent + evidence-mandate as the primary verdict, with an independent verification backstop).
 
@@ -288,7 +300,7 @@ Goal mode uses dedicated session events: one for the proposal sign-off (`goal_pr
 
 **Each goal-loop turn launches a fresh `Executor.Run`** (via `RunConductor`). The goal loop does **not** hold one long-lived executor across turns — it is a turn-of-Conductors, not a single multi-turn executor. Consequences:
 
-- The Conductor owns the task within a turn until it calls `finish`; the loop then starts a new turn (a new `Executor.Run`).
+- A turn is ONE bounded attempt and ends when the agent **declares its verdict**. The turn's executor marks `declare_goal_status` as a **stop tool** (`Executor.SetStopTools`), so a successful declaration terminates the run (`Finished=true`, the call's observation as the turn output) — the loop then reads the verdict and starts the next turn (a new `Executor.Run`). The model-facing prompt states the same protocol (goal_mode.md § *One Attempt Per Turn*; the goal-turn completion directive replaces the generic single-step "call `finish`" directive on goal runs). `finish` remains available and still ends a turn, but without a verdict it just spends a turn (not idle — the anti-spin guard only fires on zero tool calls).
 - The Conductor's conversation history accumulates across turns via the blackboard trajectory (the same mechanism normal continuation resume uses), so dialogue context is preserved across the turn boundary despite each turn being a fresh executor.
 - No turn routes. Routing (domain, complexity, matched+user skills) is decided exactly once at the top of `runGoalLoop` — before derivation — and inherited unchanged by every turn; re-routing a continuation message would misclassify it. See [Routing Invariant](#routing-invariant-one-routing-decision-per-goal-task).
 - The goal state and a fresh `GoalStatusSink` are injected into each turn's context (`WithGoalState`, `WithGoalStatusSink`); the system prompt renders the goal-mode section from the `GoalState` on every turn.

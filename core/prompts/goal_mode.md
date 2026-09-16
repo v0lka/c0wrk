@@ -1,6 +1,6 @@
 ## Goal Mode
 
-You are pursuing a declared goal: a persistent success condition backed by a resource budget. The goal remains in force across turns until its condition is verified as met or the budget is exhausted. Keep making concrete progress every turn — do not end the task with `finish` until the condition holds. Treat the condition below as the definition of "done".
+You are pursuing a declared goal: a persistent success condition backed by a resource budget. The goal stays in force across turns until its condition is met or the budget is exhausted. Each turn is ONE bounded attempt — do a concrete chunk of work, report your verdict, and stop; the loop starts the next turn for you. Treat the condition below as the definition of "done".
 
 ### Condition
 
@@ -10,11 +10,21 @@ You are pursuing a declared goal: a persistent success condition backed by a res
 
 {goal_verify_clause}
 
+### One Attempt Per Turn
+
+A turn is a single bounded attempt, not the whole goal. Do focused work, then end your turn by calling `declare_goal_status` with your honest verdict:
+
+- **`met`** — you produced the work and hold concrete evidence that the condition holds.
+- **`not_met`** — you made progress but the condition does not hold yet; the loop starts a new turn so you can continue.
+- **`blocked`** — you cannot proceed without external input or a changed situation.
+
+`declare_goal_status` **ends your turn**: do not keep calling tools after it, and do not try to complete the entire goal inside one turn. The loop increments the turn and re-invokes you with the accumulated context, so working attempt-by-attempt is both expected and cheaper than one unbounded turn that ignores the budget.
+
 ### Evidence Mandate
 
-Declare the goal met via `declare_goal_status` only after you have VERIFIED the condition — not merely after you believe you have done the work. The Verify Clause above is the test for "done": a runnable, command-type verify clause (e.g. one that reads "go test ./... exits 0") MUST be executed, and its real exit code and output cited as evidence, before you declare the goal met. Never declare "met" from an assumption that a command would pass — run it and report what actually happened.
+Do NOT act as your own verifier. An **independent** verifier re-checks every `met` claim against the Verify Clause after you declare it; your job is to do the work and report it honestly, not to run a private verification loop. A `met` verdict is only worth declaring when the condition can be independently VERIFIED.
 
-Every `met` verdict MUST cite concrete evidence — file paths changed, test output, command results. A bare "done" without evidence fails evaluation. Each claim that the condition holds must be backed by an artifact the user (or an evaluator) can inspect: a changed file path, a test run's output, or a command's result.
+Declare `met` with concrete, inspectable evidence — the artifacts your work actually produced or that you observed while working: changed file paths, command output, or a test run you performed. A runnable, command-type Verify Clause (e.g. one that reads "go test ./... exits 0") is the verifier's test, not yours; if you did run it as part of the work, cite its real exit code and output. Never declare `met` from an assumption that a command would pass — cite what you actually observed. A bare "done" without evidence fails evaluation.
 
 ### Budget
 

@@ -652,6 +652,15 @@ func (o *Orchestrator) runGoalTurns(
 		}
 
 		turn := gs.TurnCount + 1
+		// Charge the turn up front (before the run) so the per-turn system
+		// prompt renders the CURRENT turn number rather than the previous one.
+		// The goal-mode budget line (renderGoalModeVolatile) reads gs.TurnCount,
+		// so incrementing only AFTER the run made every turn — turn 1 included —
+		// render "turn 0": the UI's initial snapshot never advanced and the agent
+		// could not tell which turn it was on. Incrementing here keeps the prompt
+		// honest and the UI in step with the loop. (A retried errored turn still
+		// charges a real turn: the top-of-loop increment runs again on the retry.)
+		gs.TurnCount = turn
 		o.logInfo("goal_loop: starting turn", "turn", turn)
 
 		// Build per-turn deps with a fresh verdict sink and counting wrappers.
@@ -666,12 +675,20 @@ func (o *Orchestrator) runGoalTurns(
 		// goal-turn edit would duplicate what the executor of the underlying
 		// task already reports.
 		deps.verifyOnEdit = nil
+		// A goal turn is ONE bounded attempt. Marking declare_goal_status as a
+		// stop tool ends this turn's run the moment the agent declares its
+		// verdict (agent.Executor stop-tool terminator), so the loop reads the
+		// verdict and advances to the next turn. Without it the agent — told to
+		// keep going until the condition holds — performs the whole goal,
+		// including its own verification loop, inside a single unbounded turn:
+		// TurnCount never advances (the UI sits on turn 0), and the turn budget
+		// (MaxTurns) never engages.
+		deps.stopTools = []string{"declare_goal_status"}
 
 		toolCalls, execResult, terr := turnRunner(
 			tools.WithGoalStatusSink(WithGoalState(ctx, gs), sink),
 			turn, message, bb, availableTools, plansDir, conversationHistory, deps,
 		)
-		gs.TurnCount = turn
 
 		// Cooperative pause (mid-turn): the universal pause signal tripped at
 		// a step boundary inside this turn's conductor run, so the turn result

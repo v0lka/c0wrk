@@ -5,6 +5,8 @@
 Accepted
 
 > **Drift note (2026-08-25, vibespec-check):** The budget consequence mentions turns/tokens/deadline caps; only the turn budget exists — GoalBudget is a turn-only cap (MaxTurns, 0 = unlimited, core/goal/types.go); tokens are counted per turn for display and no goal-level deadline is enforced.
+>
+> **Revision (turn boundary):** per-turn runs originally ended only on `finish`/a step-limit, while goal-mode prompting told the agent not to `finish` until the condition held — so the agent performed the whole goal, including a self-verification loop, inside ONE turn: `TurnCount` never advanced (the UI stayed on turn 0) and `MaxTurns` never engaged. The turn boundary is now enforced by the executor: `declare_goal_status` is registered as a **stop tool** (`agent.Executor.SetStopTools` ← `ConductorConfig.StopTools` ← `conductorDeps.stopTools`, set per goal turn in `runGoalTurns`), so a successful verdict call ends the turn immediately. The render-time turn number is also charged up front (turn N runs with `TurnCount == N`), and the working agent is no longer prompted to run the Verify Clause itself — that is the independent verifier's job.
 
 ## Context
 

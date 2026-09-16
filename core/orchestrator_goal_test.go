@@ -2145,3 +2145,146 @@ func TestRunGoalLoop_ContinuationInheritsRestoredBlackboard(t *testing.T) {
 		}
 	})
 }
+
+// stopToolSpyTurnRunner records the deps.stopTools handed to each goal turn and
+// declares the configured verdict (shaped like mockGoalTurnRunner, but capturing
+// deps so a test can assert the per-turn wiring).
+type stopToolSpyTurnRunner struct {
+	verdicts      []*goal.Verdict
+	seenStopTools [][]string
+}
+
+func (s *stopToolSpyTurnRunner) run(
+	ctx context.Context,
+	turn int,
+	_ string,
+	_ orchestration.Blackboard,
+	_ []sdktools.ToolDescriptor,
+	_ string,
+	_ []llm.Message,
+	deps conductorDeps,
+) (int, *orchestration.ExecutionResult, error) {
+	s.seenStopTools = append(s.seenStopTools, append([]string(nil), deps.stopTools...))
+	if turn-1 < len(s.verdicts) && s.verdicts[turn-1] != nil {
+		if sink := tools.GoalStatusSinkFrom(ctx); sink != nil {
+			sink.Declare(*s.verdicts[turn-1])
+		}
+	}
+	return 2, &orchestration.ExecutionResult{Status: orchestration.ExecutionStatusSuccess}, nil
+}
+
+// TestRunGoalTurns_TurnRunnerReceivesStopTool verifies the loop wires
+// declare_goal_status as a turn-terminating (stop) tool into EVERY goal turn's
+// deps. Without it a real turn keeps running until the model stops calling
+// tools or hits the step limit, so the agent packs the whole goal — including
+// its own verification loop — into one unbounded turn and neither TurnCount nor
+// the turn budget advances.
+func TestRunGoalTurns_TurnRunnerReceivesStopTool(t *testing.T) {
+	o := newGoalTestOrchestrator()
+	runner := &stopToolSpyTurnRunner{verdicts: []*goal.Verdict{
+		{Status: "not_met", Reason: "one more pass", DeclaredAt: time.Now()},
+		metVerdict("done"),
+	}}
+	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "iterate"}
+	bb := orchestration.NewMapBlackboard()
+
+	result, _ := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, runner.run)
+
+	if result.Status != goal.StatusMet {
+		t.Fatalf("Status = %q, want %q", result.Status, goal.StatusMet)
+	}
+	if len(runner.seenStopTools) != 2 {
+		t.Fatalf("turn runner called %d times, want 2", len(runner.seenStopTools))
+	}
+	for i, got := range runner.seenStopTools {
+		if len(got) != 1 || got[0] != "declare_goal_status" {
+			t.Errorf("turn %d deps.stopTools = %v, want [declare_goal_status]", i+1, got)
+		}
+	}
+	// The turn counter must reflect the CURRENT turn inside the run (not the
+	// previous one): the prompt's budget line reads gs.TurnCount, so an off-by-one
+	// here renders "turn 0" for the whole first turn.
+	if result.TurnCount != 2 {
+		t.Errorf("TurnCount = %d, want 2", result.TurnCount)
+	}
+}
+
+// TestRunConductor_StopToolEndsTurn proves the executor-level turn boundary:
+// when declare_goal_status is registered as a stop tool (as every goal turn
+// does), the run ENDS the moment the agent declares its verdict — the model is
+// never called again and no later tool call is executed — even though the
+// (mock) model would happily keep working. This is what makes a goal turn one
+// bounded attempt instead of an unbounded run that ignores the turn budget.
+func TestRunConductor_StopToolEndsTurn(t *testing.T) {
+	registry := createTestRegistry()
+	registry.Register(tools.NewDeclareGoalStatusTool())
+
+	llmCalls := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+			llmCalls++
+			if llmCalls == 1 {
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role: "assistant",
+						ToolCalls: []llm.ToolCall{{
+							ID:    "dgs1",
+							Name:  "declare_goal_status",
+							Input: json.RawMessage(`{"status":"not_met","reason":"one more pass"}`),
+						}},
+					},
+					StopReason: "tool_use",
+				}, nil
+			}
+			// The loop must NOT reach this call: it would keep working forever.
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role: "assistant",
+					ToolCalls: []llm.ToolCall{{
+						ID:    "b1",
+						Name:  "bash_exec",
+						Input: json.RawMessage(`{"command":"echo should-not-run"}`),
+					}},
+				},
+				StopReason: "tool_use",
+			}, nil
+		},
+	}
+
+	o := NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
+		Router:         newCoreRouter(mockLLM, 5),
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   llm.NewSimpleTokenCounter(),
+		ContextFactory: testContextFactory,
+		Emitter:        &mockEmitter{},
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
+
+	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "the turn boundary holds"}
+	sink := &memGoalStatusSink{}
+	ctx := WithComplexity(WithDomain(sdktools.WithWorkspacePath(context.Background(), t.TempDir()), "general"), 3)
+	ctx = tools.WithGoalStatusSink(WithGoalState(ctx, gs), sink)
+
+	deps := o.buildConductorDeps(nil, nil)
+	deps.stopTools = []string{"declare_goal_status"}
+
+	bb := orchestration.NewMapBlackboard()
+	result, err := RunConductor(ctx, "work the goal", bb, registry.ListFiltered(nil), deps, "")
+	if err != nil {
+		t.Fatalf("RunConductor: %v", err)
+	}
+	if llmCalls != 1 {
+		t.Errorf("LLM called %d times, want 1 — the run must end on declare_goal_status, not continue to another step", llmCalls)
+	}
+	if result == nil || result.Status != orchestration.ExecutionStatusSuccess {
+		t.Fatalf("result = %+v, want Status=%q (a successful stop-tool call terminates the run as a success)", result, orchestration.ExecutionStatusSuccess)
+	}
+	if !strings.Contains(result.Output, "Verdict recorded") {
+		t.Errorf("result.Output = %q, want it to carry the stop tool's observation", result.Output)
+	}
+	if v := sink.Last(); v == nil || v.Status != "not_met" {
+		t.Errorf("sink verdict = %+v, want not_met (the declared verdict was captured before the run ended)", v)
+	}
+}
