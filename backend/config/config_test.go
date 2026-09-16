@@ -1621,6 +1621,99 @@ func TestSave_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestProviderTLSOverride_RoundTrip verifies that the per-provider TLS pin
+// (tls_fingerprint, ADR-050) survives a Save→Load cycle for BOTH compatible
+// provider families, and that a config without the key loads with zero
+// values (backward compatibility).
+func TestProviderTLSOverride_RoundTrip(t *testing.T) {
+	const pin = "k3J9vQ1Z0mF7hD2xS8pL4wR6tY5uI3oP1aE9cX0bN7g="
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+	cfg.LLM.DefaultModel = "selfhosted/qwen3"
+	cfg.LLM.OpenAICompatible = map[string]OpenAICompatibleConfig{
+		"selfhosted": {
+			BaseURL:        "https://llm.lan:8443/v1",
+			APIKey:         "k",
+			Models:         []string{"qwen3"},
+			TLSFingerprint: pin,
+		},
+	}
+	cfg.LLM.AnthropicCompatible = map[string]AnthropicCompatibleConfig{
+		"selfclaude": {
+			BaseURL:        "https://claude.lan:8443",
+			APIKey:         "k",
+			Models:         []string{"claude-sonnet-4-20250514"},
+			TLSFingerprint: pin,
+		},
+	}
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	oc := loaded.LLM.OpenAICompatible["selfhosted"]
+	if oc.TLSFingerprint != pin {
+		t.Errorf("openai_compatible TLS pin lost: pin=%q", oc.TLSFingerprint)
+	}
+	ac := loaded.LLM.AnthropicCompatible["selfclaude"]
+	if ac.TLSFingerprint != pin {
+		t.Errorf("anthropic_compatible TLS pin lost: pin=%q", ac.TLSFingerprint)
+	}
+
+	// The pin must also be visible through the canonical provider list
+	// (allProviderEntries → ProviderWithModels) for both families.
+	found := map[string]ProviderWithModels{}
+	for _, p := range loaded.LLM.GetAllProviderConfigs() {
+		found[p.Name] = p
+	}
+	if p, ok := found["selfhosted"]; !ok || p.TLSFingerprint != pin {
+		t.Errorf("GetAllProviderConfigs lost openai_compatible TLS pin: %+v", p)
+	}
+	if p, ok := found["selfclaude"]; !ok || p.TLSFingerprint != pin {
+		t.Errorf("GetAllProviderConfigs lost anthropic_compatible TLS pin: %+v", p)
+	}
+}
+
+// TestProviderTLSOverride_DefaultsToZero ensures older configs (no TLS keys)
+// load with the override disabled — the feature must be opt-in per provider.
+func TestProviderTLSOverride_DefaultsToZero(t *testing.T) {
+	const yamlDoc = `
+llm:
+  default_model: "m"
+  openai_compatible:
+    legacy:
+      base_url: "https://old.example.com/v1"
+      api_key: "k"
+      models: ["m"]
+  anthropic_compatible:
+    legacyclaude:
+      base_url: "https://old-claude.example.com"
+      api_key: "k"
+      models: ["claude-sonnet-4-20250514"]
+`
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yamlDoc), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if oc := loaded.LLM.OpenAICompatible["legacy"]; oc.TLSFingerprint != "" {
+		t.Errorf("legacy openai_compatible entry must default to pin=\"\", got %+v", oc)
+	}
+	if ac := loaded.LLM.AnthropicCompatible["legacyclaude"]; ac.TLSFingerprint != "" {
+		t.Errorf("legacy anthropic_compatible entry must default to pin=\"\", got %+v", ac)
+	}
+}
+
 func TestSave_AtomicWrite(t *testing.T) {
 	cfg := &Config{}
 	ApplyDefaults(cfg)

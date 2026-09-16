@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,6 +20,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/llmtls"
 	"github.com/v0lka/c0wrk/core/proxy"
 	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agents"
@@ -3531,5 +3533,277 @@ func TestHasDefaultModel(t *testing.T) {
 				t.Errorf("HasDefaultModel() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// --- Per-provider TLS pin override (ADR-050) -------------------------------
+
+const testTLSPin = "k3J9vQ1Z0mF7hD2xS8pL4wR6tY5uI3oP1aE9cX0bN7g="
+
+// tlsPinPtr boxes a fingerprint string for *string request fields.
+func tlsPinPtr(s string) *string { return &s }
+
+// TestUpdateLLMConfig_TLSOverride verifies the write path of the per-provider
+// TLS pin: explicit values persist for BOTH compatible families.
+func TestUpdateLLMConfig_TLSOverride(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "selfhosted/qwen3",
+		OpenAICompatible: map[string]ProviderConfigRequest{
+			"selfhosted": {
+				BaseURL:        "https://llm.lan:8443/v1",
+				APIKey:         "k",
+				Models:         []string{"qwen3"},
+				TLSFingerprint: tlsPinPtr(testTLSPin),
+			},
+		},
+		AnthropicCompatible: map[string]ProviderConfigRequest{
+			"selfclaude": {
+				BaseURL:        "https://claude.lan:8443",
+				APIKey:         "k",
+				Models:         []string{"claude-sonnet-4-20250514"},
+				TLSFingerprint: tlsPinPtr(testTLSPin),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	oc := f.config.LLM.OpenAICompatible["selfhosted"]
+	if oc.TLSFingerprint != testTLSPin {
+		t.Errorf("openai_compatible pin not persisted: %+v", oc)
+	}
+	ac := f.config.LLM.AnthropicCompatible["selfclaude"]
+	if ac.TLSFingerprint != testTLSPin {
+		t.Errorf("anthropic_compatible pin not persisted: %+v", ac)
+	}
+}
+
+// TestUpdateLLMConfig_TLSOverrideNilKeepsExisting verifies the debounce-safe
+// sentinel: a partial save WITHOUT the TLS field must not drop the pin.
+func TestUpdateLLMConfig_TLSOverrideNilKeepsExisting(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	f.config.LLM.OpenAICompatible = map[string]config.OpenAICompatibleConfig{
+		"selfhosted": {
+			BaseURL:        "https://llm.lan:8443/v1",
+			APIKey:         "k",
+			Models:         []string{"qwen3"},
+			TLSFingerprint: testTLSPin,
+		},
+	}
+
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		OpenAICompatible: map[string]ProviderConfigRequest{
+			"selfhosted": {
+				BaseURL: "https://llm.lan:8443/v1",
+				APIKey:  maskedAPIKey,
+				Models:  []string{"qwen3"},
+				// TLSFingerprint intentionally nil.
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	oc := f.config.LLM.OpenAICompatible["selfhosted"]
+	if oc.TLSFingerprint != testTLSPin {
+		t.Errorf("nil TLS field must preserve existing pin, got: %+v", oc)
+	}
+}
+
+// TestUpdateLLMConfig_TLSOverrideClearPin verifies that an EXPLICIT empty
+// fingerprint clears the pin (the user deleted the text / unchecked
+// "Custom TLS fingerprint") — back to system CA verification.
+func TestUpdateLLMConfig_TLSOverrideClearPin(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	f.config.LLM.AnthropicCompatible = map[string]config.AnthropicCompatibleConfig{
+		"selfclaude": {
+			BaseURL:        "https://claude.lan:8443",
+			APIKey:         "k",
+			Models:         []string{"claude-sonnet-4-20250514"},
+			TLSFingerprint: testTLSPin,
+		},
+	}
+
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		AnthropicCompatible: map[string]ProviderConfigRequest{
+			"selfclaude": {
+				BaseURL:        "https://claude.lan:8443",
+				APIKey:         maskedAPIKey,
+				Models:         []string{"claude-sonnet-4-20250514"},
+				TLSFingerprint: tlsPinPtr(""), // explicit clear
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ac := f.config.LLM.AnthropicCompatible["selfclaude"]
+	if ac.TLSFingerprint != "" {
+		t.Errorf("empty fingerprint must clear the pin, got %q", ac.TLSFingerprint)
+	}
+}
+
+// TestBuildLLMResponse_TLSOverride verifies the read path: GetConfig carries
+// the TLS pin back to the settings UI.
+func TestBuildLLMResponse_TLSOverride(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	f.config.LLM.OpenAICompatible = map[string]config.OpenAICompatibleConfig{
+		"selfhosted": {
+			BaseURL:        "https://llm.lan:8443/v1",
+			APIKey:         "k",
+			Models:         []string{"qwen3"},
+			TLSFingerprint: testTLSPin,
+		},
+	}
+
+	resp := f.buildLLMResponse()
+	oc, ok := resp.OpenAICompatible["selfhosted"]
+	if !ok {
+		t.Fatal("provider missing from response")
+	}
+	if oc.TLSFingerprint != testTLSPin {
+		t.Errorf("TLS pin not exposed in response: %+v", oc)
+	}
+}
+
+// TestApplyListProviderModelsOverrides_TLSFields verifies the draft merge:
+// Fetch Models honors the draft pin and falls back to the saved value when
+// the draft omits it.
+func TestApplyListProviderModelsOverrides_TLSFields(t *testing.T) {
+	t.Run("draft values applied", func(t *testing.T) {
+		cfg := &core.BuilderConfig{
+			LLM: core.BuilderLLMConfig{
+				ProviderConfigs: map[string]core.BuilderProviderConfig{
+					"selfhosted": {ProviderType: "openai", BaseURL: "https://llm.lan:8443/v1", Models: []string{"qwen3"}},
+				},
+			},
+		}
+		err := applyListProviderModelsOverrides(cfg, ListProviderModelsRequest{
+			Provider:       "selfhosted",
+			TLSFingerprint: tlsPinPtr(testTLSPin),
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		pc := cfg.LLM.ProviderConfigs["selfhosted"]
+		if pc.TLSFingerprint != testTLSPin {
+			t.Errorf("draft TLS pin not applied: %+v", pc)
+		}
+	})
+
+	t.Run("nil falls back to saved", func(t *testing.T) {
+		cfg := &core.BuilderConfig{
+			LLM: core.BuilderLLMConfig{
+				ProviderConfigs: map[string]core.BuilderProviderConfig{
+					"selfhosted": {
+						ProviderType:   "openai",
+						BaseURL:        "https://llm.lan:8443/v1",
+						Models:         []string{"qwen3"},
+						TLSFingerprint: testTLSPin,
+					},
+				},
+			},
+		}
+		err := applyListProviderModelsOverrides(cfg, ListProviderModelsRequest{
+			Provider: "selfhosted",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		pc := cfg.LLM.ProviderConfigs["selfhosted"]
+		if pc.TLSFingerprint != testTLSPin {
+			t.Errorf("nil draft must keep saved TLS pin, got: %+v", pc)
+		}
+	})
+}
+
+// TestGetProviderTLSCertificate verifies the fingerprint RPC: a live TLS
+// server yields its SPKI pin; an unreachable endpoint errors; a provider
+// without any base URL errors.
+func TestGetProviderTLSCertificate(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	t.Cleanup(srv.Close)
+
+	// Draft base URL wins.
+	resp, err := f.GetProviderTLSCertificate(GetProviderTLSCertificateRequest{
+		Provider: "selfhosted",
+		BaseURL:  srv.URL,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := llmtls.SPKIFingerprint(srv.Certificate())
+	if resp.Fingerprint != want {
+		t.Errorf("fingerprint = %q, want %q", resp.Fingerprint, want)
+	}
+
+	// Persisted fallback.
+	f.config.LLM.OpenAICompatible = map[string]config.OpenAICompatibleConfig{
+		"selfhosted": {BaseURL: srv.URL, Models: []string{"qwen3"}},
+	}
+	resp, err = f.GetProviderTLSCertificate(GetProviderTLSCertificateRequest{Provider: "selfhosted"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Fingerprint != want {
+		t.Errorf("persisted fallback fingerprint = %q, want %q", resp.Fingerprint, want)
+	}
+
+	// Unreachable endpoint.
+	if _, err := f.GetProviderTLSCertificate(GetProviderTLSCertificateRequest{
+		Provider: "selfhosted",
+		BaseURL:  "https://127.0.0.1:1",
+	}); err == nil {
+		t.Fatal("expected error for unreachable host")
+	}
+
+	// No base URL at all.
+	if _, err := f.GetProviderTLSCertificate(GetProviderTLSCertificateRequest{Provider: "nowhere"}); err == nil {
+		t.Fatal("expected error for provider without base URL")
+	}
+}
+
+// TestGetProviderTLSCertificate_EnvVarBaseURL verifies that a persisted
+// (or draft) base URL carrying a ${VAR} reference is expanded before the
+// TLS handshake — the same treatment every other dial path gives it — so
+// the fingerprint probe reaches the real endpoint instead of failing to
+// parse a literal "${LLM_BASE_URL}".
+func TestGetProviderTLSCertificate_EnvVarBaseURL(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	t.Cleanup(srv.Close)
+
+	want := llmtls.SPKIFingerprint(srv.Certificate())
+
+	// Draft base URL with an env-var reference.
+	t.Setenv("TLS_TEST_DRAFT_URL", srv.URL)
+	resp, err := f.GetProviderTLSCertificate(GetProviderTLSCertificateRequest{
+		Provider: "selfhosted",
+		BaseURL:  "${TLS_TEST_DRAFT_URL}",
+	})
+	if err != nil {
+		t.Fatalf("draft env-var base URL: %v", err)
+	}
+	if resp.Fingerprint != want {
+		t.Errorf("draft env-var fingerprint = %q, want %q", resp.Fingerprint, want)
+	}
+
+	// Persisted base URL with an env-var reference.
+	t.Setenv("TLS_TEST_PERSISTED_URL", srv.URL)
+	f.config.LLM.OpenAICompatible = map[string]config.OpenAICompatibleConfig{
+		"selfhosted": {BaseURL: "${TLS_TEST_PERSISTED_URL}", Models: []string{"qwen3"}},
+	}
+	resp, err = f.GetProviderTLSCertificate(GetProviderTLSCertificateRequest{Provider: "selfhosted"})
+	if err != nil {
+		t.Fatalf("persisted env-var base URL: %v", err)
+	}
+	if resp.Fingerprint != want {
+		t.Errorf("persisted env-var fingerprint = %q, want %q", resp.Fingerprint, want)
 	}
 }

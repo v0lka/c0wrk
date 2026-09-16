@@ -246,6 +246,7 @@ export namespace backend {
 	    api_key: string;
 	    base_url?: string;
 	    models: string[];
+	    tls_fingerprint?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigProviderFull(source);
@@ -256,6 +257,7 @@ export namespace backend {
 	        this.api_key = source["api_key"];
 	        this.base_url = source["base_url"];
 	        this.models = source["models"];
+	        this.tls_fingerprint = source["tls_fingerprint"];
 	    }
 	}
 	export class ConfigLLMResponse {
@@ -461,6 +463,20 @@ export namespace backend {
 	        this.name = source["name"];
 	    }
 	}
+	export class GetProviderTLSCertificateRequest {
+	    provider: string;
+	    base_url?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new GetProviderTLSCertificateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.provider = source["provider"];
+	        this.base_url = source["base_url"];
+	    }
+	}
 	export class GroupPolicyResponse {
 	    policy: string;
 	    blacklist: string[];
@@ -507,6 +523,7 @@ export namespace backend {
 	    api_key?: string;
 	    base_url?: string;
 	    models?: string[];
+	    tls_fingerprint?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProviderConfigRequest(source);
@@ -517,6 +534,7 @@ export namespace backend {
 	        this.api_key = source["api_key"];
 	        this.base_url = source["base_url"];
 	        this.models = source["models"];
+	        this.tls_fingerprint = source["tls_fingerprint"];
 	    }
 	}
 	export class LLMFullConfigRequest {
@@ -562,6 +580,7 @@ export namespace backend {
 	    api_key?: string;
 	    base_url?: string;
 	    type?: string;
+	    tls_fingerprint?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ListProviderModelsRequest(source);
@@ -573,6 +592,7 @@ export namespace backend {
 	        this.api_key = source["api_key"];
 	        this.base_url = source["base_url"];
 	        this.type = source["type"];
+	        this.tls_fingerprint = source["tls_fingerprint"];
 	    }
 	}
 	export class ModelConfigRequest {
@@ -1385,6 +1405,18 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
 	        this.description = source["description"];
+	    }
+	}
+	export class TLSCertificateResponse {
+	    fingerprint: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TLSCertificateResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.fingerprint = source["fingerprint"];
 	    }
 	}
 	export class ThemeDTO {

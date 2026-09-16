@@ -21,7 +21,7 @@ export function useModelFetch(activeProvider: string, providerConfigs: Record<st
 
     const credentialKey = (!activeProvider || !providerConfigs[activeProvider])
         ? ''
-        : `${activeProvider}|${providerConfigs[activeProvider].api_key}|${providerConfigs[activeProvider].base_url}`
+        : `${activeProvider}|${providerConfigs[activeProvider].api_key}|${providerConfigs[activeProvider].base_url}|${providerConfigs[activeProvider].tls_fingerprint}`
 
     useEffect(() => {
         fetchIdRef.current += 1
@@ -51,11 +51,16 @@ export function useModelFetch(activeProvider: string, providerConfigs: Record<st
             // Pass draft credentials so an unsaved compatible provider
             // (first-run / no default_model yet) can still list models —
             // ListProviderModels only sees persisted config otherwise.
+            // The draft TLS pin override (ADR-050) rides along so Fetch
+            // Models reaches self-signed endpoints before the first save.
+            // The pin is sent verbatim — an explicit draft "" must win over
+            // the persisted value (nil = keep), not fall back to it.
             const list = await listProviderModels({
                 provider: activeProvider,
                 api_key: config.api_key,
                 base_url: config.base_url || undefined,
                 type: config.type,
+                tls_fingerprint: config.tls_fingerprint,
             })
             if (myId !== fetchIdRef.current) return
             setModels(list || [])

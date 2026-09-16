@@ -40,7 +40,7 @@ function makeConfig() {
       default_model: 'anthropic/claude-sonnet',
       anthropic: { api_key: 'sk', models: ['claude-sonnet'] },
       openai_compatible: {
-        lmstudio: { api_key: '', base_url: 'http://localhost:1234', models: ['glm-5.3'] },
+        lmstudio: { api_key: '', base_url: 'http://localhost:1234', models: ['glm-5.3'], tls_fingerprint: '' },
       },
     },
   }

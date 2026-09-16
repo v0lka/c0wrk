@@ -17,10 +17,13 @@ export interface ProviderConfig {
      * (openai_compatible vs anthropic_compatible) they are saved under.
      */
     type?: CompatibleType
+    /** Per-provider TLS pin override (ADR-050): '' = standard CA
+     *  verification (override off), non-empty = pinned fingerprint. */
+    tls_fingerprint: string
 }
 
 const defaultProviderConfigs: Record<string, ProviderConfig> = Object.fromEntries(
-    FIXED_PROVIDERS.map((p) => [p, { api_key: '', base_url: '', models: [] }]),
+    FIXED_PROVIDERS.map((p) => [p, { api_key: '', base_url: '', models: [], tls_fingerprint: '' }]),
 )
 
 interface UseLLMConfigResult {
@@ -44,6 +47,7 @@ function toProviderConfig(p: ConfigProviderFull, type?: CompatibleType): Provide
         base_url: p.base_url ?? '',
         models: Array.isArray(p.models) ? [...p.models] : [],
         type,
+        tls_fingerprint: p.tls_fingerprint ?? '',
     }
 }
 

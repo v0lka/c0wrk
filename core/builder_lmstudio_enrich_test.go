@@ -405,7 +405,7 @@ func TestLookupOpenAIProviderBaseURL(t *testing.T) {
 		ExpandEnvVars: expand,
 	}
 
-	if base, key, ok := lookupOpenAIProviderBaseURL(cfg, "qwen2.5-coder-7b", expand); !ok {
+	if base, key, _, ok := lookupOpenAIProviderBaseURL(cfg, "qwen2.5-coder-7b", expand); !ok {
 		t.Error("expected match for local openai model")
 	} else if base != "http://127.0.0.1:1234/v1" || key != "lm-key" {
 		t.Errorf("wrong provider resolved: base=%q key=%q", base, key)
@@ -413,13 +413,52 @@ func TestLookupOpenAIProviderBaseURL(t *testing.T) {
 
 	// Variant B: a public-host OpenAI provider now MATCHES (it is probed; the
 	// probe is a harmless no-op if the listing omits the window field).
-	if _, _, ok := lookupOpenAIProviderBaseURL(cfg, "gpt-4o", expand); !ok {
+	if _, _, _, ok := lookupOpenAIProviderBaseURL(cfg, "gpt-4o", expand); !ok {
 		t.Error("public-host openai provider should match under Variant B (locality is not gated)")
 	}
-	if _, _, ok := lookupOpenAIProviderBaseURL(cfg, "claude-3-5-sonnet", expand); ok {
+	if _, _, _, ok := lookupOpenAIProviderBaseURL(cfg, "claude-3-5-sonnet", expand); ok {
 		t.Error("anthropic provider should not match (non-openai)")
 	}
-	if _, _, ok := lookupOpenAIProviderBaseURL(cfg, "unknown-model", expand); ok {
+	if _, _, _, ok := lookupOpenAIProviderBaseURL(cfg, "unknown-model", expand); ok {
 		t.Error("unknown model should not match")
+	}
+}
+
+// TestLookupOpenAIProviderBaseURL_TLSOverride verifies the per-provider TLS
+// override fields (ADR-050) ride along with the lookup: the probe path can
+// build its llmtls client from the same resolution. The pin is the switch —
+// a provider without a fingerprint resolves with an empty pin (no override).
+func TestLookupOpenAIProviderBaseURL_TLSOverride(t *testing.T) {
+	expand := func(s string) string { return s }
+	const pin = "k3J9vQ1Z0mF7hD2xS8pL4wR6tY5uI3oP1aE9cX0bN7g="
+	cfg := &BuilderConfig{
+		LLM: BuilderLLMConfig{
+			ProviderConfigs: map[string]BuilderProviderConfig{
+				"selfhosted": {
+					ProviderType:   "openai",
+					BaseURL:        "https://llm.lan:8443/v1",
+					Models:         []string{"qwen3"},
+					TLSFingerprint: pin,
+				},
+				"plain": {
+					ProviderType: "openai",
+					BaseURL:      "http://127.0.0.1:1234/v1",
+					Models:       []string{"llama-3.1-8b"},
+				},
+			},
+		},
+		ExpandEnvVars: expand,
+	}
+
+	base, _, fp, ok := lookupOpenAIProviderBaseURL(cfg, "qwen3", expand)
+	if !ok || base != "https://llm.lan:8443/v1" {
+		t.Fatalf("expected selfhosted match, got base=%q ok=%v", base, ok)
+	}
+	if fp != pin {
+		t.Errorf("TLS pin not returned: pin=%q", fp)
+	}
+
+	if _, _, fp, ok := lookupOpenAIProviderBaseURL(cfg, "llama-3.1-8b", expand); !ok || fp != "" {
+		t.Errorf("plain provider must resolve without TLS pin, got ok=%v pin=%q", ok, fp)
 	}
 }

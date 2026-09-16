@@ -33,19 +33,24 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
   const saveFullConfig = useCallback(
     (defModel: string, configs: Record<string, ProviderConfig>) => {
       const req: LLMFullConfigRequest & Record<string, unknown> = { default_model: defModel }
-      const openaiCompatible: Record<string, { api_key: string; base_url?: string; models: string[] }> = {}
-      const anthropicCompatible: Record<string, { api_key: string; base_url?: string; models: string[] }> = {}
+      const openaiCompatible: Record<string, { api_key: string; base_url?: string; models: string[]; tls_fingerprint?: string }> = {}
+      const anthropicCompatible: Record<string, { api_key: string; base_url?: string; models: string[]; tls_fingerprint?: string }> = {}
 
       for (const [p, cfg] of Object.entries(configs)) {
         if (!cfg) continue
-        const entry: { api_key: string; base_url?: string; models: string[] } = {
+        const entry: { api_key: string; base_url?: string; models: string[]; tls_fingerprint?: string } = {
           api_key: cfg.api_key,
           models: cfg.models,
         }
         if (PROVIDERS_WITH_BASE_URL.has(p)) {
           entry.base_url = cfg.base_url
         }
+        // Per-provider TLS pin override (ADR-050): compatible providers are
+        // the only ones the backend stores the pin for, and they route to a
+        // transport-type-specific backend map. The pin always travels along
+        // so the backend can apply it atomically.
         if (isCompatibleProvider(p)) {
+          entry.tls_fingerprint = cfg.tls_fingerprint
           // Route to the correct backend map by transport type. Default to
           // 'openai' for compatible providers that lack an explicit type
           // (preserves behavior for any pre-existing compatible entries).

@@ -464,6 +464,12 @@ type OpenAICompatibleConfig struct {
 	BaseURL string   `yaml:"base_url"`
 	APIKey  string   `yaml:"api_key"`
 	Models  []string `yaml:"models"` // enabled models for this provider
+	// TLSFingerprint pins the endpoint's SPKI: base64(SHA-256(SPKI DER)).
+	// Non-empty = ONLY the pinned key is accepted (self-signed / internal
+	// PKI); empty = normal system CA verification. The pin is the only
+	// verification override — there is no configured accept-any state. See
+	// ADR-050.
+	TLSFingerprint string `yaml:"tls_fingerprint,omitempty"`
 	// OutputTokenReserve overrides the output-token budget for every model
 	// served by this provider: it is subtracted from the context window in
 	// overflow validation and caps executor MaxTokens. 0 = inherit the global
@@ -477,6 +483,12 @@ type AnthropicCompatibleConfig struct {
 	BaseURL string   `yaml:"base_url"`
 	APIKey  string   `yaml:"api_key"`
 	Models  []string `yaml:"models"` // enabled models for this provider
+	// TLSFingerprint pins the endpoint's SPKI: base64(SHA-256(SPKI DER)).
+	// Non-empty = ONLY the pinned key is accepted (self-signed / internal
+	// PKI); empty = normal system CA verification. The pin is the only
+	// verification override — there is no configured accept-any state. See
+	// ADR-050.
+	TLSFingerprint string `yaml:"tls_fingerprint,omitempty"`
 	// OutputTokenReserve overrides the output-token budget for every model
 	// served by this provider: it is subtracted from the context window in
 	// overflow validation and caps executor MaxTokens. 0 = inherit the global
@@ -1251,6 +1263,10 @@ type ProviderWithModels struct {
 	APIKey       string
 	BaseURL      string
 	Models       []string // enabled models for this one provider
+	// TLSFingerprint carries the per-provider SPKI pin (only meaningful for
+	// compatible providers with a BaseURL): non-empty = ONLY the pinned key
+	// is accepted; empty = system CA verification. See ADR-050.
+	TLSFingerprint string
 	// OutputTokenReserve is the per-provider output-token budget override
 	// (0 = inherit the global executor.output_token_reserve).
 	OutputTokenReserve int
@@ -1262,6 +1278,7 @@ type providerEntry struct {
 	apiKey             string
 	baseURL            string
 	models             []string
+	tlsFingerprint     string
 	outputTokenReserve int
 }
 
@@ -1286,11 +1303,11 @@ func (c *LLMConfig) allProviderEntries() []providerEntry {
 	)
 	for _, name := range openaiKeys {
 		cfg := c.OpenAICompatible[name]
-		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, outputTokenReserve: cfg.OutputTokenReserve})
+		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, tlsFingerprint: cfg.TLSFingerprint, outputTokenReserve: cfg.OutputTokenReserve})
 	}
 	for _, name := range anthropicKeys {
 		cfg := c.AnthropicCompatible[name]
-		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, outputTokenReserve: cfg.OutputTokenReserve})
+		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, tlsFingerprint: cfg.TLSFingerprint, outputTokenReserve: cfg.OutputTokenReserve})
 	}
 	return entries
 }
@@ -1325,6 +1342,7 @@ func (c *LLMConfig) GetAllProviderConfigs() []ProviderWithModels {
 			APIKey:             p.apiKey,
 			BaseURL:            p.baseURL,
 			Models:             p.models,
+			TLSFingerprint:     p.tlsFingerprint,
 			OutputTokenReserve: p.outputTokenReserve,
 		})
 	}
@@ -1350,11 +1368,12 @@ func (c *LLMConfig) ResolveDefaultModelProvider() (ProviderWithModels, string, e
 			for _, m := range p.models {
 				if m == model {
 					return ProviderWithModels{
-						Name:         p.name,
-						ProviderType: c.providerType(p.name),
-						APIKey:       p.apiKey,
-						BaseURL:      p.baseURL,
-						Models:       p.models,
+						Name:           p.name,
+						ProviderType:   c.providerType(p.name),
+						APIKey:         p.apiKey,
+						BaseURL:        p.baseURL,
+						Models:         p.models,
+						TLSFingerprint: p.tlsFingerprint,
 					}, m, nil
 				}
 			}
@@ -1367,11 +1386,12 @@ func (c *LLMConfig) ResolveDefaultModelProvider() (ProviderWithModels, string, e
 		for _, m := range p.models {
 			if m == c.DefaultModel {
 				return ProviderWithModels{
-					Name:         p.name,
-					ProviderType: c.providerType(p.name),
-					APIKey:       p.apiKey,
-					BaseURL:      p.baseURL,
-					Models:       p.models,
+					Name:           p.name,
+					ProviderType:   c.providerType(p.name),
+					APIKey:         p.apiKey,
+					BaseURL:        p.baseURL,
+					Models:         p.models,
+					TLSFingerprint: p.tlsFingerprint,
 				}, m, nil
 			}
 		}

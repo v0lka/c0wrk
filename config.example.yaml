@@ -50,6 +50,19 @@ llm:
       # a self-hosted gateway caps output below/above the built-in catalog.
       # 0 / omitted = inherit executor.output_token_reserve.
       # output_token_reserve: 8192
+      #
+      # TLS override for self-signed endpoints (per provider):
+      #   tls_fingerprint: "..."  — base64(SHA-256(SPKI DER)) pin. A NON-EMPTY
+      #                             pin by itself activates the override: only
+      #                             the certificate with this public-key pin is
+      #                             accepted (survives certificate renewal with
+      #                             the same key). The Settings dialog's
+      #                             "Get fingerprint" button fills this in.
+      #                             Empty/omitted = normal system CA
+      #                             verification. There is no separate toggle
+      #                             and no "accept any certificate" mode — see
+      #                             ADR-050.
+      # tls_fingerprint: ""
 
   anthropic_compatible:
     # Each key is a named provider speaking Anthropic's Messages API
@@ -62,6 +75,10 @@ llm:
     #   api_key: "${ANTHROPIC_PROXY_KEY}"
     #   models:
     #     - "claude-sonnet-4-20250514"
+    #   # Same TLS override as openai_compatible (tls_fingerprint pin,
+    #   # see above / ADR-050) — for self-signed Anthropic compatible
+    #   # endpoints.
+    #   # tls_fingerprint: ""
 
   chatgpt:
     api_key: "${OPENAI_API_KEY}"

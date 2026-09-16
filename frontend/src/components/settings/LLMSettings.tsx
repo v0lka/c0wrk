@@ -115,6 +115,7 @@ export function LLMSettings({
       base_url: addFormBaseUrl,
       models: [],
       type: addFormType,
+      tls_fingerprint: '',
     })
     // Expand the new provider immediately.
     setExpandedProviders((prev) => new Set(prev).add(name))

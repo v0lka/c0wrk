@@ -106,8 +106,7 @@ describe('useLLMConfig default replacement', () => {
       api_key: 'sk-test',
       base_url: 'https://api.example.com/v1',
       models: [],
-      type: 'openai',
-    }))
+      type: 'openai', tls_fingerprint: '' }))
     act(() => result.toggleModel('custom', 'org/model-a'))
 
     expect(result.defaultModel).toBe('custom/org/model-a')
@@ -121,8 +120,7 @@ describe('useLLMConfig default replacement', () => {
         custom: {
           api_key: 'sk-test',
           base_url: 'https://api.example.com/v1',
-          models: ['org/model-a'],
-        },
+          models: ['org/model-a'], tls_fingerprint: '' },
       },
       anthropic_compatible: {},
     })
@@ -137,7 +135,7 @@ describe('useLLMConfig compatible provider deletion', () => {
         default_model: 'anthropic/default-model',
         anthropic: { api_key: '', models: ['default-model'] },
         openai_compatible: {
-          custom: { api_key: '', base_url: 'http://localhost:1234', models: ['custom-model'] },
+          custom: { api_key: '', base_url: 'http://localhost:1234', models: ['custom-model'], tls_fingerprint: '' },
         },
       },
     })
@@ -166,7 +164,7 @@ describe('useLLMConfig loading errors', () => {
         llm: {
           default_model: 'custom/model-a',
           openai_compatible: {
-            custom: { api_key: '', base_url: 'http://localhost:1234', models: ['model-a'] },
+            custom: { api_key: '', base_url: 'http://localhost:1234', models: ['model-a'], tls_fingerprint: '' },
           },
         },
       })
@@ -184,8 +182,7 @@ describe('useLLMConfig loading errors', () => {
       api_key: '',
       base_url: 'http://localhost:1234',
       models: ['model-a'],
-      type: 'openai',
-    })
+      type: 'openai', tls_fingerprint: '' })
     expect(result.openaiCompatibleProviderNames.has('custom')).toBe(true)
   })
 })
@@ -220,8 +217,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
         api_key: 'k',
         base_url: 'http://localhost:1234',
         models: [],
-        type: 'openai',
-      })
+        type: 'openai', tls_fingerprint: '' })
     })
 
     // Close the dialog BEFORE the old 300 ms debounce window elapses.
@@ -232,7 +228,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
     expect(mocks.updateLLMConfig).toHaveBeenCalledWith({
       default_model: 'anthropic/default-model',
       anthropic: { api_key: '', models: ['default-model'] },
-      openai_compatible: { custom: { api_key: 'k', base_url: 'http://localhost:1234', models: [] } },
+      openai_compatible: { custom: { api_key: 'k', base_url: 'http://localhost:1234', models: [], tls_fingerprint: '' } },
       anthropic_compatible: {},
     })
     localContainer.remove()
@@ -245,7 +241,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
         default_model: 'anthropic/default-model',
         anthropic: { api_key: '', models: ['default-model'] },
         openai_compatible: {
-          custom: { api_key: '', base_url: 'http://localhost:1234', models: ['custom-model'] },
+          custom: { api_key: '', base_url: 'http://localhost:1234', models: ['custom-model'], tls_fingerprint: '' },
         },
       },
     })
@@ -274,7 +270,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
         default_model: 'anthropic/default-model',
         anthropic: { api_key: '', models: ['default-model'] },
         openai_compatible: {
-          custom: { api_key: '', base_url: 'http://localhost:1234', models: ['custom-model'] },
+          custom: { api_key: '', base_url: 'http://localhost:1234', models: ['custom-model'], tls_fingerprint: '' },
         },
       },
     })
@@ -321,8 +317,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
         api_key: 'k',
         base_url: 'http://localhost:1234',
         models: [],
-        type: 'openai',
-      })
+        type: 'openai', tls_fingerprint: '' })
     })
 
     act(() => localRoot.unmount())

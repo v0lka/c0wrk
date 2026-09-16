@@ -79,6 +79,7 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			BaseURL:      p.BaseURL,
 			Models:       p.Models,
 
+			TLSFingerprint:     p.TLSFingerprint,
 			OutputTokenReserve: p.OutputTokenReserve,
 		}
 	}

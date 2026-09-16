@@ -3,7 +3,7 @@
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
 import { isConfigResponse, isSecuritySettingsResponse, isModelProfilesResponse } from '@/types/guards'
-import type { ConfigResponse, SecuritySettingsResponse, LLMFullConfigRequest, SearchSettingsRequest, ProxySettingsRequest, ModelConfigResponse, ModelConfigRequest, ModelProfilesResponse, ModelProfileUpdateRequest, VectorIndexSettingsResponse } from '@/types/models'
+import type { ConfigResponse, SecuritySettingsResponse, LLMFullConfigRequest, SearchSettingsRequest, ProxySettingsRequest, ModelConfigResponse, ModelConfigRequest, ModelProfilesResponse, ModelProfileUpdateRequest, VectorIndexSettingsResponse, GetProviderTLSCertificateRequest, TLSCertificateResponse } from '@/types/models'
 
 /** Sentinel value returned by backend when an API key is configured but should not be displayed */
 export const MASKED_API_KEY = '***configured***'
@@ -71,6 +71,27 @@ export async function updateLLMConfig(req: LLMFullConfigRequest): Promise<void> 
     await app.UpdateLLMConfig(req)
   } catch (err) {
     logger.error('Failed to update LLM config:', err)
+    throw err
+  }
+}
+
+/**
+ * Fetch the certificate fingerprint the provider's endpoint currently
+ * presents (ADR-050 "Get fingerprint"). Performs only the TLS handshake —
+ * no HTTP request, no API key. Draft base_url wins over the persisted one.
+ */
+export async function getProviderTLSCertificate(
+  req: GetProviderTLSCertificateRequest,
+): Promise<TLSCertificateResponse> {
+  try {
+    const app = getApp()
+    const result = await app.GetProviderTLSCertificate(req)
+    if (!result || typeof result.fingerprint !== 'string') {
+      throw new Error('getProviderTLSCertificate: backend returned invalid data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to fetch provider TLS certificate:', err)
     throw err
   }
 }

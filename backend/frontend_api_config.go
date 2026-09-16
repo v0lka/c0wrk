@@ -11,6 +11,7 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/llmtls"
 	"github.com/v0lka/c0wrk/core/modelprofiles"
 	"github.com/v0lka/c0wrk/core/proxy"
 	coretools "github.com/v0lka/c0wrk/core/tools"
@@ -115,16 +116,18 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 	}
 	for name, cfg := range f.config.LLM.OpenAICompatible {
 		resp.OpenAICompatible[name] = ConfigProviderFull{
-			APIKey:  maskAPIKey(cfg.APIKey),
-			BaseURL: cfg.BaseURL,
-			Models:  cfg.Models,
+			APIKey:         maskAPIKey(cfg.APIKey),
+			BaseURL:        cfg.BaseURL,
+			Models:         cfg.Models,
+			TLSFingerprint: cfg.TLSFingerprint,
 		}
 	}
 	for name, cfg := range f.config.LLM.AnthropicCompatible {
 		resp.AnthropicCompatible[name] = ConfigProviderFull{
-			APIKey:  maskAPIKey(cfg.APIKey),
-			BaseURL: cfg.BaseURL,
-			Models:  cfg.Models,
+			APIKey:         maskAPIKey(cfg.APIKey),
+			BaseURL:        cfg.BaseURL,
+			Models:         cfg.Models,
+			TLSFingerprint: cfg.TLSFingerprint,
 		}
 	}
 	return resp
@@ -244,16 +247,29 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		for name, ocReq := range req.OpenAICompatible {
 			apiKey := ocReq.APIKey
 			outputReserve := 0
+			tlsFingerprint := ocReq.TLSFingerprint
 			if existing, ok := candidate.OpenAICompatible[name]; ok {
 				if apiKey == maskedAPIKey || apiKey == "" {
 					apiKey = existing.APIKey
 				}
 				outputReserve = existing.OutputTokenReserve
+				// nil = keep (debounced partial saves must not drop the
+				// pin, ADR-050); non-nil values apply verbatim — an
+				// explicit empty string clears the pin.
+				if tlsFingerprint == nil {
+					existingFP := existing.TLSFingerprint
+					tlsFingerprint = &existingFP
+				}
+			}
+			fpVal := ""
+			if tlsFingerprint != nil {
+				fpVal = *tlsFingerprint
 			}
 			newMap[name] = config.OpenAICompatibleConfig{
 				APIKey:             apiKey,
 				BaseURL:            ocReq.BaseURL,
 				Models:             ocReq.Models,
+				TLSFingerprint:     fpVal,
 				OutputTokenReserve: outputReserve,
 			}
 		}
@@ -264,16 +280,26 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		for name, acReq := range req.AnthropicCompatible {
 			apiKey := acReq.APIKey
 			outputReserve := 0
+			tlsFingerprint := acReq.TLSFingerprint
 			if existing, ok := candidate.AnthropicCompatible[name]; ok {
 				if apiKey == maskedAPIKey || apiKey == "" {
 					apiKey = existing.APIKey
 				}
 				outputReserve = existing.OutputTokenReserve
+				if tlsFingerprint == nil {
+					existingFP := existing.TLSFingerprint
+					tlsFingerprint = &existingFP
+				}
+			}
+			fpVal := ""
+			if tlsFingerprint != nil {
+				fpVal = *tlsFingerprint
 			}
 			newMap[name] = config.AnthropicCompatibleConfig{
 				APIKey:             apiKey,
 				BaseURL:            acReq.BaseURL,
 				Models:             acReq.Models,
+				TLSFingerprint:     fpVal,
 				OutputTokenReserve: outputReserve,
 			}
 		}
@@ -1479,6 +1505,51 @@ func (f *FrontendAPI) ListProviderModels(req ListProviderModelsRequest) ([]strin
 	return b.ListProviderModels(context.Background(), req.Provider, cfg)
 }
 
+// GetProviderTLSCertificate connects to the provider's endpoint and returns
+// the SPKI fingerprint of the certificate the server currently presents
+// (ADR-050 "Get fingerprint" button). The connection performs only the TLS
+// handshake — no HTTP request, no API key — because the fingerprint IS what
+// is being fetched; verification is deliberately skipped here, the user pins
+// the result afterwards. baseURL from the request (draft form value) wins
+// over the persisted provider base_url; env vars are expanded for both.
+func (f *FrontendAPI) GetProviderTLSCertificate(req GetProviderTLSCertificateRequest) (TLSCertificateResponse, error) {
+	if req.Provider == "" {
+		return TLSCertificateResponse{}, errors.New("provider is required")
+	}
+
+	f.configMu.RLock()
+	var persisted string
+	if f.config != nil {
+		// Canonical provider list carries the raw (env-var) base URL; the
+		// expander resolves it below.
+		for _, p := range f.config.LLM.GetAllProviderConfigs() {
+			if p.Name == req.Provider {
+				persisted = p.BaseURL
+				break
+			}
+		}
+	}
+	f.configMu.RUnlock()
+
+	raw := req.BaseURL
+	if raw == "" {
+		raw = persisted
+	}
+	if raw == "" {
+		return TLSCertificateResponse{}, fmt.Errorf("provider %q has no base URL configured", req.Provider)
+	}
+	// Env-var expansion (${VAR}) — the same treatment every other dial path
+	// gives the base URL; a persisted `${LLM_BASE_URL}` would otherwise be
+	// parsed as a literal (and fail) by url.Parse below.
+	raw = config.ExpandEnvVars(raw)
+
+	fp, err := llmtls.FetchFingerprint(context.Background(), raw, f.log())
+	if err != nil {
+		return TLSCertificateResponse{}, fmt.Errorf("fetching certificate fingerprint from %q: %w", raw, err)
+	}
+	return TLSCertificateResponse{Fingerprint: fp}, nil
+}
+
 // applyListProviderModelsOverrides merges draft credentials from the settings
 // UI into cfg so ListProviderModels can resolve providers that exist only in
 // the frontend draft (not yet written to config.yaml). cfg must be a
@@ -1511,6 +1582,19 @@ func applyListProviderModelsOverrides(cfg *core.BuilderConfig, req ListProviderM
 		return fmt.Errorf("unsupported provider type %q", providerType)
 	}
 
+	// Draft TLS pin override (ADR-050): nil = fall back to the saved value
+	// so a partial draft (only credentials edited) does not silently drop
+	// the pin; non-nil values apply verbatim.
+	tlsFingerprint := req.TLSFingerprint
+	if tlsFingerprint == nil && exists {
+		existingFP := existing.TLSFingerprint
+		tlsFingerprint = &existingFP
+	}
+	fpVal := ""
+	if tlsFingerprint != nil {
+		fpVal = *tlsFingerprint
+	}
+
 	if !exists && baseURL == "" {
 		// Fixed providers are always present in ToBuilderConfig; reaching here
 		// means a named compatible provider that has not been saved yet.
@@ -1522,6 +1606,7 @@ func applyListProviderModelsOverrides(cfg *core.BuilderConfig, req ListProviderM
 		APIKey:             apiKey,
 		BaseURL:            baseURL,
 		Models:             existing.Models,
+		TLSFingerprint:     fpVal,
 		OutputTokenReserve: existing.OutputTokenReserve,
 	}
 	return nil

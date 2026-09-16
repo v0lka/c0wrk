@@ -310,6 +310,10 @@ export function GetProjectUIState(arg1) {
   return window['go']['desktop']['App']['GetProjectUIState'](arg1);
 }
 
+export function GetProviderTLSCertificate(arg1) {
+  return window['go']['desktop']['App']['GetProviderTLSCertificate'](arg1);
+}
+
 export function GetRebaseMergeState() {
   return window['go']['desktop']['App']['GetRebaseMergeState']();
 }

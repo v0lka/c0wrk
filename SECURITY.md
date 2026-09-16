@@ -153,7 +153,7 @@ c0wrk is a local single-user desktop application; there is no multi-tenant authe
 ### Data Protection
 
 - **At rest:** the SQLite database (`~/.c0wrk/database.db`) and config (`~/.c0wrk/config.yaml`) live in the user's home directory under default OS file permissions. Secrets are env-expanded at load, not stored as plaintext literals in committed config.
-- **In transit:** outbound calls to LLM providers and MCP HTTP servers use TLS; an optional HTTP/HTTPS proxy (`proxy` config) with a bypass list and custom CA-cert directory (for corporate MITM) is supported.
+- **In transit:** outbound calls to LLM providers and MCP HTTP servers use TLS; an optional HTTP/HTTPS proxy (`proxy` config) with a bypass list and custom CA-cert directory (for corporate MITM) is supported. Per **compatible** provider, a non-empty `tls_fingerprint` (base64 SHA-256 SPKI pin) replaces system CA verification for self-signed endpoints: only the pinned key is accepted, and an empty value means normal system verification — there is **no** configuration that accepts an arbitrary certificate (see [ADR-050](./specs/decisions/050-per-provider-tls-pinning.md)). The only unverified handshake is the Get-fingerprint probe, which exchanges no credentials; fingerprint-mismatch errors deliberately carry no key material.
 - **PII / secrets in memory:** API keys are threaded to clients; conversation history and the vector index contain whatever the user's workspace contains — treat workspace contents as potentially sensitive.
 
 **Rules:** Never log secrets, full API keys, or session tokens (`log/slog`). Never write API keys into committed files; always reference `${ENV_VAR}`. Never persist raw credentials into chat messages, blackboard facts, or error results.

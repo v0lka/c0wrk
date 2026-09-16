@@ -69,6 +69,29 @@ The output-token budget for a model resolves through the same tiering as the con
 
 The budget plays two roles: it is subtracted from the context window during overflow validation, and it caps the executor's per-request `MaxTokens` (the agent loop reads the model's `ContextWindow.OutputLimit()`), so a single provider-level knob adjusts both the validation reserve and the generation ceiling — the right granularity for self-hosted gateways (LM Studio, vLLM) whose effective limits differ from the built-in catalog.
 
+## Per-Provider TLS Verification Override
+
+Compatible providers (`openai_compatible.<name>`, `anthropic_compatible.<name>`) may replace system CA verification with an SPKI pin for self-signed endpoints ([ADR-050](../decisions/050-per-provider-tls-pinning.md)):
+
+```yaml
+llm:
+  openai_compatible:
+    myserver:
+      base_url: "https://llm.lan:8443/v1"
+      tls_fingerprint: "k3J9vQ1Z…base64(SHA-256(SPKI DER))…"
+```
+
+Semantics — **the pin is the only switch**; exactly two states exist:
+
+| `tls_fingerprint` | connection                                          |
+| ----------------- | --------------------------------------------------- |
+| empty             | normal system verification; no override              |
+| non-empty         | ONLY the pinned SPKI; mismatch = bare error          |
+
+A non-empty pin activates the override by itself; there is no separate toggle and **no configured state that accepts an arbitrary certificate** — the only deliberate unverified handshake is the Get-fingerprint probe, which exchanges no credentials.
+
+The fingerprint is `base64(SHA-256(SubjectPublicKeyInfo DER))` — Chromium CertificatePinList / RFC 7469 style — so it survives certificate renewal with the same key. Mechanics live in `core/llmtls` (`Client` clones the shared HTTP client — the pinned `*http.Transport` is derived ONCE at construction, so the derived client's connection pool and keep-alive connections persist across requests — and carries `VerifyPeerCertificate`; mismatch errors carry no key material by design. A base transport that is not an `*http.Transport` is replaced by a default-transport clone with a Warn on the builder logger — retry/observability wrappers never disappear silently). `core/builder.go` applies the override on **all four** dial paths: router entries (`providerEntryFromConfig` → `llm.ProviderEntry.HTTPClient`, the sp4rk per-provider client override), the Fetch Models listing (`fetchProviderModels` → `listOpenAIModels`/`listAnthropicModels`, both deriving from the builder's proxy client so proxy settings are honored on either transport type), the lazy context-window probe (`lookupOpenAIProviderBaseURL` → `buildLocalModelProbe`), and the unsaved-draft path (`applyListProviderModelsOverrides`). The Settings UI offers a "Get fingerprint" button (`GetProviderTLSCertificate` RPC — TLS handshake only, no API key, `${VAR}` base URLs expanded like every other dial path) that pins the certificate the server currently presents; Fetch Models sends the draft pin verbatim (an explicit draft `""` wins over the persisted value). The debounce-safe round-trip keeps its pointer sentinel at the API boundary only (`ProviderConfigRequest.TLSFingerprint *string`: nil = keep the persisted pin, non-nil `""` = clear it — i.e. back to system verification); persisted config and builder layers carry plain strings. Fixed providers (`anthropic`, `chatgpt`) have no such keys: they talk to vendor endpoints with public certificates.
+
 ## Configuration
 
 Provider configuration lives in `config.yaml` under each provider block (api key, base URL, model list, defaults). Main-loop calls use `timeouts.llmRequestTimeout` (default 600 seconds); one-shot service calls for session titles, commit messages, and prompt optimization use the independent `timeouts.serviceLLMRequestTimeout` (default 120 seconds), so a stuck auxiliary request cannot inherit the ten-minute chat-loop budget. The authoritative reference for every tunable is `config.example.yaml`. Env vars are expanded as `${VAR}`; on macOS `config.LoadShellEnvironment()` runs before any other init so Finder-launched apps inherit shell env. For self-hosted servers (vLLM, llama.cpp, LM Studio, Ollama), reliable tool calling additionally requires **server-side** configuration — tool-call parser/chat-template selection per model family, sampling defaults, context-window sizing.

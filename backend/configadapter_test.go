@@ -301,3 +301,51 @@ func TestE2SConfigExperimentalGate(t *testing.T) {
 		t.Errorf("BuilderE2SConfig.MaxSteps = %d, want 42 (values pass through)", got.MaxSteps)
 	}
 }
+
+// TestToBuilderConfig_ProviderTLSOverride verifies the config→builder mapping
+// for the per-provider TLS pin override (ADR-050): tls_fingerprint flows into
+// BuilderProviderConfig for BOTH compatible provider families, and fixed
+// providers (anthropic, chatgpt) are unaffected.
+func TestToBuilderConfig_ProviderTLSOverride(t *testing.T) {
+	const pin = "k3J9vQ1Z0mF7hD2xS8pL4wR6tY5uI3oP1aE9cX0bN7g="
+	cfg := &config.Config{}
+	config.ApplyDefaults(cfg)
+	cfg.LLM.OpenAICompatible = map[string]config.OpenAICompatibleConfig{
+		"selfhosted": {
+			BaseURL:        "https://llm.lan:8443/v1",
+			APIKey:         "k",
+			Models:         []string{"qwen3"},
+			TLSFingerprint: pin,
+		},
+	}
+	cfg.LLM.AnthropicCompatible = map[string]config.AnthropicCompatibleConfig{
+		"selfclaude": {
+			BaseURL:        "https://claude.lan:8443",
+			APIKey:         "k",
+			Models:         []string{"claude-sonnet-4-20250514"},
+			TLSFingerprint: pin,
+		},
+	}
+
+	bc := ToBuilderConfig(cfg, config.PredefinedModelProfiles())
+
+	oc, ok := bc.LLM.ProviderConfigs["selfhosted"]
+	if !ok {
+		t.Fatal("openai_compatible provider missing from ProviderConfigs")
+	}
+	if oc.TLSFingerprint != pin {
+		t.Errorf("openai_compatible TLS pin not mapped: pin=%q", oc.TLSFingerprint)
+	}
+	ac, ok := bc.LLM.ProviderConfigs["selfclaude"]
+	if !ok {
+		t.Fatal("anthropic_compatible provider missing from ProviderConfigs")
+	}
+	if ac.TLSFingerprint != pin {
+		t.Errorf("anthropic_compatible TLS pin not mapped: pin=%q", ac.TLSFingerprint)
+	}
+
+	// Fixed providers carry no override (no BaseURL → TLS keys meaningless).
+	if fx, ok := bc.LLM.ProviderConfigs["anthropic"]; ok && fx.TLSFingerprint != "" {
+		t.Errorf("fixed anthropic provider unexpectedly carries TLS pin: %+v", fx)
+	}
+}

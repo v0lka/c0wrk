@@ -19,6 +19,7 @@ import (
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 
+	"github.com/v0lka/c0wrk/core/llmtls"
 	coreprompts "github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/c0wrk/core/proxy"
 	"github.com/v0lka/c0wrk/core/tools"
@@ -1373,6 +1374,14 @@ func (b *OrchestratorBuilder) ListProviderModels(ctx context.Context, provider s
 // the public ListProviderModels applies dedup before handing the list to the
 // UI so every consumer sees each name exactly once.
 func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider string, cfg *BuilderConfig) ([]string, error) {
+	// Snapshot the proxy client under read lock once per listing call so
+	// both compatible-provider branches (openai + anthropic) honor the
+	// proxy settings the chat path already uses.
+	b.mu.RLock()
+	proxyClient := b.proxyClient
+	b.mu.RUnlock()
+	log := b.log()
+
 	switch provider {
 	case "anthropic":
 		return llm.BuiltInModelNames("anthropic-api"), nil
@@ -1385,7 +1394,7 @@ func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider 
 		if apiKey == "" {
 			return nil, errors.New("ChatGPT API key not configured")
 		}
-		models, err := listOpenAIModels(ctx, "", apiKey)
+		models, err := listOpenAIModels(ctx, "", apiKey, proxyClient)
 		if err != nil {
 			return nil, err
 		}
@@ -1403,7 +1412,14 @@ func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider 
 			if baseURL == "" {
 				return nil, fmt.Errorf("openAI-compatible base URL not configured for provider %q", provider)
 			}
-			return listOpenAIModels(ctx, baseURL, apiKey)
+			// Per-provider TLS override (ADR-050): the model listing must
+			// reach self-signed endpoints exactly like the chat path does.
+			// The proxy client is the base so proxy settings are honored
+			// here too (previously this branch dialed http.DefaultClient,
+			// ignoring the proxy). The pin is the switch: an empty
+			// fingerprint means no override (system verification).
+			client := llmtls.Client(proxyClient, pc.TLSFingerprint, log)
+			return listOpenAIModels(ctx, baseURL, apiKey, client)
 		case "anthropic":
 			baseURL := cfg.ExpandEnvVars(pc.BaseURL)
 			// Fixed "anthropic" provider (no BaseURL): return the built-in
@@ -1415,7 +1431,8 @@ func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider 
 				return llm.BuiltInModelNames("anthropic-api"), nil
 			}
 			apiKey := cfg.ExpandEnvVars(pc.APIKey)
-			names, err := listAnthropicModels(ctx, baseURL, apiKey, b.proxyClient)
+			client := llmtls.Client(proxyClient, pc.TLSFingerprint, log)
+			names, err := listAnthropicModels(ctx, baseURL, apiKey, client)
 			if err != nil {
 				b.log().Warn("anthropic-compatible model listing failed; falling back to built-in list",
 					"provider", provider, "base_url", baseURL, "error", err)
@@ -1754,13 +1771,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		if !ok || len(pc.Models) == 0 {
 			continue
 		}
-		providers = append(providers, llm.ProviderEntry{
-			Name:         name,
-			ProviderType: pc.ProviderType,
-			APIKey:       cfg.ExpandEnvVars(pc.APIKey),
-			BaseURL:      cfg.ExpandEnvVars(pc.BaseURL),
-			Models:       pc.Models,
-		})
+		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, cfg.ExpandEnvVars, b.log()))
 	}
 	// Also include any providers not in the standard order (e.g. future additions).
 	// Collect unknown names and iterate in sorted order for determinism.
@@ -1774,13 +1785,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	sort.Strings(unknown)
 	for _, name := range unknown {
 		pc := cfg.LLM.ProviderConfigs[name]
-		providers = append(providers, llm.ProviderEntry{
-			Name:         name,
-			ProviderType: pc.ProviderType,
-			APIKey:       cfg.ExpandEnvVars(pc.APIKey),
-			BaseURL:      cfg.ExpandEnvVars(pc.BaseURL),
-			Models:       pc.Models,
-		})
+		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, cfg.ExpandEnvVars, b.log()))
 	}
 
 	// Model Profiles context-management override: keeps the router's token budget
@@ -1962,12 +1967,15 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 		if model == "" || registry == nil {
 			return
 		}
-		baseURL, apiKey, ok := lookupOpenAIProviderBaseURL(cfg, model, expand)
+		baseURL, apiKey, tlsFingerprint, ok := lookupOpenAIProviderBaseURL(cfg, model, expand)
 		if !ok {
 			return
 		}
+		// Per-provider TLS override (ADR-050): the lazy context-window probe
+		// must reach self-signed endpoints exactly like the chat path.
+		probeClient := llmtls.Client(proxyClient, tlsFingerprint, log)
 		goRun(func() {
-			window, err := probeSelfHostedContextWindow(context.Background(), baseURL, apiKey, model, proxyClient)
+			window, err := probeSelfHostedContextWindow(context.Background(), baseURL, apiKey, model, probeClient)
 			if err != nil {
 				log.Warn("lazy model probe failed", "model", model, "base_url", baseURL, "error", err)
 			}
@@ -2013,14 +2021,14 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 }
 
 // lookupOpenAIProviderBaseURL searches the provider configs for the
-// OpenAI-compatible one that serves `model` and returns its expanded base_url +
-// api key. The second return is false only when no OpenAI-compatible provider
-// serves the model. Host locality is deliberately NOT filtered: a self-hosted
-// server on a public host (vLLM/TGI/Ollama behind a domain or Tailscale) is
-// probed exactly like a local one — the probe is a harmless no-op for a
-// genuine cloud provider whose /v1/models listing omits the context-window
-// field.
-func lookupOpenAIProviderBaseURL(cfg *BuilderConfig, model string, expand func(string) string) (baseURL, apiKey string, ok bool) {
+// OpenAI-compatible one that serves `model` and returns its expanded base_url,
+// api key, and per-provider TLS override. The last return is false only when
+// no OpenAI-compatible provider serves the model. Host locality is
+// deliberately NOT filtered: a self-hosted server on a public host
+// (vLLM/TGI/Ollama behind a domain or Tailscale) is probed exactly like a
+// local one — the probe is a harmless no-op for a genuine cloud provider
+// whose /v1/models listing omits the context-window field.
+func lookupOpenAIProviderBaseURL(cfg *BuilderConfig, model string, expand func(string) string) (baseURL, apiKey, tlsFingerprint string, ok bool) {
 	for _, pc := range cfg.LLM.ProviderConfigs {
 		if pc.ProviderType != "openai" {
 			continue
@@ -2039,9 +2047,9 @@ func lookupOpenAIProviderBaseURL(cfg *BuilderConfig, model string, expand func(s
 		if raw == "" {
 			continue
 		}
-		return raw, expand(pc.APIKey), true
+		return raw, expand(pc.APIKey), pc.TLSFingerprint, true
 	}
-	return "", "", false
+	return "", "", "", false
 }
 
 // buildLLMHTTPClient creates an *http.Client dedicated to LLM inference
@@ -2058,6 +2066,27 @@ func buildLLMHTTPClient(proxyClient *http.Client, timeoutSec int) *http.Client {
 		client.Transport = proxyClient.Transport
 	}
 	return client
+}
+
+// providerEntryFromConfig builds one llm.ProviderEntry from a provider's
+// BuilderConfig slice. When the provider carries the per-provider TLS
+// override (a non-empty TLSFingerprint, ADR-050 — the pin is the switch), a
+// dedicated pinned client derived from
+// sharedClient is attached via ProviderEntry.HTTPClient; otherwise the entry
+// leaves HTTPClient nil and the router's shared client is used unchanged.
+// logger (may be nil) flows to llmtls.Client for its custom-RoundTripper Warn.
+func providerEntryFromConfig(name string, pc BuilderProviderConfig, sharedClient *http.Client, expand func(string) string, logger *slog.Logger) llm.ProviderEntry {
+	entry := llm.ProviderEntry{
+		Name:         name,
+		ProviderType: pc.ProviderType,
+		APIKey:       expand(pc.APIKey),
+		BaseURL:      expand(pc.BaseURL),
+		Models:       pc.Models,
+	}
+	if pc.TLSFingerprint != "" {
+		entry.HTTPClient = llmtls.Client(sharedClient, pc.TLSFingerprint, logger)
+	}
+	return entry
 }
 
 // buildCoreAgents creates the core Router and Reflector.
@@ -2575,12 +2604,18 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 // ---------------------------------------------------------------------------
 
 // listOpenAIModels fetches model names from an OpenAI-compatible API.
-func listOpenAIModels(ctx context.Context, baseURL, apiKey string) ([]string, error) {
+// httpClient may be nil (default transport); a per-provider TLS-override
+// client (llmtls.Client) is threaded by fetchProviderModels so self-signed
+// endpoints list models exactly like the chat path (ADR-050).
+func listOpenAIModels(ctx context.Context, baseURL, apiKey string, httpClient *http.Client) ([]string, error) {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),
 	}
 	if baseURL != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
+	}
+	if httpClient != nil {
+		opts = append(opts, option.WithHTTPClient(httpClient))
 	}
 	client := oai.NewClient(opts...)
 

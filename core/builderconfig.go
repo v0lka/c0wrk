@@ -264,6 +264,12 @@ type BuilderProviderConfig struct {
 	APIKey       string   // raw value (may contain ${ENV_VAR})
 	BaseURL      string   // raw value
 	Models       []string // enabled models for this one provider
+	// TLSFingerprint is the base64(SHA-256(SPKI DER)) pin for this
+	// provider's endpoint (self-signed servers). The pin IS the switch
+	// (ADR-050): empty = system verification, non-empty = a per-provider
+	// pinned HTTP client (see core/llmtls) that accepts ONLY the pinned
+	// certificate. There is no accept-any-certificate mode.
+	TLSFingerprint string
 	// OutputTokenReserve overrides the output-token budget for every model of
 	// this provider (0 = inherit the global executor.output_token_reserve).
 	// It is seeded into the model-registry overrides as ModelMetadata.OutputLimit,

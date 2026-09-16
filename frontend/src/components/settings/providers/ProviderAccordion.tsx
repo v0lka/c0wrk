@@ -12,6 +12,9 @@ export interface ProviderConfig {
   models: string[]
   /** Transport for compatible providers: "openai" | "anthropic". */
   type?: 'openai' | 'anthropic'
+  /** Per-provider TLS pin (ADR-050): '' = standard CA verification (override
+   *  off), non-empty = ONLY the pinned key is accepted. */
+  tls_fingerprint: string
 }
 
 interface ProviderAccordionProps {
@@ -20,7 +23,7 @@ interface ProviderAccordionProps {
   config: ProviderConfig
   isExpanded: boolean
   onToggle: () => void
-  onConfigChange: (updates: Partial<{ api_key: string; base_url: string }>) => void
+  onConfigChange: (updates: Partial<{ api_key: string; base_url: string; tls_fingerprint: string }>) => void
   onToggleModel: (model: string) => void
   onDelete?: () => void
   defaultModel: string
