@@ -267,7 +267,8 @@ func TestShutdown_MidPlan_RestartResumeCompletesAllStepsTerminal(t *testing.T) {
 	sessions := newMockSessionStore()
 
 	eventChan := make(chan Event, 200)
-	mgr1 := NewManager(planWorkflowFactory(caller1, bash), func(e Event) { eventChan <- e }, t.TempDir())
+	ws := runtimeTempDir(t)
+	mgr1 := NewManager(planWorkflowFactory(caller1, bash), func(e Event) { eventChan <- e }, runtimeTempDir(t))
 	t.Cleanup(mgr1.Shutdown)
 	// Both stores set BEFORE CreateSession: the task store wires the
 	// PersistentBlackboard factory (real persistence) and the session store
@@ -275,7 +276,6 @@ func TestShutdown_MidPlan_RestartResumeCompletesAllStepsTerminal(t *testing.T) {
 	mgr1.SetTaskStore(store)
 	mgr1.SetSessionStore(sessions)
 
-	ws := testWorkspacePath(t)
 	info, err := mgr1.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
@@ -368,7 +368,7 @@ func TestShutdown_MidPlan_RestartResumeCompletesAllStepsTerminal(t *testing.T) {
 		{respond: finishResponse("plan finished")},   // Conductor finishes
 	}}
 	eventChan2 := make(chan Event, 200)
-	mgr2 := NewManager(planWorkflowFactory(caller2, bash), func(e Event) { eventChan2 <- e }, t.TempDir())
+	mgr2 := NewManager(planWorkflowFactory(caller2, bash), func(e Event) { eventChan2 <- e }, runtimeTempDir(t))
 	t.Cleanup(mgr2.Shutdown)
 	mgr2.SetTaskStore(store)
 	mgr2.SetSessionStore(sessions)

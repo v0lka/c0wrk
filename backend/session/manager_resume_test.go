@@ -230,11 +230,12 @@ func TestResumeTask_LoadsTrajectoryAndResumesWithoutPlan(t *testing.T) {
 	}
 
 	eventChan := make(chan Event, 100)
-	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "resumed-done"}), func(e Event) { eventChan <- e }, t.TempDir())
-	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "resumed-done"}), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
+	t.Cleanup(mgr.Shutdown) // stop the manager before its temp dirs are removed
 	mgr.SetTaskStore(store)
 
-	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	info, err := mgr.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -291,11 +292,12 @@ func TestResumeTask_ReusesRoutingDecision(t *testing.T) {
 	}
 
 	eventChan := make(chan Event, 100)
-	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "reused-routing"}), func(e Event) { eventChan <- e }, t.TempDir())
-	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "reused-routing"}), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
+	t.Cleanup(mgr.Shutdown) // stop the manager before its temp dirs are removed
 	mgr.SetTaskStore(store)
 
-	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	info, err := mgr.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -334,11 +336,12 @@ func TestResumeTask_EmptyTrajectoryFallback(t *testing.T) {
 	}
 
 	eventChan := make(chan Event, 100)
-	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "fresh-start"}), func(e Event) { eventChan <- e }, t.TempDir())
-	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "fresh-start"}), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
+	t.Cleanup(mgr.Shutdown) // stop the manager before its temp dirs are removed
 	mgr.SetTaskStore(store)
 
-	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	info, err := mgr.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -398,11 +401,12 @@ func TestResumeTask_AppliesModelOverride(t *testing.T) {
 		finishResponse(finishAnswer),
 	}}}
 	eventChan := make(chan Event, 100)
-	mgr := NewManager(overrideFunctionalFactory(caller, switcher), func(e Event) { eventChan <- e }, t.TempDir())
+	mgr := NewManager(overrideFunctionalFactory(caller, switcher), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
 	t.Cleanup(mgr.Shutdown)
 	mgr.SetTaskStore(store)
 
-	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	info, err := mgr.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -518,11 +522,12 @@ func TestResumeTask_ModelSwitchRebasesContextWindow(t *testing.T) {
 		allEvents = append(allEvents, e)
 		eventsMu.Unlock()
 		eventChan <- e
-	}, t.TempDir())
+	}, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
 	t.Cleanup(mgr.Shutdown)
 	mgr.SetTaskStore(store)
 
-	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	info, err := mgr.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -662,11 +667,12 @@ func TestResumeTask_ModelSwitchToCatalogModel_WindowFollowsCatalog(t *testing.T)
 		allEvents = append(allEvents, e)
 		eventsMu.Unlock()
 		eventChan <- e
-	}, t.TempDir())
+	}, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
 	t.Cleanup(mgr.Shutdown)
 	mgr.SetTaskStore(store)
 
-	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	info, err := mgr.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -747,11 +753,12 @@ func TestManager_ResumeTask_ArchivedRejected(t *testing.T) {
 		task: &TaskRecord{ID: "task-archived", SessionID: "ignored", Status: "in_progress"},
 	}
 	eventChan := make(chan Event, 100)
-	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "should-not-run"}), func(e Event) { eventChan <- e }, t.TempDir())
-	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "should-not-run"}), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
+	t.Cleanup(mgr.Shutdown) // stop the manager before its temp dirs are removed
 	mgr.SetTaskStore(store)
 
-	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	info, err := mgr.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -800,11 +807,12 @@ func TestResumeTask_PausedGoalBlockedByModelProfilesNarrowing(t *testing.T) {
 		goalState: gsJSON,
 	}
 	eventChan := make(chan Event, 100)
-	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "should-not-run"}), func(e Event) { eventChan <- e }, t.TempDir())
-	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "should-not-run"}), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
+	t.Cleanup(mgr.Shutdown) // stop the manager before its temp dirs are removed
 	mgr.SetTaskStore(store)
 
-	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	info, err := mgr.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -857,9 +865,10 @@ func TestResumeTask_PausedGoalBlockedByModelProfilesNarrowing(t *testing.T) {
 // effect — and is cleared again — without a rebuild.
 func TestManager_SetModelProfilesSettings_PushesToLiveOrchestrators(t *testing.T) {
 	eventChan := make(chan Event, 100)
-	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "x"}), func(e Event) { eventChan <- e }, t.TempDir())
+	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "x"}), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
 	t.Cleanup(mgr.Shutdown)
-	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	info, err := mgr.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -901,11 +910,12 @@ func TestResumeTask_ReactivatesPausedRowDuringRun(t *testing.T) {
 
 	gate := &gatingLLM{started: make(chan struct{}), release: make(chan struct{})}
 	eventChan := make(chan Event, 100)
-	mgr := NewManager(functionalOrchestratorFactory(gate), func(e Event) { eventChan <- e }, t.TempDir())
-	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	mgr := NewManager(functionalOrchestratorFactory(gate), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
+	t.Cleanup(mgr.Shutdown) // stop the manager before its temp dirs are removed
 	mgr.SetTaskStore(store)
 
-	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	info, err := mgr.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -961,11 +971,12 @@ func TestResumeTask_ReactivationFailureDoesNotAbortResume(t *testing.T) {
 	}
 
 	eventChan := make(chan Event, 100)
-	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "despite-error"}), func(e Event) { eventChan <- e }, t.TempDir())
-	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "despite-error"}), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
+	t.Cleanup(mgr.Shutdown) // stop the manager before its temp dirs are removed
 	mgr.SetTaskStore(store)
 
-	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	info, err := mgr.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -1012,11 +1023,12 @@ func TestResumeTask_CooperativePauseDuringResumedRunRewritesPaused(t *testing.T)
 	// signal — flipped while the call was gated — trips.
 	gate := &gatingLLM{firstToolCall: "read_file", started: make(chan struct{}), release: make(chan struct{})}
 	eventChan := make(chan Event, 100)
-	mgr := NewManager(functionalOrchestratorFactory(gate), func(e Event) { eventChan <- e }, t.TempDir())
-	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	mgr := NewManager(functionalOrchestratorFactory(gate), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
+	t.Cleanup(mgr.Shutdown) // stop the manager before its temp dirs are removed
 	mgr.SetTaskStore(store)
 
-	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	info, err := mgr.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -1555,11 +1567,12 @@ func TestResumeTask_PausedMidPlan_ResumeCompletesAllStepsTerminal(t *testing.T) 
 	store := newInMemoryTaskStore()
 
 	eventChan := make(chan Event, 200)
-	mgr := NewManager(planWorkflowFactory(caller, bash), func(e Event) { eventChan <- e }, t.TempDir())
+	mgr := NewManager(planWorkflowFactory(caller, bash), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
 	t.Cleanup(mgr.Shutdown)
 	mgr.SetTaskStore(store)
 
-	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	info, err := mgr.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}

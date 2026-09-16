@@ -19,7 +19,7 @@ import (
 // heuristic only catches a re-probe on case-insensitive FSes — a no-op on Linux.)
 func TestDetectCaseInsensitive_CachedPerRoot(t *testing.T) {
 	m, _, _ := testManager(t)
-	root := t.TempDir()
+	root := runtimeTempDir(t)
 
 	// Spy: delegate to the real probe but count how many times it runs.
 	var calls int
@@ -69,8 +69,8 @@ func TestDetectCaseInsensitive_CachedPerRoot(t *testing.T) {
 // does not leak as the answer for another.
 func TestDetectCaseInsensitive_DistinctRootsIndependent(t *testing.T) {
 	m, _, _ := testManager(t)
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	rootA := runtimeTempDir(t)
+	rootB := runtimeTempDir(t)
 	resolvedA, _ := filepath.EvalSymlinks(rootA)
 	resolvedB, _ := filepath.EvalSymlinks(rootB)
 
@@ -114,7 +114,7 @@ func TestDetectCaseInsensitive_EmptyPathReturnsFalseWithoutCaching(t *testing.T)
 // returned value reflects the real filesystem — not a silent false.
 func TestDetectCaseInsensitive_NonExistentClimbsToAncestor(t *testing.T) {
 	m, _, _ := testManager(t)
-	dir := t.TempDir()
+	dir := runtimeTempDir(t)
 	target := filepath.Join(dir, "DoesNotExist", "subdir", "leaf")
 
 	want := runtime.GOOS == "darwin" || runtime.GOOS == "windows"

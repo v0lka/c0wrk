@@ -17,7 +17,7 @@ func storeFakeResolver(m *Manager, root string) {
 
 func TestInvalidateIgnoreCache_GitignoreAtRootEvicts(t *testing.T) {
 	m, _, _ := testManager(t)
-	root := t.TempDir()
+	root := runtimeTempDir(t)
 	storeFakeResolver(m, root)
 
 	m.InvalidateIgnoreCache([]string{filepath.Join(root, ".gitignore")})
@@ -29,7 +29,7 @@ func TestInvalidateIgnoreCache_GitignoreAtRootEvicts(t *testing.T) {
 
 func TestInvalidateIgnoreCache_NestedGitignoreEvicts(t *testing.T) {
 	m, _, _ := testManager(t)
-	root := t.TempDir()
+	root := runtimeTempDir(t)
 	storeFakeResolver(m, root)
 
 	// ignore.NewResolver walks the entire tree collecting every .gitignore,
@@ -43,7 +43,7 @@ func TestInvalidateIgnoreCache_NestedGitignoreEvicts(t *testing.T) {
 
 func TestInvalidateIgnoreCache_AIIgnoreEvicts(t *testing.T) {
 	m, _, _ := testManager(t)
-	root := t.TempDir()
+	root := runtimeTempDir(t)
 	storeFakeResolver(m, root)
 
 	m.InvalidateIgnoreCache([]string{filepath.Join(root, ".aiignore")})
@@ -55,7 +55,7 @@ func TestInvalidateIgnoreCache_AIIgnoreEvicts(t *testing.T) {
 
 func TestInvalidateIgnoreCache_NonIgnoreFileKeepsCache(t *testing.T) {
 	m, _, _ := testManager(t)
-	root := t.TempDir()
+	root := runtimeTempDir(t)
 	storeFakeResolver(m, root)
 
 	m.InvalidateIgnoreCache([]string{filepath.Join(root, "main.go"), filepath.Join(root, "README.md")})
@@ -67,8 +67,8 @@ func TestInvalidateIgnoreCache_NonIgnoreFileKeepsCache(t *testing.T) {
 
 func TestInvalidateIgnoreCache_OnlyAffectedRootEvicted(t *testing.T) {
 	m, _, _ := testManager(t)
-	rootA := t.TempDir()
-	rootB := t.TempDir()
+	rootA := runtimeTempDir(t)
+	rootB := runtimeTempDir(t)
 	storeFakeResolver(m, rootA)
 	storeFakeResolver(m, rootB)
 
@@ -84,7 +84,7 @@ func TestInvalidateIgnoreCache_OnlyAffectedRootEvicted(t *testing.T) {
 
 func TestInvalidateIgnoreCache_EmptyNoop(t *testing.T) {
 	m, _, _ := testManager(t)
-	root := t.TempDir()
+	root := runtimeTempDir(t)
 	storeFakeResolver(m, root)
 
 	// Must not panic and must not evict when no ignore files are involved.
@@ -98,7 +98,7 @@ func TestInvalidateIgnoreCache_EmptyNoop(t *testing.T) {
 
 func TestInvalidateIgnoreCache_MixedBatchEvictsOnlyIgnoreFiles(t *testing.T) {
 	m, _, _ := testManager(t)
-	root := t.TempDir()
+	root := runtimeTempDir(t)
 	storeFakeResolver(m, root)
 
 	// A debounced watcher batch mixing regular files and an ignore file.

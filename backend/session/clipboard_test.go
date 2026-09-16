@@ -132,7 +132,7 @@ func TestPasteFromClipboard_ImageRejectedWithoutVision(t *testing.T) {
 // are attached via AttachFiles when vision is supported, and skipped when not.
 func TestPasteFromClipboard_FilesRouteThroughAttachFiles(t *testing.T) {
 	// A real image file on disk so AttachFiles can process it (no markitdown).
-	imgPath := filepath.Join(t.TempDir(), "clip.png")
+	imgPath := filepath.Join(runtimeTempDir(t), "clip.png")
 	if err := os.WriteFile(imgPath, pngBytes(t), 0o644); err != nil {
 		t.Fatalf("write img: %v", err)
 	}

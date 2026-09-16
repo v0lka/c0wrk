@@ -43,7 +43,7 @@ func TestCompactionForecastStoreCallsAreBounded(t *testing.T) {
 	factory := func(core.Emitter, *slog.Logger, string, core.BlackboardFactory, io.Writer, *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		return nil, nil
 	}
-	m := NewManager(factory, func(Event) {}, t.TempDir())
+	m := NewManager(factory, func(Event) {}, runtimeTempDir(t))
 	t.Cleanup(m.Shutdown)
 	store := &forecastCtxStore{}
 	m.SetProjectStore(store)

@@ -18,7 +18,7 @@ import (
 func TestDupFile_HandleIsWritable(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
+	dir := runtimeTempDir(t)
 	path := filepath.Join(dir, "dump.jsonl")
 
 	// Seed the file with initial content so we can distinguish append from

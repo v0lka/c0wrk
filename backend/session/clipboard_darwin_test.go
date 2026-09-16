@@ -139,7 +139,7 @@ func TestDarwinClipboard_TextProbe(t *testing.T) {
 func TestDarwinClipboard_ImageProbe(t *testing.T) {
 	usePrivatePasteboard(t)
 	want := pngBytes(t)
-	path := t.TempDir() + "/probe.png"
+	path := runtimeTempDir(t) + "/probe.png"
 	if err := os.WriteFile(path, want, 0o644); err != nil {
 		t.Fatalf("write png: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestDarwinClipboard_ImageProbe(t *testing.T) {
 // back as the matching filesystem path.
 func TestDarwinClipboard_FilesProbe(t *testing.T) {
 	usePrivatePasteboard(t)
-	target := strings.TrimRight(t.TempDir(), "/") + "/copied.txt"
+	target := strings.TrimRight(runtimeTempDir(t), "/") + "/copied.txt"
 	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}

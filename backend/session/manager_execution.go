@@ -473,6 +473,13 @@ func (m *Manager) detectCaseInsensitive(path string) bool {
 // startIgnoreBuild launches a background goroutine to walk root and cache its
 // ignore.Resolver. It is deduplicated: if another goroutine has already started
 // (or completed) a build for the same root, this is a no-op.
+//
+// The goroutine is tracked by the manager (see background.go) so Shutdown
+// joins it: a walk that is still running when the process tears sessions down
+// would otherwise keep touching the workspace after its temp dir was removed.
+// The walk has no cancellation hook (ignore.NewResolver takes no context), so
+// Shutdown bounds its wait by stopTimeout and proceeds; the walk only reads,
+// so a straggler cannot add an entry to a directory being removed.
 func (m *Manager) startIgnoreBuild(root string) {
 	// Deduplicate via a sentinel "building" marker stored in the cache map.
 	// sync.Map.LoadOrStore guarantees exactly one goroutine wins the race.
@@ -483,7 +490,7 @@ func (m *Manager) startIgnoreBuild(root string) {
 		return
 	}
 
-	go func() {
+	if !m.spawnBackground(func() {
 		r, err := ignore.NewResolver(root)
 		if err != nil {
 			m.log().Debug("ignore checker: background resolver build failed", "root", root, "error", err)
@@ -492,7 +499,11 @@ func (m *Manager) startIgnoreBuild(root string) {
 			return
 		}
 		m.ignoreCache.Store(root, r)
-	}()
+	}) {
+		// Shutting down: drop the sentinel so the cache is not left holding a
+		// permanently "building" root for a manager that will not run again.
+		m.ignoreCache.Delete(root)
+	}
 }
 
 // ignoreFileNames are the files whose change invalidates a cached resolver.
@@ -830,11 +841,14 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 	m.mu.RUnlock()
 	if !presented && sessionName == "Session "+safeSessionPrefix(id) && titleGen != nil {
 		dumpFile := session.DumpFile()
-		go func() {
+		// Tracked by the manager and derived from its shutdown context: the
+		// goroutine writes through the session dump file, so Shutdown must be
+		// able to abort it and wait for it before closing that handle.
+		m.spawnBackground(func() {
 			if dumpFile != nil {
 				defer func() { _ = dumpFile.Close() }()
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), serviceLLMTimeout)
+			ctx, cancel := context.WithTimeout(m.shutdownCtx, serviceLLMTimeout)
 			defer cancel()
 			if dumpFile != nil {
 				ctx = agent.WithDumpWriter(ctx, dumpFile)
@@ -854,7 +868,7 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 					m.log().Warn("failed to persist session title", "session", id, "error", err)
 				}
 			}
-		}()
+		})
 	}
 
 	// Launch goroutine to handle the message

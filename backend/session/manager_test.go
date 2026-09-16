@@ -25,7 +25,7 @@ func testManager(t *testing.T) (manager *Manager, events chan Event, agentDir st
 	t.Helper()
 
 	// Create temp directory for agent
-	agentDir = t.TempDir()
+	agentDir = runtimeTempDir(t)
 
 	// Create event channel to capture events
 	eventChan := make(chan Event, 100)
@@ -43,8 +43,8 @@ func testManager(t *testing.T) (manager *Manager, events chan Event, agentDir st
 	}
 
 	manager = NewManager(factory, emitFunc, agentDir)
-	// Ensure all session file handles (log/dump files) are closed so the
-	// TempDir cleanup can remove them — Windows refuses to delete files
+	// Ensure all session file handles (log/dump files) are closed so their
+	// temp-dir cleanup can remove them — Windows refuses to delete files
 	// that still have open handles.
 	t.Cleanup(manager.Shutdown)
 	events = eventChan
@@ -52,9 +52,14 @@ func testManager(t *testing.T) (manager *Manager, events chan Event, agentDir st
 }
 
 // testWorkspacePath returns a temp workspace path for tests.
+//
+// It delegates to runtimeTempDir, so the directory is torn down with the
+// bounded retry rather than by testing's single non-retrying per-test temp
+// parent removal. Use it (or runtimeTempDir directly) for any directory a
+// Manager may still touch when the test returns.
 func testWorkspacePath(t *testing.T) string {
 	t.Helper()
-	return t.TempDir()
+	return runtimeTempDir(t)
 }
 
 // retryRemoveAll removes dir, absorbing a transient "directory not empty"
@@ -95,8 +100,8 @@ func retryRemoveAll(dir string) error {
 // runtimeTempDir creates a fresh directory under the OS temp root and registers
 // a retrying cleanup for it, returning the directory path.
 //
-// Use it instead of t.TempDir() in tests that hand the directory to a Manager
-// whose Shutdown runs via t.Cleanup: t.TempDir()'s per-test temp *parent* is
+// Use it instead of runtimeTempDir(t) in tests that hand the directory to a Manager
+// whose Shutdown runs via t.Cleanup: runtimeTempDir(t)'s per-test temp *parent* is
 // torn down by testing's single non-retrying os.RemoveAll, so any entry a
 // not-yet-joined background goroutine appends during teardown fails the whole
 // test with "TempDir RemoveAll cleanup: ... directory not empty" (see
@@ -1351,9 +1356,10 @@ func TestManager_CreateSession_FactoryError(t *testing.T) {
 		return nil, errors.New("factory error")
 	}
 
-	manager := NewManager(factory, emitFunc, t.TempDir())
-	t.Cleanup(manager.Shutdown) // close handles before TempDir cleanup (Windows)
-	_, err := manager.CreateSession(testProjectID, testWorkspacePath(t))
+	ws := runtimeTempDir(t)
+	manager := NewManager(factory, emitFunc, runtimeTempDir(t))
+	t.Cleanup(manager.Shutdown) // stop the manager before its temp dirs are removed
+	_, err := manager.CreateSession(testProjectID, ws)
 	if err == nil {
 		t.Fatal("expected error from CreateSession when factory fails")
 	}
@@ -2299,10 +2305,10 @@ func TestSendMessage_StoresTaskIDForContinuation(t *testing.T) {
 		return nil, nil
 	}
 
-	manager := NewManager(factory, emitFunc, t.TempDir())
-	t.Cleanup(manager.Shutdown) // close handles before TempDir cleanup (Windows)
+	wsPath := runtimeTempDir(t)
+	manager := NewManager(factory, emitFunc, runtimeTempDir(t))
+	t.Cleanup(manager.Shutdown) // stop the manager before its temp dirs are removed
 	// Create a session
-	wsPath := testWorkspacePath(t)
 	info, err := manager.CreateSession(testProjectID, wsPath)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
@@ -2347,10 +2353,10 @@ func TestSendMessage_LastTaskIDClearedOnContinuationError(t *testing.T) {
 		return nil, nil
 	}
 
-	manager := NewManager(factory, emitFunc, t.TempDir())
-	t.Cleanup(manager.Shutdown) // close handles before TempDir cleanup (Windows)
+	wsPath := runtimeTempDir(t)
+	manager := NewManager(factory, emitFunc, runtimeTempDir(t))
+	t.Cleanup(manager.Shutdown) // stop the manager before its temp dirs are removed
 	// Create a session
-	wsPath := testWorkspacePath(t)
 	info, err := manager.CreateSession(testProjectID, wsPath)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
@@ -2556,7 +2562,7 @@ func (m *mockSessionStoreForRestore) Close() error { return nil }
 func restoreTestManager(t *testing.T) (*Manager, chan Event, *mockSessionStoreForRestore) {
 	t.Helper()
 
-	agentDir := t.TempDir()
+	agentDir := runtimeTempDir(t)
 
 	eventChan := make(chan Event, 100)
 	emitFunc := func(e Event) {
@@ -2571,7 +2577,7 @@ func restoreTestManager(t *testing.T) (*Manager, chan Event, *mockSessionStoreFo
 	}
 
 	mgr := NewManager(factory, emitFunc, agentDir)
-	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	t.Cleanup(mgr.Shutdown) // stop the manager before its temp dirs are removed
 	store := newMockSessionStore()
 	mgr.SetSessionStore(store)
 	mgr.SetProjectResolver(func(projectID string) (string, error) {
@@ -2884,8 +2890,8 @@ func TestRestoreSession_NoProjectResolver(t *testing.T) {
 		return nil, nil
 	}
 
-	mgr := NewManager(factory, emitFunc, t.TempDir())
-	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	mgr := NewManager(factory, emitFunc, runtimeTempDir(t))
+	t.Cleanup(mgr.Shutdown) // stop the manager before its temp dirs are removed
 	// Set store but NOT project resolver.
 	store := newMockSessionStore()
 	mgr.SetSessionStore(store)
@@ -3104,8 +3110,8 @@ func TestRestoreSession_ProjectResolverError(t *testing.T) {
 		return nil, nil
 	}
 
-	mgr := NewManager(factory, emitFunc, t.TempDir())
-	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	mgr := NewManager(factory, emitFunc, runtimeTempDir(t))
+	t.Cleanup(mgr.Shutdown) // stop the manager before its temp dirs are removed
 	store := newMockSessionStore()
 	mgr.SetSessionStore(store)
 	mgr.SetProjectResolver(func(projectID string) (string, error) {
@@ -3126,7 +3132,8 @@ func TestRestoreSession_ProjectResolverError(t *testing.T) {
 // deletion. This is the bridge the desktop confirm callback uses to attach the
 // matching tool_call_id to the tool_confirm payload.
 func TestManager_LastToolCallID_WiredByEmitterSink(t *testing.T) {
-	agentDir := t.TempDir()
+	agentDir := runtimeTempDir(t)
+	ws := runtimeTempDir(t)
 	emitFunc := func(Event) {}
 
 	var capturedEmitter core.Emitter
@@ -3135,8 +3142,8 @@ func TestManager_LastToolCallID_WiredByEmitterSink(t *testing.T) {
 		return nil, nil
 	}
 	manager := NewManager(factory, emitFunc, agentDir)
-	t.Cleanup(manager.Shutdown) // close handles before TempDir cleanup (Windows)
-	info, err := manager.CreateSession("proj-toolcall", testWorkspacePath(t))
+	t.Cleanup(manager.Shutdown) // stop the manager before its temp dirs are removed
+	info, err := manager.CreateSession("proj-toolcall", ws)
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

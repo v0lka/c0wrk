@@ -236,6 +236,25 @@ type Manager struct {
 	goalProposalResolver func(requestID, decision, condition, verify, verificationMode string) bool
 
 	logger *slog.Logger
+
+	// bg tracks manager-owned background goroutines so Shutdown can join them
+	// (see background.go). spawnBackground refuses new work once Shutdown has
+	// closed the tracker.
+	bg *backgroundTracker
+
+	// shutdownCtx is cancelled at the very start of Shutdown. Long-lived,
+	// best-effort background work (session title generation) derives from it,
+	// so a shutdown aborts that work promptly instead of leaving it to run out
+	// its own LLM timeout against a torn-down backend.
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
+
+	// blackboards collects every PersistentBlackboard built by the per-session
+	// BlackboardFactory so Shutdown can stop their persistence workers. A task
+	// that never reaches a terminal finalizer (paused or abandoned) would
+	// otherwise leave the worker goroutine blocked on its channel. Guarded by
+	// mu.
+	blackboards []*PersistentBlackboard
 }
 
 // SetLogger sets the logger for the manager.
@@ -268,9 +287,52 @@ func NewManager(factory OrchestratorFactory, emitFunc func(Event), agentDir stri
 		serviceLLMTimeout:   2 * time.Minute,
 		envInfoDone:         make(chan struct{}),
 	}
+	m.bg = newBackgroundTracker()
+	m.shutdownCtx, m.shutdownCancel = context.WithCancel(context.Background())
 	m.fileTracker = NewFileCoherenceTracker(m.resolveSessionName)
 	m.detectCaseInsensitiveFn = defaultDetectCaseInsensitive
 	return m
+}
+
+// spawnBackground runs fn on a background goroutine tracked by the manager, so
+// Shutdown waits for it before returning. It reports false (running nothing)
+// once Shutdown has closed the tracker, letting the caller fall back to a
+// synchronous path.
+func (m *Manager) spawnBackground(fn func()) bool {
+	return m.bg.spawn(fn)
+}
+
+// trackBlackboard registers a PersistentBlackboard built by the per-session
+// BlackboardFactory so Shutdown can stop its persistence worker.
+func (m *Manager) trackBlackboard(pb *PersistentBlackboard) {
+	if pb == nil {
+		return
+	}
+	m.mu.Lock()
+	m.blackboards = append(m.blackboards, pb)
+	m.mu.Unlock()
+}
+
+// stopBackground closes the background tracker (refusing any further spawn),
+// waits for every in-flight manager-owned goroutine within stopTimeout, and
+// then stops the persistence worker of every blackboard the manager built.
+//
+// It is called once, from Shutdown. Waiting on the tracker is bounded: a
+// goroutine that ignores its cancellation (e.g. a stuck filesystem walk) does
+// not extend shutdown past the budget.
+func (m *Manager) stopBackground() {
+	if !m.bg.closeAndWait(m.stopTimeout) {
+		m.log().Warn("timed out waiting for background goroutines to stop")
+	}
+
+	m.mu.Lock()
+	blackboards := m.blackboards
+	m.blackboards = nil
+	m.mu.Unlock()
+
+	for _, pb := range blackboards {
+		pb.Shutdown(m.stopTimeout)
+	}
 }
 
 // resolveSessionName returns a display name for the given session ID.
@@ -338,10 +400,15 @@ func (m *Manager) SetEnvInfo(info *sdktools.EnvInfo) {
 // single time and never panics on a double close.
 func (m *Manager) StartEnvInfoCollection() {
 	m.envInfoOnce.Do(func() {
-		go func() {
+		collect := func() {
 			defer close(m.envInfoDone)
 			m.SetEnvInfo(sdktools.CollectEnvInfo())
-		}()
+		}
+		if !m.spawnBackground(collect) {
+			// Shutdown already closed the tracker: never leave WaitEnvInfo
+			// blocked on envInfoDone — publish "no info" and return.
+			close(m.envInfoDone)
+		}
 	})
 }
 
@@ -651,6 +718,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 			} else {
 				pbb = NewPersistentBlackboard(taskID, sessionID, adapter, logger)
 			}
+			m.trackBlackboard(pbb)
 			pbb.SetOnChanged(func(changeType string) {
 				emitFunc(Event{
 					SessionID: sessionID,
@@ -1021,6 +1089,7 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 			} else {
 				pbb = NewPersistentBlackboard(taskID, sessionID, adapter, logger)
 			}
+			m.trackBlackboard(pbb)
 			pbb.SetOnChanged(func(changeType string) {
 				emitFunc(Event{
 					SessionID: sessionID,
@@ -1512,10 +1581,15 @@ func (m *Manager) ArchiveSession(id string) error {
 				// it actually finishes so archiving never destroys a still-running
 				// task's scratch files.
 				m.log().Warn("timed out waiting for task goroutine to stop before archiving; deferring temp cleanup", "session_id", id)
-				go func() {
+				if !m.spawnBackground(func() {
 					<-doneCh
 					removeTempDir()
-				}()
+				}) {
+					// Shutdown already closed the tracker; the directory is
+					// left to the OS temp cleanup rather than racing a
+					// torn-down manager's filesystem teardown.
+					m.log().Debug("shutdown in progress; skipping deferred temp dir removal", "session_id", id)
+				}
 			}
 		}
 
@@ -1717,12 +1791,29 @@ func (m *Manager) EmitSessionEvent(sessionID, eventType string, data any) {
 // On graceful shutdown, every task that was still running is checkpointed as
 // paused (not cancelled) so it can be resumed after restart — the
 // persistPauseIfUnfinished call runs after the task goroutines have stopped.
+//
+// Shutdown also joins the manager-owned background goroutines (the async
+// ignore-resolver build, deferred session temp-dir removals, best-effort
+// title generation — see background.go) and stops the persistence worker of
+// every blackboard the manager built, so nothing it spawned can touch the
+// filesystem or the store after it returns. The budget for those waits is the
+// same stopTimeout used for task goroutines.
+//
+// The conductor's compositeTrajectoryStore is NOT tracked here: it is created
+// per run inside RunConductor, every Sync spawns only a bounded writer, and
+// the run's final Flush drains it before the run returns — so it is already
+// transitively joined through the session task goroutine's done channel.
 func (m *Manager) Shutdown() {
 	// Signal that we are shutting down BEFORE cancelling any task. The
 	// SendMessage/Resume goroutines check this flag when they observe their
 	// context cancelled: on shutdown they leave the task in_progress (so it
 	// can be resumed after restart) instead of marking it cancelled.
 	m.shuttingDown.Store(true)
+
+	// Abort best-effort background work that derives from the manager's
+	// lifetime (session title generation) before tearing sessions down, so it
+	// cannot outlive the backend it writes to.
+	m.shutdownCancel()
 
 	// Collect sessions and done channels under lock.
 	//
@@ -1793,6 +1884,12 @@ func (m *Manager) Shutdown() {
 			}
 		}
 	}
+
+	// Join manager-owned background goroutines BEFORE closing session file
+	// handles: the title-generation goroutine writes through a session dump
+	// file, so it must be gone (or have given up) before that handle is
+	// closed. Bounded by stopTimeout, like the task-goroutine waits above.
+	m.stopBackground()
 
 	// Close file handles for ALL sessions (idle and active) after any active
 	// goroutines have stopped.

@@ -33,7 +33,7 @@ func writeTestFile(t *testing.T, path, content string) {
 
 func TestFileCoherenceTracker_FirstRead_NoConflict(t *testing.T) {
 	tracker := testTracker()
-	dir := t.TempDir()
+	dir := runtimeTempDir(t)
 	path := filepath.Join(dir, "file.txt")
 	writeTestFile(t, path, "hello")
 
@@ -49,7 +49,7 @@ func TestFileCoherenceTracker_FirstRead_NoConflict(t *testing.T) {
 
 func TestFileCoherenceTracker_UnchangedRead_NoConflict(t *testing.T) {
 	tracker := testTracker()
-	dir := t.TempDir()
+	dir := runtimeTempDir(t)
 	path := filepath.Join(dir, "file.txt")
 	writeTestFile(t, path, "hello")
 
@@ -71,7 +71,7 @@ func TestFileCoherenceTracker_UnchangedRead_NoConflict(t *testing.T) {
 
 func TestFileCoherenceTracker_ReadAfterExternalChange_Conflict(t *testing.T) {
 	tracker := testTracker()
-	dir := t.TempDir()
+	dir := runtimeTempDir(t)
 	path := filepath.Join(dir, "file.txt")
 	writeTestFile(t, path, "hello")
 
@@ -104,7 +104,7 @@ func TestFileCoherenceTracker_ReadAfterExternalChange_Conflict(t *testing.T) {
 
 func TestFileCoherenceTracker_ReadAfterOtherSessionWrite_Conflict(t *testing.T) {
 	tracker := testTracker()
-	dir := t.TempDir()
+	dir := runtimeTempDir(t)
 	path := filepath.Join(dir, "file.txt")
 	writeTestFile(t, path, "original content")
 
@@ -138,7 +138,7 @@ func TestFileCoherenceTracker_ReadAfterOtherSessionWrite_Conflict(t *testing.T) 
 
 func TestFileCoherenceTracker_WriteWithNoRead_NoConflict(t *testing.T) {
 	tracker := testTracker()
-	dir := t.TempDir()
+	dir := runtimeTempDir(t)
 	path := filepath.Join(dir, "new-file.txt")
 	writeTestFile(t, path, "content")
 
@@ -156,7 +156,7 @@ func TestFileCoherenceTracker_WriteWithNoRead_NoConflict(t *testing.T) {
 
 func TestFileCoherenceTracker_WriteAfterExternalChange_Conflict(t *testing.T) {
 	tracker := testTracker()
-	dir := t.TempDir()
+	dir := runtimeTempDir(t)
 	path := filepath.Join(dir, "file.txt")
 	writeTestFile(t, path, "original")
 
@@ -183,7 +183,7 @@ func TestFileCoherenceTracker_WriteAfterExternalChange_Conflict(t *testing.T) {
 
 func TestFileCoherenceTracker_RecordWrite_UpdatesSnapshot(t *testing.T) {
 	tracker := testTracker()
-	dir := t.TempDir()
+	dir := runtimeTempDir(t)
 	path := filepath.Join(dir, "file.txt")
 	writeTestFile(t, path, "v1")
 
@@ -213,7 +213,7 @@ func TestFileCoherenceTracker_RecordWrite_UpdatesSnapshot(t *testing.T) {
 
 func TestFileCoherenceTracker_RecordDelete_PurgesAllSessions(t *testing.T) {
 	tracker := testTracker()
-	dir := t.TempDir()
+	dir := runtimeTempDir(t)
 	path := filepath.Join(dir, "file.txt")
 	writeTestFile(t, path, "content")
 
@@ -251,7 +251,7 @@ func TestFileCoherenceTracker_RecordDelete_PurgesAllSessions(t *testing.T) {
 
 func TestFileCoherenceTracker_PurgeSession(t *testing.T) {
 	tracker := testTracker()
-	dir := t.TempDir()
+	dir := runtimeTempDir(t)
 	path := filepath.Join(dir, "file.txt")
 	writeTestFile(t, path, "content")
 
@@ -279,7 +279,7 @@ func TestFileCoherenceTracker_PurgeSession(t *testing.T) {
 
 func TestFileCoherenceTracker_Concurrent(t *testing.T) {
 	tracker := testTracker()
-	dir := t.TempDir()
+	dir := runtimeTempDir(t)
 
 	const numFiles = 5
 	const numSessions = 4
@@ -326,7 +326,7 @@ func TestFileCoherenceTracker_ActivityRingBuffer_Cap(t *testing.T) {
 	tracker := NewFileCoherenceTracker(func(id string) string { return id })
 	tracker.activityCap = 5 // small cap for testing
 
-	dir := t.TempDir()
+	dir := runtimeTempDir(t)
 	path := filepath.Join(dir, "file.txt")
 	writeTestFile(t, path, "content")
 
@@ -353,7 +353,7 @@ func TestFileCoherenceTracker_ActivityRingBuffer_Cap(t *testing.T) {
 
 func TestFileCoherenceTracker_CheckWrite_FileDeletedExternally(t *testing.T) {
 	tracker := testTracker()
-	dir := t.TempDir()
+	dir := runtimeTempDir(t)
 	path := filepath.Join(dir, "file.txt")
 	writeTestFile(t, path, "content")
 
@@ -384,7 +384,7 @@ func TestFileCoherenceTracker_CheckWrite_FileDeletedExternally(t *testing.T) {
 
 func TestFileCoherenceTracker_NoSessionID_NoOp(t *testing.T) {
 	tracker := testTracker()
-	dir := t.TempDir()
+	dir := runtimeTempDir(t)
 	path := filepath.Join(dir, "file.txt")
 	writeTestFile(t, path, "content")
 

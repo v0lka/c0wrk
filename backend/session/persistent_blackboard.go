@@ -52,6 +52,12 @@ type PersistentBlackboard struct {
 	persistCh          chan persistOp          // buffered channel for serializing DB writes
 	persistMu          sync.Mutex              // guards persistCh lifecycle (send vs. shutdown close)
 
+	// persistDone is closed when the background persistence worker returns.
+	// shutdownPersister only closes the channel (the worker drains it and
+	// exits afterwards); Shutdown waits on persistDone so it can guarantee the
+	// worker is gone, not merely asked to stop.
+	persistDone chan struct{}
+
 	// routing is cached when SetRouting is called, so that Routing() can return
 	// the value without a DB round-trip in active execution paths.
 	routingMu sync.RWMutex
@@ -95,6 +101,7 @@ func NewPersistentBlackboardWithTimeout(taskID, sessionID string, store core.Tas
 		logger:             logger,
 		persistenceTimeout: timeout,
 		persistCh:          ch,
+		persistDone:        make(chan struct{}),
 	}
 	go pb.persistenceWorker(ch)
 	return pb
@@ -249,6 +256,7 @@ func (pb *PersistentBlackboard) waitPersistenceResult(operation string, done <-c
 // persistenceWorker is the single goroutine that executes persist operations
 // serially, with panic recovery for each operation.
 func (pb *PersistentBlackboard) persistenceWorker(ch <-chan persistOp) {
+	defer close(pb.persistDone)
 	for op := range ch {
 		func() {
 			defer func() {
@@ -273,6 +281,31 @@ func (pb *PersistentBlackboard) shutdownPersister() {
 	if pb.persistCh != nil {
 		close(pb.persistCh)
 		pb.persistCh = nil
+	}
+}
+
+// Shutdown stops the background persistence worker and waits up to timeout for
+// it to drain and exit. It is idempotent and safe to call on a blackboard
+// whose terminal finalizer (CompleteTask/FailTask/CancelTask) already stopped
+// the worker: shutdownPersister is a no-op then and persistDone is already
+// closed.
+//
+// It exists so the session Manager can guarantee that no persistence worker
+// outlives Shutdown — a task that never reached a terminal finalizer (paused
+// or abandoned) would otherwise leave the worker blocked on its channel
+// forever.
+func (pb *PersistentBlackboard) Shutdown(timeout time.Duration) {
+	pb.shutdownPersister()
+	if pb.persistDone == nil {
+		return
+	}
+	select {
+	case <-pb.persistDone:
+	case <-time.After(timeout):
+		if pb.logger != nil {
+			pb.logger.Warn("timed out waiting for blackboard persistence worker to stop",
+				"task_id", pb.taskID, "session_id", pb.sessionID)
+		}
 	}
 }
 
@@ -516,6 +549,7 @@ func RestoreBlackboard(taskID, sessionID string, store core.TaskPersistence, log
 		logger:             logger,
 		persistenceTimeout: defaultPersistenceTimeout,
 		persistCh:          ch,
+		persistDone:        make(chan struct{}),
 		delegationSpecs:    state.Delegations,
 	}
 	go pb.persistenceWorker(ch)

@@ -156,13 +156,13 @@ func (f *fakeTaskStoreForRestore) GetLatestTaskID(_ context.Context, _ string) (
 func restoreTestManagerWithTaskStore(t *testing.T, ts TaskStore) (*Manager, *mockSessionStoreForRestore) {
 	t.Helper()
 
-	agentDir := t.TempDir()
+	agentDir := runtimeTempDir(t)
 	factory := func(_ core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		return core.NewOrchestrator(core.OrchestratorConfig{}, core.OrchestratorDeps{}), nil
 	}
 
 	mgr := NewManager(factory, func(Event) {}, agentDir)
-	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	t.Cleanup(mgr.Shutdown) // stop the manager before its temp dirs are removed
 	store := newMockSessionStore()
 	mgr.SetSessionStore(store)
 	mgr.SetTaskStore(ts)

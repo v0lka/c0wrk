@@ -177,11 +177,12 @@ func TestSendMessage_UnfinishedTask_ContinuesCycle(t *testing.T) {
 	}}
 	var orch *core.Orchestrator
 	eventChan := make(chan Event, 100)
-	mgr := NewManager(capturingFunctionalFactory(caller, &orch), func(e Event) { eventChan <- e }, t.TempDir())
-	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	mgr := NewManager(capturingFunctionalFactory(caller, &orch), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
+	t.Cleanup(mgr.Shutdown) // stop the manager before its temp dirs are removed
 	mgr.SetTaskStore(store)
 
-	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	info, err := mgr.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -300,11 +301,12 @@ func TestSendMessage_IdleSession_StartsNewTaskWithRouting(t *testing.T) {
 		finishResponse("done-fresh"),
 	}}
 	eventChan := make(chan Event, 100)
-	mgr := NewManager(routingFunctionalFactory(caller), func(e Event) { eventChan <- e }, t.TempDir())
-	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	mgr := NewManager(routingFunctionalFactory(caller), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
+	t.Cleanup(mgr.Shutdown) // stop the manager before its temp dirs are removed
 	mgr.SetTaskStore(store)
 
-	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	info, err := mgr.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -553,11 +555,12 @@ func TestSendMessage_ResumePath_AppliesOverridesAndFlushesAttachments(t *testing
 			allEventsMu.Unlock()
 		}
 	}()
-	mgr := NewManager(overrideFunctionalFactory(caller, switcher), func(e Event) { eventChan <- e }, t.TempDir())
+	mgr := NewManager(overrideFunctionalFactory(caller, switcher), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
 	t.Cleanup(mgr.Shutdown)
 	mgr.SetTaskStore(store)
 
-	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	info, err := mgr.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -814,11 +817,12 @@ func TestSendMessage_GoalOnResume_AbandonsInterruptedTaskAndRunsGoal(t *testing.
 		}
 	}()
 
-	mgr := NewManager(routingFunctionalFactory(caller), func(e Event) { eventChan <- e }, t.TempDir())
+	mgr := NewManager(routingFunctionalFactory(caller), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
 	t.Cleanup(mgr.Shutdown)
 	mgr.SetTaskStore(store)
 
-	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	info, err := mgr.CreateSession(testProjectID, ws)
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
