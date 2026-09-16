@@ -129,7 +129,10 @@ declare_plan.Execute(ctx, input)
   │    ├─ On "approve":          return ToolResult{ success content + wave echo }
   │    ├─ On "request_changes":  return ToolResult{ content incl. feedback }
   │    │   (the Conductor revises and calls declare_plan again)
-  │    └─ On "abandon":          return ToolResult{ IsError: true }
+  │    └─ On "abandon":          release this run's plan workflow and settle the
+  │        abandoned plan's steps as terminal (optional planAbandoner capability →
+  │        AbandonPlan(); normative detail: domains/orchestration/conductor.md),
+  │        then return ToolResult{ IsError: true }
   │
   └─ If mode == "present": return ToolResult{ informational content + wave echo;
        plus, when the multi-step plan collapsed into a single wave, a non-blocking
@@ -141,7 +144,7 @@ Direction: Conductor → `declare_plan` tool → `PlanPublisher` (blackboard + e
 **Behavioral notes:**
 
 - **Execution-wave echo:** every successful call (both modes) appends the plan's execution waves to the tool result. Waves are computed by Kahn-layering the validated `depends_on` DAG (`planExecutionWaves`, rendered by `formatExecutionWaves`): wave 1 holds every dependency-free step, wave N+1 holds the steps whose prerequisites all completed in waves ≤ N, and steps inside a wave keep their declaration order. The echo looks like `Execution waves: 1=[step_1, step_3] · 2=[step_2] · 3=[step_4]` and makes an under-specified dependency graph visible to the Conductor *before* `execute_plan` fans the steps into concurrency. Acyclicity is guaranteed upstream by `validatePlanTasks`, so the layering is always total.
-- **Single-wave hint (present only):** when a multi-step plan collapses into a single wave (every step dependency-free, so all run concurrently) the `present` result additionally carries a **non-blocking** hint (`IsError: false`): *"All N steps are in a single parallel wave — every step will run concurrently. If any step consumes another's output, re-declare with depends_on before executing."* The hint never fires for a one-step plan, and it is suppressed in `await_approval` mode (the user is already reviewing the plan there; only the wave echo is surfaced, on approval). Validation-error, continuation-hint, `request_changes`, and `abandon` paths are unchanged.
+- **Single-wave hint (present only):** when a multi-step plan collapses into a single wave (every step dependency-free, so all run concurrently) the `present` result additionally carries a **non-blocking** hint (`IsError: false`): *"All N steps are in a single parallel wave — every step will run concurrently. If any step consumes another's output, re-declare with depends_on before executing."* The hint never fires for a one-step plan, and it is suppressed in `await_approval` mode (the user is already reviewing the plan there; only the wave echo is surfaced, on approval). The validation-error, continuation-hint, and `request_changes` paths are unchanged. The `abandon` path returns the same `IsError: true` result as before, but now first releases this run's plan workflow and settles the abandoned plan's steps as terminal (via the optional `planAbandoner` capability → `AbandonPlan()`; see the abandon invariant in [../domains/orchestration/conductor.md](../domains/orchestration/conductor.md)).
 
 ### `execute_plan`
 

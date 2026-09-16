@@ -628,3 +628,194 @@ func TestInlineStepLifecycle_StepTransition_UpdatesScopePerStep(t *testing.T) {
 		}
 	}
 }
+
+// wantStandaloneRejection is the exact message newChecklistGuard returns for a
+// rejected standalone checklist. Kept verbatim so the guard's model-facing
+// wording is pinned by the tests.
+const wantStandaloneRejection = "a plan has been declared; a standalone checklist (without step_id) is only valid for plan-less tasks — pass the step_id of the plan step you are executing, and do not list plan steps as checklist items (a checklist tracks sub-tasks within a single step)"
+
+// TestNewChecklistGuard_Matrix pins the guard decision table: an empty step_id
+// is rejected only while the plan workflow is active AND no standalone checklist
+// was emitted earlier in the run. A non-empty step_id is always allowed, and an
+// inactive run always allows a standalone checklist.
+func TestNewChecklistGuard_Matrix(t *testing.T) {
+	tests := []struct {
+		name         string
+		declared     bool
+		continuable  bool
+		standalone   bool
+		stepID       string
+		wantRejected bool
+	}{
+		{
+			name:         "active_declared_without_standalone_rejects_empty",
+			declared:     true,
+			stepID:       "",
+			wantRejected: true,
+		},
+		{
+			name:         "active_continuable_without_standalone_rejects_empty",
+			continuable:  true,
+			stepID:       "",
+			wantRejected: true,
+		},
+		{
+			name:         "active_declared_with_standalone_allows_empty",
+			declared:     true,
+			standalone:   true,
+			stepID:       "",
+			wantRejected: false,
+		},
+		{
+			name:         "inactive_without_standalone_allows_empty",
+			stepID:       "",
+			wantRejected: false,
+		},
+		{
+			name:         "inactive_with_standalone_allows_empty",
+			standalone:   true,
+			stepID:       "",
+			wantRejected: false,
+		},
+		{
+			name:         "active_step_id_always_allowed",
+			declared:     true,
+			stepID:       "step_1",
+			wantRejected: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ps := newPlanRunState(tc.continuable)
+			if tc.declared {
+				ps.markDeclared()
+			}
+			if tc.standalone {
+				ps.markStandaloneChecklist()
+			}
+			guard := newChecklistGuard(ps)
+
+			got := guard(tc.stepID)
+			if tc.wantRejected {
+				if got != wantStandaloneRejection {
+					t.Errorf("expected standalone rejection message, got %q", got)
+				}
+				return
+			}
+			if got != "" {
+				t.Errorf("expected the call to be allowed, got rejection %q", got)
+			}
+		})
+	}
+}
+
+// TestNewChecklistGuard_NilPlanStateAllowsStandalone documents the defensive
+// nil branch: with no plan state (direct/test construction) a standalone
+// checklist is always allowed.
+func TestNewChecklistGuard_NilPlanStateAllowsStandalone(t *testing.T) {
+	guard := newChecklistGuard(nil)
+	if got := guard(""); got != "" {
+		t.Errorf("expected standalone allowed with nil planState, got rejection %q", got)
+	}
+	if got := guard("step_1"); got != "" {
+		t.Errorf("expected step-scoped allowed with nil planState, got rejection %q", got)
+	}
+}
+
+// TestInlineStepLifecycle_OnChecklistUpdate_StandaloneSetsFlag verifies that an
+// empty-step_id update records the standalone flag on planState, while a
+// step-scoped update does not — and that a nil planState (direct construction)
+// is tolerated.
+func TestInlineStepLifecycle_OnChecklistUpdate_StandaloneSetsFlag(t *testing.T) {
+	emitter := &mockEmitter{}
+
+	// Empty step_id → flag set.
+	ps := newPlanRunState(false)
+	lc := newInlineStepLifecycle(emitter, orchestration.NewMapBlackboard())
+	lc.planState = ps
+	lc.onChecklistUpdate("", []agent.TodoItem{{Text: "Standalone", Checked: false}})
+	if !ps.hasStandaloneChecklist() {
+		t.Fatal("expected standalone checklist flag set after an empty step_id update")
+	}
+
+	// Step-scoped update → flag untouched.
+	ps2 := newPlanRunState(false)
+	lc2 := newInlineStepLifecycle(emitter, orchestration.NewMapBlackboard())
+	lc2.planState = ps2
+	lc2.onChecklistUpdate("step_1", []agent.TodoItem{{Text: "Step", Checked: false}})
+	if ps2.hasStandaloneChecklist() {
+		t.Error("a step-scoped update must not set the standalone checklist flag")
+	}
+
+	// Nil planState must not panic (direct construction path).
+	lc3 := newInlineStepLifecycle(emitter, orchestration.NewMapBlackboard())
+	lc3.onChecklistUpdate("", []agent.TodoItem{{Text: "Standalone", Checked: false}})
+}
+
+// TestChecklistGuard_StandaloneBeforeDeclareThenDeclareScenario covers the
+// motivating scenario: the model emits a standalone checklist, THEN declares a
+// plan in the same run. The subsequent empty-step_id update must still be
+// accepted (the standalone checklist existed at declaration time), while the
+// standalone lifecycle behavior (no PlanStepStart, no SetCurrentStepID) is
+// unchanged.
+func TestChecklistGuard_StandaloneBeforeDeclareThenDeclareScenario(t *testing.T) {
+	emitter := &mockEmitter{}
+	ps := newPlanRunState(false)
+	lc := newInlineStepLifecycle(emitter, orchestration.NewMapBlackboard())
+	lc.planState = ps
+	guard := newChecklistGuard(ps)
+
+	// 1. Before any plan: standalone is allowed and gets recorded.
+	if msg := guard(""); msg != "" {
+		t.Fatalf("inactive run must allow a standalone checklist, got %q", msg)
+	}
+	lc.onChecklistUpdate("", []agent.TodoItem{{Text: "Plan-less first", Checked: false}})
+
+	// 2. Declare a plan in the SAME run.
+	ps.markDeclared()
+
+	// 3. The follow-up empty-step_id update is still accepted.
+	if msg := guard(""); msg != "" {
+		t.Fatalf("standalone emitted before declare must stay accepted after declare, got %q", msg)
+	}
+	lc.onChecklistUpdate("", []agent.TodoItem{{Text: "Plan-less first", Checked: true}})
+
+	// 4. Step-scoped updates remain accepted.
+	if msg := guard("step_1"); msg != "" {
+		t.Errorf("step-scoped update must be allowed, got %q", msg)
+	}
+
+	// Standalone lifecycle is unchanged: two standalone updates, both emit only
+	// StepTodoUpdate — no PlanStepStart, no SetCurrentStepID.
+	if len(emitter.stepTodoUpdates) != 2 {
+		t.Fatalf("expected 2 StepTodoUpdate (one per standalone call), got %d", len(emitter.stepTodoUpdates))
+	}
+	for i, u := range emitter.stepTodoUpdates {
+		if u.stepID != "" {
+			t.Errorf("stepTodoUpdates[%d]: expected empty step_id, got %q", i, u.stepID)
+		}
+	}
+	if len(emitter.planStepStarts) != 0 {
+		t.Errorf("standalone checklists must NOT emit PlanStepStart, got %d", len(emitter.planStepStarts))
+	}
+	if len(emitter.setCurrentStepIDs) != 0 {
+		t.Errorf("standalone checklists must NOT call SetCurrentStepID, got %d", len(emitter.setCurrentStepIDs))
+	}
+}
+
+// TestChecklistGuard_DeclareFirstRejectsStandalone is the negative counterpart:
+// when a plan is declared with NO prior standalone checklist, a subsequent
+// empty-step_id update is rejected.
+func TestChecklistGuard_DeclareFirstRejectsStandalone(t *testing.T) {
+	ps := newPlanRunState(false)
+	guard := newChecklistGuard(ps)
+
+	// Declare first — no standalone checklist was ever emitted.
+	ps.markDeclared()
+
+	got := guard("")
+	if got != wantStandaloneRejection {
+		t.Fatalf("declare-first run must reject a standalone checklist, got %q", got)
+	}
+}

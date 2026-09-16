@@ -71,6 +71,19 @@ type planRunState struct {
 	mu          sync.Mutex
 	declared    bool
 	continuable bool
+	// standaloneChecklist records that a standalone (empty step_id) checklist
+	// was emitted EARLIER in this run. It lets the ChecklistGuard keep
+	// accepting an empty-step_id checklist after a plan becomes active in the
+	// same run (the model laid out a plan-less checklist, then refined the work
+	// into plan steps).
+	//
+	// Invariant: the guard rejects an empty-step_id call while the plan is
+	// active unless this flag is already set, so the flag is only ever set
+	// while the plan is NOT active — before a declare, or after an abandon
+	// deactivated an earlier one. Its live value is therefore exactly "a
+	// standalone checklist already exists earlier in this run". No snapshot at
+	// declare time is needed.
+	standaloneChecklist bool
 }
 
 // newPlanRunState creates the per-run plan state. continuable seeds the
@@ -83,6 +96,20 @@ func newPlanRunState(continuable bool) *planRunState {
 func (s *planRunState) markDeclared() {
 	s.mu.Lock()
 	s.declared = true
+	s.mu.Unlock()
+}
+
+// unmarkDeclared clears the declared flag, deactivating the plan workflow for
+// the rest of this Conductor run. Called when the user abandons a plan at the
+// approval prompt: publishing the plan for review marked it declared, but an
+// abandoned plan must not leave the run locked in the plan workflow (delegate
+// disabled, standalone checklist rejected, execute_plan willing to run the
+// abandoned draft). Only the declared flag is cleared — the continuable flag
+// is a run-start seed that abandon can never reach (a continuable resume
+// returns the soft "already approved" hint before the approval prompt).
+func (s *planRunState) unmarkDeclared() {
+	s.mu.Lock()
+	s.declared = false
 	s.mu.Unlock()
 }
 
@@ -111,6 +138,43 @@ func (s *planRunState) isActive() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.declared || s.continuable
+}
+
+// markStandaloneChecklist records that a standalone (empty step_id) checklist
+// was emitted in this run. See the standaloneChecklist field for the invariant
+// this participates in.
+func (s *planRunState) markStandaloneChecklist() {
+	s.mu.Lock()
+	s.standaloneChecklist = true
+	s.mu.Unlock()
+}
+
+// hasStandaloneChecklist reports whether a standalone (empty step_id) checklist
+// was emitted earlier in this run (while the plan workflow was inactive). The
+// ChecklistGuard accepts an empty-step_id checklist once this is true, even
+// with an active plan.
+func (s *planRunState) hasStandaloneChecklist() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.standaloneChecklist
+}
+
+// newChecklistGuard builds the ChecklistGuardFunc for a Conductor run. It
+// rejects a standalone (empty step_id) checklist while the plan workflow is
+// active in this run — UNLESS a standalone checklist was already emitted
+// earlier in the same run (see planRunState.standaloneChecklist). planState is
+// always non-nil in RunConductor, so isActive() is safe there; the nil check is
+// purely defensive for direct (test) construction.
+func newChecklistGuard(planState *planRunState) agent.ChecklistGuardFunc {
+	return func(stepID string) string {
+		if stepID != "" || planState == nil {
+			return ""
+		}
+		if planState.isActive() && !planState.hasStandaloneChecklist() {
+			return "a plan has been declared; a standalone checklist (without step_id) is only valid for plan-less tasks — pass the step_id of the plan step you are executing, and do not list plan steps as checklist items (a checklist tracks sub-tasks within a single step)"
+		}
+		return ""
+	}
 }
 
 // compositeTrajectoryStore implements agent.TrajectoryStore. It keeps an
@@ -668,20 +732,22 @@ func (l *conductorLauncher) Execute(ctx context.Context, stepIDs []string) ([]to
 		return nil, errors.New("no plan declared — call declare_plan first")
 	}
 
-	// Restored-plan guard. Three cases reach this line with planState wired:
+	// Restored-plan guard. The plan must be active in THIS run; two cases pass:
 	//   - plan declared in this run (declare_plan)            → execute.
 	//   - continuable resume (paused task, approved plan with
 	//     unreached steps, seeded by Orchestrator.Resume)     → execute WITHOUT
 	//     a re-declare: the approved plan is still authoritative and the resume
 	//     logic below skips already-successful steps.
-	//   - plan merely restored from a previous COMPLETED task → refuse:
-	//     re-running a completed task's steps would duplicate side effects
-	//     (file edits, etc.) for no benefit.
+	// Two inactive cases are refused — on both, re-running the steps would
+	// duplicate side effects (file edits, etc.) for no benefit:
+	//   - a plan merely restored from a previous COMPLETED task; and
+	//   - a plan the user abandoned at the approval prompt (its declared flag
+	//     was cleared by conductorPublisher.AbandonPlan).
 	// When planState is nil (direct test construction), this guard is inert and
 	// Execute proceeds on whatever plan is on the blackboard, preserving the
 	// behavior the DAG-scheduler tests rely on.
 	if l.planState != nil && !l.planState.isActive() {
-		return nil, errors.New("execute_plan: the plan on the blackboard was restored from a previous (completed) task and was not declared in this run — call declare_plan to publish a new plan, or use delegate for plan-less work")
+		return nil, errors.New("execute_plan: the plan on the blackboard was not declared in this run and is not a continuable resume — it is either a plan restored from a previous (completed) task or one abandoned at the approval prompt — call declare_plan to publish a new plan, or use delegate for plan-less work")
 	}
 
 	// Well-formedness preflight. Plans published via declare_plan are
@@ -2279,6 +2345,51 @@ func (p *conductorPublisher) LastPlanMarkdown() string {
 	return p.lastMD
 }
 
+// AbandonPlan implements the optional tools.planAbandoner capability.
+// declare_plan calls it when the user abandons a plan at the approval prompt.
+// It does two things:
+//
+//  1. Clears the plan-workflow lock Publish acquired (planState.declared), so
+//     the run can act plan-less again: delegate is re-enabled, a standalone
+//     checklist is accepted, and execute_plan refuses the now-inactive plan.
+//  2. Settles the abandoned plan's steps as terminal, so the plan panel does
+//     not leave them "pending" forever. The run is no longer plan-active, so
+//     the finish-fallback completeAll (gated on planDeclaredInRun) will no
+//     longer sweep them — without this the abandoned plan would hang in the
+//     panel with unreached steps.
+//
+// Only planState.declared is cleared — the continuable flag is a run-start
+// seed abandon can never reach (a continuable resume returns the soft "already
+// approved" hint before the approval prompt). A nil planState (direct test
+// construction) makes the flag clear a no-op. The plan itself is NOT cleared
+// from the blackboard — it stays a historical artifact.
+func (p *conductorPublisher) AbandonPlan() {
+	if p.planState != nil {
+		p.planState.unmarkDeclared()
+	}
+	p.settleAbandonedPlanSteps()
+}
+
+// settleAbandonedPlanSteps emits one terminal PlanStepComplete per step of the
+// plan currently on the blackboard, marking them settled-not-completed with the
+// "plan abandoned" reason. Approval precedes any step execution, so no step
+// was started (no PlanStepStart is emitted — that would mis-tag the run as
+// "executing a step") and none can be double-completed by completeAll (the run
+// is no longer plan-active). Best-effort UI hygiene: a no-op without an emitter
+// or a plan.
+func (p *conductorPublisher) settleAbandonedPlanSteps() {
+	if p.emitter == nil || p.bb == nil {
+		return
+	}
+	plan := p.bb.GetPlan()
+	if plan == nil {
+		return
+	}
+	for _, step := range plan.Steps {
+		p.emitter.PlanStepComplete(step.ID, false, 0, "plan abandoned")
+	}
+}
+
 // conductorReflectionRunner implements tools.ReflectionRunner.
 type conductorReflectionRunner struct {
 	reflector *reflector.Reflector
@@ -2539,19 +2650,18 @@ func RunConductor(
 	ctx = tools.WithStepCompleteFunc(ctx, inlineLifecycle.completeStep)
 	ctx = tools.WithPlanStepExecutor(ctx, launcher)
 
-	// Checklist guard: once a plan is declared IN THIS RUN, reject standalone
-	// (empty step_id) checklists. A standalone checklist is only valid for
-	// plan-less tasks. With a plan, every update_checklist must target a
-	// specific step. This consults launcher.HasDeclaredPlan() (planRunState)
-	// rather than the raw blackboard plan, so a plan restored from a previous
-	// (completed) task does NOT trip the guard on a continuation — the
-	// continuation is free to act plan-less, declare its own plan, or delegate.
-	ctx = agent.WithChecklistGuard(ctx, func(stepID string) string {
-		if stepID == "" && launcher.HasDeclaredPlan() {
-			return "a plan has been declared; a standalone checklist (without step_id) is only valid for plan-less tasks — pass the step_id of the plan step you are executing, and do not list plan steps as checklist items (a checklist tracks sub-tasks within a single step)"
-		}
-		return ""
-	})
+	// Checklist guard: once a plan is active IN THIS RUN, reject standalone
+	// (empty step_id) checklists — UNLESS the run already emitted one before the
+	// plan was declared. A standalone checklist is only valid for plan-less
+	// tasks; with a plan, every update_checklist must target a specific step.
+	// The exception covers a run that laid out a standalone checklist first and
+	// only then declared a plan (refining the work into plan steps): the earlier
+	// standalone update stays valid rather than being retroactively rejected.
+	// This consults planRunState (via newChecklistGuard) rather than the raw
+	// blackboard plan, so a plan restored from a previous (completed) task does
+	// NOT trip the guard on a continuation — the continuation is free to act
+	// plan-less, declare its own plan, or delegate.
+	ctx = agent.WithChecklistGuard(ctx, newChecklistGuard(planState))
 
 	// Build the system prompt with complexity-based Conductor Guidance.
 	systemPromptFactory := func(ctx context.Context, msg string, modelMeta llm.ModelMetadata) string {
@@ -2853,7 +2963,16 @@ func (l *inlineStepLifecycle) onChecklistUpdate(stepID string, items []agent.Tod
 	}
 
 	if stepID == "" {
-		// Standalone checklist (Conductor without a declared plan) — no step lifecycle.
+		// Standalone checklist (Conductor without an active plan) — no step lifecycle.
+		// Record that one was emitted so the ChecklistGuard keeps accepting an
+		// empty-step_id checklist if a plan becomes active later in this same run.
+		// The guard rejects empty-step_id calls while the plan is active and the
+		// flag is false, so this can only run while the plan is inactive (before
+		// declare, or after an abandon) — the live flag is exactly "a standalone
+		// checklist already exists earlier in this run".
+		if l.planState != nil {
+			l.planState.markStandaloneChecklist()
+		}
 		l.emitter.StepTodoUpdate(stepID, items)
 		return
 	}

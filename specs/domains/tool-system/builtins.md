@@ -41,7 +41,7 @@ c0wrk's registered tools, their capability group (ADR-024 — drives policy and 
 | `list_step_outputs`   | Agent     | `system` | no        | List completed step results                        |
 | `read_step_output`    | Agent     | `system` | no        | Read specific step output                          |
 | `read_final_result`   | Agent     | `system` | no        | Read the prior task's final result from the blackboard |
-| `update_checklist`    | Agent     | `system` | no        | Update checklist for current step or standalone. Rejects standalone (empty step_id) when a plan is declared via a `ChecklistGuard` in context. |
+| `update_checklist`    | Agent     | `system` | no        | Update checklist for current step or standalone. A context `ChecklistGuard` rejects **starting** a standalone (empty step_id) checklist once a plan is active in the run, but keeps accepting one already begun earlier in the run. |
 | `declare_step_complete` | Agent   | `system` | no        | Signal inline plan step completion (emits `plan_step_complete`) |
 | `store_fact`          | Agent     | `system` | no        | Store fact to blackboard                           |
 | `search_facts`        | Agent     | `system` | no        | Search blackboard facts                            |

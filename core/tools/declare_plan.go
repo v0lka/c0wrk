@@ -53,6 +53,29 @@ type PlanContinuation interface {
 	PlanContinuation() bool
 }
 
+// planAbandoner is an OPTIONAL capability of the PlanPublisher: it lets
+// declare_plan react to the user abandoning a plan at the approval prompt.
+// Publishing a plan for review marks the run's plan workflow active (see
+// conductorPublisher.Publish), which disables delegate, rejects a standalone
+// (empty step_id) checklist, and lets execute_plan run the plan's steps — all
+// correct while the plan awaits approval, but wrong once the user abandons it.
+// The implementation therefore does two things: it releases the workflow so
+// the model can act plan-less again, and it settles the abandoned plan's steps
+// so the plan panel does not leave them pending forever (the run is no longer
+// plan-active, so the finish-fallback sweep no longer reaches them).
+//
+// It is deliberately a parameterless, one-directional capability: the only
+// transition declare_plan ever needs to trigger is abandonment. Re-activation
+// is owned by Publish (every publish marks the workflow active), so no
+// SetPlanWorkflowActive(true) path exists to drift out of use.
+//
+// Implemented by the core conductorPublisher and detected by declare_plan via
+// a type assertion, so this package stays decoupled from core: a publisher
+// that does not implement it (or a nil publisher) is simply left as-is.
+type planAbandoner interface {
+	AbandonPlan()
+}
+
 // DeclarePlanTool publishes a roadmap and optionally blocks for user approval.
 type DeclarePlanTool struct {
 	*sdktools.BaseTool
@@ -385,6 +408,22 @@ func (t *DeclarePlanTool) Execute(ctx context.Context, input json.RawMessage) (s
 		msg += "\n\nRevise the plan and call declare_plan again with the updated tasks."
 		return sdktools.ToolResult{Content: msg}, nil
 	case "abandon":
+		// Release the plan workflow this run acquired when the plan was
+		// published for review (conductorPublisher.Publish marks it declared)
+		// AND settle the abandoned plan's steps as terminal. An abandoned plan
+		// must not leave the run locked: delegate stays disabled, a standalone
+		// (empty step_id) checklist is rejected, execute_plan is willing to run
+		// the abandoned draft, and — because the run is no longer plan-active —
+		// the finish-fallback sweep would never reach the abandoned plan's
+		// steps, so they would otherwise stay "pending" in the plan panel
+		// forever. The plan itself stays on the blackboard as a historical
+		// artifact (not cleared here). approve/present (Publish already marked)
+		// and request_changes (the model re-declares, so delegate correctly
+		// stays disabled) leave the workflow active. Detected via the optional
+		// planAbandoner capability, so a publisher without it is unaffected.
+		if ab, ok := publisher.(planAbandoner); ok {
+			ab.AbandonPlan()
+		}
 		return sdktools.ToolResult{Content: "User abandoned the plan. Do not proceed with implementation unless the user gives new instructions.", IsError: true}, nil
 	default:
 		return sdktools.ToolResult{Content: fmt.Sprintf("Approval callback returned unknown decision %q; treating as request_changes.", decision)}, nil
