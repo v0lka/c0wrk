@@ -134,7 +134,7 @@ describe('overlap repro', () => {
     expect(true).toBe(true)
   })
 
-  it('virtualized 70 rows + streaming', () => {
+  it('long transcript (70 rows) + streaming', () => {
     const order: string[] = []
     const index: Record<string, ChatMessageUI> = {}
     for (let i = 0; i < 70; i++) { const id = `m${i}`; order.push(id); index[id] = msg(id, i % 2 === 0 ? 'user' : 'assistant', `m${i}`) }

@@ -108,8 +108,8 @@ describe('ChatMessageRenderer render isolation', () => {
   })
 
   it('still isolates unchanged messages through the sticky-turn + bookmark-gutter path', () => {
-    // Mirrors ChatArea's non-virtualized render (sticky turns + bookmark rows),
-    // where each block sits under an extra BookmarkableRow wrapper.
+    // Mirrors ChatArea's render (sticky turns + bookmark rows), where each
+    // block sits under an extra BookmarkableRow wrapper.
     const a1 = assistantItem('a1', 'one')
     const a2 = assistantItem('a2', 'two')
     render(<ChatMessageRenderer items={[a1, a2]} stickyUserMessages />)

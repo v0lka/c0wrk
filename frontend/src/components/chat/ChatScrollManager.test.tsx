@@ -9,7 +9,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChatScrollManager } from './ChatScrollManager'
 import { ScrollProvider, useScrollContext } from './ScrollContext'
 import { useChatStore } from '@/stores/chatStore'
-import type { ChatVirtualizerHandle } from '@/lib/chatVirtualizer'
 import type { ChatMessageUI } from '@/types/messages'
 
 let root: Root | null = null
@@ -264,134 +263,11 @@ describe('ChatScrollManager navigation suppresses auto-scroll', () => {
   })
 })
 
-// Finding #4: the virtualized transcript mounts only visible rows, so the
-// DOM-based lookup in ChatScrollManager finds nothing for an off-screen step or
-// bookmark. With a virtualizer handle supplied, navigation must scroll the
-// virtualizer to the row first, then position it once it has mounted.
-describe('ChatScrollManager virtualized navigation', () => {
-  function renderVirtualized(
-    handle: ChatVirtualizerHandle,
-    child: React.ReactNode = <div />,
-  ): HTMLElement {
-    const container = document.createElement('div')
-    document.body.appendChild(container)
-    const scrollRef: React.RefObject<HTMLDivElement | null> = { current: null }
-    root = createRoot(container)
-    act(() => {
-      root!.render(
-        <ScrollProvider>
-          <Probe />
-          <ChatScrollManager
-            sessionId={null}
-            messages={[]}
-            streamingText={undefined}
-            scrollRef={scrollRef}
-            virtualizerRef={{ current: handle }}
-          >
-            {child}
-          </ChatScrollManager>
-        </ScrollProvider>,
-      )
-    })
-    return scrollRef.current!
-  }
-
-  it('scrolls the virtualizer to an unmounted step, then positions it', () => {
-    // Run the deferred positioning synchronously so the assertion is deterministic.
-    const rafSpy = vi
-      .spyOn(globalThis, 'requestAnimationFrame')
-      .mockImplementation((cb) => { cb(0); return 0 as unknown as number })
-    const viewportHolder: { current: HTMLElement | null } = { current: null }
-    const handle: ChatVirtualizerHandle = {
-      scrollToStep: vi.fn((stepId: string) => {
-        // The virtualizer mounts the row: model that by inserting the target.
-        const el = document.createElement('div')
-        el.setAttribute('data-step-id', stepId)
-        vi.spyOn(el, 'getBoundingClientRect').mockReturnValue(rect({ top: 3000, height: 400 }))
-        viewportHolder.current!.appendChild(el)
-        return true
-      }),
-      scrollToKey: vi.fn(() => false),
-    }
-    const viewport = renderVirtualized(handle)
-    viewportHolder.current = viewport
-    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(rect({ top: 100, height: 600 }))
-    Object.defineProperty(viewport, 'scrollTop', { value: 500, writable: true, configurable: true })
-    const scrollTo = vi.fn()
-    viewport.scrollTo = scrollTo as unknown as typeof viewport.scrollTo
-
-    act(() => navigateStep!('step-9'))
-
-    expect(handle.scrollToStep).toHaveBeenCalledWith('step-9')
-    // No sticky bar in this render → plain top alignment: 500 + (3000 - 100).
-    expect(scrollTo).toHaveBeenCalledWith({ top: 3400, behavior: 'smooth' })
-    rafSpy.mockRestore()
-  })
-
-  it('positions an already-mounted target without consulting the virtualizer', () => {
-    const handle: ChatVirtualizerHandle = { scrollToStep: vi.fn(() => false), scrollToKey: vi.fn(() => false) }
-    const viewport = renderVirtualized(handle, <div data-step-id="step-9" />)
-    const target = viewport.querySelector('[data-step-id]')!
-    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue(rect({ top: 3000, height: 400 }))
-    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(rect({ top: 100, height: 600 }))
-    Object.defineProperty(viewport, 'scrollTop', { value: 500, writable: true, configurable: true })
-    const scrollTo = vi.fn()
-    viewport.scrollTo = scrollTo as unknown as typeof viewport.scrollTo
-
-    act(() => navigateStep!('step-9'))
-
-    expect(handle.scrollToStep).not.toHaveBeenCalled()
-    expect(scrollTo).toHaveBeenCalledWith({ top: 3400, behavior: 'smooth' })
-  })
-
-  it('does nothing when the target is unmounted and the virtualizer cannot find it', () => {
-    const handle: ChatVirtualizerHandle = { scrollToStep: vi.fn(() => false), scrollToKey: vi.fn(() => false) }
-    const viewport = renderVirtualized(handle)
-    Object.defineProperty(viewport, 'scrollTop', { value: 500, writable: true, configurable: true })
-    const scrollTo = vi.fn()
-    viewport.scrollTo = scrollTo as unknown as typeof viewport.scrollTo
-
-    act(() => navigateStep!('step-9'))
-
-    expect(handle.scrollToStep).toHaveBeenCalledWith('step-9')
-    expect(scrollTo).not.toHaveBeenCalled()
-  })
-
-  it('navigates to an unmounted bookmark via the virtualizer', () => {
-    const rafSpy = vi
-      .spyOn(globalThis, 'requestAnimationFrame')
-      .mockImplementation((cb) => { cb(0); return 0 as unknown as number })
-    const viewportHolder: { current: HTMLElement | null } = { current: null }
-    const handle: ChatVirtualizerHandle = {
-      scrollToStep: vi.fn(() => false),
-      scrollToKey: vi.fn((key: string) => {
-        const el = document.createElement('div')
-        el.setAttribute('data-bookmark-id', key)
-        vi.spyOn(el, 'getBoundingClientRect').mockReturnValue(rect({ top: 2000, height: 400 }))
-        viewportHolder.current!.appendChild(el)
-        return true
-      }),
-    }
-    const viewport = renderVirtualized(handle)
-    viewportHolder.current = viewport
-    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(rect({ top: 100, height: 600 }))
-    Object.defineProperty(viewport, 'scrollTop', { value: 0, writable: true, configurable: true })
-    const scrollTo = vi.fn()
-    viewport.scrollTo = scrollTo as unknown as typeof viewport.scrollTo
-
-    act(() => navigateBookmark!('evt-9'))
-
-    expect(handle.scrollToKey).toHaveBeenCalledWith('evt-9')
-    expect(scrollTo).toHaveBeenCalledWith({ top: 1900, behavior: 'smooth' })
-    rafSpy.mockRestore()
-  })
-})
-
 // Session-switch scroll persistence: the reading position is saved to
 // chatStore when a session's viewport unmounts and restored on that session's
 // next initial mount; a session with no saved position opens pinned to the
-// bottom; content growth (late virtualizer measurements replacing estimates,
-// images decoding, streamed text) re-pins tail-followers to the bottom but
+// bottom; content growth (async markdown/highlight layout, images decoding,
+// streamed text) re-pins tail-followers to the bottom but
 // never jerks a reader who scrolled up.
 describe('ChatScrollManager session-switch scroll persistence', () => {
   const message = (id: string): ChatMessageUI => ({
@@ -589,7 +465,7 @@ describe('ChatScrollManager session-switch scroll persistence', () => {
     // The observer watches the transcript content wrapper, not the viewport.
     const ro = ResizeObserverStub.instances[ResizeObserverStub.instances.length - 1]!
     expect(ro.targets[0]?.hasAttribute('data-transcript-content')).toBe(true)
-    // Late virtualizer measurements grow the estimated content height.
+    // Late async layout grows the content height.
     pinGeometry(12_000, 600)
     act(() => { ro.fire() })
     expect(viewport.scrollTop).toBe(12_000)
@@ -597,8 +473,8 @@ describe('ChatScrollManager session-switch scroll persistence', () => {
 
   // The browser delivers a programmatic scrollTop write's scroll event
   // asynchronously, at its rendering steps — by which time the content may
-  // have grown past the write's target (a late virtualizer spacer replacing
-  // row-height estimates, async markdown/highlight layout, an image decoding).
+  // have grown past the write's target (async markdown/highlight layout, an
+  // image decoding).
   // That delivered event must not be mistaken for the user scrolling away:
   // recomputing "at bottom" against the grown content would poison the
   // baseline and permanently disable stick-to-bottom for the rest of the run.

@@ -2,13 +2,10 @@
 //
 // ChatArea transcript-stability wiring.
 //
-// Verifies the two halves of the step-2/step-3 contract together:
-//   1. Above the item threshold ChatArea renders the virtualized list (step-2
-//      behaviour preserved); below it, the plain renderer.
-//   2. The `items` handed to the list are STABILIZED: a store update that
-//      changes exactly one message keeps every other item's object identity
-//      (`stabilizeDisplayItems` reuse) while the changed item is fresh. That
-//      identity is what lets the memoized blocks skip re-rendering.
+// Verifies that the `items` handed to the renderer are STABILIZED: a store
+// update that changes exactly one message keeps every other item's object
+// identity (`stabilizeDisplayItems` reuse) while the changed item is fresh.
+// That identity is what lets the memoized blocks skip re-rendering.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -33,15 +30,12 @@ const { messagesRef, EMPTY_WORK_UNITS, itemsCaptured, chatStoreFns, chatStoreSta
   chatStoreState: { historyCursor: {}, historyHasMore: {}, historyLoading: {}, workUnitStatus: {}, scrollPositions: {}, taskActive: {} },
 }))
 
-vi.mock('@/components/MarkdownViewer', () => ({
-  MarkdownViewer: ({ content }: { content: string }) => <div data-md={content} />,
-}))
-
-vi.mock('./VirtualizedChatList', () => ({
-  VirtualizedChatList: ({ items }: { items: DisplayItem[] }) => {
+vi.mock('./ChatMessageRenderer', () => ({
+  ChatMessageRenderer: ({ items }: { items: DisplayItem[] }) => {
     itemsCaptured.push(items)
-    return <div data-testid="vlist" />
+    return <div data-testid="plain-list" />
   },
+  CompactErrorFallback: () => <div data-testid="compact-fallback" />,
 }))
 
 vi.mock('@/stores/chatStore', () => ({
@@ -165,24 +159,23 @@ describe('ChatArea transcript stability', () => {
     root = null
   })
 
-  it('virtualizes a long transcript above the threshold', async () => {
+  it('renders a long transcript through the plain renderer', async () => {
     messagesRef.current = makeMessages(61)
     render(<Harness />)
     await flushEffects()
 
-    expect(container.querySelector('[data-testid="vlist"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="plain-list"]')).not.toBeNull()
     expect(itemsCaptured.length).toBeGreaterThan(0)
     expect(itemsCaptured[itemsCaptured.length - 1]).toHaveLength(61)
   })
 
-  it('does not virtualize a short transcript (step-2 threshold preserved)', async () => {
+  it('renders a short transcript through the plain renderer', async () => {
     messagesRef.current = makeMessages(3)
     render(<Harness />)
     await flushEffects()
 
-    expect(container.querySelector('[data-testid="vlist"]')).toBeNull()
-    // The plain renderer rendered the messages instead.
-    expect(container.querySelectorAll('[data-md]')).toHaveLength(3)
+    expect(container.querySelector('[data-testid="plain-list"]')).not.toBeNull()
+    expect(itemsCaptured[itemsCaptured.length - 1]).toHaveLength(3)
   })
 
   it('stabilizes the item tree: changing one message keeps the others identity-stable', async () => {
