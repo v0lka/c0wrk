@@ -90,6 +90,8 @@ A banner click must bring the c0wrk window forward, not merely un-hide it. `desk
 
 `x11Conn` is opened once, on first activation, and lives for the process — the activation path never calls `XCloseDisplay`. `XCloseDisplay` performs a synchronous round trip, and a window manager holding an X server grab blocks it indefinitely; KWin takes that grab for the un-minimize animation the activation request itself triggers, so a per-call open/close could block forever inside the deferred close. Because `App.notificationCallback` runs the activation, a blocked close stalls whatever goroutine dispatched it — and on Linux that used to be the godbus signal pump, whose stall made godbus discard every later `ActionInvoked` and killed notification clicks for the rest of the run. Two guarantees keep that failure mode closed: the connection is never closed, and the callback never runs on the pump goroutine (see [Click routing](#click-routing)).
 
+The discovered window id is cached (`x11TargetWindow`). A repeat activation re-validates the cache with one property read — the window is still in `_NET_CLIENT_LIST` and still carries this process's `_NET_WM_PID`, the second check covering an XID the server has recycled to another client — and walks every managed window only on a miss. The walk costs up to two property reads per window on the display, and a notification click runs one activation.
+
 `x11ActivationMu` is taken with `TryLock`, never `Lock`: an activation already in flight may be blocked inside Xlib, and queueing behind it would spread the stall to the caller. A contended activation returns `false` and takes the Wails present() fallback.
 
 The X error swallower (`x11_install_swallow`) is installed exactly once per process. `XSetErrorHandler` is process-global and returns the handler it replaced, so re-installing per call makes the saved "previous" handler the swallower itself — an error on any display other than the private one then recurses until the thread's stack is gone.
@@ -129,6 +131,8 @@ On Linux, `SendSystemNotification` routes through `sendNotificationPlatform`: a 
 3. **Wails fallback** — any D-Bus failure (no session bus, daemon error, dead connection) drops the connection, logs a warning, and re-sends through the Wails transport: icon-less but delivered, with the identical click path.
 
 The `Notify` call also carries the freedesktop `desktop-entry` hint (`"c0wrk"`), which binds the banner to the installed `c0wrk.desktop`: grouping, the source name, the per-application entries in the desktop's own notification settings, and — on daemons that prefer it over `app_icon` — the icon. A system without that `.desktop` file leaves the hint unresolvable and daemons fall back to `app_name`/`app_icon`, so sending it is never worse than omitting it.
+
+At dial time the transport probes the daemon's `GetCapabilities` once. A daemon that does not advertise `actions` ignores the action list every send carries, so `ActionInvoked` never arrives and clicking a banner does nothing — banners appear, clicks silently fail. The probe turns that into a warning naming the capabilities the daemon did report. It is diagnostic only: any probe failure is a debug line, never a failed send.
 
 Click routing coexists with the Wails transport without double delivery: each notification is tracked by exactly one side's pending map (ours for our sends, Wails' for fallback sends), and both funnel into the same `App.notificationCallback`. Our signal handler subscribes to `ActionInvoked`/`NotificationClosed`, maps the `default` action (and close reason 2, the same dismiss quirk as Wails) to `NotificationResult{ActionIdentifier: "DEFAULT_ACTION"}`, and ignores foreign ids. A failed send tears the connection down so the next send redials. `Shutdown` closes our connection before the Wails cleanup.
 
@@ -182,6 +186,7 @@ Linux only: `sendNotificationPlatform` on macOS/Windows accepts the value for si
 - The private X activation connection is opened once per process and stays open; activations serialize through `TryLock`, so a stalled activation is skipped rather than queued behind.
 - The resolved banner lifetime falls back to the daemon default (`-1`) whenever the config is unreachable, never to "never expires" (`0`), and every value reaching the D-Bus call is within `[-1, 86400]` seconds however the config was edited.
 - Each signal pump routes to the callback it was started with, so the transport holds no dispatch state a redial could overwrite.
+- The cached activation target is used only while it is still a managed window carrying this process's pid; otherwise it is discarded and rediscovered.
 
 ## Known Limitations
 
@@ -191,6 +196,8 @@ Linux only: `sendNotificationPlatform` on macOS/Windows accepts the value for si
 - Banner expiry is invisible to the app: a daemon may retire a banner without emitting `NotificationClosed`, so a banner the user never acted on leaves no trace — `banner_timeout_seconds: 0` is the way to keep such a banner reachable.
 - A banner sent with `banner_timeout_seconds: 0` stays on screen after the user handles the request inside the app; c0wrk never calls `CloseNotification`, so stale attention banners are dismissed by hand.
 - The X11 activation transport is X11-only by construction: on a Wayland session `XOpenDisplay` fails → the fail-soft `WindowUnminimise` fallback runs (GTK/`gtk_window_present` may still be honored by the compositor depending on its focus policy). A native Wayland activation path would require the foreign-toplevel-management protocol and is not implemented.
+- On a Wayland session that also runs XWayland, `XOpenDisplay` succeeds and the connection is kept for the process even though the app's toplevel is a Wayland surface that can never appear in `_NET_CLIENT_LIST`. Each activation then costs one property read before falling back. The cache never fills, so the per-window walk is not paid; closing the connection instead is not an option (see [X connection lifetime](#x-connection-lifetime)).
+- A notification daemon without the `actions` capability never emits `ActionInvoked`, so on such a desktop only dismissing a banner routes, never clicking it. The dial-time probe reports this at warn rather than working around it.
 - The pager-source activation is, by EWMH semantics, a "taskbar click" — a user actively typing in another window at that exact moment keeps their focus (the WM resolves the race; the window still raises).
 
 ## Related Specs

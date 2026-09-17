@@ -36,7 +36,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev build-essential pkg-config xvfb ripgrep
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libx11-dev build-essential pkg-config xvfb ripgrep
 
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0
@@ -246,7 +246,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev build-essential pkg-config
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libx11-dev build-essential pkg-config
 
       # Runs the exact same command as local `make vulncheck` (the Makefile
       # pins the govulncheck version), so local and CI results are identical.

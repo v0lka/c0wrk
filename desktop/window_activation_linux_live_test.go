@@ -3,6 +3,7 @@
 package desktop
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -40,11 +41,23 @@ func TestX11ActivateOwnWindowLive(t *testing.T) {
 
 	activeBefore := strings.TrimSpace(mustOut(t, "xdotool", "getactivewindow"))
 
-	// Wire the production debug hook to the test log to pinpoint any
-	// failing discovery step.
+	// Wire the production debug hook to the test log to pinpoint any failing
+	// discovery step, keeping the lines so the cache assertion below can read
+	// which path the activation took.
+	var steps []string
 	origDebug := x11ActivateDebug
-	x11ActivateDebug = func(format string, args ...any) { t.Logf("x11: "+format, args...) }
+	x11ActivateDebug = func(format string, args ...any) {
+		line := fmt.Sprintf(format, args...)
+		steps = append(steps, line)
+		t.Log("x11: " + line)
+	}
 	defer func() { x11ActivateDebug = origDebug }()
+
+	// The cache is process-global; a previous test in this binary may have
+	// filled it with a window that no longer exists.
+	x11ActivationMu.Lock()
+	x11TargetWindow = 0
+	x11ActivationMu.Unlock()
 
 	// Scratch window via PyGObject (GTK sets _NET_WM_PID and
 	// _NET_WM_WINDOW_TYPE=NORMAL exactly like the real app does; the PID is
@@ -130,6 +143,23 @@ Gtk.main()
 	}
 	if active != scratchXID {
 		t.Fatalf("activation did not make the owned window active: %s, want %s", active, scratchXID)
+	}
+
+	// A second activation must take the cached XID: rediscovery reads two
+	// properties per managed window, and a notification click would pay that
+	// on every single click.
+	steps = nil
+	if !x11ActivateOwnWindow() {
+		t.Fatal("second x11ActivateOwnWindow returned false")
+	}
+	cached := false
+	for _, step := range steps {
+		if strings.HasPrefix(step, "activating cached window") {
+			cached = true
+		}
+	}
+	if !cached {
+		t.Errorf("second activation rediscovered instead of using the cache; steps: %v", steps)
 	}
 
 	// Restore the previously focused window (courtesy).

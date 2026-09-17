@@ -3,8 +3,10 @@
 package desktop
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,6 +34,12 @@ type fakeDBusConn struct {
 	nextID      uint32
 	notifyErr   error
 	storeErr    error
+
+	// capabilities is what GetCapabilities answers. nil means "the common
+	// freedesktop set", so the many tests that never think about the probe
+	// exercise the healthy path without scripting it; set it explicitly to
+	// drive the degraded one.
+	capabilities []string
 }
 
 // fakeNotifyCall records the arguments of one Notify invocation.
@@ -75,6 +83,14 @@ func (f *fakeDBusConn) Call(method string, _ dbus.Flags, args ...any) *dbus.Call
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	call := &dbus.Call{Method: method}
+	if strings.HasSuffix(method, ".GetCapabilities") {
+		caps := f.capabilities
+		if caps == nil {
+			caps = []string{"body", "body-markup", dbusCapabilityActions, "persistence"}
+		}
+		call.Body = []any{caps}
+		return call
+	}
 	if f.notifyErr != nil {
 		call.Err = f.notifyErr
 		return call
@@ -175,7 +191,7 @@ func TestPlatformSend_NotifyArgumentsAndIconExport(t *testing.T) {
 		Title: "Title",
 		Body:  "Body",
 		Data:  map[string]any{"sessionId": "sess-1"},
-	}, results.dispatch, dbusNotificationTimeoutDefault)
+	}, results.dispatch, dbusNotificationTimeoutDefault, testLogger())
 	if err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
@@ -226,7 +242,7 @@ func TestPlatformSend_IconFallsBackToThemeNameWhenCacheUnwritable(t *testing.T) 
 	t.Cleanup(func() { notificationIconCacheDir = origCache })
 
 	st := &platformNotificationState{}
-	if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
+	if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault, testLogger()); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 	if icon := conn.notifyCalls[0].icon; icon != "c0wrk" {
@@ -239,7 +255,7 @@ func TestPlatformSend_DialFailureReturnsError(t *testing.T) {
 	results := withFakeBus(t, conn)
 	st := &platformNotificationState{}
 
-	err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault)
+	err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault, testLogger())
 	if err == nil {
 		t.Fatal("expected a dial error")
 	}
@@ -253,7 +269,7 @@ func TestPlatformSend_NotifyFailureDropsConnection(t *testing.T) {
 	results := withFakeBus(t, conn)
 	st := &platformNotificationState{}
 
-	err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault)
+	err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault, testLogger())
 	if err == nil {
 		t.Fatal("expected the notify error to surface")
 	}
@@ -274,7 +290,7 @@ func TestPlatformSignalRouting_DefaultAction(t *testing.T) {
 		Title: "t",
 		Body:  "b",
 		Data:  map[string]any{"sessionId": "sess-7", "projectId": "proj-3"},
-	}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
+	}, results.dispatch, dbusNotificationTimeoutDefault, testLogger()); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 
@@ -310,7 +326,7 @@ func TestPlatformSignalRouting_Reason2Quirk(t *testing.T) {
 	conn := &fakeDBusConn{}
 	results := withFakeBus(t, conn)
 	st := &platformNotificationState{}
-	if err := st.send(wailsRuntime.NotificationOptions{ID: "n-close", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
+	if err := st.send(wailsRuntime.NotificationOptions{ID: "n-close", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault, testLogger()); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 
@@ -332,7 +348,7 @@ func TestPlatformSignalRouting_OtherCloseReasonsIgnored(t *testing.T) {
 	conn := &fakeDBusConn{}
 	results := withFakeBus(t, conn)
 	st := &platformNotificationState{}
-	if err := st.send(wailsRuntime.NotificationOptions{ID: "n-timeout", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
+	if err := st.send(wailsRuntime.NotificationOptions{ID: "n-timeout", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault, testLogger()); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 	// id 1 expired (reason 1): consumed but never dispatched.
@@ -354,7 +370,7 @@ func TestPlatformSignalRouting_NonDefaultActionIgnored(t *testing.T) {
 	conn := &fakeDBusConn{}
 	results := withFakeBus(t, conn)
 	st := &platformNotificationState{}
-	if err := st.send(wailsRuntime.NotificationOptions{ID: "n-x", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
+	if err := st.send(wailsRuntime.NotificationOptions{ID: "n-x", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault, testLogger()); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 	conn.emitSignal(t, &dbus.Signal{
@@ -368,7 +384,7 @@ func TestPlatformTeardown_ClosesConnectionAndStopsPump(t *testing.T) {
 	conn := &fakeDBusConn{}
 	results := withFakeBus(t, conn)
 	st := &platformNotificationState{}
-	if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
+	if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault, testLogger()); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 
@@ -411,7 +427,7 @@ func TestCleanupNotifications_TeardownOwnTransport(t *testing.T) {
 	results := withFakeBus(t, conn)
 	// Drive the production singleton through the dial seam.
 	linuxNotifications.teardown() // isolate from any earlier test
-	if err := linuxNotifications.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
+	if err := linuxNotifications.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault, testLogger()); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 
@@ -465,7 +481,7 @@ func TestPlatformSend_ConcurrentSendsGetDistinctIDs(t *testing.T) {
 				ID:    "concurrent-" + strings.Repeat("x", i+1),
 				Title: "t",
 				Body:  "b",
-			}, results.dispatch, dbusNotificationTimeoutDefault)
+			}, results.dispatch, dbusNotificationTimeoutDefault, testLogger())
 		}()
 	}
 	wg.Wait()
@@ -498,7 +514,7 @@ func TestPlatformSend_IconCacheHitReusesExportedURI(t *testing.T) {
 
 	send := func(id string) string {
 		t.Helper()
-		if err := st.send(wailsRuntime.NotificationOptions{ID: id, Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
+		if err := st.send(wailsRuntime.NotificationOptions{ID: id, Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault, testLogger()); err != nil {
 			t.Fatalf("send %s failed: %v", id, err)
 		}
 		return conn.notifyCalls[len(conn.notifyCalls)-1].icon
@@ -528,7 +544,7 @@ func TestPlatformSend_IconFallbackVariants(t *testing.T) {
 		results := withFakeBus(t, conn)
 		notificationIconCacheDir = func() (string, error) { return "", errors.New("no cache dir") }
 		st := &platformNotificationState{}
-		if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
+		if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault, testLogger()); err != nil {
 			t.Fatalf("send failed: %v", err)
 		}
 		if icon := conn.notifyCalls[0].icon; icon != notificationIconThemeName {
@@ -547,7 +563,7 @@ func TestPlatformSend_IconFallbackVariants(t *testing.T) {
 		}
 		notificationIconCacheDir = func() (string, error) { return blocker, nil }
 		st := &platformNotificationState{}
-		if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
+		if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault, testLogger()); err != nil {
 			t.Fatalf("send failed: %v", err)
 		}
 		if icon := conn.notifyCalls[0].icon; icon != notificationIconThemeName {
@@ -566,7 +582,7 @@ func TestPlatformSend_IconFallbackVariants(t *testing.T) {
 		}
 		notificationIconCacheDir = func() (string, error) { return cache, nil }
 		st := &platformNotificationState{}
-		if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
+		if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault, testLogger()); err != nil {
 			t.Fatalf("send failed: %v", err)
 		}
 		if icon := conn.notifyCalls[0].icon; icon != notificationIconThemeName {
@@ -589,7 +605,7 @@ func TestPlatformSend_IconURIEncodesSpaces(t *testing.T) {
 	notificationIconCacheDir = func() (string, error) { return cache, nil }
 
 	st := &platformNotificationState{}
-	if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
+	if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault, testLogger()); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 	icon := conn.notifyCalls[0].icon
@@ -694,7 +710,7 @@ func TestPlatformSignalRouting_MalformedSignalsIgnored(t *testing.T) {
 		ID:    "n-malformed",
 		Title: "t", Body: "b",
 		Data: map[string]any{"sessionId": "sess-m"},
-	}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
+	}, results.dispatch, dbusNotificationTimeoutDefault, testLogger()); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 
@@ -737,7 +753,7 @@ func TestPlatformSignalRouting_CloseReasons3And4Ignored(t *testing.T) {
 	conn := &fakeDBusConn{}
 	results := withFakeBus(t, conn)
 	st := &platformNotificationState{}
-	if err := st.send(wailsRuntime.NotificationOptions{ID: "n-reasons", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
+	if err := st.send(wailsRuntime.NotificationOptions{ID: "n-reasons", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault, testLogger()); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 
@@ -781,7 +797,7 @@ func TestPlatformSignalRouting_IntegrationThroughNotificationCallback(t *testing
 		ID:    "n-int",
 		Title: "t", Body: "b",
 		Data: map[string]any{"sessionId": "sess-int", "projectId": "proj-int"},
-	}, f.app.notificationCallback, dbusNotificationTimeoutDefault); err != nil {
+	}, f.app.notificationCallback, dbusNotificationTimeoutDefault, testLogger()); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 
@@ -835,7 +851,7 @@ func TestLiveDBusNotification(t *testing.T) {
 		Title: "c0wrk — live D-Bus notification test",
 		Body:  "Real banner via c0wrk's own org.freedesktop.Notifications transport. It should carry the c0wrk icon.",
 		Data:  map[string]any{"sessionId": "live-dbus-test"},
-	}, results.dispatch, dbusNotificationTimeoutDefault)
+	}, results.dispatch, dbusNotificationTimeoutDefault, testLogger())
 	if err != nil {
 		t.Fatalf("live D-Bus send failed: %v", err)
 	}
@@ -924,7 +940,7 @@ func TestSendForwardsConfiguredExpireTimeout(t *testing.T) {
 			results := withFakeBus(t, conn)
 			st := &platformNotificationState{}
 			if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"},
-				results.dispatch, tc.timeout); err != nil {
+				results.dispatch, tc.timeout, testLogger()); err != nil {
 				t.Fatalf("send failed: %v", err)
 			}
 			if len(conn.notifyCalls) != 1 {
@@ -947,7 +963,7 @@ func TestNotifyCarriesDesktopEntryHint(t *testing.T) {
 	results := withFakeBus(t, conn)
 	st := &platformNotificationState{}
 	if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"},
-		results.dispatch, dbusNotificationTimeoutDefault); err != nil {
+		results.dispatch, dbusNotificationTimeoutDefault, testLogger()); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 	if len(conn.notifyCalls) != 1 {
@@ -999,5 +1015,58 @@ func TestPumpRoutesToItsOwnDispatch(t *testing.T) {
 	}
 	if got := second.snapshot()[0].Response.ID; got != "from-second-dial" {
 		t.Errorf("second pump routed %q, want from-second-dial", got)
+	}
+}
+
+// testLogger discards output; tests that assert on log content build their own.
+func testLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
+
+// TestCapabilityProbeWarnsWhenActionsMissing pins the dial-time diagnostic. A
+// daemon without the "actions" capability ignores the action list every send
+// carries, so ActionInvoked never arrives and clicking a banner does nothing.
+// The failure is otherwise invisible — banners appear, clicks silently do not
+// work — so the warning is the only thing that makes it diagnosable.
+func TestCapabilityProbeWarnsWhenActionsMissing(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		caps     []string
+		wantWarn bool
+	}{
+		{"actions advertised", []string{"body", dbusCapabilityActions}, false},
+		{"actions missing", []string{"body", "persistence"}, true},
+		{"no capabilities at all", []string{}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := &fakeDBusConn{capabilities: tc.caps}
+			results := withFakeBus(t, conn)
+			var logs bytes.Buffer
+			log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+			st := &platformNotificationState{}
+			if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"},
+				results.dispatch, dbusNotificationTimeoutDefault, log); err != nil {
+				t.Fatalf("send failed: %v", err)
+			}
+
+			warned := strings.Contains(logs.String(), "does not advertise")
+			if warned != tc.wantWarn {
+				t.Errorf("warning emitted = %v, want %v; log: %s", warned, tc.wantWarn, logs.String())
+			}
+		})
+	}
+}
+
+// TestCapabilityProbeNeverFailsASend pins the fail-soft contract: a daemon
+// that cannot answer the probe still gets the notification.
+func TestCapabilityProbeNeverFailsASend(t *testing.T) {
+	conn := &fakeDBusConn{capabilities: []string{}}
+	results := withFakeBus(t, conn)
+	st := &platformNotificationState{}
+	if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"},
+		results.dispatch, dbusNotificationTimeoutDefault, nil); err != nil {
+		t.Fatalf("send failed with a nil logger: %v", err)
+	}
+	if len(conn.notifyCalls) != 1 {
+		t.Errorf("Notify calls = %d, want 1 — the probe must not consume the send", len(conn.notifyCalls))
 	}
 }

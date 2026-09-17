@@ -5,9 +5,11 @@ package desktop
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -79,6 +81,13 @@ const (
 	// daemons fall back to app_name/app_icon, so sending it is never worse
 	// than omitting it.
 	notificationDesktopEntry = "c0wrk"
+
+	// dbusCapabilityActions is the capability a daemon advertises when it
+	// honors the action list a notification carries. Without it the `default`
+	// action is ignored, no ActionInvoked signal is ever emitted, and the
+	// only routing left is the reason-2 dismiss quirk — see the dial-time
+	// probe in ensureDialLocked.
+	dbusCapabilityActions = "actions"
 
 	// notificationPendingTTL / notificationPendingMax bound the routing map.
 	// Entries are normally consumed by ActionInvoked/NotificationClosed, but
@@ -189,7 +198,7 @@ var linuxNotifications platformNotificationState
 // deliver through the icon-augmented D-Bus transport, falling back to the
 // Wails transport on any failure.
 func (a *App) sendNotificationPlatform(ctx context.Context, options wailsRuntime.NotificationOptions, expireTimeoutMs int32) error {
-	if err := linuxNotifications.send(options, a.notificationCallback, expireTimeoutMs); err != nil {
+	if err := linuxNotifications.send(options, a.notificationCallback, expireTimeoutMs, a.log()); err != nil {
 		a.log().Warn("linux D-Bus notification transport failed; falling back to the Wails transport",
 			"error", err)
 		return a.sendNotificationViaWails(ctx, options)
@@ -205,11 +214,11 @@ func (a *App) cleanupNotificationTransport() {
 
 // send delivers one notification over D-Bus. Callers hold no locks; the
 // state mutex serializes sends and guards the lazy dial.
-func (s *platformNotificationState) send(options wailsRuntime.NotificationOptions, dispatch func(wailsRuntime.NotificationResult), expireTimeoutMs int32) error {
+func (s *platformNotificationState) send(options wailsRuntime.NotificationOptions, dispatch func(wailsRuntime.NotificationResult), expireTimeoutMs int32, log *slog.Logger) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.ensureDialLocked(dispatch); err != nil {
+	if err := s.ensureDialLocked(dispatch, log); err != nil {
 		return err
 	}
 
@@ -253,7 +262,7 @@ func (s *platformNotificationState) send(options wailsRuntime.NotificationOption
 
 // ensureDialLocked dials the session bus on first use and starts the signal
 // pump. Must be called with s.mu held.
-func (s *platformNotificationState) ensureDialLocked(dispatch func(wailsRuntime.NotificationResult)) error {
+func (s *platformNotificationState) ensureDialLocked(dispatch func(wailsRuntime.NotificationResult), log *slog.Logger) error {
 	if s.conn != nil {
 		return nil
 	}
@@ -276,6 +285,13 @@ func (s *platformNotificationState) ensureDialLocked(dispatch func(wailsRuntime.
 		return fmt.Errorf("subscribe NotificationClosed: %w", err)
 	}
 
+	// Capability probe, once per dial: purely diagnostic, never fatal. A
+	// daemon that does not advertise "actions" silently ignores the action
+	// list every send carries, so no ActionInvoked ever arrives and a banner
+	// click does nothing. Without this line that degradation is invisible —
+	// banners appear, clicks do not work, and nothing says why.
+	logActionsCapability(conn, log)
+
 	pumpCtx, cancel := context.WithCancel(context.Background())
 	signals := make(chan *dbus.Signal, 16)
 	conn.Signal(signals)
@@ -290,6 +306,34 @@ func (s *platformNotificationState) ensureDialLocked(dispatch func(wailsRuntime.
 	// signalled but not yet stopped — is still reading it to route a signal.
 	go s.pumpSignals(pumpCtx, signals, dispatch)
 	return nil
+}
+
+// logActionsCapability reads the daemon's GetCapabilities and reports whether
+// banner clicks can route at all. Every failure path is a debug line and a
+// return: a daemon that does not answer the probe is not a reason to fail a
+// send.
+func logActionsCapability(conn dbusDialer, log *slog.Logger) {
+	if log == nil {
+		return
+	}
+	call := conn.Object(dbusNotificationsInterface, dbusNotificationsPath).
+		Call(dbusNotificationsInterface+".GetCapabilities", 0)
+	if call.Err != nil {
+		log.Debug("notification daemon capability probe failed", "error", call.Err)
+		return
+	}
+	var caps []string
+	if err := call.Store(&caps); err != nil {
+		log.Debug("notification daemon capability probe returned an unexpected shape", "error", err)
+		return
+	}
+	if !slices.Contains(caps, dbusCapabilityActions) {
+		log.Warn("notification daemon does not advertise the \"actions\" capability; "+
+			"clicking a banner will not open its session (only dismissing it can)",
+			"capabilities", caps)
+		return
+	}
+	log.Debug("notification daemon capabilities", "capabilities", caps)
 }
 
 // pumpSignals forwards matched signals to the handlers until the state is

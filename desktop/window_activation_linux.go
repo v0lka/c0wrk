@@ -141,6 +141,7 @@ import "C" //nolint:gocritic // dupImport false positive: the C pseudo-package i
 import (
 	"os"
 	goruntime "runtime"
+	"slices"
 	"sync"
 	"time"
 	"unsafe" //nolint:gocritic // dupImport false positive (cgo import mangling)
@@ -229,6 +230,18 @@ func x11ActivateOwnWindow() bool {
 	x11Debug("client list: %d windows, own pid %d", len(list), os.Getpid())
 
 	pid := C.ulong(os.Getpid())
+	pidAtom := C.XInternAtom(d, pidName, C.False)
+
+	// Fast path: the window this process activated last time, still managed
+	// and still ours. Re-validating the cache is one property read; the walk
+	// below costs up to two per managed window on the display, on EVERY
+	// activation — and a notification click runs one.
+	if cached := x11CachedTarget(d, list, pidAtom, pid); cached != 0 {
+		x11Debug("activating cached window %d", uint64(cached))
+		C.x11_activate(d, root, cached, x11ServerTimestamp(d, root))
+		return true
+	}
+
 	windowTypeName := C.CString("_NET_WM_WINDOW_TYPE")
 	defer C.free(unsafe.Pointer(windowTypeName))
 	windowTypeAtom := C.XInternAtom(d, windowTypeName, C.False)
@@ -238,14 +251,7 @@ func x11ActivateOwnWindow() bool {
 	// _NET_WM_WINDOW_TYPE must not lose activation entirely).
 	var target, anyPID C.ulong
 	for _, w := range list {
-		var pn C.ulong
-		praw := C.x11_cardinal_list(d, w, C.XInternAtom(d, pidName, C.False), &pn)
-		if praw == nil {
-			continue
-		}
-		wp := *praw
-		C.XFree(unsafe.Pointer(praw))
-		if wp != pid {
+		if x11WindowPID(d, w, pidAtom) != pid {
 			continue
 		}
 		if anyPID == 0 {
@@ -263,11 +269,47 @@ func x11ActivateOwnWindow() bool {
 		x11Debug("no window with _NET_WM_PID == %d", os.Getpid())
 		return false
 	}
+	x11TargetWindow = target
 	x11Debug("activating window %d", uint64(target))
 
 	ts := x11ServerTimestamp(d, root)
 	C.x11_activate(d, root, target, ts)
 	return true
+}
+
+// x11TargetWindow caches the own-window XID discovered by the last successful
+// activation, so a repeat activation skips the per-window property walk.
+// Guarded by x11ActivationMu together with x11Conn.
+var x11TargetWindow C.ulong
+
+// x11CachedTarget returns the cached own-window XID when it is still valid,
+// else 0 (clearing the cache). Validity is two checks against the CURRENT
+// client list: the window is still managed, and it still carries this
+// process's _NET_WM_PID — the second guards against an XID the server has
+// recycled to another client since the last activation.
+func x11CachedTarget(d *C.Display, list []C.ulong, pidAtom C.Atom, pid C.ulong) C.ulong {
+	if x11TargetWindow == 0 {
+		return 0
+	}
+	if !slices.Contains(list, x11TargetWindow) || x11WindowPID(d, x11TargetWindow, pidAtom) != pid {
+		x11Debug("cached window %d is stale; rediscovering", uint64(x11TargetWindow))
+		x11TargetWindow = 0
+		return 0
+	}
+	return x11TargetWindow
+}
+
+// x11WindowPID reads a window's _NET_WM_PID (0 when the property is absent or
+// malformed — an unmanaged or non-EWMH window).
+func x11WindowPID(d *C.Display, w C.ulong, pidAtom C.Atom) C.ulong {
+	var n C.ulong
+	raw := C.x11_cardinal_list(d, w, pidAtom, &n)
+	if raw == nil {
+		return 0
+	}
+	got := *raw
+	C.XFree(unsafe.Pointer(raw))
+	return got
 }
 
 // x11Conn is the process-wide private X11 activation connection, opened
