@@ -366,6 +366,56 @@ func IsResearchPath(researchRoot, absPath string) bool {
 	return ok
 }
 
+// PaperLibraryPathIn returns the literature ("papers") library directory
+// nested inside a research root: <researchRoot>/papers. The library is a
+// global subdirectory of the research root — it holds every paper card
+// regardless of how many R-NNN research projects exist (and even when none
+// does), so it outlives any single research project. Callers pass the
+// project's effective research root (ProjectInfo.ResearchRoot when RESEARCH is
+// enabled, else ProjectResearchPath) so a custom research root carries its own
+// library. The directory is created lazily by the writer layer (core/papers)
+// and by the watcher setup, not by this path helper.
+func PaperLibraryPathIn(researchRoot string) string {
+	return filepath.Join(researchRoot, "papers")
+}
+
+// PaperLibraryPath returns the project-local literature ("papers") library
+// directory: <workspacePath>/.research/papers — i.e. PaperLibraryPathIn applied
+// to the default research root (ProjectResearchPath). It is the well-known
+// location used when the project has no custom research root (RESEARCH off, or
+// enabled with the default root). The directory is created lazily by the writer
+// layer (core/papers), not by this path helper.
+func PaperLibraryPath(workspacePath string) string {
+	return PaperLibraryPathIn(ProjectResearchPath(workspacePath))
+}
+
+// ComparisonDirName is the research-root subdirectory holding multi-paper
+// comparison artifacts. It sits beside the paper library (papers/) because a
+// comparison spans papers from across the library and therefore belongs to no
+// single paper directory.
+const ComparisonDirName = "comparisons"
+
+// ComparisonsPathIn returns the multi-paper comparison directory nested inside
+// a research root: <researchRoot>/comparisons. It holds one Markdown artifact
+// per comparison set (<slug>.md), written by the study-paper Compare intent
+// from its comparison-matrix template. Like the paper library, it is a global
+// subdirectory of the research root and is created lazily by whoever writes the
+// artifact (the agent's skill), not by this path helper. Callers pass the
+// project's effective research root so a custom research root carries its own
+// comparisons.
+func ComparisonsPathIn(researchRoot string) string {
+	return filepath.Join(researchRoot, ComparisonDirName)
+}
+
+// ComparisonsPath returns the project-local multi-paper comparison directory:
+// <workspacePath>/.research/comparisons — i.e. ComparisonsPathIn applied to the
+// default research root (ProjectResearchPath). It is the well-known location
+// used when the project has no custom research root (RESEARCH off, or enabled
+// with the default root).
+func ComparisonsPath(workspacePath string) string {
+	return ComparisonsPathIn(ProjectResearchPath(workspacePath))
+}
+
 // SessionStepDumpDir returns the per-step dump directory for a session,
 // derived from the session's LLM dump path.
 func SessionStepDumpDir(agentDir, projectID, sessionID string) string {

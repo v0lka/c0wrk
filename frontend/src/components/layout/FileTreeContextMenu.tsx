@@ -1,6 +1,13 @@
-import { useEffect, useCallback, useRef, useState } from 'react'
-import { Terminal, Copy, Eye, EyeOff, History, Loader2 } from 'lucide-react'
+import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
+import { Terminal, Copy, Eye, EyeOff, History, Loader2, Microscope, ChevronLeft } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useMessageSender } from '@/hooks/useMessageSender'
+import {
+  STUDY_MODE_OPTIONS,
+  STUDY_PAPER_SKILL,
+  buildStudyPrompt,
+  type StudyMode,
+} from '@/components/papers/paperActions'
 import { appendToGitignore } from '@/api/git'
 import { emit, clipboardSetText } from '@/api/runtime'
 import { useInputModeStore } from '@/stores/inputModeStore'
@@ -57,8 +64,27 @@ export function FileTreeContextMenu({
   const menuRef = useRef<HTMLDivElement>(null)
   const [isIgnoring, setIsIgnoring] = useState(false)
   const relativePath = toRelativePath(entry.path, workspaceRoot ?? undefined)
+  // Whether the "Study this paper…" reading-depth picker has replaced the main
+  // item list. Declared here so the placement below can re-measure when it flips.
+  const [studyOpen, setStudyOpen] = useState(false)
+
+  // The placement hook recomputes only when the anchor identity changes (or on
+  // window resize). Flipping `studyOpen` swaps the menu's contents for the
+  // TALLER depth picker without moving the pointer, so the anchor identity must
+  // track it: otherwise the flip/clamp decision is made against the stale
+  // (shorter) height and the picker can grow past the window bottom. `reseed`
+  // carries that state into the identity (the hook ignores the extra field).
+  const anchorX = position?.x
+  const anchorY = position?.y
+  const anchor = useMemo(
+    () =>
+      anchorX === undefined || anchorY === undefined
+        ? null
+        : { x: anchorX, y: anchorY, reseed: studyOpen },
+    [anchorX, anchorY, studyOpen],
+  )
   // Zoom-corrected, viewport-clamped placement (left/top in layout px).
-  const menuPosition = useCursorMenuPosition(position, menuRef)
+  const menuPosition = useCursorMenuPosition(anchor, menuRef)
 
   // Git-only actions ("Add to .gitignore", "View History") make no sense in
   // a project whose workspace is not a git repository — the Git panel does
@@ -67,6 +93,42 @@ export function FileTreeContextMenu({
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const isGitRepo = useGitPanelStore(
     (s) => s.isGitRepo && s.gitRepoProjectId === activeProjectId,
+  )
+
+  // --- Study this paper… (PDF files only) ---
+  // The `study-paper` skill accepts a PDF at a path; the gesture opens a
+  // compact reading-depth picker inside the menu, then dispatches the skill
+  // with the file path and the chosen depth.
+  const { send } = useMessageSender()
+  const isPdf = !entry.is_dir && entry.path.toLowerCase().endsWith('.pdf')
+
+  // Drop the depth picker whenever the menu retargets another entry or closes
+  // (the position prop is a fresh object per open; x/y pin the actual point,
+  // so a plain re-render with the same point never resets the picker).
+  useEffect(() => {
+    setStudyOpen(false)
+  }, [entry.path, position?.x, position?.y])
+
+  const handleStudy = useCallback(
+    (mode: StudyMode) => {
+      setStudyOpen(false)
+      // send() reports send failures in-chat itself; it rethrows only when the
+      // auto-created session fails (the documented splash race). The file tree
+      // has no panel-level error banner, so surface that as a runtime error.
+      Promise.resolve(
+        send(buildStudyPrompt(entry.path, mode), [STUDY_PAPER_SKILL], undefined, undefined, {
+          newSession: false,
+        }),
+      ).catch((err) => {
+        logger.error('Failed to dispatch study-paper:', err)
+        emit('runtime_error', {
+          id: crypto.randomUUID(),
+          message: 'Failed to start studying the paper',
+        })
+      })
+      onClose()
+    },
+    [entry.path, send, onClose],
   )
 
   // --- Open in Viewer (files only) ---
@@ -196,64 +258,110 @@ export function FileTreeContextMenu({
             'animate-in fade-in-0 zoom-in-95',
           )}
         >
-          {!entry.is_dir && (
-            <button
-              role="menuitem"
-              onClick={handleOpenInViewer}
-              className={menuItemClass}
-            >
-              <Eye className="size-4" />
-              Open in Viewer
-            </button>
-          )}
-          {!entry.is_dir && <MenuSeparator />}
-          {entry.is_dir && (
-            <button
-              role="menuitem"
-              onClick={handleOpenInTerminal}
-              className={menuItemClass}
-            >
-              <Terminal className="size-4" />
-              Open in Terminal
-            </button>
-          )}
-          {entry.is_dir && <MenuSeparator />}
-          <button
-            role="menuitem"
-            onClick={handleCopyPath}
-            className={menuItemClass}
-          >
-            <Copy className="size-4" />
-            Copy Path
-          </button>
-          <button
-            role="menuitem"
-            onClick={handleCopyRelativePath}
-            className={menuItemClass}
-          >
-            <Copy className="size-4" />
-            Copy Relative Path
-          </button>
-          {isGitRepo && (
+          {studyOpen ? (
             <>
+              <div className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Reading depth
+              </div>
+              {STUDY_MODE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  role="menuitem"
+                  data-testid={`file-study-mode-${option.value}`}
+                  onClick={() => handleStudy(option.value)}
+                  className={menuItemClass}
+                >
+                  <Microscope className="size-4" />
+                  {option.label}
+                </button>
+              ))}
               <MenuSeparator />
               <button
                 role="menuitem"
-                disabled={isIgnoring}
-                onClick={() => void handleAddToGitignore()}
+                data-testid="file-study-back"
+                onClick={() => setStudyOpen(false)}
                 className={menuItemClass}
               >
-                {isIgnoring ? <Loader2 className="size-4 animate-spin" /> : <EyeOff className="size-4" />}
-                Add to .gitignore
+                <ChevronLeft className="size-4" />
+                Back
+              </button>
+            </>
+          ) : (
+            <>
+              {!entry.is_dir && (
+                <button
+                  role="menuitem"
+                  onClick={handleOpenInViewer}
+                  className={menuItemClass}
+                >
+                  <Eye className="size-4" />
+                  Open in Viewer
+                </button>
+              )}
+              {!entry.is_dir && <MenuSeparator />}
+              {isPdf && (
+                <>
+                  <button
+                    role="menuitem"
+                    data-testid="file-study-open"
+                    onClick={() => setStudyOpen(true)}
+                    className={menuItemClass}
+                  >
+                    <Microscope className="size-4" />
+                    Study this paper…
+                  </button>
+                  <MenuSeparator />
+                </>
+              )}
+              {entry.is_dir && (
+                <button
+                  role="menuitem"
+                  onClick={handleOpenInTerminal}
+                  className={menuItemClass}
+                >
+                  <Terminal className="size-4" />
+                  Open in Terminal
+                </button>
+              )}
+              {entry.is_dir && <MenuSeparator />}
+              <button
+                role="menuitem"
+                onClick={handleCopyPath}
+                className={menuItemClass}
+              >
+                <Copy className="size-4" />
+                Copy Path
               </button>
               <button
                 role="menuitem"
-                onClick={handleViewHistory}
+                onClick={handleCopyRelativePath}
                 className={menuItemClass}
               >
-                <History className="size-4" />
-                View History
+                <Copy className="size-4" />
+                Copy Relative Path
               </button>
+              {isGitRepo && (
+                <>
+                  <MenuSeparator />
+                  <button
+                    role="menuitem"
+                    disabled={isIgnoring}
+                    onClick={() => void handleAddToGitignore()}
+                    className={menuItemClass}
+                  >
+                    {isIgnoring ? <Loader2 className="size-4 animate-spin" /> : <EyeOff className="size-4" />}
+                    Add to .gitignore
+                  </button>
+                  <button
+                    role="menuitem"
+                    onClick={handleViewHistory}
+                    className={menuItemClass}
+                  >
+                    <History className="size-4" />
+                    View History
+                  </button>
+                </>
+              )}
             </>
           )}
         </div>

@@ -7,7 +7,7 @@ React 19 application providing the user interface for c0wrk: chat interaction, p
 ## Key Files
 
 - `frontend/src/App.tsx` — root component
-- `frontend/src/stores/` — Zustand state management (28 stores)
+- `frontend/src/stores/` — Zustand state management (30 stores)
 - `frontend/src/hooks/` — custom React hooks (event handlers, data loading)
 - `frontend/src/api/` — backend RPC wrapper layer
 - `frontend/src/lib/` — utilities (fuzzyMatch, parseReferences, markdown config + local image resolution, local file link detection, CodeMirror extensions, the UI-scale geometry helpers `layoutSpace` + `cursorMenuPosition`, and the `@floating-ui/dom` zoom compensation `floatingUiZoom`)

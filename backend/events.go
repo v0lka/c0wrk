@@ -135,6 +135,18 @@ const EventResearchChanged = "research:changed"
 // incrementally update the hypothesis graph without a full status refetch.
 const EventResearchFileChanged = "research:file_changed"
 
+// EventPapersChanged is emitted when a file inside the active project's paper
+// library (<research-root>/papers/) changes — a paper card, note, or appraisal
+// being written or edited. The payload is a map[string]string carrying the
+// "project_id" and "paths" (comma-separated list of changed absolute paths) so
+// the Papers panel can refresh incrementally. Unlike research:file_changed
+// (which only fires while RESEARCH mode is on), this event fires whenever the
+// paper library changes, because the library is a global subdirectory of the
+// research root that lives independently of the RESEARCH toggle and of any
+// R-NNN project (see specs/domains/research.md). Emitted from the workspace
+// watcher callback in backend/frontend_api_project.go via emitPapersChanged.
+const EventPapersChanged = "papers:changed"
+
 // ---------------------------------------------------------------------------
 // Self-update events (emitted by FrontendAPI updater methods)
 // ---------------------------------------------------------------------------
