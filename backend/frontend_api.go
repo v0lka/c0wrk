@@ -144,6 +144,15 @@ type FrontendAPI struct {
 	// deadline for acquiring switchMu. Test-only seam (0 in production).
 	switchLockTimeoutOverride time.Duration
 
+	// researchSeedMu serializes research-pack reconciliation
+	// (reconcileResearchPacks): EnableResearch and the SwitchProject
+	// revalidation can target the same project-local .agents/{skills,agents}
+	// directories concurrently (toggle + switch race), and the pack staging
+	// swap is not designed for two concurrent writers of one destination —
+	// one rename would fail on the vanished source. The lock is coarse (all
+	// projects) because reconciliation is millisecond-scale local IO.
+	researchSeedMu sync.Mutex
+
 	// switchInProgressHook is a test-only seam invoked inside SwitchProject
 	// while switchMu is held (i.e. mid-switch). Nil in production.
 	switchInProgressHook func(id string)
@@ -329,14 +338,6 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 	// repository may spawn raw git. Nothing is trusted when config is nil or
 	// the list is empty (fail-closed).
 	f.syncGitTrustRegistry()
-
-	// Seed the built-in paper-study skill-pack into the GLOBAL agent skills
-	// directory (config.SkillsDir(agentDir) = ~/.c0wrk/.agents/skills) so the
-	// `study-paper` skill is available in every project (hybrid global
-	// seeding), independent of RESEARCH mode. Runs before the global skill
-	// watchers start so the seeded tree is covered by them. Idempotent and
-	// non-destructive (see core/papers); a no-op when agentDir is empty.
-	f.seedPapersSkillPack(cfg.AgentDir)
 
 	// Start watchers for global skill directories (those outside any
 	// workspace). Changes invalidate the skill cache and emit skills:changed

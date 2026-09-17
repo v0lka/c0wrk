@@ -1,6 +1,6 @@
 // Tests for lib/paperAnchors.ts — E1 anchor resolution. The point of these is
 // the DEGRADATION contract: an anchor that cannot be located confidently must
-// resolve to null (the UI shows "не найдено") rather than jumping to a
+// resolve to null (the UI shows "not found") rather than jumping to a
 // plausible-looking wrong line.
 
 import { describe, it, expect } from 'vitest'
@@ -193,5 +193,127 @@ describe('resolveAnchor', () => {
   it('returns null for an empty source or a fully empty anchor', () => {
     expect(resolveAnchor('', anchor('sec3', '§3'))).toBeNull()
     expect(resolveAnchor(SOURCE, anchor('', ''))).toBeNull()
+  })
+})
+
+// PDF-extracted sources: no ATX marks, plain numbered headings, body mentions
+// of floats BEFORE their captions, annotated and compound references. Line
+// indices below refer to this fixture (0-based, as AnchorHit.line is).
+const PDF_SOURCE = [
+  '1 INTRODUCTION', // 0
+  '', // 1
+  'Prompt injection is a threat.', // 2
+  '', // 3
+  '2 TAXONOMY', // 4
+  '', // 5
+  'As shown in Figure 2 and Output 3 below, the taxonomy differs.', // 6 (body mention)
+  '3 , and the LLM is compromised again when responding to a query.', // 7 (wrapped body line)
+  '', // 8
+  '3 ATTACK SURFACE', // 9
+  '', // 10
+  '4.1 Experimental Setup', // 11
+  '4.1.1', // 12 (bare number, no title — refused)
+  'Synthetic applications were constructed.', // 13
+  '', // 14
+  'Figure 2: Overview of injection methods.', // 15 (caption)
+  '', // 16
+  '5.2 Limitations', // 17
+  '', // 18
+  '5.2.1 Attacks. The attacks can be untargeted, i.e., not aim-', // 19 (hyphen wrap)
+  '', // 20
+  'Prompt 7: A simple demonstration of spreading injections.', // 21 (caption)
+  '', // 22
+  'Output 3: The output of the persistence attack.', // 23 (caption)
+  '', // 24
+  '1https://github.com/greshake/llm-security', // 25
+].join('\n')
+
+describe('resolveAnchor — PDF-extracted sources (plain headings, compounds)', () => {
+  it('resolves a section ref to a plain numbered heading line', () => {
+    const hit = resolveAnchor(PDF_SOURCE, anchor('sec3', '§3'))
+    expect(hit!.line).toBe(9)
+    expect(PDF_SOURCE.split('\n')[hit!.line]).toBe('3 ATTACK SURFACE')
+  })
+
+  it('refuses wrapped body lines that merely start with the number', () => {
+    // Line 7 starts with "3 " but continues with punctuation — the hit must
+    // still be the real heading at line 9, never the wrapped body line.
+    expect(resolveAnchor(PDF_SOURCE, anchor('sec3', '§3'))!.line).toBe(9)
+  })
+
+  it('strips parenthetical annotations before matching', () => {
+    const hit = resolveAnchor(
+      PDF_SOURCE,
+      anchor('setup', '§4.1 (synthetic apps, Bing Chat sidebar, GitHub Copilot)'),
+    )
+    expect(hit!.line).toBe(11)
+    // The bare "4.1.1" line (no title) is not treated as a heading.
+    expect(resolveAnchor(PDF_SOURCE, anchor('', '§4.1.1'))).toBeNull()
+  })
+
+  it('refuses a hyphenated wrap even when it starts like a heading', () => {
+    // Line 19 ("5.2.1 Attacks. … not aim-") is a wrapped paragraph header.
+    expect(resolveAnchor(PDF_SOURCE, anchor('', '§5.2.1'))).toBeNull()
+    // …and it must not disturb the §5.2 resolution.
+    expect(resolveAnchor(PDF_SOURCE, anchor('limitations', '§5.2'))!.line).toBe(17)
+  })
+
+  it('splits compound refs on "/" and tries each segment in order', () => {
+    const hit = resolveAnchor(PDF_SOURCE, anchor('worm-demo', 'Prompt 7 / Output 1 (spreading injections)'))
+    expect(hit!.line).toBe(21)
+    expect(PDF_SOURCE.split('\n')[hit!.line]).toBe('Prompt 7: A simple demonstration of spreading injections.')
+  })
+
+  it('splits compound refs on "+" as well', () => {
+    const hit = resolveAnchor(PDF_SOURCE, anchor('taxonomy', '§3 + Figure 2 (injection methods)'))
+    expect(hit!.line).toBe(9)
+  })
+
+  it('does not split a URL on its slashes', () => {
+    const hit = resolveAnchor(
+      PDF_SOURCE,
+      anchor('artifact', 'github.com/greshake/llm-security (verified live 2026-09-17)'),
+    )
+    expect(hit!.line).toBe(25)
+  })
+
+  it('prefers the caption line over an earlier body mention (text kind)', () => {
+    // Line 6 mentions "Output 3" mid-sentence BEFORE the caption at line 23.
+    expect(resolveAnchor(PDF_SOURCE, anchor('persistence', 'Output 3'))!.line).toBe(23)
+  })
+
+  it('prefers the caption line over an earlier body mention (float kind)', () => {
+    // Line 6 mentions "Figure 2" BEFORE the caption at line 15.
+    expect(resolveAnchor(PDF_SOURCE, anchor('fig2', 'Figure 2'))!.line).toBe(15)
+  })
+
+  it('does not line-start-match a longer caption number', () => {
+    // "Output 3" must not match a line starting "Output 30:".
+    const src = 'Output 30: something else\n\nOutput 3: the caption\n'
+    expect(resolveAnchor(src, anchor('', 'Output 3'))!.line).toBe(2)
+  })
+})
+
+describe('resolveAnchor — label fallback hits only structural targets', () => {
+  it('never free-text-matches body prose that contains the label', () => {
+    // Line 6 contains "taxonomy" mid-line; the old behavior jumped there.
+    expect(resolveAnchor(PDF_SOURCE, anchor('taxonomy', '§9'))).toBeNull()
+  })
+
+  it('refuses a body line that starts with the label but continues as prose', () => {
+    const src = 'persistence across sessions by copying the injection into memory\n'
+    expect(resolveAnchor(src, anchor('persistence', '§9'))).toBeNull()
+  })
+
+  it('accepts a caption-like line that starts with the label', () => {
+    const src = 'Output 3: The output of the persistence attack.\n'
+    const hit = resolveAnchor(src, anchor('output 3', '§9'))
+    expect(hit!.line).toBe(0)
+  })
+
+  it('accepts an ATX heading that starts with the label', () => {
+    const hit = resolveAnchor(SOURCE, anchor('abstract', '§9'))
+    expect(hit!.line).toBe(2)
+    expect(SOURCE.split('\n')[2]).toBe('## Abstract')
   })
 })

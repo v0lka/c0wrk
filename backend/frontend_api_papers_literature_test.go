@@ -291,7 +291,7 @@ func TestRunPaperLiterature_DoesNotHoldRowMutexDuringRun(t *testing.T) {
 	release := filepath.Join(agentDir, "release")
 	fakeBlockingManagedPython(t, agentDir, marker, release)
 
-	script := filepath.Join(config.SkillsDir(agentDir), studyPaperSkillName, literatureScriptRelPath)
+	script := filepath.Join(config.ProjectSkillsPath(ws), studyPaperSkillName, literatureScriptRelPath)
 	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
 		t.Fatalf("mkdir scripts: %v", err)
 	}

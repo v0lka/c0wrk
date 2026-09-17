@@ -1,16 +1,16 @@
 // Package papers provides c0wrk's paper-study skill-pack: a versioned,
 // embed-bundled set of the built-in research-paper skills (currently the
-// single `study-paper` skill) that are seeded into the GLOBAL agent skills
-// directory (~/.c0wrk/.agents/skills) at application startup.
-//
-// Seeding here is "hybrid": the pack is materialized once, globally, so the
-// skill is discoverable by every project — including projects and No-Project
-// sessions that never enable RESEARCH mode. (RESEARCH mode seeds its own
-// methodology pack into the project-local `.agents/skills` directory instead;
-// see core/research/skillpack.go.) The global directory is one of
-// config.defaultSkillDirs and is watched by the backend skill watchers, so a
-// seeded skill enters the ListSkills catalog automatically — no catalog change
-// is required.
+// single `study-paper` skill) that is seeded PROJECT-LOCALLY into a
+// workspace's `.agents/skills` directory by the research pack
+// reconciliation — when RESEARCH mode is enabled for the project
+// (backend EnableResearch) and on every project switch to a
+// research-enabled project. The project-local copy wins the same-name skill
+// discovery chain over a `~/.agents` namesake, so the active study-paper
+// skill always knows c0wrk's paper-library conventions. (RESEARCH mode seeds
+// its own methodology pack the same way; see core/research/skillpack.go.)
+// The project-local directory is scanned first by the per-session
+// SkillManager, so a seeded skill enters the router catalog automatically —
+// no catalog change is required.
 //
 // Seeding is idempotent, crash-safe, and non-destructive to user-authored or
 // user-edited skills. Classification compares the CONTENT HASH of the on-disk
@@ -70,7 +70,7 @@ const embedRoot = "skills"
 // existing seeded copies should be refreshed on the next startup. It is
 // deliberately separate from the research pack's version (see
 // core/research.CurrentSeedVersion) so the two packs bump independently.
-const CurrentSeedVersion = "3"
+const CurrentSeedVersion = "4"
 
 // seedVersionFile is the sidecar marker filename written into every seeded
 // skill directory. Its presence identifies a directory as pack-seeded (and
@@ -108,9 +108,9 @@ func SkillNames() []string {
 }
 
 // SeedSkills materializes the embedded paper-study skill-pack into
-// destSkillsDir. destSkillsDir is the GLOBAL agent skills directory (typically
-// config.SkillsDir(agentDir)); it is created if missing. The destination must
-// be a real, writable filesystem path.
+// destSkillsDir. destSkillsDir is the project-local skills directory
+// (config.ProjectSkillsPath(workspacePath)); it is created if missing. The
+// destination must be a real, writable filesystem path.
 //
 // The function is safe to call repeatedly (idempotent): see the package docs
 // for the classification rules. It never overwrites a directory that lacks a

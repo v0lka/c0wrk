@@ -27,11 +27,14 @@ DEPENDENCIES
       message and exit code 2.
     - Optional: S2_API_KEY in the environment for higher Semantic Scholar limits.
 
-RATE LIMITS (HTTP 429)
+RATE LIMITS (HTTP 429, 503, and arXiv's 406)
     Every request goes through one helper that honours the Retry-After header and
     otherwise backs off exponentially (capped), retrying a bounded number of
-    times. If the limit still will not clear, it reports a clear error naming the
-    source instead of hanging or printing a raw traceback.
+    times. arXiv's export API intermittently throttles a perfectly valid request
+    with HTTP 406 (the abs page still opens in a browser), so that status gets
+    the same polite backoff for export.arxiv.org. If the limit still will not
+    clear, it reports a clear error naming the source instead of hanging or
+    printing a raw traceback.
 
 EXIT CODES
     0  seed resolved and results produced
@@ -144,8 +147,22 @@ def _retry_delay(error, attempt):
     return min(float(2 ** attempt), 30.0)
 
 
+def _retryable_status(code, url):
+    """True when `code` from `url` deserves the same polite backoff as 429/503.
+
+    arXiv's export API intermittently throttles a valid request with HTTP 406
+    (the abs page still opens fine in a browser), so that status is retried for
+    export.arxiv.org only; anywhere else a 406 means content negotiation broke
+    and retrying cannot help.
+    """
+    if code in (429, 503):
+        return True
+    return code == 406 and urllib.parse.urlsplit(url).netloc == "export.arxiv.org"
+
+
 def http_get(url, timeout, headers=None, retries=MAX_RETRIES):
-    """GET a URL and return the raw body, retrying politely on HTTP 429 / 503."""
+    """GET a URL and return the raw body, retrying politely on HTTP 429 / 503
+    (and on HTTP 406 from arXiv's export API, which throttles that way)."""
     merged = {"User-Agent": USER_AGENT}
     if headers:
         merged.update(headers)
@@ -156,7 +173,7 @@ def http_get(url, timeout, headers=None, retries=MAX_RETRIES):
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.read()
         except urllib.error.HTTPError as exc:
-            if exc.code in (429, 503) and attempt < retries:
+            if _retryable_status(exc.code, url) and attempt < retries:
                 wait = _retry_delay(exc, attempt)
                 STATS["rate_limits"] += 1
                 sys.stderr.write(
@@ -357,6 +374,18 @@ def openalex_title_search(title, timeout, email):
     return results[0]
 
 
+def arxiv_datacite_doi(arxiv_id):
+    """Return the DataCite DOI arXiv mints for every record, version-less.
+
+    arXiv registers 10.48550/arXiv.<id> through DataCite, and OpenAlex indexes
+    works under that DOI, so an arXiv seed can be resolved without touching
+    export.arxiv.org (which intermittently throttles with HTTP 406). The DOI
+    identifies the record, not one of its versions, so a `vN` suffix is
+    stripped first. OpenAlex resolves the DOI case-insensitently.
+    """
+    return "10.48550/arXiv." + re.sub(r"v\d+$", "", arxiv_id)
+
+
 def arxiv_lookup(arxiv_id, timeout):
     params = {"id_list": arxiv_id, "max_results": "1"}
     url = "https://export.arxiv.org/api/query?" + urllib.parse.urlencode(params)
@@ -555,17 +584,29 @@ def collect(args):
         match = "identifier"
     elif kind == "arxiv":
         arxiv_id = identifier
-        arxiv_meta = call("arXiv", lambda: arxiv_lookup(identifier, args.timeout))
-        if arxiv_meta and arxiv_meta.get("doi"):
-            doi = arxiv_meta["doi"]
-            seed_work = call("OpenAlex", lambda: openalex_work_by_doi(doi, args.timeout, args.email))
-            if seed_work is not None:
-                match = "identifier"
-        # Fall back to the title search whenever the identifier lookup was
-        # inconclusive (no DOI, or an OpenAlex 404 on a DOI it does not index).
-        if seed_work is None and arxiv_meta and arxiv_meta.get("title"):
-            seed_work = call("OpenAlex", lambda: openalex_title_search(arxiv_meta["title"], args.timeout, args.email))
-            match = "title-search"
+        # Resolve through OpenAlex FIRST via the deterministic DataCite DOI
+        # every arXiv record carries: arXiv's export API intermittently
+        # throttles with HTTP 406 even though the abs page opens fine in a
+        # browser, and the DOI lookup sidesteps that API entirely. The arXiv
+        # API stays as the fallback for works OpenAlex does not index under
+        # the arXiv DOI (e.g. preprints merged into their published version).
+        datacite_doi = arxiv_datacite_doi(identifier)
+        seed_work = call("OpenAlex", lambda: openalex_work_by_doi(datacite_doi, args.timeout, args.email))
+        arxiv_meta = None
+        if seed_work is not None:
+            match = "identifier"
+        else:
+            arxiv_meta = call("arXiv", lambda: arxiv_lookup(identifier, args.timeout))
+            if arxiv_meta and arxiv_meta.get("doi"):
+                doi = arxiv_meta["doi"]
+                seed_work = call("OpenAlex", lambda: openalex_work_by_doi(doi, args.timeout, args.email))
+                if seed_work is not None:
+                    match = "identifier"
+            # Fall back to the title search whenever the identifier lookup was
+            # inconclusive (no DOI, or an OpenAlex 404 on a DOI it does not index).
+            if seed_work is None and arxiv_meta and arxiv_meta.get("title"):
+                seed_work = call("OpenAlex", lambda: openalex_title_search(arxiv_meta["title"], args.timeout, args.email))
+                match = "title-search"
     else:
         # A bare title, or an opaque URL we could not turn into an identifier.
         seed_work = call("OpenAlex", lambda: openalex_title_search(identifier, args.timeout, args.email))

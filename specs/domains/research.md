@@ -12,7 +12,8 @@ RESEARCH mode is a project-scoped methodology workspace for maintaining research
 - `core/research/recommend.go` - pure next-step recommendation, project-wide and hypothesis-scoped
 - `core/research/skillpack.go` - embedded seven-skill research pack and non-destructive versioned seeding
 - `core/research/skills/` - embedded `research-*` skill sources
-- `backend/frontend_api_research.go` - enable/disable/status/graph RPC behavior, persistence, and skill rescan
+- `core/papers/skillpack.go` - the embedded `study-paper` pack; seeded project-locally by the same reconciliation (the project-local copy outranks a same-named `~/.agents` skill in discovery)
+- `backend/frontend_api_research.go` - enable/disable/status/graph RPC behavior, persistence, and `reconcileResearchPacks` — the single pack reconciliation shared by EnableResearch and SwitchProject
 - `backend/frontend_api_project.go` - recursive research-tree watcher integration and incremental file-change emission
 - `frontend/src/components/research/index.tsx` - Research panel (the `[Dashboard | Papers]` segmented control + graph/status presentation)
 - `frontend/src/components/papers/PapersView.tsx` - Papers segment: the `study-paper` invocation surface over the studied-paper list, plus multi-select ("Compare selected", enabled at ≥2 papers) that dispatches a library comparison
@@ -77,12 +78,21 @@ User enables RESEARCH for a real project
   -> resolve root (default <workspace>/.research)
      and reject an explicit root outside the workspace
   -> create root and recursively watch its current/future directories
-  -> seed seven research-* skills into <workspace>/.agents/skills
-     (content-hash-verified, staged + atomically swapped) and the research
-     Subagent Profile into <workspace>/.agents/agents
+  -> reconcile the c0wrk packs into <workspace>/.agents: the seven research-*
+     skills AND the study-paper skill into .agents/skills, the research
+     Subagent Profile into .agents/agents (content-hash-verified, staged +
+     atomically swapped) — reconcileResearchPacks
   -> persist ProjectInfo.ResearchRoot
   -> invalidate the skill cache and rescan running project sessions
   -> parse the root and emit research:changed
+
+Switch to a research-enabled project (incl. the app-startup restore replay)
+  -> SwitchProject re-runs the same pack reconciliation: seeds missing
+     entries (e.g. study-paper), upgrades pack-marked outdated ones,
+     preserves user-owned directories; failures are logged, never fail the
+     switch
+  -> when anything was seeded or updated: skill/agent caches invalidate and
+     live sessions of the project rescan their catalogs
 
 Research artifact changes
   -> recursive workspace watcher batches changed paths
@@ -148,6 +158,7 @@ Metrics are derived from the reconciled graph:
 - RESEARCH mode is not gated by the `experimental.enabled` switch (which gates only the E2S execution mode) — it stays available for every real project.
 - The persisted research root is absolute and contained within the project workspace; the default root is `<workspace>/.research`.
 - Enabling is idempotent: it may reparse, reseed, repersist, rescan, and re-emit without duplicating domain state.
+- Switching to a research-enabled project re-runs the pack reconciliation (`reconcileResearchPacks`) under the same non-destructive contract: missing entries are seeded (including the papers pack's `study-paper`), pack-marked outdated entries are upgraded, user-owned entries are preserved; a reconciliation failure is logged and never fails the switch. Concurrent reconciliations serialize on one seed mutex. When anything was seeded or updated, the skill/agent caches invalidate and live sessions of the project rescan their catalogs.
 - Disabling clears the persisted toggle and recursive watch while preserving research artifacts and seeded skills.
 - Skill/agent seeding classifies each destination by CONTENT HASH against the embedded pack (never mtime/size, never the marker alone): content equal to the pack is Current (a missing/stale `.seed-version` marker on it is re-stamped); a pack-marked truncated subset of the pack (interrupted write) is repaired; a pack-marked same-version directory whose content diverges from the pack is a local edit (or a spoofed marker) — preserved untouched and reported `Modified`; a marker-less diverging directory is user-owned and preserved; a marker from an older pack version is overwritten in full.
 - Seeding writes are crash-safe: each entry is staged in a hidden sibling temp directory and swapped in with a single rename, so an interrupted run never leaves a truncated tree at the destination; staging/backup leftovers from a hard kill are swept on the next seeding run.
@@ -177,6 +188,7 @@ Metrics are derived from the reconciled graph:
 | `ProjectInfo.ResearchRoot` | empty (disabled) | Persisted per-project absolute research root |
 | Enable `rootPath` | `<workspace>/.research` | Optional explicit root; must remain inside the workspace |
 | Skill-pack seed version | `2` (`research.CurrentSeedVersion`) | Pack version stamped into `.seed-version` markers; agent-pack version (`research.AgentSeedVersion`, `1`) bumps independently |
+| Papers skill-pack seed version | `3` (`papers.CurrentSeedVersion`) | The `study-paper` pack seeded by the same reconciliation; bumps independently of both research pack versions (ADR-051) |
 
 ## Extension Points
 

@@ -3,12 +3,14 @@
 // A pure view over paperStore (the library sync — project-switch fetch +
 // `papers:changed` — lives in usePapersEvents, mounted once at the App root),
 // plus the invocation surface: a "Study paper" field and a study-mode selector
-// that dispatch the `study-paper` skill through the message sender (mirroring
-// ResearchQuickActions, Shift = a fresh session). Each row lists one studied
-// paper with its mode/reading/verdict/confidence badges and row actions: open the
+// that dispatch the `study-paper` skill through the message sender — always
+// into a FRESH session (a study is a self-contained task, so it never joins
+// the chat the user is currently in). Each row lists one studied paper
+// with its mode/reading/verdict/confidence badges and row actions: open the
 // reader workspace as a viewer tab, go deeper (one mode deeper, append-only),
 // compare, pin/unpin, and suggest hypotheses from the paper's gaps (which
-// auto-pins the paper as prior art).
+// auto-pins the paper as prior art). The row actions dispatch into the active
+// session by default (Shift = a fresh session).
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
@@ -80,7 +82,7 @@ function toneForVerdict(verdict: PaperRecord['verdict']): string {
 /** The mode/reading/verdict/confidence badges for one paper (empty values omitted). */
 function PaperBadges({ paper }: { paper: PaperRecord }) {
   return (
-    <div className="flex flex-wrap items-center gap-1">
+    <div className="flex w-full flex-wrap items-center gap-1">
       {paper.mode !== '' && (
         <span data-testid="paper-badge-mode" className={cn(BADGE_CLASS, TONE_CLASS.info)}>
           {paper.mode}
@@ -170,9 +172,9 @@ function PaperRow({
         </button>
       </div>
 
-      <div className="flex items-center gap-1 px-2 pb-1">
+      <div className="flex w-full flex-col gap-1 px-2 pb-1">
         <PaperBadges paper={paper} />
-        <div className="ml-auto flex shrink-0 items-center gap-0.5">
+        <div className="flex w-full shrink-0 items-center justify-end gap-0.5">
           <button
             type="button"
             data-testid="paper-action-open"
@@ -318,11 +320,14 @@ export function PapersView() {
     [send],
   )
 
+  // The "Study paper" gesture ALWAYS dispatches into a fresh session: a study
+  // is a self-contained task, so it never joins (or nudges) the chat the user
+  // is currently in (see PapersView header note).
   const study = useCallback(
-    async (newSession: boolean) => {
+    async () => {
       const ref = reference.trim()
       if (ref === '') return
-      const ok = await dispatch(buildStudyPrompt(ref, mode), STUDY_PAPER_SKILL, newSession)
+      const ok = await dispatch(buildStudyPrompt(ref, mode), STUDY_PAPER_SKILL, true)
       // Restore the field when the dispatch failed (mirrors the app's own send
       // path, which restores text on failure) so the pasted reference is never
       // silently lost.
@@ -408,7 +413,7 @@ export function PapersView() {
             placeholder="arXiv ID, DOI, URL, or PDF path"
             onChange={(e) => setReference(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') void study(e.shiftKey)
+              if (e.key === 'Enter') void study()
             }}
             className={INPUT_CLASS}
           />
@@ -416,8 +421,8 @@ export function PapersView() {
             type="button"
             data-testid="papers-invoke-study"
             disabled={reference.trim() === ''}
-            title="Study this paper (Shift = new session)"
-            onClick={(e) => void study(e.shiftKey)}
+            title="Study this paper in a new session"
+            onClick={() => void study()}
             className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-[11px] text-foreground transition-colors hover:bg-muted disabled:opacity-50"
           >
             Study

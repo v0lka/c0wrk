@@ -1,4 +1,4 @@
-// Overview section (Обзор) — the paper's identity card, its source anchors (E1
+// Overview section — the paper's identity card, its source anchors (E1
 // entry points) and the critical layer as widgets (E2).
 
 import type { PaperAnchor, PaperRecord } from '@/api/papers'

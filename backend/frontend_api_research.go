@@ -7,11 +7,13 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
+	"github.com/v0lka/c0wrk/core/papers"
 	"github.com/v0lka/c0wrk/core/research"
 )
 
@@ -265,42 +267,16 @@ func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatu
 	}
 	f.watcherMu.Unlock()
 
-	// Seed the research skill-pack into the project's local skills directory.
-	skillsDir := config.ProjectSkillsPath(proj.WorkspacePath)
-	seedRes, seedErr := research.SeedSkills(skillsDir, f.log())
-	if seedErr != nil {
-		// Seeding failure is non-fatal to enabling RESEARCH mode itself, but
-		// surface it so the user knows the methodology skills are missing.
-		f.log().Warn("research.EnableResearch: skill seeding failed",
-			"project_id", projectID, "skills_dir", skillsDir, "error", seedErr)
-	}
-	if seedRes != nil {
-		f.log().Info("research.EnableResearch: skills seeded",
-			"project_id", projectID,
-			"seeded", len(seedRes.Seeded), "updated", len(seedRes.Updated),
-			"current", len(seedRes.Current), "preserved", len(seedRes.Preserved),
-			"modified", len(seedRes.Modified))
-	}
-
-	// Seed the built-in research Subagent Profile into the project's local
-	// agents directory so research steps can be delegated via #research or
-	// delegate(agent:"research"). Idempotent and non-destructive — mirrors the
-	// skill-pack seeding above.
-	agentsDir := config.ProjectAgentsPath(proj.WorkspacePath)
-	agentSeedRes, agentSeedErr := research.SeedAgents(agentsDir, f.log())
-	if agentSeedErr != nil {
-		// Seeding failure is non-fatal to enabling RESEARCH mode itself, but
-		// surface it so the user knows the research profile is missing.
-		f.log().Warn("research.EnableResearch: agent seeding failed",
-			"project_id", projectID, "agents_dir", agentsDir, "error", agentSeedErr)
-	}
-	if agentSeedRes != nil {
-		f.log().Info("research.EnableResearch: agents seeded",
-			"project_id", projectID,
-			"seeded", len(agentSeedRes.Seeded), "updated", len(agentSeedRes.Updated),
-			"current", len(agentSeedRes.Current), "preserved", len(agentSeedRes.Preserved),
-			"modified", len(agentSeedRes.Modified))
-	}
+	// Reconcile the project-local c0wrk packs: the seven research-* skills,
+	// the study-paper skill, and the research Subagent Profile — seeding ALL
+	// missing entries, upgrading pack-marked outdated ones, preserving
+	// user-owned directories (see reconcileResearchPacks). The project-local
+	// study-paper copy is what makes the papers workflow robust: per-session
+	// skill discovery resolves same-named skills first-wins with
+	// <workspace>/.agents/skills at the highest priority, so the seeded copy
+	// beats a same-named ~/.agents skill that knows nothing about c0wrk's
+	// paper-library conventions.
+	packRes := f.reconcileResearchPacks(projectID, proj.WorkspacePath)
 
 	// Persist the research root on the project. All writers of the projects
 	// row serialize on the per-EFFECTIVE-research-root research mutation mutex
@@ -361,7 +337,7 @@ func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatu
 		ProjectID:    projectID,
 		ResearchRoot: researchRoot,
 		Root:         root,
-		SeedResult:   toSeedResultDTO(seedRes),
+		SeedResult:   toSeedResultDTO(packRes),
 	}
 	applyResearchPins(status, persistProj.ResearchPins)
 
@@ -1286,19 +1262,130 @@ func (f *FrontendAPI) parseResearchRootBestEffort(researchRoot string) *research
 	return root
 }
 
-// toSeedResultDTO converts a research.SeedSkillsResult into the frontend-facing
-// DTO, returning nil when the input is nil (so the JSON field is omitted).
-func toSeedResultDTO(r *research.SeedSkillsResult) *ResearchSeedResultDTO {
+// researchPackReconcile collects the per-pack outcomes of one
+// reconcileResearchPacks run. A nil member means that pack's seeding failed
+// (already logged); it contributes no names to the merged DTO.
+type researchPackReconcile struct {
+	skills *research.SeedSkillsResult
+	papers *papers.SeedResult
+	agents *research.SeedAgentsResult
+}
+
+// changed reports whether the reconciliation wrote anything (new seeds or
+// version upgrades). Callers use it to skip cache invalidation and session
+// rescans when nothing moved.
+func (r *researchPackReconcile) changed() bool {
 	if r == nil {
+		return false
+	}
+	skills := r.skills != nil && (len(r.skills.Seeded) > 0 || len(r.skills.Updated) > 0)
+	paperPack := r.papers != nil && (len(r.papers.Seeded) > 0 || len(r.papers.Updated) > 0)
+	agents := r.agents != nil && (len(r.agents.Seeded) > 0 || len(r.agents.Updated) > 0)
+	return skills || paperPack || agents
+}
+
+// reconcileResearchPacks seeds and updates every c0wrk-owned pack into the
+// project-local agent directories: research.SeedSkills (the seven research-*
+// methodology skills), papers.SeedSkills (the study-paper skill), and
+// research.SeedAgents (the research Subagent Profile). It is the single
+// reconciliation shared by EnableResearch and the SwitchProject revalidation
+// for research-enabled projects — seeding ALL missing pack entries and
+// upgrading pack-marked outdated ones, while user-owned (marker-less,
+// diverging) directories are preserved untouched (see the classification
+// contract in core/research/skillpack.go and core/papers/skillpack.go).
+//
+// researchSeedMu serializes the whole run: EnableResearch and a concurrent
+// SwitchProject revalidation can target the same directories, and the pack
+// staging swap is not designed for two concurrent writers of one destination.
+//
+// Failures are per-pack, logged, and never returned as errors — a failed pack
+// yields a nil result member and the research toggle/switch stays unaffected.
+func (f *FrontendAPI) reconcileResearchPacks(projectID, workspacePath string) *researchPackReconcile {
+	f.researchSeedMu.Lock()
+	defer f.researchSeedMu.Unlock()
+
+	res := &researchPackReconcile{}
+
+	skillsDir := config.ProjectSkillsPath(workspacePath)
+	skillsRes, skillsErr := research.SeedSkills(skillsDir, f.log())
+	if skillsErr != nil {
+		f.log().Warn("research pack reconciliation: skill seeding failed",
+			"project_id", projectID, "skills_dir", skillsDir, "error", skillsErr)
+	} else {
+		res.skills = skillsRes
+		f.log().Info("research skill-pack reconciled",
+			"project_id", projectID,
+			"seeded", len(skillsRes.Seeded), "updated", len(skillsRes.Updated),
+			"current", len(skillsRes.Current), "preserved", len(skillsRes.Preserved),
+			"modified", len(skillsRes.Modified))
+	}
+
+	papersRes, papersErr := papers.SeedSkills(skillsDir, f.log())
+	if papersErr != nil {
+		f.log().Warn("research pack reconciliation: paper skill seeding failed",
+			"project_id", projectID, "skills_dir", skillsDir, "error", papersErr)
+	} else {
+		res.papers = papersRes
+		f.log().Info("paper skill-pack reconciled",
+			"project_id", projectID,
+			"seeded", len(papersRes.Seeded), "updated", len(papersRes.Updated),
+			"current", len(papersRes.Current), "preserved", len(papersRes.Preserved),
+			"modified", len(papersRes.Modified))
+	}
+
+	agentsDir := config.ProjectAgentsPath(workspacePath)
+	agentsRes, agentsErr := research.SeedAgents(agentsDir, f.log())
+	if agentsErr != nil {
+		f.log().Warn("research pack reconciliation: agent seeding failed",
+			"project_id", projectID, "agents_dir", agentsDir, "error", agentsErr)
+	} else {
+		res.agents = agentsRes
+		f.log().Info("research agent-pack reconciled",
+			"project_id", projectID,
+			"seeded", len(agentsRes.Seeded), "updated", len(agentsRes.Updated),
+			"current", len(agentsRes.Current), "preserved", len(agentsRes.Preserved),
+			"modified", len(agentsRes.Modified))
+	}
+
+	return res
+}
+
+// toSeedResultDTO merges the skill-pack outcomes of a reconciliation into the
+// frontend-facing DTO (research-* + study-paper names in shared buckets),
+// returning nil when every skill pack failed (so the JSON field is omitted).
+// Skill names are unique across the two packs, so concatenation is
+// unambiguous; buckets end sorted (each pack sorts its own, the merge
+// re-sorts the concatenation). Agent-pack outcomes are log-only, mirroring
+// the pre-merge DTO shape.
+func toSeedResultDTO(r *researchPackReconcile) *ResearchSeedResultDTO {
+	if r == nil || (r.skills == nil && r.papers == nil) {
 		return nil
 	}
-	return &ResearchSeedResultDTO{
-		Seeded:    r.Seeded,
-		Updated:   r.Updated,
-		Current:   r.Current,
-		Preserved: r.Preserved,
-		Modified:  r.Modified,
+	dto := &ResearchSeedResultDTO{
+		Seeded:    []string{},
+		Updated:   []string{},
+		Current:   []string{},
+		Preserved: []string{},
+		Modified:  []string{},
 	}
+	if r.skills != nil {
+		dto.Seeded = append(dto.Seeded, r.skills.Seeded...)
+		dto.Updated = append(dto.Updated, r.skills.Updated...)
+		dto.Current = append(dto.Current, r.skills.Current...)
+		dto.Preserved = append(dto.Preserved, r.skills.Preserved...)
+		dto.Modified = append(dto.Modified, r.skills.Modified...)
+	}
+	if r.papers != nil {
+		dto.Seeded = append(dto.Seeded, r.papers.Seeded...)
+		dto.Updated = append(dto.Updated, r.papers.Updated...)
+		dto.Current = append(dto.Current, r.papers.Current...)
+		dto.Preserved = append(dto.Preserved, r.papers.Preserved...)
+		dto.Modified = append(dto.Modified, r.papers.Modified...)
+	}
+	for _, bucket := range []*[]string{&dto.Seeded, &dto.Updated, &dto.Current, &dto.Preserved, &dto.Modified} {
+		sort.Strings(*bucket)
+	}
+	return dto
 }
 
 // applyResearchPins fills a ResearchStatusDTO's pin fields from the project's

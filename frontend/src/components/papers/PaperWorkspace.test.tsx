@@ -2,23 +2,18 @@
 //
 // PaperWorkspace — the paper viewer tab: section routing, the critical-layer
 // widgets, and the E1 anchor navigation (a resolved anchor switches to the
-// Source section and scrolls; an unresolved one shows "не найдено" and never
+// Source section and scrolls; an unresolved one shows "not found" and never
 // moves).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-const { sendMock } = vi.hoisted(() => ({ sendMock: vi.fn() }))
 vi.mock('@/api/papers', () => ({
   getPapers: vi.fn(),
   getPaper: vi.fn(),
   setPaperPinned: vi.fn(() => Promise.resolve()),
 }))
-vi.mock('@/hooks/useMessageSender', () => ({
-  useMessageSender: () => ({ send: sendMock, cancel: vi.fn(), isProcessing: false }),
-}))
-
 // The artifact loader: most tests pin the on-disk state through `artifactsHolder`
 // (set before render). The "round-trip" test clears it to drive the REAL loader
 // (against the mocked workspace RPCs below), so a refresh-key bump re-runs the
@@ -66,13 +61,7 @@ import { PaperWorkspace } from './PaperWorkspace'
 import type { PaperArtifacts, PaperArtifact, PaperSectionId } from './usePaperArtifacts'
 import { listDirectory, readFile } from '@/api/workspace'
 import { usePaperStore } from '@/stores/paperStore'
-import { setPaperPinned, type PaperRecord } from '@/api/papers'
-import {
-  STUDY_PAPER_SKILL,
-  RESEARCH_HYPOTHESIS_SKILL,
-  buildDeepenPrompt,
-  buildProposeHypothesisPrompt,
-} from './paperActions'
+import type { PaperRecord } from '@/api/papers'
 
 const SECTION_IDS: PaperSectionId[] = [
   'note',
@@ -193,16 +182,6 @@ function click(selector: string): void {
   })
 }
 
-/** Click and let the dispatched async work (send / auto-pin) settle. */
-async function clickAsync(selector: string): Promise<void> {
-  const el = document.querySelector<HTMLElement>(selector)
-  expect(el).not.toBeNull()
-  await act(async () => {
-    el!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await new Promise((r) => setTimeout(r, 0))
-  })
-}
-
 /** Let the (real) artifact loader's mocked workspace RPCs settle. */
 async function flushArtifacts(): Promise<void> {
   await act(async () => {
@@ -220,9 +199,6 @@ describe('PaperWorkspace', () => {
   beforeEach(() => {
     // jsdom does not implement scrollIntoView; stub it so the scroll path runs.
     Element.prototype.scrollIntoView = vi.fn()
-    sendMock.mockReset()
-    sendMock.mockResolvedValue(undefined)
-    vi.mocked(setPaperPinned).mockClear()
     seed(paperRecord())
     artifactsHolder.current = artifactsOf()
     comparisonsHolder.current = { dir: '', loading: false, items: [] }
@@ -338,7 +314,7 @@ describe('PaperWorkspace', () => {
     expect(document.querySelector('[data-testid="paper-note-empty"]')).not.toBeNull()
   })
 
-  it('renders the source lines in the Источник section', () => {
+  it('renders the source lines in the Source section', () => {
     artifactsHolder.current = artifactsOf({
       source: { fileName: 'source.md', content: SOURCE, loading: false, missing: false, error: null },
     })
@@ -347,7 +323,7 @@ describe('PaperWorkspace', () => {
     expect(document.querySelectorAll('[data-paper-line]')).toHaveLength(SOURCE.split('\n').length)
   })
 
-  it('navigates to a resolved anchor: switches to Источник and scrolls', () => {
+  it('navigates to a resolved anchor: switches to Source and scrolls', () => {
     artifactsHolder.current = artifactsOf({
       source: { fileName: 'source.md', content: SOURCE, loading: false, missing: false, error: null },
     })
@@ -357,7 +333,7 @@ describe('PaperWorkspace', () => {
     expect(Element.prototype.scrollIntoView).toHaveBeenCalled()
   })
 
-  it('degrades honestly: an unresolvable anchor shows "не найдено" and never moves', () => {
+  it('degrades honestly: an unresolvable anchor shows "not found" and never moves', () => {
     artifactsHolder.current = artifactsOf({
       source: { fileName: 'source.md', content: SOURCE, loading: false, missing: false, error: null },
     })
@@ -365,7 +341,7 @@ describe('PaperWorkspace', () => {
     // Anchor index 1 is "§9" — the source has no section 9.
     click('[data-testid="paper-anchor"][data-anchor-index="1"]')
     expect(activeSection()).toBe('paper-section-overview')
-    expect(document.querySelector('[data-testid="paper-anchor-miss"]')?.textContent).toBe('не найдено')
+    expect(document.querySelector('[data-testid="paper-anchor-miss"]')?.textContent).toBe('not found')
     expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled()
   })
 
@@ -377,14 +353,10 @@ describe('PaperWorkspace', () => {
   })
 })
 
-describe('PaperWorkspace — deepening & hypothesis bridge (E4/E5)', () => {
+describe('PaperWorkspace — library-sync refresh & inline errors', () => {
   beforeEach(() => {
-    // Mirror the outer suite's fixture: stub scrollIntoView, seed one paper and
-    // reset the dispatch / pin spies.
+    // Mirror the outer suite's fixture: stub scrollIntoView and seed one paper.
     Element.prototype.scrollIntoView = vi.fn()
-    sendMock.mockReset()
-    sendMock.mockResolvedValue(undefined)
-    vi.mocked(setPaperPinned).mockClear()
     seed(paperRecord())
     artifactsHolder.current = artifactsOf()
   })
@@ -399,28 +371,7 @@ describe('PaperWorkspace — deepening & hypothesis bridge (E4/E5)', () => {
     usePaperStore.getState().reset()
   })
 
-  it('renders the "Go deeper" and "Suggest hypotheses from gaps" actions', () => {
-    render()
-    expect(document.querySelector('[data-testid="paper-go-deeper"]')).not.toBeNull()
-    expect(document.querySelector('[data-testid="paper-suggest-hypotheses"]')).not.toBeNull()
-  })
-
-  it('Go deeper dispatches study-paper one mode deeper on the same card', async () => {
-    render()
-    await clickAsync('[data-testid="paper-go-deeper"]')
-    expect(sendMock).toHaveBeenCalledWith(buildDeepenPrompt(paperRecord()), [STUDY_PAPER_SKILL])
-  })
-
-  it('Suggest hypotheses from gaps dispatches research-hypothesis AND auto-pins the paper', async () => {
-    render()
-    await clickAsync('[data-testid="paper-suggest-hypotheses"]')
-    expect(sendMock).toHaveBeenCalledWith(buildProposeHypothesisPrompt(paperRecord()), [
-      RESEARCH_HYPOTHESIS_SKILL,
-    ])
-    expect(setPaperPinned).toHaveBeenCalledWith('p1', 'P-001', true)
-  })
-
-  it('keeps every previous section when a deepen appends a new one (round-trip)', async () => {
+  it('keeps every previous section when a library sync appends a new one (round-trip)', async () => {
     // Drive the REAL loader (mocked workspace RPCs, not the hook) so the
     // refresh-key bump genuinely re-runs the load — the regression this guards
     // is a rebuild that drops the previously parsed sections (the stub could
@@ -484,17 +435,17 @@ describe('PaperWorkspace — deepening & hypothesis bridge (E4/E5)', () => {
     vi.mocked(readFile).mockReturnValue(new Promise(() => {}))
   })
 
-  it('renders a dispatch failure raised from the paper tab inline', async () => {
+  it('renders a paper-store failure inline', () => {
     // The failure lands on paperStore.error, whose only other renderer is the
     // Research panel's Papers segment — a different surface. This tab must show
-    // it itself so a failed "Go deeper" is never invisible.
-    sendMock.mockRejectedValue(new Error('runtime not ready'))
+    // it itself so the failure is never invisible.
     render()
-    await clickAsync('[data-testid="paper-go-deeper"]')
+    act(() => {
+      usePaperStore.getState().setError('Failed to record the flashcard review: boom')
+    })
     const alert = document.querySelector('[data-testid="paper-workspace-error"]')
     expect(alert).not.toBeNull()
-    expect(alert?.textContent).toContain('Failed to dispatch')
-    expect(alert?.textContent).toContain('runtime not ready')
+    expect(alert?.textContent).toContain('Failed to record the flashcard review: boom')
   })
 })
 

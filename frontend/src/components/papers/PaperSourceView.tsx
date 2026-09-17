@@ -1,4 +1,4 @@
-// Source section (Источник) — the paper's extracted source text with line-indexed
+// Source section — the paper's extracted source text with line-indexed
 // anchor scrolling (E1).
 //
 // The text is rendered line by line so a resolved anchor maps to an exact,

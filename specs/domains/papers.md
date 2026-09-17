@@ -10,13 +10,13 @@ The paper ("literature") library is a per-project, workspace-contained store of 
 - `core/papers/parser.go` - front-matter and Markdown-table parsing; the thin filesystem orchestrators `ParsePaperDir`/`ParseLibraryDir`. Parsing is best-effort (every artifact is optional).
 - `core/papers/writer.go` - atomic (temp file + rename) persistence of a paper's artifacts, containment-checked against the library root (`resolveTargetWithinRoot` + `pathutil.IsWithinPath`).
 - `core/papers/flashcards.go` - the `flashcards.md` model, parser, renderer, and the fixed-interval scheduler. Pure, no I/O.
-- `core/papers/skillpack.go` - the embedded `study-paper` pack and the non-destructive, versioned GLOBAL seeding used at startup (hybrid).
+- `core/papers/skillpack.go` - the embedded `study-paper` pack and the non-destructive, versioned PROJECT-LOCAL seeding run by the research pack reconciliation (enable + switch; see ADR-051).
 - `core/papers/seedstaging.go` - the crash-safe staging core; a deliberate mirror of `core/research/seedstaging.go` (the two copies must be kept in sync).
 - `core/papers/skills/study-paper/` - the embedded skill: `SKILL.md` plus `references/`, `assets/` (`flashcards.md`, `comparison-matrix.md`, `note-template.md`, `appraisal-template.md`, `explainer-outline.md`), and `scripts/` (`literature.py`, `fetch_paper.py`).
 - `backend/frontend_api_papers.go` - `GetPapers`/`GetPaper`/`SetPaperPinned`/`RecordFlashcardReview`, DTO mapping/normalization, the paper-library watcher callback, and pin/unpin.
-- `backend/frontend_api_papers_literature.go` - `RunPaperLiterature` and its testable `runLiteratureHelper` branch (exit-code → status mapping).
-- `backend/frontend_api_skills.go` - `seedPapersSkillPack(agentDir)` (the startup global seed; a no-op on an empty agent dir) and the skill cache.
-- `backend/frontend_api.go` - calls `seedPapersSkillPack(cfg.AgentDir)` before the global skill watchers start.
+- `backend/frontend_api_papers_literature.go` - `RunPaperLiterature` and its testable `runLiteratureHelper` branch (exit-code → status mapping); resolves `literature.py` from the requesting project's project-local seeded copy.
+- `backend/frontend_api_research.go` - `reconcileResearchPacks`: the single research pack reconciliation that seeds the paper pack project-locally on `EnableResearch` and on switches to research-enabled projects.
+- `backend/frontend_api_skills.go` - the skill cache (the former startup global seed was removed; see ADR-051).
 - `backend/frontend_api_project.go` - the workspace-watcher integration that emits `papers:changed` for the paper library.
 - `backend/config/paths.go` - the path helpers `PaperLibraryPathIn`/`PaperLibraryPath` and `ComparisonDirName`/`ComparisonsPathIn`/`ComparisonsPath`.
 - `frontend/src/api/papers.ts` - the RPC wrappers plus the boundary normalizers (`normalizePaperLibrary`/`normalizePaperRecord`/`normalizePaperLiteratureResult`).
@@ -99,11 +99,15 @@ type Deck        struct { Cards []Card; Reviews []ReviewEntry }
 ## Flow
 
 ```
-App startup
-  -> seedPapersSkillPack(cfg.AgentDir) writes the embedded study-paper pack into
-     the GLOBAL skills dir (~/.c0wrk/.agents/skills) — hybrid, independent of
-     RESEARCH; content-hash classified, staged + atomically swapped, non-destructive
-  -> global skill watchers start, so the seeded skill enters the ListSkills catalog
+RESEARCH enabled for a project (toggle) — or a switch to a research-enabled
+project, incl. the app-startup restore replay
+  -> reconcileResearchPacks writes the embedded study-paper pack into the
+     PROJECT-LOCAL skills dir (<workspace>/.agents/skills) alongside the
+     research-* pack — content-hash classified, staged + atomically swapped,
+     non-destructive; the project-local copy outranks a same-named ~/.agents
+     skill in per-session discovery (first-wins)
+  -> the per-session SkillManager scans the project dir first, so the seeded
+     skill enters the catalog with no extra wiring
 
 User opens the Papers panel (or the paper workspace tab)
   -> usePapersEvents loads the active project's library (GetPapers)
@@ -125,8 +129,8 @@ Flashcard review (the workspace Flashcards section)
 
 Literature lookup ("Run lookup" in the Literature section)
   -> RunPaperLiterature(projectID, paperID) resolves the seed from the card's
-     identifiers (DOI -> arXiv -> any id -> title) and runs the seeded
-     literature.py through c0wrk's managed Python
+     identifiers (DOI -> arXiv -> any id -> title) and runs the project-local
+     seeded literature.py through c0wrk's managed Python
   -> writes <paper-dir>/literature.json and returns an explicit status
   -> the frontend reads literature.json and projects it into the research DAG
      canvas (predecessors -> parents, citing -> children, contradictions retagged)
@@ -146,8 +150,9 @@ Literature lookup ("Run lookup" in the Literature section)
 - `RecordFlashcardReview` is fail-closed: an unknown paper/card, an unknown grade, or a deck with no review-log table is rejected and leaves the deck byte-for-byte unchanged; the resolve→read→mutate→write chain runs under the per-research-root mutation mutex, so concurrent reviews cannot lose a row.
 - The flashcards schedule is fixed and shared: the interval ladder is 1 → 3 → 7 → 16 → 35 days, `again` resets to the first interval, `hard` repeats at the same interval, and `good`/`easy` both promote. A card's stage is DERIVED from its interval index (`new` = -1 → `learning` = 0 → `review` ≥ 1), never stored independently, so the two never drift. `core/papers` and `frontend/src/lib/flashcards.ts` + `spacedRepetition.ts` implement the same rules.
 - `RunPaperLiterature` degrades explicitly: every non-success outcome is a status (`ok` | `offline` | `unresolved` | `rate_limited` | `no_python` | `no_script` | `no_seed` | `error`) that the UI renders as a message, never an empty graph. Only an unknown paper or a containment violation is a Go `error`. `literature.json` is helper OUTPUT and is not produced by the backend writer.
-- Global skill-pack seeding is hybrid, idempotent, crash-safe, and non-destructive to user-authored or user-edited skills: each destination is classified by CONTENT HASH against the embedded pack (never mtime/size, never the marker alone) — a pack-equal tree is Current, a pack-marked truncated subset is repaired, a diverging pack-marked tree is preserved as Modified, and a marker-less diverging directory is user-owned and preserved. Writes are staged in a hidden sibling temp dir and swapped in with a single rename. Seeding never runs for an empty agent dir, and a seeding failure is logged but never fatal to startup.
+- Project-local skill-pack seeding is research-scoped, idempotent, crash-safe, and non-destructive to user-authored or user-edited skills: each destination is classified by CONTENT HASH against the embedded pack (never mtime/size, never the marker alone) — a pack-equal tree is Current, a pack-marked truncated subset is repaired, a diverging pack-marked tree is preserved as Modified, and a marker-less diverging directory is user-owned and preserved. Writes are staged in a hidden sibling temp dir and swapped in with a single rename. Seeding runs from the research pack reconciliation (research enable + every switch to a research-enabled project); a seeding failure is logged but never fails the enable or the switch.
 - The paper pack's seed version (`papers.CurrentSeedVersion`) is independent of the research pack's (`research.CurrentSeedVersion`), so the two packs bump separately.
+- The project-local copy is the authoritative seeded `study-paper`: it outranks a same-named `~/.agents` skill in the per-session discovery chain (project dir scanned first, first name wins). No global copy is seeded anymore (ADR-051); a project that never enabled RESEARCH has no c0wrk-seeded `study-paper`, and `RunPaperLiterature` degrades to `no_script` there.
 
 ## Configuration
 
@@ -155,7 +160,7 @@ Literature lookup ("Run lookup" in the Literature section)
 | --------- | ------- | ----------- |
 | Library location | `<research-root>/papers` | Global sibling of the `R-NNN-*` projects; `<research-root>` is the persisted `ProjectInfo.ResearchRoot` or `<workspace>/.research` |
 | Comparisons location | `<research-root>/comparisons` | One `<slug>.md` per comparison set (`config.ComparisonDirName`) |
-| Global skill seed dir | `~/.c0wrk/.agents/skills` (`config.SkillsDir(agentDir)`) | Destination of the startup paper-pack seed; one of `config.defaultSkillDirs` |
+| Project-local skill seed dir | `<workspace>/.agents/skills` (`config.ProjectSkillsPath`) | Destination of the research pack reconciliation's paper-pack seed (research enable + switch); the copy that wins same-name discovery |
 | `papers.CurrentSeedVersion` | `3` | Pack version stamped into each seeded skill's `.seed-version` marker; bump to refresh marked copies |
 | Literature run timeout | `90s` wall clock; `20s` per HTTP request | Bounds `RunPaperLiterature`; the helper owns its per-request timeout |
 | Literature message cap | `600` runes | Truncation of the helper's stderr tail in `PaperLiteratureDTO.Message` |
@@ -178,4 +183,5 @@ Literature lookup ("Run lookup" in the Literature section)
 - [frontend/stores.md](frontend/stores.md) - `paperStore` and the `uiStore` Research-panel segment map
 - [tool-manager.md](tool-manager.md) - the managed Python interpreter `RunPaperLiterature` uses
 - [architecture/security-model.md](../architecture/security-model.md) - workspace containment and untrusted persisted artifacts
-- [../decisions/050-papers-library.md](../decisions/050-papers-library.md) - why the study-paper skill is vendored, globally seeded (hybrid), and where the library lives
+- [../decisions/050-papers-library.md](../decisions/050-papers-library.md) - why the study-paper skill is vendored and where the library lives (its global seeding decision is superseded by ADR-051)
+- [../decisions/051-research-pack-reconciliation.md](../decisions/051-research-pack-reconciliation.md) - why the pack seeds project-locally through the research reconciliation and the global seed was removed

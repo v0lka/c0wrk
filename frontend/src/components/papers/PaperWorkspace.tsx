@@ -1,14 +1,14 @@
-// Paper workspace (область просмотра результатов) — the file viewer's content
+// Paper workspace (the results viewing area) — the file viewer's content
 // for a `c0wrk:paper:<slug>` virtual tab.
 //
 // It renders one studied paper as a set of sections:
-//   Обзор      — identity card + source anchors (E1) + the critical layer (E2)
-//   Заметка    — note.md
+//   Overview   — identity card + source anchors (E1) + the critical layer (E2)
+//   Note       — note.md
 //   Appraisal  — appraisal.md
 //   Compare    — the library comparisons (`<research-root>/comparisons/`) this
 //                paper takes part in, else the per-paper comparison artifact
 //   Flashcards — flashcards.md
-//   Источник   — the extracted source text, with anchor scrolling (E1)
+//   Source     — the extracted source text, with anchor scrolling (E1)
 //   Literature — the literature-context artifact
 //
 // The tab is virtual (never persisted). The paper record comes from paperStore
@@ -16,7 +16,7 @@
 // paper's directory through the workspace RPCs.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BookOpen, FileText, Lightbulb, Microscope } from 'lucide-react'
+import { BookOpen, FileText } from 'lucide-react'
 import type { PaperAnchor, PaperRecord } from '@/api/papers'
 import {
   usePaperStore,
@@ -24,9 +24,7 @@ import {
   usePapersError,
   usePapersResearchRoot,
   selectPapersSyncAt,
-  ensurePaperPinned,
 } from '@/stores/paperStore'
-import { useMessageSender } from '@/hooks/useMessageSender'
 import { resolveAnchor } from '@/lib/paperAnchors'
 import { comparisonMentionsPaper } from '@/lib/paperComparison'
 import {
@@ -46,15 +44,6 @@ import { CompareMatrix } from './CompareMatrix'
 import { useComparisons } from './useComparisons'
 import { usePaperArtifacts, type PaperArtifacts } from './usePaperArtifacts'
 import { PAPER_WORKSPACE_SECTIONS, type PaperSection } from './paperSections'
-import {
-  RESEARCH_HYPOTHESIS_SKILL,
-  STUDY_PAPER_SKILL,
-  buildDeepenPrompt,
-  buildProposeHypothesisPrompt,
-} from './paperActions'
-
-const ACTION_BUTTON_CLASS =
-  'inline-flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground'
 
 function joinPath(dir: string, name: string): string {
   return `${dir.replace(/[\\/]+$/, '')}/${name}`
@@ -111,8 +100,8 @@ function NotFound({ slug }: { slug: string }) {
 export function PaperWorkspace({ slug }: { slug: string }) {
   const paper = usePaperBySlug(slug)
   const syncAt = usePaperStore(selectPapersSyncAt)
-  // A dispatch failure ("Go deeper" / "Hypotheses from gaps") is recorded on the
-  // paper store; this tab must render it itself — its only other renderer is the
+  // Failures recorded on the paper store (library load, pin toggle, flashcard
+  // review) must render in this tab itself — its only other renderer is the
   // Research panel's Papers segment, a different surface the user may never open.
   const error = usePapersError()
   const researchRoot = usePapersResearchRoot()
@@ -121,7 +110,6 @@ export function PaperWorkspace({ slug }: { slug: string }) {
   // Multi-paper comparisons live at the research-root level (not in the paper
   // directory); the Compare section shows only those this paper takes part in.
   const comparisons = useComparisons(researchRoot, syncAt)
-  const { send } = useMessageSender()
   const [section, setSection] = useState<PaperSection>('overview')
   const [pending, setPending] = useState<PendingAnchor | null>(null)
   const [missedIndex, setMissedIndex] = useState<number | null>(null)
@@ -171,53 +159,6 @@ export function PaperWorkspace({ slug }: { slug: string }) {
     [artifacts.source.content],
   )
 
-  // [22]a pattern (see PapersView): send() renders its own send failures in-chat
-  // but RETHROWS when the auto-created session fails — surface that on the
-  // paper store's error line instead of dropping it.
-  const dispatch = useCallback(
-    (prompt: string, skill: string) => {
-      // Snapshot the loaded project so a switch while the dispatch is in flight
-      // cannot write this failure into the new project's error slot (the store's
-      // own async writers guard for exactly this).
-      const projectIdBefore = usePaperStore.getState().projectId
-      const stillSameProject = (): boolean =>
-        usePaperStore.getState().projectId === projectIdBefore
-      void Promise.resolve(send(prompt, [skill])).then(
-        () => {
-          // A successful (re)dispatch clears a stale failure banner.
-          if (stillSameProject()) usePaperStore.getState().setError(null)
-        },
-        (err) => {
-          if (!stillSameProject()) return
-          usePaperStore
-            .getState()
-            .setError(
-              `Failed to dispatch ${skill}: ${
-                err instanceof Error ? err.message : 'unknown error'
-              }`,
-            )
-        },
-      )
-    },
-    [send],
-  )
-
-  // E4 — "Go deeper": re-dispatch the study-paper skill on the SAME card one
-  // mode deeper. The skill appends its sections; the library sync then rebuilds
-  // this workspace's sections (see the syncAt refresh key above).
-  const onDeepen = useCallback(() => {
-    if (paper === null) return
-    dispatch(buildDeepenPrompt(paper), STUDY_PAPER_SKILL)
-  }, [paper, dispatch])
-
-  // E5 — "Suggest hypotheses from gaps": formulate hypotheses from the paper's
-  // recorded uncertainties and auto-pin the paper as prior art (idempotent).
-  const onProposeGaps = useCallback(() => {
-    if (paper === null) return
-    void ensurePaperPinned(paper.id)
-    dispatch(buildProposeHypothesisPrompt(paper), RESEARCH_HYPOTHESIS_SKILL)
-  }, [paper, dispatch])
-
   if (paper === null) return <NotFound slug={slug} />
 
   const baseFilePath = (name: string): string | null => (dir === '' ? null : joinPath(dir, name))
@@ -230,33 +171,6 @@ export function PaperWorkspace({ slug }: { slug: string }) {
         <span className="min-w-0 flex-1 truncate text-xs font-medium" title={paper.title}>
           {paper.title !== '' ? paper.title : paper.slug}
         </span>
-        <div className="ml-auto flex shrink-0 items-center gap-0.5">
-          <button
-            type="button"
-            data-testid="paper-go-deeper"
-            title="Go deeper — study the same card one mode deeper (append-only)"
-            onClick={onDeepen}
-            className={ACTION_BUTTON_CLASS}
-          >
-            <Microscope className="size-3" />
-            Go deeper
-          </button>
-          <button
-            type="button"
-            data-testid="paper-suggest-hypotheses"
-            title="Suggest hypotheses from the recorded gaps (auto-pins the paper as prior art)"
-            onClick={onProposeGaps}
-            className={ACTION_BUTTON_CLASS}
-          >
-            <Lightbulb className="size-3" />
-            Hypotheses from gaps
-          </button>
-        </div>
-        {paper.verdict !== '' && (
-          <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">
-            {paper.verdict}
-          </span>
-        )}
       </header>
 
       {error !== null && (

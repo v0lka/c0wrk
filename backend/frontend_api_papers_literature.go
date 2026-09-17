@@ -45,8 +45,9 @@ const (
 	litStatusError       = "error"
 )
 
-// Study-paper skill coordinates: the helper is seeded under the global agent
-// skills directory as <SkillsDir>/study-paper/scripts/literature.py.
+// Study-paper skill coordinates: the helper is seeded PROJECT-LOCALLY by the
+// research pack reconciliation as
+// <workspace>/.agents/skills/study-paper/scripts/literature.py.
 const (
 	studyPaperSkillName     = "study-paper"
 	literatureScriptRelPath = "scripts/literature.py"
@@ -118,11 +119,11 @@ func (f *FrontendAPI) RunPaperLiterature(projectID, paperID string) (*PaperLiter
 		}, nil
 	}
 
-	scriptPath := f.literatureScriptPath()
+	scriptPath := f.literatureScriptPath(rctx.project.WorkspacePath)
 	if scriptPath == "" {
 		return &PaperLiteratureDTO{
 			Status:  litStatusNoScript,
-			Message: "the seeded study-paper literature.py helper was not found",
+			Message: "the study-paper literature.py helper was not found in this project's .agents/skills (enable RESEARCH mode to seed the skill pack)",
 		}, nil
 	}
 
@@ -175,14 +176,16 @@ func (f *FrontendAPI) resolvePaperForLiterature(projectID, paperID string, rctx 
 	return rec, nil
 }
 
-// literatureScriptPath resolves the seeded study-paper helper script, or "" when
-// it is not present (the global skill-pack is seeded at startup; a missing file
-// is an explicit, honest degradation rather than a crash).
-func (f *FrontendAPI) literatureScriptPath() string {
-	if f.agentDir == "" {
+// literatureScriptPath resolves the study-paper helper script from the
+// REQUESTING project's project-local skills directory — the copy seeded by
+// reconcileResearchPacks — or "" when it is not present (an explicit, honest
+// degradation rather than a crash). An empty workspacePath (No Project) has no
+// project-local skills directory at all.
+func (f *FrontendAPI) literatureScriptPath(workspacePath string) string {
+	if workspacePath == "" {
 		return ""
 	}
-	path := filepath.Join(config.SkillsDir(f.agentDir), studyPaperSkillName, literatureScriptRelPath)
+	path := filepath.Join(config.ProjectSkillsPath(workspacePath), studyPaperSkillName, literatureScriptRelPath)
 	if info, err := os.Stat(path); err != nil || info.IsDir() {
 		return ""
 	}

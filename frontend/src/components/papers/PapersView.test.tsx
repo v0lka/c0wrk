@@ -4,8 +4,8 @@
 // A pure view over paperStore (seeded directly — the library sync lives in the
 // App-root usePapersEvents) plus the dispatch surface: the Study-paper field
 // and the mode selector send the `study-paper` skill through the message
-// sender, and each row's actions open the reader tab / deepen / compare /
-// pin / propose a hypothesis.
+// sender — always into a fresh session — and each row's actions open the
+// reader tab / deepen / compare / pin / propose a hypothesis.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -139,7 +139,7 @@ afterEach(() => {
 })
 
 describe('PapersView — invocation surface', () => {
-  it('dispatches the study-paper skill with the paste reference and clears the field', async () => {
+  it('dispatches the study-paper skill into a FRESH session with the paste reference and clears the field', async () => {
     const container = await render()
     const study = container.querySelector<HTMLButtonElement>('[data-testid="papers-invoke-study"]')!
 
@@ -162,7 +162,7 @@ describe('PapersView — invocation surface', () => {
       [STUDY_PAPER_SKILL],
       undefined,
       undefined,
-      { newSession: false },
+      { newSession: true },
     )
     const input = container.querySelector<HTMLInputElement>('[data-testid="papers-invoke-input"]')!
     expect(input.value).toBe('')
@@ -188,7 +188,7 @@ describe('PapersView — invocation surface', () => {
       [STUDY_PAPER_SKILL],
       undefined,
       undefined,
-      { newSession: false },
+      { newSession: true },
     )
   })
 
@@ -297,6 +297,27 @@ describe('PapersView — the paper list', () => {
     expect(second.querySelector('[data-testid="paper-badge-reading"]')).toBeNull()
     expect(second.querySelector('[data-testid="paper-badge-verdict"]')).toBeNull()
     expect(second.querySelector('[data-testid="paper-badge-confidence"]')).toBeNull()
+  })
+
+  it('renders badges and row actions as separate full-width rows — badges left, actions right', async () => {
+    usePaperStore.getState().loadLibrary(makeLibrary([makePaper()]))
+    const container = await render()
+    const card = row(container, 'P-001')
+
+    const badgesRow = card.querySelector('[data-testid="paper-badge-mode"]')!.parentElement!
+    const actionsRow = card.querySelector('[data-testid="paper-action-open"]')!.parentElement!
+
+    // Two separate sibling rows — badges no longer share a flex line with the
+    // action buttons.
+    expect(badgesRow).not.toBe(actionsRow)
+    expect(badgesRow.parentElement).toBe(actionsRow.parentElement)
+
+    // Each row spans the card width; badges stay left-aligned (no justify-*),
+    // while the action buttons are pushed to the right edge.
+    expect(badgesRow.className).toContain('w-full')
+    expect(actionsRow.className).toContain('w-full')
+    expect(badgesRow.className).not.toContain('justify-')
+    expect(actionsRow.className).toContain('justify-end')
   })
 
   it('shows a no-project hint when no project is active', async () => {

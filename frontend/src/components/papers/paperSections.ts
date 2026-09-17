@@ -14,11 +14,11 @@ export type PaperSection =
 
 /** The workspace sections, in display order. */
 export const PAPER_WORKSPACE_SECTIONS: ReadonlyArray<{ id: PaperSection; label: string }> = [
-  { id: 'overview', label: 'Обзор' },
-  { id: 'note', label: 'Заметка' },
+  { id: 'overview', label: 'Overview' },
+  { id: 'note', label: 'Note' },
   { id: 'appraisal', label: 'Appraisal' },
   { id: 'compare', label: 'Compare' },
   { id: 'flashcards', label: 'Flashcards' },
-  { id: 'source', label: 'Источник' },
+  { id: 'source', label: 'Source' },
   { id: 'literature', label: 'Literature' },
 ]

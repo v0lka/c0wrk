@@ -185,8 +185,8 @@ describe('LLMSettings section order', () => {
     const defaultTrigger = container.querySelector('button[aria-label="Default model"]')
     expect(defaultTrigger).not.toBeNull()
 
-    // Rendered AFTER the default-model picker (the "после поля выбора
-    // дефолтной модели" requirement)…
+    // Rendered AFTER the default-model picker (the "after the default-model
+    // picker" requirement)…
     expect(
       defaultTrigger!.compareDocumentPosition(addBtn!) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()

@@ -373,6 +373,33 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	// stay consistent with what the frontend is told.
 	f.switchProjectActivate(p)
 	f.applySavedProjectSwitchState(p.ID)
+
+	// Reconcile the project-local c0wrk packs (research-*/study-paper skills,
+	// research agent profile) when switching to a research-enabled project:
+	// seed ALL missing entries and upgrade pack-marked outdated ones. The
+	// toggle-time seeding in EnableResearch only runs when the user flips the
+	// switch, so an app upgrade that bumps a pack version — or a pack that
+	// gained a new skill — would otherwise stay stale in every project until
+	// a manual re-toggle. App-startup restoration rides along for free: the
+	// frontend replays the last active project through this same
+	// SwitchProject call. Best-effort: a seeding failure is logged inside
+	// reconcileResearchPacks and never fails the switch.
+	if p.ResearchRoot != "" && !p.IsNoProject {
+		if packRes := f.reconcileResearchPacks(p.ID, p.WorkspacePath); packRes.changed() {
+			f.invalidateSkillCache()
+			f.invalidateAgentCache()
+			// Refresh running sessions of this project (background/live
+			// sessions survive a switch away and back) so their skill
+			// catalogs pick up the newly seeded entries without a restart.
+			if f.app != nil {
+				if manager := f.app.Manager(); manager != nil {
+					manager.RescanSkillsForProject(p.ID)
+					manager.RescanAgentsForProject(p.ID)
+				}
+			}
+		}
+	}
+
 	f.emitEvent(EventProjectSwitched, p)
 
 	// Intake scan (text-only, exec-free): warn the user when the freshly

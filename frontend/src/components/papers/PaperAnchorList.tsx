@@ -3,7 +3,7 @@
 // Shared by the Overview and the Source section. Clicking an anchor asks the
 // workspace to resolve it against the extracted source text; when it cannot be
 // located confidently the workspace marks that row, so the list shows an honest
-// "не найдено" instead of jumping somewhere wrong.
+// "not found" instead of jumping somewhere wrong.
 
 import type { PaperAnchor } from '@/api/papers'
 import { cn } from '@/lib/utils'
@@ -49,7 +49,7 @@ export function PaperAnchorList({ anchors, missedIndex, onSelect }: PaperAnchorL
           </button>
           {missedIndex === index && (
             <span data-testid="paper-anchor-miss" className="shrink-0 text-[10px] text-destructive">
-              не найдено
+              not found
             </span>
           )}
         </li>

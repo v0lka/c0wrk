@@ -6,7 +6,6 @@ import (
 	"sync/atomic"
 
 	"github.com/v0lka/c0wrk/backend/config"
-	"github.com/v0lka/c0wrk/core/papers"
 	"github.com/v0lka/c0wrk/core/workspace"
 )
 
@@ -56,36 +55,13 @@ func (f *FrontendAPI) ListSkills() []SkillDescriptorDTO {
 	return result
 }
 
-// seedPapersSkillPack materializes the built-in paper-study skill-pack (the
-// `study-paper` skill, see core/papers) into the GLOBAL agent skills directory
-// (config.SkillsDir(agentDir) = ~/.c0wrk/.agents/skills).
-//
-// This is "hybrid" global seeding: the skill becomes discoverable by every
-// project — including projects and No-Project sessions that never enable
-// RESEARCH mode — because the global directory is one of
-// config.defaultSkillDirs and is watched by the global skill watchers started
-// in NewFrontendAPI. Seeding is idempotent and non-destructive to user edits
-// (core/papers classifies by content hash), so it is safe to run on every
-// startup. An empty agentDir (e.g. in tests) is a no-op, and a seeding failure
-// is logged but never fatal to startup.
-func (f *FrontendAPI) seedPapersSkillPack(agentDir string) {
-	if agentDir == "" {
-		return
-	}
-	skillsDir := config.SkillsDir(agentDir)
-	res, err := papers.SeedSkills(skillsDir, f.log())
-	if err != nil {
-		f.log().Warn("paper skill-pack seeding failed", "skills_dir", skillsDir, "error", err)
-		return
-	}
-	if res != nil {
-		f.log().Info("paper skill-pack seeded",
-			"skills_dir", skillsDir,
-			"seeded", len(res.Seeded), "updated", len(res.Updated),
-			"current", len(res.Current), "preserved", len(res.Preserved),
-			"modified", len(res.Modified))
-	}
-}
+// seedPapersSkillPack was removed: the paper-study skill-pack is no longer
+// seeded into the GLOBAL agent skills directory at startup. It is reconciled
+// PROJECT-LOCALLY instead — reconcileResearchPacks seeds it into
+// <workspace>/.agents/skills when RESEARCH mode is enabled for a project
+// (EnableResearch) and on every SwitchProject to a research-enabled project,
+// where the project-local copy wins the same-name skill discovery chain over
+// a ~/.agents namesake. See core/papers/skillpack.go for the pack itself.
 
 // invalidateSkillCache bumps the generation counter so the next ListSkills
 // call re-scans the skill directories.

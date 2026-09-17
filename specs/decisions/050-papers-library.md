@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded in part by [ADR-051](./051-research-pack-reconciliation.md) (the hybrid global seeding — decision 2 below — was replaced by project-local research pack reconciliation; the vendoring and library-location decisions stand)
 
 ## Context
 
