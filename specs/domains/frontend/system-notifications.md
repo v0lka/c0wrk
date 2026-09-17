@@ -38,7 +38,9 @@ Key points:
 
 ## Key Files
 
-- `desktop/notifications.go` — the Go bridge: `InitNotifications` (memoized, single `OnNotificationResponse` callback, macOS authorization prompt), `SendSystemNotification` (the transport; unique `c0wrk-notification-*` ids), `CheckNotificationAuthorization` (non-prompting permission read for the Settings hint), `ShowTestNotification` (Settings preview, no routing data), `cleanupNotifications` (Shutdown; closes the Linux D-Bus connection).
+- `desktop/notifications.go` — the Go bridge: `InitNotifications` (memoized, single `OnNotificationResponse` callback, macOS authorization prompt), `SendSystemNotification` (the transport; unique `c0wrk-notification-*` ids; routes through the platform hook below on Linux), `CheckNotificationAuthorization` (non-prompting permission read for the Settings hint), `ShowTestNotification` (Settings preview, no routing data), `cleanupNotifications` (Shutdown; closes c0wrk's own Linux D-Bus connection AND the Wails notification service).
+- `desktop/notifications_linux.go` / `desktop/notifications_notlinux.go` — the platform send hook: on Linux c0wrk's own icon-augmented `org.freedesktop.Notifications` transport (see [Notification icon](#notification-icon)); on other platforms a stub straight to the Wails runtime.
+- `desktop/notifications_icon.go` + `desktop/icon/appicon.png` — the embedded application icon (byte-identical copy of `build/appicon.png`, guarded by a drift test — `go:embed` cannot reference files above the package dir).
 - `frontend/src/api/notifications.ts` — the single import path for the Go transport: `initSystemNotifications`, `sendSystemNotification`, `showTestNotification`, `checkNotificationAuthorization`, `onNotificationClicked` (payload-validated `notification_clicked` subscription with drop reporting).
 - `frontend/src/lib/systemNotifications.ts` — the pure event→content mapping `classifyNotificationContent()` and the best-effort send path (`sendSystemNotification(content, context)` — store gate + `isWailsReady` gate + warn-and-swallow).
 - `frontend/src/hooks/useNotificationClicks.ts` — click navigation, mounted once at the app root.
@@ -77,7 +79,25 @@ Titles are prefixed at the send site with the resolved session name: `"<session>
 4. Unknown session (even after the refresh) → logged no-op.
 5. Known session: `switchProjectWithState(projectId)` when the project differs (restores that project's UI state), then `selectSession(sessionId, projectId)`. A failed switch surfaces its own toast and selects nothing.
 
-Known Linux quirk: Wails maps reason-2 `NotificationClosed` (the banner's X) to the same `DEFAULT_ACTION` identifier, so an explicit dismiss can navigate too — indistinguishable at the identifier level. Timeout/programmatic closes never fire the callback.
+Known Linux quirk: both the Wails transport and c0wrk's own map reason-2 `NotificationClosed` (the banner's X) to the same `DEFAULT_ACTION` identifier, so an explicit dismiss can navigate too — indistinguishable at the identifier level. Timeout/programmatic closes never fire the callback.
+
+## Notification icon
+
+Wails v2 (through v2.16) has no icon field in `NotificationOptions` and hard-codes the D-Bus `app_icon` argument to `""` on Linux, so each platform resolves the banner icon differently:
+
+| Platform | Icon source | Transport |
+| -------- | ----------- | --------- |
+| macOS | the app bundle icon (automatic) | Wails runtime |
+| Windows | the app icon Wails extracts and registers under the AppUserModelId for toasts (automatic) | Wails runtime |
+| Linux | c0wrk's own transport (below) | `desktop/notifications_linux.go` |
+
+On Linux, `SendSystemNotification` routes through `sendNotificationPlatform`: a c0wrk-owned `org.freedesktop.Notifications` D-Bus call mirroring the Wails frontend's, but with `app_icon` populated. The icon argument resolves fail-soft, first match wins:
+
+1. **Embedded PNG → `file://` URI** — `desktop/icon/appicon.png` is embedded in the binary (byte-identical to `build/appicon.png`, drift-guarded by test) and exported on first use to `<UserCacheDir>/c0wrk/notification-icon.png` (mode 0644 — readable by service-user daemons), passed as a percent-encoded `file://` URI. Works in `wails dev`, standalone binaries, and daemon configurations with no theme awareness.
+2. **Theme name** (`"c0wrk"`) — when the cache dir is unwritable; packaged installs (AUR) ship `/usr/share/icons/hicolor/512x512/apps/c0wrk.png`, so theme-resolving daemons still find the icon.
+3. **Wails fallback** — any D-Bus failure (no session bus, daemon error, dead connection) drops the connection, logs a warning, and re-sends through the Wails transport: icon-less but delivered, with the identical click path.
+
+Click routing coexists with the Wails transport without double delivery: each notification is tracked by exactly one side's pending map (ours for our sends, Wails' for fallback sends), and both funnel into the same `App.notificationCallback`. Our signal handler subscribes to `ActionInvoked`/`NotificationClosed`, maps the `default` action (and close reason 2, the same dismiss quirk as Wails) to `NotificationResult{ActionIdentifier: "DEFAULT_ACTION"}`, and ignores foreign ids. A failed send tears the connection down so the next send redials. `Shutdown` closes our connection before the Wails cleanup.
 
 ## Settings UI
 
@@ -101,6 +121,7 @@ Known Linux quirk: Wails maps reason-2 `NotificationClosed` (the banner's X) to 
 - Exactly one `OnNotificationResponse` callback is registered per app run (init is memoized; a failed init is retried but never double-registers).
 - Banner ids are unique within a process (`c0wrk-notification-<GOOS>-<timestamp>-<seq>`).
 - `notification_clicked` payloads are validated (`isNotificationClickedData`); malformed ones are dropped and reported, never dispatched.
+- The Linux icon transport is fail-soft: a banner is never lost to an icon/export/D-Bus failure (fallback to the Wails transport), and exactly one side tracks each notification (no double delivery, no orphan clicks).
 
 ## Known Limitations
 

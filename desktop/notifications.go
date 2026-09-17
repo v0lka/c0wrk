@@ -176,11 +176,17 @@ func (a *App) CheckNotificationAuthorization() (bool, error) {
 	return wailsRuntime.CheckNotificationAuthorization(a.ctx)
 }
 
-// SendSystemNotification sends one native notification through the Wails
-// runtime. Frontend-callable — the single transport used by the frontend's
-// lib/systemNotifications.ts, so clicks round-trip: the data map the frontend
-// supplies here is returned as UserInfo in the click callback, from which
-// notification_clicked extracts session/project routing.
+// SendSystemNotification sends one native notification. Frontend-callable —
+// the single transport used by the frontend's lib/systemNotifications.ts, so
+// clicks round-trip: the data map the frontend supplies here is returned as
+// UserInfo in the click callback, from which notification_clicked extracts
+// session/project routing.
+//
+// Platform routing: on Linux the banner goes through c0wrk's own D-Bus
+// transport (sendNotificationPlatform) so it carries the application icon
+// (embedded PNG → cache file:// URI → theme-name fallback; any transport
+// failure falls back to the Wails path). On macOS/Windows the Wails runtime
+// remains the transport — the bundle/AUM already provides the icon there.
 //
 // data keys "sessionId" and "projectId" are the routing contract; other keys
 // are forwarded untouched. Must remain on App (Wails context).
@@ -204,7 +210,21 @@ func (a *App) SendSystemNotification(title, body string, data map[string]string)
 	if a.notificationsSendFn != nil {
 		return a.notificationsSendFn(a.ctx, options)
 	}
-	return wailsRuntime.SendNotification(a.ctx, options)
+	return a.sendNotificationPlatform(a.ctx, options)
+}
+
+// sendNotificationViaWails delivers a notification through the Wails runtime
+// transport — the platform default on macOS/Windows and the fail-soft
+// fallback on Linux when the icon-augmented D-Bus transport cannot deliver
+// (no session bus, daemon error, …). The banner then renders without the
+// c0wrk icon, but the click path is identical: Wails tracks the notification
+// and its OnNotificationResponse callback (App.notificationCallback, wired in
+// InitNotifications) still fires on activation.
+func (a *App) sendNotificationViaWails(ctx context.Context, options wailsRuntime.NotificationOptions) error {
+	if a.notificationsSendViaWailsFn != nil {
+		return a.notificationsSendViaWailsFn(ctx, options)
+	}
+	return wailsRuntime.SendNotification(ctx, options)
 }
 
 // notificationIDSeq guarantees unique notification ids within one process
@@ -233,13 +253,19 @@ func (a *App) ShowTestNotification() error {
 	)
 }
 
-// cleanupNotifications releases the notification service resources — on Linux
-// this closes the D-Bus session-bus connection. Called from Shutdown with the
-// lifecycle context (identical to a.ctx in production; taken as a parameter
-// so the teardown stays exercisable in tests); safe to call when
-// notifications were never initialized (the Wails call is a no-op on a nil
-// connection, and macOS/Windows implement it as a stub).
+// cleanupNotifications releases the notification service resources — on
+// Linux this closes the D-Bus session-bus connection of the Wails transport
+// AND c0wrk's own icon-augmented transport (cleanupNotificationTransport, a
+// no-op on other platforms). Called from Shutdown with the lifecycle context
+// (identical to a.ctx in production; taken as a parameter so the teardown
+// stays exercisable in tests); safe to call when notifications were never
+// initialized (the Wails call is a no-op on a nil connection, and
+// macOS/Windows implement it as a stub).
 func (a *App) cleanupNotifications(ctx context.Context) {
+	// Our own transport first: a Shutdown may race a late send fallback, and
+	// a closed own connection simply redials or falls back on the next send.
+	a.cleanupNotificationTransport()
+
 	if ctx == nil {
 		return
 	}

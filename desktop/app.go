@@ -162,6 +162,12 @@ type App struct {
 	notificationsSendFn func(ctx context.Context, options wailsRuntime.NotificationOptions) error
 	// notificationsCleanupFn replaces wailsRuntime.CleanupNotifications.
 	notificationsCleanupFn func(ctx context.Context)
+	// notificationsSendViaWailsFn replaces the sendNotificationViaWails
+	// fallback (the Wails transport behind the wailsRuntime.SendNotification
+	// call). Lets tests observe the Linux dial-failure fallback path — the
+	// real Wails call fatals on a context no live runtime owns. Production
+	// wiring keeps it nil.
+	notificationsSendViaWailsFn func(ctx context.Context, options wailsRuntime.NotificationOptions) error
 }
 
 // NewApp creates a new App instance.
