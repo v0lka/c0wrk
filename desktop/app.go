@@ -130,6 +130,38 @@ type App struct {
 	// those paths without a live Wails runtime (wailsRuntime panics on a
 	// foreign context). Production wiring keeps it nil.
 	windowShowFn func(ctx context.Context)
+
+	// ── System notifications (notifications.go) ────────────────────────────
+	//
+	// Test seams for the Wails notification runtime calls, following the
+	// wailsEmit / windowShowFn / quitFn precedent: each replaces exactly one
+	// wailsRuntime package function so the notification paths can be exercised
+	// without a live Wails runtime (the real calls fatal on a context no
+	// runtime owns). Production wiring keeps every one of them nil.
+
+	// notificationsInitMu serializes InitNotifications: a Wails RPC goroutine
+	// and an early frontend init must not interleave the initialize/register
+	// steps. notificationsInitialized memoizes the successful init so a second
+	// call never registers a second OnNotificationResponse callback (the Wails
+	// callback slot is a single package-level variable, but replacing it would
+	// also churn goroutine state for nothing). A FAILED init is not memoized —
+	// the next call retries (a Linux session bus can appear later).
+	notificationsInitMu      sync.Mutex
+	notificationsInitialized atomic.Bool
+
+	// onNotificationResponseFn replaces wailsRuntime.OnNotificationResponse.
+	onNotificationResponseFn func(ctx context.Context, cb func(result wailsRuntime.NotificationResult))
+	// notificationsInitFn replaces wailsRuntime.InitializeNotifications.
+	notificationsInitFn func(ctx context.Context) error
+	// notificationsAuthFn replaces wailsRuntime.RequestNotificationAuthorization.
+	notificationsAuthFn func(ctx context.Context) (bool, error)
+	// notificationsAuthCheckFn replaces wailsRuntime.CheckNotificationAuthorization
+	// (the non-prompting read the Settings permission hint needs).
+	notificationsAuthCheckFn func(ctx context.Context) (bool, error)
+	// notificationsSendFn replaces wailsRuntime.SendNotification.
+	notificationsSendFn func(ctx context.Context, options wailsRuntime.NotificationOptions) error
+	// notificationsCleanupFn replaces wailsRuntime.CleanupNotifications.
+	notificationsCleanupFn func(ctx context.Context)
 }
 
 // NewApp creates a new App instance.

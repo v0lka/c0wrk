@@ -537,6 +537,17 @@ export interface ExitRequestedData {
   readonly update_pending?: boolean
 }
 
+/** Payload of the global `notification_clicked` event (system-notification
+ *  activation). Mirrors desktop/notifications.go notificationClickedPayload.
+ *  `session_id`/`project_id` are the routing context the sender attached to
+ *  the banner and are empty strings for unattributed notifications — the
+ *  consumer treats an empty/unknown session as a logged no-op. */
+export interface NotificationClickedData {
+  readonly notification_id: string
+  readonly session_id: string
+  readonly project_id: string
+}
+
 // --- Self-update event payloads ---
 //
 // Mirror the backend DTOs in backend/frontend_api_updater.go (snake_case JSON
@@ -659,6 +670,14 @@ export interface GlobalEventMap {
   readonly 'update:error': UpdateErrorData
   /** Self-update check found no newer release (up to date or skipped). */
   readonly 'update:none': UpdateInfoData
+  /** The user activated (clicked the default action of) a delivered system
+   *  notification. Emitted by the Go notification callback
+   *  (desktop/notifications.go) AFTER it focuses the main window, so the
+   *  frontend only navigates. `session_id`/`project_id` come from the
+   *  notification's own data map and are empty for unattributed banners
+   *  (e.g. the Settings preview) — an unknown/empty session id is a logged
+   *  no-op, never a navigation. */
+  readonly 'notification_clicked': NotificationClickedData
 }
 
 export type GlobalEventKey = keyof GlobalEventMap
@@ -1110,6 +1129,18 @@ export function isExitRequestedData(d: unknown): d is ExitRequestedData {
   if (!Array.isArray(d.sessions)) return false
   if (d.update_pending !== undefined && typeof d.update_pending !== 'boolean') return false
   return d.sessions.every((s) => isObj(s) && typeof s.id === 'string' && typeof s.name === 'string')
+}
+
+/** Guard for a `notification_clicked` payload (system-notification
+ *  activation). All three fields are required strings — the backend emits
+ *  empty routing ids for unattributed banners, and the consumer's
+ *  unknown-session no-op needs that distinction to be reliable. A payload
+ *  that fails this guard is dropped at the boundary (reportDroppedEvent). */
+export function isNotificationClickedData(d: unknown): d is NotificationClickedData {
+  return isObj(d) &&
+    typeof d.notification_id === 'string' &&
+    typeof d.session_id === 'string' &&
+    typeof d.project_id === 'string'
 }
 
 const VALID_VECTOR_STATES: ReadonlySet<string> = new Set(['idle', 'indexing', 'ready', 'reindexing', 'unavailable'])

@@ -12,6 +12,7 @@ import { ThemeSelector } from './ThemeSelector'
 import { UIScaleSelector } from './UIScaleSelector'
 import { ProxySettings } from './ProxySettings'
 import { SoundSettings } from './SoundSettings'
+import { SystemNotificationSettings } from './SystemNotificationSettings'
 import { SessionStatsSettings } from './SessionStatsSettings'
 import { LLMSettings } from './LLMSettings'
 import { ModelProfilesSettings } from './ModelProfilesSettings'
@@ -241,6 +242,9 @@ export function SettingsModal() {
               <LogLevelSelector />
               <div className="border-t border-border pt-4">
                 <SoundSettings />
+              </div>
+              <div className="border-t border-border pt-4">
+                <SystemNotificationSettings />
               </div>
               <div className="border-t border-border pt-4">
                 <SessionStatsSettings />

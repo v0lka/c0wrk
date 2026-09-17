@@ -561,6 +561,12 @@ func (a *App) Shutdown(ctx context.Context) {
 	// after this point are delivered synchronously.
 	a.stopEventBatcher()
 
+	// Release the notification service resources — on Linux this closes the
+	// D-Bus session-bus connection held by InitializeNotifications; on
+	// macOS/Windows the Wails cleanup is a stub. Safe when notifications were
+	// never initialized. See notifications.go cleanupNotifications.
+	a.cleanupNotifications(ctx)
+
 	// Persist the final window geometry so a normal quit preserves the size
 	// even if no resize fired this session. Best-effort: a torn-down context
 	// makes this a no-op, and the debounced frontend saves already captured

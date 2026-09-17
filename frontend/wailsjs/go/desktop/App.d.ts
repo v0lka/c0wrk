@@ -37,6 +37,8 @@ export function CancelUnfinishedTask(arg1:string):Promise<void>;
 
 export function CheckForUpdates():Promise<backend.UpdateInfo>;
 
+export function CheckNotificationAuthorization():Promise<boolean>;
+
 export function CheckoutBranch(arg1:string):Promise<void>;
 
 export function CheckoutRemoteBranch(arg1:string):Promise<void>;
@@ -201,6 +203,8 @@ export function HardenGitRepo(arg1:string):Promise<void>;
 
 export function HasDefaultModel():Promise<boolean>;
 
+export function InitNotifications():Promise<void>;
+
 export function Lifecycle():Promise<backend.FrontendAPILifecycle>;
 
 export function ListAgents():Promise<Array<backend.AgentDescriptorDTO>>;
@@ -311,6 +315,8 @@ export function SelectModelProfile(arg1:string):Promise<void>;
 
 export function SendMessage(arg1:string,arg2:string,arg3:Array<string>,arg4:Array<string>,arg5:string,arg6:string,arg7:boolean,arg8:string,arg9:boolean,arg10:boolean):Promise<void>;
 
+export function SendSystemNotification(arg1:string,arg2:string,arg3:Record<string, string>):Promise<void>;
+
 export function SetActiveResearch(arg1:string,arg2:string):Promise<backend.ResearchStatusDTO>;
 
 export function SetHypothesisPinned(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
@@ -328,6 +334,8 @@ export function SetReviewStatus(arg1:string,arg2:string):Promise<void>;
 export function SetUpdateSettings(arg1:boolean):Promise<backend.UpdateSettings>;
 
 export function SetWailsLogger(arg1:desktop.wailsLogAdapter):Promise<void>;
+
+export function ShowTestNotification():Promise<void>;
 
 export function SkipVersion(arg1:string):Promise<void>;
 
