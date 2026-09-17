@@ -1,8 +1,9 @@
 import { useRef } from 'react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import { Search, X } from 'lucide-react'
+import { DatabaseZap, Loader2, Search, X } from 'lucide-react'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
+import { useVectorReindex } from '@/hooks/useVectorReindex'
 import type { SearchMode } from '@/types/models'
 
 const MODES: SearchMode[] = ['hybrid', 'vector', 'lexical']
@@ -34,6 +35,11 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
   const setMode = useVectorIndexStore((s) => s.setMode)
 
   const queryInputRef = useRef<HTMLInputElement>(null)
+
+  // Force-full-reindex action, hosted on the mode-selector row after the
+  // mode buttons. State machine (busy latch, No Project hiding) lives in
+  // useVectorReindex.
+  const { reindexBusy, reindexUnavailable, handleReindex } = useVectorReindex()
 
   // While the index is not ready, searches would block on index readiness —
   // the query/file-pattern inputs are disabled at the widget level (the
@@ -104,6 +110,22 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
             {m}
           </Button>
         ))}
+        {!reindexUnavailable && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 shrink-0 px-2"
+            title={reindexBusy ? 'Reindexing...' : 'Force full project reindex'}
+            disabled={reindexBusy}
+            onClick={handleReindex}
+          >
+            {reindexBusy ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <DatabaseZap className="size-3.5" />
+            )}
+          </Button>
+        )}
       </div>
 
       {/* MustMatch chips */}
