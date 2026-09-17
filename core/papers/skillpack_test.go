@@ -306,8 +306,8 @@ func TestEmbeddedScriptsStdlibOnly(t *testing.T) {
 // `license:` field is gone and a `metadata:` block is present. It also pins the
 // seed-version bump that a pack-content change requires.
 func TestSeedSkills_SkillMDNoLicenseFrontMatter(t *testing.T) {
-	if CurrentSeedVersion != "4" {
-		t.Errorf("CurrentSeedVersion = %q, want %q (pack content changed)", CurrentSeedVersion, "4")
+	if CurrentSeedVersion != "5" {
+		t.Errorf("CurrentSeedVersion = %q, want %q (pack content changed)", CurrentSeedVersion, "5")
 	}
 	licenseRe := regexp.MustCompile(`(?m)^license:`)
 	metadataRe := regexp.MustCompile(`(?m)^metadata:`)

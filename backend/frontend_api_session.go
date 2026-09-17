@@ -615,6 +615,22 @@ func (f *FrontendAPI) GetSessionHistory(id string, limit int, before string) (*s
 	return page, nil
 }
 
+// GetSessionPlanTimeline returns the session's plan-lifecycle rows (the plan
+// declaration plus every plan_step_start/complete/paused row) in ascending
+// stream order, regardless of how far back the declaration sits in the
+// message history. The Execution Plan panel and the chat's plan-step blocks
+// are rebuilt from these rows after a reload: a long-running plan task can
+// append thousands of rows after its declaration, leaving it far outside the
+// newest page GetSessionHistory returns, and no amount of window paging
+// short of walking the whole session would reach it. One indexed query over
+// the plan roles (a handful of rows per declared plan) replaces that walk.
+func (f *FrontendAPI) GetSessionPlanTimeline(id string) ([]session.ChatMessage, error) {
+	if f.store == nil {
+		return []session.ChatMessage{}, nil
+	}
+	return f.store.LoadPlanTimeline(context.Background(), id)
+}
+
 // GetBlackboardState returns the current blackboard state for a session.
 // Returns nil if no task state is available.
 func (f *FrontendAPI) GetBlackboardState(sessionID string) (*BlackboardStateResponse, error) {

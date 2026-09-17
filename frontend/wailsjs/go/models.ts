@@ -1129,6 +1129,20 @@ export namespace backend {
 	        this.content = source["content"];
 	    }
 	}
+	export class PaperOriginalDTO {
+	    status: string;
+	    url: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PaperOriginalDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.status = source["status"];
+	        this.url = source["url"];
+	    }
+	}
 	
 	export class PapersDTO {
 	    project_id: string;

@@ -103,6 +103,8 @@ export function EnableResearch(arg1:string,arg2:string):Promise<backend.Research
 
 export function Fetch(arg1:string,arg2:Array<string>):Promise<string>;
 
+export function FetchPaperOriginal(arg1:string,arg2:string):Promise<backend.PaperOriginalDTO>;
+
 export function ForkSession(arg1:string):Promise<session.SessionInfo>;
 
 export function GenerateCommitMessage():Promise<string>;
@@ -185,6 +187,8 @@ export function GetSecuritySettings():Promise<backend.SecuritySettingsResponse>;
 
 export function GetSessionHistory(arg1:string,arg2:number,arg3:string):Promise<session.HistoryPage>;
 
+export function GetSessionPlanTimeline(arg1:string):Promise<Array<session.ChatMessage>>;
+
 export function GetSessionRuntimeStatus(arg1:string):Promise<session.SessionRuntimeStatus>;
 
 export function GetSessionTokens(arg1:string):Promise<backend.SessionTokensResponse>;
@@ -250,6 +254,8 @@ export function PickAndImportThemes():Promise<Array<backend.ThemeImportResult>>;
 export function PickAttachmentFiles():Promise<Array<string>>;
 
 export function PickDirectory():Promise<string>;
+
+export function PickStudyDocument():Promise<string>;
 
 export function PinSession(arg1:string):Promise<void>;
 

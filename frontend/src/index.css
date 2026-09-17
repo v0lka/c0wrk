@@ -609,6 +609,26 @@ body {
     display: none; /* Chrome/Safari/WebKit */
 }
 
+/* xterm.js renders its scrollback inside an internal .xterm-viewport div
+   (overflow-y: scroll from xterm.css) that cannot carry the
+   .custom-scrollbar class — style it with the same look directly, exactly
+   like the CodeMirror .cm-scroller rules below. */
+.xterm .xterm-viewport::-webkit-scrollbar {
+    width: 8px;
+    background: transparent;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar-thumb {
+    background-clip: padding-box;
+    background-color: color-mix(in srgb, var(--color-border) 50%, transparent);
+    border-radius: 9999px;
+    border: 1px solid transparent;
+}
+
 /* ==========================================================================
    Radix UI Dropdown Overrides
    Styled via specificity and color-mix() — zero !important.

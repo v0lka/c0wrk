@@ -32,6 +32,7 @@ export type PaperSectionId =
   | 'flashcards'
   | 'source'
   | 'literature'
+  | 'html'
 
 /** Candidate artifact file names per section, in preference order. Every section
  *  has a candidate the study-paper skill writes; the `source` / `literature` /
@@ -49,6 +50,10 @@ export const PAPER_SECTION_FILES: Record<PaperSectionId, readonly string[]> = {
   // per-paper artifacts written by the study-paper skill.
   source: ['source.md'],
   literature: ['literature.md', 'literature-context.md'],
+  // The fetched original HTML (LaTeXML-shaped export, see core/papers'
+  // FetchOriginalHTML) with its localized `assets/` — the rendered-paper
+  // sub-view of the Source section. Not a workspace section of its own.
+  html: ['paper.html'],
 }
 
 const SECTION_IDS = Object.keys(PAPER_SECTION_FILES) as PaperSectionId[]

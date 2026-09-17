@@ -8,6 +8,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChatScrollManager } from './ChatScrollManager'
 import { ScrollProvider, useScrollContext } from './ScrollContext'
+import { useChatStore } from '@/stores/chatStore'
 import type { ChatVirtualizerHandle } from '@/lib/chatVirtualizer'
 import type { ChatMessageUI } from '@/types/messages'
 
@@ -57,7 +58,7 @@ function renderWithChatStream({ viewportTop, barHeight, targetTop, scrollTop }: 
     root!.render(
       <ScrollProvider>
         <Probe />
-        <ChatScrollManager messages={[]} streamingText={undefined} scrollRef={scrollRef}>
+        <ChatScrollManager sessionId={null} messages={[]} streamingText={undefined} scrollRef={scrollRef}>
           <div>
             {/* Floating pinned user message of the current turn. */}
             <div data-sticky-user-message data-bookmark-id="user-1" />
@@ -141,7 +142,7 @@ describe('ChatScrollManager bookmark/step navigation under the floating bar', ()
       root!.render(
         <ScrollProvider>
           <Probe />
-          <ChatScrollManager messages={[]} streamingText={undefined} scrollRef={scrollRef}>
+          <ChatScrollManager sessionId={null} messages={[]} streamingText={undefined} scrollRef={scrollRef}>
             <div data-step-id={'step-"quoted"-9'} />
           </ChatScrollManager>
         </ScrollProvider>,
@@ -188,7 +189,7 @@ describe('ChatScrollManager navigation suppresses auto-scroll', () => {
         root!.render(
           <ScrollProvider>
             <Probe />
-            <ChatScrollManager messages={messages} streamingText={undefined} scrollRef={scrollRef}>
+            <ChatScrollManager sessionId={null} messages={messages} streamingText={undefined} scrollRef={scrollRef}>
               <div>
                 <div data-sticky-user-message data-bookmark-id="user-1" />
                 <div data-bookmark-id="evt-1" data-step-id="step-9" />
@@ -281,6 +282,7 @@ describe('ChatScrollManager virtualized navigation', () => {
         <ScrollProvider>
           <Probe />
           <ChatScrollManager
+            sessionId={null}
             messages={[]}
             streamingText={undefined}
             scrollRef={scrollRef}
@@ -382,5 +384,250 @@ describe('ChatScrollManager virtualized navigation', () => {
     expect(handle.scrollToKey).toHaveBeenCalledWith('evt-9')
     expect(scrollTo).toHaveBeenCalledWith({ top: 1900, behavior: 'smooth' })
     rafSpy.mockRestore()
+  })
+})
+
+// Session-switch scroll persistence: the reading position is saved to
+// chatStore when a session's viewport unmounts and restored on that session's
+// next initial mount; a session with no saved position opens pinned to the
+// bottom; content growth (late virtualizer measurements replacing estimates,
+// images decoding, streamed text) re-pins tail-followers to the bottom but
+// never jerks a reader who scrolled up.
+describe('ChatScrollManager session-switch scroll persistence', () => {
+  const message = (id: string): ChatMessageUI => ({
+    id,
+    sessionId: 's1',
+    type: 'assistant',
+    content: `content ${id}`,
+    metadata: {},
+    timestamp: 0,
+  })
+
+  // jsdom computes no layout, and the initial-mount layout effect runs DURING
+  // the first render — before a test could touch the freshly created element.
+  // The geometry the manager reads is therefore pinned at the prototype level
+  // (restored by the file-level vi.restoreAllMocks in beforeEach).
+  function pinGeometry(scrollHeight: number, clientHeight: number) {
+    vi.spyOn(window.Element.prototype, 'scrollHeight', 'get').mockReturnValue(scrollHeight)
+    vi.spyOn(window.Element.prototype, 'clientHeight', 'get').mockReturnValue(clientHeight)
+  }
+
+  // jsdom lacks ResizeObserver. This stub records instances so a test can
+  // deliver synthetic resize notifications at will.
+  class ResizeObserverStub {
+    static instances: ResizeObserverStub[] = []
+    readonly targets: Element[] = []
+    private callback: ResizeObserverCallback
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback
+      ResizeObserverStub.instances.push(this)
+    }
+    observe(target: Element): void { this.targets.push(target) }
+    unobserve(): void { /* unused in these tests */ }
+    disconnect(): void { /* unused in these tests */ }
+    fire(): void { this.callback([], this as unknown as ResizeObserver) }
+  }
+
+  beforeEach(() => {
+    useChatStore.setState({
+      scrollPositions: {},
+      taskActive: {},
+      taskFlagsEventAt: {},
+      unfinishedTaskStatus: {},
+    })
+    ResizeObserverStub.instances = []
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function renderViewport(sessionId: string | null): HTMLElement {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const scrollRef: React.RefObject<HTMLDivElement | null> = { current: null }
+    root = createRoot(container)
+    act(() => {
+      root!.render(
+        <ScrollProvider>
+          <ChatScrollManager
+            sessionId={sessionId}
+            messages={[message('m1')]}
+            streamingText={undefined}
+            scrollRef={scrollRef}
+          >
+            <div data-transcript-content />
+          </ChatScrollManager>
+        </ScrollProvider>,
+      )
+    })
+    return scrollRef.current!
+  }
+
+  it('saves the last tracked scroll state on unmount', () => {
+    pinGeometry(10_000, 600)
+    const viewport = renderViewport('s1')
+    // The user scrolled up mid-transcript and stopped there.
+    act(() => {
+      viewport.scrollTop = 4_200
+      viewport.dispatchEvent(new Event('scroll'))
+    })
+    act(() => root!.unmount())
+    root = null
+    expect(useChatStore.getState().scrollPositions['s1']).toEqual({ scrollTop: 4_200, scrollHeight: 10_000 })
+  })
+
+  it('restores the saved reading position on the next initial mount', () => {
+    pinGeometry(10_000, 600)
+    useChatStore.getState().saveScrollPosition('s1', { scrollTop: 4_200, scrollHeight: 9_000 })
+    const viewport = renderViewport('s1')
+    // jsdom does no clamping; a real browser clamps the restored offset
+    // against the freshly mounted content (see the comment in the manager).
+    expect(viewport.scrollTop).toBe(4_200)
+    // A restored mid-content position is NOT at the bottom, so a later content
+    // growth must not jerk it (the reader had scrolled up before switching).
+    pinGeometry(12_000, 600)
+    const ro = ResizeObserverStub.instances[ResizeObserverStub.instances.length - 1]!
+    act(() => { ro.fire() })
+    expect(viewport.scrollTop).toBe(4_200)
+  })
+
+  it('pins to the bottom on switch when the session task is running, even with a saved position', () => {
+    pinGeometry(10_000, 600)
+    useChatStore.getState().saveScrollPosition('s1', { scrollTop: 4_200, scrollHeight: 9_000 })
+    act(() => { useChatStore.getState().setTaskActive('s1', true) })
+    const viewport = renderViewport('s1')
+    // A running session keeps producing output at the bottom: switching to it
+    // must reveal the live tail, not the stale reading position.
+    expect(viewport.scrollTop).toBe(10_000)
+  })
+
+  // Rerender-capable variant of renderViewport for tests that grow the
+  // transcript after mount (late history merge, streamed tail).
+  function renderViewportWithRerender(sessionId: string | null): {
+    viewport: HTMLElement
+    rerender: (messages: ChatMessageUI[]) => void
+  } {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const scrollRef: React.RefObject<HTMLDivElement | null> = { current: null }
+    root = createRoot(container)
+    const rerender = (messages: ChatMessageUI[]) =>
+      act(() => {
+        root!.render(
+          <ScrollProvider>
+            <ChatScrollManager
+              sessionId={sessionId}
+              messages={messages}
+              streamingText={undefined}
+              scrollRef={scrollRef}
+            >
+              <div data-transcript-content />
+            </ChatScrollManager>
+          </ScrollProvider>,
+        )
+      })
+    rerender([message('m1')])
+    return { viewport: scrollRef.current!, rerender }
+  }
+
+  it('re-pins to the live tail when the task flag is corrected to running after mount', () => {
+    pinGeometry(10_000, 600)
+    useChatStore.getState().saveScrollPosition('s1', { scrollTop: 4_200, scrollHeight: 9_000 })
+    // Stale-false in-memory flag at mount: the mount-time decision restores
+    // the saved reading position...
+    const { viewport, rerender } = renderViewportWithRerender('s1')
+    expect(viewport.scrollTop).toBe(4_200)
+    // ...then the asynchronous switch-time corrector (useTaskFlagRestore's
+    // status RPC, or reconcileRuntimeStatus after the history merge) flips
+    // the flag to running — the viewport must jump to the live tail,
+    // mirroring the mount-time running-session pin.
+    act(() => { useChatStore.getState().setTaskActive('s1', true) })
+    expect(viewport.scrollTop).toBe(10_000)
+    // The refreshed baseline keeps later content growth stuck to the bottom
+    // instead of raising the "New activity" pill over a pinned viewport.
+    pinGeometry(11_000, 600)
+    rerender([message('m1'), message('m2')])
+    expect(viewport.scrollTop).toBe(11_000)
+  })
+
+  it('keeps sticking to the bottom after a banner jump-to-bottom', () => {
+    pinGeometry(10_000, 600)
+    const { viewport, rerender } = renderViewportWithRerender('s2')
+    expect(viewport.scrollTop).toBe(10_000)
+    // The user scrolled up to read earlier output.
+    act(() => {
+      viewport.scrollTop = 3_000
+      viewport.dispatchEvent(new Event('scroll'))
+    })
+    // New output lands while scrolled away: no yank, the pill appears.
+    pinGeometry(10_500, 600)
+    rerender([message('m1'), message('m2')])
+    expect(viewport.scrollTop).toBe(3_000)
+    const banner = viewport.querySelector('button[aria-label="Jump to new activity"]')
+    expect(banner).not.toBeNull()
+    act(() => { banner!.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    expect(viewport.scrollTop).toBe(10_500)
+    // The jump refreshed the wasAt-bottom baseline: the NEXT message keeps
+    // sticking (a stale baseline would skip the write and re-raise the pill).
+    pinGeometry(11_200, 600)
+    rerender([message('m1'), message('m2'), message('m3')])
+    expect(viewport.scrollTop).toBe(11_200)
+  })
+
+  it('pins to the bottom when the session has no saved position', () => {
+    pinGeometry(10_000, 600)
+    const viewport = renderViewport('s2')
+    expect(viewport.scrollTop).toBe(10_000)
+  })
+
+  it('re-pins to the bottom when the content grows while following the tail', () => {
+    pinGeometry(10_000, 600)
+    const viewport = renderViewport('s2')
+    expect(viewport.scrollTop).toBe(10_000)
+    // The observer watches the transcript content wrapper, not the viewport.
+    const ro = ResizeObserverStub.instances[ResizeObserverStub.instances.length - 1]!
+    expect(ro.targets[0]?.hasAttribute('data-transcript-content')).toBe(true)
+    // Late virtualizer measurements grow the estimated content height.
+    pinGeometry(12_000, 600)
+    act(() => { ro.fire() })
+    expect(viewport.scrollTop).toBe(12_000)
+  })
+
+  // The browser delivers a programmatic scrollTop write's scroll event
+  // asynchronously, at its rendering steps — by which time the content may
+  // have grown past the write's target (a late virtualizer spacer replacing
+  // row-height estimates, async markdown/highlight layout, an image decoding).
+  // That delivered event must not be mistaken for the user scrolling away:
+  // recomputing "at bottom" against the grown content would poison the
+  // baseline and permanently disable stick-to-bottom for the rest of the run.
+  it('keeps following the tail when content grows between the pin write and its scroll-event delivery', () => {
+    pinGeometry(10_000, 600)
+    const viewport = renderViewport('s2')
+    expect(viewport.scrollTop).toBe(10_000)
+    // Growth lands BEFORE the queued scroll event from the mount's pin write
+    // is delivered.
+    pinGeometry(10_700, 600)
+    act(() => { viewport.dispatchEvent(new Event('scroll')) })
+    // The own-write event did not poison the at-bottom flag: the next growth
+    // still re-pins the viewport to the new bottom.
+    const ro = ResizeObserverStub.instances[ResizeObserverStub.instances.length - 1]!
+    pinGeometry(11_400, 600)
+    act(() => { ro.fire() })
+    expect(viewport.scrollTop).toBe(11_400)
+  })
+
+  it('does not jerk the viewport when the content grows after the user scrolled up', () => {
+    pinGeometry(10_000, 600)
+    const viewport = renderViewport('s2')
+    act(() => {
+      viewport.scrollTop = 3_000
+      viewport.dispatchEvent(new Event('scroll'))
+    })
+    pinGeometry(12_000, 600)
+    const ro = ResizeObserverStub.instances[ResizeObserverStub.instances.length - 1]!
+    act(() => { ro.fire() })
+    expect(viewport.scrollTop).toBe(3_000)
   })
 })

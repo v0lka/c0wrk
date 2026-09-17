@@ -91,22 +91,22 @@ beforeEach(() => {
 })
 
 describe('StatusBar process-memory placement', () => {
-  it('renders the RSS indicator after the index block, separated by a Sep', () => {
+  it('renders the process-memory indicator after the index block, separated by a Sep', () => {
     render()
 
     const text = container.textContent ?? ''
     const idxPos = text.indexOf('IDX')
-    const rssPos = text.indexOf('RSS')
+    const memPos = text.indexOf('MiB')
     expect(idxPos).toBeGreaterThanOrEqual(0)
-    expect(rssPos).toBeGreaterThan(idxPos)
+    expect(memPos).toBeGreaterThan(idxPos)
 
     // Token/context blocks are hidden (no session tokens) so exactly two
     // separators exist: the one before the index block and the one before
-    // the RSS block.
+    // the process-memory block.
     expect(container.querySelectorAll('[data-testid="sep"]')).toHaveLength(2)
   })
 
-  it('hides the index block but keeps the RSS indicator in No Project mode', () => {
+  it('hides the index block but keeps the process-memory indicator in No Project mode', () => {
     projectStoreState.projects = [{ id: 'np', is_no_project: true }]
     projectStoreState.activeProjectId = 'np'
 
@@ -114,8 +114,8 @@ describe('StatusBar process-memory placement', () => {
 
     const text = container.textContent ?? ''
     expect(text).not.toContain('IDX')
-    expect(text).toContain('RSS')
-    // Only the RSS indicator's separator remains.
+    expect(text).toContain('MiB')
+    // Only the process-memory indicator's separator remains.
     expect(container.querySelectorAll('[data-testid="sep"]')).toHaveLength(1)
   })
 
@@ -126,7 +126,7 @@ describe('StatusBar process-memory placement', () => {
 
     const text = container.textContent ?? ''
     expect(text).toContain('IDX')
-    expect(text).not.toContain('RSS')
+    expect(text).not.toContain('MiB')
     // Only the index block's separator remains, and nothing trails it.
     expect(container.querySelectorAll('[data-testid="sep"]')).toHaveLength(1)
     expect(container.lastElementChild?.textContent).toBe('IDX')

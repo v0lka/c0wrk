@@ -1,21 +1,23 @@
 // @vitest-environment jsdom
+//
+// Tests for the force-full-reindex action hosted on the VectorSearchFilters
+// mode-selector row (after the hybrid/vector/lexical buttons). The action was
+// moved here from the FileTreePanel explorer header; the behavior is
+// unchanged: fire-and-forget RPC, optimistic latch against duplicate clicks
+// until the first vector_index:status event, spinning/disabled while busy, and
+// hidden (not merely disabled) when no reindexable project is active.
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-// The panel must never reach the Wails backend: mock every RPC it makes on
-// mount (list / watch / git status) plus the reindex action under test.
-vi.mock('@/api/workspace', () => ({
-  listDirectory: vi.fn(async () => []),
-  getGitStatus: vi.fn(async () => ({})),
-  watchDirectory: vi.fn(async () => undefined),
-  unwatchDirectory: vi.fn(async () => undefined),
-  getSessionWorkspace: vi.fn(async () => '/ws'),
+// The panel must never reach the Wails backend: mock the reindex action under
+// test and the runtime event subscription (VectorSearchFilters subscribes to
+// vector_index:status only while a reindex request is pending).
+vi.mock('@/api/vector', () => ({
+  reindexVectorIndex: vi.fn(async () => undefined),
 }))
 vi.mock('@/api/runtime', () => ({
-  // FileTreePanel subscribes to workspace:tree_changed and (while a reindex
-  // request is pending) vector_index:status. Record the callbacks so tests
-  // can emit events; an inert workspace:tree_changed subscription is enough.
   subscribe: vi.fn((event: string, cb: () => void) => {
     let list = runtimeSubs.get(event)
     if (!list) {
@@ -35,26 +37,10 @@ const runtimeSubs = vi.hoisted(() => new Map<string, Array<() => void>>())
 function emitVectorIndexStatus(): void {
   for (const cb of [...(runtimeSubs.get('vector_index:status') ?? [])]) cb()
 }
-vi.mock('@/api/vector', () => ({
-  reindexVectorIndex: vi.fn(async () => undefined),
-}))
-vi.mock('@/hooks/useFileSearch', () => ({
-  useFileSearch: () => ({
-    filterText: '',
-    filterMode: 'glob',
-    isInvalidFilter: false,
-    handleFilterChange: vi.fn(),
-    toggleFilterMode: vi.fn(),
-  }),
-}))
-vi.mock('./FileTreeContextMenu', () => ({ FileTreeContextMenu: () => null }))
-vi.mock('./FileIcon', () => ({ FileIcon: () => null }))
 
-import { FileTreePanel } from './FileTreePanel'
+import { VectorSearchFilters } from './VectorSearchFilters'
 import { reindexVectorIndex } from '@/api/vector'
-import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { useProjectStore } from '@/stores/projectStore'
-import { useSessionStore } from '@/stores/sessionStore'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import type { ProjectInfo, VectorIndexStatus } from '@/types/models'
 
@@ -83,9 +69,12 @@ function findButton(container: HTMLElement, title: string): HTMLButtonElement | 
   return container.querySelector<HTMLButtonElement>(`button[title="${title}"]`)
 }
 
-describe('FileTreePanel — force full project reindex action', () => {
+describe('VectorSearchFilters — force full project reindex action', () => {
   let container: HTMLDivElement
   let root: Root | null = null
+  let onSearch: ReturnType<typeof vi.fn>
+  let onClear: ReturnType<typeof vi.fn>
+  let onKeyDown: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
     container = document.createElement('div')
@@ -94,9 +83,13 @@ describe('FileTreePanel — force full project reindex action', () => {
       projects: [makeProject()],
       activeProjectId: 'p1',
     })
-    useSessionStore.setState({ activeSessionId: 's1' })
-    useFileTreeStore.getState().clearTree()
+    act(() => {
+      useVectorIndexStore.getState().reset()
+    })
     setIndexState('ready')
+    onSearch = vi.fn()
+    onClear = vi.fn()
+    onKeyDown = vi.fn()
   })
 
   afterEach(() => {
@@ -109,23 +102,35 @@ describe('FileTreePanel — force full project reindex action', () => {
     vi.clearAllMocks()
   })
 
-  async function renderPanel(): Promise<void> {
+  async function renderFilters(): Promise<void> {
     root = createRoot(container)
     await act(async () => {
-      root!.render(<FileTreePanel />)
+      root!.render(
+        <VectorSearchFilters
+          isSearchMode={false}
+          onSearch={onSearch as () => void}
+          onClear={onClear as () => void}
+          onKeyDown={onKeyDown as (e: React.KeyboardEvent) => void}
+        />,
+      )
     })
+    await act(async () => {})
   }
 
-  it('replaces the refresh affordance and triggers a full reindex on click', async () => {
-    await renderPanel()
-    await act(async () => {})
-
-    // The old manual file-tree refresh button is gone.
-    expect(findButton(container, 'Refresh file tree')).toBeNull()
+  it('renders the action on the mode-selector row, after the mode buttons, and triggers a full reindex on click', async () => {
+    await renderFilters()
 
     const button = findButton(container, 'Force full project reindex')
     expect(button).not.toBeNull()
     expect(button!.disabled).toBe(false)
+
+    // Placement contract: the reindex button comes after the three mode
+    // buttons (hybrid, vector, lexical) in DOM order inside the same row.
+    const row = button!.closest('div')
+    expect(row).not.toBeNull()
+    const buttons = Array.from(row!.querySelectorAll('button'))
+    expect(buttons.map((b) => b.textContent)).toEqual(['hybrid', 'vector', 'lexical', ''])
+    expect(buttons[buttons.length - 1]).toBe(button)
 
     await act(async () => {
       button!.click()
@@ -136,8 +141,7 @@ describe('FileTreePanel — force full project reindex action', () => {
 
   it('is disabled and spinning while a reindex is already in progress', async () => {
     setIndexState('reindexing')
-    await renderPanel()
-    await act(async () => {})
+    await renderFilters()
 
     const button = findButton(container, 'Reindexing...')
     expect(button).not.toBeNull()
@@ -149,8 +153,7 @@ describe('FileTreePanel — force full project reindex action', () => {
       projects: [makeProject({ id: 'np', is_no_project: true, workspace_path: '/np' })],
       activeProjectId: 'np',
     })
-    await renderPanel()
-    await act(async () => {})
+    await renderFilters()
 
     // The reindex affordance is not rendered at all in CHAT mode — the vector
     // index is disabled there, so a disabled button would be misleading.
@@ -160,8 +163,7 @@ describe('FileTreePanel — force full project reindex action', () => {
   })
 
   it('blocks duplicate clicks until the vector_index:status event arrives', async () => {
-    await renderPanel()
-    await act(async () => {})
+    await renderFilters()
 
     const button = findButton(container, 'Force full project reindex')
     expect(button).not.toBeNull()
@@ -202,8 +204,7 @@ describe('FileTreePanel — force full project reindex action', () => {
 
   it('releases the optimistic latch when the reindex request is rejected', async () => {
     reindexMock.mockRejectedValueOnce(new Error('no indexer configured'))
-    await renderPanel()
-    await act(async () => {})
+    await renderFilters()
 
     const button = findButton(container, 'Force full project reindex')
     await act(async () => {
@@ -222,8 +223,7 @@ describe('FileTreePanel — force full project reindex action', () => {
     // coalesced away) would leave the latch engaged forever with the store
     // still reporting the previous non-busy state — any vector_index:status
     // event observed after the request must release it.
-    await renderPanel()
-    await act(async () => {})
+    await renderFilters()
 
     const button = findButton(container, 'Force full project reindex')
     await act(async () => {
@@ -244,8 +244,7 @@ describe('FileTreePanel — force full project reindex action', () => {
   })
 
   it('releases the optimistic latch and hides the action when the project becomes unavailable', async () => {
-    await renderPanel()
-    await act(async () => {})
+    await renderFilters()
 
     const button = findButton(container, 'Force full project reindex')
     await act(async () => {

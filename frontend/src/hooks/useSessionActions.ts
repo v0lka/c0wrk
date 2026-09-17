@@ -17,6 +17,7 @@
 import { useState, useRef, useCallback } from 'react'
 import type { RefObject } from 'react'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useChatStore } from '@/stores/chatStore'
 import { useTerminalRegistryStore } from '@/stores/terminalRegistryStore'
 import { useChatInputStore } from '@/stores/chatInputStore'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
@@ -117,6 +118,9 @@ export function useSessionActions(): SessionActions {
         // Drop its E2S execution-state snapshot (live-only stream — a deleted
         // session never re-emits e2s_state, so the entry would go stale).
         useE2SStore.getState().clearSession(id)
+        // Drop its saved chat scroll position — the session is gone, and the
+        // entry would otherwise keep the per-session map growing.
+        useChatStore.getState().clearScrollPosition(id)
       } catch (error) {
         logger.error('Failed to delete session:', error)
       }

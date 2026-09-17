@@ -41,7 +41,7 @@ vi.mock('@/stores/sessionStore', async () => {
 vi.mock('@/stores/chatStore', () => ({
   useChatStore: Object.assign(
     () => undefined,
-    { getState: () => ({ addMessage: vi.fn(), mergeHistoryMessages: vi.fn(), setTaskActive: vi.fn(), setHistoryPageMeta: vi.fn(), setHistoryLoading: vi.fn(), historyCursor: {}, historyHasMore: {}, historyLoading: {}, workUnitStatus: {} }) },
+    { getState: () => ({ addMessage: vi.fn(), mergeHistoryMessages: vi.fn(), setTaskActive: vi.fn(), setHistoryPageMeta: vi.fn(), setHistoryLoading: vi.fn(), historyCursor: {}, historyHasMore: {}, historyLoading: {}, prependedHistoryIds: {}, prependCursor: {}, prependHasMore: {}, workUnitStatus: {}, scrollPositions: {}, saveScrollPosition: vi.fn(), clearScrollPosition: vi.fn() }) },
   ),
   useSessionMessages: () => [],
   useSessionWorkUnits: () => ({}),

@@ -46,3 +46,34 @@ export function indexOfKey(items: DisplayItem[], key: string): number {
 export function indexOfStep(items: DisplayItem[], stepId: string): number {
   return items.findIndex((item) => item.kind === 'plan_step' && item.stepId === stepId)
 }
+
+/**
+ * Index of the user row leading the turn that owns the current scroll
+ * position: the LAST user item whose row start sits at or above the viewport
+ * top (`rowStart(index) <= scrollTop`), or -1 when the transcript is scrolled
+ * above its first user row.
+ *
+ * Rows in the virtualized transcript are absolutely positioned, which disables
+ * the native `position: sticky` pin of the turn's user message — so the list
+ * re-creates the pin as an overlay and needs to know which turn is current.
+ * Row starts are passed as a callback (backed by the virtualizer's measurement
+ * cache — measured where seen, estimated elsewhere) so this helper stays pure
+ * and unit-testable without a virtualizer instance.
+ *
+ * Scans backwards and returns at the first (highest) matching user row: the
+ * turn owner is the closest user message above the viewport top, not the first
+ * one in the transcript. A user row whose start is unknown (not yet in the
+ * measurement cache) is skipped — an earlier user row may still own the turn.
+ */
+export function indexOfUserLeader(
+  items: DisplayItem[],
+  scrollTop: number,
+  rowStart: (index: number) => number | undefined,
+): number {
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i]!.kind !== 'user') continue
+    const start = rowStart(i)
+    if (start !== undefined && start <= scrollTop) return i
+  }
+  return -1
+}

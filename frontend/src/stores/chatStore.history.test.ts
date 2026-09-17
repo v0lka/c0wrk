@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useChatStore, type ChatMessageUI } from '@/stores/chatStore'
 
-function ui(id: string, content = id): ChatMessageUI {
-  return { id, sessionId: 's1', type: 'assistant', content, metadata: {}, timestamp: 0 }
+function ui(id: string, content = id, timestamp = 0): ChatMessageUI {
+  return { id, sessionId: 's1', type: 'assistant', content, metadata: {}, timestamp }
 }
 
 describe('chatStore history pagination', () => {
@@ -10,6 +10,7 @@ describe('chatStore history pagination', () => {
     useChatStore.setState({
       messages: {}, messageOrder: {},
       historyCursor: {}, historyHasMore: {}, historyLoading: {},
+      prependedHistoryIds: {}, prependCursor: {}, prependHasMore: {},
     })
   })
 
@@ -35,6 +36,72 @@ describe('chatStore history pagination', () => {
     const s = useChatStore.getState()
     expect(s.messageOrder['s1']).toEqual(['a', 'b', 'c'])
     expect(s.historyHasMore['s1']).toBe(false)
+  })
+
+  it('prependHistoryMessages records the inserted ids and the deepest cursor position', () => {
+    useChatStore.getState().mergeHistoryMessages('s1', [ui('c'), ui('d')], 0)
+    useChatStore.getState().prependHistoryMessages('s1', [ui('b')], 'c1', true)
+    useChatStore.getState().prependHistoryMessages('s1', [ui('a')], 'c0', true)
+
+    const s = useChatStore.getState()
+    expect(s.prependedHistoryIds['s1']).toEqual(new Set(['a', 'b']))
+    // The latest prepend IS the deepest position (paging moves backwards).
+    expect(s.prependCursor['s1']).toBe('c0')
+    expect(s.prependHasMore['s1']).toBe(true)
+  })
+
+  it('a newest-page re-load preserves prepended rows ahead of the page and keeps younger live rows', () => {
+    // Initial visit: the newest page [c, d] loads, then the user scrolls up and
+    // prepends two older pages (deepest cursor 'c0', older pages remain).
+    useChatStore.getState().mergeHistoryMessages('s1', [ui('c'), ui('d')], 0)
+    useChatStore.getState().prependHistoryMessages('s1', [ui('b')], 'c1', true)
+    useChatStore.getState().prependHistoryMessages('s1', [ui('a')], 'c0', true)
+
+    // A live event lands while the re-load RPC is in flight (younger than the
+    // new loadStartedAt) and must survive the merge.
+    useChatStore.getState().addMessage('s1', ui('live-new', 'live-new', 5000))
+
+    // Re-load the newest page (session switch back / effect re-run).
+    const kept = useChatStore.getState().mergeHistoryMessages('s1', [ui('c'), ui('d')], 4000)
+
+    // Both prepended rows were kept...
+    expect(kept).toBe(2)
+    const s = useChatStore.getState()
+    // ...ahead of the newest page, with the live row after it, no duplicates.
+    expect(s.messageOrder['s1']).toEqual(['a', 'b', 'c', 'd', 'live-new'])
+
+    // The prepend bookkeeping still points at the deepest position; ChatArea
+    // restores the paging cursor from it after the merge (mirrored here).
+    expect(s.prependCursor['s1']).toBe('c0')
+    expect(s.prependHasMore['s1']).toBe(true)
+    useChatStore.getState().setHistoryPageMeta(
+      's1', s.prependCursor['s1'] ?? '', s.prependHasMore['s1'] ?? false,
+    )
+    expect(useChatStore.getState().historyCursor['s1']).toBe('c0')
+    expect(useChatStore.getState().historyHasMore['s1']).toBe(true)
+  })
+
+  it('a prepended row that reappears in the newest page is neither duplicated nor counted as kept', () => {
+    useChatStore.getState().mergeHistoryMessages('s1', [ui('c')], 0)
+    useChatStore.getState().prependHistoryMessages('s1', [ui('b')], 'c0', false)
+
+    // The re-loaded page carries b itself (e.g. rows shifted into the newest
+    // page after new messages arrived): it comes from the page, not from the
+    // prepend memory, so nothing is "kept" and no duplicate renders.
+    const kept = useChatStore.getState().mergeHistoryMessages('s1', [ui('b'), ui('c')], 4000)
+
+    expect(kept).toBe(0)
+    expect(useChatStore.getState().messageOrder['s1']).toEqual(['b', 'c'])
+  })
+
+  it('mergeHistoryMessages returns 0 and replaces stale rows when nothing was prepended', () => {
+    // A stale live row older than loadStartedAt (and not an unresolved HITL
+    // prompt) is dropped — the pre-retention behavior is unchanged.
+    useChatStore.getState().addMessage('s1', ui('stale', 'stale', 100))
+    const kept = useChatStore.getState().mergeHistoryMessages('s1', [ui('c'), ui('d')], 1000)
+
+    expect(kept).toBe(0)
+    expect(useChatStore.getState().messageOrder['s1']).toEqual(['c', 'd'])
   })
 
   it('setHistoryPageMeta records the cursor and hasMore flag', () => {

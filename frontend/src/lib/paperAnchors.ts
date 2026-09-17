@@ -123,7 +123,7 @@ function isPlainSectionHeading(line: string, token: string): boolean {
  *  or `Figure 2.1`, and a sub-labelled token (`Fig. 2a`) never matches `2ab`. */
 const NUMBER_END = '(?![\\w]|\\.\\d)'
 
-function numberedLineRe(
+export function numberedLineRe(
   kind: 'figure' | 'table' | 'equation' | 'algorithm',
   token: string,
   anchored = false,
@@ -137,8 +137,10 @@ function numberedLineRe(
           ? 'alg(?:orithm)?'
           : 'eq(?:uation)?'
   const core = `${word}\\.?\\s*\\(?${escapeRe(token)}\\)?${NUMBER_END}`
-  // Anchored = caption priority: the line STARTS with the float reference,
+  // Anchored = caption priority: the text STARTS with the float reference,
   // i.e. it is the caption itself rather than a body mention of the float.
+  // Shared by the source-text resolver (over lines) and the paper.html
+  // resolver (over element text) so both stay in lockstep.
   return new RegExp(anchored ? `^\\s*${core}` : `\\b${core}`, 'i')
 }
 

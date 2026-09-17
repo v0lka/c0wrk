@@ -68,11 +68,20 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
   // title span (EllipsisHint) carries min-w-0, so when the header row runs out
   // of room the TITLE is what truncates — the cached/batched banners stay
   // fully visible with no horizontal scrolling.
-  const mcpBadge = useMemo(() =>
-    item.source && item.source !== '' && item.source !== 'core'
-      ? <span className="text-[10px] font-medium bg-muted-foreground/15 text-foreground px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap">MCP</span>
-      : null
-  , [item.source])
+  // MCP badge names the server the tool came from: the MCP gateway registers
+  // tools with the bare server name as their source, while the E2S loop emits
+  // the `mcp:<server>` tag — normalize the prefix so the badge always reads
+  // `MCP: <server>` (a source that normalizes away entirely keeps the bare
+  // `MCP` badge).
+  const mcpBadge = useMemo(() => {
+    if (!item.source || item.source === 'core') return null
+    const server = item.source.startsWith('mcp:') ? item.source.slice('mcp:'.length) : item.source
+    return (
+      <span className="text-[10px] font-medium bg-muted-foreground/15 text-foreground px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap">
+        {server ? `MCP: ${server}` : 'MCP'}
+      </span>
+    )
+  }, [item.source])
 
   // Cached badge
   const cachedBadge = useMemo(() =>

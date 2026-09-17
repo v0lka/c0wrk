@@ -26,9 +26,11 @@ const { messagesRef, EMPTY_WORK_UNITS, itemsCaptured, chatStoreFns, chatStoreSta
     setHistoryPageMeta: vi.fn(),
     setHistoryLoading: vi.fn(),
     setTaskActive: vi.fn(),
+    // ChatScrollManager saves the reading position on unmount.
+    saveScrollPosition: vi.fn(),
   },
   // Paging bookkeeping maps the real hook reads off the store snapshot.
-  chatStoreState: { historyCursor: {}, historyHasMore: {}, historyLoading: {}, workUnitStatus: {} },
+  chatStoreState: { historyCursor: {}, historyHasMore: {}, historyLoading: {}, workUnitStatus: {}, scrollPositions: {}, taskActive: {} },
 }))
 
 vi.mock('@/components/MarkdownViewer', () => ({

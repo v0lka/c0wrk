@@ -100,6 +100,30 @@ export async function getSessionHistory(sessionId: string, limit = 0, before = '
   }
 }
 
+/**
+ * Fetch the session's plan-lifecycle rows (plan declaration + every
+ * plan_step_start/complete/paused row) in ascending stream order, regardless
+ * of how far back the declaration sits behind the chat window's newest page.
+ * Used to rebuild the Execution Plan panel and restore completed-step blocks
+ * after a reload of a long plan-driven session.
+ */
+export async function getSessionPlanTimeline(sessionId: string): Promise<ChatMessage[]> {
+  try {
+    const app = getApp()
+    const result = await app.GetSessionPlanTimeline(sessionId)
+    // Go marshals a nil slice to JSON null — treat it as an empty timeline.
+    if (result === undefined || result === null) return []
+    if (!isArrayOf(result, isChatMessage)) {
+      logger.error('getSessionPlanTimeline: unexpected response shape, returning empty timeline', result)
+      return []
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to get session plan timeline:', err)
+    throw err
+  }
+}
+
 export async function getSessionTokens(sessionId: string): Promise<TokenInfo> {
   try {
     const app = getApp()
