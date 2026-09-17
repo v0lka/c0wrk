@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -67,6 +68,16 @@ const (
 	// dbusDefaultActionKey is the D-Bus action key of the banner's default
 	// activation (a click on the body), mirroring the Wails frontend.
 	dbusDefaultActionKey = "default"
+
+	// notificationPendingTTL / notificationPendingMax bound the routing map.
+	// Entries are normally consumed by ActionInvoked/NotificationClosed, but
+	// a daemon is not obliged to signal anything: KDE Plasma lets an expired
+	// banner disappear with no NotificationClosed at all, which would leak
+	// its entry for the life of the process. Both bounds are generous — a
+	// banner the user has not acted on must stay routable for as long as it
+	// could plausibly still be clicked.
+	notificationPendingTTL = 24 * time.Hour
+	notificationPendingMax = 256
 )
 
 // dbusDialer abstracts the minimal *dbus.Conn surface the transport needs so
@@ -150,6 +161,10 @@ type platformNotificationState struct {
 type linuxNotificationMeta struct {
 	wailsID  string
 	userInfo map[string]any
+	// sentAt is when the notification was handed to the daemon; it exists
+	// solely so prunePendingLocked can evict entries the daemon never
+	// reported on (see notificationPendingTTL).
+	sentAt time.Time
 }
 
 // linuxNotifications is the process-wide production transport state. A
@@ -165,8 +180,8 @@ var linuxNotifications platformNotificationState
 // platform hook (only reached when the notificationsSendFn seam is unset):
 // deliver through the icon-augmented D-Bus transport, falling back to the
 // Wails transport on any failure.
-func (a *App) sendNotificationPlatform(ctx context.Context, options wailsRuntime.NotificationOptions) error {
-	if err := linuxNotifications.send(options, a.notificationCallback); err != nil {
+func (a *App) sendNotificationPlatform(ctx context.Context, options wailsRuntime.NotificationOptions, expireTimeoutMs int32) error {
+	if err := linuxNotifications.send(options, a.notificationCallback, expireTimeoutMs); err != nil {
 		a.log().Warn("linux D-Bus notification transport failed; falling back to the Wails transport",
 			"error", err)
 		return a.sendNotificationViaWails(ctx, options)
@@ -182,7 +197,7 @@ func (a *App) cleanupNotificationTransport() {
 
 // send delivers one notification over D-Bus. Callers hold no locks; the
 // state mutex serializes sends and guards the lazy dial.
-func (s *platformNotificationState) send(options wailsRuntime.NotificationOptions, dispatch func(wailsRuntime.NotificationResult)) error {
+func (s *platformNotificationState) send(options wailsRuntime.NotificationOptions, dispatch func(wailsRuntime.NotificationResult), expireTimeoutMs int32) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -203,7 +218,7 @@ func (s *platformNotificationState) send(options wailsRuntime.NotificationOption
 		map[string]dbus.Variant{
 			"x-notification-id": dbus.MakeVariant(options.ID),
 		},
-		dbusNotificationTimeoutDefault,
+		expireTimeoutMs,
 	)
 	if call.Err != nil {
 		// The connection may be dead (bus went away, daemon restarted):
@@ -218,7 +233,12 @@ func (s *platformNotificationState) send(options wailsRuntime.NotificationOption
 	if s.pending == nil {
 		s.pending = make(map[uint32]linuxNotificationMeta)
 	}
-	s.pending[dbusID] = linuxNotificationMeta{wailsID: options.ID, userInfo: options.Data}
+	s.pending[dbusID] = linuxNotificationMeta{
+		wailsID:  options.ID,
+		userInfo: options.Data,
+		sentAt:   time.Now(),
+	}
+	s.prunePendingLocked()
 	return nil
 }
 
@@ -312,7 +332,13 @@ func (s *platformNotificationState) handleActionInvoked(sig *dbus.Signal) {
 	if actionID != dbusDefaultActionKey {
 		return
 	}
-	s.dispatch(wailsRuntime.NotificationResult{
+	// Dispatch on its own goroutine: the callback activates the window,
+	// which makes blocking X11 round trips. Running it inline would block
+	// the signal pump, and a blocked pump means godbus silently discards
+	// every later ActionInvoked — i.e. one slow activation permanently kills
+	// notification clicks. See the XCloseDisplay wedge in
+	// window_activation_linux.go.
+	go s.dispatch(wailsRuntime.NotificationResult{
 		Response: wailsRuntime.NotificationResponse{
 			ID:               meta.wailsID,
 			ActionIdentifier: notificationDefaultActionIdentifier,
@@ -344,13 +370,41 @@ func (s *platformNotificationState) handleNotificationClosed(sig *dbus.Signal) {
 	if reason != 2 {
 		return
 	}
-	s.dispatch(wailsRuntime.NotificationResult{
+	// Off the pump goroutine — see handleActionInvoked.
+	go s.dispatch(wailsRuntime.NotificationResult{
 		Response: wailsRuntime.NotificationResponse{
 			ID:               meta.wailsID,
 			ActionIdentifier: notificationDefaultActionIdentifier,
 			UserInfo:         meta.userInfo,
 		},
 	})
+}
+
+// prunePendingLocked bounds the routing map: it drops entries older than
+// notificationPendingTTL and, if the map is still over notificationPendingMax,
+// evicts the oldest until it fits. Must be called with s.mu held.
+//
+// Without it the map grows without limit, because a notification the daemon
+// silently drops (Plasma expires banners with no NotificationClosed signal)
+// leaves its entry behind forever.
+func (s *platformNotificationState) prunePendingLocked() {
+	cutoff := time.Now().Add(-notificationPendingTTL)
+	for id, meta := range s.pending {
+		if meta.sentAt.Before(cutoff) {
+			delete(s.pending, id)
+		}
+	}
+	for len(s.pending) > notificationPendingMax {
+		var oldestID uint32
+		var oldestAt time.Time
+		first := true
+		for id, meta := range s.pending {
+			if first || meta.sentAt.Before(oldestAt) {
+				oldestID, oldestAt, first = id, meta.sentAt, false
+			}
+		}
+		delete(s.pending, oldestID)
+	}
 }
 
 // takePending removes and returns the routing meta for a daemon id (false

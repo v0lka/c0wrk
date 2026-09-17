@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   showTestNotification: vi.fn(),
   isWailsReady: vi.fn(),
   send: vi.fn(),
+  getBannerTimeout: vi.fn(),
+  setBannerTimeout: vi.fn(),
 }))
 
 vi.mock('@/api/notifications', async (importOriginal) => {
@@ -37,6 +39,11 @@ vi.mock('@/api/runtime', () => ({
   isWailsReady: mocks.isWailsReady,
 }))
 
+vi.mock('@/api/config', () => ({
+  getNotificationBannerTimeout: mocks.getBannerTimeout,
+  setNotificationBannerTimeout: mocks.setBannerTimeout,
+}))
+
 import { SystemNotificationSettings } from './SystemNotificationSettings'
 import { useSystemNotificationStore } from '@/stores/systemNotificationStore'
 
@@ -57,7 +64,7 @@ function toggleInput(): HTMLInputElement {
 }
 
 function testButton(): HTMLButtonElement | null {
-  return container.querySelector<HTMLButtonElement>('button')
+  return container.querySelector<HTMLButtonElement>('[data-testid="send-test-notification"]')
 }
 
 function hintText(): string | null {
@@ -76,6 +83,8 @@ beforeEach(() => {
   mocks.initSystemNotifications.mockResolvedValue(undefined)
   mocks.showTestNotification.mockResolvedValue(undefined)
   mocks.send.mockResolvedValue(undefined)
+  mocks.getBannerTimeout.mockResolvedValue(-1)
+  mocks.setBannerTimeout.mockResolvedValue(undefined)
   useSystemNotificationStore.setState({ enabled: true })
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -194,5 +203,64 @@ describe('SystemNotificationSettings', () => {
     render()
     await flush()
     expect(testButton()).toBeNull()
+  })
+})
+
+// --- Banner lifetime -------------------------------------------------------
+
+/** The segmented banner-lifetime buttons, in render order. */
+function bannerTimeoutButtons(): HTMLButtonElement[] {
+  const control = container.querySelector('[data-testid="banner-timeout-control"]')
+  return control ? Array.from(control.querySelectorAll('button')) : []
+}
+
+describe('banner lifetime control', () => {
+  it('renders the configured lifetime once the backend answers', async () => {
+    mocks.getBannerTimeout.mockResolvedValue(30)
+    render()
+    await flush()
+
+    const labels = bannerTimeoutButtons().map((b) => b.textContent)
+    expect(labels).toEqual(['Default', '10s', '30s', '1m', 'Never'])
+  })
+
+  it('persists the chosen lifetime, including "Never" (0)', async () => {
+    render()
+    await flush()
+
+    const never = bannerTimeoutButtons().find((b) => b.textContent === 'Never')
+    expect(never).toBeDefined()
+    await act(async () => {
+      never!.click()
+    })
+
+    // 0 is a real value here, not an unset field — the whole point of the
+    // setting is that the banner stays until the user acts on it.
+    expect(mocks.setBannerTimeout).toHaveBeenCalledWith(0)
+  })
+
+  it('stays hidden while the master toggle is off', async () => {
+    useSystemNotificationStore.setState({ enabled: false })
+    render()
+    await flush()
+
+    expect(bannerTimeoutButtons()).toHaveLength(0)
+  })
+
+  it('reverts the selection when the backend rejects the write', async () => {
+    mocks.getBannerTimeout.mockResolvedValue(-1)
+    mocks.setBannerTimeout.mockRejectedValue(new Error('nope'))
+    render()
+    await flush()
+
+    const never = bannerTimeoutButtons().find((b) => b.textContent === 'Never')
+    await act(async () => {
+      never!.click()
+    })
+    await flush()
+
+    // The optimistic update must roll back to what the backend still holds.
+    const selected = bannerTimeoutButtons().find((b) => b.className.includes('bg-background'))
+    expect(selected?.textContent).toBe('Default')
   })
 })

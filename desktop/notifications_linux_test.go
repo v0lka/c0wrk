@@ -175,7 +175,7 @@ func TestPlatformSend_NotifyArgumentsAndIconExport(t *testing.T) {
 		Title: "Title",
 		Body:  "Body",
 		Data:  map[string]any{"sessionId": "sess-1"},
-	}, results.dispatch)
+	}, results.dispatch, dbusNotificationTimeoutDefault)
 	if err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestPlatformSend_IconFallsBackToThemeNameWhenCacheUnwritable(t *testing.T) 
 	t.Cleanup(func() { notificationIconCacheDir = origCache })
 
 	st := &platformNotificationState{}
-	if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch); err != nil {
+	if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 	if icon := conn.notifyCalls[0].icon; icon != "c0wrk" {
@@ -239,7 +239,7 @@ func TestPlatformSend_DialFailureReturnsError(t *testing.T) {
 	results := withFakeBus(t, conn)
 	st := &platformNotificationState{}
 
-	err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch)
+	err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault)
 	if err == nil {
 		t.Fatal("expected a dial error")
 	}
@@ -253,7 +253,7 @@ func TestPlatformSend_NotifyFailureDropsConnection(t *testing.T) {
 	results := withFakeBus(t, conn)
 	st := &platformNotificationState{}
 
-	err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch)
+	err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault)
 	if err == nil {
 		t.Fatal("expected the notify error to surface")
 	}
@@ -274,7 +274,7 @@ func TestPlatformSignalRouting_DefaultAction(t *testing.T) {
 		Title: "t",
 		Body:  "b",
 		Data:  map[string]any{"sessionId": "sess-7", "projectId": "proj-3"},
-	}, results.dispatch); err != nil {
+	}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 
@@ -310,7 +310,7 @@ func TestPlatformSignalRouting_Reason2Quirk(t *testing.T) {
 	conn := &fakeDBusConn{}
 	results := withFakeBus(t, conn)
 	st := &platformNotificationState{}
-	if err := st.send(wailsRuntime.NotificationOptions{ID: "n-close", Title: "t", Body: "b"}, results.dispatch); err != nil {
+	if err := st.send(wailsRuntime.NotificationOptions{ID: "n-close", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 
@@ -332,7 +332,7 @@ func TestPlatformSignalRouting_OtherCloseReasonsIgnored(t *testing.T) {
 	conn := &fakeDBusConn{}
 	results := withFakeBus(t, conn)
 	st := &platformNotificationState{}
-	if err := st.send(wailsRuntime.NotificationOptions{ID: "n-timeout", Title: "t", Body: "b"}, results.dispatch); err != nil {
+	if err := st.send(wailsRuntime.NotificationOptions{ID: "n-timeout", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 	// id 1 expired (reason 1): consumed but never dispatched.
@@ -354,7 +354,7 @@ func TestPlatformSignalRouting_NonDefaultActionIgnored(t *testing.T) {
 	conn := &fakeDBusConn{}
 	results := withFakeBus(t, conn)
 	st := &platformNotificationState{}
-	if err := st.send(wailsRuntime.NotificationOptions{ID: "n-x", Title: "t", Body: "b"}, results.dispatch); err != nil {
+	if err := st.send(wailsRuntime.NotificationOptions{ID: "n-x", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 	conn.emitSignal(t, &dbus.Signal{
@@ -368,7 +368,7 @@ func TestPlatformTeardown_ClosesConnectionAndStopsPump(t *testing.T) {
 	conn := &fakeDBusConn{}
 	results := withFakeBus(t, conn)
 	st := &platformNotificationState{}
-	if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch); err != nil {
+	if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 
@@ -411,7 +411,7 @@ func TestCleanupNotifications_TeardownOwnTransport(t *testing.T) {
 	results := withFakeBus(t, conn)
 	// Drive the production singleton through the dial seam.
 	linuxNotifications.teardown() // isolate from any earlier test
-	if err := linuxNotifications.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch); err != nil {
+	if err := linuxNotifications.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 
@@ -465,7 +465,7 @@ func TestPlatformSend_ConcurrentSendsGetDistinctIDs(t *testing.T) {
 				ID:    "concurrent-" + strings.Repeat("x", i+1),
 				Title: "t",
 				Body:  "b",
-			}, results.dispatch)
+			}, results.dispatch, dbusNotificationTimeoutDefault)
 		}()
 	}
 	wg.Wait()
@@ -498,7 +498,7 @@ func TestPlatformSend_IconCacheHitReusesExportedURI(t *testing.T) {
 
 	send := func(id string) string {
 		t.Helper()
-		if err := st.send(wailsRuntime.NotificationOptions{ID: id, Title: "t", Body: "b"}, results.dispatch); err != nil {
+		if err := st.send(wailsRuntime.NotificationOptions{ID: id, Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
 			t.Fatalf("send %s failed: %v", id, err)
 		}
 		return conn.notifyCalls[len(conn.notifyCalls)-1].icon
@@ -528,7 +528,7 @@ func TestPlatformSend_IconFallbackVariants(t *testing.T) {
 		results := withFakeBus(t, conn)
 		notificationIconCacheDir = func() (string, error) { return "", errors.New("no cache dir") }
 		st := &platformNotificationState{}
-		if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch); err != nil {
+		if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
 			t.Fatalf("send failed: %v", err)
 		}
 		if icon := conn.notifyCalls[0].icon; icon != notificationIconThemeName {
@@ -547,7 +547,7 @@ func TestPlatformSend_IconFallbackVariants(t *testing.T) {
 		}
 		notificationIconCacheDir = func() (string, error) { return blocker, nil }
 		st := &platformNotificationState{}
-		if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch); err != nil {
+		if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
 			t.Fatalf("send failed: %v", err)
 		}
 		if icon := conn.notifyCalls[0].icon; icon != notificationIconThemeName {
@@ -566,7 +566,7 @@ func TestPlatformSend_IconFallbackVariants(t *testing.T) {
 		}
 		notificationIconCacheDir = func() (string, error) { return cache, nil }
 		st := &platformNotificationState{}
-		if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch); err != nil {
+		if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
 			t.Fatalf("send failed: %v", err)
 		}
 		if icon := conn.notifyCalls[0].icon; icon != notificationIconThemeName {
@@ -589,7 +589,7 @@ func TestPlatformSend_IconURIEncodesSpaces(t *testing.T) {
 	notificationIconCacheDir = func() (string, error) { return cache, nil }
 
 	st := &platformNotificationState{}
-	if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch); err != nil {
+	if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 	icon := conn.notifyCalls[0].icon
@@ -694,7 +694,7 @@ func TestPlatformSignalRouting_MalformedSignalsIgnored(t *testing.T) {
 		ID:    "n-malformed",
 		Title: "t", Body: "b",
 		Data: map[string]any{"sessionId": "sess-m"},
-	}, results.dispatch); err != nil {
+	}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 
@@ -737,7 +737,7 @@ func TestPlatformSignalRouting_CloseReasons3And4Ignored(t *testing.T) {
 	conn := &fakeDBusConn{}
 	results := withFakeBus(t, conn)
 	st := &platformNotificationState{}
-	if err := st.send(wailsRuntime.NotificationOptions{ID: "n-reasons", Title: "t", Body: "b"}, results.dispatch); err != nil {
+	if err := st.send(wailsRuntime.NotificationOptions{ID: "n-reasons", Title: "t", Body: "b"}, results.dispatch, dbusNotificationTimeoutDefault); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 
@@ -781,7 +781,7 @@ func TestPlatformSignalRouting_IntegrationThroughNotificationCallback(t *testing
 		ID:    "n-int",
 		Title: "t", Body: "b",
 		Data: map[string]any{"sessionId": "sess-int", "projectId": "proj-int"},
-	}, f.app.notificationCallback); err != nil {
+	}, f.app.notificationCallback, dbusNotificationTimeoutDefault); err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
 
@@ -835,7 +835,7 @@ func TestLiveDBusNotification(t *testing.T) {
 		Title: "c0wrk — live D-Bus notification test",
 		Body:  "Real banner via c0wrk's own org.freedesktop.Notifications transport. It should carry the c0wrk icon.",
 		Data:  map[string]any{"sessionId": "live-dbus-test"},
-	}, results.dispatch)
+	}, results.dispatch, dbusNotificationTimeoutDefault)
 	if err != nil {
 		t.Fatalf("live D-Bus send failed: %v", err)
 	}
@@ -862,4 +862,77 @@ func TestLiveDBusNotification(t *testing.T) {
 	}
 	t.Logf("banner sent: icon=%s (exported %d bytes, embedded %d), pending ids=%d — check your screen",
 		icon, len(data), len(embedded), pending)
+}
+
+// TestPendingMapIsBounded pins the routing-map bounds. Entries are normally
+// consumed by ActionInvoked/NotificationClosed, but a daemon may report
+// nothing at all — KDE Plasma lets an expired banner disappear silently — so
+// prunePendingLocked is the only thing keeping the map from growing for the
+// life of the process.
+func TestPendingMapIsBounded(t *testing.T) {
+	st := &platformNotificationState{pending: map[uint32]linuxNotificationMeta{}}
+
+	// Stale entries (older than the TTL) are dropped outright.
+	st.pending[1] = linuxNotificationMeta{wailsID: "stale", sentAt: time.Now().Add(-notificationPendingTTL - time.Hour)}
+	st.pending[2] = linuxNotificationMeta{wailsID: "fresh", sentAt: time.Now()}
+	st.prunePendingLocked()
+	if _, ok := st.pending[1]; ok {
+		t.Error("entry older than the TTL was kept")
+	}
+	if _, ok := st.pending[2]; !ok {
+		t.Error("fresh entry was evicted")
+	}
+
+	// Over the cap, the OLDEST entries go first: a banner sent a moment ago
+	// is the one the user is most likely to still click.
+	st.pending = map[uint32]linuxNotificationMeta{}
+	base := time.Now()
+	for i := range uint32(notificationPendingMax + 50) {
+		st.pending[i] = linuxNotificationMeta{
+			wailsID: "n",
+			sentAt:  base.Add(time.Duration(i) * time.Second),
+		}
+	}
+	st.prunePendingLocked()
+	if len(st.pending) != notificationPendingMax {
+		t.Fatalf("pending size = %d, want %d", len(st.pending), notificationPendingMax)
+	}
+	if _, ok := st.pending[0]; ok {
+		t.Error("oldest entry survived the cap eviction")
+	}
+	if _, ok := st.pending[notificationPendingMax+49]; !ok {
+		t.Error("newest entry was evicted")
+	}
+}
+
+// TestSendForwardsConfiguredExpireTimeout pins the banner-lifetime setting
+// end of the transport: whatever SendSystemNotification resolved from
+// `notifications.banner_timeout_seconds` is what reaches the daemon as the
+// freedesktop expire_timeout argument — including the two sentinels, which
+// must pass through untranslated (-1 daemon default, 0 never expire).
+func TestSendForwardsConfiguredExpireTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		timeout int32
+	}{
+		{"daemon default", dbusNotificationTimeoutDefault},
+		{"never expires", 0},
+		{"explicit 30s", 30_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := &fakeDBusConn{}
+			results := withFakeBus(t, conn)
+			st := &platformNotificationState{}
+			if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"},
+				results.dispatch, tc.timeout); err != nil {
+				t.Fatalf("send failed: %v", err)
+			}
+			if len(conn.notifyCalls) != 1 {
+				t.Fatalf("Notify calls = %d, want 1", len(conn.notifyCalls))
+			}
+			if got := conn.notifyCalls[0].timeout; got != tc.timeout {
+				t.Errorf("expire_timeout = %d, want %d", got, tc.timeout)
+			}
+		})
+	}
 }

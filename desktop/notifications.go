@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/v0lka/c0wrk/backend/config"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -210,7 +211,30 @@ func (a *App) SendSystemNotification(title, body string, data map[string]string)
 	if a.notificationsSendFn != nil {
 		return a.notificationsSendFn(a.ctx, options)
 	}
-	return a.sendNotificationPlatform(a.ctx, options)
+	return a.sendNotificationPlatform(a.ctx, options, a.notificationExpireTimeoutMs())
+}
+
+// notificationExpireTimeoutMs resolves the configured banner lifetime
+// (backend config `notifications.banner_timeout_seconds`) into the
+// freedesktop `expire_timeout` argument, in milliseconds. The two sentinels
+// pass through unchanged: -1 = the daemon's own default, 0 = never expire.
+//
+// Falls back to the daemon default whenever the config is unreachable (early
+// startup, tests with a zero-value FrontendAPI) — never to 0, which would
+// leave banners on screen forever by accident.
+func (a *App) notificationExpireTimeoutMs() int32 {
+	seconds := config.NotificationBannerTimeoutDaemonDefault
+	if a.FrontendAPI != nil {
+		seconds = a.GetNotificationBannerTimeout()
+	}
+	switch {
+	case seconds < 0:
+		return -1
+	case seconds == 0:
+		return 0
+	default:
+		return int32(seconds) * 1000 //nolint:mnd // seconds → milliseconds
+	}
 }
 
 // sendNotificationViaWails delivers a notification through the Wails runtime

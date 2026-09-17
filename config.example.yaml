@@ -1368,3 +1368,25 @@ runtime:
   # Default: 0 (auto).
   memory_soft_limit_mb: 0
 
+
+# ---------------------------------------------------------------------------
+# OS Notifications
+# ---------------------------------------------------------------------------
+notifications:
+  # How long a delivered notification banner stays on screen, in seconds.
+  #
+  # Values:
+  #   -1 (or omitted) — the notification daemon's own default (a handful of
+  #                     seconds on most desktops).
+  #    0              — NEVER expires: the banner stays until it is clicked or
+  #                     dismissed. Use this if banners vanish before you get
+  #                     to them — several daemons (KDE Plasma among them) drop
+  #                     an expired banner silently, without keeping it in the
+  #                     notification history.
+  #   > 0             — explicit lifetime in seconds, capped at 86400 (a day).
+  #
+  # Linux only. The value becomes the freedesktop `expire_timeout` argument of
+  # the org.freedesktop.Notifications Notify call; the macOS and Windows
+  # notification centers own banner lifetime themselves and ignore it.
+  # Editable from Settings → General → System notifications.
+  banner_timeout_seconds: -1

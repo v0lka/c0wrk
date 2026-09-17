@@ -302,6 +302,10 @@ export function GetModelProfiles() {
   return window['go']['desktop']['App']['GetModelProfiles']();
 }
 
+export function GetNotificationBannerTimeout() {
+  return window['go']['desktop']['App']['GetNotificationBannerTimeout']();
+}
+
 export function GetPaper(arg1, arg2) {
   return window['go']['desktop']['App']['GetPaper'](arg1, arg2);
 }
@@ -668,6 +672,10 @@ export function SetModelConfig(arg1, arg2) {
 
 export function SetModelProfilesEnabled(arg1) {
   return window['go']['desktop']['App']['SetModelProfilesEnabled'](arg1);
+}
+
+export function SetNotificationBannerTimeout(arg1) {
+  return window['go']['desktop']['App']['SetNotificationBannerTimeout'](arg1);
 }
 
 export function SetPaperPinned(arg1, arg2, arg3) {

@@ -569,6 +569,15 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Git.AutoFetchInterval = "2m"
 	}
 
+	// Notification banner lifetime defaults to -1: let the notification
+	// daemon decide, which is the behavior that shipped before the setting
+	// existed. A pointer-int because 0 is a MEANINGFUL value here ("never
+	// expire"), so the Go zero value cannot double as "unset".
+	if cfg.Notifications.BannerTimeoutSeconds == nil {
+		bannerTimeout := NotificationBannerTimeoutDaemonDefault
+		cfg.Notifications.BannerTimeoutSeconds = &bannerTimeout
+	}
+
 	// Runtime defaults need no mutation: runtime.memory_soft_limit_mb is a
 	// tri-state int whose zero value already IS the default (0 = auto — the
 	// desktop layer derives the soft limit from physical RAM, see

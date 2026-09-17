@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/v0lka/c0wrk/backend"
+	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -527,3 +529,36 @@ func TestCleanupNotifications_RunsThroughSeamWithLiveContext(t *testing.T) {
 		t.Errorf("expected exactly one cleanup call through the seam, got %d", f.cleanupCalls)
 	}
 }
+
+// TestNotificationExpireTimeoutMs pins the seconds → milliseconds conversion
+// and, above all, the fallback: an unreachable config must resolve to the
+// daemon default (-1), never to 0, which would leave every banner on screen
+// forever.
+func TestNotificationExpireTimeoutMs(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		seconds *int
+		want    int32
+	}{
+		{"unset config falls back to the daemon default", nil, -1},
+		{"daemon default", ptrInt(-1), -1},
+		{"never expires", ptrInt(0), 0},
+		{"explicit 45s", ptrInt(45), 45_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := NewApp()
+			if tc.seconds != nil {
+				app.FrontendAPI = backend.NewFrontendAPI(backend.FrontendAPIConfig{
+					Config: &config.Config{
+						Notifications: config.NotificationsConfig{BannerTimeoutSeconds: tc.seconds},
+					},
+				})
+			}
+			if got := app.notificationExpireTimeoutMs(); got != tc.want {
+				t.Errorf("notificationExpireTimeoutMs() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func ptrInt(v int) *int { return &v }

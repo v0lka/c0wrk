@@ -159,6 +159,8 @@ export function GetModelConfig(arg1:string):Promise<backend.ModelConfigResponse>
 
 export function GetModelProfiles():Promise<backend.ModelProfilesResponse>;
 
+export function GetNotificationBannerTimeout():Promise<number>;
+
 export function GetPaper(arg1:string,arg2:string):Promise<backend.PaperDTO>;
 
 export function GetPapers(arg1:string):Promise<backend.PapersDTO>;
@@ -342,6 +344,8 @@ export function SetLogLevel(arg1:string):Promise<void>;
 export function SetModelConfig(arg1:string,arg2:backend.ModelConfigRequest):Promise<void>;
 
 export function SetModelProfilesEnabled(arg1:boolean):Promise<void>;
+
+export function SetNotificationBannerTimeout(arg1:number):Promise<void>;
 
 export function SetPaperPinned(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 

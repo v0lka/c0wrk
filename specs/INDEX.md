@@ -144,7 +144,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [events.md](domains/frontend/events.md) - Event subscription and handling
 - [rendering.md](domains/frontend/rendering.md) - Message grouping and display pipeline
 - [sound-notifications.md](domains/frontend/sound-notifications.md) - Web Audio notification cues: event→tone pipeline, AudioContext lifecycle, recovery/replacement guarantees
-- [system-notifications.md](domains/frontend/system-notifications.md) - OS-level notification banners: two-channel architecture (sound + OS), event→content mapping, Go-binding transport, `notification_clicked` click routing (focus + navigate), permission hint, persisted master toggle
+- [system-notifications.md](domains/frontend/system-notifications.md) - OS-level notification banners: two-channel architecture (sound + OS), event→content mapping, Go-binding transport, `notification_clicked` click routing (focus + navigate), X11 window activation and its connection lifetime, `notifications.banner_timeout_seconds` banner lifetime, permission hint, persisted master toggle
 
 ### contracts/
 

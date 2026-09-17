@@ -3825,3 +3825,25 @@ func TestRuntimeConfig_MemorySoftLimit_RoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestNotificationBannerTimeoutDefault pins the pointer-int convention of the
+// banner lifetime: an absent key must default to the daemon default (-1), and
+// an explicit 0 — "never expire", the reason the setting exists — must
+// survive ApplyDefaults instead of being mistaken for an unset field.
+func TestNotificationBannerTimeoutDefault(t *testing.T) {
+	var cfg Config
+	ApplyDefaults(&cfg)
+	if cfg.Notifications.BannerTimeoutSeconds == nil {
+		t.Fatal("ApplyDefaults left banner_timeout_seconds nil")
+	}
+	if got := *cfg.Notifications.BannerTimeoutSeconds; got != NotificationBannerTimeoutDaemonDefault {
+		t.Errorf("default banner timeout = %d, want %d", got, NotificationBannerTimeoutDaemonDefault)
+	}
+
+	never := NotificationBannerTimeoutNever
+	explicit := Config{Notifications: NotificationsConfig{BannerTimeoutSeconds: &never}}
+	ApplyDefaults(&explicit)
+	if got := *explicit.Notifications.BannerTimeoutSeconds; got != NotificationBannerTimeoutNever {
+		t.Errorf("explicit 0 was overwritten with %d", got)
+	}
+}

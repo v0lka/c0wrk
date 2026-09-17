@@ -98,21 +98,41 @@ export function resolveSessionNotificationLabel(sessionId: string): SessionNotif
 }
 
 /**
+ * True when a banner about `sessionId` would be redundant RIGHT NOW: the app
+ * window is focused AND the session the banner is about is the one on screen.
+ * The Telegram "new message" rule — you are already looking at that chat, so
+ * a banner carries no information. Defensive DOM/store reads only, no RPC.
+ *
+ * The TONE is deliberately not suppressed here: this gates the visual banner
+ * only (see sendSystemNotification), so an audible cue still marks the event
+ * while the user is focused elsewhere in the app (e.g. the terminal panel of
+ * the same window).
+ */
+export function isSessionNotificationRedundant(sessionId: string): boolean {
+  if (typeof document === 'undefined' || !document.hasFocus()) return false
+  return useSessionStore.getState().activeSessionId === sessionId
+}
+
+/**
  * Send the system notification for a cued session event, if any.
  *
  * The notification counterpart of the sound path above: the same defensive
- * mapping (`classifyNotificationContent`), the same nine events. Prepends the
- * session name to the title (the app name when unresolvable) so a background
- * banner identifies WHICH session needs attention, and threads the resolved
- * project id through for click routing. Best-effort: the send itself never
- * throws (see sendSystemNotification).
+ * mapping (`classifyNotificationContent`), the same nine events. APPENDS the
+ * session name after the event title (`Event — Session name`, the app name
+ * when unresolvable) so a background banner leads with WHAT happened — the
+ * scannable part — and still identifies which session raised it; threads the
+ * resolved project id through for click routing. Suppressed when redundant
+ * (focused window + that session on screen — see
+ * isSessionNotificationRedundant). Best-effort: the send itself never throws
+ * (see sendSystemNotification).
  */
 export function notifySessionCue(event: SessionEventKey, data: unknown, context: SessionNotificationContext): void {
   const content = classifyNotificationContent(event, data)
   if (!content) return
+  if (isSessionNotificationRedundant(context.sessionId)) return
   const label = resolveSessionNotificationLabel(context.sessionId)
   void sendSystemNotification(
-    { ...content, title: `${label.name} — ${content.title}` },
+    { ...content, title: `${content.title} — ${label.name}` },
     { sessionId: context.sessionId, projectId: label.projectId },
   )
 }

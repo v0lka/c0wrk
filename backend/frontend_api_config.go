@@ -1447,6 +1447,45 @@ func (f *FrontendAPI) SetLogLevel(level string) error {
 	}
 }
 
+// GetNotificationBannerTimeout returns how long a delivered OS notification
+// banner stays on screen, in seconds: -1 (the notification daemon's own
+// default), 0 (never expire — stays until clicked or dismissed) or an
+// explicit positive lifetime.
+//
+// Fail-safe: an unloaded config answers -1 (the pre-setting behavior) rather
+// than 0, because the Go zero value would otherwise silently mean "banners
+// never go away".
+func (f *FrontendAPI) GetNotificationBannerTimeout() int {
+	f.configMu.RLock()
+	defer f.configMu.RUnlock()
+	if f.config == nil || f.config.Notifications.BannerTimeoutSeconds == nil {
+		return config.NotificationBannerTimeoutDaemonDefault
+	}
+	return *f.config.Notifications.BannerTimeoutSeconds
+}
+
+// SetNotificationBannerTimeout persists the banner lifetime (see
+// GetNotificationBannerTimeout for the accepted values).
+func (f *FrontendAPI) SetNotificationBannerTimeout(seconds int) error {
+	if seconds < config.NotificationBannerTimeoutDaemonDefault ||
+		seconds > config.NotificationBannerTimeoutMaxSeconds {
+		return fmt.Errorf("invalid notification banner timeout: %d seconds "+
+			"(want -1 for the daemon default, 0 for never, or 1..%d)",
+			seconds, config.NotificationBannerTimeoutMaxSeconds)
+	}
+
+	f.configMu.Lock()
+	defer f.configMu.Unlock()
+	if f.config == nil {
+		return errors.New("configuration is not loaded")
+	}
+	f.config.Notifications.BannerTimeoutSeconds = &seconds
+	if err := f.persistConfig(); err != nil {
+		return fmt.Errorf("persist notification banner timeout: %w", err)
+	}
+	return nil
+}
+
 // ListProviderModels returns available model names for a given provider.
 // For Anthropic: returns hardcoded list from model registry.
 // For ChatGPT/OpenAI Compatible: fetches from the provider's API.

@@ -25,7 +25,10 @@ import (
 // sendNotificationPlatform is the non-Linux branch of SendSystemNotification's
 // platform hook (only reached when the notificationsSendFn test seam is
 // unset): deliver straight through the Wails runtime.
-func (a *App) sendNotificationPlatform(ctx context.Context, options wailsRuntime.NotificationOptions) error {
+// expireTimeoutMs is accepted for signature parity with the Linux branch and
+// deliberately ignored: the macOS and Windows notification centers own banner
+// lifetime themselves and expose no per-notification expiry to the sender.
+func (a *App) sendNotificationPlatform(ctx context.Context, options wailsRuntime.NotificationOptions, _ int32) error {
 	return a.sendNotificationViaWails(ctx, options)
 }
 

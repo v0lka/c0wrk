@@ -625,7 +625,8 @@ describe('notification coverage across CHAT↔CODE toggles', () => {
       { title: string },
       { sessionId: string; projectId?: string },
     ]
-    expect(content.title.startsWith('Design Review — ')).toBe(true)
+    // The event title leads; the session name follows (event-first format).
+    expect(content.title.endsWith(' — Design Review')).toBe(true)
     expect(context.sessionId).toBe(A)
     expect(context.projectId).toBe('proj-a')
   })
@@ -636,7 +637,8 @@ describe('notification coverage across CHAT↔CODE toggles', () => {
     await act(async () => {
       useSessionStore.getState().setActiveSessionId(A)
     })
-    // Snapshot never loads — A is unresolvable → the app name leads.
+    // Snapshot never loads — A is unresolvable → the event title leads and
+    // the app name follows.
     await mountHarness()
     await act(async () => {
       statusDeferreds.get(A)!.resolve({ active: true })
@@ -651,6 +653,6 @@ describe('notification coverage across CHAT↔CODE toggles', () => {
     })
     expect(sendSystemNotificationMock).toHaveBeenCalledTimes(1)
     const [content] = sendSystemNotificationMock.mock.calls[0] as unknown as [{ title: string }]
-    expect(content.title).toBe('c0wrk — Task completed')
+    expect(content.title).toBe('Task completed — c0wrk')
   })
 })

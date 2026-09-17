@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -130,6 +131,22 @@ type App struct {
 	// those paths without a live Wails runtime (wailsRuntime panics on a
 	// foreign context). Production wiring keeps it nil.
 	windowShowFn func(ctx context.Context)
+
+	// windowRaiseFn / windowUnminimiseFn / windowIsMinimisedFn are the
+	// per-call seams behind showWindow's platform branches (WindowShow /
+	// WindowUnminimise / WindowIsMinimised). Same purpose as windowShowFn:
+	// tests drive the platform activation matrix without a live runtime;
+	// production keeps them nil.
+	windowRaiseFn       func(ctx context.Context)
+	windowUnminimiseFn  func(ctx context.Context)
+	windowIsMinimisedFn func(ctx context.Context) bool
+
+	// x11PagerActivateFn, when non-nil, replaces the Linux EWMH pager-source
+	// activation attempt in showWindow's linux branch (production:
+	// x11ActivateOwnWindow over a private X connection). Same purpose as the
+	// per-call seams above — lets tests observe/fake the activation matrix
+	// without a live X server. Production wiring keeps it nil.
+	x11PagerActivateFn func() bool
 
 	// ── System notifications (notifications.go) ────────────────────────────
 	//
@@ -369,20 +386,113 @@ func (a *App) emit(eventName string, optionalData ...any) {
 	wailsRuntime.EventsEmit(a.ctx, eventName, optionalData...)
 }
 
-// showWindow reveals the main window. Tests can inject a fake by setting
-// a.windowShowFn; production code uses wailsRuntime.WindowShow.
+// showWindow reveals AND raises the main window. Tests can inject a fake by
+// setting a.windowShowFn; production code uses wailsRuntime.
 //
-// Every reveal path funnels through here, and all of them are idempotent:
-// showing an already-visible window is a no-op. The window is created visible
-// (main.go sets no StartHidden), so in a normal start these calls have nothing
-// left to do — they exist so a window that is hidden for any other reason
-// still comes back.
+// Every reveal path funnels through here, and all of them are idempotent.
+// The window is created visible (main.go sets no StartHidden), so in a normal
+// start these calls have nothing left to do — they exist so a window that is
+// hidden, minimized, or buried under other windows still comes back.
+//
+// Activation semantics per platform (verified against the Wails v2.15
+// frontends — internal/frontend/desktop/{linux,darwin,windows}):
+//
+//		Linux     WindowShow is gtk_widget_show — a bare map call that is a NO-OP
+//		          for an already-mapped (but covered or minimized) window: no
+//		          raise, no focus, no restore. WindowUnminimise is the real
+//		          activation primitive there: gtk_window_present, which raises,
+//		          deiconifies and focuses (EWMH _NET_ACTIVE_WINDOW). So on Linux
+//	         the present call ALONE is the full reveal+raise, and the plain
+//	         Show is skipped (calling both just double-queues main-thread
+//	         work for the same effect).
+//
+//		darwin    WindowShow is makeKeyAndOrderFront + activateIgnoringOtherApps
+//		          — already the full activation; WindowUnminimise (deminiaturize)
+//		          adds nothing the Show doesn't do, so it is skipped.
+//
+//		Windows   ShowWindow maps + activates, but WindowUnminimise maps to the
+//		          WPF Form.Restore(), which UNMAXIMIZES a maximized window — so it
+//		          runs only when the window is actually minimized. The restore
+//		          path is the only way to bring the window back from the taskbar
+//		          without a focus-steal fight with the shell.
+//
+// See specs/domains/frontend/system-notifications.md (§ Click → window
+// activation) for the full matrix and the Wails source references.
 func (a *App) showWindow(ctx context.Context) {
 	if a.windowShowFn != nil {
 		a.windowShowFn(ctx)
 		return
 	}
+	switch showWindowPlatform {
+	case "linux":
+		// Own EWMH pager-source activation first (see window_activation_linux.go):
+		// the Wails present() carries a stale/zero timestamp that KWin's focus
+		// stealing prevention rejects, leaving the taskbar merely flashing.
+		if a.tryX11PagerActivation() {
+			return
+		}
+		// Fallback (Wayland, headless, no matching window): gtk_window_present
+		// — raise + deiconify + focus in one call.
+		a.windowUnminimise(ctx)
+	case "darwin":
+		// makeKeyAndOrderFront + activateIgnoringOtherApps.
+		a.windowRaise(ctx)
+	case "windows":
+		// Show maps + activates; Restore only when really minimized, or a
+		// maximized window would be unmaximized (WPF Form.Restore).
+		a.windowRaise(ctx)
+		if a.windowIsMinimised(ctx) {
+			a.windowUnminimise(ctx)
+		}
+	default:
+		// Unknown platform: keep the historical behavior (plain show).
+		a.windowRaise(ctx)
+	}
+}
+
+// showWindowPlatform selects the activation branch of showWindow. A package
+// var (not a build tag) so tests on ANY platform can exercise every branch —
+// production reads runtime.GOOS, exactly like notificationAuthorizationPlatform.
+var showWindowPlatform = runtime.GOOS
+
+// windowRaise dispatches to wailsRuntime.WindowShow (the per-call seam lives
+// on App — see the windowRaiseFn field).
+func (a *App) windowRaise(ctx context.Context) {
+	if a.windowRaiseFn != nil {
+		a.windowRaiseFn(ctx)
+		return
+	}
 	wailsRuntime.WindowShow(ctx)
+}
+
+// windowUnminimise dispatches to wailsRuntime.WindowUnminimise.
+func (a *App) windowUnminimise(ctx context.Context) {
+	if a.windowUnminimiseFn != nil {
+		a.windowUnminimiseFn(ctx)
+		return
+	}
+	wailsRuntime.WindowUnminimise(ctx)
+}
+
+// tryX11PagerActivation attempts the Linux EWMH pager-source activation of
+// the app's own window (window_activation_linux.go) behind the
+// x11PagerActivateFn seam. Returns true when the pager activation ran (the
+// caller then skips the Wails fallback); false → fall back to the Wails
+// present() path. The seam is nil in production, where the cgo
+// implementation runs; tests fake it to exercise both outcomes.
+func (a *App) tryX11PagerActivation() bool {
+	if a.x11PagerActivateFn != nil {
+		return a.x11PagerActivateFn()
+	}
+	return x11ActivateOwnWindow()
+}
+
+// windowIsMinimised dispatches to wailsRuntime.WindowIsMinimised.
+func (a *App) windowIsMinimised(ctx context.Context) bool {
+	if a.windowIsMinimisedFn != nil {
+		return a.windowIsMinimisedFn(ctx)
+	}
+	return wailsRuntime.WindowIsMinimised(ctx)
 }
 
 // resolvePendingMessage delegates to FrontendAPI.ResolvePendingMessage to mark
