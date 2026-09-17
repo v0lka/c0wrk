@@ -100,17 +100,31 @@ func TestCanaryCRLFRepoNarrowModeKeepsStatusClean(t *testing.T) {
 		t.Errorf("inflated numstat under narrow mode: %q", got)
 	}
 
-	// Non-vacuity control (the [56]a collateral, empirically re-confirmed):
-	// forcing the pre-[56] blanket kill back on makes the SAME repository
-	// report the CRLF file as wholly modified with a whole-file numstat.
+	// Non-vacuity control (the [56]a collateral, empirically re-confirmed on
+	// git 2.50.1): forcing the pre-[56] blanket kill back on makes the SAME
+	// repository report the CRLF file as wholly modified with a whole-file
+	// numstat. The collateral only materializes where the kill actually
+	// strips the fixture's "* text=auto": a git older than 2.45 silently
+	// ignores attr.tree (the very condition the include-bearing chokepoint
+	// fails closed on), and attr.tree replaces only the IN-TREE .gitattributes
+	// — a machine-level source it does not cover (core.attributesFile, the
+	// system gitattributes) can re-apply the text attribute. Probe the kill's
+	// effect first and skip the control where the precondition fails, instead
+	// of asserting a false negative; the narrow-mode acceptance above stays
+	// unconditional.
 	kill := []string{"-c", "attr.tree=" + EmptyTreeSHA1}
-	got := runInRepoGit(t, repo.Root, append(slices.Clone(kill), "status", "--porcelain")...)
-	if !strings.Contains(got, "M crlf.txt") {
-		t.Fatalf("control: attr.tree must reproduce the false-modified collateral, got status %q", got)
-	}
-	got = runInRepoGit(t, repo.Root, append(slices.Clone(kill), "diff", "--numstat")...)
-	if !strings.Contains(got, "crlf.txt") {
-		t.Fatalf("control: attr.tree must reproduce the whole-file numstat collateral, got %q", got)
+	attrs := runInRepoGit(t, repo.Root, append(slices.Clone(kill), "check-attr", "text", "--", "crlf.txt")...)
+	if !strings.Contains(attrs, "unspecified") {
+		t.Logf("attr.tree kill left the text attribute in place (%q): this git ignores the key, or a machine-level attributes source re-applied it, so the blanket-kill collateral cannot be reproduced here; skipping the non-vacuity control", strings.TrimSpace(attrs))
+	} else {
+		got := runInRepoGit(t, repo.Root, append(slices.Clone(kill), "status", "--porcelain")...)
+		if !strings.Contains(got, "M crlf.txt") {
+			t.Fatalf("control: attr.tree must reproduce the false-modified collateral, got status %q", got)
+		}
+		got = runInRepoGit(t, repo.Root, append(slices.Clone(kill), "diff", "--numstat")...)
+		if !strings.Contains(got, "crlf.txt") {
+			t.Fatalf("control: attr.tree must reproduce the whole-file numstat collateral, got %q", got)
+		}
 	}
 
 	// The narrowing must not weaken the filter neutralization itself: the

@@ -254,7 +254,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 				}
 				outputReserve = existing.OutputTokenReserve
 				// nil = keep (debounced partial saves must not drop the
-				// pin, ADR-050); non-nil values apply verbatim — an
+				// pin, ADR-052); non-nil values apply verbatim — an
 				// explicit empty string clears the pin.
 				if tlsFingerprint == nil {
 					existingFP := existing.TLSFingerprint
@@ -1507,7 +1507,7 @@ func (f *FrontendAPI) ListProviderModels(req ListProviderModelsRequest) ([]strin
 
 // GetProviderTLSCertificate connects to the provider's endpoint and returns
 // the SPKI fingerprint of the certificate the server currently presents
-// (ADR-050 "Get fingerprint" button). The connection performs only the TLS
+// (ADR-052 "Get fingerprint" button). The connection performs only the TLS
 // handshake — no HTTP request, no API key — because the fingerprint IS what
 // is being fetched; verification is deliberately skipped here, the user pins
 // the result afterwards. baseURL from the request (draft form value) wins
@@ -1515,7 +1515,7 @@ func (f *FrontendAPI) ListProviderModels(req ListProviderModelsRequest) ([]strin
 //
 // The probe dials the endpoint DIRECTLY (it does not consult the configured
 // HTTP proxy), so when a proxy is enabled the fetched pin would never be
-// used: the proxy-wins rule (ADR-051) makes the pin inert while the proxy is
+// used: the proxy-wins rule (ADR-053) makes the pin inert while the proxy is
 // active. The call is rejected up front with an actionable error instead of
 // handing the user a pin that silently does nothing.
 func (f *FrontendAPI) GetProviderTLSCertificate(req GetProviderTLSCertificateRequest) (TLSCertificateResponse, error) {
@@ -1596,7 +1596,7 @@ func applyListProviderModelsOverrides(cfg *core.BuilderConfig, req ListProviderM
 		return fmt.Errorf("unsupported provider type %q", providerType)
 	}
 
-	// Draft TLS pin override (ADR-050): nil = fall back to the saved value
+	// Draft TLS pin override (ADR-052): nil = fall back to the saved value
 	// so a partial draft (only credentials edited) does not silently drop
 	// the pin; non-nil values apply verbatim.
 	tlsFingerprint := req.TLSFingerprint

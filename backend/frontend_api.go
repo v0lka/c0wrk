@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"sort"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/review"
 	"github.com/v0lka/c0wrk/backend/session"
+	"github.com/v0lka/c0wrk/core/papers"
 	"github.com/v0lka/c0wrk/core/updater"
 	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/c0wrk/core/workspace"
@@ -81,6 +83,12 @@ type FrontendAPI struct {
 	// in production, where readProcessRSS from processmem.go runs), mirroring
 	// gitStatusFn.
 	readProcessRSSFn func() (uint64, error)
+	// fetchPaperOriginalFn, when non-nil, replaces the
+	// papers.FetchOriginalHTML call behind FetchPaperOriginal
+	// (frontend_api_papers_source.go). Test-only seam (nil in production),
+	// mirroring gitStatusFn, so the RPC's plumbing is testable without the
+	// network.
+	fetchPaperOriginalFn func(ctx context.Context, client *http.Client, libraryRoot string, rec papers.PaperRecord) papers.FetchResult
 	// remoteOpMu serializes remote git operations (pull/push/fetch) so that
 	// only one network operation runs at a time per app instance.
 	remoteOpMu sync.Mutex
@@ -144,6 +152,15 @@ type FrontendAPI struct {
 	// deadline for acquiring switchMu. Test-only seam (0 in production).
 	switchLockTimeoutOverride time.Duration
 
+	// researchSeedMu serializes research-pack reconciliation
+	// (reconcileResearchPacks): EnableResearch and the SwitchProject
+	// revalidation can target the same project-local .agents/{skills,agents}
+	// directories concurrently (toggle + switch race), and the pack staging
+	// swap is not designed for two concurrent writers of one destination —
+	// one rename would fail on the vanished source. The lock is coarse (all
+	// projects) because reconciliation is millisecond-scale local IO.
+	researchSeedMu sync.Mutex
+
 	// switchInProgressHook is a test-only seam invoked inside SwitchProject
 	// while switchMu is held (i.e. mid-switch). Nil in production.
 	switchInProgressHook func(id string)
@@ -157,6 +174,22 @@ type FrontendAPI struct {
 	// Active research root path (empty when RESEARCH is off). Guarded by
 	// activeProjectMu so it stays in sync with project switches.
 	activeResearchRoot string
+
+	// activePapersRoot holds the active paper-library root path
+	// (<research-root>/papers; empty for the No Project pseudo-project).
+	// Tracked separately from activeResearchRoot because the papers library
+	// must be watched regardless of the RESEARCH toggle: RESEARCH may be off
+	// (hybrid mode) while the library still exists at the default root.
+	// Guarded by activeProjectMu so it stays in sync with project switches.
+	activePapersRoot string
+
+	// activeComparisonsRoot holds the active multi-paper comparison root path
+	// (<research-root>/comparisons; empty for the No Project pseudo-project).
+	// Like the paper library it is a global subdirectory of the research root
+	// and must be watched regardless of the RESEARCH toggle, so a comparison
+	// artifact written in hybrid mode (RESEARCH off) still refreshes the UI.
+	// Guarded by activeProjectMu so it stays in sync with project switches.
+	activeComparisonsRoot string
 
 	// Research hypothesis mutations. researchRootsMu guards researchRootMus,
 	// which holds one mutex per research root path. Each per-root mutex

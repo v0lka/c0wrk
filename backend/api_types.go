@@ -79,7 +79,7 @@ type ConfigProviderFull struct {
 	APIKey  string   `json:"api_key"`
 	BaseURL string   `json:"base_url,omitempty"`
 	Models  []string `json:"models"` // enabled models for this provider
-	// TLSFingerprint exposes the per-provider SPKI pin (ADR-050): non-empty =
+	// TLSFingerprint exposes the per-provider SPKI pin (ADR-052): non-empty =
 	// only the pinned key is accepted; empty = system CA verification.
 	TLSFingerprint string `json:"tls_fingerprint,omitempty"`
 }
@@ -121,7 +121,7 @@ type ProviderConfigRequest struct {
 	APIKey  string   `json:"api_key,omitempty"`
 	BaseURL string   `json:"base_url,omitempty"`
 	Models  []string `json:"models,omitempty"`
-	// TLSFingerprint is the base64(SHA-256(SPKI DER)) pin (ADR-050): the pin
+	// TLSFingerprint is the base64(SHA-256(SPKI DER)) pin (ADR-052): the pin
 	// is the only verification override. nil = keep the persisted pin
 	// (debounced partial saves must not drop it); non-nil = apply verbatim,
 	// so an explicit empty string CLEARS the pin (back to system CA
@@ -143,7 +143,7 @@ type ListProviderModelsRequest struct {
 	// Type is the transport: "openai" or "anthropic". Empty means derive from
 	// the saved provider, or default to "openai" for an unknown provider.
 	Type string `json:"type,omitempty"`
-	// TLSFingerprint is the draft pin override (ADR-050) so "Fetch Models"
+	// TLSFingerprint is the draft pin override (ADR-052) so "Fetch Models"
 	// reaches a self-pinned endpoint before the provider is persisted. nil =
 	// fall back to the saved value; non-nil applies verbatim.
 	TLSFingerprint *string `json:"tls_fingerprint,omitempty"`

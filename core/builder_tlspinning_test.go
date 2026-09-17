@@ -223,7 +223,7 @@ func TestFetchProviderModels_TLSOverrideAnthropic(t *testing.T) {
 	}
 }
 
-// --- Proxy-wins rule (ADR-051) ---------------------------------------------
+// --- Proxy-wins rule (ADR-053) ---------------------------------------------
 
 // pinnedTransportPresent reports whether client's transport chain carries a
 // TLS client config with a VerifyPeerCertificate callback (the llmtls pinned
@@ -256,10 +256,10 @@ func providerDoGet(t *testing.T, httpClient *http.Client, target string) error {
 }
 
 // TestProviderEntry_ProxyWinsOverPin is the direct assertion of the
-// proxy-wins rule (ADR-051) at the entry-construction layer: with an active
+// proxy-wins rule (ADR-053) at the entry-construction layer: with an active
 // proxy the pin is inert — providerEntryFromConfig attaches NO per-entry
 // HTTPClient — while without a proxy the same config yields a pinned client
-// (regression guard for ADR-050).
+// (regression guard for ADR-052).
 func TestProviderEntry_ProxyWinsOverPin(t *testing.T) {
 	srv := newTLSLLMServer(t)
 	pin := llmtls.SPKIFingerprint(srv.Certificate())
@@ -279,7 +279,7 @@ func TestProviderEntry_ProxyWinsOverPin(t *testing.T) {
 		t.Fatal("expected NO per-entry pinned client while a proxy is configured (proxy-wins rule)")
 	}
 
-	// Without a proxy the same config yields the pinned client (ADR-050).
+	// Without a proxy the same config yields the pinned client (ADR-052).
 	entryDirect := providerEntryFromConfig("selfhosted", BuilderProviderConfig{
 		ProviderType:   "openai",
 		BaseURL:        srv.URL + "/v1",
@@ -296,7 +296,7 @@ func TestProviderEntry_ProxyWinsOverPin(t *testing.T) {
 }
 
 // TestFetchProviderModels_ProxyWinsOverPin is the behavioral check of the
-// proxy-wins rule (ADR-051) on the Fetch Models path. The builder's proxy
+// proxy-wins rule (ADR-053) on the Fetch Models path. The builder's proxy
 // client is a custom RoundTripper standing in for the configured proxy: it
 // answers with the model listing without touching the origin. With the pin
 // configured AND the proxy active, the listing must succeed THROUGH the

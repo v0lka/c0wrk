@@ -45,7 +45,7 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
         if (PROVIDERS_WITH_BASE_URL.has(p)) {
           entry.base_url = cfg.base_url
         }
-        // Per-provider TLS pin override (ADR-050): compatible providers are
+        // Per-provider TLS pin override (ADR-052): compatible providers are
         // the only ones the backend stores the pin for, and they route to a
         // transport-type-specific backend map. The pin always travels along
         // so the backend can apply it atomically.

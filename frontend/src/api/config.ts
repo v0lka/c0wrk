@@ -77,7 +77,7 @@ export async function updateLLMConfig(req: LLMFullConfigRequest): Promise<void> 
 
 /**
  * Fetch the certificate fingerprint the provider's endpoint currently
- * presents (ADR-050 "Get fingerprint"). Performs only the TLS handshake —
+ * presents (ADR-052 "Get fingerprint"). Performs only the TLS handshake —
  * no HTTP request, no API key. Draft base_url wins over the persisted one.
  */
 export async function getProviderTLSCertificate(

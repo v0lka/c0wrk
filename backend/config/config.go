@@ -468,7 +468,7 @@ type OpenAICompatibleConfig struct {
 	// Non-empty = ONLY the pinned key is accepted (self-signed / internal
 	// PKI); empty = normal system CA verification. The pin is the only
 	// verification override — there is no configured accept-any state. See
-	// ADR-050.
+	// ADR-052.
 	TLSFingerprint string `yaml:"tls_fingerprint,omitempty"`
 	// OutputTokenReserve overrides the output-token budget for every model
 	// served by this provider: it is subtracted from the context window in
@@ -487,7 +487,7 @@ type AnthropicCompatibleConfig struct {
 	// Non-empty = ONLY the pinned key is accepted (self-signed / internal
 	// PKI); empty = normal system CA verification. The pin is the only
 	// verification override — there is no configured accept-any state. See
-	// ADR-050.
+	// ADR-052.
 	TLSFingerprint string `yaml:"tls_fingerprint,omitempty"`
 	// OutputTokenReserve overrides the output-token budget for every model
 	// served by this provider: it is subtracted from the context window in
@@ -1265,7 +1265,7 @@ type ProviderWithModels struct {
 	Models       []string // enabled models for this one provider
 	// TLSFingerprint carries the per-provider SPKI pin (only meaningful for
 	// compatible providers with a BaseURL): non-empty = ONLY the pinned key
-	// is accepted; empty = system CA verification. See ADR-050.
+	// is accepted; empty = system CA verification. See ADR-052.
 	TLSFingerprint string
 	// OutputTokenReserve is the per-provider output-token budget override
 	// (0 = inherit the global executor.output_token_reserve).

@@ -425,7 +425,7 @@ func TestLookupOpenAIProviderBaseURL(t *testing.T) {
 }
 
 // TestLookupOpenAIProviderBaseURL_TLSOverride verifies the per-provider TLS
-// override fields (ADR-050) ride along with the lookup: the probe path can
+// override fields (ADR-052) ride along with the lookup: the probe path can
 // build its llmtls client from the same resolution. The pin is the switch —
 // a provider without a fingerprint resolves with an empty pin (no override).
 func TestLookupOpenAIProviderBaseURL_TLSOverride(t *testing.T) {

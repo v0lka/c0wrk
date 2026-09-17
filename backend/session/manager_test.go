@@ -2517,6 +2517,9 @@ func (m *mockSessionStoreForRestore) LoadMessages(_ context.Context, _ string) (
 func (m *mockSessionStoreForRestore) LoadMessagesPage(_ context.Context, _ string, _ int, _ *MessageCursor) ([]ChatMessage, bool, error) {
 	return []ChatMessage{}, false, nil
 }
+func (m *mockSessionStoreForRestore) LoadPlanTimeline(_ context.Context, _ string) ([]ChatMessage, error) {
+	return []ChatMessage{}, nil
+}
 func (m *mockSessionStoreForRestore) DeleteMessages(_ context.Context, _ string) error { return nil }
 func (m *mockSessionStoreForRestore) ResolvePendingMessage(_ context.Context, _, _, _, _ string, _ map[string]any) error {
 	return nil

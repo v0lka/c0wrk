@@ -1412,8 +1412,8 @@ func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider 
 			if baseURL == "" {
 				return nil, fmt.Errorf("openAI-compatible base URL not configured for provider %q", provider)
 			}
-			// Per-provider TLS override (ADR-050) under the proxy-wins rule
-			// (ADR-051): a configured proxy is a global network policy and
+			// Per-provider TLS override (ADR-052) under the proxy-wins rule
+			// (ADR-053): a configured proxy is a global network policy and
 			// the pin is ignored (the plain proxy client dials, exactly as
 			// before the pin existed); with no proxy, a non-empty
 			// fingerprint yields a direct pinned client so the listing
@@ -1972,8 +1972,8 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 		if !ok {
 			return
 		}
-		// Per-provider TLS override (ADR-050) under the proxy-wins rule
-		// (ADR-051): proxy active → plain proxy client; no proxy + pin →
+		// Per-provider TLS override (ADR-052) under the proxy-wins rule
+		// (ADR-053): proxy active → plain proxy client; no proxy + pin →
 		// direct pinned client. The probe then reaches self-signed
 		// endpoints exactly like the chat path.
 		probeClient := llmtls.ResolveProviderClient(proxyClient, tlsFingerprint, log)
@@ -2073,8 +2073,8 @@ func buildLLMHTTPClient(proxyClient *http.Client, timeoutSec int) *http.Client {
 
 // providerEntryFromConfig builds one llm.ProviderEntry from a provider's
 // BuilderConfig slice. When the provider carries the per-provider TLS
-// override (a non-empty TLSFingerprint, ADR-050 — the pin is the switch) AND
-// no proxy is configured (proxy-wins rule, ADR-051), a dedicated pinned
+// override (a non-empty TLSFingerprint, ADR-052 — the pin is the switch) AND
+// no proxy is configured (proxy-wins rule, ADR-053), a dedicated pinned
 // client derived from sharedClient is attached via ProviderEntry.HTTPClient;
 // with an active proxy the pin is ignored and the entry leaves HTTPClient
 // nil so the router's shared (proxy) client dials exactly as before the pin
@@ -2611,7 +2611,7 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 // listOpenAIModels fetches model names from an OpenAI-compatible API.
 // httpClient may be nil (default transport); a per-provider TLS-override
 // client (llmtls.Client) is threaded by fetchProviderModels so self-signed
-// endpoints list models exactly like the chat path (ADR-050).
+// endpoints list models exactly like the chat path (ADR-052).
 func listOpenAIModels(ctx context.Context, baseURL, apiKey string, httpClient *http.Client) ([]string, error) {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),

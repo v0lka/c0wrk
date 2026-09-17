@@ -13,7 +13,7 @@ interface ProviderConfig {
   /** Enabled models (present on the shared ProviderConfig shape the
    *  accordion passes through; unused by this form). */
   models?: string[]
-  /** Per-provider TLS pin override (ADR-050): '' = standard verification. */
+  /** Per-provider TLS pin override (ADR-052): '' = standard verification. */
   tls_fingerprint: string
 }
 
@@ -27,10 +27,10 @@ interface ProviderConfigFormProps {
   onApply: () => void
   /**
    * An effective HTTP proxy (enabled + a URL) is configured. Per the
-   * proxy-wins rule (ADR-051) the per-provider TLS pin does not apply to
+   * proxy-wins rule (ADR-053) the per-provider TLS pin does not apply to
    * proxied connections, so the whole TLS-override section is disabled and
    * an explanatory comment is shown. Defaults to false so callers that
-   * don't track proxy state keep the pre-ADR-051 behavior.
+   * don't track proxy state keep the pre-ADR-053 behavior.
    */
   proxyActive?: boolean
 }
@@ -52,7 +52,7 @@ export function ProviderConfigForm({
   const [fpLoading, setFpLoading] = useState(false)
   const [fpError, setFpError] = useState<string | null>(null)
 
-  // Local visibility state for the fingerprint input section (ADR-050): the
+  // Local visibility state for the fingerprint input section (ADR-052): the
   // checkbox is "Custom TLS fingerprint" and its checked state is DERIVED
   // from the persisted pin (tls_fingerprint !== '') on provider switch, but
   // stays local afterwards so collapsing the input (uncheck) does not
@@ -131,9 +131,9 @@ export function ProviderConfigForm({
         </div>
       )}
 
-      {/* TLS verification override — compatible providers only (ADR-050).
+      {/* TLS verification override — compatible providers only (ADR-052).
           Disabled wholesale while a proxy is active (proxy-wins rule,
-          ADR-051): the pin never applies to proxied connections. */}
+          ADR-053): the pin never applies to proxied connections. */}
       {showTLSSection && (
         <div className="flex flex-col gap-2">
           <label className={`flex items-center gap-2 ${proxyActive ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>

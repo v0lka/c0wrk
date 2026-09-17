@@ -17,7 +17,7 @@ export interface ProviderConfig {
      * (openai_compatible vs anthropic_compatible) they are saved under.
      */
     type?: CompatibleType
-    /** Per-provider TLS pin override (ADR-050): '' = standard CA
+    /** Per-provider TLS pin override (ADR-052): '' = standard CA
      *  verification (override off), non-empty = pinned fingerprint. */
     tls_fingerprint: string
 }
@@ -35,7 +35,7 @@ interface UseLLMConfigResult {
     anthropicCompatibleProviderNames: Set<string>
     /** Effective proxy state (enabled AND a URL set) mirroring the backend
      *  proxy.BuildTransport rule — the per-provider TLS pin is inert while
-     *  this is true (proxy-wins, ADR-051). */
+     *  this is true (proxy-wins, ADR-053). */
     proxyActive: boolean
     isLoading: boolean
     setDefaultModel: (model: string) => void

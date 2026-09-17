@@ -1,8 +1,8 @@
-# ADR-050: Per-Provider TLS Verification Override via SPKI Pinning
+# ADR-052: Per-Provider TLS Verification Override via SPKI Pinning
 
 ## Status
 
-Accepted — amended by [ADR-051](./051-proxy-wins-over-tls-pin.md), which
+Accepted — amended by [ADR-053](./053-proxy-wins-over-tls-pin.md), which
 settles the pin's interaction with the configured HTTP proxy (proxy wins;
 the pin applies only on direct connections). All other decisions remain in
 force.

@@ -26,6 +26,18 @@ const fileViewerMock = vi.hoisted(() => ({
   openFile: vi.fn(),
 }))
 
+// Study-paper dispatch goes through the shared message sender; mock it so the
+// PDF menu's dispatch can be asserted without a running Wails runtime (and so
+// the real hook's store graph never loads under jsdom).
+const messageSenderMock = vi.hoisted(() => ({ send: vi.fn() }))
+vi.mock('@/hooks/useMessageSender', () => ({
+  useMessageSender: () => ({
+    send: messageSenderMock.send,
+    cancel: vi.fn(),
+    isProcessing: false,
+  }),
+}))
+
 vi.mock('@/stores/gitPanelStore', () => ({
   // The component both subscribes (selector call) and imperatively reads
   // (getState) — the mock must be callable AND expose getState.
@@ -48,6 +60,10 @@ vi.mock('@/stores/fileViewerStore', () => ({
 }))
 
 import { FileTreeContextMenu } from './FileTreeContextMenu'
+import {
+  STUDY_PAPER_SKILL,
+  buildStudyPrompt,
+} from '@/components/papers/paperActions'
 import type { FileEntry } from '@/types/models'
 
 /**
@@ -349,5 +365,121 @@ describe('FileTreeContextMenu — Open in Viewer', () => {
     renderMenu(fileEntry, '/ws')
     const items = Array.from(container.querySelectorAll('[role="menuitem"]'))
     expect(items[0]?.textContent?.trim()).toBe('Open in Viewer')
+  })
+})
+
+describe('FileTreeContextMenu — Study this paper (PDF only)', () => {
+  let container: HTMLElement
+  let root: Root
+
+  const pdfEntry: FileEntry = {
+    name: 'attention.pdf',
+    path: '/ws/papers/attention.pdf',
+    is_dir: false,
+  }
+  const docEntry: FileEntry = { name: 'notes.md', path: '/ws/notes.md', is_dir: false }
+  const dirEntry: FileEntry = { name: 'papers', path: '/ws/papers', is_dir: true }
+
+  beforeEach(() => {
+    messageSenderMock.send.mockReset()
+    messageSenderMock.send.mockResolvedValue(undefined)
+    Object.defineProperty(globalThis, 'runtime', {
+      configurable: true,
+      value: { ClipboardSetText: vi.fn().mockResolvedValue(true), EventsEmit: vi.fn() },
+    })
+    container = document.createElement('div')
+    document.body.replaceChildren(container)
+    root = createRoot(container)
+  })
+
+  afterEach(() => {
+    act(() => root.unmount())
+    document.body.replaceChildren()
+  })
+
+  function renderMenu(entry: FileEntry) {
+    act(() => {
+      root.render(
+        <FileTreeContextMenu
+          entry={entry}
+          workspaceRoot="/ws"
+          position={{ x: 10, y: 10 }}
+          onClose={() => {}}
+        />,
+      )
+    })
+  }
+
+  function byTestId(testId: string): HTMLButtonElement {
+    const el = container.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`)
+    if (!el) throw new Error(`menu item ${testId} not rendered`)
+    return el
+  }
+
+  function itemByText(label: string): HTMLButtonElement | undefined {
+    return Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((b) => b.textContent?.trim() === label)
+  }
+
+  it('offers "Study this paper…" for a PDF file', () => {
+    renderMenu(pdfEntry)
+    expect(itemByText('Study this paper…')).not.toBeUndefined()
+    // It is offered alongside the standard file actions, not in place of them.
+    expect(itemByText('Open in Viewer')).not.toBeUndefined()
+  })
+
+  it('does not offer Study for a non-PDF file (no dispatch surface)', () => {
+    renderMenu(docEntry)
+    expect(itemByText('Study this paper…')).toBeUndefined()
+  })
+
+  it('does not offer Study for a directory', () => {
+    renderMenu(dirEntry)
+    expect(itemByText('Study this paper…')).toBeUndefined()
+  })
+
+  it('opens the depth picker and dispatches study-paper with the chosen mode', async () => {
+    renderMenu(pdfEntry)
+
+    await act(async () => {
+      byTestId('file-study-open').click()
+    })
+
+    // The picker lists every reading-depth mode.
+    expect(container.querySelector('[data-testid="file-study-mode-auto"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="file-study-mode-review"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="file-study-mode-teach"]')).not.toBeNull()
+    // The main items are replaced while picking.
+    expect(itemByText('Copy Path')).toBeUndefined()
+
+    await act(async () => {
+      byTestId('file-study-mode-review').click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    expect(messageSenderMock.send).toHaveBeenCalledTimes(1)
+    expect(messageSenderMock.send).toHaveBeenCalledWith(
+      buildStudyPrompt('/ws/papers/attention.pdf', 'review'),
+      [STUDY_PAPER_SKILL],
+      undefined,
+      undefined,
+      { newSession: false },
+    )
+  })
+
+  it('does not dispatch when the depth picker is dismissed', async () => {
+    renderMenu(pdfEntry)
+
+    await act(async () => {
+      byTestId('file-study-open').click()
+    })
+    await act(async () => {
+      byTestId('file-study-back').click()
+    })
+
+    // Back restores the main items and never dispatches.
+    expect(itemByText('Copy Path')).not.toBeUndefined()
+    expect(messageSenderMock.send).not.toHaveBeenCalled()
   })
 })

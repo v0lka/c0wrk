@@ -77,7 +77,7 @@ function flush(): Promise<void> {
 /** All model rows as {name, checked}, in render order. */
 function modelRows(): Array<{ name: string; checked: boolean }> {
   // Model checkboxes live in the scrollable model-list container; the TLS
-  // override checkbox (ADR-050) in the provider form must not be counted.
+  // override checkbox (ADR-052) in the provider form must not be counted.
   return Array.from(container.querySelectorAll('.custom-scrollbar input[type="checkbox"]')).map((input) => {
     const label = input.closest('label')
     const span = label?.querySelector('span.flex-1')
@@ -132,7 +132,7 @@ describe('ProviderAccordion model list', () => {
       provider: 'local',
       api_key: 'key',
       base_url: 'http://localhost:1234',
-      // The draft TLS pin rides along verbatim (ADR-050): an explicit ""
+      // The draft TLS pin rides along verbatim (ADR-052): an explicit ""
       // must win over the persisted value, not fall back.
       tls_fingerprint: '',
       type: undefined,

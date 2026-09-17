@@ -55,6 +55,14 @@ func (f *FrontendAPI) ListSkills() []SkillDescriptorDTO {
 	return result
 }
 
+// seedPapersSkillPack was removed: the paper-study skill-pack is no longer
+// seeded into the GLOBAL agent skills directory at startup. It is reconciled
+// PROJECT-LOCALLY instead — reconcileResearchPacks seeds it into
+// <workspace>/.agents/skills when RESEARCH mode is enabled for a project
+// (EnableResearch) and on every SwitchProject to a research-enabled project,
+// where the project-local copy wins the same-name skill discovery chain over
+// a ~/.agents namesake. See core/papers/skillpack.go for the pack itself.
+
 // invalidateSkillCache bumps the generation counter so the next ListSkills
 // call re-scans the skill directories.
 func (f *FrontendAPI) invalidateSkillCache() {

@@ -111,6 +111,13 @@ type SessionStore interface {
 	// them (frontend groupMessages drops both), so shipping them would only
 	// inflate the payload and the frontend store of a long session.
 	LoadMessagesPage(ctx context.Context, sessionID string, limit int, before *MessageCursor) (messages []ChatMessage, hasMore bool, err error)
+	// LoadPlanTimeline returns the session's plan-lifecycle rows (plan
+	// declaration + plan_step_start/complete/paused) in ascending stream
+	// order, independent of chat-window pagination. The declaration is
+	// persisted at the task's start while execution appends thousands of
+	// rows after it, so the panel/step-block restore needs a read path that
+	// reaches behind the newest page without paging the whole history.
+	LoadPlanTimeline(ctx context.Context, sessionID string) (messages []ChatMessage, err error)
 	DeleteMessages(ctx context.Context, sessionID string) error
 	// ResolvePendingMessage patches the metadata of the most recent message
 	// with the given role whose metadata[matchField] == matchValue, merging
@@ -913,6 +920,74 @@ func (s *SQLiteSessionStore) LoadMessagesPage(ctx context.Context, sessionID str
 		messages[i], messages[j] = messages[j], messages[i]
 	}
 	return messages, hasMore, nil
+}
+
+// planTimelineRolesSQL lists the persisted roles that make up a session's
+// plan lifecycle: the declaration plus the per-step start/complete/pause
+// rows. They are the ONLY rows the Execution Plan panel and the chat's
+// plan-step blocks need to be reconstructed after a reload, and there are
+// only a handful per declared plan (one plan row + ~2 rows per step), so a
+// full-history fetch of just these roles stays bounded no matter how many
+// thousands of tool-call rows the plan's execution produced in between.
+const planTimelineRolesSQL = `('plan', 'plan_step_start', 'plan_step_complete', 'plan_step_paused')`
+
+// planTimelineLimit is a defensive cap on LoadPlanTimeline. The role filter
+// alone bounds the result to a few rows per declared plan; the cap only stops
+// a pathological session (hundreds of replans) from shipping an unbounded
+// payload in one RPC.
+const planTimelineLimit = 5000
+
+// LoadPlanTimeline returns the session's plan-lifecycle rows (declaration +
+// step start/complete/pause, see planTimelineRolesSQL) in canonical
+// (created_at, id) ascending order, independent of the chat window's keyset
+// pagination. The plan declaration is persisted at the START of a task while
+// execution keeps appending rows, so on a mid-execution reload the declaration
+// can sit thousands of rows behind the newest page the UI loads — this read
+// path lets the panel and the completed-step blocks be restored without
+// paging the whole history into the chat store.
+func (s *SQLiteSessionStore) LoadPlanTimeline(ctx context.Context, sessionID string) ([]ChatMessage, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, session_id, role, content, reasoning_content, tool_calls, metadata, created_at
+		FROM session_messages
+		WHERE session_id = ? AND role IN `+planTimelineRolesSQL+`
+		ORDER BY created_at ASC, id ASC
+		LIMIT ?`, sessionID, planTimelineLimit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load plan timeline: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			s.log().Warn("failed to close database rows", "error", cerr)
+		}
+	}()
+
+	messages := []ChatMessage{}
+	for rows.Next() {
+		var msg ChatMessage
+		var metadataStr string
+		var reasoningStr, toolCallsStr sql.NullString
+		if err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &msg.Content, &reasoningStr, &toolCallsStr, &metadataStr, &msg.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan plan timeline row: %w", err)
+		}
+		if reasoningStr.Valid && reasoningStr.String != "" {
+			v := reasoningStr.String
+			msg.ReasoningContent = &v
+		}
+		if toolCallsStr.Valid && toolCallsStr.String != "" {
+			raw := json.RawMessage(toolCallsStr.String)
+			msg.ToolCalls = &raw
+		}
+		if metadataStr != "" {
+			msg.Metadata = json.RawMessage(metadataStr)
+		} else {
+			msg.Metadata = json.RawMessage("{}")
+		}
+		messages = append(messages, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating plan timeline: %w", err)
+	}
+	return messages, nil
 }
 
 // DeleteMessages deletes all messages for a session.

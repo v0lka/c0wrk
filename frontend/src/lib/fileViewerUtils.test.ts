@@ -22,6 +22,14 @@ describe('fileNameFromPath', () => {
     const sha = '0123456789abcdef0123456789abcdef01234567'
     expect(fileNameFromPath(`c0wrk:commit:${sha}`)).toBe('Commit 0123456')
   })
+
+  it('renders the slug for a c0wrk:paper:<slug> path', () => {
+    expect(fileNameFromPath('c0wrk:paper:vaswani-2017-attention')).toBe('vaswani-2017-attention')
+  })
+
+  it('falls back to "Paper" for a bare paper prefix', () => {
+    expect(fileNameFromPath('c0wrk:paper:')).toBe('Paper')
+  })
 })
 
 describe('isBinaryContent', () => {

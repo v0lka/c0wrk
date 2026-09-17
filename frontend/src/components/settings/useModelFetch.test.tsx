@@ -50,7 +50,7 @@ afterEach(() => {
   container.remove()
 })
 
-describe('useModelFetch draft TLS pin override (ADR-050)', () => {
+describe('useModelFetch draft TLS pin override (ADR-052)', () => {
   it('sends an explicit draft tls_fingerprint="" verbatim — not undefined (which would fall back to the saved pin)', async () => {
     act(() => root.render(<HookHarness provider="selfhosted" configs={{ selfhosted: draftConfig({ tls_fingerprint: '' }) }} />))
     await act(async () => { await result.handleApply() })

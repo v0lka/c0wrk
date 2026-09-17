@@ -83,7 +83,7 @@ func TestClient_CorrectPinSucceedsWrongPinFails(t *testing.T) {
 	}
 
 	// Wrong pin → failure carrying ErrPinMismatch and NOT echoing the
-	// actual certificate fingerprint (bare-error decision, ADR-050).
+	// actual certificate fingerprint (bare-error decision, ADR-052).
 	wrong := strings.Repeat("A", len(pin))
 	badClient := Client(http.DefaultClient, wrong, nil)
 	if err := doGet(t, badClient, srv.URL); err == nil {
@@ -401,7 +401,7 @@ func TestFetchFingerprint_RejectsMalformedURLs(t *testing.T) {
 	}
 }
 
-// --- ResolveProviderClient (proxy-wins rule, ADR-051) ----------------------
+// --- ResolveProviderClient (proxy-wins rule, ADR-053) ----------------------
 
 func TestResolveProviderClient_ProxyWinsOverPin(t *testing.T) {
 	// A configured proxy client is a global network policy: the pin is

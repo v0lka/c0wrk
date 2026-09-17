@@ -266,7 +266,7 @@ type BuilderProviderConfig struct {
 	Models       []string // enabled models for this one provider
 	// TLSFingerprint is the base64(SHA-256(SPKI DER)) pin for this
 	// provider's endpoint (self-signed servers). The pin IS the switch
-	// (ADR-050): empty = system verification, non-empty = a per-provider
+	// (ADR-052): empty = system verification, non-empty = a per-provider
 	// pinned HTTP client (see core/llmtls) that accepts ONLY the pinned
 	// certificate. There is no accept-any-certificate mode.
 	TLSFingerprint string

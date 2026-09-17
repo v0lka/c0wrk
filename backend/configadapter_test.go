@@ -303,7 +303,7 @@ func TestE2SConfigExperimentalGate(t *testing.T) {
 }
 
 // TestToBuilderConfig_ProviderTLSOverride verifies the config→builder mapping
-// for the per-provider TLS pin override (ADR-050): tls_fingerprint flows into
+// for the per-provider TLS pin override (ADR-052): tls_fingerprint flows into
 // BuilderProviderConfig for BOTH compatible provider families, and fixed
 // providers (anthropic, chatgpt) are unaffected.
 func TestToBuilderConfig_ProviderTLSOverride(t *testing.T) {

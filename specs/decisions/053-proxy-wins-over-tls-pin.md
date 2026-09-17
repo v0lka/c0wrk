@@ -1,14 +1,14 @@
-# ADR-051: Proxy Wins Over the Per-Provider TLS Pin
+# ADR-053: Proxy Wins Over the Per-Provider TLS Pin
 
 ## Status
 
-Accepted — amends [ADR-050](./050-per-provider-tls-pinning.md) (the pin remains
-in force; its interaction with the HTTP proxy is settled here). All ADR-050
+Accepted — amends [ADR-052](./052-per-provider-tls-pinning.md) (the pin remains
+in force; its interaction with the HTTP proxy is settled here). All ADR-052
 decisions remain in force except where this ADR narrows them.
 
 ## Context
 
-ADR-050 added the per-provider `tls_fingerprint` SPKI pin so self-signed LLM
+ADR-052 added the per-provider `tls_fingerprint` SPKI pin so self-signed LLM
 endpoints connect without disabling verification wholesale. Its four dial
 paths derive the pinned client from the builder's **proxy client** when one
 is configured (`llmtls.Client(proxyClient, pin, …)`), layering the pin on
@@ -64,10 +64,10 @@ features correctly per their own documentation.
    | proxy state                     | client used                                     |
    | ------------------------------- | ----------------------------------------------- |
    | effective (enabled + URL)       | the plain proxy client, unchanged (pin ignored) |
-   | not effective                   | pre-ADR-051 behavior (ADR-050 pin applies)      |
+   | not effective                   | pre-ADR-053 behavior (ADR-052 pin applies)      |
 
    With no proxy, nothing changes: a non-empty pin still yields the pinned
-   direct client (ADR-050).
+   direct client (ADR-052).
 
 2. **One resolver, one rule.** `llmtls.ResolveProviderClient(proxyClient,
    pin, logger)` encodes the table above and is the single source of truth

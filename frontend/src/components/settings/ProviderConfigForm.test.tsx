@@ -15,7 +15,7 @@ vi.mock('@/api/config', () => ({
 import { ProviderConfigForm } from './ProviderConfigForm'
 
 /**
- * TLS-pin form tests (ADR-050): the "Custom TLS fingerprint" checkbox +
+ * TLS-pin form tests (ADR-052): the "Custom TLS fingerprint" checkbox +
  * fingerprint field + Get button render ONLY for compatible providers; the
  * checkbox is a visibility control derived from the persisted pin, and
  * unchecking it emits an explicit tls_fingerprint: '' (clears the pin on
@@ -152,7 +152,7 @@ describe('ProviderConfigForm TLS section', () => {
   })
 })
 
-// --- Proxy-wins rule (ADR-051) ---------------------------------------------
+// --- Proxy-wins rule (ADR-053) ---------------------------------------------
 
 function renderFormWithProxy(provider: string, cfg: Partial<FormConfig>, proxyActive: boolean) {
   const onConfigChange = vi.fn()
@@ -179,7 +179,7 @@ function renderFormWithProxy(provider: string, cfg: Partial<FormConfig>, proxyAc
   return { onConfigChange }
 }
 
-describe('ProviderConfigForm proxy-wins (ADR-051)', () => {
+describe('ProviderConfigForm proxy-wins (ADR-053)', () => {
   it('disables the TLS checkbox and shows the proxy comment when a proxy is active', () => {
     renderFormWithProxy('lmstudio', { tls_fingerprint: 'PIN123' }, true)
     expect(tlsCheckbox().disabled).toBe(true)

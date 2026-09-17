@@ -12,7 +12,7 @@ export interface ProviderConfig {
   models: string[]
   /** Transport for compatible providers: "openai" | "anthropic". */
   type?: 'openai' | 'anthropic'
-  /** Per-provider TLS pin (ADR-050): '' = standard CA verification (override
+  /** Per-provider TLS pin (ADR-052): '' = standard CA verification (override
    *  off), non-empty = ONLY the pinned key is accepted. */
   tls_fingerprint: string
 }
@@ -28,7 +28,7 @@ interface ProviderAccordionProps {
   onDelete?: () => void
   defaultModel: string
   providerConfigs: Record<string, ProviderConfig>
-  /** Effective proxy state (ADR-051): disables the per-provider TLS pin UI. */
+  /** Effective proxy state (ADR-053): disables the per-provider TLS pin UI. */
   proxyActive?: boolean
 }
 

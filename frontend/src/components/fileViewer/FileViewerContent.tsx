@@ -6,7 +6,9 @@ import { DiffHunkNavBar } from '@/components/fileViewer/DiffHunkNavBar'
 import { PlanEditor } from '@/components/fileViewer/PlanEditor'
 import { ReviewPage } from '@/components/review/ReviewPage'
 import { ResearchWorkspace } from '@/components/research/ResearchWorkspace'
+import { PaperWorkspace } from '@/components/papers/PaperWorkspace'
 import { RESEARCH_TAB_PATH } from '@/stores/researchStore'
+import { PAPER_TAB_PREFIX } from '@/stores/paperStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import type { HunkDiffInfo } from '@/types/models'
 
@@ -50,6 +52,16 @@ export function FileViewerContent() {
   // execution mode).
   if (activeFile === RESEARCH_TAB_PATH) {
     return <ResearchWorkspace />
+  }
+
+  // Paper workspace: the pseudo-path carries the paper slug after
+  // "c0wrk:paper:" (see PAPER_TAB_PREFIX). Renders the paper's reading
+  // workspace (identity card + critical-layer widgets + the note / appraisal /
+  // source / … sections) instead of a code viewer. A missing slug is a no-op.
+  if (activeFile.startsWith(PAPER_TAB_PREFIX)) {
+    const slug = activeFile.slice(PAPER_TAB_PREFIX.length)
+    if (!slug) return null
+    return <PaperWorkspace slug={slug} />
   }
 
   const fileData = files[activeFile]

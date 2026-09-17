@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { HunkDiffInfo } from '@/types/models'
 import { RESEARCH_TAB_PATH } from '@/stores/researchStore'
+import { PAPER_TAB_PREFIX } from '@/stores/paperStore'
 
 // --- State types ---
 
@@ -53,6 +54,7 @@ interface FileViewerActions {
   openFileAtLine: (path: string, line: number) => void
   openVirtualFile: (path: string, language?: string) => void
   openResearch: () => void
+  openPaper: (slug: string) => void
   closeFile: (path: string) => void
   closeOthersFiles: (keepPath: string) => void
   setActiveFile: (path: string) => void
@@ -176,6 +178,14 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
       // ResearchWorkspace component instead of a code viewer.
       openResearch: () => {
         get().openVirtualFile(RESEARCH_TAB_PATH)
+      },
+
+      // Open a paper's workspace as a synthetic pseudo-path carrying the paper
+      // slug (`c0wrk:paper:<slug>` — see PAPER_TAB_PREFIX). The tab is virtual
+      // (never persisted), and FileViewerContent renders the PaperWorkspace
+      // component for the prefix instead of a code viewer.
+      openPaper: (slug) => {
+        get().openVirtualFile(`${PAPER_TAB_PREFIX}${slug}`)
       },
 
       closeFile: (path) => set((s) => {

@@ -20,7 +20,7 @@ import { useLLMConfigSave } from './useLLMConfigSave'
 import type { ProviderConfig } from './useLLMConfig'
 
 /**
- * TLS-pin payload tests (ADR-050): the save hook must carry
+ * TLS-pin payload tests (ADR-052): the save hook must carry
  * tls_fingerprint for compatible providers so the backend persists the
  * override, and never for fixed providers. An explicit empty string clears
  * the pin (back to system CA verification).

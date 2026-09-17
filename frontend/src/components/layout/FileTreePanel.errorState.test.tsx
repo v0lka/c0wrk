@@ -18,11 +18,6 @@ vi.mock('@/api/runtime', () => ({
   // directly, so an inert subscription is enough.
   subscribe: vi.fn(() => () => undefined),
 }))
-// The header's reindex action is out of scope for these error-state tests —
-// pin its RPC inert so the panel never reaches the Wails backend.
-vi.mock('@/api/vector', () => ({
-  reindexVectorIndex: vi.fn(async () => undefined),
-}))
 // The filter hook owns its own RPC (flat recursive listing); the error-state
 // behavior under test does not depend on it — pin it inert.
 vi.mock('@/hooks/useFileSearch', () => ({

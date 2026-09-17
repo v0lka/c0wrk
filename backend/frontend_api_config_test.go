@@ -3536,7 +3536,7 @@ func TestHasDefaultModel(t *testing.T) {
 	}
 }
 
-// --- Per-provider TLS pin override (ADR-050) -------------------------------
+// --- Per-provider TLS pin override (ADR-052) -------------------------------
 
 const testTLSPin = "k3J9vQ1Z0mF7hD2xS8pL4wR6tY5uI3oP1aE9cX0bN7g="
 
@@ -3809,7 +3809,7 @@ func TestGetProviderTLSCertificate_EnvVarBaseURL(t *testing.T) {
 }
 
 // TestGetProviderTLSCertificate_ProxyGuard verifies the proxy-wins rule on
-// the fingerprint RPC (ADR-051): while an effective proxy (enabled AND a
+// the fingerprint RPC (ADR-053): while an effective proxy (enabled AND a
 // URL) is configured, the Get button is rejected up front with an
 // actionable error instead of fetching a pin that would be inert — and the
 // guard mirrors BuildTransport's effective state, so an enabled-but-empty

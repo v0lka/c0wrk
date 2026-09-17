@@ -373,6 +373,33 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	// stay consistent with what the frontend is told.
 	f.switchProjectActivate(p)
 	f.applySavedProjectSwitchState(p.ID)
+
+	// Reconcile the project-local c0wrk packs (research-*/study-paper skills,
+	// research agent profile) when switching to a research-enabled project:
+	// seed ALL missing entries and upgrade pack-marked outdated ones. The
+	// toggle-time seeding in EnableResearch only runs when the user flips the
+	// switch, so an app upgrade that bumps a pack version — or a pack that
+	// gained a new skill — would otherwise stay stale in every project until
+	// a manual re-toggle. App-startup restoration rides along for free: the
+	// frontend replays the last active project through this same
+	// SwitchProject call. Best-effort: a seeding failure is logged inside
+	// reconcileResearchPacks and never fails the switch.
+	if p.ResearchRoot != "" && !p.IsNoProject {
+		if packRes := f.reconcileResearchPacks(p.ID, p.WorkspacePath); packRes.changed() {
+			f.invalidateSkillCache()
+			f.invalidateAgentCache()
+			// Refresh running sessions of this project (background/live
+			// sessions survive a switch away and back) so their skill
+			// catalogs pick up the newly seeded entries without a restart.
+			if f.app != nil {
+				if manager := f.app.Manager(); manager != nil {
+					manager.RescanSkillsForProject(p.ID)
+					manager.RescanAgentsForProject(p.ID)
+				}
+			}
+		}
+	}
+
 	f.emitEvent(EventProjectSwitched, p)
 
 	// Intake scan (text-only, exec-free): warn the user when the freshly
@@ -475,6 +502,16 @@ func (f *FrontendAPI) switchProjectActivate(p *project.ProjectInfo) {
 	// previously-active project and stops cross-project research:file_changed
 	// events.
 	f.activeResearchRoot = p.ResearchRoot
+	// Track the paper-library root (<effective research root>/papers)
+	// independently of the RESEARCH toggle, so the workspace watcher can emit
+	// papers:changed even when RESEARCH is off — the library is a global
+	// subdirectory of the research root that outlives any R-NNN. Empty for the
+	// No Project pseudo-project (papersRootForProject).
+	f.activePapersRoot = papersRootForProject(p)
+	// Track the comparisons root (<effective research root>/comparisons) with
+	// the same independence from the RESEARCH toggle: comparisons is a global
+	// sibling of the paper library and must be watched in hybrid mode too.
+	f.activeComparisonsRoot = comparisonsRootForProject(p)
 	f.activeProjectMu.Unlock()
 
 	// Invalidate cached skill list since project-local skills may differ.
@@ -542,14 +579,11 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 	}
 
 	// CODE mode: tear down the previous watcher and create a new one scoped
-	// to the project workspace.
-	// Read the research root from the TARGET project (p), not from the active
-	// fields: watcher setup now runs BEFORE switchProjectActivate commits the
-	// new project, so f.activeResearchRoot still holds the PREVIOUS project's
-	// root here. Taking p.ResearchRoot directly keeps the watcher scoped to
-	// the destination without acquiring activeProjectMu at all.
-	researchRoot := p.ResearchRoot
-
+	// to the project workspace. The effective research root is derived from
+	// the TARGET project (p) at the end of this function, not from the active
+	// fields: watcher setup runs BEFORE switchProjectActivate commits the new
+	// project, so f.activeResearchRoot still holds the PREVIOUS project's root
+	// here.
 	f.watcherMu.Lock()
 	defer f.watcherMu.Unlock()
 	if f.watcher != nil {
@@ -564,6 +598,8 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 		f.activeProjectMu.RLock()
 		snapProjectID := f.activeProjectID
 		snapResearchRoot := f.activeResearchRoot
+		snapPapersRoot := f.activePapersRoot
+		snapComparisonsRoot := f.activeComparisonsRoot
 		f.activeProjectMu.RUnlock()
 
 		// Emit research:file_changed for any changed path inside the research
@@ -572,6 +608,12 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 		// frontend's full-refetch path skips when the incremental path will
 		// handle the update, avoiding a redundant double fetch.
 		researchScoped := f.emitResearchFileChanged(snapResearchRoot, snapProjectID, changedPaths)
+		// Emit papers:changed for any changed path inside the paper library or
+		// the comparisons directory. Independent of the research emitter
+		// above: both roots are watched even with RESEARCH off, so an edit to
+		// a paper card or a comparison artifact still refreshes the Papers /
+		// Compare surfaces in hybrid mode.
+		f.emitPapersChanged(snapPapersRoot, snapComparisonsRoot, snapProjectID, changedPaths)
 		f.emitEvent(EventWorkspaceTreeChanged, map[string]bool{
 			"research_scoped": researchScoped,
 		})
@@ -618,16 +660,26 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 	}
 	f.watcher = watcher
 
-	// Recursively watch the research artifact tree so edits to hypothesis
-	// cards, the brief, prior-art, or graph files (which live in nested
-	// subdirectories like .research/R-NNN/hypotheses/) are detected. The
-	// workspace watcher is NOT recursive (fsnotify only reports events for
-	// explicitly-added directories), so without this the research panel
-	// never receives research:file_changed and does not auto-update. New
-	// subdirectories created inside the tree are auto-added by the watcher.
-	if researchRoot != "" {
-		if err := watcher.WatchTree(researchRoot); err != nil {
-			f.log().Debug("failed to watch research tree", "root", researchRoot, "error", err)
+	// Recursively watch the project's EFFECTIVE research root — the persisted
+	// ResearchRoot when RESEARCH is on, else the default <workspace>/.research.
+	// This single recursive root covers the research artifact tree (hypothesis
+	// cards, the brief, prior-art, and graph files that live in nested
+	// subdirectories like .research/R-NNN/hypotheses/), the paper library
+	// (<root>/papers), and the comparisons directory (<root>/comparisons) — so
+	// a paper or comparison edit still emits papers:changed in hybrid mode
+	// (RESEARCH off) or before any R-NNN exists.
+	//
+	// The workspace watcher is NOT recursive (fsnotify only reports events for
+	// explicitly-added directories), and WatchTree registers the root as a
+	// recursive root, so subdirectories created later — including .research
+	// itself, then papers/ and comparisons/ — are auto-added on their first
+	// write. Crucially this creates NOTHING on disk at switch time: selecting a
+	// project no longer materializes .research/papers and .research/comparisons
+	// in the user's repository (which surfaced as untracked entries in git
+	// status / the file tree and as spurious workspace:tree_changed events).
+	if effectiveRoot := effectiveResearchRoot(p); effectiveRoot != "" {
+		if err := watcher.WatchTree(effectiveRoot); err != nil {
+			f.log().Debug("failed to watch research tree", "root", effectiveRoot, "error", err)
 		}
 	}
 }
@@ -700,9 +752,15 @@ func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
 		f.activeProjectMu.RLock()
 		snapProjectID := f.activeProjectID
 		snapResearchRoot := f.activeResearchRoot
+		snapPapersRoot := f.activePapersRoot
+		snapComparisonsRoot := f.activeComparisonsRoot
 		f.activeProjectMu.RUnlock()
 
 		researchScoped := f.emitResearchFileChanged(snapResearchRoot, snapProjectID, changedPaths)
+		// No Project has no paper library or comparisons dir
+		// (activePapersRoot/activeComparisonsRoot are empty), so this is a
+		// no-op here; kept for parity with the CODE-mode callback.
+		f.emitPapersChanged(snapPapersRoot, snapComparisonsRoot, snapProjectID, changedPaths)
 		f.emitEvent(EventWorkspaceTreeChanged, map[string]bool{
 			"research_scoped": researchScoped,
 		})

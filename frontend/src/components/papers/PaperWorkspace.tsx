@@ -1,0 +1,346 @@
+// Paper workspace (the results viewing area) — the file viewer's content
+// for a `c0wrk:paper:<slug>` virtual tab.
+//
+// It renders one studied paper as a set of sections:
+//   Overview   — identity card + source anchors (E1) + the critical layer (E2)
+//   Note       — note.md
+//   Appraisal  — appraisal.md
+//   Compare    — the library comparisons (`<research-root>/comparisons/`) this
+//                paper takes part in, else the per-paper comparison artifact
+//   Flashcards — flashcards.md
+//   Source     — the extracted source text, with anchor scrolling (E1)
+//   Literature — the literature-context artifact
+//
+// The tab is virtual (never persisted). The paper record comes from paperStore
+// (its slug is the pseudo-path suffix); the artifact files are read from the
+// paper's directory through the workspace RPCs.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { BookOpen, FileText } from 'lucide-react'
+import type { PaperAnchor, PaperRecord } from '@/api/papers'
+import {
+  usePaperStore,
+  usePaperBySlug,
+  usePapersError,
+  usePapersResearchRoot,
+  selectPapersSyncAt,
+} from '@/stores/paperStore'
+import { resolveAnchor } from '@/lib/paperAnchors'
+import { resolveHtmlAnchor } from '@/lib/paperHtmlAnchors'
+import { comparisonMentionsPaper } from '@/lib/paperComparison'
+import {
+  MAX_RED_FLAG_CHIPS,
+  parseCriticalLayer,
+  type CriticalLayer,
+  type RedFlagChip,
+  type UncertaintyChip,
+} from '@/lib/paperWidgets'
+import { cn } from '@/lib/utils'
+import { PaperOverview } from './PaperOverview'
+import { PaperSourceView, type PendingAnchor, type PaperSourceViewMode } from './PaperSourceView'
+import type { PendingHtmlAnchor } from './PaperHtmlView'
+import { PaperMarkdownSection } from './PaperMarkdownSection'
+import { PaperLiterature } from './PaperLiterature'
+import { FlashcardsReview } from './FlashcardsReview'
+import { CompareMatrix } from './CompareMatrix'
+import { useComparisons } from './useComparisons'
+import { usePaperArtifacts, type PaperArtifacts } from './usePaperArtifacts'
+import { PAPER_WORKSPACE_SECTIONS, type PaperSection } from './paperSections'
+
+function joinPath(dir: string, name: string): string {
+  return `${dir.replace(/[\\/]+$/, '')}/${name}`
+}
+
+/** The record's normalized red flags as chips (fallback when no markdown was found). */
+function recordRedFlags(paper: PaperRecord | null): RedFlagChip[] {
+  if (paper === null) return []
+  return paper.red_flags
+    .slice(0, MAX_RED_FLAG_CHIPS)
+    .map((flag) => ({ flag: flag.flag, detail: flag.detail, severity: flag.severity }))
+}
+
+/** The record's normalized uncertainties as chips (same fallback). */
+function recordUncertainties(paper: PaperRecord | null): UncertaintyChip[] {
+  if (paper === null) return []
+  return paper.uncertainties.map((item) => ({ item: item.item, detail: item.detail }))
+}
+
+/**
+ * Build the critical layer: parse it from the note (authoritative) and the
+ * appraisal, and fall back to the backend-normalized record lists when neither
+ * artifact carries a critical-layer table. Red flags are capped at three.
+ */
+function buildCriticalLayer(
+  paper: PaperRecord | null,
+  artifacts: PaperArtifacts,
+): CriticalLayer {
+  const parsed = parseCriticalLayer(artifacts.note.content, artifacts.appraisal.content)
+  return {
+    evidence: parsed.evidence,
+    redFlags:
+      parsed.redFlags.length > 0
+        ? parsed.redFlags.slice(0, MAX_RED_FLAG_CHIPS)
+        : recordRedFlags(paper),
+    uncertainties:
+      parsed.uncertainties.length > 0 ? parsed.uncertainties : recordUncertainties(paper),
+  }
+}
+
+function NotFound({ slug }: { slug: string }) {
+  return (
+    <div
+      data-testid="paper-not-found"
+      className="flex h-full min-h-0 flex-col items-center justify-center gap-1 px-4 text-center"
+    >
+      <FileText className="size-5 text-muted-foreground" />
+      <p className="text-[12px] text-foreground">Paper not found in the loaded library</p>
+      <p className="text-[10px] text-muted-foreground">{slug}</p>
+    </div>
+  )
+}
+
+export function PaperWorkspace({ slug }: { slug: string }) {
+  const paper = usePaperBySlug(slug)
+  const syncAt = usePaperStore(selectPapersSyncAt)
+  // Failures recorded on the paper store (library load, pin toggle, flashcard
+  // review) must render in this tab itself — its only other renderer is the
+  // Research panel's Papers segment, a different surface the user may never open.
+  const error = usePapersError()
+  const researchRoot = usePapersResearchRoot()
+  const dir = paper?.dir ?? ''
+  const artifacts = usePaperArtifacts(dir, syncAt)
+  // Multi-paper comparisons live at the research-root level (not in the paper
+  // directory); the Compare section shows only those this paper takes part in.
+  const comparisons = useComparisons(researchRoot, syncAt)
+  const [section, setSection] = useState<PaperSection>('overview')
+  const [pending, setPending] = useState<PendingAnchor | null>(null)
+  const [pendingHtml, setPendingHtml] = useState<PendingHtmlAnchor | null>(null)
+  const [sourceMode, setSourceMode] = useState<PaperSourceViewMode>('html')
+  const [missedIndex, setMissedIndex] = useState<number | null>(null)
+  const nonceRef = useRef(0)
+
+  // A different paper in the same tab starts from a clean view.
+  useEffect(() => {
+    setSection('overview')
+    setPending(null)
+    setPendingHtml(null)
+    setSourceMode('html')
+    setMissedIndex(null)
+  }, [slug])
+
+  const layer = useMemo(() => buildCriticalLayer(paper, artifacts), [paper, artifacts])
+
+  // The comparisons this paper takes part in — matched against the recorded
+  // id / slug / card path / identifier / title. Derived with useMemo (outside
+  // any store selector).
+  const relevantComparisons = useMemo(
+    () =>
+      paper === null
+        ? []
+        : comparisons.items.filter((item) => comparisonMentionsPaper(item.content, paper)),
+    [comparisons.items, paper],
+  )
+
+  // Comparisons whose file could not be read (content '' so they never match a
+  // paper). Surfaced as a notice instead of silently falling through to the
+  // empty state — a read error must not look like "no comparisons".
+  const erroredComparisons = useMemo(
+    () => comparisons.items.filter((item) => item.error !== null),
+    [comparisons.items],
+  )
+
+  // Anchor navigation (E1): resolve against the RENDERED paper.html first
+  // (LaTeXML element ids, then conservative caption/heading text), reveal the
+  // hit there; on miss fall back to the extracted source text and switch to
+  // the extracted sub-view; only a double miss admits the honest "not found"
+  // (never a jump somewhere wrong).
+  const onAnchorSelect = useCallback(
+    (anchor: PaperAnchor, index: number) => {
+      const html = artifacts.html.content
+      if (html !== '') {
+        const hit = resolveHtmlAnchor(html, anchor)
+        if (hit !== null) {
+          setMissedIndex(null)
+          setPending(null)
+          nonceRef.current += 1
+          setPendingHtml({ id: hit.id, path: hit.path, nonce: nonceRef.current })
+          setSourceMode('html')
+          setSection('source')
+          return
+        }
+      }
+      const hit = resolveAnchor(artifacts.source.content, anchor)
+      if (hit === null) {
+        // Honest fallback: record which anchor failed and never scroll anywhere.
+        setMissedIndex(index)
+        return
+      }
+      setMissedIndex(null)
+      setPendingHtml(null)
+      nonceRef.current += 1
+      setPending({ line: hit.line, nonce: nonceRef.current })
+      setSourceMode('text')
+      setSection('source')
+    },
+    [artifacts.html.content, artifacts.source.content],
+  )
+
+  if (paper === null) return <NotFound slug={slug} />
+
+  const baseFilePath = (name: string): string | null => (dir === '' ? null : joinPath(dir, name))
+  const anchors = paper.anchors
+
+  return (
+    <div data-testid="paper-workspace" className="flex h-full min-h-0 flex-col">
+      <header className="flex shrink-0 items-center gap-2 border-b border-border bg-secondary/30 px-2 py-1">
+        <BookOpen className="size-3.5 shrink-0 text-info" />
+        <span className="min-w-0 flex-1 truncate text-xs font-medium" title={paper.title}>
+          {paper.title !== '' ? paper.title : paper.slug}
+        </span>
+      </header>
+
+      {error !== null && (
+        <div
+          data-testid="paper-workspace-error"
+          className="shrink-0 border-b border-destructive/20 bg-destructive/10 px-2 py-1 text-[11px] text-destructive"
+        >
+          {error}
+        </div>
+      )}
+
+      <nav
+        data-testid="paper-sections"
+        className="flex shrink-0 items-center gap-0.5 overflow-x-auto no-scrollbar border-b border-border px-1 py-0.5"
+      >
+        {PAPER_WORKSPACE_SECTIONS.map((s) => (
+          <button
+            key={s.id}
+            type="button"
+            data-testid={`paper-section-${s.id}`}
+            data-active={section === s.id}
+            aria-current={section === s.id ? 'true' : undefined}
+            onClick={() => setSection(s.id)}
+            className={cn(
+              'shrink-0 rounded px-1.5 py-0.5 text-[11px] transition-colors',
+              section === s.id
+                ? 'bg-background text-foreground'
+                : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground',
+            )}
+          >
+            {s.label}
+          </button>
+        ))}
+      </nav>
+
+      <div className="flex min-h-0 flex-1 flex-col">
+        {section === 'overview' && (
+          <PaperOverview
+            paper={paper}
+            layer={layer}
+            missedIndex={missedIndex}
+            onAnchorSelect={onAnchorSelect}
+          />
+        )}
+        {section === 'note' && (
+          <PaperMarkdownSection
+            artifact={artifacts.note}
+            testId="paper-note"
+            emptyText="No note recorded for this paper yet."
+            baseFilePath={baseFilePath(artifacts.note.fileName)}
+          />
+        )}
+        {section === 'appraisal' && (
+          <PaperMarkdownSection
+            artifact={artifacts.appraisal}
+            testId="paper-appraisal"
+            emptyText="No appraisal recorded for this paper yet."
+            baseFilePath={baseFilePath(artifacts.appraisal.fileName)}
+          />
+        )}
+        {section === 'compare' &&
+          (comparisons.loading ? (
+            <p
+              data-testid="paper-compare-loading"
+              className="px-3 py-4 text-center text-[11px] text-muted-foreground"
+            >
+              Loading…
+            </p>
+          ) : (
+            <>
+              {erroredComparisons.length > 0 && (
+                <div
+                  data-testid="paper-compare-error"
+                  className="shrink-0 border-b border-destructive/20 bg-destructive/10 px-2 py-1 text-[11px] text-destructive"
+                >
+                  {erroredComparisons.map((comparison) => (
+                    <p key={comparison.slug}>could not read {comparison.slug}.md</p>
+                  ))}
+                </div>
+              )}
+              {relevantComparisons.length > 0 ? (
+                <div
+                  data-testid="paper-compare-comparisons"
+                  className="min-h-0 flex-1 overflow-auto custom-scrollbar"
+                >
+                  {relevantComparisons.map((comparison) => (
+                    <CompareMatrix
+                      key={comparison.slug}
+                      slug={comparison.slug}
+                      content={comparison.content}
+                    />
+                  ))}
+                </div>
+              ) : (
+                // No library comparison involves this paper: fall back to the
+                // paper's own recorded comparison artifact (the older per-paper
+                // form).
+                <PaperMarkdownSection
+                  artifact={artifacts.compare}
+                  testId="paper-compare"
+                  emptyText="No comparison recorded for this paper yet."
+                  baseFilePath={baseFilePath(artifacts.compare.fileName)}
+                />
+              )}
+            </>
+          ))}
+        {section === 'flashcards' && (
+          <FlashcardsReview
+            artifact={artifacts.flashcards}
+            testId="paper-flashcards"
+            emptyText="No flashcards recorded for this paper yet."
+            baseFilePath={baseFilePath(artifacts.flashcards.fileName)}
+            paperId={paper.id}
+            resetKey={paper.id}
+          />
+        )}
+        {section === 'source' && (
+          <PaperSourceView
+            paper={paper}
+            artifact={artifacts.source}
+            html={artifacts.html}
+            htmlBaseFilePath={
+              dir !== '' && artifacts.html.fileName !== ''
+                ? joinPath(dir, artifacts.html.fileName)
+                : null
+            }
+            sourceBaseFilePath={baseFilePath(artifacts.source.fileName)}
+            anchors={anchors}
+            pending={pending}
+            pendingHtml={pendingHtml}
+            mode={sourceMode}
+            onModeChange={setSourceMode}
+            missedIndex={missedIndex}
+            onAnchorSelect={onAnchorSelect}
+          />
+        )}
+        {section === 'literature' && (
+          <PaperLiterature
+            paper={paper}
+            markdownArtifact={artifacts.literature}
+            baseFilePath={baseFilePath(artifacts.literature.fileName)}
+          />
+        )}
+      </div>
+    </div>
+  )
+}

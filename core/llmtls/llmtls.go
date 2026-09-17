@@ -4,7 +4,7 @@
 // stays entirely in this layer — the SDK transports whatever client it is
 // handed (llm.ProviderEntry.HTTPClient).
 //
-// Semantics (per ADR-050, "pin is the switch"):
+// Semantics (per ADR-052, "pin is the switch"):
 //
 //	no pin (empty)  → system verification; base is used unchanged
 //	pin set         → accept ONLY the certificate whose
@@ -42,7 +42,7 @@ const FetchFingerprintTimeout = 10 * time.Second
 
 // ErrPinMismatch is returned (wrapped) when the peer certificate's SPKI hash
 // does not match the configured pin. The error deliberately carries no
-// certificate material — only the fact of the mismatch (see ADR-050).
+// certificate material — only the fact of the mismatch (see ADR-052).
 var ErrPinMismatch = errors.New("fingerprint mismatch")
 
 // Client returns an HTTP client for one provider endpoint.
@@ -78,7 +78,7 @@ func Client(base *http.Client, fingerprint string, logger *slog.Logger) *http.Cl
 }
 
 // ResolveProviderClient picks the HTTP client for one provider dial path
-// according to the proxy-wins rule (ADR-051): a configured proxy is a global
+// according to the proxy-wins rule (ADR-053): a configured proxy is a global
 // network policy and takes precedence over the per-provider TLS pin.
 //
 //	proxyClient != nil → proxyClient, unchanged (pin deliberately ignored)
@@ -87,7 +87,7 @@ func Client(base *http.Client, fingerprint string, logger *slog.Logger) *http.Cl
 //	                                client pinned to the SPKI
 //
 // The proxy branch returns the proxy client verbatim — no clone, no derived
-// transport — so exactly the pre-ADR-050 behavior is restored whenever a
+// transport — so exactly the pre-ADR-052 behavior is restored whenever a
 // proxy is active. The nil return for the no-override case keeps callers
 // free to interpret it as "no client override" (SDK default transport with
 // system verification, no proxy).
@@ -103,7 +103,7 @@ func ResolveProviderClient(proxyClient *http.Client, fingerprint string, logger 
 
 // warnInvalidPin logs a Warn when pin is non-empty but cannot be the base64
 // (standard encoding) form of a 32-byte SHA-256 digest — the only well-formed
-// pin format this package accepts (ADR-050). A malformed pin still flows
+// pin format this package accepts (ADR-052). A malformed pin still flows
 // through to the handshake, where it fails with ErrPinMismatch regardless;
 // the Warn exists so a typo'd paste (hex characters, missing "=" padding, a
 // truncated value) is distinguishable in the log from a genuine server key

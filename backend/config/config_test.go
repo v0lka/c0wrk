@@ -1622,7 +1622,7 @@ func TestSave_RoundTrip(t *testing.T) {
 }
 
 // TestProviderTLSOverride_RoundTrip verifies that the per-provider TLS pin
-// (tls_fingerprint, ADR-050) survives a Save→Load cycle for BOTH compatible
+// (tls_fingerprint, ADR-052) survives a Save→Load cycle for BOTH compatible
 // provider families, and that a config without the key loads with zero
 // values (backward compatibility).
 func TestProviderTLSOverride_RoundTrip(t *testing.T) {

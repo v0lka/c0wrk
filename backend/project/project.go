@@ -18,10 +18,15 @@ const NoProjectID = core.NoProjectID
 // ResearchPins is the per-project set of pinned research artifacts shown in
 // the RESEARCH UI. Research lists pinned research document paths (relative to
 // the project's research root); Hypotheses maps a hypothesis id (H-NNN) to the
-// pinned card paths belonging to that hypothesis.
+// pinned card paths belonging to that hypothesis. Papers lists pinned paper
+// card paths (each a paper-library document path relative to the research
+// root, e.g. "papers/<slug>/paper.md") — the literature library is a global
+// subdirectory of the research root, so its pins share this same root-relative
+// path style and live alongside the research pins.
 type ResearchPins struct {
 	Research   []string            `json:"research"`
 	Hypotheses map[string][]string `json:"hypotheses"`
+	Papers     []string            `json:"papers,omitempty"`
 }
 
 // ProjectInfo is the public-facing project metadata.
