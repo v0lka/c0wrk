@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 //
 // Tests for the ProcessMemoryStatus status-bar indicator: the agreed
-// "RSS N MiB" format with the exact-bytes tooltip, tick-driven updates, timer
-// cleanup on unmount, its leading separator appearing only together with the
-// label, and silent hiding while the API is unavailable.
+// memory-stick icon + "N MiB" format with the exact-bytes tooltip, tick-driven
+// updates, timer cleanup on unmount, its leading separator appearing only
+// together with the label, and silent hiding while the API is unavailable.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act } from 'react'
@@ -52,13 +52,15 @@ afterEach(() => {
 })
 
 describe('ProcessMemoryStatus', () => {
-  it('renders "RSS 1177 MiB" for 1,234,567,896 bytes with an exact-bytes tooltip', async () => {
+  it('renders the memory-stick icon + "1177 MiB" for 1,234,567,896 bytes with an exact-bytes tooltip', async () => {
     getProcessMemoryMock.mockResolvedValue(1_234_567_896)
 
     await render()
     await flushMicrotasks()
 
-    expect(container.textContent).toBe('RSS 1177 MiB')
+    expect(container.textContent).toBe('1177 MiB')
+    // The RSS text label is gone — the memory-stick icon replaces it.
+    expect(container.querySelector('svg.lucide-memory-stick')).not.toBeNull()
     // Exactly one separator, rendered together with the visible indicator.
     expect(container.querySelectorAll('[data-testid="sep"]')).toHaveLength(1)
     const el = container.querySelector('span[title]') as HTMLElement
@@ -76,7 +78,7 @@ describe('ProcessMemoryStatus', () => {
     await render()
     await flushMicrotasks()
 
-    expect(container.textContent).toBe('RSS 4 MiB')
+    expect(container.textContent).toBe('4 MiB')
   })
 
   it('updates the label on every poll tick', async () => {
@@ -86,12 +88,12 @@ describe('ProcessMemoryStatus', () => {
 
     await render()
     await flushMicrotasks()
-    expect(container.textContent).toBe('RSS 1177 MiB')
+    expect(container.textContent).toBe('1177 MiB')
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(PROCESS_MEMORY_POLL_MS)
     })
-    expect(container.textContent).toBe('RSS 2048 MiB')
+    expect(container.textContent).toBe('2048 MiB')
   })
 
   it('clears the interval timer on unmount (no further polls)', async () => {
@@ -132,11 +134,11 @@ describe('ProcessMemoryStatus', () => {
 
     await render()
     await flushMicrotasks()
-    expect(container.textContent).toBe('RSS 1177 MiB')
+    expect(container.textContent).toBe('1177 MiB')
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(PROCESS_MEMORY_POLL_MS)
     })
-    expect(container.textContent).toBe('RSS 1177 MiB')
+    expect(container.textContent).toBe('1177 MiB')
   })
 })

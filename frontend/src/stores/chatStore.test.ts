@@ -916,3 +916,43 @@ describe('setUnfinishedTaskStatus (the single live unfinished-task overlay)', ()
     expect(useChatStore.getState().unfinishedTaskStatus[SESSION]).toBe('failed')
   })
 })
+
+describe('scroll position save/clear (session-switch reading positions)', () => {
+  beforeEach(() => {
+    useChatStore.setState({ scrollPositions: {} })
+  })
+
+  it('saves a position per session and overwrites it on a later save', () => {
+    const store = useChatStore.getState()
+    store.saveScrollPosition('s1', { scrollTop: 4200, scrollHeight: 10000 })
+    store.saveScrollPosition('s2', { scrollTop: 0, scrollHeight: 500 })
+    store.saveScrollPosition('s1', { scrollTop: 5000, scrollHeight: 12000 })
+    const positions = useChatStore.getState().scrollPositions
+    expect(positions['s1']).toEqual({ scrollTop: 5000, scrollHeight: 12000 })
+    expect(positions['s2']).toEqual({ scrollTop: 0, scrollHeight: 500 })
+  })
+
+  it('keeps the map reference when the saved position is unchanged (React #185)', () => {
+    useChatStore.getState().saveScrollPosition('s1', { scrollTop: 4200, scrollHeight: 10000 })
+    const before = useChatStore.getState().scrollPositions
+    useChatStore.getState().saveScrollPosition('s1', { scrollTop: 4200, scrollHeight: 10000 })
+    expect(useChatStore.getState().scrollPositions).toBe(before)
+  })
+
+  it('clear removes only the targeted session entry', () => {
+    const store = useChatStore.getState()
+    store.saveScrollPosition('s1', { scrollTop: 1, scrollHeight: 10 })
+    store.saveScrollPosition('s2', { scrollTop: 2, scrollHeight: 20 })
+    store.clearScrollPosition('s1')
+    const positions = useChatStore.getState().scrollPositions
+    expect(positions['s1']).toBeUndefined()
+    expect(positions['s2']).toEqual({ scrollTop: 2, scrollHeight: 20 })
+  })
+
+  it('clear on a session without a saved position is a no-op (same map reference)', () => {
+    useChatStore.getState().saveScrollPosition('s1', { scrollTop: 1, scrollHeight: 10 })
+    const before = useChatStore.getState().scrollPositions
+    useChatStore.getState().clearScrollPosition('missing')
+    expect(useChatStore.getState().scrollPositions).toBe(before)
+  })
+})
