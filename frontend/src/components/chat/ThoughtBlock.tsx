@@ -27,7 +27,7 @@ export const ThoughtBlock = React.memo(function ThoughtBlock({ item }: { item: T
           revealId={bookmarkKey(item)}
         >
           <div className="mt-2 pl-3 border-l-2 border-muted min-w-0">
-            <Markdown content={displayReasoning} compact />
+            <Markdown content={displayReasoning} />
             {isLong && (
               <button
                 onClick={(e) => { e.stopPropagation(); setShowFull(!showFull) }}
@@ -41,7 +41,7 @@ export const ThoughtBlock = React.memo(function ThoughtBlock({ item }: { item: T
       )}
       {item.content && item.content.trim() !== '' && (
         <div className={hasReasoning ? 'mt-3' : ''}>
-          <Markdown content={item.content} compact />
+          <Markdown content={item.content} />
         </div>
       )}
     </div>
