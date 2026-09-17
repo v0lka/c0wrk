@@ -1,5 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useCallback, useLayoutEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import type { ReactNode, RefObject } from 'react'
 import type { DisplayItem } from '@/types/messages'
 import { bookmarkKey } from '@/lib/bookmarks'
@@ -124,6 +124,53 @@ export function VirtualizedChatList({
       }
     }
   }, [items, virtualizer])
+
+  // --- Late adapter attach vs. the app's scroll position -------------------------
+  //
+  // `useVirtualizer`'s `_willUpdate` layout effect runs BEFORE React attaches
+  // the parent viewport's ref (ChatScrollManager renders the scroll container
+  // and passes `scrollRef` down; host refs are attached later in the layout
+  // phase, after this component's layout effects). At mount
+  // `getScrollElement()` therefore returns null, the adapter does NOT attach,
+  // and it stays detached until the NEXT commit — by which time the app has
+  // already restored its saved reading position (or pinned the live tail) in
+  // ChatScrollManager's layout effect.
+  //
+  // On that late attach the adapter unconditionally runs
+  // `_scrollToOffset(getScrollOffset())`. `scrollOffset` is still null (it only
+  // learns the position from scroll events, and it had no element to observe),
+  // so `getScrollOffset()` falls back to `initialOffset` — the library default 0
+  // — and the adapter writes `scrollTo({ top: 0 })`, YANKING THE TRANSCRIPT TO
+  // THE VERY TOP and discarding the app's restore/pin. In the virtualized
+  // transcript that is user-visible: a session that crosses the virtualization
+  // threshold opens at the beginning instead of the live tail, until some later
+  // commit happens to re-run the auto-scroll effect (a streaming/messages
+  // change) — which is exactly why the symptom appears only for long sessions
+  // and often not at all when output is actively streaming.
+  //
+  // Capture the app's chosen position while the adapter is still detached
+  // (passive effect: runs after the whole commit's layout phase, so it sees the
+  // value ChatScrollManager just wrote), then re-assert it in the layout phase
+  // of the attach commit — i.e. after the adapter's clobber but BEFORE paint, so
+  // there is no flicker. Only the clobber signature (`scrollTop === 0` over a
+  // non-zero captured position) is repaired, so a legitimate "we belong at the
+  // top" state is left untouched. The captured value is at most one commit
+  // stale (a user scroll in that sub-second window is not re-rendered); that is
+  // still strictly better than leaving the transcript yanked to the top.
+  const pendingScrollTopRef = useRef<number | null>(null)
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el && virtualizer.scrollElement == null) {
+      pendingScrollTopRef.current = el.scrollTop
+    }
+  })
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    const pending = pendingScrollTopRef.current
+    if (!el || pending === null || virtualizer.scrollElement == null) return
+    pendingScrollTopRef.current = null
+    if (el.scrollTop === 0 && pending !== 0) el.scrollTop = pending
+  })
 
   // Latest items for the (once-registered) navigation handle, so scrolling to a
   // target always resolves against the current tree without re-registering.

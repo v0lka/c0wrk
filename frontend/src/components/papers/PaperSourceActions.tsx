@@ -4,12 +4,19 @@
 //
 // The fetch outcome is explicit data (offline / no_arxiv / not_found / error
 // are conditions, not crashes) and renders as one distinct plain message per
-// status — never an empty silent failure. `ok` writes paper.html inside the
-// WATCHED library, so the file watcher's papers:changed refetch
-// (paperStore.lastSyncAt → usePaperArtifacts' refresh key) IS the artifact
-// refresh; nothing reloads manually here. The browser action derives the abs
-// URL from the card's identifiers (lib/paperArxivUrl) and hides itself when
-// the card carries no usable arXiv id.
+// status — never an empty silent failure. The fetch action and its status
+// line are mutually exclusive while work is in flight: clicking the button
+// REPLACES it with the status (running → outcome), so a loading status never
+// stacks on top of the action. Failure statuses are terminal, so the action
+// returns alongside the message as the retry; the success message retires on
+// its own once the fetched artifact is actually in the view (the watcher's
+// papers:changed refetch lands it), at which point the action returns as
+// "Reload HTML" — the next distinct action. `ok` writes paper.html inside the
+// WATCHED library, so the file watcher's refetch (paperStore.lastSyncAt →
+// usePaperArtifacts' refresh key) IS the artifact refresh; nothing reloads
+// manually here. The browser action derives the abs URL from the card's
+// identifiers (lib/paperArxivUrl) and hides itself when the card carries no
+// usable arXiv id.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Globe, RefreshCw } from 'lucide-react'
@@ -28,6 +35,9 @@ const FETCH_MESSAGES: Record<PaperOriginalStatus, string> = {
   not_found: 'No HTML rendition exists on arXiv for this paper.',
   error: 'Fetching the HTML rendition failed.',
 }
+
+/** The running label shown in place of the button while a fetch is in flight. */
+const FETCH_RUNNING_MESSAGE = 'Fetching the HTML rendition…'
 
 interface PaperSourceActionsProps {
   paper: PaperRecord
@@ -53,6 +63,16 @@ export function PaperSourceActions({ paper, hasHtml, onFetched }: PaperSourceAct
     setStatus(null)
     setDetail('')
   }, [paper.id, projectId])
+
+  // The success message's job ends when the fetched document is actually in
+  // the view (hasHtml flips once the watcher's refresh lands paper.html): the
+  // line clears itself and the fetch action returns as "Reload HTML".
+  useEffect(() => {
+    if (status === 'ok' && hasHtml) {
+      setStatus(null)
+      setDetail('')
+    }
+  }, [status, hasHtml])
 
   const absUrl = useMemo(() => arxivAbsUrl(paper.identifiers), [paper.identifiers])
 
@@ -82,6 +102,14 @@ export function PaperSourceActions({ paper, hasHtml, onFetched }: PaperSourceAct
     })()
   }, [projectId, paper.id, onFetched])
 
+  // The action and its status never share the row while work is in flight:
+  // running and the not-yet-landed success replace the button outright, so
+  // the status renders in the button's place, never on top of it. A failure
+  // is terminal — the action returns immediately next to its message as the
+  // retry.
+  const showFetchButton = !running && status !== 'ok'
+  const statusValue: PaperOriginalStatus | 'running' | null = running ? 'running' : status
+
   const message =
     status === null
       ? ''
@@ -94,28 +122,36 @@ export function PaperSourceActions({ paper, hasHtml, onFetched }: PaperSourceAct
       data-testid="paper-source-actions"
       className="flex shrink-0 items-center gap-1.5 border-b border-border px-2 py-1"
     >
-      <Button
-        variant="ghost"
-        size="sm"
-        className="h-6 shrink-0 gap-1 px-2 text-[11px]"
-        onClick={onFetch}
-        disabled={running}
-        data-testid="paper-source-fetch"
-      >
-        <RefreshCw className={cn('size-3', running && 'animate-spin')} />
-        {running ? 'Fetching…' : hasHtml ? 'Reload HTML' : 'Load HTML original'}
-      </Button>
-      {status !== null && (
+      {showFetchButton && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 shrink-0 gap-1 px-2 text-[11px]"
+          onClick={onFetch}
+          data-testid="paper-source-fetch"
+        >
+          <RefreshCw className="size-3" />
+          {hasHtml ? 'Reload HTML' : 'Load HTML original'}
+        </Button>
+      )}
+      {statusValue !== null && (
         <span
           data-testid="paper-source-fetch-status"
-          data-status={status}
+          data-status={statusValue}
           title={detail !== '' ? detail : undefined}
           className={cn(
-            'min-w-0 flex-1 truncate text-[10px]',
-            status === 'ok' ? 'text-success' : 'text-destructive',
+            'inline-flex min-w-0 flex-1 items-center gap-1 truncate text-[10px]',
+            statusValue === 'ok'
+              ? 'text-success'
+              : statusValue === 'running'
+                ? 'text-muted-foreground'
+                : 'text-destructive',
           )}
         >
-          {message}
+          {statusValue === 'running' && (
+            <RefreshCw className="size-3 shrink-0 animate-spin" aria-hidden="true" />
+          )}
+          {statusValue === 'running' ? FETCH_RUNNING_MESSAGE : message}
         </span>
       )}
       {absUrl !== '' && (

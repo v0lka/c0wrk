@@ -419,13 +419,76 @@ var strippedElements = map[string]struct{}{
 	"iframe": {},
 }
 
-// localizeOriginal parses the fetched HTML, strips the banned elements,
-// rewrites every <img src> to a local assets/<name>, and downloads each image
-// with c (bounded by maxOriginalImageSize). Relative URLs resolve against the
-// FINAL document URL; absolute URLs must stay on the allowed hosts. An image
-// that fails, exceeds its cap, exceeds the count cap, or leaves the allowlist
-// keeps its <img> element but loses its src — an honest missing placeholder,
-// never a broken remote URL. It returns the rendered document, the downloaded
+// arxivDocumentClass is the LaTeXML class of the paper's root <article>
+// element — the actual document, as opposed to arXiv's site chrome around it.
+const arxivDocumentClass = "ltx_document"
+
+// stripArxivChrome reduces the document to the paper's own content. arXiv's
+// HTML renditions wrap <article class="ltx_document"> in heavy site chrome: a
+// report-issue <dialog>, an announcement banner, the sticky
+// arxiv-html-header menu, the table-of-contents navbar, and an
+// arxiv-html-footer (ar5iv mirrors the layout with ltx_page_header /
+// ltx_page_footer wrappers). The saved paper.html must begin at the paper
+// itself (its title heading), so every body-level subtree except the article
+// is dropped — which also spares the asset pass the chrome's logo/banner
+// images. A document with no recognizable article is left untouched
+// (fail-soft: unknown shapes keep the whole-document behavior).
+func stripArxivChrome(tree *html.Node) {
+	var body, article *html.Node
+	var find func(n *html.Node)
+	find = func(n *html.Node) {
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			if c.Type == html.ElementNode {
+				switch {
+				case c.Data == "body" && body == nil:
+					body = c
+				case c.Data == "article" && article == nil && hasClassToken(c, arxivDocumentClass):
+					article = c
+				}
+			}
+			find(c)
+		}
+	}
+	find(tree)
+	if body == nil || article == nil {
+		return
+	}
+	if article.Parent != nil {
+		article.Parent.RemoveChild(article)
+	}
+	for c := body.FirstChild; c != nil; {
+		next := c.NextSibling
+		body.RemoveChild(c)
+		c = next
+	}
+	body.AppendChild(article)
+}
+
+// hasClassToken reports whether n carries token in its class attribute,
+// matched as a whitespace-separated token ("ltx_document ltx_authors_1line"
+// contains "ltx_document"; "ltx_documentation" does not).
+func hasClassToken(n *html.Node, token string) bool {
+	for _, a := range n.Attr {
+		if a.Key != "class" {
+			continue
+		}
+		for _, t := range strings.Fields(a.Val) {
+			if t == token {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// localizeOriginal parses the fetched HTML, cuts the arXiv site chrome away,
+// strips the banned elements, rewrites every <img src> to a local
+// assets/<name>, and downloads each image with c (bounded by
+// maxOriginalImageSize). Relative URLs resolve against the FINAL document
+// URL; absolute URLs must stay on the allowed hosts. An image that fails,
+// exceeds its cap, exceeds the count cap, or leaves the allowlist keeps its
+// <img> element but loses its src — an honest missing placeholder, never a
+// broken remote URL. It returns the rendered document, the downloaded
 // assets keyed by file name, and the kept/skipped counts.
 func localizeOriginal(ctx context.Context, c *http.Client, body []byte, docURL string, allowed map[string]struct{}) (doc []byte, assets map[string][]byte, kept, skipped int, err error) {
 	base, err := url.Parse(docURL)
@@ -436,6 +499,7 @@ func localizeOriginal(ctx context.Context, c *http.Client, body []byte, docURL s
 	if err != nil {
 		return nil, nil, 0, 0, fmt.Errorf("parsing HTML: %w", err)
 	}
+	stripArxivChrome(tree)
 
 	l := &localizer{
 		ctx:      ctx,

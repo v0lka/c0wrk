@@ -20,6 +20,7 @@ import {
   Pin,
   PinOff,
   Lightbulb,
+  Save,
 } from 'lucide-react'
 import { useMessageSender } from '@/hooks/useMessageSender'
 import {
@@ -35,6 +36,7 @@ import {
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore, selectIsNoProject } from '@/stores/projectStore'
 import { cn } from '@/lib/utils'
+import { pickStudyDocument } from '@/api/papers'
 import type { PaperRecord } from '@/api/papers'
 import {
   STUDY_MODE_OPTIONS,
@@ -49,7 +51,10 @@ import {
 } from './paperActions'
 
 const INPUT_CLASS =
-  'min-w-0 flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[11px] text-foreground placeholder:text-muted-foreground focus:outline-none'
+  // The placeholder mirrors the shared `.c0-input::placeholder` tone used by
+  // the file filter fields (e.g. the git panel's Files section) — foreground at
+  // 50% opacity — instead of the brighter muted-foreground token.
+  'min-w-0 flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[11px] text-foreground placeholder:text-[color-mix(in_srgb,var(--color-foreground)_50%,transparent)] focus:outline-none'
 
 const ACTION_BUTTON_CLASS =
   'inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50'
@@ -336,6 +341,34 @@ export function PapersView() {
     [reference, mode, dispatch],
   )
 
+  // The floppy-disk picker beside the field: choose a local document on disk
+  // and study it IMMEDIATELY — the gesture replaces the Study press, so no
+  // second click is needed. Same fresh-session contract as the field's own
+  // gesture (the picked absolute path is a valid study reference); a cancelled
+  // picker dispatches nothing. The dialog can stay open across a project
+  // switch, so a picker failure is routed through the same project-guard the
+  // dispatch error path uses (never write into the new project's error slot).
+  const studyPicked = useCallback(async () => {
+    const projectIdBefore = usePaperStore.getState().projectId
+    let path: string | null
+    try {
+      path = await pickStudyDocument()
+    } catch (err) {
+      if (usePaperStore.getState().projectId === projectIdBefore) {
+        usePaperStore
+          .getState()
+          .setError(
+            `Failed to open the document picker: ${
+              err instanceof Error ? err.message : 'unknown error'
+            }`,
+          )
+      }
+      return
+    }
+    if (path === null) return
+    await dispatch(buildStudyPrompt(path, mode), STUDY_PAPER_SKILL, true)
+  }, [mode, dispatch])
+
   // Open the paper's reader workspace as a viewer tab (the synthetic
   // `c0wrk:paper:<slug>` pseudo-path; openPaper also uncollapses the viewer).
   const openPaper = useCallback((paper: PaperRecord) => {
@@ -419,6 +452,16 @@ export function PapersView() {
           />
           <button
             type="button"
+            data-testid="papers-invoke-pick"
+            aria-label="Pick a local document to study"
+            title="Pick a local document and study it in a new session"
+            onClick={() => void studyPicked()}
+            className="shrink-0 rounded border border-border bg-background p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <Save className="size-3.5" />
+          </button>
+          <button
+            type="button"
             data-testid="papers-invoke-study"
             disabled={reference.trim() === ''}
             title="Study this paper in a new session"
@@ -463,11 +506,6 @@ export function PapersView() {
           <span data-testid="papers-selection-count">
             {selectedIds.length} selected
           </span>
-          {!canCompareSelected && (
-            <span data-testid="papers-selection-hint" className="text-muted-foreground/70">
-              (select ≥2 to compare)
-            </span>
-          )}
           <div className="ml-auto flex items-center gap-1">
             {selectedIds.length > 0 && (
               <button
@@ -498,7 +536,7 @@ export function PapersView() {
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-auto px-1.5 py-1.5">
+      <div className="min-h-0 flex-1 overflow-auto custom-scrollbar px-1.5 py-1.5">
         {!libraryReady || (isLoading && papers.length === 0) ? (
           <Hint testId="papers-loading">Loading…</Hint>
         ) : papers.length === 0 ? (

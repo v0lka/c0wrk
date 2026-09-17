@@ -234,6 +234,35 @@ func (a *App) PickAttachmentFiles() ([]string, error) {
 	})
 }
 
+// PickStudyDocument opens a native single-select file picker restricted to the
+// document formats the app can read (the markitdown-supported extensions, PDF
+// first among equals). It backs the Papers panel's "pick a local document"
+// gesture next to the Study field, so a study can be launched straight from a
+// file on disk. This must remain on App (not FrontendAPI) because it requires
+// the Wails context, exactly like PickDirectory and PickAttachmentFiles.
+//
+// On cancel, OpenFileDialog returns ("", nil) — returned as-is so the frontend
+// can distinguish "user cancelled" (empty path, no error) from a failure.
+func (a *App) PickStudyDocument() (string, error) {
+	if a.ctx == nil {
+		return "", errors.New("PickStudyDocument: application context is not initialized")
+	}
+
+	// Same filter rationale as PickAttachmentFiles: no "All files (*.*)" entry
+	// (a "*" pattern resolves to a dynamic UTType on macOS and corrupts the
+	// panel's content-type filter), and the supported-documents set already
+	// covers every format the study flow can convert and read.
+	return wailsRuntime.OpenFileDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+		Title: "Study a local document",
+		Filters: []wailsRuntime.FileFilter{
+			{
+				DisplayName: "Supported documents",
+				Pattern:     attachmentFilterPattern(),
+			},
+		},
+	})
+}
+
 // PickAndImportThemes opens a native multi-select file picker restricted to
 // CSS files and imports every chosen file as a user theme in one action. This
 // must remain on App (not FrontendAPI) because it requires the Wails context,

@@ -503,6 +503,79 @@ describe('ChatScrollManager session-switch scroll persistence', () => {
     expect(viewport.scrollTop).toBe(10_000)
   })
 
+  // Rerender-capable variant of renderViewport for tests that grow the
+  // transcript after mount (late history merge, streamed tail).
+  function renderViewportWithRerender(sessionId: string | null): {
+    viewport: HTMLElement
+    rerender: (messages: ChatMessageUI[]) => void
+  } {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const scrollRef: React.RefObject<HTMLDivElement | null> = { current: null }
+    root = createRoot(container)
+    const rerender = (messages: ChatMessageUI[]) =>
+      act(() => {
+        root!.render(
+          <ScrollProvider>
+            <ChatScrollManager
+              sessionId={sessionId}
+              messages={messages}
+              streamingText={undefined}
+              scrollRef={scrollRef}
+            >
+              <div data-transcript-content />
+            </ChatScrollManager>
+          </ScrollProvider>,
+        )
+      })
+    rerender([message('m1')])
+    return { viewport: scrollRef.current!, rerender }
+  }
+
+  it('re-pins to the live tail when the task flag is corrected to running after mount', () => {
+    pinGeometry(10_000, 600)
+    useChatStore.getState().saveScrollPosition('s1', { scrollTop: 4_200, scrollHeight: 9_000 })
+    // Stale-false in-memory flag at mount: the mount-time decision restores
+    // the saved reading position...
+    const { viewport, rerender } = renderViewportWithRerender('s1')
+    expect(viewport.scrollTop).toBe(4_200)
+    // ...then the asynchronous switch-time corrector (useTaskFlagRestore's
+    // status RPC, or reconcileRuntimeStatus after the history merge) flips
+    // the flag to running — the viewport must jump to the live tail,
+    // mirroring the mount-time running-session pin.
+    act(() => { useChatStore.getState().setTaskActive('s1', true) })
+    expect(viewport.scrollTop).toBe(10_000)
+    // The refreshed baseline keeps later content growth stuck to the bottom
+    // instead of raising the "New activity" pill over a pinned viewport.
+    pinGeometry(11_000, 600)
+    rerender([message('m1'), message('m2')])
+    expect(viewport.scrollTop).toBe(11_000)
+  })
+
+  it('keeps sticking to the bottom after a banner jump-to-bottom', () => {
+    pinGeometry(10_000, 600)
+    const { viewport, rerender } = renderViewportWithRerender('s2')
+    expect(viewport.scrollTop).toBe(10_000)
+    // The user scrolled up to read earlier output.
+    act(() => {
+      viewport.scrollTop = 3_000
+      viewport.dispatchEvent(new Event('scroll'))
+    })
+    // New output lands while scrolled away: no yank, the pill appears.
+    pinGeometry(10_500, 600)
+    rerender([message('m1'), message('m2')])
+    expect(viewport.scrollTop).toBe(3_000)
+    const banner = viewport.querySelector('button[aria-label="Jump to new activity"]')
+    expect(banner).not.toBeNull()
+    act(() => { banner!.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    expect(viewport.scrollTop).toBe(10_500)
+    // The jump refreshed the wasAt-bottom baseline: the NEXT message keeps
+    // sticking (a stale baseline would skip the write and re-raise the pill).
+    pinGeometry(11_200, 600)
+    rerender([message('m1'), message('m2'), message('m3')])
+    expect(viewport.scrollTop).toBe(11_200)
+  })
+
   it('pins to the bottom when the session has no saved position', () => {
     pinGeometry(10_000, 600)
     const viewport = renderViewport('s2')

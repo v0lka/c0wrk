@@ -486,6 +486,10 @@ export function PickDirectory() {
   return window['go']['desktop']['App']['PickDirectory']();
 }
 
+export function PickStudyDocument() {
+  return window['go']['desktop']['App']['PickStudyDocument']();
+}
+
 export function PinSession(arg1) {
   return window['go']['desktop']['App']['PinSession'](arg1);
 }

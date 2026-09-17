@@ -174,7 +174,7 @@ export function GitConfigRiskToast() {
             )}
             {risk.diff && (
               <pre
-                className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/50 p-2 font-mono text-xs"
+                className="mt-2 max-h-56 overflow-auto custom-scrollbar whitespace-pre-wrap rounded-md border border-border bg-muted/50 p-2 font-mono text-xs"
                 data-testid="git-config-risk-diff"
               >
                 {risk.diff}

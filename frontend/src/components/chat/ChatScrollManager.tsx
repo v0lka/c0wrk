@@ -84,12 +84,21 @@ export function ChatScrollManager({
 
   const scrollToBottom = useCallback(() => {
     const viewport = viewportRef.current
-    if (viewport) {
-      viewport.scrollTop = viewport.scrollHeight
-      lastWriteTopRef.current = viewport.scrollTop
-      isAtBottomRef.current = true
-      setHasNewActivity(false)
+    if (!viewport) return
+    viewport.scrollTop = viewport.scrollHeight
+    lastWriteTopRef.current = viewport.scrollTop
+    isAtBottomRef.current = true
+    // Refresh the incremental-growth baseline too: the passive scroll
+    // handler's own-write branch deliberately returns early WITHOUT updating
+    // prevScrollState, so a stale pre-pin baseline here would make the next
+    // message re-raise the "New activity" pill (and skip the stick-to-bottom
+    // write) even though the viewport is pinned at the bottom.
+    prevScrollState.current = {
+      scrollTop: viewport.scrollTop,
+      scrollHeight: viewport.scrollHeight,
+      clientHeight: viewport.clientHeight,
     }
+    setHasNewActivity(false)
   }, [])
 
   // Cache viewport element. Runs as a layout effect (and is declared before the
@@ -193,9 +202,12 @@ export function ChatScrollManager({
       // the bottom regardless of where reading stopped (taskActive survives
       // session switches — nothing blindly resets it, the background watcher
       // clears it on terminal events, and the switch-time status RPC
-      // restores it — so the flag is reliable at mount time). Without a
-      // saved position (first visit) the latest content is revealed so
-      // stick-to-bottom engages without the user having to scroll down first.
+      // restores it). When the flag is still stale-false at mount — the
+      // switch-time correctors are asynchronous — the saved position is
+      // restored for now and the taskActive edge effect below re-pins to the
+      // live tail the moment the flag lands. Without a saved position (first
+      // visit) the latest content is revealed so stick-to-bottom engages
+      // without the user having to scroll down first.
       const store = useChatStore.getState()
       const saved = sessionId ? store.scrollPositions[sessionId] : undefined
       const taskRunning = sessionId ? store.taskActive[sessionId] === true : false
@@ -250,6 +262,33 @@ export function ChatScrollManager({
     // per session via key=), so listing it only satisfies the deps lint — it
     // cannot re-fire this effect on its own.
   }, [messages, streamingText, sessionId])
+
+  // Live-tail re-pin on a late task-flag correction. The mount-time decision
+  // above reads the in-memory taskActive flag SYNCHRONOUSLY, but the flag's
+  // authoritative switch-time correctors resolve asynchronously — the fast
+  // status RPC in useTaskFlagRestore, and reconcileRuntimeStatus after the
+  // history merge. A session that IS running can therefore still read
+  // taskActive=false at mount (a stale-false in-memory flag), take the
+  // saved-position restore branch, and then never re-pin once the RPC lands —
+  // leaving a running session's live tail hidden behind a stale reading
+  // position and a "New activity" pill. Watch the flag: when it flips to true
+  // AFTER the initial mount, mirror the mount-time running-session behavior
+  // and pin to the live tail. The reverse edge (true→false — a completion /
+  // pause observed while mounted) intentionally does nothing: content-growth
+  // logic owns subsequent movement. Suppressed inside the bookmark/step
+  // navigation window so a correction landing mid-navigation cannot abort the
+  // user's explicit scroll target.
+  const taskActive = useChatStore(s => (sessionId ? s.taskActive[sessionId] === true : false))
+  const prevTaskActiveRef = useRef<boolean | null>(null)
+  useLayoutEffect(() => {
+    const prev = prevTaskActiveRef.current
+    prevTaskActiveRef.current = taskActive
+    // First run after mount: the layout effect above already made the
+    // mount-time decision with this very flag value — nothing to correct.
+    if (prev === null || prev || !taskActive) return
+    if (Date.now() < suppressAutoScrollUntilRef.current) return
+    scrollToBottom()
+  }, [taskActive, sessionId, scrollToBottom])
 
   // Content-growth stickiness. The auto-scroll effect above only re-runs when
   // messages/streamingText change, but the content height can keep growing

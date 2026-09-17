@@ -355,6 +355,26 @@ export async function setPaperPinned(
   }
 }
 
+/**
+ * Open the native single-select file picker for studying a local document
+ * (the markitdown-supported formats, PDF among them). Returns the chosen
+ * absolute path, or null when the user cancelled the dialog (the backend
+ * returns an empty string with no error on cancel).
+ */
+export async function pickStudyDocument(): Promise<string | null> {
+  try {
+    const app = getApp()
+    const result: unknown = await app.PickStudyDocument()
+    if (typeof result !== 'string') {
+      throw new Error('pickStudyDocument: backend returned a non-string path')
+    }
+    return result === '' ? null : result
+  } catch (err) {
+    logger.error('Failed to pick a study document:', err)
+    throw err
+  }
+}
+
 /** A self-graded flashcard review outcome (mirrors core/papers.Grade). */
 export type FlashcardGrade = 'again' | 'hard' | 'good' | 'easy'
 

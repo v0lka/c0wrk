@@ -146,12 +146,21 @@ Original-HTML fetch ("Load HTML original" in the workspace Source section)
      rendition: native arxiv.org/html/<id> first, the ar5iv mirror as fallback
      (the endpoint hosts form a hard redirect/image allowlist; byte caps are
      enforced while streaming)
-  -> sanitizes the document (script/style/iframe stripped), localizes its
-     images into <paper-dir>/assets/ (img src rewritten to assets/<name>), and
-     persists <paper-dir>/paper.html atomically — staging dir inside the paper
-     dir, assets/ swapped, paper.html renamed last as the commit point
+  -> sanitizes the document (script/style/iframe stripped; the arXiv site
+     chrome — report-issue dialog, announcement banner, arxiv-html-header
+     menu, TOC navbar, arxiv-html-footer / ar5iv ltx_page_header+footer — is
+     cut so paper.html keeps only the paper's own <article class="
+     ltx_document"> and begins at the title heading; unknown shapes are left
+     whole, fail-soft), localizes its images into <paper-dir>/assets/
+     (img src rewritten to assets/<name>; chrome images are never fetched),
+     and persists <paper-dir>/paper.html atomically — staging dir inside the
+     paper dir, assets/ swapped, paper.html renamed last as the commit point
   -> returns an explicit status (ok | offline | no_arxiv | not_found | error)
      that the Source section renders as a message, never a silent empty view
+     (the fetch action and its status line are mutually exclusive while work
+     is in flight: clicking the button replaces it with the running status,
+     failures bring the action back as the retry, and the success message
+     retires once the landed artifact is in view)
   -> the write lands in the watched library, so the watcher emits
      papers:changed on fetch completion; usePaperArtifacts re-lists the paper
      dir and the HTML sub-view appears with no manual refresh. The Source view

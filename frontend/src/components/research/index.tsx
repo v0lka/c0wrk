@@ -267,7 +267,7 @@ export function ResearchPanel() {
       ) : (
         <SegmentPanel segment="dashboard" className="flex min-h-0 flex-1 flex-col">
           {/* Control dashboard body */}
-          <div className="flex-1 min-h-0 overflow-auto px-1.5 py-1.5 flex flex-col gap-2">
+          <div className="flex-1 min-h-0 overflow-auto custom-scrollbar px-1.5 py-1.5 flex flex-col gap-2">
             {isLoading && !project ? (
               <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
                 Loading…

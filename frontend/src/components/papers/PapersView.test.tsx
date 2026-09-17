@@ -21,7 +21,7 @@ import {
   buildProposeHypothesisPrompt,
 } from './paperActions'
 import type { PaperLibrary, PaperRecord } from '@/api/papers'
-import { setPaperPinned } from '@/api/papers'
+import { pickStudyDocument, setPaperPinned } from '@/api/papers'
 import { usePaperStore } from '@/stores/paperStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
@@ -35,6 +35,7 @@ vi.mock('@/api/papers', () => ({
   getPapers: vi.fn(),
   getPaper: vi.fn(),
   setPaperPinned: vi.fn(() => Promise.resolve()),
+  pickStudyDocument: vi.fn(() => Promise.resolve(null)),
 }))
 
 let activeRoot: Root | null = null
@@ -124,6 +125,8 @@ beforeEach(() => {
   sendMock.mockReset()
   sendMock.mockResolvedValue(undefined)
   vi.mocked(setPaperPinned).mockClear()
+  vi.mocked(pickStudyDocument).mockReset()
+  vi.mocked(pickStudyDocument).mockResolvedValue(null)
   usePaperStore.getState().reset()
   useFileViewerStore.setState({ openTabs: [], activeFile: null, files: {} })
   useProjectStore.setState({ projects: null, activeProjectId: 'p1', lastRealProjectId: 'p1' })
@@ -256,6 +259,95 @@ describe('PapersView — invocation surface', () => {
     // Guarded: the failure is NOT written into project p2's error slot.
     expect(usePaperStore.getState().error).toBeNull()
   })
+
+  it('styles the field placeholder like the shared c0-input tone (git-panel Files filter)', async () => {
+    const container = await render()
+    const input = container.querySelector<HTMLInputElement>('[data-testid="papers-invoke-input"]')!
+
+    // The placeholder mirrors `.c0-input::placeholder` — foreground at 50%
+    // opacity — instead of the brighter muted-foreground token.
+    expect(input.className).toContain(
+      'placeholder:text-[color-mix(in_srgb,var(--color-foreground)_50%,transparent)]',
+    )
+    expect(input.className).not.toContain('placeholder:text-muted-foreground')
+  })
+
+  it('studies a picked local document straight from the picker button — no Study press', async () => {
+    vi.mocked(pickStudyDocument).mockResolvedValue('/Users/x/Downloads/attention.pdf')
+    const container = await render()
+    const pick = container.querySelector<HTMLButtonElement>('[data-testid="papers-invoke-pick"]')!
+    expect(pick).not.toBeNull()
+
+    // A pending manual reference is left untouched: the picked-document
+    // gesture dispatches its own path and never clobbers the field.
+    await act(async () => {
+      setInputValue(container, 'Study paper', '1706.03762')
+    })
+
+    await act(async () => {
+      pick.click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    expect(sendMock).toHaveBeenCalledTimes(1)
+    expect(sendMock).toHaveBeenCalledWith(
+      buildStudyPrompt('/Users/x/Downloads/attention.pdf', 'auto'),
+      [STUDY_PAPER_SKILL],
+      undefined,
+      undefined,
+      { newSession: true },
+    )
+    const input = container.querySelector<HTMLInputElement>('[data-testid="papers-invoke-input"]')!
+    expect(input.value).toBe('1706.03762')
+  })
+
+  it('threads the selected mode into the picked-document prompt', async () => {
+    vi.mocked(pickStudyDocument).mockResolvedValue('/Users/x/Downloads/attention.pdf')
+    const container = await render()
+
+    await act(async () => {
+      setSelectValue(container, 'Study mode', 'review')
+    })
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="papers-invoke-pick"]')!.click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    expect(sendMock).toHaveBeenCalledWith(
+      buildStudyPrompt('/Users/x/Downloads/attention.pdf', 'review'),
+      [STUDY_PAPER_SKILL],
+      undefined,
+      undefined,
+      { newSession: true },
+    )
+  })
+
+  it('dispatches nothing when the document picker is cancelled', async () => {
+    vi.mocked(pickStudyDocument).mockResolvedValue(null)
+    const container = await render()
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="papers-invoke-pick"]')!.click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    expect(sendMock).not.toHaveBeenCalled()
+    expect(usePaperStore.getState().error).toBeNull()
+  })
+
+  it('routes a picker failure into the paper store error', async () => {
+    vi.mocked(pickStudyDocument).mockRejectedValue(new Error('bindings not ready'))
+    const container = await render()
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="papers-invoke-pick"]')!.click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    expect(sendMock).not.toHaveBeenCalled()
+    expect(usePaperStore.getState().error).toContain('Failed to open the document picker')
+    expect(usePaperStore.getState().error).toContain('bindings not ready')
+  })
 })
 
 describe('PapersView — the paper list', () => {
@@ -324,6 +416,20 @@ describe('PapersView — the paper list', () => {
     useProjectStore.setState({ projects: null, activeProjectId: null, lastRealProjectId: null })
     const container = await render()
     expect(container.querySelector('[data-testid="papers-no-project"]')).not.toBeNull()
+  })
+
+  it('scrolls the list with the app-wide custom scrollbar', async () => {
+    // The sidebar's paper list owns its scrolling (the invocation surface and
+    // the selection bar stay pinned), so its scroll container must carry the
+    // project-wide custom scrollbar instead of the native one.
+    usePaperStore.getState().loadLibrary(makeLibrary([makePaper()]))
+    const container = await render()
+    const list = container.querySelector('[data-testid="papers-list"]')!
+    const scroller = list.parentElement!
+    expect(scroller.className).toContain('flex-1')
+    expect(scroller.className).toContain('min-h-0')
+    expect(scroller.className).toContain('overflow-auto')
+    expect(scroller.className).toContain('custom-scrollbar')
   })
 
   it('does not render the previous project’s papers during a project switch', async () => {
@@ -522,7 +628,8 @@ describe('PapersView — multi-select comparison', () => {
       '0 selected',
     )
     expect(compareButton(container).disabled).toBe(true)
-    expect(container.querySelector('[data-testid="papers-selection-hint"]')).not.toBeNull()
+    // The "(select ≥2 to compare)" hint was removed alongside this suite's
+    // update — the disabled button's tooltip carries the same information.
 
     // One paper is still not enough.
     await act(async () => {
@@ -541,7 +648,6 @@ describe('PapersView — multi-select comparison', () => {
       checkbox(container, 'P-002').click()
     })
     expect(compareButton(container).disabled).toBe(false)
-    expect(container.querySelector('[data-testid="papers-selection-hint"]')).toBeNull()
 
     await act(async () => {
       compareButton(container).click()

@@ -609,6 +609,34 @@ describe('PaperWorkspace — Source sub-views & actions (Extracted / Raw / fetch
     expect(line?.textContent).toContain('runtime not ready')
   })
 
+  it('an in-flight fetch replaces the button with the running status, never over it', async () => {
+    // A fetch that never resolves pins the component in the running state.
+    vi.mocked(fetchPaperOriginal).mockReturnValue(new Promise(() => {}))
+    render()
+    click('[data-testid="paper-section-source"]')
+    click('[data-testid="paper-source-fetch"]')
+    // The button is GONE while the fetch runs — the running status renders in
+    // its place, so the two can never overlap.
+    expect(document.querySelector('[data-testid="paper-source-fetch"]')).toBeNull()
+    const line = document.querySelector('[data-testid="paper-source-fetch-status"]')
+    expect(line?.getAttribute('data-status')).toBe('running')
+    expect(line?.textContent).toContain('Fetching')
+  })
+
+  it('a successful fetch with the artifact not yet landed holds the ok status in the button place', async () => {
+    // paper.html is still absent (the library watcher has not refreshed yet):
+    // the success message replaces the button instead of stacking onto it.
+    vi.mocked(fetchPaperOriginal).mockResolvedValue({ status: 'ok', url: 'https://arxiv.org/html/1706.03762' })
+    render()
+    click('[data-testid="paper-section-source"]')
+    click('[data-testid="paper-source-fetch"]')
+    await flushArtifacts()
+    expect(document.querySelector('[data-testid="paper-source-fetch"]')).toBeNull()
+    const line = document.querySelector('[data-testid="paper-source-fetch-status"]')
+    expect(line?.getAttribute('data-status')).toBe('ok')
+    expect(line?.textContent).toContain('fetched to paper.html')
+  })
+
   it('a successful fetch calls the RPC with the project/paper ids and reveals the HTML sub-view', async () => {
     artifactsHolder.current = artifactsOf({
       source: sourceArtifact(SOURCE),
@@ -625,9 +653,11 @@ describe('PaperWorkspace — Source sub-views & actions (Extracted / Raw / fetch
     click('[data-testid="paper-source-fetch"]')
     await flushArtifacts()
     expect(fetchPaperOriginal).toHaveBeenCalledWith('p1', 'P-001')
-    expect(
-      document.querySelector('[data-testid="paper-source-fetch-status"]')?.getAttribute('data-status'),
-    ).toBe('ok')
+    // paper.html was already on disk (a reload), so the success message
+    // retires the moment the artifact is in view and the action returns as
+    // the reload affordance — never alongside a lingering status line.
+    expect(document.querySelector('[data-testid="paper-source-fetch-status"]')).toBeNull()
+    expect(document.querySelector('[data-testid="paper-source-fetch"]')?.textContent).toContain('Reload HTML')
     expect(document.querySelector('[data-testid="paper-html-view"]')).not.toBeNull()
   })
 
@@ -655,9 +685,10 @@ describe('PaperWorkspace — Source sub-views & actions (Extracted / Raw / fetch
       usePaperStore.setState({ lastSyncAt: usePaperStore.getState().lastSyncAt + 1 })
     })
     await flushArtifacts()
-    expect(
-      document.querySelector('[data-testid="paper-source-fetch-status"]')?.getAttribute('data-status'),
-    ).toBe('ok')
+    // Once the landed artifact is in view the success message retires and the
+    // action returns as the reload affordance.
+    expect(document.querySelector('[data-testid="paper-source-fetch-status"]')).toBeNull()
+    expect(document.querySelector('[data-testid="paper-source-fetch"]')?.textContent).toContain('Reload HTML')
     expect(document.querySelector('[data-testid="paper-html-view"]')).not.toBeNull()
     // Restore the default (pending) RPCs so later suites schedule no state
     // update outside act.

@@ -211,7 +211,7 @@ function PaperHtmlMath({ className, display, ...rest }: PaperHtmlMathProps) {
   return createElement('math', {
     ...rest,
     display,
-    className: cn('align-middle', isBlock && 'my-4 block overflow-x-auto text-center', className),
+    className: cn('align-middle', isBlock && 'my-4 block overflow-x-auto custom-scrollbar text-center', className),
   } as unknown as ComponentProps<'span'>)
 }
 
