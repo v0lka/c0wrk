@@ -20,6 +20,8 @@ import {
   buildDecisionPrompt,
   QUICK_ACTIONS,
 } from './researchActions'
+import { projectDir, projectFilePaths } from './researchDagRender'
+import { STUDY_PAPER_SKILL, buildDeepReadPriorArtPrompt } from '@/components/papers/paperActions'
 import type {
   ResearchNextStep as ResearchNextStepDTO,
   ResearchStatus,
@@ -600,5 +602,60 @@ describe('ResearchPanel — header + View Artifacts', () => {
 
     const container = await render(<ResearchPanel />)
     expect(viewArtifactsTrigger(container).disabled).toBe(true)
+  })
+})
+
+describe('ResearchPanel — prior-art Deep read', () => {
+  // Computed through the same pure path helpers the panel uses, so the
+  // expectation tracks the artifact layout rather than a hard-coded string.
+  const expectedPriorArt = projectFilePaths(
+    '/root/.research',
+    projectDir(makeStatus().root, 'R-001'),
+  ).priorArt
+
+  it('renders the prior-art row (with its Deep-read action) only when prior art exists', async () => {
+    const status = makeStatus()
+    status.root!.projects[0]!.prior_art_count = 3
+    useResearchStore.getState().loadStatus(status, 'p1')
+
+    const container = await render(<ResearchPanel />)
+    const row = container.querySelector('[data-testid="research-prior-art-row"]')
+    expect(row).not.toBeNull()
+    expect(row!.textContent).toContain('Prior art')
+    expect(
+      container.querySelector('[data-testid="research-prior-art-deep-read"]'),
+    ).not.toBeNull()
+  })
+
+  it('omits the row when the project has no prior art (no dispatch surface)', async () => {
+    // makeStatus() carries prior_art_count: 0.
+    useResearchStore.getState().loadStatus(makeStatus(), 'p1')
+
+    const container = await render(<ResearchPanel />)
+    expect(container.querySelector('[data-testid="research-prior-art-row"]')).toBeNull()
+    expect(sendSpy).not.toHaveBeenCalled()
+  })
+
+  it('Deep read dispatches study-paper with the catalog path', async () => {
+    const status = makeStatus()
+    status.root!.projects[0]!.prior_art_count = 3
+    useResearchStore.getState().loadStatus(status, 'p1')
+
+    const container = await render(<ResearchPanel />)
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="research-prior-art-deep-read"]')!
+        .click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    expect(sendSpy).toHaveBeenCalledTimes(1)
+    expect(sendSpy).toHaveBeenCalledWith(
+      buildDeepReadPriorArtPrompt(expectedPriorArt),
+      [STUDY_PAPER_SKILL],
+      undefined,
+      undefined,
+      { newSession: false },
+    )
   })
 })

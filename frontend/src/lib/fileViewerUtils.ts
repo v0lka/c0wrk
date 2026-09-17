@@ -20,6 +20,12 @@ export function fileNameFromPath(path: string): string {
     const sha = path.slice('c0wrk:commit:'.length)
     return `Commit ${sha.slice(0, 7)}`
   }
+  // Paper workspace tab: "c0wrk:paper:<slug>" → the slug (the workspace header
+  // carries the full title once the record resolves).
+  if (path.startsWith('c0wrk:paper:')) {
+    const slug = path.slice('c0wrk:paper:'.length)
+    return slug || 'Paper'
+  }
   if (path.startsWith('c0wrk:') && !path.includes('/')) {
     const label = path.slice('c0wrk:'.length)
     return label.charAt(0).toUpperCase() + label.slice(1)

@@ -3,6 +3,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { AttachmentChips } from './AttachmentChips'
+import {
+  STUDY_PAPER_SKILL,
+  DEFAULT_STUDY_MODE,
+  buildStudyAttachmentPrompt,
+} from '@/components/papers/paperActions'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import type { AttachmentInfoUI } from '@/types/models'
@@ -22,6 +27,13 @@ vi.mock('@/lib/attachmentUploads', () => ({
 // Mock emit so runtime_error events don't touch the Wails runtime.
 vi.mock('@/api/runtime', () => ({
   emit: vi.fn(),
+}))
+
+// Study-paper dispatch goes through the shared message sender; mock it so the
+// PDF chip's dispatch is asserted without a running Wails runtime.
+const { sendMock } = vi.hoisted(() => ({ sendMock: vi.fn() }))
+vi.mock('@/hooks/useMessageSender', () => ({
+  useMessageSender: () => ({ send: sendMock, cancel: vi.fn(), isProcessing: false }),
 }))
 
 let root: Root | null = null
@@ -174,5 +186,59 @@ describe('AttachmentChips', () => {
     })
     const container = render(<AttachmentChips />)
     expect(container.textContent).toContain('notes.md')
+  })
+})
+
+describe('AttachmentChips — Study (PDF only)', () => {
+  beforeEach(() => {
+    sendMock.mockReset()
+    sendMock.mockResolvedValue(undefined)
+    resetStores()
+    document.body.innerHTML = ''
+    root = null
+  })
+
+  afterEach(() => {
+    act(() => {
+      root?.unmount()
+    })
+    root = null
+  })
+
+  it('offers a Study action on a PDF chip and dispatches study-paper', async () => {
+    useAttachmentsStore.getState().setAttachments('s1', [DOC])
+    const container = render(<AttachmentChips />)
+
+    const study = container.querySelector<HTMLButtonElement>('[data-testid="attachment-study"]')
+    expect(study).not.toBeNull()
+
+    await act(async () => {
+      study!.click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    expect(sendMock).toHaveBeenCalledTimes(1)
+    expect(sendMock).toHaveBeenCalledWith(
+      buildStudyAttachmentPrompt('report.pdf', DEFAULT_STUDY_MODE),
+      [STUDY_PAPER_SKILL],
+      undefined,
+      undefined,
+      { newSession: false },
+    )
+  })
+
+  it('offers no Study action on a non-PDF document (no dispatch surface)', () => {
+    const md: AttachmentInfoUI = { id: 'm1', originalName: 'notes.md', format: 'md', sizeBytes: 10 }
+    useAttachmentsStore.getState().setAttachments('s1', [md])
+    const container = render(<AttachmentChips />)
+
+    expect(container.querySelector('[data-testid="attachment-study"]')).toBeNull()
+    expect(sendMock).not.toHaveBeenCalled()
+  })
+
+  it('offers no Study action on an image attachment', () => {
+    useAttachmentsStore.getState().setAttachments('s1', [IMG])
+    const container = render(<AttachmentChips />)
+    expect(container.querySelector('[data-testid="attachment-study"]')).toBeNull()
   })
 })

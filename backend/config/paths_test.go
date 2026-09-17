@@ -171,6 +171,41 @@ func TestProjectResearchPath(t *testing.T) {
 	}
 }
 
+func TestPaperLibraryPath(t *testing.T) {
+	ws := filepath.Join(testAgentDir, "projects", "proj-123", WorkspaceSegment)
+	got := PaperLibraryPath(ws)
+	want := filepath.Join(ws, ".research", "papers")
+	if got != want {
+		t.Errorf("PaperLibraryPath: got %q, want %q", got, want)
+	}
+}
+
+func TestComparisonsPath(t *testing.T) {
+	ws := filepath.Join(testAgentDir, "projects", "proj-123", WorkspaceSegment)
+	got := ComparisonsPath(ws)
+	want := filepath.Join(ws, ".research", "comparisons")
+	if got != want {
+		t.Errorf("ComparisonsPath: got %q, want %q", got, want)
+	}
+}
+
+func TestComparisonsPathIn(t *testing.T) {
+	researchRoot := filepath.Join(testAgentDir, "projects", "proj-123", WorkspaceSegment, ".research")
+	got := ComparisonsPathIn(researchRoot)
+	want := filepath.Join(researchRoot, "comparisons")
+	if got != want {
+		t.Errorf("ComparisonsPathIn: got %q, want %q", got, want)
+	}
+	// The comparisons directory sits beside the paper library (both are direct
+	// children of the research root), not inside any paper directory.
+	if filepath.Dir(got) != researchRoot {
+		t.Errorf("ComparisonsPathIn: %q is not a direct child of the research root %q", got, researchRoot)
+	}
+	if got == PaperLibraryPathIn(researchRoot) {
+		t.Errorf("ComparisonsPathIn: must not collide with the paper library %q", got)
+	}
+}
+
 func TestValidateWithinSessionWorkspace(t *testing.T) {
 	t.Run("path within session workspace", func(t *testing.T) {
 		wsRoot := SessionWorkspaceRoot(testAgentDir, noProjectID, "sess-1")

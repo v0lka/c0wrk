@@ -113,10 +113,10 @@ func nullableString(s string) any {
 }
 
 // researchPinsValue serializes pins to JSON for the research_pins column. An
-// empty value (no research documents, no hypothesis cards) maps to nil so the
-// column stores NULL, mirroring nullableString for research_root.
+// empty value (no research documents, no hypothesis cards, no paper pins) maps
+// to nil so the column stores NULL, mirroring nullableString for research_root.
 func researchPinsValue(pins ResearchPins) (any, error) {
-	if len(pins.Research) == 0 && len(pins.Hypotheses) == 0 {
+	if len(pins.Research) == 0 && len(pins.Hypotheses) == 0 && len(pins.Papers) == 0 {
 		return nil, nil
 	}
 	data, err := json.Marshal(pins)

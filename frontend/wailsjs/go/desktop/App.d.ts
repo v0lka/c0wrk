@@ -157,6 +157,10 @@ export function GetModelConfig(arg1:string):Promise<backend.ModelConfigResponse>
 
 export function GetModelProfiles():Promise<backend.ModelProfilesResponse>;
 
+export function GetPaper(arg1:string,arg2:string):Promise<backend.PaperDTO>;
+
+export function GetPapers(arg1:string):Promise<backend.PapersDTO>;
+
 export function GetPendingActions(arg1:string):Promise<desktop.PendingActionsResponse>;
 
 export function GetProcessMemory():Promise<number>;
@@ -263,6 +267,8 @@ export function ReadFileAsDataURL(arg1:string):Promise<string>;
 
 export function Rebase(arg1:string):Promise<void>;
 
+export function RecordFlashcardReview(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
+
 export function ReindexVectorIndex():Promise<void>;
 
 export function RemoveAttachment(arg1:string,arg2:string):Promise<void>;
@@ -290,6 +296,8 @@ export function ResumeSession(arg1:string,arg2:string,arg3:string,arg4:string):P
 export function ResumeTask(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function RunBackgroundUpdateCheck():Promise<void>;
+
+export function RunPaperLiterature(arg1:string,arg2:string):Promise<backend.PaperLiteratureDTO>;
 
 export function SaveMessageAsMarkdown(arg1:string):Promise<string>;
 
@@ -326,6 +334,8 @@ export function SetLogLevel(arg1:string):Promise<void>;
 export function SetModelConfig(arg1:string,arg2:backend.ModelConfigRequest):Promise<void>;
 
 export function SetModelProfilesEnabled(arg1:boolean):Promise<void>;
+
+export function SetPaperPinned(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 
 export function SetResearchPinned(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 

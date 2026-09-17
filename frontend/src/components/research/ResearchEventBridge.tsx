@@ -1,5 +1,6 @@
 import { useResearchStatusEvents } from '@/hooks/useResearchStatusEvents'
 import { useResearchFileWatcher } from '@/hooks/useResearchFileWatcher'
+import { usePapersEvents } from '@/hooks/usePapersEvents'
 
 /**
  * Research store sync bridge: the data side-effect hooks (full status sync +
@@ -15,6 +16,9 @@ import { useResearchFileWatcher } from '@/hooks/useResearchFileWatcher'
 export function ResearchEventBridge() {
   useResearchStatusEvents()
   useResearchFileWatcher()
+  // The paper library is watched independently of the RESEARCH toggle, so its
+  // sync rides the same always-mounted bridge.
+  usePapersEvents()
 
   return null
 }
