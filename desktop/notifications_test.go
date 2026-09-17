@@ -544,6 +544,16 @@ func TestNotificationExpireTimeoutMs(t *testing.T) {
 		{"daemon default", ptrInt(-1), -1},
 		{"never expires", ptrInt(0), 0},
 		{"explicit 45s", ptrInt(45), 45_000},
+		{"maximum", ptrInt(86_400), 86_400_000},
+		// Only the Settings RPC range-checks its input, so a hand-edited
+		// config.yaml arrives here unvalidated. Unclamped, the seconds →
+		// milliseconds multiply overflows int32: 3_600_000 (a units mix-up —
+		// milliseconds written into a seconds field) wraps to -694_967_296,
+		// a negative expire_timeout that is neither the -1 sentinel nor a
+		// valid lifetime.
+		{"units mix-up clamps instead of overflowing", ptrInt(3_600_000), 86_400_000},
+		{"far past int32 clamps", ptrInt(999_999_999), 86_400_000},
+		{"below the -1 sentinel falls back to the daemon default", ptrInt(-5), -1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			app := NewApp()

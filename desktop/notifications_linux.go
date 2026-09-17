@@ -69,6 +69,17 @@ const (
 	// activation (a click on the body), mirroring the Wails frontend.
 	dbusDefaultActionKey = "default"
 
+	// notificationDesktopEntry is the basename of c0wrk's .desktop file,
+	// sent as the freedesktop `desktop-entry` hint. It is how a notification
+	// daemon binds a banner to the installed application: grouping, the
+	// source name, the per-application entries in the desktop's notification
+	// settings, and — on daemons that prefer it over app_icon — the icon.
+	// Packaged installs ship /usr/share/applications/c0wrk.desktop; on a
+	// system where that file is absent the hint is simply unresolvable and
+	// daemons fall back to app_name/app_icon, so sending it is never worse
+	// than omitting it.
+	notificationDesktopEntry = "c0wrk"
+
 	// notificationPendingTTL / notificationPendingMax bound the routing map.
 	// Entries are normally consumed by ActionInvoked/NotificationClosed, but
 	// a daemon is not obliged to signal anything: KDE Plasma lets an expired
@@ -142,9 +153,6 @@ type platformNotificationState struct {
 	conn dbusDialer
 	// cancel stops the signal-pump goroutine; set together with conn.
 	cancel context.CancelFunc
-	// dispatch receives activation results; set at dial time, immutable
-	// afterwards (always the owning App's notificationCallback).
-	dispatch func(result wailsRuntime.NotificationResult)
 	// pending maps daemon-assigned notification ids to their routing meta;
 	// entries are consumed exactly once by ActionInvoked/NotificationClosed.
 	pending map[uint32]linuxNotificationMeta
@@ -217,6 +225,7 @@ func (s *platformNotificationState) send(options wailsRuntime.NotificationOption
 		[]string{dbusDefaultActionKey, "Default"},
 		map[string]dbus.Variant{
 			"x-notification-id": dbus.MakeVariant(options.ID),
+			"desktop-entry":     dbus.MakeVariant(notificationDesktopEntry),
 		},
 		expireTimeoutMs,
 	)
@@ -273,17 +282,20 @@ func (s *platformNotificationState) ensureDialLocked(dispatch func(wailsRuntime.
 
 	s.conn = conn
 	s.cancel = cancel
-	s.dispatch = dispatch
 	s.pending = make(map[uint32]linuxNotificationMeta)
 
-	go s.pumpSignals(pumpCtx, signals)
+	// dispatch travels with the pump instead of living on the struct: a
+	// redial (teardown after a failed Notify, then the next send) would
+	// otherwise write the field while the previous pump — which cancel() has
+	// signalled but not yet stopped — is still reading it to route a signal.
+	go s.pumpSignals(pumpCtx, signals, dispatch)
 	return nil
 }
 
 // pumpSignals forwards matched signals to the handlers until the state is
 // torn down. Both ctx cancellation and the channel close (godbus closes
 // registered channels on Conn.Close) end the pump, mirroring the Wails loop.
-func (s *platformNotificationState) pumpSignals(ctx context.Context, ch <-chan *dbus.Signal) {
+func (s *platformNotificationState) pumpSignals(ctx context.Context, ch <-chan *dbus.Signal, dispatch func(wailsRuntime.NotificationResult)) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -292,7 +304,7 @@ func (s *platformNotificationState) pumpSignals(ctx context.Context, ch <-chan *
 			if !ok {
 				return
 			}
-			s.handleSignal(sig)
+			s.handleSignal(sig, dispatch)
 		}
 	}
 }
@@ -300,12 +312,12 @@ func (s *platformNotificationState) pumpSignals(ctx context.Context, ch <-chan *
 // handleSignal routes one D-Bus signal; ids this process did not send
 // (another app's notifications, which the match rules also deliver) find no
 // pending entry and are dropped.
-func (s *platformNotificationState) handleSignal(sig *dbus.Signal) {
+func (s *platformNotificationState) handleSignal(sig *dbus.Signal, dispatch func(wailsRuntime.NotificationResult)) {
 	switch sig.Name {
 	case dbusNotificationsInterface + ".ActionInvoked":
-		s.handleActionInvoked(sig)
+		s.handleActionInvoked(sig, dispatch)
 	case dbusNotificationsInterface + ".NotificationClosed":
-		s.handleNotificationClosed(sig)
+		s.handleNotificationClosed(sig, dispatch)
 	}
 }
 
@@ -313,7 +325,7 @@ func (s *platformNotificationState) handleSignal(sig *dbus.Signal) {
 // NotificationResult contract and hands it to the App callback. Non-default
 // actions (c0wrk registers none) are dropped after consuming the pending
 // entry, mirroring the frontend's ActionMap behavior.
-func (s *platformNotificationState) handleActionInvoked(sig *dbus.Signal) {
+func (s *platformNotificationState) handleActionInvoked(sig *dbus.Signal, dispatch func(wailsRuntime.NotificationResult)) {
 	if len(sig.Body) < 2 {
 		return
 	}
@@ -338,7 +350,7 @@ func (s *platformNotificationState) handleActionInvoked(sig *dbus.Signal) {
 	// every later ActionInvoked — i.e. one slow activation permanently kills
 	// notification clicks. See the XCloseDisplay wedge in
 	// window_activation_linux.go.
-	go s.dispatch(wailsRuntime.NotificationResult{
+	go dispatch(wailsRuntime.NotificationResult{
 		Response: wailsRuntime.NotificationResponse{
 			ID:               meta.wailsID,
 			ActionIdentifier: notificationDefaultActionIdentifier,
@@ -351,7 +363,7 @@ func (s *platformNotificationState) handleActionInvoked(sig *dbus.Signal) {
 // reason 2 (dismissed by the user) is delivered as the default action —
 // there is no identifier-level way to distinguish it from a body click.
 // Reasons 1 (timeout), 3 (programmatic close) and 4 (undefined) are dropped.
-func (s *platformNotificationState) handleNotificationClosed(sig *dbus.Signal) {
+func (s *platformNotificationState) handleNotificationClosed(sig *dbus.Signal, dispatch func(wailsRuntime.NotificationResult)) {
 	if len(sig.Body) < 2 {
 		return
 	}
@@ -371,7 +383,7 @@ func (s *platformNotificationState) handleNotificationClosed(sig *dbus.Signal) {
 		return
 	}
 	// Off the pump goroutine — see handleActionInvoked.
-	go s.dispatch(wailsRuntime.NotificationResult{
+	go dispatch(wailsRuntime.NotificationResult{
 		Response: wailsRuntime.NotificationResponse{
 			ID:               meta.wailsID,
 			ActionIdentifier: notificationDefaultActionIdentifier,

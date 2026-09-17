@@ -1385,6 +1385,9 @@ notifications:
   #                     notification history.
   #   > 0             — explicit lifetime in seconds, capped at 86400 (a day).
   #
+  # Values outside [-1, 86400] are clamped at send time and the clamp is
+  # logged — mind the unit, seconds and not milliseconds.
+  #
   # Linux only. The value becomes the freedesktop `expire_timeout` argument of
   # the org.freedesktop.Notifications Notify call; the macOS and Windows
   # notification centers own banner lifetime themselves and ignore it.

@@ -108,6 +108,8 @@ The activation order in the Go callback stays reveal-first: `showWindow` runs BE
 
 The Linux transport dispatches `App.notificationCallback` on its own goroutine, never inline on the godbus signal pump: the callback activates the window, which makes blocking X round trips, and a stalled pump makes godbus silently discard every subsequent signal — one slow activation would otherwise disable notification clicks until restart. Both the `ActionInvoked` and the reason-2 `NotificationClosed` handlers dispatch this way.
 
+The callback travels with the pump (a `pumpSignals` parameter threaded into the handlers) instead of living on the shared transport state. A redial — teardown after a failed `Notify`, then the next send — would otherwise rewrite that state while the previous pump, signalled by `cancel()` but not yet stopped, is still reading it to route a signal.
+
 Known Linux quirk: both the Wails transport and c0wrk's own map reason-2 `NotificationClosed` (the banner's X) to the same `DEFAULT_ACTION` identifier, so an explicit dismiss can navigate too — indistinguishable at the identifier level. Timeout/programmatic closes never fire the callback.
 
 ## Notification icon
@@ -126,6 +128,8 @@ On Linux, `SendSystemNotification` routes through `sendNotificationPlatform`: a 
 2. **Theme name** (`"c0wrk"`) — when the cache dir is unwritable; packaged installs (AUR) ship `/usr/share/icons/hicolor/512x512/apps/c0wrk.png`, so theme-resolving daemons still find the icon.
 3. **Wails fallback** — any D-Bus failure (no session bus, daemon error, dead connection) drops the connection, logs a warning, and re-sends through the Wails transport: icon-less but delivered, with the identical click path.
 
+The `Notify` call also carries the freedesktop `desktop-entry` hint (`"c0wrk"`), which binds the banner to the installed `c0wrk.desktop`: grouping, the source name, the per-application entries in the desktop's own notification settings, and — on daemons that prefer it over `app_icon` — the icon. A system without that `.desktop` file leaves the hint unresolvable and daemons fall back to `app_name`/`app_icon`, so sending it is never worse than omitting it.
+
 Click routing coexists with the Wails transport without double delivery: each notification is tracked by exactly one side's pending map (ours for our sends, Wails' for fallback sends), and both funnel into the same `App.notificationCallback`. Our signal handler subscribes to `ActionInvoked`/`NotificationClosed`, maps the `default` action (and close reason 2, the same dismiss quirk as Wails) to `NotificationResult{ActionIdentifier: "DEFAULT_ACTION"}`, and ignores foreign ids. A failed send tears the connection down so the next send redials. `Shutdown` closes our connection before the Wails cleanup.
 
 The pending map is bounded by `prunePendingLocked`, run on every send: entries older than 24h are dropped, and the map is capped at 256 by evicting the oldest. The bound is load-bearing rather than defensive — an entry is normally consumed by `ActionInvoked` or `NotificationClosed`, but a daemon that retires a banner silently reports neither, leaving its entry behind for the life of the process.
@@ -141,6 +145,8 @@ The pending map is bounded by `prunePendingLocked`, run on every send: entries o
 | `1`…`86400` | seconds × 1000 | An explicit lifetime. |
 
 The field is a pointer-int (`*int`) because `0` is a meaningful value here, so the Go zero value cannot double as "unset"; `ApplyDefaults` fills an absent key with `-1`. `GetNotificationBannerTimeout` answers `-1` whenever the config is unreachable — the resolution never falls back to `0`, which would leave every banner on screen forever.
+
+Only `SetNotificationBannerTimeout` range-checks its input, so a hand-edited config.yaml reaches `notificationExpireTimeoutMs` unvalidated; the conversion clamps there and logs every clamp. The upper clamp is load-bearing rather than cosmetic: the seconds → milliseconds multiply overflows `int32` from roughly 2.15e6 seconds up, so a units mix-up (`banner_timeout_seconds: 3600000`, milliseconds written into a seconds field) would otherwise wrap to a negative `expire_timeout` that is neither the `-1` sentinel nor a valid lifetime. Values below `-1` resolve to the daemon default.
 
 Linux only: `sendNotificationPlatform` on macOS/Windows accepts the value for signature parity and ignores it, because those notification centers own banner lifetime themselves and expose no per-notification expiry to the sender. The Settings control is hidden on those platforms rather than shown as an inert knob.
 
@@ -174,7 +180,8 @@ Linux only: `sendNotificationPlatform` on macOS/Windows accepts the value for si
 - The Linux click callback runs on its own goroutine, leaving the godbus signal pump free to keep reading — window activation and signal delivery never share a goroutine.
 - The Linux routing map stays bounded (24h TTL, 256 entries) however many banners a daemon retires without a signal.
 - The private X activation connection is opened once per process and stays open; activations serialize through `TryLock`, so a stalled activation is skipped rather than queued behind.
-- The resolved banner lifetime falls back to the daemon default (`-1`) whenever the config is unreachable, never to "never expires" (`0`).
+- The resolved banner lifetime falls back to the daemon default (`-1`) whenever the config is unreachable, never to "never expires" (`0`), and every value reaching the D-Bus call is within `[-1, 86400]` seconds however the config was edited.
+- Each signal pump routes to the callback it was started with, so the transport holds no dispatch state a redial could overwrite.
 
 ## Known Limitations
 

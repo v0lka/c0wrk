@@ -214,6 +214,10 @@ func (a *App) SendSystemNotification(title, body string, data map[string]string)
 	return a.sendNotificationPlatform(a.ctx, options, a.notificationExpireTimeoutMs())
 }
 
+// millisecondsPerSecond converts the config's seconds into the freedesktop
+// `expire_timeout` unit.
+const millisecondsPerSecond = 1000
+
 // notificationExpireTimeoutMs resolves the configured banner lifetime
 // (backend config `notifications.banner_timeout_seconds`) into the
 // freedesktop `expire_timeout` argument, in milliseconds. The two sentinels
@@ -222,18 +226,37 @@ func (a *App) SendSystemNotification(title, body string, data map[string]string)
 // Falls back to the daemon default whenever the config is unreachable (early
 // startup, tests with a zero-value FrontendAPI) — never to 0, which would
 // leave banners on screen forever by accident.
+//
+// Out-of-range values are clamped here rather than trusted, because only the
+// Settings RPC (SetNotificationBannerTimeout) range-checks its input: a
+// hand-edited config.yaml reaches this function unvalidated. Clamping is
+// load-bearing above the maximum — the seconds→milliseconds multiply
+// overflows int32 from ~2.15e6 seconds up, and a units mix-up
+// (`banner_timeout_seconds: 3600000`, meaning milliseconds) wraps to a
+// NEGATIVE expire_timeout that is neither the -1 sentinel nor a valid
+// lifetime. Every clamp is logged: a misconfigured value must not be applied
+// silently.
 func (a *App) notificationExpireTimeoutMs() int32 {
 	seconds := config.NotificationBannerTimeoutDaemonDefault
 	if a.FrontendAPI != nil {
 		seconds = a.GetNotificationBannerTimeout()
 	}
 	switch {
-	case seconds < 0:
+	case seconds == config.NotificationBannerTimeoutDaemonDefault:
 		return -1
-	case seconds == 0:
+	case seconds < config.NotificationBannerTimeoutDaemonDefault:
+		a.log().Warn("notification banner timeout is below the -1 sentinel; using the daemon default",
+			"configured_seconds", seconds)
+		return -1
+	case seconds == config.NotificationBannerTimeoutNever:
 		return 0
+	case seconds > config.NotificationBannerTimeoutMaxSeconds:
+		a.log().Warn("notification banner timeout exceeds the maximum; clamping",
+			"configured_seconds", seconds,
+			"max_seconds", config.NotificationBannerTimeoutMaxSeconds)
+		return int32(config.NotificationBannerTimeoutMaxSeconds) * millisecondsPerSecond
 	default:
-		return int32(seconds) * 1000 //nolint:mnd // seconds → milliseconds
+		return int32(seconds) * millisecondsPerSecond
 	}
 }
 

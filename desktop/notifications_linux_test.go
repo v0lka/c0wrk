@@ -936,3 +936,68 @@ func TestSendForwardsConfiguredExpireTimeout(t *testing.T) {
 		})
 	}
 }
+
+// TestNotifyCarriesDesktopEntryHint pins the `desktop-entry` hint. It is how a
+// notification daemon binds a banner to the installed application — grouping,
+// the source name, the per-application entries in the desktop's notification
+// settings, and the icon on daemons that prefer it over `app_icon`. Without
+// it a banner is attributed to a generic source on those desktops.
+func TestNotifyCarriesDesktopEntryHint(t *testing.T) {
+	conn := &fakeDBusConn{}
+	results := withFakeBus(t, conn)
+	st := &platformNotificationState{}
+	if err := st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"},
+		results.dispatch, dbusNotificationTimeoutDefault); err != nil {
+		t.Fatalf("send failed: %v", err)
+	}
+	if len(conn.notifyCalls) != 1 {
+		t.Fatalf("Notify calls = %d, want 1", len(conn.notifyCalls))
+	}
+	hint, ok := conn.notifyCalls[0].hints["desktop-entry"]
+	if !ok {
+		t.Fatal("Notify carried no desktop-entry hint")
+	}
+	if got := hint.Value(); got != notificationDesktopEntry {
+		t.Errorf("desktop-entry = %v, want %q", got, notificationDesktopEntry)
+	}
+}
+
+// TestPumpRoutesToItsOwnDispatch pins that a signal reaches the dispatch its
+// OWN pump was started with. Routing used to go through a field on the shared
+// transport state, which a redial (teardown after a failed Notify, then the
+// next send) overwrote while the previous pump — signalled by cancel() but not
+// yet stopped — could still be reading it to route a signal: an unsynchronized
+// read, and a signal that could reach the wrong App's callback.
+func TestPumpRoutesToItsOwnDispatch(t *testing.T) {
+	st := &platformNotificationState{pending: map[uint32]linuxNotificationMeta{
+		1: {wailsID: "from-first-dial", sentAt: time.Now()},
+		2: {wailsID: "from-second-dial", sentAt: time.Now()},
+	}}
+
+	var first, second notificationResults
+	ch1 := make(chan *dbus.Signal, 1)
+	ch2 := make(chan *dbus.Signal, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go st.pumpSignals(ctx, ch1, first.dispatch)
+	go st.pumpSignals(ctx, ch2, second.dispatch)
+
+	ch1 <- &dbus.Signal{
+		Name: dbusNotificationsInterface + ".ActionInvoked",
+		Body: []any{uint32(1), dbusDefaultActionKey},
+	}
+	ch2 <- &dbus.Signal{
+		Name: dbusNotificationsInterface + ".ActionInvoked",
+		Body: []any{uint32(2), dbusDefaultActionKey},
+	}
+
+	awaitCondition(t, "both pumps dispatched", func() bool {
+		return len(first.snapshot()) == 1 && len(second.snapshot()) == 1
+	})
+	if got := first.snapshot()[0].Response.ID; got != "from-first-dial" {
+		t.Errorf("first pump routed %q, want from-first-dial", got)
+	}
+	if got := second.snapshot()[0].Response.ID; got != "from-second-dial" {
+		t.Errorf("second pump routed %q, want from-second-dial", got)
+	}
+}
