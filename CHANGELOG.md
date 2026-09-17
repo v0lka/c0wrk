@@ -2,6 +2,24 @@
 
 All notable changes to **c0wrk**. Dates follow the tag date.
 
+## v0.8.2 — 2026-09-17
+
+### Added
+- **Original arXiv HTML renditions in the papers library** — a paper can now be read as its own arXiv HTML rendition (`arxiv.org/html/<id>`, with the `ar5iv` mirror as fallback) in addition to the extracted text and the raw source. The backend (`FetchPaperOriginal` RPC → `core/papers.FetchOriginalHTML`) fetches under a hard host allowlist and streaming byte caps, strips scripts/styles/iframes and arXiv's surrounding site chrome — so only the paper's own `ltx_document` article survives and chrome images are never fetched — localizes images into an app-owned `assets/` directory, and persists `paper.html` atomically with symlink-resolved containment checks, so a failure leaves the prior `paper.html` byte-for-byte unchanged. Every non-success outcome is an explicit status (`offline`, `no_arxiv`, `not_found`, `error`) the UI renders as a message rather than an empty pane. On the frontend the document is sanitized and rendered in-app through a `hast` pipeline (`PaperHtmlView`: MathML kept, active content stripped), the Source section gains **Original HTML / Extracted / Raw** sub-views, anchor navigation resolves against the rendered document before falling back to the extracted text, and "Open in browser" derives from the card's identifiers. `paper.html` and `assets/` are documented as app-owned, read-only artifacts for the `study-paper` skill (seed version bumped to 5). See [specs/domains/papers.md](./specs/domains/papers.md).
+- **Study a locally-held document from the Papers view** — a floppy-disk action opens a native single-select picker (`PickStudyDocument`, Wails bindings + frontend API wrapper) and dispatches the chosen file straight into a fresh study session, so a paper already on disk needs no chat-attachment round-trip.
+
+### Improved
+- **The Execution Plan panel restores after a mid-execution reload** — the bounded page-walk that backfilled the plan anchor from session history is replaced by a single indexed `GetSessionPlanTimeline` RPC, so the panel rebuilds its step timeline no matter how far back the `declare_plan` declaration sits; the client-side `planAnchorBackfill` helper is retired.
+- **Consistent custom scrollbars** — the custom-scrollbar look now covers the remaining scroll containers (the papers list, the research dashboard, the git-config risk toast, paper block math, and xterm's internal `.xterm-viewport`), and a source-scanning invariant test fails the build when a future scroll container is added without it.
+
+### Fixed
+- **Chat scroll pinning** — `ChatScrollManager` no longer lets its own programmatic scroll writes poison stick-to-bottom when content grows between the pin write and its delivery, and switching to a session with a running task pins the viewport to the live tail; a stale-false `taskActive` flag corrected after mount now re-pins, and the virtualizer's late-attach write to offset 0 is undone so a long session opens at its restored position instead of jumping to the top.
+- **Paper fetch action and its status line are mutually exclusive** while a fetch is in flight, so the action no longer reads as available while work is already running.
+
+### Internal
+- New direct Go dependency `golang.org/x/net` (HTML parsing for the original-HTML fetcher); the frontend adds the `unified`/`hast` stack — `rehype-parse`, `hast-util-sanitize`, `hast-util-to-jsx-runtime`, and `@types/hast` — for the in-app pipeline.
+- Specs updated: [papers](./specs/domains/papers.md), [rendering](./specs/domains/frontend/rendering.md), and the [desktop↔frontend contract](./specs/contracts/desktop-frontend.md). New tests cover the original-HTML fetcher, HTML sanitization/anchors, plan-timeline restore, and chat scroll attach, alongside the custom-scrollbar source invariant.
+
 ## v0.8.1 — 2026-09-17
 
 ### Added
