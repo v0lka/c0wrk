@@ -2,12 +2,18 @@ import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react
 import { useScrollContext } from './ScrollContext'
 import { scrollBlockStartIntoView } from '@/lib/chatScroll'
 import { cssEscape } from '@/lib/cssEscape'
+import { useChatStore } from '@/stores/chatStore'
 import type { ChatVirtualizerHandle } from '@/lib/chatVirtualizer'
 import type { ChatMessageUI } from '@/types/messages'
 import { unresolvedReviewPromptIds } from '@/types/messages'
 import { ChatNewActivityBanner } from './ChatNewActivityBanner'
 
 interface ChatScrollManagerProps {
+  /** Session whose transcript this viewport shows. The component remounts per
+   *  session (key={activeSessionId} in ChatArea), so the scroll position is
+   *  saved under this id on unmount and restored on the next initial mount.
+   *  Null disables both (no session context). */
+  sessionId: string | null
   messages: ChatMessageUI[]
   streamingText: string | undefined
   scrollRef: React.RefObject<HTMLDivElement | null>
@@ -28,7 +34,13 @@ interface ChatScrollManagerProps {
 // and abort the navigation (finding [27]).
 const NAVIGATION_AUTO_SCROLL_SUPPRESS_MS = 500
 
+// Distance (px) from the content bottom within which the viewport counts as
+// "at the bottom" — the single threshold behind stick-to-bottom engagement,
+// the new-activity pill and the restored-position re-check.
+const AT_BOTTOM_THRESHOLD_PX = 50
+
 export function ChatScrollManager({
+  sessionId,
   messages,
   streamingText,
   scrollRef,
@@ -86,7 +98,7 @@ export function ChatScrollManager({
     if (!viewport) return
 
     const handleScroll = () => {
-      const atBottom = viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 50
+      const atBottom = viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - AT_BOTTOM_THRESHOLD_PX
       isAtBottomRef.current = atBottom
       prevScrollState.current = {
         scrollTop: viewport.scrollTop,
@@ -100,13 +112,28 @@ export function ChatScrollManager({
     return () => viewport.removeEventListener('scroll', handleScroll)
   }, [])
 
-  // Auto-scroll: on a session switch (component remount) always jump to the
-  // latest content; on incremental content growth, stick to the bottom only if
-  // the user was already there. A freshly-appearing review-mode prompt is an
-  // exception: it requires a user decision, so the chat is forced to the
-  // bottom to reveal it even when the user had scrolled away. Both behaviors
-  // are suppressed for a short window after an explicit bookmark/step
-  // navigation (see NAVIGATION_AUTO_SCROLL_SUPPRESS_MS).
+  // Save the reading position when this session's viewport goes away. ChatArea
+  // remounts the manager per session (key={activeSessionId}), so this cleanup
+  // fires exactly on a session switch (and on app teardown); prevScrollState is
+  // the freshest snapshot — the passive scroll handler above updates it on
+  // every user scroll, so it holds where reading actually stopped. sessionId
+  // never changes within one mount, making this an unmount-only save.
+  useEffect(() => {
+    if (!sessionId) return
+    return () => {
+      const { scrollTop, scrollHeight } = prevScrollState.current
+      useChatStore.getState().saveScrollPosition(sessionId, { scrollTop, scrollHeight })
+    }
+  }, [sessionId])
+
+  // Auto-scroll: on a session switch (component remount) restore the saved
+  // reading position, or jump to the latest content when none was saved; on
+  // incremental content growth, stick to the bottom only if the user was
+  // already there. A freshly-appearing review-mode prompt is an exception: it
+  // requires a user decision, so the chat is forced to the bottom to reveal it
+  // even when the user had scrolled away. Both behaviors are suppressed for a
+  // short window after an explicit bookmark/step navigation (see
+  // NAVIGATION_AUTO_SCROLL_SUPPRESS_MS).
   useLayoutEffect(() => {
     const viewport = viewportRef.current
     if (!viewport) return
@@ -126,15 +153,28 @@ export function ChatScrollManager({
     prevLastIdRef.current = lastId
 
     if (isInitialMountRef.current) {
-      // New session selected — always reveal the most recent messages so
-      // stick-to-bottom engages without the user having to scroll down first.
-      viewport.scrollTop = viewport.scrollHeight
-      isAtBottomRef.current = true
+      // Session selected. A previously saved reading position (captured when
+      // this session's viewport last unmounted) is restored as-is — the
+      // browser clamps the offset against the freshly mounted (still
+      // estimated, possibly shorter) content, and the ResizeObserver below
+      // keeps a restored-at-bottom viewport glued to the bottom as real
+      // measurements replace the estimates. Without a saved position (first
+      // visit) the latest content is revealed so stick-to-bottom engages
+      // without the user having to scroll down first.
+      const saved = sessionId ? useChatStore.getState().scrollPositions[sessionId] : undefined
+      if (saved) {
+        viewport.scrollTop = saved.scrollTop
+        isAtBottomRef.current =
+          viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - AT_BOTTOM_THRESHOLD_PX
+      } else {
+        viewport.scrollTop = viewport.scrollHeight
+        isAtBottomRef.current = true
+      }
       isInitialMountRef.current = false
       setHasNewActivity(false)
     } else {
       const prev = prevScrollState.current
-      const wasAtBottom = prev.scrollTop + prev.clientHeight >= prev.scrollHeight - 50
+      const wasAtBottom = prev.scrollTop + prev.clientHeight >= prev.scrollHeight - AT_BOTTOM_THRESHOLD_PX
       // An explicit bookmark/step navigation just moved the viewport: hold off
       // on any auto-scroll until its smooth animation settles, otherwise the
       // stale "was at bottom" baseline (or a fresh review prompt) would snap
@@ -166,7 +206,37 @@ export function ChatScrollManager({
       scrollHeight: viewport.scrollHeight,
       clientHeight: viewport.clientHeight,
     }
-  }, [messages, streamingText])
+    // sessionId never changes within one mount (ChatArea remounts the manager
+    // per session via key=), so listing it only satisfies the deps lint — it
+    // cannot re-fire this effect on its own.
+  }, [messages, streamingText, sessionId])
+
+  // Content-growth stickiness. The auto-scroll effect above only re-runs when
+  // messages/streamingText change, but the content height can keep growing
+  // AFTER that commit: late virtualizer measurements replacing the initial
+  // row-height estimates, images decoding, async markdown/highlight layout.
+  // Observing the transcript content wrapper (the viewport's first element
+  // child — ChatHoverRegion, whose height tracks the content, including the
+  // virtualizer's total-size spacer) catches all of those: when the content
+  // grew while the user was following the tail (isAtBottomRef), re-pin to the
+  // bottom; when they had scrolled up, do nothing (no jerk). This is also what
+  // keeps a restored/pinned initial position glued to the TRUE bottom as the
+  // estimated virtualizer layout converges on the measured one.
+  useEffect(() => {
+    const viewport = viewportRef.current
+    const content = viewport?.firstElementChild
+    if (!viewport || !content || typeof ResizeObserver === 'undefined') return
+    let lastHeight = viewport.scrollHeight
+    const observer = new ResizeObserver(() => {
+      const height = viewport.scrollHeight
+      if (height > lastHeight && isAtBottomRef.current) {
+        viewport.scrollTop = viewport.scrollHeight
+      }
+      lastHeight = height
+    })
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [])
 
   // Shared navigation driver for the step/bookmark callbacks. Resolves the
   // target element and, when found, aligns its block start below the floating

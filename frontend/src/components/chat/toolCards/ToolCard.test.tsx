@@ -55,7 +55,12 @@ describe('ToolCard', () => {
     })
 
   const badges = () => Array.from(container.querySelectorAll('span'))
-    .filter(el => ['cached', 'batched', 'MCP'].includes(el.textContent ?? ''))
+    .filter(el => {
+      const t = el.textContent ?? ''
+      return t === 'cached' || t === 'batched' || t === 'MCP' || t.startsWith('MCP: ')
+    })
+
+  const mcpBadge = () => badges().find(el => (el.textContent ?? '').startsWith('MCP'))
 
   it('shows the real file name (not the tool name) for batched sub-calls', () => {
     render(makeItem({
@@ -147,6 +152,51 @@ describe('ToolCard', () => {
     }))
     expect(container.textContent).toContain('plain.ts')
     expect(badges()).toHaveLength(0)
+  })
+
+  it('names the MCP server on the badge for a bare server source', () => {
+    render(makeItem({
+      toolName: 'search_issues',
+      args: '{"query":"badge"}',
+      parsedArgs: { query: 'badge' },
+      result: '{"ok":true}',
+      source: 'github',
+    }))
+    const badge = mcpBadge()
+    expect(badge).toBeDefined()
+    expect(badge!.textContent).toBe('MCP: github')
+  })
+
+  it('normalizes the mcp: source prefix to the bare server name', () => {
+    render(makeItem({
+      toolName: 'search_issues',
+      args: '{"query":"badge"}',
+      parsedArgs: { query: 'badge' },
+      result: '{"ok":true}',
+      source: 'mcp:github',
+    }))
+    const badge = mcpBadge()
+    expect(badge).toBeDefined()
+    expect(badge!.textContent).toBe('MCP: github')
+  })
+
+  it('renders no MCP badge for core and undefined sources', () => {
+    render(makeItem({
+      toolName: 'search_issues',
+      args: '{"query":"badge"}',
+      parsedArgs: { query: 'badge' },
+      result: '{"ok":true}',
+      source: 'core',
+    }))
+    expect(mcpBadge()).toBeUndefined()
+
+    render(makeItem({
+      toolName: 'search_issues',
+      args: '{"query":"badge"}',
+      parsedArgs: { query: 'badge' },
+      result: '{"ok":true}',
+    }))
+    expect(mcpBadge()).toBeUndefined()
   })
 
   it('renders an error card collapsed by default (no auto-open on remount)', () => {

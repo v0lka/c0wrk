@@ -110,6 +110,34 @@ interface ChatState {
   historyCursor: Record<string, string>
   historyHasMore: Record<string, boolean>
   historyLoading: Record<string, boolean>
+  // Memory of rows that arrived via prependHistoryMessages (older pages
+  // fetched on scroll-up), per session. A re-load of the NEWEST page (session
+  // switch back to one still in the store, effect re-run) rebuilds the tail
+  // from a fresh snapshot; without this memory every prepended row that is
+  // neither in the newest page nor newer than loadStartedAt would be dropped
+  // — the history the user scrolled up to reveal would vanish.
+  // mergeHistoryMessages consults this set to keep those DB rows AHEAD of the
+  // freshly loaded page and returns how many it kept. Entries follow the
+  // lifecycle of the rows themselves: ids whose rows are no longer in the
+  // store simply never match, and a merge that keeps nothing reports 0 (the
+  // caller then falls back to the page's own cursor) — stale entries are
+  // inert, so no explicit invalidation is wired into session deletion.
+  prependedHistoryIds: Record<string, Set<string>>
+  // Deepest prepend position per session: the cursor/hasMore recorded by the
+  // OLDEST page ever prepended (each prepend pages backwards, so the latest
+  // write IS the deepest). historyCursor is reset to ('' | false) before every
+  // newest-page RPC, so this pair is where the true continuation point
+  // survives that reset; ChatArea restores historyCursor/historyHasMore from
+  // here when a merge preserved prepended rows.
+  prependCursor: Record<string, string>
+  prependHasMore: Record<string, boolean>
+  // Last-known scroll position per session: sessionId -> the scroll state the
+  // chat viewport held when the user last left the session (its
+  // ChatScrollManager unmounted on the session switch). The next initial mount
+  // of that session's viewport restores the reading position instead of
+  // jumping; a session with no entry opens pinned to the newest content.
+  // Cleared when the session is deleted.
+  scrollPositions: Record<string, { scrollTop: number; scrollHeight: number }>
 }
 
 interface ChatActions {
@@ -118,7 +146,12 @@ interface ChatActions {
   removeMessage: (sessionId: string, messageId: string) => void
   upsertChecklistMessage: (sessionId: string, message: ChatMessageUI) => void
   setMessages: (sessionId: string, messages: ChatMessageUI[]) => void
-  mergeHistoryMessages: (sessionId: string, history: ChatMessageUI[], loadStartedAt: number) => void
+  /** Replace the session's messages with the persisted history, preserving
+   *  live-event rows that arrived while the RPC was in flight. Returns the
+   *  number of previously PREPENDED older-page rows it kept ahead of the
+   *  newest page (0 when nothing was prepended) so the caller can restore the
+   *  paging cursor from the prepend bookkeeping instead of the page response. */
+  mergeHistoryMessages: (sessionId: string, history: ChatMessageUI[], loadStartedAt: number) => number
   /** Record the paging cursor + hasMore for a session after a history page
    *  load (cursor "" and hasMore false when the oldest page was reached). */
   setHistoryPageMeta: (sessionId: string, cursor: string, hasMore: boolean) => void
@@ -143,6 +176,12 @@ interface ChatActions {
   setWorkUnitStatus: (sessionId: string, status: Record<string, WorkUnitBlockStatus>) => void
   settleWorkUnit: (sessionId: string, stepId: string, status: WorkUnitBlockStatus) => void
   clearWorkUnitStep: (sessionId: string, stepId: string) => void
+  /** Persist the scroll position the session's chat viewport held when it
+   *  unmounted (session switch / app close), so the next visit restores the
+   *  reading position instead of jumping. */
+  saveScrollPosition: (sessionId: string, position: { scrollTop: number; scrollHeight: number }) => void
+  /** Forget the session's saved scroll position (session deletion). */
+  clearScrollPosition: (sessionId: string) => void
 }
 
 // --- Helpers ---
@@ -239,6 +278,10 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   historyCursor: {},
   historyHasMore: {},
   historyLoading: {},
+  prependedHistoryIds: {},
+  prependCursor: {},
+  prependHasMore: {},
+  scrollPositions: {},
 
   addMessage: (sessionId, message) => set((s) => {
     const sessionIndex = s.messages[sessionId] ?? {}
@@ -362,26 +405,43 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   // and a live event can land during that RPC flight. If duplication of the
   // final answer is ever observed, dedupe preserved non-HITL messages by
   // (type, content) here, or have live handlers reuse a backend-supplied id.
-  mergeHistoryMessages: (sessionId, history, loadStartedAt) => set((s) => {
-    const liveIndex = s.messages[sessionId] ?? {}
-    const liveOrder = s.messageOrder[sessionId] ?? []
-    const historyIds = new Set(history.map(m => m.id))
-    const preserved: ChatMessageUI[] = []
-    for (const id of liveOrder) {
-      const msg = liveIndex[id]
-      if (!msg || historyIds.has(id)) continue
-      if (msg.timestamp >= loadStartedAt) { preserved.push(msg); continue }
-      // Keep live, unresolved HITL prompts even if they predate the switch.
-      if (HITL_PROMPT_TYPES.has(msg.type) && msg.metadata?.resolved !== true) {
-        preserved.push(msg)
+  //
+  // PREPEND RETENTION: rows previously prepended by prependHistoryMessages
+  // (older pages fetched on scroll-up) are DB rows that predate loadStartedAt,
+  // so neither branch above would keep them — a newest-page re-load (session
+  // switch back, effect re-run) would erase the history the user scrolled up
+  // to reveal. They are therefore kept ahead of the freshly loaded page (they
+  // are older than every row it carries) via the prependedHistoryIds set, and
+  // the action returns how many were kept so the caller restores the paging
+  // cursor from the deepest prepend position instead of the page response.
+  mergeHistoryMessages: (sessionId, history, loadStartedAt) => {
+    let keptPrepended = 0
+    set((s) => {
+      const liveIndex = s.messages[sessionId] ?? {}
+      const liveOrder = s.messageOrder[sessionId] ?? []
+      const historyIds = new Set(history.map(m => m.id))
+      const prependedIds = s.prependedHistoryIds[sessionId]
+      const prepended: ChatMessageUI[] = []
+      const preserved: ChatMessageUI[] = []
+      for (const id of liveOrder) {
+        const msg = liveIndex[id]
+        if (!msg || historyIds.has(id)) continue
+        if (prependedIds?.has(id)) { prepended.push(msg); continue }
+        if (msg.timestamp >= loadStartedAt) { preserved.push(msg); continue }
+        // Keep live, unresolved HITL prompts even if they predate the switch.
+        if (HITL_PROMPT_TYPES.has(msg.type) && msg.metadata?.resolved !== true) {
+          preserved.push(msg)
+        }
       }
-    }
-    const merged = [...history, ...preserved]
-    return {
-      messages: { ...s.messages, [sessionId]: indexMessages(merged) },
-      messageOrder: { ...s.messageOrder, [sessionId]: merged.map(m => m.id) },
-    }
-  }),
+      keptPrepended = prepended.length
+      const merged = [...prepended, ...history, ...preserved]
+      return {
+        messages: { ...s.messages, [sessionId]: indexMessages(merged) },
+        messageOrder: { ...s.messageOrder, [sessionId]: merged.map(m => m.id) },
+      }
+    })
+    return keptPrepended
+  },
 
   // Record the paging cursor/hasMore after a history page load. Kept separate
   // from mergeHistoryMessages so the (older) prepend path and the (newest)
@@ -407,7 +467,10 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   // present (by id) are skipped so a re-fetch or an overlap cannot duplicate a
   // message; the page's own stream order is preserved ahead of what is already
   // loaded. Advances the cursor atomically with the message insert so the next
-  // scroll-up fetches the page before this one.
+  // scroll-up fetches the page before this one. The rows this call actually
+  // inserts are recorded in prependedHistoryIds and the page's cursor/hasMore
+  // in prependCursor/prependHasMore (the deepest position so far), so a later
+  // newest-page re-load can preserve them and resume paging from here.
   prependHistoryMessages: (sessionId, messages, cursor, hasMore) => set((s) => {
     const existingIndex = s.messages[sessionId] ?? {}
     const existingOrder = s.messageOrder[sessionId] ?? []
@@ -420,9 +483,18 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
     }
     const nextIndex = { ...existingIndex }
     for (const m of prepend) nextIndex[m.id] = m
+    // Only genuinely inserted rows are marked: a row skipped as already-known
+    // either belongs to the newest page (it will re-arrive with it) or was
+    // recorded by an earlier prepend — marking it here could misplace a live
+    // row ahead of the page on a later merge.
+    const nextPrepended = new Set(s.prependedHistoryIds[sessionId])
+    for (const m of prepend) nextPrepended.add(m.id)
     return {
       messages: { ...s.messages, [sessionId]: nextIndex },
       messageOrder: { ...s.messageOrder, [sessionId]: [...prepend.map(m => m.id), ...existingOrder] },
+      prependedHistoryIds: { ...s.prependedHistoryIds, [sessionId]: nextPrepended },
+      prependCursor: { ...s.prependCursor, [sessionId]: cursor },
+      prependHasMore: { ...s.prependHasMore, [sessionId]: hasMore },
       historyCursor: { ...s.historyCursor, [sessionId]: cursor },
       historyHasMore: { ...s.historyHasMore, [sessionId]: hasMore },
     }
@@ -661,5 +733,26 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
         [sessionId]: { ...s.workUnitEventAt[sessionId], [stepId]: Date.now() },
       },
     }
+  }),
+
+  // Saved reading position: written by ChatScrollManager's unmount cleanup (the
+  // component remounts per session via key={activeSessionId}, so the cleanup
+  // fires exactly on session switches/app teardown) and read back by the
+  // session's next initial mount. A no-op when the position is unchanged keeps
+  // the map reference stable (React #185).
+  saveScrollPosition: (sessionId, position) => set((s) => {
+    const prev = s.scrollPositions[sessionId]
+    if (prev && prev.scrollTop === position.scrollTop && prev.scrollHeight === position.scrollHeight) return s
+    return { scrollPositions: { ...s.scrollPositions, [sessionId]: position } }
+  }),
+
+  // Forget the saved position (the session was deleted — a recreated session
+  // id never collides, but dropping the entry keeps the map bounded). Same
+  // absent-key convention as the other clearers: no state change when nothing
+  // is stored.
+  clearScrollPosition: (sessionId) => set((s) => {
+    if (!(sessionId in s.scrollPositions)) return s
+    const { [sessionId]: _pos, ...rest } = s.scrollPositions
+    return { scrollPositions: rest }
   }),
 }))

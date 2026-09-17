@@ -3,6 +3,7 @@ import { useChatStore, useSessionMessages, useSessionWorkUnits } from '@/stores/
 import { useBookmarkStore } from '@/stores/bookmarkStore'
 import { groupMessages, stabilizeDisplayItems, chatMessageToUI, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow, isRoutingRequestRow } from '@/lib/chatUtils'
 import { restorePlanAndGoalFromHistory } from '@/lib/sessionStoreRestore'
+import { ensurePlanAnchorLoaded } from '@/lib/planAnchorBackfill'
 import type { ChatVirtualizerHandle } from '@/lib/chatVirtualizer'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
@@ -90,7 +91,10 @@ export function ChatArea() {
     // earlier visit would otherwise be reused by an early scroll-up (skipping a
     // slice of history), and an in-flight flag left set by a fetch interrupted
     // by that switch would block older-page loading permanently. The RPC below
-    // overwrites both with the page's real values.
+    // overwrites both with the real continuation point. The prepend
+    // bookkeeping (prependedHistoryIds / prependCursor / prependHasMore) is
+    // deliberately NOT reset: it is what lets the merge below keep the older
+    // pages this session already prepended on a previous visit.
     useChatStore.getState().setHistoryPageMeta(activeSessionId, '', false)
     useChatStore.getState().setHistoryLoading(activeSessionId, false)
     const loadStartedAt = Date.now()
@@ -118,11 +122,11 @@ export function ChatArea() {
       }
       if (cancelled) return
 
-      // Record the paging cursor/hasMore so useOlderHistoryLoader knows whether
-      // (and from where) to fetch the preceding page on scroll-up.
-      useChatStore.getState().setHistoryPageMeta(activeSessionId, page.next_cursor, page.has_more)
-
       const history = page.messages
+      // How many previously prepended older-page rows the merge kept (0 when
+      // this session never prepended, or every prepended row is covered by the
+      // newest page itself).
+      let keptPrepended = 0
       if (history.length > 0) {
         // Filter out "event_unknown" rows — transient UI events
         // (attachments:changed, session_pinned, etc.) that leaked into the DB
@@ -147,12 +151,31 @@ export function ChatArea() {
         // routing decision itself.
         const chatMessages = uiMessages.filter((m) => !isAgentMetricsRow(m) && !isRoutingRequestRow(m))
         // Merge (not replace) so live events delivered while the RPC was in
-        // flight — e.g. a terminal `error` — are not clobbered.
-        useChatStore.getState().mergeHistoryMessages(activeSessionId, chatMessages, loadStartedAt)
+        // flight — e.g. a terminal `error` — are not clobbered, and so older
+        // pages prepended on a previous visit survive the re-load.
+        keptPrepended = useChatStore.getState().mergeHistoryMessages(activeSessionId, chatMessages, loadStartedAt)
         // Rebuild the plan panel and goal badge from the merged history. The
         // plan declaration may sit on an OLDER page than the one just loaded,
         // so this also re-runs as older pages stream in (useOlderHistoryLoader).
         restorePlanAndGoalFromHistory(activeSessionId, chatMessages)
+      }
+
+      // Record the paging cursor/hasMore so useOlderHistoryLoader knows whether
+      // (and from where) to fetch the preceding page on scroll-up. This runs
+      // AFTER the merge: when the merge kept prepended rows, the store already
+      // holds history older than this page's cursor, so paging must resume
+      // from the deepest prepend position (the prepend bookkeeping) — the page
+      // response would otherwise make the next scroll-up re-fetch rows that
+      // are already on screen.
+      if (keptPrepended > 0) {
+        const store = useChatStore.getState()
+        useChatStore.getState().setHistoryPageMeta(
+          activeSessionId,
+          store.prependCursor?.[activeSessionId] ?? page.next_cursor,
+          store.prependHasMore?.[activeSessionId] ?? page.has_more,
+        )
+      } else {
+        useChatStore.getState().setHistoryPageMeta(activeSessionId, page.next_cursor, page.has_more)
       }
 
       // Reconcile AFTER the merge so the store is populated. Fetch the
@@ -181,6 +204,20 @@ export function ChatArea() {
         // ledger settled as interrupted.
         const workUnitOverlay = reconcileWorkUnits(activeSessionId, status.work_units, statusReadAt)
         usePlanStore.getState().applyWorkUnitStatuses(workUnitOverlay)
+        // Backfill the plan declaration: a mid-execution reload re-fetches only
+        // the newest page, so the plan anchor (persisted at the task's start)
+        // drops out of the store and the Execution Plan panel stays hidden
+        // while plan_step/subagent events render in the chat root. The work
+        // units above prove the task is plan-driven, so when the accumulated
+        // messages hold no plan row the helper walks older pages back until
+        // the declaration is loaded and the panel is rebuilt (no RPC when the
+        // anchor is already loaded). Fire-and-forget: the abort check discards
+        // the walk if the user switches sessions mid-flight, and a late panel
+        // rebuild for a non-active session is thereby prevented.
+        void ensurePlanAnchorLoaded(activeSessionId, status.work_units, {
+          pageSize: HISTORY_PAGE_SIZE,
+          shouldAbort: () => cancelled,
+        })
       }
       if (pending) {
         for (const msg of reconcilePendingActions(activeSessionId, pending)) staleResolved.push(msg)
@@ -299,7 +336,7 @@ export function ChatArea() {
   return (
     <ScrollProvider>
       <div className="relative flex flex-1 flex-col min-h-0 bg-background">
-        <ChatScrollManager key={activeSessionId} messages={messages} streamingText={streamingText} scrollRef={scrollRef} virtualizerRef={chatVirtualizerRef}>
+        <ChatScrollManager key={activeSessionId} sessionId={activeSessionId} messages={messages} streamingText={streamingText} scrollRef={scrollRef} virtualizerRef={chatVirtualizerRef}>
           <ChatHoverRegion className="p-4 space-y-4 min-w-0">
             {shouldVirtualize ? (
               <VirtualizedChatList
