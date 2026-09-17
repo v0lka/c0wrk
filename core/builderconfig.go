@@ -475,11 +475,11 @@ type BuilderSecurityConfig struct {
 }
 
 // BuilderGroupPolicy holds one tool group's security policy and, for the
-// execute group only, its command blacklist. Policy values are the short
+// execute group only, its command blocklist. Policy values are the short
 // config enum: "allow", "user_confirm", "deny".
 type BuilderGroupPolicy struct {
 	Policy    string
-	Blacklist []string
+	Blocklist []string
 }
 
 // BuilderSkillsConfig holds Agent Skills discovery directories.

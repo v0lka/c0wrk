@@ -608,7 +608,7 @@ type VerifyOnEditConfig struct {
 	Enabled bool `yaml:"enabled"`
 	// Command is the shell command executed after a successful write_file/
 	// edit_file call. It runs through the bash tool machinery, so the
-	// execute-group deny policy and the command blacklist still apply — but
+	// execute-group deny policy and the command blocklist still apply — but
 	// because the command is user-configured (not model-authored) it is not
 	// routed through interactive confirmation.
 	Command string `yaml:"command"`
@@ -751,7 +751,7 @@ type SecurityConfig struct {
 
 	// Groups is the tool-security schema: a fixed set of tool groups, each
 	// with its own policy (and, for the "execute" group only, an optional
-	// command blacklist). See the ToolGroup* constants for the group names and
+	// command blocklist). See the ToolGroup* constants for the group names and
 	// defaults.go for the default policies.
 	Groups map[string]GroupPolicyConfig `yaml:"groups"`
 
@@ -807,11 +807,21 @@ type SecurityConfig struct {
 // (security.groups.<group>).
 type GroupPolicyConfig struct {
 	Policy string `yaml:"policy"` // "allow"|"user_confirm"|"deny"
-	// Blacklist holds regex patterns applied to shell commands; only the
+	// Blocklist holds regex patterns applied to shell commands; only the
 	// "execute" group supports it and validation rejects it on any other
 	// group. A matching command is forced to confirmation regardless of
-	// Policy.
-	Blacklist []string `yaml:"blacklist,omitempty"`
+	// Policy. Empty by default: the app ships no predefined patterns, the
+	// list is purely a user-authored extension.
+	Blocklist []string `yaml:"blocklist,omitempty" json:"blocklist,omitempty"`
+
+	// LegacyBlacklist is the load-time mirror of the pre-rename
+	// `blacklist` yaml key. It is populated only by yaml decoding of an
+	// old config file and is migrated into Blocklist (or dropped) by
+	// migrateLegacyGroupBlacklists immediately after load — see
+	// blacklist_migration.go. It is never persisted: omitempty plus the
+	// unconditional clearing in the migration keep the stale key out of
+	// every Save, and json:"-" keeps it out of any JSON view.
+	LegacyBlacklist []string `yaml:"blacklist,omitempty" json:"-"`
 }
 
 // JudgeConfig holds LLM-based tool safety judge settings.
@@ -1409,6 +1419,12 @@ func LoadWithResult(path string) (*LoadResult, error) {
 		return nil, fmt.Errorf("failed to parse config YAML: %w", err)
 	}
 
+	// One-time migration from the pre-rename `blacklist` key to `blocklist`
+	// (see blacklist_migration.go): a customized legacy list is carried over,
+	// a default-equal or absent one is dropped. Must run before ApplyDefaults
+	// and validate so the migrated value flows through both untouched.
+	migrateLegacyGroupBlacklists(cfg.Security.Groups)
+
 	// Apply defaults for zero-value fields
 	ApplyDefaults(&cfg)
 
@@ -1425,17 +1441,10 @@ func LoadWithResult(path string) (*LoadResult, error) {
 
 // Save writes the configuration to a YAML file atomically.
 func Save(cfg *Config, path string) error {
-	// Marshal a store-as-unset view of the security groups: an execute
-	// blacklist exactly equal to the shipped defaults is written as omitted,
-	// so every persist path — not just the security settings tab — preserves
-	// the file-format contract that omitting `blacklist:` tracks the app's
-	// shipped defaults (config.example.yaml). The in-memory config is left
-	// untouched: ApplyDefaults re-derives the effective list at load, and the
-	// runtime consumers (ToBuilderConfig, groupPoliciesToResponse) treat nil
-	// and the materialized defaults identically.
-	view := *cfg
-	view.Security.Groups = StoreDefaultBlacklistAsUnset(cfg.Security.Groups)
-	data, err := yaml.Marshal(&view)
+	// Marshal the config as-is: the execute blocklist is empty by default
+	// and purely user-authored, so there is no derived view to maintain —
+	// what is stored is what is written.
+	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
@@ -1480,7 +1489,7 @@ func validate(cfg *Config) error {
 
 	// Validate the security.groups schema: only the fixed set of configurable
 	// groups is accepted, the reserved "system" group must never appear in
-	// config, policies must use the group enum, and a blacklist is an
+	// config, policies must use the group enum, and a blocklist is an
 	// execute-only feature.
 	for name, group := range cfg.Security.Groups {
 		if name == ToolGroupSystem {
@@ -1504,16 +1513,16 @@ func validate(cfg *Config) error {
 				name, group.Policy, GroupPolicyAllow, GroupPolicyUserConfirm, GroupPolicyDeny,
 			)
 		}
-		if name != ToolGroupExecute && len(group.Blacklist) > 0 {
+		if name != ToolGroupExecute && len(group.Blocklist) > 0 {
 			return fmt.Errorf(
-				"security group %q does not support a blacklist; only %q does",
+				"security group %q does not support a blocklist; only %q does",
 				name, ToolGroupExecute,
 			)
 		}
-		for _, pattern := range group.Blacklist {
+		for _, pattern := range group.Blocklist {
 			if _, err := regexp.Compile(pattern); err != nil {
 				return fmt.Errorf(
-					"security group %q blacklist pattern %q does not compile: %w",
+					"security group %q blocklist pattern %q does not compile: %w",
 					name, pattern, err,
 				)
 			}

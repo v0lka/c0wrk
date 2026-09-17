@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — amended by [ADR-052](./052-flowsh-command-analysis.md): the canonical hard set is extended with the flowsh controls (`command_exfil_flow`, `command_privilege_escalation`, `command_system_write`, `command_destructive_outside_roots`, `command_download_cradle`) alongside `command_blacklist`; `unresolvable_path_token` is no longer fired by any built-in judge (the flowsh `command_unbounded_analysis` is its non-canonical successor). The unified-funnel architecture itself stands unchanged.
 
 ## Context
 

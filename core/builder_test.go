@@ -70,7 +70,7 @@ func TestApplySecurityPolicies(t *testing.T) {
 		Security: BuilderSecurityConfig{
 			Groups: map[string]BuilderGroupPolicy{
 				"local_read":   {Policy: "allow"},
-				"execute":      {Policy: "deny", Blacklist: []string{"rm\\s+-rf"}},
+				"execute":      {Policy: "deny", Blocklist: []string{"rm\\s+-rf"}},
 				"local_write":  {Policy: "user_confirm"},
 				"system":       {Policy: "allow"},    // must be skipped: not configurable
 				"bogus_group":  {Policy: "allow"},    // must be skipped: unknown group

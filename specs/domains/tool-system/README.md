@@ -6,8 +6,9 @@ c0wrk provides tool infrastructure for the agent on top of sp4rk's `Tool`/`ToolR
 
 ## Key Files
 
-- `core/tools/registry.go` — core `ToolRegistry` (wraps the sp4rk registry; adds policy resolution, judge, hooks, symlink gate, disabled-tool and bash-blacklist enforcement)
+- `core/tools/registry.go` — core `ToolRegistry` (wraps the sp4rk registry; adds policy resolution, judge, hooks, symlink gate, disabled-tool and shell-blocklist enforcement, and the once-per-call flowsh shell analysis `AttachShellAnalysis`)
 - `core/tools/registry_canonical_reasons_test.go` — drift guard for the ADR-026 cross-repo contract: drives the real sp4rk builtin judges so a dropped/reworded `JudgeReasonCode` fails CI instead of silently making a canonical hard reason clearable
+- `core/tools/registry_shellanalysis_test.go` (+ `_unix`/`_windows` platform mirrors) — the flowsh digest contract (clean and escalated shell calls carry the digest to the strict-judge envelope; non-shell calls do not) and the behavioral backstop (the five canonical flowsh codes never pass a strict ALLOW; ⊤ does) — see [ADR-052](../../decisions/052-flowsh-command-analysis.md)
 - `core/tools/registry_symlink.go` — symlink detection/traversal integration calling sp4rk `DetectSymlinksInToolInput`
 - `core/tools/builtin_registration.go` — `RegisterBuiltinTools` function + `BuiltinToolsConfig`
 - `core/tools/registry_unattended.go` — `ExecuteUnattended(ctx, name, input)`: second execution entry point, used by verify-on-edit; enforces structural input validation (`sdktools.ValidateToolInput`), disabled tools, and execute-group deny; never model-facing (see [../verify-on-edit.md](../verify-on-edit.md))
@@ -58,13 +59,16 @@ core ToolRegistry.Execute(ctx, name, input)
 ├─ 5. PostExecuteHook deferred (runs on every later return path)
 ├─ 6. PreExecuteHook (blocking gate, e.g., index ready)
 ├─ 7. Group policy == deny? → return error result (hard block, names the group)
-├─ 8. Gather safety signals once: tool Judge outcome (hard: blacklist/SSRF; soft: path containment) + symlink analysis (escape/unresolvable = hard; in-roots = not a concern)
+├─ 8. Gather safety signals once: for shell tools, attach the deterministic flowsh analysis first (AttachShellAnalysis → sdktools.AnalyzeShellCommandForJudge → WithShellAnalysis; the SDK Judge reads the criteria C1–C8 from ctx), then collect the tool Judge outcome (hard: blocklist / flowsh criteria / SSRF; soft: path containment, credential access) + symlink analysis (escape/unresolvable = hard; in-roots = not a concern)
 └─ 9. Branch on the tool's GROUP policy:
       ├─ allow → hard reason ⇒ smartApproveOrConfirm (Hard) — the unified funnel:
-      │           the strict judge is consulted (hard-bias); a canonical reason
-      │           (blacklist, SSRF, symlink escape, unassessable input) is
-      │           deterministically backstopped to confirm even on ALLOW,
-      │           a non-canonical hard reason may be cleared by a strict ALLOW
+      │           the strict judge is consulted (hard-bias) with the flowsh digest
+      │           attached as evidence; a canonical reason (blocklist, a flowsh
+      │           control — exfil flow / privesc / system write / destructive
+      │           out-of-roots write / download cradle —, SSRF, symlink escape,
+      │           unassessable input) is deterministically backstopped to confirm
+      │           even on ALLOW; the ⊤ criterion (command_unbounded_analysis) is
+      │           non-canonical and may be cleared by a strict ALLOW
       │           soft reason ⇒ smartApproveOrConfirm (Soft): Smart Approve may allow, else confirm
       │           clean ⇒ execute
       ├─ deny → error result (step 8)
@@ -78,7 +82,7 @@ The group policy resolution, auto-approval (session roots), and symlink gate are
 ## Invariants
 
 - Tool names are unique within the registry
-- `system`-group tools bypass policy and judge checks — membership is declared on the tool itself (`ToolGroup: sdktools.GroupSystem` on `BaseTool`), not an out-of-band name set. The disabled-tool check (No Project mode) applies to all tools including system-group ones, but the extra-bash-blacklist check runs AFTER the system-group bypass. `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
+- `system`-group tools bypass policy and judge checks — membership is declared on the tool itself (`ToolGroup: sdktools.GroupSystem` on `BaseTool`), not an out-of-band name set. The disabled-tool check (No Project mode) applies to all tools including system-group ones. `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
 - A tool with an undeclared group matches no allow-list (fail-closed for group filtering, subagent budgets, verifier sets)
 - The symlink analysis runs during safety-signal gathering for every non-system tool call; only escapes out of the session roots (or unresolvable paths) are hard reasons
 - MCP tools carry source category `mcp` (source tag = the MCP server's name); core built-in tools carry source category `core`
@@ -96,9 +100,9 @@ security:
   groups:               # per-capability-group policy (ADR-024); system is reserved
     local_read:  { policy: allow }
     remote_read: { policy: allow }
-    execute:                   # bash_exec (Unix) / posh_exec (Windows); only group with a blacklist
+    execute:                   # bash_exec (Unix) / posh_exec (Windows); only group with a blocklist
       policy: user_confirm
-      blacklist: ["rm\\s+-rf\\s+/", "sudo\\s+"]
+      # blocklist: []          # user-authored extension, EMPTY BY DEFAULT — no patterns ship (ADR-052)
     local_write: { policy: user_confirm }
     local_mcp:   { policy: user_confirm }
     remote_mcp:  { policy: user_confirm }

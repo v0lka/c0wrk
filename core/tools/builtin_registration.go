@@ -21,7 +21,7 @@ type BuiltinToolsConfig struct {
 	WebFetchLimits  builtins.WebFetchLimits
 	WebSearchLimits builtins.WebSearchLimits
 	BashTimeouts    builtins.BashTimeouts
-	ShellBlacklist  []string
+	ShellBlocklist  []string
 
 	// Search provider configuration.
 	SearchProvider string
@@ -66,7 +66,7 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 	// platform-specific constructor call lives in shelltool_{unix,windows}.go
 	// behind build tags, because sp4rk's bash.go and posh.go are mutually
 	// exclusive per OS.
-	shellTool, err := newShellExecTool(cfg.ShellBlacklist, cfg.BashTimeouts)
+	shellTool, err := newShellExecTool(cfg.ShellBlocklist, cfg.BashTimeouts)
 	if err != nil {
 		return fmt.Errorf("shell tool: %w", err)
 	}
@@ -214,13 +214,15 @@ func UpdateSearchTool(registry *ToolRegistry, providerName, apiKey string, limit
 }
 
 // UpdateShellTool re-registers the shell-execution tool (bash_exec on Unix,
-// posh_exec on Windows) with an updated command blacklist. The blacklist is
+// posh_exec on Windows) with an updated command blocklist. The blocklist is
 // compiled into the tool at construction time, so a runtime edit of
-// security.groups.execute.blacklist takes effect by replacing the registered
-// instance — mirroring UpdateSearchTool. A pattern that fails to compile is
+// security.groups.execute.blocklist takes effect by replacing the registered
+// instance — mirroring UpdateSearchTool. The list is presence-based and empty
+// by default: no predefined patterns ship, so a nil or empty list registers
+// the tool with no compiled-in patterns. A pattern that fails to compile is
 // reported as an error and leaves the previously registered tool in place.
-func UpdateShellTool(registry *ToolRegistry, blacklist []string, timeouts builtins.BashTimeouts) error {
-	shellTool, err := newShellExecTool(blacklist, timeouts)
+func UpdateShellTool(registry *ToolRegistry, blocklist []string, timeouts builtins.BashTimeouts) error {
+	shellTool, err := newShellExecTool(blocklist, timeouts)
 	if err != nil {
 		return fmt.Errorf("shell tool: %w", err)
 	}

@@ -101,12 +101,23 @@ func TestCanonicalHardReasonCodes_ClassificationTable(t *testing.T) {
 		wantCanonical bool
 	}{
 		{sdktools.ReasonCodeCommandBlacklist, true},
+		{sdktools.ReasonCodeCommandExfilFlow, true},
+		{sdktools.ReasonCodeCommandPrivilegeEscalation, true},
+		{sdktools.ReasonCodeCommandSystemWrite, true},
+		{sdktools.ReasonCodeCommandDestructiveOutsideRoots, true},
+		{sdktools.ReasonCodeCommandDownloadCradle, true},
 		{sdktools.ReasonCodeSSRFPrivateAddress, true},
 		{sdktools.ReasonCodeSSRFDegraded, true},
 		{sdktools.ReasonCodeUnassessableURL, true},
 		{sdktools.ReasonCodeUnassessablePath, true},
 		{sdktools.ReasonCodeSymlinkEscape, true},
 		{sdktools.ReasonCodeGitInternal, true},
+		// The flowsh ⊤ limitation: hard but deliberately clearable — an
+		// analysis limitation the strict judge may positively clear, not a
+		// fired control.
+		{sdktools.ReasonCodeCommandUnboundedAnalysis, false},
+		// The flowsh soft scope question: non-canonical by construction.
+		{sdktools.ReasonCodeCredentialAccess, false},
 		{sdktools.ReasonCodeUnresolvablePathToken, false},
 		{sdktools.ReasonCodeSymlinkSuspicious, false},
 		{sdktools.ReasonCodeOutsideSessionRoots, false},

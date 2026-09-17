@@ -34,7 +34,7 @@ const initialSettings: LocalSettings = {
 /**
  * Security settings tab, group-based (security.groups): the seven configurable
  * tool groups each have a policy dropdown; the execute group additionally has
- * a command-blacklist editor. The reserved "system" group is not configurable
+ * a command-blocklist editor. The reserved "system" group is not configurable
  * and never rendered. Tool policies are group-level — the tool list inside
  * each card is display-only (data from GetToolList).
  */
@@ -45,9 +45,6 @@ export function SecuritySettings() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [judgeAvailable, setJudgeAvailable] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  // Shipped execute-blacklist patterns (read-only, from the backend): the
-  // blacklist editor offers them as a one-click restore.
-  const [executeDefaults, setExecuteDefaults] = useState<string[]>([]);
   // Trusted-repositories dialog (git-config intake warnings dismissed with
   // "Trust this repo") — see TrustedReposDialog.
   const [trustedOpen, setTrustedOpen] = useState(false);
@@ -57,7 +54,7 @@ export function SecuritySettings() {
 
   // Fail-closed load: save() below normalizes the FULL seven-group payload
   // from local state. If the initial load failed, local state is empty and a
-  // save would replace every live policy (and strip the execute blacklist)
+  // save would replace every live policy (and strip the execute blocklist)
   // with defaults — the exact fail-open path the backend rejects partial
   // payloads for. So the editable surface only renders after a successful
   // load; a failed load shows an error state with a retry.
@@ -73,7 +70,6 @@ export function SecuritySettings() {
         smart_approve: r.smart_approve || false,
       });
       setJudgeAvailable(r.judge_available ?? false);
-      setExecuteDefaults(r.execute_blacklist_defaults ?? []);
       setTools(toolList || []);
     } catch (err) {
       logger.error("Failed to load security settings:", err);
@@ -92,7 +88,7 @@ export function SecuritySettings() {
   // policy map. Normalizing here guarantees the payload shape even if the
   // backend response ever drifted. On failure the backend message is surfaced
   // and the displayed state is re-synced with the enforced one, so the UI
-  // never shows policies/blacklist that were not persisted or applied.
+  // never shows policies/blocklist that were not persisted or applied.
   const save = async (next: LocalSettings) => {
     setSettings(next);
     const groups: Record<string, SecurityGroupPolicy> = {};
@@ -119,7 +115,6 @@ export function SecuritySettings() {
           auto_approve_workspace_writes: r.auto_approve_workspace_writes || false,
           smart_approve: r.smart_approve || false,
         });
-        setExecuteDefaults(r.execute_blacklist_defaults ?? []);
       } catch (reloadErr) {
         // The rollback re-fetch failed too: the displayed state is neither
         // persisted nor verified. Fail closed exactly like a failed initial
@@ -141,11 +136,11 @@ export function SecuritySettings() {
     });
   };
 
-  const handleBlacklist = (group: string, blacklist: string[]) => {
+  const handleBlocklist = (group: string, blocklist: string[]) => {
     const prev = settings.groups[group] ?? { policy: DEFAULT_GROUP_POLICY };
     save({
       ...settings,
-      groups: { ...settings.groups, [group]: { ...prev, blacklist } },
+      groups: { ...settings.groups, [group]: { ...prev, blocklist } },
     });
   };
 
@@ -311,11 +306,10 @@ export function SecuritySettings() {
           key={group}
           group={group}
           policy={settings.groups[group]?.policy ?? DEFAULT_GROUP_POLICY}
-          blacklist={group === EXECUTE_GROUP ? settings.groups[group]?.blacklist ?? [] : []}
-          blacklistDefaults={group === EXECUTE_GROUP ? executeDefaults : undefined}
+          blocklist={group === EXECUTE_GROUP ? settings.groups[group]?.blocklist ?? [] : []}
           tools={toolsByGroup[group] ?? []}
           onPolicyChange={handlePolicy}
-          onBlacklistChange={handleBlacklist}
+          onBlocklistChange={handleBlocklist}
         />
       ))}
 

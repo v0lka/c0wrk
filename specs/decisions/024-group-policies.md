@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — amended by [ADR-052](./052-flowsh-command-analysis.md): the `security.groups.<group>.blacklist?` key is renamed to `blocklist?` and ships **empty by default** (no patterns; legacy custom lists migrate, default-equal lists are dropped; the Windows alias supplement is deleted), and the deterministic shell floor is the flowsh criteria C1–C8. The group model itself (8 groups, hard/soft severities, no per-tool overrides) stands unchanged.
 
 > **Drift note (2026-08-25, vibespec-check):**
 > - §1's "Group() is a required method of the sp4rk Tool interface" — Group() is exposed through the OPTIONAL GroupProvider interface (sp4rk/tools/tool.go), read via ToolGroupOf, fail-closed to "" when unimplemented; BaseTool.ToolGroup remains the declaration point and the fail-closed invariant still holds.

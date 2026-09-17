@@ -540,7 +540,7 @@ func (f *FrontendAPI) UpdateExperimentalFeatures(enabled bool) error {
 // GetSecuritySettings returns current security settings for the UI. The
 // response is group-based: every configurable tool group (seven of them — the
 // reserved "system" group is never configurable and never included) is
-// returned with its policy and, for the execute group, its command blacklist.
+// returned with its policy and, for the execute group, its command blocklist.
 func (f *FrontendAPI) GetSecuritySettings() SecuritySettingsResponse {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
@@ -552,15 +552,13 @@ func (f *FrontendAPI) GetSecuritySettings() SecuritySettingsResponse {
 		var defaults config.Config
 		config.ApplyDefaults(&defaults)
 		return SecuritySettingsResponse{
-			Groups:                   groupPoliciesToResponse(defaults.Security.Groups),
-			ExecuteBlacklistDefaults: config.DefaultExecuteGroupBlacklist(),
+			Groups: groupPoliciesToResponse(defaults.Security.Groups),
 		}
 	}
 	resp := SecuritySettingsResponse{
 		Groups:                     groupPoliciesToResponse(f.config.Security.Groups),
 		AutoApproveWorkspaceWrites: f.config.Security.AutoApproveWorkspaceWrites,
 		SmartApprove:               f.config.Security.SmartApprove,
-		ExecuteBlacklistDefaults:   config.DefaultExecuteGroupBlacklist(),
 	}
 	if b := f.builder(); b != nil {
 		resp.JudgeAvailable = b.JudgeAvailable()
@@ -569,43 +567,27 @@ func (f *FrontendAPI) GetSecuritySettings() SecuritySettingsResponse {
 }
 
 // groupPoliciesToResponse converts config group policies into the frontend
-// response shape, deep-copying blacklist slices so the caller cannot mutate
-// the live config through the returned map. The execute blacklist is
-// reported as its EFFECTIVE value while preserving the nil-vs-empty
-// distinction across the JSON boundary: nil (unset) means the shipped
-// defaults are in force (ApplyDefaults and ToBuilderConfig derive them), so
-// those are what the UI must show; an explicitly emptied list is reported
-// as [] so a UI round trip (the settings tab saves exactly what it loaded)
-// cannot resurrect the defaults over the user's choice.
+// response shape, deep-copying blocklist slices so the caller cannot mutate
+// the live config through the returned map. The execute blocklist is stored
+// as its effective value — there are no predefined patterns any more, so
+// what is stored is what applies — while the nil-vs-empty distinction is
+// preserved across the JSON boundary: nil (unset) serializes as null and an
+// explicitly emptied list as [], so a UI round trip (the settings tab saves
+// exactly what it loaded) cannot change the user's choice. Both mean "no
+// patterns".
 func groupPoliciesToResponse(groups map[string]config.GroupPolicyConfig) map[string]GroupPolicyResponse {
 	out := make(map[string]GroupPolicyResponse, len(groups))
 	for name, g := range groups {
 		entry := GroupPolicyResponse{Policy: g.Policy}
-		if name == config.ToolGroupExecute {
-			if g.Blacklist == nil {
-				entry.Blacklist = config.DefaultExecuteGroupBlacklist()
-			} else {
-				entry.Blacklist = make([]string, len(g.Blacklist))
-				copy(entry.Blacklist, g.Blacklist)
-			}
-		} else if len(g.Blacklist) > 0 {
-			entry.Blacklist = make([]string, len(g.Blacklist))
-			copy(entry.Blacklist, g.Blacklist)
+		if len(g.Blocklist) > 0 {
+			entry.Blocklist = make([]string, len(g.Blocklist))
+			copy(entry.Blocklist, g.Blocklist)
+		} else if g.Blocklist != nil {
+			entry.Blocklist = []string{}
 		}
 		out[name] = entry
 	}
 	return out
-}
-
-// effectiveExecuteBlacklist maps a stored execute blacklist to its effective
-// value: nil (unset) means the shipped defaults are in force (mirroring
-// ApplyDefaults and ToBuilderConfig); every other list — including an
-// explicitly emptied one — is used as stored.
-func effectiveExecuteBlacklist(blacklist []string) []string {
-	if blacklist == nil {
-		return config.DefaultExecuteGroupBlacklist()
-	}
-	return blacklist
 }
 
 // UpdateSecuritySettings updates security settings at runtime. The incoming
@@ -613,17 +595,16 @@ func effectiveExecuteBlacklist(blacklist []string) []string {
 // seven configurable groups — a partial payload is rejected (it would
 // silently weaken security: an omitted group resolves fail-safe to
 // user_confirm, weaker than a configured deny, and omitting execute would
-// strip the live shell blacklist). Validation mirrors config file
+// strip the live shell blocklist). Validation mirrors config file
 // validation: only the fixed set of configurable groups is accepted, the
 // reserved "system" group is rejected, policies must use the group enum, a
-// blacklist is an execute-only feature, and blacklist patterns must compile.
-// An invalid payload mutates nothing. A blacklist identical to the shipped
-// defaults is stored as unset so future default improvements keep flowing;
-// the effective list (nil ⇒ defaults) is what the shell tool registers. A
-// changed effective execute-group blacklist re-registers the shell tool so
-// the edit applies without an app restart; the re-registration runs first
-// and is atomic, so its failure rolls the config back with no
-// partially-applied state.
+// blocklist is an execute-only feature, and blocklist patterns must compile.
+// An invalid payload mutates nothing. The blocklist is empty by default and
+// purely user-authored, so what the payload carries is what gets stored. A
+// changed execute-group blocklist re-registers the shell tool so the edit
+// applies without an app restart; the re-registration runs first and is
+// atomic, so its failure rolls the config back with no partially-applied
+// state.
 func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) error {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
@@ -637,21 +618,6 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 		return err
 	}
 
-	// Store-as-unset: a blacklist identical to the shipped defaults is
-	// stored as UNSET (nil) so improved default lists keep flowing to
-	// configs that never customized the list. Without this rule every UI
-	// save would pin today's default patterns into the config file (the UI
-	// echoes back everything GetSecuritySettings returned, which includes
-	// the effective-default view). config.StoreDefaultBlacklistAsUnset is
-	// the single implementation of the rule — config.Save applies it to
-	// every persist path, so unrelated settings saves (LLM setup, MCP,
-	// search, ...) cannot pin the defaults either. The effective blacklist
-	// is unchanged: ToBuilderConfig and groupPoliciesToResponse re-derive
-	// the defaults for a nil list, and the change detection below compares
-	// effective lists. An explicitly emptied list ([]) does not match, so
-	// clearing the editor stays an intentional choice.
-	newGroups = config.StoreDefaultBlacklistAsUnset(newGroups)
-
 	// Replace the full group set so config stays in sync with the registry.
 	// prevSecurity snapshots the previous block so a failed shell-tool
 	// re-registration below can roll the whole replacement back.
@@ -663,22 +629,22 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 	// Apply policies to the shared tool registry via the backend builder.
 	if b := f.builder(); b != nil {
 		builderCfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
-		// Re-register the shell tool FIRST: the blacklist is compiled into
+		// Re-register the shell tool FIRST: the blocklist is compiled into
 		// the tool instance at registration, so runtime edits need it to
 		// take effect without an app restart. The call is atomic (a compile
 		// failure leaves the previously registered tool in place), so on
 		// error the config is restored and no layer is left half-applied —
-		// the old blacklist stays live and matches the rolled-back config.
-		// The comparison uses effective lists: a nil (unset) list means the
-		// shipped defaults are in force, so an unchanged-default save does
-		// not re-register anything.
+		// the old blocklist stays live and matches the rolled-back config.
+		// nil and an explicitly emptied list compare equal (both mean "no
+		// patterns"), so toggling between them does not re-register
+		// anything; only a real pattern change does.
 		if !slices.Equal(
-			effectiveExecuteBlacklist(prevSecurity.Groups[config.ToolGroupExecute].Blacklist),
-			effectiveExecuteBlacklist(newGroups[config.ToolGroupExecute].Blacklist),
+			prevSecurity.Groups[config.ToolGroupExecute].Blocklist,
+			newGroups[config.ToolGroupExecute].Blocklist,
 		) {
-			if err := b.UpdateShellBlacklist(builderCfg); err != nil {
+			if err := b.UpdateShellBlocklist(builderCfg); err != nil {
 				f.config.Security = prevSecurity
-				return fmt.Errorf("failed to apply execute blacklist: %w", err)
+				return fmt.Errorf("failed to apply execute blocklist: %w", err)
 			}
 		}
 		b.UpdateSecurityPolicies(builderCfg)
@@ -692,15 +658,15 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 }
 
 // responseToGroupPolicies validates a frontend groups payload and converts it
-// into config group policies, deep-copying blacklist slices. The rules mirror
+// into config group policies, deep-copying blocklist slices. The rules mirror
 // config.validate — the fixed set of configurable groups, the policy enum,
-// execute-only blacklists, and blacklist pattern compilation — so a UI-sourced
+// execute-only blocklists, and blocklist pattern compilation — so a UI-sourced
 // update can never store what the config loader would reject on the next
 // start. The payload must carry the COMPLETE set of configurable groups: the
 // result replaces the stored map wholesale, and a partial payload would
 // silently weaken security (an omitted group resolves fail-safe to
 // user_confirm — weaker than a configured deny; omitting execute strips the
-// live shell blacklist).
+// live shell blocklist).
 func responseToGroupPolicies(groups map[string]GroupPolicyResponse) (map[string]config.GroupPolicyConfig, error) {
 	out := make(map[string]config.GroupPolicyConfig, len(groups))
 	for name, g := range groups {
@@ -724,28 +690,29 @@ func responseToGroupPolicies(groups map[string]GroupPolicyResponse) (map[string]
 				name, g.Policy, config.GroupPolicyAllow, config.GroupPolicyUserConfirm, config.GroupPolicyDeny,
 			)
 		}
-		if name != config.ToolGroupExecute && len(g.Blacklist) > 0 {
+		if name != config.ToolGroupExecute && len(g.Blocklist) > 0 {
 			return nil, fmt.Errorf(
-				"security group %q does not support a blacklist; only %q does",
+				"security group %q does not support a blocklist; only %q does",
 				name, config.ToolGroupExecute,
 			)
 		}
-		for _, pattern := range g.Blacklist {
+		for _, pattern := range g.Blocklist {
 			if _, err := regexp.Compile(pattern); err != nil {
 				return nil, fmt.Errorf(
-					"security group %q blacklist pattern %q does not compile: %w",
+					"security group %q blocklist pattern %q does not compile: %w",
 					name, pattern, err,
 				)
 			}
 		}
 		entry := config.GroupPolicyConfig{Policy: g.Policy}
-		// Preserve nil vs empty distinction: a missing blacklist means
-		// "unset" (defaults apply), an explicit empty array means "no
-		// patterns" (an intentional user choice that must not resurrect
-		// the defaults).
-		if g.Blacklist != nil {
-			entry.Blacklist = make([]string, len(g.Blacklist))
-			copy(entry.Blacklist, g.Blacklist)
+		// Preserve nil vs empty distinction: a missing blocklist means
+		// "unset" (no patterns), an explicit empty array means "no
+		// patterns" — semantically identical now that no predefined list
+		// exists, but the stored shape still round-trips the user's
+		// editor state.
+		if g.Blocklist != nil {
+			entry.Blocklist = make([]string, len(g.Blocklist))
+			copy(entry.Blocklist, g.Blocklist)
 		}
 		out[name] = entry
 	}

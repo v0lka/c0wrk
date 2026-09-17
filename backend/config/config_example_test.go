@@ -3,15 +3,14 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 )
 
 // TestExampleConfigReflectsGroupsSchema loads the shipped config.example.yaml
 // through the real pipeline and asserts it uses the groups schema cleanly:
-// no load warnings and an execute blacklist identical to the compiled-in
-// default union. This keeps the example from drifting away from the code when
-// defaults change.
+// no load warnings and an EMPTY execute blocklist (the example documents the
+// blocklist as a commented-out user extension — defaults seed nothing). This
+// keeps the example from drifting away from the code when defaults change.
 func TestExampleConfigReflectsGroupsSchema(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
@@ -43,8 +42,8 @@ func TestExampleConfigReflectsGroupsSchema(t *testing.T) {
 			t.Errorf("example group %q policy = %q, want default %q", group, got.Policy, want)
 		}
 	}
-	if !reflect.DeepEqual(result.Config.Security.Groups[ToolGroupExecute].Blacklist, DefaultExecuteGroupBlacklist()) {
-		t.Error("example execute blacklist differs from the compiled-in default union")
+	if got := result.Config.Security.Groups[ToolGroupExecute].Blocklist; len(got) > 0 {
+		t.Errorf("example execute blocklist = %v, want empty (the example must not ship predefined patterns)", got)
 	}
 
 	// No backup side effects for a groups-based example.

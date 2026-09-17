@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — amended by [ADR-052](./052-flowsh-command-analysis.md): the shell tools' `Judge` no longer runs the static unresolvable-token or `PathsOutsideRoots` containment stages this ADR's stage list references; the assessability machinery itself (binding promotion, fail-closed union, inner-path surfacing) lives on unchanged behind symlink detection.
 
 ## Context
 

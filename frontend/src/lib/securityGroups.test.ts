@@ -39,7 +39,7 @@ describe('securityGroups presentation metadata', () => {
     expect(POLICY_OPTIONS.map((o) => o.value)).toEqual(['allow', 'user_confirm', 'deny'])
   })
 
-  it('marks execute as the only blacklist-capable group', () => {
+  it('marks execute as the only blocklist-capable group', () => {
     expect(EXECUTE_GROUP).toBe('execute')
     expect(GROUP_ORDER.filter((g) => g === EXECUTE_GROUP)).toHaveLength(1)
   })

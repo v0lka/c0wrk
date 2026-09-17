@@ -11,7 +11,7 @@ vi.mock('@/api/config', () => ({
       local_read: { policy: 'allow' },
       remote_read: { policy: 'allow' },
       local_write: { policy: 'user_confirm' },
-      execute: { policy: 'user_confirm', blacklist: ['rm\\s+-rf\\s+/'] },
+      execute: { policy: 'user_confirm', blocklist: ['rm\\s+-rf\\s+/'] },
       local_mcp: { policy: 'user_confirm' },
       remote_mcp: { policy: 'user_confirm' },
       remote_write: { policy: 'user_confirm' },
@@ -131,7 +131,7 @@ describe('SecuritySettings — group schema', () => {
 
     expect(updateSecuritySettingsMock).toHaveBeenCalledTimes(1)
     const payload = updateSecuritySettingsMock.mock.calls[0]![0] as {
-      groups: Record<string, { policy: string; blacklist?: string[] }>
+      groups: Record<string, { policy: string; blocklist?: string[] }>
       default_policy?: unknown
       tool_policies?: unknown
       auto_approve_workspace_writes: boolean
@@ -142,7 +142,7 @@ describe('SecuritySettings — group schema', () => {
       ['execute', 'local_mcp', 'local_read', 'local_write', 'remote_mcp', 'remote_read', 'remote_write'],
     )
     expect(payload.groups['execute']!.policy).toBe('deny')
-    expect(payload.groups['execute']!.blacklist).toEqual(['rm\\s+-rf\\s+/'])
+    expect(payload.groups['execute']!.blocklist).toEqual(['rm\\s+-rf\\s+/'])
     expect(payload.groups['local_read']!.policy).toBe('allow')
     expect(payload.default_policy).toBeUndefined()
     expect(payload.tool_policies).toBeUndefined()
@@ -152,7 +152,7 @@ describe('SecuritySettings — group schema', () => {
 
   it('a failed save surfaces the backend error and reverts the UI to the enforced settings', async () => {
     updateSecuritySettingsMock.mockRejectedValueOnce(
-      new Error('security group "execute" blacklist pattern "(" does not compile'),
+      new Error('security group "execute" blocklist pattern "(" does not compile'),
     )
     await render()
 
@@ -167,7 +167,7 @@ describe('SecuritySettings — group schema', () => {
 
     // The backend rejection message is visible to the user...
     const text = container.textContent ?? ''
-    expect(text).toContain('blacklist pattern "(" does not compile')
+    expect(text).toContain('blocklist pattern "(" does not compile')
     // ...and the displayed policy re-syncs with the enforced state
     // (execute stays user_confirm from getSecuritySettings, not the
     // optimistic 'deny' that was never persisted). The combobox trigger

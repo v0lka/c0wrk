@@ -784,28 +784,29 @@ func (b *OrchestratorBuilder) UpdateSecurityPolicies(cfg *BuilderConfig) {
 	b.applySecurityPolicies(cfg)
 }
 
-// UpdateShellBlacklist re-registers the shell-execution tool with the
-// execute-group command blacklist from cfg. The blacklist is compiled into
-// the tool instance at construction time, so runtime blacklist edits
+// UpdateShellBlocklist re-registers the shell-execution tool with the
+// execute-group command blocklist from cfg. The blocklist is compiled into
+// the tool instance at construction time, so runtime blocklist edits
 // (security settings UI) require re-registration to take effect without an
 // app restart. A compile failure leaves the previously registered tool in
 // place and is returned to the caller.
-func (b *OrchestratorBuilder) UpdateShellBlacklist(cfg *BuilderConfig) error {
+func (b *OrchestratorBuilder) UpdateShellBlocklist(cfg *BuilderConfig) error {
 	// Fail closed: a hand-built BuilderConfig whose execute group is absent, or
-	// whose blacklist was never materialized (nil), must not re-register the
-	// shell tool with an empty blacklist. ToBuilderConfig back-fills the shipped
-	// defaults for a missing or nil blacklist, so the production path always
-	// reaches here with a non-nil list; this guard only rejects incomplete
-	// programmatic configs. An explicitly emptied (non-nil) list is a deliberate
-	// "clear the blacklist" and is still honoured.
+	// whose blocklist was never materialized (nil), must not re-register the
+	// shell tool with an empty blocklist. ToBuilderConfig materializes an
+	// explicit empty list for a missing or nil blocklist (the shipped-default
+	// era is over: the list is user-authored and empty by default), so the
+	// production path always reaches here with a non-nil list; this guard
+	// only rejects incomplete programmatic configs. An explicitly emptied
+	// (non-nil) list is a deliberate "clear the blocklist" and is honoured.
 	execGroup, ok := cfg.Security.Groups[string(sdktools.GroupExecute)]
 	if !ok {
-		return errors.New("security config is missing the execute group; refusing to compile an empty shell blacklist")
+		return errors.New("security config is missing the execute group; refusing to compile an empty shell blocklist")
 	}
-	if execGroup.Blacklist == nil {
-		return errors.New("security config execute group has no blacklist; refusing to compile an empty shell blacklist")
+	if execGroup.Blocklist == nil {
+		return errors.New("security config execute group has no blocklist; refusing to compile an empty shell blocklist")
 	}
-	return tools.UpdateShellTool(b.registry, execGroup.Blacklist, builtins.BashTimeouts{
+	return tools.UpdateShellTool(b.registry, execGroup.Blocklist, builtins.BashTimeouts{
 		MaxTimeout: time.Duration(cfg.Timeouts.BashMaxTimeout) * time.Second,
 		WaitDelay:  time.Duration(cfg.Timeouts.BashWaitDelay) * time.Second,
 	})
@@ -2528,18 +2529,18 @@ func resolveSamplingFunc(s BuilderModelProfilesConfig) llm.SamplingFunc {
 
 // configToBuiltinToolsConfig converts BuilderConfig to BuiltinToolsConfig.
 // configToBuiltinToolsConfig maps a BuilderConfig into the tool-registration
-// config. (See the call site for the blacklist sourcing note.)
+// config. (See the call site for the blocklist sourcing note.)
 func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
-	// The command blacklist is sourced from the execute group
-	// (security.groups.execute.blacklist) and compiled into the shell-exec
+	// The command blocklist is sourced from the execute group
+	// (security.groups.execute.blocklist) and compiled into the shell-exec
 	// tool, whose Judge reports a match as a hard escalation naming the
-	// pattern. Presence-based: an explicitly empty blacklist ([] in YAML)
-	// clears the patterns, while an absent group leaves them unset (the
-	// config loader back-fills defaults, so this only affects programmatically
-	// built configs).
-	var shellBlacklist []string
+	// pattern. Presence-based and empty by default: an explicitly empty
+	// blocklist ([] in YAML) and an absent one both compile to "no patterns"
+	// (the config loader back-fills the entry, so a nil here only affects
+	// programmatically built configs).
+	var shellBlocklist []string
 	if execGroup, ok := cfg.Security.Groups[string(sdktools.GroupExecute)]; ok {
-		shellBlacklist = execGroup.Blacklist
+		shellBlocklist = execGroup.Blocklist
 	}
 
 	return tools.BuiltinToolsConfig{
@@ -2561,7 +2562,7 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 			MaxTimeout: time.Duration(cfg.Timeouts.BashMaxTimeout) * time.Second,
 			WaitDelay:  time.Duration(cfg.Timeouts.BashWaitDelay) * time.Second,
 		},
-		ShellBlacklist: shellBlacklist,
+		ShellBlocklist: shellBlocklist,
 		SearchProvider: cfg.Search.Provider,
 		SearchAPIKey:   cfg.ExpandEnvVars(cfg.Search.APIKey),
 		SearchTimeout:  time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,

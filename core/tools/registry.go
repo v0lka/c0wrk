@@ -394,10 +394,11 @@ func (r *ToolRegistry) RegisterWithSource(tool sdktools.Tool, source string) {
 //  4. pre-execute hook,
 //  5. group policy deny → block,
 //  6. group policy allow: tool Judge + symlink signals — a HARD reason
-//     (command blacklist, SSRF, symlink escape) forces a confirmation the
-//     advisory judge cannot weaken; a SOFT reason (path containment) goes to
-//     Smart Approve and confirms unless the strict judge allows; a clean call
-//     executes,
+//     (command blocklist, the flowsh shell-analysis controls, SSRF, symlink
+//     escape) escalates through Smart Approve, where the canonical backstop
+//     (isCanonicalHardReason) forces a user confirmation even on a strict
+//     ALLOW; a SOFT reason (path containment) goes to Smart Approve and
+//     confirms unless the strict judge allows; a clean call executes,
 //  7. group policy user_confirm: local_write tools with
 //     auto_approve_workspace_writes whose paths resolve inside the session
 //     roots execute; everything else goes through Smart Approve (never around
@@ -488,6 +489,14 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		}, nil
 	}
 
+	// Shell-exec tools (bash_exec/posh_exec): run the deterministic flowsh
+	// analysis ONCE per call and attach the digest to ctx. The tool's own
+	// Judge consumes it through sdktools.ShellJudgeOutcome (its blocklist
+	// stage aside, its criteria come exclusively from the attached analysis),
+	// and smartApproveOrConfirm forwards the same digest to the strict judge
+	// as static-analysis evidence — one analysis, every judge.
+	ctx = AttachShellAnalysis(ctx, name, input, r.log())
+
 	// Tool-local safety signals, gathered once and shared by every policy
 	// branch below:
 	//   - the tool's own Judge (command blacklist / SSRF = hard; path
@@ -564,6 +573,59 @@ func judgeToolCall(ctx context.Context, tool sdktools.Tool, input json.RawMessag
 		return judger.Judge(ctx, input)
 	}
 	return sdktools.JudgeOutcome{}
+}
+
+// isShellToolName reports whether the named tool is one of the shell-exec
+// pair (sdktools' isShellTool equivalent — unexported there, so this local
+// name-keyed check mirrors it via the exported name constants). Shell-exec
+// tools are the only ones with a deterministic flowsh analysis digest.
+func isShellToolName(name string) bool {
+	return name == sdktools.ToolBashExec || name == sdktools.ToolPoshExec
+}
+
+// AttachShellAnalysis runs the deterministic flowsh analysis
+// (sdktools.AnalyzeShellCommandForJudge) for a shell-exec call ONCE and
+// attaches the digest to ctx via sdktools.WithShellAnalysis, so every judge
+// downstream sees the same evidence without re-running the engine: the
+// tool's own SDK Judge (sdktools.ShellJudgeOutcome), the strict judge
+// (StrictJudgeRequest.AnalysisContext, see smartApproveOrConfirm), and the
+// advisory judge (its in-prompt analysis block). Non-shell tools return ctx
+// unchanged. Analysis failures are attached as (nil, err) — the judges
+// degrade to their no-digest behavior and the error is logged; hosts that
+// must fail closed inspect the error themselves. Exported for the backend
+// advisory path (backend/application.go evaluateJudgeWith).
+func AttachShellAnalysis(ctx context.Context, name string, input json.RawMessage, log *slog.Logger) context.Context {
+	if !isShellToolName(name) {
+		return ctx
+	}
+	analysis, err := sdktools.AnalyzeShellCommandForJudge(ctx, name, input)
+	if err != nil {
+		if log != nil {
+			log.Warn("security: shell command analysis failed; judges run without the digest", "tool", name, "error", err)
+		}
+	}
+	return sdktools.WithShellAnalysis(ctx, analysis, err)
+}
+
+// shellAnalysisContext extracts the marshaled digest for the strict judge's
+// AnalysisContext field (a single-line JSON document, see
+// sdktools.ShellAnalysisDigest): "" for non-shell tools, when no analysis is
+// attached, or when the attached one carries an error (the strict judge then
+// evaluates without the static-analysis evidence, same as the SDK judges).
+func shellAnalysisContext(ctx context.Context, name string) string {
+	if !isShellToolName(name) {
+		return ""
+	}
+	analysis, err := sdktools.ShellAnalysisFrom(ctx)
+	if err != nil || analysis == nil {
+		return ""
+	}
+	digest, mErr := json.Marshal(analysis.Digest)
+	if mErr != nil {
+		// Defensive: ShellAnalysisDigest contains only marshalable fields.
+		return ""
+	}
+	return string(digest)
 }
 
 // safetyReasons carries the folded tool-local safety signals through the
@@ -647,13 +709,19 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 		if judgeObserver != nil {
 			judgeObserver(ctx, JudgePhaseStarted, name)
 		}
+		// Shell-exec calls (clean and escalated alike) carry the
+		// host-precomputed flowsh digest in ctx (AttachShellAnalysis ran
+		// before the tool's own Judge); forward it as the strict judge's
+		// static-analysis evidence. Non-shell tools and failed analyses
+		// yield "" and the envelope omits the field.
 		verdict, reasoning, judgeErr = strictJudge.JudgeStrict(ctx, sdktools.StrictJudgeRequest{
-			ToolName:       name,
-			Input:          input,
-			TaskContext:    sdktools.TaskContextFrom(ctx),
-			ToolSource:     source,
-			JudgeReasoning: reason,
-			JudgeSeverity:  severity,
+			ToolName:        name,
+			Input:           input,
+			TaskContext:     sdktools.TaskContextFrom(ctx),
+			ToolSource:      source,
+			JudgeReasoning:  reason,
+			JudgeSeverity:   severity,
+			AnalysisContext: shellAnalysisContext(ctx, name),
 		})
 		if judgeObserver != nil {
 			judgeObserver(ctx, JudgePhaseFinished, name)
@@ -698,18 +766,28 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 // isCanonicalHardReason reports whether a fired hard safety reason must never
 // be auto-approved by the strict judge. Canonical codes cover two classes:
 // a security control that fired on unmistakably dangerous behavior (a command
-// blacklist match, an SSRF escape target, a symlink escape out of the
-// session roots, a write into git internals) AND an input whose safety the
-// judge is structurally unable to assess — degraded SSRF protection, an
-// undeterminable URL or path — because the judge sees only the prose, not the
-// DNS resolution or filesystem state the deterministic control lacked.
-// Codes are the typed cross-repo contract from sp4rk
-// (sdktools.JudgeReasonCode): prose matching would silently break when sp4rk
-// rewords a reason, an empty/unknown code stays non-canonical (the strict
-// judge may positively clear it).
+// blocklist match, a flowsh shell-analysis control — exfiltration flow,
+// privilege escalation, a system-path/raw-device write, an irreversible
+// destructive write outside the session roots, a download cradle — an SSRF
+// escape target, a symlink escape out of the session roots, a write into git
+// internals) AND an input whose safety the judge is structurally unable to
+// assess — degraded SSRF protection, an undeterminable URL or path — because
+// the judge sees only the prose, not the DNS resolution or filesystem state
+// the deterministic control lacked. The flowsh ⊤ limitation
+// (ReasonCodeCommandUnboundedAnalysis, "the analyzer could not bound this
+// command") is deliberately NON-canonical: it is an analysis limitation the
+// strict judge may positively clear, not a fired control. Codes are the
+// typed cross-repo contract from sp4rk (sdktools.JudgeReasonCode): prose
+// matching would silently break when sp4rk rewords a reason, an empty/unknown
+// code stays non-canonical (the strict judge may positively clear it).
 func isCanonicalHardReason(code sdktools.JudgeReasonCode) bool {
 	switch code {
 	case sdktools.ReasonCodeCommandBlacklist,
+		sdktools.ReasonCodeCommandExfilFlow,
+		sdktools.ReasonCodeCommandPrivilegeEscalation,
+		sdktools.ReasonCodeCommandSystemWrite,
+		sdktools.ReasonCodeCommandDestructiveOutsideRoots,
+		sdktools.ReasonCodeCommandDownloadCradle,
 		sdktools.ReasonCodeSSRFPrivateAddress,
 		sdktools.ReasonCodeSSRFDegraded,
 		sdktools.ReasonCodeUnassessableURL,

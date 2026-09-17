@@ -376,7 +376,14 @@ func (app *Application) EvaluateJudgeForSession(ctx context.Context, sessionID, 
 
 // evaluateJudgeWith runs a single judge evaluation and prefixes the reasoning
 // for safe verdicts so the UI can display contextual info.
+//
+// Shell-exec tools (bash_exec/posh_exec) get the deterministic flowsh digest
+// attached to ctx first (the Ask-Agent advisory path): the advisory judge
+// renders it as its in-prompt "Static Analysis Report" block, so a manual
+// judge evaluation sees the same evidence the strict judge and the tool's own
+// Judge consume. The digest never overrides the verdict — it is evidence.
 func evaluateJudgeWith(ctx context.Context, judge *sdktools.ToolJudge, toolName string, input json.RawMessage, taskContext string) (sdktools.JudgeVerdict, string, error) {
+	ctx = coretools.AttachShellAnalysis(ctx, toolName, input, nil)
 	verdict, reasoning, err := judge.Judge(ctx, toolName, input, taskContext)
 	if err != nil {
 		return verdict, reasoning, err
