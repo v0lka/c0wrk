@@ -3,10 +3,12 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useFileViewerData } from '@/hooks/useFileViewerData'
 import { CodeMirrorFileViewer } from '@/components/fileViewer/CodeMirrorFileViewer'
 import { DiffHunkNavBar } from '@/components/fileViewer/DiffHunkNavBar'
+import { ImageFileViewer } from '@/components/fileViewer/ImageFileViewer'
 import { PlanEditor } from '@/components/fileViewer/PlanEditor'
 import { ReviewPage } from '@/components/review/ReviewPage'
 import { ResearchWorkspace } from '@/components/research/ResearchWorkspace'
 import { PaperWorkspace } from '@/components/papers/PaperWorkspace'
+import { isImageFilePath } from '@/lib/fileViewerUtils'
 import { RESEARCH_TAB_PATH } from '@/stores/researchStore'
 import { PAPER_TAB_PREFIX } from '@/stores/paperStore'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -81,6 +83,21 @@ export function FileViewerContent() {
         <p className="text-sm text-destructive text-center">{fileData.error}</p>
       </div>
     )
+  }
+
+  // Image files render as a picture (with pan/zoom) rather than text. The
+  // loader supplies `imageDataUrl`; checked BEFORE the binary branch because
+  // image bytes also contain null bytes and would otherwise be reported as an
+  // unsupported format.
+  if (isImageFilePath(activeFile)) {
+    if (!fileData.imageDataUrl) {
+      return (
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-sm text-muted-foreground">Unsupported file format</p>
+        </div>
+      )
+    }
+    return <ImageFileViewer dataUrl={fileData.imageDataUrl} path={activeFile} />
   }
 
   if (fileData.isBinary) {

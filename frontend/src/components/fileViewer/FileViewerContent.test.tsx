@@ -19,6 +19,11 @@ vi.mock('@/components/papers/PaperWorkspace', () => ({
     <div data-testid="paper-workspace" data-slug={slug} />
   ),
 }))
+vi.mock('@/components/fileViewer/ImageFileViewer', () => ({
+  ImageFileViewer: ({ dataUrl, path }: { dataUrl: string; path: string }) => (
+    <div data-testid="image-viewer" data-src={dataUrl} data-path={path} />
+  ),
+}))
 
 import { FileViewerContent } from './FileViewerContent'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
@@ -93,5 +98,43 @@ describe('FileViewerContent — paper tab routing', () => {
     })
     renderContent()
     expect(document.querySelector('[data-testid="paper-workspace"]')).toBeNull()
+  })
+})
+
+describe('FileViewerContent — image routing', () => {
+  const imagePath = '/ws/assets/plot.png'
+
+  it('routes an image path to the image viewer with the data URL', () => {
+    act(() => {
+      useFileViewerStore.setState({
+        openTabs: [imagePath],
+        activeFile: imagePath,
+        files: {
+          [imagePath]: {
+            content: '',
+            loading: false,
+            imageDataUrl: 'data:image/png;base64,AAA',
+          },
+        },
+      })
+    })
+    renderContent()
+    const el = document.querySelector('[data-testid="image-viewer"]')
+    expect(el).not.toBeNull()
+    expect(el?.getAttribute('data-src')).toBe('data:image/png;base64,AAA')
+    expect(el?.getAttribute('data-path')).toBe(imagePath)
+  })
+
+  it('shows the unsupported-format notice for an image path lacking a data URL', () => {
+    act(() => {
+      useFileViewerStore.setState({
+        openTabs: [imagePath],
+        activeFile: imagePath,
+        files: { [imagePath]: { content: '', loading: false } },
+      })
+    })
+    renderContent()
+    expect(document.querySelector('[data-testid="image-viewer"]')).toBeNull()
+    expect(document.body.textContent).toContain('Unsupported file format')
   })
 })

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { fileNameFromPath, isBinaryContent } from './fileViewerUtils'
+import { fileNameFromPath, isBinaryContent, isImageFilePath } from './fileViewerUtils'
 
 describe('fileNameFromPath', () => {
   it('extracts the basename from a regular path', () => {
@@ -39,5 +39,40 @@ describe('isBinaryContent', () => {
 
   it('returns true for content with null bytes', () => {
     expect(isBinaryContent('hello\0world')).toBe(true)
+  })
+})
+
+describe('isImageFilePath', () => {
+  it('returns true for the supported image extensions', () => {
+    for (const ext of ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'svg', 'avif']) {
+      expect(isImageFilePath(`/ws/assets/pic.${ext}`)).toBe(true)
+    }
+  })
+
+  it('is case-insensitive', () => {
+    expect(isImageFilePath('/ws/PHOTO.PNG')).toBe(true)
+    expect(isImageFilePath('/ws/Photo.Jpg')).toBe(true)
+  })
+
+  it('returns false for non-image extensions', () => {
+    expect(isImageFilePath('/ws/src/main.ts')).toBe(false)
+    expect(isImageFilePath('/ws/README.md')).toBe(false)
+    expect(isImageFilePath('/ws/data.csv')).toBe(false)
+  })
+
+  it('returns false for files without an extension', () => {
+    expect(isImageFilePath('/ws/README')).toBe(false)
+    expect(isImageFilePath('/ws/Makefile')).toBe(false)
+  })
+
+  it('returns false for synthetic pseudo-paths', () => {
+    expect(isImageFilePath('c0wrk:review')).toBe(false)
+    expect(isImageFilePath('c0wrk:commit:abcdef1234567890')).toBe(false)
+    expect(isImageFilePath('c0wrk:paper:vaswani-2017-attention')).toBe(false)
+  })
+
+  it('judges by the final extension only (dotted directory names)', () => {
+    expect(isImageFilePath('/ws/a.b/c')).toBe(false)
+    expect(isImageFilePath('/ws/a.b/photo.png')).toBe(true)
   })
 })

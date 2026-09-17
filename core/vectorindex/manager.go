@@ -3,7 +3,6 @@ package vectorindex
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -484,9 +483,18 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 		m.workspacePath = ""
 		m.mu.Unlock()
 		m.stopDebounce()
-		if err := m.service.SetProject(projectID, ""); err != nil {
-			return fmt.Errorf("resetting vector index for No Project: %w", err)
-		}
+		// Drop readiness before the (possibly deferred) reset below so a search
+		// issued in the interim never serves the outgoing project's collection.
+		m.service.SetReady(false)
+		// Non-blocking: the reset is cheap, but it needs the service write lock,
+		// which an in-flight persistent DB open (initProject's SetProject) holds
+		// for its entire chromem gob-decode — minutes on a large index (tens of
+		// thousands of documents per branch collection). Waiting for it here held
+		// the backend's switchMu for that whole window, so every later CHAT/CODE
+		// toggle died on its bounded acquire — the "clicking CHAT does nothing for
+		// minutes" failure. ResetForNoProject returns at once and lets that open
+		// apply the reset as its final act.
+		m.service.ResetForNoProject(projectID)
 		return nil
 	}
 
@@ -590,6 +598,19 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 	if err := ctx.Err(); err != nil {
 		m.logger.Info("vector index init cancelled before start", "project", projectID)
 		return
+	}
+
+	// Announce the pass BEFORE the open. Opening the persistent DB can take
+	// minutes on a large index (the chromem gob-decode of every branch
+	// collection), and until the first progress callback the frontend has no
+	// status at all: the status bar renders nothing (IndexingStatus hides
+	// itself on the default "idle" state) and the search panel claims no
+	// project is selected. Reporting "indexing" up front keeps the UI honest
+	// for the whole open — the manager's own status too, so
+	// GetVectorIndexStatus agrees with the event.
+	m.setStatus(map[string]any{"state": IndexStateIndexing, "phase": PhaseBoth})
+	if cbs.OnProgress != nil {
+		cbs.OnProgress(PhaseBoth, IndexStateIndexing, 0, 0, "")
 	}
 
 	// SetProject loads the persistent chromem DB. This is the dominant cost

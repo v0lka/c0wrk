@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/base64"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -201,6 +202,136 @@ func TestReadFile_NestedPath(t *testing.T) {
 	}
 	if content != testContent {
 		t.Errorf("expected content %q, got %q", testContent, content)
+	}
+}
+
+// --- ReadImageAsDataURL / ReadFileAsDataURL tests ---
+
+// TestReadImageAsDataURL_OutsideWorkspaceReadable verifies the relaxed
+// (non-contained) contract of the image viewer's read path: an image the agent
+// surfaced anywhere on disk must render, mirroring ReadFile for text.
+func TestReadImageAsDataURL_OutsideWorkspaceReadable(t *testing.T) {
+	tmpDir := t.TempDir()
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+
+	// Small PNG signature bytes — content is opaque to the RPC.
+	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "plot.png")
+	if err := os.WriteFile(outsidePath, png, 0o644); err != nil {
+		t.Fatalf("failed to write image: %v", err)
+	}
+
+	got, err := f.ReadImageAsDataURL(outsidePath)
+	if err != nil {
+		t.Fatalf("expected out-of-workspace image to be readable, got error: %v", err)
+	}
+	want := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+	if got != want {
+		t.Errorf("expected %q, got %q", want, got)
+	}
+}
+
+func TestReadImageAsDataURL_FileNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+
+	if _, err := f.ReadImageAsDataURL(filepath.Join(tmpDir, "missing.png")); err == nil {
+		t.Fatal("expected error for nonexistent image")
+	}
+}
+
+// TestReadImageAsDataURL_LineAnchorStripped mirrors ReadFile: a trailing
+// "#L<n>" anchor from the viewer is stripped before the read.
+func TestReadImageAsDataURL_LineAnchorStripped(t *testing.T) {
+	tmpDir := t.TempDir()
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+
+	png := []byte{0x89, 'P', 'N', 'G'}
+	p := filepath.Join(tmpDir, "pic.png")
+	if err := os.WriteFile(p, png, 0o644); err != nil {
+		t.Fatalf("failed to write image: %v", err)
+	}
+
+	if _, err := f.ReadImageAsDataURL(p + "#L3"); err != nil {
+		t.Fatalf("expected anchored path to read %q, got error: %v", p, err)
+	}
+}
+
+// TestReadFileAsDataURL_RetainsContainment guards the security boundary: the
+// markdown auto-render path must stay workspace-contained and reject an
+// out-of-workspace file, unlike ReadImageAsDataURL.
+func TestReadFileAsDataURL_RetainsContainment(t *testing.T) {
+	tmpDir := t.TempDir()
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "secret.png")
+	if err := os.WriteFile(outsidePath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	if _, err := f.ReadFileAsDataURL(outsidePath); err == nil {
+		t.Fatal("expected containment error for out-of-workspace path")
+	}
+}
+
+// TestReadFileAsDataURL_Contained verifies the happy path still encodes a
+// contained file with an image MIME.
+func TestReadFileAsDataURL_Contained(t *testing.T) {
+	tmpDir := t.TempDir()
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+
+	svg := []byte("<svg/>")
+	p := filepath.Join(tmpDir, "pic.svg")
+	if err := os.WriteFile(p, svg, 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	got, err := f.ReadFileAsDataURL(p)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString(svg)
+	if got != want {
+		t.Errorf("expected %q, got %q", want, got)
+	}
+}
+
+func TestReadFileAsDataURL_TooLarge(t *testing.T) {
+	tmpDir := t.TempDir()
+	p := filepath.Join(tmpDir, "big.bin")
+	if err := os.WriteFile(p, make([]byte, 16), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	if _, err := readFileAsDataURL(p, 8); err == nil {
+		t.Fatal("expected size-guard error for oversized file")
+	}
+}
+
+// TestMimeByExtension_ImageFormats pins the deterministic image MIME mapping so
+// a host with a sparse mime.types registry still produces a paintable data URL.
+func TestMimeByExtension_ImageFormats(t *testing.T) {
+	cases := map[string]string{
+		"a.png":  "image/png",
+		"a.PNG":  "image/png",
+		"a.jpg":  "image/jpeg",
+		"a.jpeg": "image/jpeg",
+		"a.gif":  "image/gif",
+		"a.webp": "image/webp",
+		"a.bmp":  "image/bmp",
+		"a.ico":  "image/x-icon",
+		"a.svg":  "image/svg+xml",
+		"a.avif": "image/avif",
+	}
+	for path, want := range cases {
+		if got := mimeByExtension(path); got != want {
+			t.Errorf("mimeByExtension(%q) = %q, want %q", path, got, want)
+		}
+	}
+	if got := mimeByExtension("a.unknownext"); got != "application/octet-stream" {
+		t.Errorf("unknown extension: got %q, want application/octet-stream", got)
 	}
 }
 

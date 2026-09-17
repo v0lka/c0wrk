@@ -102,6 +102,28 @@ export async function readFileAsDataURL(filePath: string): Promise<string> {
   }
 }
 
+/**
+ * Fetch a local file's bytes as a `data:` URL (base64-encoded) for the file
+ * viewer's image tab. Unlike `readFileAsDataURL` (workspace-contained, used by
+ * the markdown auto-render path) this RPC is NOT workspace-contained, so the
+ * viewer can display an image the agent surfaced anywhere on disk — mirroring
+ * `readFile`. It is invoked only on an explicit user action (opening an image
+ * tab), never during automatic rendering.
+ */
+export async function readImageAsDataURL(filePath: string): Promise<string> {
+  try {
+    const app = getApp()
+    const result = await app.ReadImageAsDataURL(filePath)
+    if (typeof result !== 'string') {
+      throw new Error('readImageAsDataURL: backend returned non-string data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to read image as data URL:', err)
+    throw err
+  }
+}
+
 export async function getFileDiff(filePath: string): Promise<string> {
   try {
     const app = getApp()

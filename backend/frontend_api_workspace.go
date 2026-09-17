@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/epilande/go-devicons"
 	"github.com/v0lka/sp4rk/ignore"
@@ -244,16 +245,63 @@ func (f *FrontendAPI) ReadFile(filePath string) (string, error) {
 	return string(content), nil
 }
 
+// maxDataURLSize caps a data-URL payload at 8 MiB so a huge binary is never
+// streamed through the IPC channel in a single base64 string.
+const maxDataURLSize = 8 << 20
+
+// imageMimeByExt pins the media type for the image formats the file viewer and
+// the markdown renderer must always render, independent of the host MIME
+// registry. mime.TypeByExtension consults the OS mime.types on Unix, which is
+// not guaranteed to know bmp/ico/avif (or may be absent entirely); the
+// application/octet-stream fallback would make the webview refuse to paint the
+// image. Keeping the mapping explicit makes image rendering deterministic
+// across platforms.
+var imageMimeByExt = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+	".bmp":  "image/bmp",
+	".ico":  "image/x-icon",
+	".svg":  "image/svg+xml",
+	".avif": "image/avif",
+}
+
 // mimeByExtension returns the media type for a path based on its extension,
-// falling back to application/octet-stream when unknown. The standard
-// library's mime map is aware of the common image formats
-// (png, jpg/jpeg, gif, webp, svg, bmp, ico).
+// falling back to application/octet-stream when unknown. Image extensions are
+// resolved from imageMimeByExt first (deterministic across platforms); every
+// other extension uses the standard library's registry, which knows the common
+// image formats (png, jpg/jpeg, gif, webp, svg) as well.
 func mimeByExtension(path string) string {
-	mt := mime.TypeByExtension(filepath.Ext(path))
-	if mt != "" {
+	ext := strings.ToLower(filepath.Ext(path))
+	if mt, ok := imageMimeByExt[ext]; ok {
+		return mt
+	}
+	if mt := mime.TypeByExtension(ext); mt != "" {
 		return mt
 	}
 	return "application/octet-stream"
+}
+
+// readFileAsDataURL reads absPath and returns it as a data URL (RFC 2397):
+// "data:<mime>;base64,<payload>". A file larger than maxSize is rejected so a
+// huge binary never travels through the IPC channel in one base64 string.
+func readFileAsDataURL(absPath string, maxSize int64) (string, error) {
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to stat file: %w", err)
+	}
+	if info.Size() > maxSize {
+		return "", fmt.Errorf("file too large (%d bytes, max %d)", info.Size(), maxSize)
+	}
+
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read file: %w", err)
+	}
+
+	return "data:" + mimeByExtension(absPath) + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
 // ReadFileAsDataURL returns the bytes of a file encoded as a data URL
@@ -277,23 +325,27 @@ func (f *FrontendAPI) ReadFileAsDataURL(filePath string) (string, error) {
 		return "", err
 	}
 
-	const maxSize = 8 << 20 // 8 MiB
-	info, err := os.Stat(absPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to stat file: %w", err)
-	}
-	if info.Size() > maxSize {
-		return "", fmt.Errorf("file too large (%d bytes, max %d)", info.Size(), maxSize)
-	}
+	return readFileAsDataURL(absPath, maxDataURLSize)
+}
 
-	data, err := os.ReadFile(absPath)
+// ReadImageAsDataURL returns the bytes of a file encoded as a data URL
+// (RFC 2397) for the file viewer's image tab. It is the display counterpart to
+// ReadFileAsDataURL with the OPPOSITE containment contract: it resolves via
+// resolveReadablePath and is therefore NOT workspace-contained — the viewer
+// must be able to show an image the agent surfaced anywhere (e.g. a plot under
+// /tmp, or an SDK asset), exactly like ReadFile does for text.
+//
+// The relaxed contract is safe because this RPC never runs during automatic
+// rendering: it fires only when the user explicitly opens an image file in the
+// viewer, so it does not widen the markdown auto-render attack surface that
+// ReadFileAsDataURL's containment protects. The same size guard
+// (maxDataURLSize) bounds the payload.
+func (f *FrontendAPI) ReadImageAsDataURL(filePath string) (string, error) {
+	absPath, err := f.resolveReadablePath(filePath)
 	if err != nil {
-		return "", fmt.Errorf("failed to read file: %w", err)
+		return "", err
 	}
-
-	mimeType := mimeByExtension(absPath)
-	encoded := base64.StdEncoding.EncodeToString(data)
-	return "data:" + mimeType + ";base64," + encoded, nil
+	return readFileAsDataURL(absPath, maxDataURLSize)
 }
 
 // GetFileDiff returns the unified diff of uncommitted changes for a single

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1128,6 +1129,16 @@ func TestSwitchProject_AcquireSwitchLockTimesOut(t *testing.T) {
 	defer h.close(t)
 	prepareAtomicSwitchHarness(t, h)
 
+	// The bounded-acquire failure must be user-visible: record the emitted
+	// runtime_error (the only channel that reaches the user — the toggle's own
+	// promise rejection is swallowed by the frontend).
+	var busyErrors atomic.Int32
+	h.api.emitEvent = func(name string, _ ...any) {
+		if name == EventRuntimeError {
+			busyErrors.Add(1)
+		}
+	}
+
 	h.api.switchLockTimeoutOverride = 200 * time.Millisecond
 
 	inFirst := make(chan struct{})
@@ -1166,6 +1177,9 @@ func TestSwitchProject_AcquireSwitchLockTimesOut(t *testing.T) {
 	}
 	if elapsed > time.Second {
 		t.Fatalf("second SwitchProject blocked for %v, want it bounded by the 200ms deadline", elapsed)
+	}
+	if got := busyErrors.Load(); got != 1 {
+		t.Fatalf("runtime_error emissions = %d, want exactly 1 — the bounded-acquire failure must reach the user", got)
 	}
 }
 

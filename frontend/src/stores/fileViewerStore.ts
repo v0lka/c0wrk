@@ -16,6 +16,13 @@ export interface FileData {
   error?: string
   isBinary?: boolean
   /**
+   * Base64 data URL of the file's bytes when it is a viewable image (see
+   * `isImageFilePath`). The loader populates this instead of `content` for
+   * image files, so the viewer renders the picture directly. Like `content`
+   * it is in-memory only — never persisted (see the store's `partialize`).
+   */
+  imageDataUrl?: string
+  /**
    * Virtual files are not backed by a path on disk (e.g. a blackboard
    * attachment opened as markdown). The file-viewer data loader skips them so
    * it never tries to read or diff a non-existent path; content is supplied
@@ -63,6 +70,7 @@ interface FileViewerActions {
   setFileHunks: (path: string, hunks: HunkDiffInfo[]) => void
   setFileError: (path: string, error: string) => void
   setFileBinary: (path: string) => void
+  setFileImage: (path: string, dataUrl: string) => void
   setFileLoading: (path: string, loading: boolean) => void
   setWidth: (width: number) => void
   setCollapsed: (collapsed: boolean) => void
@@ -279,6 +287,25 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
           files: {
             ...s.files,
             [path]: { ...existing, loading: false, isBinary: true } as FileData,
+          },
+        }
+      }),
+
+      setFileImage: (path, dataUrl) => set((s) => {
+        const existing = s.files[path]
+        return {
+          files: {
+            ...s.files,
+            [path]: {
+              ...existing,
+              imageDataUrl: dataUrl,
+              loading: false,
+              // A successful image read supersedes any prior binary/error
+              // verdict for this path (e.g. a stale flag from a different
+              // content type at the same path).
+              error: undefined,
+              isBinary: undefined,
+            } as FileData,
           },
         }
       }),
