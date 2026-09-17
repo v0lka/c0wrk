@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted
+Accepted — amended by [ADR-051](./051-proxy-wins-over-tls-pin.md), which
+settles the pin's interaction with the configured HTTP proxy (proxy wins;
+the pin applies only on direct connections). All other decisions remain in
+force.
 
 ## Context
 

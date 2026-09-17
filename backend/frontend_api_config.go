@@ -1512,12 +1512,22 @@ func (f *FrontendAPI) ListProviderModels(req ListProviderModelsRequest) ([]strin
 // is being fetched; verification is deliberately skipped here, the user pins
 // the result afterwards. baseURL from the request (draft form value) wins
 // over the persisted provider base_url; env vars are expanded for both.
+//
+// The probe dials the endpoint DIRECTLY (it does not consult the configured
+// HTTP proxy), so when a proxy is enabled the fetched pin would never be
+// used: the proxy-wins rule (ADR-051) makes the pin inert while the proxy is
+// active. The call is rejected up front with an actionable error instead of
+// handing the user a pin that silently does nothing.
 func (f *FrontendAPI) GetProviderTLSCertificate(req GetProviderTLSCertificateRequest) (TLSCertificateResponse, error) {
 	if req.Provider == "" {
 		return TLSCertificateResponse{}, errors.New("provider is required")
 	}
 
 	f.configMu.RLock()
+	// Effective proxy state mirrors proxy.BuildTransport: enabled AND a URL
+	// must both be set; an enabled-but-empty proxy dials directly, so the pin
+	// stays meaningful there.
+	proxyEnabled := f.config != nil && f.config.Proxy.Enabled && f.config.Proxy.URL != ""
 	var persisted string
 	if f.config != nil {
 		// Canonical provider list carries the raw (env-var) base URL; the
@@ -1530,6 +1540,10 @@ func (f *FrontendAPI) GetProviderTLSCertificate(req GetProviderTLSCertificateReq
 		}
 	}
 	f.configMu.RUnlock()
+
+	if proxyEnabled {
+		return TLSCertificateResponse{}, errors.New("TLS fingerprint fetching is unavailable while an HTTP proxy is enabled (Settings → General → HTTP Proxy): the pin does not apply to proxied connections. Disable the proxy to pin this server's certificate")
+	}
 
 	raw := req.BaseURL
 	if raw == "" {

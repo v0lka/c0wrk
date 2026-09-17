@@ -55,6 +55,7 @@ export function LLMSettings({
     providerConfigs,
     openaiCompatibleProviderNames,
     anthropicCompatibleProviderNames,
+    proxyActive,
     isLoading,
     setDefaultModel,
     updateProviderConfig,
@@ -313,6 +314,7 @@ export function LLMSettings({
         onConfigChange={updateProviderConfig}
         onToggleModel={toggleModel}
         defaultModel={defaultModel}
+        proxyActive={proxyActive}
       />
 
       {/* OpenAI-Compatible Provider Accordions */}
@@ -326,6 +328,7 @@ export function LLMSettings({
         onDelete={deleteProvider}
         defaultModel={defaultModel}
         labelPrefix="OpenAI Compatible"
+        proxyActive={proxyActive}
       />
 
       {/* Anthropic-Compatible Provider Accordions */}
@@ -339,6 +342,7 @@ export function LLMSettings({
         onDelete={deleteProvider}
         defaultModel={defaultModel}
         labelPrefix="Anthropic Compatible"
+        proxyActive={proxyActive}
       />
     </div>
   )

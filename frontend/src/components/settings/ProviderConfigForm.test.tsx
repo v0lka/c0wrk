@@ -151,3 +151,56 @@ describe('ProviderConfigForm TLS section', () => {
     expect(getBtn().disabled).toBe(true)
   })
 })
+
+// --- Proxy-wins rule (ADR-051) ---------------------------------------------
+
+function renderFormWithProxy(provider: string, cfg: Partial<FormConfig>, proxyActive: boolean) {
+  const onConfigChange = vi.fn()
+  const config: FormConfig = {
+    api_key: 'k',
+    base_url: cfg.base_url ?? 'https://llm.lan:8443/v1',
+    models: [],
+    tls_fingerprint: cfg.tls_fingerprint ?? '',
+  }
+  act(() => {
+    root.render(
+      <ProviderConfigForm
+        activeProvider={provider}
+        config={config}
+        apiKeyDirty={false}
+        hasRequiredCredentials
+        modelsLoading={false}
+        onConfigChange={onConfigChange}
+        onApply={vi.fn()}
+        proxyActive={proxyActive}
+      />,
+    )
+  })
+  return { onConfigChange }
+}
+
+describe('ProviderConfigForm proxy-wins (ADR-051)', () => {
+  it('disables the TLS checkbox and shows the proxy comment when a proxy is active', () => {
+    renderFormWithProxy('lmstudio', { tls_fingerprint: 'PIN123' }, true)
+    expect(tlsCheckbox().disabled).toBe(true)
+    expect(document.body.textContent).toContain('Not available while an HTTP proxy is enabled')
+  })
+
+  it('does not show the proxy comment without a proxy', () => {
+    renderFormWithProxy('lmstudio', { tls_fingerprint: 'PIN123' }, false)
+    expect(tlsCheckbox().disabled).toBe(false)
+    expect(document.body.textContent).not.toContain('Not available while an HTTP proxy is enabled')
+  })
+
+  it('disables the Get button while a proxy is active', () => {
+    renderFormWithProxy('lmstudio', { tls_fingerprint: 'PIN123' }, true)
+    expect(getBtn().disabled).toBe(true)
+  })
+
+  it('disables the fingerprint input while a proxy is active', () => {
+    renderFormWithProxy('lmstudio', { tls_fingerprint: 'PIN123' }, true)
+    const input = Array.from(document.querySelectorAll('input'))
+      .find((i) => i.value === 'PIN123') as HTMLInputElement
+    expect(input.disabled).toBe(true)
+  })
+})

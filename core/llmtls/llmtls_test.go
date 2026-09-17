@@ -400,3 +400,44 @@ func TestFetchFingerprint_RejectsMalformedURLs(t *testing.T) {
 		t.Fatal("expected an error for a URL without a host")
 	}
 }
+
+// --- ResolveProviderClient (proxy-wins rule, ADR-051) ----------------------
+
+func TestResolveProviderClient_ProxyWinsOverPin(t *testing.T) {
+	// A configured proxy client is a global network policy: the pin is
+	// ignored and the proxy client is returned VERBATIM (same pointer —
+	// no clone, no derived pinned transport).
+	proxyClient := &http.Client{}
+	got := ResolveProviderClient(proxyClient, "some-nonempty-pin", nil)
+	if got != proxyClient {
+		t.Fatal("expected the proxy client back verbatim when a proxy is configured")
+	}
+}
+
+func TestResolveProviderClient_NoProxyNoPinReturnsNil(t *testing.T) {
+	if got := ResolveProviderClient(nil, "", nil); got != nil {
+		t.Fatalf("expected nil (direct client, system verification), got %v", got)
+	}
+}
+
+func TestResolveProviderClient_NoProxyWithPinReturnsPinnedClient(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	pin := serverPin(t, srv)
+	got := ResolveProviderClient(nil, pin, nil)
+	if got == nil {
+		t.Fatal("expected a pinned client for a non-empty pin without proxy")
+	}
+	// The derived client must actually reach the self-signed server...
+	if err := doGet(t, got, srv.URL); err != nil {
+		t.Fatalf("pinned client failed against self-signed server: %v", err)
+	}
+	// ...while a wrong pin still fails closed.
+	wrong := ResolveProviderClient(nil, "not-the-server-pin-value", nil)
+	if err := doGet(t, wrong, srv.URL); err == nil {
+		t.Fatal("expected wrong-pin client to fail against self-signed server")
+	}
+}

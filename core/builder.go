@@ -1412,13 +1412,13 @@ func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider 
 			if baseURL == "" {
 				return nil, fmt.Errorf("openAI-compatible base URL not configured for provider %q", provider)
 			}
-			// Per-provider TLS override (ADR-050): the model listing must
-			// reach self-signed endpoints exactly like the chat path does.
-			// The proxy client is the base so proxy settings are honored
-			// here too (previously this branch dialed http.DefaultClient,
-			// ignoring the proxy). The pin is the switch: an empty
-			// fingerprint means no override (system verification).
-			client := llmtls.Client(proxyClient, pc.TLSFingerprint, log)
+			// Per-provider TLS override (ADR-050) under the proxy-wins rule
+			// (ADR-051): a configured proxy is a global network policy and
+			// the pin is ignored (the plain proxy client dials, exactly as
+			// before the pin existed); with no proxy, a non-empty
+			// fingerprint yields a direct pinned client so the listing
+			// reaches self-signed endpoints exactly like the chat path.
+			client := llmtls.ResolveProviderClient(proxyClient, pc.TLSFingerprint, log)
 			return listOpenAIModels(ctx, baseURL, apiKey, client)
 		case "anthropic":
 			baseURL := cfg.ExpandEnvVars(pc.BaseURL)
@@ -1431,7 +1431,7 @@ func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider 
 				return llm.BuiltInModelNames("anthropic-api"), nil
 			}
 			apiKey := cfg.ExpandEnvVars(pc.APIKey)
-			client := llmtls.Client(proxyClient, pc.TLSFingerprint, log)
+			client := llmtls.ResolveProviderClient(proxyClient, pc.TLSFingerprint, log)
 			names, err := listAnthropicModels(ctx, baseURL, apiKey, client)
 			if err != nil {
 				b.log().Warn("anthropic-compatible model listing failed; falling back to built-in list",
@@ -1765,13 +1765,14 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	// Iterate in a deterministic order (matching backend/config allProviderEntries)
 	// to ensure the first provider in the list is predictable.
 	providers := make([]llm.ProviderEntry, 0, len(cfg.LLM.ProviderConfigs))
+	proxyActive := proxyClient != nil
 	providerOrder := []string{"anthropic", "chatgpt"}
 	for _, name := range providerOrder {
 		pc, ok := cfg.LLM.ProviderConfigs[name]
 		if !ok || len(pc.Models) == 0 {
 			continue
 		}
-		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, cfg.ExpandEnvVars, b.log()))
+		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyActive, cfg.ExpandEnvVars, b.log()))
 	}
 	// Also include any providers not in the standard order (e.g. future additions).
 	// Collect unknown names and iterate in sorted order for determinism.
@@ -1785,7 +1786,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	sort.Strings(unknown)
 	for _, name := range unknown {
 		pc := cfg.LLM.ProviderConfigs[name]
-		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, cfg.ExpandEnvVars, b.log()))
+		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyActive, cfg.ExpandEnvVars, b.log()))
 	}
 
 	// Model Profiles context-management override: keeps the router's token budget
@@ -1971,9 +1972,11 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 		if !ok {
 			return
 		}
-		// Per-provider TLS override (ADR-050): the lazy context-window probe
-		// must reach self-signed endpoints exactly like the chat path.
-		probeClient := llmtls.Client(proxyClient, tlsFingerprint, log)
+		// Per-provider TLS override (ADR-050) under the proxy-wins rule
+		// (ADR-051): proxy active → plain proxy client; no proxy + pin →
+		// direct pinned client. The probe then reaches self-signed
+		// endpoints exactly like the chat path.
+		probeClient := llmtls.ResolveProviderClient(proxyClient, tlsFingerprint, log)
 		goRun(func() {
 			window, err := probeSelfHostedContextWindow(context.Background(), baseURL, apiKey, model, probeClient)
 			if err != nil {
@@ -2070,12 +2073,14 @@ func buildLLMHTTPClient(proxyClient *http.Client, timeoutSec int) *http.Client {
 
 // providerEntryFromConfig builds one llm.ProviderEntry from a provider's
 // BuilderConfig slice. When the provider carries the per-provider TLS
-// override (a non-empty TLSFingerprint, ADR-050 — the pin is the switch), a
-// dedicated pinned client derived from
-// sharedClient is attached via ProviderEntry.HTTPClient; otherwise the entry
-// leaves HTTPClient nil and the router's shared client is used unchanged.
-// logger (may be nil) flows to llmtls.Client for its custom-RoundTripper Warn.
-func providerEntryFromConfig(name string, pc BuilderProviderConfig, sharedClient *http.Client, expand func(string) string, logger *slog.Logger) llm.ProviderEntry {
+// override (a non-empty TLSFingerprint, ADR-050 — the pin is the switch) AND
+// no proxy is configured (proxy-wins rule, ADR-051), a dedicated pinned
+// client derived from sharedClient is attached via ProviderEntry.HTTPClient;
+// with an active proxy the pin is ignored and the entry leaves HTTPClient
+// nil so the router's shared (proxy) client dials exactly as before the pin
+// existed. logger (may be nil) flows to llmtls.Client for its
+// custom-RoundTripper Warn.
+func providerEntryFromConfig(name string, pc BuilderProviderConfig, sharedClient *http.Client, proxyActive bool, expand func(string) string, logger *slog.Logger) llm.ProviderEntry {
 	entry := llm.ProviderEntry{
 		Name:         name,
 		ProviderType: pc.ProviderType,
@@ -2083,7 +2088,7 @@ func providerEntryFromConfig(name string, pc BuilderProviderConfig, sharedClient
 		BaseURL:      expand(pc.BaseURL),
 		Models:       pc.Models,
 	}
-	if pc.TLSFingerprint != "" {
+	if pc.TLSFingerprint != "" && !proxyActive {
 		entry.HTTPClient = llmtls.Client(sharedClient, pc.TLSFingerprint, logger)
 	}
 	return entry

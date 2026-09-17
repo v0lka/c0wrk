@@ -3807,3 +3807,45 @@ func TestGetProviderTLSCertificate_EnvVarBaseURL(t *testing.T) {
 		t.Errorf("persisted env-var fingerprint = %q, want %q", resp.Fingerprint, want)
 	}
 }
+
+// TestGetProviderTLSCertificate_ProxyGuard verifies the proxy-wins rule on
+// the fingerprint RPC (ADR-051): while an effective proxy (enabled AND a
+// URL) is configured, the Get button is rejected up front with an
+// actionable error instead of fetching a pin that would be inert — and the
+// guard mirrors BuildTransport's effective state, so an enabled-but-empty
+// proxy URL (direct dialing) keeps the button functional.
+func TestGetProviderTLSCertificate_ProxyGuard(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	t.Cleanup(srv.Close)
+
+	// Enabled proxy with a URL: rejected with the actionable message.
+	f.config.Proxy.Enabled = true
+	f.config.Proxy.URL = "http://proxy.example.com:8080"
+	_, err := f.GetProviderTLSCertificate(GetProviderTLSCertificateRequest{
+		Provider: "selfhosted",
+		BaseURL:  srv.URL,
+	})
+	if err == nil {
+		t.Fatal("expected proxy-enabled rejection")
+	}
+	if !strings.Contains(err.Error(), "proxy") {
+		t.Errorf("error should mention the proxy, got: %v", err)
+	}
+
+	// Enabled but EMPTY proxy URL: the effective state is direct (mirrors
+	// proxy.BuildTransport), so the probe must still work.
+	f.config.Proxy.URL = ""
+	resp, err := f.GetProviderTLSCertificate(GetProviderTLSCertificateRequest{
+		Provider: "selfhosted",
+		BaseURL:  srv.URL,
+	})
+	if err != nil {
+		t.Fatalf("enabled-but-empty proxy URL must keep the probe working: %v", err)
+	}
+	want := llmtls.SPKIFingerprint(srv.Certificate())
+	if resp.Fingerprint != want {
+		t.Errorf("fingerprint = %q, want %q", resp.Fingerprint, want)
+	}
+}

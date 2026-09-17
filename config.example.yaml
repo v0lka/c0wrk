@@ -62,6 +62,12 @@ llm:
       #                             verification. There is no separate toggle
       #                             and no "accept any certificate" mode — see
       #                             ADR-050.
+      #   NOTE (ADR-051): while an effective HTTP proxy is enabled
+      #   (proxy.enabled + a proxy.url), this pin is IGNORED — proxied
+      #   connections are verified by the proxy's own TLS config
+      #   (proxy.tls_cert_dir). To pin a server AND use the proxy for
+      #   everything else, add the server's host to proxy.bypass_list
+      #   (a bypassed host dials directly, so its pin applies).
       # tls_fingerprint: ""
 
   anthropic_compatible:
@@ -77,7 +83,8 @@ llm:
     #     - "claude-sonnet-4-20250514"
     #   # Same TLS override as openai_compatible (tls_fingerprint pin,
     #   # see above / ADR-050) — for self-signed Anthropic compatible
-    #   # endpoints.
+    #   # endpoints. Ignored while an effective HTTP proxy is enabled
+    #   # (ADR-051; use proxy.bypass_list to pin + proxy simultaneously).
     #   # tls_fingerprint: ""
 
   chatgpt:

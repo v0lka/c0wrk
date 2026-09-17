@@ -33,6 +33,10 @@ interface UseLLMConfigResult {
     openaiCompatibleProviderNames: Set<string>
     /** Names of providers loaded from the anthropic_compatible map. */
     anthropicCompatibleProviderNames: Set<string>
+    /** Effective proxy state (enabled AND a URL set) mirroring the backend
+     *  proxy.BuildTransport rule — the per-provider TLS pin is inert while
+     *  this is true (proxy-wins, ADR-051). */
+    proxyActive: boolean
     isLoading: boolean
     setDefaultModel: (model: string) => void
     updateProviderConfig: (provider: string, updates: Partial<ProviderConfig>) => void
@@ -112,6 +116,12 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
     const [providerConfigs, setProviderConfigs] = useState<Record<string, ProviderConfig>>({})
     const [openaiCompatibleProviderNames, setOpenaiCompatibleProviderNames] = useState<Set<string>>(new Set())
     const [anthropicCompatibleProviderNames, setAnthropicCompatibleProviderNames] = useState<Set<string>>(new Set())
+    // Effective proxy state (enabled AND a non-empty URL) from the same
+    // getConfig payload the provider configs come from — snapshot at load
+    // time, matching the backend guard in GetProviderTLSCertificate. The
+    // settings dialog remounts LLMSettings on every open, so a proxy toggle
+    // in the General tab is reflected next time the LLM tab is opened.
+    const [proxyActive, setProxyActive] = useState(false)
     const [isLoading, setIsLoading] = useState(true)
 
     // Mutable ref for providerConfigs so setDefaultModel stays stable (fix #5).
@@ -168,6 +178,10 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
             const result = await getConfig()
             const llm = result?.llm
             if (llm) {
+                // Proxy state rides the same getConfig response; the enabled
+                // flag alone is not enough — mirror proxy.BuildTransport's
+                // effective rule (enabled AND a URL).
+                setProxyActive(result?.proxy?.enabled === true && !!result?.proxy?.url)
                 const rawDefault = llm.default_model || ''
                 const configs: Record<string, ProviderConfig> = {}
                 const openaiNames = new Set<string>()
@@ -345,6 +359,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         providerConfigs,
         openaiCompatibleProviderNames,
         anthropicCompatibleProviderNames,
+        proxyActive,
         isLoading,
         setDefaultModel,
         updateProviderConfig,

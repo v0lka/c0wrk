@@ -77,6 +77,30 @@ func Client(base *http.Client, fingerprint string, logger *slog.Logger) *http.Cl
 	return &clone
 }
 
+// ResolveProviderClient picks the HTTP client for one provider dial path
+// according to the proxy-wins rule (ADR-051): a configured proxy is a global
+// network policy and takes precedence over the per-provider TLS pin.
+//
+//	proxyClient != nil → proxyClient, unchanged (pin deliberately ignored)
+//	proxyClient == nil, pin == ""  → nil (direct client, system verification)
+//	proxyClient == nil, pin != ""  → Client(nil, pin, logger): a fresh direct
+//	                                client pinned to the SPKI
+//
+// The proxy branch returns the proxy client verbatim — no clone, no derived
+// transport — so exactly the pre-ADR-050 behavior is restored whenever a
+// proxy is active. The nil return for the no-override case keeps callers
+// free to interpret it as "no client override" (SDK default transport with
+// system verification, no proxy).
+func ResolveProviderClient(proxyClient *http.Client, fingerprint string, logger *slog.Logger) *http.Client {
+	if proxyClient != nil {
+		return proxyClient
+	}
+	if pin := normalizePin(fingerprint); pin != "" {
+		return Client(nil, pin, logger)
+	}
+	return nil
+}
+
 // warnInvalidPin logs a Warn when pin is non-empty but cannot be the base64
 // (standard encoding) form of a 32-byte SHA-256 digest — the only well-formed
 // pin format this package accepts (ADR-050). A malformed pin still flows

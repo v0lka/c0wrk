@@ -2,8 +2,10 @@ package core
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/v0lka/c0wrk/core/llmtls"
@@ -219,4 +221,142 @@ func TestFetchProviderModels_TLSOverrideAnthropic(t *testing.T) {
 	if len(fallback) == 0 || len(fallback) != len(builtin) {
 		t.Fatalf("expected fallback to the built-in anthropic list (%d entries), got: %v", len(builtin), fallback)
 	}
+}
+
+// --- Proxy-wins rule (ADR-051) ---------------------------------------------
+
+// pinnedTransportPresent reports whether client's transport chain carries a
+// TLS client config with a VerifyPeerCertificate callback (the llmtls pinned
+// transport marker). Shared by the proxy-wins assertions below.
+func pinnedTransportPresent(client *http.Client) bool {
+	if client == nil || client.Transport == nil {
+		return false
+	}
+	ht, ok := client.Transport.(*http.Transport)
+	if !ok {
+		return false
+	}
+	return ht.TLSClientConfig != nil && ht.TLSClientConfig.VerifyPeerCertificate != nil
+}
+
+// providerDoGet performs a context-bound GET and closes the body; shared by
+// the proxy-wins tests below.
+func providerDoGet(t *testing.T, httpClient *http.Client, target string) error {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, target, http.NoBody)
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return nil
+}
+
+// TestProviderEntry_ProxyWinsOverPin is the direct assertion of the
+// proxy-wins rule (ADR-051) at the entry-construction layer: with an active
+// proxy the pin is inert — providerEntryFromConfig attaches NO per-entry
+// HTTPClient — while without a proxy the same config yields a pinned client
+// (regression guard for ADR-050).
+func TestProviderEntry_ProxyWinsOverPin(t *testing.T) {
+	srv := newTLSLLMServer(t)
+	pin := llmtls.SPKIFingerprint(srv.Certificate())
+	noexpand := func(s string) string { return s }
+	shared := &http.Client{}
+
+	// Proxy active: pin is inert; the entry dials through the router's
+	// shared (proxy-derived) client exactly as before the pin existed.
+	entry := providerEntryFromConfig("selfhosted", BuilderProviderConfig{
+		ProviderType:   "openai",
+		BaseURL:        srv.URL + "/v1",
+		APIKey:         "k",
+		Models:         []string{"qwen3"},
+		TLSFingerprint: pin,
+	}, shared, true /* proxyActive */, noexpand, nil)
+	if entry.HTTPClient != nil {
+		t.Fatal("expected NO per-entry pinned client while a proxy is configured (proxy-wins rule)")
+	}
+
+	// Without a proxy the same config yields the pinned client (ADR-050).
+	entryDirect := providerEntryFromConfig("selfhosted", BuilderProviderConfig{
+		ProviderType:   "openai",
+		BaseURL:        srv.URL + "/v1",
+		APIKey:         "k",
+		Models:         []string{"qwen3"},
+		TLSFingerprint: pin,
+	}, shared, false /* proxyActive */, noexpand, nil)
+	if !pinnedTransportPresent(entryDirect.HTTPClient) {
+		t.Fatal("expected a pinned per-entry client without a proxy")
+	}
+	if err := providerDoGet(t, entryDirect.HTTPClient, srv.URL+"/v1/models"); err != nil {
+		t.Fatalf("pinned client failed against self-signed server: %v", err)
+	}
+}
+
+// TestFetchProviderModels_ProxyWinsOverPin is the behavioral check of the
+// proxy-wins rule (ADR-051) on the Fetch Models path. The builder's proxy
+// client is a custom RoundTripper standing in for the configured proxy: it
+// answers with the model listing without touching the origin. With the pin
+// configured AND the proxy active, the listing must succeed THROUGH the
+// proxy client — llmtls.Client would have replaced this custom RoundTripper
+// with a default-transport clone that dials the self-signed origin directly
+// and fails, so success here proves the pin was not applied.
+func TestFetchProviderModels_ProxyWinsOverPin(t *testing.T) {
+	srv := newTLSLLMServer(t)
+	pin := llmtls.SPKIFingerprint(srv.Certificate())
+
+	rt := &recordingTransport{body: tlsModelsBody}
+	proxyClient := &http.Client{Transport: rt}
+
+	b, err := NewOrchestratorBuilder(&BuilderConfig{}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewOrchestratorBuilder: %v", err)
+	}
+	b.mu.Lock()
+	b.proxyClient = proxyClient
+	b.mu.Unlock()
+
+	cfg := &BuilderConfig{
+		ExpandEnvVars: func(s string) string { return s },
+		LLM: BuilderLLMConfig{
+			ProviderConfigs: map[string]BuilderProviderConfig{
+				"selfhosted": {
+					ProviderType:   "openai",
+					BaseURL:        srv.URL + "/v1",
+					APIKey:         "k",
+					Models:         []string{"qwen3"},
+					TLSFingerprint: pin,
+				},
+			},
+		},
+	}
+
+	names, err := b.fetchProviderModels(context.Background(), "selfhosted", cfg)
+	if err != nil {
+		t.Fatalf("listing must go through the proxy client with the pin ignored (proxy-wins), got: %v", err)
+	}
+	if len(names) != 1 || names[0] != "qwen3" {
+		t.Fatalf("unexpected model list: %v", names)
+	}
+	if rt.calls != 1 {
+		t.Fatalf("expected the proxy transport to be used exactly once, got %d", rt.calls)
+	}
+}
+
+// recordingTransport is a RoundTripper stand-in for a configured proxy: it
+// counts calls and answers every request with a fixed body.
+type recordingTransport struct {
+	body  string
+	calls int
+}
+
+func (rt *recordingTransport) RoundTrip(_ *http.Request) (*http.Response, error) {
+	rt.calls++
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(rt.body)),
+	}, nil
 }
