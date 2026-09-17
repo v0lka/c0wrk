@@ -298,7 +298,7 @@ export const Markdown = memo(
       </ReactMarkdown>
     ))
     return (
-      <div className={cn('prose prose-sm max-w-none', compact && 'prose-xs', className)}>
+      <div className={cn('prose max-w-none', compact && 'prose-xs', className)}>
         {body}
       </div>
     )
