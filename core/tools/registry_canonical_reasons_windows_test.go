@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	sdktools "github.com/v0lka/sp4rk/tools"
@@ -64,6 +65,12 @@ func platformShellJudgeCases(t *testing.T) []canonicalJudgeCase {
 			name:          "posh unbounded analysis stays clearable",
 			outcome:       judgeWithAnalysis("npm install"),
 			wantCanonical: false,
+		},
+		// A failed analysis fails CLOSED with a hard canonical code.
+		{
+			name:          "posh analysis error fails closed",
+			outcome:       poshTool.Judge(sdktools.WithShellAnalysis(baseCtx, nil, errors.New("kb load failed")), json.RawMessage(`{"command":"Get-ChildItem"}`)),
+			wantCanonical: true,
 		},
 	}
 }

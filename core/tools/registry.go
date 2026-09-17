@@ -499,7 +499,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 
 	// Tool-local safety signals, gathered once and shared by every policy
 	// branch below:
-	//   - the tool's own Judge (command blacklist / SSRF = hard; path
+	//   - the tool's own Judge (command blocklist / SSRF = hard; path
 	//     containment = soft),
 	//   - symlink traversal detection (an escape out of the session roots or
 	//     unresolvable input = hard; a symlink whose resolution stays inside
@@ -510,7 +510,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	reasons := splitSafetyReasons(judgeOutcome, symlinkReason, symlinkCode)
 
 	if policy == sdktools.PolicyAlwaysAllow {
-		// Hard reasons are security-control triggers (command blacklist, SSRF,
+		// Hard reasons are security-control triggers (command blocklist, SSRF,
 		// symlink escapes) or unassessable inputs. They now consult the
 		// strict judge like any other escalation, but the deterministic
 		// backstop in smartApproveOrConfirm still forces a user confirmation
@@ -590,10 +590,19 @@ func isShellToolName(name string) bool {
 // tool's own SDK Judge (sdktools.ShellJudgeOutcome), the strict judge
 // (StrictJudgeRequest.AnalysisContext, see smartApproveOrConfirm), and the
 // advisory judge (its in-prompt analysis block). Non-shell tools return ctx
-// unchanged. Analysis failures are attached as (nil, err) — the judges
-// degrade to their no-digest behavior and the error is logged; hosts that
-// must fail closed inspect the error themselves. Exported for the backend
-// advisory path (backend/application.go evaluateJudgeWith).
+// unchanged.
+//
+// A failed analysis (e.g. the flowsh analyzer's knowledge base could not be
+// loaded — a sticky, process-lifetime failure) is attached as (nil, err) and
+// logged. The shell tools' Judge then FAILS CLOSED: sdktools.ShellJudgeOutcome
+// turns the attachment error into a hard canonical
+// ReasonCodeCommandAnalysisUnavailable outcome (see sp4rk tools/shellanalysis.go),
+// so the call still escalates under an `allow` policy and blocks under
+// verify-on-edit's unattended path rather than running with the deterministic
+// floor (C1–C8) silently absent. The strict judge's AnalysisContext stays ""
+// in that case — the escalation is carried by the Judge, not the digest.
+// Exported for the backend advisory path (backend/application.go
+// evaluateJudgeWith).
 func AttachShellAnalysis(ctx context.Context, name string, input json.RawMessage, log *slog.Logger) context.Context {
 	if !isShellToolName(name) {
 		return ctx
@@ -601,7 +610,7 @@ func AttachShellAnalysis(ctx context.Context, name string, input json.RawMessage
 	analysis, err := sdktools.AnalyzeShellCommandForJudge(ctx, name, input)
 	if err != nil {
 		if log != nil {
-			log.Warn("security: shell command analysis failed; judges run without the digest", "tool", name, "error", err)
+			log.Warn("security: shell command analysis failed; shell judge fails closed", "tool", name, "error", err)
 		}
 	}
 	return sdktools.WithShellAnalysis(ctx, analysis, err)
@@ -642,7 +651,7 @@ type safetyReasons struct {
 
 // splitSafetyReasons folds the collected signals into a safetyReasons pair.
 // At most one reason survives per severity: a hard reason (symlink escape,
-// command blacklist, SSRF) always wins; only a soft judge escalation (path
+// command blocklist, SSRF) always wins; only a soft judge escalation (path
 // containment) yields a soft reason. Empty strings mean "clean".
 func splitSafetyReasons(judge sdktools.JudgeOutcome, symlinkReason string, symlinkCode sdktools.JudgeReasonCode) safetyReasons {
 	if !judge.Allow && judge.Reason != "" && judge.Severity == sdktools.JudgeSeverityHard {
@@ -766,14 +775,17 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 // isCanonicalHardReason reports whether a fired hard safety reason must never
 // be auto-approved by the strict judge. Canonical codes cover two classes:
 // a security control that fired on unmistakably dangerous behavior (a command
-// blocklist match, a flowsh shell-analysis control — exfiltration flow,
-// privilege escalation, a system-path/raw-device write, an irreversible
-// destructive write outside the session roots, a download cradle — an SSRF
-// escape target, a symlink escape out of the session roots, a write into git
-// internals) AND an input whose safety the judge is structurally unable to
-// assess — degraded SSRF protection, an undeterminable URL or path — because
-// the judge sees only the prose, not the DNS resolution or filesystem state
-// the deterministic control lacked. The flowsh ⊤ limitation
+// blocklist match — wire code command_blacklist, the historical spelling kept
+// deliberately as a stable contract while the config key is `blocklist` — a
+// flowsh shell-analysis control — exfiltration flow, privilege escalation, a
+// system-path/raw-device write, an irreversible destructive write outside the
+// session roots, a download cradle — an SSRF escape target, a symlink escape
+// out of the session roots, a write into git internals) AND an input whose
+// safety the judge is structurally unable to assess — degraded SSRF
+// protection, an undeterminable URL or path, or a deterministic shell
+// analysis that could not run at all — because the judge sees only the prose,
+// not the DNS resolution or filesystem state the deterministic control
+// lacked. The flowsh ⊤ limitation
 // (ReasonCodeCommandUnboundedAnalysis, "the analyzer could not bound this
 // command") is deliberately NON-canonical: it is an analysis limitation the
 // strict judge may positively clear, not a fired control. Codes are the
@@ -788,6 +800,7 @@ func isCanonicalHardReason(code sdktools.JudgeReasonCode) bool {
 		sdktools.ReasonCodeCommandSystemWrite,
 		sdktools.ReasonCodeCommandDestructiveOutsideRoots,
 		sdktools.ReasonCodeCommandDownloadCradle,
+		sdktools.ReasonCodeCommandAnalysisUnavailable,
 		sdktools.ReasonCodeSSRFPrivateAddress,
 		sdktools.ReasonCodeSSRFDegraded,
 		sdktools.ReasonCodeUnassessableURL,

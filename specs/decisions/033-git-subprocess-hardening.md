@@ -125,6 +125,22 @@ include-warning applies); **(d)** usability trade-offs, not security gaps:
 `git://` remotes fail closed while `core.gitProxy` is present, and
 include-bearing repositories are unusable in c0wrk on git < 2.45.
 
+Amended 2026-09-17 ([ADR-052](./052-flowsh-command-analysis.md)): the layer-4
+claim below that *"the shell tools are deliberately untouched: agent-typed
+`git` mutations are already covered by the `execute`-group SCM blacklist
+(`security.groups.execute.blacklist`, pinned by
+`TestApplyDefaults_GitMutatingBlacklist`)"* is **no longer true** and must not
+be relied on. ADR-052 deleted the shipped `execute`-group default blacklist —
+including every SCM git-mutator pattern — and renamed the key
+`security.groups.execute.blacklist` → `blocklist`, which now ships **empty**;
+the referenced test no longer exists, and the flowsh analyzer that replaced the
+list has no git-subcommand criterion. Agent-typed mutating git commands
+(`git push --force`, `git reset --hard`, `git clean -fdx`, …) therefore carry
+no deterministic reason and, under `security.groups.execute.policy: allow`, run
+without confirmation — an accepted risk recorded in ADR-052 (the user blocklist
+recovers it). The file-tool `.git`-write gate (`git_internal_path`) described
+in this ADR is unaffected and still fires.
+
 ## Context
 
 c0wrk runs git constantly in CODE mode: status, diff, log, ignore filtering, branch detection, the git panel. Every one of those invocations executes inside a repository the user pointed the app at — and **a repository is attacker-controlled data**. `.git/config` is effectively a program-invocation configuration file: git executes config-driven external programs during ordinary *read-only* operations (`status`, `diff`, `add`, `checkout`, even `commit`), before any trust decision c0wrk makes. Two concrete vectors motivated this decision:

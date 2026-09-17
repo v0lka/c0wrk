@@ -121,9 +121,27 @@ func migrateLegacyGroupBlacklists(groups map[string]GroupPolicyConfig) {
 		group.LegacyBlacklist = nil
 		if name == ToolGroupExecute &&
 			group.Blocklist == nil &&
-			!slices.Equal(legacy, legacyDefaultExecuteGroupBlacklist()) {
+			!samePatternSet(legacy, legacyDefaultExecuteGroupBlacklist()) {
 			group.Blocklist = legacy
 		}
 		groups[name] = group
 	}
+}
+
+// samePatternSet reports whether two pattern lists hold the same entries
+// regardless of order. The legacy default is compared against the stored list
+// only to tell "user customized the list" apart from "the shipped default is
+// still in effect": regex-list order does not change which patterns match, so
+// a reordered list is still the default and must be dropped rather than
+// carried over. Sorted copies keep the comparison exact for multisets — an
+// added, removed or duplicated pattern still counts as a customization.
+func samePatternSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	as := slices.Clone(a)
+	bs := slices.Clone(b)
+	slices.Sort(as)
+	slices.Sort(bs)
+	return slices.Equal(as, bs)
 }

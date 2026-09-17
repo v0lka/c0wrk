@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	sdktools "github.com/v0lka/sp4rk/tools"
@@ -86,6 +87,14 @@ func platformShellJudgeCases(t *testing.T) []canonicalJudgeCase {
 			name:          "bash unbounded analysis stays clearable",
 			outcome:       judgeWithAnalysis("./scripts/build.sh"),
 			wantCanonical: false,
+		},
+		// A failed analysis (e.g. a sticky knowledge-base load failure) fails
+		// CLOSED: the shell judge must not run with the deterministic floor
+		// silently absent, so it escalates with a hard canonical code.
+		{
+			name:          "bash analysis error fails closed",
+			outcome:       bashTool.Judge(sdktools.WithShellAnalysis(baseCtx, nil, errors.New("kb load failed")), json.RawMessage(`{"command":"ls"}`)),
+			wantCanonical: true,
 		},
 	}
 }

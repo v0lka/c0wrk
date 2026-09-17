@@ -106,6 +106,9 @@ func TestCanonicalHardReasonCodes_ClassificationTable(t *testing.T) {
 		{sdktools.ReasonCodeCommandSystemWrite, true},
 		{sdktools.ReasonCodeCommandDestructiveOutsideRoots, true},
 		{sdktools.ReasonCodeCommandDownloadCradle, true},
+		// The deterministic analyzer could not run at all: fail closed — a
+		// fired control-like reason, never auto-overridable.
+		{sdktools.ReasonCodeCommandAnalysisUnavailable, true},
 		{sdktools.ReasonCodeSSRFPrivateAddress, true},
 		{sdktools.ReasonCodeSSRFDegraded, true},
 		{sdktools.ReasonCodeUnassessableURL, true},

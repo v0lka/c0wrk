@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — amended by [ADR-052](./052-flowsh-command-analysis.md): the canonical hard set is extended with the flowsh controls (`command_exfil_flow`, `command_privilege_escalation`, `command_system_write`, `command_destructive_outside_roots`, `command_download_cradle`) alongside `command_blacklist`; `unresolvable_path_token` is no longer fired by any built-in judge (the flowsh `command_unbounded_analysis` is its non-canonical successor). The unified-funnel architecture itself stands unchanged.
+Accepted — amended by [ADR-052](./052-flowsh-command-analysis.md): the canonical hard set is extended with the flowsh controls (`command_exfil_flow`, `command_privilege_escalation`, `command_system_write`, `command_destructive_outside_roots`, `command_download_cradle`) and the fail-closed `command_analysis_unavailable` (the shell Judge now fails closed when the analyzer cannot run) alongside `command_blacklist`; `unresolvable_path_token` is no longer fired by any built-in judge (the flowsh `command_unbounded_analysis` is its non-canonical successor). The unified-funnel architecture itself stands unchanged.
 
 ## Context
 
@@ -91,9 +91,13 @@ fails loudly at compile/contract level instead. The canonical codes are:
 - `ssrf_protection_degraded` — the SSRF check could not initialize, so the
   call's posture is unassessable,
 - `unassessable_url` — the target URL could not be determined from the input,
-- `unassessable_path` — the target path could not be determined from the input.
+- `unassessable_path` — the target path could not be determined from the input,
+- `command_analysis_unavailable` — the deterministic shell analysis could not
+  be produced (flowsh analyzer/knowledge-base init failure), so a shell call's
+  posture is unassessable — the Judge fails closed rather than running with
+  the floor absent.
 
-The last three are deliberate: an unassessable call is one whose safety the
+The unassessable bullets above are deliberate: an unassessable call is one whose safety the
 strict judge is **structurally unable** to evaluate — the judge sees only the
 prose, not the DNS resolution or filesystem state the deterministic control
 lacked — so a strict ALLOW there would be a guess, not an assessment. A fired

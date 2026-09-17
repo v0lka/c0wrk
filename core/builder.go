@@ -662,7 +662,7 @@ func (b *OrchestratorBuilder) Build(
 	// only when the user enabled it AND a workspace is active. The runner is
 	// built exclusively from user config — the command never originates from
 	// model output. Executed via ExecuteUnattended so group-deny and the
-	// command blacklist still apply (see core/verify_on_edit.go).
+	// command blocklist still apply (see core/verify_on_edit.go).
 	var verifyOnEditRunner agent.EditVerifyRunner
 	if cfg.Executor.VerifyOnEdit.Enabled {
 		switch {
@@ -2363,7 +2363,7 @@ func (b *OrchestratorBuilder) unregisterSessionRegistry(r *tools.ToolRegistry) {
 // registry clone: each session executes on its own clone (see Build), so a
 // runtime edit from the security settings UI must reach already-open sessions
 // too — otherwise a deny set in the UI would silently fail-open on every
-// session created before the save (the same save's execute blacklist does
+// session created before the save (the same save's execute blocklist does
 // reach them, because it re-registers the tool in the shared sp4rk registry
 // the clones embed). The push holds b.mu across the whole update so a Build
 // racing it cannot miss the new state (see registerSessionRegistry).

@@ -66,7 +66,7 @@ The shell-execution tool is platform-specific: sp4rk's `bash.go` is `//go:build 
 - `core/tools/shelltool_unix.go` → `builtins.NewBashExecToolWithTimeouts` → registers `bash_exec`
 - `core/tools/shelltool_windows.go` → `builtins.NewPoshExecToolWithTimeouts` → registers `posh_exec`
 
-Both expose the same constructor signature `newShellExecTool(blocklist, timeouts)`; the caller (`RegisterBuiltinTools`) passes the config `ShellBlocklist` to the platform-specific constructor. The registered name differs per platform, so all name-keyed configuration and policy lookups resolve through `core.activeShellToolName()` (`bash_exec` on Unix, `posh_exec` on Windows) — see [Blacklist / Policy Key](#blacklist--policy-key) below and [../../architecture/security-model.md](../../architecture/security-model.md).
+Both expose the same constructor signature `newShellExecTool(blocklist, timeouts)`; the caller (`RegisterBuiltinTools`) passes the config `ShellBlocklist` to the platform-specific constructor. The registered name differs per platform, so all name-keyed configuration and policy lookups resolve through `core.activeShellToolName()` (`bash_exec` on Unix, `posh_exec` on Windows) — see [Blocklist / Policy Key](#blocklist--policy-key) below and [../../architecture/security-model.md](../../architecture/security-model.md).
 
 Prompt data references the shell tool through the `{shell_tool}` placeholder rather than a hardcoded name, so tool-priority guidance always points at the tool actually registered on the current platform. The placeholder is resolved by `prompts.SubstituteShellTool` at each prompt-assembly call site (`core/systemprompt.go`); the embedded prompt vars are kept as raw templates (placeholder recoverable).
 

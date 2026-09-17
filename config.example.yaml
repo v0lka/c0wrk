@@ -389,6 +389,14 @@ security:
       # the next save; a legacy list identical to the old shipped default (or
       # a missing one) is dropped — the effective blocklist is empty either
       # way.
+      # RECOMMENDED PERSONAL FLOOR (optional): under policy "allow" the only
+      # deterministic floor is the flowsh shell-analysis criteria, and a few
+      # shapes deliberately have NO criterion — they surface to the judges
+      # only under a confirming policy, so on "allow" they run silently
+      # unless you add a pattern. Examples for the known gaps:
+      #   - 'sudo\s+'
+      #   - '\b(shutdown|reboot|halt|poweroff)\b'
+      #   - '(^|[\s;&|])git\s+(push|reset\s+--hard|clean\s+-[fdx])'
       # blocklist:
       #   - 'rm\s+-rf\s+/'
       #   - 'mkfs'
