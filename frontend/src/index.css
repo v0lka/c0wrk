@@ -388,6 +388,11 @@ body {
 /* ==========================================================================
    Prose Overrides — One Dark for @tailwindcss/typography
    All values reference design tokens, not raw hex.
+
+   Markdown prose (chat, file-viewer preview) maps body chrome to
+   --color-foreground: inline `code`, strong, and ol markers are not
+   semantic UI (error / highlight / warning). A custom theme cannot
+   override these selectors. Syntax highlighting stays on pre > code.
    ========================================================================== */
 
 .prose {
@@ -395,14 +400,14 @@ body {
     --tw-prose-headings: var(--color-secondary-foreground);
     --tw-prose-lead: var(--color-accent);
     --tw-prose-links: var(--color-info);
-    --tw-prose-bold: var(--color-highlight);
-    --tw-prose-counters: var(--color-warning);
+    --tw-prose-bold: var(--color-foreground);
+    --tw-prose-counters: var(--color-foreground);
     --tw-prose-bullets: var(--color-muted-foreground);
     --tw-prose-hr: var(--color-border);
     --tw-prose-quotes: var(--color-muted-foreground);
     --tw-prose-quote-borders: var(--color-border);
     --tw-prose-captions: var(--color-muted-foreground);
-    --tw-prose-code: var(--color-destructive);
+    --tw-prose-code: var(--color-foreground);
     --tw-prose-pre-code: var(--color-foreground);
     --tw-prose-pre-bg: var(--color-background);
     --tw-prose-th-borders: var(--color-border);
@@ -418,9 +423,12 @@ body {
     text-decoration: underline;
 }
 
-/* Inline code (not inside pre blocks) */
+/* Inline code (not inside pre blocks).
+   Match body size: typography's default `code` is ~0.85em, which reads tiny
+   next to 14px prose (and was worse under prose-sm). */
 .prose :where(code):not(:where(pre *)) {
     color: var(--tw-prose-code);
+    font-size: 1em;
     background: var(--color-secondary);
     border-radius: 0.25rem;
     padding: 0.125rem 0.25rem;
