@@ -165,6 +165,20 @@ Linux only: `sendNotificationPlatform` on macOS/Windows accepts the value for si
 - **Banner lifetime** (Linux only, shown while enabled) → a segmented selector over Default / 10s / 30s / 1m / Never, reading `GetNotificationBannerTimeout` on mount and writing `SetNotificationBannerTimeout` on click (see [Banner lifetime](#banner-lifetime)). The write is optimistic and rolls the selection back when the RPC rejects, so the control never shows a value the backend did not accept. Host detection is `navigator.platform`/`userAgent`; on macOS and Windows the control is absent.
 - **Test button** ("Send test notification", shown while enabled and authorized) → `showTestNotification()` — the Go-authored banner demonstrating the full click round-trip (focus without navigation).
 
+## Diagnostics
+
+A banner that never appears has three very different causes that all used to look identical in the logs — like silence. These two lines tell them apart, both at `DEBUG`:
+
+| Log evidence | Reading |
+| ------------ | ------- |
+| `Wails EventsEmit called` for the session event, then `system notification sent` | The whole app-side path worked. A missing banner is then the daemon's doing (do-not-disturb, per-application settings, a dropped popup) — check the wire with `dbus-monitor --session "interface='org.freedesktop.Notifications'"`. |
+| the event line, but NO `system notification sent` | The frontend never asked for a banner: the master toggle is off, or `isSessionNotificationRedundant` suppressed it (window focused AND that session on screen). |
+| neither | The event never reached the cue hooks — a listener-coverage problem, not a notification one. |
+
+`system notification sent` carries the notification id, the session id and the resolved `expire_timeout`. It deliberately carries neither title nor body: a banner body is task output, and SECURITY.md extends the no-secrets rule to every output channel.
+
+Two more lines bound the transport's health, once per run each: `system notifications initialized` (init) and `notification daemon capabilities` (the dial-time capability probe, which warns instead when the daemon does not advertise `actions`). A `linux D-Bus notification transport failed` warning means the send fell back to the Wails transport.
+
 ## Error Handling
 
 - **Best-effort contract** — no failure path throws into the event pipeline. `sendSystemNotification` catches and logs at warn; init failure is logged and left enabled (individual sends fail softly).

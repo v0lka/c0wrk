@@ -208,10 +208,31 @@ func (a *App) SendSystemNotification(title, body string, data map[string]string)
 		Data:  userInfo,
 	}
 
+	expireTimeoutMs := a.notificationExpireTimeoutMs()
+	var err error
 	if a.notificationsSendFn != nil {
-		return a.notificationsSendFn(a.ctx, options)
+		err = a.notificationsSendFn(a.ctx, options)
+	} else {
+		err = a.sendNotificationPlatform(a.ctx, options, expireTimeoutMs)
 	}
-	return a.sendNotificationPlatform(a.ctx, options, a.notificationExpireTimeoutMs())
+	if err != nil {
+		return err
+	}
+	// A delivered banner used to leave no trace at all, which made "the
+	// frontend never asked for one" and "the daemon swallowed it"
+	// indistinguishable from the logs — both looked like silence. Paired with
+	// the `Wails EventsEmit called` line of the session event that triggered
+	// it, this line is what tells the two apart; see the Diagnostics section
+	// of specs/domains/frontend/system-notifications.md.
+	//
+	// Title and body are deliberately NOT logged: a banner body carries task
+	// output, and SECURITY.md extends the no-secrets rule to every output
+	// channel.
+	a.log().Debug("system notification sent",
+		"id", options.ID,
+		"session", stringFromUserInfo(userInfo, "sessionId"),
+		"expire_timeout_ms", expireTimeoutMs)
+	return nil
 }
 
 // millisecondsPerSecond converts the config's seconds into the freedesktop

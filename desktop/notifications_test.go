@@ -1,7 +1,10 @@
 package desktop
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -572,3 +575,51 @@ func TestNotificationExpireTimeoutMs(t *testing.T) {
 }
 
 func ptrInt(v int) *int { return &v }
+
+// TestSendSystemNotificationIsLogged pins the delivery diagnostic. A delivered
+// banner used to leave no trace, which made "the frontend never asked for one"
+// and "the daemon swallowed it" indistinguishable — both were silence — and
+// cost a long investigation. The line must also stay free of the title and
+// body: a banner body carries task output (SECURITY.md).
+func TestSendSystemNotificationIsLogged(t *testing.T) {
+	f := newNotificationsFixture(t)
+	var logs bytes.Buffer
+	f.app.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	if err := f.app.SendSystemNotification("Tool approval required — secrets", "token=ABC123",
+		map[string]string{"sessionId": "sess-7", "projectId": "proj-1"}); err != nil {
+		t.Fatalf("SendSystemNotification: %v", err)
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, "system notification sent") {
+		t.Errorf("a delivered notification logged nothing; log: %s", out)
+	}
+	if !strings.Contains(out, "sess-7") {
+		t.Errorf("the log line does not identify the session; log: %s", out)
+	}
+	for _, leaked := range []string{"token=ABC123", "secrets"} {
+		if strings.Contains(out, leaked) {
+			t.Errorf("the log line leaked banner content %q; log: %s", leaked, out)
+		}
+	}
+}
+
+// TestFailedSendIsNotLoggedAsDelivered keeps the diagnostic honest: a send that
+// failed must not leave a "sent" line, or the log would assert a banner the
+// user never saw.
+func TestFailedSendIsNotLoggedAsDelivered(t *testing.T) {
+	f := newNotificationsFixture(t)
+	var logs bytes.Buffer
+	f.app.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	f.app.notificationsSendFn = func(context.Context, runtime.NotificationOptions) error {
+		return errors.New("daemon is gone")
+	}
+
+	if err := f.app.SendSystemNotification("t", "b", nil); err == nil {
+		t.Fatal("expected the send error to propagate")
+	}
+	if strings.Contains(logs.String(), "system notification sent") {
+		t.Error("a failed send was logged as delivered")
+	}
+}
