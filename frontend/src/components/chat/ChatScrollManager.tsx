@@ -67,12 +67,26 @@ export function ChatScrollManager({
   const prevReviewPromptIdsRef = useRef<Set<string>>(new Set())
   // Timestamp until which bookmark/step navigation suppresses auto-scroll.
   const suppressAutoScrollUntilRef = useRef(0)
+  // scrollTop of the most recent programmatic at-bottom write (post-clamp —
+  // the value the browser will report in the scroll event the write queues).
+  // Scroll events are delivered asynchronously at the browser's rendering
+  // steps, by which time the content may have grown FURTHER (a late
+  // virtualizer spacer replacing estimates, async markdown/highlight layout,
+  // an image decoding). An event whose position still equals our own write is
+  // not the user scrolling away — recomputing "at bottom" against the grown
+  // content there would poison isAtBottomRef/prevScrollState (the write
+  // targeted the bottom of the content AS IT WAS) and permanently disable
+  // stick-to-bottom until the user manually re-scrolls to the bottom.
+  // handleScroll keeps the writer's intent for such events instead. Armed by
+  // every at-bottom-intent write; cleared when an event diverges from it.
+  const lastWriteTopRef = useRef<number | null>(null)
   const [hasNewActivity, setHasNewActivity] = useState(false)
 
   const scrollToBottom = useCallback(() => {
     const viewport = viewportRef.current
     if (viewport) {
       viewport.scrollTop = viewport.scrollHeight
+      lastWriteTopRef.current = viewport.scrollTop
       isAtBottomRef.current = true
       setHasNewActivity(false)
     }
@@ -98,6 +112,20 @@ export function ChatScrollManager({
     if (!viewport) return
 
     const handleScroll = () => {
+      // Own-write filtering: an event whose position equals our last
+      // programmatic at-bottom write is the delivery of THAT write (possibly
+      // after further content growth), not the user scrolling away. Keep the
+      // writer's intent — do not recompute the at-bottom baseline against
+      // content that grew past the write's target, and do not clobber the
+      // effect's post-run baseline either. Any diverging position (a real user
+      // scroll, a smooth navigation frame, the history-prepend re-anchor)
+      // invalidates the marker and resumes normal tracking.
+      const ownWrite = lastWriteTopRef.current !== null && viewport.scrollTop === lastWriteTopRef.current
+      if (!ownWrite) lastWriteTopRef.current = null
+      if (ownWrite) {
+        if (isAtBottomRef.current) setHasNewActivity(false)
+        return
+      }
       const atBottom = viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - AT_BOTTOM_THRESHOLD_PX
       isAtBottomRef.current = atBottom
       prevScrollState.current = {
@@ -127,9 +155,11 @@ export function ChatScrollManager({
   }, [sessionId])
 
   // Auto-scroll: on a session switch (component remount) restore the saved
-  // reading position, or jump to the latest content when none was saved; on
-  // incremental content growth, stick to the bottom only if the user was
-  // already there. A freshly-appearing review-mode prompt is an exception: it
+  // reading position, or jump to the latest content when none was saved —
+  // except for a session whose task is STILL RUNNING: it keeps producing
+  // output at the bottom, so switching to it always reveals the live tail,
+  // saved position notwithstanding; on incremental content growth, stick to
+  // the bottom only if the user was already there. A freshly-appearing review-mode prompt is an exception: it
   // requires a user decision, so the chat is forced to the bottom to reveal it
   // even when the user had scrolled away. Both behaviors are suppressed for a
   // short window after an explicit bookmark/step navigation (see
@@ -158,16 +188,24 @@ export function ChatScrollManager({
       // browser clamps the offset against the freshly mounted (still
       // estimated, possibly shorter) content, and the ResizeObserver below
       // keeps a restored-at-bottom viewport glued to the bottom as real
-      // measurements replace the estimates. Without a saved position (first
-      // visit) the latest content is revealed so stick-to-bottom engages
-      // without the user having to scroll down first.
-      const saved = sessionId ? useChatStore.getState().scrollPositions[sessionId] : undefined
-      if (saved) {
+      // measurements replace the estimates. A RUNNING session is the
+      // exception: its live output grows the tail, so the switch must open at
+      // the bottom regardless of where reading stopped (taskActive survives
+      // session switches — nothing blindly resets it, the background watcher
+      // clears it on terminal events, and the switch-time status RPC
+      // restores it — so the flag is reliable at mount time). Without a
+      // saved position (first visit) the latest content is revealed so
+      // stick-to-bottom engages without the user having to scroll down first.
+      const store = useChatStore.getState()
+      const saved = sessionId ? store.scrollPositions[sessionId] : undefined
+      const taskRunning = sessionId ? store.taskActive[sessionId] === true : false
+      if (saved && !taskRunning) {
         viewport.scrollTop = saved.scrollTop
         isAtBottomRef.current =
           viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - AT_BOTTOM_THRESHOLD_PX
       } else {
         viewport.scrollTop = viewport.scrollHeight
+        lastWriteTopRef.current = viewport.scrollTop
         isAtBottomRef.current = true
       }
       isInitialMountRef.current = false
@@ -189,10 +227,12 @@ export function ChatScrollManager({
         // A fresh review-mode prompt needs a user decision — reveal it even
         // when the user had scrolled away from the bottom.
         viewport.scrollTop = viewport.scrollHeight
+        lastWriteTopRef.current = viewport.scrollTop
         isAtBottomRef.current = true
         setHasNewActivity(false)
       } else if (wasAtBottom && !navigationSuppressed) {
         viewport.scrollTop = viewport.scrollHeight
+        lastWriteTopRef.current = viewport.scrollTop
         isAtBottomRef.current = true
       } else {
         setHasNewActivity(true)
@@ -231,6 +271,7 @@ export function ChatScrollManager({
       const height = viewport.scrollHeight
       if (height > lastHeight && isAtBottomRef.current) {
         viewport.scrollTop = viewport.scrollHeight
+        lastWriteTopRef.current = viewport.scrollTop
       }
       lastHeight = height
     })

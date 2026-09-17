@@ -3,7 +3,7 @@ import { useChatStore, useSessionMessages, useSessionWorkUnits } from '@/stores/
 import { useBookmarkStore } from '@/stores/bookmarkStore'
 import { groupMessages, stabilizeDisplayItems, chatMessageToUI, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow, isRoutingRequestRow } from '@/lib/chatUtils'
 import { restorePlanAndGoalFromHistory } from '@/lib/sessionStoreRestore'
-import { ensurePlanAnchorLoaded } from '@/lib/planAnchorBackfill'
+import { restorePlanFromTimeline } from '@/lib/planTimelineRestore'
 import type { ChatVirtualizerHandle } from '@/lib/chatVirtualizer'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
@@ -204,20 +204,16 @@ export function ChatArea() {
         // ledger settled as interrupted.
         const workUnitOverlay = reconcileWorkUnits(activeSessionId, status.work_units, statusReadAt)
         usePlanStore.getState().applyWorkUnitStatuses(workUnitOverlay)
-        // Backfill the plan declaration: a mid-execution reload re-fetches only
-        // the newest page, so the plan anchor (persisted at the task's start)
-        // drops out of the store and the Execution Plan panel stays hidden
-        // while plan_step/subagent events render in the chat root. The work
-        // units above prove the task is plan-driven, so when the accumulated
-        // messages hold no plan row the helper walks older pages back until
-        // the declaration is loaded and the panel is rebuilt (no RPC when the
-        // anchor is already loaded). Fire-and-forget: the abort check discards
-        // the walk if the user switches sessions mid-flight, and a late panel
-        // rebuild for a non-active session is thereby prevented.
-        void ensurePlanAnchorLoaded(activeSessionId, status.work_units, {
-          pageSize: HISTORY_PAGE_SIZE,
-          shouldAbort: () => cancelled,
-        })
+        // Restore the Execution Plan panel and the plan-step blocks the
+        // paged window cannot reach: the plan declaration sits at the task's
+        // start — often thousands of rows behind the newest page — so the
+        // window rebuild above finds no plan row and the panel stays hidden.
+        // One indexed plan-timeline RPC returns the declaration plus every
+        // plan_step_start/complete/paused row regardless of distance, which
+        // rebuilds the panel with full statuses and re-opens completed steps'
+        // blocks behind the window. Fire-and-forget: the abort check discards
+        // the restore if the user switches sessions mid-flight.
+        void restorePlanFromTimeline(activeSessionId, { shouldAbort: () => cancelled })
       }
       if (pending) {
         for (const msg of reconcilePendingActions(activeSessionId, pending)) staleResolved.push(msg)

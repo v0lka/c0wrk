@@ -186,6 +186,10 @@ export function Fetch(arg1, arg2) {
   return window['go']['desktop']['App']['Fetch'](arg1, arg2);
 }
 
+export function FetchPaperOriginal(arg1, arg2) {
+  return window['go']['desktop']['App']['FetchPaperOriginal'](arg1, arg2);
+}
+
 export function ForkSession(arg1) {
   return window['go']['desktop']['App']['ForkSession'](arg1);
 }
@@ -348,6 +352,10 @@ export function GetSecuritySettings() {
 
 export function GetSessionHistory(arg1, arg2, arg3) {
   return window['go']['desktop']['App']['GetSessionHistory'](arg1, arg2, arg3);
+}
+
+export function GetSessionPlanTimeline(arg1) {
+  return window['go']['desktop']['App']['GetSessionPlanTimeline'](arg1);
 }
 
 export function GetSessionRuntimeStatus(arg1) {

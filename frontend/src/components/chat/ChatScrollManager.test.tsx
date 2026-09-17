@@ -429,7 +429,12 @@ describe('ChatScrollManager session-switch scroll persistence', () => {
   }
 
   beforeEach(() => {
-    useChatStore.setState({ scrollPositions: {} })
+    useChatStore.setState({
+      scrollPositions: {},
+      taskActive: {},
+      taskFlagsEventAt: {},
+      unfinishedTaskStatus: {},
+    })
     ResizeObserverStub.instances = []
     vi.stubGlobal('ResizeObserver', ResizeObserverStub)
   })
@@ -488,6 +493,16 @@ describe('ChatScrollManager session-switch scroll persistence', () => {
     expect(viewport.scrollTop).toBe(4_200)
   })
 
+  it('pins to the bottom on switch when the session task is running, even with a saved position', () => {
+    pinGeometry(10_000, 600)
+    useChatStore.getState().saveScrollPosition('s1', { scrollTop: 4_200, scrollHeight: 9_000 })
+    act(() => { useChatStore.getState().setTaskActive('s1', true) })
+    const viewport = renderViewport('s1')
+    // A running session keeps producing output at the bottom: switching to it
+    // must reveal the live tail, not the stale reading position.
+    expect(viewport.scrollTop).toBe(10_000)
+  })
+
   it('pins to the bottom when the session has no saved position', () => {
     pinGeometry(10_000, 600)
     const viewport = renderViewport('s2')
@@ -505,6 +520,29 @@ describe('ChatScrollManager session-switch scroll persistence', () => {
     pinGeometry(12_000, 600)
     act(() => { ro.fire() })
     expect(viewport.scrollTop).toBe(12_000)
+  })
+
+  // The browser delivers a programmatic scrollTop write's scroll event
+  // asynchronously, at its rendering steps — by which time the content may
+  // have grown past the write's target (a late virtualizer spacer replacing
+  // row-height estimates, async markdown/highlight layout, an image decoding).
+  // That delivered event must not be mistaken for the user scrolling away:
+  // recomputing "at bottom" against the grown content would poison the
+  // baseline and permanently disable stick-to-bottom for the rest of the run.
+  it('keeps following the tail when content grows between the pin write and its scroll-event delivery', () => {
+    pinGeometry(10_000, 600)
+    const viewport = renderViewport('s2')
+    expect(viewport.scrollTop).toBe(10_000)
+    // Growth lands BEFORE the queued scroll event from the mount's pin write
+    // is delivered.
+    pinGeometry(10_700, 600)
+    act(() => { viewport.dispatchEvent(new Event('scroll')) })
+    // The own-write event did not poison the at-bottom flag: the next growth
+    // still re-pins the viewport to the new bottom.
+    const ro = ResizeObserverStub.instances[ResizeObserverStub.instances.length - 1]!
+    pinGeometry(11_400, 600)
+    act(() => { ro.fire() })
+    expect(viewport.scrollTop).toBe(11_400)
   })
 
   it('does not jerk the viewport when the content grows after the user scrolled up', () => {

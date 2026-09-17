@@ -135,7 +135,9 @@ interface ChatState {
   // chat viewport held when the user last left the session (its
   // ChatScrollManager unmounted on the session switch). The next initial mount
   // of that session's viewport restores the reading position instead of
-  // jumping; a session with no entry opens pinned to the newest content.
+  // jumping — unless the session's task is still running, in which case the
+  // viewport opens pinned to the live tail. A session with no entry opens
+  // pinned to the newest content.
   // Cleared when the session is deleted.
   scrollPositions: Record<string, { scrollTop: number; scrollHeight: number }>
 }

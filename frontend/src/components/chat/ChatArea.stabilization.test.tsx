@@ -30,7 +30,7 @@ const { messagesRef, EMPTY_WORK_UNITS, itemsCaptured, chatStoreFns, chatStoreSta
     saveScrollPosition: vi.fn(),
   },
   // Paging bookkeeping maps the real hook reads off the store snapshot.
-  chatStoreState: { historyCursor: {}, historyHasMore: {}, historyLoading: {}, workUnitStatus: {}, scrollPositions: {} },
+  chatStoreState: { historyCursor: {}, historyHasMore: {}, historyLoading: {}, workUnitStatus: {}, scrollPositions: {}, taskActive: {} },
 }))
 
 vi.mock('@/components/MarkdownViewer', () => ({

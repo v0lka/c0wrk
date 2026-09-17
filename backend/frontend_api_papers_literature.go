@@ -98,7 +98,7 @@ func (f *FrontendAPI) RunPaperLiterature(projectID, paperID string) (*PaperLiter
 		return nil, err
 	}
 
-	rec, err := f.resolvePaperForLiterature(projectID, paperID, rctx)
+	rec, err := f.resolvePaperForRun(projectID, paperID, rctx)
 	if err != nil {
 		return nil, err
 	}
@@ -145,14 +145,15 @@ func paperRunMuKey(paperDir string) string {
 	return "paper-run\x00" + paperDir
 }
 
-// resolvePaperForLiterature resolves and containment-checks the paper record
-// for RunPaperLiterature under a SHORT hold of the per-effective-research-root
-// row-mutation mutex. It re-loads the project row so a concurrent
-// Enable/DisableResearch that moved the research root is rejected with
-// errResearchRootChanged (mirroring SetPaperPinned/RecordFlashcardReview), then
-// re-resolves the record from the pre-lock, containment-checked library root.
-// The mutex is released before the network-bound helper runs.
-func (f *FrontendAPI) resolvePaperForLiterature(projectID, paperID string, rctx *papersReadContext) (*papers.PaperRecord, error) {
+// resolvePaperForRun resolves and containment-checks the paper record for a
+// network-bound per-paper run (RunPaperLiterature, FetchPaperOriginal) under
+// a SHORT hold of the per-effective-research-root row-mutation mutex. It
+// re-loads the project row so a concurrent Enable/DisableResearch that moved
+// the research root is rejected with errResearchRootChanged (mirroring
+// SetPaperPinned/RecordFlashcardReview), then re-resolves the record from the
+// pre-lock, containment-checked library root. The mutex is released before the
+// network-bound run proceeds.
+func (f *FrontendAPI) resolvePaperForRun(projectID, paperID string, rctx *papersReadContext) (*papers.PaperRecord, error) {
 	mu := f.researchMutationMu(rctx.researchRoot)
 	mu.Lock()
 	defer mu.Unlock()

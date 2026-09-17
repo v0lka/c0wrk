@@ -223,7 +223,9 @@ deck, and a reading may also drop the optional per-paper artifacts below:
 ├── flashcards.md   # flashcard deck (Teach only) — card table + append-only review log
 ├── source.md       # (optional) the extracted source text (PDF → Markdown)
 ├── literature.md   # (optional) the literature-context note (predecessors / citing / contradictions)
-└── comparison.md   # (optional) a per-paper comparison note (comparison-matrix.md is also accepted)
+├── comparison.md   # (optional) a per-paper comparison note (comparison-matrix.md is also accepted)
+├── paper.html      # (optional, app-managed) the fetched original HTML rendition — READ-ONLY
+└── assets/         # (optional, app-managed) images for paper.html — READ-ONLY
 ```
 
 Multi-paper comparison artifacts live in a sibling of the per-paper tree, one
@@ -247,6 +249,12 @@ Markdown file per comparison set:
   artifacts: write them when the reading produces them (an extracted source, a
   literature-context note, a single-paper comparison) and omit them otherwise —
   the app renders each section's empty state when the file is absent.
+- `paper.html` and `assets/` are APP-MANAGED: the app's "Load HTML original"
+  action fetches the original HTML rendition and rewrites both. Treat them as
+  read-only — never rewrite, move, or delete them, and never add files under
+  `assets/`. You may read `paper.html` as the original rendition (useful when
+  `source.md` is missing or insufficient), but refreshing it is the app's job,
+  not yours.
 
 These files are c0wrk's paper-library format and are read back verbatim by
 the app, so keep their shapes exactly as follows.

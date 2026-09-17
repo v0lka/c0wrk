@@ -64,6 +64,9 @@ func (s *captureStore) LoadMessages(_ context.Context, _ string) ([]ChatMessage,
 func (s *captureStore) LoadMessagesPage(_ context.Context, _ string, _ int, _ *MessageCursor) ([]ChatMessage, bool, error) {
 	return nil, false, nil
 }
+func (s *captureStore) LoadPlanTimeline(_ context.Context, _ string) ([]ChatMessage, error) {
+	return nil, nil
+}
 func (s *captureStore) DeleteMessages(_ context.Context, _ string) error { return nil }
 func (s *captureStore) ResolvePendingMessage(_ context.Context, _, _, _, _ string, _ map[string]any) error {
 	return nil

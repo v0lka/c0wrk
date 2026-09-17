@@ -26,6 +26,7 @@ import {
   selectPapersSyncAt,
 } from '@/stores/paperStore'
 import { resolveAnchor } from '@/lib/paperAnchors'
+import { resolveHtmlAnchor } from '@/lib/paperHtmlAnchors'
 import { comparisonMentionsPaper } from '@/lib/paperComparison'
 import {
   MAX_RED_FLAG_CHIPS,
@@ -36,7 +37,8 @@ import {
 } from '@/lib/paperWidgets'
 import { cn } from '@/lib/utils'
 import { PaperOverview } from './PaperOverview'
-import { PaperSourceView, type PendingAnchor } from './PaperSourceView'
+import { PaperSourceView, type PendingAnchor, type PaperSourceViewMode } from './PaperSourceView'
+import type { PendingHtmlAnchor } from './PaperHtmlView'
 import { PaperMarkdownSection } from './PaperMarkdownSection'
 import { PaperLiterature } from './PaperLiterature'
 import { FlashcardsReview } from './FlashcardsReview'
@@ -112,6 +114,8 @@ export function PaperWorkspace({ slug }: { slug: string }) {
   const comparisons = useComparisons(researchRoot, syncAt)
   const [section, setSection] = useState<PaperSection>('overview')
   const [pending, setPending] = useState<PendingAnchor | null>(null)
+  const [pendingHtml, setPendingHtml] = useState<PendingHtmlAnchor | null>(null)
+  const [sourceMode, setSourceMode] = useState<PaperSourceViewMode>('html')
   const [missedIndex, setMissedIndex] = useState<number | null>(null)
   const nonceRef = useRef(0)
 
@@ -119,6 +123,8 @@ export function PaperWorkspace({ slug }: { slug: string }) {
   useEffect(() => {
     setSection('overview')
     setPending(null)
+    setPendingHtml(null)
+    setSourceMode('html')
     setMissedIndex(null)
   }, [slug])
 
@@ -143,8 +149,26 @@ export function PaperWorkspace({ slug }: { slug: string }) {
     [comparisons.items],
   )
 
+  // Anchor navigation (E1): resolve against the RENDERED paper.html first
+  // (LaTeXML element ids, then conservative caption/heading text), reveal the
+  // hit there; on miss fall back to the extracted source text and switch to
+  // the extracted sub-view; only a double miss admits the honest "not found"
+  // (never a jump somewhere wrong).
   const onAnchorSelect = useCallback(
     (anchor: PaperAnchor, index: number) => {
+      const html = artifacts.html.content
+      if (html !== '') {
+        const hit = resolveHtmlAnchor(html, anchor)
+        if (hit !== null) {
+          setMissedIndex(null)
+          setPending(null)
+          nonceRef.current += 1
+          setPendingHtml({ id: hit.id, path: hit.path, nonce: nonceRef.current })
+          setSourceMode('html')
+          setSection('source')
+          return
+        }
+      }
       const hit = resolveAnchor(artifacts.source.content, anchor)
       if (hit === null) {
         // Honest fallback: record which anchor failed and never scroll anywhere.
@@ -152,11 +176,13 @@ export function PaperWorkspace({ slug }: { slug: string }) {
         return
       }
       setMissedIndex(null)
+      setPendingHtml(null)
       nonceRef.current += 1
       setPending({ line: hit.line, nonce: nonceRef.current })
+      setSourceMode('text')
       setSection('source')
     },
-    [artifacts.source.content],
+    [artifacts.html.content, artifacts.source.content],
   )
 
   if (paper === null) return <NotFound slug={slug} />
@@ -289,9 +315,20 @@ export function PaperWorkspace({ slug }: { slug: string }) {
         )}
         {section === 'source' && (
           <PaperSourceView
+            paper={paper}
             artifact={artifacts.source}
+            html={artifacts.html}
+            htmlBaseFilePath={
+              dir !== '' && artifacts.html.fileName !== ''
+                ? joinPath(dir, artifacts.html.fileName)
+                : null
+            }
+            sourceBaseFilePath={baseFilePath(artifacts.source.fileName)}
             anchors={anchors}
             pending={pending}
+            pendingHtml={pendingHtml}
+            mode={sourceMode}
+            onModeChange={setSourceMode}
             missedIndex={missedIndex}
             onAnchorSelect={onAnchorSelect}
           />

@@ -39,6 +39,8 @@ function Harness({ dir, refreshKey }: { dir: string; refreshKey: number }) {
       <span data-testid="appraisal">{a.appraisal.content}</span>
       <span data-testid="appraisal-missing">{String(a.appraisal.missing)}</span>
       <span data-testid="literature-missing">{String(a.literature.missing)}</span>
+      <span data-testid="html">{a.html.content}</span>
+      <span data-testid="html-missing">{String(a.html.missing)}</span>
     </div>
   )
 }
@@ -136,6 +138,19 @@ describe('usePaperArtifacts', () => {
     expect(text('note')).toBe('Note v1')
     expect(text('appraisal')).toBe('Appraisal v2')
     expect(text('appraisal-missing')).toBe('false')
+  })
+
+  it('reads paper.html as the Source section html artifact (rendered sub-view)', async () => {
+    listDirectoryMock.mockResolvedValue([entry('source.md'), entry('paper.html')])
+    readFileMock.mockImplementation(async (path: string) =>
+      path.endsWith('paper.html') ? '<p>rendered</p>' : '# Source',
+    )
+
+    await mount(0)
+
+    expect(text('html')).toBe('<p>rendered</p>')
+    expect(text('html-missing')).toBe('false')
+    expect(readFileMock).toHaveBeenCalledTimes(2)
   })
 
   it('surfaces a directory-listing failure as an error, not as "no artifacts" (Issue 57)', async () => {

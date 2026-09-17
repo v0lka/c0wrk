@@ -459,3 +459,71 @@ export async function runPaperLiterature(
     throw err
   }
 }
+
+// --- Original-source fetch (paper.html) ---
+
+/**
+ * Outcome of fetching a paper's original arXiv HTML rendition into
+ * `<paper-dir>/paper.html` (+ `assets/`). `ok` means the localized rendition
+ * is on disk; every other value is an EXPLICIT degradation the UI must
+ * surface (never an empty silent failure):
+ *   - `offline`    no rendition endpoint was reachable at the network level
+ *   - `no_arxiv`   the card carries no usable arXiv identifier
+ *   - `not_found`  no HTML rendition exists (404/410 everywhere reachable)
+ *   - `error`      any other failure (unexpected status, oversized document,
+ *                  containment violation, filesystem failure)
+ */
+export type PaperOriginalStatus = 'ok' | 'offline' | 'no_arxiv' | 'not_found' | 'error'
+
+/**
+ * The normalized wire shape of FetchPaperOriginal
+ * (backend.PaperOriginalDTO).
+ */
+export interface PaperOriginalResult {
+  status: PaperOriginalStatus
+  /** The URL that actually produced the document (after redirects); ''
+   *  unless the fetch succeeded. */
+  url: string
+}
+
+const ORIGINAL_STATUSES: ReadonlySet<string> = new Set([
+  'ok',
+  'offline',
+  'no_arxiv',
+  'not_found',
+  'error',
+])
+
+/** Validate + normalize a FetchPaperOriginal response; an unknown status folds
+ *  to `error` so the UI never silently treats it as success. */
+export function normalizePaperOriginalResult(v: unknown): PaperOriginalResult {
+  if (!isRecord(v)) throw new Error('Invalid paper original response from backend')
+  const raw = typeof v['status'] === 'string' ? v['status'] : 'error'
+  return {
+    status: (ORIGINAL_STATUSES.has(raw) ? raw : 'error') as PaperOriginalStatus,
+    url: asString(v['url']),
+  }
+}
+
+/**
+ * Fetch a paper's original arXiv HTML rendition (native arxiv.org/html with
+ * the ar5iv mirror as fallback), sanitized and localized (images rewritten to
+ * a local `assets/` dir), into `<paper-dir>/paper.html`. The RPC always
+ * resolves with an explicit status (offline / no arXiv id / no rendition is
+ * data, not a thrown error); only a transport failure (unknown paper, backend
+ * down) rejects. No event is emitted synchronously: the write lands inside
+ * the watched library, so the file watcher emits `papers:changed` and the
+ * resolved promise is the caller's refresh signal.
+ */
+export async function fetchPaperOriginal(
+  projectId: string,
+  paperId: string,
+): Promise<PaperOriginalResult> {
+  try {
+    const app = getApp()
+    return normalizePaperOriginalResult(await app.FetchPaperOriginal(projectId, paperId))
+  } catch (err) {
+    logger.error('Failed to fetch paper original:', err)
+    throw err
+  }
+}

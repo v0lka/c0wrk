@@ -14,9 +14,11 @@ vi.mock('@/lib/logger', () => ({
 }))
 
 import {
+  fetchPaperOriginal,
   getPapers,
   isPapersChangedPayload,
   normalizePaperLibrary,
+  normalizePaperOriginalResult,
   setPaperPinned,
 } from '@/api/papers'
 
@@ -260,5 +262,90 @@ describe('isPapersChangedPayload', () => {
     expect(isPapersChangedPayload(null)).toBe(false)
     expect(isPapersChangedPayload({ project_id: 'p1' })).toBe(false)
     expect(isPapersChangedPayload({ project_id: 1, paths: 'x' })).toBe(false)
+  })
+})
+
+describe('normalizePaperOriginalResult', () => {
+  it('normalizes every declared status and passes the url through', () => {
+    for (const status of ['ok', 'offline', 'no_arxiv', 'not_found', 'error'] as const) {
+      expect(normalizePaperOriginalResult({ status, url: 'https://arxiv.org/html/1' })).toEqual({
+        status,
+        url: 'https://arxiv.org/html/1',
+      })
+    }
+  })
+
+  it('folds an unknown status to error so it is never treated as success', () => {
+    expect(normalizePaperOriginalResult({ status: 'teleported', url: '' })).toEqual({
+      status: 'error',
+      url: '',
+    })
+  })
+
+  it('folds a missing or non-string status to error', () => {
+    expect(normalizePaperOriginalResult({})).toEqual({ status: 'error', url: '' })
+    expect(normalizePaperOriginalResult({ status: 7, url: 'x' })).toEqual({
+      status: 'error',
+      url: 'x',
+    })
+  })
+
+  it('normalizes absent and non-string url fields to the empty string', () => {
+    expect(normalizePaperOriginalResult({ status: 'ok' })).toEqual({ status: 'ok', url: '' })
+    expect(normalizePaperOriginalResult({ status: 'ok', url: null })).toEqual({
+      status: 'ok',
+      url: '',
+    })
+  })
+
+  it('rejects a non-object response (schema drift)', () => {
+    expect(() => normalizePaperOriginalResult(null)).toThrow(
+      'Invalid paper original response from backend',
+    )
+    expect(() => normalizePaperOriginalResult('nope')).toThrow(
+      'Invalid paper original response from backend',
+    )
+    expect(() => normalizePaperOriginalResult(42)).toThrow(
+      'Invalid paper original response from backend',
+    )
+  })
+})
+
+describe('fetchPaperOriginal', () => {
+  beforeEach(() => {
+    delete mockApp.FetchPaperOriginal
+  })
+
+  it('forwards the arguments and normalizes the result', async () => {
+    const call = vi.fn(() =>
+      Promise.resolve({ status: 'ok', url: 'https://arxiv.org/html/1706.03762' }),
+    )
+    mockApp.FetchPaperOriginal = call
+
+    const res = await fetchPaperOriginal('p1', 'P-001')
+
+    expect(call).toHaveBeenCalledWith('p1', 'P-001')
+    expect(res).toEqual({ status: 'ok', url: 'https://arxiv.org/html/1706.03762' })
+  })
+
+  it('resolves (not rejects) with a non-success status — a failed fetch is data', async () => {
+    mockApp.FetchPaperOriginal = vi.fn(() => Promise.resolve({ status: 'offline', url: '' }))
+
+    await expect(fetchPaperOriginal('p1', 'P-001')).resolves.toEqual({
+      status: 'offline',
+      url: '',
+    })
+  })
+
+  it('folds an unknown backend status to error at the boundary', async () => {
+    mockApp.FetchPaperOriginal = vi.fn(() => Promise.resolve({ status: 'mystery', url: 'u' }))
+
+    await expect(fetchPaperOriginal('p1', 'P-001')).resolves.toEqual({ status: 'error', url: 'u' })
+  })
+
+  it('propagates a transport failure (unknown paper / backend down)', async () => {
+    mockApp.FetchPaperOriginal = vi.fn(() => Promise.reject(new Error('paper not found')))
+
+    await expect(fetchPaperOriginal('p1', 'nope')).rejects.toThrow('paper not found')
   })
 })

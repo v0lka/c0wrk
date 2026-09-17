@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"sort"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/review"
 	"github.com/v0lka/c0wrk/backend/session"
+	"github.com/v0lka/c0wrk/core/papers"
 	"github.com/v0lka/c0wrk/core/updater"
 	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/c0wrk/core/workspace"
@@ -81,6 +83,12 @@ type FrontendAPI struct {
 	// in production, where readProcessRSS from processmem.go runs), mirroring
 	// gitStatusFn.
 	readProcessRSSFn func() (uint64, error)
+	// fetchPaperOriginalFn, when non-nil, replaces the
+	// papers.FetchOriginalHTML call behind FetchPaperOriginal
+	// (frontend_api_papers_source.go). Test-only seam (nil in production),
+	// mirroring gitStatusFn, so the RPC's plumbing is testable without the
+	// network.
+	fetchPaperOriginalFn func(ctx context.Context, client *http.Client, libraryRoot string, rec papers.PaperRecord) papers.FetchResult
 	// remoteOpMu serializes remote git operations (pull/push/fetch) so that
 	// only one network operation runs at a time per app instance.
 	remoteOpMu sync.Mutex
