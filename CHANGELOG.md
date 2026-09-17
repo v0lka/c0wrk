@@ -2,6 +2,21 @@
 
 All notable changes to **c0wrk**. Dates follow the tag date.
 
+## v0.8.3 — 2026-09-17
+
+### Added
+- **Image files render as pictures in the file viewer** — `png`, `jpg`, `jpeg`, `gif`, `webp`, `bmp`, `ico`, `svg`, and `avif` files open as an image tab instead of being reported as unsupported binaries. The tab supports drag-to-pan, wheel-zoom toward the cursor, and a floating toolbar (zoom out / live percentage / zoom in / 1:1 actual size / fit-to-view, with fit never upscaling). Backed by a new `ReadImageAsDataURL` RPC that resolves via `resolveReadablePath` and is deliberately **not** workspace-contained — unlike `ReadFileAsDataURL` — because it fires only on an explicit user action (opening an image tab), never during markdown auto-render, so the auto-render attack surface is unchanged and the viewer can display an image the agent surfaced anywhere on disk. Image MIME types come from a deterministic map (with `mime.TypeByExtension` fallback) so rendering works on hosts with a sparse `mime.types` registry; an 8 MiB size guard rejects oversized payloads. See [specs/contracts/desktop-frontend.md](./specs/contracts/desktop-frontend.md).
+
+### Fixed
+- **The CHAT/CODE toggle looked dead on large projects** — switching to No Project no longer blocks behind an in-flight persistent DB open (the chromem gob-decode of every branch collection, minutes on a large index): the reset now queues itself and the open applies it as its final act, still under the lock, so the backend's switch lock is never held for the whole window. Readiness is dropped before the reset so a search issued in the interim never serves the outgoing project's collection, and a project switch that cannot acquire the switch lock within its bounded wait now emits a `runtime_error` (`project_switch_busy`) so the failure reaches the user instead of being silently swallowed by the frontend.
+- **Vector-index status was invisible until the first progress event** — the indexing pass now announces itself *before* the DB open (both the manager's own status and an `OnProgress` emission), so the status bar and the search panel stay truthful for the whole open; and the frontend seeds `vectorIndexStore` from `GetVectorIndexStatus` on mount, on every active-project change, and on `backend:ready` — push events alone left an already-built index sitting on the store's `idle` default at startup (empty status pill, "Select a project to search" while a project *was* selected).
+
+### Changed
+- **Virtualized transcript rendering removed** — the transcript now always renders through the sequential `ChatMessageRenderer`, dropping the 60-item virtualization threshold and deleting `VirtualizedChatList` along with its `lib/chatVirtualizer` helpers. An entire class of virtualizer-specific hardening goes away with it: the imperative navigation handle for off-screen steps and bookmarks, the re-created sticky user-message overlay for absolutely positioned rows, zoom-safe row measurement with synchronous re-measure, and the repair for the virtualizer's late attach clobbering the restored scroll position. The DOM is no longer bounded by the viewport on long transcripts, but paged history loading still caps the loaded rows. See [specs/domains/frontend/rendering.md](./specs/domains/frontend/rendering.md).
+
+### Internal
+- Specs updated: [rendering](./specs/domains/frontend/rendering.md) (virtualized-transcript sections removed), [workspace](./specs/domains/workspace.md) (the pre-open status announcement, the non-blocking No Project reset, and the frontend status-seed invariants), the [desktop↔frontend contract](./specs/contracts/desktop-frontend.md) (`ReadImageAsDataURL` + the path-containment boundary note), and the [event catalog](./specs/contracts/event-catalog.md) (`project_switch_busy`). New tests cover the image viewer and its data plumbing (`useFileViewerData`, `fileViewerUtils`, `fileViewerStore`), the queued No Project reset in `core/vectorindex`, and the `useVectorIndexStatus` seeding; the deleted `VirtualizedChatList`/`chatVirtualizer` test suites go with their subjects.
+
 ## v0.8.2 — 2026-09-17
 
 ### Added

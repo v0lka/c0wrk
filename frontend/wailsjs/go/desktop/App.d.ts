@@ -271,6 +271,8 @@ export function ReadFile(arg1:string):Promise<string>;
 
 export function ReadFileAsDataURL(arg1:string):Promise<string>;
 
+export function ReadImageAsDataURL(arg1:string):Promise<string>;
+
 export function Rebase(arg1:string):Promise<void>;
 
 export function RecordFlashcardReview(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;

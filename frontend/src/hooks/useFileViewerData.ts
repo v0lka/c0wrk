@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef } from 'react'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { subscribe } from '@/api/runtime'
-import { readFile, getFileDiff } from '@/api/workspace'
+import { readFile, readImageAsDataURL, getFileDiff } from '@/api/workspace'
 import { getFileDiffHunks } from '@/api/git'
-import { isBinaryContent } from '@/lib/fileViewerUtils'
+import { isBinaryContent, isImageFilePath } from '@/lib/fileViewerUtils'
 import { detectLanguageFromPath } from '@/lib/cmLanguages'
 
 /**
@@ -23,11 +23,22 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
   const setFileHunks = useFileViewerStore((s) => s.setFileHunks)
   const setFileError = useFileViewerStore((s) => s.setFileError)
   const setFileBinary = useFileViewerStore((s) => s.setFileBinary)
+  const setFileImage = useFileViewerStore((s) => s.setFileImage)
   const setFileLoading = useFileViewerStore((s) => s.setFileLoading)
 
   const loadFile = useCallback(async (path: string, silent: boolean) => {
     if (!silent) setFileLoading(path, true)
     try {
+      // Image files are binary and cannot be shown as text — fetch them as a
+      // base64 data URL and let the viewer render the picture instead. Done
+      // before readFile so image bytes never round-trip as a (lossy) string,
+      // and the diff/hunk pipeline is skipped entirely (a picture has no
+      // meaningful line diff).
+      if (isImageFilePath(path)) {
+        const dataUrl = await readImageAsDataURL(path)
+        setFileImage(path, dataUrl)
+        return
+      }
       const content = await readFile(path)
       if (isBinaryContent(content)) { setFileBinary(path); return }
       setFileContent(path, content, detectLanguageFromPath(path))
@@ -46,7 +57,7 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
         try { const hunks = await getFileDiffHunks(path); setFileHunks(path, hunks) } catch { setFileHunks(path, []) }
       }
     } catch (err) { setFileError(path, err instanceof Error ? err.message : String(err)) }
-  }, [setFileLoading, setFileBinary, setFileContent, setFileDiff, setFileHunks, setFileError])
+  }, [setFileLoading, setFileBinary, setFileImage, setFileContent, setFileDiff, setFileHunks, setFileError])
 
   // Stable refs so the workspace event subscription does not re-bind on every
   // openTabs change. We re-read the current openTabs/loadFile inside the
@@ -62,7 +73,9 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
     const data = useFileViewerStore.getState().files[activeFile]
     // Virtual files are not backed by a path on disk — never load from disk.
     if (data?.virtual) return
-    if (data && !data.loading && (data.content || data.error || data.isBinary)) return
+    // Already loaded (text content, an image data URL, a binary verdict, or an
+    // error) — nothing to (re)fetch.
+    if (data && !data.loading && (data.content || data.imageDataUrl || data.error || data.isBinary)) return
     loadFileRef.current(activeFile, false)
   }, [activeFile])
 

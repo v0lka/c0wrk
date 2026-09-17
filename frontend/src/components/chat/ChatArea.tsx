@@ -4,7 +4,6 @@ import { useBookmarkStore } from '@/stores/bookmarkStore'
 import { groupMessages, stabilizeDisplayItems, chatMessageToUI, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow, isRoutingRequestRow } from '@/lib/chatUtils'
 import { restorePlanAndGoalFromHistory } from '@/lib/sessionStoreRestore'
 import { restorePlanFromTimeline } from '@/lib/planTimelineRestore'
-import type { ChatVirtualizerHandle } from '@/lib/chatVirtualizer'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { usePlanStore } from '@/stores/planStore'
@@ -18,7 +17,6 @@ import { AssistantMessage } from './AssistantMessage'
 import { ActivityIndicator } from './ActivityIndicator'
 import { ChatScrollManager } from './ChatScrollManager'
 import { ChatMessageRenderer, CompactErrorFallback } from './ChatMessageRenderer'
-import { VirtualizedChatList } from './VirtualizedChatList'
 import { ChatHoverRegion } from './ChatHoverRegion'
 import { ExecutionPanels } from './ExecutionPanels'
 import { BlackboardPanel } from './BlackboardPanel'
@@ -29,9 +27,6 @@ import { ScrollProvider } from './ScrollContext'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { MessageCircle } from 'lucide-react'
 import { logger } from '@/lib/logger'
-
-/** Top-level display-item count above which the transcript is virtualized. */
-const CHAT_VIRTUALIZE_THRESHOLD = 60
 
 export function ChatArea() {
   const activeSessionId = useSessionStore(s => s.activeSessionId)
@@ -53,10 +48,6 @@ export function ChatArea() {
   const workUnits = useSessionWorkUnits(activeSessionId)
   const streamingText = useChatStore(s => activeSessionId ? s.streamingText[activeSessionId] : undefined)
   const scrollRef = useRef<HTMLDivElement>(null)
-  // Imperative navigation handle for the virtualized transcript. ChatScrollManager
-  // reads it to reach step/bookmark targets outside the mounted row window;
-  // VirtualizedChatList registers it (null while the transcript is not virtualized).
-  const chatVirtualizerRef = useRef<ChatVirtualizerHandle | null>(null)
   // Baseline for transcript stabilization (see the displayItems memo below):
   // the previous committed item tree, reused for identity-stable items.
   const prevItemsRef = useRef<DisplayItem[]>([])
@@ -281,26 +272,6 @@ export function ChatArea() {
 
   const hasContent = messages.length > 0 || !!streamingText
 
-  // Above this many top-level display items the transcript is virtualized: only
-  // the rows intersecting the viewport (+ overscan) mount, so the DOM node count
-  // is bounded by the viewport rather than by the history length. Below the
-  // threshold the plain renderer is used so the sticky-pinned user message keeps
-  // working (absolute positioning disables position:sticky).
-  const shouldVirtualize = displayItems.length > CHAT_VIRTUALIZE_THRESHOLD
-
-  // Streaming text + activity indicator render below the transcript in both
-  // modes (outside the virtualized window, so the live tail is never unmounted).
-  const trailingContent = (
-    <>
-      {streamingText && (
-        <ErrorBoundary fallback={<CompactErrorFallback />}>
-          <AssistantMessage content={streamingText} isStreaming />
-        </ErrorBoundary>
-      )}
-      <ActivityIndicator />
-    </>
-  )
-
   // Archived sessions are read-only: swap the input shell for an "Archived"
   // banner. Hoisted into a single const so the archived gate lives in one
   // place (used by both render branches below). activeSessionId is guaranteed
@@ -332,22 +303,22 @@ export function ChatArea() {
   return (
     <ScrollProvider>
       <div className="relative flex flex-1 flex-col min-h-0 bg-background">
-        <ChatScrollManager key={activeSessionId} sessionId={activeSessionId} messages={messages} streamingText={streamingText} scrollRef={scrollRef} virtualizerRef={chatVirtualizerRef}>
+        <ChatScrollManager key={activeSessionId} sessionId={activeSessionId} messages={messages} streamingText={streamingText} scrollRef={scrollRef}>
           <ChatHoverRegion className="p-4 space-y-4 min-w-0">
-            {shouldVirtualize ? (
-              <VirtualizedChatList
-                items={displayItems}
-                scrollRef={scrollRef}
-                trailingContent={trailingContent}
-                virtualizerRef={chatVirtualizerRef}
-              />
-            ) : (
-              <ChatMessageRenderer
-                items={displayItems}
-                stickyUserMessages
-                trailingContent={trailingContent}
-              />
-            )}
+            <ChatMessageRenderer
+              items={displayItems}
+              stickyUserMessages
+              trailingContent={(
+                <>
+                  {streamingText && (
+                    <ErrorBoundary fallback={<CompactErrorFallback />}>
+                      <AssistantMessage content={streamingText} isStreaming />
+                    </ErrorBoundary>
+                  )}
+                  <ActivityIndicator />
+                </>
+              )}
+            />
           </ChatHoverRegion>
         </ChatScrollManager>
         <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Panel error</div>}>

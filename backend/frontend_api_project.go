@@ -278,6 +278,19 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	// which every ListDirectory (and with it @-file completion) fails
 	// containment until an app restart.
 	if err := f.acquireSwitchLock(); err != nil {
+		// Surface the failure: the frontend's toggle swallows a rejected switch
+		// (switchProjectWithState) and expects the global runtime_error listener
+		// to explain it, so a bounded-acquire failure that emits nothing is an
+		// invisible dead button. Mirrors the git-not-found path below (and is
+		// nil-guarded like the other early-startup emitters, since the injected
+		// callback may not be wired yet in tests).
+		if f.emitEvent != nil {
+			f.emitEvent(EventRuntimeError, map[string]string{
+				"id":         uuid.New().String(),
+				"message":    "Another project switch is still finishing. Please try again in a moment.",
+				"error_code": "project_switch_busy",
+			})
+		}
 		f.log().Warn("SwitchProject: timed out waiting for an in-flight switch",
 			"project", id, "error", err)
 		return err

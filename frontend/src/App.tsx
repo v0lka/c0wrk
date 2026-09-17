@@ -14,7 +14,7 @@ import { ExitConfirmDialog } from '@/components/ExitConfirmDialog'
 import { useUpdateChecker } from '@/hooks/useUpdateChecker'
 import { useExitGuard } from '@/hooks/useExitGuard'
 import { useGitFocusRefresh } from '@/hooks/useGitFocusRefresh'
-import { useVectorIndexStore } from '@/stores/vectorIndexStore'
+import { useVectorIndexStatus } from '@/hooks/useVectorIndexStatus'
 import { useProjectLoader } from '@/hooks/useProjectLoader'
 import { useSessionLoader } from '@/hooks/useSessionLoader'
 import { useSessionEvents } from '@/hooks/useSessionEvents'
@@ -31,7 +31,7 @@ import { useWorkDirsStore } from '@/stores/workDirsStore'
 import { useThemeStore } from '@/stores/themeStore'
 import { ResearchEventBridge } from '@/components/research/ResearchEventBridge'
 import type { ToolManagerToolInfo, ToolManagerProgressData } from '@/types/events'
-import { isStartupError, isRuntimeError, isVectorIndexPayload, isToolManagerStartData, isToolManagerProgressData } from '@/types/events'
+import { isStartupError, isRuntimeError, isToolManagerStartData, isToolManagerProgressData } from '@/types/events'
 import type { StartupError, RuntimeError } from '@/types/events'
 
 type AppPhase = 'splash' | 'waiting_ready' | 'main'
@@ -89,6 +89,9 @@ function App() {
   // Wire loaders — always run regardless of phase.
   useProjectLoader()
   useSessionLoader()
+  // Seed/refresh the vector-index status (status bar pill + search panel) —
+  // the push events alone leave it stale on startup (see the hook).
+  useVectorIndexStatus()
   useSessionEvents(activeSessionId)
   useBackgroundSessionWatcher()
   // Authoritative live-sessions snapshot loader. Mounted at the App root — NOT
@@ -229,19 +232,12 @@ function App() {
     return off
   }, [])
 
-  // Listen for runtime errors from the backend (e.g. git missing for CODE mode)
+  // Listen for runtime errors from the backend (e.g. git missing for CODE mode,
+  // or a project switch that could not acquire the backend switch lock)
   useEffect(() => {
     return subscribe('runtime_error', (data: unknown) => {
       if (!isRuntimeError(data)) return
       setRuntimeError(data)
-    })
-  }, [])
-
-  // Listen for vector index status (non-session-scoped)
-  useEffect(() => {
-    return subscribe('vector_index:status', (data: unknown) => {
-      if (!isVectorIndexPayload(data)) return
-      useVectorIndexStore.getState().setStatus(data)
     })
   }, [])
 

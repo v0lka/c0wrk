@@ -53,3 +53,40 @@ describe('fileViewerStore.openPaper', () => {
     expect(persisted.activeFile).toBeNull()
   })
 })
+
+describe('fileViewerStore.setFileImage', () => {
+  const path = '/ws/assets/plot.png'
+
+  beforeEach(() => {
+    useFileViewerStore.setState({ files: {}, openTabs: [], activeFile: null })
+  })
+
+  it('stores the data URL and clears the loading/binary/error flags', () => {
+    useFileViewerStore.setState({
+      openTabs: [path],
+      activeFile: path,
+      files: { [path]: { content: '', loading: true, isBinary: true, error: 'boom' } },
+    })
+
+    useFileViewerStore.getState().setFileImage(path, 'data:image/png;base64,AAA')
+
+    const file = useFileViewerStore.getState().files[path]
+    expect(file?.imageDataUrl).toBe('data:image/png;base64,AAA')
+    expect(file?.loading).toBe(false)
+    expect(file?.isBinary).toBeUndefined()
+    expect(file?.error).toBeUndefined()
+  })
+
+  it('does not persist image bytes (only UI state is persisted)', () => {
+    useFileViewerStore.getState().openFile(path)
+    useFileViewerStore.getState().setFileImage(path, 'data:image/png;base64,AAA')
+
+    const partialize = useFileViewerStore.persist.getOptions().partialize
+    const persisted = partialize!(useFileViewerStore.getState()) as {
+      openTabs: string[]
+      files?: unknown
+    }
+    expect(persisted.files).toBeUndefined()
+    expect(persisted.openTabs).toContain(path)
+  })
+})

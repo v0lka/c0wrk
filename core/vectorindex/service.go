@@ -279,6 +279,14 @@ type Service struct {
 	ready       atomic.Bool
 	readyCh     chan struct{} // closed when ready becomes true; recreated on false
 	readyMu     sync.Mutex    // protects readyCh swaps + readyGen
+
+	// pendingNoProjectReset holds the id of a No Project reset that was
+	// requested while the write lock was held by an in-flight SetProject (a
+	// persistent DB open). Nil when none is queued. Atomic because the requester
+	// records it WITHOUT taking s.mu — taking it is exactly what it cannot do.
+	// SetProject applies (and clears) it as its final act, still under the lock.
+	// See ResetForNoProject.
+	pendingNoProjectReset atomic.Pointer[string]
 	// readyGen is bumped every time SetReady(false) / MarkNotReady is called.
 	// An indexing pass captures the gen at start (via MarkNotReady) and
 	// passes it to RestoreReady on exit; if a project switch (or any other
@@ -410,6 +418,13 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Apply — as the last act of this open, while the lock is still held — a
+	// No Project reset that was requested while the open was in flight. It is
+	// registered AFTER the Unlock defer, so it runs BEFORE the lock is
+	// released; the state this call installed is therefore overwritten by the
+	// reset, which is precisely what the requester asked for (see
+	// ResetForNoProject).
+	defer s.applyPendingNoProjectResetLocked()
 
 	var embeddingCachePath string
 	if len(embeddingCachePaths) > 0 {
@@ -493,6 +508,57 @@ func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...
 
 	s.logger.Info("project set for vector index", "projectID", projectID)
 	return nil
+}
+
+// ResetForNoProject retires the current project's state and installs the empty
+// in-memory No Project state, WITHOUT waiting for an in-flight persistent DB
+// open to release the write lock.
+//
+// The reset itself is cheap — park/close the outgoing state, then an in-memory
+// chromem DB — but it needs the write lock, and SetProject holds that lock for
+// the entire chromem gob-decode, which is minutes on a large index (tens of
+// thousands of documents per branch collection). Blocking here used to wedge
+// the caller's project switch (Manager.SwitchProject) for that whole window;
+// the backend's switchMu was held behind it, so every CHAT/CODE toggle failed
+// after its bounded acquire — the "clicking CHAT does nothing for minutes"
+// failure. So: try the lock, and when it is busy record the request and return
+// at once; the in-flight SetProject applies it as its last act.
+//
+// Readiness is dropped by the caller (Manager.SwitchProject) before this call,
+// so a search issued in the window before the queued reset lands never serves
+// the outgoing project's collection.
+func (s *Service) ResetForNoProject(projectID string) {
+	if !s.mu.TryLock() {
+		id := projectID
+		s.pendingNoProjectReset.Store(&id)
+		return
+	}
+	defer s.mu.Unlock()
+	s.pendingNoProjectReset.Store(nil)
+	s.resetForNoProjectLocked(projectID)
+}
+
+// applyPendingNoProjectResetLocked applies a queued No Project reset. The
+// caller must hold s.mu (SetProject's deferred call does).
+func (s *Service) applyPendingNoProjectResetLocked() {
+	id := s.pendingNoProjectReset.Swap(nil)
+	if id == nil {
+		return
+	}
+	s.resetForNoProjectLocked(*id)
+}
+
+// resetForNoProjectLocked installs the empty in-memory No Project state — the
+// same state SetProject(NoProjectID, "") produced: parking disabled, no
+// persistent directory, an in-memory chromem DB, no collection and no lexical
+// index. The caller must hold s.mu.
+func (s *Service) resetForNoProjectLocked(projectID string) {
+	s.SetReady(false)
+	s.parkCurrentLocked()
+	ps := &projectState{projectID: projectID}
+	ps.db = chromem.NewDB()
+	s.current = ps
+	s.logger.Info("project set for vector index", "projectID", projectID)
 }
 
 // parkCurrentLocked retires the current project state. The caller must hold
