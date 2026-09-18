@@ -104,4 +104,15 @@ describe('ServiceMessage', () => {
     expect(unknown).not.toContain('text-success')
     expect(unknown).not.toContain('text-destructive')
   })
+
+  it('does not throw on a malformed payload with a non-string verdict', () => {
+    // A corrupted/foreign metadata payload with `kind`/`verdict` keys but a
+    // non-string verdict previously reached `verdict.startsWith` and threw a
+    // TypeError during render, crashing the memoized chat subtree. The boundary
+    // guard must reject it so the row renders with the muted icon.
+    render(makeItem('status', { kind: 'tool_confirm', verdict: 123 }))
+    const cls = iconClasses()[0] ?? ''
+    expect(cls).not.toContain('text-success')
+    expect(cls).not.toContain('text-destructive')
+  })
 })

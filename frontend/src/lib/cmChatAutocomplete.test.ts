@@ -289,6 +289,28 @@ describe('cmChatAutocomplete @-file source', () => {
     expect(view.state.doc.toString()).toBe("@'my file.txt' ")
   })
 
+  it('keeps the quote open when completing a directory inside an open @\'…\' ref', async () => {
+    // Regression: a directory chosen inside an open @'…' ref must continue the
+    // ref (@'beta/) instead of closing it (@'beta'/), which the trigger scan
+    // would read as a closed ref and silently stop all further completions.
+    useFileTreeStore.setState({ rootPath: '/ws' })
+    listDirectoryMock.mockResolvedValue(ENTRIES)
+
+    const fixture = makeView()
+    views.push(fixture)
+    const { view } = fixture
+
+    typeAndComplete(view, "@'be")
+    await until(
+      () => currentCompletions(view.state).some((c) => c.label === 'beta'),
+      'directory completion inside a quoted ref',
+    )
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    acceptCompletion(view)
+    expect(view.state.doc.toString()).toBe("@'beta/")
+  })
+
   it('offers no completions after a quoted ref is closed', async () => {
     useFileTreeStore.setState({ rootPath: '/ws' })
     listDirectoryMock.mockResolvedValue(ENTRIES)

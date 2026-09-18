@@ -6,7 +6,7 @@ Accepted
 
 > **Related:** the canonical, sp4rk-native version of this decision now lives in [sp4rk: specs/decisions/003-shell-parser-symlink-detection.md](https://github.com/v0lka/sp4rk/blob/main/specs/decisions/003-shell-parser-symlink-detection.md). This c0wrk ADR is retained as historical decision history.
 
-> **Drift note (2026-08-25, vibespec-check):** mvdan.cc/sh/v3/syntax is no longer confined to sp4rk/tools/symlink.go — sp4rk/tools/shellEnvBindings.go also imports it (collectCommandEnvBindings). Both files remain in the same sp4rk `tools` package.
+> **Drift note (2026-08-25, vibespec-check):** mvdan.cc/sh/v3/syntax is confined to sp4rk/tools/symlink.go again — sp4rk/tools/shellEnvBindings.go (and with it `collectCommandEnvBindings`) was deleted by [ADR-054](./054-symlink-gate-literal-paths-only.md), removing the last other importer. The import remains inside the sp4rk `tools` package only.
 
 ## Context
 

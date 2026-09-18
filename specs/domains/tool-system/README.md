@@ -89,7 +89,7 @@ The group policy resolution, auto-approval (session roots), and symlink gate are
 - Tool names are unique within the registry
 - `system`-group tools bypass policy and judge checks — membership is declared on the tool itself (`ToolGroup: sdktools.GroupSystem` on `BaseTool`), not an out-of-band name set. The disabled-tool check (No Project mode) applies to all tools including system-group ones. `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
 - A tool with an undeclared group matches no allow-list (fail-closed for group filtering, subagent budgets, verifier sets)
-- The symlink analysis runs during safety-signal gathering for every non-system tool call; only escapes out of the session roots (or unresolvable paths) are hard reasons
+- The symlink analysis runs during safety-signal gathering for every non-system tool call; only escapes out of the session roots are hard reasons — the gate is a pure literal-path extractor, so the former unresolvable/suspicious expansion escalation no longer exists (ADR-054)
 - MCP tools carry source category `mcp` (source tag = the MCP server's name); core built-in tools carry source category `core`
 - Disabled tools are blocked at execution time; `SetDisabledTools`/`DisabledTools` deep-copy the map to prevent concurrent mutation
 - The registry is thread-safe (sync.RWMutex)

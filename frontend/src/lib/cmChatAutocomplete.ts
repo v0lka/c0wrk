@@ -244,7 +244,16 @@ function relativePath(absPath: string, rootPath: string | null): string {
  * Files outside the workspace keep their absolute path.
  */
 function chatApplyPath(absPath: string, rootPath: string | null, suffix: string, forceQuoted = false): string {
-  return formatFileRefPath(relativePath(absPath, rootPath), forceQuoted) + suffix
+  const rel = relativePath(absPath, rootPath)
+  // A DIRECTORY completed inside an already-open @'…' ref must keep the quote
+  // OPEN: the ref continues into the child path (@'src/…). Closing it here
+  // (@'src'/) would make the trigger scan treat the second quote as a closed
+  // ref and silently kill all further completions. Only a FILE closes the
+  // quote, since a file ends the ref.
+  if (forceQuoted && suffix === '/' && !rel.includes("'")) {
+    return `'${rel}/`
+  }
+  return formatFileRefPath(rel, forceQuoted) + suffix
 }
 
 async function skillSource(ctx: CompletionContext): Promise<CompletionResult | null> {
