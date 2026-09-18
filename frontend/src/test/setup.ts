@@ -21,6 +21,14 @@
 //    getBoundingClientRect, which CodeMirror's measure cycle calls from
 //    requestAnimationFrame — the async TypeError otherwise shows up in stderr
 //    while the tests stay green. Installed only when a DOM is present.
+//
+// 4. Canvas getContext stub (jsdom): jsdom ships no canvas implementation, so
+//    every HTMLCanvasElement.getContext() call prints "Not implemented:
+//    HTMLCanvasElement's getContext() method" to stderr (e.g. @xterm/xterm's
+//    module-load feature probe in Terminal.options.test.ts) while the code
+//    under test null-guards the result and stays green. The stub returns null
+//    — exactly what jsdom's not-implemented path effectively yields — minus
+//    the stderr noise. Installed only when a DOM is present.
 
 const g = globalThis as Record<string, unknown>
 
@@ -88,4 +96,9 @@ if (typeof document !== 'undefined' && typeof document.createRange === 'function
         toJSON: () => ({}),
       }) as unknown as DOMRect
   }
+}
+
+// --- 4. Canvas getContext stub for jsdom ------------------------------------
+if (typeof document !== 'undefined' && typeof HTMLCanvasElement !== 'undefined') {
+  HTMLCanvasElement.prototype.getContext = (() => null) as typeof HTMLCanvasElement.prototype.getContext
 }

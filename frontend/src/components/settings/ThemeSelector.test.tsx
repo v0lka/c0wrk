@@ -7,6 +7,14 @@ import { ThemeSelector } from './ThemeSelector'
 import { useThemeStore } from '@/stores/themeStore'
 import type { ThemeImportOutcome, ThemeInfo } from '@/api/themes'
 
+// The failure-path tests below make theme import/delete reject on purpose;
+// the real logger would print "Failed to import theme: …" /
+// "Failed to delete theme: …" for each. That output is the expected behavior
+// under test, not a regression — mock the logger to keep the output clean.
+vi.mock('@/lib/logger', () => ({
+  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}))
+
 // Radix popper positioning (autoUpdate) observes the trigger/content with
 // ResizeObserver, which jsdom does not provide.
 vi.stubGlobal(

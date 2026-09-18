@@ -95,6 +95,23 @@ func newShellAnalysisRegistry(t *testing.T, judgeResponse string) (*ToolRegistry
 	return registry, provider, &confirmCalled
 }
 
+// marshalShellInput marshals a shell-exec tool input as JSON instead of
+// hand-splicing host paths into a raw string literal: on Windows,
+// t.TempDir() yields backslash-separated paths whose raw splice produces
+// invalid JSON escape sequences ("\U", "\R", …), so the input fails object
+// validation before any analysis runs. The command itself must carry the
+// path QUOTED — an unquoted backslash path is a chain of bash escape
+// characters, and the glued relative word the analyzer recovers resolves
+// inside the workspace, so the outside-roots criterion never fires.
+func marshalShellInput(t *testing.T, command, workDir string) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(map[string]string{"command": command, "working_directory": workDir})
+	if err != nil {
+		t.Fatalf("marshal shell input: %v", err)
+	}
+	return raw
+}
+
 // TestSmartApproveShellAnalysis_CleanCallReachesStrictJudge proves the
 // registry runs the flowsh analysis ONCE per shell-tool call (Execute →
 // AttachShellAnalysis) and forwards the digest to the strict judge even for
@@ -120,7 +137,7 @@ func TestSmartApproveShellAnalysis_CleanCallReachesStrictJudge(t *testing.T) {
 	// Read of a non-system path outside the session roots: fires the SOFT
 	// outside-roots criterion in the digest, but the mock tool consumes
 	// nothing — the call itself stays escalation-free (clean).
-	input := json.RawMessage(`{"command":"cat ` + outsideNotes + `","working_directory":"` + ws + `"}`)
+	input := marshalShellInput(t, `cat "`+outsideNotes+`"`, ws)
 
 	result, err := registry.Execute(ctx, "bash_exec", input)
 	if err != nil {
@@ -166,7 +183,7 @@ func TestSmartApproveShellAnalysis_EscalatedShellCallReachesStrictJudge(t *testi
 	ws := t.TempDir()
 	outside := t.TempDir() // a second root: outside the workspace
 	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
-	input := json.RawMessage(`{"command":"cat ` + outside + `/notes.md","working_directory":"` + ws + `"}`)
+	input := marshalShellInput(t, `cat "`+outside+`/notes.md"`, ws)
 
 	result, err := registry.Execute(ctx, "bash_exec", input)
 	if err != nil {
