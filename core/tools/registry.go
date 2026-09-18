@@ -416,8 +416,11 @@ func (r *ToolRegistry) SetGroupPolicies(policies map[sdktools.ToolGroup]sdktools
 // ApplySecurityState atomically replaces the registry's global security
 // state: the group→policy map, session-root write auto-approval, the autonomy
 // mode, and the silent-mode sub-policies. It is the push API for runtime
-// security-settings updates (applySecurityPolicies), used for both the shared
-// builder registry and the live per-session clones cloned from it. The
+// security-settings updates (applySecurityPolicies), used for the shared
+// builder registry; the live per-session clones are updated with group
+// policies and auto-approval only (ApplyGroupPolicies) — their autonomy
+// posture is re-synced from the shared registry at each task launch
+// (RefreshAutonomyPosture), never mid-run. The
 // policies map is deep-copied so the caller's map never aliases registry
 // state — a broadcast push may pass the same map to many registries, and each
 // must stay independently mutable (Clone contract). Replacing the whole map
