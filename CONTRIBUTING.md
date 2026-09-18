@@ -128,7 +128,7 @@ Key points:
 - The active LLM provider is resolved from `llm.default_model` — the Router looks up which provider has the model in its enabled `models` list.
 - MCP servers are configured under `mcp.servers`.
 - Security policy is configured exclusively by capability group under `security.groups`; the legacy `security.default_policy` and `security.tool_policies` keys are inert. The `execute` group alone supports a command blacklist. See [`specs/decisions/024-group-policies.md`](specs/decisions/024-group-policies.md).
-- `experimental.enabled` gates both RESEARCH and the Model Profiles feature. `executor.verify_on_edit` is opt-in and runs only a config-authored command through the unattended hard-safety path.
+- `experimental.enabled` gates only the E2S execution mode; RESEARCH and Model Profiles are always available. `executor.verify_on_edit` is opt-in and runs only a config-authored command through the unattended hard-safety path.
 - Main agent calls use `timeouts.llmRequestTimeout`; one-shot title, commit-message, and prompt-optimization calls use `timeouts.serviceLLMRequestTimeout`.
 - Runtime limits are configurable under `toolLimits`, `timeouts`, `executor`, and `vector_index`; update checks use the `updates` section.
 - The SQLite database is always stored at `~/.c0wrk/database.db` (the `memory.database` config key has been retired).

@@ -80,11 +80,12 @@ export function useComparisons(researchRoot: string, refreshKey = 0): Comparison
     if (loadedDirRef.current !== dir) {
       // A new directory: nothing to keep, show the loader with an empty set.
       setState({ loading: true, items: [] })
-    } else {
-      // A refresh of the SAME directory: keep the rendered set (an open matrix
-      // must not unmount / flash "Loading…" on every library sync).
-      setState((prev) => ({ loading: true, items: prev.items }))
     }
+    // A refresh of the SAME directory leaves the rendered state untouched —
+    // loading stays false and the open matrix stays mounted (the consumer
+    // gates the whole section on `loading`, so re-entering it here would
+    // unmount the matrix on every library sync); only the resolved read
+    // swaps the items (mirrors the sibling usePaperArtifacts loader).
     void (async () => {
       try {
         const entries = await listDirectory(dir)

@@ -248,6 +248,19 @@ export function useSessionMessages(sessionId: string | null): ChatMessageUI[] {
 // (AGENTS.md: selectors must return referentially stable values).
 const EMPTY_WORK_UNIT_STATUS: Record<string, WorkUnitBlockStatus> = {}
 
+/** Chronological insert key for prependHistoryMessages: earlier created_at
+ *  first, ties broken by id so the merge order is deterministic regardless
+ *  of which caller supplied the rows. */
+function prependSortKey(m: ChatMessageUI): [number, string] {
+  return [m.timestamp, m.id]
+}
+
+/** True when the prepended row must land at or before the existing row under
+ *  the chronological key (see prependSortKey). */
+function prependsBefore(m: ChatMessageUI, existingTs: number, existingId: string): boolean {
+  if (m.timestamp !== existingTs) return m.timestamp < existingTs
+  return m.id <= existingId
+}
 /**
  * Hook returning a session's durable work-unit status overlay (stepId -> block
  * status) for {@link groupMessages}. Returns a stable empty object when the
@@ -467,8 +480,12 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
 
   // Prepend an OLDER page of history before the current messages. Rows already
   // present (by id) are skipped so a re-fetch or an overlap cannot duplicate a
-  // message; the page's own stream order is preserved ahead of what is already
-  // loaded. Advances the cursor atomically with the message insert so the next
+  // message; each genuinely inserted row is spliced in at its chronological
+  // position (created_at, tie-broken by id) rather than blindly at the front —
+  // the plan-timeline restore inserts session-wide rows that are older than
+  // the newest page but NEWER than pages scroll-up has not yet fetched, and
+  // messageOrder must stay chronological whichever caller feeds this action.
+  // Advances the cursor atomically with the message insert so the next
   // scroll-up fetches the page before this one. The rows this call actually
   // inserts are recorded in prependedHistoryIds and the page's cursor/hasMore
   // in prependCursor/prependHasMore (the deepest position so far), so a later
@@ -485,6 +502,36 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
     }
     const nextIndex = { ...existingIndex }
     for (const m of prepend) nextIndex[m.id] = m
+    // Insert by chronological key (created_at, tie-broken by id) instead of an
+    // unconditional front-insert. The rows arriving here are OLDER than the
+    // newest page, but NOT necessarily older than everything already loaded:
+    // the plan-timeline restore prepends session-wide rows that sit BETWEEN
+    // the loaded window and the pages scroll-up has not yet fetched, and a
+    // plain front-insert would strand them above the next page. Splicing each
+    // row at its position keeps messageOrder chronological for BOTH callers
+    // (backward paging and the timeline restore), so no source of rows can
+    // violate the order.
+    const incoming = [...prepend].sort((a, b) => {
+      const [aTs, aId] = prependSortKey(a)
+      const [bTs, bId] = prependSortKey(b)
+      return aTs - bTs || (aId < bId ? -1 : aId > bId ? 1 : 0)
+    })
+    const order: string[] = []
+    let incomingIdx = 0
+    for (const id of existingOrder) {
+      // A row missing from the index cannot be keyed; keep it after every
+      // inserted row so it never strands incoming rows behind itself.
+      const existingTs = existingIndex[id]?.timestamp ?? Number.POSITIVE_INFINITY
+      while (
+        incomingIdx < incoming.length &&
+        prependsBefore(incoming[incomingIdx]!, existingTs, id)
+      ) {
+        order.push(incoming[incomingIdx]!.id)
+        incomingIdx++
+      }
+      order.push(id)
+    }
+    for (; incomingIdx < incoming.length; incomingIdx++) order.push(incoming[incomingIdx]!.id)
     // Only genuinely inserted rows are marked: a row skipped as already-known
     // either belongs to the newest page (it will re-arrive with it) or was
     // recorded by an earlier prepend — marking it here could misplace a live
@@ -493,7 +540,7 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
     for (const m of prepend) nextPrepended.add(m.id)
     return {
       messages: { ...s.messages, [sessionId]: nextIndex },
-      messageOrder: { ...s.messageOrder, [sessionId]: [...prepend.map(m => m.id), ...existingOrder] },
+      messageOrder: { ...s.messageOrder, [sessionId]: order },
       prependedHistoryIds: { ...s.prependedHistoryIds, [sessionId]: nextPrepended },
       prependCursor: { ...s.prependCursor, [sessionId]: cursor },
       prependHasMore: { ...s.prependHasMore, [sessionId]: hasMore },
@@ -721,15 +768,18 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
 
   // Drop one step's overlay entry. A fresh live launch (subagent_launch /
   // plan_step_start) proves the unit is running again, so the stale
-  // paused/interrupted snapshot must stop overriding the block; a no-op when
-  // the session/step has no entry. The clear is a LIVE write too, so it stamps
-  // workUnitEventAt — an older snapshot must not re-add the entry.
+  // paused/interrupted snapshot must stop overriding the block. The clear is a
+  // LIVE write too, so it stamps workUnitEventAt on EVERY path — including
+  // the no-entry path, where an older snapshot must not re-add the entry
+  // (reconcileWorkUnits compares this stamp against the snapshot read time).
+  // workUnitStatus itself is only rebuilt when an entry is actually dropped,
+  // so the no-entry path keeps its exact reference (React #185).
   clearWorkUnitStep: (sessionId, stepId) => set((s) => {
     const session = s.workUnitStatus[sessionId]
-    if (!session || !(stepId in session)) return s
-    const { [stepId]: _dropped, ...rest } = session
+    const hadEntry = session !== undefined && stepId in session
+    const { [stepId]: _dropped, ...rest } = session ?? {}
     return {
-      workUnitStatus: { ...s.workUnitStatus, [sessionId]: rest },
+      ...(hadEntry ? { workUnitStatus: { ...s.workUnitStatus, [sessionId]: rest } } : {}),
       workUnitEventAt: {
         ...s.workUnitEventAt,
         [sessionId]: { ...s.workUnitEventAt[sessionId], [stepId]: Date.now() },

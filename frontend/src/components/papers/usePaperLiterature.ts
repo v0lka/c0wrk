@@ -15,7 +15,7 @@
 // the graph without the user reopening the tab — the same refresh contract the
 // sibling `usePaperArtifacts`/`useComparisons` loaders honour.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { listDirectory, readFile } from '@/api/workspace'
 import { logger } from '@/lib/logger'
 import { selectPapersSyncAt, usePaperStore } from '@/stores/paperStore'
@@ -64,20 +64,28 @@ export function usePaperLiterature(
   const [nonce, setNonce] = useState(0)
   const syncAt = usePaperStore(selectPapersSyncAt)
   const key = refreshKey ?? syncAt
+  // The directory whose artifact is currently loaded ('' when none). Only a
+  // change of directory re-enters the PENDING state; a re-probe of the SAME
+  // directory (a library-sync key bump or an explicit reload()) keeps the
+  // previously loaded artifact mounted until the fresh read resolves — the
+  // sibling usePaperArtifacts/useComparisons refresh contract.
+  const loadedDirRef = useRef<string | null>(null)
 
   const reload = useCallback(() => setNonce((n) => n + 1), [])
 
   useEffect(() => {
     if (dir === '') {
+      loadedDirRef.current = null
       setArtifact(ABSENT)
       return
     }
     let cancelled = false
-    setArtifact(PENDING)
+    if (loadedDirRef.current !== dir) setArtifact(PENDING)
     void (async () => {
       try {
         const entries = await listDirectory(dir)
         if (cancelled) return
+        loadedDirRef.current = dir
         const present = entries.some((entry) => !entry.is_dir && entry.name === LITERATURE_JSON_FILE)
         if (!present) {
           setArtifact(ABSENT)

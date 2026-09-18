@@ -171,12 +171,11 @@
 */
 
 /*
-  MULTI-RULE THEMES — everything above lives in one :root block, but you
-  may add more rules: any selector the app renders is fair game (e.g.
-  tuning a specific component via its class name). Two caveats:
-    - Prefer tokens. Reaching for arbitrary selectors makes your theme
-      fragile across app updates — a rename of an internal class can
-      silently break it.
-    - No stylesheet imports and no external resources (see VALIDATION
-      RULES above); everything the theme needs must live in this file.
+  ONE RULE PER THEME — everything above lives in that single :root block,
+  and that is the whole theme format: one :root rule of custom-property
+  declarations. Arbitrary app selectors (e.g. tuning a specific component
+  via its class name) or any additional rules are NOT supported — the
+  importer rejects them (see VALIDATION RULES above). Express your look
+  through the tokens; a missing token is a gap to report, not a reason
+  to reach for selectors.
 */

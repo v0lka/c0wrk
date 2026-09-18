@@ -3,6 +3,7 @@ package backend
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -296,5 +297,70 @@ func TestFrontendAPI_Themes_ListSkipsUnsanitizableFiles(t *testing.T) {
 	list := f.ListThemes()
 	if len(list) != 1 || list[0].ID != "ok" {
 		t.Fatalf("expected only the sanitizable theme, got %+v", list)
+	}
+}
+
+// TestFrontendAPI_Themes_ListSkipsOversizedFiles pins the size cap on the
+// listing path: a hand-dropped .css above maxThemeCSSSize (the same cap the
+// import path enforces) is skipped rather than read, tokenized, and shipped
+// to the webview.
+func TestFrontendAPI_Themes_ListSkipsOversizedFiles(t *testing.T) {
+	f, agentDir := newThemesTestAPI(t)
+	themesDir := filepath.Join(agentDir, "themes")
+	writeThemeFile(t, themesDir, "ok.css",
+		"/* c0wrk-theme: Ok | dark */\n:root { --color-background: #282c34; --color-foreground: #abb2bf; }\n")
+	oversized := validThemeCSS + "\n/* " + strings.Repeat("x", maxThemeCSSSize) + " */"
+	writeThemeFile(t, themesDir, "big.css", oversized)
+
+	list := f.ListThemes()
+	if len(list) != 1 || list[0].ID != "ok" {
+		t.Fatalf("expected only the in-cap theme, got %+v", list)
+	}
+}
+
+// TestFrontendAPI_Themes_DeleteHandDroppedNonCanonicalFile pins the
+// ListThemes/DeleteTheme id symmetry: a hand-dropped file whose on-disk name
+// is not in canonical slug form (`My Theme.css`) is listed under the slug id
+// (`my-theme`) and must be deletable by that id — previously DeleteTheme
+// reconstructed `<id>.css` and could never remove such a file.
+func TestFrontendAPI_Themes_DeleteHandDroppedNonCanonicalFile(t *testing.T) {
+	f, agentDir := newThemesTestAPI(t)
+	themesDir := filepath.Join(agentDir, "themes")
+	dropped := writeThemeFile(t, themesDir, "My Theme.css",
+		":root { --color-background: #282c34; --color-foreground: #abb2bf; }\n")
+
+	list := f.ListThemes()
+	if len(list) != 1 || list[0].ID != "my-theme" {
+		t.Fatalf("expected the hand-dropped theme listed as my-theme, got %+v", list)
+	}
+	if err := f.DeleteTheme("my-theme"); err != nil {
+		t.Fatalf("delete by the listed id must succeed: %v", err)
+	}
+	if _, err := os.Stat(dropped); !os.IsNotExist(err) {
+		t.Fatalf("expected My Theme.css removed, stat err=%v", err)
+	}
+	if got := f.ListThemes(); len(got) != 0 {
+		t.Fatalf("expected empty list after delete, got %+v", got)
+	}
+}
+
+// TestFrontendAPI_Themes_DeleteAmbiguousSlugRejected: two theme files that
+// slugify to the same id (canonical + hand-dropped variant) are an ambiguous
+// delete target — the call must fail rather than guess which file to remove.
+func TestFrontendAPI_Themes_DeleteAmbiguousSlugRejected(t *testing.T) {
+	f, agentDir := newThemesTestAPI(t)
+	themesDir := filepath.Join(agentDir, "themes")
+	css := ":root { --color-background: #282c34; --color-foreground: #abb2bf; }\n"
+	writeThemeFile(t, themesDir, "my-theme.css", css)
+	writeThemeFile(t, themesDir, "My Theme.css", css)
+
+	if err := f.DeleteTheme("my-theme"); err == nil {
+		t.Fatal("expected an ambiguity error, got nil")
+	}
+	// Neither file may have been removed by the rejected call.
+	for _, name := range []string{"my-theme.css", "My Theme.css"} {
+		if _, err := os.Stat(filepath.Join(themesDir, name)); err != nil {
+			t.Fatalf("rejected delete must not remove %s: %v", name, err)
+		}
 	}
 }

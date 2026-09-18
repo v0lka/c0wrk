@@ -75,10 +75,13 @@ func (s UnitStatus) Valid() bool {
 // outcome): completed or failed.
 //
 // `interrupted` is deliberately NON-terminal: it marks a unit left unfinished
-// by a crash/app exit, and the resume funnel must relaunch it (fresh, since it
-// carries no checkpoint) rather than replay it as a finished outcome. The
-// funnel's classification (resumeUnit.terminal) is defined in terms of this
-// method, so this is the single definition of "finished".
+// by a crash/app exit, and the resume funnel must relaunch it rather than
+// replay it as a finished outcome. Relaunching does not always mean from
+// scratch: an interrupted unit whose record still carries a checkpoint is
+// resumed from it (see Resumable), because Checkpoint and the abandonment
+// settle are independent writes; only a checkpoint-less interrupted unit
+// starts fresh. The funnel's classification (resumeUnit.terminal) is defined
+// in terms of this method, so this is the single definition of "finished".
 func (s UnitStatus) Terminal() bool {
 	switch s {
 	case UnitStatusCompleted, UnitStatusFailed:
@@ -94,6 +97,22 @@ func (s UnitStatus) Terminal() bool {
 // non-executing task was abandoned by a crash/app exit.
 func (s UnitStatus) InFlight() bool {
 	return s == UnitStatusPending || s == UnitStatusRunning
+}
+
+// Resumable reports whether s is a status whose durable checkpoint (when the
+// record carries one) must be resumed instead of discarded: pending, running,
+// or interrupted. It widens InFlight with interrupted because the two durable
+// writes are independent — Ledger.Checkpoint persists rec.Steps without
+// touching the status, and the crash/app-exit abandonment sweep
+// (SettleUnitStatusIfInFlight) later flips the still in-flight unit to
+// interrupted while preserving the Steps column — so an interrupted unit CAN
+// carry a usable checkpoint. The resume funnel normalizes such a unit to
+// paused so it resumes from that checkpoint rather than relaunching fresh and
+// re-running the trajectory's side effects. paused is excluded because it
+// already IS the resumed-from-checkpoint status; terminal statuses carry an
+// outcome, not a checkpoint.
+func (s UnitStatus) Resumable() bool {
+	return s == UnitStatusPending || s == UnitStatusRunning || s == UnitStatusInterrupted
 }
 
 // Container reports whether the kind is a CONTAINER record — a unit that groups

@@ -3,7 +3,7 @@ import { EditorView, placeholder } from '@codemirror/view'
 import { EditorState, Compartment } from '@codemirror/state'
 import { createChatExtensions } from '@/lib/cmChatExtensions'
 import { createChatEditorTheme } from '@/lib/cmChatTheme'
-import { useThemeStore, selectActiveThemeType } from '@/stores/themeStore'
+import { useThemeStore, selectActiveThemeType, selectActiveThemeId } from '@/stores/themeStore'
 
 /**
  * Decide whether a paste event should take the NATIVE fast path (let
@@ -86,6 +86,9 @@ export function useChatEditor(options: UseChatEditorOptions): ChatEditorAPI {
   const placeholderComp = useRef(new Compartment())
   const themeCompartment = useRef(new Compartment())
   const theme = useThemeStore(selectActiveThemeType)
+  // Theme IDENTITY: a same-type custom-theme switch keeps `theme` unchanged
+  // but still swaps the CSS variables the baked palette resolves from.
+  const themeId = useThemeStore(selectActiveThemeId)
 
   // Keep callback refs up to date without recreating extensions.
   onSendRef.current = options.onSend
@@ -163,13 +166,16 @@ export function useChatEditor(options: UseChatEditorOptions): ChatEditorAPI {
   }, [options.placeholder])
 
   // Re-resolve the editor theme (palette + { dark } flag) on app theme change.
+  // Keyed on BOTH the type (drives the { dark } flag — applyThemes can correct
+  // the type without changing the id) and the identity (a same-type
+  // custom-theme swap changes the palette CSS variables while `theme` stays).
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
     view.dispatch({
       effects: themeCompartment.current.reconfigure(createChatEditorTheme(theme === 'dark')),
     })
-  }, [theme])
+  }, [theme, themeId])
 
   const getText = useCallback((): string => {
     return viewRef.current?.state.doc.toString() ?? ''

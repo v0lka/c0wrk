@@ -182,7 +182,7 @@ describe('PaperHtmlView: structure and safety', () => {
     expect(maths[0]?.getAttribute('display')).toBe('inline')
     expect(maths[1]?.getAttribute('display')).toBe('block')
     // Presentation tree depth survives: msup inside inline math.
-    expect(maths[0]?.querySelectorAll('msup, mi, mo')).not.toBeNull()
+    expect(maths[0]?.querySelectorAll('msup, mi, mo').length ?? 0).toBeGreaterThan(0)
     expect(document.querySelector('figure#fig1 figcaption')?.textContent).toContain(
       'Figure 1: The system.',
     )

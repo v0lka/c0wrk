@@ -18,7 +18,8 @@ import (
 //
 // Every file is re-sanitized on read (defense in depth: a hand-edited or
 // hand-dropped file that no longer passes the sanitizer is skipped rather
-// than shipped to the webview).
+// than shipped to the webview) and must stay within maxThemeCSSSize, the
+// same cap the import path enforces.
 func (f *FrontendAPI) ListThemes() []ThemeDTO {
 	themesDir := config.ThemesDir(f.agentDir)
 	entries, err := os.ReadDir(themesDir)
@@ -29,6 +30,20 @@ func (f *FrontendAPI) ListThemes() []ThemeDTO {
 	themes := make([]ThemeDTO, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".css") {
+			continue
+		}
+		// Enforce the documented size cap on this ingestion path too
+		// (mirroring importThemeFromPath): a hand-dropped oversized file
+		// must not be read into memory, tokenized, and shipped to the
+		// webview just because it bypassed the importer.
+		info, err := entry.Info()
+		if err != nil {
+			f.log().Warn("failed to stat theme file", "file", entry.Name(), "error", err)
+			continue
+		}
+		if info.Size() > maxThemeCSSSize {
+			f.log().Warn("skipping theme larger than the size cap",
+				"file", entry.Name(), "size", info.Size(), "limit", maxThemeCSSSize)
 			continue
 		}
 		raw, err := os.ReadFile(filepath.Join(themesDir, entry.Name()))
@@ -151,17 +166,42 @@ func ImportThemesFromPaths(f *FrontendAPI, paths []string) []ThemeImportResult {
 	return f.importThemesFromPaths(paths)
 }
 
-// DeleteTheme removes an installed user theme by its id (the slug stem of
-// its CSS file). It fails when the theme does not exist.
+// DeleteTheme removes an installed user theme by its id (the themeSlug of its
+// CSS file name, exactly as ListThemes derives it). The themes directory is
+// scanned for the entry whose slug matches, so a hand-dropped file whose
+// on-disk name is not in canonical slug form (`My Theme.css` → id
+// `my-theme`) is deletable too. Zero matches fail as "does not exist";
+// multiple matches (two file names slugifying to the same id) are rejected
+// rather than guessing which file to remove.
 func (f *FrontendAPI) DeleteTheme(id string) error {
 	slug, err := themeSlug(id)
 	if err != nil {
 		return err
 	}
-	themePath := filepath.Join(config.ThemesDir(f.agentDir), slug+".css")
-	if _, err := os.Stat(themePath); err != nil {
+	themesDir := config.ThemesDir(f.agentDir)
+	entries, err := os.ReadDir(themesDir)
+	if err != nil {
 		return fmt.Errorf("theme %q does not exist", id)
 	}
+	var matches []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".css") {
+			continue
+		}
+		candidate, err := themeSlug(entry.Name())
+		if err != nil || candidate != slug {
+			continue
+		}
+		matches = append(matches, entry.Name())
+	}
+	switch len(matches) {
+	case 0:
+		return fmt.Errorf("theme %q does not exist", id)
+	case 1:
+	default:
+		return fmt.Errorf("theme %q is ambiguous: %d theme files slugify to the same id", id, len(matches))
+	}
+	themePath := filepath.Join(themesDir, matches[0])
 	if err := os.Remove(themePath); err != nil {
 		return fmt.Errorf("failed to delete theme: %w", err)
 	}

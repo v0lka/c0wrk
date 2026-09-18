@@ -208,7 +208,7 @@ func parseReviews(t mdTable) []ReviewEntry {
 
 // columnIndexExcept is columnIndex over the header cells whose index is not in
 // exclude (used so a later pick never re-selects an earlier column). Matching
-// uses the same anchored/word-boundary semantics as columnIndex.
+// uses the same per-token anchored/substring semantics as columnIndex.
 func columnIndexExcept(header []string, exclude []int, names ...string) int {
 	for i, h := range header {
 		if containsInt(exclude, i) {
@@ -227,6 +227,20 @@ func columnIndexExcept(header []string, exclude []int, names ...string) int {
 func containsInt(list []int, v int) bool {
 	for _, x := range list {
 		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// cellNamesAnyField reports whether a single raw header cell matches, by name,
+// any of the review log's canonical fields (id, date, grade, or next-due).
+// Such a column is semantically owned by its named field: ApplyReview's
+// positional fallback must never write a different field's value into it.
+func cellNamesAnyField(cell string) bool {
+	hn := strings.ToLower(strings.Trim(cell, "*_` "))
+	for _, n := range []string{"id", "date", "when", "grade", "rating", "result", "next", "due"} {
+		if columnNameMatches(hn, n) {
 			return true
 		}
 	}
@@ -474,12 +488,22 @@ func ApplyReview(content, cardID string, grade Grade, date string) (string, erro
 	if !headerMatches(rHeader, "grade", "rating", "result") {
 		return "", errors.New("flashcard review rejected: review log has no grade column")
 	}
+	// A positional fallback slot is only safe when the header cell at that
+	// position matches NO canonical review-log field by name: a cell that names
+	// another field (e.g. `Grade` at position 1 of a `| ID | Grade |` log)
+	// belongs to that field alone, so an unidentified field must not write into
+	// it — its value is omitted instead of landing in (or displacing) another
+	// field's column.
+	ownedByFieldName := make([]bool, len(rHeader))
+	for i, cell := range rHeader {
+		ownedByFieldName[i] = cellNamesAnyField(cell)
+	}
 	row := make([]string, len(rHeader))
 	var claimed []int
 	set := func(names []string, fallback int, value string) {
 		idx := columnIndexExcept(rHeader, claimed, names...)
 		if idx < 0 {
-			if fallback < 0 || fallback >= len(row) || containsInt(claimed, fallback) {
+			if fallback < 0 || fallback >= len(row) || containsInt(claimed, fallback) || ownedByFieldName[fallback] {
 				return
 			}
 			idx = fallback

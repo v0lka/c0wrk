@@ -163,19 +163,30 @@ func TestRunLiteratureHelperExitCodes(t *testing.T) {
 
 // TestRunLiteratureHelperSeedAfterTerminator pins Issue 34's argparse fix: the
 // seed is passed after a `--` terminator, so a seed that begins with `-` is
-// never parsed as an option and reaches the helper as the positional.
+// never parsed as an option and reaches the helper as the positional. The
+// fake helper mimics argparse: any dash-prefixed argument that is not a
+// recognized option is rejected with a usage message on stderr and exit 2 —
+// so the run only succeeds when production keeps emitting the `--`
+// terminator before the seed.
 func TestRunLiteratureHelperSeedAfterTerminator(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("requires a POSIX shell")
 	}
 	// The fake helper records the positional seed (the last argument) into the
-	// --out payload, proving it arrived intact despite the leading dash.
+	// --out payload, proving it arrived intact despite the leading dash. The
+	// `-*)` arm sits BEFORE the catch-all so a leading-dash seed arriving
+	// without a preceding `--` is treated as an unrecognized option, exactly
+	// like the real argparse parser; `--format`/`--timeout`/`--out` are the
+	// recognized options production passes.
 	body := `out=""
 seed=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --format) shift 2 ;;
+    --timeout) shift 2 ;;
     --out) out="$2"; shift 2 ;;
     --) shift; seed="$1"; shift ;;
+    -*) echo "usage: literature.py [--format FORMAT] [--timeout N] --out OUT [--] seed: unrecognized argument: $1" >&2; exit 2 ;;
     *) seed="$1"; shift ;;
   esac
 done
