@@ -44,9 +44,19 @@ import (
 // OrchestratorBuilder lives in core so that all sp4rk imports are confined to
 // the core layer. The backend.Application wraps it without importing sp4rk.
 type OrchestratorBuilder struct {
-	mu       sync.RWMutex
-	registry *tools.ToolRegistry
-	gateway  *mcp.Gateway
+	mu sync.RWMutex
+	// reconfigureMu serializes ReconfigureMCP calls end to end. Its reason to
+	// exist is the start branch: two concurrent callers that both find no
+	// gateway would each dial one, and the loser would be orphaned with its
+	// stdio subprocesses still running. Holding it across the whole call also
+	// keeps the gateway snapshot below stable, and costs nothing — the
+	// gateway already serialized concurrent Reconfigure calls on its own
+	// mutex. It is acquired BEFORE mu and never the other way round, and no
+	// config-read path ever takes it. Startup (runMCPInit) runs once, gated
+	// by mcpDone, so it does not participate.
+	reconfigureMu sync.Mutex
+	registry      *tools.ToolRegistry
+	gateway       *mcp.Gateway
 	// sessionRegistries tracks the per-session registry clones created by
 	// Build so runtime security-policy pushes (applySecurityPolicies) reach
 	// already-open sessions, not only sessions built after the change.
@@ -230,7 +240,12 @@ func (b *OrchestratorBuilder) runMCPInit(cfg *BuilderConfig) {
 
 	// MCP Gateway (optional — failures are non-fatal)
 	mcpCfg := configToGatewayConfig(cfg)
+	// Read under the lock: MCP startup is decoupled from initDone, so a
+	// RebuildProxy that has already passed waitReady can be writing
+	// b.proxyClient concurrently with this goroutine.
+	b.mu.RLock()
 	mcpCfg.HTTPClient = b.proxyClient
+	b.mu.RUnlock()
 	gw, err := mcp.StartGateway(ctx, mcpCfg, b.registry.ToolRegistry, cfg.ExpandEnvVars, b.logger)
 	if err != nil {
 		// MCP gateway failure is non-fatal: tools from MCP servers will be unavailable

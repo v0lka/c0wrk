@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
@@ -459,6 +460,11 @@ func (f *FrontendAPI) UpdateVectorIndexSettings(settings VectorIndexSettingsResp
 	return nil
 }
 
+// proxyRebuildTimeout bounds the propagation phase of a proxy settings change
+// (builder readiness + the MCP gateway reconfigure). It matches the budget
+// runMCPInit gives MCP startup.
+const proxyRebuildTimeout = 30 * time.Second
+
 // UpdateProxySettings updates proxy configuration at runtime and propagates
 // the change to all subsystems (LLM providers, web tools, MCP, child processes).
 //
@@ -518,8 +524,20 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 	// --- Heavy work below runs OUTSIDE configMu (readers stay responsive) ---
 	// saveMu is still held, so concurrent UpdateProxySettings calls are
 	// serialized and a later save never propagates before an earlier one.
+	//
+	// The propagation is bounded. RebuildProxy passes this context to the MCP
+	// gateway reconfigure, which reconnects every changed server AND retries
+	// every previously-failed one — and a failed HTTP server is retried with
+	// no deadline of its own, so an endpoint that went unreachable while the
+	// proxy was on can stall the whole propagation for minutes. The budget
+	// matches the one runMCPInit gives MCP startup. Expiry only aborts the
+	// gateway step: RebuildProxy logs it and still rebuilds the router and
+	// the judge, which carry their own budgets.
 	if b != nil {
-		if err := b.RebuildProxy(context.Background(), bcfg); err != nil {
+		rebuildCtx, cancel := context.WithTimeout(context.Background(), proxyRebuildTimeout)
+		err := b.RebuildProxy(rebuildCtx, bcfg)
+		cancel()
+		if err != nil {
 			f.log().Warn("failed to rebuild proxy after settings update", "error", err)
 			return fmt.Errorf("proxy rebuild failed: %w", err)
 		}

@@ -71,6 +71,11 @@ type mockBuilder struct {
 	// that take m.mu.
 	rebuildProxyHook func(*core.BuilderConfig)
 
+	// rebuildProxyCtx records the context handed to the most recent
+	// RebuildProxy call, so tests can assert the propagation phase is
+	// bounded (guarded by m.mu).
+	rebuildProxyCtx context.Context
+
 	// rebuildRouterHook, when non-nil, runs inside RebuildRouter while the
 	// call is being recorded. Tests use it to block the rebuild phase (e.g.
 	// to assert readers are not convoyed behind it) or to observe ordering.
@@ -117,9 +122,10 @@ func (m *mockBuilder) routerCfgSnapshot() []string {
 	copy(out, m.rebuildRouterCfgs)
 	return out
 }
-func (m *mockBuilder) RebuildProxy(_ context.Context, cfg *core.BuilderConfig) error {
+func (m *mockBuilder) RebuildProxy(ctx context.Context, cfg *core.BuilderConfig) error {
 	m.mu.Lock()
 	m.rebuildProxyCalls++
+	m.rebuildProxyCtx = ctx
 	m.mu.Unlock()
 	if m.rebuildProxyHook != nil {
 		m.rebuildProxyHook(cfg)
@@ -133,6 +139,13 @@ func (m *mockBuilder) RebuildProxyCalls() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.rebuildProxyCalls
+}
+
+// RebuildProxyCtx returns the context of the most recent RebuildProxy call.
+func (m *mockBuilder) RebuildProxyCtx() context.Context {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rebuildProxyCtx
 }
 func (m *mockBuilder) UpdateSearchTool(_ *core.BuilderConfig) {
 	m.mu.Lock()
@@ -4273,5 +4286,51 @@ func TestUpdateProxySettings_RebuildErrorSurfaces(t *testing.T) {
 	f.configMu.RUnlock()
 	if !enabled {
 		t.Error("the proxy mutation must remain applied when only the rebuild failed")
+	}
+}
+
+// The propagation phase must be bounded. RebuildProxy hands its context to the
+// MCP gateway reconfigure, which reconnects changed servers AND retries
+// previously-failed ones — a failed HTTP server is retried with no deadline of
+// its own, so an endpoint that went unreachable while the proxy was on could
+// otherwise stall the propagation indefinitely (observed at 169 seconds in the
+// field with context.Background()).
+func TestUpdateProxySettings_PropagationIsBounded(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+
+	if err := f.UpdateProxySettings(ProxySettingsRequest{Enabled: true, URL: "http://proxy.lan:3128"}); err != nil {
+		t.Fatalf("UpdateProxySettings: %v", err)
+	}
+
+	ctx := mock.RebuildProxyCtx()
+	if ctx == nil {
+		t.Fatal("RebuildProxy received no context")
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("RebuildProxy received a context with no deadline — one unreachable MCP endpoint can stall the propagation for minutes")
+	}
+	if remaining := time.Until(deadline); remaining <= 0 || remaining > proxyRebuildTimeout+time.Second {
+		t.Errorf("deadline is %v away, want (0, %v]", remaining, proxyRebuildTimeout)
+	}
+}
+
+// The context must be cancelled once the call returns, so its timer is
+// released rather than left to fire later.
+func TestUpdateProxySettings_PropagationContextCancelled(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+
+	if err := f.UpdateProxySettings(ProxySettingsRequest{Enabled: true, URL: "http://proxy.lan:3128"}); err != nil {
+		t.Fatalf("UpdateProxySettings: %v", err)
+	}
+
+	ctx := mock.RebuildProxyCtx()
+	if ctx == nil {
+		t.Fatal("RebuildProxy received no context")
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Error("the propagation context was not cancelled after UpdateProxySettings returned")
 	}
 }

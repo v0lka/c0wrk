@@ -197,15 +197,48 @@ a concurrent `GetConfig` cannot detect the regression. A parked reader plus
 one queued writer is the chain that matters, because Go's `sync.RWMutex`
 stops admitting readers once a writer is waiting.
 
-The same reasoning fixed a pre-existing instance of the hazard on the path
-this feature makes users walk. `UpdateProxySettings` held the configMu
-**write** lock across `RebuildProxy`, which restarts the MCP gateway and
-rebuilds the router and judge, each waiting on builder readiness with its own
-30-second budget. Toggling the proxy and switching to the LLM tab therefore
-froze the dialog for the duration of the rebuild. It now follows the
-`UpdateLLMConfig` pattern: `saveMu` serializes save sequences, configMu
-covers only the field mutation and the (bounded, local, atomic) disk write,
-and the propagation runs outside the lock.
+The same reasoning fixed **two** pre-existing instances of the hazard on the
+path this feature makes users walk — toggle the proxy in General, switch to
+the LLM tab. Both were convoys, one per lock, stacked on the same code path,
+and both froze the settings dialog outright.
+
+**configMu.** `UpdateProxySettings` held the configMu **write** lock across
+`RebuildProxy`, which restarts the MCP gateway and rebuilds the router and
+judge, each waiting on builder readiness with its own 30-second budget. It now
+follows the `UpdateLLMConfig` pattern: `saveMu` serializes save sequences,
+configMu covers only the field mutation and the (bounded, local, atomic) disk
+write, and the propagation runs outside the lock.
+
+**b.mu.** One layer down, `ReconfigureMCP` held the builder's `b.mu` **write**
+lock across `gateway.Reconfigure` — which connects to every changed server and
+silently retries every previously-failed one, with no deadline of its own.
+`GetConfig` takes `configMu.RLock` and then `b.mu.RLock` (via
+`ModelRegistry`), so the whole settings dialog sat on `isLoading` for as long
+as the reconfigure took. Observed in the field at **169 seconds**: a provider
+endpoint that had failed to connect while the proxy was on was retried on the
+next reconfigure, and the app was unusable until that retry returned HTTP 405.
+
+`ReconfigureMCP` now snapshots the proxy client and the gateway pointer under
+`b.mu.RLock`, releases the lock, and does the gateway work outside it —
+including `StartGateway`, which dials too. Consistency is unaffected: the
+gateway serializes concurrent `Reconfigure` calls on its own mutex, and
+`reconfigureMu` serializes `ReconfigureMCP` itself so two callers that both
+find no gateway cannot each dial one and orphan the loser (an orphan keeps its
+stdio subprocesses alive). Lock order is `reconfigureMu → b.mu → g.mu`, the
+same `b.mu → g.mu` direction `SetMCPWorkDir` and `runMCPInit` already use;
+nothing takes `b.mu` while holding `g.mu`. Reading `b.proxyClient` under the
+lock also closes a data race against `RebuildProxy`, which writes it — the
+same read in `runMCPInit` was fixed alongside.
+
+**Bounding the propagation.** `UpdateProxySettings` now passes
+`RebuildProxy` a context with a `proxyRebuildTimeout` (30 s, matching the
+budget `runMCPInit` gives MCP startup) instead of `context.Background()`.
+`server.Connect` honours it, so one unreachable endpoint can no longer stall
+the propagation indefinitely. Expiry aborts only the gateway step: the router
+and judge rebuilds follow with their own budgets.
+
+Both fixes are verified by tests that were shown to fail against the previous
+code, and both contend with a **writer** as well as a reader.
 
 ### 8. The UI has no toggle, and reads proxy state from a draft store
 
@@ -246,10 +279,13 @@ fresher draft.
 - TLS policy stays in c0wrk. sp4rk only transports the client it is handed
   (`llm.ProviderEntry.HTTPClient`), and its fallback to the router-level
   client is what makes the nil return meaningful.
-- Two pre-existing defects were fixed in passing, both on paths this feature
-  touches: the `chatgpt` and `openai` branches of `fetchProviderModels`
-  ignored the configured proxy entirely, and `b.proxyClient` was read there
-  without `b.mu` (a race against `RebuildProxy`).
+- Several pre-existing defects were fixed in passing, all on paths this
+  feature touches: the `chatgpt` and `openai` branches of
+  `fetchProviderModels` ignored the configured proxy entirely;
+  `b.proxyClient` was read without `b.mu` in `fetchProviderModels`,
+  `ReconfigureMCP` and `runMCPInit` (races against `RebuildProxy`); and the
+  two lock convoys described in §7 froze the settings dialog whenever a proxy
+  change had to reconnect an unreachable MCP server.
 - Mismatch errors are deliberately uninformative. Diagnosing one means
   re-running Get and comparing, which is the intended workflow.
 - The Get button silently overwrites an existing pin. That is the specified
