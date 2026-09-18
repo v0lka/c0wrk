@@ -718,6 +718,139 @@ func TestFetchOriginalHTMLBytesCap(t *testing.T) {
 	}
 }
 
+// TestFetchOriginalLocalizesObjectAndEmbed pins review finding 13: LaTeXML
+// emits SVG figures as <object type="image/svg+xml" data="…">, so the
+// localization pass must rewrite <object data> (and <embed src>, for
+// symmetry) to a local assets/<name> exactly like <img src> — never leaving a
+// dead relative reference in the saved document.
+func TestFetchOriginalLocalizesObjectAndEmbed(t *testing.T) {
+	doc := `<!DOCTYPE html>
+<html><head><title>T</title></head>
+<body>
+<h1>Attention</h1>
+<img src="x1.png" alt="raster">
+<object type="image/svg+xml" data="fig3.svg" id="Sx1.F3.g1"></object>
+<embed src="fig4.svg" type="image/svg+xml">
+</body></html>
+`
+	mux := http.NewServeMux()
+	mux.HandleFunc("/html/1706.03762", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, doc)
+	})
+	mux.HandleFunc("/html/x1.png", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(fetchTestPNG)
+	})
+	mux.HandleFunc("/html/fig3.svg", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(fetchTestSVG)
+	})
+	mux.HandleFunc("/html/fig4.svg", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(fetchTestSVG)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	root := t.TempDir()
+
+	res := fetchOriginalHTML(context.Background(), srv.Client(), fetchEndpoints(srv), root, fetchTestRecord("object-paper"))
+	if res.Status != FetchStatusOK {
+		t.Fatalf("Status = %q, want ok (Err: %v)", res.Status, res.Err)
+	}
+	if res.AssetsKept != 3 || res.AssetsSkipped != 0 {
+		t.Errorf("kept/skipped = %d/%d, want 3/0 (img + object + embed)", res.AssetsKept, res.AssetsSkipped)
+	}
+	html := mustRead(t, filepath.Join(root, "object-paper", OriginalHTMLFileName))
+	for _, want := range []string{`src="assets/x1.png"`, `data="assets/fig3.svg"`, `src="assets/fig4.svg"`} {
+		if !strings.Contains(html, want) {
+			t.Errorf("paper.html missing rewritten attribute %q:\n%s", want, html)
+		}
+	}
+	for _, name := range []string{"x1.png", "fig3.svg", "fig4.svg"} {
+		if _, err := os.Stat(filepath.Join(root, "object-paper", OriginalAssetsDirName, name)); err != nil {
+			t.Errorf("asset %s missing: %v", name, err)
+		}
+	}
+}
+
+// TestFetchOriginalKeepsInlineDataURI pins review finding 14: an inline
+// <img src="data:…"> is already self-contained bytes inside the document, so
+// it is kept verbatim in the saved document (counted as kept, never fetched,
+// never counted as skipped) — the frontend sanitizer explicitly supports
+// data: img srcs, so throwing the bytes away could only lose content.
+func TestFetchOriginalKeepsInlineDataURI(t *testing.T) {
+	dataURI := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAHElEQVQI12P4//8/w38GIAXDIBKE0DHxgljNBAAO9TXL0Y4OFwAAAABJRU5ErkJggg=="
+	doc := `<!DOCTYPE html>
+<html><head><title>T</title></head>
+<body>
+<h1>Attention</h1>
+<img alt="[LOGO]" src="` + dataURI + `">
+</body></html>
+`
+	mux := http.NewServeMux()
+	mux.HandleFunc("/html/1706.03762", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, doc)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	root := t.TempDir()
+
+	res := fetchOriginalHTML(context.Background(), srv.Client(), fetchEndpoints(srv), root, fetchTestRecord("inline-paper"))
+	if res.Status != FetchStatusOK {
+		t.Fatalf("Status = %q, want ok (Err: %v)", res.Status, res.Err)
+	}
+	if res.AssetsKept != 1 || res.AssetsSkipped != 0 {
+		t.Errorf("kept/skipped = %d/%d, want 1/0 (the inline data URI is kept)", res.AssetsKept, res.AssetsSkipped)
+	}
+	html := mustRead(t, filepath.Join(root, "inline-paper", OriginalHTMLFileName))
+	if !strings.Contains(html, `src="`+dataURI+`"`) {
+		t.Errorf("paper.html dropped the inline data: URI:\n%s", html)
+	}
+}
+
+// TestFetchOriginalPaperHTMLRenameFailureRollsBackAssets pins review finding
+// 42: paper.html's rename is the commit point of persistOriginal's swap, so
+// when it fails the assets tree must be rolled back to the generation the
+// still-current document references — the prior assets survive intact.
+func TestFetchOriginalPaperHTMLRenameFailureRollsBackAssets(t *testing.T) {
+	srv := serveOriginal(t)
+	root := t.TempDir()
+	dir := filepath.Join(root, "fetched-paper")
+
+	// Prior fetch state: the assets tree the current paper.html references.
+	if err := os.MkdirAll(filepath.Join(dir, OriginalAssetsDirName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, OriginalAssetsDirName, "old.png"), []byte("old-asset"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Block the paper.html rename (the commit point): a directory at the
+	// target path makes os.Rename(file → dir) fail.
+	if err := os.Mkdir(filepath.Join(dir, OriginalHTMLFileName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	res := fetchOriginalHTML(context.Background(), srv.Client(), fetchEndpoints(srv), root, fetchTestRecord("fetched-paper"))
+	if res.Status != FetchStatusError {
+		t.Fatalf("Status = %q, want error (Err: %v)", res.Status, res.Err)
+	}
+	// The prior assets tree must survive the failed swap.
+	got, err := os.ReadFile(filepath.Join(dir, OriginalAssetsDirName, "old.png"))
+	if err != nil {
+		t.Fatalf("prior asset did not survive the failed paper.html rename: %v", err)
+	}
+	if string(got) != "old-asset" {
+		t.Errorf("old.png = %q, want the prior bytes", got)
+	}
+	// The new generation's assets must not remain half-swapped in.
+	for _, name := range []string{"x1.png", "fig2.svg"} {
+		if _, err := os.Stat(filepath.Join(dir, OriginalAssetsDirName, name)); err == nil {
+			t.Errorf("new asset %s visible after a rolled-back swap", name)
+		}
+	}
+	// No leftover backup directory.
+	if _, err := os.Stat(filepath.Join(dir, originalAssetsBackupDirName)); err == nil {
+		t.Error("assets backup directory survived the rollback")
+	}
+}
+
 func mustRead(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)

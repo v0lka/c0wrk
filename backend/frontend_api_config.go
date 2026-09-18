@@ -779,12 +779,15 @@ func responseToGroupPolicies(groups map[string]GroupPolicyResponse) (map[string]
 // returned (the catalog is independent of config.yaml); active_id is empty
 // and suggested_profile_id is null.
 func (f *FrontendAPI) GetModelProfiles() ModelProfilesResponse {
-	// Lock (not RLock): the one-shot notices are drained on read.
-	f.configMu.Lock()
-	defer f.configMu.Unlock()
-
 	// Picker universe (built-in tools + workflow clusters) comes from the live
-	// tool registry, not from config, so it is read here.
+	// tool registry, not from config, so it is read here. Both this registry
+	// call and the catalog load below do I/O (the latter reads
+	// ~/.c0wrk/model-profiles.yaml) — they run BEFORE the config lock is
+	// taken, exactly like modelProfilesGoalBlocked, so the exclusive lock is
+	// held only for the notice drain and the config field copies below
+	// (holding it across disk I/O and the tool-registry lock would block
+	// every other config read and mutation for the whole read, and would
+	// order configMu before the tool-registry lock).
 	builtinTools, toolGroups := f.modelProfilesPickerData()
 
 	resp := ModelProfilesResponse{
@@ -807,6 +810,12 @@ func (f *FrontendAPI) GetModelProfiles() ModelProfilesResponse {
 	for _, p := range catalog {
 		resp.Profiles = append(resp.Profiles, modelProfileToDTO(p))
 	}
+
+	// Lock (not RLock): the one-shot notices are drained on read. Everything
+	// that performs I/O (picker data, catalog load) has already run; the lock
+	// now guards only the config field reads and the notice drain.
+	f.configMu.Lock()
+	defer f.configMu.Unlock()
 
 	if f.config == nil {
 		return resp

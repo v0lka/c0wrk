@@ -427,7 +427,7 @@ func (a *App) buildUIEmitFunc() func(session.Event) {
 		// thread sees one evaluateJavaScript flush per ~16ms instead of one per
 		// event. Settlement/HITL events force an immediate flush.
 		a.emitBatchedEvent(eventName, []any{evt.Data},
-			sessionEventCoalesceKey(evt.Type, evt.Data), isImmediateFlushEvent(evt.Type), 0)
+			sessionEventCoalesceKey(evt.SessionID, evt.Type, evt.Data), isImmediateFlushEvent(evt.Type), 0)
 		// session_renamed is a session-list metadata change (it mirrors the
 		// global project:renamed event). Re-emit it globally so the sidebar
 		// updates the title even when the renamed session is NOT the active

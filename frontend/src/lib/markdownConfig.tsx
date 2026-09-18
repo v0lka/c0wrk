@@ -37,6 +37,12 @@ const customSanitizeSchema = {
     a: ['href', 'target', 'rel', 'className'],
     input: ['type', 'checked', 'disabled'],
   },
+  // `id` is NOT clobber-prefixed: rehype-slug generates heading ids that
+  // explicit `[text](#anchor)` links must resolve against, and the default
+  // `user-content-` prefix would break that pairing. Mirrors the paper-HTML
+  // schema (paperHtmlSanitize.ts): DOM-clobbering exposure stays limited to
+  // `name`/ARIA references, which keep the default prefix.
+  clobber: ['ariaDescribedBy', 'ariaLabelledBy', 'name'],
 }
 
 const remarkPlugins: PluggableList = [remarkGfm, remarkEmoji, remarkBreaks]

@@ -6,7 +6,7 @@ Accepted → Identifiers renamed by [ADR-043](./043-model-profiles-rename.md) (`
 
 ## Context
 
-The SLM `essential_tools` variant narrows the Conductor's advertised tool set to cut per-prompt JSON-schema overhead. Its only call sites are `HandleMessage`'s non-goal Conductor path and the E2S branch (`runE2SWithState`) — both AFTER the goal-mode early `return`. Goal mode therefore always kept the FULL tool set, which meant the `essential_tools` toggle was **a silent no-op in goal mode**: the operator's profile claimed to narrow the tool set, but a goal run quietly ignored the narrowing. This divergence was documented prose, not an enforced invariant (see [../domains/slm.md](../domains/slm.md)).
+The SLM `essential_tools` variant narrows the Conductor's advertised tool set to cut per-prompt JSON-schema overhead. Its only call sites are `HandleMessage`'s non-goal Conductor path and the E2S branch (`runE2SWithState`) — both AFTER the goal-mode early `return`. Goal mode therefore always kept the FULL tool set, which meant the `essential_tools` toggle was **a silent no-op in goal mode**: the operator's profile claimed to narrow the tool set, but a goal run quietly ignored the narrowing. This divergence was documented prose, not an enforced invariant (see [../domains/model-profiles.md](../domains/model-profiles.md)).
 
 The narrowing is tuned for **single-pass** Conductor work and, applied as written, would hide the goal-loop tooling (`propose_goal`, `declare_goal_status`, `declare_verification`). If the narrowing were ever applied to a goal run, the goal could not be derived or concluded — the loop would be unrunnable, not merely degraded.
 

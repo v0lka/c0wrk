@@ -21,8 +21,15 @@ import (
 //   - style-src 'self' 'unsafe-inline' — the app's <link> stylesheets plus
 //     injected style elements and style attributes (Tailwind utilities,
 //     theme injection, CodeMirror/xterm inline styling).
-//   - img-src 'self' data: — bundled assets and data: URIs (the markdown
-//     image pipeline resolves local files to data: URLs; TRANSPARENT_PIXEL).
+//   - img-src 'self' data: https: http: — bundled assets, data: URIs (the
+//     markdown image pipeline resolves local files to data: URLs;
+//     TRANSPARENT_PIXEL) and external http/https images, which the markdown
+//     and paper renderers both support: they pass remote URLs through
+//     verbatim as <img src> (frontend/src/lib/markdownImageResolve.ts
+//     EXTERNAL_SRC_RE, frontend/src/lib/paperHtmlSanitize.ts "http/https stay
+//     allowed"). Images are passive content — img-src grants no script or
+//     connect rights, so the exfiltration channel this CSP closes
+//     (connect-src 'self') stays closed.
 //   - font-src 'self' data: — bundled Nerd Font and data:-embedded fonts.
 //   - connect-src 'self' — the desktop IPC transport (same origin). No
 //     outbound websockets/fetches to anywhere.
@@ -38,7 +45,7 @@ import (
 const productionCSP = "default-src 'none'; " +
 	"script-src 'self'; " +
 	"style-src 'self' 'unsafe-inline'; " +
-	"img-src 'self' data:; " +
+	"img-src 'self' data: https: http:; " +
 	"font-src 'self' data:; " +
 	"connect-src 'self'; " +
 	"worker-src 'none'; " +

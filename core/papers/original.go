@@ -47,6 +47,11 @@ const (
 	// OriginalAssetsDirName is the directory holding the paper's localized
 	// images, referenced from paper.html as assets/<name>.
 	OriginalAssetsDirName = "assets"
+
+	// originalAssetsBackupDirName names the hidden sibling directory the
+	// previous assets/ tree is renamed into during persistOriginal's swap, so
+	// a failed paper.html rename can restore it.
+	originalAssetsBackupDirName = ".assets-old"
 )
 
 // Rendition endpoints, in preference order: arXiv's native LaTeXML HTML first,
@@ -69,6 +74,11 @@ const (
 	maxOriginalImageSize = 2 << 20 // 2 MiB per image
 	maxOriginalImages    = 200     // images localized per document
 	maxOriginalRedirects = 5       // redirect hops per request
+
+	// maxOriginalDataURIBytes caps an inline `data:` image URI kept verbatim in
+	// the saved document (base64 text, so ~4/3 the decoded image size; a URI
+	// over the cap is dropped like any other unusable image).
+	maxOriginalDataURIBytes = 2 << 20 // 2 MiB
 )
 
 // FetchStatus classifies the outcome of a paper.html fetch. The zero value is
@@ -482,13 +492,14 @@ func hasClassToken(n *html.Node, token string) bool {
 }
 
 // localizeOriginal parses the fetched HTML, cuts the arXiv site chrome away,
-// strips the banned elements, rewrites every <img src> to a local
-// assets/<name>, and downloads each image with c (bounded by
-// maxOriginalImageSize). Relative URLs resolve against the FINAL document
-// URL; absolute URLs must stay on the allowed hosts. An image that fails,
-// exceeds its cap, exceeds the count cap, or leaves the allowlist keeps its
-// <img> element but loses its src — an honest missing placeholder, never a
-// broken remote URL. It returns the rendered document, the downloaded
+// strips the banned elements, rewrites every embedded resource — <img src>,
+// <object data> (LaTeXML's SVG figures), <embed src> — to a local
+// assets/<name>, and downloads each with c (bounded by maxOriginalImageSize).
+// An inline `data:` URI is kept verbatim. Relative URLs resolve against the
+// FINAL document URL; absolute URLs must stay on the allowed hosts. A resource
+// that fails, exceeds its cap, exceeds the count cap, or leaves the allowlist
+// keeps its element but loses its attribute — an honest missing placeholder,
+// never a broken remote URL. It returns the rendered document, the downloaded
 // assets keyed by file name, and the kept/skipped counts.
 func localizeOriginal(ctx context.Context, c *http.Client, body []byte, docURL string, allowed map[string]struct{}) (doc []byte, assets map[string][]byte, kept, skipped int, err error) {
 	base, err := url.Parse(docURL)
@@ -530,7 +541,7 @@ type localizer struct {
 	usedName map[string]struct{} // taken asset names
 	assets   map[string][]byte   // asset name → bytes
 
-	seen    int // <img> elements encountered (cap counter)
+	seen    int // resource elements encountered (cap counter)
 	kept    int
 	skipped int
 }
@@ -551,49 +562,82 @@ func (l *localizer) visit(n, parent *html.Node) {
 			parent.RemoveChild(n)
 			return
 		}
-		if n.Data == "img" {
-			l.localizeImg(n)
+		switch n.Data {
+		case "img":
+			l.localizeResource(n, "src")
+		case "object":
+			// LaTeXML emits SVG figures as
+			// <object type="image/svg+xml" data="…">; the data attribute
+			// carries the embedded resource's URL.
+			l.localizeResource(n, "data")
+		case "embed":
+			l.localizeResource(n, "src")
 		}
 	}
 	l.walk(n)
 }
 
-// localizeImg rewrites (or removes) one <img> tag's src. srcset is always
-// dropped: it can only point at remote renditions.
-func (l *localizer) localizeImg(n *html.Node) {
-	removeAttr(n, "srcset")
-	src := getAttr(n, "src")
-	if src == "" {
-		return // nothing to rewrite; an <img> without src is already honest
+// localizeResource rewrites (or removes) one embedded-resource attribute — an
+// <img src>, an <object data> (LaTeXML's SVG figures), or an <embed src> — to
+// a local assets/<name> and downloads it with c (bounded by
+// maxOriginalImageSize). A `data:` URI is already self-contained bytes inside
+// the document, so it is kept verbatim (bounded by maxOriginalDataURIBytes),
+// never fetched or host-checked. On any failure the element keeps its shape
+// but loses the attribute — an honest missing placeholder, never a broken
+// remote URL. An <img srcset> is always dropped: it can only point at remote
+// renditions.
+func (l *localizer) localizeResource(n *html.Node, attr string) {
+	if n.Data == "img" {
+		removeAttr(n, "srcset")
+	}
+	raw := getAttr(n, attr)
+	if raw == "" {
+		return // nothing to rewrite; an element without the attribute is already honest
 	}
 	l.seen++
 	if l.seen > maxOriginalImages {
-		removeAttr(n, "src")
+		removeAttr(n, attr)
 		l.skipped++
 		return
 	}
+	if isDataURI(raw) {
+		if len(raw) > maxOriginalDataURIBytes {
+			removeAttr(n, attr)
+			l.skipped++
+			return
+		}
+		l.kept++ // inline self-contained bytes: kept verbatim, no fetch
+		return
+	}
 
-	resolved, name, ok := l.resolve(src)
+	resolved, name, ok := l.resolve(raw)
 	if !ok {
-		removeAttr(n, "src")
+		removeAttr(n, attr)
 		l.skipped++
 		return
 	}
 	if name != "" { // already downloaded on an earlier reference
-		setAttr(n, "src", OriginalAssetsDirName+"/"+name)
+		setAttr(n, attr, OriginalAssetsDirName+"/"+name)
 		return
 	}
 
 	body, _, err := fetchBounded(l.ctx, l.client, resolved, maxOriginalImageSize)
 	if err != nil {
-		removeAttr(n, "src")
+		removeAttr(n, attr)
 		l.skipped++
 		return
 	}
 	name = l.assignName(resolved)
 	l.assets[name] = body
 	l.kept++
-	setAttr(n, "src", OriginalAssetsDirName+"/"+name)
+	setAttr(n, attr, OriginalAssetsDirName+"/"+name)
+}
+
+// isDataURI reports whether src is a `data:` URI — inline, self-contained
+// bytes that need no download and no host check.
+func isDataURI(src string) bool {
+	u, err := url.Parse(src)
+	return err == nil && u.Scheme == "data"
 }
 
 // resolve absolutizes src against the document URL and checks it against the
@@ -699,12 +743,17 @@ func removeAttr(n *html.Node, key string) {
 
 // persistOriginal stages doc plus assets into a temp directory inside the
 // paper's own directory (same filesystem, so renames are atomic), then swaps
-// them into place: stale assets are removed, the new assets directory is
-// renamed in, and paper.html is renamed LAST as the commit point. Every final
-// target is symlink-resolved and containment-checked against libraryRoot
-// BEFORE staging (resolveTargetWithinRoot / pathutil.IsWithinPath), so a
-// symlinked paper directory can never redirect a write outside the library and
-// any failure before the first rename leaves the prior content untouched.
+// them into place with a backup (the shape stageAndSwap uses): the existing
+// assets/ tree is renamed aside into a hidden backup sibling — not deleted —
+// the new assets directory is renamed in, and paper.html is renamed LAST as
+// the commit point. When that final rename fails, the assets swap is rolled
+// back from the backup, so the still-current paper.html keeps resolving its
+// own images; the backup is deleted only after paper.html has committed.
+// Every final target is symlink-resolved and containment-checked against
+// libraryRoot BEFORE staging (resolveTargetWithinRoot / pathutil.IsWithinPath),
+// so a symlinked paper directory can never redirect a write outside the
+// library and any failure before the first rename leaves the prior content
+// untouched.
 func persistOriginal(libraryRoot, slug string, doc []byte, assets map[string][]byte) error {
 	paperDir, err := ensurePaperDir(libraryRoot, slug)
 	if err != nil {
@@ -728,8 +777,9 @@ func persistOriginal(libraryRoot, slug string, doc []byte, assets map[string][]b
 	if err := os.WriteFile(filepath.Join(staging, OriginalHTMLFileName), doc, 0o644); err != nil {
 		return fmt.Errorf("staging paper.html for %q: %w", slug, err)
 	}
+	stagedAssets := ""
 	if len(assets) > 0 {
-		stagedAssets := filepath.Join(staging, OriginalAssetsDirName)
+		stagedAssets = filepath.Join(staging, OriginalAssetsDirName)
 		if err := os.Mkdir(stagedAssets, 0o755); err != nil {
 			return fmt.Errorf("staging assets for %q: %w", slug, err)
 		}
@@ -743,22 +793,51 @@ func persistOriginal(libraryRoot, slug string, doc []byte, assets map[string][]b
 				return fmt.Errorf("staging asset %q for %q: %w", name, slug, err)
 			}
 		}
-		if err := os.RemoveAll(assetsTarget); err != nil {
+	} else if !isDir(assetsTarget) {
+		// No new assets and nothing stale to replace: the document rename is
+		// the only remaining step.
+		if err := os.Rename(filepath.Join(staging, OriginalHTMLFileName), htmlTarget); err != nil {
+			return fmt.Errorf("moving paper.html in for %q: %w", slug, err)
+		}
+		return nil
+	}
+
+	// Swap the assets with a backup so a failed paper.html rename (the commit
+	// point, below) can restore the tree the current paper.html still
+	// references: the existing assets directory — stale or not — is renamed
+	// aside, never deleted up front.
+	assetsBackup := filepath.Join(paperDir, originalAssetsBackupDirName)
+	hadOldAssets := isDir(assetsTarget)
+	if hadOldAssets {
+		if err := os.RemoveAll(assetsBackup); err != nil {
 			return fmt.Errorf("replacing assets for %q: %w", slug, err)
 		}
-		if err := os.Rename(stagedAssets, assetsTarget); err != nil {
-			return fmt.Errorf("moving assets in for %q: %w", slug, err)
+		if err := os.Rename(assetsTarget, assetsBackup); err != nil {
+			return fmt.Errorf("replacing assets for %q: %w", slug, err)
 		}
-	} else if isDir(assetsTarget) {
-		// A rendition with no images still clears stale assets from a
-		// previous fetch.
-		if err := os.RemoveAll(assetsTarget); err != nil {
-			return fmt.Errorf("clearing stale assets for %q: %w", slug, err)
+	}
+	if stagedAssets != "" {
+		if err := os.Rename(stagedAssets, assetsTarget); err != nil {
+			if hadOldAssets {
+				_ = os.Rename(assetsBackup, assetsTarget) // best-effort rollback
+			}
+			return fmt.Errorf("moving assets in for %q: %w", slug, err)
 		}
 	}
 
+	// paper.html is renamed LAST — the commit point. On its failure the assets
+	// swap is rolled back so the still-current document keeps its own images.
 	if err := os.Rename(filepath.Join(staging, OriginalHTMLFileName), htmlTarget); err != nil {
+		_ = os.RemoveAll(assetsTarget)
+		if hadOldAssets {
+			_ = os.Rename(assetsBackup, assetsTarget) // best-effort rollback
+		}
 		return fmt.Errorf("moving paper.html in for %q: %w", slug, err)
+	}
+	if hadOldAssets {
+		if err := os.RemoveAll(assetsBackup); err != nil {
+			return fmt.Errorf("removing assets backup for %q: %w", slug, err)
+		}
 	}
 	return nil
 }

@@ -153,6 +153,19 @@ export function selectActiveThemeType(s: Pick<ThemeStore, 'themeId' | 'themeType
   return custom ? themeTypeOf(custom) : 'dark'
 }
 
+/**
+ * Selector helper for consumers that must re-resolve baked palettes when the
+ * active theme changes IDENTITY (terminal/CodeMirror theming). A same-type
+ * custom-theme switch (dark→dark) leaves selectActiveThemeType's value
+ * unchanged but always changes the id — and the CSS custom properties those
+ * palettes are resolved from DO change (the injected custom-theme CSS swaps),
+ * so the re-resolution must be keyed on this primitive. Returns the raw
+ * store string, so it is referentially stable across renders by construction.
+ */
+export function selectActiveThemeId(s: Pick<ThemeStore, 'themeId'>): string {
+  return s.themeId
+}
+
 export const useThemeStore = create<ThemeStore>()(
   persist(
     (set, get) => ({

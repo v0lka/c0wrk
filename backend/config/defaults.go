@@ -82,7 +82,11 @@ func ApplyDefaults(cfg *Config) {
 	// Subagent concurrency cap. 4 is a safe default: enough parallelism to
 	// overlap independent work, few enough to avoid a burst of simultaneous
 	// LLM calls / tool executions and the event-rate spike they cause.
-	if cfg.Agents.MaxParallelSubagents == 0 {
+	// Any value <= 0 resolves to the default (see AgentsConfig
+	// MaxParallelSubagents) so a negative typo can never silently mean
+	// "unlimited" downstream — the conductor treats a non-positive cap as
+	// no cap at all.
+	if cfg.Agents.MaxParallelSubagents <= 0 {
 		cfg.Agents.MaxParallelSubagents = 4
 	}
 

@@ -19,7 +19,7 @@ import {
 import { conflictMarkerPlugin } from '@/lib/cmConflictMarkers'
 import { loadLanguageByName } from '@/lib/cmLanguages'
 import { createOneDarkCMTheme } from '@/lib/cmTheme'
-import { useThemeStore, selectActiveThemeType } from '@/stores/themeStore'
+import { useThemeStore, selectActiveThemeType, selectActiveThemeId } from '@/stores/themeStore'
 
 interface CodeMirrorViewerProps {
   content: string
@@ -95,6 +95,9 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
   const activeFile = useFileViewerStore((s) => s.activeFile)
   const workspacePath = useWorkspacePath()
   const theme = useThemeStore(selectActiveThemeType)
+  // Theme IDENTITY: a same-type custom-theme switch keeps `theme` unchanged
+  // but still swaps the palette CSS variables the baked theme resolves from.
+  const themeId = useThemeStore(selectActiveThemeId)
 
   // Create EditorView on mount, destroy on unmount
   useEffect(() => {
@@ -138,13 +141,15 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
   // bake CSS-variable values at creation, so a compartment reconfigure is the
   // only way to swap the palette (selection bg, gutter, syntax colors, and the
   // { dark } flag that drives CM's built-in defaults) without recreating the view.
+  // Keyed on BOTH the type (drives the { dark } flag) and the identity (a
+  // same-type custom-theme swap changes the palette while `theme` stays).
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
     view.dispatch({
       effects: themeCompartment.current.reconfigure(createOneDarkCMTheme(theme === 'dark')),
     })
-  }, [theme])
+  }, [theme, themeId])
 
   // Update document content when it changes
   useEffect(() => {

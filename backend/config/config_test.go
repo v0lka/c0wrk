@@ -296,6 +296,36 @@ llm:
 	}
 }
 
+// TestApplyDefaults_MaxParallelSubagents pins the documented contract on
+// AgentsConfig.MaxParallelSubagents (see the field's doc comment): "<= 0
+// resolves to the default (4)". Only == 0 used to be defaulted, so a negative
+// value propagated verbatim to the conductor, whose shared limiter treats a
+// non-positive cap as "unlimited" — silently disabling the concurrency bound
+// the config documents.
+func TestApplyDefaults_MaxParallelSubagents(t *testing.T) {
+	cases := []struct {
+		name  string
+		value int
+		want  int
+	}{
+		{"unset zero", 0, 4},
+		{"negative one", -1, 4},
+		{"negative large", -100, 4},
+		{"explicit one", 1, 1},
+		{"explicit seven", 7, 7},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{}
+			cfg.Agents.MaxParallelSubagents = tc.value
+			ApplyDefaults(cfg)
+			if got := cfg.Agents.MaxParallelSubagents; got != tc.want {
+				t.Fatalf("ApplyDefaults with max_parallel_subagents=%d = %d, want %d", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestApplyDefaults_BlacklistCategorySymmetry asserts that the default
 // bash_exec and posh_exec blacklists each cover the four destructive
 // categories (power-state, remote-exec/download-cradle, irreversible system

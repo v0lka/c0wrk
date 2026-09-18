@@ -165,20 +165,30 @@ from.
 
 ### ⚠️ The version stamp trap
 
-The `Makefile` short-circuits the ORT install by comparing `build/bin/.onnxruntime-version`
-against `ONNX_VERSION` (`Makefile:212`). Right now the stamp holds `1.28.1-gpu` while
-`ONNX_VERSION` = `1.28.1` — **the values differ, so `make build` would silently download the CPU
-archive over the GPU libraries.**
+**Resolved — the shipped policy is described below.** At PoC time this was an open problem: the
+`Makefile` short-circuits the ORT install by comparing `build/bin/.onnxruntime-version`
+(`ONNX_STAMP`, `Makefile:117`) against `ONNX_VERSION`, and the hand-installed GPU build had left
+`1.28.1-gpu` in the stamp while `ONNX_VERSION` = `1.28.1` — the values differed, so `make build`
+would silently download the CPU archive over the GPU libraries.
 
-Until this is resolved, build bypassing `fetch-onnx`:
+The product shipped a deliberate fix (the "ONNX Runtime GPU flavor" block in the `Makefile`):
 
-```bash
-wails build -tags webkit2_41 -ldflags "-X github.com/v0lka/c0wrk/core/version.Version=$(git describe --tags --dirty) -X github.com/v0lka/c0wrk/core/version.GitCommit=$(git rev-parse --short HEAD) -X github.com/v0lka/c0wrk/core/version.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-```
+- **Opt-in GPU install.** `make fetch-onnx-gpu` (Linux x64 only; fails closed elsewhere) installs
+  the CUDA 13 GPU flavor of the same `ONNX_VERSION` with pinned sha256 digests, exactly like the
+  CPU install. `make build` / `make fetch-onnx` always install the CPU flavor.
+- **Deliberately asymmetric stamps.** `ONNX_GPU_STAMP_VALUE := $(ONNX_VERSION)-gpu-cuda13`: the
+  GPU target writes its own stamp (`build/bin/.onnxruntime-gpu-version`) **and** overwrites the
+  CPU stamp with the same suffixed value, so a GPU install is always distinguishable from a CPU
+  one instead of masquerading as it.
+- **Deliberate CPU reinstall on mismatch.** The next `make build` / `make fetch-onnx` sees the
+  suffixed stamp, does not match `ONNX_VERSION`, and reinstalls the CPU flavor **on purpose**,
+  with an explanatory echo (`NOTE: stamp mismatch … deliberately reinstalling the CPU flavor`)
+  rather than silently keeping the GPU libraries. Consequence: rerun `make fetch-onnx-gpu` after
+  every `make build` to keep the GPU flavor.
 
-Either bring the stamp back to `1.28.1` (then the guard works again but the marker that this is
-the GPU flavor is lost), or — better — teach the `Makefile` a GPU build flavor so the stamp and
-the expected value converge. That's part of the packaging task below.
+Normal builds need nothing special: use the standard targets (`make build`, then optionally
+`make fetch-onnx-gpu`). Do not bypass `fetch-onnx` by hand-copying libraries — a hand-installed
+GPU library with an unmatched stamp is exactly what created the trap.
 
 ---
 
@@ -244,7 +254,8 @@ use (
 
 ## How to build and run
 
-Building — see the version stamp trap above. Running:
+Building: `make build` installs the CPU flavor; on Linux x64 follow it with
+`make fetch-onnx-gpu` to swap in the GPU flavor (see the version stamp trap above). Running:
 
 ```bash
 C0WRK_ONNX_EP=cuda ./build/bin/c0wrk-desktop
@@ -305,7 +316,8 @@ consumption plateaus at ~2–4 GB and **does not grow** further.
    pinned sha256. The GPU flavor is `onnxruntime-linux-x64-gpu-1.28.1.tgz`; the
    `libonnxruntime_providers_cuda.so` alone is 279 MB. Bundling it for everyone hardly makes
    sense. Options: a separate package, download on demand, or "if the GPU libraries are next to
-   the binary — use them". This also includes reconciling the version stamp (see the trap above).
+   the binary — use them". (Resolved since: the opt-in `fetch-onnx-gpu` target plus the stamp
+   policy — see the version stamp trap above.)
 
 ### Open questions
 
@@ -398,7 +410,7 @@ Expected: a flat ~4000 MiB. Growth means some ORT touch point remained unpinned.
 | embedder creation, env knob | `desktop/startup_phases.go`, `startVectorIndexBackground` |
 | looking up the library next to the binary | `desktop/startup.go`, `resolveONNXLibPath` |
 | vector index config | `backend/config/config.go`, fields `VectorIndex.*` |
-| ORT download/install, version stamp | `Makefile`, target `fetch-onnx`, `ONNX_STAMP` (line 212) |
+| ORT download/install, version stamp | `Makefile`, targets `fetch-onnx` / `fetch-onnx-gpu`, `ONNX_STAMP` / `ONNX_GPU_STAMP` |
 | session options and provider | `../sp4rk/embedding/onnx.go`, `buildSessionOptions` |
 | the pinned thread | `../sp4rk/embedding/runner.go` |
 | embedder lifecycle | `../sp4rk/embedding/embedder.go`, `NewEmbedder` / `Close` |

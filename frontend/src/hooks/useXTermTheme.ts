@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import type { ITheme } from '@xterm/xterm'
+import type { ThemeType } from '@/stores/themeStore'
 
 /**
  * The subset of ITheme keys that we resolve from CSS custom properties.
@@ -80,14 +81,19 @@ function resolveThemeFromCSS(): ITheme {
 
 /**
  * Hook that returns an XTerm theme object resolved from CSS custom properties.
- * Re-resolves whenever `theme` changes so the terminal follows the active
- * color palette without restarting the session. `theme` is a cache-busting
- * key: the CSS variables only change when the <html data-theme> attribute
- * flips, so re-resolution is keyed on it rather than on the vars themselves.
+ * Re-resolves whenever `themeKey` OR `themeType` changes so the terminal
+ * follows the active color palette without restarting the session. Pass the
+ * active theme's IDENTITY (themeStore's selectActiveThemeId) as `themeKey`
+ * and its dark/light TYPE (selectActiveThemeType) as `themeType`: the CSS
+ * variables change not only when one same-type custom theme replaces another
+ * (the data-custom-theme CSS swap — only the id key distinguishes those) but
+ * also when applyThemes corrects the TYPE of an unchanged theme id (an
+ * edited theme file flipping color-scheme) — which only the type key catches.
  */
-export function useXTermTheme(theme: 'dark' | 'light'): ITheme {
+export function useXTermTheme(themeKey: string, themeType: ThemeType): ITheme {
   return useMemo(() => {
-    void theme
+    void themeKey
+    void themeType
     return resolveThemeFromCSS()
-  }, [theme])
+  }, [themeKey, themeType])
 }

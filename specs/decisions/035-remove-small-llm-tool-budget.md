@@ -27,7 +27,7 @@ With the Essential Tools variant active, the Conductor's advertised tool set is 
 
 - The settings UI loses the "Max tools" field; the Essential Tools section documents that the assigned set equals the selection plus every connected MCP server's tools.
 - Config validation loses the `max_tools` checks and the save-time cap reconciliation (`reconcileSmallLLMCap`); `validateSmallLLMConfig` retains the remaining variant checks (sampling, loop hardening, context).
-- Tool-set size is governed entirely by the operator's selection and installed MCP servers; the 10–20-tool selection-accuracy guidance from `docs/development/slm-defaults-research.md` is operator-side advice, not an enforced guard.
+- Tool-set size is governed entirely by the operator's selection and installed MCP servers; the 10–20-tool selection-accuracy guidance from `docs/development/model-profiles-defaults-research.md` is operator-side advice, not an enforced guard.
 - The router spends no prompt tokens on tool inventory/matching instructions when the profile is on.
 - The guaranteed-set WARNING in the previous spec revision (MCP inflation vs. budget) is moot by construction: there is no budget to overflow.
 

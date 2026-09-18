@@ -5,7 +5,7 @@ import { terminalInput, terminalResize, startTerminal, startTerminalInDir } from
 import { useTerminalEvents } from '@/hooks/events/useTerminalEvents'
 import { useXTermTheme } from '@/hooks/useXTermTheme'
 import { useInputModeStore } from '@/stores/inputModeStore'
-import { useThemeStore, selectActiveThemeType } from '@/stores/themeStore'
+import { useThemeStore, selectActiveThemeId, selectActiveThemeType } from '@/stores/themeStore'
 import { useUiScaleStore } from '@/stores/uiScaleStore'
 import { logger } from '@/lib/logger'
 
@@ -35,8 +35,13 @@ export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProp
     const containerRef = useRef<HTMLDivElement>(null)
     const termRef = useRef<XTerm | null>(null)
     const fitAddonRef = useRef<FitAddon | null>(null)
-    const appTheme = useThemeStore(selectActiveThemeType)
-    const palette = useXTermTheme(appTheme)
+    // Keyed on the theme IDENTITY *and* its dark/light type: a same-type
+    // custom-theme switch must re-resolve the terminal palette, and so must
+    // a type correction that keeps the id (applyThemes can flip the type of
+    // an unchanged theme id) — the same dual key the CodeMirror sites use.
+    const appThemeId = useThemeStore(selectActiveThemeId)
+    const appThemeType = useThemeStore(selectActiveThemeType)
+    const palette = useXTermTheme(appThemeId, appThemeType)
     // Latest palette kept in a ref so the terminal-creation effect can read the
     // current palette at construction time without listing it in its
     // dependency array (which would tear down and restart the session on every

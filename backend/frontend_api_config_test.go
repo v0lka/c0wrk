@@ -2128,6 +2128,18 @@ func TestUpdateModelProfile_Rename(t *testing.T) {
 	f, _, _ := newTestAPI(t)
 	active := activateCustomModelProfile(t, f)
 
+	// Seed non-zero knob values first: the helper activates with a zero
+	// ModelProfileConfig, which would make the preservation check below
+	// vacuous against a regression that re-persists a zeroed config on the
+	// name-only path.
+	if err := f.UpdateModelProfile(active.ID, modelProfilesConfigReq(validModelProfilesValues())); err != nil {
+		t.Fatalf("seed values: %v", err)
+	}
+	// Snapshot the stored profile before the rename so BOTH invariants of the
+	// name-only update path are pinned independently: the id stays stable and
+	// the stored values are preserved verbatim.
+	before := modelProfilesStoredProfile(t, f, active.ID)
+
 	newName := "Renamed Tuned"
 	if err := f.UpdateModelProfile(active.ID, ModelProfileUpdateRequest{Name: &newName}); err != nil {
 		t.Fatalf("rename: %v", err)
@@ -2136,8 +2148,11 @@ func TestUpdateModelProfile_Rename(t *testing.T) {
 	if stored.Name != newName {
 		t.Errorf("stored name = %q, want %q", stored.Name, newName)
 	}
-	if !stored.Config.EssentialTools.Enabled && stored.ID != active.ID {
-		t.Error("rename must keep id and values stable")
+	if stored.ID != active.ID {
+		t.Errorf("stored id = %q, want %q (rename must keep the id stable)", stored.ID, active.ID)
+	}
+	if diff := cmp.Diff(before.Config, stored.Config); diff != "" {
+		t.Errorf("rename must keep the stored values stable (-before +after):\n%s", diff)
 	}
 }
 

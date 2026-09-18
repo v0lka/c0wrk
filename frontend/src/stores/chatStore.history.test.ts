@@ -104,6 +104,35 @@ describe('chatStore history pagination', () => {
     expect(useChatStore.getState().messageOrder['s1']).toEqual(['c', 'd'])
   })
 
+  // Regression (finding 23): the plan-timeline restore reuses
+  // prependHistoryMessages with SESSION-WIDE rows — older than the newest
+  // page but newer than pages scroll-up has not yet fetched. The next
+  // scroll-up page must land BELOW those rows, keeping messageOrder
+  // chronological for the rest of the run.
+  it('prependHistoryMessages keeps messageOrder chronological for a plan-timeline restore followed by an older page', () => {
+    // ChatArea's load effect merges the newest window (the live tail).
+    useChatStore.getState().mergeHistoryMessages('s1', [ui('w1', 'w1', 900)], 0)
+    useChatStore.getState().setHistoryPageMeta('s1', 'c9', true)
+
+    // The plan-timeline restore prepends the declaration plus a step row:
+    // older than the window, NEWER than the pages behind it.
+    useChatStore.getState().prependHistoryMessages(
+      's1', [ui('plan', 'plan', 100), ui('plan-step', 'plan-step', 200)], 'c9', true,
+    )
+
+    // The next scroll-up page fetches rows between the timeline rows and the
+    // window (50 predates the declaration; 300/400 postdate the step row).
+    useChatStore.getState().prependHistoryMessages(
+      's1', [ui('mid1', 'mid1', 300), ui('old1', 'old1', 50), ui('mid2', 'mid2', 400)], 'c8', true,
+    )
+
+    const s = useChatStore.getState()
+    expect(s.messageOrder['s1']).toEqual(['old1', 'plan', 'plan-step', 'mid1', 'mid2', 'w1'])
+    // Every row's timestamp is non-decreasing along the order (chronological).
+    const timestamps = s.messageOrder['s1']!.map(id => s.messages['s1']![id]!.timestamp)
+    expect(timestamps).toEqual([...timestamps].sort((a, b) => a - b))
+  })
+
   it('setHistoryPageMeta records the cursor and hasMore flag', () => {
     useChatStore.getState().setHistoryPageMeta('s1', 'cur-9', true)
     const s = useChatStore.getState()

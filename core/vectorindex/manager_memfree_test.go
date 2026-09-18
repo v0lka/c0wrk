@@ -165,3 +165,94 @@ func TestReindex_EmptyCollectionFullPassFreesOSMemory(t *testing.T) {
 		t.Errorf("full reindex on an empty collection must call the seam exactly once, got %d", got)
 	}
 }
+
+// TestBranchSwitch_NoOpSwitchDoesNotFreeOSMemory pins the gate on the git
+// branch-switch path: a switch that ends in an incremental (or outright
+// no-op) reconciliation must NOT force a stop-the-world GC. The monitor
+// callback fired freeOSMemory unconditionally, so hopping between
+// already-indexed branches — where HandleBranchSwitch only swaps collections
+// and the incremental pass finds no changes — paid a full FreeOSMemory cycle
+// (freezing the whole app, in-flight LLM streaming included) per hop for
+// zero memory benefit.
+func TestBranchSwitch_NoOpSwitchDoesNotFreeOSMemory(t *testing.T) {
+	var calls atomic.Int32
+	// Register the index temp dir BEFORE newMemFreeManager's svc.Close
+	// cleanup (t.Cleanup is LIFO): svc.Close must release the bleve
+	// .bolt/.zap handles before TempDir's RemoveAll on Windows.
+	viDir := filepath.Join(t.TempDir(), "vi")
+	ws := createTestWorkspace(t)
+	mgr, svc := newMemFreeManager(t, &calls)
+
+	if err := svc.SetProject("project-a", viDir); err != nil {
+		t.Fatalf("SetProject: %v", err)
+	}
+	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
+		t.Fatalf("SwitchBranch: %v", err)
+	}
+
+	indexer := NewIndexer(IndexerConfig{
+		Service: svc,
+		ChunkFn: fakeChunkFunc,
+		HashFn:  fakeHashFunc,
+	})
+
+	// Populate the main collection so a later same-branch switch takes the
+	// incremental no-op path rather than a full pass.
+	if err := indexer.IndexFull(context.Background(), ws); err != nil {
+		t.Fatalf("IndexFull: %v", err)
+	}
+	if col := svc.GetCollection(); col == nil || col.Count() == 0 {
+		t.Fatal("precondition: the main collection must be non-empty")
+	}
+	calls.Store(0)
+
+	// Same-branch no-op: SwitchBranch early-returns, the collection is
+	// non-empty, and the incremental pass finds no changes.
+	mgr.handleBranchSwitch(context.Background(), indexer, ws, "main")
+
+	if got := calls.Load(); got != 0 {
+		t.Errorf("no-op branch switch must not call the freeOSMemory seam, got %d calls", got)
+	}
+}
+
+// TestBranchSwitch_FullPassFreesOSMemory is the positive counterpart: a
+// switch to a branch whose collection is empty runs a full pass, whose
+// transient spike must be returned to the OS exactly once — matching the
+// other full-pass call sites (initProject's empty-collection branch and
+// Reindex).
+func TestBranchSwitch_FullPassFreesOSMemory(t *testing.T) {
+	var calls atomic.Int32
+	// Register the index temp dir BEFORE newMemFreeManager's svc.Close
+	// cleanup (t.Cleanup is LIFO): svc.Close must release the bleve
+	// .bolt/.zap handles before TempDir's RemoveAll on Windows.
+	viDir := filepath.Join(t.TempDir(), "vi")
+	ws := createTestWorkspace(t)
+	mgr, svc := newMemFreeManager(t, &calls)
+
+	if err := svc.SetProject("project-a", viDir); err != nil {
+		t.Fatalf("SetProject: %v", err)
+	}
+	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
+		t.Fatalf("SwitchBranch: %v", err)
+	}
+
+	indexer := NewIndexer(IndexerConfig{
+		Service: svc,
+		ChunkFn: fakeChunkFunc,
+		HashFn:  fakeHashFunc,
+	})
+	if err := indexer.IndexFull(context.Background(), ws); err != nil {
+		t.Fatalf("IndexFull: %v", err)
+	}
+	calls.Store(0)
+
+	// feature/new has no collection yet → the switch runs a full pass.
+	mgr.handleBranchSwitch(context.Background(), indexer, ws, "feature/new")
+
+	if got := calls.Load(); got != 1 {
+		t.Errorf("full-pass branch switch must call the seam exactly once, got %d calls", got)
+	}
+	if col := svc.GetCollection(); col == nil || col.Count() == 0 {
+		t.Error("expected the target branch collection to be indexed by the full pass")
+	}
+}

@@ -52,17 +52,63 @@ func TestSanitizeThemeCSS_RejectsImageSet(t *testing.T) {
 }
 
 // TestSanitizeThemeCSS_RejectsEscapedConstructs guards escape-sequence
-// smuggling: an escaped identifier (e.g. \75 rl → url) stays escaped in the
-// token value and therefore fails the allowlist checks.
+// smuggling. The tokenizer keeps `\` escapes verbatim in token values, so a
+// kept token whose text contains a backslash was never validated in its
+// decoded form: the webview would decode `\7d ` back to `}` after injection,
+// closing :root early and injecting arbitrary rules (with external url()
+// fetches). Every escape, in every position, is therefore rejected outright.
 func TestSanitizeThemeCSS_RejectsEscapedConstructs(t *testing.T) {
 	cases := []string{
+		// escaped function name (url) — fails the exact-name allowlist
 		`:root { --color-background: #fff; --color-foreground: #000; --x: \75 rl(https://evil.example/x); }`,
 		`@import url(data:text/css,:root{--color-background:#fff;--color-foreground:#000});`,
+		// property-NAME position: the name decodes to `--}body{background:red}`
+		// in the webview, closing :root and injecting a foreign rule
+		`:root { --color-background: #fff; --color-foreground: #000; --\7d body\7b background\3a red\7d : 0; }`,
+		// VALUE position: the identifier decodes to `}body{background:red}`
+		`:root { --color-background: #fff; --color-foreground: #000; --x: \7d body\7b background\3a red\7d ; }`,
+		// escape smuggled inside an allowlisted function's arguments
+		`:root { --color-background: #fff; --color-foreground: #000; --x: var(--y, \7d body\7b red\7d ); }`,
+		// escape inside a quoted string
+		`:root { --color-background: #fff; --color-foreground: #000; --label: "a\7d body\7b"; }`,
+		// escape that would decode to a benign value still fails closed
+		`:root { --color-background: #fff; --color-foreground: #000; color-scheme: \64 ark; }`,
 	}
 	for i, css := range cases {
 		if err := ValidateThemeCSS(css); err == nil {
 			t.Errorf("case %d: expected rejection, got nil", i)
 		}
+	}
+}
+
+// TestSanitizeThemeCSS_OutputIsIdempotentAndEscapeFree pins two properties of
+// the canonical output: it re-sanitizes to the identical document (the output
+// is a fixed point of the sanitizer), and it never contains a raw backslash —
+// so what the webview decodes can never differ from what was validated.
+func TestSanitizeThemeCSS_OutputIsIdempotentAndEscapeFree(t *testing.T) {
+	css := `/* c0wrk-theme: Kitchen Sink | dark */
+:root {
+  --color-background: #282c34;
+  --color-foreground: #abb2bf;
+  --color-shadow: rgba(0, 0, 0, 0.35);
+  --size: calc(100% - 2 * var(--gap, 4px));
+  --icon: url(data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=);
+  --label: "quoted string";
+  color-scheme: dark;
+}`
+	got, err := sanitizeThemeCSS(css)
+	if err != nil {
+		t.Fatalf("sanitize: %v", err)
+	}
+	if strings.Contains(got, `\`) {
+		t.Fatalf("canonical output must never contain a raw backslash:\n%s", got)
+	}
+	again, err := sanitizeThemeCSS(got)
+	if err != nil {
+		t.Fatalf("canonical output must re-sanitize cleanly: %v", err)
+	}
+	if again != got {
+		t.Fatalf("canonical output must be a sanitizer fixed point:\ngot:\n%s\nwant:\n%s", again, got)
 	}
 }
 

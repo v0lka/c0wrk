@@ -323,3 +323,63 @@ func repeatLines(text string, n int) string {
 	}
 	return string(out)
 }
+
+// TestRebuildLexicalFromCollection_StaleLargerCountTolerated pins the fix for
+// the nResults race: the enumeration's nResults must be sampled from the LIVE
+// collection under the read lock, not forwarded from the caller's earlier
+// sample. RebuildLexical reads its count before waiting for the file-hash
+// migration and walking the sidecar; a concurrent incremental pass can delete
+// documents in that window, and chromem hard-errors once nResults exceeds the
+// live document count — which used to leave the BM25 backfill permanently
+// failing. Passing an inflated count here simulates that shrink
+// deterministically.
+func TestRebuildLexicalFromCollection_StaleLargerCountTolerated(t *testing.T) {
+	var embedCalls atomic.Int32
+	svc, idx, viDir := newLexicalRebuildFixture(t, &embedCalls)
+	ws := filepath.Join(viDir, "ws")
+
+	seedLegacyIndexedFile(t, idx, svc, filepath.Join(ws, "a.md"), repeatLines("alpha notes line with words", 40))
+	seedLegacyIndexedFile(t, idx, svc, filepath.Join(ws, "b.md"), repeatLines("beta other markdown words", 40))
+
+	col := svc.GetCollection()
+	live := col.Count()
+	if live == 0 {
+		t.Fatal("precondition: collection must be non-empty")
+	}
+
+	rec := installRecordingLex(t, svc)
+	staleCount := live + 5 // documents deleted after the caller sampled
+	if err := idx.rebuildLexicalFromCollection(context.Background(), rec, col, staleCount); err != nil {
+		t.Fatalf("rebuildLexicalFromCollection with a stale larger count: %v", err)
+	}
+	if got := len(rec.docs); got != live {
+		t.Errorf("enumerated %d lexical docs, want the live count %d (nResults must follow the live collection)", got, live)
+	}
+}
+
+// TestRebuildLexicalFromCollection_EmptyLiveCollection covers the companion
+// edge: the collection can empty ENTIRELY in the sampling window, and chromem
+// rejects nResults <= 0 just as it rejects nResults > live — the rebuild must
+// return nil without querying rather than error.
+func TestRebuildLexicalFromCollection_EmptyLiveCollection(t *testing.T) {
+	var embedCalls atomic.Int32
+	svc, idx, _ := newLexicalRebuildFixture(t, &embedCalls)
+
+	// A brand-new branch has an empty collection; the caller's stale count
+	// still claims the pre-shrink sample.
+	if err := svc.SwitchBranch(context.Background(), "emptied"); err != nil {
+		t.Fatalf("SwitchBranch: %v", err)
+	}
+	col := svc.GetCollection()
+	if col == nil || col.Count() != 0 {
+		t.Fatal("precondition: the branch collection must be empty")
+	}
+
+	rec := installRecordingLex(t, svc)
+	if err := idx.rebuildLexicalFromCollection(context.Background(), rec, col, 7); err != nil {
+		t.Fatalf("rebuildLexicalFromCollection on an emptied collection: %v", err)
+	}
+	if got := len(rec.docs); got != 0 {
+		t.Errorf("enumerated %d docs from an empty collection, want 0", got)
+	}
+}
