@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 
 // Spies created via vi.hoisted so they exist before vi.mock factories run.
 const spies = vi.hoisted(() => ({
-  listProviderModels: vi.fn<(req: { provider: string; api_key?: string; base_url?: string; type?: string }) => Promise<string[]>>(),
+  listProviderModels: vi.fn<(req: { provider: string; api_key?: string; base_url?: string; type?: string; tls_fingerprint?: string }) => Promise<string[]>>(),
 }))
 
 // Mock the backend API wrapper so no real Wails round-trip happens.
@@ -48,7 +48,7 @@ afterEach(() => {
 })
 
 function renderAccordion(models: string[], mountKey = 'mount') {
-  const config = { api_key: 'key', base_url: 'http://localhost:1234', models }
+  const config = { api_key: 'key', base_url: 'http://localhost:1234', models, tls_fingerprint: '' }
   act(() => {
     root.render(
       <ProviderAccordion
@@ -131,6 +131,9 @@ describe('ProviderAccordion model list', () => {
       api_key: 'key',
       base_url: 'http://localhost:1234',
       type: undefined,
+      // The draft TLS pin rides along verbatim (ADR-052): an explicit ''
+      // must win over the persisted value, not fall back to it.
+      tls_fingerprint: '',
     })
 
     const rows = modelRows()

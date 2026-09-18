@@ -24,6 +24,15 @@ interface UseLLMConfigSaveResult {
  *   - Debounces saves (300 ms)
  *   - Filters out the MASKED_API_KEY sentinel so we never overwrite a real key
  */
+/** One provider's slice of the full-form save payload. */
+interface ProviderEntryPayload {
+  api_key: string
+  base_url?: string
+  models: string[]
+  /** Only set for compatible providers (ADR-052). */
+  tls_fingerprint?: string
+}
+
 export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSaveResult {
   const debounceRef = useRef<NodeJS.Timeout | null>(null)
   const onSavedRef = useRef(onSettingsSaved)
@@ -33,12 +42,12 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
   const saveFullConfig = useCallback(
     (defModel: string, configs: Record<string, ProviderConfig>) => {
       const req: LLMFullConfigRequest & Record<string, unknown> = { default_model: defModel }
-      const openaiCompatible: Record<string, { api_key: string; base_url?: string; models: string[] }> = {}
-      const anthropicCompatible: Record<string, { api_key: string; base_url?: string; models: string[] }> = {}
+      const openaiCompatible: Record<string, ProviderEntryPayload> = {}
+      const anthropicCompatible: Record<string, ProviderEntryPayload> = {}
 
       for (const [p, cfg] of Object.entries(configs)) {
         if (!cfg) continue
-        const entry: { api_key: string; base_url?: string; models: string[] } = {
+        const entry: ProviderEntryPayload = {
           api_key: cfg.api_key,
           models: cfg.models,
         }
@@ -46,6 +55,12 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
           entry.base_url = cfg.base_url
         }
         if (isCompatibleProvider(p)) {
+          // The per-provider TLS pin (ADR-052) is stored only for compatible
+          // providers — fixed ones talk to vendor endpoints with public
+          // certificates. It always travels along so the backend applies it
+          // atomically with the rest of the entry; the pointer sentinel on
+          // the Go side means an explicit '' here clears the pin.
+          entry.tls_fingerprint = cfg.tls_fingerprint
           // Route to the correct backend map by transport type. Default to
           // 'openai' for compatible providers that lack an explicit type
           // (preserves behavior for any pre-existing compatible entries).

@@ -19,7 +19,7 @@ describe('defaultModelIsValid', () => {
     const configs = (providers: Record<string, string[]>): Record<string, ProviderConfig> => {
         const out: Record<string, ProviderConfig> = {}
         for (const [name, models] of Object.entries(providers)) {
-            out[name] = { api_key: '', base_url: '', models }
+            out[name] = { api_key: '', base_url: '', models, tls_fingerprint: '' }
         }
         return out
     }

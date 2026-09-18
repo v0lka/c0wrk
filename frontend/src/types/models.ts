@@ -414,6 +414,9 @@ export interface ConfigProviderFull {
   api_key: string
   base_url?: string
   models: string[]  // enabled models for THIS provider
+  /** Per-provider TLS pin (ADR-052). Display round-trip from config.
+   *  Empty/absent = standard CA verification (no override). */
+  tls_fingerprint?: string
 }
 
 export interface ModelInfo {
@@ -501,6 +504,10 @@ export interface ProviderConfigRequest {
   api_key?: string
   base_url?: string
   models?: string[]
+  /** Per-provider TLS pin (ADR-052). Omitted = keep the persisted value
+   *  (debounce-safe); a present value is applied verbatim, so '' clears the
+   *  pin and disables the override. */
+  tls_fingerprint?: string
 }
 
 /** Draft credentials for ListProviderModels — lets Fetch Models work for a
@@ -511,6 +518,27 @@ export interface ListProviderModelsRequest {
   base_url?: string
   /** Transport: "openai" | "anthropic". Empty → derive / default openai. */
   type?: string
+  /** Draft TLS pin (ADR-052) so Fetch Models reaches self-signed endpoints
+   *  before the provider is persisted. Omitted = keep the persisted value;
+   *  '' = standard verification. */
+  tls_fingerprint?: string
+}
+
+/** Ask the backend for the fingerprint the provider's endpoint currently
+ *  presents (TLS handshake only, no verification, no API key).
+ *
+ *  Deliberately carries NO fingerprint field: the "Get" button is
+ *  unconditional with respect to any configured pin (ADR-052) — it always
+ *  reports what the endpoint serves right now. */
+export interface GetProviderTLSCertificateRequest {
+  provider: string
+  /** Draft base URL from the settings form; empty → persisted base_url. */
+  base_url?: string
+}
+
+export interface TLSCertificateResponse {
+  /** base64(SHA-256(SPKI DER)) of the server's leaf certificate. */
+  fingerprint: string
 }
 
 export interface LLMFullConfigRequest {

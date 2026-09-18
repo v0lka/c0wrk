@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,6 +21,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/llmtls"
 	"github.com/v0lka/c0wrk/core/proxy"
 	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agents"
@@ -61,6 +64,12 @@ type mockBuilder struct {
 	generateCommitMsgRes           string
 	generateCommitMsgErr           error
 	generateCommitMsgDiff          string
+
+	// rebuildProxyHook, when non-nil, runs inside RebuildProxy. Tests use it
+	// to hold the propagation phase open and assert that readers/writers are
+	// not convoyed behind it. It must not call back into mockBuilder methods
+	// that take m.mu.
+	rebuildProxyHook func(*core.BuilderConfig)
 
 	// rebuildRouterHook, when non-nil, runs inside RebuildRouter while the
 	// call is being recorded. Tests use it to block the rebuild phase (e.g.
@@ -108,11 +117,22 @@ func (m *mockBuilder) routerCfgSnapshot() []string {
 	copy(out, m.rebuildRouterCfgs)
 	return out
 }
-func (m *mockBuilder) RebuildProxy(_ context.Context, _ *core.BuilderConfig) error {
+func (m *mockBuilder) RebuildProxy(_ context.Context, cfg *core.BuilderConfig) error {
 	m.mu.Lock()
 	m.rebuildProxyCalls++
 	m.mu.Unlock()
+	if m.rebuildProxyHook != nil {
+		m.rebuildProxyHook(cfg)
+	}
 	return m.rebuildProxyErr
+}
+
+// RebuildProxyCalls reads the counter under the mock's lock, for tests that
+// run UpdateProxySettings concurrently.
+func (m *mockBuilder) RebuildProxyCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rebuildProxyCalls
 }
 func (m *mockBuilder) UpdateSearchTool(_ *core.BuilderConfig) {
 	m.mu.Lock()
@@ -3531,5 +3551,727 @@ func TestHasDefaultModel(t *testing.T) {
 				t.Errorf("HasDefaultModel() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// --- Per-provider TLS pin (ADR-052) ---
+
+// tlsPinFixture is a well-formed (base64 of 32 bytes) pin.
+const tlsPinFixture = "k3J9vQ1Z0mF7hD2xS8pL4wR6tY5uI3oP1aE9cX0bN7g="
+
+func strPtr(s string) *string { return &s }
+
+// newPinnedTestAPI returns a test API whose config already holds one pinned
+// openai-compatible provider and one pinned anthropic-compatible provider.
+func newPinnedTestAPI(t *testing.T) (*FrontendAPI, *mockBuilder) {
+	t.Helper()
+	f, mock, _ := newTestAPI(t)
+	f.config.LLM.OpenAICompatible = map[string]config.OpenAICompatibleConfig{
+		"selfhosted": {
+			BaseURL:        "https://llm.lan:8443/v1",
+			APIKey:         "oc-key",
+			Models:         []string{"qwen3"},
+			TLSFingerprint: tlsPinFixture,
+		},
+	}
+	f.config.LLM.AnthropicCompatible = map[string]config.AnthropicCompatibleConfig{
+		"gateway": {
+			BaseURL:        "https://claude.lan:8443",
+			APIKey:         "ac-key",
+			Models:         []string{"claude-3-opus"},
+			TLSFingerprint: tlsPinFixture,
+		},
+	}
+	return f, mock
+}
+
+// GetConfig must round-trip the persisted pin so the settings form can show
+// it; providers without a pin report the empty string.
+func TestGetConfig_ExposesTLSFingerprint(t *testing.T) {
+	f, _ := newPinnedTestAPI(t)
+	f.config.LLM.OpenAICompatible["plain"] = config.OpenAICompatibleConfig{
+		BaseURL: "http://127.0.0.1:1234/v1", APIKey: "k", Models: []string{"llama"},
+	}
+
+	resp := f.buildLLMResponse()
+
+	if got := resp.OpenAICompatible["selfhosted"].TLSFingerprint; got != tlsPinFixture {
+		t.Errorf("openai_compatible pin = %q, want %q", got, tlsPinFixture)
+	}
+	if got := resp.AnthropicCompatible["gateway"].TLSFingerprint; got != tlsPinFixture {
+		t.Errorf("anthropic_compatible pin = %q, want %q", got, tlsPinFixture)
+	}
+	if got := resp.OpenAICompatible["plain"].TLSFingerprint; got != "" {
+		t.Errorf("unpinned provider pin = %q, want empty", got)
+	}
+	// The pin is not a secret, but the key next to it still must be masked.
+	if resp.OpenAICompatible["selfhosted"].APIKey == "oc-key" {
+		t.Error("API key must be masked in the config response")
+	}
+}
+
+// The pointer sentinel: nil keeps the persisted pin. The settings dialog
+// saves on a debounce with partial payloads, so a save that only touched the
+// model list must not clear the pin.
+func TestUpdateLLMConfig_NilTLSFingerprintKeepsPersistedPin(t *testing.T) {
+	f, _ := newPinnedTestAPI(t)
+
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "selfhosted/qwen3",
+		OpenAICompatible: map[string]ProviderConfigRequest{
+			"selfhosted": {
+				BaseURL: "https://llm.lan:8443/v1",
+				Models:  []string{"qwen3"},
+				// TLSFingerprint omitted (nil) — only the model list changed.
+			},
+		},
+		AnthropicCompatible: map[string]ProviderConfigRequest{
+			"gateway": {BaseURL: "https://claude.lan:8443", Models: []string{"claude-3-opus"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateLLMConfig: %v", err)
+	}
+
+	if got := f.config.LLM.OpenAICompatible["selfhosted"].TLSFingerprint; got != tlsPinFixture {
+		t.Errorf("openai pin = %q, want the persisted %q preserved", got, tlsPinFixture)
+	}
+	if got := f.config.LLM.AnthropicCompatible["gateway"].TLSFingerprint; got != tlsPinFixture {
+		t.Errorf("anthropic pin = %q, want the persisted %q preserved", got, tlsPinFixture)
+	}
+}
+
+// A non-nil pointer applies verbatim: an explicit empty string CLEARS the pin
+// (the user emptied the field), and a new value replaces the old one.
+func TestUpdateLLMConfig_ExplicitTLSFingerprintAppliesVerbatim(t *testing.T) {
+	const replacement = "Zm9vYmFyYmF6cXV1eDEyMzQ1Njc4OWFiY2RlZmdoaT0="
+
+	t.Run("empty string clears the pin", func(t *testing.T) {
+		f, _ := newPinnedTestAPI(t)
+		err := f.UpdateLLMConfig(LLMFullConfigRequest{
+			DefaultModel: "selfhosted/qwen3",
+			OpenAICompatible: map[string]ProviderConfigRequest{
+				"selfhosted": {BaseURL: "https://llm.lan:8443/v1", Models: []string{"qwen3"}, TLSFingerprint: strPtr("")},
+			},
+			AnthropicCompatible: map[string]ProviderConfigRequest{
+				"gateway": {BaseURL: "https://claude.lan:8443", Models: []string{"claude-3-opus"}, TLSFingerprint: strPtr("")},
+			},
+		})
+		if err != nil {
+			t.Fatalf("UpdateLLMConfig: %v", err)
+		}
+		if got := f.config.LLM.OpenAICompatible["selfhosted"].TLSFingerprint; got != "" {
+			t.Errorf("openai pin = %q, want cleared", got)
+		}
+		if got := f.config.LLM.AnthropicCompatible["gateway"].TLSFingerprint; got != "" {
+			t.Errorf("anthropic pin = %q, want cleared", got)
+		}
+	})
+
+	t.Run("new value replaces the old pin", func(t *testing.T) {
+		f, _ := newPinnedTestAPI(t)
+		err := f.UpdateLLMConfig(LLMFullConfigRequest{
+			DefaultModel: "selfhosted/qwen3",
+			OpenAICompatible: map[string]ProviderConfigRequest{
+				"selfhosted": {BaseURL: "https://llm.lan:8443/v1", Models: []string{"qwen3"}, TLSFingerprint: strPtr(replacement)},
+			},
+		})
+		if err != nil {
+			t.Fatalf("UpdateLLMConfig: %v", err)
+		}
+		if got := f.config.LLM.OpenAICompatible["selfhosted"].TLSFingerprint; got != replacement {
+			t.Errorf("openai pin = %q, want %q", got, replacement)
+		}
+	})
+
+	t.Run("pin persists to disk", func(t *testing.T) {
+		f, _, cfgPath := newTestAPI(t)
+		f.config.LLM.OpenAICompatible = map[string]config.OpenAICompatibleConfig{
+			"selfhosted": {BaseURL: "https://llm.lan:8443/v1", APIKey: "k", Models: []string{"qwen3"}},
+		}
+		err := f.UpdateLLMConfig(LLMFullConfigRequest{
+			DefaultModel: "selfhosted/qwen3",
+			OpenAICompatible: map[string]ProviderConfigRequest{
+				"selfhosted": {BaseURL: "https://llm.lan:8443/v1", Models: []string{"qwen3"}, TLSFingerprint: strPtr(tlsPinFixture)},
+			},
+		})
+		if err != nil {
+			t.Fatalf("UpdateLLMConfig: %v", err)
+		}
+		reloaded, err := config.Load(cfgPath)
+		if err != nil {
+			t.Fatalf("reloading persisted config: %v", err)
+		}
+		if got := reloaded.LLM.OpenAICompatible["selfhosted"].TLSFingerprint; got != tlsPinFixture {
+			t.Errorf("persisted pin = %q, want %q", got, tlsPinFixture)
+		}
+	})
+}
+
+// A brand-new (not yet persisted) provider with no pin must land with an
+// empty pin, never inherit one.
+func TestUpdateLLMConfig_NewProviderWithoutPin(t *testing.T) {
+	f, _ := newPinnedTestAPI(t)
+
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "selfhosted/qwen3",
+		OpenAICompatible: map[string]ProviderConfigRequest{
+			"selfhosted": {BaseURL: "https://llm.lan:8443/v1", Models: []string{"qwen3"}},
+			"brandnew":   {BaseURL: "http://127.0.0.1:1234/v1", Models: []string{"llama"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateLLMConfig: %v", err)
+	}
+	if got := f.config.LLM.OpenAICompatible["brandnew"].TLSFingerprint; got != "" {
+		t.Errorf("new provider pin = %q, want empty", got)
+	}
+}
+
+func TestResolveTLSFingerprint(t *testing.T) {
+	tests := []struct {
+		name      string
+		requested *string
+		persisted string
+		exists    bool
+		want      string
+	}{
+		{"nil keeps persisted", nil, tlsPinFixture, true, tlsPinFixture},
+		{"nil on a new provider yields empty", nil, "", false, ""},
+		{"nil ignores a stale persisted value for a new provider", nil, tlsPinFixture, false, ""},
+		{"explicit empty clears", strPtr(""), tlsPinFixture, true, ""},
+		{"explicit value wins", strPtr("new"), tlsPinFixture, true, "new"},
+		{"explicit value on a new provider", strPtr("new"), "", false, "new"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveTLSFingerprint(tc.requested, tc.persisted, tc.exists); got != tc.want {
+				t.Errorf("resolveTLSFingerprint = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApplyListProviderModelsOverrides_TLSFingerprintSentinel(t *testing.T) {
+	newCfg := func(pin string) *core.BuilderConfig {
+		return &core.BuilderConfig{
+			LLM: core.BuilderLLMConfig{
+				ProviderConfigs: map[string]core.BuilderProviderConfig{
+					"selfhosted": {
+						ProviderType:   "openai",
+						APIKey:         "saved-key",
+						BaseURL:        "https://llm.lan:8443/v1",
+						Models:         []string{"qwen3"},
+						TLSFingerprint: pin,
+					},
+				},
+			},
+			ExpandEnvVars: func(s string) string { return s },
+		}
+	}
+
+	t.Run("nil keeps the saved pin", func(t *testing.T) {
+		cfg := newCfg(tlsPinFixture)
+		if err := applyListProviderModelsOverrides(cfg, ListProviderModelsRequest{Provider: "selfhosted"}); err != nil {
+			t.Fatalf("applyListProviderModelsOverrides: %v", err)
+		}
+		if got := cfg.LLM.ProviderConfigs["selfhosted"].TLSFingerprint; got != tlsPinFixture {
+			t.Errorf("pin = %q, want the saved %q", got, tlsPinFixture)
+		}
+	})
+
+	t.Run("explicit draft empty wins over the saved pin", func(t *testing.T) {
+		cfg := newCfg(tlsPinFixture)
+		req := ListProviderModelsRequest{Provider: "selfhosted", TLSFingerprint: strPtr("")}
+		if err := applyListProviderModelsOverrides(cfg, req); err != nil {
+			t.Fatalf("applyListProviderModelsOverrides: %v", err)
+		}
+		if got := cfg.LLM.ProviderConfigs["selfhosted"].TLSFingerprint; got != "" {
+			t.Errorf("pin = %q, want the draft empty value to win", got)
+		}
+	})
+
+	t.Run("draft pin reaches an unsaved provider", func(t *testing.T) {
+		cfg := newCfg("")
+		req := ListProviderModelsRequest{
+			Provider:       "brandnew",
+			BaseURL:        "https://new.lan:8443/v1",
+			APIKey:         "k",
+			TLSFingerprint: strPtr(tlsPinFixture),
+		}
+		if err := applyListProviderModelsOverrides(cfg, req); err != nil {
+			t.Fatalf("applyListProviderModelsOverrides: %v", err)
+		}
+		if got := cfg.LLM.ProviderConfigs["brandnew"].TLSFingerprint; got != tlsPinFixture {
+			t.Errorf("pin = %q, want the draft %q", got, tlsPinFixture)
+		}
+	})
+}
+
+// --- GetProviderTLSCertificate ---
+
+func TestGetProviderTLSCertificate_ReturnsServerSPKI(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	want := llmtls.SPKIFingerprint(srv.Certificate())
+
+	f, _ := newPinnedTestAPI(t)
+	f.config.LLM.OpenAICompatible["probe"] = config.OpenAICompatibleConfig{
+		BaseURL: srv.URL + "/v1", APIKey: "k", Models: []string{"m"},
+	}
+
+	resp, err := f.GetProviderTLSCertificate(GetProviderTLSCertificateRequest{Provider: "probe"})
+	if err != nil {
+		t.Fatalf("GetProviderTLSCertificate: %v", err)
+	}
+	if resp.Fingerprint != want {
+		t.Errorf("fingerprint = %q, want %q", resp.Fingerprint, want)
+	}
+}
+
+// The "Get" button is unconditional with respect to the configured pin: the
+// result is identical whether the provider is unpinned, correctly pinned, or
+// pinned to a value that does not match the server at all.
+func TestGetProviderTLSCertificate_IndependentOfConfiguredPin(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	want := llmtls.SPKIFingerprint(srv.Certificate())
+
+	for _, pin := range []string{"", tlsPinFixture, want} {
+		f, _ := newPinnedTestAPI(t)
+		f.config.LLM.OpenAICompatible["probe"] = config.OpenAICompatibleConfig{
+			BaseURL: srv.URL + "/v1", APIKey: "k", Models: []string{"m"}, TLSFingerprint: pin,
+		}
+
+		resp, err := f.GetProviderTLSCertificate(GetProviderTLSCertificateRequest{Provider: "probe"})
+		if err != nil {
+			t.Fatalf("configured pin %q: GetProviderTLSCertificate: %v", pin, err)
+		}
+		if resp.Fingerprint != want {
+			t.Errorf("configured pin %q: fingerprint = %q, want %q", pin, resp.Fingerprint, want)
+		}
+	}
+}
+
+// The draft base URL from the settings form wins over the persisted one, so
+// "Get" works on an endpoint the user just typed and has not saved.
+func TestGetProviderTLSCertificate_DraftBaseURLWins(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	want := llmtls.SPKIFingerprint(srv.Certificate())
+
+	f, _ := newPinnedTestAPI(t)
+	// The persisted base URL points nowhere reachable; the draft must win.
+	resp, err := f.GetProviderTLSCertificate(GetProviderTLSCertificateRequest{
+		Provider: "selfhosted",
+		BaseURL:  srv.URL + "/v1",
+	})
+	if err != nil {
+		t.Fatalf("GetProviderTLSCertificate: %v", err)
+	}
+	if resp.Fingerprint != want {
+		t.Errorf("fingerprint = %q, want %q", resp.Fingerprint, want)
+	}
+}
+
+// ${VAR} in a base URL is expanded like on every other dial path; a literal
+// "${...}" would fail url.Parse.
+func TestGetProviderTLSCertificate_ExpandsEnvVars(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	want := llmtls.SPKIFingerprint(srv.Certificate())
+
+	t.Setenv("C0WRK_TEST_LLM_BASE_URL", srv.URL+"/v1")
+
+	f, _ := newPinnedTestAPI(t)
+	f.config.LLM.OpenAICompatible["envprovider"] = config.OpenAICompatibleConfig{
+		BaseURL: "${C0WRK_TEST_LLM_BASE_URL}", APIKey: "k", Models: []string{"m"},
+	}
+
+	resp, err := f.GetProviderTLSCertificate(GetProviderTLSCertificateRequest{Provider: "envprovider"})
+	if err != nil {
+		t.Fatalf("GetProviderTLSCertificate: %v", err)
+	}
+	if resp.Fingerprint != want {
+		t.Errorf("fingerprint = %q, want %q", resp.Fingerprint, want)
+	}
+}
+
+// Proxy wins: the probe dials directly, so a pin fetched while a proxy is
+// active would be inert the moment it is saved. Reject with an actionable
+// message instead, and do not touch the network.
+func TestGetProviderTLSCertificate_RejectedWhileProxyActive(t *testing.T) {
+	var dialed atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		dialed.Add(1)
+	}))
+	defer srv.Close()
+
+	f, _ := newPinnedTestAPI(t)
+	f.config.Proxy.Enabled = true
+	f.config.Proxy.URL = "http://proxy.lan:3128"
+	f.config.LLM.OpenAICompatible["probe"] = config.OpenAICompatibleConfig{
+		BaseURL: srv.URL + "/v1", APIKey: "k", Models: []string{"m"},
+	}
+
+	_, err := f.GetProviderTLSCertificate(GetProviderTLSCertificateRequest{Provider: "probe"})
+	if err == nil {
+		t.Fatal("expected a rejection while an effective proxy is configured")
+	}
+	for _, needle := range []string{"HTTP Proxy", "proxied connections"} {
+		if !strings.Contains(err.Error(), needle) {
+			t.Errorf("error %q should mention %q so the user knows where to look", err.Error(), needle)
+		}
+	}
+	if dialed.Load() != 0 {
+		t.Error("the rejection must happen before any network dial")
+	}
+}
+
+// An enabled-but-empty proxy URL dials directly (the proxy.BuildTransport
+// rule), so the pin stays meaningful and the button keeps working.
+func TestGetProviderTLSCertificate_EnabledButEmptyProxyURLStillWorks(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	want := llmtls.SPKIFingerprint(srv.Certificate())
+
+	f, _ := newPinnedTestAPI(t)
+	f.config.Proxy.Enabled = true
+	f.config.Proxy.URL = ""
+	f.config.LLM.OpenAICompatible["probe"] = config.OpenAICompatibleConfig{
+		BaseURL: srv.URL + "/v1", APIKey: "k", Models: []string{"m"},
+	}
+
+	resp, err := f.GetProviderTLSCertificate(GetProviderTLSCertificateRequest{Provider: "probe"})
+	if err != nil {
+		t.Fatalf("an enabled-but-empty proxy must not block the probe: %v", err)
+	}
+	if resp.Fingerprint != want {
+		t.Errorf("fingerprint = %q, want %q", resp.Fingerprint, want)
+	}
+}
+
+func TestGetProviderTLSCertificate_Errors(t *testing.T) {
+	f, _ := newPinnedTestAPI(t)
+	// A fixed provider has no base_url at all.
+	f.config.LLM.OpenAICompatible["nourl"] = config.OpenAICompatibleConfig{APIKey: "k", Models: []string{"m"}}
+
+	tests := []struct {
+		name string
+		req  GetProviderTLSCertificateRequest
+	}{
+		{"empty provider", GetProviderTLSCertificateRequest{}},
+		{"provider without a base URL", GetProviderTLSCertificateRequest{Provider: "nourl"}},
+		{"fixed provider", GetProviderTLSCertificateRequest{Provider: "anthropic"}},
+		{"unknown provider", GetProviderTLSCertificateRequest{Provider: "nope"}},
+		{"unreachable draft URL", GetProviderTLSCertificateRequest{Provider: "selfhosted", BaseURL: "https://127.0.0.1:1/v1"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := f.GetProviderTLSCertificate(tc.req)
+			if err == nil {
+				t.Fatalf("expected an error, got fingerprint %q", resp.Fingerprint)
+			}
+			if resp.Fingerprint != "" {
+				t.Errorf("fingerprint must be empty on error, got %q", resp.Fingerprint)
+			}
+		})
+	}
+}
+
+// The probe must not hold configMu across its network call.
+//
+// The assertion contends with a WRITER, not a reader: the probe takes a READ
+// lock, and two readers never block each other, so a concurrent GetConfig
+// cannot detect the regression. A writer can — and a parked reader plus one
+// waiting writer is exactly the chain that freezes the settings dialog,
+// because Go's RWMutex blocks every new reader once a writer is queued.
+//
+// The dial below accepts the TCP connection and never completes the
+// handshake, so the probe is parked inside the network call for the duration
+// of the assertion.
+func TestGetProviderTLSCertificate_DoesNotHoldConfigMuAcrossDial(t *testing.T) {
+	handshakeStarted := make(chan struct{})
+	release := make(chan struct{})
+
+	var lc net.ListenConfig
+	listener, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	go func() {
+		conn, aerr := listener.Accept()
+		if aerr != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		// Accept the TCP connection but never complete the TLS handshake,
+		// so FetchFingerprint is parked inside the network call.
+		close(handshakeStarted)
+		<-release
+	}()
+
+	f, _ := newPinnedTestAPI(t)
+	probeDone := make(chan struct{})
+	go func() {
+		defer close(probeDone)
+		_, _ = f.GetProviderTLSCertificate(GetProviderTLSCertificateRequest{
+			Provider: "selfhosted",
+			BaseURL:  "https://" + listener.Addr().String() + "/v1",
+		})
+	}()
+
+	select {
+	case <-handshakeStarted:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("the probe never reached the network")
+	}
+
+	// configMu must be fully free while the handshake is parked: a writer
+	// has to be able to take it. A held read lock would block this.
+	writeDone := make(chan struct{})
+	go func() {
+		defer close(writeDone)
+		f.configMu.Lock()
+		f.config.LLM.DefaultModel = "written-under-lock"
+		f.configMu.Unlock()
+	}()
+	select {
+	case <-writeDone:
+	case <-time.After(3 * time.Second):
+		close(release)
+		t.Fatal("a concurrent config write blocked: configMu is held across the TLS dial")
+	}
+
+	// And with no writer queued, readers stay responsive too.
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		f.configMu.RLock()
+		_ = f.config.LLM.DefaultModel
+		f.configMu.RUnlock()
+	}()
+	select {
+	case <-readDone:
+	case <-time.After(3 * time.Second):
+		close(release)
+		t.Fatal("a concurrent config read blocked")
+	}
+
+	close(release)
+	select {
+	case <-probeDone:
+	case <-time.After(llmtls.FetchFingerprintTimeout + 3*time.Second):
+		t.Fatal("the probe did not return")
+	}
+}
+
+// --- UpdateProxySettings locking ---
+
+// TestUpdateProxySettings_ReadersNotBlockedDuringRebuild verifies that
+// GetConfig completes while UpdateProxySettings is inside its propagation
+// phase. That phase (RebuildProxy) restarts the MCP gateway and rebuilds the
+// router and judge, each waiting on builder readiness with its own
+// 30-second budget; the whole update used to hold configMu.Lock across it,
+// convoying every reader — the settings dialog froze for as long as the
+// rebuild took. Mirrors TestUpdateLLMConfig_ReadersNotBlockedDuringRebuild.
+func TestUpdateProxySettings_ReadersNotBlockedDuringRebuild(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+
+	rebuildStarted := make(chan struct{})
+	release := make(chan struct{})
+	mock.rebuildProxyHook = func(*core.BuilderConfig) {
+		select {
+		case <-rebuildStarted:
+		default:
+			close(rebuildStarted)
+		}
+		<-release // hold the propagation phase open
+	}
+
+	updateDone := make(chan error, 1)
+	go func() {
+		updateDone <- f.UpdateProxySettings(ProxySettingsRequest{
+			Enabled: true,
+			URL:     "http://proxy.lan:3128",
+		})
+	}()
+
+	select {
+	case <-rebuildStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("proxy rebuild phase never started")
+	}
+
+	// A reader must return promptly and observe the already-applied mutation.
+	readerDone := make(chan ConfigResponse, 1)
+	go func() { readerDone <- f.GetConfig() }()
+
+	select {
+	case resp := <-readerDone:
+		if !resp.Proxy.Enabled {
+			t.Error("GetConfig did not observe the applied proxy mutation")
+		}
+	case <-time.After(3 * time.Second):
+		close(release)
+		t.Fatal("GetConfig blocked while UpdateProxySettings was in its rebuild phase — configMu lock convoy present")
+	}
+
+	// A WRITER must get in too. This is the assertion that actually catches
+	// the regression: two readers never block each other, but a queued writer
+	// also stops every subsequent reader, which is what froze the dialog.
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		f.configMu.Lock()
+		f.configLoadErrors = nil
+		f.configMu.Unlock()
+	}()
+	select {
+	case <-writerDone:
+	case <-time.After(3 * time.Second):
+		close(release)
+		t.Fatal("a config writer blocked while UpdateProxySettings was in its rebuild phase")
+	}
+
+	close(release)
+	select {
+	case err := <-updateDone:
+		if err != nil {
+			t.Fatalf("UpdateProxySettings: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("UpdateProxySettings did not return")
+	}
+	if got := mock.RebuildProxyCalls(); got != 1 {
+		t.Errorf("RebuildProxy called %d times, want 1", got)
+	}
+}
+
+// saveMu serializes whole save sequences, so two concurrent proxy saves
+// apply strictly one after the other: the second must not enter its
+// propagation phase while the first is still inside it. Without saveMu the
+// hook below would observe overlapping calls.
+func TestUpdateProxySettings_ConcurrentSavesSerialized(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+
+	var inFlight atomic.Int32
+	var maxInFlight atomic.Int32
+	firstEntered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+
+	mock.rebuildProxyHook = func(*core.BuilderConfig) {
+		cur := inFlight.Add(1)
+		for {
+			prev := maxInFlight.Load()
+			if cur <= prev || maxInFlight.CompareAndSwap(prev, cur) {
+				break
+			}
+		}
+		once.Do(func() {
+			close(firstEntered)
+			<-release // only the first call holds the phase open
+		})
+		inFlight.Add(-1)
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = f.UpdateProxySettings(ProxySettingsRequest{
+				Enabled: true,
+				URL:     "http://proxy.lan:3128",
+			})
+		}()
+	}
+
+	select {
+	case <-firstEntered:
+	case <-time.After(10 * time.Second):
+		close(release)
+		wg.Wait()
+		t.Fatal("no proxy rebuild started")
+	}
+	// Give the second call a chance to (incorrectly) overlap.
+	time.Sleep(200 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("save %d: %v", i, err)
+		}
+	}
+	if got := maxInFlight.Load(); got != 1 {
+		t.Errorf("max concurrent RebuildProxy calls = %d, want 1 (saveMu must serialize save sequences)", got)
+	}
+	if got := mock.RebuildProxyCalls(); got != 2 {
+		t.Errorf("RebuildProxy called %d times, want 2", got)
+	}
+}
+
+// The persisted file and the in-memory config must agree after the update,
+// and the rebuild must receive the NEW proxy settings (the snapshot is taken
+// after the mutation, while the lock is still held).
+func TestUpdateProxySettings_PersistsAndPropagatesNewSettings(t *testing.T) {
+	f, mock, cfgPath := newTestAPI(t)
+
+	var seenEnabled bool
+	var seenURL string
+	mock.rebuildProxyHook = func(cfg *core.BuilderConfig) {
+		seenEnabled = cfg.Proxy.Enabled
+		seenURL = cfg.Proxy.URL
+	}
+
+	err := f.UpdateProxySettings(ProxySettingsRequest{
+		Enabled:    true,
+		URL:        "http://proxy.lan:3128",
+		BypassList: []string{"localhost"},
+		TLSCertDir: "/etc/ssl/corp",
+	})
+	if err != nil {
+		t.Fatalf("UpdateProxySettings: %v", err)
+	}
+
+	if !seenEnabled || seenURL != "http://proxy.lan:3128" {
+		t.Errorf("rebuild saw enabled=%v url=%q, want the new settings", seenEnabled, seenURL)
+	}
+	reloaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("reloading persisted config: %v", err)
+	}
+	if !reloaded.Proxy.Enabled || reloaded.Proxy.URL != "http://proxy.lan:3128" {
+		t.Errorf("persisted proxy = %+v, want the new settings", reloaded.Proxy)
+	}
+	if reloaded.Proxy.TLSCertDir != "/etc/ssl/corp" {
+		t.Errorf("persisted tls_cert_dir = %q, want /etc/ssl/corp", reloaded.Proxy.TLSCertDir)
+	}
+}
+
+// A rebuild failure still surfaces to the caller after the lock split.
+func TestUpdateProxySettings_RebuildErrorSurfaces(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+	mock.rebuildProxyErr = errors.New("boom")
+
+	err := f.UpdateProxySettings(ProxySettingsRequest{Enabled: true, URL: "http://proxy.lan:3128"})
+	if err == nil {
+		t.Fatal("expected the rebuild error to surface")
+	}
+	if !strings.Contains(err.Error(), "proxy rebuild failed") {
+		t.Errorf("error = %v, want it to mention the proxy rebuild", err)
+	}
+	// The mutation is still applied and persisted: only propagation failed.
+	f.configMu.RLock()
+	enabled := f.config.Proxy.Enabled
+	f.configMu.RUnlock()
+	if !enabled {
+		t.Error("the proxy mutation must remain applied when only the rebuild failed")
 	}
 }

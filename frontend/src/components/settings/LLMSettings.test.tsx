@@ -21,6 +21,7 @@ vi.mock('@/lib/logger', () => ({
 
 import { LLMSettings } from './LLMSettings'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { useProxyDraftStore } from '@/stores/proxyDraftStore'
 
 let container: HTMLDivElement
 let root: Root
@@ -217,5 +218,146 @@ describe('LLMSettings section order', () => {
 
     const form = container.querySelector('h4')
     expect(form?.textContent).toBe('New compatible provider')
+  })
+})
+
+// --- Per-provider TLS pin gate (ADR-052) ---
+
+describe('LLMSettings TLS pin proxy gate', () => {
+  const pin = 'k3J9vQ1Z0mF7hD2xS8pL4wR6tY5uI3oP1aE9cX0bN7g='
+
+  beforeEach(() => {
+    useProxyDraftStore.setState({ active: null })
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      proxy: { enabled: false, url: '', bypass_list: [], tls_cert_dir: '' },
+      llm: {
+        default_model: 'lmstudio/glm-5.3',
+        anthropic: { api_key: 'sk', models: [] },
+        openai_compatible: {
+          lmstudio: {
+            api_key: 'k',
+            base_url: 'http://localhost:1234',
+            models: ['glm-5.3'],
+            tls_fingerprint: pin,
+          },
+        },
+      },
+    })
+  })
+
+  async function renderSettings() {
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <LLMSettings />
+        </TooltipProvider>,
+      )
+    })
+    await flush()
+  }
+
+  /** Expand the compatible provider's accordion so its form is mounted. */
+  async function expandProvider() {
+    const header = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('lmstudio'),
+    )
+    expect(header).toBeDefined()
+    await act(async () => {
+      header!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+  }
+
+  function fingerprintInput(): HTMLInputElement | null {
+    return container.querySelector('input[placeholder*="SPKI DER"]')
+  }
+
+  function getButton(): HTMLButtonElement | null {
+    const buttons = Array.from(container.querySelectorAll('button'))
+    return (buttons.find((b) => b.textContent?.trim() === 'Get') as HTMLButtonElement) ?? null
+  }
+
+  it('shows an enabled pin section when no proxy is configured', async () => {
+    await renderSettings()
+    await expandProvider()
+
+    expect(fingerprintInput()).not.toBeNull()
+    expect(fingerprintInput()?.value).toBe(pin)
+    expect(fingerprintInput()?.disabled).toBe(false)
+    expect(getButton()?.disabled).toBe(false)
+  })
+
+  // The whole point of the draft store: the General tab toggles the proxy and
+  // an ALREADY-MOUNTED LLM tab must react, with no dialog reload and no extra
+  // config read (a re-read would be stale behind the 800 ms debounce, and
+  // would contend with the proxy rebuild).
+  it('disables the pin section when the proxy is toggled on elsewhere, without re-reading the config', async () => {
+    await renderSettings()
+    await expandProvider()
+    expect(fingerprintInput()?.disabled).toBe(false)
+    const readsBefore = mocks.getConfig.mock.calls.length
+
+    await act(async () => {
+      useProxyDraftStore.getState().setActive(true)
+    })
+    await flush()
+
+    expect(fingerprintInput()?.disabled).toBe(true)
+    expect(getButton()?.disabled).toBe(true)
+    expect(container.textContent).toContain('HTTP Proxy')
+    expect(mocks.getConfig.mock.calls.length).toBe(readsBefore)
+  })
+
+  it('re-enables the pin section when the proxy is turned back off', async () => {
+    await renderSettings()
+    await expandProvider()
+
+    await act(async () => { useProxyDraftStore.getState().setActive(true) })
+    await flush()
+    expect(fingerprintInput()?.disabled).toBe(true)
+
+    await act(async () => { useProxyDraftStore.getState().setActive(false) })
+    await flush()
+    expect(fingerprintInput()?.disabled).toBe(false)
+    // The persisted pin was preserved throughout and re-arms.
+    expect(fingerprintInput()?.value).toBe(pin)
+  })
+
+  it('starts disabled when the loaded config already has an effective proxy', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      proxy: { enabled: true, url: 'http://proxy.lan:3128', bypass_list: [], tls_cert_dir: '' },
+      llm: {
+        default_model: 'lmstudio/glm-5.3',
+        anthropic: { api_key: 'sk', models: [] },
+        openai_compatible: {
+          lmstudio: { api_key: 'k', base_url: 'http://localhost:1234', models: ['glm-5.3'], tls_fingerprint: pin },
+        },
+      },
+    })
+
+    await renderSettings()
+    await expandProvider()
+
+    expect(fingerprintInput()?.disabled).toBe(true)
+    expect(getButton()?.disabled).toBe(true)
+  })
+
+  it('shows no pin section for the fixed anthropic provider', async () => {
+    await renderSettings()
+    const header = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Anthropic') && !b.textContent?.includes('Compatible'),
+    )
+    expect(header).toBeDefined()
+    await act(async () => {
+      header!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    // Only the compatible provider's section can exist; the fixed one has no
+    // base_url and talks to a vendor endpoint with a public certificate.
+    const inputs = container.querySelectorAll('input[placeholder*="SPKI DER"]')
+    expect(inputs).toHaveLength(0)
   })
 })

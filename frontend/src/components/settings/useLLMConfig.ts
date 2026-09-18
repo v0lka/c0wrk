@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { getConfig } from '@/api/config'
 import { logger } from '@/lib/logger'
+import { useProxyDraftStore, selectProxyActive, isProxyEffective } from '@/stores/proxyDraftStore'
 import { FIXED_PROVIDERS, type CompatibleType } from '@/lib/llm-providers'
 import { compositeModelId, isCompositeModelId, decomposeCompositeModelId } from '@/lib/modelId'
 import type { ConfigProviderFull } from '@/types/models'
@@ -17,10 +18,13 @@ export interface ProviderConfig {
      * (openai_compatible vs anthropic_compatible) they are saved under.
      */
     type?: CompatibleType
+    /** Per-provider TLS pin (ADR-052): '' = standard CA verification
+     *  (override off), non-empty = only the pinned key is accepted. */
+    tls_fingerprint: string
 }
 
 const defaultProviderConfigs: Record<string, ProviderConfig> = Object.fromEntries(
-    FIXED_PROVIDERS.map((p) => [p, { api_key: '', base_url: '', models: [] }]),
+    FIXED_PROVIDERS.map((p) => [p, { api_key: '', base_url: '', models: [], tls_fingerprint: '' }]),
 )
 
 interface UseLLMConfigResult {
@@ -30,6 +34,12 @@ interface UseLLMConfigResult {
     openaiCompatibleProviderNames: Set<string>
     /** Names of providers loaded from the anthropic_compatible map. */
     anthropicCompatibleProviderNames: Set<string>
+    /** Effective proxy state (enabled AND a URL set), mirroring the Go-side
+     *  proxy.BuildTransport rule. The per-provider TLS pin is inert while
+     *  this is true (proxy wins, ADR-052), so the pin UI is disabled. Read
+     *  from proxyDraftStore, which the General tab updates synchronously —
+     *  see that store for why a config re-read cannot serve this. */
+    proxyActive: boolean
     isLoading: boolean
     setDefaultModel: (model: string) => void
     updateProviderConfig: (provider: string, updates: Partial<ProviderConfig>) => void
@@ -44,6 +54,7 @@ function toProviderConfig(p: ConfigProviderFull, type?: CompatibleType): Provide
         base_url: p.base_url ?? '',
         models: Array.isArray(p.models) ? [...p.models] : [],
         type,
+        tls_fingerprint: p.tls_fingerprint ?? '',
     }
 }
 
@@ -110,6 +121,13 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
     const [anthropicCompatibleProviderNames, setAnthropicCompatibleProviderNames] = useState<Set<string>>(new Set())
     const [isLoading, setIsLoading] = useState(true)
 
+    // The pin UI gate. proxyDraftStore is authoritative because the General
+    // tab writes it synchronously on every edit; loadConfig only SEEDS it
+    // (a no-op once known) for the case where the LLM tab is opened first
+    // and the General tab never mounted.
+    const proxyActive = useProxyDraftStore(selectProxyActive)
+    const seedProxyActive = useProxyDraftStore((s) => s.seedActive)
+
     // Mutable ref for providerConfigs so setDefaultModel stays stable (fix #5).
     const configsRef = useRef(providerConfigs)
     configsRef.current = providerConfigs
@@ -162,6 +180,10 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
     const loadConfig = useCallback(async () => {
         try {
             const result = await getConfig()
+            // Seed the pin UI gate from the same payload the provider
+            // configs come from. seedActive never overwrites a value the
+            // General tab already published, so a draft toggle wins.
+            seedProxyActive(isProxyEffective(result?.proxy))
             const llm = result?.llm
             if (llm) {
                 const rawDefault = llm.default_model || ''
@@ -222,7 +244,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         } finally {
             setIsLoading(false)
         }
-    }, [])
+    }, [seedProxyActive])
 
     useEffect(() => { loadConfig() }, [loadConfig])
 
@@ -341,6 +363,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         providerConfigs,
         openaiCompatibleProviderNames,
         anthropicCompatibleProviderNames,
+        proxyActive,
         isLoading,
         setDefaultModel,
         updateProviderConfig,

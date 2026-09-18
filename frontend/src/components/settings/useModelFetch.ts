@@ -51,11 +51,22 @@ export function useModelFetch(activeProvider: string, providerConfigs: Record<st
             // Pass draft credentials so an unsaved compatible provider
             // (first-run / no default_model yet) can still list models —
             // ListProviderModels only sees persisted config otherwise.
+            // The draft TLS pin (ADR-052) rides along so Fetch Models
+            // reaches self-signed endpoints before the first save. Sent
+            // verbatim — an explicit draft '' must win over the persisted
+            // value (the backend treats an omitted field as "keep").
+            //
+            // Deliberately NOT part of credentialKey above: keying the reset
+            // effect on the pin would clear an already-fetched model list on
+            // every keystroke in the fingerprint field. A failed fetch leaves
+            // apiKeyDirty true (it is only cleared on success), so adding a
+            // pin and retrying works without that reset.
             const list = await listProviderModels({
                 provider: activeProvider,
                 api_key: config.api_key,
                 base_url: config.base_url || undefined,
                 type: config.type,
+                tls_fingerprint: config.tls_fingerprint,
             })
             if (myId !== fetchIdRef.current) return
             setModels(list || [])

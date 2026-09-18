@@ -3,7 +3,7 @@
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
 import { isConfigResponse, isSecuritySettingsResponse, isModelProfilesResponse } from '@/types/guards'
-import type { ConfigResponse, SecuritySettingsResponse, LLMFullConfigRequest, SearchSettingsRequest, ProxySettingsRequest, ModelConfigResponse, ModelConfigRequest, ModelProfilesResponse, ModelProfileUpdateRequest, VectorIndexSettingsResponse } from '@/types/models'
+import type { ConfigResponse, SecuritySettingsResponse, LLMFullConfigRequest, SearchSettingsRequest, ProxySettingsRequest, ModelConfigResponse, ModelConfigRequest, ModelProfilesResponse, ModelProfileUpdateRequest, VectorIndexSettingsResponse, GetProviderTLSCertificateRequest, TLSCertificateResponse } from '@/types/models'
 
 /** Sentinel value returned by backend when an API key is configured but should not be displayed */
 export const MASKED_API_KEY = '***configured***'
@@ -71,6 +71,34 @@ export async function updateLLMConfig(req: LLMFullConfigRequest): Promise<void> 
     await app.UpdateLLMConfig(req)
   } catch (err) {
     logger.error('Failed to update LLM config:', err)
+    throw err
+  }
+}
+
+/**
+ * Fetch the certificate fingerprint the provider's endpoint currently
+ * presents (the settings "Get" button, ADR-052). Performs only the TLS
+ * handshake — no HTTP request, no API key.
+ *
+ * Unconditional with respect to any configured pin: the request carries no
+ * fingerprint and the answer is always "what is this endpoint serving right
+ * now?". The draft base_url wins over the persisted one.
+ *
+ * Rejects while an effective HTTP proxy is enabled: the probe dials directly,
+ * so a pin fetched then would be inert (proxy wins).
+ */
+export async function getProviderTLSCertificate(
+  req: GetProviderTLSCertificateRequest,
+): Promise<TLSCertificateResponse> {
+  try {
+    const app = getApp()
+    const result = await app.GetProviderTLSCertificate(req)
+    if (!result || typeof result.fingerprint !== 'string') {
+      throw new Error('getProviderTLSCertificate: backend returned invalid data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to fetch provider TLS certificate:', err)
     throw err
   }
 }

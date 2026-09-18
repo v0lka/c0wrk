@@ -3825,3 +3825,182 @@ func TestRuntimeConfig_MemorySoftLimit_RoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// The per-provider TLS pin (ADR-052) must survive the whole config path:
+// YAML load → canonical provider list → resolver. Fixed providers have no
+// such key — they talk to vendor endpoints with public certificates.
+func TestTLSFingerprint_LoadAndProviderList(t *testing.T) {
+	const openaiPin = "k3J9vQ1Z0mF7hD2xS8pL4wR6tY5uI3oP1aE9cX0bN7g="
+	const anthropicPin = "Zm9vYmFyYmF6cXV1eDEyMzQ1Njc4OWFiY2RlZmdoaT0="
+
+	content := `
+llm:
+  default_model: qwen3
+  openai_compatible:
+    selfhosted:
+      base_url: "https://llm.lan:8443/v1"
+      api_key: "k"
+      models:
+        - qwen3
+      tls_fingerprint: "` + openaiPin + `"
+    plain:
+      base_url: "http://127.0.0.1:1234/v1"
+      api_key: "k"
+      models:
+        - llama
+  anthropic_compatible:
+    gateway:
+      base_url: "https://claude.lan:8443"
+      api_key: "k"
+      models:
+        - claude-sonnet-4-20250514
+      tls_fingerprint: "` + anthropicPin + `"
+`
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if got := cfg.LLM.OpenAICompatible["selfhosted"].TLSFingerprint; got != openaiPin {
+		t.Errorf("openai_compatible pin = %q, want %q", got, openaiPin)
+	}
+	if got := cfg.LLM.AnthropicCompatible["gateway"].TLSFingerprint; got != anthropicPin {
+		t.Errorf("anthropic_compatible pin = %q, want %q", got, anthropicPin)
+	}
+
+	pins := make(map[string]string)
+	for _, p := range cfg.LLM.GetAllProviderConfigs() {
+		pins[p.Name] = p.TLSFingerprint
+	}
+	want := map[string]string{
+		"selfhosted": openaiPin,
+		"gateway":    anthropicPin,
+		"plain":      "",
+		"anthropic":  "",
+		"chatgpt":    "",
+	}
+	for name, wantPin := range want {
+		got, ok := pins[name]
+		if !ok {
+			t.Errorf("provider %q missing from GetAllProviderConfigs", name)
+			continue
+		}
+		if got != wantPin {
+			t.Errorf("GetAllProviderConfigs[%q].TLSFingerprint = %q, want %q", name, got, wantPin)
+		}
+	}
+}
+
+// Both ResolveDefaultModelProvider branches — composite "provider/model" and
+// a bare model name — must carry the pin. A branch that drops it would dial
+// a pinned provider unpinned.
+func TestResolveDefaultModelProvider_CarriesTLSFingerprint(t *testing.T) {
+	const pin = "k3J9vQ1Z0mF7hD2xS8pL4wR6tY5uI3oP1aE9cX0bN7g="
+
+	newCfg := func(defaultModel string) *LLMConfig {
+		return &LLMConfig{
+			DefaultModel: defaultModel,
+			OpenAICompatible: map[string]OpenAICompatibleConfig{
+				"selfhosted": {
+					BaseURL:        "https://llm.lan:8443/v1",
+					Models:         []string{"qwen3"},
+					TLSFingerprint: pin,
+				},
+			},
+		}
+	}
+
+	t.Run("composite identifier", func(t *testing.T) {
+		p, model, err := newCfg("selfhosted/qwen3").ResolveDefaultModelProvider()
+		if err != nil {
+			t.Fatalf("ResolveDefaultModelProvider: %v", err)
+		}
+		if model != "qwen3" {
+			t.Errorf("model = %q, want qwen3", model)
+		}
+		if p.TLSFingerprint != pin {
+			t.Errorf("TLSFingerprint = %q, want %q", p.TLSFingerprint, pin)
+		}
+	})
+
+	t.Run("bare identifier", func(t *testing.T) {
+		p, model, err := newCfg("qwen3").ResolveDefaultModelProvider()
+		if err != nil {
+			t.Fatalf("ResolveDefaultModelProvider: %v", err)
+		}
+		if model != "qwen3" {
+			t.Errorf("model = %q, want qwen3", model)
+		}
+		if p.TLSFingerprint != pin {
+			t.Errorf("TLSFingerprint = %q, want %q", p.TLSFingerprint, pin)
+		}
+	})
+
+	t.Run("provider without a pin resolves empty", func(t *testing.T) {
+		cfg := &LLMConfig{
+			DefaultModel: "llama",
+			OpenAICompatible: map[string]OpenAICompatibleConfig{
+				"plain": {BaseURL: "http://127.0.0.1:1234/v1", Models: []string{"llama"}},
+			},
+		}
+		p, _, err := cfg.ResolveDefaultModelProvider()
+		if err != nil {
+			t.Fatalf("ResolveDefaultModelProvider: %v", err)
+		}
+		if p.TLSFingerprint != "" {
+			t.Errorf("TLSFingerprint = %q, want empty", p.TLSFingerprint)
+		}
+	})
+}
+
+// A pin must round-trip through Save→Load unchanged, and a provider without
+// a pin must not gain an empty tls_fingerprint key in the written YAML
+// (the field is omitempty).
+func TestTLSFingerprint_SaveRoundTripAndOmitEmpty(t *testing.T) {
+	const pin = "k3J9vQ1Z0mF7hD2xS8pL4wR6tY5uI3oP1aE9cX0bN7g="
+
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+	cfg.LLM.DefaultModel = "qwen3"
+	cfg.LLM.OpenAICompatible = map[string]OpenAICompatibleConfig{
+		"selfhosted": {BaseURL: "https://llm.lan:8443/v1", APIKey: "k", Models: []string{"qwen3"}, TLSFingerprint: pin},
+		"plain":      {BaseURL: "http://127.0.0.1:1234/v1", APIKey: "k", Models: []string{"llama"}},
+	}
+	cfg.LLM.AnthropicCompatible = map[string]AnthropicCompatibleConfig{
+		"gateway": {BaseURL: "https://claude.lan:8443", APIKey: "k", Models: []string{"claude-sonnet-4-20250514"}, TLSFingerprint: pin},
+	}
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading saved config: %v", err)
+	}
+	// Exactly two tls_fingerprint keys must appear: the two pinned
+	// providers. A third would mean omitempty is not doing its job.
+	if got := strings.Count(string(raw), "tls_fingerprint"); got != 2 {
+		t.Errorf("saved YAML has %d tls_fingerprint keys, want 2 (omitempty must drop the unpinned provider)\n%s", got, raw)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := loaded.LLM.OpenAICompatible["selfhosted"].TLSFingerprint; got != pin {
+		t.Errorf("round-tripped openai pin = %q, want %q", got, pin)
+	}
+	if got := loaded.LLM.AnthropicCompatible["gateway"].TLSFingerprint; got != pin {
+		t.Errorf("round-tripped anthropic pin = %q, want %q", got, pin)
+	}
+	if got := loaded.LLM.OpenAICompatible["plain"].TLSFingerprint; got != "" {
+		t.Errorf("unpinned provider round-tripped with pin %q, want empty", got)
+	}
+}

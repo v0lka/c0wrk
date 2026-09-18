@@ -169,6 +169,8 @@ export function GetProjectSwitchState(arg1:string):Promise<backend.ProjectUIStat
 
 export function GetProjectUIState(arg1:string):Promise<backend.ProjectUIStateResponse>;
 
+export function GetProviderTLSCertificate(arg1:backend.GetProviderTLSCertificateRequest):Promise<backend.TLSCertificateResponse>;
+
 export function GetRebaseMergeState():Promise<workspace.MergeRebaseState>;
 
 export function GetResearchGraph(arg1:string):Promise<backend.ResearchGraphDTO>;
