@@ -1416,20 +1416,6 @@ export namespace backend {
 		    return a;
 		}
 	}
-	export class ReviewPromptMessage {
-	    prompt_id: string;
-	    content: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new ReviewPromptMessage(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.prompt_id = source["prompt_id"];
-	        this.content = source["content"];
-	    }
-	}
 	export class SearchRequest {
 	    query: string;
 	    top_k: number;
@@ -1480,7 +1466,6 @@ export namespace backend {
 	    tool_confirm: SilentSubPolicyResponse;
 	    step_limit: SilentSubPolicyResponse;
 	    ask_user: SilentSubPolicyResponse;
-	    review_prompt: SilentSubPolicyResponse;
 	
 	    static createFrom(source: any = {}) {
 	        return new SilentModeResponse(source);
@@ -1491,7 +1476,6 @@ export namespace backend {
 	        this.tool_confirm = this.convertValues(source["tool_confirm"], SilentSubPolicyResponse);
 	        this.step_limit = this.convertValues(source["step_limit"], SilentSubPolicyResponse);
 	        this.ask_user = this.convertValues(source["ask_user"], SilentSubPolicyResponse);
-	        this.review_prompt = this.convertValues(source["review_prompt"], SilentSubPolicyResponse);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -43,7 +43,6 @@ interface ReviewActions {
   enterReviewLoop: (sessionId: string) => void
   exitReviewLoop: (sessionId: string) => void
   clearSessionReview: (sessionId: string) => void
-  resetLoopFlags: (sessionId: string) => void
   setDiffViewMode: (mode: 'unified' | 'split') => void
 }
 
@@ -166,13 +165,6 @@ export const useReviewStore = create<ReviewState & ReviewActions>()(
           const next = { ...s.bySession }
           delete next[sessionId]
           return { bySession: next }
-        }),
-
-      resetLoopFlags: (sessionId) =>
-        set((s) => {
-          const loops = { ...s.reviewLoopActive }
-          delete loops[sessionId]
-          return { reviewLoopActive: loops }
         }),
 
       setDiffViewMode: (mode) => set({ diffViewMode: mode }),

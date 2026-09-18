@@ -317,8 +317,6 @@ export function SaveReviewGeneralComment(arg1:string,arg2:string):Promise<void>;
 
 export function SaveReviewHunkComment(arg1:string,arg2:string,arg3:string,arg4:string):Promise<string>;
 
-export function SaveReviewPrompt(arg1:string):Promise<backend.ReviewPromptMessage>;
-
 export function SearchBlackboardStepOutputs(arg1:string,arg2:string):Promise<Array<string>>;
 
 export function SearchVectorStore(arg1:backend.SearchRequest):Promise<Array<backend.VectorStoreEntry>>;
