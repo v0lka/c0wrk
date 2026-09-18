@@ -1,5 +1,5 @@
 import { useState, type KeyboardEvent } from 'react'
-import { Plus, RotateCcw, X } from 'lucide-react'
+import { Plus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Combobox } from '@/components/ui/combobox'
@@ -9,27 +9,24 @@ import { EXECUTE_GROUP, GROUP_META, POLICY_OPTIONS } from '@/lib/securityGroups'
 interface SecurityGroupCardProps {
   group: string
   policy: GroupPolicy
-  blacklist: string[]
-  /** Shipped default patterns for the execute blacklist (reset affordance). */
-  blacklistDefaults?: string[]
+  blocklist: string[]
   tools: ToolInfo[]
   onPolicyChange: (group: string, policy: GroupPolicy) => void
-  onBlacklistChange: (group: string, blacklist: string[]) => void
+  onBlocklistChange: (group: string, blocklist: string[]) => void
 }
 
 /**
  * One configurable security group: policy dropdown, the read-only tool list
  * mapped into the group (policies are group-level — tools are display-only),
- * and, for the execute group, the command-blacklist editor.
+ * and, for the execute group, the command-blocklist editor.
  */
 export function SecurityGroupCard({
   group,
   policy,
-  blacklist,
-  blacklistDefaults,
+  blocklist,
   tools,
   onPolicyChange,
-  onBlacklistChange,
+  onBlocklistChange,
 }: SecurityGroupCardProps) {
   const meta = GROUP_META[group] ?? { title: group, description: '' }
   const sorted = [...tools].sort((a, b) => a.name.localeCompare(b.name))
@@ -69,25 +66,22 @@ export function SecurityGroupCard({
       )}
 
       {group === EXECUTE_GROUP && (
-        <BlacklistEditor
-          blacklist={blacklist}
-          defaults={blacklistDefaults}
-          onChange={(bl) => onBlacklistChange(group, bl)}
+        <BlocklistEditor
+          blocklist={blocklist}
+          onChange={(bl) => onBlocklistChange(group, bl)}
         />
       )}
     </div>
   )
 }
 
-interface BlacklistEditorProps {
-  blacklist: string[]
-  /** Shipped default patterns; when provided, a reset affordance is shown. */
-  defaults?: string[]
-  onChange: (blacklist: string[]) => void
+interface BlocklistEditorProps {
+  blocklist: string[]
+  onChange: (blocklist: string[]) => void
 }
 
-/** Regex-pattern editor for the execute group's command blacklist. */
-function BlacklistEditor({ blacklist, defaults, onChange }: BlacklistEditorProps) {
+/** Regex-pattern editor for the execute group's command blocklist. */
+function BlocklistEditor({ blocklist, onChange }: BlocklistEditorProps) {
   const [newPattern, setNewPattern] = useState('')
   const [patternError, setPatternError] = useState<string | null>(null)
 
@@ -96,17 +90,7 @@ function BlacklistEditor({ blacklist, defaults, onChange }: BlacklistEditorProps
   // keys and the add-path duplicate check sees the same set the user does.
   // Adding appends to the deduped list, and removing filters every instance
   // of a pattern, so the next save persists a self-healed list.
-  const unique = Array.from(new Set(blacklist))
-
-  // The reset control is inert while the edited list already equals the
-  // shipped defaults. The comparison is order-sensitive, mirroring the
-  // backend's store-as-unset check (slices.Equal): a reordered-but-equal
-  // set is still a save-worthy state, and only the exact default list is
-  // stored as unset on save.
-  const matchesDefaults =
-    defaults !== undefined &&
-    unique.length === defaults.length &&
-    unique.every((p, i) => p === defaults[i])
+  const unique = Array.from(new Set(blocklist))
 
   const addPattern = () => {
     const pattern = newPattern.trim()
@@ -139,7 +123,7 @@ function BlacklistEditor({ blacklist, defaults, onChange }: BlacklistEditorProps
     setNewPattern('')
   }
 
-  const removePattern = (pattern: string) => onChange(blacklist.filter((p) => p !== pattern))
+  const removePattern = (pattern: string) => onChange(blocklist.filter((p) => p !== pattern))
 
   const handleKey = (e: KeyboardEvent) => {
     if (e.key === 'Enter') {
@@ -150,24 +134,9 @@ function BlacklistEditor({ blacklist, defaults, onChange }: BlacklistEditorProps
 
   return (
     <div className="mt-1 flex flex-col gap-2">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <p className="text-xs text-muted-foreground">
-          Blacklist patterns (regex) — a matching shell command is forced to user confirmation:
-        </p>
-        {defaults && defaults.length > 0 && (
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={matchesDefaults}
-            title="Replace the list with the app's shipped default patterns. Saving them stores the config as unset, so future default updates keep flowing."
-            className="h-6 px-2 text-xs gap-1"
-            onClick={() => onChange([...defaults])}
-          >
-            <RotateCcw className="h-3 w-3" />
-            Restore defaults
-          </Button>
-        )}
-      </div>
+      <p className="text-xs text-muted-foreground">
+        Blocklist patterns (regex) — a matching shell command is forced to user confirmation:
+      </p>
       {unique.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {unique.map((p) => (
@@ -189,7 +158,7 @@ function BlacklistEditor({ blacklist, defaults, onChange }: BlacklistEditorProps
       <div className="flex gap-2">
         <Input
           placeholder="e.g., rm\\s+-rf"
-          aria-label="New blacklist pattern"
+          aria-label="New blocklist pattern"
           value={newPattern}
           onChange={(e) => {
             setNewPattern(e.target.value)
@@ -205,7 +174,7 @@ function BlacklistEditor({ blacklist, defaults, onChange }: BlacklistEditorProps
           className="h-8"
           onClick={addPattern}
           disabled={!newPattern.trim()}
-          aria-label="Add blacklist pattern"
+          aria-label="Add blocklist pattern"
         >
           <Plus className="h-3 w-3" />
         </Button>

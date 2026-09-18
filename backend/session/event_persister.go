@@ -187,6 +187,12 @@ func (p *EventPersister) Persist(evt Event) {
 		role = "ask_user"
 	case "step_limit":
 		role = "step_limit"
+	case EventAutonomyDecision:
+		// Automatic (no-human) security decisions are persisted so the audit
+		// trail survives a reload — the trajectory must stay reconstructable
+		// (OWASP ASI10). Unlike tool_judge_started/finished (transient activity
+		// telemetry), this row is durable: it records WHAT was auto-decided.
+		role = EventAutonomyDecision
 	case "task_cancelled":
 		role = "task_cancelled"
 	case "step_retry":

@@ -2363,7 +2363,7 @@ func (o *Orchestrator) emitInitialContextFill() {
 // rewrite): code-flavored CHAT questions route as "code", whose compaction
 // strategy (sliding_window) requires no project. Shell commands are not
 // additionally restricted here: the global security.groups.execute policy
-// (including its destructive blacklist) applies uniformly to CODE and CHAT
+// (including its destructive blocklist) applies uniformly to CODE and CHAT
 // sessions.
 func (o *Orchestrator) SetNoProjectMode() {
 	o.isNoProject = true

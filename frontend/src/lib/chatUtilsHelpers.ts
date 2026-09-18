@@ -4,7 +4,8 @@
  */
 import type { ChatMessageUI, DisplayItem } from '@/types/messages'
 import { isArrayOf } from '@/types/guards'
-import { normalizeAgentMetricsData } from '@/types/events'
+import { normalizeAgentMetricsData, isAutonomyDecisionData } from '@/types/events'
+import { autonomyDecisionContent } from './autonomyDecision'
 
 /** Build a composite tool key for correlating tool_call ↔ tool_result. */
 export function makeToolKey(
@@ -238,6 +239,13 @@ export function reconstructContent(role: string, rawContent: string, meta: Recor
       return rawContent
     }
     case 'task_resumed': return rawContent
+    case 'autonomy_decision': {
+      // Automatic (no-human) decisions are persisted with their full payload
+      // as metadata (see backend/session/event_persister.go). Rebuild the same
+      // human-readable notice the live handler produced so a reloaded row reads
+      // identically — the audit trail must not degrade to raw JSON.
+      return isAutonomyDecisionData(meta) ? autonomyDecisionContent(meta) : rawContent
+    }
     case 'goal_status':
       // Persisted goal_status rows carry the raw snapshot JSON as content (the
       // persister writes metadata into content for non-assistant roles). The

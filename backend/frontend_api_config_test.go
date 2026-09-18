@@ -36,7 +36,7 @@ type mockBuilder struct {
 	rebuildProxyCalls         int
 	updateSearchToolCalls     int
 	updateSecPolicyCalls      int
-	updateShellBlacklistCalls int
+	updateShellBlocklistCalls int
 	reconfigureMCPCalls       int
 	listProviderModelsCalls   int
 	setMCPWorkDirCalls        int
@@ -45,11 +45,16 @@ type mockBuilder struct {
 	generateCommitMsgCalls    int
 	getBaseAgentDirsCalls     int
 
+	// updateSecPolicyLastCfg captures the most recent BuilderConfig passed to
+	// UpdateSecurityPolicies so tests can assert the runtime push forwards the
+	// intended security state (e.g. silent mode) to the live registries.
+	updateSecPolicyLastCfg *core.BuilderConfig
+
 	// Configurable return values for methods that have them.
 	rebuildRouterErr        error
 	rebuildProxyErr         error
 	reconfigureMCPErr       error
-	updateShellBlacklistErr error
+	updateShellBlocklistErr error
 	listProviderModelsRes   []string
 	listProviderModelsErr   error
 	// listProviderModelsLastProvider / LastCfg capture the most recent
@@ -119,16 +124,17 @@ func (m *mockBuilder) UpdateSearchTool(_ *core.BuilderConfig) {
 	m.updateSearchToolCalls++
 	m.mu.Unlock()
 }
-func (m *mockBuilder) UpdateSecurityPolicies(_ *core.BuilderConfig) {
+func (m *mockBuilder) UpdateSecurityPolicies(cfg *core.BuilderConfig) {
 	m.mu.Lock()
 	m.updateSecPolicyCalls++
+	m.updateSecPolicyLastCfg = cfg
 	m.mu.Unlock()
 }
-func (m *mockBuilder) UpdateShellBlacklist(_ *core.BuilderConfig) error {
+func (m *mockBuilder) UpdateShellBlocklist(_ *core.BuilderConfig) error {
 	m.mu.Lock()
-	m.updateShellBlacklistCalls++
+	m.updateShellBlocklistCalls++
 	m.mu.Unlock()
-	return m.updateShellBlacklistErr
+	return m.updateShellBlocklistErr
 }
 func (m *mockBuilder) ReconfigureMCP(_ context.Context, _ *core.BuilderConfig) error {
 	m.mu.Lock()
@@ -1238,7 +1244,7 @@ func TestUpdateSecuritySettings_AppliesGroups(t *testing.T) {
 	f, mock, _ := newTestAPI(t)
 	err := f.UpdateSecuritySettings(SecuritySettingsResponse{
 		Groups: fullGroupPayload(map[string]GroupPolicyResponse{
-			config.ToolGroupExecute:    {Policy: config.GroupPolicyUserConfirm, Blacklist: []string{`rm\s+-rf`}},
+			config.ToolGroupExecute:    {Policy: config.GroupPolicyUserConfirm, Blocklist: []string{`rm\s+-rf`}},
 			config.ToolGroupLocalWrite: {Policy: config.GroupPolicyDeny},
 		}),
 	})
@@ -1252,30 +1258,30 @@ func TestUpdateSecuritySettings_AppliesGroups(t *testing.T) {
 	if got.Policy != config.GroupPolicyUserConfirm {
 		t.Errorf("execute policy = %q, want user_confirm", got.Policy)
 	}
-	if len(got.Blacklist) != 1 || got.Blacklist[0] != `rm\s+-rf` {
-		t.Errorf("execute blacklist = %v, want [rm\\s+-rf]", got.Blacklist)
+	if len(got.Blocklist) != 1 || got.Blocklist[0] != `rm\s+-rf` {
+		t.Errorf("execute blocklist = %v, want [rm\\s+-rf]", got.Blocklist)
 	}
 	if got := f.config.Security.Groups[config.ToolGroupLocalWrite].Policy; got != config.GroupPolicyDeny {
 		t.Errorf("local_write policy = %q, want deny", got)
 	}
-	// The payload changed the execute blacklist, so the shell tool must be
+	// The payload changed the execute blocklist, so the shell tool must be
 	// re-registered for the edit to apply without a restart.
-	if mock.updateShellBlacklistCalls != 1 {
-		t.Errorf("UpdateShellBlacklist called %d times, want 1", mock.updateShellBlacklistCalls)
+	if mock.updateShellBlocklistCalls != 1 {
+		t.Errorf("UpdateShellBlocklist called %d times, want 1", mock.updateShellBlocklistCalls)
 	}
 }
 
-// TestUpdateSecuritySettings_NoShellReregistrationWhenBlacklistUnchanged
+// TestUpdateSecuritySettings_NoShellReregistrationWhenBlocklistUnchanged
 // verifies that a policy-only update leaves the shell tool alone: the
-// blacklist is compiled into the tool instance, so re-registration is
-// reserved for actual blacklist edits.
-func TestUpdateSecuritySettings_NoShellReregistrationWhenBlacklistUnchanged(t *testing.T) {
+// blocklist is compiled into the tool instance, so re-registration is
+// reserved for actual blocklist edits.
+func TestUpdateSecuritySettings_NoShellReregistrationWhenBlocklistUnchanged(t *testing.T) {
 	f, mock, _ := newTestAPI(t)
-	before := f.config.Security.Groups[config.ToolGroupExecute].Blacklist
+	before := f.config.Security.Groups[config.ToolGroupExecute].Blocklist
 
 	err := f.UpdateSecuritySettings(SecuritySettingsResponse{
 		Groups: fullGroupPayload(map[string]GroupPolicyResponse{
-			config.ToolGroupExecute:    {Policy: config.GroupPolicyAllow, Blacklist: before},
+			config.ToolGroupExecute:    {Policy: config.GroupPolicyAllow, Blocklist: before},
 			config.ToolGroupLocalWrite: {Policy: config.GroupPolicyDeny},
 		}),
 	})
@@ -1285,8 +1291,8 @@ func TestUpdateSecuritySettings_NoShellReregistrationWhenBlacklistUnchanged(t *t
 	if mock.updateSecPolicyCalls != 1 {
 		t.Errorf("UpdateSecurityPolicies called %d times, want 1", mock.updateSecPolicyCalls)
 	}
-	if mock.updateShellBlacklistCalls != 0 {
-		t.Errorf("UpdateShellBlacklist called %d times, want 0 for an unchanged blacklist", mock.updateShellBlacklistCalls)
+	if mock.updateShellBlocklistCalls != 0 {
+		t.Errorf("UpdateShellBlocklist called %d times, want 0 for an unchanged blocklist", mock.updateShellBlocklistCalls)
 	}
 }
 
@@ -1317,7 +1323,7 @@ func TestUpdateSecuritySettings_RejectsSystemGroup(t *testing.T) {
 // contract: the groups map REPLACES the stored one, so a payload omitting a
 // configurable group is rejected instead of silently weakening it (an
 // omitted deny downgrades live to user_confirm; omitting execute would strip
-// the live shell blacklist). The error must teach the missing group names.
+// the live shell blocklist). The error must teach the missing group names.
 func TestUpdateSecuritySettings_RejectsPartialGroups(t *testing.T) {
 	f, mock, _ := newTestAPI(t)
 	// local_read is configured to deny — a partial update missing it must
@@ -1336,7 +1342,7 @@ func TestUpdateSecuritySettings_RejectsPartialGroups(t *testing.T) {
 	if !strings.Contains(err.Error(), "missing: local_read, remote_mcp") {
 		t.Errorf("error %q should name the missing groups", err)
 	}
-	if mock.updateSecPolicyCalls != 0 || mock.updateShellBlacklistCalls != 0 {
+	if mock.updateSecPolicyCalls != 0 || mock.updateShellBlocklistCalls != 0 {
 		t.Error("no builder method may run for a rejected payload")
 	}
 	if got := f.config.Security.Groups[config.ToolGroupLocalRead].Policy; got != config.GroupPolicyDeny {
@@ -1347,120 +1353,85 @@ func TestUpdateSecuritySettings_RejectsPartialGroups(t *testing.T) {
 	}
 }
 
-// TestUpdateSecuritySettings_DefaultBlacklistStoredUnset verifies the
-// store-as-unset rule: saving a blacklist identical to the shipped defaults
-// (what the UI echoes back on a defaults-in-force config) stores UNSET (nil)
-// instead of pinning today's default patterns into the config file — future
-// default-list improvements keep flowing. The effective blacklist is
-// unchanged: GetSecuritySettings still reports the defaults and no shell
-// re-registration fires (effective lists compare equal).
-func TestUpdateSecuritySettings_DefaultBlacklistStoredUnset(t *testing.T) {
+// TestUpdateSecuritySettings_ExplicitEmptyBlocklistStaysEmpty verifies that
+// clearing the blocklist in the UI is an intentional choice: an explicit
+// empty list is stored verbatim as a non-nil empty list. No shell
+// re-registration fires: nil (unset) and [] both mean "no patterns", so
+// toggling between them is not a real change — only a pattern edit is.
+func TestUpdateSecuritySettings_ExplicitEmptyBlocklistStaysEmpty(t *testing.T) {
 	f, mock, _ := newTestAPI(t)
-	// newTestAPI ran ApplyDefaults, so the live config holds the default
-	// blacklist — exactly the state the UI round-trips.
-	defaults := config.DefaultExecuteGroupBlacklist()
 
 	err := f.UpdateSecuritySettings(SecuritySettingsResponse{
 		Groups: fullGroupPayload(map[string]GroupPolicyResponse{
-			config.ToolGroupExecute: {Policy: config.GroupPolicyUserConfirm, Blacklist: defaults},
+			config.ToolGroupExecute: {Policy: config.GroupPolicyUserConfirm, Blocklist: []string{}},
 		}),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if got := f.config.Security.Groups[config.ToolGroupExecute].Blacklist; got != nil {
-		t.Errorf("default-equal blacklist stored as a literal (%d patterns) — must stay unset (nil)", len(got))
-	}
-	if mock.updateShellBlacklistCalls != 0 {
-		t.Errorf("UpdateShellBlacklist called %d times, want 0 (effective list unchanged)", mock.updateShellBlacklistCalls)
-	}
-	// The UI must still see the live truth: the effective default list.
-	if got := f.GetSecuritySettings().Groups[config.ToolGroupExecute].Blacklist; !slices.Equal(got, defaults) {
-		t.Errorf("GetSecuritySettings execute blacklist = %v, want the shipped defaults", got)
-	}
-}
-
-// TestUpdateSecuritySettings_ExplicitEmptyBlacklistStaysEmpty verifies that
-// clearing the blacklist in the UI is an intentional choice: an explicit
-// empty list is NOT resurrected into the shipped defaults. It re-registers
-// the shell tool (the effective list changed) and GetSecuritySettings
-// reports an empty list.
-func TestUpdateSecuritySettings_ExplicitEmptyBlacklistStaysEmpty(t *testing.T) {
-	f, mock, _ := newTestAPI(t)
-
-	err := f.UpdateSecuritySettings(SecuritySettingsResponse{
-		Groups: fullGroupPayload(map[string]GroupPolicyResponse{
-			config.ToolGroupExecute: {Policy: config.GroupPolicyUserConfirm, Blacklist: []string{}},
-		}),
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	stored := f.config.Security.Groups[config.ToolGroupExecute].Blacklist
+	stored := f.config.Security.Groups[config.ToolGroupExecute].Blocklist
 	if stored == nil || len(stored) != 0 {
-		t.Errorf("explicit empty blacklist must persist as a non-nil empty list, got %v (nil=%t)", stored, stored == nil)
+		t.Errorf("explicit empty blocklist must persist as a non-nil empty list, got %v (nil=%t)", stored, stored == nil)
 	}
-	if mock.updateShellBlacklistCalls != 1 {
-		t.Errorf("UpdateShellBlacklist called %d times, want 1 (defaults → empty is a real change)", mock.updateShellBlacklistCalls)
+	if mock.updateShellBlocklistCalls != 0 {
+		t.Errorf("UpdateShellBlocklist called %d times, want 0 (nil and [] both mean no patterns)", mock.updateShellBlocklistCalls)
 	}
-	if got := f.GetSecuritySettings().Groups[config.ToolGroupExecute].Blacklist; len(got) != 0 {
-		t.Errorf("GetSecuritySettings execute blacklist = %v, want empty", got)
+	if got := f.GetSecuritySettings().Groups[config.ToolGroupExecute].Blocklist; len(got) != 0 {
+		t.Errorf("GetSecuritySettings execute blocklist = %v, want empty", got)
 	}
 }
 
-// TestSecuritySettings_ExplicitEmptyBlacklistRoundTrip verifies that an
-// explicitly emptied execute blacklist survives a get -> update -> get
+// TestSecuritySettings_ExplicitEmptyBlocklistRoundTrip verifies that an
+// explicitly emptied execute blocklist survives a get -> update -> get
 // cycle: the response encodes [] (not an omitted field), the echoed update
-// stores a non-nil empty list, and the effective blacklist stays empty
-// instead of silently reverting to the shipped defaults. This is exactly
-// the settings-UI pattern — every save echoes GetSecuritySettings output
-// back into UpdateSecuritySettings.
-func TestSecuritySettings_ExplicitEmptyBlacklistRoundTrip(t *testing.T) {
+// stores a non-nil empty list, and the effective blocklist stays empty.
+// This is exactly the settings-UI pattern — every save echoes
+// GetSecuritySettings output back into UpdateSecuritySettings.
+func TestSecuritySettings_ExplicitEmptyBlocklistRoundTrip(t *testing.T) {
 	f, _, _ := newTestAPI(t)
 	if err := f.UpdateSecuritySettings(SecuritySettingsResponse{
 		Groups: fullGroupPayload(map[string]GroupPolicyResponse{
-			config.ToolGroupExecute: {Policy: config.GroupPolicyUserConfirm, Blacklist: []string{}},
+			config.ToolGroupExecute: {Policy: config.GroupPolicyUserConfirm, Blocklist: []string{}},
 		}),
 	}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	echo := f.GetSecuritySettings()
-	got := echo.Groups[config.ToolGroupExecute].Blacklist
+	got := echo.Groups[config.ToolGroupExecute].Blocklist
 	if got == nil || len(got) != 0 {
-		t.Fatalf("get must report an explicit empty execute blacklist (non-nil []), got %v (nil=%t)", got, got == nil)
+		t.Fatalf("get must report an explicit empty execute blocklist (non-nil []), got %v (nil=%t)", got, got == nil)
 	}
 	if err := f.UpdateSecuritySettings(echo); err != nil {
 		t.Fatalf("unexpected error re-saving the echoed settings: %v", err)
 	}
-	stored := f.config.Security.Groups[config.ToolGroupExecute].Blacklist
+	stored := f.config.Security.Groups[config.ToolGroupExecute].Blocklist
 	if stored == nil || len(stored) != 0 {
-		t.Errorf("explicit empty blacklist reverted to %v (nil=%t) after the echo round trip — the user's choice must survive", stored, stored == nil)
+		t.Errorf("explicit empty blocklist reverted to %v (nil=%t) after the echo round trip — the user's choice must survive", stored, stored == nil)
 	}
-	if got := f.GetSecuritySettings().Groups[config.ToolGroupExecute].Blacklist; len(got) != 0 {
-		t.Errorf("effective execute blacklist after round trip = %v, want empty", got)
+	if got := f.GetSecuritySettings().Groups[config.ToolGroupExecute].Blocklist; len(got) != 0 {
+		t.Errorf("effective execute blocklist after round trip = %v, want empty", got)
 	}
 }
 
-// TestUpdateSecuritySettings_ShellBlacklistFailureRollsBack verifies the
-// failure atomicity of a blacklist edit: UpdateShellBlacklist runs BEFORE
+// TestUpdateSecuritySettings_ShellBlocklistFailureRollsBack verifies the
+// failure atomicity of a blocklist edit: UpdateShellBlocklist runs BEFORE
 // the policy application, and when it fails the whole replacement is rolled
 // back — the previous groups stay in force and UpdateSecurityPolicies is
 // never called, so the live registry and the stored config never diverge.
-func TestUpdateSecuritySettings_ShellBlacklistFailureRollsBack(t *testing.T) {
+func TestUpdateSecuritySettings_ShellBlocklistFailureRollsBack(t *testing.T) {
 	f, mock, _ := newTestAPI(t)
-	mock.updateShellBlacklistErr = errors.New("blacklist compile failure")
+	mock.updateShellBlocklistErr = errors.New("blocklist compile failure")
 	prevGroups := f.config.Security.Groups
-	prevBlacklist := prevGroups[config.ToolGroupExecute].Blacklist
-	f.config.Security.SmartApprove = false
+	prevBlocklist := prevGroups[config.ToolGroupExecute].Blocklist
+	f.config.Security.AutonomyMode = config.AutonomyModeStandard
 
 	err := f.UpdateSecuritySettings(SecuritySettingsResponse{
 		Groups: fullGroupPayload(map[string]GroupPolicyResponse{
-			config.ToolGroupExecute: {Policy: config.GroupPolicyDeny, Blacklist: []string{`mkfs`}},
+			config.ToolGroupExecute: {Policy: config.GroupPolicyDeny, Blocklist: []string{`mkfs`}},
 		}),
-		SmartApprove: true,
+		AutonomyMode: config.AutonomyModeAssisted,
 	})
 	if err == nil {
 		t.Fatal("expected error when the shell re-registration fails")
@@ -1471,11 +1442,11 @@ func TestUpdateSecuritySettings_ShellBlacklistFailureRollsBack(t *testing.T) {
 	if got := f.config.Security.Groups[config.ToolGroupExecute].Policy; got != prevGroups[config.ToolGroupExecute].Policy {
 		t.Errorf("execute policy not rolled back: got %q, want %q", got, prevGroups[config.ToolGroupExecute].Policy)
 	}
-	if got := f.config.Security.Groups[config.ToolGroupExecute].Blacklist; !slices.Equal(got, prevBlacklist) {
-		t.Errorf("execute blacklist not rolled back: got %v, want %v", got, prevBlacklist)
+	if got := f.config.Security.Groups[config.ToolGroupExecute].Blocklist; !slices.Equal(got, prevBlocklist) {
+		t.Errorf("execute blocklist not rolled back: got %v, want %v", got, prevBlocklist)
 	}
-	if f.config.Security.SmartApprove {
-		t.Error("SmartApprove not rolled back")
+	if f.config.Security.AutonomyMode != config.AutonomyModeStandard {
+		t.Error("autonomy mode not rolled back")
 	}
 	if len(f.config.Security.Groups) != len(prevGroups) {
 		t.Errorf("group set not fully restored: got %d groups, want %d", len(f.config.Security.Groups), len(prevGroups))
@@ -1504,16 +1475,16 @@ func TestUpdateSecuritySettings_RejectsInvalidPayloads(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "blacklist pattern does not compile",
+			name: "blocklist pattern does not compile",
 			groups: map[string]GroupPolicyResponse{
-				config.ToolGroupExecute: {Policy: config.GroupPolicyAllow, Blacklist: []string{"("}},
+				config.ToolGroupExecute: {Policy: config.GroupPolicyAllow, Blocklist: []string{"("}},
 			},
 			wantErr: true,
 		},
 		{
-			name: "blacklist outside execute",
+			name: "blocklist outside execute",
 			groups: map[string]GroupPolicyResponse{
-				config.ToolGroupLocalWrite: {Policy: config.GroupPolicyAllow, Blacklist: []string{"x"}},
+				config.ToolGroupLocalWrite: {Policy: config.GroupPolicyAllow, Blocklist: []string{"x"}},
 			},
 			wantErr: true,
 		},
@@ -1529,7 +1500,7 @@ func TestUpdateSecuritySettings_RejectsInvalidPayloads(t *testing.T) {
 		{
 			name: "valid full group set",
 			groups: fullGroupPayload(map[string]GroupPolicyResponse{
-				config.ToolGroupExecute: {Policy: config.GroupPolicyAllow, Blacklist: []string{`sudo\s+`}},
+				config.ToolGroupExecute: {Policy: config.GroupPolicyAllow, Blocklist: []string{`sudo\s+`}},
 			}),
 			wantErr: false,
 		},
@@ -1544,22 +1515,54 @@ func TestUpdateSecuritySettings_RejectsInvalidPayloads(t *testing.T) {
 	}
 }
 
+// TestUpdateSecuritySettings_RejectsUnknownAutonomyMode verifies the enum
+// validation on the unified autonomy posture: an explicit value outside
+// {standard, assisted, silent} is rejected and mutates nothing, while an
+// EMPTY value keeps the stored posture (transitional tolerance for frontends
+// predating the enum — see responseToAutonomyMode).
+func TestUpdateSecuritySettings_RejectsUnknownAutonomyMode(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	f.config.Security.AutonomyMode = config.AutonomyModeSilent
+
+	err := f.UpdateSecuritySettings(SecuritySettingsResponse{
+		Groups:       fullGroupPayload(nil),
+		AutonomyMode: "turbo",
+	})
+	if err == nil {
+		t.Fatal("expected an error for an unknown autonomy mode")
+	}
+	if f.config.Security.AutonomyMode != config.AutonomyModeSilent {
+		t.Errorf("an invalid payload must mutate nothing, got autonomy_mode %q", f.config.Security.AutonomyMode)
+	}
+
+	// Empty payload mode keeps the stored posture.
+	if err := f.UpdateSecuritySettings(SecuritySettingsResponse{
+		Groups:       fullGroupPayload(nil),
+		AutonomyMode: "",
+	}); err != nil {
+		t.Fatalf("empty autonomy mode must be tolerated: %v", err)
+	}
+	if f.config.Security.AutonomyMode != config.AutonomyModeSilent {
+		t.Errorf("empty autonomy mode must keep the stored posture, got %q", f.config.Security.AutonomyMode)
+	}
+}
+
 // TestGetUpdateSecuritySettings_GroupsRoundTrip verifies a get -> set -> get
-// cycle returns the same group set (policies and the execute blacklist) and
-// that the SmartApprove flag propagates to the shared tool registry via
+// cycle returns the same group set (policies and the execute blocklist) and
+// that the autonomy mode propagates to the shared tool registry via
 // UpdateSecurityPolicies.
 func TestGetUpdateSecuritySettings_GroupsRoundTrip(t *testing.T) {
 	f, mock, _ := newTestAPI(t)
-	f.config.Security.SmartApprove = false
+	f.config.Security.AutonomyMode = config.AutonomyModeStandard
 
-	// Default-off flag is exposed as stored.
-	if got := f.GetSecuritySettings().SmartApprove; got {
-		t.Fatalf("SmartApprove = true, want false by default")
+	// Default mode is exposed as stored.
+	if got := f.GetSecuritySettings().AutonomyMode; got != config.AutonomyModeStandard {
+		t.Fatalf("autonomy_mode = %q, want %q by default", got, config.AutonomyModeStandard)
 	}
 
 	in := SecuritySettingsResponse{
 		Groups: map[string]GroupPolicyResponse{
-			config.ToolGroupExecute:     {Policy: config.GroupPolicyDeny, Blacklist: []string{`mkfs`}},
+			config.ToolGroupExecute:     {Policy: config.GroupPolicyDeny, Blocklist: []string{`mkfs`}},
 			config.ToolGroupLocalRead:   {Policy: config.GroupPolicyAllow},
 			config.ToolGroupRemoteRead:  {Policy: config.GroupPolicyAllow},
 			config.ToolGroupLocalWrite:  {Policy: config.GroupPolicyUserConfirm},
@@ -1567,21 +1570,21 @@ func TestGetUpdateSecuritySettings_GroupsRoundTrip(t *testing.T) {
 			config.ToolGroupRemoteMCP:   {Policy: config.GroupPolicyUserConfirm},
 			config.ToolGroupRemoteWrite: {Policy: config.GroupPolicyUserConfirm},
 		},
-		SmartApprove: true,
+		AutonomyMode: config.AutonomyModeAssisted,
 	}
 	if err := f.UpdateSecuritySettings(in); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.config.Security.SmartApprove {
-		t.Error("SmartApprove not persisted to config")
+	if f.config.Security.AutonomyMode != config.AutonomyModeAssisted {
+		t.Error("autonomy mode not persisted to config")
 	}
 	if mock.updateSecPolicyCalls != 1 {
 		t.Errorf("UpdateSecurityPolicies called %d times, want 1", mock.updateSecPolicyCalls)
 	}
 
 	got := f.GetSecuritySettings()
-	if !got.SmartApprove {
-		t.Error("SmartApprove not reflected in GetSecuritySettings")
+	if got.AutonomyMode != config.AutonomyModeAssisted {
+		t.Error("autonomy mode not reflected in GetSecuritySettings")
 	}
 	for name, want := range in.Groups {
 		g, ok := got.Groups[name]
@@ -1592,8 +1595,8 @@ func TestGetUpdateSecuritySettings_GroupsRoundTrip(t *testing.T) {
 		if g.Policy != want.Policy {
 			t.Errorf("group %q policy = %q, want %q", name, g.Policy, want.Policy)
 		}
-		if len(g.Blacklist) != len(want.Blacklist) {
-			t.Errorf("group %q blacklist = %v, want %v", name, g.Blacklist, want.Blacklist)
+		if len(g.Blocklist) != len(want.Blocklist) {
+			t.Errorf("group %q blocklist = %v, want %v", name, g.Blocklist, want.Blocklist)
 		}
 	}
 }
@@ -1609,38 +1612,10 @@ func TestGetSecuritySettings_NoConfigDefaults(t *testing.T) {
 	if got.Groups[config.ToolGroupExecute].Policy != config.GroupPolicyUserConfirm {
 		t.Errorf("default execute policy = %q, want user_confirm", got.Groups[config.ToolGroupExecute].Policy)
 	}
-	// The shipped-default patterns ride along on every branch so the UI's
-	// reset affordance works before a config is loaded too.
-	if !slices.Equal(got.ExecuteBlacklistDefaults, config.DefaultExecuteGroupBlacklist()) {
-		t.Errorf("ExecuteBlacklistDefaults = %v, want the shipped default patterns", got.ExecuteBlacklistDefaults)
-	}
-}
-
-// TestGetSecuritySettings_ExecuteBlacklistDefaults verifies the reset
-// affordance's data source: the shipped default patterns are always sent —
-// regardless of what the stored execute blacklist is (unset, defaulted,
-// customized, or emptied) — because they describe the app's defaults, not
-// the user's current choice.
-func TestGetSecuritySettings_ExecuteBlacklistDefaults(t *testing.T) {
-	f, _, _ := newTestAPI(t)
-
-	got := f.GetSecuritySettings()
-	if !slices.Equal(got.ExecuteBlacklistDefaults, config.DefaultExecuteGroupBlacklist()) {
-		t.Fatalf("ExecuteBlacklistDefaults = %v, want the shipped default patterns", got.ExecuteBlacklistDefaults)
-	}
-
-	// ...and still after the user empties the blacklist (the reset control
-	// exists precisely for this state).
-	if err := f.UpdateSecuritySettings(SecuritySettingsResponse{
-		Groups: fullGroupPayload(map[string]GroupPolicyResponse{
-			config.ToolGroupExecute: {Policy: config.GroupPolicyUserConfirm, Blacklist: []string{}},
-		}),
-	}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	got = f.GetSecuritySettings()
-	if !slices.Equal(got.ExecuteBlacklistDefaults, config.DefaultExecuteGroupBlacklist()) {
-		t.Errorf("ExecuteBlacklistDefaults after emptying = %v, want the shipped default patterns", got.ExecuteBlacklistDefaults)
+	// No predefined blocklist exists any more: the execute group reports an
+	// empty list on every branch.
+	if got := got.Groups[config.ToolGroupExecute].Blocklist; len(got) != 0 {
+		t.Errorf("default execute blocklist = %v, want empty (no predefined patterns)", got)
 	}
 }
 

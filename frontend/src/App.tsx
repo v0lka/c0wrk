@@ -15,6 +15,7 @@ import { useUpdateChecker } from '@/hooks/useUpdateChecker'
 import { useExitGuard } from '@/hooks/useExitGuard'
 import { useGitFocusRefresh } from '@/hooks/useGitFocusRefresh'
 import { useVectorIndexStatus } from '@/hooks/useVectorIndexStatus'
+import { useAutonomyLoader } from '@/hooks/useAutonomyLoader'
 import { useProjectLoader } from '@/hooks/useProjectLoader'
 import { useSessionLoader } from '@/hooks/useSessionLoader'
 import { useSessionEvents } from '@/hooks/useSessionEvents'
@@ -80,6 +81,9 @@ function App() {
   // Seed/refresh the vector-index status (status bar pill + search panel) —
   // the push events alone leave it stale on startup (see the hook).
   useVectorIndexStatus()
+  // Hydrate the app-wide autonomy posture (autonomyStore) so the
+  // review-prompt gate is always current, whether or not Settings was opened.
+  useAutonomyLoader()
   useSessionEvents(activeSessionId)
   useBackgroundSessionWatcher()
   // Authoritative live-sessions snapshot loader. Mounted at the App root — NOT

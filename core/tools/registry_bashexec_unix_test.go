@@ -48,8 +48,12 @@ func TestBashExec_AllowGroup_OutOfRootPath_EscalatesToConfirm(t *testing.T) {
 	})
 
 	ws := t.TempDir()
+	outside := t.TempDir() // a second root: outside the workspace
 	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
-	input := json.RawMessage(`{"command": "cat /etc/passwd"}`)
+	// A read of a NON-system path outside the session roots (system-path
+	// reads like /etc/passwd no longer escalate — only writes to system
+	// paths do): the flowsh analysis fires the soft outside-roots criterion.
+	input := json.RawMessage(`{"command": "cat ` + outside + `/notes.txt"}`)
 
 	result, err := registry.Execute(ctx, "bash_exec", input)
 	if err != nil {

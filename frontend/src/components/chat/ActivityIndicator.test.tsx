@@ -39,6 +39,7 @@ describe('ActivityIndicator', () => {
 
   it('renders nothing when there is no activity status and no running task', () => {
     render()
+    expect(container.firstElementChild).toBeNull()
     expect(container.textContent).toBe('')
   })
 
@@ -48,35 +49,39 @@ describe('ActivityIndicator', () => {
     expect(container.textContent).toContain('Thinking...')
   })
 
-  it('shows "Idle…" while a task is running but has no specific status yet', () => {
+  it('renders only the blinking dot (no label text) while a task runs with no specific status yet', () => {
     // The ReAct loop briefly owns the slot with no label (e.g. right after a
     // strict-judge verdict clears it, before the next factual event lands).
-    // Without a placeholder the trailing block collapses and the arriving label
-    // makes the whole chat jump.
+    // Rather than collapsing the trailing block (which makes the whole chat jump
+    // when the arriving label lands) the slot stays occupied by the blinking dot
+    // alone — no label text is rendered for this idle gap.
     useChatStore.setState({ taskActive: { [SESSION]: true } })
     render()
-    expect(container.textContent).toContain('Idle…')
+    expect(container.textContent).toBe('')
+    expect(container.firstElementChild).not.toBeNull()
+    expect(container.querySelector('.animate-ping')).not.toBeNull()
   })
 
-  it('prefers the specific status over the idle placeholder while a task runs', () => {
+  it('prefers the specific status over the idle gap while a task runs', () => {
     useChatStore.setState({
       taskActive: { [SESSION]: true },
       activityStatus: { [SESSION]: 'Thinking...' },
     })
     render()
-    expect(container.textContent).toContain('Thinking...')
-    expect(container.textContent).not.toContain('Idle…')
+    expect(container.textContent).toBe('Thinking...')
   })
 
   it('collapses the indicator once the task ends (idle session)', () => {
     useChatStore.setState({ taskActive: { [SESSION]: true } })
     render()
-    expect(container.textContent).toContain('Idle…')
-    // task_complete: the task is no longer active and its label is cleared.
+    // While the task runs the dot holds the slot even without a status label.
+    expect(container.firstElementChild).not.toBeNull()
+    // task_complete: the task is no longer active, so even the dot goes away.
     act(() => {
       useChatStore.setState({ taskActive: {} })
     })
     render()
+    expect(container.firstElementChild).toBeNull()
     expect(container.textContent).toBe('')
   })
 

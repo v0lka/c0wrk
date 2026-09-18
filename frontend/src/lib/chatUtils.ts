@@ -35,6 +35,7 @@ type ChatRole = 'user' | 'assistant' | 'tool_call' | 'tool_result'
   | 'task_failed_resumable' | 'step_limit' | 'context_compaction'
   | 'step_todo_update' | 'memory_read' | 'plan_review'
   | 'review_prompt'
+  | 'autonomy_decision'
   | 'goal_proposal'
   | 'goal_status'
 
@@ -58,6 +59,10 @@ export const roleToType: Record<ChatRole, MessageType> = {
   memory_read: 'memory_read',
   plan_review: 'plan_review',
   review_prompt: 'review_prompt',
+  // autonomy_decision rows are persisted audit notices of automatic
+  // (no-human) decisions; they render through the same non-blocking `status`
+  // service notice as other status rows (content rebuilt by reconstructContent).
+  autonomy_decision: 'status',
   goal_proposal: 'goal_proposal',
   goal_status: 'goal_status',
 }

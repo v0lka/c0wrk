@@ -15,14 +15,13 @@ import (
 // would fail to compile on the other OS (e.g. on Windows:
 // undefined: builtins.NewBashExecToolWithTimeouts).
 //
-// The blacklist (config merge + No-Project patterns) is assembled by the caller
-// in builtin_registration.go; only the constructor call is platform-specific.
-// No platform supplement exists on Unix: the bash half of the unified
-// security.groups.execute.blacklist is already Unix-native, and the
-// PowerShell alias supplement (shelltool_windows.go) exists precisely so it
-// never compiles into bash_exec.
-func newShellExecTool(blacklist []string, timeouts builtins.BashTimeouts) (tools.Tool, error) {
-	return builtins.NewBashExecToolWithTimeouts(blacklist, timeouts)
+// The blocklist (the user-authored security.groups.execute.blocklist) is
+// assembled by the caller in builtin_registration.go; only the constructor
+// call is platform-specific. No platform supplement exists on Unix: no
+// predefined patterns ship any more, so the compiled-in set is exactly what
+// the caller passes (empty by default).
+func newShellExecTool(blocklist []string, timeouts builtins.BashTimeouts) (tools.Tool, error) {
+	return builtins.NewBashExecToolWithTimeouts(blocklist, timeouts)
 }
 
 // ShellExecToolName returns the name of the platform-registered

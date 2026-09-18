@@ -1,6 +1,6 @@
 // Security tool-group presentation metadata.
 //
-// The GROUP DATA (which groups exist, their policies, their blacklists) comes
+// The GROUP DATA (which groups exist, their policies, their blocklists) comes
 // from the backend (GetSecuritySettings / GetToolList). This module holds only
 // presentation concerns: the canonical display order of the seven configurable
 // groups and their human-readable copy. The reserved "system" group is never
@@ -8,7 +8,7 @@
 
 import type { GroupPolicy } from '@/types/models'
 
-/** The single group that supports a shell-command blacklist. */
+/** The single group that supports a shell-command blocklist. */
 export const EXECUTE_GROUP = 'execute'
 
 /** Canonical display order of the seven configurable security groups. */

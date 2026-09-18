@@ -6,7 +6,7 @@ c0wrk registers sp4rk's built-in tools plus the c0wrk-specific `ask_user` tool a
 
 ## Key Files
 
-- `core/tools/builtin_registration.go` — `RegisterBuiltinTools(registry, cfg)` + `BuiltinToolsConfig`; passes the config `ShellBlacklist` to the platform-specific `newShellExecTool`
+- `core/tools/builtin_registration.go` — `RegisterBuiltinTools(registry, cfg)` + `BuiltinToolsConfig`; passes the config `ShellBlocklist` to the platform-specific `newShellExecTool`
 - `core/tools/shelltool_unix.go` / `core/tools/shelltool_windows.go` — build-tag split for the shell-exec tool constructor (`builtins.NewBashExecToolWithTimeouts` on Unix, `builtins.NewPoshExecToolWithTimeouts` on Windows); sp4rk's `bash.go`/`posh.go` are mutually exclusive per OS
 - `core/tools/read_file_doc.go` — c0wrk `ReadFileDocTool` wrapper over sp4rk `ReadFileTool` that converts document formats (pdf, docx, pptx, xlsx, odt, html, htm) to markdown via `core/markitdown`; implements sp4rk's `ContentBackedReader` so converted results are content-backed cached
 - `core/tools/askuser.go` / `core/tools/askuser_types.go` — c0wrk-specific `ask_user` tool + AskUser request/response types (moved out of sp4rk per ADR-011)
@@ -20,7 +20,7 @@ c0wrk's registered tools, their capability group (ADR-024 — drives policy and 
 
 | Tool                  | Category  | Group          | Untrusted | Description                                        |
 | --------------------- | --------- | -------------- | --------- | -------------------------------------------------- |
-| `bash_exec` / `posh_exec` | Execution | `execute` | yes | Shell command execution with timeout and blacklist. `bash_exec` (bash) on Unix, `posh_exec` (PowerShell) on Windows — exactly one registers, selected by build tag (see [Shell-Execution Tool](#shell-execution-tool-bash_exec--posh_exec)) |
+| `bash_exec` / `posh_exec` | Execution | `execute` | yes | Shell command execution with timeout, the user blocklist (empty by default), and the deterministic flowsh criteria C1–C8. `bash_exec` (bash) on Unix, `posh_exec` (PowerShell) on Windows — exactly one registers, selected by build tag (see [Shell-Execution Tool](#shell-execution-tool-bash_exec--posh_exec)) |
 | `read_file`           | File      | `local_read` | yes       | Read file contents (streaming, O(1) memory, default 2000-line window); document formats (pdf, docx, pptx, xlsx, odt, html, htm) auto-converted to markdown via markitdown |
 | `write_file`          | File      | `local_write` | no        | Create/overwrite file                              |
 | `edit_file`           | File      | `local_write` | no        | Apply targeted edits to existing file              |
@@ -66,19 +66,19 @@ The shell-execution tool is platform-specific: sp4rk's `bash.go` is `//go:build 
 - `core/tools/shelltool_unix.go` → `builtins.NewBashExecToolWithTimeouts` → registers `bash_exec`
 - `core/tools/shelltool_windows.go` → `builtins.NewPoshExecToolWithTimeouts` → registers `posh_exec`
 
-Both expose the same constructor signature `newShellExecTool(blacklist, timeouts)`; the caller (`RegisterBuiltinTools`) passes the config `ShellBlacklist` to the platform-specific constructor. The registered name differs per platform, so all name-keyed configuration and policy lookups resolve through `core.activeShellToolName()` (`bash_exec` on Unix, `posh_exec` on Windows) — see [Blacklist / Policy Key](#blacklist--policy-key) below and [../../architecture/security-model.md](../../architecture/security-model.md).
+Both expose the same constructor signature `newShellExecTool(blocklist, timeouts)`; the caller (`RegisterBuiltinTools`) passes the config `ShellBlocklist` to the platform-specific constructor. The registered name differs per platform, so all name-keyed configuration and policy lookups resolve through `core.activeShellToolName()` (`bash_exec` on Unix, `posh_exec` on Windows) — see [Blocklist / Policy Key](#blocklist--policy-key) below and [../../architecture/security-model.md](../../architecture/security-model.md).
 
 Prompt data references the shell tool through the `{shell_tool}` placeholder rather than a hardcoded name, so tool-priority guidance always points at the tool actually registered on the current platform. The placeholder is resolved by `prompts.SubstituteShellTool` at each prompt-assembly call site (`core/systemprompt.go`); the embedded prompt vars are kept as raw templates (placeholder recoverable).
 
-#### Blacklist / Policy Key
+#### Blocklist / Policy Key
 
-The shell blacklist and policy are read from the **`execute` group** (`security.groups.execute`) — a single platform-agnostic entry covering both `bash_exec` and `posh_exec`. In `core/builder.go` → `configToBuiltinToolsConfig`, the blacklist is sourced from `cfg.Security.Groups["execute"].Blacklist`; in `applySecurityPolicies` the group policies are applied to the shared registry and every live per-session clone via `ApplySecurityState`. The default blacklist is the dedup union of the bash and PowerShell pattern sets, restricted to **cross-dialect-safe** patterns (the list is compiled into both shell tools, and only one of them runs per host, so a dialect-specific pattern could only ever hard-confirm benign commands of the other dialect — e.g. `rm -r -f <dir>` is the routine Unix spelling of `rm -rf <dir>`). The PowerShell alias patterns that cannot satisfy that invariant are appended as a Windows-only platform supplement in `core/tools/shelltool_windows.go`, so both dialects' dangerous idioms stay covered on their own platform (ADR-024 §2).
+The shell blocklist and policy are read from the **`execute` group** (`security.groups.execute`) — a single platform-agnostic entry covering both `bash_exec` and `posh_exec`. In `core/builder.go` → `configToBuiltinToolsConfig`, the blocklist is sourced from `cfg.Security.Groups["execute"].Blocklist`; in `applySecurityPolicies` the group policies are applied to the shared registry and every live per-session clone via `ApplySecurityState`. The blocklist is **empty by default — c0wrk ships no predefined patterns** (ADR-052): it is the user's personal extension on top of the deterministic flowsh criteria (e.g. a `sudo` or `shutdown` pattern for shapes the criteria deliberately leave to judgment). A load-time migration moves a legacy custom `blacklist:` list into `blocklist:`; lists equal to the old shipped default are dropped (effective empty). The former Windows-only `Remove-Item`-alias platform supplement is deleted — its engine-floor rationale (cross-dialect safety of a *shipped default*) died with the shipped defaults, and the flowsh criteria are dialect-aware by construction (bash and PowerShell grammars each get their own analyzer dialect).
 
 ## Registration Order
 
 ```go
 RegisterBuiltinTools(registry, cfg):
-  1. shell-exec tool — `bash_exec` on Unix, `posh_exec` on Windows (with blacklist + timeouts; constructor call split by build tag in `core/tools/shelltool_{unix,windows}.go`)
+  1. shell-exec tool — `bash_exec` on Unix, `posh_exec` on Windows (with the user blocklist + timeouts; constructor call split by build tag in `core/tools/shelltool_{unix,windows}.go`)
   2. File tools (read, write, edit, list, mkdir, rmdir, rm)
      — read_file is registered as `NewReadFileDocTool`, a wrapper over sp4rk `ReadFileTool` that transparently converts document formats to markdown (plain-text files delegate to the inner tool unchanged)
   3. finish
@@ -166,7 +166,7 @@ Non-truncation tool limits:
 | ---------------------------- | ------------------------- | ------------------- |
 | `BashTimeouts.MaxTimeout`    | shell-exec (`bash_exec`/`posh_exec`) | 120s                |
 | `BashTimeouts.WaitDelay`     | shell-exec (`bash_exec`/`posh_exec`) | 5s                  |
-| `BashBlacklist`              | shell-exec (`bash_exec`/`posh_exec`) | [] (regex patterns) |
+| `ShellBlocklist`             | shell-exec (`bash_exec`/`posh_exec`) | [] (user-authored regex patterns, empty by default — ADR-052) |
 | `WebSearchLimits.MaxResults` | web_search                | 5                   |
 
 ## Engine Behavior (canonical in sp4rk)

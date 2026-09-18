@@ -11,6 +11,7 @@ import type {
     FileEntry,
     ConfigResponse,
     MCPServerStatus,
+    AutonomyMode,
     SecuritySettingsResponse,
     BlackboardState,
     ModelProfile,
@@ -86,8 +87,13 @@ export function isMCPServerStatus(v: unknown): v is MCPServerStatus {
     return isObj(v) && has(v, 'name', 'connected')
 }
 
+/** Whether v is one of the three autonomy-mode enum values (config.AutonomyMode*). */
+export function isAutonomyMode(v: unknown): v is AutonomyMode {
+    return v === 'standard' || v === 'assisted' || v === 'silent'
+}
+
 export function isSecuritySettingsResponse(v: unknown): v is SecuritySettingsResponse {
-    return isObj(v) && has(v, 'groups', 'auto_approve_workspace_writes', 'smart_approve')
+    return isObj(v) && has(v, 'groups', 'auto_approve_workspace_writes', 'autonomy_mode')
 }
 
 export function isBlackboardState(v: unknown): v is BlackboardState {

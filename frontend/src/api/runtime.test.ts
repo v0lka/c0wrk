@@ -11,6 +11,14 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
+// The malformed-envelope tests below feed the dispatcher garbage on purpose;
+// the real logger would print "[events] dropped malformed …" warnings for
+// each. That output is the expected behavior under test, not a regression —
+// mock the logger to keep the suite output clean.
+vi.mock('@/lib/logger', () => ({
+  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}))
+
 type Cb = (...data: unknown[]) => void
 
 interface Harness {
