@@ -215,6 +215,26 @@ function bannerTimeoutButtons(): HTMLButtonElement[] {
 }
 
 describe('banner lifetime control', () => {
+  // The control is Linux-only (isLinuxHost() reads navigator.platform), so pin
+  // the platform for this suite: jsdom seeds navigator.platform from the host
+  // running the tests, and on the Windows/macOS CI runners the selector would
+  // otherwise not render at all. defineProperty (per the project convention,
+  // cf. the navigator.clipboard stubs) shadows the platform string
+  // deterministically wherever the suite executes.
+  const originalPlatform = navigator.platform
+  beforeEach(() => {
+    Object.defineProperty(navigator, 'platform', {
+      configurable: true,
+      value: 'Linux x86_64',
+    })
+  })
+  afterEach(() => {
+    Object.defineProperty(navigator, 'platform', {
+      configurable: true,
+      value: originalPlatform,
+    })
+  })
+
   it('renders the configured lifetime once the backend answers', async () => {
     mocks.getBannerTimeout.mockResolvedValue(30)
     render()

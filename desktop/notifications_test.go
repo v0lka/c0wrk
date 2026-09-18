@@ -355,8 +355,14 @@ func TestInitNotifications_DarwinAuthorizationBranch(t *testing.T) {
 
 // TestInitNotifications_NonDarwinSkipsAuthorization: on Linux/Windows the
 // authorization prompt is a runtime stub — the init path must not round-trip
-// it at all.
+// it at all. The platform seam is forced to "linux" so the assertion holds
+// on every CI runner (darwin included): the point is the branch is keyed on
+// the seam value, not on the host the test happens to execute on.
 func TestInitNotifications_NonDarwinSkipsAuthorization(t *testing.T) {
+	orig := notificationAuthorizationPlatform
+	defer func() { notificationAuthorizationPlatform = orig }()
+	notificationAuthorizationPlatform = "linux"
+
 	f := newNotificationsFixture(t)
 
 	if err := f.app.InitNotifications(); err != nil {
