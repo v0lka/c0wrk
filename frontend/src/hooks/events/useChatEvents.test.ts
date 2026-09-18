@@ -43,12 +43,17 @@ vi.mock('@/api/chat', () => ({
   getSessionRuntimeStatus: vi.fn(async () => null),
 }))
 
-// The post-task review trigger calls SaveReviewPrompt; stub it so the review
-// tests never touch the Wails-backed wrapper.
-const reviewApiMocks = vi.hoisted(() => ({ saveReviewPrompt: vi.fn() }))
+// The auto-review loop reopen calls loadReview → getReview; stub it with a
+// valid empty payload so the reopen test never touches the Wails runtime.
 vi.mock('@/api/review', () => ({
-  saveReviewPrompt: (...args: unknown[]) => reviewApiMocks.saveReviewPrompt(...args),
-  resolveReviewPrompt: vi.fn(),
+  getReview: vi.fn(async () => ({
+    session_id: 'sess-1',
+    status: 'active',
+    general_comment: '',
+    hunk_comments: [],
+    file_comments: [],
+    updated_at: '',
+  })),
 }))
 
 let counter = 0
@@ -64,7 +69,7 @@ function makeUI(overrides: Partial<ChatMessageUI> & { type: MessageType }): Chat
   }
 }
 
-/** Let pending promise chains (e.g. the async SaveReviewPrompt trigger) settle. */
+/** Let pending promise chains (e.g. the async review reopen load) settle. */
 const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
 
 describe('shouldAddTaskCompleteOutput', () => {
@@ -253,7 +258,7 @@ describe('useChatEvents terminal events → live unfinished-task overlay', () =>
     expect(isSessionBusy(SESSION)).toBe(false)
   })
 
-  // ── Silent mode suppresses the post-task review prompt ──
+  // ── Post-task review interception ──
   const sessionMessages = () => selectSessionMessages(useChatStore.getState(), SESSION)
 
   function seedCodeModeWithChanges(): void {
@@ -268,29 +273,51 @@ describe('useChatEvents terminal events → live unfinished-task overlay', () =>
     })
   }
 
-  it('suppresses the review prompt while silent mode is on', async () => {
+  it('a successful task_complete with changes injects NO review card (interactive mode)', async () => {
     seedCodeModeWithChanges()
-    useReviewStore.setState({ reviewLoopActive: {}, promptShownForTask: {} })
-    useAutonomyStore.getState().setAutonomy({ autonomy_mode: 'silent', review_prompt: { mode: 'suppress' } })
+    useReviewStore.setState({ reviewLoopActive: {}, reviewPageOpen: false, activeReviewSession: null })
+    useAutonomyStore.getState().setAutonomy({ autonomy_mode: 'standard' })
 
     emit('task_complete', { success: true, output: 'done' })
     await flush()
 
-    expect(reviewApiMocks.saveReviewPrompt).not.toHaveBeenCalled()
-    expect(sessionMessages().some((m) => m.type === 'review_prompt')).toBe(false)
+    // No review card is injected at all — the only post-task review hook is
+    // the auto-reopen of the review page when the loop is active.
+    expect(sessionMessages().some((m) => m.type === 'status' && m.metadata?.prompt_id !== undefined)).toBe(false)
   })
 
-  it('injects the review prompt when silent mode is off (unchanged behavior)', async () => {
+  it('task_complete with reviewLoopActive reopens the review page (interactive mode)', async () => {
     seedCodeModeWithChanges()
-    useReviewStore.setState({ reviewLoopActive: {}, promptShownForTask: {} })
-    useAutonomyStore.getState().setAutonomy({ autonomy_mode: 'standard', review_prompt: { mode: 'suppress' } })
-    reviewApiMocks.saveReviewPrompt.mockResolvedValue({ prompt_id: 'p-1', content: 'Review the changes?' })
+    useReviewStore.setState({
+      reviewLoopActive: { [SESSION]: true },
+      reviewPageOpen: false,
+      activeReviewSession: null,
+    })
+    useAutonomyStore.getState().setAutonomy({ autonomy_mode: 'standard' })
 
     emit('task_complete', { success: true, output: 'done' })
     await flush()
 
-    expect(reviewApiMocks.saveReviewPrompt).toHaveBeenCalledTimes(1)
-    expect(sessionMessages().some((m) => m.type === 'review_prompt')).toBe(true)
+    const rs = useReviewStore.getState()
+    expect(rs.reviewPageOpen).toBe(true)
+    expect(rs.activeReviewSession).toBe(SESSION)
+  })
+
+  it('silent mode suppresses the auto-review reopen', async () => {
+    seedCodeModeWithChanges()
+    useReviewStore.setState({
+      reviewLoopActive: { [SESSION]: true },
+      reviewPageOpen: false,
+      activeReviewSession: null,
+    })
+    useAutonomyStore.getState().setAutonomy({ autonomy_mode: 'silent' })
+
+    emit('task_complete', { success: true, output: 'done' })
+    await flush()
+
+    const rs = useReviewStore.getState()
+    expect(rs.reviewPageOpen).toBe(false)
+    expect(rs.activeReviewSession).toBeNull()
   })
 })
 

@@ -95,10 +95,9 @@ const (
 // builder; the registry stores them without interpreting them (consumers read
 // the fields they need).
 type SilentModeState struct {
-	ToolConfirm  string
-	StepLimit    string
-	AskUser      string
-	ReviewPrompt string
+	ToolConfirm string
+	StepLimit   string
+	AskUser     string
 }
 
 // ToolRegistry stores all available tools and provides them to Executor.

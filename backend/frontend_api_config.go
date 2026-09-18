@@ -597,10 +597,9 @@ func groupPoliciesToResponse(groups map[string]config.GroupPolicyConfig) map[str
 // frontend response shape. The mode strings are passed through verbatim.
 func silentModeToResponse(sm config.SilentModeConfig) SilentModeResponse {
 	return SilentModeResponse{
-		ToolConfirm:  SilentSubPolicyResponse{Mode: sm.ToolConfirm.Mode},
-		StepLimit:    SilentSubPolicyResponse{Mode: sm.StepLimit.Mode},
-		AskUser:      SilentSubPolicyResponse{Mode: sm.AskUser.Mode},
-		ReviewPrompt: SilentSubPolicyResponse{Mode: sm.ReviewPrompt.Mode},
+		ToolConfirm: SilentSubPolicyResponse{Mode: sm.ToolConfirm.Mode},
+		StepLimit:   SilentSubPolicyResponse{Mode: sm.StepLimit.Mode},
+		AskUser:     SilentSubPolicyResponse{Mode: sm.AskUser.Mode},
 	}
 }
 
@@ -612,10 +611,9 @@ func silentModeToResponse(sm config.SilentModeConfig) SilentModeResponse {
 // and the caller mutates nothing.
 func responseToSilentMode(r SilentModeResponse) (config.SilentModeConfig, error) {
 	sm := config.SilentModeConfig{
-		ToolConfirm:  config.SilentSubPolicyConfig{Mode: r.ToolConfirm.Mode},
-		StepLimit:    config.SilentSubPolicyConfig{Mode: r.StepLimit.Mode},
-		AskUser:      config.SilentSubPolicyConfig{Mode: r.AskUser.Mode},
-		ReviewPrompt: config.SilentSubPolicyConfig{Mode: r.ReviewPrompt.Mode},
+		ToolConfirm: config.SilentSubPolicyConfig{Mode: r.ToolConfirm.Mode},
+		StepLimit:   config.SilentSubPolicyConfig{Mode: r.StepLimit.Mode},
+		AskUser:     config.SilentSubPolicyConfig{Mode: r.AskUser.Mode},
 	}
 	config.ApplySilentModeDefaults(&sm)
 	if err := config.ValidateSilentMode(sm); err != nil {

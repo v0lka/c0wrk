@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import {
   DEFAULT_AUTONOMY_MODE,
   DEFAULT_SILENT_POLICIES,
-  isReviewPromptSuppressed,
+  isSilentMode,
   useAutonomyStore,
 } from './autonomyStore'
 
@@ -21,7 +21,6 @@ describe('autonomyStore', () => {
     expect(s.tool_confirm.mode).toBe('judge')
     expect(s.step_limit.mode).toBe('auto')
     expect(s.ask_user.mode).toBe('disable')
-    expect(s.review_prompt.mode).toBe('suppress')
     expect(s.loaded).toBe(false)
   })
 
@@ -31,7 +30,6 @@ describe('autonomyStore', () => {
       tool_confirm: { mode: 'deny' },
       step_limit: { mode: 'stop' },
       ask_user: { mode: 'enable' },
-      review_prompt: { mode: 'allow' },
     })
 
     const s = useAutonomyStore.getState()
@@ -39,7 +37,6 @@ describe('autonomyStore', () => {
     expect(s.tool_confirm.mode).toBe('deny')
     expect(s.step_limit.mode).toBe('stop')
     expect(s.ask_user.mode).toBe('enable')
-    expect(s.review_prompt.mode).toBe('allow')
     expect(s.loaded).toBe(true)
   })
 
@@ -51,7 +48,6 @@ describe('autonomyStore', () => {
     expect(s.tool_confirm.mode).toBe('judge')
     expect(s.step_limit.mode).toBe('auto')
     expect(s.ask_user.mode).toBe('disable')
-    expect(s.review_prompt.mode).toBe('suppress')
   })
 
   it('setAutonomy fails safe to standard on an unrecognized mode value', () => {
@@ -63,37 +59,20 @@ describe('autonomyStore', () => {
     expect(useAutonomyStore.getState().autonomy_mode).toBe('standard')
   })
 
-  describe('isReviewPromptSuppressed', () => {
-    it('is false in standard mode, whatever the review_prompt mode', () => {
-      useAutonomyStore.getState().setAutonomy({
-        autonomy_mode: 'standard',
-        review_prompt: { mode: 'suppress' },
-      })
-      expect(isReviewPromptSuppressed()).toBe(false)
+  describe('isSilentMode', () => {
+    it('is false in standard mode', () => {
+      useAutonomyStore.getState().setAutonomy({ autonomy_mode: 'standard' })
+      expect(isSilentMode()).toBe(false)
     })
 
-    it('is false in assisted mode, whatever the review_prompt mode', () => {
-      useAutonomyStore.getState().setAutonomy({
-        autonomy_mode: 'assisted',
-        review_prompt: { mode: 'suppress' },
-      })
-      expect(isReviewPromptSuppressed()).toBe(false)
+    it('is false in assisted mode', () => {
+      useAutonomyStore.getState().setAutonomy({ autonomy_mode: 'assisted' })
+      expect(isSilentMode()).toBe(false)
     })
 
-    it('is true only in silent mode with review_prompt suppress', () => {
-      useAutonomyStore.getState().setAutonomy({
-        autonomy_mode: 'silent',
-        review_prompt: { mode: 'suppress' },
-      })
-      expect(isReviewPromptSuppressed()).toBe(true)
-    })
-
-    it('is false in silent mode when review_prompt is allow', () => {
-      useAutonomyStore.getState().setAutonomy({
-        autonomy_mode: 'silent',
-        review_prompt: { mode: 'allow' },
-      })
-      expect(isReviewPromptSuppressed()).toBe(false)
+    it('is true in silent mode — no post-task UI interception at all', () => {
+      useAutonomyStore.getState().setAutonomy({ autonomy_mode: 'silent' })
+      expect(isSilentMode()).toBe(true)
     })
   })
 })

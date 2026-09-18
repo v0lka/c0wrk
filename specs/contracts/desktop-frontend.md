@@ -307,7 +307,7 @@ Code-review authoring surface (human-in-the-loop review of agent changes). Revie
 
 | Method | Parameters | Returns | Description |
 | ------ | ---------- | ------- | ----------- |
-| `GetReview` | sessionID | (*review.Review, error) | Load the session's review (status, comments, prompt) |
+| `GetReview` | sessionID | (*review.Review, error) | Load the session's review (status, comments) |
 | `GetReviewDiff` | — | ([]ReviewFileDiff, error) | Working-tree diff grouped by file (review format) |
 | `SaveReviewGeneralComment` | sessionID, body | error | Add/replace the general review comment |
 | `SaveReviewFileComment` | sessionID, filePath, body | (string, error) | Add a file-level comment (returns comment ID) |
@@ -316,7 +316,8 @@ Code-review authoring surface (human-in-the-loop review of agent changes). Revie
 | `SetReviewStatus` | sessionID, status | error | Set review status (e.g. pending/approved/changes_requested) |
 | `ClearReviewComments` | sessionID | error | Remove all comments from the review |
 | `ClearReview` | sessionID | error | Clear the entire review |
-| `SaveReviewPrompt` | sessionID | (*ReviewPromptMessage, error) | Persist/refresh the review prompt surfaced to the agent |
+
+> The former `SaveReviewPrompt` RPC was removed by [ADR-054](../decisions/054-remove-post-task-review-prompt.md) together with the post-task review prompt it persisted.
 
 ### Agents (`backend/frontend_api_agents.go`)
 

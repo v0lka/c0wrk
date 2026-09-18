@@ -37,13 +37,13 @@ Backend persists: ChatMessage[] (flat, role-based)
 Frontend converts: ChatMessageUI[] (semantic type, metadata)
          │
          ▼
-groupMessages(): GroupedMessages { items: DisplayItem[] } (tree structure, 21 kinds)
+groupMessages(): GroupedMessages { items: DisplayItem[] } (tree structure, 20 kinds)
          │
          ▼
 ChatMessageRenderer: renders each DisplayItem by type
 ```
 
-### Display Item Types (21 kinds)
+### Display Item Types (20 kinds)
 
 | Type                 | Description               | Visual Treatment                                                              |
 | -------------------- | ------------------------- | ----------------------------------------------------------------------------- |
@@ -61,13 +61,14 @@ ChatMessageRenderer: renders each DisplayItem by type
 | `plan_step`          | Plan step indicator       | Step badge with status; collapsible body **collapsed by default** — a `running` step does not auto-open (the user expands it)                          |
 | `subagent`           | Delegated subagent block  | Collapsible container (status badge, title, optional duration/error); nested children (plan steps, tools, thoughts) grouped inside. Rendered by `SubAgentBlock`. **Collapsed by default** (the user expands it). |
 | `plan_review`        | Plan review message       | Checklist-style card (info accent); Approve/Request-Changes/Abandon UI. Sinks while unresolved; settles at stream position when decided. Only the last unresolved `plan_review` is kept (replan cycle supersedes earlier unresolved ones); resolved plan_reviews remain at their stream position. |
-| `review_prompt`      | Code-review prompt        | Checklist-style card (info accent); Enter/Decline UI. "Enter" opens the review page (`ReviewPage` via the `c0wrk:review` tab) and enters the review loop; "Decline" dismisses. Sinks while unresolved; settles at stream position when decided (enter → success accent, decline → muted). Rendered by `ReviewPromptBlock`. |
 | `goal_proposal`      | Goal sign-off prompt      | Checklist-style card (info accent); two **pre-filled editable** textareas (condition + verify) seeded from the proposal, Approve (submits edited values) / Cancel UI. Sinks while unresolved; settles at stream position when resolved (collapses to a settled "Goal approved"/"Goal cancelled" card). Only emitted in goal mode. |
 | `reflection`         | Reflector analysis        | Warning accent, collapsible                                                   |
 | `step_finish`        | Step completion marker    | Success/fail indicator (emitted by `finish` tool call)                        |
 | `memory_read`        | Memory read notice        | Info badge (agent read from persistent memory)                                |
 | `context_compaction` | Compaction notice         | Info badge (shows before/after fill %)                                        |
 | `checklist`          | Checklist card            | Checkbox list with progress count; **sinks** to end of parent container while active (unchecked items), settles at stream position when all items checked. Renders standalone (no plan step) or nested in a `plan_step` block. Pending-action cards (`tool_confirm`/`ask_user`/`step_limit`/`plan_review`/`resume_action`) follow the same sinking semantics but always render in the root stream and use the same card chrome as this component. |
+
+> **Legacy role.** The former `review_prompt` DisplayItem was removed by [ADR-054](../../decisions/054-remove-post-task-review-prompt.md). Persisted rows still carrying that role map to the `status`/`service` type through the legacy role map (the `autonomy_decision` compat pattern) and render as muted service lines; their stable ids (`review-prompt-{prompt_id}`) are preserved so a reload keeps row identity.
 
 ### Grouping Logic
 
@@ -86,10 +87,10 @@ Key transformations in `groupMessages()`:
 - “At bottom” is a single threshold (`AT_BOTTOM_THRESHOLD_PX`, 50px from the content bottom) shared by stick-to-bottom engagement, the “new activity” pill, and the restored-position re-check
 - Scroll locked to bottom when the user is at bottom and content grows; “New activity” pill shown when messages arrive while scrolled up
 - ScrollContext (React context) coordinates between components
-- Auto-scroll temporarily suspended during user scroll-up, and for a short window after an explicit bookmark/step navigation (so the smooth navigation is not snapped away by a stale at-bottom baseline or a fresh review prompt)
+- Auto-scroll temporarily suspended during user scroll-up, and for a short window after an explicit bookmark/step navigation (so the smooth navigation is not snapped away by a stale at-bottom baseline)
 - **Reading-position restore**: `ChatScrollManager` is remounted per session (`key={activeSessionId}` in `ChatArea`). On unmount it saves `{scrollTop, scrollHeight}` into `chatStore.scrollPositions[sessionId]`; the session’s next initial mount restores that offset instead of jumping. A first visit with no saved entry opens pinned to the newest content so stick-to-bottom engages without the user scrolling down first. A session whose task is still RUNNING is the exception: the mount opens at the live tail regardless of the saved position (the `taskActive` flag survives session switches, the switch-time status RPC restores it when it is stale-false, and a `false→true` correction observed after the mount re-pins to the tail — so a task that starts while its session is open reveals its output). The browser clamps the restored offset against the freshly mounted (still estimated, possibly shorter) content; a restore that lands at the bottom is re-checked against the threshold so the flag matches the clamped reality
 - **Content-growth stickiness**: a `ResizeObserver` on the transcript content wrapper (the viewport’s first element child, whose height tracks the content) re-pins the viewport to the bottom whenever the content height grows while the user was following the tail (`isAtBottom`). This catches growth that lands AFTER the messages/streamingText commit — images decoding, async markdown/highlight layout — and is what keeps a restored/pinned position glued to the TRUE bottom as late async layout settles. When the user had scrolled up, growth does nothing (no jerk)
-- **Own-write scroll-event filtering**: the browser delivers a programmatic `scrollTop` write’s scroll event asynchronously, at its rendering steps — by which time the content may have grown past the write’s target (late spacer growth, async layout). `ChatScrollManager` therefore remembers the post-clamp `scrollTop` of its most recent at-bottom-intent write (stick, review-prompt reveal, RO re-pin, pill click, initial force-bottom); a delivered scroll event whose position still equals that marker is treated as the write’s own delivery and keeps the writer’s intent instead of recomputing “at bottom” against the grown content. Without this, that event poisoned `isAtBottomRef`/`prevScrollState` and permanently disabled stick-to-bottom for the rest of the run. Any diverging position (a real user scroll, a smooth navigation frame, the history-prepend re-anchor) clears the marker and resumes normal tracking; the reading-position restore write (mid-content intent) deliberately does not arm it
+- **Own-write scroll-event filtering**: the browser delivers a programmatic `scrollTop` write’s scroll event asynchronously, at its rendering steps — by which time the content may have grown past the write’s target (late spacer growth, async layout). `ChatScrollManager` therefore remembers the post-clamp `scrollTop` of its most recent at-bottom-intent write (stick, RO re-pin, pill click, initial force-bottom); a delivered scroll event whose position still equals that marker is treated as the write’s own delivery and keeps the writer’s intent instead of recomputing “at bottom” against the grown content. Without this, that event poisoned `isAtBottomRef`/`prevScrollState` and permanently disabled stick-to-bottom for the rest of the run. Any diverging position (a real user scroll, a smooth navigation frame, the history-prepend re-anchor) clears the marker and resumes normal tracking; the reading-position restore write (mid-content intent) deliberately does not arm it
 
 ### Sticky User Turns
 

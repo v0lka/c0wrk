@@ -353,10 +353,9 @@ func TestToBuilderConfig_SilentModeEnumPin(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Security.AutonomyMode = config.AutonomyModeSilent
 	cfg.Security.SilentMode = config.SilentModeConfig{
-		ToolConfirm:  config.SilentSubPolicyConfig{Mode: config.SilentToolConfirmDeny},
-		StepLimit:    config.SilentSubPolicyConfig{Mode: config.SilentStepLimitStop},
-		AskUser:      config.SilentSubPolicyConfig{Mode: config.SilentAskUserDisable},
-		ReviewPrompt: config.SilentSubPolicyConfig{Mode: config.SilentReviewPromptSuppress},
+		ToolConfirm: config.SilentSubPolicyConfig{Mode: config.SilentToolConfirmDeny},
+		StepLimit:   config.SilentSubPolicyConfig{Mode: config.SilentStepLimitStop},
+		AskUser:     config.SilentSubPolicyConfig{Mode: config.SilentAskUserDisable},
 	}
 	builderSecurity := ToBuilderConfig(cfg, config.PredefinedModelProfiles()).Security
 	posture := builderSecurity.SilentMode
