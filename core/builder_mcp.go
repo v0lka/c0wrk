@@ -15,26 +15,59 @@ import (
 // has completed before reading/acting on b.gateway. Otherwise a Reconfigure
 // arriving during the first ~seconds of startup could observe b.gateway == nil
 // and start a duplicate gateway that races with runMCPInit.
+//
+// LOCKING: b.mu is NEVER held across the gateway work below, only around the
+// snapshot and the publication. Both Reconfigure and StartGateway connect to
+// MCP servers over the network, and a single unreachable endpoint can hold
+// them for minutes — a previously-failed HTTP server is retried on every
+// Reconfigure, silently and with no deadline of its own. b.mu sits on the
+// GetConfig path (GetConfig takes configMu.RLock, then b.mu.RLock via
+// ModelRegistry), so holding the write lock across that work convoys every
+// config reader behind it and freezes the whole settings dialog for the
+// duration. Dropping b.mu costs nothing in consistency: the gateway
+// serializes concurrent Reconfigure calls on its own mutex, and reconfigureMu
+// below serializes this method.
 func (b *OrchestratorBuilder) ReconfigureMCP(ctx context.Context, cfg *BuilderConfig) error {
 	if err := b.waitMCPReady(ctx); err != nil {
 		return err
 	}
 
 	mcpCfg := configToGatewayConfig(cfg)
+
+	// Serializes this call end to end: without it two callers that both find
+	// no gateway would each dial one and orphan the loser. Acquired BEFORE
+	// b.mu, never the other way round.
+	b.reconfigureMu.Lock()
+	defer b.reconfigureMu.Unlock()
+
+	// Snapshot the proxy client and the gateway pointer, then RELEASE the
+	// lock before any network work. Reading b.proxyClient here under the lock
+	// also closes a data race against RebuildProxy, which writes it.
+	b.mu.RLock()
 	mcpCfg.HTTPClient = b.proxyClient
+	gw := b.gateway
+	b.mu.RUnlock()
 
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if b.gateway != nil {
-		return b.gateway.Reconfigure(ctx, mcpCfg, b.registry.ToolRegistry, cfg.ExpandEnvVars)
+	if gw != nil {
+		return gw.Reconfigure(ctx, mcpCfg, b.registry.ToolRegistry, cfg.ExpandEnvVars)
 	}
 
-	gw, err := mcp.StartGateway(ctx, mcpCfg, b.registry.ToolRegistry, cfg.ExpandEnvVars, b.logger)
+	// No gateway: startup failed earlier (waitMCPReady guarantees runMCPInit
+	// has finished, so this is not the startup window). Dial outside b.mu and
+	// publish under it, mirroring runMCPInit's record-and-apply.
+	newGW, err := mcp.StartGateway(ctx, mcpCfg, b.registry.ToolRegistry, cfg.ExpandEnvVars, b.logger)
 	if err != nil {
 		return err
 	}
-	b.gateway = gw
+
+	b.mu.Lock()
+	b.gateway = newGW
+	// Apply a work dir recorded by SetMCPWorkDir while we were dialing — the
+	// same record-and-apply race runMCPInit closes.
+	if b.mcpWorkDir != "" {
+		newGW.SetDefaultWorkDir(b.mcpWorkDir)
+	}
+	b.mu.Unlock()
 	return nil
 }
 

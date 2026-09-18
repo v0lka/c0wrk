@@ -69,6 +69,62 @@ The output-token budget for a model resolves through the same tiering as the con
 
 The budget plays two roles: it is subtracted from the context window during overflow validation, and it caps the executor's per-request `MaxTokens` (the agent loop reads the model's `ContextWindow.OutputLimit()`), so a single provider-level knob adjusts both the validation reserve and the generation ceiling — the right granularity for self-hosted gateways (LM Studio, vLLM) whose effective limits differ from the built-in catalog.
 
+## Per-Provider TLS Verification Override
+
+Compatible providers (`openai_compatible.<name>`, `anthropic_compatible.<name>`) may replace system CA verification with an SPKI pin, so a self-signed or internal-PKI endpoint is reachable without giving up peer authentication ([ADR-054](../decisions/054-per-provider-tls-pinning.md)):
+
+```yaml
+llm:
+  openai_compatible:
+    selfhosted:
+      base_url: "https://llm.lan:8443/v1"
+      tls_fingerprint: "k3J9vQ1Z…base64(SHA-256(SPKI DER))…"
+```
+
+**The pin is the only switch** — exactly two states exist:
+
+| `tls_fingerprint` | connection                                 |
+| ----------------- | ------------------------------------------ |
+| empty / absent    | normal system CA verification; no override |
+| non-empty         | ONLY the pinned SPKI; mismatch = bare error |
+
+A non-empty pin activates the override by itself; there is no separate toggle and **no configured state that accepts an arbitrary certificate**. The only deliberate unverified handshake is the Get-fingerprint probe, which exchanges no credentials. Fixed providers (`anthropic`, `chatgpt`) carry no such key: they reach vendor endpoints with publicly trusted certificates.
+
+The value is `base64(SHA-256(SubjectPublicKeyInfo DER))` — Chromium CertificatePinList / RFC 7469 style — so a pin survives certificate renewal that reuses the key pair. Comparison is whitespace-tolerant; a pin that is not base64 of 32 bytes is logged as a Warn and still fails closed at the handshake.
+
+### Proxy wins
+
+When an effective proxy is configured — `proxy.enabled` AND a non-empty `proxy.url`, the `proxy.BuildTransport` rule — the pin is **ignored on every dial path**. A MITM proxy re-encrypts with its own certificate, so the origin key never reaches the client and a layered pin would reject a correctly configured setup; the proxy carries its own trust mechanism (`proxy.tls_cert_dir`). `proxy.bypass_list` is the route for both at once: a bypassed host dials directly, so its pin applies. The rule gates the pin's *application*, never its configuration — a pin stays persisted while a proxy is active and re-arms when it is switched off.
+
+### Mechanics
+
+`core/llmtls` holds the TLS policy; sp4rk only transports the client it is handed (`llm.ProviderEntry.HTTPClient`). `Client` clones the base HTTP client and attaches a `VerifyPeerCertificate` that compares the leaf's SPKI hash; the pinned `*http.Transport` is derived ONCE at construction, so the derived client keeps its idle-connection pool across requests, and it stays a concrete `*http.Transport` so `CloseIdleConnections` reaches that pool. A base transport that is not an `*http.Transport` cannot hold a `tls.Config` and is replaced by a default-transport clone with a Warn. Mismatch errors carry no key material by design.
+
+Two resolvers encode the proxy-wins rule, because the dial paths differ in whether a fallback client exists behind them:
+
+| resolver | used by | proxy active | no pin | pin set |
+| --- | --- | --- | --- | --- |
+| `RouterEntryClient` | chat / inference (`ProviderEntry.HTTPClient`) | `nil` | `nil` | pinned clone of the shared LLM client |
+| `DirectDialClient` | Fetch Models, lazy probe | the proxy client verbatim | `nil` | fresh pinned client |
+
+`RouterEntryClient` returning nil is load-bearing: the SDK then falls back to `RouterConfig.HTTPClient`, which already carries the proxy transport **and** `timeouts.llmRequestTimeout`. Attaching the raw proxy client to the entry would shadow it and cap inference at `timeouts.webFetchProxyTimeout` (30 s). When a pin does apply, the client is cloned from the shared LLM client so the long timeout is inherited.
+
+`core/builder.go` applies the rule on every path that opens a provider connection: router entries (`providerEntryFromConfig`), the Fetch Models listing (`fetchProviderModels` → `listOpenAIModels` / `listAnthropicModels`, including the unsaved-draft path `applyListProviderModelsOverrides`), and the lazy context-window probe (`lookupOpenAIProviderBaseURL` → `buildLocalModelProbe`). `proxyActive` is `b.proxyClient != nil`, which is exactly `enabled && url != ""`. `ModelRegistry.SetHTTPClient` is out of scope — it fetches HuggingFace metadata, not provider endpoints.
+
+### Settings UI and the Get button
+
+The provider form shows the fingerprint field and a **Get** button for every compatible provider, always — the pin is the switch, so an empty field already means standard verification and there is no toggle to tick. `GetProviderTLSCertificate` performs only the TLS handshake (no HTTP request, no API key; `${VAR}` base URLs are expanded like every other dial path) and returns what the server presents right now. It is **unconditional with respect to any configured pin**: the request carries no fingerprint, nothing reads the persisted one, and the result overwrites the field whether the provider was unpinned, correctly pinned, or mismatched. The RPC rejects with an actionable error while an effective proxy is configured, because the direct-dial probe's pin would be inert once saved; the form disables the field, the button and their help text in the same situation, while keeping the persisted pin visible.
+
+The UI gate reads the draft store `frontend/src/stores/proxyDraftStore.ts`, which the General tab writes synchronously on every proxy edit — ahead of its own 800 ms debounce — so an already-mounted LLM tab reacts with no config re-read. The LLM tab only *seeds* that store from its own `getConfig`, a no-op once a value is known.
+
+Fetch Models sends the draft pin verbatim (an explicit draft `""` wins over the persisted value), and the pin is deliberately NOT part of `useModelFetch`'s `credentialKey`, so typing a fingerprint does not discard an already-fetched model list.
+
+### Invariants
+
+- No lock is held across a network call on any of these paths. `GetProviderTLSCertificate` snapshots proxy state and the base URL under `configMu.RLock` and releases it before the handshake; `fetchProviderModels` snapshots `b.proxyClient` under `b.mu.RLock` once per call.
+- The debounce-safe round-trip keeps its pointer sentinel at the API boundary only (`ProviderConfigRequest.TLSFingerprint *string` / `ListProviderModelsRequest.TLSFingerprint *string`: nil = keep the persisted pin, non-nil `""` = clear it). Persisted config and the builder layer carry plain strings.
+- A pinned inference client always carries `timeouts.llmRequestTimeout`, never the proxy timeout.
+
 ## Configuration
 
 Provider configuration lives in `config.yaml` under each provider block (api key, base URL, model list, defaults). Main-loop calls use `timeouts.llmRequestTimeout` (default 600 seconds); one-shot service calls for session titles, commit messages, and prompt optimization use the independent `timeouts.serviceLLMRequestTimeout` (default 120 seconds), so a stuck auxiliary request cannot inherit the ten-minute chat-loop budget. The authoritative reference for every tunable is `config.example.yaml`. Env vars are expanded as `${VAR}`; on macOS `config.LoadShellEnvironment()` runs before any other init so Finder-launched apps inherit shell env. For self-hosted servers (vLLM, llama.cpp, LM Studio, Ollama), reliable tool calling additionally requires **server-side** configuration — tool-call parser/chat-template selection per model family, sampling defaults, context-window sizing.

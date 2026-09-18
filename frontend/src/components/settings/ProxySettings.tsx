@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Input } from '@/components/ui/input'
 import { getConfig, updateProxySettings } from '@/api/config'
 import { logger } from '@/lib/logger'
+import { useProxyDraftStore, isProxyEffective } from '@/stores/proxyDraftStore'
 
 interface ProxyConfig {
   enabled: boolean
@@ -18,6 +19,15 @@ const DEFAULT_CONFIG: ProxyConfig = {
 }
 
 export function ProxySettings() {
+  // The LLM tab disables its per-provider TLS pin controls while a proxy is
+  // effective (proxy wins, ADR-054). It reads that from this store rather
+  // than from the backend, because saves here are debounced by 800 ms — a
+  // re-read right after a toggle would return the stale persisted value.
+  // Publishing happens synchronously in every handler below, before the
+  // debounce, so switching to the LLM tab always reflects what the user just
+  // did.
+  const setProxyActive = useProxyDraftStore((s) => s.setActive)
+
   const [config, setConfig] = useState<ProxyConfig>(DEFAULT_CONFIG)
   const [isLoading, setIsLoading] = useState(true)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -32,6 +42,7 @@ export function ProxySettings() {
         if (result?.proxy) {
           setConfig(result.proxy)
           setBypassText(result.proxy.bypass_list.join(', '))
+          setProxyActive(isProxyEffective(result.proxy))
         }
       } catch (err) {
         logger.error('Failed to load proxy config:', err)
@@ -40,7 +51,7 @@ export function ProxySettings() {
       }
     }
     load()
-  }, [])
+  }, [setProxyActive])
 
   const saveSettings = useCallback(async (newConfig: ProxyConfig) => {
     try {
@@ -83,12 +94,18 @@ export function ProxySettings() {
   const handleEnabledChange = (checked: boolean) => {
     const newConfig = { ...config, enabled: checked }
     setConfig(newConfig)
+    // Synchronous, ahead of the debounced save: the LLM tab must see this
+    // even if the user switches tabs within the debounce window.
+    setProxyActive(isProxyEffective(newConfig))
     debouncedSave(newConfig)
   }
 
   const handleUrlChange = (value: string) => {
     const newConfig = { ...config, url: value }
     setConfig(newConfig)
+    // Clearing the URL makes an enabled proxy ineffective (it dials
+    // directly), which re-arms the pin — so this edit publishes too.
+    setProxyActive(isProxyEffective(newConfig))
     debouncedSave(newConfig)
   }
 
