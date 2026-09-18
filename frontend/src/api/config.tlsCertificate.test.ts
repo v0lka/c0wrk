@@ -2,7 +2,7 @@
 //
 // Tests for the GetProviderTLSCertificate RPC wrapper in api/config.ts: the
 // request shape (the "Get" button is unconditional with respect to any
-// configured pin, so no fingerprint is sent — ADR-052) and boundary
+// configured pin, so no fingerprint is sent — ADR-054) and boundary
 // validation of the backend response.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'

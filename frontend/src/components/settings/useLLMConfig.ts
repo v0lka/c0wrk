@@ -18,7 +18,7 @@ export interface ProviderConfig {
      * (openai_compatible vs anthropic_compatible) they are saved under.
      */
     type?: CompatibleType
-    /** Per-provider TLS pin (ADR-052): '' = standard CA verification
+    /** Per-provider TLS pin (ADR-054): '' = standard CA verification
      *  (override off), non-empty = only the pinned key is accepted. */
     tls_fingerprint: string
 }
@@ -36,7 +36,7 @@ interface UseLLMConfigResult {
     anthropicCompatibleProviderNames: Set<string>
     /** Effective proxy state (enabled AND a URL set), mirroring the Go-side
      *  proxy.BuildTransport rule. The per-provider TLS pin is inert while
-     *  this is true (proxy wins, ADR-052), so the pin UI is disabled. Read
+     *  this is true (proxy wins, ADR-054), so the pin UI is disabled. Read
      *  from proxyDraftStore, which the General tab updates synchronously —
      *  see that store for why a config re-read cannot serve this. */
     proxyActive: boolean

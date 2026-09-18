@@ -1423,7 +1423,7 @@ func (l *conductorLauncher) resolveAgentAllowRedelegate(ctx context.Context, age
 // subagentCtx strips the Conductor-only context values from ctx. It must be
 // used for any subagent that is NOT explicitly granted allow_redelegate.
 //
-// Two classes of values are cleared:
+// Three classes of values are cleared:
 //
 //  1. Delegation-machinery handles (DelegationRegistry, DelegationLauncher,
 //     PlanPublisher, ReflectionRunner, PlanChecker). resolveTaskTools already
@@ -1441,6 +1441,14 @@ func (l *conductorLauncher) resolveAgentAllowRedelegate(ctx context.Context, age
 //     buildSystemPrompt path — would inherit the Conductor's "you MUST
 //     delegate via delegate(agent:)" directive while having no delegate tool
 //     available, producing a contradictory prompt.
+//  3. The goal-loop state and sinks (GoalKey, goal status / verification
+//     sinks). The goal loop sets the state and the sink together on every
+//     turn (orchestrator_goal.go); without clearing them a delegated subagent
+//     would inherit the goal-turn completion directive (declare_goal_status
+//     ends the turn — a tool no subagent holds, stripped by
+//     StripGoalModeTools) plus the goal-mode static/volatile sections, losing
+//     the normal finish/plan-context completion semantics, and could write
+//     verdicts into the loop it serves under.
 func subagentCtx(ctx context.Context) context.Context {
 	ctx = tools.WithDelegationRegistry(ctx, nil)
 	ctx = tools.WithDelegationLauncher(ctx, nil)
@@ -1459,6 +1467,11 @@ func subagentCtx(ctx context.Context) context.Context {
 	// sub-agent it delegates SHOULD land here with the sink cleared.
 	ctx = tools.WithGoalStatusSink(ctx, nil)
 	ctx = tools.WithVerificationSink(ctx, nil)
+	// Clear the goal-loop state (class 3 above): buildSystemPrompt reads
+	// GoalKey and, when present, replaces the completion directive with the
+	// goal-turn protocol and appends the goal-mode sections — none of which
+	// applies to a delegated subagent (see the function doc comment).
+	ctx = WithGoalState(ctx, nil)
 	// Clear the Conductor-only subagent roster so no subagent inherits the
 	// "Available Subagents"/"Requested Subagents" prompt sections (ADR-021 §4).
 	ctx = WithAvailableAgents(ctx, nil)

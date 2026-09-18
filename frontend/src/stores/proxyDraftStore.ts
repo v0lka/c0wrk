@@ -4,7 +4,7 @@ import { create } from 'zustand'
  * Effective HTTP-proxy state shared between the settings tabs.
  *
  * The per-provider TLS pin is inert while a proxy is active (proxy wins,
- * ADR-052), so the LLM tab has to disable its pin controls the moment the
+ * ADR-054), so the LLM tab has to disable its pin controls the moment the
  * proxy is toggled in the General tab. It cannot learn that by re-reading the
  * backend config for two reasons:
  *

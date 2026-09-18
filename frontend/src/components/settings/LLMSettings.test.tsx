@@ -221,7 +221,7 @@ describe('LLMSettings section order', () => {
   })
 })
 
-// --- Per-provider TLS pin gate (ADR-052) ---
+// --- Per-provider TLS pin gate (ADR-054) ---
 
 describe('LLMSettings TLS pin proxy gate', () => {
   const pin = 'k3J9vQ1Z0mF7hD2xS8pL4wR6tY5uI3oP1aE9cX0bN7g='

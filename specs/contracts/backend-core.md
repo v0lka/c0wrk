@@ -128,7 +128,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 | Available tools config | backend → core | `BuiltinToolsConfig`. Per-tool truncation via `BuilderConfig.ToolLimits.PerToolTruncation`. |
 | No Project mode        | backend → core | `Orchestrator.SetNoProjectMode()` (disables `semantic_search` — no vector index without a project) |
 | Tool cache config      | backend → core | `BuilderConfig.ToolResultBudget.CacheTTLSeconds` |
-| Security policies (incl. Smart Approve) | backend → core | `BuilderConfig.Security` (carries `Groups map[string]BuilderGroupPolicy` — the group-policy schema, ADR-024 — plus `SmartApprove`, `AutoApproveWorkspaceWrites`, `JudgeModel`, `InjectionDefenseEnabled`) |
+| Security policies (incl. the autonomy posture) | backend → core | `BuilderConfig.Security` (carries `Groups map[string]BuilderGroupPolicy` — the group-policy schema, ADR-024 — plus `AutonomyMode` — the `security.autonomy_mode` posture `standard`/`assisted`/`silent` that replaced the former Smart Approve / silent-master-switch booleans, ADR-053 — `SilentMode` (the sub-policy container, live only in `silent`), `AutoApproveWorkspaceWrites`, `JudgeModel`, `InjectionDefenseEnabled`) |
 | Execution result       | core → backend | `*HandleResult`                          |
 | Lifecycle events       | core → backend | `Emitter` method calls                   |
 | Blackboard state       | core → backend | `Blackboard` interface (for persistence) |

@@ -104,24 +104,23 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 	for name, g := range cfg.Security.Groups {
 		groups[name] = core.BuilderGroupPolicy{
 			Policy:    g.Policy,
-			Blacklist: g.Blacklist,
+			Blocklist: g.Blocklist,
 		}
 	}
-	// Effective view for the core layer: an unset (nil) execute blacklist
-	// means the shipped defaults are in force (the same derivation
-	// ApplyDefaults applies at load), so a runtime security-settings save
-	// that stored "unset" still registers the shell tool with the default
-	// patterns. An explicitly emptied list is used as stored. The key is
-	// also CREATED when absent: the core consumers of BuilderConfig treat a
-	// missing execute entry as an empty blacklist, and the defaults are the
-	// fail-safe reading (every other incomplete-config fallback in this
-	// schema degrades to user_confirm, not to allow).
+	// Effective view for the core layer: the execute blocklist is empty by
+	// default (the app ships no predefined patterns), so an unset (nil)
+	// config list is materialized as an explicit empty list, and the entry
+	// is CREATED when absent. core's UpdateShellBlocklist fails closed on a
+	// missing execute group or a nil blocklist (it cannot distinguish
+	// "unset" from an incomplete programmatic config), so the conversion
+	// always hands it a non-nil list; an empty list compiles to "no
+	// patterns" — the intended default posture.
 	if g, ok := groups[config.ToolGroupExecute]; !ok {
 		groups[config.ToolGroupExecute] = core.BuilderGroupPolicy{
-			Blacklist: config.DefaultExecuteGroupBlacklist(),
+			Blocklist: []string{},
 		}
-	} else if g.Blacklist == nil {
-		g.Blacklist = config.DefaultExecuteGroupBlacklist()
+	} else if g.Blocklist == nil {
+		g.Blocklist = []string{}
 		groups[config.ToolGroupExecute] = g
 	}
 
@@ -235,9 +234,15 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			InjectionDefenseEnabled:    derefBool(cfg.Security.InjectionDefense.Enabled),
 			Groups:                     groups,
 			AutoApproveWorkspaceWrites: cfg.Security.AutoApproveWorkspaceWrites,
-			SmartApprove:               cfg.Security.SmartApprove,
-			AgentsMDMaxBytes:           cfg.Security.AgentsMDMaxBytes,
-			AgentsMDSearchPaths:        agentsMDSearchPaths(),
+			AutonomyMode:               cfg.Security.AutonomyMode,
+			SilentMode: core.BuilderSilentModeConfig{
+				ToolConfirm:  cfg.Security.SilentMode.ToolConfirm.Mode,
+				StepLimit:    cfg.Security.SilentMode.StepLimit.Mode,
+				AskUser:      cfg.Security.SilentMode.AskUser.Mode,
+				ReviewPrompt: cfg.Security.SilentMode.ReviewPrompt.Mode,
+			},
+			AgentsMDMaxBytes:    cfg.Security.AgentsMDMaxBytes,
+			AgentsMDSearchPaths: agentsMDSearchPaths(),
 		},
 		Skills: core.BuilderSkillsConfig{
 			Dirs: cfg.Skills.Dirs,

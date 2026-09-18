@@ -117,7 +117,7 @@ export function LLMSettings({
       models: [],
       type: addFormType,
       // A new provider starts with standard CA verification; the pin is set
-      // afterwards in its accordion (ADR-052).
+      // afterwards in its accordion (ADR-054).
       tls_fingerprint: '',
     })
     // Expand the new provider immediately.

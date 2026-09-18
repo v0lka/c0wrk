@@ -239,6 +239,14 @@ type projectState struct {
 	contentlessCancel context.CancelFunc
 }
 
+// pendingNoProjectResetRequest is one queued No Project reset (see
+// Service.pendingNoProjectReset): the projectID to install plus the
+// Service.openGen value observed when the request was queued.
+type pendingNoProjectResetRequest struct {
+	projectID string
+	openGen   int64
+}
+
 // Service manages chromem-go collections with git-branch awareness,
 // readiness state, and vector search capabilities. It also owns a
 // per-branch bleve lexical index that is written in lock-step with the
@@ -280,13 +288,43 @@ type Service struct {
 	readyCh     chan struct{} // closed when ready becomes true; recreated on false
 	readyMu     sync.Mutex    // protects readyCh swaps + readyGen
 
-	// pendingNoProjectReset holds the id of a No Project reset that was
-	// requested while the write lock was held by an in-flight SetProject (a
-	// persistent DB open). Nil when none is queued. Atomic because the requester
-	// records it WITHOUT taking s.mu — taking it is exactly what it cannot do.
-	// SetProject applies (and clears) it as its final act, still under the lock.
-	// See ResetForNoProject.
-	pendingNoProjectReset atomic.Pointer[string]
+	// pendingNoProjectReset holds a No Project reset that could not be
+	// applied immediately because s.mu was held (by an in-flight SetProject
+	// open, an indexing pass, a search — TryLock fails under write and read
+	// holders alike). Nil when none is queued. Atomic because the requester
+	// records it WITHOUT taking s.mu — taking it is exactly what it cannot
+	// do. Every queued request is stamped with the openGen observed at queue
+	// time; an applier (SetProject's deferred call, or the background
+	// goroutine kicked by ResetForNoProject) applies it only while that
+	// generation is still current, so a queued request can never wipe a
+	// project opened after it was queued. See ResetForNoProject.
+	pendingNoProjectReset atomic.Pointer[pendingNoProjectResetRequest]
+
+	// openGen counts SetProject invocations: SetProject bumps it BEFORE
+	// acquiring s.mu, so a value read outside the lock identifies the most
+	// recent open that was initiated. ResetForNoProject stamps queued
+	// requests with the generation it observed; appliers discard a request
+	// whose generation no longer matches (a newer SetProject supersedes it),
+	// and SetProject additionally drops strictly-older queued requests at
+	// the start of its critical section, so a queued reset never survives
+	// into — and is never applied after — an unrelated open.
+	openGen atomic.Int64
+
+	// openPending counts SetProject invocations that have started but not
+	// finished their critical section (incremented before the openGen bump,
+	// settled by the deferred finishOpenLocked while s.mu is still held).
+	// The background No Project reset applier waits on openCond until this
+	// drains to zero: while any open is in flight, a queued reset stamped
+	// with that open's generation must be applied by the open itself (as its
+	// last act) rather than before it, or the open would overwrite the reset
+	// with the state it installs. openCond is guarded by s.mu.
+	openPending atomic.Int32
+	openCond    *sync.Cond
+
+	// closed is set by Close while holding s.mu, so the background No
+	// Project reset applier (which may acquire the lock only after Close
+	// finished) never mutates a closed service.
+	closed atomic.Bool
 	// readyGen is bumped every time SetReady(false) / MarkNotReady is called.
 	// An indexing pass captures the gen at start (via MarkNotReady) and
 	// passes it to RestoreReady on exit; if a project switch (or any other
@@ -367,6 +405,7 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	// current starts as an empty in-memory state so every accessor (including
 	// the lock-free GetCollection/GetDB) is safe before the first SetProject.
 	s.current = &projectState{}
+	s.openCond = sync.NewCond(&s.mu)
 	if cfg.MaxFileSize > 0 {
 		s.maxFileSize = cfg.MaxFileSize
 	} else {
@@ -416,15 +455,31 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 // outgoing state is not a real project, it is closed, reproducing the
 // historical reopen-on-every-switch behaviour.
 func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...string) error {
+	// Mark this open as pending and stamp its generation BEFORE acquiring
+	// the write lock. The pending count keeps the background No Project
+	// applier at bay until every in-flight open has applied its own queued
+	// resets — otherwise the applier could apply a reset stamped with THIS
+	// open's generation before this open installed its state, and the open
+	// would then overwrite the reset. The generation stamp supersedes every
+	// queued reset stamped with an OLDER generation, no matter when its
+	// (lock-free) store lands — appliers re-check the generation under the
+	// lock, so a stale request can never wipe the state this call installs.
+	s.openPending.Add(1)
+	gen := s.openGen.Add(1)
 	s.mu.Lock()
+	// Drop queued No Project resets stamped with an OLDER generation FIRST:
+	// they were requested before this open began, so this open supersedes
+	// them. A request carrying THIS open's generation — queued in the window
+	// between the generation bump and the lock acquisition, or while the
+	// critical section runs — is deliberately KEPT: it was requested after
+	// this open began, so the reset wins and is applied by the deferred
+	// applier below as this open's last act.
+	s.dropSupersededNoProjectResetsLocked(gen)
+	// LIFO: the gen-scoped applier runs first (lock still held), then the
+	// pending count is settled, then the lock is released.
 	defer s.mu.Unlock()
-	// Apply — as the last act of this open, while the lock is still held — a
-	// No Project reset that was requested while the open was in flight. It is
-	// registered AFTER the Unlock defer, so it runs BEFORE the lock is
-	// released; the state this call installed is therefore overwritten by the
-	// reset, which is precisely what the requester asked for (see
-	// ResetForNoProject).
-	defer s.applyPendingNoProjectResetLocked()
+	defer s.finishOpenLocked()
+	defer s.applyPendingNoProjectResetForGenLocked(gen)
 
 	var embeddingCachePath string
 	if len(embeddingCachePaths) > 0 {
@@ -511,8 +566,8 @@ func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...
 }
 
 // ResetForNoProject retires the current project's state and installs the empty
-// in-memory No Project state, WITHOUT waiting for an in-flight persistent DB
-// open to release the write lock.
+// in-memory No Project state, WITHOUT waiting for the current s.mu holder to
+// release the lock.
 //
 // The reset itself is cheap — park/close the outgoing state, then an in-memory
 // chromem DB — but it needs the write lock, and SetProject holds that lock for
@@ -521,31 +576,136 @@ func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...
 // the caller's project switch (Manager.SwitchProject) for that whole window;
 // the backend's switchMu was held behind it, so every CHAT/CODE toggle failed
 // after its bounded acquire — the "clicking CHAT does nothing for minutes"
-// failure. So: try the lock, and when it is busy record the request and return
-// at once; the in-flight SetProject applies it as its last act.
+// failure. So: try the lock; when it is busy, record the request and return at
+// once. The request is stamped with the current open generation and drained by
+// exactly one of two appliers:
+//
+//   - a SetProject that is still in flight applies it as its last act (the
+//     request carries that open's generation), still under the lock;
+//   - otherwise a background goroutine (kickNoProjectResetApplier) — the
+//     caller never blocks — waits until every in-flight open has drained,
+//     then takes s.mu and applies the still-current request, whatever kind
+//     of holder delayed it (an indexing pass, AddDocuments,
+//     ValidateCollection, a Browse — TryLock fails under read holders too).
+//     Without it, a request queued behind a non-SetProject holder would
+//     never land at all.
+//
+// A SetProject initiated AFTER the request supersedes it: the open bumps the
+// generation, making the request's generation strictly older, and both the
+// start-of-open drop and the appliers' generation checks discard it — a
+// queued reset therefore can never wipe a freshly opened project. A reset
+// queued AFTER an open began carries that open's generation and always wins
+// over the state the open installs.
 //
 // Readiness is dropped by the caller (Manager.SwitchProject) before this call,
 // so a search issued in the window before the queued reset lands never serves
 // the outgoing project's collection.
 func (s *Service) ResetForNoProject(projectID string) {
-	if !s.mu.TryLock() {
-		id := projectID
-		s.pendingNoProjectReset.Store(&id)
+	if s.mu.TryLock() {
+		s.pendingNoProjectReset.Store(nil)
+		s.resetForNoProjectLocked(projectID)
+		s.mu.Unlock()
 		return
 	}
-	defer s.mu.Unlock()
-	s.pendingNoProjectReset.Store(nil)
-	s.resetForNoProjectLocked(projectID)
+	gen := s.openGen.Load()
+	s.pendingNoProjectReset.Store(&pendingNoProjectResetRequest{projectID: projectID, openGen: gen})
+	s.kickNoProjectResetApplier()
 }
 
-// applyPendingNoProjectResetLocked applies a queued No Project reset. The
-// caller must hold s.mu (SetProject's deferred call does).
-func (s *Service) applyPendingNoProjectResetLocked() {
-	id := s.pendingNoProjectReset.Swap(nil)
-	if id == nil {
+// kickNoProjectResetApplier ensures a queued No Project reset eventually lands
+// even when the lock is held by something other than an in-flight SetProject
+// open. It spawns one short-lived goroutine that — unlike the caller — is
+// free to block: it waits on openCond until every in-flight open has drained
+// (an open that is merely blocked on s.mu still counts as in-flight and will
+// apply the request itself as its last act; applying it earlier would let
+// the open overwrite the reset with the state it installs), then takes s.mu
+// and applies the still-current queued request. The generation guard in
+// applyPendingNoProjectResetLocked makes the goroutine a no-op when a newer
+// SetProject has since superseded the request, and the closed guard keeps it
+// from touching a service Close already finished with.
+func (s *Service) kickNoProjectResetApplier() {
+	go func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for s.openPending.Load() > 0 {
+			// Wait releases s.mu, so in-flight opens keep making progress;
+			// finishOpenLocked broadcasts when the count drains to zero.
+			s.openCond.Wait()
+		}
+		s.applyPendingNoProjectResetLocked()
+	}()
+}
+
+// dropSupersededNoProjectResetsLocked removes a queued No Project reset whose
+// generation is strictly older than gen: the open that stamped gen supersedes
+// it. The caller must hold s.mu. A same-generation request (this open's
+// deferred applier consumes it) and a newer-generation request (a concurrent,
+// still-pending open owns it) are left in place.
+func (s *Service) dropSupersededNoProjectResetsLocked(gen int64) {
+	for {
+		p := s.pendingNoProjectReset.Load()
+		if p == nil || p.openGen >= gen {
+			return
+		}
+		if s.pendingNoProjectReset.CompareAndSwap(p, nil) {
+			return
+		}
+	}
+}
+
+// finishOpenLocked settles the open-pending count at the end of a SetProject
+// critical section: when the last in-flight open drains, the background No
+// Project applier (waiting on openCond) is woken so a queued request that no
+// open will consume is still applied. The caller must hold s.mu.
+func (s *Service) finishOpenLocked() {
+	if s.openPending.Add(-1) == 0 {
+		s.openCond.Broadcast()
+	}
+}
+
+// applyPendingNoProjectResetForGenLocked applies, as the open's last act, a
+// queued No Project reset that carries gen — one requested while THAT open
+// was in flight. The caller must hold s.mu (SetProject's deferred call).
+// A request carrying a newer generation belongs to a still-pending younger
+// open (which applies or supersedes it itself) and is left untouched; a
+// strictly older request is superseded by this open and is dropped without
+// applying.
+func (s *Service) applyPendingNoProjectResetForGenLocked(gen int64) {
+	for {
+		p := s.pendingNoProjectReset.Load()
+		if p == nil || p.openGen > gen {
+			return
+		}
+		if !s.pendingNoProjectReset.CompareAndSwap(p, nil) {
+			continue
+		}
+		if p.openGen == gen && !s.closed.Load() {
+			s.resetForNoProjectLocked(p.projectID)
+		}
 		return
 	}
-	s.resetForNoProjectLocked(*id)
+}
+
+// applyPendingNoProjectResetLocked applies a queued No Project reset whose
+// generation is still current. The caller must hold s.mu (the background
+// applier does; it first waits until no open is in flight, so the current
+// generation identifies the most recently COMPLETED open and a match means
+// the request was queued after that open began and never consumed). A request
+// whose generation no longer matches the current openGen was superseded by a
+// newer SetProject and is dropped instead of wiping that open's freshly
+// installed state.
+func (s *Service) applyPendingNoProjectResetLocked() {
+	pending := s.pendingNoProjectReset.Swap(nil)
+	if pending == nil {
+		return
+	}
+	if s.closed.Load() {
+		return
+	}
+	if pending.openGen != s.openGen.Load() {
+		return
+	}
+	s.resetForNoProjectLocked(pending.projectID)
 }
 
 // resetForNoProjectLocked installs the empty in-memory No Project state — the
@@ -1091,6 +1251,10 @@ func (s *Service) DeleteProjectData(fullPath string) error {
 // Close cleans up resources.
 func (s *Service) Close() error {
 	s.mu.Lock()
+	// Mark the service closed under the lock: a background No Project reset
+	// applier that acquires s.mu only after this unlock must observe it and
+	// drop any still-queued request instead of mutating the closed service.
+	s.closed.Store(true)
 
 	// Persist the current branch's in-memory hashes before shutdown, cancel
 	// any in-flight migration, and close the current state's handles.

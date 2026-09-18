@@ -58,7 +58,6 @@ export function VectorIndexSettings() {
   const [gpusLoaded, setGpusLoaded] = useState(false)
   const [gpuLoadError, setGpuLoadError] = useState<string | null>(null)
   const [deviceInput, setDeviceInput] = useState('0')
-  const [deviceError, setDeviceError] = useState<string | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const pendingConfigRef = useRef<SavedConfig | null>(null)
@@ -150,18 +149,21 @@ export function VectorIndexSettings() {
   const handleDeviceChange = (value: string) => {
     setDeviceInput(value)
     const parsed = parseDeviceId(value)
-    if (parsed === null) {
-      // Never persist an invalid id — the backend would reject the whole
-      // update; keep it buffered and flagged instead.
-      setDeviceError('Device id must be a whole number ≥ 0.')
-      return
-    }
+    // Never persist an invalid id — the backend would reject the whole
+    // update; keep it buffered instead. The invalid-input alert is DERIVED
+    // from the input (below), so re-entering any valid value — including the
+    // one already persisted — clears it immediately.
+    if (parsed === null) return
     if (parsed === config.device_id) return
-    setDeviceError(null)
     const newConfig = { ...config, device_id: parsed }
     setConfig(newConfig)
     debouncedSave(newConfig)
   }
+
+  // Derived by construction: the alert shows exactly while the input does not
+  // parse as a valid device id, so it can never go stale (e.g. correcting an
+  // invalid entry back to the persisted value clears it with the input).
+  const deviceError = parseDeviceId(deviceInput) === null ? 'Device id must be a whole number ≥ 0.' : null
 
   if (isLoading) {
     return (

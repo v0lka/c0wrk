@@ -415,6 +415,75 @@ func TestBuildSystemPrompt_GoalTurnReplacesPlanContextOnFreshTurn(t *testing.T) 
 	}
 }
 
+// TestBuildSystemPrompt_SubagentFromGoalTurnKeepsNormalCompletion is a
+// regression test for the goal-mode completion leak into delegated subagents.
+// The goal loop stamps GoalKey onto every turn's ctx (orchestrator_goal.go)
+// and a profile-less subagent's prompt is built via the normal
+// buildSystemPrompt path from the subagentCtx-narrowed context
+// (conductor.go buildSubAgentTask). subagentCtx must clear the goal state so
+// the subagent does NOT receive the goal-turn completion directive (built
+// around declare_goal_status — a tool no subagent holds, stripped by
+// StripGoalModeTools) nor the goal-mode static/volatile sections, and DOES
+// keep the normal completion semantics that mention `finish`.
+func TestBuildSystemPrompt_SubagentFromGoalTurnKeepsNormalCompletion(t *testing.T) {
+	gs := &goal.GoalState{Condition: "Ship it.", VerifyClause: "go test ./... exits 0"}
+	// Mirror a goal turn's ctx exactly as the loop builds it
+	// (orchestrator_goal.go: WithGoalState + status sink on a ctx that carries
+	// PlanModeKey via prepareRequestContext — the fresh-turn case).
+	goalCtx := coretools.WithGoalStatusSink(
+		WithGoalState(context.WithValue(context.Background(), PlanModeKey, true), gs),
+		&memGoalStatusSink{},
+	)
+
+	// The Conductor's own turn prompt still carries the goal protocol...
+	conductorPrompt := buildSystemPrompt(goalCtx, "do the thing", llmModelMetaForTests())
+	if !strings.Contains(conductorPrompt, "operating in goal mode") {
+		t.Fatal("expected the goal-turn completion directive on the goal-loop Conductor turn")
+	}
+
+	// ...but a delegated subagent (profile-less: the normal buildSystemPrompt
+	// path on the narrowed ctx) must not inherit it.
+	subCtx := subagentCtx(goalCtx)
+	sysprompt := buildSystemPrompt(subCtx, "do the thing", llmModelMetaForTests())
+	if strings.Contains(sysprompt, "operating in goal mode") {
+		t.Error("subagent prompt inherited the goal-turn completion directive")
+	}
+	if strings.Contains(sysprompt, "declare_goal_status") {
+		t.Error("subagent prompt must not reference declare_goal_status (not in any subagent toolset)")
+	}
+	if strings.Contains(sysprompt, "Goal Mode") {
+		t.Error("subagent prompt inherited the goal-mode static section")
+	}
+	// A fresh goal turn carries PlanModeKey, so the subagent falls back to the
+	// plan-context block — which frames completion via `finish`.
+	if !strings.Contains(sysprompt, "Plan Context") {
+		t.Error("subagent prompt should use the plan-context block on a plan-mode run")
+	}
+	if !strings.Contains(sysprompt, "finish") {
+		t.Error("subagent prompt must mention finish (its actual termination channel)")
+	}
+}
+
+// Mirrored counterpart: on a RESUMED goal turn (no PlanModeKey) the narrowed
+// subagent ctx must fall through to the single-step `finish` directive, not
+// the goal-turn protocol.
+func TestBuildSystemPrompt_SubagentFromResumedGoalTurnUsesFinish(t *testing.T) {
+	gs := &goal.GoalState{Condition: "Ship it.", VerifyClause: "go test ./... exits 0"}
+	goalCtx := coretools.WithGoalStatusSink(WithGoalState(context.Background(), gs), &memGoalStatusSink{})
+
+	subCtx := subagentCtx(goalCtx)
+	sysprompt := buildSystemPrompt(subCtx, "do the thing", llmModelMetaForTests())
+	if strings.Contains(sysprompt, "operating in goal mode") {
+		t.Error("subagent prompt inherited the goal-turn completion directive")
+	}
+	if !strings.Contains(sysprompt, "operating in single-step mode") {
+		t.Error("subagent prompt should use the single-step completion directive")
+	}
+	if !strings.Contains(sysprompt, "`finish`") {
+		t.Error("subagent prompt must instruct the agent to call finish")
+	}
+}
+
 func TestBuildSystemPrompt_ReviewSection_PresentWhenActive(t *testing.T) {
 	ctx := WithReviewMode(context.Background())
 

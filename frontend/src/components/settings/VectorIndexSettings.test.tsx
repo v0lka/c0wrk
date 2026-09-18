@@ -269,6 +269,27 @@ describe('VectorIndexSettings — save flow', () => {
     expect(mocks.updateVectorIndexSettings).not.toHaveBeenCalled()
   })
 
+  // Regression (finding 24): correcting an invalid entry back to the value
+  // that is ALREADY persisted must clear the "invalid device id" alert — the
+  // equality early-return used to leave the stale error on screen.
+  it('clears the invalid-device alert when the persisted value is re-entered', async () => {
+    mocks.listVectorIndexGPUs.mockResolvedValue([])
+    await render()
+    await flush()
+
+    // The persisted device id is the default 0; make the input invalid...
+    await typeDevice('')
+    expect(text()).toContain('Device id must be a whole number ≥ 0.')
+
+    // ...then type the already-persisted value back in.
+    await typeDevice('0')
+    expect(text()).not.toContain('Device id must be a whole number ≥ 0.')
+
+    // No save fires for the unchanged persisted value.
+    await waitForSave()
+    expect(mocks.updateVectorIndexSettings).not.toHaveBeenCalled()
+  })
+
   it('disables the device control while the provider is CPU', async () => {
     await render()
     await flush()

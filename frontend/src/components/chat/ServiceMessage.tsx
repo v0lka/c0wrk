@@ -40,7 +40,7 @@ export const ServiceMessage = memo(function ServiceMessage({ item }: ServiceMess
 
   return (
     <div className="flex items-center gap-1.5 text-muted-foreground">
-      <Icon className="h-3.5 w-3.5" />
+      <Icon className="h-3.5 w-3.5 shrink-0" />
       <span className="text-xs">
         {isRouting ? formatRoutingContent(item.metadata) : item.content}
       </span>

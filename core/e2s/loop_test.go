@@ -84,6 +84,8 @@ type mockRegistry struct {
 	descriptors []sdktools.ToolDescriptor
 	dispatches  []dispatchRecord
 	untrusted   map[string]bool
+	// results optionally overrides the canned Execute content per tool name.
+	results map[string]string
 }
 
 type dispatchRecord struct {
@@ -103,6 +105,9 @@ func (r *mockRegistry) Execute(_ context.Context, name string, input json.RawMes
 	if name == "bad_tool" {
 		return sdktools.ToolResult{Content: "tool failed", IsError: true}, nil
 	}
+	if content, ok := r.results[name]; ok {
+		return sdktools.ToolResult{Content: content, IsError: false}, nil
+	}
 	return sdktools.ToolResult{Content: "ok result for " + name, IsError: false}, nil
 }
 
@@ -121,11 +126,12 @@ func (r *mockRegistry) dispatched() []dispatchRecord {
 // recordingEmitter captures every emitted event, including the optional
 // e2s_state capability.
 type recordingEmitter struct {
-	mu           sync.Mutex
-	events       []string
-	states       []map[string]any
-	thoughts     []string
-	toolPreviews []string
+	mu            sync.Mutex
+	events        []string
+	states        []map[string]any
+	thoughts      []string
+	toolPreviews  []string
+	toolResultLen []int
 }
 
 func (e *recordingEmitter) record(kind string) {
@@ -143,9 +149,10 @@ func (e *recordingEmitter) Thought(_ int, content, _ string) {
 func (e *recordingEmitter) ToolCall(_, _ int, toolName, _, _ string) {
 	e.record("ToolCall:" + toolName)
 }
-func (e *recordingEmitter) ToolResult(_, _, _ int, preview string, _ bool) {
+func (e *recordingEmitter) ToolResult(_, _, resultLen int, preview string, _ bool) {
 	e.mu.Lock()
 	e.toolPreviews = append(e.toolPreviews, preview)
+	e.toolResultLen = append(e.toolResultLen, resultLen)
 	e.mu.Unlock()
 	e.record("ToolResult")
 }
@@ -1476,10 +1483,40 @@ func TestRun_BatchPreviewStaysRaw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if strings.Contains(em.toolPreviews[0], "<untrusted-content") {
+	if strings.Contains(em.toolPreviews[0], "<"+"untrusted-content") {
 		t.Errorf("batch UI preview leaked boundary tags: %q", em.toolPreviews[0])
 	}
-	if !strings.Contains(res.Steps[0].Observation, "<untrusted-content") {
+	if !strings.Contains(res.Steps[0].Observation, "<"+"untrusted-content") {
 		t.Errorf("model observation must wrap untrusted sub-results: %q", res.Steps[0].Observation)
+	}
+}
+
+// TestRun_ToolResultPreviewNotCapped pins the ToolResult event contract for
+// long observations: the preview must carry the FULL raw (pre-wrap) result —
+// the same value the Conductor passes (executor_run) — so the frontend's
+// result_len badge ("N.NK chars") and the preview body agree. The former
+// 200-rune cap made the card self-contradictory (a 12.3K badge above a
+// 200-char body) and left the tail unreachable ("Show more" revealed nothing).
+func TestRun_ToolResultPreviewNotCapped(t *testing.T) {
+	long := strings.Repeat("x", 600) + " tail marker"
+	caller := &scriptedCaller{responses: []*llm.ChatResponse{
+		stepResponse(`{}`, "read_file", `{"path":"big.txt"}`),
+		stepResponse(`{}`, "finish", `{"answer":"done"}`),
+	}}
+	reg := &mockRegistry{results: map[string]string{"read_file": long}}
+	em := &recordingEmitter{}
+	loop := New(caller, reg, em, Config{Model: "m", Task: "t", Logger: slogDiscard()})
+	if _, err := loop.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(em.toolPreviews) != 1 {
+		t.Fatalf("toolPreviews = %d, want 1", len(em.toolPreviews))
+	}
+	if em.toolPreviews[0] != long {
+		t.Errorf("preview length = %d, want %d (the full raw observation, uncapped — the badge describes bytes the card must actually show)",
+			len(em.toolPreviews[0]), len(long))
+	}
+	if len(em.toolResultLen) != 1 || em.toolResultLen[0] != len(long) {
+		t.Errorf("result_len = %v, want [%d] (agreeing with the preview)", em.toolResultLen, len(long))
 	}
 }

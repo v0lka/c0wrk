@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -270,27 +271,84 @@ func TestEventBatcher_StopFlushesPending(t *testing.T) {
 func TestSessionEventCoalesceKey(t *testing.T) {
 	cases := []struct {
 		name      string
+		sessionID string
 		eventType string
 		data      any
 		want      string
 	}{
-		{"root chunk", "assistant_chunk", map[string]any{"content": "x"}, "assistant_chunk"},
-		{"scoped chunk", "assistant_chunk", map[string]any{"plan_step_id": "step_9"}, "assistant_chunk|step_9"},
-		{"session tokens", "session_tokens", map[string]any{"model": "m"}, "session_tokens"},
-		{"agent metrics", "agent_metrics", map[string]any{"finish": "full"}, "agent_metrics"},
-		{"scoped todo", "step_todo_update", map[string]any{"step_id": "step_1"}, "step_todo_update|step_1"},
-		{"root todo", "step_todo_update", map[string]any{}, "step_todo_update"},
-		{"scoped fill struct", "context_fill", session.ContextFillEventData{PlanStepID: "step_3"}, "context_fill|step_3"},
-		{"root fill struct", "context_fill", session.ContextFillEventData{}, "context_fill"},
-		{"content event", "assistant_done", map[string]any{"content": "x"}, ""},
-		{"terminal output", "terminal_output", map[string]any{"data": "x"}, ""},
+		{"root chunk", "s1", "assistant_chunk", map[string]any{"content": "x"}, "s1|assistant_chunk"},
+		{"scoped chunk", "s1", "assistant_chunk", map[string]any{"plan_step_id": "step_9"}, "s1|assistant_chunk|step_9"},
+		{"session tokens", "s1", "session_tokens", map[string]any{"model": "m"}, "s1|session_tokens"},
+		{"agent metrics", "s1", "agent_metrics", map[string]any{"finish": "full"}, "s1|agent_metrics"},
+		{"scoped todo", "s1", "step_todo_update", map[string]any{"step_id": "step_1"}, "s1|step_todo_update|step_1"},
+		{"root todo", "s1", "step_todo_update", map[string]any{}, "s1|step_todo_update"},
+		{"scoped fill struct", "s1", "context_fill", session.ContextFillEventData{PlanStepID: "step_3"}, "s1|context_fill|step_3"},
+		{"root fill struct", "s1", "context_fill", session.ContextFillEventData{}, "s1|context_fill"},
+		{"content event", "s1", "assistant_done", map[string]any{"content": "x"}, ""},
+		{"terminal output", "s1", "terminal_output", map[string]any{"data": "x"}, ""},
+		{"other session root chunk", "s2", "assistant_chunk", map[string]any{"content": "x"}, "s2|assistant_chunk"},
+		{"other session scoped chunk", "s2", "assistant_chunk", map[string]any{"plan_step_id": "step_9"}, "s2|assistant_chunk|step_9"},
+		{"empty session id", "", "assistant_chunk", map[string]any{"content": "x"}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := sessionEventCoalesceKey(tc.eventType, tc.data); got != tc.want {
-				t.Fatalf("sessionEventCoalesceKey(%q) = %q, want %q", tc.eventType, got, tc.want)
+			if got := sessionEventCoalesceKey(tc.sessionID, tc.eventType, tc.data); got != tc.want {
+				t.Fatalf("sessionEventCoalesceKey(%q, %q) = %q, want %q", tc.sessionID, tc.eventType, got, tc.want)
 			}
 		})
+	}
+	// The key MUST differ across sessions for the same event type — the
+	// batcher queue is shared by every session, so a session-agnostic key
+	// would let two concurrent sessions merge into each other's entries.
+	if sessionEventCoalesceKey("s1", "assistant_chunk", nil) == sessionEventCoalesceKey("s2", "assistant_chunk", nil) {
+		t.Fatal("coalesce key must be session-scoped: s1 and s2 produced identical keys for assistant_chunk")
+	}
+}
+
+// TestEventBatcher_ConcurrentSessionsDoNotCrossCoalesce is the regression
+// test for the session-scoped coalescing key. The batcher queue is shared by
+// every session (one emitFunc for all sessions), and the key used to omit the
+// session ID: session B's assistant_chunk payload was merged into the queue
+// entry still carrying session A's event name, so A's chat pane rendered B's
+// text while B's own stream stopped receiving updates entirely.
+func TestEventBatcher_ConcurrentSessionsDoNotCrossCoalesce(t *testing.T) {
+	sink := newBatchChanSink()
+	b := newTestBatcher(sink, eventBatchMaxEvents)
+	defer b.Stop()
+
+	// Interleaved root-stream chunks from two sessions, exactly as the shared
+	// producer emits them while both sessions stream concurrently. Each
+	// coalesce key is derived the way buildUIEmitFunc derives it.
+	for i := 0; i < 3; i++ {
+		b.Enqueue("session:s1:assistant_chunk",
+			[]any{map[string]any{"accumulated_content": "s1-" + strconv.Itoa(i)}},
+			sessionEventCoalesceKey("s1", "assistant_chunk", map[string]any{}), false, 0)
+		b.Enqueue("session:s2:assistant_chunk",
+			[]any{map[string]any{"accumulated_content": "s2-" + strconv.Itoa(i)}},
+			sessionEventCoalesceKey("s2", "assistant_chunk", map[string]any{}), false, 0)
+	}
+	b.Flush()
+
+	// All six snapshots must survive: adjacent entries never share a
+	// coalescing key, so nothing may be merged away. (Before the fix this
+	// collapsed to a single session:s1:assistant_chunk entry carrying s2's
+	// final payload.)
+	got := sink.collectFlattened(t, 6)
+	for i, ev := range got {
+		wantSession := "s1"
+		if i%2 == 1 {
+			wantSession = "s2"
+		}
+		wantName := "session:" + wantSession + ":assistant_chunk"
+		if ev.Name != wantName {
+			t.Fatalf("event %d name = %q, want %q", i, ev.Name, wantName)
+		}
+		// Adjacent entries never share a coalescing key, so every snapshot
+		// survives with its own payload — round r is the r-th pair index.
+		wantContent := wantSession + "-" + strconv.Itoa(i/2)
+		if d := mapPayload(t, ev); d["accumulated_content"] != wantContent {
+			t.Fatalf("event %d (%s) accumulated_content = %v, want %q", i, ev.Name, d["accumulated_content"], wantContent)
+		}
 	}
 }
 

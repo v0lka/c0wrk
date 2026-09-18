@@ -158,7 +158,13 @@ func (b *EventBatcher) Enqueue(name string, args []any, coalesceKey string, barr
 		return
 	}
 	if coalesceKey != "" && len(b.queue) > 0 {
-		if last := &b.queue[len(b.queue)-1]; last.coalesceKey == coalesceKey {
+		// Require the event name to match as well: the merge overwrites Args
+		// while keeping the queued Name, so merging events with different
+		// names would deliver one payload under the other's name. The
+		// session-scoped coalesce key already prevents this for session
+		// events; the name check makes cross-name merges impossible by
+		// construction for any producer.
+		if last := &b.queue[len(b.queue)-1]; last.coalesceKey == coalesceKey && last.Name == name {
 			last.Args = args
 			b.mu.Unlock()
 			if barrier {
@@ -232,16 +238,25 @@ func (b *EventBatcher) requestFlush() {
 
 // sessionEventCoalesceKey returns the latest-wins coalescing key for a session
 // event, or "" when the event is content (must be delivered verbatim, in
-// order). Transient events collapse by session+type, refined by their stream
-// discriminator where one exists (plan_step_id / step_id) so two concurrent
-// streams of the same type never clobber each other.
-func sessionEventCoalesceKey(eventType string, data any) string {
+// order). The batcher queue is shared by every session, so the key is scoped
+// by session ID first: transient events collapse by session+type, refined by
+// their stream discriminator where one exists (plan_step_id / step_id) so two
+// concurrent streams — in the same session or across sessions — never clobber
+// each other. Without the session ID in the key, two sessions streaming
+// concurrently would merge into each other's queue entries and deliver one
+// session's payload under the other session's event name.
+func sessionEventCoalesceKey(sessionID, eventType string, data any) string {
 	switch eventType {
 	case "assistant_chunk", "context_fill", "step_todo_update", "session_tokens", "agent_metrics":
 	default:
 		return ""
 	}
-	return eventType + eventStreamDiscriminator(eventType, data)
+	if sessionID == "" {
+		// Defensive: an event without a session has no business coalescing
+		// with anything; deliver it verbatim.
+		return ""
+	}
+	return sessionID + "|" + eventType + eventStreamDiscriminator(eventType, data)
 }
 
 // eventStreamDiscriminator extracts the per-stream id that separates otherwise

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createElement } from 'react'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -7,6 +7,15 @@ import { createRoot, type Root } from 'react-dom/client'
 vi.mock('@/lib/logger', () => ({
   logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }))
+
+// Every test in this file makes a child throw ON PURPOSE so the boundary can
+// catch it; react-dom reports each catch through console.error ("The above
+// error occurred in the <Boom> component…"). Those reports are the expected
+// behavior under test, not regressions — silence them to keep the suite
+// output clean.
+beforeEach(() => {
+  vi.spyOn(console, 'error').mockImplementation(() => {})
+})
 
 const { reportCrashMock } = vi.hoisted(() => ({
   reportCrashMock: vi.fn<(error: unknown, info?: { componentStack?: string | null }) => void>(),
@@ -43,6 +52,7 @@ function render(node: React.ReactNode) {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   act(() => root.unmount())
   container.remove()
   document.body.innerHTML = ''

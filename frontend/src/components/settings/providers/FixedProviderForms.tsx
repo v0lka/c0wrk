@@ -9,7 +9,7 @@ interface FixedProviderFormProps {
   onConfigChange: (provider: string, updates: Partial<{ api_key: string; base_url: string; tls_fingerprint: string }>) => void
   onToggleModel: (provider: string, model: string) => void
   defaultModel: string
-  /** Effective proxy state: disables the per-provider TLS pin UI (ADR-052). */
+  /** Effective proxy state: disables the per-provider TLS pin UI (ADR-054). */
   proxyActive?: boolean
 }
 

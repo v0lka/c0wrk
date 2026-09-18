@@ -79,7 +79,7 @@ type ConfigProviderFull struct {
 	APIKey  string   `json:"api_key"`
 	BaseURL string   `json:"base_url,omitempty"`
 	Models  []string `json:"models"` // enabled models for this provider
-	// TLSFingerprint exposes the per-provider SPKI pin (ADR-052): non-empty =
+	// TLSFingerprint exposes the per-provider SPKI pin (ADR-054): non-empty =
 	// only the pinned key is accepted; empty = system CA verification. Only
 	// compatible providers carry one.
 	TLSFingerprint string `json:"tls_fingerprint,omitempty"`
@@ -122,7 +122,7 @@ type ProviderConfigRequest struct {
 	APIKey  string   `json:"api_key,omitempty"`
 	BaseURL string   `json:"base_url,omitempty"`
 	Models  []string `json:"models,omitempty"`
-	// TLSFingerprint is the base64(SHA-256(SPKI DER)) pin (ADR-052); the pin
+	// TLSFingerprint is the base64(SHA-256(SPKI DER)) pin (ADR-054); the pin
 	// is the only verification override. nil = keep the persisted pin
 	// (debounced partial saves must not drop it); non-nil = apply verbatim,
 	// so an explicit empty string CLEARS the pin (back to system CA
@@ -144,7 +144,7 @@ type ListProviderModelsRequest struct {
 	// Type is the transport: "openai" or "anthropic". Empty means derive from
 	// the saved provider, or default to "openai" for an unknown provider.
 	Type string `json:"type,omitempty"`
-	// TLSFingerprint is the draft pin override (ADR-052) so "Fetch Models"
+	// TLSFingerprint is the draft pin override (ADR-054) so "Fetch Models"
 	// reaches a self-pinned endpoint before the provider is persisted. nil =
 	// fall back to the saved value; non-nil applies verbatim.
 	TLSFingerprint *string `json:"tls_fingerprint,omitempty"`
@@ -157,7 +157,7 @@ type ListProviderModelsRequest struct {
 // fingerprint IS the thing being fetched.
 //
 // The request deliberately carries NO fingerprint field: the button is
-// unconditional with respect to any configured pin (ADR-052). It always
+// unconditional with respect to any configured pin (ADR-054). It always
 // reports what the endpoint serves right now, whether or not the provider
 // already has a pin, and whatever the caller does with the result is the
 // user's decision.
@@ -240,44 +240,63 @@ type ProxySettingsRequest struct {
 // exactly the seven configurable groups — per-tool policies no longer exist.
 type SecuritySettingsResponse struct {
 	// Groups maps the configurable tool-group names (config.ToolGroup*) to
-	// their policy (and, for the "execute" group only, a command blacklist).
+	// their policy (and, for the "execute" group only, a command blocklist).
 	// GetSecuritySettings always returns the full set of seven groups;
 	// UpdateSecuritySettings replaces the stored set with what it receives.
 	Groups                     map[string]GroupPolicyResponse `json:"groups"`
 	AutoApproveWorkspaceWrites bool                           `json:"auto_approve_workspace_writes"`
-	// SmartApprove enables the strict OWASP ASI judge for effective
-	// user_confirm calls. Only a strict ALLOW skips UI; every other outcome
-	// still requires the user. Default: false.
-	SmartApprove bool `json:"smart_approve"`
+	// AutonomyMode is the unified autonomy posture (security.autonomy_mode):
+	// "standard" (default — every prompt reaches a human), "assisted" (the
+	// strict OWASP ASI judge resolves escalated calls), or "silent"
+	// (unattended operation via the silent_mode sub-policies). It replaces
+	// the former Smart Approve / silent-mode master-switch pair of keys.
+	AutonomyMode string `json:"autonomy_mode"`
+	// SilentMode is the silent-mode sub-policy container
+	// (security.silent_mode). Its policies are live only while AutonomyMode
+	// is "silent". UpdateSecuritySettings replaces the stored value with
+	// what it receives (validated against the sub-policy enums).
+	SilentMode SilentModeResponse `json:"silent_mode"`
 	// JudgeAvailable reports whether the strict judge is configured and ready.
-	// Read-only: the frontend uses it to disable the Smart Approve toggle when
-	// no judge is operational (e.g. no LLM model configured). Always sent; the
-	// backend ignores any incoming value during updates.
+	// Read-only: the frontend uses it to disable the assisted/silent judge-
+	// dependent options when no judge is operational (e.g. no LLM model
+	// configured). Always sent; the backend ignores any incoming value
+	// during updates.
 	JudgeAvailable bool `json:"judge_available"`
-	// ExecuteBlacklistDefaults carries the shipped default patterns for the
-	// execute group's command blacklist. Read-only: the settings UI offers
-	// them as a one-click restore, so a user who emptied the blacklist can
-	// return to the default posture without re-typing patterns — saving them
-	// hits the store-as-unset rule (config.StoreDefaultBlacklistAsUnset) and
-	// lands the config back in the track-defaults state. Always sent; the
-	// backend ignores any incoming value during updates.
-	ExecuteBlacklistDefaults []string `json:"execute_blacklist_defaults"`
 }
 
 // GroupPolicyResponse holds one tool group's policy for the frontend. It
 // mirrors config.GroupPolicyConfig: a policy from the group enum
 // ("allow"|"user_confirm"|"deny") and — execute group only — a regex
-// blacklist of shell commands forced to confirmation.
+// blocklist of shell commands forced to confirmation.
 type GroupPolicyResponse struct {
 	Policy string `json:"policy"`
-	// Blacklist is serialized WITHOUT omitempty: for the execute group the
-	// nil-vs-empty distinction is meaningful (nil = unset, the shipped
-	// defaults are in force; empty = explicitly no patterns) and must
-	// survive the JSON round trip — the settings UI echoes
+	// Blocklist is serialized WITHOUT omitempty so the nil-vs-empty
+	// distinction survives the JSON round trip — the settings UI echoes
 	// GetSecuritySettings output straight back into UpdateSecuritySettings
-	// on every save. Non-execute groups serialize null, which the update
-	// path ignores.
-	Blacklist []string `json:"blacklist"`
+	// on every save. There are no predefined patterns: nil (JSON null) and
+	// an explicit empty array both mean "no patterns". Non-execute groups
+	// serialize null, which the update path ignores.
+	Blocklist []string `json:"blocklist"`
+}
+
+// SilentModeResponse is the frontend view of security.silent_mode: the
+// container for the four unattended-operation sub-policies (live only while
+// the autonomy mode is "silent" — see SecuritySettingsResponse.AutonomyMode).
+// Each sub-policy Mode uses that sub-policy's config enum (see
+// config.SilentToolConfirm*, SilentStepLimit*, SilentAskUser*,
+// SilentReviewPrompt*). UpdateSecuritySettings validates the modes against
+// the same enums the config loader uses.
+type SilentModeResponse struct {
+	ToolConfirm  SilentSubPolicyResponse `json:"tool_confirm"`
+	StepLimit    SilentSubPolicyResponse `json:"step_limit"`
+	AskUser      SilentSubPolicyResponse `json:"ask_user"`
+	ReviewPrompt SilentSubPolicyResponse `json:"review_prompt"`
+}
+
+// SilentSubPolicyResponse is one silent-mode sub-policy: a single Mode drawn
+// from that sub-policy's enum.
+type SilentSubPolicyResponse struct {
+	Mode string `json:"mode"`
 }
 
 // ModelProfilesResponse is the model-profile profile catalog view for the settings

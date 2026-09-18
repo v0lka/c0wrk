@@ -300,8 +300,12 @@ func TestHandleBranchSwitch(t *testing.T) {
 	}
 
 	// Switch to a new branch (empty collection) — should trigger full index.
-	if err := indexer.HandleBranchSwitch(context.Background(), wsDir, "feature/new"); err != nil {
+	fullPass, err := indexer.HandleBranchSwitch(context.Background(), wsDir, "feature/new")
+	if err != nil {
 		t.Fatalf("HandleBranchSwitch: %v", err)
+	}
+	if !fullPass {
+		t.Error("switch to an empty branch must report a full pass")
 	}
 
 	if svc.CurrentBranchName() != "feature/new" {
@@ -330,14 +334,22 @@ func TestHandleBranchSwitch_ExistingBranch(t *testing.T) {
 		t.Fatalf("IndexFull: %v", err)
 	}
 
-	// Switch to feature, index it.
-	if err := indexer.HandleBranchSwitch(context.Background(), wsDir, "feature/test"); err != nil {
+	// Switch to feature (empty collection — full pass), index it.
+	fullPass, err := indexer.HandleBranchSwitch(context.Background(), wsDir, "feature/test")
+	if err != nil {
 		t.Fatalf("HandleBranchSwitch to feature: %v", err)
+	}
+	if !fullPass {
+		t.Error("switch to an empty branch must report a full pass")
 	}
 
 	// Switch back to main (existing collection with documents) — should do incremental.
-	if err := indexer.HandleBranchSwitch(context.Background(), wsDir, "main"); err != nil {
+	fullPass, err = indexer.HandleBranchSwitch(context.Background(), wsDir, "main")
+	if err != nil {
 		t.Fatalf("HandleBranchSwitch back to main: %v", err)
+	}
+	if fullPass {
+		t.Error("switch to an already-indexed branch must report an incremental (non-full) pass")
 	}
 
 	if !svc.IsReady() {

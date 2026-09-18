@@ -242,3 +242,51 @@ func TestManagerPrepWorkers_ReachesIndexer(t *testing.T) {
 		t.Errorf("Indexer.prepWorkers = %d, want 3 (ManagerConfig.PrepWorkers → IndexerConfig.PrepWorkers)", indexer.prepWorkers)
 	}
 }
+
+// TestNewManager_ChunkKnobsReachService proves vector_index.max_chunk_size
+// and vector_index.max_chunks_per_file flow from ManagerConfig into the
+// Service's resolved values. The Service's own consumers depend on them:
+// the search-path content resolver bounds reconstructed chunk text by
+// maxChunkSize (newContentResolver in hybrid.go/service.go), and the
+// content-less migration's legacy-entry probe scans up to maxChunksPerFile
+// (probeCap in collection.go). When the forwarding is dropped, both
+// silently run on the package defaults even though the config raised them,
+// so search-hit reconstruction truncates at 2*DefaultMaxChunkSize chars and
+// the migration probe never enumerates chunk indices >= DefaultMaxChunksPerFile.
+func TestNewManager_ChunkKnobsReachService(t *testing.T) {
+	mgr, err := NewManager(ManagerConfig{
+		EmbeddingFunc:    fakeEmbeddingFunc(),
+		MaxChunkSize:     8000,
+		MaxChunksPerFile: 20000,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	t.Cleanup(func() { mgr.Shutdown() })
+
+	if got := mgr.service.maxChunkSize; got != 8000 {
+		t.Errorf("Service.maxChunkSize = %d, want 8000 (ManagerConfig.MaxChunkSize → ServiceConfig.MaxChunkSize)", got)
+	}
+	if got := mgr.service.maxChunksPerFile; got != 20000 {
+		t.Errorf("Service.maxChunksPerFile = %d, want 20000 (ManagerConfig.MaxChunksPerFile → ServiceConfig.MaxChunksPerFile)", got)
+	}
+}
+
+// TestNewManager_ChunkKnobsDefaultToPackageDefaults pins the zero-value
+// behaviour of the same forwarding: with no explicit knobs the Service must
+// resolve DefaultMaxChunkSize / DefaultMaxChunksPerFile exactly like the
+// Manager and the per-project Indexer already do.
+func TestNewManager_ChunkKnobsDefaultToPackageDefaults(t *testing.T) {
+	mgr, err := NewManager(ManagerConfig{EmbeddingFunc: fakeEmbeddingFunc()})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	t.Cleanup(func() { mgr.Shutdown() })
+
+	if got := mgr.service.maxChunkSize; got != DefaultMaxChunkSize {
+		t.Errorf("default Service.maxChunkSize = %d, want DefaultMaxChunkSize (%d)", got, DefaultMaxChunkSize)
+	}
+	if got := mgr.service.maxChunksPerFile; got != DefaultMaxChunksPerFile {
+		t.Errorf("default Service.maxChunksPerFile = %d, want DefaultMaxChunksPerFile (%d)", got, DefaultMaxChunksPerFile)
+	}
+}

@@ -165,6 +165,34 @@ func TestAskUserTool_Execute_NilFunc(t *testing.T) {
 	}
 }
 
+// TestAskUserTool_Execute_UnavailableContent pins the exact wording the silent
+// mode relies on: a tool registered with a nil callback — how silent mode's
+// ask_user sub-policy registers it — must return the explicit "not available"
+// result and never block the agent.
+func TestAskUserTool_Execute_UnavailableContent(t *testing.T) {
+	tool := NewAskUserTool(nil)
+	input, _ := json.Marshal(map[string]any{
+		"questions": []map[string]any{
+			{
+				"id":       "q1",
+				"question": "Proceed?",
+				"options":  []map[string]any{{"label": "Yes", "value": "yes"}},
+			},
+		},
+	})
+
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError=true, got %+v", result)
+	}
+	if result.Content != askUserUnavailableContent {
+		t.Errorf("expected the unavailable result %q, got %q", askUserUnavailableContent, result.Content)
+	}
+}
+
 func TestAskUserTool_Execute_InvalidJSON(t *testing.T) {
 	tool := NewAskUserTool(func(_ context.Context, _ AskUserRequest) (AskUserResponse, error) {
 		return AskUserResponse{}, nil

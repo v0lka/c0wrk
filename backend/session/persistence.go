@@ -944,13 +944,16 @@ const planTimelineLimit = 5000
 // execution keeps appending rows, so on a mid-execution reload the declaration
 // can sit thousands of rows behind the newest page the UI loads — this read
 // path lets the panel and the completed-step blocks be restored without
-// paging the whole history into the chat store.
+// paging the whole history into the chat store. When a pathological session
+// exceeds planTimelineLimit, the NEWEST rows survive the cap (the query walks
+// newest-first, mirroring LoadMessagesPage) so the plan currently in flight
+// is never the truncated one.
 func (s *SQLiteSessionStore) LoadPlanTimeline(ctx context.Context, sessionID string) ([]ChatMessage, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, session_id, role, content, reasoning_content, tool_calls, metadata, created_at
 		FROM session_messages
 		WHERE session_id = ? AND role IN `+planTimelineRolesSQL+`
-		ORDER BY created_at ASC, id ASC
+		ORDER BY created_at DESC, id DESC
 		LIMIT ?`, sessionID, planTimelineLimit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load plan timeline: %w", err)
@@ -986,6 +989,12 @@ func (s *SQLiteSessionStore) LoadPlanTimeline(ctx context.Context, sessionID str
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating plan timeline: %w", err)
+	}
+	// The query walked newest-first so the defensive cap keeps the newest
+	// planTimelineLimit rows; flip back to the canonical ascending order the
+	// callers (and the live event stream) expect.
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
 	}
 	return messages, nil
 }

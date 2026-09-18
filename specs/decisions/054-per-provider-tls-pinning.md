@@ -1,4 +1,4 @@
-# ADR-052: Per-Provider TLS Verification Override via SPKI Pinning
+# ADR-054: Per-Provider TLS Verification Override via SPKI Pinning
 
 ## Status
 

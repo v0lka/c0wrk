@@ -427,7 +427,7 @@ func (a *App) buildUIEmitFunc() func(session.Event) {
 		// thread sees one evaluateJavaScript flush per ~16ms instead of one per
 		// event. Settlement/HITL events force an immediate flush.
 		a.emitBatchedEvent(eventName, []any{evt.Data},
-			sessionEventCoalesceKey(evt.Type, evt.Data), isImmediateFlushEvent(evt.Type), 0)
+			sessionEventCoalesceKey(evt.SessionID, evt.Type, evt.Data), isImmediateFlushEvent(evt.Type), 0)
 		// session_renamed is a session-list metadata change (it mirrors the
 		// global project:renamed event). Re-emit it globally so the sidebar
 		// updates the title even when the renamed session is NOT the active
@@ -702,7 +702,34 @@ func (a *App) buildStepLimitCallback(uiEmit func(session.Event)) agent.HITLHandl
 		ctx:              a.ctx,
 		pendingStepLimit: &a.pendingStepLimit,
 		uiEmit:           uiEmit,
+		resolver:         appStepLimitResolver{app: a},
 	}
+}
+
+// stepLimitResolver resolves a step-limit boundary autonomously under silent
+// mode (security.silent_mode enabled AND step_limit.mode = "auto"). It is the
+// adapter's injected "trajectory provider + loop judge": the trajectory comes
+// from the session emitter's recent-execution window and the judge is the
+// session-pinned ToolJudge. handled=false means "not autonomous" (silent mode
+// off, sub-policy "stop", or no session registry) — the adapter then shows the
+// interactive card, so non-silent behavior is unchanged.
+type stepLimitResolver interface {
+	ResolveSilentStepLimit(ctx context.Context, sessionID string, currentStep, maxSteps int, abortReason string) (agent.StepLimitResponse, string, bool)
+}
+
+// appStepLimitResolver adapts *App to stepLimitResolver, lazily reaching the
+// backend Application (which is created AFTER this adapter — the adapter is
+// handed to it as the HITL handler). The type is UNEXPORTED on purpose: Wails
+// auto-binds exported methods on *App, and this resolution must stay host-side
+// (a renderer-callable step-limit RPC would let compromised renderer JS drive
+// the loop judge).
+type appStepLimitResolver struct{ app *App }
+
+func (r appStepLimitResolver) ResolveSilentStepLimit(ctx context.Context, sessionID string, currentStep, maxSteps int, abortReason string) (agent.StepLimitResponse, string, bool) {
+	if r.app == nil || r.app.app == nil {
+		return agent.StepLimitDeny, "", false
+	}
+	return r.app.app.ResolveSilentStepLimit(ctx, sessionID, currentStep, maxSteps, abortReason)
 }
 
 // stepLimitHITLAdapter wraps the step-limit UI prompt logic as an agent.HITLHandler.
@@ -711,6 +738,9 @@ type stepLimitHITLAdapter struct {
 	ctx              context.Context
 	pendingStepLimit *sync.Map
 	uiEmit           func(session.Event)
+	// resolver, when non-nil, offers an autonomous silent-mode decision before
+	// the interactive prompt. See stepLimitResolver.
+	resolver stepLimitResolver
 }
 
 // OnToolCall allows all tool calls unchanged. Tool confirmation is handled
@@ -726,6 +756,16 @@ func (s *stepLimitHITLAdapter) OnStepLimit(ctx context.Context, currentStep, max
 	sessionID := session.SessionIDFromContext(ctx)
 	if sessionID == "" {
 		return agent.StepLimitDeny, nil
+	}
+
+	// Silent mode + step_limit=auto: resolve the boundary autonomously from the
+	// trajectory + loop judge instead of blocking on a human. The resolver
+	// fails closed to deny internally; handled=false means silent autonomy is
+	// off, so fall through to the interactive card below.
+	if s.resolver != nil {
+		if resp, _, handled := s.resolver.ResolveSilentStepLimit(ctx, sessionID, currentStep, maxSteps, reason); handled {
+			return resp, nil
+		}
 	}
 
 	requestID := uuid.New().String()

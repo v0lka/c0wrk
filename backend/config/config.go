@@ -469,7 +469,7 @@ type OpenAICompatibleConfig struct {
 	// PKI); empty = normal system CA verification. The pin is the only
 	// verification override — there is no configured accept-any state, and
 	// no separate toggle. Ignored while an effective HTTP proxy is active
-	// (proxy.enabled + a proxy.url). See ADR-052.
+	// (proxy.enabled + a proxy.url). See ADR-054.
 	TLSFingerprint string `yaml:"tls_fingerprint,omitempty"`
 	// OutputTokenReserve overrides the output-token budget for every model
 	// served by this provider: it is subtracted from the context window in
@@ -489,7 +489,7 @@ type AnthropicCompatibleConfig struct {
 	// PKI); empty = normal system CA verification. The pin is the only
 	// verification override — there is no configured accept-any state, and
 	// no separate toggle. Ignored while an effective HTTP proxy is active
-	// (proxy.enabled + a proxy.url). See ADR-052.
+	// (proxy.enabled + a proxy.url). See ADR-054.
 	TLSFingerprint string `yaml:"tls_fingerprint,omitempty"`
 	// OutputTokenReserve overrides the output-token budget for every model
 	// served by this provider: it is subtracted from the context window in
@@ -622,7 +622,7 @@ type VerifyOnEditConfig struct {
 	Enabled bool `yaml:"enabled"`
 	// Command is the shell command executed after a successful write_file/
 	// edit_file call. It runs through the bash tool machinery, so the
-	// execute-group deny policy and the command blacklist still apply — but
+	// execute-group deny policy and the command blocklist still apply — but
 	// because the command is user-configured (not model-authored) it is not
 	// routed through interactive confirmation.
 	Command string `yaml:"command"`
@@ -723,6 +723,99 @@ const (
 	GroupPolicyDeny        = "deny"         // refuse to execute
 )
 
+// Mode values accepted by security.autonomy_mode — the unified autonomy
+// posture replacing the former pair of autonomy booleans (the Smart Approve
+// toggle and the silent-mode master switch). The core mirror of this
+// vocabulary lives in core (core.AutonomyMode*); backend/
+// configadapter_test.go pins the two dictionaries against each other so
+// neither side can rename a value alone.
+const (
+	// AutonomyModeStandard is the default posture: every interactive prompt
+	// (tool confirmations, step-limit cards, ask_user, review prompt)
+	// reaches a human.
+	AutonomyModeStandard = "standard"
+	// AutonomyModeAssisted lets the strict OWASP ASI judge resolve escalated
+	// calls (the former Smart Approve toggle): only a strict ALLOW skips the
+	// UI; every other outcome still asks the user.
+	AutonomyModeAssisted = "assisted"
+	// AutonomyModeSilent is the unattended posture (the former
+	// security.silent_mode.enabled=true): the four silent-mode sub-policies
+	// resolve the interactive prompts without a human.
+	AutonomyModeSilent = "silent"
+)
+
+// Mode values accepted by security.silent_mode.tool_confirm.mode.
+//
+// In silent mode a tool call that would normally open a confirmation card
+// must resolve without a human. This enum selects how:
+const (
+	// SilentToolConfirmJudge routes the call through the strict judge (the
+	// same OWASP ASI evaluation Smart Approve uses): a strict ALLOW executes,
+	// every other outcome (CONFIRM, error, timeout, unparseable) denies. A
+	// CANONICAL hard reason is deterministically denied even on a strict ALLOW
+	// (the isCanonicalHardReason backstop, as on the interactive path).
+	// Default.
+	SilentToolConfirmJudge = "judge"
+	// SilentToolConfirmAllow executes a confirmation-gated call without UI when
+	// it carries no hard safety reason; a call carrying a HARD reason (canonical
+	// or not) escalates to the strict judge, which decides (a canonical ALLOW is
+	// still backstopped to a denial).
+	SilentToolConfirmAllow = "allow"
+	// SilentToolConfirmDeny blocks every confirmation-gated call.
+	SilentToolConfirmDeny = "deny"
+)
+
+// Mode values accepted by security.silent_mode.step_limit.mode.
+//
+// Selects what the execution loops do at a step-limit boundary (step-budget
+// exhaustion or a circuit-breaker abort). "auto" lets the strict loop judge
+// decide among the four responses; the other values pin one response
+// deterministically without consulting the judge.
+const (
+	// SilentStepLimitAuto lets the strict loop judge decide the boundary from
+	// the trajectory (task, plan progress, abort category, recent steps,
+	// metrics): it may grant more steps (allow_once/allow_more/allow_always)
+	// or stop (deny). Fail-closed to deny when the judge is unavailable or
+	// fails. Default.
+	SilentStepLimitAuto = "auto"
+	// SilentStepLimitAllowOnce grants exactly one more step.
+	SilentStepLimitAllowOnce = "allow_once"
+	// SilentStepLimitAllowMore grants a fresh batch of steps.
+	SilentStepLimitAllowMore = "allow_more"
+	// SilentStepLimitAllowAlways suspends the step budget entirely.
+	SilentStepLimitAllowAlways = "allow_always"
+	// SilentStepLimitDeny automates the "stop" answer: the run halts at the
+	// boundary and reports it, with NO card (unlike "stop", which keeps the
+	// interactive card and therefore opts this gate out of silent mode).
+	SilentStepLimitDeny = "deny"
+	// SilentStepLimitStop does NOT resolve the boundary: it keeps the blocking
+	// step-limit card, i.e. opts this gate out of silent mode.
+	SilentStepLimitStop = "stop"
+)
+
+// Mode values accepted by security.silent_mode.ask_user.mode.
+//
+// Controls the availability of the ask_user tool:
+const (
+	// SilentAskUserDisable registers the ask_user tool with a nil callback, so
+	// a call resolves to the explicit "not available" result and the agent can
+	// never block on a question. Default.
+	SilentAskUserDisable = "disable"
+	// SilentAskUserEnable keeps the ask_user tool registered.
+	SilentAskUserEnable = "enable"
+)
+
+// Mode values accepted by security.silent_mode.review_prompt.mode.
+//
+// Controls the post-task code-review prompt (the review_prompt chat card
+// injected after a successful task_complete with uncommitted changes):
+const (
+	// SilentReviewPromptSuppress does not emit the review prompt. Default.
+	SilentReviewPromptSuppress = "suppress"
+	// SilentReviewPromptAllow emits the review prompt as when silent mode is off.
+	SilentReviewPromptAllow = "allow"
+)
+
 // TrustedGitRepo is one entry in security.trusted_git_repos: a repository
 // whose untrusted-git-config intake warning the user has explicitly dismissed.
 // Path is the absolute, filepath.Clean-ed repository work-tree root (the same
@@ -765,7 +858,7 @@ type SecurityConfig struct {
 
 	// Groups is the tool-security schema: a fixed set of tool groups, each
 	// with its own policy (and, for the "execute" group only, an optional
-	// command blacklist). See the ToolGroup* constants for the group names and
+	// command blocklist). See the ToolGroup* constants for the group names and
 	// defaults.go for the default policies.
 	Groups map[string]GroupPolicyConfig `yaml:"groups"`
 
@@ -776,10 +869,43 @@ type SecurityConfig struct {
 	// regardless of this setting. Default: false (always confirm writes).
 	AutoApproveWorkspaceWrites bool `yaml:"auto_approve_workspace_writes"`
 
-	// SmartApprove, when true, asks the strict judge to resolve effective
-	// user_confirm calls after deterministic and workspace gates. Only strict
-	// ALLOW skips UI; every other outcome still requires the user. Default false.
-	SmartApprove bool `yaml:"smart_approve"`
+	// AutonomyMode is the unified autonomy posture (security.autonomy_mode),
+	// replacing the former pair of autonomy booleans (the Smart Approve
+	// toggle and the silent-mode master switch):
+	//   standard (default) — every interactive prompt reaches a human;
+	//   assisted           — the strict judge resolves effective user_confirm
+	//                        calls (the former Smart Approve toggle on);
+	//   silent             — unattended operation: the silent_mode
+	//                        sub-policies resolve the interactive prompts
+	//                        without a human (the former silent-mode master
+	//                        switch on).
+	// Configs written before the enum carry the two legacy keys instead; the
+	// loader migrates them onto this enum (migrateLegacyAutonomyMode) with
+	// silent taking priority over assisted, and the legacy keys disappear at
+	// the next Save. An unknown value fails safe to standard with a load
+	// warning (never a hard load error).
+	AutonomyMode string `yaml:"autonomy_mode"`
+
+	// LegacySmartApprove is the load-time mirror of the pre-enum
+	// `smart_approve` yaml key. It is populated only by yaml decoding of an
+	// old config file and is migrated into AutonomyMode (or dropped) by
+	// migrateLegacyAutonomyMode immediately after load — the same pattern as
+	// GroupPolicyConfig.LegacyBlacklist (blacklist_migration.go). It is never
+	// persisted: omitempty plus the unconditional clearing in the migration
+	// keep the stale key out of every Save, and json:"-" keeps it out of any
+	// JSON view.
+	LegacySmartApprove *bool `yaml:"smart_approve,omitempty" json:"-"`
+
+	// SilentMode is the silent-mode sub-policy container
+	// (security.silent_mode). The former master switch (enabled) is gone —
+	// whether these policies are live is decided solely by AutonomyMode
+	// ("silent"). When the mode is not "silent" every sub-policy is inert
+	// and the app behaves exactly as before — confirmations, step-limit
+	// cards, ask_user questions, and the post-task review prompt all surface
+	// normally. When the mode is "silent", the sub-policies decide how the
+	// loops resolve those four interactive prompts without a human. See
+	// SilentModeConfig.
+	SilentMode SilentModeConfig `yaml:"silent_mode"`
 
 	// AgentsMDMaxBytes caps the AGENTS.md content size injected into prompts.
 	// AGENTS.md is workspace-controlled untrusted input; without a cap a large or
@@ -821,11 +947,212 @@ type SecurityConfig struct {
 // (security.groups.<group>).
 type GroupPolicyConfig struct {
 	Policy string `yaml:"policy"` // "allow"|"user_confirm"|"deny"
-	// Blacklist holds regex patterns applied to shell commands; only the
+	// Blocklist holds regex patterns applied to shell commands; only the
 	// "execute" group supports it and validation rejects it on any other
 	// group. A matching command is forced to confirmation regardless of
-	// Policy.
-	Blacklist []string `yaml:"blacklist,omitempty"`
+	// Policy. Empty by default: the app ships no predefined patterns, the
+	// list is purely a user-authored extension.
+	Blocklist []string `yaml:"blocklist,omitempty" json:"blocklist,omitempty"`
+
+	// LegacyBlacklist is the load-time mirror of the pre-rename
+	// `blacklist` yaml key. It is populated only by yaml decoding of an
+	// old config file and is migrated into Blocklist (or dropped) by
+	// migrateLegacyGroupBlacklists immediately after load — see
+	// blacklist_migration.go. It is never persisted: omitempty plus the
+	// unconditional clearing in the migration keep the stale key out of
+	// every Save, and json:"-" keeps it out of any JSON view.
+	LegacyBlacklist []string `yaml:"blacklist,omitempty" json:"-"`
+}
+
+// SilentModeConfig is security.silent_mode: the container for the four
+// unattended-operation sub-policies. It is scoped to four interactive
+// decisions the execution loops would otherwise punt to the user. The
+// policies are live only while the unified autonomy mode is "silent"
+// (security.autonomy_mode — the former master switch silent_mode.enabled is
+// migrated onto that enum by the loader); in every other mode each
+// sub-policy is inert. When live, each sub-policy decides how its prompt is
+// resolved without a human — see the SilentToolConfirm*, SilentStepLimit*,
+// SilentAskUser*, and SilentReviewPrompt* enum constants for the accepted
+// Mode values and their meaning.
+//
+// Silent mode only replaces the human ANSWER to a prompt; it never weakens a
+// gate: `deny` groups, the deterministic pre-funnel floor, and the canonical
+// hard-reason backstop (isCanonicalHardReason) are preserved under every mode —
+// a canonical reason is never auto-executed, regardless of the tool_confirm
+// mode.
+type SilentModeConfig struct {
+	// LegacyEnabled is the load-time mirror of the pre-enum
+	// `silent_mode.enabled` yaml key. It is populated only by yaml decoding
+	// of an old config file and is migrated into SecurityConfig.AutonomyMode
+	// (or dropped) by migrateLegacyAutonomyMode immediately after load — the
+	// same pattern as GroupPolicyConfig.LegacyBlacklist
+	// (blacklist_migration.go). It is never persisted: omitempty plus the
+	// unconditional clearing in the migration keep the stale key out of every
+	// Save, and json:"-" keeps it out of any JSON view.
+	LegacyEnabled *bool `yaml:"enabled,omitempty" json:"-"`
+
+	// ToolConfirm resolves a tool call that would open a confirmation card.
+	// Default mode: "judge".
+	ToolConfirm SilentSubPolicyConfig `yaml:"tool_confirm"`
+	// StepLimit resolves the step-budget-exhaustion card.
+	// Default mode: "auto".
+	StepLimit SilentSubPolicyConfig `yaml:"step_limit"`
+	// AskUser controls availability of the ask_user tool.
+	// Default mode: "disable".
+	AskUser SilentSubPolicyConfig `yaml:"ask_user"`
+	// ReviewPrompt resolves the post-task code-review prompt.
+	// Default mode: "suppress".
+	ReviewPrompt SilentSubPolicyConfig `yaml:"review_prompt"`
+}
+
+// SilentSubPolicyConfig is one silent-mode sub-policy: a single Mode drawn
+// from that sub-policy's enum.
+type SilentSubPolicyConfig struct {
+	Mode string `yaml:"mode"`
+}
+
+// ValidateSilentMode checks that every silent-mode sub-policy carries a value
+// from its enum. It is shared by config-file validation (validate) and the
+// runtime security-settings update (UpdateSecuritySettings) so a UI-sourced
+// value can never store what the loader would reject on the next start. An
+// empty Mode is accepted here because ApplyDefaults has already seeded the
+// default before validation runs; callers that bypass ApplyDefaults (the RPC)
+// validate the fully-defaulted value.
+func ValidateSilentMode(sm SilentModeConfig) error {
+	checks := []struct {
+		name    string
+		mode    string
+		allowed []string
+	}{
+		{"tool_confirm", sm.ToolConfirm.Mode, []string{SilentToolConfirmJudge, SilentToolConfirmAllow, SilentToolConfirmDeny}},
+		{"step_limit", sm.StepLimit.Mode, []string{SilentStepLimitAuto, SilentStepLimitAllowOnce, SilentStepLimitAllowMore, SilentStepLimitAllowAlways, SilentStepLimitDeny, SilentStepLimitStop}},
+		{"ask_user", sm.AskUser.Mode, []string{SilentAskUserDisable, SilentAskUserEnable}},
+		{"review_prompt", sm.ReviewPrompt.Mode, []string{SilentReviewPromptSuppress, SilentReviewPromptAllow}},
+	}
+	for _, c := range checks {
+		if c.mode == "" {
+			continue // unset → default seeded by ApplyDefaults
+		}
+		valid := false
+		for _, a := range c.allowed {
+			if c.mode == a {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return fmt.Errorf(
+				"security.silent_mode.%s.mode has invalid value %q; must be one of: %s",
+				c.name, c.mode, strings.Join(c.allowed, ", "),
+			)
+		}
+	}
+	return nil
+}
+
+// SilentModeDefaults returns the canonical default silent-mode configuration:
+// each sub-policy at its documented default (inert until the autonomy mode
+// is "silent"). It is the single source of truth for the sub-policy
+// defaults, used by ApplyDefaults and by the runtime security-settings
+// update.
+func SilentModeDefaults() SilentModeConfig {
+	return SilentModeConfig{
+		ToolConfirm:  SilentSubPolicyConfig{Mode: SilentToolConfirmJudge},
+		StepLimit:    SilentSubPolicyConfig{Mode: SilentStepLimitAuto},
+		AskUser:      SilentSubPolicyConfig{Mode: SilentAskUserDisable},
+		ReviewPrompt: SilentSubPolicyConfig{Mode: SilentReviewPromptSuppress},
+	}
+}
+
+// ApplySilentModeDefaults fills each unset (empty) sub-policy mode with its
+// default. An explicit mode is preserved.
+func ApplySilentModeDefaults(sm *SilentModeConfig) {
+	d := SilentModeDefaults()
+	if sm.ToolConfirm.Mode == "" {
+		sm.ToolConfirm.Mode = d.ToolConfirm.Mode
+	}
+	if sm.StepLimit.Mode == "" {
+		sm.StepLimit.Mode = d.StepLimit.Mode
+	}
+	if sm.AskUser.Mode == "" {
+		sm.AskUser.Mode = d.AskUser.Mode
+	}
+	if sm.ReviewPrompt.Mode == "" {
+		sm.ReviewPrompt.Mode = d.ReviewPrompt.Mode
+	}
+}
+
+// AskUserDisabled reports whether the autonomy mode is "silent" AND the
+// ask_user sub-policy disables the tool — the predicate that suppresses
+// ask_user registration. The core mirror of this predicate lives on
+// core.BuilderSecurityConfig (pinned against this one by
+// backend/configadapter_test.go).
+func (s SecurityConfig) AskUserDisabled() bool {
+	return s.AutonomyMode == AutonomyModeSilent && s.SilentMode.AskUser.Mode == SilentAskUserDisable
+}
+
+// migrateLegacyAutonomyMode migrates the pre-enum autonomy booleans
+// (security.smart_approve and security.silent_mode.enabled, mirrored by
+// LegacySmartApprove / SilentModeConfig.LegacyEnabled) onto the unified
+// SecurityConfig.AutonomyMode enum — the same load-time pattern as
+// migrateLegacyGroupBlacklists (blacklist_migration.go). Resolution order:
+//
+//   - an explicit security.autonomy_mode decides. A value outside the enum
+//     fails SAFE to "standard" with a warning (never a hard load error — a
+//     value written by a newer app version must not brick startup);
+//   - otherwise the legacy keys are honored: silent_mode.enabled=true maps
+//     to "silent" (priority — an explicit unattended posture wins), else
+//     smart_approve=true maps to "assisted", else "standard";
+//
+// The legacy mirrors are cleared unconditionally so both stale keys
+// disappear from the file at the next Save. Every observed legacy key (and
+// every ignored-legacy or unknown-enum case) is reported as a warning
+// string for the load-warnings channel the UI displays.
+func migrateLegacyAutonomyMode(sec *SecurityConfig) []string {
+	legacySmart := sec.LegacySmartApprove
+	legacySilent := sec.SilentMode.LegacyEnabled
+	sec.LegacySmartApprove = nil
+	sec.SilentMode.LegacyEnabled = nil
+
+	if sec.AutonomyMode != "" {
+		switch sec.AutonomyMode {
+		case AutonomyModeStandard, AutonomyModeAssisted, AutonomyModeSilent:
+		default:
+			warning := fmt.Sprintf(
+				"security.autonomy_mode has unknown value %q; falling back to %q (must be one of: %s, %s, %s)",
+				sec.AutonomyMode, AutonomyModeStandard, AutonomyModeStandard, AutonomyModeAssisted, AutonomyModeSilent,
+			)
+			sec.AutonomyMode = AutonomyModeStandard
+			if legacySmart != nil || legacySilent != nil {
+				warning += "; legacy security.smart_approve / security.silent_mode.enabled keys were ignored and are dropped at the next save"
+			}
+			return []string{warning}
+		}
+		if legacySmart != nil || legacySilent != nil {
+			return []string{
+				"security.autonomy_mode is set: legacy security.smart_approve / security.silent_mode.enabled keys were ignored and are dropped at the next save",
+			}
+		}
+		return nil
+	}
+
+	mode := AutonomyModeStandard
+	switch {
+	case legacySilent != nil && *legacySilent:
+		mode = AutonomyModeSilent // explicit unattended posture wins
+	case legacySmart != nil && *legacySmart:
+		mode = AutonomyModeAssisted
+	}
+	sec.AutonomyMode = mode
+	if legacySmart != nil || legacySilent != nil {
+		return []string{
+			fmt.Sprintf(
+				"legacy security.smart_approve / security.silent_mode.enabled keys are deprecated and were migrated to security.autonomy_mode: %s; they are dropped at the next save",
+				mode,
+			),
+		}
+	}
+	return nil
 }
 
 // JudgeConfig holds LLM-based tool safety judge settings.
@@ -1268,7 +1595,7 @@ type ProviderWithModels struct {
 	// TLSFingerprint carries the per-provider SPKI pin (only meaningful for
 	// compatible providers, which are the only ones with a BaseURL):
 	// non-empty = ONLY the pinned key is accepted; empty = system CA
-	// verification. See ADR-052.
+	// verification. See ADR-054.
 	TLSFingerprint string
 	// OutputTokenReserve is the per-provider output-token budget override
 	// (0 = inherit the global executor.output_token_reserve).
@@ -1432,6 +1759,21 @@ func LoadWithResult(path string) (*LoadResult, error) {
 		return nil, fmt.Errorf("failed to parse config YAML: %w", err)
 	}
 
+	// One-time migration from the pre-rename `blacklist` key to `blocklist`
+	// (see blacklist_migration.go): a customized legacy list is carried over,
+	// a default-equal or absent one is dropped. Must run before ApplyDefaults
+	// and validate so the migrated value flows through both untouched.
+	migrateLegacyGroupBlacklists(cfg.Security.Groups)
+
+	// One-time migration from the pre-enum autonomy booleans
+	// (smart_approve / silent_mode.enabled) onto security.autonomy_mode.
+	// Must run BEFORE ApplyDefaults: only an empty AutonomyMode at this
+	// point means "the config predates the enum", so the legacy keys are
+	// honored; afterwards ApplyDefaults seeds the standard default. Each
+	// observed legacy key (and any unknown enum value, which fails safe to
+	// standard) is surfaced as a load warning for the UI.
+	autonomyWarnings := migrateLegacyAutonomyMode(&cfg.Security)
+
 	// Apply defaults for zero-value fields
 	ApplyDefaults(&cfg)
 
@@ -1439,26 +1781,19 @@ func LoadWithResult(path string) (*LoadResult, error) {
 	if err := validate(&cfg); err != nil {
 		return &LoadResult{
 			Config:     &cfg,
-			LoadErrors: []string{"Config validation failed: " + err.Error()},
+			LoadErrors: append(autonomyWarnings, "Config validation failed: "+err.Error()),
 		}, fmt.Errorf("config validation failed: %w", err)
 	}
 
-	return &LoadResult{Config: &cfg}, nil
+	return &LoadResult{Config: &cfg, LoadErrors: autonomyWarnings}, nil
 }
 
 // Save writes the configuration to a YAML file atomically.
 func Save(cfg *Config, path string) error {
-	// Marshal a store-as-unset view of the security groups: an execute
-	// blacklist exactly equal to the shipped defaults is written as omitted,
-	// so every persist path — not just the security settings tab — preserves
-	// the file-format contract that omitting `blacklist:` tracks the app's
-	// shipped defaults (config.example.yaml). The in-memory config is left
-	// untouched: ApplyDefaults re-derives the effective list at load, and the
-	// runtime consumers (ToBuilderConfig, groupPoliciesToResponse) treat nil
-	// and the materialized defaults identically.
-	view := *cfg
-	view.Security.Groups = StoreDefaultBlacklistAsUnset(cfg.Security.Groups)
-	data, err := yaml.Marshal(&view)
+	// Marshal the config as-is: the execute blocklist is empty by default
+	// and purely user-authored, so there is no derived view to maintain —
+	// what is stored is what is written.
+	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
@@ -1503,7 +1838,7 @@ func validate(cfg *Config) error {
 
 	// Validate the security.groups schema: only the fixed set of configurable
 	// groups is accepted, the reserved "system" group must never appear in
-	// config, policies must use the group enum, and a blacklist is an
+	// config, policies must use the group enum, and a blocklist is an
 	// execute-only feature.
 	for name, group := range cfg.Security.Groups {
 		if name == ToolGroupSystem {
@@ -1527,20 +1862,27 @@ func validate(cfg *Config) error {
 				name, group.Policy, GroupPolicyAllow, GroupPolicyUserConfirm, GroupPolicyDeny,
 			)
 		}
-		if name != ToolGroupExecute && len(group.Blacklist) > 0 {
+		if name != ToolGroupExecute && len(group.Blocklist) > 0 {
 			return fmt.Errorf(
-				"security group %q does not support a blacklist; only %q does",
+				"security group %q does not support a blocklist; only %q does",
 				name, ToolGroupExecute,
 			)
 		}
-		for _, pattern := range group.Blacklist {
+		for _, pattern := range group.Blocklist {
 			if _, err := regexp.Compile(pattern); err != nil {
 				return fmt.Errorf(
-					"security group %q blacklist pattern %q does not compile: %w",
+					"security group %q blocklist pattern %q does not compile: %w",
 					name, pattern, err,
 				)
 			}
 		}
+	}
+
+	// Validate security.silent_mode sub-policy enums. ApplyDefaults has
+	// already seeded the defaults, so an unset mode is valid here; an
+	// explicit value must be drawn from that sub-policy's enum.
+	if err := ValidateSilentMode(cfg.Security.SilentMode); err != nil {
+		return err
 	}
 
 	// Validate vector_index.content_filter thresholds: explicit values must

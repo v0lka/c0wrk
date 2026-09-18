@@ -71,7 +71,7 @@ The budget plays two roles: it is subtracted from the context window during over
 
 ## Per-Provider TLS Verification Override
 
-Compatible providers (`openai_compatible.<name>`, `anthropic_compatible.<name>`) may replace system CA verification with an SPKI pin, so a self-signed or internal-PKI endpoint is reachable without giving up peer authentication ([ADR-052](../decisions/052-per-provider-tls-pinning.md)):
+Compatible providers (`openai_compatible.<name>`, `anthropic_compatible.<name>`) may replace system CA verification with an SPKI pin, so a self-signed or internal-PKI endpoint is reachable without giving up peer authentication ([ADR-054](../decisions/054-per-provider-tls-pinning.md)):
 
 ```yaml
 llm:

@@ -20,7 +20,7 @@ const DEFAULT_CONFIG: ProxyConfig = {
 
 export function ProxySettings() {
   // The LLM tab disables its per-provider TLS pin controls while a proxy is
-  // effective (proxy wins, ADR-052). It reads that from this store rather
+  // effective (proxy wins, ADR-054). It reads that from this store rather
   // than from the backend, because saves here are debounced by 800 ms — a
   // re-read right after a toggle would return the stale persisted value.
   // Publishing happens synchronously in every handler below, before the

@@ -65,6 +65,10 @@ import xml.etree.ElementTree as ET
 USER_AGENT = "study-paper-literature/1.0"
 DEFAULT_TIMEOUT = 25
 MAX_RETRIES = 3
+# Hard cap on one HTTP response body: 32 MiB is ample for the JSON/Atom pages
+# these APIs return. The read is cut off above the cap, so an oversized
+# response can never be buffered whole into memory.
+MAX_BODY_BYTES = 32 * 1024 * 1024
 
 ATOM_NS = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
 DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"']+", re.IGNORECASE)
@@ -162,7 +166,12 @@ def _retryable_status(code, url):
 
 def http_get(url, timeout, headers=None, retries=MAX_RETRIES):
     """GET a URL and return the raw body, retrying politely on HTTP 429 / 503
-    (and on HTTP 406 from arXiv's export API, which throttles that way)."""
+    (and on HTTP 406 from arXiv's export API, which throttles that way).
+
+    The body is capped at MAX_BODY_BYTES (an advertised Content-Length above
+    the cap is rejected before reading; otherwise the read stops at cap + 1
+    bytes), so a large response raises ApiError instead of exhausting memory.
+    """
     merged = {"User-Agent": USER_AGENT}
     if headers:
         merged.update(headers)
@@ -171,7 +180,23 @@ def http_get(url, timeout, headers=None, retries=MAX_RETRIES):
         request = urllib.request.Request(url, headers=merged)
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                return response.read()
+                declared = response.headers.get("Content-Length")
+                if declared:
+                    try:
+                        if int(declared) > MAX_BODY_BYTES:
+                            raise ApiError(
+                                "response from %s exceeds the %d-byte cap"
+                                % (url, MAX_BODY_BYTES)
+                            )
+                    except ValueError:
+                        pass  # a malformed header falls through to the bounded read
+                body = response.read(MAX_BODY_BYTES + 1)
+                if len(body) > MAX_BODY_BYTES:
+                    raise ApiError(
+                        "response from %s exceeds the %d-byte cap"
+                        % (url, MAX_BODY_BYTES)
+                    )
+                return body
         except urllib.error.HTTPError as exc:
             if _retryable_status(exc.code, url) and attempt < retries:
                 wait = _retry_delay(exc, attempt)

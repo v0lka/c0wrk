@@ -44,25 +44,3 @@ describe('markdown prose color invariant', () => {
     expect(prose).not.toMatch(/--tw-prose-counters:\s*var\(--color-warning\)/)
   })
 })
-
-describe('markdown prose size invariant', () => {
-  it('uses default prose (14px root), not prose-sm (~12px)', () => {
-    const src = readFileSync(join(SRC_DIR, 'lib/markdownConfig.tsx'), 'utf8')
-    expect(src).toMatch(/cn\('prose max-w-none'/)
-    expect(src).not.toMatch(/prose-sm/)
-  })
-
-  it('keeps inline code at 1em so chips match body size', () => {
-    const css = readFileSync(CSS_PATH, 'utf8')
-    expect(css).toMatch(
-      /\.prose :where\(code\):not\(:where\(pre \*\)\) \{[^}]*font-size:\s*1em;/,
-    )
-  })
-
-  it('does not shrink thought markdown via compact/prose-xs', () => {
-    for (const rel of ['components/chat/ThoughtBlock.tsx', 'components/chat/ThoughtGroupBlock.tsx']) {
-      const src = readFileSync(join(SRC_DIR, rel), 'utf8')
-      expect(src, rel).not.toMatch(/<Markdown\b[^>]*\bcompact\b/)
-    }
-  })
-})

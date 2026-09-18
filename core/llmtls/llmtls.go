@@ -4,7 +4,7 @@
 // stays entirely in this layer — the SDK transports whatever client it is
 // handed (llm.ProviderEntry.HTTPClient).
 //
-// Semantics (per ADR-052, "the pin is the switch"):
+// Semantics (per ADR-054, "the pin is the switch"):
 //
 //	no pin (empty)  → system verification; base is used unchanged
 //	pin set         → accept ONLY the certificate whose
@@ -19,7 +19,7 @@
 // exists only when a pin exists, so a misconfigured provider fails closed
 // (ErrPinMismatch) instead of silently disabling verification entirely.
 //
-// A configured HTTP proxy always wins over the pin (ADR-052): the proxy is a
+// A configured HTTP proxy always wins over the pin (ADR-054): the proxy is a
 // global network policy that predates the per-provider trust decision, and a
 // MITM proxy re-encrypts traffic with its own certificate, so a pin layered
 // on top would reject a legitimately configured setup. The two resolvers
@@ -49,7 +49,7 @@ const FetchFingerprintTimeout = 10 * time.Second
 
 // ErrPinMismatch is returned (wrapped) when the peer certificate's SPKI hash
 // does not match the configured pin. The error deliberately carries no
-// certificate material — only the fact of the mismatch (see ADR-052).
+// certificate material — only the fact of the mismatch (see ADR-054).
 var ErrPinMismatch = errors.New("fingerprint mismatch")
 
 // Client returns an HTTP client for one provider endpoint.
@@ -142,7 +142,7 @@ func DirectDialClient(proxyClient *http.Client, fingerprint string, logger *slog
 
 // warnInvalidPin logs a Warn when pin is non-empty but cannot be the base64
 // (standard encoding) form of a 32-byte SHA-256 digest — the only well-formed
-// pin format this package accepts (ADR-052). A malformed pin still flows
+// pin format this package accepts (ADR-054). A malformed pin still flows
 // through to the handshake, where it fails with ErrPinMismatch regardless;
 // the Warn exists so a typo'd paste (hex characters, missing "=" padding, a
 // truncated value) is distinguishable in the log from a genuine server key
@@ -258,7 +258,7 @@ func normalizePin(pin string) string {
 // settings UI "Get" button: the user pins the certificate the server
 // presents RIGHT NOW rather than copying hashes from the server.
 //
-// The call is UNCONDITIONAL with respect to the configured pin (ADR-052): it
+// The call is UNCONDITIONAL with respect to the configured pin (ADR-054): it
 // takes no fingerprint argument and never reads one, so pressing "Get"
 // behaves identically whether the provider already has a pin or not — it
 // always reports what the endpoint currently serves. Deciding what to do

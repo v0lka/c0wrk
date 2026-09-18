@@ -591,7 +591,7 @@ func (f *FrontendAPI) UpdateExperimentalFeatures(enabled bool) error {
 // GetSecuritySettings returns current security settings for the UI. The
 // response is group-based: every configurable tool group (seven of them — the
 // reserved "system" group is never configurable and never included) is
-// returned with its policy and, for the execute group, its command blacklist.
+// returned with its policy and, for the execute group, its command blocklist.
 func (f *FrontendAPI) GetSecuritySettings() SecuritySettingsResponse {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
@@ -603,15 +603,16 @@ func (f *FrontendAPI) GetSecuritySettings() SecuritySettingsResponse {
 		var defaults config.Config
 		config.ApplyDefaults(&defaults)
 		return SecuritySettingsResponse{
-			Groups:                   groupPoliciesToResponse(defaults.Security.Groups),
-			ExecuteBlacklistDefaults: config.DefaultExecuteGroupBlacklist(),
+			Groups:       groupPoliciesToResponse(defaults.Security.Groups),
+			AutonomyMode: defaults.Security.AutonomyMode,
+			SilentMode:   silentModeToResponse(defaults.Security.SilentMode),
 		}
 	}
 	resp := SecuritySettingsResponse{
 		Groups:                     groupPoliciesToResponse(f.config.Security.Groups),
 		AutoApproveWorkspaceWrites: f.config.Security.AutoApproveWorkspaceWrites,
-		SmartApprove:               f.config.Security.SmartApprove,
-		ExecuteBlacklistDefaults:   config.DefaultExecuteGroupBlacklist(),
+		AutonomyMode:               f.config.Security.AutonomyMode,
+		SilentMode:                 silentModeToResponse(f.config.Security.SilentMode),
 	}
 	if b := f.builder(); b != nil {
 		resp.JudgeAvailable = b.JudgeAvailable()
@@ -620,43 +621,79 @@ func (f *FrontendAPI) GetSecuritySettings() SecuritySettingsResponse {
 }
 
 // groupPoliciesToResponse converts config group policies into the frontend
-// response shape, deep-copying blacklist slices so the caller cannot mutate
-// the live config through the returned map. The execute blacklist is
-// reported as its EFFECTIVE value while preserving the nil-vs-empty
-// distinction across the JSON boundary: nil (unset) means the shipped
-// defaults are in force (ApplyDefaults and ToBuilderConfig derive them), so
-// those are what the UI must show; an explicitly emptied list is reported
-// as [] so a UI round trip (the settings tab saves exactly what it loaded)
-// cannot resurrect the defaults over the user's choice.
+// response shape, deep-copying blocklist slices so the caller cannot mutate
+// the live config through the returned map. The execute blocklist is stored
+// as its effective value — there are no predefined patterns any more, so
+// what is stored is what applies — while the nil-vs-empty distinction is
+// preserved across the JSON boundary: nil (unset) serializes as null and an
+// explicitly emptied list as [], so a UI round trip (the settings tab saves
+// exactly what it loaded) cannot change the user's choice. Both mean "no
+// patterns".
 func groupPoliciesToResponse(groups map[string]config.GroupPolicyConfig) map[string]GroupPolicyResponse {
 	out := make(map[string]GroupPolicyResponse, len(groups))
 	for name, g := range groups {
 		entry := GroupPolicyResponse{Policy: g.Policy}
-		if name == config.ToolGroupExecute {
-			if g.Blacklist == nil {
-				entry.Blacklist = config.DefaultExecuteGroupBlacklist()
-			} else {
-				entry.Blacklist = make([]string, len(g.Blacklist))
-				copy(entry.Blacklist, g.Blacklist)
-			}
-		} else if len(g.Blacklist) > 0 {
-			entry.Blacklist = make([]string, len(g.Blacklist))
-			copy(entry.Blacklist, g.Blacklist)
+		if len(g.Blocklist) > 0 {
+			entry.Blocklist = make([]string, len(g.Blocklist))
+			copy(entry.Blocklist, g.Blocklist)
+		} else if g.Blocklist != nil {
+			entry.Blocklist = []string{}
 		}
 		out[name] = entry
 	}
 	return out
 }
 
-// effectiveExecuteBlacklist maps a stored execute blacklist to its effective
-// value: nil (unset) means the shipped defaults are in force (mirroring
-// ApplyDefaults and ToBuilderConfig); every other list — including an
-// explicitly emptied one — is used as stored.
-func effectiveExecuteBlacklist(blacklist []string) []string {
-	if blacklist == nil {
-		return config.DefaultExecuteGroupBlacklist()
+// silentModeToResponse converts the config silent-mode sub-policies into the
+// frontend response shape. The mode strings are passed through verbatim.
+func silentModeToResponse(sm config.SilentModeConfig) SilentModeResponse {
+	return SilentModeResponse{
+		ToolConfirm:  SilentSubPolicyResponse{Mode: sm.ToolConfirm.Mode},
+		StepLimit:    SilentSubPolicyResponse{Mode: sm.StepLimit.Mode},
+		AskUser:      SilentSubPolicyResponse{Mode: sm.AskUser.Mode},
+		ReviewPrompt: SilentSubPolicyResponse{Mode: sm.ReviewPrompt.Mode},
 	}
-	return blacklist
+}
+
+// responseToSilentMode validates a frontend silent-mode payload and converts it
+// into config form. An unset (empty) mode is filled with its default so a
+// partial payload is not an error, but an explicit value must be a valid enum —
+// mirroring config.validate so a UI-sourced value can never store what the
+// loader would reject on the next start. An invalid payload returns an error
+// and the caller mutates nothing.
+func responseToSilentMode(r SilentModeResponse) (config.SilentModeConfig, error) {
+	sm := config.SilentModeConfig{
+		ToolConfirm:  config.SilentSubPolicyConfig{Mode: r.ToolConfirm.Mode},
+		StepLimit:    config.SilentSubPolicyConfig{Mode: r.StepLimit.Mode},
+		AskUser:      config.SilentSubPolicyConfig{Mode: r.AskUser.Mode},
+		ReviewPrompt: config.SilentSubPolicyConfig{Mode: r.ReviewPrompt.Mode},
+	}
+	config.ApplySilentModeDefaults(&sm)
+	if err := config.ValidateSilentMode(sm); err != nil {
+		return config.SilentModeConfig{}, err
+	}
+	return sm, nil
+}
+
+// responseToAutonomyMode validates a frontend autonomy-mode payload against
+// the security.autonomy_mode enum — mirroring config validation so a
+// UI-sourced value can never store what the loader would reject (or warn and
+// fail-safe) on the next start. An empty mode is tolerated as "keep the
+// stored value": a payload from a frontend build predating the enum must not
+// silently weaken (or fortify) the stored posture. An explicit but unknown
+// value is an error and the caller mutates nothing.
+func responseToAutonomyMode(mode string) (string, error) {
+	switch mode {
+	case "":
+		return "", nil // keep stored — transitional tolerance for pre-enum payloads
+	case config.AutonomyModeStandard, config.AutonomyModeAssisted, config.AutonomyModeSilent:
+		return mode, nil
+	default:
+		return "", fmt.Errorf(
+			"security.autonomy_mode has invalid value %q; must be one of: %s, %s, %s",
+			mode, config.AutonomyModeStandard, config.AutonomyModeAssisted, config.AutonomyModeSilent,
+		)
+	}
 }
 
 // UpdateSecuritySettings updates security settings at runtime. The incoming
@@ -664,17 +701,21 @@ func effectiveExecuteBlacklist(blacklist []string) []string {
 // seven configurable groups — a partial payload is rejected (it would
 // silently weaken security: an omitted group resolves fail-safe to
 // user_confirm, weaker than a configured deny, and omitting execute would
-// strip the live shell blacklist). Validation mirrors config file
+// strip the live shell blocklist). Validation mirrors config file
 // validation: only the fixed set of configurable groups is accepted, the
 // reserved "system" group is rejected, policies must use the group enum, a
-// blacklist is an execute-only feature, and blacklist patterns must compile.
-// An invalid payload mutates nothing. A blacklist identical to the shipped
-// defaults is stored as unset so future default improvements keep flowing;
-// the effective list (nil ⇒ defaults) is what the shell tool registers. A
-// changed effective execute-group blacklist re-registers the shell tool so
-// the edit applies without an app restart; the re-registration runs first
-// and is atomic, so its failure rolls the config back with no
-// partially-applied state.
+// blocklist is an execute-only feature, and blocklist patterns must compile.
+// An invalid payload mutates nothing. The blocklist is empty by default and
+// purely user-authored, so what the payload carries is what gets stored. The
+// autonomy mode must use the security.autonomy_mode enum (an empty payload
+// value keeps the stored posture) and the silent-mode sub-policies are
+// validated against their enums; both are replaced
+// likewise; the pushed security state (including silent mode, and the ask_user
+// registration it controls) reaches live sessions without a restart. A
+// changed execute-group blocklist re-registers the shell tool so the edit
+// applies without an app restart; the re-registration runs first and is
+// atomic, so its failure rolls the config back with no partially-applied
+// state.
 func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) error {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
@@ -688,20 +729,15 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 		return err
 	}
 
-	// Store-as-unset: a blacklist identical to the shipped defaults is
-	// stored as UNSET (nil) so improved default lists keep flowing to
-	// configs that never customized the list. Without this rule every UI
-	// save would pin today's default patterns into the config file (the UI
-	// echoes back everything GetSecuritySettings returned, which includes
-	// the effective-default view). config.StoreDefaultBlacklistAsUnset is
-	// the single implementation of the rule — config.Save applies it to
-	// every persist path, so unrelated settings saves (LLM setup, MCP,
-	// search, ...) cannot pin the defaults either. The effective blacklist
-	// is unchanged: ToBuilderConfig and groupPoliciesToResponse re-derive
-	// the defaults for a nil list, and the change detection below compares
-	// effective lists. An explicitly emptied list ([]) does not match, so
-	// clearing the editor stays an intentional choice.
-	newGroups = config.StoreDefaultBlacklistAsUnset(newGroups)
+	newSilent, err := responseToSilentMode(settings.SilentMode)
+	if err != nil {
+		return err
+	}
+
+	newAutonomyMode, err := responseToAutonomyMode(settings.AutonomyMode)
+	if err != nil {
+		return err
+	}
 
 	// Replace the full group set so config stays in sync with the registry.
 	// prevSecurity snapshots the previous block so a failed shell-tool
@@ -709,27 +745,32 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 	prevSecurity := f.config.Security
 	f.config.Security.Groups = newGroups
 	f.config.Security.AutoApproveWorkspaceWrites = settings.AutoApproveWorkspaceWrites
-	f.config.Security.SmartApprove = settings.SmartApprove
+	// An empty payload mode keeps the stored posture (transitional tolerance
+	// for frontends predating the enum — see responseToAutonomyMode).
+	if newAutonomyMode != "" {
+		f.config.Security.AutonomyMode = newAutonomyMode
+	}
+	f.config.Security.SilentMode = newSilent
 
 	// Apply policies to the shared tool registry via the backend builder.
 	if b := f.builder(); b != nil {
 		builderCfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
-		// Re-register the shell tool FIRST: the blacklist is compiled into
+		// Re-register the shell tool FIRST: the blocklist is compiled into
 		// the tool instance at registration, so runtime edits need it to
 		// take effect without an app restart. The call is atomic (a compile
 		// failure leaves the previously registered tool in place), so on
 		// error the config is restored and no layer is left half-applied —
-		// the old blacklist stays live and matches the rolled-back config.
-		// The comparison uses effective lists: a nil (unset) list means the
-		// shipped defaults are in force, so an unchanged-default save does
-		// not re-register anything.
+		// the old blocklist stays live and matches the rolled-back config.
+		// nil and an explicitly emptied list compare equal (both mean "no
+		// patterns"), so toggling between them does not re-register
+		// anything; only a real pattern change does.
 		if !slices.Equal(
-			effectiveExecuteBlacklist(prevSecurity.Groups[config.ToolGroupExecute].Blacklist),
-			effectiveExecuteBlacklist(newGroups[config.ToolGroupExecute].Blacklist),
+			prevSecurity.Groups[config.ToolGroupExecute].Blocklist,
+			newGroups[config.ToolGroupExecute].Blocklist,
 		) {
-			if err := b.UpdateShellBlacklist(builderCfg); err != nil {
+			if err := b.UpdateShellBlocklist(builderCfg); err != nil {
 				f.config.Security = prevSecurity
-				return fmt.Errorf("failed to apply execute blacklist: %w", err)
+				return fmt.Errorf("failed to apply execute blocklist: %w", err)
 			}
 		}
 		b.UpdateSecurityPolicies(builderCfg)
@@ -743,15 +784,15 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 }
 
 // responseToGroupPolicies validates a frontend groups payload and converts it
-// into config group policies, deep-copying blacklist slices. The rules mirror
+// into config group policies, deep-copying blocklist slices. The rules mirror
 // config.validate — the fixed set of configurable groups, the policy enum,
-// execute-only blacklists, and blacklist pattern compilation — so a UI-sourced
+// execute-only blocklists, and blocklist pattern compilation — so a UI-sourced
 // update can never store what the config loader would reject on the next
 // start. The payload must carry the COMPLETE set of configurable groups: the
 // result replaces the stored map wholesale, and a partial payload would
 // silently weaken security (an omitted group resolves fail-safe to
 // user_confirm — weaker than a configured deny; omitting execute strips the
-// live shell blacklist).
+// live shell blocklist).
 func responseToGroupPolicies(groups map[string]GroupPolicyResponse) (map[string]config.GroupPolicyConfig, error) {
 	out := make(map[string]config.GroupPolicyConfig, len(groups))
 	for name, g := range groups {
@@ -775,28 +816,29 @@ func responseToGroupPolicies(groups map[string]GroupPolicyResponse) (map[string]
 				name, g.Policy, config.GroupPolicyAllow, config.GroupPolicyUserConfirm, config.GroupPolicyDeny,
 			)
 		}
-		if name != config.ToolGroupExecute && len(g.Blacklist) > 0 {
+		if name != config.ToolGroupExecute && len(g.Blocklist) > 0 {
 			return nil, fmt.Errorf(
-				"security group %q does not support a blacklist; only %q does",
+				"security group %q does not support a blocklist; only %q does",
 				name, config.ToolGroupExecute,
 			)
 		}
-		for _, pattern := range g.Blacklist {
+		for _, pattern := range g.Blocklist {
 			if _, err := regexp.Compile(pattern); err != nil {
 				return nil, fmt.Errorf(
-					"security group %q blacklist pattern %q does not compile: %w",
+					"security group %q blocklist pattern %q does not compile: %w",
 					name, pattern, err,
 				)
 			}
 		}
 		entry := config.GroupPolicyConfig{Policy: g.Policy}
-		// Preserve nil vs empty distinction: a missing blacklist means
-		// "unset" (defaults apply), an explicit empty array means "no
-		// patterns" (an intentional user choice that must not resurrect
-		// the defaults).
-		if g.Blacklist != nil {
-			entry.Blacklist = make([]string, len(g.Blacklist))
-			copy(entry.Blacklist, g.Blacklist)
+		// Preserve nil vs empty distinction: a missing blocklist means
+		// "unset" (no patterns), an explicit empty array means "no
+		// patterns" — semantically identical now that no predefined list
+		// exists, but the stored shape still round-trips the user's
+		// editor state.
+		if g.Blocklist != nil {
+			entry.Blocklist = make([]string, len(g.Blocklist))
+			copy(entry.Blocklist, g.Blocklist)
 		}
 		out[name] = entry
 	}
@@ -830,12 +872,15 @@ func responseToGroupPolicies(groups map[string]GroupPolicyResponse) (map[string]
 // returned (the catalog is independent of config.yaml); active_id is empty
 // and suggested_profile_id is null.
 func (f *FrontendAPI) GetModelProfiles() ModelProfilesResponse {
-	// Lock (not RLock): the one-shot notices are drained on read.
-	f.configMu.Lock()
-	defer f.configMu.Unlock()
-
 	// Picker universe (built-in tools + workflow clusters) comes from the live
-	// tool registry, not from config, so it is read here.
+	// tool registry, not from config, so it is read here. Both this registry
+	// call and the catalog load below do I/O (the latter reads
+	// ~/.c0wrk/model-profiles.yaml) — they run BEFORE the config lock is
+	// taken, exactly like modelProfilesGoalBlocked, so the exclusive lock is
+	// held only for the notice drain and the config field copies below
+	// (holding it across disk I/O and the tool-registry lock would block
+	// every other config read and mutation for the whole read, and would
+	// order configMu before the tool-registry lock).
 	builtinTools, toolGroups := f.modelProfilesPickerData()
 
 	resp := ModelProfilesResponse{
@@ -858,6 +903,12 @@ func (f *FrontendAPI) GetModelProfiles() ModelProfilesResponse {
 	for _, p := range catalog {
 		resp.Profiles = append(resp.Profiles, modelProfileToDTO(p))
 	}
+
+	// Lock (not RLock): the one-shot notices are drained on read. Everything
+	// that performs I/O (picker data, catalog load) has already run; the lock
+	// now guards only the config field reads and the notice drain.
+	f.configMu.Lock()
+	defer f.configMu.Unlock()
 
 	if f.config == nil {
 		return resp
@@ -1532,7 +1583,7 @@ func (f *FrontendAPI) ListProviderModels(req ListProviderModelsRequest) ([]strin
 
 // GetProviderTLSCertificate connects to the provider's endpoint and returns
 // the SPKI fingerprint of the certificate the server currently presents —
-// the settings UI "Get" button (ADR-052). The connection performs only the
+// the settings UI "Get" button (ADR-054). The connection performs only the
 // TLS handshake: no HTTP request, no API key. Verification is deliberately
 // skipped, because the fingerprint IS what is being fetched; the user pins
 // the result afterwards.
@@ -1606,7 +1657,7 @@ func (f *FrontendAPI) GetProviderTLSCertificate(req GetProviderTLSCertificateReq
 }
 
 // resolveTLSFingerprint applies the pointer sentinel for the per-provider
-// TLS pin (ADR-052) on the API boundary: nil means "keep the persisted pin",
+// TLS pin (ADR-054) on the API boundary: nil means "keep the persisted pin",
 // which is what a debounced partial save from the settings dialog sends when
 // only credentials or the model list changed — without this, every such save
 // would silently clear the pin. A non-nil pointer applies verbatim, so an
@@ -1654,7 +1705,7 @@ func applyListProviderModelsOverrides(cfg *core.BuilderConfig, req ListProviderM
 		return fmt.Errorf("unsupported provider type %q", providerType)
 	}
 
-	// Draft TLS pin (ADR-052): nil falls back to the saved value so a partial
+	// Draft TLS pin (ADR-054): nil falls back to the saved value so a partial
 	// draft (only credentials edited) does not silently drop the pin; a
 	// non-nil value applies verbatim, so an explicit draft "" wins.
 	tlsFingerprint := resolveTLSFingerprint(req.TLSFingerprint, existing.TLSFingerprint, exists)

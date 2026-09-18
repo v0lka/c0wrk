@@ -29,7 +29,7 @@ interface ProviderEntryPayload {
   api_key: string
   base_url?: string
   models: string[]
-  /** Only set for compatible providers (ADR-052). */
+  /** Only set for compatible providers (ADR-054). */
   tls_fingerprint?: string
 }
 
@@ -55,7 +55,7 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
           entry.base_url = cfg.base_url
         }
         if (isCompatibleProvider(p)) {
-          // The per-provider TLS pin (ADR-052) is stored only for compatible
+          // The per-provider TLS pin (ADR-054) is stored only for compatible
           // providers — fixed ones talk to vendor endpoints with public
           // certificates. It always travels along so the backend applies it
           // atomically with the rest of the entry; the pointer sentinel on

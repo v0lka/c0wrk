@@ -12,7 +12,7 @@ interface OpenAICompatibleProviderFormProps {
   defaultModel: string
   /** Label prefix shown for each provider accordion. Defaults to "OpenAI Compatible". */
   labelPrefix?: string
-  /** Effective proxy state: disables the per-provider TLS pin UI (ADR-052). */
+  /** Effective proxy state: disables the per-provider TLS pin UI (ADR-054). */
   proxyActive?: boolean
 }
 

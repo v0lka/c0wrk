@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/core"
+	coretools "github.com/v0lka/c0wrk/core/tools"
 )
 
 // TestAgentsMDSearchPaths verifies that agentsMDSearchPaths resolves the global
@@ -302,7 +304,7 @@ func TestE2SConfigExperimentalGate(t *testing.T) {
 	}
 }
 
-// The per-provider TLS pin (ADR-052) must reach the builder layer; the core
+// The per-provider TLS pin (ADR-054) must reach the builder layer; the core
 // dial paths read it from BuilderProviderConfig. Providers without a pin must
 // map to the empty string (system verification), never to a neighbour's pin.
 func TestToBuilderConfig_ProviderTLSFingerprint(t *testing.T) {
@@ -347,5 +349,99 @@ func TestToBuilderConfig_ProviderTLSFingerprint(t *testing.T) {
 		if pc.TLSFingerprint != wantPin {
 			t.Errorf("ProviderConfigs[%q].TLSFingerprint = %q, want %q", name, pc.TLSFingerprint, wantPin)
 		}
+	}
+}
+
+// TestToBuilderConfig_SilentModeEnumPin pins the silent-mode mode vocabulary
+// shared by backend/config and core. The mode strings travel verbatim through
+// ToBuilderConfig into core's silent-mode posture (BuilderSilentModeConfig →
+// tools.SilentModeState), where core interprets them against its own constants
+// (the silentToolTerminal switch and the AskUserDisabled predicates). core
+// cannot import backend/config, so this package is the only layer that sees
+// BOTH dictionaries: a config-side rename that core does not follow would make
+// every tool_confirm mode silently fall back to the judge default and keep
+// ask_user registered in unattended runs — a security-posture regression no
+// core-side test can catch (core tests spell core's literals, config tests
+// spell config's).
+func TestToBuilderConfig_SilentModeEnumPin(t *testing.T) {
+	// Direct dictionary comparison: the config enum constants must equal the
+	// core vocabulary constants the registry interprets them with.
+	if config.SilentToolConfirmJudge != coretools.SilentToolConfirmJudge ||
+		config.SilentToolConfirmAllow != coretools.SilentToolConfirmAllow ||
+		config.SilentToolConfirmDeny != coretools.SilentToolConfirmDeny {
+		t.Fatalf(
+			"silent-mode tool_confirm enum desynchronized: config(judge=%q, allow=%q, deny=%q) vs core(judge=%q, allow=%q, deny=%q) — rename both sides together",
+			config.SilentToolConfirmJudge, config.SilentToolConfirmAllow, config.SilentToolConfirmDeny,
+			coretools.SilentToolConfirmJudge, coretools.SilentToolConfirmAllow, coretools.SilentToolConfirmDeny,
+		)
+	}
+	if config.SilentAskUserDisable != coretools.SilentAskUserDisable {
+		t.Fatalf(
+			"silent-mode ask_user enum desynchronized: config=%q vs core=%q — rename both sides together",
+			config.SilentAskUserDisable, coretools.SilentAskUserDisable,
+		)
+	}
+	// Same pin for the unified autonomy-mode vocabulary: config re-declares
+	// core's constants (core never imports backend/config), so a one-sided
+	// rename would silently strand the posture on the loader's fail-safe
+	// "standard".
+	if config.AutonomyModeStandard != core.AutonomyModeStandard ||
+		config.AutonomyModeAssisted != core.AutonomyModeAssisted ||
+		config.AutonomyModeSilent != core.AutonomyModeSilent {
+		t.Fatalf(
+			"autonomy-mode enum desynchronized: config(standard=%q, assisted=%q, silent=%q) vs core(standard=%q, assisted=%q, silent=%q) — rename both sides together",
+			config.AutonomyModeStandard, config.AutonomyModeAssisted, config.AutonomyModeSilent,
+			core.AutonomyModeStandard, core.AutonomyModeAssisted, core.AutonomyModeSilent,
+		)
+	}
+
+	// Through the real adapter: the config enums must flow into the builder
+	// posture verbatim (core/builder.go copies these strings unchanged into
+	// tools.SilentModeState, which core interprets with its constants).
+	cfg := &config.Config{}
+	cfg.Security.AutonomyMode = config.AutonomyModeSilent
+	cfg.Security.SilentMode = config.SilentModeConfig{
+		ToolConfirm:  config.SilentSubPolicyConfig{Mode: config.SilentToolConfirmDeny},
+		StepLimit:    config.SilentSubPolicyConfig{Mode: config.SilentStepLimitStop},
+		AskUser:      config.SilentSubPolicyConfig{Mode: config.SilentAskUserDisable},
+		ReviewPrompt: config.SilentSubPolicyConfig{Mode: config.SilentReviewPromptSuppress},
+	}
+	builderSecurity := ToBuilderConfig(cfg, config.PredefinedModelProfiles()).Security
+	posture := builderSecurity.SilentMode
+	if posture.ToolConfirm != coretools.SilentToolConfirmDeny || posture.AskUser != coretools.SilentAskUserDisable {
+		t.Fatalf("ToBuilderConfig must pass the silent-mode modes through verbatim, got %+v", posture)
+	}
+	if builderSecurity.AutonomyMode != config.AutonomyModeSilent {
+		t.Fatalf("ToBuilderConfig must carry autonomy_mode verbatim, got %q", builderSecurity.AutonomyMode)
+	}
+
+	// Behaviorally: both ask_user predicates (the registration config and its
+	// builder mirror) must recognize the config enum value the adapter
+	// forwards — a drifted "disable" spelling would leave ask_user live in
+	// unattended runs.
+	if !(coretools.BuiltinToolsConfig{
+		AutonomyMode: coretools.AutonomyModeSilent,
+		SilentMode:   coretools.SilentModeState{AskUser: config.SilentAskUserDisable},
+	}).AskUserDisabled() {
+		t.Error("tools.BuiltinToolsConfig.AskUserDisabled must recognize the silent autonomy mode plus config.SilentAskUserDisable")
+	}
+	if !builderSecurity.AskUserDisabled() {
+		t.Error("core.BuilderSecurityConfig.AskUserDisabled must recognize the silent autonomy mode plus config.SilentAskUserDisable")
+	}
+	if builderSecurity.SilentModeEnabled() != true || builderSecurity.SmartApproveEnabled() != true {
+		t.Error("the silent autonomy mode must derive SilentModeEnabled and SmartApproveEnabled")
+	}
+	// The assisted mode derives only Smart Approve; standard derives neither.
+	assistCfg := &config.Config{}
+	assistCfg.Security.AutonomyMode = config.AutonomyModeAssisted
+	assistSecurity := ToBuilderConfig(assistCfg, config.PredefinedModelProfiles()).Security
+	if assistSecurity.SmartApproveEnabled() != true || assistSecurity.SilentModeEnabled() != false {
+		t.Error("the assisted autonomy mode must derive SmartApproveEnabled only")
+	}
+	stdCfg := &config.Config{}
+	stdCfg.Security.AutonomyMode = config.AutonomyModeStandard
+	stdSecurity := ToBuilderConfig(stdCfg, config.PredefinedModelProfiles()).Security
+	if stdSecurity.SmartApproveEnabled() || stdSecurity.SilentModeEnabled() {
+		t.Error("the standard autonomy mode must derive neither flag")
 	}
 }

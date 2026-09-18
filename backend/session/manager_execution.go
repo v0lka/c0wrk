@@ -2129,6 +2129,21 @@ func (m *Manager) emitAgentMetrics(sessionID, finish string) {
 	s.emitter.EmitAgentMetrics(finish)
 }
 
+// ExecutionWindow returns the host-side recent-execution window (bounded
+// trajectory + run counters + plan progress) for a session. ok is false when
+// the session is unknown or has no emitter. It backs the silent-mode
+// step-limit judge, which needs the trajectory — not just the boundary reason.
+func (m *Manager) ExecutionWindow(sessionID string) (ExecutionWindowSnapshot, bool) {
+	if sessionID == "" {
+		return ExecutionWindowSnapshot{}, false
+	}
+	s, ok := m.GetSession(sessionID)
+	if !ok || s == nil || s.emitter == nil {
+		return ExecutionWindowSnapshot{}, false
+	}
+	return s.emitter.ExecutionWindowSnapshot(), true
+}
+
 // persistCancellationIfUnfinished marks the session's unfinished task (if any)
 // as cancelled in the task store. Best-effort: errors are logged only.
 func (m *Manager) persistCancellationIfUnfinished(sessionID string) {

@@ -22,8 +22,15 @@ import type { ChatMessage } from '@/types/models'
 
 const SID = 's1'
 
+// Timestamp for seeded window rows: comfortably after every timeline row
+// (row() ids map to 2026-01-01T00:00:NN), mirroring reality — the newest
+// page postdates the plan declaration it is loaded against. prependHistory
+// -Messages splices by created_at, so a zero timestamp would wrongly sort
+// the window rows behind the timeline rows.
+const WINDOW_TS = Date.parse('2026-01-02T00:00:00Z')
+
 function uiMsg(id: string, type: ChatMessageUI['type'], metadata: Record<string, unknown> = {}): ChatMessageUI {
-  return { id, sessionId: SID, type, content: '', metadata, timestamp: 0 }
+  return { id, sessionId: SID, type, content: '', metadata, timestamp: WINDOW_TS }
 }
 
 function row(id: number, role: string, metadata: Record<string, unknown> = {}): ChatMessage {

@@ -163,7 +163,7 @@ func TestClient_WrongPinFailsClosed(t *testing.T) {
 
 // The mismatch error must report the FACT of a mismatch and nothing about
 // the certificate — no PEM, no base64 of the key, no subject/DNS names
-// (RFC 7469 style; see ADR-052).
+// (RFC 7469 style; see ADR-054).
 func TestPinVerifier_ErrorCarriesNoCertificateMaterial(t *testing.T) {
 	srv, serverPin := newTLSServer(t, "hello")
 	cert := srv.Certificate()
@@ -364,7 +364,7 @@ func TestFetchFingerprint_MatchesServerSPKI(t *testing.T) {
 }
 
 // The "Get" button is unconditional with respect to the configured pin
-// (ADR-052): FetchFingerprint takes no fingerprint argument, so its result
+// (ADR-054): FetchFingerprint takes no fingerprint argument, so its result
 // cannot depend on whether the provider already has one. Calling it twice
 // against the same server yields the same value both times.
 func TestFetchFingerprint_IndependentOfAnyConfiguredPin(t *testing.T) {
@@ -390,7 +390,7 @@ func TestFetchFingerprint_IndependentOfAnyConfiguredPin(t *testing.T) {
 
 // fetchFingerprintSignatureGuard pins FetchFingerprint's signature at
 // compile time: the "Get" button must stay unconditional with respect to the
-// configured pin (ADR-052), so the function takes no fingerprint argument.
+// configured pin (ADR-054), so the function takes no fingerprint argument.
 // Adding one stops this from compiling.
 func fetchFingerprintSignatureGuard() func(context.Context, string, *slog.Logger) (string, error) {
 	return FetchFingerprint

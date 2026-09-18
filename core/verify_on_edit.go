@@ -45,7 +45,7 @@ func parseVerifyOnEditTimeout(raw string) (time.Duration, bool) {
 // The runner executes the USER-CONFIGURED command (config.yaml, never the
 // model) through the session registry's platform shell tool (bash_exec on
 // Unix, posh_exec on Windows — tools.ShellExecToolName) via
-// ExecuteUnattended: group-deny policy, the command blacklist, and
+// ExecuteUnattended: group-deny policy, the command blocklist, and
 // symlink/SSRF hard reasons still block, while interactive confirmation is
 // skipped — the user already approved the command by configuring it. The
 // output is returned raw; truncation to MaxOutputChars happens in the SDK
@@ -115,7 +115,7 @@ func buildEditVerifyRunner(
 					Timeout:  timeout,
 				}
 			}
-			// Blocked by policy/blacklist, or non-zero exit. Extract the exit
+			// Blocked by policy/blocklist, or non-zero exit. Extract the exit
 			// code from the trailing exec error the shell tool appends.
 			return agent.EditVerifyResult{
 				Output:   res.Content,

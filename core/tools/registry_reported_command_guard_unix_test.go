@@ -28,16 +28,25 @@ const reportedCommandWorkspace = "/Users/vkochetkov/Repositories/c0wrk"
 // TestShellJudgeAndSymlinkGate_ReportedCommandStaysClean is the user-visible
 // guard for the binding fix: the reported command must produce NO safety reason
 // at either gate that could force a confirmation under SmartApprove=false —
-// neither the REAL sp4rk bash judge (builtins.NewBashExecTool) nor the host
-// registry's symlink gate (ToolRegistry.symlinkHardReason). Its inner command
-// substitutions must stay genuinely assessed, so the negative controls below
-// still escalate: an approved binding must lower nothing that was ever
-// dangerous.
+// neither the REAL sp4rk bash judge (builtins.NewBashExecTool, driven with the
+// flowsh analysis attached exactly as the registry's Execute path does — see
+// AttachShellAnalysis) nor the host registry's symlink gate
+// (ToolRegistry.symlinkHardReason). Its inner command substitutions must stay
+// genuinely assessed, so the negative controls below still escalate: an
+// approved binding must lower nothing that was ever dangerous.
 //
 // Table-driven and driven against the real builtins (not prose copies in
 // mocks), mirroring registry_canonical_reasons_unix_test.go and the bash-judge
 // cases in registry_bashexec_unix_test.go. The canonical-reason tests are left
 // untouched.
+//
+// Under the flowsh contract a clean judge outcome is an EXPLICIT ALLOW
+// (ShellJudgeOutcome returns the analysis's verdict; the empty zero outcome
+// only appears when no analysis is attached). Reads of SYSTEM paths
+// (/etc/passwd) no longer escalate — only writes to them do (C3) — and the
+// old in-judge unresolvable-token stage is gone (unbounded shapes land on the
+// non-canonical C6 instead); the soft scope question survives as C8 for
+// non-system out-of-root effects.
 func TestShellJudgeAndSymlinkGate_ReportedCommandStaysClean(t *testing.T) {
 	bashTool, err := builtins.NewBashExecTool([]string{`rm\s+-rf\s+/`})
 	if err != nil {
@@ -47,15 +56,15 @@ func TestShellJudgeAndSymlinkGate_ReportedCommandStaysClean(t *testing.T) {
 	// The session root is the directory the reported command targets, so its
 	// `cd /Users/.../c0wrk` argument resolves in-root and contributes no
 	// containment escalation; only the substitution's assessment is under test.
-	ctx := sdktools.WithWorkspacePath(context.Background(), reportedCommandWorkspace)
+	baseCtx := sdktools.WithWorkspacePath(context.Background(), reportedCommandWorkspace)
 
 	tests := []struct {
 		name string
 		// command is the shell command fed to the real bash judge.
 		command string
 		// wantReasonCode is the exact JudgeReasonCode the bash judge must
-		// attach; "" means the judge must return the empty JudgeOutcome (no
-		// Reason, no ReasonCode) so nothing forces a confirmation.
+		// attach; "" means the judge must return an explicit allow (Allow
+		// true, no Reason, no ReasonCode) so nothing forces a confirmation.
 		wantReasonCode sdktools.JudgeReasonCode
 		// wantSeverity is the severity paired with wantReasonCode.
 		wantSeverity sdktools.JudgeSeverity
@@ -67,7 +76,7 @@ func TestShellJudgeAndSymlinkGate_ReportedCommandStaysClean(t *testing.T) {
 			name:            "reported package-test command: judge and symlink gate both stay clean",
 			command:         reportedCommand,
 			wantReasonCode:  "",
-			wantSeverity:    sdktools.JudgeSeverityHard, // zero value of the empty outcome
+			wantSeverity:    sdktools.JudgeSeverityHard, // zero value; unused for allow rows
 			wantSymlinkCode: "",
 		},
 		{
@@ -79,28 +88,28 @@ func TestShellJudgeAndSymlinkGate_ReportedCommandStaysClean(t *testing.T) {
 		},
 		{
 			name:            "out-of-root inner read stays a soft scope escalation",
-			command:         `X=$(cat /etc/passwd); echo $X`,
+			command:         `X=$(cat /opt/external/notes.txt); echo $X`,
 			wantReasonCode:  sdktools.ReasonCodeOutsideSessionRoots,
 			wantSeverity:    sdktools.JudgeSeveritySoft,
 			wantSymlinkCode: "",
 		},
 		{
-			name:           "unassessable inner binding stays a hard unresolvable token",
+			name:           "unresolvable inner binding: judge assesses it, symlink gate stays suspicious",
 			command:        `X=$(read D < cfg; echo $D); echo $X`,
-			wantReasonCode: sdktools.ReasonCodeUnresolvablePathToken,
-			wantSeverity:   sdktools.JudgeSeverityHard,
-			// The unresolvable $D/$X expansions also keep the symlink gate
+			wantReasonCode: "",
+			wantSeverity:   sdktools.JudgeSeverityHard, // zero value; unused for allow rows
+			// The unresolvable $D/$X expansions still keep the symlink gate
 			// best-effort suspicious — a non-canonical code, so a strict judge
 			// may still settle it.
 			wantSymlinkCode: sdktools.ReasonCodeSymlinkSuspicious,
 		},
 		{
-			name:           "bare command substitution: judge silent, symlink gate stays suspicious",
+			name:           "bare command substitution: judge assesses it clean, symlink gate stays suspicious",
 			command:        `cat $(echo x)`,
 			wantReasonCode: "",
 			wantSeverity:   sdktools.JudgeSeverityHard,
-			// A bare (argument-position) substitution was never assessed — the
-			// binding fix deliberately left it escalating.
+			// A bare (argument-position) substitution is invisible to the
+			// symlink walker — it stays escalating there.
 			wantSymlinkCode: sdktools.ReasonCodeSymlinkSuspicious,
 		},
 	}
@@ -112,6 +121,15 @@ func TestShellJudgeAndSymlinkGate_ReportedCommandStaysClean(t *testing.T) {
 				t.Fatalf("json.Marshal() error = %v", err)
 			}
 
+			// Production posture: the analysis is computed for this exact
+			// input and attached before the judge runs (Execute →
+			// AttachShellAnalysis → judgeToolCall).
+			analysis, aErr := sdktools.AnalyzeShellCommandForJudge(baseCtx, "bash_exec", input)
+			if aErr != nil {
+				t.Fatalf("AnalyzeShellCommandForJudge(%q): %v", tt.command, aErr)
+			}
+			ctx := sdktools.WithShellAnalysis(baseCtx, analysis, nil)
+
 			outcome := bashTool.Judge(ctx, input)
 			if outcome.ReasonCode != tt.wantReasonCode {
 				t.Errorf("bash Judge ReasonCode = %q, want %q (reason: %q)", outcome.ReasonCode, tt.wantReasonCode, outcome.Reason)
@@ -120,14 +138,13 @@ func TestShellJudgeAndSymlinkGate_ReportedCommandStaysClean(t *testing.T) {
 				t.Errorf("bash Judge Severity = %v, want %v (reason: %q)", outcome.Severity, tt.wantSeverity, outcome.Reason)
 			}
 			if tt.wantReasonCode == "" {
-				// No Reason AND no ReasonCode: the reported command must yield
-				// the empty JudgeOutcome exactly, so SmartApprove=false has no
-				// hard safety backstop to force a confirmation on.
+				// Explicit allow: no Reason, no ReasonCode — SmartApprove=false
+				// has no hard safety backstop to force a confirmation on.
+				if !outcome.Allow {
+					t.Errorf("bash Judge outcome = %+v, want an explicit allow (no escalation)", outcome)
+				}
 				if outcome.Reason != "" {
 					t.Errorf("bash Judge Reason = %q, want empty for a clean command", outcome.Reason)
-				}
-				if outcome != (sdktools.JudgeOutcome{}) {
-					t.Errorf("bash Judge outcome = %+v, want the empty JudgeOutcome", outcome)
 				}
 			} else if outcome.Reason == "" {
 				t.Errorf("bash Judge attached code %q with empty prose; an escalation must carry a reason", outcome.ReasonCode)

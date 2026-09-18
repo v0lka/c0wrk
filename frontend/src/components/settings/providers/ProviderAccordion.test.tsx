@@ -131,7 +131,7 @@ describe('ProviderAccordion model list', () => {
       api_key: 'key',
       base_url: 'http://localhost:1234',
       type: undefined,
-      // The draft TLS pin rides along verbatim (ADR-052): an explicit ''
+      // The draft TLS pin rides along verbatim (ADR-054): an explicit ''
       // must win over the persisted value, not fall back to it.
       tls_fingerprint: '',
     })

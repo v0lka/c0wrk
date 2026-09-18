@@ -127,8 +127,8 @@ Key points:
 - Environment placeholders are supported as `${ENV_VAR}`.
 - The active LLM provider is resolved from `llm.default_model` — the Router looks up which provider has the model in its enabled `models` list.
 - MCP servers are configured under `mcp.servers`.
-- Security policy is configured exclusively by capability group under `security.groups`; the legacy `security.default_policy` and `security.tool_policies` keys are inert. The `execute` group alone supports a command blacklist. See [`specs/decisions/024-group-policies.md`](specs/decisions/024-group-policies.md).
-- `experimental.enabled` gates both RESEARCH and the Model Profiles feature. `executor.verify_on_edit` is opt-in and runs only a config-authored command through the unattended hard-safety path.
+- Security policy is configured exclusively by capability group under `security.groups`; the legacy `security.default_policy` and `security.tool_policies` keys are inert. The `execute` group alone supports a command blocklist — **empty by default**: c0wrk ships no predefined patterns, and the deterministic floor is the flowsh shell-analysis criteria C1–C8 rather than a pattern list. See [`specs/decisions/024-group-policies.md`](specs/decisions/024-group-policies.md) and [`specs/decisions/052-flowsh-command-analysis.md`](specs/decisions/052-flowsh-command-analysis.md).
+- `experimental.enabled` gates only the E2S execution mode; RESEARCH and Model Profiles are always available. `executor.verify_on_edit` is opt-in and runs only a config-authored command through the unattended hard-safety path.
 - Main agent calls use `timeouts.llmRequestTimeout`; one-shot title, commit-message, and prompt-optimization calls use `timeouts.serviceLLMRequestTimeout`.
 - Runtime limits are configurable under `toolLimits`, `timeouts`, `executor`, and `vector_index`; update checks use the `updates` section.
 - The SQLite database is always stored at `~/.c0wrk/database.db` (the `memory.database` config key has been retired).
@@ -262,7 +262,7 @@ make test
 
 All three must pass clean. `make lint` includes `fmt-check`; `make test` runs both Go tests (`go test ./...`) and frontend tests (`cd frontend && npm test` via vitest).
 
-Every contribution must also follow [`SECURITY.md`](SECURITY.md). Treat files, web/MCP output, attachments, clipboard/drop content, and generated artifacts as untrusted; preserve capability-group policy, path/symlink/SSRF/blacklist gates, and never place secrets in source, logs, prompts, facts, or test fixtures. If behavior, a cross-layer interface, configuration, or an architectural invariant changes, update the affected documents under [`specs/`](specs/) according to [`specs/META.md`](specs/META.md); accepted ADRs are immutable and are superseded by a new ADR.
+Every contribution must also follow [`SECURITY.md`](SECURITY.md). Treat files, web/MCP output, attachments, clipboard/drop content, and generated artifacts as untrusted; preserve capability-group policy, path/symlink/SSRF/blocklist gates, and never place secrets in source, logs, prompts, facts, or test fixtures. If behavior, a cross-layer interface, configuration, or an architectural invariant changes, update the affected documents under [`specs/`](specs/) according to [`specs/META.md`](specs/META.md); accepted ADRs are immutable and are superseded by a new ADR.
 
 See the "Pre-PR checklist" section of [`AGENTS.md`](AGENTS.md) for implementation conventions.
 

@@ -12,6 +12,13 @@ vi.mock('@/api/papers', () => ({
   setPaperPinned: vi.fn(),
   recordFlashcardReview: vi.fn(),
 }))
+// The failure-path tests below make the store's flashcard write-back reject
+// on purpose; the real logger would print "Failed to record the flashcard
+// review: …" for each. That output is the expected behavior under test, not
+// a regression — mock the logger to keep the suite output clean.
+vi.mock('@/lib/logger', () => ({
+  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}))
 
 import {
   getPapers,

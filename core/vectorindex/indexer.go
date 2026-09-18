@@ -360,8 +360,12 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 }
 
 // HandleBranchSwitch handles a git branch change by switching the collection
-// and re-indexing as needed.
-func (idx *Indexer) HandleBranchSwitch(ctx context.Context, workspacePath, newBranch string) error {
+// and re-indexing as needed. It reports whether the switch ran a FULL
+// indexing pass (the empty-target-branch case); the common switch — to an
+// already-indexed branch, including the same-branch no-op where SwitchBranch
+// early-returns — reconciles incrementally and reports false, so callers can
+// skip the post-full-pass memory scavenge (Manager.freeOSMemoryAfterFullIndex).
+func (idx *Indexer) HandleBranchSwitch(ctx context.Context, workspacePath, newBranch string) (bool, error) {
 	// MarkNotReady captures the gen so RestoreReady (called by the delegated
 	// IndexFull/IndexIncremental's own defer) only restores readiness if no
 	// SetReady(false) has intervened. SwitchBranch failure returns before the
@@ -370,7 +374,7 @@ func (idx *Indexer) HandleBranchSwitch(ctx context.Context, workspacePath, newBr
 	defer idx.service.RestoreReady(readyGen)
 
 	if err := idx.service.SwitchBranch(ctx, newBranch); err != nil {
-		return fmt.Errorf("switching branch to %q: %w", newBranch, err)
+		return false, fmt.Errorf("switching branch to %q: %w", newBranch, err)
 	}
 
 	idx.logger.Info("branch switched, checking collection", "branch", newBranch)
@@ -378,10 +382,13 @@ func (idx *Indexer) HandleBranchSwitch(ctx context.Context, workspacePath, newBr
 	col := idx.service.GetCollection()
 	if col == nil || col.Count() == 0 {
 		idx.logger.Info("empty collection for branch, running full index", "branch", newBranch)
-		return idx.IndexFull(ctx, workspacePath)
+		if err := idx.IndexFull(ctx, workspacePath); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 
-	return idx.IndexIncremental(ctx, workspacePath)
+	return false, idx.IndexIncremental(ctx, workspacePath)
 }
 
 // sanitizeChunkContent replaces undecodable UTF-8 byte sequences with U+FFFD
@@ -1156,13 +1163,30 @@ func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexica
 	// embedding-free unit-vector enumeration when the dimension is known.
 	// Held under a short read lock so a concurrent park/close cannot free the
 	// collection mid-Query; released before any reconstruction or upsert.
+	//
+	// The document count is re-sampled INSIDE that lock, immediately before
+	// the query: the caller's count was read far earlier — before the
+	// file-hash migration wait and the sidecar walk — and a concurrent
+	// incremental pass may have deleted documents in that window. A stale
+	// count exceeding the live count makes chromem hard-error ("nResults
+	// must be <= the number of documents in the collection"), leaving the
+	// lexical backfill permanently failing; a count of 0 (the collection
+	// emptied entirely) errors too ("nResults must be > 0"). The earlier
+	// count is used only for the initial progress event above.
 	idx.service.mu.RLock()
+	liveCount := col.Count()
+	if liveCount == 0 {
+		idx.service.mu.RUnlock()
+		idx.onProgress(PhaseLexical, IndexStateReady, 0, 0, "")
+		idx.logger.Info("lexical backfill skipped: collection emptied since the count was sampled")
+		return nil
+	}
 	var results []chromem.Result
 	var err error
 	if unitVec := idx.service.unitQueryVector(); unitVec != nil {
-		results, err = col.QueryEmbedding(ctx, unitVec, count, nil, nil)
+		results, err = col.QueryEmbedding(ctx, unitVec, liveCount, nil, nil)
 	} else {
-		results, err = col.Query(ctx, " ", count, nil, nil)
+		results, err = col.Query(ctx, " ", liveCount, nil, nil)
 	}
 	idx.service.mu.RUnlock()
 	if err != nil {
@@ -1222,7 +1246,7 @@ func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexica
 			batch = batch[:0]
 		}
 		processed++
-		idx.onProgress(PhaseLexical, IndexStateIndexing, processed, count, r.Metadata["file_path"])
+		idx.onProgress(PhaseLexical, IndexStateIndexing, processed, liveCount, r.Metadata["file_path"])
 	}
 	if len(batch) > 0 {
 		if upErr := upsertWindow(batch); upErr != nil {
@@ -1231,10 +1255,10 @@ func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexica
 	}
 	if skippedUnreadable > 0 {
 		idx.logger.Warn("lexical backfill skipped documents whose source files are missing or unreadable",
-			"skipped", skippedUnreadable, "chunks", count)
+			"skipped", skippedUnreadable, "chunks", liveCount)
 	}
 
-	idx.onProgress(PhaseLexical, IndexStateReady, count, count, "")
+	idx.onProgress(PhaseLexical, IndexStateReady, liveCount, liveCount, "")
 	idx.logger.Info("lexical backfill complete", "chunks", processed)
 	return nil
 }

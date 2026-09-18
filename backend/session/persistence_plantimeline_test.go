@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -113,4 +114,64 @@ func rolesOf(msgs []ChatMessage) []string {
 		out = append(out, m.Role)
 	}
 	return out
+}
+
+// TestLoadPlanTimeline_CapKeepsNewestRows pins the cap's truncation side:
+// when a pathological session exceeds planTimelineLimit plan-lifecycle rows,
+// the read must keep the NEWEST rows — the declaration and step rows of the
+// plan currently in flight, exactly what this read path exists to recover.
+// An ASC-first LIMIT kept the OLDEST rows instead and silently dropped the
+// current plan.
+func TestLoadPlanTimeline_CapKeepsNewestRows(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	const sid = "plan-timeline-cap"
+	seedPagedSession(t, store, sid)
+
+	total := planTimelineLimit + 3
+	for i := 0; i < total; i++ {
+		role := "plan_step_start"
+		if i == 0 || i == total-3 {
+			// The original (oldest) declaration and the current plan's
+			// declaration, declared three rows before the end.
+			role = "plan"
+		}
+		if err := store.SaveMessage(context.Background(), ChatMessage{
+			SessionID: sid,
+			Role:      role,
+			Content:   fmt.Sprintf("row-%d", i),
+			Metadata:  json.RawMessage(`{}`),
+			// All rows share one created_at second: the id tiebreaker (not a
+			// timestamp spread) must decide what survives the cap.
+			CreatedAt: "2024-01-01T10:00:00Z",
+		}); err != nil {
+			t.Fatalf("SaveMessage(%d): %v", i, err)
+		}
+	}
+
+	got, err := store.LoadPlanTimeline(context.Background(), sid)
+	if err != nil {
+		t.Fatalf("LoadPlanTimeline: %v", err)
+	}
+	if len(got) != planTimelineLimit {
+		t.Fatalf("got %d rows, want exactly the %d-row cap", len(got), planTimelineLimit)
+	}
+	// Still ascending, with the truncation on the OLDEST side: the first
+	// surviving row is row-3 and the newest row is last.
+	if got[0].Content != "row-3" {
+		t.Errorf("oldest surviving row = %q, want %q (the oldest rows must be the truncated ones)", got[0].Content, "row-3")
+	}
+	if got[len(got)-1].Content != fmt.Sprintf("row-%d", total-1) {
+		t.Errorf("newest row = %q, want %q", got[len(got)-1].Content, fmt.Sprintf("row-%d", total-1))
+	}
+	// The current plan's declaration (three rows before the end) survived.
+	currentDecl := got[len(got)-3]
+	if currentDecl.Role != "plan" || currentDecl.Content != fmt.Sprintf("row-%d", total-3) {
+		t.Errorf("current plan declaration lost to the cap: role=%q content=%q", currentDecl.Role, currentDecl.Content)
+	}
+	for _, m := range got {
+		if m.Content == "row-0" || m.Content == "row-1" || m.Content == "row-2" {
+			t.Fatalf("row %q must have been truncated, not returned", m.Content)
+		}
+	}
 }

@@ -23,15 +23,24 @@ import (
 //     array items),
 //  2. disabled tools (No Project mode),
 //  3. group policy deny,
-//  4. hard safety reasons from the tool's Judge + symlink detection (command
-//     blacklist, SSRF, symlink escapes) — a hard reason BLOCKS here, because
-//     there is no confirmation flow to escalate to.
+//  4. CANONICAL hard safety reasons from the tool's Judge + symlink
+//     detection — a fired security control (command blocklist; the flowsh
+//     shell-analysis controls: exfiltration flow, privilege escalation,
+//     system-path/raw-device write, irreversible destructive write outside
+//     the session roots, download cradle) or a symlink escape out of the
+//     session roots BLOCKS here, because there is no confirmation flow to
+//     escalate to. A NON-canonical hard reason — most notably
+//     ReasonCodeCommandUnboundedAnalysis, the analyzer's ⊤ "could not bound
+//     this command" limitation — does NOT block: the command is the user's
+//     own verification config, and an analysis limitation is not grounds to
+//     break the verification loop the user explicitly opted into.
 //
 // Deliberately skipped, because the input is fixed config (not model output):
 // the pre/post-execute hooks, Smart Approve / advisory judging of soft
-// reasons, and HITL confirmation. The Judge itself still runs — its hard
-// reasons (notably the execute-group command blacklist compiled into the bash
-// tool) must keep firing.
+// reasons, and HITL confirmation. The Judge itself still runs — with the
+// flowsh digest attached (AttachShellAnalysis), exactly as in Execute — so
+// its canonical hard controls (the compiled-in command blocklist plus the
+// flowsh criteria) keep firing.
 //
 // The method is intentionally narrow: it is exported only so the core
 // orchestrator layer can build the verify-on-edit runner; it must NOT be
@@ -76,15 +85,30 @@ func (r *ToolRegistry) ExecuteUnattended(ctx context.Context, name string, input
 		}, nil
 	}
 
-	// Gate 4: hard safety reasons block outright (no confirmation flow here).
+	// Shell-exec tools: attach the deterministic flowsh digest once, same as
+	// Execute — the tool's Judge reads its hard criteria from ctx.
+	ctx = AttachShellAnalysis(ctx, name, input, r.log())
+
+	// Gate 4: canonical hard safety reasons block outright (no confirmation
+	// flow here). Both signals are checked for canonicality independently —
+	// splitSafetyReasons folds judge-hard ahead of the symlink signal, and a
+	// canonical symlink escape must not be masked by a non-canonical judge
+	// limitation (⊤). Non-canonical hard reasons and soft reasons pass to
+	// execution: see the method doc for the verify-on-edit rationale.
 	judgeOutcome := judgeToolCall(ctx, tool, input)
 	symlinkReason, symlinkCode := r.symlinkHardReason(ctx, name, tool, input)
-	reasons := splitSafetyReasons(judgeOutcome, symlinkReason, symlinkCode)
-	if reasons.hard != "" {
+	blockHard := ""
+	if !judgeOutcome.Allow && judgeOutcome.Reason != "" &&
+		judgeOutcome.Severity == sdktools.JudgeSeverityHard && isCanonicalHardReason(judgeOutcome.ReasonCode) {
+		blockHard = judgeOutcome.Reason
+	} else if symlinkReason != "" && isCanonicalHardReason(symlinkCode) {
+		blockHard = symlinkReason
+	}
+	if blockHard != "" {
 		r.log().Warn("security: unattended tool blocked by hard safety reason",
-			"tool", name, "group", string(group), "reason", reasons.hard)
+			"tool", name, "group", string(group), "reason", blockHard)
 		return sdktools.ToolResult{
-			Content: "command blocked by security policy: " + reasons.hard,
+			Content: "command blocked by security policy: " + blockHard,
 			IsError: true,
 		}, nil
 	}

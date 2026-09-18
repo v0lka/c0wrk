@@ -479,7 +479,7 @@ export namespace backend {
 	}
 	export class GroupPolicyResponse {
 	    policy: string;
-	    blacklist: string[];
+	    blocklist: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new GroupPolicyResponse(source);
@@ -488,7 +488,7 @@ export namespace backend {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.policy = source["policy"];
-	        this.blacklist = source["blacklist"];
+	        this.blocklist = source["blocklist"];
 	    }
 	}
 	export class HypothesisUpdateFields {
@@ -1484,12 +1484,60 @@ export namespace backend {
 	        this.api_key = source["api_key"];
 	    }
 	}
+	export class SilentSubPolicyResponse {
+	    mode: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SilentSubPolicyResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mode = source["mode"];
+	    }
+	}
+	export class SilentModeResponse {
+	    tool_confirm: SilentSubPolicyResponse;
+	    step_limit: SilentSubPolicyResponse;
+	    ask_user: SilentSubPolicyResponse;
+	    review_prompt: SilentSubPolicyResponse;
+	
+	    static createFrom(source: any = {}) {
+	        return new SilentModeResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tool_confirm = this.convertValues(source["tool_confirm"], SilentSubPolicyResponse);
+	        this.step_limit = this.convertValues(source["step_limit"], SilentSubPolicyResponse);
+	        this.ask_user = this.convertValues(source["ask_user"], SilentSubPolicyResponse);
+	        this.review_prompt = this.convertValues(source["review_prompt"], SilentSubPolicyResponse);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class SecuritySettingsResponse {
 	    groups: Record<string, GroupPolicyResponse>;
 	    auto_approve_workspace_writes: boolean;
-	    smart_approve: boolean;
+	    autonomy_mode: string;
+	    silent_mode: SilentModeResponse;
 	    judge_available: boolean;
-	    execute_blacklist_defaults: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new SecuritySettingsResponse(source);
@@ -1499,9 +1547,9 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.groups = this.convertValues(source["groups"], GroupPolicyResponse, true);
 	        this.auto_approve_workspace_writes = source["auto_approve_workspace_writes"];
-	        this.smart_approve = source["smart_approve"];
+	        this.autonomy_mode = source["autonomy_mode"];
+	        this.silent_mode = this.convertValues(source["silent_mode"], SilentModeResponse);
 	        this.judge_available = source["judge_available"];
-	        this.execute_blacklist_defaults = source["execute_blacklist_defaults"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1546,6 +1594,8 @@ export namespace backend {
 	        this.max_tokens = source["max_tokens"];
 	    }
 	}
+	
+	
 	export class SkillDescriptorDTO {
 	    name: string;
 	    description: string;

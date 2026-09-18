@@ -53,6 +53,11 @@ import xml.etree.ElementTree as ET
 
 USER_AGENT = "study-paper-fetch/1.0"
 DEFAULT_TIMEOUT = 20
+# Hard cap on one HTTP response body: 32 MiB is ample for landing pages,
+# metadata APIs, and the PDFs they point at (HTML is truncated far below this
+# downstream). The read is cut off above the cap, so an oversized response can
+# never be buffered whole into memory.
+MAX_BODY_BYTES = 32 * 1024 * 1024
 
 ATOM_NS = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
 # A DOI admits `<`/`>` (legacy SICI form); wrapping markdown/bracket/backtick
@@ -95,14 +100,37 @@ def _user_agent(email=None):
 
 
 def http_get(url, timeout=DEFAULT_TIMEOUT, accept="application/json", user_agent=None):
-    """Return the response body, or raise NetError with a classified kind."""
+    """Return the response body, or raise NetError with a classified kind.
+
+    The body is capped at MAX_BODY_BYTES (an advertised Content-Length above
+    the cap is rejected before reading; otherwise the read stops at cap + 1
+    bytes), so a large response raises NetError (kind "http") instead of
+    exhausting memory.
+    """
     request = urllib.request.Request(
         url,
         headers={"User-Agent": user_agent or USER_AGENT, "Accept": accept},
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read()
+            declared = response.headers.get("Content-Length")
+            if declared:
+                try:
+                    if int(declared) > MAX_BODY_BYTES:
+                        raise NetError(
+                            "response from %s exceeds the %d-byte cap"
+                            % (url, MAX_BODY_BYTES),
+                            kind="http",
+                        )
+                except ValueError:
+                    pass  # a malformed header falls through to the bounded read
+            body = response.read(MAX_BODY_BYTES + 1)
+            if len(body) > MAX_BODY_BYTES:
+                raise NetError(
+                    "response from %s exceeds the %d-byte cap" % (url, MAX_BODY_BYTES),
+                    kind="http",
+                )
+            return body
     except urllib.error.HTTPError as exc:
         raise NetError("HTTP %s for %s" % (exc.code, url), kind="http")
     except socket.timeout:

@@ -4,7 +4,7 @@ import { EditorState, Compartment } from '@codemirror/state'
 import { markdown } from '@codemirror/lang-markdown'
 import { cn } from '@/lib/utils'
 import { createOneDarkCMTheme } from '@/lib/cmTheme'
-import { useThemeStore, selectActiveThemeType } from '@/stores/themeStore'
+import { useThemeStore, selectActiveThemeType, selectActiveThemeId } from '@/stores/themeStore'
 
 interface MiniCodeMirrorFieldProps {
   value: string
@@ -38,6 +38,9 @@ export function MiniCodeMirrorField({ value, onChange, placeholder, ariaLabel, l
   const viewRef = useRef<EditorView | null>(null)
   const themeCompartment = useRef(new Compartment())
   const theme = useThemeStore(selectActiveThemeType)
+  // Theme IDENTITY: a same-type custom-theme switch keeps `theme` unchanged
+  // but still swaps the palette CSS variables the baked theme resolves from.
+  const themeId = useThemeStore(selectActiveThemeId)
 
   // The view is created exactly once per mount (effect below), so the update
   // listener must call the LATEST onChange through a ref: capturing the
@@ -99,7 +102,10 @@ export function MiniCodeMirrorField({ value, onChange, placeholder, ariaLabel, l
     }
   }, [])
 
-  // Re-resolve the CodeMirror theme on app theme change (see CodeMirrorFileViewer).
+  // Re-resolve the CodeMirror theme on app theme change (see
+  // CodeMirrorFileViewer). Keyed on BOTH the type (drives the { dark } flag)
+  // and the identity (a same-type custom-theme swap changes the palette while
+  // `theme` stays).
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
@@ -108,7 +114,7 @@ export function MiniCodeMirrorField({ value, onChange, placeholder, ariaLabel, l
         createOneDarkCMTheme(theme === 'dark', { editable: true }),
       ),
     })
-  }, [theme])
+  }, [theme, themeId])
 
   // Update document when value prop changes externally (e.g., file reload).
   // Preserve cursor position to avoid jarring jumps.

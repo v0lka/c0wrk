@@ -10,7 +10,7 @@ import { logger } from '@/lib/logger'
 interface ProviderConfig {
   api_key: string
   base_url: string
-  /** Per-provider TLS pin (ADR-052): '' = standard CA verification. */
+  /** Per-provider TLS pin (ADR-054): '' = standard CA verification. */
   tls_fingerprint: string
 }
 
@@ -25,7 +25,7 @@ interface ProviderConfigFormProps {
   /**
    * An effective HTTP proxy (enabled + a URL) is configured. The
    * per-provider TLS pin does not apply to proxied connections (proxy wins,
-   * ADR-052), so the whole TLS section is disabled and an explanation is
+   * ADR-054), so the whole TLS section is disabled and an explanation is
    * shown. Defaults to false so callers that do not track proxy state keep
    * the controls usable — the backend guards the fingerprint RPC anyway.
    */
@@ -48,7 +48,7 @@ export function ProviderConfigForm({
   // endpoints with public certificates, where pinning is pointless.
   const showTLSSection = showBaseUrl
 
-  // The pin itself is the switch (ADR-052) — an empty field means standard
+  // The pin itself is the switch (ADR-054) — an empty field means standard
   // verification — so there is deliberately no checkbox mirroring it. The
   // only local state here is the in-flight/error state of the Get button.
   const [fpLoading, setFpLoading] = useState(false)
@@ -120,7 +120,7 @@ export function ProviderConfigForm({
         </div>
       )}
 
-      {/* TLS verification override — compatible providers only (ADR-052).
+      {/* TLS verification override — compatible providers only (ADR-054).
           The field and the Get button are always present: the pin is the
           switch, so an empty field already means "standard verification"
           and a separate toggle would only hide the Get button behind an

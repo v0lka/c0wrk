@@ -119,7 +119,7 @@ describe('useLLMConfig default replacement', () => {
     expect(mocks.updateLLMConfig).toHaveBeenCalledWith({
       default_model: 'custom/org/model-a',
       // The fixed provider carries no tls_fingerprint — only compatible
-      // providers store a pin (ADR-052).
+      // providers store a pin (ADR-054).
       anthropic: { api_key: '', models: [] },
       openai_compatible: {
         custom: {
@@ -341,7 +341,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
   })
 })
 
-// --- Per-provider TLS pin (ADR-052) ---
+// --- Per-provider TLS pin (ADR-054) ---
 
 describe('useLLMConfig TLS pin round-trip', () => {
   const pin = 'k3J9vQ1Z0mF7hD2xS8pL4wR6tY5uI3oP1aE9cX0bN7g='

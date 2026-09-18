@@ -736,34 +736,51 @@ func TestGroupPolicies_ReplacementNotMerge(t *testing.T) {
 
 // TestApplySecurityState_ReplacesAllThreeComponentsAtomically verifies the
 // runtime security push API: one call must replace the group-policy map, the
-// auto-approve flag, and the Smart Approve flag together (a torn update would
+// auto-approve flag, and the autonomy mode together (a torn update would
 // let a call run with new policies but old flags), deep-copy the caller's map
 // (a broadcast push passes one map to many registries; each must stay
 // independently mutable), and leave the caller's map unaliased.
-func TestApplySecurityState_ReplacesAllThreeComponentsAtomically(t *testing.T) {
+func TestApplySecurityState_ReplacesAllComponentsAtomically(t *testing.T) {
 	registry := NewToolRegistry()
 	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
 		sdktools.GroupExecute: sdktools.PolicyAlwaysAllow,
 	})
 	registry.SetAutoApproveWorkspaceWrites(true)
-	registry.SetSmartApprove(true)
+	registry.SetAutonomyMode(AutonomyModeStandard)
 
 	source := map[sdktools.ToolGroup]sdktools.ToolPolicy{
 		sdktools.GroupExecute: sdktools.PolicyAlwaysDeny,
 	}
-	registry.ApplySecurityState(source, false, false)
+	// Seed a non-default silent-mode posture so the push below can be shown to
+	// replace it (silent mode has no standalone setter — ApplySecurityState is
+	// its only writer).
+	registry.ApplySecurityState(source, true, AutonomyModeAssisted, SilentModeState{
+		ToolConfirm:  "allow",
+		StepLimit:    "stop",
+		AskUser:      "enable",
+		ReviewPrompt: "allow",
+	})
+	registry.ApplySecurityState(source, false, AutonomyModeSilent, SilentModeState{
+		ToolConfirm:  "judge",
+		StepLimit:    "auto",
+		AskUser:      "disable",
+		ReviewPrompt: "suppress",
+	})
 
 	if got := registry.GroupPolicies()[sdktools.GroupExecute]; got != sdktools.PolicyAlwaysDeny {
 		t.Fatalf("execute policy = %v, want always_deny", got)
 	}
 	registry.mu.RLock()
-	autoApprove, smartApprove := registry.autoApproveWorkspaceWrites, registry.smartApprove
+	autoApprove, autonomyMode, silentMode := registry.autoApproveWorkspaceWrites, registry.autonomyMode, registry.silentMode
 	registry.mu.RUnlock()
 	if autoApprove {
 		t.Error("autoApproveWorkspaceWrites must be replaced with false")
 	}
-	if smartApprove {
-		t.Error("smartApprove must be replaced with false")
+	if autonomyMode != AutonomyModeSilent {
+		t.Errorf("autonomyMode = %q, want %q (replaced from %q)", autonomyMode, AutonomyModeSilent, AutonomyModeAssisted)
+	}
+	if want := (SilentModeState{ToolConfirm: "judge", StepLimit: "auto", AskUser: "disable", ReviewPrompt: "suppress"}); silentMode != want {
+		t.Errorf("silentMode = %+v, want %+v", silentMode, want)
 	}
 
 	// The caller's map must not alias registry state.
@@ -963,7 +980,7 @@ func TestPolicyAlwaysAllow_HardReasonForcesConfirmationWithDisabledJudge(t *test
 func TestPolicyAlwaysAllow_HardReasonNeverAutoApprovedBySmartApprove(t *testing.T) {
 	registry := NewToolRegistry()
 	setDefaultGroupPolicies(registry)
-	registry.SetSmartApprove(true)
+	registry.SetAutonomyMode(AutonomyModeAssisted)
 	registry.Register(newMockHardJudgerTool("judger_tool", "command matches blacklist pattern: shutdown", sdktools.ReasonCodeCommandBlacklist))
 
 	judge, provider := newStrictJudge("VERDICT: ALLOW\nREASON: looks fine to me", nil)
@@ -1004,7 +1021,7 @@ func TestPolicyAlwaysAllow_HardReasonNeverAutoApprovedBySmartApprove(t *testing.
 func TestPolicyAlwaysAllow_SoftReasonSmartApproveAllow(t *testing.T) {
 	registry := NewToolRegistry()
 	setDefaultGroupPolicies(registry)
-	registry.SetSmartApprove(true)
+	registry.SetAutonomyMode(AutonomyModeAssisted)
 	registry.Register(newMockJudgerTool("judger_tool", false, "path outside session roots: /etc/hosts"))
 
 	judge, provider := newStrictJudge("VERDICT: ALLOW\nREASON: benign read of a public file", nil)
@@ -1558,7 +1575,7 @@ func TestLocalWriteAutoApproval_SymlinkEscapeForcesHardConfirm(t *testing.T) {
 
 	registry := NewToolRegistry()
 	registry.SetAutoApproveWorkspaceWrites(true)
-	registry.SetSmartApprove(true)
+	registry.SetAutonomyMode(AutonomyModeAssisted)
 	registry.Register(builtins.NewWriteFileTool())
 	judge, provider := newStrictJudge("VERDICT: ALLOW\nREASON: looks fine", nil)
 	registry.SetJudge(judge)
@@ -2000,7 +2017,7 @@ func TestPreExecuteHook_ReceivesCorrectSource(t *testing.T) {
 func TestSmartApprove_UserConfirmFlow(t *testing.T) {
 	tests := []struct {
 		name             string
-		enabled          bool
+		mode             string
 		judgeResponse    string
 		judgeErr         error
 		setJudge         bool
@@ -2009,18 +2026,19 @@ func TestSmartApprove_UserConfirmFlow(t *testing.T) {
 		wantJudgeCalls   int
 		wantResultError  bool
 	}{
-		{name: "off preserves legacy confirmation", judgeResponse: "VERDICT: ALLOW\nREASON: safe", setJudge: true, wantConfirm: true},
-		{name: "strict allow executes without UI", enabled: true, judgeResponse: "VERDICT: ALLOW\nREASON: safe and relevant", setJudge: true, wantJudgeCalls: 1},
-		{name: "strict confirm uses manual UI", enabled: true, judgeResponse: "VERDICT: CONFIRM\nREASON: destructive operation", setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 1},
-		{name: "unparseable uses manual UI", enabled: true, judgeResponse: "probably fine", setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 1},
-		{name: "provider error uses manual UI", enabled: true, judgeErr: errors.New("provider failed"), setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 1},
-		{name: "unavailable judge uses manual UI", enabled: true, wantConfirm: true, wantDisableJudge: true},
+		{name: "standard preserves legacy confirmation", judgeResponse: "VERDICT: ALLOW\nREASON: safe", setJudge: true, wantConfirm: true},
+		{name: "strict allow executes without UI", mode: AutonomyModeAssisted, judgeResponse: "VERDICT: ALLOW\nREASON: safe and relevant", setJudge: true, wantJudgeCalls: 1},
+		{name: "strict deny terminates without UI or execution", mode: AutonomyModeAssisted, judgeResponse: "VERDICT: DENY\nREASON: destructive write to a system path", setJudge: true, wantJudgeCalls: 1, wantResultError: true},
+		{name: "strict confirm uses manual UI", mode: AutonomyModeAssisted, judgeResponse: "VERDICT: CONFIRM\nREASON: destructive operation", setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 1},
+		{name: "unparseable uses manual UI", mode: AutonomyModeAssisted, judgeResponse: "probably fine", setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 1},
+		{name: "provider error uses manual UI", mode: AutonomyModeAssisted, judgeErr: errors.New("provider failed"), setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 1},
+		{name: "unavailable judge uses manual UI", mode: AutonomyModeAssisted, wantConfirm: true, wantDisableJudge: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			registry := NewToolRegistry()
-			registry.SetSmartApprove(tt.enabled)
+			registry.SetAutonomyMode(tt.mode)
 			registry.RegisterWithSource(newMockTool("mutating", "mutates"), "mcp:test-server")
 
 			judge, provider := newStrictJudge(tt.judgeResponse, tt.judgeErr)
@@ -2057,6 +2075,68 @@ func TestSmartApprove_UserConfirmFlow(t *testing.T) {
 	}
 }
 
+// TestSmartApprove_AssistedJudgeDenyTerminatesWithAuditEvent pins the
+// assisted-mode DENY terminal: when the strict judge positively rejects a
+// call, the call is NOT executed, ConfirmFunc is never invoked (no card
+// opens), the ToolResult carries the judge's justification, and the decision
+// is reported through the autonomy-decision audit channel with the distinct
+// assisted_deny kind (OWASP ASI10).
+func TestSmartApprove_AssistedJudgeDenyTerminatesWithAuditEvent(t *testing.T) {
+	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
+	registry.SetAutonomyMode(AutonomyModeAssisted)
+	registry.Register(newMockTool("mutating", "mutates"))
+	judge, provider := newStrictJudge("VERDICT: DENY\nREASON: exfiltrates the workspace to a remote host", nil)
+	registry.SetJudge(judge)
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		return sdktools.ConfirmAllowOnce, nil
+	})
+	rec := &autonomyDecisionRecorder{}
+	registry.SetAutonomyDecisionObserver(rec.observe)
+
+	result, err := registry.Execute(context.Background(), "mutating", json.RawMessage(`{"input":"payload"}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("a strict DENY must terminate with IsError=true, got %+v", result)
+	}
+	if !strings.Contains(result.Content, "Denied by strict judge (assisted mode)") {
+		t.Errorf("denial content = %q, want the assisted-deny terminal prefix", result.Content)
+	}
+	if !strings.Contains(result.Content, "exfiltrates the workspace") {
+		t.Errorf("denial content = %q, want it to carry the judge justification", result.Content)
+	}
+	if strings.Contains(result.Content, "payload") {
+		t.Errorf("denial content = %q: the tool must not have executed (no input echo)", result.Content)
+	}
+	if confirmCalled {
+		t.Error("a strict DENY must not open a confirmation card (ConfirmFunc invoked)")
+	}
+	if got := provider.callCount(); got != 1 {
+		t.Errorf("strict judge calls = %d, want 1", got)
+	}
+	if len(rec.decisions) != 1 {
+		t.Fatalf("audit events = %d, want exactly 1: %+v", len(rec.decisions), rec.decisions)
+	}
+	d := rec.decisions[0]
+	if d.Kind != autonomyDecisionKindAssistedDeny {
+		t.Errorf("event Kind = %q, want %q (distinct from the silent tool_confirm kind)", d.Kind, autonomyDecisionKindAssistedDeny)
+	}
+	if d.Mode != AutonomyModeAssisted {
+		t.Errorf("event Mode = %q, want %q", d.Mode, AutonomyModeAssisted)
+	}
+	if d.Verdict != autonomyDecisionVerdictDeny {
+		t.Errorf("event Verdict = %q, want %q", d.Verdict, autonomyDecisionVerdictDeny)
+	}
+	if !strings.Contains(d.Justification, "exfiltrates the workspace") {
+		t.Errorf("event Justification = %q, want it to carry the judge reasoning", d.Justification)
+	}
+}
+
 // TestSmartApprove_UnavailableJudgeKeepsConcreteReason pins the reasoning
 // shown when Smart Approve is enabled but no strict judge is configured: the
 // confirmation must still explain WHY the call needs confirmation (the
@@ -2066,7 +2146,7 @@ func TestSmartApprove_UserConfirmFlow(t *testing.T) {
 func TestSmartApprove_UnavailableJudgeKeepsConcreteReason(t *testing.T) {
 	registry := NewToolRegistry()
 	setDefaultGroupPolicies(registry)
-	registry.SetSmartApprove(true)
+	registry.SetAutonomyMode(AutonomyModeAssisted)
 	registry.Register(newMockTool("bash_exec", "runs a command"))
 
 	var gotRequest sdktools.ConfirmationRequest
@@ -2096,7 +2176,7 @@ func TestSmartApprove_UnavailableJudgeKeepsConcreteReason(t *testing.T) {
 func TestSmartApprove_UserConfirmHardReasonConsultsJudgeThenForcesConfirm(t *testing.T) {
 	registry := NewToolRegistry()
 	setDefaultGroupPolicies(registry)
-	registry.SetSmartApprove(true)
+	registry.SetAutonomyMode(AutonomyModeAssisted)
 	registry.Register(newMockExecuteJudgerTool("bash_exec", sdktools.JudgeOutcome{
 		Reason:     "command matches blacklist pattern: mkfs",
 		Severity:   sdktools.JudgeSeverityHard,
@@ -2144,7 +2224,7 @@ func TestSmartApprove_UserConfirmHardReasonConsultsJudgeThenForcesConfirm(t *tes
 func TestSmartApprove_HardScopePatternReasonCanBeClearedByJudge(t *testing.T) {
 	registry := NewToolRegistry()
 	setDefaultGroupPolicies(registry)
-	registry.SetSmartApprove(true)
+	registry.SetAutonomyMode(AutonomyModeAssisted)
 	registry.Register(newMockExecuteJudgerTool("bash_exec", sdktools.JudgeOutcome{
 		Reason:     "command contains unresolvable path-like token(s): /tmp/nope",
 		Severity:   sdktools.JudgeSeverityHard,
@@ -2178,7 +2258,7 @@ func TestSmartApprove_HardScopePatternReasonCanBeClearedByJudge(t *testing.T) {
 func TestSmartApprove_WorkspaceAutoApproveHasPriority(t *testing.T) {
 	registry := NewToolRegistry()
 	registry.SetAutoApproveWorkspaceWrites(true)
-	registry.SetSmartApprove(true)
+	registry.SetAutonomyMode(AutonomyModeAssisted)
 	registry.Register(newMockConfirmJudgerTool("write_file", sdktools.PolicyUserConfirm, true, "within roots"))
 	judge, provider := newStrictJudge("VERDICT: CONFIRM\nREASON: should not run", nil)
 	registry.SetJudge(judge)
@@ -2221,7 +2301,7 @@ func TestSmartApprove_CleanAllowAndDenyBypassJudge(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			registry := NewToolRegistry()
-			registry.SetSmartApprove(true)
+			registry.SetAutonomyMode(AutonomyModeAssisted)
 			registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{tt.group: tt.policy})
 			tool := newMockReadOnlyTool("policy_tool", "policy test")
 			tool.group = tt.group
@@ -2256,7 +2336,7 @@ func TestSmartApprove_LogsStructuredVerdictWithoutRawArgs(t *testing.T) {
 	var logs bytes.Buffer
 	registry := NewToolRegistry()
 	registry.SetLogger(slog.New(slog.NewJSONHandler(&logs, nil)))
-	registry.SetSmartApprove(true)
+	registry.SetAutonomyMode(AutonomyModeAssisted)
 	registry.Register(newMockTool("mutating", "mutates"))
 	judge, _ := newStrictJudge("VERDICT: ALLOW\nREASON: safe", nil)
 	registry.SetJudge(judge)
@@ -2274,6 +2354,261 @@ func TestSmartApprove_LogsStructuredVerdictWithoutRawArgs(t *testing.T) {
 		if !strings.Contains(logText, field) {
 			t.Errorf("structured security log missing %s: %s", field, logText)
 		}
+	}
+}
+
+// ── Silent mode tool terminal ─────────────────────────────────────────────
+
+// TestSilentMode_ToolConfirm_Terminals drives each security.silent_mode
+// tool_confirm mode through Execute and pins the terminal outcome. Silent mode
+// must NEVER invoke ConfirmFunc (there is no human to answer): a call resolves
+// either by executing or by an auto-denial that carries the reasoning in the
+// ToolResult.
+func TestSilentMode_ToolConfirm_Terminals(t *testing.T) {
+	tests := []struct {
+		name           string
+		mode           string
+		hardReason     string // non-empty → the tool reports a HARD judge reason
+		code           sdktools.JudgeReasonCode
+		judgeResponse  string
+		judgeErr       error
+		setJudge       bool
+		wantErr        bool // the terminal is an auto-denial
+		wantJudgeCalls int
+		wantReasonPart string // substring the denial content must carry
+	}{
+		{
+			name: "judge strict ALLOW executes without UI",
+			mode: SilentToolConfirmJudge, judgeResponse: "VERDICT: ALLOW\nREASON: safe", setJudge: true,
+			wantJudgeCalls: 1,
+		},
+		{
+			name: "judge CONFIRM auto-denies carrying the judge reasoning",
+			mode: SilentToolConfirmJudge, judgeResponse: "VERDICT: CONFIRM\nREASON: destructive filesystem write", setJudge: true,
+			wantErr: true, wantJudgeCalls: 1, wantReasonPart: "destructive filesystem write",
+		},
+		{
+			name: "judge error auto-denies",
+			mode: SilentToolConfirmJudge, judgeErr: errors.New("provider failed"), setJudge: true,
+			wantErr: true, wantJudgeCalls: 1, wantReasonPart: "Strict judge evaluation failed",
+		},
+		{
+			name:    "judge unavailable auto-denies",
+			mode:    SilentToolConfirmJudge,
+			wantErr: true, wantJudgeCalls: 0, wantReasonPart: "Strict judge is unavailable",
+		},
+		{
+			name: "judge unparseable auto-denies",
+			mode: SilentToolConfirmJudge, judgeResponse: "probably fine", setJudge: true,
+			wantErr: true, wantJudgeCalls: 1,
+		},
+		{
+			// Decision 1c: the silent judge path has NO canonical backstop —
+			// the operator delegated the decision, the ALLOW executes and is
+			// audited.
+			name: "judge ALLOW executes a canonical hard reason (no silent backstop)",
+			mode: SilentToolConfirmJudge, hardReason: "command matches blacklist pattern: mkfs",
+			code: sdktools.ReasonCodeCommandBlacklist, judgeResponse: "VERDICT: ALLOW\nREASON: false positive, cleared", setJudge: true,
+			wantJudgeCalls: 1,
+		},
+		{
+			name:           "allow executes without consulting the judge",
+			mode:           SilentToolConfirmAllow,
+			wantJudgeCalls: 0,
+		},
+		{
+			name: "allow escalates a canonical hard reason to the judge, whose ALLOW executes",
+			mode: SilentToolConfirmAllow, hardReason: "command matches blacklist pattern: mkfs",
+			code: sdktools.ReasonCodeCommandBlacklist, judgeResponse: "VERDICT: ALLOW\nREASON: reviewed, harmless", setJudge: true,
+			wantJudgeCalls: 1,
+		},
+		{
+			name: "allow escalates a hard reason to the judge, which denies",
+			mode: SilentToolConfirmAllow, hardReason: "symlink escapes the session roots",
+			code: sdktools.ReasonCodeSymlinkEscape, judgeResponse: "VERDICT: CONFIRM\nREASON: escape confirmed", setJudge: true,
+			wantErr: true, wantJudgeCalls: 1, wantReasonPart: "escape confirmed",
+		},
+		{
+			name:    "deny blocks without consulting the judge",
+			mode:    SilentToolConfirmDeny,
+			wantErr: true, wantJudgeCalls: 0, wantReasonPart: "Automatic denial (silent mode)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registry := NewToolRegistry()
+			setDefaultGroupPolicies(registry)
+			// The autonomy mode is silent so the silent terminal is exercised
+			// on its own.
+			registry.ApplySecurityState(
+				registry.GroupPolicies(),
+				false,
+				AutonomyModeSilent,
+				SilentModeState{ToolConfirm: tt.mode},
+			)
+
+			name := "mutating"
+			if tt.hardReason != "" {
+				// A HARD-reason tool lives in an allow group (local_read) so the
+				// escalation reaches the silent terminal.
+				registry.Register(newMockHardJudgerTool("esc_tool", tt.hardReason, tt.code))
+				name = "esc_tool"
+			} else {
+				registry.Register(newMockTool("mutating", "mutates"))
+			}
+
+			judge, provider := newStrictJudge(tt.judgeResponse, tt.judgeErr)
+			if tt.setJudge {
+				registry.SetJudge(judge)
+			}
+
+			confirmCalled := false
+			registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+				confirmCalled = true
+				return sdktools.ConfirmAllowOnce, nil
+			})
+
+			result, err := registry.Execute(context.Background(), name, json.RawMessage(`{"input":"hello"}`))
+			if err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if confirmCalled {
+				t.Error("silent mode must never invoke ConfirmFunc")
+			}
+			if result.IsError != tt.wantErr {
+				t.Errorf("result.IsError = %v, want %v (content %q)", result.IsError, tt.wantErr, result.Content)
+			}
+			if tt.wantErr {
+				const prefix = "Automatic denial (silent mode): "
+				if !strings.HasPrefix(result.Content, prefix) {
+					t.Errorf("denial content = %q, want prefix %q", result.Content, prefix)
+				}
+				if tt.wantReasonPart != "" && !strings.Contains(result.Content, tt.wantReasonPart) {
+					t.Errorf("denial content = %q, want it to contain %q", result.Content, tt.wantReasonPart)
+				}
+			}
+			if got := provider.callCount(); got != tt.wantJudgeCalls {
+				t.Errorf("strict judge calls = %d, want %d", got, tt.wantJudgeCalls)
+			}
+		})
+	}
+}
+
+// TestSilentMode_JudgesOnItsOwnWithoutConfirmFunc verifies silent mode never
+// depends on the confirmation layer: a nil ConfirmFunc does not turn a silent
+// judge ALLOW into a denial, and a silent judge CONFIRM still auto-denies with
+// the reasoning instead of the "confirmation unavailable" message.
+func TestSilentMode_JudgesOnItsOwnWithoutConfirmFunc(t *testing.T) {
+	newRegistry := func(response string) (*ToolRegistry, *scriptedJudgeProvider) {
+		registry := NewToolRegistry()
+		setDefaultGroupPolicies(registry)
+		registry.ApplySecurityState(
+			registry.GroupPolicies(),
+			false,
+			AutonomyModeSilent,
+			SilentModeState{ToolConfirm: SilentToolConfirmJudge},
+		)
+		registry.Register(newMockTool("mutating", "mutates"))
+		judge, provider := newStrictJudge(response, nil)
+		registry.SetJudge(judge)
+		// No ConfirmFunc installed at all.
+		return registry, provider
+	}
+
+	allow, _ := newRegistry("VERDICT: ALLOW\nREASON: safe")
+	result, err := allow.Execute(context.Background(), "mutating", json.RawMessage(`{"input":"x"}`))
+	if err != nil || result.IsError {
+		t.Fatalf("silent judge ALLOW with nil ConfirmFunc = (%+v, %v), want success", result, err)
+	}
+
+	deny, _ := newRegistry("VERDICT: CONFIRM\nREASON: needs care")
+	result, err = deny.Execute(context.Background(), "mutating", json.RawMessage(`{"input":"x"}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("silent judge CONFIRM must auto-deny")
+	}
+	if strings.Contains(result.Content, "confirmation is unavailable") {
+		t.Errorf("silent mode must not fall through to the confirmation-unavailable denial: %q", result.Content)
+	}
+	if !strings.Contains(result.Content, "needs care") {
+		t.Errorf("silent auto-denial must carry the reasoning, got %q", result.Content)
+	}
+}
+
+// TestSilentMode_NonSilentPathUnchanged verifies silent mode defaults off and
+// that with it off the legacy confirmation flow (and nil-ConfirmFunc
+// fail-closed behaviour) is untouched.
+func TestSilentMode_NonSilentPathUnchanged(t *testing.T) {
+	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
+	registry.Register(newMockTool("mutating", "mutates"))
+
+	// Silent mode off (default) + no ConfirmFunc → fail closed, as before.
+	result, err := registry.Execute(context.Background(), "mutating", json.RawMessage(`{"input":"x"}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.Content, "confirmation is unavailable") {
+		t.Errorf("non-silent nil ConfirmFunc must fail closed, got (%+v)", result)
+	}
+}
+
+// TestSilentMode_DenyGroupsAndWorkspaceAutoApproveUnchanged pins that silent
+// mode does not disturb the gates that run BEFORE the confirmation funnel: a
+// deny-group tool stays blocked, and a local_write target inside the session
+// roots still auto-approves — neither consults the strict judge nor ConfirmFunc.
+func TestSilentMode_DenyGroupsAndWorkspaceAutoApproveUnchanged(t *testing.T) {
+	// A deny group is blocked outright, regardless of the silent tool_confirm mode.
+	denyReg := NewToolRegistry()
+	denyReg.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
+		sdktools.GroupLocalWrite: sdktools.PolicyAlwaysDeny,
+	})
+	denyReg.ApplySecurityState(denyReg.GroupPolicies(), false, AutonomyModeSilent, SilentModeState{ToolConfirm: SilentToolConfirmAllow})
+	denyReg.Register(newMockTool("mutating", "mutates"))
+	judge, provider := newStrictJudge("VERDICT: ALLOW\nREASON: n/a", nil)
+	denyReg.SetJudge(judge)
+	confirmCalled := false
+	denyReg.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		return sdktools.ConfirmAllowOnce, nil
+	})
+	res, err := denyReg.Execute(context.Background(), "mutating", json.RawMessage(`{"input":"x"}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !res.IsError {
+		t.Error("a deny group must stay blocked under silent mode")
+	}
+	if confirmCalled {
+		t.Error("a deny group must not reach ConfirmFunc")
+	}
+	if got := provider.callCount(); got != 0 {
+		t.Errorf("deny group: strict judge calls = %d, want 0", got)
+	}
+
+	// A local_write target inside the session roots still auto-approves.
+	wsReg := NewToolRegistry()
+	wsReg.Register(newMockConfirmJudgerTool("write_file", sdktools.PolicyUserConfirm, true, "within roots"))
+	wsReg.ApplySecurityState(wsReg.GroupPolicies(), true, AutonomyModeSilent, SilentModeState{ToolConfirm: SilentToolConfirmAllow})
+	wsJudge, wsProvider := newStrictJudge("VERDICT: CONFIRM\nREASON: should not run", nil)
+	wsReg.SetJudge(wsJudge)
+	wsConfirm := false
+	wsReg.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		wsConfirm = true
+		return sdktools.ConfirmAllowOnce, nil
+	})
+	ctx := sdktools.WithWorkspacePath(context.Background(), "/workspace")
+	if res, err := wsReg.Execute(ctx, "write_file", json.RawMessage(`{"path":"/workspace/file.txt"}`)); err != nil || res.IsError {
+		t.Fatalf("workspace auto-approve Execute() = (%+v, %v), want success", res, err)
+	}
+	if wsConfirm {
+		t.Error("workspace auto-approve must bypass the silent terminal")
+	}
+	if got := wsProvider.callCount(); got != 0 {
+		t.Errorf("workspace auto-approve: strict judge calls = %d, want 0", got)
 	}
 }
 

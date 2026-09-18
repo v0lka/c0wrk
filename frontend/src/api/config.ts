@@ -77,7 +77,7 @@ export async function updateLLMConfig(req: LLMFullConfigRequest): Promise<void> 
 
 /**
  * Fetch the certificate fingerprint the provider's endpoint currently
- * presents (the settings "Get" button, ADR-052). Performs only the TLS
+ * presents (the settings "Get" button, ADR-054). Performs only the TLS
  * handshake — no HTTP request, no API key.
  *
  * Unconditional with respect to any configured pin: the request carries no

@@ -28,7 +28,7 @@ func TestCSPMiddleware_StampsHeader(t *testing.T) {
 	// The directives that close the theme-CSS exfiltration channel.
 	for _, want := range []string{
 		"default-src 'none'",
-		"img-src 'self' data:",
+		"img-src 'self' data: https: http:",
 		"connect-src 'self'",
 		"script-src 'self'",
 	} {

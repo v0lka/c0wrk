@@ -94,6 +94,13 @@ type OrchestratorBuilder struct {
 	baseAgentDirs            []string     // resolved Subagent Profile directories shared across sessions (highest priority first)
 	proxyClient              *http.Client // proxy-configured HTTP client (nil = direct connection)
 
+	// askUserFunc is the ask_user callback supplied at construction. It is
+	// retained so a runtime silent-mode toggle can re-register the ask_user
+	// tool on the shared registry — with the live callback or, when silent mode
+	// disables it, with a nil callback — without an app restart (see
+	// reconcileAskUser). Nil when the caller has no ask_user channel.
+	askUserFunc tools.AskUserFunc
+
 	// Cached reasoning effort string. Empty unless seeded by the ModelProfiles
 	// sampling profile (applyModelProfilesPresets); per-request overrides flow
 	// through HandleOptions.ReasoningEffort → Orchestrator.SetReasoningEffort,
@@ -186,6 +193,7 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, p
 	toolsCfg.PlanApprovalFunc = planApprovalFunc
 	toolsCfg.HTTPClient = b.proxyClient
 	toolsCfg.Logger = logger
+	b.askUserFunc = askUserFunc
 	if err := tools.RegisterBuiltinTools(b.registry, toolsCfg); err != nil {
 		return nil, fmt.Errorf("registering built-in tools: %w", err)
 	}
@@ -678,7 +686,7 @@ func (b *OrchestratorBuilder) Build(
 	// only when the user enabled it AND a workspace is active. The runner is
 	// built exclusively from user config — the command never originates from
 	// model output. Executed via ExecuteUnattended so group-deny and the
-	// command blacklist still apply (see core/verify_on_edit.go).
+	// command blocklist still apply (see core/verify_on_edit.go).
 	var verifyOnEditRunner agent.EditVerifyRunner
 	if cfg.Executor.VerifyOnEdit.Enabled {
 		switch {
@@ -800,28 +808,29 @@ func (b *OrchestratorBuilder) UpdateSecurityPolicies(cfg *BuilderConfig) {
 	b.applySecurityPolicies(cfg)
 }
 
-// UpdateShellBlacklist re-registers the shell-execution tool with the
-// execute-group command blacklist from cfg. The blacklist is compiled into
-// the tool instance at construction time, so runtime blacklist edits
+// UpdateShellBlocklist re-registers the shell-execution tool with the
+// execute-group command blocklist from cfg. The blocklist is compiled into
+// the tool instance at construction time, so runtime blocklist edits
 // (security settings UI) require re-registration to take effect without an
 // app restart. A compile failure leaves the previously registered tool in
 // place and is returned to the caller.
-func (b *OrchestratorBuilder) UpdateShellBlacklist(cfg *BuilderConfig) error {
+func (b *OrchestratorBuilder) UpdateShellBlocklist(cfg *BuilderConfig) error {
 	// Fail closed: a hand-built BuilderConfig whose execute group is absent, or
-	// whose blacklist was never materialized (nil), must not re-register the
-	// shell tool with an empty blacklist. ToBuilderConfig back-fills the shipped
-	// defaults for a missing or nil blacklist, so the production path always
-	// reaches here with a non-nil list; this guard only rejects incomplete
-	// programmatic configs. An explicitly emptied (non-nil) list is a deliberate
-	// "clear the blacklist" and is still honoured.
+	// whose blocklist was never materialized (nil), must not re-register the
+	// shell tool with an empty blocklist. ToBuilderConfig materializes an
+	// explicit empty list for a missing or nil blocklist (the shipped-default
+	// era is over: the list is user-authored and empty by default), so the
+	// production path always reaches here with a non-nil list; this guard
+	// only rejects incomplete programmatic configs. An explicitly emptied
+	// (non-nil) list is a deliberate "clear the blocklist" and is honoured.
 	execGroup, ok := cfg.Security.Groups[string(sdktools.GroupExecute)]
 	if !ok {
-		return errors.New("security config is missing the execute group; refusing to compile an empty shell blacklist")
+		return errors.New("security config is missing the execute group; refusing to compile an empty shell blocklist")
 	}
-	if execGroup.Blacklist == nil {
-		return errors.New("security config execute group has no blacklist; refusing to compile an empty shell blacklist")
+	if execGroup.Blocklist == nil {
+		return errors.New("security config execute group has no blocklist; refusing to compile an empty shell blocklist")
 	}
-	return tools.UpdateShellTool(b.registry, execGroup.Blacklist, builtins.BashTimeouts{
+	return tools.UpdateShellTool(b.registry, execGroup.Blocklist, builtins.BashTimeouts{
 		MaxTimeout: time.Duration(cfg.Timeouts.BashMaxTimeout) * time.Second,
 		WaitDelay:  time.Duration(cfg.Timeouts.BashWaitDelay) * time.Second,
 	})
@@ -1432,7 +1441,7 @@ func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider 
 				return nil, fmt.Errorf("openAI-compatible base URL not configured for provider %q", provider)
 			}
 			// Per-provider TLS override under the proxy-wins rule
-			// (ADR-052): with a proxy active the plain proxy client dials
+			// (ADR-054): with a proxy active the plain proxy client dials
 			// and the pin is ignored; with no proxy, a non-empty pin yields
 			// a direct pinned client so the listing reaches self-signed
 			// endpoints exactly like the chat path.
@@ -1991,7 +2000,7 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 		if !ok {
 			return
 		}
-		// Per-provider TLS override under the proxy-wins rule (ADR-052):
+		// Per-provider TLS override under the proxy-wins rule (ADR-054):
 		// proxy active → the plain proxy client; no proxy + a pin → a direct
 		// pinned client. Resolved here, on the caller's goroutine, so the
 		// detached probe below receives a ready client.
@@ -2044,7 +2053,7 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 
 // lookupOpenAIProviderBaseURL searches the provider configs for the
 // OpenAI-compatible one that serves `model` and returns its expanded base_url,
-// api key, and per-provider TLS pin (ADR-052). The last return is false only
+// api key, and per-provider TLS pin (ADR-054). The last return is false only
 // when no OpenAI-compatible provider serves the model. Host locality is
 // deliberately NOT filtered: a self-hosted server on a public host
 // (vLLM/TGI/Ollama behind a domain or Tailscale) is probed exactly like a
@@ -2093,7 +2102,7 @@ func buildLLMHTTPClient(proxyClient *http.Client, timeoutSec int) *http.Client {
 // providerEntryFromConfig builds one llm.ProviderEntry from a provider's
 // BuilderConfig slice.
 //
-// The per-provider TLS pin (ADR-052 — the pin is the switch) is attached as
+// The per-provider TLS pin (ADR-054 — the pin is the switch) is attached as
 // ProviderEntry.HTTPClient only when the provider carries a non-empty
 // TLSFingerprint AND no proxy is active (proxy wins). sharedClient is the
 // router-level LLM client, so a pinned client inherits the LLM request
@@ -2424,11 +2433,16 @@ func (b *OrchestratorBuilder) unregisterSessionRegistry(r *tools.ToolRegistry) {
 // system group is not configurable and any entry for it is skipped
 // defensively; unknown group names are likewise skipped.
 //
+// It also pushes the silent-mode posture (security.silent_mode) to the same
+// registries and reconciles the ask_user tool's registration on the shared
+// registry, so a runtime security-settings edit takes effect on live sessions
+// without an app restart.
+//
 // The state is pushed to the shared registry AND every live per-session
 // registry clone: each session executes on its own clone (see Build), so a
 // runtime edit from the security settings UI must reach already-open sessions
 // too — otherwise a deny set in the UI would silently fail-open on every
-// session created before the save (the same save's execute blacklist does
+// session created before the save (the same save's execute blocklist does
 // reach them, because it re-registers the tool in the shared sp4rk registry
 // the clones embed). The push holds b.mu across the whole update so a Build
 // racing it cannot miss the new state (see registerSessionRegistry).
@@ -2446,17 +2460,51 @@ func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 	}
 
 	autoApprove := cfg.Security.AutoApproveWorkspaceWrites
-	smartApprove := cfg.Security.SmartApprove
+	autonomyMode := cfg.Security.AutonomyMode
+	silentMode := tools.SilentModeState{
+		ToolConfirm:  cfg.Security.SilentMode.ToolConfirm,
+		StepLimit:    cfg.Security.SilentMode.StepLimit,
+		AskUser:      cfg.Security.SilentMode.AskUser,
+		ReviewPrompt: cfg.Security.SilentMode.ReviewPrompt,
+	}
 
 	// Lock ordering is b.mu → registry mu: registerSessionRegistry clones
 	// under b.mu (same order), and the registries never call back into the
 	// builder, so no reverse order exists.
 	b.mu.Lock()
-	b.registry.ApplySecurityState(groupPolicies, autoApprove, smartApprove)
+	b.registry.ApplySecurityState(groupPolicies, autoApprove, autonomyMode, silentMode)
 	for r := range b.sessionRegistries {
-		r.ApplySecurityState(groupPolicies, autoApprove, smartApprove)
+		r.ApplySecurityState(groupPolicies, autoApprove, autonomyMode, silentMode)
 	}
+	// ask_user lives in the shared sp4rk registry the session clones embed, so
+	// re-registering it here reaches live sessions immediately — a runtime
+	// silent-mode toggle must not require an app restart.
+	b.reconcileAskUser(cfg)
 	b.mu.Unlock()
+}
+
+// reconcileAskUser (re)registers the ask_user tool on the shared registry with
+// the callback selected by the silent-mode ask_user sub-policy. It is the
+// runtime counterpart of the build-time logic in RegisterBuiltinTools: with
+// silent mode on and ask_user.mode "disable" the tool is registered with a NIL
+// callback, so a call resolves to the explicit "ask_user is not available in
+// this mode" result — never blocking the agent — instead of a missing-tool
+// error; turning silent mode back off restores the live callback. The tool is
+// stateless, so re-registering it is idempotent. A nil askUserFunc (CLI, or a
+// test builder) is a no-op — there is no callback channel to register. The
+// shared registry's tools are visible to every session clone, so one call here
+// reaches all live sessions.
+//
+// Callers hold b.mu (lock order b.mu → registry mu).
+func (b *OrchestratorBuilder) reconcileAskUser(cfg *BuilderConfig) {
+	if b.askUserFunc == nil {
+		return
+	}
+	askUser := b.askUserFunc
+	if cfg.Security.AskUserDisabled() {
+		askUser = nil
+	}
+	b.registry.Register(tools.NewAskUserTool(askUser))
 }
 
 // parseGroupPolicy maps the short config enum used by
@@ -2594,18 +2642,18 @@ func resolveSamplingFunc(s BuilderModelProfilesConfig) llm.SamplingFunc {
 
 // configToBuiltinToolsConfig converts BuilderConfig to BuiltinToolsConfig.
 // configToBuiltinToolsConfig maps a BuilderConfig into the tool-registration
-// config. (See the call site for the blacklist sourcing note.)
+// config. (See the call site for the blocklist sourcing note.)
 func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
-	// The command blacklist is sourced from the execute group
-	// (security.groups.execute.blacklist) and compiled into the shell-exec
+	// The command blocklist is sourced from the execute group
+	// (security.groups.execute.blocklist) and compiled into the shell-exec
 	// tool, whose Judge reports a match as a hard escalation naming the
-	// pattern. Presence-based: an explicitly empty blacklist ([] in YAML)
-	// clears the patterns, while an absent group leaves them unset (the
-	// config loader back-fills defaults, so this only affects programmatically
-	// built configs).
-	var shellBlacklist []string
+	// pattern. Presence-based and empty by default: an explicitly empty
+	// blocklist ([] in YAML) and an absent one both compile to "no patterns"
+	// (the config loader back-fills the entry, so a nil here only affects
+	// programmatically built configs).
+	var shellBlocklist []string
 	if execGroup, ok := cfg.Security.Groups[string(sdktools.GroupExecute)]; ok {
-		shellBlacklist = execGroup.Blacklist
+		shellBlocklist = execGroup.Blocklist
 	}
 
 	return tools.BuiltinToolsConfig{
@@ -2627,10 +2675,18 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 			MaxTimeout: time.Duration(cfg.Timeouts.BashMaxTimeout) * time.Second,
 			WaitDelay:  time.Duration(cfg.Timeouts.BashWaitDelay) * time.Second,
 		},
-		ShellBlacklist: shellBlacklist,
+		ShellBlocklist: shellBlocklist,
 		SearchProvider: cfg.Search.Provider,
 		SearchAPIKey:   cfg.ExpandEnvVars(cfg.Search.APIKey),
 		SearchTimeout:  time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
+
+		SilentMode: tools.SilentModeState{
+			ToolConfirm:  cfg.Security.SilentMode.ToolConfirm,
+			StepLimit:    cfg.Security.SilentMode.StepLimit,
+			AskUser:      cfg.Security.SilentMode.AskUser,
+			ReviewPrompt: cfg.Security.SilentMode.ReviewPrompt,
+		},
+		AutonomyMode: cfg.Security.AutonomyMode,
 
 		MarkitdownPythonPath: cfg.MarkitdownPythonPath,
 	}
@@ -2644,7 +2700,7 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 // httpClient may be nil (SDK default transport); fetchProviderModels threads
 // either the proxy client or a per-provider TLS-pinned client
 // (llmtls.DirectDialClient) so the listing reaches self-signed endpoints
-// exactly like the chat path (ADR-052).
+// exactly like the chat path (ADR-054).
 func listOpenAIModels(ctx context.Context, baseURL, apiKey string, httpClient *http.Client) ([]string, error) {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),

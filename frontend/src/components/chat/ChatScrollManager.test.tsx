@@ -452,6 +452,32 @@ describe('ChatScrollManager session-switch scroll persistence', () => {
     expect(viewport.scrollTop).toBe(11_200)
   })
 
+  // Regression (finding 21): a session switch restores a saved mid-transcript
+  // position, and ChatArea's load effect then always re-merges the newest
+  // page — a fresh messages array with IDENTICAL content. "Not at the
+  // bottom" must not be mistaken for "the user scrolled away from new
+  // output": an unchanged recognized tail (same last id, same count, same
+  // streaming text) must not raise the "New activity" pill.
+  it('does not raise the "New activity" pill when a content-identical history re-merge follows a position restore', () => {
+    pinGeometry(10_000, 600)
+    useChatStore.getState().saveScrollPosition('s1', { scrollTop: 4_200, scrollHeight: 9_000 })
+    const { viewport, rerender } = renderViewportWithRerender('s1')
+    // The mount branch restored the saved mid-transcript position (not at
+    // the bottom) and opened pill-free.
+    expect(viewport.scrollTop).toBe(4_200)
+    expect(viewport.querySelector('button[aria-label="Jump to new activity"]')).toBeNull()
+
+    // The newest-page history RPC resolves and re-merges the SAME message in
+    // a NEW array (mergeHistoryMessages unconditionally writes a fresh
+    // messageOrder). Nothing new appeared — still no pill.
+    rerender([{ ...message('m1') }])
+    expect(viewport.querySelector('button[aria-label="Jump to new activity"]')).toBeNull()
+
+    // A genuinely new tail message still raises the pill.
+    rerender([message('m1'), message('m2')])
+    expect(viewport.querySelector('button[aria-label="Jump to new activity"]')).not.toBeNull()
+  })
+
   it('pins to the bottom when the session has no saved position', () => {
     pinGeometry(10_000, 600)
     const viewport = renderViewport('s2')

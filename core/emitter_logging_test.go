@@ -3,6 +3,8 @@ package core
 import (
 	"bytes"
 	"log/slog"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -179,6 +181,37 @@ func TestLoggingEmitter_DelegatesToInner(t *testing.T) {
 				t.Errorf("expected method %q, got %q", tt.want, spy.calls[0].method)
 			}
 		})
+	}
+}
+
+func TestLoggingEmitter_SubAgentComplete_BoundsErrMsgPreview(t *testing.T) {
+	spy := &spyEmitter{}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	le := NewLoggingEmitter(spy, logger)
+
+	// errMsg can be raw model prose / file-derived content (the SDK falls back
+	// to result.Output) — it must never reach the persisted log unbounded.
+	reason := strings.Repeat("secret-bearing prose ", 200) // 4200 bytes
+
+	le.SubAgentComplete("step_1", false, time.Second, reason)
+
+	logged := buf.String()
+	if strings.Contains(logged, reason) {
+		t.Fatal("expected full errMsg NOT to be logged verbatim")
+	}
+	if want := "errMsgLen=" + strconv.Itoa(len(reason)); !strings.Contains(logged, want) {
+		t.Errorf("expected %s in log output; got: %s", want, logged)
+	}
+	if !strings.Contains(logged, "…") {
+		t.Errorf("expected truncated errMsgPreview with ellipsis marker in log output; got: %s", logged)
+	}
+	// The inner emitter still receives the untruncated reason.
+	if len(spy.calls) != 1 || spy.calls[0].method != "SubAgentComplete" {
+		t.Fatalf("expected 1 SubAgentComplete call to inner, got %d", len(spy.calls))
+	}
+	if got, ok := spy.calls[0].args[3].(string); !ok || got != reason {
+		t.Errorf("expected inner to receive full errMsg, got %v", spy.calls[0].args[3])
 	}
 }
 

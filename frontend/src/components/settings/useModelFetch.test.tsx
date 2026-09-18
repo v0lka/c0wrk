@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The draft TLS pin (ADR-052) must reach ListProviderModels so Fetch Models
+// The draft TLS pin (ADR-054) must reach ListProviderModels so Fetch Models
 // can list a self-signed endpoint — but it must NOT be part of credentialKey,
 // whose only job is to reset the fetched list when the identity of the
 // endpoint changes. Keying it on the pin would wipe an already-fetched list

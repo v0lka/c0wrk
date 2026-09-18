@@ -51,7 +51,7 @@ export function useModelFetch(activeProvider: string, providerConfigs: Record<st
             // Pass draft credentials so an unsaved compatible provider
             // (first-run / no default_model yet) can still list models —
             // ListProviderModels only sees persisted config otherwise.
-            // The draft TLS pin (ADR-052) rides along so Fetch Models
+            // The draft TLS pin (ADR-054) rides along so Fetch Models
             // reaches self-signed endpoints before the first save. Sent
             // verbatim — an explicit draft '' must win over the persisted
             // value (the backend treats an omitted field as "keep").

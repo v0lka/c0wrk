@@ -58,7 +58,9 @@ The command ALWAYS originates from user configuration, never from model output �
 1. structural input validation (`sdktools.ValidateToolInput` — required keys, declared types, unknown keys, recursively into nested objects and array items),
 2. disabled tools (No Project mode),
 3. execute-group policy `deny`,
-4. hard safety reasons (judge + symlink detection) — a hard reason blocks outright because there is no confirmation flow to escalate to.
+4. **canonical** hard safety reasons (judge + symlink detection, canonicality checked independently for both signals) — a canonical hard reason (blocklist match, a flowsh control — exfiltration flow / privilege escalation / system-path write / destructive write outside the session roots / download cradle — or a symlink escape) blocks outright because there is no confirmation flow to escalate to. A **non-canonical** hard reason — most notably the flowsh ⊤ limitation `command_unbounded_analysis` ("the analyzer could not bound this command") — passes: the command is the user's own verification config and an analysis limitation is not grounds to break the opted-in verification loop (`./x.sh`, an unknown CLI's `--version`).
+
+For shell tools the deterministic flowsh analysis is computed once per call and attached for the tool's Judge exactly as in `Execute` (ADR-052).
 
 Deliberately skipped (input is fixed config, not model output): pre/post-execute hooks, advisory judging of soft reasons, HITL confirmation. `ExecuteUnattended` must never be wired into a model-facing tool-execution path.
 
@@ -72,4 +74,4 @@ Deliberately skipped (input is fixed config, not model output): pre/post-execute
 - Injected output is capped (`max_output_chars`, SDK default 4000) with an explicit truncation marker; the cut is rune-safe (never splits a multi-byte UTF-8 rune).
 - A non-zero exit is reported as `VERIFICATION FAILED` and a timeout as `NOT verified` — never as a pass.
 - The effective timeout is `min(executor.verify_on_edit.timeout, timeouts.bashMaxTimeout)`; a clamp logs a warning and `EditVerifyResult.Timeout` carries the effective limit into the timeout note, so the model is never advised to raise a knob that cannot take effect.
-- Fail-surface mapping is exact: infrastructure failures (input marshaling, registry execution errors) surface as the `Err` note ("could not run verification command"); policy/blacklist denials and signal kills carry no `exit status N`, so they parse to a negative exit code and surface as the `ExitCode < 0` note ("verification command did not complete (blocked or killed — no exit code). The edit was NOT verified"). Either way the edit is never reported as verified — never as a silent pass.
+- Fail-surface mapping is exact: infrastructure failures (input marshaling, registry execution errors) surface as the `Err` note ("could not run verification command"); policy/blocklist/canonical-criterion denials and signal kills carry no `exit status N`, so they parse to a negative exit code and surface as the `ExitCode < 0` note ("verification command did not complete (blocked or killed — no exit code). The edit was NOT verified"). Either way the edit is never reported as verified — never as a silent pass.

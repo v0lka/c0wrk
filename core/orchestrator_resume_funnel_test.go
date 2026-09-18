@@ -6,8 +6,13 @@ package core
 // uniformly:
 //
 //   - paused                → relaunched from its checkpoint
-//   - not-started/interrupted → relaunched FRESH (the former
+//   - not-started, or interrupted WITHOUT a durable checkpoint
+//                           → relaunched FRESH (the former
 //     "interrupted ⇒ mark failed, never relaunch" branch is gone)
+//   - interrupted WITH a durable checkpoint
+//                           → normalized to paused during the ledger read and
+//     resumed from the checkpoint (Checkpoint and the abandonment settle are
+//     independent writes, so an interrupted record can still carry Steps)
 //   - terminal              → replayed, never re-run
 //
 // The tests drive the funnel at the Orchestrator.Resume level, seeding the
@@ -361,5 +366,91 @@ func TestResumeFunnel_CheckpointWithoutSettleResumesPaused(t *testing.T) {
 	}
 	if seeded != 1 {
 		t.Errorf("context managers seeded from the stored checkpoint = %d, want 1 (a durable checkpoint must not be discarded)", seeded)
+	}
+}
+
+// TestResumeFunnel_InterruptedCheckpointResumedPaused is the regression test
+// for the interrupted-with-checkpoint case: Ledger.Checkpoint persists
+// rec.Steps WITHOUT touching the status, and the crash/app-exit abandonment
+// sweep later flips the still in-flight unit to interrupted while preserving
+// the Steps column — so a resumed task can find a unit whose status reads
+// interrupted yet carries a usable checkpoint. The funnel must normalize it to
+// paused and seed the checkpoint (resume, not relaunch-fresh); the former
+// InFlight()-only predicate dropped the checkpoint and re-ran the trajectory's
+// side effects.
+func TestResumeFunnel_InterruptedCheckpointResumedPaused(t *testing.T) {
+	checkpoint := []agent.Step{{
+		Thought:     "prior",
+		Action:      llm.ToolCall{ID: "c1", Name: "bash_exec", Input: json.RawMessage(`{"command":"echo hi","timeout":"5s"}`)},
+		Observation: "hi",
+	}}
+	caller := &pauseScriptLLM{script: []pauseScriptStep{
+		// Wave: del_1 resumes from its checkpoint.
+		{respond: executorFinishResponse("del_1 done")},
+		// The resumed conductor's only LLM call: finish.
+		{respond: executorFinishResponse("all done")},
+	}}
+	o, emitter, rec, recStore := newFunnelOrchestrator(t, caller)
+
+	bb := newUnitLedgerBB("task-funnel-interrupted-cp", recStore)
+	bb.SetOriginalRequest("do the delegated work")
+	// The checkpoint landed, the app died, and the abandonment sweep marked the
+	// still-running unit interrupted — Steps preserved.
+	seedLedgerUnit(t, bb, "", "del_1", units.UnitKindSubagent, units.UnitStatusInterrupted, "", 0,
+		coretools.DelegationTask{ID: "del_1", Summary: "s", Task: "do work"}, checkpoint)
+
+	ctx := WithComplexity(WithDomain(context.Background(), "general"), 1)
+	res, err := o.Resume(ctx, bb, nil, t.TempDir(), nil, nil, "")
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.Status != orchestration.ExecutionStatusSuccess {
+		t.Fatalf("Resume status = %q, want success", res.Status)
+	}
+	if n := emitter.launchCount("del_1"); n != 1 {
+		t.Errorf("SubAgentLaunch for del_1 = %d, want 1", n)
+	}
+	// The interrupted unit flows through as paused(): its checkpoint is seeded
+	// onto a context manager (and the blackboard, transiently — the delegation's
+	// completion later overwrites the seed), not discarded.
+	seeded := 0
+	for _, cm := range rec.snapshot() {
+		if s := cm.SeededSteps(); len(s) == 1 && s[0].Action.Name == "bash_exec" {
+			seeded++
+		}
+	}
+	if seeded != 1 {
+		t.Errorf("context managers seeded from the interrupted unit's checkpoint = %d, want 1 (an interrupted unit's durable checkpoint must be resumed, not discarded)", seeded)
+	}
+}
+
+// TestResumeUnitsFromLedger_InterruptedWithCheckpointNormalizedPaused pins the
+// ledger-read classification directly (the Resume-level test above drives it
+// end-to-end): an interrupted record carrying Steps is classified paused()
+// (its checkpoint will be seeded), while a checkpoint-less interrupted record
+// stays relaunchable-fresh.
+func TestResumeUnitsFromLedger_InterruptedWithCheckpointNormalizedPaused(t *testing.T) {
+	bb := newUnitLedgerBB("task-ledger-norm", nil)
+	bb.SetOriginalRequest("do the delegated work")
+
+	cp := []agent.Step{{Thought: "prior", Observation: "hi"}}
+	seedLedgerUnit(t, bb, "", "del_cp", units.UnitKindSubagent, units.UnitStatusInterrupted, "", 0,
+		coretools.DelegationTask{ID: "del_cp", Summary: "s", Task: "work"}, cp)
+	seedLedgerUnit(t, bb, "", "del_fresh", units.UnitKindSubagent, units.UnitStatusInterrupted, "", 0,
+		coretools.DelegationTask{ID: "del_fresh", Summary: "s", Task: "work"}, nil)
+
+	unitsToSettle, err := resumeUnitsFromLedger(bb.UnitLedger(), bb)
+	if err != nil {
+		t.Fatalf("resumeUnitsFromLedger: %v", err)
+	}
+	byID := make(map[string]resumeUnit, len(unitsToSettle))
+	for _, u := range unitsToSettle {
+		byID[u.id] = u
+	}
+	if u, ok := byID["del_cp"]; !ok || !u.paused() {
+		t.Errorf("interrupted unit WITH checkpoint: present=%v paused() = %v, want true (checkpoint seeded, not relaunched fresh)", ok, u.paused())
+	}
+	if u, ok := byID["del_fresh"]; !ok || u.paused() || !u.relaunchable() {
+		t.Errorf("interrupted unit WITHOUT checkpoint: present=%v paused() = %v, relaunchable() = %v; want false/true (relaunched fresh)", ok, u.paused(), u.relaunchable())
 	}
 }

@@ -14,6 +14,12 @@ export interface ComboboxOption {
   value: string
   label: string
   /**
+   * Marks the option as unselectable (rendered dimmed, pointer-events none —
+   * Radix never fires onSelect for a disabled item). Used e.g. for silent-mode
+   * judge-dependent modes while no LLM model is configured for the judge.
+   */
+  disabled?: boolean
+  /**
    * Optional hover tooltip content, rendered inside a portaled Radix tooltip
    * anchored to the menu item — the generic settings combobox has no other
    * description surface, and Radix tooltips are zoom-corrected globally
@@ -136,12 +142,15 @@ export function Combobox({
           const item = (
             <DropdownMenuItem
               data-selected={isSelected}
+              disabled={opt.disabled}
               className={cn('gap-2 px-3 py-1.5 text-xs', isSelected && 'bg-primary/10 font-medium')}
               // Re-picking the already-selected value is a no-op (native
               // <select> fires no `change` event either); this avoids spurious
               // config-save round-trips in SecurityGroupCard/SearchSettings.
+              // A disabled option is additionally guarded (Radix suppresses
+              // its select events, this keeps the contract local).
               onSelect={() => {
-                if (opt.value !== value) onChange(opt.value)
+                if (!opt.disabled && opt.value !== value) onChange(opt.value)
               }}
             >
               <span className="flex-1 text-left truncate">{opt.label}</span>

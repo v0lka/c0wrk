@@ -52,6 +52,14 @@ export function ChatScrollManager({
   // That must not raise the "New activity" pill or yank the scroll position.
   const prevCountRef = useRef(0)
   const prevLastIdRef = useRef('')
+  // Streaming text from the previous run. Together with the count/tail-id
+  // pair above it identifies a CONTENT-IDENTICAL re-merge: a fresh array of
+  // the same messages with unchanged streaming (e.g. the newest-page history
+  // RPC re-merging after a session switch restored a mid-scroll position).
+  // Nothing new appeared in that case, so the "New activity" pill must not
+  // be raised — only a genuinely changed tail (or new streaming output)
+  // counts as activity.
+  const prevStreamingTextRef = useRef<string | undefined>(undefined)
   // IDs of review_prompt messages that still needed a decision the last time
   // the auto-scroll effect ran. A newly-appearing unresolved prompt forces the
   // chat to the bottom so the request is fully visible even if the user had
@@ -180,8 +188,18 @@ export function ChatScrollManager({
       !isInitialMountRef.current &&
       messages.length > prevCountRef.current &&
       lastId === prevLastIdRef.current
+    // True when the recognized tail did not change at all: same tail id, same
+    // count, same streaming text. The messages array may still be brand new
+    // (mergeHistoryMessages always writes a fresh index/order), so identity
+    // cannot be used — only the recognized content can.
+    const tailUnchanged =
+      !isInitialMountRef.current &&
+      messages.length === prevCountRef.current &&
+      lastId === prevLastIdRef.current &&
+      streamingText === prevStreamingTextRef.current
     prevCountRef.current = messages.length
     prevLastIdRef.current = lastId
+    prevStreamingTextRef.current = streamingText
 
     if (isInitialMountRef.current) {
       // Session selected. A previously saved reading position (captured when
@@ -238,6 +256,14 @@ export function ChatScrollManager({
         viewport.scrollTop = viewport.scrollHeight
         lastWriteTopRef.current = viewport.scrollTop
         isAtBottomRef.current = true
+      } else if (tailUnchanged) {
+        // Content-identical re-merge in a fresh array: nothing new appeared
+        // at the tail, so the pill must not be raised — the user simply is
+        // not at the bottom (e.g. a session switch restored a saved
+        // mid-transcript position and the newest-page history RPC just
+        // re-merged the same rows). Consistent with the mount branch, which
+        // deliberately opens pill-free, and with the ResizeObserver path,
+        // which guards against the same false positive.
       } else {
         setHasNewActivity(true)
       }

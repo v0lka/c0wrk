@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The per-provider TLS pin section (ADR-052). Two properties matter most:
+// The per-provider TLS pin section (ADR-054). Two properties matter most:
 //
 //  - The pin IS the switch, so the field is always present for a compatible
 //    provider and there is no separate toggle checkbox.
