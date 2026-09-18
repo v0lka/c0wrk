@@ -40,6 +40,7 @@ vi.mock('@/hooks/useSessionLoader', () => ({ useSessionLoader: () => {} }))
 vi.mock('@/hooks/useSessionEvents', () => ({ useSessionEvents: () => {} }))
 vi.mock('@/hooks/useBackgroundSessionWatcher', () => ({ useBackgroundSessionWatcher: () => {} }))
 vi.mock('@/stores/activeSessionsStore', () => ({ useActiveSessionsRefresh: () => {} }))
+vi.mock('@/hooks/useAutonomyLoader', () => ({ useAutonomyLoader: () => {} }))
 
 // --- api ---
 vi.mock('@/api/runtime', () => ({ subscribe: vi.fn(() => () => {}) }))

@@ -236,17 +236,21 @@ core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
   └─ 9. Branch on the tool's GROUP policy (security.groups, ADR-024; unconfigured
          group → fail-safe user_confirm):
        ├─ allow → hard reason ⇒ smartApproveOrConfirm (Hard) — unified funnel
-       │          (ADR-026): strict judge consulted (hard-bias); a canonical
+       │          (ADR-026) gated by the autonomy mode (security.autonomy_mode,
+       │          ADR-053): strict judge consulted (hard-bias); a canonical
        │          reason (blacklist, SSRF, symlink escape, unassessable input)
-       │          is backstopped to confirm even on ALLOW, a non-canonical
-       │          hard reason may be cleared by a strict ALLOW;
-       │          soft reason ⇒ Smart Approve may allow, else confirm; clean ⇒ execute
+       │          is backstopped to confirm even on ALLOW on the interactive
+       │          paths (silent judge mode: the judge's ALLOW is final, audited),
+       │          a non-canonical hard reason may be cleared by a strict ALLOW;
+       │          soft reason ⇒ assisted mode may allow, else confirm; clean ⇒ execute
        ├─ deny → return error result (step 8)
        └─ user_confirm → confirmFunc() blocks until user responds
                 (local_write + auto_approve_workspace_writes + Judge.Allow ⇒ execute;
                  hard reason ⇒ smartApproveOrConfirm (Hard) — same funnel +
-                 canonical backstop; otherwise Smart Approve
-                 evaluates: strict ALLOW ⇒ execute, anything else ⇒ confirm)
+                 canonical backstop; otherwise the autonomy gate decides:
+                 assisted — strict ALLOW ⇒ execute, strict DENY ⇒ terminate
+                 (audited), anything else ⇒ confirm; standard ⇒ plain confirm;
+                 silent ⇒ terminal execute-or-deny, no card)
                 │
                 ▼ (if confirmed)
          tool.Execute(ctx, input)

@@ -300,28 +300,112 @@ security:
   # write operations within your own projects.
   auto_approve_workspace_writes: false
 
-  # Smart Approve: when true, a strict OWASP ASI (ASI01–ASI10) LLM judge
-  # automatically evaluates every escalated call — whether it comes from an
-  # effective user_confirm policy or from a hard safety reason surfaced by
-  # an allow-group tool — after all deterministic gates and workspace
-  # auto-approval above. This is the unified confirmation funnel: there is
-  # no separate bypass path for hard reasons.
-  #   - A strict ALLOW executes without UI.
-  #   - CONFIRM, judge errors, timeouts, and unparseable responses always
-  #     fall back to manual confirmation (the "Ask Agent" button is hidden
-  #     because the strict judge already evaluated the call).
-  #   - HARD reasons (a fired security control: command blocklist, SSRF
-  #     escape, symlink escape out of the session roots; or an unassessable
-  #     input: degraded SSRF protection, an undeterminable URL/path) always
-  #     consult the strict judge, even for allow-group tools.
-  #   - Deterministic backstop: a canonical hard reason — a fired control
-  #     (blocklist, SSRF, symlink escape) or an unassessable input — can
-  #     never be auto-approved by the strict judge; canonicality is matched
-  #     by typed reason codes (JudgeOutcome.ReasonCode, an sp4rk contract),
-  #     not by prose. An ALLOW verdict is overridden to CONFIRM, so the
-  #     user still decides.
-  # deny groups are never judged (always blocked). Default: false.
-  smart_approve: false
+  # Autonomy mode — the unified autonomy posture (security.autonomy_mode),
+  # replacing the former pair of boolean keys: the Smart Approve toggle and
+  # the silent-mode master switch. Values:
+  #   standard (default) — every interactive prompt (tool confirmations,
+  #                        step-limit cards, ask_user, review prompt) reaches
+  #                        a human.
+  #   assisted           — a strict OWASP ASI (ASI01–ASI10) LLM judge
+  #                        automatically evaluates every escalated call —
+  #                        whether it comes from an effective user_confirm
+  #                        policy or from a hard safety reason surfaced by an
+  #                        allow-group tool — after all deterministic gates
+  #                        and workspace auto-approval above. This is the
+  #                        unified confirmation funnel: there is no separate
+  #                        bypass path for hard reasons.
+  #                          - A strict ALLOW executes without UI.
+  #                          - CONFIRM, judge errors, timeouts, and
+  #                            unparseable responses always fall back to
+  #                            manual confirmation (the "Ask Agent" button
+  #                            is hidden because the strict judge already
+  #                            evaluated the call).
+  #                          - HARD reasons (a fired security control:
+  #                            command blocklist, SSRF escape, symlink
+  #                            escape out of the session roots; or an
+  #                            unassessable input: degraded SSRF protection,
+  #                            an undeterminable URL/path) always consult
+  #                            the strict judge, even for allow-group tools.
+  #                          - Deterministic backstop: a canonical hard
+  #                            reason — a fired control (blocklist, SSRF,
+  #                            symlink escape) or an unassessable input —
+  #                            can never be auto-approved by the strict
+  #                            judge in assisted mode (the silent judge
+  #                            terminal below is the one deliberate
+  #                            exception, where your delegation makes the
+  #                            judge's ALLOW final); canonicality is matched
+  #                            by typed reason codes (JudgeOutcome.ReasonCode,
+  #                            an sp4rk contract), not by prose. An ALLOW
+  #                            verdict is overridden to CONFIRM, so the user
+  #                            still decides.
+  #                        deny groups are never judged (always blocked).
+  #   silent             — unattended operation: the four silent_mode
+  #                        sub-policies below resolve the prompts that would
+  #                        otherwise need a human, so a task can run to
+  #                        completion without blocking. The former
+  #                        silent-mode master switch no longer exists — this
+  #                        value IS the master switch for the sub-policies.
+  # Configs written before this enum are migrated at load (silent wins over
+  # assisted) and the legacy keys are dropped at the next save. An unknown
+  # value fails safe to standard with a load warning.
+  autonomy_mode: "standard"
+
+  # --- Silent mode (security.silent_mode) ---
+  # The sub-policies of the unattended-operation posture. They are live only
+  # while security.autonomy_mode is "silent" (the master switch above — the
+  # former enabled key no longer exists); in every other mode each sub-policy
+  # is inert and the app behaves exactly as before. When live, the four
+  # sub-policies resolve the prompts that would otherwise need a human, so a
+  # task can run to completion without blocking:
+  #   tool_confirm.mode  — a tool call that would open a confirmation card.
+  #                        "judge" (default) routes it through the strict
+  #                        OWASP ASI judge, whose decision is FINAL: a strict
+  #                        ALLOW runs — canonical hard reasons included (you
+  #                        delegated the final decision to the judge; the
+  #                        executed decision is audited in the
+  #                        autonomy_decision event with the judge's
+  #                        justification); a DENY, CONFIRM, a missing/failing
+  #                        judge, or an unparseable verdict denies; "allow"
+  #                        runs every confirmation-gated call with no hard
+  #                        reason (a hard reason still escalates to the
+  #                        judge); "deny" blocks them all.
+  #   step_limit.mode    — a step-budget / circuit-breaker boundary. "auto"
+  #                        (default) lets the strict judge decide from the
+  #                        trajectory (allow_once / allow_more / allow_always /
+  #                        deny); a fixed value pins that response without the
+  #                        judge; "stop" keeps the interactive card (opts this
+  #                        gate out of silent mode).
+  #   ask_user.mode      — the ask_user tool. "disable" (default) registers
+  #                        it in a disabled form that reports the tool as
+  #                        unavailable, so the agent can never block on a
+  #                        question; "enable" keeps it fully available.
+  #   review_prompt.mode — the post-task code-review prompt. "suppress"
+  #                        (default) does not emit it; "allow" emits it as
+  #                        usual.
+  # Every automatic decision (a tool_confirm / step_limit prompt resolved
+  # without a human) is recorded as a persisted, non-blocking
+  # `autonomy_decision` event (kind, mode, policy, verdict, tool/reason,
+  # justification), so an unattended run stays auditable (OWASP ASI10). Silent
+  # mode only replaces the human
+  # answer to a prompt — it never weakens a gate: deny groups, path
+  # containment, symlink/flowsh analysis and workspace auto-approval are
+  # unchanged, and a call carrying a hard safety reason is never auto-executed
+  # without the judge (allow mode escalates it; judge mode lets the judge
+  # decide, and the judge's ALLOW is final — the ONE deliberate exception to
+  # the assisted-mode canonical backstop, which forces a confirmation card
+  # instead). Pick tool_confirm "deny" if you want a judge-free hard floor for
+  # unattended runs.
+  # A runtime change from Settings → Security applies to live sessions without
+  # an app restart.
+  silent_mode:
+    tool_confirm:
+      mode: "judge"
+    step_limit:
+      mode: "auto"
+    ask_user:
+      mode: "disable"
+    review_prompt:
+      mode: "suppress"
 
   # Repositories whose "untrusted git configuration" intake warning has been
   # dismissed via the toast's "Trust this repo" action (also manageable from

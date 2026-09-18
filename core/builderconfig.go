@@ -2,6 +2,7 @@ package core
 
 import (
 	"github.com/v0lka/c0wrk/core/proxy"
+	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/llm"
 )
 
@@ -439,6 +440,26 @@ type BuilderCircuitBreaker struct {
 // Security
 // ---------------------------------------------------------------------------
 
+// Mode values of the unified autonomy posture (security.autonomy_mode).
+// Core owns this vocabulary; backend/config re-declares the same strings as
+// its config enum (core never imports backend/config) —
+// backend/configadapter_test.go pins the two dictionaries against each
+// other so neither side can rename a value alone.
+const (
+	// AutonomyModeStandard is the default posture: every interactive prompt
+	// (tool confirmations, step-limit cards, ask_user, review prompt)
+	// reaches a human.
+	AutonomyModeStandard = "standard"
+	// AutonomyModeAssisted lets the strict OWASP ASI judge resolve escalated
+	// calls (the former Smart Approve toggle): only a strict ALLOW skips the
+	// UI; every other outcome still asks the user.
+	AutonomyModeAssisted = "assisted"
+	// AutonomyModeSilent is the unattended posture (the former
+	// silent_mode.enabled=true): the four silent-mode sub-policies resolve
+	// the interactive prompts without a human.
+	AutonomyModeSilent = "silent"
+)
+
 // BuilderSecurityConfig holds security settings.
 type BuilderSecurityConfig struct {
 	JudgeModel              string
@@ -456,10 +477,22 @@ type BuilderSecurityConfig struct {
 	// confirmation.
 	AutoApproveWorkspaceWrites bool
 
-	// SmartApprove enables strict automatic judging only after a call resolves
-	// to PolicyUserConfirm (or a soft escalation under PolicyAlwaysAllow) and
-	// existing workspace auto-approval did not allow it.
-	SmartApprove bool
+	// AutonomyMode is the unified autonomy posture
+	// (security.autonomy_mode): AutonomyModeStandard | AutonomyModeAssisted |
+	// AutonomyModeSilent. It replaces the former Smart Approve /
+	// silent-mode master-switch pair of bools; the registry-facing booleans
+	// are derived from it by SmartApproveEnabled / SilentModeEnabled (and
+	// the AskUserDisabled predicate) below. An empty or unknown value
+	// behaves as standard — fail-safe (the config loader maps unknown values
+	// onto standard with a warning before they ever reach here).
+	AutonomyMode string
+
+	// SilentMode is the silent-mode sub-policy container
+	// (security.silent_mode). Its policies are live only while AutonomyMode
+	// is "silent"; then they decide how the confirmation, step-limit,
+	// ask_user, and review-prompt prompts resolve without a human. Pushed to
+	// the registry alongside the group policies.
+	SilentMode BuilderSilentModeConfig
 
 	// AgentsMDMaxBytes caps the AGENTS.md content read from the workspace before
 	// it is injected into the system prompt. 0 means use the default (65536).
@@ -474,12 +507,52 @@ type BuilderSecurityConfig struct {
 	AgentsMDSearchPaths []string
 }
 
+// SilentModeEnabled reports whether the unattended posture is active — the
+// derived replacement of the former silent_mode.enabled bool (live only in
+// the "silent" autonomy mode).
+func (s BuilderSecurityConfig) SilentModeEnabled() bool {
+	return s.AutonomyMode == AutonomyModeSilent
+}
+
+// SmartApproveEnabled reports whether the strict judge resolves escalated
+// calls — the derived replacement of the former Smart Approve bool. Silent
+// implies it: the "silent" mode routes confirmation-gated calls through the
+// judge via the tool_confirm sub-policy, and the registry's silent path
+// takes precedence over Smart Approve anyway (smartApproveOrConfirm checks
+// the silent posture first), so the flag is inert there.
+func (s BuilderSecurityConfig) SmartApproveEnabled() bool {
+	return s.AutonomyMode == AutonomyModeAssisted || s.AutonomyMode == AutonomyModeSilent
+}
+
+// AskUserDisabled reports whether the unattended posture is on AND its
+// ask_user sub-policy disables the tool. The "disable" value is the shared
+// core/tools.SilentAskUserDisable vocabulary constant (mirroring the config
+// enum SilentAskUserDisable; core does not import backend/config) — pinned
+// against the config enum by backend/configadapter_test.go.
+func (s BuilderSecurityConfig) AskUserDisabled() bool {
+	return s.SilentModeEnabled() && s.SilentMode.AskUser == tools.SilentAskUserDisable
+}
+
 // BuilderGroupPolicy holds one tool group's security policy and, for the
 // execute group only, its command blocklist. Policy values are the short
 // config enum: "allow", "user_confirm", "deny".
 type BuilderGroupPolicy struct {
 	Policy    string
 	Blocklist []string
+}
+
+// BuilderSilentModeConfig is the core mirror of security.silent_mode: the
+// container for the four unattended-operation sub-policies. The former
+// Enabled bool is gone — whether the policies are live is derived from
+// BuilderSecurityConfig.AutonomyMode ("silent"). The sub-policy mode strings
+// are the config enum values passed through verbatim; core never imports
+// backend/config, so it does not reference the enum constants.
+// ApplyDefaults has already seeded every mode before conversion.
+type BuilderSilentModeConfig struct {
+	ToolConfirm  string
+	StepLimit    string
+	AskUser      string
+	ReviewPrompt string
 }
 
 // BuilderSkillsConfig holds Agent Skills discovery directories.

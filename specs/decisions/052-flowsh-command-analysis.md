@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — scope note added by [ADR-053](./053-silent-mode.md): every "a strict judge can never clear / never-clearable" statement in this ADR refers to the **interactive paths** (`security.autonomy_mode` `standard`/`assisted`). In silent `judge` mode the operator delegated the final decision to the strict judge, so its ALLOW executes — canonical codes included — fully audited; `ExecuteUnattended` (verify-on-edit) still blocks canonical hard reasons in every mode, and the flowsh criteria themselves fire identically in every mode (only who answers the escalation changes).
 
 ## Context
 

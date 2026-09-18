@@ -3,9 +3,9 @@
 
 import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
-import { isToolCallData, isToolResultData, isToolConfirmData, isToolJudgePhaseData } from '@/types/events'
+import { isToolCallData, isToolResultData, isToolConfirmData, isToolJudgePhaseData, isAutonomyDecisionData } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
-import { handleToolConfirmEvent, handleToolJudgeStartedEvent, handleToolJudgeFinishedEvent } from './hitlHandlers'
+import { handleToolConfirmEvent, handleToolJudgeStartedEvent, handleToolJudgeFinishedEvent, handleAutonomyDecisionEvent } from './hitlHandlers'
 
 /** Build the message ID used to correlate tool_call ↔ tool_result */
 function buildToolMsgId(d: { tool_call_id?: string; plan_step_id?: string; step: number; call_idx?: number; retry_attempt?: number }): string {
@@ -108,6 +108,19 @@ export function useToolEvents(sessionId: string | null): void {
       onSessionEvent(sessionId, 'tool_judge_finished', (data) => {
         if (!isToolJudgePhaseData(data)) { reportDroppedEvent('tool_judge_finished', data); return }
         handleToolJudgeFinishedEvent(sessionId, data)
+      }),
+    )
+
+    // --- autonomy_decision ---
+    // Automatic (no-human) security decisions taken under an automatic
+    // autonomy posture — assisted or silent (a gated tool call or a
+    // step-limit boundary resolved without a card). Non-blocking: surfaced
+    // as a service/notice so the gate that was answered unattended stays
+    // visible and auditable (OWASP ASI10).
+    cleanups.push(
+      onSessionEvent(sessionId, 'autonomy_decision', (data) => {
+        if (!isAutonomyDecisionData(data)) { reportDroppedEvent('autonomy_decision', data); return }
+        handleAutonomyDecisionEvent(sessionId, data)
       }),
     )
 

@@ -269,6 +269,21 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Security.Groups[name] = group
 	}
 
+	// Autonomy-mode default (security.autonomy_mode). Empty means the config
+	// predates the enum AND carried no legacy autonomy keys — the load-time
+	// migration (migrateLegacyAutonomyMode) has already resolved those onto
+	// the enum before ApplyDefaults runs, so seeding here only covers
+	// pristine and programmatically built configs.
+	if cfg.Security.AutonomyMode == "" {
+		cfg.Security.AutonomyMode = AutonomyModeStandard
+	}
+
+	// Silent-mode sub-policy defaults (security.silent_mode). The
+	// sub-policies are inert unless the autonomy mode is "silent"; each mode
+	// is seeded so a config that names no sub-policy still gets a complete,
+	// valid posture. An explicit mode is preserved.
+	ApplySilentModeDefaults(&cfg.Security.SilentMode)
+
 	// Search defaults
 	if cfg.Search.Provider == "" {
 		cfg.Search.Provider = "tavily"

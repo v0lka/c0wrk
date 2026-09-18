@@ -83,6 +83,13 @@ type OrchestratorBuilder struct {
 	baseAgentDirs            []string     // resolved Subagent Profile directories shared across sessions (highest priority first)
 	proxyClient              *http.Client // proxy-configured HTTP client (nil = direct connection)
 
+	// askUserFunc is the ask_user callback supplied at construction. It is
+	// retained so a runtime silent-mode toggle can re-register the ask_user
+	// tool on the shared registry — with the live callback or, when silent mode
+	// disables it, with a nil callback — without an app restart (see
+	// reconcileAskUser). Nil when the caller has no ask_user channel.
+	askUserFunc tools.AskUserFunc
+
 	// Cached reasoning effort string. Empty unless seeded by the ModelProfiles
 	// sampling profile (applyModelProfilesPresets); per-request overrides flow
 	// through HandleOptions.ReasoningEffort → Orchestrator.SetReasoningEffort,
@@ -175,6 +182,7 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, p
 	toolsCfg.PlanApprovalFunc = planApprovalFunc
 	toolsCfg.HTTPClient = b.proxyClient
 	toolsCfg.Logger = logger
+	b.askUserFunc = askUserFunc
 	if err := tools.RegisterBuiltinTools(b.registry, toolsCfg); err != nil {
 		return nil, fmt.Errorf("registering built-in tools: %w", err)
 	}
@@ -2359,6 +2367,11 @@ func (b *OrchestratorBuilder) unregisterSessionRegistry(r *tools.ToolRegistry) {
 // system group is not configurable and any entry for it is skipped
 // defensively; unknown group names are likewise skipped.
 //
+// It also pushes the silent-mode posture (security.silent_mode) to the same
+// registries and reconciles the ask_user tool's registration on the shared
+// registry, so a runtime security-settings edit takes effect on live sessions
+// without an app restart.
+//
 // The state is pushed to the shared registry AND every live per-session
 // registry clone: each session executes on its own clone (see Build), so a
 // runtime edit from the security settings UI must reach already-open sessions
@@ -2381,17 +2394,51 @@ func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 	}
 
 	autoApprove := cfg.Security.AutoApproveWorkspaceWrites
-	smartApprove := cfg.Security.SmartApprove
+	autonomyMode := cfg.Security.AutonomyMode
+	silentMode := tools.SilentModeState{
+		ToolConfirm:  cfg.Security.SilentMode.ToolConfirm,
+		StepLimit:    cfg.Security.SilentMode.StepLimit,
+		AskUser:      cfg.Security.SilentMode.AskUser,
+		ReviewPrompt: cfg.Security.SilentMode.ReviewPrompt,
+	}
 
 	// Lock ordering is b.mu → registry mu: registerSessionRegistry clones
 	// under b.mu (same order), and the registries never call back into the
 	// builder, so no reverse order exists.
 	b.mu.Lock()
-	b.registry.ApplySecurityState(groupPolicies, autoApprove, smartApprove)
+	b.registry.ApplySecurityState(groupPolicies, autoApprove, autonomyMode, silentMode)
 	for r := range b.sessionRegistries {
-		r.ApplySecurityState(groupPolicies, autoApprove, smartApprove)
+		r.ApplySecurityState(groupPolicies, autoApprove, autonomyMode, silentMode)
 	}
+	// ask_user lives in the shared sp4rk registry the session clones embed, so
+	// re-registering it here reaches live sessions immediately — a runtime
+	// silent-mode toggle must not require an app restart.
+	b.reconcileAskUser(cfg)
 	b.mu.Unlock()
+}
+
+// reconcileAskUser (re)registers the ask_user tool on the shared registry with
+// the callback selected by the silent-mode ask_user sub-policy. It is the
+// runtime counterpart of the build-time logic in RegisterBuiltinTools: with
+// silent mode on and ask_user.mode "disable" the tool is registered with a NIL
+// callback, so a call resolves to the explicit "ask_user is not available in
+// this mode" result — never blocking the agent — instead of a missing-tool
+// error; turning silent mode back off restores the live callback. The tool is
+// stateless, so re-registering it is idempotent. A nil askUserFunc (CLI, or a
+// test builder) is a no-op — there is no callback channel to register. The
+// shared registry's tools are visible to every session clone, so one call here
+// reaches all live sessions.
+//
+// Callers hold b.mu (lock order b.mu → registry mu).
+func (b *OrchestratorBuilder) reconcileAskUser(cfg *BuilderConfig) {
+	if b.askUserFunc == nil {
+		return
+	}
+	askUser := b.askUserFunc
+	if cfg.Security.AskUserDisabled() {
+		askUser = nil
+	}
+	b.registry.Register(tools.NewAskUserTool(askUser))
 }
 
 // parseGroupPolicy maps the short config enum used by
@@ -2566,6 +2613,14 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 		SearchProvider: cfg.Search.Provider,
 		SearchAPIKey:   cfg.ExpandEnvVars(cfg.Search.APIKey),
 		SearchTimeout:  time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
+
+		SilentMode: tools.SilentModeState{
+			ToolConfirm:  cfg.Security.SilentMode.ToolConfirm,
+			StepLimit:    cfg.Security.SilentMode.StepLimit,
+			AskUser:      cfg.Security.SilentMode.AskUser,
+			ReviewPrompt: cfg.Security.SilentMode.ReviewPrompt,
+		},
+		AutonomyMode: cfg.Security.AutonomyMode,
 
 		MarkitdownPythonPath: cfg.MarkitdownPythonPath,
 	}

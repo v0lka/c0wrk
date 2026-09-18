@@ -9,6 +9,7 @@ import { useReviewStore } from '@/stores/reviewStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore, selectIsNoProject } from '@/stores/projectStore'
+import { isReviewPromptSuppressed } from '@/stores/autonomyStore'
 import * as reviewApi from '@/api/review'
 import { generateMessageId } from '@/lib/ids'
 import { refreshCompactionAvailability } from '@/lib/sessionRuntime'
@@ -255,7 +256,13 @@ export function useChatEvents(sessionId: string | null): void {
             gitState.entries.length > 0
           const isNoProject = selectIsNoProject(projectState)
 
-          if (shouldTriggerReview(isNoProject, hasChanges)) {
+          // Silent mode's review_prompt sub-policy suppresses the whole
+          // post-task review interception — both the auto-review loop reopen
+          // and the first-time review_prompt card. There is no user to review
+          // when the task runs unattended, and this client-side injection is
+          // the one review hook the frontend owns (the other three silent-mode
+          // sub-policies are enforced entirely in the backend).
+          if (shouldTriggerReview(isNoProject, hasChanges) && !isReviewPromptSuppressed()) {
             if (isLoopActive) {
               const fvStore = useFileViewerStore.getState()
               fvStore.openFile('c0wrk:review')

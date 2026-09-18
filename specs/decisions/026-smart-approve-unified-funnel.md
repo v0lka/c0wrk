@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — amended by [ADR-052](./052-flowsh-command-analysis.md): the canonical hard set is extended with the flowsh controls (`command_exfil_flow`, `command_privilege_escalation`, `command_system_write`, `command_destructive_outside_roots`, `command_download_cradle`) and the fail-closed `command_analysis_unavailable` (the shell Judge now fails closed when the analyzer cannot run) alongside `command_blacklist`; `unresolvable_path_token` is no longer fired by any built-in judge (the flowsh `command_unbounded_analysis` is its non-canonical successor). The unified-funnel architecture itself stands unchanged.
+Accepted — amended by [ADR-052](./052-flowsh-command-analysis.md): the canonical hard set is extended with the flowsh controls (`command_exfil_flow`, `command_privilege_escalation`, `command_system_write`, `command_destructive_outside_roots`, `command_download_cradle`) and the fail-closed `command_analysis_unavailable` (the shell Judge now fails closed when the analyzer cannot run) alongside `command_blacklist`; `unresolvable_path_token` is no longer fired by any built-in judge (the flowsh `command_unbounded_analysis` is its non-canonical successor). The unified-funnel architecture itself stands unchanged. Amended by [ADR-053](./053-silent-mode.md): the funnel is now the autonomy-mode gate (`security.autonomy_mode`: `standard`/`assisted`/`silent`; "Smart Approve" is the `assisted` value, the legacy `security.smart_approve` key migrates to the enum), the strict judge gained a `VerdictDeny` terminal in `assisted` mode, and the deterministic backstop below is **scoped to the interactive paths** (see the scope note in §3).
 
 ## Context
 
@@ -76,6 +76,18 @@ A **canonical** hard reason is never auto-approved by the strict judge. When
 the strict judge returns ALLOW but `isCanonicalHardReason(code)` is true, the
 verdict is deterministically overridden to CONFIRM, so the user always decides.
 
+> **Scope (ADR-053).** This backstop is an **interactive-path** contract: it
+> holds in `standard` (a canonical escalation is always a card) and in
+> `assisted` (a strict ALLOW on a canonical reason becomes a card, and a strict
+> DENY terminates the call without one). The **silent `judge` terminal is the
+> one deliberate exception**: the operator selected unattended operation and
+> delegated the final decision to the strict judge, so its ALLOW executes —
+> canonical reasons included — with the decision fully audited
+> (`autonomy_decision`), while every other outcome still auto-denies
+> fail-closed. The sub-funnel floor is untouched in every mode: `deny` groups,
+> containment, symlink detection, and the flowsh criteria always fire first.
+> See [ADR-053](./053-silent-mode.md) D4 for the full rationale.
+
 Canonicality is keyed off the **typed reason code** — `JudgeOutcome.ReasonCode`
 from sp4rk (`tools/safety.go`), a stable cross-repository contract — never off
 the human-readable prose, which sp4rk may reword freely. Matching prose would
@@ -114,7 +126,8 @@ The contract is guarded by
 which drives the **real** sp4rk builtin judges (not prose copies in mocks) and
 fails when a judge stops attaching a code or a code's classification changes.
 
-When Smart Approve is disabled the strict judge is not consulted:
+When the autonomy mode is `standard` (the former "Smart Approve disabled") the
+strict judge is not consulted:
 `smartApproveOrConfirm` sends the escalation straight to confirmation, with
 `DisableJudge=true` for a Hard reason (so the advisory "Ask Agent" action cannot
 weaken a fired control) and the normally-judged confirmation for a soft reason.
@@ -122,7 +135,9 @@ weaken a fired control) and the normally-judged confirmation for a soft reason.
 ## Consequences
 
 - **Security posture.** A fired security control is never un-judged
-  (hard-bias) and, when canonical, can never be auto-approved (backstop). The
+  (hard-bias) and, when canonical, can never be auto-approved on the
+  interactive paths (backstop — the silent `judge` terminal is the one
+  deliberate exception, see the scope note above). The
   strict judge is now the single evaluation point for every escalation, so its
   reasoning and severity (`JudgeReasoning`, `JudgeSeverity`) are populated
   throughout and reach the confirmation envelope.

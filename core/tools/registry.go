@@ -62,6 +62,45 @@ func StripGoalModeTools(in []sdktools.ToolDescriptor) []sdktools.ToolDescriptor 
 // ToolFilter decides whether a tool should be registered. Return false to reject.
 type ToolFilter func(toolName, source string) bool
 
+// Autonomy-mode values — the shared vocabulary between core's
+// BuilderSecurityConfig.AutonomyMode and the registry's interpretation of it
+// (core/tools cannot import core, so the strings are re-declared here, the
+// same pattern as the SilentToolConfirm* constants below; the two
+// dictionaries are pinned against each other by core/silent_mode_test.go). An
+// empty or unrecognized value behaves as standard — fail-safe: no automatic
+// evaluation, every gated call opens a confirmation card.
+const (
+	// AutonomyModeStandard is the interactive posture: no automatic gate,
+	// every confirmation-gated call opens a user confirmation card.
+	AutonomyModeStandard = "standard"
+	// AutonomyModeAssisted enables the strict judge (the former Smart
+	// Approve): a strict ALLOW executes without UI, a strict DENY terminates
+	// the call with the judge's justification (no card), everything else —
+	// CONFIRM, a missing/failing/unparseable judge — opens a card.
+	AutonomyModeAssisted = "assisted"
+	// AutonomyModeSilent is the unattended posture: no card can open; the
+	// silent-mode sub-policies (SilentModeState below) resolve every gated
+	// call to a terminal execute-or-deny.
+	AutonomyModeSilent = "silent"
+)
+
+// SilentModeState is the registry's snapshot of the security.silent_mode
+// sub-policies — the unattended posture's policy container. Whether the
+// posture itself is LIVE is decided by the autonomy mode
+// (AutonomyModeSilent), never by a bool here: the sub-policies are inert in
+// the standard and assisted modes. It is a plain value type (no pointers,
+// slices, or maps) so Clone may copy it verbatim, and so ApplySecurityState
+// replaces it atomically alongside the rest of the security state under one
+// lock. The mode strings are the config enum values passed through from the
+// builder; the registry stores them without interpreting them (consumers read
+// the fields they need).
+type SilentModeState struct {
+	ToolConfirm  string
+	StepLimit    string
+	AskUser      string
+	ReviewPrompt string
+}
+
 // ToolRegistry stores all available tools and provides them to Executor.
 // It embeds the sp4rk ToolRegistry for basic operations and adds group-based
 // policy enforcement on top. Thread-safe via sync.RWMutex.
@@ -86,8 +125,10 @@ type ToolRegistry struct {
 	disabledTools              map[string]bool
 	logger                     *slog.Logger
 	autoApproveWorkspaceWrites bool
-	smartApprove               bool
+	autonomyMode               string
+	silentMode                 SilentModeState
 	judgeObserver              JudgeObserver
+	autonomyDecisionObserver   AutonomyDecisionObserver
 }
 
 // PreExecuteHook is called before tool execution. It may block to wait for
@@ -126,6 +167,76 @@ const (
 // executor context (which carries the session ID) and the tool name.
 type JudgeObserver func(ctx context.Context, phase JudgePhase, toolName string)
 
+// AutonomyDecision is one autonomous (no-human) security decision the registry
+// took: a confirmation-gated tool call resolved without a confirmation card
+// (tool_confirm, in silent mode), a strict-judge DENY that terminated a call
+// in the assisted mode before any card opened (assisted_deny), or — filled in
+// by the host — a step-limit boundary resolved without the blocking
+// step-limit prompt (step_limit). It is the auditable record of a gate a
+// human would otherwise have answered, so the run's trajectory stays
+// reconstructable (OWASP ASI10). The strict-judge phase telemetry
+// (JudgeObserver) reports only that a judge RAN; this records WHAT it
+// decided. The struct is JSON-tagged because the host serializes it verbatim
+// into the `autonomy_decision` session event.
+type AutonomyDecision struct {
+	// Kind is the gate resolved autonomously: "tool_confirm",
+	// "assisted_deny", or "step_limit".
+	Kind string `json:"kind"`
+	// Mode is the autonomy posture that took the decision: "assisted" or
+	// "silent" (AutonomyModeAssisted/AutonomyModeSilent) — which automatic
+	// posture answered the gate.
+	Mode string `json:"mode,omitempty"`
+	// Policy is the posture's sub-policy that decided: the silent-mode
+	// tool_confirm mode ("judge"|"allow"|"deny") or the step_limit mode
+	// ("auto" or a pinned response). Empty for assisted_deny — the strict
+	// judge itself is the decider there.
+	Policy string `json:"policy,omitempty"`
+	// Verdict is the decision: "allow"|"deny" for tool_confirm, or the
+	// step-limit response ("allow_once"|"allow_more"|"allow_always"|"deny").
+	Verdict string `json:"verdict"`
+	// Tool is the tool name for a tool_confirm decision; empty for step_limit.
+	Tool string `json:"tool,omitempty"`
+	// Source is the tool source ("core" or an MCP server name) for a
+	// tool_confirm decision.
+	Source string `json:"source,omitempty"`
+	// Reason is WHY the call/boundary was escalated in the first place (the
+	// confirmation reason, or the circuit-breaker reason; empty for a plain
+	// step-budget exhaustion).
+	Reason string `json:"reason,omitempty"`
+	// Justification is the deciding rationale — the strict judge's reasoning,
+	// a fail-closed cause, or the policy that denied/allowed outright.
+	Justification string `json:"justification,omitempty"`
+	// Category is the step-limit boundary category ("budget" or
+	// "circuit_breaker"); empty for tool_confirm.
+	Category string `json:"category,omitempty"`
+	// CurrentStep/MaxSteps locate a step-limit decision; zero for tool_confirm.
+	CurrentStep int `json:"current_step,omitempty"`
+	MaxSteps    int `json:"max_steps,omitempty"`
+}
+
+// AutonomyDecisionObserver is invoked once per automatic (no-human) decision,
+// after the registry has resolved the outcome. It lets the host emit an
+// auditable, non-blocking `autonomy_decision` session event for a gate that was
+// answered without a human — in either automatic posture (assisted or silent).
+// The observer must not block; it receives the executor context (which carries
+// the session ID) and the decision.
+type AutonomyDecisionObserver func(ctx context.Context, decision AutonomyDecision)
+
+// Autonomy-decision vocabulary the registry fills in (the host serializes
+// these verbatim into the autonomy_decision event). The step_limit
+// kind/verdicts are produced by the host's step-limit resolver, not here.
+const (
+	autonomyDecisionKindToolConfirm = "tool_confirm"
+	// autonomyDecisionKindAssistedDeny is the assisted-mode counterpart of
+	// tool_confirm: the strict judge terminated a confirmation-gated call
+	// with a deliberate DENY before any card opened. It shares the
+	// autonomy_decision audit channel so the trajectory stays reconstructable
+	// (ASI10) for BOTH automatic postures — assisted and silent.
+	autonomyDecisionKindAssistedDeny = "assisted_deny"
+	autonomyDecisionVerdictAllow     = "allow"
+	autonomyDecisionVerdictDeny      = "deny"
+)
+
 // NewToolRegistry creates a new ToolRegistry with an empty tool map.
 func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{
@@ -151,8 +262,10 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 		toolFilter:                 r.toolFilter,
 		logger:                     r.logger,
 		autoApproveWorkspaceWrites: r.autoApproveWorkspaceWrites,
-		smartApprove:               r.smartApprove,
+		autonomyMode:               r.autonomyMode,
+		silentMode:                 r.silentMode,
 		judgeObserver:              r.judgeObserver,
+		autonomyDecisionObserver:   r.autonomyDecisionObserver,
 	}
 	if r.disabledTools != nil {
 		cloned.disabledTools = make(map[string]bool, len(r.disabledTools))
@@ -244,6 +357,29 @@ func (r *ToolRegistry) SetJudgeObserver(fn JudgeObserver) {
 	r.judgeObserver = fn
 }
 
+// SetAutonomyDecisionObserver registers the automatic-decision observer. Nil
+// disables observation. It is invoked once per automatic decision the registry
+// takes without a human (silentToolTerminal in silent mode; an assisted-mode
+// strict-judge DENY), regardless of the verdict, so the host can record an
+// auditable `autonomy_decision` event.
+func (r *ToolRegistry) SetAutonomyDecisionObserver(fn AutonomyDecisionObserver) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.autonomyDecisionObserver = fn
+}
+
+// observeAutonomyDecision notifies the registered autonomy-decision observer,
+// if any, of an autonomous (no-human) decision. Best-effort: a nil observer is
+// a no-op, and it is safe to call with no lock held (it takes its own RLock).
+func (r *ToolRegistry) observeAutonomyDecision(ctx context.Context, d AutonomyDecision) {
+	r.mu.RLock()
+	observer := r.autonomyDecisionObserver
+	r.mu.RUnlock()
+	if observer != nil {
+		observer(ctx, d)
+	}
+}
+
 // GetJudge returns the current tool judge, or nil if not set.
 func (r *ToolRegistry) GetJudge() *sdktools.ToolJudge {
 	r.mu.RLock()
@@ -262,19 +398,21 @@ func (r *ToolRegistry) SetGroupPolicies(policies map[sdktools.ToolGroup]sdktools
 }
 
 // ApplySecurityState atomically replaces the registry's global security
-// state: the group→policy map, session-root write auto-approval, and Smart
-// Approve. It is the push API for runtime security-settings updates
-// (applySecurityPolicies), used for both the shared builder registry and the
-// live per-session clones cloned from it. The policies map is deep-copied so
-// the caller's map never aliases registry state — a broadcast push may pass
-// the same map to many registries, and each must stay independently mutable
-// (Clone contract). Replacing the whole map under one lock acquisition also
-// means a concurrently executing tool never observes a torn update (e.g. new
-// group policies with the old Smart Approve flag).
+// state: the group→policy map, session-root write auto-approval, the autonomy
+// mode, and the silent-mode sub-policies. It is the push API for runtime
+// security-settings updates (applySecurityPolicies), used for both the shared
+// builder registry and the live per-session clones cloned from it. The
+// policies map is deep-copied so the caller's map never aliases registry
+// state — a broadcast push may pass the same map to many registries, and each
+// must stay independently mutable (Clone contract). Replacing the whole map
+// and every scalar under one lock acquisition also means a concurrently
+// executing tool never observes a torn update (e.g. new group policies with
+// the old autonomy mode or silent-mode state).
 func (r *ToolRegistry) ApplySecurityState(
 	policies map[sdktools.ToolGroup]sdktools.ToolPolicy,
 	autoApproveWorkspaceWrites bool,
-	smartApprove bool,
+	autonomyMode string,
+	silentMode SilentModeState,
 ) {
 	copied := make(map[sdktools.ToolGroup]sdktools.ToolPolicy, len(policies))
 	for g, p := range policies {
@@ -284,7 +422,26 @@ func (r *ToolRegistry) ApplySecurityState(
 	defer r.mu.Unlock()
 	r.groupPolicies = copied
 	r.autoApproveWorkspaceWrites = autoApproveWorkspaceWrites
-	r.smartApprove = smartApprove
+	r.autonomyMode = autonomyMode
+	r.silentMode = silentMode
+}
+
+// AutonomyMode returns the registry's current autonomy posture
+// (security.autonomy_mode): standard, assisted, or silent. Empty means
+// standard.
+func (r *ToolRegistry) AutonomyMode() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.autonomyMode
+}
+
+// SilentMode returns the registry's current silent-mode posture (security.
+// silent_mode). The returned value is a copy — the caller cannot mutate
+// registry state through it.
+func (r *ToolRegistry) SilentMode() SilentModeState {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.silentMode
 }
 
 // GroupPolicies returns a copy of the current group→policy map.
@@ -324,15 +481,20 @@ func (r *ToolRegistry) SetAutoApproveWorkspaceWrites(enabled bool) {
 	r.autoApproveWorkspaceWrites = enabled
 }
 
-// SetSmartApprove enables or disables strict automatic evaluation of calls
-// whose effective policy is PolicyUserConfirm, and of soft tool-judge
-// escalations under PolicyAlwaysAllow. Only a strict ALLOW executes without
-// UI; every other outcome remains a user confirmation. Hard safety reasons
-// never reach Smart Approve — they confirm directly.
-func (r *ToolRegistry) SetSmartApprove(enabled bool) {
+// SetAutonomyMode sets the autonomy posture (security.autonomy_mode):
+//
+//   - AutonomyModeStandard — every gated call opens a confirmation card;
+//   - AutonomyModeAssisted — the strict judge resolves gated calls (the
+//     former Smart Approve): ALLOW executes, DENY terminates with the judge's
+//     justification, everything else opens a card;
+//   - AutonomyModeSilent — unattended: the silent-mode sub-policies resolve
+//     every gated call (see silentToolTerminal).
+//
+// An empty or unrecognized value is treated as standard (fail-safe).
+func (r *ToolRegistry) SetAutonomyMode(mode string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.smartApprove = enabled
+	r.autonomyMode = mode
 }
 
 // SetPreExecuteHook sets a hook that is called before every non-system tool execution.
@@ -395,14 +557,15 @@ func (r *ToolRegistry) RegisterWithSource(tool sdktools.Tool, source string) {
 //  5. group policy deny → block,
 //  6. group policy allow: tool Judge + symlink signals — a HARD reason
 //     (command blocklist, the flowsh shell-analysis controls, SSRF, symlink
-//     escape) escalates through Smart Approve, where the canonical backstop
-//     (isCanonicalHardReason) forces a user confirmation even on a strict
-//     ALLOW; a SOFT reason (path containment) goes to Smart Approve and
-//     confirms unless the strict judge allows; a clean call executes,
+//     escape) escalates through the autonomy gate, where the canonical
+//     backstop (isCanonicalHardReason) forces a user confirmation even on a
+//     strict ALLOW in the assisted mode (rule 2); a SOFT reason (path
+//     containment) goes to the autonomy gate and confirms unless the strict
+//     judge allows; a clean call executes,
 //  7. group policy user_confirm: local_write tools with
 //     auto_approve_workspace_writes whose paths resolve inside the session
-//     roots execute; everything else goes through Smart Approve (never around
-//     a hard reason) and otherwise confirms.
+//     roots execute; everything else goes through the autonomy gate (never
+//     around a hard reason) and otherwise confirms.
 //
 // Hard reasons never pass Smart Approve: they confirm directly with the
 // advisory Ask Agent action disabled.
@@ -514,9 +677,11 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		// symlink escapes) or unassessable inputs. They now consult the
 		// strict judge like any other escalation, but the deterministic
 		// backstop in smartApproveOrConfirm still forces a user confirmation
-		// for canonical reasons even when the strict judge returns ALLOW —
-		// path-locality or a lenient judge must not bypass a fired security
-		// control, and an unassessable call is not for the judge to resolve.
+		// for canonical reasons even when the strict judge returns ALLOW in
+		// the assisted mode (rule 2) — path-locality or a lenient judge must
+		// not bypass a fired security control, and an unassessable call is
+		// not for the judge to resolve. In silent mode the judge's decision
+		// is final (decision 1c): its ALLOW executes and is audited.
 		if reasons.hard != "" {
 			r.log().Warn("security: allow-policy tool escalated by hard safety reason",
 				"tool", name, "group", string(group), "reason", reasons.hard)
@@ -666,18 +831,28 @@ func splitSafetyReasons(judge sdktools.JudgeOutcome, symlinkReason string, symli
 	return safetyReasons{}
 }
 
-// smartApproveOrConfirm applies the Smart Approve gate. When enabled, the
-// strict judge evaluates the call and only a strict ALLOW executes without UI;
-// every other verdict (and a missing or failing judge) stays a user
-// confirmation with the advisory Ask Agent action disabled (DisableJudge=true)
-// — the advisory judge must not re-decide what the strict judge already ran
-// on. A hard reason (a fired security control or an unassessable input)
-// additionally carries a non-clearable severity: the deterministic backstop
-// in isCanonicalHardReason forces a user confirmation for canonical codes
-// even when the strict judge returns ALLOW. When Smart Approve is off, the
-// call goes straight to confirmation (with the advisory judge disabled for
-// hard reasons) using the supplied reason, or the default per-tool reason
-// when there is none.
+// smartApproveOrConfirm applies the autonomy-mode gate (security.
+// autonomy_mode) to a confirmation-escalated call:
+//
+//   - silent: the unattended terminal resolves the call without a human —
+//     the tool_confirm sub-policy selects how (see silentToolTerminal).
+//   - standard: the call goes straight to a confirmation card (with the
+//     advisory judge disabled for hard reasons) using the supplied reason,
+//     or the default per-tool reason when there is none.
+//   - assisted (the former Smart Approve): the strict judge evaluates the
+//     call. A strict ALLOW executes without UI — except for a canonical hard
+//     reason, where the deterministic backstop (isCanonicalHardReason)
+//     forces a user confirmation (rule 2: a fired security control must
+//     never become judge-waivable). A strict DENY TERMINATES the call: the
+//     tool is not executed, ConfirmFunc is never invoked, and the ToolResult
+//     carries the judge's justification — the judge positively assessed the
+//     call as dangerous, so there is nothing for a human to weigh in on. The
+//     decision is reported through the autonomy-decision audit channel
+//     (Kind "assisted_deny") so the trajectory stays reconstructable
+//     (ASI10). CONFIRM — and a missing, failing, or unparseable judge —
+//     stays a user confirmation with the advisory Ask Agent action disabled
+//     (DisableJudge=true): the advisory judge must not re-decide what the
+//     strict judge already ran on.
 //
 // The user-facing reasoning always keeps the concrete cause (the supplied
 // reason or the per-tool default): when the strict judge is missing, fails, or
@@ -687,15 +862,28 @@ func splitSafetyReasons(judge sdktools.JudgeOutcome, symlinkReason string, symli
 // needs confirmation.
 func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.Tool, name, source string, input json.RawMessage, reason string, code sdktools.JudgeReasonCode, severity sdktools.JudgeSeverity) (sdktools.ToolResult, error) {
 	r.mu.RLock()
-	smartApprove := r.smartApprove
+	autonomyMode := r.autonomyMode
+	silentMode := r.silentMode
 	strictJudge := r.judge
 	judgeObserver := r.judgeObserver
 	r.mu.RUnlock()
 
-	if !smartApprove {
-		if reason == "" {
-			reason = defaultConfirmReason(name)
-		}
+	if reason == "" {
+		reason = defaultConfirmReason(name)
+	}
+
+	// Silent mode (security.autonomy_mode=silent) is the unattended-operation
+	// posture: a call that would open a confirmation card must resolve without
+	// a human, so it never reaches ConfirmFunc — the tool_confirm sub-policy
+	// selects the terminal (see silentToolTerminal). It takes precedence over
+	// the assisted path because enabling silent mode is an explicit operator
+	// decision to run unattended, and a confirmation card would contradict
+	// that.
+	if autonomyMode == AutonomyModeSilent {
+		return r.silentToolTerminal(ctx, tool, name, source, input, reason, code, severity, silentMode.ToolConfirm, strictJudge, judgeObserver)
+	}
+
+	if autonomyMode != AutonomyModeAssisted {
 		// A hard security control fired: keep the advisory Ask Agent action
 		// disabled (DisableJudge=true) so the advisory judge cannot weaken a
 		// fired control. A soft escalation keeps the advisory judge available.
@@ -705,9 +893,6 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 		return r.confirmAndExecute(ctx, tool, name, input, reason)
 	}
 
-	if reason == "" {
-		reason = defaultConfirmReason(name)
-	}
 	reasoning := "Strict judge is unavailable; " + reason
 	verdict := sdktools.VerdictConfirm
 	if strictJudge != nil {
@@ -747,7 +932,8 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 	// protection, an undeterminable URL/path), is not for an advisory judge
 	// to waive. Only scope/pattern hard reasons (e.g. an unresolvable
 	// path-like token) that the strict judge positively clears may
-	// auto-approve.
+	// auto-approve. (The silent path drops this backstop by design — see
+	// silentJudgeDecide.)
 	if verdict == sdktools.VerdictAllow && severity == sdktools.JudgeSeverityHard && isCanonicalHardReason(code) {
 		verdict = sdktools.VerdictConfirm
 		reasoning = "A security control fired on this destructive call and cannot be waived by an advisory judge; manual confirmation required. " + reason
@@ -757,8 +943,11 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 	}
 
 	verdictText := "CONFIRM"
-	if verdict == sdktools.VerdictAllow {
+	switch verdict {
+	case sdktools.VerdictAllow:
 		verdictText = "ALLOW"
+	case sdktools.VerdictDeny:
+		verdictText = "DENY"
 	}
 	r.log().Info("security: smart approve verdict",
 		"tool", name,
@@ -766,10 +955,239 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 		"verdict", verdictText,
 		"asi_scope", "ASI01,ASI02,ASI03,ASI05,ASI09")
 
-	if verdict == sdktools.VerdictAllow {
+	switch verdict {
+	case sdktools.VerdictAllow:
 		return tool.Execute(ctx, input)
+	case sdktools.VerdictDeny:
+		// Assisted-mode auto-deny: the strict judge positively rejected the
+		// call, so it terminates without executing and without a card. The
+		// decision rides the same auditable autonomy_decision channel with a
+		// distinct kind (assisted_deny) — a gate a human would otherwise
+		// have answered was decided automatically (ASI10).
+		r.observeAutonomyDecision(ctx, AutonomyDecision{
+			Kind:          autonomyDecisionKindAssistedDeny,
+			Mode:          AutonomyModeAssisted,
+			Verdict:       autonomyDecisionVerdictDeny,
+			Tool:          name,
+			Source:        source,
+			Reason:        reason,
+			Justification: reasoning,
+		})
+		return assistedDenial(reasoning), nil
+	default:
+		return r.confirmAndExecuteWithOptions(ctx, tool, name, input, reasoning, true)
 	}
-	return r.confirmAndExecuteWithOptions(ctx, tool, name, input, reasoning, true)
+}
+
+// Silent-mode sub-policy mode values — the shared vocabulary between
+// backend/config's Silent* enum constants and the registry's interpretation of
+// them (core cannot import backend, so the strings are re-declared here).
+// backend/configadapter_test.go (TestToBuilderConfig_SilentModeEnumPin) pins
+// the two dictionaries against each other, so a rename on either side fails
+// the backend test run instead of silently desynchronizing the security
+// posture (an unrecognized tool_confirm mode falls back to the judge default;
+// an unrecognized ask_user mode keeps the tool live in unattended runs).
+const (
+	// SilentToolConfirmJudge routes a confirmation-gated call through the strict
+	// judge. The default mode.
+	SilentToolConfirmJudge = "judge"
+	// SilentToolConfirmAllow executes a confirmation-gated call with no hard
+	// safety reason without consulting the judge.
+	SilentToolConfirmAllow = "allow"
+	// SilentToolConfirmDeny blocks every confirmation-gated call.
+	SilentToolConfirmDeny = "deny"
+
+	// SilentAskUserDisable registers the ask_user tool in a form that reports
+	// itself as unavailable, so an unattended run can never block on a question.
+	SilentAskUserDisable = "disable"
+)
+
+// silentToolTerminal resolves a confirmation-gated tool call without a human
+// when silent mode is active (security.autonomy_mode=silent). It NEVER calls
+// ConfirmFunc — there is no one to answer — and returns a terminal
+// ToolResult instead. The tool_confirm sub-policy selects how:
+//
+//   - "judge" (default): the strict judge decides, with NO canonical
+//     backstop (decision 1c — the operator delegated the decision to the
+//     judge, and no human is available to overrule it either way): a strict
+//     ALLOW executes, including for a canonical hard reason, and the
+//     audited event carries the judge's justification. Every other outcome —
+//     a deliberate DENY, CONFIRM, a missing judge, an error or timeout, an
+//     unparseable verdict — auto-denies carrying the reasoning, with the
+//     Justification distinguishing the judge's DENY from the fail-closed
+//     causes (see silentJudgeDecide).
+//   - "allow": a call carrying NO hard safety reason executes; a call carrying
+//     a HARD safety reason — canonical or not — escalates to the strict
+//     judge, which decides (its ALLOW executes, canonical included). A fired
+//     control is never auto-executed without the judge's explicit approval,
+//     even in the permissive mode.
+//   - "deny": every confirmation-gated call is denied without consulting the
+//     judge.
+//
+// An empty or unrecognized mode falls back to the "judge" default (the value
+// ApplySilentModeDefaults seeds).
+func (r *ToolRegistry) silentToolTerminal(ctx context.Context, tool sdktools.Tool, name, source string, input json.RawMessage, reason string, code sdktools.JudgeReasonCode, severity sdktools.JudgeSeverity, mode string, strictJudge *sdktools.ToolJudge, judgeObserver JudgeObserver) (sdktools.ToolResult, error) {
+	if reason == "" {
+		reason = defaultConfirmReason(name)
+	}
+
+	switch mode {
+	case SilentToolConfirmDeny:
+		r.log().Warn("security: silent mode denied confirmation-gated call",
+			"tool", name, "group", string(sdktools.ToolGroupOf(tool)), "mode", mode)
+		r.observeAutonomyDecision(ctx, AutonomyDecision{
+			Kind:          autonomyDecisionKindToolConfirm,
+			Mode:          AutonomyModeSilent,
+			Policy:        mode,
+			Verdict:       autonomyDecisionVerdictDeny,
+			Tool:          name,
+			Source:        source,
+			Reason:        reason,
+			Justification: "denied outright by security.silent_mode.tool_confirm.mode=deny (no human available)",
+		})
+		return silentDenial(reason), nil
+	case SilentToolConfirmAllow:
+		// A fired hard reason is never auto-executed even in the permissive
+		// mode: escalate it to the strict judge, which decides. A call with no
+		// hard reason runs unattended.
+		if severity != sdktools.JudgeSeverityHard {
+			result, execErr := tool.Execute(ctx, input)
+			r.observeAutonomyDecision(ctx, AutonomyDecision{
+				Kind:          autonomyDecisionKindToolConfirm,
+				Mode:          AutonomyModeSilent,
+				Policy:        mode,
+				Verdict:       autonomyDecisionVerdictAllow,
+				Tool:          name,
+				Source:        source,
+				Reason:        reason,
+				Justification: "ran unattended: no hard safety reason (security.silent_mode.tool_confirm.mode=allow)",
+			})
+			return result, execErr
+		}
+		return r.silentJudgeDecide(ctx, tool, name, source, input, reason, code, severity, mode, strictJudge, judgeObserver)
+	default: // SilentToolConfirmJudge, the empty mode, and any unrecognized value
+		return r.silentJudgeDecide(ctx, tool, name, source, input, reason, code, severity, SilentToolConfirmJudge, strictJudge, judgeObserver)
+	}
+}
+
+// silentJudgeDecide runs the strict judge for a silent-mode escalation and
+// returns the terminal outcome: a strict ALLOW executes, anything else
+// auto-denies carrying the reasoning. There is deliberately NO canonical
+// backstop here (decision 1c): in silent mode the operator explicitly
+// delegated the decision to the judge and no human can override it either
+// way, so the judge's ALLOW executes even for a canonical hard reason — the
+// executed decision is fully audited (the autonomy_decision event carries the
+// judge's justification for allowing a fired control). A deliberate DENY and
+// the fail-closed outcomes (CONFIRM, a missing judge, an error/timeout, an
+// unparseable verdict) all deny — there is no human to fall back to and no
+// confirmation card to open — but their Justification is explicitly
+// distinguishable: a judge DENY is tagged "strict judge verdict DENY", the
+// fail-closed causes carry their own prefixes, so the audit trail says WHO
+// refused the call. mode is the governing tool_confirm sub-policy, recorded on
+// the emitted autonomy-decision event (its Policy field, with Mode carrying
+// the silent posture) for the audit trail.
+func (r *ToolRegistry) silentJudgeDecide(ctx context.Context, tool sdktools.Tool, name, source string, input json.RawMessage, reason string, code sdktools.JudgeReasonCode, severity sdktools.JudgeSeverity, mode string, strictJudge *sdktools.ToolJudge, judgeObserver JudgeObserver) (sdktools.ToolResult, error) {
+	reasoning := "Strict judge is unavailable; " + reason
+	verdict := sdktools.VerdictConfirm
+	if strictJudge != nil {
+		var judgeErr error
+		if judgeObserver != nil {
+			judgeObserver(ctx, JudgePhaseStarted, name)
+		}
+		// Shell-exec calls carry the host-precomputed flowsh digest in ctx
+		// (AttachShellAnalysis ran before the tool's own Judge); forward it as
+		// the strict judge's static-analysis evidence, exactly as the
+		// non-silent Smart Approve path does.
+		verdict, reasoning, judgeErr = strictJudge.JudgeStrict(ctx, sdktools.StrictJudgeRequest{
+			ToolName:        name,
+			Input:           input,
+			TaskContext:     sdktools.TaskContextFrom(ctx),
+			ToolSource:      source,
+			JudgeReasoning:  reason,
+			JudgeSeverity:   severity,
+			AnalysisContext: shellAnalysisContext(ctx, name),
+		})
+		if judgeObserver != nil {
+			judgeObserver(ctx, JudgePhaseFinished, name)
+		}
+		if judgeErr != nil {
+			verdict = sdktools.VerdictConfirm
+			reasoning = "Strict judge evaluation failed; " + reason
+		}
+	}
+	if reasoning == "" {
+		reasoning = reason
+	}
+
+	verdictText := "CONFIRM"
+	switch verdict {
+	case sdktools.VerdictAllow:
+		verdictText = "ALLOW"
+	case sdktools.VerdictDeny:
+		verdictText = "DENY"
+	}
+	r.log().Info("security: silent mode tool verdict",
+		"tool", name,
+		"source", source,
+		"verdict", verdictText,
+		"asi_scope", "ASI01,ASI02,ASI03,ASI05,ASI09")
+
+	if verdict == sdktools.VerdictAllow {
+		result, execErr := tool.Execute(ctx, input)
+		r.observeAutonomyDecision(ctx, AutonomyDecision{
+			Kind:          autonomyDecisionKindToolConfirm,
+			Mode:          AutonomyModeSilent,
+			Policy:        mode,
+			Verdict:       autonomyDecisionVerdictAllow,
+			Tool:          name,
+			Source:        source,
+			Reason:        reason,
+			Justification: reasoning,
+		})
+		return result, execErr
+	}
+	// Terminal denial — no human is available. The Justification distinguishes
+	// a deliberate judge rejection (DENY: the judge positively assessed the
+	// call as dangerous) from the fail-closed outcomes (CONFIRM, a missing
+	// judge, an error/timeout, an unparseable verdict), so an operator reading
+	// the audit trail can tell WHO refused the call.
+	justification := "fail-closed auto-denial (no human available; judge verdict " + verdictText + "): " + reasoning
+	if verdict == sdktools.VerdictDeny {
+		justification = "strict judge verdict DENY: " + reasoning
+	}
+	r.observeAutonomyDecision(ctx, AutonomyDecision{
+		Kind:          autonomyDecisionKindToolConfirm,
+		Mode:          AutonomyModeSilent,
+		Policy:        mode,
+		Verdict:       autonomyDecisionVerdictDeny,
+		Tool:          name,
+		Source:        source,
+		Reason:        reason,
+		Justification: justification,
+	})
+	return silentDenial(justification), nil
+}
+
+// silentDenial builds the auto-denial ToolResult for silent mode. It carries
+// the concrete reasoning so the caller — and the task transcript — can see WHY
+// the call was blocked without any confirmation card ever being shown.
+func silentDenial(reasoning string) sdktools.ToolResult {
+	return sdktools.ToolResult{
+		Content: "Automatic denial (silent mode): " + reasoning,
+		IsError: true,
+	}
+}
+
+// assistedDenial builds the terminal ToolResult for an assisted-mode
+// strict-judge DENY (security.autonomy_mode=assisted). The judge positively
+// assessed the call as dangerous, so it terminates without executing and
+// without a confirmation card; the ToolResult carries the judge's
+// justification so the task transcript shows WHY the call was rejected.
+func assistedDenial(justification string) sdktools.ToolResult {
+	return sdktools.ToolResult{
+		Content: "Denied by strict judge (assisted mode): " + justification,
+		IsError: true,
+	}
 }
 
 // isCanonicalHardReason reports whether a fired hard safety reason must never

@@ -113,19 +113,19 @@ func TestApplySecurityPolicies(t *testing.T) {
 // must receive every subsequent applySecurityPolicies push until the
 // orchestrator's cleanup hook unregisters it.
 func TestUpdateSecurityPolicies_ReachesLiveSessionRegistries(t *testing.T) {
-	cfgOf := func(execPolicy string, autoApprove, smartApprove bool) *BuilderConfig {
+	cfgOf := func(execPolicy, autonomyMode string, autoApprove bool) *BuilderConfig {
 		return &BuilderConfig{
 			Security: BuilderSecurityConfig{
 				Groups:                     map[string]BuilderGroupPolicy{"execute": {Policy: execPolicy}},
 				AutoApproveWorkspaceWrites: autoApprove,
-				SmartApprove:               smartApprove,
+				AutonomyMode:               autonomyMode,
 			},
 			ExpandEnvVars: func(s string) string { return s },
 		}
 	}
 
 	b := &OrchestratorBuilder{registry: tools.NewToolRegistry()}
-	b.applySecurityPolicies(cfgOf("user_confirm", false, false))
+	b.applySecurityPolicies(cfgOf("user_confirm", AutonomyModeStandard, false))
 
 	// The "already-open session": a registered clone created under the old
 	// security state (what Build does for every session).
@@ -133,7 +133,7 @@ func TestUpdateSecurityPolicies_ReachesLiveSessionRegistries(t *testing.T) {
 
 	// The runtime push (the security settings UI save path) must reach the
 	// live session clone, not just the shared registry.
-	b.UpdateSecurityPolicies(cfgOf("deny", true, true))
+	b.UpdateSecurityPolicies(cfgOf("deny", AutonomyModeAssisted, true))
 	if got := b.registry.GroupPolicies()[sdktools.GroupExecute]; got != sdktools.PolicyAlwaysDeny {
 		t.Fatalf("shared registry execute policy = %v, want always_deny", got)
 	}
@@ -143,7 +143,7 @@ func TestUpdateSecurityPolicies_ReachesLiveSessionRegistries(t *testing.T) {
 
 	// Unregistering (the orchestrator cleanup hook) stops future pushes.
 	b.unregisterSessionRegistry(session)
-	b.UpdateSecurityPolicies(cfgOf("allow", false, false))
+	b.UpdateSecurityPolicies(cfgOf("allow", AutonomyModeStandard, false))
 	if got := session.GroupPolicies()[sdktools.GroupExecute]; got != sdktools.PolicyAlwaysDeny {
 		t.Fatalf("unregistered session execute policy = %v, want always_deny (no pushes after cleanup)", got)
 	}

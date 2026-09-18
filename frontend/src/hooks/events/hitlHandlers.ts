@@ -4,12 +4,15 @@
 // chat store regardless of which session the user is currently viewing.
 
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
+import { generateMessageId } from '@/lib/ids'
+import { autonomyDecisionContent } from '@/lib/autonomyDecision'
 import type {
   ToolConfirmData,
   AskUserData,
   StepLimitData,
   PlanReviewReadyData,
   ToolJudgePhaseData,
+  AutonomyDecisionData,
 } from '@/types/events'
 
 /** Handle a tool_confirm event for a session (active or background). */
@@ -122,6 +125,26 @@ export function handlePlanReviewEvent(sessionId: string, data: PlanReviewReadyDa
     timestamp: Date.now(),
   })
   useChatStore.getState().setActivityStatus(sessionId, 'Plan is ready for review...')
+}
+
+/**
+ * Handle an autonomy_decision event for a session (active or background). An
+ * automatic (no-human) security decision taken under an automatic autonomy
+ * posture (assisted or silent) is surfaced as a NON-BLOCKING service/notice in
+ * the transcript: there is no card to answer, but the gate that was answered
+ * without a human must stay visible and auditable (OWASP ASI10: the trajectory
+ * must be reconstructable). The payload rides in metadata so a reloaded row
+ * renders identically via reconstructContent.
+ */
+export function handleAutonomyDecisionEvent(sessionId: string, data: AutonomyDecisionData): void {
+  useChatStore.getState().addMessage(sessionId, {
+    id: `autonomy-decision-${generateMessageId()}`,
+    sessionId,
+    type: 'status',
+    content: autonomyDecisionContent(data),
+    metadata: { ...data } as Record<string, unknown>,
+    timestamp: Date.now(),
+  })
 }
 
 /**

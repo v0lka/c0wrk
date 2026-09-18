@@ -8,6 +8,12 @@ import { useSubagentEvents } from '@/hooks/events/useSubagentEvents'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import { groupMessages } from '@/lib/chatUtils'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useAutonomyStore } from '@/stores/autonomyStore'
+import { useProjectStore } from '@/stores/projectStore'
+import { useGitPanelStore } from '@/stores/gitPanelStore'
+import type { GitPanelEntry } from '@/stores/gitPanelStore'
+import { useReviewStore } from '@/stores/reviewStore'
+import type { ProjectInfo } from '@/types/models'
 import { isSessionBusy } from '@/hooks/useSessionStatusIndicator'
 import type { SessionInfo } from '@/types/models'
 import type { ChatMessageUI, MessageType } from '@/stores/chatStore'
@@ -37,6 +43,14 @@ vi.mock('@/api/chat', () => ({
   getSessionRuntimeStatus: vi.fn(async () => null),
 }))
 
+// The post-task review trigger calls SaveReviewPrompt; stub it so the review
+// tests never touch the Wails-backed wrapper.
+const reviewApiMocks = vi.hoisted(() => ({ saveReviewPrompt: vi.fn() }))
+vi.mock('@/api/review', () => ({
+  saveReviewPrompt: (...args: unknown[]) => reviewApiMocks.saveReviewPrompt(...args),
+  resolveReviewPrompt: vi.fn(),
+}))
+
 let counter = 0
 function makeUI(overrides: Partial<ChatMessageUI> & { type: MessageType }): ChatMessageUI {
   counter++
@@ -49,6 +63,9 @@ function makeUI(overrides: Partial<ChatMessageUI> & { type: MessageType }): Chat
     ...overrides,
   }
 }
+
+/** Let pending promise chains (e.g. the async SaveReviewPrompt trigger) settle. */
+const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
 
 describe('shouldAddTaskCompleteOutput', () => {
   it('returns false for empty output', () => {
@@ -234,6 +251,46 @@ describe('useChatEvents terminal events → live unfinished-task overlay', () =>
 
     expect(liveStatus()).toBe('')
     expect(isSessionBusy(SESSION)).toBe(false)
+  })
+
+  // ── Silent mode suppresses the post-task review prompt ──
+  const sessionMessages = () => selectSessionMessages(useChatStore.getState(), SESSION)
+
+  function seedCodeModeWithChanges(): void {
+    useProjectStore.setState({
+      activeProjectId: 'p1',
+      projects: [{ id: 'p1', is_no_project: false } as unknown as ProjectInfo],
+    })
+    useGitPanelStore.setState({
+      isGitRepo: true,
+      gitRepoProjectId: 'p1',
+      entries: [{ path: 'src/a.ts' } as unknown as GitPanelEntry],
+    })
+  }
+
+  it('suppresses the review prompt while silent mode is on', async () => {
+    seedCodeModeWithChanges()
+    useReviewStore.setState({ reviewLoopActive: {}, promptShownForTask: {} })
+    useAutonomyStore.getState().setAutonomy({ autonomy_mode: 'silent', review_prompt: { mode: 'suppress' } })
+
+    emit('task_complete', { success: true, output: 'done' })
+    await flush()
+
+    expect(reviewApiMocks.saveReviewPrompt).not.toHaveBeenCalled()
+    expect(sessionMessages().some((m) => m.type === 'review_prompt')).toBe(false)
+  })
+
+  it('injects the review prompt when silent mode is off (unchanged behavior)', async () => {
+    seedCodeModeWithChanges()
+    useReviewStore.setState({ reviewLoopActive: {}, promptShownForTask: {} })
+    useAutonomyStore.getState().setAutonomy({ autonomy_mode: 'standard', review_prompt: { mode: 'suppress' } })
+    reviewApiMocks.saveReviewPrompt.mockResolvedValue({ prompt_id: 'p-1', content: 'Review the changes?' })
+
+    emit('task_complete', { success: true, output: 'done' })
+    await flush()
+
+    expect(reviewApiMocks.saveReviewPrompt).toHaveBeenCalledTimes(1)
+    expect(sessionMessages().some((m) => m.type === 'review_prompt')).toBe(true)
   })
 })
 

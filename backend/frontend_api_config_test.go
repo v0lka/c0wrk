@@ -45,6 +45,11 @@ type mockBuilder struct {
 	generateCommitMsgCalls    int
 	getBaseAgentDirsCalls     int
 
+	// updateSecPolicyLastCfg captures the most recent BuilderConfig passed to
+	// UpdateSecurityPolicies so tests can assert the runtime push forwards the
+	// intended security state (e.g. silent mode) to the live registries.
+	updateSecPolicyLastCfg *core.BuilderConfig
+
 	// Configurable return values for methods that have them.
 	rebuildRouterErr        error
 	rebuildProxyErr         error
@@ -119,9 +124,10 @@ func (m *mockBuilder) UpdateSearchTool(_ *core.BuilderConfig) {
 	m.updateSearchToolCalls++
 	m.mu.Unlock()
 }
-func (m *mockBuilder) UpdateSecurityPolicies(_ *core.BuilderConfig) {
+func (m *mockBuilder) UpdateSecurityPolicies(cfg *core.BuilderConfig) {
 	m.mu.Lock()
 	m.updateSecPolicyCalls++
+	m.updateSecPolicyLastCfg = cfg
 	m.mu.Unlock()
 }
 func (m *mockBuilder) UpdateShellBlocklist(_ *core.BuilderConfig) error {
@@ -1419,13 +1425,13 @@ func TestUpdateSecuritySettings_ShellBlocklistFailureRollsBack(t *testing.T) {
 	mock.updateShellBlocklistErr = errors.New("blocklist compile failure")
 	prevGroups := f.config.Security.Groups
 	prevBlocklist := prevGroups[config.ToolGroupExecute].Blocklist
-	f.config.Security.SmartApprove = false
+	f.config.Security.AutonomyMode = config.AutonomyModeStandard
 
 	err := f.UpdateSecuritySettings(SecuritySettingsResponse{
 		Groups: fullGroupPayload(map[string]GroupPolicyResponse{
 			config.ToolGroupExecute: {Policy: config.GroupPolicyDeny, Blocklist: []string{`mkfs`}},
 		}),
-		SmartApprove: true,
+		AutonomyMode: config.AutonomyModeAssisted,
 	})
 	if err == nil {
 		t.Fatal("expected error when the shell re-registration fails")
@@ -1439,8 +1445,8 @@ func TestUpdateSecuritySettings_ShellBlocklistFailureRollsBack(t *testing.T) {
 	if got := f.config.Security.Groups[config.ToolGroupExecute].Blocklist; !slices.Equal(got, prevBlocklist) {
 		t.Errorf("execute blocklist not rolled back: got %v, want %v", got, prevBlocklist)
 	}
-	if f.config.Security.SmartApprove {
-		t.Error("SmartApprove not rolled back")
+	if f.config.Security.AutonomyMode != config.AutonomyModeStandard {
+		t.Error("autonomy mode not rolled back")
 	}
 	if len(f.config.Security.Groups) != len(prevGroups) {
 		t.Errorf("group set not fully restored: got %d groups, want %d", len(f.config.Security.Groups), len(prevGroups))
@@ -1509,17 +1515,49 @@ func TestUpdateSecuritySettings_RejectsInvalidPayloads(t *testing.T) {
 	}
 }
 
+// TestUpdateSecuritySettings_RejectsUnknownAutonomyMode verifies the enum
+// validation on the unified autonomy posture: an explicit value outside
+// {standard, assisted, silent} is rejected and mutates nothing, while an
+// EMPTY value keeps the stored posture (transitional tolerance for frontends
+// predating the enum — see responseToAutonomyMode).
+func TestUpdateSecuritySettings_RejectsUnknownAutonomyMode(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	f.config.Security.AutonomyMode = config.AutonomyModeSilent
+
+	err := f.UpdateSecuritySettings(SecuritySettingsResponse{
+		Groups:       fullGroupPayload(nil),
+		AutonomyMode: "turbo",
+	})
+	if err == nil {
+		t.Fatal("expected an error for an unknown autonomy mode")
+	}
+	if f.config.Security.AutonomyMode != config.AutonomyModeSilent {
+		t.Errorf("an invalid payload must mutate nothing, got autonomy_mode %q", f.config.Security.AutonomyMode)
+	}
+
+	// Empty payload mode keeps the stored posture.
+	if err := f.UpdateSecuritySettings(SecuritySettingsResponse{
+		Groups:       fullGroupPayload(nil),
+		AutonomyMode: "",
+	}); err != nil {
+		t.Fatalf("empty autonomy mode must be tolerated: %v", err)
+	}
+	if f.config.Security.AutonomyMode != config.AutonomyModeSilent {
+		t.Errorf("empty autonomy mode must keep the stored posture, got %q", f.config.Security.AutonomyMode)
+	}
+}
+
 // TestGetUpdateSecuritySettings_GroupsRoundTrip verifies a get -> set -> get
 // cycle returns the same group set (policies and the execute blocklist) and
-// that the SmartApprove flag propagates to the shared tool registry via
+// that the autonomy mode propagates to the shared tool registry via
 // UpdateSecurityPolicies.
 func TestGetUpdateSecuritySettings_GroupsRoundTrip(t *testing.T) {
 	f, mock, _ := newTestAPI(t)
-	f.config.Security.SmartApprove = false
+	f.config.Security.AutonomyMode = config.AutonomyModeStandard
 
-	// Default-off flag is exposed as stored.
-	if got := f.GetSecuritySettings().SmartApprove; got {
-		t.Fatalf("SmartApprove = true, want false by default")
+	// Default mode is exposed as stored.
+	if got := f.GetSecuritySettings().AutonomyMode; got != config.AutonomyModeStandard {
+		t.Fatalf("autonomy_mode = %q, want %q by default", got, config.AutonomyModeStandard)
 	}
 
 	in := SecuritySettingsResponse{
@@ -1532,21 +1570,21 @@ func TestGetUpdateSecuritySettings_GroupsRoundTrip(t *testing.T) {
 			config.ToolGroupRemoteMCP:   {Policy: config.GroupPolicyUserConfirm},
 			config.ToolGroupRemoteWrite: {Policy: config.GroupPolicyUserConfirm},
 		},
-		SmartApprove: true,
+		AutonomyMode: config.AutonomyModeAssisted,
 	}
 	if err := f.UpdateSecuritySettings(in); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !f.config.Security.SmartApprove {
-		t.Error("SmartApprove not persisted to config")
+	if f.config.Security.AutonomyMode != config.AutonomyModeAssisted {
+		t.Error("autonomy mode not persisted to config")
 	}
 	if mock.updateSecPolicyCalls != 1 {
 		t.Errorf("UpdateSecurityPolicies called %d times, want 1", mock.updateSecPolicyCalls)
 	}
 
 	got := f.GetSecuritySettings()
-	if !got.SmartApprove {
-		t.Error("SmartApprove not reflected in GetSecuritySettings")
+	if got.AutonomyMode != config.AutonomyModeAssisted {
+		t.Error("autonomy mode not reflected in GetSecuritySettings")
 	}
 	for name, want := range in.Groups {
 		g, ok := got.Groups[name]

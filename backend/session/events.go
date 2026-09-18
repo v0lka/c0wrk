@@ -14,7 +14,23 @@ import (
 const (
 	EventStepLimit         = "step_limit"
 	EventStepLimitResponse = "step_limit_response"
+	// EventAutonomyDecision carries an automatic (no-human) security decision
+	// taken under an automatic autonomy posture — silent
+	// (security.silent_mode) or assisted (a strict-judge DENY terminating a
+	// call before any card opened): a confirmation-gated tool call the
+	// registry resolved without a card (tool_confirm / assisted_deny), or a
+	// step-limit boundary the backend resolved without the
+	// blocking prompt (step_limit). It is the non-blocking audit record of a
+	// gate a human would otherwise have answered, so the run's trajectory stays
+	// reconstructable (OWASP ASI10). Persisted.
+	EventAutonomyDecision = "autonomy_decision"
 )
+
+// AutonomyDecisionData is the payload for "autonomy_decision" events — the
+// frontend/event-catalog view of one autonomous decision. It is an alias of
+// coretools.AutonomyDecision, the value the tool registry fills in and hands to
+// the host observer, so the registry and the wire contract can never drift.
+type AutonomyDecisionData = coretools.AutonomyDecision
 
 // --- Session lifecycle event data ---
 

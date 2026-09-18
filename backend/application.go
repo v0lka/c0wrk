@@ -243,6 +243,28 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 		app.manager.EmitJudgePhase(sessionID, phase == coretools.JudgePhaseStarted, toolName)
 	})
 
+	// 4c. Autonomy-decision observer: an automatic decision taken without a
+	// human — a confirmation-gated call the registry resolved (tool_confirm in
+	// silent mode, assisted_deny in assisted mode), or a step-limit boundary
+	// the backend resolved (step_limit) — must be visible and auditable, never
+	// a silent skip. The observer resolves the session from the executor
+	// context and emits the persisted `autonomy_decision` session event
+	// (OWASP ASI10: the trajectory must stay reconstructable). Session
+	// registries inherit the observer through Clone, so per-session clones
+	// report their own decisions too.
+	builder.ToolRegistry().SetAutonomyDecisionObserver(func(ctx context.Context, decision coretools.AutonomyDecision) {
+		if app.manager == nil {
+			return
+		}
+		sessionID := session.SessionIDFromContext(ctx)
+		if sessionID == "" {
+			app.log().Debug("autonomy decision observer: no session in context",
+				"kind", decision.Kind, "tool", decision.Tool, "verdict", decision.Verdict)
+			return
+		}
+		app.manager.EmitAutonomyDecision(sessionID, decision)
+	})
+
 	// 5. Orchestrator factory closure for the session manager.
 	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		orchCfg := ToBuilderConfig(cfg.Config, loadModelProfilesCatalog(app.agentDir, app.log()))
@@ -375,7 +397,12 @@ func (app *Application) EvaluateJudgeForSession(ctx context.Context, sessionID, 
 }
 
 // evaluateJudgeWith runs a single judge evaluation and prefixes the reasoning
-// for safe verdicts so the UI can display contextual info.
+// for safe and unsafe verdicts so the UI can display contextual info: a
+// "SAFE: " prefix contextualizes an allow, and an "UNSAFE: " prefix turns a
+// deliberate VerdictDeny into an explicit recommendation to REJECT the call
+// on the OPEN confirmation card (the advisory judge never decides — the
+// operator stays free to allow; see evaluateJudgeWith callers in
+// desktop/event_handlers.go).
 //
 // Shell-exec tools (bash_exec/posh_exec) get the deterministic flowsh digest
 // attached to ctx first (the Ask-Agent advisory path): the advisory judge
@@ -388,8 +415,11 @@ func evaluateJudgeWith(ctx context.Context, judge *sdktools.ToolJudge, toolName 
 	if err != nil {
 		return verdict, reasoning, err
 	}
-	if verdict == sdktools.VerdictAllow {
+	switch verdict {
+	case sdktools.VerdictAllow:
 		reasoning = "SAFE: " + reasoning
+	case sdktools.VerdictDeny:
+		reasoning = "UNSAFE: " + reasoning
 	}
 	return verdict, reasoning, nil
 }

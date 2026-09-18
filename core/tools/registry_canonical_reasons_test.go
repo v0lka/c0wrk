@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	sdktools "github.com/v0lka/sp4rk/tools"
@@ -166,5 +167,95 @@ func TestSymlinkHardReason_ReturnsTypedEscapeCode(t *testing.T) {
 	}
 	if !isCanonicalHardReason(code) {
 		t.Errorf("isCanonicalHardReason(%q) = false, want true: a symlink escape must never be auto-approved", code)
+	}
+}
+
+// TestSilentMode_JudgeTerminalCanonicalAllowExecutes pins the canonical-hard-
+// reason behavior across BOTH autonomy paths after decision 1c removed the
+// silent backstop:
+//
+//   - the assisted path KEEPS the rule-2 backstop: a strict-judge ALLOW on a
+//     canonical hard reason (isCanonicalHardReason — a fired security
+//     control or an unassessable input) is overridden to a user
+//     confirmation; a canonical fired control must never become
+//     judge-waivable while a human is available to confirm;
+//   - the silent judge terminal has NO backstop: the operator delegated the
+//     decision to the judge and no human can overrule it either way, so the
+//     canonical ALLOW EXECUTES — and the audited autonomy_decision event
+//     carries the judge's justification for allowing a fired control, so the
+//     trajectory stays reconstructable (ASI10).
+func TestSilentMode_JudgeTerminalCanonicalAllowExecutes(t *testing.T) {
+	const canonical = sdktools.ReasonCodeCommandBlacklist
+	if !isCanonicalHardReason(canonical) {
+		t.Fatalf("precondition: %q must be canonical", canonical)
+	}
+
+	newRegistry := func(mode string) (*ToolRegistry, *scriptedJudgeProvider, *bool) {
+		registry := NewToolRegistry()
+		registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
+			sdktools.GroupLocalRead: sdktools.PolicyAlwaysAllow,
+		})
+		registry.ApplySecurityState(
+			registry.GroupPolicies(),
+			false,
+			mode,
+			SilentModeState{ToolConfirm: SilentToolConfirmJudge},
+		)
+		registry.Register(newMockHardJudgerTool("esc_tool", "command matches blacklist pattern: mkfs", canonical))
+		judge, provider := newStrictJudge("VERDICT: ALLOW\nREASON: false positive, cleared", nil)
+		registry.SetJudge(judge)
+		confirmCalled := false
+		registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+			confirmCalled = true
+			return sdktools.ConfirmDeny, nil
+		})
+		return registry, provider, &confirmCalled
+	}
+
+	// Assisted mode: the rule-2 backstop still forces a confirmation for a
+	// canonical hard reason even on a strict ALLOW.
+	registry, provider, confirmCalled := newRegistry(AutonomyModeAssisted)
+	res, err := registry.Execute(context.Background(), "esc_tool", json.RawMessage(`{"input":"hello"}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !*confirmCalled {
+		t.Error("assisted mode must force a confirmation for a canonical hard reason even on ALLOW (rule 2)")
+	}
+	if !res.IsError {
+		t.Error("denying the forced confirmation must surface an error result")
+	}
+	if got := provider.callCount(); got != 1 {
+		t.Errorf("assisted strict judge calls = %d, want 1", got)
+	}
+
+	// Silent judge mode: the canonical ALLOW executes (no backstop, no
+	// confirmation card), and the decision is audited with the judge's
+	// justification.
+	silentReg, silentProvider, silentConfirm := newRegistry(AutonomyModeSilent)
+	rec := &autonomyDecisionRecorder{}
+	silentReg.SetAutonomyDecisionObserver(rec.observe)
+	res, err = silentReg.Execute(context.Background(), "esc_tool", json.RawMessage(`{"input":"hello"}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if *silentConfirm {
+		t.Error("silent mode must not open a confirmation card")
+	}
+	if res.IsError {
+		t.Errorf("silent judge mode must EXECUTE a canonical hard reason on a strict ALLOW (decision 1c), got %q", res.Content)
+	}
+	if got := silentProvider.callCount(); got != 1 {
+		t.Errorf("silent strict judge calls = %d, want 1", got)
+	}
+	if len(rec.decisions) != 1 {
+		t.Fatalf("audit events = %d, want exactly 1: %+v", len(rec.decisions), rec.decisions)
+	}
+	d := rec.decisions[0]
+	if d.Verdict != autonomyDecisionVerdictAllow {
+		t.Errorf("audit Verdict = %q, want %q", d.Verdict, autonomyDecisionVerdictAllow)
+	}
+	if !strings.Contains(d.Justification, "false positive, cleared") {
+		t.Errorf("audit Justification = %q, want it to carry the judge's reasoning for allowing a fired control", d.Justification)
 	}
 }

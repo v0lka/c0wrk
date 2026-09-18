@@ -36,6 +36,18 @@ type BuiltinToolsConfig struct {
 	// If nil, the ask_user tool is not registered.
 	AskUserFunc AskUserFunc
 
+	// SilentMode is the security.silent_mode sub-policy posture. When the
+	// autonomy mode is silent AND AskUser is "disable" (see AskUserDisabled),
+	// the ask_user tool is registered with a nil callback, so a call resolves
+	// to the explicit "not available" result and the agent can never block on
+	// a question.
+	SilentMode SilentModeState
+
+	// AutonomyMode is the security.autonomy_mode posture
+	// (standard|assisted|silent). It decides whether the silent-mode
+	// sub-policies above are live (only "silent" activates them).
+	AutonomyMode string
+
 	// PlanApprovalFunc is the callback for the declare_plan tool's await_approval mode.
 	// If nil, declare_plan is still registered but await_approval mode returns an error.
 	PlanApprovalFunc ApprovalFunc
@@ -58,6 +70,15 @@ type BuiltinToolsConfig struct {
 	// tool-manager installs the venv asynchronously after startup.
 	// See BuilderConfig.MarkitdownPythonPath.
 	MarkitdownPythonPath func() string
+}
+
+// AskUserDisabled reports whether the unattended posture is live AND its
+// ask_user sub-policy disables the tool (AutonomyModeSilent + "disable") —
+// the single predicate behind ask_user registration suppression, kept in
+// lockstep with the config-level SecurityConfig.AskUserDisabled and the
+// builder-level BuilderSecurityConfig.AskUserDisabled.
+func (c BuiltinToolsConfig) AskUserDisabled() bool {
+	return c.AutonomyMode == AutonomyModeSilent && c.SilentMode.AskUser == SilentAskUserDisable
 }
 
 // RegisterBuiltinTools creates and registers all built-in tools into the registry.
@@ -128,9 +149,17 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 		registry.Register(builtins.NewVectorSearchTool(cfg.VectorSearchFunc, cfg.VectorSearchWaitFunc))
 	}
 
-	// Ask user (optional)
+	// Ask user. A nil AskUserFunc (no callback channel — e.g. CLI) means the
+	// tool is not registered at all. When silent mode's ask_user sub-policy
+	// disables it, the tool IS registered but with a nil callback: a call then
+	// resolves to the explicit "ask_user is not available in this mode" result
+	// — never blocking the agent — instead of surfacing a missing-tool error.
 	if cfg.AskUserFunc != nil {
-		registry.Register(NewAskUserTool(cfg.AskUserFunc))
+		askUser := cfg.AskUserFunc
+		if cfg.AskUserDisabled() {
+			askUser = nil
+		}
+		registry.Register(NewAskUserTool(askUser))
 	}
 
 	// Conductor tools — delegate, cancel_delegation, reflect read their

@@ -83,7 +83,7 @@ func strictEnvelopeField(t *testing.T, reqs []llm.ChatRequest, field string) (st
 func newShellAnalysisRegistry(t *testing.T, judgeResponse string) (*ToolRegistry, *capturingJudgeProvider, *bool) {
 	t.Helper()
 	registry := NewToolRegistry()
-	registry.SetSmartApprove(true)
+	registry.SetAutonomyMode(AutonomyModeAssisted)
 	provider := &capturingJudgeProvider{response: judgeResponse}
 	registry.SetJudge(sdktools.NewToolJudge(provider, "test-model", 10, nil))
 

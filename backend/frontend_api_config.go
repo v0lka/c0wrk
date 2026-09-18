@@ -552,13 +552,16 @@ func (f *FrontendAPI) GetSecuritySettings() SecuritySettingsResponse {
 		var defaults config.Config
 		config.ApplyDefaults(&defaults)
 		return SecuritySettingsResponse{
-			Groups: groupPoliciesToResponse(defaults.Security.Groups),
+			Groups:       groupPoliciesToResponse(defaults.Security.Groups),
+			AutonomyMode: defaults.Security.AutonomyMode,
+			SilentMode:   silentModeToResponse(defaults.Security.SilentMode),
 		}
 	}
 	resp := SecuritySettingsResponse{
 		Groups:                     groupPoliciesToResponse(f.config.Security.Groups),
 		AutoApproveWorkspaceWrites: f.config.Security.AutoApproveWorkspaceWrites,
-		SmartApprove:               f.config.Security.SmartApprove,
+		AutonomyMode:               f.config.Security.AutonomyMode,
+		SilentMode:                 silentModeToResponse(f.config.Security.SilentMode),
 	}
 	if b := f.builder(); b != nil {
 		resp.JudgeAvailable = b.JudgeAvailable()
@@ -590,6 +593,58 @@ func groupPoliciesToResponse(groups map[string]config.GroupPolicyConfig) map[str
 	return out
 }
 
+// silentModeToResponse converts the config silent-mode sub-policies into the
+// frontend response shape. The mode strings are passed through verbatim.
+func silentModeToResponse(sm config.SilentModeConfig) SilentModeResponse {
+	return SilentModeResponse{
+		ToolConfirm:  SilentSubPolicyResponse{Mode: sm.ToolConfirm.Mode},
+		StepLimit:    SilentSubPolicyResponse{Mode: sm.StepLimit.Mode},
+		AskUser:      SilentSubPolicyResponse{Mode: sm.AskUser.Mode},
+		ReviewPrompt: SilentSubPolicyResponse{Mode: sm.ReviewPrompt.Mode},
+	}
+}
+
+// responseToSilentMode validates a frontend silent-mode payload and converts it
+// into config form. An unset (empty) mode is filled with its default so a
+// partial payload is not an error, but an explicit value must be a valid enum —
+// mirroring config.validate so a UI-sourced value can never store what the
+// loader would reject on the next start. An invalid payload returns an error
+// and the caller mutates nothing.
+func responseToSilentMode(r SilentModeResponse) (config.SilentModeConfig, error) {
+	sm := config.SilentModeConfig{
+		ToolConfirm:  config.SilentSubPolicyConfig{Mode: r.ToolConfirm.Mode},
+		StepLimit:    config.SilentSubPolicyConfig{Mode: r.StepLimit.Mode},
+		AskUser:      config.SilentSubPolicyConfig{Mode: r.AskUser.Mode},
+		ReviewPrompt: config.SilentSubPolicyConfig{Mode: r.ReviewPrompt.Mode},
+	}
+	config.ApplySilentModeDefaults(&sm)
+	if err := config.ValidateSilentMode(sm); err != nil {
+		return config.SilentModeConfig{}, err
+	}
+	return sm, nil
+}
+
+// responseToAutonomyMode validates a frontend autonomy-mode payload against
+// the security.autonomy_mode enum — mirroring config validation so a
+// UI-sourced value can never store what the loader would reject (or warn and
+// fail-safe) on the next start. An empty mode is tolerated as "keep the
+// stored value": a payload from a frontend build predating the enum must not
+// silently weaken (or fortify) the stored posture. An explicit but unknown
+// value is an error and the caller mutates nothing.
+func responseToAutonomyMode(mode string) (string, error) {
+	switch mode {
+	case "":
+		return "", nil // keep stored — transitional tolerance for pre-enum payloads
+	case config.AutonomyModeStandard, config.AutonomyModeAssisted, config.AutonomyModeSilent:
+		return mode, nil
+	default:
+		return "", fmt.Errorf(
+			"security.autonomy_mode has invalid value %q; must be one of: %s, %s, %s",
+			mode, config.AutonomyModeStandard, config.AutonomyModeAssisted, config.AutonomyModeSilent,
+		)
+	}
+}
+
 // UpdateSecuritySettings updates security settings at runtime. The incoming
 // groups map REPLACES the stored one and must be the COMPLETE set of the
 // seven configurable groups — a partial payload is rejected (it would
@@ -600,7 +655,12 @@ func groupPoliciesToResponse(groups map[string]config.GroupPolicyConfig) map[str
 // reserved "system" group is rejected, policies must use the group enum, a
 // blocklist is an execute-only feature, and blocklist patterns must compile.
 // An invalid payload mutates nothing. The blocklist is empty by default and
-// purely user-authored, so what the payload carries is what gets stored. A
+// purely user-authored, so what the payload carries is what gets stored. The
+// autonomy mode must use the security.autonomy_mode enum (an empty payload
+// value keeps the stored posture) and the silent-mode sub-policies are
+// validated against their enums; both are replaced
+// likewise; the pushed security state (including silent mode, and the ask_user
+// registration it controls) reaches live sessions without a restart. A
 // changed execute-group blocklist re-registers the shell tool so the edit
 // applies without an app restart; the re-registration runs first and is
 // atomic, so its failure rolls the config back with no partially-applied
@@ -618,13 +678,28 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 		return err
 	}
 
+	newSilent, err := responseToSilentMode(settings.SilentMode)
+	if err != nil {
+		return err
+	}
+
+	newAutonomyMode, err := responseToAutonomyMode(settings.AutonomyMode)
+	if err != nil {
+		return err
+	}
+
 	// Replace the full group set so config stays in sync with the registry.
 	// prevSecurity snapshots the previous block so a failed shell-tool
 	// re-registration below can roll the whole replacement back.
 	prevSecurity := f.config.Security
 	f.config.Security.Groups = newGroups
 	f.config.Security.AutoApproveWorkspaceWrites = settings.AutoApproveWorkspaceWrites
-	f.config.Security.SmartApprove = settings.SmartApprove
+	// An empty payload mode keeps the stored posture (transitional tolerance
+	// for frontends predating the enum — see responseToAutonomyMode).
+	if newAutonomyMode != "" {
+		f.config.Security.AutonomyMode = newAutonomyMode
+	}
+	f.config.Security.SilentMode = newSilent
 
 	// Apply policies to the shared tool registry via the backend builder.
 	if b := f.builder(); b != nil {

@@ -27,7 +27,7 @@ func newSmartApproveRegistry(t *testing.T, judgeResponse string, judgeErr error)
 	t.Helper()
 	registry := NewToolRegistry()
 	registry.Register(newMockTool("mutating", "A mutating tool"))
-	registry.SetSmartApprove(true)
+	registry.SetAutonomyMode(AutonomyModeAssisted)
 	judge, _ := newStrictJudge(judgeResponse, judgeErr)
 	registry.SetJudge(judge)
 
@@ -129,7 +129,7 @@ func TestSmartApproveObserverNotInvokedWithoutSmartApprove(t *testing.T) {
 // judge phases for its own session.
 func TestClonePreservesJudgeObserver(t *testing.T) {
 	parent := NewToolRegistry()
-	parent.SetSmartApprove(true)
+	parent.SetAutonomyMode(AutonomyModeAssisted)
 	parent.Register(newMockTool("mutating", "A mutating tool"))
 	judge, _ := newStrictJudge("VERDICT: ALLOW\nREASON: benign", nil)
 	parent.SetJudge(judge)

@@ -233,9 +233,15 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			InjectionDefenseEnabled:    derefBool(cfg.Security.InjectionDefense.Enabled),
 			Groups:                     groups,
 			AutoApproveWorkspaceWrites: cfg.Security.AutoApproveWorkspaceWrites,
-			SmartApprove:               cfg.Security.SmartApprove,
-			AgentsMDMaxBytes:           cfg.Security.AgentsMDMaxBytes,
-			AgentsMDSearchPaths:        agentsMDSearchPaths(),
+			AutonomyMode:               cfg.Security.AutonomyMode,
+			SilentMode: core.BuilderSilentModeConfig{
+				ToolConfirm:  cfg.Security.SilentMode.ToolConfirm.Mode,
+				StepLimit:    cfg.Security.SilentMode.StepLimit.Mode,
+				AskUser:      cfg.Security.SilentMode.AskUser.Mode,
+				ReviewPrompt: cfg.Security.SilentMode.ReviewPrompt.Mode,
+			},
+			AgentsMDMaxBytes:    cfg.Security.AgentsMDMaxBytes,
+			AgentsMDSearchPaths: agentsMDSearchPaths(),
 		},
 		Skills: core.BuilderSkillsConfig{
 			Dirs: cfg.Skills.Dirs,

