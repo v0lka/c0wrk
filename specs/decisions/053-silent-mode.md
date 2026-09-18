@@ -8,8 +8,8 @@ Accepted — amended in place (pre-release): the original decision was folded in
 
 c0wrk gates risky work behind **blocking, human-answered prompts**: `tool_confirm`
 (a confirmation-gated tool call), `step_limit` (a step-budget / circuit-breaker
-boundary), `ask_user` (the question tool), and `review_prompt` (the post-task
-code-review prompt). That is the right default for interactive use — ASI09's
+boundary), and `ask_user` (the question tool). That is the right default for
+interactive use — ASI09's
 "confirmation blocks until the user responds (no timeout)" is intentional — but
 it makes a whole class of legitimate workflows impossible: an unattended run
 (nightly maintenance, a long refactor, a headless/scheduled session) simply
@@ -91,17 +91,24 @@ priority, path containment, symlink-escape detection, and the flowsh shell
 analysis all run first and are untouched. Silent mode replaces the **human
 answer** to a prompt; it never removes a gate.
 
-### D3. The four sub-policies and their terminals
+### D3. The three sub-policies and their terminals
 
-While the mode is `silent`, four sub-policies (`security.silent_mode`) resolve
-the four prompts:
+> **Amended in place (pre-release) by [ADR-054](./054-remove-post-task-review-prompt.md):**
+> the fourth sub-policy, `review_prompt` (`suppress`/`allow`), was removed
+> together with the post-task review prompt it gated — the prompt fired on
+> nearly every task against a perpetually dirty tree and was deleted outright.
+> No released build ever shipped the four-sub-policy schema; silent mode now
+> performs no post-task UI interception at all (the review-loop reopen is
+> suppressed unconditionally, with no knob). D3 covers **three** sub-policies.
+
+While the mode is `silent`, three sub-policies (`security.silent_mode`) resolve
+the three prompts:
 
 | Sub-policy | Modes | Effect |
 | --- | --- | --- |
 | `tool_confirm` | `judge` (default) / `allow` / `deny` | How a confirmation-gated call is resolved without a human. |
 | `step_limit` | `auto` (default) / `allow_once` / `allow_more` / `allow_always` / `deny` / `stop` | `auto` lets the strict loop judge decide; a fixed value pins that response without the judge; `stop` keeps the blocking card (opts this gate out of silent mode). |
 | `ask_user` | `disable` (default) / `enable` | `disable` registers the tool in a disabled form that reports it as unavailable. |
-| `review_prompt` | `suppress` (default) / `allow` | `suppress` does not emit the post-task review prompt. |
 
 The posture is validated at load and on every Settings save
 (`ValidateSilentMode`), and the sub-policy defaults are seeded by

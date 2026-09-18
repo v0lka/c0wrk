@@ -242,17 +242,16 @@ type GroupPolicyResponse struct {
 }
 
 // SilentModeResponse is the frontend view of security.silent_mode: the
-// container for the four unattended-operation sub-policies (live only while
+// container for the three unattended-operation sub-policies (live only while
 // the autonomy mode is "silent" — see SecuritySettingsResponse.AutonomyMode).
 // Each sub-policy Mode uses that sub-policy's config enum (see
-// config.SilentToolConfirm*, SilentStepLimit*, SilentAskUser*,
-// SilentReviewPrompt*). UpdateSecuritySettings validates the modes against
-// the same enums the config loader uses.
+// config.SilentToolConfirm*, SilentStepLimit*, SilentAskUser*).
+// UpdateSecuritySettings validates the modes against the same enums the
+// config loader uses.
 type SilentModeResponse struct {
-	ToolConfirm  SilentSubPolicyResponse `json:"tool_confirm"`
-	StepLimit    SilentSubPolicyResponse `json:"step_limit"`
-	AskUser      SilentSubPolicyResponse `json:"ask_user"`
-	ReviewPrompt SilentSubPolicyResponse `json:"review_prompt"`
+	ToolConfirm SilentSubPolicyResponse `json:"tool_confirm"`
+	StepLimit   SilentSubPolicyResponse `json:"step_limit"`
+	AskUser     SilentSubPolicyResponse `json:"ask_user"`
 }
 
 // SilentSubPolicyResponse is one silent-mode sub-policy: a single Mode drawn
@@ -460,16 +459,6 @@ type ReviewHunk = workspace.ReviewHunk
 // code-review page. Defined in core/workspace; re-exported here as a type
 // alias for ViewModel convenience.
 type ReviewFileDiff = workspace.ReviewFileDiff
-
-// ReviewPromptMessage is the descriptor of a persisted review_prompt chat
-// message, returned by SaveReviewPrompt. The frontend uses Content for the
-// live (pre-reload) card so the displayed text always matches the persisted
-// message — the backend is the single source of truth for the prompt wording,
-// so the string is not duplicated on the client.
-type ReviewPromptMessage struct {
-	PromptID string `json:"prompt_id"`
-	Content  string `json:"content"`
-}
 
 // SessionTokensResponse holds token usage statistics for a session.
 type SessionTokensResponse struct {

@@ -14,10 +14,9 @@ import (
 func TestClone_CopiesAutonomyAndSilentMode(t *testing.T) {
 	parent := NewToolRegistry()
 	initial := SilentModeState{
-		ToolConfirm:  "deny",
-		StepLimit:    "stop",
-		AskUser:      "disable",
-		ReviewPrompt: "suppress",
+		ToolConfirm: "deny",
+		StepLimit:   "stop",
+		AskUser:     "disable",
 	}
 	parent.ApplySecurityState(nil, false, AutonomyModeSilent, initial)
 

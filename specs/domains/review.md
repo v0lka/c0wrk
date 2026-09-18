@@ -12,29 +12,29 @@ The review feature lets the user inspect uncommitted changes (staged + unstaged 
 
 - **`backend/review/persistence.go`** — `SQLiteReviewStore` persists the review buffer per session. Tables: `review_comments` (general, hunk-scoped, and file-scoped comments; FK→sessions ON DELETE CASCADE) and `review_state` (status: active/submitted/approved).
 - **`backend/review/persistence_fork.go`** — `CloneReview`/`CloneReviewTx` copy the review buffer (status + comments) to another session for [session forking](session-lifecycle.md#session-forking). `CloneReviewTx` runs on a caller-supplied transaction so the clone commits or rolls back atomically with the rest of the fork
-- **`backend/frontend_api_review.go`** — RPCs: `GetReview`, `SaveReviewGeneralComment`, `SaveReviewHunkComment`, `SaveReviewFileComment`, `DeleteReviewComment`, `SetReviewStatus`, `ClearReviewComments`, `ClearReview`, `GetReviewDiff`, `GetCommitDiff`, `SaveReviewPrompt`.
+- **`backend/frontend_api_review.go`** — RPCs: `GetReview`, `SaveReviewGeneralComment`, `SaveReviewHunkComment`, `SaveReviewFileComment`, `DeleteReviewComment`, `SetReviewStatus`, `ClearReviewComments`, `ClearReview`, `GetReviewDiff`, `GetCommitDiff`.
 - **`core/workspace/git.go`** — `BuildReviewDiff` combines `git diff -U5 HEAD` (staged + unstaged tracked changes) with a per-file `git diff --no-index` for every untracked file; `ParseReviewDiff` parses the combined output into per-file hunk snapshots (`ReviewFileDiff{Path, OldPath?, Hunks[]}`).
 
 ### Frontend (React/Zustand)
 
-- **`stores/reviewStore.ts`** — Zustand store with per-session review state (`bySession`), `reviewPageOpen`, `activeReviewSession`, `reviewLoopActive` (persisted), `promptShownForTask` (persisted). Comment data is NOT persisted in the store — it lives in the backend (single source of truth).
+- **`stores/reviewStore.ts`** — Zustand store with per-session review state (`bySession`), `reviewPageOpen`, `activeReviewSession`, `reviewLoopActive` (persisted). Comment data is NOT persisted in the store — it lives in the backend (single source of truth).
 - **`api/review.ts`** — RPC wrappers with type guards.
 - **`components/review/`** — `ReviewPage` (fetches `GetReviewDiff` on mount), `FileReviewBlock`, `HunkReviewBlock` (diff display + inline comment), `ReviewHeader` (Comment All + Approve/Submit button), `useReviewActions` hook.
-- **`components/chat/ReviewPromptBlock.tsx`** — Inline chat block shown after `task_complete` with changes.
 
 ### Activation paths
 
-1. **Review button** in `ChangesToolbar` — manual entry (Step 5).
-2. **Post-task prompt** — `review_prompt` DisplayItem injected on successful `task_complete` when git status is non-empty and the prompt hasn't been shown for this task (Step 6).
+1. **Review button** in `ChangesToolbar` — the only entry point (manual).
+
+The automatic post-task prompt (`review_prompt` card injected on `task_complete`) was removed by [ADR-054](../decisions/054-remove-post-task-review-prompt.md): it fired on nearly every task against a perpetually dirty tree and trained the user to dismiss it unread. The one automatic behavior that remains is the **review-loop reopen** below, which only applies while the user is already in a review loop.
 
 ### Lifecycle
 
 ```
-task_complete (success, has changes)
-  ├─ reviewLoopActive? → auto-reopen ReviewPage (no prompt)
-  └─ not in loop? → inject review_prompt block (Yes/No)
-       ├─ Yes → open ReviewPage + enterReviewLoop
-       └─ No → dismiss
+Manual entry: ChangesToolbar Review button → open ReviewPage (c0wrk:review)
+
+task_complete (success, CODE project, has changes)
+  └─ reviewLoopActive && !silent mode? → auto-reopen ReviewPage with fresh diff
+       (no prompt; silent mode performs no post-task UI interception at all)
 
 ReviewPage:
   ├─ 0 comments → "Approve" → stageAll + ClearReview + close
@@ -53,7 +53,7 @@ keeping the displayed user message as the verbatim review comments.
 
 ### Persistence
 
-- `reviewLoopActive` and `promptShownForTask` are persisted via zustand persist (localStorage).
+- `reviewLoopActive` is persisted via zustand persist (localStorage).
 - Comment data (general + hunk) is persisted in SQLite via the backend RPCs.
 - On session switch, `useReviewRestore` hook reloads comments and reconciles stale loop state.
 
@@ -71,7 +71,8 @@ keeping the displayed user message as the verbatim review comments.
 | `SetReviewStatus`                | `sessionId, status`                | `void`                   |
 | `ClearReviewComments`            | `sessionId`                        | `void`                   |
 | `ClearReview`                    | `sessionId`                        | `void`                   |
-| `SaveReviewPrompt`               | `sessionId`                        | `*ReviewPromptMessage` (prompt_id + content) |
+
+> The former `SaveReviewPrompt` RPC was removed by [ADR-054](../decisions/054-remove-post-task-review-prompt.md) together with the post-task prompt it persisted.
 
 ## Invariants
 

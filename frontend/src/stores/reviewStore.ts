@@ -28,7 +28,6 @@ interface ReviewState {
   reviewPageOpen: boolean
   activeReviewSession: string | null
   reviewLoopActive: Record<string, boolean>
-  promptShownForTask: Record<string, string | true>
   diffViewMode: 'unified' | 'split'
 }
 
@@ -43,9 +42,7 @@ interface ReviewActions {
   closeReviewPage: () => void
   enterReviewLoop: (sessionId: string) => void
   exitReviewLoop: (sessionId: string) => void
-  markPromptShown: (sessionId: string, taskId: string) => void
   clearSessionReview: (sessionId: string) => void
-  resetLoopFlags: (sessionId: string) => void
   setDiffViewMode: (mode: 'unified' | 'split') => void
 }
 
@@ -60,7 +57,6 @@ export const useReviewStore = create<ReviewState & ReviewActions>()(
       reviewPageOpen: false,
       activeReviewSession: null,
       reviewLoopActive: {},
-      promptShownForTask: {},
       diffViewMode: 'unified',
 
       loadReview: async (sessionId) => {
@@ -164,25 +160,11 @@ export const useReviewStore = create<ReviewState & ReviewActions>()(
           return { reviewLoopActive: next }
         }),
 
-      markPromptShown: (sessionId, taskId) =>
-        set((s) => ({
-          promptShownForTask: { ...s.promptShownForTask, [sessionId]: taskId },
-        })),
-
       clearSessionReview: (sessionId) =>
         set((s) => {
           const next = { ...s.bySession }
           delete next[sessionId]
           return { bySession: next }
-        }),
-
-      resetLoopFlags: (sessionId) =>
-        set((s) => {
-          const loops = { ...s.reviewLoopActive }
-          delete loops[sessionId]
-          const prompts = { ...s.promptShownForTask }
-          delete prompts[sessionId]
-          return { reviewLoopActive: loops, promptShownForTask: prompts }
         }),
 
       setDiffViewMode: (mode) => set({ diffViewMode: mode }),
@@ -191,7 +173,6 @@ export const useReviewStore = create<ReviewState & ReviewActions>()(
       name: 'c0wrk-review',
       partialize: (state) => ({
         reviewLoopActive: state.reviewLoopActive,
-        promptShownForTask: state.promptShownForTask,
         diffViewMode: state.diffViewMode,
       }),
     },

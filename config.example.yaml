@@ -354,7 +354,7 @@ security:
   # The sub-policies of the unattended-operation posture. They are live only
   # while security.autonomy_mode is "silent" (the master switch above — the
   # former enabled key no longer exists); in every other mode each sub-policy
-  # is inert and the app behaves exactly as before. When live, the four
+  # is inert and the app behaves exactly as before. When live, the three
   # sub-policies resolve the prompts that would otherwise need a human, so a
   # task can run to completion without blocking:
   #   tool_confirm.mode  — a tool call that would open a confirmation card.
@@ -379,9 +379,9 @@ security:
   #                        it in a disabled form that reports the tool as
   #                        unavailable, so the agent can never block on a
   #                        question; "enable" keeps it fully available.
-  #   review_prompt.mode — the post-task code-review prompt. "suppress"
-  #                        (default) does not emit it; "allow" emits it as
-  #                        usual.
+  # (A former fourth sub-policy for the post-task code-review prompt was
+  # removed together with that prompt — it fired on nearly every task; a
+  # config still carrying the stale key loads with it ignored.)
   # Every automatic decision (a tool_confirm / step_limit prompt resolved
   # without a human) is recorded as a persisted, non-blocking
   # `autonomy_decision` event (kind, mode, policy, verdict, tool/reason,
@@ -404,8 +404,6 @@ security:
       mode: "auto"
     ask_user:
       mode: "disable"
-    review_prompt:
-      mode: "suppress"
 
   # Repositories whose "untrusted git configuration" intake warning has been
   # dismissed via the toast's "Trust this repo" action (also manageable from

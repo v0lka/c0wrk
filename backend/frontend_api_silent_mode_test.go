@@ -25,10 +25,9 @@ func TestUpdateSecuritySettings_SilentModeRoundTrip(t *testing.T) {
 	}
 
 	in := SilentModeResponse{
-		ToolConfirm:  SilentSubPolicyResponse{Mode: config.SilentToolConfirmDeny},
-		StepLimit:    SilentSubPolicyResponse{Mode: config.SilentStepLimitStop},
-		AskUser:      SilentSubPolicyResponse{Mode: config.SilentAskUserEnable},
-		ReviewPrompt: SilentSubPolicyResponse{Mode: config.SilentReviewPromptAllow},
+		ToolConfirm: SilentSubPolicyResponse{Mode: config.SilentToolConfirmDeny},
+		StepLimit:   SilentSubPolicyResponse{Mode: config.SilentStepLimitStop},
+		AskUser:     SilentSubPolicyResponse{Mode: config.SilentAskUserEnable},
 	}
 	if err := f.UpdateSecuritySettings(SecuritySettingsResponse{
 		Groups:       fullGroupPayload(nil),
@@ -39,10 +38,9 @@ func TestUpdateSecuritySettings_SilentModeRoundTrip(t *testing.T) {
 	}
 
 	wantCfg := config.SilentModeConfig{
-		ToolConfirm:  config.SilentSubPolicyConfig{Mode: config.SilentToolConfirmDeny},
-		StepLimit:    config.SilentSubPolicyConfig{Mode: config.SilentStepLimitStop},
-		AskUser:      config.SilentSubPolicyConfig{Mode: config.SilentAskUserEnable},
-		ReviewPrompt: config.SilentSubPolicyConfig{Mode: config.SilentReviewPromptAllow},
+		ToolConfirm: config.SilentSubPolicyConfig{Mode: config.SilentToolConfirmDeny},
+		StepLimit:   config.SilentSubPolicyConfig{Mode: config.SilentStepLimitStop},
+		AskUser:     config.SilentSubPolicyConfig{Mode: config.SilentAskUserEnable},
 	}
 	if got := f.config.Security.SilentMode; got != wantCfg {
 		t.Errorf("stored silent mode = %+v, want %+v", got, wantCfg)
@@ -64,10 +62,9 @@ func TestUpdateSecuritySettings_SilentModeRoundTrip(t *testing.T) {
 		t.Errorf("pushed builder autonomy mode = %q, want %q", got, core.AutonomyModeSilent)
 	}
 	if got := mock.updateSecPolicyLastCfg.Security.SilentMode; got != (core.BuilderSilentModeConfig{
-		ToolConfirm:  config.SilentToolConfirmDeny,
-		StepLimit:    config.SilentStepLimitStop,
-		AskUser:      config.SilentAskUserEnable,
-		ReviewPrompt: config.SilentReviewPromptAllow,
+		ToolConfirm: config.SilentToolConfirmDeny,
+		StepLimit:   config.SilentStepLimitStop,
+		AskUser:     config.SilentAskUserEnable,
 	}) {
 		t.Errorf("pushed builder silent mode = %+v, want the stored posture", got)
 	}

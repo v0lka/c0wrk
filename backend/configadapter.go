@@ -235,10 +235,9 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			AutoApproveWorkspaceWrites: cfg.Security.AutoApproveWorkspaceWrites,
 			AutonomyMode:               cfg.Security.AutonomyMode,
 			SilentMode: core.BuilderSilentModeConfig{
-				ToolConfirm:  cfg.Security.SilentMode.ToolConfirm.Mode,
-				StepLimit:    cfg.Security.SilentMode.StepLimit.Mode,
-				AskUser:      cfg.Security.SilentMode.AskUser.Mode,
-				ReviewPrompt: cfg.Security.SilentMode.ReviewPrompt.Mode,
+				ToolConfirm: cfg.Security.SilentMode.ToolConfirm.Mode,
+				StepLimit:   cfg.Security.SilentMode.StepLimit.Mode,
+				AskUser:     cfg.Security.SilentMode.AskUser.Mode,
 			},
 			AgentsMDMaxBytes:    cfg.Security.AgentsMDMaxBytes,
 			AgentsMDSearchPaths: agentsMDSearchPaths(),

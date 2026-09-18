@@ -30,20 +30,18 @@ func TestSilentMode_DefaultsAndValidation(t *testing.T) {
 	explicit := &Config{Security: SecurityConfig{
 		AutonomyMode: AutonomyModeSilent,
 		SilentMode: SilentModeConfig{
-			ToolConfirm:  SilentSubPolicyConfig{Mode: SilentToolConfirmDeny},
-			StepLimit:    SilentSubPolicyConfig{Mode: SilentStepLimitStop},
-			AskUser:      SilentSubPolicyConfig{Mode: SilentAskUserEnable},
-			ReviewPrompt: SilentSubPolicyConfig{Mode: SilentReviewPromptAllow},
+			ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmDeny},
+			StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitStop},
+			AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserEnable},
 		}}}
 	ApplyDefaults(explicit)
 	if got, want := explicit.Security.AutonomyMode, AutonomyModeSilent; got != want {
 		t.Errorf("ApplyDefaults clobbered autonomy mode: got %q want %q", got, want)
 	}
 	if got, want := explicit.Security.SilentMode, (SilentModeConfig{
-		ToolConfirm:  SilentSubPolicyConfig{Mode: SilentToolConfirmDeny},
-		StepLimit:    SilentSubPolicyConfig{Mode: SilentStepLimitStop},
-		AskUser:      SilentSubPolicyConfig{Mode: SilentAskUserEnable},
-		ReviewPrompt: SilentSubPolicyConfig{Mode: SilentReviewPromptAllow},
+		ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmDeny},
+		StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitStop},
+		AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserEnable},
 	}); got != want {
 		t.Errorf("ApplyDefaults clobbered explicit silent-mode values: got %+v want %+v", got, want)
 	}
@@ -52,22 +50,19 @@ func TestSilentMode_DefaultsAndValidation(t *testing.T) {
 	valid := []SilentModeConfig{
 		SilentModeDefaults(),
 		{
-			ToolConfirm:  SilentSubPolicyConfig{Mode: SilentToolConfirmJudge},
-			StepLimit:    SilentSubPolicyConfig{Mode: SilentStepLimitAuto},
-			AskUser:      SilentSubPolicyConfig{Mode: SilentAskUserDisable},
-			ReviewPrompt: SilentSubPolicyConfig{Mode: SilentReviewPromptSuppress},
+			ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmJudge},
+			StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitAuto},
+			AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserDisable},
 		},
 		{
-			ToolConfirm:  SilentSubPolicyConfig{Mode: SilentToolConfirmAllow},
-			StepLimit:    SilentSubPolicyConfig{Mode: SilentStepLimitStop},
-			AskUser:      SilentSubPolicyConfig{Mode: SilentAskUserEnable},
-			ReviewPrompt: SilentSubPolicyConfig{Mode: SilentReviewPromptAllow},
+			ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmAllow},
+			StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitStop},
+			AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserEnable},
 		},
 		{
-			ToolConfirm:  SilentSubPolicyConfig{Mode: SilentToolConfirmDeny},
-			StepLimit:    SilentSubPolicyConfig{Mode: SilentStepLimitAllowAlways},
-			AskUser:      SilentSubPolicyConfig{Mode: SilentAskUserDisable},
-			ReviewPrompt: SilentSubPolicyConfig{Mode: SilentReviewPromptAllow},
+			ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmDeny},
+			StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitAllowAlways},
+			AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserDisable},
 		},
 	}
 	for _, c := range valid {
@@ -84,7 +79,6 @@ func TestSilentMode_DefaultsAndValidation(t *testing.T) {
 		{"tool_confirm", SilentModeConfig{ToolConfirm: SilentSubPolicyConfig{Mode: "always"}}},
 		{"step_limit", SilentModeConfig{StepLimit: SilentSubPolicyConfig{Mode: "forever"}}},
 		{"ask_user", SilentModeConfig{AskUser: SilentSubPolicyConfig{Mode: "maybe"}}},
-		{"review_prompt", SilentModeConfig{ReviewPrompt: SilentSubPolicyConfig{Mode: "loud"}}},
 	}
 	for _, tc := range invalid {
 		err := ValidateSilentMode(tc.sm)
@@ -118,19 +112,18 @@ func TestAutonomyMode_AskUserDisabled(t *testing.T) {
 
 // TestSilentMode_YAMLRoundTrip verifies the yaml keys the docs promise and a
 // faithful marshal/unmarshal round trip. The legacy `enabled` key must NOT be
-// written anymore — the container persists only the four sub-policies.
+// written anymore — the container persists only the three sub-policies.
 func TestSilentMode_YAMLRoundTrip(t *testing.T) {
 	src := SilentModeConfig{
-		ToolConfirm:  SilentSubPolicyConfig{Mode: SilentToolConfirmAllow},
-		StepLimit:    SilentSubPolicyConfig{Mode: SilentStepLimitStop},
-		AskUser:      SilentSubPolicyConfig{Mode: SilentAskUserEnable},
-		ReviewPrompt: SilentSubPolicyConfig{Mode: SilentReviewPromptAllow},
+		ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmAllow},
+		StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitStop},
+		AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserEnable},
 	}
 	data, err := yaml.Marshal(src)
 	if err != nil {
 		t.Fatalf("yaml.Marshal: %v", err)
 	}
-	for _, key := range []string{"tool_confirm", "step_limit", "ask_user", "review_prompt", "mode"} {
+	for _, key := range []string{"tool_confirm", "step_limit", "ask_user", "mode"} {
 		if !strings.Contains(string(data), key) {
 			t.Errorf("silent-mode yaml is missing key %q; got:\n%s", key, data)
 		}
@@ -165,7 +158,6 @@ security:
 		content := base + `    tool_confirm: {mode: deny}
     step_limit: {mode: stop}
     ask_user: {mode: enable}
-    review_prompt: {mode: allow}
 `
 		cfg, err := Load(writeTestConfig(t, content))
 		if err != nil {
@@ -173,10 +165,9 @@ security:
 		}
 		got := cfg.Security.SilentMode
 		want := SilentModeConfig{
-			ToolConfirm:  SilentSubPolicyConfig{Mode: SilentToolConfirmDeny},
-			StepLimit:    SilentSubPolicyConfig{Mode: SilentStepLimitStop},
-			AskUser:      SilentSubPolicyConfig{Mode: SilentAskUserEnable},
-			ReviewPrompt: SilentSubPolicyConfig{Mode: SilentReviewPromptAllow},
+			ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmDeny},
+			StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitStop},
+			AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserEnable},
 		}
 		if got != want {
 			t.Errorf("loaded silent-mode = %+v, want %+v", got, want)
@@ -197,16 +188,51 @@ security:
 	})
 
 	for name, line := range map[string]string{
-		"tool_confirm":  "    tool_confirm: {mode: always}\n",
-		"step_limit":    "    step_limit: {mode: forever}\n",
-		"ask_user":      "    ask_user: {mode: maybe}\n",
-		"review_prompt": "    review_prompt: {mode: loud}\n",
+		"tool_confirm": "    tool_confirm: {mode: always}\n",
+		"step_limit":   "    step_limit: {mode: forever}\n",
+		"ask_user":     "    ask_user: {mode: maybe}\n",
 	} {
 		t.Run("invalid "+name+" enum rejected", func(t *testing.T) {
 			if _, err := Load(writeTestConfig(t, base+line)); err == nil {
 				t.Errorf("Load() with an invalid %s enum must fail", name)
 			}
 		})
+	}
+}
+
+// TestSilentMode_RemovedReviewPromptKeyIgnored pins the removal of the
+// review_prompt sub-policy: a config file still carrying the stale
+// security.silent_mode.review_prompt key loads without an error and without
+// warnings (the yaml decode is non-strict, so the unknown key is ignored
+// rather than rejected), and the surviving sub-policies load normally. The
+// stale key simply disappears at the next Save.
+func TestSilentMode_RemovedReviewPromptKeyIgnored(t *testing.T) {
+	const base = `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+security:
+  silent_mode:
+    review_prompt: {mode: allow}
+    tool_confirm: {mode: deny}
+`
+	result, err := LoadWithResult(writeTestConfig(t, base))
+	if err != nil {
+		t.Fatalf("Load() with the stale review_prompt key must succeed, got: %v", err)
+	}
+	if len(result.LoadErrors) != 0 {
+		t.Errorf("the stale review_prompt key must be silently ignored, got warnings: %v", result.LoadErrors)
+	}
+	want := SilentModeConfig{
+		ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmDeny},
+		StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitAuto},
+		AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserDisable},
+	}
+	if got := result.Config.Security.SilentMode; got != want {
+		t.Errorf("loaded silent-mode = %+v, want %+v (stale key ignored, others intact)", got, want)
 	}
 }
 
@@ -241,7 +267,6 @@ func TestAutonomyMode_Migration(t *testing.T) {
 	const silentPolicies = `    tool_confirm: {mode: deny}
     step_limit: {mode: stop}
     ask_user: {mode: enable}
-    review_prompt: {mode: allow}
 `
 	cases := []struct {
 		name        string
@@ -307,10 +332,9 @@ func TestAutonomyMode_Migration(t *testing.T) {
 			// whenever they were written.
 			if strings.Contains(tc.security, "tool_confirm") {
 				want := SilentModeConfig{
-					ToolConfirm:  SilentSubPolicyConfig{Mode: SilentToolConfirmDeny},
-					StepLimit:    SilentSubPolicyConfig{Mode: SilentStepLimitStop},
-					AskUser:      SilentSubPolicyConfig{Mode: SilentAskUserEnable},
-					ReviewPrompt: SilentSubPolicyConfig{Mode: SilentReviewPromptAllow},
+					ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmDeny},
+					StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitStop},
+					AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserEnable},
 				}
 				if got := result.Config.Security.SilentMode; got != want {
 					t.Errorf("migrated silent-mode policies = %+v, want %+v (policies must survive migration)", got, want)

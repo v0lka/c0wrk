@@ -10,7 +10,7 @@ export type ToolLike = DisplayItem & { kind: 'tool' }
 export type PlanStep = DisplayItem & { kind: 'plan_step' }
 export type SubAgentItem = DisplayItem & { kind: 'subagent' }
 export type StepLikeItem = PlanStep | SubAgentItem
-export type ActionDisplayItem = Extract<DisplayItem, { kind: 'tool_confirm' | 'ask_user' | 'step_limit' | 'plan_review' | 'resume_action' | 'review_prompt' | 'goal_proposal' }>
+export type ActionDisplayItem = Extract<DisplayItem, { kind: 'tool_confirm' | 'ask_user' | 'step_limit' | 'plan_review' | 'resume_action' | 'goal_proposal' }>
 
 /**
  * handleStepTodoUpdate processes a step_todo_update message into a
@@ -323,8 +323,6 @@ export function handleActionMessage(
       item = { kind: 'step_limit', message: msg }; break
     case 'plan_review':
       item = { kind: 'plan_review', message: msg }; break
-    case 'review_prompt':
-      item = { kind: 'review_prompt', message: msg }; break
     case 'goal_proposal':
       item = {
         kind: 'goal_proposal',

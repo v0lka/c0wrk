@@ -97,7 +97,6 @@ describe('useAutonomyLoader', () => {
           tool_confirm: { mode: 'deny' },
           step_limit: { mode: 'stop' },
           ask_user: { mode: 'enable' },
-          review_prompt: { mode: 'allow' },
         },
       }),
     )
@@ -108,7 +107,7 @@ describe('useAutonomyLoader', () => {
     expect(s.loaded).toBe(true)
     expect(s.autonomy_mode).toBe('silent')
     expect(s.tool_confirm.mode).toBe('deny')
-    expect(s.review_prompt.mode).toBe('allow')
+    expect(s.ask_user.mode).toBe('enable')
   })
 
   it('falls back to the documented defaults when the response omits silent_mode', async () => {
@@ -119,7 +118,7 @@ describe('useAutonomyLoader', () => {
     const s = useAutonomyStore.getState()
     expect(s.autonomy_mode).toBe('silent')
     expect(s.tool_confirm.mode).toBe('judge')
-    expect(s.review_prompt.mode).toBe('suppress')
+    expect(s.ask_user.mode).toBe('disable')
   })
 
   it('re-reads on config:updated so a Settings save reaches the gate without a restart', async () => {
@@ -151,7 +150,7 @@ describe('useAutonomyLoader', () => {
 
     const s = useAutonomyStore.getState()
     expect(s.autonomy_mode).toBe('standard')
-    expect(s.review_prompt.mode).toBe('suppress')
+    expect(s.ask_user.mode).toBe('disable')
     expect(s.loaded).toBe(false)
   })
 })

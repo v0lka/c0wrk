@@ -74,8 +74,6 @@ export function bookmarkDefaultTitle(item: DisplayItem): string {
       return collapseTitle(item.content) || 'Memory read'
     case 'plan_review':
       return 'Plan review'
-    case 'review_prompt':
-      return 'Code review'
     case 'goal_proposal':
       return 'Proposed goal'
     case 'checklist':

@@ -755,16 +755,14 @@ func TestApplySecurityState_ReplacesAllComponentsAtomically(t *testing.T) {
 	// replace it (silent mode has no standalone setter — ApplySecurityState is
 	// its only writer).
 	registry.ApplySecurityState(source, true, AutonomyModeAssisted, SilentModeState{
-		ToolConfirm:  "allow",
-		StepLimit:    "stop",
-		AskUser:      "enable",
-		ReviewPrompt: "allow",
+		ToolConfirm: "allow",
+		StepLimit:   "stop",
+		AskUser:     "enable",
 	})
 	registry.ApplySecurityState(source, false, AutonomyModeSilent, SilentModeState{
-		ToolConfirm:  "judge",
-		StepLimit:    "auto",
-		AskUser:      "disable",
-		ReviewPrompt: "suppress",
+		ToolConfirm: "judge",
+		StepLimit:   "auto",
+		AskUser:     "disable",
 	})
 
 	if got := registry.GroupPolicies()[sdktools.GroupExecute]; got != sdktools.PolicyAlwaysDeny {
@@ -779,7 +777,7 @@ func TestApplySecurityState_ReplacesAllComponentsAtomically(t *testing.T) {
 	if autonomyMode != AutonomyModeSilent {
 		t.Errorf("autonomyMode = %q, want %q (replaced from %q)", autonomyMode, AutonomyModeSilent, AutonomyModeAssisted)
 	}
-	if want := (SilentModeState{ToolConfirm: "judge", StepLimit: "auto", AskUser: "disable", ReviewPrompt: "suppress"}); silentMode != want {
+	if want := (SilentModeState{ToolConfirm: "judge", StepLimit: "auto", AskUser: "disable"}); silentMode != want {
 		t.Errorf("silentMode = %+v, want %+v", silentMode, want)
 	}
 

@@ -325,8 +325,7 @@ describe('SecuritySettings — autonomy mode', () => {
         silent_mode: {
           tool_confirm: { mode: 'judge' },
           step_limit: { mode: 'auto' },
-          ask_user: { mode: 'disable' },
-          review_prompt: { mode: 'allow' },
+          ask_user: { mode: 'enable' },
         },
       }),
     )
@@ -335,7 +334,7 @@ describe('SecuritySettings — autonomy mode', () => {
     expect(autonomyRadio('silent')?.checked).toBe(true)
     // The silent policy card is visible and carries the enforced sub-policy.
     expect(container.querySelector('[data-testid="silent-mode-card"]')).not.toBeNull()
-    expect(findSelect('Review prompt mode')?.textContent).toContain('Allow')
+    expect(findSelect('Ask user mode')?.textContent).toContain('Enable')
   })
 
   it('in standard and assisted the policy card is hidden', async () => {
@@ -351,16 +350,15 @@ describe('SecuritySettings — autonomy mode', () => {
     expect(selects()).toHaveLength(7)
   })
 
-  it('switching to silent persists the mode and reveals the four sub-policy editors', async () => {
+  it('switching to silent persists the mode and reveals the three sub-policy editors', async () => {
     await render()
     await switchMode('silent')
 
-    // 7 group dropdowns + 4 silent-mode sub-policy dropdowns.
-    expect(selects()).toHaveLength(11)
+    // 7 group dropdowns + 3 silent-mode sub-policy dropdowns.
+    expect(selects()).toHaveLength(10)
     expect(findSelect('Tool confirmations mode')).toBeTruthy()
     expect(findSelect('Step limit mode')).toBeTruthy()
     expect(findSelect('Ask user mode')).toBeTruthy()
-    expect(findSelect('Review prompt mode')).toBeTruthy()
 
     // The autonomy warning states the risk inside the policy card.
     const warning = container.querySelector('[data-testid="silent-mode-warning"]')
@@ -371,7 +369,6 @@ describe('SecuritySettings — autonomy mode', () => {
       tool_confirm: { mode: 'judge' },
       step_limit: { mode: 'auto' },
       ask_user: { mode: 'disable' },
-      review_prompt: { mode: 'suppress' },
     })
   })
 
@@ -384,7 +381,6 @@ describe('SecuritySettings — autonomy mode', () => {
       tool_confirm: { mode: 'judge' },
       step_limit: { mode: 'auto' },
       ask_user: { mode: 'disable' },
-      review_prompt: { mode: 'suppress' },
     })
   })
 
@@ -392,14 +388,13 @@ describe('SecuritySettings — autonomy mode', () => {
     await render()
     await switchMode('silent')
 
-    await pickOption('Review prompt mode', 'Allow')
+    await pickOption('Ask user mode', 'Enable')
 
     expect(lastPayload().autonomy_mode).toBe('silent')
     expect(lastPayload().silent_mode).toEqual({
       tool_confirm: { mode: 'judge' },
       step_limit: { mode: 'auto' },
-      ask_user: { mode: 'disable' },
-      review_prompt: { mode: 'allow' },
+      ask_user: { mode: 'enable' },
     })
   })
 
@@ -460,7 +455,6 @@ describe('SecuritySettings — silent mode judge gating', () => {
           tool_confirm: { mode: 'deny' },
           step_limit: { mode: 'auto' },
           ask_user: { mode: 'disable' },
-          review_prompt: { mode: 'suppress' },
         },
       }),
     )
@@ -508,7 +502,6 @@ describe('SecuritySettings — silent mode judge gating', () => {
           tool_confirm: { mode: 'deny' },
           step_limit: { mode: 'stop' },
           ask_user: { mode: 'disable' },
-          review_prompt: { mode: 'suppress' },
         },
       }),
     )

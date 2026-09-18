@@ -49,7 +49,6 @@ function normalizeSilentMode(sm: SilentModeSettings | undefined): SilentModeSett
     tool_confirm: sm?.tool_confirm ?? DEFAULT_SILENT_POLICIES.tool_confirm,
     step_limit: sm?.step_limit ?? DEFAULT_SILENT_POLICIES.step_limit,
     ask_user: sm?.ask_user ?? DEFAULT_SILENT_POLICIES.ask_user,
-    review_prompt: sm?.review_prompt ?? DEFAULT_SILENT_POLICIES.review_prompt,
   };
 }
 

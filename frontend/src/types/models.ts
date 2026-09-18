@@ -620,7 +620,6 @@ export interface SilentModeSettings {
   tool_confirm: SilentSubPolicy
   step_limit: SilentSubPolicy
   ask_user: SilentSubPolicy
-  review_prompt: SilentSubPolicy
 }
 
 export interface SecuritySettingsResponse {

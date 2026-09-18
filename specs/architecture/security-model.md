@@ -208,18 +208,20 @@ ToolRegistry.Execute()
 
 ## Silent Mode (Unattended Operation)
 
-`security.autonomy_mode: silent` is the unattended-operation posture — the third value of the autonomy axis (`standard` | `assisted` | `silent`, default `standard`, [ADR-053](../decisions/053-silent-mode.md); the legacy `security.smart_approve` / `security.silent_mode.enabled` booleans migrate onto the enum at load, silent winning, and are dropped at the next save). While the mode is `silent`, the four interactive prompts that would otherwise block a
+`security.autonomy_mode: silent` is the unattended-operation posture — the third value of the autonomy axis (`standard` | `assisted` | `silent`, default `standard`, [ADR-053](../decisions/053-silent-mode.md); the legacy `security.smart_approve` / `security.silent_mode.enabled` booleans migrate onto the enum at load, silent winning, and are dropped at the next save). While the mode is `silent`, the three interactive prompts that would otherwise block a
 run are resolved without a human — `tool_confirm` (a confirmation-gated tool
-call), `step_limit` (a step-budget / circuit-breaker boundary), `ask_user` (the
-question tool), and `review_prompt` (the post-task code-review prompt). Each has
+call), `step_limit` (a step-budget / circuit-breaker boundary), and `ask_user`
+(the question tool). Each has
 its own sub-policy under `security.silent_mode` (`tool_confirm`: `judge`|`allow`|`deny`; `step_limit`:
 `auto`|`allow_once`|`allow_more`|`allow_always`|`deny`|`stop`; `ask_user`:
-`disable`|`enable`; `review_prompt`:
-`suppress`|`allow`) — the sub-policies are live **only** in this mode (the former `enabled` master switch no longer exists; the enum value is the switch). The posture is a plain value pushed to the shared registry
+`disable`|`enable`) — the sub-policies are live **only** in this mode (the former `enabled` master switch no longer exists; the enum value is the switch). The posture is a plain value pushed to the shared registry
 and every per-session clone (`ApplySecurityState`), so a Settings change reaches
-live sessions with no restart. `tool_confirm` acts in the registry,
-`ask_user` at tool registration, `review_prompt` in the frontend, and
-`step_limit.mode: auto` through the backend's `ResolveSilentStepLimit`. See
+live sessions with no restart. `tool_confirm` acts in the registry and
+`ask_user` at tool registration, while `step_limit.mode: auto` resolves through
+the backend's `ResolveSilentStepLimit`. (A fourth sub-policy, `review_prompt`
+for the removed post-task code-review prompt, was deleted by
+[ADR-054](../decisions/054-remove-post-task-review-prompt.md) — silent mode now
+performs no post-task UI interception at all.) See
 [ADR-053](../decisions/053-silent-mode.md).
 
 **Where it sits.** Silent mode is reached only from `smartApproveOrConfirm`, the
@@ -253,10 +255,9 @@ Silent mode replaces the **human answer** to a prompt; it never removes a gate.
 non-blocking (there is no card to answer) and durable (role
 `autonomy_decision`, rendered as a `status` service
 notice via `reconstructContent` on reload), so a run's trajectory stays
-reconstructable after the fact. (The other two sub-policies need no separate
+reconstructable after the fact. (The remaining sub-policy needs no separate
 event: `ask_user: disable` reaches the model as the tool's explicit
-`ask_user is not available in this mode` result, and `review_prompt: suppress`
-simply emits no prompt.) See
+`ask_user is not available in this mode` result.) See
 [contracts/event-catalog.md](../contracts/event-catalog.md).
 
 ## Symlink Confirmation
@@ -466,7 +467,7 @@ Source: `github.com/v0lka/sp4rk/security/wrap.go` (wrapping), `core/prompts/inje
 - A mutating file-tool target resolving inside a workspace `.git` tree is a hard `git_internal_path` reason that escalates under any group policy — an `allow` policy can never execute it silently
 - HARD safety reasons (blocklist match, a flowsh criterion, SSRF, symlink escape, or an unassessable input) are ALWAYS routed through the unified confirmation funnel and consult the strict judge, under any group policy; a **canonical** reason — a fired control (`command_blacklist`, the flowsh controls `command_exfil_flow`/`command_privilege_escalation`/`command_system_write`/`command_destructive_outside_roots`/`command_download_cradle`, `ssrf_private_address`, `symlink_escape`) or an unassessable input (`command_analysis_unavailable`, `ssrf_protection_degraded`, `unassessable_url`, `unassessable_path`), matched by typed code — is deterministically backstopped to confirmation with `DisableJudge=true` on the **interactive paths** (`standard`/`assisted`): it never passes assisted-mode auto-approval there; the silent `judge` terminal is the one deliberate, audited exception. A non-canonical hard reason (an analysis-limitation question, most notably `command_unbounded_analysis` — the flowsh ⊤ criterion) may be cleared by a strict ALLOW. SOFT reasons (path containment, credential access) force confirmation unless the assisted-mode strict judge allows the call
 - `deny` group policy is NEVER bypassed (not by auto-approval, not by judge, not by symlink check, not by any mechanism)
-- **Silent mode** (`security.autonomy_mode: silent`, default `standard`) resolves the four interactive prompts without a human, but only from inside the confirmation funnel: `deny` groups and every deterministic pre-funnel gate (Judge ordering, auto-approval priority, containment, symlink escape, flowsh criteria) are unchanged, and a hard safety reason is never auto-executed by `allow` mode (it escalates to the strict judge). The canonical hard-reason backstop is scoped to the interactive paths — in silent `judge` mode the strict judge holds final authority over canonical reasons (its ALLOW executes, fully audited; every other outcome auto-denies fail-closed) — pinned by `TestSilentMode_JudgeTerminalCanonicalAllowExecutes`. See [Silent Mode](#silent-mode-unattended-operation)
+- **Silent mode** (`security.autonomy_mode: silent`, default `standard`) resolves the three interactive prompts without a human, but only from inside the confirmation funnel: `deny` groups and every deterministic pre-funnel gate (Judge ordering, auto-approval priority, containment, symlink escape, flowsh criteria) are unchanged, and a hard safety reason is never auto-executed by `allow` mode (it escalates to the strict judge). The canonical hard-reason backstop is scoped to the interactive paths — in silent `judge` mode the strict judge holds final authority over canonical reasons (its ALLOW executes, fully audited; every other outcome auto-denies fail-closed) — pinned by `TestSilentMode_JudgeTerminalCanonicalAllowExecutes`. See [Silent Mode](#silent-mode-unattended-operation)
 - **Every automatic decision emits a persisted, non-blocking `autonomy_decision` event** (`kind`, `mode`, `policy`, `verdict`, `tool`/`reason`, `justification`) — the auditable receipt of a gate a human would otherwise have answered (in silent mode, or an assisted-mode strict-judge DENY), so the trajectory stays reconstructable (ASI10)
 - For `allow`-policy tools implementing `ToolJudger`, the Judge runs BEFORE workspace/temp auto-approval — safety checks (blocklist, flowsh criteria, SSRF, path containment) NEVER bypassed by path-locality
 - The session workspace, temp directory, and auxiliary work directories are equal peers — any operation permitted in one is permitted in the others
@@ -516,7 +517,7 @@ security:
 
   # Silent-mode sub-policies (live only while autonomy_mode is "silent"). They
   # only replace the HUMAN ANSWER to a prompt (tool_confirm / step_limit /
-  # ask_user / review_prompt); they never weaken a gate: `deny` groups,
+  # ask_user); they never weaken a gate: `deny` groups,
   # containment, symlink/flowsh analysis and workspace auto-approval are
   # unchanged, and every automatic decision is recorded as a persisted
   # `autonomy_decision` session event (ASI10). In tool_confirm "judge" mode
@@ -528,7 +529,6 @@ security:
     tool_confirm:  { mode: judge }    # judge | allow | deny
     step_limit:    { mode: auto }     # auto | allow_once | allow_more | allow_always | deny | stop
     ask_user:      { mode: disable }  # disable | enable
-    review_prompt: { mode: suppress } # suppress | allow
 
   # Indirect prompt injection defense
   injection_defense:
