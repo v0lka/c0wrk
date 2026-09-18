@@ -710,8 +710,11 @@ func responseToAutonomyMode(mode string) (string, error) {
 // autonomy mode must use the security.autonomy_mode enum (an empty payload
 // value keeps the stored posture) and the silent-mode sub-policies are
 // validated against their enums; both are replaced
-// likewise; the pushed security state (including silent mode, and the ask_user
-// registration it controls) reaches live sessions without a restart. A
+// likewise. Delivery is split (per-task autonomy pinning): group policies,
+// auto-approval, the execute blocklist, and the ask_user registration reach
+// live sessions immediately, while the autonomy posture updates the shared
+// registry only — each session clone re-pins it at its next task launch
+// (fresh send or resume), so a running task is never flipped mid-run. A
 // changed execute-group blocklist re-registers the shell tool so the edit
 // applies without an app restart; the re-registration runs first and is
 // atomic, so its failure rolls the config back with no partially-applied

@@ -17,7 +17,7 @@ describe('autonomyDecisionContent', () => {
       reason: 'runs a shell command', justification: 'ASI05: unverified download',
     }
     expect(autonomyDecisionContent(d))
-      .toBe('Silent mode (judge): denied bash_exec (runs a shell command) — ASI05: unverified download')
+      .toBe('Silent mode («Judge» policy): denied bash_exec (runs a shell command) — ASI05: unverified download')
   })
 
   it('renders an assisted auto-deny (strict-judge DENY, no card) as a status-notice text', () => {
@@ -35,7 +35,16 @@ describe('autonomyDecisionContent', () => {
       justification: 'ran unattended: no hard safety reason',
     }
     expect(autonomyDecisionContent(d))
-      .toBe('Silent mode (allow): allowed write_file — ran unattended: no hard safety reason')
+      .toBe('Silent mode («Allow» policy): allowed write_file — ran unattended: no hard safety reason')
+  })
+
+  it('labels every sub-policy as a policy so it cannot be misread as the verdict', () => {
+    const d: AutonomyDecisionData = {
+      kind: 'tool_confirm', mode: 'silent', policy: 'deny', verdict: 'deny', tool: 'bash_exec',
+      reason: 'runs a shell command', justification: 'sub-policy denial — fail-closed',
+    }
+    expect(autonomyDecisionContent(d))
+      .toBe('Silent mode («Deny» policy): denied bash_exec (runs a shell command) — sub-policy denial — fail-closed')
   })
 
   it('renders a step-limit circuit-breaker decision with the position', () => {

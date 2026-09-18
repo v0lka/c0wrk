@@ -78,9 +78,28 @@ channel the UI displays. `security.smart_approve` and `security.silent_mode.
 enabled` survive in documentation **only** as these legacy migration keys.
 
 The posture is a **plain value** validated at load and on every Settings save,
-pushed atomically to the shared builder registry and every per-session clone
-(`ToolRegistry.ApplySecurityState`), so a runtime change from Settings →
-Security reaches live sessions with **no restart**.
+delivered with **per-task pinning** (amended in place, pre-release; the
+original text promised an atomic push to every live per-session clone —
+"reaches live sessions with no restart" — which let a Settings save flip the
+posture of a task already running: enabling `silent` silently converted a
+live interactive session mid-run). A Settings save now updates the shared
+builder registry atomically (`ToolRegistry.ApplySecurityState`), but live
+per-session clones receive only the fail-closed half — group policies and
+auto-approval (`ToolRegistry.ApplyGroupPolicies`) — while the autonomy mode
+and the silent-mode sub-policies are **pinned at task launch**: each clone
+inherits the posture at creation and re-syncs it from the shared registry at
+every task-launch boundary (fresh sends and every resume path, via
+`ToolRegistry.RefreshAutonomyPosture`, called from the session manager). A
+task therefore always runs under the posture the user last saved before the
+task launched: enabling `silent` can never convert a task that already
+started interactive mid-run, and a paused task resumed after a Settings
+change runs under the current Settings — exactly like launching a new task.
+Two registration-scoped exceptions follow Settings immediately for every
+session (documented boundaries of the pinning, both fail-safe in the
+tightening direction): the execute blocklist (re-registered on the shared
+sp4rk registry the clones embed) and the `ask_user` tool's disabled form
+(`reconcileAskUser`) — the latter cannot be expressed per-session because
+the clones share one tool table.
 
 ### D2. Silent mode sits *inside* the confirmation funnel, never above it
 

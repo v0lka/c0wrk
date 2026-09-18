@@ -56,6 +56,59 @@ describe('parseSegments', () => {
     expect(file.startLine).toBeUndefined()
   })
 
+  // --- @'quoted path' form (canonical for paths with spaces) ---
+
+  it("parses @'my file.go' with spaces", () => {
+    const segs = parseSegments("@'my file.go'")
+    expect(segs).toHaveLength(1)
+    const file = segs[0]!
+    expect(file.type).toBe('file')
+    expect(file.path).toBe('my file.go')
+    expect(file.startLine).toBeUndefined()
+  })
+
+  it("parses @'my file.go' inside prose without splitting on inner spaces", () => {
+    const segs = parseSegments("see @'my file.go' here")
+    expect(segs).toHaveLength(3)
+    expect(segs[0]).toMatchObject({ type: 'text', content: 'see ' })
+    expect(segs[1]).toMatchObject({ type: 'file', path: 'my file.go' })
+    expect(segs[2]).toMatchObject({ type: 'text', content: ' here' })
+  })
+
+  it("parses a line anchor after the closing quote (@'f.go'#L20-L36)", () => {
+    const segs = parseSegments("@'my file.go'#L20-L36")
+    expect(segs).toHaveLength(1)
+    const file = segs[0]!
+    expect(file.type).toBe('file')
+    expect(file.path).toBe('my file.go')
+    expect(file.startLine).toBe(20)
+  })
+
+  it("parses a line anchor inside the quotes (@'f.go#L20')", () => {
+    const segs = parseSegments("@'my file.go#L20'")
+    expect(segs).toHaveLength(1)
+    const file = segs[0]!
+    expect(file.type).toBe('file')
+    expect(file.path).toBe('my file.go')
+    expect(file.startLine).toBe(20)
+  })
+
+  it('parses the legacy escaped-space form unchanged', () => {
+    const segs = parseSegments('@my\\ file.go')
+    expect(segs).toHaveLength(1)
+    const file = segs[0]!
+    expect(file.type).toBe('file')
+    expect(file.path).toBe('my file.go')
+  })
+
+  it('does NOT capture a #agent mention glued inside a quoted file ref', () => {
+    // A quoted path may contain a word that looks like an agent mention; the
+    // '#' there has no preceding whitespace and must stay part of the file.
+    const segs = parseSegments("@'dir/my #stuff file.go'")
+    expect(segs).toHaveLength(1)
+    expect(segs[0]).toMatchObject({ type: 'file', path: 'dir/my #stuff file.go' })
+  })
+
   it('parses /skill-name unchanged', () => {
     const segs = parseSegments('/skill-name')
     expect(segs).toHaveLength(1)

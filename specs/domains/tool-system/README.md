@@ -59,7 +59,7 @@ core ToolRegistry.Execute(ctx, name, input)
 ├─ 5. PostExecuteHook deferred (runs on every later return path)
 ├─ 6. PreExecuteHook (blocking gate, e.g., index ready)
 ├─ 7. Group policy == deny? → return error result (hard block, names the group)
-├─ 8. Gather safety signals once: for shell tools, attach the deterministic flowsh analysis first (AttachShellAnalysis → sdktools.AnalyzeShellCommandForJudge → WithShellAnalysis; the SDK Judge reads the criteria C1–C8 from ctx), then collect the tool Judge outcome (hard: blocklist / flowsh criteria / SSRF; soft: path containment, credential access) + symlink analysis (escape/unresolvable = hard; in-roots = not a concern)
+├─ 8. Gather safety signals once: for shell tools, attach the deterministic flowsh analysis first (AttachShellAnalysis → sdktools.AnalyzeShellCommandForJudge → WithShellAnalysis; the SDK Judge reads the criteria C1–C8 from ctx), then collect the tool Judge outcome (hard: blocklist / flowsh criteria / SSRF; soft: path containment, credential access) + symlink analysis (escape = hard; in-roots = not a concern; expansion suspicion removed — ADR-054)
 └─ 9. Branch on the tool's GROUP policy:
       ├─ allow → hard reason ⇒ smartApproveOrConfirm (Hard) — the unified funnel,
       │           gated by the autonomy mode (security.autonomy_mode):
