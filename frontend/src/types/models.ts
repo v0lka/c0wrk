@@ -590,25 +590,56 @@ export interface SecurityGroupPolicy {
    * Regex patterns of shell commands forced to confirmation; execute group
    * only. Present-but-null for the other groups (the backend serializes the
    * key unconditionally so the execute group's explicit-empty choice
-   * survives the round trip); the execute group always carries a non-null
-   * list — the effective defaults when unset.
+   * survives the round trip). Null and an empty list both mean "no
+   * patterns" — the blocklist is user-authored and empty by default.
    */
-  blacklist?: string[] | null
+  blocklist?: string[] | null
+}
+
+/**
+ * security.autonomy_mode — the unified autonomy posture replacing the former
+ * Smart Approve flag + silent-mode master switch. Mirrors the backend enum
+ * (config.AutonomyMode*): "standard" (every prompt reaches a human),
+ * "assisted" (the strict judge resolves escalated calls), "silent"
+ * (unattended operation via the silent_mode sub-policies).
+ */
+export type AutonomyMode = 'standard' | 'assisted' | 'silent'
+
+/** One silent-mode sub-policy: a Mode drawn from that sub-policy's enum. */
+export interface SilentSubPolicy {
+  mode: string
+}
+
+/**
+ * security.silent_mode — the silent-mode sub-policy container. It has no
+ * master switch: the sub-policies are live only while the autonomy mode is
+ * "silent" (see AutonomyMode) and inert otherwise. Mirrors the backend
+ * SilentModeResponse.
+ */
+export interface SilentModeSettings {
+  tool_confirm: SilentSubPolicy
+  step_limit: SilentSubPolicy
+  ask_user: SilentSubPolicy
+  review_prompt: SilentSubPolicy
 }
 
 export interface SecuritySettingsResponse {
   /** The seven configurable tool groups (the reserved "system" group is never sent). */
   groups: Record<string, SecurityGroupPolicy>
   auto_approve_workspace_writes: boolean
-  smart_approve: boolean
+  /**
+   * The unified autonomy posture (security.autonomy_mode). Replaces the
+   * former smart_approve flag and the silent_mode.enabled master switch.
+   */
+  autonomy_mode: AutonomyMode
   /** Read-only: whether the strict judge is operational. Sent by the backend. */
   judge_available?: boolean
   /**
-   * Read-only: the shipped default execute-blacklist patterns, sent by the
-   * backend so the settings UI can offer a one-click restore. Saving them
-   * lands the config back in the track-defaults state (store-as-unset).
+   * Silent-mode posture. The backend always sends it; it is optional here so a
+   * payload without it still type-checks (consumers fall back to the documented
+   * defaults). It must be echoed back on every save or the update would reset it.
    */
-  execute_blacklist_defaults?: string[]
+  silent_mode?: SilentModeSettings
 }
 
 // --- Model Profiles profiles ---

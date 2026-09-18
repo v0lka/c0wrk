@@ -253,6 +253,9 @@ func (p *themeCSSParser) parseCustomProperty() error {
 	if !strings.HasPrefix(prop, "--") {
 		return fmt.Errorf("theme CSS: %q is not a custom property (names start with --)", prop)
 	}
+	if containsEscape(prop) {
+		return fmt.Errorf("theme CSS: escape sequences are not allowed in custom property names (%s)", quote(truncate(prop)))
+	}
 
 	tok = p.next()
 	if tok.Type != scanner.TokenChar || tok.Value != ":" {
@@ -329,8 +332,14 @@ func (p *themeCSSParser) parseValue() (value string, closedBlock bool, err error
 			continue
 		case scanner.TokenIdent, scanner.TokenHash, scanner.TokenNumber,
 			scanner.TokenPercentage, scanner.TokenDimension, scanner.TokenString:
+			if containsEscape(tok.Value) {
+				return "", false, errThemeEscape(tok.Value, "declaration values")
+			}
 			appendTok(tok.Value)
 		case scanner.TokenURI:
+			if containsEscape(tok.Value) {
+				return "", false, errThemeEscape(tok.Value, "declaration values")
+			}
 			if !isDataURLToken(tok.Value) {
 				return "", false, fmt.Errorf("external resource reference %s is not allowed (only data: URLs)", quote(truncate(tok.Value)))
 			}
@@ -391,8 +400,14 @@ func (p *themeCSSParser) parseFunctionArgs(b *strings.Builder, pendingSpace *boo
 			continue
 		case scanner.TokenIdent, scanner.TokenHash, scanner.TokenNumber,
 			scanner.TokenPercentage, scanner.TokenDimension, scanner.TokenString:
+			if containsEscape(tok.Value) {
+				return errThemeEscape(tok.Value, "function arguments")
+			}
 			appendTok(tok.Value)
 		case scanner.TokenURI:
+			if containsEscape(tok.Value) {
+				return errThemeEscape(tok.Value, "function arguments")
+			}
 			if !isDataURLToken(tok.Value) {
 				return fmt.Errorf("external resource reference %s is not allowed (only data: URLs)", quote(truncate(tok.Value)))
 			}
@@ -424,6 +439,23 @@ func (p *themeCSSParser) parseFunctionArgs(b *strings.Builder, pendingSpace *boo
 			return fmt.Errorf("token %s is not allowed in function arguments", quote(truncate(tok.Value)))
 		}
 	}
+}
+
+// containsEscape reports whether a token value still carries a raw CSS escape
+// sequence (a backslash followed by hex digits or any character). The
+// tokenizer keeps escapes verbatim in IDENT/STRING/URL token values, so a
+// backslash in a KEPT token means the token's text was never validated in its
+// decoded form: the webview would decode `\7d ` back to `}` (or any other
+// structural character) after the canonical output is injected, closing the
+// :root block early and re-enabling arbitrary rule injection — including
+// external url() fetches — from inside a "validated" theme. The theme surface
+// only needs literal tokens, so any escape is rejected outright (fail closed).
+func containsEscape(v string) bool { return strings.Contains(v, "\\") }
+
+// errThemeEscape builds the rejection error for a kept token that carries a
+// CSS escape sequence; where names the position the token appeared in.
+func errThemeEscape(value, where string) error {
+	return fmt.Errorf("token %s contains a CSS escape sequence, which is not allowed in theme %s", quote(truncate(value)), where)
 }
 
 // isDataURLToken reports whether a URI token references a data: URL. The

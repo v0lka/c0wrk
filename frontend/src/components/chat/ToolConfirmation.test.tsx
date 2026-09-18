@@ -85,18 +85,18 @@ describe('ToolConfirmation — confirmation reason', () => {
     expect(text).toContain('Allow Once')
   })
 
-  it('renders the confirmation reason with the matched blacklist pattern', () => {
-    // A shell command that matched a security.groups.execute blacklist pattern
+  it('renders the confirmation reason with the matched blocklist pattern', () => {
+    // A shell command that matched a security.groups.execute blocklist pattern
     // is forced to confirmation; the reason names the matched pattern so the
     // user can see WHICH rule fired.
     render(
       reasonItem(
-        'command "rm -rf /" matched blacklist pattern "rm\\s+-rf\\s+/" — confirmation required',
+        'command "rm -rf /" matched blocklist pattern "rm\\s+-rf\\s+/" — confirmation required',
       ),
     )
     const text = container.textContent ?? ''
     expect(text).toContain('Why approval is needed')
-    expect(text).toContain('matched blacklist pattern')
+    expect(text).toContain('matched blocklist pattern')
     expect(text).toContain('rm -rf /')
   })
 

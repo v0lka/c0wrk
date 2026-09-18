@@ -28,14 +28,12 @@ func TestShellExecToolName_Unix(t *testing.T) {
 	}
 }
 
-// TestShellExecTool_UnixHasNoAliasSupplement verifies the Unix counterpart of
-// the Windows alias supplement (shelltool_windows.go): newShellExecTool must
-// pass the configured blacklist through unchanged — no hidden PowerShell
-// alias patterns — so the routine Unix idiom `rm -r -f <dir>` (and its GNU
-// long-option spelling, and alias tokens inside compounds) stays a
-// policy-gated call rather than a hard blacklist confirmation. The unified
-// default list's own cross-dialect safety is pinned in
-// backend/config.TestDefaultExecuteGroupBlacklist_CrossDialectSafe.
+// TestShellExecTool_UnixHasNoAliasSupplement verifies that newShellExecTool
+// compiles in no hidden patterns: the blocklist is user-authored and empty by
+// default (no predefined list ships any more, and the Windows alias
+// supplement is gone), so the routine Unix idiom `rm -r -f <dir>` (and its
+// GNU long-option spelling, and alias tokens inside compounds) stays a
+// policy-gated call rather than a hard blocklist confirmation.
 func TestShellExecTool_UnixHasNoAliasSupplement(t *testing.T) {
 	tool, err := newShellExecTool(nil, builtins.DefaultBashTimeouts())
 	if err != nil {
@@ -58,7 +56,7 @@ func TestShellExecTool_UnixHasNoAliasSupplement(t *testing.T) {
 		}
 		outcome := judger.Judge(context.Background(), input)
 		// JudgeSeverityHard is the zero value (meaningless on Allow=true), so
-		// a hard blacklist match is precisely: not allowed, with a reason,
+		// a hard blocklist match is precisely: not allowed, with a reason,
 		// classified hard.
 		if !outcome.Allow && outcome.Reason != "" && outcome.Severity == sdktools.JudgeSeverityHard {
 			t.Errorf("Unix constructor must not hard-block %q: reason=%q", cmd, outcome.Reason)
@@ -66,11 +64,11 @@ func TestShellExecTool_UnixHasNoAliasSupplement(t *testing.T) {
 	}
 }
 
-// TestUpdateShellTool_ReplacesBlacklist verifies that UpdateShellTool
-// re-registers the shell tool with a new compiled-in blacklist: after the
-// call, a command matching the new pattern is reported by the tool's Judge as
-// a hard escalation, and an invalid pattern leaves the previous tool intact.
-func TestUpdateShellTool_ReplacesBlacklist(t *testing.T) {
+// TestUpdateShellTool_ReplacesBlocklist verifies that UpdateShellTool
+// re-registers the shell tool with a new compiled-in blocklist: after the
+// call, the registered tool reflects the replacement list, and an invalid
+// pattern leaves the previous tool intact.
+func TestUpdateShellTool_ReplacesBlocklist(t *testing.T) {
 	registry := NewToolRegistry()
 	if err := RegisterBuiltinTools(registry, BuiltinToolsConfig{
 		BashTimeouts: builtins.BashTimeouts{MaxTimeout: 30 * time.Second},
@@ -78,7 +76,7 @@ func TestUpdateShellTool_ReplacesBlacklist(t *testing.T) {
 		t.Fatalf("RegisterBuiltinTools: %v", err)
 	}
 
-	// An empty replacement (nil blacklist) removes every pattern.
+	// An empty replacement (nil blocklist) removes every pattern.
 	if err := UpdateShellTool(registry, nil, builtins.BashTimeouts{MaxTimeout: 30 * time.Second}); err != nil {
 		t.Fatalf("UpdateShellTool: unexpected error: %v", err)
 	}
@@ -92,7 +90,7 @@ func TestUpdateShellTool_ReplacesBlacklist(t *testing.T) {
 		t.Fatalf("UpdateShellTool with a valid pattern: unexpected error: %v", err)
 	}
 	if _, ok := registry.Get("bash_exec"); !ok {
-		t.Fatal("bash_exec not registered after a blacklist update")
+		t.Fatal("bash_exec not registered after a blocklist update")
 	}
 
 	// An invalid pattern must fail and leave the previously registered

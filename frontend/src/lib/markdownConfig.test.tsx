@@ -90,9 +90,9 @@ describe('Markdown heading anchors', () => {
 
   it('keeps rehype-slug ids so explicit #anchor links have targets', async () => {
     await render('## Sub Section\n')
-    // rehype-sanitize's defaultSchema prefixes ids with 'user-content-' to
-    // prevent DOM clobbering — assert the exact rendered value.
-    expect(container.querySelector('h2')?.id).toBe('user-content-sub-section')
+    // Ids stay raw (NOT clobber-prefixed): the explicit `[jump](#sub-section)`
+    // anchor asserted below resolves against exactly this value.
+    expect(container.querySelector('h2')?.id).toBe('sub-section')
   })
 
   it('still renders explicit [#anchor](#…) links as real anchors', async () => {

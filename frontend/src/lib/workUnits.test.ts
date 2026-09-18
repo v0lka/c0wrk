@@ -90,6 +90,26 @@ describe('reconcileWorkUnits', () => {
     reconcileWorkUnits(SESSION, [{ step_id: 'del_live', status: 'running' }], snapshotReadAt)
     expect(useChatStore.getState().workUnitStatus[SESSION]).toEqual({ del_live: 'interrupted' })
   })
+
+  // Regression (finding 29): a fresh live relaunch fires clearWorkUnitStep for
+  // a step whose overlay entry is already absent (the prior run's snapshot
+  // holds it paused/interrupted, but no live entry exists). The clear must
+  // STILL stamp workUnitEventAt so a status read issued BEFORE the launch
+  // cannot re-add the stale entry — the no-entry path is a live write too.
+  it('a clear of a step with no overlay entry still outranks an older snapshot read', () => {
+    const snapshotReadAt = Date.now() - 1000
+    const statusBefore = useChatStore.getState().workUnitStatus
+    // No overlay entry exists for the step; the fresh launch clears it.
+    useChatStore.getState().clearWorkUnitStep(SESSION, 'del_relaunch')
+    // The no-entry clear stamped the live-write time for the step...
+    expect(useChatStore.getState().workUnitEventAt[SESSION]?.['del_relaunch']).toBeGreaterThan(snapshotReadAt)
+    // ...while leaving the workUnitStatus map reference untouched (React #185).
+    expect(useChatStore.getState().workUnitStatus).toBe(statusBefore)
+    // The in-flight snapshot (read before the launch) still records it paused.
+    reconcileWorkUnits(SESSION, [{ step_id: 'del_relaunch', status: 'paused' }], snapshotReadAt)
+    // The older snapshot could not re-add the entry.
+    expect(useChatStore.getState().workUnitStatus[SESSION]).toEqual({})
+  })
 })
 
 describe('groupMessages with the work-unit overlay', () => {

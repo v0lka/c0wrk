@@ -367,6 +367,8 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		Telemetry:                 cfg.Telemetry,
 		HybridConfig:              cfg.HybridConfig,
 		MaxFileSize:               cfg.MaxFileSize,
+		MaxChunkSize:              maxChunkSize,
+		MaxChunksPerFile:          maxChunksPerFile,
 		EmbeddingBatchSize:        cfg.EmbeddingBatchSize,
 		EmbeddingCacheFingerprint: cfg.EmbeddingCacheFingerprint,
 		EmbeddingDimension:        cfg.EmbeddingDimension,
@@ -799,17 +801,7 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 	gitMon, monErr := NewGitMonitor(
 		workspacePath,
 		func(newBranch string) {
-			go func() {
-				if bsErr := indexer.HandleBranchSwitch(indexCtx, workspacePath, newBranch); bsErr != nil {
-					m.logger.Warn("branch switch indexing failed", "error", bsErr)
-					return
-				}
-				// HandleBranchSwitch runs a FULL index when the target branch's
-				// collection is empty; return that spike to the OS like the
-				// other full-pass call sites. A no-op switch (existing
-				// collection) just pays one extra scavenge on a rare event.
-				m.freeOSMemoryAfterFullIndex()
-			}()
+			go m.handleBranchSwitch(indexCtx, indexer, workspacePath, newBranch)
 		},
 		m.logger,
 	)
@@ -1132,6 +1124,28 @@ func (m *Manager) NotReadyError() error {
 // cycle and would stall every lock holder.
 func (m *Manager) freeOSMemoryAfterFullIndex() {
 	freeOSMemory()
+}
+
+// handleBranchSwitch reacts to a branch change reported by the git monitor:
+// it delegates to the indexer's HandleBranchSwitch and returns the transient
+// allocation spike of a completed FULL pass to the OS (see
+// freeOSMemoryAfterFullIndex). The scavenge is gated on the switch actually
+// having run a full pass — matching the two sibling call sites, which also
+// require a successful full pass: the common switch (an already-indexed
+// target branch, including the same-branch no-op where SwitchBranch
+// early-returns and the incremental pass finds nothing to do) allocates
+// almost nothing, and an unconditional stop-the-world GC per branch hop
+// would freeze the whole app (in-flight LLM streaming included) for no
+// memory win.
+func (m *Manager) handleBranchSwitch(ctx context.Context, indexer *Indexer, workspacePath, newBranch string) {
+	fullPass, bsErr := indexer.HandleBranchSwitch(ctx, workspacePath, newBranch)
+	if bsErr != nil {
+		m.logger.Warn("branch switch indexing failed", "error", bsErr)
+		return
+	}
+	if fullPass {
+		m.freeOSMemoryAfterFullIndex()
+	}
 }
 
 // Reindex triggers a full reindex of the vector index for the active project.

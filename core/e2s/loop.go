@@ -791,15 +791,21 @@ func (l *Loop) dispatch(ctx context.Context, turn int, thought string, call Step
 		truncated = untrustedWrap(call.Action.Tool, truncated)
 	}
 
-	// The event preview mirrors the raw (pre-wrap) result, matching the
-	// Conductor: the <untrusted-content> boundary belongs to the model context,
-	// not the UI preview — including the batch path, whose per-sub-call
-	// wrappers are model-context boundaries, not UI text.
+	// The event preview mirrors the raw (pre-wrap) result IN FULL, matching the
+	// Conductor (executor_run passes the whole observation as the preview): the
+	// <untrusted-content> boundary belongs to the model context, not the UI
+	// preview — including the batch path, whose per-sub-call wrappers are
+	// model-context boundaries, not UI text. The preview must NOT be capped
+	// here: the frontend renders the "N chars" badge from result_len (the full
+	// observation's length) beside the preview body, so a capped preview makes
+	// the card self-contradictory and leaves the tail of the result unreachable
+	// (a "Show more" that reveals nothing). Truncation for the MODEL context
+	// (truncated, MaxObservationChars + cache-on-truncate) happens above and is
+	// untouched.
 	if rawPreview == "" {
 		rawPreview = observation
 	}
-	preview := strutil.TruncateUTF8(rawPreview, 200)
-	l.emit(func(e Emitter) { e.ToolResult(turn, 0, len(observation), preview, isError) })
+	l.emit(func(e Emitter) { e.ToolResult(turn, 0, len(observation), rawPreview, isError) })
 
 	return agent.Step{
 		Thought:     thought,

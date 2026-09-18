@@ -13,6 +13,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
+// The failure-path test below (Issue 57) makes the directory listing reject
+// on purpose; the real logger would print "Failed to list the paper
+// directory: …". That output is the expected behavior under test, not a
+// regression — mock the logger to keep the suite output clean.
+vi.mock('@/lib/logger', () => ({
+  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}))
+
 const { listDirectoryMock, readFileMock } = vi.hoisted(() => ({
   listDirectoryMock: vi.fn(),
   readFileMock: vi.fn(),

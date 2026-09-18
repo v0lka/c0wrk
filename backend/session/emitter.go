@@ -113,6 +113,11 @@ type EventEmitter struct {
 	// Shared agent quality metrics (shared across WithPlanStepID copies)
 	metrics *metricsState
 
+	// Shared host-side recent-execution window (shared across WithPlanStepID
+	// copies): the bounded trajectory + counters the step-limit judge reasons
+	// over in silent mode. See execution_window.go.
+	window *executionWindow
+
 	// Tool call ID generation (shared across WithPlanStepID copies)
 	toolCallIDs *toolCallIDGen
 
@@ -145,6 +150,7 @@ func NewEventEmitter(sessionID string, emit func(Event)) *EventEmitter {
 		tokens:        &tokenState{lastFillStatus: "ok"},
 		activity:      &activityState{},
 		metrics:       &metricsState{},
+		window:        &executionWindow{},
 		toolCallIDs:   &toolCallIDGen{epoch: time.Now().UnixMilli()},
 		isSessionRoot: true,
 	}
@@ -278,6 +284,7 @@ func (e *EventEmitter) WithPlanStepID(id string) core.Emitter {
 		tokens:                 e.tokens,
 		activity:               e.activity,
 		metrics:                e.metrics,
+		window:                 e.window,
 		toolCallIDs:            e.toolCallIDs,
 		logger:                 e.logger,
 		attachmentNameResolver: e.attachmentNameResolver,
@@ -296,6 +303,7 @@ func (e *EventEmitter) WithRetryAttempt(attempt int) core.Emitter {
 		tokens:                 e.tokens,
 		activity:               e.activity,
 		metrics:                e.metrics,
+		window:                 e.window,
 		toolCallIDs:            e.toolCallIDs,
 		logger:                 e.logger,
 		attachmentNameResolver: e.attachmentNameResolver,
@@ -580,6 +588,26 @@ func (e *EventEmitter) JudgeFinished(toolName string) {
 	})
 }
 
+// AutonomyDecision emits an automatic (no-human) security decision taken under
+// an automatic autonomy posture (assisted or silent), so the gate a human
+// would otherwise have answered is recorded as a non-blocking, auditable
+// notice (OWASP ASI10). Unlike the strict-judge phase telemetry
+// (JudgeStarted/JudgeFinished, which only say a judge RAN), this carries WHAT
+// was decided: kind, mode, policy, verdict, tool/reason and justification.
+// Persisted — the trajectory must stay reconstructable.
+func (e *EventEmitter) AutonomyDecision(payload AutonomyDecisionData) {
+	e.log().Debug("emitter: autonomy decision",
+		"sessionID", e.sessionID, "kind", payload.Kind,
+		"tool", payload.Tool, "verdict", payload.Verdict)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      EventAutonomyDecision,
+		Data:      payload,
+	})
+}
+
 // ToolConfirm emits a tool-confirmation request. The desktop confirm callback
 // routes the event through the live session emitter (via Manager.EmitToolConfirm)
 // so the activity tracker — and therefore the runtime-status snapshot read on
@@ -646,6 +674,7 @@ func (e *EventEmitter) ToolCall(stepNum, callIdx int, toolName, argsPreview, sou
 			}
 		}
 	}
+	e.window.recordToolCall(stepNum, toolName, argsPreview)
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "tool_call",
@@ -699,6 +728,7 @@ func (e *EventEmitter) ToolResult(stepNum, callIdx, resultLen int, preview strin
 	if toolCallID != "" {
 		data["tool_call_id"] = toolCallID
 	}
+	e.window.recordToolResult(stepNum, preview, isError)
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "tool_result",
@@ -710,6 +740,7 @@ func (e *EventEmitter) ToolResult(stepNum, callIdx, resultLen int, preview strin
 func (e *EventEmitter) StepComplete(stepNum int, duration time.Duration) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.window.recordStep(stepNum)
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "step_complete",
@@ -1088,6 +1119,7 @@ func (e *EventEmitter) E2SState(data map[string]any) {
 // These are internal diagnostics, not user-facing events.
 func (e *EventEmitter) ExecutorDiagnostic(stepNum int, event string, details map[string]any) {
 	e.metrics.observeDiagnostic(event)
+	e.window.recordDiagnostic(stepNum, event)
 	e.log().Debug("emitter: executor diagnostic",
 		"stepNum", stepNum,
 		"event", event,
@@ -1155,6 +1187,9 @@ func (e *EventEmitter) SetModelProfile(info ModelProfilesMetaInfo) {
 func (e *EventEmitter) EmitAgentMetrics(finish string) AgentMetricsData {
 	_, outputTokens := e.SessionTokenTotals()
 	data := e.metrics.snapshot(finish, outputTokens)
+	// The execution window covers the same span as agent_metrics: one task
+	// run. Reset it here so the next run starts from an empty trajectory.
+	e.window.reset()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.emitEvent(Event{
@@ -1163,6 +1198,26 @@ func (e *EventEmitter) EmitAgentMetrics(finish string) AgentMetricsData {
 		Data:      data,
 	})
 	return data
+}
+
+// ExecutionWindowSnapshot returns a copy of the session's recent-execution
+// window (trajectory + counters) together with the emitter's plan-progress
+// view. It is the host-side evidence source for the silent-mode step-limit
+// judge; the snapshot is immutable and safe to hand to a decision goroutine.
+func (e *EventEmitter) ExecutionWindowSnapshot() ExecutionWindowSnapshot {
+	e.mu.Lock()
+	planTotal := e.planTotalSteps
+	planDone := len(e.planCompletedSet)
+	planStep := e.planCurrentStepID
+	e.mu.Unlock()
+
+	return ExecutionWindowSnapshot{
+		Entries:   e.window.copyEntries(),
+		Counters:  e.window.copyCounters(),
+		PlanTotal: planTotal,
+		PlanDone:  planDone,
+		PlanStep:  planStep,
+	}
 }
 
 // StepTodoUpdate emits a step_todo_update event with the current checklist.

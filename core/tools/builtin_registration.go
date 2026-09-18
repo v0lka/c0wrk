@@ -21,7 +21,7 @@ type BuiltinToolsConfig struct {
 	WebFetchLimits  builtins.WebFetchLimits
 	WebSearchLimits builtins.WebSearchLimits
 	BashTimeouts    builtins.BashTimeouts
-	ShellBlacklist  []string
+	ShellBlocklist  []string
 
 	// Search provider configuration.
 	SearchProvider string
@@ -35,6 +35,18 @@ type BuiltinToolsConfig struct {
 	// AskUserFunc is the callback for the ask_user tool.
 	// If nil, the ask_user tool is not registered.
 	AskUserFunc AskUserFunc
+
+	// SilentMode is the security.silent_mode sub-policy posture. When the
+	// autonomy mode is silent AND AskUser is "disable" (see AskUserDisabled),
+	// the ask_user tool is registered with a nil callback, so a call resolves
+	// to the explicit "not available" result and the agent can never block on
+	// a question.
+	SilentMode SilentModeState
+
+	// AutonomyMode is the security.autonomy_mode posture
+	// (standard|assisted|silent). It decides whether the silent-mode
+	// sub-policies above are live (only "silent" activates them).
+	AutonomyMode string
 
 	// PlanApprovalFunc is the callback for the declare_plan tool's await_approval mode.
 	// If nil, declare_plan is still registered but await_approval mode returns an error.
@@ -60,13 +72,22 @@ type BuiltinToolsConfig struct {
 	MarkitdownPythonPath func() string
 }
 
+// AskUserDisabled reports whether the unattended posture is live AND its
+// ask_user sub-policy disables the tool (AutonomyModeSilent + "disable") —
+// the single predicate behind ask_user registration suppression, kept in
+// lockstep with the config-level SecurityConfig.AskUserDisabled and the
+// builder-level BuilderSecurityConfig.AskUserDisabled.
+func (c BuiltinToolsConfig) AskUserDisabled() bool {
+	return c.AutonomyMode == AutonomyModeSilent && c.SilentMode.AskUser == SilentAskUserDisable
+}
+
 // RegisterBuiltinTools creates and registers all built-in tools into the registry.
 func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error {
 	// Shell execution (bash_exec on Unix, posh_exec on Windows). The
 	// platform-specific constructor call lives in shelltool_{unix,windows}.go
 	// behind build tags, because sp4rk's bash.go and posh.go are mutually
 	// exclusive per OS.
-	shellTool, err := newShellExecTool(cfg.ShellBlacklist, cfg.BashTimeouts)
+	shellTool, err := newShellExecTool(cfg.ShellBlocklist, cfg.BashTimeouts)
 	if err != nil {
 		return fmt.Errorf("shell tool: %w", err)
 	}
@@ -128,9 +149,17 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 		registry.Register(builtins.NewVectorSearchTool(cfg.VectorSearchFunc, cfg.VectorSearchWaitFunc))
 	}
 
-	// Ask user (optional)
+	// Ask user. A nil AskUserFunc (no callback channel — e.g. CLI) means the
+	// tool is not registered at all. When silent mode's ask_user sub-policy
+	// disables it, the tool IS registered but with a nil callback: a call then
+	// resolves to the explicit "ask_user is not available in this mode" result
+	// — never blocking the agent — instead of surfacing a missing-tool error.
 	if cfg.AskUserFunc != nil {
-		registry.Register(NewAskUserTool(cfg.AskUserFunc))
+		askUser := cfg.AskUserFunc
+		if cfg.AskUserDisabled() {
+			askUser = nil
+		}
+		registry.Register(NewAskUserTool(askUser))
 	}
 
 	// Conductor tools — delegate, cancel_delegation, reflect read their
@@ -214,13 +243,15 @@ func UpdateSearchTool(registry *ToolRegistry, providerName, apiKey string, limit
 }
 
 // UpdateShellTool re-registers the shell-execution tool (bash_exec on Unix,
-// posh_exec on Windows) with an updated command blacklist. The blacklist is
+// posh_exec on Windows) with an updated command blocklist. The blocklist is
 // compiled into the tool at construction time, so a runtime edit of
-// security.groups.execute.blacklist takes effect by replacing the registered
-// instance — mirroring UpdateSearchTool. A pattern that fails to compile is
+// security.groups.execute.blocklist takes effect by replacing the registered
+// instance — mirroring UpdateSearchTool. The list is presence-based and empty
+// by default: no predefined patterns ship, so a nil or empty list registers
+// the tool with no compiled-in patterns. A pattern that fails to compile is
 // reported as an error and leaves the previously registered tool in place.
-func UpdateShellTool(registry *ToolRegistry, blacklist []string, timeouts builtins.BashTimeouts) error {
-	shellTool, err := newShellExecTool(blacklist, timeouts)
+func UpdateShellTool(registry *ToolRegistry, blocklist []string, timeouts builtins.BashTimeouts) error {
+	shellTool, err := newShellExecTool(blocklist, timeouts)
 	if err != nil {
 		return fmt.Errorf("shell tool: %w", err)
 	}

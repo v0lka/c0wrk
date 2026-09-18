@@ -40,6 +40,7 @@ vi.mock('@/hooks/useSessionLoader', () => ({ useSessionLoader: () => {} }))
 vi.mock('@/hooks/useSessionEvents', () => ({ useSessionEvents: () => {} }))
 vi.mock('@/hooks/useBackgroundSessionWatcher', () => ({ useBackgroundSessionWatcher: () => {} }))
 vi.mock('@/stores/activeSessionsStore', () => ({ useActiveSessionsRefresh: () => {} }))
+vi.mock('@/hooks/useAutonomyLoader', () => ({ useAutonomyLoader: () => {} }))
 
 // --- api ---
 // onGlobalEvent backs api/notifications' notification_clicked subscription
@@ -52,6 +53,14 @@ vi.mock('@/api/runtime', () => ({
   isWailsReady: vi.fn(() => false),
 }))
 vi.mock('@/api/projects', () => ({ listProjects: vi.fn().mockResolvedValue([]) }))
+// The App mount also fires two more RPC paths that must stay quiet here:
+// the theme-catalog refresh (App → themeStore.loadThemes → listThemes) and
+// the vector-index status seed (App → useVectorIndexStatus). Both go through
+// getApp() from '@/api/runtime', which the mock above does not define — the
+// resulting "[vitest] No 'getApp' export" errors are pure output noise for a
+// test about audio-unlock wiring, so both API modules are stubbed instead.
+vi.mock('@/api/themes', () => ({ listThemes: vi.fn().mockResolvedValue([]) }))
+vi.mock('@/api/vector', () => ({ getVectorIndexStatus: vi.fn().mockResolvedValue(null) }))
 
 // --- stores: direct-field selector mocks, no session active ---
 vi.mock('@/stores/sessionStore', () => ({

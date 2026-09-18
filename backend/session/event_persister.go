@@ -187,6 +187,12 @@ func (p *EventPersister) Persist(evt Event) {
 		role = "ask_user"
 	case "step_limit":
 		role = "step_limit"
+	case EventAutonomyDecision:
+		// Automatic (no-human) security decisions are persisted so the audit
+		// trail survives a reload — the trajectory must stay reconstructable
+		// (OWASP ASI10). Unlike tool_judge_started/finished (transient activity
+		// telemetry), this row is durable: it records WHAT was auto-decided.
+		role = EventAutonomyDecision
 	case "task_cancelled":
 		role = "task_cancelled"
 	case "step_retry":
@@ -240,7 +246,13 @@ func (p *EventPersister) Persist(evt Event) {
 		// Work-unit settlement is transient: the durable source is the unit
 		// ledger surfaced via GetSessionRuntimeStatus.work_units, so persisting
 		// this event would only add a dead row on reload.
-		"work_unit_settled":
+		"work_unit_settled",
+		// E2S execution-state Σ snapshots are live-only UI events: the
+		// frontend Execution State panel renders them in real time and has no
+		// persisted restore, so a row would store the full Σ JSON as an
+		// event_unknown message (content = metadata) that renders as garbage
+		// on reload — one dead row per E2S turn.
+		"e2s_state":
 		return // transient — no persistence needed
 	case "plan_review_ready":
 		role = "plan_review"

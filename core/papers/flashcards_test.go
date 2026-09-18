@@ -280,3 +280,139 @@ func TestApplyReviewRejections(t *testing.T) {
 		t.Error("a deck with no review log was not rejected")
 	}
 }
+
+// TestApplyReviewPartialReviewLogHeader pins the collision-safe positional
+// fallback (review finding 5): a hand-edited review log whose header omits a
+// canonical column must never write a field into another field's column. The
+// grade lands in the Grade column; a field with no column at all (no Date
+// column) is omitted rather than written into the wrong cell — so a replay of
+// the log never reads a date as a grade or loses the recorded grade.
+func TestApplyReviewPartialReviewLogHeader(t *testing.T) {
+	cases := []struct {
+		name      string
+		logHeader string
+		wantRow   string
+	}{
+		{
+			name:      "id and grade only",
+			logHeader: "| ID | Grade |\n| - | - |",
+			// No Date column: the date is omitted, not written under Grade.
+			wantRow: "| A1 | good |",
+		},
+		{
+			name:      "id, grade, and next due",
+			logHeader: "| ID | Grade | Next due |\n| - | - | - |",
+			// No Date column: grade and next-due land in their named columns.
+			wantRow: "| A1 | good | 2024-03-02 |",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			content := "| ID | Front | Back |\n| - | - | - |\n| A1 | q | a |\n\n" + tc.logHeader + "\n"
+			out, err := ApplyReview(content, "A1", GradeGood, "2024-03-01")
+			if err != nil {
+				t.Fatalf("ApplyReview: %v", err)
+			}
+			if !strings.Contains(out, tc.wantRow) {
+				t.Errorf("appended review row:\n got %q\nwant it to contain %q\nfull document:\n%s", out, tc.wantRow, out)
+			}
+			// The appended row must replay as the graded review (never a
+			// grade-less row or a date folded into the grade).
+			deck := ParseFlashcards(out)
+			if len(deck.Reviews) != 1 || deck.Reviews[0].Grade != GradeGood {
+				t.Errorf("reviews after append = %+v, want exactly one entry graded good", deck.Reviews)
+			}
+		})
+	}
+}
+
+// TestApplyReviewPartialLogOmitsIDColumn pins the same fallback collision for
+// a log that omits the ID column (review finding 5): the card id must not be
+// written into the first physical column when that column names another
+// field — every field that resolves by name lands in its own column.
+func TestApplyReviewPartialLogOmitsIDColumn(t *testing.T) {
+	content := "| ID | Front | Back |\n| - | - | - |\n| A1 | q | a |\n\n| Date | Grade | Next due |\n| - | - | - |\n"
+	out, err := ApplyReview(content, "A1", GradeGood, "2024-03-01")
+	if err != nil {
+		t.Fatalf("ApplyReview: %v", err)
+	}
+	// No id column: the id is omitted; date, grade, and next-due keep their
+	// own named columns (a date masquerading as a grade would break replay).
+	want := "| 2024-03-01 | good | 2024-03-02 |"
+	if !strings.Contains(out, want) {
+		t.Errorf("appended review row:\n got %q\nwant it to contain %q\nfull document:\n%s", out, want, out)
+	}
+	deck := ParseFlashcards(out)
+	if len(deck.Reviews) != 1 || deck.Reviews[0].Grade != GradeGood || deck.Reviews[0].Date != "2024-03-01" {
+		t.Errorf("reviews after append = %+v, want one entry dated 2024-03-01 graded good", deck.Reviews)
+	}
+}
+
+// TestParseFlashcardsLooseColumnHeaders pins the frontend parity for
+// substring column matching (review finding 36): the frontend twin's
+// unanchored /front|question|prompt/ and /back|answer/ accept `Questions` and
+// `Answers` headers, so the Go parser must too — the two parsers read the
+// same flashcards.md.
+func TestParseFlashcardsLooseColumnHeaders(t *testing.T) {
+	deck := ParseFlashcards("| Questions | Answers |\n| - | - |\n| What replaces recurrence? | Self-attention |\n")
+	if len(deck.Cards) != 1 {
+		t.Fatalf("cards = %+v, want 1 (Questions/Answers is a cards header)", deck.Cards)
+	}
+	if deck.Cards[0].Front != "What replaces recurrence?" || deck.Cards[0].Back != "Self-attention" {
+		t.Errorf("card = %+v, want front/back resolved from the Questions/Answers columns", deck.Cards[0])
+	}
+}
+
+// TestIsCardsReviewHeaderLooseMatch drives the deck/review predicates with
+// the header variants the frontend twin accepts by substring (review finding
+// 36) plus the anchored ones it rejects, so the two matchers cannot drift.
+func TestIsCardsReviewHeaderLooseMatch(t *testing.T) {
+	cases := []struct {
+		header []string
+		cards  bool
+		review bool
+	}{
+		{[]string{"ID", "Front", "Back"}, true, false},
+		{[]string{"Questions", "Answers"}, true, false},
+		{[]string{"Prompt", "Answer", "Tag"}, true, false},
+		{[]string{"ID", "Date", "Grade", "Next due"}, false, true},
+		{[]string{"Grades", "Dates"}, false, true},
+		{[]string{"Rating", "When"}, false, true},
+		{[]string{"Results", "Due"}, false, true},
+		{[]string{"Field", "Value"}, false, false},
+		// Anchored tokens still reject embedded forms, mirroring the
+		// frontend's `\b…\b` alternatives.
+		{[]string{"Tags", "Reference"}, false, false},
+		{[]string{"Card ID", "Front", "Back"}, true, false}, // id stays start-anchored; front/back loose
+	}
+	for _, tc := range cases {
+		if got := isCardsHeader(tc.header); got != tc.cards {
+			t.Errorf("isCardsHeader(%v) = %v, want %v", tc.header, got, tc.cards)
+		}
+		if got := isReviewHeader(tc.header); got != tc.review {
+			t.Errorf("isReviewHeader(%v) = %v, want %v", tc.header, got, tc.review)
+		}
+	}
+}
+
+// TestApplyReviewLooseHeadersEndToEnd drives the review writer against the
+// deck the UI renders with loose headers (review finding 36): a card table
+// headed `| ID | Questions | Answers |` and a review log headed
+// `| Grades | Dates |` must be recognized, and the appended row must land in
+// the named columns.
+func TestApplyReviewLooseHeadersEndToEnd(t *testing.T) {
+	content := "| ID | Questions | Answers |\n| - | - | - |\n| Q1 | q | a |\n\n| Grades | Dates |\n| - | - |\n"
+	out, err := ApplyReview(content, "Q1", GradeGood, "2024-03-01")
+	if err != nil {
+		t.Fatalf("ApplyReview rejected a deck the UI accepts: %v", err)
+	}
+	// The log has no id/next-due column; grade and date resolve by name.
+	want := "| good | 2024-03-01 |"
+	if !strings.Contains(out, want) {
+		t.Errorf("appended review row:\n got %q\nwant it to contain %q\nfull document:\n%s", out, want, out)
+	}
+	deck := ParseFlashcards(out)
+	if len(deck.Reviews) != 1 || deck.Reviews[0].Grade != GradeGood || deck.Reviews[0].Date != "2024-03-01" {
+		t.Errorf("reviews after append = %+v, want one entry dated 2024-03-01 graded good", deck.Reviews)
+	}
+}

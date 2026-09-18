@@ -301,6 +301,31 @@ func TestEventPersister_UIStateEventsAreTransient(t *testing.T) {
 	}
 }
 
+// TestEventPersister_E2SStateTransient verifies that e2s_state — the UI-only
+// execution-state Σ snapshot emitted with a SessionID after every E2S turn —
+// is never persisted. The frontend panel renders it live only (no persisted
+// restore), so a persisted row would store the Σ JSON as an event_unknown
+// message that renders as garbage on reload and consumes a paged-history
+// slot, plus a per-turn "unknown event type" schema-drift warning.
+func TestEventPersister_E2SStateTransient(t *testing.T) {
+	store := &captureStore{}
+	p := NewEventPersister(store)
+
+	p.Persist(Event{
+		SessionID: "s1",
+		Type:      "e2s_state",
+		Data: map[string]any{
+			"turn":        3,
+			"total_turns": 10,
+			"state":       map[string]any{"objective": "ship it", "status": "in_progress"},
+		},
+	})
+
+	if rows := store.snapshot(); len(rows) != 0 {
+		t.Fatalf("expected 0 persisted rows for e2s_state, got %d: %+v", len(rows), rows)
+	}
+}
+
 // TestEventPersister_GoalStatusPersisted_GoalProgressTransient verifies that a
 // goal_status snapshot survives a reload (role "goal_status", full metadata) so
 // the frontend can rebuild the goal store and re-render the turn-transition

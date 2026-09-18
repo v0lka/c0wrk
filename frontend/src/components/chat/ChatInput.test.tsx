@@ -6,7 +6,7 @@
 // xterm.js and is the most likely offender) must NOT replace the whole chat
 // input with the "Input error" fallback. The pane has its own error boundary,
 // so the mode toolbar stays mounted and the user can switch back to chat.
-import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { createElement } from 'react'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -85,11 +85,21 @@ beforeAll(() => {
   globalThis.ResizeObserver = RO as unknown as typeof ResizeObserver
 })
 
+// The terminal pane throws ON PURPOSE in every test here (see the
+// TerminalPanel mock above); react-dom reports each caught crash through
+// console.error ("The above error occurred in the <TerminalPanel>
+// component…"). That report is the expected behavior under test, not a
+// regression — silence it to keep the suite output clean.
+beforeEach(() => {
+  vi.spyOn(console, 'error').mockImplementation(() => {})
+})
+
 let container: HTMLDivElement
 let root: Root
 let outerBoundaryTripped = false
 
 afterEach(() => {
+  vi.restoreAllMocks()
   act(() => root.unmount())
   container.remove()
   document.body.innerHTML = ''

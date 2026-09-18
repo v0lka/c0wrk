@@ -228,7 +228,11 @@ describe('sanitizePaperHtml: LaTeXML-shaped document', () => {
     const th = findFirst(root, 'th')
     expect(allText({ type: 'root', children: th?.children ?? [] })).toBe('Column')
     const td = findFirst(root, 'td')
-    expect(td?.properties.colSpan).toBe('2')
+    // Type-agnostic on purpose: property-information's html schema decides
+    // whether colSpan arrives as the raw string '2' or the coerced number 2,
+    // and that detail shifted across its 7.x releases. What matters is that
+    // the sanitizer preserves the colspan attribute at all.
+    expect(String(td?.properties.colSpan)).toBe('2')
     // Ancestors rule: tr still lives inside table structure.
     const table = findFirst(root, 'table')
     expect(table).toBeDefined()

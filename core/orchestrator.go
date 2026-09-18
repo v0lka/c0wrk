@@ -1557,11 +1557,12 @@ type resumeUnit struct {
 }
 
 // relaunchable reports whether the funnel must (re)launch the unit — every
-// non-terminal unit. A paused unit resumes from its checkpoint; a not-started
-// (pending), running or interrupted unit is relaunched FRESH. A unit whose
-// status reads as running/interrupted but that carries a durable checkpoint is
-// normalized to paused during the ledger read, so a relaunch never discards a
-// usable checkpoint.
+// non-terminal unit. A paused unit resumes from its checkpoint; every other
+// non-terminal unit — not-started (pending), or running/interrupted WITHOUT a
+// durable checkpoint — is relaunched FRESH. A unit whose status reads as
+// running/interrupted but that carries a durable checkpoint is normalized to
+// paused during the ledger read, so a relaunch never discards a usable
+// checkpoint.
 func (u resumeUnit) relaunchable() bool {
 	return !u.terminal()
 }
@@ -1703,10 +1704,13 @@ func resumeUnitsFromLedger(ledger units.Ledger, bb orchestration.Blackboard) ([]
 		// A durable checkpoint with no matching settle is a paused checkpoint:
 		// Checkpoint and Settle are separate writes, so the checkpoint can land
 		// without the status transition. Resume from it instead of re-running
-		// the trajectory's already-completed steps. (A terminal status is left
-		// untouched — a completed/failed unit carries its outcome, not a
+		// the trajectory's already-completed steps. This covers interrupted as
+		// well: the crash/exit abandonment sweep flips a still in-flight unit
+		// to interrupted while preserving the Steps column, so an interrupted
+		// unit can carry a usable checkpoint (Resumable). (A terminal status is
+		// left untouched — a completed/failed unit carries its outcome, not a
 		// resumable checkpoint.)
-		if len(u.steps) > 0 && u.status.InFlight() {
+		if len(u.steps) > 0 && u.status.Resumable() {
 			u.status = units.UnitStatusPaused
 		}
 		// An isolated context's failure has no blackboard outcome to lift, so
@@ -1887,8 +1891,11 @@ func (o *Orchestrator) resumeUnits(
 			// step result (pausedCheckpoint). The mainline blackboard already
 			// holds its own checkpoint; an isolated-context unit (a
 			// goal-verifier delegate) does not, so its durable ledger
-			// checkpoint is lifted here. A not-started/interrupted unit has no
-			// checkpoint and is deliberately relaunched fresh.
+			// checkpoint is lifted here. A not-started (pending) unit has no
+			// checkpoint and is deliberately relaunched fresh. An interrupted
+			// unit that DID checkpoint never reaches this point as fresh: the
+			// ledger read normalized it to paused (see resumeUnit.paused), so
+			// only the checkpoint-less interrupted units are relaunched fresh.
 			if u.paused() {
 				if sr, ok := bb.GetStepResult(u.id); !ok || !isPaused(sr.Error) {
 					bb.SetStepResult(u.id, "", agent.ErrPaused, u.steps)
@@ -2356,7 +2363,7 @@ func (o *Orchestrator) emitInitialContextFill() {
 // rewrite): code-flavored CHAT questions route as "code", whose compaction
 // strategy (sliding_window) requires no project. Shell commands are not
 // additionally restricted here: the global security.groups.execute policy
-// (including its destructive blacklist) applies uniformly to CODE and CHAT
+// (including its destructive blocklist) applies uniformly to CODE and CHAT
 // sessions.
 func (o *Orchestrator) SetNoProjectMode() {
 	o.isNoProject = true

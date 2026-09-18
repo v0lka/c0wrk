@@ -6,6 +6,7 @@ import (
 
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/strutil"
 )
 
 // loggingEmitter wraps an Emitter to log all events via a session-specific logger.
@@ -134,7 +135,13 @@ func (l *loggingEmitter) SubAgentLaunch(stepID, description string) {
 }
 
 func (l *loggingEmitter) SubAgentComplete(stepID string, success bool, duration time.Duration, errMsg string) {
-	l.logger.Debug("subagent: complete", "stepID", stepID, "success", success, "durationMs", duration.Milliseconds(), "errMsg", errMsg)
+	// errMsg is model-authored: the SDK computes it from a hard error, the
+	// abort reason, or raw result.Output — prose that can embed quoted file
+	// contents and paths. Log a bounded preview plus its length only, never
+	// the payload unbounded ("no secrets in logs", cf. E2SState above).
+	l.logger.Debug("subagent: complete", "stepID", stepID, "success", success,
+		"durationMs", duration.Milliseconds(), "errMsgLen", len(errMsg),
+		"errMsgPreview", strutil.TruncateUTF8(errMsg, 200))
 	l.inner.SubAgentComplete(stepID, success, duration, errMsg)
 }
 

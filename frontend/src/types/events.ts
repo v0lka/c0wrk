@@ -65,6 +65,39 @@ export interface AskUserQuestion {
 export interface AskUserData { request_id: string; questions: AskUserQuestion[] }
 export interface StepLimitData { request_id: string; current_step: number; max_steps: number; reason?: string }
 
+/** One automatic (no-human) security decision taken under an automatic
+ *  autonomy posture — silent (security.silent_mode) or assisted (a strict-judge
+ *  DENY terminating a call before any card opened). `kind` is the gate
+ *  resolved without a human: `tool_confirm` (a confirmation-gated call the
+ *  registry decided in silent mode), `assisted_deny` (a strict-judge DENY that
+ *  terminated a call in assisted mode), or `step_limit` (a step-limit boundary
+ *  the backend decided). Non-blocking and persisted — the auditable trace of a
+ *  gate a human would otherwise have answered (OWASP ASI10). Mirrors the Go
+ *  `coretools.AutonomyDecision` payload. */
+export interface AutonomyDecisionData {
+  readonly kind: 'tool_confirm' | 'assisted_deny' | 'step_limit'
+  /** The autonomy posture that decided: "assisted" | "silent". */
+  readonly mode?: string
+  /** The posture's sub-policy that decided (tool_confirm: judge|allow|deny;
+   *  step_limit: auto or a pinned response; absent for assisted_deny — the
+   *  strict judge itself is the decider there). */
+  readonly policy?: string
+  /** The decision: allow|deny (tool_confirm) or allow_once|allow_more|allow_always|deny (step_limit). */
+  readonly verdict: string
+  /** Tool name for a tool_confirm decision; absent for step_limit. */
+  readonly tool?: string
+  /** Tool source ("core" or an MCP server name) for a tool_confirm decision. */
+  readonly source?: string
+  /** WHY the call/boundary was escalated (confirmation reason or circuit-breaker reason). */
+  readonly reason?: string
+  /** The deciding rationale (strict-judge reasoning, fail-closed cause, or the policy). */
+  readonly justification?: string
+  /** Step-limit boundary category: "budget" | "circuit_breaker". */
+  readonly category?: string
+  readonly current_step?: number
+  readonly max_steps?: number
+}
+
 export interface ContextFillData {
   fill_percent: number; used_tokens: number; max_tokens: number; status: string
   plan_step_id?: string; session_input_tokens: number; session_output_tokens: number
@@ -426,6 +459,11 @@ export interface SessionEventMap {
   readonly tool_confirm: ToolConfirmData
   readonly ask_user: AskUserData
   readonly step_limit: StepLimitData
+  /** Automatic (no-human) security decision taken under an automatic autonomy
+   *  posture (assisted or silent) — recorded so the run's trajectory stays
+   *  auditable (OWASP ASI10). Non-blocking: the UI renders it as a
+   *  service/notice, never a pending-action card. */
+  readonly autonomy_decision: AutonomyDecisionData
   readonly plan_generated: PlanData
   readonly plan_step_start: PlanStepStartData
   readonly plan_step_complete: PlanStepCompleteData
@@ -702,6 +740,7 @@ export function isToolResultData(d: unknown): d is ToolResultData { return isObj
 export function isToolConfirmData(d: unknown): d is ToolConfirmData { return isObj(d) && has(d, 'confirm_id', 'tool') }
 export function isAskUserData(d: unknown): d is AskUserData { return isObj(d) && has(d, 'request_id', 'questions') }
 export function isStepLimitData(d: unknown): d is StepLimitData { return isObj(d) && has(d, 'request_id', 'current_step', 'max_steps') }
+export function isAutonomyDecisionData(d: unknown): d is AutonomyDecisionData { return isObj(d) && has(d, 'kind', 'verdict') }
 export function isPlanData(d: unknown): d is PlanData { return isObj(d) && has(d, 'step_count') }
 export function isPlanStepStartData(d: unknown): d is PlanStepStartData { return isObj(d) && has(d, 'step_id') }
 export function isPlanStepCompleteData(d: unknown): d is PlanStepCompleteData {

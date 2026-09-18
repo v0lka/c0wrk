@@ -701,9 +701,9 @@ func headingHasAny(heading string, tokens []string) bool {
 }
 
 // columnIndex returns the index of the first header cell matching any name, or
-// -1 when none matches. Matching is case-insensitive and anchored to word
-// boundaries (see columnNameMatches), mirroring the frontend twin's
-// word-boundary regexes in frontend/src/lib/flashcards.ts.
+// -1 when none matches. Matching is case-insensitive with per-token anchored
+// or substring semantics (see columnNameMatches), mirroring the frontend
+// twin's regexes in frontend/src/lib/flashcards.ts.
 func columnIndex(header []string, names ...string) int {
 	for i, h := range header {
 		hn := strings.ToLower(strings.Trim(h, "*_` "))
@@ -716,13 +716,36 @@ func columnIndex(header []string, names ...string) int {
 	return -1
 }
 
-// columnNameMatches reports whether a cleaned, lower-cased header cell matches a
-// column-name token with the same anchored/word-boundary semantics as the
-// frontend twin (frontend/src/lib/flashcards.ts pickColumn): the token must not
-// be embedded inside a longer word, so "Reference" does not match "ref" and
-// "Tags" does not match "tag". The token "id" is additionally anchored to the
-// START of the cell (mirroring the frontend's `/^id\b/`), so "Card ID" does not
-// resolve to the id column.
+// looseColumnTokens match as plain substrings, mirroring the frontend twin's
+// UNANCHORED regex alternatives in frontend/src/lib/flashcards.ts (FRONT_COL
+// /front|question|prompt/, BACK_COL /back|answer/, GRADE_COL
+// /grade|rating|result/, DATE_COL /date|when/) — so `Questions`, `Answers`,
+// `Grades`, and `Dates` headers resolve on both sides. Every other token
+// keeps the word-boundary anchor (the frontend's `\b…\b` alternatives:
+// tag/label/ref/due, and the remaining tokens this matcher also serves);
+// "id" stays start-anchored (frontend `/^id\b/`).
+var looseColumnTokens = map[string]struct{}{
+	"front":    {},
+	"question": {},
+	"prompt":   {},
+	"back":     {},
+	"answer":   {},
+	"grade":    {},
+	"rating":   {},
+	"result":   {},
+	"date":     {},
+	"when":     {},
+}
+
+// columnNameMatches reports whether a cleaned, lower-cased header cell matches
+// a column-name token. The tokens in looseColumnTokens match as
+// case-insensitive substrings, so `Questions` matches `question` exactly as
+// the frontend twin's unanchored /front|question|prompt/ does
+// (frontend/src/lib/flashcards.ts pickColumn). Every other token must sit on
+// both word boundaries, so "Reference" does not match "ref" and "Tags" does
+// not match "tag". The token "id" is additionally anchored to the START of the
+// cell (mirroring the frontend's `/^id\b/`), so "Card ID" does not resolve to
+// the id column.
 func columnNameMatches(hn, name string) bool {
 	n := strings.ToLower(strings.Trim(name, "*_` "))
 	if n == "" {
@@ -734,6 +757,9 @@ func columnNameMatches(hn, name string) bool {
 		}
 		rest := hn[len("id"):]
 		return rest == "" || !isWordByte(rest[0])
+	}
+	if _, loose := looseColumnTokens[n]; loose {
+		return strings.Contains(hn, n)
 	}
 	for from := 0; from < len(hn); {
 		j := strings.Index(hn[from:], n)

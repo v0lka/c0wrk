@@ -23,6 +23,7 @@ import {
   useThemeStore,
   applyThemeToDocument,
   selectActiveThemeType,
+  selectActiveThemeId,
   BUILTIN_THEMES,
   type ThemeStore,
 } from '@/stores/themeStore'
@@ -292,6 +293,33 @@ describe('themeStore', () => {
     // Same descriptor shape, different object identity → same primitive.
     const s2 = { ...s, customThemes: [{ ...customLight }] }
     expect(selectActiveThemeType(s2)).toBe(selectActiveThemeType(s))
+  })
+
+  // ── selectActiveThemeId ───────────────────────────────────────────
+
+  // Regression (finding 44): the terminal/editor palettes re-resolve keyed on
+  // the identity selector. Switching between two same-type custom themes must
+  // change its value (the type selector's value does NOT change there), or
+  // the baked palettes would keep the first theme's colours.
+  it('selectActiveThemeId changes on a same-type custom-theme switch while the type stays put', () => {
+    const { setTheme } = useThemeStore.getState()
+    setTheme('gruvbox', ':root{--color-background:#282828;--color-foreground:#ebdbb2}')
+    expect(selectActiveThemeId(useThemeStore.getState())).toBe('gruvbox')
+    expect(selectActiveThemeType(useThemeStore.getState())).toBe('dark')
+
+    // A second DARK custom theme replaces the first: the type selector is
+    // Object.is-equal (dark→dark) but the identity selector moves.
+    setTheme('tokyo-night', ':root{--color-background:#1a1b26;--color-foreground:#c0caf5}')
+    expect(selectActiveThemeType(useThemeStore.getState())).toBe('dark')
+    expect(selectActiveThemeId(useThemeStore.getState())).toBe('tokyo-night')
+    expect(selectActiveThemeId(useThemeStore.getState())).not.toBe('gruvbox')
+  })
+
+  it('selectActiveThemeId returns a referentially stable primitive', () => {
+    useThemeStore.setState({ themeId: 'nord', customThemes: [customLight] })
+    const s = useThemeStore.getState() as ThemeStore
+    expect(selectActiveThemeId(s)).toBe(selectActiveThemeId(s))
+    expect(selectActiveThemeId(s)).toBe('nord')
   })
 
   it('exposes the two builtin theme descriptors', () => {
