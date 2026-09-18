@@ -23,6 +23,8 @@ import { useBackgroundSessionWatcher } from '@/hooks/useBackgroundSessionWatcher
 import { useWindowTitle } from '@/hooks/useWindowTitle'
 import { useActiveSessionsRefresh } from '@/stores/activeSessionsStore'
 import { initSoundUnlock } from '@/lib/sound'
+import { initSystemNotifications } from '@/lib/systemNotifications'
+import { useNotificationClicks } from '@/hooks/useNotificationClicks'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -58,16 +60,26 @@ function App() {
   const activeSessionId = useSessionStore(s => s.activeSessionId)
   const activeProjectId = useProjectStore(s => s.activeProjectId)
 
-  // Register the persistent gesture/visibility audio-unlock listeners ONCE at
-  // app start. This must NOT live in useSoundEvents: that hook only runs when a
-  // session is active, yet the webview can leave the AudioContext suspended
-  // with no active session (e.g. immediately after a reload) and the only way
-  // to wake it is a gesture/visibility event. initSoundUnlock is idempotent
-  // (guarded internally), so a StrictMode double-mount still installs exactly
-  // one set of listeners.
+  // Register the persistent gesture/visibility audio-unlock listeners AND
+  // initialize the OS notification bridge ONCE at app start. Neither may live
+  // in useSoundEvents: that hook only runs when a session is active, yet the
+  // webview can leave the AudioContext suspended with no active session
+  // (e.g. immediately after a reload) and the only way to wake it is a
+  // gesture/visibility event; the notification bridge likewise must exist
+  // before any banner-worthy event can arrive. initSoundUnlock is idempotent
+  // (guarded internally) and initSystemNotifications is memoized, so a
+  // StrictMode double-mount still installs exactly one set of listeners / runs
+  // the init at most once. Both are best-effort and never throw.
   useEffect(() => {
     initSoundUnlock()
+    void initSystemNotifications()
   }, [])
+
+  // Notification-click navigation (project switch → session select, the
+  // live-sessions radar's pattern), mounted once at the root so it survives
+  // every app-phase transition. The Go notification callback has already
+  // focused the window by the time the event arrives — this only navigates.
+  useNotificationClicks()
 
   // Clear stale work-directory data on project/session switch so the modal
   // doesn't briefly show entries from a previous context before loadAll runs.

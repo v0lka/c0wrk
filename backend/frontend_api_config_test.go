@@ -3523,3 +3523,49 @@ func TestHasDefaultModel(t *testing.T) {
 		})
 	}
 }
+
+// --- Notification banner timeout ---
+
+func TestNotificationBannerTimeout_RoundTrip(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	// The two sentinels plus an explicit lifetime must all persist and read
+	// back unchanged — especially 0, which is a real value ("never expire"),
+	// not an unset field.
+	for _, seconds := range []int{
+		config.NotificationBannerTimeoutDaemonDefault,
+		config.NotificationBannerTimeoutNever,
+		30,
+		config.NotificationBannerTimeoutMaxSeconds,
+	} {
+		if err := f.SetNotificationBannerTimeout(seconds); err != nil {
+			t.Fatalf("SetNotificationBannerTimeout(%d): %v", seconds, err)
+		}
+		if got := f.GetNotificationBannerTimeout(); got != seconds {
+			t.Errorf("GetNotificationBannerTimeout() = %d, want %d", got, seconds)
+		}
+	}
+}
+
+func TestNotificationBannerTimeout_RejectsOutOfRange(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	for _, seconds := range []int{-2, -100, config.NotificationBannerTimeoutMaxSeconds + 1} {
+		if err := f.SetNotificationBannerTimeout(seconds); err == nil {
+			t.Errorf("SetNotificationBannerTimeout(%d) accepted an out-of-range value", seconds)
+		}
+	}
+}
+
+// TestNotificationBannerTimeout_UnloadedConfigIsSafe pins the fail-safe: with
+// no config the getter must answer -1 (the daemon default), never the Go zero
+// value 0 — which would silently mean "banners never go away".
+func TestNotificationBannerTimeout_UnloadedConfigIsSafe(t *testing.T) {
+	f := &FrontendAPI{}
+	if got := f.GetNotificationBannerTimeout(); got != config.NotificationBannerTimeoutDaemonDefault {
+		t.Errorf("GetNotificationBannerTimeout() on an unloaded config = %d, want %d",
+			got, config.NotificationBannerTimeoutDaemonDefault)
+	}
+	if err := f.SetNotificationBannerTimeout(30); err == nil {
+		t.Error("SetNotificationBannerTimeout succeeded with no config loaded")
+	}
+}

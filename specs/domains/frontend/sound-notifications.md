@@ -4,6 +4,8 @@
 
 Synthesize the app's notification cues in the webview with the Web Audio API and keep them audible despite the desktop webview's repeated autoplay suspensions and OS-level audio interruptions. Tones are generated at runtime from oscillators — no audio assets — so they are byte-identical on macOS WKWebView, Windows WebView2/Edge, and Linux WebKitGTK.
 
+Sound is one of the app's **two notification channels**: the same cued events also raise native OS banners through the system-notification channel ([system-notifications.md](system-notifications.md)). Both channels hang off the same listener-coverage invariant below and carry independent master toggles.
+
 ## Key Files
 
 - `frontend/src/lib/sound.ts` — the audio engine: lazy `AudioContext` lifecycle, recovery/replacement logic, tone presets, `playSound(kind)`, `initSoundUnlock()`, `__resetSoundModule()` (test-only).
@@ -19,12 +21,12 @@ Synthesize the app's notification cues in the webview with the Web Audio API and
 
 ## Listener-coverage invariant (why cues can go missing above the audio engine)
 
-A session's audible cues have exactly one owner at a time:
+A session's cues — audible **and** banner, both channels — have exactly one owner at a time:
 
-- the **active** session → `useSoundEvents(activeSessionId)`;
+- the **active** session → `useSoundEvents(activeSessionId)` (which also dispatches the banner channel for the active session);
 - every **background** session that is busy → `useBackgroundSessionWatcher`, whose watched set is `taskActive ∪ paused ∪ pausing ∪ snapshot(unfinished_task_status ∈ {in_progress, paused})` minus the active id.
 
-**Invariant: for every session with a running backend task, a sound-event listener must exist** (active-subscription or watched-set membership). The CHAT↔CODE toggle is a project switch that re-runs this handoff; three historical defects broke the invariant and are now closed:
+**Invariant: for every session with a running backend task, a sound-event listener must exist** (active-subscription or watched-set membership) — and through it, both cues (the tone and the OS banner). The CHAT↔CODE toggle is a project switch that re-runs this handoff; three historical defects broke the invariant and are now closed:
 
 1. **Blind switch-time flag reset (removed).** `useSessionEvents`' reset effect used to write `taskActive[dest] = false` on every switch-TO. The flag was only restored by an async RPC, so toggling away first left a genuinely-running background session flagged idle — un-watched, its completion/HITL events had no listener (no cue, no pending-action card). `useTaskFlagRestore` is now the sole switch-time corrector, writing `status.active` in both directions.
 2. **Unguarded/cancellable fast restore (guarded).** The restore RPC is cancelled by a switch-away (correct — its write would target a now-background session) and its resolved snapshot can be older than a live flag transition (`task_resumed`, terminal events). The write is skipped when `taskFlagsEventAt[dest]` is newer than the snapshot read, mirroring `reconcileRuntimeStatus`.
@@ -115,7 +117,7 @@ Informational state transitions (`[sound] audio context left running`) stay at *
 
 ## Invariants
 
-- **Listener coverage**: every session with a running backend task has a sound-event listener at all times — it is the active session (`useSoundEvents`) or a member of the background watcher's set. The switch-time corrector is `useTaskFlagRestore` alone (no other switch path writes `taskActive`); the snapshot refresh fires on mount, on live-set changes, on every project/session switch, and on the visible-window safety poll.
+- **Listener coverage**: every session with a running backend task has a sound-event listener at all times — it is the active session (`useSoundEvents`) or a member of the background watcher's set. The switch-time corrector is `useTaskFlagRestore` alone (no other switch path writes `taskActive`); the snapshot refresh fires on mount, on live-set changes, on every project/session switch, and on the visible-window safety poll. The same listener coverage carries the system-notification banner channel ([system-notifications.md](system-notifications.md)).
 - A `running` context is never replaced.
 - A `closed` — or `interrupted` (wedged) — context is never revived in place; it is dropped and a replacement is built after `CTX_BACKOFF_MS`.
 - At most one `AudioContext` is cached/alive at a time.
@@ -135,6 +137,7 @@ Informational state transitions (`[sound] audio context left running`) stay at *
 
 - [events.md](events.md) — event subscription; `useSoundEvents` is one of the hooks composed by `useSessionEvents`.
 - [stores.md](stores.md) — `soundStore` (the persisted master toggle).
+- [system-notifications.md](system-notifications.md) — the OS banner channel fed by the same event stream and listener coverage.
 - [README.md](README.md) — frontend architecture overview.
 - [../../contracts/event-catalog.md](../../contracts/event-catalog.md) — the session events the pipeline listens to.
 - [../../decisions/017-macos-wake-reload.md](../../decisions/017-macos-wake-reload.md), [../../decisions/018-macos-webview-recovery.md](../../decisions/018-macos-webview-recovery.md) — the webview reload that resets the audio runtime.
