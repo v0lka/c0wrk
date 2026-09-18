@@ -423,12 +423,9 @@ body {
     text-decoration: underline;
 }
 
-/* Inline code (not inside pre blocks).
-   Match body size: typography's default `code` is ~0.85em, which reads tiny
-   next to 14px prose (and was worse under prose-sm). */
+/* Inline code (not inside pre blocks) */
 .prose :where(code):not(:where(pre *)) {
     color: var(--tw-prose-code);
-    font-size: 1em;
     background: var(--color-secondary);
     border-radius: 0.25rem;
     padding: 0.125rem 0.25rem;

@@ -25,11 +25,11 @@ export const ThoughtGroupBlock = memo(function ThoughtGroupBlock({ item }: Thoug
           return (
             <div key={t.reasoning || t.content ? `thought-${t.reasoning?.slice(0, 16) ?? t.content?.slice(0, 16)}-${idx}` : `thought-${idx}`}>
               {hasReasoning && (
-                <Markdown content={t.reasoning!} />
+                <Markdown content={t.reasoning!} compact />
               )}
               {t.content && t.content.trim() !== '' && (
                 <div className={hasReasoning ? 'mt-1.5' : ''}>
-                  <Markdown content={t.content} />
+                  <Markdown content={t.content} compact />
                 </div>
               )}
             </div>
