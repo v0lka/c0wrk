@@ -1184,6 +1184,7 @@ type TimeoutsConfig struct {
 	PersistenceTimeout       int `yaml:"persistenceTimeout"`       // seconds, default: 5
 	LLMRequestTimeout        int `yaml:"llmRequestTimeout"`        // seconds, default: 600 (10 min) — main chat loop
 	ServiceLLMRequestTimeout int `yaml:"serviceLLMRequestTimeout"` // seconds, default: 120 (2 min) — one-shot service LLM requests (session title, commit message, prompt optimization)
+	GitCommitTimeout         int `yaml:"gitCommitTimeout"`         // seconds, default: 300 (5 min) — git commit spawn (rev-parse and other quick git probes keep the fast 30s timeout)
 }
 
 // OrchestrationConfig holds orchestration-specific limits and settings.

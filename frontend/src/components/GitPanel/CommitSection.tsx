@@ -1,8 +1,11 @@
 import { useRef, useEffect, useCallback } from "react";
 import { Loader2, Sparkles, Check } from "lucide-react";
-import { useGitPanelStore, EMPTY_COMMIT_DRAFT } from "@/stores/gitPanelStore";
+import { useGitPanelStore, EMPTY_COMMIT_DRAFT, selectSkipCommitSuppress } from "@/stores/gitPanelStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { commit, generateCommitMessage } from "@/api/git";
+import { useCommitSuppressedFlow } from "./useCommitSuppressedFlow";
+import { CommitOutputSection } from "./CommitOutputSection";
+import { CommitSuppressedDialog } from "./CommitSuppressedDialog";
 import { cn } from "@/lib/utils";
 
 export function CommitSection() {
@@ -13,6 +16,15 @@ export function CommitSection() {
   const setCommitting = useGitPanelStore((s) => s.setCommitting);
   const setCommitError = useGitPanelStore((s) => s.setCommitError);
   const setCommitSuccess = useGitPanelStore((s) => s.setCommitSuccess);
+  const setSkipCommitSuppress = useGitPanelStore((s) => s.setSkipCommitSuppress);
+
+  // The Trust/continue flow for suppressed commits: owns the withheld
+  // commit, the trust→re-commit sequence, and the force-commit path.
+  const suppressedFlow = useCommitSuppressedFlow({
+    setCommitError,
+    setCommitSuccess,
+    setSkipCommitSuppress,
+  });
 
   // Per-project commit-box slice. The selector returns the stored slice (a
   // stable reference) or undefined when the project has no state yet — never
@@ -23,7 +35,14 @@ export function CommitSection() {
     activeProjectId === null ? undefined : s.commitByProject[activeProjectId],
   );
   const draft = storedDraft ?? EMPTY_COMMIT_DRAFT;
-  const { message: commitMessage, isGenerating, isCommitting, error, lastCommitSha: successSha } = draft;
+  const {
+    message: commitMessage,
+    isGenerating,
+    isCommitting,
+    error,
+    lastCommitSha: successSha,
+    lastCommitOutput: commitOutput,
+  } = draft;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const stagedCount = entries.filter((e) => e.staged).length;
@@ -57,14 +76,25 @@ export function CommitSection() {
     const message = commitMessage;
     setCommitting(projectId, true);
     setCommitError(projectId, null);
+    suppressedFlow.setSuppressed(null);
     try {
-      // commit() now returns the new commit's full SHA (FE-1 / B1).
-      const sha = await commit(message);
+      // A project with "don't ask again" set commits hardened directly —
+      // the suppression dialog never opens for it.
+      const force = selectSkipCommitSuppress(useGitPanelStore.getState(), projectId);
+      const result = await commit(message, force);
+      if (result.suppressed) {
+        // The commit was withheld: the untrusted repository arms commit
+        // hooks/signing that the hardened commit would silently skip. Ask
+        // the user how to proceed (trust the repo or commit hardened).
+        suppressedFlow.setSuppressed({ suppression: result.suppressed, message, projectId });
+        return;
+      }
       // Stores the SHA for the success banner, clears this project's draft,
-      // and arms the store-owned per-project auto-dismissal (4s) — a banner
-      // in one project is never cleared or left stranded by a commit in
-      // another, and dismissal survives a CHAT-mode GitPanel unmount.
-      setCommitSuccess(projectId, sha);
+      // remembers the commit output (hook output section), and arms the
+      // store-owned per-project auto-dismissal (4s) — a banner in one
+      // project is never cleared or left stranded by a commit in another,
+      // and dismissal survives a CHAT-mode GitPanel unmount.
+      setCommitSuccess(projectId, result.sha ?? "", result.output ?? "");
       // Status refresh is handled by the git:status_changed event emitted
       // by the backend after a successful commit (picked up by useGitStatusEvents)
     } catch (err) {
@@ -103,7 +133,7 @@ export function CommitSection() {
     // Ctrl+Enter / Cmd+Enter to commit
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
-      handleCommit();
+      void handleCommit();
     }
   };
 
@@ -116,6 +146,7 @@ export function CommitSection() {
           if (activeProjectId === null) return;
           setCommitMessage(activeProjectId, e.target.value);
           if (error) setCommitError(activeProjectId, null);
+          suppressedFlow.setSuppressed(null);
         }}
         onKeyDown={handleKeyDown}
         placeholder="Describe your changes..."
@@ -143,6 +174,8 @@ export function CommitSection() {
         </div>
       ) : null}
 
+      <CommitOutputSection output={commitOutput} />
+
       <div className="mt-2 flex items-center justify-between">
         <span className="text-xs text-muted-foreground">
           {stagedCount > 0 ? `${stagedCount} staged file${stagedCount !== 1 ? "s" : ""}` : "No staged changes"}
@@ -167,7 +200,7 @@ export function CommitSection() {
           </button>
           <button
             type="button"
-            onClick={handleCommit}
+            onClick={() => void handleCommit()}
             disabled={isDisabled}
             className={cn(
               "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
@@ -182,6 +215,16 @@ export function CommitSection() {
           </button>
         </div>
       </div>
+
+      {/* The Trust/continue decision for a withheld commit. */}
+      <CommitSuppressedDialog
+        suppressed={suppressedFlow.pendingSuppressed?.suppression ?? null}
+        repoPath={suppressedFlow.pendingWorkspacePath}
+        isSubmitting={suppressedFlow.isDialogSubmitting}
+        onTrust={() => void suppressedFlow.handleTrustAndCommit()}
+        onForceCommit={(skip) => void suppressedFlow.handleForceCommit(skip)}
+        onCancel={suppressedFlow.handleCancel}
+      />
     </div>
   );
 }

@@ -8,7 +8,7 @@
 // panelPersistence.test.ts, which opts into jsdom for the same reason).
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { useGitPanelStore, EMPTY_MERGE_REBASE_STATE, EMPTY_COMMIT_DRAFT, COMMIT_BANNER_DISMISS_MS, partializeGitPanel, mergeGitPanel, selectGitPanelTab, type GitPanelEntry } from '@/stores/gitPanelStore'
+import { useGitPanelStore, EMPTY_MERGE_REBASE_STATE, EMPTY_COMMIT_DRAFT, COMMIT_BANNER_DISMISS_MS, partializeGitPanel, mergeGitPanel, selectGitPanelTab, selectSkipCommitSuppress, type GitPanelEntry } from '@/stores/gitPanelStore'
 
 /** Reset the store to initial state before each test */
 function resetStore() {
@@ -75,6 +75,7 @@ describe('gitPanelStore', () => {
       isCommitting: false,
       error: null,
       lastCommitSha: null,
+      lastCommitOutput: null,
     })
   })
 
@@ -649,6 +650,7 @@ describe('gitPanelStore — per-project commit state', () => {
       isCommitting: false,
       error: null,
       lastCommitSha: null,
+      lastCommitOutput: null,
     })
   })
 
@@ -770,6 +772,7 @@ describe('gitPanelStore — per-project commit state', () => {
       isCommitting: false,
       error: 'err',
       lastCommitSha: null,
+      lastCommitOutput: null,
     })
     expect(s['proj-b']!.message).toBe('fix: b')
     expect(s['proj-b']!.isGenerating).toBe(false)
@@ -782,7 +785,155 @@ describe('gitPanelStore — per-project commit state', () => {
     const partial = partializeGitPanel(useGitPanelStore.getState())
     expect(partial).not.toHaveProperty('commitByProject')
   })
+
+  it('setCommitSuccess stores the commit output; dismissal (null) keeps it', () => {
+    const { setCommitSuccess } = useGitPanelStore.getState()
+    setCommitSuccess('proj-1', 'abc123', '[main abc123d] feat: run hooks\nhook said hi')
+    let slice = useGitPanelStore.getState().commitByProject['proj-1']!
+    expect(slice.lastCommitOutput).toBe('[main abc123d] feat: run hooks\nhook said hi')
+    // The banner auto-dismissal clears only the SHA…
+    setCommitSuccess('proj-1', null)
+    slice = useGitPanelStore.getState().commitByProject['proj-1']!
+    expect(slice.lastCommitSha).toBeNull()
+    // …the output survives until the next commit replaces it.
+    expect(slice.lastCommitOutput).toBe('[main abc123d] feat: run hooks\nhook said hi')
+    // A new commit without output clears the stale log.
+    setCommitSuccess('proj-1', 'def456')
+    slice = useGitPanelStore.getState().commitByProject['proj-1']!
+    expect(slice.lastCommitOutput).toBeNull()
+  })
+
+  it('the banner auto-dismiss timer does not clear the stored commit output', () => {
+    vi.useFakeTimers()
+    try {
+      const { setCommitSuccess } = useGitPanelStore.getState()
+      setCommitSuccess('proj-1', 'abc123', 'hook: prettier ran')
+      vi.advanceTimersByTime(COMMIT_BANNER_DISMISS_MS)
+      const slice = useGitPanelStore.getState().commitByProject['proj-1']!
+      expect(slice.lastCommitSha).toBeNull()
+      expect(slice.lastCommitOutput).toBe('hook: prettier ran')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
+
+// --- Per-project suppression-dialog skip flag (skipCommitSuppressByProject) ---
+
+describe('gitPanelStore — commit suppression skip flag', () => {
+  beforeEach(() => {
+    resetStore()
+  })
+
+  it('selectSkipCommitSuppress defaults to false (dialog shows)', () => {
+    const s = useGitPanelStore.getState()
+    expect(selectSkipCommitSuppress(s, 'never-seen')).toBe(false)
+    expect(selectSkipCommitSuppress(s, null)).toBe(false)
+    expect(selectSkipCommitSuppress(s, undefined)).toBe(false)
+  })
+
+  it('setSkipCommitSuppress sets and clears the flag per project', () => {
+    const { setSkipCommitSuppress } = useGitPanelStore.getState()
+    setSkipCommitSuppress('proj-a', true)
+    setSkipCommitSuppress('proj-b', false)
+    expect(selectSkipCommitSuppress(useGitPanelStore.getState(), 'proj-a')).toBe(true)
+    expect(selectSkipCommitSuppress(useGitPanelStore.getState(), 'proj-b')).toBe(false)
+    // Explicitly re-enabling the dialog restores it.
+    setSkipCommitSuppress('proj-a', false)
+    expect(selectSkipCommitSuppress(useGitPanelStore.getState(), 'proj-a')).toBe(false)
+  })
+
+  it('setSkipCommitSuppress is a reference-stable no-op for an unchanged value', () => {
+    const { setSkipCommitSuppress } = useGitPanelStore.getState()
+    setSkipCommitSuppress('proj-a', true)
+    // A second write with the SAME value is a no-op; a write that flips to
+    // the implicit default (false) records an explicit entry — the same
+    // contract setActiveTab uses.
+    const before = useGitPanelStore.getState()
+    setSkipCommitSuppress('proj-a', true)
+    expect(useGitPanelStore.getState()).toBe(before)
+  })
+
+  it('the flag survives a persist round-trip (partialize → merge)', () => {
+    const { setSkipCommitSuppress } = useGitPanelStore.getState()
+    setSkipCommitSuppress('proj-a', true)
+    const partial = partializeGitPanel(useGitPanelStore.getState())
+    expect(partial.skipCommitSuppressByProject).toEqual({ 'proj-a': true })
+
+    const rehydrated = JSON.parse(JSON.stringify(partial)) as unknown
+    const merged = mergeGitPanel(rehydrated, useGitPanelStore.getState())
+    expect(merged.skipCommitSuppressByProject).toEqual({ 'proj-a': true })
+  })
+
+  it('merge defaults the flag map to {} for legacy state without it', () => {
+    const current = useGitPanelStore.getState()
+    const merged = mergeGitPanel({ viewMode: 'tree', expandedDirs: ['src'] }, current)
+    expect(merged.skipCommitSuppressByProject).toEqual({})
+  })
+
+  it('merge rejects non-boolean persisted flags but keeps valid ones', () => {
+    const current = useGitPanelStore.getState()
+    const merged = mergeGitPanel(
+      { skipCommitSuppressByProject: { p1: true, p2: 'yes', p3: 0, p4: false } },
+      current,
+    )
+    expect(merged.skipCommitSuppressByProject).toEqual({ p1: true, p4: false })
+  })
+
+  it('merge tolerates a non-object persisted flag map', () => {
+    const current = useGitPanelStore.getState()
+    const merged = mergeGitPanel({ skipCommitSuppressByProject: null }, current)
+    expect(merged.skipCommitSuppressByProject).toEqual({})
+  })
+
+  it('rehydrates the flag map from a real localStorage payload', async () => {
+    localStorage.setItem(
+      'git-panel-settings',
+      JSON.stringify({
+        state: {
+          viewMode: 'flat',
+          expandedDirs: [],
+          skipCommitSuppressByProject: { p1: true, p2: 'bogus' },
+        },
+        version: 0,
+      }),
+    )
+
+    await useGitPanelStore.persist.rehydrate()
+
+    expect(useGitPanelStore.getState().skipCommitSuppressByProject).toEqual({ p1: true })
+  })
+
+  it('dropProjectCommitState removes the flag along with the draft', () => {
+    const { setSkipCommitSuppress, setCommitMessage, dropProjectCommitState } = useGitPanelStore.getState()
+    setSkipCommitSuppress('proj-a', true)
+    setSkipCommitSuppress('proj-b', true)
+    setCommitMessage('proj-a', 'draft a')
+    dropProjectCommitState('proj-a')
+    const s = useGitPanelStore.getState()
+    expect(s.skipCommitSuppressByProject['proj-a']).toBeUndefined()
+    expect(s.skipCommitSuppressByProject['proj-b']).toBe(true)
+    expect(s.commitByProject['proj-a']).toBeUndefined()
+  })
+
+  it('reset clears the flag map', () => {
+    const { setSkipCommitSuppress, reset } = useGitPanelStore.getState()
+    setSkipCommitSuppress('proj-a', true)
+    reset()
+    expect(useGitPanelStore.getState().skipCommitSuppressByProject).toEqual({})
+  })
+
+  it('selectors return primitives (no per-call allocation)', () => {
+    setSkipCommitSuppressFlagForTest()
+    // selectSkipCommitSuppress returns a boolean primitive.
+    expect(typeof selectSkipCommitSuppress(useGitPanelStore.getState(), 'proj-a')).toBe('boolean')
+  })
+})
+
+/** Helper used by the selector-stability test above. */
+function setSkipCommitSuppressFlagForTest() {
+  useGitPanelStore.getState().setSkipCommitSuppress('proj-a', true)
+}
 
 // --- Per-project active tab (activeTabByProject) & persistence ---
 

@@ -351,6 +351,9 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Timeouts.ServiceLLMRequestTimeout == 0 {
 		cfg.Timeouts.ServiceLLMRequestTimeout = 120
 	}
+	if cfg.Timeouts.GitCommitTimeout == 0 {
+		cfg.Timeouts.GitCommitTimeout = 300
+	}
 
 	// Orchestration defaults
 	if cfg.Orchestration.MaxDependencyContextChars == 0 {

@@ -567,6 +567,11 @@ timeouts:
   persistenceTimeout: 5 # Timeout for persistence (DB) operations
   llmRequestTimeout: 600 # Timeout for a single LLM API call in the main chat loop (10 min). 0 = use default 600s
   serviceLLMRequestTimeout: 120 # Timeout for one-shot "service" LLM requests (session title, commit message, prompt optimization) (2 min). 0 = use default 120s
+  # Timeout for the git commit spawn (git hooks, GPG signing, or large repos
+  # can hold a commit open for a long time). Applies only to the commit
+  # command itself; quick git probes (rev-parse and friends) keep the fast
+  # 30s timeout. 0 / omitted = use default 300s (5 min).
+  # gitCommitTimeout: 300
 
 # ---------------------------------------------------------------------------
 # Orchestration Limits

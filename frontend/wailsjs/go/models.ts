@@ -190,6 +190,57 @@ export namespace backend {
 		}
 	}
 	
+	export class CommitSuppression {
+	    hooks?: string[];
+	    signing_repo?: boolean;
+	    signing_global?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CommitSuppression(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hooks = source["hooks"];
+	        this.signing_repo = source["signing_repo"];
+	        this.signing_global = source["signing_global"];
+	    }
+	}
+	export class CommitResult {
+	    sha?: string;
+	    output?: string;
+	    suppressed?: CommitSuppression;
+	
+	    static createFrom(source: any = {}) {
+	        return new CommitResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sha = source["sha"];
+	        this.output = source["output"];
+	        this.suppressed = this.convertValues(source["suppressed"], CommitSuppression);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class ReasoningInfo {
 	    options: string[];
 	    default: string;

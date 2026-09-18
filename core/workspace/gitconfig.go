@@ -24,7 +24,9 @@ import (
 //
 // Scope (per the GitSpawn remediation plan): the INI subset under the
 // command-relevant section families — core, attr, extensions (model-only:
-// objectformat/worktreeConfig), filter.<name>, merge.<name>, diff.<name>.
+// objectformat/worktreeConfig), filter.<name>, merge.<name>, diff.<name>,
+// plus the transport (credential) and signing (commit/gpg/user) families
+// described below.
 // include/includeIf directives are parsed, logged and recorded but
 // deliberately NOT followed by the key scanner: the included files' contents
 // are unknown, so a config with includes must be treated as partially
@@ -71,13 +73,17 @@ import (
 // closed for them on git older than 2.45, where attr.tree — the only cover
 // for include-hidden attribute-routed drivers — is silently ignored.
 //
-// Out of scope, with rationale: commit.gpgsign / gpg.program (signing vectors)
-// are neutralized unconditionally by the sysproc.GitCmd baseline
-// (-c commit.gpgsign=false + GIT_EDITOR=true, see step_2 of the remediation),
-// so per-repo detection adds nothing actionable for c0wrk's local operation
-// set. Findings for baseline-covered keys are still reported (fsmonitor,
-// hooksPath, editor) with BaselineCovered=true so the intake scanner shows the
-// full picture from this single source.
+// Baseline-covered signing keys, reported for the full intake picture: the
+// commit-signing vectors (commit.gpgsign, gpg.format, gpg.program,
+// user.signingkey) are neutralized unconditionally by the sysproc.GitCmd
+// baseline (-c commit.gpgsign=false on every invocation, see step_2 of the
+// remediation), so per-repo detection adds nothing actionable for c0wrk's
+// local operation set — no overrides are derived. Findings are emitted with
+// BaselineCovered=true (fsmonitor, hooksPath, editor are the other members of
+// this family) so the intake scanner shows the full picture from this single
+// source. commit.gpgsign is additionally truthy-gated: gpgsign=false (the
+// value c0wrk's own fixtures and a safety-minded user write) is already the
+// baseline's pin and must keep a config Clean.
 //
 // Neutralization values are not invented here — every emitted override comes
 // from the canary-verified semantics of the GitSpawn neutralization study
@@ -150,6 +156,7 @@ const (
 	GitConfigFindingAttributesFile = "attributes_file"    // core.attributesFile
 	GitConfigFindingAttrRouting    = "attributes_routing" // filter/merge/diff routing in .git/info/attributes or core.attributesFile
 	GitConfigFindingCredential     = "credential_helper"  // credential.helper / credential.<url>.helper
+	GitConfigFindingSigning        = "signing"            // commit.gpgsign / gpg.format / gpg.program / user.signingkey
 )
 
 // Verified neutralizing override values (GitSpawn neutralization study).
@@ -2034,6 +2041,45 @@ func (p *gitConfigParser) dispatchEntry(line int, key, value string, boolean boo
 		if key == "helper" {
 			kind = GitConfigFindingCredential
 			description = credentialHelperDescription(p.subsection)
+		}
+	case "commit":
+		// Truthy-gated: gpgsign=false is what c0wrk's own fixtures and any
+		// safety-minded configuration write; a disabled signing key must
+		// keep the config Clean rather than warn on the baseline's own
+		// pinned value. Only an ARMED (true/yes/on/1/bare) commit.gpgsign
+		// is reported, as a baseline-covered finding with no override.
+		if key == "gpgsign" && parseBoolConfigValue(value, boolean) {
+			kind = GitConfigFindingSigning
+			baselineCovered = true
+			description = "commit.gpgsign turns on commit signing, which makes git run the signing " +
+				"program (gpg.program or gpg itself, consuming user.signingkey) during commit. " +
+				"Neutralized by the baseline -c commit.gpgsign=false, which c0wrk forces on every git " +
+				"invocation; reported so the intake picture shows the repo tried to sign commits."
+		}
+	case "gpg":
+		if key == "format" || key == "program" {
+			kind = GitConfigFindingSigning
+			baselineCovered = true
+			if key == "format" {
+				description = "gpg.format selects the signing backend for commit and tag signing (openpgp, " +
+					"x509, ssh); combined with an armed signing key it shapes which external program git " +
+					"invokes. Neutralized by the baseline -c commit.gpgsign=false, which c0wrk forces on " +
+					"every git invocation; reported so the intake picture shows the repo configured signing."
+			} else {
+				description = "gpg.program names the binary git executes to sign commits and tags — a " +
+					"repository-configured command vector on signing operations. Neutralized by the " +
+					"baseline -c commit.gpgsign=false, which c0wrk forces on every git invocation; reported " +
+					"so the intake picture shows the repo configured signing."
+			}
+		}
+	case "user":
+		if key == "signingkey" {
+			kind = GitConfigFindingSigning
+			baselineCovered = true
+			description = "user.signingkey names the key (or, for gpg.format=ssh, an arbitrary path or " +
+				"literal key) git passes to the signing program on commit/tag signing. Neutralized by the " +
+				"baseline -c commit.gpgsign=false, which c0wrk forces on every git invocation; reported so " +
+				"the intake picture shows the repo configured signing."
 		}
 	}
 	if kind == "" {

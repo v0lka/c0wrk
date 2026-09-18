@@ -138,13 +138,68 @@ export async function unstageAll(): Promise<void> {
 
 // --- Commit ---
 
-/** Create a git commit with the given message and return the new commit's SHA. */
-export async function commit(message: string): Promise<string> {
+/** What an untrusted repository armed around a commit: hooks git would run and/or signing. */
+export interface CommitSuppression {
+  hooks?: string[]
+  signing_repo?: boolean
+  signing_global?: boolean
+}
+
+/** Commit RPC payload: SHA + bounded commit output, or a Suppressed description when withheld. */
+export interface CommitResult {
+  sha?: string
+  output?: string
+  suppressed?: CommitSuppression
+}
+
+/** Human-readable summary of what a withheld commit would have executed. */
+export function formatCommitSuppression(s: CommitSuppression): string {
+  const parts: string[] = []
+  if (s.hooks && s.hooks.length > 0) parts.push(`hooks: ${s.hooks.join(', ')}`)
+  if (s.signing_repo) parts.push('commit signing (repo config)')
+  if (s.signing_global) parts.push('commit signing (global config)')
+  const detail = parts.length > 0 ? ` (${parts.join('; ')})` : ''
+  return `Commit withheld: this repository would run its own programs on commit${detail}. Commit hardened (without them) or trust the repository first.`
+}
+
+function isCommitSuppression(v: unknown): v is CommitSuppression {
+  if (typeof v !== 'object' || v === null) return false
+  const s = v as Record<string, unknown>
+  if ('hooks' in s && s.hooks !== undefined && !Array.isArray(s.hooks)) return false
+  if (Array.isArray(s.hooks) && !s.hooks.every((h) => typeof h === 'string')) return false
+  if ('signing_repo' in s && s.signing_repo !== undefined && typeof s.signing_repo !== 'boolean') return false
+  if ('signing_global' in s && s.signing_global !== undefined && typeof s.signing_global !== 'boolean') return false
+  return true
+}
+
+function isCommitResult(v: unknown): v is CommitResult {
+  if (typeof v !== 'object' || v === null) return false
+  const r = v as Record<string, unknown>
+  if ('sha' in r && r.sha !== undefined && typeof r.sha !== 'string') return false
+  if ('output' in r && r.output !== undefined && typeof r.output !== 'string') return false
+  if ('suppressed' in r && r.suppressed !== undefined && !isCommitSuppression(r.suppressed)) return false
+  return true
+}
+
+/**
+ * Create a git commit. Pass force=true to commit through the hardened
+ * baseline when the backend reports the repository arms commit
+ * hooks/signing (CommitSuppression). Returns the full result: the new
+ * commit's SHA and output, or a Suppressed description when the commit was
+ * withheld (force=false, armed repo).
+ */
+export async function commit(message: string, force = false): Promise<CommitResult> {
   try {
     const app = getApp()
-    const result = await app.Commit(message)
-    if (typeof result !== 'string' || result.length === 0) {
-      throw new Error('commit: backend returned an invalid commit SHA')
+    const result = await app.Commit(message, force)
+    if (!isCommitResult(result)) {
+      throw new Error('commit: backend returned an invalid CommitResult')
+    }
+    // A withheld commit is a normal result (no error): suppressed carries
+    // the description, sha stays empty.
+    if (result.suppressed) return result
+    if (typeof result.sha !== 'string' || result.sha.length === 0) {
+      throw new Error('commit: backend returned no commit SHA')
     }
     return result
   } catch (err) {

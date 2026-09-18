@@ -74,8 +74,8 @@ export function ClearReviewComments(arg1) {
   return window['go']['desktop']['App']['ClearReviewComments'](arg1);
 }
 
-export function Commit(arg1) {
-  return window['go']['desktop']['App']['Commit'](arg1);
+export function Commit(arg1, arg2) {
+  return window['go']['desktop']['App']['Commit'](arg1, arg2);
 }
 
 export function CompactSessionContext(arg1, arg2) {
