@@ -667,6 +667,28 @@ func liveSendRejectionLocked(session *Session, goal, e2s bool, text string, acti
 	return nil
 }
 
+// refreshAutonomyPosture re-pins the session registry's autonomy posture
+// (autonomy mode + silent-mode sub-policies) from the shared builder registry
+// at a task-launch boundary — fresh sends and every resume path. It is the
+// receiving half of the per-task pinning contract (see
+// ToolRegistry.RefreshAutonomyPosture and applySecurityPolicies): a Settings
+// save updates the shared registry immediately but never flips the posture of
+// a task that is already running, so the posture a task runs under is exactly
+// what the user last saved before the task launched. Best-effort and safe to
+// call concurrently with tool execution on another session: nil orchestrator
+// or nil registry (no CoreToolRegistry wired — tests, CLI) is a no-op.
+func (m *Manager) refreshAutonomyPosture(session *Session) {
+	session.mu.Lock()
+	orch := session.orchestrator
+	session.mu.Unlock()
+	if orch == nil {
+		return
+	}
+	if reg := orch.ToolRegistry(); reg != nil {
+		reg.RefreshAutonomyPosture()
+	}
+}
+
 // sendMessage is the implementation behind SendMessage. presented marks a
 // relaunch of an already-rendered message (the live-send follow-up): it skips
 // the message_received emission and title generation because the UI and the
@@ -794,6 +816,12 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 	}
 	session.cancel = cancel
 	session.mu.Unlock()
+
+	// Task-launch boundary: pin the autonomy posture this task will run under
+	// from the current Settings (covers the fresh, goal, E2S, and
+	// continue-interrupted dispatches below — they all run in this task's
+	// goroutine).
+	m.refreshAutonomyPosture(session)
 
 	// Snapshot envInfo under read lock
 	m.mu.RLock()
@@ -1479,6 +1507,12 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	// running task) but before launching the Resume goroutine, so the emitter's
 	// cached model is synchronized before the initial context_fill is emitted.
 	session.orchestrator.ApplyRequestOverrides(ctx, modelOverride, reasoningEffort)
+
+	// Task-launch boundary (resume): pin the autonomy posture the resumed run
+	// will execute under from the current Settings — the pause→edit→resume
+	// flow must behave exactly like launching a new task with those Settings.
+	// The interrupted task's own posture is discarded by design.
+	m.refreshAutonomyPosture(session)
 
 	// Snapshot envInfo under read lock
 	m.mu.RLock()

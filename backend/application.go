@@ -251,7 +251,9 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	// context and emits the persisted `autonomy_decision` session event
 	// (OWASP ASI10: the trajectory must stay reconstructable). Session
 	// registries inherit the observer through Clone, so per-session clones
-	// report their own decisions too.
+	// report their own decisions too. The executor context is forwarded so a
+	// subagent's decision carries its delegation/plan-step scope and renders
+	// inside the subagent's chat block, not the main stream.
 	builder.ToolRegistry().SetAutonomyDecisionObserver(func(ctx context.Context, decision coretools.AutonomyDecision) {
 		if app.manager == nil {
 			return
@@ -262,7 +264,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 				"kind", decision.Kind, "tool", decision.Tool, "verdict", decision.Verdict)
 			return
 		}
-		app.manager.EmitAutonomyDecision(sessionID, decision)
+		app.manager.EmitAutonomyDecision(ctx, sessionID, decision)
 	})
 
 	// 5. Orchestrator factory closure for the session manager.

@@ -326,6 +326,17 @@ func (e *EventEmitter) SetCurrentStepID(id string) {
 	e.planStepID = id
 }
 
+// CurrentStepID returns the dynamic plan-step scope set via SetCurrentStepID
+// (the inline step the root executor is currently executing), or "" when the
+// emitter is not step-scoped. It lets out-of-band emitters that bypass the
+// scoped copies (e.g. Manager.EmitAutonomyDecision) attribute a notice to the
+// same inline step the executor's own events carry via emitEvent injection.
+func (e *EventEmitter) CurrentStepID() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.planStepID
+}
+
 // ensure EventEmitter implements core.Emitter, core.PlanStepScopable, and core.RetryAttemptScopable at compile time.
 var (
 	_ core.Emitter              = (*EventEmitter)(nil)

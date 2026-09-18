@@ -255,31 +255,38 @@ func TestSymlinkGate_BashExecWithInRootsSymlink(t *testing.T) {
 	}
 }
 
-func TestSymlinkGate_BashExecSuspiciousForceConfirm(t *testing.T) {
+// TestSymlinkGate_ShellExpansionsNoLongerEscalate proves the removal of the
+// expansion-suspicion checks from the symlink gate (ADR-054): a shell command
+// with unresolvable expansions ($var, $(cmd), backticks) no longer escalates
+// through the symlink gate — dynamic constructs are the deterministic flowsh
+// analysis's domain, and the symlink walk is a pure literal-path extractor.
+// The execute group is set to allow so any symlink-gate escalation would
+// surface as a confirmation instead of being masked by the user_confirm
+// default.
+func TestSymlinkGate_ShellExpansionsNoLongerEscalate(t *testing.T) {
 	r := newRegistryForSymlinkTest(t)
-	confirmed := make(chan struct{}, 1)
+	r.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
+		sdktools.GroupExecute: sdktools.PolicyAlwaysAllow,
+	})
 	r.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
-		confirmed <- struct{}{}
+		t.Fatalf("confirmFunc should NOT be called: shell expansions are flowsh's domain, not the symlink gate's (reason=%q)", req.JudgeReasoning)
 		return sdktools.ConfirmDeny, nil
 	})
 
-	input, _ := json.Marshal(map[string]string{"command": "cat $HOME/file"})
-	ctx := context.Background()
+	ws := t.TempDir()
+	command := `X=probe; cat "$X/no-such-file" "$(echo probe)/also-missing"`
+	input, _ := json.Marshal(map[string]string{"command": command})
+	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
 
 	result, err := r.Execute(ctx, shellExecToolName(), input)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if !result.IsError {
-		t.Fatal("expected error result for denied suspicious command")
+	if result.IsError && strings.Contains(result.Content, "symlink") {
+		t.Fatalf("symlink gate should not have intercepted a command with expansions, got: %s", result.Content)
 	}
-
-	select {
-	case <-confirmed:
-		// Confirmation was triggered — correct
-	default:
-		t.Fatal("expected confirmFunc to be called for suspicious bash command")
-	}
+	// The call reached execution: cat reports the missing files (an error
+	// result), but through the tool, not through a symlink confirmation.
 }
 
 func TestSymlinkGate_EmptyInput(t *testing.T) {

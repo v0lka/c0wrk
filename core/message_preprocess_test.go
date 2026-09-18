@@ -5,7 +5,9 @@ import "testing"
 // TestPreprocessMessageText verifies the user-message preprocessor. It focuses
 // on the @file → fileref:// conversion, including GitHub-style line/line-range
 // anchors (#L20, #L20-L36, #L5-10), legacy bare-number anchors (#42, #5-10),
-// plain paths, as well as /skill stripping and multi-space collapsing.
+// the single-quoted (@'my file.go') and legacy escaped-space (@my\ file.go)
+// path forms, plain paths, as well as /skill stripping and multi-space
+// collapsing.
 func TestPreprocessMessageText(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -54,6 +56,49 @@ func TestPreprocessMessageText(t *testing.T) {
 			name: "plain path no anchor",
 			text: "@x.go",
 			want: "fileref://x.go",
+		},
+
+		// Single-quoted form (@'file name') — the canonical form for paths
+		// with spaces. The anchor may follow the closing quote or sit inside
+		// the quotes; both positions must work.
+		{
+			name: "quoted path with spaces",
+			text: "@'my file.go'",
+			want: "fileref://my file.go",
+		},
+		{
+			name: "quoted path inside prose",
+			text: "see @'my file.go' here",
+			want: "see fileref://my file.go here",
+		},
+		{
+			name: "quoted path with anchor after closing quote",
+			text: "@'my file.go'#L20-L36",
+			want: "fileref://my file.go#L20-L36",
+		},
+		{
+			name: "quoted path with anchor inside quotes",
+			text: "@'my file.go#L20'",
+			want: "fileref://my file.go#L20",
+		},
+		{
+			name:      "quoted relative path resolved against workspace",
+			text:      "see @'docs/my file.md' here",
+			workspace: "/ws",
+			want:      "see fileref:///ws/docs/my file.md here",
+		},
+		{
+			name:      "quoted absolute path left unchanged",
+			text:      "@'/abs/path/with spaces/x.go'",
+			workspace: "/ws",
+			want:      "fileref:///abs/path/with spaces/x.go",
+		},
+
+		// Legacy backslash-escaped form keeps working unchanged.
+		{
+			name: "legacy escaped-space path",
+			text: "@my\\ file.go",
+			want: "fileref://my file.go",
 		},
 
 		// Ref embedded in surrounding prose preserves the prose and surrounding spaces.

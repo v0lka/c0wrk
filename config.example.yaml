@@ -347,7 +347,10 @@ security:
   #                        value IS the master switch for the sub-policies.
   # Configs written before this enum are migrated at load (silent wins over
   # assisted) and the legacy keys are dropped at the next save. An unknown
-  # value fails safe to standard with a load warning.
+  # value fails safe to standard with a load warning. The posture is pinned
+  # per task at launch (a fresh send or any resume): a Settings save updates
+  # the shared state immediately but never flips the posture of a task that
+  # is already running — the next task (or a resumed one) picks it up.
   autonomy_mode: "standard"
 
   # --- Silent mode (security.silent_mode) ---
@@ -395,8 +398,10 @@ security:
   # the assisted-mode canonical backstop, which forces a confirmation card
   # instead). Pick tool_confirm "deny" if you want a judge-free hard floor for
   # unattended runs.
-  # A runtime change from Settings → Security applies to live sessions without
-  # an app restart.
+  # A runtime change from Settings → Security takes effect without an app
+  # restart: sub-policy edits apply at each task's launch (a running task
+  # keeps the posture it started with; the next fresh or resumed task picks
+  # up the current values), and ask_user follows Settings immediately.
   silent_mode:
     tool_confirm:
       mode: "judge"

@@ -2338,8 +2338,10 @@ func newJudgeDumpProvider(inner llm.Provider, logger *slog.Logger, providerName 
 // records the clone as live. The clone and the insert happen atomically under
 // b.mu so a concurrent applySecurityPolicies push cannot slip between them:
 // either the clone is created after the parent registry was updated (it
-// inherits the new security state) or it is already tracked here and receives
-// the push. The entry is released by unregisterSessionRegistry via the
+// inherits the new group policies and autonomy posture) or it is already
+// tracked here and receives the group-policy half of the push. The autonomy
+// posture on the clone is pinned at task launch (RefreshAutonomyPosture), not
+// pushed. The entry is released by unregisterSessionRegistry via the
 // orchestrator's cleanup hook.
 func (b *OrchestratorBuilder) registerSessionRegistry() *tools.ToolRegistry {
 	b.mu.Lock()
@@ -2367,19 +2369,28 @@ func (b *OrchestratorBuilder) unregisterSessionRegistry(r *tools.ToolRegistry) {
 // system group is not configurable and any entry for it is skipped
 // defensively; unknown group names are likewise skipped.
 //
-// It also pushes the silent-mode posture (security.silent_mode) to the same
-// registries and reconciles the ask_user tool's registration on the shared
-// registry, so a runtime security-settings edit takes effect on live sessions
-// without an app restart.
+// Split delivery contract (per-task autonomy pinning): the shared registry
+// receives the FULL state — group policies, auto-approval, the autonomy mode,
+// and the silent-mode sub-policies — while live per-session clones receive
+// ONLY the group policies and auto-approval. Group policy is fail-closed
+// posture shared by every session: a runtime deny set in the security
+// settings UI must reach already-open sessions too, otherwise it would
+// silently fail-open on every session created before the save (the same
+// save's execute blocklist does reach them, because it re-registers the tool
+// in the shared sp4rk registry the clones embed). The autonomy posture, by
+// contrast, is pinned per task: each clone inherits it at creation and
+// re-syncs it from the shared registry at task launch (fresh send and every
+// resume path) via ToolRegistry.RefreshAutonomyPosture, so a task that
+// started interactive can never silently turn unattended mid-run, and a
+// paused task resumed after a Settings edit runs under the posture the user
+// currently sees in Settings. applySecurityPolicies also reconciles the
+// ask_user tool's registration on the shared registry — ask_user availability
+// is tool-registration-scoped and therefore follows Settings immediately
+// (including for a running task); this is a documented boundary of the
+// pinning contract.
 //
-// The state is pushed to the shared registry AND every live per-session
-// registry clone: each session executes on its own clone (see Build), so a
-// runtime edit from the security settings UI must reach already-open sessions
-// too — otherwise a deny set in the UI would silently fail-open on every
-// session created before the save (the same save's execute blocklist does
-// reach them, because it re-registers the tool in the shared sp4rk registry
-// the clones embed). The push holds b.mu across the whole update so a Build
-// racing it cannot miss the new state (see registerSessionRegistry).
+// The push holds b.mu across the whole update so a Build racing it cannot
+// miss the new state (see registerSessionRegistry).
 func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 	groupPolicies := make(map[sdktools.ToolGroup]sdktools.ToolPolicy, len(cfg.Security.Groups))
 	for name, group := range cfg.Security.Groups {
@@ -2408,7 +2419,11 @@ func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 	b.mu.Lock()
 	b.registry.ApplySecurityState(groupPolicies, autoApprove, autonomyMode, silentMode)
 	for r := range b.sessionRegistries {
-		r.ApplySecurityState(groupPolicies, autoApprove, autonomyMode, silentMode)
+		// Group policies and auto-approval only: the autonomy posture is
+		// pinned per task (see the method comment) — a clone re-syncs it
+		// from the shared registry at task launch via
+		// RefreshAutonomyPosture, never mid-run.
+		r.ApplyGroupPolicies(groupPolicies, autoApprove)
 	}
 	// ask_user lives in the shared sp4rk registry the session clones embed, so
 	// re-registering it here reaches live sessions immediately — a runtime

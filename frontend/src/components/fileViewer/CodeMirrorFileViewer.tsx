@@ -6,6 +6,7 @@ import { lineNumbers } from '@codemirror/view'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useWorkspacePath } from '@/hooks/useWorkspacePath'
 import { relativePath } from '@/lib/localFileLink'
+import { formatFileRefPath } from '@/lib/parseReferences'
 import { parseUnifiedDiff, buildDisplayLines } from '@/lib/diffParser'
 import { Markdown } from '@/lib/markdownConfig'
 import { Button } from '@/components/ui/button'
@@ -251,10 +252,13 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
 
       const fileRef = workspacePath ? relativePath(workspacePath, activeFile) : activeFile
 
+      // The line anchor sits after the (possibly quoted) path form:
+      // @'my file.go'#L20-L36 when the path has spaces, @x.go#L20 otherwise.
+      const formattedRef = formatFileRefPath(fileRef)
       contextMenuRef.current =
         endLine > startLine
-          ? `@${fileRef}#${startLine}-${endLine}`
-          : `@${fileRef}#${startLine}`
+          ? `@${formattedRef}#${startLine}-${endLine}`
+          : `@${formattedRef}#${startLine}`
       contextMenuTextRef.current = doc.sliceString(selection.from, selection.to)
 
       setContextMenuPos({ x: e.clientX, y: e.clientY })

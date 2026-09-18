@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import type { ChatMessageUI, MessageType } from '@/stores/chatStore'
-import { handleToolConfirmEvent, handleToolJudgeStartedEvent, handleToolJudgeFinishedEvent } from './hitlHandlers'
+import { handleToolConfirmEvent, handleToolJudgeStartedEvent, handleToolJudgeFinishedEvent, handleAutonomyDecisionEvent } from './hitlHandlers'
 
 let idc = 0
 function makeUI(overrides: Partial<ChatMessageUI> & { type: MessageType }): ChatMessageUI {
@@ -107,6 +107,47 @@ describe('handleToolConfirmEvent — tool_call_id correlation', () => {
     const confirm = findConfirm(sessionId)
     expect(confirm).toBeDefined()
     expect(confirm!.metadata?.tool_msg_id).toBe('tool-y')
+  })
+})
+
+describe('handleAutonomyDecisionEvent — non-blocking audit notice', () => {
+  it('stamps the plan_step_id into the message metadata so the notice nests under the executor block', () => {
+    const sessionId = `sess-autonomy-${idc}`
+    handleAutonomyDecisionEvent(sessionId, {
+      kind: 'tool_confirm',
+      mode: 'silent',
+      policy: 'allow',
+      verdict: 'allow',
+      tool: 'bash_exec',
+      justification: 'ran unattended: no hard safety reason',
+      plan_step_id: 'sa1',
+    })
+
+    const msgs = selectSessionMessages(useChatStore.getState(), sessionId)
+    const notice = msgs.find(m => m.type === 'status')
+    expect(notice).toBeDefined()
+    // The payload rides in metadata (spread), and the delegation/plan-step
+    // scope survives — groupMessages keys nesting off metadata.plan_step_id,
+    // so a subagent's silent-mode decision renders inside its block.
+    expect(notice!.metadata?.plan_step_id).toBe('sa1')
+    expect(notice!.metadata?.kind).toBe('tool_confirm')
+    expect(notice!.content).toContain('bash_exec')
+  })
+
+  it('creates a root-level status message when the payload carries no scope', () => {
+    const sessionId = `sess-autonomy-root-${idc}`
+    handleAutonomyDecisionEvent(sessionId, {
+      kind: 'assisted_deny',
+      mode: 'assisted',
+      verdict: 'deny',
+      tool: 'bash_exec',
+      justification: 'ASI05',
+    })
+
+    const msgs = selectSessionMessages(useChatStore.getState(), sessionId)
+    const notice = msgs.find(m => m.type === 'status')
+    expect(notice).toBeDefined()
+    expect(notice!.metadata?.plan_step_id).toBeUndefined()
   })
 })
 

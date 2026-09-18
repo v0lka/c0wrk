@@ -13,7 +13,10 @@ import type { AutonomyDecisionData } from '@/types/events'
 export function autonomyDecisionContent(data: AutonomyDecisionData): string {
   const justification = data.justification ? ` — ${data.justification}` : ''
   const posture = data.mode === 'assisted' ? 'Assisted mode' : 'Silent mode'
-  const policy = data.policy ? ` (${data.policy})` : ''
+  // The sub-policy is a posture setting, NOT the decision — render it as
+  // `«Allow» policy` (capitalized, quoted, labeled) so it cannot be misread
+  // as the verdict; the verdict follows after the colon ("allowed"/"denied").
+  const policy = data.policy ? ` («${policyTitle(data.policy)}» policy)` : ''
 
   if (data.kind === 'step_limit') {
     const at = data.current_step !== undefined && data.max_steps !== undefined
@@ -27,4 +30,9 @@ export function autonomyDecisionContent(data: AutonomyDecisionData): string {
   const target = data.tool ? ` ${data.tool}` : ''
   const reason = data.reason ? ` (${data.reason})` : ''
   return `${posture}${policy}: ${action}${target}${reason}${justification}`
+}
+
+/** Capitalize a sub-policy id for the notice title: "allow" → "Allow". */
+function policyTitle(policy: string): string {
+  return policy.charAt(0).toUpperCase() + policy.slice(1)
 }

@@ -590,6 +590,38 @@ describe('groupMessages', () => {
     expect(sub.children[0]!.kind).toBe('assistant')
   })
 
+  it('nests an autonomy_decision status notice under the subagent block (silent-mode audit rows)', () => {
+    const launch = makeUI({
+      type: 'subagent_launch',
+      metadata: { step_id: 'sa1', description: 'Research code' },
+    })
+    // A silent-mode automatic decision taken by the subagent's executor: the
+    // backend scopes it to the delegation's block via plan_step_id (the same
+    // nesting key the subagent's own tool_call events carry).
+    const notice = makeUI({
+      type: 'status',
+      content: 'Silent mode («Allow» policy): allowed bash_exec',
+      metadata: {
+        kind: 'tool_confirm', mode: 'silent', policy: 'allow', verdict: 'allow',
+        tool: 'bash_exec', justification: 'ran unattended: no hard safety reason',
+        plan_step_id: 'sa1',
+      },
+    })
+    // A root-level decision carries no plan_step_id and stays in the main stream.
+    const rootNotice = makeUI({
+      type: 'status',
+      content: 'Silent mode («Allow» policy): allowed bash_exec',
+      metadata: { kind: 'tool_confirm', mode: 'silent', policy: 'allow', verdict: 'allow', tool: 'bash_exec' },
+    })
+    const result = groupMessages([launch, notice, rootNotice])
+    expect(result.items).toHaveLength(2)
+    const sub = result.items[0]! as DisplayItem & { kind: 'subagent' }
+    expect(sub.children).toHaveLength(1)
+    expect(sub.children[0]!.kind).toBe('service')
+    const rootSvc = result.items[1]! as DisplayItem & { kind: 'service' }
+    expect(rootSvc.kind).toBe('service')
+  })
+
   it('updates subagent status on subagent_complete', () => {
     const launch = makeUI({
       type: 'subagent_launch',

@@ -129,6 +129,12 @@ type ToolRegistry struct {
 	silentMode                 SilentModeState
 	judgeObserver              JudgeObserver
 	autonomyDecisionObserver   AutonomyDecisionObserver
+	// parent is the shared builder registry this clone was cut from (nil on
+	// the shared registry itself). Clones pin their autonomy posture at task
+	// launch — a runtime Settings save must not flip the posture of a task
+	// already running (see RefreshAutonomyPosture) — so the clone keeps a
+	// link to the authoritative posture source instead.
+	parent *ToolRegistry
 }
 
 // PreExecuteHook is called before tool execution. It may block to wait for
@@ -212,6 +218,13 @@ type AutonomyDecision struct {
 	// CurrentStep/MaxSteps locate a step-limit decision; zero for tool_confirm.
 	CurrentStep int `json:"current_step,omitempty"`
 	MaxSteps    int `json:"max_steps,omitempty"`
+	// PlanStepID locates the decision in the transcript: the delegation or
+	// plan-step block whose executor took it. Host-filled from the executor
+	// context (agent.StepIDFromContext — RunSubAgent stamps every subagent
+	// launch) with the root emitter's current inline step as the fallback, so
+	// the notice nests under the matching subagent/plan-step block instead of
+	// the main chat stream. Empty for root-level decisions.
+	PlanStepID string `json:"plan_step_id,omitempty"`
 }
 
 // AutonomyDecisionObserver is invoked once per automatic (no-human) decision,
@@ -248,7 +261,9 @@ func NewToolRegistry() *ToolRegistry {
 // ToolRegistry (tools themselves are stateless and shared) but has independent
 // policy state (groupPolicies, judge, confirmFunc, hooks). This gives each
 // session/orchestrator its own policy view so runtime mutations on a clone do
-// not leak across concurrent sessions.
+// not leak across concurrent sessions. The clone records its parent (the
+// registry it was cut from) so RefreshAutonomyPosture can re-sync the pinned
+// autonomy posture from the authoritative source at task launch.
 func (r *ToolRegistry) Clone() *ToolRegistry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -266,6 +281,7 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 		silentMode:                 r.silentMode,
 		judgeObserver:              r.judgeObserver,
 		autonomyDecisionObserver:   r.autonomyDecisionObserver,
+		parent:                     r,
 	}
 	if r.disabledTools != nil {
 		cloned.disabledTools = make(map[string]bool, len(r.disabledTools))
@@ -422,6 +438,56 @@ func (r *ToolRegistry) ApplySecurityState(
 	defer r.mu.Unlock()
 	r.groupPolicies = copied
 	r.autoApproveWorkspaceWrites = autoApproveWorkspaceWrites
+	r.autonomyMode = autonomyMode
+	r.silentMode = silentMode
+}
+
+// ApplyGroupPolicies atomically replaces ONLY the group→policy map and the
+// session-root write auto-approval, preserving the autonomy mode and the
+// silent-mode sub-policies. It is the runtime-push counterpart of
+// ApplySecurityState for live per-session clones: group policies and
+// auto-approval are shared, fail-closed posture that a Settings save must
+// deliver to already-running sessions (a deny set in the UI must not fail
+// open on a session created before the save), while the autonomy posture is
+// pinned per task at launch (see RefreshAutonomyPosture) and must never be
+// flipped under a running task. Like ApplySecurityState, the policies map is
+// deep-copied so a broadcast push may pass the same map to many registries.
+func (r *ToolRegistry) ApplyGroupPolicies(
+	policies map[sdktools.ToolGroup]sdktools.ToolPolicy,
+	autoApproveWorkspaceWrites bool,
+) {
+	copied := make(map[sdktools.ToolGroup]sdktools.ToolPolicy, len(policies))
+	for g, p := range policies {
+		copied[g] = p
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.groupPolicies = copied
+	r.autoApproveWorkspaceWrites = autoApproveWorkspaceWrites
+}
+
+// RefreshAutonomyPosture re-syncs this registry's autonomy mode and
+// silent-mode sub-policies from its parent (the shared builder registry the
+// clone was cut from). It is the task-launch half of the per-task posture
+// pinning contract: a Settings save updates the shared registry immediately,
+// but a session clone picks the posture up only here — at fresh-task start
+// and at resume — so a task that started interactive can never silently turn
+// unattended mid-run, and a paused task resumed after a Settings change runs
+// under the posture the user sees in Settings. A no-op on the shared registry
+// itself (no parent) and on clones whose parent is nil. Both values are read
+// from the parent under one lock acquisition, so a concurrent Settings save
+// cannot tear the pair.
+func (r *ToolRegistry) RefreshAutonomyPosture() {
+	if r.parent == nil {
+		return
+	}
+	r.parent.mu.RLock()
+	autonomyMode := r.parent.autonomyMode
+	silentMode := r.parent.silentMode
+	r.parent.mu.RUnlock()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.autonomyMode = autonomyMode
 	r.silentMode = silentMode
 }
@@ -664,10 +730,10 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	// branch below:
 	//   - the tool's own Judge (command blocklist / SSRF = hard; path
 	//     containment = soft),
-	//   - symlink traversal detection (an escape out of the session roots or
-	//     unresolvable input = hard; a symlink whose resolution stays inside
-	//     the roots is NOT a concern — containment reasons about resolved
-	//     paths).
+	//   - symlink traversal detection (an escape out of the session roots =
+	//     hard; a symlink whose resolution stays inside the roots is NOT a
+	//     concern — containment reasons about resolved paths; shell variable
+	//     expansions are flowsh's domain, not the symlink gate's).
 	judgeOutcome := judgeToolCall(ctx, tool, input)
 	symlinkReason, symlinkCode := r.symlinkHardReason(ctx, name, tool, input)
 	reasons := splitSafetyReasons(judgeOutcome, symlinkReason, symlinkCode)
@@ -930,10 +996,10 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 	// fired security control on unmistakably dangerous behavior, or an input
 	// whose safety the judge is structurally unable to assess (degraded SSRF
 	// protection, an undeterminable URL/path), is not for an advisory judge
-	// to waive. Only scope/pattern hard reasons (e.g. an unresolvable
-	// path-like token) that the strict judge positively clears may
-	// auto-approve. (The silent path drops this backstop by design — see
-	// silentJudgeDecide.)
+	// to waive. Only non-canonical hard reasons (e.g. the flowsh analyzer's
+	// ⊤ limitation, command_unbounded_analysis) that the strict judge
+	// positively clears may auto-approve. (The silent path drops this
+	// backstop by design — see silentJudgeDecide.)
 	if verdict == sdktools.VerdictAllow && severity == sdktools.JudgeSeverityHard && isCanonicalHardReason(code) {
 		verdict = sdktools.VerdictConfirm
 		reasoning = "A security control fired on this destructive call and cannot be waived by an advisory judge; manual confirmation required. " + reason

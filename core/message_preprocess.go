@@ -6,10 +6,14 @@ import (
 	"strings"
 )
 
-// fileRefPattern matches @path references (with optional backslash-escaped spaces
-// and an optional line/line-range anchor). The anchor accepts GitHub-style forms:
-// #N, #N-M (legacy bare-number) and #LN, #LN-LN (e.g. #L20-L36).
-var fileRefPattern = regexp.MustCompile(`(?:^|\s)@((?:[^\s\\]|\\.)+(?:#L?\d+(?:-L?\d+)?)?)`)
+// fileRefPattern matches @path references in either form: a single-quoted
+// path (@'my file.go', the canonical form for paths with spaces) or a bare
+// path with optional backslash-escaped spaces (@my\ file.go, the legacy
+// form). An optional line/line-range anchor may follow; the anchor accepts
+// GitHub-style forms: #N, #N-M (legacy bare-number) and #LN, #LN-LN (e.g.
+// #L20-L36). The quoted alternative must come first so a quoted ref is
+// consumed as one token instead of falling through to the bare-path alt.
+var fileRefPattern = regexp.MustCompile(`(?:^|\s)@((?:'[^']+'|(?:[^\s\\]|\\.)+)(?:#L?\d+(?:-L?\d+)?)?)`)
 
 // lineAnchorSuffixRe matches a trailing GitHub-style line/line-range anchor
 // (#N, #N-M, #LN, #LN-LN) at the end of an @file reference path. Unlike an
@@ -27,8 +31,10 @@ var multiSpaceRe = regexp.MustCompile(`  +`)
 //  2. Strips #agent-name references for each agent in activeAgents.
 //  3. Converts @file-path references to fileref:// URIs, resolving each
 //     relative path against workspacePath so the LLM receives unambiguous
-//     absolute paths. Absolute and home-relative (~/...) paths, and refs
-//     when workspacePath is empty, are left unchanged.
+//     absolute paths. Both the quoted (@'my file.go') and the legacy
+//     backslash-escaped (@my\ file.go) forms are recognized. Absolute and
+//     home-relative (~/...) paths, and refs when workspacePath is empty, are
+//     left unchanged.
 //
 // Only known agent names (from activeAgents) are stripped — exactly mirroring
 // /skill stripping — so a GitHub-style line anchor like @file#L20 is never
@@ -80,11 +86,12 @@ func PreprocessMessageText(text string, activeSkills, activeAgents []string, wor
 		}
 		// Remove the @ prefix.
 		path := strings.TrimPrefix(trimmed, "@")
-		// Unescape backslash-escaped spaces.
-		path = strings.ReplaceAll(path, `\ `, " ")
-		// Resolve to an absolute path relative to the workspace. A trailing
-		// GitHub-style line anchor (#N, #L20-L36, …) must be split off so it
-		// is not mistaken for a path component; it is re-attached unchanged.
+		// Normalize the path form. A trailing GitHub-style line anchor
+		// (#N, #L20-L36, …) is split off first so it survives both the
+		// unquoting of the @'…' form and the unescaping of the legacy
+		// backslash-escaped form, and is re-attached unchanged.
+		path = normalizeFileRefPath(path)
+		// Resolve to an absolute path relative to the workspace.
 		path = resolveFileRefPath(path, workspacePath)
 		return prefix + "fileref://" + path
 	})
@@ -92,6 +99,30 @@ func PreprocessMessageText(text string, activeSkills, activeAgents []string, wor
 	// Collapse multiple spaces into one.
 	result = multiSpaceRe.ReplaceAllString(result, " ")
 	return strings.TrimSpace(result)
+}
+
+// normalizeFileRefPath normalizes the path portion of an @file reference to
+// its literal form. Two input forms are supported:
+//
+//   - Single-quoted (@'my file.go'): the content between the quotes is taken
+//     verbatim — spaces need no escaping and backslashes are literal.
+//   - Bare with backslash-escaped spaces (@my\ file.go, the legacy form):
+//     each `\ ` escape is unescaped to a plain space.
+//
+// A trailing GitHub-style line anchor (#N, #N-M, #LN, #LN-LN) — which may
+// sit after the closing quote (@'f.go'#L20) or inside it (@'f.go#L20') — is
+// split off before normalization and re-attached verbatim, so it never
+// interferes with quote detection or path resolution.
+func normalizeFileRefPath(refPath string) string {
+	anchor := ""
+	if loc := lineAnchorSuffixRe.FindStringIndex(refPath); loc != nil {
+		anchor = refPath[loc[0]:]
+		refPath = refPath[:loc[0]]
+	}
+	if len(refPath) >= 2 && strings.HasPrefix(refPath, "'") && strings.HasSuffix(refPath, "'") {
+		return refPath[1:len(refPath)-1] + anchor
+	}
+	return strings.ReplaceAll(refPath, `\ `, " ") + anchor
 }
 
 // resolveFileRefPath resolves an @file reference's path portion against the

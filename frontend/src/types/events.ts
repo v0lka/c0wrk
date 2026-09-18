@@ -96,6 +96,11 @@ export interface AutonomyDecisionData {
   readonly category?: string
   readonly current_step?: number
   readonly max_steps?: number
+  /** The delegation or plan-step block whose executor took the decision
+   *  (host-filled from the executor context). When present the notice nests
+   *  under that subagent/plan-step block in the chat instead of the main
+   *  stream; absent for root-level decisions. */
+  readonly plan_step_id?: string
 }
 
 export interface ContextFillData {
