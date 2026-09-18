@@ -1477,7 +1477,6 @@ export namespace backend {
 	    }
 	}
 	export class SilentModeResponse {
-	    enabled: boolean;
 	    tool_confirm: SilentSubPolicyResponse;
 	    step_limit: SilentSubPolicyResponse;
 	    ask_user: SilentSubPolicyResponse;
@@ -1489,7 +1488,6 @@ export namespace backend {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.enabled = source["enabled"];
 	        this.tool_confirm = this.convertValues(source["tool_confirm"], SilentSubPolicyResponse);
 	        this.step_limit = this.convertValues(source["step_limit"], SilentSubPolicyResponse);
 	        this.ask_user = this.convertValues(source["ask_user"], SilentSubPolicyResponse);
@@ -1517,7 +1515,7 @@ export namespace backend {
 	export class SecuritySettingsResponse {
 	    groups: Record<string, GroupPolicyResponse>;
 	    auto_approve_workspace_writes: boolean;
-	    smart_approve: boolean;
+	    autonomy_mode: string;
 	    silent_mode: SilentModeResponse;
 	    judge_available: boolean;
 	
@@ -1529,7 +1527,7 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.groups = this.convertValues(source["groups"], GroupPolicyResponse, true);
 	        this.auto_approve_workspace_writes = source["auto_approve_workspace_writes"];
-	        this.smart_approve = source["smart_approve"];
+	        this.autonomy_mode = source["autonomy_mode"];
 	        this.silent_mode = this.convertValues(source["silent_mode"], SilentModeResponse);
 	        this.judge_available = source["judge_available"];
 	    }
