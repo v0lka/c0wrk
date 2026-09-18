@@ -283,4 +283,21 @@ describe('banner lifetime control', () => {
     const selected = bannerTimeoutButtons().find((b) => b.className.includes('bg-background'))
     expect(selected?.textContent).toBe('Default')
   })
+
+  it('renders on Linux arm64 hosts — the matcher must stay architecture-agnostic', async () => {
+    // WebKit composes navigator.platform from uname(): "Linux x86_64" on amd64,
+    // "Linux aarch64" on arm64 — a first-class release platform (ADR-027).
+    // isLinuxHost() matches the "Linux" substring, so any architecture string
+    // passes; this test pins that. A regression to exact-match against one
+    // arch would silently hide the control for every arm64 user while the
+    // rest of the suite (pinned to x86_64 above) stayed green.
+    Object.defineProperty(navigator, 'platform', {
+      configurable: true,
+      value: 'Linux aarch64',
+    })
+    render()
+    await flush()
+
+    expect(bannerTimeoutButtons().length).toBeGreaterThan(0)
+  })
 })
