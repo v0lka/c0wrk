@@ -1374,32 +1374,11 @@ export namespace backend {
 	        this.skill = source["skill"];
 	    }
 	}
-	export class ResearchSeedResultDTO {
-	    seeded: string[];
-	    updated: string[];
-	    current: string[];
-	    preserved: string[];
-	    modified: string[];
-	
-	    static createFrom(source: any = {}) {
-	        return new ResearchSeedResultDTO(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.seeded = source["seeded"];
-	        this.updated = source["updated"];
-	        this.current = source["current"];
-	        this.preserved = source["preserved"];
-	        this.modified = source["modified"];
-	    }
-	}
 	export class ResearchStatusDTO {
 	    enabled: boolean;
 	    project_id: string;
 	    research_root: string;
 	    root?: research.ResearchRoot;
-	    seed_result?: ResearchSeedResultDTO;
 	    pinned_research: string[];
 	    pinned_hypotheses: Record<string, Array<string>>;
 	
@@ -1413,7 +1392,6 @@ export namespace backend {
 	        this.project_id = source["project_id"];
 	        this.research_root = source["research_root"];
 	        this.root = this.convertValues(source["root"], research.ResearchRoot);
-	        this.seed_result = this.convertValues(source["seed_result"], ResearchSeedResultDTO);
 	        this.pinned_research = source["pinned_research"];
 	        this.pinned_hypotheses = source["pinned_hypotheses"];
 	    }
@@ -2156,9 +2134,7 @@ export namespace project {
 	    workspace_path: string;
 	    is_external: boolean;
 	    is_no_project: boolean;
-	    research_root: string;
 	    research_pins: ResearchPins;
-	    is_research: boolean;
 	    created_at: string;
 	    last_active_at: string;
 	
@@ -2173,9 +2149,7 @@ export namespace project {
 	        this.workspace_path = source["workspace_path"];
 	        this.is_external = source["is_external"];
 	        this.is_no_project = source["is_no_project"];
-	        this.research_root = source["research_root"];
 	        this.research_pins = this.convertValues(source["research_pins"], ResearchPins);
-	        this.is_research = source["is_research"];
 	        this.created_at = source["created_at"];
 	        this.last_active_at = source["last_active_at"];
 	    }

@@ -35,11 +35,11 @@ func (r *researchEventRecorder) papersChanged() []map[string]string {
 }
 
 // papersTestFrontend wires a FrontendAPI with one real project whose workspace
-// lives at <base>/ws. researchRoot is persisted verbatim on the project (empty
-// → RESEARCH off, so the library lives at the default <ws>/.research/papers).
-// It returns the API, the fixed project id, the workspace, and the effective
-// research root.
-func papersTestFrontend(t *testing.T, researchRoot string, pins project.ResearchPins) (api *FrontendAPI, projectID, ws, effectiveRoot string) {
+// lives at <base>/ws. RESEARCH is always on for real projects, so the research
+// root is the canonical <ws>/.research and the library lives at
+// <ws>/.research/papers. It returns the API, the fixed project id, the
+// workspace, and the effective research root.
+func papersTestFrontend(t *testing.T, _ string, pins project.ResearchPins) (api *FrontendAPI, projectID, ws, effectiveRoot string) {
 	t.Helper()
 	base := t.TempDir()
 	ws = filepath.Join(base, "ws")
@@ -56,15 +56,14 @@ func papersTestFrontend(t *testing.T, researchRoot string, pins project.Research
 		ID:            "proj-1",
 		Name:          "Papers",
 		WorkspacePath: ws,
-		ResearchRoot:  researchRoot,
 		ResearchPins:  pins,
 	}); err != nil {
 		t.Fatalf("save project: %v", err)
 	}
-	effectiveRoot = researchRoot
-	if effectiveRoot == "" {
-		effectiveRoot = config.ProjectResearchPath(ws)
-	}
+	// RESEARCH is always on for real projects: the research root is the
+	// canonical <ws>/.research (there is no per-project persisted root, so it
+	// can never escape the workspace).
+	effectiveRoot = config.ProjectResearchPath(ws)
 	recorder := &researchEventRecorder{}
 	api = &FrontendAPI{
 		projectManager: project.NewManager(store, base, nil),
@@ -228,21 +227,6 @@ func TestGetPapers_RequiresActiveProject(t *testing.T) {
 	}
 	if _, err := api.GetPapers(project.NoProjectID); err == nil {
 		t.Error("GetPapers(No Project) should error")
-	}
-}
-
-// TestGetPapers_ContainmentRejectsEscapingRoot: a persisted research root that
-// escapes the project workspace is rejected before any read.
-func TestGetPapers_ContainmentRejectsEscapingRoot(t *testing.T) {
-	outside := t.TempDir() // a different base than the fixture's workspace
-	api, projectID, _, _ := papersTestFrontend(t, outside, project.ResearchPins{})
-
-	_, err := api.GetPapers(projectID)
-	if err == nil {
-		t.Fatal("GetPapers should reject a research root outside the workspace")
-	}
-	if !strings.Contains(err.Error(), "inside the project workspace") {
-		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -576,97 +560,6 @@ func TestComparisonsFileChanged_EmitsWithoutResearch(t *testing.T) {
 	}
 }
 
-// TestDisableResearch_RewatchesPaperLibrary is the hybrid-toggle regression
-// test: DisableResearch unwatches the whole research tree (papers/ included),
-// so the paper library must be RE-watched at its (now default) location —
-// otherwise a paper edit with RESEARCH off would silently stop emitting
-// papers:changed.
-func TestDisableResearch_RewatchesPaperLibrary(t *testing.T) {
-	api, projectID, researchRoot, _ := researchRootTestFrontend(t,
-		[]string{"R-001-test"}, project.ResearchPins{})
-	ws := filepath.Dir(researchRoot) // <ws>/.research -> <ws>
-
-	// Seed a paper card BEFORE the watcher starts so WatchTree sees it.
-	libraryRoot := config.PaperLibraryPath(ws)
-	cardDir := filepath.Join(libraryRoot, "vaswani-2017-attention")
-	if err := os.MkdirAll(cardDir, 0o755); err != nil {
-		t.Fatalf("mkdir paper dir: %v", err)
-	}
-	card := filepath.Join(cardDir, papers.PaperFileName)
-	if err := os.WriteFile(card, []byte("---\nid: P-001\n---\n"), 0o644); err != nil {
-		t.Fatalf("seed card: %v", err)
-	}
-
-	var papersChanged, researchChanged atomic.Int32
-	api.emitEvent = func(name string, _ ...any) {
-		switch name {
-		case EventPapersChanged:
-			papersChanged.Add(1)
-		case EventResearchFileChanged:
-			researchChanged.Add(1)
-		}
-	}
-
-	api.activeProjectMu.Lock()
-	api.activeProjectID = projectID
-	api.activeProjectPath = ws
-	api.activeResearchRoot = researchRoot
-	api.activePapersRoot = libraryRoot
-	api.activeProjectMu.Unlock()
-
-	watcher, err := workspace.NewWatcher(ws, func(changedPaths []string) {
-		api.activeProjectMu.RLock()
-		snapProjectID := api.activeProjectID
-		snapResearchRoot := api.activeResearchRoot
-		snapPapersRoot := api.activePapersRoot
-		snapComparisonsRoot := api.activeComparisonsRoot
-		api.activeProjectMu.RUnlock()
-
-		api.emitResearchFileChanged(snapResearchRoot, snapProjectID, changedPaths)
-		api.emitPapersChanged(snapPapersRoot, snapComparisonsRoot, snapProjectID, changedPaths)
-	})
-	if err != nil {
-		t.Fatalf("NewWatcher: %v", err)
-	}
-	api.watcherMu.Lock()
-	api.watcher = watcher
-	api.watcherMu.Unlock()
-	t.Cleanup(func() { _ = watcher.Close() })
-
-	// RESEARCH on: the research tree (papers/ inside it) is watched.
-	if err := watcher.WatchTree(researchRoot); err != nil {
-		t.Fatalf("WatchTree: %v", err)
-	}
-	time.Sleep(200 * time.Millisecond)
-
-	// Disable: unwatches the research tree, then re-watches the library.
-	if err := api.DisableResearch(projectID); err != nil {
-		t.Fatalf("DisableResearch: %v", err)
-	}
-
-	api.activeProjectMu.RLock()
-	gotResearchRoot := api.activeResearchRoot
-	gotPapersRoot := api.activePapersRoot
-	api.activeProjectMu.RUnlock()
-	if gotResearchRoot != "" {
-		t.Errorf("activeResearchRoot = %q, want empty after disable", gotResearchRoot)
-	}
-	if gotPapersRoot != libraryRoot {
-		t.Errorf("activePapersRoot = %q, want %q", gotPapersRoot, libraryRoot)
-	}
-
-	time.Sleep(100 * time.Millisecond)
-	if err := os.WriteFile(card, []byte("---\nid: P-001\ntitle: edited\n---\n"), 0o644); err != nil {
-		t.Fatalf("modify card: %v", err)
-	}
-	if !waitForEmission(&papersChanged, 1, 3*time.Second) {
-		t.Fatal("papers:changed NOT emitted after DisableResearch — the library was not re-watched")
-	}
-	if researchChanged.Load() != 0 {
-		t.Error("research:file_changed must not fire once RESEARCH is disabled")
-	}
-}
-
 // TestSetPaperPinned_UnpinAfterDirectoryDeleted pins Issue 5: a pinned paper
 // whose whole directory was deleted (so lib.Get returns nil) must still be
 // unpinnable — otherwise the persisted pin is orphaned forever (no other RPC
@@ -771,57 +664,6 @@ func TestGetPapers_UnreadableLibraryIsAnError(t *testing.T) {
 	}
 	if _, err := api.GetPaper(projectID, "P-001"); err == nil {
 		t.Fatal("GetPaper must surface an unreadable library root")
-	}
-}
-
-// TestResearchRPC_EnableResearchOffKeysEffectiveRootMutex pins Issue 2: while
-// RESEARCH is off the effective research root is the default
-// <workspace>/.research, and EnableResearch must serialize on THAT mutex — the
-// same one the paper writers (SetPaperPinned / RecordFlashcardReview /
-// RunPaperLiterature) lock, or a concurrent pin's full-row save can clobber the
-// enable (projects-row lost update).
-func TestResearchRPC_EnableResearchOffKeysEffectiveRootMutex(t *testing.T) {
-	api, projectID, ws, effectiveRoot := papersTestFrontend(t, "", project.ResearchPins{})
-
-	// Premise: the effective root (what the paper writers lock) is the default
-	// research path, distinct from the raw (empty) persisted root.
-	if want := config.ProjectResearchPath(ws); effectiveRoot != want {
-		t.Fatalf("effective root = %q, want the default %q", effectiveRoot, want)
-	}
-
-	mu := api.researchMutationMu(effectiveRoot)
-	mu.Lock()
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := api.EnableResearch(projectID, "")
-		done <- err
-	}()
-
-	select {
-	case err := <-done:
-		mu.Unlock()
-		t.Fatalf("EnableResearch completed while the effective-root mutex was held externally: %v", err)
-	case <-time.After(300 * time.Millisecond):
-		// Still parked on the mutex — the serialization holds.
-	}
-	mu.Unlock()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("EnableResearch: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("EnableResearch did not finish after the mutex was released")
-	}
-
-	final, err := api.projectManager.GetProject(projectID)
-	if err != nil {
-		t.Fatalf("reload project: %v", err)
-	}
-	if final.ResearchRoot != effectiveRoot {
-		t.Errorf("research root = %q after enable, want %q", final.ResearchRoot, effectiveRoot)
 	}
 }
 

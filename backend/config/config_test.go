@@ -324,6 +324,49 @@ func TestApplyDefaults_MaxParallelSubagents(t *testing.T) {
 	}
 }
 
+// TestApplyDefaults_DiscoveryDirPrecedence pins the documented precedence of
+// the default discovery directories: the c0wrk global dir outranks the user's
+// ~/.agents dir for BOTH skills and agents, so a c0wrk-managed skill/profile
+// wins over a same-named user-wide one. An explicit list is preserved verbatim
+// (order and contents untouched).
+func TestApplyDefaults_DiscoveryDirPrecedence(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+
+	wantSkills := []string{"~/.c0wrk/.agents/skills", "~/.agents/skills"}
+	if !reflect.DeepEqual(cfg.Skills.Dirs, wantSkills) {
+		t.Errorf("Skills.Dirs = %v, want %v (c0wrk global dir first)", cfg.Skills.Dirs, wantSkills)
+	}
+	wantAgents := []string{"~/.c0wrk/.agents/agents", "~/.agents/agents"}
+	if !reflect.DeepEqual(cfg.Agents.Dirs, wantAgents) {
+		t.Errorf("Agents.Dirs = %v, want %v (c0wrk global dir first)", cfg.Agents.Dirs, wantAgents)
+	}
+
+	// An explicit user list must survive ApplyDefaults untouched — including
+	// an intentional reverse order and an explicit empty slice opt-out.
+	explicit := &Config{}
+	explicit.Skills.Dirs = []string{"~/.agents/skills"}
+	explicit.Agents.Dirs = []string{"~/.agents/agents"}
+	ApplyDefaults(explicit)
+	if !reflect.DeepEqual(explicit.Skills.Dirs, []string{"~/.agents/skills"}) {
+		t.Errorf("explicit Skills.Dirs was clobbered: %v", explicit.Skills.Dirs)
+	}
+	if !reflect.DeepEqual(explicit.Agents.Dirs, []string{"~/.agents/agents"}) {
+		t.Errorf("explicit Agents.Dirs was clobbered: %v", explicit.Agents.Dirs)
+	}
+
+	empty := &Config{}
+	empty.Skills.Dirs = []string{}
+	empty.Agents.Dirs = []string{}
+	ApplyDefaults(empty)
+	if len(empty.Skills.Dirs) != 0 {
+		t.Errorf("explicit empty Skills.Dirs must stay empty, got %v", empty.Skills.Dirs)
+	}
+	if len(empty.Agents.Dirs) != 0 {
+		t.Errorf("explicit empty Agents.Dirs must stay empty, got %v", empty.Agents.Dirs)
+	}
+}
+
 // TestOpenAICompatibleRequiresBaseURL tests that openai_compatible provider requires base_url.
 // Note: base_url requirement is now validated at the LLM router level, not at config validation.
 // The config simply loads the base_url and it's validated when creating the provider.

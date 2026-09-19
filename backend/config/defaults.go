@@ -12,21 +12,25 @@ import (
 var defaultProtectedTools = []string{"store_fact", "search_facts"}
 
 // defaultSkillDirs is the default list of skill discovery directories used when
-// the `skills.dirs` config key is omitted. The current project's
-// `.agents/skills` directory is always scanned automatically (see core/builder.go)
-// and does NOT need to be listed here.
+// the `skills.dirs` config key is omitted. Order is precedence: the c0wrk
+// global directory (`~/.c0wrk/.agents/skills`) outranks the user's
+// `~/.agents/skills`, so a c0wrk-managed skill wins over a same-named user
+// skill. The current project's `.agents/skills` directory is always scanned
+// automatically (see core/builder.go) and does NOT need to be listed here.
 var defaultSkillDirs = []string{
-	"~/.agents/skills",
 	"~/.c0wrk/.agents/skills",
+	"~/.agents/skills",
 }
 
 // defaultAgentDirs is the default list of Subagent Profile discovery
 // directories used when the `agents.dirs` config key is omitted. Mirrors
-// defaultSkillDirs for AGENT.md files. The current project's `.agents/agents`
-// directory is always scanned automatically (see core/builder.go).
+// defaultSkillDirs for AGENT.md files: the c0wrk global directory
+// (`~/.c0wrk/.agents/agents`) outranks the user's `~/.agents/agents`. The
+// current project's `.agents/agents` directory is always scanned
+// automatically (see core/builder.go).
 var defaultAgentDirs = []string{
-	"~/.agents/agents",
 	"~/.c0wrk/.agents/agents",
+	"~/.agents/agents",
 }
 
 // defaultModelProfilesAlwaysPresent is the default always-present tool allow-list

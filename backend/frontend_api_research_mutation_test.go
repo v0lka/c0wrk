@@ -35,8 +35,8 @@ func researchTwoProjectTestFrontend(t *testing.T) (api *FrontendAPI, projA, proj
 		t.Fatalf("create project store: %v", err)
 	}
 	for _, p := range []project.ProjectInfo{
-		{ID: "proj-a", Name: "A", WorkspacePath: wsA, ResearchRoot: rootA},
-		{ID: "proj-b", Name: "B", WorkspacePath: wsB, ResearchRoot: rootB},
+		{ID: "proj-a", Name: "A", WorkspacePath: wsA},
+		{ID: "proj-b", Name: "B", WorkspacePath: wsB},
 	} {
 		if err := store.SaveProject(context.Background(), p); err != nil {
 			t.Fatalf("save project %s: %v", p.ID, err)

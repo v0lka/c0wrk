@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-055](./055-research-always-on-global-seeding.md) (RESEARCH became always-on; all three decisions below — the project-local reconciliation, the removal of the global startup seed, and the project-local literature-helper resolution — were reversed by returning to a global seed and reordering discovery so the c0wrk global directory outranks `~/.agents`). Historical record below.
 
 ## Context
 

@@ -56,8 +56,8 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 function makeProjects(): ProjectInfo[] {
   const ts = new Date(0).toISOString()
   return [
-    { id: 'no-proj', name: 'No Project', workspace_path: '', is_external: false, is_no_project: true, research_root: '', is_research: false, created_at: ts, last_active_at: ts },
-    { id: 'p1', name: 'Real', workspace_path: '/tmp/r', is_external: false, is_no_project: false, research_root: '', is_research: false, created_at: ts, last_active_at: ts },
+    { id: 'no-proj', name: 'No Project', workspace_path: '', is_external: false, is_no_project: true, created_at: ts, last_active_at: ts },
+    { id: 'p1', name: 'Real', workspace_path: '/tmp/r', is_external: false, is_no_project: false, created_at: ts, last_active_at: ts },
   ]
 }
 
