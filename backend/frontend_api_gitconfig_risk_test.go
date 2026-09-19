@@ -213,6 +213,21 @@ func TestNotifyGitConfigRisk_SigningKeysReported(t *testing.T) {
 			t.Errorf("expected no event for a clean [user] config, got %+v", rec.data)
 		}
 	})
+
+	// Inert signing siblings (review finding 3): gpg.format / gpg.program /
+	// user.signingkey WITHOUT an armed commit.gpgsign cannot execute
+	// anything — a repository that merely documents a signing setup must
+	// not raise the intake warning.
+	t.Run("inert signing siblings stay silent", func(t *testing.T) {
+		dir := t.TempDir()
+		writeGitConfig(t, dir, "[gpg]\n\tformat = ssh\n\tprogram = /tmp/evil-gpg.sh\n[user]\n\tsigningkey = /tmp/evil-key\n")
+		f := &FrontendAPI{}
+		rec := newRiskRecorder(t, f)
+		f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
+		if rec.fired {
+			t.Errorf("expected no event for inert signing siblings without armed commit.gpgsign, got %+v", rec.data)
+		}
+	})
 }
 
 func TestNotifyGitConfigRisk_CleanRepoSilent(t *testing.T) {

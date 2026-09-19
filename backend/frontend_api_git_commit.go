@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -47,8 +48,10 @@ type CommitSuppression struct {
 	// SigningRepo reports an armed commit.gpgsign in the repository config:
 	// a commit would execute the signing program (gpg or gpg.program).
 	SigningRepo bool `json:"signing_repo,omitempty"`
-	// SigningGlobal reports an armed commit.gpgsign in the user's global
-	// git config (~/.gitconfig or the XDG location).
+	// SigningGlobal reports an armed commit.gpgsign in the git config git
+	// reads outside the repository (~/.gitconfig, the XDG global config
+	// with $XDG_CONFIG_HOME honored, and $GIT_CONFIG_GLOBAL /
+	// $GIT_CONFIG_SYSTEM when set).
 	SigningGlobal bool `json:"signing_global,omitempty"`
 }
 
@@ -109,6 +112,14 @@ func (f *FrontendAPI) gitCommitTimeout() time.Duration {
 // 300s; quick git probes keep the 30s budget) plus a combined stdout+stderr
 // capture so hook/signing output reaches the UI.
 //
+// The trust decision keys on the repository's WORK-TREE ROOT (the form
+// TrustGitRepo stores and GitCmdInRepo compares), resolved from the active
+// workspace path: a workspace opened at a subdirectory of a trusted
+// repository must commit as trusted, not re-trigger the gate. The
+// suppression detection itself is walked up to the same root by the
+// scanner (hooks/signing come from the discovered repository), so its
+// result is independent of the workspace path.
+//
 // On success the new commit's SHA is resolved (git rev-parse HEAD, 30s
 // probe budget) and git:status_changed is emitted. Errors are as before:
 // no project / No Project / empty message / git failure (stderr surfaced
@@ -123,10 +134,21 @@ func (f *FrontendAPI) Commit(message string, force bool) (CommitResult, error) {
 		return CommitResult{}, err
 	}
 
+	// Resolve the work-tree root the trust store keys on (see the doc
+	// comment above). No root discovered means no repository: keep the raw
+	// path so the trust check and the detection below fail closed the same
+	// way they always have.
+	trustPath := workspace.ResolveWorkTreeRoot(repoPath)
+	if trustPath == "" {
+		trustPath = repoPath
+	}
+
 	// Trusted repositories commit directly: the spawn layer runs raw git
 	// for them (hooks/signing execute — the canary suite in core/workspace
-	// proves it), and they get the long commit budget.
-	if f.gitRepoTrusted(repoPath) {
+	// proves it), and they get the long commit budget. The spawn layer
+	// resolves the same root (GitCmdInRepo), so both sides of this decision
+	// agree even for a workspace opened at a subdirectory.
+	if f.gitRepoTrusted(trustPath) {
 		return f.runCommitSpawn(repoPath, message)
 	}
 
@@ -185,7 +207,17 @@ func (f *FrontendAPI) runCommitSpawn(repoPath, message string) (CommitResult, er
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 
-	if err := cmd.Run(); err != nil {
+	// exec.ErrWaitDelay is returned by Cmd.Run only when the process itself
+	// exited SUCCESSFULLY (exit 0) while an orphaned grandchild still held
+	// the pipes past WaitDelay — a trusted repository's hook that spawned a
+	// background process (a daemon, a watcher). The commit has landed at
+	// that point; treating the error would report a successful commit as a
+	// failure, skip the git:status_changed emission (the panel stays stale),
+	// and a retry would fail with "nothing to commit". Only the tail of the
+	// orphan's output past the delay is lost. The hardened path never hits
+	// this (no hooks run there), and the context-timeout kill surfaces as a
+	// context error, not ErrWaitDelay — those stay failures.
+	if err := cmd.Run(); err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		return CommitResult{}, fmt.Errorf("git commit: %w: %s", err, out.String())
 	}
 

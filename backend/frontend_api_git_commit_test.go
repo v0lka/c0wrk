@@ -325,3 +325,136 @@ func TestLimitedBuffer_UnderCapNoMarker(t *testing.T) {
 		t.Errorf("String() = %q, want %q (trimmed, no marker)", got, "short output")
 	}
 }
+
+// TestCommit_TrustedSubdirectoryWorkspace pins the work-tree-root trust
+// attribution (review finding 1): a workspace opened at a SUBDIRECTORY of a
+// trusted repository must commit as trusted — the gate must not withhold
+// (the "Trust & commit" button would loop forever, since trust is stored
+// for the root), and force must not silently run raw git through the gate's
+// blind side. Both paths go through the same root-keyed decision.
+func TestCommit_TrustedSubdirectoryWorkspace(t *testing.T) {
+	gittest.RequirePOSIXShell(t)
+	gittrust.Clear()
+	t.Cleanup(gittrust.Clear)
+	isolateHomeForCommit(t)
+
+	root := filepath.Join(t.TempDir(), "repo")
+	repo := gittest.InitRepo(t, root, "hello\n")
+	sub := filepath.Join(root, "sub", "dir")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir subdirectory: %v", err)
+	}
+	marker := filepath.Join(t.TempDir(), "hook-fired")
+	plantCommitHook(t, root, "HOOK-STDOUT-LINE", marker)
+
+	f, _, _ := newTestAPI(t)
+	f.activeProjectPath = sub // workspace = subdirectory of the repository
+	if err := f.TrustGitRepo(sub); err != nil {
+		t.Fatalf("TrustGitRepo(subdirectory): %v", err)
+	}
+	// TrustGitRepo normalizes to the work-tree root; the commit must key on
+	// the same form.
+	if got := commitCount(t, root); got != "1" {
+		t.Fatalf("setup: rev-list count = %s, want 1", got)
+	}
+
+	repo.Write(t, "file.txt", "hello\nchanged\n")
+	repo.Git(t, "add", ".")
+
+	// force=false on the trusted subdirectory workspace: the gate must NOT
+	// withhold (Suppressed nil) — the commit runs raw through the trust.
+	res, err := f.Commit("trusted subdir commit", false)
+	if err != nil {
+		t.Fatalf("Commit (trusted subdirectory): %v", err)
+	}
+	if res.Suppressed != nil {
+		t.Fatalf("Commit (trusted subdirectory): Suppressed = %+v, want nil — the gate must honor root-keyed trust", res.Suppressed)
+	}
+	if res.Sha == "" {
+		t.Fatal("Commit (trusted subdirectory): expected a commit SHA")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Error("trusted subdirectory commit must run the repository's hook (raw git)")
+	}
+}
+
+// TestCommit_UntrustedSubdirectorySuppresses is the negative twin: the same
+// subdirectory workspace WITHOUT trust must still hit the gate (detection
+// walks up to the root's hooks) and withhold.
+func TestCommit_UntrustedSubdirectorySuppresses(t *testing.T) {
+	gittest.RequirePOSIXShell(t)
+	gittrust.Clear()
+	t.Cleanup(gittrust.Clear)
+	isolateHomeForCommit(t)
+
+	root := filepath.Join(t.TempDir(), "repo")
+	repo := gittest.InitRepo(t, root, "hello\n")
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir subdirectory: %v", err)
+	}
+	marker := filepath.Join(t.TempDir(), "hook-fired")
+	plantCommitHook(t, root, "hook-line", marker)
+
+	f := &FrontendAPI{activeProjectPath: sub} // untrusted, subdirectory workspace
+	repo.Write(t, "file.txt", "hello\nchanged\n")
+	repo.Git(t, "add", ".")
+
+	res, err := f.Commit("untrusted subdir commit", false)
+	if err != nil {
+		t.Fatalf("Commit (untrusted subdirectory): %v", err)
+	}
+	if res.Suppressed == nil {
+		t.Fatal("Commit (untrusted subdirectory): expected Suppressed — detection must see the root's hooks")
+	}
+	if got := commitCount(t, root); got != "1" {
+		t.Errorf("rev-list count = %s, want 1 (withheld commit must not land)", got)
+	}
+}
+
+// TestCommit_WaitDelayOrphanStillSucceeds pins the ErrWaitDelay tolerance
+// (review finding 6): a trusted repository whose pre-commit hook launches a
+// background process holding the pipes must still REPORT success — the
+// commit lands, the SHA resolves, the status event fires — instead of
+// surfacing exec.ErrWaitDelay as a commit failure.
+func TestCommit_WaitDelayOrphanStillSucceeds(t *testing.T) {
+	gittest.RequirePOSIXShell(t)
+	gittrust.Clear()
+	t.Cleanup(gittrust.Clear)
+	isolateHomeForCommit(t)
+
+	root := filepath.Join(t.TempDir(), "repo")
+	repo := gittest.InitRepo(t, root, "hello\n")
+
+	// The hook backgrounds a process that inherits stdout/stderr and holds
+	// them past cmd.WaitDelay (6s sleep vs the 1s WaitDelay).
+	hookPath := filepath.Join(root, ".git", "hooks", "pre-commit")
+	if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+	orphan := filepath.Join(t.TempDir(), "orphan-exit")
+	body := "#!/bin/sh\n( sleep 6; echo orphan-done >> " + orphan + " ) &\nexit 0\n"
+	if err := os.WriteFile(hookPath, []byte(body), 0o755); err != nil {
+		t.Fatalf("write orphan-spawning hook: %v", err)
+	}
+
+	f, _, _ := newTestAPI(t)
+	f.activeProjectPath = root
+	if err := f.TrustGitRepo(root); err != nil {
+		t.Fatalf("TrustGitRepo: %v", err)
+	}
+
+	repo.Write(t, "file.txt", "hello\nchanged\n")
+	repo.Git(t, "add", ".")
+
+	res, err := f.Commit("orphan hook commit", false)
+	if err != nil {
+		t.Fatalf("Commit (orphan-holding hook): %v — ErrWaitDelay must not fail a landed commit", err)
+	}
+	if res.Sha == "" {
+		t.Fatal("Commit (orphan-holding hook): expected a commit SHA")
+	}
+	if got := commitCount(t, root); got != "2" {
+		t.Errorf("rev-list count = %s, want 2 (commit landed)", got)
+	}
+}

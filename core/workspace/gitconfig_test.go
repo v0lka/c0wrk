@@ -624,6 +624,54 @@ func TestParseGitConfig_SigningKeys(t *testing.T) {
 			t.Error("benign commit/gpg/user config should be Clean")
 		}
 	})
+
+	// Inert gating (review finding 3): ScanGitConfig marks the signing
+	// siblings Inert when NO config layer arms commit.gpgsign, and Clean()
+	// ignores them — a repository that merely documents a signing setup
+	// stays warning-free. An armed commit.gpgsign (in any layer) keeps the
+	// siblings live.
+	t.Run("inert siblings without armed gpgsign", func(t *testing.T) {
+		src := "[gpg]\n\tformat = ssh\n\tprogram = /tmp/evil-gpg.sh\n[user]\n\tsigningkey = /tmp/evil-key\n"
+		info := parseTestConfig(t, src)
+		if len(info.Findings) == 0 {
+			t.Fatal("setup: expected the sibling findings to be parsed")
+		}
+		markInertSigningSiblings(info)
+		for _, f := range info.Findings {
+			if !f.Inert {
+				t.Errorf("%s: must be Inert without an armed commit.gpgsign", f.FullKey)
+			}
+		}
+		if !info.Clean() {
+			t.Error("inert-only signing config must stay Clean")
+		}
+	})
+
+	t.Run("armed gpgsign keeps siblings live", func(t *testing.T) {
+		src := "[commit]\n\tgpgsign = true\n[gpg]\n\tformat = ssh\n[user]\n\tsigningkey = /tmp/evil-key\n"
+		info := parseTestConfig(t, src)
+		markInertSigningSiblings(info)
+		for _, f := range info.Findings {
+			if f.Inert {
+				t.Errorf("%s: must NOT be Inert while commit.gpgsign is armed", f.FullKey)
+			}
+		}
+		if info.Clean() {
+			t.Error("armed signing config must break Clean")
+		}
+	})
+
+	t.Run("disabled gpgsign leaves siblings inert", func(t *testing.T) {
+		info := parseTestConfig(t, "[commit]\n\tgpgsign = false\n[gpg]\n\tprogram = /tmp/x\n")
+		markInertSigningSiblings(info)
+		f := finding(t, info, "gpg.program")
+		if !f.Inert {
+			t.Error("gpg.program must be Inert with commit.gpgsign=false (a disabled key arms nothing)")
+		}
+		if !info.Clean() {
+			t.Error("inert-only config with disabled gpgsign must stay Clean")
+		}
+	})
 }
 
 func TestParseGitConfig_IgnoredKeys(t *testing.T) {

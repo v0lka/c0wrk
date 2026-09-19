@@ -152,16 +152,6 @@ export interface CommitResult {
   suppressed?: CommitSuppression
 }
 
-/** Human-readable summary of what a withheld commit would have executed. */
-export function formatCommitSuppression(s: CommitSuppression): string {
-  const parts: string[] = []
-  if (s.hooks && s.hooks.length > 0) parts.push(`hooks: ${s.hooks.join(', ')}`)
-  if (s.signing_repo) parts.push('commit signing (repo config)')
-  if (s.signing_global) parts.push('commit signing (global config)')
-  const detail = parts.length > 0 ? ` (${parts.join('; ')})` : ''
-  return `Commit withheld: this repository would run its own programs on commit${detail}. Commit hardened (without them) or trust the repository first.`
-}
-
 function isCommitSuppression(v: unknown): v is CommitSuppression {
   if (typeof v !== 'object' || v === null) return false
   const s = v as Record<string, unknown>

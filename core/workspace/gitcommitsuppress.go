@@ -76,8 +76,11 @@ var commitHookNames = []string{
 //     ScanGitConfig. Included config files are not consulted (see the
 //     include-directive blind spot in the file header above), so signing
 //     enforced only through an include does not raise this flag.
-//   - signingGlobal: the same armed commit.gpgsign in the user's global
-//     config (~/.gitconfig or ~/.config/git/config — git's XDG location).
+//   - signingGlobal: the same armed commit.gpgsign in the configuration
+//     files git reads outside the repository (~/.gitconfig, the XDG global
+//     config — honoring $XDG_CONFIG_HOME — and $GIT_CONFIG_GLOBAL /
+//     $GIT_CONFIG_SYSTEM when set; the platform system config /etc/gitconfig
+//     stays out of scope).
 //
 // A path with no discoverable .git yields an empty result with a nil error
 // (the same convention as ScanGitConfig); the global config is not even
@@ -124,36 +127,80 @@ func armedCommitGpgsign(info *GitConfigInfo) bool {
 	return false
 }
 
-// detectGlobalCommitSigning reports an armed commit.gpgsign in the user's
-// global git config, checking both locations git reads (~/.gitconfig and
-// the XDG ~/.config/git/config). A missing file is simply clean; a present
-// but malformed global config is treated as clean rather than fatal — it is
+// detectGlobalCommitSigning reports an armed commit.gpgsign in the git
+// configuration files git reads OUTSIDE the repository, mirroring git's own
+// resolution order:
+//
+//   - $GIT_CONFIG_GLOBAL replaces both global locations when set (an empty
+//     value disables global config entirely — exactly git's semantics);
+//   - otherwise BOTH ~/.gitconfig and the XDG global config are read, the
+//     XDG file being $XDG_CONFIG_HOME/git/config when XDG_CONFIG_HOME is set
+//     (git then does NOT fall back to ~/.config/git/config) and
+//     ~/.config/git/config otherwise;
+//   - $GIT_CONFIG_SYSTEM replaces the system config when set (empty
+//     disables it). When unset the platform system config (/etc/gitconfig)
+//     stays out of scope: this flag describes the USER's config, and
+//     machine-level policy arming signing is a separate deployment concern.
+//
+// A missing file is simply clean; a present but malformed (or unreadable or
+// oversized) user-level config is treated as clean rather than fatal — it is
 // the user's own environment (git itself would refuse to run with it, so
 // nothing can silently sign), not hostile repository input the repo scan
 // must fail closed on.
 func detectGlobalCommitSigning() bool {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		// No resolvable home means no readable global config: nothing can
-		// be armed there. The repo-side picture stays complete.
-		return false
+		// No resolvable home means the default global locations cannot be
+		// built; an explicit GIT_CONFIG_GLOBAL can still name a file.
+		home = ""
 	}
-	for _, p := range []string{
-		filepath.Join(home, ".gitconfig"),
-		filepath.Join(home, ".config", "git", "config"),
-	} {
-		info, err := ScanGitConfigFile(p)
-		if err != nil {
-			// Unreadable-but-present (e.g. oversized): same reasoning as a
-			// malformed file — the user's own environment, reported clean
-			// rather than failing the whole repo detection.
-			continue
+
+	var paths []string
+	if p, ok := os.LookupEnv("GIT_CONFIG_GLOBAL"); ok {
+		if p != "" {
+			paths = append(paths, p)
 		}
-		if armedCommitGpgsign(info) {
+	} else if home != "" {
+		paths = append(paths,
+			filepath.Join(home, ".gitconfig"),
+			filepath.Join(xdgGitConfigDir(home), "config"),
+		)
+	}
+	// GIT_CONFIG_SYSTEM names a config git reads on EVERY invocation, so an
+	// armed commit.gpgsign there executes on commit just the same; an empty
+	// value disables the system config wholesale (git's semantics).
+	if p, ok := os.LookupEnv("GIT_CONFIG_SYSTEM"); ok && p != "" {
+		paths = append(paths, p)
+	}
+
+	for _, p := range paths {
+		if armedCommitGpgsignInFile(p) {
 			return true
 		}
 	}
 	return false
+}
+
+// xdgGitConfigDir returns the XDG config directory git reads its global
+// config from: $XDG_CONFIG_HOME/git when XDG_CONFIG_HOME is set non-empty
+// (git reads no ~/.config/git/config in that case), <home>/.config/git as
+// the XDG default otherwise.
+func xdgGitConfigDir(home string) string {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "git")
+	}
+	return filepath.Join(home, ".config", "git")
+}
+
+// armedCommitGpgsignInFile reports an armed commit.gpgsign in the git config
+// file at path. A missing or unreadable file is clean — see the
+// user's-own-environment reasoning on detectGlobalCommitSigning.
+func armedCommitGpgsignInFile(path string) bool {
+	info, err := ScanGitConfigFile(path)
+	if err != nil {
+		return false
+	}
+	return armedCommitGpgsign(info)
 }
 
 // listExecutableCommitHooks lists the commit-family hooks installed in

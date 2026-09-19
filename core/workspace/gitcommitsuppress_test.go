@@ -307,6 +307,97 @@ func TestDetectCommitSuppression_GlobalSigning(t *testing.T) {
 	})
 }
 
+// TestDetectCommitSuppression_GlobalConfigEnv pins the environment-aware
+// global-config resolution (review finding 2): GIT_CONFIG_GLOBAL replaces
+// both default locations, XDG_CONFIG_HOME redirects the XDG location away
+// from ~/.config, GIT_CONFIG_SYSTEM joins the scan (git reads it on every
+// invocation), and an EMPTY GIT_CONFIG_GLOBAL disables the global config
+// wholesale — mirroring git's own semantics.
+func TestDetectCommitSuppression_GlobalConfigEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test isolates HOME/XDG paths, which do not steer os.UserHomeDir on Windows")
+	}
+	repo := gittest.InitRepo(t, filepath.Join(t.TempDir(), "repo"), "hello\n")
+
+	plant := func(t *testing.T, path, ini string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(ini), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scan := func(t *testing.T) bool {
+		t.Helper()
+		_, _, signingGlobal, err := DetectCommitSuppression(repo.Root)
+		if err != nil {
+			t.Fatalf("DetectCommitSuppression: %v", err)
+		}
+		return signingGlobal
+	}
+
+	t.Run("git_config_global replaces both defaults", func(t *testing.T) {
+		home := isolateHome(t)
+		// Both default locations armed: with GIT_CONFIG_GLOBAL set, git does
+		// NOT read them, so the flag must stay down.
+		plant(t, filepath.Join(home, ".gitconfig"), "[commit]\n\tgpgsign = true\n")
+		plant(t, filepath.Join(home, ".config", "git", "config"), "[commit]\n\tgpgsign = true\n")
+		custom := filepath.Join(t.TempDir(), "custom-global")
+		plant(t, custom, "[commit]\n\tgpgsign = false\n")
+		t.Setenv("GIT_CONFIG_GLOBAL", custom)
+		if scan(t) {
+			t.Error("signingGlobal = true with GIT_CONFIG_GLOBAL pointing at a clean file — the defaults must be ignored")
+		}
+		// Arming the GIT_CONFIG_GLOBAL file raises the flag.
+		plant(t, custom, "[commit]\n\tgpgsign = true\n")
+		if !scan(t) {
+			t.Error("signingGlobal = false with armed GIT_CONFIG_GLOBAL file, want true")
+		}
+	})
+
+	t.Run("empty git_config_global disables global config", func(t *testing.T) {
+		home := isolateHome(t)
+		plant(t, filepath.Join(home, ".gitconfig"), "[commit]\n\tgpgsign = true\n")
+		t.Setenv("GIT_CONFIG_GLOBAL", "")
+		if scan(t) {
+			t.Error("signingGlobal = true with GIT_CONFIG_GLOBAL='' (global config disabled), want false")
+		}
+	})
+
+	t.Run("xdg_config_home redirects the xdg location", func(t *testing.T) {
+		xdgRoot := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", xdgRoot)
+		home := isolateHome(t)
+		// The redirected location is armed; ~/.config/git/config is NOT
+		// read when XDG_CONFIG_HOME is set, and the stale default-location
+		// file must not raise the flag on its own.
+		plant(t, filepath.Join(xdgRoot, "git", "config"), "[commit]\n\tgpgsign = true\n")
+		if !scan(t) {
+			t.Error("signingGlobal = false with armed $XDG_CONFIG_HOME/git/config, want true")
+		}
+		// Moving the arm to the DEFAULT xdg location (which git no longer
+		// reads) drops the flag again.
+		if err := os.Remove(filepath.Join(xdgRoot, "git", "config")); err != nil {
+			t.Fatal(err)
+		}
+		plant(t, filepath.Join(home, ".config", "git", "config"), "[commit]\n\tgpgsign = true\n")
+		if scan(t) {
+			t.Error("signingGlobal = true from ~/.config/git/config while XDG_CONFIG_HOME is set — git does not read that file")
+		}
+	})
+
+	t.Run("git_config_system joins the scan", func(t *testing.T) {
+		isolateHome(t)
+		system := filepath.Join(t.TempDir(), "system-config")
+		plant(t, system, "[commit]\n\tgpgsign = true\n")
+		t.Setenv("GIT_CONFIG_SYSTEM", system)
+		if !scan(t) {
+			t.Error("signingGlobal = false with armed GIT_CONFIG_SYSTEM file, want true")
+		}
+	})
+}
+
 // TestDetectCommitSuppression_NotARepo pins the no-repository contract: a
 // path with no discoverable .git yields an empty result and a nil error,
 // and the global config is not consulted then — without a repository there
