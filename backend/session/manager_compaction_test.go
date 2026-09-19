@@ -771,7 +771,7 @@ func TestCompactSessionContext_NoOpDefersCompactionToResume(t *testing.T) {
 
 	// A paused unfinished task: the flow must defer the no-op compaction to
 	// its resume and auto-resume the checkpoint.
-	taskRec := &TaskRecord{ID: "task-paused", SessionID: sess.ID, Status: "paused", OriginalRequest: "long running task"}
+	taskRec := &TaskRecord{ID: "task-paused", SessionID: sess.ID, Status: "paused", OriginalRequest: "long running task", RoutingDecision: json.RawMessage(`{"domain":"general","complexity":2}`)}
 	manager.SetTaskStore(&mockTaskStoreForResumable{unfinished: taskRec, loadTaskResult: taskRec})
 
 	// Simulate a running request the flow pauses.
@@ -883,7 +883,7 @@ func TestDiscardUnfinishedTask_ClearsDeferredResumeCompaction(t *testing.T) {
 		// A paused unfinished task; the session itself stays idle (the
 		// user-paused scenario: the flow pauses nothing and auto-resumes
 		// nothing).
-		taskRec := &TaskRecord{ID: "task-paused", SessionID: sess.ID, Status: "paused", OriginalRequest: "long running task"}
+		taskRec := &TaskRecord{ID: "task-paused", SessionID: sess.ID, Status: "paused", OriginalRequest: "long running task", RoutingDecision: json.RawMessage(`{"domain":"general","complexity":2}`)}
 		manager.SetTaskStore(&mockTaskStoreForResumable{unfinished: taskRec, loadTaskResult: taskRec})
 
 		if err := manager.CompactSessionContext(context.Background(), sess.ID, "sliding_window"); err != nil {

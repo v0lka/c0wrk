@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"testing"
@@ -122,11 +123,18 @@ func TestResumeTask_RepinsAutonomyPostureAtTaskLaunch(t *testing.T) {
 	mgr := NewManager(posturePinningFactory(caller, shared, &reg), func(e Event) { eventChan <- e }, runtimeTempDir(t))
 	t.Cleanup(mgr.Shutdown) // stop the manager before its temp dirs are removed
 
+	// A genuinely paused task carries an execution trajectory. Without one the
+	// resume path would classify it as a never-started (pre-routing) task and
+	// re-run routing, which is not the behavior under test here.
+	trajJSON, _ := json.Marshal([]agent.Step{
+		{Thought: "prior reasoning", Action: llm.ToolCall{ID: "pc1", Name: "read_file", Input: json.RawMessage(`{}`)}, Observation: "PRIOR"},
+	})
 	store := &resumeTaskStore{
 		task: &TaskRecord{
 			ID: "task-posture-paused", SessionID: "ignored", OriginalRequest: "long running task",
 			Status: "paused",
 		},
+		trajectory: trajJSON,
 	}
 	mgr.SetTaskStore(store)
 
