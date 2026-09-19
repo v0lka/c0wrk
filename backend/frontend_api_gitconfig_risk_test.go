@@ -160,6 +160,61 @@ func TestNotifyGitConfigRisk_TransportKeysCovered(t *testing.T) {
 	}
 }
 
+// TestNotifyGitConfigRisk_SigningKeysReported pins the intake surface of the
+// baseline-covered signing findings: an armed commit.gpgsign (with its gpg.*
+// and user.signingkey companions) must reach the warning payload with the
+// baseline-pin description, while a plain [user]-only config stays silent.
+// These keys derive no spawn hardening (the sysproc baseline's
+// -c commit.gpgsign=false is the whole neutralization) — the event is the
+// intake picture only.
+func TestNotifyGitConfigRisk_SigningKeysReported(t *testing.T) {
+	dir := t.TempDir()
+	writeGitConfig(t, dir, "[commit]\n\tgpgsign = true\n[gpg]\n\tformat = ssh\n\tprogram = /tmp/evil-gpg.sh\n"+
+		"[user]\n\tname = a\n\temail = b\n\tsigningkey = /tmp/evil-key\n")
+
+	f := &FrontendAPI{}
+	rec := newRiskRecorder(t, f)
+	f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
+
+	if !rec.fired {
+		t.Fatal("expected project:git_config_risk for an armed signing config")
+	}
+	keys := map[string]string{}
+	for _, fin := range rec.data.Findings {
+		keys[fin.Key] = fin.Description
+	}
+	for _, want := range []string{"commit.gpgsign", "gpg.format", "gpg.program", "user.signingkey"} {
+		desc, ok := keys[want]
+		if !ok {
+			t.Errorf("expected finding for %q, got findings %v", want, rec.data.Findings)
+			continue
+		}
+		if !strings.Contains(desc, "-c commit.gpgsign=false") {
+			t.Errorf("%s description must name the baseline pin: %q", want, desc)
+		}
+	}
+	// The benign [user] keys in the same config must not add findings.
+	for key := range keys {
+		if key == "user.name" || key == "user.email" {
+			t.Errorf("benign key %q must not produce a finding", key)
+		}
+	}
+
+	// A clean [user]-only config stays silent (name/email are identity, not
+	// signing vectors); commit.gpgsign=false — the value c0wrk's own
+	// fixtures write — is silent too.
+	t.Run("clean user config silent", func(t *testing.T) {
+		dir := t.TempDir()
+		writeGitConfig(t, dir, "[user]\n\tname = Test\n\temail = test@example.com\n[commit]\n\tgpgsign = false\n")
+		f := &FrontendAPI{}
+		rec := newRiskRecorder(t, f)
+		f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
+		if rec.fired {
+			t.Errorf("expected no event for a clean [user] config, got %+v", rec.data)
+		}
+	})
+}
+
 func TestNotifyGitConfigRisk_CleanRepoSilent(t *testing.T) {
 	t.Run("no git dir at all", func(t *testing.T) {
 		f := &FrontendAPI{}

@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 
 // vi.mock factories are hoisted, so the mock objects must be created via
 // vi.hoisted() to be accessible inside the factory.
-const { gitMocks, workspaceMocks } = vi.hoisted(() => ({
+const { gitMocks, workspaceMocks, trustMocks } = vi.hoisted(() => ({
   gitMocks: {
     commit: vi.fn(),
     generateCommitMessage: vi.fn(),
@@ -16,12 +16,19 @@ const { gitMocks, workspaceMocks } = vi.hoisted(() => ({
     getGitStatus: vi.fn(),
     getCurrentBranch: vi.fn(),
   },
+  trustMocks: {
+    trustGitRepo: vi.fn(),
+  },
 }))
 
 vi.mock('@/api/git', () => gitMocks)
 
 // getFileDiff is imported from @/api/workspace in CommitSection.
 vi.mock('@/api/workspace', () => workspaceMocks)
+
+// TrustGitRepo flows through the gitConfigRisk wrapper — one import path
+// for backend calls.
+vi.mock('@/api/gitConfigRisk', () => trustMocks)
 
 vi.mock('@/lib/logger', () => ({
   logger: { error: vi.fn() },
@@ -341,10 +348,11 @@ describe('CommitSection — per-project commit state', () => {
           isCommitting: false,
           error: null,
           lastCommitSha: null,
+          lastCommitOutput: null,
         },
       },
     })
-    gitMocks.commit.mockResolvedValue('full-sha-abcdef123456')
+    gitMocks.commit.mockResolvedValue({ sha: 'full-sha-abcdef123456' })
 
     render()
     await act(async () => {
@@ -352,7 +360,7 @@ describe('CommitSection — per-project commit state', () => {
     })
     await flush()
 
-    expect(gitMocks.commit).toHaveBeenCalledWith('feat: a')
+    expect(gitMocks.commit).toHaveBeenCalledWith('feat: a', false)
     const slice = useGitPanelStore.getState().commitByProject['proj-a']!
     expect(slice.message).toBe('')
     expect(slice.lastCommitSha).toBe('full-sha-abcdef123456')
@@ -371,6 +379,7 @@ describe('CommitSection — per-project commit state', () => {
           isCommitting: false,
           error: null,
           lastCommitSha: null,
+          lastCommitOutput: null,
         },
       },
     })
@@ -408,3 +417,315 @@ describe('CommitSection — per-project commit state', () => {
     expect(commitBtn().disabled).toBe(false)
   })
 })
+
+describe('CommitSection — suppressed commit dialog', () => {
+  const SUPPRESSED = {
+    hooks: ['pre-commit', 'commit-msg'],
+    signing_repo: false,
+    signing_global: true,
+  }
+
+  /** Stage one file and type a draft so Commit is enabled. */
+  function stageAndDraft(message = 'feat: a') {
+    useGitPanelStore.setState({
+      entries: [makeEntry({ path: 'a.ts', staged: true })],
+      commitByProject: {
+        'proj-a': {
+          message,
+          isGenerating: false,
+          isCommitting: false,
+          error: null,
+          lastCommitSha: null,
+          lastCommitOutput: null,
+        },
+      },
+    })
+  }
+
+  /** Buttons portaled into document.body by the Radix Dialog. */
+  function dialogBtn(testId: string): HTMLButtonElement {
+    const el = document.body.querySelector(`[data-testid="${testId}"]`)
+    expect(el).toBeDefined()
+    return el as HTMLButtonElement
+  }
+
+  function dialogVisible(): boolean {
+    return document.body.querySelector('[data-testid="commit-suppressed-dialog"]') !== null
+  }
+
+  function skipCheckbox(): HTMLInputElement {
+    const el = document.body.querySelector('[data-testid="commit-suppressed-skip-checkbox"]')
+    expect(el).toBeDefined()
+    return el as HTMLInputElement
+  }
+
+  it('opens the dialog on a Suppressed result and lists hooks/signing', async () => {
+    stageAndDraft()
+    gitMocks.commit.mockResolvedValueOnce({ suppressed: SUPPRESSED })
+
+    render()
+    await act(async () => {
+      commitBtn().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    expect(dialogVisible()).toBe(true)
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('pre-commit')
+    expect(text).toContain('commit-msg')
+    expect(text).toContain('commit.gpgsign (global config)')
+    // Nothing was committed and the draft survives for the decision.
+    expect(useGitPanelStore.getState().commitByProject['proj-a']!.message).toBe('feat: a')
+    expect(useGitPanelStore.getState().commitByProject['proj-a']!.lastCommitSha).toBeNull()
+  })
+
+  it('closes the dialog on Cancel, leaving the commit withheld', async () => {
+    stageAndDraft()
+    gitMocks.commit.mockResolvedValueOnce({ suppressed: SUPPRESSED })
+    render()
+    await act(async () => {
+      commitBtn().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+    expect(dialogVisible()).toBe(true)
+
+    const cancel = Array.from(document.body.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Cancel'),
+    )
+    expect(cancel).toBeDefined()
+    await act(async () => {
+      cancel!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    expect(dialogVisible()).toBe(false)
+    expect(gitMocks.commit).toHaveBeenCalledTimes(1)
+    expect(useGitPanelStore.getState().commitByProject['proj-a']!.message).toBe('feat: a')
+    expect(useGitPanelStore.getState().commitByProject['proj-a']!.lastCommitSha).toBeNull()
+  })
+
+  it('Trust path: TrustGitRepo(workspacePath) then re-commit succeeds with hooks output', async () => {
+    stageAndDraft()
+    gitMocks.commit
+      .mockResolvedValueOnce({ suppressed: SUPPRESSED })
+      .mockResolvedValueOnce({ sha: 'trusted-sha-1234567890', output: 'hook: prettier ran\n[main trusted-s] feat: a' })
+    trustMocks.trustGitRepo.mockResolvedValue(undefined)
+    // The active project's workspace path (proj-a) is what trust targets.
+    useProjectStore.setState({
+      projects: [{
+        id: 'proj-a',
+        name: 'A',
+        workspace_path: '/ws/proj-a',
+        is_external: false,
+        is_no_project: false,
+        research_root: '',
+        is_research: false,
+        created_at: '2026-01-01T00:00:00Z',
+        last_active_at: '2026-01-01T00:00:00Z',
+      }],
+    })
+
+    render()
+    await act(async () => {
+      commitBtn().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    await act(async () => {
+      dialogBtn('commit-suppressed-trust-btn').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    // Trust was recorded for the ACTIVE project's workspace path…
+    expect(trustMocks.trustGitRepo).toHaveBeenCalledWith('/ws/proj-a')
+    // …then the commit was re-run (force=false — trust makes it run).
+    expect(gitMocks.commit).toHaveBeenNthCalledWith(2, 'feat: a', false)
+    expect(dialogVisible()).toBe(false)
+    const slice = useGitPanelStore.getState().commitByProject['proj-a']!
+    expect(slice.lastCommitSha).toBe('trusted-sha-1234567890')
+    expect(slice.lastCommitOutput).toBe('hook: prettier ran\n[main trusted-s] feat: a')
+  })
+
+  it('Force path: sends force=true and persists the skip flag when checked', async () => {
+    stageAndDraft()
+    gitMocks.commit
+      .mockResolvedValueOnce({ suppressed: SUPPRESSED })
+      .mockResolvedValueOnce({ sha: 'forced-sha-1234567890', output: '' })
+    render()
+    await act(async () => {
+      commitBtn().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    // Check "Don't ask again" then force-commit (jsdom: click flips a
+    // controlled checkbox and fires the change event).
+    act(() => {
+      skipCheckbox().click()
+    })
+    await act(async () => {
+      dialogBtn('commit-suppressed-force-btn').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    expect(gitMocks.commit).toHaveBeenNthCalledWith(2, 'feat: a', true)
+    expect(dialogVisible()).toBe(false)
+    // The per-project flag was persisted BEFORE the commit fires.
+    expect(useGitPanelStore.getState().skipCommitSuppressByProject['proj-a']).toBe(true)
+    const slice = useGitPanelStore.getState().commitByProject['proj-a']!
+    expect(slice.lastCommitSha).toBe('forced-sha-1234567890')
+  })
+
+  it('Force path without the checkbox leaves the flag unset', async () => {
+    stageAndDraft()
+    gitMocks.commit
+      .mockResolvedValueOnce({ suppressed: SUPPRESSED })
+      .mockResolvedValueOnce({ sha: 'forced-sha-1234567890' })
+    render()
+    await act(async () => {
+      commitBtn().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    await act(async () => {
+      dialogBtn('commit-suppressed-force-btn').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    expect(gitMocks.commit).toHaveBeenNthCalledWith(2, 'feat: a', true)
+    expect(useGitPanelStore.getState().skipCommitSuppressByProject['proj-a']).toBeUndefined()
+  })
+
+  it('skip flag set → next commit sends force=true without opening the dialog', async () => {
+    stageAndDraft()
+    const { setSkipCommitSuppress } = useGitPanelStore.getState()
+    setSkipCommitSuppress('proj-a', true)
+    gitMocks.commit.mockResolvedValueOnce({ sha: 'auto-forced-sha-1234' })
+
+    render()
+    await act(async () => {
+      commitBtn().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    expect(gitMocks.commit).toHaveBeenCalledWith('feat: a', true)
+    expect(dialogVisible()).toBe(false)
+    expect(useGitPanelStore.getState().commitByProject['proj-a']!.lastCommitSha).toBe(
+      'auto-forced-sha-1234',
+    )
+  })
+
+  it('error from the trust path closes the dialog and surfaces in the commit box', async () => {
+    stageAndDraft()
+    gitMocks.commit.mockResolvedValueOnce({ suppressed: SUPPRESSED })
+    trustMocks.trustGitRepo.mockRejectedValue(new Error('config not initialized'))
+    useProjectStore.setState({
+      projects: [{
+        id: 'proj-a',
+        name: 'A',
+        workspace_path: '/ws/proj-a',
+        is_external: false,
+        is_no_project: false,
+        research_root: '',
+        is_research: false,
+        created_at: '2026-01-01T00:00:00Z',
+        last_active_at: '2026-01-01T00:00:00Z',
+      }],
+    })
+
+    render()
+    await act(async () => {
+      commitBtn().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+    await act(async () => {
+      dialogBtn('commit-suppressed-trust-btn').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    expect(dialogVisible()).toBe(false)
+    expect(container.textContent).toContain('config not initialized')
+    // Only the original withheld attempt ran.
+    expect(gitMocks.commit).toHaveBeenCalledTimes(1)
+  })
+
+  it('still-suppressed after trust keeps the dialog open (nested work tree)', async () => {
+    stageAndDraft()
+    gitMocks.commit
+      .mockResolvedValueOnce({ suppressed: SUPPRESSED })
+      .mockResolvedValueOnce({ suppressed: { hooks: ['pre-commit'] } })
+    trustMocks.trustGitRepo.mockResolvedValue(undefined)
+    useProjectStore.setState({
+      projects: [{
+        id: 'proj-a',
+        name: 'A',
+        workspace_path: '/ws/proj-a',
+        is_external: false,
+        is_no_project: false,
+        research_root: '',
+        is_research: false,
+        created_at: '2026-01-01T00:00:00Z',
+        last_active_at: '2026-01-01T00:00:00Z',
+      }],
+    })
+
+    render()
+    await act(async () => {
+      commitBtn().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+    await act(async () => {
+      dialogBtn('commit-suppressed-trust-btn').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    // The dialog stays open with the fresh suppression so the user can fall
+    // back to the hardened commit explicitly.
+    expect(dialogVisible()).toBe(true)
+    expect(gitMocks.commit).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('CommitSection — hook output section', () => {
+  it('renders a collapsed-by-default output toggle when output is non-empty', async () => {
+    useGitPanelStore.setState({
+      entries: [makeEntry({ path: 'a.ts', staged: true })],
+      commitByProject: {
+        'proj-a': {
+          message: '',
+          isGenerating: false,
+          isCommitting: false,
+          error: null,
+          lastCommitSha: 'live-sha-abcdef1234',
+          lastCommitOutput: '[main abc123d] hook said: clean',
+        },
+      },
+    })
+    render()
+
+    const toggle = container.querySelector('[data-testid="commit-output-toggle"]')
+    expect(toggle).toBeDefined()
+    // Collapsed by default: Radix keeps the content element mounted but
+    // hidden (data-state="closed" + the hidden attribute).
+    const collapsed = container.querySelector<HTMLElement>('[data-testid="commit-output-content"]')
+    expect(collapsed).not.toBeNull()
+    expect(collapsed!.getAttribute('data-state')).toBe('closed')
+    expect(collapsed!.hidden).toBe(true)
+
+    // Expanding shows the output.
+    await act(async () => {
+      toggle!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+    const content = container.querySelector<HTMLElement>('[data-testid="commit-output-content"]')
+    expect(content).not.toBeNull()
+    expect(content!.getAttribute('data-state')).toBe('open')
+    expect(content!.textContent).toContain('hook said: clean')
+  })
+
+  it('renders no output section when the commit produced no output', () => {
+    useGitPanelStore.getState().setCommitSuccess('proj-a', 'sha-no-output', '')
+    render()
+    expect(container.querySelector('[data-testid="commit-output-toggle"]')).toBeNull()
+  })
+})
+

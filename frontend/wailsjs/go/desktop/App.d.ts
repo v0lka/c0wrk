@@ -45,7 +45,7 @@ export function ClearReview(arg1:string):Promise<void>;
 
 export function ClearReviewComments(arg1:string):Promise<void>;
 
-export function Commit(arg1:string):Promise<string>;
+export function Commit(arg1:string,arg2:boolean):Promise<backend.CommitResult>;
 
 export function CompactSessionContext(arg1:string,arg2:string):Promise<void>;
 

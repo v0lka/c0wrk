@@ -287,6 +287,9 @@ llm:
 	if cfg.Timeouts.ServiceLLMRequestTimeout != 120 {
 		t.Errorf("Expected default serviceLLMRequestTimeout 120, got %d", cfg.Timeouts.ServiceLLMRequestTimeout)
 	}
+	if cfg.Timeouts.GitCommitTimeout != 300 {
+		t.Errorf("Expected default gitCommitTimeout 300, got %d", cfg.Timeouts.GitCommitTimeout)
+	}
 
 	// Check Models map is initialized
 	if cfg.LLM.Models == nil {
@@ -2959,6 +2962,42 @@ git:
 	}
 	if cfg.Git.AutoFetch == nil || !*cfg.Git.AutoFetch {
 		t.Errorf("Expected default git.auto_fetch true, got %v", cfg.Git.AutoFetch)
+	}
+}
+
+// TestGitCommitTimeout_DefaultsAndOverride pins the load semantics of
+// timeouts.gitCommitTimeout: omitted (or explicit 0) resolves to the default
+// 300 seconds, while a positive explicit value survives verbatim.
+func TestGitCommitTimeout_DefaultsAndOverride(t *testing.T) {
+	baseLLM := `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+`
+	cases := []struct {
+		name    string
+		yamlKey string
+		want    int
+	}{
+		{"omitted uses default", "", 300},
+		{"explicit zero coerces to default", "timeouts:\n  gitCommitTimeout: 0\n", 300},
+		{"explicit override wins", "timeouts:\n  gitCommitTimeout: 900\n", 900},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := writeTestConfig(t, baseLLM+tc.yamlKey)
+
+			cfg, err := Load(configPath)
+			if err != nil {
+				t.Fatalf("Load() failed: %v", err)
+			}
+			if cfg.Timeouts.GitCommitTimeout != tc.want {
+				t.Errorf("Expected gitCommitTimeout %d, got %d", tc.want, cfg.Timeouts.GitCommitTimeout)
+			}
+		})
 	}
 }
 

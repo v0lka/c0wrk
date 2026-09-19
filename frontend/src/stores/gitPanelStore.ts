@@ -71,6 +71,15 @@ export interface CommitDraftState {
   error: string | null
   /** SHA of the most recently created commit (FE-1). Drives the success banner. */
   lastCommitSha: string | null
+  /**
+   * Bounded combined stdout+stderr of the most recent commit spawn (hook /
+   * signing output for trusted repositories). Non-empty only when the commit
+   * produced output; drives the collapsed-by-default "hook output" section
+   * under the success banner. Unlike the banner it OUTLIVES the banner's
+   * auto-dismissal (a collapsed log the user may expand later must not
+   * vanish after 4s mid-read) — it is replaced by the next commit instead.
+   */
+  lastCommitOutput: string | null
 }
 
 /**
@@ -84,6 +93,7 @@ export const EMPTY_COMMIT_DRAFT: CommitDraftState = {
   isCommitting: false,
   error: null,
   lastCommitSha: null,
+  lastCommitOutput: null,
 }
 
 // --- State types ---
@@ -143,6 +153,15 @@ interface GitPanelState {
    * (FilterBar + tree) as the first section, shown only for git repositories.
    */
   activeTabByProject: Record<string, GitPanelTab>
+  /**
+   * Per-project "Don't ask again for this project" flag for the commit
+   * suppression dialog: true means an armed-but-untrusted repository commits
+   * hardened (force) without showing the Trust/continue dialog first.
+   * Persisted like activeTabByProject so the decision survives restarts.
+   * Keyed by project id, NOT by repository root: the active project's
+   * workspace IS the repository the decision applies to.
+   */
+  skipCommitSuppressByProject: Record<string, boolean>
   /** Transient: whether a merge or rebase is currently in progress (Phase 6). Not persisted. */
   mergeRebaseState: MergeRebaseState
   /** Sort criterion for the Changes list, persisted across sessions (D8). */
@@ -179,13 +198,14 @@ interface GitPanelActions {
   setCommitError: (projectId: string, error: string | null) => void
   /**
    * Record a successful commit for a project: store the new SHA (drives the
-   * success banner), clear that project's draft message, and arm a
-   * per-project auto-dismissal timer (COMMIT_BANNER_DISMISS_MS) that clears
-   * the banner again — unless a newer commit replaced it first. Passing
-   * `null` clears the banner immediately (manual dismissal) and keeps the
-   * draft.
+   * success banner), clear that project's draft message, remember the
+   * bounded commit output (drives the collapsed "hook output" section), and
+   * arm a per-project auto-dismissal timer (COMMIT_BANNER_DISMISS_MS) that
+   * clears the banner again — unless a newer commit replaced it first.
+   * Passing `null` clears the banner immediately (manual dismissal) and
+   * keeps the draft.
    */
-  setCommitSuccess: (projectId: string, sha: string | null) => void
+  setCommitSuccess: (projectId: string, sha: string | null, output?: string) => void
   /** Drop a project's commit-box state entirely (project deleted). */
   dropProjectCommitState: (projectId: string) => void
   setGitRepo: (isRepo: boolean, projectId: string | null) => void
@@ -202,6 +222,13 @@ interface GitPanelActions {
   setActiveTab: (projectId: string, tab: GitPanelTab) => void
   /** Drop a project's active GitPanel tab entirely (project deleted). */
   dropProjectTabs: (projectId: string) => void
+  /**
+   * Set the per-project "commit without asking about suppressed
+   * hooks/signing" flag. Setting true makes the next armed-but-untrusted
+   * commit go straight to the hardened force commit (no dialog); false
+   * restores the dialog. A no-op (reference-stable) when unchanged.
+   */
+  setSkipCommitSuppress: (projectId: string, skip: boolean) => void
   setMergeRebaseState: (state: MergeRebaseState) => void
   setSortBy: (mode: SortBy) => void
   setGroupBy: (mode: GroupBy) => void
@@ -232,6 +259,7 @@ const initialState: GitPanelState = {
   error: null,
   remoteOperationInProgress: false,
   activeTabByProject: {},
+  skipCommitSuppressByProject: {},
   mergeRebaseState: EMPTY_MERGE_REBASE_STATE,
   sortBy: 'path',
   groupBy: 'none',
@@ -253,6 +281,7 @@ export function partializeGitPanel(
   sortBy: SortBy
   groupBy: GroupBy
   activeTabByProject: Record<string, GitPanelTab>
+  skipCommitSuppressByProject: Record<string, boolean>
 } {
   return {
     viewMode: state.viewMode,
@@ -260,6 +289,7 @@ export function partializeGitPanel(
     sortBy: state.sortBy,
     groupBy: state.groupBy,
     activeTabByProject: state.activeTabByProject,
+    skipCommitSuppressByProject: state.skipCommitSuppressByProject,
   }
 }
 
@@ -282,6 +312,7 @@ export function mergeGitPanel(
     sortBy?: SortBy
     groupBy?: GroupBy
     activeTabByProject?: Record<string, unknown>
+    skipCommitSuppressByProject?: Record<string, unknown>
   }
   const sortBy: SortBy =
     p.sortBy !== undefined && SORT_BY_VALUES.has(p.sortBy)
@@ -302,6 +333,20 @@ export function mergeGitPanel(
       }
     }
   }
+  // Same entry-by-entry validation as the tab map: an absent map (legacy
+  // localStorage) rehydrates to {}, and any non-boolean value is dropped
+  // rather than trusted (fail-closed: the dialog re-appears).
+  const skipCommitSuppressByProject: Record<string, boolean> = {}
+  if (
+    p.skipCommitSuppressByProject !== null &&
+    typeof p.skipCommitSuppressByProject === 'object'
+  ) {
+    for (const [projectId, skip] of Object.entries(p.skipCommitSuppressByProject)) {
+      if (typeof skip === 'boolean') {
+        skipCommitSuppressByProject[projectId] = skip
+      }
+    }
+  }
   return {
     ...current,
     viewMode: p.viewMode ?? current.viewMode,
@@ -309,6 +354,7 @@ export function mergeGitPanel(
     sortBy,
     groupBy,
     activeTabByProject,
+    skipCommitSuppressByProject,
   }
 }
 
@@ -323,6 +369,21 @@ export function selectGitPanelTab(
 ): GitPanelTab {
   if (projectId === null || projectId === undefined) return 'files'
   return state.activeTabByProject[projectId] ?? 'files'
+}
+
+/**
+ * Pure selector for a project's "commit hardened without the suppression
+ * dialog" flag. Returns false when the project has no recorded decision or
+ * no project is active — the fail-closed default that keeps the Trust
+ * dialog appearing. Returns a primitive, so it is safe as a selector return
+ * value (no allocation).
+ */
+export function selectSkipCommitSuppress(
+  state: Pick<GitPanelState, 'skipCommitSuppressByProject'>,
+  projectId: string | null | undefined,
+): boolean {
+  if (projectId === null || projectId === undefined) return false
+  return state.skipCommitSuppressByProject[projectId] === true
 }
 
 // --- Store ---
@@ -395,7 +456,7 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
       setCommitError: (projectId, error) =>
         set((s) => withCommitDraft(s, projectId, { error })),
 
-      setCommitSuccess: (projectId, sha) => {
+      setCommitSuccess: (projectId, sha, output) => {
         // A manual dismiss (null) or a newer commit replaces any pending
         // auto-dismissal for this project first.
         clearCommitBannerTimer(projectId)
@@ -410,6 +471,10 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
             // `null` only dismisses the banner and must not wipe a draft
             // the user may have started typing.
             message: '',
+            // Bounded combined commit output (hook/signing lines). Replaced
+            // by every new commit; deliberately NOT cleared by the banner's
+            // auto-dismissal (see CommitDraftState.lastCommitOutput).
+            lastCommitOutput: output ?? null,
           }),
         )
         const timer = setTimeout(() => {
@@ -427,10 +492,22 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
       dropProjectCommitState: (projectId) => {
         clearCommitBannerTimer(projectId)
         set((s) => {
-          if (s.commitByProject[projectId] === undefined) return {}
-          const next = { ...s.commitByProject }
-          delete next[projectId]
-          return { commitByProject: next }
+          const hasDraft = s.commitByProject[projectId] !== undefined
+          const hasSkip =
+            s.skipCommitSuppressByProject[projectId] !== undefined
+          if (!hasDraft && !hasSkip) return s
+          const patch: Partial<GitPanelState> = {}
+          if (hasDraft) {
+            const nextCommit = { ...s.commitByProject }
+            delete nextCommit[projectId]
+            patch.commitByProject = nextCommit
+          }
+          if (hasSkip) {
+            const nextSkip = { ...s.skipCommitSuppressByProject }
+            delete nextSkip[projectId]
+            patch.skipCommitSuppressByProject = nextSkip
+          }
+          return patch
         })
       },
 
@@ -471,6 +548,17 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
           return { activeTabByProject: next }
         }),
 
+      setSkipCommitSuppress: (projectId, skip) =>
+        set((s) => {
+          if (s.skipCommitSuppressByProject[projectId] === skip) return s
+          return {
+            skipCommitSuppressByProject: {
+              ...s.skipCommitSuppressByProject,
+              [projectId]: skip,
+            },
+          }
+        }),
+
       setMergeRebaseState: (state) => set({ mergeRebaseState: state }),
 
       setSortBy: (mode) => set({ sortBy: mode }),
@@ -495,6 +583,7 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
           // Fresh empty maps — never share the initial-state objects across resets.
           commitByProject: {},
           activeTabByProject: {},
+          skipCommitSuppressByProject: {},
         })
       },
     }),
