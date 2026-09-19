@@ -73,16 +73,21 @@ export function CommitSuppressedDialog({
   return (
     <Dialog open={suppressed !== null} onOpenChange={(open) => { if (!open && !isSubmitting) onCancel() }}>
       <DialogContent
-        className="sm:max-w-md"
+        className="sm:max-w-[600px] max-h-[calc(var(--ui-vh)*0.8)] flex flex-col overflow-hidden"
         data-testid={suppressed !== null ? 'commit-suppressed-dialog' : undefined}
       >
-        <DialogHeader>
+        <DialogHeader className="flex-none">
           <DialogTitle className="flex items-center gap-2">
             <ShieldAlert className="size-4 shrink-0 text-warning" />
             Commit withheld
           </DialogTitle>
-          <DialogDescription asChild>
-            <div className="space-y-2 text-left">
+        </DialogHeader>
+
+        {/* Scrollable body: the explanation scrolls beneath the pinned title
+            and above the pinned footer — SettingsModal's fixed-shell pattern
+            (overflow-hidden dialog, scroll confined to the body). */}
+        <DialogDescription asChild>
+          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto custom-scrollbar text-left">
               <span className="block">
                 This repository is not trusted, and a commit here would run programs the repository
                 installed. Nothing has been committed yet. What git would run:
@@ -114,18 +119,18 @@ export function CommitSuppressedDialog({
                 {repoPath !== '' && (
                   <>
                     {' '}
-                    Trusting records <span className="font-mono">{repoPath}</span>.
+                    Trusting records{' '}
+                    <span className="break-all font-mono">{repoPath}</span>.
                   </>
                 )}
               </span>
             </div>
-          </DialogDescription>
-        </DialogHeader>
+        </DialogDescription>
 
-        {/* Custom footer (not DialogFooter): stacks the checkbox above the
+        {/* Pinned footer (not DialogFooter): stacks the checkbox above the
             action row deterministically — DialogFooter's flex-col-reverse
             would place the checkbox below the buttons on narrow panels. */}
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-none flex-col gap-2">
           <label
             className={cn(
               'flex cursor-pointer items-center gap-2 rounded-md px-1 py-1 text-xs text-muted-foreground',
@@ -143,7 +148,10 @@ export function CommitSuppressedDialog({
             Don&apos;t ask again for this project (always commit without hooks/signing)
           </label>
 
-          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          {/* flex-wrap keeps the three-button row inside the box on narrow
+              panels: buttons that do not fit wrap onto a right-aligned row
+              instead of spilling past the dialog edge. */}
+          <div className="flex flex-col-reverse flex-wrap gap-2 sm:flex-row sm:justify-end">
             <Button variant="outline" size="sm" onClick={onCancel} disabled={isSubmitting}>
               Cancel
             </Button>
