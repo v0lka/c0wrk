@@ -162,10 +162,6 @@ export function DeleteWorkDirectory(arg1, arg2, arg3) {
   return window['go']['desktop']['App']['DeleteWorkDirectory'](arg1, arg2, arg3);
 }
 
-export function DisableResearch(arg1) {
-  return window['go']['desktop']['App']['DisableResearch'](arg1);
-}
-
 export function DiscardChanges(arg1) {
   return window['go']['desktop']['App']['DiscardChanges'](arg1);
 }
@@ -176,10 +172,6 @@ export function DownloadUpdate() {
 
 export function EmitSessionEvent(arg1) {
   return window['go']['desktop']['App']['EmitSessionEvent'](arg1);
-}
-
-export function EnableResearch(arg1, arg2) {
-  return window['go']['desktop']['App']['EnableResearch'](arg1, arg2);
 }
 
 export function Fetch(arg1, arg2) {

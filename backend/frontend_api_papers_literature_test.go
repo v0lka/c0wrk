@@ -1,8 +1,6 @@
 package backend
 
 import (
-	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -251,40 +249,6 @@ func waitForFile(t *testing.T, path string) bool {
 	return false
 }
 
-// literatureOffTestFrontend mirrors papersTestFrontend but routes the project
-// manager through the shared load-signaling store, so a test can
-// deterministically interleave a committed row change with the RPC's pre-mutex
-// row load. RESEARCH is off (default research root).
-func literatureOffTestFrontend(t *testing.T) (api *FrontendAPI, projectID, ws, effectiveRoot string, loads chan string) {
-	t.Helper()
-	base := t.TempDir()
-	ws = filepath.Join(base, "ws")
-	if err := os.MkdirAll(ws, 0o755); err != nil {
-		t.Fatalf("mkdir ws: %v", err)
-	}
-	db := openResearchTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
-	store, err := project.NewSQLiteProjectStore(db)
-	if err != nil {
-		t.Fatalf("create project store: %v", err)
-	}
-	signaling := &rowLoadSignalingStore{ProjectStore: store, loads: make(chan string, 16)}
-	if err := signaling.SaveProject(context.Background(), project.ProjectInfo{
-		ID:            "proj-1",
-		Name:          "Lit",
-		WorkspacePath: ws,
-		ResearchPins:  project.ResearchPins{},
-	}); err != nil {
-		t.Fatalf("save project: %v", err)
-	}
-	api = &FrontendAPI{
-		projectManager: project.NewManager(signaling, base, nil),
-		projStore:      store,
-		emitEvent:      func(string, ...any) {},
-	}
-	return api, "proj-1", ws, config.ProjectResearchPath(ws), signaling.loads
-}
-
 // TestRunPaperLiterature_DoesNotHoldRowMutexDuringRun pins Issues 17+3: the
 // network-bound helper run must NOT hold the projects-row mutation mutex (it
 // writes no row), so a concurrent pin/flashcard/research mutation is not
@@ -302,7 +266,7 @@ func TestRunPaperLiterature_DoesNotHoldRowMutexDuringRun(t *testing.T) {
 	release := filepath.Join(agentDir, "release")
 	fakeBlockingManagedPython(t, agentDir, marker, release)
 
-	script := filepath.Join(config.ProjectSkillsPath(ws), studyPaperSkillName, literatureScriptRelPath)
+	script := filepath.Join(config.SkillsDir(agentDir), studyPaperSkillName, literatureScriptRelPath)
 	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
 		t.Fatalf("mkdir scripts: %v", err)
 	}
@@ -369,48 +333,5 @@ func TestRunPaperLiterature_DoesNotHoldRowMutexDuringRun(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("RunPaperLiterature did not return after the helper was released")
-	}
-}
-
-// TestRunPaperLiterature_RootChangedUnderLock pins Issue 3: when the research
-// root moves while the RPC waits on the mutex, it must fail with
-// errResearchRootChanged (mirroring SetPaperPinned/RecordFlashcardReview)
-// instead of writing literature.json into the now-inactive library.
-func TestRunPaperLiterature_RootChangedUnderLock(t *testing.T) {
-	api, projectID, ws, effectiveRoot, loads := literatureOffTestFrontend(t)
-	libraryRoot := config.PaperLibraryPath(ws)
-	seedTestPaper(t, libraryRoot, papers.PaperRecord{Title: "Moved", Slug: "moved"})
-
-	mu := api.researchMutationMu(effectiveRoot)
-	mu.Lock()
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := api.RunPaperLiterature(projectID, "moved")
-		done <- err
-	}()
-
-	// Deterministic interleave: wait for the RPC's pre-mutex row load, then
-	// commit a root change while it is parked on the mutex.
-	waitForInitialRowLoad(t, loads)
-	row, err := api.projectManager.GetProject(projectID)
-	if err != nil {
-		mu.Unlock()
-		t.Fatalf("load project: %v", err)
-	}
-	row.ResearchRoot = filepath.Join(ws, "custom-research")
-	if err := api.projStore.SaveProject(context.Background(), *row); err != nil {
-		mu.Unlock()
-		t.Fatalf("commit root change: %v", err)
-	}
-	mu.Unlock()
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, errResearchRootChanged) {
-			t.Fatalf("RunPaperLiterature error = %v, want errResearchRootChanged", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("RunPaperLiterature did not finish after the mutation mutex was released")
 	}
 }

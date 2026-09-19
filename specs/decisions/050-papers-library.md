@@ -2,7 +2,7 @@
 
 ## Status
 
-Superseded in part by [ADR-051](./051-research-pack-reconciliation.md) (the hybrid global seeding — decision 2 below — was replaced by project-local research pack reconciliation; the vendoring and library-location decisions stand)
+Superseded in part by [ADR-051](./051-research-pack-reconciliation.md), then re-decided by [ADR-055](./055-research-always-on-global-seeding.md) (the hybrid global seeding — decision 2 below — was first replaced by project-local research pack reconciliation (ADR-051), then restored as a global startup seed with discovery reordered so the c0wrk global dir outranks `~/.agents` (ADR-055); the vendoring and library-location decisions stand)
 
 ## Context
 

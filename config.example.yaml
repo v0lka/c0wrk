@@ -133,8 +133,8 @@ mcp:
 # Directories are scanned in priority order (highest first).
 skills:
   dirs:
+    - "~/.c0wrk/.agents/skills" # c0wrk-specific skills directory (outranks user-wide)
     - "~/.agents/skills" # user-wide skills directory
-    - "~/.c0wrk/.agents/skills" # c0wrk-specific skills directory
   # Note: in addition to the directories above, the current project's
   # `.agents/skills` directory is always scanned automatically (highest priority).
 
@@ -148,8 +148,8 @@ skills:
 # list opts out of the base directories (mirrors `skills.dirs`).
 agents:
   dirs:
+    - "~/.c0wrk/.agents/agents" # c0wrk-specific subagent profiles directory (outranks user-wide)
     - "~/.agents/agents" # user-wide subagent profiles directory
-    - "~/.c0wrk/.agents/agents" # c0wrk-specific subagent profiles directory
   # Note: in addition to the directories above, the current project's
   # `.agents/agents` directory is always scanned automatically (highest priority).
   #

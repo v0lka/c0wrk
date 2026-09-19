@@ -416,11 +416,11 @@ func stubDeniedByEvent(t *testing.T, cases []silentCorpusCase) map[int]bool {
 	return denied
 }
 
-func oneLine(s string, max int) string {
+func oneLine(s string, maxLen int) string {
 	s = strings.TrimSpace(s)
 	s = strings.ReplaceAll(s, "\n", " ")
-	if len(s) > max {
-		return s[:max] + "…"
+	if len(s) > maxLen {
+		return s[:maxLen] + "…"
 	}
 	return s
 }

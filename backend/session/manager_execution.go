@@ -289,10 +289,11 @@ func (m *Manager) injectWorkDirectories(ctx context.Context, dirs []core.WorkDir
 
 // researchProjectInfo reports whether the session's project has RESEARCH mode
 // active and, when it does, returns the research-root path. RESEARCH is
-// active: a real project (not No Project) with a non-empty research root. It
-// loads the project from the store, so callers MUST NOT hold the session lock.
-// Returns ("", false) for No Project sessions, when no project store is
-// configured, when the project is missing, or on load errors (logged
+// always on for real projects: the root is the project's canonical
+// <workspace>/.research (derived from the workspace path). It loads the
+// project from the store, so callers MUST NOT hold the session lock. Returns
+// ("", false) for No Project sessions, when no project store is configured,
+// when the project is missing or has no workspace, or on load errors (logged
 // best-effort).
 func (m *Manager) researchProjectInfo(projectID string) (string, bool) {
 	if projectID == project.NoProjectID {
@@ -311,10 +312,10 @@ func (m *Manager) researchProjectInfo(projectID string) (string, bool) {
 		m.log().Warn("failed to load project for research check", "project", projectID, "error", err)
 		return "", false
 	}
-	if proj == nil {
+	if proj == nil || proj.WorkspacePath == "" {
 		return "", false
 	}
-	return proj.ResearchRoot, proj.ResearchRoot != ""
+	return config.ProjectResearchPath(proj.WorkspacePath), true
 }
 
 // injectIgnoreChecker builds a multi-root ignore resolver from the session's
