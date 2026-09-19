@@ -60,7 +60,7 @@ A failed analysis **fails closed**: when the flowsh analyzer (or its embedded kn
 
 ### D4. Explicit removal of the static judge stages
 
-The `unresolvable_path_token` and shell-path-containment (`PathsOutsideRoots`/`ExistingOrAnchoredPaths`) stages were **removed from the shell tools' `Judge`** by explicit decision: tokens the static walker cannot see through are covered by C6 (unbounded), and out-of-root scope by C4/C8 — both of which the effect IR assesses more precisely than token walking. The extractor functions remain in sp4rk (symlink detection still uses them); the published `unresolvable_path_token` code is retained for contract stability but no built-in judge fires it.
+The `unresolvable_path_token` and shell-path-containment (`PathsOutsideRoots`/`ExistingOrAnchoredPaths`) stages were **removed from the shell tools' `Judge`** by explicit decision: tokens the static walker cannot see through are covered by C6 (unbounded), and out-of-root scope by C4/C8 — both of which the effect IR assesses more precisely than token walking. The extractor functions were later removed from sp4rk as well — the symlink gate is now a literal-path extractor that no longer uses them ([ADR-054](./054-symlink-gate-literal-paths-only.md); sp4rk decision 006); the published `unresolvable_path_token` code is retained for contract stability but no built-in judge fires it.
 
 ### D5. The judges interpret the digest
 
