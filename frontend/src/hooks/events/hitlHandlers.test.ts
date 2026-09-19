@@ -124,7 +124,7 @@ describe('handleAutonomyDecisionEvent — non-blocking audit notice', () => {
     })
 
     const msgs = selectSessionMessages(useChatStore.getState(), sessionId)
-    const notice = msgs.find(m => m.type === 'status')
+    const notice = msgs.find(m => m.type === 'autonomy_decision')
     expect(notice).toBeDefined()
     // The payload rides in metadata (spread), and the delegation/plan-step
     // scope survives — groupMessages keys nesting off metadata.plan_step_id,
@@ -134,7 +134,7 @@ describe('handleAutonomyDecisionEvent — non-blocking audit notice', () => {
     expect(notice!.content).toContain('bash_exec')
   })
 
-  it('creates a root-level status message when the payload carries no scope', () => {
+  it('creates a root-level autonomy_decision message when the payload carries no scope', () => {
     const sessionId = `sess-autonomy-root-${idc}`
     handleAutonomyDecisionEvent(sessionId, {
       kind: 'assisted_deny',
@@ -145,7 +145,7 @@ describe('handleAutonomyDecisionEvent — non-blocking audit notice', () => {
     })
 
     const msgs = selectSessionMessages(useChatStore.getState(), sessionId)
-    const notice = msgs.find(m => m.type === 'status')
+    const notice = msgs.find(m => m.type === 'autonomy_decision')
     expect(notice).toBeDefined()
     expect(notice!.metadata?.plan_step_id).toBeUndefined()
   })

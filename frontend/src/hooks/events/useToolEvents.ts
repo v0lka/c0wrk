@@ -115,8 +115,8 @@ export function useToolEvents(sessionId: string | null): void {
     // Automatic (no-human) security decisions taken under an automatic
     // autonomy posture — assisted or silent (a gated tool call or a
     // step-limit boundary resolved without a card). Non-blocking: surfaced
-    // as a service/notice so the gate that was answered unattended stays
-    // visible and auditable (OWASP ASI10).
+    // as a dedicated standard-format card (`AutonomyDecisionBlock`) so the
+    // gate that was answered unattended stays visible and auditable (OWASP ASI10).
     cleanups.push(
       onSessionEvent(sessionId, 'autonomy_decision', (data) => {
         if (!isAutonomyDecisionData(data)) { reportDroppedEvent('autonomy_decision', data); return }

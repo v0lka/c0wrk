@@ -97,7 +97,7 @@ export interface AutonomyDecisionData {
   readonly current_step?: number
   readonly max_steps?: number
   /** The delegation or plan-step block whose executor took the decision
-   *  (host-filled from the executor context). When present the notice nests
+   *  (host-filled from the executor context). When present the card nests
    *  under that subagent/plan-step block in the chat instead of the main
    *  stream; absent for root-level decisions. */
   readonly plan_step_id?: string
@@ -466,8 +466,8 @@ export interface SessionEventMap {
   readonly step_limit: StepLimitData
   /** Automatic (no-human) security decision taken under an automatic autonomy
    *  posture (assisted or silent) — recorded so the run's trajectory stays
-   *  auditable (OWASP ASI10). Non-blocking: the UI renders it as a
-   *  service/notice, never a pending-action card. */
+   *  auditable (OWASP ASI10). Non-blocking: the UI renders it as a dedicated
+   *  standard-format card (`AutonomyDecisionBlock`), never a pending-action card. */
   readonly autonomy_decision: AutonomyDecisionData
   readonly plan_generated: PlanData
   readonly plan_step_start: PlanStepStartData

@@ -265,10 +265,12 @@ sub-policy), `verdict`, `tool`/`source`/`reason`, `justification`, and (for
   emitter (falling back to the raw pipeline), and the event is **persisted**
   (role `autonomy_decision`) unlike the transient judge-phase telemetry — the
   record must survive a reload.
-- The frontend renders it as a non-blocking `status` service notice; the payload
-  rides in metadata so `reconstructContent` rebuilds byte-identical text on
-  reload. It is deliberately **not** a pending-action card: there is nothing to
-  answer, and the ordinary HITL indicators and sound cues stay silent.
+- The frontend renders it as a non-blocking standard-format card
+  (`AutonomyDecisionBlock`, the same card chrome as the confirmation/approval
+  cards); the payload rides in metadata so `reconstructContent` rebuilds
+  byte-identical text on reload. It is deliberately **not** a pending-action
+  card: there is nothing to answer, and the ordinary HITL indicators and sound
+  cues stay silent.
 
 > **Rename note (pre-release).** The event was renamed from `silent_decision`
 > to `autonomy_decision` — and extended with the `assisted_deny` kind — before
@@ -351,7 +353,7 @@ sub-policy), `verdict`, `tool`/`source`/`reason`, `justification`, and (for
   implicit precedence, invite a fourth undefined combination, and make both the
   UI and the docs lie about what is live.
 - **Transient (unpersisted) `autonomy_decision` events.** Rejected: ASI10 requires
-  the trajectory to be reconstructable; a live-only notice vanishes on reload and
+  the trajectory to be reconstructable; a live-only card vanishes on reload and
   the audit trail with it.
 - **Emitting from a backend wrapper instead of a registry observer.** Rejected:
   the `tool_confirm` decision happens deep in the registry on the executor

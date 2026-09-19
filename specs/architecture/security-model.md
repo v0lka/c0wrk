@@ -251,8 +251,8 @@ Silent mode replaces the **human answer** to a prompt; it never removes a gate.
 — from `core/tools/registry.go` (through the registry's
 `AutonomyDecisionObserver`) and `backend/step_limit_judge.go`. The event is
 non-blocking (there is no card to answer) and durable (role
-`autonomy_decision`, rendered as a `status` service
-notice via `reconstructContent` on reload), so a run's trajectory stays
+`autonomy_decision`, rendered as a dedicated standard-format card via
+`reconstructContent` on reload), so a run's trajectory stays
 reconstructable after the fact. (The other two sub-policies need no separate
 event: `ask_user: disable` reaches the model as the tool's explicit
 `ask_user is not available in this mode` result, and `review_prompt: suppress`
