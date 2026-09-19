@@ -995,8 +995,8 @@ func TestPumpRoutesToItsOwnDispatch(t *testing.T) {
 	ch2 := make(chan *dbus.Signal, 1)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	go st.pumpSignals(ctx, ch1, first.dispatch)
-	go st.pumpSignals(ctx, ch2, second.dispatch)
+	go st.pumpSignals(ctx, ch1, first.dispatch, testLogger())
+	go st.pumpSignals(ctx, ch2, second.dispatch, testLogger())
 
 	ch1 <- &dbus.Signal{
 		Name: dbusNotificationsInterface + ".ActionInvoked",

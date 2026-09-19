@@ -191,6 +191,11 @@ func (a *App) CheckNotificationAuthorization() (bool, error) {
 //
 // data keys "sessionId" and "projectId" are the routing contract; other keys
 // are forwarded untouched. Must remain on App (Wails context).
+//
+// The banner lifetime is handed to the platform hook as a resolver
+// (App.notificationExpireTimeoutMs), not as a resolved value: only the Linux
+// D-Bus transport consumes it, so macOS/Windows never pay for the resolution
+// and never log its clamp warnings for a knob that has no effect there.
 func (a *App) SendSystemNotification(title, body string, data map[string]string) error {
 	if a.ctx == nil {
 		return errors.New("SendSystemNotification: application context is not initialized")
@@ -208,12 +213,11 @@ func (a *App) SendSystemNotification(title, body string, data map[string]string)
 		Data:  userInfo,
 	}
 
-	expireTimeoutMs := a.notificationExpireTimeoutMs()
 	var err error
 	if a.notificationsSendFn != nil {
 		err = a.notificationsSendFn(a.ctx, options)
 	} else {
-		err = a.sendNotificationPlatform(a.ctx, options, expireTimeoutMs)
+		err = a.sendNotificationPlatform(a.ctx, options, a.notificationExpireTimeoutMs)
 	}
 	if err != nil {
 		return err
@@ -230,14 +234,24 @@ func (a *App) SendSystemNotification(title, body string, data map[string]string)
 	// channel.
 	a.log().Debug("system notification sent",
 		"id", options.ID,
-		"session", stringFromUserInfo(userInfo, "sessionId"),
-		"expire_timeout_ms", expireTimeoutMs)
+		"session", stringFromUserInfo(userInfo, "sessionId"))
 	return nil
 }
 
 // millisecondsPerSecond converts the config's seconds into the freedesktop
 // `expire_timeout` unit.
 const millisecondsPerSecond = 1000
+
+// expireTimeoutResolver lazily resolves the configured banner lifetime in
+// D-Bus milliseconds. The resolution is deliberately deferred to the platform
+// hook: the value is consumed by the Linux D-Bus call alone, so on macOS/
+// Windows a hand-edited out-of-range config must not produce clamp warnings
+// about a knob that has no effect there (the notification center owns banner
+// lifetime).
+//
+// Defined in this shared file (not a build-tagged one) so both platform
+// branches of sendNotificationPlatform share one signature.
+type expireTimeoutResolver = func() int32
 
 // notificationExpireTimeoutMs resolves the configured banner lifetime
 // (backend config `notifications.banner_timeout_seconds`) into the
@@ -299,10 +313,10 @@ func (a *App) sendNotificationViaWails(ctx context.Context, options wailsRuntime
 // even inside a single millisecond.
 var notificationIDSeq atomic.Uint64
 
-// buildNotificationID builds the frontend-globally-unique notification id
-// (mirrors lib/systemNotifications.ts buildNotificationId, keeping the same
-// "c0wrk-..." prefix so delivered banners are visually consistent whichever
-// layer sent them).
+// buildNotificationID builds the frontend-globally-unique notification id.
+// The id is generated on the Go side only (the frontend carries no generator
+// of its own); the shared "c0wrk-..." prefix keeps delivered banners visually
+// consistent whichever layer sent them.
 func buildNotificationID() string {
 	return "c0wrk-notification-" + runtime.GOOS + "-" +
 		time.Now().UTC().Format("20060102T150405.000000000") + "-" +

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"time"
@@ -193,11 +194,14 @@ type linuxNotificationMeta struct {
 // seam.
 var linuxNotifications platformNotificationState
 
-// sendNotificationPlatform is the Linux branch of SendSystemNotification's
-// platform hook (only reached when the notificationsSendFn seam is unset):
-// deliver through the icon-augmented D-Bus transport, falling back to the
-// Wails transport on any failure.
-func (a *App) sendNotificationPlatform(ctx context.Context, options wailsRuntime.NotificationOptions, expireTimeoutMs int32) error {
+// Platform hook: deliver one notification through the current platform's
+// transport. The expireTimeoutResolver is consumed by the Linux branch only
+// (see the Linux and !linux implementations for the asymmetry).
+func (a *App) sendNotificationPlatform(ctx context.Context, options wailsRuntime.NotificationOptions, resolveExpireTimeout expireTimeoutResolver) error {
+	var expireTimeoutMs int32
+	if resolveExpireTimeout != nil {
+		expireTimeoutMs = resolveExpireTimeout()
+	}
 	if err := linuxNotifications.send(options, a.notificationCallback, expireTimeoutMs, a.log()); err != nil {
 		a.log().Warn("linux D-Bus notification transport failed; falling back to the Wails transport",
 			"error", err)
@@ -212,23 +216,41 @@ func (a *App) cleanupNotificationTransport() {
 	linuxNotifications.teardown()
 }
 
-// send delivers one notification over D-Bus. Callers hold no locks; the
-// state mutex serializes sends and guards the lazy dial.
-func (s *platformNotificationState) send(options wailsRuntime.NotificationOptions, dispatch func(wailsRuntime.NotificationResult), expireTimeoutMs int32, log *slog.Logger) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// sendSerial serializes D-Bus Notify round trips. Sends hold NO state lock
+// across the blocking call (see send): the pump's takePending and a Shutdown
+// teardown must stay free while a daemon is slow to answer, so the
+// serialization lives on its own mutex instead.
+var sendSerial sync.Mutex
 
+// send delivers one notification over D-Bus. Callers hold no locks; the
+// state mutex guards only the dial and the pending-map write — never the
+// blocking Notify round trip. A wedged or restarting notification daemon can
+// make that round trip take arbitrarily long, and holding s.mu across it
+// would stall the signal pump's takePending (godbus silently discards
+// signals delivered while the pump is busy — the channel buffer only
+// softens the window), exactly the failure class the X11 activation path
+// engineered away. Concurrent sends serialize on sendSerial so the pending
+// registration below cannot interleave out of order.
+func (s *platformNotificationState) send(options wailsRuntime.NotificationOptions, dispatch func(wailsRuntime.NotificationResult), expireTimeoutMs int32, log *slog.Logger) error {
+	sendSerial.Lock()
+	defer sendSerial.Unlock()
+
+	s.mu.Lock()
 	if err := s.ensureDialLocked(dispatch, log); err != nil {
+		s.mu.Unlock()
 		return err
 	}
+	conn := s.conn
+	obj := conn.Object(dbusNotificationsInterface, dbusNotificationsPath)
+	icon := s.iconLocked()
+	s.mu.Unlock()
 
-	obj := s.conn.Object(dbusNotificationsInterface, dbusNotificationsPath)
 	call := obj.Call(
 		dbusNotificationsInterface+".Notify",
 		0,
 		notificationAppName,
 		uint32(0), // replaces_id: always a fresh notification
-		s.iconLocked(),
+		icon,
 		options.Title,
 		options.Body,
 		[]string{dbusDefaultActionKey, "Default"},
@@ -239,15 +261,22 @@ func (s *platformNotificationState) send(options wailsRuntime.NotificationOption
 		expireTimeoutMs,
 	)
 	if call.Err != nil {
-		// The connection may be dead (bus went away, daemon restarted):
-		// drop it so the next send redials instead of failing forever.
-		s.teardownLocked()
+		// The connection may be dead (bus went away, daemon restarted): drop
+		// it so the next send redials instead of failing forever. Only the
+		// connection this call rode on is torn down; a concurrent send that
+		// already redialled must not lose its fresh connection to a stale
+		// teardown.
+		s.teardownIfCurrent(conn)
 		return fmt.Errorf("notify call: %w", call.Err)
 	}
 	var dbusID uint32
 	if err := call.Store(&dbusID); err != nil {
 		return fmt.Errorf("store notify id: %w", err)
 	}
+	// Register the routing entry under the state mutex: the pump's
+	// takePending reads this map under the same lock. Sends serialize on
+	// sendSerial, so entries still land in send order.
+	s.mu.Lock()
 	if s.pending == nil {
 		s.pending = make(map[uint32]linuxNotificationMeta)
 	}
@@ -257,6 +286,7 @@ func (s *platformNotificationState) send(options wailsRuntime.NotificationOption
 		sentAt:   time.Now(),
 	}
 	s.prunePendingLocked()
+	s.mu.Unlock()
 	return nil
 }
 
@@ -304,7 +334,7 @@ func (s *platformNotificationState) ensureDialLocked(dispatch func(wailsRuntime.
 	// redial (teardown after a failed Notify, then the next send) would
 	// otherwise write the field while the previous pump — which cancel() has
 	// signalled but not yet stopped — is still reading it to route a signal.
-	go s.pumpSignals(pumpCtx, signals, dispatch)
+	go s.pumpSignals(pumpCtx, signals, dispatch, log)
 	return nil
 }
 
@@ -336,10 +366,30 @@ func logActionsCapability(conn dbusDialer, log *slog.Logger) {
 	log.Debug("notification daemon capabilities", "capabilities", caps)
 }
 
+// dispatchSafely runs the App click callback on its own goroutine, mirroring
+// the recovery policy of the Wails frontends' handleNotificationResult ("log
+// panic but don't crash the app"): the callback reaches the X11 activation
+// path (window_activation_linux.go, cgo/Xlib) — the one area of this app that
+// has already crashed startup once. An unrecovered panic on a bare `go
+// dispatch(...)` would kill the whole process on a banner click, far from the
+// fault site and on a user gesture.
+func dispatchSafely(dispatch func(wailsRuntime.NotificationResult), result wailsRuntime.NotificationResult, log *slog.Logger) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("panic in notification click callback; recovered",
+					"panic", r,
+					"stack", string(debug.Stack()))
+			}
+		}()
+		dispatch(result)
+	}()
+}
+
 // pumpSignals forwards matched signals to the handlers until the state is
 // torn down. Both ctx cancellation and the channel close (godbus closes
 // registered channels on Conn.Close) end the pump, mirroring the Wails loop.
-func (s *platformNotificationState) pumpSignals(ctx context.Context, ch <-chan *dbus.Signal, dispatch func(wailsRuntime.NotificationResult)) {
+func (s *platformNotificationState) pumpSignals(ctx context.Context, ch <-chan *dbus.Signal, dispatch func(wailsRuntime.NotificationResult), log *slog.Logger) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -348,7 +398,7 @@ func (s *platformNotificationState) pumpSignals(ctx context.Context, ch <-chan *
 			if !ok {
 				return
 			}
-			s.handleSignal(sig, dispatch)
+			s.handleSignal(sig, dispatch, log)
 		}
 	}
 }
@@ -356,12 +406,12 @@ func (s *platformNotificationState) pumpSignals(ctx context.Context, ch <-chan *
 // handleSignal routes one D-Bus signal; ids this process did not send
 // (another app's notifications, which the match rules also deliver) find no
 // pending entry and are dropped.
-func (s *platformNotificationState) handleSignal(sig *dbus.Signal, dispatch func(wailsRuntime.NotificationResult)) {
+func (s *platformNotificationState) handleSignal(sig *dbus.Signal, dispatch func(wailsRuntime.NotificationResult), log *slog.Logger) {
 	switch sig.Name {
 	case dbusNotificationsInterface + ".ActionInvoked":
-		s.handleActionInvoked(sig, dispatch)
+		s.handleActionInvoked(sig, dispatch, log)
 	case dbusNotificationsInterface + ".NotificationClosed":
-		s.handleNotificationClosed(sig, dispatch)
+		s.handleNotificationClosed(sig, dispatch, log)
 	}
 }
 
@@ -369,7 +419,7 @@ func (s *platformNotificationState) handleSignal(sig *dbus.Signal, dispatch func
 // NotificationResult contract and hands it to the App callback. Non-default
 // actions (c0wrk registers none) are dropped after consuming the pending
 // entry, mirroring the frontend's ActionMap behavior.
-func (s *platformNotificationState) handleActionInvoked(sig *dbus.Signal, dispatch func(wailsRuntime.NotificationResult)) {
+func (s *platformNotificationState) handleActionInvoked(sig *dbus.Signal, dispatch func(wailsRuntime.NotificationResult), log *slog.Logger) {
 	if len(sig.Body) < 2 {
 		return
 	}
@@ -388,26 +438,26 @@ func (s *platformNotificationState) handleActionInvoked(sig *dbus.Signal, dispat
 	if actionID != dbusDefaultActionKey {
 		return
 	}
-	// Dispatch on its own goroutine: the callback activates the window,
-	// which makes blocking X11 round trips. Running it inline would block
-	// the signal pump, and a blocked pump means godbus silently discards
-	// every later ActionInvoked — i.e. one slow activation permanently kills
-	// notification clicks. See the XCloseDisplay wedge in
+	// Dispatch on its own goroutine (guarded by dispatchSafely): the callback
+	// activates the window, which makes blocking X11 round trips. Running it
+	// inline would block the signal pump, and a blocked pump means godbus
+	// silently discards every later ActionInvoked — i.e. one slow activation
+	// permanently kills notification clicks. See the XCloseDisplay wedge in
 	// window_activation_linux.go.
-	go dispatch(wailsRuntime.NotificationResult{
+	dispatchSafely(dispatch, wailsRuntime.NotificationResult{
 		Response: wailsRuntime.NotificationResponse{
 			ID:               meta.wailsID,
 			ActionIdentifier: notificationDefaultActionIdentifier,
 			UserInfo:         meta.userInfo,
 		},
-	})
+	}, log)
 }
 
 // handleNotificationClosed reproduces the documented Wails quirk: close
 // reason 2 (dismissed by the user) is delivered as the default action —
 // there is no identifier-level way to distinguish it from a body click.
 // Reasons 1 (timeout), 3 (programmatic close) and 4 (undefined) are dropped.
-func (s *platformNotificationState) handleNotificationClosed(sig *dbus.Signal, dispatch func(wailsRuntime.NotificationResult)) {
+func (s *platformNotificationState) handleNotificationClosed(sig *dbus.Signal, dispatch func(wailsRuntime.NotificationResult), log *slog.Logger) {
 	if len(sig.Body) < 2 {
 		return
 	}
@@ -426,14 +476,15 @@ func (s *platformNotificationState) handleNotificationClosed(sig *dbus.Signal, d
 	if reason != 2 {
 		return
 	}
-	// Off the pump goroutine — see handleActionInvoked.
-	go dispatch(wailsRuntime.NotificationResult{
+	// Off the pump goroutine, with the same recovery policy — see
+	// handleActionInvoked and dispatchSafely.
+	dispatchSafely(dispatch, wailsRuntime.NotificationResult{
 		Response: wailsRuntime.NotificationResponse{
 			ID:               meta.wailsID,
 			ActionIdentifier: notificationDefaultActionIdentifier,
 			UserInfo:         meta.userInfo,
 		},
-	})
+	}, log)
 }
 
 // prunePendingLocked bounds the routing map: it drops entries older than
@@ -479,6 +530,20 @@ func (s *platformNotificationState) takePending(dbusID uint32) (linuxNotificatio
 func (s *platformNotificationState) teardown() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.teardownLocked()
+}
+
+// teardownIfCurrent drops and closes the connection ONLY when it is still the
+// one the state currently holds. A failed Notify must trigger a redial on the
+// next send, but a concurrent send may already have redialled (its fresh
+// connection is not the dead one this call rode on) — closing that would
+// break a healthy transport mid-flight.
+func (s *platformNotificationState) teardownIfCurrent(conn dbusDialer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conn != conn {
+		return
+	}
 	s.teardownLocked()
 }
 

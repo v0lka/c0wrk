@@ -389,10 +389,12 @@ func (a *App) emit(eventName string, optionalData ...any) {
 // showWindow reveals AND raises the main window. Tests can inject a fake by
 // setting a.windowShowFn; production code uses wailsRuntime.
 //
-// Every reveal path funnels through here, and all of them are idempotent.
-// The window is created visible (main.go sets no StartHidden), so in a normal
-// start these calls have nothing left to do — they exist so a window that is
-// hidden, minimized, or buried under other windows still comes back.
+// Every reveal path funnels through here — the startup phases, OnDomReady,
+// the exit guard, and the notification-click callback — and the raise applies
+// to ALL of them by design: reveal without raise would leave a buried window
+// "shown". The window is created visible (main.go sets no StartHidden), so in
+// a normal start these calls have nothing left to do; they exist so a window
+// that is hidden, minimized, or buried under other windows still comes back.
 //
 // Activation semantics per platform (verified against the Wails v2.15
 // frontends — internal/frontend/desktop/{linux,darwin,windows}):

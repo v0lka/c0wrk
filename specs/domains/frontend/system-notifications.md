@@ -134,13 +134,15 @@ The `Notify` call also carries the freedesktop `desktop-entry` hint (`"c0wrk"`),
 
 At dial time the transport probes the daemon's `GetCapabilities` once. A daemon that does not advertise `actions` ignores the action list every send carries, so `ActionInvoked` never arrives and clicking a banner does nothing — banners appear, clicks silently fail. The probe turns that into a warning naming the capabilities the daemon did report. It is diagnostic only: any probe failure is a debug line, never a failed send.
 
-Click routing coexists with the Wails transport without double delivery: each notification is tracked by exactly one side's pending map (ours for our sends, Wails' for fallback sends), and both funnel into the same `App.notificationCallback`. Our signal handler subscribes to `ActionInvoked`/`NotificationClosed`, maps the `default` action (and close reason 2, the same dismiss quirk as Wails) to `NotificationResult{ActionIdentifier: "DEFAULT_ACTION"}`, and ignores foreign ids. A failed send tears the connection down so the next send redials. `Shutdown` closes our connection before the Wails cleanup.
+Click routing coexists with the Wails transport without double delivery: each notification is tracked by exactly one side's pending map (ours for our sends, Wails' for fallback sends), and both funnel into the same `App.notificationCallback`. Our signal handler subscribes to `ActionInvoked`/`NotificationClosed`, maps the `default` action (and close reason 2, the same dismiss quirk as Wails) to `NotificationResult{ActionIdentifier: "DEFAULT_ACTION"}`, and ignores foreign ids. A failed send tears its connection down so the next send redials. `Shutdown` closes our connection before the Wails cleanup.
+
+Send-path lock discipline mirrors the pump-free design: the transport state lock is held only around the lazy dial, the icon lookup, and the pending-map registration — never across the blocking `Notify` round trip (concurrent sends serialize on a dedicated send mutex). A wedged or restarting daemon therefore delays only the sends queued behind it; the pump's `takePending` and `Shutdown` teardown stay free. A failed send tears down only the connection it rode on, so a concurrent send that already redialled never loses its fresh connection.
 
 The pending map is bounded by `prunePendingLocked`, run on every send: entries older than 24h are dropped, and the map is capped at 256 by evicting the oldest. The bound is load-bearing rather than defensive — an entry is normally consumed by `ActionInvoked` or `NotificationClosed`, but a daemon that retires a banner silently reports neither, leaving its entry behind for the life of the process.
 
 ## Banner lifetime
 
-`notifications.banner_timeout_seconds` (config.yaml) sets how long a delivered banner stays on screen. It becomes the freedesktop `expire_timeout` argument of the Linux `Notify` call, resolved by `App.notificationExpireTimeoutMs` and passed into `sendNotificationPlatform`:
+`notifications.banner_timeout_seconds` (config.yaml) sets how long a delivered banner stays on screen. It becomes the freedesktop `expire_timeout` argument of the Linux `Notify` call. `SendSystemNotification` hands `App.notificationExpireTimeoutMs` to `sendNotificationPlatform` as a resolver rather than a resolved value, so the Linux branch is the only place that ever resolves it: macOS/Windows accept the resolver for signature parity, never call it, and therefore never log the clamp warnings for a knob their notification centers ignore.
 
 | Value | `expire_timeout` | Meaning |
 | ----- | ---------------- | ------- |
@@ -152,7 +154,7 @@ The field is a pointer-int (`*int`) because `0` is a meaningful value here, so t
 
 Only `SetNotificationBannerTimeout` range-checks its input, so a hand-edited config.yaml reaches `notificationExpireTimeoutMs` unvalidated; the conversion clamps there and logs every clamp. The upper clamp is load-bearing rather than cosmetic: the seconds → milliseconds multiply overflows `int32` from roughly 2.15e6 seconds up, so a units mix-up (`banner_timeout_seconds: 3600000`, milliseconds written into a seconds field) would otherwise wrap to a negative `expire_timeout` that is neither the `-1` sentinel nor a valid lifetime. Values below `-1` resolve to the daemon default.
 
-Linux only: `sendNotificationPlatform` on macOS/Windows accepts the value for signature parity and ignores it, because those notification centers own banner lifetime themselves and expose no per-notification expiry to the sender. The Settings control is hidden on those platforms rather than shown as an inert knob.
+Linux only: the resolver is deliberately never called on macOS/Windows because those notification centers own banner lifetime themselves and expose no per-notification expiry to the sender. The Settings control is hidden on those platforms rather than shown as an inert knob.
 
 `0` exists because banner expiry is not observable: a daemon is free to retire a banner with no `NotificationClosed` signal and without keeping it in the notification history (KDE Plasma does exactly this), so a user who misses the popup has no way back to it. See also the routing-map bound in [Notification icon](#notification-icon).
 
@@ -175,7 +177,7 @@ A banner that never appears has three very different causes that all used to loo
 | the event line, but NO `system notification sent` | The frontend never asked for a banner: the master toggle is off, or `isSessionNotificationRedundant` suppressed it (window focused AND that session on screen). |
 | neither | The event never reached the cue hooks — a listener-coverage problem, not a notification one. |
 
-`system notification sent` carries the notification id, the session id and the resolved `expire_timeout`. It deliberately carries neither title nor body: a banner body is task output, and SECURITY.md extends the no-secrets rule to every output channel.
+`system notification sent` carries the notification id and the session id. It deliberately carries neither title nor body: a banner body is task output, and SECURITY.md extends the no-secrets rule to every output channel. The resolved `expire_timeout` is likewise absent — it is resolved inside the Linux transport only and is visible there.
 
 Two more lines bound the transport's health, once per run each: `system notifications initialized` (init) and `notification daemon capabilities` (the dial-time capability probe, which warns instead when the daemon does not advertise `actions`). A `linux D-Bus notification transport failed` warning means the send fell back to the Wails transport.
 
@@ -196,6 +198,7 @@ Two more lines bound the transport's health, once per run each: `system notifica
 - `notification_clicked` payloads are validated (`isNotificationClickedData`); malformed ones are dropped and reported, never dispatched.
 - The Linux icon transport is fail-soft: a banner is never lost to an icon/export/D-Bus failure (fallback to the Wails transport), and exactly one side tracks each notification (no double delivery, no orphan clicks).
 - The Linux click callback runs on its own goroutine, leaving the godbus signal pump free to keep reading — window activation and signal delivery never share a goroutine.
+- The transport state lock is never held across the blocking `Notify` round trip; concurrent sends serialize on a dedicated send mutex, and a slow daemon can only delay other sends, never the pump or `Shutdown`.
 - The Linux routing map stays bounded (24h TTL, 256 entries) however many banners a daemon retires without a signal.
 - The private X activation connection is opened once per process and stays open; activations serialize through `TryLock`, so a stalled activation is skipped rather than queued behind.
 - The resolved banner lifetime falls back to the daemon default (`-1`) whenever the config is unreachable, never to "never expires" (`0`), and every value reaching the D-Bus call is within `[-1, 86400]` seconds however the config was edited.
@@ -204,6 +207,7 @@ Two more lines bound the transport's health, once per run each: `system notifica
 
 ## Known Limitations
 
+- **Lock-screen exposure** — banner bodies may carry task output (`task_complete` output, error messages), and the channel is enabled by default. OS banners persist in the notification center's history and are commonly rendered on the lock screen, i.e. readable without unlocking. Titles are fixed strings and never carry content, and nothing banner-related is logged — but the banner body itself is an output channel: a user with that threat surface should disable the channel (Settings → General → System notifications). Bodies are not redacted on purpose: a stripped body makes the banner useless.
 - The webview reload (macOS wake/termination recovery) discards frontend module state — the memoized init promise included — but the Go-side init and callback survive it; the next `initSystemNotifications()` re-runs harmlessly (backend memoization makes it a no-op).
 - Linux banner-dismiss navigates like a click (the Wails reason-mapping quirk above).
 - No per-event granularity: the master toggle governs all nine cued events (mirroring the sound channel's single-switch design).

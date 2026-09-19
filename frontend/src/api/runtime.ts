@@ -15,8 +15,8 @@ export function reportDroppedEvent(event: string, data: unknown): void {
 // NOTE on system notifications: the Wails runtime also exposes a window.runtime
 // notification surface (SendNotification / InitializeNotifications / …), but
 // c0wrk does NOT use it. The single transport is the Go bridge — see
-// @/api/notifications (App.InitNotifications / App.SendNotification) — because
-// the click round-trip is Go-owned: the backend registers the response
+// @/api/notifications (App.InitNotifications / App.SendSystemNotification) —
+// because the click round-trip is Go-owned: the backend registers the response
 // callback, focuses the window, and emits `notification_clicked`. Keeping a
 // second optional path here would split the bookkeeping in two.
 

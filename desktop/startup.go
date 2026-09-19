@@ -162,7 +162,10 @@ func (a *App) reloadFrontend(ctx context.Context) {
 // reveal that can never be raced by window setup.
 //
 // It also fires again on every frontend reload (see reloadFrontend), which is
-// harmless: showWindow on a visible window is a no-op.
+// harmless: the only reload source is the macOS power-state wake recovery
+// (registerPowerWakeObserver is a no-op elsewhere), where having the window
+// come forward — showWindow now reveals AND raises/focuses — is the expected
+// outcome, not a stray focus steal.
 func (a *App) DomReady(ctx context.Context) {
 	a.log().Debug("frontend DOM ready")
 	a.showWindow(ctx)

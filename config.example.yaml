@@ -1211,6 +1211,14 @@ runtime:
 notifications:
   # How long a delivered notification banner stays on screen, in seconds.
   #
+  # PRIVACY NOTE: banner bodies may carry task output (task completion and
+  # error text). OS banners are kept in the notification center's history and
+  # are commonly shown on the lock screen — content readable there without
+  # unlocking the session. If that exposure is unacceptable, disable system
+  # notifications entirely (Settings → General → System notifications) —
+  # there is deliberately no content redaction: a banner whose body is
+  # stripped is useless.
+  #
   # Values:
   #   -1 (or omitted) — the notification daemon's own default (a handful of
   #                     seconds on most desktops).
