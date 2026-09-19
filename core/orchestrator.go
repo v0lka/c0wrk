@@ -576,6 +576,22 @@ type Orchestrator struct {
 	// routing-derived, threshold-driven compaction behavior. Guarded by
 	// resumeCompactionMu.
 	resumeCompactionStrategy string
+
+	// resumeRerouteMu guards resumeRerouteRequested — the one-shot "re-route
+	// on resume" request. The producer (RequestResumeReroute, called by the
+	// session layer right before resuming a task that never got past routing)
+	// and the consumer (Resume, on the request goroutine) may run on different
+	// goroutines, so the arm/consume pair is mutex-guarded exactly like
+	// resumeCompactionMu.
+	resumeRerouteMu sync.Mutex
+	// resumeRerouteRequested is true when the next Resume must re-run the
+	// routing stage because the resumed task's original run never reached it
+	// (no routing decision was persisted and no execution state exists — e.g.
+	// the router's LLM call failed on a network error the moment the task
+	// started). False (the default) keeps Resume's normal
+	// reuse-without-routing behavior, so a task that was actually routed is
+	// never re-classified on resume. Guarded by resumeRerouteMu.
+	resumeRerouteRequested bool
 }
 
 // ErrRequestInFlight is returned by HandleMessage when another HandleMessage
@@ -710,6 +726,55 @@ func (o *Orchestrator) consumeResumeCompaction() string {
 	strategy := o.resumeCompactionStrategy
 	o.resumeCompactionStrategy = ""
 	return strategy
+}
+
+// RequestResumeReroute arms the one-shot "re-route on resume" request. The
+// NEXT Resume call consumes it: instead of defaulting to the "general" domain
+// and skipping the routing stage, the resumed run re-classifies the task's
+// original request and activates the matched skills — exactly as a fresh
+// HandleMessage would.
+//
+// The session layer arms it ONLY for a task that never got past routing on its
+// original run: no routing decision was persisted (routing is written only
+// after the router succeeds) and no execution state exists (empty trajectory,
+// no plan). Such a task is typically a fresh send that failed while the router
+// was calling the LLM (e.g. a network error), leaving a resumable "failed" row
+// with no routing decision; resuming it without re-routing would silently run
+// the Conductor under the wrong domain. A task that WAS routed keeps its
+// persisted decision — a resume never re-classifies a continuation.
+//
+// Safe to call from any goroutine; mutex-guarded. Idempotent: re-arming before
+// consumption is a harmless no-op (the value is a boolean).
+func (o *Orchestrator) RequestResumeReroute() {
+	o.resumeRerouteMu.Lock()
+	defer o.resumeRerouteMu.Unlock()
+	o.resumeRerouteRequested = true
+}
+
+// ClearResumeReroute discards any armed one-shot resume-re-route request. The
+// session layer calls it on the cancel/abandon paths (task discarded,
+// goal-mode takeover, archival) so an armed flag belonging to a task that will
+// never be resumed cannot fire for an unrelated later task on the same
+// orchestrator. Idempotent and race-free with a concurrent Resume/consume
+// (mutex-guarded); a no-op when nothing is armed.
+func (o *Orchestrator) ClearResumeReroute() {
+	o.resumeRerouteMu.Lock()
+	defer o.resumeRerouteMu.Unlock()
+	o.resumeRerouteRequested = false
+}
+
+// consumeResumeReroute atomically reads and clears the armed resume-re-route
+// request. It returns false when none was requested (or it was already
+// consumed) — Resume then keeps its normal reuse-without-routing behavior.
+// Called exactly once at Resume entry, before either branch (goal loop or
+// plain Conductor) is chosen, so the one-shot semantics hold regardless of
+// which path the resumed task takes.
+func (o *Orchestrator) consumeResumeReroute() bool {
+	o.resumeRerouteMu.Lock()
+	defer o.resumeRerouteMu.Unlock()
+	requested := o.resumeRerouteRequested
+	o.resumeRerouteRequested = false
+	return requested
 }
 
 // TakeLiveUserMessages atomically removes and returns ALL queued live
@@ -1131,6 +1196,14 @@ func (o *Orchestrator) logDebug(msg string, args ...any) {
 func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, routing *router.RoutingDecision, plansDir string, resumeSteps []agent.Step, goalState *goal.GoalState, nudge string) (result *HandleResult, err error) {
 	o.logDebug("orchestrator: resume started", "resumeSteps", len(resumeSteps), "nudge", nudge != "")
 
+	// One-shot re-route request: the session layer arms it (RequestResumeReroute)
+	// before resuming a task that never got past routing on its original run.
+	// Consume it once at entry — before any early return — so the one-shot
+	// semantics hold and a stale arm can never leak into a later resume. An
+	// unarmed (false) flag leaves Resume's normal reuse-without-routing
+	// behavior intact.
+	forceReroute := o.consumeResumeReroute()
+
 	// Model Profiles goal guard on the resume path: a paused non-terminal goal must
 	// not re-enter the goal loop while the essential-tools narrowing is active
 	// (see ErrGoalBlockedByModelProfiles). Mirrors HandleMessage's goal branch for
@@ -1296,6 +1369,26 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// the unstripped list; strip them here for the normal resume path.
 	availableTools = tools.StripGoalModeTools(availableTools)
 
+	// Re-route a task whose original run failed before routing completed (armed
+	// by the session layer, see RequestResumeReroute). The persisted routing
+	// decision is absent precisely because nothing executed, so the
+	// domain/complexity defaults resolved above would silently skip the routing
+	// stage and run the Conductor under the wrong domain. Re-run it against the
+	// task's original request (a never-started task has no continuation to
+	// misclassify) and refresh the context with the fresh decision. Both the
+	// goal-loop and E2S resume paths returned above, so this only affects the
+	// plain Conductor path — E2S never routes by design, and a resumed goal
+	// keeps its own routing handling (resumeGoalLoop). Guarded by routing == nil
+	// as well so a persisted decision is always reused, never re-classified.
+	if forceReroute && routing == nil {
+		routedCtx, decision, rerouteErr := o.rerouteResumedTask(ctx, bb, availableTools)
+		if rerouteErr != nil {
+			return nil, rerouteErr
+		}
+		ctx = routedCtx
+		routing = decision
+	}
+
 	// Continuable resume: the task was paused (or interrupted) while its
 	// approved plan still had unreached steps. Seed the resumed Conductor run
 	// so the plan workflow stays active — execute_plan continues the remaining
@@ -1404,6 +1497,29 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// Propagate ErrExecutionIncomplete alongside the best-effort result, as
 	// documented: callers must errors.Is-check and still use the result.
 	return result, incompleteErr
+}
+
+// rerouteResumedTask re-runs the routing stage for a resumed task whose
+// original run failed before routing completed (see RequestResumeReroute). It
+// classifies the task's original request, activates the matched skills, emits
+// the normal Routing events, and returns the refreshed context (with the new
+// domain/complexity) plus the new decision. This mirrors the fresh
+// HandleMessage routing step: routeAndActivateSkills already sets the active
+// skills on the context, but domain/complexity are applied by the caller there
+// too, so they are applied here.
+//
+// A routing error is propagated unchanged: routeAndActivateSkills has already
+// marked the (live) task failed on that path — mirroring a fresh task whose
+// router call fails — so the caller can surface it and keep the task resumable.
+func (o *Orchestrator) rerouteResumedTask(ctx context.Context, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor) (context.Context, *router.RoutingDecision, error) {
+	o.logInfo("resume_task: no persisted routing decision — re-running the routing stage")
+	routedCtx, decision, _, _, err := o.routeAndActivateSkills(ctx, bb.GetOriginalRequest(), HandleOptions{}, bb, availableTools)
+	if err != nil {
+		return ctx, nil, err
+	}
+	routedCtx = WithDomain(routedCtx, decision.Domain)
+	routedCtx = WithComplexity(routedCtx, decision.Complexity)
+	return routedCtx, decision, nil
 }
 
 // resumeWaveOutcome reports what the auto-resume wave settled. summary is a

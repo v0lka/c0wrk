@@ -138,6 +138,25 @@ routing decision and a plan are **optional** — routing is reused if persisted
 (otherwise the `general` domain), and a plan-less task runs the standalone
 checklist.
 
+**Never-routed exception (re-route on resume).** A task whose original run
+failed before routing completed carries no persisted routing decision (routing
+is written only after the router succeeds) and no execution state — the shape a
+fresh send leaves when the router's LLM call fails (e.g. a network error),
+leaving a resumable `failed` row. Silently defaulting such a task to `general`
+would skip the routing stage. The session layer arms the one-shot
+`Orchestrator.RequestResumeReroute` request before `Resume` (both
+`Manager.ResumeTask` and the nudge-resume path, only when `routing == nil`, the
+trajectory is empty, and no plan was persisted), and `Resume` then re-runs
+`routeAndActivateSkills` against the task's original request — emitting the
+normal Routing event and applying the fresh domain/complexity/skills — instead
+of defaulting. A task that WAS routed (a persisted decision) or that has any
+execution state keeps its decision and is never re-classified; a resume never
+re-routes a continuation. The flag is consumed once at `Resume` entry
+(`consumeResumeReroute`) and dropped on the session layer's cancel/abandon paths
+(`ClearResumeReroute`, via `Manager.clearResumeRequests`). Goal and E2S resumes
+are unaffected: `resumeGoalLoop` keeps its own routing handling and E2S never
+routes by design.
+
 ### Step Limit and Circuit Breakers
 
 The Conductor's ReAct iteration limit is derived from routing complexity, not configured: `complexity × stepsPerComplexity` (constant 30 in `core/conductor.go`), giving a budget of 30 (complexity 1) to 150 (complexity 5). The complexity is read from the routing context (`ComplexityFromContext`). The Conductor is subject to the same circuit breakers as any `Executor.Run` instance (repeat, truncation, parse error, fruitless, same tool). On step-limit or circuit-breaker abort, `HITLHandler.OnStepLimit` is called with the same three options (AllowOnce, AllowAlways, Deny) as the prior executor. See [executor.md](executor.md) for circuit breaker details.

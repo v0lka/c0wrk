@@ -950,7 +950,17 @@ type HandleResult struct {
   `len(resumeSteps)+1` and the full trajectory syncs to the (persisted)
   TrajectoryStore on every step. A routing decision and a plan are **optional**
   — routing is reused if persisted (otherwise `general` domain), and a plan-less
-  task runs the Conductor's standalone checklist.
+  task runs the Conductor's standalone checklist. Exception: a task whose
+  original run never got past routing (no persisted routing decision AND no
+  execution state — the shape a fresh send leaves when the router's LLM call
+  fails, e.g. a network error) is **re-classified on resume**. The session layer
+  arms the one-shot `RequestResumeReroute` before `Resume` (in `ResumeTask` and
+  in the nudge-resume path `tryContinueInterruptedTask`, only when `routing ==
+  nil`, the loaded trajectory is empty, and no plan was persisted), and `Resume`
+  re-runs the routing stage against the task's original request instead of
+  defaulting to `general`. A task that WAS routed (or that has any execution
+  state) keeps its decision — a resume never re-routes a continuation; the
+  cancel/abandon paths drop an armed request (`clearResumeRequests`).
 - Under ADR-012 the router's `needs_clarification` flag is ignored — the
   Conductor handles clarification itself via the `ask_user` tool, so a
   router clarification decision never short-circuits the pipeline or closes

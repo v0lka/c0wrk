@@ -1267,15 +1267,29 @@ func (m *Manager) tryContinueInterruptedTask(
 		m.log().Warn("continue-interrupted-task: failed to load trajectory; falling back to fresh task", "session", id, "error", err)
 		return false
 	}
+	// Capture the pre-nudge trajectory length: empty means the original run
+	// never executed a step (see the re-route arming below). The nudge step
+	// appended next would otherwise mask that.
+	hadTrajectory := len(resumeSteps) > 0
 	resumeSteps = append(resumeSteps, agent.Step{UserNudge: message})
 
-	// Resolve the persisted routing decision (optional — Resume defaults to
-	// the general domain when nil). The task is never re-routed.
+	// Resolve the persisted routing decision (optional). A task that was
+	// actually routed keeps its decision; a task that never got past routing is
+	// re-classified on this resume (see the arming below).
 	var routing *router.RoutingDecision
 	if state, stateErr := adapter.LoadTaskState(taskID); stateErr != nil {
 		m.log().Warn("continue-interrupted-task: failed to load task state; resuming without routing", "session", id, "error", stateErr)
 	} else if state != nil {
 		routing = state.RoutingDecision
+	}
+
+	// A task whose original run never got past routing (no persisted routing
+	// decision AND no execution state) is re-classified on this nudge-resume,
+	// mirroring Manager.ResumeTask: without it the resumed run would default to
+	// the "general" domain and skip the routing stage. A routed task keeps its
+	// persisted decision (a nudge-resume never re-classifies a continuation).
+	if routing == nil && !hadTrajectory && bb.GetPlan() == nil {
+		session.orchestrator.RequestResumeReroute()
 	}
 
 	// Resolve the prior task_failed_resumable banner so it does not linger
@@ -1566,6 +1580,21 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 		m.log().Warn("failed to reactivate task row on resume", "session_id", id, "task_id", taskID, "error", err)
 	}
 
+	// A task whose original run never got past routing (no persisted routing
+	// decision AND no execution state — empty trajectory, no plan) has nothing
+	// to continue: it is typically a fresh send that failed while the router
+	// was calling the LLM (e.g. a network error), leaving this resumable
+	// "failed" row with no routing decision. Resuming it without re-routing
+	// would silently default to the "general" domain and skip the routing
+	// stage. Arm the one-shot re-route request so the resumed run classifies
+	// the original request first. A task that WAS routed (routing decision
+	// persisted) or that has any execution state keeps the normal
+	// reuse-without-routing behavior — a resume never re-classifies a
+	// continuation.
+	if routing == nil && len(resumeSteps) == 0 && bb.GetPlan() == nil {
+		session.orchestrator.RequestResumeReroute()
+	}
+
 	// Launch goroutine (same pattern as SendMessage).
 	go func() {
 		action := liveActionNone
@@ -1676,7 +1705,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 // must not outlive the task it was armed for.
 // Returns nil if no task store is configured or no unfinished task exists.
 func (m *Manager) CancelUnfinishedTask(sessionID string) error {
-	m.clearResumeCompaction(sessionID)
+	m.clearResumeRequests(sessionID)
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()
@@ -2398,7 +2427,7 @@ func (m *Manager) abandonUnfinishedTaskForMode(id, bannerReason, serviceContent 
 	// resume-compaction (a manual no-op compaction deferred to its resume) —
 	// drop it so the new mode's loop (or any later task) does not inherit the
 	// forced compaction chosen for the abandoned task.
-	m.clearResumeCompaction(id)
+	m.clearResumeRequests(id)
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()
@@ -2816,7 +2845,7 @@ func (m *Manager) CancelTask(id string) error {
 // is no unfinished task to cancel, preserving the sentinel callers rely on
 // to distinguish "nothing running" from a successful cancellation.
 func (m *Manager) cancelUnfinishedTask(sessionID string) error {
-	m.clearResumeCompaction(sessionID)
+	m.clearResumeRequests(sessionID)
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()
