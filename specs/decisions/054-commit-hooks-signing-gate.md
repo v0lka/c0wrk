@@ -104,6 +104,23 @@ answers "what would a commit here execute?" without spawning anything
   work with it), not repository-controlled input, so fail-open is deliberate
   here — the inverse of the repo-config direction, where unscannable always
   fails closed.
+- **Known blind spot — include directives.** The scanner parses and records
+  `include`/`includeIf` directives but deliberately never follows them (the
+  standing ADR-033 posture: an included file's contents are unknown, and
+  `ResolveIncludes` exists for trust fingerprinting only). A commit-surface
+  setting that lives only inside an included file — an armed
+  `commit.gpgsign` above all — is therefore invisible to the gate:
+  `signingRepo` stays false and the hardened commit lands without the
+  decision dialog. This is accepted, not overlooked: the baseline still
+  neutralizes the commit either way, so nothing untrusted executes and the
+  gap is silent hardening rather than exposure; the same directive already
+  fires the intake `(include directive)` warning at project open; and
+  following includes at the commit boundary would either re-implement git's
+  condition evaluation (a wrong `wildmatch` would SKIP a file git actually
+  reads — the dangerous direction) or reintroduce the hostile-repo I/O
+  amplification ADR-033 keeps off the hot path. A repository that enforces
+  signing or hooks through included configs relies on the intake warning
+  and the trust flow.
 
 Detection is a fresh scan per commit (same no-cache rationale as ADR-033:
 the mid-session planting vector makes any cached verdict a TOCTOU liability).
@@ -183,6 +200,12 @@ rewording required.
   closes.
 - One additional exec-free scan per commit attempt (microseconds, same
   bounded parse the spawn layer already runs per invocation).
+- The gate's detection does not follow `include`/`includeIf` directives, so
+  commit-surface settings defined only inside an included file — armed
+  signing above all — bypass the withhold-and-decide dialog (the commit
+  lands hardened and unasked). Accepted as documented above: no untrusted
+  code executes either way, and the intake `(include directive)` warning
+  plus per-repo trust remain the intended paths for include-driven setups.
 
 ## Alternatives Considered
 

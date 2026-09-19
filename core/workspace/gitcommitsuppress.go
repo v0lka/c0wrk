@@ -21,10 +21,17 @@ import (
 // Both vectors are already neutralized by the c0wrk git baseline on every
 // invocation (-c core.hooksPath=<safe dir> redirects hooks away, and
 // -c commit.gpgsign=false disarms signing), so this is a detection-grade
-// picture for the intake UI, not a mitigation. The one deliberate blind
-// spot mirrors the baseline: a configured core.hooksPath is reported as a
+// picture for the intake UI, not a mitigation. Two deliberate blind spots
+// mirror the baseline. First, a configured core.hooksPath is reported as a
 // single marker — the target directory is an arbitrary user-configured
-// path outside the repository, and it is never listed.
+// path outside the repository, and it is never listed. Second, include
+// directives are parsed and recorded but never followed (the standing
+// ADR-033 scanner posture; ResolveIncludes exists for trust fingerprinting
+// only): a commit-surface setting defined only inside an included file —
+// armed signing above all — stays invisible here, so the commit gate does
+// not fire for include-driven setups. Accepted because the baseline
+// neutralizes the commit either way and the intake warning already marks
+// every include directive; trust remains the path for such repositories.
 
 // CommitSuppressionHooksPathMarker is the single hooks entry reported when
 // the repository config sets core.hooksPath: git would run commit hooks
@@ -58,14 +65,17 @@ var commitHookNames = []string{
 //     returned instead and the configured directory is not listed. Sorted
 //     for stable reporting; nil when nothing is armed.
 //   - signingRepo: the repository (common config, plus the config.worktree
-//     overlay when enabled — exactly what git reads) has an ARMED
-//     commit.gpgsign (true/yes/on/1/bare): commits would be signed, i.e.
-//     git would execute the signing program (gpg.program or gpg itself)
-//     during commit. A disabled gpgsign — the value c0wrk's own baseline
-//     and fixtures pin — keeps the flag down, and the sibling signing keys
-//     (gpg.format, gpg.program, user.signingkey) alone do not arm signing:
-//     without commit.gpgsign they never execute. Each of them is still
-//     visible as a GitConfigFindingSigning finding from ScanGitConfig.
+//     overlay when enabled — the config files git reads directly) has an
+//     ARMED commit.gpgsign (true/yes/on/1/bare): commits would be signed,
+//     i.e. git would execute the signing program (gpg.program or gpg
+//     itself) during commit. A disabled gpgsign — the value c0wrk's own
+//     baseline and fixtures pin — keeps the flag down, and the sibling
+//     signing keys (gpg.format, gpg.program, user.signingkey) alone do not
+//     arm signing: without commit.gpgsign they never execute. Each of them
+//     is still visible as a GitConfigFindingSigning finding from
+//     ScanGitConfig. Included config files are not consulted (see the
+//     include-directive blind spot in the file header above), so signing
+//     enforced only through an include does not raise this flag.
 //   - signingGlobal: the same armed commit.gpgsign in the user's global
 //     config (~/.gitconfig or ~/.config/git/config — git's XDG location).
 //
