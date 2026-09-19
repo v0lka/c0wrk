@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractSkillRefs, extractAgentRefs, filterKnownAgentRefs } from './parseReferences'
+import { extractSkillRefs, extractAgentRefs, filterKnownAgentRefs, formatFileRefPath } from './parseReferences'
 import { fuzzyMatch, fuzzyFilter } from './fuzzyMatch'
 
 describe('extractSkillRefs', () => {
@@ -105,6 +105,25 @@ describe('filterKnownAgentRefs', () => {
     const text = 'this relates to issue #42 and #123, please run #code-reviewer'
     const known = ['code-reviewer', 'test-writer']
     expect(filterKnownAgentRefs(extractAgentRefs(text), known)).toEqual(['code-reviewer'])
+  })
+})
+
+describe('formatFileRefPath', () => {
+  it('leaves a path without spaces unescaped and unquoted', () => {
+    expect(formatFileRefPath('src/x.go')).toBe('src/x.go')
+  })
+
+  it('quotes a path containing spaces', () => {
+    expect(formatFileRefPath('docs/my file.md')).toBe("'docs/my file.md'")
+  })
+
+  it('always quotes when forced (completion inside an open @\'…\' ref)', () => {
+    expect(formatFileRefPath('alpha.txt', true)).toBe("'alpha.txt'")
+  })
+
+  it('falls back to backslash-escaped spaces when the path contains a single quote', () => {
+    expect(formatFileRefPath("it's a file.txt")).toBe("it's\\ a\\ file.txt")
+    expect(formatFileRefPath("it's a file.txt", true)).toBe("it's\\ a\\ file.txt")
   })
 })
 

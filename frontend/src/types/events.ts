@@ -96,6 +96,11 @@ export interface AutonomyDecisionData {
   readonly category?: string
   readonly current_step?: number
   readonly max_steps?: number
+  /** The delegation or plan-step block whose executor took the decision
+   *  (host-filled from the executor context). When present the card nests
+   *  under that subagent/plan-step block in the chat instead of the main
+   *  stream; absent for root-level decisions. */
+  readonly plan_step_id?: string
 }
 
 export interface ContextFillData {
@@ -461,8 +466,8 @@ export interface SessionEventMap {
   readonly step_limit: StepLimitData
   /** Automatic (no-human) security decision taken under an automatic autonomy
    *  posture (assisted or silent) — recorded so the run's trajectory stays
-   *  auditable (OWASP ASI10). Non-blocking: the UI renders it as a
-   *  service/notice, never a pending-action card. */
+   *  auditable (OWASP ASI10). Non-blocking: the UI renders it as a dedicated
+   *  standard-format card (`AutonomyDecisionBlock`), never a pending-action card. */
   readonly autonomy_decision: AutonomyDecisionData
   readonly plan_generated: PlanData
   readonly plan_step_start: PlanStepStartData
@@ -721,7 +726,14 @@ export function isToolResultData(d: unknown): d is ToolResultData { return isObj
 export function isToolConfirmData(d: unknown): d is ToolConfirmData { return isObj(d) && has(d, 'confirm_id', 'tool') }
 export function isAskUserData(d: unknown): d is AskUserData { return isObj(d) && has(d, 'request_id', 'questions') }
 export function isStepLimitData(d: unknown): d is StepLimitData { return isObj(d) && has(d, 'request_id', 'current_step', 'max_steps') }
-export function isAutonomyDecisionData(d: unknown): d is AutonomyDecisionData { return isObj(d) && has(d, 'kind', 'verdict') }
+export function isAutonomyDecisionData(d: unknown): d is AutonomyDecisionData {
+  // Type-validate at the boundary, not just key presence: `kind`/`verdict` are
+  // consumed with string operations (e.g. `verdict.startsWith` in
+  // ServiceMessage), and `has()` only checks that the keys exist. A corrupted
+  // or foreign payload carrying non-string values must fail the guard instead
+  // of reaching a render path that would throw a TypeError.
+  return isObj(d) && typeof d.kind === 'string' && typeof d.verdict === 'string'
+}
 export function isPlanData(d: unknown): d is PlanData { return isObj(d) && has(d, 'step_count') }
 export function isPlanStepStartData(d: unknown): d is PlanStepStartData { return isObj(d) && has(d, 'step_id') }
 export function isPlanStepCompleteData(d: unknown): d is PlanStepCompleteData {

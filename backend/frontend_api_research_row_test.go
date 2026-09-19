@@ -2,13 +2,11 @@ package backend
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 )
 
@@ -71,7 +69,6 @@ func researchLostUpdateTestFrontend(t *testing.T) (f *FrontendAPI, projectID, ro
 		ID:            "proj-1",
 		Name:          "Research",
 		WorkspacePath: ws,
-		ResearchRoot:  root,
 	}); err != nil {
 		t.Fatalf("save project: %v", err)
 	}
@@ -150,147 +147,5 @@ func TestResearchRPC_PinSaveMergesConcurrentRowWrite(t *testing.T) {
 	}
 	if got, ok := final.ResearchPins.Hypotheses["H-002"]; !ok || len(got) != 1 {
 		t.Errorf("H-002 pin = %v (present=%t), want the concurrently committed pin to survive — a stale full-row save lost it", got, ok)
-	}
-}
-
-// TestResearchRPC_PinDoesNotResurrectClearedResearchRoot verifies the guard
-// half of the contract: when DisableResearch clears ResearchRoot while a pin
-// RPC waits on the mutation mutex, the pin RPC must fail cleanly instead of
-// saving its stale row — a full-row save of the pre-wait snapshot would
-// resurrect the cleared root, silently re-enabling RESEARCH mode.
-func TestResearchRPC_PinDoesNotResurrectClearedResearchRoot(t *testing.T) {
-	f, projectID, root, loads := researchLostUpdateTestFrontend(t)
-
-	mu := f.researchMutationMu(root)
-	mu.Lock()
-
-	done := make(chan error, 1)
-	go func() { done <- f.SetResearchPinned(projectID, "R-001", true) }()
-
-	// Deterministic interleave: the RPC must have loaded the row (root still
-	// set) before the clear below commits.
-	waitForInitialRowLoad(t, loads)
-
-	// Simulate DisableResearch's committed clear while the RPC waits.
-	row, err := f.projectManager.GetProject(projectID)
-	if err != nil {
-		mu.Unlock()
-		t.Fatalf("load project: %v", err)
-	}
-	row.ResearchRoot = ""
-	if err := f.projStore.SaveProject(context.Background(), *row); err != nil {
-		mu.Unlock()
-		t.Fatalf("commit disable clear: %v", err)
-	}
-	mu.Unlock()
-
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("pin RPC succeeded although the research root was cleared concurrently")
-		}
-		if !errors.Is(err, errResearchRootChanged) {
-			t.Fatalf("pin RPC error = %v, want errResearchRootChanged", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("SetResearchPinned did not finish after the mutation mutex was released")
-	}
-
-	final, err := f.projectManager.GetProject(projectID)
-	if err != nil {
-		t.Fatalf("reload project: %v", err)
-	}
-	if final.ResearchRoot != "" {
-		t.Errorf("research root resurrected by the pin save: %q, want it to stay cleared", final.ResearchRoot)
-	}
-}
-
-// TestResearchRPC_DisableResearchTakesRootMutationMutex verifies
-// DisableResearch serializes on the same per-root mutation mutex as the pin
-// RPCs: while the mutex is held externally, the disable cannot complete.
-func TestResearchRPC_DisableResearchTakesRootMutationMutex(t *testing.T) {
-	f, projectID, root, _ := researchRootTestFrontend(t, []string{"R-001-test"}, project.ResearchPins{})
-
-	mu := f.researchMutationMu(root)
-	mu.Lock()
-
-	done := make(chan error, 1)
-	go func() { done <- f.DisableResearch(projectID) }()
-
-	select {
-	case err := <-done:
-		mu.Unlock()
-		t.Fatalf("DisableResearch completed while the per-root mutation mutex was held externally: %v", err)
-	case <-time.After(200 * time.Millisecond):
-		// Still parked on the mutex — the serialization holds.
-	}
-	mu.Unlock()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("DisableResearch: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("DisableResearch did not finish after the mutation mutex was released")
-	}
-
-	final, err := f.projectManager.GetProject(projectID)
-	if err != nil {
-		t.Fatalf("reload project: %v", err)
-	}
-	if final.ResearchRoot != "" {
-		t.Errorf("research root = %q after disable, want cleared", final.ResearchRoot)
-	}
-}
-
-// TestResearchRPC_EnableResearchTakesRootMutationMutex verifies EnableResearch
-// persists the research root under the same per-root mutation mutex (keyed by
-// the resolved root, which equals the persisted root for the default path):
-// while the mutex is held externally, the enable cannot complete its save.
-func TestResearchRPC_EnableResearchTakesRootMutationMutex(t *testing.T) {
-	f, projectID, root, _ := researchRootTestFrontend(t, []string{"R-001-test"}, project.ResearchPins{})
-
-	// EnableResearch resolves the default root as
-	// config.ProjectResearchPath(workspace) — the same string the fixture
-	// persisted, so both sides key the same mutex.
-	ws := filepath.Dir(root)
-	if got, want := config.ProjectResearchPath(ws), root; got != want {
-		t.Fatalf("resolved enable root %q does not match the fixture root %q — test premise broken", got, want)
-	}
-
-	mu := f.researchMutationMu(root)
-	mu.Lock()
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := f.EnableResearch(projectID, "")
-		done <- err
-	}()
-
-	select {
-	case err := <-done:
-		mu.Unlock()
-		t.Fatalf("EnableResearch completed while the per-root mutation mutex was held externally: %v", err)
-	case <-time.After(200 * time.Millisecond):
-		// Still parked on the mutex — the serialization holds.
-	}
-	mu.Unlock()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("EnableResearch: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("EnableResearch did not finish after the mutation mutex was released")
-	}
-
-	final, err := f.projectManager.GetProject(projectID)
-	if err != nil {
-		t.Fatalf("reload project: %v", err)
-	}
-	if final.ResearchRoot != root {
-		t.Errorf("research root = %q after enable, want %q", final.ResearchRoot, root)
 	}
 }

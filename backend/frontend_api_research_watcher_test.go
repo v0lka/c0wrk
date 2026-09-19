@@ -258,7 +258,6 @@ func researchMutationTestFrontend(t *testing.T) (api *FrontendAPI, projectID, ro
 		ID:            "proj-1",
 		Name:          "Research",
 		WorkspacePath: ws,
-		ResearchRoot:  researchRoot,
 	}); err != nil {
 		t.Fatalf("save project: %v", err)
 	}
@@ -451,43 +450,5 @@ func TestResearchRPC_RejectsInvalidInput(t *testing.T) {
 	}
 	if _, err := f.UpdateHypothesis(projectID, "R-001", "not-an-id", HypothesisUpdateFields{}); err == nil {
 		t.Error("expected error for invalid hypothesis id")
-	}
-}
-
-// TestResearchRPC_RejectsOutOfWorkspaceRoot verifies the workspace-containment
-// guard: a persisted research root outside the workspace is rejected.
-func TestResearchRPC_RejectsOutOfWorkspaceRoot(t *testing.T) {
-	base := t.TempDir()
-	ws := filepath.Join(base, "ws")
-	outsideRoot := filepath.Join(base, "outside", ".research")
-	if err := os.MkdirAll(outsideRoot, 0o755); err != nil {
-		t.Fatalf("MkdirAll outside root: %v", err)
-	}
-
-	db := openResearchTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
-	store, err := project.NewSQLiteProjectStore(db)
-	if err != nil {
-		t.Fatalf("create project store: %v", err)
-	}
-	if err := store.SaveProject(context.Background(), project.ProjectInfo{
-		ID:            "proj-out",
-		Name:          "Out",
-		WorkspacePath: ws,
-		ResearchRoot:  outsideRoot,
-	}); err != nil {
-		t.Fatalf("save project: %v", err)
-	}
-	mgr := project.NewManager(store, base, nil)
-	f := &FrontendAPI{
-		projectManager: mgr,
-		emitEvent:      func(_ string, _ ...any) {},
-	}
-
-	if _, err := f.UpdateHypothesis("proj-out", "R-001", "H-001", HypothesisUpdateFields{}); err == nil {
-		t.Fatal("expected error for out-of-workspace research root")
-	}
-	if _, err := f.CreateHypothesis("proj-out", NewHypothesisCard{Title: "X"}); err == nil {
-		t.Fatal("expected error for out-of-workspace research root")
 	}
 }

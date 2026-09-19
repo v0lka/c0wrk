@@ -764,10 +764,10 @@ The `backend/session/persistence.go` defines the `SessionStore` interface:
 | `UpdateSessionActivity(ctx, id)`                             | Update last_active_at timestamp to now                           |
 | `SaveMessage(ctx, msg)`                                      | Insert a new chat message                                        |
 | `LoadMessages(ctx, sessionID)`                               | Load all messages for session (ordered by created_at) — used by history restore      |
-| `LoadMessagesPage(ctx, sessionID, limit, before)`            | Keyset page of messages ordered `(created_at, id)` ASC, strictly before the opaque cursor `before` (nil = newest/tail page); returns `(messages, hasMore, error)`. Excludes non-content activity rows (`thinking`, `step_done`) that never render |
+| `LoadSessionHistory(ctx, sessionID)`                        | The session's full content history in ascending `(created_at, id)` order — every persisted row except the non-content activity roles (`thinking`, `step_done`) that the chat never renders. There is **no pagination**: the caller loads the whole session in one call |
 | `DeleteMessages(ctx, sessionID)`                             | Delete all messages for session                                  |
 | `ResolvePendingMessage(ctx, sessionID, role, matchField, matchValue, extra)` | Patch metadata of the most recent matching HITL message (tool_confirm/ask_user/step_limit/plan_review) as resolved so it doesn't reappear as pending on reload |
-| `UpsertStepTodoUpdate(ctx, sessionID, stepID, msg)` | Replace/insert the persisted `step_todo_update` message for `stepID` (preserving id and created_at so the checklist keeps its stream position on reload); the Conductor emits one after every tool call, so upserting bounds `session_messages` growth |
+| `ReplaceStepTodoUpdate(ctx, sessionID, stepID, msg)` | Replace the persisted `step_todo_update` message for `stepID`: every existing row for the same `(session, step_id)` is deleted and `msg` is inserted as a fresh row (new id / `created_at`, so the checklist takes the latest update's stream position instead of being pinned to the first). Rows are matched on `metadata.step_id` in Go (an empty `stepID` is a standalone checklist — all such updates collapse onto one row). The Conductor emits one after every tool call, so this bounds `session_messages` growth at one row per step |
 | `SaveTerminalCommand(ctx, sessionID, command)`               | Save terminal command to history                                 |
 | `LoadTerminalCommands(ctx, sessionID, limit)`                | Load most recent terminal commands                               |
 | `SaveSessionWorkDir(ctx, sessionID, rec)`                    | Insert a session-scoped work directory record                    |
@@ -950,7 +950,17 @@ type HandleResult struct {
   `len(resumeSteps)+1` and the full trajectory syncs to the (persisted)
   TrajectoryStore on every step. A routing decision and a plan are **optional**
   — routing is reused if persisted (otherwise `general` domain), and a plan-less
-  task runs the Conductor's standalone checklist.
+  task runs the Conductor's standalone checklist. Exception: a task whose
+  original run never got past routing (no persisted routing decision AND no
+  execution state — the shape a fresh send leaves when the router's LLM call
+  fails, e.g. a network error) is **re-classified on resume**. The session layer
+  arms the one-shot `RequestResumeReroute` before `Resume` (in `ResumeTask` and
+  in the nudge-resume path `tryContinueInterruptedTask`, only when `routing ==
+  nil`, the loaded trajectory is empty, and no plan was persisted), and `Resume`
+  re-runs the routing stage against the task's original request instead of
+  defaulting to `general`. A task that WAS routed (or that has any execution
+  state) keeps its decision — a resume never re-routes a continuation; the
+  cancel/abandon paths drop an armed request (`clearResumeRequests`).
 - Under ADR-012 the router's `needs_clarification` flag is ignored — the
   Conductor handles clarification itself via the `ask_user` tool, so a
   router clarification decision never short-circuits the pipeline or closes

@@ -89,15 +89,11 @@ export function DeleteTheme(arg1:string):Promise<void>;
 
 export function DeleteWorkDirectory(arg1:string,arg2:string,arg3:string):Promise<void>;
 
-export function DisableResearch(arg1:string):Promise<void>;
-
 export function DiscardChanges(arg1:string):Promise<void>;
 
 export function DownloadUpdate():Promise<void>;
 
 export function EmitSessionEvent(arg1:session.Event):Promise<void>;
-
-export function EnableResearch(arg1:string,arg2:string):Promise<backend.ResearchStatusDTO>;
 
 export function Fetch(arg1:string,arg2:Array<string>):Promise<string>;
 
@@ -183,9 +179,7 @@ export function GetReviewDiff():Promise<Array<workspace.ReviewFileDiff>>;
 
 export function GetSecuritySettings():Promise<backend.SecuritySettingsResponse>;
 
-export function GetSessionHistory(arg1:string,arg2:number,arg3:string):Promise<session.HistoryPage>;
-
-export function GetSessionPlanTimeline(arg1:string):Promise<Array<session.ChatMessage>>;
+export function GetSessionHistory(arg1:string):Promise<Array<session.ChatMessage>>;
 
 export function GetSessionRuntimeStatus(arg1:string):Promise<session.SessionRuntimeStatus>;
 

@@ -41,8 +41,6 @@ vi.mock('@/api/research', () => ({
   deleteResearch: vi.fn(),
   setResearchPinned: vi.fn(),
   createHypothesis: vi.fn(),
-  enableResearch: vi.fn(),
-  disableResearch: vi.fn(),
 }))
 
 // Spy on the shared convergence paths while delegating to the real

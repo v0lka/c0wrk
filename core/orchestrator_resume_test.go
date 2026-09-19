@@ -178,13 +178,12 @@ func TestResume_SeedsContextManagerWithTrajectory(t *testing.T) {
 }
 
 // TestResume_DefaultsDomainWithoutRouting verifies that when no routing decision
-// was persisted, Resume defaults to the "general" domain (and a standard
-// Conductor complexity) instead of re-routing or failing.
-// TestResume_DefaultsDomainWithoutRouting verifies that when no routing decision
-// was persisted, Resume defaults to the "general" domain (applied to the
-// conductor context internally) instead of re-routing or failing. It must NOT
-// emit a Routing event: the task is not re-routed, and the previous
-// display-only emit was removed as misleading.
+// was persisted AND no one-shot re-route was requested (RequestResumeReroute),
+// Resume defaults to the "general" domain (applied to the conductor context
+// internally) instead of re-routing or failing. It must NOT emit a Routing
+// event: an unarmed resume is never re-routed. The armed case — a task that
+// never got past routing on its original run — is covered by
+// TestResume_RequestResumeReroute_RunsRoutingWhenUnrouted.
 func TestResume_DefaultsDomainWithoutRouting(t *testing.T) {
 	mockLLM := &mockLLMCaller{responses: []*llm.ChatResponse{
 		executorFinishResponse("ok"),
@@ -282,5 +281,103 @@ func TestResume_EmptyTrajectoryFallback(t *testing.T) {
 	// No steps seeded.
 	if cm != nil && len(cm.SeededSteps()) != 0 {
 		t.Fatalf("expected no seeded steps, got %d", len(cm.SeededSteps()))
+	}
+}
+
+// TestResume_RequestResumeReroute_RunsRoutingWhenUnrouted is the acceptance
+// test for the pre-routing resume fix: when the one-shot re-route request is
+// armed (as the session layer does for a task that never got past routing —
+// no persisted routing decision, no execution state) and no routing decision
+// is passed, Resume must run the routing stage instead of silently defaulting
+// to the "general" domain. The fresh decision is emitted and returned.
+func TestResume_RequestResumeReroute_RunsRoutingWhenUnrouted(t *testing.T) {
+	// First call: the router (consumes routerResponse → domain "code").
+	// Second call: the resumed Conductor (finishes).
+	mockLLM := &mockLLMCaller{responses: []*llm.ChatResponse{
+		routerResponse(false),
+		executorFinishResponse("rerouted output"),
+	}}
+	emitter := &spyEmitter{}
+	orch := newResumeTestOrchestrator(t, mockLLM, emitter, nil)
+
+	bb := orchestration.NewMapBlackboard()
+	bb.SetOriginalRequest("classify me")
+
+	orch.RequestResumeReroute()
+	result, err := orch.Resume(context.Background(), bb, nil, "", nil, nil, "")
+	if err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	mode, domain, _, ok := routingCall(emitter)
+	if !ok {
+		t.Fatal("expected a Routing event — the never-started task must be re-routed")
+	}
+	if mode != "conductor" || domain != "code" {
+		t.Fatalf("routing event = (mode=%q, domain=%q), want (conductor, code)", mode, domain)
+	}
+	if result.RoutingDecision == nil || result.RoutingDecision.Domain != "code" {
+		t.Fatalf("result routing = %+v, want the re-routed decision (domain code)", result.RoutingDecision)
+	}
+	if result.Output != "rerouted output" {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+}
+
+// TestResume_RequestResumeReroute_ReusesPersistedRouting verifies that an armed
+// re-route request is a no-op when a routing decision WAS persisted: a task
+// that was actually routed keeps its decision and is never re-classified on
+// resume, even if the request is somehow armed.
+func TestResume_RequestResumeReroute_ReusesPersistedRouting(t *testing.T) {
+	mockLLM := &mockLLMCaller{responses: []*llm.ChatResponse{
+		executorFinishResponse("reused routing"),
+	}}
+	emitter := &spyEmitter{}
+	orch := newResumeTestOrchestrator(t, mockLLM, emitter, nil)
+
+	bb := orchestration.NewMapBlackboard()
+	bb.SetOriginalRequest("already routed task")
+
+	routing := &router.RoutingDecision{Domain: "research", Complexity: 5}
+	orch.RequestResumeReroute()
+	result, err := orch.Resume(context.Background(), bb, routing, "", nil, nil, "")
+	if err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	if _, _, _, ok := routingCall(emitter); ok {
+		t.Fatal("resume must not emit a Routing event when a routing decision was persisted")
+	}
+	if result.RoutingDecision == nil || result.RoutingDecision.Domain != "research" {
+		t.Fatalf("routing = %+v, want the persisted decision reused", result.RoutingDecision)
+	}
+}
+
+// TestRequestResumeReroute_OneShotSemantics unit-tests the arm/consume pair:
+// consuming clears the flag (a second consume returns false), re-arming is a
+// harmless no-op, and ClearResumeReroute drops an armed request.
+func TestRequestResumeReroute_OneShotSemantics(t *testing.T) {
+	orch := newResumeTestOrchestrator(t, &mockLLMCaller{}, &spyEmitter{}, nil)
+
+	if orch.consumeResumeReroute() {
+		t.Fatal("fresh orchestrator consume = true, want false")
+	}
+	orch.RequestResumeReroute()
+	if !orch.consumeResumeReroute() {
+		t.Fatal("first consume = false, want true")
+	}
+	if orch.consumeResumeReroute() {
+		t.Fatal("second consume = true, want false (one-shot)")
+	}
+	// Clear on a fresh arm drops the request.
+	orch.RequestResumeReroute()
+	orch.ClearResumeReroute()
+	if orch.consumeResumeReroute() {
+		t.Fatal("consume after clear = true, want false")
+	}
+	// Clearing when nothing is armed is a harmless no-op.
+	orch.ClearResumeReroute()
+	if orch.consumeResumeReroute() {
+		t.Fatal("consume after clear-nothing = true, want false")
 	}
 }

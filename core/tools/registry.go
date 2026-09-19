@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 
 	sdktools "github.com/v0lka/sp4rk/tools"
@@ -129,6 +130,29 @@ type ToolRegistry struct {
 	silentMode                 SilentModeState
 	judgeObserver              JudgeObserver
 	autonomyDecisionObserver   AutonomyDecisionObserver
+	// judgeMemoMu guards judgeMemo. It is deliberately independent of mu: the
+	// memo has its own lifecycle (task-scoped, never touched by the config
+	// setters mu protects), and silent-path reads must not contend with
+	// Settings pushes for it.
+	judgeMemoMu sync.Mutex
+	// judgeMemo memoizes silent-mode strict-judge verdicts by the shell
+	// EFFECT signature (ShellAnalysisDigest.Signature) within this
+	// registry's task — Track D of the silent-mode deny-accuracy audit
+	// (silent-mode-deny-accuracy-recommendations.md §3): the first verdict
+	// for an effect is fixed and replayed verbatim on re-escalation, so
+	// judge non-determinism on identical input (audit pair 961130 allow vs
+	// 961162 deny — the same vitest run, tail -20 vs -15) can no longer flip
+	// a retry, and retries stop re-paying the strict-judge call. Deliberately
+	// NOT copied by Clone: every clone is a fresh task launch
+	// (OrchestratorBuilder.registerSessionRegistry), so a new task starts
+	// with an empty memo and no verdict leaks across tasks or sessions.
+	judgeMemo map[string]judgeMemoEntry
+	// parent is the shared builder registry this clone was cut from (nil on
+	// the shared registry itself). Clones pin their autonomy posture at task
+	// launch — a runtime Settings save must not flip the posture of a task
+	// already running (see RefreshAutonomyPosture) — so the clone keeps a
+	// link to the authoritative posture source instead.
+	parent *ToolRegistry
 }
 
 // PreExecuteHook is called before tool execution. It may block to wait for
@@ -187,9 +211,13 @@ type AutonomyDecision struct {
 	// posture answered the gate.
 	Mode string `json:"mode,omitempty"`
 	// Policy is the posture's sub-policy that decided: the silent-mode
-	// tool_confirm mode ("judge"|"allow"|"deny") or the step_limit mode
-	// ("auto" or a pinned response). Empty for assisted_deny — the strict
-	// judge itself is the decider there.
+	// tool_confirm mode ("judge"|"allow"|"deny"), the step_limit mode
+	// ("auto" or a pinned response), or "judge" for assisted_deny — the
+	// strict judge itself is the decider there. Guaranteed non-empty on
+	// every emitted decision: all registry/step-limit emitters fill it, and
+	// the host funnel (Manager.EmitAutonomyDecision) defaults an empty
+	// policy from the decision kind (audit §6.3 — 5 of 8 TRUE_DENY corpus
+	// events carried policy=None, losing the deciding mechanism).
 	Policy string `json:"policy,omitempty"`
 	// Verdict is the decision: "allow"|"deny" for tool_confirm, or the
 	// step-limit response ("allow_once"|"allow_more"|"allow_always"|"deny").
@@ -199,6 +227,15 @@ type AutonomyDecision struct {
 	// Source is the tool source ("core" or an MCP server name) for a
 	// tool_confirm decision.
 	Source string `json:"source,omitempty"`
+	// Signature is the deterministic effect signature of the analyzed call
+	// (sdktools.ShellAnalysisDigest.Signature: resolved driver binaries,
+	// canonical effects, fired criteria, the workspace-scoping marker). It
+	// rides shell-exec tool decisions, where it doubles as the silent-mode
+	// strict-judge memoization key — identical signature within a task
+	// resolves identically — so an audit reader can tell which decisions
+	// adjudicated the same effect. Empty for non-shell tools, failed
+	// analyses, and non-tool gates (step_limit).
+	Signature string `json:"signature,omitempty"`
 	// Reason is WHY the call/boundary was escalated in the first place (the
 	// confirmation reason, or the circuit-breaker reason; empty for a plain
 	// step-budget exhaustion).
@@ -212,6 +249,13 @@ type AutonomyDecision struct {
 	// CurrentStep/MaxSteps locate a step-limit decision; zero for tool_confirm.
 	CurrentStep int `json:"current_step,omitempty"`
 	MaxSteps    int `json:"max_steps,omitempty"`
+	// PlanStepID locates the decision in the transcript: the delegation or
+	// plan-step block whose executor took it. Host-filled from the executor
+	// context (agent.StepIDFromContext — RunSubAgent stamps every subagent
+	// launch) with the root emitter's current inline step as the fallback, so
+	// the notice nests under the matching subagent/plan-step block instead of
+	// the main chat stream. Empty for root-level decisions.
+	PlanStepID string `json:"plan_step_id,omitempty"`
 }
 
 // AutonomyDecisionObserver is invoked once per automatic (no-human) decision,
@@ -248,7 +292,9 @@ func NewToolRegistry() *ToolRegistry {
 // ToolRegistry (tools themselves are stateless and shared) but has independent
 // policy state (groupPolicies, judge, confirmFunc, hooks). This gives each
 // session/orchestrator its own policy view so runtime mutations on a clone do
-// not leak across concurrent sessions.
+// not leak across concurrent sessions. The clone records its parent (the
+// registry it was cut from) so RefreshAutonomyPosture can re-sync the pinned
+// autonomy posture from the authoritative source at task launch.
 func (r *ToolRegistry) Clone() *ToolRegistry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -266,6 +312,7 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 		silentMode:                 r.silentMode,
 		judgeObserver:              r.judgeObserver,
 		autonomyDecisionObserver:   r.autonomyDecisionObserver,
+		parent:                     r,
 	}
 	if r.disabledTools != nil {
 		cloned.disabledTools = make(map[string]bool, len(r.disabledTools))
@@ -400,8 +447,11 @@ func (r *ToolRegistry) SetGroupPolicies(policies map[sdktools.ToolGroup]sdktools
 // ApplySecurityState atomically replaces the registry's global security
 // state: the group→policy map, session-root write auto-approval, the autonomy
 // mode, and the silent-mode sub-policies. It is the push API for runtime
-// security-settings updates (applySecurityPolicies), used for both the shared
-// builder registry and the live per-session clones cloned from it. The
+// security-settings updates (applySecurityPolicies), used for the shared
+// builder registry; the live per-session clones are updated with group
+// policies and auto-approval only (ApplyGroupPolicies) — their autonomy
+// posture is re-synced from the shared registry at each task launch
+// (RefreshAutonomyPosture), never mid-run. The
 // policies map is deep-copied so the caller's map never aliases registry
 // state — a broadcast push may pass the same map to many registries, and each
 // must stay independently mutable (Clone contract). Replacing the whole map
@@ -422,6 +472,56 @@ func (r *ToolRegistry) ApplySecurityState(
 	defer r.mu.Unlock()
 	r.groupPolicies = copied
 	r.autoApproveWorkspaceWrites = autoApproveWorkspaceWrites
+	r.autonomyMode = autonomyMode
+	r.silentMode = silentMode
+}
+
+// ApplyGroupPolicies atomically replaces ONLY the group→policy map and the
+// session-root write auto-approval, preserving the autonomy mode and the
+// silent-mode sub-policies. It is the runtime-push counterpart of
+// ApplySecurityState for live per-session clones: group policies and
+// auto-approval are shared, fail-closed posture that a Settings save must
+// deliver to already-running sessions (a deny set in the UI must not fail
+// open on a session created before the save), while the autonomy posture is
+// pinned per task at launch (see RefreshAutonomyPosture) and must never be
+// flipped under a running task. Like ApplySecurityState, the policies map is
+// deep-copied so a broadcast push may pass the same map to many registries.
+func (r *ToolRegistry) ApplyGroupPolicies(
+	policies map[sdktools.ToolGroup]sdktools.ToolPolicy,
+	autoApproveWorkspaceWrites bool,
+) {
+	copied := make(map[sdktools.ToolGroup]sdktools.ToolPolicy, len(policies))
+	for g, p := range policies {
+		copied[g] = p
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.groupPolicies = copied
+	r.autoApproveWorkspaceWrites = autoApproveWorkspaceWrites
+}
+
+// RefreshAutonomyPosture re-syncs this registry's autonomy mode and
+// silent-mode sub-policies from its parent (the shared builder registry the
+// clone was cut from). It is the task-launch half of the per-task posture
+// pinning contract: a Settings save updates the shared registry immediately,
+// but a session clone picks the posture up only here — at fresh-task start
+// and at resume — so a task that started interactive can never silently turn
+// unattended mid-run, and a paused task resumed after a Settings change runs
+// under the posture the user sees in Settings. A no-op on the shared registry
+// itself (no parent) and on clones whose parent is nil. Both values are read
+// from the parent under one lock acquisition, so a concurrent Settings save
+// cannot tear the pair.
+func (r *ToolRegistry) RefreshAutonomyPosture() {
+	if r.parent == nil {
+		return
+	}
+	r.parent.mu.RLock()
+	autonomyMode := r.parent.autonomyMode
+	silentMode := r.parent.silentMode
+	r.parent.mu.RUnlock()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.autonomyMode = autonomyMode
 	r.silentMode = silentMode
 }
@@ -664,10 +764,10 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	// branch below:
 	//   - the tool's own Judge (command blocklist / SSRF = hard; path
 	//     containment = soft),
-	//   - symlink traversal detection (an escape out of the session roots or
-	//     unresolvable input = hard; a symlink whose resolution stays inside
-	//     the roots is NOT a concern — containment reasons about resolved
-	//     paths).
+	//   - symlink traversal detection (an escape out of the session roots =
+	//     hard; a symlink whose resolution stays inside the roots is NOT a
+	//     concern — containment reasons about resolved paths; shell variable
+	//     expansions are flowsh's domain, not the symlink gate's).
 	judgeOutcome := judgeToolCall(ctx, tool, input)
 	symlinkReason, symlinkCode := r.symlinkHardReason(ctx, name, tool, input)
 	reasons := splitSafetyReasons(judgeOutcome, symlinkReason, symlinkCode)
@@ -768,9 +868,19 @@ func isShellToolName(name string) bool {
 // in that case — the escalation is carried by the Judge, not the digest.
 // Exported for the backend advisory path (backend/application.go
 // evaluateJudgeWith).
+//
+// Before analysing, the session's host-known variable bindings (see
+// sessionShellVarBindings) are attached via sdktools.WithShellVarBindings, so
+// the cross-command expansions the session context determines — today $D, the
+// session temp directory — resolve to concrete in-root targets instead of
+// degrading the analysis to ⊤ (silent-mode-deny-accuracy-recommendations.md
+// §2C, Track C).
 func AttachShellAnalysis(ctx context.Context, name string, input json.RawMessage, log *slog.Logger) context.Context {
 	if !isShellToolName(name) {
 		return ctx
+	}
+	if vars := sessionShellVarBindings(ctx); len(vars) > 0 {
+		ctx = sdktools.WithShellVarBindings(ctx, vars)
 	}
 	analysis, err := sdktools.AnalyzeShellCommandForJudge(ctx, name, input)
 	if err != nil {
@@ -779,6 +889,33 @@ func AttachShellAnalysis(ctx context.Context, name string, input json.RawMessage
 		}
 	}
 	return sdktools.WithShellAnalysis(ctx, analysis, err)
+}
+
+// sessionShellVarBindings builds the host-known shell variable table for the
+// imminent shell-exec analysis: values the session context determines but the
+// command text alone does not (flowsh Options.Vars — each binding behaves as
+// though the script assigned it a literal before its first statement; an
+// in-script assignment overrides the seed; unknown variables still degrade to
+// ⊤). Today the table carries exactly one binding:
+//
+//	D → the session temp directory (sdktools.TempDirFrom). The system prompt
+//	    hands the model the temp path and the audit corpus (§2C) shows D as
+//	    the conventional alias it binds it to, so a later command re-using
+//	    $D without a visible assignment resolves into the session roots
+//	    instead of an arbitrary ⊤ target.
+//
+// The working directory participates through the tool input's
+// working_directory (the analysis resolution base) rather than a named
+// binding — no corpus convention names it, and flowsh already models relative
+// paths and $PWD against that base. Extend the table here when a new
+// host-known binding is established; nil means "attach nothing" and analyses
+// exactly as before.
+func sessionShellVarBindings(ctx context.Context) map[string]string {
+	var vars map[string]string
+	if temp := sdktools.TempDirFrom(ctx); temp != "" {
+		vars = map[string]string{"D": temp}
+	}
+	return vars
 }
 
 // shellAnalysisContext extracts the marshaled digest for the strict judge's
@@ -800,6 +937,25 @@ func shellAnalysisContext(ctx context.Context, name string) string {
 		return ""
 	}
 	return string(digest)
+}
+
+// shellEffectSignature returns the effect signature of the shell analysis
+// attached to ctx (ShellAnalysisDigest.Signature — a pure function of the
+// resolved driver binaries, the canonical effects, the fired criteria and
+// the workspace-scoping marker; see sp4rk tools/shellanalysis.go): "" for
+// non-shell tools, a missing analysis, or a failed one. It keys the silent
+// judge's task-scoped verdict memo (silentJudgeDecide) and rides the
+// autonomy_decision audit event, so an audit reader can tell which decisions
+// adjudicated the same effect.
+func shellEffectSignature(ctx context.Context, name string) string {
+	if !isShellToolName(name) {
+		return ""
+	}
+	analysis, err := sdktools.ShellAnalysisFrom(ctx)
+	if err != nil || analysis == nil {
+		return ""
+	}
+	return analysis.Digest.Signature
 }
 
 // safetyReasons carries the folded tool-local safety signals through the
@@ -930,10 +1086,10 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 	// fired security control on unmistakably dangerous behavior, or an input
 	// whose safety the judge is structurally unable to assess (degraded SSRF
 	// protection, an undeterminable URL/path), is not for an advisory judge
-	// to waive. Only scope/pattern hard reasons (e.g. an unresolvable
-	// path-like token) that the strict judge positively clears may
-	// auto-approve. (The silent path drops this backstop by design — see
-	// silentJudgeDecide.)
+	// to waive. Only non-canonical hard reasons (e.g. the flowsh analyzer's
+	// ⊤ limitation, command_unbounded_analysis) that the strict judge
+	// positively clears may auto-approve. (The silent path drops this
+	// backstop by design — see silentJudgeDecide.)
 	if verdict == sdktools.VerdictAllow && severity == sdktools.JudgeSeverityHard && isCanonicalHardReason(code) {
 		verdict = sdktools.VerdictConfirm
 		reasoning = "A security control fired on this destructive call and cannot be waived by an advisory judge; manual confirmation required. " + reason
@@ -963,13 +1119,19 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 		// call, so it terminates without executing and without a card. The
 		// decision rides the same auditable autonomy_decision channel with a
 		// distinct kind (assisted_deny) — a gate a human would otherwise
-		// have answered was decided automatically (ASI10).
+		// have answered was decided automatically (ASI10). Policy names the
+		// deciding sub-policy ("judge" — the strict judge is the decider in
+		// the assisted posture) and Signature carries the effect signature
+		// when the call was a shell execution (audit §6.3: every decision
+		// names its mechanism and its effect).
 		r.observeAutonomyDecision(ctx, AutonomyDecision{
 			Kind:          autonomyDecisionKindAssistedDeny,
 			Mode:          AutonomyModeAssisted,
+			Policy:        SilentToolConfirmJudge,
 			Verdict:       autonomyDecisionVerdictDeny,
 			Tool:          name,
 			Source:        source,
+			Signature:     shellEffectSignature(ctx, name),
 			Reason:        reason,
 			Justification: reasoning,
 		})
@@ -1030,6 +1192,10 @@ func (r *ToolRegistry) silentToolTerminal(ctx context.Context, tool sdktools.Too
 	if reason == "" {
 		reason = defaultConfirmReason(name)
 	}
+	// The effect signature rides every decision this terminal emits (audit
+	// §6.3), whether the sub-policy decides outright (deny/allow) or the
+	// strict judge does (silentJudgeDecide re-derives it itself).
+	signature := shellEffectSignature(ctx, name)
 
 	switch mode {
 	case SilentToolConfirmDeny:
@@ -1042,6 +1208,7 @@ func (r *ToolRegistry) silentToolTerminal(ctx context.Context, tool sdktools.Too
 			Verdict:       autonomyDecisionVerdictDeny,
 			Tool:          name,
 			Source:        source,
+			Signature:     signature,
 			Reason:        reason,
 			Justification: "denied outright by security.silent_mode.tool_confirm.mode=deny (no human available)",
 		})
@@ -1059,6 +1226,7 @@ func (r *ToolRegistry) silentToolTerminal(ctx context.Context, tool sdktools.Too
 				Verdict:       autonomyDecisionVerdictAllow,
 				Tool:          name,
 				Source:        source,
+				Signature:     signature,
 				Reason:        reason,
 				Justification: "ran unattended: no hard safety reason (security.silent_mode.tool_confirm.mode=allow)",
 			})
@@ -1086,33 +1254,61 @@ func (r *ToolRegistry) silentToolTerminal(ctx context.Context, tool sdktools.Too
 // refused the call. mode is the governing tool_confirm sub-policy, recorded on
 // the emitted autonomy-decision event (its Policy field, with Mode carrying
 // the silent posture) for the audit trail.
+//
+// Verdicts are memoized by EFFECT signature (ShellAnalysisDigest.Signature)
+// for the life of this registry's task, keying on the signature plus the
+// escalation severity (see judgeMemoKey): a re-escalation of an
+// already-adjudicated effect — the identical command, or a retry re-spelled
+// so the deterministic analysis lands on the same drivers, canonical effects
+// and fired criteria — replays the FIRST verdict and its reasoning verbatim
+// without consulting the judge again (audit Track D: pair 961130 allow vs
+// 961162 deny is exactly a judge flip on identical input; retries must not
+// re-pay the call either). Only a judge that SPOKE is memoized — a provider
+// error/timeout or an unparseable response is infrastructure failure, not a
+// verdict about the effect, so the next occurrence retries the judge. A
+// missing signature (non-shell tool, failed analysis) never memoizes.
 func (r *ToolRegistry) silentJudgeDecide(ctx context.Context, tool sdktools.Tool, name, source string, input json.RawMessage, reason string, code sdktools.JudgeReasonCode, severity sdktools.JudgeSeverity, mode string, strictJudge *sdktools.ToolJudge, judgeObserver JudgeObserver) (sdktools.ToolResult, error) {
 	reasoning := "Strict judge is unavailable; " + reason
 	verdict := sdktools.VerdictConfirm
+	// The effect signature of the attached analysis: the memo key and the
+	// audit event's Signature field. "" for non-shell tools and failed
+	// analyses — those never memoize.
+	signature := shellEffectSignature(ctx, name)
 	if strictJudge != nil {
-		var judgeErr error
-		if judgeObserver != nil {
-			judgeObserver(ctx, JudgePhaseStarted, name)
-		}
-		// Shell-exec calls carry the host-precomputed flowsh digest in ctx
-		// (AttachShellAnalysis ran before the tool's own Judge); forward it as
-		// the strict judge's static-analysis evidence, exactly as the
-		// non-silent Smart Approve path does.
-		verdict, reasoning, judgeErr = strictJudge.JudgeStrict(ctx, sdktools.StrictJudgeRequest{
-			ToolName:        name,
-			Input:           input,
-			TaskContext:     sdktools.TaskContextFrom(ctx),
-			ToolSource:      source,
-			JudgeReasoning:  reason,
-			JudgeSeverity:   severity,
-			AnalysisContext: shellAnalysisContext(ctx, name),
-		})
-		if judgeObserver != nil {
-			judgeObserver(ctx, JudgePhaseFinished, name)
-		}
-		if judgeErr != nil {
-			verdict = sdktools.VerdictConfirm
-			reasoning = "Strict judge evaluation failed; " + reason
+		// Consult the task-scoped memo BEFORE the judge runs. A hit replays
+		// the first verdict verbatim — no judge call and no judge-observer
+		// phases (no judge is working).
+		if entry, ok := r.consultJudgeMemo(signature, severity); ok {
+			verdict, reasoning = entry.verdict, entry.reasoning
+			r.log().Debug("security: silent mode judge verdict reused (memoized effect signature)",
+				"tool", name, "source", source)
+		} else {
+			var judgeErr error
+			if judgeObserver != nil {
+				judgeObserver(ctx, JudgePhaseStarted, name)
+			}
+			// Shell-exec calls carry the host-precomputed flowsh digest in ctx
+			// (AttachShellAnalysis ran before the tool's own Judge); forward it as
+			// the strict judge's static-analysis evidence, exactly as the
+			// non-silent Smart Approve path does.
+			verdict, reasoning, judgeErr = strictJudge.JudgeStrict(ctx, sdktools.StrictJudgeRequest{
+				ToolName:        name,
+				Input:           input,
+				TaskContext:     sdktools.TaskContextFrom(ctx),
+				ToolSource:      source,
+				JudgeReasoning:  reason,
+				JudgeSeverity:   severity,
+				AnalysisContext: shellAnalysisContext(ctx, name),
+			})
+			if judgeObserver != nil {
+				judgeObserver(ctx, JudgePhaseFinished, name)
+			}
+			if judgeErr != nil {
+				verdict = sdktools.VerdictConfirm
+				reasoning = "Strict judge evaluation failed; " + reason
+			} else if judgeSpoke(verdict, reasoning) {
+				r.recordJudgeMemo(signature, severity, verdict, reasoning)
+			}
 		}
 	}
 	if reasoning == "" {
@@ -1141,6 +1337,7 @@ func (r *ToolRegistry) silentJudgeDecide(ctx context.Context, tool sdktools.Tool
 			Verdict:       autonomyDecisionVerdictAllow,
 			Tool:          name,
 			Source:        source,
+			Signature:     signature,
 			Reason:        reason,
 			Justification: reasoning,
 		})
@@ -1162,10 +1359,93 @@ func (r *ToolRegistry) silentJudgeDecide(ctx context.Context, tool sdktools.Tool
 		Verdict:       autonomyDecisionVerdictDeny,
 		Tool:          name,
 		Source:        source,
+		Signature:     signature,
 		Reason:        reason,
 		Justification: justification,
 	})
 	return silentDenial(justification), nil
+}
+
+// Strict-judge fail-safe reason markers. JudgeStrict NEVER returns a non-nil
+// error: every infrastructure failure (provider error/timeout, an envelope
+// marshal failure) and a twice-unparseable response comes back as a
+// fail-safe CONFIRM carrying one of these exact reason strings (sp4rk
+// tools/judge.go — unexported there, mirrored here and PINNED behaviorally by
+// TestStrictJudgeFailureReasonMarkers_Pin so the mirror cannot drift).
+const (
+	strictJudgeFailureReason = "Strict judge evaluation failed; requiring manual confirmation for safety"
+	judgeUnparsedReason      = "Unable to parse judge response; requiring manual confirmation for safety"
+)
+
+// judgeSpoke reports whether a strict-judge result is an actual adjudication
+// rather than a fail-safe CONFIRM about the judge infrastructure: a parsed
+// ALLOW/DENY always spoke, and a CONFIRM spoke unless its reasoning is one of
+// the fail-safe markers. Only spoken verdicts are memoized — an
+// infrastructure failure is not a verdict about the effect, so the next
+// occurrence of the effect retries the judge instead of inheriting the
+// failure for the rest of the task.
+func judgeSpoke(verdict sdktools.JudgeVerdict, reasoning string) bool {
+	if verdict != sdktools.VerdictConfirm {
+		return true
+	}
+	return reasoning != strictJudgeFailureReason && reasoning != judgeUnparsedReason
+}
+
+// judgeMemoEntry is one memoized silent-mode strict-judge verdict: the
+// terminal verdict the judge returned plus its reasoning. A memo hit replays
+// both verbatim, so the second occurrence of the same effect produces a
+// byte-identical justification — the terminal is exactly reproducible.
+type judgeMemoEntry struct {
+	verdict   sdktools.JudgeVerdict
+	reasoning string
+}
+
+// judgeMemoKey builds the memo key from the effect signature and the
+// escalation severity. The signature carries everything the deterministic
+// analysis says about the call (resolved driver binaries, canonical effects,
+// fired criteria, the workspace-scoping marker); the severity is the one
+// envelope dimension that changes what the judge is ASKED (a fired hard
+// control and a soft escalation are different questions), so the two
+// together bound what "identical effect" means for reusing a verdict.
+func judgeMemoKey(signature string, severity sdktools.JudgeSeverity) string {
+	return strconv.Itoa(int(severity)) + "\x00" + signature
+}
+
+// consultJudgeMemo returns the memoized verdict for the effect signature, if
+// this task's memo holds one. An empty signature (non-shell tool, failed
+// analysis) never consults — without an effect identity there is nothing to
+// key on, so every such escalation goes to the judge.
+func (r *ToolRegistry) consultJudgeMemo(signature string, severity sdktools.JudgeSeverity) (judgeMemoEntry, bool) {
+	if signature == "" {
+		return judgeMemoEntry{}, false
+	}
+	key := judgeMemoKey(signature, severity)
+	r.judgeMemoMu.Lock()
+	defer r.judgeMemoMu.Unlock()
+	entry, ok := r.judgeMemo[key]
+	return entry, ok
+}
+
+// recordJudgeMemo fixes the FIRST verdict for the effect signature in this
+// task's memo (audit Track D: "первый вердикт в рамках задачи фиксируется").
+// A later recording for the same key never overwrites, so a retried effect
+// keeps resolving the way it first resolved even if a concurrent
+// adjudication of the same effect returned differently. An empty signature
+// never records.
+func (r *ToolRegistry) recordJudgeMemo(signature string, severity sdktools.JudgeSeverity, verdict sdktools.JudgeVerdict, reasoning string) {
+	if signature == "" {
+		return
+	}
+	key := judgeMemoKey(signature, severity)
+	r.judgeMemoMu.Lock()
+	defer r.judgeMemoMu.Unlock()
+	if r.judgeMemo == nil {
+		r.judgeMemo = make(map[string]judgeMemoEntry)
+	}
+	if _, exists := r.judgeMemo[key]; exists {
+		return
+	}
+	r.judgeMemo[key] = judgeMemoEntry{verdict: verdict, reasoning: reasoning}
 }
 
 // silentDenial builds the auto-denial ToolResult for silent mode. It carries

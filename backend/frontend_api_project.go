@@ -387,31 +387,9 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	f.switchProjectActivate(p)
 	f.applySavedProjectSwitchState(p.ID)
 
-	// Reconcile the project-local c0wrk packs (research-*/study-paper skills,
-	// research agent profile) when switching to a research-enabled project:
-	// seed ALL missing entries and upgrade pack-marked outdated ones. The
-	// toggle-time seeding in EnableResearch only runs when the user flips the
-	// switch, so an app upgrade that bumps a pack version — or a pack that
-	// gained a new skill — would otherwise stay stale in every project until
-	// a manual re-toggle. App-startup restoration rides along for free: the
-	// frontend replays the last active project through this same
-	// SwitchProject call. Best-effort: a seeding failure is logged inside
-	// reconcileResearchPacks and never fails the switch.
-	if p.ResearchRoot != "" && !p.IsNoProject {
-		if packRes := f.reconcileResearchPacks(p.ID, p.WorkspacePath); packRes.changed() {
-			f.invalidateSkillCache()
-			f.invalidateAgentCache()
-			// Refresh running sessions of this project (background/live
-			// sessions survive a switch away and back) so their skill
-			// catalogs pick up the newly seeded entries without a restart.
-			if f.app != nil {
-				if manager := f.app.Manager(); manager != nil {
-					manager.RescanSkillsForProject(p.ID)
-					manager.RescanAgentsForProject(p.ID)
-				}
-			}
-		}
-	}
+	// c0wrk-owned packs (research-*/study-paper skills, research agent
+	// profile) are seeded into the GLOBAL agent directories once per launch
+	// (see seedGlobalPacks) — a project switch seeds nothing.
 
 	f.emitEvent(EventProjectSwitched, p)
 
@@ -506,15 +484,13 @@ func (f *FrontendAPI) switchProjectActivate(p *project.ProjectInfo) {
 	f.activeProjectID = p.ID
 	f.activeProjectPath = p.WorkspacePath
 	// Track the active research root so the workspace watcher callback can
-	// emit research:file_changed events for file modifications inside it.
-	// This mirrors what EnableResearch does, ensuring the incremental update
-	// path works even when switching to a project that already has research
-	// enabled (e.g. after a restart or project switch).
-	// Always assign (including "") so switching to a project with research
-	// disabled — or to No Project — clears a stale research root from the
-	// previously-active project and stops cross-project research:file_changed
-	// events.
-	f.activeResearchRoot = p.ResearchRoot
+	// emit research:file_changed events for file modifications inside it. The
+	// root is the project's canonical <workspace>/.research, so the
+	// incremental update path works across a restart and a project switch.
+	// Always assign (including "") so switching to No Project clears a stale
+	// research root from the previously-active project and stops cross-project
+	// research:file_changed events.
+	f.activeResearchRoot = effectiveResearchRoot(p)
 	// Track the paper-library root (<effective research root>/papers)
 	// independently of the RESEARCH toggle, so the workspace watcher can emit
 	// papers:changed even when RESEARCH is off — the library is a global

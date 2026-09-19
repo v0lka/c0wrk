@@ -15,6 +15,7 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { fuzzyFilter } from '@/lib/fuzzyMatch'
+import { formatFileRefPath } from '@/lib/parseReferences'
 import type { SkillDescriptor, AgentDescriptor, FileEntry } from '@/types/models'
 
 const DEFAULT_FILE_ICON = '\uf15b'
@@ -235,12 +236,24 @@ function relativePath(absPath: string, rootPath: string | null): string {
 
 /**
  * Text inserted into the chat input when a file is selected: a path made
- * relative to the workspace root (when the file lives inside it) with spaces
- * escaped, plus the given suffix (e.g. `' '` or `'/'`). Files outside the
- * workspace keep their absolute path.
+ * relative to the workspace root (when the file lives inside it), formatted
+ * for the @-ref syntax, plus the given suffix (e.g. `' '` or `'/'`). Paths
+ * with spaces are single-quoted (@'my file.go'); see formatFileRefPath.
+ * `forceQuoted` reintroduces the opening quote while completing inside an
+ * already-open @'…' ref (the replacement range swallows the typed quote).
+ * Files outside the workspace keep their absolute path.
  */
-function chatApplyPath(absPath: string, rootPath: string | null, suffix: string): string {
-  return relativePath(absPath, rootPath).replace(/ /g, '\\ ') + suffix
+function chatApplyPath(absPath: string, rootPath: string | null, suffix: string, forceQuoted = false): string {
+  const rel = relativePath(absPath, rootPath)
+  // A DIRECTORY completed inside an already-open @'…' ref must keep the quote
+  // OPEN: the ref continues into the child path (@'src/…). Closing it here
+  // (@'src'/) would make the trigger scan treat the second quote as a closed
+  // ref and silently kill all further completions. Only a FILE closes the
+  // quote, since a file ends the ref.
+  if (forceQuoted && suffix === '/' && !rel.includes("'")) {
+    return `'${rel}/`
+  }
+  return formatFileRefPath(rel, forceQuoted) + suffix
 }
 
 async function skillSource(ctx: CompletionContext): Promise<CompletionResult | null> {
@@ -325,11 +338,15 @@ async function fileSource(ctx: CompletionContext): Promise<CompletionResult | nu
   const line = ctx.state.doc.lineAt(ctx.pos)
   const textBefore = line.text.slice(0, ctx.pos - line.from)
 
+  // Scan backward for the '@' trigger. Unlike the / and # sources, the scan
+  // does NOT stop at whitespace: a quoted ref (@'my file) has spaces inside
+  // the query. Instead the last boundary-valid '@' is found first and the
+  // query shape decides whether a completion is active at all — an unquoted
+  // query containing whitespace (prose after the ref, e.g. `@x.go and more`)
+  // and a CLOSED quoted ref (@'my file') both yield no trigger.
   let triggerIdx = -1
   for (let i = textBefore.length - 1; i >= 0; i--) {
-    const ch = textBefore[i]
-    if (ch === ' ' || ch === '\n' || ch === '\t') break
-    if (ch === '@') {
+    if (textBefore[i] === '@') {
       if (i === 0 || textBefore[i - 1] === ' ' || textBefore[i - 1] === '\t') {
         triggerIdx = i
       }
@@ -339,8 +356,25 @@ async function fileSource(ctx: CompletionContext): Promise<CompletionResult | nu
 
   if (triggerIdx === -1) return null
 
+  // `from` covers everything after the '@' — including the typed opening
+  // quote of an @'…' ref — so the applied completion replaces the whole
+  // partial query (and reintroduces the quote; see chatApplyPath).
   const from = line.from + triggerIdx + 1
-  const query = textBefore.slice(triggerIdx + 1)
+  const token = textBefore.slice(triggerIdx + 1)
+
+  let query: string
+  let quoted = false
+  if (token.startsWith("'")) {
+    // Quoted form in progress: stays open until the closing quote appears.
+    if (token.indexOf("'", 1) !== -1) return null
+    quoted = true
+    query = token.slice(1)
+  } else {
+    // Unquoted refs end at whitespace — a query containing spaces is stale
+    // prose trailing an earlier ref, not an active trigger.
+    if (/\s/.test(token)) return null
+    query = token
+  }
 
   const { entries, root: rootPath } = await getFiles()
   if (entries.length === 0) return null
@@ -359,7 +393,7 @@ async function fileSource(ctx: CompletionContext): Promise<CompletionResult | nu
           label: relativePath(entry.path, rootPath),
           type: 'file',
           boost: 10,
-          apply: chatApplyPath(entry.path, rootPath, ' '),
+          apply: chatApplyPath(entry.path, rootPath, ' ', quoted),
           nerdIcon: entry.icon || DEFAULT_FILE_ICON,
           nerdIconColor: entry.icon_color,
         })
@@ -373,7 +407,7 @@ async function fileSource(ctx: CompletionContext): Promise<CompletionResult | nu
         options.push({
           label: relativePath(f.path, rootPath),
           type: f.is_dir ? 'folder' : 'file',
-          apply: chatApplyPath(f.path, rootPath, suffix),
+          apply: chatApplyPath(f.path, rootPath, suffix, quoted),
           nerdIcon: f.is_dir ? (f.icon || DEFAULT_FOLDER_ICON) : (f.icon || DEFAULT_FILE_ICON),
           nerdIconColor: f.icon_color,
         })
@@ -389,7 +423,7 @@ async function fileSource(ctx: CompletionContext): Promise<CompletionResult | nu
         label: relativePath(f.path, rootPath),
         type: f.is_dir ? 'folder' : 'file',
         boost: pinned ? 10 : 0,
-        apply: chatApplyPath(f.path, rootPath, suffix),
+        apply: chatApplyPath(f.path, rootPath, suffix, quoted),
         nerdIcon: f.is_dir ? (f.icon || DEFAULT_FOLDER_ICON) : (f.icon || DEFAULT_FILE_ICON),
         nerdIconColor: f.icon_color,
       })

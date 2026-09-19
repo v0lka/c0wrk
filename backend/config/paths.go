@@ -65,6 +65,13 @@ func SkillsDir(agentDir string) string {
 	return filepath.Join(agentDir, ".agents", "skills")
 }
 
+// AgentsDir returns the global agent Subagent Profile directory
+// (~/.c0wrk/.agents/agents). It mirrors SkillsDir for the agents package's
+// AGENT.md discovery.
+func AgentsDir(agentDir string) string {
+	return filepath.Join(agentDir, ".agents", "agents")
+}
+
 // ProjectsDir returns the base projects directory.
 func ProjectsDir(agentDir string) string {
 	return filepath.Join(agentDir, "projects")
@@ -347,10 +354,10 @@ func ProjectAgentsPath(workspacePath string) string {
 }
 
 // ProjectResearchPath returns the project-local research workspace directory.
-// This is <workspacePath>/.research. When a project has RESEARCH mode enabled,
-// its persisted ResearchRoot points here (see ProjectInfo.ResearchRoot). The
-// directory is created lazily by the layer that activates RESEARCH mode, not
-// by this path helper.
+// This is <workspacePath>/.research — the canonical research root for every
+// real project (RESEARCH is always on for real projects). The directory is
+// created lazily by the layer that writes research artifacts, not by this
+// path helper.
 func ProjectResearchPath(workspacePath string) string {
 	return filepath.Join(workspacePath, ".research")
 }
@@ -371,10 +378,10 @@ func IsResearchPath(researchRoot, absPath string) bool {
 // global subdirectory of the research root — it holds every paper card
 // regardless of how many R-NNN research projects exist (and even when none
 // does), so it outlives any single research project. Callers pass the
-// project's effective research root (ProjectInfo.ResearchRoot when RESEARCH is
-// enabled, else ProjectResearchPath) so a custom research root carries its own
-// library. The directory is created lazily by the writer layer (core/papers)
-// and by the watcher setup, not by this path helper.
+// project's effective research root (ProjectResearchPath for a real project)
+// so a custom research root carries its own library. The directory is created
+// lazily by the writer layer (core/papers) and by the watcher setup, not by
+// this path helper.
 func PaperLibraryPathIn(researchRoot string) string {
 	return filepath.Join(researchRoot, "papers")
 }
@@ -382,8 +389,7 @@ func PaperLibraryPathIn(researchRoot string) string {
 // PaperLibraryPath returns the project-local literature ("papers") library
 // directory: <workspacePath>/.research/papers — i.e. PaperLibraryPathIn applied
 // to the default research root (ProjectResearchPath). It is the well-known
-// location used when the project has no custom research root (RESEARCH off, or
-// enabled with the default root). The directory is created lazily by the writer
+// location of the library. The directory is created lazily by the writer
 // layer (core/papers), not by this path helper.
 func PaperLibraryPath(workspacePath string) string {
 	return PaperLibraryPathIn(ProjectResearchPath(workspacePath))

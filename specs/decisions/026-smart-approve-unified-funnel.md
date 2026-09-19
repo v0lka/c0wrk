@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — amended by [ADR-052](./052-flowsh-command-analysis.md): the canonical hard set is extended with the flowsh controls (`command_exfil_flow`, `command_privilege_escalation`, `command_system_write`, `command_destructive_outside_roots`, `command_download_cradle`) and the fail-closed `command_analysis_unavailable` (the shell Judge now fails closed when the analyzer cannot run) alongside `command_blacklist`; `unresolvable_path_token` is no longer fired by any built-in judge (the flowsh `command_unbounded_analysis` is its non-canonical successor). The unified-funnel architecture itself stands unchanged. Amended by [ADR-053](./053-silent-mode.md): the funnel is now the autonomy-mode gate (`security.autonomy_mode`: `standard`/`assisted`/`silent`; "Smart Approve" is the `assisted` value, the legacy `security.smart_approve` key migrates to the enum), the strict judge gained a `VerdictDeny` terminal in `assisted` mode, and the deterministic backstop below is **scoped to the interactive paths** (see the scope note in §3).
+Accepted — amended by [ADR-052](./052-flowsh-command-analysis.md): the canonical hard set is extended with the flowsh controls (`command_exfil_flow`, `command_privilege_escalation`, `command_system_write`, `command_destructive_outside_roots`, `command_download_cradle`) and the fail-closed `command_analysis_unavailable` (the shell Judge now fails closed when the analyzer cannot run) alongside `command_blacklist`; `unresolvable_path_token` is no longer fired by any built-in judge (the flowsh `command_unbounded_analysis` is its non-canonical successor). The unified-funnel architecture itself stands unchanged. Amended by [ADR-053](./053-silent-mode.md): the funnel is now the autonomy-mode gate (`security.autonomy_mode`: `standard`/`assisted`/`silent`; "Smart Approve" is the `assisted` value, the legacy `security.smart_approve` key migrates to the enum), the strict judge gained a `VerdictDeny` terminal in `assisted` mode, and the deterministic backstop below is **scoped to the interactive paths** (see the scope note in §3). Amended by [ADR-054](./054-symlink-gate-literal-paths-only.md): `symlink_suspicious` is retained in the sp4rk reason-code contract but is no longer fired by any built-in path (the symlink gate is a pure literal-path extractor).
 
 ## Context
 
@@ -116,7 +116,9 @@ lacked — so a strict ALLOW there would be a guess, not an assessment. A fired
 control and an unmeasurable input both end at the user.
 
 Non-canonical hard reasons — `unresolvable_path_token`, `symlink_suspicious`
-(scope/pattern questions where the judge can positively resolve the concrete
+(retained in the contract but no longer fired by any built-in path —
+[ADR-054](./054-symlink-gate-literal-paths-only.md); scope/pattern questions
+where the judge can positively resolve the concrete
 call), an empty/unclassified code, or a soft `outside_session_roots` reason —
 are **not** backstopped: a strict ALLOW may auto-approve them. The strict judge
 verdict is the last automatic gate for these.

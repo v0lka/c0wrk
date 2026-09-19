@@ -71,7 +71,6 @@ describe('researchStore', () => {
     const s = useResearchStore.getState()
     expect(s.status).toBeNull()
     expect(s.isLoading).toBe(false)
-    expect(s.isToggling).toBe(false)
     expect(s.error).toBeNull()
     expect(s.projectId).toBeNull()
   })
@@ -90,17 +89,13 @@ describe('researchStore', () => {
 
   it('reset clears everything back to initial', () => {
     useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
-    useResearchStore.getState().setToggling(true)
     useResearchStore.getState().reset()
     const s = useResearchStore.getState()
     expect(s.status).toBeNull()
     expect(s.projectId).toBeNull()
-    expect(s.isToggling).toBe(false)
   })
 
-  it('setToggling / setLoading / setError mutate only their slice', () => {
-    useResearchStore.getState().setToggling(true)
-    expect(useResearchStore.getState().isToggling).toBe(true)
+  it('setLoading / setError mutate only their slice', () => {
     useResearchStore.getState().setLoading(true)
     expect(useResearchStore.getState().isLoading).toBe(true)
     useResearchStore.getState().setError('err')

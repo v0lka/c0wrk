@@ -21,11 +21,9 @@ import (
 //
 // The literature ("papers") library is a GLOBAL subdirectory of a project's
 // research root: <research-root>/papers/<slug>/{paper.md, note.md,
-// appraisal.md}. It lives independently of the RESEARCH toggle and of any
-// R-NNN research project — RESEARCH may be off (hybrid mode) or no project may
-// exist, and the library still works. The effective research root is therefore
-// the persisted ResearchRoot when RESEARCH is enabled, else the default
-// <workspace>/.research (see effectiveResearchRoot).
+// appraisal.md}. It lives independently of any R-NNN research project — no
+// project may exist yet, and the library still works. The effective research
+// root is the canonical <workspace>/.research (see effectiveResearchRoot).
 //
 // Papers link to research via the paper card's `research_ids` field (H-NNN
 // hypothesis ids); the read RPCs resolve each id to the owning R-NNN project(s)
@@ -42,8 +40,7 @@ type PapersDTO struct {
 	// ProjectID is the project these results pertain to.
 	ProjectID string `json:"project_id"`
 
-	// ResearchRoot is the project's effective research root (the persisted
-	// ResearchRoot when RESEARCH is enabled, else the default
+	// ResearchRoot is the project's effective research root (the canonical
 	// <workspace>/.research). The library is a subdirectory of it.
 	ResearchRoot string `json:"research_root"`
 
@@ -185,9 +182,9 @@ func (f *FrontendAPI) GetPaper(projectID, paperID string) (*PaperDTO, error) {
 // is emitted — the caller's resolved promise is its refresh signal.
 //
 // The update serializes on the same per-effective-research-root mutex as the
-// research pin RPCs and Enable/DisableResearch (all writers of the projects
-// row), and merges only the pins delta under that lock, so a concurrent row
-// save cannot clobber it (or vice versa).
+// research pin RPCs (all writers of the projects row), and merges only the
+// pins delta under that lock, so a concurrent row save cannot clobber it (or
+// vice versa).
 func (f *FrontendAPI) SetPaperPinned(projectID, paperID string, pinned bool) error {
 	if f.projStore == nil {
 		return errors.New("project subsystem not initialized")
@@ -207,13 +204,13 @@ func (f *FrontendAPI) SetPaperPinned(projectID, paperID string, pinned bool) err
 	// Re-load the row under the lock and persist only the pins delta. The load
 	// in papersReadContextFor ran before the mutex was acquired, so a full-row
 	// save of that snapshot would clobber whatever was committed while this RPC
-	// waited (a concurrent pin toggle, or an Enable/DisableResearch root
-	// change — guarded below).
+	// waited (a concurrent pin toggle, or a research-root change — guarded
+	// below).
 	fresh, err := f.loadProjectForResearch(projectID)
 	if err != nil {
 		return err
 	}
-	if fresh.ResearchRoot != ctx.project.ResearchRoot {
+	if effectiveResearchRoot(fresh) != ctx.researchRoot {
 		return errResearchRootChanged
 	}
 
@@ -302,8 +299,8 @@ func removePaperPin(pins []string, key string, rec *papers.PaperRecord) ([]strin
 // card's Stage, then returns. The paper is resolved inside the REQUESTING
 // project's own containment-checked library (by id or slug) before any file is
 // touched, and the whole resolve→read→mutate→write chain serializes on the same
-// per-research-root mutex as the research pin RPCs and Enable/DisableResearch,
-// so a concurrent root change cannot land the review in the wrong library. The
+// per-research-root mutex as the research pin RPCs, so a concurrent root
+// change cannot land the review in the wrong library. The
 // mutation itself is atomic (temp file + rename) and containment-checked in
 // core/papers (a symlinked paper directory is rejected). An unknown paper, an
 // unknown card id, or an unknown grade is rejected and leaves the deck
@@ -331,13 +328,13 @@ func (f *FrontendAPI) RecordFlashcardReview(projectID, paperID, cardID, grade st
 	defer mu.Unlock()
 
 	// Re-load the row under the lock and bail out when the research root moved
-	// (an Enable/DisableResearch or root change committed while this RPC waited),
-	// so the review never lands in a stale library.
+	// (a root change committed while this RPC waited), so the review never
+	// lands in a stale library.
 	fresh, err := f.loadProjectForResearch(projectID)
 	if err != nil {
 		return err
 	}
-	if fresh.ResearchRoot != ctx.project.ResearchRoot {
+	if effectiveResearchRoot(fresh) != ctx.researchRoot {
 		return errResearchRootChanged
 	}
 
@@ -390,17 +387,12 @@ func comparisonsRootForProject(p *project.ProjectInfo) string {
 	return config.ComparisonsPathIn(root)
 }
 
-// effectiveResearchRoot returns the project's research root: the persisted
-// ResearchRoot when set, else the default <workspace>/.research. The library
-// and its watcher must work when RESEARCH is off, so the default is the
-// fallback rather than an error. Returns "" for nil, No Project, or a
-// workspace-less project.
+// effectiveResearchRoot returns the project's research root: the canonical
+// <workspace>/.research (RESEARCH is always on for real projects). Returns ""
+// for nil, No Project, or a workspace-less project.
 func effectiveResearchRoot(p *project.ProjectInfo) string {
 	if p == nil || p.IsNoProject || p.WorkspacePath == "" {
 		return ""
-	}
-	if p.ResearchRoot != "" {
-		return p.ResearchRoot
 	}
 	return config.ProjectResearchPath(p.WorkspacePath)
 }

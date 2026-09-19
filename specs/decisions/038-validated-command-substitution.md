@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — amended by [ADR-052](./052-flowsh-command-analysis.md): the shell tools' `Judge` no longer runs the static unresolvable-token or `PathsOutsideRoots` containment stages this ADR's stage list references; the assessability machinery itself (binding promotion, fail-closed union, inner-path surfacing) lives on unchanged behind symlink detection.
+**Superseded by [ADR-054](./054-symlink-gate-literal-paths-only.md)** — the variable-expansion checks this ADR refined were removed entirely from the symlink gate: the walk is a pure literal-path extractor, the `suspicious` flag no longer exists, and the assessability machinery (binding promotion, fail-closed union, inner-path surfacing — `shellEnvBindings.go`, the shell-path resolvers, the PowerShell static-binding tokenizer) was deleted from sp4rk. (Earlier amendment by [ADR-052](./052-flowsh-command-analysis.md) had already removed the static unresolvable-token and containment stages from the shell tools' `Judge`.)
 
 ## Context
 

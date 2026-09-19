@@ -152,13 +152,12 @@ type FrontendAPI struct {
 	// deadline for acquiring switchMu. Test-only seam (0 in production).
 	switchLockTimeoutOverride time.Duration
 
-	// researchSeedMu serializes research-pack reconciliation
-	// (reconcileResearchPacks): EnableResearch and the SwitchProject
-	// revalidation can target the same project-local .agents/{skills,agents}
-	// directories concurrently (toggle + switch race), and the pack staging
-	// swap is not designed for two concurrent writers of one destination —
-	// one rename would fail on the vanished source. The lock is coarse (all
-	// projects) because reconciliation is millisecond-scale local IO.
+	// researchSeedMu serializes c0wrk-owned pack seeding. The startup
+	// seedGlobalPacks run writes the GLOBAL .agents/{skills,agents}
+	// directories; a concurrent writer targeting the same destination would
+	// race the pack staging swap (one rename failing on the vanished source),
+	// so the whole run is serialized. The lock is coarse (process-wide)
+	// because seeding is millisecond-scale local IO.
 	researchSeedMu sync.Mutex
 
 	// switchInProgressHook is a test-only seam invoked inside SwitchProject
@@ -346,6 +345,13 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 	// repository may spawn raw git. Nothing is trusted when config is nil or
 	// the list is empty (fail-closed).
 	f.syncGitTrustRegistry()
+
+	// Seed the c0wrk-owned packs into the GLOBAL agent directories
+	// (~/.c0wrk/.agents/{skills,agents}) BEFORE the directory watchers are
+	// created, so the freshly created directories are watched on this launch.
+	// The seeding is idempotent: missing entries are written and pack-marked
+	// outdated ones upgraded, while user-owned directories are preserved.
+	f.seedGlobalPacks()
 
 	// Start watchers for global skill directories (those outside any
 	// workspace). Changes invalidate the skill cache and emit skills:changed

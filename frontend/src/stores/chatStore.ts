@@ -99,38 +99,6 @@ interface ChatState {
   // the snapshot's older view of the same step (the snapshot is read BEFORE it
   // resolves, so a live event landing in that window is fresher).
   workUnitEventAt: Record<string, Record<string, number>>
-  // Paged-history bookkeeping per session. History is loaded one page at a
-  // time (backend GetSessionHistory with a keyset cursor) so opening a session
-  // with tens of thousands of rows only fetches the tail. `historyCursor` is
-  // the opaque cursor to fetch the PRECEDING page ("" once the oldest page is
-  // loaded / before the first page), `historyHasMore` is whether older pages
-  // remain, and `historyLoading` is true while a page fetch is in flight
-  // (scroll-up loading must not fire concurrently). Absent keys mean the
-  // session's history has not been paged yet.
-  historyCursor: Record<string, string>
-  historyHasMore: Record<string, boolean>
-  historyLoading: Record<string, boolean>
-  // Memory of rows that arrived via prependHistoryMessages (older pages
-  // fetched on scroll-up), per session. A re-load of the NEWEST page (session
-  // switch back to one still in the store, effect re-run) rebuilds the tail
-  // from a fresh snapshot; without this memory every prepended row that is
-  // neither in the newest page nor newer than loadStartedAt would be dropped
-  // — the history the user scrolled up to reveal would vanish.
-  // mergeHistoryMessages consults this set to keep those DB rows AHEAD of the
-  // freshly loaded page and returns how many it kept. Entries follow the
-  // lifecycle of the rows themselves: ids whose rows are no longer in the
-  // store simply never match, and a merge that keeps nothing reports 0 (the
-  // caller then falls back to the page's own cursor) — stale entries are
-  // inert, so no explicit invalidation is wired into session deletion.
-  prependedHistoryIds: Record<string, Set<string>>
-  // Deepest prepend position per session: the cursor/hasMore recorded by the
-  // OLDEST page ever prepended (each prepend pages backwards, so the latest
-  // write IS the deepest). historyCursor is reset to ('' | false) before every
-  // newest-page RPC, so this pair is where the true continuation point
-  // survives that reset; ChatArea restores historyCursor/historyHasMore from
-  // here when a merge preserved prepended rows.
-  prependCursor: Record<string, string>
-  prependHasMore: Record<string, boolean>
   // Last-known scroll position per session: sessionId -> the scroll state the
   // chat viewport held when the user last left the session (its
   // ChatScrollManager unmounted on the session switch). The next initial mount
@@ -149,19 +117,8 @@ interface ChatActions {
   upsertChecklistMessage: (sessionId: string, message: ChatMessageUI) => void
   setMessages: (sessionId: string, messages: ChatMessageUI[]) => void
   /** Replace the session's messages with the persisted history, preserving
-   *  live-event rows that arrived while the RPC was in flight. Returns the
-   *  number of previously PREPENDED older-page rows it kept ahead of the
-   *  newest page (0 when nothing was prepended) so the caller can restore the
-   *  paging cursor from the prepend bookkeeping instead of the page response. */
-  mergeHistoryMessages: (sessionId: string, history: ChatMessageUI[], loadStartedAt: number) => number
-  /** Record the paging cursor + hasMore for a session after a history page
-   *  load (cursor "" and hasMore false when the oldest page was reached). */
-  setHistoryPageMeta: (sessionId: string, cursor: string, hasMore: boolean) => void
-  /** Toggle the in-flight flag guarding concurrent older-page fetches. */
-  setHistoryLoading: (sessionId: string, loading: boolean) => void
-  /** Prepend an older history page (deduped by id, ascending) and advance the
-   *  paging cursor. Existing (newer) messages and any live messages are kept. */
-  prependHistoryMessages: (sessionId: string, messages: ChatMessageUI[], cursor: string, hasMore: boolean) => void
+   *  live-event rows that arrived while the RPC was in flight. */
+  mergeHistoryMessages: (sessionId: string, history: ChatMessageUI[], loadStartedAt: number) => void
   setStreamingText: (sessionId: string, text: string) => void
   appendStreamingText: (sessionId: string, delta: string) => void
   clearStreamingText: (sessionId: string) => void
@@ -248,19 +205,6 @@ export function useSessionMessages(sessionId: string | null): ChatMessageUI[] {
 // (AGENTS.md: selectors must return referentially stable values).
 const EMPTY_WORK_UNIT_STATUS: Record<string, WorkUnitBlockStatus> = {}
 
-/** Chronological insert key for prependHistoryMessages: earlier created_at
- *  first, ties broken by id so the merge order is deterministic regardless
- *  of which caller supplied the rows. */
-function prependSortKey(m: ChatMessageUI): [number, string] {
-  return [m.timestamp, m.id]
-}
-
-/** True when the prepended row must land at or before the existing row under
- *  the chronological key (see prependSortKey). */
-function prependsBefore(m: ChatMessageUI, existingTs: number, existingId: string): boolean {
-  if (m.timestamp !== existingTs) return m.timestamp < existingTs
-  return m.id <= existingId
-}
 /**
  * Hook returning a session's durable work-unit status overlay (stepId -> block
  * status) for {@link groupMessages}. Returns a stable empty object when the
@@ -290,12 +234,6 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   taskFlagsEventAt: {},
   workUnitStatus: {},
   workUnitEventAt: {},
-  historyCursor: {},
-  historyHasMore: {},
-  historyLoading: {},
-  prependedHistoryIds: {},
-  prependCursor: {},
-  prependHasMore: {},
   scrollPositions: {},
 
   addMessage: (sessionId, message) => set((s) => {
@@ -420,134 +358,28 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   // and a live event can land during that RPC flight. If duplication of the
   // final answer is ever observed, dedupe preserved non-HITL messages by
   // (type, content) here, or have live handlers reuse a backend-supplied id.
-  //
-  // PREPEND RETENTION: rows previously prepended by prependHistoryMessages
-  // (older pages fetched on scroll-up) are DB rows that predate loadStartedAt,
-  // so neither branch above would keep them — a newest-page re-load (session
-  // switch back, effect re-run) would erase the history the user scrolled up
-  // to reveal. They are therefore kept ahead of the freshly loaded page (they
-  // are older than every row it carries) via the prependedHistoryIds set, and
-  // the action returns how many were kept so the caller restores the paging
-  // cursor from the deepest prepend position instead of the page response.
   mergeHistoryMessages: (sessionId, history, loadStartedAt) => {
-    let keptPrepended = 0
     set((s) => {
       const liveIndex = s.messages[sessionId] ?? {}
       const liveOrder = s.messageOrder[sessionId] ?? []
       const historyIds = new Set(history.map(m => m.id))
-      const prependedIds = s.prependedHistoryIds[sessionId]
-      const prepended: ChatMessageUI[] = []
       const preserved: ChatMessageUI[] = []
       for (const id of liveOrder) {
         const msg = liveIndex[id]
         if (!msg || historyIds.has(id)) continue
-        if (prependedIds?.has(id)) { prepended.push(msg); continue }
         if (msg.timestamp >= loadStartedAt) { preserved.push(msg); continue }
         // Keep live, unresolved HITL prompts even if they predate the switch.
         if (HITL_PROMPT_TYPES.has(msg.type) && msg.metadata?.resolved !== true) {
           preserved.push(msg)
         }
       }
-      keptPrepended = prepended.length
-      const merged = [...prepended, ...history, ...preserved]
+      const merged = [...history, ...preserved]
       return {
         messages: { ...s.messages, [sessionId]: indexMessages(merged) },
         messageOrder: { ...s.messageOrder, [sessionId]: merged.map(m => m.id) },
       }
     })
-    return keptPrepended
   },
-
-  // Record the paging cursor/hasMore after a history page load. Kept separate
-  // from mergeHistoryMessages so the (older) prepend path and the (newest)
-  // initial path share one place that owns the cursor contract.
-  setHistoryPageMeta: (sessionId, cursor, hasMore) => set((s) => ({
-    historyCursor: { ...s.historyCursor, [sessionId]: cursor },
-    historyHasMore: { ...s.historyHasMore, [sessionId]: hasMore },
-  })),
-
-  // In-flight guard for older-page fetches. Clearing deletes the key so no
-  // state change is emitted for sessions that were never loading (keeps the
-  // map reference stable — React #185).
-  setHistoryLoading: (sessionId, loading) => set((s) => {
-    if (!loading) {
-      if (!(sessionId in s.historyLoading)) return s
-      const { [sessionId]: _drop, ...rest } = s.historyLoading
-      return { historyLoading: rest }
-    }
-    return { historyLoading: { ...s.historyLoading, [sessionId]: true } }
-  }),
-
-  // Prepend an OLDER page of history before the current messages. Rows already
-  // present (by id) are skipped so a re-fetch or an overlap cannot duplicate a
-  // message; each genuinely inserted row is spliced in at its chronological
-  // position (created_at, tie-broken by id) rather than blindly at the front —
-  // the plan-timeline restore inserts session-wide rows that are older than
-  // the newest page but NEWER than pages scroll-up has not yet fetched, and
-  // messageOrder must stay chronological whichever caller feeds this action.
-  // Advances the cursor atomically with the message insert so the next
-  // scroll-up fetches the page before this one. The rows this call actually
-  // inserts are recorded in prependedHistoryIds and the page's cursor/hasMore
-  // in prependCursor/prependHasMore (the deepest position so far), so a later
-  // newest-page re-load can preserve them and resume paging from here.
-  prependHistoryMessages: (sessionId, messages, cursor, hasMore) => set((s) => {
-    const existingIndex = s.messages[sessionId] ?? {}
-    const existingOrder = s.messageOrder[sessionId] ?? []
-    const known = new Set(existingOrder)
-    const prepend: ChatMessageUI[] = []
-    for (const m of messages) {
-      if (known.has(m.id)) continue
-      known.add(m.id)
-      prepend.push(m)
-    }
-    const nextIndex = { ...existingIndex }
-    for (const m of prepend) nextIndex[m.id] = m
-    // Insert by chronological key (created_at, tie-broken by id) instead of an
-    // unconditional front-insert. The rows arriving here are OLDER than the
-    // newest page, but NOT necessarily older than everything already loaded:
-    // the plan-timeline restore prepends session-wide rows that sit BETWEEN
-    // the loaded window and the pages scroll-up has not yet fetched, and a
-    // plain front-insert would strand them above the next page. Splicing each
-    // row at its position keeps messageOrder chronological for BOTH callers
-    // (backward paging and the timeline restore), so no source of rows can
-    // violate the order.
-    const incoming = [...prepend].sort((a, b) => {
-      const [aTs, aId] = prependSortKey(a)
-      const [bTs, bId] = prependSortKey(b)
-      return aTs - bTs || (aId < bId ? -1 : aId > bId ? 1 : 0)
-    })
-    const order: string[] = []
-    let incomingIdx = 0
-    for (const id of existingOrder) {
-      // A row missing from the index cannot be keyed; keep it after every
-      // inserted row so it never strands incoming rows behind itself.
-      const existingTs = existingIndex[id]?.timestamp ?? Number.POSITIVE_INFINITY
-      while (
-        incomingIdx < incoming.length &&
-        prependsBefore(incoming[incomingIdx]!, existingTs, id)
-      ) {
-        order.push(incoming[incomingIdx]!.id)
-        incomingIdx++
-      }
-      order.push(id)
-    }
-    for (; incomingIdx < incoming.length; incomingIdx++) order.push(incoming[incomingIdx]!.id)
-    // Only genuinely inserted rows are marked: a row skipped as already-known
-    // either belongs to the newest page (it will re-arrive with it) or was
-    // recorded by an earlier prepend — marking it here could misplace a live
-    // row ahead of the page on a later merge.
-    const nextPrepended = new Set(s.prependedHistoryIds[sessionId])
-    for (const m of prepend) nextPrepended.add(m.id)
-    return {
-      messages: { ...s.messages, [sessionId]: nextIndex },
-      messageOrder: { ...s.messageOrder, [sessionId]: order },
-      prependedHistoryIds: { ...s.prependedHistoryIds, [sessionId]: nextPrepended },
-      prependCursor: { ...s.prependCursor, [sessionId]: cursor },
-      prependHasMore: { ...s.prependHasMore, [sessionId]: hasMore },
-      historyCursor: { ...s.historyCursor, [sessionId]: cursor },
-      historyHasMore: { ...s.historyHasMore, [sessionId]: hasMore },
-    }
-  }),
 
   // Streaming/activity actions stamp runtimeEventAt (see state comment) so
   // reconcileRuntimeStatus can tell live state from snapshot state.

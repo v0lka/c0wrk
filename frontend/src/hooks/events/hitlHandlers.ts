@@ -130,17 +130,18 @@ export function handlePlanReviewEvent(sessionId: string, data: PlanReviewReadyDa
 /**
  * Handle an autonomy_decision event for a session (active or background). An
  * automatic (no-human) security decision taken under an automatic autonomy
- * posture (assisted or silent) is surfaced as a NON-BLOCKING service/notice in
- * the transcript: there is no card to answer, but the gate that was answered
- * without a human must stay visible and auditable (OWASP ASI10: the trajectory
- * must be reconstructable). The payload rides in metadata so a reloaded row
- * renders identically via reconstructContent.
+ * posture (assisted or silent) is surfaced as a NON-BLOCKING standard-format
+ * `autonomy_decision` card (`AutonomyDecisionBlock`) in the transcript: there
+ * is no prompt to answer, but the gate that was answered without a human must
+ * stay visible and auditable (OWASP ASI10: the trajectory must be
+ * reconstructable). The payload rides in metadata so a reloaded row renders
+ * identically via reconstructContent.
  */
 export function handleAutonomyDecisionEvent(sessionId: string, data: AutonomyDecisionData): void {
   useChatStore.getState().addMessage(sessionId, {
     id: `autonomy-decision-${generateMessageId()}`,
     sessionId,
-    type: 'status',
+    type: 'autonomy_decision',
     content: autonomyDecisionContent(data),
     metadata: { ...data } as Record<string, unknown>,
     timestamp: Date.now(),

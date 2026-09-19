@@ -78,9 +78,28 @@ channel the UI displays. `security.smart_approve` and `security.silent_mode.
 enabled` survive in documentation **only** as these legacy migration keys.
 
 The posture is a **plain value** validated at load and on every Settings save,
-pushed atomically to the shared builder registry and every per-session clone
-(`ToolRegistry.ApplySecurityState`), so a runtime change from Settings →
-Security reaches live sessions with **no restart**.
+delivered with **per-task pinning** (amended in place, pre-release; the
+original text promised an atomic push to every live per-session clone —
+"reaches live sessions with no restart" — which let a Settings save flip the
+posture of a task already running: enabling `silent` silently converted a
+live interactive session mid-run). A Settings save now updates the shared
+builder registry atomically (`ToolRegistry.ApplySecurityState`), but live
+per-session clones receive only the fail-closed half — group policies and
+auto-approval (`ToolRegistry.ApplyGroupPolicies`) — while the autonomy mode
+and the silent-mode sub-policies are **pinned at task launch**: each clone
+inherits the posture at creation and re-syncs it from the shared registry at
+every task-launch boundary (fresh sends and every resume path, via
+`ToolRegistry.RefreshAutonomyPosture`, called from the session manager). A
+task therefore always runs under the posture the user last saved before the
+task launched: enabling `silent` can never convert a task that already
+started interactive mid-run, and a paused task resumed after a Settings
+change runs under the current Settings — exactly like launching a new task.
+Two registration-scoped exceptions follow Settings immediately for every
+session (documented boundaries of the pinning, both fail-safe in the
+tightening direction): the execute blocklist (re-registered on the shared
+sp4rk registry the clones embed) and the `ask_user` tool's disabled form
+(`reconcileAskUser`) — the latter cannot be expressed per-session because
+the clones share one tool table.
 
 ### D2. Silent mode sits *inside* the confirmation funnel, never above it
 
@@ -246,10 +265,12 @@ sub-policy), `verdict`, `tool`/`source`/`reason`, `justification`, and (for
   emitter (falling back to the raw pipeline), and the event is **persisted**
   (role `autonomy_decision`) unlike the transient judge-phase telemetry — the
   record must survive a reload.
-- The frontend renders it as a non-blocking `status` service notice; the payload
-  rides in metadata so `reconstructContent` rebuilds byte-identical text on
-  reload. It is deliberately **not** a pending-action card: there is nothing to
-  answer, and the ordinary HITL indicators and sound cues stay silent.
+- The frontend renders it as a non-blocking standard-format card
+  (`AutonomyDecisionBlock`, the same card chrome as the confirmation/approval
+  cards); the payload rides in metadata so `reconstructContent` rebuilds
+  byte-identical text on reload. It is deliberately **not** a pending-action
+  card: there is nothing to answer, and the ordinary HITL indicators and sound
+  cues stay silent.
 
 > **Rename note (pre-release).** The event was renamed from `silent_decision`
 > to `autonomy_decision` — and extended with the `assisted_deny` kind — before
@@ -332,7 +353,7 @@ sub-policy), `verdict`, `tool`/`source`/`reason`, `justification`, and (for
   implicit precedence, invite a fourth undefined combination, and make both the
   UI and the docs lie about what is live.
 - **Transient (unpersisted) `autonomy_decision` events.** Rejected: ASI10 requires
-  the trajectory to be reconstructable; a live-only notice vanishes on reload and
+  the trajectory to be reconstructable; a live-only card vanishes on reload and
   the audit trail with it.
 - **Emitting from a backend wrapper instead of a registry observer.** Rejected:
   the `tool_confirm` decision happens deep in the registry on the executor
@@ -345,4 +366,4 @@ sub-policy), `verdict`, `tool`/`source`/`reason`, `justification`, and (for
 - [specs/architecture/security-model.md](../architecture/security-model.md#silent-mode-unattended-operation)
 - [specs/contracts/event-catalog.md](../contracts/event-catalog.md) — `autonomy_decision`
 - [ADR-026](./026-smart-approve-unified-funnel.md) — the unified confirmation funnel silent mode sits inside, and the interactive-scope backstop contract
-- [ADR-052](./052-flowsh-command-analysis.md) — the deterministic floor and the canonical code contract
+- [ADR-052](./052-flowsh-command-analysis.md) — the deterministic floor and the canonical code contract; its digest evidence — the C5 consistency rule and the workspace-scoped verification marker (which encodes the operator-trust premise that session roots are trusted; an untrusted-workdir signal must disable it for that root) — is what keeps the silent judge terminal's fail-closed denies precise without relaxing a gate

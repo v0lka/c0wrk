@@ -1,20 +1,25 @@
 // Side-effect-only hook that keeps researchStore in sync with the backend.
 //
 // Modeled on useGitStatusEvents: fetches GetResearchStatus once on mount, then
-// subscribes to `research:changed` (emitted by EnableResearch/DisableResearch
-// and external artifact writes) and `workspace:tree_changed` (the workspace
-// watcher, which sees hypothesis/brief/prior-art file edits) with a shared
-// 50ms debounce. Purely a side-effect hook — returns void.
+// subscribes to `research:changed` (emitted when research artifacts change
+// externally) and `workspace:tree_changed` (the workspace watcher, which sees
+// hypothesis/brief/prior-art file edits) with a shared 50ms debounce. Purely a
+// side-effect hook — returns void.
+//
+// RESEARCH is always available for real projects; in No-Project (CHAT) mode the
+// hook skips the fetch entirely and resets the store — no GetResearchStatus
+// call is made.
 
 import { useEffect, useCallback, useRef } from 'react'
 import { getResearchStatus, getResearchNextStep } from '@/api/research'
 import { subscribe } from '@/api/runtime'
 import { logger } from '@/lib/logger'
-import { useProjectStore } from '@/stores/projectStore'
+import { useProjectStore, selectIsNoProject } from '@/stores/projectStore'
 import { useResearchStore, selectActiveHypothesisId } from '@/stores/researchStore'
 
 export function useResearchStatusEvents(): void {
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  const isNoProject = useProjectStore(selectIsNoProject)
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Watchdog timer for research-scoped tree changes (see the subscription
@@ -23,10 +28,11 @@ export function useResearchStatusEvents(): void {
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Stable refresh: fetch status for the active project and load it, but only
-  // if the project hasn't switched while the fetch was in flight.
+  // if the project hasn't switched while the fetch was in flight. Skipped
+  // entirely in No-Project mode (the store is reset; no RPC is issued).
   const refresh = useCallback(async () => {
     const projectId = activeProjectId
-    if (!projectId) {
+    if (isNoProject || !projectId) {
       useResearchStore.getState().reset()
       return
     }
@@ -69,7 +75,7 @@ export function useResearchStatusEvents(): void {
     } catch (err) {
       logger.debug('[research] next-step fetch failed:', err)
     }
-  }, [activeProjectId])
+  }, [activeProjectId, isNoProject])
 
   // --- Initial load + reload on project switch ---
   useEffect(() => {

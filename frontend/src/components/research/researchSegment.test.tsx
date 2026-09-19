@@ -3,8 +3,7 @@
 //
 // ResearchPanel is a pure view over researchStore / paperStore / uiStore, so
 // the segment tests seed the stores directly. The chosen segment is remembered
-// PER PROJECT in uiStore, and the Papers library stays reachable even when
-// RESEARCH is disabled (the library lives independently of the toggle).
+// PER PROJECT in uiStore, and the Papers library is always reachable.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -29,8 +28,6 @@ vi.mock('@/api/research', () => ({
   deleteResearch: vi.fn(),
   setResearchPinned: vi.fn(),
   setHypothesisPinned: vi.fn(),
-  enableResearch: vi.fn(),
-  disableResearch: vi.fn(),
 }))
 
 vi.stubGlobal(
@@ -154,8 +151,8 @@ describe('ResearchPanel — segmented control', () => {
     expect(container.querySelector('[data-testid="papers-view"]')).not.toBeNull()
   })
 
-  it('keeps the Papers library reachable while RESEARCH is disabled', async () => {
-    // No status → the panel's disabled branch (the toggle card).
+  it('keeps the Papers library reachable before the status has loaded', async () => {
+    // No status yet → the panel renders the (empty) dashboard segment.
     const container = await render(<ResearchPanel />)
     expect(container.querySelector('[data-testid="papers-view"]')).toBeNull()
 
@@ -180,5 +177,25 @@ describe('ResearchPanel — segmented control', () => {
     const container = await render(<ResearchPanel />)
     expect(segmentButton(container, 'dashboard').getAttribute('aria-selected')).toBe('true')
     expect(container.querySelector('[data-testid="papers-view"]')).toBeNull()
+  })
+
+  it('renders nothing (neutral) in No-Project (CHAT) mode', async () => {
+    useProjectStore.setState({
+      projects: [
+        {
+          id: 'np',
+          name: 'No Project',
+          workspace_path: '',
+          is_external: false,
+          is_no_project: true,
+          created_at: '2026-01-01T00:00:00Z',
+          last_active_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+      activeProjectId: 'np',
+    })
+
+    const container = await render(<ResearchPanel />)
+    expect(container.firstElementChild).toBeNull()
   })
 })

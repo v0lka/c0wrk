@@ -102,7 +102,6 @@ func researchRootTestFrontend(t *testing.T, seedDirs []string, pins project.Rese
 		ID:            "proj-1",
 		Name:          "Research",
 		WorkspacePath: ws,
-		ResearchRoot:  researchRoot,
 		ResearchPins:  pins,
 	}); err != nil {
 		t.Fatalf("save project: %v", err)
@@ -139,8 +138,8 @@ func researchTwoRootTestFrontend(t *testing.T) (api *FrontendAPI, projA, projB, 
 		t.Fatalf("create project store: %v", err)
 	}
 	for _, p := range []project.ProjectInfo{
-		{ID: "proj-a", Name: "A", WorkspacePath: wsA, ResearchRoot: rootA},
-		{ID: "proj-b", Name: "B", WorkspacePath: wsB, ResearchRoot: rootB},
+		{ID: "proj-a", Name: "A", WorkspacePath: wsA},
+		{ID: "proj-b", Name: "B", WorkspacePath: wsB},
 	} {
 		if err := store.SaveProject(context.Background(), p); err != nil {
 			t.Fatalf("save project %s: %v", p.ID, err)
@@ -593,9 +592,8 @@ func TestResearchRPC_GetResearchNextStepHypothesisScoped(t *testing.T) {
 }
 
 // TestResearchRPC_StatusAndEnableCarryPins verifies the ResearchStatusDTO pin
-// fields: GetResearchStatus mirrors the persisted pins, an idempotent
-// EnableResearch preserves and reports them, and a project without pins gets
-// the normalized empty collections (never null).
+// fields: GetResearchStatus mirrors the persisted pins, and a project without
+// pins gets the normalized empty collections (never null).
 func TestResearchRPC_StatusAndEnableCarryPins(t *testing.T) {
 	pins := project.ResearchPins{
 		Research:   []string{"R-001-test/brief.md"},
@@ -612,18 +610,6 @@ func TestResearchRPC_StatusAndEnableCarryPins(t *testing.T) {
 	}
 	if !reflect.DeepEqual(status.PinnedHypotheses, pins.Hypotheses) {
 		t.Errorf("PinnedHypotheses = %v, want %v", status.PinnedHypotheses, pins.Hypotheses)
-	}
-
-	// Idempotent re-enable preserves and reports the pins.
-	status, err = f.EnableResearch(projectID, "")
-	if err != nil {
-		t.Fatalf("EnableResearch: %v", err)
-	}
-	if !reflect.DeepEqual(status.PinnedResearch, pins.Research) {
-		t.Errorf("EnableResearch PinnedResearch = %v, want %v", status.PinnedResearch, pins.Research)
-	}
-	if !reflect.DeepEqual(status.PinnedHypotheses, pins.Hypotheses) {
-		t.Errorf("EnableResearch PinnedHypotheses = %v, want %v", status.PinnedHypotheses, pins.Hypotheses)
 	}
 
 	// A pin-less project reports the normalized empty collections.

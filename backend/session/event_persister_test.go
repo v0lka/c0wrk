@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,12 +14,12 @@ import (
 // captureStore is a minimal SessionStore that records every saved message so
 // the persister tests can assert on what gets persisted.
 type captureStore struct {
-	mu              sync.Mutex
-	messages        []ChatMessage
-	stepTodoUpdates []stepTodoUpsertCall
+	mu               sync.Mutex
+	messages         []ChatMessage
+	stepTodoReplaces []stepTodoReplaceCall
 }
 
-type stepTodoUpsertCall struct {
+type stepTodoReplaceCall struct {
 	sessionID string
 	stepID    string
 	msg       ChatMessage
@@ -52,19 +53,16 @@ func (s *captureStore) SaveMessage(_ context.Context, msg ChatMessage) error {
 	s.messages = append(s.messages, msg)
 	return nil
 }
-func (s *captureStore) UpsertStepTodoUpdate(_ context.Context, sessionID, stepID string, msg ChatMessage) error {
+func (s *captureStore) ReplaceStepTodoUpdate(_ context.Context, sessionID, stepID string, msg ChatMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.stepTodoUpdates = append(s.stepTodoUpdates, stepTodoUpsertCall{sessionID: sessionID, stepID: stepID, msg: msg})
+	s.stepTodoReplaces = append(s.stepTodoReplaces, stepTodoReplaceCall{sessionID: sessionID, stepID: stepID, msg: msg})
 	return nil
 }
 func (s *captureStore) LoadMessages(_ context.Context, _ string) ([]ChatMessage, error) {
 	return nil, nil
 }
-func (s *captureStore) LoadMessagesPage(_ context.Context, _ string, _ int, _ *MessageCursor) ([]ChatMessage, bool, error) {
-	return nil, false, nil
-}
-func (s *captureStore) LoadPlanTimeline(_ context.Context, _ string) ([]ChatMessage, error) {
+func (s *captureStore) LoadSessionHistory(_ context.Context, _ string) ([]ChatMessage, error) {
 	return nil, nil
 }
 func (s *captureStore) DeleteMessages(_ context.Context, _ string) error { return nil }
@@ -371,11 +369,71 @@ func TestEventPersister_GoalStatusPersisted_GoalProgressTransient(t *testing.T) 
 	}
 }
 
-// TestEventPersister_StepTodoUpdateRoutedToUpsert verifies that step_todo_update
-// events are persisted via UpsertStepTodoUpdate (not the generic SaveMessage
-// path), so checklist updates for the same step_id collapse to a single row in
-// the store instead of accumulating one row per update.
-func TestEventPersister_StepTodoUpdateRoutedToUpsert(t *testing.T) {
+// TestEventPersister_StepTodoUpdateReplacesPreviousRow verifies the new
+// step_todo_update semantics end-to-end through a real store: an update for a
+// step_id deletes that step's previous checklist row and inserts the new one at
+// the current stream position (so the row MOVES to the tail), guaranteeing
+// exactly one row per step — no duplicates — however many updates are emitted.
+func TestEventPersister_StepTodoUpdateReplacesPreviousRow(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	const sid = "step-todo-replace"
+	seedPagedSession(t, store, sid)
+
+	p := NewEventPersister(store)
+	emit := func(stepID, text string) {
+		p.Persist(Event{
+			SessionID: sid,
+			Type:      "step_todo_update",
+			Data: map[string]any{
+				"step_id": stepID,
+				"items":   []map[string]any{{"text": text, "checked": false}},
+			},
+		})
+	}
+
+	// step_1 → step_2 → step_1: the second step_1 update must delete the first
+	// step_1 row and re-insert it AFTER step_2, proving the position changed (an
+	// in-place UPDATE would have pinned step_1 before step_2).
+	emit("step_1", "v1")
+	emit("step_2", "x1")
+	emit("step_1", "v2")
+
+	rows, err := store.LoadMessages(context.Background(), sid)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	var todos []ChatMessage
+	for _, m := range rows {
+		if m.Role == "step_todo_update" {
+			todos = append(todos, m)
+		}
+	}
+	if len(todos) != 2 {
+		t.Fatalf("expected 2 step_todo_update rows (one per step, no duplicates), got %d: %+v", len(todos), todos)
+	}
+	// Position changed: the surviving step_1 row now follows step_2.
+	if got := stepIDFromMetadata(t, todos[0]); got != "step_2" {
+		t.Errorf("first checklist row step_id = %q, want %q (the stale step_1 row must have been replaced, not kept in place)", got, "step_2")
+	}
+	if got := stepIDFromMetadata(t, todos[1]); got != "step_1" {
+		t.Errorf("second checklist row step_id = %q, want %q", got, "step_1")
+	}
+	// The surviving step_1 row carries the LATEST payload only (v2, not v1).
+	if !strings.Contains(todos[1].Content, "v2") {
+		t.Errorf("step_1 row should reflect the latest update v2, got %q", todos[1].Content)
+	}
+	if strings.Contains(todos[1].Content, "v1") {
+		t.Errorf("stale v1 payload must not survive the replace, got %q", todos[1].Content)
+	}
+}
+
+// TestEventPersister_StepTodoUpdateRoutedToReplace verifies that
+// step_todo_update events reach the store through ReplaceStepTodoUpdate and
+// NEVER through the generic SaveMessage path — the routing that keeps checklist
+// updates collapsing onto one row per step instead of accumulating a row per
+// tool call.
+func TestEventPersister_StepTodoUpdateRoutedToReplace(t *testing.T) {
 	store := &captureStore{}
 	p := NewEventPersister(store)
 
@@ -400,18 +458,30 @@ func TestEventPersister_StepTodoUpdateRoutedToUpsert(t *testing.T) {
 	if len(store.messages) != 0 {
 		t.Fatalf("step_todo_update must not go through SaveMessage, got %d rows: %+v", len(store.messages), store.messages)
 	}
-	if len(store.stepTodoUpdates) != 4 {
-		t.Fatalf("expected 4 UpsertStepTodoUpdate calls, got %d", len(store.stepTodoUpdates))
+	if len(store.stepTodoReplaces) != 4 {
+		t.Fatalf("expected 4 ReplaceStepTodoUpdate calls, got %d", len(store.stepTodoReplaces))
 	}
-	if got := store.stepTodoUpdates[0].stepID; got != "step_1" {
+	if got := store.stepTodoReplaces[0].stepID; got != "step_1" {
 		t.Errorf("first call step_id: got %q", got)
 	}
-	if got := store.stepTodoUpdates[2].stepID; got != "" {
+	if got := store.stepTodoReplaces[2].stepID; got != "" {
 		t.Errorf("third call step_id (standalone): got %q", got)
 	}
-	if store.stepTodoUpdates[0].msg.Role != "step_todo_update" {
-		t.Errorf("upserted message role: got %q", store.stepTodoUpdates[0].msg.Role)
+	if store.stepTodoReplaces[0].msg.Role != "step_todo_update" {
+		t.Errorf("replaced message role: got %q", store.stepTodoReplaces[0].msg.Role)
 	}
+}
+
+// stepIDFromMetadata unmarshals a persisted message's metadata and returns its
+// step_id (empty when absent).
+func stepIDFromMetadata(t *testing.T, msg ChatMessage) string {
+	t.Helper()
+	var meta map[string]any
+	if err := json.Unmarshal(msg.Metadata, &meta); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	sid, _ := meta["step_id"].(string)
+	return sid
 }
 
 // TestEventPersister_PauseCheckpointsPersisted verifies that the cooperative
