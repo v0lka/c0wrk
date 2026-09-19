@@ -263,6 +263,15 @@ func TestSymlinkGate_BashExecWithInRootsSymlink(t *testing.T) {
 // The execute group is set to allow so any symlink-gate escalation would
 // surface as a confirmation instead of being masked by the user_confirm
 // default.
+//
+// The command is dialect-specific (the shell tool is bash_exec on Unix and
+// posh_exec on Windows), but both variants carry the same two dynamic forms —
+// a variable binding and a command substitution — and flowsh's static binding
+// fully resolves both, so no criterion fires and the call executes without a
+// confirmation. That is what makes the escalation attributable to the symlink
+// gate alone: a bash-shaped command fed to the PowerShell analyzer would
+// instead trip flowsh's own C6 unbounded-analysis criterion, which is exactly
+// the flowsh-domain escalation this test does NOT assert against.
 func TestSymlinkGate_ShellExpansionsNoLongerEscalate(t *testing.T) {
 	r := newRegistryForSymlinkTest(t)
 	r.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
@@ -275,6 +284,9 @@ func TestSymlinkGate_ShellExpansionsNoLongerEscalate(t *testing.T) {
 
 	ws := t.TempDir()
 	command := `X=probe; cat "$X/no-such-file" "$(echo probe)/also-missing"`
+	if runtime.GOOS == "windows" {
+		command = `$x = "probe"; Get-Content "$x\no-such-file" "$(Get-Date)\also-missing"`
+	}
 	input, _ := json.Marshal(map[string]string{"command": command})
 	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
 
