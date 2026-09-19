@@ -107,7 +107,8 @@ export function areDisplayItemsEqual(a: DisplayItem, b: DisplayItem): boolean {
     case 'step_limit':
     case 'resume_action':
     case 'plan_review':
-    case 'review_prompt': {
+    case 'review_prompt':
+    case 'autonomy_decision': {
       const ia = a as MessageBackedItem
       const ib = b as MessageBackedItem
       return ia.message === ib.message
