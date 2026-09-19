@@ -22,7 +22,12 @@ const (
 	// step-limit boundary the backend resolved without the
 	// blocking prompt (step_limit). It is the non-blocking audit record of a
 	// gate a human would otherwise have answered, so the run's trajectory stays
-	// reconstructable (OWASP ASI10). Persisted.
+	// reconstructable (OWASP ASI10). Persisted. Audit-completeness contract
+	// (§6.3): every emitted payload names its deciding sub-policy (Policy —
+	// the emit funnel defaults it from the kind when a source forgets) and
+	// shell-exec tool decisions carry the deterministic effect Signature,
+	// which doubles as the silent judge's memoization key (identical
+	// signature within a task ⇒ identical verdict).
 	EventAutonomyDecision = "autonomy_decision"
 )
 

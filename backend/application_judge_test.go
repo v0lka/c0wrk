@@ -103,7 +103,7 @@ func TestEvaluateJudgeWith_AdvisoryPathIncludesShellDigest(t *testing.T) {
 		prompt := prov.promptText()
 		for _, marker := range []string{
 			"## Static Analysis Report",
-			`"schemaVersion":"sp4rk-shell-analysis/v1"`,
+			`"schemaVersion":"sp4rk-shell-analysis/v2"`,
 			"shell_analysis",
 		} {
 			if !strings.Contains(prompt, marker) {
@@ -120,7 +120,7 @@ func TestEvaluateJudgeWith_AdvisoryPathIncludesShellDigest(t *testing.T) {
 		// The judge SYSTEM prompt teaches the static-analysis section, so the
 		// header phrase alone is not proof of a digest; the digest document's
 		// schemaVersion signature is.
-		if prompt := prov.promptText(); strings.Contains(prompt, "sp4rk-shell-analysis/v1") {
+		if prompt := prov.promptText(); strings.Contains(prompt, "sp4rk-shell-analysis/v2") {
 			t.Error("non-shell tool must not grow a shell-analysis digest in the advisory prompt")
 		}
 	})

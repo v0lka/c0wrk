@@ -236,8 +236,8 @@ export function LLMSettings({
                   value={addFormType}
                   onChange={(v) => setAddFormType(v as 'openai' | 'anthropic')}
                   options={[
-                    { value: 'openai', label: 'OpenAI-compatible (Chat Completions)' },
-                    { value: 'anthropic', label: 'Anthropic-compatible (Messages API)' },
+                    { value: 'openai', label: 'OpenAI-compatible' },
+                    { value: 'anthropic', label: 'Anthropic-compatible' },
                   ]}
                 />
                 <p className="text-xs text-muted-foreground">

@@ -183,9 +183,7 @@ export function GetReviewDiff():Promise<Array<workspace.ReviewFileDiff>>;
 
 export function GetSecuritySettings():Promise<backend.SecuritySettingsResponse>;
 
-export function GetSessionHistory(arg1:string,arg2:number,arg3:string):Promise<session.HistoryPage>;
-
-export function GetSessionPlanTimeline(arg1:string):Promise<Array<session.ChatMessage>>;
+export function GetSessionHistory(arg1:string):Promise<Array<session.ChatMessage>>;
 
 export function GetSessionRuntimeStatus(arg1:string):Promise<session.SessionRuntimeStatus>;
 
