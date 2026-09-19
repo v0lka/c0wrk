@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -40,11 +41,11 @@ func newTLSServer(t *testing.T, body string) (srv *httptest.Server, spkiPin stri
 
 // get issues a GET through client with a request context (the noctx linter
 // forbids the convenience http.Client.Get).
-func get(t *testing.T, client *http.Client, url string) (*http.Response, error) {
+func get(t *testing.T, client *http.Client, rawURL string) (*http.Response, error) {
 	t.Helper()
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, http.NoBody)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, rawURL, http.NoBody)
 	if err != nil {
-		t.Fatalf("building request for %s: %v", url, err)
+		t.Fatalf("building request for %s: %v", rawURL, err)
 	}
 	return client.Do(req)
 }
@@ -283,20 +284,22 @@ func TestRouterEntryClient(t *testing.T) {
 	base := &http.Client{Timeout: 10 * time.Minute}
 
 	tests := []struct {
-		name        string
-		proxyActive bool
-		pin         string
-		wantNil     bool
+		name    string
+		policy  DialPolicy
+		pin     string
+		wantNil bool
 	}{
-		{"proxy active, pin set", true, testPin, true},
-		{"proxy active, no pin", true, "", true},
-		{"no proxy, no pin", false, "", true},
-		{"no proxy, whitespace pin", false, "  \n ", true},
-		{"no proxy, pin set", false, testPin, false},
+		{"proxy dials, pin set", DialPolicy{ProxyActive: true}, testPin, true},
+		{"proxy dials, no pin", DialPolicy{ProxyActive: true}, "", true},
+		{"no proxy, no pin", ZeroDialPolicy, "", true},
+		{"no proxy, whitespace pin", ZeroDialPolicy, "  \n ", true},
+		{"no proxy, pin set", ZeroDialPolicy, testPin, false},
+		{"proxy bypassed, pin set", DialPolicy{ProxyActive: true, TargetBypassed: true}, testPin, false},
+		{"proxy bypassed, no pin", DialPolicy{ProxyActive: true, TargetBypassed: true}, "", true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := RouterEntryClient(tc.proxyActive, base, tc.pin, nil)
+			got := RouterEntryClient(tc.policy, base, tc.pin, nil)
 			if tc.wantNil {
 				if got != nil {
 					t.Fatalf("got %p, want nil", got)
@@ -316,30 +319,97 @@ func TestRouterEntryClient(t *testing.T) {
 	}
 }
 
-func TestDirectDialClient(t *testing.T) {
-	proxyClient := &http.Client{Timeout: 30 * time.Second}
+// On the bypassed branch the pinned entry client is still cloned from the
+// shared LLM client (long timeout preserved), but its transport must carry
+// NO proxy routing — a bypassed host dials directly, and a MITM proxy on the
+// way would present its own certificate and guarantee a pin mismatch.
+func TestRouterEntryClient_BypassedStripsProxyRouting(t *testing.T) {
+	base := &http.Client{
+		Timeout: 10 * time.Minute,
+		Transport: &http.Transport{
+			Proxy: func(*http.Request) (*url.URL, error) { return url.Parse("http://proxy.lan:3128") },
+		},
+	}
 
-	t.Run("proxy wins verbatim", func(t *testing.T) {
+	got := RouterEntryClient(DialPolicy{ProxyActive: true, TargetBypassed: true}, base, testPin, nil)
+	if got == nil {
+		t.Fatal("got nil, want a pinned client")
+	}
+	if got.Timeout != base.Timeout {
+		t.Errorf("Timeout = %v, want %v (the LLM timeout must survive the bypass)", got.Timeout, base.Timeout)
+	}
+	ht, ok := got.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", got.Transport)
+	}
+	if ht.Proxy != nil {
+		t.Error("the bypassed pinned transport must have no Proxy func")
+	}
+	if baseHT, ok := base.Transport.(*http.Transport); !ok || baseHT.Proxy == nil {
+		t.Error("stripProxy must clone, not mutate the shared base transport")
+	}
+}
+
+func TestDirectDialClient(t *testing.T) {
+	proxyClient := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			Proxy: func(*http.Request) (*url.URL, error) { return url.Parse("http://proxy.lan:3128") },
+		},
+	}
+	noProxy := &http.Client{Transport: &http.Transport{}}
+
+	t.Run("proxy dials wins verbatim", func(t *testing.T) {
 		for _, pin := range []string{"", testPin} {
-			got := DirectDialClient(proxyClient, pin, nil)
+			got := DirectDialClient(proxyClient, DialPolicy{ProxyActive: true}, pin, nil)
 			if got != proxyClient {
 				t.Errorf("pin=%q: got %p, want the proxy client %p unchanged", pin, got, proxyClient)
 			}
 		}
 	})
 
+	t.Run("bypassed host dials direct", func(t *testing.T) {
+		bypassed := DialPolicy{ProxyActive: true, TargetBypassed: true}
+
+		// No pin: the direct clone of the proxy client keeps the operator's
+		// CA overrides but loses the proxy routing.
+		got := DirectDialClient(proxyClient, bypassed, "", nil)
+		if got == nil || got == proxyClient {
+			t.Fatalf("got %p, want a distinct direct clone of the proxy client", got)
+		}
+		if got.Timeout != proxyClient.Timeout {
+			t.Errorf("Timeout = %v, want %v", got.Timeout, proxyClient.Timeout)
+		}
+		if ht, ok := got.Transport.(*http.Transport); !ok || ht.Proxy != nil {
+			t.Errorf("transport = %T, want an *http.Transport with the Proxy func stripped", got.Transport)
+		}
+		if ht, ok := proxyClient.Transport.(*http.Transport); !ok || ht.Proxy == nil {
+			t.Error("stripProxy must clone, not mutate the shared proxy transport")
+		}
+
+		// With a pin: a fresh pinned direct client that reaches a
+		// self-signed endpoint.
+		srv, pin := newTLSServer(t, "ok")
+		pinned := DirectDialClient(proxyClient, bypassed, pin, nil)
+		resp, err := get(t, pinned, srv.URL)
+		if err != nil {
+			t.Fatalf("the bypassed pinned client must reach the self-signed server: %v", err)
+		}
+		_ = resp.Body.Close()
+	})
+
 	t.Run("no proxy no pin yields nil", func(t *testing.T) {
-		if got := DirectDialClient(nil, "", nil); got != nil {
+		if got := DirectDialClient(nil, ZeroDialPolicy, "", nil); got != nil {
 			t.Errorf("got %p, want nil (default transport)", got)
 		}
-		if got := DirectDialClient(nil, " \t\n", nil); got != nil {
+		if got := DirectDialClient(nil, ZeroDialPolicy, " \t\n", nil); got != nil {
 			t.Errorf("whitespace pin: got %p, want nil", got)
 		}
 	})
 
 	t.Run("no proxy with pin dials pinned", func(t *testing.T) {
 		srv, pin := newTLSServer(t, "ok")
-		client := DirectDialClient(nil, pin, nil)
+		client := DirectDialClient(nil, ZeroDialPolicy, pin, nil)
 		if client == nil {
 			t.Fatal("got nil, want a pinned client")
 		}
@@ -348,6 +418,14 @@ func TestDirectDialClient(t *testing.T) {
 			t.Fatalf("pinned direct client must reach the server: %v", err)
 		}
 		_ = resp.Body.Close()
+	})
+
+	// Defense in depth: a caller that hands a proxy client to the no-proxy
+	// branch must not have its routing silently kept or mutated.
+	t.Run("no-proxy policy never mutates a handed-in client", func(t *testing.T) {
+		if got := DirectDialClient(noProxy, ZeroDialPolicy, "", nil); got != nil {
+			t.Fatalf("got %p, want nil (SDK default transport)", got)
+		}
 	})
 }
 
@@ -443,6 +521,27 @@ func TestFetchFingerprint_PlainHTTPServerFails(t *testing.T) {
 	defer cancel()
 	if _, err := FetchFingerprint(ctx, srv.URL, nil); err == nil {
 		t.Error("a non-TLS endpoint must produce an error, not an empty pin")
+	}
+}
+
+// A plain-http base URL is rejected up front with an explicit error — not a
+// TLS dial to port 443 with an obscure connection error (review on ADR-054).
+// The rejection happens before any network access.
+func TestFetchFingerprint_NonHTTPSSchemeRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+
+	for _, raw := range []string{srv.URL, "http://llm.lan:1234/v1", "ftp://llm.lan"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_, err := FetchFingerprint(ctx, raw, nil)
+		cancel()
+		if err == nil {
+			t.Errorf("FetchFingerprint(%q) must reject a non-https URL", raw)
+			continue
+		}
+		if !strings.Contains(err.Error(), "https") {
+			t.Errorf("FetchFingerprint(%q) error %q should name the https requirement", raw, err)
+		}
 	}
 }
 

@@ -19,12 +19,14 @@
 // exists only when a pin exists, so a misconfigured provider fails closed
 // (ErrPinMismatch) instead of silently disabling verification entirely.
 //
-// A configured HTTP proxy always wins over the pin (ADR-054): the proxy is a
-// global network policy that predates the per-provider trust decision, and a
-// MITM proxy re-encrypts traffic with its own certificate, so a pin layered
-// on top would reject a legitimately configured setup. The two resolvers
-// below encode that rule for the two kinds of dial path this application
-// has; see their doc comments for why one resolver cannot serve both.
+// A configured HTTP proxy normally wins over the pin (ADR-054): the proxy is
+// a global network policy that predates the per-provider trust decision, and
+// a MITM proxy re-encrypts traffic with its own certificate, so a pin layered
+// on top would reject a legitimately configured setup. The exception is a
+// target host on proxy.bypass_list (see DialPolicy): a bypassed host dials
+// directly, so its pin applies. The resolvers below encode that rule for the
+// two kinds of dial path this application has; see their doc comments for
+// why one resolver cannot serve both.
 package llmtls
 
 import (
@@ -51,6 +53,29 @@ const FetchFingerprintTimeout = 10 * time.Second
 // does not match the configured pin. The error deliberately carries no
 // certificate material — only the fact of the mismatch (see ADR-054).
 var ErrPinMismatch = errors.New("fingerprint mismatch")
+
+// DialPolicy answers the one question every provider dial path must settle
+// before a TLS pin can be considered (ADR-054): does this dial go through
+// the operator's proxy, or straight to the endpoint?
+//
+// ProxyActive is the effective-proxy rule — proxy.enabled AND a non-empty
+// proxy.url, the exact rule proxy.BuildTransport applies (a nil client from
+// proxy.BuildClient means not active).
+//
+// TargetBypassed reports that the target host is on proxy.bypass_list. When
+// a proxy is active but the target is bypassed, the dial goes direct, so the
+// pin applies after all ("bypass re-arms the pin"): the derived client is
+// built with any proxy routing stripped from its transport. When no proxy is
+// active the field is irrelevant and stays false.
+//
+// ZeroDialPolicy means "no effective proxy": every pinned dial is direct.
+type DialPolicy struct {
+	ProxyActive    bool
+	TargetBypassed bool
+}
+
+// ZeroDialPolicy is the no-proxy dial policy.
+var ZeroDialPolicy = DialPolicy{}
 
 // Client returns an HTTP client for one provider endpoint.
 //
@@ -88,14 +113,15 @@ func Client(base *http.Client, fingerprint string, logger *slog.Logger) *http.Cl
 // RouterEntryClient resolves the per-provider client override for an
 // llm.ProviderEntry — the chat/inference dial path.
 //
-//	proxyActive             → nil (the pin is deliberately ignored)
-//	!proxyActive, pin == "" → nil
-//	!proxyActive, pin != "" → Client(base, pin, logger)
+//	proxy dials (active + !bypassed)  → nil
+//	proxy bypassed for the target     → pinned clone of base (proxy stripped)
+//	no proxy, pin == ""               → nil
+//	no proxy, pin != ""               → Client(base, pin, logger)
 //
 // nil means "this entry carries no override", which makes the SDK fall back
 // to the router-level client (llm.RouterConfig.HTTPClient). That fallback is
 // the whole reason this resolver returns nil rather than the proxy client
-// while a proxy is active: the router-level client already carries the proxy
+// while the proxy dials: the router-level client already carries the proxy
 // transport AND the long LLM request timeout, whereas the raw proxy client
 // is built with the much shorter web-fetch proxy timeout. Handing the proxy
 // client back here would shadow the router-level client and silently cap
@@ -103,15 +129,28 @@ func Client(base *http.Client, fingerprint string, logger *slog.Logger) *http.Cl
 // reasoning models. Use DirectDialClient on paths that have no such
 // fallback.
 //
+// On the bypassed branch the pinned client is still cloned from base (so a
+// pinned inference client keeps the long LLM timeout), but its transport
+// inherits base's proxy routing only to strip it: a bypassed host must dial
+// directly, and a MITM proxy on the way would present its own certificate
+// and guarantee a pin mismatch (stripProxy).
+//
 // base is the shared LLM client whose timeout a pinned client must inherit.
-func RouterEntryClient(proxyActive bool, base *http.Client, fingerprint string, logger *slog.Logger) *http.Client {
-	if proxyActive {
+func RouterEntryClient(policy DialPolicy, base *http.Client, fingerprint string, logger *slog.Logger) *http.Client {
+	if policy.ProxyActive && !policy.TargetBypassed {
 		return nil
 	}
-	if pin := normalizePin(fingerprint); pin != "" {
-		return Client(base, pin, logger)
+	pin := normalizePin(fingerprint)
+	if pin == "" {
+		return nil
 	}
-	return nil
+	client := Client(base, pin, logger)
+	if policy.ProxyActive {
+		// The proxy is active but this host bypasses it: the dial is direct,
+		// so the pinned transport must not inherit the proxy routing.
+		client.Transport = stripProxy(client.Transport)
+	}
+	return client
 }
 
 // DirectDialClient resolves the client for a dial path that has no
@@ -119,25 +158,78 @@ func RouterEntryClient(proxyActive bool, base *http.Client, fingerprint string, 
 // context-window probe, both of which bound their own requests with a
 // context deadline.
 //
-//	proxyClient != nil             → proxyClient, unchanged (pin ignored)
-//	proxyClient == nil, pin == ""  → nil (SDK/default transport, system
-//	                                 verification, no proxy)
-//	proxyClient == nil, pin != ""  → Client(nil, pin, logger): a fresh
-//	                                 direct client pinned to the SPKI
+//	proxy dials (active + !bypassed)  → proxyClient, unchanged (pin ignored)
+//	proxy bypassed for the target     → direct client (proxy routing
+//	                                    stripped); pinned when a pin is set
+//	no proxy, pin == ""               → nil (SDK/default transport)
+//	no proxy, pin != ""               → Client(nil, pin, logger)
 //
-// The proxy branch returns the proxy client verbatim — no clone, no derived
-// transport — so exactly the pre-pin behavior is restored whenever a proxy
-// is active. Unlike RouterEntryClient, returning the proxy client here is
-// correct: there is no shared client behind these calls, so nil would mean
-// "dial directly" and quietly bypass the operator's routing policy.
-func DirectDialClient(proxyClient *http.Client, fingerprint string, logger *slog.Logger) *http.Client {
-	if proxyClient != nil {
+// While the proxy dials, the proxy client is returned verbatim — no clone,
+// no derived transport — so exactly the pre-pin behavior is restored. Unlike
+// RouterEntryClient, returning the proxy client here is correct: there is no
+// shared client behind these calls, so nil would mean "dial directly" and
+// quietly bypass the operator's routing policy. A bypassed host instead gets
+// a DIRECT client derived from the proxy client (pin applied when set):
+// handing the proxy client back verbatim would route a bypassed host through
+// the proxy against the operator's own bypass_list.
+func DirectDialClient(proxyClient *http.Client, policy DialPolicy, fingerprint string, logger *slog.Logger) *http.Client {
+	if policy.HostThroughProxy() {
 		return proxyClient
 	}
-	if pin := normalizePin(fingerprint); pin != "" {
-		return Client(nil, pin, logger)
+	if !policy.ProxyActive {
+		// No proxy: proxyClient is nil by construction here.
+		if pin := normalizePin(fingerprint); pin != "" {
+			return Client(nil, pin, logger)
+		}
+		return nil
 	}
-	return nil
+	// Bypassed while the proxy is active: strip the proxy routing so the
+	// dial matches what the proxy transport itself would do for this host —
+	// direct, still carrying the operator's CA overrides — and layer the
+	// pin on top when one is configured.
+	pin := normalizePin(fingerprint)
+	if pin == "" {
+		clone := *proxyClient
+		clone.Transport = stripProxy(proxyClient.Transport)
+		return &clone
+	}
+	client := Client(nil, pin, logger)
+	client.Timeout = proxyClient.Timeout
+	return client
+}
+
+// HostThroughProxy reports whether the dial behind policy still goes through
+// the proxy transport. True only when the proxy is active and the target is
+// NOT bypassed — the branch in which both resolvers return the proxy
+// client's own configuration unchanged.
+func (p DialPolicy) HostThroughProxy() bool {
+	return p.ProxyActive && !p.TargetBypassed
+}
+
+// stripProxy returns a transport with the proxy routing removed, for dials a
+// bypassed host must make directly (ADR-054). An *http.Transport is cloned —
+// never mutated, it may be shared — and its Proxy func cleared, keeping the
+// operator's dialer and CA overrides; a custom RoundTripper cannot be
+// rewritten and is returned as-is.
+func stripProxy(base http.RoundTripper) http.RoundTripper {
+	if ht, ok := base.(*http.Transport); ok {
+		ht = ht.Clone()
+		ht.Proxy = nil
+		return ht
+	}
+	return base
+}
+
+// TargetHost returns the hostname (no port, no scheme) of rawURL, or "" when
+// the URL is empty or unparseable. It is the bypass-matching key every dial
+// path derives from a provider base URL — core resolves DialPolicy with it,
+// and the backend Get-fingerprint RPC applies the same rule to its probe.
+func TargetHost(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return parsed.Hostname()
 }
 
 // warnInvalidPin logs a Warn when pin is non-empty but cannot be the base64
@@ -266,10 +358,18 @@ func normalizePin(pin string) string {
 //
 // Only the handshake happens — no HTTP request is sent — so no API key is
 // involved. rawURL must carry a scheme and host; a path is ignored.
+//
+// Only https endpoints can serve a certificate to pin, so a URL with any
+// other scheme is rejected up front with an explicit error instead of a
+// confusing TLS dial to port 443 (review on ADR-054: local servers are
+// often configured as plain http://).
 func FetchFingerprint(ctx context.Context, rawURL string, logger *slog.Logger) (string, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return "", fmt.Errorf("parsing URL: %w", err)
+	}
+	if parsed.Scheme != "https" {
+		return "", fmt.Errorf("URL %q is not https — only https endpoints present a certificate to pin", rawURL)
 	}
 	host := parsed.Hostname()
 	port := parsed.Port()

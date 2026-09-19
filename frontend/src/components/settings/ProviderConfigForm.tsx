@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -6,6 +6,7 @@ import { Loader2 } from 'lucide-react'
 import { isOpenAICompatibleProvider } from '@/lib/llm-providers'
 import { getProviderTLSCertificate } from '@/api/config'
 import { logger } from '@/lib/logger'
+import { useProxyDraftStore, pinGatedByProxy } from '@/stores/proxyDraftStore'
 
 interface ProviderConfig {
   api_key: string
@@ -22,14 +23,6 @@ interface ProviderConfigFormProps {
   modelsLoading: boolean
   onConfigChange: (updates: Partial<ProviderConfig>) => void
   onApply: () => void
-  /**
-   * An effective HTTP proxy (enabled + a URL) is configured. The
-   * per-provider TLS pin does not apply to proxied connections (proxy wins,
-   * ADR-054), so the whole TLS section is disabled and an explanation is
-   * shown. Defaults to false so callers that do not track proxy state keep
-   * the controls usable — the backend guards the fingerprint RPC anyway.
-   */
-  proxyActive?: boolean
 }
 
 export function ProviderConfigForm({
@@ -40,7 +33,6 @@ export function ProviderConfigForm({
   modelsLoading,
   onConfigChange,
   onApply,
-  proxyActive = false,
 }: ProviderConfigFormProps) {
   const showBaseUrl = isOpenAICompatibleProvider(activeProvider)
   const showApiKey = true
@@ -53,6 +45,20 @@ export function ProviderConfigForm({
   // only local state here is the in-flight/error state of the Get button.
   const [fpLoading, setFpLoading] = useState(false)
   const [fpError, setFpError] = useState<string | null>(null)
+
+  // Per-provider gate from the shared draft store: the section is disabled
+  // only while the proxy DIALS for this provider's host — effective proxy
+  // AND the host not on the bypass list. A bypassed host keeps its pin and
+  // its Get button (the probe dials directly, and the pin applies). Selectors
+  // return stable values; the gate itself is derived in useMemo because it
+  // needs the draft bypass list (a fresh array must not be allocated inside
+  // a Zustand selector).
+  const proxyActive = useProxyDraftStore((s) => s.active === true)
+  const bypassList = useProxyDraftStore((s) => s.bypassList)
+  const proxyDials = useMemo(
+    () => pinGatedByProxy(proxyActive, bypassList, config?.base_url),
+    [proxyActive, bypassList, config?.base_url],
+  )
 
   // Unconditional with respect to the configured pin: no fingerprint is
   // sent, and the result overwrites whatever the field holds. Pressing Get
@@ -124,8 +130,9 @@ export function ProviderConfigForm({
           The field and the Get button are always present: the pin is the
           switch, so an empty field already means "standard verification"
           and a separate toggle would only hide the Get button behind an
-          extra click. Disabled wholesale while a proxy is active, because
-          the pin never applies to proxied connections. */}
+          extra click. Disabled while the proxy dials for this provider's
+          host (active AND not bypassed); a bypassed host dials directly, so
+          its pin applies. */}
       {showTLSSection && (
         <div className="flex flex-col gap-2">
           <label className="text-xs text-muted-foreground">
@@ -136,17 +143,17 @@ export function ProviderConfigForm({
               placeholder="base64(SHA-256(SPKI DER)) pin"
               value={config?.tls_fingerprint ?? ''}
               onChange={(e) => onConfigChange({ tls_fingerprint: e.target.value })}
-              disabled={proxyActive}
+              disabled={proxyDials}
               className="h-9 text-sm flex-1 font-mono"
             />
             <Button
               size="sm"
               variant="outline"
               onClick={handleGetFingerprint}
-              disabled={fpLoading || !config?.base_url || proxyActive}
+              disabled={fpLoading || !config?.base_url || proxyDials}
               title={
-                proxyActive
-                  ? 'Unavailable while an HTTP proxy is enabled'
+                proxyDials
+                  ? 'Unavailable while the proxy dials for this host'
                   : config?.base_url
                     ? 'Connect and read the fingerprint the server currently presents'
                     : 'Set a base URL first'
@@ -155,13 +162,14 @@ export function ProviderConfigForm({
               {fpLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Get'}
             </Button>
           </div>
-          {proxyActive ? (
+          {proxyDials ? (
             <span className="text-[11px] text-muted-foreground">
-              Not available while an HTTP proxy is enabled — the fingerprint pin
-              does not apply to proxied connections. Disable the proxy
-              (Settings → General → HTTP Proxy), or add this host to the proxy
-              bypass list, to use certificate pinning. A saved pin is kept and
-              takes effect again once the proxy is off.
+              Not available while an HTTP proxy is enabled and this host is not
+              on its bypass list — the fingerprint pin does not apply to
+              proxied connections. Disable the proxy (Settings → General → HTTP
+              Proxy) or add this host to the proxy bypass list, to use
+              certificate pinning. A saved pin is kept and takes effect again
+              once the proxy stops dialing for this host.
             </span>
           ) : (
             <span className="text-[11px] text-muted-foreground">

@@ -22,6 +22,7 @@ vi.mock('@/api/config', () => ({
 }))
 
 import { ProviderConfigForm } from './ProviderConfigForm'
+import { useProxyDraftStore } from '@/stores/proxyDraftStore'
 
 const pin = 'k3J9vQ1Z0mF7hD2xS8pL4wR6tY5uI3oP1aE9cX0bN7g='
 const serverPin = 'Zm9vYmFyYmF6cXV1eDEyMzQ1Njc4OWFiY2RlZmdoaT0='
@@ -37,6 +38,7 @@ beforeEach(() => {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
+  useProxyDraftStore.setState({ active: null, bypassList: [] })
 })
 
 afterEach(() => {
@@ -50,6 +52,7 @@ interface RenderOpts {
   baseUrl?: string
   fingerprint?: string
   proxyActive?: boolean
+  bypassList?: string[]
 }
 
 function render({
@@ -57,7 +60,9 @@ function render({
   baseUrl = 'https://llm.lan:8443/v1',
   fingerprint = '',
   proxyActive = false,
+  bypassList = [],
 }: RenderOpts = {}) {
+  useProxyDraftStore.setState({ active: proxyActive, bypassList })
   act(() => {
     root.render(
       <ProviderConfigForm
@@ -68,7 +73,6 @@ function render({
         modelsLoading={false}
         onConfigChange={(u) => changes.push(u as Record<string, unknown>)}
         onApply={() => {}}
-        proxyActive={proxyActive}
       />,
     )
   })
@@ -230,6 +234,16 @@ describe('ProviderConfigForm proxy gate', () => {
     expect(container.textContent).toContain('bypass list')
   })
 
+  // Bypass re-arms the pin (ADR-054): a host on the draft bypass list dials
+  // directly, so its pin and its Get button stay usable even while the proxy
+  // is on for everyone else.
+  it('keeps the controls usable for a bypassed host', () => {
+    render({ fingerprint: pin, proxyActive: true, bypassList: ['llm.lan'] })
+
+    expect(fingerprintInput()?.disabled).toBe(false)
+    expect(getButton()?.disabled).toBe(false)
+  })
+
   // A configured pin stays visible while the proxy is on: it is preserved and
   // re-arms when the proxy is disabled.
   it('still shows the persisted pin', () => {
@@ -242,5 +256,17 @@ describe('ProviderConfigForm proxy gate', () => {
     expect(fingerprintInput()?.disabled).toBe(false)
     expect(getButton()?.disabled).toBe(false)
     expect(container.textContent).not.toContain('HTTP Proxy')
+  })
+
+  // The gate reads the live draft store: editing the bypass list in the
+  // General tab re-enables the section in an already-mounted LLM tab with no
+  // config re-read — the same propagation path the enabled/URL toggles use.
+  it('reacts to a bypass-list edit published by the General tab', () => {
+    render({ fingerprint: pin, proxyActive: true })
+    expect(fingerprintInput()?.disabled).toBe(true)
+
+    act(() => useProxyDraftStore.getState().setBypassList(['llm.lan']))
+    expect(fingerprintInput()?.disabled).toBe(false)
+    expect(getButton()?.disabled).toBe(false)
   })
 })

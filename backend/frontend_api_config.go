@@ -1599,16 +1599,23 @@ func (f *FrontendAPI) ListProviderModels(req ListProviderModelsRequest) ([]strin
 // path.
 //
 // The probe dials the endpoint DIRECTLY (it does not consult the configured
-// HTTP proxy), so while a proxy is enabled the fetched pin would never be
-// used: proxy wins over the pin on every provider dial path. The call is
-// rejected up front with an actionable error instead of handing the user a
-// pin that silently does nothing.
+// HTTP proxy), so while the proxy dials for this host — the proxy is
+// effective AND the host is not on proxy.bypass_list — a fetched pin would
+// be inert the moment it is saved, and the call is rejected up front with an
+// actionable error instead. For a bypassed host the probe answers a
+// meaningful question: the host dials directly, so the pin it fetches
+// applies (ADR-054, "bypass re-arms the pin").
 //
-// Locking contract: the effective proxy state and the persisted base URL are
-// snapshotted under configMu.RLock, and the lock is RELEASED before the
-// handshake. Holding configMu across a network call (up to
-// llmtls.FetchFingerprintTimeout) would block every concurrent GetConfig and
-// freeze the settings dialog.
+// The request's base_url is dialed as given: like ListProviderModels, this
+// RPC sends a network request to a host taken from the (local, single-user)
+// settings form — an accepted parity trade-off recorded in ADR-054 §5, not
+// an SSRF surface new with this feature.
+//
+// Locking contract: the effective proxy state, the bypass list, and the
+// persisted base URL are snapshotted under configMu.RLock, and the lock is
+// RELEASED before the handshake. Holding configMu across a network call (up
+// to llmtls.FetchFingerprintTimeout) would block every concurrent GetConfig
+// and freeze the settings dialog.
 func (f *FrontendAPI) GetProviderTLSCertificate(req GetProviderTLSCertificateRequest) (TLSCertificateResponse, error) {
 	if req.Provider == "" {
 		return TLSCertificateResponse{}, errors.New("provider is required")
@@ -1619,8 +1626,10 @@ func (f *FrontendAPI) GetProviderTLSCertificate(req GetProviderTLSCertificateReq
 	// must both be set; an enabled-but-empty proxy dials directly, so the pin
 	// stays meaningful there.
 	proxyEnabled := f.config != nil && f.config.Proxy.Enabled && f.config.Proxy.URL != ""
+	var bypass proxy.BypassMatcher
 	var persisted string
 	if f.config != nil {
+		bypass = proxy.NewBypassMatcher(f.config.Proxy.BypassList)
 		// The canonical provider list carries the raw (env-var) base URL; the
 		// expander resolves it below.
 		for _, p := range f.config.LLM.GetAllProviderConfigs() {
@@ -1633,10 +1642,6 @@ func (f *FrontendAPI) GetProviderTLSCertificate(req GetProviderTLSCertificateReq
 	f.configMu.RUnlock()
 	// No lock is held from here on — the handshake below is a network call.
 
-	if proxyEnabled {
-		return TLSCertificateResponse{}, errors.New("TLS fingerprint fetching is unavailable while an HTTP proxy is enabled (Settings → General → HTTP Proxy): the pin does not apply to proxied connections. Disable the proxy, or add this host to the proxy bypass list, to pin this server's certificate")
-	}
-
 	raw := req.BaseURL
 	if raw == "" {
 		raw = persisted
@@ -1648,6 +1653,15 @@ func (f *FrontendAPI) GetProviderTLSCertificate(req GetProviderTLSCertificateReq
 	// gives the base URL; a persisted `${LLM_BASE_URL}` would otherwise be
 	// parsed as a literal (and fail) by url.Parse inside FetchFingerprint.
 	raw = config.ExpandEnvVars(raw)
+
+	if proxyEnabled {
+		// The bypass decision must use the same URL the probe will dial —
+		// the draft wins over the persisted base_url, like every dial path.
+		bypassed := bypass.Matches(llmtls.TargetHost(raw))
+		if !bypassed {
+			return TLSCertificateResponse{}, errors.New("TLS fingerprint fetching is unavailable while an HTTP proxy is enabled (Settings → General → HTTP Proxy): the pin does not apply to proxied connections. Disable the proxy, or add this host to the proxy bypass list, to pin this server's certificate")
+		}
+	}
 
 	fp, err := llmtls.FetchFingerprint(context.Background(), raw, f.log())
 	if err != nil {

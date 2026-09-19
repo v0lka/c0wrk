@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { getConfig } from '@/api/config'
 import { logger } from '@/lib/logger'
-import { useProxyDraftStore, selectProxyActive, isProxyEffective } from '@/stores/proxyDraftStore'
+import { useProxyDraftStore, isProxyEffective } from '@/stores/proxyDraftStore'
 import { FIXED_PROVIDERS, type CompatibleType } from '@/lib/llm-providers'
 import { compositeModelId, isCompositeModelId, decomposeCompositeModelId } from '@/lib/modelId'
 import type { ConfigProviderFull } from '@/types/models'
@@ -34,12 +34,6 @@ interface UseLLMConfigResult {
     openaiCompatibleProviderNames: Set<string>
     /** Names of providers loaded from the anthropic_compatible map. */
     anthropicCompatibleProviderNames: Set<string>
-    /** Effective proxy state (enabled AND a URL set), mirroring the Go-side
-     *  proxy.BuildTransport rule. The per-provider TLS pin is inert while
-     *  this is true (proxy wins, ADR-054), so the pin UI is disabled. Read
-     *  from proxyDraftStore, which the General tab updates synchronously —
-     *  see that store for why a config re-read cannot serve this. */
-    proxyActive: boolean
     isLoading: boolean
     setDefaultModel: (model: string) => void
     updateProviderConfig: (provider: string, updates: Partial<ProviderConfig>) => void
@@ -121,12 +115,13 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
     const [anthropicCompatibleProviderNames, setAnthropicCompatibleProviderNames] = useState<Set<string>>(new Set())
     const [isLoading, setIsLoading] = useState(true)
 
-    // The pin UI gate. proxyDraftStore is authoritative because the General
-    // tab writes it synchronously on every edit; loadConfig only SEEDS it
-    // (a no-op once known) for the case where the LLM tab is opened first
-    // and the General tab never mounted.
-    const proxyActive = useProxyDraftStore(selectProxyActive)
+    // The per-provider pin gate lives in proxyDraftStore and is read by
+    // ProviderConfigForm directly (per host, ADR-054). This hook only SEEDS
+    // the store from its own config payload (a no-op once known) for the
+    // case where the LLM tab is opened first and the General tab never
+    // mounted.
     const seedProxyActive = useProxyDraftStore((s) => s.seedActive)
+    const seedBypassList = useProxyDraftStore((s) => s.seedBypassList)
 
     // Mutable ref for providerConfigs so setDefaultModel stays stable (fix #5).
     const configsRef = useRef(providerConfigs)
@@ -184,6 +179,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
             // configs come from. seedActive never overwrites a value the
             // General tab already published, so a draft toggle wins.
             seedProxyActive(isProxyEffective(result?.proxy))
+            seedBypassList(result?.proxy?.bypass_list ?? [])
             const llm = result?.llm
             if (llm) {
                 const rawDefault = llm.default_model || ''
@@ -244,7 +240,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         } finally {
             setIsLoading(false)
         }
-    }, [seedProxyActive])
+    }, [seedProxyActive, seedBypassList])
 
     useEffect(() => { loadConfig() }, [loadConfig])
 
@@ -363,7 +359,6 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         providerConfigs,
         openaiCompatibleProviderNames,
         anthropicCompatibleProviderNames,
-        proxyActive,
         isLoading,
         setDefaultModel,
         updateProviderConfig,

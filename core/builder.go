@@ -1406,6 +1406,11 @@ func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider 
 	b.mu.RLock()
 	proxyClient := b.proxyClient
 	b.mu.RUnlock()
+	// The bypass matcher mirrors the live proxy transport's Proxy func. Both
+	// are rebuilt from the same cfg (RebuildProxy), so a stale-matcher race
+	// is bounded to a concurrent settings save and self-corrects on the next
+	// rebuild — same tolerance as every other cfg snapshot in this file.
+	bypass := proxy.NewBypassMatcher(cfg.Proxy.BypassList)
 	log := b.log()
 
 	switch provider {
@@ -1421,8 +1426,8 @@ func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider 
 			return nil, errors.New("ChatGPT API key not configured")
 		}
 		// Fixed provider: no pin key exists (api.openai.com has a public
-		// certificate), so this only threads the proxy client.
-		models, err := listOpenAIModels(ctx, "", apiKey, llmtls.DirectDialClient(proxyClient, "", log))
+		// certificate), so this only threads the dial policy.
+		models, err := listOpenAIModels(ctx, "", apiKey, llmtls.DirectDialClient(proxyClient, dialPolicy(proxyClient, bypass, "api.openai.com"), "", log))
 		if err != nil {
 			return nil, err
 		}
@@ -1441,11 +1446,11 @@ func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider 
 				return nil, fmt.Errorf("openAI-compatible base URL not configured for provider %q", provider)
 			}
 			// Per-provider TLS override under the proxy-wins rule
-			// (ADR-054): with a proxy active the plain proxy client dials
-			// and the pin is ignored; with no proxy, a non-empty pin yields
-			// a direct pinned client so the listing reaches self-signed
-			// endpoints exactly like the chat path.
-			return listOpenAIModels(ctx, baseURL, apiKey, llmtls.DirectDialClient(proxyClient, pc.TLSFingerprint, log))
+			// (ADR-054): while the proxy dials, the plain proxy client
+			// dials and the pin is ignored; a bypassed host (or no proxy)
+			// dials directly, pinned when configured, so the listing
+			// reaches self-signed endpoints exactly like the chat path.
+			return listOpenAIModels(ctx, baseURL, apiKey, llmtls.DirectDialClient(proxyClient, dialPolicy(proxyClient, bypass, baseURL), pc.TLSFingerprint, log))
 		case "anthropic":
 			baseURL := cfg.ExpandEnvVars(pc.BaseURL)
 			// Fixed "anthropic" provider (no BaseURL): return the built-in
@@ -1457,7 +1462,7 @@ func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider 
 				return llm.BuiltInModelNames("anthropic-api"), nil
 			}
 			apiKey := cfg.ExpandEnvVars(pc.APIKey)
-			names, err := listAnthropicModels(ctx, baseURL, apiKey, llmtls.DirectDialClient(proxyClient, pc.TLSFingerprint, log))
+			names, err := listAnthropicModels(ctx, baseURL, apiKey, llmtls.DirectDialClient(proxyClient, dialPolicy(proxyClient, bypass, baseURL), pc.TLSFingerprint, log))
 			if err != nil {
 				log.Warn("anthropic-compatible model listing failed; falling back to built-in list",
 					"provider", provider, "base_url", baseURL, "error", err)
@@ -1790,17 +1795,19 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	// Iterate in a deterministic order (matching backend/config allProviderEntries)
 	// to ensure the first provider in the list is predictable.
 	providers := make([]llm.ProviderEntry, 0, len(cfg.LLM.ProviderConfigs))
-	// proxyActive is exactly proxy.enabled && proxy.url != "": proxy.BuildClient
-	// returns a nil client in every other case, so the nil check IS the
-	// effective-proxy rule the settings UI and the fingerprint RPC apply.
-	proxyActive := proxyClient != nil
+	// The proxy client is non-nil exactly when the proxy is effective
+	// (proxy.enabled && proxy.url != "", the proxy.BuildClient rule); the
+	// bypass matcher re-arms the pin for hosts the operator excluded from
+	// the proxy (ADR-054). One matcher per router build — read-only after
+	// construction.
+	bypass := proxy.NewBypassMatcher(cfg.Proxy.BypassList)
 	providerOrder := []string{"anthropic", "chatgpt"}
 	for _, name := range providerOrder {
 		pc, ok := cfg.LLM.ProviderConfigs[name]
 		if !ok || len(pc.Models) == 0 {
 			continue
 		}
-		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyActive, cfg.ExpandEnvVars, b.log()))
+		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, cfg.ExpandEnvVars, b.log()))
 	}
 	// Also include any providers not in the standard order (e.g. future additions).
 	// Collect unknown names and iterate in sorted order for determinism.
@@ -1814,7 +1821,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	sort.Strings(unknown)
 	for _, name := range unknown {
 		pc := cfg.LLM.ProviderConfigs[name]
-		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyActive, cfg.ExpandEnvVars, b.log()))
+		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, cfg.ExpandEnvVars, b.log()))
 	}
 
 	// Model Profiles context-management override: keeps the router's token budget
@@ -1991,6 +1998,9 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 	log := b.log()
 	expand := cfg.ExpandEnvVars
 	goRun := b.asyncRunner()
+	// Same rationale as fetchProviderModels: the matcher is rebuilt from the
+	// same config snapshot the probe reads its providers from.
+	bypass := proxy.NewBypassMatcher(cfg.Proxy.BypassList)
 
 	return func(model string) {
 		if model == "" || registry == nil {
@@ -2001,10 +2011,11 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 			return
 		}
 		// Per-provider TLS override under the proxy-wins rule (ADR-054):
-		// proxy active → the plain proxy client; no proxy + a pin → a direct
-		// pinned client. Resolved here, on the caller's goroutine, so the
-		// detached probe below receives a ready client.
-		probeClient := llmtls.DirectDialClient(proxyClient, tlsFingerprint, log)
+		// proxy dials → the plain proxy client; bypassed host or no proxy →
+		// a direct client, pinned when configured. Resolved here, on the
+		// caller's goroutine, so the detached probe below receives a ready
+		// client.
+		probeClient := llmtls.DirectDialClient(proxyClient, dialPolicy(proxyClient, bypass, baseURL), tlsFingerprint, log)
 		goRun(func() {
 			window, err := probeSelfHostedContextWindow(context.Background(), baseURL, apiKey, model, probeClient)
 			if err != nil {
@@ -2104,11 +2115,12 @@ func buildLLMHTTPClient(proxyClient *http.Client, timeoutSec int) *http.Client {
 //
 // The per-provider TLS pin (ADR-054 — the pin is the switch) is attached as
 // ProviderEntry.HTTPClient only when the provider carries a non-empty
-// TLSFingerprint AND no proxy is active (proxy wins). sharedClient is the
-// router-level LLM client, so a pinned client inherits the LLM request
-// timeout.
+// TLSFingerprint AND the proxy dials for this provider's endpoint (proxy
+// wins), i.e. the proxy is active and its bypass_list does NOT cover the
+// host. sharedClient is the router-level LLM client, so a pinned client
+// inherits the LLM request timeout.
 //
-// With an active proxy the entry deliberately leaves HTTPClient nil rather
+// While the proxy dials, the entry deliberately leaves HTTPClient nil rather
 // than carrying the proxy client: nil makes the SDK fall back to
 // RouterConfig.HTTPClient, which already has the proxy transport AND the long
 // LLM timeout. Attaching the raw proxy client here would shadow it and cap
@@ -2121,21 +2133,44 @@ func providerEntryFromConfig(
 	name string,
 	pc BuilderProviderConfig,
 	sharedClient *http.Client,
-	proxyActive bool,
+	proxyClient *http.Client,
+	bypass proxy.BypassMatcher,
 	expand func(string) string,
 	logger *slog.Logger,
 ) llm.ProviderEntry {
+	policy := dialPolicy(proxyClient, bypass, expand(pc.BaseURL))
 	return llm.ProviderEntry{
 		Name:         name,
 		ProviderType: pc.ProviderType,
 		APIKey:       expand(pc.APIKey),
 		BaseURL:      expand(pc.BaseURL),
 		Models:       pc.Models,
-		HTTPClient:   llmtls.RouterEntryClient(proxyActive, sharedClient, pc.TLSFingerprint, logger),
+		HTTPClient:   llmtls.RouterEntryClient(policy, sharedClient, pc.TLSFingerprint, logger),
 	}
 }
 
-// buildCoreAgents creates the core Router and Reflector.
+// dialPolicy derives the llmtls.DialPolicy for dialing targetURL (the
+// provider base URL): the proxy is active when a proxy client exists (the
+// BuildTransport rule), and the target is bypassed per the operator's
+// proxy.bypass_list. A nil proxyClient short-circuits — with no proxy every
+// dial is direct and the bypass list is irrelevant.
+func dialPolicy(proxyClient *http.Client, bypass proxy.BypassMatcher, targetURL string) llmtls.DialPolicy {
+	if proxyClient == nil {
+		return llmtls.ZeroDialPolicy
+	}
+	host := hostOf(targetURL)
+	return llmtls.DialPolicy{
+		ProxyActive:    true,
+		TargetBypassed: bypass.Matches(host),
+	}
+}
+
+// hostOf extracts the hostname (no port) from a provider base URL; an empty
+// or unparseable URL yields "" which matches nothing in the bypass list, so
+// an unusual base URL simply keeps the proxy routing.
+func hostOf(rawURL string) string {
+	return llmtls.TargetHost(rawURL)
+} // buildCoreAgents creates the core Router and Reflector.
 func (b *OrchestratorBuilder) buildCoreAgents(
 	caller agent.LLMCaller,
 	cfg *BuilderConfig,

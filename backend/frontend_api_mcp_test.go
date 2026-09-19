@@ -2,13 +2,113 @@ package backend
 
 import (
 	"testing"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	sdktools "github.com/v0lka/sp4rk/tools"
 	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
-// --- UpdateMCPServers ---
+// --- UpdateMCPServers locking ---
+
+// TestUpdateMCPServers_ReadersNotBlockedDuringReconfigure verifies that
+// GetConfig completes while UpdateMCPServers is inside its propagation
+// phase. That phase (ReconfigureMCP) reconnects every changed server and
+// retries every previously-failed one with no deadline of its own; the whole
+// update used to hold configMu.Lock across it, convoying every reader — the
+// settings dialog froze for as long as the reconfigure took (observed at
+// 169 s). Mirrors TestUpdateProxySettings_ReadersNotBlockedDuringRebuild.
+func TestUpdateMCPServers_ReadersNotBlockedDuringReconfigure(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+	f.config.MCP = config.MCPConfig{Servers: make(map[string]config.MCPServerConfig)}
+
+	reconfigureStarted := make(chan struct{})
+	release := make(chan struct{})
+	mock.reconfigureMCPHook = func() {
+		select {
+		case <-reconfigureStarted:
+		default:
+			close(reconfigureStarted)
+		}
+		<-release // hold the propagation phase open
+	}
+
+	updateDone := make(chan error, 1)
+	go func() {
+		updateDone <- f.UpdateMCPServers(map[string]config.MCPServerConfig{
+			"test-server": {Transport: "stdio", Command: "cmd"},
+		})
+	}()
+
+	select {
+	case <-reconfigureStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("MCP reconfigure phase never started")
+	}
+
+	// A reader must return promptly and observe the already-applied mutation.
+	readerDone := make(chan map[string]config.MCPServerConfig, 1)
+	go func() { readerDone <- f.GetMCPServers() }()
+
+	select {
+	case servers := <-readerDone:
+		if _, ok := servers["test-server"]; !ok {
+			t.Error("GetMCPServers did not observe the applied MCP mutation")
+		}
+	case <-time.After(3 * time.Second):
+		close(release)
+		t.Fatal("GetMCPServers blocked while UpdateMCPServers was in its reconfigure phase — configMu lock convoy present")
+	}
+
+	// A WRITER must get in too. Two readers never block each other, but a
+	// queued writer also stops every subsequent reader — that is what froze
+	// the dialog.
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		f.configMu.Lock()
+		f.configLoadErrors = nil
+		f.configMu.Unlock()
+	}()
+	select {
+	case <-writerDone:
+	case <-time.After(3 * time.Second):
+		close(release)
+		t.Fatal("a config writer blocked while UpdateMCPServers was in its reconfigure phase")
+	}
+
+	close(release)
+	select {
+	case err := <-updateDone:
+		if err != nil {
+			t.Fatalf("UpdateMCPServers: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("UpdateMCPServers did not return after the hook was released")
+	}
+}
+
+// The reconfigure phase must be bounded. UpdateMCPServers hands its context
+// to ReconfigureMCP, whose server.Connect honours it, so one unreachable
+// endpoint can no longer stall the update indefinitely.
+func TestUpdateMCPServers_ReconfigureContextBounded(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+	f.config.MCP = config.MCPConfig{Servers: make(map[string]config.MCPServerConfig)}
+
+	if err := f.UpdateMCPServers(map[string]config.MCPServerConfig{
+		"test-server": {Transport: "stdio", Command: "cmd"},
+	}); err != nil {
+		t.Fatalf("UpdateMCPServers: %v", err)
+	}
+
+	ctx := mock.ReconfigureMCPCtx()
+	if ctx == nil {
+		t.Fatal("ReconfigureMCP received no context")
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		t.Fatal("ReconfigureMCP received a context with no deadline — one unreachable MCP endpoint can stall the update indefinitely")
+	}
+}
 
 func TestUpdateMCPServers_PersistsAndReconfigures(t *testing.T) {
 	f, mock, _ := newTestAPI(t)

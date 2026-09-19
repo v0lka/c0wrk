@@ -28,8 +28,6 @@ interface ProviderAccordionProps {
   onDelete?: () => void
   defaultModel: string
   providerConfigs: Record<string, ProviderConfig>
-  /** Effective proxy state: disables the per-provider TLS pin UI (ADR-054). */
-  proxyActive?: boolean
 }
 
 export function ProviderAccordion({
@@ -43,7 +41,6 @@ export function ProviderAccordion({
   onDelete,
   defaultModel,
   providerConfigs,
-  proxyActive = false,
 }: ProviderAccordionProps) {
   const {
     models,
@@ -168,7 +165,6 @@ export function ProviderAccordion({
             modelsLoading={modelsLoading}
             onConfigChange={onConfigChange}
             onApply={handleApply}
-            proxyActive={proxyActive}
           />
 
           {/* Model Checklist */}

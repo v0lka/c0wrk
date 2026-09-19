@@ -9,8 +9,6 @@ interface FixedProviderFormProps {
   onConfigChange: (provider: string, updates: Partial<{ api_key: string; base_url: string; tls_fingerprint: string }>) => void
   onToggleModel: (provider: string, model: string) => void
   defaultModel: string
-  /** Effective proxy state: disables the per-provider TLS pin UI (ADR-054). */
-  proxyActive?: boolean
 }
 
 export function FixedProviderForms({
@@ -20,7 +18,6 @@ export function FixedProviderForms({
   onConfigChange,
   onToggleModel,
   defaultModel,
-  proxyActive = false,
 }: FixedProviderFormProps) {
   return (
     <>
@@ -41,7 +38,6 @@ export function FixedProviderForms({
             onToggleModel={(model) => onToggleModel(provider, model)}
             defaultModel={defaultModel}
             providerConfigs={providerConfigs}
-            proxyActive={proxyActive}
           />
         )
       })}

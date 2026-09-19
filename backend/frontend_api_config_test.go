@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -80,6 +81,17 @@ type mockBuilder struct {
 	// RebuildProxy call, so tests can assert the propagation phase is
 	// bounded (guarded by m.mu).
 	rebuildProxyCtx context.Context
+
+	// reconfigureMCPHook, when non-nil, runs inside ReconfigureMCP after the
+	// call is recorded. Tests use it to hold the propagation phase open and
+	// assert that readers are not convoyed behind it. It must not call back
+	// into mockBuilder methods that take m.mu.
+	reconfigureMCPHook func()
+
+	// reconfigureMCPCtx records the context handed to the most recent
+	// ReconfigureMCP call, so tests can assert the propagation phase is
+	// bounded (guarded by m.mu).
+	reconfigureMCPCtx context.Context
 
 	// rebuildRouterHook, when non-nil, runs inside RebuildRouter while the
 	// call is being recorded. Tests use it to block the rebuild phase (e.g.
@@ -169,11 +181,23 @@ func (m *mockBuilder) UpdateShellBlocklist(_ *core.BuilderConfig) error {
 	m.mu.Unlock()
 	return m.updateShellBlocklistErr
 }
-func (m *mockBuilder) ReconfigureMCP(_ context.Context, _ *core.BuilderConfig) error {
+func (m *mockBuilder) ReconfigureMCP(ctx context.Context, _ *core.BuilderConfig) error {
 	m.mu.Lock()
 	m.reconfigureMCPCalls++
+	m.reconfigureMCPCtx = ctx
 	m.mu.Unlock()
+	if m.reconfigureMCPHook != nil {
+		m.reconfigureMCPHook()
+	}
 	return m.reconfigureMCPErr
+}
+
+// ReconfigureMCPCtx returns the context of the most recent ReconfigureMCP
+// call. Safe for concurrent use.
+func (m *mockBuilder) ReconfigureMCPCtx() context.Context {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.reconfigureMCPCtx
 }
 func (m *mockBuilder) ListProviderModels(_ context.Context, provider string, cfg *core.BuilderConfig) ([]string, error) {
 	m.mu.Lock()
@@ -3900,9 +3924,12 @@ func TestGetProviderTLSCertificate_ExpandsEnvVars(t *testing.T) {
 	}
 }
 
-// Proxy wins: the probe dials directly, so a pin fetched while a proxy is
-// active would be inert the moment it is saved. Reject with an actionable
-// message instead, and do not touch the network.
+// Proxy wins: the probe dials directly, so a pin fetched while the proxy
+// dials for this host would be inert the moment it is saved. Reject with an
+// actionable message instead, and do not touch the network. The bypass list
+// is set to something that does NOT match the endpoint so the re-arm rule
+// (ADR-054) does not kick in here — see
+// TestGetProviderTLSCertificate_BypassedHostAllowed.
 func TestGetProviderTLSCertificate_RejectedWhileProxyActive(t *testing.T) {
 	var dialed atomic.Int32
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -3913,13 +3940,14 @@ func TestGetProviderTLSCertificate_RejectedWhileProxyActive(t *testing.T) {
 	f, _ := newPinnedTestAPI(t)
 	f.config.Proxy.Enabled = true
 	f.config.Proxy.URL = "http://proxy.lan:3128"
+	f.config.Proxy.BypassList = []string{"internal.corp"} // does not match srv's host
 	f.config.LLM.OpenAICompatible["probe"] = config.OpenAICompatibleConfig{
 		BaseURL: srv.URL + "/v1", APIKey: "k", Models: []string{"m"},
 	}
 
 	_, err := f.GetProviderTLSCertificate(GetProviderTLSCertificateRequest{Provider: "probe"})
 	if err == nil {
-		t.Fatal("expected a rejection while an effective proxy is configured")
+		t.Fatal("expected a rejection while the proxy dials for this host")
 	}
 	for _, needle := range []string{"HTTP Proxy", "proxied connections"} {
 		if !strings.Contains(err.Error(), needle) {
@@ -3928,6 +3956,32 @@ func TestGetProviderTLSCertificate_RejectedWhileProxyActive(t *testing.T) {
 	}
 	if dialed.Load() != 0 {
 		t.Error("the rejection must happen before any network dial")
+	}
+}
+
+// Bypass re-arms the pin (ADR-054): for a host on proxy.bypass_list the dial
+// is direct, so the Get probe is meaningful again and must be allowed — the
+// fingerprint it fetches applies once saved.
+func TestGetProviderTLSCertificate_BypassedHostAllowed(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	want := llmtls.SPKIFingerprint(srv.Certificate())
+
+	f, _ := newPinnedTestAPI(t)
+	f.config.Proxy.Enabled = true
+	f.config.Proxy.URL = "http://proxy.lan:3128"
+	host, _ := url.Parse(srv.URL)
+	f.config.Proxy.BypassList = []string{host.Hostname()}
+	f.config.LLM.OpenAICompatible["probe"] = config.OpenAICompatibleConfig{
+		BaseURL: srv.URL + "/v1", APIKey: "k", Models: []string{"m"},
+	}
+
+	resp, err := f.GetProviderTLSCertificate(GetProviderTLSCertificateRequest{Provider: "probe"})
+	if err != nil {
+		t.Fatalf("a bypassed host must keep the Get probe available: %v", err)
+	}
+	if resp.Fingerprint != want {
+		t.Errorf("fingerprint = %q, want %q", resp.Fingerprint, want)
 	}
 }
 

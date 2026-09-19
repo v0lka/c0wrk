@@ -94,7 +94,7 @@ The value is `base64(SHA-256(SubjectPublicKeyInfo DER))` — Chromium Certificat
 
 ### Proxy wins
 
-When an effective proxy is configured — `proxy.enabled` AND a non-empty `proxy.url`, the `proxy.BuildTransport` rule — the pin is **ignored on every dial path**. A MITM proxy re-encrypts with its own certificate, so the origin key never reaches the client and a layered pin would reject a correctly configured setup; the proxy carries its own trust mechanism (`proxy.tls_cert_dir`). `proxy.bypass_list` is the route for both at once: a bypassed host dials directly, so its pin applies. The rule gates the pin's *application*, never its configuration — a pin stays persisted while a proxy is active and re-arms when it is switched off.
+When an effective proxy is configured — `proxy.enabled` AND a non-empty `proxy.url`, the `proxy.BuildTransport` rule — the pin is **ignored on proxied dials** (a MITM proxy re-encrypts with its own certificate, so the origin key never reaches the client and a layered pin would reject a correctly configured setup; the proxy carries its own trust mechanism, `proxy.tls_cert_dir`). The exception is `proxy.bypass_list`: a bypassed host dials directly, so its pin applies even while the proxy serves everyone else — implemented in every resolver (`llmtls.DialPolicy.TargetBypassed`), not just documented. The rule gates the pin's *application*, never its configuration — a pin stays persisted while the proxy dials and re-arms on its own when the proxy stops dialing for that host.
 
 ### Mechanics
 

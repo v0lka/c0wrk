@@ -454,13 +454,12 @@ describe('useLLMConfig proxy gate', () => {
     { name: 'enabled without a URL', proxy: { enabled: true, url: '' }, want: false },
     { name: 'disabled', proxy: { enabled: false, url: 'http://proxy.lan:3128' }, want: false },
     { name: 'absent', proxy: undefined, want: false },
-  ])('seeds proxyActive from the config payload: $name', async ({ proxy, want }) => {
+  ])('seeds the proxy gate from the config payload: $name', async ({ proxy, want }) => {
     mockConfigWithProxy(proxy)
 
     act(() => root.render(<HookHarness />))
     await flush()
 
-    expect(result.proxyActive).toBe(want)
     expect(useProxyDraftStore.getState().active).toBe(want)
   })
 
@@ -475,7 +474,6 @@ describe('useLLMConfig proxy gate', () => {
     await flush()
 
     expect(useProxyDraftStore.getState().active).toBe(true)
-    expect(result.proxyActive).toBe(true)
   })
 
   // A proxy toggled in the General tab must reach an already-mounted LLM tab
@@ -485,11 +483,11 @@ describe('useLLMConfig proxy gate', () => {
 
     act(() => root.render(<HookHarness />))
     await flush()
-    expect(result.proxyActive).toBe(false)
+    expect(useProxyDraftStore.getState().active).toBe(false)
     const readsAfterLoad = mocks.getConfig.mock.calls.length
 
     act(() => useProxyDraftStore.getState().setActive(true))
-    expect(result.proxyActive).toBe(true)
+    expect(useProxyDraftStore.getState().active).toBe(true)
     expect(mocks.getConfig.mock.calls.length).toBe(readsAfterLoad)
   })
 })

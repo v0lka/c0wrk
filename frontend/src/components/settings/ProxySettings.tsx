@@ -19,14 +19,15 @@ const DEFAULT_CONFIG: ProxyConfig = {
 }
 
 export function ProxySettings() {
-  // The LLM tab disables its per-provider TLS pin controls while a proxy is
-  // effective (proxy wins, ADR-054). It reads that from this store rather
-  // than from the backend, because saves here are debounced by 800 ms — a
-  // re-read right after a toggle would return the stale persisted value.
-  // Publishing happens synchronously in every handler below, before the
-  // debounce, so switching to the LLM tab always reflects what the user just
-  // did.
+  // The LLM tab disables its per-provider TLS pin controls while the proxy
+  // dials for a provider's host (proxy wins unless bypassed, ADR-054). It
+  // reads that from this store rather than from the backend, because saves
+  // here are debounced by 800 ms — a re-read right after a toggle would
+  // return the stale persisted value. Publishing happens synchronously in
+  // every handler below, before the debounce, so switching to the LLM tab
+  // always reflects what the user just did.
   const setProxyActive = useProxyDraftStore((s) => s.setActive)
+  const setBypassList = useProxyDraftStore((s) => s.setBypassList)
 
   const [config, setConfig] = useState<ProxyConfig>(DEFAULT_CONFIG)
   const [isLoading, setIsLoading] = useState(true)
@@ -43,6 +44,7 @@ export function ProxySettings() {
           setConfig(result.proxy)
           setBypassText(result.proxy.bypass_list.join(', '))
           setProxyActive(isProxyEffective(result.proxy))
+          setBypassList(result.proxy.bypass_list)
         }
       } catch (err) {
         logger.error('Failed to load proxy config:', err)
@@ -51,7 +53,7 @@ export function ProxySettings() {
       }
     }
     load()
-  }, [setProxyActive])
+  }, [setProxyActive, setBypassList])
 
   const saveSettings = useCallback(async (newConfig: ProxyConfig) => {
     try {
@@ -114,6 +116,10 @@ export function ProxySettings() {
     const list = value.split(',').map(s => s.trim()).filter(Boolean)
     const newConfig = { ...config, bypass_list: list }
     setConfig(newConfig)
+    // The gate is per host (a bypassed host keeps its pin), so the list is
+    // published synchronously too — an edit here must reach the LLM tab
+    // ahead of the debounce, exactly like the enabled/URL toggles.
+    setBypassList(list)
     debouncedSave(newConfig)
   }
 

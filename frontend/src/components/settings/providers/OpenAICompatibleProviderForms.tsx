@@ -12,8 +12,6 @@ interface OpenAICompatibleProviderFormProps {
   defaultModel: string
   /** Label prefix shown for each provider accordion. Defaults to "OpenAI Compatible". */
   labelPrefix?: string
-  /** Effective proxy state: disables the per-provider TLS pin UI (ADR-054). */
-  proxyActive?: boolean
 }
 
 export function OpenAICompatibleProviderForms({
@@ -26,7 +24,6 @@ export function OpenAICompatibleProviderForms({
   onDelete,
   defaultModel,
   labelPrefix = 'OpenAI Compatible',
-  proxyActive = false,
 }: OpenAICompatibleProviderFormProps) {
   return (
     <>
@@ -49,7 +46,6 @@ export function OpenAICompatibleProviderForms({
             onDelete={() => onDelete(name)}
             defaultModel={defaultModel}
             providerConfigs={providerConfigs}
-            proxyActive={proxyActive}
           />
         )
       })}

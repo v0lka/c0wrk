@@ -88,11 +88,13 @@ certificate, so the origin's key never reaches the client — a pin layered on
 top would reject a legitimately configured setup. The proxy also already has
 its own trust mechanism (`proxy.tls_cert_dir`).
 
-`proxy.bypass_list` is the documented route for wanting both at once: a
-bypassed host dials directly, so its pin applies. The effective-proxy rule
-gates the pin's *application*, never its configuration — a pin stays
-persisted while a proxy is active and re-arms the moment the proxy is off,
-with no re-entry.
+`proxy.bypass_list` is the route for wanting both at once, and the resolvers
+implement it: a bypassed host dials directly, so its pin applies even while
+the proxy serves everyone else. The effective-proxy rule gates the pin's
+*application*, never its configuration — a pin stays persisted while the
+proxy dials and re-arms on its own the moment the proxy stops dialing for
+that host (proxy off, or the host added to the bypass list), with no
+re-entry.
 
 ### 3. Two resolvers, because the dial paths are not interchangeable
 
@@ -100,20 +102,34 @@ with no re-entry.
 that encode the rule above for the two shapes of dial path. They are separate
 because returning the proxy client from the wrong one is a live bug:
 
-- `RouterEntryClient(proxyActive, base, pin, logger)` → the chat/inference
-  path, materialized as `llm.ProviderEntry.HTTPClient`. Returns **nil**
-  whenever a proxy is active or no pin is set. nil makes the SDK fall back to
+- `RouterEntryClient(policy DialPolicy, base, pin, logger)` → the
+  chat/inference path, materialized as `llm.ProviderEntry.HTTPClient`.
+  Returns **nil** whenever the proxy dials (active AND the host not bypassed)
+  or no pin is set. nil makes the SDK fall back to
   `llm.RouterConfig.HTTPClient`, which already carries the proxy transport
   **and** `timeouts.llmRequestTimeout`. Handing the raw proxy client back
   here would shadow that client and cap every inference request at
   `timeouts.webFetchProxyTimeout` (30 s) — long enough to break reasoning
   models. When a pin does apply, the client is cloned from the shared LLM
-  client, so it inherits that long timeout.
-- `DirectDialClient(proxyClient, pin, logger)` → paths with no router-level
-  fallback (the Fetch Models listing, the lazy context-window probe), each of
-  which bounds its own requests with a context deadline. Returns the proxy
-  client **verbatim** when one exists; nil would mean "dial directly" and
-  quietly bypass the operator's routing policy.
+  client, so it inherits that long timeout. On the bypassed branch the clone's
+  transport has the proxy routing stripped (`stripProxy`): the host must dial
+  direct, and a MITM hop would present the proxy's own certificate and
+  guarantee a mismatch.
+- `DirectDialClient(proxyClient, policy DialPolicy, pin, logger)` → paths
+  with no router-level fallback (the Fetch Models listing, the lazy
+  context-window probe), each of which bounds its own requests with a context
+  deadline. Returns the proxy client **verbatim** while the proxy dials; nil
+  would mean "dial directly" and quietly bypass the operator's routing
+  policy. For a bypassed host it derives a DIRECT client from the proxy
+  client (proxy routing stripped, operator CA overrides kept, pin layered on
+  when set), so a bypassed host never rides the proxy against the operator's
+  own bypass list.
+
+`DialPolicy{ProxyActive, TargetBypassed}` is derived by one core helper,
+`dialPolicy(proxyClient, bypass, targetURL)`; the proxy is active when a
+proxy client exists (the BuildClient rule) and `TargetBypassed` consults
+`proxy.BypassMatcher` — the same type the proxy transport's own `Proxy`
+function uses, so the two bypass decisions cannot diverge.
 
 The pinned `*http.Transport` is derived **once**, at client construction:
 `http.Transport.Clone()` does not carry over the idle-connection pool, so
@@ -142,10 +158,12 @@ provider endpoint:
   pin out with the base URL and key; `buildLocalModelProbe` resolves the
   client before dispatching the detached probe.
 
-`proxyActive` is derived as `b.proxyClient != nil`, which is exactly
-`enabled && url != ""` because `proxy.BuildClient` returns a nil client in
-every other case. The proxy client is snapshotted once per call under
-`b.mu.RLock`; no lock is held across a network call.
+The proxy side of `DialPolicy` is derived as `b.proxyClient != nil`, which is
+exactly `enabled && url != ""` because `proxy.BuildClient` returns a nil
+client in every other case; the bypass side consults
+`proxy.NewBypassMatcher(cfg.Proxy.BypassList)` against the provider's base
+URL host. The proxy client is snapshotted once per call under `b.mu.RLock`;
+no lock is held across a network call.
 
 `ModelRegistry.SetHTTPClient` is deliberately untouched: it fetches
 HuggingFace metadata, not provider endpoints.
@@ -165,19 +183,34 @@ with the result is the user's business, not the probe's. The signature is
 guarded by a compile-time assertion in the package tests so a pin parameter
 cannot be added back by accident.
 
-The RPC is rejected with an actionable error while an effective proxy is
-configured: the probe dials directly, so a pin fetched then would be inert
-the moment it is saved. The rejection happens before any network access and
-names both remedies (disable the proxy, or use the bypass list).
+The RPC is rejected with an actionable error while the proxy dials for the
+target host — effective proxy AND the host not on `proxy.bypass_list`: the
+probe dials directly, so a pin fetched then would be inert the moment it is
+saved. The rejection happens before any network access and names both
+remedies (disable the proxy, or add the host to the bypass list). For a
+bypassed host the probe stays available and meaningful: that host dials
+directly, so the pin it fetches applies.
+
+The probe requires an `https` base URL and rejects any other scheme up front
+with an explicit error — only an https endpoint presents a certificate to
+pin, and a plain-http provider otherwise surfaced as a confusing TLS dial to
+port 443.
+
+The request's `base_url` is dialed as given: like `ListProviderModels`, this
+RPC opens a network connection to a host taken from the (local, single-user)
+settings form. That parity is a recorded, accepted trade-off, not a new
+exposure — both RPCs are invoked only from the settings UI of a desktop app.
 
 ### 6. The pointer sentinel lives only at the API boundary
 
 `ProviderConfigRequest.TLSFingerprint` and
 `ListProviderModelsRequest.TLSFingerprint` are `*string`:
 
-- `nil` = keep the persisted pin. This is what a debounced partial save
-  sends when only credentials or the model list changed; without the
-  sentinel every such save would clear the pin.
+- `nil` = keep the persisted pin. This protects against any client that
+  omits the field — an external API consumer, or a future partial-save path.
+  The app's own full-form save (`useLLMConfigSave`) always sends the current
+  value, so it never relies on the sentinel; the behavior is identical
+  either way because the value round-trips from the loaded config.
 - non-nil = apply verbatim, so an explicit `""` is the deliberate "clear the
   pin" signal.
 
@@ -250,9 +283,13 @@ a checkbox the user has no reason to tick before they have a fingerprint to
 paste. Clearing the field switches the override off. The only local state in
 the form is the Get button's in-flight and error state.
 
-While a proxy is effective the field, the button, and their help text are
-disabled with an explanation naming Settings → General → HTTP Proxy and the
-bypass list. The persisted pin stays visible and intact.
+While the proxy dials for a provider's host — effective proxy AND the host
+not bypassed — the field, the button, and their help text are disabled with
+an explanation naming Settings → General → HTTP Proxy and the bypass list.
+The persisted pin stays visible and intact. The gate is computed per host
+(`pinGatedByProxy`) from the draft store: a host on the bypass list keeps
+its pin field and its Get button, and editing the bypass list in the General
+tab re-enables an already-mounted LLM tab with no config re-read.
 
 The gate reads `frontend/src/stores/proxyDraftStore.ts`, not the backend
 config. `ProxySettings` publishes the effective state synchronously on every
@@ -272,8 +309,10 @@ fresher draft.
   wrong pin is a refused connection, not a silent downgrade.
 - A pin survives certificate renewal that reuses the key pair, and survives
   debounced partial saves.
-- A pin is inert but preserved while a proxy is active, and re-arms by
-  itself. Users who need both at once use `proxy.bypass_list`.
+- A pin is inert but preserved while the proxy dials for its host, and
+  re-arms by itself — when the proxy goes off, or when the host is added to
+  `proxy.bypass_list` (implemented, not just documented: every resolver
+  honors the list).
 - The pinned inference client inherits the long LLM request timeout; the two
   resolvers exist to keep that true.
 - TLS policy stays in c0wrk. sp4rk only transports the client it is handed

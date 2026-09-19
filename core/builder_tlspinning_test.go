@@ -7,12 +7,14 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/v0lka/c0wrk/core/llmtls"
+	"github.com/v0lka/c0wrk/core/proxy"
 )
 
 // pinFixture is a well-formed (base64 of 32 bytes) pin that matches no real
@@ -56,10 +58,12 @@ func newModelListServer(t *testing.T, ids ...string) (srv *httptest.Server, spki
 // ---------------------------------------------------------------------------
 
 // providerEntryFromConfig must attach a pinned client ONLY when a pin is set
-// and no proxy is active. With a proxy active the entry stays nil so the SDK
-// falls back to the router-level client — which carries both the proxy
-// transport and the long LLM request timeout. Attaching the proxy client here
-// would cap inference at the much shorter proxy timeout.
+// and the proxy dials for the provider's endpoint (proxy active AND the host
+// not bypassed). While the proxy dials the entry stays nil so the SDK falls
+// back to the router-level client — which carries both the proxy transport
+// and the long LLM request timeout; attaching the proxy client here would
+// cap inference at the much shorter proxy timeout. A bypassed host dials
+// directly, so its pin applies (ADR-054, re-armed by proxy.bypass_list).
 func TestProviderEntryFromConfig_PinAndProxyMatrix(t *testing.T) {
 	const llmTimeout = 10 * time.Minute
 	llmClient := &http.Client{Timeout: llmTimeout}
@@ -67,13 +71,16 @@ func TestProviderEntryFromConfig_PinAndProxyMatrix(t *testing.T) {
 	tests := []struct {
 		name        string
 		pin         string
-		proxyActive bool
+		proxyClient *http.Client
+		bypass      []string
 		wantClient  bool
 	}{
-		{"no proxy, pin set", pinFixture, false, true},
-		{"no proxy, no pin", "", false, false},
-		{"proxy active, pin set", pinFixture, true, false},
-		{"proxy active, no pin", "", true, false},
+		{"no proxy, pin set", pinFixture, nil, nil, true},
+		{"no proxy, no pin", "", nil, nil, false},
+		{"proxy dials, pin set", pinFixture, proxyPlaceholder, nil, false},
+		{"proxy dials, no pin", "", proxyPlaceholder, nil, false},
+		{"proxy bypassed, pin set", pinFixture, proxyPlaceholder, []string{"llm.lan"}, true},
+		{"proxy bypassed, no pin", "", proxyPlaceholder, []string{"llm.lan"}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,7 +92,7 @@ func TestProviderEntryFromConfig_PinAndProxyMatrix(t *testing.T) {
 				TLSFingerprint: tc.pin,
 			}
 
-			entry := providerEntryFromConfig("selfhosted", pc, llmClient, tc.proxyActive, identityExpand, nil)
+			entry := providerEntryFromConfig("selfhosted", pc, llmClient, tc.proxyClient, proxy.NewBypassMatcher(tc.bypass), identityExpand, nil)
 
 			if entry.Name != "selfhosted" || entry.ProviderType != "openai" ||
 				entry.APIKey != "key" || entry.BaseURL != "https://llm.lan:8443/v1" {
@@ -111,6 +118,11 @@ func TestProviderEntryFromConfig_PinAndProxyMatrix(t *testing.T) {
 	}
 }
 
+// proxyPlaceholder stands in for a non-nil proxy client in the matrix above;
+// its value is never dereferenced by providerEntryFromConfig, only checked
+// for nil (the effective-proxy rule).
+var proxyPlaceholder = &http.Client{}
+
 // providerEntryFromConfig must expand ${VAR} in credentials like every other
 // dial path, and must not invent models.
 func TestProviderEntryFromConfig_ExpandsEnvVars(t *testing.T) {
@@ -130,7 +142,7 @@ func TestProviderEntryFromConfig_ExpandsEnvVars(t *testing.T) {
 		Models:       []string{"qwen3"},
 	}
 
-	entry := providerEntryFromConfig("selfhosted", pc, nil, false, expand, nil)
+	entry := providerEntryFromConfig("selfhosted", pc, nil, nil, proxy.BypassMatcher{}, expand, nil)
 
 	if entry.APIKey != "secret" {
 		t.Errorf("APIKey = %q, want expanded 'secret'", entry.APIKey)
@@ -149,7 +161,7 @@ func TestProviderEntryFromConfig_ExpandsEnvVars(t *testing.T) {
 func TestProviderEntryFromConfig_NilSharedClient(t *testing.T) {
 	pc := BuilderProviderConfig{ProviderType: "openai", Models: []string{"m"}, TLSFingerprint: pinFixture}
 
-	entry := providerEntryFromConfig("selfhosted", pc, nil, false, identityExpand, nil)
+	entry := providerEntryFromConfig("selfhosted", pc, nil, nil, proxy.BypassMatcher{}, identityExpand, nil)
 
 	if entry.HTTPClient == nil {
 		t.Fatal("HTTPClient = nil, want a pinned client even without a shared base client")
@@ -256,11 +268,12 @@ func (r *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error
 	}, nil
 }
 
-// Proxy wins: with a proxy client configured, the listing dials through
-// EXACTLY that client and the pin is not applied. The recording transport
-// proves both — it is reached (so the proxy client was used) and the
-// deliberately wrong pin did not reject anything (so no pinning was layered
-// on top).
+// While the proxy dials (active and the host not bypassed), the listing goes
+// through EXACTLY the proxy client and the pin is not applied. The recording
+// transport proves both — it is reached (so the proxy client was used) and
+// the deliberately wrong pin did not reject anything (so no pinning was
+// layered on top). For a bypassed host see
+// TestFetchProviderModels_BypassedHostPinnedDirect.
 func TestFetchProviderModels_ProxyWinsOverPin(t *testing.T) {
 	rec := &recordingTransport{body: `{"object":"list","data":[{"id":"via-proxy","object":"model"}]}`}
 	proxyClient := &http.Client{Transport: rec, Timeout: 30 * time.Second}
@@ -282,6 +295,26 @@ func TestFetchProviderModels_ProxyWinsOverPin(t *testing.T) {
 				t.Error("expected a non-empty model list from the proxy transport")
 			}
 		})
+	}
+}
+
+// A host on proxy.bypass_list dials directly, so its pin applies even while
+// the proxy is active for everyone else (ADR-054: bypass re-arms the pin).
+// The pinned direct client must reach the self-signed endpoint that system
+// verification — and therefore the proxy route — would reject.
+func TestFetchProviderModels_BypassedHostPinnedDirect(t *testing.T) {
+	srv, pin := newModelListServer(t, "qwen3")
+	b := newListingBuilder(&http.Client{Transport: &http.Transport{}})
+	cfg := listingConfig("selfhosted", srv.URL+"/v1", pin, "openai")
+	host, _ := url.Parse(srv.URL)
+	cfg.Proxy.BypassList = []string{host.Hostname()}
+
+	names, err := b.fetchProviderModels(context.Background(), "selfhosted", cfg)
+	if err != nil {
+		t.Fatalf("bypassed pinned listing must succeed: %v", err)
+	}
+	if len(names) != 1 || names[0] != "qwen3" {
+		t.Errorf("names = %v, want [qwen3]", names)
 	}
 }
 
