@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -157,7 +158,7 @@ func TestSmartApproveShellAnalysis_CleanCallReachesStrictJudge(t *testing.T) {
 	if !ok {
 		t.Fatal("strict envelope lacks the analysis field: the flowsh digest must reach the strict judge for clean shell calls too")
 	}
-	if !strings.Contains(analysis, `"schemaVersion":"sp4rk-shell-analysis/v1"`) {
+	if !strings.Contains(analysis, `"schemaVersion":"sp4rk-shell-analysis/v2"`) {
 		t.Errorf("analysis field is not a shell-analysis digest: %s", analysis)
 	}
 	if !strings.Contains(analysis, "outside_session_roots") {
@@ -200,7 +201,7 @@ func TestSmartApproveShellAnalysis_EscalatedShellCallReachesStrictJudge(t *testi
 	if !ok {
 		t.Fatal("strict envelope lacks the analysis field for an escalated shell call")
 	}
-	if !strings.Contains(analysis, `"schemaVersion":"sp4rk-shell-analysis/v1"`) {
+	if !strings.Contains(analysis, `"schemaVersion":"sp4rk-shell-analysis/v2"`) {
 		t.Errorf("analysis field is not a shell-analysis digest: %s", analysis)
 	}
 	// The escalation reasoning must survive alongside the digest.
@@ -289,4 +290,101 @@ func TestSmartApproveCanonicalFlowshCodes_BackstopUnderAllowPolicy(t *testing.T)
 			}
 		})
 	}
+}
+
+// TestAttachShellAnalysis_SessionVarBindingsResolveDRedirect is the Track-C
+// integration proof (silent-mode-deny-accuracy-recommendations.md §2C):
+// AttachShellAnalysis seeds the host-known bindings — D → the session temp
+// directory from ctx — into the deterministic analysis, so a command whose
+// redirect re-uses $D without a visible assignment (the cross-command form
+// the audit corpus showed) is analyzed against the CONCRETE in-root target
+// instead of degrading to ⊤. The digest must reach the strict judge with
+// that concrete target and without the unbounded-analysis criterion; without
+// the temp attachment the very same command keeps the ⊤ shape (fail-closed
+// contrast, pinning that the resolution is the host table's doing).
+func TestAttachShellAnalysis_SessionVarBindingsResolveDRedirect(t *testing.T) {
+	const command = `git diff main...HEAD -- core > $D/registry.diff`
+
+	run := func(t *testing.T, withTemp bool) (digest sdktools.ShellAnalysisDigest, wantTarget string) {
+		t.Helper()
+		registry, provider, confirmCalled := newShellAnalysisRegistry(t, "VERDICT: ALLOW\nREASON: benign diff dump")
+		// Mock tool NAMED bash_exec without a Judge: the call is
+		// escalation-free, so the digest reaches the strict judge purely
+		// through the AttachShellAnalysis ctx attachment.
+		bashMock := newMockTool("bash_exec", "mock shell")
+		bashMock.group = sdktools.GroupExecute
+		registry.Register(bashMock)
+
+		ws := t.TempDir()
+		temp := t.TempDir()
+		ctx := sdktools.WithWorkspacePath(context.Background(), ws)
+		if withTemp {
+			ctx = sdktools.WithTempDir(ctx, temp)
+			wantTarget = filepath.Join(temp, "registry.diff")
+		}
+		result, err := registry.Execute(ctx, "bash_exec", marshalShellInput(t, command, ws))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result.IsError {
+			t.Fatalf("expected execution (strict ALLOW), got error result: %s", result.Content)
+		}
+		if *confirmCalled {
+			t.Error("strict ALLOW must not reach the manual confirmation path")
+		}
+		analysis, ok := strictEnvelopeField(t, provider.snapshot(), "analysis")
+		if !ok {
+			t.Fatal("strict envelope lacks the analysis field")
+		}
+		// The digest sits inside the untrusted-content boundary wrapper
+		// (see strictEnvelopeField); peel it to the JSON object.
+		start := strings.Index(analysis, "{")
+		end := strings.LastIndex(analysis, "}")
+		if start < 0 || end < start {
+			t.Fatalf("analysis field carries no JSON digest: %s", analysis)
+		}
+		if err := json.Unmarshal([]byte(analysis[start:end+1]), &digest); err != nil {
+			t.Fatalf("analysis field is not a shell-analysis digest: %v (%s)", err, analysis)
+		}
+		return digest, wantTarget
+	}
+
+	t.Run("bound D resolves the redirect into the session temp", func(t *testing.T) {
+		digest, wantTarget := run(t, true)
+		found := false
+		for _, e := range digest.Effects {
+			if e.Kind != "FSWrite" || e.Mode != "Direct" {
+				continue
+			}
+			for _, target := range e.Targets {
+				if filepath.Clean(target) == filepath.Clean(wantTarget) {
+					found = true
+					if e.Arbitrary {
+						t.Errorf("resolved target %q still marked arbitrary", target)
+					}
+				}
+			}
+		}
+		if !found {
+			t.Errorf("FSWrite effects carry no concrete target %q (host binding D → session temp); effects: %+v", wantTarget, digest.Effects)
+		}
+		for _, c := range digest.Criteria {
+			if c.Fired == sdktools.ReasonCodeCommandUnboundedAnalysis {
+				t.Errorf("bound $D redirect still fired the unbounded-analysis criterion: %+v", digest.Criteria)
+			}
+		}
+	})
+
+	t.Run("without the temp attachment the same command stays unbounded", func(t *testing.T) {
+		digest, _ := run(t, false)
+		fired := false
+		for _, c := range digest.Criteria {
+			if c.Fired == sdktools.ReasonCodeCommandUnboundedAnalysis {
+				fired = true
+			}
+		}
+		if !fired {
+			t.Errorf("unbound $D redirect must keep the ⊤ shape (unbounded-analysis criterion); criteria: %+v", digest.Criteria)
+		}
+	})
 }

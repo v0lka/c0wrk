@@ -364,4 +364,4 @@ sub-policy), `verdict`, `tool`/`source`/`reason`, `justification`, and (for
 - [specs/architecture/security-model.md](../architecture/security-model.md#silent-mode-unattended-operation)
 - [specs/contracts/event-catalog.md](../contracts/event-catalog.md) — `autonomy_decision`
 - [ADR-026](./026-smart-approve-unified-funnel.md) — the unified confirmation funnel silent mode sits inside, and the interactive-scope backstop contract
-- [ADR-052](./052-flowsh-command-analysis.md) — the deterministic floor and the canonical code contract
+- [ADR-052](./052-flowsh-command-analysis.md) — the deterministic floor and the canonical code contract; its digest evidence — the C5 consistency rule and the workspace-scoped verification marker (which encodes the operator-trust premise that session roots are trusted; an untrusted-workdir signal must disable it for that root) — is what keeps the silent judge terminal's fail-closed denies precise without relaxing a gate

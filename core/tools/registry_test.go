@@ -2030,7 +2030,9 @@ func TestSmartApprove_UserConfirmFlow(t *testing.T) {
 		{name: "strict allow executes without UI", mode: AutonomyModeAssisted, judgeResponse: "VERDICT: ALLOW\nREASON: safe and relevant", setJudge: true, wantJudgeCalls: 1},
 		{name: "strict deny terminates without UI or execution", mode: AutonomyModeAssisted, judgeResponse: "VERDICT: DENY\nREASON: destructive write to a system path", setJudge: true, wantJudgeCalls: 1, wantResultError: true},
 		{name: "strict confirm uses manual UI", mode: AutonomyModeAssisted, judgeResponse: "VERDICT: CONFIRM\nREASON: destructive operation", setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 1},
-		{name: "unparseable uses manual UI", mode: AutonomyModeAssisted, judgeResponse: "probably fine", setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 1},
+		// wantJudgeCalls 2: an unparseable response retries exactly once with
+		// format feedback (sp4rk retry-once) before failing safe to CONFIRM.
+		{name: "unparseable uses manual UI", mode: AutonomyModeAssisted, judgeResponse: "probably fine", setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 2},
 		{name: "provider error uses manual UI", mode: AutonomyModeAssisted, judgeErr: errors.New("provider failed"), setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 1},
 		{name: "unavailable judge uses manual UI", mode: AutonomyModeAssisted, wantConfirm: true, wantDisableJudge: true},
 	}
@@ -2400,7 +2402,9 @@ func TestSilentMode_ToolConfirm_Terminals(t *testing.T) {
 		{
 			name: "judge unparseable auto-denies",
 			mode: SilentToolConfirmJudge, judgeResponse: "probably fine", setJudge: true,
-			wantErr: true, wantJudgeCalls: 1,
+			// 2 calls: the unparseable response retries exactly once with
+			// format feedback (sp4rk retry-once) before the fail-closed CONFIRM.
+			wantErr: true, wantJudgeCalls: 2,
 		},
 		{
 			// Decision 1c: the silent judge path has NO canonical backstop —

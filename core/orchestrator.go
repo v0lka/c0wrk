@@ -1448,6 +1448,19 @@ const waveSummaryOutputCap = 300
 // latest steering (the wave runs before the conductor's first LLM call, so
 // the nudge would otherwise arrive too late to steer it).
 func (o *Orchestrator) resumePausedWork(ctx context.Context, bb orchestration.Blackboard, nudge string) (resumeWaveOutcome, error) {
+	// Context parity with the Conductor path: the wave relaunches subagents
+	// DIRECTLY through the launcher, bypassing orchestration.Conductor.Run —
+	// the sole place the mainline executor context gains the blackboard-backed
+	// stores (step output / facts / attachments / final result). Without this
+	// the relaunched subagent runs with a ctx whose FactStore is nil, so its
+	// store_fact / search_facts calls fail with "Fact store not available"
+	// (and read_step_output / read_attachment likewise). bb is the run's
+	// blackboard, the exact store source the Conductor injects.
+	ctx = agent.WithStepOutputStore(ctx, orchestration.NewStepOutputStore(bb))
+	ctx = agent.WithFactStore(ctx, orchestration.NewFactStore(bb))
+	ctx = agent.WithAttachmentStore(ctx, orchestration.NewAttachmentStore(bb))
+	ctx = agent.WithFinalResultStore(ctx, orchestration.NewFinalResultStore(bb))
+
 	// One funnel, one enumeration: every unit the task still has in flight —
 	// across all kinds, depths and namespaces, including the units a
 	// goal-verification pass recorded under its own namespace — is lifted from

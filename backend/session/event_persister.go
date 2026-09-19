@@ -64,10 +64,6 @@ func (p *EventPersister) Persist(evt Event) {
 	}
 
 	var role, content string
-	var (
-		isStepTodoUpdate bool
-		stepTodoStepID   string
-	)
 
 	// Reset per-session assistant tracking on a new user message or session
 	// deletion so the task_complete dedup (below) is scoped to the current
@@ -209,13 +205,11 @@ func (p *EventPersister) Persist(evt Event) {
 	case "agent_metrics":
 		role = "status"
 	case "step_todo_update":
+		// Checklist updates use replace semantics (see the write path below):
+		// the previous row for this step_id is dropped and the new one takes a
+		// fresh stream position, so the checklist is never pinned to its first
+		// update and the row count stays bounded at one row per step.
 		role = "step_todo_update"
-		isStepTodoUpdate = true
-		if d, ok := evt.Data.(map[string]any); ok {
-			if sid, ok := d["step_id"].(string); ok {
-				stepTodoStepID = sid
-			}
-		}
 	case "session_tokens",
 		"assistant_chunk", "context_fill", "context_compaction", "finishing",
 		"memory_read", "message_received", "blackboard_updated",
@@ -304,16 +298,25 @@ func (p *EventPersister) Persist(evt Event) {
 	createdAt := time.Now().UTC().Format(time.RFC3339)
 	store := p.store
 
-	if isStepTodoUpdate {
+	if role == "step_todo_update" {
+		// Replace semantics: drop the prior row for this step_id and insert the
+		// new one at the current stream position. The step_id is recovered from
+		// the event data here rather than carried across the switch.
+		var stepID string
+		if d, ok := evt.Data.(map[string]any); ok {
+			if sid, ok := d["step_id"].(string); ok {
+				stepID = sid
+			}
+		}
 		p.SubmitWrite(func() {
-			if err := store.UpsertStepTodoUpdate(context.Background(), evt.SessionID, stepTodoStepID, ChatMessage{
+			if err := store.ReplaceStepTodoUpdate(context.Background(), evt.SessionID, stepID, ChatMessage{
 				SessionID: evt.SessionID,
 				Role:      role,
 				Content:   content,
 				Metadata:  metadata,
 				CreatedAt: createdAt,
 			}); err != nil {
-				p.log().Error("failed to persist step_todo_update message", "session", evt.SessionID, "step_id", stepTodoStepID, "error", err)
+				p.log().Error("failed to persist step_todo_update message", "session", evt.SessionID, "step_id", stepID, "error", err)
 			}
 		})
 		return

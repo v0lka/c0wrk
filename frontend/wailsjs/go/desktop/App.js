@@ -362,12 +362,8 @@ export function GetSecuritySettings() {
   return window['go']['desktop']['App']['GetSecuritySettings']();
 }
 
-export function GetSessionHistory(arg1, arg2, arg3) {
-  return window['go']['desktop']['App']['GetSessionHistory'](arg1, arg2, arg3);
-}
-
-export function GetSessionPlanTimeline(arg1) {
-  return window['go']['desktop']['App']['GetSessionPlanTimeline'](arg1);
+export function GetSessionHistory(arg1) {
+  return window['go']['desktop']['App']['GetSessionHistory'](arg1);
 }
 
 export function GetSessionRuntimeStatus(arg1) {
