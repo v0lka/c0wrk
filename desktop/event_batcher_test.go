@@ -159,13 +159,31 @@ func TestEventBatcher_SizeThresholdTriggersFlush(t *testing.T) {
 	b := newTestBatcher(sink, 4) // flush every 4 enqueued events
 	defer b.Stop()
 
-	// No explicit Flush: the size threshold must deliver everything.
+	// No explicit Flush: the size threshold must flush on its own. 10 events
+	// cross the threshold at #4 and #8, so at least the first 8 must arrive
+	// without any other trigger (the ticker is an hour away). Exactly how
+	// much crosses depends on when the batcher goroutine wakes — a late wake
+	// may deliver all 10 in one flush — so assert a floor of 8, drain the
+	// leftovers with an explicit flush, and pin the full order.
 	for i := 0; i < 10; i++ {
 		b.Enqueue("session:s1:thought", []any{map[string]any{"content": i}}, "", false, 0)
 	}
-	got := sink.collectFlattened(t, 10)
+	got := sink.collectFlattened(t, 8)
+	for i, ev := range got {
+		if content := mapPayload(t, ev)["content"]; content != i {
+			t.Fatalf("size-flushed event %d out of order: content=%v", i, content)
+		}
+	}
+
+	b.Flush()
+	got = append(got, sink.collectFlattened(t, 10-len(got))...)
 	if len(got) != 10 {
-		t.Fatalf("size-triggered flush delivered %d events, want 10", len(got))
+		t.Fatalf("delivered %d events, want 10", len(got))
+	}
+	for i, ev := range got {
+		if content := mapPayload(t, ev)["content"]; content != i {
+			t.Fatalf("event %d out of order after final flush: content=%v", i, content)
+		}
 	}
 }
 

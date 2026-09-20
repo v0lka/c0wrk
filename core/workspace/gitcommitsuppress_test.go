@@ -15,10 +15,22 @@ import (
 // to a scratch directory so assertions on signingGlobal never observe the
 // developer's real ~/.gitconfig, and so armed global fixtures are only
 // visible to the test that plants them.
+//
+// It also unsets the environment overrides git (and the detector) steer the
+// global config by — XDG_CONFIG_HOME, GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM:
+// CI runners export XDG_CONFIG_HOME, which would point the XDG location
+// outside the scratch HOME and defeat the isolation. Tests that exercise
+// the overrides re-set them with t.Setenv AFTER calling this helper.
 func isolateHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	for _, key := range []string{"XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"} {
+		if prev, ok := os.LookupEnv(key); ok {
+			t.Cleanup(func() { _ = os.Setenv(key, prev) })
+			_ = os.Unsetenv(key)
+		}
+	}
 	return home
 }
 
@@ -366,9 +378,9 @@ func TestDetectCommitSuppression_GlobalConfigEnv(t *testing.T) {
 	})
 
 	t.Run("xdg_config_home redirects the xdg location", func(t *testing.T) {
+		home := isolateHome(t)
 		xdgRoot := t.TempDir()
 		t.Setenv("XDG_CONFIG_HOME", xdgRoot)
-		home := isolateHome(t)
 		// The redirected location is armed; ~/.config/git/config is NOT
 		// read when XDG_CONFIG_HOME is set, and the stale default-location
 		// file must not raise the flag on its own.
