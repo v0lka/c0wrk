@@ -197,6 +197,37 @@ export async function setLogLevel(level: string): Promise<void> {
   }
 }
 
+/**
+ * How long a delivered OS notification banner stays on screen, in seconds:
+ * -1 = the notification daemon's own default, 0 = never expires (stays until
+ * clicked or dismissed), >0 = an explicit lifetime. Linux only — macOS and
+ * Windows notification centers own banner lifetime themselves.
+ */
+export async function getNotificationBannerTimeout(): Promise<number> {
+  try {
+    const app = getApp()
+    const result = await app.GetNotificationBannerTimeout()
+    if (typeof result !== 'number') {
+      throw new Error('getNotificationBannerTimeout: backend returned non-number data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to get notification banner timeout:', err)
+    throw err
+  }
+}
+
+/** See getNotificationBannerTimeout for the accepted values. */
+export async function setNotificationBannerTimeout(seconds: number): Promise<void> {
+  try {
+    const app = getApp()
+    await app.SetNotificationBannerTimeout(seconds)
+  } catch (err) {
+    logger.error('Failed to set notification banner timeout:', err)
+    throw err
+  }
+}
+
 export async function updateProxySettings(settings: ProxySettingsRequest): Promise<void> {
   try {
     const app = getApp()

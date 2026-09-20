@@ -49,6 +49,7 @@
 | Frontend events, streaming               | [domains/frontend/events.md](domains/frontend/events.md)                 |
 | Message rendering, display items         | [domains/frontend/rendering.md](domains/frontend/rendering.md)           |
 | Sound notifications, audio reliability   | [domains/frontend/sound-notifications.md](domains/frontend/sound-notifications.md) |
+| System (OS) notifications, banner click routing | [domains/frontend/system-notifications.md](domains/frontend/system-notifications.md) |
 | Code review feature                      | [domains/review.md](domains/review.md)                                   |
 | RESEARCH mode (toggle, research skills seeding, hypothesis graph) | [domains/research.md](domains/research.md), [contracts/desktop-frontend.md](contracts/desktop-frontend.md) (Research section), [contracts/event-catalog.md](contracts/event-catalog.md) (`research:*` events) |
 | Papers / literature library (studied-paper cards, appraisals, flashcards, literature graph, comparisons, the vendored `study-paper` skill) | [domains/papers.md](domains/papers.md), [contracts/desktop-frontend.md](contracts/desktop-frontend.md) (Papers section), [contracts/event-catalog.md](contracts/event-catalog.md) (`papers:changed`), [decisions/050-papers-library.md](decisions/050-papers-library.md), [decisions/051-research-pack-reconciliation.md](decisions/051-research-pack-reconciliation.md) |
@@ -144,6 +145,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [events.md](domains/frontend/events.md) - Event subscription and handling
 - [rendering.md](domains/frontend/rendering.md) - Message grouping and display pipeline
 - [sound-notifications.md](domains/frontend/sound-notifications.md) - Web Audio notification cues: event→tone pipeline, AudioContext lifecycle, recovery/replacement guarantees
+- [system-notifications.md](domains/frontend/system-notifications.md) - OS-level notification banners: two-channel architecture (sound + OS), event→content mapping, Go-binding transport, `notification_clicked` click routing (focus + navigate), X11 window activation and its connection lifetime, `notifications.banner_timeout_seconds` banner lifetime, permission hint, persisted master toggle
 
 ### contracts/
 

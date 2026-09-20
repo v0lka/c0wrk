@@ -58,6 +58,10 @@ export function CheckForUpdates() {
   return window['go']['desktop']['App']['CheckForUpdates']();
 }
 
+export function CheckNotificationAuthorization() {
+  return window['go']['desktop']['App']['CheckNotificationAuthorization']();
+}
+
 export function CheckoutBranch(arg1) {
   return window['go']['desktop']['App']['CheckoutBranch'](arg1);
 }
@@ -298,6 +302,10 @@ export function GetModelProfiles() {
   return window['go']['desktop']['App']['GetModelProfiles']();
 }
 
+export function GetNotificationBannerTimeout() {
+  return window['go']['desktop']['App']['GetNotificationBannerTimeout']();
+}
+
 export function GetPaper(arg1, arg2) {
   return window['go']['desktop']['App']['GetPaper'](arg1, arg2);
 }
@@ -404,6 +412,10 @@ export function HardenGitRepo(arg1) {
 
 export function HasDefaultModel() {
   return window['go']['desktop']['App']['HasDefaultModel']();
+}
+
+export function InitNotifications() {
+  return window['go']['desktop']['App']['InitNotifications']();
 }
 
 export function Lifecycle() {
@@ -642,6 +654,10 @@ export function SendMessage(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9
   return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10);
 }
 
+export function SendSystemNotification(arg1, arg2, arg3) {
+  return window['go']['desktop']['App']['SendSystemNotification'](arg1, arg2, arg3);
+}
+
 export function SetActiveResearch(arg1, arg2) {
   return window['go']['desktop']['App']['SetActiveResearch'](arg1, arg2);
 }
@@ -662,6 +678,10 @@ export function SetModelProfilesEnabled(arg1) {
   return window['go']['desktop']['App']['SetModelProfilesEnabled'](arg1);
 }
 
+export function SetNotificationBannerTimeout(arg1) {
+  return window['go']['desktop']['App']['SetNotificationBannerTimeout'](arg1);
+}
+
 export function SetPaperPinned(arg1, arg2, arg3) {
   return window['go']['desktop']['App']['SetPaperPinned'](arg1, arg2, arg3);
 }
@@ -680,6 +700,10 @@ export function SetUpdateSettings(arg1) {
 
 export function SetWailsLogger(arg1) {
   return window['go']['desktop']['App']['SetWailsLogger'](arg1);
+}
+
+export function ShowTestNotification() {
+  return window['go']['desktop']['App']['ShowTestNotification']();
 }
 
 export function SkipVersion(arg1) {

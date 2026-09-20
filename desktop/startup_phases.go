@@ -170,8 +170,12 @@ func (a *App) initTools(ctx context.Context, log *slog.Logger) (toolsBinPath str
 	// Show the window unconditionally at the start of tool initialization.
 	// The window is already visible — main.go creates it that way on purpose
 	// (see the StartHidden note there) — so this is a no-op in a normal start.
-	// It is kept as a safety net: a window hidden for any other reason must
-	// still be back before the tool-install splash and backend:ready need it.
+	// It is kept as a safety net: a window hidden or buried for any other
+	// reason must still be back before the tool-install splash and
+	// backend:ready need it. Note that showWindow now reveals AND
+	// raises/focuses (see the activation matrix on App.showWindow), so a
+	// window hidden mid-first-run comes back to the front here — expected
+	// while the user waits out the tool install.
 	// showWindow is idempotent; emitBackendReady calls it again harmlessly.
 	a.showWindow(ctx)
 
@@ -1003,8 +1007,11 @@ func (a *App) buildFrontendAPI(
 // when available, falling back to a fresh ListProjects call. The signal tells
 // the frontend that all synchronous backend subsystems are wired up.
 // showWindow is called unconditionally and is idempotent — the window is
-// created visible, so this is the last of several no-op safety nets rather
-// than the moment the window appears.
+// created visible, so this is the last of several reveal safety nets rather
+// than the moment the window appears. Note the reveal now implies raise/focus
+// (see the activation matrix on App.showWindow): on a normal start the
+// window is already up, and when something did hide it, bringing it forward
+// here is the point.
 //
 // filterNoProject strips the No Project pseudo-project from the emitted list
 // regardless of whether projects come from cache or a fresh query.

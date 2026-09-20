@@ -55,6 +55,8 @@ export interface ConfigAPI {
   updateSearchSettings(settings: SearchSettingsRequest): Promise<void>
   getLogLevel(): Promise<string>
   setLogLevel(level: string): Promise<void>
+  getNotificationBannerTimeout(): Promise<number>
+  setNotificationBannerTimeout(seconds: number): Promise<void>
   updateExperimentalFeatures(enabled: boolean): Promise<void>
 }
 

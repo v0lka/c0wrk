@@ -38,7 +38,7 @@ import type { SessionEventKey } from '@/types/events'
 import { handleToolConfirmEvent, handleAskUserEvent, handleStepLimitEvent, handlePlanReviewEvent } from './events/hitlHandlers'
 import { handleGoalProposalEvent } from './events/goalHandlers'
 import { handleSessionPausedEvent, handleSessionResumedEvent } from './events/sessionLifecycleHandlers'
-import { classifySessionEvent } from './events/useSoundEvents'
+import { classifySessionEvent, notifySessionCue } from './events/useSoundEvents'
 import { playSound } from '@/lib/sound'
 
 /**
@@ -55,6 +55,22 @@ function playBackgroundCue(event: SessionEventKey, data: unknown): void {
 }
 
 /**
+ * Announce a background-session event through BOTH cues, if any.
+ *
+ * Reuses the single event→sound mapping (`classifySessionEvent`) that the
+ * active-session hook uses, so a background session produces the same tone the
+ * user would hear had they been viewing it, and routes the notification through
+ * the same shared `notifySessionCue` dispatch — identical coverage for the
+ * tone and the banner, with that session's id as context so the banner title
+ * names the session. A no-op when the master toggles are off or the platform
+ * lacks audio/notifications (see `lib/sound.ts` / `lib/systemNotifications.ts`).
+ */
+function announceBackgroundCue(sessionId: string, event: SessionEventKey, data: unknown): void {
+  playBackgroundCue(event, data)
+  notifySessionCue(event, data, { sessionId })
+}
+
+/**
  * Watch all live background sessions for lifecycle, completion, and HITL events.
  *
  * For each background session that is running, pausing, or paused, subscribes
@@ -68,11 +84,11 @@ function playBackgroundCue(event: SessionEventKey, data: unknown): void {
  * whose start this frontend never observed — after a reload, or in a project
  * the user has not opened — is still announced on completion.
  *
- * Sound parity: every watched event also plays the audible cue the active
- * session would play (`classifySessionEvent` → `playSound`), so a task that
- * finishes or blocks on HITL in the background is still announced. There is
- * no double-play risk: this hook excludes the active session, whose cues are
- * owned by `useSoundEvents`.
+ * Cue parity: every watched event also plays the tone AND raises the system
+ * notification the active session would produce (`classifySessionEvent` /
+ * `notifySessionCue`), so a task that finishes or blocks on HITL in the
+ * background is still announced both ways. There is no double-send risk: this
+ * hook excludes the active session, whose cues are owned by `useSoundEvents`.
  *
  * Called once at the app level (App.tsx) — not per session.
  */
@@ -154,24 +170,27 @@ export function useBackgroundSessionWatcher(): void {
       }
 
       cleanups.push(
-        onSessionEvent(sessionId, 'task_failed_resumable', () => {
+        onSessionEvent(sessionId, 'task_failed_resumable', (data) => {
           // Degraded background completion: the task stays resumable — re-arm
           // the SINGLE live unfinished-task overlay as 'failed' so every status
           // surface repaints red live (mirrors useActionEvents' active-session
           // handling; the resume banner itself is rebuilt by the switch-back
-          // history load + runtime reconcile).
+          // history load + runtime reconcile). The cue (tone + banner) is sent
+          // unconditionally: this event has no payload guard (any payload, even
+          // a malformed one, still means the task stopped resumable).
+          announceBackgroundCue(sessionId, 'task_failed_resumable', data)
           useChatStore.getState().setUnfinishedTaskStatus(sessionId, 'failed')
         }),
       )
 
       cleanups.push(
-        onSessionEvent(sessionId, 'task_complete', (data) => { playBackgroundCue('task_complete', data); handleCompletion() }),
+        onSessionEvent(sessionId, 'task_complete', (data) => { announceBackgroundCue(sessionId, 'task_complete', data); handleCompletion() }),
       )
       cleanups.push(
-        onSessionEvent(sessionId, 'task_cancelled', (data) => { playBackgroundCue('task_cancelled', data); handleCompletion() }),
+        onSessionEvent(sessionId, 'task_cancelled', (data) => { announceBackgroundCue(sessionId, 'task_cancelled', data); handleCompletion() }),
       )
       cleanups.push(
-        onSessionEvent(sessionId, 'error', (data) => { playBackgroundCue('error', data); handleCompletion() }),
+        onSessionEvent(sessionId, 'error', (data) => { announceBackgroundCue(sessionId, 'error', data); handleCompletion() }),
       )
       cleanups.push(
         onSessionEvent(sessionId, 'session_paused', () => {
@@ -189,33 +208,34 @@ export function useBackgroundSessionWatcher(): void {
 
       // HITL events — the agent goroutine blocks until the user responds.
       // Without these listeners the event is lost and the session hangs.
-      // The cue is played only after the payload validates so a dropped
-      // (malformed) event does not beep without anything for the user to act on.
+      // BOTH cues (tone and banner) are sent only after the payload validates
+      // so a dropped (malformed) event neither beeps nor raises a banner
+      // without anything for the user to act on.
       cleanups.push(
         onSessionEvent(sessionId, 'tool_confirm', (data) => {
           if (!isToolConfirmData(data)) { reportDroppedEvent('tool_confirm', data); return }
-          playBackgroundCue('tool_confirm', data)
+          announceBackgroundCue(sessionId, 'tool_confirm', data)
           handleToolConfirmEvent(sessionId, data)
         }),
       )
       cleanups.push(
         onSessionEvent(sessionId, 'ask_user', (data) => {
           if (!isAskUserData(data)) { reportDroppedEvent('ask_user', data); return }
-          playBackgroundCue('ask_user', data)
+          announceBackgroundCue(sessionId, 'ask_user', data)
           handleAskUserEvent(sessionId, data)
         }),
       )
       cleanups.push(
         onSessionEvent(sessionId, 'step_limit', (data) => {
           if (!isStepLimitData(data)) { reportDroppedEvent('step_limit', data); return }
-          playBackgroundCue('step_limit', data)
+          announceBackgroundCue(sessionId, 'step_limit', data)
           handleStepLimitEvent(sessionId, data)
         }),
       )
       cleanups.push(
         onSessionEvent(sessionId, 'plan_review_ready', (data) => {
           if (!isPlanReviewReadyData(data)) { reportDroppedEvent('plan_review_ready', data); return }
-          playBackgroundCue('plan_review_ready', data)
+          announceBackgroundCue(sessionId, 'plan_review_ready', data)
           handlePlanReviewEvent(sessionId, data)
         }),
       )
@@ -225,7 +245,7 @@ export function useBackgroundSessionWatcher(): void {
       cleanups.push(
         onSessionEvent(sessionId, 'goal_proposal', (data) => {
           if (!isGoalProposalData(data)) { reportDroppedEvent('goal_proposal', data); return }
-          playBackgroundCue('goal_proposal', data)
+          announceBackgroundCue(sessionId, 'goal_proposal', data)
           handleGoalProposalEvent(sessionId, data)
         }),
       )
