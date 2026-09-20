@@ -3,7 +3,7 @@
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
 import { isConfigResponse, isSecuritySettingsResponse, isModelProfilesResponse } from '@/types/guards'
-import type { ConfigResponse, SecuritySettingsResponse, LLMFullConfigRequest, SearchSettingsRequest, ProxySettingsRequest, ModelConfigResponse, ModelConfigRequest, ModelProfilesResponse, ModelProfileUpdateRequest, VectorIndexSettingsResponse } from '@/types/models'
+import type { ConfigResponse, SecuritySettingsResponse, LLMFullConfigRequest, SearchSettingsRequest, ProxySettingsRequest, ModelConfigResponse, ModelConfigRequest, ModelProfilesResponse, ModelProfileUpdateRequest, VectorIndexSettingsResponse, GetProviderTLSCertificateRequest, TLSCertificateResponse } from '@/types/models'
 
 /** Sentinel value returned by backend when an API key is configured but should not be displayed */
 export const MASKED_API_KEY = '***configured***'
@@ -71,6 +71,34 @@ export async function updateLLMConfig(req: LLMFullConfigRequest): Promise<void> 
     await app.UpdateLLMConfig(req)
   } catch (err) {
     logger.error('Failed to update LLM config:', err)
+    throw err
+  }
+}
+
+/**
+ * Fetch the certificate fingerprint the provider's endpoint currently
+ * presents (the settings "Get" button, ADR-054). Performs only the TLS
+ * handshake — no HTTP request, no API key.
+ *
+ * Unconditional with respect to any configured pin: the request carries no
+ * fingerprint and the answer is always "what is this endpoint serving right
+ * now?". The draft base_url wins over the persisted one.
+ *
+ * Rejects while an effective HTTP proxy is enabled: the probe dials directly,
+ * so a pin fetched then would be inert (proxy wins).
+ */
+export async function getProviderTLSCertificate(
+  req: GetProviderTLSCertificateRequest,
+): Promise<TLSCertificateResponse> {
+  try {
+    const app = getApp()
+    const result = await app.GetProviderTLSCertificate(req)
+    if (!result || typeof result.fingerprint !== 'string') {
+      throw new Error('getProviderTLSCertificate: backend returned invalid data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to fetch provider TLS certificate:', err)
     throw err
   }
 }
@@ -165,6 +193,37 @@ export async function setLogLevel(level: string): Promise<void> {
     await app.SetLogLevel(level)
   } catch (err) {
     logger.error('Failed to set log level:', err)
+    throw err
+  }
+}
+
+/**
+ * How long a delivered OS notification banner stays on screen, in seconds:
+ * -1 = the notification daemon's own default, 0 = never expires (stays until
+ * clicked or dismissed), >0 = an explicit lifetime. Linux only — macOS and
+ * Windows notification centers own banner lifetime themselves.
+ */
+export async function getNotificationBannerTimeout(): Promise<number> {
+  try {
+    const app = getApp()
+    const result = await app.GetNotificationBannerTimeout()
+    if (typeof result !== 'number') {
+      throw new Error('getNotificationBannerTimeout: backend returned non-number data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to get notification banner timeout:', err)
+    throw err
+  }
+}
+
+/** See getNotificationBannerTimeout for the accepted values. */
+export async function setNotificationBannerTimeout(seconds: number): Promise<void> {
+  try {
+    const app = getApp()
+    await app.SetNotificationBannerTimeout(seconds)
+  } catch (err) {
+    logger.error('Failed to set notification banner timeout:', err)
     throw err
   }
 }

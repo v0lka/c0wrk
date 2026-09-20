@@ -162,7 +162,10 @@ func (a *App) reloadFrontend(ctx context.Context) {
 // reveal that can never be raced by window setup.
 //
 // It also fires again on every frontend reload (see reloadFrontend), which is
-// harmless: showWindow on a visible window is a no-op.
+// harmless: the only reload source is the macOS power-state wake recovery
+// (registerPowerWakeObserver is a no-op elsewhere), where having the window
+// come forward — showWindow now reveals AND raises/focuses — is the expected
+// outcome, not a stray focus steal.
 func (a *App) DomReady(ctx context.Context) {
 	a.log().Debug("frontend DOM ready")
 	a.showWindow(ctx)
@@ -560,6 +563,12 @@ func (a *App) Shutdown(ctx context.Context) {
 	// teardown, so a quit never drops the last batch of a run. Events emitted
 	// after this point are delivered synchronously.
 	a.stopEventBatcher()
+
+	// Release the notification service resources — on Linux this closes the
+	// D-Bus session-bus connection held by InitializeNotifications; on
+	// macOS/Windows the Wails cleanup is a stub. Safe when notifications were
+	// never initialized. See notifications.go cleanupNotifications.
+	a.cleanupNotifications(ctx)
 
 	// Persist the final window geometry so a normal quit preserves the size
 	// even if no resize fired this session. Best-effort: a torn-down context

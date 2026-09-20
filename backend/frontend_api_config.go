@@ -8,9 +8,11 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/llmtls"
 	"github.com/v0lka/c0wrk/core/modelprofiles"
 	"github.com/v0lka/c0wrk/core/proxy"
 	coretools "github.com/v0lka/c0wrk/core/tools"
@@ -115,16 +117,18 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 	}
 	for name, cfg := range f.config.LLM.OpenAICompatible {
 		resp.OpenAICompatible[name] = ConfigProviderFull{
-			APIKey:  maskAPIKey(cfg.APIKey),
-			BaseURL: cfg.BaseURL,
-			Models:  cfg.Models,
+			APIKey:         maskAPIKey(cfg.APIKey),
+			BaseURL:        cfg.BaseURL,
+			Models:         cfg.Models,
+			TLSFingerprint: cfg.TLSFingerprint,
 		}
 	}
 	for name, cfg := range f.config.LLM.AnthropicCompatible {
 		resp.AnthropicCompatible[name] = ConfigProviderFull{
-			APIKey:  maskAPIKey(cfg.APIKey),
-			BaseURL: cfg.BaseURL,
-			Models:  cfg.Models,
+			APIKey:         maskAPIKey(cfg.APIKey),
+			BaseURL:        cfg.BaseURL,
+			Models:         cfg.Models,
+			TLSFingerprint: cfg.TLSFingerprint,
 		}
 	}
 	return resp
@@ -244,7 +248,8 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		for name, ocReq := range req.OpenAICompatible {
 			apiKey := ocReq.APIKey
 			outputReserve := 0
-			if existing, ok := candidate.OpenAICompatible[name]; ok {
+			existing, exists := candidate.OpenAICompatible[name]
+			if exists {
 				if apiKey == maskedAPIKey || apiKey == "" {
 					apiKey = existing.APIKey
 				}
@@ -254,6 +259,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 				APIKey:             apiKey,
 				BaseURL:            ocReq.BaseURL,
 				Models:             ocReq.Models,
+				TLSFingerprint:     resolveTLSFingerprint(ocReq.TLSFingerprint, existing.TLSFingerprint, exists),
 				OutputTokenReserve: outputReserve,
 			}
 		}
@@ -264,7 +270,8 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		for name, acReq := range req.AnthropicCompatible {
 			apiKey := acReq.APIKey
 			outputReserve := 0
-			if existing, ok := candidate.AnthropicCompatible[name]; ok {
+			existing, exists := candidate.AnthropicCompatible[name]
+			if exists {
 				if apiKey == maskedAPIKey || apiKey == "" {
 					apiKey = existing.APIKey
 				}
@@ -274,6 +281,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 				APIKey:             apiKey,
 				BaseURL:            acReq.BaseURL,
 				Models:             acReq.Models,
+				TLSFingerprint:     resolveTLSFingerprint(acReq.TLSFingerprint, existing.TLSFingerprint, exists),
 				OutputTokenReserve: outputReserve,
 			}
 		}
@@ -452,13 +460,32 @@ func (f *FrontendAPI) UpdateVectorIndexSettings(settings VectorIndexSettingsResp
 	return nil
 }
 
+// proxyRebuildTimeout bounds the propagation phase of a proxy settings change
+// (builder readiness + the MCP gateway reconfigure). It matches the budget
+// runMCPInit gives MCP startup.
+const proxyRebuildTimeout = 30 * time.Second
+
 // UpdateProxySettings updates proxy configuration at runtime and propagates
 // the change to all subsystems (LLM providers, web tools, MCP, child processes).
+//
+// Locking contract (mirrors UpdateLLMConfig): saveMu serializes whole save
+// sequences, while configMu is held only for the field mutation and the disk
+// write — never across the propagation below. RebuildProxy restarts the MCP
+// gateway and rebuilds the router and judge, each waiting on builder
+// readiness with its own 30-second budget; holding the configMu WRITE lock
+// across that blocks every concurrent GetConfig and, because Go's RWMutex
+// stops admitting readers once a writer is queued, freezes the whole
+// settings dialog for as long as the rebuild takes. The disk write stays
+// inside the lock — it is a bounded local atomic rewrite, and keeping it
+// there keeps the in-memory state and the persisted file consistent for
+// concurrent readers.
 func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
-	f.configMu.Lock()
-	defer f.configMu.Unlock()
+	f.saveMu.Lock()
+	defer f.saveMu.Unlock()
 
+	f.configMu.Lock()
 	if f.config == nil {
+		f.configMu.Unlock()
 		return errors.New("config not initialized")
 	}
 
@@ -479,14 +506,38 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 	}
 	f.config.Proxy.TLSCertDir = settings.TLSCertDir
 
+	// Persist (and announce) while configMu is still held: the write is a
+	// bounded local atomic rewrite, and keeping it inside keeps the
+	// in-memory state and the file consistent for readers. A failure is
+	// warned about and the change stays live in memory — the pre-existing
+	// contract of this RPC, unchanged here.
 	if err := f.persistConfig(); err != nil {
 		f.log().Warn("failed to persist proxy settings", "error", err)
 	}
 
-	// Rebuild proxy transport and propagate to all subsystems.
-	if b := f.builder(); b != nil {
-		bcfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
-		if err := b.RebuildProxy(context.Background(), bcfg); err != nil {
+	// Snapshot what the rebuild needs while the lock is still held; after the
+	// unlock f.config must only be touched under configMu again.
+	b := f.builder()
+	bcfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+	f.configMu.Unlock()
+
+	// --- Heavy work below runs OUTSIDE configMu (readers stay responsive) ---
+	// saveMu is still held, so concurrent UpdateProxySettings calls are
+	// serialized and a later save never propagates before an earlier one.
+	//
+	// The propagation is bounded. RebuildProxy passes this context to the MCP
+	// gateway reconfigure, which reconnects every changed server AND retries
+	// every previously-failed one — and a failed HTTP server is retried with
+	// no deadline of its own, so an endpoint that went unreachable while the
+	// proxy was on can stall the whole propagation for minutes. The budget
+	// matches the one runMCPInit gives MCP startup. Expiry only aborts the
+	// gateway step: RebuildProxy logs it and still rebuilds the router and
+	// the judge, which carry their own budgets.
+	if b != nil {
+		rebuildCtx, cancel := context.WithTimeout(context.Background(), proxyRebuildTimeout)
+		err := b.RebuildProxy(rebuildCtx, bcfg)
+		cancel()
+		if err != nil {
 			f.log().Warn("failed to rebuild proxy after settings update", "error", err)
 			return fmt.Errorf("proxy rebuild failed: %w", err)
 		}
@@ -1496,6 +1547,45 @@ func (f *FrontendAPI) SetLogLevel(level string) error {
 	}
 }
 
+// GetNotificationBannerTimeout returns how long a delivered OS notification
+// banner stays on screen, in seconds: -1 (the notification daemon's own
+// default), 0 (never expire — stays until clicked or dismissed) or an
+// explicit positive lifetime.
+//
+// Fail-safe: an unloaded config answers -1 (the pre-setting behavior) rather
+// than 0, because the Go zero value would otherwise silently mean "banners
+// never go away".
+func (f *FrontendAPI) GetNotificationBannerTimeout() int {
+	f.configMu.RLock()
+	defer f.configMu.RUnlock()
+	if f.config == nil || f.config.Notifications.BannerTimeoutSeconds == nil {
+		return config.NotificationBannerTimeoutDaemonDefault
+	}
+	return *f.config.Notifications.BannerTimeoutSeconds
+}
+
+// SetNotificationBannerTimeout persists the banner lifetime (see
+// GetNotificationBannerTimeout for the accepted values).
+func (f *FrontendAPI) SetNotificationBannerTimeout(seconds int) error {
+	if seconds < config.NotificationBannerTimeoutDaemonDefault ||
+		seconds > config.NotificationBannerTimeoutMaxSeconds {
+		return fmt.Errorf("invalid notification banner timeout: %d seconds "+
+			"(want -1 for the daemon default, 0 for never, or 1..%d)",
+			seconds, config.NotificationBannerTimeoutMaxSeconds)
+	}
+
+	f.configMu.Lock()
+	defer f.configMu.Unlock()
+	if f.config == nil {
+		return errors.New("configuration is not loaded")
+	}
+	f.config.Notifications.BannerTimeoutSeconds = &seconds
+	if err := f.persistConfig(); err != nil {
+		return fmt.Errorf("persist notification banner timeout: %w", err)
+	}
+	return nil
+}
+
 // ListProviderModels returns available model names for a given provider.
 // For Anthropic: returns hardcoded list from model registry.
 // For ChatGPT/OpenAI Compatible: fetches from the provider's API.
@@ -1526,6 +1616,112 @@ func (f *FrontendAPI) ListProviderModels(req ListProviderModelsRequest) ([]strin
 		return nil, err
 	}
 	return b.ListProviderModels(context.Background(), req.Provider, cfg)
+}
+
+// GetProviderTLSCertificate connects to the provider's endpoint and returns
+// the SPKI fingerprint of the certificate the server currently presents —
+// the settings UI "Get" button (ADR-054). The connection performs only the
+// TLS handshake: no HTTP request, no API key. Verification is deliberately
+// skipped, because the fingerprint IS what is being fetched; the user pins
+// the result afterwards.
+//
+// The call is UNCONDITIONAL with respect to any configured pin: the request
+// carries no fingerprint, nothing here reads the provider's persisted pin,
+// and the result is the same whether the provider is already pinned or not.
+// Pressing the button always answers "what is this endpoint serving right
+// now?".
+//
+// baseURL from the request (the draft form value) wins over the persisted
+// provider base_url; ${VAR} is expanded for both, like every other dial
+// path.
+//
+// The probe dials the endpoint DIRECTLY (it does not consult the configured
+// HTTP proxy), so while the proxy dials for this host — the proxy is
+// effective AND the host is not on proxy.bypass_list — a fetched pin would
+// be inert the moment it is saved, and the call is rejected up front with an
+// actionable error instead. For a bypassed host the probe answers a
+// meaningful question: the host dials directly, so the pin it fetches
+// applies (ADR-054, "bypass re-arms the pin").
+//
+// The request's base_url is dialed as given: like ListProviderModels, this
+// RPC sends a network request to a host taken from the (local, single-user)
+// settings form — an accepted parity trade-off recorded in ADR-054 §5, not
+// an SSRF surface new with this feature.
+//
+// Locking contract: the effective proxy state, the bypass list, and the
+// persisted base URL are snapshotted under configMu.RLock, and the lock is
+// RELEASED before the handshake. Holding configMu across a network call (up
+// to llmtls.FetchFingerprintTimeout) would block every concurrent GetConfig
+// and freeze the settings dialog.
+func (f *FrontendAPI) GetProviderTLSCertificate(req GetProviderTLSCertificateRequest) (TLSCertificateResponse, error) {
+	if req.Provider == "" {
+		return TLSCertificateResponse{}, errors.New("provider is required")
+	}
+
+	f.configMu.RLock()
+	// Effective proxy state mirrors proxy.BuildTransport: enabled AND a URL
+	// must both be set; an enabled-but-empty proxy dials directly, so the pin
+	// stays meaningful there.
+	proxyEnabled := f.config != nil && f.config.Proxy.Enabled && f.config.Proxy.URL != ""
+	var bypass proxy.BypassMatcher
+	var persisted string
+	if f.config != nil {
+		bypass = proxy.NewBypassMatcher(f.config.Proxy.BypassList)
+		// The canonical provider list carries the raw (env-var) base URL; the
+		// expander resolves it below.
+		for _, p := range f.config.LLM.GetAllProviderConfigs() {
+			if p.Name == req.Provider {
+				persisted = p.BaseURL
+				break
+			}
+		}
+	}
+	f.configMu.RUnlock()
+	// No lock is held from here on — the handshake below is a network call.
+
+	raw := req.BaseURL
+	if raw == "" {
+		raw = persisted
+	}
+	if raw == "" {
+		return TLSCertificateResponse{}, fmt.Errorf("provider %q has no base URL configured", req.Provider)
+	}
+	// Env-var expansion (${VAR}) — the same treatment every other dial path
+	// gives the base URL; a persisted `${LLM_BASE_URL}` would otherwise be
+	// parsed as a literal (and fail) by url.Parse inside FetchFingerprint.
+	raw = config.ExpandEnvVars(raw)
+
+	if proxyEnabled {
+		// The bypass decision must use the same URL the probe will dial —
+		// the draft wins over the persisted base_url, like every dial path.
+		bypassed := bypass.Matches(llmtls.TargetHost(raw))
+		if !bypassed {
+			return TLSCertificateResponse{}, errors.New("TLS fingerprint fetching is unavailable while an HTTP proxy is enabled (Settings → General → HTTP Proxy): the pin does not apply to proxied connections. Disable the proxy, or add this host to the proxy bypass list, to pin this server's certificate")
+		}
+	}
+
+	fp, err := llmtls.FetchFingerprint(context.Background(), raw, f.log())
+	if err != nil {
+		return TLSCertificateResponse{}, fmt.Errorf("fetching certificate fingerprint from %q: %w", raw, err)
+	}
+	return TLSCertificateResponse{Fingerprint: fp}, nil
+}
+
+// resolveTLSFingerprint applies the pointer sentinel for the per-provider
+// TLS pin (ADR-054) on the API boundary: nil means "keep the persisted pin",
+// which is what a debounced partial save from the settings dialog sends when
+// only credentials or the model list changed — without this, every such save
+// would silently clear the pin. A non-nil pointer applies verbatim, so an
+// explicit empty string is the deliberate "clear the pin" signal (back to
+// system CA verification).
+func resolveTLSFingerprint(requested *string, persisted string, providerExists bool) string {
+	if requested != nil {
+		return *requested
+	}
+	if providerExists {
+		return persisted
+	}
+	return ""
 }
 
 // applyListProviderModelsOverrides merges draft credentials from the settings
@@ -1560,6 +1756,11 @@ func applyListProviderModelsOverrides(cfg *core.BuilderConfig, req ListProviderM
 		return fmt.Errorf("unsupported provider type %q", providerType)
 	}
 
+	// Draft TLS pin (ADR-054): nil falls back to the saved value so a partial
+	// draft (only credentials edited) does not silently drop the pin; a
+	// non-nil value applies verbatim, so an explicit draft "" wins.
+	tlsFingerprint := resolveTLSFingerprint(req.TLSFingerprint, existing.TLSFingerprint, exists)
+
 	if !exists && baseURL == "" {
 		// Fixed providers are always present in ToBuilderConfig; reaching here
 		// means a named compatible provider that has not been saved yet.
@@ -1571,6 +1772,7 @@ func applyListProviderModelsOverrides(cfg *core.BuilderConfig, req ListProviderM
 		APIKey:             apiKey,
 		BaseURL:            baseURL,
 		Models:             existing.Models,
+		TLSFingerprint:     tlsFingerprint,
 		OutputTokenReserve: existing.OutputTokenReserve,
 	}
 	return nil

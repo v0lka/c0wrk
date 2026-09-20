@@ -93,7 +93,7 @@ answer** to a prompt; it never removes a gate.
 
 ### D3. The three sub-policies and their terminals
 
-> **Amended in place (pre-release) by [ADR-054](./054-remove-post-task-review-prompt.md):**
+> **Amended in place (pre-release) by [ADR-055](./055-remove-post-task-review-prompt.md):**
 > the fourth sub-policy, `review_prompt` (`suppress`/`allow`), was removed
 > together with the post-task review prompt it gated — the prompt fired on
 > nearly every task against a perpetually dirty tree and was deleted outright.

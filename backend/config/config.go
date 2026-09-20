@@ -40,6 +40,7 @@ type Config struct {
 	Terminal      TerminalConfig      `yaml:"terminal"`
 	Git           GitConfig           `yaml:"git"`
 	Runtime       RuntimeConfig       `yaml:"runtime"`
+	Notifications NotificationsConfig `yaml:"notifications"`
 
 	// ModelProfiles configures optimizations applied when running on a "small"
 	// (low-capacity / cheaper) LLM. Only the two durable operator choices are
@@ -139,6 +140,27 @@ type TerminalConfig struct {
 // GitConfig controls the automatic git background behaviour of the app
 // (periodic and event-driven background fetches). Manual fetches triggered
 // from the UI are not gated by this section.
+// NotificationsConfig configures the OS-level notification banners of the
+// desktop system-notification channel (specs/domains/frontend/
+// system-notifications.md).
+type NotificationsConfig struct {
+	// BannerTimeoutSeconds is how long a delivered banner stays on screen:
+	//
+	//   -1  let the notification daemon apply its own default
+	//    0  never expire — the banner stays until clicked or dismissed
+	//   >0  explicit lifetime in seconds
+	//
+	// A pointer so an explicit 0 ("never expire" — the reason the setting
+	// exists) is distinguishable from an absent key, which defaults to -1.
+	// Same convention as GitConfig.AutoFetch below.
+	//
+	// Linux only: the value becomes the freedesktop `expire_timeout` argument
+	// (in milliseconds) of the org.freedesktop.Notifications Notify call.
+	// macOS and Windows notification centers own banner lifetime themselves
+	// and ignore it.
+	BannerTimeoutSeconds *int `yaml:"banner_timeout_seconds"`
+}
+
 type GitConfig struct {
 	// AutoFetch is the master gate for ALL automatic fetch triggers: app
 	// startup, project switch, window focus, and the periodic ticker. It is
@@ -464,6 +486,13 @@ type OpenAICompatibleConfig struct {
 	BaseURL string   `yaml:"base_url"`
 	APIKey  string   `yaml:"api_key"`
 	Models  []string `yaml:"models"` // enabled models for this provider
+	// TLSFingerprint pins the endpoint's SPKI: base64(SHA-256(SPKI DER)).
+	// Non-empty = ONLY the pinned key is accepted (self-signed / internal
+	// PKI); empty = normal system CA verification. The pin is the only
+	// verification override — there is no configured accept-any state, and
+	// no separate toggle. Ignored while an effective HTTP proxy is active
+	// (proxy.enabled + a proxy.url). See ADR-054.
+	TLSFingerprint string `yaml:"tls_fingerprint,omitempty"`
 	// OutputTokenReserve overrides the output-token budget for every model
 	// served by this provider: it is subtracted from the context window in
 	// overflow validation and caps executor MaxTokens. 0 = inherit the global
@@ -477,6 +506,13 @@ type AnthropicCompatibleConfig struct {
 	BaseURL string   `yaml:"base_url"`
 	APIKey  string   `yaml:"api_key"`
 	Models  []string `yaml:"models"` // enabled models for this provider
+	// TLSFingerprint pins the endpoint's SPKI: base64(SHA-256(SPKI DER)).
+	// Non-empty = ONLY the pinned key is accepted (self-signed / internal
+	// PKI); empty = normal system CA verification. The pin is the only
+	// verification override — there is no configured accept-any state, and
+	// no separate toggle. Ignored while an effective HTTP proxy is active
+	// (proxy.enabled + a proxy.url). See ADR-054.
+	TLSFingerprint string `yaml:"tls_fingerprint,omitempty"`
 	// OutputTokenReserve overrides the output-token budget for every model
 	// served by this provider: it is subtracted from the context window in
 	// overflow validation and caps executor MaxTokens. 0 = inherit the global
@@ -1558,6 +1594,11 @@ type ProviderWithModels struct {
 	APIKey       string
 	BaseURL      string
 	Models       []string // enabled models for this one provider
+	// TLSFingerprint carries the per-provider SPKI pin (only meaningful for
+	// compatible providers, which are the only ones with a BaseURL):
+	// non-empty = ONLY the pinned key is accepted; empty = system CA
+	// verification. See ADR-054.
+	TLSFingerprint string
 	// OutputTokenReserve is the per-provider output-token budget override
 	// (0 = inherit the global executor.output_token_reserve).
 	OutputTokenReserve int
@@ -1569,6 +1610,7 @@ type providerEntry struct {
 	apiKey             string
 	baseURL            string
 	models             []string
+	tlsFingerprint     string
 	outputTokenReserve int
 }
 
@@ -1593,11 +1635,11 @@ func (c *LLMConfig) allProviderEntries() []providerEntry {
 	)
 	for _, name := range openaiKeys {
 		cfg := c.OpenAICompatible[name]
-		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, outputTokenReserve: cfg.OutputTokenReserve})
+		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, tlsFingerprint: cfg.TLSFingerprint, outputTokenReserve: cfg.OutputTokenReserve})
 	}
 	for _, name := range anthropicKeys {
 		cfg := c.AnthropicCompatible[name]
-		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, outputTokenReserve: cfg.OutputTokenReserve})
+		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, tlsFingerprint: cfg.TLSFingerprint, outputTokenReserve: cfg.OutputTokenReserve})
 	}
 	return entries
 }
@@ -1632,6 +1674,7 @@ func (c *LLMConfig) GetAllProviderConfigs() []ProviderWithModels {
 			APIKey:             p.apiKey,
 			BaseURL:            p.baseURL,
 			Models:             p.models,
+			TLSFingerprint:     p.tlsFingerprint,
 			OutputTokenReserve: p.outputTokenReserve,
 		})
 	}
@@ -1657,11 +1700,12 @@ func (c *LLMConfig) ResolveDefaultModelProvider() (ProviderWithModels, string, e
 			for _, m := range p.models {
 				if m == model {
 					return ProviderWithModels{
-						Name:         p.name,
-						ProviderType: c.providerType(p.name),
-						APIKey:       p.apiKey,
-						BaseURL:      p.baseURL,
-						Models:       p.models,
+						Name:           p.name,
+						ProviderType:   c.providerType(p.name),
+						APIKey:         p.apiKey,
+						BaseURL:        p.baseURL,
+						Models:         p.models,
+						TLSFingerprint: p.tlsFingerprint,
 					}, m, nil
 				}
 			}
@@ -1674,11 +1718,12 @@ func (c *LLMConfig) ResolveDefaultModelProvider() (ProviderWithModels, string, e
 		for _, m := range p.models {
 			if m == c.DefaultModel {
 				return ProviderWithModels{
-					Name:         p.name,
-					ProviderType: c.providerType(p.name),
-					APIKey:       p.apiKey,
-					BaseURL:      p.baseURL,
-					Models:       p.models,
+					Name:           p.name,
+					ProviderType:   c.providerType(p.name),
+					APIKey:         p.apiKey,
+					BaseURL:        p.baseURL,
+					Models:         p.models,
+					TLSFingerprint: p.tlsFingerprint,
 				}, m, nil
 			}
 		}
@@ -2022,3 +2067,19 @@ func validate(cfg *Config) error {
 
 	return nil
 }
+
+// Notification banner-timeout sentinels, shared by the config layer, the
+// FrontendAPI validation and the desktop transport so the three never drift.
+const (
+	// NotificationBannerTimeoutDaemonDefault leaves the lifetime to the
+	// notification daemon (freedesktop expire_timeout = -1).
+	NotificationBannerTimeoutDaemonDefault = -1
+
+	// NotificationBannerTimeoutNever keeps the banner on screen until the
+	// user clicks or dismisses it (freedesktop expire_timeout = 0).
+	NotificationBannerTimeoutNever = 0
+
+	// NotificationBannerTimeoutMaxSeconds caps an explicit lifetime at one
+	// day — past that, "never expire" is the honest choice.
+	NotificationBannerTimeoutMaxSeconds = 86400
+)

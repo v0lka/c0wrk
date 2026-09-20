@@ -50,6 +50,31 @@ llm:
       # a self-hosted gateway caps output below/above the built-in catalog.
       # 0 / omitted = inherit executor.output_token_reserve.
       # output_token_reserve: 8192
+      #
+      # TLS override for self-signed / internal-PKI endpoints (per provider):
+      #   tls_fingerprint: "..."  — base64(SHA-256(SPKI DER)) pin. A NON-EMPTY
+      #                             pin by itself activates the override: only
+      #                             the certificate with this public key is
+      #                             accepted (so it survives certificate
+      #                             renewal that reuses the key pair). The
+      #                             Settings dialog's "Get" button fills it in
+      #                             by reading whatever the server presents
+      #                             right now — it works the same whether or
+      #                             not a pin is already set.
+      #                             Empty / omitted = normal system CA
+      #                             verification. There is no separate toggle
+      #                             and no "accept any certificate" mode: a
+      #                             wrong pin refuses the connection. See
+      #                             ADR-054.
+      #   NOTE: while the proxy dials for this host — an effective HTTP
+      #   proxy is enabled (proxy.enabled + a proxy.url) AND the host is NOT
+      #   on proxy.bypass_list — this pin is IGNORED: proxied connections are
+      #   verified by the proxy's own TLS config (proxy.tls_cert_dir). To pin
+      #   a server AND use the proxy for everything else, add the server's
+      #   host to proxy.bypass_list: a bypassed host dials directly, so its
+      #   pin applies. A configured pin is preserved while the proxy is on
+      #   and takes effect again once the proxy stops dialing for the host.
+      # tls_fingerprint: ""
 
   anthropic_compatible:
     # Each key is a named provider speaking Anthropic's Messages API
@@ -62,6 +87,11 @@ llm:
     #   api_key: "${ANTHROPIC_PROXY_KEY}"
     #   models:
     #     - "claude-sonnet-4-20250514"
+    #   # Same TLS override as openai_compatible above (tls_fingerprint pin,
+    #   # ADR-054) — for self-signed Anthropic-compatible endpoints. Ignored
+    #   # while the proxy dials for the host; add the host to
+    #   # proxy.bypass_list to pin and proxy simultaneously.
+    #   # tls_fingerprint: ""
 
   chatgpt:
     api_key: "${OPENAI_API_KEY}"
@@ -1202,3 +1232,36 @@ runtime:
   # Default: 0 (auto).
   memory_soft_limit_mb: 0
 
+
+# ---------------------------------------------------------------------------
+# OS Notifications
+# ---------------------------------------------------------------------------
+notifications:
+  # How long a delivered notification banner stays on screen, in seconds.
+  #
+  # PRIVACY NOTE: banner bodies may carry task output (task completion and
+  # error text). OS banners are kept in the notification center's history and
+  # are commonly shown on the lock screen — content readable there without
+  # unlocking the session. If that exposure is unacceptable, disable system
+  # notifications entirely (Settings → General → System notifications) —
+  # there is deliberately no content redaction: a banner whose body is
+  # stripped is useless.
+  #
+  # Values:
+  #   -1 (or omitted) — the notification daemon's own default (a handful of
+  #                     seconds on most desktops).
+  #    0              — NEVER expires: the banner stays until it is clicked or
+  #                     dismissed. Use this if banners vanish before you get
+  #                     to them — several daemons (KDE Plasma among them) drop
+  #                     an expired banner silently, without keeping it in the
+  #                     notification history.
+  #   > 0             — explicit lifetime in seconds, capped at 86400 (a day).
+  #
+  # Values outside [-1, 86400] are clamped at send time and the clamp is
+  # logged — mind the unit, seconds and not milliseconds.
+  #
+  # Linux only. The value becomes the freedesktop `expire_timeout` argument of
+  # the org.freedesktop.Notifications Notify call; the macOS and Windows
+  # notification centers own banner lifetime themselves and ignore it.
+  # Editable from Settings → General → System notifications.
+  banner_timeout_seconds: -1

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { getConfig } from '@/api/config'
 import { logger } from '@/lib/logger'
+import { useProxyDraftStore, isProxyEffective } from '@/stores/proxyDraftStore'
 import { FIXED_PROVIDERS, type CompatibleType } from '@/lib/llm-providers'
 import { compositeModelId, isCompositeModelId, decomposeCompositeModelId } from '@/lib/modelId'
 import type { ConfigProviderFull } from '@/types/models'
@@ -17,10 +18,13 @@ export interface ProviderConfig {
      * (openai_compatible vs anthropic_compatible) they are saved under.
      */
     type?: CompatibleType
+    /** Per-provider TLS pin (ADR-054): '' = standard CA verification
+     *  (override off), non-empty = only the pinned key is accepted. */
+    tls_fingerprint: string
 }
 
 const defaultProviderConfigs: Record<string, ProviderConfig> = Object.fromEntries(
-    FIXED_PROVIDERS.map((p) => [p, { api_key: '', base_url: '', models: [] }]),
+    FIXED_PROVIDERS.map((p) => [p, { api_key: '', base_url: '', models: [], tls_fingerprint: '' }]),
 )
 
 interface UseLLMConfigResult {
@@ -44,6 +48,7 @@ function toProviderConfig(p: ConfigProviderFull, type?: CompatibleType): Provide
         base_url: p.base_url ?? '',
         models: Array.isArray(p.models) ? [...p.models] : [],
         type,
+        tls_fingerprint: p.tls_fingerprint ?? '',
     }
 }
 
@@ -110,6 +115,14 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
     const [anthropicCompatibleProviderNames, setAnthropicCompatibleProviderNames] = useState<Set<string>>(new Set())
     const [isLoading, setIsLoading] = useState(true)
 
+    // The per-provider pin gate lives in proxyDraftStore and is read by
+    // ProviderConfigForm directly (per host, ADR-054). This hook only SEEDS
+    // the store from its own config payload (a no-op once known) for the
+    // case where the LLM tab is opened first and the General tab never
+    // mounted.
+    const seedProxyActive = useProxyDraftStore((s) => s.seedActive)
+    const seedBypassList = useProxyDraftStore((s) => s.seedBypassList)
+
     // Mutable ref for providerConfigs so setDefaultModel stays stable (fix #5).
     const configsRef = useRef(providerConfigs)
     configsRef.current = providerConfigs
@@ -162,6 +175,11 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
     const loadConfig = useCallback(async () => {
         try {
             const result = await getConfig()
+            // Seed the pin UI gate from the same payload the provider
+            // configs come from. seedActive never overwrites a value the
+            // General tab already published, so a draft toggle wins.
+            seedProxyActive(isProxyEffective(result?.proxy))
+            seedBypassList(result?.proxy?.bypass_list ?? [])
             const llm = result?.llm
             if (llm) {
                 const rawDefault = llm.default_model || ''
@@ -222,7 +240,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         } finally {
             setIsLoading(false)
         }
-    }, [])
+    }, [seedProxyActive, seedBypassList])
 
     useEffect(() => { loadConfig() }, [loadConfig])
 

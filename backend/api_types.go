@@ -79,6 +79,10 @@ type ConfigProviderFull struct {
 	APIKey  string   `json:"api_key"`
 	BaseURL string   `json:"base_url,omitempty"`
 	Models  []string `json:"models"` // enabled models for this provider
+	// TLSFingerprint exposes the per-provider SPKI pin (ADR-054): non-empty =
+	// only the pinned key is accepted; empty = system CA verification. Only
+	// compatible providers carry one.
+	TLSFingerprint string `json:"tls_fingerprint,omitempty"`
 }
 
 // ConfigSearchResp holds search config values.
@@ -118,6 +122,12 @@ type ProviderConfigRequest struct {
 	APIKey  string   `json:"api_key,omitempty"`
 	BaseURL string   `json:"base_url,omitempty"`
 	Models  []string `json:"models,omitempty"`
+	// TLSFingerprint is the base64(SHA-256(SPKI DER)) pin (ADR-054); the pin
+	// is the only verification override. nil = keep the persisted pin
+	// (debounced partial saves must not drop it); non-nil = apply verbatim,
+	// so an explicit empty string CLEARS the pin (back to system CA
+	// verification). Only meaningful for compatible providers.
+	TLSFingerprint *string `json:"tls_fingerprint,omitempty"`
 }
 
 // ListProviderModelsRequest is the payload for ListProviderModels.
@@ -134,6 +144,34 @@ type ListProviderModelsRequest struct {
 	// Type is the transport: "openai" or "anthropic". Empty means derive from
 	// the saved provider, or default to "openai" for an unknown provider.
 	Type string `json:"type,omitempty"`
+	// TLSFingerprint is the draft pin override (ADR-054) so "Fetch Models"
+	// reaches a self-pinned endpoint before the provider is persisted. nil =
+	// fall back to the saved value; non-nil applies verbatim.
+	TLSFingerprint *string `json:"tls_fingerprint,omitempty"`
+}
+
+// GetProviderTLSCertificateRequest asks the backend to connect to a
+// provider's endpoint (draft BaseURL, or the persisted one when empty) and
+// return the certificate fingerprint the server currently presents — the
+// settings UI "Get" button. No verification happens on this connection: the
+// fingerprint IS the thing being fetched.
+//
+// The request deliberately carries NO fingerprint field: the button is
+// unconditional with respect to any configured pin (ADR-054). It always
+// reports what the endpoint serves right now, whether or not the provider
+// already has a pin, and whatever the caller does with the result is the
+// user's decision.
+type GetProviderTLSCertificateRequest struct {
+	Provider string `json:"provider"`
+	// BaseURL is the DRAFT base URL from the settings form; empty = use the
+	// provider's persisted base_url.
+	BaseURL string `json:"base_url,omitempty"`
+}
+
+// TLSCertificateResponse carries the fetched leaf-certificate pin.
+type TLSCertificateResponse struct {
+	// Fingerprint is base64(SHA-256(SPKI DER)) of the server's leaf cert.
+	Fingerprint string `json:"fingerprint"`
 }
 
 // ModelConfigResponse returns a single model's configurable parameters: the

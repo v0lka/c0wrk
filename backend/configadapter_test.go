@@ -304,6 +304,54 @@ func TestE2SConfigExperimentalGate(t *testing.T) {
 	}
 }
 
+// The per-provider TLS pin (ADR-054) must reach the builder layer; the core
+// dial paths read it from BuilderProviderConfig. Providers without a pin must
+// map to the empty string (system verification), never to a neighbour's pin.
+func TestToBuilderConfig_ProviderTLSFingerprint(t *testing.T) {
+	const openaiPin = "k3J9vQ1Z0mF7hD2xS8pL4wR6tY5uI3oP1aE9cX0bN7g="
+	const anthropicPin = "Zm9vYmFyYmF6cXV1eDEyMzQ1Njc4OWFiY2RlZmdoaT0="
+
+	cfg := &config.Config{}
+	cfg.LLM.OpenAICompatible = map[string]config.OpenAICompatibleConfig{
+		"selfhosted": {
+			BaseURL:        "https://llm.lan:8443/v1",
+			Models:         []string{"qwen3"},
+			TLSFingerprint: openaiPin,
+		},
+		"plain": {
+			BaseURL: "http://127.0.0.1:1234/v1",
+			Models:  []string{"llama"},
+		},
+	}
+	cfg.LLM.AnthropicCompatible = map[string]config.AnthropicCompatibleConfig{
+		"gateway": {
+			BaseURL:        "https://claude.lan:8443",
+			Models:         []string{"claude-sonnet-4-20250514"},
+			TLSFingerprint: anthropicPin,
+		},
+	}
+
+	bc := ToBuilderConfig(cfg, config.PredefinedModelProfiles())
+
+	want := map[string]string{
+		"selfhosted": openaiPin,
+		"gateway":    anthropicPin,
+		"plain":      "",
+		"anthropic":  "",
+		"chatgpt":    "",
+	}
+	for name, wantPin := range want {
+		pc, ok := bc.LLM.ProviderConfigs[name]
+		if !ok {
+			t.Errorf("provider %q missing from BuilderConfig", name)
+			continue
+		}
+		if pc.TLSFingerprint != wantPin {
+			t.Errorf("ProviderConfigs[%q].TLSFingerprint = %q, want %q", name, pc.TLSFingerprint, wantPin)
+		}
+	}
+}
+
 // TestToBuilderConfig_SilentModeEnumPin pins the silent-mode mode vocabulary
 // shared by backend/config and core. The mode strings travel verbatim through
 // ToBuilderConfig into core's silent-mode posture (BuilderSilentModeConfig →

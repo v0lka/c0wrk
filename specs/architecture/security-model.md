@@ -220,7 +220,7 @@ live sessions with no restart. `tool_confirm` acts in the registry and
 `ask_user` at tool registration, while `step_limit.mode: auto` resolves through
 the backend's `ResolveSilentStepLimit`. (A fourth sub-policy, `review_prompt`
 for the removed post-task code-review prompt, was deleted by
-[ADR-054](../decisions/054-remove-post-task-review-prompt.md) — silent mode now
+[ADR-055](../decisions/055-remove-post-task-review-prompt.md) — silent mode now
 performs no post-task UI interception at all.) See
 [ADR-053](../decisions/053-silent-mode.md).
 

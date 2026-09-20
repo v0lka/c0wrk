@@ -4,6 +4,7 @@ import type {
   ProjectInfo, SessionInfo, ChatMessage, TokenInfo,
   FileEntry, GitStatusEntry, ConfigResponse, SecuritySettingsResponse,
   LLMFullConfigRequest, SearchSettingsRequest,
+  GetProviderTLSCertificateRequest, TLSCertificateResponse,
   MCPServerStatus, MCPServerConfig, ToolInfo,
   AttachmentInfoUI, PasteResultUI,
 } from './models'
@@ -50,9 +51,12 @@ export interface ConfigAPI {
   getSecuritySettings(): Promise<SecuritySettingsResponse>
   updateSecuritySettings(settings: SecuritySettingsResponse): Promise<void>
   updateLLMConfig(req: LLMFullConfigRequest): Promise<void>
+  getProviderTLSCertificate(req: GetProviderTLSCertificateRequest): Promise<TLSCertificateResponse>
   updateSearchSettings(settings: SearchSettingsRequest): Promise<void>
   getLogLevel(): Promise<string>
   setLogLevel(level: string): Promise<void>
+  getNotificationBannerTimeout(): Promise<number>
+  setNotificationBannerTimeout(seconds: number): Promise<void>
   updateExperimentalFeatures(enabled: boolean): Promise<void>
 }
 

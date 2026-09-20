@@ -13,6 +13,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/epilande/go-devicons v0.0.0-20250505162540-0661cab71a28
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/godbus/dbus/v5 v5.1.0
 	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/css v1.0.1
@@ -64,7 +65,6 @@ require (
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-shiori/dom v0.0.0-20230515143342-73569d674e1c // indirect
-	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f // indirect
 	github.com/golang/snappy v1.0.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect

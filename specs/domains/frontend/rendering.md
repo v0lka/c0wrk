@@ -68,7 +68,7 @@ ChatMessageRenderer: renders each DisplayItem by type
 | `context_compaction` | Compaction notice         | Info badge (shows before/after fill %)                                        |
 | `checklist`          | Checklist card            | Checkbox list with progress count; **sinks** to end of parent container while active (unchecked items), settles at stream position when all items checked. Renders standalone (no plan step) or nested in a `plan_step` block. Pending-action cards (`tool_confirm`/`ask_user`/`step_limit`/`plan_review`/`resume_action`) follow the same sinking semantics but always render in the root stream and use the same card chrome as this component. |
 
-> **Legacy role.** The former `review_prompt` DisplayItem was removed by [ADR-054](../../decisions/054-remove-post-task-review-prompt.md). Persisted rows still carrying that role map to the `status`/`service` type through the legacy role map (the `autonomy_decision` compat pattern) and render as muted service lines; their stable ids (`review-prompt-{prompt_id}`) are preserved so a reload keeps row identity.
+> **Legacy role.** The former `review_prompt` DisplayItem was removed by [ADR-055](../../decisions/055-remove-post-task-review-prompt.md). Persisted rows still carrying that role map to the `status`/`service` type through the legacy role map (the `autonomy_decision` compat pattern) and render as muted service lines; their stable ids (`review-prompt-{prompt_id}`) are preserved so a reload keeps row identity.
 
 ### Grouping Logic
 

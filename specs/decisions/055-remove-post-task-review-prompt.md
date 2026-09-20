@@ -1,4 +1,4 @@
-# ADR-054: Remove the Post-Task Review Prompt
+# ADR-055: Remove the Post-Task Review Prompt
 
 ## Status
 
