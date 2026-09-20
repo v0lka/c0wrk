@@ -169,4 +169,52 @@ describe('AutonomyDecisionBlock', () => {
     expect(text).toContain('Denied: bash_exec')
     expect(text).toContain('ASI05: unverified download')
   })
+
+  it('renders a canonical cradle network flow in the destructive tone', () => {
+    render(makeItem({
+      kind: 'tool_confirm', mode: 'silent', policy: 'judge', verdict: 'deny', tool: 'bash_exec',
+      network: { flow: 'cradle', canonical: true, hosts: ['evil.sh'] },
+    }))
+    const text = container.textContent ?? ''
+    expect(text).toContain('Network:')
+    expect(text).toContain('Download cradle to evil.sh')
+    expect(text).toContain('canonical — cannot be waived')
+    expect(container.querySelector('.text-destructive.font-medium')).not.toBeNull()
+    expect(container.querySelector('.text-warning.font-medium')).toBeNull()
+  })
+
+  it('renders a non-canonical ingest in the warning tone, visually distinct from a cradle', () => {
+    render(makeItem({
+      kind: 'tool_confirm', mode: 'silent', policy: 'judge', verdict: 'deny', tool: 'bash_exec',
+      network: { flow: 'ingest', canonical: false, hosts: ['example.com'], operands: ['p.pdf'] },
+    }))
+    const text = container.textContent ?? ''
+    expect(text).toContain('External-content ingest to example.com → p.pdf')
+    expect(text).toContain('non-canonical — judge-clearable')
+    const netLine = container.querySelector('.text-warning.font-medium')
+    expect(netLine).not.toBeNull()
+    expect(netLine!.textContent).toContain('judge-clearable')
+    // The judge-clearable ingest must not read like a canonical control.
+    expect(container.querySelector('.text-destructive.font-medium')).toBeNull()
+  })
+
+  it('renders a clean fetch in the muted tone with no canonicality qualifier', () => {
+    render(makeItem({
+      kind: 'tool_confirm', mode: 'silent', policy: 'judge', verdict: 'allow', tool: 'bash_exec',
+      network: { flow: 'fetch', hosts: ['example.com'] },
+    }))
+    const text = container.textContent ?? ''
+    expect(text).toContain('Network fetch to example.com')
+    expect(text).not.toContain('canonical')
+    expect(container.querySelector('.text-warning.font-medium')).toBeNull()
+    expect(container.querySelector('.text-destructive.font-medium')).toBeNull()
+  })
+
+  it('falls back to the muted card on a malformed network payload', () => {
+    render(makeItem({ kind: 'tool_confirm', verdict: 'allow', tool: 'bash_exec', network: { flow: 123 } }, 'Raw notice'))
+    const cls = svgClasses()[0] ?? ''
+    expect(cls).toContain('lucide-triangle-alert')
+    expect(cls).toContain('text-muted-foreground')
+    expect(container.textContent).toContain('Raw notice')
+  })
 })

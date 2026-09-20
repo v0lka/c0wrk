@@ -603,6 +603,19 @@ func ApplyDefaults(cfg *Config) {
 	// desktop/memlimit.go; >0 = explicit MiB; -1 = off). Documented here so
 	// default hunters find it; the AUTO value (0) and the OFF sentinel (-1)
 	// are validated in validate().
+
+	// shell_exec defaults: an active launch-shape override without a
+	// declared shell is seeded with the tool's platform-default kind
+	// (bash_exec → bash, posh_exec → powershell) — the overwhelmingly common
+	// override (a Homebrew bash, a login zsh, a pwsh replacement) keeps the
+	// tool's native syntax family. An INVALID explicit kind is not handled
+	// here: normalizeShellExec (load pipeline) warns and resets the section.
+	if cfg.ShellExec.BashExec.OverrideActive() && cfg.ShellExec.BashExec.Shell == "" {
+		cfg.ShellExec.BashExec.Shell = DefaultShellKindBash
+	}
+	if cfg.ShellExec.PoshExec.OverrideActive() && cfg.ShellExec.PoshExec.Shell == "" {
+		cfg.ShellExec.PoshExec.Shell = DefaultShellKindPosh
+	}
 }
 
 // defaultToolGroupPolicies is the single source of truth for the configurable

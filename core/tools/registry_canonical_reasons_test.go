@@ -120,6 +120,12 @@ func TestCanonicalHardReasonCodes_ClassificationTable(t *testing.T) {
 		// analysis limitation the strict judge may positively clear, not a
 		// fired control.
 		{sdktools.ReasonCodeCommandUnboundedAnalysis, false},
+		// The flowsh external-content ingest (C7): hard but deliberately
+		// clearable — whether the destination host is authoritative for the
+		// artifact class is a judgment delegated to the strict judge
+		// (fail-closed-on-arbitrary-host), not a fired control
+		// (ADR-056 D2; the canonical set is unchanged).
+		{sdktools.ReasonCodeCommandExternalContentIngest, false},
 		// The flowsh soft scope question: non-canonical by construction.
 		{sdktools.ReasonCodeCredentialAccess, false},
 		{sdktools.ReasonCodeUnresolvablePathToken, false},

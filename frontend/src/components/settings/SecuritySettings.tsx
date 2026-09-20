@@ -5,6 +5,7 @@ import { getToolList } from "@/api/mcp";
 import { logger } from "@/lib/logger";
 import { Button } from "@/components/ui/button";
 import { SecurityGroupCard } from "./SecurityGroupCard";
+import { ShellExecutionCard } from "./ShellExecutionCard";
 import { TrustedReposDialog } from "./TrustedReposDialog";
 import { HardenReposDialog } from "./HardenReposDialog";
 import { SilentModeCard } from "./SilentModeCard";
@@ -394,6 +395,12 @@ export function SecuritySettings() {
           onBlocklistChange={handleBlocklist}
         />
       ))}
+
+      {/* Shell-execution launch-shape override (the shell_exec config
+          section): how the execute tool launches commands and which shell the
+          command text is written in. Self-contained: loads and saves its own
+          section via the shell-exec settings RPCs. */}
+      <ShellExecutionCard />
 
       <div className="flex items-start gap-2 text-xs text-muted-foreground">
         <Info className="h-3.5 w-3.5 shrink-0 mt-0.5" />

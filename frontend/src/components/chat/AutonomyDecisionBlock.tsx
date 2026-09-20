@@ -1,13 +1,15 @@
 import { memo } from 'react'
 import { AlertTriangle, Check, X } from 'lucide-react'
 import type { DisplayItem } from '@/types/messages'
-import type { AutonomyDecisionData } from '@/types/events'
+import type { AutonomyDecisionData, NetworkDecisionData } from '@/types/events'
 import { isAutonomyDecisionData } from '@/types/events'
 import { cn } from '@/lib/utils'
 import {
   autonomyDecisionTitle,
   autonomyDecisionVerdictLine,
   isAutonomyAllowVerdict,
+  isCanonicalNetworkFlow,
+  networkSummary,
 } from '@/lib/autonomyDecision'
 
 type AutonomyItem = Extract<DisplayItem, { kind: 'autonomy_decision' }>
@@ -25,6 +27,7 @@ interface AutonomyDecisionBlockProps {
 const toneClasses = {
   success: { card: 'border-success/30 bg-success/5', icon: 'text-success' },
   destructive: { card: 'border-destructive/30 bg-destructive/5', icon: 'text-destructive' },
+  warning: { card: 'border-warning/30 bg-warning/5', icon: 'text-warning' },
   muted: { card: 'border-border bg-background/50', icon: 'text-muted-foreground' },
 } as const
 
@@ -40,6 +43,32 @@ function verdictTone(data: AutonomyDecisionData): Tone {
   if (isAutonomyAllowVerdict(data.verdict)) return 'success'
   if (data.verdict === 'deny') return 'destructive'
   return 'muted'
+}
+
+/**
+ * Tone for the network-flow line, independent of the verdict: a canonical
+ * cradle is a fired control (destructive), a non-canonical ingest is
+ * judge-clearable (warning), and a clean fetch is informational (muted). The
+ * distinct tones are the point — an ingest must never read like a cradle.
+ */
+function networkTone(flow: string): Tone {
+  if (isCanonicalNetworkFlow(flow)) return 'destructive'
+  if (flow === 'ingest') return 'warning'
+  return 'muted'
+}
+
+/** One network-flow audit line: the flow label, host(s), operand(s) and
+ *  canonicality, painted in the flow's own tone so a judge-clearable ingest is
+ *  visually distinct from a canonical cradle. */
+function NetworkRow({ network }: { network: NetworkDecisionData }) {
+  return (
+    <p className="text-xs">
+      <span className="text-muted-foreground/60">Network:</span>{' '}
+      <span className={cn('font-medium', toneClasses[networkTone(network.flow)].icon)}>
+        {networkSummary(network)}
+      </span>
+    </p>
+  )
 }
 
 function VerdictIcon({ tone }: { tone: Tone }) {
@@ -102,6 +131,7 @@ export const AutonomyDecisionBlock = memo(function AutonomyDecisionBlock({ item 
       </div>
       <div className="mt-1.5 space-y-1">
         <p className="text-xs text-foreground">{autonomyDecisionVerdictLine(metadata)}</p>
+        {metadata.network && <NetworkRow network={metadata.network} />}
         {rows.map((row) => (
           <DecisionRow key={row.label} label={row.label} value={row.value} />
         ))}

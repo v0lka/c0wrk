@@ -126,8 +126,9 @@ func (p *corpusStubJudgeProvider) setVerdict(allow bool) {
 }
 
 // corpusWorkspaceVerificationMarker reads the Track-B marker from the
-// analysis digest (sp4rk-shell-analysis/v2 field workspaceScopedVerification,
-// landed with the marker engine in sp4rk tools/shellanalysis.go): the stub
+// analysis digest (the workspaceScopedVerification field, landed in
+// sp4rk-shell-analysis/v2 and carried unchanged into v3, sp4rk
+// tools/shellanalysis.go): the stub
 // judge ALLOWs marked verification drivers exactly as the real strict-judge
 // prompt now teaches ("sufficient grounds to ALLOW unless the command text
 // contradicts it"). Unmarked commands keep the fail-closed DENY — a judge
@@ -180,6 +181,11 @@ type corpusReplayOutcome struct {
 	trueAllowDenied int
 	falseAllow      int
 	tracksStillDeny map[string]int
+	// deniedByEvent records the terminal deny/allow verdict of every replayed
+	// event, keyed by the audit event id. It carries the per-event facts the
+	// pinned incident assertions in TestSilentCorpus_Replay check directly
+	// (the aggregate cross-tab cannot name a single event).
+	deniedByEvent map[int]bool
 }
 
 // newCorpusReplayRegistries builds the two silent-mode registries the corpus
@@ -221,7 +227,7 @@ func replayCorpus(t *testing.T, cases []silentCorpusCase) corpusReplayOutcome {
 	provider := &corpusStubJudgeProvider{}
 	judgeReg, allowReg, judgeRec, allowRec := newCorpusReplayRegistries(t, provider, bash, read)
 
-	out := corpusReplayOutcome{tracksStillDeny: map[string]int{}}
+	out := corpusReplayOutcome{tracksStillDeny: map[string]int{}, deniedByEvent: map[int]bool{}}
 	for _, c := range cases {
 		ctx := sdktools.WithWorkspacePathNoProbe(context.Background(), c.Workspace)
 		// Production fidelity: the executor always attaches the session temp
@@ -302,6 +308,7 @@ func replayCorpus(t *testing.T, cases []silentCorpusCase) corpusReplayOutcome {
 		if denied != res.IsError {
 			t.Fatalf("event %d: decision verdict %q disagrees with result IsError=%v", c.EventID, decision.Verdict, res.IsError)
 		}
+		out.deniedByEvent[c.EventID] = denied
 
 		switch c.AuditClass {
 		case corpusClassTrueDeny:
@@ -364,6 +371,14 @@ func corpusOutcomeEqual(a, b corpusReplayOutcome) bool {
 			return false
 		}
 	}
+	if len(a.deniedByEvent) != len(b.deniedByEvent) {
+		return false
+	}
+	for id, denied := range a.deniedByEvent {
+		if b.deniedByEvent[id] != denied {
+			return false
+		}
+	}
 	return true
 }
 
@@ -401,6 +416,45 @@ func TestSilentCorpus_Replay(t *testing.T) {
 		t.Errorf("TRUE_DENY denied = %d, want all %d (must-stay-denied); replay-allowed TD events: %v",
 			out.trueDenyDenied, len(corpusTrueDenyEventIDs), tdDenied)
 	}
+
+	// Pinned per-event incident assertions — the flow-based criteria's
+	// falsifiable acceptance, stated on the events themselves rather than
+	// inferred from the aggregate cross-tab:
+	//
+	//   - 966284 (track A, "network-ingress-only"): the read-only stdout
+	//     fetch (`curl … | head`) the OLD ⊤∧NetEgress∧host-evidence C5 rule
+	//     manufactured a canonical cradle deny for. A fetch that neither
+	//     executes nor persists establishes NO flow, so neither C5 nor C7 is
+	//     in force and the deterministic stub must ALLOW it — the incident is
+	//     fixed on the deterministic layer.
+	//   - 964976/965136 (`curl -o … <file>`): the NEW C7
+	//     external-content-ingest flow (hard, non-canonical) keeps them
+	//     denied — the fail-closed-on-arbitrary-host replacement for the
+	//     removed host-reputation trigger (ADR-056 D2).
+	assertEventDenied := func(id int, wantDenied bool, why string) {
+		got, ok := out.deniedByEvent[id]
+		if !ok {
+			t.Errorf("event %d missing from the replay outcome (corpus/linkage drift)", id)
+			return
+		}
+		if got != wantDenied {
+			t.Errorf("event %d denied = %v, want %v: %s", id, got, wantDenied, why)
+		}
+	}
+	assertEventDenied(966284, false,
+		"read-only stdout fetch: no cradle/ingest flow fires, the deterministic stub must ALLOW it (phantom-C5 incident fixed)")
+	assertEventDenied(964976, true,
+		"curl -o persisted fetch: the C7 external-content-ingest flow is in force (hard, non-canonical)")
+	assertEventDenied(965136, true,
+		"curl -o persisted fetch: the C7 external-content-ingest flow is in force (hard, non-canonical)")
+	// 966665 (toolchain over an unpacked EXTERNAL module graph: GOFLAGS=-mod=mod
+	// + a `> go.work` write): the ⊤/C6 escalation must survive. This is the
+	// regression the flow-based rewrite caught — a flowsh KB that BOUNDS a
+	// verification driver fires no criterion on this shape, silently clearing
+	// the marker's env/manifest screens (the driver stays unresolved by
+	// design; see flowsh kb/data/linting.yaml).
+	assertEventDenied(966665, true,
+		"toolchain over an external module graph: the ⊤ escalation must stay (no cradle/ingest flow, marker off)")
 
 	if os.Getenv("SILENT_CORPUS_REGEN_SNAPSHOT") == "1" {
 		snap := corpusSnapshot{

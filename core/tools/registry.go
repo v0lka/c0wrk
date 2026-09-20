@@ -260,6 +260,15 @@ type AutonomyDecision struct {
 	// the notice nests under the matching subagent/plan-step block instead of
 	// the main chat stream. Empty for root-level decisions.
 	PlanStepID string `json:"plan_step_id,omitempty"`
+	// Network summarizes the network data-flow of a shell-exec decision
+	// (bash_exec/posh_exec): the flow the deterministic analysis established
+	// (cradle/ingest/fetch), the resolved egress host(s) and the affected local
+	// operands. It makes a silent-mode network read diagnosable and actionable
+	// — the card can name WHICH flow was adjudicated and against which host,
+	// and distinguish a canonical cradle (a fired control) from a non-canonical
+	// ingest (judge-clearable). Nil for non-shell tools, failed analyses,
+	// non-network shell commands, and non-tool gates (step_limit).
+	Network *NetworkDecision `json:"network,omitempty"`
 }
 
 // AutonomyDecisionObserver is invoked once per automatic (no-human) decision,
@@ -422,7 +431,18 @@ func (r *ToolRegistry) SetAutonomyDecisionObserver(fn AutonomyDecisionObserver) 
 // observeAutonomyDecision notifies the registered autonomy-decision observer,
 // if any, of an autonomous (no-human) decision. Best-effort: a nil observer is
 // a no-op, and it is safe to call with no lock held (it takes its own RLock).
+//
+// It enriches a shell-exec decision with the network data-flow the attached
+// deterministic analysis established (cradle/ingest/fetch + resolved host(s) +
+// operands) when the caller did not set it, so every emission path —
+// silentToolTerminal's allow/deny/judge terminals and the assisted strict-DENY
+// terminal — carries the same diagnosable summary without each having to derive
+// it. Derived here from the per-call ctx (the digest is attached by
+// AttachShellAnalysis before the policy branches run).
 func (r *ToolRegistry) observeAutonomyDecision(ctx context.Context, d AutonomyDecision) {
+	if d.Network == nil {
+		d.Network = shellNetworkDecision(ctx, d.Tool)
+	}
 	r.mu.RLock()
 	observer := r.autonomyDecisionObserver
 	r.mu.RUnlock()
@@ -814,8 +834,10 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	// Judge consumes it through sdktools.ShellJudgeOutcome (its blocklist
 	// stage aside, its criteria come exclusively from the attached analysis),
 	// and smartApproveOrConfirm forwards the same digest to the strict judge
-	// as static-analysis evidence — one analysis, every judge.
-	ctx = AttachShellAnalysis(ctx, name, input, r.log())
+	// as static-analysis evidence — one analysis, every judge. The registered
+	// instance rides along so an operator-configured shell invocation
+	// override (declared shell kind) picks the analysis dialect.
+	ctx = AttachShellAnalysisForTool(ctx, tool, name, input, r.log())
 
 	// Tool-local safety signals, gathered once and shared by every policy
 	// branch below:
@@ -921,7 +943,7 @@ func isShellToolName(name string) bool {
 // ReasonCodeCommandAnalysisUnavailable outcome (see sp4rk tools/shellanalysis.go),
 // so the call still escalates under an `allow` policy and blocks under
 // verify-on-edit's unattended path rather than running with the deterministic
-// floor (C1–C8) silently absent. The strict judge's AnalysisContext stays ""
+// floor (C1–C9) silently absent. The strict judge's AnalysisContext stays ""
 // in that case — the escalation is carried by the Judge, not the digest.
 // Exported for the backend advisory path (backend/application.go
 // evaluateJudgeWith).
@@ -938,10 +960,31 @@ func isShellToolName(name string) bool {
 // degrading to ⊤ — the flowsh analysis models the command exactly as the
 // shell will run it (silent-mode-deny-accuracy-recommendations.md §2C).
 func AttachShellAnalysis(ctx context.Context, name string, input json.RawMessage, log *slog.Logger) context.Context {
+	return AttachShellAnalysisForTool(ctx, nil, name, input, log)
+}
+
+// AttachShellAnalysisForTool is AttachShellAnalysis with the registered tool
+// instance. When the tool is provided and carries a declared shell kind
+// (sdktools.DeclaredShellKinder — every built-in shell tool does), the
+// analysis runs with the dialect of that DECLARED kind: an operator-configured
+// launch-shape override (tools.ShellInvocation) changes the command syntax the
+// tool name no longer implies (e.g. bash_exec running a pwsh wrapper). A nil
+// tool — or one without a declared kind — resolves the dialect from the
+// legacy tool-name mapping, exactly like AttachShellAnalysis.
+func AttachShellAnalysisForTool(ctx context.Context, tool sdktools.Tool, name string, input json.RawMessage, log *slog.Logger) context.Context {
 	if !isShellToolName(name) {
 		return ctx
 	}
-	analysis, err := sdktools.AnalyzeShellCommandForJudge(ctx, name, input)
+	var (
+		analysis *sdktools.ShellAnalysis
+		err      error
+	)
+	switch lang, ok := sdktools.ShellAnalysisLangForTool(tool, name); {
+	case ok:
+		analysis, err = sdktools.AnalyzeShellCommandForJudgeWithDialect(ctx, lang, input)
+	default:
+		analysis, err = sdktools.AnalyzeShellCommandForJudge(ctx, name, input)
+	}
 	if err != nil {
 		if log != nil {
 			log.Warn("security: shell command analysis failed; shell judge fails closed", "tool", name, "error", err)
@@ -1544,10 +1587,15 @@ func assistedDenial(justification string) sdktools.ToolResult {
 // protection, an undeterminable URL or path, or a deterministic shell
 // analysis that could not run at all — because the judge sees only the prose,
 // not the DNS resolution or filesystem state the deterministic control
-// lacked. The flowsh ⊤ limitation
+// lacked. Two flowsh "hard but clearable" codes are the deliberate
+// counterexamples: the ⊤ limitation
 // (ReasonCodeCommandUnboundedAnalysis, "the analyzer could not bound this
-// command") is deliberately NON-canonical: it is an analysis limitation the
-// strict judge may positively clear, not a fired control. Codes are the
+// command") is an analysis limitation the strict judge may positively clear,
+// and the external-content ingest
+// (ReasonCodeCommandExternalContentIngest, "a download client wrote fetched
+// content to a file") delegates the host-authority judgment to the strict
+// judge (fail-closed-on-arbitrary-host, ADR-056 D2) — neither is a fired
+// control. Codes are the
 // typed cross-repo contract from sp4rk (sdktools.JudgeReasonCode): prose
 // matching would silently break when sp4rk rewords a reason, an empty/unknown
 // code stays non-canonical (the strict judge may positively clear it).

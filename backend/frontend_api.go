@@ -398,8 +398,8 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 // configured list, so a custom list that omits the global directory silently
 // orphans every seeded pack. Best-effort and non-fatal — an empty seedDir
 // (no agent dir) is a no-op, since nothing is seeded then.
-func warnIfSeedDirUndiscovered(logger *slog.Logger, kind, seedDir string, discovered []string) {
-	if logger == nil || seedDir == "" {
+func warnIfSeedDirUndiscovered(lg *slog.Logger, kind, seedDir string, discovered []string) {
+	if lg == nil || seedDir == "" {
 		return
 	}
 	seed := filepath.Clean(seedDir)
@@ -408,7 +408,7 @@ func warnIfSeedDirUndiscovered(logger *slog.Logger, kind, seedDir string, discov
 			return
 		}
 	}
-	logger.Warn("c0wrk packs are seeded into a global directory that is absent from the configured discovery dirs; the seeded packs may be undiscoverable — add the directory to the dirs list",
+	lg.Warn("c0wrk packs are seeded into a global directory that is absent from the configured discovery dirs; the seeded packs may be undiscoverable — add the directory to the dirs list",
 		"kind", kind, "seed_dir", seedDir, "discovered_dirs", discovered)
 }
 

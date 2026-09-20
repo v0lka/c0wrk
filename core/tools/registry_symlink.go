@@ -23,7 +23,7 @@ import (
 // Shell input that is not statically resolvable ($var, $(cmd), backticks,
 // process substitution) no longer escalates here: the sp4rk symlink walk is a
 // pure literal-path extractor, and dynamic constructs are assessed by the
-// deterministic flowsh analysis (criteria C1–C8) on the same call. The deny
+// deterministic flowsh analysis (criteria C1–C9) on the same call. The deny
 // policy is enforced by Execute before this runs, so an escape never bypasses
 // an explicit deny.
 //

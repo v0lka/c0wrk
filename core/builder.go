@@ -809,8 +809,9 @@ func (b *OrchestratorBuilder) UpdateSecurityPolicies(cfg *BuilderConfig) {
 }
 
 // UpdateShellBlocklist re-registers the shell-execution tool with the
-// execute-group command blocklist from cfg. The blocklist is compiled into
-// the tool instance at construction time, so runtime blocklist edits
+// execute-group command blocklist and the shell_exec launch-shape override
+// from cfg. The blocklist is compiled into the tool instance at construction
+// time and the invocation shapes the tool description, so runtime edits
 // (security settings UI) require re-registration to take effect without an
 // app restart. A compile failure leaves the previously registered tool in
 // place and is returned to the caller.
@@ -833,7 +834,7 @@ func (b *OrchestratorBuilder) UpdateShellBlocklist(cfg *BuilderConfig) error {
 	return tools.UpdateShellTool(b.registry, execGroup.Blocklist, builtins.BashTimeouts{
 		MaxTimeout: time.Duration(cfg.Timeouts.BashMaxTimeout) * time.Second,
 		WaitDelay:  time.Duration(cfg.Timeouts.BashWaitDelay) * time.Second,
-	})
+	}, cfg.ShellExec.BashExec, cfg.ShellExec.PoshExec)
 }
 
 // UpdateSearchTool replaces or removes the web_search tool in the registry.
@@ -2736,10 +2737,12 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 			MaxTimeout: time.Duration(cfg.Timeouts.BashMaxTimeout) * time.Second,
 			WaitDelay:  time.Duration(cfg.Timeouts.BashWaitDelay) * time.Second,
 		},
-		ShellBlocklist: shellBlocklist,
-		SearchProvider: cfg.Search.Provider,
-		SearchAPIKey:   cfg.ExpandEnvVars(cfg.Search.APIKey),
-		SearchTimeout:  time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
+		ShellBlocklist:      shellBlocklist,
+		BashShellInvocation: cfg.ShellExec.BashExec,
+		PoshShellInvocation: cfg.ShellExec.PoshExec,
+		SearchProvider:      cfg.Search.Provider,
+		SearchAPIKey:        cfg.ExpandEnvVars(cfg.Search.APIKey),
+		SearchTimeout:       time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
 
 		SilentMode: tools.SilentModeState{
 			ToolConfirm:  cfg.Security.SilentMode.ToolConfirm,

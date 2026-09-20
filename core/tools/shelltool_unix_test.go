@@ -19,7 +19,7 @@ import (
 // shelltool_windows_test.go). Guarding the assertion behind a build tag keeps
 // the test aligned with the build-tagged constructor it exercises.
 func TestShellExecToolName_Unix(t *testing.T) {
-	tool, err := newShellExecTool(nil, builtins.DefaultBashTimeouts())
+	tool, err := newShellExecTool(nil, builtins.DefaultBashTimeouts(), nil, nil)
 	if err != nil {
 		t.Fatalf("newShellExecTool: unexpected error: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestShellExecToolName_Unix(t *testing.T) {
 // GNU long-option spelling, and alias tokens inside compounds) stays a
 // policy-gated call rather than a hard blocklist confirmation.
 func TestShellExecTool_UnixHasNoAliasSupplement(t *testing.T) {
-	tool, err := newShellExecTool(nil, builtins.DefaultBashTimeouts())
+	tool, err := newShellExecTool(nil, builtins.DefaultBashTimeouts(), nil, nil)
 	if err != nil {
 		t.Fatalf("newShellExecTool: unexpected error: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestUpdateShellTool_ReplacesBlocklist(t *testing.T) {
 	}
 
 	// An empty replacement (nil blocklist) removes every pattern.
-	if err := UpdateShellTool(registry, nil, builtins.BashTimeouts{MaxTimeout: 30 * time.Second}); err != nil {
+	if err := UpdateShellTool(registry, nil, builtins.BashTimeouts{MaxTimeout: 30 * time.Second}, nil, nil); err != nil {
 		t.Fatalf("UpdateShellTool: unexpected error: %v", err)
 	}
 	// The tool must still be registered under the platform shell name.
@@ -86,7 +86,7 @@ func TestUpdateShellTool_ReplacesBlocklist(t *testing.T) {
 	}
 
 	// A non-empty replacement registers and compiles.
-	if err := UpdateShellTool(registry, []string{`^echo\s+danger`}, builtins.BashTimeouts{MaxTimeout: 30 * time.Second}); err != nil {
+	if err := UpdateShellTool(registry, []string{`^echo\s+danger`}, builtins.BashTimeouts{MaxTimeout: 30 * time.Second}, nil, nil); err != nil {
 		t.Fatalf("UpdateShellTool with a valid pattern: unexpected error: %v", err)
 	}
 	if _, ok := registry.Get("bash_exec"); !ok {
@@ -95,7 +95,7 @@ func TestUpdateShellTool_ReplacesBlocklist(t *testing.T) {
 
 	// An invalid pattern must fail and leave the previously registered
 	// tool in place.
-	if err := UpdateShellTool(registry, []string{"("}, builtins.BashTimeouts{MaxTimeout: 30 * time.Second}); err == nil {
+	if err := UpdateShellTool(registry, []string{"("}, builtins.BashTimeouts{MaxTimeout: 30 * time.Second}, nil, nil); err == nil {
 		t.Fatal("expected an error for a pattern that does not compile")
 	}
 	if _, ok := registry.Get("bash_exec"); !ok {

@@ -7,6 +7,11 @@ import {
   autonomyDecisionTitle,
   autonomyDecisionVerdictLine,
   isAutonomyAllowVerdict,
+  isCanonicalNetworkFlow,
+  networkFlowLabel,
+  networkFlowQualifier,
+  networkSummary,
+  networkDecisionLine,
 } from '@/lib/autonomyDecision'
 import { handleAutonomyDecisionEvent } from '@/hooks/events/hitlHandlers'
 import type { AutonomyDecisionData } from '@/types/events'
@@ -66,6 +71,63 @@ describe('autonomyDecisionContent', () => {
       kind: 'step_limit', mode: 'silent', verdict: 'allow_more', current_step: 20, max_steps: 20, category: 'budget',
     }
     expect(autonomyDecisionContent(d)).toBe('Silent mode: step limit allow_more at step 20/20')
+  })
+
+  it('appends the network flow, host and operand for a network-touching shell decision', () => {
+    const d: AutonomyDecisionData = {
+      kind: 'tool_confirm', mode: 'silent', policy: 'judge', verdict: 'deny', tool: 'bash_exec',
+      reason: 'runs a shell command', justification: 'unverified download',
+      network: { flow: 'ingest', canonical: false, hosts: ['example.com'], operands: ['PII-Trace.pdf'] },
+    }
+    expect(autonomyDecisionContent(d)).toBe(
+      'Silent mode («Judge» policy): denied bash_exec (runs a shell command) — unverified download' +
+      ' [network: External-content ingest to example.com → PII-Trace.pdf (non-canonical — judge-clearable)]',
+    )
+  })
+
+  it('renders a clean fetch with no canonicality qualifier', () => {
+    const d: AutonomyDecisionData = {
+      kind: 'tool_confirm', mode: 'silent', policy: 'judge', verdict: 'allow', tool: 'bash_exec',
+      network: { flow: 'fetch', hosts: ['example.com'] },
+    }
+    expect(autonomyDecisionContent(d)).toContain('[network: Network fetch to example.com]')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Network-decision helpers — the flow/host/operand copy + canonicality
+// ---------------------------------------------------------------------------
+
+describe('network-decision helpers', () => {
+  it('labels each flow', () => {
+    expect(networkFlowLabel('cradle')).toBe('Download cradle')
+    expect(networkFlowLabel('ingest')).toBe('External-content ingest')
+    expect(networkFlowLabel('fetch')).toBe('Network fetch')
+    expect(networkFlowLabel('other')).toBe('Network flow')
+  })
+
+  it('distinguishes a canonical cradle from a judge-clearable ingest', () => {
+    expect(isCanonicalNetworkFlow('cradle')).toBe(true)
+    expect(isCanonicalNetworkFlow('ingest')).toBe(false)
+    expect(isCanonicalNetworkFlow('fetch')).toBe(false)
+    expect(networkFlowQualifier('cradle')).toBe('canonical — cannot be waived')
+    expect(networkFlowQualifier('ingest')).toBe('non-canonical — judge-clearable')
+    expect(networkFlowQualifier('fetch')).toBe('')
+  })
+
+  it('summarizes a cradle, an ingest and a clean fetch', () => {
+    expect(networkSummary({ flow: 'cradle', canonical: true, hosts: ['evil.sh'] }))
+      .toBe('Download cradle to evil.sh (canonical — cannot be waived)')
+    expect(networkSummary({ flow: 'ingest', hosts: ['example.com'], operands: ['a.pdf', 'b.zip'] }))
+      .toBe('External-content ingest to example.com → a.pdf, b.zip (non-canonical — judge-clearable)')
+    expect(networkSummary({ flow: 'fetch', hosts: ['api.example.com'] }))
+      .toBe('Network fetch to api.example.com')
+  })
+
+  it('returns null when the decision carries no network flow', () => {
+    expect(networkDecisionLine({ kind: 'tool_confirm', verdict: 'allow', tool: 'write_file' })).toBeNull()
+    expect(networkDecisionLine({ kind: 'tool_confirm', verdict: 'deny', tool: 'bash_exec', network: { flow: 'fetch' } }))
+      .toBe('Network fetch')
   })
 })
 

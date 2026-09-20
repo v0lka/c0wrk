@@ -8,7 +8,7 @@ Accepted
 
 The symlink gate (sp4rk's `DetectSymlinksInToolInput` consumed by the host registry's `symlinkHardReason`) carried a second responsibility besides symlink detection: flagging shell commands containing variable expansions (`$var`, `$(cmd)`, backticks, `$env:...`, process substitution) as **suspicious** — a hard `symlink_suspicious` escalation routed to the strict LLM judge and the confirmation card.
 
-That check duplicated coverage the deterministic flowsh analysis ([ADR-052](./052-flowsh-command-analysis.md)) already provides on the same call: constructs the static token walk cannot see through land on the non-canonical C6 (`command_unbounded_analysis`) criterion, and out-of-root effects on C4/C8 — both assessed more precisely from the effect IR than from token walking. The built-in shell tools' `Judge` had already dropped its static unresolvable-token and containment stages for exactly this reason; the symlink gate was the last consumer.
+That check duplicated coverage the deterministic flowsh analysis ([ADR-052](./052-flowsh-command-analysis.md)) already provides on the same call: constructs the static token walk cannot see through land on the non-canonical C6 (`command_unbounded_analysis`) criterion, and out-of-root effects on C4/C9 — both assessed more precisely from the effect IR than from token walking. The built-in shell tools' `Judge` had already dropped its static unresolvable-token and containment stages for exactly this reason; the symlink gate was the last consumer.
 
 The check also carried a large maintenance tail: the validated command-substitution machinery ([ADR-038](./038-validated-command-substitution.md)) — `shellEnvBindings.go` (~2000 lines), the shell-path resolvers in `shellpaths.go` (~1350 lines), and the PowerShell static-binding tokenizer — existed mostly to decide when an expansion was benign enough NOT to fire the flag. And operationally the escalation cluttered the LLM judge's work: every `PKGS=$(...)`-style command produced a hard reason the strict judge had to assess, spending tokens per session on noise the deterministic layer had already covered.
 
@@ -24,7 +24,7 @@ The symlink gate is a **pure literal-path extractor**. All variable-expansion ch
 ## Consequences
 
 - Fewer false-positive escalations for ordinary shell idioms; the strict LLM judge no longer spends tokens assessing expansion noise.
-- A symlink reachable only *through* a variable (`X=$(cat link/secret); cat $X`) is no longer surfaced by the symlink walk — accepted: flowsh assesses the command holistically, and the deterministic floor (C1–C8) does not depend on symlink-walk coverage of dynamic constructs.
+- A symlink reachable only *through* a variable (`X=$(cat link/secret); cat $X`) is no longer surfaced by the symlink walk — accepted: flowsh assesses the command holistically, and the deterministic floor (C1–C9) does not depend on symlink-walk coverage of dynamic constructs.
 - The sp4rk `tools` package shrinks by ~3300 lines plus their tests; the three live helpers (`isASCIILetter`, `isPathComponentChar`, `isPureSeparatorRunToken`) were relocated to their consumers (`shellanalysis.go`, `judge.go`).
 - An escape through a **literal** path is still a canonical hard reason, backstopped beyond a strict ALLOW (interactive scope).
 

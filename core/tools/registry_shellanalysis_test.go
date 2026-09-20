@@ -158,7 +158,7 @@ func TestSmartApproveShellAnalysis_CleanCallReachesStrictJudge(t *testing.T) {
 	if !ok {
 		t.Fatal("strict envelope lacks the analysis field: the flowsh digest must reach the strict judge for clean shell calls too")
 	}
-	if !strings.Contains(analysis, `"schemaVersion":"sp4rk-shell-analysis/v2"`) {
+	if !strings.Contains(analysis, `"schemaVersion":"sp4rk-shell-analysis/v3"`) {
 		t.Errorf("analysis field is not a shell-analysis digest: %s", analysis)
 	}
 	if !strings.Contains(analysis, "outside_session_roots") {
@@ -201,7 +201,7 @@ func TestSmartApproveShellAnalysis_EscalatedShellCallReachesStrictJudge(t *testi
 	if !ok {
 		t.Fatal("strict envelope lacks the analysis field for an escalated shell call")
 	}
-	if !strings.Contains(analysis, `"schemaVersion":"sp4rk-shell-analysis/v2"`) {
+	if !strings.Contains(analysis, `"schemaVersion":"sp4rk-shell-analysis/v3"`) {
 		t.Errorf("analysis field is not a shell-analysis digest: %s", analysis)
 	}
 	// The escalation reasoning must survive alongside the digest.
@@ -246,6 +246,7 @@ func TestSmartApproveCanonicalFlowshCodes_BackstopUnderAllowPolicy(t *testing.T)
 		{name: "destructive outside roots", code: sdktools.ReasonCodeCommandDestructiveOutsideRoots, wantBlock: true},
 		{name: "download cradle", code: sdktools.ReasonCodeCommandDownloadCradle, wantBlock: true},
 		{name: "unbounded analysis stays clearable", code: sdktools.ReasonCodeCommandUnboundedAnalysis, wantBlock: false},
+		{name: "external-content ingest stays clearable", code: sdktools.ReasonCodeCommandExternalContentIngest, wantBlock: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -370,6 +370,10 @@ export function GetSessionWorkspace(arg1) {
   return window['go']['desktop']['App']['GetSessionWorkspace'](arg1);
 }
 
+export function GetShellExecSettings() {
+  return window['go']['desktop']['App']['GetShellExecSettings']();
+}
+
 export function GetStepOutput(arg1, arg2) {
   return window['go']['desktop']['App']['GetStepOutput'](arg1, arg2);
 }
@@ -792,6 +796,10 @@ export function UpdateSearchSettings(arg1) {
 
 export function UpdateSecuritySettings(arg1) {
   return window['go']['desktop']['App']['UpdateSecuritySettings'](arg1);
+}
+
+export function UpdateShellExecSettings(arg1) {
+  return window['go']['desktop']['App']['UpdateShellExecSettings'](arg1);
 }
 
 export function UpdateVectorIndexSettings(arg1) {

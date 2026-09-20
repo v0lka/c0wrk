@@ -20,8 +20,17 @@ import (
 // call is platform-specific. No platform supplement exists on Unix: no
 // predefined patterns ship any more, so the compiled-in set is exactly what
 // the caller passes (empty by default).
-func newShellExecTool(blocklist []string, timeouts builtins.BashTimeouts) (tools.Tool, error) {
-	return builtins.NewBashExecToolWithTimeouts(blocklist, timeouts)
+//
+// bashInvocation/poshInvocation carry the operator's optional launch-shape
+// override (see sp4rk tools.ShellInvocation); this file consumes the bash
+// entry, the Windows file the posh entry — a nil pointer keeps the built-in
+// default launch shape.
+func newShellExecTool(blocklist []string, timeouts builtins.BashTimeouts, bashInvocation, poshInvocation *tools.ShellInvocation) (tools.Tool, error) {
+	invocation := tools.DefaultBashInvocation()
+	if bashInvocation != nil {
+		invocation = *bashInvocation
+	}
+	return builtins.NewBashExecToolWithInvocation(blocklist, timeouts, invocation)
 }
 
 // ShellExecToolName returns the name of the platform-registered

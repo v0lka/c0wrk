@@ -8,6 +8,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/core/proxy"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 // derefBool safely dereferences a *bool, defaulting to true when nil.
@@ -327,6 +328,7 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			WebSearchTimeout:     cfg.Timeouts.WebSearchTimeout,
 			LLMRequestTimeout:    cfg.Timeouts.LLMRequestTimeout,
 		},
+		ShellExec: convertShellExecConfig(cfg.ShellExec),
 		Proxy: proxy.Config{
 			Enabled:      cfg.Proxy.Enabled,
 			URL:          config.ExpandEnvVars(cfg.Proxy.URL),
@@ -373,4 +375,37 @@ func agentsMDSearchPaths() []string {
 		filepath.Join(homeDir, ".agents", "AGENTS.md"),
 		filepath.Join(homeDir, config.DefaultAgentDir, ".agents", "AGENTS.md"),
 	}
+}
+
+// convertShellExecConfig maps the validated config `shell_exec` section onto
+// the builder's per-tool launch-shape invocations. The load pipeline
+// (config.normalizeShellExec) guarantees an active override carries a valid
+// template and a declared kind; any residual inconsistency (a
+// programmatically-built config that bypassed load) fails soft to the
+// built-in default rather than erroring the whole conversion.
+func convertShellExecConfig(sec config.ShellExecConfig) core.BuilderShellExecConfig {
+	return core.BuilderShellExecConfig{
+		BashExec: convertShellExecTool(sec.BashExec),
+		PoshExec: convertShellExecTool(sec.PoshExec),
+	}
+}
+
+// convertShellExecTool converts one tool's override; nil = no override.
+func convertShellExecTool(tool config.ShellExecToolConfig) *sdktools.ShellInvocation {
+	if !tool.OverrideActive() {
+		return nil
+	}
+	kind, err := sdktools.ParseShellKind(tool.Shell)
+	if err != nil {
+		return nil
+	}
+	inv := sdktools.ShellInvocation{
+		Binary: tool.Command[0],
+		Args:   append([]string(nil), tool.Command[1:]...),
+		Kind:   kind,
+	}
+	if err := inv.Validate(); err != nil {
+		return nil
+	}
+	return &inv
 }

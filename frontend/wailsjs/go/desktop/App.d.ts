@@ -193,6 +193,8 @@ export function GetSessionTokens(arg1:string):Promise<backend.SessionTokensRespo
 
 export function GetSessionWorkspace(arg1:string):Promise<string>;
 
+export function GetShellExecSettings():Promise<backend.ShellExecSettingsResponse>;
+
 export function GetStepOutput(arg1:string,arg2:string):Promise<string>;
 
 export function GetTerminalHistory(arg1:string):Promise<Array<session.TerminalCommand>>;
@@ -404,6 +406,8 @@ export function UpdateProxySettings(arg1:backend.ProxySettingsRequest):Promise<v
 export function UpdateSearchSettings(arg1:backend.SearchSettingsRequest):Promise<void>;
 
 export function UpdateSecuritySettings(arg1:backend.SecuritySettingsResponse):Promise<void>;
+
+export function UpdateShellExecSettings(arg1:backend.ShellExecSettingsResponse):Promise<void>;
 
 export function UpdateVectorIndexSettings(arg1:backend.VectorIndexSettingsResponse):Promise<void>;
 

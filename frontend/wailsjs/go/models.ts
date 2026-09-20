@@ -1572,6 +1572,53 @@ export namespace backend {
 	        this.max_tokens = source["max_tokens"];
 	    }
 	}
+	export class ShellExecToolSettings {
+	    command: string[];
+	    shell: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ShellExecToolSettings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.command = source["command"];
+	        this.shell = source["shell"];
+	    }
+	}
+	export class ShellExecSettingsResponse {
+	    bash_exec: ShellExecToolSettings;
+	    posh_exec: ShellExecToolSettings;
+	
+	    static createFrom(source: any = {}) {
+	        return new ShellExecSettingsResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.bash_exec = this.convertValues(source["bash_exec"], ShellExecToolSettings);
+	        this.posh_exec = this.convertValues(source["posh_exec"], ShellExecToolSettings);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	
 	
 	export class SkillDescriptorDTO {

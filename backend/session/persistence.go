@@ -775,15 +775,17 @@ func (s *SQLiteSessionStore) ReplaceStepTodoUpdate(ctx context.Context, sessionI
 	if err != nil {
 		return fmt.Errorf("failed to query step_todo_update messages: %w", err)
 	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			s.log().Warn("failed to close database rows", "error", cerr)
+		}
+	}()
 
 	var staleIDs []int64
 	for rows.Next() {
 		var id int64
 		var metadataStr string
 		if err := rows.Scan(&id, &metadataStr); err != nil {
-			if cerr := rows.Close(); cerr != nil {
-				s.log().Warn("failed to close database rows", "error", cerr)
-			}
 			return fmt.Errorf("failed to scan step_todo_update message: %w", err)
 		}
 		var meta map[string]any
@@ -795,11 +797,11 @@ func (s *SQLiteSessionStore) ReplaceStepTodoUpdate(ctx context.Context, sessionI
 		}
 	}
 	if err := rows.Err(); err != nil {
-		if cerr := rows.Close(); cerr != nil {
-			s.log().Warn("failed to close database rows", "error", cerr)
-		}
 		return fmt.Errorf("error iterating step_todo_update messages: %w", err)
 	}
+	// Release the read cursor before the DELETEs/INSERT/Commit below: the
+	// deferred Close above is an idempotent safety net, but the transaction's
+	// single connection must be free of the open cursor before it commits.
 	if cerr := rows.Close(); cerr != nil {
 		s.log().Warn("failed to close database rows", "error", cerr)
 	}

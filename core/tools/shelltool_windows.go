@@ -21,8 +21,12 @@ import (
 // rationale was cross-dialect safety of a unified default list, which no
 // longer exists), so the compiled-in set is exactly what the caller passes
 // (empty by default).
-func newShellExecTool(blocklist []string, timeouts builtins.BashTimeouts) (tools.Tool, error) {
-	return builtins.NewPoshExecToolWithTimeouts(blocklist, timeouts)
+func newShellExecTool(blocklist []string, timeouts builtins.BashTimeouts, bashInvocation, poshInvocation *tools.ShellInvocation) (tools.Tool, error) {
+	invocation := tools.DefaultPoshInvocation()
+	if poshInvocation != nil {
+		invocation = *poshInvocation
+	}
+	return builtins.NewPoshExecToolWithInvocation(blocklist, timeouts, invocation)
 }
 
 // ShellExecToolName returns the name of the platform-registered

@@ -620,6 +620,28 @@ export interface SecurityGroupPolicy {
   blocklist?: string[] | null
 }
 
+/** The closed set of shells the launch-shape override accepts (mirrors backend config). */
+export type ShellExecShellKind = 'bash' | 'sh' | 'zsh' | 'ksh' | 'dash' | 'powershell' | 'pwsh'
+
+/** One shell-exec tool's launch-shape override (mirrors backend ShellExecToolSettings). */
+export interface ShellExecToolSettings {
+  /**
+   * argv template launching the agent's command; exactly one element equals
+   * "{command}". Empty = built-in default launch shape.
+   */
+  command: string[]
+  /** The shell the command text is written in; empty when there is no override. */
+  shell: string
+}
+
+/** The shell_exec config section (mirrors backend ShellExecSettingsResponse). */
+export interface ShellExecSettingsResponse {
+  /** Consumed on Unix (bash_exec); inert elsewhere. */
+  bash_exec: ShellExecToolSettings
+  /** Consumed on Windows (posh_exec); inert elsewhere. */
+  posh_exec: ShellExecToolSettings
+}
+
 /**
  * security.autonomy_mode — the unified autonomy posture replacing the former
  * Smart Approve flag + silent-mode master switch. Mirrors the backend enum

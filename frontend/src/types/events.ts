@@ -65,6 +65,31 @@ export interface AskUserQuestion {
 export interface AskUserData { request_id: string; questions: AskUserQuestion[] }
 export interface StepLimitData { request_id: string; current_step: number; max_steps: number; reason?: string }
 
+/** The network data-flow a shell-exec (bash_exec/posh_exec) autonomy decision
+ *  adjudicated — WHICH flow the deterministic analysis proved, the resolved
+ *  egress host(s), and the affected local operands. It makes a silent-mode
+ *  network read diagnosable: the card can name the flow ("Download cradle" vs
+ *  "External-content ingest") and the host instead of leaving the operator to
+ *  decode a bare effect signature. Mirrors Go `coretools.NetworkDecision`.
+ *  Present only on a network-touching shell decision; absent for non-network
+ *  calls and non-tool gates. */
+export interface NetworkDecisionData {
+  /** The flow the analysis established: "cradle" (network→code-execution — a
+   *  canonical control), "ingest" (network→filesystem — hard but
+   *  non-canonical, judge-clearable), or "fetch" (a clean network read that
+   *  persisted/executed nothing). */
+  readonly flow: string
+  /** True only for a cradle — a proven control a host must never
+   *  auto-override. False for an ingest and a clean fetch. */
+  readonly canonical?: boolean
+  /** Resolved egress hosts (scheme/path/port stripped). Empty when the
+   *  analyzer could not resolve a literal host. */
+  readonly hosts?: string[]
+  /** Affected local operands of the flow — the files an ingest wrote. Empty
+   *  for a cradle and a clean fetch. */
+  readonly operands?: string[]
+}
+
 /** One automatic (no-human) security decision taken under an automatic
  *  autonomy posture — silent (security.silent_mode) or assisted (a strict-judge
  *  DENY terminating a call before any card opened). `kind` is the gate
@@ -112,6 +137,9 @@ export interface AutonomyDecisionData {
    *  under that subagent/plan-step block in the chat instead of the main
    *  stream; absent for root-level decisions. */
   readonly plan_step_id?: string
+  /** The network data-flow this shell-exec decision adjudicated (flow + host +
+   *  operands); absent for non-network calls and step-limit gates. */
+  readonly network?: NetworkDecisionData
 }
 
 export interface ContextFillData {
@@ -778,6 +806,23 @@ export function isAutonomyDecisionData(d: unknown): d is AutonomyDecisionData {
   // present non-string value (e.g. an object reaching a React child) fails.
   for (const key of ['mode', 'policy', 'tool', 'source', 'reason', 'justification', 'category', 'plan_step_id', 'signature'] as const) {
     if (key in d && d[key] !== undefined && typeof d[key] !== 'string') return false
+  }
+  // The optional nested network summary is validated structurally: its `flow`
+  // is rendered through string operations (networkFlowLabel/networkSummary),
+  // its `canonical` drives a tone, and its `hosts`/`operands` are iterated — a
+  // malformed value must fail the guard, not reach a render path.
+  if ('network' in d && d.network !== undefined && !isNetworkDecisionData(d.network)) return false
+  return true
+}
+
+/** Structural guard for the nested network summary on a shell-exec autonomy
+ *  decision (see NetworkDecisionData). */
+export function isNetworkDecisionData(v: unknown): v is NetworkDecisionData {
+  if (!isObj(v) || typeof v.flow !== 'string') return false
+  if ('canonical' in v && v.canonical !== undefined && typeof v.canonical !== 'boolean') return false
+  for (const key of ['hosts', 'operands'] as const) {
+    const arr = v[key]
+    if (arr !== undefined && !(Array.isArray(arr) && arr.every(x => typeof x === 'string'))) return false
   }
   return true
 }
