@@ -1,4 +1,4 @@
-# ADR-054: Commit Hooks & Signing Gate (Withhold-and-Decide at the Commit Boundary)
+# ADR-055: Commit Hooks & Signing Gate (Withhold-and-Decide at the Commit Boundary)
 
 ## Status
 

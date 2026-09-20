@@ -2,7 +2,11 @@ package core
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -214,5 +218,284 @@ func TestMCPGatewayNoWait(t *testing.T) {
 	b.mu.Unlock()
 	if got := b.MCPGatewayNoWait(); got != gw {
 		t.Error("MCPGatewayNoWait() did not return the assigned gateway")
+	}
+}
+
+// --- b.mu must not be held across MCP gateway network work ---
+
+// hangingMCPServer returns an HTTPS-free test server that blocks every request
+// until release is closed, plus a channel closed when the first request lands
+// and a counter of requests received. It stands in for an MCP endpoint that
+// went unreachable (the real-world case: a server that failed to connect while
+// a proxy was on is retried on the next Reconfigure, silently and with no
+// deadline of its own).
+func hangingMCPServer(t *testing.T) (url string, entered <-chan struct{}, hits *atomic.Int32, release func()) {
+	t.Helper()
+	enteredCh := make(chan struct{})
+	releaseCh := make(chan struct{})
+	hits = &atomic.Int32{}
+	var once sync.Once
+
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		once.Do(func() { close(enteredCh) })
+		select {
+		case <-releaseCh:
+		case <-r.Context().Done():
+		}
+		// Abort the connection rather than answering: the client must fail
+		// fast once released, not sit waiting for a valid MCP handshake that
+		// this stub cannot produce.
+		panic(http.ErrAbortHandler)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Idempotent, so a test can release on a failure path and again at the
+	// end. Callers MUST also `defer release()` in the test body: t.Cleanup
+	// callbacks run LIFO, so a gateway registered after this helper would have
+	// its Stop() run first — and Stop blocks on the gateway mutex that the
+	// parked Reconfigure still holds. A body-level defer runs ahead of every
+	// cleanup, including on the t.Fatal path (Goexit runs defers first).
+	release = sync.OnceFunc(func() { close(releaseCh) })
+	t.Cleanup(release)
+	return srv.URL, enteredCh, hits, release
+}
+
+func hangingServerConfig(url string) *BuilderConfig {
+	return &BuilderConfig{
+		MCP: BuilderMCPConfig{
+			Servers: map[string]BuilderMCPServer{
+				"hang": {Transport: "http", URL: url},
+			},
+		},
+		ExpandEnvVars: func(s string) string { return s },
+	}
+}
+
+// closedChan returns an already-closed channel, standing in for "MCP startup
+// finished" (mcpDone).
+func closedChan() chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
+
+// TestReconfigureMCP_DoesNotHoldBuilderLockDuringGatewayWork is the regression
+// test for the settings-dialog freeze: ReconfigureMCP used to hold b.mu
+// (WRITE) across gateway.Reconfigure, which connects to every changed and
+// every previously-failed server. b.mu sits on the GetConfig path
+// (configMu.RLock → b.mu.RLock via ModelRegistry), so an unreachable MCP
+// endpoint froze the whole settings dialog for as long as the connect took —
+// observed at 169 seconds in the field.
+func TestReconfigureMCP_DoesNotHoldBuilderLockDuringGatewayWork(t *testing.T) {
+	url, entered, _, release := hangingMCPServer(t)
+	defer release()
+
+	b := &OrchestratorBuilder{
+		registry: tools.NewToolRegistry(),
+		gateway:  newFailingGateway(t),
+		mcpDone:  closedChan(),
+	}
+
+	reconfigureDone := make(chan struct{})
+	go func() {
+		defer close(reconfigureDone)
+		_ = b.ReconfigureMCP(context.Background(), hangingServerConfig(url))
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the gateway reconfigure never reached the MCP endpoint")
+	}
+
+	// The reconfigure is now parked inside the network call. A config reader
+	// must not be convoyed behind it: ModelRegistry is exactly what GetConfig
+	// calls while holding configMu.RLock.
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		_ = b.ModelRegistry()
+	}()
+	select {
+	case <-readerDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("ModelRegistry blocked while the MCP gateway was reconfiguring — b.mu is held across the network call")
+	}
+
+	// A writer must get in too: a queued writer is what stops every
+	// subsequent reader under Go's RWMutex, so this is the stricter check.
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		b.mu.Lock()
+		b.mcpWorkDir = "/tmp/probe"
+		b.mu.Unlock()
+	}()
+	select {
+	case <-writerDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("a builder writer blocked while the MCP gateway was reconfiguring")
+	}
+
+	release()
+	select {
+	case <-reconfigureDone:
+	case <-time.After(20 * time.Second):
+		t.Fatal("ReconfigureMCP did not return after the endpoint was released")
+	}
+}
+
+// The start path (no gateway yet, i.e. startup failed earlier) also dials, so
+// it must not hold b.mu either.
+func TestReconfigureMCP_StartPathDoesNotHoldBuilderLock(t *testing.T) {
+	url, entered, _, release := hangingMCPServer(t)
+	defer release()
+
+	b := &OrchestratorBuilder{
+		registry: tools.NewToolRegistry(),
+		mcpDone:  closedChan(), // gateway == nil: startup failed earlier
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = b.ReconfigureMCP(context.Background(), hangingServerConfig(url))
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(15 * time.Second):
+		t.Fatal("StartGateway never reached the MCP endpoint")
+	}
+
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		_ = b.ModelRegistry()
+	}()
+	select {
+	case <-readerDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("ModelRegistry blocked while StartGateway was dialing — b.mu is held across the network call")
+	}
+
+	release()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("ReconfigureMCP did not return")
+	}
+}
+
+// gatewayInitMu serializes the start path so two concurrent callers cannot
+// each dial a gateway of their own and leave one orphaned (an orphan keeps its
+// stdio subprocesses running). While the first caller is parked inside
+// StartGateway, the second must not have reached the endpoint at all.
+func TestReconfigureMCP_ConcurrentStartsSerialized(t *testing.T) {
+	url, entered, hits, release := hangingMCPServer(t)
+	defer release()
+
+	b := &OrchestratorBuilder{
+		registry: tools.NewToolRegistry(),
+		mcpDone:  closedChan(),
+	}
+
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = b.ReconfigureMCP(context.Background(), hangingServerConfig(url))
+		}()
+	}
+
+	select {
+	case <-entered:
+	case <-time.After(15 * time.Second):
+		release()
+		wg.Wait()
+		t.Fatal("no caller reached the MCP endpoint")
+	}
+	// Give the second caller a chance to (incorrectly) dial in parallel.
+	time.Sleep(500 * time.Millisecond)
+	if got := hits.Load(); got != 1 {
+		release()
+		wg.Wait()
+		t.Fatalf("endpoint received %d requests while the first start was in flight, want 1 (the start path must be serialized)", got)
+	}
+
+	release()
+	wg.Wait()
+
+	b.mu.RLock()
+	gw := b.gateway
+	b.mu.RUnlock()
+	if gw == nil {
+		t.Error("no gateway was published after the start path completed")
+	}
+}
+
+// The proxy client must be read under b.mu: RebuildProxy writes it
+// concurrently. Run under -race to catch a regression.
+func TestReconfigureMCP_ProxyClientReadIsSynchronized(t *testing.T) {
+	url, entered, _, release := hangingMCPServer(t)
+	defer release()
+
+	b := &OrchestratorBuilder{
+		registry: tools.NewToolRegistry(),
+		gateway:  newFailingGateway(t),
+		mcpDone:  closedChan(),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = b.ReconfigureMCP(context.Background(), hangingServerConfig(url))
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the gateway reconfigure never reached the MCP endpoint")
+	}
+
+	// Hammer the field the way RebuildProxy does.
+	stop := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			b.mu.Lock()
+			b.proxyClient = &http.Client{}
+			b.mu.Unlock()
+			b.mu.Lock()
+			b.proxyClient = nil
+			b.mu.Unlock()
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	close(stop)
+	// Bounded: if b.mu were held across the network call again, the writer
+	// would be parked on b.mu.Lock forever. Fail with a diagnosis instead of
+	// hanging until the package timeout.
+	select {
+	case <-writerDone:
+	case <-time.After(5 * time.Second):
+		release()
+		<-writerDone
+		t.Fatal("the writer never acquired b.mu — it is held across the gateway reconfigure")
+	}
+	release()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("ReconfigureMCP did not return")
 	}
 }

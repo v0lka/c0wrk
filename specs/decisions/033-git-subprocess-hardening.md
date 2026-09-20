@@ -125,14 +125,14 @@ include-warning applies); **(d)** usability trade-offs, not security gaps:
 `git://` remotes fail closed while `core.gitProxy` is present, and
 include-bearing repositories are unusable in c0wrk on git < 2.45.
 
-Amended 2026-09-19 ([ADR-054](./054-commit-hooks-signing-gate.md)): the
+Amended 2026-09-19 ([ADR-055](./055-commit-hooks-signing-gate.md)): the
 **Hooks: strip and warn** rule below ("repo operations proceed normally")
 and the Consequences claim that legitimate hook-based workflows "never run
 inside c0wrk" are both superseded in scope and must be read in their original
 context — untrusted repositories under the pre-ADR-034 trust semantics.
 Since ADR-034 a *trusted* repository runs its own hooks (the "never run"
 claim was already scoped away from trusted roots by that decision). Since
-ADR-054 the commit boundary no longer "proceeds normally" either: an
+ADR-055 the commit boundary no longer "proceeds normally" either: an
 untrusted repository arming commit-family hooks or signing has its commit
 **withheld** (`CommitResult.Suppressed`, a non-error decision request) for an
 explicit force-or-trust decision instead of landing stripped — the commit is
