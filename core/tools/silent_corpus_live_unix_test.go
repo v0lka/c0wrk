@@ -289,9 +289,10 @@ func newCorpusLiveRegistries(t *testing.T, judge *sdktools.ToolJudge, bash *buil
 
 // replayCorpusLive runs every fixture through the real pipeline with the real
 // judge. The ctx construction mirrors replayCorpus event-for-event (workspace,
-// session-temp root + D binding, workdir mirroring, analysis precompute) —
-// the ONLY difference is that no stub verdict is scripted: the registry's own
-// silent terminal consults the live strict judge.
+// session-temp root, workdir mirroring, analysis precompute — and, as in
+// production, no shell-variable binding) — the ONLY difference is that no stub
+// verdict is scripted: the registry's own silent terminal consults the live
+// strict judge.
 func replayCorpusLive(t *testing.T, cases []silentCorpusCase, judge *sdktools.ToolJudge, counter *liveCallCounter) (corpusReplayOutcome, []liveCorpusRecord) {
 	t.Helper()
 
@@ -308,7 +309,6 @@ func replayCorpusLive(t *testing.T, cases []silentCorpusCase, judge *sdktools.To
 		ctx := sdktools.WithWorkspacePathNoProbe(context.Background(), c.Workspace)
 		if temp := corpusSessionTemp(c.Command); temp != "" {
 			ctx = sdktools.WithTempDir(ctx, temp)
-			ctx = sdktools.WithShellVarBindings(ctx, map[string]string{"D": temp})
 		}
 		if c.Workdir != "" && !corpusPathWithinAnyRoot(ctx, c.Workdir) && !corpusWithinHostTemp(c.Workdir) {
 			ctx = sdktools.WithAllowedRoots(ctx, []string{c.Workdir})

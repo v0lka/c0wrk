@@ -57,6 +57,13 @@ export function parseSegments(content: string): Segment[] {
             let path = raw
             if (path.length >= 2 && path.startsWith("'") && path.endsWith("'")) {
                 path = path.slice(1, -1)
+            } else if (path.startsWith("'") && !path.endsWith("'")) {
+                // Unterminated quoted ref (@'my file — the quoted alternative
+                // of REF_PATTERN never matches, so the bare alternative
+                // captured the lone opening quote). Strip just that quote so
+                // the file chip label carries no stray apostrophe; mirrors
+                // cmChatAutocomplete.fileSource's token.startsWith("'") handling.
+                path = path.slice(1)
             } else {
                 path = path.replace(/\\ /g, ' ')
             }

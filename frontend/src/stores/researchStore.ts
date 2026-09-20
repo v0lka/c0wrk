@@ -265,7 +265,7 @@ export const useResearchStore = create<ResearchStore>((set) => ({
       // next step is dropped too — it is phase-derived per project, and the
       // next-step fetch is best-effort (a failure would otherwise leave the
       // OLD project's recommendation rendering indefinitely). Same-project
-      // reloads (research:changed refreshes, toggle) keep both —
+      // reloads (research:changed refreshes) keep both —
       // same-project active-R-NNN transitions are handled by the composite
       // selection keys (selectedHypothesisProjectId /
       // activeHypothesisResearchId) instead.

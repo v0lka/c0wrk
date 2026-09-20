@@ -443,7 +443,6 @@ func TestSilentJudgeMemo_CorpusPairSameTerminal(t *testing.T) {
 		ctx := sdktools.WithWorkspacePathNoProbe(context.Background(), c.Workspace)
 		if temp := corpusSessionTemp(c.Command); temp != "" {
 			ctx = sdktools.WithTempDir(ctx, temp)
-			ctx = sdktools.WithShellVarBindings(ctx, map[string]string{"D": temp})
 		}
 		if c.Workdir != "" && !corpusPathWithinAnyRoot(ctx, c.Workdir) && !corpusWithinHostTemp(c.Workdir) {
 			ctx = sdktools.WithAllowedRoots(ctx, []string{c.Workdir})

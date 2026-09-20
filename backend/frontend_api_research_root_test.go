@@ -347,7 +347,7 @@ func TestResearchRPC_DeleteResearchLastProject(t *testing.T) {
 		t.Fatalf("DeleteResearch: %v", err)
 	}
 	if !status.Enabled {
-		t.Error("Enabled = false, want true (the RESEARCH toggle survives deleting the last project)")
+		t.Error("Enabled = false, want true (RESEARCH stays available after deleting the last project)")
 	}
 	if status.Root != nil && len(status.Root.Projects) != 0 {
 		t.Errorf("Root.Projects = %d, want 0", len(status.Root.Projects))

@@ -10,16 +10,23 @@ import (
 // defaultAutonomyPolicy derives the deciding sub-policy for a decision that
 // reached the emit boundary without one (audit completeness §6.3: 5 of 8
 // TRUE_DENY corpus events carried policy=None — the audit trail lost the
-// mechanism that decided). tool_confirm and assisted_deny decisions are taken
-// by the strict judge ("judge"); a step_limit boundary resolves under the
-// "auto" sub-policy (kind literal mirrors backend's unexported
-// autonomyDecisionKindStepLimit — the session package owns the wire view).
+// mechanism that decided). The known kinds are switched explicitly:
+// tool_confirm and assisted_deny decisions are taken by the strict judge
+// ("judge"); a step_limit boundary resolves under the "auto" sub-policy (kind
+// literal mirrors backend's unexported autonomyDecisionKindStepLimit — the
+// session package owns the wire view). An empty or unrecognized kind returns
+// the explicit "unknown" sentinel rather than a plausible-looking decider, so
+// the audit gap is visible in the data itself (the accompanying Warn is not
+// the only signal) and never names a sub-policy that did not take the
+// decision.
 func defaultAutonomyPolicy(kind string) string {
 	switch kind {
 	case "step_limit":
 		return "auto"
-	default:
+	case "tool_confirm", "assisted_deny":
 		return coretools.SilentToolConfirmJudge
+	default:
+		return "unknown"
 	}
 }
 

@@ -979,7 +979,7 @@ func TestProjectWorkDir_IsolationByProject(t *testing.T) {
 	}
 }
 
-func TestCreateTablesMigrationDropsResearchRootIdempotent(t *testing.T) {
+func TestCreateTablesRetainsLegacyResearchRootColumn(t *testing.T) {
 	db := openTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -998,16 +998,19 @@ func TestCreateTablesMigrationDropsResearchRootIdempotent(t *testing.T) {
 		t.Fatalf("failed to create legacy projects table: %v", err)
 	}
 	if !(&SQLiteProjectStore{db: db}).columnExists("projects", "research_root") {
-		t.Fatal("research_root column should exist before migration")
+		t.Fatal("research_root column should exist before construction")
 	}
 
-	// First construction drops the legacy column.
+	// Construction must leave the column alone: the destructive DROP was
+	// removed, so research_root is retained physically (the DTO no longer
+	// reads or writes it, but keeping it costs nothing and preserves
+	// backward/forward compatibility).
 	store1, err := NewSQLiteProjectStore(db)
 	if err != nil {
 		t.Fatalf("first NewSQLiteProjectStore: %v", err)
 	}
-	if store1.columnExists("projects", "research_root") {
-		t.Fatal("research_root column should be dropped after migration")
+	if !store1.columnExists("projects", "research_root") {
+		t.Fatal("research_root column must be retained (no destructive DROP migration)")
 	}
 
 	// Second construction must be a no-op (idempotent) — not error.
@@ -1015,8 +1018,8 @@ func TestCreateTablesMigrationDropsResearchRootIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second NewSQLiteProjectStore should be idempotent, got: %v", err)
 	}
-	if store2.columnExists("projects", "research_root") {
-		t.Fatal("research_root column should still be absent after re-migration")
+	if !store2.columnExists("projects", "research_root") {
+		t.Fatal("research_root column must still be present after re-construction")
 	}
 }
 
@@ -1025,8 +1028,9 @@ func TestCreateTablesMigrationResearchPins_LegacyTableUpgraded(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	// Simulate a database written by an older build: the projects table
-	// predates the research_pins column and still carries the obsolete
-	// research_root column, which the migration drops.
+	// predates the research_pins column and still carries the legacy
+	// research_root column, which is now retained physically (no DROP
+	// migration).
 	const legacySchema = `
 	CREATE TABLE projects (
 		id TEXT PRIMARY KEY,
@@ -1055,8 +1059,8 @@ func TestCreateTablesMigrationResearchPins_LegacyTableUpgraded(t *testing.T) {
 	if !store.columnExists("projects", "research_pins") {
 		t.Fatal("research_pins column should exist after migrating a legacy table")
 	}
-	if store.columnExists("projects", "research_root") {
-		t.Fatal("research_root column should be dropped when migrating a legacy table")
+	if !store.columnExists("projects", "research_root") {
+		t.Fatal("research_root column must be retained (the destructive DROP migration was removed)")
 	}
 
 	// Existing rows survive the migration; pins coalesce to the zero value

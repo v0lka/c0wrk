@@ -212,3 +212,49 @@ func TestApplyGroupPolicies_PreservesAutonomyPosture(t *testing.T) {
 		t.Errorf("silent mode = %+v, want %+v (preserved)", got, on)
 	}
 }
+
+// TestApplyAutonomyPostureIfTightening pins the de-escalation exception to
+// per-task posture pinning: a TIGHTENING posture (a strictly-less-automatic
+// rank) is applied so a revoked unattended posture stops auto-approving a
+// running task immediately, while an equal-or-looser (escalation) posture is
+// ignored so a task can never silently BECOME unattended mid-run.
+func TestApplyAutonomyPostureIfTightening(t *testing.T) {
+	tightened := SilentModeState{ToolConfirm: "deny", StepLimit: "stop", AskUser: "disable", ReviewPrompt: "suppress"}
+	seed := SilentModeState{ToolConfirm: "judge"}
+	tests := []struct {
+		name      string
+		from      string
+		to        string
+		toSilent  SilentModeState
+		wantApply bool
+	}{
+		{"silent to standard tightens", AutonomyModeSilent, AutonomyModeStandard, SilentModeState{}, true},
+		{"silent to assisted tightens", AutonomyModeSilent, AutonomyModeAssisted, SilentModeState{}, true},
+		{"assisted to standard tightens", AutonomyModeAssisted, AutonomyModeStandard, SilentModeState{}, true},
+		{"standard to silent escalates (pinned)", AutonomyModeStandard, AutonomyModeSilent, tightened, false},
+		{"assisted to silent escalates (pinned)", AutonomyModeAssisted, AutonomyModeSilent, tightened, false},
+		{"standard to assisted escalates (pinned)", AutonomyModeStandard, AutonomyModeAssisted, tightened, false},
+		{"silent to silent equal (no change)", AutonomyModeSilent, AutonomyModeSilent, tightened, false},
+		{"unknown ranks as standard (no change)", AutonomyModeStandard, "weird", tightened, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewToolRegistry()
+			r.ApplySecurityState(nil, false, tt.from, seed)
+			got := r.ApplyAutonomyPostureIfTightening(tt.to, tt.toSilent)
+			if got != tt.wantApply {
+				t.Fatalf("ApplyAutonomyPostureIfTightening(%q) = %v, want %v", tt.to, got, tt.wantApply)
+			}
+			wantMode, wantSilent := tt.from, seed
+			if tt.wantApply {
+				wantMode, wantSilent = tt.to, tt.toSilent
+			}
+			if gotMode := r.AutonomyMode(); gotMode != wantMode {
+				t.Errorf("autonomy mode = %q, want %q", gotMode, wantMode)
+			}
+			if gotSilent := r.SilentMode(); gotSilent != wantSilent {
+				t.Errorf("silent mode = %+v, want %+v", gotSilent, wantSilent)
+			}
+		})
+	}
+}

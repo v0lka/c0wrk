@@ -364,7 +364,7 @@ func (f *FrontendAPI) RecordFlashcardReview(projectID, paperID, cardID, grade st
 // No Project pseudo-project or a project without a workspace, where the
 // research/papers subsystems are unavailable. Used by the project switch (to
 // track the active library for the watcher) and by the watcher setup (to
-// recursively watch the library independently of the RESEARCH toggle).
+// recursively watch the library for every real project).
 func papersRootForProject(p *project.ProjectInfo) string {
 	root := effectiveResearchRoot(p)
 	if root == "" {
@@ -376,8 +376,8 @@ func papersRootForProject(p *project.ProjectInfo) string {
 // comparisonsRootForProject returns the multi-paper comparison root for a
 // project: the "comparisons" subdirectory of its effective research root. Like
 // the paper library it is a global subdirectory of the research root and is
-// watched independently of the RESEARCH toggle, so a comparison artifact
-// written in hybrid mode still refreshes the Compare section. It returns "" for
+// watched for every real project, so a comparison artifact written before any
+// R-NNN exists still refreshes the Compare section. It returns "" for
 // the No Project pseudo-project or a project without a workspace.
 func comparisonsRootForProject(p *project.ProjectInfo) string {
 	root := effectiveResearchRoot(p)
@@ -403,15 +403,15 @@ func effectiveResearchRoot(p *project.ProjectInfo) string {
 // returns true when at least one path was scoped to either root.
 //
 // BOTH roots are global subdirectories of the research root (papers/ and
-// comparisons/) and BOTH are watched regardless of the RESEARCH toggle, so an
-// artifact written in hybrid mode (RESEARCH off) still refreshes the UI: the
+// comparisons/) and BOTH are watched for every real project, so an artifact
+// written before any R-NNN exists still refreshes the UI: the
 // frontend's papers:changed handler refetches the library and bumps its sync
 // key, which the Compare section subscribes to as a refresh key.
 //
-// Unlike emitResearchFileChanged this is NOT gated on RESEARCH mode: the roots
-// are watched independently, so an edit to a paper card or a comparison
-// artifact emits the event even when RESEARCH is disabled (hybrid mode) and
-// regardless of whether any R-NNN exists.
+// Like emitResearchFileChanged, this is a workspace-watcher callback scoped to
+// a subdirectory of the canonical research root of a real project: an edit to a
+// paper card or a comparison artifact emits the event regardless of which
+// research project (if any) is active.
 //
 // The caller must pass already-snapshotted papersRoot, comparisonsRoot, and
 // projectID (read under activeProjectMu) to avoid the data race between the

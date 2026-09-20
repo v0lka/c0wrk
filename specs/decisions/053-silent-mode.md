@@ -94,6 +94,24 @@ task therefore always runs under the posture the user last saved before the
 task launched: enabling `silent` can never convert a task that already
 started interactive mid-run, and a paused task resumed after a Settings
 change runs under the current Settings — exactly like launching a new task.
+
+**De-escalation (tightening) direction (amended in place).** The pinning
+above covers only the **escalation** direction — a task can never silently
+*become* unattended mid-run. The reverse direction must not fail open: an
+operator who revokes an unattended posture (Security back to
+`assisted`/`standard`) while a task runs expects the running task to stop
+auto-approving immediately, but under pinning-only the task would keep
+resolving gated calls through the silent terminal — which, in `judge` mode,
+deliberately drops the canonical-hard-reason backstop — until it ends or is
+paused/resumed. A Settings save therefore also pushes the posture to each
+live clone through `ToolRegistry.ApplyAutonomyPostureIfTightening`, which
+applies the new posture **only** when it ranks strictly less automatic than
+the clone's current one (`autonomyModeRank`: `silent`=2, `assisted`=1,
+`standard`/unknown=0). An equal-or-looser save is ignored (pinning preserved);
+a tightening save reaches a running clone at once. Net contract: a task can
+never silently become unattended mid-run, but a revocation takes effect
+immediately.
+
 Two registration-scoped exceptions follow Settings immediately for every
 session (documented boundaries of the pinning, both fail-safe in the
 tightening direction): the execute blocklist (re-registered on the shared

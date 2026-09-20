@@ -136,6 +136,76 @@ func TestCanonicalHardReasonCodes_ClassificationTable(t *testing.T) {
 	}
 }
 
+// TestSplitSafetyReasons_CanonicalSymlinkNotMaskedByNonCanonicalJudge pins the
+// canonicality-aware fold: when the tool-local judge reports a HARD but
+// NON-canonical reason (the flowsh ⊤ limitation) while the symlink gate
+// independently reports a CANONICAL escape, the folded reason must carry the
+// canonical symlink code so isCanonicalHardReason — the deterministic
+// backstop consulted by smartApproveOrConfirm and ExecuteUnattended — still
+// sees the canonical signal. Every other fold combination is unchanged.
+func TestSplitSafetyReasons_CanonicalSymlinkNotMaskedByNonCanonicalJudge(t *testing.T) {
+	const (
+		symlinkReason = "symlink escapes the session roots"
+		judgeReason   = "command could not be bounded"
+	)
+	tests := []struct {
+		name          string
+		judge         sdktools.JudgeOutcome
+		symlinkReason string
+		symlinkCode   sdktools.JudgeReasonCode
+		wantHard      string
+		wantCode      sdktools.JudgeReasonCode
+	}{
+		{
+			name: "canonical symlink survives a non-canonical judge hard reason",
+			judge: sdktools.JudgeOutcome{
+				Allow:      false,
+				Reason:     judgeReason,
+				Severity:   sdktools.JudgeSeverityHard,
+				ReasonCode: sdktools.ReasonCodeCommandUnboundedAnalysis,
+			},
+			symlinkReason: symlinkReason,
+			symlinkCode:   sdktools.ReasonCodeSymlinkEscape,
+			wantHard:      symlinkReason,
+			wantCode:      sdktools.ReasonCodeSymlinkEscape,
+		},
+		{
+			name: "canonical judge hard reason still wins over a canonical symlink",
+			judge: sdktools.JudgeOutcome{
+				Allow:      false,
+				Reason:     "command matches blacklist pattern: mkfs",
+				Severity:   sdktools.JudgeSeverityHard,
+				ReasonCode: sdktools.ReasonCodeCommandBlacklist,
+			},
+			symlinkReason: symlinkReason,
+			symlinkCode:   sdktools.ReasonCodeSymlinkEscape,
+			wantHard:      "command matches blacklist pattern: mkfs",
+			wantCode:      sdktools.ReasonCodeCommandBlacklist,
+		},
+		{
+			name: "non-canonical judge hard reason wins over a non-canonical symlink reason",
+			judge: sdktools.JudgeOutcome{
+				Allow:      false,
+				Reason:     judgeReason,
+				Severity:   sdktools.JudgeSeverityHard,
+				ReasonCode: sdktools.ReasonCodeCommandUnboundedAnalysis,
+			},
+			symlinkReason: "unresolvable path token",
+			symlinkCode:   sdktools.ReasonCodeUnresolvablePathToken,
+			wantHard:      judgeReason,
+			wantCode:      sdktools.ReasonCodeCommandUnboundedAnalysis,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := splitSafetyReasons(tt.judge, tt.symlinkReason, tt.symlinkCode)
+			if got.hard != tt.wantHard || got.hardCode != tt.wantCode {
+				t.Errorf("hard = (%q, %q), want (%q, %q)", got.hard, got.hardCode, tt.wantHard, tt.wantCode)
+			}
+		})
+	}
+}
+
 // TestSymlinkHardReason_ReturnsTypedEscapeCode drives the real host-side
 // symlink gate (sp4rk's walker + this registry's escape classification) and
 // verifies the hard reason carries the canonical ReasonCodeSymlinkEscape the

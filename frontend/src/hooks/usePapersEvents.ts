@@ -6,8 +6,8 @@
 // useResearchStatusEvents). Mounted ONCE at the App root by ResearchEventBridge
 // — PapersView is a pure view over paperStore.
 //
-// The paper library is watched independently of the RESEARCH toggle (hybrid
-// mode), so this hook never gates on RESEARCH. It only skips the No Project
+// The paper library always exists at the canonical research root of a real
+// project, so this hook never gates on any research state. It only skips the No Project
 // pseudo-project (the GetPapers RPC requires a real project).
 //
 // The event path always refetches the ACTIVE project (never the loaded one):

@@ -679,14 +679,19 @@ func liveSendRejectionLocked(session *Session, goal, e2s bool, text string, acti
 // call concurrently with tool execution on another session: nil orchestrator
 // or nil registry (no CoreToolRegistry wired — tests, CLI) is a no-op.
 func (m *Manager) refreshAutonomyPosture(session *Session) {
-	session.mu.Lock()
+	session.mu.RLock()
 	orch := session.orchestrator
-	session.mu.Unlock()
+	session.mu.RUnlock()
 	if orch == nil {
 		return
 	}
 	if reg := orch.ToolRegistry(); reg != nil {
 		reg.RefreshAutonomyPosture()
+		// Scope the silent-mode judge memo to this task: the session's registry
+		// clone outlives the task, so a verdict from the previous task would
+		// otherwise be replayed for an identical effect in this one. See
+		// ToolRegistry.ResetJudgeMemo.
+		reg.ResetJudgeMemo()
 	}
 }
 

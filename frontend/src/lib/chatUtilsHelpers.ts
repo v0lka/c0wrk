@@ -381,6 +381,18 @@ export function buildHistoryId(
         ? `goal-status-${run ?? 'legacy'}-${turn}-${status}`
         : `history-${dbId}`
     }
+    case 'autonomy_decision':
+      // No stable per-decision identifier exists to align the live card with
+      // the reloaded row. The live handler (handleAutonomyDecisionEvent) uses a
+      // random `autonomy-decision-${generateMessageId()}`, while the persisted
+      // metadata is the verbatim Go coretools.AutonomyDecision payload
+      // (core/tools/registry.go) — which carries NO unique id, and whose
+      // `signature` REPEATS across re-escalations of the same effect (it doubles
+      // as the silent-mode judge memo key). Keying on any of those fields would
+      // wrongly dedupe two distinct decisions, so we deliberately keep the
+      // `history-${dbId}` fallback: a decision landing during the history RPC
+      // can duplicate, which is preferable to silently dropping a real one.
+      return `history-${dbId}`
     default:
       return `history-${dbId}`
   }

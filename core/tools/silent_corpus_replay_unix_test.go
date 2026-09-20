@@ -64,8 +64,10 @@ const corpusSnapshotPath = "testdata/silent_corpus/baseline_snapshot.json"
 // ~/.c0wrk/projects/<project>/<session-uuid>/temp layout, handed to the model
 // by the system prompt and used verbatim in its commands (sometimes behind an
 // in-command D=/OUT=/TMP= assignment, which the leading /Users/ anchor
-// skips). AttachShellAnalysis additionally binds D to this directory, so
-// cross-command $D forms resolve into the session roots.
+// skips). It is attached as a session ROOT only: production attaches no shell
+// variable binding (AttachShellAnalysis seeds none), so a $D form resolves
+// only through its own in-command assignment — exactly as the executed shell
+// would resolve it.
 var corpusSessionTempRe = regexp.MustCompile(`/[^\s"';&|]*\.c0wrk/projects/[^/\s"';&|]+/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/temp`)
 
 // corpusSessionTemp returns the embedded session temp directory, or "" when
@@ -223,18 +225,15 @@ func replayCorpus(t *testing.T, cases []silentCorpusCase) corpusReplayOutcome {
 	for _, c := range cases {
 		ctx := sdktools.WithWorkspacePathNoProbe(context.Background(), c.Workspace)
 		// Production fidelity: the executor always attaches the session temp
-		// directory as a session root (sdktools.WithTempDir — it is also the
-		// D-binding source AttachShellAnalysis seeds into the analysis).
-		// Mirror it for fixtures whose command embeds the historical temp
-		// path; without it every temp-writing fixture would look out-of-root
-		// exactly where production sees an in-root write.
+		// directory as a session root (sdktools.WithTempDir). Mirror it for
+		// fixtures whose command embeds the historical temp path; without it
+		// every temp-writing fixture would look out-of-root exactly where
+		// production sees an in-root write. No shell-variable binding is
+		// mirrored: AttachShellAnalysis seeds none (an unassigned $D stays
+		// unset, fail-closed), and every $D fixture here also assigns D in
+		// the command itself, so the analysis is unaffected either way.
 		if temp := corpusSessionTemp(c.Command); temp != "" {
 			ctx = sdktools.WithTempDir(ctx, temp)
-			// AttachShellAnalysis seeds the same D → temp binding into the
-			// analysis; the stub verdict is precomputed from this analysis,
-			// so mirror the binding too (same input → same digest as the
-			// registry's own Execute path).
-			ctx = sdktools.WithShellVarBindings(ctx, map[string]string{"D": temp})
 		}
 		// Production fidelity: bash_exec validates working_directory against
 		// the session roots ∪ os.TempDir() BEFORE execution (sp4rk builtins

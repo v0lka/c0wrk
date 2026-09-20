@@ -42,9 +42,7 @@ interface ProjectInfo {
   workspace_path: string
   is_external: boolean
   is_no_project: boolean
-  research_root: string
   research_pins: { research: string[] | null; hypotheses: Record<string, string[]> | null }
-  is_research: boolean
   created_at: string
   last_active_at: string
 }

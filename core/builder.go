@@ -2484,11 +2484,18 @@ func (b *OrchestratorBuilder) unregisterSessionRegistry(r *tools.ToolRegistry) {
 // resume path) via ToolRegistry.RefreshAutonomyPosture, so a task that
 // started interactive can never silently turn unattended mid-run, and a
 // paused task resumed after a Settings edit runs under the posture the user
-// currently sees in Settings. applySecurityPolicies also reconciles the
-// ask_user tool's registration on the shared registry — ask_user availability
-// is tool-registration-scoped and therefore follows Settings immediately
-// (including for a running task); this is a documented boundary of the
-// pinning contract.
+// currently sees in Settings. The pinning is bidirectional-aware: the
+// escalation direction is pinned as just described, while a TIGHTENING save
+// (a revocation to a less-permissive posture — e.g. Security back to
+// Assisted/Standard while a silent task runs) must not fail open, so each
+// live clone also receives ApplyAutonomyPostureIfTightening, which applies
+// the new posture only when it is tighter than the clone's current one. The
+// result is that a task can never silently BECOME unattended mid-run, but a
+// revocation reaches a running task immediately. applySecurityPolicies also
+// reconciles the ask_user tool's registration on the shared registry — ask_user
+// availability is tool-registration-scoped and therefore follows Settings
+// immediately (including for a running task); this is a documented boundary of
+// the pinning contract.
 //
 // The push holds b.mu across the whole update so a Build racing it cannot
 // miss the new state (see registerSessionRegistry).
@@ -2521,10 +2528,14 @@ func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 	b.registry.ApplySecurityState(groupPolicies, autoApprove, autonomyMode, silentMode)
 	for r := range b.sessionRegistries {
 		// Group policies and auto-approval only: the autonomy posture is
-		// pinned per task (see the method comment) — a clone re-syncs it
-		// from the shared registry at task launch via
-		// RefreshAutonomyPosture, never mid-run.
+		// pinned per task (see the method comment) — a clone re-syncs an
+		// ESCALATION from the shared registry at task launch via
+		// RefreshAutonomyPosture, never mid-run. The one mid-run exception is
+		// the DE-ESCALATION (tightening) direction: a revoked unattended
+		// posture must stop auto-approving immediately, so push it here when
+		// it is tighter than the posture the clone currently holds.
 		r.ApplyGroupPolicies(groupPolicies, autoApprove)
+		r.ApplyAutonomyPostureIfTightening(autonomyMode, silentMode)
 	}
 	// ask_user lives in the shared sp4rk registry the session clones embed, so
 	// re-registering it here reaches live sessions immediately — a runtime

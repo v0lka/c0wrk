@@ -101,6 +101,26 @@ describe('parseSegments', () => {
     expect(file.path).toBe('my file.go')
   })
 
+  it("strips the stray leading quote of an unterminated quoted ref (@'alpha.go)", () => {
+    // An unbalanced @'… (open quote, no close) makes the quoted alternative of
+    // REF_PATTERN fail, so the bare alternative captures the lone leading
+    // quote. It must be stripped so the file chip label shows no stray
+    // apostrophe.
+    const segs = parseSegments("@'alpha.go")
+    expect(segs).toHaveLength(1)
+    const file = segs[0]!
+    expect(file.type).toBe('file')
+    expect(file.path).toBe('alpha.go')
+  })
+
+  it("strips the leading quote of an unterminated quoted ref inside prose", () => {
+    const segs = parseSegments("open @'my file")
+    const file = segs.find((s) => s.type === 'file')
+    expect(file).toBeDefined()
+    expect(file!.path).toBe('my')
+    expect(file!.path!.startsWith("'")).toBe(false)
+  })
+
   it('does NOT capture a #agent mention glued inside a quoted file ref', () => {
     // A quoted path may contain a word that looks like an agent mention; the
     // '#' there has no preceding whitespace and must stay part of the file.

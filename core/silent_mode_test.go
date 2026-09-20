@@ -9,15 +9,19 @@ import (
 	"github.com/v0lka/c0wrk/core/tools"
 )
 
-// TestApplySecurityPolicies_PinsAutonomyToTaskLaunch verifies the per-task
-// autonomy pinning contract: a runtime push updates the shared registry (the
-// authoritative posture source) and the group policies of every live session
-// clone, but NEVER the autonomy mode or the silent-mode sub-policies of a
-// clone — those are pinned at task launch (ToolRegistry.RefreshAutonomyPosture,
-// called by the session manager at fresh sends and every resume path), so a
-// task that started interactive can never silently turn unattended mid-run,
-// and a paused task resumed after a Settings edit runs under the posture the
-// user currently sees in Settings.
+// TestApplySecurityPolicies_PinsAutonomyToTaskLaunch verifies the
+// one-directional per-task autonomy pinning contract: a runtime push updates
+// the shared registry (the authoritative posture source) and the group policies
+// of every live session clone. A clone's autonomy mode + silent-mode
+// sub-policies are pinned at task launch
+// (ToolRegistry.RefreshAutonomyPosture, called by the session manager at fresh
+// sends and every resume path), so a task that started interactive can never
+// silently turn MORE autonomous mid-run. The opposite (TIGHTENING) direction is
+// NOT pinned: a revocation save (a less-permissive posture than the clone is
+// running) IS delivered to a running clone immediately via
+// ToolRegistry.ApplyAutonomyPostureIfTightening, so switching back to Standard
+// stops a running silent task from auto-approving instead of deferring the
+// revocation until the task ends or is resumed.
 func TestApplySecurityPolicies_PinsAutonomyToTaskLaunch(t *testing.T) {
 	cfgOf := func(mode string, sm BuilderSilentModeConfig) *BuilderConfig {
 		return &BuilderConfig{
@@ -67,11 +71,17 @@ func TestApplySecurityPolicies_PinsAutonomyToTaskLaunch(t *testing.T) {
 		t.Errorf("post-refresh session silent mode = %+v, want %+v", got, want)
 	}
 
-	// Turning it back off: the shared registry updates, the pinned clone
-	// keeps its posture until its next task launch.
+	// Turning it back off is a TIGHTENING save (silent → standard): the shared
+	// registry updates AND the revocation reaches the running clone immediately
+	// — a task must not keep auto-approving after the operator reasserts human
+	// control (only the escalation direction is pinned). The clone's silent
+	// sub-policies are cleared along with the mode.
 	b.UpdateSecurityPolicies(cfgOf(AutonomyModeStandard, BuilderSilentModeConfig{}))
-	if got := session.AutonomyMode(); got != AutonomyModeSilent {
-		t.Errorf("session autonomy mode must stay pinned between task launches, got %q", got)
+	if got := session.AutonomyMode(); got != AutonomyModeStandard {
+		t.Errorf("session autonomy mode must follow a tightening save, got %q", got)
+	}
+	if got := session.SilentMode(); got != (tools.SilentModeState{}) {
+		t.Errorf("session silent mode must be cleared by a tightening save, got %+v", got)
 	}
 	if got := b.registry.AutonomyMode(); got != AutonomyModeStandard {
 		t.Errorf("shared registry autonomy mode = %q, want %q", got, AutonomyModeStandard)

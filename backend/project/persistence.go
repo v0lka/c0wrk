@@ -68,16 +68,11 @@ func (s *SQLiteProjectStore) createTables() error {
 		return err
 	}
 
-	// Migration: drop the legacy research_root column. RESEARCH is now always
-	// on for real projects (the root is derived from the workspace path), so
-	// the persisted toggle column is obsolete. Idempotent — skipped when the
-	// column has already been dropped.
-	if s.columnExists("projects", "research_root") {
-		if _, err := s.db.ExecContext(context.Background(),
-			`ALTER TABLE projects DROP COLUMN research_root`); err != nil {
-			return fmt.Errorf("failed to migrate projects.research_root: %w", err)
-		}
-	}
+	// The legacy research_root column is intentionally retained physically: a
+	// DROP is destructive, irreversible and fail-hard (it can abort startup),
+	// and the DTO no longer reads or writes the column, so keeping it costs
+	// nothing while preserving backward/forward compatibility for a downgrade.
+	// No migration is performed for it here.
 
 	// Migration: add nullable research_pins column to projects for persisting
 	// the per-project pinned research artifacts (documents + hypothesis cards)

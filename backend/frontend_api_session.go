@@ -569,7 +569,12 @@ func (f *FrontendAPI) GetSessionRuntimeStatus(id string) (session.SessionRuntime
 
 // GetSessionHistory returns the session's full content history, oldest-first,
 // in a single call. Non-content activity rows (thinking, step_done) are
-// omitted and there is no pagination.
+// omitted.
+//
+// DELIBERATE TRADE-OFF: this is intentionally unpaginated — the former 200-row
+// page size and the 2000-row backend cap were removed because the full set is
+// needed for plan-timeline restore, so NO numeric ceiling remains on the
+// initial-load cost. See SQLiteSessionStore.LoadSessionHistory.
 func (f *FrontendAPI) GetSessionHistory(id string) ([]session.ChatMessage, error) {
 	if f.store == nil {
 		return []session.ChatMessage{}, nil

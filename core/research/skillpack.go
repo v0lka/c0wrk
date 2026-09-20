@@ -1,7 +1,9 @@
-// Package research provides the RESEARCH mode skill-pack: a versioned,
+// Package research provides the RESEARCH-mode skill-pack: a versioned,
 // embed-bundled set of the seven research-* skills (sourced from the
-// engineering skills set) that are seeded into a project's local
-// `.agents/skills` directory when RESEARCH mode is enabled.
+// engineering skills set). FrontendAPI.seedGlobalPacks seeds them into the
+// global c0wrk skills directory (`~/.c0wrk/.agents/skills`) once per launch,
+// before the skill watchers start; RESEARCH is always on for real projects, so
+// there is no per-project enable step.
 //
 // Seeding is idempotent, crash-safe, and non-destructive to user-authored
 // skills. Classification compares the CONTENT HASH of the on-disk tree
@@ -26,11 +28,11 @@
 //   - An existing directory with NO marker whose content differs from the
 //     pack is user-owned and never clobbered.
 //
-// Because seeded skills land in the project-local `.agents/skills`
-// directory — which the per-session SkillManager always prepends to its
-// discovery list — they enter the router catalog automatically; no catalog
-// change is required. The activating API layer (see Task 6) computes the
-// destination via config.ProjectSkillsPath and passes it to SeedSkills.
+// Because the seeded skills land in the global c0wrk skills directory — which
+// the per-session SkillManager discovers (a project-local `.agents/skills`
+// copy still outranks it) — they enter the router catalog automatically; no
+// catalog change is required. FrontendAPI.seedGlobalPacks resolves the
+// destination global skills directory and passes it to SeedSkills.
 package research
 
 import (
@@ -60,7 +62,7 @@ const embedRoot = "skills"
 
 // CurrentSeedVersion is the pack version stamped into each seeded skill's
 // sidecar marker. Bump this when the embedded skill content changes and
-// existing seeded copies should be refreshed on the next EnableResearch.
+// existing seeded copies should be refreshed on the next seed run.
 const CurrentSeedVersion = "2"
 
 // seedVersionFile is the sidecar marker filename written into every seeded

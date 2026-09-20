@@ -14,9 +14,9 @@ import (
 //
 // Contract under test: the pin RPCs (SetResearchPinned / SetHypothesisPinned /
 // DeleteResearch) re-load the projects row INSIDE the per-root mutation mutex
-// and persist only their pins delta, and EnableResearch / DisableResearch take
-// the same mutex — so no full-row save can clobber row state committed by a
-// serialized writer (another pin toggle, an enable/disable root change).
+// and persist only their pins delta, and every other row writer takes the same
+// mutex — so no full-row save can clobber row state committed by a serialized
+// writer (another pin toggle, a concurrent root change).
 
 // rowLoadSignalingStore wraps a ProjectStore, signaling a buffered channel on
 // every LoadProject call. It gives the lost-update tests a deterministic

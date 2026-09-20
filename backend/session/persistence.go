@@ -702,8 +702,16 @@ func (s *SQLiteSessionStore) UpdateSessionActivity(ctx context.Context, id strin
 	return nil
 }
 
-// SaveMessage saves a chat message.
-func (s *SQLiteSessionStore) SaveMessage(ctx context.Context, msg ChatMessage) error {
+// execer is the minimal exec surface shared by *sql.DB and *sql.Tx, so the
+// message INSERT can run inside a transaction (ReplaceStepTodoUpdate) or
+// autocommit (SaveMessage) without duplicating the SQL.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// insertMessage writes the chat message INSERT through ex. It is the shared
+// body of SaveMessage and the transactional ReplaceStepTodoUpdate path.
+func (s *SQLiteSessionStore) insertMessage(ctx context.Context, ex execer, msg ChatMessage) error {
 	var reasoningVal, toolCallsVal any
 	if msg.ReasoningContent != nil {
 		reasoningVal = *msg.ReasoningContent
@@ -711,7 +719,7 @@ func (s *SQLiteSessionStore) SaveMessage(ctx context.Context, msg ChatMessage) e
 	if msg.ToolCalls != nil && len(*msg.ToolCalls) > 0 {
 		toolCallsVal = string(*msg.ToolCalls)
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := ex.ExecContext(ctx, `
 		INSERT INTO session_messages (session_id, role, content, reasoning_content, tool_calls, metadata, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		msg.SessionID, msg.Role, msg.Content, reasoningVal, toolCallsVal, string(msg.Metadata), msg.CreatedAt,
@@ -720,6 +728,11 @@ func (s *SQLiteSessionStore) SaveMessage(ctx context.Context, msg ChatMessage) e
 		return fmt.Errorf("failed to save message: %w", err)
 	}
 	return nil
+}
+
+// SaveMessage saves a chat message.
+func (s *SQLiteSessionStore) SaveMessage(ctx context.Context, msg ChatMessage) error {
+	return s.insertMessage(ctx, s.db, msg)
 }
 
 // ReplaceStepTodoUpdate persists a step_todo_update checklist message with
@@ -731,13 +744,30 @@ func (s *SQLiteSessionStore) SaveMessage(ctx context.Context, msg ChatMessage) e
 // appends the new one. The Conductor emits a checklist update after every tool
 // call, so this is what bounds session_messages growth: one row per step.
 //
+// The SELECT, all DELETEs and the INSERT run inside a SINGLE transaction, so
+// the replace is atomic: either the stale rows are replaced by msg or nothing
+// changes. This matters because the delete-then-insert window would otherwise
+// leave a step with no checklist row at all if the INSERT failed (e.g.
+// SQLITE_FULL, SQLITE_BUSY) after the DELETEs had already committed — a silent
+// loss of a persisted UI row.
+//
 // Matching is done on metadata.step_id in Go (the same approach as
 // ResolvePendingMessage) rather than via SQL json_extract, so it does not depend
 // on the JSON1 extension being compiled into the driver. stepID may be empty for
 // a standalone checklist (Conductor without a plan); all empty-step_id updates
 // then collapse onto a single row.
 func (s *SQLiteSessionStore) ReplaceStepTodoUpdate(ctx context.Context, sessionID, stepID string, msg ChatMessage) error {
-	rows, err := s.db.QueryContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin step_todo_update replace transaction: %w", err)
+	}
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			s.log().Warn("failed to roll back step_todo_update replace", "error", rbErr)
+		}
+	}()
+
+	rows, err := tx.QueryContext(ctx, `
 		SELECT id, metadata FROM session_messages
 		WHERE session_id = ? AND role = 'step_todo_update'`,
 		sessionID,
@@ -745,17 +775,15 @@ func (s *SQLiteSessionStore) ReplaceStepTodoUpdate(ctx context.Context, sessionI
 	if err != nil {
 		return fmt.Errorf("failed to query step_todo_update messages: %w", err)
 	}
-	defer func() {
-		if cerr := rows.Close(); cerr != nil {
-			s.log().Warn("failed to close database rows", "error", cerr)
-		}
-	}()
 
 	var staleIDs []int64
 	for rows.Next() {
 		var id int64
 		var metadataStr string
 		if err := rows.Scan(&id, &metadataStr); err != nil {
+			if cerr := rows.Close(); cerr != nil {
+				s.log().Warn("failed to close database rows", "error", cerr)
+			}
 			return fmt.Errorf("failed to scan step_todo_update message: %w", err)
 		}
 		var meta map[string]any
@@ -767,22 +795,29 @@ func (s *SQLiteSessionStore) ReplaceStepTodoUpdate(ctx context.Context, sessionI
 		}
 	}
 	if err := rows.Err(); err != nil {
+		if cerr := rows.Close(); cerr != nil {
+			s.log().Warn("failed to close database rows", "error", cerr)
+		}
 		return fmt.Errorf("error iterating step_todo_update messages: %w", err)
 	}
-	// Release the read cursor before the writes below so it does not keep a pool
-	// connection checked out (the read and the writes are separate autocommit
-	// transactions; WAL lets a writer proceed without blocking readers).
 	if cerr := rows.Close(); cerr != nil {
 		s.log().Warn("failed to close database rows", "error", cerr)
 	}
 
 	for _, id := range staleIDs {
-		if _, err := s.db.ExecContext(ctx, `DELETE FROM session_messages WHERE id = ?`, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM session_messages WHERE id = ?`, id); err != nil {
 			return fmt.Errorf("failed to delete stale step_todo_update message: %w", err)
 		}
 	}
 
-	return s.SaveMessage(ctx, msg)
+	if err := s.insertMessage(ctx, tx, msg); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit step_todo_update replace: %w", err)
+	}
+	return nil
 }
 
 // LoadMessages loads all messages for a session ordered by creation time. The
@@ -856,8 +891,17 @@ const nonContentMessageRolesSQL = `('thinking', 'step_done')`
 // (created_at, id) order, excluding the non-content activity roles
 // (nonContentMessageRolesSQL). id is the deterministic tiebreaker for
 // same-second rows (created_at has second granularity). Unlike LoadMessages it
-// drops the thinking/step_done noise; unlike the former paged reader it applies
-// no LIMIT — the caller loads the whole session in one call.
+// drops the thinking/step_done noise.
+//
+// DELIBERATE TRADE-OFF — no numeric bound remains. This is a single
+// unpaginated read: the former paged reader applied a default limit (200) and
+// a max limit (2000), and those limits were intentionally REMOVED, because the
+// FULL row set is required to restore the plan timeline (the plan declaration
+// and every step row must be present on first paint). There is therefore no
+// LIMIT here and no ceiling enforced anywhere on this call path — a
+// pathological session transfers and processes its entire transcript in one
+// call. The bound was dropped on purpose; re-introducing one must preserve
+// timeline restore rather than re-adding a blind LIMIT.
 func (s *SQLiteSessionStore) LoadSessionHistory(ctx context.Context, sessionID string) ([]ChatMessage, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, session_id, role, content, reasoning_content, tool_calls, metadata, created_at

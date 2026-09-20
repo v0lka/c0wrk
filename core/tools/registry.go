@@ -136,16 +136,20 @@ type ToolRegistry struct {
 	// Settings pushes for it.
 	judgeMemoMu sync.Mutex
 	// judgeMemo memoizes silent-mode strict-judge verdicts by the shell
-	// EFFECT signature (ShellAnalysisDigest.Signature) within this
-	// registry's task — Track D of the silent-mode deny-accuracy audit
+	// EFFECT signature (ShellAnalysisDigest.Signature) — Track D of the
+	// silent-mode deny-accuracy audit
 	// (silent-mode-deny-accuracy-recommendations.md §3): the first verdict
 	// for an effect is fixed and replayed verbatim on re-escalation, so
 	// judge non-determinism on identical input (audit pair 961130 allow vs
 	// 961162 deny — the same vitest run, tail -20 vs -15) can no longer flip
 	// a retry, and retries stop re-paying the strict-judge call. Deliberately
-	// NOT copied by Clone: every clone is a fresh task launch
-	// (OrchestratorBuilder.registerSessionRegistry), so a new task starts
-	// with an empty memo and no verdict leaks across tasks or sessions.
+	// NOT copied by Clone — but clone lifetime is NOT task lifetime: a
+	// session's registry clone is created once
+	// (OrchestratorBuilder.registerSessionRegistry) and reused for every task
+	// in that session, so an unreset memo would leak a verdict across
+	// distinct tasks. The memo is therefore scoped to a task by an explicit
+	// reset at each task-launch boundary — ResetJudgeMemo, called from
+	// Manager.refreshAutonomyPosture — not by the clone's lifetime.
 	judgeMemo map[string]judgeMemoEntry
 	// parent is the shared builder registry this clone was cut from (nil on
 	// the shared registry itself). Clones pin their autonomy posture at task
@@ -483,9 +487,13 @@ func (r *ToolRegistry) ApplySecurityState(
 // auto-approval are shared, fail-closed posture that a Settings save must
 // deliver to already-running sessions (a deny set in the UI must not fail
 // open on a session created before the save), while the autonomy posture is
-// pinned per task at launch (see RefreshAutonomyPosture) and must never be
-// flipped under a running task. Like ApplySecurityState, the policies map is
-// deep-copied so a broadcast push may pass the same map to many registries.
+// pinned per task at launch (see RefreshAutonomyPosture) and — in the
+// escalation direction — must never be flipped under a running task. A
+// tightening (de-escalation) save is the one exception: it is delivered to
+// live clones separately via ApplyAutonomyPostureIfTightening, which
+// applySecurityPolicies also calls on each clone in the same push. Like
+// ApplySecurityState, the policies map is deep-copied so a broadcast push may
+// pass the same map to many registries.
 func (r *ToolRegistry) ApplyGroupPolicies(
 	policies map[sdktools.ToolGroup]sdktools.ToolPolicy,
 	autoApproveWorkspaceWrites bool,
@@ -503,14 +511,19 @@ func (r *ToolRegistry) ApplyGroupPolicies(
 // RefreshAutonomyPosture re-syncs this registry's autonomy mode and
 // silent-mode sub-policies from its parent (the shared builder registry the
 // clone was cut from). It is the task-launch half of the per-task posture
-// pinning contract: a Settings save updates the shared registry immediately,
-// but a session clone picks the posture up only here — at fresh-task start
-// and at resume — so a task that started interactive can never silently turn
+// pinning contract and carries the ESCALATION direction: a Settings save
+// updates the shared registry immediately, but a session clone picks a
+// between-tasks posture change up only here — at fresh-task start and at
+// resume — so a task that started interactive can never silently turn
 // unattended mid-run, and a paused task resumed after a Settings change runs
-// under the posture the user sees in Settings. A no-op on the shared registry
-// itself (no parent) and on clones whose parent is nil. Both values are read
-// from the parent under one lock acquisition, so a concurrent Settings save
-// cannot tear the pair.
+// under the posture the user sees in Settings. The DE-ESCALATION direction is
+// handled mid-run instead by ApplyAutonomyPostureIfTightening: a tightening
+// Settings save (revoking an unattended posture) reaches a live clone
+// immediately, so a running task stops auto-approving the moment the operator
+// reasserts human control. A no-op on the shared registry itself (no parent)
+// and on clones whose parent is nil. Both values are read from the parent
+// under one lock acquisition, so a concurrent Settings save cannot tear the
+// pair.
 func (r *ToolRegistry) RefreshAutonomyPosture() {
 	if r.parent == nil {
 		return
@@ -524,6 +537,50 @@ func (r *ToolRegistry) RefreshAutonomyPosture() {
 	defer r.mu.Unlock()
 	r.autonomyMode = autonomyMode
 	r.silentMode = silentMode
+}
+
+// autonomyModeRank orders the autonomy postures by automaticity for the
+// tightening check of ApplyAutonomyPostureIfTightening: silent (2) is the most
+// unattended, assisted (1) is next, and standard — or any unrecognized/empty
+// value — is the human-in-the-loop baseline (0). A LOWER rank is a TIGHTER
+// (less automatic) posture.
+func autonomyModeRank(mode string) int {
+	switch mode {
+	case AutonomyModeSilent:
+		return 2
+	case AutonomyModeAssisted:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// ApplyAutonomyPostureIfTightening applies the autonomy mode and silent-mode
+// sub-policies to this registry only when they are a TIGHTENING — a
+// less-permissive posture than the one the registry currently holds
+// (autonomyModeRank(autonomyMode) < autonomyModeRank(r.autonomyMode)). It
+// returns true when it applied the change, or false when it left the registry
+// untouched (the incoming posture ranks at or above the current one).
+//
+// It is the exception to the per-task posture pinning (see
+// RefreshAutonomyPosture and applySecurityPolicies). Pinning exists so a task
+// can never silently BECOME unattended mid-run — an escalation the operator
+// did not intend for a task already in flight — and this method preserves
+// that: an equal or looser posture is ignored. But the reverse direction must
+// not fail open: when an operator revokes an unattended posture (Security back
+// to Assisted/Standard) while a task runs, the running clone must stop
+// auto-approving immediately, so a tightening save reaches it here. Both
+// values are set under one lock acquisition so a concurrently executing tool
+// never observes a torn posture pair.
+func (r *ToolRegistry) ApplyAutonomyPostureIfTightening(autonomyMode string, silentMode SilentModeState) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if autonomyModeRank(autonomyMode) >= autonomyModeRank(r.autonomyMode) {
+		return false
+	}
+	r.autonomyMode = autonomyMode
+	r.silentMode = silentMode
+	return true
 }
 
 // AutonomyMode returns the registry's current autonomy posture
@@ -869,18 +926,20 @@ func isShellToolName(name string) bool {
 // Exported for the backend advisory path (backend/application.go
 // evaluateJudgeWith).
 //
-// Before analysing, the session's host-known variable bindings (see
-// sessionShellVarBindings) are attached via sdktools.WithShellVarBindings, so
-// the cross-command expansions the session context determines — today $D, the
-// session temp directory — resolve to concrete in-root targets instead of
-// degrading the analysis to ⊤ (silent-mode-deny-accuracy-recommendations.md
-// §2C, Track C).
+// Before analysing, NO host-known variable binding is attached. The executed
+// shell is a fresh, stateless `bash -c` process whose environment carries no
+// D=… assignment (sp4rk runs it via exec.CommandContext without setting D),
+// so a cross-command expansion such as `$D` is genuinely UNSET at runtime —
+// `$D/foo` expands to the absolute `/foo`, outside the session roots. Seeding
+// a binding for `$D` would make the analyzer resolve an UNASSIGNED `$D` to an
+// in-root temp directory the command never actually targets: a fail-open that
+// downgrades the fail-closed ⊤ escalation (C6, command_unbounded_analysis) to
+// a criterion-free in-root allow. An unassigned `$D` must therefore keep
+// degrading to ⊤ — the flowsh analysis models the command exactly as the
+// shell will run it (silent-mode-deny-accuracy-recommendations.md §2C).
 func AttachShellAnalysis(ctx context.Context, name string, input json.RawMessage, log *slog.Logger) context.Context {
 	if !isShellToolName(name) {
 		return ctx
-	}
-	if vars := sessionShellVarBindings(ctx); len(vars) > 0 {
-		ctx = sdktools.WithShellVarBindings(ctx, vars)
 	}
 	analysis, err := sdktools.AnalyzeShellCommandForJudge(ctx, name, input)
 	if err != nil {
@@ -889,33 +948,6 @@ func AttachShellAnalysis(ctx context.Context, name string, input json.RawMessage
 		}
 	}
 	return sdktools.WithShellAnalysis(ctx, analysis, err)
-}
-
-// sessionShellVarBindings builds the host-known shell variable table for the
-// imminent shell-exec analysis: values the session context determines but the
-// command text alone does not (flowsh Options.Vars — each binding behaves as
-// though the script assigned it a literal before its first statement; an
-// in-script assignment overrides the seed; unknown variables still degrade to
-// ⊤). Today the table carries exactly one binding:
-//
-//	D → the session temp directory (sdktools.TempDirFrom). The system prompt
-//	    hands the model the temp path and the audit corpus (§2C) shows D as
-//	    the conventional alias it binds it to, so a later command re-using
-//	    $D without a visible assignment resolves into the session roots
-//	    instead of an arbitrary ⊤ target.
-//
-// The working directory participates through the tool input's
-// working_directory (the analysis resolution base) rather than a named
-// binding — no corpus convention names it, and flowsh already models relative
-// paths and $PWD against that base. Extend the table here when a new
-// host-known binding is established; nil means "attach nothing" and analyses
-// exactly as before.
-func sessionShellVarBindings(ctx context.Context) map[string]string {
-	var vars map[string]string
-	if temp := sdktools.TempDirFrom(ctx); temp != "" {
-		vars = map[string]string{"D": temp}
-	}
-	return vars
 }
 
 // shellAnalysisContext extracts the marshaled digest for the strict judge's
@@ -974,8 +1006,24 @@ type safetyReasons struct {
 // At most one reason survives per severity: a hard reason (symlink escape,
 // command blocklist, SSRF) always wins; only a soft judge escalation (path
 // containment) yields a soft reason. Empty strings mean "clean".
+//
+// One hard-vs-hard refinement: when the judge's hard reason carries a
+// NON-canonical code (e.g. the flowsh ⊤ limitation,
+// ReasonCodeCommandUnboundedAnalysis, which the strict judge may positively
+// clear) while the symlink gate independently produced a CANONICAL hard code
+// (a symlink escape out of the session roots), the canonical symlink
+// reason+code is kept. Otherwise the non-canonical judge code would mask the
+// canonical signal and isCanonicalHardReason — the deterministic backstop
+// consulted by smartApproveOrConfirm and verify-on-edit — would not force a
+// confirmation for a call that actually traversed a symlink out of the roots.
+// Every other combination is unchanged: a canonical judge hard reason still
+// wins, and a non-canonical judge hard reason still wins over a non-canonical
+// symlink reason.
 func splitSafetyReasons(judge sdktools.JudgeOutcome, symlinkReason string, symlinkCode sdktools.JudgeReasonCode) safetyReasons {
 	if !judge.Allow && judge.Reason != "" && judge.Severity == sdktools.JudgeSeverityHard {
+		if !isCanonicalHardReason(judge.ReasonCode) && symlinkReason != "" && isCanonicalHardReason(symlinkCode) {
+			return safetyReasons{hard: symlinkReason, hardCode: symlinkCode}
+		}
 		return safetyReasons{hard: judge.Reason, hardCode: judge.ReasonCode}
 	}
 	if symlinkReason != "" {
@@ -1446,6 +1494,19 @@ func (r *ToolRegistry) recordJudgeMemo(signature string, severity sdktools.Judge
 		return
 	}
 	r.judgeMemo[key] = judgeMemoEntry{verdict: verdict, reasoning: reasoning}
+}
+
+// ResetJudgeMemo clears the task-scoped silent-mode verdict memo so a task
+// launched on this registry clone starts with no verdict replayed from a
+// previous task. It is called at the task-launch boundary
+// (Manager.refreshAutonomyPosture) because a session's clone is created once
+// and reused for every task in that session: the memo is scoped to one task
+// by this explicit reset, not by the clone's lifetime (see the judgeMemo
+// field doc). Also called by tests to simulate a fresh task launch.
+func (r *ToolRegistry) ResetJudgeMemo() {
+	r.judgeMemoMu.Lock()
+	defer r.judgeMemoMu.Unlock()
+	r.judgeMemo = nil
 }
 
 // silentDenial builds the auto-denial ToolResult for silent mode. It carries

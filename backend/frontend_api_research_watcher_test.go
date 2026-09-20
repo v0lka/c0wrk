@@ -86,7 +86,7 @@ func TestResearchFileChanged_NestedSubdir(t *testing.T) {
 	f.watcherMu.Unlock()
 
 	// THE FIX: recursively watch the research tree so nested hypothesis
-	// edits are detected (mirrors switchProjectSetupWatcher / EnableResearch).
+	// edits are detected (mirrors switchProjectSetupWatcher).
 	if err := watcher.WatchTree(researchRoot); err != nil {
 		t.Fatalf("WatchTree: %v", err)
 	}

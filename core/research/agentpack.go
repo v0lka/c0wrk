@@ -1,6 +1,8 @@
-// Package research provides the RESEARCH mode agent-pack: a versioned,
-// embed-bundled Subagent Profile (AGENT.md) seeded into a project's local
-// `.agents/agents` directory when RESEARCH mode is enabled. It mirrors the
+// Package research provides the RESEARCH-mode agent-pack: a versioned,
+// embed-bundled Subagent Profile (AGENT.md). FrontendAPI.seedGlobalPacks seeds
+// it into the global c0wrk agents directory (`~/.c0wrk/.agents/agents`) once
+// per launch, before the agent watchers start; RESEARCH is always on for real
+// projects, so there is no per-project enable step. It mirrors the
 // skill-pack (skillpack.go) so a research step can be delegated via the
 // `#research` mention or delegate(agent:"research").
 //
@@ -25,12 +27,11 @@
 //   - An existing directory with NO marker whose content differs from the
 //     pack is user-owned and never clobbered.
 //
-// Because seeded profiles land in the project-local `.agents/agents`
-// directory — which both ListAgents and the per-session AgentManager always
-// prepend to their discovery list — they enter the subagent roster
-// automatically; no catalog change is required. The activating API layer
-// computes the destination via config.ProjectAgentsPath and passes it to
-// SeedAgents.
+// Because the seeded profiles land in the global c0wrk agents directory — which
+// both ListAgents and the per-session AgentManager discover (a project-local
+// `.agents/agents` copy still outranks it) — they enter the subagent roster
+// automatically; no catalog change is required. FrontendAPI.seedGlobalPacks
+// resolves the destination global agents directory and passes it to SeedAgents.
 package research
 
 import (
@@ -60,7 +61,7 @@ const agentEmbedRoot = "agents"
 
 // AgentSeedVersion is the pack version stamped into each seeded profile's
 // sidecar marker. Bump this when the embedded AGENT.md content changes and
-// existing seeded copies should be refreshed on the next EnableResearch. It is
+// existing seeded copies should be refreshed on the next seed run. It is
 // deliberately separate from CurrentSeedVersion (the skill-pack version) so the
 // two packs can bump independently.
 const AgentSeedVersion = "1"

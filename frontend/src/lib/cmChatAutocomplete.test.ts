@@ -338,6 +338,47 @@ describe('cmChatAutocomplete @-file source', () => {
     await new Promise((resolve) => setTimeout(resolve, 200))
     expect(currentCompletions(view.state)).toEqual([])
   })
+
+  it('keeps the quote open for a space-named directory from an unquoted query, so further completions still resolve', async () => {
+    // A directory whose NAME contains a space, completed from an UNQUOTED
+    // query. The applied text must keep the quote OPEN (@'beta dir/): the
+    // CLOSED form (@'beta dir'/) makes the trigger scan treat the second quote
+    // as a closed ref (token.indexOf("'", 1) !== -1) and silently kills every
+    // further completion inside the ref.
+    useFileTreeStore.setState({ rootPath: '/ws' })
+    listDirectoryMock.mockResolvedValue([
+      { name: 'beta dir', path: '/ws/beta dir', is_dir: true },
+    ])
+
+    const fixture = makeView()
+    views.push(fixture)
+    const { view } = fixture
+
+    typeAndComplete(view, '@beta')
+    await until(
+      () => currentCompletions(view.state).some((c) => c.label === 'beta dir'),
+      'completion for a space-named directory from an unquoted query',
+    )
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    acceptCompletion(view)
+    // Quote still OPEN — the ref can continue into the child path.
+    expect(view.state.doc.toString()).toBe("@'beta dir/")
+
+    // A subsequent completion inside the open ref must still be served. The
+    // listing cache is invalidated (project switch) so a served trigger
+    // re-fetches; a CLOSED ref would make the trigger scan return null BEFORE
+    // getFiles, so listDirectory would never be called again.
+    const callsBefore = listDirectoryMock.mock.calls.length
+    useProjectStore.setState({ projects: [], activeProjectId: 'proj-after-dir' })
+    view.dispatch(view.state.replaceSelection('c'))
+    startCompletion(view)
+    await until(
+      () => listDirectoryMock.mock.calls.length > callsBefore,
+      'the open-ref trigger is still served after the directory completion',
+    )
+    expect(view.state.doc.toString()).toBe("@'beta dir/c")
+  })
 })
 
 describe('chat editor tooltip placement', () => {

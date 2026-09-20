@@ -245,12 +245,15 @@ function relativePath(absPath: string, rootPath: string | null): string {
  */
 function chatApplyPath(absPath: string, rootPath: string | null, suffix: string, forceQuoted = false): string {
   const rel = relativePath(absPath, rootPath)
-  // A DIRECTORY completed inside an already-open @'…' ref must keep the quote
-  // OPEN: the ref continues into the child path (@'src/…). Closing it here
-  // (@'src'/) would make the trigger scan treat the second quote as a closed
-  // ref and silently kill all further completions. Only a FILE closes the
-  // quote, since a file ends the ref.
-  if (forceQuoted && suffix === '/' && !rel.includes("'")) {
+  // A DIRECTORY completed must keep the quote OPEN: the ref continues into the
+  // child path (@'src/…). Closing it here (@'src'/) would make the trigger scan
+  // treat the second quote as a closed ref and silently kill all further
+  // completions. This applies whenever the applied path needs quoting — either
+  // because the user already typed @' (forceQuoted), or because the directory
+  // NAME contains a space, which formatFileRefPath would otherwise emit as the
+  // CLOSED form (@'beta dir'/). Only a FILE closes the quote, since a file ends
+  // the ref.
+  if (suffix === '/' && !rel.includes("'") && (forceQuoted || rel.includes(' '))) {
     return `'${rel}/`
   }
   return formatFileRefPath(rel, forceQuoted) + suffix

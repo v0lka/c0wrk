@@ -2,9 +2,9 @@
 //
 // The literature ("papers") library is a global subdirectory of a project's
 // EFFECTIVE research root — `<research-root>/papers/<slug>/{paper.md, note.md,
-// appraisal.md}` — where `<research-root>` is the persisted research root when
-// RESEARCH is enabled, else the default `<workspace>/.research`. The library
-// lives and is watched INDEPENDENTLY of the RESEARCH toggle. See
+// appraisal.md}` — where `<research-root>` is always the canonical
+// `<workspace>/.research` for a real project. The library lives and is watched
+// independently of any active R-NNN. See
 // specs/contracts/desktop-frontend.md → Papers.
 //
 // Every response is validated and normalized at this boundary: Go serializes a

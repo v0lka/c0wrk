@@ -752,11 +752,25 @@ func (o *Orchestrator) RequestResumeReroute() {
 }
 
 // ClearResumeReroute discards any armed one-shot resume-re-route request. The
-// session layer calls it on the cancel/abandon paths (task discarded,
-// goal-mode takeover, archival) so an armed flag belonging to a task that will
-// never be resumed cannot fire for an unrelated later task on the same
-// orchestrator. Idempotent and race-free with a concurrent Resume/consume
-// (mutex-guarded); a no-op when nothing is armed.
+// session layer calls it — via clearResumeRequests — on every lifecycle
+// transition where the task the arm was set for can no longer be resumed by a
+// later Resume that would consume it:
+//
+//   - CancelUnfinishedTask — the unfinished task is discarded;
+//   - cancelUnfinishedTask — a Stop-button cancel of the paused task;
+//   - abandonUnfinishedTaskForMode — a goal-mode / E2S mode takeover.
+//
+// Leaving the flag armed across such a transition would let it fire for an
+// unrelated later task on the same orchestrator (the session's registry/clone
+// is reused for the whole session). Idempotent and race-free with a concurrent
+// Resume/consume (mutex-guarded); a no-op when nothing is armed.
+//
+// Clearing here is defense-in-depth, not the sole protection: Resume consumes
+// the flag once at entry and only re-routes when `forceReroute && routing ==
+// nil`, so a task that was actually routed carries a non-nil routing and can
+// never be re-classified by a stale arm. That guard — not this clear — is what
+// bounds a leaked arm to a harmless no-op; keep it if this clear's coverage
+// ever shrinks.
 func (o *Orchestrator) ClearResumeReroute() {
 	o.resumeRerouteMu.Lock()
 	defer o.resumeRerouteMu.Unlock()
@@ -2541,55 +2555,6 @@ func (o *Orchestrator) LookupSkillDescriptors(names []string) []skills.SkillDesc
 		}
 	}
 	return result
-}
-
-// RescanSkills re-scans the skill discovery directories and refreshes the
-// per-session skill catalog in place. It is used when skills are seeded into
-// the project's .agents/skills directory mid-session (e.g. enabling RESEARCH
-// mode, which seeds the research-* methodology skills) so the running session
-// can discover them without a restart. Safe to call concurrently with skill
-// lookups — the SkillManager holds its own lock and Scan replaces the catalog
-// atomically. A nil skill manager is a no-op (returns nil).
-func (o *Orchestrator) RescanSkills() error {
-	if o.skillManager == nil {
-		return nil
-	}
-	if err := o.skillManager.Scan(); err != nil {
-		if o.logger != nil {
-			o.logger.Warn("RescanSkills: skill re-scan failed", "error", err)
-		}
-		return err
-	}
-	if o.logger != nil {
-		o.logger.Debug("RescanSkills: skill catalog refreshed",
-			"count", len(o.skillManager.List()))
-	}
-	return nil
-}
-
-// RescanAgents re-scans the Subagent Profile discovery directories and
-// refreshes the per-session agent catalog in place. It mirrors RescanSkills:
-// used when profiles are seeded into the project's .agents/agents directory
-// mid-session (e.g. enabling RESEARCH mode, which seeds the built-in research
-// profile) so the running session can discover them without a restart. Safe to
-// call concurrently with agent lookups — the AgentManager holds its own lock
-// and Scan replaces the catalog atomically. A nil agent manager is a no-op
-// (returns nil).
-func (o *Orchestrator) RescanAgents() error {
-	if o.agentManager == nil {
-		return nil
-	}
-	if err := o.agentManager.Scan(); err != nil {
-		if o.logger != nil {
-			o.logger.Warn("RescanAgents: agent re-scan failed", "error", err)
-		}
-		return err
-	}
-	if o.logger != nil {
-		o.logger.Debug("RescanAgents: agent catalog refreshed",
-			"count", len(o.agentManager.List()))
-	}
-	return nil
 }
 
 // currentModel returns the session's active model identity, synchronized for

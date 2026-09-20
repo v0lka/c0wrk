@@ -7,6 +7,7 @@ import {
   RESEARCH_CARD_MAX_HEIGHT,
 } from '@/stores/researchStore'
 import { useResize } from '@/hooks/useResize'
+import { useProjectStore, selectIsNoProject } from '@/stores/projectStore'
 import { ResizeHandle } from '@/components/ResizeHandle'
 import { HypothesisCard } from './HypothesisCard'
 import { ErrorBanner } from './ResearchBanner'
@@ -101,6 +102,17 @@ export function ResearchWorkspace() {
     axis: 'y',
     onChange: setCardHeight,
   })
+
+  // ── No Project (CHAT mode) → neutral render ───────────────────────────────
+  // RESEARCH is always available for real projects, so the workspace is
+  // otherwise unconditional. The Workspace panel hides the Research tab in
+  // No-Project mode but does not close an already-open viewer tab, so this
+  // guard is the neutral render if the tab is still mounted. It sits AFTER
+  // every hook call so the hook order stays stable (rules-of-hooks).
+  const isNoProject = useProjectStore(selectIsNoProject)
+  if (isNoProject) {
+    return null
+  }
 
   // ── Render the workspace (RESEARCH is always available for real projects) ──
   return (

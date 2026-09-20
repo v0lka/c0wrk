@@ -122,10 +122,13 @@ const EventVectorIndexStatus = "vector_index:status"
 // (startMCPReadyNotifier), which waits on the builder's WaitMCPStartup.
 const EventMCPReady = "mcp:ready"
 
-// EventResearchChanged is emitted when RESEARCH mode is enabled or disabled
-// for a project (EnableResearch / DisableResearch). The payload is a
-// map[string]string carrying the "project_id" and the "action" ("enabled" /
-// "disabled") so the frontend can refresh the Research panel and project list.
+// EventResearchChanged is emitted on a RESEARCH mutation for a project — a
+// switched active R-NNN (SetActiveResearch) or a deleted research project
+// (DeleteResearch). RESEARCH is always on for real projects, so there is no
+// enable/disable action; the payload is a map[string]string carrying the
+// "project_id" and the "action" ("active_changed" / "project_deleted") so the
+// frontend can refresh the Research panel and project list. See
+// specs/contracts/event-catalog.md.
 const EventResearchChanged = "research:changed"
 
 // EventResearchFileChanged is emitted when a file inside the research
@@ -140,10 +143,10 @@ const EventResearchFileChanged = "research:file_changed"
 // being written or edited. The payload is a map[string]string carrying the
 // "project_id" and "paths" (comma-separated list of changed absolute paths) so
 // the Papers panel can refresh incrementally. Unlike research:file_changed
-// (which only fires while RESEARCH mode is on), this event fires whenever the
-// paper library changes, because the library is a global subdirectory of the
-// research root that lives independently of the RESEARCH toggle and of any
-// R-NNN project (see specs/domains/research.md). Emitted from the workspace
+// (scoped to the research artifact tree), this event fires whenever the paper
+// library changes, because the library is a global subdirectory of the
+// research root that lives independently of any active R-NNN project (see
+// specs/domains/research.md). Emitted from the workspace
 // watcher callback in backend/frontend_api_project.go via emitPapersChanged.
 const EventPapersChanged = "papers:changed"
 

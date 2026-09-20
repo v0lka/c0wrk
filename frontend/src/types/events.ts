@@ -79,8 +79,11 @@ export interface AutonomyDecisionData {
   /** The autonomy posture that decided: "assisted" | "silent". */
   readonly mode?: string
   /** The posture's sub-policy that decided (tool_confirm: judge|allow|deny;
-   *  step_limit: auto or a pinned response; absent for assisted_deny — the
-   *  strict judge itself is the decider there). */
+   *  assisted_deny: judge — the strict judge IS the decider there; step_limit:
+   *  auto or a pinned response). Guaranteed non-empty on every emitted
+   *  decision: the host funnel (Manager.EmitAutonomyDecision) defaults an empty
+   *  policy from the decision kind, so the audit trail always names the
+   *  deciding mechanism. */
   readonly policy?: string
   /** The decision: allow|deny (tool_confirm) or allow_once|allow_more|allow_always|deny (step_limit). */
   readonly verdict: string
@@ -88,6 +91,14 @@ export interface AutonomyDecisionData {
   readonly tool?: string
   /** Tool source ("core" or an MCP server name) for a tool_confirm decision. */
   readonly source?: string
+  /** The deterministic effect signature of the analyzed shell call (mirrors Go
+   *  coretools.AutonomyDecision.Signature): resolved driver binaries, canonical
+   *  effects, fired criteria and the workspace-scoping marker. It rides
+   *  shell-exec decisions and doubles as the silent-mode strict-judge
+   *  memoization key, so an audit reader can tell which decisions adjudicated
+   *  the same effect. Absent/empty for non-shell tools, failed analyses and
+   *  non-tool gates (step_limit). */
+  readonly signature?: string
   /** WHY the call/boundary was escalated (confirmation reason or circuit-breaker reason). */
   readonly reason?: string
   /** The deciding rationale (strict-judge reasoning, fail-closed cause, or the policy). */
@@ -675,16 +686,19 @@ export interface GlobalEventMap {
    *  research-only files in the batch are covered by the incremental
    *  research:file_changed path); consumers use it to defer to that path. */
   readonly 'workspace:tree_changed': { readonly research_scoped?: boolean }
-  /** RESEARCH mode toggled (enable/disable). */
-  readonly 'research:changed': void
+  /** RESEARCH mutation for a project: the active R-NNN switched
+   *  (`SetActiveResearch`) or a research project was deleted (`DeleteResearch`).
+   *  RESEARCH is always on for real projects, so there is no enable/disable
+   *  action. Mirrors specs/contracts/event-catalog.md. */
+  readonly 'research:changed': { readonly project_id: string; readonly action: 'active_changed' | 'project_deleted' }
   /** A file inside the research directory changed (hypothesis cards, brief,
    *  prior-art, graph, log). `paths` is a comma-separated list. */
   readonly 'research:file_changed': { readonly project_id: string; readonly paths: string }
   /** A file inside the paper library (`<research-root>/papers/`) changed — a
    *  paper card, note, or appraisal written or edited. `paths` is a
-   *  comma-separated list of changed absolute paths. Fires INDEPENDENTLY of the
-   *  RESEARCH toggle (the library is watched even in hybrid mode and regardless
-   *  of any R-NNN), unlike `research:file_changed`. */
+   *  comma-separated list of changed absolute paths. Fires INDEPENDENTLY of
+   *  any active R-NNN, unlike `research:file_changed`: the library is a global
+   *  subdirectory of the canonical research root for every real project. */
   readonly 'papers:changed': { readonly project_id: string; readonly paths: string }
   readonly 'skills:changed': void
   readonly 'git:status_changed': string
@@ -747,11 +761,25 @@ export function isAskUserData(d: unknown): d is AskUserData { return isObj(d) &&
 export function isStepLimitData(d: unknown): d is StepLimitData { return isObj(d) && has(d, 'request_id', 'current_step', 'max_steps') }
 export function isAutonomyDecisionData(d: unknown): d is AutonomyDecisionData {
   // Type-validate at the boundary, not just key presence: `kind`/`verdict` are
-  // consumed with string operations (e.g. `verdict.startsWith` in
-  // ServiceMessage), and `has()` only checks that the keys exist. A corrupted
-  // or foreign payload carrying non-string values must fail the guard instead
-  // of reaching a render path that would throw a TypeError.
-  return isObj(d) && typeof d.kind === 'string' && typeof d.verdict === 'string'
+  // consumed with string operations (e.g. `isAutonomyAllowVerdict` →
+  // `verdict.startsWith` in lib/autonomyDecision.ts, used by
+  // AutonomyDecisionBlock), and `has()` only checks that the keys exist. A
+  // corrupted or foreign payload carrying non-string values must fail the guard
+  // instead of reaching a render path that would throw a TypeError.
+  if (!isObj(d)) return false
+  // `kind` must be one of the three gates the card knows how to render — an
+  // unknown kind is mislabelled "Tool Call (auto)" by autonomyDecisionTitle
+  // (it treats any non-step_limit kind as a tool gate).
+  const kind = d.kind
+  if (kind !== 'tool_confirm' && kind !== 'assisted_deny' && kind !== 'step_limit') return false
+  if (typeof d.verdict !== 'string') return false
+  // Every optional string field that is actually rendered must be a string when
+  // present. The Go payload tags them `omitempty`, so absence is valid; only a
+  // present non-string value (e.g. an object reaching a React child) fails.
+  for (const key of ['mode', 'policy', 'tool', 'source', 'reason', 'justification', 'category', 'plan_step_id', 'signature'] as const) {
+    if (key in d && d[key] !== undefined && typeof d[key] !== 'string') return false
+  }
+  return true
 }
 export function isPlanData(d: unknown): d is PlanData { return isObj(d) && has(d, 'step_count') }
 export function isPlanStepStartData(d: unknown): d is PlanStepStartData { return isObj(d) && has(d, 'step_id') }
