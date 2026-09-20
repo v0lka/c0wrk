@@ -43,7 +43,15 @@ vi.mock('@/stores/activeSessionsStore', () => ({ useActiveSessionsRefresh: () =>
 vi.mock('@/hooks/useAutonomyLoader', () => ({ useAutonomyLoader: () => {} }))
 
 // --- api ---
-vi.mock('@/api/runtime', () => ({ subscribe: vi.fn(() => () => {}) }))
+// onGlobalEvent backs api/notifications' notification_clicked subscription
+// (mounted by useNotificationClicks in App); isWailsReady gates the
+// notification init in lib/systemNotifications. Both must no-op here —
+// this suite tests the audio-unlock wiring only.
+vi.mock('@/api/runtime', () => ({
+  subscribe: vi.fn(() => () => {}),
+  onGlobalEvent: vi.fn(() => () => {}),
+  isWailsReady: vi.fn(() => false),
+}))
 vi.mock('@/api/projects', () => ({ listProjects: vi.fn().mockResolvedValue([]) }))
 // The App mount also fires two more RPC paths that must stay quiet here:
 // the theme-catalog refresh (App → themeStore.loadThemes → listThemes) and

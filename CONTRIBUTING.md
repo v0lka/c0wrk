@@ -68,25 +68,30 @@ Verified from project configuration and build files:
 
 ## Linux build dependencies
 
-Wails v2 requires native libraries for the WebKit GTK backend.
+Wails v2 requires native libraries for the WebKit GTK backend, and `desktop/window_activation_linux.go` links libX11 directly (`#cgo pkg-config: x11` — the EWMH window activation behind a notification click).
 
 **Ubuntu/Debian 24.04+:**
 
 ```bash
-sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev build-essential pkg-config
+sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev libx11-dev build-essential pkg-config
 ```
 
 **Fedora 39+:**
 
 ```bash
-sudo dnf install gtk3-devel webkit2gtk4.1-devel gcc pkg-config
+sudo dnf install gtk3-devel webkit2gtk4.1-devel libX11-devel gcc pkg-config
 ```
 
 **Arch Linux:**
 
 ```bash
-sudo pacman -S gtk3 webkit2gtk-4.1 base-devel
+sudo pacman -S gtk3 webkit2gtk-4.1 libx11 base-devel
 ```
+
+The X11 development package is listed explicitly even though the GTK one already
+pulls it in (`gdk-3.0.pc` carries `x11` in `Requires.private`): the dependency is
+ours now, and relying on GTK to keep providing it would turn a future GTK change
+into an unexplained `pkg-config` failure.
 
 For CI/headless builds, also install `xvfb` (`sudo apt install xvfb` on Debian/Ubuntu).
 

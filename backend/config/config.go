@@ -40,6 +40,7 @@ type Config struct {
 	Terminal      TerminalConfig      `yaml:"terminal"`
 	Git           GitConfig           `yaml:"git"`
 	Runtime       RuntimeConfig       `yaml:"runtime"`
+	Notifications NotificationsConfig `yaml:"notifications"`
 
 	// ModelProfiles configures optimizations applied when running on a "small"
 	// (low-capacity / cheaper) LLM. Only the two durable operator choices are
@@ -139,6 +140,27 @@ type TerminalConfig struct {
 // GitConfig controls the automatic git background behaviour of the app
 // (periodic and event-driven background fetches). Manual fetches triggered
 // from the UI are not gated by this section.
+// NotificationsConfig configures the OS-level notification banners of the
+// desktop system-notification channel (specs/domains/frontend/
+// system-notifications.md).
+type NotificationsConfig struct {
+	// BannerTimeoutSeconds is how long a delivered banner stays on screen:
+	//
+	//   -1  let the notification daemon apply its own default
+	//    0  never expire — the banner stays until clicked or dismissed
+	//   >0  explicit lifetime in seconds
+	//
+	// A pointer so an explicit 0 ("never expire" — the reason the setting
+	// exists) is distinguishable from an absent key, which defaults to -1.
+	// Same convention as GitConfig.AutoFetch below.
+	//
+	// Linux only: the value becomes the freedesktop `expire_timeout` argument
+	// (in milliseconds) of the org.freedesktop.Notifications Notify call.
+	// macOS and Windows notification centers own banner lifetime themselves
+	// and ignore it.
+	BannerTimeoutSeconds *int `yaml:"banner_timeout_seconds"`
+}
+
 type GitConfig struct {
 	// AutoFetch is the master gate for ALL automatic fetch triggers: app
 	// startup, project switch, window focus, and the periodic ticker. It is
@@ -2042,3 +2064,19 @@ func validate(cfg *Config) error {
 
 	return nil
 }
+
+// Notification banner-timeout sentinels, shared by the config layer, the
+// FrontendAPI validation and the desktop transport so the three never drift.
+const (
+	// NotificationBannerTimeoutDaemonDefault leaves the lifetime to the
+	// notification daemon (freedesktop expire_timeout = -1).
+	NotificationBannerTimeoutDaemonDefault = -1
+
+	// NotificationBannerTimeoutNever keeps the banner on screen until the
+	// user clicks or dismisses it (freedesktop expire_timeout = 0).
+	NotificationBannerTimeoutNever = 0
+
+	// NotificationBannerTimeoutMaxSeconds caps an explicit lifetime at one
+	// day — past that, "never expire" is the honest choice.
+	NotificationBannerTimeoutMaxSeconds = 86400
+)

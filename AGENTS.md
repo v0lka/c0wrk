@@ -174,6 +174,7 @@ Three-column panel layout (no router): Sidebar (persisted width, clamped 180-500
 | `themeStore`         | App theme (`dark` \| `light`), persisted; writes `data-theme` to `<html>`                       |
 | `uiScaleStore`       | App-wide UI scale in percent (50–200, persisted `c0wrk-ui-scale`); applies CSS `zoom` on `<html>` and the `--ui-zoom`/`--ui-vh` primitives; see **UI Scale** in Frontend architecture |
 | `soundStore`         | Persisted master toggle for synthesized foreground/background notification sounds               |
+| `systemNotificationStore` | Persisted master toggle for OS-level system notifications (persisted `c0wrk-system-notifications`); gates the Go-binding banner transport — see `specs/domains/frontend/system-notifications.md` |
 | `vectorIndexStore`   | Vector index status/progress                                                                   |
 | `goalStore`          | Goal lifecycle: pending proposal (condition/verify/clarification), status verdict, progress    |
 | `reviewStore`        | Review / human-in-the-loop prompts (plan review, review_prompt items)                         |

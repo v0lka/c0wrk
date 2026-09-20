@@ -59,13 +59,33 @@ vi.mock('@/api/runtime', () => ({
 }))
 
 // ---------------------------------------------------------------------------
-// Sound engine mock — the cue is the observable.
+// Sound engine mock — the audible cue is one observable.
 // ---------------------------------------------------------------------------
 
 const playSoundMock = vi.fn()
 vi.mock('@/lib/sound', () => ({
   playSound: (...args: unknown[]) => playSoundMock(...args),
 }))
+
+// ---------------------------------------------------------------------------
+// System-notification engine mock — the banner is the second observable.
+//
+// lib/systemNotifications is PARTIALLY mocked: the real pure mapping
+// (classifyNotificationContent) stays live so the assertions exercise the real
+// event→content translation, while the runtime boundary (sendSystemNotification)
+// is stubbed as the observable sink. resolveSessionNameForNotification lives in
+// the hook module (useSoundEvents) and reads the REAL stores, so the
+// session-name behavior is tested through the real path too.
+// ---------------------------------------------------------------------------
+
+const sendSystemNotificationMock = vi.fn()
+vi.mock('@/lib/systemNotifications', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/systemNotifications')>()
+  return {
+    ...actual,
+    sendSystemNotification: (...args: unknown[]) => sendSystemNotificationMock(...(args as [never, never])),
+  }
+})
 
 // ---------------------------------------------------------------------------
 // RPC mocks
@@ -113,7 +133,7 @@ import { usePlanStore } from '@/stores/planStore'
 import { useActiveSessionsStore, cancelPendingRefresh } from '@/stores/activeSessionsStore'
 import { useActiveSessionsRefresh } from '@/stores/activeSessionsStore'
 import { useBackgroundSessionWatcher } from '@/hooks/useBackgroundSessionWatcher'
-import { useSoundEvents } from '@/hooks/events/useSoundEvents'
+import { useSoundEvents, CUED_SESSION_EVENTS } from '@/hooks/events/useSoundEvents'
 import { useTaskFlagRestore } from '@/hooks/useTaskFlagRestore'
 
 // ---------------------------------------------------------------------------
@@ -387,5 +407,252 @@ describe('sound coverage across CHAT↔CODE toggles', () => {
     })
 
     expect(useChatStore.getState().taskActive[B]).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// NOTIFICATION coverage — the same harness, the banner sink instead of the tone.
+//
+// The hook module (useSoundEvents) routes every cued event to BOTH sinks, so
+// the listener-coverage invariant now implies a notification listener too, and
+// the active/background split must hold for the banner exactly as it does for
+// the tone: the watcher excludes the active session, the hook covers it.
+// ---------------------------------------------------------------------------
+
+/** Valid payloads per HITL event — pass both the guards and handler internals. */
+const VALID_HITL_PAYLOADS: Record<string, unknown> = {
+  tool_confirm: { confirm_id: 'c1', tool: 'bash' },
+  ask_user: { request_id: 'r1', questions: [{ id: 'q1', question: 'Proceed?', options: [{ label: 'Yes', value: 'yes' }] }] },
+  step_limit: { request_id: 'r2', current_step: 25, max_steps: 25 },
+  plan_review_ready: { request_id: 'r3', plan_path: '/tmp/p.md', plan_content: '# Plan' },
+  goal_proposal: { request_id: 'r4', session_id: A, condition: 'finish', verify: 'tests pass' },
+}
+
+describe('notification coverage across CHAT↔CODE toggles', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    listeners.clear()
+    statusDeferreds.clear()
+    listAllSessionsImpl = async () => []
+    resetStores()
+    cancelPendingRefresh()
+  })
+
+  afterEach(async () => {
+    await unmountHarness()
+    cancelPendingRefresh()
+    resetStores()
+    vi.useRealTimers()
+  })
+
+  it('steady state: a background session completion raises exactly one notification', async () => {
+    seedRunning(A)
+    seedRunning(B)
+    await act(async () => {
+      useSessionStore.getState().setActiveSessionId(A)
+    })
+    await mountHarness()
+    await act(async () => {
+      statusDeferreds.get(A)!.resolve({ active: true })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await toggleTo(B)
+
+    sendSystemNotificationMock.mockClear()
+    await act(async () => {
+      emitSession(A, 'task_complete', { success: true })
+    })
+    // Exactly one banner: the watcher (A is background) — and NOT the active
+    // hook (B is active; its listener was registered for B's events only).
+    expect(sendSystemNotificationMock).toHaveBeenCalledTimes(1)
+    const [content] = sendSystemNotificationMock.mock.calls[0] as unknown as [
+      { title: string; body: string; kind: string },
+    ]
+    expect(content.title).toContain('Task completed')
+  })
+
+  it('all nine cued events of a background session raise exactly one notification each', async () => {
+    seedRunning(A)
+    seedRunning(B)
+    await act(async () => {
+      useSessionStore.getState().setActiveSessionId(A)
+    })
+    await mountHarness()
+    await act(async () => {
+      statusDeferreds.get(A)!.resolve({ active: true })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await toggleTo(B)
+
+    for (const event of CUED_SESSION_EVENTS) {
+      // Terminal events finalize the session (taskActive→false), which drops
+      // it from the watched set; re-arm the running flag so each iteration
+      // observes a genuinely-watched background session.
+      seedRunning(A)
+      sendSystemNotificationMock.mockClear()
+      const data = VALID_HITL_PAYLOADS[event] ?? { success: true }
+      await act(async () => {
+        emitSession(A, event, data)
+      })
+      // One event → exactly one notification.
+      expect(sendSystemNotificationMock, `event ${event}`).toHaveBeenCalledTimes(1)
+    }
+    expect(CUED_SESSION_EVENTS).toHaveLength(9)
+  })
+
+  it('a background HITL event with a malformed payload sends NO notification (guard first)', async () => {
+    seedRunning(A)
+    seedRunning(B)
+    await act(async () => {
+      useSessionStore.getState().setActiveSessionId(A)
+    })
+    await mountHarness()
+    await act(async () => {
+      statusDeferreds.get(A)!.resolve({ active: true })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await toggleTo(B)
+
+    sendSystemNotificationMock.mockClear()
+    await act(async () => {
+      emitSession(A, 'tool_confirm', { malformed: true })
+    })
+    expect(sendSystemNotificationMock).not.toHaveBeenCalled()
+  })
+
+  it('the active session owns its own notifications: emitting on it while another runs does not double-send', async () => {
+    seedRunning(A)
+    seedRunning(B)
+    await act(async () => {
+      useSessionStore.getState().setActiveSessionId(A)
+    })
+    await mountHarness()
+    await act(async () => {
+      statusDeferreds.get(A)!.resolve({ active: true })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    // A stays active; B runs in the background.
+    expect(listenerCount(A, 'task_complete')).toBeGreaterThan(0)
+
+    sendSystemNotificationMock.mockClear()
+    await act(async () => {
+      emitSession(A, 'task_complete', { success: true })
+    })
+    // The active hook sends exactly one; the watcher is not subscribed to A.
+    expect(sendSystemNotificationMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('all nine cued events of the ACTIVE session raise exactly one notification each (hook path)', async () => {
+    seedRunning(A)
+    await act(async () => {
+      useSessionStore.getState().setActiveSessionId(A)
+    })
+    await mountHarness()
+    await act(async () => {
+      statusDeferreds.get(A)!.resolve({ active: true })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    for (const event of CUED_SESSION_EVENTS) {
+      // The active hook owns the session for its whole lifetime — it does not
+      // unsubscribe on terminal events — but re-arm the running flag anyway so
+      // the invariant holds independent of that implementation detail.
+      seedRunning(A)
+      sendSystemNotificationMock.mockClear()
+      const data = VALID_HITL_PAYLOADS[event] ?? { success: true }
+      await act(async () => {
+        emitSession(A, event, data)
+      })
+      // One event → exactly one notification: the active hook. The watcher is
+      // not subscribed to the active session, so there is no double-send.
+      expect(sendSystemNotificationMock, `event ${event}`).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('notifications carry the session name in the title when the snapshot knows the session', async () => {
+    seedRunning(A)
+    seedRunning(B)
+    await act(async () => {
+      useSessionStore.getState().setActiveSessionId(A)
+    })
+    await mountHarness()
+    await act(async () => {
+      statusDeferreds.get(A)!.resolve({ active: true })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await toggleTo(B)
+
+    // Seed the cross-project snapshot with a human name for A. The label is
+    // resolved defensively at notify time via getState() — no subscription —
+    // so late seeding is exactly the production shape (a refresh landing
+    // between the task starting and finishing).
+    await act(async () => {
+      useActiveSessionsStore.setState({
+        sessions: [
+          {
+            id: A,
+            project_id: 'proj-a',
+            name: 'Design Review',
+            created_at: '2026-01-01T00:00:00Z',
+            last_active_at: '2026-01-01T00:00:00Z',
+            archived: false,
+            pinned: false,
+            active: false,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            model: 'm',
+            family: 'f',
+            has_unfinished_task: true,
+            unfinished_task_status: 'in_progress',
+          },
+        ],
+      })
+    })
+
+    sendSystemNotificationMock.mockClear()
+    await act(async () => {
+      emitSession(A, 'task_complete', { success: true })
+    })
+    expect(sendSystemNotificationMock).toHaveBeenCalledTimes(1)
+    const [content, context] = sendSystemNotificationMock.mock.calls[0] as unknown as [
+      { title: string },
+      { sessionId: string; projectId?: string },
+    ]
+    // The event title leads; the session name follows (event-first format).
+    expect(content.title.endsWith(' — Design Review')).toBe(true)
+    expect(context.sessionId).toBe(A)
+    expect(context.projectId).toBe('proj-a')
+  })
+
+  it('unknown sessions fall back to a generic title without errors', async () => {
+    seedRunning(A)
+    seedRunning(B)
+    await act(async () => {
+      useSessionStore.getState().setActiveSessionId(A)
+    })
+    // Snapshot never loads — A is unresolvable → the event title leads and
+    // the app name follows.
+    await mountHarness()
+    await act(async () => {
+      statusDeferreds.get(A)!.resolve({ active: true })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await toggleTo(B)
+
+    sendSystemNotificationMock.mockClear()
+    await act(async () => {
+      emitSession(A, 'task_complete', { success: true })
+    })
+    expect(sendSystemNotificationMock).toHaveBeenCalledTimes(1)
+    const [content] = sendSystemNotificationMock.mock.calls[0] as unknown as [{ title: string }]
+    expect(content.title).toBe('Task completed — c0wrk')
   })
 })
