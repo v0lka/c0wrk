@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	sdktools "github.com/v0lka/sp4rk/tools"
@@ -166,7 +167,26 @@ func effectiveGroupPolicy(policies map[sdktools.ToolGroup]sdktools.ToolPolicy, g
 	return config.GroupPolicyUserConfirm
 }
 
-// UpdateMCPServers updates MCP server configuration and hot-reloads the gateway.
+// mcpReconfigureTimeout bounds the propagation phase of an MCP server config
+// change. It matches the budget proxyRebuildTimeout and runMCPInit give MCP
+// work: ReconfigureMCP reconnects every changed server and retries every
+// previously-failed one, and a failed HTTP server is retried with no
+// deadline of its own.
+const mcpReconfigureTimeout = 30 * time.Second
+
+// UpdateMCPServers updates MCP server configuration and hot-reloads the
+// gateway.
+//
+// Locking contract (mirrors UpdateProxySettings): saveMu serializes whole
+// save sequences, while configMu is held only for the field mutation and the
+// disk write — never across the ReconfigureMCP propagation. Reconfigure
+// reconnects every changed server and retries every previously-failed one
+// with no deadline of its own; holding the configMu WRITE lock across it
+// blocks every concurrent GetConfig and — because Go's RWMutex stops
+// admitting readers once a writer is queued — freezes the whole settings
+// dialog for as long as the reconfigure takes (observed at 169 s when an
+// unreachable endpoint was retried). The disk write stays inside the lock:
+// it is a bounded local atomic rewrite.
 func (f *FrontendAPI) UpdateMCPServers(servers map[string]config.MCPServerConfig) error {
 	// Validate config first
 	for name, cfg := range servers {
@@ -175,10 +195,12 @@ func (f *FrontendAPI) UpdateMCPServers(servers map[string]config.MCPServerConfig
 		}
 	}
 
-	f.configMu.Lock()
-	defer f.configMu.Unlock()
+	f.saveMu.Lock()
+	defer f.saveMu.Unlock()
 
+	f.configMu.Lock()
 	if f.config == nil {
+		f.configMu.Unlock()
 		return errors.New("config not initialized")
 	}
 
@@ -210,9 +232,25 @@ func (f *FrontendAPI) UpdateMCPServers(servers map[string]config.MCPServerConfig
 		f.log().Warn("failed to persist MCP server settings", "error", err)
 	}
 
-	// Reconfigure MCP gateway via the backend builder.
-	if b := f.builder(); b != nil {
-		if err := b.ReconfigureMCP(context.Background(), ToBuilderConfig(f.config, f.modelProfilesCatalog())); err != nil {
+	// Snapshot what the reconfigure needs while the lock is still held; after
+	// the unlock f.config must only be touched under configMu again.
+	b := f.builder()
+	bcfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+	f.configMu.Unlock()
+
+	// --- Heavy work below runs OUTSIDE configMu (readers stay responsive) ---
+	// saveMu is still held, so concurrent UpdateMCPServers calls are
+	// serialized and a later save never propagates before an earlier one.
+	//
+	// The propagation is bounded: ReconfigureMCP hands this context to the
+	// gateway reconfigure, whose server.Connect honours it, so one
+	// unreachable endpoint can no longer stall the update (and the dialog)
+	// indefinitely.
+	if b != nil {
+		reconfigureCtx, cancel := context.WithTimeout(context.Background(), mcpReconfigureTimeout)
+		err := b.ReconfigureMCP(reconfigureCtx, bcfg)
+		cancel()
+		if err != nil {
 			return fmt.Errorf("failed to reconfigure MCP gateway: %w", err)
 		}
 	}

@@ -22,6 +22,7 @@ vi.mock('@/lib/logger', () => ({
 }))
 
 import { useLLMConfig, type ProviderConfig } from './useLLMConfig'
+import { useProxyDraftStore } from '@/stores/proxyDraftStore'
 
 let container: HTMLDivElement
 let root: Root
@@ -107,6 +108,7 @@ describe('useLLMConfig default replacement', () => {
       base_url: 'https://api.example.com/v1',
       models: [],
       type: 'openai',
+      tls_fingerprint: '',
     }))
     act(() => result.toggleModel('custom', 'org/model-a'))
 
@@ -116,12 +118,15 @@ describe('useLLMConfig default replacement', () => {
 
     expect(mocks.updateLLMConfig).toHaveBeenCalledWith({
       default_model: 'custom/org/model-a',
+      // The fixed provider carries no tls_fingerprint — only compatible
+      // providers store a pin (ADR-054).
       anthropic: { api_key: '', models: [] },
       openai_compatible: {
         custom: {
           api_key: 'sk-test',
           base_url: 'https://api.example.com/v1',
           models: ['org/model-a'],
+          tls_fingerprint: '',
         },
       },
       anthropic_compatible: {},
@@ -137,7 +142,7 @@ describe('useLLMConfig compatible provider deletion', () => {
         default_model: 'anthropic/default-model',
         anthropic: { api_key: '', models: ['default-model'] },
         openai_compatible: {
-          custom: { api_key: '', base_url: 'http://localhost:1234', models: ['custom-model'] },
+          custom: { api_key: '', base_url: 'http://localhost:1234', models: ['custom-model'], tls_fingerprint: '' },
         },
       },
     })
@@ -166,7 +171,7 @@ describe('useLLMConfig loading errors', () => {
         llm: {
           default_model: 'custom/model-a',
           openai_compatible: {
-            custom: { api_key: '', base_url: 'http://localhost:1234', models: ['model-a'] },
+            custom: { api_key: '', base_url: 'http://localhost:1234', models: ['model-a'], tls_fingerprint: '' },
           },
         },
       })
@@ -185,6 +190,7 @@ describe('useLLMConfig loading errors', () => {
       base_url: 'http://localhost:1234',
       models: ['model-a'],
       type: 'openai',
+      tls_fingerprint: '',
     })
     expect(result.openaiCompatibleProviderNames.has('custom')).toBe(true)
   })
@@ -221,6 +227,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
         base_url: 'http://localhost:1234',
         models: [],
         type: 'openai',
+        tls_fingerprint: '',
       })
     })
 
@@ -232,7 +239,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
     expect(mocks.updateLLMConfig).toHaveBeenCalledWith({
       default_model: 'anthropic/default-model',
       anthropic: { api_key: '', models: ['default-model'] },
-      openai_compatible: { custom: { api_key: 'k', base_url: 'http://localhost:1234', models: [] } },
+      openai_compatible: { custom: { api_key: 'k', base_url: 'http://localhost:1234', models: [], tls_fingerprint: '' } },
       anthropic_compatible: {},
     })
     localContainer.remove()
@@ -245,7 +252,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
         default_model: 'anthropic/default-model',
         anthropic: { api_key: '', models: ['default-model'] },
         openai_compatible: {
-          custom: { api_key: '', base_url: 'http://localhost:1234', models: ['custom-model'] },
+          custom: { api_key: '', base_url: 'http://localhost:1234', models: ['custom-model'], tls_fingerprint: '' },
         },
       },
     })
@@ -274,7 +281,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
         default_model: 'anthropic/default-model',
         anthropic: { api_key: '', models: ['default-model'] },
         openai_compatible: {
-          custom: { api_key: '', base_url: 'http://localhost:1234', models: ['custom-model'] },
+          custom: { api_key: '', base_url: 'http://localhost:1234', models: ['custom-model'], tls_fingerprint: '' },
         },
       },
     })
@@ -322,6 +329,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
         base_url: 'http://localhost:1234',
         models: [],
         type: 'openai',
+        tls_fingerprint: '',
       })
     })
 
@@ -330,5 +338,156 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
 
     expect(mocks.updateLLMConfig).not.toHaveBeenCalled()
     localContainer.remove()
+  })
+})
+
+// --- Per-provider TLS pin (ADR-054) ---
+
+describe('useLLMConfig TLS pin round-trip', () => {
+  const pin = 'k3J9vQ1Z0mF7hD2xS8pL4wR6tY5uI3oP1aE9cX0bN7g='
+
+  beforeEach(() => {
+    useProxyDraftStore.setState({ active: null })
+  })
+
+  it('loads the persisted pin and defaults an absent one to an empty string', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        default_model: 'pinned/qwen3',
+        anthropic: { api_key: '', models: [] },
+        openai_compatible: {
+          pinned: { api_key: 'k', base_url: 'https://llm.lan:8443/v1', models: ['qwen3'], tls_fingerprint: pin },
+          plain: { api_key: 'k', base_url: 'http://127.0.0.1:1234/v1', models: ['llama'] },
+        },
+        anthropic_compatible: {
+          gateway: { api_key: 'k', base_url: 'https://claude.lan:8443', models: ['claude'], tls_fingerprint: pin },
+        },
+      },
+    })
+
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    expect(result.providerConfigs.pinned?.tls_fingerprint).toBe(pin)
+    expect(result.providerConfigs.gateway?.tls_fingerprint).toBe(pin)
+    expect(result.providerConfigs.plain?.tls_fingerprint).toBe('')
+    // Fixed providers have no pin key; the shape still carries the field.
+    expect(result.providerConfigs.anthropic?.tls_fingerprint).toBe('')
+  })
+
+  it('sends the pin only for compatible providers on save', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        default_model: 'pinned/qwen3',
+        anthropic: { api_key: '', models: [] },
+        openai_compatible: {
+          pinned: { api_key: 'k', base_url: 'https://llm.lan:8443/v1', models: ['qwen3'], tls_fingerprint: pin },
+        },
+        anthropic_compatible: {},
+      },
+    })
+
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    act(() => result.updateProviderConfig('pinned', { tls_fingerprint: 'newpin' }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+
+    expect(mocks.updateLLMConfig).toHaveBeenCalledTimes(1)
+    const req = mocks.updateLLMConfig.mock.calls[0]![0] as Record<string, never>
+    const compatible = req.openai_compatible as unknown as Record<string, { tls_fingerprint?: string }>
+    expect(compatible.pinned?.tls_fingerprint).toBe('newpin')
+    // The fixed provider entry must not grow a pin field.
+    const fixed = req.anthropic as unknown as Record<string, unknown>
+    expect(fixed).not.toHaveProperty('tls_fingerprint')
+  })
+
+  // Clearing the field is how the override is switched off: an explicit ''
+  // reaches the backend, which treats a present value as authoritative.
+  it('sends an explicit empty string when the pin is cleared', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        default_model: 'pinned/qwen3',
+        anthropic: { api_key: '', models: [] },
+        openai_compatible: {
+          pinned: { api_key: 'k', base_url: 'https://llm.lan:8443/v1', models: ['qwen3'], tls_fingerprint: pin },
+        },
+        anthropic_compatible: {},
+      },
+    })
+
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    act(() => result.updateProviderConfig('pinned', { tls_fingerprint: '' }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+
+    const req = mocks.updateLLMConfig.mock.calls[0]![0] as Record<string, never>
+    const compatible = req.openai_compatible as unknown as Record<string, { tls_fingerprint?: string }>
+    expect(compatible.pinned?.tls_fingerprint).toBe('')
+  })
+})
+
+describe('useLLMConfig proxy gate', () => {
+  beforeEach(() => {
+    useProxyDraftStore.setState({ active: null })
+  })
+
+  function mockConfigWithProxy(proxy: unknown) {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      proxy,
+      llm: {
+        default_model: 'anthropic/claude',
+        anthropic: { api_key: 'k', models: ['claude'] },
+        openai_compatible: {},
+        anthropic_compatible: {},
+      },
+    })
+  }
+
+  it.each([
+    { name: 'enabled with a URL', proxy: { enabled: true, url: 'http://proxy.lan:3128' }, want: true },
+    { name: 'enabled without a URL', proxy: { enabled: true, url: '' }, want: false },
+    { name: 'disabled', proxy: { enabled: false, url: 'http://proxy.lan:3128' }, want: false },
+    { name: 'absent', proxy: undefined, want: false },
+  ])('seeds the proxy gate from the config payload: $name', async ({ proxy, want }) => {
+    mockConfigWithProxy(proxy)
+
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    expect(useProxyDraftStore.getState().active).toBe(want)
+  })
+
+  // The General tab writes the store synchronously on every edit, so its
+  // draft is fresher than anything getConfig can report. The LLM tab's seed
+  // must not overwrite it.
+  it('does not overwrite a draft state already published by the General tab', async () => {
+    useProxyDraftStore.getState().setActive(true)
+    mockConfigWithProxy({ enabled: false, url: '' })
+
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    expect(useProxyDraftStore.getState().active).toBe(true)
+  })
+
+  // A proxy toggled in the General tab must reach an already-mounted LLM tab
+  // without any config re-read.
+  it('reacts to a later store change without re-reading the config', async () => {
+    mockConfigWithProxy({ enabled: false, url: '' })
+
+    act(() => root.render(<HookHarness />))
+    await flush()
+    expect(useProxyDraftStore.getState().active).toBe(false)
+    const readsAfterLoad = mocks.getConfig.mock.calls.length
+
+    act(() => useProxyDraftStore.getState().setActive(true))
+    expect(useProxyDraftStore.getState().active).toBe(true)
+    expect(mocks.getConfig.mock.calls.length).toBe(readsAfterLoad)
   })
 })

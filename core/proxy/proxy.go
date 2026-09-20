@@ -45,11 +45,10 @@ func BuildTransport(cfg Config, logger *slog.Logger) (*http.Transport, error) {
 		return nil, fmt.Errorf("invalid proxy URL: %w", err)
 	}
 
-	bypassSet := buildBypassSet(cfg.BypassList)
+	bypass := NewBypassMatcher(cfg.BypassList)
 
 	proxyFunc := func(req *http.Request) (*url.URL, error) {
-		host := req.URL.Hostname()
-		if shouldBypass(host, bypassSet) {
+		if bypass.Matches(req.URL.Hostname()) {
 			return nil, nil // direct connection
 		}
 		return proxyURL, nil
@@ -197,23 +196,54 @@ func parseProxyURL(rawURL string) (*url.URL, error) {
 	return parsed, nil
 }
 
-// buildBypassSet creates a set of lowercase hostnames/IPs for fast lookup.
-func buildBypassSet(bypassList []string) map[string]struct{} {
-	set := make(map[string]struct{}, len(bypassList))
-	for _, entry := range bypassList {
-		set[strings.ToLower(strings.TrimSpace(entry))] = struct{}{}
-	}
-	return set
+// BypassMatcher reports whether a target host must skip the proxy and dial
+// directly. It is the single authority on bypass semantics — the proxy
+// transport's own Proxy function (BuildTransport) and the per-provider TLS
+// resolvers (core/llmtls, ADR-054 "bypass re-arms the pin") must never
+// diverge. Entries are matched case-insensitively; "*.example.com" matches
+// every subdomain.
+//
+// A zero BypassMatcher matches nothing, so dial policy degenerates to
+// "everything goes through the proxy", and it is safe to construct one via
+// the zero value + Assign in hot paths.
+type BypassMatcher struct {
+	set map[string]struct{}
 }
 
-// shouldBypass checks whether a host should bypass the proxy.
-func shouldBypass(host string, bypassSet map[string]struct{}) bool {
+// NewBypassMatcher builds a matcher from a config bypass list. Entries are
+// lowercased and whitespace-trimmed; blank entries are dropped.
+func NewBypassMatcher(bypassList []string) BypassMatcher {
+	var m BypassMatcher
+	m.Assign(bypassList)
+	return m
+}
+
+// Assign replaces the matcher's list. Safe on the zero value.
+func (m *BypassMatcher) Assign(bypassList []string) {
+	if len(bypassList) == 0 {
+		m.set = nil
+		return
+	}
+	set := make(map[string]struct{}, len(bypassList))
+	for _, entry := range bypassList {
+		e := strings.ToLower(strings.TrimSpace(entry))
+		if e == "" {
+			continue
+		}
+		set[e] = struct{}{}
+	}
+	m.set = set
+}
+
+// Matches reports whether host (lowercased, no port) is on the bypass list,
+// including wildcard entries ("*.example.com"). Same semantics as the proxy
+// transport's internal Proxy function.
+func (m BypassMatcher) Matches(host string) bool {
 	host = strings.ToLower(host)
-	if _, ok := bypassSet[host]; ok {
+	if _, ok := m.set[host]; ok {
 		return true
 	}
-	// Check for wildcard domain matches (e.g., *.example.com)
-	for entry := range bypassSet {
+	for entry := range m.set {
 		if strings.HasPrefix(entry, "*.") {
 			suffix := entry[1:] // ".example.com"
 			if strings.HasSuffix(host, suffix) {
@@ -223,6 +253,8 @@ func shouldBypass(host string, bypassSet map[string]struct{}) bool {
 	}
 	return false
 }
+
+// parseProxyURL parses and validates a proxy URL string.
 
 // buildTLSConfig creates a *tls.Config with custom CA certificates loaded from certDir.
 // If certDir is empty, returns nil (default system pool will be used).

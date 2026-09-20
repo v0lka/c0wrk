@@ -405,7 +405,7 @@ func TestLookupOpenAIProviderBaseURL(t *testing.T) {
 		ExpandEnvVars: expand,
 	}
 
-	if base, key, ok := lookupOpenAIProviderBaseURL(cfg, "qwen2.5-coder-7b", expand); !ok {
+	if base, key, _, ok := lookupOpenAIProviderBaseURL(cfg, "qwen2.5-coder-7b", expand); !ok {
 		t.Error("expected match for local openai model")
 	} else if base != "http://127.0.0.1:1234/v1" || key != "lm-key" {
 		t.Errorf("wrong provider resolved: base=%q key=%q", base, key)
@@ -413,13 +413,13 @@ func TestLookupOpenAIProviderBaseURL(t *testing.T) {
 
 	// Variant B: a public-host OpenAI provider now MATCHES (it is probed; the
 	// probe is a harmless no-op if the listing omits the window field).
-	if _, _, ok := lookupOpenAIProviderBaseURL(cfg, "gpt-4o", expand); !ok {
+	if _, _, _, ok := lookupOpenAIProviderBaseURL(cfg, "gpt-4o", expand); !ok {
 		t.Error("public-host openai provider should match under Variant B (locality is not gated)")
 	}
-	if _, _, ok := lookupOpenAIProviderBaseURL(cfg, "claude-3-5-sonnet", expand); ok {
+	if _, _, _, ok := lookupOpenAIProviderBaseURL(cfg, "claude-3-5-sonnet", expand); ok {
 		t.Error("anthropic provider should not match (non-openai)")
 	}
-	if _, _, ok := lookupOpenAIProviderBaseURL(cfg, "unknown-model", expand); ok {
+	if _, _, _, ok := lookupOpenAIProviderBaseURL(cfg, "unknown-model", expand); ok {
 		t.Error("unknown model should not match")
 	}
 }

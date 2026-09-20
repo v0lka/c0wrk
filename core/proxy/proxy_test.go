@@ -38,21 +38,22 @@ func TestParseProxyURL(t *testing.T) {
 	}
 }
 
-func TestBuildBypassSet(t *testing.T) {
-	set := buildBypassSet([]string{"localhost", "  127.0.0.1  ", "*.internal"})
-	want := []string{"localhost", "127.0.0.1", "*.internal"}
-	for _, w := range want {
-		if _, ok := set[w]; !ok {
-			t.Errorf("buildBypassSet missing %q", w)
-		}
+func TestNewBypassMatcher(t *testing.T) {
+	m := NewBypassMatcher([]string{"localhost", "  127.0.0.1  ", "*.internal", "   "})
+	// Blank entries are dropped; the rest are trimmed and lowercased.
+	if len(m.set) != 3 {
+		t.Fatalf("matcher len = %d, want 3", len(m.set))
 	}
-	if len(set) != 3 {
-		t.Errorf("buildBypassSet len = %d, want 3", len(set))
+	// Assign to the zero value replaces the list entirely.
+	var zero BypassMatcher
+	zero.Assign(nil)
+	if zero.Matches("localhost") {
+		t.Error("a nil list must match nothing")
 	}
 }
 
-func TestShouldBypass(t *testing.T) {
-	set := buildBypassSet([]string{"localhost", "127.0.0.1", "*.internal"})
+func TestBypassMatcher_Matches(t *testing.T) {
+	m := NewBypassMatcher([]string{"localhost", "127.0.0.1", "*.internal"})
 	tests := []struct {
 		host string
 		want bool
@@ -67,8 +68,8 @@ func TestShouldBypass(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.host, func(t *testing.T) {
-			if got := shouldBypass(tt.host, set); got != tt.want {
-				t.Errorf("shouldBypass(%q) = %v, want %v", tt.host, got, tt.want)
+			if got := m.Matches(tt.host); got != tt.want {
+				t.Errorf("Matches(%q) = %v, want %v", tt.host, got, tt.want)
 			}
 		})
 	}
