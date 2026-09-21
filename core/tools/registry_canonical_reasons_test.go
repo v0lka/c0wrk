@@ -124,7 +124,7 @@ func TestCanonicalHardReasonCodes_ClassificationTable(t *testing.T) {
 		// clearable — whether the destination host is authoritative for the
 		// artifact class is a judgment delegated to the strict judge
 		// (fail-closed-on-arbitrary-host), not a fired control
-		// (ADR-056 D2; the canonical set is unchanged).
+		// (ADR-057 D2; the canonical set is unchanged).
 		{sdktools.ReasonCodeCommandExternalContentIngest, false},
 		// The flowsh soft scope question: non-canonical by construction.
 		{sdktools.ReasonCodeCredentialAccess, false},

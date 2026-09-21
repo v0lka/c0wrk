@@ -76,7 +76,7 @@ The shell blocklist and policy are read from the **`execute` group** (`security.
 
 #### Shell Invocation Override (`shell_exec`)
 
-The `shell_exec` config section lets the operator override HOW the platform shell tool launches the agent's command and declare WHICH shell the command text is written in ([ADR-057](../../decisions/057-shell-execution-override.md)). Per tool (`shell_exec.bash_exec` — live on Unix, `shell_exec.posh_exec` — live on Windows):
+The `shell_exec` config section lets the operator override HOW the platform shell tool launches the agent's command and declare WHICH shell the command text is written in ([ADR-058](../../decisions/058-shell-execution-override.md)). Per tool (`shell_exec.bash_exec` — live on Unix, `shell_exec.posh_exec` — live on Windows):
 
 - `command` is an argv template (first element = binary, exactly one element = the `{command}` placeholder, replaced by the agent's command as a single argv element); empty = built-in `bash -c` / `powershell.exe -NoProfile -NonInteractive -Command` shape.
 - `shell` is a closed enum — `bash|sh|zsh|ksh|dash` (bash family) and `powershell|pwsh` (PowerShell family) — seeded with the tool's native kind when omitted; an omitted kind is silent, an invalid entry is fail-soft (load warning in `config.normalizeShellExec` + section reset to the default shape).

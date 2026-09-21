@@ -2,7 +2,7 @@
 
 ## Status
 
-Superseded in part by [ADR-051](./051-research-pack-reconciliation.md), then re-decided by [ADR-055](./055-research-always-on-global-seeding.md) (the hybrid global seeding — decision 2 below — was first replaced by project-local research pack reconciliation (ADR-051), then restored as a global startup seed with discovery reordered so the c0wrk global dir outranks `~/.agents` (ADR-055); the vendoring and library-location decisions stand)
+Superseded in part by [ADR-051](./051-research-pack-reconciliation.md), then re-decided by [ADR-056](./056-research-always-on-global-seeding.md) (the hybrid global seeding — decision 2 below — was first replaced by project-local research pack reconciliation (ADR-051), then restored as a global startup seed with discovery reordered so the c0wrk global dir outranks `~/.agents` (ADR-056); the vendoring and library-location decisions stand)
 
 ## Context
 
@@ -33,7 +33,7 @@ Three questions had to be answered before the feature could land, because the an
 ## Alternatives Considered
 
 - **Fetch the skill from an external registry at runtime.** Rejected: c0wrk must ship a deterministic, offline-capable skill surface, and the c0wrk-specific assets/helper would still have to be layered on — a network dependency plus a merge step, for no benefit.
-- **Seed the skill per-project (mirroring the RESEARCH pack's project-local seeding).** Rejected: the capability would be invisible in every project until seeded and unavailable in No-Project sessions, and it would couple a general capability to a per-project opt-in (the model ADR-055 removed).
+- **Seed the skill per-project (mirroring the RESEARCH pack's project-local seeding).** Rejected: the capability would be invisible in every project until seeded and unavailable in No-Project sessions, and it would couple a general capability to a per-project opt-in (the model ADR-056 removed).
 - **Seed into a project-local `.agents/skills` and also require RESEARCH.** Rejected for the same reason — it makes a generally useful skill gated and project-scoped.
 - **Store papers inside the active `R-NNN-<slug>/` research project (or in a dedicated top-level `.papers/` root).** Rejected: papers predate and outlive any single research project, a research project can be deleted, and a separate root would fragment the watcher/containment story. The research root is already workspace-contained and already has the `index.md`/`R-NNN` sibling layout the library slots into.
 - **Give comparisons their own RPC and event.** Rejected as unnecessary: a comparison is a plain Markdown artifact under the same research root, so the frontend reads it through the existing workspace file RPCs and reuses the `papers:changed` refresh (the Compare section subscribes to the library-sync key) rather than a bespoke RPC/event pair. The directory is watched through the same watcher as the paper library.

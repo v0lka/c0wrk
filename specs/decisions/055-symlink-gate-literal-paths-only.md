@@ -1,4 +1,4 @@
-# ADR-054: Symlink Gate Is a Literal-Path Extractor
+# ADR-055: Symlink Gate Is a Literal-Path Extractor
 
 ## Status
 
@@ -25,7 +25,7 @@ The symlink gate is a **pure literal-path extractor**. All variable-expansion ch
 
 - Fewer false-positive escalations for ordinary shell idioms; the strict LLM judge no longer spends tokens assessing expansion noise.
 - A symlink reachable only *through* a variable (`X=$(cat link/secret); cat $X`) is no longer surfaced by the symlink walk — accepted: flowsh assesses the command holistically, and the deterministic floor (C1–C9) does not depend on symlink-walk coverage of dynamic constructs.
-- **Accepted residual — a statically-resolvable in-root symlink.** The gate extracts literal paths only, so a symlink whose target *escapes the roots* but which is reached through a **dynamically composed** path that statically resolves to an in-root path is escalated by neither layer. Concretely, with `X=./sub; cat "$X/link"` where `<ws>/sub/link` is a symlink out of the roots, flowsh resolves the read to the textual in-root path (no criterion fires) and the literal-path symlink walk never sees the dynamic `$X` — so under an `allow` execute policy the out-of-root read executes with no card and no hard reason. This is the same accepted-risk class ADR-054 takes for the fully-⊤ case, here reached without ⊤; the shape is pinned by a test in `core/tools/symlink_test.go`.
+- **Accepted residual — a statically-resolvable in-root symlink.** The gate extracts literal paths only, so a symlink whose target *escapes the roots* but which is reached through a **dynamically composed** path that statically resolves to an in-root path is escalated by neither layer. Concretely, with `X=./sub; cat "$X/link"` where `<ws>/sub/link` is a symlink out of the roots, flowsh resolves the read to the textual in-root path (no criterion fires) and the literal-path symlink walk never sees the dynamic `$X` — so under an `allow` execute policy the out-of-root read executes with no card and no hard reason. This is the same accepted-risk class ADR-055 takes for the fully-⊤ case, here reached without ⊤; the shape is pinned by a test in `core/tools/symlink_test.go`.
 - The sp4rk `tools` package shrinks by ~3300 lines plus their tests; the three live helpers (`isASCIILetter`, `isPathComponentChar`, `isPureSeparatorRunToken`) were relocated to their consumers (`shellanalysis.go`, `judge.go`).
 - An escape through a **literal** path is still a canonical hard reason, backstopped beyond a strict ALLOW (interactive scope).
 

@@ -430,7 +430,7 @@ func TestSilentCorpus_Replay(t *testing.T) {
 	//   - 964976/965136 (`curl -o … <file>`): the NEW C7
 	//     external-content-ingest flow (hard, non-canonical) keeps them
 	//     denied — the fail-closed-on-arbitrary-host replacement for the
-	//     removed host-reputation trigger (ADR-056 D2).
+	//     removed host-reputation trigger (ADR-057 D2).
 	assertEventDenied := func(id int, wantDenied bool, why string) {
 		got, ok := out.deniedByEvent[id]
 		if !ok {

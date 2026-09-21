@@ -244,7 +244,7 @@ decisions define its terminals:
    hard reason is overridden to a **user confirmation** with
    `DisableJudge=true` — the user remains the final authority over fired
    controls and unassessable inputs (SECURITY.md rule 2, interactive scope).
-   Non-canonical hard reasons (e.g. the flowsh ⊤ limitation `command_unbounded_analysis`, or the external-content-ingest flow `command_external_content_ingest`, [ADR-056](./056-flow-based-network-verdicts.md)) may be positively
+   Non-canonical hard reasons (e.g. the flowsh ⊤ limitation `command_unbounded_analysis`, or the external-content-ingest flow `command_external_content_ingest`, [ADR-057](./057-flow-based-network-verdicts.md)) may be positively
    cleared by a strict ALLOW, exactly as in ADR-026. *Justification:* a human
    IS present in assisted mode; rule 2 exists precisely for this path. The one
    deliberate exception is the silent `judge` terminal (D4), where the
@@ -382,4 +382,4 @@ sub-policy), `verdict`, `tool`/`source`/`reason`, `justification`, and (for
 - [specs/architecture/security-model.md](../architecture/security-model.md#silent-mode-unattended-operation)
 - [specs/contracts/event-catalog.md](../contracts/event-catalog.md) — `autonomy_decision`
 - [ADR-026](./026-smart-approve-unified-funnel.md) — the unified confirmation funnel silent mode sits inside, and the interactive-scope backstop contract
-- [ADR-052](./052-flowsh-command-analysis.md) — the deterministic floor and the canonical code contract; its digest evidence — the **flow-based cradle verdict** (the established `cradleFlows` *is* canonicality's own evidence, [ADR-056](./056-flow-based-network-verdicts.md)) and the workspace-scoped verification marker (which encodes the operator-trust premise that session roots are trusted; an untrusted-workdir signal must disable it for that root) — is what keeps the silent judge terminal's fail-closed denies precise without relaxing a gate
+- [ADR-052](./052-flowsh-command-analysis.md) — the deterministic floor and the canonical code contract; its digest evidence — the **flow-based cradle verdict** (the established `cradleFlows` *is* canonicality's own evidence, [ADR-057](./057-flow-based-network-verdicts.md)) and the workspace-scoped verification marker (which encodes the operator-trust premise that session roots are trusted; an untrusted-workdir signal must disable it for that root) — is what keeps the silent judge terminal's fail-closed denies precise without relaxing a gate

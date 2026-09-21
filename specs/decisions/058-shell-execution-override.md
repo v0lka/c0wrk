@@ -1,4 +1,4 @@
-# ADR-057: Operator-Configurable Shell Invocation for bash_exec/posh_exec
+# ADR-058: Operator-Configurable Shell Invocation for bash_exec/posh_exec
 
 ## Status
 

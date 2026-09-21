@@ -232,7 +232,7 @@ core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
   ├─ 7. Group policy == deny? → return error result (hard block, names the group)
   ├─ 8. Gather safety signals once: ToolJudger outcome (hard: blacklist/SSRF;
   │      soft: path containment) + symlink analysis (escape = hard;
-  │      resolution staying inside the roots = not a concern; expansion suspicion removed — dynamic constructs are flowsh's domain, ADR-054)
+  │      resolution staying inside the roots = not a concern; expansion suspicion removed — dynamic constructs are flowsh's domain, ADR-055)
   └─ 9. Branch on the tool's GROUP policy (security.groups, ADR-024; unconfigured
          group → fail-safe user_confirm):
        ├─ allow → hard reason ⇒ smartApproveOrConfirm (Hard) — unified funnel

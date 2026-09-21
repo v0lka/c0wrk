@@ -5,7 +5,7 @@
 // launches the agent's command, plus the mandatory declaration of which shell
 // the command text is written in.
 //
-// Design contract (ADR-057):
+// Design contract (ADR-058):
 //   - The override is optional; the zero value keeps the built-in launch
 //     shape (`bash -c <command>` / `powershell.exe -NoProfile -NonInteractive
 //     -Command <command>`).

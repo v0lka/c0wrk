@@ -256,7 +256,7 @@ func TestSymlinkGate_BashExecWithInRootsSymlink(t *testing.T) {
 }
 
 // TestSymlinkGate_ShellExpansionsNoLongerEscalate proves the removal of the
-// expansion-suspicion checks from the symlink gate (ADR-054): a shell command
+// expansion-suspicion checks from the symlink gate (ADR-055): a shell command
 // with unresolvable expansions ($var, $(cmd), backticks) no longer escalates
 // through the symlink gate — dynamic constructs are the deterministic flowsh
 // analysis's domain, and the symlink walk is a pure literal-path extractor.

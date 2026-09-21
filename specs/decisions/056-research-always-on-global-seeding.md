@@ -1,4 +1,4 @@
-# ADR-055: RESEARCH always on — global pack seeding at startup and reordered discovery
+# ADR-056: RESEARCH always on — global pack seeding at startup and reordered discovery
 
 ## Status
 

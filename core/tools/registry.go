@@ -1721,7 +1721,7 @@ func assistedDenial(justification string) sdktools.ToolResult {
 // and the external-content ingest
 // (ReasonCodeCommandExternalContentIngest, "a download client wrote fetched
 // content to a file") delegates the host-authority judgment to the strict
-// judge (fail-closed-on-arbitrary-host, ADR-056 D2) — neither is a fired
+// judge (fail-closed-on-arbitrary-host, ADR-057 D2) — neither is a fired
 // control. Codes are the
 // typed cross-repo contract from sp4rk (sdktools.JudgeReasonCode): prose
 // matching would silently break when sp4rk rewords a reason, an empty/unknown
