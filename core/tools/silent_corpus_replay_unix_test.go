@@ -48,14 +48,16 @@ import (
 //     the A+B+C+D package — the remaining FD/TA are code-exec sinks
 //     (awk/python3/jq) and out-of-root reads the marker excludes by design,
 //     and §4 of the recommendations forbids blanket non-canonical-C6→allow
-//     (3 of 8 TD are exactly that shape). FD 967229 (python3 repo script)
+//     (2 of 8 TD are exactly that shape; the third, 969588, now rides the
+//     deterministic C10). FD 967229 (python3 repo script)
 //     vs TD 967493/969396/969419 (python3 temp scripts) is separable only
 //     by script CONTENT — flip the flag only after Track E (content
 //     attachment) or an equivalent positive-evidence doctrine lands.
 //
 // Independently of the mode, the eight TRUE_DENY events are ALWAYS asserted
 // denied (must-stay-denied; loosening the fail-closed path must keep them —
-// audit: 3 of 8 TD are exactly "judge CONFIRM → fail-closed deny" on C6).
+// audit: 2 of 8 TD are exactly "judge CONFIRM → fail-closed deny" on C6; the
+// third, 969588, now denies deterministically on C10).
 
 const corpusSnapshotPath = "testdata/silent_corpus/baseline_snapshot.json"
 
@@ -127,12 +129,12 @@ func (p *corpusStubJudgeProvider) setVerdict(allow bool) {
 
 // corpusWorkspaceVerificationMarker reads the Track-B marker from the
 // analysis digest (the workspaceScopedVerification field, landed in
-// sp4rk-shell-analysis/v2 and carried unchanged into v3, sp4rk
+// sp4rk-shell-analysis/v2 and carried unchanged into v4, sp4rk
 // tools/shellanalysis.go): the stub
 // judge ALLOWs marked verification drivers exactly as the real strict-judge
 // prompt now teaches ("sufficient grounds to ALLOW unless the command text
 // contradicts it"). Unmarked commands keep the fail-closed DENY — a judge
-// that cannot positively establish still denies (3 of the 8 TD are exactly
+// that cannot positively establish still denies (2 of the 8 TD are exactly
 // this shape and must stay denied).
 func corpusWorkspaceVerificationMarker(a *sdktools.ShellAnalysis) bool {
 	return a != nil && a.Digest.WorkspaceScopedVerification
@@ -408,8 +410,9 @@ func TestSilentCorpus_Replay(t *testing.T) {
 		out.tracksStillDeny["A"], out.tracksStillDeny["B"], out.tracksStillDeny["C"], out.tracksStillDeny["D"])
 
 	// Security invariant, independent of any snapshot: every audited TRUE_DENY
-	// must stay denied. 3 of the 8 are "judge CONFIRM → fail-closed deny" on
-	// the non-canonical C6 — any loosening of the fail-closed path that loses
+	// must stay denied. 2 of the 8 are "judge CONFIRM → fail-closed deny" on
+	// the non-canonical C6 (the third, 969588, now denies deterministically on
+	// C10) — any loosening of the fail-closed path that loses
 	// them is a regression, not an improvement.
 	if out.trueDenyDenied != len(corpusTrueDenyEventIDs) {
 		tdDenied := corpusDeniedEventIDs(t, cases)

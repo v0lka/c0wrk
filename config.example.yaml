@@ -634,7 +634,7 @@ timeouts:
 # with the tool's native family (bash / powershell); an INVALID entry is
 # fail-soft: a load warning is surfaced and the built-in launch shape is
 # kept. Security gates (execute-group policy, blocklist, flowsh criteria
-# C1–C9, confirmation funnel) are unaffected — the override changes how a
+# C1–C10, confirmation funnel) are unaffected — the override changes how a
 # command is launched, never what is checked.
 #
 # shell_exec:

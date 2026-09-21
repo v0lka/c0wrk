@@ -20,7 +20,7 @@ c0wrk's registered tools, their capability group (ADR-024 — drives policy and 
 
 | Tool                  | Category  | Group          | Untrusted | Description                                        |
 | --------------------- | --------- | -------------- | --------- | -------------------------------------------------- |
-| `bash_exec` / `posh_exec` | Execution | `execute` | yes | Shell command execution with timeout, the user blocklist (empty by default), and the deterministic flowsh criteria C1–C9. `bash_exec` (bash) on Unix, `posh_exec` (PowerShell) on Windows — exactly one registers, selected by build tag (see [Shell-Execution Tool](#shell-execution-tool-bash_exec--posh_exec)) |
+| `bash_exec` / `posh_exec` | Execution | `execute` | yes | Shell command execution with timeout, the user blocklist (empty by default), and the deterministic flowsh criteria C1–C10. `bash_exec` (bash) on Unix, `posh_exec` (PowerShell) on Windows — exactly one registers, selected by build tag (see [Shell-Execution Tool](#shell-execution-tool-bash_exec--posh_exec)) |
 | `read_file`           | File      | `local_read` | yes       | Read file contents (streaming, O(1) memory, default 2000-line window); document formats (pdf, docx, pptx, xlsx, odt, html, htm) auto-converted to markdown via markitdown |
 | `write_file`          | File      | `local_write` | no        | Create/overwrite file                              |
 | `edit_file`           | File      | `local_write` | no        | Apply targeted edits to existing file              |

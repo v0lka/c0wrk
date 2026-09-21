@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — the deterministic floor it refers to was later extended to **C1–C10** by [ADR-061](./061-package-runner-resolution-exec-scope.md); the C1–C9 references in the Consequences read as C1–C10, and the digest is `sp4rk-shell-analysis/v4`.
 
 ## Context
 

@@ -251,7 +251,7 @@ decisions define its terminals:
    hard reason is overridden to a **user confirmation** with
    `DisableJudge=true` — the user remains the final authority over fired
    controls and unassessable inputs (SECURITY.md rule 2, interactive scope).
-   Non-canonical hard reasons (e.g. the flowsh ⊤ limitation `command_unbounded_analysis`, or the external-content-ingest flow `command_external_content_ingest`, [ADR-057](./057-flow-based-network-verdicts.md)) may be positively
+   Non-canonical hard reasons (e.g. the flowsh ⊤ limitation `command_unbounded_analysis`, the external-content-ingest flow `command_external_content_ingest` ([ADR-057](./057-flow-based-network-verdicts.md)), or the exec-scope criterion `command_exec_outside_roots` ([ADR-061](./061-package-runner-resolution-exec-scope.md))) may be positively
    cleared by a strict ALLOW, exactly as in ADR-026. *Justification:* a human
    IS present in assisted mode; rule 2 exists precisely for this path. The one
    deliberate exception is the silent `judge` terminal (D4), where the

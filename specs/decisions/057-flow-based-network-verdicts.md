@@ -4,6 +4,8 @@
 
 Accepted — amends [ADR-052](./052-flowsh-command-analysis.md) (criteria C5–C7 and the shell-analysis digest version). Engine side in sp4rk (`tools/shellanalysis.go`), over the flow model contributed to flowsh.
 
+Amended by [ADR-061](./061-package-runner-resolution-exec-scope.md): a new hard **non-canonical** criterion **C10** (`command_exec_outside_roots`) is appended, the criteria set extends to **C1–C10**, the digest is bumped to **`sp4rk-shell-analysis/v4`** (over flowsh v0.4.0's binder-level runner/bin-path resolution), and winner selection is now by **severity first** (ties broken by the fixed priority order). Every "C1–C9" reference below reads **C1–C10**, and every digest "v3" reference below reads **v4**, under this amendment.
+
 ## Context
 
 [ADR-052](./052-flowsh-command-analysis.md) made the deterministic download-cradle criterion (**C5**, `command_download_cradle`, hard **canonical**) fire on the **co-occurrence** of analyzer ⊤/conservative **and** `NetEgress`, and then required **"cradle evidence"** to keep that canonical verdict honest — the **C5 consistency rule**: the egress had to be pinned to a concrete host/URL destination, or paired with a real secret→sink exfil pairing, else the verdict degraded to the non-canonical C6.
