@@ -26,6 +26,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/v0lka/c0wrk/internal/gittest"
 )
@@ -117,6 +118,20 @@ func TestCanaryCRLFRepoNarrowModeKeepsStatusClean(t *testing.T) {
 	if !strings.Contains(attrs, "unspecified") {
 		t.Logf("attr.tree kill left the text attribute in place (%q): this git ignores the key, or a machine-level attributes source re-applied it, so the blanket-kill collateral cannot be reproduced here; skipping the non-vacuity control", strings.TrimSpace(attrs))
 	} else {
+		// The collateral is a BYTE-level difference — the CRLF worktree
+		// against the normalized LF index — that git only reports once it
+		// actually reads crlf.txt. git's stat cache can satisfy status/diff
+		// WITHOUT that read, and whether the cached stat is trusted is a
+		// sub-second racy-timestamp race: the very same repository then
+		// reports clean (the CI flake, "got status \"\""). Make the cached
+		// stat stale so git must re-read and re-apply the (identity under
+		// the killed attributes) clean conversion, deterministically
+		// re-manifesting the collateral. The file's bytes are untouched —
+		// only the stat shortcut is defeated.
+		future := time.Now().Add(2 * time.Second)
+		if err := os.Chtimes(filepath.Join(repo.Root, "crlf.txt"), future, future); err != nil {
+			t.Fatalf("Chtimes(crlf.txt): %v", err)
+		}
 		got := runInRepoGit(t, repo.Root, append(slices.Clone(kill), "status", "--porcelain")...)
 		if !strings.Contains(got, "M crlf.txt") {
 			t.Fatalf("control: attr.tree must reproduce the false-modified collateral, got status %q", got)
