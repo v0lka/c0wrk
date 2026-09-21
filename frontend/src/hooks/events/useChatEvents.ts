@@ -37,8 +37,8 @@ export function shouldAddTaskCompleteOutput(messages: ChatMessageUI[], output: s
 }
 
 /**
- * Whether a post-task review action (auto-review loop or first-time prompt)
- * should fire for this task_complete. Review is a CODE-mode-only feature: it
+ * Whether the post-task review-loop reopen should fire for this
+ * task_complete. Review is a CODE-mode-only feature: it
  * must never trigger in CHAT (No Project) mode, even if the git panel store
  * holds stale/leaked entries, and requires uncommitted working-tree changes.
  *

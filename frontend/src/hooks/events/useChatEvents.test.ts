@@ -278,12 +278,19 @@ describe('useChatEvents terminal events → live unfinished-task overlay', () =>
     useReviewStore.setState({ reviewLoopActive: {}, reviewPageOpen: false, activeReviewSession: null })
     useAutonomyStore.getState().setAutonomy({ autonomy_mode: 'standard' })
 
+    const before = sessionMessages()
     emit('task_complete', { success: true, output: 'done' })
     await flush()
 
     // No review card is injected at all — the only post-task review hook is
-    // the auto-reopen of the review page when the loop is active.
-    expect(sessionMessages().some((m) => m.type === 'status' && m.metadata?.prompt_id !== undefined)).toBe(false)
+    // the auto-reopen of the review page when the loop is active. A type-based
+    // probe would be trivially false since `review_prompt` left MessageType,
+    // so assert the observable outcome: snapshot comparison shows the only
+    // mutation is the task output landing as a regular assistant message.
+    const after = sessionMessages()
+    expect(after).toHaveLength(before.length + 1)
+    expect(after[after.length - 1]).toMatchObject({ type: 'assistant', content: 'done' })
+    expect(after.slice(0, before.length)).toEqual(before)
   })
 
   it('task_complete with reviewLoopActive reopens the review page (interactive mode)', async () => {

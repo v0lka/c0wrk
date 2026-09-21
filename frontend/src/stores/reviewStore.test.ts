@@ -1,5 +1,14 @@
+// Unit tests for reviewStore helpers and the persist migration
+//
+// jsdom environment: the persistence-migration test exercises zustand's
+// persist middleware, which resolves its default storage
+// (`createJSONStorage(() => window.localStorage)`) at store-creation time.
+// In the plain node environment `window` is undefined, persist bails out
+// before attaching the `api.persist` handle, and `persist.rehydrate()` is
+// unreachable — same reason gitPanelStore.test.ts runs under jsdom.
+// @vitest-environment jsdom
 import { describe, it, expect } from 'vitest'
-import { totalCommentCount, hunkCommentKey, type SessionReviewState } from './reviewStore'
+import { totalCommentCount, hunkCommentKey, useReviewStore, type SessionReviewState } from './reviewStore'
 
 function makeState(overrides: Partial<SessionReviewState> = {}): SessionReviewState {
   return {
@@ -61,5 +70,31 @@ describe('hunkCommentKey', () => {
 
   it('handles paths with special chars', () => {
     expect(hunkCommentKey('src/a-b.go', 'hunk-0')).toBe('src/a-b.go::hunk-0')
+  })
+})
+
+describe('persistence migration', () => {
+  it('strips the removed promptShownForTask key from a legacy localStorage snapshot', async () => {
+    // Legacy persisted shape (pre-ADR-055): the now-removed post-task review
+    // prompt flag sat alongside the surviving keys. zustand's default shallow
+    // rehydrate merge would re-inject it into state; the migrate hook must
+    // drop it so nothing stale lands in the store.
+    localStorage.setItem(
+      'c0wrk-review',
+      JSON.stringify({
+        state: {
+          promptShownForTask: 'task-1',
+          reviewLoopActive: { s1: true },
+          diffViewMode: 'split',
+        },
+        version: 0,
+      }),
+    )
+    await useReviewStore.persist.rehydrate()
+
+    const state = useReviewStore.getState() as unknown as Record<string, unknown>
+    expect(state.promptShownForTask).toBeUndefined()
+    expect(useReviewStore.getState().reviewLoopActive).toEqual({ s1: true })
+    expect(useReviewStore.getState().diffViewMode).toBe('split')
   })
 })
