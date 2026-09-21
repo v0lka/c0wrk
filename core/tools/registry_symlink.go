@@ -8,9 +8,8 @@ import (
 )
 
 // symlinkHardReason returns a HARD confirmation reason when the tool input
-// contains symlink traversals that ESCAPE the session roots, or shell input
-// that cannot be resolved at all (unexpandable/dynamic tokens). Returns ""
-// when there is nothing to escalate.
+// contains symlink traversals that ESCAPE the session roots. Returns "" when
+// there is nothing to escalate.
 //
 // A symlink whose resolution stays INSIDE the session roots is not a concern:
 // every containment check in the pipeline reasons about resolved paths, so an
@@ -21,17 +20,19 @@ import (
 // delegated to sp4rk's IsOSLevelSymlink — os_symlinks.go is the single source
 // of truth shared by the sp4rk symlink walker and this core gate.
 //
-// Unresolvable input escalates fail-closed (hard), mirroring the SSRF judge's
-// "unassessable" posture. The deny policy is enforced by Execute before this
-// runs, so an escape never bypasses an explicit deny.
+// Shell input that is not statically resolvable ($var, $(cmd), backticks,
+// process substitution) no longer escalates here: the sp4rk symlink walk is a
+// pure literal-path extractor, and dynamic constructs are assessed by the
+// deterministic flowsh analysis (criteria C1–C9) on the same call. The deny
+// policy is enforced by Execute before this runs, so an escape never bypasses
+// an explicit deny.
 //
 // The returned code classifies the returned reason (sdktools.ReasonCode*): a
-// confirmed escape reports ReasonCodeSymlinkEscape; unresolvable-only input
-// reports ReasonCodeSymlinkSuspicious. Hosts key deterministic policy off the
-// code, never off the prose.
+// confirmed escape reports ReasonCodeSymlinkEscape. Hosts key deterministic
+// policy off the code, never off the prose.
 func (r *ToolRegistry) symlinkHardReason(ctx context.Context, name string, tool sdktools.Tool, input json.RawMessage) (string, sdktools.JudgeReasonCode) {
-	inside, outside, suspicious := sdktools.DetectSymlinksInToolInput(ctx, name, input, tool.InputSchema(), r.log())
-	if len(inside) == 0 && len(outside) == 0 && !suspicious {
+	inside, outside := sdktools.DetectSymlinksInToolInput(ctx, name, input, tool.InputSchema(), r.log())
+	if len(inside) == 0 && len(outside) == 0 {
 		return "", ""
 	}
 
@@ -45,14 +46,10 @@ func (r *ToolRegistry) symlinkHardReason(ctx context.Context, name string, tool 
 			escapes = append(escapes, t)
 		}
 	}
-	if len(escapes) == 0 && !suspicious {
+	if len(escapes) == 0 {
 		// Only in-root (or OS-level) traversals — acceptable.
 		return "", ""
 	}
 
-	code := sdktools.ReasonCodeSymlinkSuspicious
-	if len(escapes) > 0 {
-		code = sdktools.ReasonCodeSymlinkEscape
-	}
-	return sdktools.FormatSymlinkReasoning(inside, escapes, suspicious), code
+	return sdktools.FormatSymlinkReasoning(inside, escapes), sdktools.ReasonCodeSymlinkEscape
 }

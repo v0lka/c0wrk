@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — amended by [ADR-052](./052-flowsh-command-analysis.md): the `security.groups.<group>.blacklist?` key is renamed to `blocklist?` and ships **empty by default** (no patterns; legacy custom lists migrate, default-equal lists are dropped; the Windows alias supplement is deleted), and the deterministic shell floor is the flowsh criteria C1–C8. The group model itself (8 groups, hard/soft severities, no per-tool overrides) stands unchanged. Amended by [ADR-053](./053-silent-mode.md): the funnel is gated by the autonomy mode (`security.autonomy_mode`), and the canonical-reason backstop is scoped to the interactive paths (`standard`/`assisted`) — in silent `judge` mode the strict judge's ALLOW is final over canonical reasons (audited).
+Accepted — amended by [ADR-052](./052-flowsh-command-analysis.md): the `security.groups.<group>.blacklist?` key is renamed to `blocklist?` and ships **empty by default** (no patterns; legacy custom lists migrate, default-equal lists are dropped; the Windows alias supplement is deleted), and the deterministic shell floor is the flowsh criteria C1–C9. The group model itself (8 groups, hard/soft severities, no per-tool overrides) stands unchanged. Amended by [ADR-053](./053-silent-mode.md): the funnel is gated by the autonomy mode (`security.autonomy_mode`), and the canonical-reason backstop is scoped to the interactive paths (`standard`/`assisted`) — in silent `judge` mode the strict judge's ALLOW is final over canonical reasons (audited). Amended by [ADR-055](./055-symlink-gate-literal-paths-only.md): the symlink gate is a pure literal-path extractor — the unresolvable/suspicious expansion escalation is removed (`ReasonCodeSymlinkSuspicious` is retained in the contract but no longer fired); an escape out of the session roots remains a hard reason. Amended by [ADR-057](./057-flow-based-network-verdicts.md): the canonical cradle (C5) is keyed on the established network→code-execution **cradle flow** (the former host-reputation/evidence proxy is removed), a new hard **non-canonical** C7 `command_external_content_ingest` fires on the network→filesystem **ingest flow**, and the criteria are renumbered C1–C9 (canonical set unchanged).
 
 > **Drift note (2026-08-25, vibespec-check):**
 > - §1's "Group() is a required method of the sp4rk Tool interface" — Group() is exposed through the OPTIONAL GroupProvider interface (sp4rk/tools/tool.go), read via ToolGroupOf, fail-closed to "" when unimplemented; BaseTool.ToolGroup remains the declaration point and the fail-closed invariant still holds.
@@ -137,7 +137,7 @@ security:
 6. Group policy deny → hard block
 7. Safety signals gathered once:
      tool Judge outcome (hard: blacklist / SSRF; soft: path containment)
-     + symlink analysis (escape / unresolvable = hard; in-roots = not a concern)
+     + symlink analysis (escape = hard; in-roots = not a concern; expansion suspicion removed — ADR-055)
 8. Branch on effective group policy:
    allow        → hard reason ⇒ confirm with DisableJudge=true (never passes
                   Smart Approve); soft reason ⇒ Smart Approve may allow, else
@@ -159,7 +159,7 @@ severity `hard` or `soft`:
 
 - **Hard** — a fired security control: blacklist pattern match, SSRF (private/
   reserved addresses, degraded SSRF protection, unjudged URL), symlink escape
-  out of session roots (or unresolvable/suspicious path). A hard reason forces
+  out of session roots (the former unresolvable/suspicious expansion escalation is removed — ADR-055). A hard reason forces
   a confirmation that **Smart Approve can never pass** and whose advisory
   "Ask Agent" action is disabled (`DisableJudge=true`).
 - **Soft** — a scope question: path containment (file tools, out-of-root shell
@@ -168,8 +168,8 @@ severity `hard` or `soft`:
 
 Severity is per-source: the SDK file judge's path containment is a soft scope
 question by design (sp4rk's safety model reasons about the symlink-resolved
-path), while c0wrk's registry-level symlink analysis classifies an escape or
-unresolvable traversal as a fired control — hard — so `splitSafetyReasons`
+path), while c0wrk's registry-level symlink analysis classifies an escape
+as a fired control — hard — so `splitSafetyReasons`
 can never let it be auto-approved away.
 
 A symlink whose resolution stays inside the session roots is explicitly **not**

@@ -289,10 +289,11 @@ func (m *Manager) injectWorkDirectories(ctx context.Context, dirs []core.WorkDir
 
 // researchProjectInfo reports whether the session's project has RESEARCH mode
 // active and, when it does, returns the research-root path. RESEARCH is
-// active: a real project (not No Project) with a non-empty research root. It
-// loads the project from the store, so callers MUST NOT hold the session lock.
-// Returns ("", false) for No Project sessions, when no project store is
-// configured, when the project is missing, or on load errors (logged
+// always on for real projects: the root is the project's canonical
+// <workspace>/.research (derived from the workspace path). It loads the
+// project from the store, so callers MUST NOT hold the session lock. Returns
+// ("", false) for No Project sessions, when no project store is configured,
+// when the project is missing or has no workspace, or on load errors (logged
 // best-effort).
 func (m *Manager) researchProjectInfo(projectID string) (string, bool) {
 	if projectID == project.NoProjectID {
@@ -311,10 +312,10 @@ func (m *Manager) researchProjectInfo(projectID string) (string, bool) {
 		m.log().Warn("failed to load project for research check", "project", projectID, "error", err)
 		return "", false
 	}
-	if proj == nil {
+	if proj == nil || proj.WorkspacePath == "" {
 		return "", false
 	}
-	return proj.ResearchRoot, proj.ResearchRoot != ""
+	return config.ProjectResearchPath(proj.WorkspacePath), true
 }
 
 // injectIgnoreChecker builds a multi-root ignore resolver from the session's
@@ -667,6 +668,33 @@ func liveSendRejectionLocked(session *Session, goal, e2s bool, text string, acti
 	return nil
 }
 
+// refreshAutonomyPosture re-pins the session registry's autonomy posture
+// (autonomy mode + silent-mode sub-policies) from the shared builder registry
+// at a task-launch boundary — fresh sends and every resume path. It is the
+// receiving half of the per-task pinning contract (see
+// ToolRegistry.RefreshAutonomyPosture and applySecurityPolicies): a Settings
+// save updates the shared registry immediately but never flips the posture of
+// a task that is already running, so the posture a task runs under is exactly
+// what the user last saved before the task launched. Best-effort and safe to
+// call concurrently with tool execution on another session: nil orchestrator
+// or nil registry (no CoreToolRegistry wired — tests, CLI) is a no-op.
+func (m *Manager) refreshAutonomyPosture(session *Session) {
+	session.mu.RLock()
+	orch := session.orchestrator
+	session.mu.RUnlock()
+	if orch == nil {
+		return
+	}
+	if reg := orch.ToolRegistry(); reg != nil {
+		reg.RefreshAutonomyPosture()
+		// Scope the silent-mode judge memo to this task: the session's registry
+		// clone outlives the task, so a verdict from the previous task would
+		// otherwise be replayed for an identical effect in this one. See
+		// ToolRegistry.ResetJudgeMemo.
+		reg.ResetJudgeMemo()
+	}
+}
+
 // sendMessage is the implementation behind SendMessage. presented marks a
 // relaunch of an already-rendered message (the live-send follow-up): it skips
 // the message_received emission and title generation because the UI and the
@@ -794,6 +822,12 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 	}
 	session.cancel = cancel
 	session.mu.Unlock()
+
+	// Task-launch boundary: pin the autonomy posture this task will run under
+	// from the current Settings (covers the fresh, goal, E2S, and
+	// continue-interrupted dispatches below — they all run in this task's
+	// goroutine).
+	m.refreshAutonomyPosture(session)
 
 	// Snapshot envInfo under read lock
 	m.mu.RLock()
@@ -1238,15 +1272,29 @@ func (m *Manager) tryContinueInterruptedTask(
 		m.log().Warn("continue-interrupted-task: failed to load trajectory; falling back to fresh task", "session", id, "error", err)
 		return false
 	}
+	// Capture the pre-nudge trajectory length: empty means the original run
+	// never executed a step (see the re-route arming below). The nudge step
+	// appended next would otherwise mask that.
+	hadTrajectory := len(resumeSteps) > 0
 	resumeSteps = append(resumeSteps, agent.Step{UserNudge: message})
 
-	// Resolve the persisted routing decision (optional — Resume defaults to
-	// the general domain when nil). The task is never re-routed.
+	// Resolve the persisted routing decision (optional). A task that was
+	// actually routed keeps its decision; a task that never got past routing is
+	// re-classified on this resume (see the arming below).
 	var routing *router.RoutingDecision
 	if state, stateErr := adapter.LoadTaskState(taskID); stateErr != nil {
 		m.log().Warn("continue-interrupted-task: failed to load task state; resuming without routing", "session", id, "error", stateErr)
 	} else if state != nil {
 		routing = state.RoutingDecision
+	}
+
+	// A task whose original run never got past routing (no persisted routing
+	// decision AND no execution state) is re-classified on this nudge-resume,
+	// mirroring Manager.ResumeTask: without it the resumed run would default to
+	// the "general" domain and skip the routing stage. A routed task keeps its
+	// persisted decision (a nudge-resume never re-classifies a continuation).
+	if routing == nil && !hadTrajectory && bb.GetPlan() == nil {
+		session.orchestrator.RequestResumeReroute()
 	}
 
 	// Resolve the prior task_failed_resumable banner so it does not linger
@@ -1480,6 +1528,12 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	// cached model is synchronized before the initial context_fill is emitted.
 	session.orchestrator.ApplyRequestOverrides(ctx, modelOverride, reasoningEffort)
 
+	// Task-launch boundary (resume): pin the autonomy posture the resumed run
+	// will execute under from the current Settings — the pause→edit→resume
+	// flow must behave exactly like launching a new task with those Settings.
+	// The interrupted task's own posture is discarded by design.
+	m.refreshAutonomyPosture(session)
+
 	// Snapshot envInfo under read lock
 	m.mu.RLock()
 	envInfo := m.envInfo
@@ -1529,6 +1583,21 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	// the resume itself must proceed.
 	if err := adapter.ReactivateTask(taskID); err != nil {
 		m.log().Warn("failed to reactivate task row on resume", "session_id", id, "task_id", taskID, "error", err)
+	}
+
+	// A task whose original run never got past routing (no persisted routing
+	// decision AND no execution state — empty trajectory, no plan) has nothing
+	// to continue: it is typically a fresh send that failed while the router
+	// was calling the LLM (e.g. a network error), leaving this resumable
+	// "failed" row with no routing decision. Resuming it without re-routing
+	// would silently default to the "general" domain and skip the routing
+	// stage. Arm the one-shot re-route request so the resumed run classifies
+	// the original request first. A task that WAS routed (routing decision
+	// persisted) or that has any execution state keeps the normal
+	// reuse-without-routing behavior — a resume never re-classifies a
+	// continuation.
+	if routing == nil && len(resumeSteps) == 0 && bb.GetPlan() == nil {
+		session.orchestrator.RequestResumeReroute()
 	}
 
 	// Launch goroutine (same pattern as SendMessage).
@@ -1641,7 +1710,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 // must not outlive the task it was armed for.
 // Returns nil if no task store is configured or no unfinished task exists.
 func (m *Manager) CancelUnfinishedTask(sessionID string) error {
-	m.clearResumeCompaction(sessionID)
+	m.clearResumeRequests(sessionID)
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()
@@ -2363,7 +2432,7 @@ func (m *Manager) abandonUnfinishedTaskForMode(id, bannerReason, serviceContent 
 	// resume-compaction (a manual no-op compaction deferred to its resume) —
 	// drop it so the new mode's loop (or any later task) does not inherit the
 	// forced compaction chosen for the abandoned task.
-	m.clearResumeCompaction(id)
+	m.clearResumeRequests(id)
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()
@@ -2781,7 +2850,7 @@ func (m *Manager) CancelTask(id string) error {
 // is no unfinished task to cancel, preserving the sentinel callers rely on
 // to distinguish "nothing running" from a successful cancellation.
 func (m *Manager) cancelUnfinishedTask(sessionID string) error {
-	m.clearResumeCompaction(sessionID)
+	m.clearResumeRequests(sessionID)
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()

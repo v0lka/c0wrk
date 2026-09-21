@@ -135,9 +135,14 @@ func TestResumeTask_E2STerminalStateNotResumed(t *testing.T) {
 	store.tasks["task-e2s-terminal"] = TaskRecord{
 		ID: "task-e2s-terminal", SessionID: info.ID,
 		OriginalRequest: "already cancelled run",
-		RoutingDecision: emptyJSONObject, Plan: emptyJSONObject,
-		Reflections: emptyJSONArray,
-		Status:      "in_progress", CreatedAt: time.Now().Add(-2 * time.Minute),
+		// A persisted routing decision (the task was routed before the E2S
+		// checkpoint went terminal). Without it the resume path would treat the
+		// task as never-started and re-route — and functionalOrchestratorFactory
+		// deliberately wires no router for this plain-conductor fall-through.
+		RoutingDecision: json.RawMessage(`{"domain":"general","complexity":2}`),
+		Plan:            emptyJSONObject,
+		Reflections:     emptyJSONArray,
+		Status:          "in_progress", CreatedAt: time.Now().Add(-2 * time.Minute),
 	}
 	store.e2sStates["task-e2s-terminal"] = seededJSON
 	store.mu.Unlock()

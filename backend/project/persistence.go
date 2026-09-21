@@ -68,15 +68,11 @@ func (s *SQLiteProjectStore) createTables() error {
 		return err
 	}
 
-	// Migration: add nullable research_root column to projects for persisting
-	// the per-project research workspace root (RESEARCH mode toggle) across
-	// app restarts. Idempotent — skipped when the column already exists.
-	if !s.columnExists("projects", "research_root") {
-		if _, err := s.db.ExecContext(context.Background(),
-			`ALTER TABLE projects ADD COLUMN research_root TEXT`); err != nil {
-			return fmt.Errorf("failed to migrate projects.research_root: %w", err)
-		}
-	}
+	// The legacy research_root column is intentionally retained physically: a
+	// DROP is destructive, irreversible and fail-hard (it can abort startup),
+	// and the DTO no longer reads or writes the column, so keeping it costs
+	// nothing while preserving backward/forward compatibility for a downgrade.
+	// No migration is performed for it here.
 
 	// Migration: add nullable research_pins column to projects for persisting
 	// the per-project pinned research artifacts (documents + hypothesis cards)
@@ -103,18 +99,9 @@ func (s *SQLiteProjectStore) columnExists(table, column string) bool {
 	return rows.Next()
 }
 
-// nullableString returns nil for an empty string so the column stores NULL
-// rather than an empty string. Used for nullable TEXT columns (e.g. research_root).
-func nullableString(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
-}
-
 // researchPinsValue serializes pins to JSON for the research_pins column. An
 // empty value (no research documents, no hypothesis cards, no paper pins) maps
-// to nil so the column stores NULL, mirroring nullableString for research_root.
+// to nil so the column stores NULL.
 func researchPinsValue(pins ResearchPins) (any, error) {
 	if len(pins.Research) == 0 && len(pins.Hypotheses) == 0 && len(pins.Papers) == 0 {
 		return nil, nil
@@ -150,17 +137,16 @@ func (s *SQLiteProjectStore) SaveProject(ctx context.Context, info ProjectInfo) 
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO projects (id, name, workspace_path, is_external, research_root, research_pins, created_at, last_active_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO projects (id, name, workspace_path, is_external, research_pins, created_at, last_active_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			workspace_path = excluded.workspace_path,
 			is_external = excluded.is_external,
-			research_root = excluded.research_root,
 			research_pins = excluded.research_pins,
 			last_active_at = excluded.last_active_at`,
 		info.ID, info.Name, info.WorkspacePath, info.IsExternal,
-		nullableString(info.ResearchRoot), pinsJSON,
+		pinsJSON,
 		info.CreatedAt, lastActiveAt,
 	)
 	if err != nil {
@@ -174,10 +160,10 @@ func (s *SQLiteProjectStore) LoadProject(ctx context.Context, id string) (*Proje
 	var info ProjectInfo
 	var researchPinsJSON string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, name, workspace_path, is_external, COALESCE(research_root, ''), COALESCE(research_pins, ''), created_at, COALESCE(last_active_at, created_at)
+		SELECT id, name, workspace_path, is_external, COALESCE(research_pins, ''), created_at, COALESCE(last_active_at, created_at)
 		FROM projects WHERE id = ?`,
 		id,
-	).Scan(&info.ID, &info.Name, &info.WorkspacePath, &info.IsExternal, &info.ResearchRoot, &researchPinsJSON, &info.CreatedAt, &info.LastActiveAt)
+	).Scan(&info.ID, &info.Name, &info.WorkspacePath, &info.IsExternal, &researchPinsJSON, &info.CreatedAt, &info.LastActiveAt)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -191,14 +177,13 @@ func (s *SQLiteProjectStore) LoadProject(ctx context.Context, id string) (*Proje
 	}
 	info.ResearchPins = pins
 	info.IsNoProject = info.ID == NoProjectID
-	info.IsResearch = !info.IsNoProject && info.ResearchRoot != ""
 	return &info, nil
 }
 
 // ListProjects returns all projects ordered by last activity (newest first).
 func (s *SQLiteProjectStore) ListProjects(ctx context.Context) ([]ProjectInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, workspace_path, is_external, COALESCE(research_root, ''), COALESCE(research_pins, ''), created_at, COALESCE(last_active_at, created_at)
+		SELECT id, name, workspace_path, is_external, COALESCE(research_pins, ''), created_at, COALESCE(last_active_at, created_at)
 		FROM projects
 		ORDER BY COALESCE(last_active_at, created_at) DESC`)
 	if err != nil {
@@ -210,7 +195,7 @@ func (s *SQLiteProjectStore) ListProjects(ctx context.Context) ([]ProjectInfo, e
 	for rows.Next() {
 		var info ProjectInfo
 		var researchPinsJSON string
-		if err := rows.Scan(&info.ID, &info.Name, &info.WorkspacePath, &info.IsExternal, &info.ResearchRoot, &researchPinsJSON, &info.CreatedAt, &info.LastActiveAt); err != nil {
+		if err := rows.Scan(&info.ID, &info.Name, &info.WorkspacePath, &info.IsExternal, &researchPinsJSON, &info.CreatedAt, &info.LastActiveAt); err != nil {
 			return nil, fmt.Errorf("failed to scan project: %w", err)
 		}
 		pins, err := parseResearchPins(researchPinsJSON)
@@ -219,7 +204,6 @@ func (s *SQLiteProjectStore) ListProjects(ctx context.Context) ([]ProjectInfo, e
 		}
 		info.ResearchPins = pins
 		info.IsNoProject = info.ID == NoProjectID
-		info.IsResearch = !info.IsNoProject && info.ResearchRoot != ""
 		projects = append(projects, info)
 	}
 	if err := rows.Err(); err != nil {

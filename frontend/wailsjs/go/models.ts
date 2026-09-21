@@ -1425,32 +1425,11 @@ export namespace backend {
 	        this.skill = source["skill"];
 	    }
 	}
-	export class ResearchSeedResultDTO {
-	    seeded: string[];
-	    updated: string[];
-	    current: string[];
-	    preserved: string[];
-	    modified: string[];
-	
-	    static createFrom(source: any = {}) {
-	        return new ResearchSeedResultDTO(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.seeded = source["seeded"];
-	        this.updated = source["updated"];
-	        this.current = source["current"];
-	        this.preserved = source["preserved"];
-	        this.modified = source["modified"];
-	    }
-	}
 	export class ResearchStatusDTO {
 	    enabled: boolean;
 	    project_id: string;
 	    research_root: string;
 	    root?: research.ResearchRoot;
-	    seed_result?: ResearchSeedResultDTO;
 	    pinned_research: string[];
 	    pinned_hypotheses: Record<string, Array<string>>;
 	
@@ -1464,7 +1443,6 @@ export namespace backend {
 	        this.project_id = source["project_id"];
 	        this.research_root = source["research_root"];
 	        this.root = this.convertValues(source["root"], research.ResearchRoot);
-	        this.seed_result = this.convertValues(source["seed_result"], ResearchSeedResultDTO);
 	        this.pinned_research = source["pinned_research"];
 	        this.pinned_hypotheses = source["pinned_hypotheses"];
 	    }
@@ -1645,6 +1623,53 @@ export namespace backend {
 	        this.max_tokens = source["max_tokens"];
 	    }
 	}
+	export class ShellExecToolSettings {
+	    command: string[];
+	    shell: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ShellExecToolSettings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.command = source["command"];
+	        this.shell = source["shell"];
+	    }
+	}
+	export class ShellExecSettingsResponse {
+	    bash_exec: ShellExecToolSettings;
+	    posh_exec: ShellExecToolSettings;
+	
+	    static createFrom(source: any = {}) {
+	        return new ShellExecSettingsResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.bash_exec = this.convertValues(source["bash_exec"], ShellExecToolSettings);
+	        this.posh_exec = this.convertValues(source["posh_exec"], ShellExecToolSettings);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	
 	
 	export class SkillDescriptorDTO {
@@ -2207,9 +2232,7 @@ export namespace project {
 	    workspace_path: string;
 	    is_external: boolean;
 	    is_no_project: boolean;
-	    research_root: string;
 	    research_pins: ResearchPins;
-	    is_research: boolean;
 	    created_at: string;
 	    last_active_at: string;
 	
@@ -2224,9 +2247,7 @@ export namespace project {
 	        this.workspace_path = source["workspace_path"];
 	        this.is_external = source["is_external"];
 	        this.is_no_project = source["is_no_project"];
-	        this.research_root = source["research_root"];
 	        this.research_pins = this.convertValues(source["research_pins"], ResearchPins);
-	        this.is_research = source["is_research"];
 	        this.created_at = source["created_at"];
 	        this.last_active_at = source["last_active_at"];
 	    }
@@ -2677,40 +2698,6 @@ export namespace session {
 	        this.type = source["type"];
 	        this.data = source["data"];
 	    }
-	}
-	export class HistoryPage {
-	    messages: ChatMessage[];
-	    next_cursor: string;
-	    has_more: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new HistoryPage(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.messages = this.convertValues(source["messages"], ChatMessage);
-	        this.next_cursor = source["next_cursor"];
-	        this.has_more = source["has_more"];
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 	export class PasteResult {
 	    kind: string;

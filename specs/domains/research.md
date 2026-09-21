@@ -2,7 +2,7 @@
 
 ## Purpose
 
-RESEARCH mode is a project-scoped methodology workspace for maintaining research briefs, prior art, hypothesis cards, a hypothesis DAG, progress metrics, and synthesis reports. It parses Markdown/Mermaid artifacts under a workspace-contained research root, seeds versioned `research-*` skills, and exposes the same active-project graph to the orchestrator and frontend.
+RESEARCH mode is a project-scoped methodology workspace for maintaining research briefs, prior art, hypothesis cards, a hypothesis DAG, progress metrics, and synthesis reports. It is always on for every real project — there is no per-project toggle: it parses Markdown/Mermaid artifacts under the workspace-contained research root `<workspace>/.research`, seeds versioned `research-*` skills (globally, once at app startup), and exposes the same active-project graph to the orchestrator and frontend.
 
 ## Key Files
 
@@ -12,8 +12,8 @@ RESEARCH mode is a project-scoped methodology workspace for maintaining research
 - `core/research/recommend.go` - pure next-step recommendation, project-wide and hypothesis-scoped
 - `core/research/skillpack.go` - embedded seven-skill research pack and non-destructive versioned seeding
 - `core/research/skills/` - embedded `research-*` skill sources
-- `core/papers/skillpack.go` - the embedded `study-paper` pack; seeded project-locally by the same reconciliation (the project-local copy outranks a same-named `~/.agents` skill in discovery)
-- `backend/frontend_api_research.go` - enable/disable/status/graph RPC behavior, persistence, and `reconcileResearchPacks` — the single pack reconciliation shared by EnableResearch and SwitchProject
+- `core/papers/skillpack.go` - the embedded `study-paper` pack; seeded globally by the same startup seed into the c0wrk global skills directory (which outranks a same-named `~/.agents` skill in discovery)
+- `backend/frontend_api_research.go` - always-on status/graph RPC behavior, workspace containment, and `seedGlobalPacks` — the single global pack seed run once per launch
 - `backend/frontend_api_project.go` - recursive research-tree watcher integration and incremental file-change emission
 - `frontend/src/components/research/index.tsx` - Research panel (the `[Dashboard | Papers]` segmented control + graph/status presentation)
 - `frontend/src/components/papers/PapersView.tsx` - Papers segment: the `study-paper` invocation surface over the studied-paper list, plus multi-select ("Compare selected", enabled at ≥2 papers) that dispatches a library comparison
@@ -74,25 +74,22 @@ Hypothesis IDs normalize to `H-NNN`; research IDs normalize to `R-NNN`. `open` a
 ## Flow
 
 ```
-User enables RESEARCH for a real project
-  -> resolve root (default <workspace>/.research)
-     and reject an explicit root outside the workspace
-  -> create root and recursively watch its current/future directories
-  -> reconcile the c0wrk packs into <workspace>/.agents: the seven research-*
-     skills AND the study-paper skill into .agents/skills, the research
-     Subagent Profile into .agents/agents (content-hash-verified, staged +
-     atomically swapped) — reconcileResearchPacks
-  -> persist ProjectInfo.ResearchRoot
-  -> invalidate the skill cache and rescan running project sessions
-  -> parse the root and emit research:changed
+App startup
+  -> seedGlobalPacks seeds every c0wrk-owned pack into ~/.c0wrk/.agents:
+     the seven research-* skills AND the study-paper skill into
+     .agents/skills, the research Subagent Profile into .agents/agents
+     (content-hash-verified, staged + atomically swapped, non-destructive)
+     — BEFORE the skill/agent directory watchers are created
+  -> invalidate the skill and agent caches (the freshly created directories
+     are themselves watched on the same launch)
 
-Switch to a research-enabled project (incl. the app-startup restore replay)
-  -> SwitchProject re-runs the same pack reconciliation: seeds missing
-     entries (e.g. study-paper), upgrades pack-marked outdated ones,
-     preserves user-owned directories; failures are logged, never fail the
-     switch
-  -> when anything was seeded or updated: skill/agent caches invalidate and
-     live sessions of the project rescan their catalogs
+Open / switch to a real project (incl. the app-startup restore replay)
+  -> the research root is unconditionally <workspace>/.research
+     (config.ProjectResearchPath) — RESEARCH is always on, no persisted
+     per-project root, no reconcile/seed on switch
+  -> the project's recursive watcher covers the research root's current and
+     future directories; the frontend loads the panel via GetResearchStatus
+  -> nothing is seeded on the switch
 
 Research artifact changes
   -> recursive workspace watcher batches changed paths
@@ -120,7 +117,7 @@ Papers segment over `paperStore`) and never mount the
 hooks themselves (a double mount would duplicate every watchdog and fallback
 refetch). The bridge additionally mounts `usePapersEvents`, which loads the
 active project's paper library and re-fetches it on `papers:changed` — the
-library is watched independently of the RESEARCH toggle (hybrid mode). The workspace's hypothesis selection is keyed to the research
+library is watched independently of any particular `R-NNN` research project. The workspace's hypothesis selection is keyed to the research
 project it was made in (`selectedHypothesisProjectId`): an active-R-NNN
 switch leaves a stale selection — and its unsaved draft — unrendered instead
 of rebinding it to the new project's same-id card.
@@ -154,15 +151,16 @@ Metrics are derived from the reconciled graph:
 
 ## Invariants
 
-- RESEARCH mode is available only for real projects.
+- RESEARCH mode is always on for real projects: there is no per-project toggle and no persisted root. The No-Project pseudo-project has no workspace, so RESEARCH is unavailable there (`loadProjectForResearch` rejects it) and the panel renders a neutral empty state.
 - RESEARCH mode is not gated by the `experimental.enabled` switch (which gates only the E2S execution mode) — it stays available for every real project.
-- The persisted research root is absolute and contained within the project workspace; the default root is `<workspace>/.research`.
-- Enabling is idempotent: it may reparse, reseed, repersist, rescan, and re-emit without duplicating domain state.
-- Switching to a research-enabled project re-runs the pack reconciliation (`reconcileResearchPacks`) under the same non-destructive contract: missing entries are seeded (including the papers pack's `study-paper`), pack-marked outdated entries are upgraded, user-owned entries are preserved; a reconciliation failure is logged and never fails the switch. Concurrent reconciliations serialize on one seed mutex. When anything was seeded or updated, the skill/agent caches invalidate and live sessions of the project rescan their catalogs.
-- Disabling clears the persisted toggle and recursive watch while preserving research artifacts and seeded skills.
+- The research root is unconditionally `<workspace>/.research` (`config.ProjectResearchPath`) — an absolute, workspace-contained path, never persisted per project and with no user override.
+- Always-on RESEARCH also makes the research **router hints unconditional for every real project**. `researchProjectInfo` returns `(<workspace>/.research, true)` for every real project, so `core/router_adapter.go` appends `formatResearchRouterHints` (the advisory intent→`research-*`-skill mapping) to the router context whenever `coretools.IsResearch(ctx)` holds, and the full `## Research Context` block (`core/systemprompt.go`) is added whenever a research snapshot is present — independent of whether the project has any research artifacts. This is an intentional consequence of always-on RESEARCH (ADR-056): every real project pays the extra router-prompt tokens and carries a mild classification bias toward the research skills, even with an empty research root. No-Project sessions are unaffected (`IsResearch` is false there).
+- `seedGlobalPacks` runs once per launch from `NewFrontendAPI`, BEFORE the skill and agent directory watchers are created, so the c0wrk global directories (`~/.c0wrk/.agents/{skills,agents}`) are freshly seeded and watched on the same launch; it serializes on `researchSeedMu` and invalidates the skill/agent caches afterwards. It is idempotent: a second run re-seeds nothing new and never duplicates domain state.
+- Skill/agent discovery precedence is project-local `<workspace>/.agents/{skills,agents}` → c0wrk global `~/.c0wrk/.agents/{skills,agents}` → user `~/.agents/{skills,agents}`: the c0wrk global directory outranks the user's portable `~/.agents` library, so a seeded c0wrk pack wins over a stale same-named user copy.
+- A project switch seeds nothing — `reconcileResearchPacks` is gone; the global startup seed is the only c0wrk pack writer.
 - Skill/agent seeding classifies each destination by CONTENT HASH against the embedded pack (never mtime/size, never the marker alone): content equal to the pack is Current (a missing/stale `.seed-version` marker on it is re-stamped); a pack-marked truncated subset of the pack (interrupted write) is repaired; a pack-marked same-version directory whose content diverges from the pack is a local edit (or a spoofed marker) — preserved untouched and reported `Modified`; a marker-less diverging directory is user-owned and preserved; a marker from an older pack version is overwritten in full.
 - Seeding writes are crash-safe: each entry is staged in a hidden sibling temp directory and swapped in with a single rename, so an interrupted run never leaves a truncated tree at the destination; staging/backup leftovers from a hard kill are swept on the next seeding run.
-- Skill-seeding failure is logged while the research toggle remains enabled; `SeedResult` reports per-skill outcomes only when seeding returns a result.
+- A global seeding failure is per-pack and logged, and is never fatal to startup; outcomes are reported through structured logs (per-pack `Seeded`/`Updated`/`Current`/`Preserved` counts), not through an RPC result.
 - Root/project parsing is best-effort: malformed or missing optional artifacts do not invalidate other parseable projects or cards.
 - Hypothesis nodes and edges are normalized, de-duplicated, and deterministically ordered; malformed cycles terminate metric traversal without unbounded recursion.
 - The recursive watcher covers existing and newly created subdirectories beneath the active research root.
@@ -173,9 +171,9 @@ Metrics are derived from the reconciled graph:
 - `UpdateHypothesis` mutates the card's editable fields (title, status, result, timebox, decision, statement, verification criterion, experiment notes, parents). Status transitions follow the methodology's state machine (no backward jumps); a Parents update is validated against the reconciled graph — every parent must exist, self-reference is rejected, and a parent that would close a cycle is rejected — before any write, and is synchronized across the card's Parent(s) row, the Mermaid diagram's incoming edges (adding missing node definitions for card-only parents), and the catalog's Parent(s) column. Any invalid update returns an error and leaves every file byte-for-byte unchanged.
 - `SetActiveResearch` makes an R-NNN active by rewriting `index.md` so its row is the last table entry — the chronological rule `PickActiveProject` applies. A missing row gets a minimal brief-linking row appended, and a missing `index.md` is created with the canonical skeleton; the rid must resolve under the requesting research root (the `ProjectDir` ownership check) before any file is touched, and the write goes through the same atomic temp+rename path as the hypothesis mutations.
 - `DeleteResearchProject` removes every `index.md` entry line for the project and its `R-NNN-*` directory tree. The project must resolve under the requesting research root, and the symlink-resolved project directory must sit strictly inside the symlink-resolved research root (a directory equal to the root is rejected) before anything is touched; `os.RemoveAll` runs on the validated resolved location and unlinks symlinked children rather than following them.
-- The root-level RPCs (`SetActiveResearch`/`DeleteResearch`) mirror the hypothesis-mutation posture: the research root is workspace-containment-checked, the whole resolve→write chain runs under the per-root mutation mutex, and the caller's R-NNN is ownership-checked via `ProjectDir` before any file is touched. Both return the refreshed `ResearchStatusDTO` (the toggle stays on after deleting the last project) and emit `research:changed` (action=`active_changed` / `project_deleted`).
-- Pins (`ProjectInfo.ResearchPins`) store research-root-relative, forward-slash document paths: a pinned research project records its brief (`R-NNN-*/brief.md`), a pinned hypothesis card records `R-NNN-*/hypotheses/H-NNN.md` keyed by hypothesis id (a list per key — the same H-NNN exists across R-NNN projects). The pin RPCs are idempotent in both directions, ownership-check the R-NNN, serialize under the per-root mutation mutex (against `DeleteResearch`'s pin cleanup, so a concurrent toggle cannot resurrect a deleted project's pins), and emit no event. Pinning a card requires the card file to exist; unpinning tolerates a deleted card, so stale pins stay removable. `DeleteResearch` removes every pin under the deleted R-NNN's directory and persists the cleaned record.
-- `ResearchStatusDTO.pinned_research`/`pinned_hypotheses` mirror the persisted pins in `GetResearchStatus`, `EnableResearch`, `SetActiveResearch`, and `DeleteResearch`, normalized to non-nil collections (empty `[]`/`{}`, never `null`).
+- The root-level RPCs (`SetActiveResearch`/`DeleteResearch`) mirror the hypothesis-mutation posture: the research root is workspace-containment-checked, the whole resolve→write chain runs under the per-root mutation mutex, and the caller's R-NNN is ownership-checked via `ProjectDir` before any file is touched. Both return the refreshed `ResearchStatusDTO` (RESEARCH stays on after deleting the last project) and emit `research:changed` (action=`active_changed` / `project_deleted`).
+- Pins (`ProjectInfo.ResearchPins`) store research-root-relative, forward-slash document paths: a pinned research project records its brief (`R-NNN-*/brief.md`), a pinned hypothesis card records `R-NNN-*/hypotheses/H-NNN.md` keyed by hypothesis id (a list per key — the same H-NNN exists across R-NNN projects). The pin RPCs are idempotent in both directions, ownership-check the R-NNN, serialize under the per-root mutation mutex (against `DeleteResearch`'s pin cleanup, so a concurrent pin change cannot resurrect a deleted project's pins), and emit no event. Pinning a card requires the card file to exist; unpinning tolerates a deleted card, so stale pins stay removable. `DeleteResearch` removes every pin under the deleted R-NNN's directory and persists the cleaned record.
+- `ResearchStatusDTO.pinned_research`/`pinned_hypotheses` mirror the persisted pins in `GetResearchStatus`, `SetActiveResearch`, and `DeleteResearch`, normalized to non-nil collections (empty `[]`/`{}`, never `null`).
 - `RecommendNextStepForHypothesis` scopes the next-step recommendation to one hypothesis: open/in-progress → `research-experiment` on it; terminal without a recorded Decision → `research-decision` on it; otherwise (unknown hypothesis, nil project, empty ID, or a terminal hypothesis already carrying a Decision) the plain `RecommendNextStep` result. `GetResearchNextStep(projectID, hypothesisID)` exposes this at the RPC boundary: an empty `hypothesisID` means the project-level recommendation.
 - `ResearchNextStepDTO.project_id` (and `ResearchGraphDTO.project_id`) are dual-namespace by design: they name the recommendation's/graph's subject — the active R-NNN when one exists, the c0wrk project UUID otherwise (the pre-R-NNN setup state). They are not stable identities for the requesting c0wrk project; frontend state keying must not rely on them across a project switch (the research store drops the recommendation and selection on cross-project loads instead).
 
@@ -185,10 +183,10 @@ Metrics are derived from the reconciled graph:
 
 | Parameter | Default | Description |
 | --------- | ------- | ----------- |
-| `ProjectInfo.ResearchRoot` | empty (disabled) | Persisted per-project absolute research root |
-| Enable `rootPath` | `<workspace>/.research` | Optional explicit root; must remain inside the workspace |
+| Research root | `<workspace>/.research` | Unconditional per-project root (`config.ProjectResearchPath`); no persisted override |
+| Global seed dir | `~/.c0wrk/.agents/` (`config.SkillsDir`/`config.AgentsDir` on the agent dir) | Destination of the startup `seedGlobalPacks` run; outranks `~/.agents` in discovery |
 | Skill-pack seed version | `2` (`research.CurrentSeedVersion`) | Pack version stamped into `.seed-version` markers; agent-pack version (`research.AgentSeedVersion`, `1`) bumps independently |
-| Papers skill-pack seed version | `3` (`papers.CurrentSeedVersion`) | The `study-paper` pack seeded by the same reconciliation; bumps independently of both research pack versions (ADR-051) |
+| Papers skill-pack seed version | `3` (`papers.CurrentSeedVersion`) | The `study-paper` pack seeded by the same global startup seed; bumps independently of both research pack versions (ADR-056) |
 
 ## Extension Points
 
@@ -210,6 +208,7 @@ The literature library and the hypothesis graph are wired in ONE direction end-t
 ## Related Specs
 
 - [papers.md](papers.md) - the paper ("literature") library: studied-paper cards, flashcards, the literature graph, and multi-paper comparisons, plus the globally-seeded `study-paper` skill-pack (the RESEARCH panel's Papers segment)
+- [../decisions/056-research-always-on-global-seeding.md](../decisions/056-research-always-on-global-seeding.md) - why RESEARCH is always on for real projects and every c0wrk pack seeds globally at startup with reordered discovery (supersedes [ADR-051](../decisions/051-research-pack-reconciliation.md))
 - [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) - RESEARCH RPC surface and DTO boundary
 - [../contracts/event-catalog.md](../contracts/event-catalog.md) - `research:changed` and `research:file_changed` events
 - [architecture/security-model.md](../architecture/security-model.md) - workspace containment and untrusted persisted artifacts

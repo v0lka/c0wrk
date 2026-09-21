@@ -13,15 +13,24 @@ import (
 // the registration path platform-portable: sp4rk's bash.go is //go:build !windows
 // and posh.go is //go:build windows, so a single unconditional constructor call
 // would fail to compile on the other OS (e.g. on Windows:
-// undefined: builtins.NewBashExecToolWithTimeouts).
+// undefined: builtins.NewBashExecToolWithInvocation).
 //
 // The blocklist (the user-authored security.groups.execute.blocklist) is
 // assembled by the caller in builtin_registration.go; only the constructor
 // call is platform-specific. No platform supplement exists on Unix: no
 // predefined patterns ship any more, so the compiled-in set is exactly what
 // the caller passes (empty by default).
-func newShellExecTool(blocklist []string, timeouts builtins.BashTimeouts) (tools.Tool, error) {
-	return builtins.NewBashExecToolWithTimeouts(blocklist, timeouts)
+//
+// bashInvocation/poshInvocation carry the operator's optional launch-shape
+// override (see sp4rk tools.ShellInvocation); this file consumes the bash
+// entry, the Windows file the posh entry — a nil pointer keeps the built-in
+// default launch shape.
+func newShellExecTool(blocklist []string, timeouts builtins.BashTimeouts, bashInvocation, poshInvocation *tools.ShellInvocation) (tools.Tool, error) {
+	invocation := tools.DefaultBashInvocation()
+	if bashInvocation != nil {
+		invocation = *bashInvocation
+	}
+	return builtins.NewBashExecToolWithInvocation(blocklist, timeouts, invocation)
 }
 
 // ShellExecToolName returns the name of the platform-registered

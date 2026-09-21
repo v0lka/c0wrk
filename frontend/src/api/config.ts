@@ -2,8 +2,8 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
-import { isConfigResponse, isSecuritySettingsResponse, isModelProfilesResponse } from '@/types/guards'
-import type { ConfigResponse, SecuritySettingsResponse, LLMFullConfigRequest, SearchSettingsRequest, ProxySettingsRequest, ModelConfigResponse, ModelConfigRequest, ModelProfilesResponse, ModelProfileUpdateRequest, VectorIndexSettingsResponse, GetProviderTLSCertificateRequest, TLSCertificateResponse } from '@/types/models'
+import { isConfigResponse, isSecuritySettingsResponse, isModelProfilesResponse, isShellExecSettingsResponse } from '@/types/guards'
+import type { ConfigResponse, SecuritySettingsResponse, ShellExecSettingsResponse, LLMFullConfigRequest, SearchSettingsRequest, ProxySettingsRequest, ModelConfigResponse, ModelConfigRequest, ModelProfilesResponse, ModelProfileUpdateRequest, VectorIndexSettingsResponse, GetProviderTLSCertificateRequest, TLSCertificateResponse } from '@/types/models'
 
 /** Sentinel value returned by backend when an API key is configured but should not be displayed */
 export const MASKED_API_KEY = '***configured***'
@@ -61,6 +61,30 @@ export async function updateSecuritySettings(settings: SecuritySettingsResponse)
     await app.UpdateSecuritySettings(settings)
   } catch (err) {
     logger.error('Failed to update security settings:', err)
+    throw err
+  }
+}
+
+export async function getShellExecSettings(): Promise<ShellExecSettingsResponse> {
+  try {
+    const app = getApp()
+    const result = await app.GetShellExecSettings()
+    if (!isShellExecSettingsResponse(result)) {
+      throw new Error('getShellExecSettings: backend returned invalid data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to get shell exec settings:', err)
+    throw err
+  }
+}
+
+export async function updateShellExecSettings(settings: ShellExecSettingsResponse): Promise<void> {
+  try {
+    const app = getApp()
+    await app.UpdateShellExecSettings(settings)
+  } catch (err) {
+    logger.error('Failed to update shell exec settings:', err)
     throw err
   }
 }

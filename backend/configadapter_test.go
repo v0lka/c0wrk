@@ -7,6 +7,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
 	coretools "github.com/v0lka/c0wrk/core/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 // TestAgentsMDSearchPaths verifies that agentsMDSearchPaths resolves the global
@@ -443,5 +444,52 @@ func TestToBuilderConfig_SilentModeEnumPin(t *testing.T) {
 	stdSecurity := ToBuilderConfig(stdCfg, config.PredefinedModelProfiles()).Security
 	if stdSecurity.SmartApproveEnabled() || stdSecurity.SilentModeEnabled() {
 		t.Error("the standard autonomy mode must derive neither flag")
+	}
+}
+
+// TestToBuilderConfig_ShellExecOverride verifies the config→builder mapping of
+// the shell_exec launch-shape override: an active entry maps to a validated
+// sp4rk ShellInvocation with the declared kind, an inactive entry maps to nil
+// (built-in default), and a programmatic config that bypassed the load
+// pipeline's fail-soft normalization degrades to nil instead of erroring.
+func TestToBuilderConfig_ShellExecOverride(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.ShellExec.BashExec = config.ShellExecToolConfig{
+		Command: []string{"/opt/homebrew/bin/zsh", "-c", config.ShellCommandPlaceholder},
+		Shell:   config.ShellKindZsh,
+	}
+	cfg.ShellExec.PoshExec = config.ShellExecToolConfig{
+		Command: []string{"pwsh.exe", "-NoProfile", "-Command", config.ShellCommandPlaceholder},
+		Shell:   config.ShellKindPwsh,
+	}
+
+	bc := ToBuilderConfig(cfg, nil)
+
+	if bc.ShellExec.BashExec == nil {
+		t.Fatal("bash_exec override not mapped")
+	}
+	if bc.ShellExec.BashExec.Binary != "/opt/homebrew/bin/zsh" || bc.ShellExec.BashExec.Kind != sdktools.ShellKindZsh {
+		t.Errorf("bash invocation = %+v", bc.ShellExec.BashExec)
+	}
+	if bc.ShellExec.PoshExec == nil || bc.ShellExec.PoshExec.Kind != sdktools.ShellKindPwsh {
+		t.Errorf("posh invocation not mapped correctly: %+v", bc.ShellExec.PoshExec)
+	}
+
+	// Inactive entries map to nil.
+	empty := ToBuilderConfig(&config.Config{}, nil)
+	if empty.ShellExec.BashExec != nil || empty.ShellExec.PoshExec != nil {
+		t.Errorf("inactive overrides must map to nil, got %+v", empty.ShellExec)
+	}
+
+	// A config that bypassed load normalization (invalid kind) degrades to
+	// nil — the conversion never errors the whole build.
+	broken := &config.Config{}
+	broken.ShellExec.BashExec = config.ShellExecToolConfig{
+		Command: []string{"/usr/bin/fish", "-c", config.ShellCommandPlaceholder},
+		Shell:   "fish",
+	}
+	bc = ToBuilderConfig(broken, nil)
+	if bc.ShellExec.BashExec != nil {
+		t.Errorf("an invalid override must degrade to nil, got %+v", bc.ShellExec.BashExec)
 	}
 }

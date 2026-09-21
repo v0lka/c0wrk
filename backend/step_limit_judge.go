@@ -69,9 +69,11 @@ func (app *Application) ResolveSilentStepLimit(ctx context.Context, sessionID st
 		// Every automatic decision must leave an auditable, non-blocking trace
 		// (OWASP ASI10). The step-limit boundary is answered without a human
 		// here, so emit the autonomy_decision event carrying the verdict, the
-		// boundary category and the deciding justification.
+		// boundary category and the deciding justification. ctx is forwarded so
+		// a subagent executor's boundary nests under its delegation/plan-step
+		// chat block instead of the main stream.
 		if app.manager != nil {
-			app.manager.EmitAutonomyDecision(sessionID, autonomyStepLimitDecisionData(req, resp, reasoning, registry.SilentMode().StepLimit))
+			app.manager.EmitAutonomyDecision(ctx, sessionID, autonomyStepLimitDecisionData(req, resp, reasoning, registry.SilentMode().StepLimit))
 		}
 	}
 	return resp, reasoning, handled

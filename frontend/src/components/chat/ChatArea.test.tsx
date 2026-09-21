@@ -41,7 +41,7 @@ vi.mock('@/stores/sessionStore', async () => {
 vi.mock('@/stores/chatStore', () => ({
   useChatStore: Object.assign(
     () => undefined,
-    { getState: () => ({ addMessage: vi.fn(), mergeHistoryMessages: vi.fn(), setTaskActive: vi.fn(), setHistoryPageMeta: vi.fn(), setHistoryLoading: vi.fn(), historyCursor: {}, historyHasMore: {}, historyLoading: {}, prependedHistoryIds: {}, prependCursor: {}, prependHasMore: {}, workUnitStatus: {}, scrollPositions: {}, saveScrollPosition: vi.fn(), clearScrollPosition: vi.fn() }) },
+    { getState: () => ({ addMessage: vi.fn(), mergeHistoryMessages: vi.fn(), setTaskActive: vi.fn(), workUnitStatus: {}, scrollPositions: {}, saveScrollPosition: vi.fn(), clearScrollPosition: vi.fn() }) },
   ),
   useSessionMessages: () => [],
   useSessionWorkUnits: () => ({}),
@@ -53,9 +53,9 @@ vi.mock('@/stores/planStore', () => ({
   usePlanStore: Object.assign(() => null, { getState: () => ({ clearPlan: vi.fn() }) }),
 }))
 
-// --- api/chat: return an empty page / null so the history/reconcile effects are no-ops ---
+// --- api/chat: return an empty array / null so the history/reconcile effects are no-ops ---
 vi.mock('@/api/chat', () => ({
-  getSessionHistory: vi.fn().mockResolvedValue({ messages: [], next_cursor: '', has_more: false }),
+  getSessionHistory: vi.fn().mockResolvedValue([]),
   getSessionRuntimeStatus: vi.fn().mockResolvedValue(null),
   getPendingActions: vi.fn().mockResolvedValue(null),
   resolveStalePrompt: vi.fn().mockResolvedValue(undefined),

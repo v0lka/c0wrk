@@ -7,8 +7,8 @@ import {
   RESEARCH_CARD_MAX_HEIGHT,
 } from '@/stores/researchStore'
 import { useResize } from '@/hooks/useResize'
+import { useProjectStore, selectIsNoProject } from '@/stores/projectStore'
 import { ResizeHandle } from '@/components/ResizeHandle'
-import { ResearchToggle } from './ResearchToggle'
 import { HypothesisCard } from './HypothesisCard'
 import { ErrorBanner } from './ResearchBanner'
 import { useHypothesisEditor } from './useHypothesisEditor'
@@ -32,14 +32,11 @@ import type { HypothesisGraph } from '@/types/models'
  * card as a sibling read-only tab, and the card edits (title / parents /
  * status / decision / statement / verification criterion / experiment
  * notes / timebox / result — persisted through the t4 UpdateHypothesis RPC)
- * render in markdown-highlighted editors. The header carries the RESEARCH
- * mode toggle (disable), so the workspace tab remains usable even when the
- * sidebar panel is hidden.
+ * render in markdown-highlighted editors.
  */
 export function ResearchWorkspace() {
   // Data sync (full status + incremental graph updates) lives in the App-root
   // ResearchEventBridge — this component is a pure view over researchStore.
-  const enabled = useResearchStore((s) => s.status?.enabled ?? false)
   const project = useResearchStore(selectActiveProject)
   const error = useResearchStore((s) => s.error)
   const isLoading = useResearchStore((s) => s.isLoading)
@@ -89,7 +86,6 @@ export function ResearchWorkspace() {
   )
 
   // Card editing (selection clicks, dirty, save round-trip, open-card link).
-  // Called before the early return below so the hook order stays stable.
   const { saving, saveError, selectNode, dirty, handleSave, openHypothesisCard } =
     useHypothesisEditor(graph, selectedNode, draft)
 
@@ -107,21 +103,21 @@ export function ResearchWorkspace() {
     onChange: setCardHeight,
   })
 
-  // ── RESEARCH off → enable empty state ──────────────────────────────
-  if (!enabled) {
-    return (
-      <div className="flex h-full min-h-0 flex-col">
-        {error && <ErrorBanner message={error} />}
-        <div className="flex flex-1 items-center justify-center min-h-0">
-          <ResearchToggle variant="card" />
-        </div>
-      </div>
-    )
+  // ── No Project (CHAT mode) → neutral render ───────────────────────────────
+  // RESEARCH is always available for real projects, so the workspace is
+  // otherwise unconditional. The Workspace panel hides the Research tab in
+  // No-Project mode but does not close an already-open viewer tab, so this
+  // guard is the neutral render if the tab is still mounted. It sits AFTER
+  // every hook call so the hook order stays stable (rules-of-hooks).
+  const isNoProject = useProjectStore(selectIsNoProject)
+  if (isNoProject) {
+    return null
   }
 
+  // ── Render the workspace (RESEARCH is always available for real projects) ──
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* Header: title + hide-completed toggle + mode toggle (disable) */}
+      {/* Header: title + hide-completed toggle */}
       <div className="flex items-center gap-2 shrink-0 border-b border-border bg-secondary/30 px-2 py-1">
         <FlaskConical className="size-3.5 shrink-0 text-success" />
         <span
@@ -140,7 +136,6 @@ export function ResearchWorkspace() {
           />
           Hide completed
         </label>
-        <ResearchToggle variant="button" />
       </div>
 
       {error && <ErrorBanner message={error} />}

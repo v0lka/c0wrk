@@ -48,8 +48,6 @@ function makeProject(overrides: Partial<ProjectInfo> = {}): ProjectInfo {
     workspace_path: '/ws',
     is_external: true,
     is_no_project: false,
-    research_root: '',
-    is_research: false,
     created_at: new Date(0).toISOString(),
     last_active_at: new Date(0).toISOString(),
     ...overrides,

@@ -326,11 +326,20 @@ func TestResumeTask_ReusesRoutingDecision(t *testing.T) {
 
 // TestResumeTask_EmptyTrajectoryFallback verifies that a resume with no
 // persisted trajectory degrades to a fresh-start executor (no error).
+//
+// The task carries a persisted routing decision (a task that was routed but
+// produced no trajectory — e.g. it failed before the first step landed): a
+// task with neither routing nor trajectory would instead be treated as
+// never-started and re-routed (see TestResumeTask_ReroutesNeverStartedTask),
+// which requires a routing-capable call, not the finish-only mock wired here.
 func TestResumeTask_EmptyTrajectoryFallback(t *testing.T) {
+	routing := router.RoutingDecision{Domain: "general", Complexity: 2}
+	routingJSON, _ := json.Marshal(routing)
 	store := &resumeTaskStore{
 		task: &TaskRecord{
 			ID: "task-resume-3", SessionID: "ignored", OriginalRequest: "no trajectory task",
-			Status: "in_progress",
+			Status:          "in_progress",
+			RoutingDecision: routingJSON,
 		},
 		trajectory: nil,
 	}
@@ -355,6 +364,125 @@ func TestResumeTask_EmptyTrajectoryFallback(t *testing.T) {
 
 	if _, ok := waitForEvent(eventChan, "task_complete", 3*time.Second); !ok {
 		t.Fatal("timeout waiting for task_complete event (empty trajectory fallback)")
+	}
+}
+
+// TestResumeTask_ReroutesNeverStartedTask is the manager-level acceptance test
+// for the pre-routing resume fix: a task that failed BEFORE its original run
+// reached routing — no persisted routing decision AND no execution state, the
+// shape a fresh send leaves when the router's LLM call fails (e.g. a network
+// error) — must be re-classified on resume instead of running the Conductor
+// under the default "general" domain. The re-routed decision flows back on the
+// result, and the router is actually invoked.
+func TestResumeTask_ReroutesNeverStartedTask(t *testing.T) {
+	// First call: the router (re-route). Second call: the resumed Conductor.
+	caller := &scriptedLLM{scripted: []*llm.ChatResponse{
+		routingJSONResponse("research", 4),
+		finishResponse("rerouted-done"),
+	}}
+	store := &resumeTaskStore{
+		task: &TaskRecord{
+			ID: "task-reroute", SessionID: "ignored", OriginalRequest: "study the paper",
+			// "failed" is what a routing failure leaves behind (FailTask);
+			// no routing decision and no trajectory.
+			Status: "failed",
+		},
+		trajectory: nil,
+	}
+
+	eventChan := make(chan Event, 100)
+	mgr := NewManager(routingFunctionalFactory(caller), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
+	t.Cleanup(mgr.Shutdown) // stop the manager before its temp dirs are removed
+	mgr.SetTaskStore(store)
+
+	info, err := mgr.CreateSession(testProjectID, ws)
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	store.mu.Lock()
+	store.task.SessionID = info.ID
+	store.mu.Unlock()
+
+	if err := mgr.ResumeTask(context.Background(), info.ID, "", "", ""); err != nil {
+		t.Fatalf("ResumeTask failed: %v", err)
+	}
+
+	complete, ok := waitForEvent(eventChan, "task_complete", 5*time.Second)
+	if !ok {
+		t.Fatal("timeout waiting for task_complete event")
+	}
+	data, ok := complete.Data.(TaskCompleteData)
+	if !ok {
+		t.Fatalf("expected TaskCompleteData, got %T", complete.Data)
+	}
+	if !data.Success {
+		t.Fatalf("expected successful completion, got completion=%q output=%q", data.Completion, data.Output)
+	}
+	if data.Output != "rerouted-done" {
+		t.Errorf("output = %q, want %q", data.Output, "rerouted-done")
+	}
+	// The resumed run must carry the RE-ROUTED decision, not the general default.
+	if data.RoutingDecision == nil || data.RoutingDecision.Domain != "research" {
+		t.Fatalf("resumed routing decision = %+v, want domain research (task must be re-routed)", data.RoutingDecision)
+	}
+	// The router must have run: route + finish = at least two LLM calls.
+	if got := len(caller.Calls()); got < 2 {
+		t.Fatalf("expected at least 2 LLM calls (route + finish), got %d", got)
+	}
+}
+
+// TestResumeTask_StartedTaskIsNotRerouted is the negative companion to
+// TestResumeTask_ReroutesNeverStartedTask: a task that DID execute (a persisted
+// trajectory) but has no routing decision keeps the pre-existing behavior — it
+// is resumed with the "general" default and the router is NOT invoked (the
+// factory's router would otherwise consume a script and fail the finish-only
+// mock). This guards against re-routing a genuine continuation.
+func TestResumeTask_StartedTaskIsNotRerouted(t *testing.T) {
+	trajJSON, _ := json.Marshal([]agent.Step{
+		{Thought: "prior", Action: llm.ToolCall{ID: "pc1", Name: "read_file", Input: json.RawMessage(`{}`)}, Observation: "PRIOR"},
+	})
+	store := &resumeTaskStore{
+		task: &TaskRecord{
+			ID: "task-started", SessionID: "ignored", OriginalRequest: "long running task",
+			Status: "in_progress",
+			// No routing decision, but a trajectory: the task executed, so the
+			// missing routing is an anomaly, not a pre-routing failure.
+		},
+		trajectory: trajJSON,
+	}
+
+	eventChan := make(chan Event, 100)
+	// functionalOrchestratorFactory deliberately wires NO router: if the resume
+	// path tried to route, it would panic — so a clean completion proves the
+	// started task was not re-routed.
+	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "not-rerouted"}), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
+	t.Cleanup(mgr.Shutdown) // stop the manager before its temp dirs are removed
+	mgr.SetTaskStore(store)
+
+	info, err := mgr.CreateSession(testProjectID, ws)
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	store.mu.Lock()
+	store.task.SessionID = info.ID
+	store.mu.Unlock()
+
+	if err := mgr.ResumeTask(context.Background(), info.ID, "", "", ""); err != nil {
+		t.Fatalf("ResumeTask failed: %v", err)
+	}
+
+	complete, ok := waitForEvent(eventChan, "task_complete", 3*time.Second)
+	if !ok {
+		t.Fatal("timeout waiting for task_complete event")
+	}
+	data, _ := complete.Data.(TaskCompleteData)
+	if !data.Success || data.Output != "not-rerouted" {
+		t.Fatalf("expected successful completion %q, got success=%v output=%q", "not-rerouted", data.Success, data.Output)
+	}
+	if data.RoutingDecision != nil {
+		t.Errorf("a started task must not be re-routed, got routing %+v", data.RoutingDecision)
 	}
 }
 

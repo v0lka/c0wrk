@@ -13,6 +13,7 @@ export type MessageType =
   | 'step_todo_update' | 'memory_read' | 'plan_review'
   | 'service'
   | 'review_prompt'
+  | 'autonomy_decision'
   | 'goal_proposal'
   | 'goal_status'
 
@@ -31,6 +32,7 @@ export type DisplayItemKind =
   | 'subagent' | 'reflection' | 'step_finish'
   | 'context_compaction' | 'memory_read' | 'plan_review' | 'checklist'
   | 'review_prompt'
+  | 'autonomy_decision'
   | 'goal_proposal'
 
 /**
@@ -62,6 +64,7 @@ export type DisplayItem =
   | { kind: 'memory_read'; id: string; content: string; stepNum?: number }
   | { kind: 'plan_review'; message: ChatMessageUI }
   | { kind: 'review_prompt'; message: ChatMessageUI }
+  | { kind: 'autonomy_decision'; message: ChatMessageUI }
   | {
       kind: 'goal_proposal'
       message: ChatMessageUI

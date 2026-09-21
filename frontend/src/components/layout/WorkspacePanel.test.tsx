@@ -30,8 +30,6 @@ function makeProject(overrides: Partial<ProjectInfo> & { id: string }): ProjectI
     workspace_path: `/ws/${overrides.id}`,
     is_external: false,
     is_no_project: false,
-    research_root: '',
-    is_research: false,
     created_at: '2026-01-01T00:00:00Z',
     last_active_at: '2026-01-01T00:00:00Z',
     ...overrides,

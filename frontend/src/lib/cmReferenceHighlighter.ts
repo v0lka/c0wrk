@@ -5,8 +5,12 @@ import { StateField, RangeSetBuilder, type Text } from '@codemirror/state'
 const SKILL_RE = /(?:^|(?<=\s))\/([\w-]+)/g
 // Matches #agent-name preceded by whitespace or at line start.
 const AGENT_RE = /(?:^|(?<=\s))#([\w-]+)/g
-// Matches @file-path (with escaped spaces and optional #line) preceded by whitespace or at line start.
-const FILE_RE = /(?:^|(?<=\s))@(?:[^\s\\]|\\.)+(?:#\d+(?:-\d+)?)?/g
+// Matches @file-path refs preceded by whitespace or at line start. Two forms:
+// a single-quoted path (@'my file.go', the canonical form for paths with
+// spaces) or a bare path with backslash-escaped spaces (@my\ file.go, the
+// legacy form), both with an optional #line anchor. The quoted alternative
+// must come first so a quoted ref is consumed as one token.
+const FILE_RE = /(?:^|(?<=\s))@(?:'[^']+'|(?:[^\s\\]|\\.)+)(?:#\d+(?:-\d+)?)?/g
 
 const skillMark = Decoration.mark({ class: 'cm-ref-skill' })
 const agentMark = Decoration.mark({ class: 'cm-ref-agent' })

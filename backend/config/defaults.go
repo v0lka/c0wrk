@@ -12,21 +12,25 @@ import (
 var defaultProtectedTools = []string{"store_fact", "search_facts"}
 
 // defaultSkillDirs is the default list of skill discovery directories used when
-// the `skills.dirs` config key is omitted. The current project's
-// `.agents/skills` directory is always scanned automatically (see core/builder.go)
-// and does NOT need to be listed here.
+// the `skills.dirs` config key is omitted. Order is precedence: the c0wrk
+// global directory (`~/.c0wrk/.agents/skills`) outranks the user's
+// `~/.agents/skills`, so a c0wrk-managed skill wins over a same-named user
+// skill. The current project's `.agents/skills` directory is always scanned
+// automatically (see core/builder.go) and does NOT need to be listed here.
 var defaultSkillDirs = []string{
-	"~/.agents/skills",
 	"~/.c0wrk/.agents/skills",
+	"~/.agents/skills",
 }
 
 // defaultAgentDirs is the default list of Subagent Profile discovery
 // directories used when the `agents.dirs` config key is omitted. Mirrors
-// defaultSkillDirs for AGENT.md files. The current project's `.agents/agents`
-// directory is always scanned automatically (see core/builder.go).
+// defaultSkillDirs for AGENT.md files: the c0wrk global directory
+// (`~/.c0wrk/.agents/agents`) outranks the user's `~/.agents/agents`. The
+// current project's `.agents/agents` directory is always scanned
+// automatically (see core/builder.go).
 var defaultAgentDirs = []string{
-	"~/.agents/agents",
 	"~/.c0wrk/.agents/agents",
+	"~/.agents/agents",
 }
 
 // defaultModelProfilesAlwaysPresent is the default always-present tool allow-list
@@ -602,6 +606,19 @@ func ApplyDefaults(cfg *Config) {
 	// desktop/memlimit.go; >0 = explicit MiB; -1 = off). Documented here so
 	// default hunters find it; the AUTO value (0) and the OFF sentinel (-1)
 	// are validated in validate().
+
+	// shell_exec defaults: an active launch-shape override without a
+	// declared shell is seeded with the tool's platform-default kind
+	// (bash_exec → bash, posh_exec → powershell) — the overwhelmingly common
+	// override (a Homebrew bash, a login zsh, a pwsh replacement) keeps the
+	// tool's native syntax family. An INVALID explicit kind is not handled
+	// here: normalizeShellExec (load pipeline) warns and resets the section.
+	if cfg.ShellExec.BashExec.OverrideActive() && cfg.ShellExec.BashExec.Shell == "" {
+		cfg.ShellExec.BashExec.Shell = DefaultShellKindBash
+	}
+	if cfg.ShellExec.PoshExec.OverrideActive() && cfg.ShellExec.PoshExec.Shell == "" {
+		cfg.ShellExec.PoshExec.Shell = DefaultShellKindPosh
+	}
 }
 
 // defaultToolGroupPolicies is the single source of truth for the configurable

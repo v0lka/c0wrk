@@ -63,8 +63,6 @@ vi.mock('@/api/research', () => ({
   getResearchNextStep: vi.fn(),
   updateHypothesis: vi.fn(),
   createHypothesis: vi.fn(),
-  enableResearch: vi.fn(),
-  disableResearch: vi.fn(),
 }))
 
 // Radix dropdown positioning observes the trigger with ResizeObserver, which

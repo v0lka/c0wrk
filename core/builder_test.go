@@ -110,8 +110,10 @@ func TestApplySecurityPolicies(t *testing.T) {
 // shared builder registry would leave live sessions executing on stale state
 // — a deny set in the security settings UI would fail open on every session
 // created before the save. The clone registered by registerSessionRegistry
-// must receive every subsequent applySecurityPolicies push until the
-// orchestrator's cleanup hook unregisters it.
+// must receive the group-policy half of every subsequent
+// applySecurityPolicies push until the orchestrator's cleanup hook
+// unregisters it (the autonomy half is pinned per task instead — see
+// TestApplySecurityPolicies_PinsAutonomyToTaskLaunch).
 func TestUpdateSecurityPolicies_ReachesLiveSessionRegistries(t *testing.T) {
 	cfgOf := func(execPolicy, autonomyMode string, autoApprove bool) *BuilderConfig {
 		return &BuilderConfig{

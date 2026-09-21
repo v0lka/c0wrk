@@ -59,8 +59,8 @@ type PaperOriginalDTO struct {
 //
 // Concurrency: mirroring RunPaperLiterature, the paper is resolved and
 // containment-checked under a SHORT hold of the per-effective-research-root
-// mutation mutex (re-loading the row so a concurrent Enable/DisableResearch
-// that moved the root is rejected with errResearchRootChanged), and the mutex
+// mutation mutex (re-loading the row so a concurrent root move is rejected
+// with errResearchRootChanged), and the mutex
 // is RELEASED before the network-bound fetch runs — holding the row-mutation
 // mutex across a fetch (bounded per-request timeouts of 60s per document and
 // 20s per image, up to 200 images) would head-of-line-block every

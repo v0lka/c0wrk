@@ -20,14 +20,12 @@ const { messagesRef, EMPTY_WORK_UNITS, itemsCaptured, chatStoreFns, chatStoreSta
   chatStoreFns: {
     addMessage: vi.fn(),
     mergeHistoryMessages: vi.fn(),
-    setHistoryPageMeta: vi.fn(),
-    setHistoryLoading: vi.fn(),
     setTaskActive: vi.fn(),
     // ChatScrollManager saves the reading position on unmount.
     saveScrollPosition: vi.fn(),
   },
-  // Paging bookkeeping maps the real hook reads off the store snapshot.
-  chatStoreState: { historyCursor: {}, historyHasMore: {}, historyLoading: {}, workUnitStatus: {}, scrollPositions: {}, taskActive: {} },
+  // Store snapshot maps the component reads off the store.
+  chatStoreState: { workUnitStatus: {}, scrollPositions: {}, taskActive: {} },
 }))
 
 vi.mock('./ChatMessageRenderer', () => ({
@@ -68,7 +66,7 @@ vi.mock('@/stores/planStore', () => ({
 }))
 
 vi.mock('@/api/chat', () => ({
-  getSessionHistory: vi.fn().mockResolvedValue({ messages: [], next_cursor: '', has_more: false }),
+  getSessionHistory: vi.fn().mockResolvedValue([]),
   getSessionRuntimeStatus: vi.fn().mockResolvedValue(null),
   getPendingActions: vi.fn().mockResolvedValue(null),
   resolveStalePrompt: vi.fn().mockResolvedValue(undefined),
@@ -204,14 +202,4 @@ describe('ChatArea transcript stability', () => {
     expect(second[5]).not.toBe(first[5])
   })
 
-  it('resets the session paging bookkeeping before loading the newest page (finding #2b)', async () => {
-    messagesRef.current = makeMessages(3)
-    render(<Harness />)
-    await flushEffects()
-
-    // A cursor/hasMore left over from an earlier visit must not be reused, and
-    // an in-flight flag left set must not block older-page loading.
-    expect(chatStoreFns.setHistoryPageMeta).toHaveBeenCalledWith('s1', '', false)
-    expect(chatStoreFns.setHistoryLoading).toHaveBeenCalledWith('s1', false)
-  })
 })

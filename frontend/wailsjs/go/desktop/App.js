@@ -166,10 +166,6 @@ export function DeleteWorkDirectory(arg1, arg2, arg3) {
   return window['go']['desktop']['App']['DeleteWorkDirectory'](arg1, arg2, arg3);
 }
 
-export function DisableResearch(arg1) {
-  return window['go']['desktop']['App']['DisableResearch'](arg1);
-}
-
 export function DiscardChanges(arg1) {
   return window['go']['desktop']['App']['DiscardChanges'](arg1);
 }
@@ -180,10 +176,6 @@ export function DownloadUpdate() {
 
 export function EmitSessionEvent(arg1) {
   return window['go']['desktop']['App']['EmitSessionEvent'](arg1);
-}
-
-export function EnableResearch(arg1, arg2) {
-  return window['go']['desktop']['App']['EnableResearch'](arg1, arg2);
 }
 
 export function Fetch(arg1, arg2) {
@@ -362,12 +354,8 @@ export function GetSecuritySettings() {
   return window['go']['desktop']['App']['GetSecuritySettings']();
 }
 
-export function GetSessionHistory(arg1, arg2, arg3) {
-  return window['go']['desktop']['App']['GetSessionHistory'](arg1, arg2, arg3);
-}
-
-export function GetSessionPlanTimeline(arg1) {
-  return window['go']['desktop']['App']['GetSessionPlanTimeline'](arg1);
+export function GetSessionHistory(arg1) {
+  return window['go']['desktop']['App']['GetSessionHistory'](arg1);
 }
 
 export function GetSessionRuntimeStatus(arg1) {
@@ -380,6 +368,10 @@ export function GetSessionTokens(arg1) {
 
 export function GetSessionWorkspace(arg1) {
   return window['go']['desktop']['App']['GetSessionWorkspace'](arg1);
+}
+
+export function GetShellExecSettings() {
+  return window['go']['desktop']['App']['GetShellExecSettings']();
 }
 
 export function GetStepOutput(arg1, arg2) {
@@ -804,6 +796,10 @@ export function UpdateSearchSettings(arg1) {
 
 export function UpdateSecuritySettings(arg1) {
   return window['go']['desktop']['App']['UpdateSecuritySettings'](arg1);
+}
+
+export function UpdateShellExecSettings(arg1) {
+  return window['go']['desktop']['App']['UpdateShellExecSettings'](arg1);
 }
 
 export function UpdateVectorIndexSettings(arg1) {
