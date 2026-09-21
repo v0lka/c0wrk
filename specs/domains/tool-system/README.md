@@ -59,7 +59,7 @@ core ToolRegistry.Execute(ctx, name, input)
 ├─ 5. PostExecuteHook deferred (runs on every later return path)
 ├─ 6. PreExecuteHook (blocking gate, e.g., index ready)
 ├─ 7. Group policy == deny? → return error result (hard block, names the group)
-├─ 8. Gather safety signals once: for shell tools, attach the deterministic flowsh analysis first (AttachShellAnalysis → sdktools.AnalyzeShellCommandForJudge → WithShellAnalysis; the SDK Judge reads the criteria C1–C9 from ctx), then collect the tool Judge outcome (hard: blocklist / flowsh criteria / SSRF; soft: path containment, credential access) + symlink analysis (escape = hard; in-roots = not a concern; expansion suspicion removed — ADR-055)
+├─ 8. Gather safety signals once: for shell tools, attach the deterministic flowsh analysis first (AttachShellAnalysis → sdktools.AnalyzeShellCommandForJudge → WithShellAnalysis; the SDK Judge reads the criteria C1–C10 from ctx), then collect the tool Judge outcome (hard: blocklist / flowsh criteria / SSRF; soft: path containment, credential access) + symlink analysis (escape = hard; in-roots = not a concern; expansion suspicion removed — ADR-055)
 └─ 9. Branch on the tool's GROUP policy:
       ├─ allow → hard reason ⇒ smartApproveOrConfirm (Hard) — the unified funnel,
       │           gated by the autonomy mode (security.autonomy_mode):
@@ -70,7 +70,7 @@ core ToolRegistry.Execute(ctx, name, input)
       │           unassessable input) is deterministically backstopped to confirm
       │           even on ALLOW on the interactive paths (silent judge mode is the
       │           one deliberate exception: its ALLOW executes, audited); the ⊤
-      │           criterion (command_unbounded_analysis) is non-canonical and may
+      │           criterion (command_unbounded_analysis) and the exec-scope criterion (command_exec_outside_roots) are non-canonical and may
       │           be cleared by a strict ALLOW
       │           soft reason ⇒ smartApproveOrConfirm (Soft): assisted mode may allow, else confirm
       │           clean ⇒ execute

@@ -126,6 +126,12 @@ func TestCanonicalHardReasonCodes_ClassificationTable(t *testing.T) {
 		// (fail-closed-on-arbitrary-host), not a fired control
 		// (ADR-057 D2; the canonical set is unchanged).
 		{sdktools.ReasonCodeCommandExternalContentIngest, false},
+		// The flowsh exec-scope criterion (C10): hard but deliberately
+		// clearable — executing an out-of-root file is a scope/judgment
+		// shape (a scratch script the session itself wrote to the host temp
+		// dir is routine), delegated to the strict judge, not a fired
+		// control (ADR-061; the canonical set is unchanged).
+		{sdktools.ReasonCodeCommandExecOutsideRoots, false},
 		// The flowsh soft scope question: non-canonical by construction.
 		{sdktools.ReasonCodeCredentialAccess, false},
 		{sdktools.ReasonCodeUnresolvablePathToken, false},

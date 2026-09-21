@@ -158,7 +158,7 @@ func TestSmartApproveShellAnalysis_CleanCallReachesStrictJudge(t *testing.T) {
 	if !ok {
 		t.Fatal("strict envelope lacks the analysis field: the flowsh digest must reach the strict judge for clean shell calls too")
 	}
-	if !strings.Contains(analysis, `"schemaVersion":"sp4rk-shell-analysis/v3"`) {
+	if !strings.Contains(analysis, `"schemaVersion":"sp4rk-shell-analysis/v4"`) {
 		t.Errorf("analysis field is not a shell-analysis digest: %s", analysis)
 	}
 	if !strings.Contains(analysis, "outside_session_roots") {
@@ -201,7 +201,7 @@ func TestSmartApproveShellAnalysis_EscalatedShellCallReachesStrictJudge(t *testi
 	if !ok {
 		t.Fatal("strict envelope lacks the analysis field for an escalated shell call")
 	}
-	if !strings.Contains(analysis, `"schemaVersion":"sp4rk-shell-analysis/v3"`) {
+	if !strings.Contains(analysis, `"schemaVersion":"sp4rk-shell-analysis/v4"`) {
 		t.Errorf("analysis field is not a shell-analysis digest: %s", analysis)
 	}
 	// The escalation reasoning must survive alongside the digest.

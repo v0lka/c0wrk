@@ -1042,7 +1042,7 @@ func isShellToolName(name string) bool {
 // ReasonCodeCommandAnalysisUnavailable outcome (see sp4rk tools/shellanalysis.go),
 // so the call still escalates under an `allow` policy and blocks under
 // verify-on-edit's unattended path rather than running with the deterministic
-// floor (C1–C9) silently absent. The strict judge's AnalysisContext stays ""
+// floor (C1–C10) silently absent. The strict judge's AnalysisContext stays ""
 // in that case — the escalation is carried by the Judge, not the digest.
 // Exported for the backend advisory path (backend/application.go
 // evaluateJudgeWith).

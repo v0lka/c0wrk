@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — the shell-execution override is unchanged; after [ADR-061](./061-package-runner-resolution-exec-scope.md) the flowsh criteria references read **C1–C10** and the digest is `sp4rk-shell-analysis/v4`.
 
 ## Context
 
