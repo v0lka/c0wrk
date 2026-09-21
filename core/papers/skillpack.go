@@ -8,9 +8,10 @@
 // still outranks it), so the active study-paper skill always knows c0wrk's
 // paper-library conventions. (The RESEARCH mode seeds its own methodology pack
 // the same way; see core/research/skillpack.go.)
-// The project-local directory is scanned first by the per-session
-// SkillManager, so a seeded skill enters the router catalog automatically —
-// no catalog change is required.
+// The per-session SkillManager scans that whole discovery chain — the
+// project-local .agents/skills first, then the c0wrk global directory the pack
+// seeds into, then ~/.agents — so a seeded skill enters the router catalog
+// without a catalog change.
 //
 // Seeding is idempotent, crash-safe, and non-destructive to user-authored or
 // user-edited skills. Classification compares the CONTENT HASH of the on-disk

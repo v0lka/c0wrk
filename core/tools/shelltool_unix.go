@@ -13,7 +13,7 @@ import (
 // the registration path platform-portable: sp4rk's bash.go is //go:build !windows
 // and posh.go is //go:build windows, so a single unconditional constructor call
 // would fail to compile on the other OS (e.g. on Windows:
-// undefined: builtins.NewBashExecToolWithTimeouts).
+// undefined: builtins.NewBashExecToolWithInvocation).
 //
 // The blocklist (the user-authored security.groups.execute.blocklist) is
 // assembled by the caller in builtin_registration.go; only the constructor

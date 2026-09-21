@@ -135,14 +135,23 @@ type ToolRegistry struct {
 	// setters mu protects), and silent-path reads must not contend with
 	// Settings pushes for it.
 	judgeMemoMu sync.Mutex
-	// judgeMemo memoizes silent-mode strict-judge verdicts by the shell
-	// EFFECT signature (ShellAnalysisDigest.Signature) — Track D of the
-	// silent-mode deny-accuracy audit
-	// (silent-mode-deny-accuracy-recommendations.md §3): the first verdict
-	// for an effect is fixed and replayed verbatim on re-escalation, so
-	// judge non-determinism on identical input (audit pair 961130 allow vs
-	// 961162 deny — the same vitest run, tail -20 vs -15) can no longer flip
-	// a retry, and retries stop re-paying the strict-judge call. Deliberately
+	// judgeMemo memoizes silent-mode strict-judge FAIL-CLOSED verdicts (a
+	// DENY, and a spoken CONFIRM) by the shell EFFECT signature
+	// (ShellAnalysisDigest.Signature) — Track D of the silent-mode
+	// deny-accuracy audit (the internal artifact
+	// silent-mode-deny-accuracy-recommendations.md §3, kept out of this repo):
+	// the first fail-closed verdict for an effect is fixed and replayed
+	// verbatim on re-escalation, so judge non-determinism (audit pair 961130
+	// allow vs 961162 deny — the same vitest run, tail -20 vs -15) can no
+	// longer flip a retry DENY back to ALLOW, and a re-spelled retry of a
+	// denied effect stops re-paying the strict-judge call. An ALLOW verdict
+	// is deliberately NEVER memoized: the effect signature is NOT injective
+	// (every command the analyzer cannot see through — node -e / python -c /
+	// eval code, rm -rf $VAR, … — collapses to the one
+	// command_unbounded_analysis signature), so replaying an ALLOW would let a
+	// materially different command inherit a verdict the strict judge never
+	// gave it — a judge bypass / fail-open. A replayed DENY is fail-closed
+	// and safe; a replayed ALLOW is not. Deliberately
 	// NOT copied by Clone — but clone lifetime is NOT task lifetime: a
 	// session's registry clone is created once
 	// (OrchestratorBuilder.registerSessionRegistry) and reused for every task
@@ -577,30 +586,133 @@ func autonomyModeRank(mode string) int {
 
 // ApplyAutonomyPostureIfTightening applies the autonomy mode and silent-mode
 // sub-policies to this registry only when they are a TIGHTENING — a
-// less-permissive posture than the one the registry currently holds
-// (autonomyModeRank(autonomyMode) < autonomyModeRank(r.autonomyMode)). It
+// less-permissive posture than the one the registry currently holds. It
 // returns true when it applied the change, or false when it left the registry
-// untouched (the incoming posture ranks at or above the current one).
+// untouched.
 //
 // It is the exception to the per-task posture pinning (see
 // RefreshAutonomyPosture and applySecurityPolicies). Pinning exists so a task
 // can never silently BECOME unattended mid-run — an escalation the operator
 // did not intend for a task already in flight — and this method preserves
-// that: an equal or looser posture is ignored. But the reverse direction must
+// that: an equal-or-looser posture is ignored. But the reverse direction must
 // not fail open: when an operator revokes an unattended posture (Security back
 // to Assisted/Standard) while a task runs, the running clone must stop
-// auto-approving immediately, so a tightening save reaches it here. Both
-// values are set under one lock acquisition so a concurrently executing tool
-// never observes a torn posture pair.
+// auto-approving immediately, so a tightening save reaches it here. TIGHTENING
+// is delivered in BOTH directions:
+//
+//   - an autonomy-mode de-escalation (e.g. silent → assisted) is always
+//     applied;
+//   - a SAME-mode save that revokes a silent sub-policy (e.g. tool_confirm
+//     allow → deny) is applied too, provided every incoming silent sub-policy
+//     is at least as strict as the current one (silentModeAtLeastAsStrict) —
+//     so a sub-policy tightening is never discarded merely because the mode
+//     rank is unchanged. (The sub-policies carry policy only in the silent
+//     posture, so a same-rank change is delivered only when the mode is
+//     silent.)
+//
+// Both values are set under one lock acquisition so a concurrently executing
+// tool never observes a torn posture pair.
 func (r *ToolRegistry) ApplyAutonomyPostureIfTightening(autonomyMode string, silentMode SilentModeState) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if autonomyModeRank(autonomyMode) >= autonomyModeRank(r.autonomyMode) {
+	incomingRank := autonomyModeRank(autonomyMode)
+	currentRank := autonomyModeRank(r.autonomyMode)
+	switch {
+	case incomingRank < currentRank:
+		// An autonomy de-escalation (tightening) is always delivered.
+		r.autonomyMode = autonomyMode
+		r.silentMode = silentMode
+		return true
+	case incomingRank > currentRank:
+		// An escalation (loosening) never reaches a running task (pinned).
 		return false
 	}
-	r.autonomyMode = autonomyMode
+	// Same autonomy rank. The sub-policies carry policy only in the silent
+	// posture, so only a silent→silent save is a candidate; deliver it when it
+	// is a per-field tightening.
+	if currentRank != autonomyModeRank(AutonomyModeSilent) {
+		return false
+	}
+	if !silentModeAtLeastAsStrict(silentMode, r.silentMode) {
+		return false
+	}
+	if silentMode == r.silentMode {
+		// Nothing actually changed.
+		return false
+	}
 	r.silentMode = silentMode
 	return true
+}
+
+// silentToolConfirmPermissiveness ranks security.silent_mode.tool_confirm.mode
+// by how UNATTENDED it lets a confirmation-gated call run: HIGHER is more
+// permissive (more automatic). A transition to a lower-or-equal rank is a
+// TIGHTENING. Unknown/empty values rank as the documented default (judge).
+func silentToolConfirmPermissiveness(mode string) int {
+	switch mode {
+	case SilentToolConfirmAllow:
+		return 2
+	case SilentToolConfirmDeny:
+		return 0
+	default: // judge, empty, unknown
+		return 1
+	}
+}
+
+// silentStepLimitPermissiveness ranks security.silent_mode.step_limit.mode by
+// how UNATTENDED it lets a step-limit boundary resolve: allow_always (suspends
+// the budget) is the most permissive, stop (keeps the interactive card, i.e.
+// the human decides) the least. Unknown/empty values rank as the documented
+// default (auto). The literals mirror backend/config's SilentStepLimit*
+// constants (core cannot import backend).
+func silentStepLimitPermissiveness(mode string) int {
+	switch mode {
+	case "allow_always":
+		return 5
+	case "allow_more":
+		return 4
+	case "allow_once":
+		return 3
+	case "deny":
+		return 1
+	case "stop":
+		return 0
+	default: // auto, empty, unknown
+		return 2
+	}
+}
+
+// silentAskUserPermissiveness ranks security.silent_mode.ask_user.mode by how
+// UNATTENDED it leaves the run: "disable" (the agent can never block on a
+// question) is more permissive than "enable". Unknown/empty values rank as the
+// documented default (disable).
+func silentAskUserPermissiveness(mode string) int {
+	if mode == "enable" {
+		return 0
+	}
+	return 1 // disable, empty, unknown
+}
+
+// silentReviewPromptPermissiveness ranks security.silent_mode.review_prompt.mode
+// by how UNATTENDED it leaves the run: "suppress" (no post-task review prompt)
+// is more permissive than "allow". Unknown/empty values rank as the documented
+// default (suppress).
+func silentReviewPromptPermissiveness(mode string) int {
+	if mode == "allow" {
+		return 0
+	}
+	return 1 // suppress, empty, unknown
+}
+
+// silentModeAtLeastAsStrict reports whether the incoming silent-mode
+// sub-policies are at least as strict as the current ones on EVERY field — the
+// condition for delivering a same-mode sub-policy change to a running clone
+// without ever making it more permissive.
+func silentModeAtLeastAsStrict(incoming, current SilentModeState) bool {
+	return silentToolConfirmPermissiveness(incoming.ToolConfirm) <= silentToolConfirmPermissiveness(current.ToolConfirm) &&
+		silentStepLimitPermissiveness(incoming.StepLimit) <= silentStepLimitPermissiveness(current.StepLimit) &&
+		silentAskUserPermissiveness(incoming.AskUser) <= silentAskUserPermissiveness(current.AskUser) &&
+		silentReviewPromptPermissiveness(incoming.ReviewPrompt) <= silentReviewPromptPermissiveness(current.ReviewPrompt)
 }
 
 // AutonomyMode returns the registry's current autonomy posture
@@ -958,7 +1070,7 @@ func isShellToolName(name string) bool {
 // downgrades the fail-closed ⊤ escalation (C6, command_unbounded_analysis) to
 // a criterion-free in-root allow. An unassigned `$D` must therefore keep
 // degrading to ⊤ — the flowsh analysis models the command exactly as the
-// shell will run it (silent-mode-deny-accuracy-recommendations.md §2C).
+// shell will run it (the internal artifact silent-mode-deny-accuracy-recommendations.md §2C, kept out of this repo).
 func AttachShellAnalysis(ctx context.Context, name string, input json.RawMessage, log *slog.Logger) context.Context {
 	return AttachShellAnalysisForTool(ctx, nil, name, input, log)
 }
@@ -1348,13 +1460,20 @@ func (r *ToolRegistry) silentToolTerminal(ctx context.Context, tool sdktools.Too
 //
 // Verdicts are memoized by EFFECT signature (ShellAnalysisDigest.Signature)
 // for the life of this registry's task, keying on the signature plus the
-// escalation severity (see judgeMemoKey): a re-escalation of an
+// escalation severity (see judgeMemoKey). Memoization is deliberately
+// restricted to FAIL-CLOSED verdicts: a re-escalation of an
 // already-adjudicated effect — the identical command, or a retry re-spelled
 // so the deterministic analysis lands on the same drivers, canonical effects
-// and fired criteria — replays the FIRST verdict and its reasoning verbatim
-// without consulting the judge again (audit Track D: pair 961130 allow vs
-// 961162 deny is exactly a judge flip on identical input; retries must not
-// re-pay the call either). Only a judge that SPOKE is memoized — a provider
+// and fired criteria — replays the FIRST DENY (or spoken CONFIRM) and its
+// reasoning verbatim without consulting the judge again (audit Track D: pair
+// 961130 allow vs 961162 deny is exactly a judge flip on identical input; a
+// denied retry must not re-pay the call either). An ALLOW is NEVER memoized,
+// because the signature is not injective: every command the analyzer cannot
+// see through (node -e / python -c / eval code, rm -rf $VAR, …) collapses to
+// the same command_unbounded_analysis signature, so replaying an ALLOW would
+// let a materially different command inherit a verdict the judge never gave
+// it — a fail-open. A replayed DENY is fail-closed; a replayed ALLOW is not.
+// Only a judge that SPOKE is memoized — a provider
 // error/timeout or an unparseable response is infrastructure failure, not a
 // verdict about the effect, so the next occurrence retries the judge. A
 // missing signature (non-shell tool, failed analysis) never memoizes.
@@ -1397,7 +1516,10 @@ func (r *ToolRegistry) silentJudgeDecide(ctx context.Context, tool sdktools.Tool
 			if judgeErr != nil {
 				verdict = sdktools.VerdictConfirm
 				reasoning = "Strict judge evaluation failed; " + reason
-			} else if judgeSpoke(verdict, reasoning) {
+			} else if judgeSpoke(verdict, reasoning) && verdict != sdktools.VerdictAllow {
+				// Only a fail-closed verdict is memoized. An ALLOW must never
+				// be replayed for a later command, even one sharing the same
+				// (non-injective) effect signature — see the method doc.
 				r.recordJudgeMemo(signature, severity, verdict, reasoning)
 			}
 		}
@@ -1502,8 +1624,10 @@ func judgeMemoKey(signature string, severity sdktools.JudgeSeverity) string {
 	return strconv.Itoa(int(severity)) + "\x00" + signature
 }
 
-// consultJudgeMemo returns the memoized verdict for the effect signature, if
-// this task's memo holds one. An empty signature (non-shell tool, failed
+// consultJudgeMemo returns the memoized fail-closed verdict for the effect
+// signature, if this task's memo holds one. Because only fail-closed verdicts
+// are ever recorded, a hit can only ever DENY (or auto-confirm-deny); it can
+// never replay an ALLOW. An empty signature (non-shell tool, failed
 // analysis) never consults — without an effect identity there is nothing to
 // key on, so every such escalation goes to the judge.
 func (r *ToolRegistry) consultJudgeMemo(signature string, severity sdktools.JudgeSeverity) (judgeMemoEntry, bool) {
@@ -1517,12 +1641,15 @@ func (r *ToolRegistry) consultJudgeMemo(signature string, severity sdktools.Judg
 	return entry, ok
 }
 
-// recordJudgeMemo fixes the FIRST verdict for the effect signature in this
-// task's memo (audit Track D: "первый вердикт в рамках задачи фиксируется").
-// A later recording for the same key never overwrites, so a retried effect
-// keeps resolving the way it first resolved even if a concurrent
-// adjudication of the same effect returned differently. An empty signature
-// never records.
+// recordJudgeMemo fixes the FIRST FAIL-CLOSED verdict for the effect
+// signature in this task's memo (audit Track D: "первый вердикт в рамках
+// задачи фиксируется"). Callers must only pass a fail-closed verdict
+// (DENY / spoken CONFIRM): an ALLOW is never recorded, because a non-injective
+// signature would otherwise let a materially different command inherit it
+// (see the method doc). A later recording for the same key never overwrites,
+// so a retried effect keeps resolving the way it first resolved even if a
+// concurrent adjudication of the same effect returned differently. An empty
+// signature never records.
 func (r *ToolRegistry) recordJudgeMemo(signature string, severity sdktools.JudgeSeverity, verdict sdktools.JudgeVerdict, reasoning string) {
 	if signature == "" {
 		return

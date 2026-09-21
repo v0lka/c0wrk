@@ -12,12 +12,14 @@ import (
 // ── Silent-mode audit corpus (golden fixtures) ────────────────────────────
 //
 // The corpus freezes the 194 independently audited silent-mode tool_confirm
-// decisions (silent-mode-audit-report.md, snapshot of ~/.c0wrk/database.db on
-// 2026-09-18) as replayable fixtures: the FULL command + working directory
+// decisions (the internal audit artifact silent-mode-audit-report.md — a
+// snapshot of ~/.c0wrk/database.db on 2026-09-18, kept out of this repository)
+// as replayable fixtures: the FULL command + working directory
 // recovered through the audit's tool_call_id → tool_call linkage, the audit
 // classification (TRUE/FALSE_ALLOW/DENY), the historical gate verdict and
-// tool_confirm sub-policy, and the fix-track tags from
-// silent-mode-deny-accuracy-recommendations.md (§1/§5):
+// tool_confirm sub-policy, and the fix-track tags from the internal artifact
+// silent-mode-deny-accuracy-recommendations.md (§1/§5, also kept out of this
+// repository):
 //
 //	A — evidence validity in the deterministic layer (phantom C5/C1, −13 FD)
 //	B — workspace-scoped verification marker (C6 on routine drivers, −26 FD)

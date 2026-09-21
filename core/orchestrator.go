@@ -1401,6 +1401,16 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 		}
 		ctx = routedCtx
 		routing = decision
+		// Persist the fresh decision immediately (mirroring HandleMessage /
+		// finalizeResult, resumeGoalLoop and the E2S path): without this, the
+		// re-route armed on this resume would not survive it — the next resume
+		// would find routing still absent while the trajectory is now non-empty,
+		// so no re-route is armed and Resume falls back to domain "general" for
+		// a task classified one resume earlier. Persisting closes the gap this
+		// block exists to prevent.
+		if pbb, ok := bb.(PersistableBlackboard); ok {
+			pbb.SetRouting(decision)
+		}
 	}
 
 	// Continuable resume: the task was paused (or interrupted) while its
@@ -1517,10 +1527,20 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 // original run failed before routing completed (see RequestResumeReroute). It
 // classifies the task's original request, activates the matched skills, emits
 // the normal Routing events, and returns the refreshed context (with the new
-// domain/complexity) plus the new decision. This mirrors the fresh
-// HandleMessage routing step: routeAndActivateSkills already sets the active
-// skills on the context, but domain/complexity are applied by the caller there
-// too, so they are applied here.
+// domain/complexity) plus the new decision: routeAndActivateSkills already
+// sets the active skills on the context, and domain/complexity are applied
+// here (as the fresh path applies them at its call site).
+//
+// It mirrors the fresh HandleMessage routing step for the request TEXT, but
+// NOT for an explicit invocation. The frontend strips the /skill and #agent
+// refs before the request is stored (PreprocessMessageText), so the stored
+// original request seen here carries neither, and the requested
+// UserSkills/UserAgents (which the fresh path threads through HandleOptions)
+// are not available on resume: an explicit /skill or #agent ref is therefore
+// NOT re-applied by a re-route. The refs are persisted nowhere Resume can read
+// (TaskState carries no such field, and Resume/ResumeTask receive no
+// HandleOptions), so closing this gap would require a persistence-schema
+// change; it is recorded here as the known limitation.
 //
 // A routing error is propagated unchanged: routeAndActivateSkills has already
 // marked the (live) task failed on that path — mirroring a fresh task whose

@@ -151,7 +151,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	app.emitFunc = emitFunc
 
 	// 3. OrchestratorBuilder (owns registry, gateway, router, judge).
-	builderCfg := ToBuilderConfig(cfg.Config, loadModelProfilesCatalog(app.agentDir, app.log()))
+	builderCfg := ToBuilderConfig(cfg.Config, loadModelProfilesCatalog(app.agentDir, app.log()), app.log())
 	// Managed venv interpreter (imports markitdown) enables vision-assisted
 	// document conversion. Machine-local fact, resolved LAZILY: the
 	// tool-manager installs the venv asynchronously after startup, so probing
@@ -269,7 +269,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 
 	// 5. Orchestrator factory closure for the session manager.
 	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
-		orchCfg := ToBuilderConfig(cfg.Config, loadModelProfilesCatalog(app.agentDir, app.log()))
+		orchCfg := ToBuilderConfig(cfg.Config, loadModelProfilesCatalog(app.agentDir, app.log()), app.log())
 		// The lazy python probe is consumed at tool registration (builder
 		// creation); propagate it here as well so any future Build-side
 		// consumer sees the closure instead of a zero value.

@@ -425,11 +425,6 @@ export const useResearchStore = create<ResearchStore>((set) => ({
 // --- Selectors (pure functions; stable references — never allocate inside a
 // useStore(selector) call so React 19's useSyncExternalStore never loops) ---
 
-/** True when RESEARCH is enabled for the loaded project. */
-export function selectEnabled(state: ResearchStore): boolean {
-  return state.status?.enabled ?? false
-}
-
 /** The active research project (brief + graph + metrics) for the metrics row
  *  and DAG, or null when off / not yet loaded. Uses the backend-computed
  *  active_project_id (the latest index entry) as the single source of truth —

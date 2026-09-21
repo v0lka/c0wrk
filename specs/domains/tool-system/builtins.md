@@ -7,7 +7,7 @@ c0wrk registers sp4rk's built-in tools plus the c0wrk-specific `ask_user` tool a
 ## Key Files
 
 - `core/tools/builtin_registration.go` — `RegisterBuiltinTools(registry, cfg)` + `BuiltinToolsConfig`; passes the config `ShellBlocklist` to the platform-specific `newShellExecTool`
-- `core/tools/shelltool_unix.go` / `core/tools/shelltool_windows.go` — build-tag split for the shell-exec tool constructor (`builtins.NewBashExecToolWithTimeouts` on Unix, `builtins.NewPoshExecToolWithTimeouts` on Windows); sp4rk's `bash.go`/`posh.go` are mutually exclusive per OS
+- `core/tools/shelltool_unix.go` / `core/tools/shelltool_windows.go` — build-tag split for the shell-exec tool constructor (`builtins.NewBashExecToolWithInvocation` on Unix, `builtins.NewPoshExecToolWithInvocation` on Windows); sp4rk's `bash.go`/`posh.go` are mutually exclusive per OS
 - `core/tools/read_file_doc.go` — c0wrk `ReadFileDocTool` wrapper over sp4rk `ReadFileTool` that converts document formats (pdf, docx, pptx, xlsx, odt, html, htm) to markdown via `core/markitdown`; implements sp4rk's `ContentBackedReader` so converted results are content-backed cached
 - `core/tools/askuser.go` / `core/tools/askuser_types.go` — c0wrk-specific `ask_user` tool + AskUser request/response types (moved out of sp4rk per ADR-011)
 - `core/toolmanager/` — manages external binaries (`rg`, `uv`, `markitdown`), auto-downloaded on first run to `~/.c0wrk/tools/bin/`, PATH-prepended at startup (ADR-010)
@@ -63,8 +63,8 @@ Three system-group tools are **goal-mode-only** (`goalModeTools`, gated by `IsGo
 
 The shell-execution tool is platform-specific: sp4rk's `bash.go` is `//go:build !windows` and `posh.go` is `//go:build windows`, and they are mutually exclusive per OS. A single unconditional constructor call would fail to compile on the other OS, so the registration path is split behind build tags:
 
-- `core/tools/shelltool_unix.go` → `builtins.NewBashExecToolWithTimeouts` → registers `bash_exec`
-- `core/tools/shelltool_windows.go` → `builtins.NewPoshExecToolWithTimeouts` → registers `posh_exec`
+- `core/tools/shelltool_unix.go` → `builtins.NewBashExecToolWithInvocation` → registers `bash_exec`
+- `core/tools/shelltool_windows.go` → `builtins.NewPoshExecToolWithInvocation` → registers `posh_exec`
 
 Both expose the same constructor signature `newShellExecTool(blocklist, timeouts, bashInvocation, poshInvocation)`; the caller (`RegisterBuiltinTools`) passes the config `ShellBlocklist` plus the optional `shell_exec` launch-shape override (see [Shell Invocation Override](#shell-invocation-override-shell_exec)) to the platform-specific constructor — the Unix file consumes the bash entry, the Windows file the posh entry, a nil pointer keeps the built-in default. The registered name differs per platform, so all name-keyed configuration and policy lookups resolve through `core.activeShellToolName()` (`bash_exec` on Unix, `posh_exec` on Windows) — see [Blocklist / Policy Key](#blocklist--policy-key) below and [../../architecture/security-model.md](../../architecture/security-model.md).
 

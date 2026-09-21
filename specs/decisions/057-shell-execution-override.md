@@ -43,7 +43,7 @@ Confirmed interactively with the owner during planning: closed analyzable shell 
 - Operators can run any bash-family or PowerShell-family shell without engine changes; the agent is always told (via the description) what it is writing for.
 - The deterministic floor is provably preserved for every accepted override: the declared kind always maps onto a flowsh dialect, so no configuration state can silently drop C1–C9.
 - Shells outside the two families (fish, nushell, csh, cmd.exe) are unsupported: there is no analyzer for their syntax, and the alternatives (silent floor loss, or fail-closed on every call breaking verify-on-edit) were both rejected.
-- The `go.work` cross-repo cycle applies: the new constructors and the dialect entry points are sp4rk changes consumed by c0wrk before the next sp4rk release pin advance ([ADR-031](./031-gowork-repo-root.md)).
+- The sp4rk cross-repo cycle for this work is **complete** (ADR-031): the new constructors and the dialect entry points are sp4rk changes, and c0wrk's `go.mod` pin was advanced to the published sp4rk commit that carries them (`v0.15.1-0.20260920163716-2e9a87dc2469`), so `GOWORK=off go build ./...` / `go vet ./...` resolve and pass.
 - Cost: the tool description is now composed at construction time (one string op per registration, not per call); the analysis dialect resolution gained an instance-based lookup path.
 
 ## Alternatives Considered

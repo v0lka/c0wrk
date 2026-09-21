@@ -234,7 +234,16 @@ func TestApplyAutonomyPostureIfTightening(t *testing.T) {
 		{"standard to silent escalates (pinned)", AutonomyModeStandard, AutonomyModeSilent, tightened, false},
 		{"assisted to silent escalates (pinned)", AutonomyModeAssisted, AutonomyModeSilent, tightened, false},
 		{"standard to assisted escalates (pinned)", AutonomyModeStandard, AutonomyModeAssisted, tightened, false},
-		{"silent to silent equal (no change)", AutonomyModeSilent, AutonomyModeSilent, tightened, false},
+		// A same-mode save that revokes a silent sub-policy is a tightening and
+		// must reach the running clone (findings: same-mode tightening).
+		{"silent to silent sub-policy tightening applies", AutonomyModeSilent, AutonomyModeSilent, tightened, true},
+		{"silent to silent tool_confirm deny from allow applies", AutonomyModeSilent, AutonomyModeSilent, SilentModeState{ToolConfirm: "deny"}, true},
+		// A same-mode save that would loosen a sub-policy must be ignored.
+		{"silent to silent looser sub-policy ignored", AutonomyModeSilent, AutonomyModeSilent, SilentModeState{ToolConfirm: "allow"}, false},
+		{"silent to silent equal sub-policy (no change)", AutonomyModeSilent, AutonomyModeSilent, seed, false},
+		// Sub-policies are inert outside the silent posture: a same-rank
+		// non-silent save changes nothing.
+		{"assisted to assisted sub-policy change ignored", AutonomyModeAssisted, AutonomyModeAssisted, tightened, false},
 		{"unknown ranks as standard (no change)", AutonomyModeStandard, "weird", tightened, false},
 	}
 	for _, tt := range tests {

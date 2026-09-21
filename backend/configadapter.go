@@ -69,7 +69,15 @@ func activeModelProfile(persist config.ModelProfilesPersistConfig, catalog []con
 // modelProfilesCatalog is the profile catalog (predefined ∪ custom) used to resolve the
 // effective model-profile profile; callers that have an agent dir should build it
 // via config.LoadModelProfilesCatalog so custom profiles apply without a restart.
-func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProfile) *core.BuilderConfig {
+func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProfile, logger ...*slog.Logger) *core.BuilderConfig {
+	// Optional logger: when provided, residual inconsistencies a programmatic
+	// (load-bypassing) config can carry — e.g. a shell_exec override dropped by
+	// convertShellExecTool — are logged instead of silently ignored. The load
+	// pipeline (config.normalizeShellExec) already warns for the normal path.
+	var log *slog.Logger
+	if len(logger) > 0 {
+		log = logger[0]
+	}
 	// Build provider configs map from all enabled providers.
 	allProviders := cfg.LLM.GetAllProviderConfigs()
 	providerConfigs := make(map[string]core.BuilderProviderConfig, len(allProviders))
@@ -328,7 +336,7 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			WebSearchTimeout:     cfg.Timeouts.WebSearchTimeout,
 			LLMRequestTimeout:    cfg.Timeouts.LLMRequestTimeout,
 		},
-		ShellExec: convertShellExecConfig(cfg.ShellExec),
+		ShellExec: convertShellExecConfig(cfg.ShellExec, log),
 		Proxy: proxy.Config{
 			Enabled:      cfg.Proxy.Enabled,
 			URL:          config.ExpandEnvVars(cfg.Proxy.URL),
@@ -383,20 +391,27 @@ func agentsMDSearchPaths() []string {
 // template and a declared kind; any residual inconsistency (a
 // programmatically-built config that bypassed load) fails soft to the
 // built-in default rather than erroring the whole conversion.
-func convertShellExecConfig(sec config.ShellExecConfig) core.BuilderShellExecConfig {
+func convertShellExecConfig(sec config.ShellExecConfig, log *slog.Logger) core.BuilderShellExecConfig {
 	return core.BuilderShellExecConfig{
-		BashExec: convertShellExecTool(sec.BashExec),
-		PoshExec: convertShellExecTool(sec.PoshExec),
+		BashExec: convertShellExecTool("bash_exec", sec.BashExec, log),
+		PoshExec: convertShellExecTool("posh_exec", sec.PoshExec, log),
 	}
 }
 
-// convertShellExecTool converts one tool's override; nil = no override.
-func convertShellExecTool(tool config.ShellExecToolConfig) *sdktools.ShellInvocation {
+// convertShellExecTool converts one tool's override; nil = no override. A
+// residual inconsistency — a programmatic config that bypassed
+// normalizeShellExec — is logged when a logger is provided rather than dropped
+// silently.
+func convertShellExecTool(name string, tool config.ShellExecToolConfig, log *slog.Logger) *sdktools.ShellInvocation {
 	if !tool.OverrideActive() {
 		return nil
 	}
 	kind, err := sdktools.ParseShellKind(tool.Shell)
 	if err != nil {
+		if log != nil {
+			log.Warn("shell_exec override dropped: undeclared shell kind (falling back to the built-in launch shape)",
+				"tool", name, "shell", tool.Shell, "error", err)
+		}
 		return nil
 	}
 	inv := sdktools.ShellInvocation{
@@ -405,6 +420,10 @@ func convertShellExecTool(tool config.ShellExecToolConfig) *sdktools.ShellInvoca
 		Kind:   kind,
 	}
 	if err := inv.Validate(); err != nil {
+		if log != nil {
+			log.Warn("shell_exec override dropped: invalid invocation (falling back to the built-in launch shape)",
+				"tool", name, "error", err)
+		}
 		return nil
 	}
 	return &inv

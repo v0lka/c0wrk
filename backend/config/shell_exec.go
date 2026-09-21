@@ -152,19 +152,26 @@ func normalizeShellExec(cfg *Config) []string {
 		*tool = ShellExecToolConfig{}
 	}
 
-	for name, tool := range map[string]*ShellExecToolConfig{
-		"bash_exec": &cfg.ShellExec.BashExec,
-		"posh_exec": &cfg.ShellExec.PoshExec,
+	// Iterate a fixed-order slice (not a map literal): the warning order is
+	// surfaced verbatim in the UI, so it must be deterministic when both
+	// sections are invalid.
+	for _, entry := range []struct {
+		name string
+		tool *ShellExecToolConfig
+	}{
+		{"bash_exec", &cfg.ShellExec.BashExec},
+		{"posh_exec", &cfg.ShellExec.PoshExec},
 	} {
+		tool := entry.tool
 		if !tool.OverrideActive() {
 			continue
 		}
 		if err := ValidateShellExecCommand(tool.Command); err != nil {
-			reset(name, tool, err)
+			reset(entry.name, tool, err)
 			continue
 		}
 		if err := ValidateShellKind(tool.Shell); err != nil {
-			reset(name, tool, err)
+			reset(entry.name, tool, err)
 		}
 	}
 	return warnings

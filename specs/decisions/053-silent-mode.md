@@ -305,9 +305,7 @@ sub-policy), `verdict`, `tool`/`source`/`reason`, `justification`, and (for
 - Unattended operation becomes possible without weakening the deterministic
   floor below the funnel: `deny` groups and every pre-funnel gate are untouched
   (D2).
-- The posture is explicit, opt-in, validated, documented, and hot-appliable to
-  live sessions (D1) — it is never a hidden default, and one enum value
-  replaces two historically-drifting booleans.
+- The posture is explicit, opt-in, validated, documented, and **pinned per task** (D1, amended pre-release to per-task pinning): a running task is never converted to unattended mid-run — it re-syncs an escalation only at the next task-launch boundary, while a tightening reaches a live clone immediately. It is never a hidden default, and one enum value replaces two historically-drifting booleans.
 - The assisted posture gains a real negative terminal (D5): a judge that
   positively detects danger now *stops* the call instead of bouncing it to an
   approval-fatigued human.

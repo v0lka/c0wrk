@@ -99,7 +99,8 @@ export function ShellExecutionCard({ onSaved }: ShellExecutionCardProps) {
         <span className="text-xs text-muted-foreground">
           Override how the platform shell tool launches commands and declare which shell the
           command text is written in. The safety analysis and the agent prompts follow the declared
-          shell. Leave empty to keep the built-in launch shape (bash -c / powershell -Command).
+          shell. Leave the shell menu at <strong>Default</strong> to keep the built-in launch shape
+          (bash -c / powershell -Command); pick a shell to declare an override.
         </span>
       </div>
 
@@ -166,14 +167,32 @@ interface ToolEditorProps {
 /** One tool's override editor: binary, one-argument-per-row template, shell select. */
 function ToolEditor({ testIdPrefix, toolName, appliesTo, state, onChange }: ToolEditorProps) {
   const [newArg, setNewArg] = useState('')
+  // The shell select doubles as the override switch: its "Default" entry
+  // (value '') means no launch-shape override at all — the tool keeps its
+  // built-in shape and the command template controls below stay inert.
+  // Picking a shell kind arms the override.
+  const overrideOn = state.shell !== ''
   const problem = validateTool(state)
-  const preview = problem ?? previewCommand(state)
 
   const addArg = () => {
     const arg = newArg
     if (!arg) return
     onChange({ ...state, args: [...state.args, arg] })
     setNewArg('')
+  }
+
+  // The status line under the editor: the built-in shape while no override is
+  // armed, a validation problem, the effective launch command, or a hint that
+  // the armed override has no template yet.
+  let status: string
+  if (!overrideOn) {
+    status = `built-in: ${builtinLaunch(toolName)}`
+  } else if (problem) {
+    status = `⚠ ${problem}`
+  } else if (!state.binary && state.args.length === 0) {
+    status = `no override — add a binary and a ${COMMAND_PLACEHOLDER} argument`
+  } else {
+    status = previewCommand(state)
   }
 
   return (
@@ -190,18 +209,22 @@ function ToolEditor({ testIdPrefix, toolName, appliesTo, state, onChange }: Tool
         <Input
           id={`${testIdPrefix}-binary`}
           value={state.binary}
+          disabled={!overrideOn}
           onChange={(e) => onChange({ ...state, binary: e.target.value })}
           placeholder="e.g. /opt/homebrew/bin/zsh"
-          className="h-8 text-xs font-mono flex-1"
+          className="h-9 text-sm font-mono flex-1"
           data-testid={`${testIdPrefix}-binary`}
         />
         <div className="w-[130px] shrink-0" data-testid={`${testIdPrefix}-shell`}>
           <Combobox
             ariaLabel={`${toolName} declared shell`}
             value={state.shell}
-            onChange={(v) => onChange({ ...state, shell: v as ShellExecShellKind })}
-            className="h-8 text-xs"
-            options={SHELL_KINDS.map((k) => ({ value: k.value, label: k.label }))}
+            onChange={(v) => onChange(v === '' ? { ...EMPTY_TOOL } : { ...state, shell: v as ShellExecShellKind })}
+            className="h-9 text-sm"
+            options={[
+              { value: '', label: 'Default' },
+              ...SHELL_KINDS.map((k) => ({ value: k.value, label: k.label })),
+            ]}
           />
         </div>
       </div>
@@ -224,6 +247,7 @@ function ToolEditor({ testIdPrefix, toolName, appliesTo, state, onChange }: Tool
               size="icon"
               className="h-6 w-6"
               aria-label={`Remove argument ${arg}`}
+              disabled={!overrideOn}
               onClick={() => onChange({ ...state, args: state.args.filter((_, j) => j !== i) })}
               data-testid={`${testIdPrefix}-arg-remove-${i}`}
             >
@@ -234,6 +258,7 @@ function ToolEditor({ testIdPrefix, toolName, appliesTo, state, onChange }: Tool
         <div className="flex items-center gap-1.5">
           <Input
             value={newArg}
+            disabled={!overrideOn}
             onChange={(e) => setNewArg(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
@@ -242,10 +267,10 @@ function ToolEditor({ testIdPrefix, toolName, appliesTo, state, onChange }: Tool
               }
             }}
             placeholder={`add argument (use ${COMMAND_PLACEHOLDER} for the command)`}
-            className="h-8 text-xs font-mono flex-1"
+            className="h-9 text-sm font-mono flex-1"
             data-testid={`${testIdPrefix}-new-arg`}
           />
-          <Button variant="ghost" size="icon" className="h-6 w-6" aria-label="Add argument" onClick={addArg} data-testid={`${testIdPrefix}-arg-add`}>
+          <Button variant="ghost" size="icon" className="h-6 w-6" aria-label="Add argument" disabled={!overrideOn} onClick={addArg} data-testid={`${testIdPrefix}-arg-add`}>
             <Plus className="h-3 w-3" />
           </Button>
         </div>
@@ -253,9 +278,9 @@ function ToolEditor({ testIdPrefix, toolName, appliesTo, state, onChange }: Tool
 
       <p
         data-testid={`${testIdPrefix}-preview`}
-        className={'text-xs font-mono break-all ' + (problem ? 'text-destructive' : 'text-muted-foreground')}
+        className={'text-xs font-mono break-all ' + (overrideOn && problem ? 'text-destructive' : 'text-muted-foreground')}
       >
-        {problem ? `⚠ ${problem}` : preview}
+        {status}
       </p>
     </div>
   )
@@ -271,13 +296,25 @@ function toToolState(settings: ShellExecToolSettings): ToolOverride {
 }
 
 function toPayload(state: ToolOverride): ShellExecToolSettings {
-  if (!state.binary) return { command: [], shell: '' }
+  // The shell menu's "Default" entry (empty shell) — or an empty template —
+  // both mean "no override": the backend ignores a declared shell when the
+  // command is empty (responseToShellExecTool).
+  if (!state.shell || (!state.binary && state.args.length === 0)) {
+    return { command: [], shell: '' }
+  }
   return { command: [state.binary, ...state.args], shell: state.shell }
 }
 
 /** Client-side mirror of the backend validation (the backend stays authoritative). */
 function validateTool(state: ToolOverride): string | null {
-  if (!state.binary && state.args.length === 0 && !state.shell) return null // no override
+  // The shell menu's "Default" entry (empty shell) means the override is off
+  // entirely, so nothing is validated.
+  if (!state.shell) return null // "Default" — no override
+  // A declared shell arms the override, but an empty template is still "no
+  // override": the backend ignores a stray shell when the command is empty
+  // (responseToShellExecTool), so emptying the binary and deleting every
+  // argument row reverts to the built-in launch shape.
+  if (!state.binary && state.args.length === 0) return null // no override
   if (!state.binary.trim()) return 'Binary is required when an override is set.'
   if (state.binary === COMMAND_PLACEHOLDER) return 'The binary must not be the {command} placeholder.'
   if (state.args.length === 0) return `Add at least one ${COMMAND_PLACEHOLDER} argument.`
@@ -287,7 +324,6 @@ function validateTool(state: ToolOverride): string | null {
   if (state.args.some((a) => a !== COMMAND_PLACEHOLDER && a.includes(COMMAND_PLACEHOLDER))) {
     return `${COMMAND_PLACEHOLDER} must be a standalone argument, not embedded in another.`
   }
-  if (!state.shell) return 'Declare the shell the command text is written in.'
   return null
 }
 
@@ -296,4 +332,11 @@ function previewCommand(state: ToolOverride): string {
   const rendered = state.args.map((a) => (a === COMMAND_PLACEHOLDER ? '<command>' : a))
   const quote = (s: string) => (s.includes(' ') ? `"${s}"` : s)
   return [quote(state.binary), ...rendered].join(' ')
+}
+
+/** The built-in launch shape a tool keeps while no override is armed (mirrors the backend defaults). */
+function builtinLaunch(toolName: string): string {
+  return toolName === 'posh_exec'
+    ? 'powershell.exe -NoProfile -NonInteractive -Command <command>'
+    : 'bash -c <command>'
 }

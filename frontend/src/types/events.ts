@@ -85,8 +85,9 @@ export interface NetworkDecisionData {
   /** Resolved egress hosts (scheme/path/port stripped). Empty when the
    *  analyzer could not resolve a literal host. */
   readonly hosts?: string[]
-  /** Affected local operands of the flow — the files an ingest wrote. Empty
-   *  for a cradle and a clean fetch. */
+  /** Affected local operands of the flow — the files the network flow wrote
+   *  (an ingest's persisted target, or the dropped payload a cradle runs).
+   *  Empty for a clean fetch. */
   readonly operands?: string[]
 }
 

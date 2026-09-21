@@ -48,6 +48,31 @@ async function unmountCard() {
 
 const q = (id: string) => container.querySelector(`[data-testid="${id}"]`) as HTMLElement | null
 
+/** Drive a React-controlled text input by setting the native value and firing
+ *  an input event (the value setter React's onChange listens to). */
+function setInputValue(el: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+  setter?.call(el, value)
+  el.dispatchEvent(new window.Event('input', { bubbles: true }))
+}
+
+/** Open the shell combobox with `ariaLabel` and click its `optionLabel` option
+ *  (the menu is portaled to document.body; Radix toggles on pointerdown). */
+async function pickShell(ariaLabel: string, optionLabel: string) {
+  const trigger = container.querySelector<HTMLButtonElement>(`button[aria-label="${ariaLabel}"]`)
+  if (!trigger) throw new Error(`${ariaLabel} dropdown not found`)
+  await act(async () => {
+    trigger.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    await new Promise((r) => setTimeout(r, 10))
+  })
+  const option = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+    .find((o) => o.textContent?.includes(optionLabel))
+  if (!option) throw new Error(`Option "${optionLabel}" not found in ${ariaLabel} menu`)
+  await act(async () => {
+    option.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+}
+
 beforeEach(() => {
   getShellExecSettingsMock.mockReset().mockResolvedValue(settings([], ''))
   updateShellExecSettingsMock.mockReset().mockResolvedValue(undefined)
@@ -119,6 +144,77 @@ describe('ShellExecutionCard', () => {
     expect(q('shell-exec-bash-preview')?.textContent).toContain('exactly one')
     expect(q('shell-exec-save')?.hasAttribute('disabled')).toBe(true)
     expect(updateShellExecSettingsMock).not.toHaveBeenCalled()
+    await unmountCard()
+  })
+
+  it('clears an existing override once the binary is emptied and every argument row removed', async () => {
+    getShellExecSettingsMock.mockResolvedValue(settings(['/opt/homebrew/bin/zsh', '-c', PLACEHOLDER], 'zsh'))
+    await renderCard()
+    // Emptying the binary alone still reports an override (argument rows remain).
+    await act(async () => {
+      setInputValue(q('shell-exec-bash-binary') as HTMLInputElement, '')
+    })
+    expect(q('shell-exec-save')?.hasAttribute('disabled')).toBe(true)
+    // Removing every argument row leaves no override, despite the seeded shell.
+    await act(async () => {
+      q('shell-exec-bash-arg-remove-1')?.click()
+    })
+    await act(async () => {
+      q('shell-exec-bash-arg-remove-0')?.click()
+    })
+    expect(q('shell-exec-save')?.hasAttribute('disabled')).toBe(false)
+    await act(async () => {
+      q('shell-exec-save')?.click()
+    })
+    expect(updateShellExecSettingsMock).toHaveBeenCalledWith({
+      bash_exec: { command: [], shell: '' },
+      posh_exec: { command: [], shell: '' },
+    })
+    await unmountCard()
+  })
+
+  it('defaults the shell menu to Default and shows the built-in launch shape', async () => {
+    await renderCard()
+    expect(
+      container.querySelector('button[aria-label="bash_exec declared shell"]')?.textContent,
+    ).toContain('Default')
+    expect(q('shell-exec-bash-preview')?.textContent).toContain('built-in: bash -c <command>')
+    expect(
+      container.querySelector('button[aria-label="posh_exec declared shell"]')?.textContent,
+    ).toContain('Default')
+    expect(q('shell-exec-posh-preview')?.textContent).toContain(
+      'built-in: powershell.exe -NoProfile -NonInteractive -Command <command>',
+    )
+    // The command template controls are inert while Default is selected.
+    expect((q('shell-exec-bash-binary') as HTMLInputElement).disabled).toBe(true)
+    expect((q('shell-exec-bash-new-arg') as HTMLInputElement).disabled).toBe(true)
+    await unmountCard()
+  })
+
+  it('shows the declared shell and enables the controls for a loaded override', async () => {
+    getShellExecSettingsMock.mockResolvedValue(settings(['/opt/homebrew/bin/zsh', '-c', PLACEHOLDER], 'zsh'))
+    await renderCard()
+    expect(
+      container.querySelector('button[aria-label="bash_exec declared shell"]')?.textContent,
+    ).toContain('zsh')
+    expect((q('shell-exec-bash-binary') as HTMLInputElement).disabled).toBe(false)
+    await unmountCard()
+  })
+
+  it('arms the override when a shell is picked and disarms it back to Default', async () => {
+    await renderCard()
+    expect((q('shell-exec-bash-binary') as HTMLInputElement).disabled).toBe(true)
+    await pickShell('bash_exec declared shell', 'zsh')
+    expect((q('shell-exec-bash-binary') as HTMLInputElement).disabled).toBe(false)
+    await act(async () => {
+      setInputValue(q('shell-exec-bash-binary') as HTMLInputElement, '/bin/zsh')
+    })
+    expect((q('shell-exec-bash-binary') as HTMLInputElement).value).toBe('/bin/zsh')
+    // Default clears the template and disarms the override again.
+    await pickShell('bash_exec declared shell', 'Default')
+    expect((q('shell-exec-bash-binary') as HTMLInputElement).value).toBe('')
+    expect((q('shell-exec-bash-binary') as HTMLInputElement).disabled).toBe(true)
+    expect(q('shell-exec-bash-preview')?.textContent).toContain('built-in: bash -c <command>')
     await unmountCard()
   })
 })

