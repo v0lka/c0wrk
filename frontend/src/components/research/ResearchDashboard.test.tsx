@@ -49,8 +49,6 @@ vi.mock('@/api/research', () => ({
   deleteResearch: vi.fn(),
   setResearchPinned: vi.fn(),
   setHypothesisPinned: vi.fn(),
-  enableResearch: vi.fn(),
-  disableResearch: vi.fn(),
 }))
 
 // Radix dropdown positioning observes the trigger with ResizeObserver, which
@@ -532,7 +530,7 @@ describe('ResearchPanel — header + View Artifacts', () => {
     const container = await render(<ResearchPanel />)
     const toolbar = container.firstElementChild!
     expect(toolbar.querySelector('[data-testid="research-project-init"]')).not.toBeNull()
-    // The RESEARCH disable control moved to the workspace tab header.
+    // RESEARCH is always on — there is no enable/disable control anywhere.
     expect(
       toolbar.querySelector('button[aria-label="Disable RESEARCH mode"]'),
     ).toBeNull()

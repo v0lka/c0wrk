@@ -242,9 +242,9 @@ export function ChatScrollManager({
       const navigationSuppressed = Date.now() < suppressAutoScrollUntilRef.current
 
       if (prependedOlder) {
-        // Older page(s) prepended above the viewport: leave the viewport where
-        // it is (useOlderHistoryLoader re-anchors it) and do not raise the
-        // new-activity pill — nothing new appeared at the bottom.
+        // Older rows inserted above the viewport: leave the viewport where it
+        // is (the prepend path re-anchors it) and do not raise the new-activity
+        // pill — nothing new appeared at the bottom.
       } else if (hasNewReviewPrompt && !navigationSuppressed) {
         // A fresh review-mode prompt needs a user decision — reveal it even
         // when the user had scrolled away from the bottom.

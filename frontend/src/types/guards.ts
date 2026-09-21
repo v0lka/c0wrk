@@ -13,6 +13,8 @@ import type {
     MCPServerStatus,
     AutonomyMode,
     SecuritySettingsResponse,
+    ShellExecSettingsResponse,
+    ShellExecToolSettings,
     BlackboardState,
     ModelProfile,
     ModelProfileKind,
@@ -94,6 +96,25 @@ export function isAutonomyMode(v: unknown): v is AutonomyMode {
 
 export function isSecuritySettingsResponse(v: unknown): v is SecuritySettingsResponse {
     return isObj(v) && has(v, 'groups', 'auto_approve_workspace_writes', 'autonomy_mode')
+}
+
+function isShellExecToolSettings(v: unknown): v is ShellExecToolSettings {
+    return (
+        isObj(v) &&
+        has(v, 'command', 'shell') &&
+        Array.isArray(v.command) &&
+        v.command.every((c) => typeof c === 'string') &&
+        typeof v.shell === 'string'
+    )
+}
+
+export function isShellExecSettingsResponse(v: unknown): v is ShellExecSettingsResponse {
+    return (
+        isObj(v) &&
+        has(v, 'bash_exec', 'posh_exec') &&
+        isShellExecToolSettings(v.bash_exec) &&
+        isShellExecToolSettings(v.posh_exec)
+    )
 }
 
 export function isBlackboardState(v: unknown): v is BlackboardState {

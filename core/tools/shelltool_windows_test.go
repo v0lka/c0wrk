@@ -19,7 +19,7 @@ import (
 // supplement died with the shipped defaults), so there is no supplement test:
 // with a nil/empty blocklist the tool hard-blocks nothing.
 func TestShellExecToolName_Windows(t *testing.T) {
-	tool, err := newShellExecTool(nil, builtins.DefaultBashTimeouts())
+	tool, err := newShellExecTool(nil, builtins.DefaultBashTimeouts(), nil, nil)
 	if err != nil {
 		t.Fatalf("newShellExecTool: unexpected error: %v", err)
 	}

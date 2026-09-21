@@ -18,8 +18,8 @@ const LONG_NOTICE =
   'no hard safety reason (the command_unbounded_analysis limitation on the flowsh ' +
   'judge is deliberately non-canonical)'
 
-function makeItem(variant: ServiceItem['variant']): ServiceItem {
-  return { kind: 'service', id: 'svc-1', variant, content: LONG_NOTICE }
+function makeItem(variant: ServiceItem['variant'], metadata?: Record<string, unknown>): ServiceItem {
+  return { kind: 'service', id: 'svc-1', variant, content: LONG_NOTICE, metadata }
 }
 
 describe('ServiceMessage', () => {
@@ -66,5 +66,12 @@ describe('ServiceMessage', () => {
   it('renders the notice text next to the icon', () => {
     render(makeItem('status'))
     expect(container.textContent).toContain('Silent mode: allowed write_file')
+  })
+
+  it('keeps the muted (untinted) icon for a status notice', () => {
+    render(makeItem('status'))
+    const cls = iconClasses()[0] ?? ''
+    expect(cls).not.toContain('text-success')
+    expect(cls).not.toContain('text-destructive')
   })
 })

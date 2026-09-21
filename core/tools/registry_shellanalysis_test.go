@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -157,7 +158,7 @@ func TestSmartApproveShellAnalysis_CleanCallReachesStrictJudge(t *testing.T) {
 	if !ok {
 		t.Fatal("strict envelope lacks the analysis field: the flowsh digest must reach the strict judge for clean shell calls too")
 	}
-	if !strings.Contains(analysis, `"schemaVersion":"sp4rk-shell-analysis/v1"`) {
+	if !strings.Contains(analysis, `"schemaVersion":"sp4rk-shell-analysis/v3"`) {
 		t.Errorf("analysis field is not a shell-analysis digest: %s", analysis)
 	}
 	if !strings.Contains(analysis, "outside_session_roots") {
@@ -200,7 +201,7 @@ func TestSmartApproveShellAnalysis_EscalatedShellCallReachesStrictJudge(t *testi
 	if !ok {
 		t.Fatal("strict envelope lacks the analysis field for an escalated shell call")
 	}
-	if !strings.Contains(analysis, `"schemaVersion":"sp4rk-shell-analysis/v1"`) {
+	if !strings.Contains(analysis, `"schemaVersion":"sp4rk-shell-analysis/v3"`) {
 		t.Errorf("analysis field is not a shell-analysis digest: %s", analysis)
 	}
 	// The escalation reasoning must survive alongside the digest.
@@ -245,6 +246,7 @@ func TestSmartApproveCanonicalFlowshCodes_BackstopUnderAllowPolicy(t *testing.T)
 		{name: "destructive outside roots", code: sdktools.ReasonCodeCommandDestructiveOutsideRoots, wantBlock: true},
 		{name: "download cradle", code: sdktools.ReasonCodeCommandDownloadCradle, wantBlock: true},
 		{name: "unbounded analysis stays clearable", code: sdktools.ReasonCodeCommandUnboundedAnalysis, wantBlock: false},
+		{name: "external-content ingest stays clearable", code: sdktools.ReasonCodeCommandExternalContentIngest, wantBlock: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -288,5 +290,89 @@ func TestSmartApproveCanonicalFlowshCodes_BackstopUnderAllowPolicy(t *testing.T)
 				}
 			}
 		})
+	}
+}
+
+// TestAttachShellAnalysis_DoesNotSeedDSessionVarBinding pins the corrected,
+// fail-closed contract for an UNASSIGNED $D
+// (silent-mode-deny-accuracy-recommendations.md §2C): AttachShellAnalysis
+// attaches NO host-known variable binding, because the executed shell is a
+// fresh stateless `bash -c` where $D is genuinely unset — seeding `D` → the
+// session temp dir would let the analyzer resolve an unassigned `$D` to an
+// in-root target the command never actually writes (a fail-open), downgrading
+// the fail-closed ⊤ escalation (the command_unbounded_analysis criterion) to
+// a criterion-free in-root allow.
+//
+// The command below re-uses $D without a visible assignment; even with the
+// session temp dir present in ctx, the digest must keep the ⊤ shape (the
+// CommandUnboundedAnalysis criterion fires) and must NOT carry a concrete
+// in-root temp target for the redirect — i.e. no fabricated `D` binding.
+func TestAttachShellAnalysis_DoesNotSeedDSessionVarBinding(t *testing.T) {
+	const command = `git diff main...HEAD -- core > $D/registry.diff`
+
+	registry, provider, confirmCalled := newShellAnalysisRegistry(t, "VERDICT: ALLOW\nREASON: benign diff dump")
+	// Mock tool NAMED bash_exec without a Judge: the call is escalation-free,
+	// so the digest reaches the strict judge purely through the
+	// AttachShellAnalysis ctx attachment.
+	bashMock := newMockTool("bash_exec", "mock shell")
+	bashMock.group = sdktools.GroupExecute
+	registry.Register(bashMock)
+
+	ws := t.TempDir()
+	temp := t.TempDir()
+	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
+	// The session temp dir IS present in ctx, but AttachShellAnalysis must not
+	// turn it into a `D` binding — an unassigned $D stays unset.
+	ctx = sdktools.WithTempDir(ctx, temp)
+	result, err := registry.Execute(ctx, "bash_exec", marshalShellInput(t, command, ws))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected execution (strict ALLOW), got error result: %s", result.Content)
+	}
+	if *confirmCalled {
+		t.Error("strict ALLOW must not reach the manual confirmation path")
+	}
+	analysis, ok := strictEnvelopeField(t, provider.snapshot(), "analysis")
+	if !ok {
+		t.Fatal("strict envelope lacks the analysis field")
+	}
+	// The digest sits inside the untrusted-content boundary wrapper
+	// (see strictEnvelopeField); peel it to the JSON object.
+	start := strings.Index(analysis, "{")
+	end := strings.LastIndex(analysis, "}")
+	if start < 0 || end < start {
+		t.Fatalf("analysis field carries no JSON digest: %s", analysis)
+	}
+	var digest sdktools.ShellAnalysisDigest
+	if err := json.Unmarshal([]byte(analysis[start:end+1]), &digest); err != nil {
+		t.Fatalf("analysis field is not a shell-analysis digest: %v (%s)", err, analysis)
+	}
+
+	// Fail-closed: the ⊤ (unbounded-analysis) criterion must fire — the
+	// analysis must NOT have been handed a concrete target to bound it.
+	fired := false
+	for _, c := range digest.Criteria {
+		if c.Fired == sdktools.ReasonCodeCommandUnboundedAnalysis {
+			fired = true
+		}
+	}
+	if !fired {
+		t.Errorf("unassigned $D redirect must keep the ⊤ shape (unbounded-analysis criterion); criteria: %+v", digest.Criteria)
+	}
+
+	// And no concrete in-root temp target may appear: the removed seed must
+	// not be resurrected by AttachShellAnalysis.
+	wantTarget := filepath.Join(temp, "registry.diff")
+	for _, e := range digest.Effects {
+		if e.Kind != "FSWrite" || e.Mode != "Direct" {
+			continue
+		}
+		for _, target := range e.Targets {
+			if filepath.Clean(target) == filepath.Clean(wantTarget) {
+				t.Errorf("AttachShellAnalysis fabricated the removed D → session-temp binding: redirect resolved to %q", target)
+			}
+		}
 	}
 }

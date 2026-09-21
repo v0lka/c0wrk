@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
+import { Fragment, useState, useEffect, useCallback } from "react";
 import { Loader2, AlertTriangle, Info, RotateCw, FolderGit2, ShieldBan } from "lucide-react";
 import { getSecuritySettings, updateSecuritySettings } from "@/api/config";
 import { getToolList } from "@/api/mcp";
 import { logger } from "@/lib/logger";
 import { Button } from "@/components/ui/button";
 import { SecurityGroupCard } from "./SecurityGroupCard";
+import { ShellExecutionCard } from "./ShellExecutionCard";
 import { TrustedReposDialog } from "./TrustedReposDialog";
 import { HardenReposDialog } from "./HardenReposDialog";
 import { SilentModeCard } from "./SilentModeCard";
@@ -382,17 +383,24 @@ export function SecuritySettings() {
         />
       )}
 
-      {/* The seven configurable tool groups */}
+      {/* The seven configurable tool groups. The shell-execution override sits
+          directly under the Execute group it governs. */}
       {GROUP_ORDER.map((group) => (
-        <SecurityGroupCard
-          key={group}
-          group={group}
-          policy={settings.groups[group]?.policy ?? DEFAULT_GROUP_POLICY}
-          blocklist={group === EXECUTE_GROUP ? settings.groups[group]?.blocklist ?? [] : []}
-          tools={toolsByGroup[group] ?? []}
-          onPolicyChange={handlePolicy}
-          onBlocklistChange={handleBlocklist}
-        />
+        <Fragment key={group}>
+          <SecurityGroupCard
+            group={group}
+            policy={settings.groups[group]?.policy ?? DEFAULT_GROUP_POLICY}
+            blocklist={group === EXECUTE_GROUP ? settings.groups[group]?.blocklist ?? [] : []}
+            tools={toolsByGroup[group] ?? []}
+            onPolicyChange={handlePolicy}
+            onBlocklistChange={handleBlocklist}
+          />
+          {/* Shell-execution launch-shape override (the shell_exec config
+              section): how the execute tool launches commands and which shell
+              the command text is written in. Self-contained: loads and saves
+              its own section via the shell-exec settings RPCs. */}
+          {group === EXECUTE_GROUP && <ShellExecutionCard />}
+        </Fragment>
       ))}
 
       <div className="flex items-start gap-2 text-xs text-muted-foreground">

@@ -18,13 +18,11 @@ export const RESEARCH_TAB_PATH = 'c0wrk:research'
 
 interface ResearchState {
   /** Parsed research status (graph + metrics + brief) for the active project,
-   *  or null when not yet loaded / RESEARCH off. */
+   *  or null when not yet loaded. */
   status: ResearchStatus | null
   /** True while GetResearchStatus is in flight (initial load + event refresh). */
   isLoading: boolean
-  /** True while EnableResearch / DisableResearch is in flight (blocks the toggle). */
-  isToggling: boolean
-  /** Last error from a status fetch or toggle; null when clean. */
+  /** Last error from a status fetch; null when clean. */
   error: string | null
   /** The projectId the current `status` belongs to. Guards against stale data
    *  when the user switches projects before an in-flight fetch resolves. */
@@ -156,7 +154,6 @@ interface ResearchActions {
    *  freezing on stale data. */
   loadGraph: (graphResponse: ResearchGraphResponse, startedSeq?: number) => boolean
   setLoading: (loading: boolean) => void
-  setToggling: (toggling: boolean) => void
   setError: (error: string | null) => void
   /** Clear everything (e.g. on project switch / No-Project mode). */
   reset: () => void
@@ -183,7 +180,6 @@ const EMPTY_PINNED_HYPOTHESES: Record<string, string[]> = {}
 const initialState: ResearchState = {
   status: null,
   isLoading: false,
-  isToggling: false,
   error: null,
   projectId: null,
   nextStep: null,
@@ -269,7 +265,7 @@ export const useResearchStore = create<ResearchStore>((set) => ({
       // next step is dropped too — it is phase-derived per project, and the
       // next-step fetch is best-effort (a failure would otherwise leave the
       // OLD project's recommendation rendering indefinitely). Same-project
-      // reloads (research:changed refreshes, toggle) keep both —
+      // reloads (research:changed refreshes) keep both —
       // same-project active-R-NNN transitions are handled by the composite
       // selection keys (selectedHypothesisProjectId /
       // activeHypothesisResearchId) instead.
@@ -421,8 +417,6 @@ export const useResearchStore = create<ResearchStore>((set) => ({
 
   setLoading: (loading) => set({ isLoading: loading }),
 
-  setToggling: (toggling) => set({ isToggling: toggling }),
-
   setError: (error) => set({ error, isLoading: false }),
 
   reset: () => set(initialState),
@@ -430,11 +424,6 @@ export const useResearchStore = create<ResearchStore>((set) => ({
 
 // --- Selectors (pure functions; stable references — never allocate inside a
 // useStore(selector) call so React 19's useSyncExternalStore never loops) ---
-
-/** True when RESEARCH is enabled for the loaded project. */
-export function selectEnabled(state: ResearchStore): boolean {
-  return state.status?.enabled ?? false
-}
 
 /** The active research project (brief + graph + metrics) for the metrics row
  *  and DAG, or null when off / not yet loaded. Uses the backend-computed

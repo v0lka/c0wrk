@@ -1,4 +1,4 @@
-// Skill reference extraction from user message text.
+// Reference parsing/formatting for user message text.
 
 const SKILL_REF_PATTERN = /(?:^|\s)\/([\w-]+)/g
 
@@ -78,4 +78,25 @@ export function extractAgentRefs(text: string): string[] {
 export function filterKnownAgentRefs(refs: string[], knownNames: string[]): string[] {
   const known = new Set(knownNames)
   return refs.filter((name) => known.has(name))
+}
+
+/**
+ * Format a path for insertion into the chat input as an @file reference.
+ *
+ * Paths containing spaces are quoted (`@'my file.go'`, the canonical form)
+ * unless the path itself contains a single quote — a quote cannot be nested
+ * inside the quoting, so such paths fall back to backslash-escaped spaces
+ * (`@my\ file.go`, the legacy form). Both forms are recognized by every
+ * consumer (input highlighting, chat display, backend preprocessing), so
+ * this only picks the more readable spelling for what gets typed.
+ *
+ * `forceQuoted` is used while completing inside an already-open `@'…' ref:
+ * the replacement range swallows the typed opening quote, so the applied
+ * text must reintroduce it even when the chosen path needs no quoting.
+ */
+export function formatFileRefPath(relPath: string, forceQuoted = false): string {
+  if ((forceQuoted || relPath.includes(' ')) && !relPath.includes("'")) {
+    return `'${relPath}'`
+  }
+  return relPath.replace(/ /g, '\\ ')
 }

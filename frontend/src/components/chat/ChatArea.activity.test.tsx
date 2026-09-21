@@ -18,7 +18,7 @@ import type { ChatMessageUI } from '@/types/messages'
 import type { SessionInfo } from '@/types/models'
 
 vi.mock('@/api/chat', () => ({
-  getSessionHistory: vi.fn().mockResolvedValue({ messages: [], next_cursor: '', has_more: false }),
+  getSessionHistory: vi.fn().mockResolvedValue([]),
   getSessionRuntimeStatus: vi.fn().mockResolvedValue(null),
   getPendingActions: vi.fn().mockResolvedValue(null),
   resolveStalePrompt: vi.fn().mockResolvedValue(undefined),

@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   useResearchStore,
-  selectEnabled,
   selectActiveProject,
   selectActiveHypothesisId,
   RESEARCH_CARD_DEFAULT_HEIGHT,
@@ -71,7 +70,6 @@ describe('researchStore', () => {
     const s = useResearchStore.getState()
     expect(s.status).toBeNull()
     expect(s.isLoading).toBe(false)
-    expect(s.isToggling).toBe(false)
     expect(s.error).toBeNull()
     expect(s.projectId).toBeNull()
   })
@@ -90,17 +88,13 @@ describe('researchStore', () => {
 
   it('reset clears everything back to initial', () => {
     useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
-    useResearchStore.getState().setToggling(true)
     useResearchStore.getState().reset()
     const s = useResearchStore.getState()
     expect(s.status).toBeNull()
     expect(s.projectId).toBeNull()
-    expect(s.isToggling).toBe(false)
   })
 
-  it('setToggling / setLoading / setError mutate only their slice', () => {
-    useResearchStore.getState().setToggling(true)
-    expect(useResearchStore.getState().isToggling).toBe(true)
+  it('setLoading / setError mutate only their slice', () => {
     useResearchStore.getState().setLoading(true)
     expect(useResearchStore.getState().isLoading).toBe(true)
     useResearchStore.getState().setError('err')
@@ -827,16 +821,6 @@ describe('researchStore selectors', () => {
     useResearchStore.getState().reset()
   })
 
-  it('selectEnabled is false when no status loaded', () => {
-    expect(selectEnabled(useResearchStore.getState())).toBe(false)
-  })
-  it('selectEnabled reflects status.enabled', () => {
-    useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
-    expect(selectEnabled(useResearchStore.getState())).toBe(true)
-    useResearchStore.getState().loadStatus(statusOf(false), 'proj-1')
-    expect(selectEnabled(useResearchStore.getState())).toBe(false)
-  })
-
   it('selectActiveProject returns the first project when on, null when off', () => {
     useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
     expect(selectActiveProject(useResearchStore.getState())?.id).toBe('r1')
@@ -899,7 +883,5 @@ describe('researchStore selectors', () => {
     const st = useResearchStore.getState()
     // selectActiveProject returns the same object reference both calls.
     expect(selectActiveProject(st)).toBe(selectActiveProject(st))
-    // selectEnabled is a primitive boolean.
-    expect(typeof selectEnabled(st)).toBe('boolean')
   })
 })

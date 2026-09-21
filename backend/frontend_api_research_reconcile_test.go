@@ -20,11 +20,16 @@ import (
 // for assertions).
 const seedVersionMarker = ".seed-version"
 
-// newReconcileTestFrontend builds the minimal EnableResearch-capable
-// FrontendAPI: a project store with one real project over a temp workspace.
-func newReconcileTestFrontend(t *testing.T) (f *FrontendAPI, projectID, ws string) {
+// seedGlobalPacksTestFrontend builds the minimal FrontendAPI for exercising
+// the launch-time global seed: a temp agent directory plus a one-real-project
+// store over a temp workspace.
+func seedGlobalPacksTestFrontend(t *testing.T) (f *FrontendAPI, projectID, ws, agentDir string) {
 	t.Helper()
 	base := t.TempDir()
+	agentDir = filepath.Join(base, "agent")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatalf("mkdir agentDir: %v", err)
+	}
 	ws = filepath.Join(base, "ws")
 	if err := os.MkdirAll(ws, 0o755); err != nil {
 		t.Fatalf("mkdir ws: %v", err)
@@ -40,7 +45,7 @@ func newReconcileTestFrontend(t *testing.T) (f *FrontendAPI, projectID, ws strin
 	}
 	if err := store.SaveProject(context.Background(), project.ProjectInfo{
 		ID:            "proj-1",
-		Name:          "Reconcile",
+		Name:          "Seeded",
 		WorkspacePath: ws,
 	}); err != nil {
 		t.Fatalf("save project: %v", err)
@@ -48,51 +53,47 @@ func newReconcileTestFrontend(t *testing.T) (f *FrontendAPI, projectID, ws strin
 	f = &FrontendAPI{
 		projectManager: project.NewManager(store, base, nil),
 		projStore:      store,
+		agentDir:       agentDir,
 		emitEvent:      func(string, ...any) {},
 	}
-	return f, "proj-1", ws
+	return f, "proj-1", ws, agentDir
 }
 
-// TestEnableResearch_SeedsAllPacksProjectLocally pins the reconciliation
-// contract at toggle time: EnableResearch must seed EVERY c0wrk-owned pack
-// into the project-local agent directories — the research-* skills, the
-// study-paper skill (so the project-local copy wins the same-name discovery
-// chain over a ~/.agents namesake), and the research Subagent Profile — with
-// the current pack-version markers, and report the skill names in the DTO.
-func TestEnableResearch_SeedsAllPacksProjectLocally(t *testing.T) {
-	f, projectID, ws := newReconcileTestFrontend(t)
+// TestSeedGlobalPacks_SeedsAllPacksGlobally pins the launch-time seeding: every
+// c0wrk-owned pack lands in the GLOBAL agent directories —
+// <agentDir>/.agents/skills (the research-* methodology skills + study-paper)
+// and <agentDir>/.agents/agents (the research Subagent Profile) — carrying the
+// current pack-version markers.
+func TestSeedGlobalPacks_SeedsAllPacksGlobally(t *testing.T) {
+	f, _, _, agentDir := seedGlobalPacksTestFrontend(t)
 
-	status, err := f.EnableResearch(projectID, "")
-	if err != nil {
-		t.Fatalf("EnableResearch: %v", err)
-	}
+	f.seedGlobalPacks()
 
-	skillsDir := config.ProjectSkillsPath(ws)
+	skillsDir := config.SkillsDir(agentDir)
 
-	// study-paper seeded project-locally with the papers pack's marker.
+	// study-paper seeded with the papers pack's marker.
 	spSkill := filepath.Join(skillsDir, "study-paper", "SKILL.md")
-	if data, rerr := os.ReadFile(spSkill); rerr != nil {
-		t.Fatalf("study-paper SKILL.md not seeded at %s: %v", spSkill, rerr)
+	if data, err := os.ReadFile(spSkill); err != nil {
+		t.Fatalf("study-paper SKILL.md not seeded at %s: %v", spSkill, err)
 	} else if len(data) == 0 {
 		t.Fatal("seeded study-paper SKILL.md is empty")
 	}
-	marker, rerr := os.ReadFile(filepath.Join(skillsDir, "study-paper", seedVersionMarker))
-	if rerr != nil {
-		t.Fatalf("study-paper seed marker missing: %v", rerr)
-	}
-	if string(marker) != papers.CurrentSeedVersion {
-		t.Errorf("study-paper marker = %q, want papers.CurrentSeedVersion %q", marker, papers.CurrentSeedVersion)
+	if m, err := os.ReadFile(filepath.Join(skillsDir, "study-paper", seedVersionMarker)); err != nil {
+		t.Fatalf("study-paper seed marker missing: %v", err)
+	} else if string(m) != papers.CurrentSeedVersion {
+		t.Errorf("study-paper marker = %q, want %q", m, papers.CurrentSeedVersion)
 	}
 
 	// Every research-* skill present with the research pack's marker.
 	for _, name := range research.ResearchSkillNames() {
 		skill := filepath.Join(skillsDir, name, "SKILL.md")
-		if _, serr := os.Stat(skill); serr != nil {
-			t.Errorf("research skill %s not seeded: %v", name, serr)
+		if _, err := os.Stat(skill); err != nil {
+			t.Errorf("research skill %s not seeded: %v", name, err)
+			continue
 		}
-		m, merr := os.ReadFile(filepath.Join(skillsDir, name, seedVersionMarker))
-		if merr != nil {
-			t.Errorf("research skill %s marker missing: %v", name, merr)
+		m, err := os.ReadFile(filepath.Join(skillsDir, name, seedVersionMarker))
+		if err != nil {
+			t.Errorf("research skill %s marker missing: %v", name, err)
 			continue
 		}
 		if string(m) != research.CurrentSeedVersion {
@@ -100,128 +101,22 @@ func TestEnableResearch_SeedsAllPacksProjectLocally(t *testing.T) {
 		}
 	}
 
-	// The research Subagent Profile is seeded into .agents/agents.
+	// The research Subagent Profile is seeded into the GLOBAL agents dir.
 	for _, name := range research.ResearchAgentNames() {
-		profile := filepath.Join(config.ProjectAgentsPath(ws), name, "AGENT.md")
-		if _, perr := os.Stat(profile); perr != nil {
-			t.Errorf("agent profile %s not seeded: %v", name, perr)
-		}
-	}
-
-	// The DTO reports both packs' skill names in the seeded bucket.
-	if status.SeedResult == nil {
-		t.Fatal("SeedResult is nil after a first enable")
-	}
-	wantSeeded := map[string]bool{"study-paper": false}
-	for _, name := range research.ResearchSkillNames() {
-		wantSeeded[name] = false
-	}
-	for _, name := range status.SeedResult.Seeded {
-		if _, ok := wantSeeded[name]; ok {
-			wantSeeded[name] = true
-		}
-	}
-	for name, seen := range wantSeeded {
-		if !seen {
-			t.Errorf("SeedResult.Seeded missing %q (got %v)", name, status.SeedResult.Seeded)
+		profile := filepath.Join(config.AgentsDir(agentDir), name, "AGENT.md")
+		if _, err := os.Stat(profile); err != nil {
+			t.Errorf("agent profile %s not seeded: %v", name, err)
 		}
 	}
 }
 
-// TestSwitchProject_ReconcilesResearchPacks pins the switch-time validation:
-// switching to a research-enabled project seeds missing pack entries (here:
-// study-paper, the entry whose absence let a stale ~/.agents namesake win the
-// discovery chain) and upgrades pack-marked outdated ones, while
-// research-disabled projects reconcile nothing.
-func TestSwitchProject_ReconcilesResearchPacks(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH (CODE-mode SwitchProject requires it)")
-	}
+// TestSeedGlobalPacks_PreservesUserOwnedSkill pins the non-destructive half of
+// the launch seed: a marker-less, diverging directory is USER-OWNED and must
+// survive the seed untouched — even when a same-named pack skill exists.
+func TestSeedGlobalPacks_PreservesUserOwnedSkill(t *testing.T) {
+	f, _, _, agentDir := seedGlobalPacksTestFrontend(t)
 
-	// A research-enabled target project carrying an OUTDATED pack-marked
-	// research-init (marker "0" < research.CurrentSeedVersion) and NO
-	// study-paper at all.
-	f, projectID, ws := newReconcileTestFrontend(t)
-	f.builderOverride = &mockBuilder{}
-	t.Cleanup(func() { closeSwitchTestWatcher(t, f) })
-
-	root := config.ProjectResearchPath(ws)
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatalf("mkdir research root: %v", err)
-	}
-	proj, err := f.projectManager.GetProject(projectID)
-	if err != nil || proj == nil {
-		t.Fatalf("GetProject: %v", err)
-	}
-	proj.ResearchRoot = root
-	if err := f.projStore.SaveProject(context.Background(), *proj); err != nil {
-		t.Fatalf("persist ResearchRoot: %v", err)
-	}
-
-	skillsDir := config.ProjectSkillsPath(ws)
-	stale := filepath.Join(skillsDir, "research-init")
-	if err := os.MkdirAll(stale, 0o755); err != nil {
-		t.Fatalf("mkdir stale skill: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(stale, "SKILL.md"), []byte("---\nname: research-init\ndescription: stale\n---\n# old\n"), 0o644); err != nil {
-		t.Fatalf("write stale SKILL.md: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(stale, seedVersionMarker), []byte("0"), 0o644); err != nil {
-		t.Fatalf("write stale marker: %v", err)
-	}
-
-	if err := f.SwitchProject(projectID); err != nil {
-		t.Fatalf("SwitchProject: %v", err)
-	}
-
-	// Missing study-paper seeded project-locally.
-	if _, serr := os.Stat(filepath.Join(skillsDir, "study-paper", "SKILL.md")); serr != nil {
-		t.Fatalf("study-paper not seeded on switch: %v", serr)
-	}
-
-	// Outdated pack-marked research-init upgraded to the current pack.
-	upgraded, rerr := os.ReadFile(filepath.Join(stale, "SKILL.md"))
-	if rerr != nil {
-		t.Fatalf("read upgraded SKILL.md: %v", rerr)
-	}
-	if !bytes.HasPrefix(upgraded, []byte("---\nname: research-init")) {
-		// A full pack overwrite replaces the stale body; the embedded SKILL.md
-		// always starts with the YAML front matter.
-		t.Errorf("research-init content was not replaced by the pack copy: %q", string(upgraded[:min(60, len(upgraded))]))
-	}
-	if m, merr := os.ReadFile(filepath.Join(stale, seedVersionMarker)); merr != nil || string(m) != research.CurrentSeedVersion {
-		t.Errorf("research-init marker not upgraded: content=%q err=%v", m, merr)
-	}
-}
-
-// TestSwitchProject_PreservesUserOwnedSkillOnReconcile pins the
-// non-destructive half of the switch-time reconciliation: a marker-less,
-// diverging directory is USER-OWNED and must survive a switch untouched —
-// even when a same-named pack skill exists.
-func TestSwitchProject_PreservesUserOwnedSkillOnReconcile(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH (CODE-mode SwitchProject requires it)")
-	}
-
-	f, projectID, ws := newReconcileTestFrontend(t)
-	f.builderOverride = &mockBuilder{}
-	t.Cleanup(func() { closeSwitchTestWatcher(t, f) })
-
-	root := config.ProjectResearchPath(ws)
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatalf("mkdir research root: %v", err)
-	}
-	proj, err := f.projectManager.GetProject(projectID)
-	if err != nil || proj == nil {
-		t.Fatalf("GetProject: %v", err)
-	}
-	proj.ResearchRoot = root
-	if err := f.projStore.SaveProject(context.Background(), *proj); err != nil {
-		t.Fatalf("persist ResearchRoot: %v", err)
-	}
-
-	// User-owned study-paper: no marker, diverging content.
-	userSkill := filepath.Join(config.ProjectSkillsPath(ws), "study-paper")
+	userSkill := filepath.Join(config.SkillsDir(agentDir), "study-paper")
 	if err := os.MkdirAll(userSkill, 0o755); err != nil {
 		t.Fatalf("mkdir user skill: %v", err)
 	}
@@ -230,31 +125,46 @@ func TestSwitchProject_PreservesUserOwnedSkillOnReconcile(t *testing.T) {
 		t.Fatalf("write user SKILL.md: %v", err)
 	}
 
-	if err := f.SwitchProject(projectID); err != nil {
-		t.Fatalf("SwitchProject: %v", err)
-	}
+	f.seedGlobalPacks()
 
-	got, rerr := os.ReadFile(filepath.Join(userSkill, "SKILL.md"))
-	if rerr != nil {
-		t.Fatalf("read user SKILL.md: %v", rerr)
+	got, err := os.ReadFile(filepath.Join(userSkill, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read user SKILL.md: %v", err)
 	}
 	if !bytes.Equal(got, userBody) {
-		t.Error("user-owned study-paper was modified by switch-time reconciliation")
+		t.Error("user-owned study-paper was modified by the launch seed")
 	}
-	if _, merr := os.Stat(filepath.Join(userSkill, seedVersionMarker)); !os.IsNotExist(merr) {
-		t.Errorf("user-owned study-paper gained a pack marker (stat err=%v)", merr)
+	if _, err := os.Stat(filepath.Join(userSkill, seedVersionMarker)); !os.IsNotExist(err) {
+		t.Errorf("user-owned study-paper gained a pack marker (stat err=%v)", err)
 	}
 }
 
-// TestSwitchProject_NoReconcileWithoutResearch pins the gate: switching to a
-// project WITHOUT a persisted research root must not touch the project-local
-// agent directories at all.
-func TestSwitchProject_NoReconcileWithoutResearch(t *testing.T) {
+// TestSeedGlobalPacks_Idempotent pins that a repeated launch seed is a no-op
+// (the pack copies are current) and leaves the packs in place.
+func TestSeedGlobalPacks_Idempotent(t *testing.T) {
+	f, _, _, agentDir := seedGlobalPacksTestFrontend(t)
+
+	f.seedGlobalPacks()
+	f.seedGlobalPacks()
+
+	if _, err := os.Stat(filepath.Join(config.SkillsDir(agentDir), "study-paper", "SKILL.md")); err != nil {
+		t.Fatalf("study-paper missing after a repeated seed: %v", err)
+	}
+	entries, err := os.ReadDir(config.AgentsDir(agentDir))
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("no research agent profiles after a repeated seed: %v", err)
+	}
+}
+
+// TestSwitchProject_DoesNotSeedProjectLocalPacks pins that a project switch no
+// longer writes any pack into the PROJECT-LOCAL .agents directories — seeding
+// is now a global, launch-time concern (seedGlobalPacks).
+func TestSwitchProject_DoesNotSeedProjectLocalPacks(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH (CODE-mode SwitchProject requires it)")
 	}
 
-	f, projectID, ws := newReconcileTestFrontend(t)
+	f, projectID, ws, _ := seedGlobalPacksTestFrontend(t)
 	f.builderOverride = &mockBuilder{}
 	t.Cleanup(func() { closeSwitchTestWatcher(t, f) })
 
@@ -262,38 +172,38 @@ func TestSwitchProject_NoReconcileWithoutResearch(t *testing.T) {
 		t.Fatalf("SwitchProject: %v", err)
 	}
 
-	if _, serr := os.Stat(config.ProjectSkillsPath(ws)); !os.IsNotExist(serr) {
-		t.Errorf("project skills dir created for a research-disabled project (stat err=%v)", serr)
+	if _, err := os.Stat(config.ProjectSkillsPath(ws)); !os.IsNotExist(err) {
+		t.Errorf("project-local skills dir created by SwitchProject (stat err=%v)", err)
 	}
-	if _, aerr := os.Stat(config.ProjectAgentsPath(ws)); !os.IsNotExist(aerr) {
-		t.Errorf("project agents dir created for a research-disabled project (stat err=%v)", aerr)
+	if _, err := os.Stat(config.ProjectAgentsPath(ws)); !os.IsNotExist(err) {
+		t.Errorf("project-local agents dir created by SwitchProject (stat err=%v)", err)
 	}
 }
 
-// TestLiteratureScriptPath_ProjectLocal pins the retargeted resolver: the
-// study-paper literature.py helper is looked up in the REQUESTING project's
-// project-local skills directory (the copy seeded by the research pack
-// reconciliation), never in a global one.
-func TestLiteratureScriptPath_ProjectLocal(t *testing.T) {
+// TestLiteratureScriptPath_Global pins the global resolver: the study-paper
+// literature.py helper is looked up in c0wrk's GLOBAL agent skills directory
+// (config.SkillsDir(agentDir)), never in a project-local one; a missing helper
+// (or missing agentDir) yields "" — the explicit no_script degradation.
+func TestLiteratureScriptPath_Global(t *testing.T) {
 	f := &FrontendAPI{}
-
-	if got := f.literatureScriptPath(""); got != "" {
-		t.Errorf("literatureScriptPath(\"\") = %q, want empty", got)
+	if got := f.literatureScriptPath(); got != "" {
+		t.Errorf("literatureScriptPath() with no agentDir = %q, want empty", got)
 	}
 
-	ws := t.TempDir()
-	if got := f.literatureScriptPath(ws); got != "" {
-		t.Errorf("literatureScriptPath(missing) = %q, want empty", got)
+	agentDir := t.TempDir()
+	f = &FrontendAPI{agentDir: agentDir}
+	if got := f.literatureScriptPath(); got != "" {
+		t.Errorf("literatureScriptPath() missing = %q, want empty", got)
 	}
 
-	script := filepath.Join(config.ProjectSkillsPath(ws), "study-paper", "scripts", "literature.py")
+	script := filepath.Join(config.SkillsDir(agentDir), studyPaperSkillName, literatureScriptRelPath)
 	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
 		t.Fatalf("mkdir scripts: %v", err)
 	}
 	if err := os.WriteFile(script, []byte("# stub\n"), 0o644); err != nil {
 		t.Fatalf("write stub: %v", err)
 	}
-	if got := f.literatureScriptPath(ws); got != script {
-		t.Errorf("literatureScriptPath(ws) = %q, want %q", got, script)
+	if got := f.literatureScriptPath(); got != script {
+		t.Errorf("literatureScriptPath() = %q, want %q", got, script)
 	}
 }

@@ -262,18 +262,6 @@ describe('ResearchWorkspace — filter toggle', () => {
     expect(container.querySelector('[data-node-id="H-001"]')).not.toBeNull()
     expect(container.querySelector('[data-node-id="H-002"]')).toBeNull()
   })
-
-  it('carries the RESEARCH disable toggle in its header', async () => {
-    const { container } = await renderWorkspace()
-
-    // The workspace tab is the only place the disable control renders while
-    // RESEARCH is on (the panel header lost it to the project picker).
-    const disable = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Disable RESEARCH mode"]',
-    )
-    expect(disable).not.toBeNull()
-    expect(disable!.className).toContain('text-destructive')
-  })
 })
 
 describe('ResearchWorkspace — edit persistence', () => {

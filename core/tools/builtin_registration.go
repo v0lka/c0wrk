@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/v0lka/sp4rk/agent"
+	sdktools "github.com/v0lka/sp4rk/tools"
 	"github.com/v0lka/sp4rk/tools/builtins"
 	"github.com/v0lka/sp4rk/tools/builtins/websearch"
 )
@@ -22,6 +23,13 @@ type BuiltinToolsConfig struct {
 	WebSearchLimits builtins.WebSearchLimits
 	BashTimeouts    builtins.BashTimeouts
 	ShellBlocklist  []string
+	// BashShellInvocation / PoshShellInvocation carry the operator's optional
+	// launch-shape override for the shell-exec tool (sp4rk
+	// tools.ShellInvocation). Only the platform-matching entry is consumed
+	// (bash on Unix, posh on Windows — see newShellExecTool); nil = built-in
+	// default launch shape.
+	BashShellInvocation *sdktools.ShellInvocation
+	PoshShellInvocation *sdktools.ShellInvocation
 
 	// Search provider configuration.
 	SearchProvider string
@@ -87,7 +95,7 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 	// platform-specific constructor call lives in shelltool_{unix,windows}.go
 	// behind build tags, because sp4rk's bash.go and posh.go are mutually
 	// exclusive per OS.
-	shellTool, err := newShellExecTool(cfg.ShellBlocklist, cfg.BashTimeouts)
+	shellTool, err := newShellExecTool(cfg.ShellBlocklist, cfg.BashTimeouts, cfg.BashShellInvocation, cfg.PoshShellInvocation)
 	if err != nil {
 		return fmt.Errorf("shell tool: %w", err)
 	}
@@ -243,15 +251,17 @@ func UpdateSearchTool(registry *ToolRegistry, providerName, apiKey string, limit
 }
 
 // UpdateShellTool re-registers the shell-execution tool (bash_exec on Unix,
-// posh_exec on Windows) with an updated command blocklist. The blocklist is
-// compiled into the tool at construction time, so a runtime edit of
-// security.groups.execute.blocklist takes effect by replacing the registered
-// instance — mirroring UpdateSearchTool. The list is presence-based and empty
-// by default: no predefined patterns ship, so a nil or empty list registers
-// the tool with no compiled-in patterns. A pattern that fails to compile is
-// reported as an error and leaves the previously registered tool in place.
-func UpdateShellTool(registry *ToolRegistry, blocklist []string, timeouts builtins.BashTimeouts) error {
-	shellTool, err := newShellExecTool(blocklist, timeouts)
+// posh_exec on Windows) with an updated command blocklist and launch-shape
+// override. The blocklist is compiled into the tool at construction time and
+// the invocation shapes the description, so a runtime edit of
+// security.groups.execute.blocklist or of the shell_exec config section takes
+// effect by replacing the registered instance — mirroring UpdateSearchTool.
+// The invocation entries are platform-keyed like BuiltinToolsConfig: only the
+// platform-matching one is consumed, nil keeps the built-in default launch
+// shape. A pattern that fails to compile or an invalid invocation is reported
+// as an error and leaves the previously registered tool in place.
+func UpdateShellTool(registry *ToolRegistry, blocklist []string, timeouts builtins.BashTimeouts, bashInvocation, poshInvocation *sdktools.ShellInvocation) error {
+	shellTool, err := newShellExecTool(blocklist, timeouts, bashInvocation, poshInvocation)
 	if err != nil {
 		return fmt.Errorf("shell tool: %w", err)
 	}

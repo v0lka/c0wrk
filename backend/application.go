@@ -151,7 +151,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	app.emitFunc = emitFunc
 
 	// 3. OrchestratorBuilder (owns registry, gateway, router, judge).
-	builderCfg := ToBuilderConfig(cfg.Config, loadModelProfilesCatalog(app.agentDir, app.log()))
+	builderCfg := ToBuilderConfig(cfg.Config, loadModelProfilesCatalog(app.agentDir, app.log()), app.log())
 	// Managed venv interpreter (imports markitdown) enables vision-assisted
 	// document conversion. Machine-local fact, resolved LAZILY: the
 	// tool-manager installs the venv asynchronously after startup, so probing
@@ -251,7 +251,9 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	// context and emits the persisted `autonomy_decision` session event
 	// (OWASP ASI10: the trajectory must stay reconstructable). Session
 	// registries inherit the observer through Clone, so per-session clones
-	// report their own decisions too.
+	// report their own decisions too. The executor context is forwarded so a
+	// subagent's decision carries its delegation/plan-step scope and renders
+	// inside the subagent's chat block, not the main stream.
 	builder.ToolRegistry().SetAutonomyDecisionObserver(func(ctx context.Context, decision coretools.AutonomyDecision) {
 		if app.manager == nil {
 			return
@@ -262,12 +264,12 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 				"kind", decision.Kind, "tool", decision.Tool, "verdict", decision.Verdict)
 			return
 		}
-		app.manager.EmitAutonomyDecision(sessionID, decision)
+		app.manager.EmitAutonomyDecision(ctx, sessionID, decision)
 	})
 
 	// 5. Orchestrator factory closure for the session manager.
 	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
-		orchCfg := ToBuilderConfig(cfg.Config, loadModelProfilesCatalog(app.agentDir, app.log()))
+		orchCfg := ToBuilderConfig(cfg.Config, loadModelProfilesCatalog(app.agentDir, app.log()), app.log())
 		// The lazy python probe is consumed at tool registration (builder
 		// creation); propagate it here as well so any future Build-side
 		// consumer sees the closure instead of a zero value.
@@ -370,7 +372,8 @@ func (app *Application) EvaluateJudge(ctx context.Context, toolName string, inpu
 	if judge == nil {
 		return sdktools.VerdictConfirm, "", ErrJudgeNotAvailable
 	}
-	return evaluateJudgeWith(ctx, judge, toolName, input, taskContext)
+	tool, _ := registry.Get(toolName)
+	return evaluateJudgeWith(ctx, judge, tool, toolName, input, taskContext)
 }
 
 // EvaluateJudgeForSession performs an on-demand judge evaluation for a pending
@@ -387,7 +390,8 @@ func (app *Application) EvaluateJudgeForSession(ctx context.Context, sessionID, 
 			if orch := sess.GetOrchestrator(); orch != nil {
 				if registry := orch.ToolRegistry(); registry != nil {
 					if judge := registry.GetJudge(); judge != nil {
-						return evaluateJudgeWith(ctx, judge, toolName, input, taskContext)
+						tool, _ := registry.Get(toolName)
+						return evaluateJudgeWith(ctx, judge, tool, toolName, input, taskContext)
 					}
 				}
 			}
@@ -408,9 +412,12 @@ func (app *Application) EvaluateJudgeForSession(ctx context.Context, sessionID, 
 // attached to ctx first (the Ask-Agent advisory path): the advisory judge
 // renders it as its in-prompt "Static Analysis Report" block, so a manual
 // judge evaluation sees the same evidence the strict judge and the tool's own
-// Judge consume. The digest never overrides the verdict — it is evidence.
-func evaluateJudgeWith(ctx context.Context, judge *sdktools.ToolJudge, toolName string, input json.RawMessage, taskContext string) (sdktools.JudgeVerdict, string, error) {
-	ctx = coretools.AttachShellAnalysis(ctx, toolName, input, nil)
+// Judge consume. The registered tool instance rides along so an
+// operator-configured shell invocation override (declared shell kind) picks
+// the analysis dialect. The digest never overrides the verdict — it is
+// evidence.
+func evaluateJudgeWith(ctx context.Context, judge *sdktools.ToolJudge, tool sdktools.Tool, toolName string, input json.RawMessage, taskContext string) (sdktools.JudgeVerdict, string, error) {
+	ctx = coretools.AttachShellAnalysisForTool(ctx, tool, toolName, input, nil)
 	verdict, reasoning, err := judge.Judge(ctx, toolName, input, taskContext)
 	if err != nil {
 		return verdict, reasoning, err

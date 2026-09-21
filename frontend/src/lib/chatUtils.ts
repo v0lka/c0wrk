@@ -59,10 +59,12 @@ export const roleToType: Record<ChatRole, MessageType> = {
   memory_read: 'memory_read',
   plan_review: 'plan_review',
   review_prompt: 'review_prompt',
-  // autonomy_decision rows are persisted audit notices of automatic
-  // (no-human) decisions; they render through the same non-blocking `status`
-  // service notice as other status rows (content rebuilt by reconstructContent).
-  autonomy_decision: 'status',
+  // autonomy_decision rows are persisted audit records of automatic
+  // (no-human) decisions; they keep their own message type so groupMessages
+  // renders a dedicated non-blocking card (AutonomyDecisionBlock; content
+  // rebuilt by reconstructContent) instead of reusing the generic `status`
+  // service row.
+  autonomy_decision: 'autonomy_decision',
   goal_proposal: 'goal_proposal',
   goal_status: 'goal_status',
 }
@@ -261,6 +263,8 @@ export function groupMessages(messages: ChatMessageUI[], workUnitStatus?: Record
       }
       case 'status':
         pushItem({ kind: 'service', id: msg.id, variant: 'status', content: msg.content, metadata: meta }, planStepId); break
+      case 'autonomy_decision':
+        pushItem({ kind: 'autonomy_decision', message: msg }, planStepId); break
       case 'step_done': case 'thinking': case 'task_resumed': break
       default: break
     }

@@ -576,6 +576,22 @@ type Orchestrator struct {
 	// routing-derived, threshold-driven compaction behavior. Guarded by
 	// resumeCompactionMu.
 	resumeCompactionStrategy string
+
+	// resumeRerouteMu guards resumeRerouteRequested — the one-shot "re-route
+	// on resume" request. The producer (RequestResumeReroute, called by the
+	// session layer right before resuming a task that never got past routing)
+	// and the consumer (Resume, on the request goroutine) may run on different
+	// goroutines, so the arm/consume pair is mutex-guarded exactly like
+	// resumeCompactionMu.
+	resumeRerouteMu sync.Mutex
+	// resumeRerouteRequested is true when the next Resume must re-run the
+	// routing stage because the resumed task's original run never reached it
+	// (no routing decision was persisted and no execution state exists — e.g.
+	// the router's LLM call failed on a network error the moment the task
+	// started). False (the default) keeps Resume's normal
+	// reuse-without-routing behavior, so a task that was actually routed is
+	// never re-classified on resume. Guarded by resumeRerouteMu.
+	resumeRerouteRequested bool
 }
 
 // ErrRequestInFlight is returned by HandleMessage when another HandleMessage
@@ -710,6 +726,69 @@ func (o *Orchestrator) consumeResumeCompaction() string {
 	strategy := o.resumeCompactionStrategy
 	o.resumeCompactionStrategy = ""
 	return strategy
+}
+
+// RequestResumeReroute arms the one-shot "re-route on resume" request. The
+// NEXT Resume call consumes it: instead of defaulting to the "general" domain
+// and skipping the routing stage, the resumed run re-classifies the task's
+// original request and activates the matched skills — exactly as a fresh
+// HandleMessage would.
+//
+// The session layer arms it ONLY for a task that never got past routing on its
+// original run: no routing decision was persisted (routing is written only
+// after the router succeeds) and no execution state exists (empty trajectory,
+// no plan). Such a task is typically a fresh send that failed while the router
+// was calling the LLM (e.g. a network error), leaving a resumable "failed" row
+// with no routing decision; resuming it without re-routing would silently run
+// the Conductor under the wrong domain. A task that WAS routed keeps its
+// persisted decision — a resume never re-classifies a continuation.
+//
+// Safe to call from any goroutine; mutex-guarded. Idempotent: re-arming before
+// consumption is a harmless no-op (the value is a boolean).
+func (o *Orchestrator) RequestResumeReroute() {
+	o.resumeRerouteMu.Lock()
+	defer o.resumeRerouteMu.Unlock()
+	o.resumeRerouteRequested = true
+}
+
+// ClearResumeReroute discards any armed one-shot resume-re-route request. The
+// session layer calls it — via clearResumeRequests — on every lifecycle
+// transition where the task the arm was set for can no longer be resumed by a
+// later Resume that would consume it:
+//
+//   - CancelUnfinishedTask — the unfinished task is discarded;
+//   - cancelUnfinishedTask — a Stop-button cancel of the paused task;
+//   - abandonUnfinishedTaskForMode — a goal-mode / E2S mode takeover.
+//
+// Leaving the flag armed across such a transition would let it fire for an
+// unrelated later task on the same orchestrator (the session's registry/clone
+// is reused for the whole session). Idempotent and race-free with a concurrent
+// Resume/consume (mutex-guarded); a no-op when nothing is armed.
+//
+// Clearing here is defense-in-depth, not the sole protection: Resume consumes
+// the flag once at entry and only re-routes when `forceReroute && routing ==
+// nil`, so a task that was actually routed carries a non-nil routing and can
+// never be re-classified by a stale arm. That guard — not this clear — is what
+// bounds a leaked arm to a harmless no-op; keep it if this clear's coverage
+// ever shrinks.
+func (o *Orchestrator) ClearResumeReroute() {
+	o.resumeRerouteMu.Lock()
+	defer o.resumeRerouteMu.Unlock()
+	o.resumeRerouteRequested = false
+}
+
+// consumeResumeReroute atomically reads and clears the armed resume-re-route
+// request. It returns false when none was requested (or it was already
+// consumed) — Resume then keeps its normal reuse-without-routing behavior.
+// Called exactly once at Resume entry, before either branch (goal loop or
+// plain Conductor) is chosen, so the one-shot semantics hold regardless of
+// which path the resumed task takes.
+func (o *Orchestrator) consumeResumeReroute() bool {
+	o.resumeRerouteMu.Lock()
+	defer o.resumeRerouteMu.Unlock()
+	requested := o.resumeRerouteRequested
+	o.resumeRerouteRequested = false
+	return requested
 }
 
 // TakeLiveUserMessages atomically removes and returns ALL queued live
@@ -1131,6 +1210,14 @@ func (o *Orchestrator) logDebug(msg string, args ...any) {
 func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, routing *router.RoutingDecision, plansDir string, resumeSteps []agent.Step, goalState *goal.GoalState, nudge string) (result *HandleResult, err error) {
 	o.logDebug("orchestrator: resume started", "resumeSteps", len(resumeSteps), "nudge", nudge != "")
 
+	// One-shot re-route request: the session layer arms it (RequestResumeReroute)
+	// before resuming a task that never got past routing on its original run.
+	// Consume it once at entry — before any early return — so the one-shot
+	// semantics hold and a stale arm can never leak into a later resume. An
+	// unarmed (false) flag leaves Resume's normal reuse-without-routing
+	// behavior intact.
+	forceReroute := o.consumeResumeReroute()
+
 	// Model Profiles goal guard on the resume path: a paused non-terminal goal must
 	// not re-enter the goal loop while the essential-tools narrowing is active
 	// (see ErrGoalBlockedByModelProfiles). Mirrors HandleMessage's goal branch for
@@ -1296,6 +1383,36 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// the unstripped list; strip them here for the normal resume path.
 	availableTools = tools.StripGoalModeTools(availableTools)
 
+	// Re-route a task whose original run failed before routing completed (armed
+	// by the session layer, see RequestResumeReroute). The persisted routing
+	// decision is absent precisely because nothing executed, so the
+	// domain/complexity defaults resolved above would silently skip the routing
+	// stage and run the Conductor under the wrong domain. Re-run it against the
+	// task's original request (a never-started task has no continuation to
+	// misclassify) and refresh the context with the fresh decision. Both the
+	// goal-loop and E2S resume paths returned above, so this only affects the
+	// plain Conductor path — E2S never routes by design, and a resumed goal
+	// keeps its own routing handling (resumeGoalLoop). Guarded by routing == nil
+	// as well so a persisted decision is always reused, never re-classified.
+	if forceReroute && routing == nil {
+		routedCtx, decision, rerouteErr := o.rerouteResumedTask(ctx, bb, availableTools)
+		if rerouteErr != nil {
+			return nil, rerouteErr
+		}
+		ctx = routedCtx
+		routing = decision
+		// Persist the fresh decision immediately (mirroring HandleMessage /
+		// finalizeResult, resumeGoalLoop and the E2S path): without this, the
+		// re-route armed on this resume would not survive it — the next resume
+		// would find routing still absent while the trajectory is now non-empty,
+		// so no re-route is armed and Resume falls back to domain "general" for
+		// a task classified one resume earlier. Persisting closes the gap this
+		// block exists to prevent.
+		if pbb, ok := bb.(PersistableBlackboard); ok {
+			pbb.SetRouting(decision)
+		}
+	}
+
 	// Continuable resume: the task was paused (or interrupted) while its
 	// approved plan still had unreached steps. Seed the resumed Conductor run
 	// so the plan workflow stays active — execute_plan continues the remaining
@@ -1406,6 +1523,39 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	return result, incompleteErr
 }
 
+// rerouteResumedTask re-runs the routing stage for a resumed task whose
+// original run failed before routing completed (see RequestResumeReroute). It
+// classifies the task's original request, activates the matched skills, emits
+// the normal Routing events, and returns the refreshed context (with the new
+// domain/complexity) plus the new decision: routeAndActivateSkills already
+// sets the active skills on the context, and domain/complexity are applied
+// here (as the fresh path applies them at its call site).
+//
+// It mirrors the fresh HandleMessage routing step for the request TEXT, but
+// NOT for an explicit invocation. The frontend strips the /skill and #agent
+// refs before the request is stored (PreprocessMessageText), so the stored
+// original request seen here carries neither, and the requested
+// UserSkills/UserAgents (which the fresh path threads through HandleOptions)
+// are not available on resume: an explicit /skill or #agent ref is therefore
+// NOT re-applied by a re-route. The refs are persisted nowhere Resume can read
+// (TaskState carries no such field, and Resume/ResumeTask receive no
+// HandleOptions), so closing this gap would require a persistence-schema
+// change; it is recorded here as the known limitation.
+//
+// A routing error is propagated unchanged: routeAndActivateSkills has already
+// marked the (live) task failed on that path — mirroring a fresh task whose
+// router call fails — so the caller can surface it and keep the task resumable.
+func (o *Orchestrator) rerouteResumedTask(ctx context.Context, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor) (context.Context, *router.RoutingDecision, error) {
+	o.logInfo("resume_task: no persisted routing decision — re-running the routing stage")
+	routedCtx, decision, _, _, err := o.routeAndActivateSkills(ctx, bb.GetOriginalRequest(), HandleOptions{}, bb, availableTools)
+	if err != nil {
+		return ctx, nil, err
+	}
+	routedCtx = WithDomain(routedCtx, decision.Domain)
+	routedCtx = WithComplexity(routedCtx, decision.Complexity)
+	return routedCtx, decision, nil
+}
+
 // resumeWaveOutcome reports what the auto-resume wave settled. summary is a
 // factual, bounded digest of the settled subagent outcomes (empty when the
 // wave had nothing to do); pausedAgain is true when the universal pause
@@ -1448,6 +1598,19 @@ const waveSummaryOutputCap = 300
 // latest steering (the wave runs before the conductor's first LLM call, so
 // the nudge would otherwise arrive too late to steer it).
 func (o *Orchestrator) resumePausedWork(ctx context.Context, bb orchestration.Blackboard, nudge string) (resumeWaveOutcome, error) {
+	// Context parity with the Conductor path: the wave relaunches subagents
+	// DIRECTLY through the launcher, bypassing orchestration.Conductor.Run —
+	// the sole place the mainline executor context gains the blackboard-backed
+	// stores (step output / facts / attachments / final result). Without this
+	// the relaunched subagent runs with a ctx whose FactStore is nil, so its
+	// store_fact / search_facts calls fail with "Fact store not available"
+	// (and read_step_output / read_attachment likewise). bb is the run's
+	// blackboard, the exact store source the Conductor injects.
+	ctx = agent.WithStepOutputStore(ctx, orchestration.NewStepOutputStore(bb))
+	ctx = agent.WithFactStore(ctx, orchestration.NewFactStore(bb))
+	ctx = agent.WithAttachmentStore(ctx, orchestration.NewAttachmentStore(bb))
+	ctx = agent.WithFinalResultStore(ctx, orchestration.NewFinalResultStore(bb))
+
 	// One funnel, one enumeration: every unit the task still has in flight —
 	// across all kinds, depths and namespaces, including the units a
 	// goal-verification pass recorded under its own namespace — is lifted from
@@ -2412,55 +2575,6 @@ func (o *Orchestrator) LookupSkillDescriptors(names []string) []skills.SkillDesc
 		}
 	}
 	return result
-}
-
-// RescanSkills re-scans the skill discovery directories and refreshes the
-// per-session skill catalog in place. It is used when skills are seeded into
-// the project's .agents/skills directory mid-session (e.g. enabling RESEARCH
-// mode, which seeds the research-* methodology skills) so the running session
-// can discover them without a restart. Safe to call concurrently with skill
-// lookups — the SkillManager holds its own lock and Scan replaces the catalog
-// atomically. A nil skill manager is a no-op (returns nil).
-func (o *Orchestrator) RescanSkills() error {
-	if o.skillManager == nil {
-		return nil
-	}
-	if err := o.skillManager.Scan(); err != nil {
-		if o.logger != nil {
-			o.logger.Warn("RescanSkills: skill re-scan failed", "error", err)
-		}
-		return err
-	}
-	if o.logger != nil {
-		o.logger.Debug("RescanSkills: skill catalog refreshed",
-			"count", len(o.skillManager.List()))
-	}
-	return nil
-}
-
-// RescanAgents re-scans the Subagent Profile discovery directories and
-// refreshes the per-session agent catalog in place. It mirrors RescanSkills:
-// used when profiles are seeded into the project's .agents/agents directory
-// mid-session (e.g. enabling RESEARCH mode, which seeds the built-in research
-// profile) so the running session can discover them without a restart. Safe to
-// call concurrently with agent lookups — the AgentManager holds its own lock
-// and Scan replaces the catalog atomically. A nil agent manager is a no-op
-// (returns nil).
-func (o *Orchestrator) RescanAgents() error {
-	if o.agentManager == nil {
-		return nil
-	}
-	if err := o.agentManager.Scan(); err != nil {
-		if o.logger != nil {
-			o.logger.Warn("RescanAgents: agent re-scan failed", "error", err)
-		}
-		return err
-	}
-	if o.logger != nil {
-		o.logger.Debug("RescanAgents: agent catalog refreshed",
-			"count", len(o.agentManager.List()))
-	}
-	return nil
 }
 
 // currentModel returns the session's active model identity, synchronized for

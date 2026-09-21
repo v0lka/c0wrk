@@ -45,9 +45,9 @@ const (
 	litStatusError       = "error"
 )
 
-// Study-paper skill coordinates: the helper is seeded PROJECT-LOCALLY by the
-// research pack reconciliation as
-// <workspace>/.agents/skills/study-paper/scripts/literature.py.
+// Study-paper skill coordinates: the helper is seeded into c0wrk's GLOBAL
+// agent skills directory by seedGlobalPacks as
+// <agentDir>/.agents/skills/study-paper/scripts/literature.py.
 const (
 	studyPaperSkillName     = "study-paper"
 	literatureScriptRelPath = "scripts/literature.py"
@@ -80,8 +80,8 @@ type PaperLiteratureDTO struct {
 //
 // Concurrency: the paper is resolved and containment-checked under a SHORT hold
 // of the per-effective-research-root mutation mutex (re-loading the row so a
-// concurrent Enable/DisableResearch that moved the root is rejected with
-// errResearchRootChanged, mirroring SetPaperPinned/RecordFlashcardReview). The
+// concurrent root-affecting change is rejected with errResearchRootChanged,
+// mirroring SetPaperPinned/RecordFlashcardReview). The
 // mutex is RELEASED before the network-bound helper runs: the helper writes no
 // projects row, so holding the row-mutation mutex across its whole run (up to
 // literatureRunTimeout) would head-of-line-block every pin/flashcard/research
@@ -119,11 +119,11 @@ func (f *FrontendAPI) RunPaperLiterature(projectID, paperID string) (*PaperLiter
 		}, nil
 	}
 
-	scriptPath := f.literatureScriptPath(rctx.project.WorkspacePath)
+	scriptPath := f.literatureScriptPath()
 	if scriptPath == "" {
 		return &PaperLiteratureDTO{
 			Status:  litStatusNoScript,
-			Message: "the study-paper literature.py helper was not found in this project's .agents/skills (enable RESEARCH mode to seed the skill pack)",
+			Message: "the study-paper literature.py helper was not found in c0wrk's global skills directory (~/.c0wrk/.agents/skills/study-paper)",
 		}, nil
 	}
 
@@ -148,8 +148,8 @@ func paperRunMuKey(paperDir string) string {
 // resolvePaperForRun resolves and containment-checks the paper record for a
 // network-bound per-paper run (RunPaperLiterature, FetchPaperOriginal) under
 // a SHORT hold of the per-effective-research-root row-mutation mutex. It
-// re-loads the project row so a concurrent Enable/DisableResearch that moved
-// the research root is rejected with errResearchRootChanged (mirroring
+// re-loads the project row so a concurrent root-affecting change is rejected
+// with errResearchRootChanged (mirroring
 // SetPaperPinned/RecordFlashcardReview), then re-resolves the record from the
 // pre-lock, containment-checked library root. The mutex is released before the
 // network-bound run proceeds.
@@ -162,7 +162,7 @@ func (f *FrontendAPI) resolvePaperForRun(projectID, paperID string, rctx *papers
 	if err != nil {
 		return nil, err
 	}
-	if fresh.ResearchRoot != rctx.project.ResearchRoot {
+	if effectiveResearchRoot(fresh) != rctx.researchRoot {
 		return nil, errResearchRootChanged
 	}
 
@@ -177,16 +177,16 @@ func (f *FrontendAPI) resolvePaperForRun(projectID, paperID string, rctx *papers
 	return rec, nil
 }
 
-// literatureScriptPath resolves the study-paper helper script from the
-// REQUESTING project's project-local skills directory — the copy seeded by
-// reconcileResearchPacks — or "" when it is not present (an explicit, honest
-// degradation rather than a crash). An empty workspacePath (No Project) has no
-// project-local skills directory at all.
-func (f *FrontendAPI) literatureScriptPath(workspacePath string) string {
-	if workspacePath == "" {
+// literatureScriptPath resolves the study-paper helper script from c0wrk's
+// GLOBAL agent skills directory — the copy seeded once per launch by
+// seedGlobalPacks into config.SkillsDir(agentDir) — or "" when it is not
+// present (an explicit, honest degradation rather than a crash). A missing
+// agentDir (or an unseeded pack) yields "".
+func (f *FrontendAPI) literatureScriptPath() string {
+	if f.agentDir == "" {
 		return ""
 	}
-	path := filepath.Join(config.ProjectSkillsPath(workspacePath), studyPaperSkillName, literatureScriptRelPath)
+	path := filepath.Join(config.SkillsDir(f.agentDir), studyPaperSkillName, literatureScriptRelPath)
 	if info, err := os.Stat(path); err != nil || info.IsDir() {
 		return ""
 	}

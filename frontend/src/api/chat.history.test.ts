@@ -1,4 +1,5 @@
-// Unit tests for api/chat.ts getSessionHistory — the paged history wrapper.
+// Unit tests for api/chat.ts getSessionHistory — the single-request history
+// wrapper.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockApp: Record<string, (...args: unknown[]) => Promise<unknown>> = {}
@@ -16,45 +17,31 @@ function row(id: number, role: string, content: string) {
   return { id, session_id: 's1', role, content, metadata: {}, created_at: '2026-01-01T00:00:00Z' }
 }
 
-describe('getSessionHistory (paged)', () => {
+describe('getSessionHistory', () => {
   beforeEach(() => {
     delete mockApp.GetSessionHistory
   })
 
-  it('forwards (sessionId, limit, before) and returns the page', async () => {
-    const spy = vi.fn(() => Promise.resolve({
-      messages: [row(1, 'user', 'hi')],
-      next_cursor: 'c1',
-      has_more: true,
-    }))
+  it('forwards the session id and returns the full message array', async () => {
+    const spy = vi.fn(() => Promise.resolve([row(1, 'user', 'hi')]))
     mockApp.GetSessionHistory = spy
 
-    const page = await getSessionHistory('s1', 200, 'c0')
+    const messages = await getSessionHistory('s1')
 
-    expect(spy).toHaveBeenCalledWith('s1', 200, 'c0')
-    expect(page.messages).toHaveLength(1)
-    expect(page.next_cursor).toBe('c1')
-    expect(page.has_more).toBe(true)
+    expect(spy).toHaveBeenCalledWith('s1')
+    expect(messages).toHaveLength(1)
+    expect(messages[0]!.content).toBe('hi')
   })
 
-  it('normalizes a Go nil slice (messages: null) to an empty array', async () => {
-    mockApp.GetSessionHistory = vi.fn(() => Promise.resolve({
-      messages: null,
-      next_cursor: '',
-      has_more: false,
-    }))
+  it('normalizes a Go nil slice (null) to an empty array', async () => {
+    mockApp.GetSessionHistory = vi.fn(() => Promise.resolve(null))
 
-    const page = await getSessionHistory('s1')
-
-    expect(page.messages).toEqual([])
-    expect(page.has_more).toBe(false)
+    expect(await getSessionHistory('s1')).toEqual([])
   })
 
-  it('rejects a malformed page (missing has_more) with an empty page', async () => {
-    mockApp.GetSessionHistory = vi.fn(() => Promise.resolve({ messages: [], next_cursor: '' }))
+  it('returns an empty array for a malformed response', async () => {
+    mockApp.GetSessionHistory = vi.fn(() => Promise.resolve({ nope: true }))
 
-    const page = await getSessionHistory('s1')
-
-    expect(page).toEqual({ messages: [], next_cursor: '', has_more: false })
+    expect(await getSessionHistory('s1')).toEqual([])
   })
 })

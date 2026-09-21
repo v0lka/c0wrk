@@ -38,7 +38,8 @@ func IsResearch(ctx context.Context) bool {
 }
 
 // researchRootKey carries the on-disk research-root path for a RESEARCH-mode
-// project (the persisted ProjectInfo.ResearchRoot). It is set alongside
+// project (config.ProjectResearchPath, `<workspace>/.research`, for every real
+// project). It is set alongside
 // WithResearch by the session manager so the orchestrator can parse the
 // research catalog and build a research-aware prompt/router context without
 // re-deriving the path (core may not import backend/config). Empty by

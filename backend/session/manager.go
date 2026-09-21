@@ -61,29 +61,33 @@ func SessionIDFromContext(ctx context.Context) string {
 
 // Session represents a running agent session with its own orchestrator.
 type Session struct {
-	ID                      string
-	ProjectID               string // immutable after creation (no lock needed for reads)
-	Name                    string
-	CreatedAt               time.Time
-	LastActiveAt            time.Time
-	Archived                bool
-	Pinned                  bool
-	WorkspacePath           string // workspace directory (from project)
-	TempDir                 string // session-specific temp directory
-	orchestrator            *core.Orchestrator
-	emitter                 *EventEmitter      // session emitter; agent quality metrics are read from it on task finish
-	logFile                 *os.File           // session log file handle, closed on deletion
-	dumpFile                *os.File           // LLM dump file handle (DEBUG mode only), closed on deletion
-	cancel                  context.CancelFunc // cancel for current task
-	active                  bool               // is currently processing
-	pausing                 bool               // pause requested: the running task is on its way to a cooperative pause checkpoint (guarded by mu)
-	pauseOwner              pauseOwner         // who requested the in-flight/latest pause: the user or the manual-compaction flow (guarded by mu); the flow's auto-resume resumes only its own pause
-	done                    chan struct{}      // closed when task goroutine finishes
-	compacting              bool               // manual context compaction in flight: sends/resumes rejected, UI locked (guarded by mu)
-	compactCancel           context.CancelFunc // cancels the in-flight manual compaction (guarded by mu)
-	compactDone             chan struct{}      // closed when the manual-compaction flow goroutine exits (guarded by mu); joined by Shutdown
-	lastCompletedTaskID     string             // tracks last completed task for continuations
-	mu                      sync.Mutex
+	ID                  string
+	ProjectID           string // immutable after creation (no lock needed for reads)
+	Name                string
+	CreatedAt           time.Time
+	LastActiveAt        time.Time
+	Archived            bool
+	Pinned              bool
+	WorkspacePath       string // workspace directory (from project)
+	TempDir             string // session-specific temp directory
+	orchestrator        *core.Orchestrator
+	emitter             *EventEmitter      // session emitter; agent quality metrics are read from it on task finish
+	logFile             *os.File           // session log file handle, closed on deletion
+	dumpFile            *os.File           // LLM dump file handle (DEBUG mode only), closed on deletion
+	cancel              context.CancelFunc // cancel for current task
+	active              bool               // is currently processing
+	pausing             bool               // pause requested: the running task is on its way to a cooperative pause checkpoint (guarded by mu)
+	pauseOwner          pauseOwner         // who requested the in-flight/latest pause: the user or the manual-compaction flow (guarded by mu); the flow's auto-resume resumes only its own pause
+	done                chan struct{}      // closed when task goroutine finishes
+	compacting          bool               // manual context compaction in flight: sends/resumes rejected, UI locked (guarded by mu)
+	compactCancel       context.CancelFunc // cancels the in-flight manual compaction (guarded by mu)
+	compactDone         chan struct{}      // closed when the manual-compaction flow goroutine exits (guarded by mu); joined by Shutdown
+	lastCompletedTaskID string             // tracks last completed task for continuations
+	mu                  sync.RWMutex
+	// mu guards the mutable session fields below and the orchestrator/emitter
+	// references. It is an RWMutex so read-mostly accessors (e.g. the
+	// task-launch autonomy re-pin, which only reads orchestrator) can take a
+	// read lock; writers keep using Lock/Unlock.
 	pendingAttachments      []orchestration.Attachment // user-attached files staged via AttachFiles, flushed into the blackboard on the next SendMessage (guarded by mu)
 	pendingImageAttachments []ImageAttachment          // user-attached images staged via AttachFiles, snapshotted into ContentBlocks on the next SendMessage (guarded by mu)
 }
@@ -1704,84 +1708,6 @@ func (s *Session) GetOrchestrator() *core.Orchestrator {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.orchestrator
-}
-
-// RescanSkills re-scans the skill catalog for this session's orchestrator,
-// picking up skills seeded into .agents/skills after the session was created
-// (e.g. the research-* pack from enabling RESEARCH mode). Best-effort: errors
-// are logged and do not propagate, since a failed re-scan leaves the prior
-// catalog intact and never blocks the caller. A nil orchestrator is a no-op.
-func (s *Session) RescanSkills(logger *slog.Logger) {
-	s.mu.Lock()
-	orch := s.orchestrator
-	s.mu.Unlock()
-	if orch == nil {
-		return
-	}
-	if err := orch.RescanSkills(); err != nil && logger != nil {
-		logger.Warn("RescanSkills: failed to refresh session skill catalog",
-			"session_id", s.ID, "error", err)
-	}
-}
-
-// RescanAgents re-scans the Subagent Profile catalog for this session's
-// orchestrator, picking up profiles seeded into .agents/agents after the
-// session was created (e.g. the built-in research profile from enabling
-// RESEARCH mode). Best-effort: errors are logged and do not propagate, since a
-// failed re-scan leaves the prior catalog intact and never blocks the caller.
-// A nil orchestrator is a no-op.
-func (s *Session) RescanAgents(logger *slog.Logger) {
-	s.mu.Lock()
-	orch := s.orchestrator
-	s.mu.Unlock()
-	if orch == nil {
-		return
-	}
-	if err := orch.RescanAgents(); err != nil && logger != nil {
-		logger.Warn("RescanAgents: failed to refresh session agent catalog",
-			"session_id", s.ID, "error", err)
-	}
-}
-
-// RescanSkillsForProject re-scans the skill catalog for every live
-// (in-memory) session belonging to projectID. Used by EnableResearch so the
-// research-* skills become discoverable to sessions that are already running
-// without requiring a restart. Lazy-restored or store-only sessions are
-// skipped — they build a fresh skill catalog when next activated.
-func (m *Manager) RescanSkillsForProject(projectID string) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	logger := m.log()
-	for _, session := range m.sessions {
-		if session.ProjectID != projectID {
-			continue
-		}
-		session.RescanSkills(logger)
-	}
-	if logger != nil {
-		logger.Debug("RescanSkillsForProject completed", "project_id", projectID)
-	}
-}
-
-// RescanAgentsForProject re-scans the Subagent Profile catalog for every live
-// (in-memory) session belonging to projectID. Mirrors RescanSkillsForProject:
-// used by EnableResearch so the built-in research profile becomes discoverable
-// to sessions that are already running without requiring a restart.
-// Lazy-restored or store-only sessions are skipped — they build a fresh agent
-// catalog when next activated.
-func (m *Manager) RescanAgentsForProject(projectID string) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	logger := m.log()
-	for _, session := range m.sessions {
-		if session.ProjectID != projectID {
-			continue
-		}
-		session.RescanAgents(logger)
-	}
-	if logger != nil {
-		logger.Debug("RescanAgentsForProject completed", "project_id", projectID)
-	}
 }
 
 // IsActive returns whether the session is currently processing a task.

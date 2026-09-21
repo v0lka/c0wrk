@@ -25,8 +25,8 @@ export type WorkspaceTabByProject = Record<string, WorkspaceTab>
 
 /**
  * The Research panel's inner segment: the research control Dashboard vs the
- * literature ("papers") library. Independent of the RESEARCH toggle — the
- * paper library lives in the research root whether or not RESEARCH is on — so
+ * literature ("papers") library. The paper library always lives at the
+ * canonical research root of a real project — so
  * the segment is remembered per project just like the workspace tab.
  */
 export type ResearchSegment = 'dashboard' | 'papers'

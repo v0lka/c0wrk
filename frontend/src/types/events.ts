@@ -65,6 +65,32 @@ export interface AskUserQuestion {
 export interface AskUserData { request_id: string; questions: AskUserQuestion[] }
 export interface StepLimitData { request_id: string; current_step: number; max_steps: number; reason?: string }
 
+/** The network data-flow a shell-exec (bash_exec/posh_exec) autonomy decision
+ *  adjudicated — WHICH flow the deterministic analysis proved, the resolved
+ *  egress host(s), and the affected local operands. It makes a silent-mode
+ *  network read diagnosable: the card can name the flow ("Download cradle" vs
+ *  "External-content ingest") and the host instead of leaving the operator to
+ *  decode a bare effect signature. Mirrors Go `coretools.NetworkDecision`.
+ *  Present only on a network-touching shell decision; absent for non-network
+ *  calls and non-tool gates. */
+export interface NetworkDecisionData {
+  /** The flow the analysis established: "cradle" (network→code-execution — a
+   *  canonical control), "ingest" (network→filesystem — hard but
+   *  non-canonical, judge-clearable), or "fetch" (a clean network read that
+   *  persisted/executed nothing). */
+  readonly flow: string
+  /** True only for a cradle — a proven control a host must never
+   *  auto-override. False for an ingest and a clean fetch. */
+  readonly canonical?: boolean
+  /** Resolved egress hosts (scheme/path/port stripped). Empty when the
+   *  analyzer could not resolve a literal host. */
+  readonly hosts?: string[]
+  /** Affected local operands of the flow — the files the network flow wrote
+   *  (an ingest's persisted target, or the dropped payload a cradle runs).
+   *  Empty for a clean fetch. */
+  readonly operands?: string[]
+}
+
 /** One automatic (no-human) security decision taken under an automatic
  *  autonomy posture — silent (security.silent_mode) or assisted (a strict-judge
  *  DENY terminating a call before any card opened). `kind` is the gate
@@ -79,8 +105,11 @@ export interface AutonomyDecisionData {
   /** The autonomy posture that decided: "assisted" | "silent". */
   readonly mode?: string
   /** The posture's sub-policy that decided (tool_confirm: judge|allow|deny;
-   *  step_limit: auto or a pinned response; absent for assisted_deny — the
-   *  strict judge itself is the decider there). */
+   *  assisted_deny: judge — the strict judge IS the decider there; step_limit:
+   *  auto or a pinned response). Guaranteed non-empty on every emitted
+   *  decision: the host funnel (Manager.EmitAutonomyDecision) defaults an empty
+   *  policy from the decision kind, so the audit trail always names the
+   *  deciding mechanism. */
   readonly policy?: string
   /** The decision: allow|deny (tool_confirm) or allow_once|allow_more|allow_always|deny (step_limit). */
   readonly verdict: string
@@ -88,6 +117,14 @@ export interface AutonomyDecisionData {
   readonly tool?: string
   /** Tool source ("core" or an MCP server name) for a tool_confirm decision. */
   readonly source?: string
+  /** The deterministic effect signature of the analyzed shell call (mirrors Go
+   *  coretools.AutonomyDecision.Signature): resolved driver binaries, canonical
+   *  effects, fired criteria and the workspace-scoping marker. It rides
+   *  shell-exec decisions and doubles as the silent-mode strict-judge
+   *  memoization key, so an audit reader can tell which decisions adjudicated
+   *  the same effect. Absent/empty for non-shell tools, failed analyses and
+   *  non-tool gates (step_limit). */
+  readonly signature?: string
   /** WHY the call/boundary was escalated (confirmation reason or circuit-breaker reason). */
   readonly reason?: string
   /** The deciding rationale (strict-judge reasoning, fail-closed cause, or the policy). */
@@ -96,6 +133,14 @@ export interface AutonomyDecisionData {
   readonly category?: string
   readonly current_step?: number
   readonly max_steps?: number
+  /** The delegation or plan-step block whose executor took the decision
+   *  (host-filled from the executor context). When present the card nests
+   *  under that subagent/plan-step block in the chat instead of the main
+   *  stream; absent for root-level decisions. */
+  readonly plan_step_id?: string
+  /** The network data-flow this shell-exec decision adjudicated (flow + host +
+   *  operands); absent for non-network calls and step-limit gates. */
+  readonly network?: NetworkDecisionData
 }
 
 export interface ContextFillData {
@@ -461,8 +506,8 @@ export interface SessionEventMap {
   readonly step_limit: StepLimitData
   /** Automatic (no-human) security decision taken under an automatic autonomy
    *  posture (assisted or silent) — recorded so the run's trajectory stays
-   *  auditable (OWASP ASI10). Non-blocking: the UI renders it as a
-   *  service/notice, never a pending-action card. */
+   *  auditable (OWASP ASI10). Non-blocking: the UI renders it as a dedicated
+   *  standard-format card (`AutonomyDecisionBlock`), never a pending-action card. */
   readonly autonomy_decision: AutonomyDecisionData
   readonly plan_generated: PlanData
   readonly plan_step_start: PlanStepStartData
@@ -670,16 +715,19 @@ export interface GlobalEventMap {
    *  research-only files in the batch are covered by the incremental
    *  research:file_changed path); consumers use it to defer to that path. */
   readonly 'workspace:tree_changed': { readonly research_scoped?: boolean }
-  /** RESEARCH mode toggled (enable/disable). */
-  readonly 'research:changed': void
+  /** RESEARCH mutation for a project: the active R-NNN switched
+   *  (`SetActiveResearch`) or a research project was deleted (`DeleteResearch`).
+   *  RESEARCH is always on for real projects, so there is no enable/disable
+   *  action. Mirrors specs/contracts/event-catalog.md. */
+  readonly 'research:changed': { readonly project_id: string; readonly action: 'active_changed' | 'project_deleted' }
   /** A file inside the research directory changed (hypothesis cards, brief,
    *  prior-art, graph, log). `paths` is a comma-separated list. */
   readonly 'research:file_changed': { readonly project_id: string; readonly paths: string }
   /** A file inside the paper library (`<research-root>/papers/`) changed — a
    *  paper card, note, or appraisal written or edited. `paths` is a
-   *  comma-separated list of changed absolute paths. Fires INDEPENDENTLY of the
-   *  RESEARCH toggle (the library is watched even in hybrid mode and regardless
-   *  of any R-NNN), unlike `research:file_changed`. */
+   *  comma-separated list of changed absolute paths. Fires INDEPENDENTLY of
+   *  any active R-NNN, unlike `research:file_changed`: the library is a global
+   *  subdirectory of the canonical research root for every real project. */
   readonly 'papers:changed': { readonly project_id: string; readonly paths: string }
   readonly 'skills:changed': void
   readonly 'git:status_changed': string
@@ -740,7 +788,45 @@ export function isToolResultData(d: unknown): d is ToolResultData { return isObj
 export function isToolConfirmData(d: unknown): d is ToolConfirmData { return isObj(d) && has(d, 'confirm_id', 'tool') }
 export function isAskUserData(d: unknown): d is AskUserData { return isObj(d) && has(d, 'request_id', 'questions') }
 export function isStepLimitData(d: unknown): d is StepLimitData { return isObj(d) && has(d, 'request_id', 'current_step', 'max_steps') }
-export function isAutonomyDecisionData(d: unknown): d is AutonomyDecisionData { return isObj(d) && has(d, 'kind', 'verdict') }
+export function isAutonomyDecisionData(d: unknown): d is AutonomyDecisionData {
+  // Type-validate at the boundary, not just key presence: `kind`/`verdict` are
+  // consumed with string operations (e.g. `isAutonomyAllowVerdict` →
+  // `verdict.startsWith` in lib/autonomyDecision.ts, used by
+  // AutonomyDecisionBlock), and `has()` only checks that the keys exist. A
+  // corrupted or foreign payload carrying non-string values must fail the guard
+  // instead of reaching a render path that would throw a TypeError.
+  if (!isObj(d)) return false
+  // `kind` must be one of the three gates the card knows how to render — an
+  // unknown kind is mislabelled "Tool Call (auto)" by autonomyDecisionTitle
+  // (it treats any non-step_limit kind as a tool gate).
+  const kind = d.kind
+  if (kind !== 'tool_confirm' && kind !== 'assisted_deny' && kind !== 'step_limit') return false
+  if (typeof d.verdict !== 'string') return false
+  // Every optional string field that is actually rendered must be a string when
+  // present. The Go payload tags them `omitempty`, so absence is valid; only a
+  // present non-string value (e.g. an object reaching a React child) fails.
+  for (const key of ['mode', 'policy', 'tool', 'source', 'reason', 'justification', 'category', 'plan_step_id', 'signature'] as const) {
+    if (key in d && d[key] !== undefined && typeof d[key] !== 'string') return false
+  }
+  // The optional nested network summary is validated structurally: its `flow`
+  // is rendered through string operations (networkFlowLabel/networkSummary),
+  // its `canonical` drives a tone, and its `hosts`/`operands` are iterated — a
+  // malformed value must fail the guard, not reach a render path.
+  if ('network' in d && d.network !== undefined && !isNetworkDecisionData(d.network)) return false
+  return true
+}
+
+/** Structural guard for the nested network summary on a shell-exec autonomy
+ *  decision (see NetworkDecisionData). */
+export function isNetworkDecisionData(v: unknown): v is NetworkDecisionData {
+  if (!isObj(v) || typeof v.flow !== 'string') return false
+  if ('canonical' in v && v.canonical !== undefined && typeof v.canonical !== 'boolean') return false
+  for (const key of ['hosts', 'operands'] as const) {
+    const arr = v[key]
+    if (arr !== undefined && !(Array.isArray(arr) && arr.every(x => typeof x === 'string'))) return false
+  }
+  return true
+}
 export function isPlanData(d: unknown): d is PlanData { return isObj(d) && has(d, 'step_count') }
 export function isPlanStepStartData(d: unknown): d is PlanStepStartData { return isObj(d) && has(d, 'step_id') }
 export function isPlanStepCompleteData(d: unknown): d is PlanStepCompleteData {

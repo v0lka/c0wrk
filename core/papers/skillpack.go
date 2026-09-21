@@ -1,16 +1,17 @@
 // Package papers provides c0wrk's paper-study skill-pack: a versioned,
 // embed-bundled set of the built-in research-paper skills (currently the
-// single `study-paper` skill) that is seeded PROJECT-LOCALLY into a
-// workspace's `.agents/skills` directory by the research pack
-// reconciliation — when RESEARCH mode is enabled for the project
-// (backend EnableResearch) and on every project switch to a
-// research-enabled project. The project-local copy wins the same-name skill
-// discovery chain over a `~/.agents` namesake, so the active study-paper
-// skill always knows c0wrk's paper-library conventions. (RESEARCH mode seeds
-// its own methodology pack the same way; see core/research/skillpack.go.)
-// The project-local directory is scanned first by the per-session
-// SkillManager, so a seeded skill enters the router catalog automatically —
-// no catalog change is required.
+// single `study-paper` skill). FrontendAPI.seedGlobalPacks seeds it into the
+// global c0wrk skills directory (`~/.c0wrk/.agents/skills`) once per launch,
+// before the skill watchers start; RESEARCH is always on for real projects, so
+// there is no per-project enable step. The global copy wins the same-name
+// skill discovery chain over a `~/.agents` namesake (a project-local copy
+// still outranks it), so the active study-paper skill always knows c0wrk's
+// paper-library conventions. (The RESEARCH mode seeds its own methodology pack
+// the same way; see core/research/skillpack.go.)
+// The per-session SkillManager scans that whole discovery chain — the
+// project-local .agents/skills first, then the c0wrk global directory the pack
+// seeds into, then ~/.agents — so a seeded skill enters the router catalog
+// without a catalog change.
 //
 // Seeding is idempotent, crash-safe, and non-destructive to user-authored or
 // user-edited skills. Classification compares the CONTENT HASH of the on-disk

@@ -163,8 +163,8 @@ mcp:
 # Directories are scanned in priority order (highest first).
 skills:
   dirs:
+    - "~/.c0wrk/.agents/skills" # c0wrk-specific skills directory (outranks user-wide)
     - "~/.agents/skills" # user-wide skills directory
-    - "~/.c0wrk/.agents/skills" # c0wrk-specific skills directory
   # Note: in addition to the directories above, the current project's
   # `.agents/skills` directory is always scanned automatically (highest priority).
 
@@ -178,8 +178,8 @@ skills:
 # list opts out of the base directories (mirrors `skills.dirs`).
 agents:
   dirs:
+    - "~/.c0wrk/.agents/agents" # c0wrk-specific subagent profiles directory (outranks user-wide)
     - "~/.agents/agents" # user-wide subagent profiles directory
-    - "~/.c0wrk/.agents/agents" # c0wrk-specific subagent profiles directory
   # Note: in addition to the directories above, the current project's
   # `.agents/agents` directory is always scanned automatically (highest priority).
   #
@@ -377,7 +377,10 @@ security:
   #                        value IS the master switch for the sub-policies.
   # Configs written before this enum are migrated at load (silent wins over
   # assisted) and the legacy keys are dropped at the next save. An unknown
-  # value fails safe to standard with a load warning.
+  # value fails safe to standard with a load warning. The posture is pinned
+  # per task at launch (a fresh send or any resume): a Settings save updates
+  # the shared state immediately but never flips the posture of a task that
+  # is already running — the next task (or a resumed one) picks it up.
   autonomy_mode: "standard"
 
   # --- Silent mode (security.silent_mode) ---
@@ -425,8 +428,10 @@ security:
   # the assisted-mode canonical backstop, which forces a confirmation card
   # instead). Pick tool_confirm "deny" if you want a judge-free hard floor for
   # unattended runs.
-  # A runtime change from Settings → Security applies to live sessions without
-  # an app restart.
+  # A runtime change from Settings → Security takes effect without an app
+  # restart: sub-policy edits apply at each task's launch (a running task
+  # keeps the posture it started with; the next fresh or resumed task picks
+  # up the current values), and ask_user follows Settings immediately.
   silent_mode:
     tool_confirm:
       mode: "judge"
@@ -597,6 +602,45 @@ timeouts:
   persistenceTimeout: 5 # Timeout for persistence (DB) operations
   llmRequestTimeout: 600 # Timeout for a single LLM API call in the main chat loop (10 min). 0 = use default 600s
   serviceLLMRequestTimeout: 120 # Timeout for one-shot "service" LLM requests (session title, commit message, prompt optimization) (2 min). 0 = use default 120s
+
+# ---------------------------------------------------------------------------
+# Shell Execution Override
+# ---------------------------------------------------------------------------
+# Overrides HOW the platform shell-execution tool launches the agent's
+# command — bash_exec on Linux/macOS, posh_exec on Windows (exactly one is
+# live per platform; only that tool's entry is read). The built-in launch
+# shapes are `bash -c <command>` and
+# `powershell.exe -NoProfile -NonInteractive -Command <command>`.
+#
+# command is an argv TEMPLATE: exactly one element must be the "{command}"
+# placeholder — it is replaced by the agent's command as a SINGLE argv
+# element (no string splicing, no extra quoting). The first element is the
+# binary (absolute path or PATH name). Examples:
+#
+#   command: ["/opt/homebrew/bin/bash", "-c", "{command}"]   # Homebrew bash 5
+#   command: ["/bin/zsh", "-c", "{command}"]                 # system zsh
+#   command: ["pwsh.exe", "-NoProfile", "-Command", "{command}"]  # Windows pwsh
+#
+# shell declares WHICH shell the command text is written in — the agent
+# prompts, the deterministic command-safety analysis (flowsh dialect), and
+# the PowerShell-specific output bootstrap all follow it. CLOSED enum:
+#   bash-family: bash, sh, zsh, ksh, dash
+#   PowerShell-family: powershell, pwsh
+# Shells the safety analysis cannot parse (fish, nushell, csh, cmd.exe, …)
+# are NOT supported and are rejected at load. An omitted shell is seeded
+# with the tool's native family (bash / powershell); an INVALID entry is
+# fail-soft: a load warning is surfaced and the built-in launch shape is
+# kept. Security gates (execute-group policy, blocklist, flowsh criteria
+# C1–C9, confirmation funnel) are unaffected — the override changes how a
+# command is launched, never what is checked.
+#
+# shell_exec:
+#   bash_exec:
+#     command: ["/opt/homebrew/bin/bash", "-c", "{command}"]
+#     shell: bash
+#   posh_exec:
+#     command: ["pwsh.exe", "-NoProfile", "-Command", "{command}"]
+#     shell: pwsh
 
 # ---------------------------------------------------------------------------
 # Orchestration Limits

@@ -86,8 +86,9 @@ func (r *ToolRegistry) ExecuteUnattended(ctx context.Context, name string, input
 	}
 
 	// Shell-exec tools: attach the deterministic flowsh digest once, same as
-	// Execute — the tool's Judge reads its hard criteria from ctx.
-	ctx = AttachShellAnalysis(ctx, name, input, r.log())
+	// Execute — the tool's Judge reads its hard criteria from ctx. The
+	// registered instance picks the dialect when an override is active.
+	ctx = AttachShellAnalysisForTool(ctx, tool, name, input, r.log())
 
 	// Gate 4: canonical hard safety reasons block outright (no confirmation
 	// flow here). Both signals are checked for canonicality independently —

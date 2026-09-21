@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -152,13 +153,12 @@ type FrontendAPI struct {
 	// deadline for acquiring switchMu. Test-only seam (0 in production).
 	switchLockTimeoutOverride time.Duration
 
-	// researchSeedMu serializes research-pack reconciliation
-	// (reconcileResearchPacks): EnableResearch and the SwitchProject
-	// revalidation can target the same project-local .agents/{skills,agents}
-	// directories concurrently (toggle + switch race), and the pack staging
-	// swap is not designed for two concurrent writers of one destination —
-	// one rename would fail on the vanished source. The lock is coarse (all
-	// projects) because reconciliation is millisecond-scale local IO.
+	// researchSeedMu serializes c0wrk-owned pack seeding. The startup
+	// seedGlobalPacks run writes the GLOBAL .agents/{skills,agents}
+	// directories; a concurrent writer targeting the same destination would
+	// race the pack staging swap (one rename failing on the vanished source),
+	// so the whole run is serialized. The lock is coarse (process-wide)
+	// because seeding is millisecond-scale local IO.
 	researchSeedMu sync.Mutex
 
 	// switchInProgressHook is a test-only seam invoked inside SwitchProject
@@ -171,23 +171,23 @@ type FrontendAPI struct {
 	// verify the switch stays atomic when it fails.
 	switchProjectSetupVectorFn func(*project.ProjectInfo) error
 
-	// Active research root path (empty when RESEARCH is off). Guarded by
-	// activeProjectMu so it stays in sync with project switches.
+	// Active research root path (empty for the No Project pseudo-project).
+	// Guarded by activeProjectMu so it stays in sync with project switches.
 	activeResearchRoot string
 
 	// activePapersRoot holds the active paper-library root path
 	// (<research-root>/papers; empty for the No Project pseudo-project).
-	// Tracked separately from activeResearchRoot because the papers library
-	// must be watched regardless of the RESEARCH toggle: RESEARCH may be off
-	// (hybrid mode) while the library still exists at the default root.
+	// Tracked separately from activeResearchRoot because the papers library is
+	// a global subdirectory that always exists at the canonical research root
+	// of a real project, even before any R-NNN project exists.
 	// Guarded by activeProjectMu so it stays in sync with project switches.
 	activePapersRoot string
 
 	// activeComparisonsRoot holds the active multi-paper comparison root path
 	// (<research-root>/comparisons; empty for the No Project pseudo-project).
 	// Like the paper library it is a global subdirectory of the research root
-	// and must be watched regardless of the RESEARCH toggle, so a comparison
-	// artifact written in hybrid mode (RESEARCH off) still refreshes the UI.
+	// and must be watched for every real project, so a comparison artifact
+	// written before any R-NNN exists still refreshes the UI.
 	// Guarded by activeProjectMu so it stays in sync with project switches.
 	activeComparisonsRoot string
 
@@ -347,12 +347,34 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 	// the list is empty (fail-closed).
 	f.syncGitTrustRegistry()
 
+	// Seed the c0wrk-owned packs into the GLOBAL agent directories
+	// (~/.c0wrk/.agents/{skills,agents}) BEFORE the directory watchers are
+	// created, so the freshly created directories are watched on this launch.
+	// The seeding is idempotent: missing entries are written and pack-marked
+	// outdated ones upgraded, while user-owned directories are preserved.
+	f.seedGlobalPacks()
+
+	// The c0wrk packs are seeded into the compiled-in global dirs
+	// (config.SkillsDir / config.AgentsDir off the agent dir). Discovery and
+	// the watchers below follow the CONFIGURED dir lists, so warn when the
+	// global dir is absent — a custom `skills.dirs`/`agents.dirs` list that
+	// omits it silently orphans every seeded pack. Best-effort and non-fatal;
+	// the seeding target is unchanged.
+	seedSkillsDir, seedAgentsDir := "", ""
+	if cfg.AgentDir != "" {
+		seedSkillsDir = config.SkillsDir(cfg.AgentDir)
+		seedAgentsDir = config.AgentsDir(cfg.AgentDir)
+	}
+
 	// Start watchers for global skill directories (those outside any
 	// workspace). Changes invalidate the skill cache and emit skills:changed
 	// so the frontend autocomplete refreshes without an app restart.
 	if cfg.Config != nil && len(cfg.Config.Skills.Dirs) > 0 {
 		dirs := resolveSkillDirs(cfg.Config.Skills.Dirs, cfg.AgentDir, config.ExpandEnvVars, f.logger)
 		f.startSkillsWatchers(dirs)
+		warnIfSeedDirUndiscovered(f.logger, "skills", seedSkillsDir, dirs)
+	} else {
+		warnIfSeedDirUndiscovered(f.logger, "skills", seedSkillsDir, nil)
 	}
 
 	// Start watchers for global Subagent Profile directories. Mirrors the
@@ -361,9 +383,33 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 	if cfg.Config != nil && len(cfg.Config.Agents.Dirs) > 0 {
 		dirs := resolveSkillDirs(cfg.Config.Agents.Dirs, cfg.AgentDir, config.ExpandEnvVars, f.logger)
 		f.startAgentsWatchers(dirs)
+		warnIfSeedDirUndiscovered(f.logger, "agents", seedAgentsDir, dirs)
+	} else {
+		warnIfSeedDirUndiscovered(f.logger, "agents", seedAgentsDir, nil)
 	}
 
 	return f
+}
+
+// warnIfSeedDirUndiscovered emits a startup warning when the compiled-in
+// global directory the c0wrk packs are seeded into (config.SkillsDir /
+// config.AgentsDir off the agent dir) is NOT among the effective configured
+// discovery dirs the skill/agent watchers use. Discovery follows the
+// configured list, so a custom list that omits the global directory silently
+// orphans every seeded pack. Best-effort and non-fatal — an empty seedDir
+// (no agent dir) is a no-op, since nothing is seeded then.
+func warnIfSeedDirUndiscovered(lg *slog.Logger, kind, seedDir string, discovered []string) {
+	if lg == nil || seedDir == "" {
+		return
+	}
+	seed := filepath.Clean(seedDir)
+	for _, d := range discovered {
+		if filepath.Clean(d) == seed {
+			return
+		}
+	}
+	lg.Warn("c0wrk packs are seeded into a global directory that is absent from the configured discovery dirs; the seeded packs may be undiscoverable — add the directory to the dirs list",
+		"kind", kind, "seed_dir", seedDir, "discovered_dirs", discovered)
 }
 
 // FrontendAPILifecycle holds infrastructure/lifecycle methods that must NOT be

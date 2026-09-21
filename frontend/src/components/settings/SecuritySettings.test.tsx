@@ -21,6 +21,11 @@ vi.mock('@/api/config', () => ({
     judge_available: false,
   }),
   updateSecuritySettings: (...args: unknown[]) => updateSecuritySettingsMock(...args),
+  getShellExecSettings: vi.fn().mockResolvedValue({
+    bash_exec: { command: [], shell: '' },
+    posh_exec: { command: [], shell: '' },
+  }),
+  updateShellExecSettings: vi.fn().mockResolvedValue(undefined),
 }))
 
 // Failure-path tests (backend rejections on load/save) intentionally make
@@ -95,7 +100,12 @@ const render = () =>
 // the aria-label; picking a value happens through the menu portaled to
 // document.body.
 const selects = () =>
-  Array.from(container.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="menu"]'))
+  Array.from(container.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="menu"]')).filter(
+    // The shell-execution card carries its own shell-select menus; the
+    // group/silent-mode assertions below count only SecuritySettings' own
+    // dropdowns, so anything inside that card stays out of scope.
+    (b) => !b.closest('[data-testid="shell-exec-card"]'),
+  )
 
 const findSelect = (ariaLabel: string) =>
   selects().find((s) => s.getAttribute('aria-label') === ariaLabel)
@@ -145,6 +155,8 @@ describe('SecuritySettings — group schema', () => {
   it('renders exactly seven group policy dropdowns', async () => {
     await render()
     // 7 group dropdowns — the reserved system group is never rendered.
+    // selects() scopes to the "… policy" aria-label so unrelated menu buttons
+    // in the tab (the shell-execution card's shell selects) stay out of scope.
     expect(selects()).toHaveLength(7)
     const labels = selects().map((s) => s.getAttribute('aria-label'))
     expect(labels).toContain('Execute policy')
