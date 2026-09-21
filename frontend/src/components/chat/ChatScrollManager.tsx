@@ -4,7 +4,6 @@ import { scrollBlockStartIntoView } from '@/lib/chatScroll'
 import { cssEscape } from '@/lib/cssEscape'
 import { useChatStore } from '@/stores/chatStore'
 import type { ChatMessageUI } from '@/types/messages'
-import { unresolvedReviewPromptIds } from '@/types/messages'
 import { ChatNewActivityBanner } from './ChatNewActivityBanner'
 
 interface ChatScrollManagerProps {
@@ -60,11 +59,6 @@ export function ChatScrollManager({
   // be raised — only a genuinely changed tail (or new streaming output)
   // counts as activity.
   const prevStreamingTextRef = useRef<string | undefined>(undefined)
-  // IDs of review_prompt messages that still needed a decision the last time
-  // the auto-scroll effect ran. A newly-appearing unresolved prompt forces the
-  // chat to the bottom so the request is fully visible even if the user had
-  // scrolled up to read earlier output.
-  const prevReviewPromptIdsRef = useRef<Set<string>>(new Set())
   // Timestamp until which bookmark/step navigation suppresses auto-scroll.
   const suppressAutoScrollUntilRef = useRef(0)
   // scrollTop of the most recent programmatic at-bottom write (post-clamp —
@@ -168,20 +162,12 @@ export function ChatScrollManager({
   // except for a session whose task is STILL RUNNING: it keeps producing
   // output at the bottom, so switching to it always reveals the live tail,
   // saved position notwithstanding; on incremental content growth, stick to
-  // the bottom only if the user was already there. A freshly-appearing review-mode prompt is an exception: it
-  // requires a user decision, so the chat is forced to the bottom to reveal it
-  // even when the user had scrolled away. Both behaviors are suppressed for a
-  // short window after an explicit bookmark/step navigation (see
-  // NAVIGATION_AUTO_SCROLL_SUPPRESS_MS).
+  // the bottom only if the user was already there. Both behaviors are
+  // suppressed for a short window after an explicit bookmark/step navigation
+  // (see NAVIGATION_AUTO_SCROLL_SUPPRESS_MS).
   useLayoutEffect(() => {
     const viewport = viewportRef.current
     if (!viewport) return
-
-    const currentReviewPromptIds = unresolvedReviewPromptIds(messages)
-    const hasNewReviewPrompt =
-      !isInitialMountRef.current &&
-      [...currentReviewPromptIds].some((id) => !prevReviewPromptIdsRef.current.has(id))
-    prevReviewPromptIdsRef.current = currentReviewPromptIds
 
     const lastId = messages.length > 0 ? messages[messages.length - 1]!.id : ''
     const prependedOlder =
@@ -237,21 +223,14 @@ export function ChatScrollManager({
       const wasAtBottom = prev.scrollTop + prev.clientHeight >= prev.scrollHeight - AT_BOTTOM_THRESHOLD_PX
       // An explicit bookmark/step navigation just moved the viewport: hold off
       // on any auto-scroll until its smooth animation settles, otherwise the
-      // stale "was at bottom" baseline (or a fresh review prompt) would snap
+      // stale "was at bottom" baseline would snap
       // the chat back to the bottom mid-navigation.
       const navigationSuppressed = Date.now() < suppressAutoScrollUntilRef.current
 
       if (prependedOlder) {
-        // Older rows inserted above the viewport: leave the viewport where it
-        // is (the prepend path re-anchors it) and do not raise the new-activity
-        // pill — nothing new appeared at the bottom.
-      } else if (hasNewReviewPrompt && !navigationSuppressed) {
-        // A fresh review-mode prompt needs a user decision — reveal it even
-        // when the user had scrolled away from the bottom.
-        viewport.scrollTop = viewport.scrollHeight
-        lastWriteTopRef.current = viewport.scrollTop
-        isAtBottomRef.current = true
-        setHasNewActivity(false)
+        // Older page(s) prepended above the viewport: leave the viewport where
+        // it is (useOlderHistoryLoader re-anchors it) and do not raise the
+        // new-activity pill — nothing new appeared at the bottom.
       } else if (wasAtBottom && !navigationSuppressed) {
         viewport.scrollTop = viewport.scrollHeight
         lastWriteTopRef.current = viewport.scrollTop

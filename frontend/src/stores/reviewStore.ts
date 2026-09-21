@@ -28,7 +28,6 @@ interface ReviewState {
   reviewPageOpen: boolean
   activeReviewSession: string | null
   reviewLoopActive: Record<string, boolean>
-  promptShownForTask: Record<string, string | true>
   diffViewMode: 'unified' | 'split'
 }
 
@@ -43,9 +42,7 @@ interface ReviewActions {
   closeReviewPage: () => void
   enterReviewLoop: (sessionId: string) => void
   exitReviewLoop: (sessionId: string) => void
-  markPromptShown: (sessionId: string, taskId: string) => void
   clearSessionReview: (sessionId: string) => void
-  resetLoopFlags: (sessionId: string) => void
   setDiffViewMode: (mode: 'unified' | 'split') => void
 }
 
@@ -60,7 +57,6 @@ export const useReviewStore = create<ReviewState & ReviewActions>()(
       reviewPageOpen: false,
       activeReviewSession: null,
       reviewLoopActive: {},
-      promptShownForTask: {},
       diffViewMode: 'unified',
 
       loadReview: async (sessionId) => {
@@ -164,11 +160,6 @@ export const useReviewStore = create<ReviewState & ReviewActions>()(
           return { reviewLoopActive: next }
         }),
 
-      markPromptShown: (sessionId, taskId) =>
-        set((s) => ({
-          promptShownForTask: { ...s.promptShownForTask, [sessionId]: taskId },
-        })),
-
       clearSessionReview: (sessionId) =>
         set((s) => {
           const next = { ...s.bySession }
@@ -176,22 +167,23 @@ export const useReviewStore = create<ReviewState & ReviewActions>()(
           return { bySession: next }
         }),
 
-      resetLoopFlags: (sessionId) =>
-        set((s) => {
-          const loops = { ...s.reviewLoopActive }
-          delete loops[sessionId]
-          const prompts = { ...s.promptShownForTask }
-          delete prompts[sessionId]
-          return { reviewLoopActive: loops, promptShownForTask: prompts }
-        }),
-
       setDiffViewMode: (mode) => set({ diffViewMode: mode }),
     }),
     {
       name: 'c0wrk-review',
+      version: 1,
+      // v0→v1: the removed post-task review prompt persisted a
+      // `promptShownForTask` key that zustand's default shallow rehydrate
+      // merge would re-inject into state from older localStorage snapshots;
+      // strip it so the stale key is gone deterministically at first load
+      // (nothing reads it since ADR-060).
+      migrate: (persistedState, _version) => {
+        const state = { ...(persistedState ?? {}) } as Record<string, unknown>
+        delete state.promptShownForTask
+        return state as unknown as ReviewState & ReviewActions
+      },
       partialize: (state) => ({
         reviewLoopActive: state.reviewLoopActive,
-        promptShownForTask: state.promptShownForTask,
         diffViewMode: state.diffViewMode,
       }),
     },

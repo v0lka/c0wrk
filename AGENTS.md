@@ -177,7 +177,7 @@ Three-column panel layout (no router): Sidebar (persisted width, clamped 180-500
 | `systemNotificationStore` | Persisted master toggle for OS-level system notifications (persisted `c0wrk-system-notifications`); gates the Go-binding banner transport — see `specs/domains/frontend/system-notifications.md` |
 | `vectorIndexStore`   | Vector index status/progress                                                                   |
 | `goalStore`          | Goal lifecycle: pending proposal (condition/verify/clarification), status verdict, progress    |
-| `reviewStore`        | Review / human-in-the-loop prompts (plan review, review_prompt items)                         |
+| `reviewStore`        | Review page / loop state (per-session comments, review-loop reopen, diff view mode)           |
 | `attachmentsStore`   | Message attachments (per-session file list, per-file failure tracking)                         |
 | `workDirsStore`      | Additional working directories (multi-repo workspace roots)                                    |
 | `experimentalStore`  | Effective Experimental Features gate exposed by runtime config                                  |
@@ -192,7 +192,7 @@ Cross-component scroll coordination uses a React context (`ScrollContext.tsx`), 
 
 - Backend persists `ChatMessage` (id, session_id, role, content, reasoning_content, tool_calls, metadata JSON, created_at).
 - Frontend converts to `ChatMessageUI` (semantic string ID, sessionId, MessageType, content, metadata, timestamp).
-- `groupMessages()` transforms flat `ChatMessageUI[]` into a `DisplayItem[]` tree (22 kinds: user, assistant, thought, thought_group, tool, tool_confirm, ask_user, step_limit, autonomy_decision, resume_action, error, service, plan_step, subagent, reflection, step_finish, context_compaction, memory_read, plan_review, review_prompt, goal_proposal, checklist).
+- `groupMessages()` transforms flat `ChatMessageUI[]` into a `DisplayItem[]` tree (21 kinds: user, assistant, thought, thought_group, tool, tool_confirm, ask_user, step_limit, autonomy_decision, resume_action, error, service, plan_step, subagent, reflection, step_finish, context_compaction, memory_read, plan_review, goal_proposal, checklist).
 - Grouping handles: plan step nesting, tool call/result correlation (via tool_call_id or composite key), thought collapsing, pending action extraction, special tool handling (subagent skipped, finish/memory compact).
 
 ### Key components

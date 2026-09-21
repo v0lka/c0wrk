@@ -183,7 +183,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `GetFileDiffHunks`     | filePath                | ([]HunkDiffInfo, error)       | Per-hunk diff info for a file (staged/unstaged ranges) |
 | `GetDiffStat`          | path                    | (*DiffStat, error)            | Diff stat for a file |
 | `GetDiffStats`         | —                       | (map[string]DiffStat, error)  | Diff stats for all changed files |
-| `Commit`               | message, force          | (CommitResult, error)         | Create a commit (suppression-aware: an untrusted repo arming commit hooks/signing and not forced is withheld with a non-nil `Suppressed{Hooks, SigningRepo, SigningGlobal}` and a nil error; `force=true` commits hardened; a trusted repo commits raw — [ADR-055](../decisions/055-commit-hooks-signing-gate.md)) |
+| `Commit`               | message, force          | (CommitResult, error)         | Create a commit (suppression-aware: an untrusted repo arming commit hooks/signing and not forced is withheld with a non-nil `Suppressed{Hooks, SigningRepo, SigningGlobal}` and a nil error; `force=true` commits hardened; a trusted repo commits raw — [ADR-059](../decisions/059-commit-hooks-signing-gate.md)) |
 | `GetBranches`          | —                       | ([]Branch, error)             | List branches |
 | `GetCurrentBranch`     | —                       | (BranchInfo, error)           | Get current branch |
 | `GetBranchBases`       | —                       | ([]BranchBase, error)         | Branch base refs (for merge/rebase target UI) |
@@ -308,7 +308,7 @@ Code-review authoring surface (human-in-the-loop review of agent changes). Revie
 
 | Method | Parameters | Returns | Description |
 | ------ | ---------- | ------- | ----------- |
-| `GetReview` | sessionID | (*review.Review, error) | Load the session's review (status, comments, prompt) |
+| `GetReview` | sessionID | (*review.Review, error) | Load the session's review (status, comments) |
 | `GetReviewDiff` | — | ([]ReviewFileDiff, error) | Working-tree diff grouped by file (review format) |
 | `SaveReviewGeneralComment` | sessionID, body | error | Add/replace the general review comment |
 | `SaveReviewFileComment` | sessionID, filePath, body | (string, error) | Add a file-level comment (returns comment ID) |
@@ -317,7 +317,8 @@ Code-review authoring surface (human-in-the-loop review of agent changes). Revie
 | `SetReviewStatus` | sessionID, status | error | Set review status (e.g. pending/approved/changes_requested) |
 | `ClearReviewComments` | sessionID | error | Remove all comments from the review |
 | `ClearReview` | sessionID | error | Clear the entire review |
-| `SaveReviewPrompt` | sessionID | (*ReviewPromptMessage, error) | Persist/refresh the review prompt surfaced to the agent |
+
+> The former `SaveReviewPrompt` RPC was removed by [ADR-060](../decisions/060-remove-post-task-review-prompt.md) together with the post-task review prompt it persisted.
 
 ### Agents (`backend/frontend_api_agents.go`)
 

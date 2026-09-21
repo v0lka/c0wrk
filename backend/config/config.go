@@ -832,17 +832,6 @@ const (
 	SilentAskUserEnable = "enable"
 )
 
-// Mode values accepted by security.silent_mode.review_prompt.mode.
-//
-// Controls the post-task code-review prompt (the review_prompt chat card
-// injected after a successful task_complete with uncommitted changes):
-const (
-	// SilentReviewPromptSuppress does not emit the review prompt. Default.
-	SilentReviewPromptSuppress = "suppress"
-	// SilentReviewPromptAllow emits the review prompt as when silent mode is off.
-	SilentReviewPromptAllow = "allow"
-)
-
 // TrustedGitRepo is one entry in security.trusted_git_repos: a repository
 // whose untrusted-git-config intake warning the user has explicitly dismissed.
 // Path is the absolute, filepath.Clean-ed repository work-tree root (the same
@@ -928,10 +917,9 @@ type SecurityConfig struct {
 	// whether these policies are live is decided solely by AutonomyMode
 	// ("silent"). When the mode is not "silent" every sub-policy is inert
 	// and the app behaves exactly as before — confirmations, step-limit
-	// cards, ask_user questions, and the post-task review prompt all surface
-	// normally. When the mode is "silent", the sub-policies decide how the
-	// loops resolve those four interactive prompts without a human. See
-	// SilentModeConfig.
+	// cards, and ask_user questions all surface normally. When the mode is
+	// "silent", the sub-policies decide how the loops resolve those three
+	// interactive prompts without a human. See SilentModeConfig.
 	SilentMode SilentModeConfig `yaml:"silent_mode"`
 
 	// AgentsMDMaxBytes caps the AGENTS.md content size injected into prompts.
@@ -991,16 +979,16 @@ type GroupPolicyConfig struct {
 	LegacyBlacklist []string `yaml:"blacklist,omitempty" json:"-"`
 }
 
-// SilentModeConfig is security.silent_mode: the container for the four
-// unattended-operation sub-policies. It is scoped to four interactive
+// SilentModeConfig is security.silent_mode: the container for the three
+// unattended-operation sub-policies. It is scoped to three interactive
 // decisions the execution loops would otherwise punt to the user. The
 // policies are live only while the unified autonomy mode is "silent"
 // (security.autonomy_mode — the former master switch silent_mode.enabled is
 // migrated onto that enum by the loader); in every other mode each
 // sub-policy is inert. When live, each sub-policy decides how its prompt is
 // resolved without a human — see the SilentToolConfirm*, SilentStepLimit*,
-// SilentAskUser*, and SilentReviewPrompt* enum constants for the accepted
-// Mode values and their meaning.
+// and SilentAskUser* enum constants for the accepted Mode values and their
+// meaning.
 //
 // Silent mode only replaces the human ANSWER to a prompt; it never weakens a
 // gate: `deny` groups, the deterministic pre-funnel floor, and the canonical
@@ -1027,9 +1015,6 @@ type SilentModeConfig struct {
 	// AskUser controls availability of the ask_user tool.
 	// Default mode: "disable".
 	AskUser SilentSubPolicyConfig `yaml:"ask_user"`
-	// ReviewPrompt resolves the post-task code-review prompt.
-	// Default mode: "suppress".
-	ReviewPrompt SilentSubPolicyConfig `yaml:"review_prompt"`
 }
 
 // SilentSubPolicyConfig is one silent-mode sub-policy: a single Mode drawn
@@ -1054,7 +1039,6 @@ func ValidateSilentMode(sm SilentModeConfig) error {
 		{"tool_confirm", sm.ToolConfirm.Mode, []string{SilentToolConfirmJudge, SilentToolConfirmAllow, SilentToolConfirmDeny}},
 		{"step_limit", sm.StepLimit.Mode, []string{SilentStepLimitAuto, SilentStepLimitAllowOnce, SilentStepLimitAllowMore, SilentStepLimitAllowAlways, SilentStepLimitDeny, SilentStepLimitStop}},
 		{"ask_user", sm.AskUser.Mode, []string{SilentAskUserDisable, SilentAskUserEnable}},
-		{"review_prompt", sm.ReviewPrompt.Mode, []string{SilentReviewPromptSuppress, SilentReviewPromptAllow}},
 	}
 	for _, c := range checks {
 		if c.mode == "" {
@@ -1084,10 +1068,9 @@ func ValidateSilentMode(sm SilentModeConfig) error {
 // update.
 func SilentModeDefaults() SilentModeConfig {
 	return SilentModeConfig{
-		ToolConfirm:  SilentSubPolicyConfig{Mode: SilentToolConfirmJudge},
-		StepLimit:    SilentSubPolicyConfig{Mode: SilentStepLimitAuto},
-		AskUser:      SilentSubPolicyConfig{Mode: SilentAskUserDisable},
-		ReviewPrompt: SilentSubPolicyConfig{Mode: SilentReviewPromptSuppress},
+		ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmJudge},
+		StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitAuto},
+		AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserDisable},
 	}
 }
 
@@ -1103,9 +1086,6 @@ func ApplySilentModeDefaults(sm *SilentModeConfig) {
 	}
 	if sm.AskUser.Mode == "" {
 		sm.AskUser.Mode = d.AskUser.Mode
-	}
-	if sm.ReviewPrompt.Mode == "" {
-		sm.ReviewPrompt.Mode = d.ReviewPrompt.Mode
 	}
 }
 

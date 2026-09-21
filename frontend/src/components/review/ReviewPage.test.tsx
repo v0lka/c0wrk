@@ -19,8 +19,6 @@ const { reviewMocks, runtimeMocks, gitMocks, chatMocks } = vi.hoisted(() => ({
     clearReview: vi.fn(),
     clearReviewComments: vi.fn(),
     setReviewStatus: vi.fn(),
-    saveReviewPrompt: vi.fn(),
-    resolveReviewPrompt: vi.fn(),
   },
   runtimeMocks: {
     subscribe: vi.fn(),

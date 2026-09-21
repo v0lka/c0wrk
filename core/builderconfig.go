@@ -561,17 +561,16 @@ type BuilderGroupPolicy struct {
 }
 
 // BuilderSilentModeConfig is the core mirror of security.silent_mode: the
-// container for the four unattended-operation sub-policies. The former
+// container for the three unattended-operation sub-policies. The former
 // Enabled bool is gone — whether the policies are live is derived from
 // BuilderSecurityConfig.AutonomyMode ("silent"). The sub-policy mode strings
 // are the config enum values passed through verbatim; core never imports
 // backend/config, so it does not reference the enum constants.
 // ApplyDefaults has already seeded every mode before conversion.
 type BuilderSilentModeConfig struct {
-	ToolConfirm  string
-	StepLimit    string
-	AskUser      string
-	ReviewPrompt string
+	ToolConfirm string
+	StepLimit   string
+	AskUser     string
 }
 
 // BuilderSkillsConfig holds Agent Skills discovery directories.

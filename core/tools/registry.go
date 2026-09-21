@@ -96,10 +96,9 @@ const (
 // builder; the registry stores them without interpreting them (consumers read
 // the fields they need).
 type SilentModeState struct {
-	ToolConfirm  string
-	StepLimit    string
-	AskUser      string
-	ReviewPrompt string
+	ToolConfirm string
+	StepLimit   string
+	AskUser     string
 }
 
 // ToolRegistry stores all available tools and provides them to Executor.
@@ -693,17 +692,6 @@ func silentAskUserPermissiveness(mode string) int {
 	return 1 // disable, empty, unknown
 }
 
-// silentReviewPromptPermissiveness ranks security.silent_mode.review_prompt.mode
-// by how UNATTENDED it leaves the run: "suppress" (no post-task review prompt)
-// is more permissive than "allow". Unknown/empty values rank as the documented
-// default (suppress).
-func silentReviewPromptPermissiveness(mode string) int {
-	if mode == "allow" {
-		return 0
-	}
-	return 1 // suppress, empty, unknown
-}
-
 // silentModeAtLeastAsStrict reports whether the incoming silent-mode
 // sub-policies are at least as strict as the current ones on EVERY field — the
 // condition for delivering a same-mode sub-policy change to a running clone
@@ -711,8 +699,7 @@ func silentReviewPromptPermissiveness(mode string) int {
 func silentModeAtLeastAsStrict(incoming, current SilentModeState) bool {
 	return silentToolConfirmPermissiveness(incoming.ToolConfirm) <= silentToolConfirmPermissiveness(current.ToolConfirm) &&
 		silentStepLimitPermissiveness(incoming.StepLimit) <= silentStepLimitPermissiveness(current.StepLimit) &&
-		silentAskUserPermissiveness(incoming.AskUser) <= silentAskUserPermissiveness(current.AskUser) &&
-		silentReviewPromptPermissiveness(incoming.ReviewPrompt) <= silentReviewPromptPermissiveness(current.ReviewPrompt)
+		silentAskUserPermissiveness(incoming.AskUser) <= silentAskUserPermissiveness(current.AskUser)
 }
 
 // AutonomyMode returns the registry's current autonomy posture

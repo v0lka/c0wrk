@@ -58,7 +58,12 @@ export const roleToType: Record<ChatRole, MessageType> = {
   step_todo_update: 'step_todo_update',
   memory_read: 'memory_read',
   plan_review: 'plan_review',
-  review_prompt: 'review_prompt',
+  // Legacy review_prompt rows (the removed post-task code-review prompt card)
+  // render through the same non-blocking `status` service notice as other
+  // status rows. The role stays in ChatRole so persisted rows keep converting
+  // (and dedupe by their stable review-prompt-{prompt_id} history id) instead
+  // of falling back to assistant.
+  review_prompt: 'status',
   // autonomy_decision rows are persisted audit records of automatic
   // (no-human) decisions; they keep their own message type so groupMessages
   // renders a dedicated non-blocking card (AutonomyDecisionBlock; content
@@ -234,7 +239,7 @@ export function groupMessages(messages: ChatMessageUI[], workUnitStatus?: Record
       }
       case 'tool_call': handleToolCall(msg, meta, planStepId, stepIndexMap, toolItemsByKey, pendingResults, pushItem, toolItemById); break
       case 'tool_result': handleToolResult(meta, toolItemsByKey, pendingResults); break
-      case 'tool_confirm': case 'ask_user': case 'task_failed_resumable': case 'step_limit': case 'plan_review': case 'review_prompt': case 'goal_proposal':
+      case 'tool_confirm': case 'ask_user': case 'task_failed_resumable': case 'step_limit': case 'plan_review': case 'goal_proposal':
         handleActionMessage(msg, meta, items, activeActions, toolItemById); break
       case 'context_compaction': {
         const bp = (meta?.before_percent as number) ?? 0

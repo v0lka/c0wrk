@@ -9,8 +9,7 @@ import { useReviewStore } from '@/stores/reviewStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore, selectIsNoProject } from '@/stores/projectStore'
-import { isReviewPromptSuppressed } from '@/stores/autonomyStore'
-import * as reviewApi from '@/api/review'
+import { isSilentMode } from '@/stores/autonomyStore'
 import { generateMessageId } from '@/lib/ids'
 import { refreshCompactionAvailability } from '@/lib/sessionRuntime'
 import type { ChatMessageUI } from '@/types/messages'
@@ -38,8 +37,8 @@ export function shouldAddTaskCompleteOutput(messages: ChatMessageUI[], output: s
 }
 
 /**
- * Whether a post-task review action (auto-review loop or first-time prompt)
- * should fire for this task_complete. Review is a CODE-mode-only feature: it
+ * Whether the post-task review-loop reopen should fire for this
+ * task_complete. Review is a CODE-mode-only feature: it
  * must never trigger in CHAT (No Project) mode, even if the git panel store
  * holds stale/leaked entries, and requires uncommitted working-tree changes.
  *
@@ -233,12 +232,14 @@ export function useChatEvents(sessionId: string | null): void {
           })
         }
 
-        // --- Review triggers ---
-        // Only on successful task_complete. Two modes:
-        // 1) Auto-review loop: if reviewLoopActive[session] is set (user
-        //    previously clicked Submit), reopen the review page with fresh diff.
-        // 2) First-time prompt: if the project has git changes and the prompt
-        //    hasn't been shown for this task turn, inject a review_prompt block.
+        // --- Review trigger (auto-review loop reopen only) ---
+        // On a successful task_complete with uncommitted changes in a CODE
+        // project, reopen the review page when the user previously clicked
+        // Submit (reviewLoopActive). Silent mode suppresses this post-task
+        // UI interception entirely — there is no user to review when the
+        // task runs unattended (this client-side reopen is the one review
+        // hook the frontend owns; the other silent-mode sub-policies are
+        // enforced entirely in the backend).
         if (data.success !== false) {
           const reviewStore = useReviewStore.getState()
           const isLoopActive = !!reviewStore.reviewLoopActive[sessionId]
@@ -246,49 +247,22 @@ export function useChatEvents(sessionId: string | null): void {
           const projectState = useProjectStore.getState()
           // Pair isGitRepo with the project it was checked against (the store
           // contract): a stale isGitRepo=true from a previously active project
-          // must not inject a review prompt for the project now active, which
-          // may have no changes. Review is also CODE-mode-only: never show the
-          // prompt or reopen the review page in CHAT (No Project) mode, even if
-          // the git store holds stale/leaked entries.
+          // must not reopen the review page for the project now active, which
+          // may have no changes. Review is also CODE-mode-only: never reopen
+          // the review page in CHAT (No Project) mode, even if the git store
+          // holds stale/leaked entries.
           const hasChanges =
             gitState.isGitRepo &&
             gitState.gitRepoProjectId === projectState.activeProjectId &&
             gitState.entries.length > 0
           const isNoProject = selectIsNoProject(projectState)
 
-          // Silent mode's review_prompt sub-policy suppresses the whole
-          // post-task review interception — both the auto-review loop reopen
-          // and the first-time review_prompt card. There is no user to review
-          // when the task runs unattended, and this client-side injection is
-          // the one review hook the frontend owns (the other three silent-mode
-          // sub-policies are enforced entirely in the backend).
-          if (shouldTriggerReview(isNoProject, hasChanges) && !isReviewPromptSuppressed()) {
-            if (isLoopActive) {
-              const fvStore = useFileViewerStore.getState()
-              fvStore.openFile('c0wrk:review')
-              fvStore.setCollapsed(false)
-              reviewStore.openReviewPage(sessionId)
-              void reviewStore.loadReview(sessionId)
-            } else if (!reviewStore.promptShownForTask[sessionId]) {
-              // Persist the prompt as a real session message so it survives a
-              // session switch / restart (the old frontend-only message was
-              // dropped by mergeHistoryMessages on the next history reload).
-              // The id is derived from the backend-assigned prompt_id so the
-              // live card and the reloaded history share an id and dedupe
-              // cleanly. markPromptShown runs after the persist succeeds so a
-              // persist failure leaves the prompt retryable on a later turn.
-              void reviewApi.saveReviewPrompt(sessionId).then((prompt) => {
-                reviewStore.markPromptShown(sessionId, 'task')
-                store.addMessage(sessionId, {
-                  id: `review-prompt-${prompt.prompt_id}`,
-                  sessionId,
-                  type: 'review_prompt',
-                  content: prompt.content,
-                  metadata: { prompt_id: prompt.prompt_id },
-                  timestamp: Date.now(),
-                })
-              }).catch(() => { /* logged in the saveReviewPrompt wrapper */ })
-            }
+          if (isLoopActive && shouldTriggerReview(isNoProject, hasChanges) && !isSilentMode()) {
+            const fvStore = useFileViewerStore.getState()
+            fvStore.openFile('c0wrk:review')
+            fvStore.setCollapsed(false)
+            reviewStore.openReviewPage(sessionId)
+            void reviewStore.loadReview(sessionId)
           }
         }
       }),

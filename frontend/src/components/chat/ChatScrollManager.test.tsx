@@ -240,22 +240,16 @@ describe('ChatScrollManager navigation suppresses auto-scroll', () => {
     vi.useRealTimers()
   })
 
-  it('even a fresh review-prompt force-scroll waits out the navigation window', () => {
+  it('a step navigation holds even when a new decision-type message arrives mid-window', () => {
     vi.useFakeTimers()
     const h = renderAtBottomStream()
 
     act(() => navigateStep!('step-9'))
     expect(h.scrollTo).toHaveBeenCalledTimes(1)
 
-    const reviewPrompt: ChatMessageUI = {
-      id: 'rp-1',
-      sessionId: 's1',
-      type: 'review_prompt',
-      content: 'decide',
-      metadata: {},
-      timestamp: 0,
-    }
-    h.rerender([message('m1'), message('m2'), reviewPrompt])
+    // A newly-appearing message mid-navigation must not snap the viewport to
+    // the bottom while the smooth scroll is still settling.
+    h.rerender([message('m1'), message('m2'), message('m3')])
 
     expect(h.scrollTopWrites()).toEqual([])
 

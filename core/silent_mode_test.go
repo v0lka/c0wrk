@@ -40,10 +40,10 @@ func TestApplySecurityPolicies_PinsAutonomyToTaskLaunch(t *testing.T) {
 	// The "already-open session": a clone created under the old state.
 	session := b.registerSessionRegistry()
 
-	on := BuilderSilentModeConfig{ToolConfirm: "judge", StepLimit: "auto", AskUser: "disable", ReviewPrompt: "suppress"}
+	on := BuilderSilentModeConfig{ToolConfirm: "judge", StepLimit: "auto", AskUser: "disable"}
 	b.UpdateSecurityPolicies(cfgOf(AutonomyModeSilent, on))
 
-	want := tools.SilentModeState{ToolConfirm: "judge", StepLimit: "auto", AskUser: "disable", ReviewPrompt: "suppress"}
+	want := tools.SilentModeState{ToolConfirm: "judge", StepLimit: "auto", AskUser: "disable"}
 	if got := b.registry.SilentMode(); got != want {
 		t.Errorf("shared registry silent mode = %+v, want %+v", got, want)
 	}

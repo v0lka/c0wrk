@@ -202,8 +202,8 @@ export function useReviewActions(sessionId: string) {
       // Leave the auto-reopen loop ARMED: per specs/domains/review.md the next
       // task_complete reopens the review page with a fresh diff so the user can
       // re-review the agent's fixes (loop repeats until Approve). The loop is
-      // disarmed only on Approve (handleApprove) or an explicit decline
-      // (resetLoopFlags).
+      // disarmed only on Approve (handleApprove) or a failed Submit send
+      // (rollback via exitReviewLoop).
     } catch (err) {
       logger.error('Submit flow failed:', err)
     } finally {

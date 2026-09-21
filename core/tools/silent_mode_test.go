@@ -16,10 +16,9 @@ import (
 func TestClone_CopiesAutonomyAndSilentMode(t *testing.T) {
 	parent := NewToolRegistry()
 	initial := SilentModeState{
-		ToolConfirm:  "deny",
-		StepLimit:    "stop",
-		AskUser:      "disable",
-		ReviewPrompt: "suppress",
+		ToolConfirm: "deny",
+		StepLimit:   "stop",
+		AskUser:     "disable",
 	}
 	parent.ApplySecurityState(nil, false, AutonomyModeSilent, initial)
 
@@ -130,7 +129,7 @@ func TestRefreshAutonomyPosture_SyncsCloneFromParent(t *testing.T) {
 
 	// Settings save: the shared registry flips to silent; the clone stays
 	// pinned to the posture it is executing under.
-	on := SilentModeState{ToolConfirm: "judge", StepLimit: "auto", AskUser: "disable", ReviewPrompt: "suppress"}
+	on := SilentModeState{ToolConfirm: "judge", StepLimit: "auto", AskUser: "disable"}
 	parent.ApplySecurityState(nil, false, AutonomyModeSilent, on)
 	if got := child.AutonomyMode(); got != AutonomyModeStandard {
 		t.Fatalf("clone autonomy mode = %q, want %q (pinned until the task-launch refresh)", got, AutonomyModeStandard)
@@ -165,7 +164,7 @@ func TestRefreshAutonomyPosture_SyncsCloneFromParent(t *testing.T) {
 // posture — the shared registry IS the authoritative source.
 func TestRefreshAutonomyPosture_NoParentIsNoop(t *testing.T) {
 	shared := NewToolRegistry()
-	on := SilentModeState{ToolConfirm: "deny", StepLimit: "stop", AskUser: "enable", ReviewPrompt: "allow"}
+	on := SilentModeState{ToolConfirm: "deny", StepLimit: "stop", AskUser: "enable"}
 	shared.ApplySecurityState(nil, false, AutonomyModeSilent, on)
 
 	shared.RefreshAutonomyPosture()
@@ -185,7 +184,7 @@ func TestRefreshAutonomyPosture_NoParentIsNoop(t *testing.T) {
 // RefreshAutonomyPosture).
 func TestApplyGroupPolicies_PreservesAutonomyPosture(t *testing.T) {
 	r := NewToolRegistry()
-	on := SilentModeState{ToolConfirm: "allow", StepLimit: "deny", AskUser: "enable", ReviewPrompt: "allow"}
+	on := SilentModeState{ToolConfirm: "allow", StepLimit: "deny", AskUser: "enable"}
 	r.ApplySecurityState(
 		map[sdktools.ToolGroup]sdktools.ToolPolicy{sdktools.GroupExecute: sdktools.PolicyUserConfirm},
 		false, AutonomyModeSilent, on,
@@ -219,7 +218,7 @@ func TestApplyGroupPolicies_PreservesAutonomyPosture(t *testing.T) {
 // running task immediately, while an equal-or-looser (escalation) posture is
 // ignored so a task can never silently BECOME unattended mid-run.
 func TestApplyAutonomyPostureIfTightening(t *testing.T) {
-	tightened := SilentModeState{ToolConfirm: "deny", StepLimit: "stop", AskUser: "disable", ReviewPrompt: "suppress"}
+	tightened := SilentModeState{ToolConfirm: "deny", StepLimit: "stop", AskUser: "disable"}
 	seed := SilentModeState{ToolConfirm: "judge"}
 	tests := []struct {
 		name      string

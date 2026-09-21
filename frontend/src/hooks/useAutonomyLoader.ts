@@ -9,7 +9,7 @@ import { DEFAULT_SILENT_POLICIES, useAutonomyStore } from '@/stores/autonomyStor
  * Hydrates the app-wide autonomy posture (autonomyStore) from
  * GetSecuritySettings, mirroring useExperimentalFeatures.
  *
- * Mounted once at the App root so the review-prompt gate (useChatEvents) always
+ * Mounted once at the App root so the silent-mode gate (useChatEvents) always
  * has a current posture, regardless of whether Settings has ever been opened.
  * The read is attempted on mount and re-run on `backend:ready` (the backend
  * answers with canonical defaults until Startup has loaded config.yaml, so a

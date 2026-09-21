@@ -1,12 +1,12 @@
 /**
  * Presentation metadata for silent mode (security.silent_mode). The enum VALUES
  * are owned by the backend (config.Silent*); this module only carries the human
- * labels, descriptions, and option order for the four sub-policy dropdowns, so
+ * labels, descriptions, and option order for the three sub-policy dropdowns, so
  * SecuritySettings stays a thin view.
  */
 
-/** The four silent-mode sub-policies, keyed like SilentModeSettings. */
-export type SilentSubPolicyKey = 'tool_confirm' | 'step_limit' | 'ask_user' | 'review_prompt'
+/** The three silent-mode sub-policies, keyed like SilentModeSettings. */
+export type SilentSubPolicyKey = 'tool_confirm' | 'step_limit' | 'ask_user'
 
 export interface SilentModeSubPolicyMeta {
   key: SilentSubPolicyKey
@@ -58,16 +58,6 @@ export const SILENT_SUB_POLICIES: readonly SilentModeSubPolicyMeta[] = [
     options: [
       { value: 'disable', label: 'Disable' },
       { value: 'enable', label: 'Enable' },
-    ],
-  },
-  {
-    key: 'review_prompt',
-    label: 'Review prompt',
-    description:
-      'The post-task code-review prompt injected after a successful task with uncommitted changes. Suppress does not emit it; Allow emits it as usual.',
-    options: [
-      { value: 'suppress', label: 'Suppress' },
-      { value: 'allow', label: 'Allow' },
     ],
   },
 ]

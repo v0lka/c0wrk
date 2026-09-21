@@ -31,9 +31,9 @@ interface SilentModeCardProps {
 }
 
 /**
- * Silent mode (security.silent_mode): the four sub-policies that decide how
+ * Silent mode (security.silent_mode): the three sub-policies that decide how
  * each interactive decision (tool confirmation, step-limit exhaustion,
- * ask_user, post-task review prompt) resolves without a human. The card has
+ * ask_user) resolves without a human. The card has
  * no enable switch — the autonomy mode (security.autonomy_mode = "silent")
  * owns liveness, and SecuritySettings renders this card only in that mode —
  * and the autonomy warning is always visible so the risk is stated up front.
@@ -75,7 +75,7 @@ export function SilentModeCard({ mode, value, judgeAvailable, onModeChange }: Si
         <span>
           <strong>Autonomy warning.</strong> Silent mode lets the agent act without you: confirmation
           cards, step-limit halts, and questions are resolved automatically, and the post-task review
-          prompt is not shown. A task can then run to completion unattended — enable it only when you
+          page is not reopened. A task can then run to completion unattended — enable it only when you
           intend the agent to operate without supervision, and review the sub-policies below.
         </span>
       </div>

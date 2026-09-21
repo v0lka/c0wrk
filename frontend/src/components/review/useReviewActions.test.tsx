@@ -46,8 +46,6 @@ vi.mock('@/api/review', () => ({
   setReviewStatus: spies.setReviewStatus,
   clearReviewComments: spies.clearReviewComments,
   clearReview: vi.fn(),
-  saveReviewPrompt: vi.fn(),
-  resolveReviewPrompt: vi.fn(),
 }))
 
 vi.mock('@/api/git', () => ({

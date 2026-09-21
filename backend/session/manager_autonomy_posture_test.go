@@ -89,7 +89,7 @@ func TestSendMessage_RepinsAutonomyPostureAtTaskLaunch(t *testing.T) {
 
 	// A Settings save AFTER session creation flips the shared registry to
 	// silent (the exact reported scenario).
-	on := coretools.SilentModeState{ToolConfirm: "judge", StepLimit: "auto", AskUser: "disable", ReviewPrompt: "suppress"}
+	on := coretools.SilentModeState{ToolConfirm: "judge", StepLimit: "auto", AskUser: "disable"}
 	shared.ApplySecurityState(nil, false, coretools.AutonomyModeSilent, on)
 
 	if err := mgr.SendMessage(context.Background(), info.ID, "do the thing", nil, nil, "", "", false, "", false, false); err != nil {
@@ -151,7 +151,7 @@ func TestResumeTask_RepinsAutonomyPostureAtTaskLaunch(t *testing.T) {
 
 	// The paused task started under standard; the user changes Settings while
 	// the task is paused.
-	on := coretools.SilentModeState{ToolConfirm: "deny", StepLimit: "stop", AskUser: "enable", ReviewPrompt: "allow"}
+	on := coretools.SilentModeState{ToolConfirm: "deny", StepLimit: "stop", AskUser: "enable"}
 	shared.ApplySecurityState(nil, false, coretools.AutonomyModeSilent, on)
 
 	if err := mgr.ResumeTask(context.Background(), info.ID, "", "", ""); err != nil {

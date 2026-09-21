@@ -350,10 +350,10 @@ export function buildHistoryId(
       return requestId ? `plan-review-${requestId}` : `history-${dbId}`
     }
     case 'review_prompt': {
-      // Derive the id from the backend-assigned prompt_id so the live card
-      // (added right after SaveReviewPrompt) and the reloaded history share an
-      // id — mergeHistoryMessages then dedupes them instead of dropping the
-      // prompt on the next session switch.
+      // Legacy: the post-task review-prompt card was removed, but persisted
+      // rows survive in existing databases. Keep deriving the id from the
+      // backend-assigned prompt_id so history reloads stay id-stable across
+      // repeated loads (the same row always converts to the same UI id).
       const promptId = meta.prompt_id as string | undefined
       return promptId ? `review-prompt-${promptId}` : `history-${dbId}`
     }
