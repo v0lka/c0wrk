@@ -78,9 +78,46 @@ channel the UI displays. `security.smart_approve` and `security.silent_mode.
 enabled` survive in documentation **only** as these legacy migration keys.
 
 The posture is a **plain value** validated at load and on every Settings save,
-pushed atomically to the shared builder registry and every per-session clone
-(`ToolRegistry.ApplySecurityState`), so a runtime change from Settings →
-Security reaches live sessions with **no restart**.
+delivered with **per-task pinning** (amended in place, pre-release; the
+original text promised an atomic push to every live per-session clone —
+"reaches live sessions with no restart" — which let a Settings save flip the
+posture of a task already running: enabling `silent` silently converted a
+live interactive session mid-run). A Settings save now updates the shared
+builder registry atomically (`ToolRegistry.ApplySecurityState`), but live
+per-session clones receive only the fail-closed half — group policies and
+auto-approval (`ToolRegistry.ApplyGroupPolicies`) — while the autonomy mode
+and the silent-mode sub-policies are **pinned at task launch**: each clone
+inherits the posture at creation and re-syncs it from the shared registry at
+every task-launch boundary (fresh sends and every resume path, via
+`ToolRegistry.RefreshAutonomyPosture`, called from the session manager). A
+task therefore always runs under the posture the user last saved before the
+task launched: enabling `silent` can never convert a task that already
+started interactive mid-run, and a paused task resumed after a Settings
+change runs under the current Settings — exactly like launching a new task.
+
+**De-escalation (tightening) direction (amended in place).** The pinning
+above covers only the **escalation** direction — a task can never silently
+*become* unattended mid-run. The reverse direction must not fail open: an
+operator who revokes an unattended posture (Security back to
+`assisted`/`standard`) while a task runs expects the running task to stop
+auto-approving immediately, but under pinning-only the task would keep
+resolving gated calls through the silent terminal — which, in `judge` mode,
+deliberately drops the canonical-hard-reason backstop — until it ends or is
+paused/resumed. A Settings save therefore also pushes the posture to each
+live clone through `ToolRegistry.ApplyAutonomyPostureIfTightening`, which
+applies the new posture **only** when it ranks strictly less automatic than
+the clone's current one (`autonomyModeRank`: `silent`=2, `assisted`=1,
+`standard`/unknown=0). An equal-or-looser save is ignored (pinning preserved);
+a tightening save reaches a running clone at once. Net contract: a task can
+never silently become unattended mid-run, but a revocation takes effect
+immediately.
+
+Two registration-scoped exceptions follow Settings immediately for every
+session (documented boundaries of the pinning, both fail-safe in the
+tightening direction): the execute blocklist (re-registered on the shared
+sp4rk registry the clones embed) and the `ask_user` tool's disabled form
+(`reconcileAskUser`) — the latter cannot be expressed per-session because
+the clones share one tool table.
 
 ### D2. Silent mode sits *inside* the confirmation funnel, never above it
 
@@ -93,7 +130,7 @@ answer** to a prompt; it never removes a gate.
 
 ### D3. The three sub-policies and their terminals
 
-> **Amended in place (pre-release) by [ADR-055](./055-remove-post-task-review-prompt.md):**
+> **Amended in place (pre-release) by [ADR-060](./060-remove-post-task-review-prompt.md):**
 > the fourth sub-policy, `review_prompt` (`suppress`/`allow`), was removed
 > together with the post-task review prompt it gated — the prompt fired on
 > nearly every task against a perpetually dirty tree and was deleted outright.
@@ -214,7 +251,7 @@ decisions define its terminals:
    hard reason is overridden to a **user confirmation** with
    `DisableJudge=true` — the user remains the final authority over fired
    controls and unassessable inputs (SECURITY.md rule 2, interactive scope).
-   Non-canonical hard reasons (e.g. the flowsh ⊤ limitation) may be positively
+   Non-canonical hard reasons (e.g. the flowsh ⊤ limitation `command_unbounded_analysis`, or the external-content-ingest flow `command_external_content_ingest`, [ADR-057](./057-flow-based-network-verdicts.md)) may be positively
    cleared by a strict ALLOW, exactly as in ADR-026. *Justification:* a human
    IS present in assisted mode; rule 2 exists precisely for this path. The one
    deliberate exception is the silent `judge` terminal (D4), where the
@@ -253,10 +290,12 @@ sub-policy), `verdict`, `tool`/`source`/`reason`, `justification`, and (for
   emitter (falling back to the raw pipeline), and the event is **persisted**
   (role `autonomy_decision`) unlike the transient judge-phase telemetry — the
   record must survive a reload.
-- The frontend renders it as a non-blocking `status` service notice; the payload
-  rides in metadata so `reconstructContent` rebuilds byte-identical text on
-  reload. It is deliberately **not** a pending-action card: there is nothing to
-  answer, and the ordinary HITL indicators and sound cues stay silent.
+- The frontend renders it as a non-blocking standard-format card
+  (`AutonomyDecisionBlock`, the same card chrome as the confirmation/approval
+  cards); the payload rides in metadata so `reconstructContent` rebuilds
+  byte-identical text on reload. It is deliberately **not** a pending-action
+  card: there is nothing to answer, and the ordinary HITL indicators and sound
+  cues stay silent.
 
 > **Rename note (pre-release).** The event was renamed from `silent_decision`
 > to `autonomy_decision` — and extended with the `assisted_deny` kind — before
@@ -273,9 +312,7 @@ sub-policy), `verdict`, `tool`/`source`/`reason`, `justification`, and (for
 - Unattended operation becomes possible without weakening the deterministic
   floor below the funnel: `deny` groups and every pre-funnel gate are untouched
   (D2).
-- The posture is explicit, opt-in, validated, documented, and hot-appliable to
-  live sessions (D1) — it is never a hidden default, and one enum value
-  replaces two historically-drifting booleans.
+- The posture is explicit, opt-in, validated, documented, and **pinned per task** (D1, amended pre-release to per-task pinning): a running task is never converted to unattended mid-run — it re-syncs an escalation only at the next task-launch boundary, while a tightening reaches a live clone immediately. It is never a hidden default, and one enum value replaces two historically-drifting booleans.
 - The assisted posture gains a real negative terminal (D5): a judge that
   positively detects danger now *stops* the call instead of bouncing it to an
   approval-fatigued human.
@@ -339,7 +376,7 @@ sub-policy), `verdict`, `tool`/`source`/`reason`, `justification`, and (for
   implicit precedence, invite a fourth undefined combination, and make both the
   UI and the docs lie about what is live.
 - **Transient (unpersisted) `autonomy_decision` events.** Rejected: ASI10 requires
-  the trajectory to be reconstructable; a live-only notice vanishes on reload and
+  the trajectory to be reconstructable; a live-only card vanishes on reload and
   the audit trail with it.
 - **Emitting from a backend wrapper instead of a registry observer.** Rejected:
   the `tool_confirm` decision happens deep in the registry on the executor
@@ -352,4 +389,4 @@ sub-policy), `verdict`, `tool`/`source`/`reason`, `justification`, and (for
 - [specs/architecture/security-model.md](../architecture/security-model.md#silent-mode-unattended-operation)
 - [specs/contracts/event-catalog.md](../contracts/event-catalog.md) — `autonomy_decision`
 - [ADR-026](./026-smart-approve-unified-funnel.md) — the unified confirmation funnel silent mode sits inside, and the interactive-scope backstop contract
-- [ADR-052](./052-flowsh-command-analysis.md) — the deterministic floor and the canonical code contract
+- [ADR-052](./052-flowsh-command-analysis.md) — the deterministic floor and the canonical code contract; its digest evidence — the **flow-based cradle verdict** (the established `cradleFlows` *is* canonicality's own evidence, [ADR-057](./057-flow-based-network-verdicts.md)) and the workspace-scoped verification marker (which encodes the operator-trust premise that session roots are trusted; an untrusted-workdir signal must disable it for that root) — is what keeps the silent judge terminal's fail-closed denies precise without relaxing a gate

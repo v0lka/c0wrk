@@ -287,6 +287,9 @@ llm:
 	if cfg.Timeouts.ServiceLLMRequestTimeout != 120 {
 		t.Errorf("Expected default serviceLLMRequestTimeout 120, got %d", cfg.Timeouts.ServiceLLMRequestTimeout)
 	}
+	if cfg.Timeouts.GitCommitTimeout != 300 {
+		t.Errorf("Expected default gitCommitTimeout 300, got %d", cfg.Timeouts.GitCommitTimeout)
+	}
 
 	// Check Models map is initialized
 	if cfg.LLM.Models == nil {
@@ -321,6 +324,49 @@ func TestApplyDefaults_MaxParallelSubagents(t *testing.T) {
 				t.Fatalf("ApplyDefaults with max_parallel_subagents=%d = %d, want %d", tc.value, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestApplyDefaults_DiscoveryDirPrecedence pins the documented precedence of
+// the default discovery directories: the c0wrk global dir outranks the user's
+// ~/.agents dir for BOTH skills and agents, so a c0wrk-managed skill/profile
+// wins over a same-named user-wide one. An explicit list is preserved verbatim
+// (order and contents untouched).
+func TestApplyDefaults_DiscoveryDirPrecedence(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+
+	wantSkills := []string{"~/.c0wrk/.agents/skills", "~/.agents/skills"}
+	if !reflect.DeepEqual(cfg.Skills.Dirs, wantSkills) {
+		t.Errorf("Skills.Dirs = %v, want %v (c0wrk global dir first)", cfg.Skills.Dirs, wantSkills)
+	}
+	wantAgents := []string{"~/.c0wrk/.agents/agents", "~/.agents/agents"}
+	if !reflect.DeepEqual(cfg.Agents.Dirs, wantAgents) {
+		t.Errorf("Agents.Dirs = %v, want %v (c0wrk global dir first)", cfg.Agents.Dirs, wantAgents)
+	}
+
+	// An explicit user list must survive ApplyDefaults untouched — including
+	// an intentional reverse order and an explicit empty slice opt-out.
+	explicit := &Config{}
+	explicit.Skills.Dirs = []string{"~/.agents/skills"}
+	explicit.Agents.Dirs = []string{"~/.agents/agents"}
+	ApplyDefaults(explicit)
+	if !reflect.DeepEqual(explicit.Skills.Dirs, []string{"~/.agents/skills"}) {
+		t.Errorf("explicit Skills.Dirs was clobbered: %v", explicit.Skills.Dirs)
+	}
+	if !reflect.DeepEqual(explicit.Agents.Dirs, []string{"~/.agents/agents"}) {
+		t.Errorf("explicit Agents.Dirs was clobbered: %v", explicit.Agents.Dirs)
+	}
+
+	empty := &Config{}
+	empty.Skills.Dirs = []string{}
+	empty.Agents.Dirs = []string{}
+	ApplyDefaults(empty)
+	if len(empty.Skills.Dirs) != 0 {
+		t.Errorf("explicit empty Skills.Dirs must stay empty, got %v", empty.Skills.Dirs)
+	}
+	if len(empty.Agents.Dirs) != 0 {
+		t.Errorf("explicit empty Agents.Dirs must stay empty, got %v", empty.Agents.Dirs)
 	}
 }
 
@@ -2959,6 +3005,42 @@ git:
 	}
 	if cfg.Git.AutoFetch == nil || !*cfg.Git.AutoFetch {
 		t.Errorf("Expected default git.auto_fetch true, got %v", cfg.Git.AutoFetch)
+	}
+}
+
+// TestGitCommitTimeout_DefaultsAndOverride pins the load semantics of
+// timeouts.gitCommitTimeout: omitted (or explicit 0) resolves to the default
+// 300 seconds, while a positive explicit value survives verbatim.
+func TestGitCommitTimeout_DefaultsAndOverride(t *testing.T) {
+	baseLLM := `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+`
+	cases := []struct {
+		name    string
+		yamlKey string
+		want    int
+	}{
+		{"omitted uses default", "", 300},
+		{"explicit zero coerces to default", "timeouts:\n  gitCommitTimeout: 0\n", 300},
+		{"explicit override wins", "timeouts:\n  gitCommitTimeout: 900\n", 900},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := writeTestConfig(t, baseLLM+tc.yamlKey)
+
+			cfg, err := Load(configPath)
+			if err != nil {
+				t.Fatalf("Load() failed: %v", err)
+			}
+			if cfg.Timeouts.GitCommitTimeout != tc.want {
+				t.Errorf("Expected gitCommitTimeout %d, got %d", tc.want, cfg.Timeouts.GitCommitTimeout)
+			}
+		})
 	}
 }
 

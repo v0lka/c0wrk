@@ -4,6 +4,7 @@ import (
 	"github.com/v0lka/c0wrk/core/proxy"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/llm"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 // BuilderConfig holds all configuration that the OrchestratorBuilder needs.
@@ -24,6 +25,17 @@ type BuilderConfig struct {
 	ToolLimits    BuilderToolLimitsConfig
 	Timeouts      BuilderTimeoutsConfig
 	Proxy         proxy.Config
+
+	// ShellExec carries the optional operator override of the shell-exec
+	// tool's launch shape (nil = built-in default). BashExec is consumed on
+	// Unix, PoshExec on Windows — exactly one is live per platform (the
+	// build-tag split in core/tools/shelltool_*.go). The declared shell kind
+	// drives the tool description (the prompt channel that informs every
+	// agent able to call the tool), the PowerShell-only UTF-8 bootstrap, and
+	// the flowsh analysis dialect. Values arrive pre-validated from the
+	// backend config layer (fail-soft load); a nil entry is the normal
+	// no-override posture.
+	ShellExec BuilderShellExecConfig
 
 	// MarkitdownPythonPath lazily resolves the managed venv interpreter that
 	// can `import markitdown` (toolmanager.VenvPythonPath). It enables
@@ -677,4 +689,12 @@ type BuilderTimeoutsConfig struct {
 	WebFetchRetries      int // retry count (not seconds); each retry doubles the active web fetch timeout
 	WebSearchTimeout     int
 	LLMRequestTimeout    int
+}
+
+// BuilderShellExecConfig carries the operator's shell-exec launch-shape
+// override per tool. A nil entry means "built-in default launch shape" —
+// the normal posture. See BuilderConfig.ShellExec.
+type BuilderShellExecConfig struct {
+	BashExec *sdktools.ShellInvocation
+	PoshExec *sdktools.ShellInvocation
 }

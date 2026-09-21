@@ -94,23 +94,24 @@ func TestShellJudgeAndSymlinkGate_ReportedCommandStaysClean(t *testing.T) {
 			wantSymlinkCode: "",
 		},
 		{
-			name:           "unresolvable inner binding: judge assesses it, symlink gate stays suspicious",
+			name:           "unresolvable inner binding: judge assesses it, symlink walk stays silent",
 			command:        `X=$(read D < cfg; echo $D); echo $X`,
 			wantReasonCode: "",
 			wantSeverity:   sdktools.JudgeSeverityHard, // zero value; unused for allow rows
-			// The unresolvable $D/$X expansions still keep the symlink gate
-			// best-effort suspicious — a non-canonical code, so a strict judge
-			// may still settle it.
-			wantSymlinkCode: sdktools.ReasonCodeSymlinkSuspicious,
+			// The symlink walk is a pure literal-path extractor: dynamic
+			// constructs ($D/$X) are deliberately not assessed there — the
+			// deterministic flowsh analysis owns them on this same call.
+			wantSymlinkCode: "",
 		},
 		{
-			name:           "bare command substitution: judge assesses it clean, symlink gate stays suspicious",
+			name:           "bare command substitution: judge assesses it clean, symlink walk stays silent",
 			command:        `cat $(echo x)`,
 			wantReasonCode: "",
 			wantSeverity:   sdktools.JudgeSeverityHard,
-			// A bare (argument-position) substitution is invisible to the
-			// symlink walker — it stays escalating there.
-			wantSymlinkCode: sdktools.ReasonCodeSymlinkSuspicious,
+			// A bare (argument-position) substitution carries no literal path,
+			// so the literal-path walk has nothing to say; flowsh covers the
+			// dynamic construct.
+			wantSymlinkCode: "",
 		},
 	}
 

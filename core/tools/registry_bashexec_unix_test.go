@@ -21,8 +21,8 @@ import (
 // executed because confirmation fires first.
 //
 // BashExecTool is //go:build !windows; on Windows the posh_exec tool covers
-// the same containment contract (see step_5 surrogate test in sp4rk
-// shellpaths_test.go and posh_test.go).
+// the same containment contract (see the judge-severity coverage in sp4rk
+// tools/builtins/posh_judge_severity_windows_test.go).
 func TestBashExec_AllowGroup_OutOfRootPath_EscalatesToConfirm(t *testing.T) {
 	registry := NewToolRegistry()
 	// Real bash_exec tool with an empty blacklist so ONLY path-containment

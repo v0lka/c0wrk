@@ -256,16 +256,36 @@ describe('commit', () => {
     Object.keys(mockApp).forEach(k => delete mockApp[k])
   })
 
-  it('calls app.Commit with message and returns the new SHA', async () => {
-    mockApp.Commit = vi.fn().mockResolvedValue('abc123def456789012345678901234567890abcd')
-    const result = await commit('fix: update config')
-    expect(mockApp.Commit).toHaveBeenCalledWith('fix: update config')
-    expect(result).toBe('abc123def456789012345678901234567890abcd')
+  it('calls app.Commit with message and force flag, returns the CommitResult', async () => {
+    mockApp.Commit = vi.fn().mockResolvedValue({ sha: 'abc123def456789012345678901234567890abcd', output: '[main abc123d] fix: update config' })
+    const result = await commit('fix: update config', true)
+    expect(mockApp.Commit).toHaveBeenCalledWith('fix: update config', true)
+    expect(result.sha).toBe('abc123def456789012345678901234567890abcd')
+    expect(result.output).toBe('[main abc123d] fix: update config')
+    expect(result.suppressed).toBeUndefined()
+  })
+
+  it('defaults force to false', async () => {
+    mockApp.Commit = vi.fn().mockResolvedValue({ sha: 'abc123def456789012345678901234567890abcd' })
+    await commit('fix: default force')
+    expect(mockApp.Commit).toHaveBeenCalledWith('fix: default force', false)
+  })
+
+  it('returns the Suppressed description when the backend withholds the commit', async () => {
+    mockApp.Commit = vi.fn().mockResolvedValue({ suppressed: { hooks: ['pre-commit'], signing_repo: false, signing_global: false } })
+    const result = await commit('fix: suppressed')
+    expect(result.suppressed?.hooks).toEqual(['pre-commit'])
+    expect(result.sha).toBeUndefined()
   })
 
   it('throws when backend returns an invalid SHA', async () => {
-    mockApp.Commit = vi.fn().mockResolvedValue('')
-    await expect(commit('fix: empty sha')).rejects.toThrow('invalid commit SHA')
+    mockApp.Commit = vi.fn().mockResolvedValue({ sha: '' })
+    await expect(commit('fix: empty sha')).rejects.toThrow('no commit SHA')
+  })
+
+  it('throws when backend returns an invalid CommitResult', async () => {
+    mockApp.Commit = vi.fn().mockResolvedValue('abc123')
+    await expect(commit('fix: old string shape')).rejects.toThrow('invalid CommitResult')
   })
 
   it('propagates errors', async () => {

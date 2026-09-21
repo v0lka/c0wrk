@@ -3,7 +3,7 @@ import { FlaskConical, FolderOpen, ChevronDown, AlertCircle } from 'lucide-react
 import { cn } from '@/lib/utils'
 import { useResearchStore, selectActiveProject } from '@/stores/researchStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
-import { useProjectStore } from '@/stores/projectStore'
+import { useProjectStore, selectIsNoProject } from '@/stores/projectStore'
 import { useUIStore, selectResearchSegment, type ResearchSegment } from '@/stores/uiStore'
 import {
   DropdownMenu,
@@ -11,7 +11,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from '@/components/ui/dropdown-menu'
-import { ResearchToggle } from './ResearchToggle'
 import { ResearchMetricsRow } from './ResearchMetrics'
 import { ResearchNextStep } from './ResearchNextStep'
 import { ResearchHypothesisPicker } from './ResearchHypothesisPicker'
@@ -25,7 +24,7 @@ import { PapersView } from '@/components/papers/PapersView'
 
 /** The Research panel's two segments: the research control Dashboard vs the
  *  literature (Papers) library. The paper library lives independently of the
- *  RESEARCH toggle, so the segment is reachable in both states. */
+ *  hypothesis tracking, so the segment is always reachable. */
 const RESEARCH_SEGMENTS: ReadonlyArray<{ value: ResearchSegment; label: string }> = [
   { value: 'dashboard', label: 'Dashboard' },
   { value: 'papers', label: 'Papers' },
@@ -164,7 +163,6 @@ export function ResearchPanel() {
   // Data sync (research:changed / workspace:tree_changed full status +
   // research:file_changed incremental graph) lives in the App-root
   // ResearchEventBridge — this panel is a pure view over researchStore.
-  const enabled = useResearchStore((s) => s.status?.enabled ?? false)
   const project = useResearchStore(selectActiveProject)
   const rootPath = useResearchStore((s) => s.status?.research_root ?? '')
   const root = useResearchStore((s) => s.status?.root)
@@ -174,6 +172,7 @@ export function ResearchPanel() {
   // The segment is remembered per project; '' / null id falls back to the
   // Dashboard.
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  const isNoProject = useProjectStore(selectIsNoProject)
   const segment = useUIStore((s) => selectResearchSegment(s, activeProjectId))
   const setResearchSegment = useUIStore((s) => s.setResearchSegment)
   const selectSegment = useCallback(
@@ -202,26 +201,13 @@ export function ResearchPanel() {
     <ResearchSegmentControl active={segment} onSelect={selectSegment} />
   )
 
-  // ── RESEARCH off → Papers library or the toggle empty state ───────────
-  if (!enabled) {
-    return (
-      <div className="flex h-full flex-col min-h-0">
-        {segmentControl}
-        {error && <ErrorBanner message={error} />}
-        {segment === 'papers' ? (
-          <SegmentPanel segment="papers" className="flex min-h-0 flex-1 flex-col">
-            <PapersView />
-          </SegmentPanel>
-        ) : (
-          <SegmentPanel
-            segment="dashboard"
-            className="flex min-h-0 flex-1 items-center justify-center"
-          >
-            <ResearchToggle variant="card" />
-          </SegmentPanel>
-        )}
-      </div>
-    )
+  // ── No Project (CHAT mode) → neutral render ───────────────────────────
+  // RESEARCH is always available for real projects, so the panel is otherwise
+  // unconditional. In No-Project mode the workspace panel already hides the
+  // Research tab, and the store is reset (no GetResearchStatus call is made);
+  // this guard is the defensive neutral render for any other mount.
+  if (isNoProject) {
+    return null
   }
 
   const metrics = project?.metrics

@@ -25,14 +25,19 @@ type Config struct {
 	LLM      LLMConfig `yaml:"llm"`
 	MCP      MCPConfig `yaml:"mcp"`
 
-	Router        RouterConfig        `yaml:"router"`
-	Executor      ExecutorConfig      `yaml:"executor"`
-	Security      SecurityConfig      `yaml:"security"`
-	Skills        SkillsConfig        `yaml:"skills"`
-	Agents        AgentsConfig        `yaml:"agents"`
-	Search        SearchConfig        `yaml:"search"`
-	ToolLimits    ToolLimitsConfig    `yaml:"toolLimits"`
-	Timeouts      TimeoutsConfig      `yaml:"timeouts"`
+	Router     RouterConfig     `yaml:"router"`
+	Executor   ExecutorConfig   `yaml:"executor"`
+	Security   SecurityConfig   `yaml:"security"`
+	Skills     SkillsConfig     `yaml:"skills"`
+	Agents     AgentsConfig     `yaml:"agents"`
+	Search     SearchConfig     `yaml:"search"`
+	ToolLimits ToolLimitsConfig `yaml:"toolLimits"`
+	Timeouts   TimeoutsConfig   `yaml:"timeouts"`
+	// ShellExec overrides the shell-execution tool's launch shape
+	// (bash_exec on Unix, posh_exec on Windows) and declares the shell the
+	// command text is written in. Zero value = built-in launch shape; load
+	// problems are fail-soft (warning + default). See shell_exec.go.
+	ShellExec     ShellExecConfig     `yaml:"shell_exec"`
 	Orchestration OrchestrationConfig `yaml:"orchestration"`
 	GoalLoop      GoalLoopConfig      `yaml:"goal_loop"`
 	VectorIndex   VectorIndexConfig   `yaml:"vector_index"`
@@ -1200,6 +1205,7 @@ type TimeoutsConfig struct {
 	PersistenceTimeout       int `yaml:"persistenceTimeout"`       // seconds, default: 5
 	LLMRequestTimeout        int `yaml:"llmRequestTimeout"`        // seconds, default: 600 (10 min) — main chat loop
 	ServiceLLMRequestTimeout int `yaml:"serviceLLMRequestTimeout"` // seconds, default: 120 (2 min) — one-shot service LLM requests (session title, commit message, prompt optimization)
+	GitCommitTimeout         int `yaml:"gitCommitTimeout"`         // seconds, default: 300 (5 min) — git commit spawn (rev-parse and other quick git probes keep the fast 30s timeout)
 }
 
 // OrchestrationConfig holds orchestration-specific limits and settings.
@@ -1779,15 +1785,22 @@ func LoadWithResult(path string) (*LoadResult, error) {
 	// Apply defaults for zero-value fields
 	ApplyDefaults(&cfg)
 
+	// Validate the shell_exec override section in place (fail-soft: invalid
+	// entries are warned about and reset to the built-in launch shape). Must
+	// run after ApplyDefaults (which seeds the platform-default shell kind
+	// for an active override) and before validate, so the persisted shape is
+	// always valid.
+	shellExecWarnings := normalizeShellExec(&cfg)
+
 	// Validate configuration
 	if err := validate(&cfg); err != nil {
 		return &LoadResult{
 			Config:     &cfg,
-			LoadErrors: append(autonomyWarnings, "Config validation failed: "+err.Error()),
+			LoadErrors: append(append(autonomyWarnings, shellExecWarnings...), "Config validation failed: "+err.Error()),
 		}, fmt.Errorf("config validation failed: %w", err)
 	}
 
-	return &LoadResult{Config: &cfg, LoadErrors: autonomyWarnings}, nil
+	return &LoadResult{Config: &cfg, LoadErrors: append(autonomyWarnings, shellExecWarnings...)}, nil
 }
 
 // Save writes the configuration to a YAML file atomically.

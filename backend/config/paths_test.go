@@ -41,6 +41,14 @@ func TestSkillsDir(t *testing.T) {
 	}
 }
 
+func TestAgentsDir(t *testing.T) {
+	got := AgentsDir(testAgentDir)
+	want := filepath.Join(testAgentDir, ".agents", "agents")
+	if got != want {
+		t.Errorf("AgentsDir: got %q, want %q", got, want)
+	}
+}
+
 func TestProjectsDir(t *testing.T) {
 	got := ProjectsDir(testAgentDir)
 	want := filepath.Join(testAgentDir, "projects")

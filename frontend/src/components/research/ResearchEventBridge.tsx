@@ -16,8 +16,8 @@ import { usePapersEvents } from '@/hooks/usePapersEvents'
 export function ResearchEventBridge() {
   useResearchStatusEvents()
   useResearchFileWatcher()
-  // The paper library is watched independently of the RESEARCH toggle, so its
-  // sync rides the same always-mounted bridge.
+  // The paper library always exists at the canonical research root of a real
+  // project, so its sync rides the same always-mounted bridge.
   usePapersEvents()
 
   return null

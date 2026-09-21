@@ -809,8 +809,9 @@ func (b *OrchestratorBuilder) UpdateSecurityPolicies(cfg *BuilderConfig) {
 }
 
 // UpdateShellBlocklist re-registers the shell-execution tool with the
-// execute-group command blocklist from cfg. The blocklist is compiled into
-// the tool instance at construction time, so runtime blocklist edits
+// execute-group command blocklist and the shell_exec launch-shape override
+// from cfg. The blocklist is compiled into the tool instance at construction
+// time and the invocation shapes the tool description, so runtime edits
 // (security settings UI) require re-registration to take effect without an
 // app restart. A compile failure leaves the previously registered tool in
 // place and is returned to the caller.
@@ -833,7 +834,7 @@ func (b *OrchestratorBuilder) UpdateShellBlocklist(cfg *BuilderConfig) error {
 	return tools.UpdateShellTool(b.registry, execGroup.Blocklist, builtins.BashTimeouts{
 		MaxTimeout: time.Duration(cfg.Timeouts.BashMaxTimeout) * time.Second,
 		WaitDelay:  time.Duration(cfg.Timeouts.BashWaitDelay) * time.Second,
-	})
+	}, cfg.ShellExec.BashExec, cfg.ShellExec.PoshExec)
 }
 
 // UpdateSearchTool replaces or removes the web_search tool in the registry.
@@ -2439,8 +2440,10 @@ func newJudgeDumpProvider(inner llm.Provider, logger *slog.Logger, providerName 
 // records the clone as live. The clone and the insert happen atomically under
 // b.mu so a concurrent applySecurityPolicies push cannot slip between them:
 // either the clone is created after the parent registry was updated (it
-// inherits the new security state) or it is already tracked here and receives
-// the push. The entry is released by unregisterSessionRegistry via the
+// inherits the new group policies and autonomy posture) or it is already
+// tracked here and receives the group-policy half of the push. The autonomy
+// posture on the clone is pinned at task launch (RefreshAutonomyPosture), not
+// pushed. The entry is released by unregisterSessionRegistry via the
 // orchestrator's cleanup hook.
 func (b *OrchestratorBuilder) registerSessionRegistry() *tools.ToolRegistry {
 	b.mu.Lock()
@@ -2468,19 +2471,35 @@ func (b *OrchestratorBuilder) unregisterSessionRegistry(r *tools.ToolRegistry) {
 // system group is not configurable and any entry for it is skipped
 // defensively; unknown group names are likewise skipped.
 //
-// It also pushes the silent-mode posture (security.silent_mode) to the same
-// registries and reconciles the ask_user tool's registration on the shared
-// registry, so a runtime security-settings edit takes effect on live sessions
-// without an app restart.
+// Split delivery contract (per-task autonomy pinning): the shared registry
+// receives the FULL state — group policies, auto-approval, the autonomy mode,
+// and the silent-mode sub-policies — while live per-session clones receive
+// ONLY the group policies and auto-approval. Group policy is fail-closed
+// posture shared by every session: a runtime deny set in the security
+// settings UI must reach already-open sessions too, otherwise it would
+// silently fail-open on every session created before the save (the same
+// save's execute blocklist does reach them, because it re-registers the tool
+// in the shared sp4rk registry the clones embed). The autonomy posture, by
+// contrast, is pinned per task: each clone inherits it at creation and
+// re-syncs it from the shared registry at task launch (fresh send and every
+// resume path) via ToolRegistry.RefreshAutonomyPosture, so a task that
+// started interactive can never silently turn unattended mid-run, and a
+// paused task resumed after a Settings edit runs under the posture the user
+// currently sees in Settings. The pinning is bidirectional-aware: the
+// escalation direction is pinned as just described, while a TIGHTENING save
+// (a revocation to a less-permissive posture — e.g. Security back to
+// Assisted/Standard while a silent task runs) must not fail open, so each
+// live clone also receives ApplyAutonomyPostureIfTightening, which applies
+// the new posture only when it is tighter than the clone's current one. The
+// result is that a task can never silently BECOME unattended mid-run, but a
+// revocation reaches a running task immediately. applySecurityPolicies also
+// reconciles the ask_user tool's registration on the shared registry — ask_user
+// availability is tool-registration-scoped and therefore follows Settings
+// immediately (including for a running task); this is a documented boundary of
+// the pinning contract.
 //
-// The state is pushed to the shared registry AND every live per-session
-// registry clone: each session executes on its own clone (see Build), so a
-// runtime edit from the security settings UI must reach already-open sessions
-// too — otherwise a deny set in the UI would silently fail-open on every
-// session created before the save (the same save's execute blocklist does
-// reach them, because it re-registers the tool in the shared sp4rk registry
-// the clones embed). The push holds b.mu across the whole update so a Build
-// racing it cannot miss the new state (see registerSessionRegistry).
+// The push holds b.mu across the whole update so a Build racing it cannot
+// miss the new state (see registerSessionRegistry).
 func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 	groupPolicies := make(map[sdktools.ToolGroup]sdktools.ToolPolicy, len(cfg.Security.Groups))
 	for name, group := range cfg.Security.Groups {
@@ -2508,7 +2527,15 @@ func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 	b.mu.Lock()
 	b.registry.ApplySecurityState(groupPolicies, autoApprove, autonomyMode, silentMode)
 	for r := range b.sessionRegistries {
-		r.ApplySecurityState(groupPolicies, autoApprove, autonomyMode, silentMode)
+		// Group policies and auto-approval only: the autonomy posture is
+		// pinned per task (see the method comment) — a clone re-syncs an
+		// ESCALATION from the shared registry at task launch via
+		// RefreshAutonomyPosture, never mid-run. The one mid-run exception is
+		// the DE-ESCALATION (tightening) direction: a revoked unattended
+		// posture must stop auto-approving immediately, so push it here when
+		// it is tighter than the posture the clone currently holds.
+		r.ApplyGroupPolicies(groupPolicies, autoApprove)
+		r.ApplyAutonomyPostureIfTightening(autonomyMode, silentMode)
 	}
 	// ask_user lives in the shared sp4rk registry the session clones embed, so
 	// re-registering it here reaches live sessions immediately — a runtime
@@ -2709,10 +2736,12 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 			MaxTimeout: time.Duration(cfg.Timeouts.BashMaxTimeout) * time.Second,
 			WaitDelay:  time.Duration(cfg.Timeouts.BashWaitDelay) * time.Second,
 		},
-		ShellBlocklist: shellBlocklist,
-		SearchProvider: cfg.Search.Provider,
-		SearchAPIKey:   cfg.ExpandEnvVars(cfg.Search.APIKey),
-		SearchTimeout:  time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
+		ShellBlocklist:      shellBlocklist,
+		BashShellInvocation: cfg.ShellExec.BashExec,
+		PoshShellInvocation: cfg.ShellExec.PoshExec,
+		SearchProvider:      cfg.Search.Provider,
+		SearchAPIKey:        cfg.ExpandEnvVars(cfg.Search.APIKey),
+		SearchTimeout:       time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
 
 		SilentMode: tools.SilentModeState{
 			ToolConfirm: cfg.Security.SilentMode.ToolConfirm,

@@ -7,7 +7,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 
@@ -22,33 +21,30 @@ import (
 // ---------------------------------------------------------------------------
 
 // ResearchStatusDTO is the structured response for GetResearchStatus. It is the
-// full Research-panel view model: the toggle state plus the parsed research
-// root (graph + metrics) when RESEARCH mode is enabled.
+// full Research-panel view model: the mode state plus the parsed research root
+// (graph + metrics).
 //
-// When Enabled is false, ResearchRoot and Root are empty/nil — this is the
-// "empty state" the frontend renders when RESEARCH is off (or the project has
-// no research root yet).
+// RESEARCH is always on for real projects, so for them Enabled is true and
+// ResearchRoot points at <workspace>/.research. For the No Project
+// pseudo-project (no workspace) it is the neutral "empty state": Enabled=false
+// with ResearchRoot and Root empty/nil.
 type ResearchStatusDTO struct {
-	// Enabled reports whether RESEARCH mode is active for the project (a real,
-	// non-No-Project project with a non-empty persisted ResearchRoot).
+	// Enabled reports whether RESEARCH is available for the project (true for
+	// a real, non-No-Project project).
 	Enabled bool `json:"enabled"`
 
 	// ProjectID is the project these results pertain to.
 	ProjectID string `json:"project_id"`
 
 	// ResearchRoot is the absolute path to the research workspace directory
-	// (config.ProjectResearchPath) when enabled; "" otherwise.
+	// (config.ProjectResearchPath); "" for the No Project pseudo-project.
 	ResearchRoot string `json:"research_root"`
 
 	// Root is the parsed research root (index, projects, each project's graph
-	// + metrics + brief + prior-art). It is nil when Enabled is false or when
-	// the directory could not be parsed (treated as an empty state).
+	// + metrics + brief + prior-art). It is nil for the No Project
+	// pseudo-project or when the directory could not be parsed (treated as an
+	// empty state).
 	Root *research.ResearchRoot `json:"root,omitempty"`
-
-	// SeedResult, populated only by EnableResearch, reports the per-skill
-	// outcome of seeding the research skill-pack into the project's local
-	// .agents/skills directory. Nil for GetResearchStatus / DisableResearch.
-	SeedResult *ResearchSeedResultDTO `json:"seed_result,omitempty"`
 
 	// PinnedResearch lists the project's pinned research document paths —
 	// each the brief of a pinned R-NNN, relative to the research root with
@@ -92,17 +88,6 @@ type ResearchMetrics struct {
 	Depth            int            `json:"depth"`
 	Breadth          int            `json:"breadth"`
 	ActiveFront      []string       `json:"active_front,omitempty"`
-}
-
-// ResearchSeedResultDTO mirrors research.SeedSkillsResult for the frontend:
-// which skills were newly seeded, overwritten, left current, preserved
-// (user-owned), or modified (pack-marked but locally diverged).
-type ResearchSeedResultDTO struct {
-	Seeded    []string `json:"seeded"`
-	Updated   []string `json:"updated"`
-	Current   []string `json:"current"`
-	Preserved []string `json:"preserved"`
-	Modified  []string `json:"modified"`
 }
 
 // ResearchNextStepDTO is the small response for GetResearchNextStep: the single
@@ -153,324 +138,16 @@ type NewHypothesisCard struct {
 }
 
 // ---------------------------------------------------------------------------
-// EnableResearch
-// ---------------------------------------------------------------------------
-
-// EnableResearch activates RESEARCH mode for a project. It:
-//   - Resolves the research root directory (rootPath, or the project's default
-//     <workspace>/.research when rootPath is empty) and creates it if missing.
-//   - Seeds the seven research-* methodology skills into the project's local
-//     .agents/skills directory (idempotent, non-destructive — see Task 4).
-//   - Persists the research root on the project (ProjectInfo.ResearchRoot) so
-//     the toggle survives restarts.
-//   - Invalidates the skill cache so ListSkills picks up the seeded skills.
-//   - Emits a research:changed event (action="enabled").
-//
-// It returns the parsed research status (graph + metrics + seed result) so the
-// frontend can render the panel immediately. Enabling on an already-enabled
-// project is idempotent (re-seeds, re-persists, re-emits).
-func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatusDTO, error) {
-	if projectID == "" {
-		return nil, errors.New("project_id is required")
-	}
-	if f.projectManager == nil || f.projStore == nil {
-		return nil, errors.New("project subsystem not initialized")
-	}
-
-	proj, err := f.loadProjectForResearch(projectID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Resolve the research root. Default to the project's canonical research
-	// directory when no explicit root is supplied. When an explicit rootPath is
-	// given, it MUST reside within the project workspace (centralized path
-	// containment — SECURITY.md): an out-of-workspace root is rejected rather
-	// than silently persisted, since this is a UI binding and a future caller
-	// could otherwise point research artifacts outside the workspace.
-	researchRoot := rootPath
-	if researchRoot == "" {
-		researchRoot = config.ProjectResearchPath(proj.WorkspacePath)
-	} else {
-		// Explicit root: enforce workspace containment.
-		contained, withinErr := config.IsWithinPath(proj.WorkspacePath, researchRoot)
-		if withinErr != nil {
-			return nil, fmt.Errorf("failed to validate research root path containment: %w", withinErr)
-		}
-		if !contained {
-			return nil, fmt.Errorf("research root %q must be inside the project workspace %q", researchRoot, proj.WorkspacePath)
-		}
-	}
-	if abs, absErr := filepath.Abs(researchRoot); absErr == nil {
-		researchRoot = abs
-	}
-
-	// Create the research root directory (config.ProjectResearchPath is
-	// explicitly created-lazily by this activating layer).
-	if err := os.MkdirAll(researchRoot, 0o755); err != nil {
-		return nil, fmt.Errorf("failed to create research root %q: %w", researchRoot, err)
-	}
-
-	// Track the active research root so the workspace watcher callback can
-	// emit research:file_changed events for file modifications inside it.
-	// Mirror DisableResearch's guard: the active-project trio drives
-	// CreateSession, ListSessions, resolveWorkspacePath (file tree), git
-	// status, and the skills-cache key, and EnableResearch may legitimately be
-	// invoked for a project that is NOT the active one (a stale project id
-	// during a project-switch race, or any non-UI binding caller). Writing the
-	// trio unconditionally would silently retarget those operations without
-	// any of the project-switch flow (no watcher swap, no project:switched
-	// event, no session refresh). Research-root tracking is only needed for
-	// the ACTIVE project's watcher; the persisted proj.ResearchRoot below
-	// makes a later switch to this project pick the root up anyway
-	// (switchProject sets activeResearchRoot from the project record).
-	f.activeProjectMu.Lock()
-	if f.activeProjectID == projectID {
-		f.activeProjectPath = proj.WorkspacePath
-		f.activeResearchRoot = researchRoot
-		// The paper library follows the effective research root, so track it
-		// here too. When RESEARCH is enabled with a custom root the library
-		// moves to <researchRoot>/papers; the WatchTree(researchRoot) below
-		// covers its subtree.
-		f.activePapersRoot = config.PaperLibraryPathIn(researchRoot)
-		// The comparisons directory follows the same root and is likewise
-		// covered by the WatchTree(researchRoot) below.
-		f.activeComparisonsRoot = config.ComparisonsPathIn(researchRoot)
-	}
-	f.activeProjectMu.Unlock()
-
-	// Recursively watch the research artifact tree so the file watcher
-	// detects edits to hypothesis cards / brief / graph in nested
-	// subdirectories (.research/R-NNN/hypotheses/…). The watcher was created
-	// at project-switch time (which registered the EFFECTIVE research root as a
-	// recursive root — the default <workspace>/.research when RESEARCH was off)
-	// so it did not watch the newly-activated tree; add it now. Unwatch the
-	// previous effective root first when it differs: fsnotify watches persist
-	// until Remove/Close, so a stale watch on the now-inactive default-root tree
-	// would leak for the app's lifetime and fire spurious
-	// workspace:tree_changed events. Best-effort: a nil watcher (e.g. early in
-	// startup) is skipped — switchProjectSetupWatcher picks it up on the next
-	// project switch.
-	prevResearchRoot := effectiveResearchRoot(proj)
-	f.watcherMu.Lock()
-	if f.watcher != nil {
-		if prevResearchRoot != "" && prevResearchRoot != researchRoot {
-			if uerr := f.watcher.UnwatchTree(prevResearchRoot); uerr != nil {
-				f.log().Debug("failed to unwatch previous research tree on enable",
-					"root", prevResearchRoot, "error", uerr)
-			}
-		}
-		if werr := f.watcher.WatchTree(researchRoot); werr != nil {
-			f.log().Debug("failed to watch research tree on enable",
-				"root", researchRoot, "error", werr)
-		}
-	}
-	f.watcherMu.Unlock()
-
-	// Reconcile the project-local c0wrk packs: the seven research-* skills,
-	// the study-paper skill, and the research Subagent Profile — seeding ALL
-	// missing entries, upgrading pack-marked outdated ones, preserving
-	// user-owned directories (see reconcileResearchPacks). The project-local
-	// study-paper copy is what makes the papers workflow robust: per-session
-	// skill discovery resolves same-named skills first-wins with
-	// <workspace>/.agents/skills at the highest priority, so the seeded copy
-	// beats a same-named ~/.agents skill that knows nothing about c0wrk's
-	// paper-library conventions.
-	packRes := f.reconcileResearchPacks(projectID, proj.WorkspacePath)
-
-	// Persist the research root on the project. All writers of the projects
-	// row serialize on the per-EFFECTIVE-research-root research mutation mutex
-	// — the same key the paper writers (SetPaperPinned / RecordFlashcardReview /
-	// RunPaperLiterature) derive from papersReadContextFor, which is the
-	// persisted root when RESEARCH is on and the default <workspace>/.research
-	// when it is off. Keying on the raw ResearchRoot instead would, while
-	// RESEARCH is off, take the "" mutex and let a concurrent pin save land on a
-	// stale snapshot (the projects-row lost update). Keying on the NEW root
-	// would likewise take a different mutex during an explicit-root re-enable.
-	// Inside the lock this save re-loads the row, verifies the root did not
-	// change meanwhile (the sentinel below), and merges only ResearchRoot — a
-	// full-row save of the snapshot taken before seeding would clobber a pin
-	// toggle committed meanwhile.
-	persistMu := f.researchMutationMu(effectiveResearchRoot(proj))
-	persistMu.Lock()
-	persistProj, err := f.loadProjectForResearch(projectID)
-	if err != nil {
-		persistMu.Unlock()
-		return nil, err
-	}
-	if persistProj.ResearchRoot != proj.ResearchRoot {
-		persistMu.Unlock()
-		return nil, errResearchRootChanged
-	}
-	persistProj.ResearchRoot = researchRoot
-	if err := f.projStore.SaveProject(context.Background(), *persistProj); err != nil {
-		persistMu.Unlock()
-		return nil, fmt.Errorf("failed to persist research root: %w", err)
-	}
-	persistMu.Unlock()
-
-	// Invalidate the skill cache so the next ListSkills re-scans and picks up
-	// the freshly seeded research-* skills.
-	f.invalidateSkillCache()
-
-	// Invalidate the agent cache so the next ListAgents re-scans and picks up
-	// the freshly seeded research profile.
-	f.invalidateAgentCache()
-
-	// Reload the skill catalog for any already-running sessions of this project
-	// so the research-* skills are discoverable without a restart. Without this,
-	// a session created before RESEARCH was enabled would emit research router
-	// hints referencing skills it has not loaded, so natural-language matching
-	// would silently no-op until restart.
-	if f.app != nil {
-		if manager := f.app.Manager(); manager != nil {
-			manager.RescanSkillsForProject(projectID)
-			manager.RescanAgentsForProject(projectID)
-		}
-	}
-
-	// Parse the research root for the response.
-	root := f.parseResearchRootBestEffort(researchRoot)
-
-	status := &ResearchStatusDTO{
-		Enabled:      true,
-		ProjectID:    projectID,
-		ResearchRoot: researchRoot,
-		Root:         root,
-		SeedResult:   toSeedResultDTO(packRes),
-	}
-	applyResearchPins(status, persistProj.ResearchPins)
-
-	f.emitEvent(EventResearchChanged, map[string]string{
-		"project_id": projectID,
-		"action":     "enabled",
-	})
-
-	return status, nil
-}
-
-// ---------------------------------------------------------------------------
-// DisableResearch
-// ---------------------------------------------------------------------------
-
-// DisableResearch deactivates RESEARCH mode for a project by clearing its
-// persisted research root. It does NOT delete the research workspace directory
-// or remove the seeded skills — only the toggle is cleared, so re-enabling
-// later restores the prior state without data loss. Emits a research:changed
-// event (action="disabled").
-func (f *FrontendAPI) DisableResearch(projectID string) error {
-	if projectID == "" {
-		return errors.New("project_id is required")
-	}
-	if f.projectManager == nil || f.projStore == nil {
-		return errors.New("project subsystem not initialized")
-	}
-
-	proj, err := f.loadProjectForResearch(projectID)
-	if err != nil {
-		return err
-	}
-
-	// Clear the toggle. Take the same per-EFFECTIVE-research-root mutation
-	// mutex the pin RPCs, EnableResearch, and the paper writers serialize on
-	// (effectiveResearchRoot, so every writer of this row agrees on one key),
-	// re-load the row inside the lock, and merge only this clear: a pin
-	// committed while we waited on the mutex survives the save instead of being
-	// overwritten by a stale full-row snapshot (the projects-row lost update).
-	mu := f.researchMutationMu(effectiveResearchRoot(proj))
-	mu.Lock()
-	fresh, err := f.loadProjectForResearch(projectID)
-	if err != nil {
-		mu.Unlock()
-		return err
-	}
-	// Sentinel guard (mirrors the pin/delete RPCs): the root observed on the
-	// initial load changed while we waited for the mutex, so clearing it here
-	// would clear a root this call never observed. Nothing was written; a
-	// retry against the fresh state resolves.
-	if fresh.ResearchRoot != proj.ResearchRoot {
-		mu.Unlock()
-		return errResearchRootChanged
-	}
-	fresh.ResearchRoot = ""
-	if err := f.projStore.SaveProject(context.Background(), *fresh); err != nil {
-		mu.Unlock()
-		return fmt.Errorf("failed to clear research root: %w", err)
-	}
-	mu.Unlock()
-
-	// Clear the tracked research root so the watcher stops emitting
-	// research:file_changed events. Only activeResearchRoot is cleared — the
-	// active project ID/path must be preserved so git, workspace, and session
-	// operations continue to target the correct project after toggling
-	// RESEARCH off. The paper-library / comparisons roots are RETRACKED (not
-	// cleared): both follow the effective research root, which falls back to
-	// the default once the toggle is cleared, and must keep being watched so a
-	// paper edit still emits papers:changed with RESEARCH off.
-	f.activeProjectMu.Lock()
-	researchRootToUnwatch := ""
-	researchRootToWatch := ""
-	if f.activeProjectID == projectID {
-		researchRootToUnwatch = f.activeResearchRoot
-		f.activeResearchRoot = ""
-		f.activePapersRoot = papersRootForProject(fresh)
-		f.activeComparisonsRoot = comparisonsRootForProject(fresh)
-		researchRootToWatch = effectiveResearchRoot(fresh)
-	}
-	f.activeProjectMu.Unlock()
-
-	// Stop watching the research artifact tree so file edits inside it no
-	// longer emit research:file_changed. The tree was added by EnableResearch
-	// (or switchProjectSetupWatcher); it must be explicitly removed because
-	// fsnotify watches persist until Remove/Close.
-	if researchRootToUnwatch != "" {
-		f.watcherMu.Lock()
-		if f.watcher != nil {
-			if werr := f.watcher.UnwatchTree(researchRootToUnwatch); werr != nil {
-				f.log().Debug("failed to unwatch research tree on disable",
-					"root", researchRootToUnwatch, "error", werr)
-			}
-		}
-		f.watcherMu.Unlock()
-	}
-
-	// The paper library and the comparisons directory both live INSIDE the
-	// research tree, so the UnwatchTree above removed their watches too.
-	// Re-watch the effective (now default) research root as a recursive root so
-	// both subtrees stay watched independently of the toggle — and do so
-	// WITHOUT creating any directory: the recursive root auto-adds papers/ and
-	// comparisons/ when they are first written, so the toggle-off path no
-	// longer materializes them in the user's repository. Best-effort: a nil
-	// watcher (early startup) is skipped and switchProjectSetupWatcher
-	// re-establishes it on the next project switch.
-	if researchRootToWatch != "" {
-		f.watcherMu.Lock()
-		if f.watcher != nil {
-			if wErr := f.watcher.WatchTree(researchRootToWatch); wErr != nil {
-				f.log().Debug("failed to re-watch research tree on disable",
-					"root", researchRootToWatch, "error", wErr)
-			}
-		}
-		f.watcherMu.Unlock()
-	}
-
-	f.emitEvent(EventResearchChanged, map[string]string{
-		"project_id": projectID,
-		"action":     "disabled",
-	})
-
-	return nil
-}
-
-// ---------------------------------------------------------------------------
 // GetResearchStatus
 // ---------------------------------------------------------------------------
 
-// GetResearchStatus returns the live RESEARCH mode state for a project: the
-// toggle plus the parsed research root (graph + metrics + project list) when
-// enabled. When RESEARCH is disabled (no research root, or the No Project
-// pseudo-project), it returns an empty-state DTO (Enabled=false, nil Root)
-// rather than an error.
+// GetResearchStatus returns the live RESEARCH mode state for a project.
+// RESEARCH is always on for real projects: the research root is the project's
+// canonical <workspace>/.research, and the returned DTO carries the parsed
+// root (graph + metrics + project list) with Enabled=true. The No Project
+// pseudo-project has no workspace, so RESEARCH is unavailable there — it
+// returns a neutral empty state (Enabled=false, nil Root) rather than an
+// error.
 func (f *FrontendAPI) GetResearchStatus(projectID string) (*ResearchStatusDTO, error) {
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
@@ -479,13 +156,17 @@ func (f *FrontendAPI) GetResearchStatus(projectID string) (*ResearchStatusDTO, e
 		return nil, errors.New("project subsystem not initialized")
 	}
 
-	proj, err := f.loadProjectForResearch(projectID)
+	proj, err := f.projectManager.GetProject(projectID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load project %q: %w", projectID, err)
+	}
+	if proj == nil {
+		return nil, fmt.Errorf("project %q not found", projectID)
 	}
 
-	// Empty state when no research root is persisted.
-	if proj.ResearchRoot == "" {
+	// No Project has no workspace: RESEARCH is unavailable there, so return a
+	// neutral empty state (no error) for the panel's empty view.
+	if proj.IsNoProject {
 		status := &ResearchStatusDTO{
 			Enabled:   false,
 			ProjectID: projectID,
@@ -494,11 +175,12 @@ func (f *FrontendAPI) GetResearchStatus(projectID string) (*ResearchStatusDTO, e
 		return status, nil
 	}
 
-	root := f.parseResearchRootBestEffort(proj.ResearchRoot)
+	researchRoot := config.ProjectResearchPath(proj.WorkspacePath)
+	root := f.parseResearchRootBestEffort(researchRoot)
 	status := &ResearchStatusDTO{
 		Enabled:      true,
 		ProjectID:    projectID,
-		ResearchRoot: proj.ResearchRoot,
+		ResearchRoot: researchRoot,
 		Root:         root,
 	}
 	applyResearchPins(status, proj.ResearchPins)
@@ -529,15 +211,11 @@ func (f *FrontendAPI) GetResearchGraph(projectID string) (*ResearchGraphDTO, err
 		return nil, err
 	}
 
-	// Empty state when no research root is persisted.
-	if proj.ResearchRoot == "" {
-		return &ResearchGraphDTO{
-			ProjectID: projectID,
-		}, nil
-	}
+	// RESEARCH is always on for real projects: the root is <workspace>/.research.
+	researchRoot := config.ProjectResearchPath(proj.WorkspacePath)
 
 	// Parse the full root to get the active project.
-	root := f.parseResearchRootBestEffort(proj.ResearchRoot)
+	root := f.parseResearchRootBestEffort(researchRoot)
 	if root == nil {
 		return &ResearchGraphDTO{
 			ProjectID: projectID,
@@ -597,9 +275,9 @@ func researchGraphDTOFromProject(active *research.ResearchProject) *ResearchGrap
 // recorded Decision recommends deciding on it. An empty hypothesisID means
 // the project-level recommendation; an unknown hypothesis id (or one already
 // carrying a Decision) falls back to it too. When there is no active R-NNN
-// yet (an empty research root, a root with no projects, or RESEARCH not
-// enabled), it returns the setup recommendation (research-init) rather than
-// an error, so the dashboard always has a next step to show.
+// yet (an empty research root, or a root with no projects), it returns the
+// setup recommendation (research-init) rather than an error, so the dashboard
+// always has a next step to show.
 func (f *FrontendAPI) GetResearchNextStep(projectID, hypothesisID string) (*ResearchNextStepDTO, error) {
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
@@ -613,12 +291,14 @@ func (f *FrontendAPI) GetResearchNextStep(projectID, hypothesisID string) (*Rese
 		return nil, err
 	}
 
-	// RESEARCH disabled (no persisted root) → setup recommendation.
-	if proj.ResearchRoot == "" {
+	// RESEARCH is always on for real projects: the root is <workspace>/.research.
+	// A missing/unparseable root (no research artifacts yet) yields the setup
+	// recommendation.
+	root := f.parseResearchRootBestEffort(config.ProjectResearchPath(proj.WorkspacePath))
+	if root == nil {
 		return f.setupNextStep(projectID), nil
 	}
 
-	root := f.parseResearchRootBestEffort(proj.ResearchRoot)
 	active := research.PickActiveProject(root) // handles nil root → nil
 	rec := research.RecommendNextStepForHypothesis(active, hypothesisID)
 
@@ -638,7 +318,7 @@ func (f *FrontendAPI) GetResearchNextStep(projectID, hypothesisID string) (*Rese
 }
 
 // setupNextStep returns the research-init setup recommendation for a project
-// that has no active R-NNN yet (RESEARCH disabled, or an empty research root).
+// that has no active R-NNN yet (an empty or unparseable research root).
 func (f *FrontendAPI) setupNextStep(projectID string) *ResearchNextStepDTO {
 	rec := research.RecommendNextStep(nil)
 	return &ResearchNextStepDTO{
@@ -808,7 +488,7 @@ func (f *FrontendAPI) SetActiveResearch(projectID, researchID string) (*Research
 	if err != nil {
 		return nil, err
 	}
-	if proj.ResearchRoot != researchRoot {
+	if effectiveResearchRoot(proj) != researchRoot {
 		return nil, errResearchRootChanged
 	}
 
@@ -870,7 +550,7 @@ func (f *FrontendAPI) DeleteResearch(projectID, researchID string) (*ResearchSta
 	if err != nil {
 		return nil, err
 	}
-	if proj.ResearchRoot != researchRoot {
+	if effectiveResearchRoot(proj) != researchRoot {
 		return nil, errResearchRootChanged
 	}
 
@@ -950,16 +630,15 @@ func (f *FrontendAPI) SetResearchPinned(projectID, researchID string, pinned boo
 	// Re-load the row under the lock and persist only the pins delta. The
 	// load in researchRootForMutation ran before the mutex was acquired, so
 	// a full-row save of that snapshot would clobber whatever was committed
-	// while this RPC waited on the mutex: a DisableResearch clear of
-	// ResearchRoot (resurrecting the toggle), an EnableResearch root change
-	// (guarded below), or another pin toggle on a different card (losing
-	// its pin). All writers of the projects row — the pin RPCs, Enable and
-	// Disable — serialize on this same per-root mutex.
+	// while this RPC waited on the mutex: a concurrent pin toggle on a
+	// different card (losing its pin), or another research-row writer that
+	// moved the effective root (guarded below). All writers of the projects
+	// row serialize on this same per-root mutex.
 	proj, err := f.loadProjectForResearch(projectID)
 	if err != nil {
 		return err
 	}
-	if proj.ResearchRoot != researchRoot {
+	if effectiveResearchRoot(proj) != researchRoot {
 		return errResearchRootChanged
 	}
 
@@ -1018,7 +697,7 @@ func (f *FrontendAPI) SetHypothesisPinned(projectID, researchID, hypothesisID st
 	if err != nil {
 		return err
 	}
-	if proj.ResearchRoot != researchRoot {
+	if effectiveResearchRoot(proj) != researchRoot {
 		return errResearchRootChanged
 	}
 
@@ -1138,14 +817,11 @@ func removePinnedUnderDir(pins project.ResearchPins, dir string) (project.Resear
 }
 
 // errResearchRootChanged is returned by the research-root writers (the
-// pin/delete RPCs, EnableResearch, and DisableResearch) when the project's
-// persisted research root changed between the call's initial load and its
-// mutex-guarded re-load: the pin paths / the observed root were resolved
-// against the old root, so persisting them would misattribute work to the new
-// one. No row write happens in that case; a retry against the fresh state
-// resolves. (EnableResearch may already have performed best-effort skill/agent
-// seeding before it detects the change — those side effects are idempotent and
-// non-destructive.)
+// pin/delete RPCs and the paper writers) when the project's effective research
+// root changed between the call's initial load and its mutex-guarded re-load:
+// the pin paths / the observed root were resolved against the old root, so
+// persisting them would misattribute work to the new one. No row write happens
+// in that case; a retry against the fresh state resolves.
 var errResearchRootChanged = errors.New("research root changed concurrently")
 
 // researchMutationMu returns the mutex serializing hypothesis mutations for a
@@ -1165,14 +841,13 @@ func (f *FrontendAPI) researchMutationMu(researchRoot string) *sync.Mutex {
 	return mu
 }
 
-// researchRootForMutation loads the project, verifies RESEARCH is enabled, and
-// returns the project's research root (with
-// workspace containment enforced — SECURITY.md; defense in depth even though
-// the root was already validated at enable time). The returned project record
-// predates the caller's mutex acquisition, so callers that persist the project
-// back must re-load the row under the per-root mutation mutex and merge only
-// their field delta (see SetResearchPinned); this helper only requires the
-// read path.
+// researchRootForMutation loads the project and returns its research root,
+// derived from the workspace path (<workspace>/.research) with workspace
+// containment enforced (SECURITY.md; defense in depth even though the root is
+// deterministic). The returned project record predates the caller's mutex
+// acquisition, so callers that persist the project back must re-load the row
+// under the per-root mutation mutex and merge only their field delta (see
+// SetResearchPinned); this helper only requires the read path.
 func (f *FrontendAPI) researchRootForMutation(projectID string) (string, *project.ProjectInfo, error) {
 	if projectID == "" {
 		return "", nil, errors.New("project_id is required")
@@ -1185,18 +860,16 @@ func (f *FrontendAPI) researchRootForMutation(projectID string) (string, *projec
 	if err != nil {
 		return "", nil, err
 	}
-	if proj.ResearchRoot == "" {
-		return "", nil, errors.New("RESEARCH mode is not enabled for this project")
-	}
 
-	contained, withinErr := config.IsWithinPath(proj.WorkspacePath, proj.ResearchRoot)
+	researchRoot := config.ProjectResearchPath(proj.WorkspacePath)
+	contained, withinErr := config.IsWithinPath(proj.WorkspacePath, researchRoot)
 	if withinErr != nil {
 		return "", nil, fmt.Errorf("failed to validate research root containment: %w", withinErr)
 	}
 	if !contained {
-		return "", nil, fmt.Errorf("research root %q must be inside the project workspace %q", proj.ResearchRoot, proj.WorkspacePath)
+		return "", nil, fmt.Errorf("research root %q must be inside the project workspace %q", researchRoot, proj.WorkspacePath)
 	}
-	return proj.ResearchRoot, proj, nil
+	return researchRoot, proj, nil
 }
 
 // researchGraphAfterMutation re-parses the research root after a mutation and
@@ -1262,130 +935,68 @@ func (f *FrontendAPI) parseResearchRootBestEffort(researchRoot string) *research
 	return root
 }
 
-// researchPackReconcile collects the per-pack outcomes of one
-// reconcileResearchPacks run. A nil member means that pack's seeding failed
-// (already logged); it contributes no names to the merged DTO.
-type researchPackReconcile struct {
-	skills *research.SeedSkillsResult
-	papers *papers.SeedResult
-	agents *research.SeedAgentsResult
-}
-
-// changed reports whether the reconciliation wrote anything (new seeds or
-// version upgrades). Callers use it to skip cache invalidation and session
-// rescans when nothing moved.
-func (r *researchPackReconcile) changed() bool {
-	if r == nil {
-		return false
+// seedGlobalPacks seeds every c0wrk-owned pack into the GLOBAL agent
+// directories (~/.c0wrk/.agents/{skills,agents}) once per launch:
+// research.SeedSkills (the seven research-* methodology skills) and
+// papers.SeedSkills (the study-paper skill) into config.SkillsDir(agentDir),
+// and research.SeedAgents (the research Subagent Profile) into
+// config.AgentsDir(agentDir). It is called from NewFrontendAPI BEFORE the
+// skill/agent directory watchers are created, so the freshly created
+// directories are themselves watched on the same launch.
+//
+// The seeding is idempotent and non-destructive: missing pack entries are
+// written, pack-marked outdated entries are upgraded to the current pack
+// version, and user-owned (marker-less, diverging) directories are preserved
+// untouched (see the classification contract in core/research/skillpack.go and
+// core/papers/skillpack.go). Failures are per-pack and logged, never fatal.
+//
+// researchSeedMu serializes the run against any other pack writer; the skill
+// and agent caches are invalidated afterwards so the next ListSkills /
+// ListAgents call reflects the seeded entries.
+func (f *FrontendAPI) seedGlobalPacks() {
+	if f.agentDir == "" {
+		return
 	}
-	skills := r.skills != nil && (len(r.skills.Seeded) > 0 || len(r.skills.Updated) > 0)
-	paperPack := r.papers != nil && (len(r.papers.Seeded) > 0 || len(r.papers.Updated) > 0)
-	agents := r.agents != nil && (len(r.agents.Seeded) > 0 || len(r.agents.Updated) > 0)
-	return skills || paperPack || agents
-}
 
-// reconcileResearchPacks seeds and updates every c0wrk-owned pack into the
-// project-local agent directories: research.SeedSkills (the seven research-*
-// methodology skills), papers.SeedSkills (the study-paper skill), and
-// research.SeedAgents (the research Subagent Profile). It is the single
-// reconciliation shared by EnableResearch and the SwitchProject revalidation
-// for research-enabled projects — seeding ALL missing pack entries and
-// upgrading pack-marked outdated ones, while user-owned (marker-less,
-// diverging) directories are preserved untouched (see the classification
-// contract in core/research/skillpack.go and core/papers/skillpack.go).
-//
-// researchSeedMu serializes the whole run: EnableResearch and a concurrent
-// SwitchProject revalidation can target the same directories, and the pack
-// staging swap is not designed for two concurrent writers of one destination.
-//
-// Failures are per-pack, logged, and never returned as errors — a failed pack
-// yields a nil result member and the research toggle/switch stays unaffected.
-func (f *FrontendAPI) reconcileResearchPacks(projectID, workspacePath string) *researchPackReconcile {
 	f.researchSeedMu.Lock()
 	defer f.researchSeedMu.Unlock()
 
-	res := &researchPackReconcile{}
-
-	skillsDir := config.ProjectSkillsPath(workspacePath)
-	skillsRes, skillsErr := research.SeedSkills(skillsDir, f.log())
-	if skillsErr != nil {
-		f.log().Warn("research pack reconciliation: skill seeding failed",
-			"project_id", projectID, "skills_dir", skillsDir, "error", skillsErr)
+	skillsDir := config.SkillsDir(f.agentDir)
+	if res, err := research.SeedSkills(skillsDir, f.log()); err != nil {
+		f.log().Warn("global research skill-pack seeding failed",
+			"skills_dir", skillsDir, "error", err)
 	} else {
-		res.skills = skillsRes
-		f.log().Info("research skill-pack reconciled",
-			"project_id", projectID,
-			"seeded", len(skillsRes.Seeded), "updated", len(skillsRes.Updated),
-			"current", len(skillsRes.Current), "preserved", len(skillsRes.Preserved),
-			"modified", len(skillsRes.Modified))
+		f.log().Info("global research skill-pack seeded",
+			"skills_dir", skillsDir,
+			"seeded", len(res.Seeded), "updated", len(res.Updated),
+			"current", len(res.Current), "preserved", len(res.Preserved))
 	}
 
-	papersRes, papersErr := papers.SeedSkills(skillsDir, f.log())
-	if papersErr != nil {
-		f.log().Warn("research pack reconciliation: paper skill seeding failed",
-			"project_id", projectID, "skills_dir", skillsDir, "error", papersErr)
+	if res, err := papers.SeedSkills(skillsDir, f.log()); err != nil {
+		f.log().Warn("global paper skill-pack seeding failed",
+			"skills_dir", skillsDir, "error", err)
 	} else {
-		res.papers = papersRes
-		f.log().Info("paper skill-pack reconciled",
-			"project_id", projectID,
-			"seeded", len(papersRes.Seeded), "updated", len(papersRes.Updated),
-			"current", len(papersRes.Current), "preserved", len(papersRes.Preserved),
-			"modified", len(papersRes.Modified))
+		f.log().Info("global paper skill-pack seeded",
+			"skills_dir", skillsDir,
+			"seeded", len(res.Seeded), "updated", len(res.Updated),
+			"current", len(res.Current), "preserved", len(res.Preserved))
 	}
 
-	agentsDir := config.ProjectAgentsPath(workspacePath)
-	agentsRes, agentsErr := research.SeedAgents(agentsDir, f.log())
-	if agentsErr != nil {
-		f.log().Warn("research pack reconciliation: agent seeding failed",
-			"project_id", projectID, "agents_dir", agentsDir, "error", agentsErr)
+	agentsDir := config.AgentsDir(f.agentDir)
+	if res, err := research.SeedAgents(agentsDir, f.log()); err != nil {
+		f.log().Warn("global research agent-pack seeding failed",
+			"agents_dir", agentsDir, "error", err)
 	} else {
-		res.agents = agentsRes
-		f.log().Info("research agent-pack reconciled",
-			"project_id", projectID,
-			"seeded", len(agentsRes.Seeded), "updated", len(agentsRes.Updated),
-			"current", len(agentsRes.Current), "preserved", len(agentsRes.Preserved),
-			"modified", len(agentsRes.Modified))
+		f.log().Info("global research agent-pack seeded",
+			"agents_dir", agentsDir,
+			"seeded", len(res.Seeded), "updated", len(res.Updated),
+			"current", len(res.Current), "preserved", len(res.Preserved))
 	}
 
-	return res
-}
-
-// toSeedResultDTO merges the skill-pack outcomes of a reconciliation into the
-// frontend-facing DTO (research-* + study-paper names in shared buckets),
-// returning nil when every skill pack failed (so the JSON field is omitted).
-// Skill names are unique across the two packs, so concatenation is
-// unambiguous; buckets end sorted (each pack sorts its own, the merge
-// re-sorts the concatenation). Agent-pack outcomes are log-only, mirroring
-// the pre-merge DTO shape.
-func toSeedResultDTO(r *researchPackReconcile) *ResearchSeedResultDTO {
-	if r == nil || (r.skills == nil && r.papers == nil) {
-		return nil
-	}
-	dto := &ResearchSeedResultDTO{
-		Seeded:    []string{},
-		Updated:   []string{},
-		Current:   []string{},
-		Preserved: []string{},
-		Modified:  []string{},
-	}
-	if r.skills != nil {
-		dto.Seeded = append(dto.Seeded, r.skills.Seeded...)
-		dto.Updated = append(dto.Updated, r.skills.Updated...)
-		dto.Current = append(dto.Current, r.skills.Current...)
-		dto.Preserved = append(dto.Preserved, r.skills.Preserved...)
-		dto.Modified = append(dto.Modified, r.skills.Modified...)
-	}
-	if r.papers != nil {
-		dto.Seeded = append(dto.Seeded, r.papers.Seeded...)
-		dto.Updated = append(dto.Updated, r.papers.Updated...)
-		dto.Current = append(dto.Current, r.papers.Current...)
-		dto.Preserved = append(dto.Preserved, r.papers.Preserved...)
-		dto.Modified = append(dto.Modified, r.papers.Modified...)
-	}
-	for _, bucket := range []*[]string{&dto.Seeded, &dto.Updated, &dto.Current, &dto.Preserved, &dto.Modified} {
-		sort.Strings(*bucket)
-	}
-	return dto
+	// The seeded directories are new c0wrk-owned content; drop any cached
+	// skill/agent listing so the next read rescans them.
+	f.invalidateSkillCache()
+	f.invalidateAgentCache()
 }
 
 // applyResearchPins fills a ResearchStatusDTO's pin fields from the project's

@@ -416,39 +416,10 @@ func (f *FrontendAPI) emitGitStatusChanged(repoPath string) {
 // whitespace-only.
 var commitMsgRe = regexp.MustCompile(`\S`)
 
-// Commit creates a git commit with the given message at the active
-// project's repository root and returns the SHA of the newly created
-// commit. The message must be non-empty and is passed to git as a
-// separate argv element (never interpolated into the command line) to
-// prevent shell injection. Emits git:status_changed on success. Returns
-// the new commit's 40-character SHA, or an error when no project is
-// active, the project is No Project, the message is empty, there is
-// nothing to commit, or a git command fails.
-func (f *FrontendAPI) Commit(message string) (string, error) {
-	if !commitMsgRe.MatchString(message) {
-		return "", errors.New("commit message must not be empty")
-	}
-
-	repoPath, err := f.resolveGitRepoRoot()
-	if err != nil {
-		return "", err
-	}
-
-	if _, err := f.runGitCmd(repoPath, "commit", "-m", message); err != nil {
-		return "", err
-	}
-
-	// Resolve the SHA of the commit just created so the frontend can
-	// display it. git rev-parse HEAD yields the 40-character commit SHA.
-	sha, err := f.runGitCmd(repoPath, "rev-parse", "HEAD")
-	if err != nil {
-		return "", fmt.Errorf("resolve new commit SHA: %w", err)
-	}
-	sha = strings.TrimSpace(sha)
-
-	f.emitGitStatusChanged(repoPath)
-	return sha, nil
-}
+// The Commit RPC itself lives in frontend_api_git_commit.go: it gained a
+// force flag and a CommitResult payload for the suppression-aware flow
+// (untrusted repositories with armed hooks/signing return Suppressed
+// instead of silently skipping them).
 
 // ---------------------------------------------------------------------------
 // Branch RPCs

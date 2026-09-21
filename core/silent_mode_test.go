@@ -9,11 +9,20 @@ import (
 	"github.com/v0lka/c0wrk/core/tools"
 )
 
-// TestApplySecurityPolicies_PushesSilentModeToClones verifies the runtime push
-// reaches the shared registry AND every live session clone — the same contract
-// the group policies uphold, so a silent-mode toggle from the settings UI takes
-// effect on already-open sessions without an app restart.
-func TestApplySecurityPolicies_PushesSilentModeToClones(t *testing.T) {
+// TestApplySecurityPolicies_PinsAutonomyToTaskLaunch verifies the
+// one-directional per-task autonomy pinning contract: a runtime push updates
+// the shared registry (the authoritative posture source) and the group policies
+// of every live session clone. A clone's autonomy mode + silent-mode
+// sub-policies are pinned at task launch
+// (ToolRegistry.RefreshAutonomyPosture, called by the session manager at fresh
+// sends and every resume path), so a task that started interactive can never
+// silently turn MORE autonomous mid-run. The opposite (TIGHTENING) direction is
+// NOT pinned: a revocation save (a less-permissive posture than the clone is
+// running) IS delivered to a running clone immediately via
+// ToolRegistry.ApplyAutonomyPostureIfTightening, so switching back to Standard
+// stops a running silent task from auto-approving instead of deferring the
+// revocation until the task ends or is resumed.
+func TestApplySecurityPolicies_PinsAutonomyToTaskLaunch(t *testing.T) {
 	cfgOf := func(mode string, sm BuilderSilentModeConfig) *BuilderConfig {
 		return &BuilderConfig{
 			Security: BuilderSecurityConfig{
@@ -38,20 +47,44 @@ func TestApplySecurityPolicies_PushesSilentModeToClones(t *testing.T) {
 	if got := b.registry.SilentMode(); got != want {
 		t.Errorf("shared registry silent mode = %+v, want %+v", got, want)
 	}
-	if got := session.SilentMode(); got != want {
-		t.Errorf("live session silent mode = %+v, want %+v — a runtime toggle must reach already-open sessions", got, want)
-	}
 	if got := b.registry.AutonomyMode(); got != AutonomyModeSilent {
 		t.Errorf("shared registry autonomy mode = %q, want %q", got, AutonomyModeSilent)
 	}
-	if got := session.AutonomyMode(); got != AutonomyModeSilent {
-		t.Errorf("live session autonomy mode = %q, want %q", got, AutonomyModeSilent)
+	// The live clone must NOT follow: enabling silent from the settings UI
+	// must not flip a session that is (or was) running interactively — the
+	// reported bug. Group policies still reach it (fail-closed posture,
+	// pinned by TestUpdateSecurityPolicies_ReachesLiveSessionRegistries).
+	if got := session.AutonomyMode(); got != AutonomyModeStandard {
+		t.Errorf("live session autonomy mode = %q, want %q — a runtime enable must not reach a running task", got, AutonomyModeStandard)
+	}
+	if got := session.SilentMode(); got != (tools.SilentModeState{}) {
+		t.Errorf("live session silent mode = %+v, want the zero posture (not pushed)", got)
 	}
 
-	// Turning it back off propagates too (replacement, not merge).
+	// Task-launch boundary: the clone re-syncs from the shared registry and
+	// runs the task under the current Settings.
+	session.RefreshAutonomyPosture()
+	if got := session.AutonomyMode(); got != AutonomyModeSilent {
+		t.Errorf("post-refresh session autonomy mode = %q, want %q", got, AutonomyModeSilent)
+	}
+	if got := session.SilentMode(); got != want {
+		t.Errorf("post-refresh session silent mode = %+v, want %+v", got, want)
+	}
+
+	// Turning it back off is a TIGHTENING save (silent → standard): the shared
+	// registry updates AND the revocation reaches the running clone immediately
+	// — a task must not keep auto-approving after the operator reasserts human
+	// control (only the escalation direction is pinned). The clone's silent
+	// sub-policies are cleared along with the mode.
 	b.UpdateSecurityPolicies(cfgOf(AutonomyModeStandard, BuilderSilentModeConfig{}))
 	if got := session.AutonomyMode(); got != AutonomyModeStandard {
-		t.Errorf("session autonomy mode must follow the runtime push off, got %q", got)
+		t.Errorf("session autonomy mode must follow a tightening save, got %q", got)
+	}
+	if got := session.SilentMode(); got != (tools.SilentModeState{}) {
+		t.Errorf("session silent mode must be cleared by a tightening save, got %+v", got)
+	}
+	if got := b.registry.AutonomyMode(); got != AutonomyModeStandard {
+		t.Errorf("shared registry autonomy mode = %q, want %q", got, AutonomyModeStandard)
 	}
 }
 

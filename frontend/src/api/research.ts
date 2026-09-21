@@ -12,44 +12,10 @@ import type {
 } from '@/types/models'
 
 /**
- * Enable RESEARCH mode for a project. Seeds the methodology skill-pack,
- * persists the research root, and returns the parsed research status.
- *
- * Pass an empty rootPath to use the project's default research directory
- * (<workspace>/.research); pass an explicit path to use a custom root.
- */
-export async function enableResearch(
-  projectId: string,
-  rootPath = '',
-): Promise<ResearchStatus> {
-  try {
-    const app = getApp()
-    const result = await app.EnableResearch(projectId, rootPath)
-    if (!isResearchStatus(result)) {
-      throw new Error('Invalid research status response from backend')
-    }
-    return normalizeResearchStatus(result)
-  } catch (err) {
-    logger.error('Failed to enable research:', err)
-    throw err
-  }
-}
-
-/** Disable RESEARCH mode for a project (clears the toggle; preserves files). */
-export async function disableResearch(projectId: string): Promise<void> {
-  try {
-    const app = getApp()
-    await app.DisableResearch(projectId)
-  } catch (err) {
-    logger.error('Failed to disable research:', err)
-    throw err
-  }
-}
-
-/**
- * Get the live RESEARCH mode status for a project: the toggle plus the parsed
- * research root (graph + metrics + project list). Returns an empty-state DTO
- * (enabled=false, no root) when RESEARCH is off.
+ * Get the live RESEARCH status for a project: the parsed research root
+ * (graph + metrics + project list). RESEARCH is always available for real
+ * projects, so `enabled` is true and the root is `<workspace>/.research`; the
+ * No-Project pseudo-project gets a neutral empty DTO.
  */
 export async function getResearchStatus(projectId: string): Promise<ResearchStatus> {
   try {
@@ -136,8 +102,7 @@ export async function setActiveResearch(
 /**
  * Delete a research project (R-NNN): its index rows, its directory tree, and
  * its persisted pins. Deleting the active project falls the active selection
- * through to the remaining projects. Returns the refreshed status (the
- * toggle stays on even after deleting the last project).
+ * through to the remaining projects. Returns the refreshed status.
  */
 export async function deleteResearch(
   projectId: string,

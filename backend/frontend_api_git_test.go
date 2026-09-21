@@ -601,7 +601,7 @@ func TestGitStatus_WorkTreeOnly(t *testing.T) {
 
 func TestCommit_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
-	_, err := f.Commit("test")
+	_, err := f.Commit("test", false)
 	if err == nil {
 		t.Fatal("expected error when no active project")
 	}
@@ -609,7 +609,7 @@ func TestCommit_NoProject(t *testing.T) {
 
 func TestCommit_NoProjectMode(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: "NO_PROJECT", activeProjectPath: t.TempDir()}
-	_, err := f.Commit("test")
+	_, err := f.Commit("test", false)
 	if err == nil {
 		t.Fatal("expected error for No Project mode")
 	}
@@ -617,7 +617,7 @@ func TestCommit_NoProjectMode(t *testing.T) {
 
 func TestCommit_EmptyMessage(t *testing.T) {
 	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		_, err := f.Commit("")
+		_, err := f.Commit("", false)
 		if err == nil {
 			t.Fatal("expected error for empty commit message")
 		}
@@ -626,7 +626,7 @@ func TestCommit_EmptyMessage(t *testing.T) {
 
 func TestCommit_WhitespaceMessage(t *testing.T) {
 	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		_, err := f.Commit("\n  \t")
+		_, err := f.Commit("\n  \t", false)
 		if err == nil {
 			t.Fatal("expected error for whitespace-only commit message")
 		}
@@ -645,10 +645,14 @@ func TestCommit_Success(t *testing.T) {
 		}
 
 		// Commit and capture the returned SHA.
-		sha, err := f.Commit("add commitme.txt")
+		res, err := f.Commit("add commitme.txt", false)
 		if err != nil {
 			t.Fatalf("Commit: %v", err)
 		}
+		if res.Suppressed != nil {
+			t.Fatalf("Commit: unexpected suppression for a clean untrusted repo: %+v", res.Suppressed)
+		}
+		sha := res.Sha
 		if sha == "" {
 			t.Fatal("Commit: expected non-empty commit SHA")
 		}
@@ -682,7 +686,7 @@ func TestCommit_Success(t *testing.T) {
 func TestCommit_NothingToCommit(t *testing.T) {
 	withGitRepo(t, func(f *FrontendAPI, dir string) {
 		// No changes staged — commit should fail.
-		_, err := f.Commit("empty commit")
+		_, err := f.Commit("empty commit", false)
 		if err == nil {
 			t.Fatal("expected error when nothing to commit")
 		}
@@ -1133,7 +1137,7 @@ func TestEventEmitted_Commit(t *testing.T) {
 			t.Fatalf("StageFile: %v", err)
 		}
 
-		if _, err := f.Commit("event commit"); err != nil {
+		if _, err := f.Commit("event commit", false); err != nil {
 			t.Fatalf("Commit: %v", err)
 		}
 
@@ -1152,7 +1156,7 @@ func TestEventNotEmitted_OnError(t *testing.T) {
 			t.Errorf("unexpected event %q emitted on error path", name)
 		}
 		// Commit with nothing staged should fail without emitting.
-		_, _ = f.Commit("nothing to commit")
+		_, _ = f.Commit("nothing to commit", false)
 	})
 }
 

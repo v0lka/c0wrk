@@ -6,10 +6,6 @@ export interface ProjectInfo {
   readonly workspace_path: string
   readonly is_external: boolean
   readonly is_no_project: boolean
-  /** Persisted research workspace root (<workspace>/.research) when RESEARCH mode is enabled; empty otherwise. */
-  readonly research_root: string
-  /** Derived: true for a real (non-No-Project) project with a non-empty research_root. */
-  readonly is_research: boolean
   readonly created_at: string
   readonly last_active_at: string
 }
@@ -624,6 +620,28 @@ export interface SecurityGroupPolicy {
   blocklist?: string[] | null
 }
 
+/** The closed set of shells the launch-shape override accepts (mirrors backend config). */
+export type ShellExecShellKind = 'bash' | 'sh' | 'zsh' | 'ksh' | 'dash' | 'powershell' | 'pwsh'
+
+/** One shell-exec tool's launch-shape override (mirrors backend ShellExecToolSettings). */
+export interface ShellExecToolSettings {
+  /**
+   * argv template launching the agent's command; exactly one element equals
+   * "{command}". Empty = built-in default launch shape.
+   */
+  command: string[]
+  /** The shell the command text is written in; empty when there is no override. */
+  shell: string
+}
+
+/** The shell_exec config section (mirrors backend ShellExecSettingsResponse). */
+export interface ShellExecSettingsResponse {
+  /** Consumed on Unix (bash_exec); inert elsewhere. */
+  bash_exec: ShellExecToolSettings
+  /** Consumed on Windows (posh_exec); inert elsewhere. */
+  posh_exec: ShellExecToolSettings
+}
+
 /**
  * security.autonomy_mode — the unified autonomy posture replacing the former
  * Smart Approve flag + silent-mode master switch. Mirrors the backend enum
@@ -1006,22 +1024,12 @@ export interface ResearchRoot {
   active_project_id?: string
 }
 
-/** Per-skill outcome of seeding the research skill-pack (mirrors backend DTO). */
-export interface ResearchSeedResult {
-  seeded: string[]
-  updated: string[]
-  current: string[]
-  preserved: string[]
-  modified: string[]
-}
-
-/** View model for GetResearchStatus: toggle state + parsed research root. */
+/** View model for GetResearchStatus: enabled flag + parsed research root. */
 export interface ResearchStatus {
   enabled: boolean
   project_id: string
   research_root: string
   root?: ResearchRoot
-  seed_result?: ResearchSeedResult
   /** Pinned research projects — brief paths, research-root-relative with
    *  forward slashes (`R-NNN-<slug>/brief.md`), mirrored from the persisted
    *  project pins. Optional on the wire (older payloads omit it); the RPC

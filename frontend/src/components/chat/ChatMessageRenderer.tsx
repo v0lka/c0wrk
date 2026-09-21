@@ -14,6 +14,7 @@ import { ResumeActionPanel } from './ResumeActionPanel'
 import { StepLimitPrompt } from './StepLimitPrompt'
 import { ErrorBlock } from './ErrorBlock'
 import { ServiceMessage } from './ServiceMessage'
+import { AutonomyDecisionBlock } from './AutonomyDecisionBlock'
 import { ReflectionBlock } from './ReflectionBlock'
 import { PlanApprovalPanel } from './PlanApprovalPanel'
 import { GoalProposalPanel } from './GoalProposalPanel'
@@ -69,6 +70,7 @@ const renderers: Record<DisplayItemKind, ItemRenderer> = {
   resume_action: ResumeActionPanel as ItemRenderer,
   error: ErrorBlock as ItemRenderer,
   service: ServiceMessage as ItemRenderer,
+  autonomy_decision: AutonomyDecisionBlock as ItemRenderer,
   plan_step: PlanStepBlock as ItemRenderer,
   subagent: SubAgentBlock as ItemRenderer,
   reflection: ReflectionBlock as ItemRenderer,

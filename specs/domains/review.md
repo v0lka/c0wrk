@@ -25,7 +25,7 @@ The review feature lets the user inspect uncommitted changes (staged + unstaged 
 
 1. **Review button** in `ChangesToolbar` — the only entry point (manual).
 
-The automatic post-task prompt (`review_prompt` card injected on `task_complete`) was removed by [ADR-055](../decisions/055-remove-post-task-review-prompt.md): it fired on nearly every task against a perpetually dirty tree and trained the user to dismiss it unread. The one automatic behavior that remains is the **review-loop reopen** below, which only applies while the user is already in a review loop.
+The automatic post-task prompt (`review_prompt` card injected on `task_complete`) was removed by [ADR-060](../decisions/060-remove-post-task-review-prompt.md): it fired on nearly every task against a perpetually dirty tree and trained the user to dismiss it unread. The one automatic behavior that remains is the **review-loop reopen** below, which only applies while the user is already in a review loop.
 
 ### Lifecycle
 
@@ -72,7 +72,7 @@ keeping the displayed user message as the verbatim review comments.
 | `ClearReviewComments`            | `sessionId`                        | `void`                   |
 | `ClearReview`                    | `sessionId`                        | `void`                   |
 
-> The former `SaveReviewPrompt` RPC was removed by [ADR-055](../decisions/055-remove-post-task-review-prompt.md) together with the post-task prompt it persisted.
+> The former `SaveReviewPrompt` RPC was removed by [ADR-060](../decisions/060-remove-post-task-review-prompt.md) together with the post-task prompt it persisted.
 
 ## Invariants
 

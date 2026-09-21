@@ -24,7 +24,9 @@ import (
 //
 // Scope (per the GitSpawn remediation plan): the INI subset under the
 // command-relevant section families — core, attr, extensions (model-only:
-// objectformat/worktreeConfig), filter.<name>, merge.<name>, diff.<name>.
+// objectformat/worktreeConfig), filter.<name>, merge.<name>, diff.<name>,
+// plus the transport (credential) and signing (commit/gpg/user) families
+// described below.
 // include/includeIf directives are parsed, logged and recorded but
 // deliberately NOT followed by the key scanner: the included files' contents
 // are unknown, so a config with includes must be treated as partially
@@ -71,13 +73,21 @@ import (
 // closed for them on git older than 2.45, where attr.tree — the only cover
 // for include-hidden attribute-routed drivers — is silently ignored.
 //
-// Out of scope, with rationale: commit.gpgsign / gpg.program (signing vectors)
-// are neutralized unconditionally by the sysproc.GitCmd baseline
-// (-c commit.gpgsign=false + GIT_EDITOR=true, see step_2 of the remediation),
-// so per-repo detection adds nothing actionable for c0wrk's local operation
-// set. Findings for baseline-covered keys are still reported (fsmonitor,
-// hooksPath, editor) with BaselineCovered=true so the intake scanner shows the
-// full picture from this single source.
+// Baseline-covered signing keys, reported for the full intake picture: the
+// commit-signing vectors (commit.gpgsign, gpg.format, gpg.program,
+// user.signingkey) are neutralized unconditionally by the sysproc.GitCmd
+// baseline (-c commit.gpgsign=false on every invocation, see step_2 of the
+// remediation), so per-repo detection adds nothing actionable for c0wrk's
+// local operation set — no overrides are derived. Findings are emitted with
+// BaselineCovered=true (fsmonitor, hooksPath, editor are the other members of
+// this family) so the intake scanner shows the full picture from this single
+// source. commit.gpgsign is additionally truthy-gated: gpgsign=false (the
+// value c0wrk's own fixtures and a safety-minded user write) is already the
+// baseline's pin and must keep a config Clean. The siblings
+// (gpg.format, gpg.program, user.signingkey) are marked Inert by
+// ScanGitConfig when no config layer arms commit.gpgsign — dead
+// configuration cannot execute, so Clean() ignores them and the intake
+// warning stays off for repositories that merely document a signing setup.
 //
 // Neutralization values are not invented here — every emitted override comes
 // from the canary-verified semantics of the GitSpawn neutralization study
@@ -150,6 +160,7 @@ const (
 	GitConfigFindingAttributesFile = "attributes_file"    // core.attributesFile
 	GitConfigFindingAttrRouting    = "attributes_routing" // filter/merge/diff routing in .git/info/attributes or core.attributesFile
 	GitConfigFindingCredential     = "credential_helper"  // credential.helper / credential.<url>.helper
+	GitConfigFindingSigning        = "signing"            // commit.gpgsign / gpg.format / gpg.program / user.signingkey
 )
 
 // Verified neutralizing override values (GitSpawn neutralization study).
@@ -230,6 +241,15 @@ type GitConfigFinding struct {
 	// (-c core.fsmonitor=false, -c core.hooksPath=<safe dir>,
 	// GIT_EDITOR=true), so it needs no per-repo override.
 	BaselineCovered bool
+	// Inert reports that the finding cannot execute in this configuration.
+	// The signing siblings (gpg.format, gpg.program, user.signingkey) are
+	// emitted whenever present, but git only runs a signing program when
+	// commit.gpgsign is ARMED — without it the siblings are dead
+	// configuration, so ScanGitConfig flags them inert and Clean() ignores
+	// them (a repository that merely documents a signing setup stays
+	// warning-free). Inert findings still render in the intake payload when
+	// a warning fires for another reason.
+	Inert bool
 	// Overrides are the verified per-repo `-c` neutralizations for this
 	// finding. Empty when none is needed or none is verified (the
 	// description explains which case applies).
@@ -358,13 +378,20 @@ type gitConfigSource struct {
 }
 
 // Clean reports that the config is fully visible (no include directives, no
-// parse errors) and carries no dangerous keys. Only a Clean result allows the
-// caller to skip per-repo neutralization without suspicion.
+// parse errors) and carries no dangerous keys. Inert findings (the signing
+// siblings without an armed commit.gpgsign) are ignored: dead configuration
+// cannot execute, and warning on it would cry wolf. Only a Clean result
+// allows the caller to skip per-repo neutralization without suspicion.
 func (info *GitConfigInfo) Clean() bool {
 	if info == nil {
 		return true
 	}
-	return len(info.Findings) == 0 && len(info.Includes) == 0 && len(info.Errors) == 0
+	for i := range info.Findings {
+		if !info.Findings[i].Inert {
+			return false
+		}
+	}
+	return len(info.Includes) == 0 && len(info.Errors) == 0
 }
 
 // Snapshot returns a canonical, diff-able byte representation of every source
@@ -1140,7 +1167,47 @@ func ScanGitConfig(repoRoot string, loggers ...*slog.Logger) (*GitConfigInfo, er
 	if err := scanAttributeSources(repoRoot, commonDir, info, logger); err != nil {
 		return nil, err
 	}
+
+	// Mark the signing siblings inert when no layer of the configuration
+	// arms commit.gpgsign. This runs after the worktree-overlay merge and
+	// the attribute scan, so a commit.gpgsign=true in ANY config layer keeps
+	// the siblings armed (over-armed beats under-armed here: the spawn
+	// baseline neutralizes signing either way; this only shapes the intake
+	// warning). DetectCommitSuppression already reads the same gating off
+	// the armed finding only.
+	markInertSigningSiblings(info)
 	return info, nil
+}
+
+// signSiblingKeys are the baseline-covered signing keys that shape (or name)
+// the signing program but never execute on their own: git runs a signing
+// program only when commit.gpgsign is armed.
+var signSiblingKeys = map[string]bool{
+	"gpg.format":      true,
+	"gpg.program":     true,
+	"user.signingkey": true,
+}
+
+// markInertSigningSiblings flags gpg.format / gpg.program /
+// user.signingkey findings as Inert when the scanned configuration carries
+// no ARMED commit.gpgsign finding in any layer. commit.gpgsign itself keeps
+// its unconditional emission (truthy-gated): it is the key that makes git
+// execute a signing program, so its presence alone is warning-worthy.
+func markInertSigningSiblings(info *GitConfigInfo) {
+	if info == nil {
+		return
+	}
+	for i := range info.Findings {
+		if info.Findings[i].Kind == GitConfigFindingSigning &&
+			info.Findings[i].FullKey == "commit.gpgsign" {
+			return // armed: the siblings stay live for this repository
+		}
+	}
+	for i := range info.Findings {
+		if info.Findings[i].Kind == GitConfigFindingSigning && signSiblingKeys[info.Findings[i].FullKey] {
+			info.Findings[i].Inert = true
+		}
+	}
 }
 
 // resolveCommonGitDir resolves the shared git directory for gitDir, mirroring
@@ -2034,6 +2101,45 @@ func (p *gitConfigParser) dispatchEntry(line int, key, value string, boolean boo
 		if key == "helper" {
 			kind = GitConfigFindingCredential
 			description = credentialHelperDescription(p.subsection)
+		}
+	case "commit":
+		// Truthy-gated: gpgsign=false is what c0wrk's own fixtures and any
+		// safety-minded configuration write; a disabled signing key must
+		// keep the config Clean rather than warn on the baseline's own
+		// pinned value. Only an ARMED (true/yes/on/1/bare) commit.gpgsign
+		// is reported, as a baseline-covered finding with no override.
+		if key == "gpgsign" && parseBoolConfigValue(value, boolean) {
+			kind = GitConfigFindingSigning
+			baselineCovered = true
+			description = "commit.gpgsign turns on commit signing, which makes git run the signing " +
+				"program (gpg.program or gpg itself, consuming user.signingkey) during commit. " +
+				"Neutralized by the baseline -c commit.gpgsign=false, which c0wrk forces on every git " +
+				"invocation; reported so the intake picture shows the repo tried to sign commits."
+		}
+	case "gpg":
+		if key == "format" || key == "program" {
+			kind = GitConfigFindingSigning
+			baselineCovered = true
+			if key == "format" {
+				description = "gpg.format selects the signing backend for commit and tag signing (openpgp, " +
+					"x509, ssh); combined with an armed signing key it shapes which external program git " +
+					"invokes. Neutralized by the baseline -c commit.gpgsign=false, which c0wrk forces on " +
+					"every git invocation; reported so the intake picture shows the repo configured signing."
+			} else {
+				description = "gpg.program names the binary git executes to sign commits and tags — a " +
+					"repository-configured command vector on signing operations. Neutralized by the " +
+					"baseline -c commit.gpgsign=false, which c0wrk forces on every git invocation; reported " +
+					"so the intake picture shows the repo configured signing."
+			}
+		}
+	case "user":
+		if key == "signingkey" {
+			kind = GitConfigFindingSigning
+			baselineCovered = true
+			description = "user.signingkey names the key (or, for gpg.format=ssh, an arbitrary path or " +
+				"literal key) git passes to the signing program on commit/tag signing. Neutralized by the " +
+				"baseline -c commit.gpgsign=false, which c0wrk forces on every git invocation; reported so " +
+				"the intake picture shows the repo configured signing."
 		}
 	}
 	if kind == "" {

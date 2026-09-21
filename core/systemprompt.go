@@ -109,7 +109,7 @@ var researchContextKey = researchContextKeyType{}
 // derived from the hypothesis-graph state. All rules and enforcement live in
 // the research-* skill bodies — this block is pure awareness, never policy.
 type ResearchContext struct {
-	// RootPath is the on-disk research-root directory (ProjectInfo.ResearchRoot).
+	// RootPath is the on-disk research-root directory (config.ProjectResearchPath).
 	RootPath string `json:"root_path"`
 	// ProjectCount is the number of research projects discovered in the index.
 	ProjectCount int `json:"project_count"`

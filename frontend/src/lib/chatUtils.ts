@@ -60,14 +60,16 @@ export const roleToType: Record<ChatRole, MessageType> = {
   plan_review: 'plan_review',
   // Legacy review_prompt rows (the removed post-task code-review prompt card)
   // render through the same non-blocking `status` service notice as other
-  // status rows — the autonomy_decision pattern. The role stays in ChatRole so
-  // persisted rows keep converting (and dedupe by their stable
-  // review-prompt-{prompt_id} history id) instead of falling back to assistant.
+  // status rows. The role stays in ChatRole so persisted rows keep converting
+  // (and dedupe by their stable review-prompt-{prompt_id} history id) instead
+  // of falling back to assistant.
   review_prompt: 'status',
-  // autonomy_decision rows are persisted audit notices of automatic
-  // (no-human) decisions; they render through the same non-blocking `status`
-  // service notice as other status rows (content rebuilt by reconstructContent).
-  autonomy_decision: 'status',
+  // autonomy_decision rows are persisted audit records of automatic
+  // (no-human) decisions; they keep their own message type so groupMessages
+  // renders a dedicated non-blocking card (AutonomyDecisionBlock; content
+  // rebuilt by reconstructContent) instead of reusing the generic `status`
+  // service row.
+  autonomy_decision: 'autonomy_decision',
   goal_proposal: 'goal_proposal',
   goal_status: 'goal_status',
 }
@@ -266,6 +268,8 @@ export function groupMessages(messages: ChatMessageUI[], workUnitStatus?: Record
       }
       case 'status':
         pushItem({ kind: 'service', id: msg.id, variant: 'status', content: msg.content, metadata: meta }, planStepId); break
+      case 'autonomy_decision':
+        pushItem({ kind: 'autonomy_decision', message: msg }, planStepId); break
       case 'step_done': case 'thinking': case 'task_resumed': break
       default: break
     }

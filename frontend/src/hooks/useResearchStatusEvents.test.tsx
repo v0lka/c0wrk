@@ -204,4 +204,34 @@ describe('useResearchStatusEvents — refresh + research watchdog', () => {
     // resolves in the reloaded status, so the reconciliation keeps it).
     expect(nextStepMock).toHaveBeenLastCalledWith('p1', 'H-002')
   })
+
+  it('skips the fetch and resets the store in No-Project (CHAT) mode', async () => {
+    useProjectStore.setState({
+      projects: [
+        {
+          id: 'np',
+          name: 'No Project',
+          workspace_path: '',
+          is_external: false,
+          is_no_project: true,
+          created_at: '2026-01-01T00:00:00Z',
+          last_active_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+      activeProjectId: 'np',
+    })
+    // Seed the store so the reset is observable.
+    act(() => {
+      useResearchStore.getState().loadStatus(makeStatus(), 'stale')
+    })
+
+    await act(async () => {
+      root.render(<Probe />)
+    })
+
+    // No GetResearchStatus call is issued, and the store is cleared.
+    expect(statusMock).not.toHaveBeenCalled()
+    expect(useResearchStore.getState().status).toBeNull()
+    expect(useResearchStore.getState().projectId).toBeNull()
+  })
 })

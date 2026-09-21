@@ -708,8 +708,11 @@ func responseToAutonomyMode(mode string) (string, error) {
 // autonomy mode must use the security.autonomy_mode enum (an empty payload
 // value keeps the stored posture) and the silent-mode sub-policies are
 // validated against their enums; both are replaced
-// likewise; the pushed security state (including silent mode, and the ask_user
-// registration it controls) reaches live sessions without a restart. A
+// likewise. Delivery is split (per-task autonomy pinning): group policies,
+// auto-approval, the execute blocklist, and the ask_user registration reach
+// live sessions immediately, while the autonomy posture updates the shared
+// registry only — each session clone re-pins it at its next task launch
+// (fresh send or resume), so a running task is never flipped mid-run. A
 // changed execute-group blocklist re-registers the shell tool so the edit
 // applies without an app restart; the re-registration runs first and is
 // atomic, so its failure rolls the config back with no partially-applied
@@ -776,6 +779,121 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 
 	if err := f.persistConfig(); err != nil {
 		f.log().Warn("failed to persist security settings", "error", err)
+	}
+
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Shell execution settings (the shell_exec launch-shape override)
+// ---------------------------------------------------------------------------
+
+// ShellExecToolSettings is one shell-exec tool's launch-shape override as seen
+// by the UI: the argv template (exactly one "{command}" element) and the
+// declared shell. An empty Command keeps the built-in launch shape.
+type ShellExecToolSettings struct {
+	Command []string `json:"command"`
+	Shell   string   `json:"shell"`
+}
+
+// ShellExecSettingsResponse is the shell_exec section surface for the
+// Settings UI. BashExec applies on Unix (bash_exec), PoshExec on Windows
+// (posh_exec) — exactly one is live per platform, both are editable so the
+// UI can render the full section.
+type ShellExecSettingsResponse struct {
+	BashExec ShellExecToolSettings `json:"bash_exec"`
+	PoshExec ShellExecToolSettings `json:"posh_exec"`
+}
+
+// GetShellExecSettings returns the stored shell_exec launch-shape override
+// for the Settings UI. An uninitialized config renders the built-in defaults
+// (no override). Command slices are deep-copied so the caller cannot mutate
+// the live config through the response.
+func (f *FrontendAPI) GetShellExecSettings() ShellExecSettingsResponse {
+	f.configMu.RLock()
+	defer f.configMu.RUnlock()
+
+	section := config.ShellExecConfig{}
+	if f.config != nil {
+		section = f.config.ShellExec
+	}
+	return ShellExecSettingsResponse{
+		BashExec: shellExecToolToResponse(section.BashExec),
+		PoshExec: shellExecToolToResponse(section.PoshExec),
+	}
+}
+
+func shellExecToolToResponse(tool config.ShellExecToolConfig) ShellExecToolSettings {
+	command := make([]string, len(tool.Command))
+	copy(command, tool.Command)
+	return ShellExecToolSettings{Command: command, Shell: tool.Shell}
+}
+
+// responseToShellExecTool validates a UI payload for one tool's override: the
+// argv template shape (config.ValidateShellExecCommand) and the closed shell
+// enum (config.ValidateShellKind). An empty command means "no override" and is
+// always valid (a stray shell value without a command is ignored).
+func responseToShellExecTool(settings ShellExecToolSettings) (config.ShellExecToolConfig, error) {
+	if len(settings.Command) == 0 {
+		return config.ShellExecToolConfig{}, nil
+	}
+	command := make([]string, len(settings.Command))
+	copy(command, settings.Command)
+	if err := config.ValidateShellExecCommand(command); err != nil {
+		return config.ShellExecToolConfig{}, err
+	}
+	if err := config.ValidateShellKind(settings.Shell); err != nil {
+		return config.ShellExecToolConfig{}, err
+	}
+	return config.ShellExecToolConfig{Command: command, Shell: settings.Shell}, nil
+}
+
+// UpdateShellExecSettings replaces the shell_exec launch-shape override and
+// applies it without an app restart by re-registering the shell tool. The
+// payload is validated first (argv template shape + closed shell enum) and an
+// invalid payload mutates nothing. Re-registration runs the same atomic path
+// as the blocklist update (UpdateShellBlocklist — it re-registers the shell
+// tool with the stored blocklist plus the new override), so its failure rolls
+// the section back: the previously registered tool stays live and matches the
+// rolled-back config. A no-change payload re-registers nothing.
+func (f *FrontendAPI) UpdateShellExecSettings(settings ShellExecSettingsResponse) error {
+	f.configMu.Lock()
+	defer f.configMu.Unlock()
+
+	if f.config == nil {
+		return errors.New("config not initialized")
+	}
+
+	newBash, err := responseToShellExecTool(settings.BashExec)
+	if err != nil {
+		return fmt.Errorf("bash_exec: %w", err)
+	}
+	newPosh, err := responseToShellExecTool(settings.PoshExec)
+	if err != nil {
+		return fmt.Errorf("posh_exec: %w", err)
+	}
+
+	prev := f.config.ShellExec
+	changed := !slices.Equal(prev.BashExec.Command, newBash.Command) ||
+		prev.BashExec.Shell != newBash.Shell ||
+		!slices.Equal(prev.PoshExec.Command, newPosh.Command) ||
+		prev.PoshExec.Shell != newPosh.Shell
+	if !changed {
+		return nil
+	}
+
+	f.config.ShellExec = config.ShellExecConfig{BashExec: newBash, PoshExec: newPosh}
+
+	if b := f.builder(); b != nil {
+		builderCfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+		if err := b.UpdateShellBlocklist(builderCfg); err != nil {
+			f.config.ShellExec = prev
+			return fmt.Errorf("failed to apply shell command override: %w", err)
+		}
+	}
+
+	if err := f.persistConfig(); err != nil {
+		f.log().Warn("failed to persist shell exec settings", "error", err)
 	}
 
 	return nil

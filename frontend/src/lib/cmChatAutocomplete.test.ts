@@ -37,6 +37,7 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import type { MutableRefObject } from 'react'
 import { Compartment } from '@codemirror/state'
+import { acceptCompletion } from '@codemirror/autocomplete'
 
 const ENTRIES: FileEntry[] = [
   { name: 'alpha.txt', path: '/ws/alpha.txt', is_dir: false },
@@ -240,6 +241,144 @@ describe('cmChatAutocomplete @-file source', () => {
       'completions recover after the cooldown expires',
     )
   }, 8000)
+  it('completes inside an open @\'…\' ref and applies the quoted form', async () => {
+    // Typing @'my fil — spaces inside the quotes are part of the query, so
+    // the completion must survive them, and the applied text must produce a
+    // closed quoted ref (@'my file.txt' ) with the typed opening quote
+    // swallowed by the replacement range.
+    useFileTreeStore.setState({ rootPath: '/ws' })
+    listDirectoryMock.mockResolvedValue([
+      { name: 'my file.txt', path: '/ws/my file.txt', is_dir: false },
+    ])
+
+    const fixture = makeView()
+    views.push(fixture)
+    const { view } = fixture
+
+    typeAndComplete(view, "@'my fil")
+    await until(
+      () => currentCompletions(view.state).some((c) => c.label === 'my file.txt'),
+      'completions for a quoted query containing spaces',
+    )
+    // acceptCompletion is suppressed within the config's interactionDelay
+    // (75ms default) of the tooltip opening — let that window elapse.
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    acceptCompletion(view)
+    expect(view.state.doc.toString()).toBe("@'my file.txt' ")
+  })
+
+  it('applies the quoted form for a spacey path from an unquoted query', async () => {
+    useFileTreeStore.setState({ rootPath: '/ws' })
+    listDirectoryMock.mockResolvedValue([
+      { name: 'my file.txt', path: '/ws/my file.txt', is_dir: false },
+    ])
+
+    const fixture = makeView()
+    views.push(fixture)
+    const { view } = fixture
+
+    typeAndComplete(view, '@my')
+    await until(
+      () => currentCompletions(view.state).some((c) => c.label === 'my file.txt'),
+      'completions for an unquoted query',
+    )
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    acceptCompletion(view)
+    expect(view.state.doc.toString()).toBe("@'my file.txt' ")
+  })
+
+  it('keeps the quote open when completing a directory inside an open @\'…\' ref', async () => {
+    // Regression: a directory chosen inside an open @'…' ref must continue the
+    // ref (@'beta/) instead of closing it (@'beta'/), which the trigger scan
+    // would read as a closed ref and silently stop all further completions.
+    useFileTreeStore.setState({ rootPath: '/ws' })
+    listDirectoryMock.mockResolvedValue(ENTRIES)
+
+    const fixture = makeView()
+    views.push(fixture)
+    const { view } = fixture
+
+    typeAndComplete(view, "@'be")
+    await until(
+      () => currentCompletions(view.state).some((c) => c.label === 'beta'),
+      'directory completion inside a quoted ref',
+    )
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    acceptCompletion(view)
+    expect(view.state.doc.toString()).toBe("@'beta/")
+  })
+
+  it('offers no completions after a quoted ref is closed', async () => {
+    useFileTreeStore.setState({ rootPath: '/ws' })
+    listDirectoryMock.mockResolvedValue(ENTRIES)
+
+    const fixture = makeView()
+    views.push(fixture)
+    const { view } = fixture
+
+    typeAndComplete(view, "@'alpha.txt'")
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(currentCompletions(view.state)).toEqual([])
+  })
+
+  it('offers no completions for prose trailing an unquoted ref', async () => {
+    // The trigger scan must not treat words after a completed @ref (separated
+    // by spaces) as a continuation of its query.
+    useFileTreeStore.setState({ rootPath: '/ws' })
+    listDirectoryMock.mockResolvedValue(ENTRIES)
+
+    const fixture = makeView()
+    views.push(fixture)
+    const { view } = fixture
+
+    typeAndComplete(view, 'see @x.go and more')
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(currentCompletions(view.state)).toEqual([])
+  })
+
+  it('keeps the quote open for a space-named directory from an unquoted query, so further completions still resolve', async () => {
+    // A directory whose NAME contains a space, completed from an UNQUOTED
+    // query. The applied text must keep the quote OPEN (@'beta dir/): the
+    // CLOSED form (@'beta dir'/) makes the trigger scan treat the second quote
+    // as a closed ref (token.indexOf("'", 1) !== -1) and silently kills every
+    // further completion inside the ref.
+    useFileTreeStore.setState({ rootPath: '/ws' })
+    listDirectoryMock.mockResolvedValue([
+      { name: 'beta dir', path: '/ws/beta dir', is_dir: true },
+    ])
+
+    const fixture = makeView()
+    views.push(fixture)
+    const { view } = fixture
+
+    typeAndComplete(view, '@beta')
+    await until(
+      () => currentCompletions(view.state).some((c) => c.label === 'beta dir'),
+      'completion for a space-named directory from an unquoted query',
+    )
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    acceptCompletion(view)
+    // Quote still OPEN — the ref can continue into the child path.
+    expect(view.state.doc.toString()).toBe("@'beta dir/")
+
+    // A subsequent completion inside the open ref must still be served. The
+    // listing cache is invalidated (project switch) so a served trigger
+    // re-fetches; a CLOSED ref would make the trigger scan return null BEFORE
+    // getFiles, so listDirectory would never be called again.
+    const callsBefore = listDirectoryMock.mock.calls.length
+    useProjectStore.setState({ projects: [], activeProjectId: 'proj-after-dir' })
+    view.dispatch(view.state.replaceSelection('c'))
+    startCompletion(view)
+    await until(
+      () => listDirectoryMock.mock.calls.length > callsBefore,
+      'the open-ref trigger is still served after the directory completion',
+    )
+    expect(view.state.doc.toString()).toBe("@'beta dir/c")
+  })
 })
 
 describe('chat editor tooltip placement', () => {

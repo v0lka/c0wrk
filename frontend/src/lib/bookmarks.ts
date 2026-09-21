@@ -60,6 +60,8 @@ export function bookmarkDefaultTitle(item: DisplayItem): string {
       return collapseTitle(item.message.content) || 'Error'
     case 'service':
       return collapseTitle(item.content) || 'Status'
+    case 'autonomy_decision':
+      return collapseTitle(item.message.content) || 'Autonomy decision'
     case 'plan_step':
       return `Step ${item.stepNum}: ${item.title}`
     case 'subagent':

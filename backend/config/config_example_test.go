@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -44,6 +45,15 @@ func TestExampleConfigReflectsGroupsSchema(t *testing.T) {
 	}
 	if got := result.Config.Security.Groups[ToolGroupExecute].Blocklist; len(got) > 0 {
 		t.Errorf("example execute blocklist = %v, want empty (the example must not ship predefined patterns)", got)
+	}
+
+	// The discovery dir lists documented in the example must match the
+	// compiled-in default order (c0wrk global dir before ~/.agents).
+	if !reflect.DeepEqual(result.Config.Skills.Dirs, defaultSkillDirs) {
+		t.Errorf("example skills.dirs = %v, want %v", result.Config.Skills.Dirs, defaultSkillDirs)
+	}
+	if !reflect.DeepEqual(result.Config.Agents.Dirs, defaultAgentDirs) {
+		t.Errorf("example agents.dirs = %v, want %v", result.Config.Agents.Dirs, defaultAgentDirs)
 	}
 
 	// No backup side effects for a groups-based example.

@@ -12,6 +12,7 @@ export type MessageType =
   | 'task_failed_resumable' | 'task_resumed' | 'step_limit' | 'context_compaction'
   | 'step_todo_update' | 'memory_read' | 'plan_review'
   | 'service'
+  | 'autonomy_decision'
   | 'goal_proposal'
   | 'goal_status'
 
@@ -29,6 +30,7 @@ export type DisplayItemKind =
   | 'ask_user' | 'step_limit' | 'resume_action' | 'error' | 'service' | 'plan_step'
   | 'subagent' | 'reflection' | 'step_finish'
   | 'context_compaction' | 'memory_read' | 'plan_review' | 'checklist'
+  | 'autonomy_decision'
   | 'goal_proposal'
 
 /**
@@ -59,6 +61,7 @@ export type DisplayItem =
   | { kind: 'context_compaction'; id: string; beforePercent: number; afterPercent: number }
   | { kind: 'memory_read'; id: string; content: string; stepNum?: number }
   | { kind: 'plan_review'; message: ChatMessageUI }
+  | { kind: 'autonomy_decision'; message: ChatMessageUI }
   | {
       kind: 'goal_proposal'
       message: ChatMessageUI

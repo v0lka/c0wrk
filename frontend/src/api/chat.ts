@@ -53,73 +53,24 @@ export async function cancelTask(sessionId: string): Promise<void> {
   }
 }
 
-/** One page of a session's chat history (backend GetSessionHistory). Messages
- *  are ordered oldest-first within the page. */
-export interface SessionHistoryPage {
-  messages: ChatMessage[]
-  /** Opaque keyset cursor; pass back as `before` to fetch the preceding
-   *  (older) page. Empty string when the page is empty. */
-  next_cursor: string
-  /** True when older messages remain before this page. */
-  has_more: boolean
-}
-
-const EMPTY_HISTORY_PAGE: SessionHistoryPage = { messages: [], next_cursor: '', has_more: false }
-
-// isSessionHistoryPage validates the paged-history response. Go marshals a nil
-// slice to JSON null, so a session with no history legitimately arrives as
-// {messages: null, ...} — treat null as an empty list rather than rejecting.
-function isSessionHistoryPage(d: unknown): d is SessionHistoryPage {
-  if (typeof d !== 'object' || d === null) return false
-  const o = d as Record<string, unknown>
-  const msgs = o.messages
-  return (msgs === undefined || msgs === null || (Array.isArray(msgs) && isArrayOf(msgs, isChatMessage)))
-    && typeof o.next_cursor === 'string'
-    && typeof o.has_more === 'boolean'
-}
-
 /**
- * Fetch one page of a session's chat history. The first call (before === "")
- * returns the NEWEST page; pass the returned `next_cursor` back as `before` to
- * walk older pages, so a long session is never loaded in one shot. `limit<=0`
- * lets the backend apply its default.
+ * Fetch a session's full content history, oldest-first, in a single call.
+ * Go marshals a nil slice to JSON null, so a session with no history
+ * legitimately arrives as null — normalize it to [] for consumers.
  */
-export async function getSessionHistory(sessionId: string, limit = 0, before = ''): Promise<SessionHistoryPage> {
+export async function getSessionHistory(sessionId: string): Promise<ChatMessage[]> {
   try {
     const app = getApp()
-    const result = await app.GetSessionHistory(sessionId, limit, before)
-    if (!isSessionHistoryPage(result)) {
-      logger.error('getSessionHistory: unexpected response shape, returning empty page', result)
-      return EMPTY_HISTORY_PAGE
-    }
-    // Normalize a Go nil slice (JSON null) to an empty array for consumers.
-    return { messages: result.messages ?? [], next_cursor: result.next_cursor, has_more: result.has_more }
-  } catch (err) {
-    logger.error('Failed to get session history:', err)
-    throw err
-  }
-}
-
-/**
- * Fetch the session's plan-lifecycle rows (plan declaration + every
- * plan_step_start/complete/paused row) in ascending stream order, regardless
- * of how far back the declaration sits behind the chat window's newest page.
- * Used to rebuild the Execution Plan panel and restore completed-step blocks
- * after a reload of a long plan-driven session.
- */
-export async function getSessionPlanTimeline(sessionId: string): Promise<ChatMessage[]> {
-  try {
-    const app = getApp()
-    const result = await app.GetSessionPlanTimeline(sessionId)
-    // Go marshals a nil slice to JSON null — treat it as an empty timeline.
+    const result = await app.GetSessionHistory(sessionId)
+    // Go marshals a nil slice to JSON null — treat it as an empty history.
     if (result === undefined || result === null) return []
     if (!isArrayOf(result, isChatMessage)) {
-      logger.error('getSessionPlanTimeline: unexpected response shape, returning empty timeline', result)
+      logger.error('getSessionHistory: unexpected response shape, returning empty history', result)
       return []
     }
     return result
   } catch (err) {
-    logger.error('Failed to get session plan timeline:', err)
+    logger.error('Failed to get session history:', err)
     throw err
   }
 }

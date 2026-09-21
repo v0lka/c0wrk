@@ -2968,14 +2968,13 @@ func stepTodoMsg(sessionID, stepID, text, createdAt string) ChatMessage {
 	}
 }
 
-// TestUpsertStepTodoUpdate verifies that checklist updates for the same step_id
-// replace the previous persisted row in place (preserving id and created_at so
-// the checklist keeps its original stream position), while different step_ids
-// (including the empty standalone step_id) are stored as separate rows. This is
-// what bounds session_messages growth: the Conductor emits a checklist update
-// after every tool call, and persisting one row per update would grow history
-// without bound.
-func TestUpsertStepTodoUpdate(t *testing.T) {
+// TestReplaceStepTodoUpdate verifies the replace/append semantics: an update
+// for a step_id deletes that step's previous checklist row and inserts the new
+// one at the CURRENT position (fresh id and created_at), so exactly one row per
+// step survives and it sits where the latest update happened. An in-place
+// UPDATE (the former behavior) kept the row pinned to the first update's
+// position; that is explicitly not what this store does now.
+func TestReplaceStepTodoUpdate(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -2990,20 +2989,20 @@ func TestUpsertStepTodoUpdate(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := store.UpsertStepTodoUpdate(ctx, sessionID, "step_1", stepTodoMsg(sessionID, "step_1", "v1", "2024-01-15T10:00:00Z")); err != nil {
-		t.Fatalf("first upsert step_1: %v", err)
+	if err := store.ReplaceStepTodoUpdate(ctx, sessionID, "step_1", stepTodoMsg(sessionID, "step_1", "v1", "2024-01-15T10:00:00Z")); err != nil {
+		t.Fatalf("first replace step_1: %v", err)
 	}
-	if err := store.UpsertStepTodoUpdate(ctx, sessionID, "step_1", stepTodoMsg(sessionID, "step_1", "v2", "2024-01-15T10:00:01Z")); err != nil {
-		t.Fatalf("second upsert step_1: %v", err)
+	if err := store.ReplaceStepTodoUpdate(ctx, sessionID, "step_1", stepTodoMsg(sessionID, "step_1", "v2", "2024-01-15T10:00:01Z")); err != nil {
+		t.Fatalf("second replace step_1: %v", err)
 	}
-	if err := store.UpsertStepTodoUpdate(ctx, sessionID, "step_2", stepTodoMsg(sessionID, "step_2", "v3", "2024-01-15T10:00:02Z")); err != nil {
-		t.Fatalf("first upsert step_2: %v", err)
+	if err := store.ReplaceStepTodoUpdate(ctx, sessionID, "step_2", stepTodoMsg(sessionID, "step_2", "v3", "2024-01-15T10:00:02Z")); err != nil {
+		t.Fatalf("first replace step_2: %v", err)
 	}
-	if err := store.UpsertStepTodoUpdate(ctx, sessionID, "", stepTodoMsg(sessionID, "", "standalone-1", "2024-01-15T10:00:03Z")); err != nil {
-		t.Fatalf("first upsert standalone: %v", err)
+	if err := store.ReplaceStepTodoUpdate(ctx, sessionID, "", stepTodoMsg(sessionID, "", "standalone-1", "2024-01-15T10:00:03Z")); err != nil {
+		t.Fatalf("first replace standalone: %v", err)
 	}
-	if err := store.UpsertStepTodoUpdate(ctx, sessionID, "", stepTodoMsg(sessionID, "", "standalone-2", "2024-01-15T10:00:04Z")); err != nil {
-		t.Fatalf("second upsert standalone: %v", err)
+	if err := store.ReplaceStepTodoUpdate(ctx, sessionID, "", stepTodoMsg(sessionID, "", "standalone-2", "2024-01-15T10:00:04Z")); err != nil {
+		t.Fatalf("second replace standalone: %v", err)
 	}
 
 	messages, err := store.LoadMessages(ctx, sessionID)
@@ -3041,24 +3040,36 @@ func TestUpsertStepTodoUpdate(t *testing.T) {
 		t.Fatalf("missing rows: step1=%v step2=%v standalone=%v", step1, step2, standalone)
 	}
 
-	// step_1 was upserted twice: the row's id and created_at must be preserved
-	// (the first insert's position), but its content/metadata reflect v2.
-	if step1.CreatedAt != "2024-01-15T10:00:00Z" {
-		t.Errorf("step_1 created_at not preserved: got %q", step1.CreatedAt)
+	// step_1 was replaced once: only the latest payload (v2) survives and the
+	// row MOVED to the timestamp of that update (10:00:01Z), not the first
+	// insert's position (10:00:00Z).
+	if step1.CreatedAt != "2024-01-15T10:00:01Z" {
+		t.Errorf("step_1 created_at should be the latest update's timestamp, got %q", step1.CreatedAt)
 	}
 	if !strings.Contains(step1.Content, "v2") {
 		t.Errorf("step_1 content should reflect the latest update v2, got %q", step1.Content)
+	}
+	if strings.Contains(step1.Content, "v1") {
+		t.Errorf("stale v1 payload must not survive the replace, got %q", step1.Content)
 	}
 
 	if step2.CreatedAt != "2024-01-15T10:00:02Z" {
 		t.Errorf("step_2 created_at: got %q", step2.CreatedAt)
 	}
 
-	// The empty standalone step_id collapses to a single row too.
-	if standalone.CreatedAt != "2024-01-15T10:00:03Z" {
-		t.Errorf("standalone created_at not preserved: got %q", standalone.CreatedAt)
+	// The empty standalone step_id collapses to a single row too, at the
+	// position of its last update.
+	if standalone.CreatedAt != "2024-01-15T10:00:04Z" {
+		t.Errorf("standalone created_at should be the latest update's timestamp, got %q", standalone.CreatedAt)
 	}
 	if !strings.Contains(standalone.Content, "standalone-2") {
 		t.Errorf("standalone content should reflect the latest update, got %q", standalone.Content)
+	}
+
+	// Rows stay in ascending (created_at, id) order after the replaces.
+	for i := 1; i < len(messages); i++ {
+		if messages[i].CreatedAt < messages[i-1].CreatedAt {
+			t.Errorf("rows not ascending: %q before %q", messages[i-1].CreatedAt, messages[i].CreatedAt)
+		}
 	}
 }

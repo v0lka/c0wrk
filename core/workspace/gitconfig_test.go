@@ -539,6 +539,141 @@ func TestParseGitConfig_TransportKeys_Texts(t *testing.T) {
 	}
 }
 
+// TestParseGitConfig_SigningKeys pins the baseline-covered reporting of the
+// commit-signing vectors: commit.gpgsign, gpg.format, gpg.program and
+// user.signingkey all produce findings with BaselineCovered=true and no
+// overrides — the sysproc baseline's -c commit.gpgsign=false is the whole
+// neutralization, so the spawn hardening (NeutralizingArgv) must not change.
+// commit.gpgsign is truthy-gated: gpgsign=false (what c0wrk's own fixtures
+// and a safety-minded user write) keeps the config Clean.
+func TestParseGitConfig_SigningKeys(t *testing.T) {
+	src := "[commit]\n\tgpgsign = true\n[gpg]\n\tformat = ssh\n\tprogram = /tmp/evil-gpg.sh\n" +
+		"[user]\n\tsigningkey = /tmp/evil-key\n"
+	info := parseTestConfig(t, src)
+	if len(info.Errors) != 0 {
+		t.Fatalf("unexpected parse errors: %+v", info.Errors)
+	}
+	want := map[string]bool{
+		"commit.gpgsign":  true,
+		"gpg.format":      true,
+		"gpg.program":     true,
+		"user.signingkey": true,
+	}
+	if len(info.Findings) != len(want) {
+		t.Fatalf("got %d findings, want %d: %+v", len(info.Findings), len(want), info.Findings)
+	}
+	for fullKey := range want {
+		f := finding(t, info, fullKey)
+		if f.Kind != GitConfigFindingSigning {
+			t.Errorf("%s: kind = %q, want %q", fullKey, f.Kind, GitConfigFindingSigning)
+		}
+		if !f.BaselineCovered {
+			t.Errorf("%s: must be baseline-covered", fullKey)
+		}
+		if len(f.Overrides) != 0 {
+			t.Errorf("%s: must carry no overrides: %+v", fullKey, f.Overrides)
+		}
+		if !strings.Contains(f.Description, "-c commit.gpgsign=false") {
+			t.Errorf("%s: description must name the baseline pin: %q", fullKey, f.Description)
+		}
+	}
+	if info.Clean() {
+		t.Error("armed signing keys must break Clean")
+	}
+	if got := info.NeutralizingArgv(); got != nil {
+		t.Errorf("signing findings must not change NeutralizingArgv, got %v", got)
+	}
+	if got := info.NeutralizingOverrides(); got != nil {
+		t.Errorf("signing findings must not derive NeutralizingOverrides, got %v", got)
+	}
+
+	// Truthy-gating: a disabled or absent signing key stays silent, and the
+	// value c0wrk's own fixtures write (gpgsign=false) keeps Clean intact.
+	t.Run("disabled gpgsign stays clean", func(t *testing.T) {
+		for _, src := range []string{
+			"[commit]\n\tgpgsign = false\n",
+			"[commit]\n\tgpgsign = off\n",
+			"[user]\n\tname = a\n\temail = b\n",
+		} {
+			info := parseTestConfig(t, src)
+			if len(info.Findings) != 0 {
+				t.Errorf("src %q: benign signing keys produced findings: %+v", src, info.Findings)
+			}
+			if !info.Clean() {
+				t.Errorf("src %q: benign signing keys must stay Clean", src)
+			}
+		}
+	})
+
+	// Bare boolean keys count as true for commit.gpgsign.
+	t.Run("bare gpgsign is true", func(t *testing.T) {
+		info := parseTestConfig(t, "[commit]\n\tgpgsign\n")
+		f := finding(t, info, "commit.gpgsign")
+		if f.Kind != GitConfigFindingSigning || !f.BaselineCovered || !f.Boolean {
+			t.Errorf("bare gpgsign finding = %+v", f)
+		}
+	})
+
+	// Benign neighbors of the new sections stay silent.
+	t.Run("benign neighbors ignored", func(t *testing.T) {
+		info := parseTestConfig(t, "[commit]\n\ttemplate = /tmp/x\n[gpg]\n\tminTrustLevel = marginal\n[user]\n\tname = a\n\temail = b\n")
+		if len(info.Findings) != 0 {
+			t.Errorf("benign commit/gpg/user keys produced findings: %+v", info.Findings)
+		}
+		if !info.Clean() {
+			t.Error("benign commit/gpg/user config should be Clean")
+		}
+	})
+
+	// Inert gating (review finding 3): ScanGitConfig marks the signing
+	// siblings Inert when NO config layer arms commit.gpgsign, and Clean()
+	// ignores them — a repository that merely documents a signing setup
+	// stays warning-free. An armed commit.gpgsign (in any layer) keeps the
+	// siblings live.
+	t.Run("inert siblings without armed gpgsign", func(t *testing.T) {
+		src := "[gpg]\n\tformat = ssh\n\tprogram = /tmp/evil-gpg.sh\n[user]\n\tsigningkey = /tmp/evil-key\n"
+		info := parseTestConfig(t, src)
+		if len(info.Findings) == 0 {
+			t.Fatal("setup: expected the sibling findings to be parsed")
+		}
+		markInertSigningSiblings(info)
+		for _, f := range info.Findings {
+			if !f.Inert {
+				t.Errorf("%s: must be Inert without an armed commit.gpgsign", f.FullKey)
+			}
+		}
+		if !info.Clean() {
+			t.Error("inert-only signing config must stay Clean")
+		}
+	})
+
+	t.Run("armed gpgsign keeps siblings live", func(t *testing.T) {
+		src := "[commit]\n\tgpgsign = true\n[gpg]\n\tformat = ssh\n[user]\n\tsigningkey = /tmp/evil-key\n"
+		info := parseTestConfig(t, src)
+		markInertSigningSiblings(info)
+		for _, f := range info.Findings {
+			if f.Inert {
+				t.Errorf("%s: must NOT be Inert while commit.gpgsign is armed", f.FullKey)
+			}
+		}
+		if info.Clean() {
+			t.Error("armed signing config must break Clean")
+		}
+	})
+
+	t.Run("disabled gpgsign leaves siblings inert", func(t *testing.T) {
+		info := parseTestConfig(t, "[commit]\n\tgpgsign = false\n[gpg]\n\tprogram = /tmp/x\n")
+		markInertSigningSiblings(info)
+		f := finding(t, info, "gpg.program")
+		if !f.Inert {
+			t.Error("gpg.program must be Inert with commit.gpgsign=false (a disabled key arms nothing)")
+		}
+		if !info.Clean() {
+			t.Error("inert-only config with disabled gpgsign must stay Clean")
+		}
+	})
+}
+
 func TestParseGitConfig_IgnoredKeys(t *testing.T) {
 	// Benign keys of dangerous sections and unknown sections produce nothing.
 	src := "[filter \"lfs\"]\n\trequired = true\n[merge \"x\"]\n\tname = display only\n" +
@@ -607,6 +742,12 @@ func TestNeutralizingOverrides_Matrix(t *testing.T) {
 			et, "core.askPass=", "core.attributesFile=", "core.sshCommand=ssh",
 			"credential.helper=", "diff.external=",
 			"filter.x.clean=cat", "filter.x.process=", "filter.x.smudge=cat"}},
+		// Baseline-covered signing keys are reported as findings but must
+		// never derive spawn hardening: commit.gpgsign=true, gpg.format,
+		// gpg.program and user.signingkey are all neutralized by the
+		// sysproc baseline (-c commit.gpgsign=false), so NeutralizingArgv
+		// stays empty for them.
+		{"signing armed", "[commit]\n\tgpgsign = true\n[gpg]\n\tformat = ssh\n\tprogram = /tmp/evil-gpg.sh\n[user]\n\tsigningkey = /tmp/evil-key\n", nil},
 		{"two filters", "[filter \"a\"]\n\tprocess = e\n[filter \"b\"]\n\tclean = e\n", []string{
 			"filter.a.clean=cat", "filter.a.process=", "filter.a.smudge=cat",
 			"filter.b.clean=cat", "filter.b.process=", "filter.b.smudge=cat",

@@ -567,68 +567,19 @@ func (f *FrontendAPI) GetSessionRuntimeStatus(id string) (session.SessionRuntime
 	return f.app.Manager().GetSessionRuntimeStatus(id)
 }
 
-// Default and maximum page sizes for GetSessionHistory. The default keeps the
-// first load of a session bounded (the UI fetches the newest page on open and
-// pages older content in on scroll-up); the cap protects against an
-// accidentally huge page request.
-const (
-	sessionHistoryDefaultLimit = 200
-	sessionHistoryMaxLimit     = 2000
-)
-
-// normalizeSessionHistoryLimit clamps a requested page size: non-positive
-// falls back to the default, and oversized is capped.
-func normalizeSessionHistoryLimit(limit int) int {
-	if limit <= 0 {
-		return sessionHistoryDefaultLimit
-	}
-	if limit > sessionHistoryMaxLimit {
-		return sessionHistoryMaxLimit
-	}
-	return limit
-}
-
-// GetSessionHistory returns ONE page of chat history for a session, oldest-first
-// within the page. The first call (before == "") returns the NEWEST page; pass
-// the returned NextCursor back as `before` to fetch the preceding page, so the
-// UI never has to load a whole session at once. limit<=0 uses the default and
-// is clamped to the maximum. Non-content activity rows (thinking, step_done)
-// are omitted. A malformed cursor is rejected instead of paging from the wrong
-// offset.
-func (f *FrontendAPI) GetSessionHistory(id string, limit int, before string) (*session.HistoryPage, error) {
-	if f.store == nil {
-		return &session.HistoryPage{Messages: []session.ChatMessage{}}, nil
-	}
-	cursor, err := session.DecodeMessageCursor(before)
-	if err != nil {
-		return nil, err
-	}
-	msgs, hasMore, err := f.store.LoadMessagesPage(context.Background(), id, normalizeSessionHistoryLimit(limit), cursor)
-	if err != nil {
-		return nil, err
-	}
-	page := &session.HistoryPage{Messages: msgs, HasMore: hasMore}
-	if len(msgs) > 0 {
-		oldest := msgs[0]
-		page.NextCursor = session.EncodeMessageCursor(session.MessageCursor{CreatedAt: oldest.CreatedAt, ID: oldest.ID})
-	}
-	return page, nil
-}
-
-// GetSessionPlanTimeline returns the session's plan-lifecycle rows (the plan
-// declaration plus every plan_step_start/complete/paused row) in ascending
-// stream order, regardless of how far back the declaration sits in the
-// message history. The Execution Plan panel and the chat's plan-step blocks
-// are rebuilt from these rows after a reload: a long-running plan task can
-// append thousands of rows after its declaration, leaving it far outside the
-// newest page GetSessionHistory returns, and no amount of window paging
-// short of walking the whole session would reach it. One indexed query over
-// the plan roles (a handful of rows per declared plan) replaces that walk.
-func (f *FrontendAPI) GetSessionPlanTimeline(id string) ([]session.ChatMessage, error) {
+// GetSessionHistory returns the session's full content history, oldest-first,
+// in a single call. Non-content activity rows (thinking, step_done) are
+// omitted.
+//
+// DELIBERATE TRADE-OFF: this is intentionally unpaginated — the former 200-row
+// page size and the 2000-row backend cap were removed because the full set is
+// needed for plan-timeline restore, so NO numeric ceiling remains on the
+// initial-load cost. See SQLiteSessionStore.LoadSessionHistory.
+func (f *FrontendAPI) GetSessionHistory(id string) ([]session.ChatMessage, error) {
 	if f.store == nil {
 		return []session.ChatMessage{}, nil
 	}
-	return f.store.LoadPlanTimeline(context.Background(), id)
+	return f.store.LoadSessionHistory(context.Background(), id)
 }
 
 // GetBlackboardState returns the current blackboard state for a session.
