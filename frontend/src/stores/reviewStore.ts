@@ -176,7 +176,7 @@ export const useReviewStore = create<ReviewState & ReviewActions>()(
       // `promptShownForTask` key that zustand's default shallow rehydrate
       // merge would re-inject into state from older localStorage snapshots;
       // strip it so the stale key is gone deterministically at first load
-      // (nothing reads it since ADR-055).
+      // (nothing reads it since ADR-060).
       migrate: (persistedState, _version) => {
         const state = { ...(persistedState ?? {}) } as Record<string, unknown>
         delete state.promptShownForTask

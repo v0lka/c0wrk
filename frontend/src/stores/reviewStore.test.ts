@@ -75,7 +75,7 @@ describe('hunkCommentKey', () => {
 
 describe('persistence migration', () => {
   it('strips the removed promptShownForTask key from a legacy localStorage snapshot', async () => {
-    // Legacy persisted shape (pre-ADR-055): the now-removed post-task review
+    // Legacy persisted shape (pre-ADR-060): the now-removed post-task review
     // prompt flag sat alongside the surviving keys. zustand's default shallow
     // rehydrate merge would re-inject it into state; the migrate hook must
     // drop it so nothing stale lands in the store.
