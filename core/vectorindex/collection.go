@@ -38,7 +38,7 @@ func collectionName(branch string) string {
 	if sanitized == "" {
 		sanitized = "default"
 	}
-	return "branch_" + sanitized
+	return collectionNamePrefix + sanitized
 }
 
 // lexicalBranchDirName returns a sanitized directory name for a branch,
@@ -58,12 +58,15 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.current.db == nil {
-		return errors.New("no database initialized; call SetProject first")
-	}
-
 	if branchName == s.current.currentBranch && s.current.collection != nil {
 		return nil
+	}
+
+	// ADR-064: the persistent DB is opened per branch (SetProject prepares the
+	// layout but no longer opens it), so a real project is identified by a
+	// non-empty storage path rather than an already-open DB.
+	if s.current.projectPath == "" {
+		return errors.New("no project initialized; call SetProject first")
 	}
 
 	// Persist the outgoing branch's in-memory hashes before they are
@@ -75,25 +78,42 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 		}
 	}
 
-	name := collectionName(branchName)
-	col, err := s.current.db.GetOrCreateCollection(name, nil, s.embeddingFunc)
+	// ADR-064 step (a): drop the outgoing branch's residents BEFORE opening the
+	// incoming one, so the switch peaks at one branch's working set instead of
+	// two. Its hashes were persisted just above, so nothing is lost.
+	s.releaseBranchResidentsLocked()
+
+	// Open the branch-scoped chromem DB root. NewPersistentDB decodes only this
+	// branch's collection — never the other branches' (ADR-064).
+	db, err := s.openBranchDBLocked(branchName)
 	if err != nil {
-		return fmt.Errorf("getting or creating collection %q: %w", name, err)
+		return err
 	}
 
-	// Close any previously-open lexical index and open the one for this
-	// branch. The lexical index is persisted alongside the chromem DB under
-	// the project's vector_index directory (set by SetProject).
-	if s.current.lexical != nil {
-		if closeErr := s.current.lexical.Close(); closeErr != nil {
-			s.logger.Warn("failed to close previous lexical index", "error", closeErr)
-		}
-		s.current.lexical = nil
+	name := collectionName(branchName)
+	col, err := db.GetOrCreateCollection(name, nil, s.embeddingFunc)
+	if err != nil {
+		// Deliberately do NOT publish db: a half-open state (db resident,
+		// collection nil) would be parked by parkCurrentLocked — which gates on
+		// db != nil — and estimateStateBytes sizes a parked state from its
+		// COLLECTION, so the documents this db already decoded would be counted
+		// as 0 bytes and the park budget could never evict them. takeParkedLocked
+		// would then restore that state without reopening it (db != nil), leaving
+		// a collection-less current. Keeping the state fully closed instead
+		// upholds the fail-closed contract ADR-064 documents for EVERY failed
+		// open, not only a failed NewPersistentDB — GetOrCreateCollection reaches
+		// chromem's CreateCollection, which persists the collection metadata file
+		// and so genuinely fails on a full or read-only volume (exactly the
+		// condition a multi-GB index runs into).
+		return fmt.Errorf("getting or creating collection %q: %w", name, err)
 	}
-	// The lexical index directory is derived from the chromem DB path
-	// (stored in the database, which was opened from the project path).
-	// If the DB is persistent, extract its directory to place the lexical
-	// index alongside it; otherwise skip lexical persistence.
+	s.current.db = db
+
+	// Open this branch's lexical index; the previous branch's was already closed
+	// by releaseBranchResidentsLocked above. It lives under the project's
+	// vector_index storage root (set by SetProject), alongside the chromem DB —
+	// a state without a storage root or project id (the in-memory No Project
+	// state) gets no lexical persistence at all.
 	if s.current.projectPath != "" && s.current.projectID != "" {
 		lexDir := filepath.Join(s.current.projectPath, "lexical", lexicalBranchDirName(branchName))
 		// Ensure the parent directory (…/{projectID}/lexical/) exists;

@@ -356,6 +356,9 @@ func TestServiceDeleteProjectData_ResetsCurrentState(t *testing.T) {
 	if err := svc.SetProject("p2", p2); err != nil {
 		t.Fatalf("SetProject p2: %v", err)
 	}
+	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
+		t.Fatalf("SwitchBranch p2: %v", err)
+	}
 	if err := svc.SetProject("p3", p3); err != nil {
 		t.Fatalf("SetProject p3: %v", err)
 	}

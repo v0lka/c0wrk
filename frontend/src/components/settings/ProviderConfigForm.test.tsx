@@ -53,6 +53,12 @@ interface RenderOpts {
   fingerprint?: string
   proxyActive?: boolean
   bypassList?: string[]
+  /**
+   * The pin section ships COLLAPSED by default; tests that touch the field
+   * expand it first (the default), mirroring the user's click on the section
+   * header. The collapse behavior itself is tested with expandPin: false.
+   */
+  expandPin?: boolean
 }
 
 function render({
@@ -61,6 +67,7 @@ function render({
   fingerprint = '',
   proxyActive = false,
   bypassList = [],
+  expandPin = true,
 }: RenderOpts = {}) {
   useProxyDraftStore.setState({ active: proxyActive, bypassList })
   act(() => {
@@ -76,6 +83,20 @@ function render({
       />,
     )
   })
+  if (expandPin) {
+    // Expand while the field is not yet mounted: Radix renders the closed
+    // content div but strips its children, so the input's presence is the
+    // real "expanded" signal — repeated render() calls reuse the component
+    // instance, and a blind click would TOGGLE an expanded block back shut.
+    // Fixed providers have no trigger at all — nothing to expand.
+    const inputMounted = container.querySelector('input[placeholder*="SPKI DER"]')
+    const trigger = container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]')
+    if (trigger && !inputMounted) {
+      act(() => {
+        trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      })
+    }
+  }
 }
 
 function fingerprintInput(): HTMLInputElement | null {
@@ -130,6 +151,44 @@ describe('ProviderConfigForm TLS section visibility', () => {
   it('renders no toggle checkbox in the form', () => {
     render({ fingerprint: pin })
     expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(0)
+  })
+})
+
+describe('ProviderConfigForm collapse block', () => {
+  function collapseTrigger(): HTMLButtonElement | null {
+    return container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]')
+  }
+
+  function collapseContent(): HTMLElement | null {
+    return container.querySelector<HTMLElement>('[data-slot="collapsible-content"]')
+  }
+
+  // The old "Certificate fingerprint (SPKI, base64)" label is gone; the
+  // section is introduced by the collapse trigger instead.
+  it('titles the section "Pin TLS certificate (optional)" and drops the SPKI label', () => {
+    render({ expandPin: false })
+    expect(collapseTrigger()?.textContent).toBe('Pin TLS certificate (optional)')
+    expect(container.textContent).not.toContain('Certificate fingerprint (SPKI, base64)')
+  })
+
+  // Radix renders the closed content div but strips its children, so
+  // "collapsed by default" means the field is absent from the DOM until the
+  // header is clicked — the visual collapse itself is the presentational
+  // contract.
+  it('is collapsed by default and mounts the field on expand', async () => {
+    render({ fingerprint: pin, expandPin: false })
+    expect(collapseContent()?.getAttribute('data-state')).toBe('closed')
+    expect(fingerprintInput()).toBeNull()
+
+    await act(async () => {
+      collapseTrigger()!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(collapseContent()?.getAttribute('data-state')).toBe('open')
+    expect(fingerprintInput()?.value).toBe(pin)
+    expect(getButton()).not.toBeNull()
   })
 })
 

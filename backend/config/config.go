@@ -581,6 +581,20 @@ type MCPServerConfig struct {
 	// http fields (new)
 	URL     string            `yaml:"url,omitempty" json:"url,omitempty"`
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// Timeout bounds this server's initialization handshake (initialize +
+	// tools/list), as a Go duration string (e.g. "30s"). Empty is allowed and
+	// selects the mcp package default (60s). When set it must parse and be
+	// positive; invalid values are rejected on the UI save path
+	// (validateMCPServerConfig) and fail soft to the default on the load path.
+	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+
+	// CallTimeout bounds a single tools/call invocation against this server,
+	// as a Go duration string (e.g. "2m"). Empty is allowed: the call inherits
+	// Timeout (which itself defaults when unset). When set it must parse and
+	// be positive; invalid values are rejected on the UI save path and fail
+	// soft to the default on the load path.
+	CallTimeout string `yaml:"call_timeout,omitempty" json:"call_timeout,omitempty"`
 }
 
 // RouterConfig holds router settings.
@@ -1792,15 +1806,29 @@ func LoadWithResult(path string) (*LoadResult, error) {
 	// always valid.
 	shellExecWarnings := normalizeShellExec(&cfg)
 
+	// Validate the MCP per-server timeout durations (fail-soft: invalid entries
+	// are warned about and left untouched — the config→builder adapter resolves
+	// them to the engine default at build time). Must run after ApplyDefaults
+	// and before validate. Surfacing the warning here is what makes the ADR-063
+	// "logged warning" reach the user on the production load path — this is what
+	// feeds the UI's configLoadErrors channel (the frontend rebuild paths call
+	// the adapter without a logger).
+	mcpWarnings := normalizeMCPTimeouts(&cfg)
+
+	// Warnings collected before validation, in a deterministic order.
+	warnings := autonomyWarnings
+	warnings = append(warnings, shellExecWarnings...)
+	warnings = append(warnings, mcpWarnings...)
+
 	// Validate configuration
 	if err := validate(&cfg); err != nil {
 		return &LoadResult{
 			Config:     &cfg,
-			LoadErrors: append(append(autonomyWarnings, shellExecWarnings...), "Config validation failed: "+err.Error()),
+			LoadErrors: append(warnings, "Config validation failed: "+err.Error()),
 		}, fmt.Errorf("config validation failed: %w", err)
 	}
 
-	return &LoadResult{Config: &cfg, LoadErrors: append(autonomyWarnings, shellExecWarnings...)}, nil
+	return &LoadResult{Config: &cfg, LoadErrors: warnings}, nil
 }
 
 // Save writes the configuration to a YAML file atomically.

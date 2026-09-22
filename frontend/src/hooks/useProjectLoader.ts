@@ -133,6 +133,7 @@ export function useProjectLoader(): void {
         // rehydrated and the per-project maps stay bounded (mirrors
         // ProjectSelector's delete path).
         useGitPanelStore.getState().dropProjectCommitState(data)
+        useGitPanelStore.getState().dropProjectOperation(data)
         useGitPanelStore.getState().dropProjectTabs(data)
         useUIStore.getState().dropProjectTabs(data)
         dropProjectSnapshot(data)

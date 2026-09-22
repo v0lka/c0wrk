@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Loader2 } from 'lucide-react'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { ChevronDown, Loader2 } from 'lucide-react'
 import { isOpenAICompatibleProvider } from '@/lib/llm-providers'
 import { getProviderTLSCertificate } from '@/api/config'
 import { logger } from '@/lib/logger'
@@ -42,7 +43,10 @@ export function ProviderConfigForm({
 
   // The pin itself is the switch (ADR-054) — an empty field means standard
   // verification — so there is deliberately no checkbox mirroring it. The
-  // only local state here is the in-flight/error state of the Get button.
+  // local state here is purely visual: whether the (optional) pin section is
+  // expanded, plus the in-flight/error state of the Get button. Collapsed by
+  // default to keep the form short.
+  const [tlsOpen, setTlsOpen] = useState(false)
   const [fpLoading, setFpLoading] = useState(false)
   const [fpError, setFpError] = useState<string | null>(null)
 
@@ -127,59 +131,66 @@ export function ProviderConfigForm({
       )}
 
       {/* TLS verification override — compatible providers only (ADR-054).
-          The field and the Get button are always present: the pin is the
-          switch, so an empty field already means "standard verification"
-          and a separate toggle would only hide the Get button behind an
-          extra click. Disabled while the proxy dials for this provider's
-          host (active AND not bypassed); a bypassed host dials directly, so
-          its pin applies. */}
+          Grouped under a purely visual collapse block titled "Pin TLS
+          certificate (optional)", collapsed by default, so the common path
+          stays short. Once expanded the field and the Get button are always
+          present: the pin is the switch, so an empty field already means
+          "standard verification" and a separate toggle would only hide the
+          Get button behind an extra click. Disabled while the proxy dials
+          for this provider's host (active AND not bypassed); a bypassed host
+          dials directly, so its pin applies. */}
       {showTLSSection && (
-        <div className="flex flex-col gap-2">
-          <label className="text-xs text-muted-foreground">
-            Certificate fingerprint (SPKI, base64)
-          </label>
-          <div className="flex items-center gap-2">
-            <Input
-              placeholder="base64(SHA-256(SPKI DER)) pin"
-              value={config?.tls_fingerprint ?? ''}
-              onChange={(e) => onConfigChange({ tls_fingerprint: e.target.value })}
-              disabled={proxyDials}
-              className="h-9 text-sm flex-1 font-mono"
-            />
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={handleGetFingerprint}
-              disabled={fpLoading || !config?.base_url || proxyDials}
-              title={
-                proxyDials
-                  ? 'Unavailable while the proxy dials for this host'
-                  : config?.base_url
-                    ? 'Connect and read the fingerprint the server currently presents'
-                    : 'Set a base URL first'
-              }
-            >
-              {fpLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Get'}
-            </Button>
-          </div>
-          {proxyDials ? (
-            <span className="text-[11px] text-muted-foreground">
-              Not available while an HTTP proxy is enabled and this host is not
-              on its bypass list — the fingerprint pin does not apply to
-              proxied connections. Disable the proxy (Settings → General → HTTP
-              Proxy) or add this host to the proxy bypass list, to use
-              certificate pinning. A saved pin is kept and takes effect again
-              once the proxy stops dialing for this host.
-            </span>
-          ) : (
-            <span className="text-[11px] text-muted-foreground">
-              Empty = standard certificate verification. A pinned fingerprint
-              accepts only this key and survives certificate renewal. Get reads
-              whatever the server presents right now.
-            </span>
-          )}
-          {fpError && <span className="text-xs text-destructive">{fpError}</span>}
-        </div>
+        <Collapsible open={tlsOpen} onOpenChange={setTlsOpen} className="rounded-lg border border-border bg-card/50">
+          <CollapsibleTrigger className="flex w-full items-center justify-between px-4 py-3">
+            <span className="text-sm font-semibold">Pin TLS certificate (optional)</span>
+            <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${tlsOpen ? 'rotate-180' : ''}`} />
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="flex flex-col gap-2 px-4 pb-4">
+              <div className="flex items-center gap-2">
+                <Input
+                  placeholder="base64(SHA-256(SPKI DER)) pin"
+                  value={config?.tls_fingerprint ?? ''}
+                  onChange={(e) => onConfigChange({ tls_fingerprint: e.target.value })}
+                  disabled={proxyDials}
+                  className="h-9 text-sm flex-1 font-mono"
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleGetFingerprint}
+                  disabled={fpLoading || !config?.base_url || proxyDials}
+                  title={
+                    proxyDials
+                      ? 'Unavailable while the proxy dials for this host'
+                      : config?.base_url
+                        ? 'Connect and read the fingerprint the server currently presents'
+                        : 'Set a base URL first'
+                  }
+                >
+                  {fpLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Get'}
+                </Button>
+              </div>
+              {proxyDials ? (
+                <span className="text-[11px] text-muted-foreground">
+                  Not available while an HTTP proxy is enabled and this host is not
+                  on its bypass list — the fingerprint pin does not apply to
+                  proxied connections. Disable the proxy (Settings → General → HTTP
+                  Proxy) or add this host to the proxy bypass list, to use
+                  certificate pinning. A saved pin is kept and takes effect again
+                  once the proxy stops dialing for this host.
+                </span>
+              ) : (
+                <span className="text-[11px] text-muted-foreground">
+                  Empty = standard certificate verification. A pinned fingerprint
+                  accepts only this key and survives certificate renewal. Get reads
+                  whatever the server presents right now.
+                </span>
+              )}
+              {fpError && <span className="text-xs text-destructive">{fpError}</span>}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
       )}
     </>
   )

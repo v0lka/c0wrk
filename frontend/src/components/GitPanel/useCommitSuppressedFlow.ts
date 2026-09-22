@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useProjectStore } from '@/stores/projectStore'
-import { commit, type CommitSuppression } from '@/api/git'
+import { commit, type CommitResult, type CommitSuppression } from '@/api/git'
 import { trustGitRepo } from '@/api/gitConfigRisk'
 
 /**
@@ -16,10 +16,17 @@ export interface PendingSuppressedCommit {
 }
 
 interface CommitSuppressedFlowOptions {
-  /** Store setter: surface a flow error in the commit box's error slot. */
-  setCommitError: (projectId: string, error: string | null) => void
-  /** Store setter: record a successful commit (SHA + bounded output). */
-  setCommitSuccess: (projectId: string, sha: string | null, output?: string) => void
+  /**
+   * Record a commit that actually ran in the git-operation console and clear
+   * its draft. A withheld (suppressed) result never reaches here — it is a
+   * decision request, not a commit.
+   */
+  recordCommit: (projectId: string, result: CommitResult) => Promise<void>
+  /**
+   * Record a failed commit (the trust RPC or the commit itself) in the
+   * git-operation console.
+   */
+  recordCommitFailure: (projectId: string, err: unknown) => Promise<void>
   /** Store setter: persist the per-project "don't ask again" flag. */
   setSkipCommitSuppress: (projectId: string, skip: boolean) => void
 }
@@ -36,8 +43,8 @@ interface CommitSuppressedFlowOptions {
  * generate handlers use.
  */
 export function useCommitSuppressedFlow({
-  setCommitError,
-  setCommitSuccess,
+  recordCommit,
+  recordCommitFailure,
   setSkipCommitSuppress,
 }: CommitSuppressedFlowOptions) {
   // Direct store reference (null | ProjectInfo[]) — selector-stable.
@@ -74,7 +81,10 @@ export function useCommitSuppressedFlow({
       projects?.find((p) => p.id === pending.projectId)?.workspace_path ?? ''
     if (workspacePath === '') {
       setPendingSuppressed(null)
-      setCommitError(pending.projectId, 'Cannot trust: project workspace path is unavailable')
+      await recordCommitFailure(
+        pending.projectId,
+        new Error('Cannot trust: project workspace path is unavailable'),
+      )
       return
     }
     setIsDialogSubmitting(true)
@@ -93,12 +103,12 @@ export function useCommitSuppressedFlow({
         return
       }
       setPendingSuppressed(null)
-      setCommitSuccess(pending.projectId, result.sha ?? '', result.output ?? '')
+      await recordCommit(pending.projectId, result)
     } catch (err) {
-      // Trust RPC or the re-commit failed: close the dialog and surface the
-      // error in the commit box's error slot (nothing was committed).
+      // Trust RPC or the re-commit failed: close the dialog and record the
+      // failure in the console (nothing was committed).
       setPendingSuppressed(null)
-      setCommitError(pending.projectId, err instanceof Error ? err.message : 'Commit failed')
+      await recordCommitFailure(pending.projectId, err)
     } finally {
       setIsDialogSubmitting(false)
     }
@@ -119,10 +129,10 @@ export function useCommitSuppressedFlow({
       // force=true: the backend commits hardened and never suppresses.
       const result = await commit(pending.message, true)
       setPendingSuppressed(null)
-      setCommitSuccess(pending.projectId, result.sha ?? '', result.output ?? '')
+      await recordCommit(pending.projectId, result)
     } catch (err) {
       setPendingSuppressed(null)
-      setCommitError(pending.projectId, err instanceof Error ? err.message : 'Commit failed')
+      await recordCommitFailure(pending.projectId, err)
     } finally {
       setIsDialogSubmitting(false)
     }

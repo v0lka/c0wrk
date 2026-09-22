@@ -6,6 +6,17 @@ import { createRoot, type Root } from 'react-dom/client'
 import { ModelCombobox } from './ModelCombobox'
 import { useInputModeStore } from '@/stores/inputModeStore'
 
+// Radix popper positioning (autoUpdate) observes the trigger/content with
+// ResizeObserver, which jsdom does not provide.
+vi.stubGlobal(
+  'ResizeObserver',
+  class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  },
+)
+
 // Spies created via vi.hoisted so they exist before vi.mock factories run and
 // are also referenceable inside the test bodies.
 const spies = vi.hoisted(() => ({
@@ -70,63 +81,81 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
-function openDropdown(): HTMLButtonElement {
+/** Radix's DropdownMenuTrigger toggles on `pointerdown`, not `click`. */
+async function openDropdown(): Promise<HTMLButtonElement> {
   const trigger = container.querySelector('button')
   expect(trigger).not.toBeNull()
-  act(() => {
-    trigger!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  await act(async () => {
+    trigger!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    await new Promise((r) => setTimeout(r, 10))
   })
   return trigger!
 }
 
+function menu(): HTMLDivElement | null {
+  return document.body.querySelector('[role="menu"]')
+}
+
+/** Radix menu items are `div[role="menuitem"]`, not buttons. */
+function options(): HTMLElement[] {
+  const el = menu()
+  return el ? Array.from(el.querySelectorAll<HTMLElement>('[role="menuitem"]')) : []
+}
+
+function clickOption(el: HTMLElement): void {
+  act(() => {
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+}
+
 describe('ModelCombobox portal', () => {
-  it('renders the dropdown into document.body (not the component subtree) when open', () => {
-    // Closed initially: no listbox anywhere.
-    expect(document.body.querySelector('[role="listbox"]')).toBeNull()
+  it('renders the dropdown into document.body (not the component subtree) when open', async () => {
+    // Closed initially: no menu anywhere.
+    expect(menu()).toBeNull()
 
-    openDropdown()
+    await openDropdown()
 
-    const listbox = document.body.querySelector('[role="listbox"]') as HTMLDivElement | null
-    expect(listbox).not.toBeNull()
-    // The menu lives in a portal under <body>, separate from the trigger's DOM.
-    expect(container.contains(listbox)).toBe(false)
-    expect(document.body.contains(listbox)).toBe(true)
+    const el = menu()
+    expect(el).not.toBeNull()
+    // The menu lives in a Radix portal under <body>, separate from the trigger.
+    expect(container.contains(el)).toBe(false)
+    expect(document.body.contains(el)).toBe(true)
   })
 
-  it('positions the portaled menu fixed with a high z-index', () => {
-    openDropdown()
-    const listbox = document.body.querySelector('[role="listbox"]') as HTMLDivElement | null
-    expect(listbox).not.toBeNull()
-    expect(listbox!.style.position).toBe('fixed')
-    // z-50 exceeds the message input area (auto), chat area (z-10/z-20) and
-    // pending actions bar (auto).
-    expect(listbox!.style.zIndex).toBe('50')
-  })
+  it('marks the trigger as expanded while the menu is open', async () => {
+    const trigger = await openDropdown()
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
 
-  it('keeps the dropdown open when clicking inside the portaled menu', () => {
-    openDropdown()
-    const listbox = document.body.querySelector('[role="listbox"]') as HTMLDivElement | null
-    expect(listbox).not.toBeNull()
-
-    // A mousedown inside the portal menu must NOT be treated as an outside click.
+    // Radix closes on Escape; the trigger returns to the collapsed state.
     act(() => {
-      listbox!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      menu()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     })
-    expect(document.body.querySelector('[role="listbox"]')).not.toBeNull()
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
   })
 
-  it('dismisses the dropdown on an outside click (outside trigger + portal)', () => {
-    openDropdown()
-    expect(document.body.querySelector('[role="listbox"]')).not.toBeNull()
+  it('keeps the dropdown open when interacting inside the portaled menu', async () => {
+    await openDropdown()
+    expect(menu()).not.toBeNull()
 
-    // A mousedown on <body> (outside both the trigger wrapper and the portal menu).
+    // A pointerdown inside the portal menu must NOT be treated as an outside click.
     act(() => {
-      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      menu()!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
     })
-    expect(document.body.querySelector('[role="listbox"]')).toBeNull()
+    expect(menu()).not.toBeNull()
   })
 
-  it('does not display a stale global default that is no longer selectable', () => {
+  it('dismisses the dropdown on an outside pointerdown', async () => {
+    await openDropdown()
+    expect(menu()).not.toBeNull()
+
+    // A pointerdown on <body> (outside both the trigger wrapper and the portal menu).
+    act(() => {
+      document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    })
+    expect(menu()).toBeNull()
+  })
+
+  it('does not display a stale global default that is no longer selectable', async () => {
     spies.configData.allModels = [
       { name: 'deepseek-v4', provider: 'PT', family: 'deepseek', vision: false },
       { name: 'zai-org/GLM-5.3', provider: 'PT', family: 'glm', vision: false },
@@ -141,40 +170,36 @@ describe('ModelCombobox portal', () => {
     expect(trigger?.textContent).toContain('Select model…')
     expect(trigger?.textContent).not.toContain('GLM-5.2-FP8')
 
-    openDropdown()
-    const defaultOption = document.body.querySelector('[role="listbox"] button')
+    await openDropdown()
+    const defaultOption = options()[0]
     expect(defaultOption?.textContent).toBe('Defaultactive')
     expect(defaultOption?.textContent).not.toContain('GLM-5.2-FP8')
   })
 
-  it('selects a model and closes when a portaled option is clicked', () => {
-    openDropdown()
-    const options = document.body.querySelectorAll('[role="listbox"] button')
-    // Default option + two models = 3 buttons.
-    expect(options.length).toBe(3)
+  it('selects a model and closes when a portaled option is clicked', async () => {
+    await openDropdown()
+    const entries = options()
+    // Default option + two models = 3 items.
+    expect(entries.length).toBe(3)
 
-    act(() => {
-      // Last option button is the 'gpt-4o' model.
-      options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    // Last option is the 'gpt-4o' model.
+    clickOption(entries[entries.length - 1]!)
 
     // The selected value is the composite selector "provider/name".
     expect(useInputModeStore.getState().selectedModel).toBe('chatgpt/gpt-4o')
-    expect(document.body.querySelector('[role="listbox"]')).toBeNull()
+    expect(menu()).toBeNull()
   })
 })
 
 describe('ModelCombobox default-model persistence', () => {
   it('persists the picked model as default_model and invalidates the config cache', async () => {
-    openDropdown()
-    const options = document.body.querySelectorAll('[role="listbox"] button')
+    await openDropdown()
+    const entries = options()
 
     spies.setDefaultModel.mockResolvedValue(undefined)
 
-    act(() => {
-      // Last option button is the 'gpt-4o' model.
-      options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    // Last option is the 'gpt-4o' model.
+    clickOption(entries[entries.length - 1]!)
 
     // The picked model is written to default_model (LLM section) as the
     // composite selector "provider/name".
@@ -193,15 +218,13 @@ describe('ModelCombobox default-model persistence', () => {
   })
 
   it('does NOT persist default_model when the "Default" option is chosen', async () => {
-    openDropdown()
-    const options = document.body.querySelectorAll('[role="listbox"] button')
+    await openDropdown()
+    const entries = options()
 
     spies.setDefaultModel.mockResolvedValue(undefined)
 
-    act(() => {
-      // First option button is the "Default" entry (resets to global default).
-      options[0]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    // First option is the "Default" entry (resets to global default).
+    clickOption(entries[0]!)
 
     // Choosing "Default" clears the per-message override but must NOT rewrite
     // default_model — it already points at the global default.
@@ -217,19 +240,15 @@ describe('ModelCombobox default-model persistence', () => {
       .mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectFirst = reject }))
       .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveSecond = resolve }))
 
-    openDropdown()
-    let options = document.body.querySelectorAll('[role="listbox"] button')
-    act(() => {
-      // Pick gpt-4o first; its request remains in flight.
-      options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    await openDropdown()
+    let entries = options()
+    // Pick gpt-4o first; its request remains in flight.
+    clickOption(entries[entries.length - 1]!)
 
-    openDropdown()
-    options = document.body.querySelectorAll('[role="listbox"] button')
-    act(() => {
-      // Then select claude-sonnet before the first request settles.
-      options[1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    await openDropdown()
+    entries = options()
+    // Then select claude-sonnet before the first request settles.
+    clickOption(entries[1]!)
     expect(useInputModeStore.getState().selectedModel).toBe('anthropic/claude-sonnet')
     expect(spies.setDefaultModel).toHaveBeenCalledTimes(1)
 
@@ -249,25 +268,19 @@ describe('ModelCombobox default-model persistence', () => {
       .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveFirst = resolve }))
       .mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectSecond = reject }))
 
-    openDropdown()
-    let options = document.body.querySelectorAll('[role="listbox"] button')
-    act(() => {
-      options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    await openDropdown()
+    let entries = options()
+    clickOption(entries[entries.length - 1]!)
 
-    openDropdown()
-    options = document.body.querySelectorAll('[role="listbox"] button')
-    act(() => {
-      // Cancel the optimistic pick before its persistence succeeds.
-      options[0]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    await openDropdown()
+    entries = options()
+    // Cancel the optimistic pick before its persistence succeeds.
+    clickOption(entries[0]!)
     await act(async () => { resolveFirst() })
 
-    openDropdown()
-    options = document.body.querySelectorAll('[role="listbox"] button')
-    act(() => {
-      options[1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    await openDropdown()
+    entries = options()
+    clickOption(entries[1]!)
     await vi.waitFor(() => {
       expect(spies.setDefaultModel).toHaveBeenCalledTimes(2)
     })
@@ -285,17 +298,13 @@ describe('ModelCombobox default-model persistence', () => {
       .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveFirst = resolve }))
       .mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectSecond = reject }))
 
-    openDropdown()
-    let options = document.body.querySelectorAll('[role="listbox"] button')
-    act(() => {
-      options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    await openDropdown()
+    let entries = options()
+    clickOption(entries[entries.length - 1]!)
 
-    openDropdown()
-    options = document.body.querySelectorAll('[role="listbox"] button')
-    act(() => {
-      options[1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    await openDropdown()
+    entries = options()
+    clickOption(entries[1]!)
 
     await act(async () => { resolveFirst() })
     await vi.waitFor(() => {
@@ -317,17 +326,13 @@ describe('ModelCombobox default-model persistence', () => {
       .mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectFirst = reject }))
       .mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectSecond = reject }))
 
-    openDropdown()
-    let options = document.body.querySelectorAll('[role="listbox"] button')
-    act(() => {
-      options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    await openDropdown()
+    let entries = options()
+    clickOption(entries[entries.length - 1]!)
 
-    openDropdown()
-    options = document.body.querySelectorAll('[role="listbox"] button')
-    act(() => {
-      options[1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    await openDropdown()
+    entries = options()
+    clickOption(entries[1]!)
     expect(useInputModeStore.getState().selectedModel).toBe('anthropic/claude-sonnet')
 
     await act(async () => { rejectFirst(new Error('first request failed')) })
@@ -344,16 +349,16 @@ describe('ModelCombobox default-model persistence', () => {
   })
 
   it('still invalidates the cache even if persist rejects', async () => {
-    openDropdown()
-    const options = document.body.querySelectorAll('[role="listbox"] button')
+    await openDropdown()
+    const entries = options()
 
     spies.setDefaultModel.mockRejectedValue(new Error('boom'))
 
     // Async act so the rejection's rollback microtask runs inside the act
     // scope rather than after it.
     await act(async () => {
-      // Last option button is the 'gpt-4o' model.
-      options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      // Last option is the 'gpt-4o' model.
+      clickOption(entries[entries.length - 1]!)
     })
 
     await vi.waitFor(() => {
@@ -362,8 +367,8 @@ describe('ModelCombobox default-model persistence', () => {
   })
 
   it('rolls back the per-message override when persist fails (no silent divergence)', async () => {
-    openDropdown()
-    const options = document.body.querySelectorAll('[role="listbox"] button')
+    await openDropdown()
+    const entries = options()
 
     spies.setDefaultModel.mockRejectedValue(new Error('boom'))
 
@@ -372,8 +377,8 @@ describe('ModelCombobox default-model persistence', () => {
     // synchronously right after the click, before the rollback flushes.
     let optimistic: string | null = 'unset'
     await act(async () => {
-      // Last option button is the 'gpt-4o' model.
-      options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      // Last option is the 'gpt-4o' model.
+      clickOption(entries[entries.length - 1]!)
       optimistic = useInputModeStore.getState().selectedModel
     })
 
@@ -390,7 +395,7 @@ describe('ModelCombobox default-model persistence', () => {
 })
 
 describe('ModelCombobox disabled (session-pinning lock)', () => {
-  it('renders a disabled trigger and ignores clicks while the session is running', () => {
+  it('renders a disabled trigger and ignores clicks while the session is running', async () => {
     act(() => {
       root.render(<ModelCombobox disabled />)
     })
@@ -399,10 +404,8 @@ describe('ModelCombobox disabled (session-pinning lock)', () => {
     expect(trigger.disabled).toBe(true)
     expect(trigger.getAttribute('title')).toBe('Locked while the session is running')
 
-    // A click on a disabled button must not open the dropdown.
-    act(() => {
-      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-    expect(document.body.querySelector('[role="listbox"]')).toBeNull()
+    // A pointerdown on a disabled trigger must not open the dropdown.
+    await openDropdown()
+    expect(menu()).toBeNull()
   })
 })

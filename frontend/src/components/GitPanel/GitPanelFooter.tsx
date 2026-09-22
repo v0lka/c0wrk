@@ -1,5 +1,5 @@
-import { useState, useCallback } from 'react'
-import { DownloadCloud, UploadCloud, RefreshCw, Loader2, AlertCircle, ChevronDown, Terminal } from 'lucide-react'
+import { useState, useCallback, useEffect, useId, useRef } from 'react'
+import { DownloadCloud, UploadCloud, RefreshCw, Loader2, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -9,9 +9,13 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
-import { cn } from '@/lib/utils'
 import { pull, push, fetch } from '@/api/git'
-import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { runGitOperation } from '@/lib/gitOperation'
+import { useDropdown } from '@/hooks/useDropdown'
+import { useGitPanelStore, selectLastOperation } from '@/stores/gitPanelStore'
+import { useProjectStore } from '@/stores/projectStore'
+import { GitOperationButton } from './GitOperationButton'
+import { GitOperationPopover } from './GitOperationPopover'
 
 type RemoteOp = 'pull' | 'push' | 'fetch'
 
@@ -40,15 +44,24 @@ const OP_FLAGS: Record<RemoteOp, { label: string; flags: string[] }[]> = {
 }
 
 /**
- * Remote operations footer (Phase 5): Pull / Push / Fetch.
+ * Remote operations footer (Phase 5): Pull / Push / Fetch, plus a shared
+ * git-operation log.
  *
  * Each operation is a split button: the main part runs the default
  * operation, and the chevron opens a dropdown of additional flag options
  * (e.g. pull --rebase, push --force-with-lease). Parallel remote ops are
  * blocked via the shared `remoteOperationInProgress` store flag. An empty
- * `remote` argument lets git use the configured upstream. The backend
- * emits `git:status_changed` after each op, so `useGitStatusEvents`
+ * `remote` argument lets git use the configured upstream; for push this
+ * means the current branch is sent to its upstream, or — when it has never
+ * been published — created on the remote and tracked (push -u origin). The
+ * backend emits `git:status_changed` after each op, so `useGitStatusEvents`
  * auto-refreshes.
+ *
+ * The result of every remote op is recorded (via `runGitOperation`) into the
+ * store's per-project operation record instead of local state, so the
+ * {@link GitOperationButton} can tint green/red from any tab the shared footer
+ * is mounted on, and the {@link GitOperationPopover} can replay the captured
+ * output. Opening the log acknowledges the record, neutralising the tint.
  */
 export function GitPanelFooter() {
   const remoteOperationInProgress = useGitPanelStore(
@@ -57,39 +70,89 @@ export function GitPanelFooter() {
   const setRemoteOperationInProgress = useGitPanelStore(
     (s) => s.setRemoteOperationInProgress,
   )
+  const acknowledgeOperation = useGitPanelStore((s) => s.acknowledgeOperation)
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  // The last operation record by reference (or undefined) — selector-stable.
+  const lastOperation = useGitPanelStore((s) => selectLastOperation(s, activeProjectId))
 
   const [activeOp, setActiveOp] = useState<RemoteOp | null>(null)
-  const [output, setOutput] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [showOutput, setShowOutput] = useState(false)
+  // Open state + outside-click dismissal for the portaled log panel. The panel
+  // lives in a separate DOM subtree (document.body), so the hook's `menuRef`
+  // — attached to the panel — is what keeps a click INSIDE it from counting as
+  // an outside click.
+  const {
+    isOpen: isLogOpen,
+    setIsOpen: setIsLogOpen,
+    containerRef: logWrapRef,
+    menuRef: logPanelRef,
+  } = useDropdown()
+  // The trigger, so opening can acknowledge the record and closing (via Escape)
+  // can return focus to it — focus moves into the panel on mount.
+  const logButtonRef = useRef<HTMLButtonElement>(null)
+  // Document-unique id linking the trigger to its panel (`aria-controls`/`id`).
+  const logId = useId()
+
+  // Escape closes the log popover and returns focus to its trigger (focus had
+  // moved into the panel on open). Outside-click dismissal is the dropdown
+  // hook's job; it treats a click inside the portaled panel as "inside".
+  useEffect(() => {
+    if (!isLogOpen) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsLogOpen(false)
+        logButtonRef.current?.focus()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [isLogOpen, setIsLogOpen])
 
   const runOp = useCallback(
     async (op: RemoteOp, flags: string[] = []) => {
+      // Records are keyed by the active project, so without one there is
+      // nothing to attach the result to. The footer only renders inside a git
+      // panel, where a project is always active.
+      if (activeProjectId === null) return
       setActiveOp(op)
-      setError(null)
       setRemoteOperationInProgress(true)
       try {
-        // Empty remote → backend uses the configured upstream.
-        const result =
-          op === 'pull' ? await pull('', flags) :
-          op === 'push' ? await push('', flags) :
-          await fetch('', flags)
-        setOutput(result || `${OP_LABEL[op]} completed.`)
-        setShowOutput(true)
-      } catch (err) {
-        const message = err instanceof Error ? err.message : `${OP_LABEL[op]} failed`
-        setError(message)
-        setOutput(message)
-        setShowOutput(true)
+        // `runGitOperation` never throws: it records the success/failure into
+        // the store (which the log button/popover surface) and returns an
+        // outcome we intentionally ignore. Empty remote → backend resolves it;
+        // push publishes an unpublished branch (push -u <default push remote>)
+        // instead of failing.
+        await runGitOperation({
+          projectId: activeProjectId,
+          kind: op,
+          label: OP_LABEL[op],
+          fn: () =>
+            op === 'pull' ? pull('', flags) : op === 'push' ? push('', flags) : fetch('', flags),
+          extractOutput: (out) => out || `${OP_LABEL[op]} completed.`,
+        })
       } finally {
         setActiveOp(null)
         setRemoteOperationInProgress(false)
       }
     },
-    [setRemoteOperationInProgress],
+    [activeProjectId, setRemoteOperationInProgress],
   )
 
   const busy = remoteOperationInProgress
+
+  const toggleLog = useCallback(() => {
+    if (isLogOpen) {
+      setIsLogOpen(false)
+      // Return focus to the trigger: focus had moved into the panel on open.
+      logButtonRef.current?.focus()
+      return
+    }
+    // Acknowledge as we open: the button tints neutral, so an open log reads
+    // as "seen" rather than "unread result". Skip it while an operation is in
+    // flight — the result it will record re-arms the tint anyway, and the log
+    // stays readable mid-operation.
+    if (activeProjectId !== null && !busy) acknowledgeOperation(activeProjectId)
+    setIsLogOpen(true)
+  }, [isLogOpen, setIsLogOpen, activeProjectId, acknowledgeOperation, busy])
 
   const buttons: { op: RemoteOp; icon: typeof DownloadCloud }[] = [
     { op: 'fetch', icon: RefreshCw },
@@ -148,34 +211,29 @@ export function GitPanelFooter() {
           </DropdownMenu>
         ))}
 
-        {error && (
-          <span className="ml-1 flex items-center gap-1 text-[10px] text-destructive truncate max-w-[140px]" title={error}>
-            <AlertCircle className="size-3 shrink-0" />
-            {error}
-          </span>
-        )}
-
-        {(output || error) && (
-          <Button
-            variant="ghost"
-            size="xs"
-            className="ml-auto text-muted-foreground gap-0.5 px-1"
-            onClick={() => setShowOutput((v) => !v)}
-            aria-expanded={showOutput}
-            aria-label={showOutput ? 'Hide output' : 'Show output'}
-            title={showOutput ? 'Hide output' : 'Show output'}
-          >
-            <Terminal className="size-3" />
-            <ChevronDown className={cn('size-3 transition-transform', showOutput && 'rotate-180')} />
-          </Button>
-        )}
+        {/* Shared operation log. The panel is portaled to document.body with
+            fixed positioning (positioned from the trigger's rect), so it is
+            never clipped by the panel's overflow-hidden ancestor. Rendered on
+            every tab because the footer itself is shared. */}
+        <div ref={logWrapRef} className="ml-auto flex items-center">
+          <GitOperationButton
+            record={lastOperation}
+            busy={busy}
+            buttonRef={logButtonRef}
+            controlsId={isLogOpen ? logId : undefined}
+            open={isLogOpen}
+            onToggle={toggleLog}
+          />
+          {isLogOpen && (
+            <GitOperationPopover
+              record={lastOperation}
+              id={logId}
+              triggerRef={logButtonRef}
+              panelRef={logPanelRef}
+            />
+          )}
+        </div>
       </div>
-
-      {showOutput && output && (
-        <pre className="mx-2 mb-1.5 max-h-32 overflow-auto custom-scrollbar rounded bg-muted/60 p-1.5 text-[10px] leading-tight font-mono text-muted-foreground whitespace-pre-wrap">
-          {output}
-        </pre>
-      )}
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, CheckCircle2, AlertCircle, Loader2, Pencil, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, CheckCircle2, AlertCircle, TriangleAlert, Loader2, Pencil, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -59,10 +59,18 @@ export function MCPServerCard({ server, tools, expanded, onToggleExpand, onEdit,
               : <ChevronRight className="h-4 w-4 text-muted-foreground" />
             }
             {server.connected
-              ? <CheckCircle2 className="h-4 w-4 text-success" />
+              ? (server.unhealthy
+                  ? <TriangleAlert className="h-4 w-4 text-warning" />
+                  : <CheckCircle2 className="h-4 w-4 text-success" />)
               : <AlertCircle className="h-4 w-4 text-destructive" />
             }
             <span className="font-medium text-sm flex-1">{server.name}</span>
+            {server.unhealthy && (
+              <Badge variant="outline" className="text-xs border-warning text-warning gap-1">
+                <TriangleAlert className="h-3 w-3" />
+                Unhealthy
+              </Badge>
+            )}
             <Badge variant="secondary" className="text-xs">{server.transport}</Badge>
             <span className="text-xs text-muted-foreground">{server.tool_count} tools</span>
           </div>
@@ -70,6 +78,13 @@ export function MCPServerCard({ server, tools, expanded, onToggleExpand, onEdit,
 
         <CollapsibleContent>
           <div className="px-3 pb-3 pt-0 space-y-3 border-t">
+            {server.unhealthy && (
+              <div className="mt-3 flex items-start gap-2 p-2 rounded bg-warning/10 text-xs">
+                <TriangleAlert className="h-3 w-3 text-warning flex-shrink-0 mt-0.5" />
+                <span className="text-warning">This server is reachable but unhealthy — recent tool calls are failing or timing out. Check its configuration and logs.</span>
+              </div>
+            )}
+
             {server.error && (
               <div className="mt-3 flex items-start gap-2 p-2 rounded bg-destructive/10 text-xs">
                 <AlertCircle className="h-3 w-3 text-destructive flex-shrink-0 mt-0.5" />

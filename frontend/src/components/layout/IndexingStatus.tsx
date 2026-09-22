@@ -62,6 +62,24 @@ export function IndexingStatus() {
     )
   }
 
+  if (status.state === 'loading') {
+    // ADR-064: the branch-scoped persistent DB is being opened. Show an honest
+    // "Preparing index…" — no progress bar and no n/m, never the "Indexing" /
+    // "building" shape that implied a pass was already running.
+    return (
+      <div
+        className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground"
+        title={tooltip}
+      >
+        <div className="flex items-center gap-1">
+          <Dot state={derived.vectorDot} label={vectorLabel} />
+          <Dot state={derived.lexicalDot} label={lexicalLabel} />
+        </div>
+        <span>Preparing index…</span>
+      </div>
+    )
+  }
+
   const isReindexing = status.state === 'reindexing'
   const pct = Math.round(status.progress * 100)
   const phaseLabel =

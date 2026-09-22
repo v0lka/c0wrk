@@ -1,8 +1,12 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
-import { useDropdown } from '@/hooks/useDropdown'
-import { computeDropdownPosition, type DropdownPosition } from '@/lib/dropdownPosition'
-import { getLayoutViewport, toLayoutTriggerRect } from '@/lib/layoutSpace'
+import { useMemo } from 'react'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { compositeModelId, bareModel, findModelRef, type ModelRef } from '@/lib/modelId'
 import { cn } from '@/lib/utils'
 
@@ -18,21 +22,6 @@ function providerLabel(provider: string): string {
       return provider
   }
 }
-
-/**
- * Portal positioning constants (viewport-space, pixels).
- *  - MAX_DROPDOWN_HEIGHT mirrors the `max-h-64` (256px) cap on the menu so the
- *    up/down decision is correct before the first measurement is available.
- *  - MIN_WIDTH keeps long model names readable (matches the previous `w-72`).
- *  - GAP is the space kept between the trigger and the menu.
- *  - Z_INDEX sits above the message input area (auto), chat area (z-10/z-20)
- *    and pending actions bar (auto), matching the project's popover/dialog
- *    `z-50` layer so the portaled menu is never covered.
- */
-const MAX_DROPDOWN_HEIGHT = 256
-const MIN_WIDTH = 288
-const GAP = 6
-const Z_INDEX = 50
 
 export interface ModelPickerEntry {
   /** Composite selector "provider/name" — the value sent to the backend. */
@@ -103,14 +92,6 @@ interface ModelPickerMenuProps {
    *  self-referential. The provider groups remain unchanged. */
   hideDefaultOption?: boolean
   /**
-   * Render the portaled menu inside this element instead of document.body.
-   * The settings modal sets `pointer-events: none` on <body>, which would
-   * make a plain document.body portal inert (clicks on options fall through
-   * and close the dialog) — the Radix dialog content keeps
-   * `pointer-events: auto`, so portaling into it keeps the menu interactive.
-   */
-  portalContainer?: HTMLElement | null
-  /**
    * Optional heading rendered above the provider groups (e.g. "Default model"
    * in the settings context). Renders nothing when omitted.
    */
@@ -121,11 +102,28 @@ interface ModelPickerMenuProps {
  * ModelPickerMenu — the reusable model-selection dropdown.
  *
  * This is the single implementation of the model picker UI: a compact trigger
- * button plus a portaled, provider-grouped menu with an optional "Default"
- * entry and default/selected badges. It is rendered through a React portal
- * with `position: fixed` so it is never clipped by `overflow-hidden`
- * ancestors, opens upward or downward depending on available space, and
- * tracks window resize/scroll while open.
+ * button plus a provider-grouped menu with an optional "Default" entry and
+ * default/selected badges. It is built on the project's Radix `dropdown-menu`
+ * primitives (like {@link Combobox} and `ModelProfileSelector`), which own the
+ * portaled popper, keyboard navigation, dismissal, and — crucially — the
+ * modal-dialog interop described below.
+ *
+ * Why Radix rather than a hand-rolled `position: fixed` portal (the previous
+ * implementation): the settings consumer renders INSIDE a Radix modal dialog.
+ * Two consequences made a bespoke portal incorrect there:
+ *  1. `DialogContent` carries a CSS `transform` (its centering
+ *     `translate-x-[-50%] translate-y-[-50%]` plus the entry animation). A
+ *     transformed ancestor becomes the containing block for `position: fixed`
+ *     descendants, so viewport-space coordinates are reinterpreted in the
+ *     dialog's local space — the menu is displaced by the dialog's own offset
+ *     and then clipped by the dialog's `overflow-hidden` ("out of view", the
+ *     bug in issue #71).
+ *  2. A modal Radix dialog sets `body { pointer-events: none }`, so a plain
+ *     portal to `document.body` renders inert and cannot be clicked.
+ * Radix's `DropdownMenu.Content` is a `DismissableLayer` that portals to
+ * `document.body` (escaping both the transform and the overflow) while being
+ * treated as "inside" the parent dialog for dismissal purposes; its popper
+ * positioning is zoom-corrected globally by `lib/floatingUiZoom`.
  *
  * The component is purely presentational with respect to persistence: callers
  * own the selected value and decide what a pick means. The chat toolbar's
@@ -148,18 +146,8 @@ export function ModelPickerMenu({
   ariaLabel,
   className,
   hideDefaultOption = false,
-  portalContainer,
   menuHeading,
 }: ModelPickerMenuProps) {
-  const { isOpen, setIsOpen, containerRef, menuRef } = useDropdown(disabled)
-
-  const triggerRef = useRef<HTMLButtonElement>(null)
-  const [position, setPosition] = useState<DropdownPosition | null>(null)
-  // Direction of an arrow-key open from the trigger: the portal content does
-  // not exist at keydown time, so the entry focus (first option on ArrowDown,
-  // last on ArrowUp) is applied in a layout effect once the menu has rendered.
-  const [pendingFocusDir, setPendingFocusDir] = useState<1 | -1 | null>(null)
-
   const allModels = useMemo(() => toModelPickerEntries(models), [models])
 
   // Resolve the global default_model (which may be a composite "provider/name"
@@ -189,267 +177,115 @@ export function ModelPickerMenu({
 
   const isLoading = !loaded
 
-  // Position the portaled menu whenever it is open, and recompute on resize or
-  // any scroll (capture phase so nested scroll containers are covered too).
-  useLayoutEffect(() => {
-    if (!isOpen) {
-      setPosition(null)
-      return
-    }
-
-    const recompute = () => {
-      const trigger = triggerRef.current
-      if (!trigger) return
-      // getBoundingClientRect() and window.innerWidth/innerHeight report VISUAL
-      // px (magnified by the UI-scale `zoom` on <html>), while the menu's
-      // style.left/top are LAYOUT px. `toLayoutTriggerRect`/`getLayoutViewport`
-      // move the viewport-derived inputs into layout px (offsetHeight already
-      // is) so the menu lands where intended at any scale — a raw visual rect
-      // would displace it by `coordinate × (zoom − 1)`.
-      const rect = trigger.getBoundingClientRect()
-      const menu = menuRef.current
-      // Use the rendered height once available; otherwise fall back to the
-      // max-height cap so the direction decision is correct on first paint.
-      const dropdownHeight = menu && menu.offsetHeight > 0 ? menu.offsetHeight : MAX_DROPDOWN_HEIGHT
-      const viewport = getLayoutViewport()
-      setPosition(
-        computeDropdownPosition({
-          triggerRect: toLayoutTriggerRect({
-            top: rect.top,
-            bottom: rect.bottom,
-            left: rect.left,
-            width: rect.width,
-          }),
-          dropdownHeight,
-          viewportHeight: viewport.height,
-          viewportWidth: viewport.width,
-          gap: GAP,
-          minWidth: MIN_WIDTH,
-        }),
-      )
-    }
-
-    recompute()
-    window.addEventListener('resize', recompute)
-    window.addEventListener('scroll', recompute, true)
-    return () => {
-      window.removeEventListener('resize', recompute)
-      window.removeEventListener('scroll', recompute, true)
-    }
-  }, [isOpen, menuRef])
-
-  /**
-   * Move DOM focus among the rendered option buttons, wrapping at the ends.
-   * When nothing inside the menu is focused yet (focus still on the trigger),
-   * ArrowDown enters at the first option and ArrowUp at the last. Together
-   * with `role="option"` + `aria-selected` on the entries this completes the
-   * listbox keyboard/AT contract (the portaled container declares
-   * `role="listbox"`).
-   */
-  const focusOption = useCallback((direction: 1 | -1) => {
-    const menu = menuRef.current
-    if (!menu) return
-    const options = Array.from(
-      menu.querySelectorAll<HTMLButtonElement>('[role="option"]'),
-    )
-    if (options.length === 0) return
-    const current = options.indexOf(document.activeElement as HTMLButtonElement)
-    const next = current === -1
-      ? direction === 1
-        ? 0
-        : options.length - 1
-      : (current + direction + options.length) % options.length
-    options[next]?.focus()
-  }, [menuRef])
-
-  // Apply the arrow-key entry focus once the portaled menu has rendered AND
-  // been positioned. The menu is mounted with visibility:hidden until the
-  // positioning effect's setPosition lands (which happens one commit later),
-  // and a focus() call on an element inside a visibility:hidden subtree is a
-  // no-op in real WebViews — so focusing in the same commit the menu mounts
-  // would silently leave focus on the trigger. Gating on a non-null `position`
-  // (and depending on it) defers the focus to the commit that makes the menu
-  // visible, after which pendingFocusDir is cleared.
-  useLayoutEffect(() => {
-    if (isOpen && pendingFocusDir !== null && position !== null) {
-      focusOption(pendingFocusDir)
-      setPendingFocusDir(null)
-    }
-  }, [isOpen, pendingFocusDir, position, focusOption])
-
-  const close = () => {
-    setIsOpen(false)
-    triggerRef.current?.focus()
-  }
-
   return (
-    <div className="relative shrink-0" ref={containerRef}>
-      <button
-        ref={triggerRef}
-        type="button"
-        disabled={isLoading || disabled}
-        aria-label={ariaLabel}
-        className={cn(
-          'flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-input bg-background',
-          'hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors',
-          'max-w-[200px] truncate disabled:opacity-50 disabled:cursor-not-allowed',
-          className,
-        )}
-        onClick={() => setIsOpen((v) => !v)}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape' && isOpen) {
-            e.stopPropagation()
-            close()
-            return
-          }
-          // Listbox keyboard contract: ArrowDown/ArrowUp open the menu and
-          // move focus into the options (first/last respectively); when the
-          // menu is already open (focus still on the trigger) they enter it.
-          if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !isLoading && !disabled) {
-            e.preventDefault()
-            const direction = e.key === 'ArrowDown' ? 1 : -1
-            if (!isOpen) {
-              setIsOpen(true)
-              setPendingFocusDir(direction)
-            } else {
-              focusOption(direction)
-            }
-          }
-        }}
-        title={isLoading ? 'Loading models…' : disabled ? 'Locked while the session is running' : effectiveEntry ? `${effectiveEntry.providerLabel}: ${effectiveEntry.model}` : displayLabel}
-      >
-        <span className="truncate">{isLoading ? 'Loading models\u2026' : displayLabel}</span>
-        <svg className="size-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M6 9l6 6 6-6" />
-        </svg>
-      </button>
-
-      {isOpen && createPortal(
-        <div
-          ref={menuRef}
-          role="listbox"
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild disabled={isLoading || disabled}>
+        <button
+          type="button"
+          disabled={isLoading || disabled}
           aria-label={ariaLabel}
-          className="rounded-md border bg-popover shadow-md max-h-64 overflow-y-auto custom-scrollbar"
-          style={{
-            position: 'fixed',
-            top: position?.top ?? 0,
-            left: position?.left ?? 0,
-            width: position?.width ?? MIN_WIDTH,
-            visibility: position ? 'visible' : 'hidden',
-            zIndex: Z_INDEX,
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') {
-              e.stopPropagation()
-              close()
-              return
-            }
-            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-              e.preventDefault()
-              focusOption(e.key === 'ArrowDown' ? 1 : -1)
-            }
-          }}
-        >
-          {isLoading ? (
-            <div className="px-3 py-4 text-xs text-muted-foreground text-center">
-              Loading models…
-            </div>
-          ) : (
-            <>
-              {menuHeading && (
-                <div
-                  aria-hidden="true"
-                  className="px-3 pt-2 pb-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider"
-                >
-                  {menuHeading}
-                </div>
-              )}
-
-              {/* Default option */}
-              {!hideDefaultOption && (
-                <button
-                  type="button"
-                  role="option"
-                  aria-selected={!selected}
-                  className={cn(
-                    'flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted',
-                    !selected && 'bg-primary/10 font-medium',
-                  )}
-                  onClick={() => {
-                    // "Default" is an immediately valid local choice (null =
-                    // use the persisted global default). The caller decides
-                    // whether this needs a backend round-trip. Route through
-                    // close() so focus returns to the trigger before the
-                    // portaled menu unmounts (otherwise focus falls to
-                    // <body>, restarting the tab order for keyboard users).
-                    onSelect(null)
-                    close()
-                  }}
-                >
-                  <span className="flex-1 text-left">
-                    Default{effectiveDefaultId ? ` (${bareModel(defaultModel)})` : ''}
-                  </span>
-                  {!selected && (
-                    <span className="text-[10px] text-primary">active</span>
-                  )}
-                </button>
-              )}
-
-              {/* Provider groups — `role="group"` keeps the ARIA ownership
-                  valid (listbox → group → option); the visual header is
-                  aria-hidden because the group label carries the name. */}
-              {Array.from(grouped.entries()).map(([provider, modelsInGroup]) => (
-                <div key={provider} role="group" aria-label={providerLabel(provider)}>
-                  <div
-                    aria-hidden="true"
-                    className="px-3 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider bg-muted/30"
-                  >
-                    {providerLabel(provider)}
-                  </div>
-                  {modelsInGroup.map((entry) => {
-                    const isSelected = selected === entry.id
-                    // "default" badge marks the single entry the global
-                    // default_model resolves to. default_model may be a
-                    // composite "provider/name" or a legacy bare name, so
-                    // compare against the resolved composite id — this pins
-                    // the badge to exactly one provider even when the same
-                    // bare name is exposed by multiple providers.
-                    const isDefault = !selected && entry.id === effectiveDefaultId
-                    return (
-                      <button
-                        key={entry.id}
-                        type="button"
-                        role="option"
-                        aria-selected={isSelected}
-                        className={cn(
-                          'flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted',
-                          isSelected && 'bg-primary/10 font-medium',
-                        )}
-                        onClick={() => { onSelect(entry.id); close() }}
-                      >
-                        <span className="flex-1 text-left truncate">{entry.model}</span>
-                        {isSelected && (
-                          <span className="text-[10px] text-primary">selected</span>
-                        )}
-                        {isDefault && (
-                          <span className="text-[10px] text-muted-foreground">default</span>
-                        )}
-                      </button>
-                    )
-                  })}
-                </div>
-              ))}
-
-              {loaded && allModels.length === 0 && (
-                <div className="px-3 py-2 text-xs text-muted-foreground italic">
-                  No models configured. Enable models in Settings.
-                </div>
-              )}
-            </>
+          className={cn(
+            'flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-input bg-background',
+            'hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors',
+            'max-w-[200px] truncate disabled:opacity-50 disabled:cursor-not-allowed',
+            className,
           )}
-        </div>,
-        portalContainer ?? document.body,
-      )}
-    </div>
+          title={isLoading ? 'Loading models…' : disabled ? 'Locked while the session is running' : effectiveEntry ? `${effectiveEntry.providerLabel}: ${effectiveEntry.model}` : displayLabel}
+        >
+          <span className="truncate">{isLoading ? 'Loading models\u2026' : displayLabel}</span>
+          <svg className="size-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </button>
+      </DropdownMenuTrigger>
+
+      <DropdownMenuContent aria-label={ariaLabel} align="start" className="min-w-72 max-h-64">
+        {isLoading ? (
+          <div className="px-3 py-4 text-xs text-muted-foreground text-center">
+            Loading models…
+          </div>
+        ) : (
+          <>
+            {menuHeading && (
+              <DropdownMenuLabel
+                className="px-3 pt-2 pb-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider"
+              >
+                {menuHeading}
+              </DropdownMenuLabel>
+            )}
+
+            {/* Default option */}
+            {!hideDefaultOption && (
+              <DropdownMenuItem
+                data-selected={!selected}
+                className={cn(
+                  'gap-2 px-3 py-1.5 text-xs',
+                  !selected && 'bg-primary/10 font-medium',
+                )}
+                // "Default" is an immediately valid local choice (null = use
+                // the persisted global default). The caller decides whether
+                // this needs a backend round-trip; Radix closes the menu and
+                // returns focus to the trigger.
+                onSelect={() => onSelect(null)}
+              >
+                <span className="flex-1 text-left">
+                  Default{effectiveDefaultId ? ` (${bareModel(defaultModel)})` : ''}
+                </span>
+                {!selected && (
+                  <span className="text-[10px] text-primary">active</span>
+                )}
+              </DropdownMenuItem>
+            )}
+
+            {/* Provider groups. `DropdownMenuGroup` supplies the ARIA group
+                ownership (group → items); the visual header is a Radix label. */}
+            {Array.from(grouped.entries()).map(([provider, modelsInGroup]) => (
+              <DropdownMenuGroup key={provider} aria-label={providerLabel(provider)}>
+                <DropdownMenuLabel
+                  className="px-3 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider bg-muted/30"
+                >
+                  {providerLabel(provider)}
+                </DropdownMenuLabel>
+                {modelsInGroup.map((entry) => {
+                  const isSelected = selected === entry.id
+                  // "default" badge marks the single entry the global
+                  // default_model resolves to. default_model may be a
+                  // composite "provider/name" or a legacy bare name, so
+                  // compare against the resolved composite id — this pins
+                  // the badge to exactly one provider even when the same
+                  // bare name is exposed by multiple providers.
+                  const isDefault = !selected && entry.id === effectiveDefaultId
+                  return (
+                    <DropdownMenuItem
+                      key={entry.id}
+                      data-selected={isSelected}
+                      className={cn(
+                        'gap-2 px-3 py-1.5 text-xs',
+                        isSelected && 'bg-primary/10 font-medium',
+                      )}
+                      onSelect={() => onSelect(entry.id)}
+                    >
+                      <span className="flex-1 text-left truncate">{entry.model}</span>
+                      {isSelected && (
+                        <span className="text-[10px] text-primary">selected</span>
+                      )}
+                      {isDefault && (
+                        <span className="text-[10px] text-muted-foreground">default</span>
+                      )}
+                    </DropdownMenuItem>
+                  )
+                })}
+              </DropdownMenuGroup>
+            ))}
+
+            {loaded && allModels.length === 0 && (
+              <div className="px-3 py-2 text-xs text-muted-foreground italic">
+                No models configured. Enable models in Settings.
+              </div>
+            )}
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }

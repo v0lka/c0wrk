@@ -153,6 +153,22 @@ mcp:
   #       SOME_VAR: "value"
   #     url: ""                    # HTTP endpoint URL (http transport)
   #     headers: {}                # HTTP headers (http transport)
+  #     # Per-server timeouts. Both are Go duration strings — a unit suffix is
+  #     # required (e.g. "60s", "2m", "500ms", "1h30m"); a bare number is
+  #     # rejected. An omitted, empty, unparseable, or non-positive `timeout`
+  #     # resolves to the built-in 60s default; an invalid `call_timeout`
+  #     # inherits the resolved `timeout` (and therefore 60s only when `timeout`
+  #     # is itself unset). A bad value never prevents the server from starting.
+  #     timeout: "60s"             # Bounds this server's initialization
+  #                                # handshake (initialize + tools/list) and is
+  #                                # the default bound for every tools/call on
+  #                                # it. Default: 60s.
+  #     call_timeout: "30s"        # Optional per-call override: bounds a single
+  #                                # tools/call independently of the handshake.
+  #                                # Unset inherits `timeout`, so a per-call wire
+  #                                # timeout is always in effect. A server that
+  #                                # times out 3 calls in a row is flagged
+  #                                # unhealthy (marked, never killed).
 
 # ---------------------------------------------------------------------------
 # Agent Skills Discovery

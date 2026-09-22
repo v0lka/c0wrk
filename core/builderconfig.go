@@ -1,6 +1,8 @@
 package core
 
 import (
+	"time"
+
 	"github.com/v0lka/c0wrk/core/proxy"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/llm"
@@ -607,6 +609,14 @@ type BuilderMCPServer struct {
 	URL       string
 	Headers   map[string]string
 	WorkDir   string
+
+	// Timeout bounds this server's initialization handshake (initialize +
+	// tools/list). Zero or negative selects the mcp package default (60s).
+	Timeout time.Duration
+
+	// CallTimeout bounds a single tools/call invocation. Zero or negative
+	// inherits Timeout (which itself defaults when unset).
+	CallTimeout time.Duration
 }
 
 // ---------------------------------------------------------------------------

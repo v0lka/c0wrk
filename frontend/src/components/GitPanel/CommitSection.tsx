@@ -1,12 +1,52 @@
 import { useRef, useEffect, useCallback } from "react";
-import { Loader2, Sparkles, Check } from "lucide-react";
+import { Loader2, Sparkles } from "lucide-react";
 import { useGitPanelStore, EMPTY_COMMIT_DRAFT, selectSkipCommitSuppress } from "@/stores/gitPanelStore";
 import { useProjectStore } from "@/stores/projectStore";
-import { commit, generateCommitMessage } from "@/api/git";
+import { commit, generateCommitMessage, type CommitResult } from "@/api/git";
+import { runGitOperation } from "@/lib/gitOperation";
 import { useCommitSuppressedFlow } from "./useCommitSuppressedFlow";
-import { CommitOutputSection } from "./CommitOutputSection";
 import { CommitSuppressedDialog } from "./CommitSuppressedDialog";
 import { cn } from "@/lib/utils";
+
+/** Header label for a commit record in the git-operation console. */
+function commitLabel(sha?: string): string {
+  return sha ? `Committed ${sha.slice(0, 7)}` : "Committed";
+}
+
+/**
+ * Record a commit that actually ran in the git-operation console and clear
+ * the committed project's draft. A withheld (suppressed) result never reaches
+ * here — it is a decision request, not a commit, so it must not land in the
+ * console. The commit already ran, so the recorder thunk replays its result
+ * and the shared wrapper owns the console write (and the error logging).
+ */
+async function recordCommit(projectId: string, result: CommitResult): Promise<void> {
+  await runGitOperation({
+    projectId,
+    kind: "commit",
+    label: commitLabel(result.sha),
+    fn: async () => result,
+    extractOutput: (r) => r.output ?? "",
+  });
+  useGitPanelStore.getState().setCommitMessage(projectId, "");
+}
+
+/**
+ * Record a failed commit in the git-operation console. Never throws: the
+ * recorder captures the rejection (and logs it) so the caller's control flow
+ * is preserved.
+ */
+async function recordCommitFailure(projectId: string, err: unknown): Promise<void> {
+  await runGitOperation({
+    projectId,
+    kind: "commit",
+    label: "Commit failed",
+    fn: async () => {
+      throw err;
+    },
+    extractOutput: () => "",
+  });
+}
 
 export function CommitSection() {
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
@@ -15,34 +55,27 @@ export function CommitSection() {
   const setGenerating = useGitPanelStore((s) => s.setGeneratingCommit);
   const setCommitting = useGitPanelStore((s) => s.setCommitting);
   const setCommitError = useGitPanelStore((s) => s.setCommitError);
-  const setCommitSuccess = useGitPanelStore((s) => s.setCommitSuccess);
   const setSkipCommitSuppress = useGitPanelStore((s) => s.setSkipCommitSuppress);
 
   // The Trust/continue flow for suppressed commits: owns the withheld
-  // commit, the trust→re-commit sequence, and the force-commit path.
+  // commit, the trust→re-commit sequence, and the force-commit path. Its
+  // outcomes are recorded in the git-operation console (never inline).
   const suppressedFlow = useCommitSuppressedFlow({
-    setCommitError,
-    setCommitSuccess,
+    recordCommit,
+    recordCommitFailure,
     setSkipCommitSuppress,
   });
 
   // Per-project commit-box slice. The selector returns the stored slice (a
   // stable reference) or undefined when the project has no state yet — never
   // a fresh object — so the stable-selector rule holds. Defaults come from a
-  // module constant, keeping the draft/generating/committing/error/success
-  // state alive across project switches and GitPanel unmounts (CHAT mode).
+  // module constant, keeping the draft/generating/committing/error state alive
+  // across project switches and GitPanel unmounts (CHAT mode).
   const storedDraft = useGitPanelStore((s) =>
     activeProjectId === null ? undefined : s.commitByProject[activeProjectId],
   );
   const draft = storedDraft ?? EMPTY_COMMIT_DRAFT;
-  const {
-    message: commitMessage,
-    isGenerating,
-    isCommitting,
-    error,
-    lastCommitSha: successSha,
-    lastCommitOutput: commitOutput,
-  } = draft;
+  const { message: commitMessage, isGenerating, isCommitting, error } = draft;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const stagedCount = entries.filter((e) => e.staged).length;
@@ -68,9 +101,9 @@ export function CommitSection() {
   }, [commitMessage, adjustHeight]);
 
   const handleCommit = async () => {
-    // Capture the project at click time: every write below (success SHA,
-    // error, draft clear) must land in the project whose draft is being
-    // committed, even if the user switches projects mid-flight.
+    // Capture the project at click time: every write below (console record,
+    // draft clear) must land in the project whose draft is being committed,
+    // even if the user switches projects mid-flight.
     const projectId = activeProjectId;
     if (projectId === null || isDisabled) return;
     const message = commitMessage;
@@ -81,24 +114,21 @@ export function CommitSection() {
       // A project with "don't ask again" set commits hardened directly —
       // the suppression dialog never opens for it.
       const force = selectSkipCommitSuppress(useGitPanelStore.getState(), projectId);
+      // A withheld commit (result.suppressed) is a non-error decision
+      // request, not a commit: it opens the Trust/continue dialog and must
+      // never reach the console. Probe first; only a commit that actually
+      // ran is recorded (success or failure).
       const result = await commit(message, force);
       if (result.suppressed) {
-        // The commit was withheld: the untrusted repository arms commit
-        // hooks/signing that the hardened commit would silently skip. Ask
-        // the user how to proceed (trust the repo or commit hardened).
         suppressedFlow.setSuppressed({ suppression: result.suppressed, message, projectId });
         return;
       }
-      // Stores the SHA for the success banner, clears this project's draft,
-      // remembers the commit output (hook output section), and arms the
-      // store-owned per-project auto-dismissal (4s) — a banner in one
-      // project is never cleared or left stranded by a commit in another,
-      // and dismissal survives a CHAT-mode GitPanel unmount.
-      setCommitSuccess(projectId, result.sha ?? "", result.output ?? "");
+      // Records the result in the git-operation console and clears the draft.
+      await recordCommit(projectId, result);
       // Status refresh is handled by the git:status_changed event emitted
       // by the backend after a successful commit (picked up by useGitStatusEvents)
     } catch (err) {
-      setCommitError(projectId, err instanceof Error ? err.message : "Commit failed");
+      await recordCommitFailure(projectId, err);
     } finally {
       setCommitting(projectId, false);
     }
@@ -163,18 +193,9 @@ export function CommitSection() {
         )}
       />
 
-      {error ? (
-        <div className="mt-1.5 text-xs text-destructive">{error}</div>
-      ) : successSha ? (
-        <div className="mt-1.5 flex items-center gap-1.5 text-xs text-success">
-          <Check className="size-3 shrink-0" />
-          <span>
-            Committed <span className="font-mono">{successSha.slice(0, 7)}</span>
-          </span>
-        </div>
-      ) : null}
-
-      <CommitOutputSection output={commitOutput} />
+      {/* Inline error is reserved for DRAFT/GENERATE/VALIDATION failures only.
+          Commit outcomes (success or failure) go to the git-operation console. */}
+      {error ? <div className="mt-1.5 text-xs text-destructive">{error}</div> : null}
 
       <div className="mt-2 flex items-center justify-between">
         <span className="text-xs text-muted-foreground">

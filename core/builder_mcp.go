@@ -117,13 +117,15 @@ func configToGatewayConfig(cfg *BuilderConfig) mcp.GatewayConfig {
 	entries := make(map[string]mcp.ServerEntry, len(cfg.MCP.Servers))
 	for name, srv := range cfg.MCP.Servers {
 		entries[name] = mcp.ServerEntry{
-			Transport: srv.Transport,
-			Command:   srv.Command,
-			Args:      srv.Args,
-			Env:       srv.Env,
-			URL:       srv.URL,
-			Headers:   srv.Headers,
-			WorkDir:   srv.WorkDir,
+			Transport:   srv.Transport,
+			Command:     srv.Command,
+			Args:        srv.Args,
+			Env:         srv.Env,
+			URL:         srv.URL,
+			Headers:     srv.Headers,
+			WorkDir:     srv.WorkDir,
+			Timeout:     srv.Timeout,
+			CallTimeout: srv.CallTimeout,
 		}
 	}
 	return mcp.GatewayConfig{

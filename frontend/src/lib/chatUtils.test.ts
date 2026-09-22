@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { roleToType, chatMessageToUI, rebuildPlanFromHistory, rebuildGoalFromHistory, groupMessages, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow, isRoutingRequestRow } from './chatUtils'
+import { roleToType, chatMessageToUI, rebuildPlanFromHistory, rebuildGoalFromHistory, groupMessages, isPersistableHistoryMessage, isLegacyReviewPromptRow, lastAgentMetricsFromHistory, isAgentMetricsRow, isRoutingRequestRow } from './chatUtils'
 import type { ChatMessage } from '@/types/models'
 import type { ChatMessageUI } from '@/types/messages'
 
@@ -69,6 +69,25 @@ describe('isPersistableHistoryMessage', () => {
       metadata: JSON.stringify({ attachments: [{ id: 'x' }] }),
     })
     expect(isPersistableHistoryMessage(leaked)).toBe(false)
+  })
+})
+
+describe('isLegacyReviewPromptRow', () => {
+  it('matches the removed post-task review-prompt rows', () => {
+    // Legacy databases still carry one row per completed task with the
+    // backend-owned body "Uncommitted changes detected in this repository.".
+    // History-load drops them so they never render as a stale status line.
+    expect(isLegacyReviewPromptRow(makeMsg({
+      role: 'review_prompt',
+      content: 'Uncommitted changes detected in this repository.',
+      metadata: JSON.stringify({ prompt_id: 'p-abc', decision: 'decline', resolved: true }),
+    }))).toBe(true)
+  })
+
+  it('does not match any other role', () => {
+    expect(isLegacyReviewPromptRow(makeMsg({ role: 'status' }))).toBe(false)
+    expect(isLegacyReviewPromptRow(makeMsg({ role: 'user', content: 'hi' }))).toBe(false)
+    expect(isLegacyReviewPromptRow(makeMsg({ role: 'assistant' }))).toBe(false)
   })
 })
 
@@ -530,9 +549,11 @@ describe('buildHistoryId (via chatMessageToUI)', () => {
     expect(result.id).toBe('ask-user-r1')
   })
 
-  it('legacy review_prompt with prompt_id → "review-prompt-{id}" (stable across reload)', () => {
-    // Legacy: the review-prompt card was removed, but persisted rows survive
-    // in existing databases and must keep converting to a stable id.
+  it('legacy review_prompt with prompt_id keeps a stable id (defensive fallback)', () => {
+    // Legacy rows are normally DROPPED before conversion
+    // (isLegacyReviewPromptRow → history-load filter in ChatArea). This pins
+    // the fallback conversion so a row that ever bypasses the filter still
+    // converts to a stable, non-duplicating id.
     const result = chatMessageToUI(makeMsg({
       role: 'review_prompt',
       metadata: JSON.stringify({ prompt_id: 'p-abc' }),
@@ -540,9 +561,10 @@ describe('buildHistoryId (via chatMessageToUI)', () => {
     expect(result.id).toBe('review-prompt-p-abc')
   })
 
-  it('legacy review_prompt renders as a non-blocking status notice', () => {
-    // autonomy_decision pattern: the persisted role maps to 'status' so a
-    // legacy row renders as a muted service line, with no decision buttons.
+  it('legacy review_prompt maps to a status line (defensive fallback)', () => {
+    // The filter hides these rows; if one is ever converted the legacy role
+    // map leaves it a muted status line (autonomy_decision pattern) rather
+    // than raw content, with no decision buttons.
     const result = chatMessageToUI(makeMsg({
       role: 'review_prompt',
       content: 'Review the changes?',

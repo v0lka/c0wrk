@@ -1,28 +1,28 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { File, Check, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { GitFileContextMenu } from './GitFileContextMenu'
+import { isMergeConflict, isUntracked, rowStatusChar } from '@/lib/gitStatus'
+import type { StageSide, StageToggleHandler } from '@/lib/gitStatus'
 import type { GitPanelEntry } from '@/stores/gitPanelStore'
 
 // --- Props ---
 
 interface GitFileEntryProps {
   entry: GitPanelEntry
+  /**
+   * The porcelain axis this row represents: 'index' for a Staged Changes row,
+   * 'worktree' for a Changes / Untracked Files row. Determines the checkbox
+   * state, the toggle action, and the status badge character.
+   */
+  side: StageSide
   /** Optional workspace root path — when provided, strips it for display rendering */
   workspaceRoot?: string
-  onToggle: (path: string) => void
+  onToggle: StageToggleHandler
   onOpenDiff: (path: string) => void
 }
 
 // --- Helpers ---
-
-/** Two-char porcelain status combinations that indicate an unresolved merge conflict. */
-const CONFLICT_COMBOS = new Set(['UU', 'AA', 'DD', 'AU', 'UD', 'UA', 'DU'])
-
-/** True when the index/worktree status pair marks an unresolved merge conflict. */
-function isMergeConflict(indexStatus: string, worktreeStatus: string): boolean {
-  return CONFLICT_COMBOS.has(`${indexStatus}${worktreeStatus}`)
-}
 
 /** Map git status codes to One Dark theme Tailwind text colors */
 function statusColorClass(status: string): string {
@@ -58,12 +58,96 @@ function splitPathParts(filePath: string): { dir: string; name: string } {
 
 // --- Component ---
 
-export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: GitFileEntryProps) {
+export function GitFileEntry({ entry, side, workspaceRoot, onToggle, onOpenDiff }: GitFileEntryProps) {
   const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null)
 
+  // The checkbox is server-derived (an index row is staged, a worktree row is
+  // not), but a click fires an async RPC and the row is only re-classified
+  // once `git:status_changed` re-loads the list. Without a local override the
+  // controlled box would flash back to its pre-click value in the meantime, so
+  // the intended state is held here until the server catches up. The override
+  // is tagged with the server state it was applied against, so it
+  // self-invalidates the moment that state changes (the row re-classified into
+  // the other section, or a status refresh re-loaded it) — a stale override
+  // can never outlive the data it was reacting to.
+  const serverChecked = side === 'index'
+  const serverKey = `${side}:${entry.indexStatus}${entry.worktreeStatus}`
+  const [override, setOverride] = useState<{ key: string; value: boolean } | null>(null)
+  // Drop the override whenever the porcelain pair it was applied against
+  // changes. The display already ignores a mismatched key, but clearing the
+  // stored value too means a stale override can never re-apply should the same
+  // pair recur later while the row stays mounted.
+  useEffect(() => {
+    setOverride(null)
+  }, [serverKey])
+  const checked =
+    override !== null && override.key === serverKey ? override.value : serverChecked
+
+  // Only one stage/unstage RPC may be in flight for THIS ROW at a time — two
+  // overlapping calls from the same checkbox could leave the index in the state
+  // opposite to the last click (git's index.lock serializes the writes, but the
+  // completion order is not guaranteed). A click during flight therefore only
+  // records the desired state (`desiredRef`) and flips the box optimistically;
+  // the running pump reconciles to that state once the current request settles,
+  // so the final state matches the user's last click without overlapping
+  // same-row requests. (Contention between different rows is not coordinated
+  // here; each row guards only itself.)
+  const desiredRef = useRef<boolean | null>(null)
+  const pumpingRef = useRef(false)
+  // Guards the one post-await state update (the failure revert) against a row
+  // that unmounted mid-request (e.g. a section reclassification). Re-armed in
+  // the effect body: React StrictMode runs mount→cleanup→mount in dev, so
+  // setting it only in the initializer would leave it permanently false.
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
   const handleToggle = useCallback(() => {
-    onToggle(entry.path)
-  }, [entry.path, onToggle])
+    // Flip whatever is currently rendered — the server state, or a pending
+    // optimistic flip — and drive the server toward it (un-checking unstages,
+    // checking stages).
+    const next = !checked
+    setOverride({ key: serverKey, value: next })
+    desiredRef.current = next
+    if (pumpingRef.current) return
+    pumpingRef.current = true
+    void (async () => {
+      try {
+        let want = desiredRef.current
+        while (want !== null) {
+          desiredRef.current = null
+          let failed = false
+          try {
+            const result = await Promise.resolve(
+              onToggle(entry.path, want ? 'stage' : 'unstage'),
+            )
+            failed = result === false
+          } catch {
+            // A handler that rejects is treated like a `false` return: the
+            // handler itself owns recording the failure, and the optimistic
+            // flip is reverted below unless a newer click is queued.
+            failed = true
+          }
+          want = desiredRef.current
+          if (failed && want === null) {
+            // The request failed and no newer click is queued: revert to the
+            // server state rather than retrying a rejected operation. A click
+            // that arrived while the request was in flight is a newer intent,
+            // so it is honoured instead — the last click still wins. Skip the
+            // update if the row has since unmounted.
+            if (mountedRef.current) setOverride(null)
+            return
+          }
+        }
+      } finally {
+        pumpingRef.current = false
+      }
+    })()
+  }, [checked, entry.path, onToggle, serverKey])
 
   const handleDoubleClick = useCallback(() => {
     onOpenDiff(entry.path)
@@ -85,8 +169,11 @@ export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: Git
       : entry.path
 
   const { dir, name } = splitPathParts(displayPath)
-  const statusCls = statusColorClass(entry.status)
-  const conflict = isMergeConflict(entry.indexStatus, entry.worktreeStatus)
+  // Untracked paths carry no per-axis change code (worktreeStatus '?'); git
+  // reports them as additions, so the badge shows 'A' rather than '?'.
+  const badge = isUntracked(entry) ? 'A' : rowStatusChar(entry, side)
+  const statusCls = statusColorClass(badge)
+  const conflict = isMergeConflict(entry)
 
   return (
     <>
@@ -102,11 +189,11 @@ export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: Git
       <label className="relative flex items-center justify-center shrink-0 size-3.5 rounded border border-muted-foreground/40 cursor-pointer transition-colors hover:border-muted-foreground/60 has-checked:border-info has-checked:bg-info">
         <input
           type="checkbox"
-          checked={entry.staged}
+          checked={checked}
           onChange={handleToggle}
           className="sr-only"
         />
-        {entry.staged && (
+        {checked && (
           <Check className="size-2.5 text-background pointer-events-none" strokeWidth={3} />
         )}
       </label>
@@ -154,11 +241,12 @@ export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: Git
           'bg-muted/60',
         )}
       >
-        {entry.status}
+        {badge}
       </span>
     </div>
     <GitFileContextMenu
       entry={entry}
+      side={side}
       workspaceRoot={workspaceRoot}
       position={contextMenuPos}
       onClose={closeContextMenu}

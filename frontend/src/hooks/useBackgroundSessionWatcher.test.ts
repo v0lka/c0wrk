@@ -75,8 +75,12 @@ vi.mock('@/hooks/events/hitlHandlers', () => ({
 }))
 
 const handleGoalProposalEventMock = vi.fn()
+const handleGoalStatusEventMock = vi.fn()
+const handleGoalProgressEventMock = vi.fn()
 vi.mock('@/hooks/events/goalHandlers', () => ({
   handleGoalProposalEvent: (...args: unknown[]) => handleGoalProposalEventMock(...args),
+  handleGoalStatusEvent: (...args: unknown[]) => handleGoalStatusEventMock(...args),
+  handleGoalProgressEvent: (...args: unknown[]) => handleGoalProgressEventMock(...args),
 }))
 
 // --- Mock chat store ---
@@ -193,6 +197,8 @@ function resetMockState(): void {
   handleStepLimitEventMock.mockClear()
   handlePlanReviewEventMock.mockClear()
   handleGoalProposalEventMock.mockClear()
+  handleGoalStatusEventMock.mockClear()
+  handleGoalProgressEventMock.mockClear()
   effectCleanup = undefined
   lastDeps = undefined
 }
@@ -248,7 +254,34 @@ describe('useBackgroundSessionWatcher', () => {
     expect(subscriptions.has('bg-1:step_limit')).toBe(true)
     expect(subscriptions.has('bg-1:plan_review_ready')).toBe(true)
     expect(subscriptions.has('bg-1:goal_proposal')).toBe(true)
+    expect(subscriptions.has('bg-1:goal_status')).toBe(true)
+    expect(subscriptions.has('bg-1:goal_progress')).toBe(true)
     expect(subscriptions.has('bg-1:ask_user')).toBe(true)
+  })
+
+  it('routes a background goal_status/goal_progress to the shared goal handlers (status-bar badge parity)', () => {
+    // Regression: without these subscriptions the goal store was only written
+    // by the ACTIVE session's useGoalEvents, so a session whose goal advanced
+    // while backgrounded had no live goal state — the status-bar goal badge
+    // (GoalStatusIndicator) then showed nothing (or a stale turn) on switch
+    // until the session emitted its NEXT goal update.
+    chatStoreState.setTaskActive('bg-1', true)
+    sessionStoreState.activeSessionId = 'active-1'
+
+    useRenderWatcher()
+
+    const status = { status: 'active', turn: 2, condition: 'ship it', max_turns: 5, created_at: 1000 }
+    fireSessionEvent('bg-1', 'goal_status', status)
+    expect(handleGoalStatusEventMock).toHaveBeenCalledWith('bg-1', status)
+
+    const progress = { turn: 3, max_turns: 5, condition: 'ship it' }
+    fireSessionEvent('bg-1', 'goal_progress', progress)
+    expect(handleGoalProgressEventMock).toHaveBeenCalledWith('bg-1', progress)
+
+    // A malformed payload is dropped, never handed to the handler.
+    fireSessionEvent('bg-1', 'goal_status', { status: 'active' })
+    expect(handleGoalStatusEventMock).toHaveBeenCalledTimes(1)
+    expect(reportDroppedEventMock).toHaveBeenCalledWith('goal_status', { status: 'active' })
   })
 
   it('does not subscribe to the active session (handled by useChatEvents)', () => {
@@ -267,6 +300,10 @@ describe('useBackgroundSessionWatcher', () => {
     expect(subscriptions.has('active-1:plan_review_ready')).toBe(false)
     expect(subscriptions.has('active-1:ask_user')).toBe(false)
     expect(subscriptions.has('active-1:goal_proposal')).toBe(false)
+    // Goal status/progress parity: the ACTIVE session's goal events are owned
+    // by useGoalEvents (mounted per session), never the background watcher.
+    expect(subscriptions.has('active-1:goal_status')).toBe(false)
+    expect(subscriptions.has('active-1:goal_progress')).toBe(false)
   })
 
   it('does not subscribe to sessions with taskActive === false', () => {
@@ -287,8 +324,8 @@ describe('useBackgroundSessionWatcher', () => {
 
     expect(subscriptions.has('bg-1:task_complete')).toBe(true)
     expect(subscriptions.has('bg-2:task_complete')).toBe(true)
-    // 11 events × 2 sessions = 22 subscriptions
-    expect(subscriptions.size).toBe(22)
+    // 13 events × 2 sessions = 26 subscriptions
+    expect(subscriptions.size).toBe(26)
   })
 
   it('resets taskActive to false on task_complete without touching the active session state', () => {
@@ -404,7 +441,7 @@ describe('useBackgroundSessionWatcher', () => {
     sessionStoreState.activeSessionId = 'active-1'
 
     useRenderWatcher()
-    expect(subscriptions.size).toBe(11)
+    expect(subscriptions.size).toBe(13)
 
     // Session completes via another path.
     chatStoreState.setTaskActive('bg-1', false)
@@ -524,8 +561,8 @@ describe('useBackgroundSessionWatcher', () => {
 
     useRenderWatcher()
 
-    // 11 events × 2 unique sessions = 22 — the shadowed bg-1 is not counted twice.
-    expect(subscriptions.size).toBe(22)
+    // 13 events × 2 unique sessions = 26 — the shadowed bg-1 is not counted twice.
+    expect(subscriptions.size).toBe(26)
   })
 
   // --- Sound parity: a background session gets the same audible cues the

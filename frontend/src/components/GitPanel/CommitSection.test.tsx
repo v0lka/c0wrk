@@ -338,7 +338,7 @@ describe('CommitSection — per-project commit state', () => {
     expect(container.textContent).toContain('model offline')
   })
 
-  it('commits the active project draft and clears that project slice on success', async () => {
+  it('commits the active project draft, records it in the console and clears the draft', async () => {
     useGitPanelStore.setState({
       entries: [makeEntry({ path: 'a.ts', staged: true })],
       commitByProject: {
@@ -347,8 +347,6 @@ describe('CommitSection — per-project commit state', () => {
           isGenerating: false,
           isCommitting: false,
           error: null,
-          lastCommitSha: null,
-          lastCommitOutput: null,
         },
       },
     })
@@ -361,12 +359,18 @@ describe('CommitSection — per-project commit state', () => {
     await flush()
 
     expect(gitMocks.commit).toHaveBeenCalledWith('feat: a', false)
+    // The successful commit consumes the draft…
     const slice = useGitPanelStore.getState().commitByProject['proj-a']!
     expect(slice.message).toBe('')
-    expect(slice.lastCommitSha).toBe('full-sha-abcdef123456')
-    // Success banner shows the short SHA.
-    expect(container.textContent).toContain('Committed')
-    expect(container.textContent).toContain('full-sh')
+    // …and its outcome lands in the git-operation console (short SHA label).
+    const rec = useGitPanelStore.getState().operationByProject['proj-a']!
+    expect(rec.kind).toBe('commit')
+    expect(rec.ok).toBe(true)
+    expect(rec.label).toBe('Committed full-sh')
+    expect(rec.error).toBeNull()
+    // No inline success surface (banner) remains in the commit box.
+    expect(container.textContent).not.toContain('Committed')
+    expect(container.textContent).not.toContain('full-sh')
   })
 
   it('keeps the commit-in-flight flag in the store across a GitPanel unmount', async () => {
@@ -378,8 +382,6 @@ describe('CommitSection — per-project commit state', () => {
           isGenerating: false,
           isCommitting: false,
           error: null,
-          lastCommitSha: null,
-          lastCommitOutput: null,
         },
       },
     })
@@ -413,7 +415,13 @@ describe('CommitSection — per-project commit state', () => {
     reject(new Error('hook declined'))
     await flush()
     expect(useGitPanelStore.getState().commitByProject['proj-a']!.isCommitting).toBe(false)
-    expect(useGitPanelStore.getState().commitByProject['proj-a']!.error).toBe('hook declined')
+    // The failure is a git-operation result: it lands in the console, never
+    // as an inline error under the textarea.
+    const rec = useGitPanelStore.getState().operationByProject['proj-a']!
+    expect(rec.ok).toBe(false)
+    expect(rec.error).toBe('hook declined')
+    expect(useGitPanelStore.getState().commitByProject['proj-a']!.error).toBeNull()
+    expect(container.textContent).not.toContain('hook declined')
     expect(commitBtn().disabled).toBe(false)
   })
 })
@@ -435,8 +443,6 @@ describe('CommitSection — suppressed commit dialog', () => {
           isGenerating: false,
           isCommitting: false,
           error: null,
-          lastCommitSha: null,
-          lastCommitOutput: null,
         },
       },
     })
@@ -476,7 +482,9 @@ describe('CommitSection — suppressed commit dialog', () => {
     expect(text).toContain('commit.gpgsign (global config)')
     // Nothing was committed and the draft survives for the decision.
     expect(useGitPanelStore.getState().commitByProject['proj-a']!.message).toBe('feat: a')
-    expect(useGitPanelStore.getState().commitByProject['proj-a']!.lastCommitSha).toBeNull()
+    // A withheld commit is a decision request, not a commit: it must not land
+    // in the console.
+    expect(useGitPanelStore.getState().operationByProject['proj-a']).toBeUndefined()
   })
 
   it('closes the dialog on Cancel, leaving the commit withheld', async () => {
@@ -501,7 +509,7 @@ describe('CommitSection — suppressed commit dialog', () => {
     expect(dialogVisible()).toBe(false)
     expect(gitMocks.commit).toHaveBeenCalledTimes(1)
     expect(useGitPanelStore.getState().commitByProject['proj-a']!.message).toBe('feat: a')
-    expect(useGitPanelStore.getState().commitByProject['proj-a']!.lastCommitSha).toBeNull()
+    expect(useGitPanelStore.getState().operationByProject['proj-a']).toBeUndefined()
   })
 
   it('Trust path: TrustGitRepo(workspacePath) then re-commit succeeds with hooks output', async () => {
@@ -539,9 +547,13 @@ describe('CommitSection — suppressed commit dialog', () => {
     // …then the commit was re-run (force=false — trust makes it run).
     expect(gitMocks.commit).toHaveBeenNthCalledWith(2, 'feat: a', false)
     expect(dialogVisible()).toBe(false)
-    const slice = useGitPanelStore.getState().commitByProject['proj-a']!
-    expect(slice.lastCommitSha).toBe('trusted-sha-1234567890')
-    expect(slice.lastCommitOutput).toBe('hook: prettier ran\n[main trusted-s] feat: a')
+    const rec = useGitPanelStore.getState().operationByProject['proj-a']!
+    expect(rec.kind).toBe('commit')
+    expect(rec.ok).toBe(true)
+    expect(rec.label).toBe('Committed trusted')
+    expect(rec.output).toBe('hook: prettier ran\n[main trusted-s] feat: a')
+    // The successful (trusted) commit consumes the draft.
+    expect(useGitPanelStore.getState().commitByProject['proj-a']!.message).toBe('')
   })
 
   it('Force path: sends force=true and persists the skip flag when checked', async () => {
@@ -569,8 +581,9 @@ describe('CommitSection — suppressed commit dialog', () => {
     expect(dialogVisible()).toBe(false)
     // The per-project flag was persisted BEFORE the commit fires.
     expect(useGitPanelStore.getState().skipCommitSuppressByProject['proj-a']).toBe(true)
-    const slice = useGitPanelStore.getState().commitByProject['proj-a']!
-    expect(slice.lastCommitSha).toBe('forced-sha-1234567890')
+    const rec = useGitPanelStore.getState().operationByProject['proj-a']!
+    expect(rec.ok).toBe(true)
+    expect(rec.label).toBe('Committed forced-')
   })
 
   it('Force path without the checkbox leaves the flag unset', async () => {
@@ -607,12 +620,12 @@ describe('CommitSection — suppressed commit dialog', () => {
 
     expect(gitMocks.commit).toHaveBeenCalledWith('feat: a', true)
     expect(dialogVisible()).toBe(false)
-    expect(useGitPanelStore.getState().commitByProject['proj-a']!.lastCommitSha).toBe(
-      'auto-forced-sha-1234',
-    )
+    const rec = useGitPanelStore.getState().operationByProject['proj-a']!
+    expect(rec.ok).toBe(true)
+    expect(rec.label).toBe('Committed auto-fo')
   })
 
-  it('error from the trust path closes the dialog and surfaces in the commit box', async () => {
+  it('error from the trust path closes the dialog and records the failure in the console', async () => {
     stageAndDraft()
     gitMocks.commit.mockResolvedValueOnce({ suppressed: SUPPRESSED })
     trustMocks.trustGitRepo.mockRejectedValue(new Error('config not initialized'))
@@ -639,7 +652,12 @@ describe('CommitSection — suppressed commit dialog', () => {
     await flush()
 
     expect(dialogVisible()).toBe(false)
-    expect(container.textContent).toContain('config not initialized')
+    // The trust failure is a failed commit operation → the console, not inline.
+    const rec = useGitPanelStore.getState().operationByProject['proj-a']!
+    expect(rec.kind).toBe('commit')
+    expect(rec.ok).toBe(false)
+    expect(rec.error).toBe('config not initialized')
+    expect(container.textContent).not.toContain('config not initialized')
     // Only the original withheld attempt ran.
     expect(gitMocks.commit).toHaveBeenCalledTimes(1)
   })
@@ -676,50 +694,67 @@ describe('CommitSection — suppressed commit dialog', () => {
     // back to the hardened commit explicitly.
     expect(dialogVisible()).toBe(true)
     expect(gitMocks.commit).toHaveBeenCalledTimes(2)
+    // A still-withheld commit is recorded nowhere.
+    expect(useGitPanelStore.getState().operationByProject['proj-a']).toBeUndefined()
   })
 })
 
-describe('CommitSection — hook output section', () => {
-  it('renders a collapsed-by-default output toggle when output is non-empty', async () => {
+describe('CommitSection — commit result goes to the console', () => {
+  /** Stage one file and type a draft so Commit is enabled. */
+  function stageAndDraft(message = 'feat: a') {
     useGitPanelStore.setState({
       entries: [makeEntry({ path: 'a.ts', staged: true })],
       commitByProject: {
         'proj-a': {
-          message: '',
+          message,
           isGenerating: false,
           isCommitting: false,
           error: null,
-          lastCommitSha: 'live-sha-abcdef1234',
-          lastCommitOutput: '[main abc123d] hook said: clean',
         },
       },
     })
+  }
+
+  it('records a successful commit (with its output) and renders no inline surface', async () => {
+    stageAndDraft()
+    gitMocks.commit.mockResolvedValue({
+      sha: 'live-sha-abcdef1234',
+      output: '[main abc123d] hook said: clean',
+    })
+
     render()
-
-    const toggle = container.querySelector('[data-testid="commit-output-toggle"]')
-    expect(toggle).toBeDefined()
-    // Collapsed by default: Radix keeps the content element mounted but
-    // hidden (data-state="closed" + the hidden attribute).
-    const collapsed = container.querySelector<HTMLElement>('[data-testid="commit-output-content"]')
-    expect(collapsed).not.toBeNull()
-    expect(collapsed!.getAttribute('data-state')).toBe('closed')
-    expect(collapsed!.hidden).toBe(true)
-
-    // Expanding shows the output.
     await act(async () => {
-      toggle!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      commitBtn().dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     await flush()
-    const content = container.querySelector<HTMLElement>('[data-testid="commit-output-content"]')
-    expect(content).not.toBeNull()
-    expect(content!.getAttribute('data-state')).toBe('open')
-    expect(content!.textContent).toContain('hook said: clean')
+
+    const rec = useGitPanelStore.getState().operationByProject['proj-a']!
+    expect(rec.kind).toBe('commit')
+    expect(rec.ok).toBe(true)
+    expect(rec.output).toBe('[main abc123d] hook said: clean')
+    // No green "Committed" banner and no hook-output surface remain.
+    expect(container.textContent).not.toContain('Committed')
+    expect(container.querySelector('[data-testid="commit-output-toggle"]')).toBeNull()
+    expect(container.querySelector('[data-testid="commit-output-content"]')).toBeNull()
   })
 
-  it('renders no output section when the commit produced no output', () => {
-    useGitPanelStore.getState().setCommitSuccess('proj-a', 'sha-no-output', '')
+  it('records a failed commit in the console instead of an inline error', async () => {
+    stageAndDraft()
+    gitMocks.commit.mockRejectedValue(new Error('hook declined'))
+
     render()
-    expect(container.querySelector('[data-testid="commit-output-toggle"]')).toBeNull()
+    await act(async () => {
+      commitBtn().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    const rec = useGitPanelStore.getState().operationByProject['proj-a']!
+    expect(rec.kind).toBe('commit')
+    expect(rec.ok).toBe(false)
+    expect(rec.error).toBe('hook declined')
+    // The failure is not surfaced inline in the commit box.
+    expect(useGitPanelStore.getState().commitByProject['proj-a']!.error).toBeNull()
+    expect(container.textContent).not.toContain('hook declined')
   })
 })
 

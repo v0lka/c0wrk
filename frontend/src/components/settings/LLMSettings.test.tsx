@@ -3,6 +3,17 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// Radix popper positioning (autoUpdate) observes the trigger/content with
+// ResizeObserver, which jsdom does not provide.
+vi.stubGlobal(
+  'ResizeObserver',
+  class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  },
+)
+
 const mocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
   updateLLMConfig: vi.fn(),
@@ -69,6 +80,16 @@ function defaultModelTrigger(): HTMLButtonElement {
   return btn!
 }
 
+/** Radix's DropdownMenuTrigger toggles on `pointerdown`, not `click`. */
+async function openDefaultPicker(): Promise<void> {
+  act(() => {
+    defaultModelTrigger().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+  })
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 10))
+  })
+}
+
 describe('LLMSettings default-model picker (shared ModelPickerMenu)', () => {
   it('renders the shared picker showing the current default, not the old Combobox', async () => {
     await act(async () => {
@@ -97,27 +118,24 @@ describe('LLMSettings default-model picker (shared ModelPickerMenu)', () => {
     })
     await flush()
 
-    act(() => {
-      defaultModelTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-    await flush()
+    await openDefaultPicker()
 
-    const listbox = document.querySelector('[role="listbox"]')
-    expect(listbox).not.toBeNull()
+    const menu = document.querySelector('[role="menu"]')
+    expect(menu).not.toBeNull()
     // Provider group headers are rendered for both providers.
-    expect(listbox!.textContent).toContain('Anthropic')
-    expect(listbox!.textContent).toContain('lmstudio')
+    expect(menu!.textContent).toContain('Anthropic')
+    expect(menu!.textContent).toContain('lmstudio')
     // The "Default" option is hidden in the settings context (the picker IS
     // the default — a "use the default" entry would be self-referential).
-    expect(listbox!.textContent).not.toContain('Defaultactive')
+    expect(menu!.textContent).not.toContain('Defaultactive')
 
-    // Pick the lmstudio model — the entry button whose text is glm-5.3.
-    const glmBtn = Array.from(
-      listbox!.querySelectorAll('button'),
+    // Pick the lmstudio model — the menu item whose text is glm-5.3.
+    const glmItem = Array.from(
+      menu!.querySelectorAll<HTMLElement>('[role="menuitem"]'),
     ).find((b) => b.textContent?.includes('glm-5.3'))
-    expect(glmBtn).toBeDefined()
+    expect(glmItem).toBeDefined()
     act(() => {
-      glmBtn!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      glmItem!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     await flush()
 
@@ -130,13 +148,13 @@ describe('LLMSettings default-model picker (shared ModelPickerMenu)', () => {
     })
   })
 
-  it('portals the FIRST-opened dropdown inside the settings container, not document.body', async () => {
-    // Regression (review finding): the container div mounts only on the
-    // render after `isLoading` flips to false, so a plain `ref.current` read
-    // during that render is still null and the menu would portal to
-    // document.body — inert inside the Radix settings dialog (pointer-events:
-    // none on <body>). The portal target must be populated by the time the
-    // user's first interaction opens the menu.
+  it('portals the opened menu to <body> through Radix (issue #71: escapes the dialog transform/overflow)', async () => {
+    // The previous hand-rolled menu portaled INTO the settings dialog so it
+    // stayed interactive under the modal body lock — but DialogContent's
+    // centering `transform` then became the containing block for its
+    // `position: fixed`, displacing and clipping it (issue #71). Radix's
+    // DismissableLayer instead portals to <body> (escaping any transformed or
+    // overflow-hidden ancestor) while still counting as "inside" the dialog.
     await act(async () => {
       root.render(
         <TooltipProvider>
@@ -147,17 +165,12 @@ describe('LLMSettings default-model picker (shared ModelPickerMenu)', () => {
     await flush()
 
     // First interaction with the freshly-mounted panel: open the picker.
-    act(() => {
-      defaultModelTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-    await flush()
+    await openDefaultPicker()
 
-    const listbox = document.querySelector('[role="listbox"]')
-    expect(listbox).not.toBeNull()
-    // The menu lives inside the panel container (the portal target), not as
-    // a direct child of <body>.
-    expect(container.contains(listbox)).toBe(true)
-    expect(listbox!.parentElement).not.toBe(document.body)
+    const menu = document.querySelector('[role="menu"]')
+    expect(menu).not.toBeNull()
+    expect(container.contains(menu)).toBe(false)
+    expect(document.body.contains(menu)).toBe(true)
   })
 })
 
@@ -257,7 +270,12 @@ describe('LLMSettings TLS pin proxy gate', () => {
     await flush()
   }
 
-  /** Expand the compatible provider's accordion so its form is mounted. */
+  /**
+   * Expand the compatible provider's accordion so its form is mounted, then
+   * open the pin collapse block so its field is mounted too (the block ships
+   * collapsed by default; the fixed provider has no pin section, hence the
+   * guard).
+   */
   async function expandProvider() {
     const header = Array.from(container.querySelectorAll('button')).find((b) =>
       b.textContent?.includes('lmstudio'),
@@ -267,6 +285,14 @@ describe('LLMSettings TLS pin proxy gate', () => {
       header!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     await flush()
+
+    const pinTrigger = container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]')
+    if (pinTrigger) {
+      await act(async () => {
+        pinTrigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      })
+      await flush()
+    }
   }
 
   function fingerprintInput(): HTMLInputElement | null {

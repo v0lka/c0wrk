@@ -94,26 +94,11 @@ export function BranchDropdown() {
 
   return (
     <div className="px-2 py-1">
-      {actions.error && (
-        <div className="mb-1 rounded px-2 py-1 text-[11px] text-destructive bg-destructive/10">
-          {actions.error}
-        </div>
-      )}
-      {actions.output && (
-        <div className="mb-1 rounded px-2 py-1 text-[11px] text-success bg-success/10">
-          {actions.output}
-        </div>
-      )}
-
       <DropdownMenu
         open={open}
         onOpenChange={(o) => {
           setOpen(o);
           if (!o) setSearch("");
-          if (o) {
-            actions.clearError();
-            actions.clearOutput();
-          }
         }}
       >
         <DropdownMenuTrigger asChild>

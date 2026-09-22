@@ -4,7 +4,8 @@ import { cn } from '@/lib/utils'
 import { useCursorMenuPosition } from '@/lib/cursorMenuPosition'
 import { discardChanges, appendToGitignore, stageFile, unstageFile } from '@/api/git'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
-import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useProjectStore } from '@/stores/projectStore'
+import { runGitOperation } from '@/lib/gitOperation'
 import {
   Dialog,
   DialogContent,
@@ -14,10 +15,17 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import type { StageSide } from '@/lib/gitStatus'
 import type { GitPanelEntry } from '@/stores/gitPanelStore'
 
 interface GitFileContextMenuProps {
   entry: GitPanelEntry
+  /**
+   * The porcelain axis of the row that opened this menu: 'index' → the action
+   * is "Unstage"; 'worktree' → "Stage". Chosen by the row, not the entry's
+   * coarse `staged` flag, so an `MM` file's two rows offer opposite actions.
+   */
+  side: StageSide
   /** Workspace root — when provided, stripped to form the .gitignore pattern. */
   workspaceRoot?: string
   /**
@@ -41,13 +49,14 @@ function toRelativePath(path: string, workspaceRoot?: string): string {
 }
 
 /**
- * Contextual menu for a git file entry: Stage/Unstage (first item, depends on
- * the entry's staged state), Discard Changes (with confirm), Add to .gitignore,
- * and Open in Viewer. Self-contained — calls the API and stores directly, so
- * no callback prop threading is required.
+ * Contextual menu for a git file entry: Stage/Unstage (first item, the label,
+ * icon and action chosen by the row's `side` axis), Discard Changes (with
+ * confirm), Add to .gitignore, and Open in Viewer. Self-contained — calls the
+ * API and stores directly, so no callback prop threading is required.
  */
 export function GitFileContextMenu({
   entry,
+  side,
   workspaceRoot,
   position,
   onClose,
@@ -63,37 +72,47 @@ export function GitFileContextMenu({
 
   // --- Stage / Unstage ---
   const handleToggleStage = useCallback(async () => {
+    const projectId = useProjectStore.getState().activeProjectId
     setIsStaging(true)
     try {
-      if (entry.staged) {
-        await unstageFile(entry.path)
-      } else {
-        await stageFile(entry.path)
+      if (projectId) {
+        // Success is silent (the row simply moves between the staged /
+        // unstaged sections); only a failure is recorded in the console.
+        await runGitOperation({
+          projectId,
+          kind: side === 'index' ? 'unstage' : 'stage',
+          label: `${side === 'index' ? 'Unstaged' : 'Staged'} ${entry.path}`,
+          fn: () =>
+            side === 'index' ? unstageFile(entry.path) : stageFile(entry.path),
+          recordSuccess: false,
+          logLevel: 'warn',
+        })
       }
-    } catch (err) {
-      useGitPanelStore.getState().setError(
-        err instanceof Error ? err.message : 'Failed to toggle stage',
-      )
     } finally {
       setIsStaging(false)
-      // Close the menu regardless of outcome; errors are surfaced via the
-      // store-level error banner.
+      // Close the menu regardless of outcome; failures surface in the console.
       onClose()
     }
-  }, [entry.path, entry.staged, onClose])
+  }, [entry.path, side, onClose])
 
   // --- Discard (with confirmation) ---
   const handleConfirmDiscard = useCallback(async () => {
+    const projectId = useProjectStore.getState().activeProjectId
     setIsDiscarding(true)
     try {
-      await discardChanges(entry.path)
+      if (projectId) {
+        await runGitOperation({
+          projectId,
+          kind: 'discard',
+          label: `Discarded changes in ${entry.path}`,
+          fn: () => discardChanges(entry.path),
+          recordSuccess: false,
+          logLevel: 'warn',
+        })
+      }
       // Backend emits git:status_changed → useGitStatusEvents refreshes.
       setConfirmOpen(false)
       onClose()
-    } catch (err) {
-      useGitPanelStore.getState().setError(
-        err instanceof Error ? err.message : 'Failed to discard changes',
-      )
     } finally {
       setIsDiscarding(false)
     }
@@ -101,17 +120,24 @@ export function GitFileContextMenu({
 
   // --- Add to .gitignore ---
   const handleAddToGitignore = useCallback(async () => {
+    const projectId = useProjectStore.getState().activeProjectId
     setIsIgnoring(true)
     try {
-      await appendToGitignore(relativePath)
-    } catch (err) {
-      useGitPanelStore.getState().setError(
-        err instanceof Error ? err.message : 'Failed to update .gitignore',
-      )
+      if (projectId) {
+        // Success is silent (the entry leaves the tree); only a failure is
+        // recorded in the operation console.
+        await runGitOperation({
+          projectId,
+          kind: 'gitignore',
+          label: `Added ${relativePath} to .gitignore`,
+          fn: () => appendToGitignore(relativePath),
+          recordSuccess: false,
+          logLevel: 'warn',
+        })
+      }
     } finally {
       setIsIgnoring(false)
-      // Close the menu regardless of outcome; errors are surfaced via the
-      // store-level error banner.
+      // Close the menu regardless of outcome; failures surface in the console.
       onClose()
     }
   }, [relativePath, onClose])
@@ -185,12 +211,12 @@ export function GitFileContextMenu({
           >
             {isStaging ? (
               <Loader2 className="size-4 animate-spin" />
-            ) : entry.staged ? (
+            ) : side === 'index' ? (
               <Minus className="size-4" />
             ) : (
               <Plus className="size-4" />
             )}
-            {entry.staged ? 'Unstage' : 'Stage'}
+            {side === 'index' ? 'Unstage' : 'Stage'}
           </button>
           <button
             role="menuitem"

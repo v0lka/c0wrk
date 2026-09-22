@@ -62,8 +62,16 @@ func TestSetProject(t *testing.T) {
 		if err := svc.SetProject("test-project", projectDir); err != nil {
 			t.Fatalf("SetProject failed: %v", err)
 		}
+		// ADR-064: SetProject prepares the storage layout but does NOT open the
+		// DB; the branch-scoped open happens in SwitchBranch.
+		if svc.current.db != nil {
+			t.Fatal("expected the branch-scoped DB to stay unopened until SwitchBranch")
+		}
+		if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
+			t.Fatalf("SwitchBranch failed: %v", err)
+		}
 		if svc.current.db == nil {
-			t.Fatal("expected db to be initialized")
+			t.Fatal("expected db to be initialized after SwitchBranch")
 		}
 	})
 

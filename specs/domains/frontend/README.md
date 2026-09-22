@@ -206,6 +206,7 @@ Frontend configuration is derived from backend (no separate frontend config file
 
 - [ui-scale.md](ui-scale.md) — UI scale feature and the zoom-safety invariant
 - [stores.md](stores.md) — Zustand store catalog
+- [git-operation-console.md](git-operation-console.md) — the footer log of the last git mutation result (button tint, anchored popover, per-project scope, acknowledge semantics)
 - [events.md](events.md) — event handling architecture
 - [rendering.md](rendering.md) — message display pipeline
 - [../../contracts/desktop-frontend.md](../../contracts/desktop-frontend.md) — RPC surface

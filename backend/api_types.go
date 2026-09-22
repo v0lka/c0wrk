@@ -607,7 +607,7 @@ type VectorIndexStatus struct {
 	TotalFiles   int      `json:"total_files"`
 	CurrentFile  string   `json:"current_file"`
 	Branch       string   `json:"branch"`
-	Phase        string   `json:"phase"`   // "both" | "embedding" | "lexical"
+	Phase        string   `json:"phase"`   // "both" | "embedding" | "lexical" | "open" (the ADR-064 pre-open `loading` state)
 	Indices      []string `json:"indices"` // e.g. ["vector", "lexical"
 
 	// ExecutionProvider is the ONNX Runtime execution provider the embedder

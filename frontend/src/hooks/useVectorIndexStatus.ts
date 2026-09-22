@@ -18,10 +18,10 @@ import { logger } from '@/lib/logger'
  * "Select a project to search" while a project WAS selected.
  *
  * The getter `GetVectorIndexStatus` already reports the truthful state
- * (ready / indexing / reindexing / unavailable) for the active project, and is
- * cheap (an in-memory snapshot). It is fetched on mount, whenever the active
- * project changes, and again once the backend signals readiness — the mount
- * fetch can land before `backend:ready`.
+ * (ready / indexing / reindexing / loading / unavailable) for the active
+ * project, and is cheap (an in-memory snapshot). It is fetched on mount,
+ * whenever the active project changes, and again once the backend signals
+ * readiness — the mount fetch can land before `backend:ready`.
  *
  * The push subscription stays alongside it so live progress still streams in.
  */

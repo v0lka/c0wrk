@@ -97,4 +97,19 @@ describe('E2SToggle', () => {
     })
     expect(useInputModeStore.getState().e2sEnabled).toBe(false)
   })
+
+  it('surfaces the task-state lockReason in the title while disabled', () => {
+    act(() => {
+      root.render(<E2SToggle disabled lockReason="Locked while a failed task awaits resume or cancel" />)
+    })
+    const btn = trigger()
+    expect(btn.disabled).toBe(true)
+    expect(btn.getAttribute('title')).toBe('Locked while a failed task awaits resume or cancel')
+
+    // Clicking a locked trigger must not arm E2S mode.
+    act(() => {
+      btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(useInputModeStore.getState().e2sEnabled).toBe(false)
+  })
 })

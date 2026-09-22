@@ -1,6 +1,7 @@
 package vectorindex
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -38,13 +39,22 @@ func TestResetForNoProject_DoesNotBlockOnInFlightOpen(t *testing.T) {
 	t.Cleanup(func() { _ = svc.Close() })
 
 	openErr := make(chan error, 1)
-	go func() { openErr <- svc.SetProject("proj-a", t.TempDir()) }()
+	// ADR-064: the (heavy) persistent DB open now happens in SwitchBranch,
+	// which holds the write lock for its whole duration; SetProject only
+	// prepares the layout.
+	go func() {
+		if err := svc.SetProject("proj-a", t.TempDir()); err != nil {
+			openErr <- err
+			return
+		}
+		openErr <- svc.SwitchBranch(context.Background(), "main")
+	}()
 
 	select {
 	case <-openStarted:
 	case <-time.After(10 * time.Second):
 		close(releaseOpen)
-		t.Fatal("SetProject never reached the persistent DB open")
+		t.Fatal("the open never reached chromem.NewPersistentDB")
 	}
 
 	// Contended path: the reset must not wait for the open to finish.
@@ -62,19 +72,29 @@ func TestResetForNoProject_DoesNotBlockOnInFlightOpen(t *testing.T) {
 
 	close(releaseOpen)
 	if err := <-openErr; err != nil {
-		t.Fatalf("SetProject: %v", err)
+		t.Fatalf("open: %v", err)
 	}
 
-	// The open applied the queued reset as its final act (received from the
-	// goroutine above, so every write below happens-before this read).
-	svc.mu.RLock()
-	currentID := svc.current.projectID
-	svc.mu.RUnlock()
-	if currentID != noProjectIDForTest {
-		t.Fatalf("current project = %q after the queued reset, want %q", currentID, noProjectIDForTest)
+	// The reset is delivered by the background applier (kickNoProjectResetApplier)
+	// once the lock holder releases — no longer "by the open as its last act",
+	// because ADR-064 moved the open out of SetProject. Poll for it so the
+	// assertion is not racy.
+	deadline := time.Now().Add(3 * time.Second)
+	var currentID string
+	for {
+		svc.mu.RLock()
+		currentID = svc.current.projectID
+		svc.mu.RUnlock()
+		if currentID == noProjectIDForTest {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("current project = %q after the queued reset, want %q", currentID, noProjectIDForTest)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	if svc.pendingNoProjectReset.Load() != nil {
-		t.Fatal("the queued reset must be consumed by the in-flight open")
+		t.Fatal("the queued reset must be consumed")
 	}
 	if svc.GetCollection() != nil {
 		t.Fatal("the No Project state must carry no collection")

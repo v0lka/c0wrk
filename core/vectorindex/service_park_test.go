@@ -130,7 +130,7 @@ func TestService_ParkRestoreSkipsReopen(t *testing.T) {
 	if svc.current.db != dbA {
 		t.Error("restore did not reuse the chromem DB object")
 	}
-	if got := counter.count(dirA); got != 1 {
+	if got := counter.count(branchRootPath(dirA, "main")); got != 1 {
 		t.Errorf("persistent DB for A opened %d times, want 1 (restore must not reopen)", got)
 	}
 	if got := counter.total(); got != 2 {
@@ -263,7 +263,7 @@ func TestService_ParkDisabledReopens(t *testing.T) {
 	if svc.current.collection == colA {
 		t.Error("with parking disabled, A should have been reopened (new collection object)")
 	}
-	if got := counter.count(dirA); got != 2 {
+	if got := counter.count(branchRootPath(dirA, "main")); got != 2 {
 		t.Errorf("persistent DB for A opened %d times, want 2 (reopen expected)", got)
 	}
 	if len(svc.parked) != 0 {
@@ -636,7 +636,7 @@ func TestService_ParkDisabledDespiteBudget(t *testing.T) {
 
 	// Returning to A reopens it — there is no parked state to restore from.
 	parkBudgetSwitchProject(t, svc, "A", dirA)
-	if got := counter.count(dirA); got != 2 {
+	if got := counter.count(branchRootPath(dirA, "main")); got != 2 {
 		t.Errorf("persistent DB for A opened %d times, want 2 (reopen expected)", got)
 	}
 }

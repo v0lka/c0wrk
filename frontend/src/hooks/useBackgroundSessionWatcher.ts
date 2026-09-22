@@ -33,10 +33,10 @@ import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useActiveSessionsStore } from '@/stores/activeSessionsStore'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
-import { isToolConfirmData, isAskUserData, isStepLimitData, isPlanReviewReadyData, isGoalProposalData } from '@/types/events'
+import { isToolConfirmData, isAskUserData, isStepLimitData, isPlanReviewReadyData, isGoalProposalData, isGoalStatusData, isGoalProgressData } from '@/types/events'
 import type { SessionEventKey } from '@/types/events'
 import { handleToolConfirmEvent, handleAskUserEvent, handleStepLimitEvent, handlePlanReviewEvent } from './events/hitlHandlers'
-import { handleGoalProposalEvent } from './events/goalHandlers'
+import { handleGoalProposalEvent, handleGoalStatusEvent, handleGoalProgressEvent } from './events/goalHandlers'
 import { handleSessionPausedEvent, handleSessionResumedEvent } from './events/sessionLifecycleHandlers'
 import { classifySessionEvent, notifySessionCue } from './events/useSoundEvents'
 import { playSound } from '@/lib/sound'
@@ -247,6 +247,37 @@ export function useBackgroundSessionWatcher(): void {
           if (!isGoalProposalData(data)) { reportDroppedEvent('goal_proposal', data); return }
           announceBackgroundCue(sessionId, 'goal_proposal', data)
           handleGoalProposalEvent(sessionId, data)
+        }),
+      )
+      // Goal status / progress — keep the goal store current for BACKGROUND
+      // sessions too.
+      //
+      // Without these two subscriptions the goal store is only written by the
+      // ACTIVE session's `useGoalEvents`: a session whose goal loop advances
+      // while another session is in front drops every goal_status/goal_progress
+      // (Wails EventsEmit with no listener is a no-op), so the status-bar goal
+      // badge (GoalStatusIndicator) has NO live state for it. Switching to that
+      // session then relies entirely on the asynchronous history rebuild
+      // (`rebuildGoalFromHistory`), which only carries the last PERSISTED
+      // `goal_status` turn snapshot — the transient `goal_progress` telemetry
+      // of an in-flight turn is never persisted — so the badge shows nothing (or
+      // a stale turn) until the session emits its NEXT goal update. Mirroring
+      // the goal_proposal handler above (and the active session's useGoalEvents)
+      // closes that gap: the store is kept current for every live session, so a
+      // session switch always renders the true goal status immediately. This is
+      // the documented contract in events/goalHandlers.ts — the goal handlers
+      // are shared "so goal state reaches the goal store regardless of which
+      // session the user is currently viewing".
+      cleanups.push(
+        onSessionEvent(sessionId, 'goal_status', (data) => {
+          if (!isGoalStatusData(data)) { reportDroppedEvent('goal_status', data); return }
+          handleGoalStatusEvent(sessionId, data)
+        }),
+      )
+      cleanups.push(
+        onSessionEvent(sessionId, 'goal_progress', (data) => {
+          if (!isGoalProgressData(data)) { reportDroppedEvent('goal_progress', data); return }
+          handleGoalProgressEvent(sessionId, data)
         }),
       )
     }

@@ -8,6 +8,8 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useGitStatusEvents } from '@/hooks/useGitStatusEvents'
 import { getFileDiff } from '@/api/workspace'
 import { stageFile, unstageFile } from '@/api/git'
+import { runGitOperation } from '@/lib/gitOperation'
+import type { StageAction } from '@/lib/gitStatus'
 import { GitPanelToolbar } from './GitPanelToolbar'
 import { ChangesList } from './ChangesList'
 import { CommitSection } from './CommitSection'
@@ -43,27 +45,30 @@ export function GitPanel() {
 
   // ── Callbacks ──────────────────────────────────────────────────────────
 
-  /** Toggle staged/unstaged state of a file. */
-  const onToggleFile = useCallback(async (path: string) => {
-    const entry = useGitPanelStore.getState().entries.find(
-      (e) => e.path === path,
-    )
-    if (!entry) return
-
-    try {
-      if (entry.staged) {
-        await unstageFile(path)
-      } else {
-        await stageFile(path)
-      }
-      // The backend emits `git:status_changed` after StageFile/UnstageFile,
-      // which is picked up by useGitStatusEvents — no manual refresh needed.
-    } catch (err) {
-      logger.error('Failed to toggle file stage:', err)
-      useGitPanelStore.getState().setError(
-        err instanceof Error ? err.message : 'Failed to toggle file stage',
-      )
-    }
+  /**
+   * Toggle a file's stage state along a specific porcelain axis. The action is
+   * supplied by the row that fired it — `unstage` when the row's checkbox was
+   * checked (an index row), `stage` when it was unchecked (a worktree row) — so
+   * no store lookup is required, and a file that is both staged and unstaged
+   * (`MM`) resolves correctly per row.
+   */
+  const onToggleFile = useCallback(async (path: string, action: StageAction): Promise<boolean> => {
+    const projectId = useProjectStore.getState().activeProjectId
+    if (!projectId) return false
+    // The backend emits `git:status_changed` after StageFile/UnstageFile,
+    // which is picked up by useGitStatusEvents — no manual refresh needed.
+    // Success is silent (the row moves between sections); only a failure is
+    // recorded in the operation console. The boolean result lets the row keep
+    // its optimistic checkbox on success and revert it on failure.
+    const outcome = await runGitOperation({
+      projectId,
+      kind: action === 'unstage' ? 'unstage' : 'stage',
+      label: `${action === 'unstage' ? 'Unstaged' : 'Staged'} ${path}`,
+      fn: () => (action === 'unstage' ? unstageFile(path) : stageFile(path)),
+      recordSuccess: false,
+      logLevel: 'warn',
+    })
+    return outcome.ok
   }, [])
 
   /** Open a file diff in the FileViewerPanel. */

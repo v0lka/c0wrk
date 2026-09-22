@@ -76,4 +76,13 @@ describe('IndexingStatus — progress bar', () => {
     render()
     expect(container.textContent).toBe('')
   })
+
+  it('renders an honest "Preparing index…" while the DB is opening (ADR-064, no fake bar)', () => {
+    state.status = { state: 'loading', phase: 'open', progress: 0, files_indexed: 0, total_files: 0 }
+    render()
+    expect(container.textContent).toContain('Preparing index…')
+    expect(container.textContent).not.toContain('Indexing')
+    // No progress bar and no n/m while only opening.
+    expect(() => fillElement(container)).toThrow()
+  })
 })

@@ -23,6 +23,7 @@ vi.mock('@/lib/logger', () => ({ logger: { error: vi.fn() } }))
 
 import { BranchDropdown } from './BranchDropdown'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useProjectStore } from '@/stores/projectStore'
 import type { Branch } from '@/types/models'
 
 let container: HTMLDivElement
@@ -44,6 +45,8 @@ beforeEach(() => {
   gitMocks.deleteRemoteBranch.mockResolvedValue('deleted')
 
   useGitPanelStore.getState().reset()
+  // Branch operations record their outcome against the ACTIVE project.
+  useProjectStore.setState({ activeProjectId: 'p1' })
   useGitPanelStore.setState({
     branch: { name: 'main', upstream: '', ahead: 0, behind: 0 },
   })
@@ -213,6 +216,11 @@ describe('BranchDropdown', () => {
 
     expect(gitMocks.checkoutBranch).toHaveBeenCalledWith('feature/x')
     expect(isMenuOpen()).toBe(false)
+    // The outcome is recorded in the operation console slice.
+    expect(useGitPanelStore.getState().operationByProject['p1']).toMatchObject({
+      kind: 'checkout',
+      ok: true,
+    })
   })
 
   it('does not checkout the current branch', async () => {

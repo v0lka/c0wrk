@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — removes the post-task activation path of the review feature ([review.md](../domains/review.md)) and, pre-release, the `review_prompt` sub-policy that [ADR-053](./053-silent-mode.md) had defined for it (D3 now covers three sub-policies; no released build ever shipped a silent-mode `review_prompt` knob).
+Accepted (D4 partially superseded by [ADR-062](./062-hide-legacy-review-prompt-rows.md): legacy `review_prompt` rows are now hidden at history load instead of rendering as muted status lines) — removes the post-task activation path of the review feature ([review.md](../domains/review.md)) and, pre-release, the `review_prompt` sub-policy that [ADR-053](./053-silent-mode.md) had defined for it (D3 now covers three sub-policies; no released build ever shipped a silent-mode `review_prompt` knob).
 
 ## Context
 

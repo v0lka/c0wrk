@@ -12,6 +12,8 @@ import { E2SToggle } from './E2SToggle'
 import { BudgetCombobox } from './BudgetCombobox'
 import { useWorkDirsStore } from '@/stores/workDirsStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
+import { useChatStore } from '@/stores/chatStore'
+import { computeModeTogglesLocked, modeToggleLockReason } from '@/lib/chatInputLock'
 import { useAttachmentsInput } from '@/hooks/useAttachmentsInput'
 
 interface ChatInputToolbarProps {
@@ -82,6 +84,23 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
   // session — judge evaluations included — stays on the provider/model the
   // session runs on; model picks elsewhere must not move it mid-task.
   const selectorsLocked = taskActive || pausing || compacting
+
+  // Goal/E2S (plus the goal budget selector) lock on a SUPERSET of the
+  // selector lock above: they additionally stay locked while the task is
+  // cooperatively paused and while a failed/unfinished task lingers (the live
+  // unfinished-task overlay is non-empty). The asymmetry is deliberate —
+  // model/reasoning are resume-time overrides (a paused resume honors a
+  // freshly picked model/reasoning), while goal and E2S can only arm a NEW
+  // task: a goal- or E2S-armed send that lands on an unfinished task makes the
+  // backend ABANDON it (abandonUnfinishedTaskForGoal / abandonUnfinishedTaskForE2S),
+  // so the modes must not be flippable until the session is clean — the task
+  // settled successfully (a follow-up send continues on the inherited
+  // blackboard), or the failed task was cancelled (the next send starts
+  // fresh). See lib/chatInputLock for the authoritative matrix.
+  const unfinishedTaskStatus = useChatStore((s) => (activeSessionId ? s.unfinishedTaskStatus[activeSessionId] ?? '' : ''))
+  const modeToggleLockInput = { taskActive, pausing, compacting, paused, unfinishedTaskStatus }
+  const modeTogglesLocked = computeModeTogglesLocked(modeToggleLockInput)
+  const modeToggleLockTitle = modeToggleLockReason(modeToggleLockInput)
 
   const blockingMessage = isNoProject ? 'Select or create a project' : null
 
@@ -167,11 +186,15 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
             <ModelCombobox disabled={selectorsLocked} />
             <ReasoningCombobox disabled={selectorsLocked} />
             <div className="w-px h-4 bg-border mx-1" />
-            <GoalToggle disabled={selectorsLocked} blocked={goalBlocked} />
+            {/* Goal/E2S/budget use the WIDER mode-toggle lock (see the
+                computation above): unlike model/reasoning they do not unlock
+                on a cooperative pause or a lingering failed task, because a
+                mode-armed send would abandon the unfinished task. */}
+            <GoalToggle disabled={modeTogglesLocked} lockReason={modeToggleLockTitle} blocked={goalBlocked} />
             {/* E2S renders itself only while the experimental gate is on
                 (see E2SToggle) — no extra gating here. */}
-            <E2SToggle disabled={selectorsLocked} />
-            {goalEnabled && <BudgetCombobox disabled={selectorsLocked} />}
+            <E2SToggle disabled={modeTogglesLocked} lockReason={modeToggleLockTitle} />
+            {goalEnabled && <BudgetCombobox disabled={modeTogglesLocked} />}
           </div>
         </>
       )}

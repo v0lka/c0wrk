@@ -27,7 +27,21 @@ export async function getMCPServers(): Promise<Record<string, MCPServerConfig>> 
     if (typeof result !== 'object' || result === null) {
       throw new Error('getMCPServers: backend returned invalid data')
     }
-    return result as Record<string, MCPServerConfig>
+    // The backend marshals `timeout`/`call_timeout` with `omitempty`, so an
+    // unset value is absent from the payload. Normalize the missing keys to ''
+    // at this boundary so every downstream consumer sees the non-optional
+    // `string` the type declares (an empty string means "use the default").
+    const servers: Record<string, MCPServerConfig> = {}
+    for (const [name, cfg] of Object.entries(
+      result as Record<string, MCPServerConfig>,
+    )) {
+      servers[name] = {
+        ...cfg,
+        timeout: cfg.timeout ?? '',
+        call_timeout: cfg.call_timeout ?? '',
+      }
+    }
+    return servers
   } catch (err) {
     logger.error('Failed to get MCP servers:', err)
     throw err

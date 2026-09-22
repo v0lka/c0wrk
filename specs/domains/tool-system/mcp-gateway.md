@@ -42,7 +42,7 @@ MCP tools are wrapped in sp4rk `mcp.Tool` (implements the `Tool` interface) and 
 
 ### Status Reporting (frontend UI)
 
-`gateway.Status()` returns per-server `ServerStatus` (`Name`, `Transport`, `Connected`, `Starting`, `ToolCount`, `Tools`, `Error`), exposed to the frontend MCP management UI via `GetMCPStatus`.
+`gateway.Status()` returns per-server `ServerStatus` (`Name`, `Transport`, `Connected`, `Unhealthy`, `Starting`, `ToolCount`, `Tools`, `Error`), exposed to the frontend MCP management UI via `GetMCPStatus`.
 
 Every **configured** server is always visible in the settings UI, unavailable ones rendered with a red indicator:
 
@@ -63,6 +63,8 @@ mcp:
       args: ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
       env:
         NODE_PATH: "/usr/local/lib/node_modules"
+      timeout: "60s"       # handshake + default per-call bound
+      call_timeout: "30s"  # optional per-call override
 
     remote-api:
       transport: http
@@ -73,6 +75,15 @@ mcp:
 
 Env vars are expanded as `${VAR}`. Transport types (stdio/http), schema sanitization, and server connection behavior are engine concerns — see [the sp4rk mcp-gateway spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/mcp-gateway.md).
 
+### Per-server timeouts
+
+Each server entry accepts two optional duration keys (Go duration strings — a unit suffix is required, e.g. `60s`, `2m`, `500ms`):
+
+- `timeout` — bounds the server's **initialization handshake** (`initialize` + `tools/list`) and is the **default bound for every `tools/call`** on that server. Default **60s**.
+- `call_timeout` — optional **per-call override** for a single `tools/call`; unset inherits `timeout`, so a per-call wire timeout is always in effect.
+
+A key that is omitted, empty, unparseable, or non-positive resolves to its fallback: `timeout` to the built-in **60s** default, and `call_timeout` to the resolved `timeout` (so a bad `call_timeout` under `timeout: 5m` yields 5m, not 60s; 60s only when `timeout` is itself unset). The UI save path rejects an invalid value up front; on the load path a bad value **fails soft** to that fallback with a load warning — surfaced through the config load-warnings channel (`configLoadErrors`) and logged at WARN — so it never prevents the server from starting. The resolved bounds are captured at connect time, so editing a timeout re-applies it by reconnecting that server (a timeout-only change is reconnect-worthy). The bound mechanics and the unhealthy flag are engine concerns — see [the sp4rk mcp-gateway spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/mcp-gateway.md).
+
 ## Invariants
 
 - MCP gateway failure is non-fatal (application starts without MCP tools)
@@ -80,6 +91,9 @@ Env vars are expanded as `${VAR}`. Transport types (stdio/http), schema sanitiza
 - MCP tools default to `PolicyUserConfirm` (never auto-execute untrusted external tools)
 - All MCP tools are untrusted (`IsUntrusted()` returns `true`)
 - `ReconfigureMCP()` is atomic: old servers stopped before new ones started
+- Every MCP server has a bounded initialization handshake (`initialize` + `tools/list`) and a bounded per-call wire timeout; both default to 60s, and an unset `call_timeout` inherits `timeout` — a server never operates with an unbounded handshake or call
+- A server is marked `Unhealthy` after **3 consecutive** `tools/call` timeouts; the mark is advisory and never disconnects the server (a timeout does not kill or close the connection), and a clean call clears it
+- Timeout errors surface to the agent loop as a typed error (never swallowed); the server stays connected
 
 ## Related Specs
 

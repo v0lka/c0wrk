@@ -10,7 +10,7 @@ import { createRoot, type Root } from 'react-dom/client'
 // undefined.
 const state = vi.hoisted(() => ({
   status: {
-    state: 'ready' as 'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable',
+    state: 'ready' as 'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable' | 'loading',
     progress: 0,
     files_indexed: 0,
     total_files: 0,
@@ -73,5 +73,22 @@ describe('VectorSearchResults — index-not-ready placeholder', () => {
     state.status = { state: 'unavailable', progress: 0, files_indexed: 0, total_files: 0 }
     render(true)
     expect(container.textContent).toContain('Vector index unavailable')
+  })
+
+  // ADR-064: the branch-scoped DB open is not an indexing pass, so it must not
+  // borrow the "Indexing in progress" claim.
+  it('says "Preparing index" while the DB is opening, with an active query', () => {
+    state.status = { state: 'loading', progress: 0, files_indexed: 0, total_files: 0 }
+    render(true)
+    expect(container.textContent).toContain('Preparing index')
+    expect(container.textContent).toContain('results will appear automatically when ready')
+    expect(container.textContent).not.toContain('Indexing in progress')
+  })
+
+  it('stays terse while the DB is opening without an active query', () => {
+    state.status = { state: 'loading', progress: 0, files_indexed: 0, total_files: 0 }
+    render(false)
+    expect(container.textContent).toContain('Preparing index')
+    expect(container.textContent).not.toContain('results will appear')
   })
 })

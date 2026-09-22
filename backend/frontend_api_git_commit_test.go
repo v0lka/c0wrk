@@ -304,11 +304,11 @@ func TestLimitedBuffer_CapsAt64KiBWithMarker(t *testing.T) {
 		}
 	}
 	got := b.String()
-	if !strings.HasSuffix(got, commitOutputTruncationMarker) {
+	if !strings.HasSuffix(got, gitOutputTruncationMarker) {
 		t.Error("expected the truncation marker at the end of the capped output")
 	}
-	if l := len(got); l > commitOutputLimit+len(commitOutputTruncationMarker) {
-		t.Errorf("capped output length = %d, want <= %d", l, commitOutputLimit+len(commitOutputTruncationMarker))
+	if l := len(got); l > gitOutputLimit+len(gitOutputTruncationMarker) {
+		t.Errorf("capped output length = %d, want <= %d", l, gitOutputLimit+len(gitOutputTruncationMarker))
 	}
 	if !strings.HasPrefix(got, strings.Repeat("a", 64*1024)) {
 		t.Error("the first 64 KiB must be preserved verbatim")

@@ -1,8 +1,12 @@
 package backend
 
 import (
+	"bytes"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
@@ -245,6 +249,49 @@ func TestToBuilderConfig_ProviderOutputTokenReserve(t *testing.T) {
 	bc = ToBuilderConfig(cfg, config.PredefinedModelProfiles())
 	if got := bc.LLM.ProviderConfigs["other"].OutputTokenReserve; got != 0 {
 		t.Errorf("other OutputTokenReserve = %d, want 0 (inherit)", got)
+	}
+}
+
+// TestToBuilderConfig_MCPTimeouts verifies the per-server MCP timeout /
+// call_timeout duration strings are parsed into BuilderMCPServer, with empty
+// and invalid values falling back to 0 (the sp4rk default) rather than
+// erroring. The adapter deliberately does NOT log an invalid value — the
+// production load path (normalizeMCPTimeouts → config.ResolveAndLoad) is its
+// single surfacing point — so the test also pins that no WARN is emitted here,
+// which would otherwise duplicate the load-path warning on every start.
+func TestToBuilderConfig_MCPTimeouts(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"valid":   {Command: "cmd", Timeout: "30s", CallTimeout: "2m"},
+		"empty":   {Command: "cmd"},
+		"invalid": {Command: "cmd", Timeout: "abc", CallTimeout: "0s"},
+	}
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	bc := ToBuilderConfig(cfg, config.PredefinedModelProfiles(), log)
+
+	valid := bc.MCP.Servers["valid"]
+	if valid.Timeout != 30*time.Second {
+		t.Errorf("valid Timeout = %v, want 30s", valid.Timeout)
+	}
+	if valid.CallTimeout != 2*time.Minute {
+		t.Errorf("valid CallTimeout = %v, want 2m", valid.CallTimeout)
+	}
+
+	empty := bc.MCP.Servers["empty"]
+	if empty.Timeout != 0 || empty.CallTimeout != 0 {
+		t.Errorf("empty durations = (%v, %v), want (0, 0)", empty.Timeout, empty.CallTimeout)
+	}
+
+	invalid := bc.MCP.Servers["invalid"]
+	if invalid.Timeout != 0 || invalid.CallTimeout != 0 {
+		t.Errorf("invalid durations = (%v, %v), want (0, 0) fallback", invalid.Timeout, invalid.CallTimeout)
+	}
+	// The adapter must not log the invalid value: config.ResolveAndLoad owns
+	// that WARN (via normalizeMCPTimeouts), so logging here would double it.
+	if strings.Contains(buf.String(), "invalid MCP server duration") {
+		t.Errorf("adapter must not log an invalid MCP duration (the load path owns that warning), got log %q", buf.String())
 	}
 }
 

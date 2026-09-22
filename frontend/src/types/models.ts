@@ -257,7 +257,7 @@ export interface MergeRebaseState {
 
 export type SearchMode = 'hybrid' | 'vector' | 'lexical'
 
-export type IndexPhase = 'both' | 'embedding' | 'lexical'
+export type IndexPhase = 'both' | 'embedding' | 'lexical' | 'open'
 
 /**
  * ONNX Runtime execution provider for the vector-index embedder
@@ -267,7 +267,7 @@ export type IndexPhase = 'both' | 'embedding' | 'lexical'
 export type ExecutionProvider = 'auto' | 'cpu' | 'cuda'
 
 export interface VectorIndexStatus {
-  state: 'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable'
+  state: 'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable' | 'loading'
   progress: number
   files_indexed: number
   total_files: number
@@ -847,12 +847,25 @@ export interface MCPServerConfig {
   env: Record<string, string>
   url: string
   headers: Record<string, string>
+  /** Initialization handshake timeout (initialize + tools/list) as a Go
+   *  duration string (e.g. "30s"), applied to both transports. Empty selects
+   *  the backend default (60s); when set it must parse and be positive. */
+  timeout: string
+  /** Single tools/call invocation timeout as a Go duration string (e.g. "2m"),
+   *  applied to both transports. Empty inherits `timeout`; when set it must
+   *  parse and be positive. */
+  call_timeout: string
 }
 
 export interface MCPServerStatus {
   name: string
   transport: string
   connected: boolean
+  /** Degraded-but-reachable state: the server answered but is misbehaving
+   *  (e.g. it has been timing out back-to-back). Distinct from `connected`
+   *  (down) and `starting` (initializing). Optional so older payloads that
+   *  predate the flag stay valid. */
+  unhealthy?: boolean
   starting: boolean
   tool_count: number
   tools: string[]

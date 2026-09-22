@@ -7,6 +7,7 @@ import { ChatInputToolbar } from './ChatInputToolbar'
 import { GOAL_BLOCKED_BY_MODEL_PROFILES_REASON } from '@/lib/goalGate'
 import type { ChatInputController } from '@/hooks/useChatInputController'
 import { useInputModeStore } from '@/stores/inputModeStore'
+import { useChatStore } from '@/stores/chatStore'
 
 // Mock the config hook so the comboboxes render synchronously with a
 // reasoning-capable model, without touching the Wails backend.
@@ -35,10 +36,12 @@ vi.mock('@/hooks/useAttachmentsInput', () => ({
 // E2SToggle (rendered by the toolbar) consults the experimental gate through
 // this hook, whose real implementation fetches the config via the Wails
 // bindings — unavailable in jsdom, so every mount logged two backend errors.
-// The gate is irrelevant to the lock behaviour under test; pin it off (the
-// same default the store latches in these tests).
+// The gate is irrelevant to most lock behaviour but must be flippable for the
+// E2S-toggle lock cases; pin it off by default (the same default the store
+// latches in these tests).
+const experimentalGate = vi.hoisted(() => ({ enabled: false }))
 vi.mock('@/hooks/useExperimentalFeatures', () => ({
-  useExperimentalFeatures: () => false,
+  useExperimentalFeatures: () => experimentalGate.enabled,
 }))
 
 // The toolbar consults the Model Profiles goal gate through this hook, whose real
@@ -120,8 +123,19 @@ function goalTrigger(): HTMLButtonElement {
   return btn as HTMLButtonElement
 }
 
+function e2sTrigger(): HTMLButtonElement {
+  const btn = container.querySelector('button[aria-label="Toggle E2S mode"]')
+  expect(btn).not.toBeNull()
+  return btn as HTMLButtonElement
+}
+
 beforeEach(() => {
-  useInputModeStore.setState({ goalEnabled: false })
+  useInputModeStore.setState({ goalEnabled: false, e2sEnabled: false })
+  experimentalGate.enabled = false
+  // The toolbar reads the active session's live unfinished-task overlay (the
+  // goal/E2S mode-toggle lock) straight from chatStore — reset it so tests
+  // seed exactly the state they assert on.
+  useChatStore.setState({ unfinishedTaskStatus: {} })
   modelProfilesGate.blocked = false
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -156,11 +170,57 @@ describe('ChatInputToolbar selector lock', () => {
     expect(modelTrigger().disabled).toBe(true)
   })
 
-  it('unlocks the selectors when the task is cooperatively paused (resume honors overrides)', () => {
+  it('unlocks model/reasoning when the task is cooperatively paused (resume honors overrides)', () => {
     renderToolbar({ taskActive: false, paused: true, showCancel: true })
     expect(modelTrigger().disabled).toBe(false)
     expect(reasoningTrigger().disabled).toBe(false)
+  })
+
+  it('keeps goal and E2S locked while the task is cooperatively paused (mode-armed sends abandon the task)', () => {
+    experimentalGate.enabled = true
+    renderToolbar({ taskActive: false, paused: true, showCancel: true })
+    expect(goalTrigger().disabled).toBe(true)
+    expect(goalTrigger().getAttribute('title')).toBe('Locked while the task is paused — resume or cancel it first')
+    expect(e2sTrigger().disabled).toBe(true)
+    expect(e2sTrigger().getAttribute('title')).toBe('Locked while the task is paused — resume or cancel it first')
+    // Model/reasoning stay unlocked (resume honors those overrides).
+    expect(modelTrigger().disabled).toBe(false)
+    expect(reasoningTrigger().disabled).toBe(false)
+  })
+
+  it('keeps goal and E2S locked while a failed task awaits resume or cancel', () => {
+    experimentalGate.enabled = true
+    act(() => {
+      useChatStore.setState({ unfinishedTaskStatus: { s1: 'failed' } })
+    })
+    renderToolbar({ activeSessionId: 's1' })
+    expect(goalTrigger().disabled).toBe(true)
+    expect(goalTrigger().getAttribute('title')).toBe('Locked while a failed task awaits resume or cancel')
+    expect(e2sTrigger().disabled).toBe(true)
+    expect(e2sTrigger().getAttribute('title')).toBe('Locked while a failed task awaits resume or cancel')
+    // Model/reasoning still unlock — the failed task is resumable with fresh
+    // model/reasoning overrides.
+    expect(modelTrigger().disabled).toBe(false)
+    expect(reasoningTrigger().disabled).toBe(false)
+  })
+
+  it('releases goal and E2S after the failed task is cancelled (overlay cleared)', () => {
+    act(() => {
+      useChatStore.setState({ unfinishedTaskStatus: { s1: '' } })
+    })
+    renderToolbar({ activeSessionId: 's1' })
     expect(goalTrigger().disabled).toBe(false)
+    expect(goalTrigger().getAttribute('title')).toBe('Goal mode off — click to turn on')
+  })
+
+  it('keeps goal and E2S unlocked for a continuation after a settled task', () => {
+    experimentalGate.enabled = true
+    act(() => {
+      useChatStore.setState({ unfinishedTaskStatus: { s1: '' } })
+    })
+    renderToolbar({ activeSessionId: 's1' })
+    expect(goalTrigger().disabled).toBe(false)
+    expect(e2sTrigger().disabled).toBe(false)
   })
 
   it('unlocks the selectors when the session is idle (finished/failed)', () => {

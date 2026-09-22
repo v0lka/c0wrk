@@ -24,6 +24,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useProjectStore } from '@/stores/projectStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import {
   createTag,
@@ -33,6 +34,7 @@ import {
   resetToCommit,
 } from '@/api/git'
 import { clipboardSetText, emit } from '@/api/runtime'
+import { runGitOperation } from '@/lib/gitOperation'
 import { logger } from '@/lib/logger'
 
 /** Reset modes offered by the "Reset <branch> to This Commit" submenu. */
@@ -219,6 +221,7 @@ export function GitHistoryContextMenu({
   const [resetError, setResetError] = useState<string | null>(null)
 
   const tags = tagNamesFromRefs(refs)
+  const branchLabel = currentBranch || 'HEAD'
 
   // ── View Commit ────────────────────────────────────────────────────
   const handleViewCommit = useCallback(() => {
@@ -264,16 +267,22 @@ export function GitHistoryContextMenu({
   const handleConfirmCreateTag = useCallback(async () => {
     const trimmed = tagName.trim()
     if (!trimmed || creatingTag) return
+    const projectId = useProjectStore.getState().activeProjectId
+    if (!projectId) return
     setCreatingTag(true)
     setTagError(null)
-    try {
-      await createTag(trimmed, tagTargetSha)
+    const outcome = await runGitOperation({
+      projectId,
+      kind: 'tag-create',
+      label: `Created tag ${trimmed}`,
+      fn: () => createTag(trimmed, tagTargetSha),
+    })
+    setCreatingTag(false)
+    if (outcome.ok) {
       setTagDialogOpen(false)
       onAfterMutation()
-    } catch (err) {
-      setTagError(err instanceof Error ? err.message : 'Failed to create tag')
-    } finally {
-      setCreatingTag(false)
+    } else {
+      setTagError(outcome.error)
     }
   }, [tagName, creatingTag, tagTargetSha, onAfterMutation])
 
@@ -287,56 +296,56 @@ export function GitHistoryContextMenu({
         setResetConfirmOpen(true)
         return
       }
-      void (async () => {
-        try {
-          await resetToCommit(sha, mode)
-          onAfterMutation()
-        } catch (err) {
-          useGitPanelStore.getState().setError(
-            err instanceof Error ? err.message : 'Failed to reset branch',
-          )
-        }
-      })()
+      const projectId = useProjectStore.getState().activeProjectId
+      if (!projectId) return
+      void runGitOperation({
+        projectId,
+        kind: 'reset',
+        label: `Reset ${branchLabel} to ${sha.slice(0, 7)} (${mode})`,
+        fn: () => resetToCommit(sha, mode),
+      }).then((outcome) => {
+        if (outcome.ok) onAfterMutation()
+      })
     },
-    [sha, onClose, onAfterMutation],
+    [sha, onClose, onAfterMutation, branchLabel],
   )
 
   const handleConfirmHardReset = useCallback(async () => {
+    const projectId = useProjectStore.getState().activeProjectId
+    if (!projectId) return
     setResetting(true)
     setResetError(null)
-    try {
-      await resetToCommit(sha, 'hard')
+    const outcome = await runGitOperation({
+      projectId,
+      kind: 'reset',
+      label: `Reset ${branchLabel} to ${sha.slice(0, 7)} (hard)`,
+      fn: () => resetToCommit(sha, 'hard'),
+    })
+    setResetting(false)
+    if (outcome.ok) {
       setResetConfirmOpen(false)
       onAfterMutation()
-    } catch (err) {
-      setResetError(err instanceof Error ? err.message : 'Failed to reset branch')
-    } finally {
-      setResetting(false)
+    } else {
+      setResetError(outcome.error)
     }
-  }, [sha, onAfterMutation])
+  }, [sha, onAfterMutation, branchLabel])
 
   // ── Per-tag actions ────────────────────────────────────────────────
   const handlePushTag = useCallback(
     (tagName: string) => {
       onClose()
-      void (async () => {
-        try {
-          const out = await pushTag(tagName, '')
-          // git pushes its progress to stderr, returned in the combined
-          // output. There is no success-toast channel (the app only toasts
-          // errors) and the branch Push output panel lives in
-          // GitPanelFooter local state, which this menu cannot reach — so
-          // surface the output via the logger for debuggability.
-          if (out) {
-            logger.info(`Pushed tag ${tagName}:`, out)
-          }
-          onAfterMutation()
-        } catch (err) {
-          useGitPanelStore.getState().setError(
-            err instanceof Error ? err.message : 'Failed to push tag',
-          )
-        }
-      })()
+      const projectId = useProjectStore.getState().activeProjectId
+      if (!projectId) return
+      // git pushes its progress to stderr, returned in the combined output —
+      // captured as the record's `output` in the operation console.
+      void runGitOperation({
+        projectId,
+        kind: 'tag-push',
+        label: `Pushed tag ${tagName}`,
+        fn: () => pushTag(tagName, ''),
+      }).then((outcome) => {
+        if (outcome.ok) onAfterMutation()
+      })
     },
     [onClose, onAfterMutation],
   )
@@ -344,16 +353,16 @@ export function GitHistoryContextMenu({
   const handleDeleteTagLocal = useCallback(
     (tagName: string) => {
       onClose()
-      void (async () => {
-        try {
-          await deleteTag(tagName)
-          onAfterMutation()
-        } catch (err) {
-          useGitPanelStore.getState().setError(
-            err instanceof Error ? err.message : 'Failed to delete tag',
-          )
-        }
-      })()
+      const projectId = useProjectStore.getState().activeProjectId
+      if (!projectId) return
+      void runGitOperation({
+        projectId,
+        kind: 'tag-delete',
+        label: `Deleted tag ${tagName}`,
+        fn: () => deleteTag(tagName),
+      }).then((outcome) => {
+        if (outcome.ok) onAfterMutation()
+      })
     },
     [onClose, onAfterMutation],
   )
@@ -361,16 +370,16 @@ export function GitHistoryContextMenu({
   const handleDeleteTagRemote = useCallback(
     (tagName: string) => {
       onClose()
-      void (async () => {
-        try {
-          await deleteRemoteTag(tagName, '')
-          onAfterMutation()
-        } catch (err) {
-          useGitPanelStore.getState().setError(
-            err instanceof Error ? err.message : 'Failed to delete remote tag',
-          )
-        }
-      })()
+      const projectId = useProjectStore.getState().activeProjectId
+      if (!projectId) return
+      void runGitOperation({
+        projectId,
+        kind: 'tag-delete-remote',
+        label: `Deleted remote tag ${tagName}`,
+        fn: () => deleteRemoteTag(tagName, ''),
+      }).then((outcome) => {
+        if (outcome.ok) onAfterMutation()
+      })
     },
     [onClose, onAfterMutation],
   )
@@ -410,8 +419,6 @@ export function GitHistoryContextMenu({
       window.removeEventListener('scroll', onClose, true)
     }
   }, [position, onClose])
-
-  const branchLabel = currentBranch || 'HEAD'
 
   return (
     <>
