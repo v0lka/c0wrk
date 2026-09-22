@@ -8,6 +8,7 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useGitStatusEvents } from '@/hooks/useGitStatusEvents'
 import { getFileDiff } from '@/api/workspace'
 import { stageFile, unstageFile } from '@/api/git'
+import type { StageAction } from '@/lib/gitStatus'
 import { GitPanelToolbar } from './GitPanelToolbar'
 import { ChangesList } from './ChangesList'
 import { CommitSection } from './CommitSection'
@@ -43,15 +44,15 @@ export function GitPanel() {
 
   // ── Callbacks ──────────────────────────────────────────────────────────
 
-  /** Toggle staged/unstaged state of a file. */
-  const onToggleFile = useCallback(async (path: string) => {
-    const entry = useGitPanelStore.getState().entries.find(
-      (e) => e.path === path,
-    )
-    if (!entry) return
-
+  /**
+   * Toggle a file's stage state along a specific porcelain axis. The action is
+   * supplied by the row that fired it (`unstage` for an index row, `stage` for
+   * a worktree row) so no store lookup is required — and a file that is both
+   * staged and unstaged (`MM`) resolves correctly per row.
+   */
+  const onToggleFile = useCallback(async (path: string, action: StageAction) => {
     try {
-      if (entry.staged) {
+      if (action === 'unstage') {
         await unstageFile(path)
       } else {
         await stageFile(path)

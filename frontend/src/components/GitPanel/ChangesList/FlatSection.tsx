@@ -1,6 +1,7 @@
 import { Fragment, useMemo } from 'react'
 import { GitFileEntry } from '../GitFileEntry'
 import { groupEntries } from '@/lib/gitSortGroup'
+import type { StageAction, StageSide } from '@/lib/gitStatus'
 import type { GitPanelEntry, GroupBy } from '@/stores/gitPanelStore'
 
 // ───────────────────────────── Flat Section ──────────────────────────────────
@@ -8,10 +9,12 @@ import type { GitPanelEntry, GroupBy } from '@/stores/gitPanelStore'
 interface FlatSectionProps {
   /** Entries for this section — already sorted by the caller. */
   entries: GitPanelEntry[]
+  /** Porcelain axis this section's rows act on (index | worktree). */
+  side: StageSide
   /** Sub-grouping criterion applied within the section (D8). */
   groupBy: GroupBy
   workspaceRoot: string
-  onToggleFile: (path: string) => void
+  onToggleFile: (path: string, action: StageAction) => void
   onOpenDiff: (path: string) => void
 }
 
@@ -43,6 +46,7 @@ function SubGroupHeader({ label }: { label: string }) {
 
 export function FlatSection({
   entries,
+  side,
   groupBy,
   workspaceRoot,
   onToggleFile,
@@ -61,6 +65,7 @@ export function FlatSection({
           <GitFileEntry
             key={entry.path}
             entry={entry}
+            side={side}
             workspaceRoot={workspaceRoot}
             onToggle={onToggleFile}
             onOpenDiff={onOpenDiff}
@@ -82,6 +87,7 @@ export function FlatSection({
             <GitFileEntry
               key={entry.path}
               entry={entry}
+              side={side}
               workspaceRoot={workspaceRoot}
               onToggle={onToggleFile}
               onOpenDiff={onOpenDiff}

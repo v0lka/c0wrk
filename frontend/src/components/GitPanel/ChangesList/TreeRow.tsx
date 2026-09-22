@@ -1,5 +1,6 @@
 import { Folder, ChevronDown, ChevronRight } from 'lucide-react'
 import { GitFileEntry } from '../GitFileEntry'
+import type { StageAction, StageSide } from '@/lib/gitStatus'
 import type { TreeNode } from './types'
 
 // ─────────────────────────── Tree View Renderer ──────────────────────────────
@@ -7,16 +8,19 @@ import type { TreeNode } from './types'
 interface TreeRowProps {
   node: TreeNode
   depth: number
+  /** Porcelain axis this tree's rows act on (index | worktree). */
+  side: StageSide
   workspaceRoot: string
   expandedDirs: Set<string>
   onToggleExpandedDir: (dir: string) => void
-  onToggleFile: (path: string) => void
+  onToggleFile: (path: string, action: StageAction) => void
   onOpenDiff: (path: string) => void
 }
 
 export function TreeRow({
   node,
   depth,
+  side,
   workspaceRoot,
   expandedDirs,
   onToggleExpandedDir,
@@ -53,6 +57,7 @@ export function TreeRow({
               key={child.isDir ? child.fullPath : child.entry.path}
               node={child}
               depth={depth + 1}
+              side={side}
               workspaceRoot={workspaceRoot}
               expandedDirs={expandedDirs}
               onToggleExpandedDir={onToggleExpandedDir}
@@ -70,6 +75,7 @@ export function TreeRow({
     <div style={{ paddingLeft: `${indentPx}px` }}>
       <GitFileEntry
         entry={node.entry}
+        side={side}
         workspaceRoot={workspaceRoot}
         onToggle={onToggleFile}
         onOpenDiff={onOpenDiff}

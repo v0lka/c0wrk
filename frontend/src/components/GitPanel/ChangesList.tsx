@@ -7,12 +7,14 @@ import { Section } from './ChangesList/Section'
 import { SortGroupControls } from './ChangesList/SortGroupControls'
 import { TreeExpandControls } from './ChangesList/TreeExpandControls'
 import { ChangesToolbar } from './ChangesToolbar'
+import { classifyEntries } from '@/lib/gitStatus'
+import type { StageAction } from '@/lib/gitStatus'
 import type { SectionData } from './ChangesList/types'
 
 // ─────────────────────────────────── Types ───────────────────────────────────
 
 interface ChangesListProps {
-  onToggleFile: (path: string) => void
+  onToggleFile: (path: string, action: StageAction) => void
   onOpenDiff: (path: string) => void
 }
 
@@ -65,32 +67,37 @@ export function ChangesList({ onToggleFile, onOpenDiff }: ChangesListProps) {
     return s.projects.find((p) => p.id === activeProjectId)?.workspace_path ?? ''
   })
 
-  // Group entries into 3 structural sections and sort each section by the
-  // selected criterion. The structural split (Staged / Changes / Untracked)
-  // is always preserved — `sortBy` only reorders entries *within* each section.
+  // Split entries into the 3 structural sections along their porcelain axis
+  // (see `classifyEntries`) and sort each section by the selected criterion.
+  // The split is by-axis, not exclusive: a path modified on both axes (`MM`)
+  // appears in Staged Changes AND Changes. The structural split is always
+  // preserved — `sortBy` only reorders entries *within* each section.
   //
-  // Untracked files are identified by the precise porcelain field
-  // `worktreeStatus === '?'` (the backend sets WorkTreeStatus "?" and
-  // Status "A" for untracked files — see core/workspace/git.go). The
-  // legacy `status === 'U'` check was wrong: "U" means *unmerged* (merge
-  // conflict), not untracked. All conflict combos carry a non-empty index
-  // status (hence `staged: true`), so the `!e.staged` guard routes them to
-  // "Staged Changes" and out of "Untracked Files".
+  // Each section carries the axis its rows act on (`side`): Staged Changes →
+  // 'index' (checkbox checked, "Unstage"), Changes / Untracked Files →
+  // 'worktree' (checkbox unchecked, "Stage").
   const sections = useMemo<SectionData[]>(() => {
-    const staged = sortEntries(entries.filter((e) => e.staged), sortBy)
-    const unstaged = sortEntries(
-      entries.filter((e) => !e.staged && e.worktreeStatus !== '?'),
-      sortBy,
-    )
-    const untracked = sortEntries(
-      entries.filter((e) => !e.staged && e.worktreeStatus === '?'),
-      sortBy,
-    )
+    const { staged, unstaged, untracked } = classifyEntries(entries)
 
     return [
-      { key: 'staged', title: 'Staged Changes', entries: staged },
-      { key: 'unstaged', title: 'Changes', entries: unstaged },
-      { key: 'untracked', title: 'Untracked Files', entries: untracked },
+      {
+        key: 'staged',
+        title: 'Staged Changes',
+        side: 'index',
+        entries: sortEntries(staged, sortBy),
+      },
+      {
+        key: 'unstaged',
+        title: 'Changes',
+        side: 'worktree',
+        entries: sortEntries(unstaged, sortBy),
+      },
+      {
+        key: 'untracked',
+        title: 'Untracked Files',
+        side: 'worktree',
+        entries: sortEntries(untracked, sortBy),
+      },
     ]
   }, [entries, sortBy])
 

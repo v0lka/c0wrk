@@ -3,6 +3,7 @@ import { SectionHeader } from '../ChangesList'
 import { FlatSection } from './FlatSection'
 import { TreeSection } from './TreeSection'
 import type { SortBy, GroupBy } from '@/stores/gitPanelStore'
+import type { StageAction } from '@/lib/gitStatus'
 import type { SectionData } from './types'
 
 // ────────────────────────── Collapsible Section ──────────────────────────────
@@ -18,7 +19,7 @@ interface SectionProps {
   workspaceRoot: string
   expandedDirs: Set<string>
   onToggleExpandedDir: (dir: string) => void
-  onToggleFile: (path: string) => void
+  onToggleFile: (path: string, action: StageAction) => void
   onOpenDiff: (path: string) => void
 }
 
@@ -51,6 +52,7 @@ export function Section({
           {viewMode === 'flat' ? (
             <FlatSection
               entries={section.entries}
+              side={section.side}
               groupBy={groupBy}
               workspaceRoot={workspaceRoot}
               onToggleFile={onToggleFile}
@@ -59,6 +61,7 @@ export function Section({
           ) : (
             <TreeSection
               entries={section.entries}
+              side={section.side}
               sortBy={sortBy}
               workspaceRoot={workspaceRoot}
               expandedDirs={expandedDirs}

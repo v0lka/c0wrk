@@ -14,10 +14,17 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import type { StageSide } from '@/lib/gitStatus'
 import type { GitPanelEntry } from '@/stores/gitPanelStore'
 
 interface GitFileContextMenuProps {
   entry: GitPanelEntry
+  /**
+   * The porcelain axis of the row that opened this menu: 'index' → the action
+   * is "Unstage"; 'worktree' → "Stage". Chosen by the row, not the entry's
+   * coarse `staged` flag, so an `MM` file's two rows offer opposite actions.
+   */
+  side: StageSide
   /** Workspace root — when provided, stripped to form the .gitignore pattern. */
   workspaceRoot?: string
   /**
@@ -41,13 +48,14 @@ function toRelativePath(path: string, workspaceRoot?: string): string {
 }
 
 /**
- * Contextual menu for a git file entry: Stage/Unstage (first item, depends on
- * the entry's staged state), Discard Changes (with confirm), Add to .gitignore,
- * and Open in Viewer. Self-contained — calls the API and stores directly, so
- * no callback prop threading is required.
+ * Contextual menu for a git file entry: Stage/Unstage (first item, the label,
+ * icon and action chosen by the row's `side` axis), Discard Changes (with
+ * confirm), Add to .gitignore, and Open in Viewer. Self-contained — calls the
+ * API and stores directly, so no callback prop threading is required.
  */
 export function GitFileContextMenu({
   entry,
+  side,
   workspaceRoot,
   position,
   onClose,
@@ -65,7 +73,7 @@ export function GitFileContextMenu({
   const handleToggleStage = useCallback(async () => {
     setIsStaging(true)
     try {
-      if (entry.staged) {
+      if (side === 'index') {
         await unstageFile(entry.path)
       } else {
         await stageFile(entry.path)
@@ -80,7 +88,7 @@ export function GitFileContextMenu({
       // store-level error banner.
       onClose()
     }
-  }, [entry.path, entry.staged, onClose])
+  }, [entry.path, side, onClose])
 
   // --- Discard (with confirmation) ---
   const handleConfirmDiscard = useCallback(async () => {
@@ -185,12 +193,12 @@ export function GitFileContextMenu({
           >
             {isStaging ? (
               <Loader2 className="size-4 animate-spin" />
-            ) : entry.staged ? (
+            ) : side === 'index' ? (
               <Minus className="size-4" />
             ) : (
               <Plus className="size-4" />
             )}
-            {entry.staged ? 'Unstage' : 'Stage'}
+            {side === 'index' ? 'Unstage' : 'Stage'}
           </button>
           <button
             role="menuitem"

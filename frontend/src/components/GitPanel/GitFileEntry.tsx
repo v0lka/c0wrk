@@ -2,27 +2,27 @@ import { useCallback, useState } from 'react'
 import { File, Check, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { GitFileContextMenu } from './GitFileContextMenu'
+import { isMergeConflict, isUntracked, rowStatusChar } from '@/lib/gitStatus'
+import type { StageAction, StageSide } from '@/lib/gitStatus'
 import type { GitPanelEntry } from '@/stores/gitPanelStore'
 
 // --- Props ---
 
 interface GitFileEntryProps {
   entry: GitPanelEntry
+  /**
+   * The porcelain axis this row represents: 'index' for a Staged Changes row,
+   * 'worktree' for a Changes / Untracked Files row. Determines the checkbox
+   * state, the toggle action, and the status badge character.
+   */
+  side: StageSide
   /** Optional workspace root path — when provided, strips it for display rendering */
   workspaceRoot?: string
-  onToggle: (path: string) => void
+  onToggle: (path: string, action: StageAction) => void
   onOpenDiff: (path: string) => void
 }
 
 // --- Helpers ---
-
-/** Two-char porcelain status combinations that indicate an unresolved merge conflict. */
-const CONFLICT_COMBOS = new Set(['UU', 'AA', 'DD', 'AU', 'UD', 'UA', 'DU'])
-
-/** True when the index/worktree status pair marks an unresolved merge conflict. */
-function isMergeConflict(indexStatus: string, worktreeStatus: string): boolean {
-  return CONFLICT_COMBOS.has(`${indexStatus}${worktreeStatus}`)
-}
 
 /** Map git status codes to One Dark theme Tailwind text colors */
 function statusColorClass(status: string): string {
@@ -58,12 +58,18 @@ function splitPathParts(filePath: string): { dir: string; name: string } {
 
 // --- Component ---
 
-export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: GitFileEntryProps) {
+export function GitFileEntry({ entry, side, workspaceRoot, onToggle, onOpenDiff }: GitFileEntryProps) {
   const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null)
 
+  // The row's batch action is fixed by its axis: an index row unstages, a
+  // worktree row stages. Derived from `side` (never the entry's coarse
+  // `staged` flag) so the same file can appear staged AND unstaged as two
+  // independent rows.
+  const toggleAction: StageAction = side === 'index' ? 'unstage' : 'stage'
+
   const handleToggle = useCallback(() => {
-    onToggle(entry.path)
-  }, [entry.path, onToggle])
+    onToggle(entry.path, toggleAction)
+  }, [entry.path, toggleAction, onToggle])
 
   const handleDoubleClick = useCallback(() => {
     onOpenDiff(entry.path)
@@ -85,8 +91,11 @@ export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: Git
       : entry.path
 
   const { dir, name } = splitPathParts(displayPath)
-  const statusCls = statusColorClass(entry.status)
-  const conflict = isMergeConflict(entry.indexStatus, entry.worktreeStatus)
+  // Untracked paths carry no per-axis change code (worktreeStatus '?'); git
+  // reports them as additions, so the badge shows 'A' rather than '?'.
+  const badge = isUntracked(entry) ? 'A' : rowStatusChar(entry, side)
+  const statusCls = statusColorClass(badge)
+  const conflict = isMergeConflict(entry)
 
   return (
     <>
@@ -102,11 +111,11 @@ export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: Git
       <label className="relative flex items-center justify-center shrink-0 size-3.5 rounded border border-muted-foreground/40 cursor-pointer transition-colors hover:border-muted-foreground/60 has-checked:border-info has-checked:bg-info">
         <input
           type="checkbox"
-          checked={entry.staged}
+          checked={side === 'index'}
           onChange={handleToggle}
           className="sr-only"
         />
-        {entry.staged && (
+        {side === 'index' && (
           <Check className="size-2.5 text-background pointer-events-none" strokeWidth={3} />
         )}
       </label>
@@ -154,11 +163,12 @@ export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: Git
           'bg-muted/60',
         )}
       >
-        {entry.status}
+        {badge}
       </span>
     </div>
     <GitFileContextMenu
       entry={entry}
+      side={side}
       workspaceRoot={workspaceRoot}
       position={contextMenuPos}
       onClose={closeContextMenu}
