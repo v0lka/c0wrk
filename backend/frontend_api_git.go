@@ -840,7 +840,9 @@ func (f *FrontendAPI) currentBranchName(repoPath string) (string, error) {
 // published: it is pushed to "origin" with -u so the upstream is set in
 // the same step (git push -u origin <name>). The remote name is always
 // read from git config branch.<name>.remote, falling back to "origin"
-// when unset.
+// when unset. The argv is assembled by pushArgs, which is shared with the
+// bare-push path in runRemoteOp so both entry points publish an
+// unpublished branch identically.
 //
 // Like Pull/Push/Fetch, this is a remote operation: it is serialized via
 // remoteOpMu and bounded by remoteGitCmdTimeout, and it emits
@@ -859,12 +861,7 @@ func (f *FrontendAPI) PushBranch(name string) (string, error) {
 		return "", err
 	}
 
-	remote := f.branchRemote(repoPath, branchName)
-	if remote == "" {
-		// Not published yet: publish and set the upstream against origin.
-		return f.runSerializedRemoteOp(repoPath, "push", "-u", "origin", branchName)
-	}
-	return f.runSerializedRemoteOp(repoPath, "push", remote, branchName)
+	return f.runSerializedRemoteOp(repoPath, f.pushArgs(repoPath, branchName, nil)...)
 }
 
 // branchRemote returns the upstream remote name configured for the given
@@ -877,6 +874,25 @@ func (f *FrontendAPI) branchRemote(repoPath, branchName string) string {
 		return ""
 	}
 	return strings.TrimSpace(out)
+}
+
+// pushArgs assembles the git argv that pushes branchName: when the branch
+// already has a configured upstream it is pushed to that remote, otherwise
+// it has never been published and is pushed to "origin" with -u so the
+// upstream is set in the same step. flags are optional push options
+// (--force, --force-with-lease, --no-verify) placed before the positional
+// arguments. Shared by PushBranch and the bare-push path in runRemoteOp,
+// which must both turn a never-published branch into a real remote branch
+// instead of failing with "no upstream branch". callers validate flags and
+// resolve the branch name; the returned argv is passed verbatim to
+// runSerializedRemoteOp.
+func (f *FrontendAPI) pushArgs(repoPath, branchName string, flags []string) []string {
+	args := []string{"push"}
+	args = append(args, flags...)
+	if remote := f.branchRemote(repoPath, branchName); remote != "" {
+		return append(args, remote, branchName)
+	}
+	return append(args, "-u", "origin", branchName)
 }
 
 // CheckoutRemoteBranch creates a local branch from a remote-tracking branch
@@ -1186,14 +1202,17 @@ func (f *FrontendAPI) Pull(remote string, flags []string) (string, error) {
 }
 
 // Push sends local commits to the named remote (git push <remote>
-// [flags...]). When remote is empty, git uses the configured upstream.
-// flags carries optional push options (--force, --force-with-lease,
-// --no-verify); each must be in the allowedRemoteFlags allowlist. The
-// combined stdout+stderr output is returned for display in the UI.
-// Parallel remote operations are serialized via remoteOpMu. Emits
-// git:status_changed on completion. Returns an error when no project is
-// active, the project is No Project, a flag is not allowed, or the git
-// command fails.
+// [flags...]). When remote is empty, the current branch is pushed to its
+// configured upstream, or — when it has never been published — published
+// to origin with -u so the remote branch is created and the upstream set
+// in the same step (the Git panel's push button relies on this instead of
+// failing with "no upstream branch"). flags carries optional push options
+// (--force, --force-with-lease, --no-verify); each must be in the
+// allowedRemoteFlags allowlist. The combined stdout+stderr output is
+// returned for display in the UI. Parallel remote operations are
+// serialized via remoteOpMu. Emits git:status_changed on completion.
+// Returns an error when no project is active, the project is No Project,
+// a flag is not allowed, or the git command fails.
 func (f *FrontendAPI) Push(remote string, flags []string) (string, error) {
 	return f.runRemoteOp("push", remote, flags)
 }
@@ -1240,8 +1259,9 @@ func (f *FrontendAPI) runSerializedRemoteOp(repoPath string, args ...string) (st
 // runRemoteOp is the shared body of Pull, Push and Fetch. It validates
 // flags against allowedRemoteFlags, assembles the git argv (op, optional
 // remote, flags) and delegates to runSerializedRemoteOp for the
-// serialized network call. It is intentionally unexported so it is not
-// exposed as a Wails RPC method.
+// serialized network call. For a push with no remote it publishes the
+// current branch instead of running a bare push (see below). It is
+// intentionally unexported so it is not exposed as a Wails RPC method.
 func (f *FrontendAPI) runRemoteOp(op, remote string, flags []string) (string, error) {
 	if err := validateRemoteFlags(op, flags); err != nil {
 		return "", err
@@ -1250,6 +1270,19 @@ func (f *FrontendAPI) runRemoteOp(op, remote string, flags []string) (string, er
 	repoPath, err := f.resolveGitRepoRoot()
 	if err != nil {
 		return "", err
+	}
+
+	// A bare `git push` on a branch with no configured upstream aborts with
+	// "fatal: The current branch <name> has no upstream branch." The Git
+	// panel's push button passes an empty remote, so push the current branch
+	// explicitly instead: pushArgs sends it to its upstream when one exists,
+	// or creates the remote branch and sets the upstream (-u origin) when it
+	// does not. A detached HEAD (or an unresolvable branch name) falls
+	// through to the bare push, which is what git does without a remote.
+	if op == "push" && strings.TrimSpace(remote) == "" {
+		if branchName, berr := f.currentBranchName(repoPath); berr == nil && branchName != "" && branchName != "HEAD" {
+			return f.runSerializedRemoteOp(repoPath, f.pushArgs(repoPath, branchName, flags)...)
+		}
 	}
 
 	args := []string{op}

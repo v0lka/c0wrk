@@ -200,7 +200,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `DeleteRemoteTag`      | name, remote            | (string, error)               | Delete a tag on the remote (default origin) |
 | `GenerateCommitMessage`| —                       | (string, error)               | AI-generate a commit message from the staged/working diff |
 | `Pull`                 | remote, flags []string  | (string, error)               | Pull from remote (flags: --ff-only, --rebase, --rebase --autostash) |
-| `Push`                 | remote, flags []string  | (string, error)               | Push to remote (flags: --force, --force-with-lease, --no-verify) |
+| `Push`                 | remote, flags []string  | (string, error)               | Push to remote (flags: --force, --force-with-lease, --no-verify). An empty `remote` pushes the current branch to its configured upstream, or publishes it (git push -u origin) when it has none yet |
 | `Fetch`                | remote, flags []string  | (string, error)               | Fetch from remote (flags: --tags, --prune) |
 | `GetIsGitRepo`         | —                       | (bool, error)                 | Whether the active project's workspace resolves to a git repository (30s-cached local check; feeds the `isGitRepo`/`gitRepoProjectId` store pairing) |
 | `GetGitHistory`        | limit, skip             | (*GitHistoryPage, error)      | One page of the unified commit log + DAG graph topology (each `GitHistoryCommit` carries both log fields and parents/refs; replaces the former separate `GetCommitLog`/`GetGitGraph` pair). Paginated via `git log -n <limit> --skip <skip>` (limit default 300, capped at 1000); returns `GitHistoryPage{Commits, NextSkip, HasMore}` and the frontend accumulates pages |

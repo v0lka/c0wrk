@@ -252,7 +252,9 @@ export async function getIsGitRepo(): Promise<boolean> {
 }
 
 // --- Remote operations (Phase 5) ---
-// An empty `remote` argument lets git use the configured upstream.
+// An empty `remote` argument lets git use the configured upstream. For
+// push this means the current branch goes to its upstream, or — when it
+// has no upstream yet — is published (push -u origin) and tracked.
 
 export async function pull(remote: string, flags: string[] = []): Promise<string> {
   try {

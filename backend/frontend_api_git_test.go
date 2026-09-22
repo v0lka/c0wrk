@@ -2349,6 +2349,88 @@ func TestPush_LocalRemote(t *testing.T) {
 	}
 }
 
+// TestPush_EmptyRemote_UntrackedBranch_PublishesAndSetsUpstream pins the
+// issue-#59 fix: pushing a never-published branch through the Git panel's
+// path (Push with an empty remote) must create the remote branch and set
+// its upstream instead of failing with "no upstream branch".
+func TestPush_EmptyRemote_UntrackedBranch_PublishesAndSetsUpstream(t *testing.T) {
+	remoteDir := t.TempDir()
+	gitOut(t, remoteDir, "init", "--bare")
+
+	localDir := t.TempDir()
+	gitInit(t, localDir)
+	commitFile(t, localDir, "a.txt", "a\n")
+	gitOut(t, localDir, "remote", "add", "origin", remoteDir)
+
+	// A branch that has never been pushed: no upstream, no remote ref.
+	gitOut(t, localDir, "checkout", "-b", "feature/x")
+	commitFile(t, localDir, "b.txt", "b\n")
+
+	f := &FrontendAPI{activeProjectPath: localDir}
+	var emitted string
+	f.emitEvent = func(name string, args ...any) {
+		if name == EventGitStatusChanged && len(args) >= 1 {
+			emitted, _ = args[0].(string)
+		}
+	}
+
+	// The Git panel's push button passes an empty remote.
+	if _, err := f.Push("", nil); err != nil {
+		t.Fatalf("Push (empty remote): %v", err)
+	}
+	if emitted != localDir {
+		t.Errorf("event payload: got %q, want %q", emitted, localDir)
+	}
+
+	// The remote now has the branch pointing at the local HEAD.
+	remoteHead := gitOut(t, remoteDir, "rev-parse", "refs/heads/feature/x")
+	localHead := gitOut(t, localDir, "rev-parse", "HEAD")
+	if remoteHead != localHead {
+		t.Errorf("after push: remote head %q != local head %q", remoteHead, localHead)
+	}
+
+	// The -u publish must have set the upstream.
+	if got := gitOut(t, localDir, "config", "--get", "branch.feature/x.remote"); got != "origin" {
+		t.Errorf("branch.feature/x.remote = %q, want origin", got)
+	}
+	if got := gitOut(t, localDir, "rev-parse", "--abbrev-ref", "feature/x@{upstream}"); got != "origin/feature/x" {
+		t.Errorf("upstream = %q, want origin/feature/x", got)
+	}
+}
+
+// TestPush_EmptyRemote_TrackedBranch_UsesConfiguredRemote verifies the
+// other half of the issue-#59 fix: when the branch already has an
+// upstream, an empty-remote Push pushes to that configured remote (here a
+// remote deliberately not named "origin") rather than hardcoding origin.
+func TestPush_EmptyRemote_TrackedBranch_UsesConfiguredRemote(t *testing.T) {
+	remoteDir := t.TempDir()
+	gitOut(t, remoteDir, "init", "--bare")
+
+	localDir := t.TempDir()
+	gitInit(t, localDir)
+	commitFile(t, localDir, "a.txt", "a\n")
+	// A remote that is NOT named "origin" forces the push path to honour
+	// branch.<name>.remote instead of hardcoding "origin".
+	gitOut(t, localDir, "remote", "add", "upstream", remoteDir)
+	branch := gitDefaultBranch(t, localDir)
+	gitOut(t, localDir, "push", "-u", "upstream", branch)
+
+	f := &FrontendAPI{activeProjectPath: localDir}
+
+	// New local commit to push via the RPC.
+	commitFile(t, localDir, "b.txt", "b\n")
+	if _, err := f.Push("", nil); err != nil {
+		t.Fatalf("Push (empty remote, tracked): %v", err)
+	}
+
+	// The configured (non-origin) remote now points at the new local commit.
+	remoteHead := gitOut(t, remoteDir, "rev-parse", "refs/heads/"+branch)
+	localHead := gitOut(t, localDir, "rev-parse", "HEAD")
+	if remoteHead != localHead {
+		t.Errorf("after push: remote head %q != local head %q", remoteHead, localHead)
+	}
+}
+
 func TestFetchAndPull_LocalRemote(t *testing.T) {
 	remoteDir := t.TempDir()
 	gitOut(t, remoteDir, "init", "--bare")

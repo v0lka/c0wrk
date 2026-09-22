@@ -46,8 +46,10 @@ const OP_FLAGS: Record<RemoteOp, { label: string; flags: string[] }[]> = {
  * operation, and the chevron opens a dropdown of additional flag options
  * (e.g. pull --rebase, push --force-with-lease). Parallel remote ops are
  * blocked via the shared `remoteOperationInProgress` store flag. An empty
- * `remote` argument lets git use the configured upstream. The backend
- * emits `git:status_changed` after each op, so `useGitStatusEvents`
+ * `remote` argument lets git use the configured upstream; for push this
+ * means the current branch is sent to its upstream, or — when it has never
+ * been published — created on the remote and tracked (push -u origin). The
+ * backend emits `git:status_changed` after each op, so `useGitStatusEvents`
  * auto-refreshes.
  */
 export function GitPanelFooter() {
@@ -69,7 +71,8 @@ export function GitPanelFooter() {
       setError(null)
       setRemoteOperationInProgress(true)
       try {
-        // Empty remote → backend uses the configured upstream.
+        // Empty remote → backend resolves it; push publishes an
+        // unpublished branch (push -u origin) instead of failing.
         const result =
           op === 'pull' ? await pull('', flags) :
           op === 'push' ? await push('', flags) :
