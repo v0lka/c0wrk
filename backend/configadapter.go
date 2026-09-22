@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
@@ -137,12 +138,14 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 	mcpServers := make(map[string]core.BuilderMCPServer, len(cfg.MCP.Servers))
 	for name, srv := range cfg.MCP.Servers {
 		mcpServers[name] = core.BuilderMCPServer{
-			Transport: srv.Transport,
-			Command:   srv.Command,
-			Args:      srv.Args,
-			Env:       srv.Env,
-			URL:       srv.URL,
-			Headers:   srv.Headers,
+			Transport:   srv.Transport,
+			Command:     srv.Command,
+			Args:        srv.Args,
+			Env:         srv.Env,
+			URL:         srv.URL,
+			Headers:     srv.Headers,
+			Timeout:     parseMCPDuration(srv.Timeout, "timeout", name, log),
+			CallTimeout: parseMCPDuration(srv.CallTimeout, "call_timeout", name, log),
 		}
 	}
 
@@ -345,6 +348,28 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 		},
 		ExpandEnvVars: config.ExpandEnvVars,
 	}
+}
+
+// parseMCPDuration parses an MCP server duration string (timeout /
+// call_timeout) into a time.Duration for the sp4rk ServerEntry. Empty resolves
+// to 0 (the sp4rk default). An unparseable or non-positive value fails soft:
+// it resolves to 0 (default) and is logged at WARN when a logger is available.
+// The UI save path rejects such values up front (validateMCPServerConfig); this
+// fail-soft branch protects the load path and programmatic configs that bypass
+// that validation — a bad duration must never prevent a server from starting.
+func parseMCPDuration(raw, field, server string, log *slog.Logger) time.Duration {
+	if raw == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		if log != nil {
+			log.Warn("invalid MCP server duration; falling back to default",
+				"server", server, "field", field, "value", raw)
+		}
+		return 0
+	}
+	return d
 }
 
 // convertTruncationMap converts config-level ToolTruncationConfig to builder-level.

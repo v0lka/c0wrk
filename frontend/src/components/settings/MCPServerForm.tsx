@@ -22,6 +22,8 @@ interface ServerFormData {
   env: Record<string, string>
   url: string
   headers: Record<string, string>
+  timeout: string
+  callTimeout: string
 }
 
 interface KeyValueEntry { id: string; key: string; value: string }
@@ -31,7 +33,7 @@ function makeEntry(key = '', value = ''): KeyValueEntry {
 }
 
 const emptyForm: ServerFormData = {
-  name: '', transport: 'stdio', command: '', args: '', env: {}, url: '', headers: {},
+  name: '', transport: 'stdio', command: '', args: '', env: {}, url: '', headers: {}, timeout: '', callTimeout: '',
 }
 
 interface MCPServerFormProps {
@@ -49,7 +51,7 @@ export function MCPServerForm({ open, onOpenChange, editingName, serverConfigs, 
     if (editingName && serverConfigs[editingName]) {
       const cfg = serverConfigs[editingName]
       const isStdio = editServer?.transport === 'stdio'
-      return { name: editingName, transport: isStdio ? 'stdio' : 'http', command: cfg.command || '', args: cfg.args?.join(', ') || '', env: cfg.env || {}, url: cfg.url || '', headers: cfg.headers || {} }
+      return { name: editingName, transport: isStdio ? 'stdio' : 'http', command: cfg.command || '', args: cfg.args?.join(', ') || '', env: cfg.env || {}, url: cfg.url || '', headers: cfg.headers || {}, timeout: cfg.timeout || '', callTimeout: cfg.call_timeout || '' }
     }
     return emptyForm
   })
@@ -84,6 +86,8 @@ export function MCPServerForm({ open, onOpenChange, editingName, serverConfigs, 
       env: isStdio ? env : {},
       url: isStdio ? '' : formData.url,
       headers: isStdio ? {} : headers,
+      timeout: formData.timeout.trim(),
+      call_timeout: formData.callTimeout.trim(),
     }
 
     const newServers = { ...serverConfigs }
@@ -135,6 +139,16 @@ export function MCPServerForm({ open, onOpenChange, editingName, serverConfigs, 
               <KeyValueList label="Headers" entries={headerEntries} setEntries={setHeaderEntries} keyPlaceholder="Authorization" valuePlaceholder="Bearer ${API_KEY}" addLabel="Add Header" />
             </>
           )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Connect Timeout">
+              <Input placeholder="60s" value={formData.timeout} onChange={(e) => setFormData({ ...formData, timeout: e.target.value })} className="h-9 font-mono text-sm" />
+            </Field>
+            <Field label="Call Timeout">
+              <Input placeholder="60s" value={formData.callTimeout} onChange={(e) => setFormData({ ...formData, callTimeout: e.target.value })} className="h-9 font-mono text-sm" />
+            </Field>
+          </div>
+          <p className="text-xs text-muted-foreground">Optional durations (e.g. 30s, 2m). Connect bounds the handshake; Call bounds a single tool call. Empty uses defaults.</p>
         </div>
 
         <DialogFooter>

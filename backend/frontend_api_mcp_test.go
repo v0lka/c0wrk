@@ -396,6 +396,14 @@ func TestValidateMCPServerConfig(t *testing.T) {
 		{name: "http no url", cfg: config.MCPServerConfig{Transport: "http"}, wantErr: true},
 		{name: "unknown transport", cfg: config.MCPServerConfig{Transport: "grpc"}, wantErr: true},
 		{name: "default transport needs command", cfg: config.MCPServerConfig{}, wantErr: true},
+		{name: "empty timeouts ok", cfg: config.MCPServerConfig{Command: "cmd", Timeout: "", CallTimeout: ""}, wantErr: false},
+		{name: "valid timeout", cfg: config.MCPServerConfig{Command: "cmd", Timeout: "30s"}, wantErr: false},
+		{name: "valid call_timeout", cfg: config.MCPServerConfig{Command: "cmd", CallTimeout: "2m"}, wantErr: false},
+		{name: "invalid timeout", cfg: config.MCPServerConfig{Command: "cmd", Timeout: "abc"}, wantErr: true},
+		{name: "zero timeout", cfg: config.MCPServerConfig{Command: "cmd", Timeout: "0s"}, wantErr: true},
+		{name: "negative timeout", cfg: config.MCPServerConfig{Command: "cmd", Timeout: "-5s"}, wantErr: true},
+		{name: "invalid call_timeout", cfg: config.MCPServerConfig{Command: "cmd", CallTimeout: "abc"}, wantErr: true},
+		{name: "zero call_timeout", cfg: config.MCPServerConfig{Command: "cmd", CallTimeout: "0s"}, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

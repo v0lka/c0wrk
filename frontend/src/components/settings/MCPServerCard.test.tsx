@@ -67,6 +67,20 @@ describe('MCPServerCard', () => {
     teardown()
   })
 
+  it('renders a distinct unhealthy indicator for a reachable-but-degraded server', () => {
+    setup({ name: 'flaky', transport: 'http', connected: true, unhealthy: true, starting: false, tool_count: 1, tools: [] })
+    expect(container.textContent).toContain('flaky')
+    // A distinct warning label (not the plain green connected state).
+    expect(container.textContent).toContain('Unhealthy')
+    teardown()
+  })
+
+  it('renders a healthy connected server without the unhealthy indicator', () => {
+    setup({ name: 'context7', transport: 'http', connected: true, unhealthy: false, starting: false, tool_count: 2, tools: [] })
+    expect(container.textContent).not.toContain('Unhealthy')
+    teardown()
+  })
+
   it('renders a destructive state with the error message', () => {
     setup({ name: 'broken', transport: 'http', connected: false, starting: false, tool_count: 0, tools: [], error: 'connection refused' }, true)
     expect(container.textContent).toContain('broken')

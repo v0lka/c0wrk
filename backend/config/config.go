@@ -581,6 +581,20 @@ type MCPServerConfig struct {
 	// http fields (new)
 	URL     string            `yaml:"url,omitempty" json:"url,omitempty"`
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// Timeout bounds this server's initialization handshake (initialize +
+	// tools/list), as a Go duration string (e.g. "30s"). Empty is allowed and
+	// selects the mcp package default (60s). When set it must parse and be
+	// positive; invalid values are rejected on the UI save path
+	// (validateMCPServerConfig) and fail soft to the default on the load path.
+	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+
+	// CallTimeout bounds a single tools/call invocation against this server,
+	// as a Go duration string (e.g. "2m"). Empty is allowed: the call inherits
+	// Timeout (which itself defaults when unset). When set it must parse and
+	// be positive; invalid values are rejected on the UI save path and fail
+	// soft to the default on the load path.
+	CallTimeout string `yaml:"call_timeout,omitempty" json:"call_timeout,omitempty"`
 }
 
 // RouterConfig holds router settings.

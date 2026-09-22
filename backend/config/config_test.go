@@ -1219,6 +1219,79 @@ func TestMCPServerConfig_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestMCPServerConfig_TimeoutRoundTrip verifies that the per-server timeout and
+// call_timeout duration strings survive both YAML and JSON round-trips, and are
+// omitted entirely when unset (so an existing config that predates them
+// serializes unchanged).
+func TestMCPServerConfig_TimeoutRoundTrip(t *testing.T) {
+	original := MCPServerConfig{
+		Command:     "/usr/bin/mcp-server",
+		Timeout:     "30s",
+		CallTimeout: "2m",
+	}
+
+	// YAML round-trip.
+	yamlData, err := yaml.Marshal(&original)
+	if err != nil {
+		t.Fatalf("yaml.Marshal() failed: %v", err)
+	}
+	var fromYAML MCPServerConfig
+	if err := yaml.Unmarshal(yamlData, &fromYAML); err != nil {
+		t.Fatalf("yaml.Unmarshal() failed: %v", err)
+	}
+	if fromYAML.Timeout != original.Timeout {
+		t.Errorf("yaml Timeout = %q, want %q", fromYAML.Timeout, original.Timeout)
+	}
+	if fromYAML.CallTimeout != original.CallTimeout {
+		t.Errorf("yaml CallTimeout = %q, want %q", fromYAML.CallTimeout, original.CallTimeout)
+	}
+
+	// JSON round-trip with the lowercase keys the frontend reads.
+	jsonData, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal() failed: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(jsonData, &got); err != nil {
+		t.Fatalf("json.Unmarshal() failed: %v", err)
+	}
+	for _, key := range []string{"timeout", "call_timeout"} {
+		if _, ok := got[key]; !ok {
+			t.Errorf("JSON output missing lowercase key %q (got %s)", key, jsonData)
+		}
+	}
+	for _, key := range []string{"Timeout", "CallTimeout"} {
+		if _, ok := got[key]; ok {
+			t.Errorf("JSON output leaked capitalized key %q (got %s)", key, jsonData)
+		}
+	}
+	var fromJSON MCPServerConfig
+	if err := json.Unmarshal(jsonData, &fromJSON); err != nil {
+		t.Fatalf("json.Unmarshal() round-trip failed: %v", err)
+	}
+	if fromJSON.Timeout != original.Timeout || fromJSON.CallTimeout != original.CallTimeout {
+		t.Errorf("json round-trip mismatch: got %+v, want %+v", fromJSON, original)
+	}
+
+	// Unset durations must be omitted (empty string + omitempty) so a config
+	// that does not set them serializes byte-identically to before.
+	empty := MCPServerConfig{Command: "node"}
+	emptyYAML, err := yaml.Marshal(&empty)
+	if err != nil {
+		t.Fatalf("yaml.Marshal() failed: %v", err)
+	}
+	if strings.Contains(string(emptyYAML), "timeout") {
+		t.Errorf("empty durations should be omitted from YAML, got %q", emptyYAML)
+	}
+	emptyJSON, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("json.Marshal() failed: %v", err)
+	}
+	if strings.Contains(string(emptyJSON), "timeout") {
+		t.Errorf("empty durations should be omitted from JSON, got %q", emptyJSON)
+	}
+}
+
 // TestCreateDefault_CreatesFileWithDefaults tests that CreateDefault creates a YAML file
 // with all default values applied.
 func TestCreateDefault_CreatesFileWithDefaults(t *testing.T) {

@@ -278,5 +278,29 @@ func validateMCPServerConfig(name string, cfg config.MCPServerConfig) error {
 		return fmt.Errorf("server %q: unsupported transport: %q", name, transport)
 	}
 
+	if err := validateMCPTimeout(name, "timeout", cfg.Timeout); err != nil {
+		return err
+	}
+	if err := validateMCPTimeout(name, "call_timeout", cfg.CallTimeout); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateMCPTimeout rejects a non-empty timeout / call_timeout that does not
+// parse as a Go duration or is non-positive. Empty is allowed — the server
+// falls back to the mcp package default (and call_timeout to timeout).
+func validateMCPTimeout(name, field, raw string) error {
+	if raw == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return fmt.Errorf("server %q: invalid %s %q (expected a Go duration such as \"30s\")", name, field, raw)
+	}
+	if d <= 0 {
+		return fmt.Errorf("server %q: %s must be positive, got %q", name, field, raw)
+	}
 	return nil
 }

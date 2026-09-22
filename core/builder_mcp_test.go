@@ -14,6 +14,36 @@ import (
 	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
+// TestConfigToGatewayConfig_MCPTimeouts verifies the per-server timeout /
+// call_timeout durations are copied from BuilderMCPServer into the sp4rk
+// mcp.ServerEntry the gateway consumes.
+func TestConfigToGatewayConfig_MCPTimeouts(t *testing.T) {
+	cfg := &BuilderConfig{
+		MCP: BuilderMCPConfig{
+			Servers: map[string]BuilderMCPServer{
+				"srv": {
+					Transport:   "http",
+					URL:         "https://example.com/mcp",
+					Timeout:     30 * time.Second,
+					CallTimeout: 2 * time.Minute,
+				},
+			},
+		},
+	}
+
+	gw := configToGatewayConfig(cfg)
+	entry, ok := gw.Servers["srv"]
+	if !ok {
+		t.Fatal(`server "srv" missing from gateway config`)
+	}
+	if entry.Timeout != 30*time.Second {
+		t.Errorf("ServerEntry.Timeout = %v, want 30s", entry.Timeout)
+	}
+	if entry.CallTimeout != 2*time.Minute {
+		t.Errorf("ServerEntry.CallTimeout = %v, want 2m", entry.CallTimeout)
+	}
+}
+
 // newFailingGateway returns a non-nil *mcp.Gateway backed by a stdio server
 // whose command does not exist. StartGateway returns the gateway even when the
 // underlying server fails to connect, so the returned gateway is usable for

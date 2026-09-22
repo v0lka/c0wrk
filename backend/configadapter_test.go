@@ -1,8 +1,12 @@
 package backend
 
 import (
+	"bytes"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
@@ -249,6 +253,45 @@ func TestToBuilderConfig_ProviderOutputTokenReserve(t *testing.T) {
 }
 
 // TestToBuilderConfig_WebFetchTimeouts verifies the config→builder mapping for
+// TestToBuilderConfig_MCPTimeouts verifies the per-server MCP timeout /
+// call_timeout duration strings are parsed into BuilderMCPServer, with empty
+// and invalid values falling back to 0 (the sp4rk default) rather than
+// erroring — and that an invalid value is logged at WARN when a logger is
+// supplied.
+func TestToBuilderConfig_MCPTimeouts(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"valid":   {Command: "cmd", Timeout: "30s", CallTimeout: "2m"},
+		"empty":   {Command: "cmd"},
+		"invalid": {Command: "cmd", Timeout: "abc", CallTimeout: "0s"},
+	}
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	bc := ToBuilderConfig(cfg, config.PredefinedModelProfiles(), log)
+
+	valid := bc.MCP.Servers["valid"]
+	if valid.Timeout != 30*time.Second {
+		t.Errorf("valid Timeout = %v, want 30s", valid.Timeout)
+	}
+	if valid.CallTimeout != 2*time.Minute {
+		t.Errorf("valid CallTimeout = %v, want 2m", valid.CallTimeout)
+	}
+
+	empty := bc.MCP.Servers["empty"]
+	if empty.Timeout != 0 || empty.CallTimeout != 0 {
+		t.Errorf("empty durations = (%v, %v), want (0, 0)", empty.Timeout, empty.CallTimeout)
+	}
+
+	invalid := bc.MCP.Servers["invalid"]
+	if invalid.Timeout != 0 || invalid.CallTimeout != 0 {
+		t.Errorf("invalid durations = (%v, %v), want (0, 0) fallback", invalid.Timeout, invalid.CallTimeout)
+	}
+	if !strings.Contains(buf.String(), "invalid MCP server duration") {
+		t.Errorf("expected a WARN about the invalid MCP duration, got log %q", buf.String())
+	}
+}
+
 // the web fetch timeout/retry knobs: the proxy-path timeout and the retry
 // count flow into BuilderTimeoutsConfig so both reach sp4rk's web_fetch tool
 // (each retry doubles the effective client timeout).
