@@ -16,7 +16,7 @@ require (
 	github.com/openai/openai-go v1.12.0
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/shirou/gopsutil/v4 v4.26.8
-	github.com/v0lka/sp4rk v0.15.1-0.20260921164711-128595637727
+	github.com/v0lka/sp4rk v0.15.1-0.20260922081114-140e7411466b
 	github.com/wailsapp/wails/v2 v2.15.0
 	golang.org/x/image v0.45.0
 	golang.org/x/mod v0.40.0
