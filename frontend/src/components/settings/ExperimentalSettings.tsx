@@ -48,7 +48,7 @@ export function ExperimentalSettings() {
         onChange={handleChange}
         disabled={!loaded || saving}
         label={enabled ? 'Enabled' : 'Disabled'}
-        description="Enable experimental features (the E2S execution mode). When disabled, the E2S control is hidden and treated as off. Model Profiles and RESEARCH mode are always available."
+        description="Enable experimental features (the E2S execution mode). When disabled, the E2S control is hidden and treated as off."
       />
     </div>
   )

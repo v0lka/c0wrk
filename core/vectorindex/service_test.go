@@ -51,13 +51,15 @@ func TestNewService(t *testing.T) {
 
 func TestSetProject(t *testing.T) {
 	t.Run("in-memory mode", func(t *testing.T) {
+		projectDir := t.TempDir() // register cleanup BEFORE svc.Close (t.Cleanup is LIFO)
 		svc, err := NewService(ServiceConfig{
 			EmbeddingFunc: fakeEmbeddingFunc(),
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if err := svc.SetProject("test-project", t.TempDir()); err != nil {
+		t.Cleanup(func() { _ = svc.Close() }) // release the on-disk lexical store (.bolt) handles before TempDir cleanup (Windows)
+		if err := svc.SetProject("test-project", projectDir); err != nil {
 			t.Fatalf("SetProject failed: %v", err)
 		}
 		// ADR-064: SetProject prepares the storage layout but does NOT open the
@@ -82,6 +84,7 @@ func TestSetProject(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
+		t.Cleanup(func() { _ = svc.Close() }) // release the on-disk lexical store (.bolt) handles before TempDir cleanup (Windows)
 		if err := svc.SetProject("my-project", projectDir); err != nil {
 			t.Fatalf("SetProject failed: %v", err)
 		}
