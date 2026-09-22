@@ -436,15 +436,16 @@ func (m *Manager) IsAnyIndexablePath(changedPaths []string) bool {
 
 // SwitchProject sets up vector indexing for the given project and workspace.
 //
-// For a CODE project the heavy initialization — opening the persistent chromem
-// DB (which synchronously gob-decodes every document of every branch into
-// RAM), detecting the branch, switching the branch collection, creating the
-// indexer, launching background indexing, and starting the git branch monitor
-// — runs in a background goroutine (see initProject) so it does not block the
-// frontend's project-load waterfall. SwitchProject returns once the previous
-// project is torn down and readiness is dropped; vector search then gates on
-// WaitReady until init + indexing settle. For No Project (CHAT mode) the
-// teardown + reset stays fully synchronous.
+// For a CODE project the heavy initialization — preparing the storage layout,
+// detecting the branch, opening the ACTIVE branch's persistent chromem DB
+// (which synchronously gob-decodes that branch's documents into RAM — see
+// ADR-064; no other branch is ever decoded), creating the indexer, launching
+// background indexing, and starting the git branch monitor — runs in a
+// background goroutine (see initProject) so it does not block the frontend's
+// project-load waterfall. SwitchProject returns once the previous project is
+// torn down and readiness is dropped; vector search then gates on WaitReady
+// until init + indexing settle. For No Project (CHAT mode) the teardown +
+// reset stays fully synchronous.
 func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath string, cbs ProjectCallbacks, embeddingCachePaths ...string) error {
 	// No Project (CHAT mode): the vector index subsystem is fully disabled.
 	// Tear down any previous project's in-flight indexing and reset the
@@ -489,13 +490,14 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 		// issued in the interim never serves the outgoing project's collection.
 		m.service.SetReady(false)
 		// Non-blocking: the reset is cheap, but it needs the service write lock,
-		// which an in-flight persistent DB open (initProject's SetProject) holds
-		// for its entire chromem gob-decode — minutes on a large index (tens of
-		// thousands of documents per branch collection). Waiting for it here held
-		// the backend's switchMu for that whole window, so every later CHAT/CODE
-		// toggle died on its bounded acquire — the "clicking CHAT does nothing for
-		// minutes" failure. ResetForNoProject returns at once and lets that open
-		// apply the reset as its final act.
+		// which an in-flight branch-scoped DB open (initProject's SwitchBranch,
+		// ADR-064) holds for its entire chromem gob-decode of the ACTIVE branch
+		// — seconds on a large branch, and minutes on a pre-ADR-064 index that
+		// decoded every branch collection. Waiting for it here held the backend's
+		// switchMu for that whole window, so every later CHAT/CODE toggle died on
+		// its bounded acquire — the "clicking CHAT does nothing for minutes"
+		// failure. ResetForNoProject returns at once and lets the lock holder (or
+		// the background applier it kicks) apply the reset.
 		m.service.ResetForNoProject(projectID)
 		return nil
 	}
@@ -504,12 +506,13 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 	// touching shared state; the cancelled init aborts at its next ctx check
 	// (see initProject) and can no longer race on m.indexer / m.gitMonitor /
 	// the service. We deliberately do NOT wait for it to drain here: doing so
-	// would put the previous project's chromem gob-decode (up to the 10 s grace)
-	// back on the project-switch RPC path and freeze the UI during a rapid
-	// double-switch. Serialization is instead provided by initCancel plus
-	// initProject's per-step ctx checks, and any residual mutual exclusion comes
-	// from s.mu — the new init goroutine launched below blocks on s.mu in the
-	// background until an orphaned one releases it, so it never blocks the RPC.
+	// would put the previous project's branch-scoped chromem gob-decode (up to
+	// the 10 s grace) back on the project-switch RPC path and freeze the UI
+	// during a rapid double-switch. Serialization is instead provided by
+	// initCancel plus initProject's per-step ctx checks, and any residual
+	// mutual exclusion comes from s.mu — the new init goroutine launched
+	// below blocks on s.mu in the background until an orphaned one releases
+	// it, so it never blocks the RPC.
 	// Only Shutdown waits on initWG (bounded) before closing the service.
 	m.mu.Lock()
 	if m.initCancel != nil {
@@ -570,13 +573,14 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 }
 
 // initProject performs the asynchronous portion of SwitchProject for a CODE
-// project: open the persistent chromem DB, detect the git branch, switch the
-// branch collection, create the indexer, launch background indexing, and start
-// the git branch monitor. It runs off the SwitchProject RPC path so the
-// frontend's project-load waterfall is not blocked by chromem's synchronous
-// gob-decode of all branch documents. ctx is checked between steps so a
-// follow-up SwitchProject / Shutdown (which cancels it) aborts a stale init
-// early instead of doing needless work.
+// project: prepare the storage layout, detect the git branch, open that
+// branch's persistent chromem DB and collection, create the indexer, launch
+// background indexing, and start the git branch monitor. It runs off the
+// SwitchProject RPC path so the frontend's project-load waterfall is not
+// blocked by chromem's synchronous gob-decode of the active branch's documents
+// (ADR-064: only the active branch is decoded, never all of them). ctx is
+// checked between steps so a follow-up SwitchProject / Shutdown (which cancels
+// it) aborts a stale init early instead of doing needless work.
 //
 // Failures are logged (not returned): SwitchProject has already returned, and
 // vector indexing is optional. On failure readiness is flipped to true so
@@ -602,24 +606,26 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 		return
 	}
 
-	// Announce the pass BEFORE the open. Opening the persistent DB can take
-	// minutes on a large index (the chromem gob-decode of every branch
-	// collection), and until the first progress callback the frontend has no
-	// status at all: the status bar renders nothing (IndexingStatus hides
-	// itself on the default "idle" state) and the search panel claims no
-	// project is selected. Reporting "indexing" up front keeps the UI honest
-	// for the whole open — the manager's own status too, so
-	// GetVectorIndexStatus agrees with the event.
-	m.setStatus(map[string]any{"state": IndexStateIndexing, "phase": PhaseBoth})
+	// Announce the pre-open state BEFORE the open. Until the first progress
+	// callback the frontend has no status at all: the status bar renders
+	// nothing (IndexingStatus hides itself on the default "idle" state) and the
+	// search panel claims no project is selected. ADR-064 made the open
+	// branch-scoped — SetProject only prepares the layout, SwitchBranch decodes
+	// the ONE active branch — so the open is seconds rather than minutes.
+	// It is still not indexing, so the status is a distinct "loading/open" state
+	// (no progress fraction), rendered as a plain "Preparing index…" rather than
+	// a fake "Indexing" with an empty 0/0 bar; the manager's own status agrees,
+	// so GetVectorIndexStatus matches the event.
+	m.setStatus(map[string]any{"state": IndexStateLoading, "phase": PhaseOpen})
 	if cbs.OnProgress != nil {
-		cbs.OnProgress(PhaseBoth, IndexStateIndexing, 0, 0, "")
+		cbs.OnProgress(PhaseOpen, IndexStateLoading, 0, 0, "")
 	}
 
-	// SetProject loads the persistent chromem DB. This is the dominant cost
-	// (gob-decoding every document of every branch collection into RAM) and
-	// holds the service write lock for the duration. It is the one step that
-	// cannot be pre-empted once entered, so its outcome is also checked against
-	// ctx immediately afterwards.
+	// SetProject prepares the storage layout (and runs the one-time legacy
+	// migration); it no longer opens the DB. SwitchBranch below performs the
+	// branch-scoped open, decoding only the active branch, and holds the service
+	// write lock for that duration. Its outcome is checked against ctx
+	// immediately afterwards.
 	if err := m.service.SetProject(projectID, vectorIndexFullPath, embeddingCachePath); err != nil {
 		// If the init was cancelled while SetProject ran, this failure belongs
 		// to an orphaned init: a newer project already owns readiness, so do NOT
@@ -1258,11 +1264,12 @@ func (m *Manager) Shutdown() {
 
 	// Wait for the async init goroutine, bounded by the grace period.
 	// initProject launches the background indexing goroutine, so it must exit
-	// first to know whether indexing was even started. initProject's opening
-	// step — SetProject's gob-decode of every branch document into RAM — is
-	// synchronous and not ctx-interruptible; an unbounded Wait would hang app
-	// shutdown if it stalled on a large or corrupt DB. Bound it instead: if it
-	// does not exit within the grace, skip the blocking Close()/closeFn().
+	// first to know whether indexing was even started. initProject's heavy step
+	// — SwitchBranch's gob-decode of the active branch's documents into RAM
+	// (ADR-064) — is synchronous and not ctx-interruptible; an unbounded Wait
+	// would hang app shutdown if it stalled on a large or corrupt DB. Bound it
+	// instead: if it does not exit within the grace, skip the blocking
+	// Close()/closeFn().
 	initClean := m.waitBounded(&m.initWG, grace, "init")
 
 	// Only wait for indexing if init exited cleanly — otherwise indexing may

@@ -445,7 +445,9 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 }
 
 // SetProject switches to a project directory, creating a project-specific
-// subdirectory for persistence and initializing the chromem-go DB.
+// subdirectory for persistence and preparing the per-branch storage layout
+// (ADR-064). It no longer opens the chromem DB: that is deferred to
+// SwitchBranch, which decodes ONLY the active branch's collection.
 //
 // Instead of unconditionally tearing the previous project down, the outgoing
 // state is parked (see parkCurrentLocked): a later call with the SAME
@@ -529,12 +531,15 @@ func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...
 			s.current = &projectState{}
 			return fmt.Errorf("creating project directory %s: %w", fullPath, err)
 		}
-		db, err := newPersistentDB(fullPath, false)
-		if err != nil {
-			s.current = &projectState{}
-			return fmt.Errorf("opening persistent DB at %s: %w", fullPath, err)
-		}
-		ps.db = db
+		// ADR-064: do NOT open the persistent DB here. chromem's
+		// NewPersistentDB eagerly gob-decodes EVERY collection in the given
+		// directory, and the storage root holds one collection per git branch
+		// before migration — so opening it cost O(all branches × documents)
+		// and, on a large index, took minutes while holding s.mu. The
+		// branch-scoped open is deferred to SwitchBranch, which decodes only
+		// the active branch. Here we just run the one-time migration that
+		// re-homes legacy collection directories into their per-branch roots.
+		s.migrateLegacyLayoutLocked(fullPath)
 		if embeddingCachePath != "" {
 			within, containmentErr := pathutil.IsWithinPath(fullPath, embeddingCachePath)
 			if containmentErr != nil || !within {
@@ -570,15 +575,17 @@ func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...
 // release the lock.
 //
 // The reset itself is cheap — park/close the outgoing state, then an in-memory
-// chromem DB — but it needs the write lock, and SetProject holds that lock for
-// the entire chromem gob-decode, which is minutes on a large index (tens of
-// thousands of documents per branch collection). Blocking here used to wedge
-// the caller's project switch (Manager.SwitchProject) for that whole window;
-// the backend's switchMu was held behind it, so every CHAT/CODE toggle failed
-// after its bounded acquire — the "clicking CHAT does nothing for minutes"
-// failure. So: try the lock; when it is busy, record the request and return at
-// once. The request is stamped with the current open generation and drained by
-// exactly one of two appliers:
+// chromem DB — but it needs the write lock, and an in-flight open holds that
+// lock for its entire chromem gob-decode: SwitchBranch's branch-scoped open
+// (ADR-064) for the active branch's documents, or — before ADR-064 —
+// SetProject's decode of EVERY branch collection, which was minutes on a large
+// index. Blocking here used to wedge the caller's project switch
+// (Manager.SwitchProject) for that whole window; the backend's switchMu was
+// held behind it, so every CHAT/CODE toggle failed after its bounded acquire
+// — the "clicking CHAT does nothing for minutes" failure. So: try the lock;
+// when it is busy, record the request and return at once. The request is
+// stamped with the current open generation and drained by exactly one of two
+// appliers:
 //
 //   - a SetProject that is still in flight applies it as its last act (the
 //     request carries that open's generation), still under the lock;
@@ -783,9 +790,10 @@ func (s *Service) parkCurrentLocked() {
 		ps.contentlessCancel = nil
 	}
 
-	if s.parkCapacity <= 0 || ps.projectPath == "" {
-		// Parking disabled, or nothing worth keeping (the empty in-memory
-		// No-Project state): close immediately.
+	if s.parkCapacity <= 0 || ps.projectPath == "" || ps.db == nil {
+		// Parking disabled, nothing worth keeping (the empty in-memory
+		// No-Project state), or a project whose branch-scoped DB was never
+		// opened (ADR-064 — SetProject no longer opens it): close immediately.
 		s.closeStateLocked(ps)
 		return
 	}
@@ -877,6 +885,34 @@ func (s *Service) closeStateLocked(ps *projectState) {
 	}
 	ps.contentlessCh = nil
 	ps.currentBranch = ""
+}
+
+// releaseBranchResidentsLocked drops only the ACTIVE BRANCH's in-memory
+// residents — its bleve lexical index, chromem DB and collection — while
+// leaving the project identity (projectID/projectPath), the file-hash sidecar
+// and the pending no-project reset untouched. Unlike closeStateLocked it is
+// not a teardown: SwitchBranch calls it right before opening the incoming
+// branch, so a switch peaks at one branch's working set instead of two
+// (ADR-064 step (a)). Since ADR-064 every branch owns its own chromem DB, so
+// keeping the outgoing one alive across the open would hold two fully decoded
+// collections resident at once — exactly the footprint the branch-scoped layout
+// exists to avoid.
+//
+// The outgoing branch's hashes must already have been persisted (SwitchBranch
+// does that before calling this), because dropping the collection makes them
+// unrecoverable from RAM. On a subsequent open failure the state stays closed
+// — GetCollection reports nil and search fails fast — rather than silently
+// serving the previous branch's collection while the worktree is elsewhere.
+// The caller must hold s.mu.
+func (s *Service) releaseBranchResidentsLocked() {
+	if s.current.lexical != nil {
+		if err := s.current.lexical.Close(); err != nil {
+			s.logger.Warn("failed to close previous lexical index", "error", err)
+		}
+		s.current.lexical = nil
+	}
+	s.current.db = nil
+	s.current.collection = nil
 }
 
 // evictLocked drops a parked state to make room in the LRU: it flushes the
@@ -1215,12 +1251,12 @@ func (s *Service) DeleteProjectData(fullPath string) error {
 		s.closeStateLocked(cur)
 		// Reset rather than leaving the closed state installed: closeStateLocked
 		// drops the handles but keeps projectID/projectPath, and
-		// parkCurrentLocked parks any state with a non-empty path — the next
-		// SetProject would park this dead state into the LRU, wasting a park
-		// slot and, for any future deterministic id+path reuse, restoring a
-		// db-less state whose SwitchBranch fails ("no database initialized").
-		// The empty placeholder mirrors parkCurrentLocked's reset state and is
-		// never parked or restorable.
+		// parkCurrentLocked parks any state with a non-empty path and an opened
+		// DB — the next SetProject would otherwise park this dead state into the
+		// LRU, wasting a park slot and, for any future deterministic id+path
+		// reuse, restoring a state whose collection and branch point at a
+		// directory that no longer exists. The empty placeholder mirrors
+		// parkCurrentLocked's reset state and is never parked or restorable.
 		s.current = &projectState{}
 	}
 	if len(s.parked) > 0 {

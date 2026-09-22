@@ -49,4 +49,12 @@ describe('deriveDotStatus', () => {
       bothReady: false,
     })
   })
+
+  it('stays idle during the pre-open loading state (ADR-064: no building claim)', () => {
+    expect(deriveDotStatus('loading', 'open')).toEqual({
+      vectorDot: 'idle',
+      lexicalDot: 'idle',
+      bothReady: false,
+    })
+  })
 })

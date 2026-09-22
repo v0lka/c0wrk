@@ -257,7 +257,7 @@ export interface MergeRebaseState {
 
 export type SearchMode = 'hybrid' | 'vector' | 'lexical'
 
-export type IndexPhase = 'both' | 'embedding' | 'lexical'
+export type IndexPhase = 'both' | 'embedding' | 'lexical' | 'open'
 
 /**
  * ONNX Runtime execution provider for the vector-index embedder
@@ -267,7 +267,7 @@ export type IndexPhase = 'both' | 'embedding' | 'lexical'
 export type ExecutionProvider = 'auto' | 'cpu' | 'cuda'
 
 export interface VectorIndexStatus {
-  state: 'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable'
+  state: 'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable' | 'loading'
   progress: number
   files_indexed: number
   total_files: number

@@ -1274,7 +1274,7 @@ export function isNotificationClickedData(d: unknown): d is NotificationClickedD
     typeof d.project_id === 'string'
 }
 
-const VALID_VECTOR_STATES: ReadonlySet<string> = new Set(['idle', 'indexing', 'ready', 'reindexing', 'unavailable'])
+const VALID_VECTOR_STATES: ReadonlySet<string> = new Set(['idle', 'indexing', 'ready', 'reindexing', 'unavailable', 'loading'])
 
 export function isVectorIndexPayload(d: unknown): d is VectorIndexStatus {
   if (!isObjLocal(d)) return false

@@ -39,7 +39,7 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
   // Force-full-reindex action, hosted on the mode-selector row after the
   // mode buttons. State machine (busy latch, No Project hiding) lives in
   // useVectorReindex.
-  const { reindexBusy, reindexUnavailable, handleReindex } = useVectorReindex()
+  const { reindexBusy, reindexBusyTitle, reindexUnavailable, handleReindex } = useVectorReindex()
 
   // While the index is not ready, searches would block on index readiness —
   // the query/file-pattern inputs are disabled at the widget level (the
@@ -115,7 +115,7 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
             variant="ghost"
             size="sm"
             className="h-6 shrink-0 px-2"
-            title={reindexBusy ? 'Reindexing...' : 'Force full project reindex'}
+            title={reindexBusy ? reindexBusyTitle : 'Force full project reindex'}
             disabled={reindexBusy}
             onClick={handleReindex}
           >

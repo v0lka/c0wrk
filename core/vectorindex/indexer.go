@@ -43,6 +43,12 @@ const (
 	// It mirrors the state string the frontend already renders as dormant
 	// (see indexPhaseStatus.deriveDotStatus), so no UI changes are needed.
 	IndexStateUnavailable IndexState = "unavailable"
+	// IndexStateLoading indicates the branch-scoped persistent DB is being
+	// OPENED (ADR-064) and no indexing pass has started yet. It carries no
+	// progress fraction and is rendered as a plain "Preparing index…" — never
+	// the "indexing"/"building" shape — so the UI does not claim to be indexing
+	// while it is only opening.
+	IndexStateLoading IndexState = "loading"
 )
 
 // IndexPhase describes which side(s) of the dual index are being produced
@@ -58,6 +64,9 @@ const (
 	PhaseEmbedding IndexPhase = "embedding"
 	// PhaseLexical indicates progress for lexical (BM25) indexing only.
 	PhaseLexical IndexPhase = "lexical"
+	// PhaseOpen accompanies IndexStateLoading: the branch-scoped persistent DB
+	// is being opened, before any indexing pass exists.
+	PhaseOpen IndexPhase = "open"
 )
 
 // addDocumentBatchSize is the number of documents added per batch call.
@@ -372,6 +381,39 @@ func (idx *Indexer) HandleBranchSwitch(ctx context.Context, workspacePath, newBr
 	// delegation, so we also need to restore here.
 	readyGen := idx.service.MarkNotReady()
 	defer idx.service.RestoreReady(readyGen)
+
+	// ADR-064 turned a branch switch into a real open: SwitchBranch releases the
+	// outgoing branch's residents and then gob-decodes the target branch's own
+	// chromem DB, which takes seconds on a large branch (it was an O(1)
+	// GetOrCreateCollection on an already-fully-decoded DB before). Announce the
+	// honest pre-open state for that window, exactly as initProject does for the
+	// project-open path, so the status bar does not keep showing the previous
+	// pass's green "Index ready" while the collection is nil and readiness is
+	// dropped — and so a search whose bounded WaitReady expires inside the decode
+	// reports "index not yet ready (loading)" instead of the self-contradictory
+	// "(ready)".
+	//
+	// The guard is the exact negation of SwitchBranch's own early-return
+	// condition (`branch == currentBranch && collection != nil`), so the
+	// announcement fires for precisely the calls that really open — never for
+	// the same-branch no-op, where it would only flicker the pill. Mirroring the
+	// callee instead of comparing branch names alone also covers a retry after a
+	// FAILED open, which leaves currentBranch naming a branch whose collection
+	// is already gone. Both reads are harmless if another switch interleaves:
+	// the worst case is one extra or one missing announcement, and that switch
+	// announces for itself.
+	//
+	// A FAILED open deliberately leaves this state in place rather than emitting
+	// a terminal one. `unavailable` is the documented terminal state for "the
+	// git branch collection could not be switched", but IndexingStatus has no
+	// `unavailable` branch and renders it as a fake "Indexing…" 0% bar — the
+	// exact dishonesty ADR-064 removed — so it is not emitted here. "Preparing
+	// index…" is the truthful non-terminal rendering (idle dots, no fraction),
+	// a reindex cannot repair a failed open anyway (there is no collection to
+	// validate or add to), and the next branch change or project switch retries.
+	if idx.service.CurrentBranchName() != newBranch || idx.service.GetCollection() == nil {
+		idx.onProgress(PhaseOpen, IndexStateLoading, 0, 0, "")
+	}
 
 	if err := idx.service.SwitchBranch(ctx, newBranch); err != nil {
 		return false, fmt.Errorf("switching branch to %q: %w", newBranch, err)

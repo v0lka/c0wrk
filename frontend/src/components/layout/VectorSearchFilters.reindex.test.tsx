@@ -4,8 +4,9 @@
 // mode-selector row (after the hybrid/vector/lexical buttons). The action was
 // moved here from the FileTreePanel explorer header; the behavior is
 // unchanged: fire-and-forget RPC, optimistic latch against duplicate clicks
-// until the first vector_index:status event, spinning/disabled while busy, and
-// hidden (not merely disabled) when no reindexable project is active.
+// until the first vector_index:status event, spinning/disabled while busy — a
+// pass in flight OR the branch-scoped DB still opening (`loading`, ADR-064) —
+// and hidden (not merely disabled) when no reindexable project is active.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
@@ -144,6 +145,34 @@ describe('VectorSearchFilters — force full project reindex action', () => {
     const button = findButton(container, 'Reindexing...')
     expect(button).not.toBeNull()
     expect(button!.disabled).toBe(true)
+  })
+
+  // ADR-064: the branch-scoped chromem DB open reports the distinct
+  // `loading` state. Before ADR-064 the open reported `indexing`, which kept
+  // the action disabled; `loading` must keep it disabled too — a reindex
+  // fired during the open would race it and, until the manager publishes the
+  // indexer, could only fail.
+  it('is disabled and spinning while the branch-scoped index is still opening (loading)', async () => {
+    setIndexState('loading')
+    await renderFilters()
+
+    // The open is not a reindex pass, so the tooltip must not claim one.
+    const button = findButton(container, 'Opening the index…')
+    expect(button).not.toBeNull()
+    expect(button!.disabled).toBe(true)
+    expect(findButton(container, 'Reindexing...')).toBeNull()
+    expect(findButton(container, 'Force full project reindex')).toBeNull()
+
+    await act(async () => {
+      button!.click()
+    })
+    expect(reindexMock).not.toHaveBeenCalled()
+
+    // The open settling re-enables the action.
+    await act(async () => {
+      setIndexState('ready')
+    })
+    expect(findButton(container, 'Force full project reindex')!.disabled).toBe(false)
   })
 
   it('is hidden (not merely disabled) in No Project (CHAT) mode', async () => {
