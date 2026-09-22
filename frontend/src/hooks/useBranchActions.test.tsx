@@ -24,6 +24,8 @@ vi.mock('@/lib/logger', () => ({
 }))
 
 import { useBranchActions, type BranchActions } from './useBranchActions'
+import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useProjectStore } from '@/stores/projectStore'
 
 let result!: BranchActions
 let root: Root
@@ -55,6 +57,10 @@ beforeEach(() => {
   gitMocks.pushBranch.mockResolvedValue('ok')
   gitMocks.checkoutRemoteBranch.mockResolvedValue(undefined)
   gitMocks.deleteRemoteBranch.mockResolvedValue('ok')
+  // Operations record their outcome against the ACTIVE project; without one
+  // they are skipped entirely. Reset the recorder slice for clean assertions.
+  useGitPanelStore.getState().reset()
+  useProjectStore.setState({ activeProjectId: 'p1' })
 })
 
 describe('useBranchActions — operations', () => {
@@ -66,7 +72,10 @@ describe('useBranchActions — operations', () => {
     expect(gitMocks.checkoutBranch).toHaveBeenCalledWith('feature/x')
     expect(result.isBusy).toBe(false)
     expect(result.busyAction).toBeNull()
-    expect(result.error).toBeNull()
+    expect(useGitPanelStore.getState().operationByProject['p1']).toMatchObject({
+      kind: 'checkout',
+      ok: true,
+    })
   })
 
   it('tracks in-flight busy state during an operation', async () => {
@@ -93,14 +102,20 @@ describe('useBranchActions — operations', () => {
     expect(result.busyAction).toBeNull()
   })
 
-  it('captures operation errors in error state', async () => {
+  it('records operation failures without rejecting', async () => {
     gitMocks.checkoutBranch.mockRejectedValue(new Error('local changes would be overwritten'))
     renderHook()
+    let ok = true
     await act(async () => {
-      await result.checkout('feature/x')
+      ok = await result.checkout('feature/x')
     })
-    expect(result.error).toBe('local changes would be overwritten')
+    expect(ok).toBe(false)
     expect(result.isBusy).toBe(false)
+    expect(useGitPanelStore.getState().operationByProject['p1']).toMatchObject({
+      kind: 'checkout',
+      ok: false,
+      error: 'local changes would be overwritten',
+    })
   })
 
   it('rejects a concurrent operation while another is in flight', async () => {

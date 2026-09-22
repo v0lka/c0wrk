@@ -4,12 +4,9 @@ import { Button } from '@/components/ui/button'
 import { stashCreate, stashPop, stashDrop, stashList } from '@/api/git'
 import type { StashEntry } from '@/types/models'
 import { cn } from '@/lib/utils'
+import { runGitOperation } from '@/lib/gitOperation'
+import { useProjectStore } from '@/stores/projectStore'
 import { GitStashList } from './GitStashList'
-
-interface GitStashButtonsProps {
-  /** Report an error message to the parent for shared display. */
-  onError: (message: string) => void
-}
 
 /**
  * Stash create / pop-latest icon button group (Phase 5) with a list popover
@@ -17,15 +14,21 @@ interface GitStashButtonsProps {
  * per-entry Pop (`stashPop(index)`) and Drop (`stashDrop(index)`) actions.
  * The list body is rendered by `GitStashList`.
  *
+ * Every mutating operation (create / pop / drop) is recorded via
+ * {@link runGitOperation} so the Git panel's operation console reflects its
+ * result. A failure loading the stash list is NOT a git mutation — it is
+ * surfaced inline inside the popover instead.
+ *
  * All operations emit `git:status_changed` on the backend, which
  * `useGitStatusEvents` picks up — no manual refresh is needed here.
  */
-export function GitStashButtons({ onError }: GitStashButtonsProps) {
+export function GitStashButtons() {
   const [isStashing, setIsStashing] = useState(false)
   const [isPopping, setIsPopping] = useState(false)
   const [isListOpen, setIsListOpen] = useState(false)
   const [isLoadingList, setIsLoadingList] = useState(false)
   const [stashEntries, setStashEntries] = useState<StashEntry[]>([])
+  const [listError, setListError] = useState<string | null>(null)
   const [busyIndex, setBusyIndex] = useState<number | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -33,16 +36,17 @@ export function GitStashButtons({ onError }: GitStashButtonsProps) {
 
   const loadList = useCallback(async () => {
     setIsLoadingList(true)
+    setListError(null)
     try {
       const list = await stashList()
       setStashEntries(list)
     } catch (err) {
-      onError(err instanceof Error ? err.message : 'Failed to load stashes')
+      setListError(err instanceof Error ? err.message : 'Failed to load stashes')
       setStashEntries([])
     } finally {
       setIsLoadingList(false)
     }
-  }, [onError])
+  }, [])
 
   // Open the popover: (re)fetch the stash list each time it is shown.
   const toggleList = useCallback(() => {
@@ -66,50 +70,59 @@ export function GitStashButtons({ onError }: GitStashButtonsProps) {
   }, [isListOpen])
 
   const handleStashCreate = useCallback(async () => {
+    const projectId = useProjectStore.getState().activeProjectId
+    if (!projectId) return
     setIsStashing(true)
     try {
       // Empty message → git uses its default stash message.
-      await stashCreate('')
+      await runGitOperation({
+        projectId,
+        kind: 'stash-create',
+        label: 'Stashed changes',
+        fn: () => stashCreate(''),
+      })
       if (isListOpen) void loadList()
-    } catch (err) {
-      onError(err instanceof Error ? err.message : 'Failed to stash changes')
     } finally {
       setIsStashing(false)
     }
-  }, [onError, isListOpen, loadList])
+  }, [isListOpen, loadList])
 
   const handleStashPop = useCallback(async () => {
+    const projectId = useProjectStore.getState().activeProjectId
+    if (!projectId) return
     setIsPopping(true)
     try {
       // Pop the most recent stash (stash@{0}).
-      await stashPop(0)
+      await runGitOperation({
+        projectId,
+        kind: 'stash-pop',
+        label: 'Popped latest stash',
+        fn: () => stashPop(0),
+      })
       if (isListOpen) void loadList()
-    } catch (err) {
-      onError(err instanceof Error ? err.message : 'Failed to pop stash')
     } finally {
       setIsPopping(false)
     }
-  }, [onError, isListOpen, loadList])
+  }, [isListOpen, loadList])
 
   const handleEntryAction = useCallback(
     async (index: number, op: 'pop' | 'drop') => {
+      const projectId = useProjectStore.getState().activeProjectId
+      if (!projectId) return
       setBusyIndex(index)
       try {
-        if (op === 'pop') {
-          await stashPop(index)
-        } else {
-          await stashDrop(index)
-        }
+        await runGitOperation({
+          projectId,
+          kind: op === 'pop' ? 'stash-pop' : 'stash-drop',
+          label: `${op === 'pop' ? 'Popped' : 'Dropped'} stash@{${index}}`,
+          fn: () => (op === 'pop' ? stashPop(index) : stashDrop(index)),
+        })
         await loadList()
-      } catch (err) {
-        onError(
-          err instanceof Error ? err.message : `Failed to ${op} stash@{${index}}`,
-        )
       } finally {
         setBusyIndex(null)
       }
     },
-    [loadList, onError],
+    [loadList],
   )
 
   return (
@@ -160,6 +173,9 @@ export function GitStashButtons({ onError }: GitStashButtonsProps) {
 
       {isListOpen && (
         <div className="absolute left-0 top-full z-50 mt-1 w-72 rounded-md border border-border bg-popover p-1 shadow-md">
+          {listError && (
+            <div className="px-2 py-1.5 text-[10px] text-destructive">{listError}</div>
+          )}
           <GitStashList
             entries={stashEntries}
             isLoading={isLoadingList}

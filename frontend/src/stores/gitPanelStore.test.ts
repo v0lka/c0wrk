@@ -7,8 +7,8 @@
 // degrades to "storage unavailable" and warns on every `set` (matching
 // panelPersistence.test.ts, which opts into jsdom for the same reason).
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { useGitPanelStore, EMPTY_MERGE_REBASE_STATE, EMPTY_COMMIT_DRAFT, COMMIT_BANNER_DISMISS_MS, partializeGitPanel, mergeGitPanel, selectGitPanelTab, selectSkipCommitSuppress, type GitPanelEntry } from '@/stores/gitPanelStore'
+import { describe, it, expect, beforeEach } from 'vitest'
+import { useGitPanelStore, EMPTY_MERGE_REBASE_STATE, EMPTY_COMMIT_DRAFT, EMPTY_GIT_OPERATION, partializeGitPanel, mergeGitPanel, selectGitPanelTab, selectSkipCommitSuppress, selectLastOperation, type GitPanelEntry, type GitOperationRecord } from '@/stores/gitPanelStore'
 
 /** Reset the store to initial state before each test */
 function resetStore() {
@@ -74,8 +74,6 @@ describe('gitPanelStore', () => {
       isGenerating: false,
       isCommitting: false,
       error: null,
-      lastCommitSha: null,
-      lastCommitOutput: null,
     })
   })
 
@@ -417,7 +415,6 @@ describe('gitPanelStore', () => {
     store.setCommitMessage('proj-1', 'fix: bug')
     store.setGeneratingCommit('proj-1', true)
     store.setCommitError('proj-1', 'boom')
-    store.setCommitSuccess('proj-2', 'abc123def456')
     store.setBranch({ name: 'feature/x', upstream: '', ahead: 0, behind: 0 })
     store.setBranches([{ name: 'main', is_current: true, kind: 'local', upstream: 'origin/main' }])
     store.setGitRepo(true, 'proj-1')
@@ -649,8 +646,6 @@ describe('gitPanelStore — per-project commit state', () => {
       isGenerating: false,
       isCommitting: false,
       error: null,
-      lastCommitSha: null,
-      lastCommitOutput: null,
     })
   })
 
@@ -679,65 +674,6 @@ describe('gitPanelStore — per-project commit state', () => {
     expect(useGitPanelStore.getState().commitByProject['proj-1']!.error).toBe('generation failed')
     setCommitError('proj-1', null)
     expect(useGitPanelStore.getState().commitByProject['proj-1']!.error).toBeNull()
-  })
-
-  it('setCommitSuccess stores the SHA and clears the draft message', () => {
-    const { setCommitMessage, setCommitSuccess } = useGitPanelStore.getState()
-    setCommitMessage('proj-1', 'feat: thing')
-    setCommitSuccess('proj-1', 'abc123def456789')
-    const slice = useGitPanelStore.getState().commitByProject['proj-1']!
-    expect(slice.lastCommitSha).toBe('abc123def456789')
-    expect(slice.message).toBe('')
-  })
-
-  it('setCommitSuccess(null) dismisses the banner without wiping a new draft', () => {
-    // The banner auto-dismiss timer fires seconds after the commit; by then
-    // the user may have started typing a new message that must survive.
-    const { setCommitSuccess, setCommitMessage } = useGitPanelStore.getState()
-    setCommitSuccess('proj-1', 'abc123def456789')
-    setCommitMessage('proj-1', 'next draft')
-    setCommitSuccess('proj-1', null)
-    const slice = useGitPanelStore.getState().commitByProject['proj-1']!
-    expect(slice.lastCommitSha).toBeNull()
-    expect(slice.message).toBe('next draft')
-  })
-
-  it('commit banners auto-dismiss per project and independently', () => {
-    // Regression: a single shared timer left an earlier project's banner
-    // stranded forever when a later commit in another project replaced it.
-    vi.useFakeTimers()
-    try {
-      const { setCommitSuccess } = useGitPanelStore.getState()
-      setCommitSuccess('proj-a', 'sha-a')
-      setCommitSuccess('proj-b', 'sha-b')
-      // Both banners still visible before the dismissal window elapses.
-      expect(useGitPanelStore.getState().commitByProject['proj-a']!.lastCommitSha).toBe('sha-a')
-      expect(useGitPanelStore.getState().commitByProject['proj-b']!.lastCommitSha).toBe('sha-b')
-      vi.advanceTimersByTime(COMMIT_BANNER_DISMISS_MS)
-      expect(useGitPanelStore.getState().commitByProject['proj-a']!.lastCommitSha).toBeNull()
-      expect(useGitPanelStore.getState().commitByProject['proj-b']!.lastCommitSha).toBeNull()
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('a newer commit banner is not clobbered by an older auto-dismiss timer', () => {
-    vi.useFakeTimers()
-    try {
-      const { setCommitSuccess } = useGitPanelStore.getState()
-      setCommitSuccess('proj-1', 'sha-old')
-      // A second commit in the same project re-arms the dismissal timer.
-      vi.advanceTimersByTime(COMMIT_BANNER_DISMISS_MS - 100)
-      setCommitSuccess('proj-1', 'sha-new')
-      vi.advanceTimersByTime(COMMIT_BANNER_DISMISS_MS - 100)
-      // The old timer was cancelled; the new banner is still within its own
-      // full window.
-      expect(useGitPanelStore.getState().commitByProject['proj-1']!.lastCommitSha).toBe('sha-new')
-      vi.advanceTimersByTime(100)
-      expect(useGitPanelStore.getState().commitByProject['proj-1']!.lastCommitSha).toBeNull()
-    } finally {
-      vi.useRealTimers()
-    }
   })
 
   it('dropProjectCommitState removes only the given project', () => {
@@ -771,51 +707,18 @@ describe('gitPanelStore — per-project commit state', () => {
       isGenerating: true,
       isCommitting: false,
       error: 'err',
-      lastCommitSha: null,
-      lastCommitOutput: null,
     })
     expect(s['proj-b']!.message).toBe('fix: b')
     expect(s['proj-b']!.isGenerating).toBe(false)
   })
 
   it('commitByProject is transient: excluded from the persisted partial', () => {
-    const { setCommitMessage, setCommitSuccess } = useGitPanelStore.getState()
+    const { setCommitMessage } = useGitPanelStore.getState()
     setCommitMessage('proj-1', 'draft')
-    setCommitSuccess('proj-1', 'abc123')
     const partial = partializeGitPanel(useGitPanelStore.getState())
     expect(partial).not.toHaveProperty('commitByProject')
   })
 
-  it('setCommitSuccess stores the commit output; dismissal (null) keeps it', () => {
-    const { setCommitSuccess } = useGitPanelStore.getState()
-    setCommitSuccess('proj-1', 'abc123', '[main abc123d] feat: run hooks\nhook said hi')
-    let slice = useGitPanelStore.getState().commitByProject['proj-1']!
-    expect(slice.lastCommitOutput).toBe('[main abc123d] feat: run hooks\nhook said hi')
-    // The banner auto-dismissal clears only the SHA…
-    setCommitSuccess('proj-1', null)
-    slice = useGitPanelStore.getState().commitByProject['proj-1']!
-    expect(slice.lastCommitSha).toBeNull()
-    // …the output survives until the next commit replaces it.
-    expect(slice.lastCommitOutput).toBe('[main abc123d] feat: run hooks\nhook said hi')
-    // A new commit without output clears the stale log.
-    setCommitSuccess('proj-1', 'def456')
-    slice = useGitPanelStore.getState().commitByProject['proj-1']!
-    expect(slice.lastCommitOutput).toBeNull()
-  })
-
-  it('the banner auto-dismiss timer does not clear the stored commit output', () => {
-    vi.useFakeTimers()
-    try {
-      const { setCommitSuccess } = useGitPanelStore.getState()
-      setCommitSuccess('proj-1', 'abc123', 'hook: prettier ran')
-      vi.advanceTimersByTime(COMMIT_BANNER_DISMISS_MS)
-      const slice = useGitPanelStore.getState().commitByProject['proj-1']!
-      expect(slice.lastCommitSha).toBeNull()
-      expect(slice.lastCommitOutput).toBe('hook: prettier ran')
-    } finally {
-      vi.useRealTimers()
-    }
-  })
 })
 
 // --- Per-project suppression-dialog skip flag (skipCommitSuppressByProject) ---
@@ -1072,5 +975,198 @@ describe('gitPanelStore — per-project active tab', () => {
     await useGitPanelStore.persist.rehydrate()
 
     expect(useGitPanelStore.getState().activeTabByProject).toEqual({ p1: 'history' })
+  })
+})
+
+// --- Per-project last git operation (operationByProject) ---
+
+describe('gitPanelStore — per-project git operation', () => {
+  beforeEach(() => {
+    resetStore()
+  })
+
+  const OP: GitOperationRecord = {
+    kind: 'push',
+    label: 'Pushed to origin',
+    ok: true,
+    output: 'Everything up-to-date',
+    error: null,
+    at: 1_700_000_000_000,
+    acknowledged: false,
+  }
+
+  it('exposes EMPTY_GIT_OPERATION matching the default record', () => {
+    expect(EMPTY_GIT_OPERATION).toEqual({
+      kind: 'unknown',
+      label: '',
+      ok: false,
+      output: '',
+      error: null,
+      at: 0,
+      acknowledged: false,
+    })
+  })
+
+  it('initializes operationByProject to an empty map', () => {
+    expect(useGitPanelStore.getState().operationByProject).toEqual({})
+  })
+
+  it('recordGitOperation stores a full record, scoped per project', () => {
+    const { recordGitOperation } = useGitPanelStore.getState()
+    recordGitOperation('proj-a', OP)
+    recordGitOperation('proj-b', { ...OP, kind: 'commit', label: 'Committed' })
+
+    const map = useGitPanelStore.getState().operationByProject
+    expect(map['proj-a']).toEqual(OP)
+    expect(map['proj-b']!.kind).toBe('commit')
+    expect(map['proj-b']!.label).toBe('Committed')
+  })
+
+  it('recordGitOperation merges a patch into the existing record', () => {
+    const { recordGitOperation } = useGitPanelStore.getState()
+    recordGitOperation('proj-a', OP)
+    recordGitOperation('proj-a', { acknowledged: true, error: null })
+
+    const rec = useGitPanelStore.getState().operationByProject['proj-a']!
+    expect(rec.acknowledged).toBe(true)
+    // Untouched fields survive the patch.
+    expect(rec.kind).toBe('push')
+    expect(rec.label).toBe('Pushed to origin')
+    expect(rec.output).toBe('Everything up-to-date')
+  })
+
+  it('records a failing operation with its error and ok=false', () => {
+    const { recordGitOperation } = useGitPanelStore.getState()
+    recordGitOperation('proj-a', {
+      kind: 'pull',
+      label: 'Pull from origin',
+      ok: false,
+      output: '',
+      error: 'CONFLICT (content): Merge conflict in src/app.ts',
+      at: 42,
+    })
+    const rec = useGitPanelStore.getState().operationByProject['proj-a']!
+    expect(rec.ok).toBe(false)
+    expect(rec.error).toContain('CONFLICT')
+    expect(rec.acknowledged).toBe(false)
+  })
+
+  it('a repeated identical patch is a reference-stable no-op (no new object)', () => {
+    const { recordGitOperation } = useGitPanelStore.getState()
+    recordGitOperation('proj-a', OP)
+    const before = useGitPanelStore.getState()
+    recordGitOperation('proj-a', OP)
+    expect(useGitPanelStore.getState()).toBe(before)
+    expect(useGitPanelStore.getState().operationByProject['proj-a']).toBe(
+      before.operationByProject['proj-a'],
+    )
+  })
+
+  it('an empty patch on an absent project is a reference-stable no-op', () => {
+    const before = useGitPanelStore.getState()
+    useGitPanelStore.getState().recordGitOperation('never-seen', {})
+    expect(useGitPanelStore.getState()).toBe(before)
+    expect(useGitPanelStore.getState().operationByProject['never-seen']).toBeUndefined()
+  })
+
+  it('a patch equal to the default on an absent project is a no-op', () => {
+    // acknowledged=false is already the implicit default: it must not
+    // fabricate an entry (mirrors the commit-slice contract).
+    const before = useGitPanelStore.getState()
+    useGitPanelStore.getState().recordGitOperation('never-seen', { acknowledged: false })
+    expect(useGitPanelStore.getState()).toBe(before)
+    expect(useGitPanelStore.getState().operationByProject['never-seen']).toBeUndefined()
+  })
+
+  it('acknowledgeOperation flips the flag and is a no-op when already set', () => {
+    const { recordGitOperation, acknowledgeOperation } = useGitPanelStore.getState()
+    recordGitOperation('proj-a', OP)
+    acknowledgeOperation('proj-a')
+    expect(useGitPanelStore.getState().operationByProject['proj-a']!.acknowledged).toBe(true)
+
+    const before = useGitPanelStore.getState()
+    acknowledgeOperation('proj-a')
+    expect(useGitPanelStore.getState()).toBe(before)
+  })
+
+  it('acknowledgeOperation is a no-op for an unknown project', () => {
+    const before = useGitPanelStore.getState()
+    useGitPanelStore.getState().acknowledgeOperation('never-seen')
+    expect(useGitPanelStore.getState()).toBe(before)
+    expect(useGitPanelStore.getState().operationByProject['never-seen']).toBeUndefined()
+  })
+
+  it('dropProjectOperation removes only the given project', () => {
+    const { recordGitOperation, dropProjectOperation } = useGitPanelStore.getState()
+    recordGitOperation('proj-a', OP)
+    recordGitOperation('proj-b', OP)
+    dropProjectOperation('proj-a')
+    const map = useGitPanelStore.getState().operationByProject
+    expect(map['proj-a']).toBeUndefined()
+    expect(map['proj-b']).toBeDefined()
+  })
+
+  it('dropProjectOperation is a reference-stable no-op for an unknown project', () => {
+    const { recordGitOperation, dropProjectOperation } = useGitPanelStore.getState()
+    recordGitOperation('proj-a', OP)
+    const before = useGitPanelStore.getState()
+    expect(() => dropProjectOperation('never-seen')).not.toThrow()
+    expect(useGitPanelStore.getState()).toBe(before)
+  })
+
+  it('the record survives an A→B→A project switch (in-memory)', () => {
+    const { recordGitOperation } = useGitPanelStore.getState()
+    recordGitOperation('proj-a', OP)
+    recordGitOperation('proj-b', { ...OP, kind: 'fetch' })
+    const map = useGitPanelStore.getState().operationByProject
+    expect(map['proj-a']).toEqual(OP)
+    expect(map['proj-b']!.kind).toBe('fetch')
+  })
+
+  it('operationByProject is transient: excluded from the persisted partial', () => {
+    const { recordGitOperation } = useGitPanelStore.getState()
+    recordGitOperation('proj-a', OP)
+    const partial = partializeGitPanel(useGitPanelStore.getState())
+    expect(partial).not.toHaveProperty('operationByProject')
+  })
+
+  it('operationByProject is never written to localStorage', () => {
+    const { recordGitOperation } = useGitPanelStore.getState()
+    recordGitOperation('proj-a', OP)
+    // Force a persist flush via a persisted (partialized) write.
+    useGitPanelStore.getState().setActiveTab('proj-a', 'history')
+
+    const raw = localStorage.getItem('git-panel-settings')
+    expect(raw).toBeTruthy()
+    expect(raw!).not.toContain('operationByProject')
+    const parsed = JSON.parse(raw!) as { state: Record<string, unknown> }
+    expect(parsed.state).not.toHaveProperty('operationByProject')
+    // The persisted slice it DOES carry is intact.
+    expect(parsed.state.activeTabByProject).toEqual({ 'proj-a': 'history' })
+  })
+
+  it('reset clears operationByProject', () => {
+    const { recordGitOperation, reset } = useGitPanelStore.getState()
+    recordGitOperation('proj-a', OP)
+    reset()
+    expect(useGitPanelStore.getState().operationByProject).toEqual({})
+  })
+
+  it('selectLastOperation returns undefined for null/undefined/unknown project', () => {
+    const s = useGitPanelStore.getState()
+    expect(selectLastOperation(s, 'never-seen')).toBeUndefined()
+    expect(selectLastOperation(s, null)).toBeUndefined()
+    expect(selectLastOperation(s, undefined)).toBeUndefined()
+  })
+
+  it('selectLastOperation returns the stored record by reference (stable, allocating nothing)', () => {
+    const { recordGitOperation } = useGitPanelStore.getState()
+    recordGitOperation('proj-a', OP)
+    const s = useGitPanelStore.getState()
+    const first = selectLastOperation(s, 'proj-a')
+    const second = selectLastOperation(s, 'proj-a')
+    // Same reference as the stored object, and identical across calls.
+    expect(first).toBe(s.operationByProject['proj-a'])
+    expect(first).toBe(second)
   })
 })

@@ -34,7 +34,9 @@ import { NewBranchSection } from './NewBranchSection'
  * - Provides a "New Branch" field + button (with optional base selector) that
  *   calls CreateBranch and checks out the new branch immediately.
  * - Checkout runs through the shared {@link useBranchActions} hook (single
- *   busy/error track); the picker closes on success and stays open on error.
+ *   busy track that records each result in the Git panel's operation console);
+ *   the picker closes once the checkout settles — on success AND on error — so
+ *   a recorded failure is visible in that console rather than behind the modal.
  */
 export function BranchPicker() {
   const isOpen = useGitPanelStore((s) => s.isBranchPickerOpen)
@@ -114,21 +116,21 @@ export function BranchPicker() {
   const visibleLocal = localBranches.filter((b) => filterFn(b.name))
   const visibleRemote = remoteBranches.filter((b) => filterFn(b.name))
 
-  // Checkout (local + remote) closes on success and stays open on error. The
-  // shared hook captures errors into `actions.error`; the boolean return tells
-  // us whether the operation succeeded so we can close only on success.
+  // Checkout (local + remote) closes the picker once the operation settles —
+  // on success AND on error. The shared hook records the outcome in the Git
+  // panel's operation console, so the picker must not linger over a failure.
   const handleCheckout = useCallback(
     async (name: string) => {
-      const ok = await checkout(name)
-      if (ok) closeBranchPicker()
+      await checkout(name)
+      closeBranchPicker()
     },
     [checkout, closeBranchPicker],
   )
 
   const handleCheckoutRemote = useCallback(
     async (remoteBranch: string) => {
-      const ok = await checkoutRemote(remoteBranch)
-      if (ok) closeBranchPicker()
+      await checkoutRemote(remoteBranch)
+      closeBranchPicker()
     },
     [checkoutRemote, closeBranchPicker],
   )
@@ -143,18 +145,11 @@ export function BranchPicker() {
   const disabledFor = (name: string): boolean =>
     actions.isBusy && actions.busyBranch !== name
 
-  const displayedError = error ?? actions.error
-
   return (
     <Dialog
       open={isOpen}
       onOpenChange={(open) => {
-        if (open) {
-          actions.clearError()
-          actions.clearOutput()
-        } else {
-          closeBranchPicker()
-        }
+        if (!open) closeBranchPicker()
       }}
     >
       <DialogContent
@@ -262,18 +257,11 @@ export function BranchPicker() {
           onCreated={closeBranchPicker}
         />
 
-        {/* Output (successful remote-op progress) */}
-        {actions.output && (
-          <div className="flex items-center gap-1.5 border-t border-success/20 px-4 py-2 text-xs text-success shrink-0">
-            <span className="truncate">{actions.output}</span>
-          </div>
-        )}
-
-        {/* Error */}
-        {displayedError && (
+        {/* Local error (branch-list load / create-branch failures) */}
+        {error && (
           <div className="flex items-center gap-1.5 border-t border-destructive/20 px-4 py-2 text-xs text-destructive shrink-0">
             <AlertCircle className="size-3.5 shrink-0" />
-            <span className="truncate">{displayedError}</span>
+            <span className="truncate">{error}</span>
           </div>
         )}
       </DialogContent>

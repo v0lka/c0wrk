@@ -25,6 +25,7 @@ vi.mock('@/lib/logger', () => ({
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { BranchPicker } from './BranchPicker'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useProjectStore } from '@/stores/projectStore'
 
 let container: HTMLDivElement
 let root: Root
@@ -41,6 +42,8 @@ beforeEach(() => {
   gitMocks.getBranches.mockResolvedValue([])
 
   useGitPanelStore.getState().reset()
+  // Branch operations record their outcome against the ACTIVE project.
+  useProjectStore.setState({ activeProjectId: 'p1' })
   useGitPanelStore.getState().openBranchPicker()
   useGitPanelStore.setState({
     branch: { name: 'main', upstream: '', ahead: 0, behind: 0 },
@@ -186,15 +189,19 @@ describe('BranchPicker', () => {
     const devRow = branchRow('dev')!
     await act(async () => {
       devRow.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await Promise.resolve()
-      await Promise.resolve()
     })
+    await flush()
 
     expect(gitMocks.checkoutBranch).toHaveBeenCalledWith('dev')
     expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(false)
+    // The outcome is recorded in the operation console slice.
+    expect(useGitPanelStore.getState().operationByProject['p1']).toMatchObject({
+      kind: 'checkout',
+      ok: true,
+    })
   })
 
-  it('shows an error when checkoutBranch fails and stays open', async () => {
+  it('records a checkout failure in the operation console and closes', async () => {
     gitMocks.getBranches.mockResolvedValue([
       { name: 'main', is_current: true, kind: 'local', upstream: '' },
       { name: 'dev', is_current: false, kind: 'local', upstream: '' },
@@ -208,12 +215,17 @@ describe('BranchPicker', () => {
     const devRow = branchRow('dev')!
     await act(async () => {
       devRow.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await Promise.resolve()
-      await Promise.resolve()
     })
+    await flush()
 
-    expect(body().textContent).toContain('local changes would be overwritten')
-    expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(true)
+    // The picker closes on error (the operation console surfaces it) and the
+    // failure is recorded against the active project.
+    expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(false)
+    expect(useGitPanelStore.getState().operationByProject['p1']).toMatchObject({
+      kind: 'checkout',
+      ok: false,
+      error: 'local changes would be overwritten',
+    })
   })
 
   it('filters branches by the filter input', async () => {

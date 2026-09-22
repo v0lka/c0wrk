@@ -15,8 +15,9 @@ import * as reviewApi from '@/api/review'
  *
  * Hosts the bulk change operations that only make sense while viewing the
  * working-tree changes: abort merge/rebase, stage/unstage all, stash
- * create/pop, plus the flat/tree view-mode toggle and a shared error
- * indicator. Rendered above `SortGroupControls` inside `ChangesList`.
+ * create/pop, plus the flat/tree view-mode toggle. Rendered above
+ * `SortGroupControls` inside `ChangesList`. Results (success and failure) are
+ * surfaced by the Git panel's operation console, not by an inline indicator.
  *
  * The branch indicator lives in `GitPanelToolbar` (always visible across
  * tabs); everything else that used to share that toolbar was moved here so
@@ -39,8 +40,6 @@ export function ChangesToolbar() {
     isUnstagingAll,
     isAborting,
     isBusy,
-    error,
-    setError,
     handleStageAll,
     handleUnstageAll,
     handleAbort,
@@ -127,7 +126,7 @@ export function ChangesToolbar() {
       </div>
 
       {/* Stash / Pop stash */}
-      <GitStashButtons onError={setError} />
+      <GitStashButtons />
 
       {/* Review button — opens the review page in the file viewer */}
       <Button
@@ -144,16 +143,6 @@ export function ChangesToolbar() {
 
       {/* Spacer */}
       <div className="flex-1" />
-
-      {/* Error indicator */}
-      {error && (
-        <span
-          className="text-[10px] text-destructive truncate max-w-[120px]"
-          title={error}
-        >
-          {error}
-        </span>
-      )}
 
       {/* View mode toggle */}
       <div className="flex items-center rounded-md border border-border/50 overflow-hidden">

@@ -9,6 +9,7 @@ import {
   type StudyMode,
 } from '@/components/papers/paperActions'
 import { appendToGitignore } from '@/api/git'
+import { runGitOperation } from '@/lib/gitOperation'
 import { emit, clipboardSetText } from '@/api/runtime'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
@@ -174,18 +175,27 @@ export function FileTreeContextMenu({
 
   // --- Add to .gitignore ---
   const handleAddToGitignore = useCallback(async () => {
+    const projectId = useProjectStore.getState().activeProjectId
     setIsIgnoring(true)
     try {
-      await appendToGitignore(relativePath)
-    } catch (err) {
-      useGitPanelStore.getState().setError(
-        err instanceof Error ? err.message : 'Failed to update .gitignore',
-      )
-      // Switch to the Git panel so the store-level error banner is visible —
-      // the user is on the Explorer tab and wouldn't see it otherwise.
-      // Per-project: record the switch against the active project.
-      const projectId = useProjectStore.getState().activeProjectId
-      if (projectId !== null) {
+      if (projectId === null) {
+        await appendToGitignore(relativePath)
+        return
+      }
+      // Success is silent (the entry leaves the tree); only a failure is
+      // recorded in the operation console.
+      const outcome = await runGitOperation({
+        projectId,
+        kind: 'gitignore',
+        label: `Added ${relativePath} to .gitignore`,
+        fn: () => appendToGitignore(relativePath),
+        recordSuccess: false,
+      })
+      if (!outcome.ok) {
+        // Switch to the Git panel so the recorded failure (shown in its
+        // footer console) is visible — the user is on the Explorer tab and
+        // wouldn't see it otherwise. Per-project: record the switch against
+        // the active project.
         useUIStore.getState().setWorkspaceTab(projectId, 'git')
       }
     } finally {

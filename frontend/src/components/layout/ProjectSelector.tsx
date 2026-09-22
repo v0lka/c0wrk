@@ -91,6 +91,9 @@ export function ProjectSelector() {
         // message, generation flag, error/success banner) so the per-project
         // map stays bounded.
         useGitPanelStore.getState().dropProjectCommitState(id);
+        // Drop the deleted project's transient last-git-operation record so
+        // its per-project map stays bounded too.
+        useGitPanelStore.getState().dropProjectOperation(id);
         // Drop the deleted project's persisted tab selections (git-panel active
         // tab + workspace panel tab) so both per-project maps stay bounded.
         useGitPanelStore.getState().dropProjectTabs(id);

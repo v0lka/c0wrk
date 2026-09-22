@@ -40,6 +40,13 @@ vi.mock('@/stores/fileViewerStore', () => ({
   },
 }))
 
+const { gitPanelActions } = vi.hoisted(() => ({
+  gitPanelActions: {
+    setPendingBranchBase: vi.fn(),
+    openBranchPicker: vi.fn(),
+    recordGitOperation: vi.fn(),
+  },
+}))
 const { gitPanelStoreMock } = vi.hoisted(() => ({
   gitPanelStoreMock: {
     getState: vi.fn(),
@@ -50,6 +57,7 @@ vi.mock('@/stores/gitPanelStore', () => ({
 }))
 
 import { GitHistoryContextMenu } from './GitHistoryContextMenu'
+import { useProjectStore } from '@/stores/projectStore'
 
 let container: HTMLDivElement
 let root: Root
@@ -64,14 +72,10 @@ beforeEach(() => {
   gitMocks.deleteRemoteTag.mockResolvedValue('deleted')
   gitMocks.resetToCommit.mockResolvedValue(undefined)
   runtimeMocks.clipboardSetText.mockResolvedValue(true)
-  const setPendingBranchBase = vi.fn()
-  const openBranchPicker = vi.fn()
-  const setError = vi.fn()
-  gitPanelStoreMock.getState.mockReturnValue({
-    setPendingBranchBase,
-    openBranchPicker,
-    setError,
-  })
+  Object.values(gitPanelActions).forEach((m) => m.mockReset())
+  gitPanelStoreMock.getState.mockReturnValue(gitPanelActions)
+  // Git operations record their outcome against the ACTIVE project.
+  useProjectStore.setState({ activeProjectId: 'p1' })
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -225,6 +229,10 @@ describe('GitHistoryContextMenu — Create › Tag', () => {
     })
     expect(gitMocks.createTag).toHaveBeenCalledWith('v2.0', 'abc1234')
     expect(onAfterMutation).toHaveBeenCalled()
+    expect(gitPanelActions.recordGitOperation).toHaveBeenCalledWith(
+      'p1',
+      expect.objectContaining({ kind: 'tag-create', ok: true }),
+    )
   })
 
   it('disables the create button while the name is empty', async () => {
@@ -247,6 +255,10 @@ describe('GitHistoryContextMenu — Reset', () => {
     await flush()
     expect(gitMocks.resetToCommit).toHaveBeenCalledWith('abc1234', 'soft')
     expect(onAfterMutation).toHaveBeenCalled()
+    expect(gitPanelActions.recordGitOperation).toHaveBeenCalledWith(
+      'p1',
+      expect.objectContaining({ kind: 'reset', ok: true }),
+    )
   })
 
   it('performs a mixed reset and reloads history', async () => {
@@ -257,6 +269,10 @@ describe('GitHistoryContextMenu — Reset', () => {
     await flush()
     expect(gitMocks.resetToCommit).toHaveBeenCalledWith('abc1234', 'mixed')
     expect(onAfterMutation).toHaveBeenCalled()
+    expect(gitPanelActions.recordGitOperation).toHaveBeenCalledWith(
+      'p1',
+      expect.objectContaining({ kind: 'reset', ok: true }),
+    )
   })
 
   it('opens a confirmation dialog for a hard reset before executing', async () => {
@@ -275,6 +291,10 @@ describe('GitHistoryContextMenu — Reset', () => {
       await flush()
     })
     expect(gitMocks.resetToCommit).toHaveBeenCalledWith('abc1234', 'hard')
+    expect(gitPanelActions.recordGitOperation).toHaveBeenCalledWith(
+      'p1',
+      expect.objectContaining({ kind: 'reset', ok: true }),
+    )
   })
 
   it('labels the Reset submenu with the current branch name', () => {
@@ -312,6 +332,10 @@ describe('GitHistoryContextMenu — Tag submenu', () => {
     await flush()
     expect(gitMocks.deleteTag).toHaveBeenCalledWith('v1.0')
     expect(onAfterMutation).toHaveBeenCalled()
+    expect(gitPanelActions.recordGitOperation).toHaveBeenCalledWith(
+      'p1',
+      expect.objectContaining({ kind: 'tag-delete', ok: true }),
+    )
   })
 
   it('pushes a tag to the remote from the per-tag submenu', async () => {
@@ -323,6 +347,10 @@ describe('GitHistoryContextMenu — Tag submenu', () => {
     await flush()
     expect(gitMocks.pushTag).toHaveBeenCalledWith('v1.0', '')
     expect(onAfterMutation).toHaveBeenCalled()
+    expect(gitPanelActions.recordGitOperation).toHaveBeenCalledWith(
+      'p1',
+      expect.objectContaining({ kind: 'tag-push', ok: true }),
+    )
   })
 
   it('deletes a remote tag from the per-tag submenu', async () => {
@@ -334,6 +362,10 @@ describe('GitHistoryContextMenu — Tag submenu', () => {
     await flush()
     expect(gitMocks.deleteRemoteTag).toHaveBeenCalledWith('v1.0', '')
     expect(onAfterMutation).toHaveBeenCalled()
+    expect(gitPanelActions.recordGitOperation).toHaveBeenCalledWith(
+      'p1',
+      expect.objectContaining({ kind: 'tag-delete-remote', ok: true }),
+    )
   })
 
   it('opens the Switch Branch dialog with the tag as base', async () => {

@@ -8,6 +8,7 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useGitStatusEvents } from '@/hooks/useGitStatusEvents'
 import { getFileDiff } from '@/api/workspace'
 import { stageFile, unstageFile } from '@/api/git'
+import { runGitOperation } from '@/lib/gitOperation'
 import type { StageAction } from '@/lib/gitStatus'
 import { GitPanelToolbar } from './GitPanelToolbar'
 import { ChangesList } from './ChangesList'
@@ -51,20 +52,19 @@ export function GitPanel() {
    * staged and unstaged (`MM`) resolves correctly per row.
    */
   const onToggleFile = useCallback(async (path: string, action: StageAction) => {
-    try {
-      if (action === 'unstage') {
-        await unstageFile(path)
-      } else {
-        await stageFile(path)
-      }
-      // The backend emits `git:status_changed` after StageFile/UnstageFile,
-      // which is picked up by useGitStatusEvents — no manual refresh needed.
-    } catch (err) {
-      logger.error('Failed to toggle file stage:', err)
-      useGitPanelStore.getState().setError(
-        err instanceof Error ? err.message : 'Failed to toggle file stage',
-      )
-    }
+    const projectId = useProjectStore.getState().activeProjectId
+    if (!projectId) return
+    // The backend emits `git:status_changed` after StageFile/UnstageFile,
+    // which is picked up by useGitStatusEvents — no manual refresh needed.
+    // Success is silent (the row moves between sections); only a failure is
+    // recorded in the operation console.
+    await runGitOperation({
+      projectId,
+      kind: action === 'unstage' ? 'unstage' : 'stage',
+      label: `${action === 'unstage' ? 'Unstaged' : 'Staged'} ${path}`,
+      fn: () => (action === 'unstage' ? unstageFile(path) : stageFile(path)),
+      recordSuccess: false,
+    })
   }, [])
 
   /** Open a file diff in the FileViewerPanel. */

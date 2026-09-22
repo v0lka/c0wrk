@@ -44,6 +44,7 @@
 | Embedding execution provider (GPU/CUDA), `fetch-onnx-gpu` packaging, embedding fallback semantics, GPU release artifact & flavor-pinned updates | [decisions/045-gpu-embedding-provider.md](decisions/045-gpu-embedding-provider.md), [decisions/046-cuda-release-artifact.md](decisions/046-cuda-release-artifact.md), [domains/workspace.md](domains/workspace.md) (Embedding Execution Provider section) |
 | Git subprocess hardening (untrusted repos, `.git/config` vectors, hooks/filters neutralization, `.git` write gate) + user trust/harden opt-out (snapshot-bound, recheck-with-diff, fail-closed) + commit hooks/signing gate (withhold-and-decide, `DetectCommitSuppression`) | [decisions/033-git-subprocess-hardening.md](decisions/033-git-subprocess-hardening.md), [decisions/034-git-trust-opt-out.md](decisions/034-git-trust-opt-out.md), [decisions/059-commit-hooks-signing-gate.md](decisions/059-commit-hooks-signing-gate.md), [architecture/security-model.md](architecture/security-model.md) (Git Subprocess Hardening), [domains/workspace.md](domains/workspace.md) |
 | Git auto-fetch (background `git fetch`, switch/ticker/focus triggers) | [domains/git-auto-fetch.md](domains/git-auto-fetch.md)             |
+| Git operation console (per-project footer log of git mutation results) | [domains/frontend/git-operation-console.md](domains/frontend/git-operation-console.md), [domains/frontend/stores.md](domains/frontend/stores.md) (`gitPanelStore` `operationByProject`) |
 | Auxiliary work directories               | [architecture/security-model.md](architecture/security-model.md), [contracts/desktop-frontend.md](contracts/desktop-frontend.md) (Work Directories section), [domains/frontend/stores.md](domains/frontend/stores.md) (`workDirsStore`) |
 | Frontend stores, state management        | [domains/frontend/stores.md](domains/frontend/stores.md)                 |
 | UI scale / zoom-safe sizing & popover placement | [domains/frontend/ui-scale.md](domains/frontend/ui-scale.md)       |
@@ -143,6 +144,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [README.md](domains/frontend/README.md) - Frontend architecture overview
 - [ui-scale.md](domains/frontend/ui-scale.md) - UI scale feature and the zoom-safety invariant: coordinate spaces (visual vs layout px), percentage/`--ui-vh` sizing, pointer-anchored panel placement, floating-ui compensation, guard tests
 - [stores.md](domains/frontend/stores.md) - Zustand store catalog
+- [git-operation-console.md](domains/frontend/git-operation-console.md) - Git operation console: the footer log button + anchored popover for the last git mutation result (button tint, popover contents, per-project scope, which operations feed it, acknowledge semantics, zoom-safe sizing)
 - [events.md](domains/frontend/events.md) - Event subscription and handling
 - [rendering.md](domains/frontend/rendering.md) - Message grouping and display pipeline
 - [sound-notifications.md](domains/frontend/sound-notifications.md) - Web Audio notification cues: event→tone pipeline, AudioContext lifecycle, recovery/replacement guarantees

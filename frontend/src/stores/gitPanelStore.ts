@@ -54,11 +54,14 @@ const GIT_PANEL_TAB_VALUES = new Set<GitPanelTab>(['files', 'changes', 'history'
 
 /**
  * Per-project state for the commit box: the draft message, the AI-generation
- * flag, the commit-in-flight flag, the last error, and the SHA of the most
- * recent commit (success banner). Keyed by project id so a draft survives
- * project switches and CHAT↔CODE mode switches (GitPanel unmount), and so a
- * mid-generation project switch can never land text in the wrong project's
- * box. Transient — NOT persisted.
+ * flag, the commit-in-flight flag, and the inline draft/generation error.
+ * Keyed by project id so a draft survives project switches and CHAT↔CODE mode
+ * switches (GitPanel unmount), and so a mid-generation project switch can
+ * never land text in the wrong project's box. Transient — NOT persisted.
+ *
+ * Commit OUTCOMES (success or failure) are deliberately absent: they are a
+ * git operation result and land in the git-operation console
+ * (`operationByProject`) through `runGitOperation`, never inline here.
  */
 export interface CommitDraftState {
   /** Draft commit message shown in the textarea. */
@@ -67,19 +70,12 @@ export interface CommitDraftState {
   isGenerating: boolean
   /** True while the commit RPC itself is in flight (disables the buttons). */
   isCommitting: boolean
-  /** Last generation/commit error surfaced under the textarea. */
-  error: string | null
-  /** SHA of the most recently created commit (FE-1). Drives the success banner. */
-  lastCommitSha: string | null
   /**
-   * Bounded combined stdout+stderr of the most recent commit spawn (hook /
-   * signing output for trusted repositories). Non-empty only when the commit
-   * produced output; drives the collapsed-by-default "hook output" section
-   * under the success banner. Unlike the banner it OUTLIVES the banner's
-   * auto-dismissal (a collapsed log the user may expand later must not
-   * vanish after 4s mid-read) — it is replaced by the next commit instead.
+   * Inline error under the textarea for DRAFT/GENERATE/VALIDATION failures
+   * only (e.g. a failed AI generation). A commit outcome is a git operation
+   * result and is surfaced in the git-operation console instead.
    */
-  lastCommitOutput: string | null
+  error: string | null
 }
 
 /**
@@ -92,42 +88,102 @@ export const EMPTY_COMMIT_DRAFT: CommitDraftState = {
   isGenerating: false,
   isCommitting: false,
   error: null,
-  lastCommitSha: null,
-  lastCommitOutput: null,
+}
+
+/**
+ * Every git operation that can surface a user-visible result (success banner
+ * or failure toast) in the Git panel. A closed union so callers/UI switch
+ * exhaustively and an unknown op string can never leak into the store.
+ * `'unknown'` is the sentinel used only as the merge base of a record created
+ * before its kind has been supplied — real callers always pass a concrete kind.
+ */
+export type GitOperationKind =
+  | 'unknown'
+  | 'stage'
+  | 'unstage'
+  | 'stage-all'
+  | 'unstage-all'
+  | 'commit'
+  | 'pull'
+  | 'push'
+  | 'fetch'
+  | 'stash-create'
+  | 'stash-pop'
+  | 'stash-drop'
+  | 'checkout'
+  | 'branch-create'
+  | 'branch-rename'
+  | 'branch-delete'
+  | 'branch-push'
+  | 'branch-checkout-remote'
+  | 'branch-delete-remote'
+  | 'discard'
+  | 'gitignore'
+  | 'merge'
+  | 'rebase'
+  | 'merge-abort'
+  | 'rebase-abort'
+  | 'tag-create'
+  | 'tag-delete'
+  | 'tag-push'
+  | 'tag-delete-remote'
+  | 'reset'
+
+/**
+ * The outcome of the most recent git operation for a project. Keyed by project
+ * id so the result (and its acknowledgement) survives project switches and
+ * CHAT↔CODE mode switches (GitPanel unmount), and so a slow operation that
+ * completes after a project switch can never land in the wrong project's
+ * banner. Transient — NOT persisted: a result banner is live feedback, never
+ * rehydrated from a previous session.
+ */
+export interface GitOperationRecord {
+  /** Which operation produced this result. */
+  kind: GitOperationKind
+  /** Human-readable summary shown next to the result (e.g. "Pushed to origin"). */
+  label: string
+  /** True on success; false when `error` is set. */
+  ok: boolean
+  /** Bounded combined stdout+stderr of the operation (may be empty). */
+  output: string
+  /** Failure message when `ok` is false; null on success. */
+  error: string | null
+  /** Epoch milliseconds when the operation completed (ordering / relative time). */
+  at: number
+  /** True once the user has dismissed the result banner/toast. */
+  acknowledged: boolean
+}
+
+/**
+ * Default per-project operation record, used as the merge base when a project
+ * has no entry yet. Referentially stable (module constant) so the merge helper
+ * can compare a patch against the defaults without allocating, and so an
+ * otherwise-no-op patch stays reference-stable.
+ */
+export const EMPTY_GIT_OPERATION: GitOperationRecord = {
+  kind: 'unknown',
+  label: '',
+  ok: false,
+  output: '',
+  error: null,
+  at: 0,
+  acknowledged: false,
 }
 
 // --- State types ---
-
-/**
- * Auto-dismissal delay for the per-project commit success banner (FE-1).
- */
-export const COMMIT_BANNER_DISMISS_MS = 4000
-
-/**
- * Pending per-project banner-dismissal timers. Module-level (not store
- * state): timers are imperative runtime objects, not serializable state.
- * Keyed by project id so banners in different projects dismiss
- * independently — a single component-owned timer cleared on every new
- * commit (or killed by a CHAT-mode GitPanel unmount) left earlier projects'
- * banners stuck until their next commit. Owned by the store so dismissal
- * survives unmounts and project switches alike.
- */
-const commitBannerTimers = new Map<string, ReturnType<typeof setTimeout>>()
-
-/** Cancel a project's pending banner-dismissal timer, if any. */
-function clearCommitBannerTimer(projectId: string): void {
-  const timer = commitBannerTimers.get(projectId)
-  if (timer !== undefined) {
-    clearTimeout(timer)
-    commitBannerTimers.delete(projectId)
-  }
-}
 
 interface GitPanelState {
   viewMode: 'flat' | 'tree'
   entries: GitPanelEntry[]
   /** Transient per-project commit-box state, keyed by project id. Not persisted. */
   commitByProject: Record<string, CommitDraftState>
+  /**
+   * Transient per-project result of the most recent git operation, keyed by
+   * project id. Not persisted. Keeps the last op's outcome (success or
+   * failure) so the Git panel can show a banner/toast that survives project
+   * switches and panel remounts.
+   */
+  operationByProject: Record<string, GitOperationRecord>
   branch: BranchInfo
   branches: Branch[]
   isBranchPickerOpen: boolean
@@ -194,20 +250,25 @@ interface GitPanelActions {
   setGeneratingCommit: (projectId: string, generating: boolean) => void
   /** Toggle the commit-in-flight flag for a project. */
   setCommitting: (projectId: string, committing: boolean) => void
-  /** Set or clear the commit-box error for a project. */
+  /** Set or clear the inline draft/generation/validation error for a project. */
   setCommitError: (projectId: string, error: string | null) => void
-  /**
-   * Record a successful commit for a project: store the new SHA (drives the
-   * success banner), clear that project's draft message, remember the
-   * bounded commit output (drives the collapsed "hook output" section), and
-   * arm a per-project auto-dismissal timer (COMMIT_BANNER_DISMISS_MS) that
-   * clears the banner again — unless a newer commit replaced it first.
-   * Passing `null` clears the banner immediately (manual dismissal) and
-   * keeps the draft.
-   */
-  setCommitSuccess: (projectId: string, sha: string | null, output?: string) => void
   /** Drop a project's commit-box state entirely (project deleted). */
   dropProjectCommitState: (projectId: string) => void
+  /**
+   * Record (or update) the result of the most recent git operation for a
+   * project. `patch` is merged over the project's existing record (or over
+   * EMPTY_GIT_OPERATION when the project has none); a patch that changes
+   * nothing is a reference-stable no-op (no new object, no subscriber churn).
+   */
+  recordGitOperation: (projectId: string, patch: Partial<GitOperationRecord>) => void
+  /**
+   * Mark a project's last operation result as acknowledged (the banner was
+   * dismissed). No-op (reference-stable) when the project has no record or
+   * the flag is already set.
+   */
+  acknowledgeOperation: (projectId: string) => void
+  /** Drop a project's last-operation record entirely (project deleted). */
+  dropProjectOperation: (projectId: string) => void
   setGitRepo: (isRepo: boolean, projectId: string | null) => void
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
@@ -249,6 +310,7 @@ const initialState: GitPanelState = {
   viewMode: 'flat',
   entries: [],
   commitByProject: {},
+  operationByProject: {},
   branch: EMPTY_BRANCH_INFO,
   branches: [],
   expandedDirs: new Set<string>(),
@@ -272,6 +334,8 @@ const initialState: GitPanelState = {
 /**
  * Select the slice of state persisted to localStorage. `expandedDirs` (a Set)
  * is serialized to an array; `sortBy`/`groupBy` are persisted directly (D8).
+ * Transient slices (`commitByProject`, `operationByProject`, `entries`, …) are
+ * deliberately omitted — live feedback is never rehydrated from a prior run.
  */
 export function partializeGitPanel(
   state: GitPanelState & GitPanelActions,
@@ -386,6 +450,21 @@ export function selectSkipCommitSuppress(
   return state.skipCommitSuppressByProject[projectId] === true
 }
 
+/**
+ * Pure selector for a project's most recent git operation record. Returns the
+ * stored record by REFERENCE (so Zustand's snapshot equality sees a stable
+ * value and subscribers don't re-render on an unrelated state change) or
+ * `undefined` when the project has no record — including the null/undefined
+ * project id during CHAT mode. Allocates nothing.
+ */
+export function selectLastOperation(
+  state: Pick<GitPanelState, 'operationByProject'>,
+  projectId: string | null | undefined,
+): GitOperationRecord | undefined {
+  if (projectId === null || projectId === undefined) return undefined
+  return state.operationByProject[projectId]
+}
+
 // --- Store ---
 
 /**
@@ -406,6 +485,34 @@ function withCommitDraft(
   return {
     commitByProject: {
       ...s.commitByProject,
+      [projectId]: {
+        ...current,
+        ...patch,
+      },
+    },
+  }
+}
+
+/**
+ * Spread-update one project's operation record, merging the patch over the
+ * project's existing record (or over EMPTY_GIT_OPERATION when it has none).
+ * Other projects' records are untouched. A patch whose every key already
+ * equals the current value returns the state itself (reference-equal no-op)
+ * so subscribers don't churn — the same contract `withCommitDraft` and the
+ * per-key stores use.
+ */
+function withGitOperation(
+  s: GitPanelState,
+  projectId: string,
+  patch: Partial<GitOperationRecord>,
+): GitPanelState | Pick<GitPanelState, 'operationByProject'> {
+  const current = s.operationByProject[projectId] ?? EMPTY_GIT_OPERATION
+  if ((Object.keys(patch) as (keyof GitOperationRecord)[]).every((k) => current[k] === patch[k])) {
+    return s
+  }
+  return {
+    operationByProject: {
+      ...s.operationByProject,
       [projectId]: {
         ...current,
         ...patch,
@@ -456,41 +563,7 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
       setCommitError: (projectId, error) =>
         set((s) => withCommitDraft(s, projectId, { error })),
 
-      setCommitSuccess: (projectId, sha, output) => {
-        // A manual dismiss (null) or a newer commit replaces any pending
-        // auto-dismissal for this project first.
-        clearCommitBannerTimer(projectId)
-        if (sha === null) {
-          set((s) => withCommitDraft(s, projectId, { lastCommitSha: null }))
-          return
-        }
-        set((s) =>
-          withCommitDraft(s, projectId, {
-            lastCommitSha: sha,
-            // A real SHA marks a completed commit: consume the draft.
-            // `null` only dismisses the banner and must not wipe a draft
-            // the user may have started typing.
-            message: '',
-            // Bounded combined commit output (hook/signing lines). Replaced
-            // by every new commit; deliberately NOT cleared by the banner's
-            // auto-dismissal (see CommitDraftState.lastCommitOutput).
-            lastCommitOutput: output ?? null,
-          }),
-        )
-        const timer = setTimeout(() => {
-          commitBannerTimers.delete(projectId)
-          set((s) => {
-            // Dismiss only the banner this timer was armed for: a newer
-            // commit in the same project must not be clobbered.
-            if (s.commitByProject[projectId]?.lastCommitSha !== sha) return s
-            return withCommitDraft(s, projectId, { lastCommitSha: null })
-          })
-        }, COMMIT_BANNER_DISMISS_MS)
-        commitBannerTimers.set(projectId, timer)
-      },
-
       dropProjectCommitState: (projectId) => {
-        clearCommitBannerTimer(projectId)
         set((s) => {
           const hasDraft = s.commitByProject[projectId] !== undefined
           const hasSkip =
@@ -510,6 +583,31 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
           return patch
         })
       },
+
+      recordGitOperation: (projectId, patch) =>
+        set((s) => withGitOperation(s, projectId, patch)),
+
+      acknowledgeOperation: (projectId) =>
+        set((s) => {
+          const current = s.operationByProject[projectId]
+          // An absent record or an already-acknowledged one is a no-op: never
+          // fabricate an entry just to flip a flag.
+          if (current === undefined || current.acknowledged) return s
+          return {
+            operationByProject: {
+              ...s.operationByProject,
+              [projectId]: { ...current, acknowledged: true },
+            },
+          }
+        }),
+
+      dropProjectOperation: (projectId) =>
+        set((s) => {
+          if (s.operationByProject[projectId] === undefined) return s
+          const next = { ...s.operationByProject }
+          delete next[projectId]
+          return { operationByProject: next }
+        }),
 
       setGitRepo: (isRepo, projectId) => set({ isGitRepo: isRepo, gitRepoProjectId: projectId }),
 
@@ -574,14 +672,12 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
       clearPendingBranchBase: () => set({ pendingBranchBase: null }),
 
       reset: () => {
-        for (const projectId of commitBannerTimers.keys()) {
-          clearCommitBannerTimer(projectId)
-        }
         set({
           ...initialState,
           expandedDirs: new Set<string>(),
           // Fresh empty maps — never share the initial-state objects across resets.
           commitByProject: {},
+          operationByProject: {},
           activeTabByProject: {},
           skipCommitSuppressByProject: {},
         })
