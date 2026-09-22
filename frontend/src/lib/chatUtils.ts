@@ -114,6 +114,20 @@ export function isPersistableHistoryMessage(msg: ChatMessage): boolean {
 }
 
 /**
+ * Predicate for the legacy `review_prompt` history rows — the post-task
+ * code-review prompt card removed by ADR-060. Existing databases still carry
+ * these rows (the backend owned their body: "Uncommitted changes detected in
+ * this repository."), and each one would otherwise surface as a stale muted
+ * `status` line at the tail of a session's chat via the legacy role map. The
+ * feature is gone and the row carries no actionable content, so it is dropped
+ * at history-load time (alongside the event_unknown filtering) instead of
+ * being rendered.
+ */
+export function isLegacyReviewPromptRow(msg: ChatMessage): boolean {
+  return msg.role === 'review_prompt'
+}
+
+/**
  * Extract the newest per-run agent quality report from persisted history
  * rows. The Go persister stores `agent_metrics` events as role-`status`
  * messages (payload in metadata); the live handler routes the same payload

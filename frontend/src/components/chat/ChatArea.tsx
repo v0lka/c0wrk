@@ -1,7 +1,7 @@
 import { useEffect, useRef, useMemo } from 'react'
 import { useChatStore, useSessionMessages, useSessionWorkUnits } from '@/stores/chatStore'
 import { useBookmarkStore } from '@/stores/bookmarkStore'
-import { groupMessages, stabilizeDisplayItems, chatMessageToUI, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow, isRoutingRequestRow } from '@/lib/chatUtils'
+import { groupMessages, stabilizeDisplayItems, chatMessageToUI, isPersistableHistoryMessage, isLegacyReviewPromptRow, lastAgentMetricsFromHistory, isAgentMetricsRow, isRoutingRequestRow } from '@/lib/chatUtils'
 import { restorePlanAndGoalFromHistory } from '@/lib/sessionStoreRestore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
@@ -100,14 +100,21 @@ export function ChatArea() {
       if (cancelled) return
 
       if (history.length > 0) {
-        // Filter out "event_unknown" rows — transient UI events
-        // (attachments:changed, session_pinned, etc.) that leaked into the DB
-        // before they were marked transient in the persister. Their content is
-        // the raw JSON metadata payload, which would render as garbage text.
-        const filteredHistory = history.filter(isPersistableHistoryMessage)
+        // Filter out rows that must never surface in the chat:
+        //  - "event_unknown" — transient UI events (attachments:changed,
+        //    session_pinned, etc.) that leaked into the DB before they were
+        //    marked transient in the persister. Their content is the raw JSON
+        //    metadata payload, which would render as garbage text.
+        //  - "review_prompt" — the removed post-task code-review prompt card
+        //    (ADR-060). Legacy databases still carry one per completed task;
+        //    without this they render as a stale "Uncommitted changes detected
+        //    in this repository." status line at the end of the chat.
+        const filteredHistory = history.filter(
+          (msg) => isPersistableHistoryMessage(msg) && !isLegacyReviewPromptRow(msg),
+        )
         const droppedCount = history.length - filteredHistory.length
         if (droppedCount > 0) {
-          logger.debug(`Filtered ${droppedCount} transient event_unknown row(s) from session history`)
+          logger.debug(`Filtered ${droppedCount} non-displayable row(s) from session history`)
         }
         const uiMessages = filteredHistory.map((msg) => chatMessageToUI(msg))
         // agent_metrics rows are session store-state, not chat content (the

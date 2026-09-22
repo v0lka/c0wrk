@@ -2,6 +2,11 @@
 
 All notable changes to **c0wrk**. Dates follow the tag date.
 
+## Unreleased
+
+### Changed
+- **Legacy `review_prompt` rows are hidden** — removing the post-task review prompt ([ADR-060](./specs/decisions/060-remove-post-task-review-prompt.md)) still left its already-persisted rows rendering as muted `status` lines. Each carries the backend-owned body "Uncommitted changes detected in this repository." and was written *after* `task_complete`, so it sat at the very end of a session's chat and read as if it were fresh output. History-load now drops `review_prompt` rows (frontend `isLegacyReviewPromptRow`, applied in `ChatArea` alongside the `event_unknown` filter), so the line no longer appears in any session, old or new. No migration is written — the rows stay in the database and the legacy `status` mapping plus its stable ids are kept only as a defensive fallback. See [ADR-062](./specs/decisions/062-hide-legacy-review-prompt-rows.md).
+
 ## v0.9.0 — 2026-09-21
 
 ### Changed

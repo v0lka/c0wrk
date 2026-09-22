@@ -65,17 +65,6 @@ export function LLMSettings({
 
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set())
 
-  // Portal target for the default-model picker's menu: the settings modal is
-  // a Radix dialog that sets pointer-events:none on <body>, which would make
-  // a document.body portal inert — portaling into this container keeps the
-  // menu interactive inside the dialog. Tracked via a callback ref + state
-  // (not a plain ref object): this component early-returns a spinner while
-  // `isLoading`, so the container first mounts on the render AFTER
-  // `setIsLoading(false)` — a plain `.current` read during that render is
-  // still null (the ref is assigned only at commit). A stateful node
-  // triggers the extra re-render that populates the prop.
-  const [portalNode, setPortalNode] = useState<HTMLDivElement | null>(null)
-
   // --- Add-provider form state -------------------------------------------
   const [showAddForm, setShowAddForm] = useState(false)
   const [addFormName, setAddFormName] = useState('')
@@ -170,7 +159,7 @@ export function LLMSettings({
   }
 
   return (
-    <div className="flex flex-col gap-6" ref={setPortalNode}>
+    <div className="flex flex-col gap-6">
       {/* Global Default Model */}
       <div className="flex flex-col gap-2">
         <label className="text-sm font-medium">Default Model</label>
@@ -186,7 +175,6 @@ export function LLMSettings({
           // warning below until a concrete model is picked.
           hideDefaultOption
           menuHeading="Default model"
-          portalContainer={portalNode}
           className="w-full h-9 text-sm px-3 max-w-none"
         />
         <p className="text-xs text-muted-foreground">

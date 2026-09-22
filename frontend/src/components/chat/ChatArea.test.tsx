@@ -15,7 +15,12 @@ import type { ReactElement } from 'react'
 
 // Enable React's act() flushing in this jsdom environment.
 
-import type { SessionInfo } from '@/types/models'
+import type { SessionInfo, ChatMessage } from '@/types/models'
+
+// Shared spy so a test can assert what ChatArea hands to mergeHistoryMessages
+// after the history-load filter. vi.hoisted keeps it in scope for the mock
+// factories below, which are hoisted above the imports.
+const mergeSpy = vi.hoisted(() => vi.fn())
 
 // --- sessionStore: a REAL zustand store so setState triggers re-renders ---
 // (lets the live-toggle assertion flip the surface without a fresh mount).
@@ -41,7 +46,7 @@ vi.mock('@/stores/sessionStore', async () => {
 vi.mock('@/stores/chatStore', () => ({
   useChatStore: Object.assign(
     () => undefined,
-    { getState: () => ({ addMessage: vi.fn(), mergeHistoryMessages: vi.fn(), setTaskActive: vi.fn(), workUnitStatus: {}, scrollPositions: {}, saveScrollPosition: vi.fn(), clearScrollPosition: vi.fn() }) },
+    { getState: () => ({ addMessage: vi.fn(), mergeHistoryMessages: mergeSpy, setTaskActive: vi.fn(), workUnitStatus: {}, scrollPositions: {}, saveScrollPosition: vi.fn(), clearScrollPosition: vi.fn() }) },
   ),
   useSessionMessages: () => [],
   useSessionWorkUnits: () => ({}),
@@ -72,6 +77,7 @@ vi.mock('./BlackboardPanel', () => ({ BlackboardPanel: () => null }))
 
 import { ChatArea } from './ChatArea'
 import { useSessionStore } from '@/stores/sessionStore'
+import { getSessionHistory } from '@/api/chat'
 
 function session(over: Partial<SessionInfo>): SessionInfo {
   return {
@@ -117,6 +123,7 @@ describe('ChatArea archived-session input swap', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
     root = null
+    mergeSpy.mockClear()
     useSessionStore.setState({ sessions: null, activeSessionId: null })
   })
 
@@ -172,5 +179,25 @@ describe('ChatArea archived-session input swap', () => {
     await flushEffects()
     expect(container.querySelector('[data-testid="chat-input-stub"]')).not.toBeNull()
     expect(container.textContent).not.toContain('archived')
+  })
+
+  it('drops legacy review_prompt rows at history load so they never reach the chat', async () => {
+    // A session that ran before ADR-060 carries a review_prompt row as its last
+    // message (body "Uncommitted changes detected in this repository."). The
+    // history-load filter must drop it before mergeHistoryMessages so the stale
+    // line never surfaces at the end of the chat.
+    vi.mocked(getSessionHistory).mockResolvedValueOnce([
+      { id: 1, session_id: 's1', role: 'user', content: 'do the thing', metadata: '', created_at: '2026-01-01T00:00:00Z' },
+      { id: 2, session_id: 's1', role: 'review_prompt', content: 'Uncommitted changes detected in this repository.', metadata: JSON.stringify({ prompt_id: 'p-1', decision: 'decline', resolved: true }), created_at: '2026-01-01T00:00:01Z' },
+    ] as unknown as ChatMessage[])
+    useSessionStore.setState({ sessions: [session({ archived: false })], activeSessionId: 's1' })
+    render(<ChatArea />)
+    await flushEffects()
+
+    expect(mergeSpy).toHaveBeenCalled()
+    const calls = mergeSpy.mock.calls
+    const merged = calls[calls.length - 1]![1] as Array<{ type: string; content: string }>
+    expect(merged.some((m) => m.content === 'Uncommitted changes detected in this repository.')).toBe(false)
+    expect(merged.some((m) => m.type === 'user' && m.content === 'do the thing')).toBe(true)
   })
 })
