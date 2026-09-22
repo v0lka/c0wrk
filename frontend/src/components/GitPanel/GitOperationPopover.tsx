@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { CheckCircle2, Terminal, XCircle } from 'lucide-react'
+import { CheckCircle2, FileTerminal, XCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { computeDropdownPosition } from '@/lib/dropdownPosition'
 import { getLayoutViewport, toLayoutTriggerRect } from '@/lib/layoutSpace'
@@ -171,7 +171,7 @@ export function GitOperationPopover({
     >
       <div className="flex shrink-0 items-center gap-1.5 border-b border-border px-2 py-1.5">
         {record === undefined ? (
-          <Terminal className={cn('size-3.5 shrink-0', tone)} />
+          <FileTerminal className={cn('size-3.5 shrink-0', tone)} />
         ) : record.ok ? (
           <CheckCircle2 className={cn('size-3.5 shrink-0', tone)} />
         ) : (

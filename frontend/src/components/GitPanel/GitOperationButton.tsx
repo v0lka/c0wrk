@@ -1,5 +1,5 @@
 import { type Ref } from 'react'
-import { Loader2, Terminal } from 'lucide-react'
+import { Loader2, FileTerminal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import type { GitOperationRecord } from '@/stores/gitPanelStore'
@@ -34,7 +34,7 @@ export interface GitOperationButtonProps {
 }
 
 /**
- * Footer affordance for the last git operation: a terminal glyph tinted by the
+ * Footer affordance for the last git operation: a file-terminal glyph tinted by the
  * outcome (green on success / red on failure / neutral when unread-or-none)
  * that spins while an operation is active. The button stays clickable during
  * an operation so the *previous* result's log remains readable; opening it is
@@ -58,7 +58,7 @@ export function GitOperationButton({ record, busy, open, onToggle, buttonRef, co
       {busy ? (
         <Loader2 className="size-3.5 animate-spin" />
       ) : (
-        <Terminal className="size-3.5" />
+        <FileTerminal className="size-3.5" />
       )}
     </Button>
   )

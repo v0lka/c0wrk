@@ -270,7 +270,12 @@ describe('LLMSettings TLS pin proxy gate', () => {
     await flush()
   }
 
-  /** Expand the compatible provider's accordion so its form is mounted. */
+  /**
+   * Expand the compatible provider's accordion so its form is mounted, then
+   * open the pin collapse block so its field is mounted too (the block ships
+   * collapsed by default; the fixed provider has no pin section, hence the
+   * guard).
+   */
   async function expandProvider() {
     const header = Array.from(container.querySelectorAll('button')).find((b) =>
       b.textContent?.includes('lmstudio'),
@@ -280,6 +285,14 @@ describe('LLMSettings TLS pin proxy gate', () => {
       header!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     await flush()
+
+    const pinTrigger = container.querySelector<HTMLButtonElement>('[data-slot="collapsible-trigger"]')
+    if (pinTrigger) {
+      await act(async () => {
+        pinTrigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      })
+      await flush()
+    }
   }
 
   function fingerprintInput(): HTMLInputElement | null {
