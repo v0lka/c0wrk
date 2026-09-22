@@ -1,6 +1,6 @@
 import { Folder, ChevronDown, ChevronRight } from 'lucide-react'
 import { GitFileEntry } from '../GitFileEntry'
-import type { StageAction, StageSide } from '@/lib/gitStatus'
+import type { StageSide, StageToggleHandler } from '@/lib/gitStatus'
 import type { TreeNode } from './types'
 
 // ─────────────────────────── Tree View Renderer ──────────────────────────────
@@ -13,7 +13,7 @@ interface TreeRowProps {
   workspaceRoot: string
   expandedDirs: Set<string>
   onToggleExpandedDir: (dir: string) => void
-  onToggleFile: (path: string, action: StageAction) => void
+  onToggleFile: StageToggleHandler
   onOpenDiff: (path: string) => void
 }
 

@@ -45,7 +45,21 @@ function checkbox(container: HTMLElement): HTMLInputElement {
   return container.querySelector('input[type="checkbox"]') as HTMLInputElement
 }
 
-const noop = () => {}
+/** A promise whose resolution the test controls (for in-flight assertions). */
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((res) => {
+    resolve = res
+  })
+  return { promise, resolve }
+}
+
+/** Drain pending microtasks (and the macrotask queue) so async handlers settle. */
+function flush(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+const noop = () => Promise.resolve(true)
 
 describe('GitFileEntry', () => {
   it('carries the workspace-relative display path as the name tooltip', () => {
@@ -217,5 +231,228 @@ describe('GitFileEntry — merge conflict', () => {
       />,
     )
     expect(container.querySelector('svg[aria-label="Merge conflict"]')).toBeNull()
+  })
+})
+
+// ─────────────────────── Optimistic checkbox state ──────────────────────────
+
+describe('GitFileEntry — optimistic checkbox', () => {
+  it('holds the flipped value while the toggle is in flight, then reverts on failure', async () => {
+    let resolveToggle!: (value: boolean) => void
+    const onToggle = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveToggle = resolve
+        }),
+    )
+    const container = render(
+      <GitFileEntry
+        entry={makeEntry({ status: 'M', indexStatus: 'M', worktreeStatus: ' ' })}
+        side="index"
+        onToggle={onToggle}
+        onOpenDiff={noop}
+      />,
+    )
+    const box = checkbox(container)
+    expect(box.checked).toBe(true)
+
+    await act(async () => {
+      box.click()
+    })
+    // The box holds the intended (flipped) state instead of snapping back to
+    // the stale server-derived value while the RPC is still in flight.
+    expect(box.checked).toBe(false)
+
+    await act(async () => {
+      resolveToggle(false)
+      await flush()
+    })
+    // A failed toggle reverts the optimistic flip.
+    expect(box.checked).toBe(true)
+  })
+
+  it('keeps the flipped value and dispatches stage on a successful worktree toggle', async () => {
+    const onToggle = vi.fn(() => Promise.resolve(true))
+    const container = render(
+      <GitFileEntry
+        entry={makeEntry({ status: 'A', indexStatus: '?', worktreeStatus: '?' })}
+        side="worktree"
+        onToggle={onToggle}
+        onOpenDiff={noop}
+      />,
+    )
+    const box = checkbox(container)
+    expect(box.checked).toBe(false)
+
+    await act(async () => {
+      box.click()
+    })
+    expect(box.checked).toBe(true)
+    expect(onToggle).toHaveBeenCalledWith(LONG_PATH, 'stage')
+  })
+
+  it('coalesces rapid clicks into a single in-flight request, then reconciles to the last click', async () => {
+    const first = deferred<boolean>()
+    const onToggle = vi.fn()
+    onToggle.mockReturnValueOnce(first.promise).mockResolvedValue(true)
+    const container = render(
+      <GitFileEntry
+        entry={makeEntry({ status: 'M', indexStatus: 'M', worktreeStatus: ' ' })}
+        side="index"
+        onToggle={onToggle}
+        onOpenDiff={noop}
+      />,
+    )
+    const box = checkbox(container)
+
+    await act(async () => {
+      box.click()
+    })
+    expect(box.checked).toBe(false)
+    expect(onToggle).toHaveBeenNthCalledWith(1, LONG_PATH, 'unstage')
+
+    // A second click while the first request is in flight re-checks the box but
+    // must NOT fire a second, overlapping request.
+    await act(async () => {
+      box.click()
+    })
+    expect(box.checked).toBe(true)
+    expect(onToggle).toHaveBeenCalledTimes(1)
+
+    // Settling the first request drains the queued (last-click) intent.
+    await act(async () => {
+      first.resolve(true)
+      await flush()
+    })
+    expect(onToggle).toHaveBeenNthCalledWith(2, LONG_PATH, 'stage')
+    expect(box.checked).toBe(true)
+  })
+
+  it('honours the last click when an earlier in-flight request fails', async () => {
+    const first = deferred<boolean>()
+    const onToggle = vi.fn()
+    onToggle.mockReturnValueOnce(first.promise).mockResolvedValue(true)
+    const container = render(
+      <GitFileEntry
+        entry={makeEntry({ status: 'M', indexStatus: 'M', worktreeStatus: ' ' })}
+        side="index"
+        onToggle={onToggle}
+        onOpenDiff={noop}
+      />,
+    )
+    const box = checkbox(container)
+
+    await act(async () => {
+      box.click() // unstage
+    })
+    expect(box.checked).toBe(false)
+
+    await act(async () => {
+      box.click() // re-check, queued while the first request is in flight
+    })
+    expect(box.checked).toBe(true)
+    expect(onToggle).toHaveBeenCalledTimes(1)
+
+    // The first (unstage) request fails, but the queued re-check is honoured so
+    // the row still reflects the user's last click.
+    await act(async () => {
+      first.resolve(false)
+      await flush()
+    })
+    expect(onToggle).toHaveBeenNthCalledWith(2, LONG_PATH, 'stage')
+    expect(box.checked).toBe(true)
+  })
+
+  it('reverts the flip when the toggle handler rejects', async () => {
+    const onToggle = vi.fn(() => Promise.reject(new Error('index.lock exists')))
+    const container = render(
+      <GitFileEntry
+        entry={makeEntry({ status: 'M', indexStatus: 'M', worktreeStatus: ' ' })}
+        side="index"
+        onToggle={onToggle}
+        onOpenDiff={noop}
+      />,
+    )
+    const box = checkbox(container)
+    expect(box.checked).toBe(true)
+
+    await act(async () => {
+      box.click()
+      await flush()
+    })
+    // A rejection is treated like a `false` return: the optimistic flip reverts.
+    expect(box.checked).toBe(true)
+  })
+
+  it('does not re-apply a stale override when the same status recurs', async () => {
+    const onToggle = vi.fn(() => new Promise<boolean>(() => {})) // never settles
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    const path = '/repo/a.ts'
+    const entryM = makeEntry({ path, status: 'M', indexStatus: ' ', worktreeStatus: 'M' })
+    const renderRow = (entry: GitPanelEntry) =>
+      root.render(
+        <GitFileEntry entry={entry} side="worktree" onToggle={onToggle} onOpenDiff={noop} />,
+      )
+
+    act(() => renderRow(entryM))
+    const box = checkbox(container)
+    expect(box.checked).toBe(false)
+
+    await act(async () => {
+      box.click()
+    })
+    expect(box.checked).toBe(true)
+
+    // The server status changes → the override is dropped…
+    act(() =>
+      renderRow(makeEntry({ path, status: 'D', indexStatus: ' ', worktreeStatus: 'D' })),
+    )
+    expect(box.checked).toBe(false)
+
+    // …so when the original status recurs the stale override must not re-apply.
+    act(() => renderRow(entryM))
+    expect(box.checked).toBe(false)
+  })
+
+  it('drops the override once the server state it was applied against changes', async () => {
+    const onToggle = vi.fn(() => new Promise<boolean>(() => {}))
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    const path = '/repo/a.ts'
+
+    act(() => {
+      root.render(
+        <GitFileEntry
+          entry={makeEntry({ path, status: 'M', indexStatus: ' ', worktreeStatus: 'M' })}
+          side="worktree"
+          onToggle={onToggle}
+          onOpenDiff={noop}
+        />,
+      )
+    })
+    const box = checkbox(container)
+    expect(box.checked).toBe(false)
+
+    await act(async () => {
+      box.click()
+    })
+    expect(box.checked).toBe(true)
+
+    // Same path, new server status → serverKey changes → the override no longer
+    // applies and the box re-derives from the (now unmodified) server state.
+    act(() => {
+      root.render(
+        <GitFileEntry
+          entry={makeEntry({ path, status: 'D', indexStatus: ' ', worktreeStatus: 'D' })}
+          side="worktree"
+          onToggle={onToggle}
+          onOpenDiff={noop}
+        />,
+      )
+    })
+    expect(box.checked).toBe(false)
   })
 })

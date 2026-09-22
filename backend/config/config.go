@@ -1806,15 +1806,29 @@ func LoadWithResult(path string) (*LoadResult, error) {
 	// always valid.
 	shellExecWarnings := normalizeShellExec(&cfg)
 
+	// Validate the MCP per-server timeout durations (fail-soft: invalid entries
+	// are warned about and left untouched — the config→builder adapter resolves
+	// them to the engine default at build time). Must run after ApplyDefaults
+	// and before validate. Surfacing the warning here is what makes the ADR-063
+	// "logged warning" reach the user on the production load path — this is what
+	// feeds the UI's configLoadErrors channel (the frontend rebuild paths call
+	// the adapter without a logger).
+	mcpWarnings := normalizeMCPTimeouts(&cfg)
+
+	// Warnings collected before validation, in a deterministic order.
+	warnings := autonomyWarnings
+	warnings = append(warnings, shellExecWarnings...)
+	warnings = append(warnings, mcpWarnings...)
+
 	// Validate configuration
 	if err := validate(&cfg); err != nil {
 		return &LoadResult{
 			Config:     &cfg,
-			LoadErrors: append(append(autonomyWarnings, shellExecWarnings...), "Config validation failed: "+err.Error()),
+			LoadErrors: append(warnings, "Config validation failed: "+err.Error()),
 		}, fmt.Errorf("config validation failed: %w", err)
 	}
 
-	return &LoadResult{Config: &cfg, LoadErrors: append(autonomyWarnings, shellExecWarnings...)}, nil
+	return &LoadResult{Config: &cfg, LoadErrors: warnings}, nil
 }
 
 // Save writes the configuration to a YAML file atomically.

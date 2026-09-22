@@ -68,7 +68,9 @@ function opButton(label: 'Pull' | 'Push' | 'Fetch'): HTMLButtonElement {
 }
 
 function panel(): HTMLElement | null {
-  return container.querySelector<HTMLElement>('[role="dialog"]')
+  // The log panel is portaled to document.body (out of this container), so a
+  // container-scoped query would miss it.
+  return document.querySelector<HTMLElement>('[role="dialog"]')
 }
 
 function storeRecord(): GitOperationRecord | undefined {
@@ -217,14 +219,15 @@ describe('GitPanelFooter — log popover dismissal', () => {
 })
 
 describe('GitPanelFooter — remote-op gate', () => {
-  it('disables and spins the log button while a remote op is in flight', () => {
+  it('spins the log button (still clickable) and disables the op buttons while a remote op is in flight', () => {
     useGitPanelStore.setState({ remoteOperationInProgress: true })
     render()
 
-    expect(logButton().disabled).toBe(true)
+    // The log stays readable mid-operation, so its button is not disabled…
+    expect(logButton().disabled).toBe(false)
     expect(container.querySelector('.animate-spin')).not.toBeNull()
     expect(logButton().className).toContain('text-muted-foreground')
-    // Remote op buttons share the same gate.
+    // …while the remote op buttons share the busy gate.
     expect(opButton('Pull').disabled).toBe(true)
     expect(opButton('Push').disabled).toBe(true)
     expect(opButton('Fetch').disabled).toBe(true)

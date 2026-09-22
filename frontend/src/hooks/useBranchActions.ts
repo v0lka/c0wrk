@@ -55,6 +55,25 @@ interface BranchOperation {
   label: string
 }
 
+/**
+ * Outcome of an attempted branch operation. `ran: false` means the request was
+ * skipped — another operation was already in flight, or there is no active
+ * project to record against — so nothing executed and the caller must not react
+ * to it. `ran: true` distinguishes an executed operation from a skipped one
+ * (both are otherwise falsy) and carries its success in `ok`; on success the
+ * wrapped API result is available as `result`. Callers that only care about
+ * success (e.g. a row's spinner) collapse it with {@link ranOk}.
+ */
+export type BranchOperationOutcome<T> =
+  | { ran: true; ok: true; result: T }
+  | { ran: true; ok: false }
+  | { ran: false }
+
+/** True when the operation actually executed and succeeded. */
+function ranOk(outcome: BranchOperationOutcome<unknown>): boolean {
+  return outcome.ran ? outcome.ok : false
+}
+
 export interface BranchActions {
   /** Name of the branch currently being operated on, or null. */
   busyBranch: string | null
@@ -73,15 +92,18 @@ export interface BranchActions {
   cancelRename: () => void
 
   // Low-level operations (each wraps one API call with busy/record tracking).
-  // Operations that only report success/failure return a boolean; `push` and
-  // `deleteRemote` return the backend's combined stdout+stderr (or null).
-  checkout: (name: string) => Promise<boolean>
+  // `checkout`/`checkoutRemote` return a {@link BranchOperationOutcome} so a
+  // caller can tell a skipped call (nothing to react to) from a settled one;
+  // `rename`/`deleteLocal`/`mergeBranch`/`rebaseBranch` collapse it to a success
+  // boolean, and `push`/`deleteRemote` return the backend's combined
+  // stdout+stderr (or null).
+  checkout: (name: string) => Promise<BranchOperationOutcome<void>>
   rename: (oldName: string, newName: string) => Promise<boolean>
   deleteLocal: (name: string, force: boolean) => Promise<boolean>
   mergeBranch: (name: string) => Promise<boolean>
   rebaseBranch: (name: string) => Promise<boolean>
   push: (name: string) => Promise<string | null>
-  checkoutRemote: (remoteBranch: string) => Promise<boolean>
+  checkoutRemote: (remoteBranch: string) => Promise<BranchOperationOutcome<void>>
   deleteRemote: (name: string, remote: string) => Promise<string | null>
 
   // Delete confirmation flow.
@@ -107,21 +129,20 @@ export function useBranchActions(): BranchActions {
 
   // Single in-flight gate shared by every operation. The operation is run
   // through {@link runGitOperation}, which records its outcome for the active
-  // project and never throws — callers observe success via the returned value
-  // and via `git:status_changed`/store sync. Returns the wrapped API result on
-  // success, or null when the operation was skipped (busy / no active project)
-  // or failed.
+  // project and never throws. Returns a discriminated {@link BranchOperationOutcome}
+  // so callers can tell a *skipped* call (another operation was already in
+  // flight, or there is no active project) from one that actually *ran*.
   const run = useCallback(
     async <T,>(
       branch: string,
       action: BranchActionKind,
       op: BranchOperation,
       fn: () => Promise<T>,
-    ): Promise<T | null> => {
+    ): Promise<BranchOperationOutcome<T>> => {
       // The Git panel only exists for an active project; without one there is
       // nothing to record against, so skip rather than run unrecorded.
       const projectId = useProjectStore.getState().activeProjectId
-      if (!projectId || busyRef.current) return null
+      if (!projectId || busyRef.current) return { ran: false }
       busyRef.current = true
       setBusy({ branch, action })
       try {
@@ -131,7 +152,9 @@ export function useBranchActions(): BranchActions {
           label: op.label,
           fn,
         })
-        return outcome.ok ? outcome.result : null
+        return outcome.ok
+          ? { ran: true, ok: true, result: outcome.result }
+          : { ran: true, ok: false }
       } finally {
         busyRef.current = false
         setBusy(null)
@@ -141,90 +164,102 @@ export function useBranchActions(): BranchActions {
   )
 
   const checkout = useCallback(
-    async (name: string) =>
-      (await run(
+    (name: string) =>
+      run(
         name,
         'checkout',
         { kind: 'checkout', label: `Checked out ${name}` },
         () => checkoutBranch(name),
-      )) !== null,
+      ),
     [run],
   )
 
   const rename = useCallback(
     async (oldName: string, newName: string) =>
-      (await run(
-        oldName,
-        'rename',
-        { kind: 'branch-rename', label: `Renamed ${oldName} to ${newName}` },
-        () => renameBranch(oldName, newName),
-      )) !== null,
+      ranOk(
+        await run(
+          oldName,
+          'rename',
+          { kind: 'branch-rename', label: `Renamed ${oldName} to ${newName}` },
+          () => renameBranch(oldName, newName),
+        ),
+      ),
     [run],
   )
 
   const deleteLocal = useCallback(
     async (name: string, force: boolean) =>
-      (await run(
-        name,
-        'delete',
-        { kind: 'branch-delete', label: `Deleted branch ${name}` },
-        () => deleteBranch(name, force),
-      )) !== null,
+      ranOk(
+        await run(
+          name,
+          'delete',
+          { kind: 'branch-delete', label: `Deleted branch ${name}` },
+          () => deleteBranch(name, force),
+        ),
+      ),
     [run],
   )
 
   const mergeBranch = useCallback(
     async (name: string) =>
-      (await run(
-        name,
-        'merge',
-        { kind: 'merge', label: `Merged ${name} into current` },
-        () => merge(name),
-      )) !== null,
+      ranOk(
+        await run(
+          name,
+          'merge',
+          { kind: 'merge', label: `Merged ${name} into current` },
+          () => merge(name),
+        ),
+      ),
     [run],
   )
 
   const rebaseBranch = useCallback(
     async (name: string) =>
-      (await run(
-        name,
-        'rebase',
-        { kind: 'rebase', label: `Rebased current onto ${name}` },
-        () => rebase(name),
-      )) !== null,
+      ranOk(
+        await run(
+          name,
+          'rebase',
+          { kind: 'rebase', label: `Rebased current onto ${name}` },
+          () => rebase(name),
+        ),
+      ),
     [run],
   )
 
   const push = useCallback(
-    async (name: string) =>
-      run(
+    async (name: string) => {
+      const outcome = await run(
         name,
         'push',
         { kind: 'branch-push', label: `Pushed ${name}` },
         () => pushBranch(name),
-      ),
+      )
+      return outcome.ran && outcome.ok ? outcome.result : null
+    },
     [run],
   )
 
   const checkoutRemote = useCallback(
-    async (remoteBranch: string) =>
-      (await run(
+    (remoteBranch: string) =>
+      run(
         remoteBranch,
         'checkoutRemote',
         { kind: 'branch-checkout-remote', label: `Checked out ${remoteBranch}` },
         () => checkoutRemoteBranch(remoteBranch),
-      )) !== null,
+      ),
     [run],
   )
 
   const deleteRemote = useCallback(
-    async (name: string, remote: string) =>
-      run(
+    async (name: string, remote: string) => {
+      const outcome = await run(
         name,
         'deleteRemote',
         { kind: 'branch-delete-remote', label: `Deleted remote branch ${name}` },
         () => deleteRemoteBranch(name, remote),
-      ),
+      )
+      return outcome.ran && outcome.ok ? outcome.result : null
+    },
     [run],
   )
 

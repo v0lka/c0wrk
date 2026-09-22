@@ -155,9 +155,10 @@ mcp:
   #     headers: {}                # HTTP headers (http transport)
   #     # Per-server timeouts. Both are Go duration strings — a unit suffix is
   #     # required (e.g. "60s", "2m", "500ms", "1h30m"); a bare number is
-  #     # rejected. When a key is omitted, empty, unparseable, or non-positive
-  #     # it falls back to the built-in 60s default (a bad value never prevents
-  #     # the server from starting).
+  #     # rejected. An omitted, empty, unparseable, or non-positive `timeout`
+  #     # resolves to the built-in 60s default; an invalid `call_timeout`
+  #     # inherits the resolved `timeout` (and therefore 60s only when `timeout`
+  #     # is itself unset). A bad value never prevents the server from starting.
   #     timeout: "60s"             # Bounds this server's initialization
   #                                # handshake (initialize + tools/list) and is
   #                                # the default bound for every tools/call on

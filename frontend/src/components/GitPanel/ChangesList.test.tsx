@@ -38,7 +38,7 @@ function makeEntry(overrides: Partial<GitPanelEntry>): GitPanelEntry {
   }
 }
 
-const noop = () => {}
+const noop = () => Promise.resolve(true)
 
 let root: Root | null = null
 let container: HTMLDivElement | null = null

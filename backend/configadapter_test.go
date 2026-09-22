@@ -252,12 +252,13 @@ func TestToBuilderConfig_ProviderOutputTokenReserve(t *testing.T) {
 	}
 }
 
-// TestToBuilderConfig_WebFetchTimeouts verifies the config→builder mapping for
 // TestToBuilderConfig_MCPTimeouts verifies the per-server MCP timeout /
 // call_timeout duration strings are parsed into BuilderMCPServer, with empty
 // and invalid values falling back to 0 (the sp4rk default) rather than
-// erroring — and that an invalid value is logged at WARN when a logger is
-// supplied.
+// erroring. The adapter deliberately does NOT log an invalid value — the
+// production load path (normalizeMCPTimeouts → config.ResolveAndLoad) is its
+// single surfacing point — so the test also pins that no WARN is emitted here,
+// which would otherwise duplicate the load-path warning on every start.
 func TestToBuilderConfig_MCPTimeouts(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.MCP.Servers = map[string]config.MCPServerConfig{
@@ -287,11 +288,14 @@ func TestToBuilderConfig_MCPTimeouts(t *testing.T) {
 	if invalid.Timeout != 0 || invalid.CallTimeout != 0 {
 		t.Errorf("invalid durations = (%v, %v), want (0, 0) fallback", invalid.Timeout, invalid.CallTimeout)
 	}
-	if !strings.Contains(buf.String(), "invalid MCP server duration") {
-		t.Errorf("expected a WARN about the invalid MCP duration, got log %q", buf.String())
+	// The adapter must not log the invalid value: config.ResolveAndLoad owns
+	// that WARN (via normalizeMCPTimeouts), so logging here would double it.
+	if strings.Contains(buf.String(), "invalid MCP server duration") {
+		t.Errorf("adapter must not log an invalid MCP duration (the load path owns that warning), got log %q", buf.String())
 	}
 }
 
+// TestToBuilderConfig_WebFetchTimeouts verifies the config→builder mapping for
 // the web fetch timeout/retry knobs: the proxy-path timeout and the retry
 // count flow into BuilderTimeoutsConfig so both reach sp4rk's web_fetch tool
 // (each retry doubles the effective client timeout).

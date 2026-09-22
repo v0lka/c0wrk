@@ -9,6 +9,7 @@ import {
 } from '@/components/ui/collapsible'
 import { cn } from '@/lib/utils'
 import { createBranch, getBranchBases } from '@/api/git'
+import { logger } from '@/lib/logger'
 import { BaseSelector } from './BaseSelector'
 import type { BranchBase } from '@/types/models'
 
@@ -94,6 +95,9 @@ export function NewBranchSection({
       setName('')
       onCreated()
     } catch (err) {
+      // The api/git transport does not log mutation failures; this branch
+      // creation sits outside the runGitOperation funnel, so it logs its own.
+      logger.error('Failed to create branch:', err)
       onError(err instanceof Error ? err.message : 'Failed to create branch')
     } finally {
       setCreating(false)

@@ -2086,6 +2086,7 @@ export namespace mcp {
 	    name: string;
 	    transport: string;
 	    connected: boolean;
+	    unhealthy: boolean;
 	    starting: boolean;
 	    tool_count: number;
 	    tools: string[];
@@ -2100,6 +2101,7 @@ export namespace mcp {
 	        this.name = source["name"];
 	        this.transport = source["transport"];
 	        this.connected = source["connected"];
+	        this.unhealthy = source["unhealthy"];
 	        this.starting = source["starting"];
 	        this.tool_count = source["tool_count"];
 	        this.tools = source["tools"];

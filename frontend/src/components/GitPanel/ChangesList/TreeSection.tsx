@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { TreeRow } from './TreeRow'
 import { buildTree } from './buildTree'
-import type { StageAction, StageSide } from '@/lib/gitStatus'
+import type { StageSide, StageToggleHandler } from '@/lib/gitStatus'
 import type { GitPanelEntry, SortBy } from '@/stores/gitPanelStore'
 
 // ───────────────────────────── Tree Section ──────────────────────────────────
@@ -15,7 +15,7 @@ interface TreeSectionProps {
   workspaceRoot: string
   expandedDirs: Set<string>
   onToggleExpandedDir: (dir: string) => void
-  onToggleFile: (path: string, action: StageAction) => void
+  onToggleFile: StageToggleHandler
   onOpenDiff: (path: string) => void
 }
 

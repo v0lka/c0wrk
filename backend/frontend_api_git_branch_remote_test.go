@@ -4,6 +4,7 @@ import (
 	"context"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -105,6 +106,79 @@ func TestPushBranch_TrackedBranch_PushesToConfiguredRemote(t *testing.T) {
 	localHead := gitOut(t, localDir, "rev-parse", "HEAD")
 	if remoteHead != localHead {
 		t.Errorf("after PushBranch: remote head %q != local head %q", remoteHead, localHead)
+	}
+}
+
+// TestPushBranch_UpstreamRefNameDiffers_PushesConfiguredRefspec pins the
+// branch.<name>.merge fix: a local branch whose configured upstream ref has a
+// different name (local "feature-x" tracking "origin/feature") must be pushed
+// to the configured upstream ref via an explicit "<local>:<upstreamRef>"
+// refspec, not to a same-named remote branch (which a bare push under
+// push.default=simple would refuse outright).
+func TestPushBranch_UpstreamRefNameDiffers_PushesConfiguredRefspec(t *testing.T) {
+	remoteDir := t.TempDir()
+	gitOut(t, remoteDir, "init", "--bare")
+
+	localDir := t.TempDir()
+	gitInit(t, localDir)
+	commitFile(t, localDir, "a.txt", "a\n")
+	gitOut(t, localDir, "remote", "add", "origin", remoteDir)
+	mainBranch := gitDefaultBranch(t, localDir)
+	gitOut(t, localDir, "push", "-u", "origin", mainBranch)
+
+	// A local branch deliberately configured to track a DIFFERENTLY-named
+	// remote ref (local feature-x → origin/feature).
+	gitOut(t, localDir, "checkout", "-b", "feature-x")
+	commitFile(t, localDir, "b.txt", "b\n")
+	gitOut(t, localDir, "config", "branch.feature-x.remote", "origin")
+	gitOut(t, localDir, "config", "branch.feature-x.merge", "refs/heads/feature")
+
+	f := &FrontendAPI{activeProjectPath: localDir}
+	if _, err := f.PushBranch("feature-x"); err != nil {
+		t.Fatalf("PushBranch: %v", err)
+	}
+
+	// The configured upstream ref now points at the local HEAD...
+	remoteHead := gitOut(t, remoteDir, "rev-parse", "refs/heads/feature")
+	localHead := gitOut(t, localDir, "rev-parse", "HEAD")
+	if remoteHead != localHead {
+		t.Errorf("remote refs/heads/feature %q != local head %q", remoteHead, localHead)
+	}
+	// ...and no same-named remote branch was created.
+	refs := gitOut(t, remoteDir, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
+	if strings.Contains(refs, "feature-x") {
+		t.Errorf("push created a same-named remote branch; remote refs = %q", refs)
+	}
+}
+
+// TestPush_EmptyRemote_UpstreamRefNameDiffers_PushesConfiguredRefspec verifies
+// the same refspec behaviour on the Git panel's empty-remote path (runRemoteOp
+// → pushArgs), which shares pushArgs with PushBranch.
+func TestPush_EmptyRemote_UpstreamRefNameDiffers_PushesConfiguredRefspec(t *testing.T) {
+	remoteDir := t.TempDir()
+	gitOut(t, remoteDir, "init", "--bare")
+
+	localDir := t.TempDir()
+	gitInit(t, localDir)
+	commitFile(t, localDir, "a.txt", "a\n")
+	gitOut(t, localDir, "remote", "add", "origin", remoteDir)
+	mainBranch := gitDefaultBranch(t, localDir)
+	gitOut(t, localDir, "push", "-u", "origin", mainBranch)
+
+	gitOut(t, localDir, "checkout", "-b", "feature-x")
+	commitFile(t, localDir, "b.txt", "b\n")
+	gitOut(t, localDir, "config", "branch.feature-x.remote", "origin")
+	gitOut(t, localDir, "config", "branch.feature-x.merge", "refs/heads/feature")
+
+	f := &FrontendAPI{activeProjectPath: localDir}
+	if _, err := f.Push("", nil); err != nil {
+		t.Fatalf("Push (empty remote): %v", err)
+	}
+
+	remoteHead := gitOut(t, remoteDir, "rev-parse", "refs/heads/feature")
+	localHead := gitOut(t, localDir, "rev-parse", "HEAD")
+	if remoteHead != localHead {
+		t.Errorf("remote refs/heads/feature %q != local head %q", remoteHead, localHead)
 	}
 }
 

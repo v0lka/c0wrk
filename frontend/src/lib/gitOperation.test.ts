@@ -155,6 +155,45 @@ describe('runGitOperation', () => {
     expect(errorSpy).toHaveBeenCalledTimes(1)
   })
 
+  it('logs a failure at warn when the call site opts into warn severity', async () => {
+    const errorSpy = vi.spyOn(logger, 'error')
+    const warnSpy = vi.spyOn(logger, 'warn')
+
+    await runGitOperation({
+      projectId: 'proj-a',
+      kind: 'discard',
+      label: 'Discarded changes in a.ts',
+      recordSuccess: false,
+      logLevel: 'warn',
+      fn: async () => {
+        throw new Error('nothing to discard')
+      },
+    })
+
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    expect(errorSpy).not.toHaveBeenCalled()
+  })
+
+  it('keeps ERROR severity independent of recordSuccess', async () => {
+    const errorSpy = vi.spyOn(logger, 'error')
+    const warnSpy = vi.spyOn(logger, 'warn')
+
+    // `recordSuccess: false` alone must NOT downgrade the log: severity is the
+    // call site's explicit `logLevel` choice, not implied by the recording flag.
+    await runGitOperation({
+      projectId: 'proj-a',
+      kind: 'stage',
+      label: 'Staged a.ts',
+      recordSuccess: false,
+      fn: async () => {
+        throw new Error('boom')
+      },
+    })
+
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    expect(warnSpy).not.toHaveBeenCalled()
+  })
+
   // ── Outcome / record lifecycle ──
 
   it('replaces the project record with the latest operation', async () => {

@@ -111,7 +111,6 @@ export type GitOperationKind =
   | 'stash-pop'
   | 'stash-drop'
   | 'checkout'
-  | 'branch-create'
   | 'branch-rename'
   | 'branch-delete'
   | 'branch-push'
@@ -241,7 +240,6 @@ interface GitPanelActions {
   /** Set the commit-message draft for a project. */
   setCommitMessage: (projectId: string, message: string) => void
   loadEntries: (entries: GitPanelEntry[]) => void
-  toggleStage: (path: string) => void
   setBranch: (branch: BranchInfo) => void
   setBranches: (branches: Branch[]) => void
   openBranchPicker: () => void
@@ -536,15 +534,6 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
       setError: (error) => set({ error }),
 
       loadEntries: (entries) => set({ entries, isLoading: false, error: null }),
-
-      toggleStage: (path) =>
-        set((s) => ({
-          entries: s.entries.map((entry) =>
-            entry.path === path
-              ? { ...entry, staged: !entry.staged }
-              : entry,
-          ),
-        })),
 
       setBranch: (branch) => set({ branch }),
 

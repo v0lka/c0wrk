@@ -87,9 +87,10 @@ describe('GitOperationButton — outcome tint', () => {
     expect(button().className).not.toContain('text-success')
   })
 
-  it('shows a spinner, neutralizes, and disables while busy', () => {
+  it('shows a spinner and neutralizes while busy, but stays clickable', () => {
     render({ record: record({ ok: true }), busy: true })
-    expect(button().disabled).toBe(true)
+    // The log of the previous result stays reachable during an operation.
+    expect(button().disabled).toBe(false)
     expect(container.querySelector('.animate-spin')).not.toBeNull()
     expect(button().className).toContain('text-muted-foreground')
     expect(button().className).not.toContain('text-success')

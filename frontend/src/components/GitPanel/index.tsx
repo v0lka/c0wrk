@@ -47,24 +47,28 @@ export function GitPanel() {
 
   /**
    * Toggle a file's stage state along a specific porcelain axis. The action is
-   * supplied by the row that fired it (`unstage` for an index row, `stage` for
-   * a worktree row) so no store lookup is required — and a file that is both
-   * staged and unstaged (`MM`) resolves correctly per row.
+   * supplied by the row that fired it — `unstage` when the row's checkbox was
+   * checked (an index row), `stage` when it was unchecked (a worktree row) — so
+   * no store lookup is required, and a file that is both staged and unstaged
+   * (`MM`) resolves correctly per row.
    */
-  const onToggleFile = useCallback(async (path: string, action: StageAction) => {
+  const onToggleFile = useCallback(async (path: string, action: StageAction): Promise<boolean> => {
     const projectId = useProjectStore.getState().activeProjectId
-    if (!projectId) return
+    if (!projectId) return false
     // The backend emits `git:status_changed` after StageFile/UnstageFile,
     // which is picked up by useGitStatusEvents — no manual refresh needed.
     // Success is silent (the row moves between sections); only a failure is
-    // recorded in the operation console.
-    await runGitOperation({
+    // recorded in the operation console. The boolean result lets the row keep
+    // its optimistic checkbox on success and revert it on failure.
+    const outcome = await runGitOperation({
       projectId,
       kind: action === 'unstage' ? 'unstage' : 'stage',
       label: `${action === 'unstage' ? 'Unstaged' : 'Staged'} ${path}`,
       fn: () => (action === 'unstage' ? unstageFile(path) : stageFile(path)),
       recordSuccess: false,
+      logLevel: 'warn',
     })
+    return outcome.ok
   }, [])
 
   /** Open a file diff in the FileViewerPanel. */

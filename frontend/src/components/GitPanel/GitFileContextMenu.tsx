@@ -85,6 +85,7 @@ export function GitFileContextMenu({
           fn: () =>
             side === 'index' ? unstageFile(entry.path) : stageFile(entry.path),
           recordSuccess: false,
+          logLevel: 'warn',
         })
       }
     } finally {
@@ -106,6 +107,7 @@ export function GitFileContextMenu({
           label: `Discarded changes in ${entry.path}`,
           fn: () => discardChanges(entry.path),
           recordSuccess: false,
+          logLevel: 'warn',
         })
       }
       // Backend emits git:status_changed → useGitStatusEvents refreshes.
@@ -130,6 +132,7 @@ export function GitFileContextMenu({
           label: `Added ${relativePath} to .gitignore`,
           fn: () => appendToGitignore(relativePath),
           recordSuccess: false,
+          logLevel: 'warn',
         })
       }
     } finally {

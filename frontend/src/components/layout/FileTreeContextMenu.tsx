@@ -179,7 +179,14 @@ export function FileTreeContextMenu({
     setIsIgnoring(true)
     try {
       if (projectId === null) {
-        await appendToGitignore(relativePath)
+        // No active project to key an operation record against (the file tree
+        // only exists with one — defensive). Run the mutation and surface a
+        // failure via the log; there is no console to record it to.
+        try {
+          await appendToGitignore(relativePath)
+        } catch (err) {
+          logger.error('Failed to append to .gitignore:', err)
+        }
         return
       }
       // Success is silent (the entry leaves the tree); only a failure is
@@ -190,6 +197,7 @@ export function FileTreeContextMenu({
         label: `Added ${relativePath} to .gitignore`,
         fn: () => appendToGitignore(relativePath),
         recordSuccess: false,
+        logLevel: 'warn',
       })
       if (!outcome.ok) {
         // Switch to the Git panel so the recorded failure (shown in its

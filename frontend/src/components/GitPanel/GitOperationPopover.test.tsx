@@ -1,17 +1,21 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { act } from 'react'
+import { act, createRef, type RefObject } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { GitOperationPopover } from './GitOperationPopover'
 import type { GitOperationRecord } from '@/stores/gitPanelStore'
 
 let container: HTMLDivElement
 let root: Root
+let triggerRef: RefObject<HTMLButtonElement | null>
+let panelRef: RefObject<HTMLDivElement | null>
 
 beforeEach(() => {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
+  triggerRef = createRef<HTMLButtonElement>()
+  panelRef = createRef<HTMLDivElement>()
 })
 
 afterEach(() => {
@@ -37,12 +41,25 @@ function record(overrides: Partial<GitOperationRecord> = {}): GitOperationRecord
 
 function render(rec: GitOperationRecord | undefined): void {
   act(() => {
-    root.render(<GitOperationPopover record={rec} />)
+    root.render(
+      <div>
+        <button ref={triggerRef} type="button">
+          trigger
+        </button>
+        <GitOperationPopover
+          record={rec}
+          id="test-log"
+          triggerRef={triggerRef}
+          panelRef={panelRef}
+        />
+      </div>,
+    )
   })
 }
 
+// The panel is portaled to document.body, so it is NOT under `container`.
 function panel(): HTMLElement {
-  const el = container.querySelector<HTMLElement>('[role="dialog"]')
+  const el = document.querySelector<HTMLElement>('[role="dialog"]')
   expect(el).not.toBeNull()
   return el!
 }
@@ -59,17 +76,37 @@ function pre(): HTMLElement {
   return el!
 }
 
-describe('GitOperationPopover — placement (zoom-safe)', () => {
-  it('anchors above-right, is layered, and is capped in --ui-vh units', () => {
+describe('GitOperationPopover — placement (zoom-safe, clipped-ancestor-proof)', () => {
+  it('is portaled to document.body and fixed-positioned (not an in-flow anchored panel)', () => {
+    render(record())
+    const el = panel()
+    // Portaled out of the component tree, so the Git panel's overflow-hidden
+    // ancestor can never clip it or scroll under it.
+    expect(container.contains(el)).toBe(false)
+    expect(document.body.contains(el)).toBe(true)
+    expect(el.parentElement).toBe(document.body)
+    // Fixed positioning is applied via the computed style, not `absolute
+    // bottom-full left-0` classes (which would be clipped/scroll the panel).
+    expect(el.style.position).toBe('fixed')
+    expect(el.className).not.toContain('absolute')
+    expect(el.className).not.toContain('bottom-full')
+  })
+
+  it('is layered above the app and capped so it never leaves the window', () => {
+    render(record())
+    const el = panel()
+    expect(el.style.zIndex).toBe('50')
+    // Height/width come from the layout-px placement computation (no raw
+    // viewport units), and the panel is capped in absolute (layout) px.
+    expect(el.style.maxHeight).not.toBe('')
+    expect(el.style.width).not.toBe('')
+  })
+
+  it('matches the app tooltip surface (bg-background), not the darker popover', () => {
     render(record())
     const cls = panel().className
-    expect(cls).toContain('absolute')
-    expect(cls).toContain('bottom-full')
-    expect(cls).toContain('right-0')
-    expect(cls).toContain('z-50')
-    expect(cls).toContain('w-96')
-    expect(cls).toContain('bg-popover')
-    expect(cls).toContain('max-h-[calc(var(--ui-vh)*0.5)]')
+    expect(cls).toContain('bg-background')
+    expect(cls).not.toContain('bg-popover')
   })
 
   it('scrolls its body with the custom scrollbar', () => {
@@ -86,7 +123,7 @@ describe('GitOperationPopover — header status and output', () => {
     expect(header().textContent).toBe('Pull')
     expect(header().className).toContain('text-success')
     expect(pre().textContent).toContain('Already up to date.')
-    expect(container.querySelector('.text-success')).not.toBeNull()
+    expect(panel().querySelector('.text-success')).not.toBeNull()
   })
 
   it('shows a red header and the failure message on error', () => {

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -350,9 +351,9 @@ func (f *FrontendAPI) runGitCmdWithStdin(dir, stdinData string, args ...string) 
 // because git writes progress and informational messages to stderr even
 // on success (notably pull/push/fetch). The timeout is caller-supplied
 // so long-running remote operations can opt into a larger budget. On
-// failure the partial output is still returned alongside the wrapped
-// error so the UI can display whatever git printed. Returns an error
-// when no arguments are provided or the command fails.
+// failure the partial output (capped at gitOutputLimit) is still returned
+// alongside the wrapped error so the UI can display whatever git printed.
+// Returns an error when no arguments are provided or the command fails.
 func (f *FrontendAPI) runGitCmdCombined(dir string, timeout time.Duration, args ...string) (string, error) {
 	if len(args) == 0 {
 		return "", errors.New("runGitCmdCombined: no arguments")
@@ -381,8 +382,33 @@ func (f *FrontendAPI) runGitCmdCombined(dir string, timeout time.Duration, args 
 	return combinedGitOutput(stdout.String(), stderr.String()), nil
 }
 
-// combinedGitOutput joins stdout and stderr (stdout first) and trims
-// surrounding whitespace, for display of remote git command output.
+// gitOutputLimit caps the combined stdout+stderr surfaced for a git
+// operation (commit, pull, push, fetch, and the tag push/delete RPCs). A
+// hook-heavy or signing commit, or a chatty remote op, can spray megabytes
+// (GPG banners, hook progress, verbose templates); the Git panel only ever
+// shows a bounded excerpt, so anything past 64 KiB is dropped with an
+// explicit marker. It is the single cap shared by limitedBuffer (the commit
+// spawn, capped as it streams) and truncateGitOutput (the remote-op path,
+// whose output is buffered whole then capped).
+const gitOutputLimit = 64 * 1024
+
+// gitOutputTruncationMarker is appended to an operation's captured output
+// when it exceeded gitOutputLimit and was cut.
+const gitOutputTruncationMarker = "\n[output truncated at 64 KiB]"
+
+// truncateGitOutput caps a finalized output string at gitOutputLimit,
+// appending gitOutputTruncationMarker when it was cut. It complements
+// limitedBuffer, which enforces the same cap while the commit spawn streams.
+func truncateGitOutput(out string) string {
+	if len(out) <= gitOutputLimit {
+		return out
+	}
+	return out[:gitOutputLimit] + gitOutputTruncationMarker
+}
+
+// combinedGitOutput joins stdout and stderr (stdout first), trims
+// surrounding whitespace, and caps the result at gitOutputLimit with a
+// truncation marker, for display of remote git command output.
 func combinedGitOutput(stdout, stderr string) string {
 	out := strings.TrimSpace(stdout)
 	if s := strings.TrimSpace(stderr); s != "" {
@@ -391,7 +417,7 @@ func combinedGitOutput(stdout, stderr string) string {
 		}
 		out += s
 	}
-	return out
+	return truncateGitOutput(out)
 }
 
 // emitGitStatusChanged emits the git:status_changed event to the
@@ -836,13 +862,17 @@ func (f *FrontendAPI) currentBranchName(repoPath string) (string, error) {
 //
 // When the branch already has an upstream — that is, git config
 // branch.<name>.remote resolves — the branch is pushed to that remote
-// (git push <remote> <name>). Otherwise the branch has never been
-// published: it is pushed to "origin" with -u so the upstream is set in
-// the same step (git push -u origin <name>). The remote name is always
-// read from git config branch.<name>.remote, falling back to "origin"
-// when unset. The argv is assembled by pushArgs, which is shared with the
-// bare-push path in runRemoteOp so both entry points publish an
-// unpublished branch identically.
+// (git push <remote> <name>), or, when branch.<name>.merge names an
+// upstream ref whose short name differs from the local branch name, to
+// that exact ref via an explicit <name>:<upstreamRef> refspec. Otherwise
+// the branch has never been published: it is pushed to the repository's
+// default push remote with -u so the upstream is set in the same step
+// (git push -u <remote> <name>). The remote is read from git config
+// branch.<name>.remote, falling back to the default push remote
+// (remote.pushDefault, else "origin" when it exists, else the repository's
+// alphabetically first remote) when unset. The argv is assembled by pushArgs, which is
+// shared with the bare-push path in runRemoteOp so both entry points publish
+// an unpublished branch identically.
 //
 // Like Pull/Push/Fetch, this is a remote operation: it is serialized via
 // remoteOpMu and bounded by remoteGitCmdTimeout, and it emits
@@ -876,23 +906,130 @@ func (f *FrontendAPI) branchRemote(repoPath, branchName string) string {
 	return strings.TrimSpace(out)
 }
 
-// pushArgs assembles the git argv that pushes branchName: when the branch
-// already has a configured upstream it is pushed to that remote, otherwise
-// it has never been published and is pushed to "origin" with -u so the
-// upstream is set in the same step. flags are optional push options
-// (--force, --force-with-lease, --no-verify) placed before the positional
-// arguments. Shared by PushBranch and the bare-push path in runRemoteOp,
-// which must both turn a never-published branch into a real remote branch
-// instead of failing with "no upstream branch". callers validate flags and
-// resolve the branch name; the returned argv is passed verbatim to
+// branchMerge returns the branch's configured upstream merge ref
+// (git config branch.<name>.merge, e.g. "refs/heads/main"), or "" when no
+// upstream is configured. Together with branch.<name>.remote it forms the
+// branch's full upstream; pushArgs reads both so a push targets the exact
+// ref the branch is configured to track.
+func (f *FrontendAPI) branchMerge(repoPath, branchName string) string {
+	out, err := f.runGitCmd(repoPath, "config", "--get", "branch."+branchName+".merge")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// upstreamRefFromMerge returns the short name of the branch a
+// branch.<name>.merge value points at — the "refs/heads/" prefix stripped (so
+// "refs/heads/main" → "main"). Only a branch upstream (refs/heads/*) maps to a
+// pushable refspec destination; a merge ref outside refs/heads/ (e.g. a tag) is
+// not a remote branch to push onto, so it returns "" and the caller falls back
+// to the branch's own name. Pure, so the merge value is read once per push.
+func upstreamRefFromMerge(merge string) string {
+	if !strings.HasPrefix(merge, "refs/heads/") {
+		return ""
+	}
+	return strings.TrimPrefix(merge, "refs/heads/")
+}
+
+// pushArgs assembles the git argv that pushes branchName. For a branch that
+// already has an upstream, the push remote follows git's own precedence — the
+// branch's branch.<name>.pushRemote, else remote.pushDefault, else its upstream
+// remote branch.<name>.remote — so an explicit argv still honours a user's
+// push-remote configuration. A branch that has never been published has no upstream to push
+// to, so it is published to the default push remote with -u so the remote
+// branch is created and the upstream set in the same step. flags are optional
+// push options (--force, --force-with-lease, --no-verify) placed before the
+// positional arguments. Shared by PushBranch and the bare-push path in
+// runRemoteOp, which must both turn a never-published branch into a real remote
+// branch instead of failing with "no upstream branch". callers validate flags
+// and resolve the branch name; the returned argv is passed verbatim to
 // runSerializedRemoteOp.
+//
+// The refspec pushes exactly the current branch to the ref it is configured to
+// track (upstream-style push.default), which is what a UI push button wants: a
+// branch whose configured upstream ref name differs from its local name (e.g.
+// local "feature-x" tracking upstream "origin/feature") is pushed with an
+// explicit "<local>:<upstreamRef>" refspec, so the push targets the exact ref
+// the branch tracks rather than a same-named remote branch — a case a bare
+// "git push" under push.default=simple would refuse outright ("upstream branch
+// name does not match"). push.default=matching/nothing (push more than the
+// current branch, or refuse) are deliberately not honoured, since c0wrk only
+// ever pushes the one branch the user asked for.
+//
+// branch.<name>.merge is consulted only for a branch that HAS an upstream
+// remote: git writes the branch.<name>.remote / .merge pair together when a
+// branch is given an upstream, so a branch with .merge but no .remote is not a
+// state git's own plumbing produces, and an unpublished branch is published
+// under its own name (what `git push -u` would do) rather than onto a stray
+// merge ref.
 func (f *FrontendAPI) pushArgs(repoPath, branchName string, flags []string) []string {
 	args := []string{"push"}
 	args = append(args, flags...)
-	if remote := f.branchRemote(repoPath, branchName); remote != "" {
-		return append(args, remote, branchName)
+
+	if upstreamRemote := f.branchRemote(repoPath, branchName); upstreamRemote != "" {
+		// Already published: push the current branch to the ref it is
+		// configured to track, on its push remote (which
+		// branch.<name>.pushRemote / remote.pushDefault may override).
+		refspec := branchName
+		if upstream := upstreamRefFromMerge(f.branchMerge(repoPath, branchName)); upstream != "" && upstream != branchName {
+			refspec = branchName + ":" + upstream
+		}
+		return append(args, f.pushRemote(repoPath, branchName, upstreamRemote), refspec)
 	}
-	return append(args, "-u", "origin", branchName)
+	// Never published: create the remote branch under the branch's own name and
+	// set the upstream in the same step, on the repository's default push
+	// remote (not a hardcoded "origin", which may not exist).
+	return append(args, "-u", f.defaultPushRemote(repoPath, branchName), branchName)
+}
+
+// pushRemote returns the remote a push of branchName should target, following
+// git's push-remote precedence: branch.<name>.pushRemote, else
+// remote.pushDefault, else fallback. Both overriding keys are push-specific —
+// they take precedence over the branch's tracking remote for pushes only — so
+// the already-published path passes branch.<name>.remote as the fallback while
+// the never-published path passes "" and resolves the conventional default
+// remote in defaultPushRemote instead.
+func (f *FrontendAPI) pushRemote(repoPath, branchName, fallback string) string {
+	for _, key := range []string{
+		"branch." + branchName + ".pushRemote",
+		"remote.pushDefault",
+	} {
+		if out, err := f.runGitCmd(repoPath, "config", "--get", key); err == nil {
+			if r := strings.TrimSpace(out); r != "" {
+				return r
+			}
+		}
+	}
+	return fallback
+}
+
+// defaultPushRemote returns the remote a never-published branch should be
+// published to. It starts from git's push-remote precedence (the branch's
+// branch.<name>.pushRemote, else remote.pushDefault), then — unlike a bare
+// `git push`, which errors with "No configured push destination" — falls back
+// to "origin" when that remote exists, else the alphabetically first remote (a
+// deterministic choice, independent of `git remote`'s emission order), else
+// "origin" (git's conventional default name, so the failure names a remote the
+// user recognises). That fallback is c0wrk's own convenience, not git parity.
+func (f *FrontendAPI) defaultPushRemote(repoPath, branchName string) string {
+	if r := f.pushRemote(repoPath, branchName, ""); r != "" {
+		return r
+	}
+	if out, err := f.runGitCmd(repoPath, "remote"); err == nil {
+		remotes := strings.Fields(out)
+		if len(remotes) > 0 {
+			// Deterministic order independent of `git remote`'s emission order.
+			sort.Strings(remotes)
+			for _, r := range remotes {
+				if r == "origin" {
+					return "origin"
+				}
+			}
+			return remotes[0]
+		}
+	}
+	return "origin"
 }
 
 // CheckoutRemoteBranch creates a local branch from a remote-tracking branch
@@ -1203,10 +1340,11 @@ func (f *FrontendAPI) Pull(remote string, flags []string) (string, error) {
 
 // Push sends local commits to the named remote (git push <remote>
 // [flags...]). When remote is empty, the current branch is pushed to its
-// configured upstream, or — when it has never been published — published
-// to origin with -u so the remote branch is created and the upstream set
-// in the same step (the Git panel's push button relies on this instead of
-// failing with "no upstream branch"). flags carries optional push options
+// configured push remote (branch.<name>.pushRemote, else remote.pushDefault,
+// else its upstream remote), or — when it has never been published — published
+// to the default push remote with -u so the remote branch is created and the
+// upstream set in the same step (the Git panel's push button relies on this
+// instead of failing with "no upstream branch"). flags carries optional push options
 // (--force, --force-with-lease, --no-verify); each must be in the
 // allowedRemoteFlags allowlist. The combined stdout+stderr output is
 // returned for display in the UI. Parallel remote operations are
@@ -1234,8 +1372,9 @@ func (f *FrontendAPI) Fetch(remote string, flags []string) (string, error) {
 // runSerializedRemoteOp executes a git remote operation under the
 // remoteOpMu lock so that only one network operation runs at a time per
 // app instance — pull, push, fetch and tag push/delete all share this
-// gate. The combined stdout+stderr output is captured for UI display and
-// the operation is bounded by remoteGitCmdTimeout. On success it emits
+// gate. The combined stdout+stderr output is captured for UI display
+// (capped at gitOutputLimit) and the operation is bounded by
+// remoteGitCmdTimeout. On success it emits
 // git:status_changed so the frontend can refresh ahead/behind indicators
 // and tag refs. It neither validates flags nor assembles the remote
 // argument — callers build the full argv. This is the single chokepoint

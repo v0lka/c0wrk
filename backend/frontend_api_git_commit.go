@@ -16,16 +16,10 @@ import (
 // Commit RPC — suppression-aware commit flow
 // ---------------------------------------------------------------------------
 
-// commitOutputLimit caps the combined commit stdout+stderr captured into
-// CommitResult.Output. A hook-heavy or signing commit can spray megabytes
-// (GPG banners, hook progress, verbose templates); the panel only ever
-// shows a bounded excerpt, so anything past 64 KiB is dropped with an
-// explicit marker.
-const commitOutputLimit = 64 * 1024
-
-// commitOutputTruncationMarker is appended to Output when the combined
-// commit output exceeded commitOutputLimit and was cut.
-const commitOutputTruncationMarker = "\n[output truncated at 64 KiB]"
+// The combined commit stdout+stderr that lands in CommitResult.Output is
+// capped at gitOutputLimit with gitOutputTruncationMarker (both defined in
+// frontend_api_git.go, the shared cap for every git operation's surfaced
+// output) via the streaming limitedBuffer below.
 
 // defaultGitCommitTimeout is the fallback commit-spawn budget when the
 // config is not loaded or the value is zero. Mirrors the config default
@@ -234,7 +228,7 @@ func (f *FrontendAPI) runCommitSpawn(repoPath, message string) (CommitResult, er
 }
 
 // limitedBuffer is an io.Writer that accumulates written bytes up to
-// commitOutputLimit and appends a truncation marker once the cap is
+// gitOutputLimit and appends gitOutputTruncationMarker once the cap is
 // crossed; writes beyond the cap are counted but dropped. It is safe for
 // concurrent use: os/exec assigns it to both Stdout and Stderr of one
 // exec.Cmd and copies each pipe on its own goroutine.
@@ -253,7 +247,7 @@ func (l *limitedBuffer) Write(p []byte) (int, error) {
 		l.written += len(p)
 		return len(p), nil
 	}
-	room := commitOutputLimit - l.written
+	room := gitOutputLimit - l.written
 	if len(p) > room {
 		l.b.WriteString(string(p[:max(room, 0)]))
 		l.written += len(p)
@@ -273,7 +267,7 @@ func (l *limitedBuffer) String() string {
 	defer l.mu.Unlock()
 	out := strings.TrimSpace(l.b.String())
 	if l.truncated {
-		out += commitOutputTruncationMarker
+		out += gitOutputTruncationMarker
 	}
 	return out
 }

@@ -2,7 +2,7 @@
 
 ## Role
 
-The single surface for the outcome of every user-triggered git mutation in the Git panel: a footer log button whose glyph is tinted by the last operation's result, anchored over a popover that replays the captured output. It replaces the scattered per-feature success banners and error toasts with one per-project record so a result survives panel remounts and project switches.
+The single surface for the outcome of every *funneled* user-triggered git mutation in the Git panel — branch creation is the one deliberate exception (see [What stays inline](#what-stays-inline-and-does-not-feed-the-console)): a footer log button whose glyph is tinted by the last operation's result, anchored over a popover that replays the captured output. It replaces the scattered per-feature success banners and error toasts with one per-project record so a result survives panel remounts and project switches.
 
 ## Key Files
 
@@ -10,7 +10,8 @@ The single surface for the outcome of every user-triggered git mutation in the G
 - `frontend/src/stores/gitPanelStore.ts` — `operationByProject`, `GitOperationRecord`, `GitOperationKind`, `EMPTY_GIT_OPERATION`, `recordGitOperation`/`acknowledgeOperation`/`dropProjectOperation`, `selectLastOperation`
 - `frontend/src/components/GitPanel/GitPanelFooter.tsx` — hosts the button + popover, owns open state and the outside-click/Escape dismissal, and acknowledges on open (`toggleLog`)
 - `frontend/src/components/GitPanel/GitOperationButton.tsx` — the footer affordance (tint + busy spinner + `aria-expanded`)
-- `frontend/src/components/GitPanel/GitOperationPopover.tsx` — the anchored log panel (status header + `<pre>` of captured output)
+- `frontend/src/components/GitPanel/GitOperationPopover.tsx` — the portaled log panel (status header + `<pre>` of captured output), positioned from the trigger's rect
+- `frontend/src/lib/dropdownPosition.ts` / `frontend/src/lib/layoutSpace.ts` — the zoom-safe trigger-anchored placement helpers the popover reuses (`computeDropdownPosition`, `toLayoutTriggerRect`, `getLayoutViewport`)
 - Event source: `frontend/src/hooks/useGitStatusEvents.ts` — consumes `git:status_changed` so a console-recorded mutation auto-refreshes the store
 - Guards: `frontend/src/lib/gitOperation.test.ts`, `frontend/src/stores/gitPanelStore.test.ts`, `frontend/src/components/GitPanel/GitPanelFooter.test.tsx`, `frontend/src/components/GitPanel/GitOperationButton.test.tsx`, `frontend/src/components/GitPanel/GitOperationPopover.test.tsx`
 
@@ -21,13 +22,13 @@ The single surface for the outcome of every user-triggered git mutation in the G
 Every user-triggered git mutation runs through `runGitOperation`, which is the only writer of an operation record. It captures the owning `projectId` at call time, awaits `fn`, and:
 
 - on **success** records `{ kind, label, ok: true, output, error: null }` (when `recordSuccess` is true), where `output` is `extractOutput(result)` — or the result itself when it is a string, else `''`;
-- on **failure** records `{ kind, label, ok: false, output: '', error }` with `gitOperationErrorMessage(err)`, and logs via `logger.error`;
+- on **failure** records `{ kind, label, ok: false, output: '', error }` with `gitOperationErrorMessage(err)`, and logs it at the call site's explicit `logLevel` — `logger.error` by default, `logger.warn` for the low-level ops that pass `logLevel: 'warn'` (per-file staging/unstaging, discard, and gitignore failures are routine user-initiated outcomes rather than faults; the bulk `stage-all`/`unstage-all` toolbar actions keep the default ERROR, as a failed batch reads like a fault). Severity is deliberately independent of `recordSuccess`, which only governs whether a *success* is recorded;
 - **never rethrows** — a rejected `fn` is captured, so a caller's `try/finally` (busy-flag clearing, dialog dismissal) always runs.
 
 Each record sets a fresh `at` timestamp and `acknowledged: false`, so a new result re-arms the tint.
 
 ```
-call site ──runGitOperation({projectId, kind, label, fn, extractOutput?, recordSuccess?})──▶ gitPanelStore.recordGitOperation
+call site ──runGitOperation({projectId, kind, label, fn, extractOutput?, recordSuccess?, logLevel?})──▶ gitPanelStore.recordGitOperation
                                                                                               │  operationByProject[projectId]
                                                                                               ▼
 GitPanelFooter ──selectLastOperation(state, activeProjectId)──▶ GitOperationButton ──toggle──▶ GitOperationPopover
@@ -37,7 +38,7 @@ GitPanelFooter ──selectLastOperation(state, activeProjectId)──▶ GitOpe
 
 ### Button
 
-`GitOperationButton` renders a `Terminal` glyph that, while a remote op is in flight, is replaced by a `Loader2` spinner and disabled. Its color is the only signal of an unread result (`operationTone`):
+`GitOperationButton` renders a `Terminal` glyph that, while a remote op is in flight, is replaced by a `Loader2` spinner. It stays clickable during an operation so the previous result's log remains readable. Its color is the only signal of an unread result (`operationTone`):
 
 | State | Tone |
 | ----- | ---- |
@@ -47,11 +48,11 @@ GitPanelFooter ──selectLastOperation(state, activeProjectId)──▶ GitOpe
 | `ok` and unread | `text-success` |
 | `!ok` and unread | `text-destructive` |
 
-It carries `aria-label="Git operation log"`, `aria-haspopup="dialog"`, and `aria-expanded={open}`.
+It carries `aria-label="Git operation log"`, `aria-haspopup="dialog"`, `aria-expanded={open}`, and `aria-controls` pointing at the popover's stable id.
 
 ### Popover
 
-`GitOperationPopover` is purely presentational — the footer owns open state and dismissal. It renders a dialog (`role="dialog"`, `aria-label="Git operation log"`) with a status header (a `Terminal` / `CheckCircle2` / `XCircle` icon plus the operation `label`, falling back to `kind`, and `No git operations yet` when there is no record) above a scrollable, pre-wrapped `<pre>`:
+`GitOperationPopover` is purely presentational — the footer owns open state and dismissal. It renders a dialog (`role="dialog"`, `aria-modal="false"`, `aria-label="Git operation log"`, a stable `id` the trigger points at via `aria-controls`) and moves focus into itself once positioned, with a status header (a `Terminal` / `CheckCircle2` / `XCircle` icon plus the operation `label`, falling back to `kind`, and `No git operations yet` when there is no record) above a scrollable, pre-wrapped `<pre>`:
 
 ```
 header: [icon] <label>                      ← label.trim() || kind; tinted success/destructive/muted
@@ -59,6 +60,8 @@ body:   captured output                     ← output.trim() || error || 'No ou
 ```
 
 The body prefers the captured `output`; when the operation produced none (a failed spawn records an empty `output` and the message in `error`), it falls back to `error`, then to `No output`.
+
+The panel is **portaled to `document.body`** and `position: fixed`, measured and placed from the trigger button's `getBoundingClientRect()` (see [Zoom-safe sizing](#zoom-safe-sizing)). This is what keeps it outside the Git panel's `overflow-hidden` ancestor: an in-place panel wider than the resizable sidebar (180–500px) overflowed that clipped ancestor, and the panel's `focus()` then scrolled the container — shifting the entire Git panel sideways. Escaping to a body portal removes both the clipping and the scroll.
 
 ### Per-project scope
 
@@ -73,7 +76,7 @@ The active project's record is read via `selectLastOperation(state, activeProjec
 
 ### Acknowledge semantics
 
-Opening the log is the acknowledgement. `GitPanelFooter.toggleLog` calls `acknowledgeOperation(activeProjectId)` as it opens the popover, flipping `acknowledged: true`, so the glyph drops to neutral and an open log reads as "seen" rather than "unread result". Closing and reopening does not re-acknowledge; `acknowledgeOperation` is a reference-stable no-op when the project has no record or the flag is already set (it never fabricates an entry just to flip a flag). A newly recorded operation resets `acknowledged` to false, re-arming the tint.
+Opening the log is the acknowledgement. `GitPanelFooter.toggleLog` calls `acknowledgeOperation(activeProjectId)` as it opens the popover (except while a remote op is in flight — the log stays readable mid-operation, and the pending result re-arms the tint when it lands), flipping `acknowledged: true`, so the glyph drops to neutral and an open log reads as "seen" rather than "unread result". Closing and reopening does not re-acknowledge; `acknowledgeOperation` is a reference-stable no-op when the project has no record or the flag is already set (it never fabricates an entry just to flip a flag). A newly recorded operation resets `acknowledged` to false, re-arming the tint.
 
 ### Which operations feed the console
 
@@ -93,7 +96,7 @@ Every `GitOperationKind` is written by `runGitOperation`; call sites and labels:
 | `gitignore` | File + file-tree context menus (`GitPanel/GitFileContextMenu.tsx`, `layout/FileTreeContextMenu.tsx`) | `Added <path> to .gitignore` | **No** — errors only |
 | `unknown` | sentinel only — never passed by a real caller | — | n/a |
 
-**Silent successes.** The low-level staging/gitignore operations pass `recordSuccess: false`: success is already visible through the changed git state (a row moving between the staged/unstaged sections, an entry leaving the tree), so a success entry would only be console noise. Failures are always recorded, regardless of the flag.
+**Silent successes.** The per-file staging/discard/gitignore operations pass `recordSuccess: false`: success is already visible through the changed git state (a row moving between the staged/unstaged sections, an entry leaving the tree), so a success entry would only be console noise. Failures are always recorded, regardless of the flag. These same operations also pass `logLevel: 'warn'` so their routine failures log below ERROR; the flag and the level are chosen independently at each call site.
 
 **Recorded output.** A failing spawn records an empty `output` and the message in `error`. Remote ops and commits pass an `extractOutput` (e.g. the commit replays `result.output`, remote ops substitute `<Op> completed.` for an empty string); branch push/delete-remote return the backend's combined stdout+stderr, so `git` progress text (written to stderr) shows up in the popover body.
 
@@ -112,12 +115,14 @@ The console owns operation *results* only. These non-result surfaces deliberatel
 
 ### Zoom-safe sizing
 
-The popover is anchored, not pointer-tracked: it is absolutely positioned by its relatively-positioned footer wrapper (`absolute bottom-full right-0`), so no pointer coordinate is written into `style.left/top` and the UI-scale zoom cannot displace it. Its height is capped through the zoom-corrected `--ui-vh` primitive — `max-h-[calc(var(--ui-vh)*0.5)]` — so it stays inside the visible window at any UI scale (a raw `50vh` would be magnified past the window). The body is `min-h-0 flex-1 overflow-auto` so the cap scrolls rather than overflowing. See [ui-scale.md](ui-scale.md) for the coordinate model.
+The popover is trigger-anchored, not pointer-tracked, and is rendered through a React portal to `document.body` with `position: fixed` — so the Git panel's `overflow-hidden` ancestor can neither clip it nor scroll under it. Placement mirrors `BudgetCombobox`: the trigger's `getBoundingClientRect()` (VISUAL px) is converted to LAYOUT px with `toLayoutTriggerRect`, the window extent comes from `getLayoutViewport()` (also layout px), and `computeDropdownPosition` returns the fixed rect — opening **upward** (the footer sits at the bottom of the panel, so there is no room below it) and **left-aligned to the trigger**, i.e. up and to the right, then clamped horizontally so the panel always stays inside the window at any UI scale. No pointer coordinate lands in `style.left/top` (`position.left`/`position.top` come from `lib/dropdownPosition`, already layout px), so the zoom cannot displace it.
+
+Its height is capped in absolute layout px — `min(MAX_PANEL_HEIGHT, room above the trigger, window height)` — measured from the panel's own `offsetHeight` and applied inline as `maxHeight`, so the panel never grows past the window or past the trigger. The body is `min-h-0 flex-1 overflow-auto custom-scrollbar` so the cap scrolls rather than overflowing. See [ui-scale.md](ui-scale.md) for the coordinate model.
 
 ## Error Handling
 
 - **`fn` rejects**: caught, never rethrown; the message is normalized by `gitOperationErrorMessage` (`err instanceof Error ? err.message : String(err)`), recorded with `ok: false`, and logged. The caller keeps its control flow and its `finally` always runs.
-- **No active project**: every call site guards before calling (`if (!projectId) return`); without one there is nothing to key the record to.
+- **No active project**: call sites guard before calling (`if (!projectId) return`), since without one there is nothing to key the record to. The one exception is the file-tree `.gitignore` action (`FileTreeContextMenu.handleAddToGitignore`): with no active project there is no console to key the record to, so it still runs the write and logs its own failure at ERROR.
 - **Acknowledging without a record**: `acknowledgeOperation` is a no-op (reference-stable) when the project has no record or is already acknowledged — it never creates a phantom entry.
 - **Stale completion**: the project id is captured at call time, so a late completion cannot land in the wrong project's record.
 - **Non-string / non-Error shapes**: `defaultExtractOutput` yields `''` for a non-string result; a non-Error rejection still yields a displayable string.
@@ -132,7 +137,7 @@ The popover is anchored, not pointer-tracked: it is absolutely positioned by its
 - Opening the log acknowledges the active project's record; the glyph is neutral while `busy`, when there is no record, or once `acknowledged`.
 - A record is dropped only by project deletion (`dropProjectOperation`), never by a panel remount or project switch.
 - `selectLastOperation` returns the stored record by reference (or `undefined`) — it allocates nothing, so it is safe as a Zustand selector.
-- The popover is anchored to the footer wrapper (no pointer coordinate) and capped in `--ui-vh`, so it is correct under the app-wide UI scale.
+- The popover is portaled to `document.body` and `position: fixed`, placed from the trigger's rect converted to layout px (`toLayoutTriggerRect` + `getLayoutViewport` + `computeDropdownPosition`) and height-capped in layout px — never clipped or scrolled by the panel's `overflow-hidden` ancestor, and correct under the app-wide UI scale.
 
 ## Related Specs
 

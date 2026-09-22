@@ -144,52 +144,6 @@ describe('gitPanelStore', () => {
     expect(useGitPanelStore.getState().entries).toEqual([])
   })
 
-  // ── toggleStage ──
-
-  it('toggleStage toggles staged flag from false to true', () => {
-    const { loadEntries, toggleStage } = useGitPanelStore.getState()
-    loadEntries([
-      makeEntry({ path: 'a.ts', staged: false }),
-      makeEntry({ path: 'b.ts', staged: true }),
-    ])
-
-    toggleStage('a.ts')
-    const entries = useGitPanelStore.getState().entries
-    expect(entries.find(e => e.path === 'a.ts')!.staged).toBe(true)
-    expect(entries.find(e => e.path === 'b.ts')!.staged).toBe(true) // unchanged
-  })
-
-  it('toggleStage toggles staged flag from true to false', () => {
-    const { loadEntries, toggleStage } = useGitPanelStore.getState()
-    loadEntries([
-      makeEntry({ path: 'a.ts', staged: true }),
-    ])
-
-    toggleStage('a.ts')
-    expect(useGitPanelStore.getState().entries[0]!.staged).toBe(false)
-  })
-
-  it('toggleStage does nothing for nonexistent path', () => {
-    const { loadEntries, toggleStage } = useGitPanelStore.getState()
-    loadEntries([makeEntry({ path: 'a.ts', staged: false })])
-    toggleStage('nonexistent.ts')
-    expect(useGitPanelStore.getState().entries).toHaveLength(1)
-    expect(useGitPanelStore.getState().entries[0]!.staged).toBe(false)
-  })
-
-  it('toggleStage preserves other entry properties', () => {
-    const { loadEntries, toggleStage } = useGitPanelStore.getState()
-    loadEntries([
-      makeEntry({ path: 'a.ts', status: 'M', diffStat: { added: 3, deleted: 1 } }),
-    ])
-
-    toggleStage('a.ts')
-    const entry = useGitPanelStore.getState().entries[0]!
-    expect(entry.staged).toBe(true)
-    expect(entry.status).toBe('M')
-    expect(entry.diffStat).toEqual({ added: 3, deleted: 1 })
-  })
-
   // ── setBranch ──
 
   it('setBranch updates branch info', () => {
@@ -455,8 +409,12 @@ describe('gitPanelStore', () => {
       makeEntry({ path: 'README.md', status: 'M', staged: false }),
     ])
 
-    // Stage one file
-    store.toggleStage('src/app.ts')
+    // Stage one file: the backend emits git:status_changed after StageFile,
+    // so the store re-loads with the file now classified as staged.
+    store.loadEntries([
+      makeEntry({ path: 'src/app.ts', status: 'M', staged: true, indexStatus: 'M', worktreeStatus: ' ' }),
+      makeEntry({ path: 'README.md', status: 'M', staged: false, indexStatus: ' ', worktreeStatus: 'M' }),
+    ])
     expect(useGitPanelStore.getState().entries.find(e => e.path === 'src/app.ts')!.staged).toBe(true)
 
     // Set commit message

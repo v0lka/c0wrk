@@ -34,7 +34,7 @@ Bound every MCP operation at the **sp4rk gateway layer** with two per-server dur
 
 6. **Mark, not kill.** A timeout never closes the connection or kills the process. `Unhealthy` is an advisory status flag (surfaced through `ServerStatus.Unhealthy`, non-omitempty) that lets callers and the UI deprioritize or warn about a persistently unresponsive server while it stays connected. The timeout itself surfaces to the agent loop as a typed `*TimeoutError` (with server/op/tool/bound attribution; it unwraps to `context.DeadlineExceeded`), never swallowed.
 
-**Config surface (c0wrk wiring).** `mcp.servers.<name>.timeout` / `.call_timeout` (`MCPServerConfig`) parse through `parseMCPDuration` into `BuilderMCPServer` and are forwarded into `mcp.ServerEntry.Timeout` / `.CallTimeout`. An omitted/empty key resolves to 0 (→ the sp4rk 60s default); an unparseable or non-positive value **fails soft** to 0 with a logged warning (so a bad value never prevents a server from starting), while the UI save path (`validateMCPServerConfig`) rejects it up front. Because the bounds are captured at connect time, the gateway's `configChanged` treats a timeout-only edit as reconnect-worthy so the new bound re-applies immediately.
+**Config surface (c0wrk wiring).** `mcp.servers.<name>.timeout` / `.call_timeout` (`MCPServerConfig`) parse through `parseMCPDuration` into `BuilderMCPServer` and are forwarded into `mcp.ServerEntry.Timeout` / `.CallTimeout`. An omitted/empty key resolves to 0 (→ the sp4rk 60s default); an unparseable or non-positive value **fails soft** to 0 with a load warning — surfaced through the production load path (`config.ResolveAndLoad` → `LoadWithResult` → `LoadResult.LoadErrors`, produced by `normalizeMCPTimeouts`, into the UI's `configLoadErrors`, plus a WARN log) so a bad value never prevents a server from starting — while the UI save path (`validateMCPServerConfig`) rejects it up front. Because the bounds are captured at connect time, the gateway's `configChanged` treats a timeout-only edit as reconnect-worthy so the new bound re-applies immediately.
 
 ## Consequences
 
@@ -69,5 +69,6 @@ Bound every MCP operation at the **sp4rk gateway layer** with two per-server dur
 - `config.example.yaml` — `mcp.servers.<name>.timeout` / `call_timeout`
 - `backend/config/config.go` — `MCPServerConfig.Timeout` / `CallTimeout`
 - `backend/configadapter.go` — `parseMCPDuration` (fail-soft to the default)
+- `backend/config/mcp_timeout.go` — `ParseMCPDuration` (shared duration rule) and `normalizeMCPTimeouts` (load warning, so a bad value is reported on the production load path)
 - [specs/domains/tool-system/mcp-gateway.md](../domains/tool-system/mcp-gateway.md) — c0wrk MCP wiring (timeouts + invariants)
 - [sp4rk mcp-gateway spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/mcp-gateway.md) — canonical engine behavior

@@ -8,13 +8,13 @@ import { SortGroupControls } from './ChangesList/SortGroupControls'
 import { TreeExpandControls } from './ChangesList/TreeExpandControls'
 import { ChangesToolbar } from './ChangesToolbar'
 import { classifyEntries } from '@/lib/gitStatus'
-import type { StageAction } from '@/lib/gitStatus'
+import type { StageToggleHandler } from '@/lib/gitStatus'
 import type { SectionData } from './ChangesList/types'
 
 // ─────────────────────────────────── Types ───────────────────────────────────
 
 interface ChangesListProps {
-  onToggleFile: (path: string, action: StageAction) => void
+  onToggleFile: StageToggleHandler
   onOpenDiff: (path: string) => void
 }
 

@@ -2398,6 +2398,38 @@ func TestPush_EmptyRemote_UntrackedBranch_PublishesAndSetsUpstream(t *testing.T)
 	}
 }
 
+// TestPush_EmptyRemote_UntrackedBranch_NoOriginUsesDefaultRemote pins the
+// companion fix: a never-published branch in a repository whose only remote is
+// not named "origin" must publish to that remote (mirroring what a bare
+// `git push` would resolve) instead of failing on a hardcoded "origin".
+func TestPush_EmptyRemote_UntrackedBranch_NoOriginUsesDefaultRemote(t *testing.T) {
+	remoteDir := t.TempDir()
+	gitOut(t, remoteDir, "init", "--bare")
+
+	localDir := t.TempDir()
+	gitInit(t, localDir)
+	commitFile(t, localDir, "a.txt", "a\n")
+	// The only remote is deliberately not named "origin".
+	gitOut(t, localDir, "remote", "add", "upstream", remoteDir)
+
+	gitOut(t, localDir, "checkout", "-b", "feature/y")
+	commitFile(t, localDir, "b.txt", "b\n")
+
+	f := &FrontendAPI{activeProjectPath: localDir}
+	if _, err := f.Push("", nil); err != nil {
+		t.Fatalf("Push (empty remote, no origin): %v", err)
+	}
+
+	remoteHead := gitOut(t, remoteDir, "rev-parse", "refs/heads/feature/y")
+	localHead := gitOut(t, localDir, "rev-parse", "HEAD")
+	if remoteHead != localHead {
+		t.Errorf("after push: remote head %q != local head %q", remoteHead, localHead)
+	}
+	if got := gitOut(t, localDir, "config", "--get", "branch.feature/y.remote"); got != "upstream" {
+		t.Errorf("branch.feature/y.remote = %q, want upstream", got)
+	}
+}
+
 // TestPush_EmptyRemote_TrackedBranch_UsesConfiguredRemote verifies the
 // other half of the issue-#59 fix: when the branch already has an
 // upstream, an empty-remote Push pushes to that configured remote (here a
@@ -2428,6 +2460,44 @@ func TestPush_EmptyRemote_TrackedBranch_UsesConfiguredRemote(t *testing.T) {
 	localHead := gitOut(t, localDir, "rev-parse", "HEAD")
 	if remoteHead != localHead {
 		t.Errorf("after push: remote head %q != local head %q", remoteHead, localHead)
+	}
+}
+
+// TestPush_EmptyRemote_TrackedBranch_HonorsPushRemote pins that an
+// already-published branch is pushed to its push remote (git's push-remote
+// resolution: branch.<name>.pushRemote, else remote.pushDefault, else the
+// upstream remote) rather than unconditionally to the upstream remote, so an
+// empty-remote push honours a user's push-remote configuration.
+func TestPush_EmptyRemote_TrackedBranch_HonorsPushRemote(t *testing.T) {
+	upstreamDir := t.TempDir()
+	gitOut(t, upstreamDir, "init", "--bare")
+	forkDir := t.TempDir()
+	gitOut(t, forkDir, "init", "--bare")
+
+	localDir := t.TempDir()
+	gitInit(t, localDir)
+	commitFile(t, localDir, "a.txt", "a\n")
+	gitOut(t, localDir, "remote", "add", "origin", upstreamDir)
+	gitOut(t, localDir, "remote", "add", "fork", forkDir)
+	branch := gitDefaultBranch(t, localDir)
+	gitOut(t, localDir, "push", "-u", "origin", branch)
+	// The branch tracks origin, but pushes are redirected to the fork.
+	gitOut(t, localDir, "config", "branch."+branch+".pushRemote", "fork")
+
+	f := &FrontendAPI{activeProjectPath: localDir}
+
+	commitFile(t, localDir, "b.txt", "b\n")
+	if _, err := f.Push("", nil); err != nil {
+		t.Fatalf("Push (empty remote, pushRemote): %v", err)
+	}
+
+	localHead := gitOut(t, localDir, "rev-parse", "HEAD")
+	if got := gitOut(t, forkDir, "rev-parse", "refs/heads/"+branch); got != localHead {
+		t.Errorf("pushRemote target head %q != local head %q", got, localHead)
+	}
+	// The upstream remote must NOT have received the commit.
+	if got := gitOut(t, upstreamDir, "rev-parse", "refs/heads/"+branch); got == localHead {
+		t.Errorf("origin (upstream) received the push despite branch.<name>.pushRemote=fork")
 	}
 }
 
@@ -2653,5 +2723,29 @@ func TestPull_FFOnlyFlag_Diverged(t *testing.T) {
 	}
 	if _, err := f.Pull("origin", []string{"--ff-only"}); err == nil {
 		t.Fatal("Pull --ff-only (diverged): expected error, got nil")
+	}
+}
+
+// TestCombinedGitOutput_CapsAtGitOutputLimit verifies that the remote-op
+// output surfaced to the UI is bounded at gitOutputLimit with the shared
+// truncation marker — the same cap the commit path enforces via
+// limitedBuffer — so the GitOperationRecord.output field's documented
+// "bounded" contract holds for every operation kind, not only commit.
+func TestCombinedGitOutput_CapsAtGitOutputLimit(t *testing.T) {
+	big := strings.Repeat("x", gitOutputLimit+1024)
+	got := combinedGitOutput(big, "")
+	if want := gitOutputLimit + len(gitOutputTruncationMarker); len(got) != want {
+		t.Fatalf("combined output length = %d, want %d", len(got), want)
+	}
+	if !strings.HasSuffix(got, gitOutputTruncationMarker) {
+		t.Error("expected the truncation marker at the end of the capped output")
+	}
+	if !strings.HasPrefix(got, strings.Repeat("x", gitOutputLimit)) {
+		t.Error("the first gitOutputLimit bytes must be preserved verbatim")
+	}
+
+	// Under the cap: stdout first, then stderr, trimmed, no marker.
+	if got, want := combinedGitOutput("out", "err"), "out\nerr"; got != want {
+		t.Errorf("combinedGitOutput = %q, want %q", got, want)
 	}
 }

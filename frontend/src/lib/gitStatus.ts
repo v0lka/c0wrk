@@ -44,6 +44,17 @@ export type StageSide = 'index' | 'worktree'
 export type StageAction = 'stage' | 'unstage'
 
 /**
+ * Handler a changes-list row invokes to flip its axis state (`stage` or
+ * `unstage`). It resolves `false` when the operation failed so the row can
+ * revert its optimistic checkbox; `true` leaves the optimistic flip in place
+ * until the next status refresh re-derives it.
+ */
+export type StageToggleHandler = (
+  path: string,
+  action: StageAction,
+) => Promise<boolean>
+
+/**
  * Two-char porcelain status combinations that indicate an unresolved merge
  * conflict (both axes together). Mirrors `git status`'s unmerged codes.
  */

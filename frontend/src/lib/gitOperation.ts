@@ -39,6 +39,15 @@ export interface RunGitOperationArgs<T> {
    * Failures are ALWAYS recorded, regardless of this flag. Defaults to true.
    */
   recordSuccess?: boolean
+  /**
+   * Severity for the log line emitted when `fn` rejects. Defaults to `'error'`
+   * — a failed remote op, commit, or branch mutation is a genuine fault. The
+   * per-file staging/discard/gitignore ops pass `'warn'`: their failures are
+   * routine, user-driven outcomes (a discard on an unchanged file, a stage of
+   * an already-staged path), not faults. Deliberately independent of
+   * `recordSuccess`, which governs the console record, not logging severity.
+   */
+  logLevel?: 'error' | 'warn'
 }
 
 /**
@@ -71,8 +80,9 @@ export function gitOperationErrorMessage(err: unknown): string {
  * `{ ok: true, result, error: null }`.
  *
  * On failure records `{ kind, label, ok: false, output: '', error }` with the
- * normalized error message, logs it via `logger.error`, and returns
- * `{ ok: false, result: undefined, error }`.
+ * normalized error message, logs it at `logLevel` (an ordinary `'error'` by
+ * default, or `'warn'` for the routine per-file ops that pass it explicitly),
+ * and returns `{ ok: false, result: undefined, error }`.
  *
  * When `recordSuccess` is false a success is not recorded at all (but is still
  * returned); failures are always recorded.
@@ -89,6 +99,7 @@ export async function runGitOperation<T>({
   fn,
   extractOutput,
   recordSuccess = true,
+  logLevel = 'error',
 }: RunGitOperationArgs<T>): Promise<GitOperationOutcome<T>> {
   // Capture the project id at call time: the record must land under the
   // project that started the operation, even if the active project changed
@@ -111,7 +122,15 @@ export async function runGitOperation<T>({
     return { ok: true, result, error: null }
   } catch (err) {
     const error = gitOperationErrorMessage(err)
-    logger.error(`gitOperation: "${kind}" failed for project ${pid}:`, err)
+    // Severity is chosen explicitly by the call site, not inferred from
+    // `recordSuccess` (which governs the console record, not logging): the
+    // per-file staging/discard/gitignore ops pass `logLevel: 'warn'` because
+    // their failures are routine, user-driven outcomes (a discard on an
+    // unchanged file, a stage of an already-staged path). Every other op — remote ops,
+    // commit, the batch toolbars — defaults to ERROR: a failed mutation there
+    // is a genuine fault, not a normal consequence of what the user clicked.
+    const logFailure = logLevel === 'warn' ? logger.warn : logger.error
+    logFailure(`gitOperation: "${kind}" failed for project ${pid}:`, err)
     useGitPanelStore.getState().recordGitOperation(pid, {
       kind,
       label,

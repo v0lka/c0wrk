@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useId, useRef } from 'react'
 import { DownloadCloud, UploadCloud, RefreshCw, Loader2, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { pull, push, fetch } from '@/api/git'
 import { runGitOperation } from '@/lib/gitOperation'
+import { useDropdown } from '@/hooks/useDropdown'
 import { useGitPanelStore, selectLastOperation } from '@/stores/gitPanelStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { GitOperationButton } from './GitOperationButton'
@@ -75,28 +76,36 @@ export function GitPanelFooter() {
   const lastOperation = useGitPanelStore((s) => selectLastOperation(s, activeProjectId))
 
   const [activeOp, setActiveOp] = useState<RemoteOp | null>(null)
-  const [isLogOpen, setIsLogOpen] = useState(false)
-  const logWrapRef = useRef<HTMLDivElement>(null)
+  // Open state + outside-click dismissal for the portaled log panel. The panel
+  // lives in a separate DOM subtree (document.body), so the hook's `menuRef`
+  // — attached to the panel — is what keeps a click INSIDE it from counting as
+  // an outside click.
+  const {
+    isOpen: isLogOpen,
+    setIsOpen: setIsLogOpen,
+    containerRef: logWrapRef,
+    menuRef: logPanelRef,
+  } = useDropdown()
+  // The trigger, so opening can acknowledge the record and closing (via Escape)
+  // can return focus to it — focus moves into the panel on mount.
+  const logButtonRef = useRef<HTMLButtonElement>(null)
+  // Document-unique id linking the trigger to its panel (`aria-controls`/`id`).
+  const logId = useId()
 
-  // Close the log popover on click-outside or Escape. The wrapper holds BOTH
-  // the trigger and the panel, so a click on the button counts as "inside" and
-  // its own onClick toggles — the outside handler never swallows it.
+  // Escape closes the log popover and returns focus to its trigger (focus had
+  // moved into the panel on open). Outside-click dismissal is the dropdown
+  // hook's job; it treats a click inside the portaled panel as "inside".
   useEffect(() => {
     if (!isLogOpen) return
-    const onPointerDown = (e: MouseEvent) => {
-      if (logWrapRef.current?.contains(e.target as Node)) return
-      setIsLogOpen(false)
-    }
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setIsLogOpen(false)
+      if (e.key === 'Escape') {
+        setIsLogOpen(false)
+        logButtonRef.current?.focus()
+      }
     }
-    document.addEventListener('mousedown', onPointerDown)
     document.addEventListener('keydown', onKeyDown)
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown)
-      document.removeEventListener('keydown', onKeyDown)
-    }
-  }, [isLogOpen])
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [isLogOpen, setIsLogOpen])
 
   const runOp = useCallback(
     async (op: RemoteOp, flags: string[] = []) => {
@@ -110,8 +119,8 @@ export function GitPanelFooter() {
         // `runGitOperation` never throws: it records the success/failure into
         // the store (which the log button/popover surface) and returns an
         // outcome we intentionally ignore. Empty remote → backend resolves it;
-        // push publishes an unpublished branch (push -u origin) instead of
-        // failing.
+        // push publishes an unpublished branch (push -u <default push remote>)
+        // instead of failing.
         await runGitOperation({
           projectId: activeProjectId,
           kind: op,
@@ -133,13 +142,17 @@ export function GitPanelFooter() {
   const toggleLog = useCallback(() => {
     if (isLogOpen) {
       setIsLogOpen(false)
+      // Return focus to the trigger: focus had moved into the panel on open.
+      logButtonRef.current?.focus()
       return
     }
     // Acknowledge as we open: the button tints neutral, so an open log reads
-    // as "seen" rather than "unread result".
-    if (activeProjectId !== null) acknowledgeOperation(activeProjectId)
+    // as "seen" rather than "unread result". Skip it while an operation is in
+    // flight — the result it will record re-arms the tint anyway, and the log
+    // stays readable mid-operation.
+    if (activeProjectId !== null && !busy) acknowledgeOperation(activeProjectId)
     setIsLogOpen(true)
-  }, [isLogOpen, activeProjectId, acknowledgeOperation])
+  }, [isLogOpen, setIsLogOpen, activeProjectId, acknowledgeOperation, busy])
 
   const buttons: { op: RemoteOp; icon: typeof DownloadCloud }[] = [
     { op: 'fetch', icon: RefreshCw },
@@ -198,16 +211,27 @@ export function GitPanelFooter() {
           </DropdownMenu>
         ))}
 
-        {/* Shared operation log, anchored by this relatively-positioned wrapper.
-            Rendered on every tab because the footer itself is shared. */}
-        <div ref={logWrapRef} className="relative ml-auto flex items-center">
+        {/* Shared operation log. The panel is portaled to document.body with
+            fixed positioning (positioned from the trigger's rect), so it is
+            never clipped by the panel's overflow-hidden ancestor. Rendered on
+            every tab because the footer itself is shared. */}
+        <div ref={logWrapRef} className="ml-auto flex items-center">
           <GitOperationButton
             record={lastOperation}
             busy={busy}
+            buttonRef={logButtonRef}
+            controlsId={isLogOpen ? logId : undefined}
             open={isLogOpen}
             onToggle={toggleLog}
           />
-          {isLogOpen && <GitOperationPopover record={lastOperation} />}
+          {isLogOpen && (
+            <GitOperationPopover
+              record={lastOperation}
+              id={logId}
+              triggerRef={logButtonRef}
+              panelRef={logPanelRef}
+            />
+          )}
         </div>
       </div>
     </div>

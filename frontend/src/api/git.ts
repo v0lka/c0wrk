@@ -1,4 +1,16 @@
-// Git API wrappers — all Wails RPC calls for git operations go through here
+// Git API wrappers — all Wails RPC calls for git operations go through here.
+//
+// Layering: this module is the thin RPC transport. A MUTATION wrapper is a
+// pass-through that normalizes the response and rethrows, and deliberately does
+// NOT log a failed operation — the caller owns that. Every interactive git
+// mutation runs through `runGitOperation` (@/lib/gitOperation), which logs the
+// failure at the operation's severity (WARN for routine, user-driven ops such
+// as stage/unstage/discard/gitignore; ERROR otherwise) and records it for the
+// panel console; a mutation triggered outside that funnel (createBranch) is
+// logged by the component that owns the action. Logging the failure here too
+// would duplicate that line and pin every failure to ERROR. A response-SHAPE
+// fault (the backend returned an unexpected type) is still logged at ERROR
+// below, since no caller can surface it.
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
@@ -97,43 +109,23 @@ function isMergeRebaseState(v: unknown): v is MergeRebaseState {
 // --- Staging operations ---
 
 export async function stageFile(path: string): Promise<void> {
-  try {
-    const app = getApp()
-    await app.StageFile(path)
-  } catch (err) {
-    logger.error('stageFile failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.StageFile(path)
 }
 
 export async function unstageFile(path: string): Promise<void> {
-  try {
-    const app = getApp()
-    await app.UnstageFile(path)
-  } catch (err) {
-    logger.error('unstageFile failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.UnstageFile(path)
 }
 
 export async function stageAll(): Promise<void> {
-  try {
-    const app = getApp()
-    await app.StageAll()
-  } catch (err) {
-    logger.error('stageAll failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.StageAll()
 }
 
 export async function unstageAll(): Promise<void> {
-  try {
-    const app = getApp()
-    await app.UnstageAll()
-  } catch (err) {
-    logger.error('unstageAll failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.UnstageAll()
 }
 
 // --- Commit ---
@@ -179,23 +171,18 @@ function isCommitResult(v: unknown): v is CommitResult {
  * withheld (force=false, armed repo).
  */
 export async function commit(message: string, force = false): Promise<CommitResult> {
-  try {
-    const app = getApp()
-    const result = await app.Commit(message, force)
-    if (!isCommitResult(result)) {
-      throw new Error('commit: backend returned an invalid CommitResult')
-    }
-    // A withheld commit is a normal result (no error): suppressed carries
-    // the description, sha stays empty.
-    if (result.suppressed) return result
-    if (typeof result.sha !== 'string' || result.sha.length === 0) {
-      throw new Error('commit: backend returned no commit SHA')
-    }
-    return result
-  } catch (err) {
-    logger.error('commit failed:', err)
-    throw err
+  const app = getApp()
+  const result = await app.Commit(message, force)
+  if (!isCommitResult(result)) {
+    throw new Error('commit: backend returned an invalid CommitResult')
   }
+  // A withheld commit is a normal result (no error): suppressed carries
+  // the description, sha stays empty.
+  if (result.suppressed) return result
+  if (typeof result.sha !== 'string' || result.sha.length === 0) {
+    throw new Error('commit: backend returned no commit SHA')
+  }
+  return result
 }
 
 // --- Branches ---
@@ -257,45 +244,30 @@ export async function getIsGitRepo(): Promise<boolean> {
 // has no upstream yet — is published (push -u origin) and tracked.
 
 export async function pull(remote: string, flags: string[] = []): Promise<string> {
-  try {
-    const app = getApp()
-    const result = await app.Pull(remote, flags)
-    if (typeof result !== 'string') {
-      throw new Error('pull: backend returned non-string output')
-    }
-    return result
-  } catch (err) {
-    logger.error('pull failed:', err)
-    throw err
+  const app = getApp()
+  const result = await app.Pull(remote, flags)
+  if (typeof result !== 'string') {
+    throw new Error('pull: backend returned non-string output')
   }
+  return result
 }
 
 export async function push(remote: string, flags: string[] = []): Promise<string> {
-  try {
-    const app = getApp()
-    const result = await app.Push(remote, flags)
-    if (typeof result !== 'string') {
-      throw new Error('push: backend returned non-string output')
-    }
-    return result
-  } catch (err) {
-    logger.error('push failed:', err)
-    throw err
+  const app = getApp()
+  const result = await app.Push(remote, flags)
+  if (typeof result !== 'string') {
+    throw new Error('push: backend returned non-string output')
   }
+  return result
 }
 
 export async function fetch(remote: string, flags: string[] = []): Promise<string> {
-  try {
-    const app = getApp()
-    const result = await app.Fetch(remote, flags)
-    if (typeof result !== 'string') {
-      throw new Error('fetch: backend returned non-string output')
-    }
-    return result
-  } catch (err) {
-    logger.error('fetch failed:', err)
-    throw err
+  const app = getApp()
+  const result = await app.Fetch(remote, flags)
+  if (typeof result !== 'string') {
+    throw new Error('fetch: backend returned non-string output')
   }
+  return result
 }
 
 /**
@@ -357,34 +329,19 @@ export async function getCommitFilesBatch(shas: string[]): Promise<Record<string
 // --- Stash (Phase 5) ---
 
 export async function stashCreate(message: string): Promise<void> {
-  try {
-    const app = getApp()
-    await app.StashCreate(message)
-  } catch (err) {
-    logger.error('stashCreate failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.StashCreate(message)
 }
 
 export async function stashPop(index: number): Promise<void> {
-  try {
-    const app = getApp()
-    await app.StashPop(index)
-  } catch (err) {
-    logger.error('stashPop failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.StashPop(index)
 }
 
 /** Drop a stash entry by index (`git stash drop stash@{index}`). */
 export async function stashDrop(index: number): Promise<void> {
-  try {
-    const app = getApp()
-    await app.StashDrop(index)
-  } catch (err) {
-    logger.error('stashDrop failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.StashDrop(index)
 }
 
 export async function stashList(): Promise<StashEntry[]> {
@@ -403,23 +360,13 @@ export async function stashList(): Promise<StashEntry[]> {
 }
 
 export async function checkoutBranch(name: string): Promise<void> {
-  try {
-    const app = getApp()
-    await app.CheckoutBranch(name)
-  } catch (err) {
-    logger.error('checkoutBranch failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.CheckoutBranch(name)
 }
 
 export async function createBranch(name: string, base: string): Promise<void> {
-  try {
-    const app = getApp()
-    await app.CreateBranch(name, base)
-  } catch (err) {
-    logger.error('createBranch failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.CreateBranch(name, base)
 }
 
 export async function getBranchBases(): Promise<BranchBase[]> {
@@ -438,61 +385,36 @@ export async function getBranchBases(): Promise<BranchBase[]> {
 }
 
 export async function renameBranch(oldName: string, newName: string): Promise<void> {
-  try {
-    const app = getApp()
-    await app.RenameBranch(oldName, newName)
-  } catch (err) {
-    logger.error('renameBranch failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.RenameBranch(oldName, newName)
 }
 
 export async function deleteBranch(name: string, force: boolean): Promise<void> {
-  try {
-    const app = getApp()
-    await app.DeleteBranch(name, force)
-  } catch (err) {
-    logger.error('deleteBranch failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.DeleteBranch(name, force)
 }
 
 export async function pushBranch(name: string): Promise<string> {
-  try {
-    const app = getApp()
-    const result = await app.PushBranch(name)
-    if (typeof result !== 'string') {
-      throw new Error('pushBranch: backend returned non-string output')
-    }
-    return result
-  } catch (err) {
-    logger.error('pushBranch failed:', err)
-    throw err
+  const app = getApp()
+  const result = await app.PushBranch(name)
+  if (typeof result !== 'string') {
+    throw new Error('pushBranch: backend returned non-string output')
   }
+  return result
 }
 
 export async function checkoutRemoteBranch(remoteBranch: string): Promise<void> {
-  try {
-    const app = getApp()
-    await app.CheckoutRemoteBranch(remoteBranch)
-  } catch (err) {
-    logger.error('checkoutRemoteBranch failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.CheckoutRemoteBranch(remoteBranch)
 }
 
 export async function deleteRemoteBranch(name: string, remote: string): Promise<string> {
-  try {
-    const app = getApp()
-    const result = await app.DeleteRemoteBranch(name, remote)
-    if (typeof result !== 'string') {
-      throw new Error('deleteRemoteBranch: backend returned non-string output')
-    }
-    return result
-  } catch (err) {
-    logger.error('deleteRemoteBranch failed:', err)
-    throw err
+  const app = getApp()
+  const result = await app.DeleteRemoteBranch(name, remote)
+  if (typeof result !== 'string') {
+    throw new Error('deleteRemoteBranch: backend returned non-string output')
   }
+  return result
 }
 
 // --- Diff statistics ---
@@ -570,24 +492,14 @@ export async function generateCommitMessage(): Promise<string> {
 
 /** Discard all local changes to a file (staged + unstaged). Requires user confirmation. */
 export async function discardChanges(path: string): Promise<void> {
-  try {
-    const app = getApp()
-    await app.DiscardChanges(path)
-  } catch (err) {
-    logger.error('discardChanges failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.DiscardChanges(path)
 }
 
 /** Append a pattern to the repository-root `.gitignore` (creates it if missing). */
 export async function appendToGitignore(pattern: string): Promise<void> {
-  try {
-    const app = getApp()
-    await app.AppendToGitignore(pattern)
-  } catch (err) {
-    logger.error('appendToGitignore failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.AppendToGitignore(pattern)
 }
 
 function isHunkDiffInfo(v: unknown): v is HunkDiffInfo {
@@ -623,46 +535,26 @@ export async function getFileDiffHunks(path: string): Promise<HunkDiffInfo[]> {
 
 /** Merge `branch` into the current branch. Conflicts surface as an error. */
 export async function merge(branch: string): Promise<void> {
-  try {
-    const app = getApp()
-    await app.Merge(branch)
-  } catch (err) {
-    logger.error('merge failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.Merge(branch)
 }
 
 /** Rebase the current branch onto `branch`. Conflicts surface as an error. */
 export async function rebase(branch: string): Promise<void> {
-  try {
-    const app = getApp()
-    await app.Rebase(branch)
-  } catch (err) {
-    logger.error('rebase failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.Rebase(branch)
 }
 
 /** Abort an in-progress merge. */
 export async function abortMerge(): Promise<void> {
-  try {
-    const app = getApp()
-    await app.AbortMerge()
-  } catch (err) {
-    logger.error('abortMerge failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.AbortMerge()
 }
 
 /** Abort an in-progress rebase. */
 export async function abortRebase(): Promise<void> {
-  try {
-    const app = getApp()
-    await app.AbortRebase()
-  } catch (err) {
-    logger.error('abortRebase failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.AbortRebase()
 }
 
 /** Detect whether a merge or rebase is currently in progress. */
@@ -727,24 +619,14 @@ export async function getGitHistory(
  * interactive editor for annotated tags.
  */
 export async function createTag(name: string, sha: string): Promise<void> {
-  try {
-    const app = getApp()
-    await app.CreateTag(name, sha)
-  } catch (err) {
-    logger.error('createTag failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.CreateTag(name, sha)
 }
 
 /** Delete a local tag (`git tag -d <name>`). */
 export async function deleteTag(name: string): Promise<void> {
-  try {
-    const app = getApp()
-    await app.DeleteTag(name)
-  } catch (err) {
-    logger.error('deleteTag failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.DeleteTag(name)
 }
 
 /**
@@ -754,17 +636,12 @@ export async function deleteTag(name: string): Promise<void> {
  * success).
  */
 export async function pushTag(name: string, remote: string): Promise<string> {
-  try {
-    const app = getApp()
-    const result = await app.PushTag(name, remote)
-    if (typeof result !== 'string') {
-      throw new Error('pushTag: backend returned non-string output')
-    }
-    return result
-  } catch (err) {
-    logger.error('pushTag failed:', err)
-    throw err
+  const app = getApp()
+  const result = await app.PushTag(name, remote)
+  if (typeof result !== 'string') {
+    throw new Error('pushTag: backend returned non-string output')
   }
+  return result
 }
 
 /**
@@ -773,26 +650,16 @@ export async function pushTag(name: string, remote: string): Promise<string> {
  * combined stdout+stderr output.
  */
 export async function deleteRemoteTag(name: string, remote: string): Promise<string> {
-  try {
-    const app = getApp()
-    const result = await app.DeleteRemoteTag(name, remote)
-    if (typeof result !== 'string') {
-      throw new Error('deleteRemoteTag: backend returned non-string output')
-    }
-    return result
-  } catch (err) {
-    logger.error('deleteRemoteTag failed:', err)
-    throw err
+  const app = getApp()
+  const result = await app.DeleteRemoteTag(name, remote)
+  if (typeof result !== 'string') {
+    throw new Error('deleteRemoteTag: backend returned non-string output')
   }
+  return result
 }
 
 /** Reset the current branch to the given commit with the named mode (soft/mixed/hard). */
 export async function resetToCommit(sha: string, mode: 'soft' | 'mixed' | 'hard'): Promise<void> {
-  try {
-    const app = getApp()
-    await app.ResetToCommit(sha, mode)
-  } catch (err) {
-    logger.error('resetToCommit failed:', err)
-    throw err
-  }
+  const app = getApp()
+  await app.ResetToCommit(sha, mode)
 }

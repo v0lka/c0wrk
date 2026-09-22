@@ -148,7 +148,7 @@ export function MCPServerForm({ open, onOpenChange, editingName, serverConfigs, 
               <Input placeholder="60s" value={formData.callTimeout} onChange={(e) => setFormData({ ...formData, callTimeout: e.target.value })} className="h-9 font-mono text-sm" />
             </Field>
           </div>
-          <p className="text-xs text-muted-foreground">Optional durations (e.g. 30s, 2m). Connect bounds the handshake; Call bounds a single tool call. Empty uses defaults.</p>
+          <p className="text-xs text-muted-foreground">Optional durations (e.g. 30s, 2m). Connect bounds the handshake and is the default bound for every tool call; Call overrides it for a single call. An empty Call inherits Connect; both empty use the 60s default.</p>
         </div>
 
         <DialogFooter>

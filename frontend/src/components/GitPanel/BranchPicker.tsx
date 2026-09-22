@@ -119,18 +119,20 @@ export function BranchPicker() {
   // Checkout (local + remote) closes the picker once the operation settles —
   // on success AND on error. The shared hook records the outcome in the Git
   // panel's operation console, so the picker must not linger over a failure.
+  // A skipped call (another operation already in flight) is not a settle: the
+  // picker stays open rather than dismissing itself for a no-op.
   const handleCheckout = useCallback(
     async (name: string) => {
-      await checkout(name)
-      closeBranchPicker()
+      const outcome = await checkout(name)
+      if (outcome.ran) closeBranchPicker()
     },
     [checkout, closeBranchPicker],
   )
 
   const handleCheckoutRemote = useCallback(
     async (remoteBranch: string) => {
-      await checkoutRemote(remoteBranch)
-      closeBranchPicker()
+      const outcome = await checkoutRemote(remoteBranch)
+      if (outcome.ran) closeBranchPicker()
     },
     [checkoutRemote, closeBranchPicker],
   )

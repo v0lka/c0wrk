@@ -23,7 +23,7 @@ vi.mock('@/lib/logger', () => ({
   logger: { error: vi.fn() },
 }))
 
-import { useBranchActions, type BranchActions } from './useBranchActions'
+import { useBranchActions, type BranchActions, type BranchOperationOutcome } from './useBranchActions'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useProjectStore } from '@/stores/projectStore'
 
@@ -85,7 +85,7 @@ describe('useBranchActions — operations', () => {
     )
     renderHook()
 
-    let pending!: Promise<boolean>
+    let pending!: Promise<BranchOperationOutcome<void>>
     act(() => {
       pending = result.checkout('feature/x')
     })
@@ -105,11 +105,11 @@ describe('useBranchActions — operations', () => {
   it('records operation failures without rejecting', async () => {
     gitMocks.checkoutBranch.mockRejectedValue(new Error('local changes would be overwritten'))
     renderHook()
-    let ok = true
+    let outcome!: BranchOperationOutcome<void>
     await act(async () => {
-      ok = await result.checkout('feature/x')
+      outcome = await result.checkout('feature/x')
     })
-    expect(ok).toBe(false)
+    expect(outcome).toEqual({ ran: true, ok: false })
     expect(result.isBusy).toBe(false)
     expect(useGitPanelStore.getState().operationByProject['p1']).toMatchObject({
       kind: 'checkout',
@@ -125,15 +125,15 @@ describe('useBranchActions — operations', () => {
     )
     renderHook()
 
-    let first!: Promise<boolean>
-    let second!: Promise<boolean>
+    let first!: Promise<BranchOperationOutcome<void>>
+    let second!: Promise<BranchOperationOutcome<void>>
     act(() => {
       first = result.checkout('feature/x')
       second = result.checkout('feature/y')
     })
 
-    let firstResult!: boolean
-    let secondResult!: boolean
+    let firstResult!: BranchOperationOutcome<void>
+    let secondResult!: BranchOperationOutcome<void>
     await act(async () => {
       resolve()
       firstResult = await first
@@ -142,8 +142,8 @@ describe('useBranchActions — operations', () => {
 
     expect(gitMocks.checkoutBranch).toHaveBeenCalledTimes(1)
     expect(gitMocks.checkoutBranch).toHaveBeenCalledWith('feature/x')
-    expect(firstResult).toBe(true)
-    expect(secondResult).toBe(false)
+    expect(firstResult).toEqual({ ran: true, ok: true, result: undefined })
+    expect(secondResult).toEqual({ ran: false })
   })
 
   it('rename calls renameBranch with old and new names', async () => {

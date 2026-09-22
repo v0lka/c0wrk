@@ -1,7 +1,7 @@
 import { Fragment, useMemo } from 'react'
 import { GitFileEntry } from '../GitFileEntry'
 import { groupEntries } from '@/lib/gitSortGroup'
-import type { StageAction, StageSide } from '@/lib/gitStatus'
+import type { StageSide, StageToggleHandler } from '@/lib/gitStatus'
 import type { GitPanelEntry, GroupBy } from '@/stores/gitPanelStore'
 
 // ───────────────────────────── Flat Section ──────────────────────────────────
@@ -14,7 +14,7 @@ interface FlatSectionProps {
   /** Sub-grouping criterion applied within the section (D8). */
   groupBy: GroupBy
   workspaceRoot: string
-  onToggleFile: (path: string, action: StageAction) => void
+  onToggleFile: StageToggleHandler
   onOpenDiff: (path: string) => void
 }
 
