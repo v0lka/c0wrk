@@ -1,4 +1,4 @@
-import { useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import {
   Collapsible,
@@ -6,6 +6,7 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
 import { cn } from '@/lib/utils'
+import { collapsibleRegistry } from './collapsibleRegistry'
 import { useChatHoverChevron } from './chatHoverStore'
 
 interface CollapsibleBlockProps {
@@ -71,6 +72,32 @@ export function CollapsibleBlock({
   const chevronId = revealId ?? fallbackId
   const activeChevron = useChatHoverChevron()
   const chevronActive = activeChevron === chevronId
+
+  // Register this block's `setOpen` under its chevron id so outside code can
+  // programmatically collapse it via {@link collapsibleRegistry}. The
+  // registered callback is a stable wrapper that always forwards to the
+  // freshest `setOpen` — `setOpen` itself is a different function reference on
+  // every render (controlled: an inline `onOpenChange` prop; uncontrolled: a
+  // state setter that React re-creates per render), so registering it directly
+  // would re-run the effect on every render and, worse, unregister the
+  // *current* registration on each cleanup. Keeping the identity stable lets
+  // the effect run ONLY when `chevronId` changes: mount registers, id change
+  // re-registers (overwriting the old entry), unmount unregisters. Symmetric
+  // by construction — no leaks, no stale callbacks.
+  const setOpenRef = useRef(setOpen)
+  setOpenRef.current = setOpen
+  useEffect(() => {
+    const registrySetOpen = (open: boolean): void => {
+      // `setOpen` is `undefined` only for a controlled caller that omits
+      // `onOpenChange` (Radix tolerates that); the registry treats such a
+      // block as inert rather than throwing.
+      setOpenRef.current?.(open)
+    }
+    collapsibleRegistry.register(chevronId, registrySetOpen)
+    return () => {
+      collapsibleRegistry.unregister(chevronId, registrySetOpen)
+    }
+  }, [chevronId])
 
   return (
     <Collapsible

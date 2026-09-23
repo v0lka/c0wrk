@@ -16,8 +16,9 @@ Defines the app-wide UI scale feature (the "UI Scale" setting) and the **zoom-sa
 - `frontend/src/lib/floatingUiZoom.ts` — global `@floating-ui/dom` platform compensation (`installFloatingUiZoomCompensation`) that makes Radix popovers/tooltips/menus zoom-correct without per-component changes
 - `frontend/src/hooks/useResize.ts` — panel-resize divider: `pointerDeltaToLayout` divides pointer deltas by the zoom factor
 - `frontend/src/lib/usePanZoom.ts` — canvas pan/zoom (Mermaid/diagram): divides `getBoundingClientRect()` extents by the zoom factor
+- `frontend/src/lib/chatScroll.ts` — sticky-aware chat scrolling (`scrollBlockStartIntoView`): divides the `getBoundingClientRect()` delta and the overlay-bar height by the zoom factor before adding them to `scrollTop`
 - `frontend/src/components/layout/AppLayout.tsx` — app shell root, sized `h-full w-full` (percentages, never viewport units)
-- Guards: `frontend/src/test/zoomViewportInvariant.test.ts`, `frontend/src/lib/layoutSpace.test.ts`, `frontend/src/lib/cursorMenuPosition.test.tsx`, `frontend/src/components/layout/AppLayout.test.tsx`, `frontend/src/stores/uiScaleStore.test.ts`, `frontend/src/lib/floatingUiZoom.test.ts`, `frontend/src/hooks/useResize.test.ts`, `frontend/src/lib/usePanZoom.test.ts`
+- Guards: `frontend/src/test/zoomViewportInvariant.test.ts`, `frontend/src/lib/layoutSpace.test.ts`, `frontend/src/lib/cursorMenuPosition.test.tsx`, `frontend/src/components/layout/AppLayout.test.tsx`, `frontend/src/stores/uiScaleStore.test.ts`, `frontend/src/lib/floatingUiZoom.test.ts`, `frontend/src/hooks/useResize.test.ts`, `frontend/src/lib/usePanZoom.test.ts`, `frontend/src/lib/chatScroll.test.ts`
 
 ## Behavior
 
@@ -59,6 +60,7 @@ CSS `zoom` pre-multiplies the used value of every `length` while leaving `auto`/
 - **Trigger-anchored hand-rolled dropdowns** convert their inputs through `lib/layoutSpace` (`toLayoutTriggerRect` for the target rect, `getLayoutViewport` for the extent) before calling `computeDropdownPosition`.
 - **Radix-based popovers** (dropdown menus, tooltips, selects) require no per-component handling: `@floating-ui/dom`'s shared `platform` is patched once by `installFloatingUiZoomCompensation`, which divides the reference rect (`getElementRects`) and the clipping rect (`getClippingRect`) by the zoom factor. `getDimensions` and `convertOffsetParentRelativeRectToViewportRelativeRect` are deliberately left stock (the former already yields layout px via `offsetWidth`; dividing the latter double-compensates).
 - **Pointer-driven resizing/panning** divides pointer deltas by the zoom factor (`useResize.pointerDeltaToLayout`, `usePanZoom`).
+- **Programmatic scrolling that computes a `scrollTop` from measured geometry** divides the `getBoundingClientRect()` delta (and any rect-derived overlay height) by the zoom factor before adding it to `scrollTop` (`chatScroll.scrollBlockStartIntoView`): rect geometry is VISUAL px while `scrollTop` is LAYOUT px, so a raw delta overshoots by `delta × (Z − 1)` at any scale ≠ 100%.
 
 ### Why a global patch for floating-ui
 
