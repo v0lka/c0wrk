@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/v0lka/sp4rk/llm"
 	"gopkg.in/yaml.v3"
 )
 
@@ -417,6 +418,98 @@ func TestSyncEmbeddedProviderContextWindowOverride(t *testing.T) {
 	if got := fresh.LLM.Models[EmbeddedLLMModelName].ContextWindow; got != 16384 {
 		t.Errorf("context_window = %d, want 16384", got)
 	}
+}
+
+// resolveEmbeddedModelMetadata seeds a registry from the config's llm.models
+// overrides exactly the way core.buildRouter does, and returns the effective
+// metadata for the embedded model. It is the only way to observe what a family
+// authored (or not authored) in the override actually resolves to.
+func resolveEmbeddedModelMetadata(t *testing.T, cfg *Config) llm.ModelMetadata {
+	t.Helper()
+	overrides := make(map[string]llm.ModelMetadata, len(cfg.LLM.Models))
+	for name, override := range cfg.LLM.Models {
+		overrides[name] = llm.ModelMetadata{
+			ContextWindow: override.ContextWindow,
+			OutputLimit:   override.OutputLimit,
+			TokenizerType: override.TokenizerType,
+			Family:        override.Family,
+			Protocol:      llm.APIProtocol(override.Protocol),
+			Capabilities:  override.Capabilities,
+		}
+	}
+	meta, _ := llm.NewModelRegistry(overrides).ResolveLocal(EmbeddedLLMModelName)
+	return meta
+}
+
+// TestSyncEmbeddedProviderFamilyResolution pins the two halves of the embedded
+// model's family contract — the value the reasoning-effort picker keys off:
+//
+//   - a user-authored `family:` tweak survives every sync (the RAM-tier write
+//     touches context_window only) and stays AUTHORITATIVE in the registry the
+//     router is built from;
+//   - with no family authored — the shape SyncEmbeddedProvider itself writes —
+//     the effective family comes from the sp4rk catalog ("qwen" for the Bonsai
+//     checkpoint), not from DetectFamily's "default" fallback. c0wrk never
+//     spells the family out, so a catalog correction needs no c0wrk change.
+func TestSyncEmbeddedProviderFamilyResolution(t *testing.T) {
+	t.Run("user family tweak survives and wins", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.EmbeddedLLM = installedEmbeddedState()
+		cfg.LLM.Models = map[string]ModelOverride{
+			EmbeddedLLMModelName: {Family: "qwen3", OutputLimit: 8192},
+		}
+
+		// Every sync shape: first write, idempotent re-write, re-resolved tier
+		// and the zero tier of the load path.
+		for _, tier := range []int{32768, 32768, 65536, 0} {
+			cfg.SyncEmbeddedLLMProvider(tier)
+			override := cfg.LLM.Models[EmbeddedLLMModelName]
+			if override.Family != "qwen3" {
+				t.Fatalf("family = %q after syncing tier %d, want the user's qwen3 preserved", override.Family, tier)
+			}
+			if override.OutputLimit != 8192 {
+				t.Fatalf("output_limit = %d after syncing tier %d, want it preserved", override.OutputLimit, tier)
+			}
+		}
+		if got := cfg.LLM.Models[EmbeddedLLMModelName].ContextWindow; got != 65536 {
+			t.Errorf("context_window = %d, want the last resolved 65536", got)
+		}
+		if meta := resolveEmbeddedModelMetadata(t, cfg); meta.Family != "qwen3" {
+			t.Errorf("resolved family = %q, want the user's authoritative qwen3", meta.Family)
+		}
+	})
+
+	t.Run("absent family resolves from the catalog", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.EmbeddedLLM = installedEmbeddedState()
+		if !cfg.SyncEmbeddedLLMProvider(32768) {
+			t.Fatal("writing the resolved context tier reported no change")
+		}
+		override := cfg.LLM.Models[EmbeddedLLMModelName]
+		if override.ContextWindow != 32768 {
+			t.Fatalf("context_window = %d, want 32768", override.ContextWindow)
+		}
+		if override.Family != "" {
+			t.Fatalf("family = %q, want it left unset so the catalog decides", override.Family)
+		}
+
+		meta := resolveEmbeddedModelMetadata(t, cfg)
+		if meta.Family != "qwen" {
+			t.Errorf("resolved family = %q, want qwen from the sp4rk catalog", meta.Family)
+		}
+		if meta.ContextWindow != 32768 {
+			t.Errorf("resolved context_window = %d, want the override's 32768 to win over the catalog", meta.ContextWindow)
+		}
+		if meta.Capabilities == nil {
+			t.Fatal("resolved capabilities = nil, want the catalog set inherited through the override")
+		}
+		if !meta.Capabilities.Reasoning {
+			t.Error("Reasoning = false, want true — without it the picker renders no effort control")
+		}
+		if !meta.Capabilities.Attachment {
+			t.Error("Attachment = false, want true — vision gating must be unchanged")
+		}
+	})
 }
 
 // TestSyncEmbeddedProviderCopiesSharedMaps pins the copy-on-write behavior

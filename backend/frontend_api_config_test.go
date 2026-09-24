@@ -5197,6 +5197,86 @@ func TestGetConfig_NoEmbeddedProviderWhenNotInstalled(t *testing.T) {
 	}
 }
 
+// TestGetConfig_EmbeddedReasoningCombobox pins the end-to-end data the
+// reasoning-effort combobox renders for the embedded model. The override shape
+// is the real one: SyncEmbeddedProvider writes ONLY the resolved RAM-tier
+// context_window, so before the sp4rk catalog carried the checkpoint the
+// resolved family fell back to DetectFamily's "default" and collectAllModels
+// emitted Reasoning=nil — the picker showed no effort control at all for a
+// model whose chat template natively accepts reasoning_effort.
+//
+// The family must arrive from the catalog: nothing in c0wrk authors it.
+func TestGetConfig_EmbeddedReasoningCombobox(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+	installEmbeddedLLM(t, f, 4321)
+	// The resolved RAM tier, exactly as the install/startup path writes it.
+	if !f.config.SyncEmbeddedLLMProvider(32768) {
+		t.Fatal("pinning the resolved context tier reported no change")
+	}
+	override := f.config.LLM.Models[config.EmbeddedLLMModelName]
+	if override.ContextWindow != 32768 {
+		t.Fatalf("override context_window = %d, want 32768", override.ContextWindow)
+	}
+	if override.Family != "" || override.Capabilities != nil || override.TokenizerType != "" || override.Protocol != "" {
+		t.Fatalf("override = %+v, want the context-window-only shape SyncEmbeddedProvider writes", override)
+	}
+
+	// buildRouter seeds the registry from exactly those overrides.
+	reg := llm.NewModelRegistry(map[string]llm.ModelMetadata{
+		config.EmbeddedLLMModelName: {
+			ContextWindow: override.ContextWindow,
+			OutputLimit:   override.OutputLimit,
+			TokenizerType: override.TokenizerType,
+			Family:        override.Family,
+			Protocol:      llm.APIProtocol(override.Protocol),
+			Capabilities:  override.Capabilities,
+		},
+	})
+	mock.registry = reg
+
+	resp := f.GetConfig()
+	if !resp.LLM.ModelsReady {
+		t.Fatal("ModelsReady = false with a live registry wired")
+	}
+	var got *ModelInfo
+	for i := range resp.LLM.AllModels {
+		m := &resp.LLM.AllModels[i]
+		if m.Provider == config.EmbeddedLLMProviderName && m.Name == config.EmbeddedLLMModelName {
+			got = m
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("AllModels does not list %q: %+v", embeddedCompositeID(), resp.LLM.AllModels)
+	}
+
+	// The family is the catalog's value, proven by resolving the same model
+	// through a registry that carries NO c0wrk override at all.
+	bare, _ := llm.NewModelRegistry(nil).ResolveLocal(config.EmbeddedLLMModelName)
+	if bare.Family == "" {
+		t.Fatal("the sp4rk catalog resolves no family for the embedded model — the assertion below would be vacuous")
+	}
+	if got.Family != bare.Family {
+		t.Errorf("Family = %q, want %q (the catalog's, inherited through a context-window-only override)", got.Family, bare.Family)
+	}
+	if got.Family != "qwen" {
+		t.Errorf("Family = %q, want qwen — the Bonsai checkpoint is a Qwen3.8-architecture build", got.Family)
+	}
+	if !got.Vision {
+		t.Error("Vision = false, want true — the catalog entry keeps Attachment on, so vision gating is unchanged")
+	}
+	if got.Reasoning == nil {
+		t.Fatal("Reasoning = nil, want non-empty combobox data for a reasoning-capable model")
+	}
+	wantOptions := []string{"xhigh", "medium", "low", "Off"}
+	if diff := cmp.Diff(wantOptions, got.Reasoning.Options); diff != "" {
+		t.Errorf("Reasoning.Options mismatch (-want +got):\n%s", diff)
+	}
+	if got.Reasoning.Default != "xhigh" {
+		t.Errorf("Reasoning.Default = %q, want xhigh", got.Reasoning.Default)
+	}
+}
+
 // TestUpdateLLMConfig_EmbeddedContextWindowOverrideUntouched verifies the
 // settings-save path never recomputes the RAM-tier override: it performs no
 // probe, so the value the install path wrote is preserved verbatim.

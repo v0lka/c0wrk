@@ -720,8 +720,11 @@ type BuilderTimeoutsConfig struct {
 // What it changes: the provider entry named ProviderName gets an
 // embeddedllm.EnsureLoadedTransport on its ProviderEntry.HTTPClient, so the
 // first request to an idle-unloaded model transparently starts it and every
-// completed response restarts the idle budget. Every other entry — and every
-// other dial path (Fetch Models, the lazy context probe) — is untouched.
+// completed response restarts the idle budget. That same entry is also the only
+// one built with llm.ReasoningWireChatTemplateKwargs, because the supervised
+// server is the pinned llama.cpp fork that reads enable_thinking exclusively
+// from chat_template_kwargs. Every other entry — and every other dial path
+// (Fetch Models, the lazy context probe) — is untouched.
 //
 // This is the PER-BUILD form. OrchestratorBuilder also holds one as its default
 // (SetEmbeddedLLM), which buildRouter applies to any config that carries no

@@ -14,13 +14,17 @@ import (
 	"github.com/v0lka/c0wrk/core/embeddedllm"
 	"github.com/v0lka/c0wrk/core/llmtls"
 	"github.com/v0lka/c0wrk/core/proxy"
+	"github.com/v0lka/sp4rk/llm"
 )
 
-// This file pins the wiring of the embedded provider's ensure-loaded transport
-// through the existing ProviderEntry.HTTPClient hook. The invariant it guards is
-// the one llm-providers.md states for that hook: a client attached to an entry
-// shadows RouterConfig.HTTPClient, so it MUST carry timeouts.llmRequestTimeout
-// and never the 30 s web-fetch proxy budget.
+// This file pins the wiring of the embedded provider's two ProviderEntry
+// effects, both decided by the same name-scoped guard in
+// providerEntryFromConfig: the ensure-loaded transport on
+// ProviderEntry.HTTPClient, and the reasoning wire on
+// ProviderEntry.ReasoningWire. The transport invariant it guards is the one
+// llm-providers.md states for that hook: a client attached to an entry shadows
+// RouterConfig.HTTPClient, so it MUST carry timeouts.llmRequestTimeout and
+// never the 30 s web-fetch proxy budget.
 
 // fakeEmbeddedLoader stands in for *embeddedllm.Server, counting the loads and
 // activity marks the transport owes it.
@@ -215,5 +219,47 @@ func TestProviderEntryFromConfig_EmbeddedKeepsThePinResolution(t *testing.T) {
 	}
 	if loads, _ := loader.counts(); loads != 1 {
 		t.Errorf("loads = %d, want 1 — the model is loaded before the dial, whatever the dial then does", loads)
+	}
+}
+
+// The embedded guard is also the ONLY selector of the reasoning wire. The
+// supervised server is the pinned PrismML-Eng/llama.cpp fork, which reads
+// enable_thinking exclusively from chat_template_kwargs — a top-level field is
+// silently ignored there, so the entry must opt into that spelling or "Off"
+// would not turn thinking off. Every sibling keeps the vendor-default top-level
+// spelling, which is what LM Studio/vLLM/Ollama/DashScope read.
+func TestProviderEntryFromConfig_EmbeddedSelectsTheChatTemplateKwargsWire(t *testing.T) {
+	shared := &http.Client{Timeout: 10 * time.Minute}
+	embedded := BuilderEmbeddedLLMConfig{ProviderName: "embedded", Loader: &fakeEmbeddedLoader{}}
+
+	entry := providerEntryFromConfig("embedded", embeddedProviderConfig("http://127.0.0.1:1/v1"),
+		shared, nil, proxy.BypassMatcher{}, embedded, identityExpand, nil)
+
+	if entry.ReasoningWire != llm.ReasoningWireChatTemplateKwargs {
+		t.Errorf("embedded ReasoningWire = %q, want %q", entry.ReasoningWire, llm.ReasoningWireChatTemplateKwargs)
+	}
+
+	// The wire follows the supervisor, never the name or the URL shape: a user
+	// provider pointed at the very same loopback llama-server keeps the vendor
+	// default, because c0wrk does not know which binary answers there.
+	for _, name := range []string{"anthropic", "chatgpt", "selfhosted", "lmstudio", "Embedded", ""} {
+		sibling := providerEntryFromConfig(name, embeddedProviderConfig("http://127.0.0.1:1/v1"),
+			shared, nil, proxy.BypassMatcher{}, embedded, identityExpand, nil)
+		if sibling.ReasoningWire != llm.ReasoningWireVendorDefault {
+			t.Errorf("provider %q ReasoningWire = %q, want the zero value %q",
+				name, sibling.ReasoningWire, llm.ReasoningWireVendorDefault)
+		}
+	}
+
+	// A configured name with no supervisor behind it (the posture before an
+	// install and after a Remove) must not select the wire either — the guard
+	// is inert as a whole, so a stale embedded_llm.provider_name cannot change
+	// the request body of an unrelated provider.
+	inert := providerEntryFromConfig("embedded", embeddedProviderConfig("http://127.0.0.1:1/v1"),
+		shared, nil, proxy.BypassMatcher{}, BuilderEmbeddedLLMConfig{ProviderName: "embedded"},
+		identityExpand, nil)
+	if inert.ReasoningWire != llm.ReasoningWireVendorDefault {
+		t.Errorf("ReasoningWire without a loader = %q, want the vendor default %q",
+			inert.ReasoningWire, llm.ReasoningWireVendorDefault)
 	}
 }

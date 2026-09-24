@@ -2193,6 +2193,11 @@ func buildLLMHTTPClient(proxyClient *http.Client, timeoutSec int) *http.Client {
 // that decision (embedding it first would hand llmtls a client whose transport
 // is a wrapper, which cannot hold a tls.Config). Both resolvers clone from
 // sharedClient, so whichever applies, timeouts.llmRequestTimeout survives.
+//
+// The same guard is also the ONLY thing that sets ProviderEntry.ReasoningWire:
+// the embedded llama-server spells Qwen reasoning controls as
+// chat_template_kwargs, while every other openai_compatible entry keeps the
+// vendor-default top-level spelling.
 func providerEntryFromConfig(
 	name string,
 	pc BuilderProviderConfig,
@@ -2205,6 +2210,7 @@ func providerEntryFromConfig(
 ) llm.ProviderEntry {
 	policy := dialPolicy(proxyClient, bypass, expand(pc.BaseURL))
 	client := llmtls.RouterEntryClient(policy, sharedClient, pc.TLSFingerprint, logger)
+	reasoningWire := llm.ReasoningWireVendorDefault
 	if embedded.guards(name) {
 		// A cold embedded model is not listening, so this entry's client must
 		// start it before the request goes out and restart the idle budget when
@@ -2213,6 +2219,13 @@ func providerEntryFromConfig(
 		// handing over a client without the long LLM timeout would cap inference
 		// at the web-fetch proxy budget, the exact mistake llmtls warns about.
 		client = embeddedllm.EnsureLoadedClient(client, sharedClient, embedded.Loader, embedded.LoadWaitTimeout, logger)
+		// The embedded server is the pinned PrismML-Eng/llama.cpp fork, which
+		// reads enable_thinking ONLY from chat_template_kwargs — a top-level
+		// field is silently ignored, so "Off" would not turn thinking off. This
+		// is a property of the server the supervisor spawns (never of a
+		// user-authored base URL), which is why it rides the same guard as the
+		// transport and no other entry can pick it up.
+		reasoningWire = llm.ReasoningWireChatTemplateKwargs
 	}
 	return llm.ProviderEntry{
 		Name:         name,
@@ -2221,6 +2234,10 @@ func providerEntryFromConfig(
 		BaseURL:      expand(pc.BaseURL),
 		Models:       pc.Models,
 		HTTPClient:   client,
+		// Zero value for every non-embedded provider: the vendor-default
+		// top-level spelling stays the answer for LM Studio/vLLM/Ollama entries
+		// an operator points at the same loopback.
+		ReasoningWire: reasoningWire,
 	}
 }
 
