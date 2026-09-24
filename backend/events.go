@@ -175,6 +175,30 @@ const EventUpdateError = "update:error"
 const EventUpdateNone = "update:none"
 
 // ---------------------------------------------------------------------------
+// Embedded local-model events (emitted by FrontendAPI embedded-LLM methods)
+// ---------------------------------------------------------------------------
+
+// EventEmbeddedLLMInstallProgress reports one per-component step of an
+// embedded-LLM install (runtime, cudart, model, mmproj × downloading,
+// verifying, extracting, signing, done). The payload is an
+// EmbeddedLLMProgressData. It is a global event with a bare name (not
+// session-scoped): the install belongs to the machine, not to a conversation.
+// Emitted from the background install run started by InstallEmbeddedLLM
+// (backend/frontend_api_embedded.go). See specs/contracts/event-catalog.md.
+const EventEmbeddedLLMInstallProgress = "embedded_llm:install_progress"
+
+// EventEmbeddedLLMState reports the supervision state of the embedded local
+// model (not_installed | installed | loading | loaded | unloading | error) plus
+// the install record the UI shows. The payload is an EmbeddedLLMStateData. It
+// fires on every observable transition of core/embeddedllm.Server, once at
+// startup after the manifest restore, and after an install, a removal or an
+// auto-unload policy change. A failure is additionally reported through the
+// existing EventRuntimeError toast when it happened in the background (an
+// install run), where no RPC is left to carry the error. See
+// specs/contracts/event-catalog.md.
+const EventEmbeddedLLMState = "embedded_llm:state"
+
+// ---------------------------------------------------------------------------
 // Wails event names received FROM the frontend
 // ---------------------------------------------------------------------------
 

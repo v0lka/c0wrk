@@ -19,6 +19,7 @@ import (
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 
+	"github.com/v0lka/c0wrk/core/embeddedllm"
 	"github.com/v0lka/c0wrk/core/llmtls"
 	coreprompts "github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/c0wrk/core/proxy"
@@ -93,6 +94,17 @@ type OrchestratorBuilder struct {
 	baseSkillDirs            []string     // resolved skill directories shared across sessions (highest priority first)
 	baseAgentDirs            []string     // resolved Subagent Profile directories shared across sessions (highest priority first)
 	proxyClient              *http.Client // proxy-configured HTTP client (nil = direct connection)
+
+	// embeddedLLM is the builder-level embedded-model seam: the default
+	// BuilderEmbeddedLLMConfig applied to EVERY router this builder constructs
+	// when the per-build cfg carries no Loader of its own. It exists because a
+	// BuilderConfig is built in more than one place — and the one that matters
+	// most, the per-session orchestrator factory in backend/application.go,
+	// converts the live config directly and cannot reach the supervisor. Without
+	// this default the session router would carry no ensure-loaded transport, so
+	// a chat request to a cold model would be dispatched to a loopback socket
+	// nothing is listening on. Guarded by b.mu. See SetEmbeddedLLM.
+	embeddedLLM BuilderEmbeddedLLMConfig
 
 	// askUserFunc is the ask_user callback supplied at construction. It is
 	// retained so a runtime silent-mode toggle can re-register the ask_user
@@ -1506,6 +1518,44 @@ func dedupeModelNames(names []string) []string {
 	return result
 }
 
+// SetEmbeddedLLM installs (or, with a zero value, withdraws) the builder-level
+// embedded-model seam applied to every router this builder constructs.
+//
+// The backend calls it from the embedded-LLM lifecycle — on the startup restore,
+// after a successful install, and on removal — each time mirroring the persisted
+// install state, exactly like the per-build injection in
+// FrontendAPI.applyEmbeddedLoader. Both produce the same value; this one is the
+// net for the router builds that do not go through it.
+//
+// Installing it here rather than only in BuilderConfig is what makes the
+// guarantee unmissable. A per-session orchestrator is built from a BuilderConfig
+// converted deep inside the session factory, which has no path to the
+// supervisor; a seam that has to be remembered at every conversion site will
+// eventually be forgotten at one, and the failure is silent — a chat request to
+// a cold model is dispatched to a loopback socket nothing is listening on.
+//
+// It does NOT rebuild anything. Callers that need the change to reach the
+// already-cached router follow it with RebuildRouter, as the embedded lifecycle
+// does; per-session routers pick it up when they are next built.
+func (b *OrchestratorBuilder) SetEmbeddedLLM(cfg BuilderEmbeddedLLMConfig) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.embeddedLLM = cfg
+}
+
+// embeddedSeam resolves the effective embedded-model seam for a router build: an
+// explicit per-build Loader wins, otherwise the builder-level default applies.
+// buildRouter is the single place every router — cached or per-session — is
+// constructed, so resolving here is what covers both.
+func (b *OrchestratorBuilder) embeddedSeam(cfg *BuilderConfig) BuilderEmbeddedLLMConfig {
+	if cfg.EmbeddedLLM.Loader != nil && cfg.EmbeddedLLM.ProviderName != "" {
+		return cfg.EmbeddedLLM
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.embeddedLLM
+}
+
 // RegisterVectorSearch adds the semantic_search tool to the shared registry.
 // This must be called after NewOrchestratorBuilder when the vector index backend
 // is available. The searchFunc and waitFunc are provided by the desktop layer;
@@ -1795,6 +1845,12 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	// Build provider entries from all enabled providers.
 	// Iterate in a deterministic order (matching backend/config allProviderEntries)
 	// to ensure the first provider in the list is predictable.
+	//
+	// The embedded seam is resolved ONCE for the whole build, not per entry: it
+	// falls back to the builder-level default when this BuilderConfig carries no
+	// Loader, which is the case for the per-session config the orchestrator
+	// factory converts (see SetEmbeddedLLM).
+	embedded := b.embeddedSeam(cfg)
 	providers := make([]llm.ProviderEntry, 0, len(cfg.LLM.ProviderConfigs))
 	// The proxy client is non-nil exactly when the proxy is effective
 	// (proxy.enabled && proxy.url != "", the proxy.BuildClient rule); the
@@ -1808,7 +1864,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		if !ok || len(pc.Models) == 0 {
 			continue
 		}
-		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, cfg.ExpandEnvVars, b.log()))
+		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, embedded, cfg.ExpandEnvVars, b.log()))
 	}
 	// Also include any providers not in the standard order (e.g. future additions).
 	// Collect unknown names and iterate in sorted order for determinism.
@@ -1822,7 +1878,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	sort.Strings(unknown)
 	for _, name := range unknown {
 		pc := cfg.LLM.ProviderConfigs[name]
-		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, cfg.ExpandEnvVars, b.log()))
+		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, embedded, cfg.ExpandEnvVars, b.log()))
 	}
 
 	// Model Profiles context-management override: keeps the router's token budget
@@ -2130,23 +2186,41 @@ func buildLLMHTTPClient(proxyClient *http.Client, timeoutSec int) *http.Client {
 //
 // logger (may be nil) flows to llmtls for its malformed-pin and
 // custom-RoundTripper warnings.
+//
+// The embedded provider's ensure-loaded transport (embedded) is the SECOND
+// resolver on this hook, and the order is fixed: the pin rule decides whether
+// the entry carries a client at all, and the embedded transport only decorates
+// that decision (embedding it first would hand llmtls a client whose transport
+// is a wrapper, which cannot hold a tls.Config). Both resolvers clone from
+// sharedClient, so whichever applies, timeouts.llmRequestTimeout survives.
 func providerEntryFromConfig(
 	name string,
 	pc BuilderProviderConfig,
 	sharedClient *http.Client,
 	proxyClient *http.Client,
 	bypass proxy.BypassMatcher,
+	embedded BuilderEmbeddedLLMConfig,
 	expand func(string) string,
 	logger *slog.Logger,
 ) llm.ProviderEntry {
 	policy := dialPolicy(proxyClient, bypass, expand(pc.BaseURL))
+	client := llmtls.RouterEntryClient(policy, sharedClient, pc.TLSFingerprint, logger)
+	if embedded.guards(name) {
+		// A cold embedded model is not listening, so this entry's client must
+		// start it before the request goes out and restart the idle budget when
+		// the response completes. The clone inherits sharedClient's Timeout (or
+		// the pinned client's, which is itself cloned from sharedClient) —
+		// handing over a client without the long LLM timeout would cap inference
+		// at the web-fetch proxy budget, the exact mistake llmtls warns about.
+		client = embeddedllm.EnsureLoadedClient(client, sharedClient, embedded.Loader, embedded.LoadWaitTimeout, logger)
+	}
 	return llm.ProviderEntry{
 		Name:         name,
 		ProviderType: pc.ProviderType,
 		APIKey:       expand(pc.APIKey),
 		BaseURL:      expand(pc.BaseURL),
 		Models:       pc.Models,
-		HTTPClient:   llmtls.RouterEntryClient(policy, sharedClient, pc.TLSFingerprint, logger),
+		HTTPClient:   client,
 	}
 }
 

@@ -20,6 +20,14 @@ func (f *FrontendAPI) OptimizePrompt(prompt string) (*OptimizePromptResponse, er
 		return nil, errors.New("prompt is empty")
 	}
 
+	// The embedded model must be resident BEFORE this request's budget starts:
+	// a cold weight load takes longer than the service timeout, and charging it
+	// to the request would fail the call instead of serving it. A no-op for
+	// every other provider.
+	if err := f.ensureEmbeddedReadyForLLMRequest(f.ctx()); err != nil {
+		return nil, err
+	}
+
 	ctx, cancel := context.WithTimeout(f.ctx(), f.serviceLLMTimeout())
 	defer cancel()
 

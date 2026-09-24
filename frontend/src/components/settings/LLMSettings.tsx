@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback } from 'react'
 import { useLLMConfig } from './useLLMConfig'
 import { Plus, X } from 'lucide-react'
-import { FIXED_PROVIDERS } from '@/lib/llm-providers'
+import { EMBEDDED_PROVIDER_NAME, FIXED_PROVIDERS } from '@/lib/llm-providers'
 import type { ModelRef } from '@/lib/modelId'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -9,12 +9,20 @@ import { Combobox } from '@/components/ui/combobox'
 import { ModelPickerMenu } from '@/components/ui/ModelPickerMenu'
 import { FixedProviderForms } from './providers/FixedProviderForms'
 import { OpenAICompatibleProviderForms } from './providers/OpenAICompatibleProviderForms'
+import { EmbeddedLLMSettings } from './EmbeddedLLMSettings'
 
 // ---------------------------------------------------------------------------
 // Provider name validation
 // ---------------------------------------------------------------------------
 
-const RESERVED_NAMES = new Set<string>(FIXED_PROVIDERS)
+// Names a user-created compatible provider may never take. The fixed providers
+// own their top-level config keys, and `embedded` is the backend-owned key the
+// installed local model is generated under — reserving it statically (rather
+// than deriving it from the loaded provider sets) is what keeps the name
+// rejected while the model is NOT installed, when no `embedded` record exists
+// to collide with and a later SyncEmbeddedProvider would silently delete the
+// user's provider.
+const RESERVED_NAMES = new Set<string>([...FIXED_PROVIDERS, EMBEDDED_PROVIDER_NAME])
 
 /** Regex: must start with a letter, then letters / digits / underscores / hyphens. */
 const PROVIDER_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]*$/
@@ -206,9 +214,16 @@ export function LLMSettings({
         )}
       </div>
 
-      {/* Add compatible provider — kept directly below the default-model
-          field so the "add a provider" action sits with the model selection
-          rather than at the very bottom of the section. */}
+      {/* Embedded LLM — the pinned local model's whole lifecycle (install,
+          per-component progress, remove, load/unload, auto unload). It LEADS
+          the provider section: running fully local is the primary offering, so
+          the block sits directly under the default-model field. */}
+      <EmbeddedLLMSettings />
+
+      {/* Add compatible provider — kept BELOW the Embedded block (and above the
+          accordions it creates) so the "add a remote endpoint" action still
+          sits with the model selection rather than at the very bottom of the
+          section. */}
       <div className="flex flex-col gap-3">
         {!showAddForm && (
           <Button

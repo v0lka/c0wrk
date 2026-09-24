@@ -26,6 +26,7 @@ type appBuilder interface {
 	ReconfigureMCP(context.Context, *core.BuilderConfig) error
 	ListProviderModels(context.Context, string, *core.BuilderConfig) ([]string, error)
 	SetMCPWorkDir(string)
+	SetEmbeddedLLM(core.BuilderEmbeddedLLMConfig)
 	OptimizePrompt(context.Context, string) (*core.OptimizePromptResult, error)
 	GenerateCommitMessage(context.Context, string) (string, error)
 	GetBaseSkillDirs() []string

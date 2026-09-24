@@ -863,55 +863,8 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 		})
 	}
 
-	// Check if this is the first message (session has default name)
-	// and spawn title generation in background.
-	session.mu.Lock()
-	sessionName := session.Name
-	session.mu.Unlock()
-	m.mu.RLock()
-	titleGen := m.titleGen
-	store := m.sessionStore
-	serviceLLMTimeout := m.serviceLLMTimeout
-	m.mu.RUnlock()
-	if !presented && sessionName == "Session "+safeSessionPrefix(id) && titleGen != nil {
-		dumpFile := session.DumpFile()
-		// Tracked by the manager and derived from its shutdown context: the
-		// goroutine writes through the session dump file, so Shutdown must be
-		// able to abort it and wait for it before closing that handle.
-		titleSpawned := m.spawnBackground(func() {
-			if dumpFile != nil {
-				defer func() { _ = dumpFile.Close() }()
-			}
-			ctx, cancel := context.WithTimeout(m.shutdownCtx, serviceLLMTimeout)
-			defer cancel()
-			if dumpFile != nil {
-				ctx = agent.WithDumpWriter(ctx, dumpFile)
-			}
-			title := titleGen.Generate(ctx, text, activeSkills)
-			if title == "" {
-				return
-			}
-			if err := m.RenameSession(id, title); err != nil {
-				m.log().Warn("failed to rename session with generated title", "session", id, "error", err)
-				return
-			}
-			m.log().Info("session auto-named", "session", id, "title", title)
-			// Persist rename to store
-			if store != nil {
-				if err := store.RenameSession(context.Background(), id, title); err != nil {
-					m.log().Warn("failed to persist session title", "session", id, "error", err)
-				}
-			}
-		})
-		if !titleSpawned && dumpFile != nil {
-			// Shutdown closed the tracker concurrently, so the closure never
-			// runs and its deferred close never happens. DumpFile duplicated
-			// the descriptor for the closure to own; close it here or it leaks
-			// until process exit (and on Windows it blocks the dump file's
-			// removal from the agent dir).
-			_ = dumpFile.Close()
-		}
-	}
+	// Auto-name the session from its first message (background).
+	m.maybeSpawnTitleGeneration(session, id, text, presented, activeSkills)
 
 	// Launch goroutine to handle the message
 	go func(ctx context.Context, msg string, skills []string, agents []string) {
@@ -2956,4 +2909,84 @@ func (m *Manager) GetBlackboardState(sessionID string) (*BlackboardState, error)
 // BlackboardState wraps a core.TaskState for the GetBlackboardState API.
 type BlackboardState struct {
 	TaskState *core.TaskState
+}
+
+// maybeSpawnTitleGeneration auto-names a session from its first message.
+//
+// It runs the generation in a tracked background goroutine derived from the
+// manager's shutdown context: the goroutine writes through the session dump
+// file, so Shutdown must be able to abort it and wait for it before closing that
+// handle.
+//
+// Only a session still carrying its generated placeholder name is renamed, and
+// never a presented relaunch (the live-send follow-up), whose first message was
+// already handled when the original task launched.
+//
+// The readiness gate runs BEFORE the service timeout is armed — see
+// serviceLLMGate. A gate failure skips the rename and leaves the placeholder in
+// place: the session stays usable, and the run's own request is what reports the
+// cause to the user.
+func (m *Manager) maybeSpawnTitleGeneration(session *Session, id, text string, presented bool, activeSkills []string) {
+	session.mu.Lock()
+	sessionName := session.Name
+	session.mu.Unlock()
+	m.mu.RLock()
+	titleGen := m.titleGen
+	store := m.sessionStore
+	serviceLLMTimeout := m.serviceLLMTimeout
+	serviceLLMGate := m.serviceLLMGate
+	m.mu.RUnlock()
+	if presented || sessionName != "Session "+safeSessionPrefix(id) || titleGen == nil {
+		return
+	}
+	dumpFile := session.DumpFile()
+	// Tracked by the manager and derived from its shutdown context: the
+	// goroutine writes through the session dump file, so Shutdown must be
+	// able to abort it and wait for it before closing that handle.
+	titleSpawned := m.spawnBackground(func() {
+		if dumpFile != nil {
+			defer func() { _ = dumpFile.Close() }()
+		}
+		// Readiness BEFORE the budget: the embedded model's cold load is
+		// longer than the service timeout, so arming the timeout first
+		// would spend it on the load and lose the title. A failure here
+		// skips the rename and leaves the generated name in place — the
+		// session is still usable, and the run's own request reports the
+		// cause to the user.
+		if serviceLLMGate != nil {
+			if err := serviceLLMGate(m.shutdownCtx); err != nil {
+				m.log().Warn("skipping session title generation: the model is not ready",
+					"session", id, "error", err)
+				return
+			}
+		}
+		ctx, cancel := context.WithTimeout(m.shutdownCtx, serviceLLMTimeout)
+		defer cancel()
+		if dumpFile != nil {
+			ctx = agent.WithDumpWriter(ctx, dumpFile)
+		}
+		title := titleGen.Generate(ctx, text, activeSkills)
+		if title == "" {
+			return
+		}
+		if err := m.RenameSession(id, title); err != nil {
+			m.log().Warn("failed to rename session with generated title", "session", id, "error", err)
+			return
+		}
+		m.log().Info("session auto-named", "session", id, "title", title)
+		// Persist rename to store
+		if store != nil {
+			if err := store.RenameSession(context.Background(), id, title); err != nil {
+				m.log().Warn("failed to persist session title", "session", id, "error", err)
+			}
+		}
+	})
+	if !titleSpawned && dumpFile != nil {
+		// Shutdown closed the tracker concurrently, so the closure never
+		// runs and its deferred close never happens. DumpFile duplicated
+		// the descriptor for the closure to own; close it here or it leaks
+		// until process exit (and on Windows it blocks the dump file's
+		// removal from the agent dir).
+		_ = dumpFile.Close()
+	}
 }

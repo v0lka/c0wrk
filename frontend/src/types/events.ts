@@ -713,6 +713,60 @@ export interface GitConfigRiskData {
   readonly diff?: string
 }
 
+// --- Embedded local-model event payloads ---
+//
+// Mirror the backend DTOs in backend/frontend_api_embedded.go (snake_case JSON
+// keys). Both events are GLOBAL (bare names, not session-scoped): the embedded
+// model belongs to the machine, not to a conversation. See
+// specs/contracts/event-catalog.md and specs/domains/embedded-llm.md.
+
+/** The artifact one `embedded_llm:install_progress` update belongs to. `cudart`
+ *  is the paired Windows CUDA DLL archive; `mmproj` is the vision projector. */
+export type EmbeddedLLMComponent = 'runtime' | 'cudart' | 'model' | 'mmproj'
+
+/** The stage of one component during an install. A component walks
+ *  downloading → verifying → (extracting → signing for runtime archives) →
+ *  done, with exactly one `done`. */
+export type EmbeddedLLMStage = 'downloading' | 'verifying' | 'extracting' | 'signing' | 'done'
+
+/** Payload of the global `embedded_llm:install_progress` event: one component's
+ *  one stage. `bytes_done`/`bytes_total` describe that component's own transfer
+ *  and are both 0 for the non-transfer stages (verifying, extracting, signing,
+ *  done), where a byte count would be a lie. Mirrors backend
+ *  EmbeddedLLMProgressData. */
+export interface EmbeddedLLMInstallProgressData {
+  readonly component: EmbeddedLLMComponent
+  readonly stage: EmbeddedLLMStage
+  readonly bytes_done: number
+  readonly bytes_total: number
+}
+
+/** Payload of the global `embedded_llm:state` event: the supervision state of
+ *  the local model plus the install record a status indicator shows. Fires on
+ *  every observable transition, once at startup after the manifest restore, and
+ *  after an install, a removal or an auto-unload policy change.
+ *
+ *  `installed` means "the runtime and the weights are on disk and verified" —
+ *  it does NOT imply resident; `loaded` does. `packing` is the ternary
+ *  quantization on disk ("PQ2_0" | "PTQ1_0"), `backend` the accelerator the
+ *  runtime was provisioned for ("metal", "cuda-12.4", "cuda-12.8", "cuda-13.3",
+ *  "rocm", "vulkan", "cpu"); both are empty when nothing is installed.
+ *  `context_size` is the RAM-tiered context frozen in the manifest. `error`
+ *  carries a human-readable cause (the supervisor's message for a failed load
+ *  or a crashed process, otherwise the last failed install/removal) and is empty
+ *  when nothing failed. Mirrors backend EmbeddedLLMStateData. */
+export interface EmbeddedLLMStateData {
+  readonly installed: boolean
+  readonly loading: boolean
+  readonly loaded: boolean
+  readonly packing: string
+  readonly backend: string
+  readonly port: number
+  readonly context_size: number
+  readonly auto_unload_minutes: number
+  readonly error: string
+}
+
 export interface GlobalEventMap {
   readonly 'startup_error': { readonly message: string; readonly error: string; readonly error_code?: string }
   readonly 'runtime_error': { readonly id: string; readonly message: string; readonly error_code?: string }
@@ -760,6 +814,15 @@ export interface GlobalEventMap {
   readonly 'tool_manager:start': ToolManagerStartData
   readonly 'tool_manager:progress': ToolManagerProgressData
   readonly 'tool_manager:done': ToolManagerDoneData
+  /** Embedded local-model install progress: one component's one stage
+   *  (runtime, cudart, model, mmproj × downloading, verifying, extracting,
+   *  signing, done). Emitted by the background install run started by
+   *  InstallEmbeddedLLM (backend/frontend_api_embedded.go). */
+  readonly 'embedded_llm:install_progress': EmbeddedLLMInstallProgressData
+  /** Embedded local-model supervision state. Emitted on every observable
+   *  transition, once at startup after the manifest restore, and after an
+   *  install, a removal or an auto-unload policy change. */
+  readonly 'embedded_llm:state': EmbeddedLLMStateData
   readonly 'workdirs:changed': void
   readonly 'files:dropped': FilesDroppedData
   /** Quit attempt intercepted because sessions have live work; the user
@@ -1328,3 +1391,39 @@ export function isToolManagerProgressData(d: unknown): d is ToolManagerProgressD
     typeof d.bytes_done === 'number' && typeof d.bytes_total === 'number'
 }
 
+
+// --- Embedded local-model event type guards ---
+
+const VALID_EMBEDDED_LLM_COMPONENTS: ReadonlySet<string> = new Set(['runtime', 'cudart', 'model', 'mmproj'])
+const VALID_EMBEDDED_LLM_STAGES: ReadonlySet<string> = new Set([
+  'downloading', 'verifying', 'extracting', 'signing', 'done',
+])
+
+/** Guard for an `embedded_llm:install_progress` payload. The component and the
+ *  stage are closed vocabularies owned by core/embeddedllm — an unknown value
+ *  is dropped rather than rendered as a mystery row. `packing`/`backend` of the
+ *  state payload are deliberately NOT enumerated here: they are informational
+ *  display strings, and a newly pinned backend must not make the state event
+ *  fail validation. */
+export function isEmbeddedLLMInstallProgressData(d: unknown): d is EmbeddedLLMInstallProgressData {
+  if (!isObj(d)) return false
+  if (typeof d.component !== 'string' || !VALID_EMBEDDED_LLM_COMPONENTS.has(d.component)) return false
+  if (typeof d.stage !== 'string' || !VALID_EMBEDDED_LLM_STAGES.has(d.stage)) return false
+  return typeof d.bytes_done === 'number' && typeof d.bytes_total === 'number'
+}
+
+/** Guard for an `embedded_llm:state` payload. Every field is always present in
+ *  the backend DTO (no omitempty), so a payload missing one of them is not a
+ *  state event this UI knows how to render. */
+export function isEmbeddedLLMStateData(d: unknown): d is EmbeddedLLMStateData {
+  if (!isObj(d)) return false
+  if (typeof d.installed !== 'boolean') return false
+  if (typeof d.loading !== 'boolean') return false
+  if (typeof d.loaded !== 'boolean') return false
+  if (typeof d.packing !== 'string') return false
+  if (typeof d.backend !== 'string') return false
+  if (typeof d.port !== 'number') return false
+  if (typeof d.context_size !== 'number') return false
+  if (typeof d.auto_unload_minutes !== 'number') return false
+  return typeof d.error === 'string'
+}

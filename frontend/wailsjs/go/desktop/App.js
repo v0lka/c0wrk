@@ -242,6 +242,10 @@ export function GetDiffStats() {
   return window['go']['desktop']['App']['GetDiffStats']();
 }
 
+export function GetEmbeddedLLMStatus() {
+  return window['go']['desktop']['App']['GetEmbeddedLLMStatus']();
+}
+
 export function GetFileDiff(arg1) {
   return window['go']['desktop']['App']['GetFileDiff'](arg1);
 }
@@ -410,6 +414,10 @@ export function InitNotifications() {
   return window['go']['desktop']['App']['InitNotifications']();
 }
 
+export function InstallEmbeddedLLM() {
+  return window['go']['desktop']['App']['InstallEmbeddedLLM']();
+}
+
 export function Lifecycle() {
   return window['go']['desktop']['App']['Lifecycle']();
 }
@@ -460,6 +468,10 @@ export function ListThemes() {
 
 export function ListVectorIndexGPUs() {
   return window['go']['desktop']['App']['ListVectorIndexGPUs']();
+}
+
+export function LoadEmbeddedLLM() {
+  return window['go']['desktop']['App']['LoadEmbeddedLLM']();
 }
 
 export function Merge(arg1) {
@@ -544,6 +556,10 @@ export function ReindexVectorIndex() {
 
 export function RemoveAttachment(arg1, arg2) {
   return window['go']['desktop']['App']['RemoveAttachment'](arg1, arg2);
+}
+
+export function RemoveEmbeddedLLM() {
+  return window['go']['desktop']['App']['RemoveEmbeddedLLM']();
 }
 
 export function RemoveHardenGitRepo(arg1) {
@@ -650,6 +666,10 @@ export function SetActiveResearch(arg1, arg2) {
   return window['go']['desktop']['App']['SetActiveResearch'](arg1, arg2);
 }
 
+export function SetEmbeddedLLMAutoUnload(arg1, arg2) {
+  return window['go']['desktop']['App']['SetEmbeddedLLMAutoUnload'](arg1, arg2);
+}
+
 export function SetHypothesisPinned(arg1, arg2, arg3, arg4) {
   return window['go']['desktop']['App']['SetHypothesisPinned'](arg1, arg2, arg3, arg4);
 }
@@ -748,6 +768,10 @@ export function TerminalResize(arg1, arg2, arg3) {
 
 export function TrustGitRepo(arg1) {
   return window['go']['desktop']['App']['TrustGitRepo'](arg1);
+}
+
+export function UnloadEmbeddedLLM() {
+  return window['go']['desktop']['App']['UnloadEmbeddedLLM']();
 }
 
 export function UnstageAll() {

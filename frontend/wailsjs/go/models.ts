@@ -477,6 +477,58 @@ export namespace backend {
 		}
 	}
 	
+	export class EmbeddedLLMStatus {
+	    state: string;
+	    installed: boolean;
+	    installing: boolean;
+	    loading: boolean;
+	    loaded: boolean;
+	    packing: string;
+	    backend: string;
+	    port: number;
+	    context_size: number;
+	    auto_unload_enabled: boolean;
+	    auto_unload_minutes: number;
+	    idle_remaining_seconds: number;
+	    base_url: string;
+	    model_id: string;
+	    model_name: string;
+	    runtime_version: string;
+	    installed_at: string;
+	    model_file: string;
+	    pid: number;
+	    error: string;
+	    available: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new EmbeddedLLMStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.state = source["state"];
+	        this.installed = source["installed"];
+	        this.installing = source["installing"];
+	        this.loading = source["loading"];
+	        this.loaded = source["loaded"];
+	        this.packing = source["packing"];
+	        this.backend = source["backend"];
+	        this.port = source["port"];
+	        this.context_size = source["context_size"];
+	        this.auto_unload_enabled = source["auto_unload_enabled"];
+	        this.auto_unload_minutes = source["auto_unload_minutes"];
+	        this.idle_remaining_seconds = source["idle_remaining_seconds"];
+	        this.base_url = source["base_url"];
+	        this.model_id = source["model_id"];
+	        this.model_name = source["model_name"];
+	        this.runtime_version = source["runtime_version"];
+	        this.installed_at = source["installed_at"];
+	        this.model_file = source["model_file"];
+	        this.pid = source["pid"];
+	        this.error = source["error"];
+	        this.available = source["available"];
+	    }
+	}
 	
 	export class FileIconResponse {
 	    icon: string;

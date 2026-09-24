@@ -8,16 +8,23 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { compositeModelId, bareModel, findModelRef, type ModelRef } from '@/lib/modelId'
+import { EMBEDDED_PROVIDER_NAME } from '@/lib/llm-providers'
 import { cn } from '@/lib/utils'
 
 /** Human-readable label for a provider config key. Fixed providers have
- *  canonical labels; OpenAI-compatible providers display their config key. */
+ *  canonical labels; OpenAI-compatible providers display their config key —
+ *  except the backend-owned `embedded` record of the local model
+ *  (specs/domains/embedded-llm.md), whose key is an internal identifier and is
+ *  therefore labelled like a fixed provider. The composite model id stays
+ *  `embedded/<name>` regardless: only the DISPLAY is humanized. */
 function providerLabel(provider: string): string {
   switch (provider) {
     case 'anthropic':
       return 'Anthropic'
     case 'chatgpt':
       return 'ChatGPT'
+    case EMBEDDED_PROVIDER_NAME:
+      return 'Embedded'
     default:
       return provider
   }
@@ -56,6 +63,16 @@ function toModelPickerEntries(models: readonly ModelRef[]): ModelPickerEntry[] {
  * Group model entries by provider, preserving order. Shared by every
  * ModelPickerMenu consumer so all model pickers render the same provider
  * sections in the same order.
+ *
+ * Ordering rule: the backend-owned `embedded` provider is ALWAYS the first
+ * group, regardless of where its models arrive in the input list. Both feed
+ * orders put it in the middle — the settings picker iterates a provider map
+ * whose JSON keys are alphabetized by the Go marshaller, and the chat picker
+ * iterates `all_models`, which the backend emits as (anthropic, chatgpt, sorted
+ * openai_compatible, sorted anthropic_compatible). Normalizing it here (rather
+ * than in each caller) is what keeps the two surfaces — and any future picker —
+ * from drifting apart again. Every other provider keeps its input order, so the
+ * fix is a single hoist and not a re-sort.
  */
 function groupByProvider(entries: ModelPickerEntry[]): Map<string, ModelPickerEntry[]> {
   const map = new Map<string, ModelPickerEntry[]>()
@@ -64,7 +81,14 @@ function groupByProvider(entries: ModelPickerEntry[]): Map<string, ModelPickerEn
     list.push(entry)
     map.set(entry.provider, list)
   }
-  return map
+  const embedded = map.get(EMBEDDED_PROVIDER_NAME)
+  if (embedded === undefined) return map
+  // Rebuild with the embedded group first; Map preserves insertion order.
+  const ordered = new Map<string, ModelPickerEntry[]>([[EMBEDDED_PROVIDER_NAME, embedded]])
+  for (const [provider, list] of map) {
+    if (provider !== EMBEDDED_PROVIDER_NAME) ordered.set(provider, list)
+  }
+  return ordered
 }
 
 interface ModelPickerMenuProps {

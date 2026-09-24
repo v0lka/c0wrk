@@ -129,6 +129,8 @@ export function GetDiffStat(arg1:string):Promise<workspace.DiffStat>;
 
 export function GetDiffStats():Promise<Record<string, workspace.DiffStat>>;
 
+export function GetEmbeddedLLMStatus():Promise<backend.EmbeddedLLMStatus>;
+
 export function GetFileDiff(arg1:string):Promise<string>;
 
 export function GetFileDiffHunks(arg1:string):Promise<Array<workspace.HunkDiffInfo>>;
@@ -213,6 +215,8 @@ export function HasDefaultModel():Promise<boolean>;
 
 export function InitNotifications():Promise<void>;
 
+export function InstallEmbeddedLLM():Promise<void>;
+
 export function Lifecycle():Promise<backend.FrontendAPILifecycle>;
 
 export function ListAgents():Promise<Array<backend.AgentDescriptorDTO>>;
@@ -238,6 +242,8 @@ export function ListSkills():Promise<Array<backend.SkillDescriptorDTO>>;
 export function ListThemes():Promise<Array<backend.ThemeDTO>>;
 
 export function ListVectorIndexGPUs():Promise<Array<backend.GPUDeviceResponse>>;
+
+export function LoadEmbeddedLLM():Promise<void>;
 
 export function Merge(arg1:string):Promise<void>;
 
@@ -280,6 +286,8 @@ export function RecordFlashcardReview(arg1:string,arg2:string,arg3:string,arg4:s
 export function ReindexVectorIndex():Promise<void>;
 
 export function RemoveAttachment(arg1:string,arg2:string):Promise<void>;
+
+export function RemoveEmbeddedLLM():Promise<void>;
 
 export function RemoveHardenGitRepo(arg1:string):Promise<void>;
 
@@ -333,6 +341,8 @@ export function SendSystemNotification(arg1:string,arg2:string,arg3:Record<strin
 
 export function SetActiveResearch(arg1:string,arg2:string):Promise<backend.ResearchStatusDTO>;
 
+export function SetEmbeddedLLMAutoUnload(arg1:boolean,arg2:number):Promise<void>;
+
 export function SetHypothesisPinned(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
 
 export function SetLogLevel(arg1:string):Promise<void>;
@@ -382,6 +392,8 @@ export function TerminalInput(arg1:string,arg2:string):Promise<void>;
 export function TerminalResize(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function TrustGitRepo(arg1:string):Promise<void>;
+
+export function UnloadEmbeddedLLM():Promise<void>;
 
 export function UnstageAll():Promise<void>;
 

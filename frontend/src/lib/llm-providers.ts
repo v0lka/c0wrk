@@ -2,6 +2,23 @@
 export const FIXED_PROVIDERS = ['anthropic', 'chatgpt'] as const
 export type FixedProviderKey = (typeof FIXED_PROVIDERS)[number]
 
+/**
+ * The provider key of the installed embedded local model
+ * (`backend/config.EmbeddedLLMProviderName`).
+ *
+ * The record under `llm.openai_compatible.embedded` is BACKEND-OWNED: it is
+ * generated from the authoritative `embedded_llm` state on every config load
+ * and save (`SyncEmbeddedProvider`), so the settings dialog must display the
+ * model but never offer it for editing — any edit is overwritten on the next
+ * save. It is therefore excluded from the compatible-provider accordions and
+ * reserved against user-created provider names (a custom provider named
+ * "embedded" would be silently deleted by that sync whenever the local model
+ * is not installed).
+ *
+ * See specs/domains/embedded-llm.md and ADR-066.
+ */
+export const EMBEDDED_PROVIDER_NAME = 'embedded'
+
 /** Canonical list of fixed LLM provider keys. */
 export const PROVIDERS = FIXED_PROVIDERS
 export type ProviderKey = FixedProviderKey
@@ -27,6 +44,16 @@ export type CompatibleType = 'openai' | 'anthropic'
  *  i.e. a provider whose name is not in {@link FIXED_PROVIDERS}. */
 export function isCompatibleProvider(name: string): boolean {
   return !(FIXED_PROVIDERS as readonly string[]).includes(name)
+}
+
+/**
+ * Returns true when the provider record is owned by the backend rather than by
+ * the settings dialog's draft: it is generated from authoritative app state and
+ * re-injected on every save, so the draft must neither render an editor for it
+ * nor send it back.
+ */
+export function isBackendOwnedProvider(name: string): boolean {
+  return name === EMBEDDED_PROVIDER_NAME
 }
 
 /** Backwards-compatible alias: any compatible provider. */

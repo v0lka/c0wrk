@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -23,7 +24,16 @@ const DefaultAgentDir = ".c0wrk"
 type Config struct {
 	LogLevel string    `yaml:"log_level"`
 	LLM      LLMConfig `yaml:"llm"`
-	MCP      MCPConfig `yaml:"mcp"`
+
+	// EmbeddedLLM is the authoritative state of the optional in-app local
+	// model (Bonsai 2 27B). It is APP-WRITTEN state, not tuning: Install
+	// records it, Remove clears it, and hand-editing it neither downloads nor
+	// starts anything. The `llm.openai_compatible.embedded` provider record is
+	// GENERATED from this section (see SyncEmbeddedLLMProvider) — the LLM
+	// section never owns it. See specs/domains/embedded-llm.md and ADR-066.
+	EmbeddedLLM EmbeddedLLMConfig `yaml:"embedded_llm"`
+
+	MCP MCPConfig `yaml:"mcp"`
 
 	Router     RouterConfig     `yaml:"router"`
 	Executor   ExecutorConfig   `yaml:"executor"`
@@ -591,6 +601,235 @@ type LLMRetryConfig struct {
 	MaxRetries     int    `yaml:"max_retries"`     // max retry attempts (0 = no retries)
 	InitialBackoff string `yaml:"initial_backoff"` // initial backoff duration (e.g. "1s")
 	MaxBackoff     string `yaml:"max_backoff"`     // maximum backoff duration (e.g. "30s")
+}
+
+// Embedded LLM identity and limits. The provider record is backend-owned:
+// `embedded_llm:` is the authoritative state and `llm.openai_compatible.embedded`
+// is GENERATED from it (SyncEmbeddedProvider), so the UI's whole-map provider
+// replacement can never delete the local model. See
+// specs/domains/embedded-llm.md and ADR-066.
+const (
+	// EmbeddedLLMProviderName is the openai_compatible key of the generated
+	// provider and therefore the provider half of the composite model id
+	// ("embedded/Bonsai 2 27B").
+	EmbeddedLLMProviderName = "embedded"
+
+	// EmbeddedLLMModelName is the single model the local server exposes. It is
+	// also the llm.models override key, which is always the BARE model name.
+	EmbeddedLLMModelName = "Bonsai 2 27B"
+
+	// EmbeddedLLMHost is the loopback address the server binds. Fixed by
+	// design: the inference runtime must never become network-reachable.
+	EmbeddedLLMHost = "127.0.0.1"
+
+	// EmbeddedLLMDefaultAutoUnloadMinutes is the default idle budget before the
+	// server process is stopped so RAM/VRAM is returned deterministically.
+	EmbeddedLLMDefaultAutoUnloadMinutes = 60
+
+	// EmbeddedLLMMinPort and EmbeddedLLMMaxPort bound the persisted loopback
+	// port. 0 is the "not allocated yet" sentinel and is only legal while
+	// Installed is false.
+	EmbeddedLLMMinPort = 1024
+	EmbeddedLLMMaxPort = 65535
+)
+
+// EmbeddedLLMConfig is the persisted install/runtime state of the embedded
+// local model. Every field is written by the app; the section documents what
+// is on THIS machine (resolved packing, probed backend, allocated port) so a
+// restart can supervise the server without probing hardware or network.
+type EmbeddedLLMConfig struct {
+	// Installed reports that the runtime and the weights are on disk and
+	// SHA256-verified. It gates the generated provider entry.
+	Installed bool `yaml:"installed"`
+	// Packing is the ternary quantization resolved for this machine
+	// ("PQ2_0" | "PTQ1_0"). Informational — shown in Settings.
+	Packing string `yaml:"packing"`
+	// Backend is the accelerator the hardware probe selected ("metal",
+	// "cuda-12.4", "cuda-12.8", "cuda-13.3", "rocm", "vulkan", "cpu").
+	// Informational.
+	Backend string `yaml:"backend"`
+	// Port is the persisted loopback port; 0 = allocate at install time. The
+	// provider base URL is ALWAYS derived from it, never stored separately.
+	Port int `yaml:"port"`
+	// ModelFile is the absolute path of the installed GGUF weights.
+	ModelFile string `yaml:"model_file"`
+	// RuntimeVersion is the pinned fork release the runtime came from. A pin
+	// change forces a runtime re-download and keeps the weights.
+	RuntimeVersion string `yaml:"runtime_version"`
+	// InstalledAt is the RFC 3339 timestamp of the install.
+	InstalledAt string `yaml:"installed_at"`
+	// AutoUnload is the idle budget after which the server process is stopped.
+	AutoUnload AutoUnloadConfig `yaml:"auto_unload"`
+}
+
+// AutoUnloadConfig is the embedded server's idle-unload budget. Both fields are
+// pointers so an explicit `enabled: false` / `minutes: N` in YAML is
+// distinguishable from "unset" (which resolves to the documented default).
+type AutoUnloadConfig struct {
+	// Enabled is the idle-timer master switch. Default: true.
+	Enabled *bool `yaml:"enabled"`
+	// Minutes is the idle budget before unload. Default: 60; must be >= 1.
+	Minutes *int `yaml:"minutes"`
+}
+
+// IsEnabled resolves the idle-timer master switch (nil → true).
+func (a AutoUnloadConfig) IsEnabled() bool {
+	return a.Enabled == nil || *a.Enabled
+}
+
+// IdleMinutes resolves the idle budget (nil → EmbeddedLLMDefaultAutoUnloadMinutes).
+// An explicit non-positive value is rejected by validate(), so a config that
+// loaded always resolves to >= 1.
+func (a AutoUnloadConfig) IdleMinutes() int {
+	if a.Minutes == nil {
+		return EmbeddedLLMDefaultAutoUnloadMinutes
+	}
+	return *a.Minutes
+}
+
+// BaseURL derives the loopback OpenAI-compatible endpoint from the persisted
+// port. Deriving (instead of storing) the URL is what keeps a port reallocation
+// from leaving a stale endpoint behind.
+func (c EmbeddedLLMConfig) BaseURL() string {
+	return fmt.Sprintf("http://%s:%d/v1", EmbeddedLLMHost, c.Port)
+}
+
+// ProviderConfig returns the generated openai_compatible record for the
+// embedded server. It is only meaningful while Installed is true. The API key
+// is always empty (a loopback server takes no key) and no TLS fingerprint is
+// set (the endpoint is plain HTTP, so ADR-054 pinning does not apply).
+func (c EmbeddedLLMConfig) ProviderConfig() OpenAICompatibleConfig {
+	return OpenAICompatibleConfig{
+		BaseURL: c.BaseURL(),
+		Models:  []string{EmbeddedLLMModelName},
+	}
+}
+
+// SyncEmbeddedLLMProvider reconciles the derived LLM state with the
+// authoritative embedded_llm section. See LLMConfig.SyncEmbeddedProvider.
+func (c *Config) SyncEmbeddedLLMProvider(contextWindow int) bool {
+	return c.LLM.SyncEmbeddedProvider(c.EmbeddedLLM, contextWindow)
+}
+
+// SyncEmbeddedProvider makes the generated `embedded` provider record match the
+// authoritative embedded_llm state:
+//
+//   - installed     → the record is (re)generated from the persisted port, so a
+//     reallocated port or a hand-deleted entry self-heals;
+//   - not installed → the record is removed, so no dangling provider survives a
+//     Remove.
+//
+// contextWindow > 0 additionally records the resolved RAM-tier context window as
+// an llm.models override for the embedded model (every other override field is
+// preserved); <= 0 leaves an existing override untouched. The tier is passed IN:
+// this function performs no hardware probe, no network I/O and no disk access,
+// so it is safe on the config-load path and from any request handler.
+//
+// This is the single defense against UpdateLLMConfig's whole-map replacement of
+// openai_compatible: the UI draft never owns the `embedded` key. Maps are
+// copied before mutation, so calling this on a struct copy that still shares
+// its maps with the live config cannot leak a partial change to readers.
+func (c *LLMConfig) SyncEmbeddedProvider(state EmbeddedLLMConfig, contextWindow int) bool {
+	changed := false
+
+	existing, present := c.OpenAICompatible[EmbeddedLLMProviderName]
+	if !state.Installed {
+		if present {
+			c.copyOpenAICompatibleMap()
+			delete(c.OpenAICompatible, EmbeddedLLMProviderName)
+			changed = true
+		}
+	} else {
+		want := state.ProviderConfig()
+		// output_token_reserve is the one operator knob with no representation
+		// in embedded_llm, so it survives regeneration instead of being reset.
+		want.OutputTokenReserve = existing.OutputTokenReserve
+		if !present || !embeddedProviderEqual(existing, want) {
+			c.copyOpenAICompatibleMap()
+			c.OpenAICompatible[EmbeddedLLMProviderName] = want
+			changed = true
+		}
+	}
+
+	if contextWindow > 0 && c.setEmbeddedContextWindow(contextWindow) {
+		changed = true
+	}
+	return changed
+}
+
+// setEmbeddedContextWindow records the resolved context window as the embedded
+// model's llm.models override, preserving the remaining override fields (a
+// user-authored tokenizer/family/protocol tweak stays). Reports whether the
+// stored value changed.
+func (c *LLMConfig) setEmbeddedContextWindow(contextWindow int) bool {
+	override := c.Models[EmbeddedLLMModelName]
+	if override.ContextWindow == contextWindow {
+		return false
+	}
+	override.ContextWindow = contextWindow
+	c.copyModelOverridesMap()
+	c.Models[EmbeddedLLMModelName] = override
+	return true
+}
+
+// embeddedProviderEqual reports whether two generated embedded records carry
+// the same backend-owned values.
+func embeddedProviderEqual(a, b OpenAICompatibleConfig) bool {
+	return a.BaseURL == b.BaseURL &&
+		a.APIKey == b.APIKey &&
+		a.TLSFingerprint == b.TLSFingerprint &&
+		a.OutputTokenReserve == b.OutputTokenReserve &&
+		slices.Equal(a.Models, b.Models)
+}
+
+// copyOpenAICompatibleMap replaces the provider map with a private copy so a
+// sync can never mutate a map another LLMConfig value still references.
+func (c *LLMConfig) copyOpenAICompatibleMap() {
+	clone := make(map[string]OpenAICompatibleConfig, len(c.OpenAICompatible)+1)
+	for name, cfg := range c.OpenAICompatible {
+		clone[name] = cfg
+	}
+	c.OpenAICompatible = clone
+}
+
+// copyModelOverridesMap replaces the model-override map with a private copy,
+// for the same aliasing reason as copyOpenAICompatibleMap.
+func (c *LLMConfig) copyModelOverridesMap() {
+	clone := make(map[string]ModelOverride, len(c.Models)+1)
+	for name, override := range c.Models {
+		clone[name] = override
+	}
+	c.Models = clone
+}
+
+// validateEmbeddedLLM checks the embedded_llm section. It is app-written state,
+// so an invalid value here is either a hand edit or a bug — both must fail fast
+// with an actionable message rather than produce an unreachable provider
+// endpoint or a dead idle timer.
+func validateEmbeddedLLM(c *EmbeddedLLMConfig) error {
+	switch {
+	case c.Port == 0:
+		// 0 means "allocate at install time", which contradicts a completed
+		// install: the provider base URL could not be derived.
+		if c.Installed {
+			return errors.New(
+				"embedded_llm.installed is true but embedded_llm.port is 0; the loopback port is allocated during install — set installed: false or reinstall the embedded model so the provider base URL can be derived",
+			)
+		}
+	case c.Port < EmbeddedLLMMinPort || c.Port > EmbeddedLLMMaxPort:
+		return fmt.Errorf(
+			"embedded_llm.port %d is not valid; must be within %d-%d, or 0 to allocate it at install time",
+			c.Port, EmbeddedLLMMinPort, EmbeddedLLMMaxPort,
+		)
+	}
+
+	if minutes := c.AutoUnload.IdleMinutes(); minutes < 1 {
+		return fmt.Errorf(
+			"embedded_llm.auto_unload.minutes %d is not valid; must be >= 1 (default %d), or set embedded_llm.auto_unload.enabled: false to disable the idle timer",
+			minutes, EmbeddedLLMDefaultAutoUnloadMinutes,
+		)
+	}
+	return nil
 }
 
 // MCPConfig holds MCP server configurations.
@@ -1834,6 +2073,17 @@ func LoadWithResult(path string) (*LoadResult, error) {
 	// Apply defaults for zero-value fields
 	ApplyDefaults(&cfg)
 
+	// Reconcile the backend-owned `embedded` provider record with the
+	// authoritative embedded_llm state: generated from the persisted port
+	// while installed, removed otherwise (so a hand-deleted entry self-heals
+	// and no dangling provider survives a Remove). Pure in-memory work — no
+	// probe, no network, no disk. Must run after ApplyDefaults and before
+	// validate so the generated provider takes part in the default_model
+	// resolution check. The context_window override is deliberately NOT
+	// recomputed here: the resolved RAM tier is written by the install and
+	// supervision paths that know it.
+	cfg.SyncEmbeddedLLMProvider(0)
+
 	// Validate the shell_exec override section in place (fail-soft: invalid
 	// entries are warned about and reset to the built-in launch shape). Must
 	// run after ApplyDefaults (which seeds the platform-default shell kind
@@ -2153,6 +2403,12 @@ func validate(cfg *Config) error {
 			"runtime.memory_soft_limit_mb %d exceeds the maximum of %d MiB (2 PiB); the MiB→bytes shift would overflow",
 			cfg.Runtime.MemorySoftLimitMB, maxMemoryLimitMiB,
 		)
+	}
+
+	// Validate the embedded_llm section (port range / install consistency and
+	// the idle-unload budget).
+	if err := validateEmbeddedLLM(&cfg.EmbeddedLLM); err != nil {
+		return err
 	}
 
 	return nil

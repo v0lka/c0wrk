@@ -209,3 +209,151 @@ describe('ModelPickerMenu (Radix dropdown-menu)', () => {
     expect(document.body.contains(m)).toBe(true)
   })
 })
+
+// The embedded local model is registered by the backend as an
+// `openai_compatible` provider whose KEY is an internal identifier
+// (`embedded`) and whose single model is `Bonsai 2 27B`
+// (specs/domains/embedded-llm.md). Both pickers — the Settings default-model
+// picker and the chat toolbar's ModelCombobox — render it through this
+// component, so the human-readable reading is asserted here once: provider
+// "Embedded", model "Bonsai 2 27B", composite id unchanged.
+describe('ModelPickerMenu — embedded local model entry', () => {
+  const embeddedModels: ModelRef[] = [
+    { name: 'claude-sonnet', provider: 'anthropic' },
+    { name: 'Bonsai 2 27B', provider: 'embedded' },
+  ]
+
+  it('groups the model under the human-readable provider "Embedded", not the config key', async () => {
+    renderMenu({ models: embeddedModels, hideDefaultOption: true })
+    await openMenu()
+
+    const groups = Array.from(menu().querySelectorAll('[role="group"]'))
+    expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['Embedded', 'Anthropic'])
+
+    const embeddedGroup = groups[0]!
+    expect(embeddedGroup.textContent).toContain('Embedded')
+    // Case-sensitive: the raw `embedded` config key is never what the user reads.
+    expect(embeddedGroup.textContent).not.toContain('embedded')
+    expect(embeddedGroup.textContent).toContain('Bonsai 2 27B')
+  })
+
+  it('selects the embedded model by its unchanged composite id', async () => {
+    renderMenu({ models: embeddedModels, hideDefaultOption: true })
+    await openMenu()
+
+    const item = items().find((i) => i.textContent?.includes('Bonsai 2 27B'))
+    expect(item).toBeDefined()
+    clickItem(item!)
+
+    expect(onSelect).toHaveBeenCalledWith('embedded/Bonsai 2 27B')
+  })
+
+  it('shows the whole bare name in the trigger, with the provider in the tooltip', () => {
+    renderMenu({
+      models: embeddedModels,
+      defaultModel: 'embedded/Bonsai 2 27B',
+      value: 'embedded/Bonsai 2 27B',
+      hideDefaultOption: true,
+    })
+
+    // Exact equality: nothing hand-truncates the label (a CSS ellipsis under a
+    // narrow trigger would still leave the full string in the DOM).
+    expect(trigger().textContent).toBe('Bonsai 2 27B')
+    expect(trigger().getAttribute('title')).toBe('Embedded: Bonsai 2 27B')
+  })
+
+  it('resolves the global default to the embedded entry', () => {
+    renderMenu({ models: embeddedModels, defaultModel: 'embedded/Bonsai 2 27B', value: null })
+
+    expect(trigger().textContent).toContain('Default: Bonsai 2 27B')
+  })
+
+  it('lets the Settings variant lift the 200px trigger cap so the label is never clipped', () => {
+    // LLMSettings passes `max-w-none`; tailwind-merge must drop the built-in
+    // `max-w-[200px]` rather than keep both (two max-widths = the narrower one
+    // wins and the label ellipsizes).
+    renderMenu({
+      models: embeddedModels,
+      defaultModel: 'embedded/Bonsai 2 27B',
+      value: 'embedded/Bonsai 2 27B',
+      hideDefaultOption: true,
+      className: 'w-full h-9 text-sm px-3 max-w-none',
+    })
+
+    expect(trigger().className).toContain('max-w-none')
+    expect(trigger().className).not.toContain('max-w-[200px]')
+    expect(trigger().textContent).toBe('Bonsai 2 27B')
+  })
+})
+
+// Both real feed orders put the embedded provider in the MIDDLE of the list:
+// the settings picker iterates a provider map whose JSON keys the Go marshaller
+// alphabetizes, and the chat picker iterates `all_models`, which the backend
+// emits as (anthropic, chatgpt, sorted openai_compatible, sorted
+// anthropic_compatible). The group order is normalized here — in the shared
+// component — so the local model always leads on every surface.
+describe('ModelPickerMenu — the Embedded group always leads', () => {
+  function groupLabels(): string[] {
+    return Array.from(menu().querySelectorAll('[role="group"]')).map(
+      (g) => g.getAttribute('aria-label') ?? '',
+    )
+  }
+
+  it('hoists Embedded to the top when its model arrives last', async () => {
+    renderMenu({
+      models: [
+        { name: 'claude-sonnet', provider: 'anthropic' },
+        { name: 'glm-5.3', provider: 'lmstudio' },
+        { name: 'Bonsai 2 27B', provider: 'embedded' },
+      ],
+      hideDefaultOption: true,
+    })
+    await openMenu()
+
+    expect(groupLabels()).toEqual(['Embedded', 'Anthropic', 'lmstudio'])
+    // The hoist moves the group, not its entry: the model is still inside it.
+    const groups = Array.from(menu().querySelectorAll('[role="group"]'))
+    expect(groups[0]!.textContent).toContain('Bonsai 2 27B')
+  })
+
+  it('hoists Embedded even when it arrives in the middle, leaving the rest in order', async () => {
+    renderMenu({
+      models: [
+        { name: 'claude-sonnet', provider: 'anthropic' },
+        { name: 'Bonsai 2 27B', provider: 'embedded' },
+        { name: 'gpt-4o', provider: 'chatgpt' },
+        { name: 'glm-5.3', provider: 'lmstudio' },
+      ],
+      hideDefaultOption: true,
+    })
+    await openMenu()
+
+    expect(groupLabels()).toEqual(['Embedded', 'Anthropic', 'ChatGPT', 'lmstudio'])
+  })
+
+  it('keeps its models listed in input order within the hoisted group', async () => {
+    renderMenu({
+      models: [
+        { name: 'claude-sonnet', provider: 'anthropic' },
+        { name: 'Bonsai 2 27B', provider: 'embedded' },
+        { name: 'Bonsai 2 9B', provider: 'embedded' },
+      ],
+      hideDefaultOption: true,
+    })
+    await openMenu()
+
+    const embeddedGroup = Array.from(menu().querySelectorAll('[role="group"]'))[0]!
+    const names = Array.from(embeddedGroup.querySelectorAll('[role="menuitem"]')).map(
+      (i) => i.textContent ?? '',
+    )
+    expect(names[0]).toContain('Bonsai 2 27B')
+    expect(names[1]).toContain('Bonsai 2 9B')
+  })
+
+  it('renders no Embedded group while the local model is not installed', async () => {
+    renderMenu({ hideDefaultOption: true })
+    await openMenu()
+
+    expect(groupLabels()).toEqual(['Anthropic', 'lmstudio'])
+  })
+})

@@ -409,3 +409,51 @@ describe('ModelCombobox disabled (session-pinning lock)', () => {
     expect(menu()).toBeNull()
   })
 })
+
+// The chat toolbar's picker is the second surface where the embedded local
+// model must read as provider "Embedded" / model "Bonsai 2 27B" while the value
+// sent to the backend stays the composite `embedded/Bonsai 2 27B`
+// (specs/domains/embedded-llm.md). The backend registers the model as an
+// ordinary openai_compatible provider, so this is the same list useConfigData
+// already returns — only the DISPLAY is humanized.
+describe('ModelCombobox — embedded local model entry', () => {
+  beforeEach(() => {
+    spies.configData.allModels = [
+      { name: 'claude-sonnet', provider: 'anthropic', family: 'anthropic', vision: true },
+      { name: 'Bonsai 2 27B', provider: 'embedded', family: 'qwen3', vision: true },
+    ]
+    spies.configData.defaultModel = 'anthropic/claude-sonnet'
+    act(() => {
+      root.render(<ModelCombobox />)
+    })
+  })
+
+  it('lists the local model under the human-readable provider "Embedded"', async () => {
+    await openDropdown()
+
+    // The feed order here mirrors what the backend actually emits for
+    // `all_models` (anthropic, chatgpt, then the sorted openai_compatible keys,
+    // where `embedded` lands in the middle) — and the picker hoists the
+    // Embedded group to the top regardless.
+    const groups = Array.from(menu()!.querySelectorAll('[role="group"]'))
+    expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['Embedded', 'Anthropic'])
+
+    const embeddedGroup = groups[0]!
+    expect(embeddedGroup.textContent).toContain('Bonsai 2 27B')
+    // Case-sensitive: the raw `embedded` config key is never what the user reads.
+    expect(embeddedGroup.textContent).not.toContain('embedded')
+  })
+
+  it('persists the composite id and shows the bare name in the trigger', async () => {
+    await openDropdown()
+
+    const item = options().find((o) => o.textContent?.includes('Bonsai 2 27B'))
+    expect(item).toBeDefined()
+    clickOption(item!)
+
+    expect(spies.setDefaultModel).toHaveBeenCalledWith('embedded/Bonsai 2 27B')
+    expect(useInputModeStore.getState().selectedModel).toBe('embedded/Bonsai 2 27B')
+    expect(container.querySelector('button')?.textContent).toBe('Bonsai 2 27B')
+    expect(container.querySelector('button')?.getAttribute('title')).toBe('Embedded: Bonsai 2 27B')
+  })
+})

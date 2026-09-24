@@ -449,6 +449,13 @@ func (a *App) Startup(ctx context.Context) {
 		},
 	}, configLoadErrors, projStore, log, startTime)
 
+	// ── Embedded local model: restore only ──────────────────────────
+	// Reads manifest.json into the supervisor and emits the initial
+	// embedded_llm:state snapshot. No download, no network, no probe and no
+	// model load: startup never depends on the network and never blocks on the
+	// multi-gigabyte weight load (see initEmbeddedLLM).
+	a.initEmbeddedLLM(log)
+
 	a.wireWailsEventListeners(log, uiEmitFunc)
 
 	// ── Session restoration resolver ─────────────────────────────────
@@ -575,6 +582,13 @@ func (a *App) Shutdown(ctx context.Context) {
 	// makes this a no-op, and the debounced frontend saves already captured
 	// any prior resize.
 	a.saveWindowBounds(a.log())
+
+	// Stop the embedded local-model server (llama-server) if one is running.
+	// It runs BEFORE the judge drain and the store closes: the loaded weights
+	// hold gigabytes of RAM/VRAM, so they are released while the rest of the
+	// teardown is still working rather than after it. Idempotent, bounded, and
+	// a failure is logged rather than fatal (see stopEmbeddedLLM).
+	a.stopEmbeddedLLM(ctx)
 
 	// Drain all pending confirmation/ask-user/step-limit channels so that
 	// blocked goroutines can exit cleanly instead of leaking.

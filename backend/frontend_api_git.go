@@ -1273,6 +1273,16 @@ func (f *FrontendAPI) GenerateCommitMessage() (string, error) {
 	f.log().Debug("GenerateCommitMessage: sending staged diff to LLM",
 		"diff_bytes", len(trimmed), "repo", repoPath)
 
+	// The embedded model must be resident BEFORE this request's budget starts:
+	// a cold weight load takes longer than the service timeout, and charging it
+	// to the request would fail the call instead of serving it. A no-op for
+	// every other provider. Deliberately after the staged-diff check, so a
+	// nothing-to-generate call does not load gigabytes for no reason.
+	if err := f.ensureEmbeddedReadyForLLMRequest(f.ctx()); err != nil {
+		f.log().Warn("GenerateCommitMessage: the embedded model could not be loaded", "err", err)
+		return "", err
+	}
+
 	ctx, cancel := context.WithTimeout(f.ctx(), f.serviceLLMTimeout())
 	defer cancel()
 

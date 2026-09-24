@@ -106,6 +106,21 @@ func ApplyDefaults(cfg *Config) {
 		cfg.LLM.Retry.MaxBackoff = "30s"
 	}
 
+	// Embedded LLM idle-unload defaults. Both are pointers so an explicit
+	// `enabled: false` / `minutes: N` in YAML is respected rather than
+	// overwritten by the default. The rest of the section is app-written
+	// install state whose zero values ARE the documented not-installed
+	// defaults (installed: false, port: 0, empty packing/backend/model_file/
+	// runtime_version/installed_at), so nothing else needs seeding here.
+	if cfg.EmbeddedLLM.AutoUnload.Enabled == nil {
+		autoUnload := true
+		cfg.EmbeddedLLM.AutoUnload.Enabled = &autoUnload
+	}
+	if cfg.EmbeddedLLM.AutoUnload.Minutes == nil {
+		minutes := EmbeddedLLMDefaultAutoUnloadMinutes
+		cfg.EmbeddedLLM.AutoUnload.Minutes = &minutes
+	}
+
 	// Executor defaults
 	if cfg.Executor.MaxRetries == 0 {
 		cfg.Executor.MaxRetries = 2

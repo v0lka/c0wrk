@@ -261,6 +261,13 @@ type FrontendAPI struct {
 	lastCheckResult       *updater.Result
 	downloadedArchivePath string
 
+	// Embedded local-model subsystem state: the storage layout, the
+	// core/embeddedllm supervisor and installer, the cached manifest snapshot
+	// and the in-flight-install flag. A value field with its own two mutexes,
+	// constructed lazily on first use — see frontend_api_embedded.go for the
+	// lock order and the RPC surface.
+	embedded embeddedLLMState
+
 	// Terminal
 	terminalManager TerminalManager
 
@@ -388,7 +395,29 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 		warnIfSeedDirUndiscovered(f.logger, "agents", seedAgentsDir, nil)
 	}
 
+	// Route the session manager's one-shot service LLM requests (session title
+	// generation) through the embedded readiness gate.
+	f.installServiceLLMGate()
+
 	return f
+}
+
+// installServiceLLMGate routes the session manager's one-shot service LLM
+// requests (session title generation) through the embedded readiness gate.
+//
+// Installed unconditionally: the gate resolves the active model per call and
+// returns at once for every provider that is always listening, so a machine
+// without the local model pays one config read and nothing else. It is a method
+// (rather than inline code) because the manager is created before any
+// FrontendAPI exists, so this is the one place the two can meet — and a wiring
+// line nobody can observe is a wiring line that silently goes missing.
+func (f *FrontendAPI) installServiceLLMGate() {
+	if f.app == nil {
+		return
+	}
+	if m := f.app.Manager(); m != nil {
+		m.SetServiceLLMGate(f.ensureEmbeddedReadyForLLMRequest)
+	}
 }
 
 // warnIfSeedDirUndiscovered emits a startup warning when the compiled-in

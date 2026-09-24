@@ -125,6 +125,14 @@ type App struct {
 	// Production wiring keeps it nil.
 	quitFn func(ctx context.Context)
 
+	// embeddedLLMStopFn, when non-nil, replaces the backend embedded-LLM
+	// server stop in stopEmbeddedLLM (the Shutdown teardown of the supervised
+	// llama-server). Lets tests observe that shutdown stops the model without
+	// a real runtime, weights or a live Wails runtime — same purpose as quitFn
+	// and windowShowFn. Production wiring keeps it nil, where the call goes to
+	// FrontendAPILifecycle.StopEmbeddedLLM.
+	embeddedLLMStopFn func(ctx context.Context) error
+
 	// windowShowFn, when non-nil, replaces wailsRuntime.WindowShow in
 	// showWindow — and therefore on every path that reveals the window (the
 	// startup phases, OnDomReady, and the close guard). Lets tests observe

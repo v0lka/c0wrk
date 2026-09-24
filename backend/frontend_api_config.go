@@ -305,6 +305,22 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		}
 	}
 
+	// The `embedded` provider record is BACKEND-OWNED: it is generated from the
+	// authoritative embedded_llm state and is not part of the UI's draft. A
+	// request that carries openai_compatible REPLACES the whole map, so a draft
+	// that never saw the generated entry (a stale settings dialog, a provider
+	// deletion, a hand-built request) would silently delete the local model —
+	// re-inject it from the authoritative state after the candidate is built
+	// and before it is validated. This also removes the record when the model
+	// has been uninstalled, keeping the two sections consistent in both
+	// directions.
+	//
+	// contextWindow is 0 on purpose: this path performs no hardware probe and
+	// no network I/O (the server may well be stopped), so an existing
+	// llm.models context_window override is left exactly as the install path
+	// wrote it.
+	candidate.SyncEmbeddedProvider(f.config.EmbeddedLLM, 0)
+
 	// A first-run config intentionally has no default until setup finishes.
 	// Once a default exists, however, every candidate must still resolve after
 	// all requested provider/model replacements have been applied. Validate
@@ -419,7 +435,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 	// FrontendAPI, so holding the RLock across them cannot deadlock.
 	if b := f.builder(); b != nil {
 		f.configMu.RLock()
-		fresh := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+		fresh := f.toBuilderConfigLocked()
 		b.RebuildJudge(fresh)
 		rebuildErr := b.RebuildRouter(fresh)
 		f.configMu.RUnlock()
@@ -452,7 +468,7 @@ func (f *FrontendAPI) UpdateSearchSettings(settings SearchSettingsRequest) error
 
 	// Rebuild web search tool via the backend builder.
 	if b := f.builder(); b != nil {
-		b.UpdateSearchTool(ToBuilderConfig(f.config, f.modelProfilesCatalog()))
+		b.UpdateSearchTool(f.toBuilderConfigLocked())
 	}
 
 	return nil
@@ -562,7 +578,7 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 	// Snapshot what the rebuild needs while the lock is still held; after the
 	// unlock f.config must only be touched under configMu again.
 	b := f.builder()
-	bcfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+	bcfg := f.toBuilderConfigLocked()
 	f.configMu.Unlock()
 
 	// --- Heavy work below runs OUTSIDE configMu (readers stay responsive) ---
@@ -613,7 +629,7 @@ func (f *FrontendAPI) UpdateExperimentalFeatures(enabled bool) error {
 	// immediately. The builder config carries the effective E2S settings,
 	// reused below to refresh the live orchestrators. Model Profiles is not
 	// gated by this switch, so no Model Profiles state is recomputed or pushed.
-	builderCfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+	builderCfg := f.toBuilderConfigLocked()
 	if b := f.builder(); b != nil {
 		if err := b.RebuildRouter(builderCfg); err != nil {
 			f.log().Warn("failed to rebuild LLM router after experimental-features toggle", "error", err)
@@ -799,7 +815,7 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 
 	// Apply policies to the shared tool registry via the backend builder.
 	if b := f.builder(); b != nil {
-		builderCfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+		builderCfg := f.toBuilderConfigLocked()
 		// Re-register the shell tool FIRST: the blocklist is compiled into
 		// the tool instance at registration, so runtime edits need it to
 		// take effect without an app restart. The call is atomic (a compile
@@ -929,7 +945,7 @@ func (f *FrontendAPI) UpdateShellExecSettings(settings ShellExecSettingsResponse
 	f.config.ShellExec = config.ShellExecConfig{BashExec: newBash, PoshExec: newPosh}
 
 	if b := f.builder(); b != nil {
-		builderCfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+		builderCfg := f.toBuilderConfigLocked()
 		if err := b.UpdateShellBlocklist(builderCfg); err != nil {
 			f.config.ShellExec = prev
 			return fmt.Errorf("failed to apply shell command override: %w", err)
@@ -1137,17 +1153,42 @@ func normalizeModelProfilesModelToken(s string) string {
 	return b.String()
 }
 
+// modelProfilesSuggestAliasIDs maps a model whose shipping name shares no token
+// with the architecture it is derived from to the predefined profile slug that
+// fits it. The embedded local model ("Bonsai 2 27B") is derived from
+// Qwen/Qwen3.8-27B, but its normalized name ("bonsai227b") contains no
+// predefined slug, so the containment match below can never reach
+// "qwen3.8-27b" — hence the explicit entry. Keys are produced by
+// normalizeModelProfilesModelToken, so the bare name and the composite
+// "embedded/Bonsai 2 27B" id both resolve to the same key. An alias stays a
+// HINT: nothing here flips model_profiles.enabled or changes active_profile
+// (ADR-066 D8).
+var modelProfilesSuggestAliasIDs = map[string]string{
+	normalizeModelProfilesModelToken(config.EmbeddedLLMModelName): "qwen3.8-27b",
+}
+
 // suggestModelProfileID returns the predefined profile whose slug best matches
 // the configured default model name, or "" when nothing matches. "generic"
 // is never suggested — it is the model-agnostic fallback the picker already
 // offers. The match is containment on the normalized tokens (model name
 // contains the slug), so vendor decorations ("Qwen/Qwen3.8-27B",
 // "qwen3.8-27b-instruct-2507") still land on "qwen3.8-27b"; the longest
-// matching slug wins so a more specific profile beats a shorter one.
+// matching slug wins so a more specific profile beats a shorter one. A model
+// listed in modelProfilesSuggestAliasIDs is matched by identity instead and
+// therefore outranks containment (an exact alias is strictly more specific than
+// a substring); an alias whose target is missing from the predefined catalog
+// yields no suggestion rather than a dangling id.
 func suggestModelProfileID(defaultModel string) string {
 	norm := normalizeModelProfilesModelToken(defaultModel)
 	if norm == "" {
 		return ""
+	}
+	if alias, ok := modelProfilesSuggestAliasIDs[norm]; ok {
+		p, found := config.FindPredefinedModelProfile(alias)
+		if !found || p.ID == config.ModelProfilesGenericProfileID {
+			return ""
+		}
+		return p.ID
 	}
 	best := ""
 	bestLen := 0
@@ -1338,7 +1379,7 @@ func (f *FrontendAPI) applyModelProfilesChange() {
 	// runs under configMu.Lock), so the goal-mode block the settings UI mirrors
 	// tracks the just-applied change.
 	f.refreshModelProfilesGateLocked()
-	builderCfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+	builderCfg := f.toBuilderConfigLocked()
 	if b := f.builder(); b != nil {
 		if err := b.RebuildRouter(builderCfg); err != nil {
 			f.log().Warn("failed to rebuild LLM router after model-profile profile change", "error", err)
@@ -1771,7 +1812,7 @@ func (f *FrontendAPI) ListProviderModels(req ListProviderModelsRequest) ([]strin
 		f.configMu.RUnlock()
 		return nil, errors.New("application not initialized")
 	}
-	cfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+	cfg := f.toBuilderConfigLocked()
 	f.configMu.RUnlock()
 
 	if err := applyListProviderModelsOverrides(cfg, req); err != nil {
@@ -2181,7 +2222,7 @@ func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error
 
 	// Rebuild the LLM router so the new override takes effect for new sessions.
 	if b := f.builder(); b != nil {
-		bcfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+		bcfg := f.toBuilderConfigLocked()
 		if err := b.RebuildRouter(bcfg); err != nil {
 			f.log().Warn("failed to rebuild LLM router after model config update", "error", err)
 		}

@@ -49,6 +49,25 @@ type mockBuilder struct {
 	generateCommitMsgCalls    int
 	getBaseAgentDirsCalls     int
 
+	// embeddedSeam captures the most recent SetEmbeddedLLM argument, and
+	// embeddedSeamSets how many times it was pushed, so tests can assert the
+	// builder-level default (the one every per-session router falls back to)
+	// follows the persisted install state.
+	embeddedSeam     core.BuilderEmbeddedLLMConfig
+	embeddedSeamSets int
+
+	// optimizePromptCtx is the context of the most recent OptimizePrompt call,
+	// snapshotted AT CALL TIME: the caller cancels it as soon as the RPC
+	// returns, so inspecting it afterwards would only observe that.
+	optimizePromptCtx context.Context
+	// optimizePromptBudget records the deadline the call was handed and how much
+	// of it was left when the call started, which is what a test compares
+	// against the configured service timeout.
+	optimizePromptDeadline    time.Time
+	optimizePromptHasDeadline bool
+	optimizePromptCtxLive     bool
+	optimizePromptStartedAt   time.Time
+
 	// updateSecPolicyLastCfg captures the most recent BuilderConfig passed to
 	// UpdateSecurityPolicies so tests can assert the runtime push forwards the
 	// intended security state (e.g. silent mode) to the live registries.
@@ -212,11 +231,58 @@ func (m *mockBuilder) SetMCPWorkDir(_ string) {
 	m.setMCPWorkDirCalls++
 	m.mu.Unlock()
 }
-func (m *mockBuilder) OptimizePrompt(_ context.Context, _ string) (*core.OptimizePromptResult, error) {
+
+func (m *mockBuilder) SetEmbeddedLLM(cfg core.BuilderEmbeddedLLMConfig) {
+	m.mu.Lock()
+	m.embeddedSeam = cfg
+	m.embeddedSeamSets++
+	m.mu.Unlock()
+}
+
+// lastEmbeddedSeam reports the most recently pushed builder-level embedded seam.
+func (m *mockBuilder) lastEmbeddedSeam() (seam core.BuilderEmbeddedLLMConfig, sets int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.embeddedSeam, m.embeddedSeamSets
+}
+func (m *mockBuilder) OptimizePrompt(ctx context.Context, _ string) (*core.OptimizePromptResult, error) {
 	m.mu.Lock()
 	m.optimizePromptCalls++
+	// Captured so a test can inspect the budget the request was handed — the
+	// embedded readiness gate must run BEFORE this context is armed, so the
+	// deadline has to be whole by the time the call arrives.
+	m.optimizePromptCtx = ctx
+	m.optimizePromptCtxLive = ctx.Err() == nil
+	m.optimizePromptStartedAt = time.Now()
+	m.optimizePromptDeadline, m.optimizePromptHasDeadline = ctx.Deadline()
 	m.mu.Unlock()
 	return m.optimizePromptRes, m.optimizePromptErr
+}
+
+// promptCallBudget is the state of the service request's budget at the moment
+// the builder was called.
+type promptCallBudget struct {
+	calls       int
+	live        bool
+	hasDeadline bool
+	// remaining is how much of the budget was left when the call started.
+	remaining time.Duration
+}
+
+// lastOptimizePromptBudget reports the budget the most recent OptimizePrompt
+// call was handed, measured when it started rather than after it returned.
+func (m *mockBuilder) lastOptimizePromptBudget() promptCallBudget {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b := promptCallBudget{
+		calls:       m.optimizePromptCalls,
+		live:        m.optimizePromptCtxLive,
+		hasDeadline: m.optimizePromptHasDeadline,
+	}
+	if b.hasDeadline && !m.optimizePromptStartedAt.IsZero() {
+		b.remaining = m.optimizePromptDeadline.Sub(m.optimizePromptStartedAt)
+	}
+	return b
 }
 func (m *mockBuilder) GenerateCommitMessage(_ context.Context, diff string) (string, error) {
 	m.mu.Lock()
@@ -1983,6 +2049,7 @@ func TestGetModelProfiles_SuggestedFromDefaultModel(t *testing.T) {
 		{"Qwen/Qwen3.8-27B", "qwen3.8-27b"},
 		{"Qwen/Qwen3.8-27B-Instruct", "qwen3.8-27b"},
 		{"gemma-4-26b-a4b-it", "gemma-4-26b-a4b-it"},
+		{"embedded/Bonsai 2 27B", "qwen3.8-27b"},
 		{"my-custom-model", ""},
 		{"", ""},
 	}
@@ -2010,8 +2077,8 @@ func TestGetModelProfiles_SuggestedFromDefaultModel(t *testing.T) {
 // TestSuggestModelProfileID_Normalization exercises the pure matcher: provider
 // prefixes are stripped ("Qwen/", "openrouter/qwen/", ":" keys), trailing
 // marketing suffixes collapse ("-instruct", "-it", ":free"), separators are
-// irrelevant, "generic" is never suggested, and unknown/custom names yield no
-// match.
+// irrelevant, the embedded local model matches through its explicit alias,
+// "generic" is never suggested, and unknown/custom names yield no match.
 func TestSuggestModelProfileID_Normalization(t *testing.T) {
 	cases := []struct{ model, want string }{
 		{"qwen3.8-27b", "qwen3.8-27b"},
@@ -2022,6 +2089,12 @@ func TestSuggestModelProfileID_Normalization(t *testing.T) {
 		{"google/gemma-4-26b-a4b-it", "gemma-4-26b-a4b-it"},
 		{"gemma-4-31b-it", "gemma-4-31b-it"},
 		{"qwen3_8_27b", "qwen3.8-27b"},
+		// The embedded local model is derived from Qwen/Qwen3.8-27B but its
+		// shipping name shares no token with it, so it matches through the
+		// explicit alias, not containment (bare name and composite id alike).
+		{"Bonsai 2 27B", "qwen3.8-27b"},
+		{"embedded/Bonsai 2 27B", "qwen3.8-27b"},
+		{"  bonsai 2 27b  ", "qwen3.8-27b"},
 		// No matches.
 		{"claude-sonnet-4", ""},
 		{"my-tuned-model", ""},
@@ -2032,6 +2105,78 @@ func TestSuggestModelProfileID_Normalization(t *testing.T) {
 		if got := suggestModelProfileID(tc.model); got != tc.want {
 			t.Errorf("suggestModelProfileID(%q) = %q, want %q", tc.model, got, tc.want)
 		}
+	}
+}
+
+// TestSuggestModelProfileID_EmbeddedModelAlias pins the explicit alias for the
+// backend-owned embedded model: it is derived from Qwen/Qwen3.8-27B, but
+// normalizing "Bonsai 2 27B" yields "bonsai227b", which contains no predefined
+// slug, so ONLY the identity mapping can produce the suggestion. The alias is
+// keyed off config.EmbeddedLLMModelName — the bare name and the
+// "embedded/<model>" composite the pickers and the router use both resolve to
+// it — and its target must be a real, suggestible predefined profile: a renamed
+// slug degrades to "no suggestion" instead of a dangling id the picker cannot
+// select.
+func TestSuggestModelProfileID_EmbeddedModelAlias(t *testing.T) {
+	const want = "qwen3.8-27b"
+
+	for _, model := range []string{
+		config.EmbeddedLLMModelName,
+		embeddedCompositeID(),
+		strings.ToLower(config.EmbeddedLLMModelName),
+		"  " + config.EmbeddedLLMModelName + "  ",
+	} {
+		if got := suggestModelProfileID(model); got != want {
+			t.Errorf("suggestModelProfileID(%q) = %q, want %q", model, got, want)
+		}
+	}
+
+	// Every alias must point at a suggestible predefined profile.
+	for key, id := range modelProfilesSuggestAliasIDs {
+		profile, ok := config.FindPredefinedModelProfile(id)
+		if !ok {
+			t.Errorf("alias %q targets unknown profile %q", key, id)
+			continue
+		}
+		if profile.ID == config.ModelProfilesGenericProfileID {
+			t.Errorf("alias %q targets %q, which is never suggested", key, id)
+		}
+	}
+
+	// A stale alias fails closed.
+	aliasKey := normalizeModelProfilesModelToken(config.EmbeddedLLMModelName)
+	original := modelProfilesSuggestAliasIDs[aliasKey]
+	modelProfilesSuggestAliasIDs[aliasKey] = "renamed-away-profile"
+	t.Cleanup(func() { modelProfilesSuggestAliasIDs[aliasKey] = original })
+	if got := suggestModelProfileID(config.EmbeddedLLMModelName); got != "" {
+		t.Errorf("suggestModelProfileID with a dangling alias = %q, want no suggestion", got)
+	}
+}
+
+// TestGetModelProfiles_EmbeddedSuggestionIsHintOnly pins the ADR-066 D8
+// invariant on the RPC surface: with the embedded model selected as the default,
+// GetModelProfiles suggests "qwen3.8-27b" while the stored master toggle and the
+// active profile are reported exactly as persisted — the suggestion is never
+// auto-applied.
+func TestGetModelProfiles_EmbeddedSuggestionIsHintOnly(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	wantActive := f.config.ModelProfiles.ActiveProfile
+	wantEnabled := f.config.ModelProfiles.Enabled
+	f.config.LLM.DefaultModel = embeddedCompositeID()
+
+	got := f.GetModelProfiles()
+	if got.SuggestedProfileID == nil || *got.SuggestedProfileID != "qwen3.8-27b" {
+		t.Fatalf("SuggestedProfileID = %v, want \"qwen3.8-27b\"", got.SuggestedProfileID)
+	}
+	if got.Enabled != wantEnabled {
+		t.Errorf("Enabled = %v, want the stored %v (the hint must not enable Model Profiles)", got.Enabled, wantEnabled)
+	}
+	if got.ActiveID != wantActive {
+		t.Errorf("ActiveID = %q, want the stored %q (the hint must not switch profiles)", got.ActiveID, wantActive)
+	}
+	if f.config.ModelProfiles.Enabled != wantEnabled || f.config.ModelProfiles.ActiveProfile != wantActive {
+		t.Errorf("config ModelProfiles = {enabled:%v active:%q}, want {enabled:%v active:%q}",
+			f.config.ModelProfiles.Enabled, f.config.ModelProfiles.ActiveProfile, wantEnabled, wantActive)
 	}
 }
 
@@ -4756,5 +4901,381 @@ func TestNotificationBannerTimeout_UnloadedConfigIsSafe(t *testing.T) {
 	}
 	if err := f.SetNotificationBannerTimeout(30); err == nil {
 		t.Error("SetNotificationBannerTimeout succeeded with no config loaded")
+	}
+}
+
+// --- Embedded LLM provider (backend-owned) ---
+
+// installEmbeddedLLM puts the API into the "embedded model installed" state the
+// install RPC produces: the authoritative embedded_llm section is written and
+// the backend-owned provider record is regenerated from it.
+func installEmbeddedLLM(t *testing.T, f *FrontendAPI, port int) {
+	t.Helper()
+	f.config.EmbeddedLLM = config.EmbeddedLLMConfig{
+		Installed:      true,
+		Packing:        "PQ2_0",
+		Backend:        "metal",
+		Port:           port,
+		ModelFile:      filepath.Join(f.agentDir, "models", "bonsai-2-27b", "bonsai.gguf"),
+		RuntimeVersion: "prism-b10709-9a9394a",
+		InstalledAt:    "2026-09-23T10:15:00Z",
+	}
+	if !f.config.SyncEmbeddedLLMProvider(0) {
+		t.Fatal("SyncEmbeddedLLMProvider reported no change for a fresh install")
+	}
+}
+
+// embeddedCompositeID is the model identifier the pickers and the router use.
+func embeddedCompositeID() string {
+	return config.EmbeddedLLMProviderName + "/" + config.EmbeddedLLMModelName
+}
+
+// TestUpdateLLMConfig_WholeMapReplaceKeepsEmbeddedProvider is the regression for
+// the backend-owned provider record: a request that carries openai_compatible
+// REPLACES the whole map, so a UI draft that does not know about the generated
+// `embedded` entry used to delete the local model on every LLM settings save.
+func TestUpdateLLMConfig_WholeMapReplaceKeepsEmbeddedProvider(t *testing.T) {
+	f, _, cfgPath := newTestAPI(t)
+	installEmbeddedLLM(t, f, 4321)
+
+	// The draft mentions only a user provider — `embedded` is absent.
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "claude-3-opus",
+		Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-opus"}},
+		OpenAICompatible: map[string]ProviderConfigRequest{
+			"lmstudio": {BaseURL: "http://127.0.0.1:1234/v1", Models: []string{"local-model"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	entry, ok := f.config.LLM.OpenAICompatible[config.EmbeddedLLMProviderName]
+	if !ok {
+		t.Fatalf("the embedded provider was deleted by a whole-map replace: %+v", f.config.LLM.OpenAICompatible)
+	}
+	if entry.BaseURL != "http://127.0.0.1:4321/v1" {
+		t.Errorf("base_url = %q, want the URL derived from the persisted port", entry.BaseURL)
+	}
+	if entry.APIKey != "" {
+		t.Errorf("api_key = %q, want empty", entry.APIKey)
+	}
+	if len(entry.Models) != 1 || entry.Models[0] != config.EmbeddedLLMModelName {
+		t.Errorf("models = %v, want [%s]", entry.Models, config.EmbeddedLLMModelName)
+	}
+	if got := f.config.LLM.OpenAICompatible["lmstudio"]; len(got.Models) != 1 || got.Models[0] != "local-model" {
+		t.Errorf("the user-authored provider was not applied: %+v", got)
+	}
+
+	// The re-injected record is persisted, not just held in memory.
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+	for _, want := range []string{"embedded_llm:", "installed: true", "port: 4321", "embedded:", "http://127.0.0.1:4321/v1"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("persisted config is missing %q:\n%s", want, data)
+		}
+	}
+
+	// The composite id still resolves after the save.
+	got, _, err := f.config.LLM.ResolveModelID(embeddedCompositeID())
+	if err != nil {
+		t.Fatalf("ResolveModelID(%q) failed: %v", embeddedCompositeID(), err)
+	}
+	if got != embeddedCompositeID() {
+		t.Errorf("ResolveModelID = %q, want %q", got, embeddedCompositeID())
+	}
+}
+
+// TestUpdateLLMConfig_EmbeddedRecordIsNotClientAuthorable pins that a draft
+// claiming the `embedded` key cannot redirect the local model: the record is
+// regenerated from the authoritative embedded_llm state, so a tampered or stale
+// client can never point it at another host or swap its model list.
+func TestUpdateLLMConfig_EmbeddedRecordIsNotClientAuthorable(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	installEmbeddedLLM(t, f, 4321)
+
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "claude-3-opus",
+		OpenAICompatible: map[string]ProviderConfigRequest{
+			config.EmbeddedLLMProviderName: {
+				BaseURL: "https://not-loopback.example.com/v1",
+				APIKey:  "attacker-key",
+				Models:  []string{"some-other-model"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	entry := f.config.LLM.OpenAICompatible[config.EmbeddedLLMProviderName]
+	if entry.BaseURL != "http://127.0.0.1:4321/v1" {
+		t.Errorf("base_url = %q, want the loopback URL derived from embedded_llm.port", entry.BaseURL)
+	}
+	if entry.APIKey != "" {
+		t.Errorf("api_key = %q, want empty", entry.APIKey)
+	}
+	if len(entry.Models) != 1 || entry.Models[0] != config.EmbeddedLLMModelName {
+		t.Errorf("models = %v, want [%s]", entry.Models, config.EmbeddedLLMModelName)
+	}
+}
+
+// TestUpdateLLMConfig_RemovesEmbeddedProviderAfterUninstall covers the other
+// direction: once embedded_llm says "not installed", the next LLM settings save
+// drops the generated record instead of resurrecting a dangling endpoint.
+func TestUpdateLLMConfig_RemovesEmbeddedProviderAfterUninstall(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	installEmbeddedLLM(t, f, 4321)
+
+	f.config.EmbeddedLLM.Installed = false // what the Remove RPC records
+
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "claude-3-opus",
+		OpenAICompatible: map[string]ProviderConfigRequest{
+			// A draft that still carries the record the UI read before Remove.
+			config.EmbeddedLLMProviderName: {BaseURL: "http://127.0.0.1:4321/v1", Models: []string{config.EmbeddedLLMModelName}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := f.config.LLM.OpenAICompatible[config.EmbeddedLLMProviderName]; ok {
+		t.Errorf("the provider record survived the uninstall: %+v", f.config.LLM.OpenAICompatible)
+	}
+	if _, _, err := f.config.LLM.ResolveModelID(embeddedCompositeID()); err == nil {
+		t.Errorf("ResolveModelID(%q) must fail once the model is uninstalled", embeddedCompositeID())
+	}
+
+	// The same removal must happen when the request carries NO provider map at
+	// all (a debounced partial save that only touches the default model): the
+	// reconciliation is unconditional, not tied to the whole-map replace.
+	installEmbeddedLLM(t, f, 4321)
+	f.config.EmbeddedLLM.Installed = false
+	if err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "claude-3-opus",
+		Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-opus"}},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := f.config.LLM.OpenAICompatible[config.EmbeddedLLMProviderName]; ok {
+		t.Errorf("a provider-map-less save kept the uninstalled record: %+v", f.config.LLM.OpenAICompatible)
+	}
+}
+
+// TestUpdateLLMConfig_RejectedRequestDoesNotLeakEmbeddedSync pins the
+// copy-on-write half of the protection: the candidate shares its maps with the
+// live config, so a sync performed while building a candidate that is later
+// REJECTED must not leak into the observable state.
+func TestUpdateLLMConfig_RejectedRequestDoesNotLeakEmbeddedSync(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	// A stale generated record with no install behind it, exactly the state a
+	// rejected request must leave untouched.
+	f.config.LLM.OpenAICompatible = map[string]config.OpenAICompatibleConfig{
+		config.EmbeddedLLMProviderName: {
+			BaseURL: "http://127.0.0.1:4321/v1",
+			Models:  []string{config.EmbeddedLLMModelName},
+		},
+	}
+
+	// Dropping the model that owns default_model makes the candidate dangling,
+	// so the whole update is rejected.
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "claude-3-opus",
+		Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
+	})
+	if err == nil {
+		t.Fatal("expected the dangling default_model to be rejected")
+	}
+	if _, ok := f.config.LLM.OpenAICompatible[config.EmbeddedLLMProviderName]; !ok {
+		t.Errorf("the rejected request leaked the embedded removal into the live config: %+v", f.config.LLM.OpenAICompatible)
+	}
+	if got := f.config.LLM.Anthropic.Models; len(got) != 1 || got[0] != "claude-3-opus" {
+		t.Errorf("the rejected request leaked a provider mutation: %v", got)
+	}
+}
+
+// TestUpdateLLMConfig_EmbeddedAsDefaultModel verifies the generated provider
+// participates in the normal resolution path: the composite id can be selected
+// as the default model and survives the save.
+func TestUpdateLLMConfig_EmbeddedAsDefaultModel(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	installEmbeddedLLM(t, f, 4321)
+
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: embeddedCompositeID(),
+		Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-opus"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if f.config.LLM.DefaultModel != embeddedCompositeID() {
+		t.Errorf("default_model = %q, want %q", f.config.LLM.DefaultModel, embeddedCompositeID())
+	}
+	provider, bare, err := f.config.LLM.ResolveDefaultModelProvider()
+	if err != nil {
+		t.Fatalf("ResolveDefaultModelProvider() failed: %v", err)
+	}
+	if provider.Name != config.EmbeddedLLMProviderName || provider.ProviderType != "openai" {
+		t.Errorf("provider = %q/%q, want %q/openai", provider.Name, provider.ProviderType, config.EmbeddedLLMProviderName)
+	}
+	if bare != config.EmbeddedLLMModelName {
+		t.Errorf("bare model = %q, want %q", bare, config.EmbeddedLLMModelName)
+	}
+
+	// GetConfig reports it like any other provider model.
+	resp := f.GetConfig()
+	got, ok := resp.LLM.OpenAICompatible[config.EmbeddedLLMProviderName]
+	if !ok {
+		t.Fatalf("GetConfig omitted the embedded provider: %+v", resp.LLM.OpenAICompatible)
+	}
+	if got.BaseURL != "http://127.0.0.1:4321/v1" {
+		t.Errorf("GetConfig base_url = %q", got.BaseURL)
+	}
+	var listed bool
+	for _, m := range resp.LLM.AllModels {
+		if m.Provider == config.EmbeddedLLMProviderName && m.Name == config.EmbeddedLLMModelName {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Errorf("GetConfig AllModels does not list the embedded model: %+v", resp.LLM.AllModels)
+	}
+}
+
+// TestGetConfig_EmbeddedProviderNetworkFree extends the network-free guarantee
+// to the embedded provider: reading config with an installed local model must
+// not dial its loopback endpoint (the server may be stopped, and a dial would
+// stall every settings open behind a connect timeout).
+func TestGetConfig_EmbeddedProviderNetworkFree(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+	installEmbeddedLLM(t, f, 4321)
+
+	transport := &countingTransport{}
+	reg := llm.NewModelRegistry(nil)
+	reg.SetHTTPClient(&http.Client{Transport: transport, Timeout: 10 * time.Second})
+	mock.registry = reg
+
+	// A real listener on the persisted port would turn an accidental dial into
+	// a success; the canary transport fails any round trip instead, and the
+	// counter proves none was attempted.
+	start := time.Now()
+	resp := f.GetConfig()
+	elapsed := time.Since(start)
+
+	if got := transport.calls.Load(); got != 0 {
+		t.Fatalf("GetConfig attempted %d HTTP round trip(s); the embedded provider must be reported from config alone", got)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("GetConfig took %v with an installed embedded model; expected an instant in-memory read", elapsed)
+	}
+	if !resp.Loaded {
+		t.Fatal("GetConfig reported an unloaded config")
+	}
+	if _, ok := resp.LLM.OpenAICompatible[config.EmbeddedLLMProviderName]; !ok {
+		t.Errorf("GetConfig omitted the embedded provider: %+v", resp.LLM.OpenAICompatible)
+	}
+}
+
+// TestGetConfig_NoEmbeddedProviderWhenNotInstalled pins the not-installed
+// state: no provider record, no model in the picker list.
+func TestGetConfig_NoEmbeddedProviderWhenNotInstalled(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	resp := f.GetConfig()
+	if _, ok := resp.LLM.OpenAICompatible[config.EmbeddedLLMProviderName]; ok {
+		t.Errorf("the embedded provider exists without an install: %+v", resp.LLM.OpenAICompatible)
+	}
+	for _, m := range resp.LLM.AllModels {
+		if m.Provider == config.EmbeddedLLMProviderName {
+			t.Errorf("AllModels lists an uninstalled embedded model: %+v", m)
+		}
+	}
+	if _, _, err := f.config.LLM.ResolveModelID(embeddedCompositeID()); err == nil {
+		t.Errorf("ResolveModelID(%q) must fail while the model is not installed", embeddedCompositeID())
+	}
+}
+
+// TestUpdateLLMConfig_EmbeddedContextWindowOverrideUntouched verifies the
+// settings-save path never recomputes the RAM-tier override: it performs no
+// probe, so the value the install path wrote is preserved verbatim.
+func TestUpdateLLMConfig_EmbeddedContextWindowOverrideUntouched(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	installEmbeddedLLM(t, f, 4321)
+	if !f.config.SyncEmbeddedLLMProvider(32768) {
+		t.Fatal("writing the resolved context tier reported no change")
+	}
+
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "claude-3-opus",
+		OpenAICompatible: map[string]ProviderConfigRequest{
+			"lmstudio": {BaseURL: "http://127.0.0.1:1234/v1", Models: []string{"local-model"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	override := f.config.LLM.Models[config.EmbeddedLLMModelName]
+	if override.ContextWindow != 32768 {
+		t.Errorf("context_window = %d, want the preserved 32768", override.ContextWindow)
+	}
+}
+
+// TestUpdateLLMConfig_EmbeddedInstallKeepsModelProfilesUntouched pins the
+// hint-only contract (ADR-066 D8) on the settings-save path: selecting the
+// installed embedded model as the default persists the LLM state WITHOUT
+// touching model_profiles — neither the master toggle nor the active profile,
+// in memory or in the saved YAML — while GetModelProfiles starts suggesting
+// "qwen3.8-27b". Applying that suggestion stays an explicit user action.
+func TestUpdateLLMConfig_EmbeddedInstallKeepsModelProfilesUntouched(t *testing.T) {
+	f, _, cfgPath := newTestAPI(t)
+	installEmbeddedLLM(t, f, 4321)
+
+	wantActive := f.config.ModelProfiles.ActiveProfile
+	wantEnabled := f.config.ModelProfiles.Enabled
+	if wantEnabled {
+		t.Fatal("test precondition: the master Model Profiles toggle starts off")
+	}
+	if wantActive == "qwen3.8-27b" {
+		t.Fatal("test precondition: the active profile must differ from the suggestion")
+	}
+
+	if err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: embeddedCompositeID(),
+		Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-opus"}},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := f.config.ModelProfiles.Enabled; got != wantEnabled {
+		t.Errorf("in-memory model_profiles.enabled = %v, want %v", got, wantEnabled)
+	}
+	if got := f.config.ModelProfiles.ActiveProfile; got != wantActive {
+		t.Errorf("in-memory model_profiles.active_profile = %q, want %q", got, wantActive)
+	}
+	if got := f.GetConfig().ModelProfiles.Enabled; got != wantEnabled {
+		t.Errorf("GetConfig model_profiles.enabled = %v, want %v", got, wantEnabled)
+	}
+
+	persisted, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if persisted.ModelProfiles.Enabled != wantEnabled {
+		t.Errorf("persisted model_profiles.enabled = %v, want %v", persisted.ModelProfiles.Enabled, wantEnabled)
+	}
+	if persisted.ModelProfiles.ActiveProfile != wantActive {
+		t.Errorf("persisted model_profiles.active_profile = %q, want %q", persisted.ModelProfiles.ActiveProfile, wantActive)
+	}
+
+	// The suggestion is the ONLY model-profiles effect of the install.
+	got := f.GetModelProfiles()
+	if got.SuggestedProfileID == nil || *got.SuggestedProfileID != "qwen3.8-27b" {
+		t.Fatalf("SuggestedProfileID = %v, want \"qwen3.8-27b\"", got.SuggestedProfileID)
+	}
+	if got.Enabled != wantEnabled || got.ActiveID != wantActive {
+		t.Errorf("GetModelProfiles = {enabled:%v active:%q}, want {enabled:%v active:%q}",
+			got.Enabled, got.ActiveID, wantEnabled, wantActive)
 	}
 }

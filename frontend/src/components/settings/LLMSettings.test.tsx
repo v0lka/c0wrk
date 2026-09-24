@@ -516,3 +516,258 @@ describe('LLMSettings auto-retry interval', () => {
     })
   })
 })
+
+describe('LLMSettings — Embedded LLM block placement', () => {
+  beforeEach(() => {
+    mocks.getConfig.mockResolvedValue(makeConfig())
+  })
+
+  async function renderSettings() {
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <LLMSettings />
+        </TooltipProvider>,
+      )
+    })
+    await flush()
+  }
+
+  // The embedded local model LEADS the provider section: running fully local is
+  // the primary offering, so "+ Add compatible provider" — the escape hatch for
+  // a remote endpoint — sits BELOW it, and the accordions an added provider
+  // turns into follow in turn. The default-model field stays above both.
+  it('renders "+ Add compatible provider" after the Embedded LLM block', async () => {
+    await renderSettings()
+
+    const embeddedBlock = container.querySelector('[data-testid="embedded-llm-settings"]')
+    expect(embeddedBlock).not.toBeNull()
+    expect(embeddedBlock!.textContent).toContain('Embedded LLM')
+
+    // While its form is closed the button is the add-provider block's only
+    // child, so the block is the button's parent.
+    const addButton = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Add compatible provider'),
+    )
+    expect(addButton).toBeDefined()
+    const addBlock = addButton!.parentElement
+    expect(addBlock).not.toBeNull()
+
+    // The embedded block comes first, with only the default-model field above it.
+    expect(embeddedBlock!.previousElementSibling?.textContent).toContain('Default Model')
+    expect(embeddedBlock!.nextElementSibling).toBe(addBlock)
+
+    // …and the provider accordions still follow the add-provider block, in order.
+    expect(addBlock!.nextElementSibling?.textContent).toContain('Anthropic')
+  })
+})
+
+// The Settings default-model picker builds its list from the DRAFT provider
+// configs (`allEnabledModels`), which include the backend-owned
+// `openai_compatible.embedded` record the install generates. That record's key
+// is an internal identifier, so the entry must read as provider "Embedded" /
+// model "Bonsai 2 27B" while the value saved stays the composite
+// `embedded/Bonsai 2 27B` (specs/domains/embedded-llm.md).
+describe('LLMSettings — embedded model in the default-model picker', () => {
+  function embeddedConfig() {
+    return {
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'embedded/Bonsai 2 27B',
+        anthropic: { api_key: 'sk', models: ['claude-sonnet'] },
+        openai_compatible: {
+          embedded: {
+            api_key: '',
+            base_url: 'http://127.0.0.1:52341/v1',
+            models: ['Bonsai 2 27B'],
+          },
+        },
+      },
+    }
+  }
+
+  async function renderPanel(): Promise<void> {
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <LLMSettings />
+        </TooltipProvider>,
+      )
+    })
+    await flush()
+  }
+
+  it('reads the entry as provider "Embedded" / model "Bonsai 2 27B"', async () => {
+    mocks.getConfig.mockResolvedValue(embeddedConfig())
+    await renderPanel()
+
+    // The trigger shows the bare name of the composite default, whole.
+    expect(defaultModelTrigger().textContent).toContain('Bonsai 2 27B')
+
+    await openDefaultPicker()
+
+    const menu = document.querySelector('[role="menu"]')
+    expect(menu).not.toBeNull()
+    const groups = Array.from(menu!.querySelectorAll('[role="group"]'))
+    expect(groups.map((g) => g.getAttribute('aria-label'))).toContain('Embedded')
+
+    const embeddedGroup = groups.find((g) => g.getAttribute('aria-label') === 'Embedded')!
+    expect(embeddedGroup.textContent).toContain('Bonsai 2 27B')
+    // Case-sensitive: the raw config key is never what the user reads, and the
+    // composite selector is never displayed.
+    expect(embeddedGroup.textContent).not.toContain('embedded')
+    expect(menu!.textContent).not.toContain('embedded/')
+  })
+
+  it('saves the composite id when the embedded model is picked', async () => {
+    mocks.getConfig.mockResolvedValue(embeddedConfig())
+    await renderPanel()
+    await openDefaultPicker()
+
+    const menu = document.querySelector('[role="menu"]')!
+    const item = Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((b) =>
+      b.textContent?.includes('Bonsai 2 27B'),
+    )
+    expect(item).toBeDefined()
+    act(() => {
+      item!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    await vi.waitFor(() => {
+      const last = mocks.updateLLMConfig.mock.calls[mocks.updateLLMConfig.mock.calls.length - 1]
+      expect(last?.[0]?.default_model).toBe('embedded/Bonsai 2 27B')
+    })
+  })
+})
+
+// The generated `openai_compatible.embedded` record is backend-owned: it is
+// regenerated from embedded_llm on every load and save, so an accordion for it
+// would offer edits that are silently discarded. It must stay out of the
+// compatible-provider list while its model remains selectable as the default.
+describe('LLMSettings — the backend-owned embedded provider is not user-editable', () => {
+  function configWithEmbedded() {
+    return {
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'anthropic/claude-sonnet',
+        anthropic: { api_key: 'sk', models: ['claude-sonnet'] },
+        openai_compatible: {
+          embedded: {
+            api_key: '',
+            base_url: 'http://127.0.0.1:52341/v1',
+            models: ['Bonsai 2 27B'],
+          },
+          // A real user provider, so the assertions prove the filtering is
+          // selective rather than the whole compatible list being empty.
+          lmstudio: { api_key: '', base_url: 'http://localhost:1234', models: ['glm-5.3'] },
+        },
+      },
+    }
+  }
+
+  function typeInto(input: HTMLInputElement, value: string) {
+    const nativeInputSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      'value',
+    )?.set
+    if (!nativeInputSetter) throw new Error('native input setter not found')
+    act(() => {
+      nativeInputSetter.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+
+  async function renderPanel(): Promise<void> {
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <LLMSettings />
+        </TooltipProvider>,
+      )
+    })
+    await flush()
+  }
+
+  function clickButton(text: string): void {
+    const btn = Array.from(container.querySelectorAll('button')).find(
+      (b) => (b.textContent ?? '').trim() === text,
+    )
+    expect(btn, `no button labelled ${JSON.stringify(text)}`).toBeDefined()
+    act(() => {
+      btn!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+  }
+
+  it('renders an accordion for a user provider but not for "embedded"', async () => {
+    mocks.getConfig.mockResolvedValue(configWithEmbedded())
+    await renderPanel()
+
+    expect(container.textContent).toContain('OpenAI Compatible: lmstudio')
+    expect(container.textContent).not.toContain('OpenAI Compatible: embedded')
+  })
+
+  it('still lists the embedded model in the default-model picker', async () => {
+    mocks.getConfig.mockResolvedValue(configWithEmbedded())
+    await renderPanel()
+    await openDefaultPicker()
+
+    const menu = document.querySelector('[role="menu"]')
+    expect(menu).not.toBeNull()
+    expect(menu!.textContent).toContain('Bonsai 2 27B')
+  })
+
+  it('omits "embedded" from the saved openai_compatible map', async () => {
+    mocks.getConfig.mockResolvedValue(configWithEmbedded())
+    await renderPanel()
+    await openDefaultPicker()
+
+    // Switching the default re-sends the whole draft; the backend-owned key
+    // must not travel in it, while the user provider survives.
+    const menu = document.querySelector('[role="menu"]')!
+    const item = Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((b) =>
+      b.textContent?.includes('glm-5.3'),
+    )
+    expect(item).toBeDefined()
+    act(() => {
+      item!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    await vi.waitFor(() => {
+      expect(mocks.updateLLMConfig).toHaveBeenCalled()
+    })
+    const payload = mocks.updateLLMConfig.mock.calls[
+      mocks.updateLLMConfig.mock.calls.length - 1
+    ]?.[0]
+    expect(Object.keys(payload.openai_compatible)).toEqual(['lmstudio'])
+    expect(payload.default_model).toBe('lmstudio/glm-5.3')
+  })
+
+  // The name is reserved STATICALLY: while the model is not installed there is
+  // no `embedded` record to collide with, so a uniqueness check derived from
+  // the loaded providers would let a user create one — and the next
+  // SyncEmbeddedProvider would silently delete it.
+  it('rejects "embedded" as a new provider name when the model is not installed', async () => {
+    mocks.getConfig.mockResolvedValue(makeConfig())
+    await renderPanel()
+
+    clickButton('Add compatible provider')
+    await flush()
+
+    const nameInput = container.querySelector<HTMLInputElement>(
+      'input[placeholder="e.g. deepseek"]',
+    )
+    expect(nameInput).not.toBeNull()
+    typeInto(nameInput!, 'embedded')
+    await flush()
+
+    clickButton('Add Provider')
+    await flush()
+
+    expect(container.textContent).toContain('"embedded" is a reserved name.')
+    expect(mocks.updateLLMConfig).not.toHaveBeenCalled()
+  })
+})

@@ -1428,3 +1428,49 @@ func (a *App) startUpdateCheckerBackground(log *slog.Logger) {
 func (a *App) startAutoFetchBackground() {
 	a.Lifecycle().StartAutoFetch()
 }
+
+// initEmbeddedLLM restores the embedded local-model state on the startup path.
+//
+// The whole phase is a manifest.json read plus one embedded_llm:state event: it
+// performs NO download, NO network I/O, NO hardware probe and NO model load.
+// Startup must never depend on the network (the offline-first rule the managed
+// tools follow) and must never block on a multi-gigabyte weight load, so the
+// model stays unloaded until something asks for it — an explicit
+// LoadEmbeddedLLM or the ensure-loaded transport of a request that targets it.
+// Both the install and the load are RPC-driven, and the install runs in the
+// background so its RPC does not block either.
+//
+// Cost: one stat + one small JSON read inside the agent dir, far below the 50ms
+// critical-phase budget, which is why it runs inline in Phase 5 instead of a
+// background goroutine — the restore has to be complete before the first
+// GetEmbeddedLLMStatus can report anything truthful.
+func (a *App) initEmbeddedLLM(log *slog.Logger) {
+	if a.FrontendAPI == nil {
+		return
+	}
+	startTime := time.Now()
+	a.Lifecycle().InitEmbeddedLLM()
+	log.Info("startup phase complete", "phase", "embedded_llm",
+		"elapsed_ms", time.Since(startTime).Milliseconds())
+}
+
+// stopEmbeddedLLM stops the supervised llama-server during Shutdown, releasing
+// the RAM/VRAM the loaded weights hold. It runs early in the teardown (before
+// the judge drain and the store closes) so the gigabytes are returned while the
+// rest of the shutdown is still working, and it is idempotent: a model that was
+// never loaded, or one already stopped by the idle budget, makes it a no-op.
+//
+// A failure is logged, never fatal — quitting must not be blocked by a server
+// that refuses to die, and the OS reclaims the child when this process exits.
+func (a *App) stopEmbeddedLLM(ctx context.Context) {
+	if a.FrontendAPI == nil {
+		return
+	}
+	stop := a.embeddedLLMStopFn
+	if stop == nil {
+		stop = a.Lifecycle().StopEmbeddedLLM
+	}
+	if err := stop(ctx); err != nil {
+		a.log().Error("failed to stop the embedded LLM server during shutdown", "error", err)
+	}
+}
