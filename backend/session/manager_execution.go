@@ -1121,7 +1121,7 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 				},
 			})
 			m.emitAgentMetrics(id, "failed")
-			m.emitResumableIfUnfinished(id, resumableReasonFromError(err))
+			m.emitResumableIfUnfinished(id, resumableReasonFromError(err), err)
 			return
 		}
 
@@ -1330,7 +1330,7 @@ func (m *Manager) tryContinueInterruptedTask(
 			},
 		})
 		m.emitAgentMetrics(id, "failed")
-		m.emitResumableIfUnfinished(id, resumableReasonFromError(err))
+		m.emitResumableIfUnfinished(id, resumableReasonFromError(err), err)
 		m.deactivateSessionTask(session, liveActionNone)
 		return true
 	}
@@ -1647,7 +1647,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 				},
 			})
 			m.emitAgentMetrics(id, "failed")
-			m.emitResumableIfUnfinished(id, resumableReasonFromError(err))
+			m.emitResumableIfUnfinished(id, resumableReasonFromError(err), err)
 			return
 		}
 
@@ -2536,13 +2536,16 @@ func (m *Manager) unfinishedTaskID(sessionID string) string {
 // fallback warning when the resumable safety net is unavailable (nil task
 // store, lookup error, or no unfinished record). reason is a concise,
 // contextual cause prepended to the banner message and carried in the
-// structured Reason field; pass "" for the generic message.
+// structured Reason field; pass "" for the generic message. cause, when
+// non-nil, is the terminal execution error inspected for the automatic-retry
+// timer (a classified *llm.Error with a rate-limit status arms the timer and
+// surfaces AutoRetryAt in the payload; pass nil to never arm).
 //
 // This helper emits ONLY the banner. The "agent_metrics" counters reset on
 // every emission, so exactly one agent_metrics event must fire per terminal
 // path — emitting it here would double-count on the emitTaskComplete path
 // (which already emits) and zero out the real per-run report in the UI.
-func (m *Manager) emitResumableIfUnfinished(sessionID, reason string) bool {
+func (m *Manager) emitResumableIfUnfinished(sessionID, reason string, cause error) bool {
 	taskID := m.unfinishedTaskID(sessionID)
 	if taskID == "" {
 		return false
@@ -2553,13 +2556,16 @@ func (m *Manager) emitResumableIfUnfinished(sessionID, reason string) bool {
 		message = reason + " You can resume to retry from where it left off."
 	}
 
+	autoRetryAt := m.maybeAutoRetryAt(cause)
+
 	m.emitFunc(Event{
 		SessionID: sessionID,
 		Type:      "task_failed_resumable",
 		Data: TaskFailedResumableData{
-			Message: message,
-			TaskID:  taskID,
-			Reason:  reason,
+			Message:     message,
+			TaskID:      taskID,
+			Reason:      reason,
+			AutoRetryAt: autoRetryAt,
 		},
 	})
 	return true
@@ -2685,7 +2691,7 @@ func (m *Manager) emitTaskComplete(sessionID string, result *core.HandleResult, 
 		return
 	}
 
-	resumableEmitted := m.emitResumableIfUnfinished(sessionID, completionReason(completion))
+	resumableEmitted := m.emitResumableIfUnfinished(sessionID, completionReason(completion), nil)
 	if !resumableEmitted {
 		m.log().Warn("degraded task completion without resumable safety net", "session", sessionID, "completion", completion)
 		m.emitFunc(Event{

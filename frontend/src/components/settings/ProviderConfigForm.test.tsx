@@ -8,6 +8,18 @@
 //    it is enabled whether or not a pin exists, sends no pin, and overwrites
 //    whatever the field holds.
 
+// Radix popper positioning (autoUpdate) observes the trigger/content with
+// ResizeObserver, which jsdom does not provide (needed by the preset
+// dropdown of the auto-retry EditableCombobox).
+vi.stubGlobal(
+  'ResizeObserver',
+  class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  },
+)
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -53,6 +65,8 @@ interface RenderOpts {
   fingerprint?: string
   proxyActive?: boolean
   bypassList?: string[]
+  /** Draft auto-retry interval in seconds; undefined = not carried. */
+  autoRetry?: number
   /**
    * The pin section ships COLLAPSED by default; tests that touch the field
    * expand it first (the default), mirroring the user's click on the section
@@ -67,6 +81,7 @@ function render({
   fingerprint = '',
   proxyActive = false,
   bypassList = [],
+  autoRetry,
   expandPin = true,
 }: RenderOpts = {}) {
   useProxyDraftStore.setState({ active: proxyActive, bypassList })
@@ -74,7 +89,7 @@ function render({
     root.render(
       <ProviderConfigForm
         activeProvider={provider}
-        config={{ api_key: 'key', base_url: baseUrl, tls_fingerprint: fingerprint }}
+        config={{ api_key: 'key', base_url: baseUrl, tls_fingerprint: fingerprint, auto_retry_seconds: autoRetry }}
         apiKeyDirty={false}
         hasRequiredCredentials={true}
         modelsLoading={false}
@@ -327,5 +342,148 @@ describe('ProviderConfigForm proxy gate', () => {
     act(() => useProxyDraftStore.getState().setBypassList(['llm.lan']))
     expect(fingerprintInput()?.disabled).toBe(false)
     expect(getButton()?.disabled).toBe(false)
+  })
+})
+
+// --- Auto-retry interval (compatible providers only) ---
+
+describe('ProviderConfigForm auto-retry interval', () => {
+  function retryInput(): HTMLInputElement | null {
+    return container.querySelector<HTMLInputElement>('input[aria-label="Auto-retry interval"]')
+  }
+
+  function retryPresetsButton(): HTMLButtonElement | null {
+    return container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Auto-retry interval presets"]',
+    )
+  }
+
+  function retryLabel(): string | null {
+    const labels = Array.from(container.querySelectorAll('label'))
+    return labels.find((l) => l.textContent === 'Auto-retry interval')?.textContent ?? null
+  }
+
+  function typeRetry(value: string): void {
+    const input = retryInput()
+    if (!input) throw new Error('auto-retry input not found')
+    const nativeInputSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      'value',
+    )?.set
+    if (!nativeInputSetter) throw new Error('native input setter not found')
+    act(() => {
+      nativeInputSetter.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+
+  function pressRetry(key: string): void {
+    act(() => {
+      retryInput()!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+    })
+  }
+
+  async function openRetryPresets(): Promise<void> {
+    const btn = retryPresetsButton()
+    if (!btn) throw new Error('presets button not found')
+    await act(async () => {
+      btn.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 10))
+    })
+  }
+
+  it('is absent for fixed providers (anthropic, chatgpt)', () => {
+    for (const provider of ['anthropic', 'chatgpt']) {
+      render({ provider, baseUrl: '' })
+      expect(retryInput()).toBeNull()
+      expect(retryLabel()).toBeNull()
+      // And neither the caption nor the presets button exist.
+      expect(container.textContent).not.toContain('auto-resend off')
+      expect(retryPresetsButton()).toBeNull()
+    }
+  })
+
+  it('renders for a compatible provider with the persisted value from GetConfig', () => {
+    render({ autoRetry: 45 })
+    expect(retryInput()).not.toBeNull()
+    expect(retryInput()?.value).toBe('45')
+    expect(retryLabel()).toBe('Auto-retry interval')
+  })
+
+  // 0 is a VALID value: it disables the timer, and the field must display
+  // it rather than blanking to a placeholder — saving it must emit an
+  // EXPLICIT 0 (never undefined, which would keep the persisted interval).
+  it('renders 0 as a valid value with the off caption', () => {
+    render({ autoRetry: 0 })
+    expect(retryInput()?.value).toBe('0')
+    expect(container.textContent).toContain('0 = auto-resend off (retry only inside the engine)')
+  })
+
+  it('defaults the field to 0 when the config carries no interval', () => {
+    render({ autoRetry: undefined })
+    expect(retryInput()?.value).toBe('0')
+    expect(container.textContent).toContain('0 = auto-resend off (retry only inside the engine)')
+  })
+
+  it('shows the unit suffix inside the combobox', () => {
+    render({ autoRetry: 30 })
+    const wrap = retryInput()?.closest('div')
+    expect(wrap).not.toBeNull()
+    const unit = Array.from(wrap!.querySelectorAll('span')).find((s) => s.textContent === 's')
+    expect(unit).toBeDefined()
+  })
+
+  it('offers the presets [0, 5, 10, 30, 60, 120, 300] with the current one marked', async () => {
+    render({ autoRetry: 30 })
+    await openRetryPresets()
+
+    const menu = document.body.querySelector('[role="menu"]')
+    expect(menu).not.toBeNull()
+    for (const p of [0, 5, 10, 30, 60, 120, 300]) {
+      expect(menu!.textContent).toContain(String(p))
+    }
+    const selected = menu!.querySelector<HTMLElement>('[data-selected="true"]')
+    expect(selected).not.toBeNull()
+    expect(selected!.textContent).toContain('30')
+  })
+
+  it('commits a preset pick through onConfigChange', async () => {
+    render({ autoRetry: 0 })
+    await openRetryPresets()
+
+    const menu = document.body.querySelector('[role="menu"]')!
+    const item = Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((o) =>
+      o.textContent?.includes('60'),
+    )
+    expect(item).toBeDefined()
+    act(() => {
+      item!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(changes).toEqual([{ auto_retry_seconds: 60 }])
+  })
+
+  // Bounds: the EditableCombobox clamps manual input to [0, 3600].
+  it('clamps above-max input to 3600 on Enter', () => {
+    render({ autoRetry: 30 })
+    typeRetry('9999')
+    pressRetry('Enter')
+    expect(changes).toEqual([{ auto_retry_seconds: 3600 }])
+    expect(retryInput()?.value).toBe('3600')
+  })
+
+  it('commits an explicit 0 from manual input (disables the timer)', () => {
+    render({ autoRetry: 120 })
+    typeRetry('0')
+    pressRetry('Enter')
+    expect(changes).toEqual([{ auto_retry_seconds: 0 }])
+    expect(retryInput()?.value).toBe('0')
+  })
+
+  it('commits a manual value within bounds', () => {
+    render({ autoRetry: 0 })
+    typeRetry('45')
+    pressRetry('Enter')
+    expect(changes).toEqual([{ auto_retry_seconds: 45 }])
   })
 })

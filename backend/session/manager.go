@@ -259,6 +259,15 @@ type Manager struct {
 	// otherwise leave the worker goroutine blocked on its channel. Guarded by
 	// mu.
 	blackboards []*PersistentBlackboard
+
+	// autoRetryResolver maps a provider name (the logical config key carried
+	// by *llm.Error.Provider) to that provider's auto-resend interval in
+	// seconds (0 = disabled). Wired by the backend Application to the live
+	// LLM config, so Settings changes apply to the next surfaced deadline.
+	// Guarded by mu. There is NO backend timer (ADR-065): the deadline is
+	// only stamped into the task_failed_resumable payload; the UI owns the
+	// countdown and the resume-on-zero.
+	autoRetryResolver func(provider string) int
 }
 
 // SetLogger sets the logger for the manager.

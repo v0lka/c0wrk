@@ -21,6 +21,14 @@ export interface ProviderConfig {
     /** Per-provider TLS pin (ADR-054): '' = standard CA verification
      *  (override off), non-empty = only the pinned key is accepted. */
     tls_fingerprint: string
+    /**
+     * Per-provider session-layer auto-retry interval in seconds (compatible
+     * providers only). Undefined = not set in the payload → the backend
+     * pointer sentinel keeps the persisted value (debounce-safe); 0 = the
+     * auto-resend timer is off (explicit zero is sent verbatim); a positive
+     * value is the resend interval. Fixed providers never carry the field.
+     */
+    auto_retry_seconds?: number
 }
 
 const defaultProviderConfigs: Record<string, ProviderConfig> = Object.fromEntries(
@@ -49,6 +57,12 @@ function toProviderConfig(p: ConfigProviderFull, type?: CompatibleType): Provide
         models: Array.isArray(p.models) ? [...p.models] : [],
         type,
         tls_fingerprint: p.tls_fingerprint ?? '',
+        // Passed through VERBATIM (undefined stays undefined): a disabled or
+        // absent interval must not become an explicit 0 in the draft, or every
+        // full-form save would send 0 and disable a persisted interval. An
+        // undefined draft omits the key from the save payload, which the
+        // backend pointer sentinel treats as "keep the persisted value".
+        auto_retry_seconds: p.auto_retry_seconds,
     }
 }
 

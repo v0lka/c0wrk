@@ -15,6 +15,10 @@ export interface ProviderConfig {
   /** Per-provider TLS pin (ADR-054): '' = standard CA verification (override
    *  off), non-empty = only the pinned key is accepted. */
   tls_fingerprint: string
+  /** Auto-resend interval in seconds (compatible providers only).
+   *  Undefined = keep the persisted value (omitted from the payload);
+   *  0 = auto-resend off, sent explicitly. */
+  auto_retry_seconds?: number
 }
 
 interface ProviderAccordionProps {
@@ -23,7 +27,7 @@ interface ProviderAccordionProps {
   config: ProviderConfig
   isExpanded: boolean
   onToggle: () => void
-  onConfigChange: (updates: Partial<{ api_key: string; base_url: string; tls_fingerprint: string }>) => void
+  onConfigChange: (updates: Partial<{ api_key: string; base_url: string; tls_fingerprint: string; auto_retry_seconds?: number }>) => void
   onToggleModel: (model: string) => void
   onDelete?: () => void
   defaultModel: string

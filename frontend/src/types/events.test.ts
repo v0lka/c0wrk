@@ -1,5 +1,29 @@
 import { describe, it, expect } from 'vitest'
-import { isAgentMetricsData, normalizeAgentMetricsData, isTaskCompleteData, isCompactionFinishedData, isPlanStepCompleteData, isPlanStepPausedData, isSubAgentPausedData, isSubAgentCompleteData, isGitConfigRiskData, isE2SStateData, isE2SSigma } from './events'
+import { isAgentMetricsData, normalizeAgentMetricsData, isTaskCompleteData, isCompactionFinishedData, isPlanStepCompleteData, isPlanStepPausedData, isSubAgentPausedData, isSubAgentCompleteData, isGitConfigRiskData, isE2SStateData, isE2SSigma, isTaskFailedResumableData } from './events'
+
+describe('isTaskFailedResumableData', () => {
+    it('accepts a payload without auto_retry_at (timer not armed)', () => {
+        expect(isTaskFailedResumableData({ message: 'Plan execution failed.' })).toBe(true)
+        expect(isTaskFailedResumableData({})).toBe(true)
+    })
+
+    it('accepts a payload carrying the armed auto-retry deadline', () => {
+        expect(isTaskFailedResumableData({ message: 'Rate limit exceeded.', auto_retry_at: 1_900_000_000 })).toBe(true)
+        expect(isTaskFailedResumableData({ auto_retry_at: 0 })).toBe(true)
+    })
+
+    it('rejects a non-number auto_retry_at', () => {
+        expect(isTaskFailedResumableData({ message: 'x', auto_retry_at: '1900000000' })).toBe(false)
+        expect(isTaskFailedResumableData({ auto_retry_at: null })).toBe(false)
+    })
+
+    it('rejects a non-string message and non-objects (pre-existing behavior)', () => {
+        expect(isTaskFailedResumableData({ message: 42 })).toBe(false)
+        expect(isTaskFailedResumableData(null)).toBe(false)
+        expect(isTaskFailedResumableData('boom')).toBe(false)
+    })
+})
+
 
 describe('isTaskCompleteData', () => {
     it('accepts valid data with string output', () => {

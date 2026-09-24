@@ -503,6 +503,27 @@ type OpenAICompatibleConfig struct {
 	// overflow validation and caps executor MaxTokens. 0 = inherit the global
 	// executor.output_token_reserve.
 	OutputTokenReserve int `yaml:"output_token_reserve"`
+	// AutoRetrySeconds enables the c0wrk-layer automatic retry timer for
+	// this provider: after a failed request the session waits this many
+	// seconds before re-sending automatically (0 = disabled, the model is
+	// asked how to proceed instead). Compatible providers only — the fixed
+	// providers (anthropic, chatgpt) have no such knob. Not mapped into
+	// ToBuilderConfig: the timer lives in the c0wrk session layer, not in
+	// the router/SDK layer.
+	AutoRetrySeconds int `yaml:"auto_retry_seconds,omitempty"`
+}
+
+// maxAutoRetrySeconds is the inclusive upper bound for per-provider
+// auto_retry_seconds (ADR-065); 0 disables the timer. The Settings UI
+// clamps its input to the same range, and validate() enforces it for
+// YAML/RPC edits that bypass the UI.
+const maxAutoRetrySeconds = 3600
+
+// MaxAutoRetrySeconds exposes the inclusive upper bound of per-provider
+// auto_retry_seconds to other packages (the Settings RPC path validates
+// incoming values against the same bound Load enforces).
+func MaxAutoRetrySeconds() int {
+	return maxAutoRetrySeconds
 }
 
 // AnthropicCompatibleConfig holds Anthropic-compatible provider configuration
@@ -523,6 +544,14 @@ type AnthropicCompatibleConfig struct {
 	// overflow validation and caps executor MaxTokens. 0 = inherit the global
 	// executor.output_token_reserve.
 	OutputTokenReserve int `yaml:"output_token_reserve"`
+	// AutoRetrySeconds enables the c0wrk-layer automatic retry timer for
+	// this provider: after a failed request the session waits this many
+	// seconds before re-sending automatically (0 = disabled, the model is
+	// asked how to proceed instead). Compatible providers only — the fixed
+	// providers (anthropic, chatgpt) have no such knob. Not mapped into
+	// ToBuilderConfig: the timer lives in the c0wrk session layer, not in
+	// the router/SDK layer.
+	AutoRetrySeconds int `yaml:"auto_retry_seconds,omitempty"`
 }
 
 // ChatGPTConfig holds ChatGPT (OpenAI) provider configuration.
@@ -1622,6 +1651,10 @@ type ProviderWithModels struct {
 	// OutputTokenReserve is the per-provider output-token budget override
 	// (0 = inherit the global executor.output_token_reserve).
 	OutputTokenReserve int
+	// AutoRetrySeconds is the per-provider automatic-retry timer knob for
+	// compatible providers (0 = disabled). Fixed providers (anthropic,
+	// chatgpt) have no such knob and always report 0.
+	AutoRetrySeconds int
 }
 
 // providerEntry is the canonical, single-source-of-truth provider list.
@@ -1632,6 +1665,7 @@ type providerEntry struct {
 	models             []string
 	tlsFingerprint     string
 	outputTokenReserve int
+	autoRetrySeconds   int
 }
 
 // allProviderEntries returns the flat list of all known providers.
@@ -1655,11 +1689,11 @@ func (c *LLMConfig) allProviderEntries() []providerEntry {
 	)
 	for _, name := range openaiKeys {
 		cfg := c.OpenAICompatible[name]
-		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, tlsFingerprint: cfg.TLSFingerprint, outputTokenReserve: cfg.OutputTokenReserve})
+		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, tlsFingerprint: cfg.TLSFingerprint, outputTokenReserve: cfg.OutputTokenReserve, autoRetrySeconds: cfg.AutoRetrySeconds})
 	}
 	for _, name := range anthropicKeys {
 		cfg := c.AnthropicCompatible[name]
-		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, tlsFingerprint: cfg.TLSFingerprint, outputTokenReserve: cfg.OutputTokenReserve})
+		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, tlsFingerprint: cfg.TLSFingerprint, outputTokenReserve: cfg.OutputTokenReserve, autoRetrySeconds: cfg.AutoRetrySeconds})
 	}
 	return entries
 }
@@ -1696,6 +1730,7 @@ func (c *LLMConfig) GetAllProviderConfigs() []ProviderWithModels {
 			Models:             p.models,
 			TLSFingerprint:     p.tlsFingerprint,
 			OutputTokenReserve: p.outputTokenReserve,
+			AutoRetrySeconds:   p.autoRetrySeconds,
 		})
 	}
 	return result
@@ -1877,6 +1912,20 @@ func validate(cfg *Config) error {
 	_, _, err := cfg.LLM.ResolveDefaultModelProvider()
 	if err != nil {
 		return err
+	}
+
+	// Validate per-provider auto_retry_seconds (ADR-065): the timer accepts
+	// [0, 3600] seconds. 0 disables; negative or oversized values would arm
+	// time.AfterFunc on an unusable window (years) while the banner still
+	// promises an auto-resend. The Settings UI clamps to the same range;
+	// YAML/RPC edits go through this check instead of trusting the clamp.
+	for _, p := range cfg.LLM.allProviderEntries() {
+		if p.autoRetrySeconds < 0 || p.autoRetrySeconds > maxAutoRetrySeconds {
+			return fmt.Errorf(
+				"llm provider %q auto_retry_seconds must be within [0, %d], got %d",
+				p.name, maxAutoRetrySeconds, p.autoRetrySeconds,
+			)
+		}
 	}
 
 	// Validate the security.groups schema: only the fixed set of configurable

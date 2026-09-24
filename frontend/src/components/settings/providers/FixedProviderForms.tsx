@@ -6,7 +6,7 @@ interface FixedProviderFormProps {
   providerConfigs: Record<string, ProviderConfig>
   expandedProviders: Set<string>
   onToggle: (provider: string) => void
-  onConfigChange: (provider: string, updates: Partial<{ api_key: string; base_url: string; tls_fingerprint: string }>) => void
+  onConfigChange: (provider: string, updates: Partial<{ api_key: string; base_url: string; tls_fingerprint: string; auto_retry_seconds?: number }>) => void
   onToggleModel: (provider: string, model: string) => void
   defaultModel: string
 }

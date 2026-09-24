@@ -387,3 +387,126 @@ describe('LLMSettings TLS pin proxy gate', () => {
     expect(inputs).toHaveLength(0)
   })
 })
+
+// --- Auto-retry interval (compatible providers only) ---
+
+describe('LLMSettings auto-retry interval', () => {
+  beforeEach(() => {
+    useProxyDraftStore.setState({ active: null })
+  })
+
+  async function renderSettings() {
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <LLMSettings />
+        </TooltipProvider>,
+      )
+    })
+    await flush()
+  }
+
+  /** Expand the provider accordion whose header mentions `name`. */
+  async function expandProvider(name: string) {
+    const header = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes(name),
+    )
+    expect(header).toBeDefined()
+    await act(async () => {
+      header!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+  }
+
+  it('renders the field with the persisted interval for a compatible provider', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      proxy: { enabled: false, url: '', bypass_list: [], tls_cert_dir: '' },
+      llm: {
+        default_model: 'lmstudio/glm-5.3',
+        anthropic: { api_key: 'sk', models: [] },
+        openai_compatible: {
+          lmstudio: {
+            api_key: 'k',
+            base_url: 'http://localhost:1234',
+            models: ['glm-5.3'],
+            auto_retry_seconds: 30,
+          },
+        },
+      },
+    })
+
+    await renderSettings()
+    await expandProvider('lmstudio')
+
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Auto-retry interval"]')
+    expect(input).not.toBeNull()
+    // The value from GetConfig is displayed.
+    expect(input?.value).toBe('30')
+    expect(container.textContent).toContain('Auto-retry interval')
+  })
+
+  it('shows no field for the fixed anthropic provider', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      proxy: { enabled: false, url: '', bypass_list: [], tls_cert_dir: '' },
+      llm: {
+        default_model: 'lmstudio/glm-5.3',
+        anthropic: { api_key: 'sk', models: ['glm-5.3'] },
+        openai_compatible: {
+          lmstudio: { api_key: 'k', base_url: 'http://localhost:1234', models: [] },
+        },
+      },
+    })
+
+    await renderSettings()
+    await expandProvider('Anthropic')
+
+    expect(container.querySelector('input[aria-label="Auto-retry interval"]')).toBeNull()
+  })
+
+  // End-to-end through the real form: picking a preset writes the draft and
+  // the debounced save carries the interval in the compatible map only.
+  it('saves an explicit 0 through the form into the compatible map only', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      proxy: { enabled: false, url: '', bypass_list: [], tls_cert_dir: '' },
+      llm: {
+        default_model: 'lmstudio/glm-5.3',
+        anthropic: { api_key: 'sk', models: [] },
+        openai_compatible: {
+          lmstudio: {
+            api_key: 'k',
+            base_url: 'http://localhost:1234',
+            models: ['glm-5.3'],
+            auto_retry_seconds: 120,
+          },
+        },
+      },
+    })
+
+    await renderSettings()
+    await expandProvider('lmstudio')
+
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Auto-retry interval"]')
+    expect(input?.value).toBe('120')
+
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+    await act(async () => {
+      setter!.call(input!, '0')
+      input!.dispatchEvent(new Event('input', { bubbles: true }))
+      input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      const last = mocks.updateLLMConfig.mock.calls[mocks.updateLLMConfig.mock.calls.length - 1]
+      const compatible = last?.[0]?.openai_compatible as Record<string, { auto_retry_seconds?: number }> | undefined
+      expect(compatible?.lmstudio?.auto_retry_seconds).toBe(0)
+      // The fixed provider entry never carries the field.
+      const fixed = last?.[0]?.anthropic
+      expect(fixed).not.toHaveProperty('auto_retry_seconds')
+    })
+  })
+})

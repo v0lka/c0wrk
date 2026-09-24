@@ -8,13 +8,23 @@ import { isOpenAICompatibleProvider } from '@/lib/llm-providers'
 import { getProviderTLSCertificate } from '@/api/config'
 import { logger } from '@/lib/logger'
 import { useProxyDraftStore, pinGatedByProxy } from '@/stores/proxyDraftStore'
+import { EditableCombobox } from '@/components/ui/EditableCombobox'
 
 interface ProviderConfig {
   api_key: string
   base_url: string
   /** Per-provider TLS pin (ADR-054): '' = standard CA verification. */
   tls_fingerprint: string
+  /** Auto-resend interval in seconds for this provider (compatible
+   *  providers only). 0/undefined = auto-resend off. */
+  auto_retry_seconds?: number
 }
+
+/** Preset auto-resend intervals offered in the dropdown, in seconds. */
+const AUTO_RETRY_PRESETS = [0, 5, 10, 30, 60, 120, 300] as const
+/** Bounds for the auto-resend interval, in seconds. */
+const AUTO_RETRY_MIN = 0
+const AUTO_RETRY_MAX = 3600
 
 interface ProviderConfigFormProps {
   activeProvider: string
@@ -98,6 +108,31 @@ export function ProviderConfigForm({
               className="h-9 text-sm flex-1"
             />
           </div>
+        </div>
+      )}
+
+      {/* Auto-retry interval — compatible providers only, the same gate as
+          Base URL. The engine's in-request retry loop (backoff inside the
+          LLM call) always runs; this timer is the extra session-layer
+          auto-RESEND of a failed exchange, which only makes sense against a
+          custom endpoint the user owns. 0 = off. */}
+      {showBaseUrl && (
+        <div className="flex flex-col gap-2">
+          <label className="text-xs text-muted-foreground">Auto-retry interval</label>
+          <div className="flex max-w-[240px] items-center gap-2">
+            <EditableCombobox
+              value={config?.auto_retry_seconds ?? 0}
+              presets={AUTO_RETRY_PRESETS}
+              min={AUTO_RETRY_MIN}
+              max={AUTO_RETRY_MAX}
+              unit="s"
+              onChange={(n) => onConfigChange({ auto_retry_seconds: n })}
+              ariaLabel="Auto-retry interval"
+            />
+          </div>
+          <span className="text-[11px] text-muted-foreground">
+            0 = auto-resend off (retry only inside the engine)
+          </span>
         </div>
       )}
 

@@ -56,13 +56,13 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   }
 }
 
-function makeResumeItem(): Extract<DisplayItem, { kind: 'resume_action' }> {
+function makeResumeItem(metadata: Record<string, unknown> = {}): Extract<DisplayItem, { kind: 'resume_action' }> {
   const message: ChatMessageUI = {
     id: 'resume-1',
     sessionId: SESSION_ID,
     type: 'task_failed_resumable',
     content: 'Plan execution failed.',
-    metadata: { resolved: false },
+    metadata: { resolved: false, ...metadata },
     timestamp: 0,
   }
   return { kind: 'resume_action', message }
@@ -141,5 +141,126 @@ describe('ResumeActionPanel cancel', () => {
     expect(snap.unfinished_task_status).toBe('failed')
     // The overlay is left untouched on failure — the task stays resumable.
     expect(useChatStore.getState().unfinishedTaskStatus[SESSION_ID]).toBeUndefined()
+  })
+})
+
+describe('ResumeActionPanel auto-resend countdown', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('ticks the Resume button label 30→0, fires the auto-resend, and yields the button', async () => {
+    const deadline = Math.floor(Date.now() / 1000) + 30
+    const container = render(<ResumeActionPanel item={makeResumeItem({ auto_retry_at: deadline, auto_retry_live: true })} />)
+
+    const resume = buttonByText(container, 'Resume')
+    expect(resume.textContent).toContain('Resume (30s)')
+    expect(resume.disabled).toBe(false)
+    expect(container.textContent).toContain('Auto-retry in 30s')
+
+    await act(async () => { vi.advanceTimersByTime(30_000) })
+
+    expect(resume.disabled).toBe(true)
+    expect(resume.textContent).toContain('Auto-resend')
+    // On zero the hook fired the auto-resend through the ordinary resume RPC.
+    expect(resumeTaskMock).toHaveBeenCalledTimes(1)
+    expect(resumeTaskMock).toHaveBeenCalledWith(SESSION_ID)
+  })
+
+  it('renders the plain banner when the deadline is absent (previous look)', () => {
+    const container = render(<ResumeActionPanel item={makeResumeItem()} />)
+
+    const resume = buttonByText(container, 'Resume')
+    expect(resume.textContent).toContain('Resume')
+    expect(resume.textContent).not.toContain('(')
+    expect(resume.disabled).toBe(false)
+    expect(container.textContent).not.toContain('Auto-retry in')
+  })
+
+  it('renders the plain manual banner for a restored row (no live flag, even with a future deadline)', () => {
+    // A history-reload banner carries the raw persisted payload WITHOUT
+    // auto_retry_live: after a restart there is no timer to keep — the
+    // user decides manually, no matter how far in the future the stale
+    // deadline is.
+    const deadline = Math.floor(Date.now() / 1000) + 500
+    const container = render(
+      <ResumeActionPanel item={makeResumeItem({ auto_retry_at: deadline })} />,
+    )
+
+    const resume = buttonByText(container, 'Resume')
+    expect(resume.disabled).toBe(false)
+    expect(resume.textContent).toContain('Resume')
+    expect(resume.textContent).not.toContain('Auto-resend')
+    expect(container.textContent).not.toContain('Auto-retry in')
+    act(() => { vi.advanceTimersByTime(600_000) })
+    expect(resumeTaskMock).not.toHaveBeenCalled()
+  })
+
+  it('does not double-resume when the button is clicked after the countdown hit 0', async () => {
+    const deadline = Math.floor(Date.now() / 1000) + 1
+    const container = render(<ResumeActionPanel item={makeResumeItem({ auto_retry_at: deadline, auto_retry_live: true })} />)
+
+    await act(async () => { vi.advanceTimersByTime(1_000) })
+
+    const resume = buttonByText(container, 'Auto-resend')
+    expect(resume.disabled).toBe(true)
+    // The auto fire already used the single resume slot.
+    expect(resumeTaskMock).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      // A disabled button ignores clicks in a real DOM; call the handler path
+      // anyway through a forced dispatch to prove the guard holds.
+      resume.click()
+    })
+
+    expect(resumeTaskMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('a manual Resume click before expiry stops the countdown and resumes once', async () => {
+    const deadline = Math.floor(Date.now() / 1000) + 30
+    const container = render(<ResumeActionPanel item={makeResumeItem({ auto_retry_at: deadline, auto_retry_live: true })} />)
+
+    const resume = buttonByText(container, 'Resume')
+    await act(async () => {
+      resume.click()
+    })
+
+    expect(resumeTaskMock).toHaveBeenCalledTimes(1)
+    expect(resumeTaskMock).toHaveBeenCalledWith(SESSION_ID, '', '')
+
+    // The manual click disarmed the auto fire: the deadline window passes
+    // with no second resume.
+    await act(async () => { vi.advanceTimersByTime(60_000) })
+    expect(resumeTaskMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('a Cancel click before expiry stops the countdown (no auto fire afterwards)', async () => {
+    const deadline = Math.floor(Date.now() / 1000) + 30
+    const container = render(<ResumeActionPanel item={makeResumeItem({ auto_retry_at: deadline, auto_retry_live: true })} />)
+
+    await act(async () => {
+      buttonByText(container, 'Cancel').click()
+    })
+
+    expect(resumeTaskMock).not.toHaveBeenCalled()
+    expect(cancelUnfinishedTaskMock).toHaveBeenCalledWith(SESSION_ID)
+
+    await act(async () => { vi.advanceTimersByTime(60_000) })
+    expect(resumeTaskMock).not.toHaveBeenCalled()
+  })
+
+  it('resolves the banner when task_resumed lands after auto-resend (existing handler contract)', () => {
+    // task_resumed (auto or manual) is handled by useActionEvents, which marks
+    // the latest unresolved banner resolved:true — the panel then renders the
+    // settled "Task resumed" card. Verify the panel honors that metadata.
+    const container = render(
+      <ResumeActionPanel item={makeResumeItem({ resolved: true, decision: 'resumed' })} />,
+    )
+    expect(container.textContent).toContain('Task resumed')
+    expect(container.querySelectorAll('button')).toHaveLength(0)
   })
 })

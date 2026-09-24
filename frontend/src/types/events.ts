@@ -213,7 +213,17 @@ export interface RetryData { attempt: number; max_attempts: number }
 export interface StepRetryData { step_id: string; attempt: number; max_attempts: number }
 export interface ServiceData { content: string; phase?: string }
 export interface SessionRenamedData { new_name: string; old_name?: string; id?: string }
-export interface TaskFailedResumableData { message?: string }
+export interface TaskFailedResumableData {
+  message?: string
+  /** Unix timestamp (seconds) at which the UI auto-resend countdown reaches
+   *  zero. Present only when the backend classified the terminal failure as
+   *  a rate-limit/overload error from a provider with a configured retry
+   *  interval; absent/0 means no countdown. There is no backend timer: the
+   *  live event handler copies the deadline into the banner metadata with
+   *  `auto_retry_live: true`, and ONLY a live-marked banner may count down
+   *  (a restored row renders the plain manual banner). */
+  auto_retry_at?: number
+}
 export interface ReflectionData {
   summary: string
   insights?: string[]
@@ -934,7 +944,11 @@ export function isSessionTokensData(d: unknown): d is SessionTokensData { return
 export function isSessionRenamedData(d: unknown): d is SessionRenamedData { return isObj(d) && has(d, 'new_name') }
 export function isTaskFailedResumableData(d: unknown): d is TaskFailedResumableData {
   if (!isObjLocal(d)) return false
-  return !('message' in d) || typeof d.message === 'string'
+  if (!('message' in d) || typeof d.message === 'string') {
+    // auto_retry_at is optional; when present it must be a unix-seconds number.
+    return !('auto_retry_at' in d) || typeof d.auto_retry_at === 'number'
+  }
+  return false
 }
 export function isTerminalOutputData(d: unknown): d is TerminalOutputData { return isObj(d) && typeof d.data === 'string' }
 export function isSkillsActivatedData(d: unknown): d is SkillsActivatedData { return isObj(d) && Array.isArray(d.skills) }
