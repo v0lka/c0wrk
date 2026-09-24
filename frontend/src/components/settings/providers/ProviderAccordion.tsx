@@ -32,6 +32,9 @@ interface ProviderAccordionProps {
   onDelete?: () => void
   defaultModel: string
   providerConfigs: Record<string, ProviderConfig>
+  /** Server-published auto_retry_seconds upper bound (ADR-065), threaded
+   *  to ProviderConfigForm's interval input. */
+  autoRetryMaxSeconds?: number
 }
 
 export function ProviderAccordion({
@@ -45,6 +48,7 @@ export function ProviderAccordion({
   onDelete,
   defaultModel,
   providerConfigs,
+  autoRetryMaxSeconds,
 }: ProviderAccordionProps) {
   const {
     models,
@@ -169,6 +173,7 @@ export function ProviderAccordion({
             modelsLoading={modelsLoading}
             onConfigChange={onConfigChange}
             onApply={handleApply}
+            autoRetryMaxSeconds={autoRetryMaxSeconds}
           />
 
           {/* Model Checklist */}

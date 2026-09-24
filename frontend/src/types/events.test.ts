@@ -12,9 +12,10 @@ describe('isTaskFailedResumableData', () => {
         expect(isTaskFailedResumableData({ auto_retry_at: 0 })).toBe(true)
     })
 
-    it('rejects a non-number auto_retry_at', () => {
-        expect(isTaskFailedResumableData({ message: 'x', auto_retry_at: '1900000000' })).toBe(false)
-        expect(isTaskFailedResumableData({ auto_retry_at: null })).toBe(false)
+    it('treats a malformed auto_retry_at as absent (banner survives with the real message)', () => {
+        expect(isTaskFailedResumableData({ message: 'x', auto_retry_at: '1900000000' })).toBe(true)
+        expect(isTaskFailedResumableData({ auto_retry_at: null })).toBe(true)
+        expect(isTaskFailedResumableData({ message: 'x', auto_retry_at: Number.NaN })).toBe(true)
     })
 
     it('rejects a non-string message and non-objects (pre-existing behavior)', () => {

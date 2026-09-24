@@ -12,6 +12,8 @@ interface OpenAICompatibleProviderFormProps {
   defaultModel: string
   /** Label prefix shown for each provider accordion. Defaults to "OpenAI Compatible". */
   labelPrefix?: string
+  /** Server-published auto_retry_seconds upper bound (ADR-065). */
+  autoRetryMaxSeconds?: number
 }
 
 export function OpenAICompatibleProviderForms({
@@ -24,6 +26,7 @@ export function OpenAICompatibleProviderForms({
   onDelete,
   defaultModel,
   labelPrefix = 'OpenAI Compatible',
+  autoRetryMaxSeconds,
 }: OpenAICompatibleProviderFormProps) {
   return (
     <>
@@ -46,6 +49,7 @@ export function OpenAICompatibleProviderForms({
             onDelete={() => onDelete(name)}
             defaultModel={defaultModel}
             providerConfigs={providerConfigs}
+            autoRetryMaxSeconds={autoRetryMaxSeconds}
           />
         )
       })}

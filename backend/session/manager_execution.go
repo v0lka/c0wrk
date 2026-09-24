@@ -2691,7 +2691,17 @@ func (m *Manager) emitTaskComplete(sessionID string, result *core.HandleResult, 
 		return
 	}
 
-	resumableEmitted := m.emitResumableIfUnfinished(sessionID, completionReason(completion), nil)
+	// The typed degraded-completion cause (ADR-065 follow-up): a result
+	// whose run collapsed its error into the output (the goal loop's
+	// errored-turn halt) carries it on HandleResult.Err so the auto-retry
+	// classifier still sees the *llm.Error chain. Non-degraded outcomes
+	// (plain partial/aborted/cancelled — budget/reflector outcomes with no
+	// typed cause) pass nil and never arm the timer, exactly as before.
+	cause := error(nil)
+	if result != nil {
+		cause = result.Err
+	}
+	resumableEmitted := m.emitResumableIfUnfinished(sessionID, completionReason(completion), cause)
 	if !resumableEmitted {
 		m.log().Warn("degraded task completion without resumable safety net", "session", sessionID, "completion", completion)
 		m.emitFunc(Event{

@@ -156,7 +156,7 @@ describe('useActionEvents task_failed_resumable → live unfinished-task overlay
     expect(banner!.metadata?.auto_retry_at).toBeUndefined()
   })
 
-  it('drops a malformed auto_retry_at (guard rejected payload still renders the plain banner)', () => {
+  it('degrades a malformed auto_retry_at to the plain banner (backend message kept)', () => {
     act(() => {
       for (const cb of runtimeHandlers.get('task_failed_resumable') ?? []) {
         cb({ message: 'Rate limit exceeded.', task_id: 't-1', auto_retry_at: 'soon' })
@@ -166,10 +166,12 @@ describe('useActionEvents task_failed_resumable → live unfinished-task overlay
     const store = useChatStore.getState()
     const order = store.messageOrder[SESSION] ?? []
     const banner = order.map(id => store.messages[SESSION]![id]!).find(m => m.type === 'task_failed_resumable')
-    // The payload failed the guard entirely, so the handler fell back to the
-    // generic message and must not carry the malformed deadline forward.
+    // A malformed optional field must not discard the payload: the banner
+    // keeps the backend's real message (no generic fallback) and never
+    // carries the malformed deadline into its metadata — it degrades to the
+    // plain manual banner (review fix).
     expect(banner).toBeDefined()
-    expect(banner!.content).toBe('Plan execution failed.')
+    expect(banner!.content).toBe('Rate limit exceeded.')
     expect(banner!.metadata?.auto_retry_at).toBeUndefined()
   })
 })

@@ -18,7 +18,7 @@ A previous attempt implemented the timer on the **backend** (branch `llm/auto-re
 
 ### Ownership: backend classifies, UI fires
 
-- **Backend** (`backend/session/manager_auto_retry.go`, ~100 lines, no timers): when a terminal execution error reaches `emitResumableIfUnfinished` with a `cause`, `maybeAutoRetryAt` classifies it (`isAutoRetryableCause`: an `*llm.Error` whose `ErrType` is `rate_limit` or `overloaded`, or whose HTTP `StatusCode` is 429/529) and resolves the provider's interval (`SetAutoRetryResolver`, wired to an immutable atomic snapshot of the live config — see below). When both qualify, the deadline `now + interval` travels in the `task_failed_resumable` payload as `auto_retry_at` (unix seconds, `omitempty`). Nothing is scheduled; no state is held; nothing needs disarming.
+- **Backend** (`backend/session/manager_auto_retry.go`, ~100 lines, no timers): when a terminal execution error reaches `emitResumableIfUnfinished` with a `cause`, `maybeAutoRetryAt` classifies it (`isAutoRetryableCause`: an `*llm.Error` whose `ErrType` is `rate_limit` or `overloaded`, or whose HTTP `StatusCode` is 429/529) and resolves the provider's interval (`SetAutoRetryResolver`, wired to an immutable atomic snapshot of the live config — see below). When both qualify, the deadline `now + interval` travels in the `task_failed_resumable` payload as `auto_retry_at` (unix seconds, `omitempty`). Nothing is scheduled; no state is held; nothing needs disarming. Two transports carry the cause into that call: (a) the synchronous error path — the orchestrator returns the error and the manager forwards it verbatim; (b) the **degraded-completion path** — a best-effort result with a nil returned error (the goal loop's errored-turn halt collapses its typed turn error into `GoalState.LastError`) preserves the error VALUE on `HandleResult.Err` (set by `goalLoopResult` from `GoalState.LastErrorTyped`, process-local and never persisted), and `emitTaskComplete` forwards `result.Err` as the cause. Without (b) the longest rate-limit storm — the one that outlives the goal loop's bounded turn retries and surfaces as a degraded completion — would never arm the countdown.
 - **Frontend** (`frontend/src/components/chat/useAutoRetryCountdown.ts`): the live event handler copies the deadline into the banner message metadata together with `auto_retry_live: true`. The panel's 1-second ticker renders `Resume (Ns)` on the button; on zero it calls `resumeTask(sessionId)` — the ordinary guarded backend resume path — exactly once per deadline (one-shot fire guard).
 
 ### Live-only deadline (restored sessions never count down)
@@ -27,7 +27,7 @@ The `auto_retry_live` discriminator exists **only in memory**: the event persist
 
 ### Any manual click stops the countdown
 
-While the ticker runs, the seconds tick on the Resume button itself. **Any** manual click — Resume or Cancel — stops the countdown optimistically (`stop()`, before the RPC round-trip): a manual Resume IS the resume the timer would have performed; a Cancel is the user's final discard. In both cases the auto fire is disarmed and never happens. After the deadline hits zero the Resume button disables as `Auto-resend…` until the `task_resumed` event resolves the banner; if the auto fire's `resumeTask` rejects (busy session, archived, backend refusal), the hook strips the live keys from the banner metadata so the panel falls back to the plain manual banner instead of a permanently disabled dead end.
+While the ticker runs, the seconds tick on the Resume button itself. **Any** manual click — Resume or Cancel — stops the countdown optimistically (`stop()`, before the RPC round-trip): a manual Resume IS the resume the timer would have performed; a Cancel is the user's final discard. In both cases the auto fire is disarmed and never happens. After the deadline hits zero the Resume button disables as `Auto-resend…` until the `task_resumed` event resolves the banner, and **Cancel disables with it**: the auto fire already dispatched `resumeTask`, so a click in that window would race the just-fired resume (optimistically mark the banner cancelled while the task starts running, or cancel the resumed task) — the window is seconds at most. If the auto fire's `resumeTask` rejects (busy session, archived, backend refusal), the hook strips the live keys from the banner metadata so the panel falls back to the plain manual banner instead of a permanently disabled dead end.
 
 ### Compaction
 
@@ -36,6 +36,8 @@ A manual compaction needs an idle window; an auto fire landing inside it would c
 ### `0` = off; no bool
 
 The interval is a plain int, `auto_retry_seconds`, with `omitempty` — 0/omitted means "never auto-resend; surface the failure and ask the user". There is no separate `enabled` bool: two knobs for one behavior is a state space with no additional expressiveness.
+
+The inclusive upper bound (3600) lives in ONE place: `config.maxAutoRetrySeconds`, enforced by `validate()` and the `UpdateLLMConfig` RPC path, and published to the Settings UI as `llm.auto_retry_max_seconds` in the `GetConfig` response — the form clamps its interval input against that server-published value (falling back to the compiled-in 3600 while the config loads or against an older backend), so the UI can never propose a value the save RPC would reject.
 
 ### Compatible providers only
 

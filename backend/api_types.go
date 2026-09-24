@@ -72,6 +72,13 @@ type ConfigLLMResponse struct {
 	ChatGPT             ConfigProviderFull            `json:"chatgpt"`
 	AllModels           []ModelInfo                   `json:"all_models"`   // flat list of all enabled models with family + reasoning metadata
 	ModelsReady         bool                          `json:"models_ready"` // false during async LLM init; true once registry is wired
+	// AutoRetryMaxSeconds is the inclusive upper bound for per-provider
+	// auto_retry_seconds (ADR-065) — the SAME bound validate() and the
+	// UpdateLLMConfig RPC path enforce. Exposed so the Settings form clamps
+	// its input against the backend's actual limit instead of a duplicated
+	// frontend constant (single source of truth; a backend limit change
+	// propagates with the next config load, no frontend release needed).
+	AutoRetryMaxSeconds int `json:"auto_retry_max_seconds"`
 }
 
 // ConfigProviderFull is a provider with api_key, optional base_url, and enabled models list.

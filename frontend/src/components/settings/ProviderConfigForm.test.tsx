@@ -67,6 +67,8 @@ interface RenderOpts {
   bypassList?: string[]
   /** Draft auto-retry interval in seconds; undefined = not carried. */
   autoRetry?: number
+  /** Server-published auto-retry upper bound; omit for the 3600 fallback. */
+  autoRetryMax?: number
   /**
    * The pin section ships COLLAPSED by default; tests that touch the field
    * expand it first (the default), mirroring the user's click on the section
@@ -82,6 +84,7 @@ function render({
   proxyActive = false,
   bypassList = [],
   autoRetry,
+  autoRetryMax,
   expandPin = true,
 }: RenderOpts = {}) {
   useProxyDraftStore.setState({ active: proxyActive, bypassList })
@@ -95,6 +98,7 @@ function render({
         modelsLoading={false}
         onConfigChange={(u) => changes.push(u as Record<string, unknown>)}
         onApply={() => {}}
+        autoRetryMaxSeconds={autoRetryMax}
       />,
     )
   })
@@ -470,6 +474,18 @@ describe('ProviderConfigForm auto-retry interval', () => {
     pressRetry('Enter')
     expect(changes).toEqual([{ auto_retry_seconds: 3600 }])
     expect(retryInput()?.value).toBe('3600')
+  })
+
+  // The upper bound is the SERVER-published limit (GetConfig →
+  // llm.auto_retry_max_seconds, ADR-065), not the compiled-in fallback: a
+  // backend with a tighter limit clamps here to that limit, so the form can
+  // never propose a value the UpdateLLMConfig RPC would reject.
+  it('clamps to the server-published max when it is tighter than the fallback', () => {
+    render({ autoRetry: 30, autoRetryMax: 120 })
+    typeRetry('9999')
+    pressRetry('Enter')
+    expect(changes).toEqual([{ auto_retry_seconds: 120 }])
+    expect(retryInput()?.value).toBe('120')
   })
 
   it('commits an explicit 0 from manual input (disables the timer)', () => {

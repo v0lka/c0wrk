@@ -944,11 +944,16 @@ export function isSessionTokensData(d: unknown): d is SessionTokensData { return
 export function isSessionRenamedData(d: unknown): d is SessionRenamedData { return isObj(d) && has(d, 'new_name') }
 export function isTaskFailedResumableData(d: unknown): d is TaskFailedResumableData {
   if (!isObjLocal(d)) return false
-  if (!('message' in d) || typeof d.message === 'string') {
-    // auto_retry_at is optional; when present it must be a unix-seconds number.
-    return !('auto_retry_at' in d) || typeof d.auto_retry_at === 'number'
-  }
-  return false
+  if ('message' in d && typeof d.message !== 'string') return false
+  // auto_retry_at is optional. A malformed value (non-number — e.g. a
+  // backend-schema drift) does NOT invalidate the payload: the banner stays
+  // actionable with the backend's real message, and the live handler
+  // independently gates on `typeof === 'number' && > 0` before copying it
+  // into the banner metadata — so a malformed deadline degrades to
+  // treat-as-absent (plain manual banner) instead of discarding the event's
+  // message. Dropping the whole payload over an optional field was
+  // disproportionate (review fix, ADR-065 follow-up).
+  return true
 }
 export function isTerminalOutputData(d: unknown): d is TerminalOutputData { return isObj(d) && typeof d.data === 'string' }
 export function isSkillsActivatedData(d: unknown): d is SkillsActivatedData { return isObj(d) && Array.isArray(d.skills) }

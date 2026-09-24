@@ -104,6 +104,11 @@ func (f *FrontendAPI) experimentalFeaturesEnabled() bool {
 func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 	resp := ConfigLLMResponse{
 		DefaultModel: f.config.LLM.DefaultModel,
+		// The clamping bound for the Settings form's auto-retry interval
+		// input: the same constant validate() and UpdateLLMConfig enforce
+		// (ADR-065). Published so the frontend has a single source of truth
+		// instead of a duplicated constant.
+		AutoRetryMaxSeconds: config.MaxAutoRetrySeconds(),
 		Anthropic: ConfigProviderFull{
 			APIKey: maskAPIKey(f.config.LLM.Anthropic.APIKey),
 			Models: f.config.LLM.Anthropic.Models,

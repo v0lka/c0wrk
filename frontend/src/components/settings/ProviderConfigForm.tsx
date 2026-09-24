@@ -22,9 +22,13 @@ interface ProviderConfig {
 
 /** Preset auto-resend intervals offered in the dropdown, in seconds. */
 const AUTO_RETRY_PRESETS = [0, 5, 10, 30, 60, 120, 300] as const
-/** Bounds for the auto-resend interval, in seconds. */
+/** Bounds for the auto-resend interval, in seconds. The MIN is fixed; the
+ *  MAX comes from the SERVER (llm.auto_retry_max_seconds — the same bound
+ *  validate()/UpdateLLMConfig enforce, ADR-065) via the autoRetryMaxSeconds
+ *  prop, falling back to the compiled-in 3600 when an older backend does
+ *  not publish it. */
 const AUTO_RETRY_MIN = 0
-const AUTO_RETRY_MAX = 3600
+export const AUTO_RETRY_MAX_FALLBACK = 3600
 
 interface ProviderConfigFormProps {
   activeProvider: string
@@ -34,6 +38,9 @@ interface ProviderConfigFormProps {
   modelsLoading: boolean
   onConfigChange: (updates: Partial<ProviderConfig>) => void
   onApply: () => void
+  /** Server-published inclusive upper bound for auto_retry_seconds
+   *  (GetConfig → llm.auto_retry_max_seconds, ADR-065). */
+  autoRetryMaxSeconds?: number
 }
 
 export function ProviderConfigForm({
@@ -44,6 +51,7 @@ export function ProviderConfigForm({
   modelsLoading,
   onConfigChange,
   onApply,
+  autoRetryMaxSeconds = AUTO_RETRY_MAX_FALLBACK,
 }: ProviderConfigFormProps) {
   const showBaseUrl = isOpenAICompatibleProvider(activeProvider)
   const showApiKey = true
@@ -124,7 +132,7 @@ export function ProviderConfigForm({
               value={config?.auto_retry_seconds ?? 0}
               presets={AUTO_RETRY_PRESETS}
               min={AUTO_RETRY_MIN}
-              max={AUTO_RETRY_MAX}
+              max={autoRetryMaxSeconds}
               unit="s"
               onChange={(n) => onConfigChange({ auto_retry_seconds: n })}
               ariaLabel="Auto-retry interval"

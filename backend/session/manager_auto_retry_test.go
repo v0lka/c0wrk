@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/orchestration"
 )
 
 // TestIsAutoRetryableCause pins the retryable-class taxonomy (ADR-065):
@@ -199,4 +201,58 @@ func TestEmitResumableIfUnfinished_StampsAutoRetryAt(t *testing.T) {
 			t.Fatal("timeout waiting for task_failed_resumable event")
 		}
 	})
+}
+
+// TestEmitTaskComplete_DegradedCauseStampsAutoRetryAt pins the review fix
+// (ADR-065 follow-up): a DEGRADED completion — the orchestrator returned a
+// best-effort result with a nil error (the goal loop's errored-turn halt) —
+// carries its typed cause on HandleResult.Err, and emitTaskComplete forwards
+// it to emitResumableIfUnfinished so a rate-limit class failure still arms
+// the auto-resend countdown on the very path the feature was built for: the
+// long rate-limit storm that outlives the goal loop's bounded turn retries.
+func TestEmitTaskComplete_DegradedCauseStampsAutoRetryAt(t *testing.T) {
+	manager, eventChan, _ := testManager(t)
+	manager.SetTaskStore(&mockTaskStoreForResumable{
+		unfinished: &TaskRecord{ID: "task-123", SessionID: "sess-1", Status: "failed"},
+	})
+	manager.SetAutoRetryResolver(func(provider string) int {
+		if provider == "selfhosted" {
+			return 5
+		}
+		return 0
+	})
+
+	before := time.Now().Unix()
+	manager.emitTaskComplete("sess-1", &core.HandleResult{
+		Status: orchestration.ExecutionStatusFailed,
+		Err: &llm.Error{
+			Provider:   "selfhosted",
+			StatusCode: 429,
+			ErrType:    llm.ErrTypeRateLimit,
+		},
+	}, nil)
+
+	// task_complete fires first; the resumable banner follows.
+	deadline := int64(0)
+	sawComplete := false
+	for deadline == 0 || !sawComplete {
+		select {
+		case event := <-eventChan:
+			switch event.Type {
+			case "task_complete":
+				sawComplete = true
+			case "task_failed_resumable":
+				data, ok := event.Data.(TaskFailedResumableData)
+				if !ok {
+					t.Fatalf("expected TaskFailedResumableData, got %T", event.Data)
+				}
+				deadline = data.AutoRetryAt
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout waiting for terminal events")
+		}
+	}
+	if deadline < before+5 || deadline > time.Now().Unix()+5 {
+		t.Errorf("auto_retry_at %d outside now+5s window (want the degraded cause to arm the countdown)", deadline)
+	}
 }

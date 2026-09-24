@@ -131,7 +131,13 @@ function ResumeBanner({ item, content }: { item: ResumeItem; content: string }) 
             <><RefreshCw className="h-3 w-3 mr-1.5" />Resume{counting ? ` (${secondsLeft}s)` : ''}</>
           )}
         </Button>
-        <Button size="sm" variant="outline" onClick={handleCancel} className="text-xs">
+        {/* Cancel mirrors the Resume gate while the auto-resend is in
+            flight: the auto fire already dispatched resumeTask, so a Cancel
+            click now would race it (optimistically mark the banner
+            cancelled while the resumed task starts running, or cancel the
+            just-resumed task). The window is seconds at most — until the
+            task_resumed event resolves the banner. */}
+        <Button size="sm" variant="outline" onClick={handleCancel} disabled={autoResending} className="text-xs">
           <X className="h-3 w-3 mr-1.5" />Cancel
         </Button>
       </div>

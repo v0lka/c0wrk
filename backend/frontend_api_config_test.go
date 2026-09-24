@@ -3963,6 +3963,12 @@ func TestGetConfig_ExposesAutoRetrySeconds(t *testing.T) {
 	if got := resp.ChatGPT.AutoRetrySeconds; got != 0 {
 		t.Errorf("fixed chatgpt interval = %d, want 0", got)
 	}
+	// The clamping bound travels with the response so the Settings form
+	// clamps against the backend's actual limit (single source of truth —
+	// must equal config.MaxAutoRetrySeconds, the value validate() enforces).
+	if got := resp.AutoRetryMaxSeconds; got != config.MaxAutoRetrySeconds() || got <= 0 {
+		t.Errorf("auto_retry_max_seconds = %d, want %d", got, config.MaxAutoRetrySeconds())
+	}
 }
 
 // The pointer sentinel: nil keeps the persisted interval. The settings dialog

@@ -253,6 +253,23 @@ describe('ResumeActionPanel auto-resend countdown', () => {
     expect(resumeTaskMock).not.toHaveBeenCalled()
   })
 
+  it('disables Cancel while the auto-resend is in flight (no cancel/resume race)', async () => {
+    // Once the deadline hits zero the auto fire dispatched resumeTask; a
+    // Cancel click in that window would race it (optimistically mark the
+    // banner cancelled while the resumed task starts, or cancel the
+    // just-resumed task). Both buttons stay disabled until task_resumed
+    // resolves the banner (review fix).
+    const deadline = Math.floor(Date.now() / 1000) + 1
+    const container = render(<ResumeActionPanel item={makeResumeItem({ auto_retry_at: deadline, auto_retry_live: true })} />)
+
+    await act(async () => { vi.advanceTimersByTime(1_000) })
+
+    expect(resumeTaskMock).toHaveBeenCalledTimes(1)
+    expect(buttonByText(container, 'Auto-resend').disabled).toBe(true)
+    expect(buttonByText(container, 'Cancel').disabled).toBe(true)
+    expect(cancelUnfinishedTaskMock).not.toHaveBeenCalled()
+  })
+
   it('resolves the banner when task_resumed lands after auto-resend (existing handler contract)', () => {
     // task_resumed (auto or manual) is handled by useActionEvents, which marks
     // the latest unresolved banner resolved:true — the panel then renders the

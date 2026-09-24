@@ -53,6 +53,7 @@ export function LLMSettings({
   const {
     defaultModel,
     providerConfigs,
+    autoRetryMaxSeconds,
     openaiCompatibleProviderNames,
     anthropicCompatibleProviderNames,
     isLoading,
@@ -303,6 +304,7 @@ export function LLMSettings({
         onConfigChange={updateProviderConfig}
         onToggleModel={toggleModel}
         defaultModel={defaultModel}
+        autoRetryMaxSeconds={autoRetryMaxSeconds}
       />
 
       {/* OpenAI-Compatible Provider Accordions */}
@@ -315,6 +317,7 @@ export function LLMSettings({
         onToggleModel={toggleModel}
         onDelete={deleteProvider}
         defaultModel={defaultModel}
+        autoRetryMaxSeconds={autoRetryMaxSeconds}
         labelPrefix="OpenAI Compatible"
       />
 
@@ -328,6 +331,7 @@ export function LLMSettings({
         onToggleModel={toggleModel}
         onDelete={deleteProvider}
         defaultModel={defaultModel}
+        autoRetryMaxSeconds={autoRetryMaxSeconds}
         labelPrefix="Anthropic Compatible"
       />
     </div>

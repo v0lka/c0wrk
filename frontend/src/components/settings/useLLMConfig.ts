@@ -31,6 +31,12 @@ export interface ProviderConfig {
     auto_retry_seconds?: number
 }
 
+/** Compiled-in fallback for the server-published auto-retry upper bound
+ *  (ADR-065): used until GetConfig answers and when an older backend does
+ *  not carry llm.auto_retry_max_seconds. Kept in sync with the backend's
+ *  maxAutoRetrySeconds (3600). */
+const AUTO_RETRY_MAX_FALLBACK = 3600
+
 const defaultProviderConfigs: Record<string, ProviderConfig> = Object.fromEntries(
     FIXED_PROVIDERS.map((p) => [p, { api_key: '', base_url: '', models: [], tls_fingerprint: '' }]),
 )
@@ -38,6 +44,10 @@ const defaultProviderConfigs: Record<string, ProviderConfig> = Object.fromEntrie
 interface UseLLMConfigResult {
     defaultModel: string
     providerConfigs: Record<string, ProviderConfig>
+    /** Server-published inclusive upper bound for auto_retry_seconds
+     *  (ADR-065); falls back to the compiled-in default (3600) when the
+     *  config payload does not carry it (older backend). */
+    autoRetryMaxSeconds: number
     /** Names of providers loaded from the openai_compatible map (non-fixed providers). */
     openaiCompatibleProviderNames: Set<string>
     /** Names of providers loaded from the anthropic_compatible map. */
@@ -125,6 +135,7 @@ export function defaultModelIsValid(
 export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?: (model: string) => void): UseLLMConfigResult {
     const [defaultModel, setDefaultModelState] = useState('')
     const [providerConfigs, setProviderConfigs] = useState<Record<string, ProviderConfig>>({})
+    const [autoRetryMaxSeconds, setAutoRetryMaxSeconds] = useState(AUTO_RETRY_MAX_FALLBACK)
     const [openaiCompatibleProviderNames, setOpenaiCompatibleProviderNames] = useState<Set<string>>(new Set())
     const [anthropicCompatibleProviderNames, setAnthropicCompatibleProviderNames] = useState<Set<string>>(new Set())
     const [isLoading, setIsLoading] = useState(true)
@@ -196,6 +207,9 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
             seedBypassList(result?.proxy?.bypass_list ?? [])
             const llm = result?.llm
             if (llm) {
+                setAutoRetryMaxSeconds(typeof llm.auto_retry_max_seconds === 'number' && llm.auto_retry_max_seconds > 0
+                    ? llm.auto_retry_max_seconds
+                    : AUTO_RETRY_MAX_FALLBACK)
                 const rawDefault = llm.default_model || ''
                 const configs: Record<string, ProviderConfig> = {}
                 const openaiNames = new Set<string>()
@@ -371,6 +385,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
     return {
         defaultModel,
         providerConfigs,
+        autoRetryMaxSeconds,
         openaiCompatibleProviderNames,
         anthropicCompatibleProviderNames,
         isLoading,
