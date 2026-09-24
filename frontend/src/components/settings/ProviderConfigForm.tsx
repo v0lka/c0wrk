@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { ChevronDown, Loader2 } from 'lucide-react'
-import { isOpenAICompatibleProvider } from '@/lib/llm-providers'
+import { isOpenAICompatibleProvider, AUTO_RETRY_MAX_FALLBACK } from '@/lib/llm-providers'
 import { getProviderTLSCertificate } from '@/api/config'
 import { logger } from '@/lib/logger'
 import { useProxyDraftStore, pinGatedByProxy } from '@/stores/proxyDraftStore'
@@ -28,7 +28,6 @@ const AUTO_RETRY_PRESETS = [0, 5, 10, 30, 60, 120, 300] as const
  *  prop, falling back to the compiled-in 3600 when an older backend does
  *  not publish it. */
 const AUTO_RETRY_MIN = 0
-export const AUTO_RETRY_MAX_FALLBACK = 3600
 
 interface ProviderConfigFormProps {
   activeProvider: string

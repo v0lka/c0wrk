@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { getConfig } from '@/api/config'
 import { logger } from '@/lib/logger'
 import { useProxyDraftStore, isProxyEffective } from '@/stores/proxyDraftStore'
-import { FIXED_PROVIDERS, type CompatibleType } from '@/lib/llm-providers'
+import { FIXED_PROVIDERS, type CompatibleType, AUTO_RETRY_MAX_FALLBACK } from '@/lib/llm-providers'
 import { compositeModelId, isCompositeModelId, decomposeCompositeModelId } from '@/lib/modelId'
 import type { ConfigProviderFull } from '@/types/models'
 import { useLLMConfigSave } from './useLLMConfigSave'
@@ -30,12 +30,6 @@ export interface ProviderConfig {
      */
     auto_retry_seconds?: number
 }
-
-/** Compiled-in fallback for the server-published auto-retry upper bound
- *  (ADR-065): used until GetConfig answers and when an older backend does
- *  not carry llm.auto_retry_max_seconds. Kept in sync with the backend's
- *  maxAutoRetrySeconds (3600). */
-const AUTO_RETRY_MAX_FALLBACK = 3600
 
 const defaultProviderConfigs: Record<string, ProviderConfig> = Object.fromEntries(
     FIXED_PROVIDERS.map((p) => [p, { api_key: '', base_url: '', models: [], tls_fingerprint: '' }]),
