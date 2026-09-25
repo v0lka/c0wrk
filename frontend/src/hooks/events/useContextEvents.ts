@@ -5,12 +5,14 @@ import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isContextFillData, isContextCompactionData, isSessionTokensData, isCompactionStartedData, isCompactionFinishedData } from '@/types/events'
 import type { ContextFillData } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
+import type { StepContextTokens } from '@/stores/chatStore'
 import type { TokenInfo, CompactionAvailability } from '@/types/models'
 import { generateMessageId } from '@/lib/ids'
 
 /** Minimal store surface handleContextFill needs — the chatStore subset. */
 export interface ContextFillStore {
   setStepContextFill: (sessionId: string, stepId: string, fill: number) => void
+  setStepContextTokens: (sessionId: string, stepId: string, tokens: Partial<StepContextTokens>) => void
   setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
 }
 
@@ -19,7 +21,9 @@ export interface ContextFillStore {
  *
  * Two shapes arrive on this channel:
  * - Step-scoped copies (plan_step_id set — subagent/executor steps): update
- *   only the step fill and the token totals. A subagent's own fill must not
+ *   only the step fill, the step's own token totals (stepContextTokens map —
+ *   the step reports its own context window, separate from the conductor's)
+ *   and the session token totals. A subagent's own fill must not
  *   clobber the conductor's session-level fill the status bar renders.
  * - Session-root events (no plan_step_id — conductor emissions AND the
  *   SetDisplayContextWindowForModel re-broadcast that corrects the window
@@ -48,6 +52,17 @@ export function handleContextFill(store: ContextFillStore, sessionId: string, da
   }
   if (data.plan_step_id) {
     store.setStepContextFill(sessionId, data.plan_step_id, data.fill_percent)
+    // Step-scoped context_fill also carries the step's own context-window
+    // totals (a subagent/executor step reports its own window, separate from
+    // the conductor's session-level one). Same optional-spread guards as the
+    // session-root branch below: the type guard does not verify the fields, so
+    // an absent value must not overwrite the previously-known totals.
+    if (typeof data.used_tokens === 'number' || typeof data.max_tokens === 'number') {
+      store.setStepContextTokens(sessionId, data.plan_step_id, {
+        ...(typeof data.used_tokens === 'number' ? { used_tokens: data.used_tokens } : {}),
+        ...(typeof data.max_tokens === 'number' ? { max_tokens: data.max_tokens } : {}),
+      })
+    }
     store.setSessionTokens(sessionId, totals)
     return
   }

@@ -7,12 +7,15 @@ import { formatDuration } from '@/lib/formatters'
 import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
+import { ContextFillStatus } from '@/components/layout/ContextFillStatus'
 import { StepTooltip } from './StepTooltip'
 import { ChatMessageRenderer } from './ChatMessageRenderer'
 import { BookmarkableContext } from './BookmarkableContext'
+import { StepChecklistProgress } from './StepChecklistProgress'
 import type { DisplayItem } from '@/types/messages'
 
 type PlanStepItem = Extract<DisplayItem, { kind: 'plan_step' }>
+type ChecklistChild = Extract<DisplayItem, { kind: 'checklist' }>
 
 interface PlanStepBlockProps {
   item: PlanStepItem
@@ -28,6 +31,14 @@ export const PlanStepBlock = memo(function PlanStepBlock({ item }: PlanStepBlock
   const stepContextFill = useChatStore(s => {
     const fills = activeSessionId ? s.stepContextFill[activeSessionId] : undefined
     return fills ? fills[stepId] : undefined
+  })
+  // Per-step token totals from the same step-scoped context_fill events —
+  // feeds the reusable ContextFillStatus indicator its "N of M" tooltip. The
+  // nested lookup returns the stored totals object (stable reference across
+  // unrelated writes — stable selector, no allocation).
+  const stepContextTokens = useChatStore(s => {
+    const tokens = activeSessionId ? s.stepContextTokens[activeSessionId] : undefined
+    return tokens ? tokens[stepId] : undefined
   })
 
   // Collapsed by default; the user can expand it. Reset the override whenever
@@ -57,6 +68,18 @@ export const PlanStepBlock = memo(function PlanStepBlock({ item }: PlanStepBlock
 
   const fullDesc = description || title
 
+  // The step's checklist progress, derived from its own children — a checklist
+  // nested in a plan_step carries this step's stepId, and handleStepTodoUpdate
+  // keeps exactly ONE per level (each update supersedes the previous one), so
+  // the first (and only) checklist child is authoritative. useMemo keeps the
+  // counts stable across renders whose item object is fresh but equal.
+  const checklist = useMemo(
+    () => children.find((c): c is ChecklistChild => c.kind === 'checklist'),
+    [children],
+  )
+  const checklistDone = checklist ? checklist.items.filter(i => i.checked).length : 0
+  const checklistTotal = checklist?.items.length ?? 0
+
   const headerExtra = useMemo(() => (
     <>
       {isRetry && <RefreshCw className="h-3 w-3 text-warning" />}
@@ -66,8 +89,17 @@ export const PlanStepBlock = memo(function PlanStepBlock({ item }: PlanStepBlock
       {status === 'interrupted' && (
         <span className="text-xs text-muted-foreground truncate min-w-0">— interrupted</span>
       )}
+      {checklistTotal > 0 && (
+        <StepChecklistProgress total={checklistTotal} completed={checklistDone} />
+      )}
       {typeof stepContextFill === 'number' && (
-        <span className="text-xs text-muted-foreground ml-2">{Math.round(stepContextFill)}%</span>
+        <span className="ml-2 inline-flex shrink-0">
+          <ContextFillStatus
+            percent={stepContextFill}
+            usedTokens={stepContextTokens?.used_tokens}
+            maxTokens={stepContextTokens?.max_tokens}
+          />
+        </span>
       )}
       {duration !== undefined && (
         <span className="ml-auto text-xs text-muted-foreground/50 bg-muted/50 px-1.5 py-0.5 rounded shrink-0">
@@ -75,7 +107,7 @@ export const PlanStepBlock = memo(function PlanStepBlock({ item }: PlanStepBlock
         </span>
       )}
     </>
-  ), [isRetry, status, error, stepContextFill, duration])
+  ), [isRetry, status, error, stepContextFill, stepContextTokens, checklistTotal, checklistDone, duration])
 
   const icon = useMemo(() => (
     <StatusIcon className={cn('h-3.5 w-3.5 shrink-0', iconClass)} />

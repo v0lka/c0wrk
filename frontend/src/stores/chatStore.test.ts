@@ -988,3 +988,81 @@ describe('scroll position save/clear (session-switch reading positions)', () => 
     expect(useChatStore.getState().scrollPositions).toBe(before)
   })
 })
+
+describe('step context tokens (per-step context_fill used/max totals)', () => {
+  const STEP_TOKENS = { used_tokens: 8500, max_tokens: 20000 }
+
+  beforeEach(() => {
+    useChatStore.setState({ stepContextFill: {}, stepContextTokens: {} })
+  })
+
+  it('setStepContextTokens writes a step entry without touching fills', () => {
+    const store = useChatStore.getState()
+    store.setStepContextFill('s1', 'step_1', 42.5)
+    store.setStepContextTokens('s1', 'step_1', STEP_TOKENS)
+    expect(useChatStore.getState().stepContextTokens).toEqual({
+      s1: { step_1: { used_tokens: 8500, max_tokens: 20000 } },
+    })
+    expect(useChatStore.getState().stepContextFill).toEqual({ s1: { step_1: 42.5 } })
+  })
+
+  it('setStepContextTokens merges partial totals without coercing absent fields', () => {
+    // The optional-spread guard in handleContextFill only forwards fields that
+    // are actually present; merge semantics must keep the previous value for
+    // the absent one (no 0/undefined coercion — same pattern as setSessionTokens).
+    const store = useChatStore.getState()
+    store.setStepContextTokens('s1', 'step_1', STEP_TOKENS)
+    store.setStepContextTokens('s1', 'step_1', { used_tokens: 9000 })
+    expect(useChatStore.getState().stepContextTokens).toEqual({
+      s1: { step_1: { used_tokens: 9000, max_tokens: 20000 } },
+    })
+  })
+
+  it('setStepContextTokens keeps other sessions/steps isolated', () => {
+    const store = useChatStore.getState()
+    store.setStepContextTokens('s1', 'step_1', STEP_TOKENS)
+    store.setStepContextTokens('s2', 'step_1', { used_tokens: 1, max_tokens: 2 })
+    store.setStepContextTokens('s1', 'step_2', { used_tokens: 3, max_tokens: 4 })
+    expect(useChatStore.getState().stepContextTokens).toEqual({
+      s1: {
+        step_1: { used_tokens: 8500, max_tokens: 20000 },
+        step_2: { used_tokens: 3, max_tokens: 4 },
+      },
+      s2: { step_1: { used_tokens: 1, max_tokens: 2 } },
+    })
+  })
+
+  it('clearStepContextFill clears both the fill and the token maps for the session', () => {
+    const store = useChatStore.getState()
+    store.setStepContextFill('s1', 'step_1', 42.5)
+    store.setStepContextTokens('s1', 'step_1', STEP_TOKENS)
+    store.setStepContextFill('s2', 'step_1', 10)
+    store.setStepContextTokens('s2', 'step_1', { used_tokens: 1, max_tokens: 2 })
+    useChatStore.getState().clearStepContextFill('s1')
+    expect(useChatStore.getState().stepContextFill).toEqual({ s2: { step_1: 10 } })
+    expect(useChatStore.getState().stepContextTokens).toEqual({
+      s2: { step_1: { used_tokens: 1, max_tokens: 2 } },
+    })
+  })
+
+  it('clearStepContextFill still clears the token map when no fills are recorded', () => {
+    // The maps can diverge (a session whose steps only ever reported
+    // used/max): the shared clear must not bail out on the empty fill map.
+    const store = useChatStore.getState()
+    store.setStepContextTokens('s1', 'step_1', STEP_TOKENS)
+    useChatStore.getState().clearStepContextFill('s1')
+    expect(useChatStore.getState().stepContextFill).toEqual({})
+    expect(useChatStore.getState().stepContextTokens).toEqual({})
+  })
+
+  it('clearStepContextFill on a session with neither map populated is a no-op', () => {
+    const store = useChatStore.getState()
+    store.setStepContextFill('s2', 'step_1', 10)
+    store.setStepContextTokens('s2', 'step_1', STEP_TOKENS)
+    const beforeFill = useChatStore.getState().stepContextFill
+    const beforeTokens = useChatStore.getState().stepContextTokens
+    useChatStore.getState().clearStepContextFill('missing')
+    expect(useChatStore.getState().stepContextFill).toBe(beforeFill)
+    expect(useChatStore.getState().stepContextTokens).toBe(beforeTokens)
+  })
+})

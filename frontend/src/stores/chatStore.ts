@@ -10,6 +10,12 @@ export { groupMessages } from '@/lib/chatUtils'
 
 // --- State types ---
 
+/** Per-step context-window token totals carried by step-scoped context_fill events. */
+export interface StepContextTokens {
+  used_tokens: number
+  max_tokens: number
+}
+
 interface ChatState {
   // Messages indexed by session: sessionId -> messageId -> message
   messages: Record<string, Record<string, ChatMessageUI>>
@@ -66,6 +72,14 @@ interface ChatState {
   // global wipe that preceded this keyed form erased the badges of whichever
   // session the user switched to.
   stepContextFill: Record<string, Record<string, number>>
+  // Context-window token totals per step, keyed like stepContextFill:
+  // sessionId -> stepId -> { used_tokens, max_tokens }. Fed from the
+  // step-scoped context_fill events (a subagent/executor step reports its own
+  // window, separate from the conductor's session-level totals), so a step
+  // block can render "used of max" the same way the status bar renders the
+  // session-level window. Cleared by clearStepContextFill alongside
+  // stepContextFill.
+  stepContextTokens: Record<string, Record<string, StepContextTokens>>
   // Session tokens: sessionId -> token info
   sessionTokens: Record<string, TokenInfo>
   // Timestamp of the last LIVE update to a session's activity label or
@@ -130,6 +144,7 @@ interface ChatActions {
   setCompacting: (sessionId: string, compacting: boolean) => void
   setCompactionAvailability: (sessionId: string, availability: CompactionAvailability[]) => void
   setStepContextFill: (sessionId: string, stepId: string, fill: number) => void
+  setStepContextTokens: (sessionId: string, stepId: string, tokens: Partial<StepContextTokens>) => void
   clearStepContextFill: (sessionId: string) => void
   setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
   setWorkUnitStatus: (sessionId: string, status: Record<string, WorkUnitBlockStatus>) => void
@@ -229,6 +244,7 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   compacting: {},
   compactionAvailability: {},
   stepContextFill: {},
+  stepContextTokens: {},
   sessionTokens: {},
   runtimeEventAt: {},
   taskFlagsEventAt: {},
@@ -556,12 +572,38 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
     },
   })),
 
+  // Merge ONE step's token totals (setStepContextFill's merge semantics):
+  // absent fields are omitted from the spread so they leave the previously
+  // known values untouched instead of coercing them to 0/undefined.
+  setStepContextTokens: (sessionId, stepId, tokens) => set((s) => {
+    const existing = s.stepContextTokens[sessionId]?.[stepId]
+    return {
+      stepContextTokens: {
+        ...s.stepContextTokens,
+        [sessionId]: {
+          ...s.stepContextTokens[sessionId],
+          [stepId]: { ...existing, ...tokens } as StepContextTokens,
+        },
+      },
+    }
+  }),
+
   // Clears one session's step fills (absent key = nothing to do); other
-  // sessions' fills survive.
+  // sessions' fills survive. Also drops the session's per-step token totals —
+  // both maps are keyed by the same plan-step ids, so they must share the
+  // plan-replace lifecycle (usePlanEvents' handlePlanGenerated clears them via
+  // this one action without extra wiring).
   clearStepContextFill: (sessionId) => set((s) => {
-    if (!(sessionId in s.stepContextFill)) return s
-    const { [sessionId]: _fills, ...rest } = s.stepContextFill
-    return { stepContextFill: rest }
+    const patch: Partial<Pick<ChatState, 'stepContextFill' | 'stepContextTokens'>> = {}
+    if (sessionId in s.stepContextFill) {
+      const { [sessionId]: _fills, ...rest } = s.stepContextFill
+      patch.stepContextFill = rest
+    }
+    if (sessionId in s.stepContextTokens) {
+      const { [sessionId]: _tokens, ...rest } = s.stepContextTokens
+      patch.stepContextTokens = rest
+    }
+    return patch
   }),
 
   // Merge partial token info into the session entry so event-driven updates
