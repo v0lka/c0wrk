@@ -71,7 +71,20 @@ function statusWith(over: Partial<VectorIndexStatus> = {}): VectorIndexStatus {
 let container: HTMLDivElement
 let root: Root
 
+// The provider/device controls are Linux-only (`isLinuxHost()` reads
+// navigator.platform), so pin the platform for this suite: jsdom seeds
+// navigator.platform from the host running the tests, and on the Windows/macOS
+// CI runners the controls would otherwise not render at all. defineProperty
+// (per the project convention, cf. SystemNotificationSettings.test.tsx)
+// shadows the platform string deterministically wherever the suite executes;
+// the non-Linux describe below re-pins it to exercise the gated branch.
+const originalPlatform = navigator.platform
+
 beforeEach(() => {
+  Object.defineProperty(navigator, 'platform', {
+    configurable: true,
+    value: 'Linux x86_64',
+  })
   vi.clearAllMocks()
   mocks.getConfig.mockResolvedValue(configPayload())
   mocks.updateVectorIndexSettings.mockResolvedValue(undefined)
@@ -85,6 +98,10 @@ beforeEach(() => {
 afterEach(() => {
   act(() => {
     root.unmount()
+  })
+  Object.defineProperty(navigator, 'platform', {
+    configurable: true,
+    value: originalPlatform,
   })
 })
 
@@ -496,5 +513,68 @@ describe('VectorIndexSettings — diagnostics', () => {
     await flush()
 
     expect(container.querySelector('[data-testid="vector-restart-hint"]')).toBeNull()
+  })
+})
+
+describe('VectorIndexSettings — non-Linux host (controls gated off)', () => {
+  // Windows/macOS hosts have no CUDA build to configure (the GPU flavor is
+  // linux/amd64 only, ADR-046; win/mac acceleration is a separate future
+  // implementation), so the section must render controls-free: no provider
+  // Combobox, no device picker, no restart hint — and issue NO RPCs at all.
+  beforeEach(() => {
+    Object.defineProperty(navigator, 'platform', {
+      configurable: true,
+      value: 'Win32',
+    })
+  })
+
+  it('hides the provider combobox, device picker, and restart hint; shows diagnostics', async () => {
+    useVectorIndexStore.setState({
+      status: statusWith({
+        requested_execution_provider: 'cuda',
+        device_id: 1,
+      }),
+    })
+    await render()
+    await flush()
+
+    // No provider Combobox trigger anywhere.
+    expect(findTrigger('Embedder execution provider')).toBeUndefined()
+
+    // No device control in either shape (named dropdown or numeric input).
+    expect(findTrigger('Embedder GPU device')).toBeUndefined()
+    expect(
+      container.querySelector<HTMLInputElement>('input[aria-label="Embedder GPU device"]'),
+    ).toBeNull()
+
+    // The muted Linux-only note is present.
+    expect(container.querySelector('[data-testid="vector-controls-unavailable"]')).not.toBeNull()
+
+    // Cross-platform diagnostics still render (status diverges from the
+    // DEFAULT_CONFIG the unhydrated component holds, so the restart hint
+    // is the discriminating case: it must be absent despite divergence).
+    expect(container.querySelector('[data-testid="vector-diagnostics"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="vector-restart-hint"]')).toBeNull()
+  })
+
+  it('issues no RPCs: neither mount-time load/probe nor any save', async () => {
+    await render()
+    await flush()
+    await waitForSave()
+
+    expect(mocks.getConfig).not.toHaveBeenCalled()
+    expect(mocks.listVectorIndexGPUs).not.toHaveBeenCalled()
+    expect(mocks.updateVectorIndexSettings).not.toHaveBeenCalled()
+  })
+
+  it('renders without ever showing the loading state', async () => {
+    // getConfig would never resolve if it were called; rendering settles
+    // immediately past the loading gate even so.
+    mocks.getConfig.mockImplementation(() => new Promise(() => {}))
+    await render()
+    await flush()
+
+    expect(text()).not.toContain('Loading vector index settings')
+    expect(text()).toContain('available on Linux hosts only')
   })
 })

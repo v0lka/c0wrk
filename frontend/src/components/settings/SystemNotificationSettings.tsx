@@ -14,6 +14,7 @@ import {
 } from '@/api/config'
 import { sendSystemNotification } from '@/lib/systemNotifications'
 import { isWailsReady } from '@/api/runtime'
+import { isLinuxHost } from '@/lib/platform'
 import { logger } from '@/lib/logger'
 
 /** Tri-state of the lazy mount-time authorization probe (macOS-only concern:
@@ -34,10 +35,8 @@ const bannerTimeoutOptions: { value: number; label: string }[] = [
 /** The banner-lifetime setting only reaches the OS on Linux, where it becomes
  *  the freedesktop `expire_timeout`; macOS and Windows notification centers
  *  manage banner lifetime themselves, so the control is hidden there rather
- *  than shown as a knob that does nothing. */
-function isLinuxHost(): boolean {
-  return typeof navigator !== 'undefined' && /Linux/i.test(navigator.platform || navigator.userAgent)
-}
+ *  than shown as a knob that does nothing. (isLinuxHost lives in
+ *  @/lib/platform.) */
 
 /**
  * General-tab control for system (OS-level) notifications, mirroring
