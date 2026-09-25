@@ -107,6 +107,15 @@ type TaskFailedResumableData struct {
 	// execution error or the completion outcome) so the banner can explain
 	// WHY the task is resumable rather than always showing a generic message.
 	Reason string `json:"reason,omitempty"`
+	// AutoRetryAt, when non-zero, is the unix timestamp (seconds) at which
+	// the UI auto-resend countdown reaches zero and the frontend re-sends
+	// the failed task (resumeTask). It is stamped only when the failure
+	// cause is a classified rate-limit/overload *llm.Error (see
+	// Manager.maybeAutoRetryAt) from a compatible provider configured with
+	// auto_retry_seconds > 0; absent (0) means no countdown is scheduled
+	// and the user's manual Resume/Cancel decision is final. There is no
+	// backend timer (ADR-065): the deadline is advisory to the UI.
+	AutoRetryAt int64 `json:"auto_retry_at,omitempty"`
 }
 
 // ErrorData is the payload for "error" events.

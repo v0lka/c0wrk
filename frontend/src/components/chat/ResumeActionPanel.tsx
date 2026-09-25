@@ -1,4 +1,4 @@
-import { AlertTriangle, RefreshCw, X, Check } from 'lucide-react'
+import { AlertTriangle, RefreshCw, X, Check, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useChatStore } from '@/stores/chatStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
@@ -7,12 +7,12 @@ import { resumeTask, cancelUnfinishedTask } from '@/api/chat'
 import { generateMessageId } from '@/lib/ids'
 import type { DisplayItem } from '@/types/messages'
 import { getResumeResolution, resumeResolved } from '@/types/messages'
+import { readAutoRetryAt, stripLiveKeys, useAutoRetryCountdown } from './useAutoRetryCountdown'
 
 type ResumeItem = Extract<DisplayItem, { kind: 'resume_action' }>
 
 export function ResumeActionPanel({ item }: { item: ResumeItem }) {
-  const { sessionId, content, metadata } = item.message
-  const updateMessage = useChatStore(s => s.updateMessage)
+  const { content, metadata } = item.message
 
   const decision = getResumeResolution(metadata)
 
@@ -42,7 +42,25 @@ export function ResumeActionPanel({ item }: { item: ResumeItem }) {
   // reload) — render nothing at the stream position.
   if (metadata?.resolved === true) return null
 
+  return <ResumeBanner item={item} content={content} />
+}
+
+function ResumeBanner({ item, content }: { item: ResumeItem; content: string }) {
+  const { sessionId, id: messageId, metadata } = item.message
+  const updateMessage = useChatStore(s => s.updateMessage)
+  const { counting, secondsLeft, autoResending, stop } = useAutoRetryCountdown(true, sessionId, messageId, readAutoRetryAt(metadata))
+
   const handleResume = async () => {
+    // A manual click while the auto-resend is already in flight would race
+    // it: the optimistic marking below flips the banner to 'resumed', but
+    // the in-flight resumeTask would then hit the active-session guard (or
+    // double-resume) — the button is disabled at exactly 0, and this guard
+    // is the belt to that suspenders.
+    if (autoResending) return
+    // ANY manual click stops the countdown optimistically — before the RPC
+    // round-trip: this click IS the resume the timer would have performed,
+    // so the auto fire is disarmed and the manual flow proceeds alone.
+    stop()
     // Snapshot the original metadata so the optimistic 'resumed' marking can be
     // reverted if the backend rejects the resume (e.g. the session is archived —
     // the manager guard returns ErrSessionArchived). updateMessage shallow-merges
@@ -59,7 +77,15 @@ export function ResumeActionPanel({ item }: { item: ResumeItem }) {
     } catch (err) {
       // Revert the optimistic 'resumed' state so the panel stays actionable,
       // then surface the failure in the chat (mirrors useMessageSender).
-      updateMessage(sessionId, item.message.id, { metadata: originalMetadata })
+      // The revert strips the live auto-resend keys: the optimistic marking
+      // unmounted the banner (killing this hook instance and its one-shot
+      // disarm), so reverting the raw metadata would remount it with a fresh
+      // firedRef=false and RE-ARM the countdown toward the unchanged future
+      // deadline. A failed manual resume degrades to the plain manual banner,
+      // exactly like the auto-fire failure path.
+      updateMessage(sessionId, item.message.id, {
+        metadata: originalMetadata ? stripLiveKeys(originalMetadata) : undefined,
+      })
       const errorMessage = err instanceof Error ? err.message : String(err)
       useChatStore.getState().addMessage(sessionId, {
         id: generateMessageId(),
@@ -72,6 +98,9 @@ export function ResumeActionPanel({ item }: { item: ResumeItem }) {
   }
 
   const handleCancel = () => {
+    // ANY manual click stops the countdown optimistically — the user's
+    // explicit discard is the final decision; the auto fire is disarmed.
+    stop()
     updateMessage(sessionId, item.message.id, { metadata: resumeResolved('cancelled') })
     // The backend marks the unfinished task cancelled and emits NO terminal
     // event on this hard-discard path — so clear the SINGLE live unfinished-task
@@ -99,11 +128,24 @@ export function ResumeActionPanel({ item }: { item: ResumeItem }) {
         <span>Task Failed</span>
       </div>
       <p className="mt-1.5 text-xs text-muted-foreground">{content}</p>
+      {counting && (
+        <p className="mt-1 text-xs text-muted-foreground">Auto-retry in {secondsLeft}s</p>
+      )}
       <div className="mt-2 flex flex-wrap gap-2">
-        <Button size="sm" onClick={handleResume} className="text-xs">
-          <RefreshCw className="h-3 w-3 mr-1.5" />Resume
+        <Button size="sm" onClick={handleResume} disabled={autoResending} className="text-xs">
+          {autoResending ? (
+            <><Loader2 className="h-3 w-3 mr-1.5 animate-spin" />Auto-resend…</>
+          ) : (
+            <><RefreshCw className="h-3 w-3 mr-1.5" />Resume{counting ? ` (${secondsLeft}s)` : ''}</>
+          )}
         </Button>
-        <Button size="sm" variant="outline" onClick={handleCancel} className="text-xs">
+        {/* Cancel mirrors the Resume gate while the auto-resend is in
+            flight: the auto fire already dispatched resumeTask, so a Cancel
+            click now would race it (optimistically mark the banner
+            cancelled while the resumed task starts running, or cancel the
+            just-resumed task). The window is seconds at most — until the
+            task_resumed event resolves the banner. */}
+        <Button size="sm" variant="outline" onClick={handleCancel} disabled={autoResending} className="text-xs">
           <X className="h-3 w-3 mr-1.5" />Cancel
         </Button>
       </div>

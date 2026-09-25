@@ -3464,3 +3464,206 @@ func TestNotificationBannerTimeoutDefault(t *testing.T) {
 		t.Errorf("explicit 0 was overwritten with %d", got)
 	}
 }
+
+// TestAutoRetrySeconds_ParsesAndSurfacesInProviderList pins the compatible-only
+// schema of the per-provider automatic retry timer: llm.openai_compatible.<name>
+// .auto_retry_seconds and llm.anthropic_compatible.<name>.auto_retry_seconds
+// parse from YAML, absent keys read as 0, and GetAllProviderConfigs surfaces
+// the value for compatible providers while the fixed providers (anthropic,
+// chatgpt — which have no such knob in their schema) always report 0.
+func TestAutoRetrySeconds_ParsesAndSurfacesInProviderList(t *testing.T) {
+	content := `llm:
+  default_model: "qwen3"
+  anthropic:
+    api_key: "k"
+    models:
+      - "claude-sonnet-4-20250514"
+  openai_compatible:
+    selfhosted:
+      base_url: "https://llm.lan:8443/v1"
+      api_key: "k"
+      models:
+        - "qwen3"
+      auto_retry_seconds: 30
+    plain:
+      base_url: "http://127.0.0.1:1234/v1"
+      api_key: "k"
+      models:
+        - "llama"
+  anthropic_compatible:
+    gateway:
+      base_url: "https://claude.lan:8443"
+      api_key: "k"
+      models:
+        - "claude-sonnet-4-20250514"
+      auto_retry_seconds: 30
+    plain-gw:
+      base_url: "http://127.0.0.2:8443"
+      api_key: "k"
+      models:
+        - "claude-haiku"
+  chatgpt:
+    api_key: "k"
+    models:
+      - "gpt-4o"
+`
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if got := cfg.LLM.OpenAICompatible["selfhosted"].AutoRetrySeconds; got != 30 {
+		t.Errorf("openai_compatible auto_retry_seconds = %d, want 30", got)
+	}
+	if got := cfg.LLM.OpenAICompatible["plain"].AutoRetrySeconds; got != 0 {
+		t.Errorf("absent openai_compatible auto_retry_seconds = %d, want 0", got)
+	}
+	if got := cfg.LLM.AnthropicCompatible["gateway"].AutoRetrySeconds; got != 30 {
+		t.Errorf("anthropic_compatible auto_retry_seconds = %d, want 30", got)
+	}
+	if got := cfg.LLM.AnthropicCompatible["plain-gw"].AutoRetrySeconds; got != 0 {
+		t.Errorf("absent anthropic_compatible auto_retry_seconds = %d, want 0", got)
+	}
+
+	retry := make(map[string]int)
+	for _, p := range cfg.LLM.GetAllProviderConfigs() {
+		retry[p.Name] = p.AutoRetrySeconds
+	}
+	want := map[string]int{
+		"selfhosted": 30,
+		"gateway":    30,
+		"plain":      0,
+		"plain-gw":   0,
+		"anthropic":  0, // fixed providers: no knob, always 0
+		"chatgpt":    0, // fixed providers: no knob, always 0
+	}
+	for name, wantSeconds := range want {
+		got, ok := retry[name]
+		if !ok {
+			t.Errorf("provider %q missing from GetAllProviderConfigs", name)
+			continue
+		}
+		if got != wantSeconds {
+			t.Errorf("GetAllProviderConfigs[%q].AutoRetrySeconds = %d, want %d", name, got, wantSeconds)
+		}
+	}
+}
+
+// The timer value must round-trip through Save→Load unchanged, and providers
+// without it must not gain an auto_retry_seconds key in the written YAML
+// (the field is omitempty).
+func TestAutoRetrySeconds_SaveRoundTripAndOmitEmpty(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+	cfg.LLM.DefaultModel = "qwen3"
+	cfg.LLM.OpenAICompatible = map[string]OpenAICompatibleConfig{
+		"selfhosted": {BaseURL: "https://llm.lan:8443/v1", APIKey: "k", Models: []string{"qwen3"}, AutoRetrySeconds: 30},
+		"plain":      {BaseURL: "http://127.0.0.1:1234/v1", APIKey: "k", Models: []string{"llama"}},
+	}
+	cfg.LLM.AnthropicCompatible = map[string]AnthropicCompatibleConfig{
+		"gateway": {BaseURL: "https://claude.lan:8443", APIKey: "k", Models: []string{"claude-sonnet-4-20250514"}, AutoRetrySeconds: 45},
+	}
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading saved config: %v", err)
+	}
+	// Exactly two auto_retry_seconds keys: the two timer-enabled providers.
+	// A third would mean omitempty is not doing its job.
+	if got := strings.Count(string(raw), "auto_retry_seconds"); got != 2 {
+		t.Errorf("saved YAML has %d auto_retry_seconds keys, want 2 (omitempty must drop disabled providers)\n%s", got, raw)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := loaded.LLM.OpenAICompatible["selfhosted"].AutoRetrySeconds; got != 30 {
+		t.Errorf("round-tripped openai auto_retry_seconds = %d, want 30", got)
+	}
+	if got := loaded.LLM.AnthropicCompatible["gateway"].AutoRetrySeconds; got != 45 {
+		t.Errorf("round-tripped anthropic auto_retry_seconds = %d, want 45", got)
+	}
+	if got := loaded.LLM.OpenAICompatible["plain"].AutoRetrySeconds; got != 0 {
+		t.Errorf("disabled provider round-tripped with auto_retry_seconds %d, want 0", got)
+	}
+}
+
+// TestAutoRetrySeconds_RejectsOutOfRange pins the [0, 3600] bound (ADR-065):
+// Load rejects negative and oversized values for both compatible provider
+// kinds — the timer must never arm on an unusable window while the banner
+// still promises an auto-resend.
+func TestAutoRetrySeconds_RejectsOutOfRange(t *testing.T) {
+	tests := []struct {
+		name    string
+		yamlVal int
+	}{
+		{"negative", -30},
+		{"oversized", 3601},
+		{"absurdly large", 1_000_000_000},
+	}
+	for _, tt := range tests {
+		t.Run("openai_compatible "+tt.name, func(t *testing.T) {
+			content := fmt.Sprintf(`llm:
+  default_model: "qwen3"
+  openai_compatible:
+    selfhosted:
+      base_url: "http://127.0.0.1:1234/v1"
+      api_key: "k"
+      auto_retry_seconds: %d
+      models: ["qwen3"]
+`, tt.yamlVal)
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if _, err := Load(path); err == nil {
+				t.Errorf("Load accepted auto_retry_seconds %d, want rejection", tt.yamlVal)
+			}
+		})
+		t.Run("anthropic_compatible "+tt.name, func(t *testing.T) {
+			content := fmt.Sprintf(`llm:
+  default_model: "claude-sonnet-4-20250514"
+  anthropic_compatible:
+    gateway:
+      base_url: "https://claude.lan:8443"
+      api_key: "k"
+      auto_retry_seconds: %d
+      models: ["claude-sonnet-4-20250514"]
+`, tt.yamlVal)
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if _, err := Load(path); err == nil {
+				t.Errorf("Load accepted auto_retry_seconds %d, want rejection", tt.yamlVal)
+			}
+		})
+	}
+	// The boundary itself must stay valid.
+	content := `llm:
+  default_model: "qwen3"
+  openai_compatible:
+    selfhosted:
+      base_url: "http://127.0.0.1:1234/v1"
+      api_key: "k"
+      auto_retry_seconds: 3600
+      models: ["qwen3"]
+`
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Errorf("Load rejected boundary auto_retry_seconds 3600: %v", err)
+	}
+}

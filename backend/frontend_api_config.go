@@ -104,6 +104,11 @@ func (f *FrontendAPI) experimentalFeaturesEnabled() bool {
 func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 	resp := ConfigLLMResponse{
 		DefaultModel: f.config.LLM.DefaultModel,
+		// The clamping bound for the Settings form's auto-retry interval
+		// input: the same constant validate() and UpdateLLMConfig enforce
+		// (ADR-065). Published so the frontend has a single source of truth
+		// instead of a duplicated constant.
+		AutoRetryMaxSeconds: config.MaxAutoRetrySeconds(),
 		Anthropic: ConfigProviderFull{
 			APIKey: maskAPIKey(f.config.LLM.Anthropic.APIKey),
 			Models: f.config.LLM.Anthropic.Models,
@@ -117,18 +122,20 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 	}
 	for name, cfg := range f.config.LLM.OpenAICompatible {
 		resp.OpenAICompatible[name] = ConfigProviderFull{
-			APIKey:         maskAPIKey(cfg.APIKey),
-			BaseURL:        cfg.BaseURL,
-			Models:         cfg.Models,
-			TLSFingerprint: cfg.TLSFingerprint,
+			APIKey:           maskAPIKey(cfg.APIKey),
+			BaseURL:          cfg.BaseURL,
+			Models:           cfg.Models,
+			TLSFingerprint:   cfg.TLSFingerprint,
+			AutoRetrySeconds: cfg.AutoRetrySeconds,
 		}
 	}
 	for name, cfg := range f.config.LLM.AnthropicCompatible {
 		resp.AnthropicCompatible[name] = ConfigProviderFull{
-			APIKey:         maskAPIKey(cfg.APIKey),
-			BaseURL:        cfg.BaseURL,
-			Models:         cfg.Models,
-			TLSFingerprint: cfg.TLSFingerprint,
+			APIKey:           maskAPIKey(cfg.APIKey),
+			BaseURL:          cfg.BaseURL,
+			Models:           cfg.Models,
+			TLSFingerprint:   cfg.TLSFingerprint,
+			AutoRetrySeconds: cfg.AutoRetrySeconds,
 		}
 	}
 	return resp
@@ -261,6 +268,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 				Models:             ocReq.Models,
 				TLSFingerprint:     resolveTLSFingerprint(ocReq.TLSFingerprint, existing.TLSFingerprint, exists),
 				OutputTokenReserve: outputReserve,
+				AutoRetrySeconds:   resolveAutoRetrySeconds(ocReq.AutoRetrySeconds, existing.AutoRetrySeconds, exists),
 			}
 		}
 		candidate.OpenAICompatible = newMap
@@ -283,6 +291,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 				Models:             acReq.Models,
 				TLSFingerprint:     resolveTLSFingerprint(acReq.TLSFingerprint, existing.TLSFingerprint, exists),
 				OutputTokenReserve: outputReserve,
+				AutoRetrySeconds:   resolveAutoRetrySeconds(acReq.AutoRetrySeconds, existing.AutoRetrySeconds, exists),
 			}
 		}
 		candidate.AnthropicCompatible = newMap
@@ -307,7 +316,35 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		}
 	}
 
+	// Reject out-of-range auto_retry_seconds before anything is committed
+	// (ADR-065): the same [0, 3600] bound Load enforces. The Settings UI
+	// clamps its own input, but this RPC is a trust boundary for arbitrary
+	// callers (devtools, future scripts), so the clamp cannot be assumed.
+	for name, oc := range candidate.OpenAICompatible {
+		if oc.AutoRetrySeconds < 0 || oc.AutoRetrySeconds > config.MaxAutoRetrySeconds() {
+			f.configMu.Unlock()
+			return fmt.Errorf("invalid LLM configuration: openai_compatible %q auto_retry_seconds must be within [0, %d], got %d",
+				name, config.MaxAutoRetrySeconds(), oc.AutoRetrySeconds)
+		}
+	}
+	for name, ac := range candidate.AnthropicCompatible {
+		if ac.AutoRetrySeconds < 0 || ac.AutoRetrySeconds > config.MaxAutoRetrySeconds() {
+			f.configMu.Unlock()
+			return fmt.Errorf("invalid LLM configuration: anthropic_compatible %q auto_retry_seconds must be within [0, %d], got %d",
+				name, config.MaxAutoRetrySeconds(), ac.AutoRetrySeconds)
+		}
+	}
+
 	f.config.LLM = candidate
+
+	// Republish the auto-retry interval snapshot (ADR-065) from the committed
+	// candidate BEFORE the persist: the session-layer resolver reads it
+	// lock-free, and doing it under configMu keeps the snapshot exactly in
+	// lockstep with f.config.LLM — a failed persist rolls f.config.LLM back
+	// below, and this same path republishes the restored previous state.
+	if f.app != nil {
+		f.app.publishAutoRetryIntervals(f.config)
+	}
 
 	// Persist while configMu is held so a failed disk write can restore the
 	// exact prior LLM state before any reader, rebuild, or frontend RPC result
@@ -316,6 +353,13 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 	// request to consumers.
 	if err := config.Save(f.config, f.configPath); err != nil {
 		f.config.LLM = previous
+		if f.app != nil {
+			f.app.publishAutoRetryIntervals(f.config)
+		}
+		// Release configMu before returning: a failed persist must leave the
+		// config stack as usable as a rejected request. Holding the lock here
+		// would deadlock every GetConfig/Settings RPC on the first persist
+		// failure (full disk, missing directory, permissions).
 		f.configMu.Unlock()
 		return fmt.Errorf("failed to persist LLM config: %w", err)
 	}
@@ -1840,6 +1884,23 @@ func resolveTLSFingerprint(requested *string, persisted string, providerExists b
 		return persisted
 	}
 	return ""
+}
+
+// resolveAutoRetrySeconds applies the pointer sentinel for the per-provider
+// session-layer auto-retry interval (compatible providers only): nil means
+// "keep the persisted interval", which is what a debounced partial save from
+// the settings dialog sends when only credentials or the model list changed —
+// without this, every such save would silently reset the timer. A non-nil
+// pointer applies verbatim, so an explicit 0 is the deliberate "disable the
+// retry timer" signal.
+func resolveAutoRetrySeconds(requested *int, persisted int, providerExists bool) int {
+	if requested != nil {
+		return *requested
+	}
+	if providerExists {
+		return persisted
+	}
+	return 0
 }
 
 // applyListProviderModelsOverrides merges draft credentials from the settings

@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { handleContextFill, handleCompactionStarted, handleCompactionFinished, type ContextFillStore } from '@/hooks/events/useContextEvents'
+import { handleContextFill, handleCompactionStarted, handleCompactionFinished, stripAutoRetryFromBanner, type ContextFillStore } from '@/hooks/events/useContextEvents'
 import type { ContextFillData } from '@/types/events'
 import type { TokenInfo, CompactionAvailability } from '@/types/models'
 import type { StepContextTokens } from '@/stores/chatStore'
+import type { ChatMessageUI } from '@/types/messages'
 
 interface Recorded {
   stepFill: Array<{ sessionId: string; stepId: string; fill: number }>
@@ -116,8 +117,65 @@ describe('handleContextFill', () => {
   })
 })
 
-describe('handleCompactionStarted / handleCompactionFinished', () => {
-  interface CompactionRecorded {
+describe('stripAutoRetryFromBanner', () => {
+  function makeStripStore() {
+    const updates: Array<{ sessionId: string; messageId: string; metadata: Record<string, unknown> }> = []
+    return {
+      updates,
+      updateMessage: (sessionId: string, messageId: string, updates2: Partial<{ metadata: Record<string, unknown> }>) => {
+        updates.push({ sessionId, messageId, metadata: updates2.metadata ?? {} })
+      },
+    }
+  }
+  function bannerMsg(id: string, metadata: Record<string, unknown> | undefined) {
+    return { id, sessionId: 'sess-1', type: 'task_failed_resumable', content: 'x', metadata, timestamp: 1 } as unknown as ChatMessageUI
+  }
+
+  it('strips the live auto-resend keys from the latest unresolved live banner', () => {
+    const store = makeStripStore()
+    stripAutoRetryFromBanner(store, 'sess-1', [
+      bannerMsg('older', { resolved: false, auto_retry_at: 100, auto_retry_live: true }),
+      bannerMsg('latest', { resolved: false, auto_retry_at: 200, auto_retry_live: true, decision: 'none' }),
+    ])
+    // Only the LAST unresolved banner is touched. Key removal is expressed as
+    // undefined overwrites (updateMessage shallow-merges metadata), so the
+    // live keys read as absent afterwards; the rest of the metadata survives.
+    expect(store.updates).toHaveLength(1)
+    expect(store.updates[0]).toEqual({
+      sessionId: 'sess-1',
+      messageId: 'latest',
+      metadata: { resolved: false, decision: 'none', auto_retry_at: undefined, auto_retry_live: undefined },
+    })
+  })
+
+  it('leaves a restored banner (deadline without the live flag) untouched', () => {
+    const store = makeStripStore()
+    // A history-reload row carries the raw persisted payload (auto_retry_at
+    // with no auto_retry_live): it never counts down, so there is nothing
+    // to strip.
+    stripAutoRetryFromBanner(store, 'sess-1', [
+      bannerMsg('restored', { resolved: false, auto_retry_at: 100 }),
+    ])
+    expect(store.updates).toHaveLength(0)
+  })
+
+  it('skips resolved banners and is a no-op when no live deadline exists', () => {
+    const store = makeStripStore()
+    stripAutoRetryFromBanner(store, 'sess-1', [
+      bannerMsg('resolved', { resolved: true, auto_retry_at: 100, auto_retry_live: true }),
+      bannerMsg('no-deadline', { resolved: false }),
+    ])
+    expect(store.updates).toHaveLength(0)
+  })
+
+  it('does nothing when there is no banner at all', () => {
+    const store = makeStripStore()
+    stripAutoRetryFromBanner(store, 'sess-1', [{ id: 'other', sessionId: 'sess-1', type: 'assistant', content: 'hi', timestamp: 1 } as unknown as ChatMessageUI])
+    expect(store.updates).toHaveLength(0)
+  })
+})
+
+describe('handleCompactionStarted / handleCompactionFinished', () => {  interface CompactionRecorded {
     compacting: Array<{ sessionId: string; value: boolean }>
     compactionAvailability: Array<{ sessionId: string; value: CompactionAvailability[] }>
     activity: Array<{ sessionId: string; status: string | null }>

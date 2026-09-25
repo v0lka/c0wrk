@@ -4,9 +4,10 @@ import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isContextFillData, isContextCompactionData, isSessionTokensData, isCompactionStartedData, isCompactionFinishedData } from '@/types/events'
 import type { ContextFillData } from '@/types/events'
-import { useChatStore } from '@/stores/chatStore'
+import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import type { StepContextTokens } from '@/stores/chatStore'
 import type { TokenInfo, CompactionAvailability } from '@/types/models'
+import type { ChatMessageUI } from '@/types/messages'
 import { generateMessageId } from '@/lib/ids'
 
 /** Minimal store surface handleContextFill needs — the chatStore subset. */
@@ -91,6 +92,40 @@ export interface CompactionStore {
 export function handleCompactionStarted(store: CompactionStore, sessionId: string): void {
   store.setCompacting(sessionId, true)
   store.setActivityStatus(sessionId, 'Compacting')
+}
+
+/** Minimal store surface stripAutoRetryFromBanner needs. */
+export interface AutoRetryStripStore {
+  updateMessage: (sessionId: string, messageId: string, updates: Partial<ChatMessageUI>) => void
+}
+
+/**
+ * Strips the live auto-resend keys (`auto_retry_at` + `auto_retry_live`)
+ * from the latest unresolved task_failed_resumable banner when a manual
+ * compaction starts. Compaction is an operator takeover needing an idle
+ * window: a countdown firing mid-compaction would call resumeTask into the
+ * compacting guard and fail. Without this strip, the purely-local countdown
+ * would run to 0, flip the banner to the disabled "Auto-resend…" state, and
+ * strand it there — the `task_resumed` event that resolves the banner never
+ * comes. After the strip the panel re-reads metadata, finds no live keys,
+ * and renders the plain manual Resume/Cancel banner.
+ */
+export function stripAutoRetryFromBanner(store: AutoRetryStripStore, sessionId: string, msgs: ChatMessageUI[]): void {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]!
+    if (m.type !== 'task_failed_resumable' || m.metadata?.resolved === true) continue
+    // No live deadline on the banner (auto-resend never armed, restored
+    // row, or already stripped): nothing to do — and never rewrite metadata
+    // wholesale.
+    if (m.metadata?.auto_retry_live !== true) return
+    // updateMessage shallow-merges metadata, so key removal must be explicit
+    // undefined overwrites (they drop out of JSON serialization; the
+    // countdown reads auto_retry_live === true, so undefined is "absent").
+    store.updateMessage(sessionId, m.id, {
+      metadata: { ...m.metadata, auto_retry_at: undefined, auto_retry_live: undefined },
+    })
+    return
+  }
 }
 
 /**
@@ -227,6 +262,11 @@ export function useContextEvents(sessionId: string | null): void {
       onSessionEvent(sessionId, 'compaction_started', (data) => {
         if (!isCompactionStartedData(data)) { reportDroppedEvent('compaction_started', data); return }
         handleCompactionStarted(useChatStore.getState(), sessionId)
+        // Compaction is an operator takeover (idle window required): strip
+        // the banner's live countdown so it cannot run to 0, fire resumeTask
+        // into the compacting guard, and strand itself in the disabled
+        // "Auto-resend…" state.
+        stripAutoRetryFromBanner(useChatStore.getState(), sessionId, selectSessionMessages(useChatStore.getState(), sessionId))
       }),
     )
     cleanups.push(

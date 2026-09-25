@@ -1526,7 +1526,7 @@ func TestEmitResumableIfUnfinished_EmitsWhenUnfinishedTaskExists(t *testing.T) {
 	drainEvents(eventChan)
 
 	// Call the method under test.
-	manager.emitResumableIfUnfinished("sess-1", "Network error during execution.")
+	manager.emitResumableIfUnfinished("sess-1", "Network error during execution.", nil)
 
 	// Expect a task_failed_resumable event.
 	select {
@@ -1570,7 +1570,7 @@ func TestEmitResumableIfUnfinished_NoEventWhenNoUnfinishedTask(t *testing.T) {
 	drainEvents(eventChan)
 
 	// Call the method under test.
-	manager.emitResumableIfUnfinished("sess-1", "")
+	manager.emitResumableIfUnfinished("sess-1", "", nil)
 
 	// No event should be emitted.
 	select {
@@ -1590,7 +1590,7 @@ func TestEmitResumableIfUnfinished_NoEventWithoutTaskStore(t *testing.T) {
 
 	drainEvents(eventChan)
 
-	manager.emitResumableIfUnfinished("sess-1", "")
+	manager.emitResumableIfUnfinished("sess-1", "", nil)
 
 	select {
 	case event := <-eventChan:

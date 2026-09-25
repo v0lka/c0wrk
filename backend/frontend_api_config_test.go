@@ -301,7 +301,81 @@ func newTestAPI(t *testing.T) (*FrontendAPI, *mockBuilder, string) {
 	return f, mock, cfgPath
 }
 
+// newTestAPIWithApp is newTestAPI with a real Application attached, for tests
+// that exercise the app-owned atomic snapshots (the auto-retry interval
+// snapshot republished by UpdateLLMConfig, ADR-065).
+func newTestAPIWithApp(t *testing.T) (*FrontendAPI, *mockBuilder, string, *Application) {
+	t.Helper()
+	f, mock, cfgPath := newTestAPI(t)
+	app := &Application{}
+	app.publishAutoRetryIntervals(f.config)
+	f.app = app
+	return f, mock, cfgPath, app
+}
+
 // --- UpdateLLMConfig ---
+
+// TestUpdateLLMConfig_RepublishesAutoRetryIntervals verifies the atomic
+// snapshot contract (ADR-065): UpdateLLMConfig republishes the
+// provider→auto_retry_seconds snapshot after committing the candidate, so the
+// lock-free session-layer resolver observes Settings changes for the next
+// armed failure — without ever reading the live config maps (which would race
+// the map replacement under configMu). A rejected update (unresolvable
+// default model) must leave the snapshot untouched.
+func TestUpdateLLMConfig_RepublishesAutoRetryIntervals(t *testing.T) {
+	f, _, _, app := newTestAPIWithApp(t)
+	f.configMu.Lock()
+	f.config.LLM.OpenAICompatible = map[string]config.OpenAICompatibleConfig{
+		"lmstudio": {Models: []string{"qwen3-6"}, AutoRetrySeconds: 30},
+		"vllm":     {Models: []string{"llama-4"}, AutoRetrySeconds: 0},
+	}
+	f.configMu.Unlock()
+	app.publishAutoRetryIntervals(f.config)
+
+	interval := func() int { return app.autoRetryIntervalSnapshot()["lmstudio"] }
+	if got := interval(); got != 30 {
+		t.Fatalf("pre-update snapshot lmstudio interval = %d, want 30", got)
+	}
+
+	// Commit an update that changes lmstudio's interval to 60 (nil keeps 30,
+	// so pass the value explicitly) and drops the provider entirely for vllm.
+	sixty := 60
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "lmstudio/qwen3-6",
+		OpenAICompatible: map[string]ProviderConfigRequest{
+			"lmstudio": {Models: []string{"qwen3-6"}, AutoRetrySeconds: &sixty},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateLLMConfig: %v", err)
+	}
+	snapshot := app.autoRetryIntervalSnapshot()
+	if snapshot == nil {
+		t.Fatal("snapshot missing after UpdateLLMConfig")
+	}
+	if got := snapshot["lmstudio"]; got != 60 {
+		t.Errorf("post-update lmstudio interval = %d, want 60", got)
+	}
+	if got, ok := snapshot["vllm"]; ok && got != 0 {
+		t.Errorf("dropped provider vllm still resolves to %d (present=%t), want absent/0", got, ok)
+	}
+
+	// A rejected update (default model unresolvable) must not touch the
+	// snapshot: the candidate never commits.
+	before := app.autoRetryIntervals.Load()
+	err = f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "nope/missing-model",
+		OpenAICompatible: map[string]ProviderConfigRequest{
+			"lmstudio": {Models: []string{"qwen3-6"}, AutoRetrySeconds: &sixty},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected an error for an unresolvable default model")
+	}
+	if app.autoRetryIntervals.Load() != before {
+		t.Error("rejected update changed the snapshot pointer")
+	}
+}
 
 func TestUpdateLLMConfig_PersistsAndRebuilds(t *testing.T) {
 	f, mock, cfgPath := newTestAPI(t)
@@ -443,6 +517,12 @@ func TestUpdateLLMConfig_RollsBackWhenPersistFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected persist failure")
 	}
+	// The persist-failure path must release configMu: a stuck lock deadlocks
+	// every GetConfig/Settings RPC after the first failed disk write.
+	if !f.configMu.TryLock() {
+		t.Fatal("configMu still held after failed persist")
+	}
+	f.configMu.Unlock()
 	if got := f.config.LLM.DefaultModel; got != "claude-3-opus" {
 		t.Errorf("default_model after failed persist = %q, want claude-3-opus", got)
 	}
@@ -454,6 +534,54 @@ func TestUpdateLLMConfig_RollsBackWhenPersistFails(t *testing.T) {
 	}
 	if mock.rebuildRouterCalls != 0 {
 		t.Errorf("RebuildRouter calls after failed persist = %d, want 0", mock.rebuildRouterCalls)
+	}
+}
+
+// TestUpdateLLMConfig_RejectsOutOfRangeAutoRetry verifies the Settings RPC
+// trust boundary for per-provider auto_retry_seconds (ADR-065): the UI clamps
+// its own input, but the RPC accepts arbitrary values, so negative and
+// oversized intervals are rejected before any state mutation.
+func TestUpdateLLMConfig_RejectsOutOfRangeAutoRetry(t *testing.T) {
+	for name, seconds := range map[string]int{
+		"negative":  -30,
+		"oversized": 3601,
+	} {
+		t.Run("openai_compatible "+name, func(t *testing.T) {
+			f, _, _ := newTestAPI(t)
+			v := seconds
+			err := f.UpdateLLMConfig(LLMFullConfigRequest{
+				OpenAICompatible: map[string]ProviderConfigRequest{
+					"lmstudio": {BaseURL: "http://localhost:1234/v1", Models: []string{"test-model"}, AutoRetrySeconds: &v},
+				},
+			})
+			if err == nil {
+				t.Errorf("UpdateLLMConfig accepted auto_retry_seconds %d, want rejection", seconds)
+			}
+			f.configMu.RLock()
+			got := f.config.LLM.OpenAICompatible["lmstudio"].AutoRetrySeconds
+			f.configMu.RUnlock()
+			if got != 0 {
+				t.Errorf("config mutated to auto_retry_seconds %d despite rejection", got)
+			}
+		})
+		t.Run("anthropic_compatible "+name, func(t *testing.T) {
+			f, _, _ := newTestAPI(t)
+			v := seconds
+			err := f.UpdateLLMConfig(LLMFullConfigRequest{
+				AnthropicCompatible: map[string]ProviderConfigRequest{
+					"gateway": {BaseURL: "https://claude.lan:8443", Models: []string{"test-model"}, AutoRetrySeconds: &v},
+				},
+			})
+			if err == nil {
+				t.Errorf("UpdateLLMConfig accepted auto_retry_seconds %d, want rejection", seconds)
+			}
+			f.configMu.RLock()
+			got := f.config.LLM.AnthropicCompatible["gateway"].AutoRetrySeconds
+			f.configMu.RUnlock()
+			if got != 0 {
+				t.Errorf("config mutated to auto_retry_seconds %d despite rejection", got)
+			}
+		})
 	}
 }
 
@@ -3774,6 +3902,212 @@ func TestResolveTLSFingerprint(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := resolveTLSFingerprint(tc.requested, tc.persisted, tc.exists); got != tc.want {
 				t.Errorf("resolveTLSFingerprint = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// --- Per-provider auto-retry interval (compatible providers only) ---
+
+func intPtr(i int) *int { return &i }
+
+// newAutoRetryTestAPI returns a test API whose config already holds one
+// openai-compatible and one anthropic-compatible provider with a persisted
+// auto-retry interval, plus the fixed providers (which never carry one).
+func newAutoRetryTestAPI(t *testing.T) (*FrontendAPI, *mockBuilder) {
+	t.Helper()
+	f, mock, _ := newTestAPI(t)
+	f.config.LLM.OpenAICompatible = map[string]config.OpenAICompatibleConfig{
+		"selfhosted": {
+			BaseURL:          "https://llm.lan:8443/v1",
+			APIKey:           "oc-key",
+			Models:           []string{"qwen3"},
+			AutoRetrySeconds: 30,
+		},
+	}
+	f.config.LLM.AnthropicCompatible = map[string]config.AnthropicCompatibleConfig{
+		"gateway": {
+			BaseURL:          "https://claude.lan:8443",
+			APIKey:           "ac-key",
+			Models:           []string{"claude-3-opus"},
+			AutoRetrySeconds: 45,
+		},
+	}
+	return f, mock
+}
+
+// GetConfig (buildLLMResponse) must round-trip the persisted interval for
+// compatible providers so the settings form can show it; providers without
+// an interval — and the fixed anthropic/chatgpt providers — report 0.
+func TestGetConfig_ExposesAutoRetrySeconds(t *testing.T) {
+	f, _ := newAutoRetryTestAPI(t)
+	f.config.LLM.OpenAICompatible["plain"] = config.OpenAICompatibleConfig{
+		BaseURL: "http://127.0.0.1:1234/v1", APIKey: "k", Models: []string{"llama"},
+	}
+
+	resp := f.buildLLMResponse()
+
+	if got := resp.OpenAICompatible["selfhosted"].AutoRetrySeconds; got != 30 {
+		t.Errorf("openai_compatible interval = %d, want 30", got)
+	}
+	if got := resp.AnthropicCompatible["gateway"].AutoRetrySeconds; got != 45 {
+		t.Errorf("anthropic_compatible interval = %d, want 45", got)
+	}
+	if got := resp.OpenAICompatible["plain"].AutoRetrySeconds; got != 0 {
+		t.Errorf("unconfigured provider interval = %d, want 0", got)
+	}
+	// The fixed providers never carry an interval: the field stays 0/empty.
+	if got := resp.Anthropic.AutoRetrySeconds; got != 0 {
+		t.Errorf("fixed anthropic interval = %d, want 0", got)
+	}
+	if got := resp.ChatGPT.AutoRetrySeconds; got != 0 {
+		t.Errorf("fixed chatgpt interval = %d, want 0", got)
+	}
+	// The clamping bound travels with the response so the Settings form
+	// clamps against the backend's actual limit (single source of truth —
+	// must equal config.MaxAutoRetrySeconds, the value validate() enforces).
+	if got := resp.AutoRetryMaxSeconds; got != config.MaxAutoRetrySeconds() || got <= 0 {
+		t.Errorf("auto_retry_max_seconds = %d, want %d", got, config.MaxAutoRetrySeconds())
+	}
+}
+
+// The pointer sentinel: nil keeps the persisted interval. The settings dialog
+// saves on a debounce with partial payloads, so a save that only touched the
+// model list must not reset the retry timer.
+func TestUpdateLLMConfig_NilAutoRetrySecondsKeepsPersistedInterval(t *testing.T) {
+	f, _ := newAutoRetryTestAPI(t)
+
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "selfhosted/qwen3",
+		OpenAICompatible: map[string]ProviderConfigRequest{
+			"selfhosted": {
+				BaseURL: "https://llm.lan:8443/v1",
+				Models:  []string{"qwen3"},
+				// AutoRetrySeconds omitted (nil) — only the model list changed.
+			},
+		},
+		AnthropicCompatible: map[string]ProviderConfigRequest{
+			"gateway": {BaseURL: "https://claude.lan:8443", Models: []string{"claude-3-opus"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateLLMConfig: %v", err)
+	}
+
+	if got := f.config.LLM.OpenAICompatible["selfhosted"].AutoRetrySeconds; got != 30 {
+		t.Errorf("openai interval = %d, want the persisted 30 preserved", got)
+	}
+	if got := f.config.LLM.AnthropicCompatible["gateway"].AutoRetrySeconds; got != 45 {
+		t.Errorf("anthropic interval = %d, want the persisted 45 preserved", got)
+	}
+}
+
+// A non-nil pointer applies verbatim: an explicit 0 DISABLES the retry timer
+// (the user cleared the field), and a new value replaces the old one. A
+// brand-new provider never inherits a stale interval.
+func TestUpdateLLMConfig_ExplicitAutoRetrySecondsAppliesVerbatim(t *testing.T) {
+	t.Run("explicit zero disables the timer", func(t *testing.T) {
+		f, _ := newAutoRetryTestAPI(t)
+		err := f.UpdateLLMConfig(LLMFullConfigRequest{
+			DefaultModel: "selfhosted/qwen3",
+			OpenAICompatible: map[string]ProviderConfigRequest{
+				"selfhosted": {BaseURL: "https://llm.lan:8443/v1", Models: []string{"qwen3"}, AutoRetrySeconds: intPtr(0)},
+			},
+			AnthropicCompatible: map[string]ProviderConfigRequest{
+				"gateway": {BaseURL: "https://claude.lan:8443", Models: []string{"claude-3-opus"}, AutoRetrySeconds: intPtr(0)},
+			},
+		})
+		if err != nil {
+			t.Fatalf("UpdateLLMConfig: %v", err)
+		}
+		if got := f.config.LLM.OpenAICompatible["selfhosted"].AutoRetrySeconds; got != 0 {
+			t.Errorf("openai interval = %d, want disabled (0)", got)
+		}
+		if got := f.config.LLM.AnthropicCompatible["gateway"].AutoRetrySeconds; got != 0 {
+			t.Errorf("anthropic interval = %d, want disabled (0)", got)
+		}
+	})
+
+	t.Run("new value replaces the old interval", func(t *testing.T) {
+		f, _ := newAutoRetryTestAPI(t)
+		err := f.UpdateLLMConfig(LLMFullConfigRequest{
+			DefaultModel: "selfhosted/qwen3",
+			OpenAICompatible: map[string]ProviderConfigRequest{
+				"selfhosted": {BaseURL: "https://llm.lan:8443/v1", Models: []string{"qwen3"}, AutoRetrySeconds: intPtr(120)},
+			},
+		})
+		if err != nil {
+			t.Fatalf("UpdateLLMConfig: %v", err)
+		}
+		if got := f.config.LLM.OpenAICompatible["selfhosted"].AutoRetrySeconds; got != 120 {
+			t.Errorf("openai interval = %d, want 120", got)
+		}
+		// The untouched compatible provider keeps its own persisted interval.
+		if got := f.config.LLM.AnthropicCompatible["gateway"].AutoRetrySeconds; got != 45 {
+			t.Errorf("anthropic interval = %d, want the persisted 45 preserved", got)
+		}
+	})
+
+	t.Run("new provider never inherits an interval", func(t *testing.T) {
+		f, _ := newAutoRetryTestAPI(t)
+		err := f.UpdateLLMConfig(LLMFullConfigRequest{
+			DefaultModel: "selfhosted/qwen3",
+			OpenAICompatible: map[string]ProviderConfigRequest{
+				"selfhosted": {BaseURL: "https://llm.lan:8443/v1", Models: []string{"qwen3"}},
+				"brandnew":   {BaseURL: "http://127.0.0.1:1234/v1", Models: []string{"llama"}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("UpdateLLMConfig: %v", err)
+		}
+		if got := f.config.LLM.OpenAICompatible["brandnew"].AutoRetrySeconds; got != 0 {
+			t.Errorf("new provider interval = %d, want 0", got)
+		}
+	})
+
+	t.Run("interval persists to disk", func(t *testing.T) {
+		f, _, cfgPath := newTestAPI(t)
+		f.config.LLM.OpenAICompatible = map[string]config.OpenAICompatibleConfig{
+			"selfhosted": {BaseURL: "https://llm.lan:8443/v1", APIKey: "k", Models: []string{"qwen3"}},
+		}
+		err := f.UpdateLLMConfig(LLMFullConfigRequest{
+			DefaultModel: "selfhosted/qwen3",
+			OpenAICompatible: map[string]ProviderConfigRequest{
+				"selfhosted": {BaseURL: "https://llm.lan:8443/v1", Models: []string{"qwen3"}, AutoRetrySeconds: intPtr(30)},
+			},
+		})
+		if err != nil {
+			t.Fatalf("UpdateLLMConfig: %v", err)
+		}
+		reloaded, err := config.Load(cfgPath)
+		if err != nil {
+			t.Fatalf("reloading persisted config: %v", err)
+		}
+		if got := reloaded.LLM.OpenAICompatible["selfhosted"].AutoRetrySeconds; got != 30 {
+			t.Errorf("persisted interval = %d, want 30", got)
+		}
+	})
+}
+
+func TestResolveAutoRetrySeconds(t *testing.T) {
+	tests := []struct {
+		name      string
+		requested *int
+		persisted int
+		exists    bool
+		want      int
+	}{
+		{"nil keeps persisted", nil, 30, true, 30},
+		{"nil on a new provider yields 0", nil, 0, false, 0},
+		{"nil ignores a stale persisted value for a new provider", nil, 30, false, 0},
+		{"explicit zero disables", intPtr(0), 30, true, 0},
+		{"explicit value wins", intPtr(120), 30, true, 120},
+		{"explicit value on a new provider", intPtr(60), 0, false, 60},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveAutoRetrySeconds(tc.requested, tc.persisted, tc.exists); got != tc.want {
+				t.Errorf("resolveAutoRetrySeconds = %d, want %d", got, tc.want)
 			}
 		})
 	}
