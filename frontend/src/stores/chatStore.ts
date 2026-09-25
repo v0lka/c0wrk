@@ -78,8 +78,9 @@ interface ChatState {
   // window, separate from the conductor's session-level totals), so a step
   // block can render "used of max" the same way the status bar renders the
   // session-level window. Cleared by clearStepContextFill alongside
-  // stepContextFill.
-  stepContextTokens: Record<string, Record<string, StepContextTokens>>
+  // stepContextFill. Entries may be partial: merge semantics let the first
+  // event payload for a step carry only one of the two fields.
+  stepContextTokens: Record<string, Record<string, Partial<StepContextTokens>>>
   // Session tokens: sessionId -> token info
   sessionTokens: Record<string, TokenInfo>
   // Timestamp of the last LIVE update to a session's activity label or
@@ -582,7 +583,7 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
         ...s.stepContextTokens,
         [sessionId]: {
           ...s.stepContextTokens[sessionId],
-          [stepId]: { ...existing, ...tokens } as StepContextTokens,
+          [stepId]: { ...existing, ...tokens },
         },
       },
     }

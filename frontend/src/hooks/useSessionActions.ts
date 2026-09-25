@@ -121,6 +121,10 @@ export function useSessionActions(): SessionActions {
         // Drop its saved chat scroll position — the session is gone, and the
         // entry would otherwise keep the per-session map growing.
         useChatStore.getState().clearScrollPosition(id)
+        // Drop its step context fill + per-step token totals for the same
+        // reason — one action clears both session-keyed maps (a deleted
+        // session never re-emits context_fill, so the entries would go stale).
+        useChatStore.getState().clearStepContextFill(id)
       } catch (error) {
         logger.error('Failed to delete session:', error)
       }
