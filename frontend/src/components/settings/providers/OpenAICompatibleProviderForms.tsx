@@ -12,8 +12,9 @@ interface OpenAICompatibleProviderFormProps {
   defaultModel: string
   /** Label prefix shown for each provider accordion. Defaults to "OpenAI Compatible". */
   labelPrefix?: string
-  /** Server-published auto_retry_seconds upper bound (ADR-065). */
-  autoRetryMaxSeconds?: number
+  /** Server-published auto_retry_seconds upper bound (ADR-065). REQUIRED —
+   *  LLMSettings gates the forms until the bound has loaded. */
+  autoRetryMaxSeconds: number
 }
 
 export function OpenAICompatibleProviderForms({

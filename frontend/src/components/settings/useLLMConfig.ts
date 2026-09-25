@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { getConfig } from '@/api/config'
 import { logger } from '@/lib/logger'
 import { useProxyDraftStore, isProxyEffective } from '@/stores/proxyDraftStore'
-import { FIXED_PROVIDERS, type CompatibleType, AUTO_RETRY_MAX_FALLBACK } from '@/lib/llm-providers'
+import { FIXED_PROVIDERS, type CompatibleType } from '@/lib/llm-providers'
 import { compositeModelId, isCompositeModelId, decomposeCompositeModelId } from '@/lib/modelId'
 import type { ConfigProviderFull } from '@/types/models'
 import { useLLMConfigSave } from './useLLMConfigSave'
@@ -39,9 +39,12 @@ interface UseLLMConfigResult {
     defaultModel: string
     providerConfigs: Record<string, ProviderConfig>
     /** Server-published inclusive upper bound for auto_retry_seconds
-     *  (ADR-065); falls back to the compiled-in default (3600) when the
-     *  config payload does not carry it (older backend). */
-    autoRetryMaxSeconds: number
+     *  (ADR-065). REQUIRED from the GetConfig payload: the backend always
+     *  serializes it (no omitempty) and frontend/backend ship in one
+     *  binary, so there is no compiled-in fallback — a payload without it
+     *  fails the load loudly instead of silently clamping against a stale
+     *  constant. Undefined only until the first successful load. */
+    autoRetryMaxSeconds: number | undefined
     /** Names of providers loaded from the openai_compatible map (non-fixed providers). */
     openaiCompatibleProviderNames: Set<string>
     /** Names of providers loaded from the anthropic_compatible map. */
@@ -129,7 +132,7 @@ export function defaultModelIsValid(
 export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?: (model: string) => void): UseLLMConfigResult {
     const [defaultModel, setDefaultModelState] = useState('')
     const [providerConfigs, setProviderConfigs] = useState<Record<string, ProviderConfig>>({})
-    const [autoRetryMaxSeconds, setAutoRetryMaxSeconds] = useState(AUTO_RETRY_MAX_FALLBACK)
+    const [autoRetryMaxSeconds, setAutoRetryMaxSeconds] = useState<number | undefined>(undefined)
     const [openaiCompatibleProviderNames, setOpenaiCompatibleProviderNames] = useState<Set<string>>(new Set())
     const [anthropicCompatibleProviderNames, setAnthropicCompatibleProviderNames] = useState<Set<string>>(new Set())
     const [isLoading, setIsLoading] = useState(true)
@@ -201,9 +204,19 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
             seedBypassList(result?.proxy?.bypass_list ?? [])
             const llm = result?.llm
             if (llm) {
-                setAutoRetryMaxSeconds(typeof llm.auto_retry_max_seconds === 'number' && llm.auto_retry_max_seconds > 0
-                    ? llm.auto_retry_max_seconds
-                    : AUTO_RETRY_MAX_FALLBACK)
+                // The auto-retry bound is a REQUIRED field of the payload
+                // (backend always serializes it; ADR-065): a missing or
+                // non-positive value means the frontend/backend contract is
+                // broken — fail the load LOUDLY instead of silently clamping
+                // against a stale compiled-in constant. The throw lands in
+                // the catch below (logger.error) and leaves the previous
+                // successfully loaded state untouched.
+                if (typeof llm.auto_retry_max_seconds !== 'number' || llm.auto_retry_max_seconds <= 0) {
+                    throw new Error(
+                        `getConfig: llm.auto_retry_max_seconds missing or invalid (${String(llm.auto_retry_max_seconds)}) — the Settings form cannot clamp the auto-retry interval`,
+                    )
+                }
+                setAutoRetryMaxSeconds(llm.auto_retry_max_seconds)
                 const rawDefault = llm.default_model || ''
                 const configs: Record<string, ProviderConfig> = {}
                 const openaiNames = new Set<string>()

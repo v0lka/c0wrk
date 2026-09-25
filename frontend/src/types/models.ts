@@ -448,8 +448,12 @@ export interface ConfigLLMResponse {
   /** Inclusive upper bound for per-provider auto_retry_seconds — the SAME
    *  bound the backend's validate()/UpdateLLMConfig enforce (ADR-065). The
    *  Settings form clamps its interval input against this server-provided
-   *  limit instead of a duplicated frontend constant. */
-  auto_retry_max_seconds?: number
+   *  limit instead of a duplicated frontend constant. REQUIRED: the field
+   *  always serializes (no omitempty on the Go side) and frontend/backend
+   *  ship in one binary — a missing or non-positive value fails the
+   *  loadConfig contract loudly instead of silently clamping against a
+   *  stale compiled-in constant. */
+  auto_retry_max_seconds: number
 }
 
 export interface ConfigSearchResp {

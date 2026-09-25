@@ -10,8 +10,9 @@ interface FixedProviderFormProps {
   onToggleModel: (provider: string, model: string) => void
   defaultModel: string
   /** Server-published auto_retry_seconds upper bound (ADR-065); unused by
-   *  fixed providers themselves but threaded for the shared accordion. */
-  autoRetryMaxSeconds?: number
+   *  fixed providers themselves but threaded for the shared accordion.
+   *  REQUIRED — LLMSettings gates the forms until the bound has loaded. */
+  autoRetryMaxSeconds: number
 }
 
 export function FixedProviderForms({

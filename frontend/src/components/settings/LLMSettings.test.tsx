@@ -49,6 +49,7 @@ function makeConfig() {
   return {
     loaded: true,
     llm: {
+      auto_retry_max_seconds: 3600,
       default_model: 'anthropic/claude-sonnet',
       anthropic: { api_key: 'sk', models: ['claude-sonnet'] },
       openai_compatible: {
@@ -245,6 +246,7 @@ describe('LLMSettings TLS pin proxy gate', () => {
       loaded: true,
       proxy: { enabled: false, url: '', bypass_list: [], tls_cert_dir: '' },
       llm: {
+        auto_retry_max_seconds: 3600,
         default_model: 'lmstudio/glm-5.3',
         anthropic: { api_key: 'sk', models: [] },
         openai_compatible: {
@@ -355,6 +357,7 @@ describe('LLMSettings TLS pin proxy gate', () => {
       loaded: true,
       proxy: { enabled: true, url: 'http://proxy.lan:3128', bypass_list: [], tls_cert_dir: '' },
       llm: {
+        auto_retry_max_seconds: 3600,
         default_model: 'lmstudio/glm-5.3',
         anthropic: { api_key: 'sk', models: [] },
         openai_compatible: {
@@ -423,6 +426,7 @@ describe('LLMSettings auto-retry interval', () => {
       loaded: true,
       proxy: { enabled: false, url: '', bypass_list: [], tls_cert_dir: '' },
       llm: {
+        auto_retry_max_seconds: 3600,
         default_model: 'lmstudio/glm-5.3',
         anthropic: { api_key: 'sk', models: [] },
         openai_compatible: {
@@ -451,6 +455,7 @@ describe('LLMSettings auto-retry interval', () => {
       loaded: true,
       proxy: { enabled: false, url: '', bypass_list: [], tls_cert_dir: '' },
       llm: {
+        auto_retry_max_seconds: 3600,
         default_model: 'lmstudio/glm-5.3',
         anthropic: { api_key: 'sk', models: ['glm-5.3'] },
         openai_compatible: {
@@ -472,6 +477,7 @@ describe('LLMSettings auto-retry interval', () => {
       loaded: true,
       proxy: { enabled: false, url: '', bypass_list: [], tls_cert_dir: '' },
       llm: {
+        auto_retry_max_seconds: 3600,
         default_model: 'lmstudio/glm-5.3',
         anthropic: { api_key: 'sk', models: [] },
         openai_compatible: {

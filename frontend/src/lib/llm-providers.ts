@@ -32,12 +32,6 @@ export function isCompatibleProvider(name: string): boolean {
 /** Backwards-compatible alias: any compatible provider. */
 export const isOpenAICompatibleProvider = isCompatibleProvider
 
-/** Compiled-in fallback for the server-published auto-retry upper bound
- *  (ADR-065): used until GetConfig answers and when an older backend does
- *  not carry llm.auto_retry_max_seconds. Must stay in sync with the
- *  backend's maxAutoRetrySeconds (3600). */
-export const AUTO_RETRY_MAX_FALLBACK = 3600
-
 /** Providers that require a base_url in their config form.
  *  Any compatible provider requires a base URL. */
 export const PROVIDERS_WITH_BASE_URL = {

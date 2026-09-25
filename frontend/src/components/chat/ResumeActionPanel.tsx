@@ -7,7 +7,7 @@ import { resumeTask, cancelUnfinishedTask } from '@/api/chat'
 import { generateMessageId } from '@/lib/ids'
 import type { DisplayItem } from '@/types/messages'
 import { getResumeResolution, resumeResolved } from '@/types/messages'
-import { readAutoRetryAt, useAutoRetryCountdown } from './useAutoRetryCountdown'
+import { readAutoRetryAt, stripLiveKeys, useAutoRetryCountdown } from './useAutoRetryCountdown'
 
 type ResumeItem = Extract<DisplayItem, { kind: 'resume_action' }>
 
@@ -77,7 +77,15 @@ function ResumeBanner({ item, content }: { item: ResumeItem; content: string }) 
     } catch (err) {
       // Revert the optimistic 'resumed' state so the panel stays actionable,
       // then surface the failure in the chat (mirrors useMessageSender).
-      updateMessage(sessionId, item.message.id, { metadata: originalMetadata })
+      // The revert strips the live auto-resend keys: the optimistic marking
+      // unmounted the banner (killing this hook instance and its one-shot
+      // disarm), so reverting the raw metadata would remount it with a fresh
+      // firedRef=false and RE-ARM the countdown toward the unchanged future
+      // deadline. A failed manual resume degrades to the plain manual banner,
+      // exactly like the auto-fire failure path.
+      updateMessage(sessionId, item.message.id, {
+        metadata: originalMetadata ? stripLiveKeys(originalMetadata) : undefined,
+      })
       const errorMessage = err instanceof Error ? err.message : String(err)
       useChatStore.getState().addMessage(sessionId, {
         id: generateMessageId(),

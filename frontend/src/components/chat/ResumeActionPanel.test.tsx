@@ -238,6 +238,47 @@ describe('ResumeActionPanel auto-resend countdown', () => {
     expect(resumeTaskMock).toHaveBeenCalledTimes(1)
   })
 
+  it('a REJECTED manual Resume degrades to the plain manual banner (no countdown resurrection)', async () => {
+    // The optimistic 'resumed' marking unmounts the real banner and kills
+    // the hook instance (and its one-shot disarm with it); if the revert
+    // restored the raw live metadata, the remounted banner would RE-ARM and
+    // auto-fire at the unchanged deadline — violating "any manual click
+    // disarms the auto fire". The revert must strip the live keys instead.
+    resumeTaskMock.mockRejectedValueOnce(new Error('session archived'))
+    const deadline = Math.floor(Date.now() / 1000) + 30
+    const item = makeResumeItem({ auto_retry_at: deadline, auto_retry_live: true })
+    // Seed the store so updateMessage lands (it no-ops without the session
+    // index) — the panel writes the optimistic marking and the revert there.
+    useChatStore.setState({
+      messages: { [SESSION_ID]: { [item.message.id]: item.message } },
+    })
+
+    const container = render(<ResumeActionPanel item={item} />)
+    await act(async () => {
+      buttonByText(container, 'Resume').click()
+    })
+
+    expect(resumeTaskMock).toHaveBeenCalledTimes(1)
+    // The failure is surfaced in the chat...
+    const msgs = Object.values(useChatStore.getState().messages[SESSION_ID] ?? {})
+    expect(msgs.some((m) => m.type === 'error' && m.content.includes('Failed to resume task: session archived'))).toBe(true)
+    // ...and the reverted banner metadata carries NO live keys: a remount
+    // (what the real parent does with store data) renders the plain manual
+    // banner instead of resurrecting the countdown.
+    const container2 = render(
+      <ResumeActionPanel
+        item={{ kind: 'resume_action', message: useChatStore.getState().messages[SESSION_ID]![item.message.id]! }}
+      />,
+    )
+    expect(container2.textContent).not.toContain('Auto-retry in')
+    const resume2 = buttonByText(container2, 'Resume')
+    expect(resume2.textContent).not.toContain('(')
+    // The remounted plain banner never fires: the deadline expires with no
+    // second resume beyond the rejected manual attempt.
+    await act(async () => { vi.advanceTimersByTime(60_000) })
+    expect(resumeTaskMock).toHaveBeenCalledTimes(1)
+  })
+
   it('a Cancel click before expiry stops the countdown (no auto fire afterwards)', async () => {
     const deadline = Math.floor(Date.now() / 1000) + 30
     const container = render(<ResumeActionPanel item={makeResumeItem({ auto_retry_at: deadline, auto_retry_live: true })} />)

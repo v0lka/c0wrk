@@ -159,6 +159,23 @@ export function LLMSettings({
     )
   }
 
+  // The server-published auto-retry bound (llm.auto_retry_max_seconds) is a
+  // REQUIRED config field (ADR-065) — there is no compiled-in fallback, so
+  // the provider forms (whose interval input clamps against it) must not run
+  // against an unknown bound. Reaching this state means the load FAILED the
+  // contract check (the error is logged in useLLMConfig); the forms stay
+  // gated and the user retries by reopening the dialog. Cannot happen
+  // against a healthy backend (the field always serializes).
+  if (autoRetryMaxSeconds === undefined) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <span className="text-sm text-destructive">
+          LLM settings failed to load completely (missing auto-retry bound) — reopen the settings dialog to retry.
+        </span>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col gap-6">
       {/* Global Default Model */}

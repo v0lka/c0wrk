@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { ChevronDown, Loader2 } from 'lucide-react'
-import { isOpenAICompatibleProvider, AUTO_RETRY_MAX_FALLBACK } from '@/lib/llm-providers'
+import { isOpenAICompatibleProvider } from '@/lib/llm-providers'
 import { getProviderTLSCertificate } from '@/api/config'
 import { logger } from '@/lib/logger'
 import { useProxyDraftStore, pinGatedByProxy } from '@/stores/proxyDraftStore'
@@ -23,10 +23,10 @@ interface ProviderConfig {
 /** Preset auto-resend intervals offered in the dropdown, in seconds. */
 const AUTO_RETRY_PRESETS = [0, 5, 10, 30, 60, 120, 300] as const
 /** Bounds for the auto-resend interval, in seconds. The MIN is fixed; the
- *  MAX comes from the SERVER (llm.auto_retry_max_seconds — the same bound
- *  validate()/UpdateLLMConfig enforce, ADR-065) via the autoRetryMaxSeconds
- *  prop, falling back to the compiled-in 3600 when an older backend does
- *  not publish it. */
+ *  MAX is REQUIRED: the SERVER-published bound (llm.auto_retry_max_seconds —
+ *  the same bound validate()/UpdateLLMConfig enforce, ADR-065) via the
+ *  autoRetryMaxSeconds prop — no compiled-in fallback exists, and LLMSettings
+ *  gates the forms until the bound has loaded. */
 const AUTO_RETRY_MIN = 0
 
 interface ProviderConfigFormProps {
@@ -38,8 +38,10 @@ interface ProviderConfigFormProps {
   onConfigChange: (updates: Partial<ProviderConfig>) => void
   onApply: () => void
   /** Server-published inclusive upper bound for auto_retry_seconds
-   *  (GetConfig → llm.auto_retry_max_seconds, ADR-065). */
-  autoRetryMaxSeconds?: number
+   *  (GetConfig → llm.auto_retry_max_seconds, ADR-065). REQUIRED — no
+   *  compiled-in fallback; LLMSettings gates the forms until the bound is
+   *  loaded. */
+  autoRetryMaxSeconds: number
 }
 
 export function ProviderConfigForm({
@@ -50,7 +52,7 @@ export function ProviderConfigForm({
   modelsLoading,
   onConfigChange,
   onApply,
-  autoRetryMaxSeconds = AUTO_RETRY_MAX_FALLBACK,
+  autoRetryMaxSeconds,
 }: ProviderConfigFormProps) {
   const showBaseUrl = isOpenAICompatibleProvider(activeProvider)
   const showApiKey = true
@@ -79,6 +81,16 @@ export function ProviderConfigForm({
   const proxyDials = useMemo(
     () => pinGatedByProxy(proxyActive, bypassList, config?.base_url),
     [proxyActive, bypassList, config?.base_url],
+  )
+
+  // Presets clamped to the SERVER-published bound (ADR-065): EditableCombobox
+  // clamps only typed input, so a preset above max would otherwise be pushed
+  // into the draft verbatim and the save would be rejected wholesale by the
+  // UpdateLLMConfig range check — the form must never offer a value the save
+  // refuses. Memoized so the presets array keeps a stable reference.
+  const autoRetryPresets = useMemo(
+    () => AUTO_RETRY_PRESETS.filter((p) => p <= autoRetryMaxSeconds),
+    [autoRetryMaxSeconds],
   )
 
   // Unconditional with respect to the configured pin: no fingerprint is
@@ -129,7 +141,7 @@ export function ProviderConfigForm({
           <div className="flex max-w-[240px] items-center gap-2">
             <EditableCombobox
               value={config?.auto_retry_seconds ?? 0}
-              presets={AUTO_RETRY_PRESETS}
+              presets={autoRetryPresets}
               min={AUTO_RETRY_MIN}
               max={autoRetryMaxSeconds}
               unit="s"

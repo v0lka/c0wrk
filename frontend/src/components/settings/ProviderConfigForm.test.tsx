@@ -67,7 +67,8 @@ interface RenderOpts {
   bypassList?: string[]
   /** Draft auto-retry interval in seconds; undefined = not carried. */
   autoRetry?: number
-  /** Server-published auto-retry upper bound; omit for the 3600 fallback. */
+  /** Server-published auto-retry upper bound (llm.auto_retry_max_seconds);
+   *  omit for the 3600 a healthy backend always publishes. */
   autoRetryMax?: number
   /**
    * The pin section ships COLLAPSED by default; tests that touch the field
@@ -98,7 +99,7 @@ function render({
         modelsLoading={false}
         onConfigChange={(u) => changes.push(u as Record<string, unknown>)}
         onApply={() => {}}
-        autoRetryMaxSeconds={autoRetryMax}
+        autoRetryMaxSeconds={autoRetryMax ?? 3600}
       />,
     )
   })
@@ -451,6 +452,36 @@ describe('ProviderConfigForm auto-retry interval', () => {
     expect(selected!.textContent).toContain('30')
   })
 
+  // Presets are filtered against the server-published bound: a future tighter
+  // backend limit must never surface a preset the save would reject wholesale
+  // (EditableCombobox clamps only TYPED input — a preset pick is applied
+  // verbatim).
+  it('filters presets above the server-published max out of the dropdown', async () => {
+    render({ autoRetry: 0, autoRetryMax: 120 })
+    await openRetryPresets()
+
+    const menu = document.body.querySelector('[role="menu"]')
+    expect(menu).not.toBeNull()
+    const offered = Array.from(menu!.querySelectorAll<HTMLElement>('[role="menuitem"]')).map(
+      (o) => o.textContent ?? '',
+    )
+    // 120 survives (inclusive bound), everything above it is gone.
+    for (const allowed of ['0', '5', '10', '30', '60', '120']) {
+      expect(offered.some((t) => t.trim() === allowed || t.includes(allowed))).toBe(true)
+    }
+    for (const dropped of ['300']) {
+      expect(offered.some((t) => t.includes(dropped))).toBe(false)
+    }
+    // Picking the highest surviving preset commits it verbatim (in range).
+    const item = Array.from(menu!.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((o) =>
+      o.textContent?.includes('120'),
+    )
+    act(() => {
+      item!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(changes).toEqual([{ auto_retry_seconds: 120 }])
+  })
+
   it('commits a preset pick through onConfigChange', async () => {
     render({ autoRetry: 0 })
     await openRetryPresets()
@@ -477,10 +508,10 @@ describe('ProviderConfigForm auto-retry interval', () => {
   })
 
   // The upper bound is the SERVER-published limit (GetConfig →
-  // llm.auto_retry_max_seconds, ADR-065), not the compiled-in fallback: a
-  // backend with a tighter limit clamps here to that limit, so the form can
+  // llm.auto_retry_max_seconds, ADR-065) — there is no compiled-in fallback:
+  // a backend with a tighter limit clamps here to that limit, so the form can
   // never propose a value the UpdateLLMConfig RPC would reject.
-  it('clamps to the server-published max when it is tighter than the fallback', () => {
+  it('clamps to the server-published max when it is tighter than the compiled 3600', () => {
     render({ autoRetry: 30, autoRetryMax: 120 })
     typeRetry('9999')
     pressRetry('Enter')

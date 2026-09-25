@@ -33,8 +33,9 @@ interface ProviderAccordionProps {
   defaultModel: string
   providerConfigs: Record<string, ProviderConfig>
   /** Server-published auto_retry_seconds upper bound (ADR-065), threaded
-   *  to ProviderConfigForm's interval input. */
-  autoRetryMaxSeconds?: number
+   *  to ProviderConfigForm's interval input. REQUIRED — LLMSettings gates
+   *  the forms until the bound has loaded. */
+  autoRetryMaxSeconds: number
 }
 
 export function ProviderAccordion({

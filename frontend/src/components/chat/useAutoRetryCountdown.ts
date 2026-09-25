@@ -30,7 +30,11 @@ import { useChatStore } from '@/stores/chatStore'
  * Failure handling: when the auto fire's resumeTask rejects (or the session
  * is busy — the backend refuses), the live keys are stripped from the
  * banner metadata so the panel falls back to the plain manual banner
- * instead of a permanently disabled dead end.
+ * instead of a permanently disabled dead end. A REJECTED MANUAL RESUME
+ * degrades the same way: the catch in handleResume reverts to the original
+ * metadata with the live keys stripped, so the unmount/remount round-trip
+ * of the optimistic 'resumed' marking cannot resurrect the countdown (the
+ * one-shot disarm is instance state and dies with the unmount).
  */
 
 export interface AutoRetryCountdown {
@@ -56,11 +60,13 @@ export function readAutoRetryAt(metadata: Record<string, unknown> | undefined): 
 }
 
 /** Strip the live auto-resend keys from a banner's metadata, producing the
- *  plain manual-banner metadata. Used after a failed auto fire. The store's
+ *  plain manual-banner metadata. Used after a failed auto fire AND after a
+ *  rejected manual resume (the reverted metadata must not re-arm the
+ *  countdown — see the failure-handling note below). The store's
  *  updateMessage SHALLOW-MERGES metadata, so key removal must be expressed
  *  as explicit undefined overwrites (they drop out of JSON serialization;
  *  readAutoRetryAt treats any non-true as absent). */
-function stripLiveKeys(metadata: Record<string, unknown>): Record<string, unknown> {
+export function stripLiveKeys(metadata: Record<string, unknown>): Record<string, unknown> {
   return { ...metadata, auto_retry_at: undefined, auto_retry_live: undefined }
 }
 
