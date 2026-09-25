@@ -31,15 +31,15 @@ func isAutoRetryableStatus(code int) bool {
 // automatic resend. Two independent transports carry the retryable class:
 // the HTTP status code (openai_compatible, and anthropic gateways that
 // return a non-JSON body so the SDK surfaces RequestError) and the
-// transport-independent ErrType classification (anthropic_compatible: the
+// transport-independent ErrKind classification (anthropic_compatible: the
 // SDK parses the JSON error body into APIError, which carries NO status, so
-// ErrType=rate_limit / overloaded derived from the provider's own
+// ErrKind=rate_limit / overloaded derived from the provider's own
 // "rate_limit_error" / "overloaded_error" type fields is the only signal).
 func isAutoRetryableCause(llmErr *llm.Error) bool {
 	if isAutoRetryableStatus(llmErr.StatusCode) {
 		return true
 	}
-	return llmErr.ErrType == llm.ErrTypeRateLimit || llmErr.ErrType == llm.ErrTypeOverloaded
+	return llmErr.ErrKind == llm.ErrKindRateLimit || llmErr.ErrKind == llm.ErrKindOverloaded
 }
 
 // SetAutoRetryResolver sets the callback that resolves a provider name (as

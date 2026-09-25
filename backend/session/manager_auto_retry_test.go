@@ -12,12 +12,12 @@ import (
 )
 
 // TestIsAutoRetryableCause pins the retryable-class taxonomy (ADR-065):
-// rate-limit (429 / ErrType rate_limit) and overload (529 /
-// ErrType overloaded) qualify on BOTH transports — the HTTP status code
-// (openai_compatible) and the transport-independent ErrType
+// rate-limit (429 / ErrKind rate_limit) and overload (529 /
+// ErrKind overloaded) qualify on BOTH transports — the HTTP status code
+// (openai_compatible) and the transport-independent ErrKind
 // (anthropic_compatible, whose SDK-parsed APIError carries no status).
 // Everything else — transient-but-unclassified 5xx (500/503/504), network
-// errors (StatusCode 0), empty ErrType on a non-matching status — never
+// errors (StatusCode 0), empty ErrKind on a non-matching status — never
 // arms the auto-resend.
 func TestIsAutoRetryableCause(t *testing.T) {
 	tests := []struct {
@@ -25,10 +25,10 @@ func TestIsAutoRetryableCause(t *testing.T) {
 		err  *llm.Error
 		want bool
 	}{
-		{"429 rate limit", &llm.Error{StatusCode: 429, ErrType: llm.ErrTypeRateLimit}, true},
-		{"529 overloaded", &llm.Error{StatusCode: 529, ErrType: llm.ErrTypeOverloaded}, true},
-		{"anthropic rate_limit type, no status", &llm.Error{ErrType: llm.ErrTypeRateLimit}, true},
-		{"anthropic overloaded type, no status", &llm.Error{ErrType: llm.ErrTypeOverloaded}, true},
+		{"429 rate limit", &llm.Error{StatusCode: 429, ErrKind: llm.ErrKindRateLimit}, true},
+		{"529 overloaded", &llm.Error{StatusCode: 529, ErrKind: llm.ErrKindOverloaded}, true},
+		{"anthropic rate_limit type, no status", &llm.Error{ErrKind: llm.ErrKindRateLimit}, true},
+		{"anthropic overloaded type, no status", &llm.Error{ErrKind: llm.ErrKindOverloaded}, true},
 		{"500 internal", &llm.Error{StatusCode: 500, Retryable: true}, false},
 		{"503 unavailable", &llm.Error{StatusCode: 503, Retryable: true}, false},
 		{"504 gateway timeout", &llm.Error{StatusCode: 504, Retryable: true}, false},
@@ -62,7 +62,7 @@ func TestMaybeAutoRetryAt_QualifyingCauseStampsDeadline(t *testing.T) {
 	got := manager.maybeAutoRetryAt(&llm.Error{
 		Provider:   "selfhosted",
 		StatusCode: 429,
-		ErrType:    llm.ErrTypeRateLimit,
+		ErrKind:    llm.ErrKindRateLimit,
 		Retryable:  true,
 		Err:        errors.New("429 Too Many Requests"),
 	})
@@ -85,7 +85,7 @@ func TestMaybeAutoRetryAt_NonQualifyingCausesReturnZero(t *testing.T) {
 	rateLimitErr := &llm.Error{
 		Provider:   "selfhosted",
 		StatusCode: 429,
-		ErrType:    llm.ErrTypeRateLimit,
+		ErrKind:    llm.ErrKindRateLimit,
 		Err:        errors.New("429 Too Many Requests"),
 	}
 
@@ -166,7 +166,7 @@ func TestEmitResumableIfUnfinished_StampsAutoRetryAt(t *testing.T) {
 		manager.emitResumableIfUnfinished("sess-1", "Rate limited.", &llm.Error{
 			Provider:   "selfhosted",
 			StatusCode: 429,
-			ErrType:    llm.ErrTypeRateLimit,
+			ErrKind:    llm.ErrKindRateLimit,
 		})
 		select {
 		case event := <-eventChan:
@@ -228,7 +228,7 @@ func TestEmitTaskComplete_DegradedCauseStampsAutoRetryAt(t *testing.T) {
 		Err: &llm.Error{
 			Provider:   "selfhosted",
 			StatusCode: 429,
-			ErrType:    llm.ErrTypeRateLimit,
+			ErrKind:    llm.ErrKindRateLimit,
 		},
 	}, nil)
 
