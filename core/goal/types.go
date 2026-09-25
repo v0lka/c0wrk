@@ -160,6 +160,14 @@ type GoalState struct {
 	// cleared to "" at the top of every clean turn, so it always describes the
 	// immediately-preceding failure.
 	LastError string `json:"last_error"`
+	// LastErrorTyped is the error VALUE behind LastError (ADR-065 follow-up):
+	// runGoalTurns sets it next to the string so the loop's terminal mapping
+	// (goalLoopResult) can preserve the typed chain for the session manager's
+	// auto-retry classifier (errors.As on *llm.Error). It is process-local
+	// state — never persisted (json:"-") and never read after a restore; the
+	// string LastError remains the only persistence/display form, so a
+	// restored goal degrades to the manual banner exactly as before.
+	LastErrorTyped error `json:"-"`
 	// LastVerification records the outcome of the independent verifier on the
 	// most recent "met" verdict attempt: "" (no verification ran / a fresh
 	// turn), "confirmed", "rejected", or "off" (verification disabled). It is

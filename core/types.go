@@ -243,6 +243,18 @@ type HandleResult struct {
 	Blackboard      orchestration.Blackboard      `json:"-"`
 	Reflections     []orchestration.Reflection    `json:"reflections,omitempty"`
 	Status          orchestration.ExecutionStatus `json:"status,omitempty"`
+	// Err is the typed terminal cause of a DEGRADED outcome — non-nil only
+	// when the run produced a best-effort result with a nil returned error
+	// (today: the goal loop's errored-turn halt, which collapses its typed
+	// turn error into gs.LastError). It preserves the error VALUE (not just
+	// its text) so the session manager's auto-retry classifier can apply
+	// errors.As on the *llm.Error chain (ADR-065) — stringifying the cause
+	// would lose the classification. It is deliberately NOT set when the
+	// orchestrator returns the error itself: that path already carries the
+	// cause through the returned error, and duplicating it here would make
+	// both transports race for the same classification. JSON-omitted so the
+	// frontend contract is unchanged.
+	Err error `json:"-"`
 }
 
 // HandleOptions controls how a message is processed by HandleMessage.

@@ -353,7 +353,7 @@ func (o *Orchestrator) runGoalLoop(
 		// Pass the computed routing (not nil) so finalizeResult does not clobber
 		// the routing decision persisted above — the other two goalLoopResult
 		// call sites (end of runGoalLoop / resumeGoalLoop) pass the real value.
-		return o.goalLoopResult(conductorMessage, bb, routing, goal.StatusActive, "", false, ""), nil
+		return o.goalLoopResult(conductorMessage, bb, routing, goal.StatusActive, "", false, nil), nil
 	}
 
 	// Resolve the budget: the per-message override sets MaxTurns when present;
@@ -401,7 +401,7 @@ func (o *Orchestrator) runGoalLoop(
 	if gs.LastVerdict != nil && gs.LastVerdict.Reason != "" {
 		out = gs.LastVerdict.Reason
 	}
-	return o.goalLoopResult(out, bb, routing, gs.Status, gs.Condition, paused, gs.LastError), nil
+	return o.goalLoopResult(out, bb, routing, gs.Status, gs.Condition, paused, gs.LastErrorTyped), nil
 }
 
 // resumeGoalLoop re-enters the goal loop from a persisted, non-terminal
@@ -551,7 +551,7 @@ func (o *Orchestrator) resumeGoalLoop(
 	if gs.LastVerdict != nil && gs.LastVerdict.Reason != "" {
 		out = gs.LastVerdict.Reason
 	}
-	return o.goalLoopResult(out, bb, routing, gs.Status, gs.Condition, paused, gs.LastError), nil
+	return o.goalLoopResult(out, bb, routing, gs.Status, gs.Condition, paused, gs.LastErrorTyped), nil
 }
 
 // persistGoalStateBestEffort persists the goal state for the current task so a
@@ -638,6 +638,7 @@ func (o *Orchestrator) runGoalTurns(
 	// invocation's turns, so it can never misclassify a run that broke before
 	// (or without) an error as a resumable failure.
 	gs.LastError = ""
+	gs.LastErrorTyped = nil
 
 	for gs.Status == goal.StatusActive {
 		if ctx.Err() != nil {
@@ -716,6 +717,7 @@ func (o *Orchestrator) runGoalTurns(
 			// error to ExecutionStatusFailed ("stopped after a turn error") —
 			// reporting a user cancel that way would be a lie.
 			gs.LastError = ""
+			gs.LastErrorTyped = nil
 			break
 		}
 		// Turn error (LLM/provider/transport or execution failure). Branch BEFORE
@@ -731,6 +733,11 @@ func (o *Orchestrator) runGoalTurns(
 		// reason; a later Resume re-enters this loop and retries.
 		if terr != nil {
 			gs.LastError = terr.Error()
+			// Preserve the error VALUE next to its string: the terminal
+			// mapping copies it onto HandleResult.Err for the manager's
+			// auto-retry classifier (ADR-065). Only the final (halt-deciding)
+			// error matters — a retried-then-cleaned turn resets both below.
+			gs.LastErrorTyped = terr
 			consecutiveErrors++
 			budgetSpent := goalTurnBudgetSpent(gs)
 			if consecutiveErrors <= goalTurnMaxErrorRetries && !budgetSpent {
@@ -750,6 +757,7 @@ func (o *Orchestrator) runGoalTurns(
 		// counter so the retry bound is per-incident, not cumulative.
 		consecutiveErrors = 0
 		gs.LastError = ""
+		gs.LastErrorTyped = nil
 
 		// The verification marker described the PREVIOUS turn's met attempt and
 		// has now been rendered into THIS turn's system prompt (built inside
@@ -983,15 +991,20 @@ func resolveGoalBudget(override *goal.GoalBudget) goal.GoalBudget {
 // finalizeResult→persistTaskOutcome marks the task paused (resumable) and the
 // manager emits session_paused instead of a degraded task_complete.
 //
-// turnErr, when non-empty, is the error that halted the loop (a turn returned
-// an error and the bounded retries were exhausted). It overrides the default
-// to a RESUMABLE FAILURE — ExecutionStatusFailed, which persistTaskOutcome
+// turnErr, when non-nil, is the typed error that halted the loop (a turn
+// returned an error and the bounded retries were exhausted). It overrides the
+// default to a RESUMABLE FAILURE — ExecutionStatusFailed, which persistTaskOutcome
 // marks "failed" (still resumable) and the manager maps to a
 // task_failed_resumable banner — instead of a misleading "partial". The goal
 // itself stays non-terminal (active), so Resume re-enters the loop and retries;
 // the error reason becomes the task output so the UI shows WHY the run stopped.
-func (o *Orchestrator) goalLoopResult(output string, bb orchestration.Blackboard, routing *router.RoutingDecision, status goal.GoalStatus, condition string, paused bool, turnErr string) *HandleResult {
+// The error VALUE is additionally preserved on HandleResult.Err so the manager's
+// auto-retry classifier can errors.As the *llm.Error chain (ADR-065) — the
+// degraded-completion path (nil returned error) would otherwise lose the
+// classification and never arm the auto-resend.
+func (o *Orchestrator) goalLoopResult(output string, bb orchestration.Blackboard, routing *router.RoutingDecision, status goal.GoalStatus, condition string, paused bool, turnErr error) *HandleResult {
 	execResult := &orchestration.ExecutionResult{Output: output}
+	var cause error
 	switch status {
 	case goal.StatusMet:
 		execResult.Status = orchestration.ExecutionStatusSuccess
@@ -1003,7 +1016,7 @@ func (o *Orchestrator) goalLoopResult(output string, bb orchestration.Blackboard
 		switch {
 		case paused:
 			execResult.Status = orchestration.ExecutionStatusPaused
-		case turnErr != "":
+		case turnErr != nil:
 			// A goal-loop turn ERRORED and the loop halted without meeting the
 			// goal (bounded retries exhausted). Surface a resumable failure and
 			// carry the concrete cause as the task output — mirroring the E2S
@@ -1012,11 +1025,16 @@ func (o *Orchestrator) goalLoopResult(output string, bb orchestration.Blackboard
 			// runGoalTurns, so Resume re-enters the loop and retries.
 			execResult.Status = orchestration.ExecutionStatusFailed
 			execResult.Output = fmt.Sprintf("Goal run stopped after a turn error: %s\n\nThe goal is still active — resume to retry from the checkpoint.", turnErr)
+			cause = turnErr
 		default:
 			execResult.Status = orchestration.ExecutionStatusPartial
 		}
 	}
-	return o.finalizeResult(bb, routing, execResult)
+	result := o.finalizeResult(bb, routing, execResult)
+	// Preserve the typed cause for the degraded-completion classifier (see
+	// the doc comment): nil for every non-errored outcome.
+	result.Err = cause
+	return result
 }
 
 // emitGoalStatus emits a dedicated goal_status session event carrying the

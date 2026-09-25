@@ -120,5 +120,58 @@ describe('useActionEvents task_failed_resumable → live unfinished-task overlay
     const banner = order.map(id => store.messages[SESSION]![id]!).find(m => m.type === 'task_failed_resumable')
     expect(banner).toBeDefined()
     expect(banner!.metadata?.resolved).toBe(false)
+    expect(banner!.metadata?.auto_retry_at).toBeUndefined()
+  })
+
+  it('copies auto_retry_at + auto_retry_live into the banner metadata on a live event', () => {
+    const deadline = Math.floor(Date.now() / 1000) + 30
+    act(() => {
+      for (const cb of runtimeHandlers.get('task_failed_resumable') ?? []) {
+        cb({ message: 'Rate limit exceeded.', task_id: 't-1', auto_retry_at: deadline })
+      }
+    })
+
+    const store = useChatStore.getState()
+    const order = store.messageOrder[SESSION] ?? []
+    const banner = order.map(id => store.messages[SESSION]![id]!).find(m => m.type === 'task_failed_resumable')
+    expect(banner).toBeDefined()
+    expect(banner!.metadata?.resolved).toBe(false)
+    expect(banner!.metadata?.auto_retry_at).toBe(deadline)
+    // The LIVE marker gates the countdown: only a banner created by a live
+    // event in this app run may count down (restored rows never carry it).
+    expect(banner!.metadata?.auto_retry_live).toBe(true)
+  })
+
+  it('omits auto_retry_at when the backend reports 0 (timer not armed)', () => {
+    act(() => {
+      for (const cb of runtimeHandlers.get('task_failed_resumable') ?? []) {
+        cb({ message: 'Rate limit exceeded.', task_id: 't-1', auto_retry_at: 0 })
+      }
+    })
+
+    const store = useChatStore.getState()
+    const order = store.messageOrder[SESSION] ?? []
+    const banner = order.map(id => store.messages[SESSION]![id]!).find(m => m.type === 'task_failed_resumable')
+    expect(banner).toBeDefined()
+    expect(banner!.metadata?.auto_retry_at).toBeUndefined()
+  })
+
+  it('degrades a malformed auto_retry_at to the plain banner (backend message kept)', () => {
+    act(() => {
+      for (const cb of runtimeHandlers.get('task_failed_resumable') ?? []) {
+        cb({ message: 'Rate limit exceeded.', task_id: 't-1', auto_retry_at: 'soon' })
+      }
+    })
+
+    const store = useChatStore.getState()
+    const order = store.messageOrder[SESSION] ?? []
+    const banner = order.map(id => store.messages[SESSION]![id]!).find(m => m.type === 'task_failed_resumable')
+    // A malformed optional field must not discard the payload: the banner
+    // keeps the backend's real message (no generic fallback) and never
+    // carries the malformed deadline into its metadata — it degrades to the
+    // plain manual banner (review fix).
+    expect(banner).toBeDefined()
+    expect(banner!.content).toBe('Rate limit exceeded.')
+    expect(banner!.metadata?.auto_retry_at).toBeUndefined()
   })
 })

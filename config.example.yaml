@@ -75,6 +75,13 @@ llm:
       #   pin applies. A configured pin is preserved while the proxy is on
       #   and takes effect again once the proxy stops dialing for the host.
       # tls_fingerprint: ""
+      #
+      # Optional: automatic retry timer for this provider (compatible
+      # providers only). After a failed LLM request the session waits this
+      # many seconds, then re-sends automatically instead of asking how to
+      # proceed. 0 / omitted = disabled (the default). Not a router-level
+      # retry knob: the timer lives in the c0wrk session layer.
+      # auto_retry_seconds: 30
 
   anthropic_compatible:
     # Each key is a named provider speaking Anthropic's Messages API
@@ -92,6 +99,11 @@ llm:
     #   # while the proxy dials for the host; add the host to
     #   # proxy.bypass_list to pin and proxy simultaneously.
     #   # tls_fingerprint: ""
+    #   # Same automatic retry timer as openai_compatible above
+    #   # (auto_retry_seconds, compatible providers only; 0 / omitted =
+    #   # disabled). After a failed request the session waits this many
+    #   # seconds, then re-sends automatically.
+    #   # auto_retry_seconds: 30
 
   chatgpt:
     api_key: "${OPENAI_API_KEY}"

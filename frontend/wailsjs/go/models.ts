@@ -298,6 +298,7 @@ export namespace backend {
 	    base_url?: string;
 	    models: string[];
 	    tls_fingerprint?: string;
+	    auto_retry_seconds?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigProviderFull(source);
@@ -309,6 +310,7 @@ export namespace backend {
 	        this.base_url = source["base_url"];
 	        this.models = source["models"];
 	        this.tls_fingerprint = source["tls_fingerprint"];
+	        this.auto_retry_seconds = source["auto_retry_seconds"];
 	    }
 	}
 	export class ConfigLLMResponse {
@@ -319,6 +321,7 @@ export namespace backend {
 	    chatgpt: ConfigProviderFull;
 	    all_models: ModelInfo[];
 	    models_ready: boolean;
+	    auto_retry_max_seconds: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigLLMResponse(source);
@@ -333,6 +336,7 @@ export namespace backend {
 	        this.chatgpt = this.convertValues(source["chatgpt"], ConfigProviderFull);
 	        this.all_models = this.convertValues(source["all_models"], ModelInfo);
 	        this.models_ready = source["models_ready"];
+	        this.auto_retry_max_seconds = source["auto_retry_max_seconds"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -575,6 +579,7 @@ export namespace backend {
 	    base_url?: string;
 	    models?: string[];
 	    tls_fingerprint?: string;
+	    auto_retry_seconds?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProviderConfigRequest(source);
@@ -586,6 +591,7 @@ export namespace backend {
 	        this.base_url = source["base_url"];
 	        this.models = source["models"];
 	        this.tls_fingerprint = source["tls_fingerprint"];
+	        this.auto_retry_seconds = source["auto_retry_seconds"];
 	    }
 	}
 	export class LLMFullConfigRequest {

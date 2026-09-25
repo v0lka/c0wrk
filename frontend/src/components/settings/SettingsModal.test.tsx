@@ -54,9 +54,10 @@ function flush(): Promise<void> {
 beforeEach(() => {
   vi.clearAllMocks()
   // General-tab children call getConfig (ConfigWarningBanner, ProxySettings)
-  // and getLogLevel (LogLevelSelector); an empty-but-valid llm section keeps
-  // them quiet and leaves the default model unset (slow close path).
-  mocks.getConfig.mockResolvedValue({ loaded: true, llm: {} })
+  // and getLogLevel (LogLevelSelector); a minimal-but-VALID llm section keeps
+  // them quiet and leaves the default model unset (slow close path). The
+  // auto-retry bound is REQUIRED (useLLMConfig fails the load without it).
+  mocks.getConfig.mockResolvedValue({ loaded: true, llm: { auto_retry_max_seconds: 3600 } })
   mocks.getLogLevel.mockResolvedValue('info')
   mocks.hasDefaultModel.mockResolvedValue(true)
   mocks.listVectorIndexGPUs.mockResolvedValue([])
@@ -81,6 +82,7 @@ describe('SettingsModal close flow', () => {
     mocks.getConfig.mockResolvedValue({
       loaded: true,
       llm: {
+        auto_retry_max_seconds: 3600,
         default_model: 'claude-3-opus',
         anthropic: { api_key: '', models: ['claude-3-opus'] },
       },

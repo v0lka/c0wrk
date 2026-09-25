@@ -213,7 +213,17 @@ export interface RetryData { attempt: number; max_attempts: number }
 export interface StepRetryData { step_id: string; attempt: number; max_attempts: number }
 export interface ServiceData { content: string; phase?: string }
 export interface SessionRenamedData { new_name: string; old_name?: string; id?: string }
-export interface TaskFailedResumableData { message?: string }
+export interface TaskFailedResumableData {
+  message?: string
+  /** Unix timestamp (seconds) at which the UI auto-resend countdown reaches
+   *  zero. Present only when the backend classified the terminal failure as
+   *  a rate-limit/overload error from a provider with a configured retry
+   *  interval; absent/0 means no countdown. There is no backend timer: the
+   *  live event handler copies the deadline into the banner metadata with
+   *  `auto_retry_live: true`, and ONLY a live-marked banner may count down
+   *  (a restored row renders the plain manual banner). */
+  auto_retry_at?: number
+}
 export interface ReflectionData {
   summary: string
   insights?: string[]
@@ -934,7 +944,16 @@ export function isSessionTokensData(d: unknown): d is SessionTokensData { return
 export function isSessionRenamedData(d: unknown): d is SessionRenamedData { return isObj(d) && has(d, 'new_name') }
 export function isTaskFailedResumableData(d: unknown): d is TaskFailedResumableData {
   if (!isObjLocal(d)) return false
-  return !('message' in d) || typeof d.message === 'string'
+  if ('message' in d && typeof d.message !== 'string') return false
+  // auto_retry_at is optional. A malformed value (non-number — e.g. a
+  // backend-schema drift) does NOT invalidate the payload: the banner stays
+  // actionable with the backend's real message, and the live handler
+  // independently gates on `typeof === 'number' && > 0` before copying it
+  // into the banner metadata — so a malformed deadline degrades to
+  // treat-as-absent (plain manual banner) instead of discarding the event's
+  // message. Dropping the whole payload over an optional field was
+  // disproportionate (review fix, ADR-065 follow-up).
+  return true
 }
 export function isTerminalOutputData(d: unknown): d is TerminalOutputData { return isObj(d) && typeof d.data === 'string' }
 export function isSkillsActivatedData(d: unknown): d is SkillsActivatedData { return isObj(d) && Array.isArray(d.skills) }

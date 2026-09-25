@@ -413,6 +413,10 @@ export interface ConfigProviderFull {
   /** Per-provider TLS pin (ADR-054). Display round-trip from config.
    *  Empty/absent = standard CA verification (no override). */
   tls_fingerprint?: string
+  /** Per-provider session-layer auto-retry interval in seconds (compatible
+   *  providers only). 0/absent = disabled. The fixed anthropic/chatgpt
+   *  providers always report 0. */
+  auto_retry_seconds?: number
 }
 
 export interface ModelInfo {
@@ -441,6 +445,15 @@ export interface ConfigLLMResponse {
   chatgpt: ConfigProviderFull
   all_models: ModelInfo[]
   models_ready: boolean
+  /** Inclusive upper bound for per-provider auto_retry_seconds — the SAME
+   *  bound the backend's validate()/UpdateLLMConfig enforce (ADR-065). The
+   *  Settings form clamps its interval input against this server-provided
+   *  limit instead of a duplicated frontend constant. REQUIRED: the field
+   *  always serializes (no omitempty on the Go side) and frontend/backend
+   *  ship in one binary — a missing or non-positive value fails the
+   *  loadConfig contract loudly instead of silently clamping against a
+   *  stale compiled-in constant. */
+  auto_retry_max_seconds: number
 }
 
 export interface ConfigSearchResp {
@@ -504,6 +517,11 @@ export interface ProviderConfigRequest {
    *  (debounce-safe); a present value is applied verbatim, so '' clears the
    *  pin and disables the override. */
   tls_fingerprint?: string
+  /** Per-provider session-layer auto-retry interval (compatible providers
+   *  only). Omitted = keep the persisted value (debounce-safe); a present
+   *  value is applied verbatim, so 0 disables the retry timer. Ignored for
+   *  the fixed anthropic/chatgpt providers. */
+  auto_retry_seconds?: number
 }
 
 /** Draft credentials for ListProviderModels — lets Fetch Models work for a

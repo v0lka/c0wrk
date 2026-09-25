@@ -60,6 +60,7 @@ describe('useLLMConfig default replacement', () => {
     mocks.getConfig.mockResolvedValue({
       loaded: true,
       llm: {
+        auto_retry_max_seconds: 3600,
         default_model: 'anthropic/old-model',
         anthropic: { api_key: '', models: ['old-model'] },
       },
@@ -93,6 +94,7 @@ describe('useLLMConfig default replacement', () => {
     mocks.getConfig.mockResolvedValue({
       loaded: true,
       llm: {
+        auto_retry_max_seconds: 3600,
         default_model: '',
         anthropic: { api_key: '', models: [] },
         openai_compatible: {},
@@ -139,6 +141,7 @@ describe('useLLMConfig compatible provider deletion', () => {
     mocks.getConfig.mockResolvedValue({
       loaded: true,
       llm: {
+        auto_retry_max_seconds: 3600,
         default_model: 'anthropic/default-model',
         anthropic: { api_key: '', models: ['default-model'] },
         openai_compatible: {
@@ -169,6 +172,7 @@ describe('useLLMConfig loading errors', () => {
       .mockResolvedValueOnce({
         loaded: true,
         llm: {
+          auto_retry_max_seconds: 3600,
           default_model: 'custom/model-a',
           openai_compatible: {
             custom: { api_key: '', base_url: 'http://localhost:1234', models: ['model-a'], tls_fingerprint: '' },
@@ -214,6 +218,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
     mocks.getConfig.mockResolvedValue({
       loaded: true,
       llm: {
+        auto_retry_max_seconds: 3600,
         default_model: 'anthropic/default-model',
         anthropic: { api_key: '', models: ['default-model'] },
       },
@@ -249,6 +254,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
     mocks.getConfig.mockResolvedValue({
       loaded: true,
       llm: {
+        auto_retry_max_seconds: 3600,
         default_model: 'anthropic/default-model',
         anthropic: { api_key: '', models: ['default-model'] },
         openai_compatible: {
@@ -278,6 +284,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
     mocks.getConfig.mockResolvedValue({
       loaded: true,
       llm: {
+        auto_retry_max_seconds: 3600,
         default_model: 'anthropic/default-model',
         anthropic: { api_key: '', models: ['default-model'] },
         openai_compatible: {
@@ -316,6 +323,7 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
     mocks.getConfig.mockResolvedValue({
       loaded: true,
       llm: {
+        auto_retry_max_seconds: 3600,
         default_model: '',
         anthropic: { api_key: '', models: ['default-model'] },
       },
@@ -354,6 +362,7 @@ describe('useLLMConfig TLS pin round-trip', () => {
     mocks.getConfig.mockResolvedValue({
       loaded: true,
       llm: {
+        auto_retry_max_seconds: 3600,
         default_model: 'pinned/qwen3',
         anthropic: { api_key: '', models: [] },
         openai_compatible: {
@@ -380,6 +389,7 @@ describe('useLLMConfig TLS pin round-trip', () => {
     mocks.getConfig.mockResolvedValue({
       loaded: true,
       llm: {
+        auto_retry_max_seconds: 3600,
         default_model: 'pinned/qwen3',
         anthropic: { api_key: '', models: [] },
         openai_compatible: {
@@ -410,6 +420,7 @@ describe('useLLMConfig TLS pin round-trip', () => {
     mocks.getConfig.mockResolvedValue({
       loaded: true,
       llm: {
+        auto_retry_max_seconds: 3600,
         default_model: 'pinned/qwen3',
         anthropic: { api_key: '', models: [] },
         openai_compatible: {
@@ -431,6 +442,162 @@ describe('useLLMConfig TLS pin round-trip', () => {
   })
 })
 
+// --- Auto-retry interval (compatible providers only) ---
+
+describe('useLLMConfig auto-retry interval', () => {
+  beforeEach(() => {
+    useProxyDraftStore.setState({ active: null })
+  })
+
+  it('loads the persisted interval and defaults an absent one to undefined', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'timed/qwen3',
+        anthropic: { api_key: '', models: [] },
+        openai_compatible: {
+          timed: { api_key: 'k', base_url: 'https://llm.lan:8443/v1', models: ['qwen3'], auto_retry_seconds: 30 },
+          plain: { api_key: 'k', base_url: 'http://127.0.0.1:1234/v1', models: ['llama'] },
+        },
+        anthropic_compatible: {
+          gateway: { api_key: 'k', base_url: 'https://claude.lan:8443', models: ['claude'], auto_retry_seconds: 45 },
+        },
+      },
+    })
+
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    expect(result.providerConfigs.timed?.auto_retry_seconds).toBe(30)
+    expect(result.providerConfigs.gateway?.auto_retry_seconds).toBe(45)
+    expect(result.providerConfigs.plain?.auto_retry_seconds).toBeUndefined()
+    // Fixed providers never carry the field (backend reports 0 → omitted).
+    expect(result.providerConfigs.anthropic?.auto_retry_seconds).toBeUndefined()
+  })
+
+  it('sends the interval only for compatible providers on save', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'timed/qwen3',
+        anthropic: { api_key: 'k', models: ['claude'] },
+        openai_compatible: {
+          timed: { api_key: 'k', base_url: 'https://llm.lan:8443/v1', models: ['qwen3'], auto_retry_seconds: 30 },
+        },
+        anthropic_compatible: {},
+      },
+    })
+
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    act(() => result.updateProviderConfig('timed', { base_url: 'https://new.lan/v1' }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+
+    expect(mocks.updateLLMConfig).toHaveBeenCalledTimes(1)
+    const req = mocks.updateLLMConfig.mock.calls[0]![0] as Record<string, never>
+    const compatible = req.openai_compatible as unknown as Record<
+      string,
+      { auto_retry_seconds?: number }
+    >
+    expect(compatible.timed?.auto_retry_seconds).toBe(30)
+    // The fixed provider entry must not grow an auto_retry_seconds field.
+    const fixed = req.anthropic as unknown as Record<string, unknown>
+    expect(fixed).not.toHaveProperty('auto_retry_seconds')
+  })
+
+  // The debounce must not silently disable a persisted interval: a save
+  // triggered by an unrelated field edit carries the loaded interval along.
+  it('keeps a loaded interval through a debounced unrelated edit', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'timed/qwen3',
+        anthropic: { api_key: '', models: [] },
+        openai_compatible: {
+          timed: { api_key: 'k', base_url: 'https://llm.lan:8443/v1', models: ['qwen3'], auto_retry_seconds: 30 },
+        },
+        anthropic_compatible: {},
+      },
+    })
+
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    act(() => result.updateProviderConfig('timed', { api_key: 'k2' }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+
+    const req = mocks.updateLLMConfig.mock.calls[0]![0] as Record<string, never>
+    const compatible = req.openai_compatible as unknown as Record<
+      string,
+      { auto_retry_seconds?: number }
+    >
+    expect(compatible.timed?.auto_retry_seconds).toBe(30)
+  })
+
+  it('sends an explicit 0 when the interval is disabled via the form', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'timed/qwen3',
+        anthropic: { api_key: '', models: [] },
+        openai_compatible: {
+          timed: { api_key: 'k', base_url: 'https://llm.lan:8443/v1', models: ['qwen3'], auto_retry_seconds: 30 },
+        },
+        anthropic_compatible: {},
+      },
+    })
+
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    act(() => result.updateProviderConfig('timed', { auto_retry_seconds: 0 }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+
+    const req = mocks.updateLLMConfig.mock.calls[0]![0] as Record<string, never>
+    const compatible = req.openai_compatible as unknown as Record<
+      string,
+      { auto_retry_seconds?: number }
+    >
+    // An EXPLICIT 0 — never undefined, which the backend would read as
+    // "keep the persisted 30".
+    expect(compatible.timed?.auto_retry_seconds).toBe(0)
+    expect(compatible.timed).toHaveProperty('auto_retry_seconds', 0)
+  })
+
+  it('omits the field for a compatible provider that never had an interval', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'plain/qwen3',
+        anthropic: { api_key: '', models: [] },
+        openai_compatible: {
+          plain: { api_key: 'k', base_url: 'http://127.0.0.1:1234/v1', models: ['qwen3'] },
+        },
+        anthropic_compatible: {},
+      },
+    })
+
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    act(() => result.updateProviderConfig('plain', { api_key: 'k2' }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+
+    const req = mocks.updateLLMConfig.mock.calls[0]![0] as Record<string, never>
+    const compatible = req.openai_compatible as unknown as Record<
+      string,
+      { auto_retry_seconds?: number }
+    >
+    expect(compatible.plain).not.toHaveProperty('auto_retry_seconds')
+  })
+})
+
 describe('useLLMConfig proxy gate', () => {
   beforeEach(() => {
     useProxyDraftStore.setState({ active: null })
@@ -441,6 +608,7 @@ describe('useLLMConfig proxy gate', () => {
       loaded: true,
       proxy,
       llm: {
+        auto_retry_max_seconds: 3600,
         default_model: 'anthropic/claude',
         anthropic: { api_key: 'k', models: ['claude'] },
         openai_compatible: {},
@@ -489,5 +657,53 @@ describe('useLLMConfig proxy gate', () => {
     act(() => useProxyDraftStore.getState().setActive(true))
     expect(useProxyDraftStore.getState().active).toBe(true)
     expect(mocks.getConfig.mock.calls.length).toBe(readsAfterLoad)
+  })
+})
+
+// --- Server-published auto-retry bound contract (ADR-065) ---
+
+describe('useLLMConfig auto_retry_max_seconds contract', () => {
+  // The bound is REQUIRED (no compiled-in fallback): frontend and backend
+  // ship in one binary, so a payload without a positive value means the
+  // contract is broken — the load must fail LOUDLY instead of silently
+  // clamping the interval input against a stale constant.
+  it('fails the load loudly when auto_retry_max_seconds is missing or non-positive', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        default_model: 'anthropic/old-model',
+        anthropic: { api_key: '', models: ['old-model'] },
+      },
+    })
+
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    expect(mocks.loggerError).toHaveBeenCalledWith(
+      'Failed to load LLM config:',
+      expect.objectContaining({ message: expect.stringContaining('auto_retry_max_seconds') }),
+    )
+    // The whole load is rejected: no provider state leaks in from the broken
+    // payload, and the bound stays unknown (LLMSettings keeps the forms
+    // gated on exactly this).
+    expect(result.defaultModel).toBe('')
+    expect(Object.keys(result.providerConfigs)).toEqual([])
+    expect(result.autoRetryMaxSeconds).toBeUndefined()
+  })
+
+  it('publishes the server value verbatim when present', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 600,
+        default_model: '',
+      },
+    })
+
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    expect(result.autoRetryMaxSeconds).toBe(600)
+    expect(mocks.loggerError).not.toHaveBeenCalled()
   })
 })
