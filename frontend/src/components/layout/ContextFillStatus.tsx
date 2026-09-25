@@ -5,9 +5,9 @@ import { formatTokenCount } from '@/lib/formatters'
 interface ContextFillStatusProps {
   /** Conductor's context-window fill percent (0-100). Undefined hides the indicator. */
   percent: number | undefined
-  /** Conductor's context-window used token count (session-root only, from session_tokens events). */
+  /** Context-window used token count (drives the "N of M" tooltip): session-root via session_tokens, step-scoped via context_fill. */
   usedTokens?: number
-  /** Conductor's context-window total capacity (session-root only, from session_tokens events). */
+  /** Context-window total capacity (drives the "N of M" tooltip): session-root via session_tokens, step-scoped via context_fill. */
   maxTokens?: number
 }
 
@@ -36,9 +36,11 @@ const TIER_BAR: Record<FillTier, string> = {
 }
 
 /**
- * Renders the conductor's context-window fill as a compact bar + percentage,
- * colour-coded by pressure tier. Reflects the session-root (conductor) fill
- * only — subagent fills never reach this indicator.
+ * Renders a context-window fill as a compact bar + percentage, colour-coded
+ * by pressure tier. Reused for both consumers of the same window's numbers:
+ * the session-root (conductor) fill in the status bar and the per-step fill
+ * in plan/subagent step headers (step-scoped context_fill events — see
+ * rendering.md, Step/Subagent Header Cluster).
  *
  * Hidden while no tokens are spent (0 used). The tooltip shows "Context fill:
  * N of M" (used of capacity) when the token counts are available, falling back

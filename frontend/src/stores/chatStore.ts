@@ -147,6 +147,10 @@ interface ChatActions {
   setStepContextFill: (sessionId: string, stepId: string, fill: number) => void
   setStepContextTokens: (sessionId: string, stepId: string, tokens: Partial<StepContextTokens>) => void
   clearStepContextFill: (sessionId: string) => void
+  /** Clear several sessions' step fills + per-step token totals at once
+   *  (bulk session delete, e.g. a project deletion cascading over its
+   *  sessions) in a single store update. */
+  dropSessions: (sessionIds: string[]) => void
   setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
   setWorkUnitStatus: (sessionId: string, status: Record<string, WorkUnitBlockStatus>) => void
   settleWorkUnit: (sessionId: string, stepId: string, status: WorkUnitBlockStatus) => void
@@ -593,8 +597,11 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   // sessions' fills survive. Also drops the session's per-step token totals —
   // both maps are keyed by the same plan-step ids, so they must share the
   // plan-replace lifecycle (usePlanEvents' handlePlanGenerated clears them via
-  // this one action without extra wiring).
+  // this one action without extra wiring). A fully-unknown session returns the
+  // state object itself so the no-op keeps state identity and doesn't sweep
+  // every subscriber.
   clearStepContextFill: (sessionId) => set((s) => {
+    if (!(sessionId in s.stepContextFill) && !(sessionId in s.stepContextTokens)) return s
     const patch: Partial<Pick<ChatState, 'stepContextFill' | 'stepContextTokens'>> = {}
     if (sessionId in s.stepContextFill) {
       const { [sessionId]: _fills, ...rest } = s.stepContextFill
@@ -605,6 +612,26 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
       patch.stepContextTokens = rest
     }
     return patch
+  }),
+
+  // Bulk variant of clearStepContextFill (project deletion cascading over its
+  // sessions): drops every listed session from BOTH maps in ONE set call.
+  // Skips absent ids so an all-unknown batch keeps state identity.
+  dropSessions: (sessionIds) => set((s) => {
+    let stepContextFill = s.stepContextFill
+    let stepContextTokens = s.stepContextTokens
+    for (const sessionId of sessionIds) {
+      if (sessionId in stepContextFill) {
+        const { [sessionId]: _fills, ...rest } = stepContextFill
+        stepContextFill = rest
+      }
+      if (sessionId in stepContextTokens) {
+        const { [sessionId]: _tokens, ...rest } = stepContextTokens
+        stepContextTokens = rest
+      }
+    }
+    if (stepContextFill === s.stepContextFill && stepContextTokens === s.stepContextTokens) return s
+    return { stepContextFill, stepContextTokens }
   }),
 
   // Merge partial token info into the session entry so event-driven updates

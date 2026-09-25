@@ -90,9 +90,7 @@ export function ProjectSelector() {
           // totals (live-only stream — a deleted session never re-emits
           // context_fill, so the entries would go stale and keep the
           // per-session maps unbounded).
-          for (const sid of removedSessionIds) {
-            useChatStore.getState().clearStepContextFill(sid);
-          }
+          useChatStore.getState().dropSessions(removedSessionIds);
         }
         removeProject(id);
         // Drop the deleted project's transient commit-box state (draft

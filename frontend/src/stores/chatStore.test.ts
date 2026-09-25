@@ -1059,10 +1059,41 @@ describe('step context tokens (per-step context_fill used/max totals)', () => {
     const store = useChatStore.getState()
     store.setStepContextFill('s2', 'step_1', 10)
     store.setStepContextTokens('s2', 'step_1', STEP_TOKENS)
-    const beforeFill = useChatStore.getState().stepContextFill
-    const beforeTokens = useChatStore.getState().stepContextTokens
+    const before = useChatStore.getState()
     useChatStore.getState().clearStepContextFill('missing')
-    expect(useChatStore.getState().stepContextFill).toBe(beforeFill)
-    expect(useChatStore.getState().stepContextTokens).toBe(beforeTokens)
+    // State identity preserved — no new state object, no subscriber sweep.
+    expect(useChatStore.getState()).toBe(before)
+  })
+
+  it('dropSessions removes several sessions from both maps in one update and leaves others intact', () => {
+    const store = useChatStore.getState()
+    store.setStepContextFill('s1', 'step_1', 42.5)
+    store.setStepContextTokens('s1', 'step_1', STEP_TOKENS)
+    store.setStepContextFill('s2', 'step_1', 10)
+    store.setStepContextTokens('s2', 'step_1', { used_tokens: 1, max_tokens: 2 })
+    store.setStepContextFill('s3', 'step_1', 90)
+    store.setStepContextTokens('s3', 'step_1', STEP_TOKENS)
+    useChatStore.getState().dropSessions(['s1', 's3'])
+    expect(useChatStore.getState().stepContextFill).toEqual({ s2: { step_1: 10 } })
+    expect(useChatStore.getState().stepContextTokens).toEqual({
+      s2: { step_1: { used_tokens: 1, max_tokens: 2 } },
+    })
+  })
+
+  it('dropSessions with a mixed batch drops only the known ids', () => {
+    const store = useChatStore.getState()
+    store.setStepContextFill('s1', 'step_1', 42.5)
+    store.setStepContextFill('s2', 'step_1', 10)
+    useChatStore.getState().dropSessions(['s1', 'unknown-a'])
+    expect(useChatStore.getState().stepContextFill).toEqual({ s2: { step_1: 10 } })
+  })
+
+  it('dropSessions is a no-op for an all-unknown batch (state identity preserved)', () => {
+    const store = useChatStore.getState()
+    store.setStepContextFill('s1', 'step_1', 42.5)
+    store.setStepContextTokens('s1', 'step_1', STEP_TOKENS)
+    const before = useChatStore.getState()
+    useChatStore.getState().dropSessions(['unknown-a', 'unknown-b'])
+    expect(useChatStore.getState()).toBe(before)
   })
 })
