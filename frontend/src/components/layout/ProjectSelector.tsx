@@ -6,6 +6,7 @@ import { useGitPanelStore } from "@/stores/gitPanelStore";
 import { useUIStore } from "@/stores/uiStore";
 import { useChatInputStore } from "@/stores/chatInputStore";
 import { useAttachmentsStore } from "@/stores/attachmentsStore";
+import { useChatStore } from "@/stores/chatStore";
 import { useE2SStore } from "@/stores/e2sStore";
 import { renameProject, deleteProject } from "@/api/projects";
 import { useProjectSwitchState } from "@/hooks/useProjectSwitchState";
@@ -85,6 +86,11 @@ export function ProjectSelector() {
           // deleted session never re-emits e2s_state, so the entries would go
           // stale and keep the per-session map unbounded).
           useE2SStore.getState().dropSessions(removedSessionIds);
+          // Drop the deleted sessions' step context fill + per-step token
+          // totals (live-only stream — a deleted session never re-emits
+          // context_fill, so the entries would go stale and keep the
+          // per-session maps unbounded).
+          useChatStore.getState().dropSessions(removedSessionIds);
         }
         removeProject(id);
         // Drop the deleted project's transient commit-box state (draft

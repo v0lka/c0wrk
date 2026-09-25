@@ -11,7 +11,7 @@ Manages real-time event subscription, validation, and store updates. Events flow
 - `frontend/src/hooks/events/usePlanEvents.ts` — plan generation, step lifecycle
 - `frontend/src/hooks/events/useToolEvents.ts` — tool call/result correlation and tool confirmation (`tool_confirm` via shared handlers)
 - `frontend/src/hooks/events/useActionEvents.ts` — `ask_user`, step limits, resume actions (`task_failed_resumable`/`task_resumed`), and plan review (`plan_review_ready`) via shared handlers
-- `frontend/src/hooks/events/useContextEvents.ts` — context fill, compaction. Also owns the manual-compaction lifecycle: `compaction_started` sets `chatStore.compacting` + the "Compacting" activity, `compaction_finished` releases it (failure → "Compaction failed" label; a failed auto-resume → `paused_without_resume` re-applies the paused state, since `session_paused` was suppressed while compacting; any other outcome with nothing to resume — idle session including an idle no-op (`nothing_compacted`, no card follows), cancelled flow, plain success — clears the activity; a successful auto-resume or a deferral (`deferred_to_resume`) leaves the label to `task_resumed`); pure handlers `handleCompactionStarted`/`handleCompactionFinished` are shared-testable
+- `frontend/src/hooks/events/useContextEvents.ts` — context fill (session-level **and** step-scoped), compaction. Step-scoped `context_fill` (a `plan_step_id` is set — subagent/executor steps) writes the step fill into `chatStore.stepContextFill`, the step's own context-window totals into `chatStore.stepContextTokens` (a subagent/executor step reports its own window, separate from the conductor's), and still refreshes the session token sums — a subagent's own fill never clobbers the conductor's session-level fill the status bar renders; session-root events (no `plan_step_id` — conductor emissions plus the lazy-local-probe window re-broadcast) update the session-level fill/tokens. Also owns the manual-compaction lifecycle: `compaction_started` sets `chatStore.compacting` + the "Compacting" activity, `compaction_finished` releases it (failure → "Compaction failed" label; a failed auto-resume → `paused_without_resume` re-applies the paused state, since `session_paused` was suppressed while compacting; any other outcome with nothing to resume — idle session including an idle no-op (`nothing_compacted`, no card follows), cancelled flow, plain success — clears the activity; a successful auto-resume or a deferral (`deferred_to_resume`) leaves the label to `task_resumed`); pure handlers `handleCompactionStarted`/`handleCompactionFinished` are shared-testable
 - `frontend/src/hooks/events/useLifecycleEvents.ts` — routing, step_start, step_complete, retry, step_retry
 - `frontend/src/hooks/events/useSubagentEvents.ts` — subagent lifecycle
 - `frontend/src/hooks/events/useBlackboardEvents.ts` — blackboard state updates
@@ -47,7 +47,7 @@ useSessionEvents(sessionId)
   │   ├─ usePlanEvents → planStore updates
   │   ├─ useToolEvents → chatStore (tool messages, tool_confirm via hitlHandlers)
   │   ├─ useActionEvents → chatStore (pending actions: ask_user/step_limit/resume; plan_review via hitlHandlers)
-  │   ├─ useContextEvents → chatStore (context fill, manual-compaction lifecycle)
+  │   ├─ useContextEvents → chatStore (context fill — session-level + step-scoped maps —, manual-compaction lifecycle)
   │   ├─ useLifecycleEvents → chatStore (routing, step_start/complete, retry)
   │   ├─ useSubagentEvents → planStore
   │   ├─ useBlackboardEvents → blackboardStore

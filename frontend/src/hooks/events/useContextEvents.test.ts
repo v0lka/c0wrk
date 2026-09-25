@@ -2,18 +2,21 @@ import { describe, it, expect } from 'vitest'
 import { handleContextFill, handleCompactionStarted, handleCompactionFinished, stripAutoRetryFromBanner, type ContextFillStore } from '@/hooks/events/useContextEvents'
 import type { ContextFillData } from '@/types/events'
 import type { TokenInfo, CompactionAvailability } from '@/types/models'
+import type { StepContextTokens } from '@/stores/chatStore'
 import type { ChatMessageUI } from '@/types/messages'
 
 interface Recorded {
   stepFill: Array<{ sessionId: string; stepId: string; fill: number }>
+  stepTokens: Array<{ sessionId: string; stepId: string; tokens: Partial<StepContextTokens> }>
   sessionTokens: Array<Partial<TokenInfo>>
 }
 
 function makeStore(): ContextFillStore & { recorded: Recorded } {
-  const recorded: Recorded = { stepFill: [], sessionTokens: [] }
+  const recorded: Recorded = { stepFill: [], stepTokens: [], sessionTokens: [] }
   return {
     recorded,
     setStepContextFill: (sessionId, stepId, fill) => { recorded.stepFill.push({ sessionId, stepId, fill }) },
+    setStepContextTokens: (sessionId, stepId, tokens) => { recorded.stepTokens.push({ sessionId, stepId, tokens }) },
     setSessionTokens: (_sessionId, tokens) => { recorded.sessionTokens.push(tokens) },
   }
 }
@@ -58,6 +61,9 @@ describe('handleContextFill', () => {
     const store = makeStore()
     handleContextFill(store, 'sess-1', makeData({ plan_step_id: 'step-9' }))
     expect(store.recorded.stepFill).toEqual([{ sessionId: 'sess-1', stepId: 'step-9', fill: 42.5 }])
+    expect(store.recorded.stepTokens).toEqual([
+      { sessionId: 'sess-1', stepId: 'step-9', tokens: { used_tokens: 8500, max_tokens: 20000 } },
+    ])
     expect(store.recorded.sessionTokens).toHaveLength(1)
     expect(store.recorded.sessionTokens[0]).toEqual({
       total_input_tokens: 100,
@@ -65,6 +71,38 @@ describe('handleContextFill', () => {
       model: 'qwen3.6',
       family: 'openai_compatible',
     })
+  })
+
+  it('step-scoped event without used/max tokens does not touch the step token map', () => {
+    // The type guard does not verify used_tokens/max_tokens; a payload missing
+    // them (older backend) must not write the stepContextTokens map at all —
+    // merge semantics would keep the previous values, so a no-op write is
+    // pointless and an undefined coercion would corrupt them.
+    const store = makeStore()
+    handleContextFill(store, 'sess-1', makeData({ plan_step_id: 'step-9', used_tokens: undefined, max_tokens: undefined }))
+    expect(store.recorded.stepFill).toEqual([{ sessionId: 'sess-1', stepId: 'step-9', fill: 42.5 }])
+    expect(store.recorded.stepTokens).toHaveLength(0)
+  })
+
+  it('step-scoped event merges partial token totals without erasing the other field', () => {
+    // Only max_tokens present (e.g. the window was re-probed): the merge
+    // semantics of setStepContextTokens keep the previously-known used_tokens.
+    const store = makeStore()
+    handleContextFill(store, 'sess-1', makeData({ plan_step_id: 'step-9' }))
+    handleContextFill(store, 'sess-1', makeData({ plan_step_id: 'step-9', used_tokens: undefined }))
+    expect(store.recorded.stepTokens).toEqual([
+      { sessionId: 'sess-1', stepId: 'step-9', tokens: { used_tokens: 8500, max_tokens: 20000 } },
+      { sessionId: 'sess-1', stepId: 'step-9', tokens: { max_tokens: 20000 } },
+    ])
+  })
+
+  it('session-root event does not write the step token map', () => {
+    // Session-root events carry the conductor's window; they must never land
+    // in the per-step token maps (same isolation as the step fill).
+    const store = makeStore()
+    handleContextFill(store, 'sess-1', makeData({}))
+    expect(store.recorded.stepFill).toHaveLength(0)
+    expect(store.recorded.stepTokens).toHaveLength(0)
   })
 
   it('session-root event preserves previously-known fill when fields are absent', () => {
