@@ -521,6 +521,50 @@ func TestEventEmitterContextFill(t *testing.T) {
 	}
 }
 
+// TestEventEmitterContextFillDynamicStepScope verifies that an inline
+// Conductor step's context_fill carries the dynamically-set plan-step id:
+// the executor passes an empty stepID (only delegated subagent executors get
+// SetPlanContext), so the emitter must fall back to its own current scope
+// (SetCurrentStepID). Without the fallback the event arrived session-root and
+// the frontend's per-step context-fill badge never populated.
+func TestEventEmitterContextFillDynamicStepScope(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.SetCurrentStepID("step_2")
+	// The executor loop passes e.planStepID, which is empty for the inline
+	// Conductor executor (SetPlanContext is never called on it).
+	emitter.ContextFill(42.0, 4200, 10000, "ok", "")
+
+	data, ok := received.Data.(ContextFillEventData)
+	if !ok {
+		t.Fatalf("expected ContextFillEventData, got %T", received.Data)
+	}
+	if data.PlanStepID != "step_2" {
+		t.Errorf("expected PlanStepID 'step_2' from the emitter's dynamic scope, got %q", data.PlanStepID)
+	}
+}
+
+// TestEventEmitterContextFillNoScopeStaysSessionRoot verifies the fallback
+// does not invent a scope: with no dynamic step set, an empty caller stepID
+// keeps the event session-root (planning/idle emissions between steps).
+func TestEventEmitterContextFillNoScopeStaysSessionRoot(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.ContextFill(10.0, 1000, 10000, "ok", "")
+
+	data, ok := received.Data.(ContextFillEventData)
+	if !ok {
+		t.Fatalf("expected ContextFillEventData, got %T", received.Data)
+	}
+	if data.PlanStepID != "" {
+		t.Errorf("expected empty PlanStepID (session-root), got %q", data.PlanStepID)
+	}
+}
+
 // TestEventEmitterContextFillDisplayWindow verifies that when a display context
 // window is injected, ContextFill recomputes the fill percent and max relative
 // to the real advertised window — not the executor's internal effective max.

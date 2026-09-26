@@ -1003,6 +1003,21 @@ func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family st
 // been injected via SetDisplayContextWindow, the percent and max are
 // recomputed relative to that real window before emission and caching.
 func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens int, status, stepID string) {
+	// The executor passes its own plan-step id (SetPlanContext — delegated
+	// subagent executors only). Inline Conductor steps never set one: their
+	// scoping is dynamic on the ROOT emitter (SetCurrentStepID), and
+	// emitEvent's plan_step_id injection covers only map[string]any payloads,
+	// NOT this typed struct — so the inline steps' context_fill arrived
+	// session-root and the frontend never populated the step header's
+	// context-fill badge (the status bar swallowed every emission). Fall back
+	// to the emitter's own scope (fixed via WithPlanStepID, dynamic via
+	// SetCurrentStepID) when the caller has none; "" on both sides keeps the
+	// event session-root (planning/idle emissions between steps).
+	if stepID == "" {
+		e.mu.Lock()
+		stepID = e.planStepID
+		e.mu.Unlock()
+	}
 	// Cache fill state and read session totals atomically.
 	e.tokens.mu.Lock()
 	// The executor's maxTokens is the internal effective max; remember it so
