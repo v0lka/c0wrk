@@ -44,16 +44,25 @@ import {
   onEmbeddedLLMState,
   type EmbeddedLLMStatus,
 } from '@/api/embedded'
+import { getEmbeddedLLMTuning, type EmbeddedLLMTuning } from '@/api/embeddedTuning'
 import type { EmbeddedLLMComponent, EmbeddedLLMInstallProgressData } from '@/types/events'
 import { invalidateConfigCache } from '@/hooks/useConfigData'
 import { logger } from '@/lib/logger'
 
 export type { EmbeddedLLMStatus } from '@/api/embedded'
+export type { EmbeddedLLMTuning } from '@/api/embeddedTuning'
 
 /** The mutating RPC currently in flight (null = idle). Drives button disabling
  *  and the spinner. `load` is the long one: LoadEmbeddedLLM blocks for the whole
- *  multi-gigabyte weight load. */
-export type EmbeddedLLMBusyAction = 'install' | 'remove' | 'load' | 'unload' | 'auto-unload'
+ *  multi-gigabyte weight load; `tuning` is a quick config write whose re-read
+ *  still has to settle before the controls un-disable. */
+export type EmbeddedLLMBusyAction =
+  | 'install'
+  | 'remove'
+  | 'load'
+  | 'unload'
+  | 'auto-unload'
+  | 'tuning'
 
 /** The latest progress payload per component. A component that never reported
  *  (e.g. `cudart` outside Windows CUDA) is simply absent — the UI must not
@@ -79,6 +88,15 @@ interface EmbeddedLLMState {
    *  Distinct from `status.error`, which is the backend-reported cause of the
    *  last failed install/removal or of the supervisor's error state. */
   error: string | null
+  /** The persisted tuning overrides (null = never read). Replaced WHOLE by
+   *  `setTuning` — the one writer is `refreshEmbeddedLLMTuning`, exactly the
+   *  `status`/`setStatus` authority model: a partial merge could render a
+   *  half-updated override set, and this UI is the only tuning writer, so the
+   *  shared `embedded_llm:state` invalidation (which re-reads the STATUS)
+   *  cannot leave the slice stale. */
+  tuning: EmbeddedLLMTuning | null
+  /** True while the first tuning read is in flight. */
+  tuningLoading: boolean
 }
 
 interface EmbeddedLLMActions {
@@ -95,6 +113,10 @@ interface EmbeddedLLMActions {
   setBusy: (action: EmbeddedLLMBusyAction | null) => void
   /** Record/clear the message of a failed action taken from this UI. */
   setError: (message: string | null) => void
+  /** Replace the tuning snapshot wholesale (a `GetEmbeddedLLMTuning` read). */
+  setTuning: (tuning: EmbeddedLLMTuning) => void
+  /** Toggle the first tuning-read spinner. */
+  setTuningLoading: (loading: boolean) => void
   /** Drop every local field (used by tests and by an app-level teardown). */
   reset: () => void
 }
@@ -110,6 +132,8 @@ const initialState: EmbeddedLLMState = {
   progress: {},
   busy: null,
   error: null,
+  tuning: null,
+  tuningLoading: false,
 }
 
 // --- Store ---
@@ -142,6 +166,10 @@ export const useEmbeddedLLMStore = create<EmbeddedLLMStore>()((set) => ({
   setBusy: (action) => set({ busy: action }),
 
   setError: (message) => set({ error: message }),
+
+  setTuning: (tuning) => set({ tuning, tuningLoading: false }),
+
+  setTuningLoading: (loading) => set({ tuningLoading: loading }),
 
   reset: () => set({ ...initialState }),
 }))
@@ -180,6 +208,17 @@ export function useEmbeddedLLMStatusLoading(): boolean {
   return useEmbeddedLLMStore((s) => s.statusLoading)
 }
 
+/** The persisted tuning overrides, or null before the first read. Direct store
+ *  reference — safe. */
+export function useEmbeddedLLMTuningSnapshot(): EmbeddedLLMTuning | null {
+  return useEmbeddedLLMStore((s) => s.tuning)
+}
+
+/** Whether the first tuning read is in flight. Primitive — safe. */
+export function useEmbeddedLLMTuningLoading(): boolean {
+  return useEmbeddedLLMStore((s) => s.tuningLoading)
+}
+
 // --- Backend sync (module-level functions, not actions) ---
 
 /** Re-read the authoritative snapshot. NEVER throws: an unavailable backend
@@ -216,6 +255,23 @@ export async function refreshEmbeddedLLMStatus(): Promise<boolean> {
     // and leave the previous snapshot in place.
     logger.warn('[embedded-llm] status read failed', err)
     setStatusLoading(false)
+    return false
+  }
+}
+
+/** Re-read the authoritative tuning overrides. NEVER throws — the exact
+ *  contract as `refreshEmbeddedLLMStatus`: a failed read is logged, the
+ *  previous snapshot stays and no action error is painted. Returns whether the
+ *  snapshot was applied. */
+export async function refreshEmbeddedLLMTuning(): Promise<boolean> {
+  const { setTuningLoading, setTuning } = useEmbeddedLLMStore.getState()
+  setTuningLoading(true)
+  try {
+    setTuning(await getEmbeddedLLMTuning())
+    return true
+  } catch (err) {
+    logger.warn('[embedded-llm] tuning read failed', err)
+    setTuningLoading(false)
     return false
   }
 }

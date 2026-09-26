@@ -5,7 +5,10 @@
 // RemoveEmbeddedLLM / LoadEmbeddedLLM / UnloadEmbeddedLLM /
 // SetEmbeddedLLMAutoUnload. Every embedded-LLM surface (the Settings block, the
 // status-bar indicator) routes through this module — components never import
-// wailsjs directly, so the boundary validation lives here exactly once.
+// wailsjs directly, so the boundary validation lives here exactly once. The
+// TUNING RPCs (Get/SetEmbeddedLLMTuning, ProbeEmbeddedLLMDevices) and the
+// status snapshot's measured-topology additions live in the sibling
+// @/api/embeddedTuning.
 //
 // The two global events (`embedded_llm:state`, `embedded_llm:install_progress`)
 // are typed in @/types/events; the subscription helpers below validate each
@@ -23,6 +26,7 @@
 //     `loading` state rather than treat the pending promise as a hang.
 
 import { getApp, onGlobalEvent, reportDroppedEvent } from './runtime'
+import { isEmbeddedLLMStatusExtras, type EmbeddedLLMStatusExtras } from './embeddedTuning'
 import { logger } from '@/lib/logger'
 import {
   isEmbeddedLLMInstallProgressData,
@@ -52,8 +56,10 @@ export type EmbeddedLLMState = string
 /** The status snapshot. Mirrors backend `EmbeddedLLMStatus`
  *  (frontend/wailsjs/go/models.ts) field for field — every field is always
  *  present in the DTO (no omitempty), so the frontend never distinguishes
- *  "absent" from "zero". */
-export interface EmbeddedLLMStatus {
+ *  "absent" from "zero". The measured-topology / effective-plan / reload
+ *  fields (the T10 additive block) come from @/api/embeddedTuning via
+ *  `extends`, keeping this module at its single lifecycle concern. */
+export interface EmbeddedLLMStatus extends EmbeddedLLMStatusExtras {
   /** not_installed | installed | loading | loaded | unloading | error. */
   readonly state: EmbeddedLLMState
   /** The runtime and the weights are on disk and verified. Does NOT imply
@@ -98,6 +104,11 @@ export interface EmbeddedLLMStatus {
   readonly model_file: string
   /** OS process id of the supervised server (0 when not running). */
   readonly pid: number
+  /** The fit-contract finding of the last failed launch: the fork's
+   *  "failed to fit params to free device memory" complaint, scanned from the
+   *  dead run's output tail. Absent while no launch has failed that way (the
+   *  backend marks it omitempty); a launch that becomes ready clears it. */
+  readonly fit_warning?: string
   /** Human-readable cause: the supervisor's message while state is "error",
    *  otherwise the last failed install or removal. */
   readonly error: string
@@ -135,7 +146,8 @@ export function isEmbeddedLLMStatus(d: unknown): d is EmbeddedLLMStatus {
     typeof o.model_file === 'string' &&
     typeof o.pid === 'number' &&
     typeof o.error === 'string' &&
-    typeof o.available === 'boolean'
+    typeof o.available === 'boolean' &&
+    isEmbeddedLLMStatusExtras(o)
   )
 }
 

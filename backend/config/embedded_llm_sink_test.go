@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/v0lka/c0wrk/core/embeddedllm"
@@ -26,9 +27,12 @@ var _ embeddedllm.ConfigSink = embeddedConfigSink{}
 // auto-unload defaults WITHOUT overwriting an explicit operator choice (both
 // knobs are pointers, so nil is distinguishable from "explicitly false"), and
 // regenerates the backend-owned provider entry plus the context-window override
-// from the authoritative state.
+// from the authoritative state. The tuning section is operator-owned too, so it
+// is carried through verbatim: provisioning the model never resets a tuned
+// memory plan.
 func (s embeddedConfigSink) ApplyInstalled(_ context.Context, state embeddedllm.InstallState) error {
 	autoUnload := s.cfg.EmbeddedLLM.AutoUnload
+	tuning := s.cfg.EmbeddedLLM.Tuning
 	s.cfg.EmbeddedLLM = EmbeddedLLMConfig{
 		Installed:      true,
 		Packing:        string(state.Packing),
@@ -38,6 +42,7 @@ func (s embeddedConfigSink) ApplyInstalled(_ context.Context, state embeddedllm.
 		RuntimeVersion: state.RuntimeVersion,
 		InstalledAt:    state.InstalledAt,
 		AutoUnload:     autoUnload,
+		Tuning:         tuning,
 	}
 	if s.cfg.EmbeddedLLM.AutoUnload.Enabled == nil {
 		enabled := state.AutoUnloadEnabled
@@ -56,7 +61,9 @@ func (s embeddedConfigSink) ApplyInstalled(_ context.Context, state embeddedllm.
 // ApplyRemoved clears the install state, migrates llm.default_model off the
 // embedded composite (otherwise the next load fails validation and the next
 // settings save is rejected as dangling), and drops the provider record. The
-// auto-unload knobs are operator settings, not install state, so they survive.
+// auto-unload and tuning knobs are operator settings, not install state, so
+// both survive — a reinstall starts from the same memory plan the operator
+// chose, not from a reset one.
 func (s embeddedConfigSink) ApplyRemoved(_ context.Context) error {
 	composite := EmbeddedLLMProviderName + "/" + EmbeddedLLMModelName
 	// Migrate the default model BEFORE the record disappears: an empty
@@ -67,7 +74,8 @@ func (s embeddedConfigSink) ApplyRemoved(_ context.Context) error {
 		migrated = firstNonEmbeddedModelID(s.cfg, composite)
 	}
 	autoUnload := s.cfg.EmbeddedLLM.AutoUnload
-	s.cfg.EmbeddedLLM = EmbeddedLLMConfig{AutoUnload: autoUnload}
+	tuning := s.cfg.EmbeddedLLM.Tuning
+	s.cfg.EmbeddedLLM = EmbeddedLLMConfig{AutoUnload: autoUnload, Tuning: tuning}
 	s.cfg.LLM.DefaultModel = migrated
 	s.cfg.SyncEmbeddedLLMProvider(0)
 	return nil
@@ -335,5 +343,169 @@ func TestEmbeddedLLMRemoveWithNoOtherModelLeavesAnEmptyDefault(t *testing.T) {
 	}
 	if err := validate(cfg); err == nil {
 		t.Error("validate() accepted a config with no enabled model at all")
+	}
+}
+
+// operatorTuning is a memory plan the operator actually chose: every knob set
+// to something other than the planner's own default, so a sink that drops or
+// re-seeds the section cannot pass by accident.
+func operatorTuning() TuningConfig {
+	return TuningConfig{
+		Context: EmbeddedLLMContextConfig{
+			Mode:   embeddedStrPtr(EmbeddedLLMContextExact),
+			Tokens: embeddedIntPtr(49152),
+		},
+		KVCacheType: embeddedStrPtr("q4_0"),
+		Offload: EmbeddedLLMOffloadConfig{
+			Mode:   embeddedStrPtr(EmbeddedLLMOffloadLayers),
+			Layers: embeddedIntPtr(40),
+		},
+		Fit:            embeddedBoolPtr(false),
+		FitTargetMiB:   embeddedIntPtr(2048),
+		FitMinContext:  embeddedIntPtr(32768),
+		KVOffload:      embeddedBoolPtr(false),
+		MMProjOffload:  embeddedBoolPtr(false),
+		Packing:        embeddedStrPtr("PTQ1_0"),
+		Parallel:       embeddedIntPtr(2),
+		CacheRAMMiB:    embeddedIntPtr(0),
+		HostReserveGiB: embeddedFloatPtr(6.5),
+	}
+}
+
+// TestEmbeddedConfigSinkPreservesOperatorTuning is the install half of the
+// tuning contract: ApplyInstalled rewrites embedded_llm.* wholesale, so it must
+// carry the operator's memory plan through verbatim — provisioning the model
+// does not reset a tuned plan, exactly as it does not reset a tuned idle budget.
+// The install record must still land in full beside it.
+func TestEmbeddedConfigSinkPreservesOperatorTuning(t *testing.T) {
+	cfg := minimalValidConfig()
+	want := operatorTuning()
+	cfg.EmbeddedLLM.Tuning = want
+
+	state := testInstallState()
+	if err := (embeddedConfigSink{cfg: cfg}).ApplyInstalled(context.Background(), state); err != nil {
+		t.Fatalf("ApplyInstalled: %v", err)
+	}
+
+	got := cfg.EmbeddedLLM.Tuning
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("an install reset the operator's memory plan:\n got %+v\nwant %+v", got, want)
+	}
+	// The section is carried as a VALUE. It shares its pointers with the value
+	// the test kept, which is safe under this codebase's discipline — every
+	// writer replaces the whole sub-struct with fresh pointers (see
+	// SetEmbeddedLLMAutoUnload) rather than mutating a pointee in place — and
+	// the boundary where a value genuinely LEAVES the config, ToTuning, clones
+	// (pinned by TestEmbeddedLLMTuningToTuningClonesPointers).
+	// …and the install record itself still landed.
+	record := cfg.EmbeddedLLM
+	if !record.Installed || record.Port != state.Port ||
+		record.Packing != string(state.Packing) || record.Backend != string(state.Backend) {
+		t.Errorf("embedded_llm = %+v, does not carry the install record %+v", record, state)
+	}
+	if err := validate(cfg); err != nil {
+		t.Errorf("validate() after an install that preserved tuning: %v", err)
+	}
+}
+
+// TestEmbeddedConfigSinkRemovePreservesOperatorTuning is the removal half: a
+// Remove clears the RECORD and keeps the SETTINGS, so a reinstall starts from
+// the memory plan the operator chose rather than from a reset one.
+func TestEmbeddedConfigSinkRemovePreservesOperatorTuning(t *testing.T) {
+	cfg := minimalValidConfig()
+	want := operatorTuning()
+	cfg.EmbeddedLLM = installedEmbeddedState()
+	cfg.EmbeddedLLM.Tuning = want
+	cfg.LLM.DefaultModel = EmbeddedLLMProviderName + "/" + EmbeddedLLMModelName
+
+	if err := (embeddedConfigSink{cfg: cfg}).ApplyRemoved(context.Background()); err != nil {
+		t.Fatalf("ApplyRemoved: %v", err)
+	}
+
+	got := cfg.EmbeddedLLM
+	if got.Installed {
+		t.Error("embedded_llm.installed survived a removal")
+	}
+	for key, value := range map[string]string{
+		"packing": got.Packing, "backend": got.Backend, "model_file": got.ModelFile,
+		"runtime_version": got.RuntimeVersion, "installed_at": got.InstalledAt,
+	} {
+		if value != "" {
+			t.Errorf("embedded_llm.%s = %q survived a removal", key, value)
+		}
+	}
+	if got.Port != 0 {
+		t.Errorf("embedded_llm.port = %d, want the 0 (allocate-at-install) sentinel", got.Port)
+	}
+	if !reflect.DeepEqual(got.Tuning, want) {
+		t.Errorf("a removal reset the operator's memory plan:\n got %+v\nwant %+v", got.Tuning, want)
+	}
+	// The idle budget survives too — the two operator-owned sub-sections are
+	// preserved by the same rule.
+	if got.AutoUnload.Enabled == nil || *got.AutoUnload.Enabled {
+		t.Errorf("auto_unload.enabled = %v, want the operator's explicit false", got.AutoUnload.Enabled)
+	}
+}
+
+// TestEmbeddedLLMTuningEditDoesNotRewriteInstallState is the round-trip half of
+// the same guarantee: editing the tuning section of a persisted config.yaml and
+// saving it again must leave every app-written record field byte-identical. A
+// tuning change is a settings change, not a re-provision.
+func TestEmbeddedLLMTuningEditDoesNotRewriteInstallState(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	cfg := minimalValidConfig()
+	cfg.EmbeddedLLM = installedEmbeddedState()
+	cfg.LLM.DefaultModel = EmbeddedLLMProviderName + "/" + EmbeddedLLMModelName
+	before := cfg.EmbeddedLLM
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save(): %v", err)
+	}
+
+	// Re-load from disk (so the edit starts from the persisted bytes, not from
+	// an in-memory struct), change ONLY the tuning section, and save again.
+	reloaded, err := LoadWithResult(path)
+	if err != nil {
+		t.Fatalf("LoadWithResult(): %v", err)
+	}
+	edited := reloaded.Config
+	edited.EmbeddedLLM.Tuning = operatorTuning()
+	if err := Save(edited, path); err != nil {
+		t.Fatalf("Save() after the tuning edit: %v", err)
+	}
+
+	final, err := LoadWithResult(path)
+	if err != nil {
+		t.Fatalf("LoadWithResult() after the tuning edit: %v", err)
+	}
+	after := final.Config.EmbeddedLLM
+
+	for _, field := range []struct {
+		key  string
+		got  any
+		want any
+	}{
+		{"installed", after.Installed, before.Installed},
+		{"packing", after.Packing, before.Packing},
+		{"backend", after.Backend, before.Backend},
+		{"port", after.Port, before.Port},
+		{"model_file", after.ModelFile, before.ModelFile},
+		{"runtime_version", after.RuntimeVersion, before.RuntimeVersion},
+		{"installed_at", after.InstalledAt, before.InstalledAt},
+	} {
+		if field.got != field.want {
+			t.Errorf("embedded_llm.%s = %v after a tuning edit, want the untouched %v",
+				field.key, field.got, field.want)
+		}
+	}
+	if !reflect.DeepEqual(after.Tuning, operatorTuning()) {
+		t.Errorf("the tuning edit did not survive the round-trip: %+v", after.Tuning)
+	}
+	// The generated provider record follows the untouched port, so it is
+	// untouched too.
+	if entry := final.Config.LLM.OpenAICompatible[EmbeddedLLMProviderName]; entry.BaseURL != before.BaseURL() {
+		t.Errorf("base_url = %q after a tuning edit, want the untouched %q",
+			entry.BaseURL, before.BaseURL())
 	}
 }

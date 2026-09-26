@@ -398,9 +398,11 @@ func TestGiBConversionMatchesDemoArithmetic(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("%s: %d bytes = %v GiB, want %v", tc.nominal, tc.bytes, got, tc.want)
 		}
-		// A nominal machine of this size must clear the install gate.
-		if got < MinRAMGiB && tc.want >= MinRAMGiB {
-			t.Errorf("%s: %v GiB is below the %v GiB gate", tc.nominal, got, MinRAMGiB)
+		// The conversion must not lose a whole GiB: the memory gate derives a
+		// host budget from this figure, and a budget short by a GiB is a refusal
+		// on a machine that has the RAM.
+		if int(got) != int(tc.want) {
+			t.Errorf("%s: %d bytes = %v GiB, want a whole %v GiB", tc.nominal, tc.bytes, got, tc.want)
 		}
 	}
 
@@ -503,10 +505,12 @@ func TestProbeHardwareOnThisMachine(t *testing.T) {
 
 	// Whatever was probed must be provisionable, or degrade to something that
 	// is: the pair feeds straight into Resolve.
-	if hw.RAMGiB >= MinRAMGiB {
-		res, err := Resolve(hw.Platform, hw.Backend, hw.RAMGiB)
+	if CheckMemoryBudget(ResolveInput{MachineProfile: MachineProfile{
+		Platform: hw.Platform, Backend: hw.Backend, RAMGiB: hw.RAMGiB,
+	}}) == nil {
+		res, err := ResolveMachine(hw.Platform, hw.Backend, hw.RAMGiB)
 		if err != nil {
-			t.Fatalf("Resolve(%q, %q, %v) error = %v, want a provisionable plan",
+			t.Fatalf("ResolveMachine(%q, %q, %v) error = %v, want a provisionable plan",
 				hw.Platform, hw.Backend, hw.RAMGiB, err)
 		}
 		if len(res.Assets) == 0 {

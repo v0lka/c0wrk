@@ -10,23 +10,27 @@ The subsystem (`core/embeddedllm/`) plus every existing file it touches. Port ha
 
 **Subsystem (`core/embeddedllm/`)**
 
-- `core/embeddedllm/registry.go` — compile-time artifact registry: `RuntimeTag` (the pinned fork release `prism-b10709-9a9394a`), `ModelRevision` (the pinned Hugging Face commit), per-packing model assets with SHA256 (HF LFS OID) and exact byte sizes, the vision projector, and per-platform × per-backend runtime archives with SHA256 taken from the GitHub REST per-asset `digest` field (including the paired Windows `cudart` archive). Pure lookups (`RuntimeAsset`, `CudartAsset`, `ModelAsset`, `MMProjAsset`, `ArtifactSet`, `TotalBytes`) plus `ValidateRegistry`, which self-checks the pin tables. `registry_test.go` pins the digests/sizes verbatim and proves the validator is not vacuous — against a local fixture, never by mutating the shared tables
+- `core/embeddedllm/registry.go` — compile-time artifact registry: `RuntimeTag` (the pinned fork release `prism-b10735-842b188`), `ModelRevision` (the pinned Hugging Face commit), per-packing model assets with SHA256 (HF LFS OID) and exact byte sizes, the vision projector, and per-platform × per-backend runtime archives with SHA256 taken from the GitHub REST per-asset `digest` field (including the paired Windows `cudart` archive). Pure lookups (`RuntimeAsset`, `CudartAsset`, `ModelAsset`, `MMProjAsset`, `ArtifactSet`, `TotalBytes`) plus `ValidateRegistry`, which self-checks the pin tables. `registry_test.go` pins the digests/sizes verbatim (`TestRegistryModelPinsMatchUpstreamLFS` for the HF LFS OIDs, `TestRegistryRuntimePinsMatchUpstreamRelease` for the GitHub release `digest` field) and proves the validator is not vacuous — against a local fixture, never by mutating the shared tables. The pin is currently `prism-b10735-842b188`; see the **Pin bump 2026-09-25** note under **Invariants** for the CVE-reviewed advance from `prism-b10709-9a9394a` — ADR-065 D11's literal tag is historical, because accepted ADRs are immutable
 - `core/embeddedllm/download.go` — the resumable downloader (`Downloader`, `Download`, `VerifyFile`, `Result`, `ProgressFunc`, `RequiredFreeBytes`): HTTP `Range` resume from a `<destination>.part` file, the two explicit Range fallbacks, throttled progress callbacks, context cancellation, fail-closed SHA256 verification before promotion, and an artifact-sized disk guard. Deliberately **not** `toolmanager.Download` (see Invariants). `download_test.go` drives it against an HTTPS `httptest` server in Range/ignore-Range/416 modes with an injectable `FreeSpace`
-- `core/embeddedllm/hardware.go` — RAM probe (`sysctl hw.memsize` / `/proc/meminfo` / `GlobalMemoryStatusEx`) and accelerator probe (`nvidia-smi` → `nvcc` → `rocminfo`/`rocm-smi`/`hipcc` → `vulkaninfo` → Metal on darwin/arm64 → CPU), producing a `Hardware` value. Also owns the `Backend` vocabulary the registry tables are keyed by. The OS-specific RAM read lives in the two build-tagged companions `hardware_unix.go` (`!windows`: darwin `sysctl` + linux `/proc/meminfo`) and `hardware_windows.go` (`GlobalMemoryStatusEx` via `syscall`); every parser is in the untagged file so it is testable on all three platforms
-- `core/embeddedllm/resolve.go` — pure function `(platform, backend, ramGiB) → Resolution`: runtime asset(s), packing, `-ngl`, context size, image-max-tokens, cudart requirement. No I/O, fully table-tested. It consults the registry through the `AssetTable` seam and never invents a URL or checksum; a probed backend the pin cannot serve is degraded (never refused) to the best build the platform does have
+- `core/embeddedllm/hardware.go` — RAM probe (`sysctl hw.memsize` / `/proc/meminfo` / `GlobalMemoryStatusEx`) and accelerator probe (`nvidia-smi` → `nvcc` → `rocminfo`/`rocm-smi`/`hipcc` → `vulkaninfo` → Metal on darwin/arm64 → CPU), producing a `Hardware` value. Also owns the `Backend` vocabulary the registry tables are keyed by. The OS-specific RAM read lives in the two build-tagged companions `hardware_unix.go` (`!windows`: darwin `sysctl` + linux `/proc/meminfo`) and `hardware_windows.go` (`GlobalMemoryStatusEx` via `syscall`); every parser is in the untagged file so it is testable on all three platforms. Every probe in the package spawns through one hardened helper (`runProbeCommand`: `exec.LookPath` resolution, the 2 s `probeCommandTimeout` bound, `probeWaitDelay` on the output pipes, `sysproc.HideConsole`), which `topology.go` reuses rather than re-implementing
+- `core/embeddedllm/topology.go` — the SECOND, post-install hardware probe: `ProbeDevices(ctx, binaryPath, logger)` asks the installed runtime what accelerator memory it can see (`llama-server --list-devices`) and returns a `MemoryTopology` — every device's total/free MiB, whether those bytes alias host RAM (`Unified`), and the two budgets a fit decision may spend (`DeviceBudgetBytes` / `HostBudgetBytes`). It exists because `Hardware` has no VRAM field and cannot grow one: at probe time the binary is not on disk yet, so there is nothing to ask. Fail-soft by contract (a missing, hung, nonzero-exit or unrecognized answer yields `ok=false` and a Debug log, never an error), and split like the rest of the probe layer into an I/O half and a pure half (`parseDeviceListing`, `classifyUnified`, `buildTopology`) that is table-tested against verbatim captured runtime output. `topology_test.go` carries the fixtures plus the never-sum-a-unified-pool guard
+- `core/embeddedllm/resolve.go` — pure resolution: `Resolve(ResolveInput)` over the full machine picture and the `ResolveMachine(platform, backend, ramGiB)` / `ResolveProfile(MachineProfile)` convenience forms, producing a `Resolution` (runtime asset(s), packing + its `PackingReason`, GPU family, the guard decisions, `-ngl`, context size, image-max-tokens, cudart requirement). No I/O, fully table-tested. It consults the registry through the `AssetTable` seam and never invents a URL or checksum; a probed backend the pin cannot serve is degraded (never refused) to the best build the platform does have, and `applyCompatGuards` then folds in the compatibility table's substitutions. `decidePacking` is the packing table itself; `packingFor(backend, gpuFamily, fitsPQ2_0, hostCaps)` is the four-input form the resolver calls
+- `core/embeddedllm/compat.go` — the machine-class knowledge derived from the pinned model's own documents: the `GPUFamily` vocabulary and its description classifier (`ClassifyGPU` / `ClassifyGPUs` / `ClassifyTopology`), the tri-state input vocabularies (`HostCaps`/`CPUFeature`, `BudgetFit`), the pure guard table `CompatibilityGuards(backend, gpuFamily, platform) → []GuardDecision` with its typed reasons, derived severities and upstream issue citations, `mergeGuardDecisions` for the two-pass record, and the pin awareness behind the AVX-512 rule (`parseRuntimeBuild`, `minBuildWithAVX512PQ2_0Fix`). `compat_test.go` table-tests the packing matrix, the classifier, every guard and the pin parsing, and scans this file's own source to prove each guard constant still cites an issue number. See [Backend compatibility guards](#backend-compatibility-guards)
+- `core/embeddedllm/memory.go` — the measured memory model of the ONE pinned model: `KVType` (the closed set `f16` / `q8_0` / `q4_0`, with `ParseKVType` refusing everything else), `ModelMemoryProfile` (every term of the footprint — on-disk sizes derived from the registry, device/host weight residency, the context-independent recurrent state, the compute reserves, the exact per-token KV cost and the divisor table — each carrying the measurement behind it) and the two pure projections `ProjectDeviceMiB` / `ProjectHostMiB`. `PinnedMemoryProfile` builds it; nothing here decides a context size or refuses an install. See [Memory model](#memory-model)
+- `core/embeddedllm/plan.go` — the **pure planner** `Plan(MemoryTopology, ModelMemoryProfile, Tuning, Backend, GPUFamily) → (MemoryPlan, error)`: the decision layer that turns the two measured halves (capacity from `topology.go`, requirement from `memory.go`) into a launch shape. Owns the `Tuning` override vocabulary in which *unset* is representable, the `--fit` **exclusivity** rule, adaptive `f16 → q8_0 → q4_0` KV escalation, the two measurement-forced defaults (`-fitc` 65536, `-np` 1), the `splitAllowanceMiB` policy margin that prices `memory.go`'s Metal-only measurement, and the operator-facing `Notes` trail. It is also the **combined memory gate** that replaced ADR-065 D6's flat RAM floor: `memoryGate` (the first check in `Resolve`), the tri-state `deviceAxisState`, `gateBudgetsFor` (measured budgets, or budgets derived from the RAM probe when nothing was probed), `backendHasIndependentVRAM`, `normalizeTopology`, the typed `InsufficientMemoryError` / `ErrInsufficientMemory`, the exported `CheckMemoryBudget` / `DefaultHostReserveGiB` the desktop RPC calls, and `Plan`'s **degradation ladder** (`relaxations`) that shrinks a shape before refusing it. No I/O, no clock, no probing — asserted structurally (`TestPlanImportsNoIOPackage` bans every I/O-capable import from the file) and behaviourally (`TestPlanIsPure`). `plan_test.go` tables the exclusivity rule in both directions, the KV ladder at three budget levels and the pinned-offload refusal; `resolve_test.go` tables the gate's verdicts and pins the derived unified floor. See [Memory plan](#memory-plan) and [The combined memory gate](#the-combined-memory-gate)
 - `core/embeddedllm/layout.go` — the on-disk layout. `Layout{RuntimesRoot, ModelRoot}` is built by `NewLayout` from roots the centralized path API resolved (`config.RuntimesDir` / `config.EmbeddedModelDir`), so the subsystem never re-derives `<agentDir>/runtimes` itself; every derived path (`RuntimeDir`, `RuntimeStagingDir`, `RuntimeRetiredDir`, `DownloadsDir`, `ManifestPath`, `Destination`, `ModelFile`) goes through one containment-checked join over `pathutil.IsWithinPath`. `Layout.Owns` is the ownership predicate every deletion is gated on, `RuntimeDirName` is the `llama-<tag>-<backend>` shape, and `ServerBinaryPath` locates `llama-server` in an extracted tree by a deterministic walk (the archives nest it, at a depth that differs per platform)
-- `core/embeddedllm/install.go` — Install/Remove orchestration: `Installer` (with injectable `Downloader`, `Probe`, `RunCommand`, `AllocatePort`, `Stop`, `Now`, `HostOS` seams), `InstallOptions`, `InstallReport`, `Manifest` + `ReadManifest`/atomic write, `Progress` + `InstallProgressFunc`, the `ConfigSink`/`InstallState` boundary to the config layer, per-component progress, the independent verification gate, archive extraction with traversal/symlink/size guards, the staging → retire → rename runtime swap, and the macOS quarantine-clear + ad-hoc codesign + `--version` smoke test. It also owns the production port allocator `ephemeralLoopbackPort` (bind `127.0.0.1:0`, read the assignment back, close), which `Installer.allocatePort` reaches whenever the `AllocatePort` seam is `nil`
+- `core/embeddedllm/install.go` — Install/Remove orchestration: `Installer` (with injectable `Downloader`, `Probe`, `ProbeDevices`, `RunCommand`, `AllocatePort`, `Stop`, `Now`, `HostOS` seams), `InstallOptions`, `InstallReport` (which carries the compatibility record: `Guards` + `PackingReason`), `Manifest` + `ReadManifest`/atomic write (persisting `packing_reason`, `gpu_family`, `guards` and the `topology` + `plan` pair a load launches from), `recordableContext`, `Progress` + `InstallProgressFunc`, the `ConfigSink`/`InstallState` boundary to the config layer, per-component progress, the independent verification gate, archive extraction with traversal/symlink/size guards, the staging → retire → rename runtime swap, and the macOS quarantine-clear + ad-hoc codesign + `--version` smoke test. It also owns the production port allocator `ephemeralLoopbackPort` (bind `127.0.0.1:0`, read the assignment back, close), which `Installer.allocatePort` reaches whenever the `AllocatePort` seam is `nil`
 - `core/embeddedllm/port.go` — the pre-spawn free-port scan: the `MinLoopbackPort`/`MaxLoopbackPort` bounds (mirroring `backend/config`'s `EmbeddedLLMMinPort`/`EmbeddedLLMMaxPort`, which core cannot import), `PortProber` (the injection seam), `SearchFreePort` (walk upward from the preferred port until one is bindable; a preference below the floor starts at it, an exhausted range is `ErrNoFreePort`, ctx is checked per candidate) and the production prober `loopbackPortFree` (bind and release — the same test `llama-server` itself applies, so a lingering `TIME_WAIT` socket is judged the way the server would judge it). `port_test.go` covers the scan against a staged prober and against a really occupied loopback port
-- `core/embeddedllm/server.go` — the supervisor: `Server` (with injectable `Spawn`, `EnsurePort`, `OnState`, `HTTPClient`, `Now`, `HostOS`, `Platform` seams and four budget fields), the `State` machine plus `StateEvent`/`Status`, `Load`/`Unload`/`Stop`/`SetInstalled`, the single-instance gate, `LaunchSpec` with `Args`/`Validate` (the only place the command line exists), the `Process`/`SpawnFunc`/`LaunchCommand` seams and the production `spawnOSServer`, `/v1/models` readiness polling, output pumping into `slog` with a bounded tail that ends up in every failure message, crash detection, and graceful-then-forced termination. `EnsurePort` is nil only for a caller with no config to keep in sync; production always wires it
+- `core/embeddedllm/server.go` — the supervisor: `Server` (with injectable `Spawn`, `EnsurePort`, `OnState`, `HTTPClient`, `ProbeDevices`, `Tuning`, `PersistContext`, `Now`, `HostOS`, `Platform` seams and five budget fields), the `State` machine plus `StateEvent`/`Status`, `Load`/`Unload`/`Stop`/`SetInstalled`, the single-instance gate, `LaunchSpec` with `Args`/`Validate` (the only place the command line exists), the launch derivation (`launchSpec` / `launchIdentity` / `effectivePlan` / `replan` and the `resolvedLaunch` they return), the post-ready `/props` context readback (`propsURL`, `readPropsContext`, `recordEffectiveContext`), the `Process`/`SpawnFunc`/`LaunchCommand` seams and the production `spawnOSServer`, `/v1/models` readiness polling, output pumping into `slog` with a bounded tail that ends up in every failure message, crash detection, the fit-contract tail scanner (`fitFailureMarker` / `scanFitFailure` → `Status.FitWarning`), and graceful-then-forced termination. It also owns the launch vocabulary the memory planner renders into: `LayerMode` (the four `-ngl` answers, one of which is *omit the flag*), the typed `LaunchSpec` fields for `-fit`/`-fitt`/`-fitc`/`-ctk`/`-ctv`/`-nkvo`/`--no-mmproj-offload`/`-np`/`--cache-ram`/`-dev`/`-sm`, the `ApplyMemoryPlan` bridge, and the `Validate` rules that make the fit-exclusivity invariant a spec error rather than a spawn-time abort. `EnsurePort` is nil only for a caller with no config to keep in sync; production always wires it
 - `core/embeddedllm/idle.go` — the auto-unload budget: `AutoUnload` (plus `DefaultAutoUnload`/`NewAutoUnload`), the unexported `idleTimer` tracker, and the `Server` surface around it (`SetAutoUnload`, `AutoUnloadPolicy`, `MarkActivity`, `IdleRemaining`, `LastActivity`). Its defining rule is that weight-load time is never charged to the idle budget
 - `core/embeddedllm/transport.go` — the ensure-loaded request path: `Loader` (the supervisor seam, satisfied by `*Server` as-is), the optional `PortSource` capability (`*Server.Port`, read to redirect a request whose URL was built from a base_url that predates a port move), `EnsureLoadedTransport`/`NewEnsureLoadedTransport` (the `http.RoundTripper` that makes the model resident before the request, aims it at the live port, arms the request budget only once the model can answer, and stamps activity when the response completes), `EnsureLoadedClient` (derives the provider entry's client, moving the shared LLM timeout off `http.Client.Timeout` and into the transport so the cold-load wait is not charged to it) and `ErrLoadWaitTimeout`/`DefaultLoadWaitTimeout`
 
 **Existing touch points**
 
-- `backend/config/config.go` — `EmbeddedLLMConfig` (+ `AutoUnloadConfig`) with yaml tags and the identity constants (`EmbeddedLLMProviderName`, `EmbeddedLLMModelName`, `EmbeddedLLMHost`, port bounds, the 60-minute default); `Config.SyncEmbeddedLLMProvider` / `LLMConfig.SyncEmbeddedProvider` generate or remove the backend-owned provider record and write the `llm.models` context-window override; `validateEmbeddedLLM` is wired into `validate()` and `LoadWithResult` syncs on every load
-- `backend/config/defaults.go` — the `auto_unload` pointer defaults (`enabled: true`, `minutes: 60`); every other field's zero value already IS the documented not-installed default
+- `backend/config/config.go` — `EmbeddedLLMConfig` (+ `AutoUnloadConfig`, and the operator-owned memory-plan override surface `TuningConfig` / `EmbeddedLLMContextConfig` / `EmbeddedLLMOffloadConfig` with `TuningConfig.ToTuning` as the single translation into `embeddedllm.Tuning`, `validateEmbeddedLLMTuning` delegating to it, and `EmbeddedLLMMaxContextTokens` reading the context ceiling from the pinned profile rather than transcribing it) with yaml tags and the identity constants (`EmbeddedLLMProviderName`, `EmbeddedLLMModelName`, `EmbeddedLLMHost`, port bounds, the 60-minute default); `Config.SyncEmbeddedLLMProvider` / `LLMConfig.SyncEmbeddedProvider` generate or remove the backend-owned provider record and write the `llm.models` context-window override; `validateEmbeddedLLM` is wired into `validate()` and `LoadWithResult` syncs on every load
+- `backend/config/defaults.go` — the `auto_unload` pointer defaults (`enabled: true`, `minutes: 60`); every other field's zero value already IS the documented not-installed default. `tuning` is deliberately **not** seeded at all: its all-nil zero value IS the all-Auto default, and materializing the pointers would collapse *unset* into *explicit auto* on the first save
 - `backend/config/paths.go` — path constructors; owns `ModelsDir` (`<agentDir>/models`, the flat embedding-model files), `ToolsDir`/`ToolsBinDir`, and the two embedded roots `RuntimesDir` (`<agentDir>/runtimes`) and `EmbeddedModelDir` (`<agentDir>/models/bonsai-2-27b`). `TestEmbeddedLLMDirs` pins both outside the tools tree, which is what makes the agent-PATH isolation a checked property rather than a convention
-- `backend/frontend_api_embedded.go` — the RPC surface and the wiring of core into the app: `GetEmbeddedLLMStatus` (the read-only getter, no error — an unconstructable subsystem reports `available: false`), `InstallEmbeddedLLM` (the synchronous gates only — single-run, bounded probe, the 16 GiB refusal — then a BACKGROUND run), `RemoveEmbeddedLLM`, `LoadEmbeddedLLM`, `UnloadEmbeddedLLM`, `SetEmbeddedLLMAutoUnload`; the DTOs (`EmbeddedLLMStatus`, `EmbeddedLLMStateData`, `EmbeddedLLMProgressData`); the production `ConfigSink` (`embeddedConfigSink`: the reference state mutation plus the atomic save-or-rollback, `config:updated` and the judge/router rebuild); the event emitters (`emitEmbeddedLLMState`, `emitEmbeddedInstallProgress`, `emitEmbeddedRuntimeError`); the lazily built, two-mutex subsystem state (`embeddedLLMState` on `FrontendAPI.embedded`, which also owns the manifest snapshot and the state-event mute that keeps one operation to one event); and the lifecycle hooks `FrontendAPILifecycle.InitEmbeddedLLM` / `StopEmbeddedLLM` (never Wails-bound); the pre-spawn port check `embeddedEnsurePort` (wired onto `Server.EnsurePort` by `embeddedBuild`) with `persistEmbeddedPort`, which writes a moved port to `embedded_llm.port` and regenerates the provider record — best-effort, since the transport redirect keeps the model usable even when the config write fails; and the router-side seam that makes a cold request load the model — `toBuilderConfigLocked` (the single wrapper every production `ToBuilderConfig` call site goes through), `applyEmbeddedLoader`, `syncEmbeddedBuilderSeam` (the builder-level default that also reaches per-session routers), `embeddedLoaderRef`, `rebuildRouterForEmbeddedTransport`, and the `embeddedLLMState.loader` atomic snapshot the injection reads without taking `st.mu`; plus the pre-dispatch gate for short-budget callers — `ensureEmbeddedReadyForLLMRequest` and its `activeModelIsEmbedded` predicate
+- `backend/frontend_api_embedded.go` — the RPC surface and the wiring of core into the app: `GetEmbeddedLLMStatus` (the read-only getter, no error — an unconstructable subsystem reports `available: false`), `InstallEmbeddedLLM` (the synchronous gates only — single-run, bounded probe, the combined memory refusal via `embeddedllm.CheckMemoryBudget` — then a BACKGROUND run), `RemoveEmbeddedLLM`, `LoadEmbeddedLLM`, `UnloadEmbeddedLLM`, `SetEmbeddedLLMAutoUnload`, `GetEmbeddedLLMTuning` (the tuning getter — returns an error only before startup, where the all-nil fail-soft answer would be indistinguishable from "the operator overrode nothing" and an editor would wipe the real tuning on Save), `SetEmbeddedLLMTuning` (the PARTIAL tuning patch: nil keeps, present replaces, `reset` clears; validated through the same `ToTuning` translation a config load runs, refused without a write, rolled back on a failed persist, no-op writes nothing, and never restarts a resident model — it sets `reload_required` instead), `ProbeEmbeddedLLMDevices` (the on-demand re-measurement; the one embedded-LLM read allowed to be slow and to fail, converting core's fail-soft probe silence into an actionable error); the DTOs (`EmbeddedLLMStatus` — including the `packing_reason` / `gpu_family` / `guards` degradation record, the recorded device topology (`devices`/`unified`/`host_ram_gib`/both budgets/`topology_probed_at`), the effective launch plan (`EmbeddedLLMPlan` with `Recorded` and `Notes`) and `reload_required` (plus the additive `fit_warning`, the surfaced fit-contract complaint of the last failed launch) —, `EmbeddedLLMGuard`, `EmbeddedLLMDevice`, `EmbeddedLLMDevicesDTO`, the nullable tuning mirrors `EmbeddedLLMTuningDTO`/`EmbeddedLLMTuningRequest` (with their context/offload sub-DTOs), `EmbeddedLLMStateData`, `EmbeddedLLMProgressData`); the tuning bookkeeping those RPCs lean on (`applyEmbeddedTuningRequest` — the pure fold, `embeddedTuningFingerprint` — compared over the translated planner vocabulary so equivalent respellings do not raise a spurious reload flag, `noteEmbeddedLaunchTuning` — records on `loading` what the argv was actually built from, cleared on every non-resident transition); the production `ConfigSink` (`embeddedConfigSink`: the reference state mutation plus the atomic save-or-rollback, `config:updated` and the judge/router rebuild); the event emitters (`emitEmbeddedLLMState`, `emitEmbeddedInstallProgress`, `emitEmbeddedRuntimeError`); the lazily built, two-mutex subsystem state (`embeddedLLMState` on `FrontendAPI.embedded`, which also owns the manifest snapshot and the state-event mute that keeps one operation to one event); and the lifecycle hooks `FrontendAPILifecycle.InitEmbeddedLLM` / `StopEmbeddedLLM` (never Wails-bound); the pre-spawn port check `embeddedEnsurePort` (wired onto `Server.EnsurePort` by `embeddedBuild`) with `persistEmbeddedPort`, which writes a moved port to `embedded_llm.port` and regenerates the provider record — best-effort, since the transport redirect keeps the model usable even when the config write fails; the post-ready context readback's config half `persistEmbeddedContext` (wired onto `Server.PersistContext`), which writes the value the server reported to the tier-1 `llm.models` `context_window` override and mirrors it into the cached install record — likewise best-effort, and likewise without a router rebuild, because it runs inside `Load`; and `embeddedTuning` (wired onto `Server.Tuning`), which translates the live `embedded_llm.tuning` for a launch and fails soft to the all-Auto plan; and the router-side seam that makes a cold request load the model — `toBuilderConfigLocked` (the single wrapper every production `ToBuilderConfig` call site goes through), `applyEmbeddedLoader`, `syncEmbeddedBuilderSeam` (the builder-level default that also reaches per-session routers), `embeddedLoaderRef`, `rebuildRouterForEmbeddedTransport`, and the `embeddedLLMState.loader` atomic snapshot the injection reads without taking `st.mu`; plus the pre-dispatch gate for short-budget callers — `ensureEmbeddedReadyForLLMRequest` and its `activeModelIsEmbedded` predicate
 - `backend/frontend_api_config.go` — **protects** the generated `llm.openai_compatible.embedded` entry: `UpdateLLMConfig` re-injects it from the authoritative state after building the candidate, because a non-nil `openai_compatible` request replaces the whole map; also maps the model to the `qwen3.8-27b` profile hint in `suggestModelProfileID`
 - `backend/events.go` — the two global event-name constants `EventEmbeddedLLMInstallProgress` (`embedded_llm:install_progress`) and `EventEmbeddedLLMState` (`embedded_llm:state`); failures of a BACKGROUND run additionally reuse the existing `EventRuntimeError` toast with `error_code: "embedded_llm_install_failed"` / `"embedded_llm_remove_failed"`
 - `core/builder.go` — `providerEntryFromConfig` attaches the ensure-loaded client through the existing `llm.ProviderEntry.HTTPClient` hook (the same mechanism `core/llmtls.RouterEntryClient` uses): the pin resolver runs first and `embeddedllm.EnsureLoadedClient` only decorates its answer, for the one entry the seam's `ProviderName` names. The same guard is the only place that sets `llm.ProviderEntry.ReasoningWire` (to `ReasoningWireChatTemplateKwargs`, the spelling the pinned fork parses — see [Reasoning effort and the family resolution](#reasoning-effort-and-the-family-resolution)); every other `openai_compatible` entry keeps the vendor default. `SetEmbeddedLLM` holds the builder-level default seam and `embeddedSeam` resolves it inside `buildRouter` — the one place every router is constructed, which is what covers the per-session router the session factory builds from a plain `ToBuilderConfig`. The seam is injected by the backend, not by `ToBuilderConfig` — see [Request path](#invariants)
@@ -36,7 +40,7 @@ The subsystem (`core/embeddedllm/`) plus every existing file it touches. Port ha
 - `desktop/startup_phases.go` — `(*App).initEmbeddedLLM` (Phase 5, right after `buildFrontendAPI`: one manifest read plus one snapshot event, so it stays far below the 50ms critical-phase budget) and `(*App).stopEmbeddedLLM` (called early in `Shutdown`, before the judge drain, so the gigabytes are released while the rest of the teardown still runs; a failure is logged, never fatal). Startup restores state from the manifest only — no download, no probe, no auto-load
 - `frontend/src/api/embedded.ts` — the subsystem's ONLY path to the generated bindings: the validating RPC wrappers (`getEmbeddedLLMStatus` + `isEmbeddedLLMStatus`, `installEmbeddedLLM`, `removeEmbeddedLLM`, `loadEmbeddedLLM`, `unloadEmbeddedLLM`, `setEmbeddedLLMAutoUnload` with its local `MIN_AUTO_UNLOAD_MINUTES` refusal), the typed event subscriptions (`onEmbeddedLLMState`, `onEmbeddedLLMInstallProgress` — a malformed payload is reported, never silently dropped), the `EmbeddedLLMStatus` mirror of the backend DTO and `DEFAULT_AUTO_UNLOAD_MINUTES`
 - `frontend/src/stores/embeddedLLMStore.ts` — the UI state both surfaces share (see [frontend/stores.md](frontend/stores.md)): the authoritative `status` snapshot (one writer, `setStatus`), `installing`, the per-component `progress` map, the mutating-RPC `busy` action and the last failed action's `error`; backend sync lives in the module-level `refreshEmbeddedLLMStatus` (never throws) and the refcounted `subscribeEmbeddedLLMEvents`. `refreshEmbeddedLLMStatus` carries the store's one deliberate cross-store side effect: when `installed` FLIPS it calls `invalidateConfigCache()` on `frontend/src/hooks/useConfigData.ts`, because that hook's module-level cache is the chat toolbar picker's model list and no other embedded path invalidates it
-- `frontend/src/components/settings/EmbeddedLLMSettings.tsx` — the Settings block (mounted in `frontend/src/components/settings/LLMSettings.tsx` as the FIRST block of the provider section — directly under the Default Model field and above "+ Add compatible provider"): the state-derived action surface (Install / progress / record + Load-Unload + Remove / auto-unload) and its RPC handlers, with the presentation split into `frontend/src/components/settings/embedded/` — `EmbeddedLLMProgress.tsx` (the per-component rows, worded with the shared `frontend/src/lib/embeddedLLMLabels.ts` order/label/stage vocabulary), `EmbeddedLLMInstallRecord.tsx` (the informational label), `EmbeddedLLMAutoUnload.tsx` (the toggle + minutes draft), `EmbeddedLLMRemoveDialog.tsx` (the removal gate). See [Settings block](#settings-block-ui-states)
+- `frontend/src/components/settings/EmbeddedLLMSettings.tsx` — the Settings block (mounted in `frontend/src/components/settings/LLMSettings.tsx` as the FIRST block of the provider section — directly under the Default Model field and above "+ Add compatible provider"): the state-derived action surface (Install / progress / record + Load-Unload + Remove / auto-unload / tuning) and its RPC handlers, with the presentation split into `frontend/src/components/settings/embedded/` — `EmbeddedLLMProgress.tsx` (the per-component rows, worded with the shared `frontend/src/lib/embeddedLLMLabels.ts` order/label/stage vocabulary), `EmbeddedLLMInstallRecord.tsx` (the informational label: the install record plus the measured topology and the effective plan with its notes), `EmbeddedLLMAutoUnload.tsx` (the toggle + minutes draft), `EmbeddedLLMTuning.tsx` (the three primary memory-plan controls), `EmbeddedLLMAdvancedTuning.tsx` (the collapsed Advanced tuning VariantSection), `EmbeddedLLMRemoveDialog.tsx` (the removal gate) — while the two commit flows (drafts, local refusal, RPC, re-read) live in `frontend/src/hooks/useEmbeddedLLMAutoUnload.ts` and `frontend/src/hooks/useEmbeddedLLMTuning.ts`, extracted so the block file keeps its baseline length. See [Settings block](#settings-block-ui-states)
 - `frontend/src/components/layout/EmbeddedModelStatus.tsx` — the status-bar block (mounted in `frontend/src/components/layout/StatusBar.tsx` between the vector-index block and the process-memory indicator): the always-visible counterpart of the Settings block. Like `ProcessMemoryStatus` it owns its LEADING separator and renders nothing at all — separator included — unless it has a state to report; when it does, it renders exactly one compact surface (the active artifact's download bar, an indeterminate weight-load bar, the residency indicator, or an explicit error hint). Its component/stage words come from `frontend/src/lib/embeddedLLMLabels.ts`, shared with `EmbeddedLLMProgress.tsx` so the two surfaces describing the same payload cannot drift. See [Status-bar indicator](#status-bar-indicator-ui-states)
 - `frontend/src/components/ui/ModelPickerMenu.tsx` — the single model-picker implementation both model lists render (the Settings → LLM default-model picker through `allEnabledModels`, and the chat toolbar's `ModelCombobox` through `useConfigData`). Its `providerLabel` humanizes the backend-owned `embedded` config key to **Embedded**, while the value sent to the backend stays the composite `embedded/Bonsai 2 27B`. Its `groupByProvider` additionally hoists the `embedded` group to the TOP of the group list, because neither feed order puts it there: the settings list iterates a provider map whose JSON keys Go alphabetizes, and `all_models` arrives as (anthropic, chatgpt, sorted `openai_compatible`, sorted `anthropic_compatible`). Normalizing in the shared component is what keeps the two surfaces from drifting apart; every other provider keeps its input order
 - `frontend/src/types/events.ts` (`EmbeddedLLMInstallProgressData` / `EmbeddedLLMStateData` plus the `EmbeddedLLMComponent`/`EmbeddedLLMStage` unions, their `GlobalEventMap` entries and the `isEmbeddedLLMInstallProgressData`/`isEmbeddedLLMStateData` guards — the state guard deliberately does NOT enumerate `packing`/`backend`, so a newly pinned backend cannot make the event fail validation)
@@ -63,16 +67,93 @@ type Packing string
 
 const (
 	PackingPQ2_0  Packing = "PQ2_0"  // 7,206,168,928 B — default
-	PackingPTQ1_0 Packing = "PTQ1_0" // 5,946,648,928 B — Vulkan only (no PQ2_0 kernels)
+	PackingPTQ1_0 Packing = "PTQ1_0" // 5,946,648,928 B — the downgrade packing
 )
 
+// PackingReason is WHY that packing was chosen. Recorded in the Resolution, the
+// Manifest and the status DTO: a downgrade that does not say why is invisible.
+type PackingReason string
+
+const (
+	PackingReasonDefault              PackingReason = "default"
+	PackingReasonNoPQ2_0Kernels       PackingReason = "no_pq2_0_kernels"      // Vulkan
+	PackingReasonAVX512PQ2_0Segfault  PackingReason = "avx512_pq2_0_segfault" // pin predates #245
+	PackingReasonPQ2_0DoesNotFit      PackingReason = "pq2_0_does_not_fit"    // measured budget
+	PackingReasonGPUGenerationDecode  PackingReason = "gpu_generation_decode" // Ada / L4
+	PackingReasonOperatorOverride     PackingReason = "operator_override"     // Tuning.Packing
+)
+
+// GPUFamily is the accelerator GENERATION a device description names, classified
+// from the runtime's own `--list-devices` output (never from the backend: the
+// backend says which archive was downloaded, the description says which silicon
+// answered). Two consumers read it — the packing rule (which generation decodes
+// which ternary packing faster) and the compatibility guards (which parts
+// upstream documents as broken) — plus the memory planner, which prices the
+// uncertainty of a device/host split nobody measured.
+type GPUFamily string
+
+// "" (unknown) | apple-silicon | nvidia-ada | nvidia-blackwell | nvidia-hopper
+// | nvidia-ampere | amd-rdna2 | amd-rdna3 | amd-gfx1151 | intel-arc
+// Unknown means "nothing to decide", never "no GPU": it fires no GPU-specific
+// guard, keeps the default packing and pays the largest memory allowance.
+
+// HostCaps is the CPU-side capability set the packing decision reads. Tri-state
+// per feature, because "we did not look" must not read as "the CPU lacks it".
+type HostCaps struct {
+	AVX512 CPUFeature // CPUFeatureUnknown (zero) | CPUFeatureAbsent | CPUFeaturePresent
+}
+
+// BudgetFit is the fit gate's verdict on one packing. Tri-state for the same
+// reason: a bool's zero value would assert "does not fit" for every caller that
+// measured nothing, downgrading the packing on machines that were never probed.
+type BudgetFit int // FitUnknown (zero) | FitSufficient | FitInsufficient
+
+// GuardDecision is one backend-compatibility verdict: what fired, what it asks
+// for, why (typed), how bad, which upstream report says so, whether c0wrk acted
+// on it, and the sentence a user reads. JSON-serializable, because it is
+// persisted in the Manifest and replayed by the status DTO.
+type GuardDecision struct {
+	Guard    GuardID         // stable id, e.g. "cuda-13.3-crash"
+	Action   GuardAction     // prefer_backend | prefer_packing | advisory
+	Reason   GuardReason     // crash_on_load | process_abort | garbled_output | hang | fails_to_start
+	Severity GuardSeverity   // critical | warning — DERIVED from Reason, never hand-set
+	Issue    string          // "<repo>#<number>", e.g. "PrismML-Eng/llama.cpp#222"
+	Applied  bool            // set by the consumer: did the plan actually change?
+	Backend  Backend         // prefer_backend only
+	Packing  Packing         // prefer_packing only
+	Guidance string          // user-facing: what is documented, what c0wrk did
+}
+
 // Hardware is the probe result: everything resolution may depend on.
+// It carries NO device-memory field — accelerator memory is a second, later
+// probe (MemoryTopology) because the runtime binary does not exist yet here.
 type Hardware struct {
 	Platform string  // toolmanager.Platform() shape: "<goos>-<goarch>"
 	Arch     string  // "amd64" | "arm64"
 	RAMGiB   float64 // total system RAM, in GiB (bytes / 2^30) — not GB
 	Backend  Backend // probed accelerator (BackendCPU when nothing else is found)
 	CUDATag  string  // driver-derived CUDA asset tag ("" when not CUDA)
+}
+
+// DeviceMemory is one accelerator as the RUNTIME reports it (not as the OS
+// does), from `llama-server --list-devices`.
+type DeviceMemory struct {
+	Name        string `json:"name"`        // "MTL0" | "CUDA0" | "HIP0" | "Vulkan0"
+	Description string `json:"description"` // "Apple M4 Max", "NVIDIA GeForce RTX 4090"
+	TotalMiB    int64  `json:"total_mib"`
+	FreeMiB     int64  `json:"free_mib"` // a snapshot; informational, never a budget input
+}
+
+// MemoryTopology is the post-install probe result, and the only description of
+// accelerator memory the subsystem has. JSON-serializable so an install can
+// record it beside the Manifest and a support bundle can carry it.
+type MemoryTopology struct {
+	Devices           []DeviceMemory `json:"devices"` // printed order; 0/0 entries dropped; deduped by name
+	HostRAMGiB        float64        `json:"host_ram_gib"`
+	Unified           bool           `json:"unified"` // device memory IS host RAM — never add the two
+	DeviceBudgetBytes int64          `json:"device_budget_bytes"`
+	HostBudgetBytes   int64          `json:"host_budget_bytes"`
+	ProbedAt          string         `json:"probed_at"` // RFC 3339 UTC
 }
 
 // Asset is one downloadable component with its integrity pin.
@@ -93,16 +174,31 @@ const (
 	ComponentMMProj  Component = "mmproj"
 )
 
-// Resolution is the pure output of (platform, backend, ramGiB).
+// Resolution is the pure output of a ResolveInput.
 type Resolution struct {
 	Assets         []Asset // 1 runtime, or 2 on Windows CUDA (runtime + cudart)
 	Backend        Backend // what the assets were ACTUALLY resolved for, post-degradation
 	Packing        Packing
-	Layers         int // -ngl: 0 on Intel Mac / CPU, 99 on GPU backends
-	ContextSize    int // -c: RAM-tiered, NEVER 0 and never 262144
+	Layers         int // -ngl: mirrors Memory.Layers; 0 under a fit-sized plan
+	ContextSize    int // -c: mirrors Memory.ContextSize; 0 under a fit-sized plan
 	ImageMaxTokens int // --image-max-tokens: 1024 on metal/vulkan/cpu, 0 = uncapped on CUDA/ROCm
 	NeedsCudart    bool
+	Memory         MemoryPlan // the resolved launch shape; Layers/ContextSize/Packing above are projections of it
 }
+
+// ResolveInput is the whole resolution input. MachineProfile alone is the
+// DERIVED-budget view: the host budget comes from the RAM probe and the
+// accelerator axis is classified statically (see deviceAxisState). Topology is
+// what turns both into measured ones.
+type ResolveInput struct {
+	MachineProfile          // Platform, Backend, RAMGiB, GPU, Host, FitsPQ2_0
+	Topology       *MemoryTopology // nil = "not probed" (NOT the zero MemoryTopology, which means "unknown")
+	Tuning         Tuning          // zero value = the all-Auto plan
+}
+
+func Resolve(in ResolveInput) (Resolution, error)          // the whole plan
+func ResolveProfile(p MachineProfile) (Resolution, error)  // no topology, no tuning
+func ResolveMachine(platform string, b Backend, ramGiB float64) (Resolution, error) // three-input form
 
 // AssetTable is the registry seam Resolve consults. The production
 // implementation delegates to the compile-time pins in registry.go; tests
@@ -116,7 +212,7 @@ type AssetTable interface {
 // and a Hugging Face commit SHA, never a branch — so a rebuild cannot silently
 // re-point at newer upstream bytes.
 const (
-	RuntimeTag    = "prism-b10709-9a9394a"                     // pinned fork release
+	RuntimeTag    = "prism-b10735-842b188"                     // pinned fork release
 	ModelRevision = "6ed5e12bf84b7a63069882c91dd9e9218647d17b"  // pinned HF commit of the weights repo
 )
 
@@ -223,10 +319,38 @@ type Manifest struct {
 	RuntimeVersion string            `json:"runtime_version"`
 	Checksums      map[string]string `json:"checksums"` // component -> verified sha256
 	Port           int               `json:"port"`
-	ContextSize    int               `json:"context_size"`
-	ModelFile      string            `json:"model_file"`
-	InstalledAt    string            `json:"installed_at"` // RFC 3339
+	// ContextSize is the LAST KNOWN EFFECTIVE context, not a tier frozen at
+	// install: install writes the planner's figure (a fit-sized plan records its
+	// FitMinContext floor, never 0) and every successful load overwrites it with
+	// the value the server itself reported through /props. It is what the tier-1
+	// llm.models context_window override is generated from.
+	ContextSize int    `json:"context_size"`
+	ModelFile   string `json:"model_file"`
+	InstalledAt string `json:"installed_at"` // RFC 3339
+
+	PackingReason PackingReason   `json:"packing_reason,omitempty"`
+	GPUFamily     GPUFamily       `json:"gpu_family,omitempty"`
+	Guards        []GuardDecision `json:"guards,omitempty"`
+
+	// Topology is the device-memory snapshot the recorded plan was made from.
+	// NIL means "no probe ever answered" and a reader must treat it as UNKNOWN,
+	// never as "no accelerator" — a zero budget read as a fact is the refusal the
+	// combined gate exists to avoid. A load's fail-soft path falls back to it.
+	Topology *MemoryTopology `json:"topology,omitempty"`
+	// Plan is the launch shape LAST APPLIED. NIL means a pre-plan manifest, and
+	// a load then derives its shape from the pure policy in resolve.go instead.
+	// Persisted rather than re-derived because re-deriving would need the
+	// operator's Tuning, which is a SETTING the sink carries verbatim — a copy in
+	// a record would be a second source of truth, stale on the first edit.
+	Plan *MemoryPlan `json:"plan,omitempty"`
 }
+
+// recordableContext is the context a manifest may carry for a plan: the
+// planner's own value for a computed shape, and FitMinContext — the floor fit is
+// held to — for a fit-sized one, which by definition has no concrete context.
+// Never 0: a 0 override means "leave the existing one alone" to
+// SyncEmbeddedLLMProvider, and a 0 in a manifest reads as a lost tier.
+func recordableContext(plan MemoryPlan, fallback int) int
 
 // Progress is one per-component download/verify/extract update.
 type Progress struct {
@@ -236,13 +360,54 @@ type Progress struct {
 	BytesTotal int64
 }
 
-// ErrInsufficientRAM is the typed refusal for D6 (< 16 GiB).
-var ErrInsufficientRAM = errors.New("embedded LLM requires at least 16 GiB of system RAM")
+// ErrInsufficientMemory is the typed refusal of the combined gate: no shape
+// memory.go has measured — neither residency extreme, nor any packing, nor any
+// modelled KV precision — fits this machine's memory.
+var ErrInsufficientMemory = errors.New("the embedded LLM does not fit this machine's memory")
 
-// ErrRAMUnknown is returned when total system RAM cannot be read. The 16 GiB
-// gate is a safety gate, so an unreadable size refuses the install instead of
-// assuming the machine is big enough.
+// InsufficientMemoryError is that refusal WITH the arithmetic in it. Its Error()
+// names BOTH pools and BOTH numbers, in GiB, plus the reserve the host figure
+// was derived with, the installed total and the smallest shape that was priced.
+// It unwraps to a CHAIN: ErrInsufficientMemory always, ErrMemoryPlanInfeasible
+// always (the two name one fact at two layers), and the deprecated
+// ErrInsufficientRAM only when the HOST pool overflowed — so a refusal caused by
+// a small accelerator never reports itself as insufficient system RAM.
+type InsufficientMemoryError struct {
+	Packing, KVType, Context, Offloaded // the shape the numbers belong to
+	DeviceNeedMiB, DeviceHaveMiB int64
+	Device                       deviceAxisState
+	HostNeedMiB, HostHaveMiB, HostReserveMiB int64
+	HostRAMGiB                               float64
+	Unified                                  bool
+}
+
+// deviceAxisState is the TRI-STATE accelerator axis: absent (nothing to offload
+// to — a refusal), known (a budget this gate may spend), unreadable (an
+// accelerator with independent memory nobody measured — NOT a refusal; the gate
+// degrades to the host pool and says so in Notes). Tri-state for the same reason
+// BudgetFit and CPUFeature are.
+type deviceAxisState int // deviceAbsent (zero) | deviceKnown | deviceUnreadable
+
+// ErrInsufficientRAM is DEPRECATED: ADR-065 D6's flat floor is gone. Kept so a
+// caller that only cares about the host pool can still match it — every
+// *InsufficientMemoryError whose host budget overflowed unwraps to it.
+var ErrInsufficientRAM = errors.New("insufficient system RAM for the embedded LLM")
+
+// ErrRAMUnknown is returned when total system RAM cannot be read. The gate is a
+// safety gate and derives its HOST budget from this figure on every path, so an
+// unreadable size refuses the install instead of assuming the machine is big
+// enough. An unreadable DEVICE budget is the opposite case — see deviceAxisState.
 var ErrRAMUnknown = errors.New("cannot determine total system RAM")
+
+// DefaultHostReserveGiB is the reserve derivation exposed so a caller with no
+// topology and one with a topology cannot disagree about it: max(4 GiB, 1/8 of
+// RAM), covering the OS and window server, c0wrk itself, and the vector index.
+func DefaultHostReserveGiB(ramGiB float64) float64
+
+// CheckMemoryBudget runs the gate on its own — no assets, no launch shape. It is
+// what the desktop RPC calls so a click and the background install answer with
+// one voice.
+func CheckMemoryBudget(in ResolveInput) error
 
 // Layout is the on-disk footprint, built from roots the centralized path API
 // resolved. The zero value is invalid; ErrLayoutInvalid reports empty,
@@ -356,18 +521,55 @@ var ErrSmokeTestFailed = errors.New("the provisioned llama-server did not run")
 const LoopbackHost = "127.0.0.1"
 
 // LaunchSpec is everything one llama-server invocation is derived from: the
-// install record plus the pure launch policy in resolve.go. Args renders the
+// install record plus the pure launch policy in resolve.go, or — for a
+// memory-aware launch — a MemoryPlan through ApplyMemoryPlan. Args renders the
 // command line and Validate is the last gate before exec.
+//
+// There is no free-form flag or argument string here. Every argv element comes
+// from a typed field, so nothing an operator or a config file says can become
+// part of the command line (SECURITY.md, ASI05); the four string-typed fields
+// that do reach argv are each pinned by Validate — Host to LoopbackHost, KVType
+// and SplitMode to closed enums, Devices token by token — and the three path
+// fields come from the install record and the layout, never from config.
 type LaunchSpec struct {
-	ServerBinary   string
-	ModelFile      string // -m
-	MMProjFile     string // --mmproj; empty omits the flag (text-only serving)
-	Host           string // --host, always LoopbackHost
-	Port           int    // --port, the persisted loopback port
-	Layers         int    // -ngl, layersFor(platform, manifest.Backend)
-	ContextSize    int    // -c, the RAM tier frozen in manifest.json
-	ImageMaxTokens int    // --image-max-tokens; ImageMaxTokensUncapped omits it
+	ServerBinary string        // the exec target; NOT an argv element
+	ModelFile    string        // -m
+	MMProjFile   string        // --mmproj; empty omits the flag (text-only serving)
+	Host         string        // --host, always LoopbackHost
+	Port         int           // --port, the persisted loopback port
+	Layers       LayerMode     // -ngl; LayerAuto OMITS the element entirely
+	ContextSize  int           // -c; 0 = "fit sizes it", valid only with Fit
+	ImageMaxTokens int         // --image-max-tokens; ImageMaxTokensUncapped omits it
+
+	Fit           bool         // -fit on|off, rendered UNCONDITIONALLY (see below)
+	FitTargetMiB  int          // -fitt; 0 omits it; rendered only under Fit
+	FitMinContext int          // -fitc; required > 0 under Fit, omitted otherwise
+	KVType        KVType       // -ctk/-ctv (one precision for both); "" omits both
+	KVOffload     *bool        // nil omits; an explicit false renders -nkvo
+	MMProjOffload *bool        // nil omits; an explicit false renders --no-mmproj-offload
+	Parallel      int          // -np, rendered UNCONDITIONALLY; Validate requires >= 1
+	CacheRAMMiB   *int         // --cache-ram; nil omits, 0 disables, -1 is "no limit"
+	Devices       []string     // -dev, comma-joined into ONE element; empty omits it
+	SplitMode     SplitMode    // -sm; SplitModeAuto omits it
 }
+
+// LayerMode is the `-ngl` half of a spec, and it has four answers rather than
+// three because one of them is the ABSENCE of an answer. The discriminator and
+// the count are private, so only these four are constructible.
+func LayerAuto() LayerMode     // OMIT the flag — the only shape a fit-sized launch may carry
+func LayerAll() LayerMode      // -ngl all
+func LayerCPU() LayerMode      // -ngl 0
+func LayerCount(n int) LayerMode // -ngl n (negative is representable and refused by Validate)
+func (m LayerMode) EmitsFlag() bool // the LayerMode spelling of MemoryPlan.EmitsLayers
+func (m LayerMode) String() string  // diagnostics only; never an argv element
+
+// ApplyMemoryPlan is the one bridge between the pure planner and the command
+// line. It copies rather than mutates, and it is total: every MemoryPlan field
+// that names a runtime flag is carried across, so a plan cannot be half-applied
+// and a new planner knob cannot be silently dropped on the way to argv
+// (TestApplyMemoryPlanRendersEveryFlagBearingField ratchets this by reflection).
+// It does not call Validate.
+func (spec LaunchSpec) ApplyMemoryPlan(plan MemoryPlan) LaunchSpec
 
 func (spec LaunchSpec) Args() []string
 func (spec LaunchSpec) Validate() error
@@ -546,6 +748,150 @@ const DefaultLoadWaitTimeout = DefaultReadyTimeout + 2*time.Minute // 17 min
 // own budget expired while the load was still legitimately running, and the load
 // was NOT cancelled.
 var ErrLoadWaitTimeout = errors.New("the embedded LLM did not become resident within the load wait budget")
+
+// KVType is the precision of the K and V KV caches — the value passed to BOTH
+// --cache-type-k and --cache-type-v. One type covers both on purpose: a MIXED
+// K/V cache silently runs flash attention on the CPU (PrismML-Eng/llama.cpp#267),
+// so the mixed shape is unrepresentable.
+//
+// The set is CLOSED at three. q5_0 is excluded on performance
+// (PrismML-Eng/llama.cpp#191: pp 11.4 / tg 4.0 t/s against f16's pp 343.5 /
+// tg 31.8 on the same hardware, model and prompt, reproduced after a reboot, and
+// it buys no capacity — a 73728 context ceiling against q4_0's 72960);
+// q4_1 / iq4_nl / q5_1 are excluded as unverified on this model.
+type KVType string
+
+const (
+	KVTypeF16  KVType = "f16"  // lossless baseline
+	KVTypeQ8_0 KVType = "q8_0" // same throughput as f16 in #191
+	KVTypeQ4_0 KVType = "q4_0" // the fork's own long-context option (BONSAI_KV4)
+)
+
+func KVTypes() []KVType                                   // the three, in order; a copy
+func ParseKVType(s string) (KVType, error)                // ErrKVTypeUnsupported, never a coercion
+func (t KVType) Valid() bool
+
+// ModelMemoryProfile is the measured footprint of Ternary-Bonsai-2-27B, term by
+// term, in MiB. It is a DESCRIPTION, not a policy: it decides nothing. Every
+// field's doc comment in memory.go names the measurement and its date.
+type ModelMemoryProfile struct {
+	WeightsMiB           map[Packing]int64   // on-disk; DERIVED from registry Asset.SizeBytes, never re-typed
+	MMProjMiB            int64               // on-disk projector; derived the same way
+	DeviceWeightsMiB     map[Packing]int64   // accelerator residency at full offload
+	HostWeightsMiB       map[Packing]int64   // system-RAM residency at -ngl 0
+	HostWeightSpillMiB   map[Packing]int64   // the un-repackable spill that stays in RAM even at full offload
+	RecurrentStateMiB    int64               // the SSM/GDN state: context- AND cache-type-independent
+	ComputeDeviceMiB     int64               // accelerator compute reserve, f16 reference shape
+	KVQuantComputeExtraMiB int64             // extra device compute a quantised cache needs
+	ComputeHostMiB       int64               // system-RAM compute reserve at full offload
+	ComputeHostCPUOnlyMiB int64              // the same at -ngl 0, where the whole graph is on the CPU
+	MMProjReserveDeviceMiB int64             // the projector's worst-case device reserve (not in the projections)
+	MMProjReserveHostMiB int64               // the projector's worst-case host reserve (not in the projections)
+	KVBytesPerTokenF16   int64               // exactly 64 KiB on this model
+	KVValuesPerLayerToken int64              // n_embd_k_gqa + n_embd_v_gqa
+	KVDivisor            map[KVType]float64  // f16 1, q8_0 32/17, q4_0 32/9
+	MaxContext           int                 // the model's training context (a ceiling, never a -c value)
+	LayerCount           int
+	OffloadableLayers    int                 // LayerCount + 1
+	FullAttentionLayers  int                 // 16 of 64: the rest are recurrent
+}
+
+func PinnedMemoryProfile() (ModelMemoryProfile, error) // fails closed on an unpinned packing
+func (p ModelMemoryProfile) KVCacheMiB(ctx int, kv KVType) (int64, error)
+func (p ModelMemoryProfile) ProjectDeviceMiB(packing Packing, ctx int, kv KVType, offloaded bool) (int64, error)
+func (p ModelMemoryProfile) ProjectHostMiB(packing Packing, ctx int, kv KVType, offloaded bool) (int64, error)
+
+var ErrKVTypeUnsupported = errors.New("unsupported embedded-LLM KV cache type")
+var ErrMemoryNotMeasured = errors.New("no measured memory residency for this packing")
+var ErrContextOutOfRange = errors.New("context size outside the modelled range")
+
+// ── plan.go: the decision layer between the two measured halves above ──
+
+// Tuning is the operator override vocabulary. EVERY field distinguishes "unset"
+// from "set to the default value", because the difference is load-bearing: an
+// unset -ngl lets the runtime's fit pass size the launch, while an -ngl that
+// happens to equal the value fit would have chosen turns fit OFF (see the
+// exclusivity rule in Flow). Fields with a natural zero sentinel use it; the
+// rest are pointers.
+type Tuning struct {
+	Context        ContextTuning // ContextAuto (zero) | ContextExact + Tokens
+	KVType         KVType        // zero = Auto: escalate f16 → q8_0 → q4_0
+	Offload        Offload       // OffloadAuto (zero) | OffloadAll | OffloadCPU | OffloadLayers + Layers
+	FitEnabled     *bool         // -fit; nil lets the exclusivity rule decide
+	FitTargetMiB   *int          // -fitt; nil/0 omits the flag (runtime default 1024)
+	FitMinContext  *int          // -fitc; nil = DefaultFitMinContext (65536, NOT the runtime's 4096)
+	KVOffload      *bool         // -kvo/-nkvo; false keeps the KV cache in system RAM
+	MMProjOffload  *bool         // --mmproj-offload/--no-mmproj-offload
+	Packing        Packing       // zero = the backend/GPU-derived packing
+	Parallel       *int          // -np; nil = DefaultParallel (1, NOT the runtime's -1 auto)
+	CacheRAMMiB    *int          // -cram; nil omits the flag, 0 disables the prompt cache
+	HostReserveGiB *float64      // planner-side budget knob; nil keeps the topology's derivation
+	Devices        []string      // -dev; any entry forces fit off
+	SplitMode      SplitMode     // -sm; anything but SplitModeAuto forces fit off
+}
+
+type ContextMode int // ContextAuto (zero) | ContextExact
+type ContextTuning struct {
+	Mode   ContextMode
+	Tokens int
+}
+
+type OffloadMode int // OffloadAuto (zero) | OffloadAll | OffloadCPU | OffloadLayers
+type Offload struct {
+	Mode   OffloadMode
+	Layers int // read by OffloadLayers only
+}
+
+type SplitMode string // "" (Auto, omit -sm) | none | layer | row | tensor — the runtime's own spellings
+
+// MemoryPlan is the resolved launch shape. It is a DESCRIPTION, not a command
+// line: LaunchSpec.Args remains the only place an argv is assembled, and
+// omission is expressed as a nil pointer or a zero rather than as a rendered
+// flag.
+type MemoryPlan struct {
+	Fit           bool   // the runtime's --fit pass sizes layers AND context
+	FitTargetMiB  int    // -fitt; 0 omits
+	FitMinContext int    // -fitc; the floor fit is held to (only meaningful with Fit)
+	Layers        *int   // -ngl; NIL MEANS OMIT THE FLAG — a pointer to 0 means "-ngl 0"
+	ContextSize   int    // -c; 0 under fit, computed here otherwise
+	KVType        KVType // never empty: Auto is resolved to a concrete precision
+	Packing       Packing
+	KVOffload     bool // false emits -nkvo
+	MMProjOffload bool // false emits --no-mmproj-offload
+	Parallel      int  // -np; DefaultParallel unless overridden
+	CacheRAMMiB   *int // -cram; nil omits
+	Devices       []string
+	SplitMode     SplitMode
+	GPUFamily     GPUFamily // echoed: it is what priced the split allowance below
+
+	DeviceBudgetMiB int64 // topology's budget, minus the family's split allowance
+	HostBudgetMiB   int64 // topology's budget, or re-derived from a HostReserveGiB override
+
+	// The projected footprints INCLUDING the vision projector's reserve
+	// (memory.go's two projections are text-only). Under a PARTIAL layer count
+	// these are conservative bounds (full-offload device, CPU-only host), and
+	// Notes says so.
+	ExpectedDeviceMiB int64
+	ExpectedHostMiB   int64
+
+	Notes []string // the human-readable "why", surfaced in the UI verbatim
+}
+
+func (p MemoryPlan) FitArg() string          // the literal -fit value: "on" | "off"
+func (p MemoryPlan) EmitsLayers() bool       // false = -ngl must be OMITTED
+func (p MemoryPlan) OffloadsToDevice() bool  // the boolean every projection needs
+
+// Plan is PURE: no I/O, no probing, no clock, no package state. The zero
+// MemoryTopology means "unknown" and must not be passed — a caller with no
+// topology takes the derived-budget path in Resolve instead.
+func Plan(topology MemoryTopology, profile ModelMemoryProfile, tuning Tuning,
+	backend Backend, family GPUFamily) (MemoryPlan, error)
+
+const DefaultFitMinContext = 65536 // -fitc; the runtime's own default is 4096
+const DefaultParallel = 1          // -np; the runtime's own default is -1 (auto)
+
+var ErrMemoryPlanInfeasible = errors.New("the embedded LLM does not fit this machine's measured memory budgets")
+var ErrTuningInvalid = errors.New("invalid embedded-LLM memory tuning")
 ```
 
 Persisted config (see [Configuration](#configuration)):
@@ -559,13 +905,40 @@ type EmbeddedLLMConfig struct {
 	ModelFile      string           `yaml:"model_file"`
 	RuntimeVersion string           `yaml:"runtime_version"` // pinned fork release tag
 	InstalledAt    string           `yaml:"installed_at"`
-	AutoUnload     AutoUnloadConfig `yaml:"auto_unload"`
+	AutoUnload     AutoUnloadConfig `yaml:"auto_unload"`      // operator setting
+	Tuning         TuningConfig     `yaml:"tuning,omitempty"` // operator setting
 }
 
 type AutoUnloadConfig struct {
 	Enabled *bool `yaml:"enabled"` // default true
 	Minutes *int  `yaml:"minutes"` // default 60
 }
+
+// TuningConfig is the persisted form of the planner's `Tuning` override
+// vocabulary (plan.go). EVERY knob is a pointer, or a struct of pointers, so
+// *unset* stays distinguishable from an explicit `auto` / `0` / `false` —
+// which for `Fit` and `CacheRAMMiB` is a different PLAN, not a different
+// spelling. Nothing is seeded by ApplyDefaults: the all-nil zero value IS the
+// all-Auto default.
+type TuningConfig struct {
+	Context       EmbeddedLLMContextConfig `yaml:"context,omitempty"`       // mode auto|exact + tokens
+	KVCacheType   *string                  `yaml:"kv_cache_type,omitempty"` // auto|f16|q8_0|q4_0
+	Offload       EmbeddedLLMOffloadConfig `yaml:"offload,omitempty"`       // mode auto|all|cpu|layers + layers
+	Fit           *bool                    `yaml:"fit,omitempty"`
+	FitTargetMiB  *int                     `yaml:"fit_target_mib,omitempty"`
+	FitMinContext *int                     `yaml:"fit_min_context,omitempty"`
+	KVOffload     *bool                    `yaml:"kv_offload,omitempty"`
+	MMProjOffload *bool                    `yaml:"mmproj_offload,omitempty"`
+	Packing       *string                  `yaml:"packing,omitempty"` // auto|PQ2_0|PTQ1_0
+	Parallel      *int                     `yaml:"parallel,omitempty"`
+	CacheRAMMiB   *int                     `yaml:"cache_ram_mib,omitempty"`
+	HostReserveGiB *float64                `yaml:"host_reserve_gib,omitempty"`
+}
+
+// ToTuning is the ONE translation into the planner's vocabulary, and
+// validateEmbeddedLLMTuning delegates to it — so "validate() accepts it" and
+// "the planner can honour it" are the same statement by construction.
+func (t TuningConfig) ToTuning() (embeddedllm.Tuning, error)
 ```
 
 ## Flow
@@ -593,27 +966,52 @@ probeHardware()
    CUDA and ROCm are x64-only: a non-x64 platform with CUDA detected
    resolves to the CPU build (linux-arm64 + CUDA → cpu).
    RAM is a hard input, not a best-effort one: an unreadable size yields
-   ErrRAMUnknown rather than letting the 16 GiB gate pass on a guess.
+   ErrRAMUnknown rather than letting the memory gate derive a host budget
+   from nothing.
 
-resolve(platform, backend, ramGiB)  →  Resolution        [pure, no I/O]
-├─ ramGiB < 16                    → ErrInsufficientRAM (the FIRST check)
+resolve(ResolveInput)  →  Resolution                      [pure, no I/O]
+├─ ramGiB unreadable              → ErrRAMUnknown (fail-closed)
 ├─ effective backend (see degradation rules below): metal only on
 │           darwin-arm64; CUDA/ROCm only on amd64; a CUDA tag the platform has
 │           no archive for clamps DOWN to the nearest older pinned tag; any
 │           other unpinned pair → cpu
-├─ packing: PTQ1_0 on vulkan (the one backend with no PQ2_0 kernels);
-│           PQ2_0 everywhere else. There is NO RAM-based downgrade.
+├─ guards:  the compatibility table for (effective backend, GPU family,
+│           platform) runs BEFORE the packing decision, so a backend it
+│           substitutes is the one the packing is chosen for — see
+│           [Backend compatibility guards](#backend-compatibility-guards)
+├─ packing: PQ2_0 unless one of four triggers fires, highest precedence first
+│           (the reason is recorded, never inferred from a file size):
+│             1. vulkan — the one backend with no PQ2_0 kernels at all
+│             2. an AVX-512 host AND a pin predating #245 — PQ2_0 segfaults at
+│                load there, even fully offloaded (inert on the current pin)
+│             3. the MEASURED device budget does not fit PQ2_0
+│             4. an Ada/L4-class GPU — PTQ1_0 decodes faster there
+│           Installed RAM is NOT a trigger: the constraint is the accelerator
+│           budget, and it counts only when it was actually measured.
 │           mmproj-Q8_0 is ALWAYS part of the set.
+├─ GATE:    memoryGate prices every modelled shape (packing × KV precision ×
+│           residency extreme) at the smallest context c0wrk serves, against
+│           BOTH pools, and refuses with ErrInsufficientMemory when none fits.
+│           Runs BEFORE any asset is planned — see
+│           [The combined memory gate](#the-combined-memory-gate)
 ├─ assets:  runtime[platform][effective]  (+ cudart on windows CUDA)
 │           + model[packing] + mmproj      — ArtifactSet order = download order
-├─ -ngl:    0 on Intel Mac and on the CPU build; 99 on CUDA/ROCm/Vulkan and on
-│           Apple Silicon (there the arm64 archive IS the Metal build)
-├─ -c:      RAM tier (see table below) — never 0, never 262144
+├─ -ngl:    the PLATFORM TIER — 0 on Intel Mac and on the CPU build; 99 on
+│           CUDA/ROCm/Vulkan and on Apple Silicon (there the arm64 archive IS
+│           the Metal build). This is the default the memory plan starts from
+│           and what the RAM-only path emits; a probed topology under an
+│           all-Auto tuning OMITS the flag entirely and lets --fit size it
+│           (see [Memory plan](#memory-plan))
+├─ -c:      the RAM tier (see table below) — what the RAM-only path emits,
+│           never 0 and never 262144 there; a fit-sized plan deliberately
+│           carries -c 0 (the runtime sizes the context), and an explicit
+│           Context override replaces the tier outright
 └─ --image-max-tokens: 1024 on metal/vulkan/cpu; uncapped on CUDA/ROCm
                        (uncapped = the flag is omitted entirely)
 
   RAM (GiB)   context    reachable through Resolve?
-  ≤ 11        8192       no — below the 16 GiB gate
+  ≤ 11        8192       only with a device-resident plan; a host-resident
+                         one at this tier does not clear the gate
   ≤ 23        16384      yes
   ≤ 35        32768      yes
   ≤ 71        65536      yes
@@ -626,7 +1024,7 @@ resolve(platform, backend, ramGiB)  →  Resolution        [pure, no I/O]
 ```
 
 **Backend → asset → packing.** What each *effective* backend resolves to. The
-archive stems are the pinned `prism-b10709-9a9394a` release names; checksums and
+archive stems are the pinned `prism-b10735-842b188` release names; checksums and
 exact sizes live in `registry.go`.
 
 | Effective backend | Runtime archive stem(s) | Packing | `-ngl` | `--image-max-tokens` | Second runtime component |
@@ -635,6 +1033,14 @@ exact sizes live in `registry.go`.
 | `cuda-12.4` | linux `bin-linux-cuda-12.4-x64`, win `bin-win-cuda-12.4-x64` | `PQ2_0` | 99 | uncapped | `cudart-…-win-cuda-12.4-x64` (Windows only) |
 | `cuda-12.8` | linux `bin-linux-cuda-12.8-x64` (no Windows archive in this pin) | `PQ2_0` | 99 | uncapped | — |
 | `cuda-13.3` | linux `bin-linux-cuda-13.3-x64`, win `bin-win-cuda-13.3-x64` | `PQ2_0` | 99 | uncapped | `cudart-…-win-cuda-13.3-x64` (Windows only) |
+
+> The `cuda-13.3` row is pinned but **not reachable**: the `cuda-13.3-crash`
+> guard substitutes `cuda-12.8` on Linux and `cuda-12.4` on Windows before the
+> artifact set is built (KNOWN_ISSUES #222 — the 13.3 builds segfault on Linux
+> and print their banner and exit on Windows). A 13.3 driver still runs an
+> older-toolkit build, which is the same backwards compatibility the
+> missing-archive clamp below relies on. The archives stay pinned so the guard
+> can be lifted the moment upstream closes #222.
 | `rocm` | linux `bin-ubuntu-rocm-7.2-x64`, win `bin-win-hip-radeon-x64` | `PQ2_0` | 99 | uncapped | — |
 | `vulkan` | `bin-ubuntu-vulkan-x64`, `bin-ubuntu-vulkan-arm64`, `bin-win-vulkan-x64` | **`PTQ1_0`** | 99 | 1024 | — |
 | `cpu` | `bin-macos-x64`, `bin-macos-arm64`, `bin-ubuntu-x64`, `bin-ubuntu-arm64`, `bin-win-cpu-x64` | `PQ2_0` | 0 (99 on darwin-arm64) | 1024 | — |
@@ -644,8 +1050,8 @@ Bonsai 2 27B is multimodal:
 
 | Component | Asset | Selected when |
 | --- | --- | --- |
-| `model` | `Ternary-Bonsai-2-27B-PQ2_0.gguf` | every backend except Vulkan |
-| `model` | `Ternary-Bonsai-2-27B-PTQ1_0.gguf` | Vulkan (no `PQ2_0` kernels) |
+| `model` | `Ternary-Bonsai-2-27B-PQ2_0.gguf` | no packing trigger fired |
+| `model` | `Ternary-Bonsai-2-27B-PTQ1_0.gguf` | any of the four triggers: Vulkan, an AVX-512 host on a pre-#245 pin, a measured budget PQ2_0 does not fit, or an Ada/L4-class GPU |
 | `mmproj` | `Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf` | always |
 
 **Degradation rules.** Resolution never refuses because of an unsupported
@@ -658,20 +1064,579 @@ install beats an error on a machine that could have run the model.
 | `cuda-*`, `rocm` | any non-amd64 | `cpu` | CUDA/ROCm archives are x64-only |
 | `cuda-12.8` | windows-amd64 | `cuda-12.4` | this pin has no Windows 12.8 archive; clamp **down** (a 12.4 build runs on a newer driver, never the reverse) |
 | any accelerator | a platform that does not pin it | `cpu` | `cpu` is pinned for every supported platform |
+| `cuda-13.3` | linux-amd64 | `cuda-12.8` | guard `cuda-13.3-crash` (#222) — the 13.3 build segfaults on some systems |
+| `cuda-13.3` | windows-amd64 | `cuda-12.4` | guard `cuda-13.3-crash` (#222) — the 13.3 build exits after its banner |
+| `rocm` + RDNA2 | linux-amd64, windows-amd64 | `vulkan` (⇒ `PTQ1_0`) | guard `rocm-rdna2-abort` (Bonsai-demo #197) — HIP aborts on gfx1030-class parts |
+| `rocm` + gfx1151 | windows-amd64 | `vulkan` (⇒ `PTQ1_0`) | guard `windows-hip-gfx1151-garbled` (#223) — `PQ2_0` output is garbage there |
 | any | a platform with no pins at all | — | `ErrArtifactNotPinned` |
 
 `Resolution.Backend` records the *effective* backend, and it — never the probed
 value — is what the manifest and the informational Settings label must carry:
 recording the probed backend would describe an install that is not on disk.
 
+### Backend compatibility guards
+
+The pinned runtime documents its own machine-class failures. `compat.go` turns
+each one into a decision c0wrk makes **before** it commits a multi-gigabyte
+download to a plan that is known to crash, hang, abort — or quietly produce
+garbage. None of this is inferred from first principles: every guard cites the
+upstream report that justifies it, and a guard without a citation is a bug.
+
+Sources of record, both read against the current pin (`prism-b10735-842b188`) on
+2026-09-25: `KNOWN_ISSUES.md` in the pinned weights repository
+(`prism-ml/Ternary-Bonsai-2-27B-gguf`, "Last checked: 2026-09-23"), and the same
+repository's model card ("Choosing a Packing" plus the "Cross-Platform
+Throughput" table).
+
+```
+CompatibilityGuards(backend, gpuFamily, platform)  →  []GuardDecision
+                                                     [pure table, no I/O]
+```
+
+| Guard id | Fires when | Action | Reason → severity | Upstream |
+| --- | --- | --- | --- | --- |
+| `cuda-13.3-crash` | effective backend `cuda-13.3` | prefer `cuda-12.8` on linux-amd64, `cuda-12.4` on windows-amd64 | `crash_on_load` → critical | `llama.cpp#222` — Linux segfault; Windows prints the banner and exits |
+| `rocm-rdna2-abort` | `rocm` + RDNA2 (gfx1030-class) | prefer `vulkan` | `process_abort` → critical | `Bonsai-demo#197` — HIP aborts on consumer RDNA2; "try the Vulkan build" |
+| `windows-hip-gfx1151-garbled` | windows-amd64 + `rocm` (HIP) + gfx1151 | prefer `vulkan`, which resolves to `PTQ1_0` | `garbled_output` → critical | `llama.cpp#223` — `PQ2_0` output is garbage; `-ngl 0` or Vulkan+`PTQ1_0` are correct |
+| `vulkan-intel-arc-hang` | `vulkan` + Intel Arc | advisory | `hang` → warning | `llama.cpp#192` — hangs after ~1,900 generated tokens; "run on CPU for now" |
+| `windows-cuda-no-start` | windows-amd64 + any CUDA backend | advisory | `fails_to_start` → warning | `llama.cpp#241` — some Windows CUDA builds do not start; the CPU-only build does |
+
+Severity is **derived** from the reason (`severityFor`), never set per guard, so
+the two cannot drift apart — and an unranked reason maps to critical, because a
+failure nobody classified must never render as the mildest thing on the list.
+
+**Why two guards are advisory only.** `windows-cuda-no-start` names no CPUID, no
+driver version and no card, so nothing can predict it statically; what the guard
+can do is put the documented fallback in the install record *before* the failure
+instead of after it. `vulkan-intel-arc-hang` has a workaround that gives up GPU
+acceleration entirely, and it degrades only after ~1,900 tokens of *output* — a
+trade c0wrk discloses rather than makes silently on the user's behalf.
+
+**Where the decisions are made.** A guard is data, so the same table is read
+twice: by the resolver, to apply the substitutions it still can, and by the
+installer, to disclose the rest.
+
+```
+Install
+├─ plan()                        static half, BEFORE any download
+│  ├─ ResolveMachine(...)        #222 and #241 need no device probe
+│  ├─ a runtime already on disk? (a repair / reinstall)
+│  │     └─ ProbeDevices → ClassifyGPUs → ResolveProfile(GPU: family)
+│  │        so #197 / #223 / #192 apply to the artifacts about to be fetched
+│  └─ Resolution{Backend, Packing, PackingReason, GPU, Guards}
+├─ runtime archives → stage → sign → smoke test
+├─ refineWithStagedDevices()     device half, AFTER staging, BEFORE the weights
+│  ├─ the staged runtime answers --list-devices → ClassifyGPUs
+│  ├─ backend unchanged → adopt the refined plan (the packing rule can still
+│  │   flip the weights that have NOT been downloaded yet: an Ada card that was
+│  │   unknown at plan time gets PTQ1_0)
+│  └─ backend changed   → too late to substitute; record it unapplied, with the
+│                         reason in its guidance ("reinstall to apply it")
+├─ weights → verify → manifest{packing_reason, gpu_family, guards} → config sink
+└─ InstallReport{Guards, PackingReason, Manifest, Resolution}
+       └─ backend: EmbeddedLLMStatus{packing_reason, gpu_family, guards}
+```
+
+**A substitution must be pinned.** `applyCompatGuards` only swaps in a backend
+the registry actually publishes for that platform. A guard that swapped in an
+unpinned build would convert an upstream failure into c0wrk's own
+`ErrArtifactNotPinned` — a strictly worse outcome — so the decision is recorded
+unapplied and its guidance says why.
+
+**The pin is part of the guard set.** The AVX-512 rule is pin-aware by
+construction: `PQ2_0` segfaults at load on an AVX-512 host only while the pin
+predates PR #245, so `decidePacking` compares `parseRuntimeBuild(RuntimeTag)`
+against `minBuildWithAVX512PQ2_0Fix` (10735 — the first build c0wrk can *prove*
+contains the fix, since b10709 demonstrably predates it and the CVE-reviewed
+range `9a9394a..842b188` demonstrably contains it). An unproven or unparseable
+build number compares below the threshold, i.e. it is treated as unfixed: the
+error in that direction is a smaller, slower-decoding packing, while the error in
+the other direction is a segfault. **Every pin bump must re-read both upstream
+documents** and re-check this table — a fixed issue means a guard that should
+stop firing, and a stale guard is a needless degradation.
+
+**Known coverage limit.** Classification reads the device *description* the
+runtime prints. `gfx1151` is matched by its target name and by the Strix Halo /
+Ryzen AI Max product names, but Windows HIP commonly reports that iGPU as a
+generic "AMD Radeon(TM) Graphics" with no target in the string — such a machine
+classifies as unknown and `windows-hip-gfx1151-garbled` cannot fire. The honest
+alternatives were both worse: matching all of RDNA 3 would degrade working
+RX 7000 cards to protect a broken iGPU, and c0wrk ships no `rocminfo` probe to
+read the target from. A `rocminfo`-derived gfx target is the extension point that
+would close this.
+
+### Device memory topology probe
+
+`Hardware` answers *which archive to download* and *how big a context this
+machine can hold*. It says nothing about accelerator memory, and it cannot: the
+probe runs **before** anything is on disk, so there is no runtime to ask.
+`ProbeDevices` is that second probe — it runs against the **installed** binary
+and reports the real memory topology.
+
+```
+ProbeDevices(ctx, binaryPath, logger)  →  (MemoryTopology, ok bool)   [I/O half]
+├─ binaryPath == ""                     → (zero, false)
+├─ platformTotalRAMBytes(ctx)           → unreadable ⇒ (zero, false)
+│        (the same read Hardware.RAMGiB uses, so the two can never disagree)
+├─ runProbeCommand(ctx, binaryPath, "--list-devices")
+│        the EXISTING hardened spawn: exec.LookPath, probeCommandTimeout (2 s),
+│        probeWaitDelay (500 ms) on the output pipes, sysproc.HideConsole
+│        ⇒ absent / hung / nonzero exit / cancelled ⇒ (zero, false)
+├─ parseDeviceListing(stdout)           → unrecognized output ⇒ (zero, false)
+├─ buildTopology(platform, hostRAMBytes, listing, probedAt)   [pure half]
+│   ├─ classifyUnified(platform, devices)
+│   ├─ hostBudget   = hostRAM − reserve,  reserve = max(4 GiB, 12.5% of RAM)
+│   ├─ devicePool   = unified ? LARGEST device total : SUM of device totals
+│   ├─ deviceBudget = devicePool − margin (1536 MiB)
+│   │                 unified ⇒ additionally min(deviceBudget, hostBudget)
+│   └─ both clamped at 0, never negative
+└─ crossCheckHostRAM(logger, topology, listing)   [Debug only, never fatal]
+
+ok == false means UNKNOWN, never "no memory": the caller treats the accelerator
+budget as `deviceUnreadable`, which degrades the memory gate to the host pool and
+records it in `Notes` rather than refusing. A topology probe refines a decision;
+it must never be the reason a load fails.
+```
+
+**Why the pool question is the whole point.** Measured on this project's
+reference machine (Apple M4 Max, 128 GiB, pinned fork runtime, stdout verbatim):
+
+```
+Available devices:
+  MTL0: Apple M4 Max (110100 MiB, 110100 MiB free)
+  BLAS: Accelerate (0 MiB, 0 MiB free)
+```
+
+Those 110100 MiB are **not extra memory** — the OS carved that working set out
+of the same 131072 MiB of RAM, so a naive "RAM + VRAM" sum reports 235 GiB on a
+128 GiB machine, a **1.84×** overcount that would wave through a launch the
+machine cannot serve. Unified pools are not a macOS specialty either (AMD APUs /
+Strix Halo through GTT and stolen memory, Intel iGPUs the same way, Jetson and
+Grace-Hopper class CUDA SoCs), so unification is **detected**, never inferred
+from `GOOS`.
+
+**The two spellings of the inventory.** The parser accepts both; they never
+appear on the same line.
+
+| Form | Stream | Reaches c0wrk via | Lists `CPU`? |
+| --- | --- | --- | --- |
+| `llama-server --list-devices` | **stdout**, exit 0, stderr empty | `ProbeDevices` | no |
+| `llama-server -lv 4 -m … ` parameter dump (`common_param: device_info:`) | **stderr**, printed before the load | `Server.pumpOutput`'s bounded `lineTail`, a support bundle | **yes** |
+
+The richer form's `CPU` row is host RAM wearing a device line (measured
+`CPU : Apple M4 Max (131072 MiB, 131072 MiB free)` against a
+`sysctl hw.memsize` of exactly 128 GiB). It is kept **out** of the accelerator
+inventory and used only as the cross-check. `-lv 4 --list-devices` is *not* a
+way to get it: the list-devices path exits before the parameter dump, so it
+prints the stdout spelling and nothing else (measured with `-v`, `-lv 4` and
+`--verbosity 4`).
+
+**Parser rules.** Both format strings were read out of the pinned build's
+`libllama-common` (`  %s: %s (%zu MiB, %zu MiB free)` — the two leading spaces
+are part of the format — and `cmn  %12.*s:   - %-8s: %s (%zu MiB, %zu MiB free)`)
+and re-verified against the shipped pin. Matches are strictly line-anchored and
+applied per line.
+
+| Rule | Why |
+| --- | --- |
+| `^\s{2}(\S+): (.*) \((\d+) MiB, (\d+) MiB free\)$` for the stdout form | a log line, a warning or a stack trace simply does not match |
+| `:\s+-\s+(\S+)\s*: (.*) \((\d+) MiB, (\d+) MiB free\)$` for the dump form | the name is left-aligned in a fixed width of 8 and the line carries a timestamp/level prefix |
+| entries with `Total == 0 && Free == 0` are **dropped** (and counted, so `ProbeDevices` logs the drop) | measured `BLAS: Accelerate (0 MiB, 0 MiB free)`, and the pinned fork says so at `common/fit.cpp:117`: *"Some non-GPU accelerator backends, such as BLAS, report 0/0 and rely on the host-memory fallback."* The same code **keeps** 0/0 for a GPU/IGPU-typed device and then refuses to place anything on it (*"--fit will not use it"*) — a dropped entry amounts to the same thing here, and keeping the row would add a zero to a discrete sum or win the unified `max()` on a machine whose real accelerator was misparsed |
+| the `CPU` row is kept out of the inventory | it is host RAM, not an accelerator |
+| duplicate names collapse, first wins | a log tail can hold both spellings; a duplicated pool would be summed twice |
+| `Available devices:` alone, or `  (none)`, is an **answered** probe with an empty inventory | a CPU-only build can print the header and nothing after it |
+| nothing recognized ⇒ `ok = false`, **not** an empty inventory | "no accelerator" is a verdict about the machine; unrecognized output is a probe that did not answer, and reporting it as the former would turn a broken binary into a "no GPU" verdict |
+
+**Unified classification** (`classifyUnified`, first rule that fires wins):
+
+| # | Condition | Verdict | Why |
+| --- | --- | --- | --- |
+| 1 | no devices | unified | nothing to sum, and it is the fallback anyway |
+| 2 | `darwin-arm64` | unified | Apple Silicon's Metal working set is carved out of system RAM. A discrete eGPU is misclassified here — the **safe** direction, since the `min()` can only shrink its budget |
+| 3 | a device named `MTL<n>` | unified | Metal exists only on Apple's unified parts |
+| 4 | a `CUDA<n>`/`HIP<n>` device on a **non-amd64** platform | unified | that shape is a Jetson / Grace-Hopper class SoC; a discrete card is only ever provisioned on amd64 |
+| 5 | any device matching an **integrated** marker (Apple `M<n>`, Ryzen, Strix Halo, `Radeon(TM) Graphics`, `Radeon 890M`, Iris, UHD Graphics, `Arc(TM) Graphics`, Adreno, Mali) | unified | one device aliases host RAM, so the pools cannot be added. Discrete markers (NVIDIA/GeForce/RTX/GTX/Quadro/Tesla/Instinct, `Radeon RX`/`Radeon Pro`, `Arc A770`-style model numbers) are checked **first per device**, so a hybrid laptop is decided by its iGPU |
+| 6 | anything else | **unified** | unsure means unified: misclassifying a discrete card only clamps its budget to a host pool that is bigger than it, while misclassifying a unified pool invents memory |
+
+**Budget derivation.**
+
+| | unified | discrete |
+| --- | --- | --- |
+| device pool | **largest** device total (one physical pool; a second entry is another view of the same bytes) | **sum** of device totals (independent VRAM the runtime tensor-splits across) |
+| `DeviceBudgetBytes` | `min(pool − margin, HostBudgetBytes)` | `pool − margin` |
+| `HostBudgetBytes` | `hostRAM − reserve` | `hostRAM − reserve` (independent of the device term) |
+
+- `reserve` = `max(4 GiB, 12.5% of RAM)` — exposed as
+  `DefaultHostReserveGiB(ramGiB)` and overridable per plan by
+  `Tuning.HostReserveGiB` (which REPLACES the derivation, never stacks on it).
+  It is not slack: it has three named tenants, and a launch that eats into it
+  does not merely slow down. (1) the OS and the window server, which is what the
+  4 GiB floor is sized for; (2) c0wrk itself — the Wails webview, the Go heap,
+  the PTYs and the session store all live in this process while the model is
+  resident; (3) the **vector index**, the tenant that scales with the project —
+  the ONNX Runtime session, the embedding model and a large workspace's
+  in-memory index are all host-resident whether or not the embedded LLM is. The
+  1/8 ratio above the floor is what keeps all three covered on a big machine,
+  where "everything else" is bigger too. On a 16 GiB machine that is 4 GiB,
+  leaving 12 GiB; on the 128 GiB reference machine 16 GiB, leaving 112 GiB.
+- `margin` = 1536 MiB of accelerator slack: the fork's demo documents
+  "~1.2 GiB overhead" for the pinned family, rounded up to the next half-GiB
+  because it is a whole-family approximation rather than a measurement of this
+  build. It deliberately excludes the vision projector's 849 MiB device reserve
+  — a topology is model-agnostic, and the consumer that projects a footprint
+  already adds `ModelMemoryProfile.MMProjReserveDeviceMiB`, so folding it in
+  here would count the projector twice.
+- Budgets come from `Total`, not `Free`: `Free` is a snapshot of the probe
+  instant (on the reference machine it equals `Total`, nothing else was using
+  the GPU), and a capacity plan that moved with whatever else happened to be
+  running would not be reproducible. A consumer wanting a live check reads
+  `FreeMiB` explicitly.
+- Both budgets floor at 0 and are exposed in MiB too (`DeviceBudgetMiB`,
+  `HostBudgetMiB`, floored) because that is the unit `memory.go`'s projections
+  speak.
+
+**What this section does *not* do.** `MemoryTopology` is a description, not a
+policy: it refuses nothing, picks no context size and changes no launch flag.
+`Resolve` still takes `(platform, backend, ramGiB)` and stays pure — threading a
+post-install probe through it would mean passing a zero value at the only place
+`Resolve` is called. Capacity lives here; the requirement side lives in
+[Memory model](#memory-model); a gate that compares them is a separate concern.
+
+### Memory model
+
+`core/embeddedllm/memory.go` is the measured answer to "does this launch fit?".
+It replaces a single transcribed *≈ 64 KiB per token* comment — a figure
+`Bonsai-demo/README.md` states for a whole model **family**, where the
+full-attention 8B costs roughly 140 KiB per token — with a per-term model of the
+ONE model c0wrk pins. It decides nothing: the RAM-tiered `-c` ladder above lives
+in `resolve.go` and is a separate concern. It is the **requirement** side of a
+fit decision; the **capacity** side — how much device and host memory this
+machine actually has, and whether the two are the same bytes — is
+[Device memory topology probe](#device-memory-topology-probe).
+
+**Provenance.** Every constant was measured on **2026-09-25** with the pinned
+fork release `prism-b10735-842b188` (`llama-server --version` →
+`0.2.0-dev (build 10735, commit 842b18804)`) on an Apple M4 Max (128 GiB
+unified; the Metal device `MTL0` reports 110100 MiB), against the pinned
+`Ternary-Bonsai-2-27B-PQ2_0.gguf` and `-PTQ1_0.gguf` (both re-verified against
+their registry SHA256 first). The runtime archive was re-downloaded from the
+registry URL, so the figures belong to the pin this package ships. Reference
+command line — c0wrk's own launch shape minus the flags the model does not
+depend on:
+
+```
+llama-server -v -m <weights>.gguf --host 127.0.0.1 -ngl <99|0> -fa on \
+  -c 262144 -np 1 --no-webui [-ctk T -ctv T]
+```
+
+**Two totals per run, and they are not interchangeable.**
+
+| Pass | What it prints | Used for |
+| --- | --- | --- |
+| dry-run *fit* | `common_params_fit_impl: projected to use N MiB of device memory` + the `common_memory_breakdown_print` MTL0 row | `ProjectDeviceMiB` — it is what the fork's own `--fit` decides on, it is available **before** the load, and it splits device from host cleanly |
+| loaded (printed at shutdown) | the `| - Host | … |` row, asserted by `~llama_context: … matches expectation` | `ProjectHostMiB` — it is what the running process actually holds |
+
+The dry-run **Host** row is not the real host footprint: the reserve pass runs
+twice, so the breakdown sums two identical CPU compute buffers
+(`874 = 322 + 0 + 552`, where 552 = 2 × 276.02). The loaded pass reports the
+single buffer the process keeps (276), which is why the host projection is
+modelled on it.
+
+**Measured run matrix** — `-c 262144 -np 1 -fa on`, text-only. Device totals are
+the fork's own projection; host totals are the loaded pass.
+
+| Packing | `-ngl` | KV | `llama_kv_cache: size` | device total | host total |
+| --- | --- | --- | --- | --- | --- |
+| PQ2_0 | 99 | `f16` | 16384.00 MiB (K 8192.00 + V 8192.00) | **24450** = 6539 + 16533 + 1377 | **598** = 322 + 0 + 276 |
+| PQ2_0 | 99 | `q8_0` | 8704.00 MiB (K 4352.00 + V 4352.00) | **16782** = 6539 + 8853 + 1389 | **598** |
+| PQ2_0 | 99 | `q4_0` | 4608.00 MiB (K 2304.00 + V 2304.00) | **12686** = 6539 + 4757 + 1389 | **598** |
+| PQ2_0 | 0 | `f16` | 16384.00 MiB | **0** = 0 + 0 + 0 | **23789** = 6865 + 16533 + 390 |
+| PTQ1_0 | 99 | `f16` | 16384.00 MiB | **23306** = 5395 + 16533 + 1377 | **541** = 265 + 276 |
+| PTQ1_0 | 0 | `f16` | 16384.00 MiB | **0** | **22588** = 5664 + 16533 + 390 |
+
+`TestProjectionMatchesMeasuredMatrix` asserts every cell; the projections
+reproduce all six rows **exactly**, in whole MiB.
+
+**The terms.**
+
+| Term | Value (MiB) | Measurement |
+| --- | --- | --- |
+| KV per token, f16 | 65536 B | `size = 16384.00 MiB (262144 cells, 16 layers)` — exact, no remainder. Derivable: `FullAttentionLayers × KVValuesPerLayerToken × 2 B` = 16 × 2048 × 2 |
+| KV divisor | f16 1, q8_0 32/17, q4_0 32/9 | a quantised block is 32 values **plus one fp16 scale**, so a value costs 8.5 / 4.5 bits, not 8 / 4. The three divisors reproduce 16384.00 / 8704.00 / 4608.00 MiB exactly |
+| Recurrent state | 149.62 → 150 | `llama_memory_recurrent: size = 149.62 MiB (1 cells, 64 layers), R (f32): 5.62, S (f32): 144.00` — byte-identical under all three cache types and at `-c` 262144 / 131072 / 65536, so it is **context-independent**. An undocumented term: no upstream table carries it |
+| Device weights | PQ2_0 6539, PTQ1_0 5395 | the dry-run breakdown's `model` column |
+| Host weight spill | PQ2_0 322, PTQ1_0 265 | `load_tensors: CPU_Mapped model buffer size = 322.07 MiB`; the tensors the runtime cannot repack (`token_embd.weight … cannot be used with preferred buffer type CPU_REPACK`). Per-packing because it is the same tensors at 2.13 vs 1.75 bpw |
+| Host weights (`-ngl 0`) | PQ2_0 6865, PTQ1_0 5664 | the loaded Host row's `model` column; 4 MiB above device + spill, being the small host buffers (`CPU output buffer size = 0.95 MiB` and friends) |
+| Device compute | 1377.52 → 1377 (+12 quantised) | `sched_reserve: MTL0 compute buffer size = 1377.52 MiB`; 1389.03 under **both** quantised types, the dequantisation scratch |
+| Host compute | 276.02 → 276 (390 at `-ngl 0`) | `sched_reserve: CPU compute buffer size = 276.02 MiB`, confirmed by the shutdown assert |
+| Projector reserve | 849 device + 25 host | `[mtmd] estimated worst-case memory usage of mmproj is 873.10 MiB`, split `adding 848.18 MiB … for device MTL0` / `24.93 MiB … for device CPU` |
+| Geometry | 262144 / 64 / 65 / 16 | `n_ctx_train = 262144`; `n_layer = 64`; `-ngl 65` and `-ngl 99` project identically (and #191 calls it "all 65/65 layers"); `16 layers` in the KV line, corroborated by the recurrent-layer trace keeping 0,1,2 / skipping 3 / keeping 4,5,6 / skipping 7 — one full-attention layer in four, which is why a 27B model's cache costs what a 4B full-attention model's would |
+
+`TestEveryConstantMatchesItsMeasurement` is the table form of this: one row per
+constant, its measured value, and the log line it came from.
+
+**KV-cache precision is a quality/memory trade-off.** Previously undocumented,
+now explicit: the cache type is a first-class knob, not a detail.
+
+| | KV at 262144 | Throughput (#191, same hardware/model/prompt) | Notes |
+| --- | --- | --- | --- |
+| `f16` | 16384.00 MiB | pp 343.5 / tg 31.8 t/s | lossless baseline |
+| `q8_0` | 8704.00 MiB | pp 342.0 / tg 31.5 t/s | indistinguishable from f16 in speed; costs 11.5 MiB of extra device compute |
+| `q4_0` | 4608.00 MiB | pp 342.6 / tg 31.3 t/s | the fork's own `BONSAI_KV4=1` option; ~3.5× smaller. Upstream recommends a per-model mean-centering bias (`--kv-mean-center`, `llama-kv-mean-center`) for K-cache quality, and #85 records that no bias file ships for this model |
+| `q5_0` | — | **pp 11.4 / tg 4.0 t/s** | **excluded**: ~8× slower on long-context decode (#191, reproduced after a reboot; suspected CUDA-graph cache-key churn) and no capacity gain over q4_0 |
+| `q4_1`, `iq4_nl`, `q5_1` | — | unmeasured | **excluded** as unverified on this model |
+
+**Limitations.** The figures are TEXT-ONLY — c0wrk always passes `--mmproj`, so
+a gate must add the projector reserve (849 + 25 MiB) to the projections. And
+they were all measured on **Metal**: the weight/cache/state/compute terms are
+properties of the model and runtime, but the device/host *split* is a property
+of the backend's repack support, so PTQ1_0 — which `packingFor` selects only for
+Vulkan — was measured on a backend c0wrk does not pair it with. CUDA, ROCm,
+Vulkan and CPU residency is unmeasured.
+
+**Load verification per backend (`-ctk`/`-ctv` quantized with `-fa on`).**
+KNOWN_ISSUES warns that CUDA builds may need `-DGGML_CUDA_FA_ALL_QUANTS=ON` for
+quantized KV beside flash attention; whether each pinned archive actually loads
+that shape is therefore recorded as evidence, not assumed:
+
+| Backend (pinned archive) | Quantized KV + `-fa on` loads? | Evidence |
+| --- | --- | --- |
+| `metal` (`bin-macos-arm64`) | **yes** — q4_0 verified end to end | 2026-09-26: SHA256-verified archive of pin `prism-b10735-842b188`, full load with `-ngl 99 -fa on -ctk q4_0 -ctv q4_0`, all 65/65 layers offloaded, `llama_kv_cache: size = 144.00 MiB (8192 cells, 16 layers …), K (q4_0): 72.00 MiB, V (q4_0): 72.00 MiB`, `/v1/models` answered ready |
+| `cpu` (`bin-ubuntu-x64`, `bin-win-cpu-x64`, `bin-macos-x64`) | **unverified — no host** | the archives were downloaded and SHA256-verified against the pins on 2026-09-26, but the capture machine (darwin/arm64) had no container runtime, VM or Windows host to execute them on; a load failure on such a backend surfaces through the bounded-tail failure message, and the fit contract's own abort through `Status.FitWarning` |
+| `cuda-12.4`/`cuda-12.8`/`cuda-13.3`, `rocm`, `vulkan` (Linux/Windows archives) | **unverified — no host, no GPU** | same as above, plus the CUDA/Vulkan inventories themselves require the matching GPUs; `bin-linux-cuda-12.8-x64` was SHA256-verified byte-exact (168052249 bytes) against both the pin table and the GitHub REST asset `digest` |
+
+No backend is pinned to `f16` on this table's say-so: `unverified` is not
+`failed`, and the planner escalates precision on fit arithmetic alone (ADR-066
+D3). What the record buys instead is honesty about which claim rests on a
+measurement and which on the fork's documentation — and a failure on an
+unverified backend is *visible* (state `error` + the server's own complaint in
+the tail) rather than silent.
+
+`WeightsMiB` / `MMProjMiB` (the on-disk sizes) are **derived from `registry.go`
+at call time** and never re-typed in `memory.go`;
+`TestNoRegistryByteSizeIsRetypedInMemoryGo` scans the source for every registry
+byte count to prove it, so a pin bump cannot leave a stale figure behind. Note
+that the resident weights are ~11–12 MiB *below* the file size — GGUF metadata
+and the tensor-info table are never loaded into a compute buffer — which is why
+the projections use the measured residency and not the file size.
+
+### Memory plan
+
+`core/embeddedllm/plan.go` is the decision layer between the two measured halves
+above. [Device memory topology probe](#device-memory-topology-probe) answers
+*how much memory does this machine have*, [Memory model](#memory-model) answers
+*how much does this launch need*, and the planner turns the pair into a launch
+shape — the `-ngl` / `-c` / `-ctk` / `-np` / `-fit` values, the two expected
+footprints and a `Notes` trail. Before it existed those two values came out of
+`resolve.go` as a **constant** `-ngl` per platform/backend and a five-step RAM
+ladder for `-c`, neither of which was a memory decision. See
+[ADR-067](../decisions/067-memory-aware-embedded-llm-provisioning.md).
+
+```
+Plan(topology, profile, tuning, backend, family)  →  (MemoryPlan, error)   [PURE]
+│
+├─ 1. packing      tuning.Packing, else packingFor(backend, family, fit, host).
+│                  Refused with ErrMemoryNotMeasured if the profile has no
+│                  measured residency for it — never projected from a file size.
+│
+├─ 2. budgets      device = topology.DeviceBudgetMiB() − splitAllowance(family)
+│                  host   = topology.HostBudgetMiB(), or RAM − HostReserveGiB
+│                           when that override is set (it REPLACES the derived
+│                           reserve, it does not stack on it)
+│
+│     splitAllowance is POLICY, not measurement: memory.go's device/host split
+│     was measured on Metal alone, so an unmeasured family pays 1024 MiB and an
+│     unrecognized one 2048 MiB. Apple Silicon — the measured family — pays 0.
+│
+├─ 3. FIT EXCLUSIVITY  (see the rule below)  →  fit bool, layers *int
+│
+├─ 4. target ctx   tuning.Context exact  → that (validated 1..MaxContext)
+│                  fit                    → FitMinContext (the floor fit must
+│                                            reach; a fit run that cannot is
+│                                            aborted by the runtime)
+│                  otherwise              → contextSizeFor(topology.HostRAMGiB)
+│
+├─ 5. ADAPTIVE KV  Auto: try f16; if the target context does not fit the device
+│                  budget, escalate q8_0, then q4_0. Every escalation is noted.
+│                  Pinned: honoured as given, never escalated; a precision
+│                  outside the closed set is refused (ErrKVTypeUnsupported
+│                  wrapped in ErrTuningInvalid — both are in the chain).
+│                  None fits → this PASS is infeasible, and Plan's degradation
+│                  ladder (below) tries the next shape before anyone refuses.
+│
+├─ 6. footprints   profile.ProjectDeviceMiB / ProjectHostMiB
+│                  + MMProjReserveDeviceMiB / MMProjReserveHostMiB (the
+│                  projections are text-only; c0wrk always passes --mmproj)
+│                  −nkvo moves the whole KV cache device → host
+│                  a PARTIAL layer count yields BOUNDS, not measurements
+│
+└─ 7. Notes        one entry per non-default decision, in operator-facing prose
+```
+
+**Fit exclusivity — exactly one decider.** The pinned fork ships its own sizing
+pass, `--fit`, which adjusts *unset* arguments so the launch fits the device
+memory it can see. It is ON by default and it sizes both `-ngl` and `-c`, which
+makes it a direct competitor with this planner. The fork settles the competition
+by **refusing** the ambiguous shape: `common/fit.cpp` throws at `:183` and
+`:462`, `:466`, `:472`, `:477`, `:480`, `:483` whenever `--fit` is asked to size
+an argument the caller already pinned. Confirmed empirically against the pinned
+runtime: **`-ngl 99` beside `--fit on` aborts the launch** rather than degrading
+it. The healthy fit pass was re-captured end to end on 2026-09-26 (pin
+`prism-b10735-842b188`, darwin-arm64, `-fit on -fitc 65536 -np 1 -fa on`, no
+`-ngl`, no `-c`): `common_init_: fitting params to device memory …` →
+`common_params_fit_impl: projected to use 24450 MiB of device memory vs. 109950
+MiB of free device memory` → `will leave 85499 >= 1872 MiB of free device
+memory, no changes needed` → `common_fit_params: successfully fit params to free
+device memory` — the 24450 MiB projection is the same figure ADR-066 cites, and
+on a pool with headroom fit settles at the model's training maximum
+(`n_ctx = 262144`), which `-fitc` bounds only from *below*. The abort spelling
+of that last line is what the supervision tail scanner looks for (see
+Invariants). So which of the two decides is a pure function of the override
+vocabulary:
+
+| `Offload` | `Devices` | `SplitMode` | `-fit` | `-ngl` | `-c` | who sizes |
+| --- | --- | --- | --- | --- | --- | --- |
+| Auto | none | Auto | `on` | **omitted** | `0` | the runtime, held to `-fitc` |
+| any explicit | — | — | `off` | passed | **computed here** | the planner, from `ModelMemoryProfile` |
+| Auto | any | — | `off` | passed | **computed here** | naming the devices *is* pinning the offload |
+| Auto | none | any | `off` | passed | **computed here** | the same, for the split |
+
+`MemoryPlan.Layers` is a `*int` because `nil` (*omit the flag*) is materially
+different from a pointer to `0` (`-ngl 0`, a real choice). `FitArg()` renders the
+literal `-fit` value and `EmitsLayers()` the omission, so the rule is testable
+exactly as it is stated. A `FitEnabled` override never breaks exclusivity:
+`false` forces the second row, and `true` beside an explicit offload **loses** to
+the rule and is recorded in `Notes` rather than silently dropped or spawned into
+a `fit.cpp` throw. An exact `Context` does *not* force fit off — it is not an
+offload override, and `--fit` adjusts only *unset* arguments, so a pinned `-c`
+survives beside `--fit on`.
+
+**Two defaults that diverge from the runtime's own, both measurement-forced.**
+
+| | c0wrk | runtime default | why |
+| --- | --- | --- | --- |
+| `-fitc` | **65536** | 4096 | the pinned model's issue tracker reports empty/truncated answers as *the most common complaint*, and the documented workaround is `-n 16384` with `-c 65536`. A 4096 floor reproduces that failure on every machine tight enough for fit to shrink — a server that loads, answers and returns nothing useful, which is worse than a refusal because nothing reports it. 65536 also equals the tier `contextSizeFor` grants a ≤71 GiB machine, so the two paths stop disagreeing about "usable" |
+| `-np` | **1** | `-1` (auto) | measured: `-np 4` inflates fit's own projection from **24450 to 77297 MiB** (`n_streams` becomes 4 when `kv_unified` is false), and `-np` **splits** `-c` across slots (`-c 8192 -np 4` → `n_ctx_slot 2048`). Auto would therefore both triple the number fit decides against and quietly quarter the context the plan verified. c0wrk serves one agent loop over one loopback socket, one request at a time, so a single slot is not a restriction — and it is the shape every `memory.go` figure was measured in |
+
+**A shape that does not fit is DEGRADED before it is refused.** `planShape` is
+the single pass; `Plan` wraps it in a bounded ladder of relaxations, least-lossy
+first, and every rung re-runs the KV precision ladder rather than replacing it:
+
+| # | rung | what it trades | flag(s) |
+| --- | --- | --- | --- |
+| 1 | spill the KV cache and the projector's reserve to host RAM | attention bandwidth; the weights stay on the accelerator | `-nkvo`, `--no-mmproj-offload` |
+| 2 | reduce the context to `DefaultFitMinContext` | reach — never below 65536, see that constant | `-fitc`, or an exact `-c` off the fit path |
+| 3 | both | — | — |
+| 4 | host residency | the accelerator, entirely | `-ngl 0` (which also turns fit off) |
+| 5 | host residency with the reduced context | — | — |
+
+A **partial** offload is deliberately NOT a rung: `memory.go` has no measurement
+for one (`footprint` can only bound it), and an unmeasured device/host split is a
+guess a capacity gate must not make. A slow launch that loads beats a fast plan
+nobody could verify. An operator who pinned the offload (`explicitOffloadShape`)
+gets no ladder at all — honouring the pin and reporting the refusal beats quietly
+launching a different shape than the one asked for — but the refusal is still the
+typed both-pools one, and it prices only the residency they pinned. Every rung
+that fires is recorded in `Notes`.
+
+The RAM-only path (`Topology == nil`) still does **not** delegate to fit — a
+fit-sized plan has no concrete context, and the resolved context is what the
+manifest records and what becomes the `llm.models` `context_window` override
+deterministically at config-read time, when the server is not running and cannot
+be asked. It reports the DERIVED budgets it was gated on rather than two zeroes,
+so a reader can tell a plan that was priced from one that was not.
+
+**The packing loop closes here too.** `MachineProfile.FitsPQ2_0` exists so that
+ADR-065 D2's *"PTQ1_0 whenever memory is short"* can be a measurement rather than
+a heuristic, and this planner is what produces it: `planMemory` plans the derived
+packing, and if the measured budgets refuse it, it re-decides with
+`FitInsufficient` and plans **once** more. A second refusal is final — PTQ1_0 is
+the smallest packing this model ships. An explicit `Tuning.Packing`
+short-circuits the loop and is recorded as `PackingReasonOperatorOverride`.
+
+### The combined memory gate
+
+The gate that replaced ADR-065 D6's flat `MinRAMGiB = 16.0` refusal. D6 measured
+ONE pool and was wrong in both directions at once, which is why the replacement
+is not a different threshold but a different *measurement*:
+
+```
+memoryGate(ResolveInput, effectiveBackend, gpuFamily, ModelMemoryProfile)   [PURE]
+│
+├─ 1. budgets   gateBudgetsFor — WITH a topology: its own two budgets (reserve
+│               and unified clamp already applied) minus splitAllowanceMiB(family).
+│               WITHOUT one: host = RAM − DefaultHostReserveGiB(RAM), and the
+│               accelerator axis is classified STATICALLY:
+│                 backend not gpuAccelerated          → deviceAbsent
+│                 backendHasIndependentVRAM            → deviceUnreadable
+│                 otherwise (metal / vulkan / unsure)  → deviceKnown, unified:
+│                                                        the pool IS the host budget
+│
+├─ 2. context   the operator's exact -c, else the -fitc override, else
+│               DefaultFitMinContext — the smallest context c0wrk will serve, so
+│               the question is "can this machine serve the model AT ALL"
+│
+├─ 3. space     packings = the machine's own decision (+ PTQ1_0 when that is not
+│               already it), mirroring planMemory's single bounded downgrade so
+│               the gate never admits a machine on a packing the planner cannot
+│               reach. Shapes = both residency extremes, minus the offloaded one
+│               when there is nothing to offload to.
+│
+└─ 4. search    closestAttempt walks (packing × residency × precision) least-lossy
+                first and returns the first shape whose overflow is 0, or the one
+                that overflowed by the least. Any fit → ADMIT; none → refuse with
+                an *InsufficientMemoryError built from the closest attempt.
+```
+
+`overflow` is where the unified awareness lives: on a unified machine the two
+footprints are **additive** against one pool (and the device term is *also*
+checked, because the topology's margin and the family's split allowance live in
+the device budget alone); on a discrete machine each is checked against its own.
+
+**The three device-axis states have three different consequences**, which is why
+the axis is an enum and not a bool:
+
+| state | when | consequence |
+| --- | --- | --- |
+| `deviceAbsent` | the runtime reported no devices, or the backend is not accelerated (CPU build, Intel Mac) | only the host-resident shape is priced; a host pool too small for it is a **refusal** |
+| `deviceKnown` | a topology was probed, or the accelerator's pool IS host RAM (Metal, and Vulkan where `classifyUnified` settles "unsure" as unified) | both pools are priced and both are checked |
+| `deviceUnreadable` | a backend with memory **independent** of host RAM (discrete CUDA/ROCm on amd64) and nothing to ask yet | the device axis is **not** gated; the host axis is priced against the device-resident host need (the measured 566–623 MiB of spill + one CPU compute buffer + the projector), and the degradation is recorded in `Notes` |
+
+`deviceUnreadable` is the state that fixes the original bug: it is what a FIRST
+install on an 8 GiB laptop with a big card looks like, because `ProbeDevices`
+needs a provisioned runtime and there is none yet. Refusing there reproduces D6
+exactly. It is safe because the host figure it gates against is a measurement of
+the device-resident shape, not a guess — and because the install re-plans against
+the staged runtime's real topology before the multi-gigabyte weights are fetched.
+`backendHasIndependentVRAM` deliberately excludes Vulkan: it serves discrete cards
+and iGPUs alike, and `classifyUnified`'s rule 6 already settles "unsure" as
+unified, because misclassifying a discrete card only shrinks its budget while
+misclassifying a unified pool invents memory.
+
+**Ordering.** The gate is the first thing `resolveWith` does after resolving the
+effective backend, the GPU family and the compatibility guards, and before
+`ArtifactSet`. `Install` calls `plan` before `Layout.EnsureRoots`, so a refused
+machine plans no assets, creates no directory, fetches no byte and registers no
+provider — the invariant `TestInstallMemoryGateRefusesBeforeAnyDownload` asserts.
+
+**Two callers, one gate.** `Resolve` runs it internally; `CheckMemoryBudget`
+exposes the same function so `InstallEmbeddedLLM` can refuse *synchronously* — a
+rejection that arrives as the answer to the user's click rather than as a toast
+ten minutes into a download. Exposing it rather than re-deriving a threshold in
+the backend is what keeps the two from drifting apart.
+
 ### Install (explicit user click only)
 
 ```
 Installer.Install(ctx, InstallOptions)   [runs in background; the RPC returns immediately]
 ├─ hardware probe      → RAM is a hard input: ErrRAMUnknown refuses instead of guessing
-├─ resolve             → Resolve(platform, backend, ramGiB). Its 16 GiB RAM gate is
-│                        the FIRST check, so an undersized machine plans no assets,
-│                        creates no directory and downloads nothing (ErrInsufficientRAM)
+├─ resolve             → Resolve(ResolveInput). The combined memory gate is its
+│                        FIRST check, so a machine that cannot hold the model plans
+│                        no assets, creates no directory and downloads nothing
+│                        (ErrInsufficientMemory, naming both pools). A repair or a
+│                        reinstall still has a provisioned runtime to ask, so its
+│                        gate runs on the MEASURED topology; a first install has
+│                        none and runs on the derived budgets
 ├─ ensure roots        → <agentDir>/runtimes, <agentDir>/models/bonsai-2-27b,
 │                        <agentDir>/runtimes/downloads
 ├─ disk guard          → RequiredFreeBytes(TotalBytes(set)) measured at the model root,
@@ -693,10 +1658,25 @@ Installer.Install(ctx, InstallOptions)   [runs in background; the RPC returns im
 ├─ promote             → retire the previous tree to .old, rename staging into place,
 │                        delete .old (rollback on a failed rename). The old tree dies
 │                        only after the new one is secured AND proven to run
+├─ DEVICE PROBE        → ProbeDevices on the staged, signed, smoke-tested runtime — the
+│                        last moment a refinement is still cheap, because the
+│                        multi-gigabyte weights have NOT been fetched yet. The
+│                        authoritative topology drives the generation-aware packing rule
+│                        (so the weights about to be downloaded are the right ones), the
+│                        device-dependent guards and the memory gate. Fail-soft: no
+│                        answer leaves the plan on its statically decidable guards. A
+│                        guard that wants a DIFFERENT RUNTIME is past its moment — the
+│                        archive is staged and signed — so it is recorded as guidance
+│                        (Applied=false) rather than silently dropped
 ├─ WEIGHTS phase       → for model, mmproj: download straight to their final path (the
 │                        artifact IS the file, so there is nothing to extract)
 │                        → SHA256 verify
 ├─ write manifest.json                                  [atomically, and only now]
+│                        records packing/backend/checksums/port/model_file, the
+│                        degradation record (packing_reason, gpu_family, guards) AND the
+│                        topology + plan pair a load launches from — one coherent pair,
+│                        so a topology is recorded only when it actually informed the
+│                        plan beside it
 └─ ConfigSink.ApplyInstalled(InstallState)
      → embedded_llm.* + the auto-unload defaults (unset knobs only)
      → Config.SyncEmbeddedLLMProvider(state.ContextSize) generates
@@ -732,8 +1712,8 @@ Installer.Remove(ctx)
 │      enabled model. NOT to "": validate() rejects an empty default_model, so
 │      clearing it would break the next load and the next settings save. Empty
 │      is correct only when the embedded model was the only one enabled
-│    → reset embedded_llm.* to zero while PRESERVING the auto_unload pointers
-│      (an idle budget is an operator setting, not install state)
+│    → reset embedded_llm.* to zero while PRESERVING the auto_unload and
+│      tuning sub-sections (both are operator settings, not install state)
 │    → Config.SyncEmbeddedLLMProvider(0) drops llm.openai_compatible.embedded,
 │      so the composite id stops resolving → persist
 └─ deletion errors are joined and returned AFTER the config was cleared
@@ -778,12 +1758,36 @@ Load:  single-instance gate (ctx-aware; a Load against a loaded model is a no-op
        → the persisted port is re-checked and walked upward to the first
          bindable one (EnsurePort → SearchFreePort); a move is written back to
          embedded_llm.port and the provider record is regenerated from it
-       → LaunchSpec from the manifest + the pure policy in resolve.go, then
-         Validate: loopback host only, usable port, -c inside the resolved tiers
+       → LaunchSpec: the IDENTITY half (binary, weights, projector, loopback
+         socket, --image-max-tokens) always from the manifest + the layout, and
+         the SHAPE half from Manifest.Plan through ApplyMemoryPlan — or, for a
+         pre-plan manifest, from the pure policy in resolve.go. A recorded plan
+         is then OPTIONALLY refined by a bounded load-time device probe
+         (Server.ProbeDevices, LoadProbeTimeout), which FAILS SOFT: an unwired
+         probe, a wedged or absent driver query, an unreadable memory profile
+         and a re-plan that now refuses all launch the recorded plan unchanged
+         and log at Debug. A re-plan pins the packing to the manifest's, since
+         the bytes on disk are the only ones it may price.
+         Then Validate: loopback host only, usable port, the fit-exclusivity
+         rule, a context inside 0..MaxContext (0 only under fit), the KV
+         allow-list, -np >= 1
        → State loading, then spawn
-            llama-server -m <gguf> --host 127.0.0.1 --port <effective> -ngl N
-                         -fa on -c CTX --temp 1.0 --top-p 0.95 --top-k 20 --jinja
-                         --no-webui [--mmproj <file>] [--image-max-tokens N]
+            llama-server -m <gguf> --host 127.0.0.1 --port <effective>
+                         -fit <on|off> [-fitt N] [-fitc N]
+                         [-ngl <all|0|N>] [-sm <mode>] [-dev <a,b>]
+                         -fa on -c CTX [-ctk T -ctv T] [-nkvo] -np N
+                         [--cache-ram N]
+                         --temp 1.0 --top-p 0.95 --top-k 20 --jinja
+                         --no-ui [--mmproj <file>] [--no-mmproj-offload]
+                         [--image-max-tokens N]
+         (bracketed flags are omitted. A manifest that recorded a PLAN renders
+         every value that plan carries — `-fit on` with `-ngl` omitted, or
+         `-fit off` with an explicit `-ngl`, plus the resolved KV precision, the
+         cache knobs, `-dev` and `-sm` where the plan named them. A PRE-PLAN
+         manifest renders `-fit off` with an explicit `-ngl`, `-np 1` and the
+         recorded `-c`, and leaves the KV precision, the cache knobs, `-dev` and
+         `-sm` to the runtime's defaults. `-np` is rendered on every command
+         line either way — see DefaultParallel)
          with the platform library path (LD_LIBRARY_PATH / DYLD_LIBRARY_PATH /
          PATH) headed by the binary's own directory, that directory as cwd, and
          the context DETACHED from the caller's — the server outlives the Load
@@ -795,6 +1799,14 @@ Load:  single-instance gate (ctx-aware; a Load against a loaded model is a no-op
          weights are in memory
        → on ready: State loaded AND lastActivity := now — the load's own duration
          never eats the idle budget
+       → CONTEXT READBACK: GET /props → default_generation_settings.n_ctx (the
+         PER-SLOT figure) × total_slots = the effective total. Persisted to the
+         manifest and, through Server.PersistContext, to the tier-1
+         llm.models."Bonsai 2 27B".context_window override — the one correction
+         that override can ever receive, because a tier-1 value shadows the
+         tier-1.5 lazy probe. Fail-soft: no answer keeps the recorded value, and
+         a value that did not move writes nothing. Never fails a load that is
+         already serving
        → on any failure: the half-started process is discarded as abandoned (so
          its exit is not reported a second time as a crash) and the state becomes
          error, carrying the tail
@@ -968,13 +1980,43 @@ installing → one row PER COMPONENT, in install order (runtime, cudart when thi
 installed  → the INFORMATIONAL install record: the packing the resolver
             actually chose (PQ2_0 | PTQ1_0), the EFFECTIVE backend, the
             RAM-tiered context, the persisted port and the derived base URL +
-            composite model id. Below it Load (or Unload while resident, with
-            the blocking load's own spinner), Remove behind a confirmation
-            dialog, and the auto-unload toggle with its minutes field
-            (default 60; committed on blur/Enter; an out-of-range value reverts
-            locally instead of paying a round trip for a guaranteed refusal).
-            While loaded with the idle timer armed, the remaining budget is
-            shown.
+            composite model id, plus the MEASURED topology (the probed devices
+            with their free/total memory and the unified-memory flag; an
+            unprobed machine says so instead of implying CPU-only) and the
+            EFFECTIVE plan as one compact line (packing · KV · context ·
+            offload · fit · slots · expected device/host footprint) with the
+            planner's `Notes` trail verbatim — '—' wherever nothing was
+            measured or recorded. When the last failed launch tripped the fit
+            contract, its `fit_warning` sentence renders in the warning colour
+            inside the record (absent on a healthy status; a ready
+            launch clears it). Below it Load (or Unload while resident,
+            with the blocking load's own spinner), Remove behind a
+            confirmation dialog, and the auto-unload toggle with its minutes
+            field (default 60; committed on blur/Enter; an out-of-range value
+            reverts locally instead of paying a round trip for a guaranteed
+            refusal). While loaded with the idle timer armed, the remaining
+            budget is shown. Below those sits the memory-plan TUNING block
+            (the `useEmbeddedLLMTuning` hook behind two fully controlled
+            leaves): three PRIMARY controls — Context (Auto | Exact + a tokens
+            field), KV-cache precision (Auto | f16 | q8_0 | q4_0) and layer
+            offload (Auto | All | CPU | N layers + a layers field) — plus a
+            COLLAPSED "Advanced tuning" VariantSection carrying the rest (fit
+            on/off, fit target MiB, fit floor tokens, KV-on-device, projector-
+            on-device, packing, parallel slots, prompt-cache MiB, host reserve
+            GiB; every numeric knob shows "Auto" while unset and gets an Auto
+            button that clears the override back to unset once set). Every
+            control is a Combobox / Toggle / NumberField (a native <select> is
+            banned in settings and there is no slider primitive); the drafts
+            and the commit flow live in the hook, local validation refuses an
+            out-of-range value WITHOUT a round trip, a value the backend
+            reports as 0 / out-of-range falls back to the knob's documented
+            default instead of painting an uncommittable entry, and a commit
+            runs `SetEmbeddedLLMTuning` (a PARTIAL patch naming only the
+            changed knob — absent keeps, present replaces, Auto resets to
+            unset) → busy/error → a re-read of BOTH the tuning and the status
+            in success AND failure. A write NEVER restarts a resident model:
+            the status's `reload_required` renders a pending-changes hint, and
+            Unload + Load is the explicit apply path.
 
 transitions → every embedded_llm:state event re-reads the authoritative
             snapshot instead of patching it (the payload carries no
@@ -1058,17 +2100,69 @@ error      → an explicit hint carrying the backend's message (truncated in the
 
 **Hardware probe and resolution:**
 
-- Total RAM is a hard input: when it cannot be read the probe returns `ErrRAMUnknown` rather than guessing, because the 16 GiB gate depends on it.
-- The install is refused below 16 GiB with the typed `ErrInsufficientRAM`, and that refusal is the FIRST check in `Resolve` — an undersized machine plans no assets and downloads nothing. There is deliberately no reduced-experience band between 8 and 16 GiB.
-- `Resolve` is a pure function of `(platform, backend, ramGiB)`: no I/O, no probing, no clock. That is what keeps the whole platform × backend × RAM matrix table-testable.
+- Total RAM is a hard input: when it cannot be read the probe returns `ErrRAMUnknown` rather than guessing, and `resolveWith` refuses a non-positive total itself — because the gate derives its HOST budget from that figure on *every* path, measured topology or not. An unreadable **device** budget is the opposite case and is deliberately not fatal; see the memory-gate invariants below.
+- **There is no RAM threshold.** ADR-065 D6's flat 16 GiB floor is gone, and nothing replaced it with another round number: viability is wherever the smallest shape `memory.go` has measured stops fitting, which is a fact about the model and both of the machine's memory pools rather than a constant anyone has to remember to revisit. `MinRAMGiB` no longer exists.
+- `Resolve` is a pure function of its `ResolveInput`: no I/O, no probing, no clock. That is what keeps the whole platform × backend × RAM × topology × tuning matrix table-testable.
 - The accelerator ladder is fixed (`nvidia-smi` → `nvcc` → ROCm tools → `vulkaninfo` → Metal on darwin/arm64 → CPU) and first hit wins. Every external probe is bounded by a 2 s budget, so a wedged driver cannot stall installation; an absent probe helper is a normal outcome, not an error.
 - A detected CUDA version older than the oldest pinned asset tag is not a hit: the ladder keeps looking instead of provisioning an archive the driver cannot load.
 - Resolution degrades an unsupported backend rather than refusing it, and a CUDA tag with no archive for the platform clamps DOWN to the nearest older pinned tag — never up, because a binary built against a newer toolkit will not load on an older driver.
-- `PQ2_0` is the default packing; `PTQ1_0` is selected for Vulkan alone, the one backend without `PQ2_0` kernels. Packing is independent of RAM.
+- `PQ2_0` is the default packing, and `PTQ1_0` is selected only when one of four documented triggers fires — Vulkan (the one backend with no `PQ2_0` kernels), an AVX-512 host on a pin that predates `#245`, a **measured** device budget `PQ2_0` does not fit, or an Ada/L4-class GPU (the generations the model card measures as `PTQ1_0`-faster for decode). The decision is one pure table (`decidePacking`) with a documented precedence, and every outcome carries a typed `PackingReason`.
+- **Installed RAM is not a packing input.** The old claim that "packing is independent of RAM" was half right and has been replaced: RAM *alone* still never downgrades the packing — the constraint that `PQ2_0` can exceed is the accelerator budget, not system memory, and it downgrades only when that budget was actually measured (`FitInsufficient`) — the verdict ADR-066's gate produces, which is what replaced ADR-065 D2's unmeasured *"whenever memory is short"* clause rather than reinstating it. An unmeasured budget (`FitUnknown`, the zero value) never downgrades anything, which is why `BudgetFit` and `CPUFeature` are tri-state: a bool's zero value would assert a fact nobody measured.
+- The packing decision is **pin-aware**: the AVX-512 trigger compares the pinned fork build against the first build proven to contain `#245`, and an unproven or unparseable build number is treated as unfixed — the conservative direction, because the failure it guards is a segfault at load.
+
+**Backend compatibility guards:**
+
+- Every guard cites the upstream report that justifies it (`GuardDecision.Issue`, `<repo>#<number>`) and carries a typed `GuardReason`. A guard invented from a hunch is a bug: the table is a transcription of the pinned model's `KNOWN_ISSUES.md`, not a theory about hardware.
+- `CompatibilityGuards(backend, gpuFamily, platform)` is a **pure** table lookup: no I/O, no clock, no failure, and a machine nothing is documented against gets no decisions at all. That is what makes the whole backend × family × platform matrix table-testable.
+- Severity is **derived** from the reason, never hand-set per guard, and an unranked reason maps to `critical` — an unclassified failure must never render as the mildest thing on the list.
+- A guard substitutes a backend only when the registry **pins** that backend for the platform. Otherwise the decision is recorded unapplied with the reason in its guidance: converting an upstream failure into c0wrk's own `ErrArtifactNotPinned` would be strictly worse than the failure.
+- **No guard changes behavior without recording a reason, and no decision is dropped because it could not be applied.** Every decision — applied or not — travels `Resolution.Guards` → `InstallReport.Guards` → `Manifest.guards` → `EmbeddedLLMStatus.guards`, so a degraded install is visible in Settings after the installing process has exited. `Applied` is set by the consumer, never by the table: the table states what *should* happen, `Applied` records what *did*.
+- Guards are evaluated twice, because one install learns about the machine twice: the statically decidable half at plan time (before any byte is fetched), and the device-dependent half from a device probe — against a previously installed runtime when there is one (so a repair applies substitutions *before* downloading), otherwise against the freshly staged runtime, which is still early enough to change the weights but too late to change the runtime. A substitution discovered too late is recorded as guidance, never silently discarded.
+- The device probe that feeds a guard is **fail-soft**: no answer leaves the plan on its static guards. A compatibility guard refines a plan; it is never a precondition of one.
+- `GPUFamilyUnknown` fires no GPU-specific guard and pays the largest memory allowance. It means "nothing recognized", never "no accelerator" — so a classification miss degrades to the plan c0wrk would have made before the guards existed.
+- **Every pin bump re-reads `KNOWN_ISSUES.md` and the model card** and re-checks this table. A fixed upstream issue means a guard that should stop firing, and a stale guard is a needless degradation of a working machine.
 - The context size is always an explicit positive value drawn from the five RAM tiers. `Resolve` never emits `0` ("let the server choose") and never the model's full `262144`-token training context: both are memory-unaware and OOM a constrained machine once `-ngl` offloads the KV cache.
 - The tier comparison floors RAM to a whole GiB, matching the integer arithmetic the tiers were derived with, so a Linux machine reporting slightly under its nominal size lands in the tier its real capacity belongs to.
 - The vision projector is part of every resolved set, for every backend and packing.
 - The manifest and the informational Settings label record `Resolution.Backend` (the effective backend), never the raw probed value.
+
+**Device memory topology:**
+
+- Accelerator memory is always **detected**, never assumed from `GOOS`: unified pools exist on Apple Silicon, AMD APUs / Strix Halo, Intel iGPUs and Jetson-class CUDA SoCs alike, and `MemoryTopology.Unified` is the only authority on whether device memory and host RAM are the same bytes.
+- A unified pool is **never summed** with host RAM. The pool is the *largest* device (not the sum), and the device budget is `min(pool − margin, hostBudget)`, so on a unified machine the device budget can never exceed the machine's physical RAM. On the reference machine a naive `RAM + VRAM` sum claims 235 GiB where 128 GiB exist — a 1.84× overcount that a fit decision would act on.
+- An inconclusive classification resolves to **unified**: misclassifying a discrete card can only shrink its budget through the `min()`, while misclassifying a unified pool invents memory that does not exist.
+- The topology probe is **fail-soft in every direction**: a missing, hung, nonzero-exit, cancelled or unrecognized answer yields `ok = false` with a Debug log — never an error, and never a failed load. `ok = false` means *unknown*, not "no memory", and the caller treats the accelerator budget as `deviceUnreadable` — degrading the memory gate to the host pool and recording it in `Notes`, never refusing the machine for it.
+- The probe spawns only through the shared hardened path (`runProbeCommand`), so it inherits the `exec.LookPath` resolution, the 2 s `probeCommandTimeout` bound, the `probeWaitDelay` pipe deadline and `sysproc.HideConsole`: a wedged runtime cannot stall a load, even when its child leaves a grandchild holding stdout.
+- Every device the parser keeps is a strictly line-anchored match of one of the runtime's two own format strings. An output with nothing recognizable is a **failed probe**, never an empty inventory — while `Available devices:` with no entries, or `  (none)`, is an answered probe reporting no accelerator.
+- Entries that report no memory of their own (`Total == 0 && Free == 0`, measured as `BLAS: Accelerate`) are dropped — and the drop is counted and logged, never silent, so a machine whose only accelerator failed to report a size is distinguishable from one with no accelerator. Duplicate names collapse to the first, and the `CPU` row of the `-lv 4` parameter dump never enters the accelerator inventory — it is host RAM, used only as a Debug cross-check against the OS RAM probe.
+- Both budgets are non-negative, and the host budget is never reduced by a device footprint: on a unified machine the two numbers describe the same bytes from two sides and the clamp lives in the device budget alone, so adding them is meaningless by construction rather than by convention.
+- The topology is **model-agnostic** — it carries no weight, KV-cache or projector figure. The requirement side belongs to `memory.go` (`ProjectDeviceMiB` / `ProjectHostMiB` / `MMProjReserve*MiB`), and the 1536 MiB device margin deliberately excludes the projector reserve so a consumer that adds it does not count it twice.
+- Every topology carries a `ProbedAt` RFC 3339 stamp, because free memory and even the device list change with the driver and the build: a recorded topology is always attributable to an instant.
+
+**Memory planning:**
+
+- `Plan` is **pure**: no I/O, no probing, no clock, no package state. Every input arrives as a value, so the whole (topology × profile × tuning × backend × GPU family) matrix is table-testable with no runtime, no GPU and no filesystem. The guarantee is structural as well as behavioural — `plan.go` imports nothing that can touch a file, a socket, a subprocess or the clock, and a test fails the build if it ever does.
+- **Exactly one decider sizes the launch.** `Offload == Auto` ∧ no `Devices` ∧ `SplitMode == Auto` → `-fit on`, `-ngl` **omitted**, `-c` zero, and the runtime sizes both. Any one of those three pinned → `-fit off`, the values passed explicitly, and the context **computed from `ModelMemoryProfile`** because nothing else will. This is not a preference: the pinned fork's `common/fit.cpp` throws when `--fit` is asked to size an argument the caller already pinned (`-ngl 99` beside `--fit on` aborts the launch, confirmed empirically), so a plan that emitted both would not degrade — it would crash.
+- `MemoryPlan.Layers` is a `*int` and `nil` means **omit `-ngl`**, which is materially different from a pointer to `0` (`-ngl 0`). The distinction is what the exclusivity rule turns on, and it is why `EmitsLayers()` exists rather than a layer count that has to be reinterpreted.
+- A `FitEnabled` override never breaks exclusivity: `true` beside an explicit offload **loses** and is recorded in `Notes`. An exact `Context` does *not* force fit off — `--fit` adjusts only *unset* arguments, so a pinned `-c` survives beside `--fit on`.
+- `-fitc` is **never** the runtime's own 4096 default. `DefaultFitMinContext` is 65536, and a test fails if the two are ever equalized: a 4096 floor reproduces the pinned model's most-reported failure (empty/truncated answers, whose documented workaround is `-c 65536`) on every machine tight enough for fit to shrink.
+- `-np` is **1** unless overridden, never the runtime's `-1` (auto): auto was measured to inflate fit's projection 24450 → 77297 MiB and to split `-c` across slots, so a plan that verified a 65536-token budget under `-np 4` would be provisioning four 16384-token slots.
+- The KV ladder only ever descends in precision (`f16 → q8_0 → q4_0`), never below `q4_0`, and every escalation is recorded in `Notes`. A pinned precision is honoured as given and **never** escalated; a precision outside `memory.go`'s closed set is refused, never coerced to `f16`.
+- **The gate is combined and unified-aware, and it is the FIRST check** — before any asset is planned, and so before `Install` creates a directory or fetches a byte. It prices both pools the way the machine actually spends them: ONE shared pool when accelerator memory aliases host RAM (the two footprints are then *additive* against it, and checking each against its own budget would pass a launch needing twice the machine's memory), two independent budgets when it does not.
+- **An unreadable device budget degrades; it never refuses.** The accelerator axis is tri-state (`deviceAbsent` / `deviceKnown` / `deviceUnreadable`) for the same reason `BudgetFit` is: "no accelerator" and "an accelerator nobody measured" have OPPOSITE consequences, and a bool's zero value would assert one of them about every caller that measured nothing. Only a backend whose memory is *independent* of host RAM (a discrete CUDA or ROCm card on amd64 — `backendHasIndependentVRAM`) can be `deviceUnreadable`; a unified or absent accelerator is priced from the RAM probe, which measured both. That is why 8 GiB of RAM beside a CUDA card degrades while 8 GiB of Apple Silicon refuses.
+- **Whatever `Resolve` returns fits the budgets it reports** — on every path, measured or derived. Admitting a machine because *some* modelled shape fits is only half the job: the RAM-only planner's defaults are platform-derived (`-ngl 99` on Apple Silicon, an f16 cache), not memory-derived, so a 13 GiB unified machine was once admitted on a host-resident PTQ1_0 shape and then handed a device-resident PQ2_0 plan 145 MiB too large. Both defaults therefore yield to the gate's verdict wherever the operator pinned neither, and the gate's packing verdict is fed back as `FitsPQ2_0 = FitInsufficient` so `decidePacking`'s rule 3 selects the smaller weights *and* records why. `TestResolveNeverEmitsAPlanThatOverflowsItsOwnBudget` ratchets the property over the machine matrix, re-projecting each plan's footprint from `memory.go`'s own API so the assertion is not circular with the planner.
+- The gate's device axis follows **`layersFor`, not `backend.gpuAccelerated()`**, because the gate must price the shape the plan will actually emit. On Apple Silicon the arm64 archive IS the Metal build even when the effective backend came out as `cpu`, so a gate keyed on the backend label would see "no accelerator" there and price a host-resident shape nobody launches.
+- **A shape that does not fit is degraded before it is refused**, and the ladder is ordered least-lossy first: KV/projector spill to host → context down to `DefaultFitMinContext` → both → host residency → host residency with the reduced context. A **partial offload is never a rung**: `memory.go` has no measurement for one, and an unmeasured split is a guess a capacity gate must not make. Every rung that fires is recorded in `Notes`, so a degraded install states its degradation instead of leaving the user to infer it from a slower generation.
+- An operator-pinned offload shape gets **no ladder**: honouring the pin and reporting the refusal beats quietly launching a different shape than the one asked for. The refusal still prices only the residency that was pinned, so its numbers describe a launch somebody actually requested.
+- A refusal is an `*InsufficientMemoryError` and it **names both pools with both numbers** — need, available, the reserve the host figure was derived with, the installed total and the smallest shape priced — so a UI can show why instead of a bare "not enough memory". It unwraps to a chain (`ErrInsufficientMemory`, `ErrMemoryPlanInfeasible`, and the deprecated `ErrInsufficientRAM` *only* when the host pool overflowed), so a caller may match any of the three without parsing a message and a device-side refusal never reports itself as insufficient system RAM.
+- A shortfall under 1 GiB is rendered in **MiB**, because a refusal that reads "needs 8.0 GiB, 8.0 GiB available" tells the user nothing: the two figures differ by an amount one decimal place cannot show, and the difference is the whole reason for the refusal.
+- `normalizeTopology` derives the budgets of a topology that carries an inventory but none — the same reserve policy, device margin and unified clamp `buildTopology` uses — because `MemoryTopology`'s zero value means *unknown*, never "no memory", and reading a zero `DeviceBudgetBytes` beside a 24 GiB inventory literally would degrade a machine that has plenty. It never re-classifies `Unified` (topology.go names that field the only authority, and re-deriving it would need a platform key `Plan` does not take) and never derives a budget for a pool that fits inside the margin (that is a measurement, not an omission).
+- A tuning typo is `ErrTuningInvalid` and is checked *before* any feasibility arithmetic, so an operator is never told their machine is too small when what they typed was out of range.
+- `splitAllowanceMiB` is **policy, not measurement**, and is labelled as such in the source: it is the only pair of numbers in `plan.go` not derived from a cited figure. It exists because `memory.go`'s device/host split was measured on Metal alone. Apple Silicon pays 0, a recognized-but-unmeasured family 1024 MiB, an unrecognized part 2048 MiB — unknown means unknown in both directions.
+- A **partial** layer count is the one shape the measured profile does not cover, so its expected figures are conservative **bounds** (full-offload device, CPU-only host — both err towards refusal) and the plan says so in `Notes` instead of presenting an estimate as a measurement.
+- `Expected*MiB` always **include** the vision projector's reserve (849 device + 25 host measured), because `memory.go`'s two projections are text-only and c0wrk always passes `--mmproj`. A consumer that adds the reserve again counts it twice.
+- `Notes` explains **every** non-default decision and is surfaced in the UI verbatim, so each entry is a sentence an operator can act on and none is a debug dump.
+- `Tuning`'s zero value is the **all-Auto** plan and every field distinguishes *unset* from *set to the default value*. A field whose zero already meant "chosen" would make `-ngl 0` indistinguishable from "no opinion about `-ngl`", which is the distinction the exclusivity rule reads.
 
 **Supply chain (ASI04):**
 
@@ -1078,7 +2172,19 @@ error      → an explicit hint carrying the backend's message (truncated in the
 - A `(platform, backend, packing)` combination the pin does not cover fails closed with `ErrArtifactNotPinned` — never a neighbouring platform's or backend's bytes. The pinned release has **no** `windows-amd64` + `cuda-12.8` archive (and no matching `cudart`) although linux does ship `bin-linux-cuda-12.8-x64`; the registry refuses that pair and `Resolve` clamps the CUDA tag down to a pinned one. `windows-arm64` is out of scope entirely (D9), so it is not even a supported platform key.
 - Every downloaded byte is SHA256-verified before use, **fail-closed**: an empty or missing checksum for the platform refuses the install rather than skipping verification, and a mismatch deletes the partial file and returns an error. Verified bytes are never accepted from an unverified path.
 - `manifest.json` is written only after every component has been verified; a failed verification leaves no manifest and registers no provider.
-- The runtime is a pinned fork release (`prism-b10709-9a9394a`), never upstream llama.cpp: stock rejects `PQ2_0`/`PTQ1_0` and silently produces garbage on `Q2_0`.
+- The runtime is a pinned fork release (`prism-b10735-842b188`), never upstream llama.cpp: stock rejects `PQ2_0`/`PTQ1_0` and silently produces garbage on `Q2_0`.
+
+> **Pin bump 2026-09-25 — `prism-b10709-9a9394a` → `prism-b10735-842b188`.**
+>
+> [ADR-065](../decisions/065-embedded-llm-runtime.md) D11 records the pin as `prism-b10709-9a9394a`. Accepted ADRs are immutable (`META.md`, "How to update" rule 5), so the **current** value lives here and in `registry.go` — D11's literal tag is now historical and must not be read as the pin. Read D11 for the *policy* (no upstream version queries, no auto-update, hand bump after a CVE review, digests from the GitHub REST per-asset `digest` field) and this note for the *value*.
+>
+> **Why it moved.** Five correctness fixes landed 2026-09-21/23, *after* `b10709` was published (2026-09-18), so the previous pin was known-broken on whole machine classes: `#245` `PQ2_0` segfaulted on AVX-512 hosts (Zen 4/5, Strix Halo — even with every layer on the GPU), `#238` `PQ2_0` on Vulkan silently ran on the CPU at <2 tok/s and `PTQ1_0` was slow on Intel Xe2, `#206` had no fast x86 `PQ2_0` kernels, `#196` left the Metal tensor API disabled on the newest Apple chips, and `#205` refused MTP. A resolver that computes a perfect plan for a runtime that segfaults or silently runs on the CPU is worthless, so the pin is a correctness surface, not only a supply-chain one.
+>
+> **CVE review of the 26-commit range (`9a9394a..842b188`) — outcome: no security-relevant change, bump approved.** The range is linear and fork-only (`ahead_by 26`, `behind_by 0`) with **no upstream `llama.cpp` rebase**, so upstream CVE exposure is unchanged from the already-reviewed pin. All 44 changed files sit under `ggml/` (cpu/cuda/metal/sycl/vulkan backends), `src/llama-*`, `tests/`, `docs/` and `conversion/base.py`: **nothing under `tools/server/`**, no CI workflow, no root `CMakeLists.txt`, no download or build script. `common/arg.cpp` is **byte-identical** between the two tags, so the loopback HTTP/OpenAI surface c0wrk exposes did not move. The fork publishes **no** GitHub Security Advisories. An added-line scan for process/network/filesystem/dynamic-loading primitives (`system`, `popen`, `exec*`, `fork`, `socket`, `connect`, `curl`, `dlopen`, `LoadLibrary`, `fopen`/`fwrite`, `eval`, `subprocess`, URL and credential literals) found one benign hit: a `getenv("PQ2_SGEMM")` kill-switch that can only *disable* a fast kernel path when set to `0` and never enables anything (c0wrk does not set it). The one suspicious-looking commit (`ea50aba8c` `#233`, subject "# Pull request — testo pronto da incollare su GitHub") was inspected individually: a legitimate AVX2/AVX-VNNI `Q1_0` 4x8-repack GEMV/GEMM performance contribution touching only `ggml-cpu` `repack.cpp`/`repack.h`, whose subject is an Italian PR-template placeholder pasted verbatim. The range is net **memory-safety-positive** — `#245` keeps Hadamard rotation tensors out of `CPU_REPACK` buffers and adds a fail-loud `throw` where such a table was previously misused silently. The new SYCL backend (`#235`) is unreachable: c0wrk ships no SYCL artifact.
+>
+> **What the re-pin preserved.** All 16 runtime entries were re-pinned from the GitHub REST per-asset `digest` field and are now locked verbatim by `TestRegistryRuntimePinsMatchUpstreamRelease` (previously only the *model* digests were pinned verbatim; runtime digests were checked structurally). The release is shape-identical — still 23 assets, same names modulo the tag — and the two Windows `cudart` digests are **byte-identical** across the tags (`8c79a9b226de…`, `1462a050eb4c…`), so only runtime digests changed. `windows-amd64 + cuda-12.8` is still absent, so the clamp-down invariant and `TestRegistryWindowsCUDA128Gap` hold unchanged, and `windows-arm64` stays out of scope (D9).
+>
+> **Launch-flag migration in the same change.** `LaunchSpec.Args()` now emits the canonical `--no-ui` instead of the legacy `--no-webui`. The pinned fork registers the switch as the alias pair `{"--ui", "--webui"}` / `{"--no-ui", "--no-webui"}` in one `common_arg`, and `--ui`-first is the vocabulary every related flag uses (`--ui-config`, `--ui-mcp-proxy`), so `--no-ui` is canonical. Both spellings are accepted at this pin — verified in the pinned tree, where **no** deprecation warning for `--no-webui` exists — so this is a spelling migration, not a behavior change, and the D12 guarantee (Web UI off, loopback only) is untouched. Because the runtime is a compile-time pin whose `arg.cpp` was verified to accept `--no-ui`, no rejected-spelling fallback was added: it would be dead code guarding a binary this build cannot spawn. `TestLaunchSpecAlwaysLoopbackAndNeverAgentFacing` now additionally **forbids** `--no-webui`, so a stale legacy flag cannot survive silently.
 
 **Download:**
 
@@ -1109,7 +2215,9 @@ error      → an explicit hint carrying the backend's message (truncated in the
 - The runtime is proven **before** the weights are fetched: a runtime that cannot execute (Gatekeeper, a missing GPU library) fails the install in seconds instead of after a multi-gigabyte download.
 - Verification is enforced twice, and neither pass re-hashes a multi-gigabyte file: `Downloader.Download` never promotes unverified bytes, and `Install` independently refuses a result that is not marked verified or whose digest differs from the pin. Fail-closed is the only acceptable reading — "probably fine" is how an unverified binary ends up executed.
 - `manifest.json` is written once, atomically (sibling temp + rename), and only after every component verified and the runtime ran. A crash mid-write leaves the previous manifest intact rather than a truncated one, and a failed install leaves no manifest at all.
-- The manifest records the *effective* backend, the pinned `RuntimeTag`, the resolved context tier and the verified digest of every downloaded component keyed by component name — enough for startup to restore state from disk alone.
+- The manifest records the *effective* backend, the pinned `RuntimeTag`, the verified digest of every downloaded component keyed by component name, the degradation record (`packing_reason`, `gpu_family`, `guards`) and the **`topology` + `plan` pair** a load launches from — enough for startup to restore state from disk alone.
+- `Topology` and `Plan` are recorded as ONE coherent fact: a topology is persisted only when it actually informed the plan beside it, so a load's fail-soft path can read the pair as "the shape this machine was provisioned for, and the measurement it was priced against". A measurement the re-plan rejected is dropped rather than recorded beside a plan that ignores it. Both are nil-able, and nil means **unknown** — never "no accelerator" and never "no plan to launch".
+- `ContextSize` is the **last known effective** context, not a tier frozen at install. Install writes `recordableContext(plan, resolution.ContextSize)` — the planner's own value for a computed shape, and the `FitMinContext` floor for a fit-sized one, because a fit plan has no concrete context and `0` would mean "leave the existing override alone" to `SyncEmbeddedLLMProvider` while reading as a lost tier in a manifest. Every successful load then overwrites it with the value the server reported through `/props`.
 - Install and Remove both refuse without a `ConfigSink`: bytes that cannot be registered are bytes nobody can use, and a deletion whose provider entry survives points the router at nothing. A sink failure *after* the manifest was written keeps the manifest, because it is accurate — the retry re-downloads nothing and rewrites the same record.
 - A failed install keeps the bytes that DID verify (they are cache hits for the next attempt) and writes no manifest, which is what makes a multi-gigabyte install resumable rather than restartable.
 - Progress is per component and per stage. Each component reports `downloading` first and exactly one `done`, always against its own pinned byte total; the runtime group's `done` is deferred until the tree is provisioned, so a component's stream ends when it is usable rather than when its bytes landed.
@@ -1119,23 +2227,51 @@ error      → an explicit hint carrying the backend's message (truncated in the
 
 **Server supervision:**
 
-- The server binds strictly `127.0.0.1` — `LaunchSpec.Validate` refuses any other host — and its built-in Web UI is disabled with `--no-webui` on every command line. The server's own agent surface (`--agent`/`-ag`, `--tools`, `--cors-origins`, the MCP proxy) is never enabled.
+- The server binds strictly `127.0.0.1` — `LaunchSpec.Validate` refuses any other host — and its built-in Web UI is disabled with `--no-ui` on every command line. The server's own agent surface (`--agent`/`-ag`, `--tools`, `--cors-origins`, the MCP proxy) is never enabled.
+- **The tuning surface is typed-only and cannot inject argv.** `LaunchSpec.Args` is the only place a command line exists, and every element it renders comes from a typed field, a fixed literal in that function, or an integer rendering of one — there is no free-form flag, argument or command-line string in the struct, and no value read from `config.yaml`. The four string-typed fields that do reach argv are each pinned by `Validate` first: `Host` to `LoopbackHost`, `KVType` to `memory.go`'s closed three-precision set, `SplitMode` to the runtime's closed `{none,layer,row,tensor}`, and every `Devices` entry to a single separator-free, dash-free token (so a name cannot smuggle a second device into the joined `-dev` element, or present the parser with something that reads as a flag). The three path fields come from the install record and the layout. `LayerMode`'s discriminator and count are private, so only its four constructors can produce an `-ngl` value. This is enforced structurally, not by review: `TestLaunchSpecArgsRenderTypedValuesOnly` parses `server.go`'s own syntax tree and requires that `Args` concatenate no strings, call nothing outside a declared rendering vocabulary, and read exactly an allow-listed set of `LaunchSpec` fields — and that every field of the struct is either on that list or is `ServerBinary`, the exec target. `TestLaunchSpecStringFieldsCannotSplitArgv` is the behavioural half: a hostile payload in a path field replaces exactly one element, in the same value slot, and the flag-position sequence is unchanged.
+- `-fit` is rendered on **every** command line and never inherited from the binary. The pinned fork's own default is `on`, and `--fit` is an undocumented fork contract that stock llama.cpp does not have, so a pin bump could flip or drop that default; rendering the switch explicitly makes the launch shape a property of `LaunchSpec` rather than of whichever runtime happens to be pinned. `-np` is rendered unconditionally for the same reason, and because the fork's `-1` (auto) both inflates fit's compute reserve per stream and splits `-c` across slots — see `DefaultParallel`.
 - Readiness is a `200` from `/v1/models` **with a non-empty model list**, never `/health`: a `200` whose list is empty keeps polling, because the fork's server opens its socket and answers both routes long before the weights are in memory.
 - The ready wait watches the process as well as the clock, so a server that dies during the weight load is reported in milliseconds instead of after the whole ready budget.
 - Load is idempotent and single-instance: a ctx-aware gate guarantees at most one `llama-server` per install, a Load against a serving model is a no-op that only marks activity, and a process left over from a stop that did not take is discarded before another one is spawned.
 - The spawned process is deliberately NOT bound to the caller's context (`context.WithoutCancel`): a Load's context is usually one RPC, and the server must outlive it. Its lifetime is owned by `Unload`/`Stop`, the idle timer and app shutdown.
 - The child's environment heads the platform's dynamic-library search path (`LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` / `PATH`) with the runtime's own binary directory, and the separator and variable are derived from the target `goos` rather than from the host, so the policy stays a pure, table-testable function. Nothing is installed into a system location.
-- The child's stdout and stderr are drained into `slog` (debug, tagged with the stream and the pid) and only then is `Wait` called — the ordering `os/exec` requires for piped output. A bounded 24-line tail of that output is attached to every load failure and every crash report, because "the process exited" is not a diagnosis and "ggml_cuda_init: found 0 devices" is.
+- The child's stdout and stderr are drained into `slog` (debug, tagged with the stream and the pid) and only then is `Wait` called — the ordering `os/exec` requires for piped output. A bounded 24-line tail of that output is attached to every load failure and every crash report, because "the process exited" is not a diagnosis and "ggml_cuda_init: found 0 devices" is. The same tail is **scanned for the fit contract's failure signature** — `failed to fit params to free device memory`, the abort spelling of the success line (`common_fit_params: successfully fit params to free device memory`) that ends every captured fit trace — and a hit is surfaced as `Status.FitWarning` (the `fit_warning` status field the Settings install record renders verbatim) instead of dying with the discarded run: a pin bump that breaks the fit contract must be REPORTED, not silently retried away. The warning describes the *last failed* launch and is cleared by the next launch that becomes ready (`TestLoadTimeoutSurfacesTheFitContractWarning`, `TestLoadDeathWithoutTheFitComplaintStaysQuiet`, `TestLoadReadyClearsTheFitWarning`; the scanner's spelling discrimination is `TestScanFitFailureMatchesTheFailureSpellingOnly`).
 - Unload means terminating the process, which deterministically returns RAM/VRAM. It is graceful first (SIGTERM, then Kill after `StopTimeout`); a platform with no graceful child signal falls straight through to the kill.
 - A stop that did not take is an error, keeps the process handle and never reports `installed`: claiming "not resident" while a process holds gigabytes would misreport the machine, and dropping the handle would let the next Load start a second server.
 - An unexpected exit — a clean status 0 included — transitions the state to `error` and emits `embedded_llm:state`; only an exit the supervisor asked for reports `installed`. A dead server is never reported as `loaded`.
 - A failed Load marks its own process *abandoned* before discarding it, so one death is never reported twice (once as a load failure and once as a crash); state transitions that change nothing emit nothing.
 - The state of a live process belongs to the supervisor: `SetInstalled` is refused with `ErrServerBusy` while one is running, so neither startup nor Remove can silently misreport a running model.
-- The launch specification is validated at the last gate before exec: a missing binary or model, a non-loopback host, an unusable port, negative `-ngl`/`--image-max-tokens`, or a context outside `1..contextTierTop` is refused with `ErrLaunchSpecInvalid` rather than spawned.
-- No hardware probe runs at load time: `-ngl` and `--image-max-tokens` are re-derived from the manifest's **effective** backend through the same pure policy `Resolve` uses, and `-c` is the tier frozen in the manifest, so a load cannot fail because a driver query wedged.
-- Startup flags always come from the resolution: the context size is a RAM tier, never unspecified and never the model's own full training context.
+- The launch specification is validated at the last gate before exec, and the refusals are `ErrLaunchSpecInvalid` rather than a spawn: a missing binary or model; a non-loopback host; an unusable port; a negative `-ngl` count or `--image-max-tokens`; a negative context, or a context above the model's own training context (`maxTrainingContext`, the figure `ModelMemoryProfile.MaxContext` reports); a **zero** context with `-fit off`, since with fit off nothing else would size it; `-fit on` beside an explicit `-ngl`, `-dev` or `-sm`, and `-fit off` with no `-ngl` at all — the two halves of the exclusivity rule; `-fit on` with a non-positive `-fitc` floor, which would let the fork's own 4096 default reproduce the pinned model's most-reported failure; a negative `-fitt`; a `KVType` outside the closed set; `-np` below 1; a `--cache-ram` below `-1`; and an unknown `-sm` or malformed `-dev` name.
+- The context **ceiling** at that gate is the model's own training context, not the resolver's top RAM tier. `contextTierTop` (131072) is still the largest context the RAM ladder in `resolve.go` ever *emits* — the ladder is unchanged — but a memory-aware plan can legitimately be held to a floor at the top of the modelled range, so the gate no longer refuses it. What the gate still refuses is anything memory-unaware: a negative context, a context above the training maximum, and a zero context nobody is going to size.
+- **A load must not fail because a driver query wedged.** That guarantee used to be bought by never probing at load time; it is now bought by making the probe FAIL-SOFT, which keeps the guarantee and adds freshness. `--image-max-tokens` is still re-derived from the manifest's **effective** backend through the same pure policy `Resolve` uses, and the shape half still comes from a record rather than from a measurement that must succeed: `Manifest.Plan` when the install recorded one (applied through `ApplyMemoryPlan`), otherwise the pure policy's explicit `-ngl` / `-fit off` / recorded `-c`. On top of that record, `Server.ProbeDevices` MAY re-measure the accelerator, bounded by `LoadProbeTimeout` (`DefaultLoadProbeTimeout`, 10 s — an order of magnitude below the ready budget, because every cold start pays it, including one a first request waits on through the ensure-loaded transport).
+- Every way that refinement can fail leaves the recorded decision in place and logs at Debug: the hook is unwired (the pre-existing contract, and what a caller that does not opt in gets), the probe wedges or answers nothing, `PinnedMemoryProfile` is unreadable, or the planner now refuses the machine it was handed. A load-time refusal is deliberately NOT a new failure mode — the memory gate that decides whether this machine may hold the model ran at **install**, when the bytes were chosen and the user accepted them, and a measurement at load refines that decision rather than re-litigating it.
+- The probe is **opt-in**: `Server.ProbeDevices` nil means no probe runs at all, rather than defaulting to the package function the way `Installer.ProbeDevices` does. Production always wires it; a caller that does not gets exactly the older "no hardware probe runs at load time" behaviour and no exec it did not ask for.
+- A load-time re-plan **pins the packing to the manifest's**. It is the one input the refinement must not re-decide: `Plan` derives a packing from the backend and GPU family whenever the tuning leaves it unset, and a different packing would price a footprint the installed GGUF does not have — so the `-c` and `-ngl` it returned would be computed for bytes that are not on disk. A packing change is an install decision, because it changes which multi-gigabyte file gets downloaded (`TestLoadReplanPinsTheInstalledPacking`).
+- The operator's `Tuning` reaches a load through `Server.Tuning`, a **function** rather than a value: the supervisor is built once and cached, while a settings save can change `embedded_llm.tuning` at any point in between, so a load must plan with the tuning in force when it runs. It is read on the load path only, where taking `configMu.RLock` is already established as safe (`EnsurePort` → `persistEmbeddedPort` does the same), and an untranslatable section yields the all-Auto zero rather than failing the load.
+- A refinement that changed nothing writes nothing: `planChanged`/`topologyChanged` gate the manifest rewrite, so a steady machine pays no disk write, no new mtime and no `config:updated` on every cold start (`TestLoadDoesNotRewriteTheRecordWhenNothingChanged`).
+- **The context readback is the only correction the tier-1 override ever gets.** After readiness the load asks `GET /props` for `default_generation_settings.n_ctx` — the PER-SLOT figure — and multiplies it by `total_slots`, because reading the per-slot value alone would under-report a multi-slot server by a factor of `-np`. `DefaultParallel` is 1, so today the two figures agree — but `embedded_llm.tuning.parallel` is an operator knob, and the multiplication is what keeps the recorded window honest the moment somebody raises it. The product is persisted to the manifest and, through `Server.PersistContext`, to `llm.models."Bonsai 2 27B".context_window`. This is inside the existing contract, not an extension of it: [llm-providers.md](llm-providers.md) has always assigned that override to "the path that knows it", naming **install and load**, and the load path already spawned the process and waited for it — so the read costs no extra startup and `GetConfig` stays network-free.
+- The readback is fail-soft in both layers. A `/props` that does not answer (a non-200, an unparseable body, a missing or non-positive `n_ctx`, an unreachable socket) keeps the recorded value and logs at Debug; an absent `total_slots` is read as one slot, not as zero. A manifest or config write that fails is logged and otherwise ignored, because the model is resident and serving and that is the fact the Load was asked to establish — the manifest is written first, so the next load retries only the config mirror (`TestReadPropsContextIsFailSoft`, `TestRecordEffectiveContextSurvivesAFailingConfigWrite`).
+- The readback runs AFTER the `loaded` transition is emitted, not before. A `/props` read is normally sub-millisecond on loopback, but a wedged server could hold it for the whole `ProbeTimeout`, and delaying the "the model is ready" signal by that would be a worse regression than the one-event staleness it buys: the `embedded_llm:state` payload for that transition can carry the pre-readback `context_size`, while the cached install record, `GetEmbeddedLLMStatus` and the `config:updated` the write emits all carry the corrected one immediately after.
+- `persistEmbeddedContext` does NOT rebuild the router, for the reason `persistEmbeddedPort` gives: it runs inside `Load`, usually on behalf of an in-flight request the ensure-loaded transport is waiting on, and swapping the router underneath it would be worse than serving one session with the previous — still valid — window. The persisted value is what the next rebuild (a settings save, a profile change, a restart) picks up. It also mirrors the corrected value into the cached install record, which is what `GetEmbeddedLLMStatus` and the `embedded_llm:state` payload answer from.
+- Startup flags always come from the resolution: the context size is a RAM tier or a planner-computed value, never unspecified, and the offload is either an explicit `-ngl` (with `-fit off`) or no `-ngl` element at all (with `-fit on`) — never the runtime's own `auto` default, which is decided by the model file rather than by any memory measurement.
 - A missing vision projector degrades to text-only serving (a warning, and no `--mmproj`) instead of refusing to load; a missing model file does refuse, wrapped in `ErrNotInstalled` with a reinstall hint.
 - Reasoning effort is not set by the subsystem: no reasoning flag exists in `LaunchSpec.Args`, and the effort arrives through the ordinary mechanism (`HandleOptions.ReasoningEffort` / the picker / a Model Profile's `sampling.reasoning_effort`). That mechanism only works for this model because of three things outside the subsystem — the sp4rk catalog entry for the checkpoint (`Family "qwen"` + authoritative capabilities), the registry's Family inheritance for a partial override, and the `chat_template_kwargs` reasoning wire this entry alone carries. See [Reasoning effort and the family resolution](#reasoning-effort-and-the-family-resolution) and [ADR-066](../decisions/066-embedded-llm-runtime.md) D7.
+
+**Memory-plan tuning (`embedded_llm.tuning`):**
+
+- Every knob is a pointer, or a struct of pointers, so *unset* is a distinct value from an explicit `auto` / `0` / `false`. That distinction is load-bearing, not cosmetic: an unset `fit` lets the exclusivity rule decide while `fit: false` forces `-fit off`, and an unset `cache_ram_mib` keeps the runtime's default while `cache_ram_mib: 0` DISABLES the prompt cache.
+- `ApplyDefaults` seeds **nothing** here. The all-nil zero `TuningConfig` IS the documented all-Auto default, and materializing the pointers would collapse *unset* into *explicit auto* on the first save (`TestEmbeddedLLMTuningDefaultsAreNotSeeded`, `TestEmbeddedLLMTuningZeroValueIsAllUnset`).
+- An unauthored section writes **nothing**: `yaml:"tuning,omitempty"` plus yaml.v3's deep-zero struct elision mean a config.yaml that never authored a tuning knob does not grow a block of nulls (`TestEmbeddedLLMTuningUnsetIsDistinguishableFromExplicitAuto`).
+- Validation and translation are ONE function. `validateEmbeddedLLMTuning` delegates to `TuningConfig.ToTuning`, so "validate() accepts it" and "the planner can honour it" are the same statement by construction and there is no second allow-list to drift.
+- The closed sets are read from core, never transcribed: `kv_cache_type` from `embeddedllm.KVTypes()` (through `ParseKVType`, so `q5_0` stays excluded on its measured ~8x long-context slowdown) and `packing` from `embeddedllm.SupportedPackings()`. The context ceiling is `PinnedMemoryProfile().MaxContext`, resolved once through `sync.OnceValues` and failing closed — a profile nobody could read is a ceiling nobody could enforce, so it is an error rather than a permissive default.
+- Rejection is fail-closed and never a coercion: an out-of-set spelling or an out-of-range number is an error naming the key and stating the fix, not a silent fall-back to Auto. Silently planning a different memory plan than the one the operator wrote is the exact failure this surface exists to avoid.
+- Every knob is validated even while it is **inert** — while the model is not installed, while fit is off, while another knob makes it moot — for the reason `auto_unload.minutes` already is: arming a value must never activate a dead one.
+- `ToTuning` clones every pointer it copies, so a translated `Tuning` never aliases the live config and no caller can reach back into it (`TestEmbeddedLLMTuningToTuningClonesPointers`).
+- Install and Remove both rewrite `embedded_llm.*` wholesale and must carry `tuning` through **verbatim** — the same rule `auto_unload` already follows. Install establishes no tuning defaults, because `Tuning`'s zero value already IS the all-Auto plan.
+- A tuning edit never rewrites the app-written record: `installed`, `packing`, `backend`, `port`, `model_file`, `runtime_version` and `installed_at` survive a load → edit-tuning → save → load cycle byte-identical, and the generated provider record keeps following the untouched port (`TestEmbeddedLLMTuningEditDoesNotRewriteInstallState`).
+- The mapping direction is one-way: `backend/config` imports `core/embeddedllm` (backend sits above core), and core never imports back — which is why the translation lives on the backend side rather than in the planner. `InstallState` carries no tuning for the same reason `ConfigSink` exists at all (`TestEmbeddedLLMTuningKeepsTheImportDirection`).
+- `-dev` and `-sm` are **not** reachable from config.yaml. Both pin the offload, which forces fit off, and a wrong device name yields an unlaunchable server rather than a slower one.
+- `tuning:` reaches the UI through its own RPC pair, not through the config view: `GetEmbeddedLLMTuning`/`SetEmbeddedLLMTuning` in `backend/frontend_api_embedded.go`. It appears in neither `ConfigResponse` nor `EmbeddedLLMStatus` — the status carries the resolved **outcome** (`plan`), never the override. The setter is a PARTIAL patch (nil keeps the stored value) with a `reset` list for the third state, because the pointers exist to keep *unset* and *explicit auto* distinct and a whole-section write would collapse them. A tuning write never restarts a resident model — every knob is a launch flag, so it takes effect on the next load and `reload_required` says so.
 
 **Idle budget:**
 
@@ -1223,7 +2359,7 @@ error      → an explicit hint carrying the backend's message (truncated in the
 
 ## Configuration
 
-Authoritative reference: `config.example.yaml` (section `embedded_llm:`). Every value is written by the app — the section is state, not tuning, and hand-editing it does not install or remove anything.
+Authoritative reference: `config.example.yaml` (section `embedded_llm:`). Most of the section is written by the app — it is state, not tuning, and hand-editing it does not install or remove anything. **Two sub-sections are the exception and are operator settings**: `auto_unload:` (the idle budget) and `tuning:` (the memory-plan overrides). Install and Remove carry both through verbatim, so provisioning or uninstalling the model never resets either. Everything else — `installed`, `packing`, `backend`, `port`, `model_file`, `runtime_version`, `installed_at` — is owned by the install flow alone, and a tuning edit never rewrites it (pinned by `TestEmbeddedLLMTuningEditDoesNotRewriteInstallState`).
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -1237,6 +2373,27 @@ Authoritative reference: `config.example.yaml` (section `embedded_llm:`). Every 
 | `embedded_llm.auto_unload.enabled` | bool | `true` | Idle timer on/off. |
 | `embedded_llm.auto_unload.minutes` | int | `60` | Idle minutes before the process is stopped. Must be ≥ 1 — validated even while the timer is disabled, so re-enabling it can never activate a dead budget. |
 
+The memory-plan override surface. Every key is **optional**, defaults to *absent*, and maps one-to-one onto a field of `embeddedllm.Tuning` (see [Memory plan](#memory-plan)). Absent is not spelled `auto`: both build the same plan, but only an absent key means "the operator chose nothing". Spellings are matched case-insensitively and trimmed; the two closed sets (`kv_cache_type`, `packing`) are READ from core (`embeddedllm.KVTypes()` / `SupportedPackings()`) rather than transcribed, so they cannot drift.
+
+| Key | Type | Default (unset means) | Valid values |
+| --- | --- | --- | --- |
+| `embedded_llm.tuning.context.mode` | string | planner sizes `-c`: from `fit_min_context` under fit, otherwise from the RAM ladder, capped at the training context | `auto` \| `exact` (which makes `tokens` **required**) |
+| `embedded_llm.tuning.context.tokens` | int | — | `1`–`262144` (the pinned model's training context, read from `PinnedMemoryProfile().MaxContext`). Validated even while `mode` is `auto` |
+| `embedded_llm.tuning.kv_cache_type` | string | adaptive `-ctk`/`-ctv`: f16 → q8_0 → q4_0 until the target context fits | `auto` \| `f16` \| `q8_0` \| `q4_0`. Anything else is refused, never coerced |
+| `embedded_llm.tuning.offload.mode` | string | nothing pinned — under fit the RUNTIME sizes the layer count | `auto` \| `all` (`-ngl 99`) \| `cpu` (`-ngl 0`) \| `layers` (which makes `layers` **required**). Any explicit mode turns fit **off** |
+| `embedded_llm.tuning.offload.layers` | int | — | ≥ `0`. Validated even while `mode` is not `layers` |
+| `embedded_llm.tuning.fit` | bool | the exclusivity rule decides | `true` \| `false`. An explicit `true` next to an explicit offload LOSES to the rule and is recorded in the plan's notes |
+| `embedded_llm.tuning.fit_target_mib` | int | the runtime's own 1024 MiB `-fitt` | ≥ `0`; an explicit `0` also omits the flag. Only emitted under fit |
+| `embedded_llm.tuning.fit_min_context` | int | `65536` (`DefaultFitMinContext`, NOT the runtime's 4096) | `1`–`262144`. Only emitted under fit |
+| `embedded_llm.tuning.kv_offload` | bool | the KV cache stays on the device with the layers | `true` \| `false` (`false` passes `-nkvo`) |
+| `embedded_llm.tuning.mmproj_offload` | bool | the projector reserve stays on the device | `true` \| `false` (`false` passes `--no-mmproj-offload`) |
+| `embedded_llm.tuning.packing` | string | the packing the hardware probe resolved, which `embedded_llm.packing` RECORDS | `auto` \| `PQ2_0` \| `PTQ1_0`. Overrides what the PLAN assumes, not what is on disk — change it and reinstall. Recorded as `PackingReasonOperatorOverride` |
+| `embedded_llm.tuning.parallel` | int | `1` (`DefaultParallel`) | ≥ `1` |
+| `embedded_llm.tuning.cache_ram_mib` | int | the runtime's own `-cram` | ≥ `0`; an explicit `0` DISABLES the prompt cache and is passed through verbatim, not read as unset |
+| `embedded_llm.tuning.host_reserve_gib` | float | the topology's own derivation (the larger of a 4 GiB floor and 1/8 of RAM) | ≥ `0`. A **planner-side** budget knob, not a runtime flag (the fork has no `--host-reserve`), and it REPLACES the derived reserve |
+
+Two `embeddedllm.Tuning` fields are deliberately **not** exposed: `Devices` (`-dev`) and `SplitMode` (`-sm`). Both pin the offload — which forces fit off — and naming a device this machine does not have yields an unlaunchable server rather than a slower one. They stay reachable only through the planner's own vocabulary, and `TestEmbeddedLLMTuningToTuning` asserts a translated plan leaves both at their zero sentinels.
+
 Derived config the backend writes (never authored by hand), reconciled by `Config.SyncEmbeddedLLMProvider` → `LLMConfig.SyncEmbeddedProvider` at two points — the config load path (`LoadWithResult`, after `ApplyDefaults` and before `validate`) and `UpdateLLMConfig` (after the candidate is built, before it is validated):
 
 - `llm.openai_compatible.embedded` — `base_url: http://127.0.0.1:<port>/v1` (always derived from the persisted port, never stored independently), `api_key: ""`, `models: ["Bonsai 2 27B"]`, no `tls_fingerprint` (plain HTTP on loopback, so the ADR-054 pin does not apply); present exactly while `installed` is true. `output_token_reserve` is the one operator field preserved across regeneration.
@@ -1246,12 +2403,12 @@ The sync copies the provider and override maps before mutating them: `UpdateLLMC
 
 The override is backend-written but operator-owned afterwards: the Configure dialog (`SetModelConfig`) rewrites the whole `llm.models` entry, and saving it with every field at the built-in default DROPS the entry — including the tier. That is the documented precedence (an explicit user choice wins), and it self-heals: with no config override the lazy probe (tier 1.5) rediscovers the window from `/v1/models` the first time the server runs, and the next install/load sync rewrites the tier. A runtime entry written that way also pre-fills `Family` from the model name, which outranks the catalog — see the ordering hazard in [Reasoning effort and the family resolution](#reasoning-effort-and-the-family-resolution).
 
-`validate()` rejects an out-of-range port, an install without an allocated port, and a non-positive `auto_unload.minutes`, each with an actionable message naming the key and the fix. Because the record disappears with `installed: false`, the Remove flow must also migrate `llm.default_model` off `embedded/Bonsai 2 27B` — otherwise the next load fails validation and the next settings save is rejected as a dangling default. Migration means moving it to the first *other* enabled model id, not clearing it: `validate()` also rejects an empty `llm.default_model`, so an empty result is correct only when the embedded model was the only one enabled (a config with no provider at all is invalid independently of this subsystem, and `ApplyDefaults` fills the first available model on the next load). `Remove` preserves the `auto_unload` pointers while resetting every other `embedded_llm.*` field — an idle budget is an operator setting, not install state. Fixed operational constants (not configurable, by design — tunability would undermine the pins and the hardware safety margins):
+`validate()` rejects an out-of-range port, an install without an allocated port, a non-positive `auto_unload.minutes`, and every illegal `tuning.*` value, each with an actionable message naming the key and the fix. The tuning rules live in `validateEmbeddedLLMTuning`, which is a one-line delegation to `TuningConfig.ToTuning` — there is deliberately no second list of legal values to drift, so a config that loads is by construction a config the planner can honour. They run **unconditionally**, including while the model is not installed and while the knob in question is inert (`fit_min_context` beside `fit: false`, `offload.layers` beside `offload.mode: all`, `context.tokens` beside `mode: auto`), for the reason `auto_unload.minutes` already is validated while the timer is off: arming a value must never activate a dead one (`TestEmbeddedLLMTuningValidatedWhileInert`). Because the record disappears with `installed: false`, the Remove flow must also migrate `llm.default_model` off `embedded/Bonsai 2 27B` — otherwise the next load fails validation and the next settings save is rejected as a dangling default. Migration means moving it to the first *other* enabled model id, not clearing it: `validate()` also rejects an empty `llm.default_model`, so an empty result is correct only when the embedded model was the only one enabled (a config with no provider at all is invalid independently of this subsystem, and `ApplyDefaults` fills the first available model on the next load). `Remove` preserves the `auto_unload` and `tuning` sub-sections while resetting every other `embedded_llm.*` field — an idle budget and a memory plan are operator settings, not install state, so a reinstall starts from the plan the operator chose rather than from a reset one. `Install` follows the same rule and additionally fills the auto-unload defaults into unset knobs only; it establishes **no** tuning defaults, because `Tuning`'s zero value already IS the all-Auto plan and shipping defaults for the sink to apply would collapse the unset/explicit distinction on the first provision. Fixed operational constants (not configurable, by design — tunability would undermine the pins and the hardware safety margins):
 
 | Parameter | Value |
 | --- | --- |
-| Minimum system RAM | 16 GiB (typed refusal below it) |
-| Runtime pin | `prism-b10709-9a9394a` |
+| Minimum memory | **no fixed threshold** — the gate refuses when no modelled shape fits *both* pools (`ErrInsufficientMemory`). On a UNIFIED machine the floor is *derived*: it lands at **12.03 GiB** of RAM (`TestMemoryGateUnifiedFloorIsDerived` pins it), which is where the 8230 MiB host-resident PTQ1_0 shape at the 65536-token floor clears `RAM − max(4 GiB, RAM/8)`. Beside an accelerator with its own memory the RAM total is not the binding constraint at all — 8 GiB of RAM with a 32 GiB card is admitted |
+| Runtime pin | `prism-b10735-842b188` |
 | Sampling flags | `--temp 1.0 --top-p 0.95 --top-k 20 --jinja -fa on` |
 | Progress throttle | ~100 ms |
 | Disk headroom on top of the artifact set | 2 GiB (`DefaultDiskHeadroom`) |
@@ -1260,6 +2417,8 @@ The override is backend-written but operator-owned afterwards: the Configure dia
 | macOS `xattr`/`codesign` command budget | 2 min per command |
 | macOS `--version` smoke-test budget | 60 s |
 | Auto-unload defaults an install establishes | `enabled: true`, `minutes: 60` (unset knobs only) |
+| Memory-tuning defaults an install establishes | **none** — `Tuning`'s zero value is the all-Auto plan, and seeding it would collapse *unset* into *explicit auto* |
+| Context ceiling for an explicit override | `262144` — `PinnedMemoryProfile().MaxContext`, read not transcribed (`EmbeddedLLMMaxContextTokens`) |
 | Ready budget for one Load (spawn → first `/v1/models` answer) | 15 min (`DefaultReadyTimeout`) |
 | Request-path budget for waiting on a cold load | 17 min (`DefaultLoadWaitTimeout` = `DefaultReadyTimeout` + 2 min) |
 | Readiness poll interval | 500 ms (`DefaultReadyPollInterval`) |
@@ -1269,9 +2428,11 @@ The override is backend-written but operator-owned afterwards: the Configure dia
 | Server output retained for failure messages | last 24 lines |
 | Level the server's own stdout/stderr is logged at | debug |
 | Bind address | `127.0.0.1` (`LoopbackHost`, enforced by `Validate`) |
-| Web UI | disabled unconditionally (`--no-webui`) |
+| Web UI | disabled unconditionally (`--no-ui`) |
 
-The four supervision budgets and the stop timeout are per-`Server` fields rather than config keys: they are recovery timeouts with no operator meaning, and the idle budget — the one knob a user actually tunes — is `embedded_llm.auto_unload`.
+The four supervision budgets and the stop timeout are per-`Server` fields rather than config keys: they are recovery timeouts with no operator meaning. The two knobs a user actually tunes are `embedded_llm.auto_unload` (the idle budget) and `embedded_llm.tuning` (the memory plan), and both are reachable from the UI: the former through `SetEmbeddedLLMAutoUnload`, the latter through the `GetEmbeddedLLMTuning`/`SetEmbeddedLLMTuning` pair (see [desktop-frontend.md](../contracts/desktop-frontend.md#embedded-llm-backendfrontend_api_embeddedgo)).
+
+The **Runtime pin** row is the current value of `embeddedllm.RuntimeTag`. ADR-065 D11 still reads `prism-b10709-9a9394a`, because accepted ADRs are immutable — see the **Pin bump 2026-09-25** note under **Invariants** for the CVE review that advanced it to `prism-b10735-842b188`. Advancing the pin is a code change in `registry.go` plus this table, never a `config.yaml` edit: `embedded_llm.runtime_version` only *records* which pin an install came from, and a pin change forces a runtime re-download while keeping the weights.
 
 ## Extension Points
 
@@ -1283,17 +2444,39 @@ The four supervision budgets and the stop timeout are per-`Server` fields rather
 
 **Change port policy.** Three seams own the port and nothing else chooses one: `Installer.AllocatePort` (`func(ctx) (int, error)`, called once during install, defaulting to the unexported `ephemeralLoopbackPort`) picks the initial one; `Server.EnsurePort` (`func(ctx, port) (int, error)`, called immediately before every spawn) may substitute and persist a replacement — production wires it to `backend.embeddedEnsurePort`, which scans with `embeddedllm.SearchFreePort` and writes a move back to config; and `PortProber` (the third argument of `SearchFreePort`, defaulting to `loopbackPortFree`) decides what "free" means, injected in tests through `embeddedLLMState.portProbeFn` and in core by passing the prober directly. Leaving `EnsurePort` nil trusts the persisted port, which is correct only for a caller with no config to keep in sync. An explicit `InstallOptions.Port` bypasses allocation entirely. The provider base URL is always derived from the persisted value and the request path always aims at the live one, so a different allocation strategy is a change to these seams and nothing else.
 
-**Wire or change the supervision.** `Server` owns the whole lifecycle and every external effect is an injectable field: `Spawn` (`SpawnFunc`) replaces the real `exec` with a double, `EnsurePort` the port policy, `OnState` the event transport (the backend forwards `StateEvent` as the global `embedded_llm:state` payload), `HTTPClient` the readiness client, and `Now`/`HostOS`/`Platform` the clock and the platform keys. `Stop` has exactly the `Installer.Stop` signature, so removal and shutdown wire with no adapter (`installer.Stop = server.Stop`). The command line exists in one place — `LaunchSpec.Args` — and its inputs come from the manifest plus the pure policy in `resolve.go`, so a new flag is a `LaunchSpec` field, an `Args` entry and a `Validate` rule, and nothing else. `Process` is deliberately an interface with `Stdout`/`Stderr` readers so the production output pumping and log tail are exercised by tests that never start a real server. The request path is a seam of the same shape: `Loader` (`Load` + `MarkActivity`) is all `EnsureLoadedTransport` needs, so a different residency policy — pre-warming on project open, keeping the model pinned while a session is live — replaces the loader or wraps it, and the transport, its coalescing and its activity stamping stay put.
+**Wire or change the supervision.** `Server` owns the whole lifecycle and every external effect is an injectable field: `Spawn` (`SpawnFunc`) replaces the real `exec` with a double, `EnsurePort` the port policy, `OnState` the event transport (the backend forwards `StateEvent` as the global `embedded_llm:state` payload), `HTTPClient` the readiness client, and `Now`/`HostOS`/`Platform` the clock and the platform keys. Three more carry the memory-aware load, and production wires all three (`embeddedBuild`): `ProbeDevices` (the OPTIONAL, fail-soft, `LoadProbeTimeout`-bounded re-measurement a launch refines its plan with — nil means no probe at all, which is the pre-existing contract), `Tuning` (a **function** resolving `embedded_llm.tuning` at launch time, because the supervisor is cached while a settings save is not; nil means the all-Auto zero), and `PersistContext` (where the `/props` readback writes the tier-1 `context_window` override; nil means the manifest is still corrected but config.yaml keeps the install's estimate). A different residency or freshness policy — never probe, probe on a schedule, refuse a load whose machine changed — is a change to these three and nothing else. `Stop` has exactly the `Installer.Stop` signature, so removal and shutdown wire with no adapter (`installer.Stop = server.Stop`). The command line exists in one place — `LaunchSpec.Args` — and its inputs come from the manifest, from `Manifest.Plan` through `ApplyMemoryPlan`, or (for a pre-plan manifest) from the pure policy in `resolve.go`, so a new flag is a `LaunchSpec` field, an `Args` entry and a `Validate` rule — plus a `MemoryPlan` field if the planner decides it, which `TestApplyMemoryPlanRendersEveryFlagBearingField` then ratchets. `Process` is deliberately an interface with `Stdout`/`Stderr` readers so the production output pumping and log tail are exercised by tests that never start a real server. The request path is a seam of the same shape: `Loader` (`Load` + `MarkActivity`) is all `EnsureLoadedTransport` needs, so a different residency policy — pre-warming on project open, keeping the model pinned while a session is live — replaces the loader or wraps it, and the transport, its coalescing and its activity stamping stay put.
 
 **Wire or change the install orchestration.** `Installer` owns the whole flow; the config layer is reached only through `ConfigSink` (`ApplyInstalled(InstallState)` / `ApplyRemoved()`), implemented by `backend/frontend_api_embedded.go`. The reference implementation and its executable contract — what an install must produce in `embedded_llm.*`/`llm.*`, which auto-unload knobs survive, and what a removal must leave behind — is `backend/config/embedded_llm_sink_test.go`. A different progress transport only has to adapt `InstallOptions.Progress` (the `embedded_llm:install_progress` payload *is* the `Progress` struct), and every external effect (`Downloader`, `Probe`, `RunCommand`, `AllocatePort`, `Stop`, `Now`, `HostOS`) is an injectable field, so the flow itself is testable without a network, without multi-gigabyte artifacts and without macOS binaries.
 
+**Recognize a new accelerator, or act on the topology.** The classifier's vocabulary is two marker lists in `core/embeddedllm/topology.go` (`discreteDeviceMarkers`, `unifiedDeviceMarkers`) matched against a device's name *and* description, plus the ordered rules in `classifyUnified`; a new part is a marker and a row in `TestClassifyUnified`, and an unrecognized part already lands on the safe side (unified). Everything downstream of the parse is a pure function of `(platform, hostRAMBytes, listing)`, so a different budget policy is a change to `buildTopology` and its table alone. A **consumer** — the memory gate, a status surface — reads `DeviceBudgetMiB()` / `HostBudgetMiB()` against `memory.go`'s `ProjectDeviceMiB` / `ProjectHostMiB` plus the projector reserve, and must treat `ok == false` from `ProbeDevices` as `deviceUnreadable` — a host-only gate with the degradation recorded in `Notes` — never as a refusal. A consumer that assembles a `MemoryTopology` by hand rather than receiving one from `ProbeDevices` should expect `normalizeTopology` to derive the budgets it left out; what it must still supply itself is `Unified`, which is never re-classified for it.
+
+**Add or retire a compatibility guard.** The table is `CompatibilityGuards` in `core/embeddedllm/compat.go`: one `GuardID` constant whose doc comment cites the upstream report, one branch in the table body carrying a typed `GuardReason` (severity is derived from it), and a row in `TestCompatibilityGuardsTable` plus a shape assertion in `TestGuardDecisionShape`. Nothing else has to change — the resolver applies a `prefer_backend` decision automatically when the target is pinned, the packing rule reads the same `GPUFamily`, and the record reaches the manifest and the status DTO on its own. A **new accelerator generation** is a `GPUFamily` constant, a rule in `gpuRules` (order matters: specific tokens before broad ones) and rows in `TestClassifyGPU`; if the model card measures a different packing as faster there, that is one line in `prefersPTQ1_0Decode`. Retiring a guard — because upstream fixed the issue — is deleting its branch and its table rows, and it is what a pin bump's re-read of `KNOWN_ISSUES.md` is for. Two inputs are still unprobed and therefore inert in production, each with a documented safe default: `HostCaps.AVX512` (no CPU-feature probe exists; `Unknown` is treated as present, which only matters on a pre-#245 pin) and `MachineProfile.FitsPQ2_0` (the fit gate supplies it; `FitUnknown` never downgrades). A `rocminfo`-derived gfx target would close the `gfx1151` coverage gap documented under [Backend compatibility guards](#backend-compatibility-guards).
+
+**Change the memory gate.** The gate is three pure pieces in `core/embeddedllm/plan.go` and nothing else decides viability: `gateBudgetsFor` (which pools exist and how much of each may be spent), `memoryGate`'s shape space (`gatePackings` / `gateKVTypes` / `gateContext` / the residency extremes), and `gateBudgets.overflow` (how the two footprints are charged — additively on a unified machine, independently on a discrete one). A new memory model is a change to those three plus a row in `TestResolveMemoryGate`. Two contracts a change must respect: the gate stays the FIRST check in `resolveWith`, before `ArtifactSet`, so a refused machine plans no assets and creates no directory (`TestInstallMemoryGateRefusesBeforeAnyDownload` ratchets it); and a new *device-axis* state must be added to `deviceAxisState` rather than folded into `deviceKnown` or `deviceUnreadable`, because the three states have three different consequences and the distinction between "no accelerator" and "an accelerator nobody measured" is the whole reason the gate is not a RAM threshold. The derived unified floor is pinned by `TestMemoryGateUnifiedFloorIsDerived`, which recomputes it from `memory.go`'s own projections — a pin bump that changes the weights moves the floor, and that test tells you the Configuration table's number is stale.
+
+**Add a degradation rung.** `relaxations` in `core/embeddedllm/plan.go` is an ordered list of `(Tuning → Tuning, note)` pairs, least-lossy first, and `Plan` walks it only when the base pass came back infeasible and the operator pinned no offload. A new rung is one entry plus a `plan_test.go` case at a budget where it is the one that wins. Two rules: it must compose with `planKVType`'s precision ladder rather than replacing it (every rung re-runs it), and it must only touch a knob the operator left *unset* — a rung that overrides a pin silently launches a different shape than the one asked for. A rung that needs a measurement `memory.go` does not have (a partial offload is the standing example) is not a rung: an unmeasured split is a guess a capacity gate must not make.
+
+**Change the memory plan, or add a tuning knob.** The whole decision is one pure function — `Plan` in `core/embeddedllm/plan.go` — over values, so a policy change is a change to that function and its table, with nothing to stub and no machine to test on. A new knob is a `Tuning` field (a pointer, or a type with an explicit Auto sentinel, so *unset* stays representable), a branch in `Plan`, a `MemoryPlan` field if the launcher must see it, a note in `shapeNotes`, and a row in `TestPlanNotesEveryNonDefaultDecision`. Two contracts a new field must respect: it may not make `Plan` impure (`TestPlanImportsNoIOPackage` bans the imports that would), and if it pins the offload it **must** be added to `Tuning.explicitOffloadShape()` — otherwise the plan emits `-fit on` beside a pinned `-ngl`, which is the shape the fork's `fit.cpp` aborts on. A new KV precision belongs in `memory.go`'s closed `KVType` set first (with a measurement); the ladder in `planKVType` then picks it up automatically.
+
+**Consume a memory plan at launch.** The rendering half is built: `LaunchSpec` carries a typed field for every flag a `MemoryPlan` names, `ApplyMemoryPlan` is the total bridge between them, and `Validate` enforces the exclusivity rule on the argv side. So mapping a plan onto a launch is one call, and `TestApplyMemoryPlanRendersEveryFlagBearingField` ratchets it — it reflects over `MemoryPlan` and fails if a new field is neither a documented non-flag nor visible in argv, so a planner knob cannot be added and then silently dropped.
+
+The decision to use one is wired too, and it took the persisting branch. `Manifest.Plan` carries the shape an install resolved, `Server.launchSpec` splits a launch into an **identity half** (`launchIdentity`: the binary, the weights, the projector, the socket, `--image-max-tokens` — all describing bytes that are on disk) and a **shape half** (`ApplyMemoryPlan` over the recorded plan), and `resolvedLaunch` carries the applied plan, the topology it was priced against and a `Refreshed` flag back to `Load` so a refinement can be written down. Persisting beat re-deriving for the reason the extension point predicted: re-deriving at load would need the operator's `Tuning`, and `tuning` is a setting the sink carries verbatim, so a copy in a record would be a second source of truth that goes stale on the first edit. A **pre-plan manifest** still launches, from the pure policy (explicit `-ngl`, `-fit off`, `-np 1`, the recorded `-c`, and the runtime's own defaults for the KV precision, the cache knobs, `-dev` and `-sm`) — and gains no plan it never had, even when a probe answers.
+
+The context half is `recordableContext`, and it is the rule the extension point asked for: anything that persists a context reads `MemoryPlan.Fit` and treats a fit-sized plan as *"no concrete context to record"* rather than *"context 0"*, recording the `FitMinContext` floor instead. `Validate` accepts the zero on the argv side because there fit sizes it; a record may not carry one, because `0` means "leave the existing override alone" to `SyncEmbeddedLLMProvider` and would read as a lost tier.
+
+A plan that outlives a single launch as a user-visible artifact is wired too: `MemoryPlan.Notes` — the human-readable "why" for every non-default decision — reaches the manifest, the install log **and** `EmbeddedLLMStatus.Plan`, alongside every flag-bearing value, both expected footprints and the budgets, with a `Recorded` flag disambiguating a pre-plan manifest's zeros from a real decision. A degraded *launch* is therefore as visible in Settings as a degraded *install*, and `ProbeEmbeddedLLMDevices` exists for the follow-up question — "what does the machine look like NOW?" — against the recorded snapshot the plan was made from.
+
 **Add a config knob.** Add the field to `EmbeddedLLMConfig` with a yaml tag, a default in `backend/config/defaults.go`, a rule in `validateEmbeddedLLM` (`backend/config/config.go`, reached from `validate()`), an entry in `config.example.yaml`, and — if the UI exposes it — an RPC in `backend/frontend_api_embedded.go` plus a field on the `embedded_llm:state` payload and its type in `frontend/src/types/events.ts`.
+
+**Add a memory-plan tuning knob.** The route is different, because the vocabulary already exists on core's side. Add a **pointer** field (or a struct of pointers) to `TuningConfig` with a `yaml:"…,omitempty"` tag, translate it in `TuningConfig.ToTuning` — which is where its range check belongs too, since `validateEmbeddedLLMTuning` is a delegation to that one function and a rule written anywhere else would be a second list to drift — and document the key, its unset meaning and its valid values in both the Configuration table above and `config.example.yaml`. Do **not** seed it in `defaults.go`: the all-nil zero value is the all-Auto default, and materializing a pointer converts *unset* into *explicit*, which for `Fit` and `CacheRAMMiB` changes the plan. Add a row to `TestEmbeddedLLMTuningYAMLRoundTrip`'s key list and to `fullySpecifiedTuning`, plus rejection and acceptance rows. Two contracts hold it in place: the sink carries `Tuning` through Install and Remove verbatim, so a new knob is preserved with no sink change; and the knob must correspond to a real `embeddedllm.Tuning` field, because anything the planner does not read is a setting that silently does nothing. If the new knob pins the offload, `Tuning.explicitOffloadShape()` in `plan.go` must learn about it too — see [Memory plan](#memory-plan).
 
 **Add lifecycle events.** Both events are global (bare names, not session-scoped): `embedded_llm:install_progress` and `embedded_llm:state`. Extend the payload structs, `backend/events.go`, `frontend/src/types/events.ts` and the event catalog together.
 
 ## Related Specs
 
-- [ADR-066: Embedded LLM Runtime (Bonsai 2 27B)](../decisions/066-embedded-llm-runtime.md) — the decision record; D1–D12 are cited by number throughout this spec
+- [ADR-066: Embedded LLM Runtime (Bonsai 2 27B)](../decisions/066-embedded-llm-runtime.md) — the decision record; D1–D12 are cited by number throughout this spec. Its **D6** (the hard 16 GiB RAM floor) and **D10** (the RAM-tiered context, "never `-c 0`") and the *"whenever memory is short"* clause of its **D2** are superseded by ADR-067; ADR-066 itself stays `Accepted` and the rest of it stands.
+  **Note on ADR-067's own D6.** ADR-067 D6 recorded that the measured budget replaces the RAM floor *"only when a topology exists"*, leaving `MinRAMGiB` in force for an unprobed caller. That residual is gone too: the gate is now combined on every path, deriving its host budget from the RAM probe and classifying the accelerator axis statically when nothing measured it (see [The combined memory gate](#the-combined-memory-gate)). ADR-067 is `Accepted` and therefore immutable per [META.md](../META.md), so this spec — not that ADR — is the authority on the gate, and the supersession is recorded here rather than by editing it
+- [ADR-067: Memory-Aware Embedded LLM Provisioning](../decisions/067-memory-aware-embedded-llm-provisioning.md) — the pure planner, the `--fit` exclusivity rule, adaptive KV escalation, the two measurement-forced defaults (`-fitc` 65536, `-np` 1), the measured-budget gate that replaces the RAM floor only when a topology was probed, the `Tuning` vocabulary and the `Notes` contract; see [Memory plan](#memory-plan)
 - [Tool Manager](tool-manager.md) — the subsystem deliberately **not** reused, with the limits (1 GiB / 512 MiB / 5 min / 200 MiB) and the offline-first startup invariant that rule it out
 - [ADR-032: Offline-First Tool Reconciliation](../decisions/032-offline-first-tool-reconciliation.md) — the startup invariant an on-click multi-GiB download must respect
 - [LLM Providers](llm-providers.md) — provider config, the `ProviderEntry.HTTPClient` hook, the lazy context probe and the context-window precedence this subsystem writes into

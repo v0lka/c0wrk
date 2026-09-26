@@ -10,16 +10,16 @@ import (
 	"testing"
 )
 
-// ramTiers are the RAM sizes Resolve can actually be called with, given the
-// MinRAMGiB gate. Every entry is at or above the gate; the sub-16 GiB refusals
-// and the unreachable smallest context tier are covered separately by
-// TestResolveRAMGate and TestContextSizeTiers.
+// ramTiers are the RAM sizes Resolve can actually be called with on a machine
+// the memory gate admits. Every entry clears it; the refusals and the
+// unreachable smallest context tier are covered separately by
+// TestResolveMemoryGate and TestContextSizeTiers.
 var ramTiers = []struct {
 	ramGiB      float64
 	wantContext int
 }{
-	// The gate boundary itself.
-	{ramGiB: MinRAMGiB, wantContext: 16384},
+	// The smallest tier the RAM ladder itself reaches.
+	{ramGiB: 16, wantContext: 16384},
 	{ramGiB: 16.5, wantContext: 16384},
 	{ramGiB: 23, wantContext: 16384},
 	// A Linux machine advertised as 24 GB reports MemTotal slightly below the
@@ -168,9 +168,15 @@ var resolveMatrix = []matrixCase{
 		wantPacking: PackingPQ2_0, wantLayers: 99, wantImageTokens: ImageMaxTokensUncapped,
 		wantComponents: componentsPlain,
 	},
+	// KNOWN_ISSUES #222: "CUDA 13.3 builds crash on some systems. On Linux this
+	// is a segfault; on Windows the server prints its banner and exits without a
+	// message." Upstream's workaround is the 12.8 build on Linux and the 12.4
+	// build on Windows, and a newer driver still runs an older-toolkit build —
+	// the same backwards compatibility clampCUDABackend relies on. So a probed
+	// 13.3 resolves to the fallback and the compatibility guard records why.
 	{
-		name: "linux x64 cuda 13.3", platform: PlatformLinuxAMD64, probed: BackendCUDA133,
-		wantBackend: BackendCUDA133, wantArchive: "llama-" + RuntimeTag + "-bin-linux-cuda-13.3-x64.tar.gz",
+		name: "linux x64 cuda 13.3 is guarded down to 12.8", platform: PlatformLinuxAMD64, probed: BackendCUDA133,
+		wantBackend: BackendCUDA128, wantArchive: "llama-" + RuntimeTag + "-bin-linux-cuda-12.8-x64.tar.gz",
 		wantPacking: PackingPQ2_0, wantLayers: 99, wantImageTokens: ImageMaxTokensUncapped,
 		wantComponents: componentsPlain,
 	},
@@ -246,9 +252,11 @@ var resolveMatrix = []matrixCase{
 		wantPacking: PackingPQ2_0, wantLayers: 99, wantImageTokens: ImageMaxTokensUncapped,
 		wantCudart: true, wantComponents: componentsCudart,
 	},
+	// #222 on Windows: the documented fallback is the 12.4 build, which this pin
+	// ships for Windows (it ships no Windows 12.8 archive at all).
 	{
-		name: "windows x64 cuda 13.3", platform: PlatformWindowsAMD64, probed: BackendCUDA133,
-		wantBackend: BackendCUDA133, wantArchive: "llama-" + RuntimeTag + "-bin-win-cuda-13.3-x64.zip",
+		name: "windows x64 cuda 13.3 is guarded down to 12.4", platform: PlatformWindowsAMD64, probed: BackendCUDA133,
+		wantBackend: BackendCUDA124, wantArchive: "llama-" + RuntimeTag + "-bin-win-cuda-12.4-x64.zip",
 		wantPacking: PackingPQ2_0, wantLayers: 99, wantImageTokens: ImageMaxTokensUncapped,
 		wantCudart: true, wantComponents: componentsCudart,
 	},
@@ -281,9 +289,9 @@ func TestResolveFullMatrix(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 
-				got, err := Resolve(mc.platform, mc.probed, tier.ramGiB)
+				got, err := ResolveMachine(mc.platform, mc.probed, tier.ramGiB)
 				if err != nil {
-					t.Fatalf("Resolve(%q, %q, %v) error = %v, want success",
+					t.Fatalf("ResolveMachine(%q, %q, %v) error = %v, want success",
 						mc.platform, mc.probed, tier.ramGiB, err)
 				}
 
@@ -324,7 +332,7 @@ func TestResolveVulkanSelectsPTQ1_0(t *testing.T) {
 		t.Run(platform, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := Resolve(platform, BackendVulkan, 32)
+			got, err := ResolveMachine(platform, BackendVulkan, 32)
 			if err != nil {
 				t.Fatalf("Resolve error = %v, want success", err)
 			}
@@ -344,78 +352,240 @@ func TestResolveVulkanSelectsPTQ1_0(t *testing.T) {
 
 	// Every other backend keeps the faster-prefill default.
 	for _, backend := range []Backend{BackendMetal, BackendCUDA124, BackendCUDA128, BackendCUDA133, BackendROCm, BackendCPU} {
-		if got := packingFor(backend); got != PackingPQ2_0 {
-			t.Errorf("packingFor(%q) = %q, want %q", backend, got, PackingPQ2_0)
+		if got := packingForBackend(backend); got != PackingPQ2_0 {
+			t.Errorf("packingForBackend(%q) = %q, want %q", backend, got, PackingPQ2_0)
 		}
 	}
 }
 
-// TestResolveRAMGate covers ADR-066 D6: below 16 GiB the install is refused
-// with a typed error before anything is planned, and 16 GiB exactly succeeds.
-// There is no reduced-experience band in between.
-func TestResolveRAMGate(t *testing.T) {
+// TestResolveMemoryGate covers the gate that replaced ADR-066 D6's flat 16 GiB
+// floor. D6 measured ONE pool and was wrong in both directions at once, so the
+// cases here are the two directions plus the fail-closed edges:
+//
+//   - a small-RAM machine with a big accelerator is ADMITTED (the floor refused
+//     it on a number that described neither pool);
+//   - a big-RAM machine with a small accelerator gets a plan that FITS (the
+//     floor admitted it and then OOMed at load);
+//   - a small-RAM machine with no accelerator is still REFUSED, now with the
+//     arithmetic in the message rather than a threshold.
+//
+// The refusals are asserted on the typed error, not on a RAM size, because
+// there is no RAM size to assert on any more: viability is a property of both
+// pools and of the model's measured footprint.
+func TestResolveMemoryGate(t *testing.T) {
 	t.Parallel()
 
-	refuse := []float64{0, 0.5, 1, 4, 8, 12, 15, 15.5, 15.9, MinRAMGiB - 0.001}
-	for _, ram := range refuse {
-		t.Run(fmt.Sprintf("refuse %.3f GiB", ram), func(t *testing.T) {
-			t.Parallel()
-
-			got, err := Resolve(PlatformDarwinARM64, BackendMetal, ram)
-			if !errors.Is(err, ErrInsufficientRAM) {
-				t.Fatalf("Resolve(ram=%v) error = %v, want it to wrap ErrInsufficientRAM", ram, err)
-			}
-			if got.Assets != nil {
-				t.Errorf("refused resolution still planned %d assets, want none", len(got.Assets))
-			}
-			// The refusal has to be actionable: it names the threshold.
-			if !strings.Contains(err.Error(), "at least 16 GiB") {
-				t.Errorf("error %q does not state the required RAM threshold", err)
-			}
-		})
-	}
-
-	// The message also reports what the machine actually has, so a refusal is
-	// diagnosable without re-running the probe.
-	t.Run("message reports the detected size", func(t *testing.T) {
+	// ── admitted: the accelerator carries the model ──
+	t.Run("8 GiB RAM beside a 32 GiB accelerator is admitted", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := Resolve(PlatformDarwinARM64, BackendMetal, 12)
-		if err == nil {
-			t.Fatal("Resolve(ram=12) error = nil, want ErrInsufficientRAM")
+		topology := probedTopology(t, PlatformLinuxAMD64, 8,
+			DeviceMemory{Name: "CUDA0", Description: "NVIDIA GeForce RTX 4090",
+				TotalMiB: 32 * 1024, FreeMiB: 32 * 1024})
+
+		res, err := Resolve(ResolveInput{
+			MachineProfile: MachineProfile{
+				Platform: PlatformLinuxAMD64, Backend: BackendCUDA128, RAMGiB: 8,
+			},
+			Topology: &topology,
+		})
+		if err != nil {
+			t.Fatalf("Resolve error = %v, want a viable resolution", err)
 		}
-		if !strings.Contains(err.Error(), "detected 12.0 GiB") {
-			t.Errorf("error %q does not report the detected RAM size", err)
+		if !res.Memory.OffloadsToDevice() {
+			t.Errorf("the plan is not device-resident (fit=%v, layers=%v, device budget %d)",
+				res.Memory.Fit, deref(res.Memory.Layers), res.Memory.DeviceBudgetMiB)
+		}
+		// The point of the whole exercise: the host side is the measured spill
+		// plus one CPU compute buffer, not the weights.
+		if res.Memory.ExpectedHostMiB >= res.Memory.ExpectedDeviceMiB {
+			t.Errorf("host footprint %d MiB is not below the device footprint %d MiB; "+
+				"the model is not really on the card",
+				res.Memory.ExpectedHostMiB, res.Memory.ExpectedDeviceMiB)
 		}
 	})
 
-	accept := []float64{MinRAMGiB, 16, 16.0, 17, 24, 128}
-	for _, ram := range accept {
-		t.Run(fmt.Sprintf("accept %.0f GiB", ram), func(t *testing.T) {
+	// ── admitted with a plan that fits: the accelerator cannot carry it ──
+	t.Run("32 GiB RAM beside an 8 GiB accelerator gets a plan that fits", func(t *testing.T) {
+		t.Parallel()
+
+		topology := probedTopology(t, PlatformLinuxAMD64, 32,
+			DeviceMemory{Name: "CUDA0", Description: "NVIDIA GeForce RTX 4060",
+				TotalMiB: 8 * 1024, FreeMiB: 8 * 1024})
+
+		res, err := Resolve(ResolveInput{
+			MachineProfile: MachineProfile{
+				Platform: PlatformLinuxAMD64, Backend: BackendCUDA128, RAMGiB: 32,
+			},
+			Topology: &topology,
+		})
+		if err != nil {
+			t.Fatalf("Resolve error = %v, want a degraded plan rather than a refusal", err)
+		}
+		plan := res.Memory
+		// The invariant that matters: the plan the installer persists fits the
+		// budgets it was gated on, in BOTH pools. An at-load OOM is a plan whose
+		// expected footprint nobody compared to the machine.
+		if plan.ExpectedDeviceMiB > plan.DeviceBudgetMiB {
+			t.Errorf("expected device footprint %d MiB exceeds the %d MiB budget it was gated on",
+				plan.ExpectedDeviceMiB, plan.DeviceBudgetMiB)
+		}
+		if plan.ExpectedHostMiB > plan.HostBudgetMiB {
+			t.Errorf("expected host footprint %d MiB exceeds the %d MiB budget it was gated on",
+				plan.ExpectedHostMiB, plan.HostBudgetMiB)
+		}
+		if plan.OffloadsToDevice() {
+			t.Error("the plan still offloads to an accelerator that cannot hold the weights")
+		}
+		// A degradation this large must be legible in the record.
+		if !noteContaining(plan.Notes, "host residency") {
+			t.Errorf("Notes = %v, want one recording the degradation to host residency", plan.Notes)
+		}
+	})
+
+	// ── refused: no accelerator, and the host pool cannot hold the model ──
+	refuseRAM := []float64{0.5, 1, 4, 8, 12}
+	for _, ram := range refuseRAM {
+		t.Run(fmt.Sprintf("%.1f GiB of RAM with no accelerator is refused", ram), func(t *testing.T) {
 			t.Parallel()
 
-			if _, err := Resolve(PlatformDarwinARM64, BackendMetal, ram); err != nil {
-				t.Fatalf("Resolve(ram=%v) error = %v, want success", ram, err)
+			topology := probedTopology(t, PlatformLinuxAMD64, ram)
+			got, err := Resolve(ResolveInput{
+				MachineProfile: MachineProfile{
+					Platform: PlatformLinuxAMD64, Backend: BackendCPU, RAMGiB: ram,
+				},
+				Topology: &topology,
+			})
+			if !errors.Is(err, ErrInsufficientMemory) {
+				t.Fatalf("Resolve error = %v, want it to wrap ErrInsufficientMemory", err)
+			}
+			if got.Assets != nil {
+				t.Errorf("a refused resolution still planned %d assets, want none", len(got.Assets))
+			}
+			// A host-pool refusal still matches the deprecated sentinel, so a
+			// caller that only cares about system RAM keeps working.
+			if !errors.Is(err, ErrInsufficientRAM) {
+				t.Errorf("error %v does not unwrap to the deprecated ErrInsufficientRAM", err)
+			}
+		})
+	}
+
+	// ── the refusal names BOTH pools with BOTH numbers ──
+	t.Run("the refusal message names both pools", func(t *testing.T) {
+		t.Parallel()
+
+		topology := probedTopology(t, PlatformLinuxAMD64, 8)
+		_, err := Resolve(ResolveInput{
+			MachineProfile: MachineProfile{
+				Platform: PlatformLinuxAMD64, Backend: BackendCPU, RAMGiB: 8,
+			},
+			Topology: &topology,
+		})
+		if err == nil {
+			t.Fatal("Resolve error = nil, want a refusal")
+		}
+		var typed *InsufficientMemoryError
+		if !errors.As(err, &typed) {
+			t.Fatalf("error %v is not an *InsufficientMemoryError", err)
+		}
+		message := err.Error()
+		for _, want := range []string{
+			"device memory", "host RAM", "GiB available", "reserve", "installed",
+		} {
+			if !strings.Contains(message, want) {
+				t.Errorf("refusal %q does not name %q", message, want)
+			}
+		}
+		// Both NUMBERS, not just both pool names: a message that said "not
+		// enough memory" would name the pools too.
+		if typed.HostNeedMiB <= 0 || typed.HostHaveMiB < 0 {
+			t.Errorf("host figures are %d needed / %d available, want both populated",
+				typed.HostNeedMiB, typed.HostHaveMiB)
+		}
+		if typed.HostReserveMiB <= 0 {
+			t.Errorf("reserve = %d MiB, want the derivation the host budget came from",
+				typed.HostReserveMiB)
+		}
+		// A refusal is diagnosable without re-running the probe: the installed
+		// total is in the message.
+		if !strings.Contains(message, "8.0 GiB installed") {
+			t.Errorf("refusal %q does not report the installed RAM", message)
+		}
+	})
+
+	// ── fail-closed on an unreadable host total ──
+	t.Run("an unreadable RAM total still refuses", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := ResolveMachine(PlatformDarwinARM64, BackendMetal, 0)
+		if !errors.Is(err, ErrRAMUnknown) {
+			t.Fatalf("ResolveMachine(ram=0) error = %v, want it to wrap ErrRAMUnknown", err)
+		}
+		if errors.Is(err, ErrInsufficientMemory) {
+			t.Error("an UNKNOWN RAM total reported itself as insufficient memory; " +
+				"unknown is not the same fact as too small")
+		}
+	})
+
+	// ── an unreadable DEVICE budget degrades instead of refusing ──
+	t.Run("an unmeasured accelerator degrades rather than refuses", func(t *testing.T) {
+		t.Parallel()
+
+		// No topology at all — the first-install shape, where there is no
+		// provisioned runtime to ask. A discrete CUDA card on amd64 has memory
+		// independent of host RAM, so 8 GiB of RAM is NOT evidence against it.
+		res, err := Resolve(ResolveInput{MachineProfile: MachineProfile{
+			Platform: PlatformLinuxAMD64, Backend: BackendCUDA128, RAMGiB: 8,
+		}})
+		if err != nil {
+			t.Fatalf("Resolve error = %v, want a degraded resolution rather than a refusal", err)
+		}
+		if !noteContaining(res.Memory.Notes, "could not be measured") {
+			t.Errorf("Notes = %v, want one recording that the device budget was not measured",
+				res.Memory.Notes)
+		}
+	})
+
+	t.Run("an unmeasured UNIFIED accelerator does not get the benefit of the doubt", func(t *testing.T) {
+		t.Parallel()
+
+		// Same RAM, but Apple Silicon: the accelerator's pool IS the host pool,
+		// so the RAM probe measured both and 8 GiB really is the whole budget.
+		_, err := ResolveMachine(PlatformDarwinARM64, BackendMetal, 8)
+		if !errors.Is(err, ErrInsufficientMemory) {
+			t.Fatalf("ResolveMachine(darwin-arm64, metal, 8 GiB) error = %v, "+
+				"want it to wrap ErrInsufficientMemory", err)
+		}
+	})
+
+	// ── the admitted band now ends where the measurements say it does ──
+	accept := []float64{16, 17, 24, 32, 64, 128}
+	for _, ram := range accept {
+		t.Run(fmt.Sprintf("accept %.0f GiB of unified RAM", ram), func(t *testing.T) {
+			t.Parallel()
+
+			if _, err := ResolveMachine(PlatformDarwinARM64, BackendMetal, ram); err != nil {
+				t.Fatalf("ResolveMachine(ram=%v) error = %v, want success", ram, err)
 			}
 		})
 	}
 }
 
-// TestResolveRAMGateIsCheckedBeforeArtifacts proves the refusal happens even
-// when nothing could be provisioned anyway, i.e. the RAM gate is the FIRST
+// TestResolveMemoryGateIsCheckedBeforeArtifacts proves the refusal happens even
+// when nothing could be provisioned anyway, i.e. the memory gate is the FIRST
 // check and not a consequence of a missing pin.
-func TestResolveRAMGateIsCheckedBeforeArtifacts(t *testing.T) {
+func TestResolveMemoryGateIsCheckedBeforeArtifacts(t *testing.T) {
 	t.Parallel()
 
 	// A registry where nothing at all is pinned.
 	empty := stubAssetTable{setErr: fmt.Errorf("%w: nothing pinned", ErrArtifactNotPinned)}
 
-	_, err := resolveWith(empty, PlatformLinuxAMD64, BackendCPU, 8)
-	if !errors.Is(err, ErrInsufficientRAM) {
-		t.Fatalf("error = %v, want ErrInsufficientRAM to win over the missing pin", err)
+	_, err := resolveMachineWithTable(empty, PlatformLinuxAMD64, BackendCPU, 8)
+	if !errors.Is(err, ErrInsufficientMemory) {
+		t.Fatalf("error = %v, want ErrInsufficientMemory to win over the missing pin", err)
 	}
 	if errors.Is(err, ErrArtifactNotPinned) {
-		t.Error("the artifact error masked the RAM refusal")
+		t.Error("the artifact error masked the memory refusal")
 	}
 }
 
@@ -429,7 +599,7 @@ func TestResolveWindowsCUDAHasTwoRuntimeComponents(t *testing.T) {
 		t.Run(string(backend), func(t *testing.T) {
 			t.Parallel()
 
-			got, err := Resolve(PlatformWindowsAMD64, backend, 64)
+			got, err := ResolveMachine(PlatformWindowsAMD64, backend, 64)
 			if err != nil {
 				t.Fatalf("Resolve error = %v, want success", err)
 			}
@@ -469,12 +639,12 @@ func TestResolveWindowsCUDAHasTwoRuntimeComponents(t *testing.T) {
 		t.Parallel()
 
 		for _, backend := range []Backend{BackendCUDA124, BackendCUDA128, BackendCUDA133} {
-			got, err := Resolve(PlatformLinuxAMD64, backend, 64)
+			got, err := ResolveMachine(PlatformLinuxAMD64, backend, 64)
 			if err != nil {
-				t.Fatalf("Resolve(%q) error = %v, want success", backend, err)
+				t.Fatalf("ResolveMachine(%q) error = %v, want success", backend, err)
 			}
 			if got.NeedsCudart {
-				t.Errorf("Resolve(%q).NeedsCudart = true, want false on Linux", backend)
+				t.Errorf("ResolveMachine(%q).NeedsCudart = true, want false on Linux", backend)
 			}
 			assertComponents(t, got, componentsPlain)
 		}
@@ -485,12 +655,12 @@ func TestResolveWindowsCUDAHasTwoRuntimeComponents(t *testing.T) {
 		t.Parallel()
 
 		for _, backend := range []Backend{BackendCPU, BackendVulkan, BackendROCm} {
-			got, err := Resolve(PlatformWindowsAMD64, backend, 64)
+			got, err := ResolveMachine(PlatformWindowsAMD64, backend, 64)
 			if err != nil {
-				t.Fatalf("Resolve(%q) error = %v, want success", backend, err)
+				t.Fatalf("ResolveMachine(%q) error = %v, want success", backend, err)
 			}
 			if got.NeedsCudart {
-				t.Errorf("Resolve(%q).NeedsCudart = true, want false for a non-CUDA backend", backend)
+				t.Errorf("ResolveMachine(%q).NeedsCudart = true, want false for a non-CUDA backend", backend)
 			}
 		}
 	})
@@ -506,7 +676,7 @@ func TestResolveNonX64CUDAFallsBackToCPU(t *testing.T) {
 		t.Run(string(probed), func(t *testing.T) {
 			t.Parallel()
 
-			got, err := Resolve(PlatformLinuxARM64, probed, 32)
+			got, err := ResolveMachine(PlatformLinuxARM64, probed, 32)
 			if err != nil {
 				t.Fatalf("Resolve error = %v, want the CPU fallback to succeed", err)
 			}
@@ -533,7 +703,7 @@ func TestResolveNonX64CUDAFallsBackToCPU(t *testing.T) {
 	t.Run("darwin arm64 cuda falls back to cpu", func(t *testing.T) {
 		t.Parallel()
 
-		got, err := Resolve(PlatformDarwinARM64, BackendCUDA124, 32)
+		got, err := ResolveMachine(PlatformDarwinARM64, BackendCUDA124, 32)
 		if err != nil {
 			t.Fatalf("Resolve error = %v, want success", err)
 		}
@@ -554,7 +724,7 @@ func TestResolveWindowsCUDA128ClampsToPinnedTag(t *testing.T) {
 		t.Skip("the registry now pins a Windows cuda-12.8 archive; the clamp case no longer applies")
 	}
 
-	got, err := Resolve(PlatformWindowsAMD64, BackendCUDA128, 64)
+	got, err := ResolveMachine(PlatformWindowsAMD64, BackendCUDA128, 64)
 	if err != nil {
 		t.Fatalf("Resolve error = %v, want the 12.4 clamp to succeed", err)
 	}
@@ -615,12 +785,12 @@ func TestResolveIntelMacNeverOffloads(t *testing.T) {
 	t.Parallel()
 
 	for _, probed := range []Backend{BackendCPU, BackendMetal, BackendVulkan, BackendROCm, BackendCUDA124, BackendCUDA133} {
-		got, err := Resolve(PlatformDarwinAMD64, probed, 32)
+		got, err := ResolveMachine(PlatformDarwinAMD64, probed, 32)
 		if err != nil {
-			t.Fatalf("Resolve(%q) error = %v, want success", probed, err)
+			t.Fatalf("ResolveMachine(%q) error = %v, want success", probed, err)
 		}
 		if got.Layers != 0 {
-			t.Errorf("Resolve(%q).Layers = %d, want 0 on an Intel Mac", probed, got.Layers)
+			t.Errorf("ResolveMachine(%q).Layers = %d, want 0 on an Intel Mac", probed, got.Layers)
 		}
 	}
 }
@@ -696,7 +866,7 @@ func TestResolveAssetIntegrity(t *testing.T) {
 	t.Parallel()
 
 	for _, mc := range resolveMatrix {
-		got, err := Resolve(mc.platform, mc.probed, 32)
+		got, err := ResolveMachine(mc.platform, mc.probed, 32)
 		if err != nil {
 			t.Fatalf("%s: Resolve error = %v, want success", mc.name, err)
 		}
@@ -753,7 +923,7 @@ func TestResolveFailClosedWithoutPinnedArtifacts(t *testing.T) {
 			setErr: fmt.Errorf("%w: platform %q", ErrArtifactNotPinned, PlatformLinuxAMD64),
 		}
 
-		got, err := resolveWith(table, PlatformLinuxAMD64, BackendCUDA133, 64)
+		got, err := resolveMachineWithTable(table, PlatformLinuxAMD64, BackendCUDA133, 64)
 		if !errors.Is(err, ErrArtifactNotPinned) {
 			t.Fatalf("error = %v, want it to wrap ErrArtifactNotPinned", err)
 		}
@@ -769,7 +939,7 @@ func TestResolveFailClosedWithoutPinnedArtifacts(t *testing.T) {
 			setErr: fmt.Errorf("%w: platform %q", ErrArtifactNotPinned, "plan9-mips"),
 		}
 
-		got, err := resolveWith(table, "plan9-mips", BackendCPU, 64)
+		got, err := resolveMachineWithTable(table, "plan9-mips", BackendCPU, 64)
 		if !errors.Is(err, ErrArtifactNotPinned) {
 			t.Fatalf("error = %v, want it to wrap ErrArtifactNotPinned", err)
 		}
@@ -790,19 +960,19 @@ func TestResolveFailClosedWithoutPinnedArtifacts(t *testing.T) {
 		}
 
 		for _, probed := range []Backend{BackendCUDA133, BackendROCm, BackendVulkan, BackendMetal} {
-			got, err := resolveWith(table, PlatformLinuxAMD64, probed, 64)
+			got, err := resolveMachineWithTable(table, PlatformLinuxAMD64, probed, 64)
 			if err != nil {
-				t.Fatalf("Resolve(%q) error = %v, want the CPU fallback", probed, err)
+				t.Fatalf("ResolveMachine(%q) error = %v, want the CPU fallback", probed, err)
 			}
 			if got.Backend != BackendCPU {
-				t.Errorf("Resolve(%q).Backend = %q, want %q", probed, got.Backend, BackendCPU)
+				t.Errorf("ResolveMachine(%q).Backend = %q, want %q", probed, got.Backend, BackendCPU)
 			}
 			if got.NeedsCudart {
-				t.Errorf("Resolve(%q).NeedsCudart = true, want false on the CPU fallback", probed)
+				t.Errorf("ResolveMachine(%q).NeedsCudart = true, want false on the CPU fallback", probed)
 			}
 			// The packing follows the degraded backend, not the probed one.
 			if got.Packing != PackingPQ2_0 {
-				t.Errorf("Resolve(%q).Packing = %q, want %q on the CPU fallback",
+				t.Errorf("ResolveMachine(%q).Packing = %q, want %q on the CPU fallback",
 					probed, got.Packing, PackingPQ2_0)
 			}
 		}
@@ -815,7 +985,7 @@ func TestResolveFailClosedWithoutPinnedArtifacts(t *testing.T) {
 			PlatformWindowsAMD64: {BackendCUDA124: true},
 		}
 
-		withCudart, err := resolveWith(stubAssetTable{runtimes: runtimes, cudart: true},
+		withCudart, err := resolveMachineWithTable(stubAssetTable{runtimes: runtimes, cudart: true},
 			PlatformWindowsAMD64, BackendCUDA124, 64)
 		if err != nil {
 			t.Fatalf("Resolve error = %v, want success", err)
@@ -825,7 +995,7 @@ func TestResolveFailClosedWithoutPinnedArtifacts(t *testing.T) {
 		}
 		assertComponents(t, withCudart, componentsCudart)
 
-		without, err := resolveWith(stubAssetTable{runtimes: runtimes},
+		without, err := resolveMachineWithTable(stubAssetTable{runtimes: runtimes},
 			PlatformWindowsAMD64, BackendCUDA124, 64)
 		if err != nil {
 			t.Fatalf("Resolve error = %v, want success", err)
@@ -843,12 +1013,12 @@ func TestResolveFailClosedWithoutPinnedArtifacts(t *testing.T) {
 func TestResolveIsPure(t *testing.T) {
 	t.Parallel()
 
-	first, err := Resolve(PlatformWindowsAMD64, BackendCUDA128, 23.4)
+	first, err := ResolveMachine(PlatformWindowsAMD64, BackendCUDA128, 23.4)
 	if err != nil {
 		t.Fatalf("Resolve error = %v, want success", err)
 	}
 	for i := range 5 {
-		again, err := Resolve(PlatformWindowsAMD64, BackendCUDA128, 23.4)
+		again, err := ResolveMachine(PlatformWindowsAMD64, BackendCUDA128, 23.4)
 		if err != nil {
 			t.Fatalf("call %d: Resolve error = %v, want success", i, err)
 		}
@@ -1016,4 +1186,234 @@ func componentNames(assets []Asset) []Component {
 		names = append(names, a.Component)
 	}
 	return names
+}
+
+// TestMemoryGateUnifiedFloorIsDerived pins the number the retired 16 GiB
+// constant was replaced with — and pins that it is DERIVED rather than chosen.
+//
+// On a unified machine the accelerator's pool IS system RAM, so the RAM probe
+// prices both and the floor is wherever the smallest modelled shape stops
+// clearing `RAM − max(4 GiB, RAM/8)`. That is the 8230 MiB host-resident
+// PTQ1_0 shape at the 65536-token context floor, which puts the boundary just
+// above 12 GiB: a machine 38 MiB short of it is refused, and one 38 MiB over is
+// admitted. A test that asserts a round 16 here would be asserting the constant
+// this gate exists to remove; if a pin bump moves the weights, this test moves
+// with the measurements and the spec's Configuration table must be re-read.
+func TestMemoryGateUnifiedFloorIsDerived(t *testing.T) {
+	t.Parallel()
+
+	profile := profileOrFail(t)
+	ctx := DefaultFitMinContext
+
+	// The shape the boundary is made of, priced from memory.go's own API rather
+	// than from the gate under test, so the expectation is not circular.
+	smallest, err := profile.ProjectHostMiB(PackingPTQ1_0, ctx, KVTypeQ4_0, false)
+	if err != nil {
+		t.Fatalf("ProjectHostMiB: %v", err)
+	}
+	smallest += profile.MMProjReserveDeviceMiB + profile.MMProjReserveHostMiB
+
+	const refused, admitted = 12.0, 12.1
+	for _, tc := range []struct {
+		ramGiB float64
+		wantOK bool
+	}{
+		{refused, false},
+		{admitted, true},
+	} {
+		t.Run(fmt.Sprintf("%.1f GiB", tc.ramGiB), func(t *testing.T) {
+			t.Parallel()
+
+			_, err := ResolveMachine(PlatformDarwinARM64, BackendMetal, tc.ramGiB)
+			if tc.wantOK && err != nil {
+				t.Fatalf("ResolveMachine(%.1f GiB) error = %v, want it admitted", tc.ramGiB, err)
+			}
+			if !tc.wantOK && !errors.Is(err, ErrInsufficientMemory) {
+				t.Fatalf("ResolveMachine(%.1f GiB) error = %v, want ErrInsufficientMemory",
+					tc.ramGiB, err)
+			}
+
+			// The boundary really is the derivation: the budget at the refused
+			// size is below the smallest shape and the one just above it is not.
+			ramBytes := int64(tc.ramGiB * gibibyte)
+			budget := ramBytes - hostReserveBytes(ramBytes)
+			if got := budget >= smallest*bytesPerMiB; got != tc.wantOK {
+				t.Errorf("%.1f GiB leaves a %d-byte host budget against a %d MiB smallest shape "+
+					"(fits = %v), but Resolve said %v — the gate is not pricing the shape the "+
+					"boundary is derived from", tc.ramGiB, budget, smallest, got, tc.wantOK)
+			}
+		})
+	}
+
+	// And the floor is not a round number anyone picked: it is strictly between
+	// 12 and 13 GiB, which is what "derived" has to mean here.
+	if _, err := ResolveMachine(PlatformDarwinARM64, BackendMetal, 13); err != nil {
+		t.Errorf("13 GiB of unified RAM error = %v, want the derived floor to sit below it", err)
+	}
+}
+
+// TestDefaultHostReserveGiBMatchesTheTopologyDerivation pins the two callers of
+// the reserve to one another: the gate that has no topology and the probe that
+// has one must hold back the same RAM, or a machine is admitted by the
+// synchronous RPC and refused by the install (or the reverse).
+func TestDefaultHostReserveGiBMatchesTheTopologyDerivation(t *testing.T) {
+	t.Parallel()
+
+	for _, ramGiB := range []float64{8, 12, 16, 32, 64, 128} {
+		derived := DefaultHostReserveGiB(ramGiB)
+		probed := probedTopology(t, PlatformLinuxAMD64, ramGiB)
+		want := float64(hostReserveBytes(int64(ramGiB*gibibyte))) / gibibyte
+
+		if derived != want {
+			t.Errorf("DefaultHostReserveGiB(%v) = %v, want %v", ramGiB, derived, want)
+		}
+		// The topology's host budget is the same RAM minus the same reserve.
+		if got := probed.HostRAMGiB - float64(probed.HostBudgetBytes)/gibibyte; got != want {
+			t.Errorf("a probed %v GiB machine held back %v GiB, want %v", ramGiB, got, want)
+		}
+		if derived <= 0 {
+			t.Errorf("DefaultHostReserveGiB(%v) = %v, want a positive reserve", ramGiB, derived)
+		}
+	}
+
+	// The reserve has a floor, so a small machine does not end up handing
+	// nearly all of its RAM to the model.
+	if got := DefaultHostReserveGiB(8); got != 4 {
+		t.Errorf("DefaultHostReserveGiB(8) = %v, want the 4 GiB floor", got)
+	}
+	// And it scales above the floor.
+	if got := DefaultHostReserveGiB(128); got != 16 {
+		t.Errorf("DefaultHostReserveGiB(128) = %v, want 1/8 of RAM", got)
+	}
+	if got := DefaultHostReserveGiB(0); got != 0 {
+		t.Errorf("DefaultHostReserveGiB(0) = %v, want 0 for an unreadable total", got)
+	}
+}
+
+// TestResolveNeverEmitsAPlanThatOverflowsItsOwnBudget is the property the whole
+// gate exists to establish, asserted over the reachable machine matrix rather
+// than over one anecdote per bug: **whatever `Resolve` returns must fit the
+// budgets it reports**. A refusal is fine — a plan that does not fit is the
+// at-load out-of-memory this subsystem is not allowed to produce.
+//
+// It is the regression test for a hole the gate itself opened. Admitting a
+// machine because SOME modelled shape fits is only half the job: the RAM-only
+// planner used to emit its platform defaults anyway (`-ngl 99` on Apple Silicon,
+// an f16 cache), so a 13 GiB unified machine was admitted on a host-resident
+// PTQ1_0 shape and then handed a device-resident PQ2_0 plan 1.3 GiB too large.
+// The plan now yields to the gate's verdict, and this test is what stops the two
+// from drifting apart again.
+//
+// The footprints are re-projected from memory.go's own API rather than read off
+// the plan, so the assertion is not circular with the planner under test.
+func TestResolveNeverEmitsAPlanThatOverflowsItsOwnBudget(t *testing.T) {
+	t.Parallel()
+
+	profile := profileOrFail(t)
+
+	machines := []struct {
+		platform  string
+		backend   Backend
+		ramGiB    float64
+		deviceMiB int64 // 0 = no accelerator; negative = do not probe at all
+	}{
+		// No topology at all — the first-install shape, where the budgets are
+		// derived from the RAM probe and the accelerator axis is static.
+		{PlatformDarwinARM64, BackendMetal, 13, -1},
+		{PlatformDarwinARM64, BackendMetal, 14, -1},
+		{PlatformDarwinARM64, BackendMetal, 16, -1},
+		{PlatformDarwinARM64, BackendMetal, 24, -1},
+		{PlatformDarwinARM64, BackendMetal, 64, -1},
+		{PlatformDarwinARM64, BackendMetal, 128, -1},
+		{PlatformDarwinARM64, BackendCPU, 32, -1},
+		{PlatformDarwinAMD64, BackendCPU, 32, -1},
+		{PlatformLinuxAMD64, BackendCPU, 32, -1},
+		{PlatformLinuxAMD64, BackendCUDA128, 8, -1},
+		{PlatformLinuxAMD64, BackendVulkan, 16, -1},
+		{PlatformLinuxAMD64, BackendVulkan, 32, -1},
+		// Probed topologies: unified and discrete.
+		{PlatformDarwinARM64, BackendMetal, 16, 16 * 1024},
+		{PlatformDarwinARM64, BackendMetal, 128, 110100},
+		{PlatformLinuxAMD64, BackendCUDA128, 8, 32 * 1024},
+		{PlatformLinuxAMD64, BackendCUDA128, 32, 8 * 1024},
+		{PlatformLinuxAMD64, BackendCUDA128, 64, 24 * 1024},
+		{PlatformLinuxAMD64, BackendVulkan, 32, 12 * 1024},
+		{PlatformLinuxAMD64, BackendCPU, 8, 0},
+		{PlatformLinuxAMD64, BackendCPU, 64, 0},
+	}
+
+	for _, m := range machines {
+		name := fmt.Sprintf("%s/%s/ram%.0f/vram%d", m.platform, m.backend, m.ramGiB, max(m.deviceMiB, -1))
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			in := ResolveInput{MachineProfile: MachineProfile{
+				Platform: m.platform, Backend: m.backend, RAMGiB: m.ramGiB,
+			}}
+			if m.deviceMiB >= 0 {
+				var devices []DeviceMemory
+				if m.deviceMiB > 0 {
+					devices = []DeviceMemory{{
+						Name: "DEV0", Description: "NVIDIA GeForce RTX 4090",
+						TotalMiB: m.deviceMiB, FreeMiB: m.deviceMiB,
+					}}
+					if m.platform == PlatformDarwinARM64 {
+						devices[0] = DeviceMemory{
+							Name: "MTL0", Description: "Apple M4 Max",
+							TotalMiB: m.deviceMiB, FreeMiB: m.deviceMiB,
+						}
+					}
+				}
+				topology := probedTopology(t, m.platform, m.ramGiB, devices...)
+				in.Topology = &topology
+				in.GPU = ClassifyGPUs(topology.Devices)
+			}
+
+			res, err := Resolve(in)
+			if err != nil {
+				// A refusal is a correct outcome; this test is about the plans
+				// that are emitted.
+				if !errors.Is(err, ErrInsufficientMemory) {
+					t.Fatalf("Resolve error = %v, want success or ErrInsufficientMemory", err)
+				}
+				return
+			}
+
+			plan := res.Memory
+			ctx := plan.ContextSize
+			if ctx == 0 {
+				ctx = plan.FitMinContext // a fit-sized plan is held to its floor
+			}
+			offloaded := plan.OffloadsToDevice()
+			deviceMiB, hostMiB, _, ferr := footprint(profile, res.Packing, ctx, plan.KVType, offloaded,
+				false, plan.KVOffload, plan.MMProjOffload)
+			if ferr != nil {
+				t.Fatalf("footprint(%s, %d, %s, %v): %v", res.Packing, ctx, plan.KVType, offloaded, ferr)
+			}
+
+			// An accelerator nobody measured cannot be checked, and the plan
+			// says so — that is the one axis this test cannot assert on.
+			deviceUnmeasured := noteContaining(plan.Notes, "could not be measured")
+
+			if offloaded && !deviceUnmeasured && deviceMiB > plan.DeviceBudgetMiB {
+				t.Errorf("plan needs %d MiB on the accelerator against a %d MiB budget "+
+					"(%s, %d-token %s, -ngl %d)",
+					deviceMiB, plan.DeviceBudgetMiB, res.Packing, ctx, plan.KVType, deref(plan.Layers))
+			}
+			if hostMiB > plan.HostBudgetMiB {
+				t.Errorf("plan needs %d MiB of host RAM against a %d MiB budget "+
+					"(%s, %d-token %s, -ngl %d)",
+					hostMiB, plan.HostBudgetMiB, res.Packing, ctx, plan.KVType, deref(plan.Layers))
+			}
+			// On a unified machine the two footprints come out of ONE pool, so
+			// the sum is the number that has to fit — checking each against its
+			// own budget would pass a launch needing twice the machine's memory.
+			if plan.GPUFamily == GPUFamilyAppleSilicon || (m.deviceMiB < 0 && m.platform == PlatformDarwinARM64) {
+				if total := deviceMiB + hostMiB; !deviceUnmeasured && total > plan.HostBudgetMiB {
+					t.Errorf("unified pool: plan needs %d + %d = %d MiB against a %d MiB budget",
+						deviceMiB, hostMiB, total, plan.HostBudgetMiB)
+				}
+			}
+		})
+	}
 }

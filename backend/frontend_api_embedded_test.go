@@ -638,10 +638,16 @@ func assertNoPartialDownloads(t *testing.T, agentDir string) {
 
 // ── install gates ──────────────────────────────────────────────────────────
 
-// TestInstallEmbeddedLLMRefusesBelowTheRAMGateWithoutDownloading is D6 as an
-// RPC contract: a machine under 16 GiB gets an actionable refusal from the call
-// itself — not from a toast after a download — and not one byte is fetched.
-func TestInstallEmbeddedLLMRefusesBelowTheRAMGateWithoutDownloading(t *testing.T) {
+// TestInstallEmbeddedLLMRefusesBelowTheMemoryGateWithoutDownloading is the
+// combined memory gate as an RPC contract: a machine that cannot hold the model
+// gets an actionable refusal from the call itself — not from a toast after a
+// download — and not one byte is fetched.
+//
+// The refusal is no longer "below 16 GiB". This machine is refused because its
+// accelerator memory IS its system RAM, so the 8 GiB probe priced both pools and
+// the smallest modelled shape still does not fit inside the reserve. The message
+// says which pool is short by how much, which is what makes it actionable.
+func TestInstallEmbeddedLLMRefusesBelowTheMemoryGateWithoutDownloading(t *testing.T) {
 	f, rec, _ := newEmbeddedTestAPI(t)
 	f.embedded.probeFn = func(context.Context, *slog.Logger) (embeddedllm.Hardware, error) {
 		return embeddedllm.Hardware{
@@ -656,7 +662,7 @@ func TestInstallEmbeddedLLMRefusesBelowTheRAMGateWithoutDownloading(t *testing.T
 		return nil, errors.New("spawn forbidden")
 	}
 	f.embedded.installFn = func(context.Context, *embeddedllm.Installer, embeddedllm.InstallOptions) (*embeddedllm.InstallReport, error) {
-		t.Error("the install run started on a machine below the RAM gate")
+		t.Error("the install run started on a machine the memory gate refuses")
 		return nil, errors.New("install forbidden")
 	}
 	// Belt and braces: even if a run did start, its downloader must never reach
@@ -664,19 +670,31 @@ func TestInstallEmbeddedLLMRefusesBelowTheRAMGateWithoutDownloading(t *testing.T
 	supervisorOf(t, f)
 	f.embedded.installer.Downloader = &embeddedllm.Downloader{
 		Client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-			t.Error("the downloader performed an HTTP request after the RAM refusal")
+			t.Error("the downloader performed an HTTP request after the memory refusal")
 			return nil, errors.New("network forbidden")
 		})},
 	}
 
 	err := f.InstallEmbeddedLLM()
 	if err == nil {
-		t.Fatal("InstallEmbeddedLLM succeeded on an 8 GiB machine")
+		t.Fatal("InstallEmbeddedLLM succeeded on a machine that cannot hold the model")
 	}
+	if !errors.Is(err, embeddedllm.ErrInsufficientMemory) {
+		t.Errorf("error = %v, want it to wrap ErrInsufficientMemory", err)
+	}
+	// The deprecated sentinel still matches, because the pool that overflowed
+	// here IS system RAM. A caller written against the old gate keeps working —
+	// which is the whole point of asserting it from OUTSIDE the declaring
+	// package, where the compatibility claim is actually load-bearing.
+	//nolint:staticcheck // SA1019: matching a deprecated sentinel on purpose.
 	if !errors.Is(err, embeddedllm.ErrInsufficientRAM) {
-		t.Errorf("error = %v, want it to wrap ErrInsufficientRAM", err)
+		t.Errorf("error = %v, want a host-pool refusal to keep unwrapping to ErrInsufficientRAM", err)
 	}
-	for _, want := range []string{"16 GiB", "8.0 GiB"} {
+	// Actionable means BOTH pools with BOTH numbers, and the installed total so
+	// the refusal is diagnosable without re-running the probe.
+	for _, want := range []string{
+		"device memory", "host RAM", "GiB available", "reserve", "8.0 GiB installed",
+	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal %q is not actionable: it does not mention %q", err, want)
 		}
@@ -691,7 +709,7 @@ func TestInstallEmbeddedLLMRefusesBelowTheRAMGateWithoutDownloading(t *testing.T
 	if status.Installing {
 		t.Error("Installing = true after a refusal; the slot was not released")
 	}
-	if !strings.Contains(status.Error, "16 GiB") {
+	if !strings.Contains(status.Error, "does not fit this machine's memory") {
 		t.Errorf("status.Error = %q, want the refusal cause", status.Error)
 	}
 	if status.Installed {
@@ -704,6 +722,41 @@ func TestInstallEmbeddedLLMRefusesBelowTheRAMGateWithoutDownloading(t *testing.T
 	assertNoPartialDownloads(t, f.agentDir)
 	if f.config.EmbeddedLLM.Installed {
 		t.Error("config claims an install that was refused")
+	}
+}
+
+// TestInstallEmbeddedLLMDegradesWhenTheAcceleratorWasNotMeasured is the other
+// half of the same contract, and the reason the flat RAM floor was wrong: an
+// 8 GiB machine whose accelerator has its OWN memory is not refused by the
+// synchronous gate, because the RAM figure does not describe the pool the model
+// will live in. Nothing was measured on the device side, so the gate prices the
+// host pool alone and lets the install proceed.
+func TestInstallEmbeddedLLMDegradesWhenTheAcceleratorWasNotMeasured(t *testing.T) {
+	f, _, _ := newEmbeddedTestAPI(t)
+	f.embedded.probeFn = func(context.Context, *slog.Logger) (embeddedllm.Hardware, error) {
+		return embeddedllm.Hardware{
+			Platform: "linux-amd64",
+			Arch:     "amd64",
+			RAMGiB:   8,
+			Backend:  embeddedllm.BackendCUDA128,
+		}, nil
+	}
+	started := make(chan struct{}, 1)
+	f.embedded.installFn = func(context.Context, *embeddedllm.Installer, embeddedllm.InstallOptions) (*embeddedllm.InstallReport, error) {
+		started <- struct{}{}
+		return &embeddedllm.InstallReport{}, nil
+	}
+
+	if err := f.InstallEmbeddedLLM(); err != nil {
+		t.Fatalf("InstallEmbeddedLLM error = %v, want the degraded path to proceed", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the install run never started; the gate refused an unmeasured accelerator")
+	}
+	if got := f.GetEmbeddedLLMStatus().Error; got != "" {
+		t.Errorf("status.Error = %q, want no refusal recorded", got)
 	}
 }
 
@@ -1072,7 +1125,7 @@ func TestLoadEmbeddedLLMStartsTheServerAndStopStopsIt(t *testing.T) {
 	select {
 	case cmd := <-spawns:
 		joined := strings.Join(cmd.Args, " ")
-		for _, want := range []string{"--host 127.0.0.1", "--no-webui", fmt.Sprintf("--port %d", port), "-c 32768"} {
+		for _, want := range []string{"--host 127.0.0.1", "--no-ui", fmt.Sprintf("--port %d", port), "-c 32768"} {
 			if !strings.Contains(joined, want) {
 				t.Errorf("the launch arguments %q are missing %q", joined, want)
 			}
@@ -1408,5 +1461,125 @@ func TestEmbeddedLLMEventPayloadsSerializeToTheCatalogShape(t *testing.T) {
 	}
 	if want := `{"component":"model","stage":"downloading","bytes_done":1,"bytes_total":2}`; string(progressJSON) != want {
 		t.Errorf("progress payload = %s, want %s", progressJSON, want)
+	}
+}
+
+// TestGetEmbeddedLLMStatusCarriesTheCompatibilityGuards covers the disclosure
+// half of the guard contract at the boundary the Settings UI reads: an install
+// the pinned runtime documents a failure for reports WHICH failure, its typed
+// reason, its severity, its upstream citation and whether c0wrk could act on it.
+// A degraded install must not look identical to a clean one.
+func TestGetEmbeddedLLMStatusCarriesTheCompatibilityGuards(t *testing.T) {
+	f, _, _ := newEmbeddedTestAPI(t)
+	forbidEmbeddedSideEffects(t, f)
+
+	want := embeddedTestManifest(4321, 32768)
+	want.Backend = embeddedllm.BackendVulkan
+	want.Packing = embeddedllm.PackingPTQ1_0
+	want.PackingReason = embeddedllm.PackingReasonNoPQ2_0Kernels
+	want.GPUFamily = embeddedllm.GPUFamilyIntelArc
+	want.Guards = []embeddedllm.GuardDecision{
+		{
+			Guard:    embeddedllm.GuardVulkanIntelArcHang,
+			Action:   embeddedllm.GuardActionAdvisory,
+			Reason:   embeddedllm.GuardReasonHang,
+			Severity: embeddedllm.GuardSeverityWarning,
+			Issue:    "PrismML-Eng/llama.cpp#192",
+			Guidance: "PTQ1_0 on Vulkan is documented to hang Intel Arc GPUs after about 1,900 generated tokens",
+		},
+		{
+			// A substitution the install could not make: recorded, unapplied,
+			// with the reason in its guidance.
+			Guard:    embeddedllm.GuardROCmRDNA2Abort,
+			Action:   embeddedllm.GuardActionPreferBackend,
+			Reason:   embeddedllm.GuardReasonProcessAbort,
+			Severity: embeddedllm.GuardSeverityCritical,
+			Issue:    "PrismML-Eng/Bonsai-demo#197",
+			Backend:  embeddedllm.BackendVulkan,
+			Guidance: "ROCm/HIP is documented to abort on consumer RDNA2 GPUs (reinstall to apply it)",
+		},
+	}
+	writeEmbeddedInstallTree(t, f.agentDir, want)
+	// The startup phase is what reads manifest.json into the cached install
+	// record the status getter replays.
+	f.Lifecycle().InitEmbeddedLLM()
+
+	status := f.GetEmbeddedLLMStatus()
+	if !status.Installed {
+		t.Fatalf("status = %+v, want an installed record", status)
+	}
+	if status.PackingReason != string(embeddedllm.PackingReasonNoPQ2_0Kernels) {
+		t.Errorf("packing_reason = %q, want %q", status.PackingReason,
+			embeddedllm.PackingReasonNoPQ2_0Kernels)
+	}
+	if status.GPUFamily != string(embeddedllm.GPUFamilyIntelArc) {
+		t.Errorf("gpu_family = %q, want %q", status.GPUFamily, embeddedllm.GPUFamilyIntelArc)
+	}
+	if len(status.Guards) != 2 {
+		t.Fatalf("status carries %d guard(s), want 2: %+v", len(status.Guards), status.Guards)
+	}
+
+	hang := status.Guards[0]
+	if hang.Guard != string(embeddedllm.GuardVulkanIntelArcHang) || hang.Applied {
+		t.Errorf("guard[0] = %+v, want the unapplied #192 advisory", hang)
+	}
+	if hang.Reason != string(embeddedllm.GuardReasonHang) ||
+		hang.Severity != string(embeddedllm.GuardSeverityWarning) {
+		t.Errorf("guard[0] reason/severity = %q/%q, want %q/%q", hang.Reason, hang.Severity,
+			embeddedllm.GuardReasonHang, embeddedllm.GuardSeverityWarning)
+	}
+	if hang.Issue != "PrismML-Eng/llama.cpp#192" || hang.Guidance == "" {
+		t.Errorf("guard[0] issue/guidance = %q/%q, want the #192 citation and its guidance",
+			hang.Issue, hang.Guidance)
+	}
+
+	abort := status.Guards[1]
+	if abort.Applied || abort.Backend != string(embeddedllm.BackendVulkan) {
+		t.Errorf("guard[1] = %+v, want an unapplied substitution to Vulkan", abort)
+	}
+	if abort.Action != string(embeddedllm.GuardActionPreferBackend) {
+		t.Errorf("guard[1] action = %q, want %q", abort.Action, embeddedllm.GuardActionPreferBackend)
+	}
+}
+
+// TestGetEmbeddedLLMStatusWithoutGuardsCarriesAnEmptyArray pins the boundary
+// shape for the healthy machine: `guards` is an array, never null, so the
+// frontend has one code path.
+func TestGetEmbeddedLLMStatusWithoutGuardsCarriesAnEmptyArray(t *testing.T) {
+	f, _, _ := newEmbeddedTestAPI(t)
+	forbidEmbeddedSideEffects(t, f)
+	writeEmbeddedInstallTree(t, f.agentDir, embeddedTestManifest(4321, 32768))
+	f.Lifecycle().InitEmbeddedLLM()
+
+	status := f.GetEmbeddedLLMStatus()
+	if status.Guards == nil {
+		t.Fatal("guards = nil, want an empty array")
+	}
+	if len(status.Guards) != 0 {
+		t.Errorf("guards = %+v, want none on an unguarded install", status.Guards)
+	}
+
+	data, err := json.Marshal(status)
+	if err != nil {
+		t.Fatalf("marshalling the status: %v", err)
+	}
+	if !strings.Contains(string(data), `"guards":[]`) {
+		t.Errorf("the serialized status does not carry an empty guards array: %s", data)
+	}
+}
+
+// TestEmbeddedGuardIDsMarksUnappliedDecisions covers the log rendering: an
+// unapplied guard must not read like an applied one, because the difference is
+// whether the install is actually running the recommended build.
+func TestEmbeddedGuardIDsMarksUnappliedDecisions(t *testing.T) {
+	if got := embeddedGuardIDs(nil); got != "none" {
+		t.Errorf("embeddedGuardIDs(nil) = %q, want %q", got, "none")
+	}
+	got := embeddedGuardIDs([]embeddedllm.GuardDecision{
+		{Guard: embeddedllm.GuardCUDA133Crash, Applied: true},
+		{Guard: embeddedllm.GuardVulkanIntelArcHang},
+	})
+	if got != "cuda-13.3-crash,vulkan-intel-arc-hang(unapplied)" {
+		t.Errorf("embeddedGuardIDs = %q", got)
 	}
 }

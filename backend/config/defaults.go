@@ -121,6 +121,17 @@ func ApplyDefaults(cfg *Config) {
 		cfg.EmbeddedLLM.AutoUnload.Minutes = &minutes
 	}
 
+	// embedded_llm.tuning is deliberately NOT seeded, and the omission is the
+	// whole point: every one of its knobs is a pointer so that "the operator
+	// never wrote this" stays distinguishable from "the operator wrote auto"
+	// (and, for `cache_ram_mib` and `fit`, from an explicit 0 / false — which
+	// mean something different again). Materializing the defaults here would
+	// collapse that distinction on the first save and silently change which
+	// memory plan gets built. The zero TuningConfig — every knob absent — IS
+	// the documented all-Auto default, and the planner's own defaults
+	// (embeddedllm.DefaultParallel, embeddedllm.DefaultFitMinContext) are where
+	// the resolved values live. See TuningConfig.
+
 	// Executor defaults
 	if cfg.Executor.MaxRetries == 0 {
 		cfg.Executor.MaxRetries = 2

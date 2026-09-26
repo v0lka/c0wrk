@@ -26,7 +26,7 @@ import (
 // ternary packings outright and silently produces garbage on plain Q2_0
 // (ADR-066 D11). Bumping this constant requires updating every runtime and
 // cudart URL/checksum below and a CVE review of the old→new range.
-const RuntimeTag = "prism-b10709-9a9394a"
+const RuntimeTag = "prism-b10735-842b188"
 
 // ModelRevision is the pinned Hugging Face revision of the weights repository.
 //
@@ -54,8 +54,12 @@ type Packing string
 const (
 	// PackingPQ2_0 is the default 6.71 GiB packing.
 	PackingPQ2_0 Packing = "PQ2_0"
-	// PackingPTQ1_0 is the 5.54 GiB packing used on Vulkan (which has no
-	// PQ2_0 kernels) and whenever memory is short.
+	// PackingPTQ1_0 is the 5.54 GiB packing. It is chosen when the backend has
+	// no PQ2_0 kernels (Vulkan), when the host has AVX-512 and the pin predates
+	// upstream #245 (where PQ2_0 segfaults at load), when the MEASURED device
+	// budget does not fit PQ2_0, or on the GPU generations the model card
+	// measures as PTQ1_0-faster for decode (Ada and the L4). Installed RAM alone
+	// never selects it — see decidePacking.
 	PackingPTQ1_0 Packing = "PTQ1_0"
 )
 
@@ -153,47 +157,47 @@ var runtimeAssets = map[string]map[Backend]Asset{
 		// Metal is deliberately absent here — the probe only yields Metal on
 		// darwin/arm64, and an Intel Mac runs with -ngl 0.
 		BackendCPU: newRuntimeAsset("llama-"+RuntimeTag+"-bin-macos-x64.tar.gz",
-			"a4417a984fa92f72f01e40dfb8fb471a16357c08df62e72e41b8a190a29d916d", 11515388),
+			"c246b099d4c29cda21861333d2349477eba0c168a53a8ec3d770b4c300beda5e", 11552821),
 	},
 	PlatformDarwinARM64: {
 		BackendMetal: newRuntimeAsset("llama-"+RuntimeTag+"-bin-macos-arm64.tar.gz",
-			"f9cdf245fb7b832f1996dd776b321d4ae1f23b6d88c380100f636742c3a980ff", 11500187),
+			"a5c7a4d1f4f4ac7571aefdda5d1861e92ae196588dabb92525265d4c4ccbb7bb", 11509540),
 		// Same archive: the macOS arm64 build is the Metal build, and it is
 		// also what a CPU-only run on Apple Silicon uses.
 		BackendCPU: newRuntimeAsset("llama-"+RuntimeTag+"-bin-macos-arm64.tar.gz",
-			"f9cdf245fb7b832f1996dd776b321d4ae1f23b6d88c380100f636742c3a980ff", 11500187),
+			"a5c7a4d1f4f4ac7571aefdda5d1861e92ae196588dabb92525265d4c4ccbb7bb", 11509540),
 	},
 	PlatformLinuxAMD64: {
 		BackendCPU: newRuntimeAsset("llama-"+RuntimeTag+"-bin-ubuntu-x64.tar.gz",
-			"48b487f00fd2b27bc3ef77c701b43c1c23a4af484d2a203ae87d0efc41506728", 17108139),
+			"f97eb58e365e4a2dadaf4c1eabbc45a4cc30a055d141abc10e533d88267f3008", 17380722),
 		BackendVulkan: newRuntimeAsset("llama-"+RuntimeTag+"-bin-ubuntu-vulkan-x64.tar.gz",
-			"4d7f858539d0207cf64e90beb83fcb7e076580d52856580f223cbecdd3ef6d03", 34248149),
+			"2858b6a8f013736efbf429c99570e49162f0e382b3afd8fe7819937acaa3f107", 35515317),
 		BackendROCm: newRuntimeAsset("llama-"+RuntimeTag+"-bin-ubuntu-rocm-7.2-x64.tar.gz",
-			"230f879d538bb9f794d25c908bc8c0f676774c41c3e70ea719131c86d899841d", 139908720),
+			"47017372214be55a545aa31090be4e02e67e0d3c68d5733fc88a946412f02c3f", 139691397),
 		BackendCUDA124: newRuntimeAsset("llama-"+RuntimeTag+"-bin-linux-cuda-12.4-x64.tar.gz",
-			"f542fdcc818562359e947db65e0b11c4658dd5ca3bd240490448252e817d8e7a", 260869644),
+			"b58caa10e38ea2d3af419bc1c908f785b5f8756b07c98cb1752d50e1e985d4c6", 261907543),
 		BackendCUDA128: newRuntimeAsset("llama-"+RuntimeTag+"-bin-linux-cuda-12.8-x64.tar.gz",
-			"8aec67eb023b251712c7e6490f367b5671bf587eced1436a9b85f4a90c3b7d3d", 167241119),
+			"5cbac5269804e4eb63676aeaec1ee7d4cff6e22b87da91de9b05795bf635998e", 168052249),
 		BackendCUDA133: newRuntimeAsset("llama-"+RuntimeTag+"-bin-linux-cuda-13.3-x64.tar.gz",
-			"7e01a434e513b373026c347cd008502ab04f6307d1cab71fcd4cea212b4fdbb0", 146381070),
+			"a84e28e22f108fb1f9b71bbde01e42fbe4626d2f0519b13394dd1ca0b91e9039", 147328305),
 	},
 	PlatformLinuxARM64: {
 		BackendCPU: newRuntimeAsset("llama-"+RuntimeTag+"-bin-ubuntu-arm64.tar.gz",
-			"f97eeed89b61786c41aba66caa5d39aa17e9435754ee19ad36a7de8ca3f32f49", 13753343),
+			"1fc79ccda103880adc33083920eda71f752af7996df576ea90889814baa04cc3", 13792856),
 		BackendVulkan: newRuntimeAsset("llama-"+RuntimeTag+"-bin-ubuntu-vulkan-arm64.tar.gz",
-			"d8108de54933bc8212f31a4d13d3f6d517820467837a6dce866b847506ceacc0", 28002242),
+			"5146495910072dd3543eadebba125fecd7ae598c46851e139c2f011d43618f61", 28398701),
 	},
 	PlatformWindowsAMD64: {
 		BackendCPU: newRuntimeAsset("llama-"+RuntimeTag+"-bin-win-cpu-x64.zip",
-			"92cd4d1cee11107593ff87d77eb57b02d804c86dd4b13224e18ba963a4271ad8", 18785841),
+			"f0b2b80710fc00a38dfd4c9345c97c928ea3e05114e51654b7dad617bc010615", 19030039),
 		BackendVulkan: newRuntimeAsset("llama-"+RuntimeTag+"-bin-win-vulkan-x64.zip",
-			"fabef609b588cbbed85b5f10b45809c46088f0a63caca7976054034e24b40836", 29908460),
+			"dbc74e6eb3835a3d6d94e947bd0135d3786765117136dc2b797277ad8baf0787", 30982836),
 		BackendROCm: newRuntimeAsset("llama-"+RuntimeTag+"-bin-win-hip-radeon-x64.zip",
-			"86792e1590232e4ac702df2fe961fe196552ad7642658b5347834f539a1525b6", 321932526),
+			"24f7259c18a6b3e0f6afdd250bd5304e6bd7164b686327836d79b38f881112ee", 321722730),
 		BackendCUDA124: newRuntimeAsset("llama-"+RuntimeTag+"-bin-win-cuda-12.4-x64.zip",
-			"f565c8428c1f108311f65ed97f02425188b3aa3c745c2bc597521bbd24bcbbc9", 253442371),
+			"a6fe7fe4a5d72d729d593e5da3b47b30d24ffebd52e61b616f0150447e07f5dd", 254452483),
 		BackendCUDA133: newRuntimeAsset("llama-"+RuntimeTag+"-bin-win-cuda-13.3-x64.zip",
-			"d656f217172c489706df40951e46bef647eb1a81eb8eeb1398c8f38bd7fa9725", 145031500),
+			"80e950d34b03a5fc011a5d5aa74a07c7aef58dca0218b6b62ea8fc3177ff1655", 146021367),
 		// BackendCUDA128 intentionally absent — see the gap note above.
 	},
 }

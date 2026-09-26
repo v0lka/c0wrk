@@ -12,7 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,8 +26,10 @@ import (
 // llama-server, bound strictly to loopback, with its built-in Web UI disabled
 // (ADR-066 D12). Everything the command line depends on comes from the install
 // record (manifest.json) plus the pure launch policy in resolve.go — the
-// supervisor never invents a flag value and never re-derives hardware at load
-// time.
+// supervisor never invents a flag value. It MAY re-measure the hardware at load
+// time, but only as a fail-soft refinement of the recorded plan: a probe that
+// wedges, answers nothing or re-plans into a refusal leaves the install's
+// decision in place, so a load can never fail because a driver query did.
 //
 // Two properties are load-bearing and easy to lose:
 //
@@ -63,6 +67,20 @@ const (
 	// DefaultStopTimeout is the graceful window between the termination signal
 	// and the kill.
 	DefaultStopTimeout = 10 * time.Second
+	// DefaultLoadProbeTimeout bounds the OPTIONAL device probe a Load runs
+	// before it decides the launch shape. It is deliberately short — an order
+	// of magnitude below DefaultReadyTimeout — because the probe is a
+	// refinement and never a precondition: whatever it costs is charged to
+	// every cold start, including the one a first request waits on through the
+	// ensure-loaded transport. `ProbeDevices` bounds its own spawn at
+	// `probeCommandTimeout` (2 s); this is the outer cap that also covers a
+	// caller-substituted probe.
+	DefaultLoadProbeTimeout = 10 * time.Second
+	// maxPropsBodyLen caps the /props readback. The response is a small JSON
+	// object of server properties; the cap is the same posture the readiness
+	// probe takes (maxModelsBodyLen) — a local server is trusted, but an
+	// unbounded read from a socket is still an unbounded read.
+	maxPropsBodyLen = 1 << 20
 	// defaultKillWait bounds the wait after a kill. It should never be needed —
 	// SIGKILL is unconditional — but a process stuck in an uninterruptible syscall
 	// must not wedge shutdown forever.
@@ -77,6 +95,21 @@ const (
 	tailLines        = 24
 	maxModelsBodyLen = 1 << 20
 )
+
+// fitFailureMarker is the fit contract's failure signature: the complaint the
+// pinned fork's `--fit` pass logs (common_fit_params, fit.cpp) when it cannot
+// size the launch inside the free device memory it measured. Its success
+// sibling — "common_fit_params: successfully fit params to free device
+// memory" — closes every fit trace captured from the pin (2026-09-26,
+// `prism-b10735-842b188`, darwin-arm64: projected 24450 MiB vs 109950 MiB
+// free, no changes needed), and this is the same sentence in the failure
+// spelling the abort path emits before the process dies. Because the planner
+// DELEGATES the launch shape to `--fit` whenever the operator pinned nothing
+// (ADR-067 D2), a pin bump that changes fit's contract can turn a planned
+// launch into an abort whose only trace is this line — so the tail is scanned
+// for it and the finding surfaced (Status.FitWarning) instead of silently
+// dropped with the dead run.
+const fitFailureMarker = "failed to fit params to free device memory"
 
 // Fixed launch policy (ADR-066, "Sampling flags"): the fork's demo scripts run
 // the model with exactly these values, and they are deliberately not
@@ -146,6 +179,14 @@ type Status struct {
 	Since time.Time
 	// Message is the StateError cause, empty otherwise.
 	Message string
+	// FitWarning is the fit-contract finding of the last failed launch: the
+	// fork's "failed to fit params to free device memory" complaint, scanned
+	// out of the dead run's bounded output tail and rendered as a sentence an
+	// operator can act on. Empty when no run failed that way, and cleared by
+	// the next launch that becomes ready. It outlives the failed run so the
+	// Settings install record can show it — a plan/pin mismatch must be
+	// REPORTED, not silently retried away.
+	FitWarning string
 }
 
 // Supervisor refusals. All are sentinels so callers can branch with errors.Is
@@ -168,9 +209,123 @@ var (
 	ErrServerBusy = errors.New("the embedded LLM server is running")
 )
 
+// layerKind is LayerMode's private discriminator. It is unexported so that no
+// caller outside this package can build a fifth answer, and so that the mapping
+// from a kind to an argv element stays the single switch in LayerMode.arg.
+type layerKind uint8
+
+const (
+	// layerKindAuto omits `-ngl` entirely.
+	layerKindAuto layerKind = iota
+	// layerKindAll renders `-ngl all`.
+	layerKindAll
+	// layerKindCPU renders `-ngl 0`.
+	layerKindCPU
+	// layerKindExact renders `-ngl <count>`.
+	layerKindExact
+)
+
+// LayerMode is the `-ngl` half of a LaunchSpec: how many layers the launch puts
+// on the accelerator. It has FOUR answers, not three, and the fourth is the
+// absence of an answer:
+//
+//	LayerAuto()     OMIT the flag
+//	LayerAll()      -ngl all
+//	LayerCPU()      -ngl 0
+//	LayerCount(n)   -ngl n
+//
+// LayerAuto is deliberately NOT `-ngl auto`, even though the pinned fork
+// accepts that spelling and even defaults to it
+// (`-ngl, --gpu-layers, --n-gpu-layers N   max. number of layers to store in
+// VRAM, either an exact number, 'auto', or 'all' (default: auto)`). `--fit`
+// adjusts only UNSET arguments, and the fork's fit.cpp THROWS on the ambiguous
+// shape rather than degrading it — the throw sites at `common/fit.cpp:183` and
+// the cluster at `:462`, `:466`, `:472`, `:477`, `:480`, `:483` are all "an
+// argument --fit would have chosen is already set", confirmed empirically
+// against the pinned runtime: `-ngl 99` beside `--fit on` ABORTS the launch.
+// Passing `-ngl auto` would still be passing a value, so a fit-sized launch
+// must carry no `-ngl` element at all. That is plan.go's exclusivity rule, and
+// this type is how the launcher expresses it.
+//
+// The zero value is LayerAuto, which is what lets a MemoryPlan's nil `Layers`
+// map onto a spec with no translation step and no sentinel to forget. The
+// discriminator and the count are private, so nothing free-form can reach argv
+// through this field (SECURITY.md ASI05).
+type LayerMode struct {
+	kind   layerKind
+	layers int
+}
+
+// LayerAuto is "the runtime's fit pass chooses the offload": `-ngl` is omitted
+// from the command line. It is only valid together with Fit.
+func LayerAuto() LayerMode { return LayerMode{kind: layerKindAuto} }
+
+// LayerAll renders `-ngl all`: every offloadable layer on the accelerator.
+func LayerAll() LayerMode { return LayerMode{kind: layerKindAll} }
+
+// LayerCPU renders `-ngl 0`: the model stays in system RAM.
+func LayerCPU() LayerMode { return LayerMode{kind: layerKindCPU} }
+
+// LayerCount renders `-ngl n` for an exact layer count. A negative count is
+// representable and is refused by Validate rather than clamped here: clamping
+// would hide a caller's mistake behind a launch that offloads something the
+// caller never asked for. The runtime itself treats any count at or above the
+// model's offloadable layer count as "all", so a large n loses nothing.
+func LayerCount(n int) LayerMode { return LayerMode{kind: layerKindExact, layers: n} }
+
+// EmitsFlag reports whether Args renders `-ngl` at all. It is the LayerMode
+// spelling of MemoryPlan.EmitsLayers, and it is what makes the exclusivity rule
+// checkable exactly as it is stated — "`-fit on` and no `-ngl`" — rather than
+// through a number the reader has to re-interpret.
+func (m LayerMode) EmitsFlag() bool { return m.kind != layerKindAuto }
+
+// arg renders the `-ngl` value. ok is false for LayerAuto, whose flag is
+// omitted rather than given a value; Args is its only caller.
+func (m LayerMode) arg() (value string, ok bool) {
+	switch m.kind {
+	case layerKindAll:
+		return "all", true
+	case layerKindCPU:
+		return strconv.Itoa(nglCPUOnly), true
+	case layerKindExact:
+		return strconv.Itoa(m.layers), true
+	case layerKindAuto:
+	}
+	return "", false
+}
+
+// String is for diagnostics and error text only. It is never an argv element —
+// Args renders through arg(), and this spelling names the mode rather than the
+// flag value so a log line distinguishes an omitted `-ngl` from `-ngl auto`.
+func (m LayerMode) String() string {
+	value, ok := m.arg()
+	if !ok {
+		return "auto (flag omitted)"
+	}
+	return value
+}
+
+// cacheRAMNoLimit is the pinned fork's own `--cache-ram` spelling of "no
+// ceiling" (`-cram, --cache-ram N   set the maximum cache size in MiB
+// (default: 8192, -1 - no limit, 0 - disable)`). It is the only negative value
+// Validate accepts for that field.
+const cacheRAMNoLimit = -1
+
 // LaunchSpec is everything one llama-server invocation is derived from. It is
-// built from the install record plus the pure launch policy in resolve.go, so
-// the flags always match what the installer provisioned for this machine.
+// built from the install record plus the pure launch policy in resolve.go — or,
+// for a memory-aware launch, from a MemoryPlan through ApplyMemoryPlan — so the
+// flags always match what this machine was provisioned for.
+//
+// Args is the ONLY place a llama-server command line exists, and every element
+// it renders comes from a field below. That is a security property and not just
+// a tidiness one (SECURITY.md ASI05): there is no free-form flag, argument or
+// command-line string anywhere in this struct, so nothing an operator or a
+// config file says can become an argv element. The four string-typed fields
+// that do reach argv are each pinned by Validate — Host to the loopback
+// constant, KVType and SplitMode to closed enums, and Devices token by token —
+// and the three path fields come from the install record and the layout, not
+// from config. TestLaunchSpecArgsRenderTypedValuesOnly enforces this at the
+// syntax-tree level, so widening it is a deliberate, reviewed act.
 type LaunchSpec struct {
 	// ServerBinary is the absolute path of llama-server inside the installed
 	// runtime tree.
@@ -185,19 +340,95 @@ type LaunchSpec struct {
 	Host string
 	// Port is the persisted loopback port.
 	Port int
-	// Layers is -ngl, from the platform+backend policy in resolve.go.
-	Layers int
-	// ContextSize is -c: the RAM tier resolved at install time and recorded in
-	// the manifest. Never unspecified, never the model's own training context.
+	// Layers is -ngl. LayerAuto omits the flag, which is the only shape a
+	// fit-sized launch may carry; see LayerMode.
+	Layers LayerMode
+	// ContextSize is -c. Zero means "the runtime's fit pass sizes it" and is
+	// rendered as an explicit zero, which the fork reads as its own default
+	// (`-c, --ctx-size N   size of the prompt context (default: 0, 0 = loaded
+	// from model)`) and --fit then adjusts; it is valid only together with Fit.
+	// With Fit false the planner has computed the context and it is always
+	// positive. Either way it never exceeds the model's own training context —
+	// an unspecified one lets the server fall back to that training context,
+	// which is memory-unaware and OOMs a constrained machine once -ngl offloads
+	// the KV cache.
 	ContextSize int
 	// ImageMaxTokens is --image-max-tokens. ImageMaxTokensUncapped omits the
 	// flag entirely (CUDA/ROCm run uncapped).
 	ImageMaxTokens int
+
+	// ── the memory-plan surface ──
+	//
+	// Everything below is a typed projection of a MemoryPlan (plan.go). Omission
+	// is expressed the way that struct expresses it — a nil pointer, a zero, an
+	// empty slice, the enum's Auto member — so a plan maps onto a spec field for
+	// field with no sentinel to invent.
+
+	// Fit is `-fit`, and it is the one memory flag Args renders
+	// UNCONDITIONALLY. The fork's own default is 'on' (`-fit, --fit [on|off]
+	// whether to adjust unset arguments to fit in device memory ('on' or 'off',
+	// default: 'on')`), and this subsystem does not rely on it: `--fit` is an
+	// undocumented fork contract — stock llama.cpp has no such switch — so a pin
+	// bump could flip or drop the default, and a flipped default would silently
+	// turn every explicit-offload launch into a fit.cpp abort. Rendering it
+	// always means the launch shape is a property of this struct rather than of
+	// whichever binary happens to be pinned.
+	Fit bool
+	// FitTargetMiB is `-fitt`, the per-device margin fit leaves free. Zero omits
+	// the flag and keeps the runtime's own 1024 MiB default. Rendered only under
+	// Fit, since with fit off nothing reads it.
+	FitTargetMiB int
+	// FitMinContext is `-fitc`, the smallest context fit may settle on.
+	// Rendered only under Fit, where Validate requires it to be positive:
+	// letting the fork's own 4096 default apply reproduces the pinned model's
+	// most-reported failure, which is what DefaultFitMinContext exists to
+	// prevent. A fit-OFF plan still carries the planner's floor in this field
+	// (plan.go sets it unconditionally); Args omits it and Validate accepts it,
+	// because there it is a record of the gate the planner ran and not a
+	// decision being dropped.
+	FitMinContext int
+	// KVType is `-ctk`/`-ctv`, one precision for both because memory.go
+	// documents that a mixed pair silently drops to CPU until the target context
+	// fits. Empty omits both flags and leaves the runtime's own f16 default;
+	// any other value must be a member of memory.go's closed three-precision
+	// set, so an unmodelled precision is a refusal rather than a fallback.
+	KVType KVType
+	// KVOffload nil omits `-kvo`/`-nkvo` and keeps the runtime's default
+	// (enabled). An explicit false renders `-nkvo`: the KV cache stays in system
+	// RAM, which trades device memory for host memory and attention bandwidth.
+	KVOffload *bool
+	// MMProjOffload nil omits `--mmproj-offload`/`--no-mmproj-offload` and keeps
+	// the runtime's default (enabled). An explicit false renders
+	// `--no-mmproj-offload`: the vision projector's worst-case reserve stays in
+	// system RAM.
+	MMProjOffload *bool
+	// Parallel is `-np`, and like Fit it is ALWAYS rendered. The fork's default
+	// is `-1` (auto), which is unsafe here for two measured reasons: auto
+	// inflates fit's own compute reserve per stream (24450 MiB → 77297 MiB at 4
+	// slots), and `-np` SPLITS `-c` across slots, so `-c 8192 -np 4` yields
+	// `n_ctx_slot 2048`. See DefaultParallel. Validate requires at least 1.
+	Parallel int
+	// CacheRAMMiB is `--cache-ram` (the fork also accepts the short alias
+	// `-cram`; the long spelling is used here so the flag is greppable in a
+	// process listing). nil omits the flag and keeps the runtime's own default;
+	// a non-nil value is passed through verbatim, including cacheRAMNoLimit for
+	// "no ceiling" and 0 to disable the prompt cache, because disabling it is a
+	// legitimate choice.
+	CacheRAMMiB *int
+	// Devices is `-dev`, the comma-separated offload target list. Empty omits
+	// the flag. Any entry pins the offload, so a non-empty list is incompatible
+	// with Fit. Each name is validated as a single separator-free, dash-free
+	// token before it can reach argv — see validateDeviceName.
+	Devices []string
+	// SplitMode is `-sm`. SplitModeAuto (the zero value) omits the flag; any
+	// other member of the runtime's closed set pins the split and is
+	// incompatible with Fit.
+	SplitMode SplitMode
 }
 
 // Validate refuses a specification that must never reach exec: spawning it
-// would either fail obscurely or, worse, start a server with a memory-unaware
-// context.
+// would either fail obscurely, abort inside the fork's own fit pass, or — worse
+// — start a server whose offload and context nobody decided.
 func (spec LaunchSpec) Validate() error {
 	if spec.ServerBinary == "" {
 		return fmt.Errorf("%w: no llama-server binary", ErrLaunchSpecInvalid)
@@ -212,17 +443,42 @@ func (spec LaunchSpec) Validate() error {
 	if !usablePort(spec.Port) {
 		return fmt.Errorf("%w: port %d is not a usable TCP port", ErrLaunchSpecInvalid, spec.Port)
 	}
-	if spec.Layers < 0 {
-		return fmt.Errorf("%w: -ngl %d is negative", ErrLaunchSpecInvalid, spec.Layers)
+	if spec.Layers.kind == layerKindExact && spec.Layers.layers < 0 {
+		return fmt.Errorf("%w: -ngl %d is negative", ErrLaunchSpecInvalid, spec.Layers.layers)
 	}
-	// The context must be an explicit positive tier: an unspecified one lets the
-	// server fall back to the model's own training context, which is
-	// memory-unaware and OOMs a constrained machine once -ngl offloads the KV
-	// cache. Nothing above the resolver's top tier is launchable either — the
-	// subsystem never asks for more than Resolve can justify.
-	if spec.ContextSize <= 0 || spec.ContextSize > contextTierTop {
-		return fmt.Errorf("%w: context size %d is outside the resolved tiers (1..%d)",
-			ErrLaunchSpecInvalid, spec.ContextSize, contextTierTop)
+	if err := spec.validateFitExclusivity(); err != nil {
+		return err
+	}
+	if err := spec.validateContext(); err != nil {
+		return err
+	}
+	if spec.Fit && (spec.FitMinContext <= 0 || spec.FitMinContext > maxTrainingContext) {
+		return fmt.Errorf("%w: -fit on needs a -fitc floor in 1..%d, got %d — the runtime's own default of %d is the truncated-answer failure DefaultFitMinContext exists to prevent",
+			ErrLaunchSpecInvalid, maxTrainingContext, spec.FitMinContext, upstreamFitMinContext)
+	}
+	if spec.FitTargetMiB < 0 {
+		return fmt.Errorf("%w: -fitt %d is negative", ErrLaunchSpecInvalid, spec.FitTargetMiB)
+	}
+	if spec.KVType != "" && !spec.KVType.Valid() {
+		return fmt.Errorf("%w: -ctk/-ctv %q is outside the modelled set (%s)",
+			ErrLaunchSpecInvalid, string(spec.KVType), strings.Join(kvTypeNames(), ", "))
+	}
+	if spec.Parallel < 1 {
+		return fmt.Errorf("%w: -np %d is below the single slot this subsystem serves; the runtime's own auto default splits -c across slots",
+			ErrLaunchSpecInvalid, spec.Parallel)
+	}
+	if spec.CacheRAMMiB != nil && *spec.CacheRAMMiB < cacheRAMNoLimit {
+		return fmt.Errorf("%w: --cache-ram %d MiB is below %d, the runtime's own spelling of no limit",
+			ErrLaunchSpecInvalid, *spec.CacheRAMMiB, cacheRAMNoLimit)
+	}
+	if !splitModeIsKnown(spec.SplitMode) {
+		return fmt.Errorf("%w: -sm %q is not one of the runtime's split modes (%s)",
+			ErrLaunchSpecInvalid, string(spec.SplitMode), strings.Join(splitModeNames(), ", "))
+	}
+	for _, device := range spec.Devices {
+		if err := validateDeviceName(device); err != nil {
+			return err
+		}
 	}
 	if spec.ImageMaxTokens < 0 {
 		return fmt.Errorf("%w: --image-max-tokens %d is negative",
@@ -231,17 +487,172 @@ func (spec LaunchSpec) Validate() error {
 	return nil
 }
 
-// Args renders the command line. The flag order is fixed and the values are the
-// ones the pinned fork was validated with; the Web UI is always off.
+// validateFitExclusivity is plan.go's exclusivity rule enforced at the last gate
+// before exec. Exactly one of {this spec, the runtime's fit pass} decides the
+// offload, and the fork refuses the ambiguous shape rather than picking a
+// winner — so an explicit -ngl, -dev or -sm beside `-fit on` is a spec error
+// here, not a spawn-time abort and not a silently ignored decision.
+//
+// The converse is enforced too: with `-fit off` an omitted -ngl leaves the
+// offload to the runtime's own `auto` default, which is decided by the model
+// file rather than by any memory measurement. That is precisely the
+// memory-unaware launch this subsystem exists to prevent, so a fit-off spec must
+// pin the layer count.
+func (spec LaunchSpec) validateFitExclusivity() error {
+	if !spec.Fit {
+		if !spec.Layers.EmitsFlag() {
+			return fmt.Errorf("%w: -fit off needs an explicit -ngl, because with fit off nothing else sizes the offload",
+				ErrLaunchSpecInvalid)
+		}
+		return nil
+	}
+	switch {
+	case spec.Layers.EmitsFlag():
+		return fmt.Errorf("%w: -fit on cannot size a launch whose -ngl is already pinned to %s; the fork's fit pass aborts on that combination",
+			ErrLaunchSpecInvalid, spec.Layers)
+	case len(spec.Devices) > 0:
+		return fmt.Errorf("%w: -fit on cannot size a launch whose -dev is already pinned to %s",
+			ErrLaunchSpecInvalid, strings.Join(spec.Devices, ","))
+	case spec.SplitMode != SplitModeAuto:
+		return fmt.Errorf("%w: -fit on cannot size a launch whose -sm is already pinned to %q",
+			ErrLaunchSpecInvalid, string(spec.SplitMode))
+	}
+	return nil
+}
+
+// validateContext is the `-c` rule. The ceiling is the model's own training
+// context — memory.go's maxTrainingContext, the same figure
+// ModelMemoryProfile.MaxContext reports — because nothing above it is
+// representable and a fit-sized plan may legitimately be held to a floor at the
+// top of the modelled range. The floor moved with the memory planner: a zero
+// context is no longer "unspecified", it is "fit decides", and it is accepted
+// only when fit is actually on to decide it. A negative one is refused outright.
+func (spec LaunchSpec) validateContext() error {
+	switch {
+	case spec.ContextSize < 0:
+		return fmt.Errorf("%w: context size %d is negative", ErrLaunchSpecInvalid, spec.ContextSize)
+	case spec.ContextSize == 0 && !spec.Fit:
+		return fmt.Errorf("%w: context size 0 means --fit sizes the context, but -fit is off and nothing else would",
+			ErrLaunchSpecInvalid)
+	case spec.ContextSize > maxTrainingContext:
+		return fmt.Errorf("%w: context size %d exceeds the model's own %d-token training context",
+			ErrLaunchSpecInvalid, spec.ContextSize, maxTrainingContext)
+	}
+	return nil
+}
+
+// splitModeIsKnown reports whether the mode is a member of the closed set the
+// pinned fork accepts (`-sm, --split-mode {none,layer,row,tensor}`, plus
+// SplitModeAuto for "omit the flag"). An unknown spelling is refused rather than
+// passed through, so a typo cannot become an argv element.
+func splitModeIsKnown(mode SplitMode) bool {
+	switch mode {
+	case SplitModeAuto, SplitModeNone, SplitModeLayer, SplitModeRow, SplitModeTensor:
+		return true
+	default:
+		return false
+	}
+}
+
+// splitModeNames renders the closed set for diagnostics.
+func splitModeNames() []string {
+	return []string{
+		string(SplitModeNone), string(SplitModeLayer),
+		string(SplitModeRow), string(SplitModeTensor),
+	}
+}
+
+// validateDeviceName is the typed-value guarantee for the one argv element Args
+// builds by joining strings. A device name is a probe result rather than config,
+// but it is still a string, so it is checked instead of trusted: the joined list
+// must stay ONE argv element that the runtime parses as a device list and as
+// nothing else.
+//
+// What this does not have to defend against is command injection — argv goes to
+// exec directly and never through a shell, so no value here can introduce a
+// command. What a malformed name could do is smuggle a second device past the
+// planner's device decision, or present the runtime's parser with something that
+// reads as a flag.
+func validateDeviceName(name string) error {
+	switch {
+	case name == "":
+		return fmt.Errorf("%w: -dev carries an empty device name", ErrLaunchSpecInvalid)
+	case strings.ContainsAny(name, ", \t\n\r"):
+		return fmt.Errorf("%w: -dev device name %q contains a separator, so it would smuggle a second device into the list",
+			ErrLaunchSpecInvalid, name)
+	case strings.HasPrefix(name, "-"):
+		return fmt.Errorf("%w: -dev device name %q reads as a flag", ErrLaunchSpecInvalid, name)
+	}
+	return nil
+}
+
+// fitArg renders the literal `-fit` value. It mirrors MemoryPlan.FitArg so the
+// exclusivity rule reads identically on both sides of the bridge, and it is a
+// two-branch choice between fixed literals: no value from outside this package
+// can reach the flag.
+func (spec LaunchSpec) fitArg() string {
+	if spec.Fit {
+		return "on"
+	}
+	return "off"
+}
+
+// Args renders the command line. This function is the only place a llama-server
+// argv exists; the flag order is fixed, and every value is either a literal in
+// this file or an integer/enum rendering of a typed LaunchSpec field. The Web UI
+// is always off and the bind is always loopback.
+//
+// The order groups by concern so a diff reads as a decision: identity and
+// socket, then the fit switch that decides who sizes the launch, then the
+// offload shape, then the context and its cache, then the slot and prompt-cache
+// budgets, then the fixed sampling policy, the UI kill switch, and finally the
+// vision flags.
 func (spec LaunchSpec) Args() []string {
-	args := make([]string, 0, 24)
+	args := make([]string, 0, 34)
 	args = append(args,
 		"-m", spec.ModelFile,
 		"--host", spec.Host,
 		"--port", strconv.Itoa(spec.Port),
-		"-ngl", strconv.Itoa(spec.Layers),
+		// Always explicit — see LaunchSpec.Fit.
+		"-fit", spec.fitArg(),
+	)
+	// The two fit knobs are rendered only under fit: with `-fit off` the
+	// runtime never reads them, and passing them would advertise a decision
+	// nobody made.
+	if spec.Fit && spec.FitTargetMiB > 0 {
+		args = append(args, "-fitt", strconv.Itoa(spec.FitTargetMiB))
+	}
+	if spec.Fit && spec.FitMinContext > 0 {
+		args = append(args, "-fitc", strconv.Itoa(spec.FitMinContext))
+	}
+	// LayerAuto omits the element entirely — see LayerMode.
+	if layers, ok := spec.Layers.arg(); ok {
+		args = append(args, "-ngl", layers)
+	}
+	if spec.SplitMode != SplitModeAuto {
+		args = append(args, "-sm", string(spec.SplitMode))
+	}
+	if len(spec.Devices) > 0 {
+		args = append(args, "-dev", strings.Join(spec.Devices, ","))
+	}
+	args = append(args,
 		"-fa", flashAttention,
 		"-c", strconv.Itoa(spec.ContextSize),
+	)
+	if spec.KVType != "" {
+		// One precision for both halves: memory.go documents that a mixed pair
+		// silently drops to CPU until the target context fits.
+		precision := string(spec.KVType)
+		args = append(args, "-ctk", precision, "-ctv", precision)
+	}
+	if spec.KVOffload != nil && !*spec.KVOffload {
+		args = append(args, "-nkvo")
+	}
+	args = append(args, "-np", strconv.Itoa(spec.Parallel))
+	if spec.CacheRAMMiB != nil {
+		args = append(args, "--cache-ram", strconv.Itoa(*spec.CacheRAMMiB))
+	}
+	args = append(args,
 		"--temp", samplingTemp,
 		"--top-p", samplingTopP,
 		"--top-k", samplingTopK,
@@ -249,15 +660,69 @@ func (spec LaunchSpec) Args() []string {
 		// D12: the built-in Web UI ships its own MCP client and agentic loop.
 		// It is disabled unconditionally — this process is an inference
 		// endpoint for c0wrk and nothing else.
-		"--no-webui",
+		//
+		// `--no-ui` is the canonical spelling: the pinned fork registers the
+		// switch as the alias pair {"--ui", "--webui"} / {"--no-ui",
+		// "--no-webui"} (common/arg.cpp), and `--ui`-first is the vocabulary
+		// every related flag uses (--ui-config, --ui-mcp-proxy). The legacy
+		// `--no-webui` is still accepted as a trailing alias, so this is a
+		// spelling migration rather than a behavior change — and because the
+		// runtime is a compile-time pin whose arg.cpp was verified to accept
+		// `--no-ui`, no rejected-spelling fallback is warranted: a fallback
+		// would be dead code guarding a binary this build cannot spawn.
+		"--no-ui",
 	)
 	if spec.MMProjFile != "" {
 		args = append(args, "--mmproj", spec.MMProjFile)
+	}
+	if spec.MMProjOffload != nil && !*spec.MMProjOffload {
+		args = append(args, "--no-mmproj-offload")
 	}
 	if spec.ImageMaxTokens != ImageMaxTokensUncapped {
 		args = append(args, "--image-max-tokens", strconv.Itoa(spec.ImageMaxTokens))
 	}
 	return args
+}
+
+// ApplyMemoryPlan returns a copy of the spec with every memory-derived flag
+// taken from plan. It is the one bridge between the pure planner and the
+// command line, and it is deliberately total: every field of a MemoryPlan that
+// names a runtime flag is copied here, so a plan cannot be half-applied and a
+// new planner knob cannot be silently dropped on the way to argv.
+//
+// It copies rather than mutates so a caller can build the identity half (binary,
+// model, projector, socket) from the install record and the shape half from the
+// plan without either being able to overwrite the other. It does NOT call
+// Validate: the exclusivity rule, the KV allow-list and the context bounds are
+// the caller's gate, and ApplyMemoryPlan's own output satisfies them for any
+// plan that Plan returned.
+func (spec LaunchSpec) ApplyMemoryPlan(plan MemoryPlan) LaunchSpec {
+	spec.Fit = plan.Fit
+	spec.FitTargetMiB = plan.FitTargetMiB
+	spec.FitMinContext = plan.FitMinContext
+	if plan.Layers == nil {
+		spec.Layers = LayerAuto()
+	} else {
+		// The count is passed through exactly as the planner decided it. It is
+		// NOT re-read as "all" or "cpu" when it happens to equal nglAllGPU or
+		// nglCPUOnly: the launcher renders a decision, it does not make one.
+		spec.Layers = LayerCount(*plan.Layers)
+	}
+	spec.ContextSize = plan.ContextSize
+	spec.KVType = plan.KVType
+	kvOffload := plan.KVOffload
+	spec.KVOffload = &kvOffload
+	mmprojOffload := plan.MMProjOffload
+	spec.MMProjOffload = &mmprojOffload
+	spec.Parallel = plan.Parallel
+	spec.CacheRAMMiB = nil
+	if plan.CacheRAMMiB != nil {
+		cacheRAM := *plan.CacheRAMMiB
+		spec.CacheRAMMiB = &cacheRAM
+	}
+	spec.Devices = slices.Clone(plan.Devices)
+	spec.SplitMode = plan.SplitMode
+	return spec
 }
 
 // ModelsURL is the readiness endpoint: the OpenAI-compatible model list.
@@ -357,6 +822,43 @@ type Server struct {
 	// HTTPClient performs the readiness probes. nil → http.DefaultClient with a
 	// per-probe timeout (ProbeTimeout).
 	HTTPClient *http.Client
+	// ProbeDevices re-measures the accelerator inventory immediately before a
+	// launch, so a load can notice that a GPU appeared, disappeared, or got a
+	// new driver since the install recorded its topology. PRODUCTION ALWAYS
+	// WIRES IT (backend.embeddedDeviceProbe); nil → NO load-time probe, and the
+	// manifest's stored plan is launched exactly as recorded.
+	//
+	// It is opt-in rather than defaulted to the package function because the
+	// pre-existing contract of this path was "no hardware probe runs at load
+	// time", and a caller that does not wire it must get that behaviour rather
+	// than an exec it did not ask for. When wired, it is FAIL-SOFT in every
+	// direction — see effectivePlan — so wiring it can never make a load fail.
+	ProbeDevices func(ctx context.Context, binaryPath string, logger *slog.Logger) (MemoryTopology, bool)
+	// Tuning resolves the operator's memory-plan overrides
+	// (`embedded_llm.tuning`) at launch time. It is a FUNCTION, not a value,
+	// because a load must plan with the tuning in force when it runs: the
+	// supervisor is built once and cached, while a settings save can change the
+	// tuning at any point in between. nil → the zero Tuning, which IS the
+	// documented all-Auto plan.
+	//
+	// It is read on the load path only, and it must not block: the production
+	// implementation takes configMu.RLock, which is already established as safe
+	// inside Load (EnsurePort → persistEmbeddedPort does the same).
+	Tuning func() Tuning
+	// PersistContext writes the effective context a READY server reported back
+	// into durable config state — the `llm.models."Bonsai 2 27B".context_window`
+	// override the tier-1 config lookup reads. PRODUCTION ALWAYS WIRES IT
+	// (backend.persistEmbeddedContext); nil → the manifest is still updated, but
+	// config.yaml keeps the install's estimate.
+	//
+	// It is called inside Load, after readiness and while the single-instance
+	// gate is held, so an implementation must not call back into the Server.
+	// Failures are logged and otherwise ignored: a load that served the model
+	// successfully must not be reported as failed over an administrative write.
+	PersistContext func(ctx context.Context, contextSize int) error
+	// LoadProbeTimeout bounds the ProbeDevices call. <= 0 →
+	// DefaultLoadProbeTimeout.
+	LoadProbeTimeout time.Duration
 	// Now stamps state transitions and idle bookkeeping. nil → time.Now.
 	Now func() time.Time
 	// HostOS overrides the OS the binary name and the library-path policy key
@@ -385,6 +887,11 @@ type Server struct {
 	port    int
 	since   time.Time
 	run     *processRun
+	// fitWarning is the fit-contract finding of the last failed run — the
+	// sentence scanFitFailure produced from the dead run's output tail, or ""
+	// when no run has complained (or the complaint was followed by a
+	// successful load, which clears it). Guarded by mu.
+	fitWarning string
 	// gate is the single-instance lock: a buffered-1 channel used as a token,
 	// so a waiter can abandon it through its context instead of blocking for
 	// the whole weight load. Lazily created, which keeps the zero value from
@@ -498,11 +1005,12 @@ func (s *Server) Load(ctx context.Context) error {
 		}
 	}
 
-	spec, err := s.launchSpec(manifest, port)
+	launch, err := s.launchSpec(ctx, manifest, port)
 	if err != nil {
 		s.transition(StateError, err.Error())
 		return err
 	}
+	spec := launch.Spec
 
 	s.mu.Lock()
 	s.port = spec.Port
@@ -531,6 +1039,11 @@ func (s *Server) Load(ctx context.Context) error {
 		// probe is swallowed and a dead server keeps being reported as loaded.
 		s.mu.Lock()
 		run.abandoned = true
+		// R1 guard: the fit contract's failure line must not die with the run.
+		// Scanned here (not only in supervise) because an abandoned run's exit
+		// is deliberately unreported by the supervisor — this branch is the one
+		// place the failure is explained.
+		s.fitWarning = scanFitFailure(run.tail.String())
 		s.mu.Unlock()
 		s.discardRun(run)
 		s.transition(StateError, err.Error())
@@ -540,6 +1053,9 @@ func (s *Server) Load(ctx context.Context) error {
 	}
 
 	s.mu.Lock()
+	// A launch that became ready proves the fit contract held; whatever the
+	// previous run complained about no longer describes this installation.
+	s.fitWarning = ""
 	event := s.transitionLocked(StateLoaded, "")
 	// The idle budget starts HERE, after the weights are in memory — see step 7.
 	// Stamping it at the spawn instead would charge a multi-minute weight load
@@ -548,9 +1064,18 @@ func (s *Server) Load(ctx context.Context) error {
 	s.mu.Unlock()
 	s.emit(event)
 
+	// The server is resident and answering, so it can now be ASKED what context
+	// it actually came up with. This is the only moment that question has an
+	// answer, and the only path allowed to make it: GetConfig stays
+	// network-free, and the load path already spawned the process and waited
+	// for it. Fail-soft — a readback that fails leaves the recorded value and
+	// never fails a load that is already serving.
+	effectiveContext := s.recordEffectiveContext(ctx, launch, manifest)
+
 	s.logger().Info("embedded LLM ready",
 		"port", spec.Port, "pid", run.pid, "backend", manifest.Backend,
-		"context_size", spec.ContextSize, "layers", spec.Layers)
+		"context_size", effectiveContext, "launch_context", spec.ContextSize,
+		"layers", spec.Layers, "fit", spec.Fit, "plan_refreshed", launch.Refreshed)
 	return nil
 }
 
@@ -672,10 +1197,11 @@ func (s *Server) Status() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snapshot := Status{
-		State:   s.stateLocked(),
-		Port:    s.port,
-		Since:   s.since,
-		Message: s.message,
+		State:      s.stateLocked(),
+		Port:       s.port,
+		Since:      s.since,
+		Message:    s.message,
+		FitWarning: s.fitWarning,
 	}
 	if s.run != nil {
 		snapshot.Pid = s.run.pid
@@ -724,12 +1250,99 @@ func (s *Server) acquireGate(ctx context.Context) (func(), error) {
 
 // ── launch derivation ──
 
-// launchSpec turns the install record into a launch specification. The context
-// size is the tier resolved at install time (the manifest), while -ngl and
-// --image-max-tokens are re-derived from the same pure policy Resolve uses,
-// keyed on the EFFECTIVE backend the manifest recorded. No hardware probe runs
-// at load time: a load must not fail because a driver query wedged.
-func (s *Server) launchSpec(manifest Manifest, port int) (LaunchSpec, error) {
+// resolvedLaunch is one Load's fully derived launch: the command line to run,
+// plus the memory decision that produced its shape and the measurement that
+// decision was made from. The extra fields exist because a load is allowed to
+// REFINE the record — an opportunistic device probe may answer with a different
+// accelerator than the install saw — and a refinement that is not written back
+// is a refinement the next load has to rediscover.
+type resolvedLaunch struct {
+	// Spec is the validated launch specification.
+	Spec LaunchSpec
+	// Plan is the shape Spec renders, or nil for a manifest that recorded none
+	// (a pre-plan install), where the shape came from the pure policy instead.
+	Plan *MemoryPlan
+	// Topology is the measurement Plan was made from — the fresh one when the
+	// load-time probe answered, the manifest's snapshot when it did not, nil
+	// when there never was one.
+	Topology *MemoryTopology
+	// Refreshed reports whether Plan or Topology differ from the manifest's, so
+	// a load only rewrites the record when it actually learned something.
+	Refreshed bool
+}
+
+// launchSpec turns the install record into a launch specification.
+//
+// The IDENTITY half — the binary, the weights, the projector, the loopback
+// socket and `--image-max-tokens` — always comes from the manifest and the
+// layout, keyed on the EFFECTIVE backend the manifest recorded, because those
+// describe bytes that are on disk and a re-derivation could only disagree with
+// them.
+//
+// The SHAPE half comes from `Manifest.Plan` when the install recorded one, and
+// from the pure policy in resolve.go when it did not (a pre-plan manifest:
+// explicit `-ngl`, `-fit off`, the recorded context tier, one slot, and the
+// runtime's own defaults for everything else).
+//
+// A recorded plan is then OPTIONALLY refined by a load-time device probe,
+// bounded by LoadProbeTimeout. The refinement is FAIL-SOFT in every direction —
+// an unwired probe, a wedged or absent driver query, an unreadable memory
+// profile and a re-plan that now refuses the machine all leave the recorded plan
+// untouched and log at Debug — which replaces the older, absolute "no hardware
+// probe runs at load time" rule with the property that rule existed to
+// guarantee: A LOAD MUST NOT FAIL BECAUSE A DRIVER QUERY WEDGED. What the probe
+// buys is freshness: a GPU that appeared, disappeared or got a new driver since
+// the install is priced at launch instead of being served a shape computed for a
+// machine that no longer exists.
+func (s *Server) launchSpec(ctx context.Context, manifest Manifest, port int) (resolvedLaunch, error) {
+	identity, err := s.launchIdentity(manifest, port)
+	if err != nil {
+		return resolvedLaunch{}, err
+	}
+
+	plan, topology := s.effectivePlan(ctx, manifest, identity.ServerBinary)
+	refreshed := planChanged(manifest.Plan, plan) || topologyChanged(manifest.Topology, topology)
+
+	var spec LaunchSpec
+	if plan != nil {
+		spec = identity.ApplyMemoryPlan(*plan)
+	} else {
+		// A manifest with no recorded plan: reproduce the shape this path has
+		// always derived, from the pure policy and the recorded context tier.
+		platform := s.Platform
+		if platform == "" {
+			platform = runtime.GOOS + "-" + runtime.GOARCH
+		}
+		spec = identity
+		// The install record pins the offload, so this is the exclusivity
+		// rule's second branch: `-fit off` with an explicit -ngl. Rendering the
+		// switch rather than inheriting the fork's own 'on' default is what
+		// keeps that pinned offload from aborting inside fit.cpp — see
+		// LaunchSpec.Fit.
+		spec.Fit = false
+		spec.Layers = LayerCount(layersFor(platform, manifest.Backend))
+		// The manifest's tier is the context. A zero one is only meaningful
+		// under fit, and this path never runs fit, so Validate refuses it —
+		// which is how TestLaunchSpecRefusesACorruptContext catches a manifest
+		// whose tier was lost.
+		spec.ContextSize = manifest.ContextSize
+		// One slot: c0wrk serves one agent loop over one loopback socket and
+		// issues one request at a time per server. The fork's auto default
+		// would split the context across slots — see DefaultParallel.
+		spec.Parallel = DefaultParallel
+	}
+
+	if err := spec.Validate(); err != nil {
+		return resolvedLaunch{}, fmt.Errorf("embeddedllm: %w", err)
+	}
+	return resolvedLaunch{Spec: spec, Plan: plan, Topology: topology, Refreshed: refreshed}, nil
+}
+
+// launchIdentity resolves the half of a launch that describes what is ON DISK:
+// the runtime binary, the recorded weights, the optional vision projector, the
+// loopback socket and the backend-keyed image-token cap. It carries no memory
+// decision, so neither half can overwrite the other — see ApplyMemoryPlan.
+func (s *Server) launchIdentity(manifest Manifest, port int) (LaunchSpec, error) {
 	runtimeDir, err := s.Layout.RuntimeDir(manifest.Backend)
 	if err != nil {
 		return LaunchSpec{}, err
@@ -768,24 +1381,276 @@ func (s *Server) launchSpec(manifest Manifest, port int) (LaunchSpec, error) {
 		}
 	}
 
-	platform := s.Platform
-	if platform == "" {
-		platform = runtime.GOOS + "-" + runtime.GOARCH
-	}
-	spec := LaunchSpec{
-		ServerBinary:   binary,
-		ModelFile:      modelFile,
-		MMProjFile:     mmproj,
-		Host:           LoopbackHost,
-		Port:           port,
-		Layers:         layersFor(platform, manifest.Backend),
-		ContextSize:    manifest.ContextSize,
+	return LaunchSpec{
+		ServerBinary: binary,
+		ModelFile:    modelFile,
+		MMProjFile:   mmproj,
+		Host:         LoopbackHost,
+		Port:         port,
+		// A pure function of the EFFECTIVE backend the manifest recorded, so it
+		// is re-derived rather than stored: it is a property of the artifact
+		// set, not of a memory measurement.
 		ImageMaxTokens: imageMaxTokensFor(manifest.Backend),
+		// Fit, Layers, ContextSize, Parallel and the whole memory-plan surface
+		// are filled by the caller — from Manifest.Plan through
+		// ApplyMemoryPlan, or from the pure policy for a plan-less manifest.
+	}, nil
+}
+
+// effectivePlan decides the shape a load launches: the manifest's recorded plan,
+// refined by a fresh measurement when one can be had cheaply, and unchanged
+// otherwise.
+//
+// It NEVER fails and never blocks longer than LoadProbeTimeout. Every way the
+// refinement can go wrong — no probe wired, no recorded plan to refine, a driver
+// query that wedges or answers nothing, an unreadable memory profile, a planner
+// that now refuses the machine — leaves the stored decision in place and logs at
+// Debug. The reasoning is the one the install's own probes already follow: a
+// measurement REFINES a decision, it is never a precondition of one. A load-time
+// refusal would also be a new failure mode with no user action behind it — the
+// memory gate that decides whether this machine may hold the model ran at
+// install, when the bytes were chosen and the user accepted them.
+func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary string) (*MemoryPlan, *MemoryTopology) {
+	stored := manifest.Plan
+	snapshot := manifest.Topology
+
+	if s.ProbeDevices == nil {
+		// Not wired: the pre-existing contract, and the manifest is the whole
+		// story.
+		return stored, snapshot
 	}
-	if err := spec.Validate(); err != nil {
-		return LaunchSpec{}, fmt.Errorf("embeddedllm: %w", err)
+	if stored == nil {
+		// Nothing to refine. A fresh measurement with no recorded plan would
+		// have to invent a shape from the pure policy, which is a different and
+		// coarser decision than the one this install made — so the launch stays
+		// legacy and no topology is recorded beside a plan that ignores it.
+		return nil, nil
 	}
-	return spec, nil
+
+	probeCtx, cancel := context.WithTimeout(ctx, s.loadProbeTimeout())
+	defer cancel()
+	fresh, ok := s.ProbeDevices(probeCtx, binary, s.logger())
+	if !ok {
+		// THE FAIL-SOFT CASE the load-time probe exists to survive: a wedged or
+		// absent driver query falls back to the snapshot the install recorded,
+		// and the load proceeds on the shape this machine was provisioned for.
+		s.logger().Debug("the embedded LLM load-time device probe did not answer; launching the recorded plan")
+		return stored, snapshot
+	}
+
+	replanned, err := s.replan(manifest, fresh)
+	if err != nil {
+		s.logger().Debug("the embedded LLM launch shape was not re-planned from the fresh topology",
+			"error", err, "gpu_family", ClassifyGPUs(fresh.Devices))
+		return stored, snapshot
+	}
+
+	measured := fresh
+	if planChanged(stored, &replanned) {
+		s.logger().Info("the embedded LLM launch shape changed after the load-time device probe",
+			"gpu_family", replanned.GPUFamily, "fit", replanned.FitArg(),
+			"from_context", stored.ContextSize, "to_context", replanned.ContextSize,
+			"device_budget_mib", measured.DeviceBudgetMiB())
+	}
+	return &replanned, &measured
+}
+
+// replan re-derives the launch shape from a fresh measurement while holding the
+// plan to the artifacts that are actually on disk.
+//
+// The packing is PINNED to the manifest's. That is the one input a load-time
+// re-plan must not be allowed to re-decide: `Plan` derives a packing from the
+// backend and GPU family whenever the tuning leaves it unset, and a different
+// packing would price a footprint the installed GGUF does not have — so the
+// context and offload it returned would be computed for bytes that are not
+// there. A packing change is an install decision, because it changes which
+// multi-gigabyte file gets downloaded.
+func (s *Server) replan(manifest Manifest, topology MemoryTopology) (MemoryPlan, error) {
+	profile, err := PinnedMemoryProfile()
+	if err != nil {
+		return MemoryPlan{}, fmt.Errorf("memory profile: %w", err)
+	}
+	tuning := s.tuning()
+	if manifest.Packing != "" {
+		tuning.Packing = manifest.Packing
+	}
+	family := ClassifyGPUs(topology.Devices)
+	if family == GPUFamilyUnknown {
+		// An inventory the classifier does not recognize is not evidence that the
+		// accelerator changed generation; the install's classification is a
+		// better answer than "unknown".
+		family = manifest.GPUFamily
+	}
+	return Plan(topology, profile, tuning, manifest.Backend, family)
+}
+
+// tuning resolves the operator's memory-plan overrides for a launch. nil → the
+// zero Tuning, which IS the all-Auto plan, so an unwired supervisor still gets a
+// coherent decision rather than a nil dereference.
+func (s *Server) tuning() Tuning {
+	if s.Tuning == nil {
+		return Tuning{}
+	}
+	return s.Tuning()
+}
+
+func (s *Server) loadProbeTimeout() time.Duration {
+	if s.LoadProbeTimeout > 0 {
+		return s.LoadProbeTimeout
+	}
+	return DefaultLoadProbeTimeout
+}
+
+// planChanged and topologyChanged compare a recorded decision against the one a
+// load is about to apply, so a load rewrites the manifest only when it actually
+// learned something: an unchanged record rewritten on every cold start is a disk
+// write, a new mtime and a spurious change signal for nothing. Both count
+// nil-vs-present as a change, which is the point — a legacy manifest gaining its
+// first plan IS worth recording.
+func planChanged(recorded, applied *MemoryPlan) bool {
+	if recorded == nil || applied == nil {
+		return recorded != applied
+	}
+	return !reflect.DeepEqual(*recorded, *applied)
+}
+
+func topologyChanged(recorded, measured *MemoryTopology) bool {
+	if recorded == nil || measured == nil {
+		return recorded != measured
+	}
+	return !reflect.DeepEqual(*recorded, *measured)
+}
+
+// ── post-ready context readback ──
+
+// propsURL is the server's own property endpoint. It is NOT under /v1: the
+// fork's server exposes /props at the root, beside /health, and only the
+// OpenAI-compatible surface lives under /v1.
+func propsURL(port int) string {
+	return "http://" + LoopbackHost + ":" + strconv.Itoa(port) + "/props"
+}
+
+// propsPayload is the slice of the /props response the context readback needs.
+//
+// `default_generation_settings.n_ctx` is the PER-SLOT context — the fork splits
+// the `-c` value across `-np` slots — and `total_slots` is how many it split it
+// into, so the effective total the model can actually hold is their product.
+// Reading only the per-slot figure would under-report a multi-slot server by a
+// factor of `-np`; c0wrk launches `-np 1` (DefaultParallel), so today the two
+// agree, and the multiplication is what keeps the recorded value honest if that
+// ever changes.
+type propsPayload struct {
+	DefaultGenerationSettings struct {
+		NCtx int `json:"n_ctx"`
+	} `json:"default_generation_settings"`
+	TotalSlots int `json:"total_slots"`
+}
+
+// readPropsContext asks a READY server what context it came up with.
+//
+// It is fail-soft and returns (0, false) for every way the question can go wrong
+// — a non-200, an unreadable or unparseable body, a missing or non-positive
+// `n_ctx` — because the answer refines a recorded value and must never become
+// the reason a load that is already serving gets reported as failed.
+// `total_slots` is the one field allowed to be absent: a server that does not
+// report it is serving one slot, and treating an absent count as zero would
+// report a context of 0.
+func readPropsContext(ctx context.Context, client *http.Client, url string, timeout time.Duration) (int, bool) {
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, http.NoBody)
+	if err != nil {
+		return 0, false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPropsBodyLen))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return 0, false
+	}
+	var payload propsPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return 0, false
+	}
+	perSlot := payload.DefaultGenerationSettings.NCtx
+	if perSlot <= 0 {
+		return 0, false
+	}
+	slots := payload.TotalSlots
+	if slots <= 0 {
+		slots = 1
+	}
+	return perSlot * slots, true
+}
+
+// recordEffectiveContext reads the served context back from a ready server and
+// makes it durable: the manifest's `ContextSize` and — through PersistContext —
+// the tier-1 `llm.models."Bonsai 2 27B".context_window` override.
+//
+// This is the correction the recorded value needs. `llm-providers.md` gives a
+// tier-1 config override precedence over the tier-1.5 lazy probe, so an override
+// written at install can never be refined by asking the model later: it shadows
+// the answer. Reading the real window on the LOAD path — the one path that has
+// already spawned the process and waited for it, so it costs no extra startup
+// and leaves `GetConfig` network-free — is what keeps the override honest
+// instead of frozen at an estimate.
+//
+// It returns the context now on record. Fail-soft throughout: a readback that
+// does not answer keeps the previous value, and a manifest or config write that
+// fails is logged and otherwise ignored, because the model is resident and
+// serving and that is the fact this Load was asked to establish.
+func (s *Server) recordEffectiveContext(ctx context.Context, launch resolvedLaunch, manifest Manifest) int {
+	recorded := manifest.ContextSize
+	effective := recorded
+	if n, ok := readPropsContext(ctx, s.httpClient(), propsURL(launch.Spec.Port), s.probeTimeout()); ok {
+		effective = n
+	} else {
+		s.logger().Debug("the embedded LLM did not report its context; keeping the recorded value",
+			"port", launch.Spec.Port, "context_size", recorded)
+	}
+
+	if effective == recorded && !launch.Refreshed {
+		return effective
+	}
+
+	updated := manifest
+	updated.ContextSize = effective
+	updated.Plan = launch.Plan
+	updated.Topology = launch.Topology
+	// The port is deliberately NOT the one this load bound: manifest.json keeps
+	// the port the install allocated, which is the preference the next load
+	// re-scans from — see backend.persistEmbeddedPort.
+
+	path, err := s.Layout.ManifestPath()
+	if err != nil {
+		s.logger().Debug("the embedded LLM context readback was not persisted",
+			"error", err, "context_size", effective)
+		return effective
+	}
+	if err := writeManifest(path, updated); err != nil {
+		s.logger().Warn("failed to persist the embedded LLM context readback",
+			"error", err, "context_size", effective)
+		return effective
+	}
+	s.logger().Debug("the embedded LLM manifest was updated from the live server",
+		"context_size", effective, "recorded", recorded, "plan_refreshed", launch.Refreshed)
+
+	if effective == recorded || s.PersistContext == nil {
+		return effective
+	}
+	if err := s.PersistContext(ctx, effective); err != nil {
+		// The manifest is already correct; only the config mirror lagged. The
+		// next successful load retries, and the override keeps its previous —
+		// still valid — value in the meantime.
+		s.logger().Warn("failed to persist the embedded LLM context window override",
+			"context_size", effective, "error", err)
+	}
+	return effective
 }
 
 // launchEnv builds the child environment: the parent's, with the runtime's own
@@ -1048,6 +1913,7 @@ func (s *Server) supervise(run *processRun) {
 		if expected {
 			event = s.transitionLocked(StateInstalled, "")
 		} else {
+			s.fitWarning = scanFitFailure(run.tail.String())
 			event = s.transitionLocked(StateError, s.crashMessage(run, exitErr))
 		}
 	}
@@ -1068,6 +1934,21 @@ func (s *Server) crashMessage(run *processRun, exitErr error) string {
 		message += "\nlast server output:\n" + tail
 	}
 	return message
+}
+
+// scanFitFailure inspects a dead or failed run's bounded output tail for the
+// fork's fit-failure complaint and renders it as the warning Status.FitWarning
+// carries. The marker is matched as a substring so the fork's timestamp and
+// level prefixes cannot hide it, and the SUCCESS spelling ("successfully fit
+// params to free device memory", the line every captured trace ends with)
+// deliberately does not match.
+func scanFitFailure(tail string) string {
+	if strings.Contains(tail, fitFailureMarker) {
+		return "the runtime's --fit pass aborted: " + strconv.Quote(fitFailureMarker) +
+			" — the recorded memory plan and this pin's fit contract disagree;" +
+			" re-plan or re-review the pin before reloading"
+	}
+	return ""
 }
 
 // takeRun detaches and returns the live process handle, if any. Once detached,

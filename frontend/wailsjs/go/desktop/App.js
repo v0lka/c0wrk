@@ -246,6 +246,10 @@ export function GetEmbeddedLLMStatus() {
   return window['go']['desktop']['App']['GetEmbeddedLLMStatus']();
 }
 
+export function GetEmbeddedLLMTuning() {
+  return window['go']['desktop']['App']['GetEmbeddedLLMTuning']();
+}
+
 export function GetFileDiff(arg1) {
   return window['go']['desktop']['App']['GetFileDiff'](arg1);
 }
@@ -514,6 +518,10 @@ export function PinSession(arg1) {
   return window['go']['desktop']['App']['PinSession'](arg1);
 }
 
+export function ProbeEmbeddedLLMDevices() {
+  return window['go']['desktop']['App']['ProbeEmbeddedLLMDevices']();
+}
+
 export function Pull(arg1, arg2) {
   return window['go']['desktop']['App']['Pull'](arg1, arg2);
 }
@@ -668,6 +676,10 @@ export function SetActiveResearch(arg1, arg2) {
 
 export function SetEmbeddedLLMAutoUnload(arg1, arg2) {
   return window['go']['desktop']['App']['SetEmbeddedLLMAutoUnload'](arg1, arg2);
+}
+
+export function SetEmbeddedLLMTuning(arg1) {
+  return window['go']['desktop']['App']['SetEmbeddedLLMTuning'](arg1);
 }
 
 export function SetHypothesisPinned(arg1, arg2, arg3, arg4) {

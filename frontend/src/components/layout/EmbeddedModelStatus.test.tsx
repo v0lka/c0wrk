@@ -54,7 +54,32 @@ vi.mock('@/components/ui/separator', () => ({
 import { EmbeddedModelStatus } from './EmbeddedModelStatus'
 import { useEmbeddedLLMStore } from '@/stores/embeddedLLMStore'
 import type { EmbeddedLLMStatus } from '@/api/embedded'
+import type { EmbeddedLLMPlan } from '@/api/embeddedTuning'
 import type { EmbeddedLLMComponent, EmbeddedLLMStage } from '@/types/events'
+
+/** The all-zero measured-topology / plan block (no probe, no recorded plan). */
+const EMPTY_PLAN: EmbeddedLLMPlan = {
+  recorded: false,
+  packing: '',
+  kv_type: '',
+  context_size: 0,
+  fit: false,
+  fit_arg: '',
+  fit_target_mib: 0,
+  fit_min_context: 0,
+  offload_mode: 'auto',
+  layers: -1,
+  kv_offload: false,
+  mmproj_offload: false,
+  parallel: 0,
+  cache_ram_mib: -1,
+  gpu_family: '',
+  device_budget_mib: 0,
+  host_budget_mib: 0,
+  expected_device_mib: 0,
+  expected_host_mib: 0,
+  notes: [],
+}
 
 // --- Fixtures -------------------------------------------------------------
 
@@ -78,6 +103,14 @@ function statusWith(overrides: Partial<EmbeddedLLMStatus> = {}): EmbeddedLLMStat
     runtime_version: '',
     installed_at: '',
     model_file: '',
+    devices: [],
+    unified: false,
+    host_ram_gib: 0,
+    device_budget_mib: 0,
+    host_budget_mib: 0,
+    topology_probed_at: '',
+    plan: EMPTY_PLAN,
+    reload_required: false,
     pid: 0,
     error: '',
     available: true,

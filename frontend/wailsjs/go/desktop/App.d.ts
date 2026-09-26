@@ -131,6 +131,8 @@ export function GetDiffStats():Promise<Record<string, workspace.DiffStat>>;
 
 export function GetEmbeddedLLMStatus():Promise<backend.EmbeddedLLMStatus>;
 
+export function GetEmbeddedLLMTuning():Promise<backend.EmbeddedLLMTuningDTO>;
+
 export function GetFileDiff(arg1:string):Promise<string>;
 
 export function GetFileDiffHunks(arg1:string):Promise<Array<workspace.HunkDiffInfo>>;
@@ -265,6 +267,8 @@ export function PickStudyDocument():Promise<string>;
 
 export function PinSession(arg1:string):Promise<void>;
 
+export function ProbeEmbeddedLLMDevices():Promise<backend.EmbeddedLLMDevicesDTO>;
+
 export function Pull(arg1:string,arg2:Array<string>):Promise<string>;
 
 export function Push(arg1:string,arg2:Array<string>):Promise<string>;
@@ -342,6 +346,8 @@ export function SendSystemNotification(arg1:string,arg2:string,arg3:Record<strin
 export function SetActiveResearch(arg1:string,arg2:string):Promise<backend.ResearchStatusDTO>;
 
 export function SetEmbeddedLLMAutoUnload(arg1:boolean,arg2:number):Promise<void>;
+
+export function SetEmbeddedLLMTuning(arg1:backend.EmbeddedLLMTuningRequest):Promise<void>;
 
 export function SetHypothesisPinned(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
 

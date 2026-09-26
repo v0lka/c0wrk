@@ -18,6 +18,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -65,6 +67,14 @@ type installCase struct {
 	// sinkErr / stopErr make the config sink / server stop fail.
 	sinkErr error
 	stopErr error
+	// devices is the accelerator inventory the fixture's device probe answers
+	// with. Empty means "the probe did not answer", which is what a machine with
+	// no runtime to ask reports.
+	devices []DeviceMemory
+	// guardBackends lists backends a compatibility guard may substitute into,
+	// which the fixture's asset table must then also serve: a guard that swaps
+	// cuda-13.3 for cuda-12.8 needs a 12.8 archive to swap TO.
+	guardBackends []Backend
 }
 
 // darwinMetalCase is the canonical happy path: Apple Silicon, 32 GiB, Metal.
@@ -116,6 +126,38 @@ type installFixture struct {
 	mu       sync.Mutex
 	progress []Progress
 	requests map[string]int
+	// events is the ORDERED log of the externally observable install steps —
+	// a command run, an artifact requested, the device probe answering — so a
+	// test can assert the sequence and not only the set. The counts above say
+	// what happened; this says when.
+	events []string
+}
+
+// recordEvent appends one step to the ordered install log.
+func (fx *installFixture) recordEvent(name string) {
+	fx.mu.Lock()
+	defer fx.mu.Unlock()
+	fx.events = append(fx.events, name)
+}
+
+// eventLog returns a copy of the ordered install log.
+func (fx *installFixture) eventLog() []string {
+	fx.mu.Lock()
+	defer fx.mu.Unlock()
+	out := make([]string, len(fx.events))
+	copy(out, fx.events)
+	return out
+}
+
+// eventIndex returns the position of the first event whose name contains
+// substr, or -1 when there is none.
+func (fx *installFixture) eventIndex(substr string) int {
+	for i, name := range fx.eventLog() {
+		if strings.Contains(name, substr) {
+			return i
+		}
+	}
+	return -1
 }
 
 // newInstallFixture wires an Installer for tc. It swaps the package asset table
@@ -170,6 +212,7 @@ func newInstallFixture(t *testing.T, tc installCase) *installFixture {
 		Logger:       dlDiscardLogger(),
 		Downloader:   downloader,
 		Probe:        fx.probe,
+		ProbeDevices: fx.probeDevices,
 		RunCommand:   fx.runCommand,
 		AllocatePort: func(context.Context) (int, error) { return 41977, nil },
 		Now:          func() time.Time { return testInstallInstant },
@@ -191,11 +234,27 @@ func (fx *installFixture) probe(context.Context, *slog.Logger) (Hardware, error)
 	}, nil
 }
 
+// probeDevices is the injected device probe. It answers with the case's
+// inventory and never spawns anything: a test must not depend on a real
+// llama-server being on disk, and an empty inventory is the honest "no answer"
+// that leaves a plan on its statically decidable guards.
+func (fx *installFixture) probeDevices(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+	fx.recordEvent("device-probe")
+	if len(fx.case_.devices) == 0 {
+		return MemoryTopology{}, false
+	}
+	return MemoryTopology{
+		Devices:    fx.case_.devices,
+		HostRAMGiB: fx.case_.ramGiB,
+	}, true
+}
+
 // runCommand is the injected CommandRunner. It records every invocation and
 // answers the smoke test with a plausible llama-server banner.
 func (fx *installFixture) runCommand(_ context.Context, name string, args ...string) (string, error) {
 	line := strings.TrimSpace(name + " " + strings.Join(args, " "))
 	fx.cmds.record(line)
+	fx.recordEvent("cmd:" + line)
 	if fx.cmds.isMissing(name) {
 		return "", fmt.Errorf("%s: %w", name, exec.ErrNotFound)
 	}
@@ -280,7 +339,7 @@ func (fx *installFixture) buildArtifacts(tc installCase) map[Component][]byte {
 
 	files := map[Component][]byte{
 		ComponentRuntime: runtimeArchive,
-		ComponentModel:   []byte("ternary bonsai 2 27b weights fixture (" + string(packingFor(tc.backend)) + ")"),
+		ComponentModel:   []byte("ternary bonsai 2 27b weights fixture (" + string(packingForBackend(tc.backend)) + ")"),
 		ComponentMMProj:  []byte("mmproj Q8_0 projector fixture"),
 	}
 	if tc.cudart {
@@ -295,7 +354,7 @@ func (fx *installFixture) buildArtifacts(tc installCase) map[Component][]byte {
 // component the pin describes the ORIGINAL bytes while the server returns
 // something else, which is exactly how a substituted artifact looks.
 func (fx *installFixture) buildAssets(baseURL string, tc installCase, served map[Component][]byte) []Asset {
-	packing := packingFor(tc.backend)
+	packing := packingForBackend(tc.backend)
 
 	names := map[Component]string{
 		ComponentRuntime: fx.runtimeArchiveName(tc),
@@ -363,6 +422,7 @@ func (fx *installFixture) startServer(files map[Component][]byte) *httptest.Serv
 		mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
 			fx.mu.Lock()
 			fx.requests[strings.TrimPrefix(path, "/")]++
+			fx.events = append(fx.events, "download:"+strings.TrimPrefix(path, "/"))
 			fx.mu.Unlock()
 			w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
 			w.WriteHeader(http.StatusOK)
@@ -381,8 +441,14 @@ type fixtureAssetTable struct {
 	tc     installCase
 }
 
+// serves reports whether the fixture has artifacts for a backend: the case's
+// own, plus any backend a compatibility guard is expected to substitute into.
+func (f fixtureAssetTable) serves(backend Backend) bool {
+	return backend == f.tc.backend || slices.Contains(f.tc.guardBackends, backend)
+}
+
 func (f fixtureAssetTable) RuntimeAsset(platform string, backend Backend) (Asset, bool) {
-	if platform != f.tc.platform || backend != f.tc.backend {
+	if platform != f.tc.platform || !f.serves(backend) {
 		return Asset{}, false
 	}
 	for _, asset := range f.assets {
@@ -397,7 +463,7 @@ func (f fixtureAssetTable) ArtifactSet(platform string, backend Backend, _ Packi
 	if platform != f.tc.platform {
 		return nil, fmt.Errorf("%w: platform %q", ErrArtifactNotPinned, platform)
 	}
-	if backend != f.tc.backend {
+	if !f.serves(backend) {
 		return nil, fmt.Errorf("%w: backend %q", ErrArtifactNotPinned, backend)
 	}
 	out := make([]Asset, len(f.assets))
@@ -924,14 +990,30 @@ func TestInstallRuntimeVerificationFailureStopsBeforeTheWeights(t *testing.T) {
 
 // ── gates ──
 
-func TestInstallRAMGateRefusesBeforeAnyDownload(t *testing.T) {
+// TestInstallMemoryGateRefusesBeforeAnyDownload is the ordering invariant: the
+// gate is the FIRST thing an install does, so a machine that cannot hold the
+// model makes no HTTP request, registers no provider, writes no manifest and
+// CREATES NO DIRECTORY. A refusal that left a multi-gigabyte partial install
+// behind would be worse than no gate at all.
+//
+// 8 GiB on Apple Silicon is refused on the measurements, not on a threshold:
+// the accelerator's pool IS the host pool there, so the RAM probe priced both,
+// and the smallest modelled shape still does not fit inside the reserve.
+func TestInstallMemoryGateRefusesBeforeAnyDownload(t *testing.T) {
 	tc := darwinMetalCase()
-	tc.ramGiB = MinRAMGiB - 0.5
+	tc.ramGiB = 8
 	fx := newInstallFixture(t, tc)
 
 	_, err := fx.Install(context.Background(), InstallOptions{})
-	if !errors.Is(err, ErrInsufficientRAM) {
-		t.Fatalf("Install error = %v, want ErrInsufficientRAM", err)
+	if !errors.Is(err, ErrInsufficientMemory) {
+		t.Fatalf("Install error = %v, want ErrInsufficientMemory", err)
+	}
+	// The refusal names both pools with both numbers, all the way out through
+	// the installer's own error wrapping.
+	for _, want := range []string{"device memory", "host RAM", "GiB available"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Install error %q does not name %q", err, want)
+		}
 	}
 	if n := fx.totalRequests(); n != 0 {
 		t.Errorf("an undersized machine made %d HTTP requests, want 0", n)
@@ -1724,4 +1806,579 @@ func sameComponents(got, want []Component) bool {
 		}
 	}
 	return true
+}
+
+// ── compatibility guards in the install record ──
+//
+// A degraded install must be visible: every guard the pinned model's
+// KNOWN_ISSUES documents for this machine is recorded in the report AND
+// persisted in the manifest, whether or not c0wrk could act on it.
+
+// guardFor returns the recorded decision for an id, failing the test when the
+// install recorded none — an unrecorded guard is exactly the silence these
+// tests exist to prevent.
+func guardFor(t *testing.T, decisions []GuardDecision, id GuardID) GuardDecision {
+	t.Helper()
+	for _, decision := range decisions {
+		if decision.Guard == id {
+			return decision
+		}
+	}
+	t.Fatalf("the install recorded no %q decision (recorded: %v)", id, guardIDsForLog(decisions))
+	return GuardDecision{}
+}
+
+// TestInstallRecordsAnAppliedCompatibilityGuard covers a guard c0wrk acted on:
+// KNOWN_ISSUES #222 says the CUDA 13.3 builds crash on some systems and names
+// the 12.8 build as the Linux fallback, so the install provisions 12.8 and the
+// record says so — including on disk, where the Settings UI reads it back from.
+func TestInstallRecordsAnAppliedCompatibilityGuard(t *testing.T) {
+	fx := newInstallFixture(t, installCase{
+		platform: PlatformLinuxAMD64,
+		arch:     "amd64",
+		backend:  BackendCUDA133,
+		ramGiB:   64,
+		hostOS:   "linux",
+		// The guard substitutes into this backend, so the fixture table has to
+		// be able to serve it.
+		guardBackends: []Backend{BackendCUDA128},
+	})
+	report := fx.mustInstall(t)
+
+	if report.Resolution.Backend != BackendCUDA128 {
+		t.Errorf("resolution backend = %q, want the guarded %q",
+			report.Resolution.Backend, BackendCUDA128)
+	}
+	if report.Manifest.Backend != BackendCUDA128 {
+		t.Errorf("manifest backend = %q, want %q", report.Manifest.Backend, BackendCUDA128)
+	}
+
+	decision := guardFor(t, report.Guards, GuardCUDA133Crash)
+	if !decision.Applied {
+		t.Error("the #222 guard changed the backend but is recorded as unapplied")
+	}
+	if decision.Action != GuardActionPreferBackend || decision.Backend != BackendCUDA128 {
+		t.Errorf("#222 action/target = %q/%q, want %q/%q",
+			decision.Action, decision.Backend, GuardActionPreferBackend, BackendCUDA128)
+	}
+	if decision.Reason != GuardReasonCrashOnLoad || decision.Severity != GuardSeverityCritical {
+		t.Errorf("#222 reason/severity = %q/%q, want %q/%q",
+			decision.Reason, decision.Severity, GuardReasonCrashOnLoad, GuardSeverityCritical)
+	}
+	if decision.Issue != "PrismML-Eng/llama.cpp#222" {
+		t.Errorf("#222 issue citation = %q", decision.Issue)
+	}
+	if strings.TrimSpace(decision.Guidance) == "" {
+		t.Error("#222 carries no user-facing guidance")
+	}
+
+	// The same record survives the manifest round-trip, which is what makes the
+	// degradation visible after the process that installed it has exited.
+	manifestPath, err := fx.layout.ManifestPath()
+	if err != nil {
+		t.Fatalf("ManifestPath: %v", err)
+	}
+	onDisk, err := ReadManifest(manifestPath)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	persisted := guardFor(t, onDisk.Guards, GuardCUDA133Crash)
+	if !persisted.Applied || persisted.Reason != GuardReasonCrashOnLoad {
+		t.Errorf("persisted #222 = %+v, want the applied crash_on_load decision", persisted)
+	}
+	if persisted.Issue != decision.Issue || persisted.Guidance != decision.Guidance {
+		t.Error("the persisted #222 decision lost its citation or its guidance")
+	}
+	if onDisk.PackingReason != PackingReasonDefault {
+		t.Errorf("manifest packing_reason = %q, want %q", onDisk.PackingReason, PackingReasonDefault)
+	}
+}
+
+// TestInstallRecordsALateDeviceGuardAsGuidance covers the guard that arrives
+// too late to be applied: a first install only learns the GPU generation from
+// the runtime it has just staged, and by then the archive for the planned
+// backend is on disk. The recommendation is recorded as guidance — with the
+// reason it was not applied — instead of being dropped on the floor.
+func TestInstallRecordsALateDeviceGuardAsGuidance(t *testing.T) {
+	fx := newInstallFixture(t, installCase{
+		platform: PlatformLinuxAMD64,
+		arch:     "amd64",
+		backend:  BackendROCm,
+		ramGiB:   64,
+		hostOS:   "linux",
+		devices: []DeviceMemory{
+			{Name: "HIP0", Description: "AMD Radeon RX 6800 XT", TotalMiB: 16384, FreeMiB: 16384},
+		},
+		// The guard's Vulkan target must be servable, otherwise the plan reports
+		// "no pinned runtime" instead of exercising the too-late branch this test
+		// is about. The real registry does pin linux-amd64 Vulkan.
+		guardBackends: []Backend{BackendVulkan},
+	})
+	report := fx.mustInstall(t)
+
+	// Nothing was substituted: the staged runtime is the ROCm build.
+	if report.Resolution.Backend != BackendROCm {
+		t.Errorf("backend = %q, want the staged %q", report.Resolution.Backend, BackendROCm)
+	}
+	if report.Resolution.GPU != GPUFamilyAMDRDNA2 {
+		t.Errorf("gpu family = %q, want %q", report.Resolution.GPU, GPUFamilyAMDRDNA2)
+	}
+
+	decision := guardFor(t, report.Guards, GuardROCmRDNA2Abort)
+	if decision.Applied {
+		t.Error("a substitution made after the runtime was staged is recorded as applied")
+	}
+	if decision.Reason != GuardReasonProcessAbort || decision.Severity != GuardSeverityCritical {
+		t.Errorf("Bonsai-demo #197 reason/severity = %q/%q, want %q/%q",
+			decision.Reason, decision.Severity, GuardReasonProcessAbort, GuardSeverityCritical)
+	}
+	if decision.Issue != "PrismML-Eng/Bonsai-demo#197" {
+		t.Errorf("#197 issue citation = %q", decision.Issue)
+	}
+	if !strings.Contains(decision.Guidance, "reinstall") {
+		t.Errorf("#197 guidance does not say how to apply it: %q", decision.Guidance)
+	}
+
+	manifestPath, err := fx.layout.ManifestPath()
+	if err != nil {
+		t.Fatalf("ManifestPath: %v", err)
+	}
+	onDisk, err := ReadManifest(manifestPath)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	if onDisk.GPUFamily != GPUFamilyAMDRDNA2 {
+		t.Errorf("manifest gpu_family = %q, want %q", onDisk.GPUFamily, GPUFamilyAMDRDNA2)
+	}
+	if persisted := guardFor(t, onDisk.Guards, GuardROCmRDNA2Abort); persisted.Applied {
+		t.Error("the persisted #197 decision claims a substitution that did not happen")
+	}
+}
+
+// TestInstallRecordsAnAdvisoryGuard covers the disclosure-only case: #192 hangs
+// Intel Arc GPUs on PTQ1_0/Vulkan after about 1,900 tokens, and the only
+// documented workaround gives up GPU acceleration, so c0wrk records it and lets
+// the user decide rather than choosing silently.
+func TestInstallRecordsAnAdvisoryGuard(t *testing.T) {
+	fx := newInstallFixture(t, installCase{
+		platform: PlatformWindowsAMD64,
+		arch:     "amd64",
+		backend:  BackendVulkan,
+		ramGiB:   32,
+		hostOS:   "windows",
+		devices: []DeviceMemory{
+			{Name: "Vulkan0", Description: "Intel(R) Arc(TM) B390 Graphics", TotalMiB: 32768, FreeMiB: 32768},
+		},
+	})
+	report := fx.mustInstall(t)
+
+	if report.Resolution.Backend != BackendVulkan || report.Resolution.Packing != PackingPTQ1_0 {
+		t.Errorf("plan = %q/%q, want the unguarded Vulkan + PTQ1_0",
+			report.Resolution.Backend, report.Resolution.Packing)
+	}
+	if report.PackingReason != PackingReasonNoPQ2_0Kernels {
+		t.Errorf("packing reason = %q, want %q", report.PackingReason, PackingReasonNoPQ2_0Kernels)
+	}
+
+	decision := guardFor(t, report.Guards, GuardVulkanIntelArcHang)
+	if decision.Applied || decision.Action != GuardActionAdvisory {
+		t.Errorf("#192 = applied %v action %q, want an unapplied advisory", decision.Applied, decision.Action)
+	}
+	if decision.Reason != GuardReasonHang || decision.Severity != GuardSeverityWarning {
+		t.Errorf("#192 reason/severity = %q/%q, want %q/%q",
+			decision.Reason, decision.Severity, GuardReasonHang, GuardSeverityWarning)
+	}
+	if report.Resolution.GPU != GPUFamilyIntelArc {
+		t.Errorf("gpu family = %q, want %q", report.Resolution.GPU, GPUFamilyIntelArc)
+	}
+}
+
+// TestRefineWithStagedDevicesAppliesTheGPUGenerationPacking covers the branch
+// the late probe CAN still act on: the backend is unchanged, so the weights —
+// not yet downloaded — follow the generation-aware packing rule. An Ada card
+// decodes PTQ1_0 faster (the model card's throughput table), and a first install
+// only learns that from the staged runtime.
+//
+// This one runs against the real pinned registry, so it asserts the weights the
+// refinement actually selects rather than a fixture's.
+func TestRefineWithStagedDevicesAppliesTheGPUGenerationPacking(t *testing.T) {
+	agentDir := t.TempDir()
+	layout, err := NewLayout(
+		filepath.Join(agentDir, "runtimes"),
+		filepath.Join(agentDir, "models", testModelDirName),
+	)
+	if err != nil {
+		t.Fatalf("NewLayout: %v", err)
+	}
+	in := &Installer{
+		Layout: layout,
+		Logger: dlDiscardLogger(),
+		ProbeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+			return MemoryTopology{Devices: []DeviceMemory{
+				{Name: "CUDA0", Description: "NVIDIA GeForce RTX 4090", TotalMiB: 24576, FreeMiB: 24576},
+			}}, true
+		},
+	}
+
+	profile := MachineProfile{Platform: PlatformLinuxAMD64, Backend: BackendCUDA124, RAMGiB: 64}
+	res, err := ResolveProfile(profile)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if res.Packing != PackingPQ2_0 || res.GPU != GPUFamilyUnknown {
+		t.Fatalf("precondition: an unprobed machine resolved %q for family %q", res.Packing, res.GPU)
+	}
+	_, weights := splitRuntimeAssets(res.Assets)
+
+	hw := Hardware{Platform: PlatformLinuxAMD64, Arch: "amd64", RAMGiB: 64, Backend: BackendCUDA124}
+	refined, refinedWeights, refinedTopology := in.refineWithStagedDevices(
+		context.Background(), profile.Platform, hw, res, "/nonexistent/llama-server", weights)
+
+	// The measurement is handed back with the resolution it refined, so the
+	// manifest can record a topology and a plan that describe one another.
+	if refinedTopology == nil {
+		t.Fatal("a successful refinement returned no topology")
+	}
+	if len(refinedTopology.Devices) != 1 || refinedTopology.Devices[0].TotalMiB != 24576 {
+		t.Errorf("refined topology = %+v, want the probed 24 GiB device", refinedTopology.Devices)
+	}
+
+	if refined.GPU != GPUFamilyNVIDIAAda {
+		t.Errorf("gpu family = %q, want %q", refined.GPU, GPUFamilyNVIDIAAda)
+	}
+	if refined.Backend != BackendCUDA124 {
+		t.Errorf("backend = %q, want it unchanged", refined.Backend)
+	}
+	if refined.Packing != PackingPTQ1_0 {
+		t.Errorf("packing = %q, want %q (the Ada decode measurement)", refined.Packing, PackingPTQ1_0)
+	}
+	if refined.PackingReason != PackingReasonGPUGenerationDecode {
+		t.Errorf("packing reason = %q, want %q", refined.PackingReason, PackingReasonGPUGenerationDecode)
+	}
+
+	// The weights to fetch must follow the refined packing, or the install would
+	// download a file the manifest does not describe.
+	var model Asset
+	for _, asset := range refinedWeights {
+		if asset.Component == ComponentModel {
+			model = asset
+		}
+	}
+	if !strings.Contains(model.ArchiveName, string(PackingPTQ1_0)) {
+		t.Errorf("refined model archive = %q, want the %s weights", model.ArchiveName, PackingPTQ1_0)
+	}
+	modelFile, err := layout.ModelFile(refined.Packing)
+	if err != nil {
+		t.Fatalf("ModelFile: %v", err)
+	}
+	if filepath.Base(modelFile) != model.ArchiveName {
+		t.Errorf("the refined plan pairs %q with the weights path %q", model.ArchiveName, modelFile)
+	}
+}
+
+// TestRefineWithStagedDevicesKeepsThePlanWithoutAnAnswer covers the fail-soft
+// contract: a probe that does not answer leaves the resolution byte-for-byte
+// alone, so a machine whose runtime will not enumerate its devices still gets
+// the plan it was promised.
+func TestRefineWithStagedDevicesKeepsThePlanWithoutAnAnswer(t *testing.T) {
+	agentDir := t.TempDir()
+	layout, err := NewLayout(
+		filepath.Join(agentDir, "runtimes"),
+		filepath.Join(agentDir, "models", testModelDirName),
+	)
+	if err != nil {
+		t.Fatalf("NewLayout: %v", err)
+	}
+	in := &Installer{
+		Layout: layout,
+		Logger: dlDiscardLogger(),
+		ProbeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+			return MemoryTopology{}, false
+		},
+	}
+
+	profile := MachineProfile{Platform: PlatformLinuxAMD64, Backend: BackendCUDA124, RAMGiB: 64}
+	res, err := ResolveProfile(profile)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	_, weights := splitRuntimeAssets(res.Assets)
+
+	hw := Hardware{Platform: PlatformLinuxAMD64, Arch: "amd64", RAMGiB: 64, Backend: BackendCUDA124}
+	got, gotWeights, gotTopology := in.refineWithStagedDevices(
+		context.Background(), profile.Platform, hw, res, "/nonexistent/llama-server", weights)
+
+	if gotTopology != nil {
+		t.Errorf("an unanswered probe returned a topology: %+v", *gotTopology)
+	}
+	if got.Packing != res.Packing || got.Backend != res.Backend || got.GPU != GPUFamilyUnknown {
+		t.Errorf("an unanswered probe changed the plan: %q/%q/%q", got.Backend, got.Packing, got.GPU)
+	}
+	if len(got.Guards) != len(res.Guards) {
+		t.Errorf("an unanswered probe changed the guard record: %d decisions, want %d",
+			len(got.Guards), len(res.Guards))
+	}
+	if len(gotWeights) != len(weights) {
+		t.Errorf("an unanswered probe changed the weight set: %d assets, want %d", len(gotWeights), len(weights))
+	}
+}
+
+// ── the topology probe's place in the install sequence ──
+
+// appleSiliconDevices is the accelerator inventory a provisioned Metal runtime
+// reports on the reference machine: one unified-memory device whose pool IS the
+// host pool.
+func appleSiliconDevices() []DeviceMemory {
+	return []DeviceMemory{
+		{Name: "MTL0", Description: "Apple M3 Pro", TotalMiB: 24576, FreeMiB: 24576},
+	}
+}
+
+// TestInstallProbesDevicesAfterTheRuntimeIsProvenAndBeforeTheWeights is the
+// ordering invariant this seam exists for. The device probe must run
+//
+//	 AFTER the runtime is proven — an unrunnable runtime (Gatekeeper, a missing
+//	   GPU library) must fail the install in seconds, and probing a binary that
+//	   cannot execute answers nothing anyway; and
+//	BEFORE the multi-gigabyte weights are fetched — because the authoritative
+//	  topology is what the generation-aware packing rule and the memory gate need
+//	  in order to choose WHICH weights to download. A probe that ran later could
+//	  only describe a decision already made.
+//
+// Both halves are asserted against one ordered log of externally observable
+// steps rather than against call counts, so a reordering anywhere in the
+// sequence fails here.
+func TestInstallProbesDevicesAfterTheRuntimeIsProvenAndBeforeTheWeights(t *testing.T) {
+	tc := darwinMetalCase()
+	tc.devices = appleSiliconDevices()
+	fx := newInstallFixture(t, tc)
+
+	report := fx.mustInstall(t)
+
+	smokeTest := fx.eventIndex("--version")
+	probe := fx.eventIndex("device-probe")
+	model := fx.eventIndex("download:" + string(ComponentModel))
+	projector := fx.eventIndex("download:" + string(ComponentMMProj))
+
+	if smokeTest < 0 {
+		t.Fatalf("the darwin smoke test never ran; events = %v", fx.eventLog())
+	}
+	if probe < 0 {
+		t.Fatalf("the device probe never ran; events = %v", fx.eventLog())
+	}
+	if model < 0 || projector < 0 {
+		t.Fatalf("the weights were never requested; events = %v", fx.eventLog())
+	}
+	if smokeTest >= probe {
+		t.Errorf("the device probe (event %d) ran BEFORE the runtime smoke test (event %d):\n%v",
+			probe, smokeTest, fx.eventLog())
+	}
+	if probe >= model || probe >= projector {
+		t.Errorf("the device probe (event %d) ran AFTER the weights (model %d, mmproj %d):\n%v",
+			probe, model, projector, fx.eventLog())
+	}
+	// The runtime archive itself is downloaded before the probe — that is the
+	// whole point of the seam: the staged runtime is what answers it.
+	if runtime := fx.eventIndex("download:" + string(ComponentRuntime)); runtime < 0 || runtime > probe {
+		t.Errorf("the runtime download (event %d) must precede the probe (event %d):\n%v",
+			runtime, probe, fx.eventLog())
+	}
+
+	// And the probe's answer reached the plan that chose those weights.
+	if report.Resolution.GPU == GPUFamilyUnknown {
+		t.Errorf("the probe answered but the resolution kept GPUFamilyUnknown: %+v", report.Resolution)
+	}
+}
+
+// TestInstallRecordsTheTopologyAndThePlanItInformed covers the persistence half
+// of the seam: the manifest carries the measured topology AND the plan derived
+// from it, as one coherent pair, because a load's fail-soft path reads them as
+// one fact — the snapshot is what a wedged driver query falls back to, and the
+// plan is the shape it falls back to.
+func TestInstallRecordsTheTopologyAndThePlanItInformed(t *testing.T) {
+	tc := darwinMetalCase()
+	tc.devices = appleSiliconDevices()
+	fx := newInstallFixture(t, tc)
+
+	report := fx.mustInstall(t)
+
+	path, err := fx.layout.ManifestPath()
+	if err != nil {
+		t.Fatalf("ManifestPath: %v", err)
+	}
+	onDisk, err := ReadManifest(path)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+
+	if onDisk.Topology == nil {
+		t.Fatal("the manifest recorded no topology, though the device probe answered")
+	}
+	if len(onDisk.Topology.Devices) != 1 || onDisk.Topology.Devices[0].TotalMiB != 24576 {
+		t.Errorf("recorded topology = %+v, want the probed 24 GiB device", onDisk.Topology.Devices)
+	}
+	// Recorded VERBATIM: the install copies the probe's answer rather than
+	// re-deriving or re-stamping it, so whatever the probe measured — including
+	// its own ProbedAt stamp, which the production ProbeDevices always sets and
+	// this fixture leaves empty — is what a load's fail-soft path falls back to.
+	probed, ok := fx.probeDevices(context.Background(), "", nil)
+	if !ok {
+		t.Fatal("the fixture probe did not answer, so this case proves nothing")
+	}
+	if !reflect.DeepEqual(*onDisk.Topology, probed) {
+		t.Errorf("the recorded topology is not the probed one:\n got %+v\nwant %+v",
+			*onDisk.Topology, probed)
+	}
+
+	if onDisk.Plan == nil {
+		t.Fatal("the manifest recorded no plan")
+	}
+	// The plan must describe the bytes that are on disk, so its packing is the
+	// manifest's — a plan priced for a different quantization would compute a
+	// footprint the installed GGUF does not have.
+	if onDisk.Plan.Packing != onDisk.Packing {
+		t.Errorf("plan packing = %q, manifest packing = %q", onDisk.Plan.Packing, onDisk.Packing)
+	}
+	if onDisk.Plan.Packing != report.Resolution.Packing {
+		t.Errorf("plan packing = %q, resolved packing = %q",
+			onDisk.Plan.Packing, report.Resolution.Packing)
+	}
+	// The recorded plan is the resolution's own memory plan, not a re-derivation.
+	if !reflect.DeepEqual(*onDisk.Plan, report.Resolution.Memory) {
+		t.Errorf("the recorded plan differs from the resolved one:\n got %+v\nwant %+v",
+			*onDisk.Plan, report.Resolution.Memory)
+	}
+
+	// ContextSize is the RECORDABLE context: the planner's own value for a
+	// computed shape, and the fit floor for a fit-sized one — never 0, because 0
+	// means "leave the existing override alone" to SyncEmbeddedLLMProvider and
+	// would read as a lost tier in a manifest.
+	want := recordableContext(report.Resolution.Memory, report.Resolution.ContextSize)
+	if onDisk.ContextSize != want {
+		t.Errorf("manifest context_size = %d, want %d (fit=%v)",
+			onDisk.ContextSize, want, report.Resolution.Memory.Fit)
+	}
+	if onDisk.ContextSize <= 0 {
+		t.Errorf("manifest context_size = %d, want a positive recordable context", onDisk.ContextSize)
+	}
+
+	// The pair survives a JSON round trip, which is the only form a load ever
+	// sees: a plan or a topology that does not survive serialization is one a
+	// load silently loses.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the manifest: %v", err)
+	}
+	var decoded Manifest
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("the manifest is not valid JSON: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, onDisk) {
+		t.Errorf("the manifest does not round-trip:\n got %+v\nwant %+v", decoded, onDisk)
+	}
+}
+
+// TestInstallRecordsNoTopologyWhenTheProbeDoesNotAnswer keeps the pair honest in
+// the other direction: a machine whose runtime will not enumerate its devices
+// gets a plan but NO topology beside it, rather than a zero MemoryTopology that
+// a reader could mistake for "measured, and there was nothing".
+func TestInstallRecordsNoTopologyWhenTheProbeDoesNotAnswer(t *testing.T) {
+	fx := newInstallFixture(t, darwinMetalCase()) // no devices → the probe answers false
+
+	report := fx.mustInstall(t)
+
+	path, err := fx.layout.ManifestPath()
+	if err != nil {
+		t.Fatalf("ManifestPath: %v", err)
+	}
+	onDisk, err := ReadManifest(path)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	if onDisk.Topology != nil {
+		t.Errorf("an unanswered probe recorded a topology: %+v", *onDisk.Topology)
+	}
+	if onDisk.Plan == nil {
+		t.Error("an unanswered probe recorded no plan; the RAM-tiered path still produces one")
+	}
+	if onDisk.ContextSize <= 0 {
+		t.Errorf("manifest context_size = %d, want a positive recordable context", onDisk.ContextSize)
+	}
+	if report.Resolution.GPU != GPUFamilyUnknown {
+		t.Errorf("gpu family = %q with no probe answer, want %q",
+			report.Resolution.GPU, GPUFamilyUnknown)
+	}
+}
+
+// TestInstallWritesNoTopologyForAnUnverifiedComponent is the fail-closed half:
+// the manifest — and with it the topology and the plan — is written only after
+// every component verified, so a weights download that fails its digest leaves
+// no record of a measurement made for bytes that are not on disk.
+func TestInstallWritesNoTopologyForAnUnverifiedComponent(t *testing.T) {
+	tc := darwinMetalCase()
+	tc.devices = appleSiliconDevices()
+	tc.corrupt = ComponentModel
+	fx := newInstallFixture(t, tc)
+
+	if _, err := fx.Install(context.Background(), InstallOptions{}); !errors.Is(err, ErrChecksumMismatch) {
+		t.Fatalf("Install error = %v, want ErrChecksumMismatch", err)
+	}
+
+	// The probe DID run — it is upstream of the weights, which is exactly why a
+	// failed weights download cannot be repaired by re-probing.
+	if fx.eventIndex("device-probe") < 0 {
+		t.Errorf("the device probe never ran; events = %v", fx.eventLog())
+	}
+	// And nothing was recorded: no manifest means no topology and no plan.
+	requireNoManifest(t, fx.layout)
+	if len(fx.sink.installCalls()) != 0 {
+		t.Error("a failed install registered a provider")
+	}
+}
+
+// TestRecordableContextIsTheFitFloorUnderFit pins the one rule that makes a
+// fit-sized plan persistable: there is no concrete context to record, so the
+// floor fit is held to is recorded instead — never 0.
+func TestRecordableContextIsTheFitFloorUnderFit(t *testing.T) {
+	cases := []struct {
+		name     string
+		plan     MemoryPlan
+		fallback int
+		want     int
+	}{
+		{
+			name:     "a computed shape records its own context",
+			plan:     MemoryPlan{Fit: false, ContextSize: 32768, FitMinContext: DefaultFitMinContext},
+			fallback: 16384,
+			want:     32768,
+		},
+		{
+			name:     "a fit-sized shape records the floor, not 0",
+			plan:     MemoryPlan{Fit: true, ContextSize: 0, FitMinContext: DefaultFitMinContext},
+			fallback: 16384,
+			want:     DefaultFitMinContext,
+		},
+		{
+			name:     "a fit-sized shape with no floor falls back",
+			plan:     MemoryPlan{Fit: true, ContextSize: 0, FitMinContext: 0},
+			fallback: 16384,
+			want:     16384,
+		},
+		{
+			name:     "a plan-less resolution keeps its tier",
+			plan:     MemoryPlan{},
+			fallback: 16384,
+			want:     16384,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := recordableContext(tc.plan, tc.fallback); got != tc.want {
+				t.Errorf("recordableContext(%+v, %d) = %d, want %d", tc.plan, tc.fallback, got, tc.want)
+			}
+			if got := recordableContext(tc.plan, tc.fallback); got <= 0 && tc.want > 0 {
+				t.Errorf("recordableContext returned %d, want a positive value", got)
+			}
+		})
+	}
 }

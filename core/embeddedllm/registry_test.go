@@ -39,7 +39,7 @@ func TestRegistryModelPinsMatchUpstreamLFS(t *testing.T) {
 			comp:  ComponentModel,
 		},
 		{
-			label: "PTQ1_0 (5.54 GiB, Vulkan / memory-short)",
+			label: "PTQ1_0 (5.54 GiB, the downgrade packing)",
 			got:   regMustModelAsset(t, PackingPTQ1_0),
 			file:  "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
 			size:  5946648928,
@@ -74,6 +74,84 @@ func TestRegistryModelPinsMatchUpstreamLFS(t *testing.T) {
 				t.Errorf("URL = %q, want %q", tc.got.URL, want)
 			}
 		})
+	}
+}
+
+// TestRegistryRuntimePinsMatchUpstreamRelease locks every runtime and cudart
+// pin to the GitHub REST per-asset `digest` field captured for RuntimeTag
+// (`prism-b10735-842b188`, published 2026-09-24). These digests are the
+// supply-chain anchor for a NATIVE BINARY c0wrk later spawns (ADR-066 D11,
+// ASI04), so a change here must be a deliberate, CVE-reviewed pin bump — never
+// a retyped or "refreshed" value.
+//
+// Keying the table by archive name (rather than by platform/backend) also pins
+// the mapping: darwin-arm64 deliberately resolves Metal and CPU to the SAME
+// archive, and windows-amd64 has no cuda-12.8 row at all. The release's other
+// 6 assets (android-arm64, the iOS xcframework, macos-arm64-kleidiai, the two
+// windows arm64 builds and their cuda-13.4 cudart) are out of scope (D9) and
+// are not captured.
+func TestRegistryRuntimePinsMatchUpstreamRelease(t *testing.T) {
+	type pin struct {
+		sha  string
+		size int64
+	}
+	release := map[string]pin{
+		"llama-" + RuntimeTag + "-bin-macos-x64.tar.gz":           {"c246b099d4c29cda21861333d2349477eba0c168a53a8ec3d770b4c300beda5e", 11552821},
+		"llama-" + RuntimeTag + "-bin-macos-arm64.tar.gz":         {"a5c7a4d1f4f4ac7571aefdda5d1861e92ae196588dabb92525265d4c4ccbb7bb", 11509540},
+		"llama-" + RuntimeTag + "-bin-ubuntu-x64.tar.gz":          {"f97eb58e365e4a2dadaf4c1eabbc45a4cc30a055d141abc10e533d88267f3008", 17380722},
+		"llama-" + RuntimeTag + "-bin-ubuntu-arm64.tar.gz":        {"1fc79ccda103880adc33083920eda71f752af7996df576ea90889814baa04cc3", 13792856},
+		"llama-" + RuntimeTag + "-bin-ubuntu-vulkan-x64.tar.gz":   {"2858b6a8f013736efbf429c99570e49162f0e382b3afd8fe7819937acaa3f107", 35515317},
+		"llama-" + RuntimeTag + "-bin-ubuntu-vulkan-arm64.tar.gz": {"5146495910072dd3543eadebba125fecd7ae598c46851e139c2f011d43618f61", 28398701},
+		"llama-" + RuntimeTag + "-bin-ubuntu-rocm-7.2-x64.tar.gz": {"47017372214be55a545aa31090be4e02e67e0d3c68d5733fc88a946412f02c3f", 139691397},
+		"llama-" + RuntimeTag + "-bin-linux-cuda-12.4-x64.tar.gz": {"b58caa10e38ea2d3af419bc1c908f785b5f8756b07c98cb1752d50e1e985d4c6", 261907543},
+		"llama-" + RuntimeTag + "-bin-linux-cuda-12.8-x64.tar.gz": {"5cbac5269804e4eb63676aeaec1ee7d4cff6e22b87da91de9b05795bf635998e", 168052249},
+		"llama-" + RuntimeTag + "-bin-linux-cuda-13.3-x64.tar.gz": {"a84e28e22f108fb1f9b71bbde01e42fbe4626d2f0519b13394dd1ca0b91e9039", 147328305},
+		"llama-" + RuntimeTag + "-bin-win-cpu-x64.zip":            {"f0b2b80710fc00a38dfd4c9345c97c928ea3e05114e51654b7dad617bc010615", 19030039},
+		"llama-" + RuntimeTag + "-bin-win-vulkan-x64.zip":         {"dbc74e6eb3835a3d6d94e947bd0135d3786765117136dc2b797277ad8baf0787", 30982836},
+		"llama-" + RuntimeTag + "-bin-win-hip-radeon-x64.zip":     {"24f7259c18a6b3e0f6afdd250bd5304e6bd7164b686327836d79b38f881112ee", 321722730},
+		"llama-" + RuntimeTag + "-bin-win-cuda-12.4-x64.zip":      {"a6fe7fe4a5d72d729d593e5da3b47b30d24ffebd52e61b616f0150447e07f5dd", 254452483},
+		"llama-" + RuntimeTag + "-bin-win-cuda-13.3-x64.zip":      {"80e950d34b03a5fc011a5d5aa74a07c7aef58dca0218b6b62ea8fc3177ff1655", 146021367},
+		"cudart-llama-bin-win-cuda-12.4-x64.zip":                  {"8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6", 391443627},
+		"cudart-llama-bin-win-cuda-13.3-x64.zip":                  {"1462a050eb4c684921ba51dcc4cc488a036674c3e73e9945ee705b854808d03e", 390970417},
+	}
+
+	seen := map[string]int{}
+	check := func(what string, tables map[string]map[Backend]Asset) {
+		for _, platform := range SupportedPlatforms() {
+			for backend, a := range tables[platform] {
+				where := fmt.Sprintf("%s %s/%s", what, platform, backend)
+				want, ok := release[a.ArchiveName]
+				if !ok {
+					t.Errorf("%s: archive %q is not in the captured release table", where, a.ArchiveName)
+					continue
+				}
+				seen[a.ArchiveName]++
+				if a.SHA256 != want.sha {
+					t.Errorf("%s: SHA256 = %q, want the release digest %q", where, a.SHA256, want.sha)
+				}
+				if a.SizeBytes != want.size {
+					t.Errorf("%s: SizeBytes = %d, want the exact release size %d", where, a.SizeBytes, want.size)
+				}
+				if wantURL := runtimeReleaseBase + a.ArchiveName; a.URL != wantURL {
+					t.Errorf("%s: URL = %q, want %q", where, a.URL, wantURL)
+				}
+			}
+		}
+	}
+	check("runtime", runtimeAssets)
+	check("cudart", cudartAssets)
+
+	// A captured asset no registry entry references means the mapping moved
+	// (or a pin was deleted), not that the release changed.
+	for name := range release {
+		if seen[name] == 0 {
+			t.Errorf("release asset %q is captured but pinned by no registry entry", name)
+		}
+	}
+	// The macOS arm64 build IS the Metal build, so both darwin-arm64 backends
+	// share one archive and one digest.
+	if got := seen["llama-"+RuntimeTag+"-bin-macos-arm64.tar.gz"]; got != 2 {
+		t.Errorf("bin-macos-arm64 is pinned by %d entries, want 2 (Metal + CPU share one archive)", got)
 	}
 }
 
@@ -187,7 +265,7 @@ func TestRegistryFailClosedOnUnknownBackendAndPacking(t *testing.T) {
 }
 
 // TestRegistryWindowsCUDA128Gap documents a real hole in the pinned release,
-// verified against its 23 assets: prism-b10709-9a9394a ships win-cuda-12.4-x64,
+// verified against its 23 assets: prism-b10735-842b188 ships win-cuda-12.4-x64,
 // win-cuda-13.3-x64 and win-cuda-13.4-arm64 — but NO windows cuda-12.8 archive
 // and no cuda-12.8 cudart, while linux DOES have bin-linux-cuda-12.8-x64.
 //
@@ -336,15 +414,15 @@ func TestArtifactSetSizesAreArtifactSized(t *testing.T) {
 		runtime  int64
 		cudart   int64
 	}{
-		{PlatformDarwinARM64, BackendMetal, PackingPQ2_0, 11500187, 0},
-		{PlatformDarwinARM64, BackendMetal, PackingPTQ1_0, 11500187, 0},
-		{PlatformDarwinAMD64, BackendCPU, PackingPQ2_0, 11515388, 0},
+		{PlatformDarwinARM64, BackendMetal, PackingPQ2_0, 11509540, 0},
+		{PlatformDarwinARM64, BackendMetal, PackingPTQ1_0, 11509540, 0},
+		{PlatformDarwinAMD64, BackendCPU, PackingPQ2_0, 11552821, 0},
 		// The largest install: Windows CUDA = runtime + cudart + weights + projector.
-		{PlatformWindowsAMD64, BackendCUDA124, PackingPQ2_0, 253442371, 391443627},
-		{PlatformWindowsAMD64, BackendCUDA133, PackingPQ2_0, 145031500, 390970417},
+		{PlatformWindowsAMD64, BackendCUDA124, PackingPQ2_0, 254452483, 391443627},
+		{PlatformWindowsAMD64, BackendCUDA133, PackingPQ2_0, 146021367, 390970417},
 		// The heaviest linux runtime still needs no cudart.
-		{PlatformLinuxAMD64, BackendCUDA124, PackingPQ2_0, 260869644, 0},
-		{PlatformLinuxARM64, BackendVulkan, PackingPTQ1_0, 28002242, 0},
+		{PlatformLinuxAMD64, BackendCUDA124, PackingPQ2_0, 261907543, 0},
+		{PlatformLinuxARM64, BackendVulkan, PackingPTQ1_0, 28398701, 0},
 	}
 	for _, tc := range cases {
 		set, err := ArtifactSet(tc.platform, tc.backend, tc.packing)

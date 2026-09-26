@@ -64,9 +64,89 @@ type Manifest struct {
 	RuntimeVersion string            `json:"runtime_version"`
 	Checksums      map[string]string `json:"checksums"` // component -> verified sha256
 	Port           int               `json:"port"`
-	ContextSize    int               `json:"context_size"`
-	ModelFile      string            `json:"model_file"`
-	InstalledAt    string            `json:"installed_at"` // RFC 3339
+
+	// ContextSize is the LAST KNOWN EFFECTIVE context of this installation —
+	// the number the `llm.models."Bonsai 2 27B".context_window` override is
+	// generated from, and the value a launch falls back to when no plan was
+	// recorded.
+	//
+	// It is a record that is *corrected*, not a decision that is *frozen*:
+	// install writes the planner's figure, and every successful load overwrites
+	// it with the context the server itself reports through `/props` (see
+	// `Server.recordEffectiveContext`). That readback is what keeps the tier-1
+	// config override honest — `contracts`/`llm-providers.md` gives a tier-1
+	// override precedence over the tier-1.5 lazy probe, so a stale one could
+	// never be corrected by the probe and would silently misreport the model's
+	// real window forever.
+	//
+	// A FIT-SIZED plan has no concrete context to record (the runtime's own fit
+	// pass chooses it at launch, and `MemoryPlan.ContextSize` is 0 there), so
+	// the install records `FitMinContext` — the floor fit is held to — as the
+	// estimate the override needs, and the first successful load replaces it
+	// with the measured value. It never records 0: a zero override means "leave
+	// the existing one alone" to `SyncEmbeddedLLMProvider`, and a zero context
+	// in a manifest would read as a lost tier.
+	ContextSize int `json:"context_size"`
+
+	ModelFile   string `json:"model_file"`
+	InstalledAt string `json:"installed_at"` // RFC 3339
+
+	// Topology is the device-memory snapshot the recorded plan was made from —
+	// the accelerators the provisioned runtime could see, whether their memory
+	// aliases host RAM, and the two budgets the memory gate was allowed to
+	// spend. It is persisted for two reasons. A load re-probes only
+	// opportunistically and must fail SOFT, so the snapshot is what a wedged or
+	// absent driver query falls back to; and a support bundle carries the
+	// machine's real shape as measured at provision time rather than as guessed
+	// from a backend name.
+	//
+	// Nil means "no probe ever answered" — a first install whose runtime would
+	// not enumerate its devices, or a manifest written before this field
+	// existed. A reader must treat nil as UNKNOWN, never as "no accelerator":
+	// `MemoryTopology`'s own contract is that its zero value means unknown, and
+	// a zero budget read as a fact is the refusal the combined gate exists to
+	// avoid.
+	Topology *MemoryTopology `json:"topology,omitempty"`
+
+	// Plan is the launch shape LAST APPLIED to this installation: every
+	// flag-bearing value `LaunchSpec` renders, the two footprints it expected,
+	// the budgets it was gated against, and the human-readable `Notes` saying
+	// why each non-default decision was made. `Server.launchSpec` builds the
+	// shape half of a launch from it, so a load reproduces the decision the
+	// install made instead of re-deriving a different one from a coarser policy.
+	//
+	// Nil means "no plan was recorded" — a manifest written before this field
+	// existed — and a load then falls back to the pure policy in resolve.go
+	// (explicit `-ngl`, `-fit off`, the manifest's `ContextSize`). Persisting
+	// the plan rather than re-deriving it at load is deliberate: re-deriving
+	// would need the operator's `Tuning`, and `tuning` is an operator SETTING
+	// the sink carries verbatim, not install state a record may copy — a second
+	// copy would be a second source of truth that goes stale on the first edit.
+	Plan *MemoryPlan `json:"plan,omitempty"`
+
+	// PackingReason says WHY this packing was chosen. It is recorded because
+	// every value other than "default" is a degradation of some kind — a backend
+	// with no PQ2_0 kernels, a pin that predates an upstream fix, a GPU
+	// generation that decodes the smaller packing faster, or a measured budget
+	// PQ2_0 did not fit — and a degraded install must state its reason instead
+	// of leaving the user to infer it from a file size. Empty on a manifest
+	// written before this field existed, which readers must treat as "unknown",
+	// never as "default".
+	PackingReason PackingReason `json:"packing_reason,omitempty"`
+
+	// GPUFamily is the accelerator generation the plan was classified as, empty
+	// when no device probe answered. Recorded so a support bundle carries the
+	// silicon the guards and the packing rule were reasoning about.
+	GPUFamily GPUFamily `json:"gpu_family,omitempty"`
+
+	// Guards are the backend compatibility decisions that were in force when
+	// this install was planned — each with its typed reason, its severity, its
+	// upstream issue citation, its guidance, and an Applied flag saying whether
+	// the plan actually changed because of it. They are persisted, not just
+	// returned, because the whole point is that a degraded install stays
+	// visible: a guard that fired is a fact about THIS install and must still be
+	// readable after the process that made it exited.
+	Guards []GuardDecision `json:"guards,omitempty"`
 }
 
 // ErrNotInstalled reports that no manifest exists, i.e. the model is not
@@ -124,6 +204,40 @@ func writeManifest(path string, m Manifest) error {
 	return nil
 }
 
+// recordableContext is the context a MANIFEST may carry for a plan.
+//
+// A planner-computed shape has one: `MemoryPlan.ContextSize` is always positive
+// when `Fit` is false, because with fit off nothing else would size it. A
+// FIT-SIZED shape does not — `ContextSize` is 0 there by definition, since the
+// runtime's own fit pass chooses the value at launch — but a manifest still owes
+// its readers a number: `ContextSize` is what the `llm.models` `context_window`
+// override is generated from, and a 0 there means "leave the existing override
+// alone" rather than "the window is zero", so the honest figure would be lost.
+//
+// `FitMinContext` is that figure. It is the floor fit is held to (`-fitc`), so
+// it is the smallest context the launch can legitimately end up with, and the
+// first successful load replaces it with the value the server actually reports
+// through `/props` — see `Manifest.ContextSize` and
+// `Server.recordEffectiveContext`. Recording the floor instead of 0 is the
+// conservative direction in both uses: an override that under-reports the window
+// costs compaction headroom, while one that claims 0 costs the model its place
+// in the context accounting entirely.
+//
+// fallback is the value a plan-less resolution already carries (`Resolution.
+// ContextSize`), used when the plan is absent and for the RAM-tiered path.
+func recordableContext(plan MemoryPlan, fallback int) int {
+	if plan.Fit {
+		if plan.FitMinContext > 0 {
+			return plan.FitMinContext
+		}
+		return fallback
+	}
+	if plan.ContextSize > 0 {
+		return plan.ContextSize
+	}
+	return fallback
+}
+
 // InstallState is the durable install record handed to the config layer. It
 // maps one-to-one onto config.EmbeddedLLMConfig plus the resolved context
 // tier, and it is the ONLY channel through which this subsystem reaches
@@ -146,6 +260,14 @@ type InstallState struct {
 	// tuned idle budget.
 	AutoUnloadEnabled bool
 	AutoUnloadMinutes int
+
+	// There are deliberately NO memory-tuning defaults here. `Tuning`'s zero
+	// value IS the all-Auto plan, and config.TuningConfig keeps every knob a
+	// pointer precisely so "the operator never wrote this" stays
+	// distinguishable from "the operator wrote auto" — so an install that
+	// shipped defaults for the sink to apply would collapse that distinction
+	// on the first provision. What the sink owes the tuning section is
+	// narrower and stronger: carry it through verbatim (see ConfigSink).
 }
 
 // ConfigSink persists install state into config.yaml. The backend layer
@@ -162,6 +284,12 @@ type InstallState struct {
 //     next load fails validation and the next settings save is rejected as
 //     dangling), calls SyncEmbeddedLLMProvider(0) so the provider entry is
 //     dropped, and persists.
+//
+// BOTH rewrite embedded_llm.* wholesale, so both must carry the two
+// operator-owned sub-sections through unchanged: `auto_unload` (applying
+// state.AutoUnload* to unset knobs only) and `tuning` (verbatim — it is a
+// setting, not a record, so neither provisioning nor uninstalling the model
+// may reset the memory plan the operator chose).
 //
 // Both must be idempotent: Install and Remove may be retried after a partial
 // failure.
@@ -234,6 +362,13 @@ type Installer struct {
 	Downloader *Downloader
 	// Probe reads the machine's RAM and accelerator. nil → ProbeHardware.
 	Probe func(ctx context.Context, logger *slog.Logger) (Hardware, error)
+	// ProbeDevices reads the accelerator INVENTORY of a provisioned runtime, so
+	// an install can learn the GPU generation — which the packing rule and the
+	// compatibility guards both need — instead of guessing it from the backend.
+	// nil → ProbeDevices (the package function). Fail-soft like every other
+	// probe here: an answer of false leaves the plan on its statically
+	// decidable guards, it never fails an install.
+	ProbeDevices func(ctx context.Context, binaryPath string, logger *slog.Logger) (MemoryTopology, bool)
 	// RunCommand executes xattr/codesign/--version. nil → defaultCommandRunner.
 	RunCommand CommandRunner
 	// AllocatePort reserves a free loopback port. nil → ephemeralLoopbackPort.
@@ -279,6 +414,22 @@ type InstallReport struct {
 	RuntimeDir   string
 	ServerBinary string
 	ModelFile    string
+
+	// Guards is the complete compatibility record of this install: every
+	// decision the guard table made for this machine, whether c0wrk acted on it
+	// (Applied=true, e.g. a CUDA 13.3 plan swapped to 12.8 before anything was
+	// downloaded) or could only disclose it (Applied=false, e.g. a substitution
+	// discovered after the runtime archive was already staged, or an advisory
+	// whose workaround trades away something the user may want to keep).
+	//
+	// It is the same list the Manifest persists, lifted to the top level because
+	// a degraded install is the first thing a caller should be able to see
+	// without walking the report's nested records.
+	Guards []GuardDecision
+
+	// PackingReason is why the installed packing is what it is, lifted from the
+	// resolution for the same reason.
+	PackingReason PackingReason
 }
 
 // Install provisions the pinned runtime and weights for this machine.
@@ -286,8 +437,10 @@ type InstallReport struct {
 // The order is fixed and each step is a gate:
 //
 //  1. hardware probe — RAM is a hard input (ErrRAMUnknown refuses);
-//  2. Resolve — the 16 GiB gate is its FIRST check, so an undersized machine
-//     plans no assets and downloads nothing;
+//  2. Resolve — the combined memory gate is its FIRST check, so a machine
+//     whose memory no modelled shape fits plans no assets, creates no
+//     directory and downloads nothing (ErrInsufficientMemory, naming both
+//     pools with both numbers);
 //  3. a whole-set disk guard, before the first byte is fetched;
 //  4. port allocation, persisted in both the manifest and the config;
 //  5. the runtime archives (and the Windows CUDA companion): download with
@@ -320,7 +473,7 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*Install
 		return nil, err
 	}
 
-	hw, res, err := in.plan(ctx, opts)
+	hw, platform, res, topology, err := in.plan(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -363,6 +516,24 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*Install
 		return nil, err
 	}
 
+	// The staged runtime can now answer the device probe, which is the last
+	// moment a refinement is still cheap: the multi-gigabyte weights have not
+	// been fetched yet. A first install learns its GPU generation here (a
+	// repair already learned it in plan), so the generation-aware packing rule
+	// and the device-dependent guards apply to the weights that are about to be
+	// downloaded. A guard that wants a DIFFERENT RUNTIME is past its moment —
+	// the archive is on disk and signed — so it is recorded as guidance rather
+	// than silently dropped.
+	res, weightAssets, refinedTopology := in.refineWithStagedDevices(ctx, platform, hw, res, serverBinary, weightAssets)
+	if refinedTopology != nil {
+		// The staged runtime answered, and the resolution that goes with it was
+		// refined by that answer, so the pair the manifest records is the pair
+		// the weights about to be downloaded were chosen for. A repair keeps the
+		// topology plan() measured off the pre-existing tree; a first install
+		// learns it here.
+		topology = refinedTopology
+	}
+
 	if err := in.fetchComponents(ctx, opts, weightAssets, "", checksums); err != nil {
 		return nil, err
 	}
@@ -372,15 +543,26 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*Install
 		return nil, err
 	}
 	installedAt := in.now().UTC().Format(time.RFC3339)
+	// The plan is recorded because a load must reproduce the shape this
+	// machine was provisioned for, and it can only do that from a record: the
+	// operator's `tuning` is a setting the sink carries verbatim, not install
+	// state a manifest may copy, so re-deriving the plan at load would need a
+	// second source of truth that goes stale on the first edit.
+	plan := res.Memory
 	manifest := Manifest{
 		Packing:        res.Packing,
 		Backend:        res.Backend,
 		RuntimeVersion: RuntimeTag,
 		Checksums:      checksums,
 		Port:           port,
-		ContextSize:    res.ContextSize,
+		ContextSize:    recordableContext(plan, res.ContextSize),
 		ModelFile:      modelFile,
 		InstalledAt:    installedAt,
+		PackingReason:  res.PackingReason,
+		GPUFamily:      res.GPU,
+		Guards:         res.Guards,
+		Topology:       topology,
+		Plan:           &plan,
 	}
 
 	manifestPath, err := in.Layout.ManifestPath()
@@ -392,7 +574,11 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*Install
 	}
 	in.logger().Info("embedded LLM installed",
 		"backend", manifest.Backend, "packing", manifest.Packing,
+		"packing_reason", manifest.PackingReason, "gpu_family", manifest.GPUFamily,
+		"guards", guardIDsForLog(manifest.Guards),
 		"port", manifest.Port, "context_size", manifest.ContextSize,
+		"fit", plan.FitArg(), "kv_type", plan.KVType,
+		"topology_probed", topology != nil,
 		"model_file", manifest.ModelFile)
 
 	state := InstallState{
@@ -419,22 +605,49 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*Install
 		return nil, err
 	}
 	return &InstallReport{
-		Manifest:     manifest,
-		Resolution:   res,
-		Hardware:     hw,
-		RuntimeDir:   runtimeDir,
-		ServerBinary: serverBinary,
-		ModelFile:    modelFile,
+		Manifest:      manifest,
+		Resolution:    res,
+		Hardware:      hw,
+		RuntimeDir:    runtimeDir,
+		ServerBinary:  serverBinary,
+		ModelFile:     modelFile,
+		Guards:        manifest.Guards,
+		PackingReason: manifest.PackingReason,
 	}, nil
 }
 
-// plan runs the two pure gates — the hardware probe and resolution — and
-// returns both results. The RAM refusal lives inside Resolve as its first
-// check, so nothing is planned and nothing is downloaded below 16 GiB.
-func (in *Installer) plan(ctx context.Context, opts InstallOptions) (Hardware, Resolution, error) {
+// plan runs the pure gates — the hardware probe, the memory gate and
+// resolution — and returns both results together with the platform key the plan
+// was made for. The memory refusal lives inside Resolve as its first check, so
+// nothing is planned and nothing is downloaded on a machine that cannot hold
+// the model.
+//
+// The DEVICE PROBE is an optional refinement, and plan tries to obtain it
+// without spending anything: a repair or a reinstall still has the previously
+// provisioned runtime on disk, which can answer `--list-devices` before a
+// single byte is downloaded. When it answers, the plan is refined with BOTH
+// halves of the answer — the classified GPU generation, so the
+// backend-substituting compatibility guards (KNOWN_ISSUES #197, #223) and the
+// generation-aware packing rule apply to the artifacts about to be fetched
+// rather than to a record written after the fact, AND the measured memory
+// budgets, so the gate and the launch shape are priced against the card that is
+// actually there. A first install has no binary to ask and keeps
+// GPUFamilyUnknown here; Install probes the staged runtime later and refines
+// what is still refinable.
+//
+// Without a topology the gate does NOT fall back to a RAM floor. It derives the
+// host budget from the RAM probe with the same reserve policy a topology
+// carries, and classifies the accelerator axis statically: a backend whose
+// memory is independent of host RAM (a discrete CUDA or ROCm card on amd64)
+// leaves the device side UNREADABLE, which degrades the gate to the host pool
+// and says so in `MemoryPlan.Notes` rather than refusing — that refusal is the
+// bug this gate replaced. A unified or absent accelerator is priced from the RAM
+// probe alone, which measures both. FitsPQ2_0 is still left Unknown, so no
+// capacity downgrade is ever inferred from an unmeasured budget.
+func (in *Installer) plan(ctx context.Context, opts InstallOptions) (Hardware, string, Resolution, *MemoryTopology, error) {
 	hw, err := in.probe()(ctx, in.logger())
 	if err != nil {
-		return Hardware{}, Resolution{}, fmt.Errorf("embeddedllm: hardware probe: %w", err)
+		return Hardware{}, "", Resolution{}, nil, fmt.Errorf("embeddedllm: hardware probe: %w", err)
 	}
 	platform := hw.Platform
 	if opts.Platform != "" {
@@ -444,11 +657,211 @@ func (in *Installer) plan(ctx context.Context, opts InstallOptions) (Hardware, R
 	if opts.Backend != "" {
 		backend = opts.Backend
 	}
-	res, err := Resolve(platform, backend, hw.RAMGiB)
+
+	profile := MachineProfile{Platform: platform, Backend: backend, RAMGiB: hw.RAMGiB}
+	res, err := ResolveProfile(profile)
 	if err != nil {
-		return Hardware{}, Resolution{}, fmt.Errorf("embeddedllm: %w", err)
+		return Hardware{}, "", Resolution{}, nil, fmt.Errorf("embeddedllm: %w", err)
 	}
-	return hw, res, nil
+
+	// probed is returned only when it INFORMED the resolution that goes with
+	// it. A topology the re-plan rejected is still a true measurement, but
+	// recording it beside a plan that was not made from it would break the pair
+	// the manifest promises — and a load's fail-soft path reads them as one
+	// fact. Losing the measurement costs a support bundle one line; a
+	// mismatched pair costs a launch shape nobody reasoned about.
+	var probed *MemoryTopology
+	if topology, ok := in.memoryTopologyFromBinary(ctx, in.existingServerBinary(res.Backend)); ok {
+		gpu := ClassifyGPUs(topology.Devices)
+		profile.GPU = gpu
+		refined, refineErr := Resolve(ResolveInput{MachineProfile: profile, Topology: &topology})
+		if refineErr != nil {
+			// A MEMORY refusal is not "lost information" — it is the measured
+			// budget saying this machine cannot hold the model, discovered
+			// before a single byte was fetched. It must stop the install
+			// rather than fall back to a plan that would OOM at load.
+			if errors.Is(refineErr, ErrInsufficientMemory) {
+				return Hardware{}, "", Resolution{}, nil, fmt.Errorf("embeddedllm: %w", refineErr)
+			}
+			// Anything else: the first plan is valid and the refinement only
+			// adds information. Losing it degrades to the guards that are
+			// statically decidable.
+			in.logger().Debug("embedded LLM device-aware re-plan skipped",
+				"gpu_family", gpu, "error", refineErr)
+			res.GPU = gpu
+			return hw, platform, res, nil, nil
+		}
+		if refined.Backend != res.Backend {
+			in.logger().Info("embedded LLM plan changed after the device probe",
+				"gpu_family", gpu, "probed_backend", backend,
+				"from", res.Backend, "to", refined.Backend,
+				"guards", guardIDsForLog(refined.Guards))
+		}
+		res = refined
+		measured := topology
+		probed = &measured
+	}
+	return hw, platform, res, probed, nil
+}
+
+// existingServerBinary returns the llama-server of an already-provisioned
+// runtime for a backend, or "" when there is none. It exists so a repair or a
+// reinstall can answer the device probe before downloading anything, and it
+// never creates anything: a missing tree is the normal first-install case.
+func (in *Installer) existingServerBinary(backend Backend) string {
+	runtimeDir, err := in.Layout.RuntimeDir(backend)
+	if err != nil {
+		return ""
+	}
+	binary, err := ServerBinaryPath(runtimeDir, in.hostOS())
+	if err != nil {
+		return ""
+	}
+	if _, err := os.Stat(binary); err != nil {
+		return ""
+	}
+	return binary
+}
+
+// memoryTopologyFromBinary asks a provisioned runtime what accelerator memory
+// it can see. It is FAIL-SOFT in every direction, like the probe it wraps: no
+// binary, a hung one or an unrecognized inventory all yield (zero, false), and
+// the caller keeps the plan it already had. A memory measurement refines a
+// plan; it is never a precondition of one.
+//
+// It returns the whole topology rather than only the GPU generation it used to,
+// because the two consumers of the probe need different halves of it and the
+// probe is expensive enough to run once: the compatibility guards and the
+// packing rule need the FAMILY, and the memory gate needs the BUDGETS. A first
+// install has no binary to ask, so its gate runs on the derived host budget and
+// treats the device side as unreadable — see gateBudgetsFor.
+func (in *Installer) memoryTopologyFromBinary(ctx context.Context, binaryPath string) (MemoryTopology, bool) {
+	if binaryPath == "" {
+		return MemoryTopology{}, false
+	}
+	topology, ok := in.probeDevices()(ctx, binaryPath, in.logger())
+	if !ok {
+		return MemoryTopology{}, false
+	}
+	if ClassifyGPUs(topology.Devices) == GPUFamilyUnknown {
+		in.logger().Debug("embedded LLM device probe recognized no accelerator family",
+			"devices", len(topology.Devices))
+	}
+	return topology, true
+}
+
+// guardIDsForLog renders the guards that a plan change acted on, for one log
+// line. Only the applied ones are interesting there: the record itself carries
+// every decision, applied or not.
+func guardIDsForLog(decisions []GuardDecision) string {
+	ids := make([]string, 0, len(decisions))
+	for _, decision := range decisions {
+		if decision.Applied {
+			ids = append(ids, string(decision.Guard))
+		}
+	}
+	if len(ids) == 0 {
+		return "none"
+	}
+	return strings.Join(ids, ",")
+}
+
+// refineWithStagedDevices is the second, device-aware pass over a plan: it
+// probes the freshly staged runtime, classifies the accelerator, and folds what
+// that reveals into the resolution BEFORE the weights are fetched.
+//
+// It never fails and never downloads. Three outcomes, in increasing order of
+// what could still be changed:
+//
+//   - no answer (no probe, an unrecognized inventory, or a plan that already
+//     knew its GPU family): the resolution is returned untouched;
+//   - a guard or the packing rule wants something different and the BACKEND is
+//     unchanged: the refined resolution and its weight assets are returned, so
+//     the weights that are about to be downloaded are the right ones. This is
+//     the case the refinement exists for — an Ada card that should get PTQ1_0,
+//     or #223's garbled-output guard on a machine whose iGPU only a device
+//     probe could name;
+//   - a guard wants a DIFFERENT BACKEND: the runtime archive for the planned
+//     backend is already staged, signed and smoke-tested, so the substitution
+//     is recorded as guidance instead of applied. The install completes and the
+//     record says why it may not work, which is the difference between a
+//     documented upstream failure and a mystery.
+//
+// Guards are merged rather than replaced, so a decision that WAS applied in
+// plan (a static one, like #222) keeps its Applied flag and its place in the
+// record.
+//
+// The third result is the measured `MemoryTopology` — non-nil ONLY in the second
+// and third outcomes' successful form, i.e. only when the returned resolution
+// was actually refined by it, so the caller can persist a topology and a plan
+// that describe one another. A branch that kept the resolution it came in with
+// returns nil and the caller keeps whatever `plan` measured.
+func (in *Installer) refineWithStagedDevices(ctx context.Context, platform string, hw Hardware,
+	res Resolution, serverBinary string, weightAssets []Asset,
+) (Resolution, []Asset, *MemoryTopology) {
+	if res.GPU != GPUFamilyUnknown {
+		return res, weightAssets, nil
+	}
+	topology, ok := in.memoryTopologyFromBinary(ctx, serverBinary)
+	if !ok {
+		return res, weightAssets, nil
+	}
+	gpu := ClassifyGPUs(topology.Devices)
+
+	refined, err := Resolve(ResolveInput{MachineProfile: MachineProfile{
+		Platform: platform,
+		Backend:  res.Backend,
+		RAMGiB:   hw.RAMGiB,
+		GPU:      gpu,
+	}, Topology: &topology})
+	if err != nil {
+		// The unrefined plan is valid; only the extra information is lost.
+		in.logger().Debug("embedded LLM device-aware refinement skipped",
+			"gpu_family", gpu, "error", err)
+		res.GPU = gpu
+		return res, weightAssets, nil
+	}
+
+	if refined.Backend != res.Backend {
+		in.logger().Warn("a compatibility guard wants a different runtime than the one already staged",
+			"gpu_family", gpu, "staged_backend", res.Backend, "preferred_backend", refined.Backend,
+			"guards", guardIDsForLog(refined.Guards))
+		res.GPU = gpu
+		res.Guards = mergeGuardDecisions(res.Guards, markGuardsUnappliable(refined.Guards))
+		return res, weightAssets, nil
+	}
+
+	res = refined
+	_, weights := splitRuntimeAssets(refined.Assets)
+	if refined.PackingReason != PackingReasonDefault {
+		in.logger().Info("embedded LLM packing refined by the device probe",
+			"gpu_family", gpu, "packing", refined.Packing, "reason", refined.PackingReason)
+	}
+	// The measurement is returned only here, where the resolution that goes
+	// with it was actually refined by it. Every earlier branch keeps the plan
+	// it came in with, so it keeps the topology (if any) that plan was made
+	// from — see Installer.plan for why the pair must not be split.
+	measured := topology
+	return res, weights, &measured
+}
+
+// markGuardsUnappliable rewrites a set of decisions that were computed for a
+// substitution c0wrk is no longer able to make: the runtime archive is already
+// on disk. Every backend substitution loses its Applied flag and gains the
+// reason it could not be applied, so the record explains itself instead of
+// looking like an oversight.
+func markGuardsUnappliable(decisions []GuardDecision) []GuardDecision {
+	marked := make([]GuardDecision, 0, len(decisions))
+	for _, decision := range decisions {
+		if decision.Action == GuardActionPreferBackend {
+			decision.Applied = false
+			decision.Guidance += " (this was only discovered after a runtime had already been " +
+				"staged, so the recommended " + string(decision.Backend) + " build was NOT provisioned: " +
+				"reinstall to apply it)"
+		}
+		marked = append(marked, decision)
+	}
+	return marked
 }
 
 // splitRuntimeAssets separates the runtime archives (the server build plus the
@@ -1080,6 +1493,13 @@ func (in *Installer) probe() func(context.Context, *slog.Logger) (Hardware, erro
 		return in.Probe
 	}
 	return ProbeHardware
+}
+
+func (in *Installer) probeDevices() func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+	if in.ProbeDevices != nil {
+		return in.ProbeDevices
+	}
+	return ProbeDevices
 }
 
 func (in *Installer) runner() CommandRunner {

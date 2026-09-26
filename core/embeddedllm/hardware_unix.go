@@ -19,7 +19,7 @@ import (
 //
 // Any other GOOS is unsupported: c0wrk ships darwin, linux and windows only,
 // and an unreadable RAM size must fail closed (see ErrRAMUnknown) rather than
-// let the 16 GiB gate pass on a guess.
+// let the memory gate derive a host budget out of nothing.
 func platformTotalRAMBytes(ctx context.Context) (uint64, error) {
 	if runtime.GOOS == "darwin" {
 		return darwinTotalRAMBytes(ctx)

@@ -39,12 +39,12 @@ import (
 //	  → 416  for a Range starting beyond EOF
 //
 //	GitHub release assets (runtime + cudart)
-//	  GET …/releases/download/prism-b10709-9a9394a/llama-…-bin-win-cpu-x64.zip
-//	                                                   Range: bytes=18785000-
+//	  GET …/releases/download/prism-b10735-842b188/llama-…-bin-win-cpu-x64.zip
+//	                                                   Range: bytes=19029000-
 //	  → 302 → 206  accept-ranges: bytes
-//	               content-length: 841
-//	               content-range: bytes 18785000-18785840/18785841
-//	  → 416  content-range: bytes */18785841 for a Range beyond EOF
+//	               content-length: 1039
+//	               content-range: bytes 19029000-19030038/19030039
+//	  → 416  content-range: bytes */19030039 for a Range beyond EOF
 //
 // Both hosts serve the bytes through a redirect to a signed CDN URL. net/http
 // copies the Range header across a redirect — only Authorization, Cookie,

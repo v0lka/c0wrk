@@ -157,7 +157,7 @@ llm:
 # ---------------------------------------------------------------------------
 # The optional in-app local model. On an explicit user action (Settings → LLM →
 # Embedded LLM → Install) c0wrk downloads a pinned inference runtime — the
-# PrismML-Eng/llama.cpp fork at release `prism-b10709-9a9394a`, because stock
+# PrismML-Eng/llama.cpp fork at release `prism-b10735-842b188`, because stock
 # llama.cpp rejects the PQ2_0/PTQ1_0 ternary packings and silently produces
 # garbage on Q2_0 — plus the Ternary-Bonsai-2-27B weights, provisions both for
 # THIS machine, supervises `llama-server` as a loopback OpenAI-compatible
@@ -165,9 +165,18 @@ llm:
 # `Bonsai 2 27B`. An explicit Load (Settings or the status bar) makes the model
 # resident; an idle budget unloads it again.
 #
-# THIS SECTION IS APP-WRITTEN STATE, NOT TUNING. Install writes it, Remove
-# clears it; hand-editing does not download, install or start anything. The
-# values below are the not-installed defaults.
+# MOST OF THIS SECTION IS APP-WRITTEN STATE, NOT TUNING. Install writes it,
+# Remove clears it, and hand-editing it does not download, install or start
+# anything. The values below are the not-installed defaults.
+#
+# TWO sub-sections are the exception, and both are OPERATOR SETTINGS that
+# Install and Remove carry through verbatim — provisioning or uninstalling the
+# model never resets either:
+#
+#   - `auto_unload:` — the idle budget (was always a setting; it just lives
+#     here because it is the one knob this section had before `tuning:`);
+#   - `tuning:`      — the memory-plan overrides, documented at the end of this
+#     section. Everything else above them is a record.
 #
 # This section is the AUTHORITATIVE state; `llm.openai_compatible.embedded` is
 # GENERATED from it (base_url http://127.0.0.1:<port>/v1, empty api_key,
@@ -182,22 +191,42 @@ llm:
 #   - artifact versions, URLs and SHA256 checksums are compile-time pins in
 #     `core/embeddedllm/registry.go` — no upstream version queries, no
 #     auto-update; a bump is a manual, CVE-reviewed pin change;
-#   - accelerator, packing, layer offload (`-ngl`), context size and the
-#     image-token cap are RESOLVED from the hardware probe, never configured.
-#     The resolved outcome is reported back through `packing` / `backend` and
-#     through the generated `llm.models."Bonsai 2 27B".context_window`
-#     override (RAM-tiered; never the fork's 262144 maximum).
+#   - the accelerator and the image-token cap are RESOLVED from the hardware
+#     probe and are never configured. The resolved outcome is reported back
+#     through `backend` and `packing` and through the generated
+#     `llm.models."Bonsai 2 27B".context_window` override (RAM-tiered; never
+#     the fork's 262144 maximum).
+#     Packing, layer offload (`-ngl`), the context window and the KV precision
+#     used to belong to this list too. They are now OVERRIDABLE through
+#     `tuning:` below — resolved by default, pinned on request. Note that
+#     `tuning.packing` changes what the PLAN assumes, not what is on disk: the
+#     weights are an install-time artifact, so override it and reinstall.
+#   - the backend compatibility guards: machine classes the pinned model's own
+#     KNOWN_ISSUES documents as crashing, aborting, hanging or producing GARBLED
+#     output are substituted onto a working build, or disclosed when they cannot
+#     be. Every decision — applied or not — is recorded in the install manifest
+#     and reported through the Settings status, so a degraded install is visible
+#     rather than silent. Nothing here is configurable: the guards are derived
+#     from the pin, and a pin bump re-reads them.
 #
 # Artifacts are stored OUTSIDE ~/.c0wrk/tools/ — runtimes in
 # ~/.c0wrk/runtimes/llama-<tag>-<backend>/, weights in
 # ~/.c0wrk/models/bonsai-2-27b/ — because <toolsDir>/bin is prepended to the
 # agent's PATH and the inference runtime must not become agent-invokable.
-# Install requires at least 16 GiB of system RAM and refuses below it with an
-# actionable error (there is no 8–16 GiB tier). Disk budget: ~7.3 GiB
+# Install has NO fixed RAM threshold. A combined memory gate prices both of the
+# machine's pools — accelerator memory and system RAM — against the measured
+# footprint of the smallest launch shape that fits, and refuses only when no
+# modelled shape fits either. On a unified-memory machine (Apple Silicon, an
+# AMD APU) the two pools are the same bytes and the derived floor lands just
+# above 12 GiB of RAM; beside a discrete card the RAM total is not the binding
+# constraint at all, so 8 GiB of RAM with a large GPU is admitted. The refusal
+# names both pools with both numbers. Disk budget: ~7.3 GiB
 # (PQ2_0 + mmproj) or ~6.1 GiB (PTQ1_0 + mmproj) plus a 150–650 MB runtime.
 # The server binds strictly 127.0.0.1 with its built-in Web UI disabled.
 # See specs/domains/embedded-llm.md and
-# specs/decisions/066-embedded-llm-runtime.md.
+# specs/decisions/066-embedded-llm-runtime.md (the runtime),
+# specs/decisions/067-memory-aware-embedded-llm-provisioning.md (the memory
+# planner `tuning:` overrides).
 #
 # embedded_llm:
 #   # True once runtime and weights are downloaded, SHA256-verified (fail-closed)
@@ -205,15 +234,29 @@ llm:
 #   # Default: false.
 #   installed: false
 #   # Informational: the packing actually resolved for this machine, shown in
-#   # Settings. Default: "" (not installed).
+#   # Settings together with the typed REASON for it. Default: "" (not installed).
 #   #   "PQ2_0"   (6.71 GiB) — default everywhere it is supported
-#   #   "PTQ1_0"  (5.54 GiB) — Vulkan (no PQ2_0 kernels) or memory-short
+#   #   "PTQ1_0"  (5.54 GiB) — chosen when ANY of these holds:
+#   #     * the backend has no PQ2_0 kernels (Vulkan), so PQ2_0 would silently
+#   #       run dequantized;
+#   #     * the host has AVX-512 AND the pinned runtime predates upstream #245,
+#   #       where PQ2_0 segfaults at load (inert on the current pin);
+#   #     * the MEASURED device budget does not fit PQ2_0 — the model card calls
+#   #       PTQ1_0 "the pick wherever memory is tightest";
+#   #     * the GPU generation decodes PTQ1_0 faster (the Ada-generation cards
+#   #       and the L4, per the card's own throughput table).
+#   # Installed system RAM alone never downgrades the packing: the constraint is
+#   # the accelerator budget, and it downgrades only when it was measured.
 #   # The vision projector mmproj-Q8_0 (600 MiB) is always installed alongside.
 #   packing: ""
-#   # Informational: the accelerator the probe selected. Default: "" (not
+#   # Informational: the accelerator the plan settled on, AFTER the
+#   # compatibility guards — never the raw probed value. Default: "" (not
 #   # installed). One of:
-#   #   metal | cuda-12.4 | cuda-12.8 | cuda-13.3 | rocm | vulkan | cpu
-#   # (CUDA and ROCm builds are x64-only; Windows CUDA additionally downloads a
+#   #   metal | cuda-12.4 | cuda-12.8 | rocm | vulkan | cpu
+#   # (cuda-13.3 is pinned but not selectable while upstream #222 is open: the
+#   # 13.3 builds are documented to crash, so a 13.3 driver resolves to the 12.8
+#   # build on Linux and the 12.4 build on Windows, both of which it still runs.
+#   # CUDA and ROCm builds are x64-only; Windows CUDA additionally downloads a
 #   # paired cudart archive as a separate, separately-verified component.)
 #   backend: ""
 #   # Loopback port the local inference server listens on. 0 = allocate a free
@@ -228,7 +271,7 @@ llm:
 #   # Absolute path of the installed GGUF weights. Default: "".
 #   model_file: ""
 #   # The pinned fork release the installed runtime came from
-#   # (e.g. "prism-b10709-9a9394a"). A pin change forces a runtime re-download
+#   # (e.g. "prism-b10735-842b188"). A pin change forces a runtime re-download
 #   # and keeps the weights. Default: "".
 #   runtime_version: ""
 #   # RFC 3339 timestamp of the install. Default: "".
@@ -243,6 +286,142 @@ llm:
 #     # timer is disabled, so re-enabling it can never activate a dead budget.
 #     # Default: 60.
 #     minutes: 60
+#   # ---------------------------------------------------------------------
+#   # MEMORY-PLAN TUNING — the other operator-owned sub-section. Everything
+#   # above it is a RECORD of what the app did; this is a SETTING of what you
+#   # want the memory plan to be. It is the persisted form of the override
+#   # vocabulary the planner in core/embeddedllm/plan.go accepts, and the legal
+#   # spellings for the two closed sets (the KV precisions, the packings) are
+#   # READ from core rather than transcribed here, so the two cannot drift.
+#   #
+#   # Every knob is OPTIONAL and defaults to ABSENT. Absent is not the same
+#   # value as an explicit `auto`: both build the same plan, but only an absent
+#   # key means "the operator chose nothing". For two knobs the difference is
+#   # not cosmetic at all — an unset `fit` lets the exclusivity rule decide
+#   # while `fit: false` forces `-fit off`, and an unset `cache_ram_mib` keeps
+#   # the runtime default while `cache_ram_mib: 0` DISABLES the prompt cache.
+#   # That is why nothing here is seeded by defaults, and why an unauthored
+#   # block writes nothing: config.yaml only grows a `tuning:` section when you
+#   # author one, and a save never converts your "unset" into an "explicit
+#   # auto".
+#   #
+#   # Install and Remove preserve this section verbatim (same rule as
+#   # auto_unload), so provisioning or uninstalling the model never resets a
+#   # tuned memory plan, and editing a knob never touches the app-written
+#   # record beside it — `installed`, `packing`, `backend`, `port`,
+#   # `model_file`, `runtime_version` and `installed_at` are all owned by the
+#   # install flow alone.
+#   #
+#   # Every knob is validated on load EVEN WHILE IT IS INERT — while the model
+#   # is not installed, while fit is off, while another knob makes it moot —
+#   # for the reason auto_unload.minutes already is: arming a value must never
+#   # activate a dead one. A rejected key names itself and states the fix.
+#   #
+#   # Two planner knobs are deliberately NOT exposed: `-dev` (the offload
+#   # device list) and `-sm`/`--split-mode`. Both pin the offload, which turns
+#   # fit off, and naming a device this machine does not have yields an
+#   # unlaunchable server rather than a slower one.
+#   tuning:
+#     # The context window (`-c`). Default: unset.
+#     #   mode: auto   the planner sizes it — from fit_min_context under fit,
+#     #                otherwise from the system-RAM ladder, never above the
+#     #                model's own training context.
+#     #   mode: exact  pins `-c` to tokens, which then becomes REQUIRED.
+#     # tokens is valid 1-262144 (the pinned model's own training context, read
+#     # from the memory profile rather than written down here) and is validated
+#     # even while mode is auto, so switching to exact can never activate a
+#     # window the model cannot serve.
+#     context:
+#       mode: auto #        auto | exact
+#       tokens: 32768 #     1-262144; required by mode: exact
+#     # The KV-cache precision, applied to BOTH `-ctk` and `-ctv` — a mixed pair
+#     # silently drops to CPU flash attention, so one value drives both.
+#     # Default: unset = adaptive.
+#     #   auto   f16, escalating to q8_0 and then q4_0 until the target context
+#     #          fits the MEASURED device budget. Precision is spent first
+#     #          because it is nearly free: the fork measures q8_0 and q4_0
+#     #          within ~1% of f16's throughput on this model while cutting the
+#     #          cache to 53% and 28% of its size. Every escalation is recorded
+#     #          in the plan's notes.
+#     #   f16 | q8_0 | q4_0
+#     #          honoured exactly as given and never escalated.
+#     # Anything else is REFUSED, not coerced to f16: q5_0 is excluded on a
+#     # measured ~8x long-context decode slowdown (and buys no capacity over
+#     # q4_0), and q4_1 / iq4_nl / q5_1 have no measurement on this model.
+#     kv_cache_type: auto # auto | f16 | q8_0 | q4_0
+#     # Layer offload (`-ngl`). Default: unset.
+#     #   mode: auto    nothing pinned. Under fit the RUNTIME sizes the layer
+#     #                 count; otherwise every offloadable layer goes to the
+#     #                 device when there is one, and none when there is not.
+#     #   mode: all     `-ngl 99` — every offloadable layer on the device.
+#     #   mode: cpu     `-ngl 0` — nothing offloaded, the model runs from
+#     #                 system RAM (the Intel-Mac and CPU-build shape).
+#     #   mode: layers  `-ngl <layers>`, which then becomes REQUIRED (>= 0).
+#     # ANY explicit mode turns fit OFF: naming the offload IS pinning it, and
+#     # `-fit on` beside a pinned `-ngl` is the shape the fork's fit.cpp aborts
+#     # on. The planner then computes the context itself, and never above the
+#     # model's training context.
+#     offload:
+#       mode: auto #        auto | all | cpu | layers
+#       layers: 40 #        >= 0; required by mode: layers
+#     # The runtime's own memory-sizing pass (`-fit`). Default: unset.
+#     #   unset   the exclusivity rule decides: fit stays ON unless something
+#     #           else pins the offload (see `offload`).
+#     #   false   forces `-fit off`; the planner computes the context.
+#     #   true    asks for fit. It LOSES to the exclusivity rule next to an
+#     #           explicit offload, and the plan records that in its notes.
+#     fit: true
+#     # The per-device margin fit leaves free (`-fitt`), in MiB. Default: unset
+#     # = the runtime's own 1024 MiB. Valid >= 0; an explicit 0 also omits the
+#     # flag. Only emitted under fit.
+#     fit_target_mib: 1024
+#     # The smallest context fit may settle on (`-fitc`). Default: unset =
+#     # 65536. Valid 1-262144. Only emitted under fit — and it doubles as the
+#     # context the feasibility gate checks, because a fit run that cannot
+#     # reach its own floor aborts instead of launching.
+#     # 65536 is c0wrk's floor and deliberately NOT the runtime's own 4096: at
+#     # 4096 this model produces empty and truncated answers, which is the
+#     # entire reason the two defaults diverge.
+#     fit_min_context: 65536
+#     # Where the KV cache lives (`-kvo` / `-nkvo`). Default: unset = on the
+#     # device, with the layers. false passes `-nkvo` and leaves the cache in
+#     # system RAM, trading device memory for host memory and for attention
+#     # bandwidth.
+#     kv_offload: true
+#     # Where the vision projector's worst-case reserve lives
+#     # (`--mmproj-offload` / `--no-mmproj-offload`). Default: unset = on the
+#     # device. false moves it to system RAM.
+#     mmproj_offload: true
+#     # The weights quantization the PLAN is built for. Default: unset =
+#     # whatever the hardware probe resolved, which `packing` above RECORDS.
+#     # Valid: auto | PQ2_0 (6.71 GiB) | PTQ1_0 (5.54 GiB), matched
+#     # case-insensitively.
+#     # An explicit packing short-circuits the probe's decision and is recorded
+#     # as an operator override. One the memory model has no MEASURED residency
+#     # for is refused rather than projected from a file size, because a gate
+#     # built on a guessed device/host split could pass a launch that does not
+#     # fit. Overriding this does not fetch different weights — the packing is
+#     # an install-time artifact, so change it and reinstall.
+#     packing: auto #       auto | PQ2_0 | PTQ1_0
+#     # Slot count (`-np`). Default: unset = 1. Valid >= 1.
+#     # 1 is a measurement, not a preference: `-np 4` inflates fit's own
+#     # projection from 24450 MiB to 77297 MiB (the compute reserve is sized
+#     # per stream), and `-np` also SPLITS the context across slots — `-c 8192
+#     # -np 4` yields 2048-token slots, which is exactly the truncated-answer
+#     # failure fit_min_context exists to prevent. c0wrk serves one agent loop
+#     # over one loopback socket and issues one request at a time per server.
+#     parallel: 1
+#     # The prompt-cache ceiling (`-cram`), in MiB. Default: unset = the
+#     # runtime's own. Valid >= 0, and an explicit 0 DISABLES the cache — a
+#     # legitimate choice, so it is passed through verbatim rather than read as
+#     # "unset".
+#     cache_ram_mib: 0
+#     # System RAM kept OUT of the host budget, in GiB. Default: unset = the
+#     # topology's own derivation (the larger of a 4 GiB floor and 1/8 of RAM).
+#     # Valid >= 0. A PLANNER-side budget knob and not a runtime flag — the
+#     # pinned fork has no `--host-reserve` — and it REPLACES the derived
+#     # reserve rather than stacking on it.
+#     host_reserve_gib: 4
 
 # ---------------------------------------------------------------------------
 # MCP (Model Context Protocol) Servers

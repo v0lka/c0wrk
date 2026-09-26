@@ -19,6 +19,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   getEmbeddedLLMStatus: vi.fn(),
+  getEmbeddedLLMTuning: vi.fn(),
   onState: vi.fn(),
   onProgress: vi.fn(),
   invalidateConfigCache: vi.fn(),
@@ -47,13 +48,43 @@ vi.mock('@/api/embedded', () => ({
   onEmbeddedLLMInstallProgress: mocks.onProgress,
 }))
 
+vi.mock('@/api/embeddedTuning', () => ({
+  getEmbeddedLLMTuning: mocks.getEmbeddedLLMTuning,
+}))
+
 import {
   refreshEmbeddedLLMStatus,
+  refreshEmbeddedLLMTuning,
   subscribeEmbeddedLLMEvents,
   useEmbeddedLLMStore,
 } from './embeddedLLMStore'
 import type { EmbeddedLLMStatus } from '@/api/embedded'
+import type { EmbeddedLLMPlan, EmbeddedLLMTuning } from '@/api/embeddedTuning'
 import type { EmbeddedLLMInstallProgressData } from '@/types/events'
+
+/** The all-zero measured-topology / plan block (no probe, no recorded plan). */
+const EMPTY_PLAN: EmbeddedLLMPlan = {
+  recorded: false,
+  packing: '',
+  kv_type: '',
+  context_size: 0,
+  fit: false,
+  fit_arg: '',
+  fit_target_mib: 0,
+  fit_min_context: 0,
+  offload_mode: 'auto',
+  layers: -1,
+  kv_offload: false,
+  mmproj_offload: false,
+  parallel: 0,
+  cache_ram_mib: -1,
+  gpu_family: '',
+  device_budget_mib: 0,
+  host_budget_mib: 0,
+  expected_device_mib: 0,
+  expected_host_mib: 0,
+  notes: [],
+}
 
 /** The captured handler of a mocked subscription, so a test can emit an event. */
 function captured(subscribeMock: ReturnType<typeof vi.fn>): (data: unknown) => void {
@@ -83,6 +114,14 @@ function makeStatus(overrides: Partial<EmbeddedLLMStatus> = {}): EmbeddedLLMStat
     runtime_version: '',
     installed_at: '',
     model_file: '',
+    devices: [],
+    unified: false,
+    host_ram_gib: 0,
+    device_budget_mib: 0,
+    host_budget_mib: 0,
+    topology_probed_at: '',
+    plan: EMPTY_PLAN,
+    reload_required: false,
     pid: 0,
     error: '',
     available: true,
@@ -342,5 +381,57 @@ describe('embeddedLLMStore — model-cache invalidation on an install transition
     })
     expect(state().status?.installed).toBe(true)
     off()
+  })
+})
+
+describe('embeddedLLMStore — the tuning slice', () => {
+  /** The all-unset tuning snapshot (the all-Auto plan). */
+  function makeTuning(overrides: Partial<EmbeddedLLMTuning> = {}): EmbeddedLLMTuning {
+    return {
+      context: { mode: null, tokens: null },
+      kv_cache_type: null,
+      offload: { mode: null, layers: null },
+      fit: null,
+      fit_target_mib: null,
+      fit_min_context: null,
+      kv_offload: null,
+      mmproj_offload: null,
+      packing: null,
+      parallel: null,
+      cache_ram_mib: null,
+      host_reserve_gib: null,
+      ...overrides,
+    }
+  }
+
+  it('refreshEmbeddedLLMTuning applies the snapshot wholesale and clears the spinner', async () => {
+    const tuning = makeTuning({ kv_cache_type: 'q8_0' })
+    mocks.getEmbeddedLLMTuning.mockResolvedValue(tuning)
+
+    await expect(refreshEmbeddedLLMTuning()).resolves.toBe(true)
+
+    expect(state().tuning).toBe(tuning)
+    expect(state().tuningLoading).toBe(false)
+  })
+
+  it('never throws on a failed read, keeps the previous snapshot and paints no action error', async () => {
+    const previous = makeTuning({ parallel: 2 })
+    mocks.getEmbeddedLLMTuning.mockResolvedValueOnce(previous)
+    await refreshEmbeddedLLMTuning()
+
+    mocks.getEmbeddedLLMTuning.mockRejectedValue(new Error('not ready'))
+    await expect(refreshEmbeddedLLMTuning()).resolves.toBe(false)
+
+    expect(state().tuning).toBe(previous)
+    expect(state().tuningLoading).toBe(false)
+    expect(state().error).toBeNull()
+  })
+
+  it('hands out the exact reference it was given (one writer, no clone)', () => {
+    const tuning = makeTuning({ fit: false })
+    state().setTuning(tuning)
+
+    const selected = useEmbeddedLLMStore.getState().tuning
+    expect(selected).toBe(tuning)
   })
 })

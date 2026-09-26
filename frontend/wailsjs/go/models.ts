@@ -477,6 +477,198 @@ export namespace backend {
 		}
 	}
 	
+	export class EmbeddedLLMContextTuningDTO {
+	    mode?: string;
+	    tokens?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new EmbeddedLLMContextTuningDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mode = source["mode"];
+	        this.tokens = source["tokens"];
+	    }
+	}
+	export class EmbeddedLLMContextTuningRequest {
+	    mode?: string;
+	    tokens?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new EmbeddedLLMContextTuningRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mode = source["mode"];
+	        this.tokens = source["tokens"];
+	    }
+	}
+	export class EmbeddedLLMDevice {
+	    name: string;
+	    description: string;
+	    total_mib: number;
+	    free_mib: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new EmbeddedLLMDevice(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.total_mib = source["total_mib"];
+	        this.free_mib = source["free_mib"];
+	    }
+	}
+	export class EmbeddedLLMDevicesDTO {
+	    devices: EmbeddedLLMDevice[];
+	    unified: boolean;
+	    host_ram_gib: number;
+	    device_budget_mib: number;
+	    host_budget_mib: number;
+	    probed_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EmbeddedLLMDevicesDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.devices = this.convertValues(source["devices"], EmbeddedLLMDevice);
+	        this.unified = source["unified"];
+	        this.host_ram_gib = source["host_ram_gib"];
+	        this.device_budget_mib = source["device_budget_mib"];
+	        this.host_budget_mib = source["host_budget_mib"];
+	        this.probed_at = source["probed_at"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class EmbeddedLLMGuard {
+	    guard: string;
+	    action: string;
+	    reason: string;
+	    severity: string;
+	    issue: string;
+	    applied: boolean;
+	    backend?: string;
+	    packing?: string;
+	    guidance: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EmbeddedLLMGuard(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.guard = source["guard"];
+	        this.action = source["action"];
+	        this.reason = source["reason"];
+	        this.severity = source["severity"];
+	        this.issue = source["issue"];
+	        this.applied = source["applied"];
+	        this.backend = source["backend"];
+	        this.packing = source["packing"];
+	        this.guidance = source["guidance"];
+	    }
+	}
+	export class EmbeddedLLMOffloadTuningDTO {
+	    mode?: string;
+	    layers?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new EmbeddedLLMOffloadTuningDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mode = source["mode"];
+	        this.layers = source["layers"];
+	    }
+	}
+	export class EmbeddedLLMOffloadTuningRequest {
+	    mode?: string;
+	    layers?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new EmbeddedLLMOffloadTuningRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mode = source["mode"];
+	        this.layers = source["layers"];
+	    }
+	}
+	export class EmbeddedLLMPlan {
+	    recorded: boolean;
+	    packing: string;
+	    kv_type: string;
+	    context_size: number;
+	    fit: boolean;
+	    fit_arg: string;
+	    fit_target_mib: number;
+	    fit_min_context: number;
+	    offload_mode: string;
+	    layers: number;
+	    kv_offload: boolean;
+	    mmproj_offload: boolean;
+	    parallel: number;
+	    cache_ram_mib: number;
+	    gpu_family: string;
+	    device_budget_mib: number;
+	    host_budget_mib: number;
+	    expected_device_mib: number;
+	    expected_host_mib: number;
+	    notes: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new EmbeddedLLMPlan(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.recorded = source["recorded"];
+	        this.packing = source["packing"];
+	        this.kv_type = source["kv_type"];
+	        this.context_size = source["context_size"];
+	        this.fit = source["fit"];
+	        this.fit_arg = source["fit_arg"];
+	        this.fit_target_mib = source["fit_target_mib"];
+	        this.fit_min_context = source["fit_min_context"];
+	        this.offload_mode = source["offload_mode"];
+	        this.layers = source["layers"];
+	        this.kv_offload = source["kv_offload"];
+	        this.mmproj_offload = source["mmproj_offload"];
+	        this.parallel = source["parallel"];
+	        this.cache_ram_mib = source["cache_ram_mib"];
+	        this.gpu_family = source["gpu_family"];
+	        this.device_budget_mib = source["device_budget_mib"];
+	        this.host_budget_mib = source["host_budget_mib"];
+	        this.expected_device_mib = source["expected_device_mib"];
+	        this.expected_host_mib = source["expected_host_mib"];
+	        this.notes = source["notes"];
+	    }
+	}
 	export class EmbeddedLLMStatus {
 	    state: string;
 	    installed: boolean;
@@ -496,7 +688,19 @@ export namespace backend {
 	    runtime_version: string;
 	    installed_at: string;
 	    model_file: string;
+	    packing_reason: string;
+	    gpu_family: string;
+	    guards: EmbeddedLLMGuard[];
+	    devices: EmbeddedLLMDevice[];
+	    unified: boolean;
+	    host_ram_gib: number;
+	    device_budget_mib: number;
+	    host_budget_mib: number;
+	    topology_probed_at: string;
+	    plan: EmbeddedLLMPlan;
+	    reload_required: boolean;
 	    pid: number;
+	    fit_warning?: string;
 	    error: string;
 	    available: boolean;
 	
@@ -524,10 +728,146 @@ export namespace backend {
 	        this.runtime_version = source["runtime_version"];
 	        this.installed_at = source["installed_at"];
 	        this.model_file = source["model_file"];
+	        this.packing_reason = source["packing_reason"];
+	        this.gpu_family = source["gpu_family"];
+	        this.guards = this.convertValues(source["guards"], EmbeddedLLMGuard);
+	        this.devices = this.convertValues(source["devices"], EmbeddedLLMDevice);
+	        this.unified = source["unified"];
+	        this.host_ram_gib = source["host_ram_gib"];
+	        this.device_budget_mib = source["device_budget_mib"];
+	        this.host_budget_mib = source["host_budget_mib"];
+	        this.topology_probed_at = source["topology_probed_at"];
+	        this.plan = this.convertValues(source["plan"], EmbeddedLLMPlan);
+	        this.reload_required = source["reload_required"];
 	        this.pid = source["pid"];
+	        this.fit_warning = source["fit_warning"];
 	        this.error = source["error"];
 	        this.available = source["available"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class EmbeddedLLMTuningDTO {
+	    context: EmbeddedLLMContextTuningDTO;
+	    kv_cache_type?: string;
+	    offload: EmbeddedLLMOffloadTuningDTO;
+	    fit?: boolean;
+	    fit_target_mib?: number;
+	    fit_min_context?: number;
+	    kv_offload?: boolean;
+	    mmproj_offload?: boolean;
+	    packing?: string;
+	    parallel?: number;
+	    cache_ram_mib?: number;
+	    host_reserve_gib?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new EmbeddedLLMTuningDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.context = this.convertValues(source["context"], EmbeddedLLMContextTuningDTO);
+	        this.kv_cache_type = source["kv_cache_type"];
+	        this.offload = this.convertValues(source["offload"], EmbeddedLLMOffloadTuningDTO);
+	        this.fit = source["fit"];
+	        this.fit_target_mib = source["fit_target_mib"];
+	        this.fit_min_context = source["fit_min_context"];
+	        this.kv_offload = source["kv_offload"];
+	        this.mmproj_offload = source["mmproj_offload"];
+	        this.packing = source["packing"];
+	        this.parallel = source["parallel"];
+	        this.cache_ram_mib = source["cache_ram_mib"];
+	        this.host_reserve_gib = source["host_reserve_gib"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class EmbeddedLLMTuningRequest {
+	    reset: string[];
+	    context?: EmbeddedLLMContextTuningRequest;
+	    kv_cache_type?: string;
+	    offload?: EmbeddedLLMOffloadTuningRequest;
+	    fit?: boolean;
+	    fit_target_mib?: number;
+	    fit_min_context?: number;
+	    kv_offload?: boolean;
+	    mmproj_offload?: boolean;
+	    packing?: string;
+	    parallel?: number;
+	    cache_ram_mib?: number;
+	    host_reserve_gib?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new EmbeddedLLMTuningRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.reset = source["reset"];
+	        this.context = this.convertValues(source["context"], EmbeddedLLMContextTuningRequest);
+	        this.kv_cache_type = source["kv_cache_type"];
+	        this.offload = this.convertValues(source["offload"], EmbeddedLLMOffloadTuningRequest);
+	        this.fit = source["fit"];
+	        this.fit_target_mib = source["fit_target_mib"];
+	        this.fit_min_context = source["fit_min_context"];
+	        this.kv_offload = source["kv_offload"];
+	        this.mmproj_offload = source["mmproj_offload"];
+	        this.packing = source["packing"];
+	        this.parallel = source["parallel"];
+	        this.cache_ram_mib = source["cache_ram_mib"];
+	        this.host_reserve_gib = source["host_reserve_gib"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	
 	export class FileIconResponse {

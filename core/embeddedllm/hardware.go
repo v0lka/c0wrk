@@ -83,6 +83,13 @@ func (b Backend) gpuAccelerated() bool {
 }
 
 // Hardware is the probe result: everything resolution may depend on.
+//
+// It answers "which archive do I download, and how big a context can this
+// machine hold", and it deliberately carries NO device-memory field: at probe
+// time the runtime is not on disk yet, so there is nothing to ask what it can
+// see. Accelerator memory is a second, LATER probe over the installed binary —
+// `ProbeDevices` and `MemoryTopology` in topology.go, which is why the two
+// results are kept apart rather than folded into one struct.
 type Hardware struct {
 	// Platform is the "<goos>-<goarch>" key (the toolmanager.Platform()
 	// shape), e.g. "darwin-arm64", "windows-amd64".
@@ -107,6 +114,16 @@ type Hardware struct {
 // context kills the child and the probe reports failure — it never hangs.
 const probeCommandTimeout = 2 * time.Second
 
+// probeWaitDelay is how long a probe may keep its output pipes open after the
+// process itself is gone. Killing the child is not enough to bound the read:
+// a grandchild that inherited stdout — a driver helper, or a shell's own
+// `sleep` — keeps the pipe's write end open, and the copy that feeds
+// cmd.Output would block until IT exits, long after probeCommandTimeout fired.
+// The delay makes the documented bound real: once it expires, os/exec closes
+// the pipes and Wait returns (with exec.ErrWaitDelay), which every caller here
+// already treats as "the probe did not answer".
+const probeWaitDelay = 500 * time.Millisecond
+
 // gibibyte is the divisor turning a byte count into GiB. The fork's demo
 // scripts divide by exactly this value, so the RAM tiers line up with them.
 const gibibyte = 1 << 30
@@ -117,8 +134,11 @@ const gibibyte = 1 << 30
 var errProbeToolAbsent = errors.New("probe tool not found in PATH")
 
 // ErrRAMUnknown is returned when total system RAM cannot be determined. The
-// 16 GiB gate (MinRAMGiB) is a safety gate, so an unreadable RAM size refuses
-// the install instead of assuming the machine is big enough.
+// memory gate is a safety gate and its HOST budget is derived from this figure
+// on every path — measured topology or not — so an unreadable RAM size refuses
+// the install instead of assuming the machine is big enough. An unreadable
+// DEVICE budget is the opposite case and is deliberately not fatal: see
+// deviceUnreadable in plan.go.
 var ErrRAMUnknown = errors.New("cannot determine total system RAM")
 
 // cudaVersionRE matches the "CUDA Version: 12.4" field of the nvidia-smi
@@ -144,8 +164,8 @@ var nvccReleaseRE = regexp.MustCompile(`release\s+(\d+)\.(\d+)`)
 // the driver cannot load would fail later with a far less useful error.
 //
 // RAM is a hard requirement, not a best-effort signal: if it cannot be read,
-// ProbeHardware returns ErrRAMUnknown rather than guessing, because the
-// 16 GiB refusal gate depends on it.
+// ProbeHardware returns ErrRAMUnknown rather than guessing, because the memory
+// gate derives its host budget from it.
 //
 // logger may be nil, in which case a discard logger is used. ctx governs
 // cancellation of every external probe; nil is treated as context.Background().
@@ -397,6 +417,8 @@ func runProbeCommand(ctx context.Context, name string, args ...string) (string, 
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, bin, args...)
+	// Bound the read as well as the process: see probeWaitDelay.
+	cmd.WaitDelay = probeWaitDelay
 	// Suppress the console window a GUI-subsystem host would otherwise
 	// allocate for the child probe process (CREATE_NO_WINDOW on Windows).
 	sysproc.HideConsole(cmd)

@@ -29,6 +29,8 @@ const mocks = vi.hoisted(() => ({
   loadEmbeddedLLM: vi.fn(),
   unloadEmbeddedLLM: vi.fn(),
   setEmbeddedLLMAutoUnload: vi.fn(),
+  getEmbeddedLLMTuning: vi.fn(),
+  setEmbeddedLLMTuning: vi.fn(),
   // Captured subscribers so a test can emit an event at the block.
   stateHandlers: new Set<(data: unknown) => void>(),
   progressHandlers: new Set<(data: unknown) => void>(),
@@ -61,14 +63,46 @@ vi.mock('@/api/embedded', () => ({
   },
 }))
 
+// The tuning RPCs the block's hook reaches through (real constants kept).
+vi.mock('@/api/embeddedTuning', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/embeddedTuning')>()),
+  getEmbeddedLLMTuning: mocks.getEmbeddedLLMTuning,
+  setEmbeddedLLMTuning: mocks.setEmbeddedLLMTuning,
+}))
+
 import { EmbeddedLLMSettings } from './EmbeddedLLMSettings'
 import { useEmbeddedLLMStore } from '@/stores/embeddedLLMStore'
 import { formatBytes } from '@/lib/formatters'
 import type { EmbeddedLLMStatus } from '@/api/embedded'
+import type { EmbeddedLLMPlan, EmbeddedLLMTuning } from '@/api/embeddedTuning'
 import type { EmbeddedLLMInstallProgressData, EmbeddedLLMStateData } from '@/types/events'
 
 let container: HTMLDivElement
 let root: Root
+
+/** The all-zero measured-topology / plan block (no probe, no recorded plan). */
+const EMPTY_PLAN: EmbeddedLLMPlan = {
+  recorded: false,
+  packing: '',
+  kv_type: '',
+  context_size: 0,
+  fit: false,
+  fit_arg: '',
+  fit_target_mib: 0,
+  fit_min_context: 0,
+  offload_mode: 'auto',
+  layers: -1,
+  kv_offload: false,
+  mmproj_offload: false,
+  parallel: 0,
+  cache_ram_mib: -1,
+  gpu_family: '',
+  device_budget_mib: 0,
+  host_budget_mib: 0,
+  expected_device_mib: 0,
+  expected_host_mib: 0,
+  notes: [],
+}
 
 /** A complete status snapshot (every DTO field is always present) with the
  *  not-installed defaults; a test overrides only what it cares about. */
@@ -92,9 +126,36 @@ function makeStatus(overrides: Partial<EmbeddedLLMStatus> = {}): EmbeddedLLMStat
     runtime_version: '',
     installed_at: '',
     model_file: '',
+    devices: [],
+    unified: false,
+    host_ram_gib: 0,
+    device_budget_mib: 0,
+    host_budget_mib: 0,
+    topology_probed_at: '',
+    plan: EMPTY_PLAN,
+    reload_required: false,
     pid: 0,
     error: '',
     available: true,
+    ...overrides,
+  }
+}
+
+/** The all-unset tuning snapshot (the all-Auto plan). */
+function makeTuning(overrides: Partial<EmbeddedLLMTuning> = {}): EmbeddedLLMTuning {
+  return {
+    context: { mode: null, tokens: null },
+    kv_cache_type: null,
+    offload: { mode: null, layers: null },
+    fit: null,
+    fit_target_mib: null,
+    fit_min_context: null,
+    kv_offload: null,
+    mmproj_offload: null,
+    packing: null,
+    parallel: null,
+    cache_ram_mib: null,
+    host_reserve_gib: null,
     ...overrides,
   }
 }
@@ -176,6 +237,8 @@ beforeEach(() => {
   mocks.loadEmbeddedLLM.mockResolvedValue(undefined)
   mocks.unloadEmbeddedLLM.mockResolvedValue(undefined)
   mocks.setEmbeddedLLMAutoUnload.mockResolvedValue(undefined)
+  mocks.getEmbeddedLLMTuning.mockResolvedValue(makeTuning())
+  mocks.setEmbeddedLLMTuning.mockResolvedValue(undefined)
   useEmbeddedLLMStore.getState().reset()
   container = document.createElement('div')
   document.body.replaceChildren(container)
@@ -195,6 +258,9 @@ describe('EmbeddedLLMSettings — before an install', () => {
     await render()
 
     const install = q('embedded-llm-install')
+    expect(install).not.toBeNull()
+    // No tuning surface either — the block's installed-only controls stay away.
+    expect(q('embedded-llm-tuning')).toBeNull()
     expect(install).not.toBeNull()
     expect(install?.textContent).toContain('Install')
 
@@ -569,6 +635,98 @@ describe('EmbeddedLLMSettings — auto unload', () => {
     expect(mocks.setEmbeddedLLMAutoUnload).not.toHaveBeenCalled()
     // The field reverted to the authoritative value.
     expect((q('embedded-llm-auto-unload-minutes') as HTMLInputElement).value).toBe('60')
+  })
+})
+
+describe('EmbeddedLLMSettings — tuning section', () => {
+  beforeEach(() => {
+    mocks.getEmbeddedLLMStatus.mockResolvedValue(
+      makeStatus({
+        state: 'installed',
+        installed: true,
+        packing: 'PQ2_0',
+        backend: 'metal',
+        port: 43211,
+      }),
+    )
+  })
+
+  it('renders the three primary controls and the collapsed Advanced section', async () => {
+    await render()
+
+    expect(q('embedded-llm-tuning')).not.toBeNull()
+    const triggers = Array.from(container.querySelectorAll('button[aria-haspopup="menu"]'))
+    const labels = triggers.map((b) => b.getAttribute('aria-label'))
+    expect(labels).toContain('Context mode')
+    expect(labels).toContain('KV cache precision')
+    expect(labels).toContain('Layer offload')
+    // Collapsed: the Advanced knobs render only once the section opens.
+    expect(container.querySelector('input[data-field="Parallel slots"]')).toBeNull()
+    expect(container.textContent).toContain('Advanced tuning')
+  })
+
+  it('renders the measured devices, the unified flag and the effective plan with notes', async () => {
+    mocks.getEmbeddedLLMStatus.mockResolvedValue(
+      makeStatus({
+        state: 'installed',
+        installed: true,
+        devices: [
+          { name: 'Apple M4 Max', description: 'Metal unified memory', total_mib: 49152, free_mib: 24576 },
+        ],
+        unified: true,
+        topology_probed_at: '2026-01-01T00:00:00Z',
+        plan: {
+          ...EMPTY_PLAN,
+          recorded: true,
+          packing: 'PQ2_0',
+          kv_type: 'q8_0',
+          context_size: 131072,
+          offload_mode: 'layers',
+          layers: 30,
+          parallel: 1,
+          fit: true,
+          expected_device_mib: 12288,
+          expected_host_mib: 8192,
+          notes: ['--fit was disabled explicitly, so the layer count and the context are computed here'],
+        },
+      }),
+    )
+    await render()
+
+    expect(q('embedded-llm-unified')?.textContent).toBe('Yes')
+    expect(q('embedded-llm-devices')?.textContent).toContain('Apple M4 Max')
+    expect(q('embedded-llm-devices')?.textContent).toContain('24 GiB')
+    const plan = q('embedded-llm-plan')?.textContent ?? ''
+    expect(plan).toContain('PQ2_0')
+    expect(plan).toContain('KV q8_0')
+    expect(plan).toContain('131072 ctx')
+    expect(plan).toContain('30 layers')
+    expect(plan).toContain('12 GiB device')
+    expect(q('embedded-llm-plan-notes')?.textContent).toContain('--fit was disabled explicitly')
+  })
+
+  it('surfaces the fit-contract warning of the last failed launch', async () => {
+    mocks.getEmbeddedLLMStatus.mockResolvedValue(
+      makeStatus({
+        state: 'error',
+        installed: true,
+        fit_warning:
+          'the runtime\'s --fit pass aborted: "failed to fit params to free device memory" — the recorded memory plan and this pin\'s fit contract disagree; re-plan or re-review the pin before reloading',
+      }),
+    )
+    await render()
+
+    expect(q('embedded-llm-fit-warning')?.textContent).toContain('failed to fit params')
+  })
+
+  it('keeps the empty-value convention when nothing was measured or recorded', async () => {
+    await render()
+
+    expect(q('embedded-llm-unified')?.textContent).toBe('No')
+    expect(q('embedded-llm-plan')?.textContent).toBe('—')
+    expect(q('embedded-llm-devices')?.textContent).toContain('No device topology measured')
+    expect(q('embedded-llm-plan-notes')).toBeNull()
+    expect(q('embedded-llm-fit-warning')).toBeNull()
   })
 })
 
