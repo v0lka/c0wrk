@@ -556,6 +556,49 @@ func TestSyncEmbeddedProviderCopiesSharedMaps(t *testing.T) {
 	}
 }
 
+// TestSyncEmbeddedProviderSeedsTheOutputLimit pins the generation ceiling the
+// sync seeds for the local model. The registry's static fallback assumes a
+// datacenter-speed model; at the embedded model's measured decode rates a
+// fallback-sized ceiling is tens of minutes of worst-case generation, so the
+// sync records EmbeddedLLMOutputLimit (clamped under window/4, the shape that
+// would disable compaction). A ceiling the user authored is a seeded default's
+// opposite: it wins and the sync stops touching it.
+func TestSyncEmbeddedProviderSeedsTheOutputLimit(t *testing.T) {
+	live := minimalValidConfig()
+	live.EmbeddedLLM = installedEmbeddedState()
+
+	if !live.LLM.SyncEmbeddedProvider(live.EmbeddedLLM, 131072) {
+		t.Fatal("the seed reported no change")
+	}
+	if got := live.LLM.Models[EmbeddedLLMModelName].OutputLimit; got != EmbeddedLLMOutputLimit {
+		t.Errorf("output_limit = %d, want the seeded %d", got, EmbeddedLLMOutputLimit)
+	}
+
+	// The clamp: an output reserve at or above a quarter of the window is what
+	// disables compaction, so a small window caps the ceiling proportionally.
+	small := minimalValidConfig()
+	small.EmbeddedLLM = installedEmbeddedState()
+	small.LLM.SyncEmbeddedProvider(small.EmbeddedLLM, 8192)
+	if got := small.LLM.Models[EmbeddedLLMModelName].OutputLimit; got != 2048 {
+		t.Errorf("output_limit = %d, want it clamped under the 8192-token window's quarter (2048)", got)
+	}
+
+	// A user-authored ceiling survives every later sync, including the
+	// context-window correction the readback runs on every load. The window is
+	// left at the sync value, so the only change on the table is the ceiling.
+	const userLimit = 16384
+	live.LLM.Models[EmbeddedLLMModelName] = ModelOverride{
+		ContextWindow: 98304,
+		OutputLimit:   userLimit,
+	}
+	if live.LLM.SyncEmbeddedProvider(live.EmbeddedLLM, 98304) {
+		t.Error("a user-authored output_limit was rewritten by the sync")
+	}
+	if got := live.LLM.Models[EmbeddedLLMModelName].OutputLimit; got != userLimit {
+		t.Errorf("output_limit = %d, want the user's %d", got, userLimit)
+	}
+}
+
 // TestLoadWithResultGeneratesEmbeddedProvider verifies the production load path
 // reconciles the section: a config whose embedded model is installed but whose
 // provider record was hand-deleted (or never written) loads with the record

@@ -1,9 +1,9 @@
 // Chat stream & response events: assistant_chunk, assistant_done, thought, error,
-// task_complete, task_cancelled, reflection
+// task_complete, task_cancelled, reflection, memory_read
 
 import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
-import { isAssistantChunkData, isAssistantDoneData, isThoughtData, isErrorData, isTaskCompleteData, isReflectionData } from '@/types/events'
+import { isAssistantChunkData, isAssistantDoneData, isThoughtData, isErrorData, isTaskCompleteData, isReflectionData, isMemoryReadData } from '@/types/events'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import { useReviewStore } from '@/stores/reviewStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
@@ -345,6 +345,30 @@ export function useChatEvents(sessionId: string | null): void {
             attempt: data.attempt,
             max_attempts: data.max_attempts,
           },
+          timestamp: Date.now(),
+        })
+      }),
+    )
+
+    // --- memory_read ---
+    // The agent restored facts from its persistent blackboard: render the
+    // compact "memory read" card at the moment of the read. The event also
+    // persists as a durable role-`memory_read` row whose restored card
+    // (chatUtils 'memory_read' case) matches this one — content plus the
+    // step_num metadata hint. No stable per-event identity exists to align
+    // the live message id with the reloaded row's `history-<dbId>` (same
+    // limitation as autonomy_decision), so an event landing exactly during a
+    // history RPC can duplicate the card — acceptable; dropping a real read
+    // is not.
+    cleanups.push(
+      onSessionEvent(sessionId, 'memory_read', (data) => {
+        if (!isMemoryReadData(data)) { reportDroppedEvent('memory_read', data); return }
+        useChatStore.getState().addMessage(sessionId, {
+          id: generateMessageId(),
+          sessionId,
+          type: 'memory_read',
+          content: data.content,
+          metadata: { step_num: data.step_num },
           timestamp: Date.now(),
         })
       }),

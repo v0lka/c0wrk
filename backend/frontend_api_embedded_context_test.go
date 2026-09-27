@@ -315,14 +315,33 @@ func TestPersistEmbeddedContextUpdatesTheCachedInstallRecord(t *testing.T) {
 
 // The end-to-end half: a load whose server reports a different context than the
 // install estimated must persist the REPORTED one — this is the criterion that
-// keeps the tier-1 override from being permanently stale.
+// keeps the tier-1 override from being permanently stale. The install record
+// carries a plan whose context (the launched -c) is at or above the reported
+// figure: the readback clamp (core's recordEffectiveContext) never exceeds the
+// launched context, and the plan's own context is RAM-tier dependent, so the
+// reported figure is held below the 65536 fit floor every plan's context is
+// held to — above the estimate, below the clamp.
 func TestLoadPersistsTheContextTheServerReported(t *testing.T) {
 	const estimated = 16384
-	const reported = 98304
+	const reported = 60000
+	const launched = 98304
 	f, _, _ := newEmbeddedTestAPI(t)
 
 	_, livePort := modelsAndPropsEndpoint(t, reported, 1)
-	writeEmbeddedInstallTree(t, f.agentDir, embeddedTestManifest(livePort, estimated))
+	manifest := embeddedTestManifest(livePort, estimated)
+	layers := 99
+	manifest.Plan = &embeddedllm.MemoryPlan{
+		Fit:           false,
+		Layers:        &layers,
+		ContextSize:   launched,
+		KVType:        embeddedllm.KVTypeF16,
+		Packing:       embeddedllm.PackingPQ2_0,
+		KVOffload:     true,
+		MMProjOffload: true,
+		Parallel:      1,
+		GPUFamily:     embeddedllm.GPUFamilyAppleSilicon,
+	}
+	writeEmbeddedInstallTree(t, f.agentDir, manifest)
 	installEmbeddedLLM(t, f, livePort)
 	if !f.config.SyncEmbeddedLLMProvider(estimated) {
 		t.Fatal("pinning the install's estimate reported no change")
@@ -599,5 +618,54 @@ func TestEmbeddedRefreshRerunsForAChangeLandedMidFlight(t *testing.T) {
 	}
 	if len(pending) != 2 {
 		t.Errorf("the third change scheduled %d new refresh(es), want 1", len(pending)-1)
+	}
+}
+
+// TestPersistEmbeddedContextPushesTheDisplayWindow pins the live-session half
+// of the readback: when the measured window MOVES, the correction is pushed to
+// the session manager's emitters (model-scoped to the embedded model) so an
+// idle session — or the tail of a task that started before the correction —
+// stops displaying fill percentages and compaction cards against the stale
+// basis. A value that did not move (the steady-machine common case) and an
+// out-of-range readback push nothing.
+func TestPersistEmbeddedContextPushesTheDisplayWindow(t *testing.T) {
+	f, _, _ := newEmbeddedTestAPI(t)
+	installEmbeddedLLM(t, f, 4321)
+
+	type displayPush struct {
+		model  string
+		window int
+	}
+	var pushes []displayPush
+	f.displayWindowPush = func(model string, window int) {
+		pushes = append(pushes, displayPush{model, window})
+	}
+
+	const measured = 98304
+	if err := f.persistEmbeddedContext(context.Background(), measured); err != nil {
+		t.Fatalf("persistEmbeddedContext: %v", err)
+	}
+	if len(pushes) != 1 || pushes[0].model != config.EmbeddedLLMModelName || pushes[0].window != measured {
+		t.Fatalf("display window pushes = %+v, want exactly [{%s %d}]",
+			pushes, config.EmbeddedLLMModelName, measured)
+	}
+
+	// A value that did not move writes nothing and pushes nothing.
+	pushes = nil
+	if err := f.persistEmbeddedContext(context.Background(), measured); err != nil {
+		t.Fatalf("steady persistEmbeddedContext: %v", err)
+	}
+	if len(pushes) != 0 {
+		t.Errorf("a steady readback pushed the display window: %+v", pushes)
+	}
+
+	// An out-of-range readback is skipped before the persist — the emitters
+	// must not hear about it either.
+	pushes = nil
+	if err := f.persistEmbeddedContext(context.Background(), config.MaxModelContextWindow+1); err != nil {
+		t.Fatalf("out-of-range persistEmbeddedContext: %v", err)
+	}
+	if len(pushes) != 0 {
+		t.Errorf("an out-of-range readback pushed the display window: %+v", pushes)
 	}
 }

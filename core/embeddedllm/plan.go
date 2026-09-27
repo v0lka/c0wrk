@@ -1416,20 +1416,22 @@ func planShape(
 		ExpectedDeviceMiB: deviceMiB,
 		ExpectedHostMiB:   hostMiB,
 	}
-	// Under fit the runtime sizes the context, so the plan records no `-c` of
-	// its own and FitMinContext is the floor it is held to — UNLESS the operator
-	// pinned one. An exact context is not an offload override, so it does not
-	// turn fit off; and `--fit` adjusts only UNSET arguments, so a set `-c` is
-	// left exactly where the operator put it.
+	// The plan ALWAYS records a concrete `-c`. Under fit that is the RAM tier
+	// (held to the `-fitc` floor — see planTargetContext), NOT "fit decides":
+	// `--fit` adjusts only UNSET arguments, so a rendered `-c` is left alone
+	// and fit sizes the offload (`-ngl`) — while a zero would hand the context
+	// to the runtime, which sizes it up to the model's full training context
+	// regardless of available memory. An exact operator pin is honoured as-is.
 	plan.ContextSize = target
-	if fit && tuning.Context.Mode != ContextExact {
-		plan.ContextSize = 0
-	}
 	if fit {
 		if tuning.Context.Mode == ContextExact {
 			notes = append(notes, fmt.Sprintf(
 				"the context was pinned to %d tokens, which the runtime leaves alone; only the layer count is sized by --fit",
 				target))
+		} else {
+			notes = append(notes, fmt.Sprintf(
+				"the context is the %d-token RAM tier (held to the %d-token fit floor), rendered as an explicit -c so the runtime's own fit pass never sizes it up to the model's training context; only the layer count is sized by --fit",
+				target, fitMinContext))
 		}
 		if tuning.FitTargetMiB != nil && *tuning.FitTargetMiB > 0 {
 			plan.FitTargetMiB = *tuning.FitTargetMiB
@@ -1712,13 +1714,34 @@ func planTargetContext(
 		return tokens, nil
 	}
 	if fit {
-		return fitMinContext, nil
+		// The fit path renders the SAME tier ladder the explicit path does
+		// (planShape writes it into the spec), held to the `-fitc` floor: fit
+		// sizes the offload, never the context. Without this floor a tier
+		// below 65536 would reproduce the truncated-answer failure
+		// DefaultFitMinContext exists to prevent.
+		ladder := ladderContextFor(topology, profile)
+		if fitMinContext > ladder {
+			ladder = fitMinContext
+		}
+		return ladder, nil
 	}
+	return ladderContextFor(topology, profile), nil
+}
+
+// ladderContextFor is the RAM-tier context the explicit path has always used:
+// the ladder value clamped to the model's own training context. It is ALSO the
+// fit path's `-c` (see planShape): `--fit` adjusts only UNSET arguments, so a
+// rendered `-c` is left alone and fit sizes the offload (`-ngl`) — while an
+// omitted (zero) context hands the sizing to the runtime, which picks the
+// model's full training context regardless of available memory. That is the
+// failure the vendor warns about explicitly and the shape that made every agent
+// prompt a minutes-long prefill on memory-rich machines.
+func ladderContextFor(topology MemoryTopology, profile ModelMemoryProfile) int {
 	ladder := contextSizeFor(topology.HostRAMGiB)
 	if profile.MaxContext > 0 && ladder > profile.MaxContext {
 		ladder = profile.MaxContext
 	}
-	return ladder, nil
+	return ladder
 }
 
 // planKVType resolves `-ctk`/`-ctv`.
@@ -1762,8 +1785,20 @@ func planKVType(
 	}
 
 	offloaded := willOffload(layers, fit, budgets.deviceMiB)
+
+	// Long contexts start the precision ladder at q8_0 rather than f16. The KV
+	// cache dominates the footprint there (at 64 KiB/token, 131072 tokens is
+	// 8 GiB at f16 — half the weights), and halving it costs measured 1% of
+	// throughput on this model while freeing device capacity for the offload
+	// fit pass to keep. Below the threshold the f16 cache is small enough to
+	// stay the lossless default.
+	candidates := kvTypes
+	if target > longContextKVThreshold {
+		candidates = kvTypes[1:]
+	}
+
 	var lastDev, lastHost int64
-	for _, candidate := range kvTypes {
+	for _, candidate := range candidates {
 		// The exactness flag is not consulted here: this loop only compares
 		// footprints against budgets to pick a KV precision, and the bound a
 		// partial offload produces is reported once, by planFootprint. Passing

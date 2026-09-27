@@ -1987,6 +1987,24 @@ func (s *Server) recordEffectiveContext(ctx context.Context, launch resolvedLaun
 	effective := recorded
 	if n, ok := readPropsContext(ctx, s.httpClient(), propsURL(launch.Spec.Port), s.probeTimeout()); ok {
 		effective = n
+		// The served window can never legitimately exceed what this launch
+		// itself ordered (`-c`, the RAM tier in the auto path, the operator's
+		// pinned figure in the exact path — the same value rendered in argv).
+		// Anything larger is a poisoned readback (a squatted port answering
+		// /props, or a stale fit-sized server from a previous build). Clamping
+		// here keeps the invariant the config documents — the override is
+		// RAM-tiered, never the fork's full training context — in BOTH durable
+		// stores (the manifest below and, through PersistContext, the tier-1
+		// `llm.models.context_window`), so compaction and the output budget
+		// scale from the window the server actually holds instead of an
+		// absurd one. Fail-soft by construction: the launch value is always
+		// positive on every path ApplyMemoryPlan renders, and when it is not
+		// the clamp simply does not apply.
+		if launched := launch.Spec.ContextSize; launched > 0 && effective > launched {
+			s.logger().Warn("the embedded LLM reported a context above the launched one; clamping the readback",
+				"reported", effective, "launched", launched)
+			effective = launched
+		}
 	} else {
 		s.logger().Debug("the embedded LLM did not report its context; keeping the recorded value",
 			"port", launch.Spec.Port, "context_size", recorded)

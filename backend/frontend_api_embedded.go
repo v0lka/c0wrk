@@ -820,12 +820,39 @@ func (f *FrontendAPI) persistEmbeddedContext(_ context.Context, contextSize int)
 		return err
 	}
 
+	// The corrected window also reaches the LIVE sessions' emitters. The
+	// scheduled refresh below updates their model REGISTRIES, but an emitter
+	// caches its display basis at HandleMessage start and only re-resolves it
+	// on the next message — an idle session (or the tail of a task that
+	// started before this correction) would keep showing fill percentages and
+	// "Compacted from X% to Y%" cards against the stale window. The emitter
+	// push is model-scoped and re-broadcasts a corrected context_fill for
+	// idle sessions, so the status bar heals immediately.
+	f.pushDisplayContextWindow(contextSize)
+
 	// The corrected window is durable and config:updated is on its way.
 	// Schedule the async refresh so the live router stops guarding prompts
 	// with the stale estimate — see scheduleEmbeddedRouterRefresh for why it
 	// must not run synchronously on this path.
 	f.scheduleEmbeddedRouterRefresh()
 	return nil
+}
+
+// pushDisplayContextWindow forwards the measured embedded context window to
+// the live session emitters (session.Manager.SetDisplayContextWindowForModel),
+// model-scoped to the embedded model. Best-effort: a nil app/manager (tests,
+// early startup) skips the push — the registry push and the next
+// HandleMessage's re-resolution remain the authoritative correction paths,
+// exactly like a skipped router rebuild.
+func (f *FrontendAPI) pushDisplayContextWindow(contextSize int) {
+	push := f.displayWindowPush
+	if push == nil {
+		if f.app == nil || f.app.Manager() == nil {
+			return
+		}
+		push = f.app.Manager().SetDisplayContextWindowForModel
+	}
+	push(config.EmbeddedLLMModelName, contextSize)
 }
 
 // ---------------------------------------------------------------------------
@@ -2142,6 +2169,106 @@ func (f *FrontendAPI) ensureEmbeddedReadyForLLMRequest(ctx context.Context) erro
 		return fmt.Errorf("the embedded model could not be loaded: %w", err)
 	}
 	return nil
+}
+
+// Budgets of the agent-idle wait in serviceEmbeddedGate.
+const (
+	// embeddedServiceIdleWaitInteractive bounds the wait an INTERACTIVE service
+	// caller (commit message, prompt optimization) spends before refusing. It is
+	// short on purpose: these run on the RPC the user is watching, so the wait
+	// is visible, and "the task just finished" is the case it exists to catch.
+	embeddedServiceIdleWaitInteractive = 20 * time.Second
+	// embeddedServiceIdleWaitBackground bounds the wait a BACKGROUND service
+	// caller (session title generation) spends. The goroutine is tracked and
+	// invisible to the user, so it can afford to wait out a task that is
+	// minutes from finishing before giving up on the rename.
+	embeddedServiceIdleWaitBackground = 10 * time.Minute
+	// embeddedServiceIdlePoll is the active-session recheck gap. ActiveSessions
+	// is an RLock'd snapshot, cheap enough to poll.
+	embeddedServiceIdlePoll = 2 * time.Second
+)
+
+// serviceEmbeddedGate is the pre-dispatch gate for one-shot service LLM calls
+// against the embedded model: it waits for agent idle, THEN for model ready.
+//
+// The wait is the cache half of the gate. The local server runs `-np 1`, so any
+// request with a different prompt evicts the prompt cache the running task's
+// next step would have reused — on a 40-50K-token agent prompt that eviction
+// costs a fresh multi-minute prefill. So while an agent is running, service
+// requests are DEFERRED until the task finishes, within the caller's budget:
+// an interactive call refuses with an actionable message when the budget
+// expires, a background one just skips.
+//
+// The model-readiness half is ensureEmbeddedReadyForLLMRequest unchanged: the
+// load is never charged to the request's own timeout (ADR-066 D13), which is
+// why the gate runs before the caller arms it.
+func (f *FrontendAPI) serviceEmbeddedGate(ctx context.Context, waitBudget time.Duration) error {
+	if !f.activeModelIsEmbedded() {
+		// Not the default model: the service request never reaches the local
+		// server, so no cache can be disturbed.
+		return nil
+	}
+	if err := f.waitForEmbeddedAgentIdle(ctx, waitBudget); err != nil {
+		return err
+	}
+	return f.ensureEmbeddedReadyForLLMRequest(ctx)
+}
+
+// waitForEmbeddedAgentIdle blocks until no session carries live background
+// work, the wait budget expires, or ctx is done.
+//
+// "Busy" is deliberately coarse: ANY active session holds the gate while the
+// embedded model is the default. The precise predicate — a session whose own
+// router is on the embedded model — is not observable here (per-session model
+// overrides live inside the session's router), and the false positive is cheap:
+// the service call merely waits out the task, then proceeds, exactly as a call
+// that followed a real eviction would have had to.
+func (f *FrontendAPI) waitForEmbeddedAgentIdle(ctx context.Context, waitBudget time.Duration) error {
+	if ctx == nil {
+		ctx = f.ctx()
+	}
+	if f.activeSessionCount == nil {
+		// No manager was wired (tests, a headless embedding): no agent can be
+		// running, and blocking would be wrong by construction.
+		return nil
+	}
+	if f.activeSessionCount() == 0 {
+		return nil
+	}
+	f.log().Info("deferring an embedded service LLM request until the active task finishes",
+		"active_sessions", f.activeSessionCount(), "wait_budget", waitBudget.String())
+	deadline := time.NewTimer(waitBudget)
+	defer deadline.Stop()
+	ticker := time.NewTicker(embeddedServiceIdlePoll)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf(
+				"the embedded model is busy with an active task; the request was deferred for %s to keep that task's prompt cache — retry when it finishes",
+				waitBudget)
+		case <-ticker.C:
+			if f.activeSessionCount() == 0 {
+				return nil
+			}
+		}
+	}
+}
+
+// serviceEmbeddedGateInteractive is serviceEmbeddedGate for the RPC-backed
+// callers (GenerateCommitMessage, OptimizePrompt): a short, visible wait, then
+// an actionable refusal.
+func (f *FrontendAPI) serviceEmbeddedGateInteractive(ctx context.Context) error {
+	return f.serviceEmbeddedGate(ctx, embeddedServiceIdleWaitInteractive)
+}
+
+// serviceEmbeddedGateBackground is serviceEmbeddedGate for the session
+// manager's one-shot title generation: a long invisible wait, and the caller
+// already skips the rename when the gate fails.
+func (f *FrontendAPI) serviceEmbeddedGateBackground(ctx context.Context) error {
+	return f.serviceEmbeddedGate(ctx, embeddedServiceIdleWaitBackground)
 }
 
 // activeModelIsEmbedded reports whether the model a one-shot service request

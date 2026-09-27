@@ -258,10 +258,11 @@ describe('handleCompactionStarted / handleCompactionFinished', () => {
     pausing: Array<{ sessionId: string; value: boolean }>
     paused: Array<{ sessionId: string; value: boolean }>
     taskActive: Array<{ sessionId: string; value: boolean }>
+    messages: Array<{ sessionId: string; message: ChatMessageUI }>
   }
 
   function makeCompactionStore() {
-    const recorded: CompactionRecorded = { compacting: [], compactionAvailability: [], activity: [], pausing: [], paused: [], taskActive: [] }
+    const recorded: CompactionRecorded = { compacting: [], compactionAvailability: [], activity: [], pausing: [], paused: [], taskActive: [], messages: [] }
     return {
       recorded,
       setCompacting: (sessionId: string, value: boolean) => { recorded.compacting.push({ sessionId, value }) },
@@ -270,6 +271,7 @@ describe('handleCompactionStarted / handleCompactionFinished', () => {
       setPausing: (sessionId: string, value: boolean) => { recorded.pausing.push({ sessionId, value }) },
       setPaused: (sessionId: string, value: boolean) => { recorded.paused.push({ sessionId, value }) },
       setTaskActive: (sessionId: string, value: boolean) => { recorded.taskActive.push({ sessionId, value }) },
+      addMessage: (sessionId: string, message: ChatMessageUI) => { recorded.messages.push({ sessionId, message }) },
     }
   }
 
@@ -285,6 +287,47 @@ describe('handleCompactionStarted / handleCompactionFinished', () => {
     handleCompactionFinished(store, 'sess-1', { success: true, resumed: true })
     expect(store.recorded.compacting).toEqual([{ sessionId: 'sess-1', value: false }])
     expect(store.recorded.activity).toHaveLength(0)
+  })
+
+  it('finished on success lands the manual compaction card with rounded percentages', () => {
+    // The manual flow emits no context_compaction event (that type means
+    // "auto compaction" and is persisted by the backend event pipeline), so
+    // the live card is derived here from compaction_finished's display-basis
+    // percentages — the same numbers the marker row stores, keeping the live
+    // and reloaded cards identical.
+    const store = makeCompactionStore()
+    handleCompactionFinished(store, 'sess-1', { success: true, resumed: true, before_percent: 45.6, after_percent: 12.3 })
+    expect(store.recorded.messages).toHaveLength(1)
+    const card = store.recorded.messages[0]!
+    expect(card.sessionId).toBe('sess-1')
+    expect(card.message.type).toBe('context_compaction')
+    expect(card.message.content).toBe('Context compacted from 46% to 12%')
+    expect(card.message.metadata).toEqual({ before_percent: 45.6, after_percent: 12.3 })
+  })
+
+  it('finished with nothing_compacted adds no card (the label is the outcome)', () => {
+    const store = makeCompactionStore()
+    handleCompactionFinished(store, 'sess-1', { success: true, resumed: false, nothing_compacted: true, before_percent: 0, after_percent: 0 })
+    expect(store.recorded.messages).toHaveLength(0)
+  })
+
+  it('finished on error or cancellation adds no card', () => {
+    const errStore = makeCompactionStore()
+    handleCompactionFinished(errStore, 'sess-1', { success: false, error: 'boom', before_percent: 45.6, after_percent: 12.3 })
+    expect(errStore.recorded.messages).toHaveLength(0)
+
+    const cancelStore = makeCompactionStore()
+    handleCompactionFinished(cancelStore, 'sess-1', { success: false, cancelled: true, resumed: false, before_percent: 45.6, after_percent: 12.3 })
+    expect(cancelStore.recorded.messages).toHaveLength(0)
+  })
+
+  it('finished with a failed auto-resume still lands the card (the compaction succeeded)', () => {
+    // paused_without_resume means the flow compacted fine but could not
+    // auto-resume the task — the card records the compaction either way.
+    const store = makeCompactionStore()
+    handleCompactionFinished(store, 'sess-1', { success: true, resumed: false, paused_without_resume: true, before_percent: 45.6, after_percent: 12.3 })
+    expect(store.recorded.messages).toHaveLength(1)
+    expect(store.recorded.messages[0]!.message.type).toBe('context_compaction')
   })
 
   it('finished on success without a resume clears the activity (idle session)', () => {

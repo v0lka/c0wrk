@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { shouldAddTaskCompleteOutput, shouldTriggerReview, useChatEvents } from '@/hooks/events/useChatEvents'
 import { useSubagentEvents } from '@/hooks/events/useSubagentEvents'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
+import { reportDroppedEvent } from '@/api/runtime'
 import { groupMessages } from '@/lib/chatUtils'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useAutonomyStore } from '@/stores/autonomyStore'
@@ -406,5 +407,72 @@ describe('useChatEvents scoped assistant answer (subagent / plan step)', () => {
     const { items } = groupMessages(messages())
     expect(items.some(it => it.kind === 'assistant')).toBe(true)
     expect(useChatStore.getState().streamingText[SESSION]).toBeUndefined()
+  })
+})
+
+describe('useChatEvents memory_read', () => {
+  const SESSION = 'sess-1'
+
+  function emit(event: string, data?: unknown): void {
+    act(() => {
+      for (const cb of runtimeHandlers.get(event) ?? []) cb(data)
+    })
+  }
+
+  let container: HTMLDivElement
+  let root: Root
+
+  function Harness(): null {
+    useChatEvents(SESSION)
+    return null
+  }
+
+  beforeEach(() => {
+    useChatStore.setState({
+      messages: {},
+      messageOrder: {},
+      streamingText: {},
+      activityStatus: {},
+      taskActive: {},
+      paused: {},
+      pausing: {},
+    })
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    act(() => {
+      root.render(createElement(Harness))
+    })
+  })
+
+  afterEach(() => {
+    act(() => {
+      root.unmount()
+    })
+    container.remove()
+  })
+
+  const messages = () => selectSessionMessages(useChatStore.getState(), SESSION)
+
+  it('renders the memory-read card live, matching the persisted-row restore shape', () => {
+    emit('memory_read', { step_num: 0, content: 'Loaded 3 facts from previous execution' })
+
+    const msgs = messages()
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]!.type).toBe('memory_read')
+    expect(msgs[0]!.content).toBe('Loaded 3 facts from previous execution')
+    expect(msgs[0]!.metadata).toEqual({ step_num: 0 })
+    // The card must survive session switches via the persisted role-memory_read
+    // row: the restored card (chatUtils 'memory_read' case) renders the row
+    // content + the step_num metadata — identical to this live message shape.
+    const { items } = groupMessages(msgs)
+    expect(items.some(it => it.kind === 'memory_read' && it.content === 'Loaded 3 facts from previous execution')).toBe(true)
+  })
+
+  it('drops a malformed memory_read payload without adding a message', () => {
+    emit('memory_read', { step_num: 0 }) // missing content — guard must reject
+
+    expect(messages()).toHaveLength(0)
+    expect(vi.mocked(reportDroppedEvent)).toHaveBeenCalledWith('memory_read', { step_num: 0 })
   })
 })

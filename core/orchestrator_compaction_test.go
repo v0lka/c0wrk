@@ -13,9 +13,11 @@ import (
 )
 
 // compactionSpyEmitter records the emissions the manual-compaction path must
-// produce (ContextCompaction + refreshed ContextFill). It also mirrors the
-// dynamic plan-step scope contract (CurrentStepScopable) so tests can verify
-// the orchestrator resets a stale scope before session-root emissions.
+// produce (a refreshed ContextFill; no ContextCompaction — the manual card
+// comes from the session layer's compaction_finished event, and the durable
+// record is the marker row). It also mirrors the dynamic plan-step scope
+// contract (CurrentStepScopable) so tests can verify the orchestrator resets
+// a stale scope before session-root emissions.
 type compactionSpyEmitter struct {
 	mockEmitter
 	compactions []compactionRecord
@@ -201,12 +203,12 @@ func TestCompactConversationHistory_LongLightHistoryCompacts(t *testing.T) {
 	if before <= after {
 		t.Errorf("expected fill reduction, got %.1f → %.1f", before, after)
 	}
-	if len(spy.compactions) != 1 || len(spy.fills) != 1 {
-		t.Error("a real compaction must emit the compaction card + refreshed fill")
+	if len(spy.compactions) != 0 || len(spy.fills) != 1 {
+		t.Error("a real compaction must refresh the fill and emit no ContextCompaction (the manual card comes from compaction_finished)")
 	}
 }
 
-func TestCompactConversationHistory_SlidingWindowReplacesHistoryAndEmits(t *testing.T) {
+func TestCompactConversationHistory_SlidingWindowReplacesHistoryAndRefreshesFill(t *testing.T) {
 	o, spy := newCompactionTestOrchestrator(nil)
 	hist := compactionHistory(30) // 60 messages
 	o.SetConversationHistory(hist)
@@ -242,17 +244,15 @@ func TestCompactConversationHistory_SlidingWindowReplacesHistoryAndEmits(t *test
 		t.Errorf("expected before (%.1f) > after (%.1f)", before, after)
 	}
 
-	// Events: compaction card + refreshed fill — on the EFFECTIVE base
+	// Events: no ContextCompaction (the manual flow's chat card comes from
+	// the session layer's compaction_finished event, and its durable record
+	// is the marker row) + one refreshed fill — on the EFFECTIVE base
 	// (window 1000 − output limit 100 − safety margin 1000*5/100=50 → 850),
-	// the basis the emitter's ContextCompaction display scaling expects.
+	// the basis the emitter's display override scales to the real window.
 	const effectiveMax = 850
-	wantBeforeEff := float64(counter.CountMessages(hist)) / effectiveMax * 100
 	wantAfterEff := float64(counter.CountMessages(got)) / effectiveMax * 100
-	if len(spy.compactions) != 1 {
-		t.Fatalf("expected exactly 1 ContextCompaction emission, got %d", len(spy.compactions))
-	}
-	if math.Abs(spy.compactions[0].before-wantBeforeEff) > 0.001 || math.Abs(spy.compactions[0].after-wantAfterEff) > 0.001 {
-		t.Errorf("ContextCompaction effective-base percentages: got %.2f/%.2f, want %.2f/%.2f", spy.compactions[0].before, spy.compactions[0].after, wantBeforeEff, wantAfterEff)
+	if len(spy.compactions) != 0 {
+		t.Fatalf("expected no ContextCompaction emission from the manual path, got %d", len(spy.compactions))
 	}
 	if len(spy.fills) != 1 {
 		t.Fatalf("expected exactly 1 ContextFill emission, got %d", len(spy.fills))
@@ -319,8 +319,8 @@ func TestCompactConversationHistory_NilTokenCounterStillCompacts(t *testing.T) {
 	if before != 0 || after != 0 {
 		t.Errorf("expected 0 percentages without a token counter, got %.1f/%.1f", before, after)
 	}
-	if len(spy.compactions) != 1 || len(spy.fills) != 1 {
-		t.Error("events must be emitted for a real compaction")
+	if len(spy.compactions) != 0 || len(spy.fills) != 1 {
+		t.Error("a real compaction must refresh the fill and emit no ContextCompaction")
 	}
 }
 
@@ -387,8 +387,8 @@ func TestCompactConversationHistory_ZeroWindowYieldsZeroPercent(t *testing.T) {
 	if before != 0 || after != 0 {
 		t.Errorf("expected 0 percentages without a window, got %.1f/%.1f", before, after)
 	}
-	if len(spy.compactions) != 1 || len(spy.fills) != 1 {
-		t.Error("events must still be emitted without a known window")
+	if len(spy.compactions) != 0 || len(spy.fills) != 1 {
+		t.Error("the fill refresh must still be emitted without a known window, and no ContextCompaction with it")
 	}
 	// Structural window is independent of the model window: 2 head + note +
 	// 4 tail = 7 messages.

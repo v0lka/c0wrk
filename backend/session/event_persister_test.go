@@ -141,6 +141,82 @@ func TestEventPersister_DedupTaskCompleteAgainstAssistantDone(t *testing.T) {
 	}
 }
 
+// TestEventPersister_ContextCompactionPersisted verifies that auto-compaction
+// events (executor fill-trigger / compact-on-start) persist as durable
+// context_compaction rows — the card must survive session switches (the
+// frontend's history merge keeps only persisted rows) and app restarts.
+// The manual flow emits no context_compaction event; its record is the
+// richer marker row, so no duplication arises.
+func TestEventPersister_ContextCompactionPersisted(t *testing.T) {
+	store := &captureStore{}
+	p := NewEventPersister(store)
+
+	p.Persist(Event{
+		SessionID: "s1",
+		Type:      "context_compaction",
+		Data: ContextCompactionEventData{
+			BeforePercent: 85.4,
+			AfterPercent:  30.2,
+			PlanStepID:    "step_1",
+		},
+	})
+
+	rows := store.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 persisted row, got %d: %+v", len(rows), rows)
+	}
+	if rows[0].Role != "context_compaction" {
+		t.Fatalf("role = %q, want context_compaction", rows[0].Role)
+	}
+	if rows[0].Content != "Context compacted from 85% to 30%" {
+		t.Fatalf("content = %q, want the human-readable card text", rows[0].Content)
+	}
+	var meta ContextCompactionEventData
+	if err := json.Unmarshal(rows[0].Metadata, &meta); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	if meta.BeforePercent != 85.4 || meta.AfterPercent != 30.2 || meta.PlanStepID != "step_1" {
+		t.Fatalf("unexpected metadata: %+v", meta)
+	}
+}
+
+// TestEventPersister_MemoryReadPersisted verifies that memory_read events
+// persist as durable memory_read rows — the card must survive session switches
+// (the frontend's history merge keeps only persisted rows) and app restarts.
+// Content carries the human-readable summary so the restored card matches the
+// live one; metadata keeps the raw payload ({step_num, content}).
+func TestEventPersister_MemoryReadPersisted(t *testing.T) {
+	store := &captureStore{}
+	p := NewEventPersister(store)
+
+	p.Persist(Event{
+		SessionID: "s1",
+		Type:      "memory_read",
+		Data: map[string]any{
+			"step_num": 0,
+			"content":  "Loaded 3 facts from previous execution",
+		},
+	})
+
+	rows := store.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 persisted row, got %d: %+v", len(rows), rows)
+	}
+	if rows[0].Role != "memory_read" {
+		t.Fatalf("role = %q, want memory_read", rows[0].Role)
+	}
+	if rows[0].Content != "Loaded 3 facts from previous execution" {
+		t.Fatalf("content = %q, want the human-readable card text", rows[0].Content)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(rows[0].Metadata, &meta); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	if meta["step_num"] != float64(0) || meta["content"] != "Loaded 3 facts from previous execution" {
+		t.Fatalf("unexpected metadata: %+v", meta)
+	}
+}
+
 // TestEventPersister_KeepsTaskCompleteWhenOutputDiffers verifies that
 // task_complete is still persisted when its output differs from the last
 // streamed assistant content (the explicit finish-tool path, where the

@@ -298,6 +298,20 @@ type FrontendAPI struct {
 	embeddedRefreshScheduled bool
 	embeddedRefreshDirty     bool
 	embeddedRefreshDispatch  func(func())
+
+	// displayWindowPush, when non-nil (tests), replaces the default
+	// session-manager fan-out of the corrected display context window — the
+	// same injection shape as embeddedRefreshDispatch. Production leaves it
+	// nil; pushDisplayContextWindow then routes through app.Manager().
+	displayWindowPush func(model string, window int)
+
+	// activeSessionCount reports how many sessions currently carry live
+	// background work. It is the agent-idle seam the service gate
+	// (serviceEmbeddedGate) waits on: production wires it to the session
+	// manager in installServiceLLMGate, and a nil value — tests, a headless
+	// embedding without a manager — reads as "no agent is running", which
+	// keeps the gate inert rather than blocking on a manager nobody wired.
+	activeSessionCount func() int
 }
 
 // TerminalManager is the interface for the terminal subsystem.
@@ -432,7 +446,8 @@ func (f *FrontendAPI) installServiceLLMGate() {
 		return
 	}
 	if m := f.app.Manager(); m != nil {
-		m.SetServiceLLMGate(f.ensureEmbeddedReadyForLLMRequest)
+		f.activeSessionCount = func() int { return len(m.ActiveSessions()) }
+		m.SetServiceLLMGate(f.serviceEmbeddedGateBackground)
 	}
 }
 

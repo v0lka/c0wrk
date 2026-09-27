@@ -4663,13 +4663,19 @@ func TestLoadReplanPinsTheInstalledPacking(t *testing.T) {
 // reported through /props — not the estimate the install froze. This matters
 // because llm-providers.md gives the tier-1 config override precedence over the
 // tier-1.5 lazy probe, so a stale override can never be corrected by anything
-// else.
+// else. The recorded plan carries the launched context, above the estimate,
+// which is what a real install writes (the estimate is the planner figure, the
+// readback corrects it upward) — and below it the readback clamp would keep the
+// estimate (see the clamp test).
 func TestLoadRecordsTheContextTheServerReported(t *testing.T) {
 	t.Parallel()
 
 	const reported = 24576
+	plan := stagedPlan()
+	plan.ContextSize = 98304
 	fx := newFixture(t, fixtureOptions{
 		contextSize: 16384, // the install's estimate
+		plan:        &plan,
 		propsNCtx:   reported,
 		propsSlots:  1,
 	})
@@ -4699,8 +4705,15 @@ func TestLoadMultipliesTheReportedContextByTheSlotCount(t *testing.T) {
 
 	fx := newFixture(t, fixtureOptions{
 		contextSize: 16384,
-		propsNCtx:   8192,
-		propsSlots:  4,
+		plan: func() *MemoryPlan {
+			// The launched context: at or above the reported total, so the
+			// readback clamp stays out of the way (8192×4 = 32768).
+			plan := stagedPlan()
+			plan.ContextSize = 32768
+			return &plan
+		}(),
+		propsNCtx:  8192,
+		propsSlots: 4,
 	})
 
 	if err := fx.srv.Load(t.Context()); err != nil {
@@ -4712,6 +4725,37 @@ func TestLoadMultipliesTheReportedContextByTheSlotCount(t *testing.T) {
 	if got := fx.diskManifest(t).ContextSize; got != 8192*4 {
 		t.Errorf("the manifest context_size = %d, want %d", got, 8192*4)
 	}
+}
+
+// TestLoadClampsTheReadbackToTheLaunchedContext pins the poisoned-readback
+// defense. A server can never legitimately report a window above the one this
+// launch ordered (-c, the plan's context): the value reaches TWO durable stores
+// — the manifest and, through PersistContext, the tier-1 llm.models override
+// that shadows the lazy probe — so a readback that claims more (a squatted
+// loopback port, a stale fit-sized server from a previous build) would make
+// every prompt "fit" and silently disable compaction. The clamp keeps both
+// stores at the launched figure.
+func TestLoadClampsTheReadbackToTheLaunchedContext(t *testing.T) {
+	t.Parallel()
+
+	plan := stagedPlan() // ContextSize 32768 — the launched -c and the clamp's ceiling
+	fx := newFixture(t, fixtureOptions{
+		contextSize: 16384, // the install's estimate, below the launched -c
+		plan:        &plan,
+		propsNCtx:   98304, // above the launched context: a poisoned readback
+		propsSlots:  1,
+	})
+
+	if err := fx.srv.Load(t.Context()); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := fx.persistedContexts(); len(got) != 1 || got[0] != plan.ContextSize {
+		t.Errorf("PersistContext calls = %v, want the clamped [%d]", got, plan.ContextSize)
+	}
+	if got := fx.diskManifest(t).ContextSize; got != plan.ContextSize {
+		t.Errorf("the manifest context_size = %d, want the clamped %d", got, plan.ContextSize)
+	}
+	waitForState(t, fx.srv, StateLoaded)
 }
 
 // TestLoadKeepsTheRecordedContextWhenTheReadbackFails is the fail-soft half: a
@@ -4892,7 +4936,15 @@ func TestReadPropsContextIsFailSoft(t *testing.T) {
 func TestRecordEffectiveContextSurvivesAFailingConfigWrite(t *testing.T) {
 	t.Parallel()
 
-	fx := newFixture(t, fixtureOptions{contextSize: 16384, propsNCtx: 65536})
+	fx := newFixture(t, fixtureOptions{
+		contextSize: 16384,
+		plan: func() *MemoryPlan {
+			plan := stagedPlan()
+			plan.ContextSize = 65536 // the launched context, at the reported figure
+			return &plan
+		}(),
+		propsNCtx: 65536,
+	})
 	fx.srv.PersistContext = func(context.Context, int) error {
 		return errors.New("the config write failed")
 	}
@@ -4955,7 +5007,12 @@ func TestRecordEffectiveContextMergesOntoTheCurrentRecord(t *testing.T) {
 	var fx *fixture
 	fx = newFixture(t, fixtureOptions{
 		contextSize: 16384,
-		propsNCtx:   65536,
+		plan: func() *MemoryPlan {
+			plan := stagedPlan()
+			plan.ContextSize = 65536 // the launched context, at the reported figure
+			return &plan
+		}(),
+		propsNCtx: 65536,
 		// The install finishes in the window between readiness and the readback,
 		// which is exactly where the load's snapshot goes stale.
 		readyHook: func() {

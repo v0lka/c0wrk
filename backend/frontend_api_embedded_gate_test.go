@@ -350,3 +350,53 @@ func TestEmbeddedLoaderRefusesWhileAnEmbeddedOperationRuns(t *testing.T) {
 		})
 	}
 }
+
+// TestServiceEmbeddedGateWaitsForAgentIdle pins the cache half of the service
+// gate. The local server runs one slot, so ANY service request issued while an
+// agent task is running evicts the prompt cache that task's next step would
+// have reused — on a 40-50K-token agent prompt that eviction costs a fresh
+// multi-minute prefill. The gate therefore defers service calls until no
+// session carries live background work, within the caller's budget: an expired
+// interactive budget is an actionable refusal, not a cache-evicting request.
+func TestServiceEmbeddedGateWaitsForAgentIdle(t *testing.T) {
+	t.Run("no agent running: the gate proceeds to readiness", func(t *testing.T) {
+		f, _, _ := newEmbeddedTestAPI(t)
+		installEmbeddedAsDefault(t, f)
+		stubFreePortProbe(t, f)
+		f.embedded.spawnFn = func(context.Context, embeddedllm.LaunchCommand) (embeddedllm.Process, error) {
+			return newFakeEmbeddedProcess(4242), nil
+		}
+		tightenEmbeddedBudgets(t, f)
+
+		if err := f.serviceEmbeddedGate(t.Context(), 50*time.Millisecond); err != nil {
+			t.Fatalf("serviceEmbeddedGate with no active task: %v", err)
+		}
+	})
+
+	t.Run("an active task defers the call; an expired budget is an actionable refusal", func(t *testing.T) {
+		f, _, _ := newEmbeddedTestAPI(t)
+		installEmbeddedAsDefault(t, f)
+		forbidEmbeddedSideEffects(t, f)
+		f.activeSessionCount = func() int { return 1 }
+
+		err := f.serviceEmbeddedGate(t.Context(), 50*time.Millisecond)
+		if err == nil {
+			t.Fatal("the gate let a service request through while an agent task is running: " +
+				"it would evict that task's prompt cache")
+		}
+		if !strings.Contains(err.Error(), "busy with an active task") {
+			t.Errorf("the refusal = %q, want it to name the busy embedded model", err)
+		}
+	})
+
+	t.Run("another model as the default: the wait never engages", func(t *testing.T) {
+		f, _, _ := newEmbeddedTestAPI(t)
+		installEmbeddedLLM(t, f, 4321)
+		forbidEmbeddedSideEffects(t, f)
+		f.activeSessionCount = func() int { return 1 }
+
+		if err := f.serviceEmbeddedGate(t.Context(), 50*time.Millisecond); err != nil {
+			t.Fatalf("serviceEmbeddedGate must be inert while another model is the default: %v", err)
+		}
+	})
+}

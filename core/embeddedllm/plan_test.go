@@ -355,8 +355,13 @@ func TestPlanFitExclusivity(t *testing.T) {
 						plan.ContextSize, tc.tuning.Context.Tokens)
 				}
 			case tc.wantFit:
-				if plan.ContextSize != 0 {
-					t.Errorf("ContextSize = %d, want 0: under fit the runtime sizes -c", plan.ContextSize)
+				// The fit path renders the RAM tier as an explicit -c (held
+				// to the fit floor): fit sizes the offload, never the
+				// context, and an omitted -c would hand the context to the
+				// runtime's fit pass, which sizes it up to the model's full
+				// training context regardless of available memory.
+				if plan.ContextSize <= 0 {
+					t.Errorf("ContextSize = %d, want the RAM tier the plan renders as an explicit -c", plan.ContextSize)
 				}
 			default:
 				if plan.ContextSize <= 0 {
@@ -485,11 +490,18 @@ func TestPlanDefaultsAreTheAllAutoShape(t *testing.T) {
 	if plan.Layers != nil {
 		t.Errorf("Layers = %v, want nil so -ngl is omitted", derefOrOmit(plan.Layers))
 	}
-	if plan.ContextSize != 0 {
-		t.Errorf("ContextSize = %d, want 0 under fit", plan.ContextSize)
+	// The fit path renders the RAM tier as an explicit -c (held to the fit
+	// floor): fit sizes the offload, never the context, and an omitted -c lets
+	// the runtime size the context up to the model's full training context
+	// regardless of available memory.
+	if want := contextSizeFor(128); plan.ContextSize != want {
+		t.Errorf("ContextSize = %d, want the RAM tier %d rendered as an explicit -c under fit", plan.ContextSize, want)
 	}
-	if plan.KVType != KVTypeF16 {
-		t.Errorf("KVType = %v, want the lossless default f16", plan.KVType)
+	// 131072 > the long-context threshold, so the KV ladder starts at q8_0:
+	// halving the cache costs measured 1% of throughput and frees half the
+	// device capacity the weights would otherwise share it with.
+	if plan.KVType != KVTypeQ8_0 {
+		t.Errorf("KVType = %v, want q8_0 for a long-context plan", plan.KVType)
 	}
 	if plan.Packing != PackingPQ2_0 {
 		t.Errorf("Packing = %v, want the Metal backend's PQ2_0", plan.Packing)
@@ -575,10 +587,14 @@ func TestPlanAdaptiveKVEscalation(t *testing.T) {
 
 			// Apple Silicon pays no split allowance, so the literal budget IS
 			// the budget the gate spends. The host side is deliberately
-			// generous: this test is about the device ladder.
+			// generous: this test is about the device ladder. The RAM figure
+			// puts the host below the 131072 tier, so the fit path's target
+			// stays at the 65536 floor (ctx) — the short-context ladder this
+			// table exercises. (A 128-GiB host would plan 131072 and start the
+			// ladder at q8_0 instead — see TestPlanDefaultsAreTheAllAutoShape.)
 			topology := topologyLiteral(tc.deviceMiB, 64*1024, []DeviceMemory{
 				{Name: "MTL0", Description: "Apple M4 Max", TotalMiB: tc.deviceMiB, FreeMiB: tc.deviceMiB},
-			}, 128)
+			}, 24)
 
 			plan, err := Plan(topology, profile, Tuning{}, BackendMetal, GPUFamilyAppleSilicon)
 			if tc.wantErr != nil {
@@ -1311,8 +1327,9 @@ func TestSplitModeSpellingsAreTheRuntimesOwn(t *testing.T) {
 
 // TestPlanNeverEmitsTheTrainingContextAsAContext is the planner's half of the
 // package-wide ban: whatever the tuning asks for, a plan's context is inside
-// the modelled range, and a fit-sized plan carries no context of its own at
-// all.
+// the modelled range, and a fit-sized plan carries the RAM tier (or the
+// operator's exact pin) as an explicit -c rather than leaving the context to
+// the runtime's fit pass.
 func TestPlanNeverEmitsTheTrainingContextAsAContext(t *testing.T) {
 	t.Parallel()
 
@@ -1345,8 +1362,8 @@ func TestPlanNeverEmitsTheTrainingContextAsAContext(t *testing.T) {
 		if plan.ContextSize < 0 || plan.ContextSize > profile.MaxContext {
 			t.Errorf("Plan (tuning %d) ContextSize = %d, want 0..%d", i, plan.ContextSize, profile.MaxContext)
 		}
-		if plan.Fit && plan.ContextSize != 0 && plan.ContextSize != tuning.Context.Tokens {
-			t.Errorf("Plan (tuning %d) is fit-sized but carries ContextSize %d", i, plan.ContextSize)
+		if plan.Fit && plan.ContextSize <= 0 {
+			t.Errorf("Plan (tuning %d) is fit-sized but records no -c: an omitted context hands the sizing to the runtime's fit pass", i)
 		}
 		if !plan.Fit && plan.ContextSize <= 0 {
 			t.Errorf("Plan (tuning %d) has fit off but no computed context", i)

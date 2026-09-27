@@ -34,7 +34,7 @@ func (f *FrontendAPI) OptimizePrompt(prompt string) (*OptimizePromptResponse, er
 	// bound is derived is stated once, on the constant itself. The frontend
 	// keeps a per-session in-flight spinner across the whole wait and no
 	// client-side RPC timeout aborts it.
-	if err := f.ensureEmbeddedReadyForLLMRequest(f.ctx()); err != nil {
+	if err := f.serviceEmbeddedGateInteractive(f.ctx()); err != nil {
 		return nil, err
 	}
 

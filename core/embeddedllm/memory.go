@@ -149,6 +149,10 @@ const (
 // kvTypes is the exhaustive, ordered set of modelled precisions.
 var kvTypes = []KVType{KVTypeF16, KVTypeQ8_0, KVTypeQ4_0}
 
+// longContextKVThreshold is the target context above which the planner starts
+// the KV-precision ladder at q8_0 instead of f16 (see planKVType).
+const longContextKVThreshold = DefaultFitMinContext
+
 // GGUF quantisation-block geometry, which is what makes the KV divisors
 // derivable instead of magic. Both quantised cache types store one fp16 scale
 // per block of 32 values, so a value costs MORE than its nominal bit width:

@@ -656,6 +656,15 @@ const (
 	// Installed is false.
 	EmbeddedLLMMinPort = 1024
 	EmbeddedLLMMaxPort = 65535
+
+	// EmbeddedLLMOutputLimit is the generation ceiling (max_tokens) seeded for
+	// the local model. The registry's 32768 static fallback assumes a
+	// datacenter-speed model; at this model's measured decode rates (15-31
+	// tok/s) a 32768-token ceiling is 17-36 minutes of worst-case generation,
+	// so the local model gets the budget an agent loop actually spends. A
+	// user-authored llm.models output_limit still wins (see
+	// SyncEmbeddedProvider).
+	EmbeddedLLMOutputLimit = 8192
 )
 
 // EmbeddedLLMConfig is the persisted state of the embedded local model. Most
@@ -1257,7 +1266,40 @@ func (c *LLMConfig) SyncEmbeddedProvider(state EmbeddedLLMConfig, contextWindow 
 	if contextWindow > 0 && c.setEmbeddedContextWindow(contextWindow) {
 		changed = true
 	}
+	if limit := embeddedOutputLimitCeiling(contextWindow); c.setEmbeddedOutputLimit(limit) {
+		changed = true
+	}
 	return changed
+}
+
+// embeddedOutputLimitCeiling is the generation ceiling recorded for the local
+// model: EmbeddedLLMOutputLimit, clamped under contextWindow/4 when a window is
+// known (an output reserve at or above a quarter of the window is the shape
+// that disables compaction). contextWindow <= 0 (the seed path before the
+// readback) keeps the plain default.
+func embeddedOutputLimitCeiling(contextWindow int) int {
+	if contextWindow <= 0 {
+		return EmbeddedLLMOutputLimit
+	}
+	return min(EmbeddedLLMOutputLimit, contextWindow/4)
+}
+
+// setEmbeddedOutputLimit records the local model's generation ceiling as its
+// llm.models override. A value the user authored is left alone: this is a
+// seeded default, not an operator override — once anything non-zero is present
+// the function reports no change and SyncEmbeddedProvider skips the write.
+func (c *LLMConfig) setEmbeddedOutputLimit(limit int) bool {
+	if limit <= 0 {
+		return false
+	}
+	override := c.Models[EmbeddedLLMModelName]
+	if override.OutputLimit != 0 {
+		return false
+	}
+	override.OutputLimit = limit
+	c.copyModelOverridesMap()
+	c.Models[EmbeddedLLMModelName] = override
+	return true
 }
 
 // setEmbeddedContextWindow records the resolved context window as the embedded

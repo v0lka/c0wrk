@@ -135,6 +135,7 @@ export interface CompactionStore {
   setPausing: (sessionId: string, pausing: boolean) => void
   setPaused: (sessionId: string, paused: boolean) => void
   setTaskActive: (sessionId: string, active: boolean) => void
+  addMessage: (sessionId: string, message: ChatMessageUI) => void
 }
 
 /**
@@ -207,7 +208,7 @@ export function stripAutoRetryFromBanner(store: AutoRetryStripStore, sessionId: 
 export function handleCompactionFinished(
   store: CompactionStore,
   sessionId: string,
-  data: { success?: boolean; error?: string; cancelled?: boolean; resumed?: boolean; paused_without_resume?: boolean; nothing_compacted?: boolean; deferred_to_resume?: boolean; compaction_availability?: CompactionAvailability[] },
+  data: { success?: boolean; error?: string; cancelled?: boolean; resumed?: boolean; paused_without_resume?: boolean; nothing_compacted?: boolean; deferred_to_resume?: boolean; before_percent?: number; after_percent?: number; compaction_availability?: CompactionAvailability[] },
 ): void {
   store.setCompacting(sessionId, false)
   // Post-flow per-strategy availability from the backend: refresh the compact
@@ -215,6 +216,25 @@ export function handleCompactionFinished(
   // strategy stays clickable).
   if (data.compaction_availability !== undefined) {
     store.setCompactionAvailability(sessionId, data.compaction_availability)
+  }
+  // The manual flow's chat card. The flow emits no context_compaction event —
+  // that event type means "auto compaction" and the backend event pipeline
+  // persists it as a durable row, so a manual emission would duplicate the
+  // persisted marker row on reload. compaction_finished carries the same
+  // display-basis percentages the marker row stores, so the live card matches
+  // the reloaded one. No card for a no-op (nothing was compacted — the
+  // "Context already compacted" label below is the outcome), a cancelled
+  // flow, or an error; paused_without_resume still gets its card (the
+  // compaction itself succeeded — only the auto-resume failed).
+  if (data.success && !data.nothing_compacted && !data.cancelled && !data.error) {
+    store.addMessage(sessionId, {
+      id: generateMessageId(),
+      sessionId,
+      type: 'context_compaction',
+      content: `Context compacted from ${Math.round(data.before_percent ?? 0)}% to ${Math.round(data.after_percent ?? 0)}%`,
+      metadata: { before_percent: data.before_percent, after_percent: data.after_percent },
+      timestamp: Date.now(),
+    })
   }
   if (data.paused_without_resume) {
     // Same transitions as handleSessionPausedEvent: unlock into the paused

@@ -61,17 +61,21 @@ type CompactionAvailability struct {
 // offers exactly the strategies whose prediction says they will shrink the
 // dialogue.
 //
-// Percentages are computed in two bases. The EMITTED values
-// (ContextCompaction chat card + the refreshed ContextFill status bar) use
-// the effective token base — the advertised window minus the model's output
-// limit minus the safety margin, the same basis the executor reports (sp4rk
-// ContextWindow.EffectiveMax): the session emitter's ContextCompaction
-// scales effective-based percentages to the display basis (the real
-// advertised window) itself, so pre-scaling those would double-shrink the
-// card (~×0.7). The RETURNED values use the display base (the advertised
-// window) directly, because the caller persists them into the marker row
-// and the compaction_finished event and the frontend renders the marker's
-// metadata verbatim on reload — the reloaded card must match the live one.
+// Percentages are computed in two bases. The status-bar refresh (the
+// ContextFill emission) uses the effective token base — the advertised
+// window minus the model's output limit minus the safety margin, the same
+// basis the executor reports (sp4rk ContextWindow.EffectiveMax); the session
+// emitter's display override scales it to the real advertised window itself,
+// so pre-scaling those would double-shrink the bar (~×0.7). The RETURNED
+// values use the display base (the advertised window) directly, because the
+// caller persists them into the marker row and the compaction_finished
+// event, and the frontend renders the compaction card from compaction_finished
+// live and from the marker's metadata on reload — the reloaded card must
+// match the live one. No ContextCompaction event is emitted here: the manual
+// flow's chat card comes from compaction_finished and its durable record is
+// the marker row, while auto compactions' ContextCompaction events are the
+// ones the event pipeline persists — an emission here would duplicate the
+// card on reload.
 //
 // Error semantics: an empty history returns ErrNothingToCompact; a no-op
 // compaction (history unchanged — same message count and token estimate;
@@ -142,13 +146,16 @@ func (o *Orchestrator) CompactConversationHistory(ctx context.Context, strategy 
 		return 0, 0, ErrNothingCompacted
 	}
 
-	// Percentages in the two bases sharing the one token count above: the
-	// emitter basis (effective max) and the return basis (display window).
-	// Emission is NOT gated on a known window — an unknown window reports
-	// zero percents, the same "unknown" semantics as the fill path.
-	beforeEff, afterEff := 0.0, 0.0
+	// Percentages: the RETURNED values use the display base (the advertised
+	// window) — the caller persists them into the marker row and the
+	// compaction_finished event, whose before/after percents the client
+	// renders verbatim as the manual compaction's chat card (the reloaded
+	// marker card must match the live one). The status-bar refresh uses the
+	// emitter basis (effective max); it is NOT gated on a known window — an
+	// unknown window reports zero percents, the same "unknown" semantics as
+	// the fill path.
+	afterEff := 0.0
 	if effectiveMax > 0 {
-		beforeEff = float64(beforeTokens) / float64(effectiveMax) * 100
 		afterEff = float64(afterTokens) / float64(effectiveMax) * 100
 	}
 	if displayMax > 0 {
@@ -171,11 +178,17 @@ func (o *Orchestrator) CompactConversationHistory(ctx context.Context, strategy 
 		"messages", len(compacted))
 	// Session-root refresh emissions: drop the dynamic step scope first so a
 	// scope left by an inline step (task still open after a pause, resumed
-	// mid-step) cannot tag the compaction card or the status-bar refresh with
-	// a foreign plan_step_id. The conductor re-scopes the resumed step on its
-	// next start, so this is transient.
+	// mid-step) cannot tag the status-bar refresh with a foreign
+	// plan_step_id. The conductor re-scopes the resumed step on its next
+	// start, so this is transient.
 	o.resetDynamicStepScope()
-	o.emitter.ContextCompaction(beforeEff, afterEff, "")
+	// No ContextCompaction emission: the manual flow's chat card is derived
+	// by the client from the session layer's compaction_finished event
+	// (display-basis numbers, identical to the marker row's metadata), and
+	// its durable record is the marker row — an emission here would produce
+	// a second live card and a duplicated persisted row on reload. Auto
+	// compactions (executor fill-trigger / compact-on-start) are the only
+	// ContextCompaction emitters.
 	// Refresh the status bar with the post-compaction fill. maxTokens is the
 	// effective max (the executor basis); the emitter's display override
 	// recomputes the user-facing percent against the real advertised window

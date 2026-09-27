@@ -431,6 +431,16 @@ export interface GoalStatusData {
 }
 
 /**
+ * Agent read from its persistent memory — facts restored from the blackboard
+ * at task start. Emitted as a dedicated `memory_read` session event; persisted
+ * as role `memory_read` so the compact card survives session switches.
+ */
+export interface MemoryReadData {
+  readonly step_num: number
+  readonly content: string
+}
+
+/**
  * Mid-loop goal progress telemetry. Emitted as its OWN dedicated
  * `goal_progress` session event after a non-terminal turn.
  */
@@ -590,7 +600,7 @@ export interface SessionEventMap {
   readonly blackboard_updated: BlackboardUpdatedData
   readonly step_todo_update: StepTodoUpdateData
   readonly plan_review_ready: PlanReviewReadyData
-  readonly memory_read: { readonly step_num: number; readonly content: string }
+  readonly memory_read: MemoryReadData
   /** Goal lifecycle events, each its OWN dedicated session event:
    *  goal_proposal (a pending proposal awaiting approval), goal_status (the
    *  full goal state snapshot, emitted on every turn transition), and
@@ -1263,6 +1273,15 @@ export function isGoalProgressData(d: unknown): d is GoalProgressData {
   return typeof d.turn === 'number'
     && typeof d.max_turns === 'number'
     && typeof d.condition === 'string'
+}
+
+/**
+ * Guard for a memory_read payload — facts restored from the agent's
+ * persistent memory (blackboard) at task start.
+ */
+export function isMemoryReadData(d: unknown): d is MemoryReadData {
+  if (!isObj(d)) return false
+  return typeof d.step_num === 'number' && typeof d.content === 'string'
 }
 
 // --- E2S event type guards ---
