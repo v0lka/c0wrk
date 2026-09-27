@@ -105,6 +105,38 @@ describe('handleContextFill', () => {
     expect(store.recorded.stepTokens).toHaveLength(0)
   })
 
+  it('step-scoped event with session_root_mirror also refreshes the session-level fill', () => {
+    // Root-emitter inline-step fill (dynamic scope): the step fill IS the
+    // conductor's session-level fill here — mirror it to the status bar
+    // immediately instead of waiting for the one iteration-stale
+    // session_tokens re-broadcast.
+    const store = makeStore()
+    handleContextFill(store, 'sess-1', makeData({ plan_step_id: 'step-2', session_root_mirror: true }))
+    expect(store.recorded.stepFill).toEqual([{ sessionId: 'sess-1', stepId: 'step-2', fill: 42.5 }])
+    expect(store.recorded.stepTokens).toEqual([
+      { sessionId: 'sess-1', stepId: 'step-2', tokens: { used_tokens: 8500, max_tokens: 20000 } },
+    ])
+    expect(store.recorded.sessionTokens).toHaveLength(1)
+    expect(store.recorded.sessionTokens[0]).toMatchObject({
+      total_input_tokens: 100,
+      total_output_tokens: 50,
+      fill_percent: 42.5,
+      used_tokens: 8500,
+      max_tokens: 20000,
+    })
+  })
+
+  it('session_root_mirror respects absent optional fields like the session-root branch', () => {
+    // The flag authorizes the mirror, not a field coercion: a payload missing
+    // used_tokens/max_tokens must not overwrite the last known session-level
+    // values with 0/undefined.
+    const store = makeStore()
+    handleContextFill(store, 'sess-1', makeData({ plan_step_id: 'step-2', session_root_mirror: true, used_tokens: undefined, max_tokens: undefined }))
+    expect(store.recorded.sessionTokens[0]).toMatchObject({ fill_percent: 42.5 })
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('used_tokens')
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('max_tokens')
+  })
+
   it('session-root event preserves previously-known fill when fields are absent', () => {
     // The type guard (isContextFillData) requires only fill_percent+status;
     // a payload missing used_tokens/max_tokens must not overwrite the last
