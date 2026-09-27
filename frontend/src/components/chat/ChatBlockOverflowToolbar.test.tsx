@@ -34,6 +34,7 @@ let root: Root | null = null
 function stubNav(partial: Partial<OversizedBlockNavApi> = {}): OversizedBlockNavApi {
   return {
     activeRevealId: null,
+    hasOversizedBlock: true,
     hasPrev: false,
     hasNext: false,
     collapse: vi.fn(),
@@ -319,8 +320,31 @@ describe('ChatScrollManager — single sticky bottom stack', () => {
     vi.unstubAllGlobals()
   })
 
-  it('hosts the toolbar in one sticky wrapper — no other sticky element, banner-free stack has a single child', () => {
+  it('hides the toolbar entirely when no expanded block overflows the viewport (AC #4)', () => {
     const f = renderManager([])
+
+    // Default fixture geometry: every block is 200px in a 600px viewport —
+    // nothing oversized anywhere. The wrapper (the single sticky element)
+    // persists, but it must render EMPTY: no toolbar, no dead disabled pill
+    // in an empty session (issue #93 [1]a — issue #55 AC #4).
+    const stickyEls = f.viewport.querySelectorAll('[class*="sticky"]')
+    expect(stickyEls).toHaveLength(1)
+    const stack = stickyEls[0]!
+    expect(stack.className).toContain('bottom-2')
+    expect(stack.className).toContain('pointer-events-none')
+    expect(stack.className).toContain('flex-col')
+    expect(stack.children).toHaveLength(0)
+    expect(f.viewport.querySelector('[aria-label="Expandable block navigation"]')).toBeNull()
+    expect(f.viewport.querySelector('button[aria-label="Jump to new activity"]')).toBeNull()
+  })
+
+  it('hosts the toolbar in one sticky wrapper once an oversized block exists — banner-free stack has a single child', () => {
+    const f = renderManager([])
+
+    // B grows oversized (and intersects): the chrome appears inside the same
+    // single sticky wrapper.
+    f.geom.b = { offsetHeight: 700, top: 100, height: 400 }
+    scrollAndFlush(f.viewport)
 
     const stickyEls = f.viewport.querySelectorAll('[class*="sticky"]')
     expect(stickyEls).toHaveLength(1)
@@ -341,6 +365,11 @@ describe('ChatScrollManager — single sticky bottom stack', () => {
     vi.spyOn(window.Element.prototype, 'scrollHeight', 'get').mockReturnValue(10_000)
     vi.spyOn(window.Element.prototype, 'clientHeight', 'get').mockReturnValue(600)
     const f = renderManager([message('m1')])
+
+    // An oversized block must exist for the toolbar to be part of the stack
+    // (AC #4 gating — see the hides-the-toolbar test below).
+    f.geom.b = { offsetHeight: 700, top: 100, height: 400 }
+    scrollAndFlush(f.viewport)
 
     // Reader scrolls away from the bottom, then new output lands: the pill
     // must appear in the SAME sticky stack as the toolbar, above it.

@@ -291,6 +291,53 @@ describe('useOversizedBlockNav — oversized scan', () => {
   })
 })
 
+describe('useOversizedBlockNav — hasOversizedBlock (toolbar visibility gate)', () => {
+  it('is true while ANY expanded oversized block exists, even fully off-screen', () => {
+    const f = buildFixture([{ id: 'far', open: true }])
+    f.geom.blocks.far = { offsetHeight: 2000, top: 800, height: 2000 }
+    viewportRef.current = f.viewport
+    mount()
+
+    // Off-screen (activeRevealId is null — see the oversized-scan suite), but
+    // the block exists and overflows: the chrome stays available so first/
+    // next can still navigate to it (issue #93 [1]a).
+    expect(api?.activeRevealId).toBeNull()
+    expect(api?.hasOversizedBlock).toBe(true)
+  })
+
+  it('is false when every open block fits the viewport and closed blocks never count', () => {
+    const f = buildFixture([
+      { id: 'small', open: true },
+      { id: 'shut', open: false },
+    ])
+    f.geom.blocks.small = { offsetHeight: 200, top: 0, height: 200 }
+    f.geom.blocks.shut = { offsetHeight: 2000, top: 0, height: 2000 }
+    viewportRef.current = f.viewport
+    mount()
+
+    expect(api?.activeRevealId).toBeNull()
+    expect(api?.hasOversizedBlock).toBe(false)
+  })
+
+  it('flips to false when the last oversized block collapses (ResizeObserver rescan)', () => {
+    const f = standardFixture()
+    viewportRef.current = f.viewport
+    mount()
+    expect(api?.hasOversizedBlock).toBe(true)
+
+    // Collapse B (shrink below the viewport height); C is closed, so no
+    // expanded oversized block remains anywhere in the transcript.
+    f.geom.blocks.b = { offsetHeight: 100, top: 350, height: 100 }
+    const ro = ResizeObserverStub.instances[ResizeObserverStub.instances.length - 1]!
+    act(() => {
+      ro.fire()
+      flushFrames()
+    })
+    expect(api?.activeRevealId).toBeNull()
+    expect(api?.hasOversizedBlock).toBe(false)
+  })
+})
+
 describe('useOversizedBlockNav — hasPrev / hasNext', () => {
   it('derives from the document-order position of the topmost intersecting block', () => {
     const f = standardFixture()
@@ -424,6 +471,29 @@ describe('useOversizedBlockNav — navigation', () => {
     scrollAndFlush(f.viewport)
     act(() => { api?.goNext() })
     expect(scrollBlockStartIntoView).toHaveBeenLastCalledWith(f.viewport, f.blocks.get('b'))
+  })
+
+  it('issue #93 [2]a: a stale frozen anchor falls back to the fresh geometry anchor for hasPrev/hasNext', () => {
+    const f = standardFixture()
+    viewportRef.current = f.viewport
+    mount()
+
+    // Navigate to C (the last block): the anchor freezes on C.
+    act(() => { api?.goLast() })
+    expect(api?.hasNext).toBe(false)
+
+    // C unmounts mid-freeze (streaming re-render, compaction). The frozen id
+    // deliberately survives the freeze check but no longer resolves: the
+    // fresh geometry still finds anchor A (topmost intersecting), and the
+    // flags must derive from THAT index — not from the incomplete
+    // above/below flags (the loop broke at A, classifying nothing), which
+    // would wrongly report BOTH ends as exhausted.
+    f.blocks.get('c')!.remove()
+    scrollAndFlush(f.viewport)
+
+    // Anchor resolved to A (index 0 of [a, b]): nothing above, B follows.
+    expect(api?.hasPrev).toBe(false)
+    expect(api?.hasNext).toBe(true)
   })
 })
 

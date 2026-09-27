@@ -20,12 +20,21 @@ const EXPANDABLE_BLOCK_SELECTOR = '[data-chevron-reveal-id]'
 /** The currently-expanded subset (Radix toggles `data-state` on the root). */
 const OPEN_BLOCK_SELECTOR = "[data-chevron-reveal-id][data-state='open']"
 
-// Same rationale as ChatScrollManager's NAVIGATION_AUTO_SCROLL_SUPPRESS_MS:
-// during a smooth navigation's first frames the derived state still describes
-// the pre-scroll geometry, so anything reacting to scroll events mid-flight
-// would fight the navigation. The window covers the animation's start; after
-// it expires, scans re-derive from the settled viewport.
-const NAVIGATION_SUPPRESS_MS = 500
+/**
+ * Single shared suppression window for programmatic smooth navigations in the
+ * chat transcript (bookmark/step navigation in ChatScrollManager and the
+ * oversized-block navigation here): during the animation's first frames the
+ * derived state still describes the pre-scroll geometry, so anything reacting
+ * to scroll events mid-flight would fight the navigation. The window covers
+ * the animation's start; after it expires, scans re-derive from the settled
+ * viewport.
+ *
+ * The same constant drives BOTH coupled windows — ChatScrollManager's
+ * stick-to-bottom suppression (its `suppressAutoScrollUntilRef`) and this
+ * hook's anchor freeze — so they cannot drift apart. Import it; never
+ * re-declare a local twin.
+ */
+export const NAVIGATION_SUPPRESS_MS = 500
 
 export interface OversizedBlockNavOptions {
   /**
@@ -50,6 +59,14 @@ export interface OversizedBlockNavApi {
    * Null when no such block is on screen — {@link collapse} is a no-op then.
    */
   readonly activeRevealId: string | null
+  /**
+   * Any expanded oversized block exists in the transcript (open + taller than
+   * the viewport), even fully off-screen. Gates the toolbar's visibility:
+   * AC #4 (issue #55) requires the buttons to be absent when no expanded
+   * block overflows the viewport — e.g. an empty session, all-collapsed
+   * blocks, or every open block fitting in one screen.
+   */
+  readonly hasOversizedBlock: boolean
   /** A previous navigation target exists (see {@link OversizedBlockNavApi.goPrev}). */
   readonly hasPrev: boolean
   /** A next navigation target exists (see {@link OversizedBlockNavApi.goNext}). */
@@ -109,6 +126,10 @@ export function useOversizedBlockNav(
   const [activeRevealId, setActiveRevealId] = useState<string | null>(null)
   const [hasPrev, setHasPrev] = useState(false)
   const [hasNext, setHasNext] = useState(false)
+  // Any expanded oversized block exists anywhere in the transcript (not
+  // necessarily on screen) — gates the toolbar's visibility (AC #4: the
+  // chrome disappears when no expanded block overflows the viewport).
+  const [hasOversizedBlock, setHasOversizedBlock] = useState(false)
 
   // Mirror of `activeRevealId` for the []-deps callbacks (collapse()).
   const activeRevealIdRef = useRef<string | null>(null)
@@ -133,16 +154,24 @@ export function useOversizedBlockNav(
     const vpBottom = vpRect.bottom
 
     // Current oversized block: the TOPMOST expanded block that is taller than
-    // the viewport and intersecting it. querySelectorAll yields document
-    // order, so the first surviving match is the topmost — break there.
+    // the viewport and intersecting it. The existence flag additionally
+    // records ANY expanded oversized block in the transcript (even one fully
+    // off-screen) — it gates the toolbar's visibility (issue #55 AC #4: the
+    // chrome is absent when no expanded block overflows, e.g. an empty
+    // session), while navigation availability keeps its wider all-blocks
+    // scope. querySelectorAll yields document order; the scan stops as soon
+    // as both facts are known.
     let nextActive: string | null = null
+    let nextHasOversized = false
     for (const el of Array.from(viewport.querySelectorAll(OPEN_BLOCK_SELECTOR))) {
       const id = el.getAttribute('data-chevron-reveal-id')
       if (!id) continue
       // `offsetHeight` is an HTMLElement property (LAYOUT px); the Radix root
       // renders as a div, so non-HTMLElement hits cannot occur in practice.
       if (!(el instanceof HTMLElement)) continue
-      if (el.offsetHeight > vpHeight && intersectsViewport(el, vpTop, vpBottom)) {
+      if (el.offsetHeight <= vpHeight) continue
+      nextHasOversized = true
+      if (nextActive === null && intersectsViewport(el, vpTop, vpBottom)) {
         nextActive = id
         break
       }
@@ -151,9 +180,11 @@ export function useOversizedBlockNav(
     // Navigation anchor: the topmost expandable block intersecting the
     // viewport. When none does (the viewport sits on plain text between
     // blocks), prev/next fall back to geometry: is there any block entirely
-    // above / entirely below the viewport? The above/below flags are only
-    // consulted in that no-anchor case — and then the loop below never broke
-    // early, so every block was classified and both flags are complete.
+    // above / entirely below the viewport? The above/below flags classify
+    // only the blocks BEFORE the break — they are complete in exactly the
+    // case they are consulted (see the effIdx resolution below): a resolvable
+    // anchor derives the flags from its index instead, and effIdx === -1
+    // implies no intersecting block, i.e. the loop never broke early.
     let nextAnchorId: string | null = null
     let aboveExists = false
     let belowExists = false
@@ -178,20 +209,29 @@ export function useOversizedBlockNav(
     }
 
     // Resolve the (possibly frozen) anchor against the CURRENT block list —
-    // blocks mount/unmount between scans, so the stored id may be stale.
+    // blocks mount/unmount between scans, so the stored id may be stale
+    // (unmounted target right after a click). A stale frozen id resolves to
+    // -1; when the fresh geometry still found an anchor, derive the flags
+    // from IT instead of the (incomplete — see the enumeration loop above)
+    // above/below flags, so end-of-list buttons cannot flicker to disabled
+    // for the rest of the freeze window.
     const anchorId = anchorIdRef.current
     const anchorIdx = anchorId === null
       ? -1
       : blocks.findIndex(b => b.id === anchorId)
+    const effIdx = anchorIdx !== -1
+      ? anchorIdx
+      : (anchorId !== null && nextAnchorId !== null ? blocks.findIndex(b => b.id === nextAnchorId) : -1)
 
-    const nextHasPrev = anchorIdx !== -1 ? anchorIdx > 0 : aboveExists
-    const nextHasNext = anchorIdx !== -1 ? anchorIdx < blocks.length - 1 : belowExists
+    const nextHasPrev = effIdx !== -1 ? effIdx > 0 : aboveExists
+    const nextHasNext = effIdx !== -1 ? effIdx < blocks.length - 1 : belowExists
 
     // Identity-guarded writes: scans run per animation frame on scroll; only
     // real changes should re-render the consumer.
     setActiveRevealId(prev => (prev === nextActive ? prev : nextActive))
     setHasPrev(prev => (prev === nextHasPrev ? prev : nextHasPrev))
     setHasNext(prev => (prev === nextHasNext ? prev : nextHasNext))
+    setHasOversizedBlock(prev => (prev === nextHasOversized ? prev : nextHasOversized))
     activeRevealIdRef.current = nextActive
   }, [viewportRef])
 
@@ -325,6 +365,7 @@ export function useOversizedBlockNav(
 
   return useMemo<OversizedBlockNavApi>(() => ({
     activeRevealId,
+    hasOversizedBlock,
     hasPrev,
     hasNext,
     collapse,
@@ -332,5 +373,5 @@ export function useOversizedBlockNav(
     goNext,
     goFirst,
     goLast,
-  }), [activeRevealId, hasPrev, hasNext, collapse, goPrev, goNext, goFirst, goLast])
+  }), [activeRevealId, hasOversizedBlock, hasPrev, hasNext, collapse, goPrev, goNext, goFirst, goLast])
 }
