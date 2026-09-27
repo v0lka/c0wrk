@@ -1,7 +1,8 @@
 import { useState, useMemo, useCallback } from 'react'
 import { useLLMConfig } from './useLLMConfig'
 import { Plus, X } from 'lucide-react'
-import { EMBEDDED_PROVIDER_NAME, FIXED_PROVIDERS } from '@/lib/llm-providers'
+import { excludeEmbeddedModel, EMBEDDED_PROVIDER_NAME, FIXED_PROVIDERS } from '@/lib/llm-providers'
+import { useExperimentalStore } from '@/stores/experimentalStore'
 import type { ModelRef } from '@/lib/modelId'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -73,6 +74,13 @@ export function LLMSettings({
   } = useLLMConfig(onSettingsSaved, onDefaultModelChange)
 
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set())
+
+  // The experimental switch is the embedded local model's frontend
+  // availability gate: it hides the EmbeddedLLMSettings block below and drops
+  // the model's entries from the default-model picker. Read reactively so
+  // flipping the switch in Settings hides/reveals within the same session
+  // without a reload (the same contract as the E2S gate).
+  const experimentalEnabled = useExperimentalStore((s) => s.enabled)
 
   // --- Add-provider form state -------------------------------------------
   const [showAddForm, setShowAddForm] = useState(false)
@@ -156,8 +164,11 @@ export function LLMSettings({
         }
       }
     }
-    return result
-  }, [providerConfigs])
+    // The experimental gate drops the backend-generated `embedded` record's
+    // models from the picker while the switch is off (the draft still carries
+    // the record whenever the local model is installed).
+    return excludeEmbeddedModel(result, experimentalEnabled)
+  }, [providerConfigs, experimentalEnabled])
 
   if (isLoading) {
     return (
@@ -217,8 +228,11 @@ export function LLMSettings({
       {/* Embedded LLM — the pinned local model's whole lifecycle (install,
           per-component progress, remove, load/unload, auto unload). It LEADS
           the provider section: running fully local is the primary offering, so
-          the block sits directly under the default-model field. */}
-      <EmbeddedLLMSettings />
+          the block sits directly under the default-model field. Gated by the
+          experimental switch (frontend-only gate): with the switch off the
+          block is not mounted and the model's entries stay out of the
+          default-model picker above. */}
+      {experimentalEnabled && <EmbeddedLLMSettings />}
 
       {/* Add compatible provider — kept BELOW the Embedded block (and above the
           accordions it creates) so the "add a remote endpoint" action still

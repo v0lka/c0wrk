@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 
 import { ModelCombobox } from './ModelCombobox'
 import { useInputModeStore } from '@/stores/inputModeStore'
+import { useExperimentalStore } from '@/stores/experimentalStore'
 
 // Radix popper positioning (autoUpdate) observes the trigger/content with
 // ResizeObserver, which jsdom does not provide.
@@ -418,6 +419,9 @@ describe('ModelCombobox disabled (session-pinning lock)', () => {
 // already returns — only the DISPLAY is humanized.
 describe('ModelCombobox — embedded local model entry', () => {
   beforeEach(() => {
+    // The gate-ON view: the experimental switch is the embedded entry's
+    // frontend availability gate and its default is OFF.
+    useExperimentalStore.setState({ enabled: true, loaded: true })
     spies.configData.allModels = [
       { name: 'claude-sonnet', provider: 'anthropic', family: 'anthropic', vision: true },
       { name: 'Bonsai 2 27B', provider: 'embedded', family: 'qwen3', vision: true },
@@ -426,6 +430,10 @@ describe('ModelCombobox — embedded local model entry', () => {
     act(() => {
       root.render(<ModelCombobox />)
     })
+  })
+
+  afterEach(() => {
+    useExperimentalStore.setState({ enabled: false, loaded: false })
   })
 
   it('lists the local model under the human-readable provider "Embedded"', async () => {
@@ -455,5 +463,48 @@ describe('ModelCombobox — embedded local model entry', () => {
     expect(useInputModeStore.getState().selectedModel).toBe('embedded/Bonsai 2 27B')
     expect(container.querySelector('button')?.textContent).toBe('Bonsai 2 27B')
     expect(container.querySelector('button')?.getAttribute('title')).toBe('Embedded: Bonsai 2 27B')
+  })
+})
+
+// The experimental switch is the embedded local model's frontend availability
+// gate: with it off the chat toolbar's picker drops the model's entry (the
+// Settings → LLM default-model picker filters the same way), and flipping the
+// switch reveals it live. Backend RPCs stay ungated — the gate hides the
+// entry, it does not disable the subsystem.
+describe('ModelCombobox — the experimental gate hides the embedded entry', () => {
+  beforeEach(() => {
+    useExperimentalStore.setState({ enabled: false, loaded: true })
+    spies.configData.allModels = [
+      { name: 'claude-sonnet', provider: 'anthropic', family: 'anthropic', vision: true },
+      { name: 'Bonsai 2 27B', provider: 'embedded', family: 'qwen3', vision: true },
+    ]
+    spies.configData.defaultModel = 'anthropic/claude-sonnet'
+    act(() => {
+      root.render(<ModelCombobox />)
+    })
+  })
+
+  afterEach(() => {
+    useExperimentalStore.setState({ enabled: false, loaded: false })
+  })
+
+  it('omits the embedded entry from the menu while the gate is off', async () => {
+    await openDropdown()
+
+    const groups = Array.from(menu()!.querySelectorAll('[role="group"]'))
+    expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['Anthropic'])
+    expect(menu()!.textContent).not.toContain('Bonsai 2 27B')
+  })
+
+  it('lists the entry again live once the switch is on', async () => {
+    act(() => {
+      useExperimentalStore.setState({ enabled: true })
+    })
+    await openDropdown()
+
+    // The Embedded group is hoisted back to the top when it reappears.
+    const groups = Array.from(menu()!.querySelectorAll('[role="group"]'))
+    expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['Embedded', 'Anthropic'])
+    expect(menu()!.textContent).toContain('Bonsai 2 27B')
   })
 })

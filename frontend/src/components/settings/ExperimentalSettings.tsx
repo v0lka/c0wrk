@@ -9,10 +9,12 @@ import { Toggle } from './ModelProfilesControls'
 
 /**
  * General-tab control for the experimental-features switch. The switch gates
- * the E2S explicit-state execution mode: while disabled the per-message E2S
- * control is hidden and disarmed. Model Profiles is a first-class settings tab
- * and is not affected by this switch. RESEARCH mode is always available and is
- * unaffected by this toggle.
+ * the E2S explicit-state execution mode (while disabled the per-message E2S
+ * control is hidden and disarmed) and the embedded local model's frontend
+ * surfaces — the Settings → LLM block and its entries in both model pickers;
+ * a frontend-only gate, the backend stays available (ADR-068). Model Profiles
+ * is a first-class settings tab and is not affected by this switch. RESEARCH
+ * mode is always available and is unaffected by this toggle.
  */
 export function ExperimentalSettings() {
   const enabled = useExperimentalFeatures()
@@ -48,7 +50,7 @@ export function ExperimentalSettings() {
         onChange={handleChange}
         disabled={!loaded || saving}
         label={enabled ? 'Enabled' : 'Disabled'}
-        description="Enable experimental features (the E2S execution mode). When disabled, the E2S control is hidden and treated as off."
+        description="Enable experimental features (the E2S execution mode; the embedded local model's Settings block and picker entries). When disabled, those surfaces are hidden and treated as off."
       />
     </div>
   )

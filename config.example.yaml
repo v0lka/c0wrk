@@ -1415,9 +1415,12 @@ orchestration:
 # all-or-nothing: enabling it exposes every gated feature, disabling it hides
 # every gated feature and treats each as off. Gated features today:
 #   - the E2S explicit-state execution mode (e2s.*)
+#   - the embedded local model's frontend surfaces (the Settings → LLM block
+#     and its entries in both model pickers; a frontend-only gate — the
+#     backend keeps serving the subsystem's RPCs regardless)
 #
 # experimental:
-#   # Master switch. Default: false (E2S mode off).
+#   # Master switch. Default: false (gated features off).
 #   enabled: false
 
 # ---------------------------------------------------------------------------

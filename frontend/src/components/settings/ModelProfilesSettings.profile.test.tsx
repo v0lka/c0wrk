@@ -5,7 +5,8 @@ import { createRoot, type Root } from 'react-dom/client'
 
 // Mock the API layer: the component must not touch real Wails bindings.
 // updateExperimentalFeatures toggles the experimental-features switch, whose
-// only gated feature is the E2S execution mode — Model Profiles graduated out
+// gated features are the E2S execution mode and the embedded model's frontend
+  // surfaces — Model Profiles graduated out
 // of that gate (ADR-044), so the profile UI must never call it (UX invariant:
 // neither switching a profile nor the master profile toggle touches the gate).
 const getModelProfilesMock = vi.fn()

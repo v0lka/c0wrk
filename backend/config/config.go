@@ -2117,12 +2117,16 @@ var envVarPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 // behind a single master switch. It is all-or-nothing by design: there is no
 // per-feature toggle, so enabling it exposes every gated feature and
 // disabling it treats each as off. Currently gated: the E2S execution mode
-// (e2s.*). Model Profiles (model_profiles.*) is NOT gated — it carries its own
+// (e2s.*) and the embedded local model's FRONTEND surfaces — the Settings
+// block and its entries in both model pickers are hidden while the switch is
+// off, while the backend keeps serving the subsystem's RPCs (ADR-068).
+// Model Profiles (model_profiles.*) is NOT gated — it carries its own
 // manual master toggle.
 type ExperimentalConfig struct {
 	// Enabled is the master switch for the gated experimental features (the
-	// E2S execution mode). When false, every gated feature is treated as off
-	// regardless of its own toggles. Default: false.
+	// E2S execution mode and the embedded model's frontend surfaces). When
+	// false, every gated feature is treated as off regardless of its own
+	// toggles. Default: false.
 	Enabled bool `yaml:"enabled"`
 }
 

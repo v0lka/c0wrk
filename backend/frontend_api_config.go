@@ -608,7 +608,8 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 
 // UpdateExperimentalFeatures toggles the master experimental-features switch
 // at runtime. It persists the change and rebuilds the LLM router so the
-// gated features (the E2S execution mode) take effect for new sessions without
+// gated features (the E2S execution mode — the embedded-model gate is
+// frontend-only and needs no rebuild) take effect for new sessions without
 // an app restart. Model Profiles is not gated by this switch, so this method
 // never touches its persisted master toggle (model_profiles.enabled).
 func (f *FrontendAPI) UpdateExperimentalFeatures(enabled bool) error {

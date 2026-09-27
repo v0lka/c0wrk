@@ -33,6 +33,7 @@ vi.mock('@/lib/logger', () => ({
 import { LLMSettings } from './LLMSettings'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useProxyDraftStore } from '@/stores/proxyDraftStore'
+import { useExperimentalStore } from '@/stores/experimentalStore'
 
 let container: HTMLDivElement
 let root: Root
@@ -519,7 +520,14 @@ describe('LLMSettings auto-retry interval', () => {
 
 describe('LLMSettings — Embedded LLM block placement', () => {
   beforeEach(() => {
+    // The gate-ON view: this describe pins the block's placement, which only
+    // exists while the experimental switch is on (its default is OFF).
+    useExperimentalStore.setState({ enabled: true, loaded: true })
     mocks.getConfig.mockResolvedValue(makeConfig())
+  })
+
+  afterEach(() => {
+    useExperimentalStore.setState({ enabled: false, loaded: false })
   })
 
   async function renderSettings() {
@@ -569,6 +577,17 @@ describe('LLMSettings — Embedded LLM block placement', () => {
 // model "Bonsai 2 27B" while the value saved stays the composite
 // `embedded/Bonsai 2 27B` (specs/domains/embedded-llm.md).
 describe('LLMSettings — embedded model in the default-model picker', () => {
+  // The gate-ON view: the experimental switch is the embedded surfaces'
+  // frontend availability gate and its default is OFF, so these tests turn it
+  // on explicitly and restore the default afterwards.
+  beforeEach(() => {
+    useExperimentalStore.setState({ enabled: true, loaded: true })
+  })
+
+  afterEach(() => {
+    useExperimentalStore.setState({ enabled: false, loaded: false })
+  })
+
   function embeddedConfig() {
     return {
       loaded: true,
@@ -642,11 +661,108 @@ describe('LLMSettings — embedded model in the default-model picker', () => {
   })
 })
 
+// The experimental switch is the embedded local model's FRONTEND availability
+// gate: with it off the Settings block is not mounted and the model's entries
+// stay out of the default-model picker, while the rest of the section is
+// untouched. Backend RPCs stay ungated — the gate hides the surfaces, it does
+// not disable the subsystem.
+describe('LLMSettings — the experimental gate hides the embedded surfaces', () => {
+  beforeEach(() => {
+    useExperimentalStore.setState({ enabled: false, loaded: true })
+  })
+
+  afterEach(() => {
+    useExperimentalStore.setState({ enabled: false, loaded: false })
+  })
+
+  function gateConfig() {
+    return {
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'anthropic/claude-sonnet',
+        anthropic: { api_key: 'sk', models: ['claude-sonnet'] },
+        openai_compatible: {
+          lmstudio: { api_key: '', base_url: 'http://localhost:1234', models: ['glm-5.3'] },
+          embedded: {
+            api_key: '',
+            base_url: 'http://127.0.0.1:52341/v1',
+            models: ['Bonsai 2 27B'],
+          },
+        },
+      },
+    }
+  }
+
+  async function renderPanel(): Promise<void> {
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <LLMSettings />
+        </TooltipProvider>,
+      )
+    })
+    await flush()
+  }
+
+  it('does not mount the EmbeddedLLMSettings block', async () => {
+    mocks.getConfig.mockResolvedValue(gateConfig())
+    await renderPanel()
+
+    expect(container.querySelector('[data-testid="embedded-llm-settings"]')).toBeNull()
+    // The rest of the section is untouched.
+    expect(defaultModelTrigger()).not.toBeNull()
+  })
+
+  it('drops the embedded model from the default-model picker but keeps other providers', async () => {
+    mocks.getConfig.mockResolvedValue(gateConfig())
+    await renderPanel()
+    await openDefaultPicker()
+
+    const menu = document.querySelector('[role="menu"]')
+    expect(menu).not.toBeNull()
+    expect(menu!.textContent).not.toContain('Bonsai 2 27B')
+    const groups = Array.from(menu!.querySelectorAll('[role="group"]'))
+    expect(groups.map((g) => g.getAttribute('aria-label'))).not.toContain('Embedded')
+    expect(menu!.textContent).toContain('glm-5.3')
+  })
+
+  it('reveals the block and the picker entry live once the switch is on', async () => {
+    mocks.getConfig.mockResolvedValue(gateConfig())
+    await renderPanel()
+
+    expect(container.querySelector('[data-testid="embedded-llm-settings"]')).toBeNull()
+
+    act(() => {
+      useExperimentalStore.setState({ enabled: true })
+    })
+    await flush()
+
+    // The block mounts without a remount of the section…
+    expect(container.querySelector('[data-testid="embedded-llm-settings"]')).not.toBeNull()
+    // …and the picker lists the embedded model again.
+    await openDefaultPicker()
+    const menu = document.querySelector('[role="menu"]')
+    expect(menu).not.toBeNull()
+    expect(menu!.textContent).toContain('Bonsai 2 27B')
+  })
+})
+
 // The generated `openai_compatible.embedded` record is backend-owned: it is
 // regenerated from embedded_llm on every load and save, so an accordion for it
 // would offer edits that are silently discarded. It must stay out of the
 // compatible-provider list while its model remains selectable as the default.
 describe('LLMSettings — the backend-owned embedded provider is not user-editable', () => {
+  // The gate-ON view: the picker assertions below need the embedded surfaces
+  // available (the experimental switch's default is OFF).
+  beforeEach(() => {
+    useExperimentalStore.setState({ enabled: true, loaded: true })
+  })
+
+  afterEach(() => {
+    useExperimentalStore.setState({ enabled: false, loaded: false })
+  })
+
   function configWithEmbedded() {
     return {
       loaded: true,

@@ -56,6 +56,29 @@ export function isBackendOwnedProvider(name: string): boolean {
   return name === EMBEDDED_PROVIDER_NAME
 }
 
+/**
+ * The frontend availability gate for the embedded local model's UI surfaces
+ * (specs/domains/embedded-llm.md): while the experimental switch
+ * (`experimental.enabled`, read reactively by the call sites from
+ * `useExperimentalStore`) is off, the backend-owned `embedded` provider's
+ * entries are dropped from the model lists BOTH pickers render — the
+ * Settings → LLM default-model picker and the chat toolbar's ModelCombobox —
+ * and the Settings block itself is not mounted (its own `experimentalEnabled`
+ * guard). The backend RPCs stay ungated: this is deliberately a
+ * frontend-only gate, so an already-generated provider record keeps working
+ * underneath and the surfaces reappear the moment the switch is flipped on.
+ *
+ * Returns the input reference untouched while the gate is open (callers
+ * memoize the result); a filtered copy otherwise.
+ */
+export function excludeEmbeddedModel<T extends { provider: string }>(
+  models: readonly T[],
+  experimentalEnabled: boolean,
+): readonly T[] {
+  if (experimentalEnabled) return models
+  return models.filter((m) => m.provider !== EMBEDDED_PROVIDER_NAME)
+}
+
 /** Backwards-compatible alias: any compatible provider. */
 export const isOpenAICompatibleProvider = isCompatibleProvider
 
