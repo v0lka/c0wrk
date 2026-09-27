@@ -3,7 +3,7 @@
 import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isContextFillData, isContextCompactionData, isSessionTokensData, isCompactionStartedData, isCompactionFinishedData } from '@/types/events'
-import type { ContextFillData } from '@/types/events'
+import type { ContextFillData, SessionTokensData } from '@/types/events'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import type { StepContextTokens } from '@/stores/chatStore'
 import type { TokenInfo, CompactionAvailability } from '@/types/models'
@@ -97,6 +97,36 @@ export function handleContextFill(store: ContextFillStore, sessionId: string, da
   })
 }
 
+/** Minimal store surface the session_tokens handler needs. */
+export interface SessionTokensStore {
+  setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
+}
+
+/**
+ * Applies a session_tokens event to the store.
+ *
+ * Every optional field is forwarded only when actually present: the type guard
+ * (isSessionTokensData) does not require fill_percent/used_tokens/max_tokens,
+ * so coercing an absent value to 0 would overwrite a previously-valid fill and
+ * make ContextFillStatus show a false "0%". The same holds for the throughput
+ * pair (median_output_tok_s/tok_s_samples) — an older payload that predates
+ * the metric must not clobber the last known median with a zero. Omitting the
+ * keys lets the store's merge semantics preserve the last known values.
+ */
+export function handleSessionTokens(store: SessionTokensStore, sessionId: string, data: SessionTokensData): void {
+  store.setSessionTokens(sessionId, {
+    total_input_tokens: data.session_input_tokens,
+    total_output_tokens: data.session_output_tokens,
+    model: data.model,
+    family: data.family,
+    ...(typeof data.fill_percent === 'number' ? { fill_percent: data.fill_percent } : {}),
+    ...(typeof data.used_tokens === 'number' ? { used_tokens: data.used_tokens } : {}),
+    ...(typeof data.max_tokens === 'number' ? { max_tokens: data.max_tokens } : {}),
+    ...(typeof data.median_output_tok_s === 'number' ? { median_output_tok_s: data.median_output_tok_s } : {}),
+    ...(typeof data.tok_s_samples === 'number' ? { tok_s_samples: data.tok_s_samples } : {}),
+  })
+}
+
 /** Minimal store surface the manual-compaction handlers need. */
 export interface CompactionStore {
   setCompacting: (sessionId: string, compacting: boolean) => void
@@ -105,6 +135,7 @@ export interface CompactionStore {
   setPausing: (sessionId: string, pausing: boolean) => void
   setPaused: (sessionId: string, paused: boolean) => void
   setTaskActive: (sessionId: string, active: boolean) => void
+  addMessage: (sessionId: string, message: ChatMessageUI) => void
 }
 
 /**
@@ -177,7 +208,7 @@ export function stripAutoRetryFromBanner(store: AutoRetryStripStore, sessionId: 
 export function handleCompactionFinished(
   store: CompactionStore,
   sessionId: string,
-  data: { success?: boolean; error?: string; cancelled?: boolean; resumed?: boolean; paused_without_resume?: boolean; nothing_compacted?: boolean; deferred_to_resume?: boolean; compaction_availability?: CompactionAvailability[] },
+  data: { success?: boolean; error?: string; cancelled?: boolean; resumed?: boolean; paused_without_resume?: boolean; nothing_compacted?: boolean; deferred_to_resume?: boolean; before_percent?: number; after_percent?: number; compaction_availability?: CompactionAvailability[] },
 ): void {
   store.setCompacting(sessionId, false)
   // Post-flow per-strategy availability from the backend: refresh the compact
@@ -185,6 +216,25 @@ export function handleCompactionFinished(
   // strategy stays clickable).
   if (data.compaction_availability !== undefined) {
     store.setCompactionAvailability(sessionId, data.compaction_availability)
+  }
+  // The manual flow's chat card. The flow emits no context_compaction event —
+  // that event type means "auto compaction" and the backend event pipeline
+  // persists it as a durable row, so a manual emission would duplicate the
+  // persisted marker row on reload. compaction_finished carries the same
+  // display-basis percentages the marker row stores, so the live card matches
+  // the reloaded one. No card for a no-op (nothing was compacted — the
+  // "Context already compacted" label below is the outcome), a cancelled
+  // flow, or an error; paused_without_resume still gets its card (the
+  // compaction itself succeeded — only the auto-resume failed).
+  if (data.success && !data.nothing_compacted && !data.cancelled && !data.error) {
+    store.addMessage(sessionId, {
+      id: generateMessageId(),
+      sessionId,
+      type: 'context_compaction',
+      content: `Context compacted from ${Math.round(data.before_percent ?? 0)}% to ${Math.round(data.after_percent ?? 0)}%`,
+      metadata: { before_percent: data.before_percent, after_percent: data.after_percent },
+      timestamp: Date.now(),
+    })
   }
   if (data.paused_without_resume) {
     // Same transitions as handleSessionPausedEvent: unlock into the paused
@@ -254,25 +304,12 @@ export function useContextEvents(sessionId: string | null): void {
     // session_root_mirror (root-emitter inline steps — those mirror the fill to
     // the session level immediately). used_tokens/max_tokens follow the same
     // session-root-only cache path as fill_percent, so the status bar can
-    // render a "N of M" tooltip.
+    // render a "N of M" tooltip. The throughput pair (median_output_tok_s /
+    // tok_s_samples) rides along the same guarded-passthrough path.
     cleanups.push(
       onSessionEvent(sessionId, 'session_tokens', (data) => {
         if (!isSessionTokensData(data)) { reportDroppedEvent('session_tokens', data); return }
-        useChatStore.getState().setSessionTokens(sessionId, {
-          total_input_tokens: data.session_input_tokens,
-          total_output_tokens: data.session_output_tokens,
-          model: data.model,
-          family: data.family,
-          // Only forward fill_percent / used_tokens / max_tokens when actually
-          // present. The type guard (isSessionTokensData) does not require these
-          // fields, so coercing an absent value to 0 would overwrite a previously-
-          // valid fill and make ContextFillStatus show a false "0%". Omitting them
-          // lets the store's merge semantics preserve the last known session-level
-          // values.
-          ...(typeof data.fill_percent === 'number' ? { fill_percent: data.fill_percent } : {}),
-          ...(typeof data.used_tokens === 'number' ? { used_tokens: data.used_tokens } : {}),
-          ...(typeof data.max_tokens === 'number' ? { max_tokens: data.max_tokens } : {}),
-        })
+        handleSessionTokens(useChatStore.getState(), sessionId, data)
       }),
     )
 

@@ -361,6 +361,14 @@ export interface TokenInfo {
   used_tokens?: number
   /** Conductor's context-window total capacity (session-root only, from session_tokens events). */
   max_tokens?: number
+  /** Median end-to-end output-token throughput (tok/s) over the session's
+   *  recent LLM calls, from session_tokens events (median_output_tok_s).
+   *  Absent on older payloads and until the backend's window has enough
+   *  samples (it emits no median below three). */
+  median_output_tok_s?: number
+  /** Per-call sample count behind median_output_tok_s (tok_s_samples) —
+   *  the metric is only displayed at >= 3 samples. Absent on older payloads. */
+  tok_s_samples?: number
 }
 
 export interface TodoItem {

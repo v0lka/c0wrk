@@ -959,7 +959,26 @@ func (e *EventEmitter) SetLastModel(model, family string) {
 // cache (updated only by the session-root emitter in ContextFill) and forwarded for
 // persistence and display.
 func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
-	e.log().Debug("emitter: session tokens update", "sessionID", e.sessionID, "totalIn", totalIn, "totalOut", totalOut, "model", model, "family", family)
+	e.emitSessionTokens(totalIn, totalOut, model, family, 0, 0)
+}
+
+// EmitSessionTokensWithThroughput emits a "session_tokens" event that
+// additionally carries the median per-call output-token throughput
+// (medianOutputTokPerSec, tokens/second) and the sample count behind it
+// (throughputSamples). It is the preferred seam of the UsageTracker's timed
+// observer in core/builder.go; the plain EmitSessionTokens remains for
+// emitters/callers that only have cumulative totals. Values of 0 mean the
+// per-session throughput window has not reached its minimum sample count —
+// the fields are omitted from the wire payload (omitempty).
+func (e *EventEmitter) EmitSessionTokensWithThroughput(totalIn, totalOut int, model, family string, medianOutputTokPerSec float64, throughputSamples int) {
+	e.emitSessionTokens(totalIn, totalOut, model, family, medianOutputTokPerSec, throughputSamples)
+}
+
+// emitSessionTokens is the shared body of both session-token emission seams:
+// it refreshes the cached totals (used by ContextFill enrichment and
+// TokenSnapshot), invokes the persistence callback, and emits the typed event.
+func (e *EventEmitter) emitSessionTokens(totalIn, totalOut int, model, family string, medianOutputTokPerSec float64, throughputSamples int) {
+	e.log().Debug("emitter: session tokens update", "sessionID", e.sessionID, "totalIn", totalIn, "totalOut", totalOut, "model", model, "family", family, "medianOutputTokPerSec", medianOutputTokPerSec, "throughputSamples", throughputSamples)
 	e.tokens.mu.Lock()
 	// Update cached state for ContextFill enrichment
 	e.tokens.sessionInputTokens = totalIn
@@ -989,6 +1008,8 @@ func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family st
 			FillPercent:         fillPercent,
 			UsedTokens:          usedTokens,
 			MaxTokens:           maxTokens,
+			MedianOutputTokS:    medianOutputTokPerSec,
+			TokSSamples:         throughputSamples,
 		},
 	})
 }

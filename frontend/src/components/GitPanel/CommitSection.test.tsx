@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 
 // vi.mock factories are hoisted, so the mock objects must be created via
 // vi.hoisted() to be accessible inside the factory.
-const { gitMocks, workspaceMocks, trustMocks } = vi.hoisted(() => ({
+const { gitMocks, workspaceMocks, trustMocks, configMocks } = vi.hoisted(() => ({
   gitMocks: {
     commit: vi.fn(),
     generateCommitMessage: vi.fn(),
@@ -18,6 +18,12 @@ const { gitMocks, workspaceMocks, trustMocks } = vi.hoisted(() => ({
   },
   trustMocks: {
     trustGitRepo: vi.fn(),
+  },
+  // The configured global default model — the one a commit-message generation
+  // runs on. Mutable so the pending-title cases can point it at the embedded
+  // local model.
+  configMocks: {
+    defaultModel: 'anthropic/claude-sonnet',
   },
 }))
 
@@ -34,9 +40,24 @@ vi.mock('@/lib/logger', () => ({
   logger: { error: vi.fn() },
 }))
 
+// The Generate button's pending title consults the shared config cache for the
+// configured default model (see useServiceCallTitle) — pin it locally so no
+// test reaches the Wails bindings.
+vi.mock('@/hooks/useConfigData', () => ({
+  useConfigData: () => ({
+    allModels: [],
+    defaultModel: configMocks.defaultModel,
+    loaded: true,
+  }),
+  invalidateConfigCache: vi.fn(),
+}))
+
 import { CommitSection } from './CommitSection'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useProjectStore } from '@/stores/projectStore'
+import { useEmbeddedLLMStore } from '@/stores/embeddedLLMStore'
+import { COLD_EMBEDDED_LOAD_HINT } from '@/lib/embeddedColdLoadHint'
+import { makeColdEmbeddedStatus } from '@/test/embeddedStatusFixture'
 import type { GitPanelEntry } from '@/stores/gitPanelStore'
 
 let container: HTMLDivElement
@@ -72,6 +93,8 @@ beforeEach(() => {
   // A real project is active by default, mirroring CODE mode with a project
   // selected. Per-project tests override this explicitly.
   useProjectStore.setState({ activeProjectId: 'proj-a' })
+  configMocks.defaultModel = 'anthropic/claude-sonnet'
+  useEmbeddedLLMStore.getState().reset()
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -755,6 +778,98 @@ describe('CommitSection — commit result goes to the console', () => {
     // The failure is not surfaced inline in the commit box.
     expect(useGitPanelStore.getState().commitByProject['proj-a']!.error).toBeNull()
     expect(container.textContent).not.toContain('hook declined')
+  })
+})
+
+// The generate call has NO client-side timeout, so the pending tooltip is the
+// only thing separating a long wait from a hang — but the backend's cold
+// embedded-model gate (`ensureEmbeddedReadyForLLMRequest`) is a no-op for every
+// other provider. The clause must follow the CONFIGURED DEFAULT MODEL, never the
+// in-flight flag: on the default remote-provider configuration an ordinary
+// sub-second call must not claim a multi-gigabyte local load is under way.
+describe('CommitSection — generate pending title', () => {
+  function stageOne() {
+    useGitPanelStore.setState({
+      entries: [makeEntry({ path: 'a.ts', staged: true })],
+    })
+    render()
+  }
+
+  /** Click Generate against a never-settling promise; returns the settle. */
+  async function startGenerate(): Promise<() => Promise<void>> {
+    const pending = deferred<string>()
+    gitMocks.generateCommitMessage.mockReturnValueOnce(pending.promise)
+    await act(async () => {
+      generateBtn().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    return async () => {
+      await act(async () => {
+        pending.resolve('feat: generated')
+      })
+      await flush()
+    }
+  }
+
+  function seedColdEmbedded(): void {
+    act(() => {
+      useEmbeddedLLMStore.getState().setStatus(makeColdEmbeddedStatus())
+    })
+  }
+
+  it('warns about the cold load when the default model IS the embedded one', async () => {
+    configMocks.defaultModel = 'embedded/Bonsai 2 27B'
+    seedColdEmbedded()
+    stageOne()
+
+    const settle = await startGenerate()
+    expect(generateBtn().title).toBe(`Generating… — ${COLD_EMBEDDED_LOAD_HINT}`)
+    await settle()
+
+    // The idle title returns once the call landed.
+    expect(generateBtn().title).toBe('Generate commit message with AI')
+  })
+
+  it('keeps a plain pending title on the default remote-provider configuration', async () => {
+    // The embedded model IS installed and cold — the default model just is not
+    // it, so the long-wait clause would be the wrong diagnosis.
+    seedColdEmbedded()
+    stageOne()
+
+    const settle = await startGenerate()
+    expect(generateBtn().title).toBe('Generating…')
+    expect(generateBtn().title).not.toContain(COLD_EMBEDDED_LOAD_HINT)
+    await settle()
+  })
+
+  it('keeps a plain pending title once the embedded default model is resident', async () => {
+    configMocks.defaultModel = 'embedded/Bonsai 2 27B'
+    act(() => {
+      useEmbeddedLLMStore
+        .getState()
+        .setStatus(makeColdEmbeddedStatus({ state: 'loaded', loaded: true, pid: 4242 }))
+    })
+    stageOne()
+
+    const settle = await startGenerate()
+    expect(generateBtn().title).toBe('Generating…')
+    await settle()
+  })
+
+  it('keeps a plain pending title before any embedded snapshot was read', async () => {
+    configMocks.defaultModel = 'embedded/Bonsai 2 27B'
+    stageOne()
+
+    const settle = await startGenerate()
+    expect(generateBtn().title).toBe('Generating…')
+    await settle()
+  })
+
+  it('shows the idle title while nothing is in flight', () => {
+    configMocks.defaultModel = 'embedded/Bonsai 2 27B'
+    seedColdEmbedded()
+    stageOne()
+
+    expect(generateBtn().title).toBe('Generate commit message with AI')
   })
 })
 

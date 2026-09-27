@@ -1,5 +1,6 @@
 import type { ModelProfilesContext } from '@/types/models'
-import { Toggle, NumberField } from './ModelProfilesControls'
+import { Toggle } from './ModelProfilesControls'
+import { NumberField } from './NumberField'
 import { VariantSection } from './ModelProfilesSections'
 
 /**
@@ -35,6 +36,7 @@ export function ContextSection({ slice, patch, open, onOpenChange, disabled }: {
               value={compaction.keep_last}
               onChange={(keep_last) => patch({ compaction: { ...compaction, keep_last } })}
               min={2}
+              integer
               disabled={disabled}
             />
             <NumberField
@@ -42,6 +44,7 @@ export function ContextSection({ slice, patch, open, onOpenChange, disabled }: {
               value={compaction.block_size}
               onChange={(block_size) => patch({ compaction: { ...compaction, block_size } })}
               min={2}
+              integer
               disabled={disabled}
             />
             <NumberField
@@ -50,6 +53,7 @@ export function ContextSection({ slice, patch, open, onOpenChange, disabled }: {
               onChange={(trigger_percent) => patch({ compaction: { ...compaction, trigger_percent } })}
               min={1}
               max={99}
+              integer
               disabled={disabled}
             />
             <NumberField
@@ -57,6 +61,7 @@ export function ContextSection({ slice, patch, open, onOpenChange, disabled }: {
               value={slice.tool_output_keep_last_n}
               onChange={(tool_output_keep_last_n) => patch({ tool_output_keep_last_n })}
               min={1}
+              integer
               disabled={disabled}
             />
             <NumberField
@@ -64,6 +69,7 @@ export function ContextSection({ slice, patch, open, onOpenChange, disabled }: {
               value={slice.output_token_reserve}
               onChange={(output_token_reserve) => patch({ output_token_reserve })}
               min={1}
+              integer
               disabled={disabled}
             />
           </div>

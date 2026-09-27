@@ -1273,6 +1273,32 @@ func (f *FrontendAPI) GenerateCommitMessage() (string, error) {
 	f.log().Debug("GenerateCommitMessage: sending staged diff to LLM",
 		"diff_bytes", len(trimmed), "repo", repoPath)
 
+	// The embedded model must be resident BEFORE this request's budget starts:
+	// a cold weight load takes longer than the service timeout, and charging it
+	// to the request would fail the call instead of serving it. A no-op for
+	// every other provider. Deliberately after the staged-diff check, so a
+	// nothing-to-generate call does not load gigabytes for no reason.
+	//
+	// The gate is the serviceEmbeddedGate composite: while an agent task is
+	// running, the request is DEFERRED first (a request with a different prompt
+	// would evict the task's prompt cache and cost the next step a fresh
+	// multi-minute prefill — see serviceEmbeddedGate), and only then does it
+	// wait for model readiness.
+	//
+	// BY DESIGN this gate is outside the latency envelope the service timeout
+	// describes (ADR-066 D13: no LLM request may start before the model is
+	// resident, and the load is never charged to the request's own budget). The
+	// worst case for a caller of this RPC is therefore the idle-wait budget
+	// (embeddedServiceIdleWaitInteractive) + serviceLLMTimeout +
+	// embeddedllm.DefaultLoadWaitTimeout when the local model is the default
+	// and cold. How each wait bound is derived is stated once, on the constant
+	// itself. The frontend keeps the per-project "generating" spinner lit
+	// across the whole wait and no client-side RPC timeout aborts it.
+	if err := f.serviceEmbeddedGateInteractive(f.ctx()); err != nil {
+		f.log().Warn("GenerateCommitMessage: the embedded service gate refused the request", "err", err)
+		return "", err
+	}
+
 	ctx, cancel := context.WithTimeout(f.ctx(), f.serviceLLMTimeout())
 	defer cancel()
 

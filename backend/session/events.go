@@ -273,6 +273,9 @@ type ContextFillEventData struct {
 // UsedTokens/MaxTokens mirror the session-root (conductor) context-window fill,
 // cached by ContextFill and forwarded here alongside FillPercent so the status
 // bar can render a "N of M" tooltip without waiting for the next context_fill.
+// MedianOutputTokS/TokSSamples carry the median per-call output-token
+// throughput over the session's recent LLM calls; both are omitted until the
+// per-session sliding window reaches its minimum sample count.
 type SessionTokensEventData struct {
 	SessionInputTokens  int     `json:"session_input_tokens"`
 	SessionOutputTokens int     `json:"session_output_tokens"`
@@ -281,6 +284,8 @@ type SessionTokensEventData struct {
 	FillPercent         float64 `json:"fill_percent"`
 	UsedTokens          int     `json:"used_tokens"`
 	MaxTokens           int     `json:"max_tokens"`
+	MedianOutputTokS    float64 `json:"median_output_tok_s,omitempty"`
+	TokSSamples         int     `json:"tok_s_samples,omitempty"`
 }
 
 // ContextCompactionEventData is the typed Data payload for "context_compaction" events.

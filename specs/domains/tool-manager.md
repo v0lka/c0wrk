@@ -6,6 +6,8 @@ The tool-manager downloads, installs, and version-tracks the external CLI binari
 
 Offline operation is a hard product requirement, not a tradeoff: app startup never depends on the network. The startup reconciliation runs in two passes — a synchronous pass restricted to local disk work (probe existing binaries, install from already-cached SHA256-verified archives), followed by a background pass with network access for whatever is still missing. Per-tool failures are isolated and reported; they never block or abort startup.
 
+**Scope boundary.** The tool-manager delivers the agent's *CLI tools* — binaries that are resolved **by name through `PATH`** and invoked by the model — and nothing else. The [Embedded LLM](embedded-llm.md) inference runtime and model weights are deliberately **not** managed tools: they are neither in `ManagedTools()` nor under `~/.c0wrk/tools/`, they are not reconciled at startup, and they are never placed where `PrependToPATH()` would expose them to `bash_exec`. `core/embeddedllm/` is a separate delivery subsystem that reuses this one's *posture* (compile-time pins, fail-closed SHA256, secure-bytes-before-destroy) but not its code, registry, limits or directory. See [Delivery scope](#invariants) below and [ADR-066](../decisions/066-embedded-llm-runtime.md).
+
 ## Key Files
 
 - `core/toolmanager/registry.go` — `ManagedTools()` registry: per-tool pinned `Version`, per-platform download `URLs`, SHA256 `Checksums`, archive-layout metadata (`ArchiveName`, `BinPathInArchive`), `PipSpec` for Python packages, and the embedded `RequirementsLock` (fully pinned transitive tree)
@@ -132,6 +134,14 @@ startup Phase 2: initTools()
 - The `.versions` file is rewritten after each successful tool install, so a partially completed bootstrap resumes on the next launch.
 - The fast path probes the actual binary via `--version` whenever `.versions` claims a match for a `StaticBinary` tool; a probe mismatch triggers a reinstall attempt. When the attempt cannot secure replacement bytes (offline, no verified cached archive), the existing binary stays on disk and the tool is reported not Ready — the version file never masks an outdated binary, and the machine never loses a working tool to a failed update.
 
+**Delivery scope (what the tool-manager does NOT deliver):**
+
+- `ManagedTools()` is the complete inventory. The embedded-LLM runtime and weights are absent from it by design, so they are never probed, reconciled, version-tracked in `.versions`, or installed by either startup pass.
+- No embedded-LLM file is ever written under `<toolsDir>/bin`. That directory is prepended to the agent's `PATH` by `PrependToPATH()`, which would make `llama-server` directly invokable from `bash_exec` — an inference runtime is a c0wrk-supervised subprocess, never an agent tool (ASI05, ADR-066 D3). The embedded roots are `<agentDir>/runtimes/llama-<tag>-<backend>/` and `<agentDir>/models/bonsai-2-27b/`, pinned outside the tools tree by `TestEmbeddedLLMDirs`.
+- The embedded artifacts violate every size and time bound this subsystem is built on, so reusing its code would silently weaken one of them: `maxDownloadBytes` (1 GiB) is below a single 6.7 GiB model file, `maxExtractEntryBytes` (512 MiB) is below a CUDA runtime library in these archives, the 5-minute download client timeout is below a multi-hour transfer on a slow link, and `checkDiskSpace`'s 200 MiB floor is below the ~7.3 GiB the set needs.
+- A download that must never start implicitly cannot ride the startup reconciliation: the embedded install runs only on an explicit user action, in the background, and never during startup ([ADR-032](../decisions/032-offline-first-tool-reconciliation.md)'s offline-first invariant is preserved precisely by keeping it out).
+- `core/embeddedllm/download.go` is therefore a separate downloader (HTTP `Range` resume, no size ceiling, a per-artifact disk guard, ~100 ms throttled progress) and `core/embeddedllm/install.go` has its own extraction with caps sized for these archives (2 GiB per entry, 8 GiB per archive). What is shared is the pattern, not the code.
+
 **Operational:**
 
 - Startup performs local disk work only: binary probes and installs from already-cached verified archives. Network access is used exclusively by the background pass, which runs after startup has completed — restricted or absent connectivity never blocks, fails, or degrades startup itself.
@@ -166,6 +176,8 @@ To remove all managed tools, delete `~/.c0wrk/tools/`.
 - [ADR-010: Tool Manager for External Binary Dependencies](../decisions/010-tool-manager.md) — decision record (accepted; failure handling amended by [ADR-032](../decisions/032-offline-first-tool-reconciliation.md)): why tools are downloaded rather than bundled, and why `git` stays a lazy system dependency
 - [ADR-032: Offline-First Tool Reconciliation](../decisions/032-offline-first-tool-reconciliation.md) — the two-pass startup contract (local-only sync pass + background network pass), per-tool failure isolation, and the never-destructive-offline guarantee
 - [Security Model](../architecture/security-model.md) — defense-in-depth for *agent-invoked* tool execution; the tool-manager's supply-chain guarantee is the software-delivery counterpart
+- [Embedded LLM](embedded-llm.md) — the delivery subsystem that deliberately does **not** extend this one (separate pins, downloader, disk layout and manifest), with the isolation invariant that keeps it out of `tools/bin`
+- [ADR-066: Embedded LLM Runtime](../decisions/066-embedded-llm-runtime.md) — "Not a tool-manager extension" records the limit-by-limit reasons
 - [Tool System README](tool-system/README.md) — the agent's `ToolRegistry` consumes the managed `rg` binary transparently via PATH
 - [Event Catalog](../contracts/event-catalog.md) — `tool_manager:start` / `tool_manager:progress` / `tool_manager:done` lifecycle events emitted during bootstrap
 - [Testing Environment Conventions](testing.md) — `~/.c0wrk/tools/` is the stateless artifact copied into an isolated `$HOME` for manual whole-app test runs

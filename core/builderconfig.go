@@ -3,6 +3,7 @@ package core
 import (
 	"time"
 
+	"github.com/v0lka/c0wrk/core/embeddedllm"
 	"github.com/v0lka/c0wrk/core/proxy"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/llm"
@@ -27,6 +28,12 @@ type BuilderConfig struct {
 	ToolLimits    BuilderToolLimitsConfig
 	Timeouts      BuilderTimeoutsConfig
 	Proxy         proxy.Config
+
+	// EmbeddedLLM wires the embedded local model's ensure-loaded transport into
+	// its router entry. The zero value is the normal posture — no embedded
+	// supervisor is configured, and every provider entry is built exactly as
+	// before. See BuilderEmbeddedLLMConfig.
+	EmbeddedLLM BuilderEmbeddedLLMConfig
 
 	// ShellExec carries the optional operator override of the shell-exec
 	// tool's launch shape (nil = built-in default). BashExec is consumed on
@@ -699,6 +706,68 @@ type BuilderTimeoutsConfig struct {
 	WebFetchRetries      int // retry count (not seconds); each retry doubles the active web fetch timeout
 	WebSearchTimeout     int
 	LLMRequestTimeout    int
+}
+
+// ---------------------------------------------------------------------------
+// Embedded LLM
+// ---------------------------------------------------------------------------
+
+// BuilderEmbeddedLLMConfig carries the embedded local model's runtime seam into
+// the router build. The embedded server is supervised by core/embeddedllm, but
+// the *instance* is owned by the layer that knows the storage layout, so it is
+// injected here — exactly like MarkitdownPythonPath and ExpandEnvVars.
+//
+// What it changes: the provider entry named ProviderName gets an
+// embeddedllm.EnsureLoadedTransport on its ProviderEntry.HTTPClient, so the
+// first request to an idle-unloaded model transparently starts it and every
+// completed response restarts the idle budget. That same entry is also the only
+// one built with llm.ReasoningWireChatTemplateKwargs, because the supervised
+// server is the pinned llama.cpp fork that reads enable_thinking exclusively
+// from chat_template_kwargs. Every other entry — and every other dial path
+// (Fetch Models, the lazy context probe) — is untouched.
+//
+// This is the PER-BUILD form. OrchestratorBuilder also holds one as its default
+// (SetEmbeddedLLM), which buildRouter applies to any config that carries no
+// Loader of its own — see embeddedSeam. The default exists because not every
+// BuilderConfig is converted by a caller that can reach the supervisor: the
+// per-session orchestrator is built from one converted inside the session
+// factory, and without the default that router would dispatch requests to a
+// cold model's dead socket.
+type BuilderEmbeddedLLMConfig struct {
+	// ProviderName is the router entry the transport guards. The backend injects
+	// config.EmbeddedLLMProviderName ("embedded"); core deliberately does not
+	// hardcode the literal, so an unset name guards nothing rather than guessing.
+	ProviderName string
+
+	// Loader is the supervisor seam. nil disables the transport entirely, which
+	// is the posture until the app owns a server instance.
+	//
+	// In production this is NOT a *Server but backend.embeddedLoaderRef — a
+	// small value type that resolves the supervisor lazily, at call time, and
+	// also carries the two optional capabilities the transport probes for
+	// (embeddedllm.RequestTracker and embeddedllm.PortSource). It is a ref
+	// rather than a direct pointer for an ordering reason: the router is first
+	// built before the embedded subsystem exists, and the per-session router is
+	// built from a config converted while the backend's config lock is held,
+	// where taking the subsystem's lock would invert the documented lock order.
+	// Resolving at call time lets the seam be attached before the supervisor
+	// exists and still reach the real one later.
+	//
+	// A *Server also satisfies the interface (and both optional capabilities),
+	// so tests may hand one over directly.
+	Loader embeddedllm.Loader
+
+	// LoadWaitTimeout bounds how long one request waits for a cold load.
+	// <= 0 → embeddedllm.DefaultLoadWaitTimeout.
+	LoadWaitTimeout time.Duration
+}
+
+// guards reports whether the ensure-loaded transport applies to the provider
+// entry named name. Both halves are required: a loader with no name would guard
+// nothing, and a name with no loader must not install a pass-through wrapper
+// that shadows the router-level client for no reason.
+func (c BuilderEmbeddedLLMConfig) guards(name string) bool {
+	return c.Loader != nil && c.ProviderName != "" && c.ProviderName == name
 }
 
 // BuilderShellExecConfig carries the operator's shell-exec launch-shape

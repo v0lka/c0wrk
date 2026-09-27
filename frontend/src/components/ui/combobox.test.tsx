@@ -110,6 +110,31 @@ describe('Combobox trigger', () => {
     })
     expect(document.body.querySelector('[role="menu"]')).toBeNull()
   })
+
+  it('force-closes an already-open menu when it becomes disabled', async () => {
+    render()
+    await openDropdown()
+    expect(document.body.querySelector('[role="menu"]')).not.toBeNull()
+
+    // Radix applies `disabled` to the TRIGGER only, so without the force-close
+    // the portaled items stayed clickable: one physical click could still fire
+    // `onChange` after the control became unavailable.
+    render({ disabled: true })
+
+    expect(document.body.querySelector('[role="menu"]')).toBeNull()
+    expect(trigger().disabled).toBe(true)
+  })
+
+  it('keeps an open menu open across a re-render that leaves it usable', async () => {
+    render()
+    await openDropdown()
+
+    // The effect must not treat an unrelated re-render as a disable flip.
+    render({ value: 'deny' })
+
+    expect(document.body.querySelector('[role="menu"]')).not.toBeNull()
+    expect(trigger().textContent).toContain('Deny')
+  })
 })
 
 describe('Combobox portaled menu', () => {

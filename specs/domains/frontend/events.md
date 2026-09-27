@@ -7,7 +7,7 @@ Manages real-time event subscription, validation, and store updates. Events flow
 ## Key Files
 
 - `frontend/src/hooks/useSessionEvents.ts` — master event subscription hook
-- `frontend/src/hooks/events/useChatEvents.ts` — streaming, thoughts, errors, task lifecycle (task_complete, task_cancelled), `session_paused` (sets the per-session `paused` flag + clears `taskActive`, unlocking the input — SUPPRESSED while `chatStore.compacting[session]` is set, the manual-compaction flow's own pause), and `session_resumed` (clears the `paused` flag + sets `taskActive`, re-locking the input)
+- `frontend/src/hooks/events/useChatEvents.ts` — streaming, thoughts, errors, task lifecycle (task_complete, task_cancelled), `memory_read` (the compact "memory read" card — persisted as role `memory_read`, so the restored row renders the identical card), `session_paused` (sets the per-session `paused` flag + clears `taskActive`, unlocking the input — SUPPRESSED while `chatStore.compacting[session]` is set, the manual-compaction flow's own pause), and `session_resumed` (clears the `paused` flag + sets `taskActive`, re-locking the input)
 - `frontend/src/hooks/events/usePlanEvents.ts` — plan generation, step lifecycle
 - `frontend/src/hooks/events/useToolEvents.ts` — tool call/result correlation and tool confirmation (`tool_confirm` via shared handlers)
 - `frontend/src/hooks/events/useActionEvents.ts` — `ask_user`, step limits, resume actions (`task_failed_resumable`/`task_resumed`), and plan review (`plan_review_ready`) via shared handlers

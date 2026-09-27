@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/v0lka/c0wrk/core/embeddedllm"
 	"github.com/v0lka/c0wrk/internal/sysproc"
 )
 
@@ -251,5 +252,68 @@ func TestValidateWithinSessionWorkspace(t *testing.T) {
 func TestDefaultAgentDirMirrorsSysproc(t *testing.T) {
 	if sysproc.DefaultAgentDirName != DefaultAgentDir {
 		t.Errorf("sysproc.DefaultAgentDirName = %q, want DefaultAgentDir %q", sysproc.DefaultAgentDirName, DefaultAgentDir)
+	}
+}
+
+// TestEmbeddedLLMDirs pins the embedded-LLM storage roots to the documented
+// shape (~/.c0wrk/runtimes and ~/.c0wrk/models/bonsai-2-27b) and, more
+// importantly, to the agent-isolation invariant: neither root may live under
+// ToolsBinDir, which Manager.PrependToPATH() exposes to the agent's bash_exec
+// (ADR-066 D3, ASI05). The weights must also stay inside a dedicated
+// subdirectory of ModelsDir so removing them can never touch the flat
+// embedding-model files.
+func TestEmbeddedLLMDirs(t *testing.T) {
+	if got, want := RuntimesDir(testAgentDir), filepath.Join(testAgentDir, "runtimes"); got != want {
+		t.Errorf("RuntimesDir: got %q, want %q", got, want)
+	}
+	if got, want := EmbeddedModelDir(testAgentDir),
+		filepath.Join(testAgentDir, "models", "bonsai-2-27b"); got != want {
+		t.Errorf("EmbeddedModelDir: got %q, want %q", got, want)
+	}
+
+	toolsBin := ToolsBinDir(testAgentDir)
+	for name, dir := range map[string]string{
+		"RuntimesDir":      RuntimesDir(testAgentDir),
+		"EmbeddedModelDir": EmbeddedModelDir(testAgentDir),
+	} {
+		if within, err := IsWithinPath(toolsBin, dir); err != nil {
+			t.Errorf("%s: containment check against the agent PATH failed: %v", name, err)
+		} else if within {
+			t.Errorf("%s = %q is inside the agent PATH %q — the inference runtime "+
+				"would become agent-invokable", name, dir, toolsBin)
+		}
+		if within, err := IsWithinPath(ToolsDir(testAgentDir), dir); err != nil {
+			t.Errorf("%s: containment check against the tools dir failed: %v", name, err)
+		} else if within {
+			t.Errorf("%s = %q is inside the managed-tools tree %q", name, dir, ToolsDir(testAgentDir))
+		}
+	}
+
+	// The weights live in a dedicated subdirectory of the models root, never at
+	// its top level.
+	if within, err := IsWithinPath(ModelsDir(testAgentDir), EmbeddedModelDir(testAgentDir)); err != nil {
+		t.Errorf("EmbeddedModelDir containment: %v", err)
+	} else if !within {
+		t.Errorf("EmbeddedModelDir = %q is not inside ModelsDir %q",
+			EmbeddedModelDir(testAgentDir), ModelsDir(testAgentDir))
+	}
+	if EmbeddedModelDir(testAgentDir) == ModelsDir(testAgentDir) {
+		t.Error("EmbeddedModelDir equals ModelsDir; removing the embedded model would delete the embedding model")
+	}
+}
+
+// TestEmbeddedAutoUnloadDefaultMirrorsCore pins the auto-unload default that
+// core/embeddedllm hands to the config sink on install. core cannot import
+// this package (backend/config sits above core and already imports core
+// packages, so an import back would cycle), so the value is declared on both
+// sides of the boundary — the same situation TestDefaultAgentDirMirrorsSysproc
+// covers for internal/sysproc.
+func TestEmbeddedAutoUnloadDefaultMirrorsCore(t *testing.T) {
+	if embeddedllm.DefaultAutoUnloadMinutes != EmbeddedLLMDefaultAutoUnloadMinutes {
+		t.Errorf("embeddedllm.DefaultAutoUnloadMinutes = %d, want EmbeddedLLMDefaultAutoUnloadMinutes %d",
+			embeddedllm.DefaultAutoUnloadMinutes, EmbeddedLLMDefaultAutoUnloadMinutes)
+	}
+	if !embeddedllm.DefaultAutoUnloadEnabled {
+		t.Error("embeddedllm.DefaultAutoUnloadEnabled = false, want the documented default true")
 	}
 }

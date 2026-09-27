@@ -12,6 +12,7 @@ import { ContextFillStatus } from "./ContextFillStatus";
 import { CompactContextButton } from "./CompactContextButton";
 import { GoalStatusIndicator } from "./GoalStatusIndicator";
 import { ProcessMemoryStatus } from "./ProcessMemoryStatus";
+import { EmbeddedModelStatus } from "./EmbeddedModelStatus";
 
 function Sep() {
   return <Separator orientation="vertical" className="mx-1 h-4" />;
@@ -83,6 +84,12 @@ export function StatusBar() {
           <IndexingStatus />
         </>
       )}
+
+      {/* Embedded local model (download progress / weight load / residency).
+          Process-wide like the memory indicator, so it is NOT gated on
+          isNoProject. The component owns its leading separator and renders
+          nothing at all — separator included — unless it has something to say. */}
+      <EmbeddedModelStatus />
 
       {/* Live process memory (RSS) — last block, always visible including
           No Project mode (memory usage is process-wide, not per-project).

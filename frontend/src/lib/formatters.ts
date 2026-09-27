@@ -48,3 +48,17 @@ export function formatBytes(bytes: number): string {
   const value = bytes / Math.pow(1024, i)
   return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
 }
+
+/** Compact countdown readout of a remaining-seconds figure: `41m 40s` under an
+ *  hour, `1h 05m` above it (the minutes drop their seconds so the string stays
+ *  narrow in a status line). Negative and non-finite inputs read as zero. */
+export function formatIdleCountdown(seconds: number): string {
+  if (!Number.isFinite(seconds)) return '0m 00s'
+  const s = Math.max(0, Math.floor(seconds))
+  if (s >= 3600) {
+    const h = Math.floor(s / 3600)
+    const m = Math.floor((s % 3600) / 60)
+    return `${h}h ${String(m).padStart(2, '0')}m`
+  }
+  return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`
+}

@@ -184,11 +184,25 @@ type Manager struct {
 	stopTimeout         time.Duration        // how long to wait for goroutine on cancel/delete
 	maxSummaryLen       int                  // character limit for auto-generated step summaries
 	serviceLLMTimeout   time.Duration        // timeout for one-shot service LLM requests (session title); default 2m
-	projectResolver     ProjectResolverFunc  // resolves projectID -> workspacePath for lazy session restoration
-	fileTracker         *FileCoherenceTracker
-	converter           *markitdown.Converter // lazy-init markitdown converter for AttachFiles
-	converterMu         sync.Mutex            // guards lazy converter initialization
-	modelProfiles       ModelProfilesMetaInfo // Model Profiles profile annotating agent_metrics events (guarded by mu)
+	// serviceLLMGate, when set, is invoked BEFORE a one-shot service LLM
+	// request's timeout context is created, and must return once whatever the
+	// request needs in order to be served is ready. It exists for the embedded
+	// local model: a cold weight load takes longer than the service timeout, so
+	// a budget armed first would be consumed by the load and the request would
+	// fail instead of waiting. Guarded by mu.
+	//
+	// Consequence, deliberate per ADR-066 D13: serviceLLMTimeout bounds the
+	// REQUEST only, never the gate. The production gate
+	// (backend.ensureEmbeddedReadyForLLMRequest) can wait
+	// embeddedllm.DefaultLoadWaitTimeout — derived from the supervisor's own
+	// ready budget, as that constant's doc states — so a caller must not assume
+	// the whole one-shot call fits inside serviceLLMTimeout.
+	serviceLLMGate  func(context.Context) error
+	projectResolver ProjectResolverFunc // resolves projectID -> workspacePath for lazy session restoration
+	fileTracker     *FileCoherenceTracker
+	converter       *markitdown.Converter // lazy-init markitdown converter for AttachFiles
+	converterMu     sync.Mutex            // guards lazy converter initialization
+	modelProfiles   ModelProfilesMetaInfo // Model Profiles profile annotating agent_metrics events (guarded by mu)
 
 	// ignoreCache caches per-root ignore.Resolver instances so the directory
 	// tree is walked only once per root (not on every SendMessage). The key
@@ -570,6 +584,17 @@ func (m *Manager) SetServiceLLMTimeout(d time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.serviceLLMTimeout = d
+}
+
+// SetServiceLLMGate installs the pre-dispatch readiness gate for one-shot
+// service LLM requests (see serviceLLMGate). It is called with the manager's
+// shutdown context and must block until the request can be served; returning an
+// error skips the request rather than issuing it against something not ready.
+// A nil gate is the normal posture for every provider that is always listening.
+func (m *Manager) SetServiceLLMGate(fn func(context.Context) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.serviceLLMGate = fn
 }
 
 // SetTitleGenerator sets the title generator for auto-naming sessions.

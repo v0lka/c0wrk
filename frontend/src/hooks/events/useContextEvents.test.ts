@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { handleContextFill, handleCompactionStarted, handleCompactionFinished, stripAutoRetryFromBanner, type ContextFillStore } from '@/hooks/events/useContextEvents'
-import type { ContextFillData } from '@/types/events'
+import { handleContextFill, handleSessionTokens, handleCompactionStarted, handleCompactionFinished, stripAutoRetryFromBanner, type ContextFillStore } from '@/hooks/events/useContextEvents'
+import type { ContextFillData, SessionTokensData } from '@/types/events'
 import type { TokenInfo, CompactionAvailability } from '@/types/models'
 import type { StepContextTokens } from '@/stores/chatStore'
 import type { ChatMessageUI } from '@/types/messages'
@@ -207,17 +207,62 @@ describe('stripAutoRetryFromBanner', () => {
   })
 })
 
-describe('handleCompactionStarted / handleCompactionFinished', () => {  interface CompactionRecorded {
+describe('handleSessionTokens', () => {
+  function makeTokensData(overrides: Partial<SessionTokensData> = {}): SessionTokensData {
+    return {
+      session_input_tokens: 1200,
+      session_output_tokens: 340,
+      model: 'embedded/Bonsai 2 27B',
+      family: 'embedded',
+      ...overrides,
+    }
+  }
+
+  it('forwards the throughput pair when the payload carries it', () => {
+    const store = makeStore()
+    handleSessionTokens(store, 'sess-1', makeTokensData({ median_output_tok_s: 27.44, tok_s_samples: 5 }))
+    expect(store.recorded.sessionTokens).toHaveLength(1)
+    expect(store.recorded.sessionTokens[0]).toMatchObject({
+      total_input_tokens: 1200,
+      total_output_tokens: 340,
+      model: 'embedded/Bonsai 2 27B',
+      family: 'embedded',
+      median_output_tok_s: 27.44,
+      tok_s_samples: 5,
+    })
+  })
+
+  it('omits the throughput pair on legacy payloads (no clobbering with zeros)', () => {
+    // A payload that predates the metric must not overwrite a previously-known
+    // median with 0 — the same merge-preservation contract as fill_percent.
+    const store = makeStore()
+    handleSessionTokens(store, 'sess-1', makeTokensData({ median_output_tok_s: undefined, tok_s_samples: undefined }))
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('median_output_tok_s')
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('tok_s_samples')
+  })
+
+  it('keeps guarding the optional fill fields exactly as before', () => {
+    const store = makeStore()
+    handleSessionTokens(store, 'sess-1', makeTokensData({ fill_percent: undefined, used_tokens: undefined, max_tokens: undefined }))
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('fill_percent')
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('used_tokens')
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('max_tokens')
+  })
+})
+
+describe('handleCompactionStarted / handleCompactionFinished', () => {
+  interface CompactionRecorded {
     compacting: Array<{ sessionId: string; value: boolean }>
     compactionAvailability: Array<{ sessionId: string; value: CompactionAvailability[] }>
     activity: Array<{ sessionId: string; status: string | null }>
     pausing: Array<{ sessionId: string; value: boolean }>
     paused: Array<{ sessionId: string; value: boolean }>
     taskActive: Array<{ sessionId: string; value: boolean }>
+    messages: Array<{ sessionId: string; message: ChatMessageUI }>
   }
 
   function makeCompactionStore() {
-    const recorded: CompactionRecorded = { compacting: [], compactionAvailability: [], activity: [], pausing: [], paused: [], taskActive: [] }
+    const recorded: CompactionRecorded = { compacting: [], compactionAvailability: [], activity: [], pausing: [], paused: [], taskActive: [], messages: [] }
     return {
       recorded,
       setCompacting: (sessionId: string, value: boolean) => { recorded.compacting.push({ sessionId, value }) },
@@ -226,6 +271,7 @@ describe('handleCompactionStarted / handleCompactionFinished', () => {  interfac
       setPausing: (sessionId: string, value: boolean) => { recorded.pausing.push({ sessionId, value }) },
       setPaused: (sessionId: string, value: boolean) => { recorded.paused.push({ sessionId, value }) },
       setTaskActive: (sessionId: string, value: boolean) => { recorded.taskActive.push({ sessionId, value }) },
+      addMessage: (sessionId: string, message: ChatMessageUI) => { recorded.messages.push({ sessionId, message }) },
     }
   }
 
@@ -241,6 +287,47 @@ describe('handleCompactionStarted / handleCompactionFinished', () => {  interfac
     handleCompactionFinished(store, 'sess-1', { success: true, resumed: true })
     expect(store.recorded.compacting).toEqual([{ sessionId: 'sess-1', value: false }])
     expect(store.recorded.activity).toHaveLength(0)
+  })
+
+  it('finished on success lands the manual compaction card with rounded percentages', () => {
+    // The manual flow emits no context_compaction event (that type means
+    // "auto compaction" and is persisted by the backend event pipeline), so
+    // the live card is derived here from compaction_finished's display-basis
+    // percentages — the same numbers the marker row stores, keeping the live
+    // and reloaded cards identical.
+    const store = makeCompactionStore()
+    handleCompactionFinished(store, 'sess-1', { success: true, resumed: true, before_percent: 45.6, after_percent: 12.3 })
+    expect(store.recorded.messages).toHaveLength(1)
+    const card = store.recorded.messages[0]!
+    expect(card.sessionId).toBe('sess-1')
+    expect(card.message.type).toBe('context_compaction')
+    expect(card.message.content).toBe('Context compacted from 46% to 12%')
+    expect(card.message.metadata).toEqual({ before_percent: 45.6, after_percent: 12.3 })
+  })
+
+  it('finished with nothing_compacted adds no card (the label is the outcome)', () => {
+    const store = makeCompactionStore()
+    handleCompactionFinished(store, 'sess-1', { success: true, resumed: false, nothing_compacted: true, before_percent: 0, after_percent: 0 })
+    expect(store.recorded.messages).toHaveLength(0)
+  })
+
+  it('finished on error or cancellation adds no card', () => {
+    const errStore = makeCompactionStore()
+    handleCompactionFinished(errStore, 'sess-1', { success: false, error: 'boom', before_percent: 45.6, after_percent: 12.3 })
+    expect(errStore.recorded.messages).toHaveLength(0)
+
+    const cancelStore = makeCompactionStore()
+    handleCompactionFinished(cancelStore, 'sess-1', { success: false, cancelled: true, resumed: false, before_percent: 45.6, after_percent: 12.3 })
+    expect(cancelStore.recorded.messages).toHaveLength(0)
+  })
+
+  it('finished with a failed auto-resume still lands the card (the compaction succeeded)', () => {
+    // paused_without_resume means the flow compacted fine but could not
+    // auto-resume the task — the card records the compaction either way.
+    const store = makeCompactionStore()
+    handleCompactionFinished(store, 'sess-1', { success: true, resumed: false, paused_without_resume: true, before_percent: 45.6, after_percent: 12.3 })
+    expect(store.recorded.messages).toHaveLength(1)
+    expect(store.recorded.messages[0]!.message.type).toBe('context_compaction')
   })
 
   it('finished on success without a resume clears the activity (idle session)', () => {

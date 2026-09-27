@@ -4,12 +4,16 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 
+	"github.com/v0lka/c0wrk/core/embeddedllm"
 	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/sp4rk/llm"
 
@@ -23,7 +27,19 @@ const DefaultAgentDir = ".c0wrk"
 type Config struct {
 	LogLevel string    `yaml:"log_level"`
 	LLM      LLMConfig `yaml:"llm"`
-	MCP      MCPConfig `yaml:"mcp"`
+
+	// EmbeddedLLM is the authoritative state of the optional in-app local
+	// model (Bonsai 2 27B). It is mostly APP-WRITTEN state: Install records
+	// it, Remove clears it, and hand-editing it neither downloads nor starts
+	// anything. Two sub-sections are the exception and are OPERATOR settings
+	// that both flows preserve — `auto_unload` (the idle budget) and `tuning`
+	// (the memory-plan overrides). The `llm.openai_compatible.embedded`
+	// provider record is GENERATED from this section (see
+	// SyncEmbeddedLLMProvider) — the LLM section never owns it. See
+	// specs/domains/embedded-llm.md and ADR-066.
+	EmbeddedLLM EmbeddedLLMConfig `yaml:"embedded_llm"`
+
+	MCP MCPConfig `yaml:"mcp"`
 
 	Router     RouterConfig     `yaml:"router"`
 	Executor   ExecutorConfig   `yaml:"executor"`
@@ -565,6 +581,22 @@ type ChatGPTConfig struct {
 	OutputTokenReserve int `yaml:"output_token_reserve"`
 }
 
+// MaxModelContextWindow is the sanity ceiling for a
+// llm.models.<name>.context_window override. 1<<24 = 16,777,216 tokens, which
+// is roughly eight times the largest context any real remote model serves
+// today (2M), so it can never refuse a legitimate configuration — it exists to
+// reject the absurd instead.
+//
+// Why it is needed at all: this override is a TIER-1 value that shadows the
+// tier-1.5 lazy probe, so a poisoned one is never corrected by asking the model
+// again. Two writers feed it — an operator hand-editing config.yaml, and the
+// embedded LLM's `/props` context readback (backend.persistEmbeddedContext,
+// which reads the figure off a local HTTP endpoint) — and an absurd value is
+// worse than a wrong one: sp4rk's memory-context arithmetic reports "fits" for
+// every prompt, so compaction never triggers. Both writers therefore bound the
+// value against this one constant rather than each keeping its own figure.
+const MaxModelContextWindow = 1 << 24
+
 // ModelOverride allows overriding built-in model metadata.
 // Fields use omitempty so a 0/empty/nil value (meaning "inherit the built-in
 // default") is not serialized — only fields that actually differ from the
@@ -577,6 +609,9 @@ type ChatGPTConfig struct {
 // sentinels ensure a deliberate override to "default"/""/all-false is still
 // distinguishable from "no override", so a user can force e.g. a false
 // Attachment capability that differs from the built-in true.
+//
+// ContextWindow is 0 (unset → inherit) or within 1..MaxModelContextWindow;
+// validate() rejects anything else.
 type ModelOverride struct {
 	ContextWindow int                    `yaml:"context_window,omitempty"`
 	OutputLimit   int                    `yaml:"output_limit,omitempty"`
@@ -591,6 +626,784 @@ type LLMRetryConfig struct {
 	MaxRetries     int    `yaml:"max_retries"`     // max retry attempts (0 = no retries)
 	InitialBackoff string `yaml:"initial_backoff"` // initial backoff duration (e.g. "1s")
 	MaxBackoff     string `yaml:"max_backoff"`     // maximum backoff duration (e.g. "30s")
+}
+
+// Embedded LLM identity and limits. The provider record is backend-owned:
+// `embedded_llm:` is the authoritative state and `llm.openai_compatible.embedded`
+// is GENERATED from it (SyncEmbeddedProvider), so the UI's whole-map provider
+// replacement can never delete the local model. See
+// specs/domains/embedded-llm.md and ADR-066.
+const (
+	// EmbeddedLLMProviderName is the openai_compatible key of the generated
+	// provider and therefore the provider half of the composite model id
+	// ("embedded/Bonsai 2 27B").
+	EmbeddedLLMProviderName = "embedded"
+
+	// EmbeddedLLMModelName is the single model the local server exposes. It is
+	// also the llm.models override key, which is always the BARE model name.
+	EmbeddedLLMModelName = "Bonsai 2 27B"
+
+	// EmbeddedLLMHost is the loopback address the server binds. Fixed by
+	// design: the inference runtime must never become network-reachable.
+	EmbeddedLLMHost = "127.0.0.1"
+
+	// EmbeddedLLMDefaultAutoUnloadMinutes is the default idle budget before the
+	// server process is stopped so RAM/VRAM is returned deterministically.
+	EmbeddedLLMDefaultAutoUnloadMinutes = 60
+
+	// EmbeddedLLMMinPort and EmbeddedLLMMaxPort bound the persisted loopback
+	// port. 0 is the "not allocated yet" sentinel and is only legal while
+	// Installed is false.
+	EmbeddedLLMMinPort = 1024
+	EmbeddedLLMMaxPort = 65535
+
+	// EmbeddedLLMOutputLimit is the generation ceiling (max_tokens) seeded for
+	// the local model. The registry's 32768 static fallback assumes a
+	// datacenter-speed model; at this model's measured decode rates (15-31
+	// tok/s) a 32768-token ceiling is 17-36 minutes of worst-case generation,
+	// so the local model gets the budget an agent loop actually spends. A
+	// user-authored llm.models output_limit still wins (see
+	// SyncEmbeddedProvider).
+	EmbeddedLLMOutputLimit = 8192
+)
+
+// EmbeddedLLMConfig is the persisted state of the embedded local model. Most
+// fields are written by the app and document what is on THIS machine (resolved
+// packing, probed backend, allocated port) so a restart can supervise the
+// server without probing hardware or network. The two operator-owned
+// sub-sections — AutoUnload and Tuning — are settings instead: every flow that
+// rewrites the record carries them through unchanged.
+type EmbeddedLLMConfig struct {
+	// Installed reports that the runtime and the weights are on disk and
+	// SHA256-verified. It gates the generated provider entry.
+	Installed bool `yaml:"installed"`
+	// Packing is the ternary quantization resolved for this machine
+	// ("PQ2_0" | "PTQ1_0"). Informational — shown in Settings.
+	Packing string `yaml:"packing"`
+	// Backend is the accelerator the hardware probe selected ("metal",
+	// "cuda-12.4", "cuda-12.8", "cuda-13.3", "rocm", "vulkan", "cpu").
+	// Informational.
+	//
+	// "cuda-13.3" is PINNED and therefore recordable here — it is part of the
+	// pinned runtime artifact set — but it is NOT selectable in practice:
+	// core's compat guard `cuda-13.3-crash` (PrismML-Eng/llama.cpp#222)
+	// substitutes it on every CUDA platform, to cuda-12.8 on linux/amd64 and
+	// cuda-12.4 on windows/amd64, so no machine resolves to it while that guard
+	// is in force. Recordable-in-the-manifest and user-selectable are different
+	// predicates; this field records.
+	Backend string `yaml:"backend"`
+	// Port is the persisted loopback port; 0 = allocate at install time. The
+	// provider base URL is ALWAYS derived from it, never stored separately.
+	Port int `yaml:"port"`
+	// ModelFile is the absolute path of the installed GGUF weights.
+	ModelFile string `yaml:"model_file"`
+	// RuntimeVersion is the pinned fork release the runtime came from. A pin
+	// change forces a runtime re-download and keeps the weights.
+	RuntimeVersion string `yaml:"runtime_version"`
+	// InstalledAt is the RFC 3339 timestamp of the install.
+	InstalledAt string `yaml:"installed_at"`
+	// AutoUnload is the idle budget after which the server process is stopped.
+	AutoUnload AutoUnloadConfig `yaml:"auto_unload"`
+	// Tuning is the operator override surface for the memory plan. It is the
+	// ONE part of this section that is a setting rather than a record: Install
+	// and Remove both preserve it verbatim (see TuningConfig), and an absent
+	// knob leaves the decision to the planner.
+	Tuning TuningConfig `yaml:"tuning,omitempty"`
+}
+
+// AutoUnloadConfig is the embedded server's idle-unload budget. Both fields are
+// pointers so an explicit `enabled: false` / `minutes: N` in YAML is
+// distinguishable from "unset" (which resolves to the documented default).
+type AutoUnloadConfig struct {
+	// Enabled is the idle-timer master switch. Default: true.
+	Enabled *bool `yaml:"enabled"`
+	// Minutes is the idle budget before unload. Default: 60; must be within
+	// 1..embeddedllm.MaxAutoUnloadMinutes.
+	Minutes *int `yaml:"minutes"`
+}
+
+// IsEnabled resolves the idle-timer master switch (nil → true).
+func (a AutoUnloadConfig) IsEnabled() bool {
+	return a.Enabled == nil || *a.Enabled
+}
+
+// IdleMinutes resolves the idle budget (nil → EmbeddedLLMDefaultAutoUnloadMinutes).
+// An explicit value outside 1..embeddedllm.MaxAutoUnloadMinutes is rejected by
+// validate(), so a config that loaded always resolves to a budget the
+// minutes→duration conversion can represent.
+func (a AutoUnloadConfig) IdleMinutes() int {
+	if a.Minutes == nil {
+		return EmbeddedLLMDefaultAutoUnloadMinutes
+	}
+	return *a.Minutes
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Embedded LLM memory-plan tuning (the operator override surface)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// The YAML spellings of the memory-plan override modes. `embeddedllm.Tuning`
+// is the authority on what each choice MEANS; these constants are only its
+// config-file vocabulary, and ToTuning is the single translation between the
+// two. They are declared here (rather than in core) because they are a
+// serialization concern: core's `ContextMode`/`OffloadMode` are int enums with
+// no spelling at all.
+const (
+	// EmbeddedLLMTuningAuto is the explicit "let the planner decide" spelling.
+	// It resolves to the same plan as an absent key, but it is NOT the same
+	// value: an absent key means the operator chose nothing, which is what
+	// Install/Remove preservation and the round-trip contract key off. An
+	// empty string is accepted as a synonym so `kv_cache_type: ""` cannot
+	// become a silent typo.
+	EmbeddedLLMTuningAuto = "auto"
+
+	// EmbeddedLLMContextExact pins `-c` to context.tokens.
+	EmbeddedLLMContextExact = "exact"
+
+	// EmbeddedLLMOffloadAll is `-ngl 99` (every offloadable layer on the
+	// device), EmbeddedLLMOffloadCPU is `-ngl 0` (nothing offloaded), and
+	// EmbeddedLLMOffloadLayers is an explicit `-ngl <offload.layers>`.
+	EmbeddedLLMOffloadAll    = "all"
+	EmbeddedLLMOffloadCPU    = "cpu"
+	EmbeddedLLMOffloadLayers = "layers"
+)
+
+// EmbeddedLLMMinContextTokens is the smallest legal explicit context. There is
+// no such thing as a zero-token context window: a plan that cannot reach a
+// positive `-c` is a refusal, not a configuration.
+const EmbeddedLLMMinContextTokens = 1
+
+// embeddedLLMContextModes and embeddedLLMOffloadModes are the closed sets
+// behind the two composite knobs, in the order config.example.yaml documents
+// them. `auto` is not listed: it is the EmbeddedLLMTuningAuto sentinel, which
+// tuningChoice handles before consulting these.
+var (
+	embeddedLLMContextModes = []string{EmbeddedLLMContextExact}
+	embeddedLLMOffloadModes = []string{
+		EmbeddedLLMOffloadAll, EmbeddedLLMOffloadCPU, EmbeddedLLMOffloadLayers,
+	}
+)
+
+// embeddedLLMMaxContext resolves the ceiling for an explicit context: the
+// pinned model's OWN training context (262144), read from core's memory
+// profile rather than transcribed here so a pin bump cannot leave a stale
+// ceiling behind. OnceValues keeps the profile's measurement tables off the
+// per-load path, and the error is propagated rather than defaulted away —
+// failing closed is the point, since a ceiling nobody could read is a ceiling
+// nobody can enforce.
+var embeddedLLMMaxContext = sync.OnceValues(func() (int, error) {
+	profile, err := embeddedllm.PinnedMemoryProfile()
+	if err != nil {
+		return 0, fmt.Errorf("the pinned memory profile is unavailable: %w", err)
+	}
+	if profile.MaxContext <= 0 {
+		return 0, errors.New("the pinned memory profile reports no training context")
+	}
+	return profile.MaxContext, nil
+})
+
+// EmbeddedLLMMaxContextTokens exposes the resolved context ceiling for
+// diagnostics and tests. It fails closed: a profile that cannot be read
+// yields an error, never a permissive bound.
+func EmbeddedLLMMaxContextTokens() (int, error) { return embeddedLLMMaxContext() }
+
+// TuningConfig is the persisted, user-editable override surface for the
+// embedded model's memory plan. It maps onto `embeddedllm.Tuning` one-to-one
+// (see ToTuning) and follows the AutoUnloadConfig precedent exactly: every
+// field is a pointer, so an explicit value — including an explicit `auto` or
+// an explicit `0` — is distinguishable from "the operator never wrote this".
+//
+// That distinction is load-bearing, not cosmetic. Two examples from the
+// planner's own contract:
+//
+//   - an UNSET `fit` lets the fit-exclusivity rule decide, while an explicit
+//     `fit: false` forces `-fit off`;
+//   - an UNSET `cache_ram_mib` omits `-cram` and keeps the runtime default,
+//     while an explicit `0` DISABLES the prompt cache.
+//
+// Nothing here is seeded by ApplyDefaults, for the same reason: materializing
+// the pointers would turn every "unset" into an "explicit auto" on the first
+// save and destroy the distinction this struct exists to preserve. The zero
+// TuningConfig — all knobs absent — IS the documented all-Auto default, and
+// `yaml:"tuning,omitempty"` keeps it out of a config.yaml that never authored it.
+//
+// Unlike the rest of embedded_llm, this section is a SETTING: Install and
+// Remove both carry it through verbatim, so provisioning or uninstalling the
+// model never resets a tuned memory plan.
+//
+// Two `embeddedllm.Tuning` fields are deliberately NOT exposed here: `Devices`
+// (`-dev`) and `SplitMode` (`-sm`). Both pin the offload, which forces fit off,
+// and neither has a safe default on a machine c0wrk has not measured — naming
+// the wrong device is an unlaunchable server, not a slower one. They stay
+// reachable only through the planner's own vocabulary.
+type TuningConfig struct {
+	// Context overrides `-c`. Absent (or `mode: auto`) lets the planner size
+	// it: from the fit floor under fit, otherwise from the RAM ladder.
+	Context EmbeddedLLMContextConfig `yaml:"context,omitempty"`
+	// KVCacheType overrides BOTH `-ctk` and `-ctv` (one value for both: a
+	// mixed pair silently drops to CPU flash attention). Absent or "auto" is
+	// the ADAPTIVE path — f16, escalating to q8_0 and then q4_0 until the
+	// target context fits. Any other spelling must be one of the three
+	// precisions core has a measurement for; `q5_0` is excluded on a measured
+	// ~8x long-context decode slowdown, and an unlisted precision is refused
+	// rather than coerced to f16.
+	KVCacheType *string `yaml:"kv_cache_type,omitempty"`
+	// Offload overrides `-ngl`. Absent (or `mode: auto`) leaves the layer
+	// count to the runtime's fit pass when nothing else pins it.
+	Offload EmbeddedLLMOffloadConfig `yaml:"offload,omitempty"`
+	// Fit overrides `-fit`. Absent lets the exclusivity rule decide; an
+	// explicit false forces `-fit off` and hands context sizing back to the
+	// planner; an explicit true NEXT TO an explicit offload loses to the
+	// exclusivity rule (and the planner records that in its notes).
+	Fit *bool `yaml:"fit,omitempty"`
+	// FitTargetMiB overrides `-fitt`, the per-device margin fit leaves free.
+	// Absent keeps the runtime's own 1024 MiB target; an explicit 0 also omits
+	// the flag. Must be within 0..embeddedllm.MaxTuningMiB. Only emitted under
+	// fit.
+	FitTargetMiB *int `yaml:"fit_target_mib,omitempty"`
+	// FitMinContext overrides `-fitc`, the smallest context fit may settle on.
+	// Absent means c0wrk's 65536 floor — deliberately NOT the runtime's own
+	// 4096, which is small enough to truncate answers on this model. Must be
+	// within 1..max context. Only emitted under fit.
+	FitMinContext *int `yaml:"fit_min_context,omitempty"`
+	// KVOffload is `-kvo`/`-nkvo`. Absent and an explicit true keep the KV
+	// cache on the device with the layers; false passes `-nkvo` and leaves it
+	// in system RAM, trading device memory for host memory and attention
+	// bandwidth.
+	KVOffload *bool `yaml:"kv_offload,omitempty"`
+	// MMProjOffload is `--mmproj-offload`/`--no-mmproj-offload`. Absent and an
+	// explicit true keep the vision projector's reserve on the device; false
+	// moves it to system RAM.
+	MMProjOffload *bool `yaml:"mmproj_offload,omitempty"`
+	// Packing overrides the weights quantization. Absent or "auto" keeps the
+	// packing the hardware probe resolved (recorded separately in
+	// `embedded_llm.packing`); any other spelling must be one the registry pins
+	// AND the memory model has measured residency for, or the plan is refused
+	// instead of projected from a file size.
+	Packing *string `yaml:"packing,omitempty"`
+	// Parallel overrides `-np`, the slot count. Absent means 1: c0wrk serves
+	// one agent loop over one loopback socket and issues one request at a time,
+	// and `-np 4` was measured to inflate fit's own projection from 24450 MiB
+	// to 77297 MiB while SPLITTING the context across slots (`-c 8192 -np 4`
+	// yields 2048-token slots). Must be within
+	// 1..embeddedllm.MaxTuningParallel.
+	Parallel *int `yaml:"parallel,omitempty"`
+	// CacheRAMMiB overrides `-cram`, the prompt-cache ceiling. Absent omits the
+	// flag and keeps the runtime default; an explicit 0 DISABLES the cache and
+	// is passed through verbatim, because disabling it is a legitimate choice.
+	// Must be within 0..embeddedllm.MaxTuningMiB.
+	CacheRAMMiB *int `yaml:"cache_ram_mib,omitempty"`
+	// HostReserveGiB overrides the system RAM kept out of the host budget.
+	// Absent keeps the topology's own derivation (the larger of a 4 GiB floor
+	// and 1/8 of RAM). It is a PLANNER-side budget knob, not a runtime flag —
+	// the pinned fork has no `--host-reserve` — and it REPLACES the derived
+	// reserve rather than stacking on it. Must be a FINITE number within
+	// 0..embeddedllm.MaxTuningHostReserveGiB: the planner converts it to an
+	// integer MiB count, and a float→int conversion the result type cannot
+	// represent is implementation-defined (it saturates on arm64 and goes
+	// negative on amd64, which would fail the memory gate open).
+	HostReserveGiB *float64 `yaml:"host_reserve_gib,omitempty"`
+}
+
+// EmbeddedLLMContextConfig is the `tuning.context` knob: a mode plus, for
+// `mode: exact` only, the token count. Mirrors `embeddedllm.ContextTuning`.
+type EmbeddedLLMContextConfig struct {
+	// Mode is "auto" (absent is a synonym) or "exact".
+	Mode *string `yaml:"mode,omitempty"`
+	// Tokens is the pinned `-c`. Validated even while Mode is auto, so
+	// switching to exact can never activate an out-of-range context — the same
+	// rule auto_unload.minutes follows while the timer is disabled.
+	Tokens *int `yaml:"tokens,omitempty"`
+}
+
+// EmbeddedLLMOffloadConfig is the `tuning.offload` knob: a mode plus, for
+// `mode: layers` only, the layer count. Mirrors `embeddedllm.Offload`.
+type EmbeddedLLMOffloadConfig struct {
+	// Mode is "auto" (absent is a synonym), "all", "cpu" or "layers".
+	Mode *string `yaml:"mode,omitempty"`
+	// Layers is the explicit `-ngl` count. Validated even while Mode is not
+	// "layers", for the same reason as Tokens above. Must be within
+	// 0..embeddedllm.MaxTuningLayers.
+	Layers *int `yaml:"layers,omitempty"`
+}
+
+// tuningChoice resolves one string knob against a closed set. It reports the
+// CANONICAL spelling (so `PQ2_0` and `pq2_0` are the same choice) and whether
+// the operator picked something other than Auto. Matching is case-insensitive
+// and trimmed; the error names the key and lists every legal spelling.
+func tuningChoice(key string, value *string, allowed []string) (canonical string, explicit bool, err error) {
+	if value == nil {
+		return "", false, nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" || strings.EqualFold(trimmed, EmbeddedLLMTuningAuto) {
+		return "", false, nil
+	}
+	for _, candidate := range allowed {
+		if strings.EqualFold(trimmed, candidate) {
+			return candidate, true, nil
+		}
+	}
+	list := make([]string, 0, len(allowed)+1)
+	list = append(list, EmbeddedLLMTuningAuto)
+	list = append(list, allowed...)
+	return "", false, fmt.Errorf(
+		"%s %q is not valid; must be one of %s",
+		key, *value, strings.Join(list, ", "),
+	)
+}
+
+// tuningKVChoices and tuningPackingChoices read the two closed sets from core
+// instead of transcribing them, so a precision or a packing core adds (or
+// retires on a new measurement) changes what config.yaml may say with no edit
+// here.
+func tuningKVChoices() []string {
+	kv := embeddedllm.KVTypes()
+	out := make([]string, 0, len(kv))
+	for _, t := range kv {
+		out = append(out, string(t))
+	}
+	return out
+}
+
+func tuningPackingChoices() []string {
+	packings := embeddedllm.SupportedPackings()
+	out := make([]string, 0, len(packings))
+	for _, p := range packings {
+		out = append(out, string(p))
+	}
+	return out
+}
+
+// tuningRange checks one integer knob against a closed range. The key is named
+// in the message and the fix is stated, matching validateEmbeddedLLM's existing
+// style.
+//
+// The CEILING is as load-bearing as the floor. Core owns the figures
+// (embeddedllm.MaxTuning*) and they are overflow/absurdity guards, not tuning
+// opinions: every one of these values is multiplied by a per-unit footprint
+// downstream (MiB→bytes, layers→per-layer weights, slots→per-slot KV caches), so
+// an unbounded knob makes that arithmetic wrap instead of merely being refused
+// by the memory gate — and a bound that exists at only one layer is a bound an
+// operator walks around by hand-editing config.yaml.
+func tuningRange(key string, value *int, floor, ceiling int, fix string) error {
+	if value == nil {
+		return nil
+	}
+	if *value < floor || *value > ceiling {
+		return fmt.Errorf("%s %d is not valid; must be within %d-%d%s", key, *value, floor, ceiling, fix)
+	}
+	return nil
+}
+
+// ToTuning translates the persisted override surface into the planner's
+// `embeddedllm.Tuning` vocabulary, and it is the ONLY place that translation
+// happens — validateEmbeddedLLMTuning calls it too, so a config validate()
+// accepts is by construction a config the planner can honour, and the two can
+// never drift apart.
+//
+// It fails closed. A spelling outside a closed set, or a number outside its
+// range, is an error naming the key and the fix; nothing is coerced to Auto,
+// because silently planning a different memory plan than the one the operator
+// wrote is exactly the failure this surface exists to avoid.
+//
+// Pointer fields are cloned, so the returned Tuning never aliases the config
+// and a caller cannot reach back into the live state through it.
+func (t TuningConfig) ToTuning() (embeddedllm.Tuning, error) {
+	maxContext, err := embeddedLLMMaxContext()
+	if err != nil {
+		return embeddedllm.Tuning{}, fmt.Errorf("embedded_llm.tuning: %w", err)
+	}
+
+	out := embeddedllm.Tuning{
+		FitEnabled:     cloneBoolPtr(t.Fit),
+		FitTargetMiB:   cloneIntPtr(t.FitTargetMiB),
+		FitMinContext:  cloneIntPtr(t.FitMinContext),
+		KVOffload:      cloneBoolPtr(t.KVOffload),
+		MMProjOffload:  cloneBoolPtr(t.MMProjOffload),
+		Parallel:       cloneIntPtr(t.Parallel),
+		CacheRAMMiB:    cloneIntPtr(t.CacheRAMMiB),
+		HostReserveGiB: cloneFloat64Ptr(t.HostReserveGiB),
+	}
+
+	// context: a mode plus, for `exact` only, the token count. Tokens is
+	// range-checked even while the mode is auto, so switching to exact can
+	// never activate a context the model cannot serve.
+	ctxMode, ctxExplicit, err := tuningChoice(
+		"embedded_llm.tuning.context.mode", t.Context.Mode, embeddedLLMContextModes)
+	if err != nil {
+		return embeddedllm.Tuning{}, err
+	}
+	if err := tuningContextRange(t.Context.Tokens, maxContext); err != nil {
+		return embeddedllm.Tuning{}, err
+	}
+	if ctxExplicit && ctxMode == EmbeddedLLMContextExact {
+		if t.Context.Tokens == nil {
+			return embeddedllm.Tuning{}, errors.New(
+				"embedded_llm.tuning.context.mode \"exact\" is not valid; must be paired with embedded_llm.tuning.context.tokens, or set context.mode: auto to let the planner size it",
+			)
+		}
+		out.Context = embeddedllm.ContextTuning{
+			Mode:   embeddedllm.ContextExact,
+			Tokens: *t.Context.Tokens,
+		}
+	}
+
+	// kv_cache_type: core owns the closed set, so ParseKVType stays the single
+	// authority on which precisions have a measurement.
+	kv, kvExplicit, err := tuningChoice(
+		"embedded_llm.tuning.kv_cache_type", t.KVCacheType, tuningKVChoices())
+	if err != nil {
+		return embeddedllm.Tuning{}, err
+	}
+	if kvExplicit {
+		parsed, parseErr := embeddedllm.ParseKVType(kv)
+		if parseErr != nil {
+			return embeddedllm.Tuning{}, fmt.Errorf(
+				"embedded_llm.tuning.kv_cache_type: %w", parseErr)
+		}
+		out.KVType = parsed
+	}
+
+	// offload: a mode plus, for `layers` only, the count.
+	offMode, offExplicit, err := tuningChoice(
+		"embedded_llm.tuning.offload.mode", t.Offload.Mode, embeddedLLMOffloadModes)
+	if err != nil {
+		return embeddedllm.Tuning{}, err
+	}
+	if err := tuningRange("embedded_llm.tuning.offload.layers", t.Offload.Layers, 0,
+		embeddedllm.MaxTuningLayers,
+		" (a layer count is never negative; use offload.mode: cpu for nothing offloaded)"); err != nil {
+		return embeddedllm.Tuning{}, err
+	}
+	if offExplicit {
+		switch offMode {
+		case EmbeddedLLMOffloadAll:
+			out.Offload = embeddedllm.Offload{Mode: embeddedllm.OffloadAll}
+		case EmbeddedLLMOffloadCPU:
+			out.Offload = embeddedllm.Offload{Mode: embeddedllm.OffloadCPU}
+		case EmbeddedLLMOffloadLayers:
+			if t.Offload.Layers == nil {
+				return embeddedllm.Tuning{}, errors.New(
+					"embedded_llm.tuning.offload.mode \"layers\" is not valid; must be paired with embedded_llm.tuning.offload.layers, or set offload.mode: auto to let the runtime size it",
+				)
+			}
+			out.Offload = embeddedllm.Offload{
+				Mode:   embeddedllm.OffloadLayers,
+				Layers: *t.Offload.Layers,
+			}
+		}
+	}
+
+	// packing: core owns the pinned set AND the measured-residency requirement,
+	// so the spelling is checked here and the residency at plan time.
+	packing, packingExplicit, err := tuningChoice(
+		"embedded_llm.tuning.packing", t.Packing, tuningPackingChoices())
+	if err != nil {
+		return embeddedllm.Tuning{}, err
+	}
+	if packingExplicit {
+		out.Packing = embeddedllm.Packing(packing)
+	}
+
+	// The remaining numeric knobs. Every bound is checked whether or not the
+	// knob is currently inert — an out-of-range fit_min_context beside
+	// `fit: false` is still a dead budget waiting for the flag to be flipped.
+	if err := tuningRange("embedded_llm.tuning.fit_target_mib", t.FitTargetMiB, 0,
+		embeddedllm.MaxTuningMiB,
+		" (0 keeps the runtime's own 1024 MiB target)"); err != nil {
+		return embeddedllm.Tuning{}, err
+	}
+	if err := tuningContextRangeNamed("embedded_llm.tuning.fit_min_context",
+		t.FitMinContext, maxContext); err != nil {
+		return embeddedllm.Tuning{}, err
+	}
+	if err := tuningRange("embedded_llm.tuning.parallel", t.Parallel, 1,
+		embeddedllm.MaxTuningParallel,
+		fmt.Sprintf(" (default %d: one slot, because -np also SPLITS the context across slots)",
+			embeddedllm.DefaultParallel)); err != nil {
+		return embeddedllm.Tuning{}, err
+	}
+	if err := tuningRange("embedded_llm.tuning.cache_ram_mib", t.CacheRAMMiB, 0,
+		embeddedllm.MaxTuningMiB,
+		" (0 disables the prompt cache, which is a legitimate choice)"); err != nil {
+		return embeddedllm.Tuning{}, err
+	}
+	if t.HostReserveGiB != nil {
+		// A FINITE-and-bounded check, not just `< 0`. NaN compares false against
+		// every bound, so the old floor-only check let an operator typo through
+		// and the planner then silently ignored it; and a float→int conversion
+		// whose value the result type cannot represent is implementation-defined
+		// in Go — the planner's `int64(reserve * mibPerGiB)` saturates on arm64
+		// and yields the negative "indefinite value" on amd64, which would make
+		// host = ram − reserve enormous and fail the memory gate OPEN on the one
+		// knob meant to shrink the budget. Rejecting ±Inf keeps that conversion
+		// total on every architecture.
+		reserve := *t.HostReserveGiB
+		if math.IsNaN(reserve) || math.IsInf(reserve, 0) ||
+			reserve < 0 || reserve > embeddedllm.MaxTuningHostReserveGiB {
+			return embeddedllm.Tuning{}, fmt.Errorf(
+				"embedded_llm.tuning.host_reserve_gib %g is not valid; must be a finite number within 0-%d (it REPLACES the derived reserve, so a negative one would inflate the host budget)",
+				reserve, embeddedllm.MaxTuningHostReserveGiB,
+			)
+		}
+	}
+
+	return out, nil
+}
+
+// tuningContextRange checks the `context.tokens` knob, whose key is fixed.
+func tuningContextRange(tokens *int, maxContext int) error {
+	return tuningContextRangeNamed("embedded_llm.tuning.context.tokens", tokens, maxContext)
+}
+
+// tuningContextRangeNamed checks one context-shaped knob against the model's
+// own training context. The upper bound is the pinned profile's, not a
+// transcribed figure.
+func tuningContextRangeNamed(key string, value *int, maxContext int) error {
+	if value == nil {
+		return nil
+	}
+	if *value < EmbeddedLLMMinContextTokens || *value > maxContext {
+		return fmt.Errorf(
+			"%s %d is not valid; must be within %d-%d (the pinned model's own training context), or leave it unset to let the planner size it",
+			key, *value, EmbeddedLLMMinContextTokens, maxContext,
+		)
+	}
+	return nil
+}
+
+// cloneBoolPtr / cloneIntPtr / cloneFloat64Ptr copy a pointer field so a
+// translated Tuning never aliases the config it came from.
+func cloneBoolPtr(v *bool) *bool {
+	if v == nil {
+		return nil
+	}
+	copied := *v
+	return &copied
+}
+
+func cloneIntPtr(v *int) *int {
+	if v == nil {
+		return nil
+	}
+	copied := *v
+	return &copied
+}
+
+func cloneFloat64Ptr(v *float64) *float64 {
+	if v == nil {
+		return nil
+	}
+	copied := *v
+	return &copied
+}
+
+// BaseURL derives the loopback OpenAI-compatible endpoint from the persisted
+// port. Deriving (instead of storing) the URL is what keeps a port reallocation
+// from leaving a stale endpoint behind.
+func (c EmbeddedLLMConfig) BaseURL() string {
+	return fmt.Sprintf("http://%s:%d/v1", EmbeddedLLMHost, c.Port)
+}
+
+// ProviderConfig returns the generated openai_compatible record for the
+// embedded server. It is only meaningful while Installed is true. The API key
+// is always empty (a loopback server takes no key) and no TLS fingerprint is
+// set (the endpoint is plain HTTP, so ADR-054 pinning does not apply).
+func (c EmbeddedLLMConfig) ProviderConfig() OpenAICompatibleConfig {
+	return OpenAICompatibleConfig{
+		BaseURL: c.BaseURL(),
+		Models:  []string{EmbeddedLLMModelName},
+	}
+}
+
+// SyncEmbeddedLLMProvider reconciles the derived LLM state with the
+// authoritative embedded_llm section. See LLMConfig.SyncEmbeddedProvider.
+func (c *Config) SyncEmbeddedLLMProvider(contextWindow int) bool {
+	return c.LLM.SyncEmbeddedProvider(c.EmbeddedLLM, contextWindow)
+}
+
+// SyncEmbeddedProvider makes the generated `embedded` provider record match the
+// authoritative embedded_llm state:
+//
+//   - installed     → the record is (re)generated from the persisted port, so a
+//     reallocated port or a hand-deleted entry self-heals;
+//   - not installed → the record is removed, so no dangling provider survives a
+//     Remove.
+//
+// contextWindow > 0 additionally records the resolved RAM-tier context window as
+// an llm.models override for the embedded model (every other override field is
+// preserved); <= 0 leaves an existing override untouched. The tier is passed IN:
+// this function performs no hardware probe, no network I/O and no disk access,
+// so it is safe on the config-load path and from any request handler.
+//
+// This is the single defense against UpdateLLMConfig's whole-map replacement of
+// openai_compatible: the UI draft never owns the `embedded` key. Maps are
+// copied before mutation, so calling this on a struct copy that still shares
+// its maps with the live config cannot leak a partial change to readers.
+func (c *LLMConfig) SyncEmbeddedProvider(state EmbeddedLLMConfig, contextWindow int) bool {
+	changed := false
+
+	existing, present := c.OpenAICompatible[EmbeddedLLMProviderName]
+	if !state.Installed {
+		if present {
+			c.copyOpenAICompatibleMap()
+			delete(c.OpenAICompatible, EmbeddedLLMProviderName)
+			changed = true
+		}
+	} else {
+		want := state.ProviderConfig()
+		// output_token_reserve is the one operator knob with no representation
+		// in embedded_llm, so it survives regeneration instead of being reset.
+		want.OutputTokenReserve = existing.OutputTokenReserve
+		if !present || !embeddedProviderEqual(existing, want) {
+			c.copyOpenAICompatibleMap()
+			c.OpenAICompatible[EmbeddedLLMProviderName] = want
+			changed = true
+		}
+	}
+
+	if contextWindow > 0 && c.setEmbeddedContextWindow(contextWindow) {
+		changed = true
+	}
+	if limit := embeddedOutputLimitCeiling(contextWindow); c.setEmbeddedOutputLimit(limit) {
+		changed = true
+	}
+	return changed
+}
+
+// embeddedOutputLimitCeiling is the generation ceiling recorded for the local
+// model: EmbeddedLLMOutputLimit, clamped under contextWindow/4 when a window is
+// known (an output reserve at or above a quarter of the window is the shape
+// that disables compaction). contextWindow <= 0 (the seed path before the
+// readback) keeps the plain default.
+func embeddedOutputLimitCeiling(contextWindow int) int {
+	if contextWindow <= 0 {
+		return EmbeddedLLMOutputLimit
+	}
+	return min(EmbeddedLLMOutputLimit, contextWindow/4)
+}
+
+// setEmbeddedOutputLimit records the local model's generation ceiling as its
+// llm.models override. A value the user authored is left alone: this is a
+// seeded default, not an operator override — once anything non-zero is present
+// the function reports no change and SyncEmbeddedProvider skips the write.
+func (c *LLMConfig) setEmbeddedOutputLimit(limit int) bool {
+	if limit <= 0 {
+		return false
+	}
+	override := c.Models[EmbeddedLLMModelName]
+	if override.OutputLimit != 0 {
+		return false
+	}
+	override.OutputLimit = limit
+	c.copyModelOverridesMap()
+	c.Models[EmbeddedLLMModelName] = override
+	return true
+}
+
+// setEmbeddedContextWindow records the resolved context window as the embedded
+// model's llm.models override, preserving the remaining override fields (a
+// user-authored tokenizer/family/protocol tweak stays). Reports whether the
+// stored value changed.
+func (c *LLMConfig) setEmbeddedContextWindow(contextWindow int) bool {
+	override := c.Models[EmbeddedLLMModelName]
+	if override.ContextWindow == contextWindow {
+		return false
+	}
+	override.ContextWindow = contextWindow
+	c.copyModelOverridesMap()
+	c.Models[EmbeddedLLMModelName] = override
+	return true
+}
+
+// embeddedProviderEqual reports whether two generated embedded records carry
+// the same backend-owned values.
+func embeddedProviderEqual(a, b OpenAICompatibleConfig) bool {
+	return a.BaseURL == b.BaseURL &&
+		a.APIKey == b.APIKey &&
+		a.TLSFingerprint == b.TLSFingerprint &&
+		a.OutputTokenReserve == b.OutputTokenReserve &&
+		slices.Equal(a.Models, b.Models)
+}
+
+// copyOpenAICompatibleMap replaces the provider map with a private copy so a
+// sync can never mutate a map another LLMConfig value still references.
+func (c *LLMConfig) copyOpenAICompatibleMap() {
+	clone := make(map[string]OpenAICompatibleConfig, len(c.OpenAICompatible)+1)
+	for name, cfg := range c.OpenAICompatible {
+		clone[name] = cfg
+	}
+	c.OpenAICompatible = clone
+}
+
+// copyModelOverridesMap replaces the model-override map with a private copy,
+// for the same aliasing reason as copyOpenAICompatibleMap.
+func (c *LLMConfig) copyModelOverridesMap() {
+	clone := make(map[string]ModelOverride, len(c.Models)+1)
+	for name, override := range c.Models {
+		clone[name] = override
+	}
+	c.Models = clone
+}
+
+// validateEmbeddedLLM checks the embedded_llm section. Most of it is
+// app-written state, so an invalid value there is either a hand edit or a bug —
+// both must fail fast with an actionable message rather than produce an
+// unreachable provider endpoint or a dead idle timer. The `tuning` sub-section
+// is operator-authored, and it is held to the same standard for the same
+// reason: a plan the planner cannot honour must be refused at load, not at
+// launch.
+func validateEmbeddedLLM(c *EmbeddedLLMConfig) error {
+	switch {
+	case c.Port == 0:
+		// 0 means "allocate at install time", which contradicts a completed
+		// install: the provider base URL could not be derived.
+		if c.Installed {
+			return errors.New(
+				"embedded_llm.installed is true but embedded_llm.port is 0; the loopback port is allocated during install — set installed: false or reinstall the embedded model so the provider base URL can be derived",
+			)
+		}
+	case c.Port < EmbeddedLLMMinPort || c.Port > EmbeddedLLMMaxPort:
+		return fmt.Errorf(
+			"embedded_llm.port %d is not valid; must be within %d-%d, or 0 to allocate it at install time",
+			c.Port, EmbeddedLLMMinPort, EmbeddedLLMMaxPort,
+		)
+	}
+
+	// The idle budget is bounded on BOTH sides. The floor keeps the timer from
+	// being armed with a non-positive budget; the ceiling
+	// (embeddedllm.MaxAutoUnloadMinutes) keeps the minutes→nanoseconds multiply
+	// total — past it `time.Duration(minutes) * time.Minute` wraps, and the
+	// wrapped result can be a short POSITIVE budget (seconds, or at the residues
+	// of the 2^11 divisor even microseconds), so an "effectively never" value
+	// would silently invert into "unload immediately" and the UI would keep
+	// echoing the operator's number. Same overflow class maxMemoryLimitMiB
+	// already guards for the two MiB-valued memory knobs.
+	if minutes := c.AutoUnload.IdleMinutes(); minutes < 1 || minutes > embeddedllm.MaxAutoUnloadMinutes {
+		return fmt.Errorf(
+			"embedded_llm.auto_unload.minutes %d is not valid; must be within 1-%d (default %d), or set embedded_llm.auto_unload.enabled: false to disable the idle timer",
+			minutes, embeddedllm.MaxAutoUnloadMinutes, EmbeddedLLMDefaultAutoUnloadMinutes,
+		)
+	}
+
+	// The tuning knobs are validated unconditionally — while the model is not
+	// installed, while fit is off, and while a knob is otherwise inert — for
+	// the reason auto_unload.minutes already is: a value that is merely
+	// dormant today must not become a dead budget the moment the switch is
+	// flipped. Routing through ToTuning is what keeps this list and the
+	// planner's own closed sets from ever disagreeing.
+	return validateEmbeddedLLMTuning(&c.Tuning)
+}
+
+// validateEmbeddedLLMTuning checks the embedded_llm.tuning section by
+// translating it. Delegating to ToTuning makes "validate() accepts it" and
+// "the planner can honour it" the same statement by construction rather than by
+// coincidence, so the two cannot drift; every message names the offending key
+// and states the fix.
+func validateEmbeddedLLMTuning(t *TuningConfig) error {
+	_, err := t.ToTuning()
+	return err
 }
 
 // MCPConfig holds MCP server configurations.
@@ -1304,12 +2117,16 @@ var envVarPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 // behind a single master switch. It is all-or-nothing by design: there is no
 // per-feature toggle, so enabling it exposes every gated feature and
 // disabling it treats each as off. Currently gated: the E2S execution mode
-// (e2s.*). Model Profiles (model_profiles.*) is NOT gated — it carries its own
+// (e2s.*) and the embedded local model's FRONTEND surfaces — the Settings
+// block and its entries in both model pickers are hidden while the switch is
+// off, while the backend keeps serving the subsystem's RPCs (ADR-068).
+// Model Profiles (model_profiles.*) is NOT gated — it carries its own
 // manual master toggle.
 type ExperimentalConfig struct {
 	// Enabled is the master switch for the gated experimental features (the
-	// E2S execution mode). When false, every gated feature is treated as off
-	// regardless of its own toggles. Default: false.
+	// E2S execution mode and the embedded model's frontend surfaces). When
+	// false, every gated feature is treated as off regardless of its own
+	// toggles. Default: false.
 	Enabled bool `yaml:"enabled"`
 }
 
@@ -1834,6 +2651,17 @@ func LoadWithResult(path string) (*LoadResult, error) {
 	// Apply defaults for zero-value fields
 	ApplyDefaults(&cfg)
 
+	// Reconcile the backend-owned `embedded` provider record with the
+	// authoritative embedded_llm state: generated from the persisted port
+	// while installed, removed otherwise (so a hand-deleted entry self-heals
+	// and no dangling provider survives a Remove). Pure in-memory work — no
+	// probe, no network, no disk. Must run after ApplyDefaults and before
+	// validate so the generated provider takes part in the default_model
+	// resolution check. The context_window override is deliberately NOT
+	// recomputed here: the resolved RAM tier is written by the install and
+	// supervision paths that know it.
+	cfg.SyncEmbeddedLLMProvider(0)
+
 	// Validate the shell_exec override section in place (fail-soft: invalid
 	// entries are warned about and reset to the built-in launch shape). Must
 	// run after ApplyDefaults (which seeds the platform-default shell kind
@@ -1924,6 +2752,31 @@ func validate(cfg *Config) error {
 			return fmt.Errorf(
 				"llm provider %q auto_retry_seconds must be within [0, %d], got %d",
 				p.name, maxAutoRetrySeconds, p.autoRetrySeconds,
+			)
+		}
+	}
+
+	// Range-check the llm.models context_window overrides. 0 means "inherit the
+	// built-in metadata" and stays legal; anything else must be a plausible
+	// token count. The override is a TIER-1 value that shadows the tier-1.5 lazy
+	// probe, so a poisoned one is never corrected by asking the model again, and
+	// an absurd window makes every prompt "fit" — which silently disables
+	// context compaction. Keys are sorted so a config with several bad overrides
+	// reports the same one every run. See MaxModelContextWindow.
+	modelNames := make([]string, 0, len(cfg.LLM.Models))
+	for name := range cfg.LLM.Models {
+		modelNames = append(modelNames, name)
+	}
+	sort.Strings(modelNames)
+	for _, name := range modelNames {
+		window := cfg.LLM.Models[name].ContextWindow
+		if window == 0 {
+			continue
+		}
+		if window < 0 || window > MaxModelContextWindow {
+			return fmt.Errorf(
+				"llm.models.%q.context_window %d is not valid; must be within 1-%d tokens, or 0/unset to inherit the built-in metadata",
+				name, window, MaxModelContextWindow,
 			)
 		}
 	}
@@ -2153,6 +3006,12 @@ func validate(cfg *Config) error {
 			"runtime.memory_soft_limit_mb %d exceeds the maximum of %d MiB (2 PiB); the MiB→bytes shift would overflow",
 			cfg.Runtime.MemorySoftLimitMB, maxMemoryLimitMiB,
 		)
+	}
+
+	// Validate the embedded_llm section (port range / install consistency and
+	// the idle-unload budget).
+	if err := validateEmbeddedLLM(&cfg.EmbeddedLLM); err != nil {
+		return err
 	}
 
 	return nil

@@ -1,7 +1,9 @@
-import { useRef } from 'react'
+import { useMemo, useRef } from 'react'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useConfigData, invalidateConfigCache } from '@/hooks/useConfigData'
 import { setDefaultModel } from '@/api/config'
+import { excludeEmbeddedModel } from '@/lib/llm-providers'
+import { useExperimentalStore } from '@/stores/experimentalStore'
 import { ModelPickerMenu } from '@/components/ui/ModelPickerMenu'
 
 /**
@@ -31,6 +33,16 @@ export function ModelCombobox({ disabled = false }: { disabled?: boolean }) {
   const setSelectedModel = useInputModeStore((s) => s.setSelectedModel)
 
   const { allModels: modelInfos, defaultModel, loaded } = useConfigData()
+
+  // The experimental switch gates the embedded local model's entries here the
+  // same way the Settings → LLM default-model picker does (the frontend-only
+  // gate — backend RPCs stay ungated). Read reactively so flipping the switch
+  // hides/reveals the entry without a reload.
+  const experimentalEnabled = useExperimentalStore((s) => s.enabled)
+  const visibleModels = useMemo(
+    () => excludeEmbeddedModel(modelInfos, experimentalEnabled),
+    [modelInfos, experimentalEnabled],
+  )
 
   // The first model pick starts immediately; while it is in flight, later
   // picks are chained here so backend mutations retain user click order.
@@ -96,7 +108,7 @@ export function ModelCombobox({ disabled = false }: { disabled?: boolean }) {
 
   return (
     <ModelPickerMenu
-      models={modelInfos}
+      models={visibleModels}
       defaultModel={defaultModel}
       loaded={loaded}
       value={selectedModel}

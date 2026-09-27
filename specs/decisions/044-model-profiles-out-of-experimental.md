@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted → Partially supersedes [ADR-041](./041-slm-profiles.md) and [ADR-043](./043-model-profiles-rename.md) (the experimental-gate coupling only; the profile-catalog architecture and the Model Profiles nomenclature stand unchanged)
+Accepted → Partially supersedes [ADR-041](./041-slm-profiles.md) and [ADR-043](./043-model-profiles-rename.md) (the experimental-gate coupling only; the profile-catalog architecture and the Model Profiles nomenclature stand unchanged) → Partially superseded by [ADR-068](./068-embedded-llm-frontend-experimental-gate.md) (the "experimental.enabled gates only E2S" scope claim only; the Model Profiles graduation stands unchanged)
 
 ## Context
 

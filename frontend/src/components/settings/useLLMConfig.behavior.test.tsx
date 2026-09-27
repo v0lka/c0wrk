@@ -707,3 +707,39 @@ describe('useLLMConfig auto_retry_max_seconds contract', () => {
     expect(mocks.loggerError).not.toHaveBeenCalled()
   })
 })
+
+// The generated `openai_compatible.embedded` record is backend-owned, so the
+// hook must expose it as a MODEL SOURCE (providerConfigs feeds the default
+// picker and validates the composite default) but never as an editable
+// compatible provider (the accordion list).
+describe('useLLMConfig backend-owned embedded provider', () => {
+  it('keeps the embedded model in providerConfigs but out of the compatible name set', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'embedded/Bonsai 2 27B',
+        anthropic: { api_key: '', models: ['claude-sonnet'] },
+        openai_compatible: {
+          embedded: {
+            api_key: '',
+            base_url: 'http://127.0.0.1:52341/v1',
+            models: ['Bonsai 2 27B'],
+            tls_fingerprint: '',
+          },
+          lmstudio: { api_key: '', base_url: 'http://localhost:1234', models: ['glm-5.3'], tls_fingerprint: '' },
+        },
+      },
+    })
+
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    // Not an editable compatible provider…
+    expect(result.openaiCompatibleProviderNames.has('embedded')).toBe(false)
+    expect(result.openaiCompatibleProviderNames.has('lmstudio')).toBe(true)
+    // …but still a model source, and still the resolved default.
+    expect(result.providerConfigs.embedded?.models).toEqual(['Bonsai 2 27B'])
+    expect(result.defaultModel).toBe('embedded/Bonsai 2 27B')
+  })
+})

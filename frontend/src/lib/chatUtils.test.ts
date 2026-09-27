@@ -1361,7 +1361,7 @@ describe('rebuildGoalFromHistory', () => {
       }),
     ]
 
-    rebuildGoalFromHistory(messages, { setActiveGoal }, undefined)
+    rebuildGoalFromHistory(messages, { setActiveGoal, setGoalProgress: vi.fn() }, undefined)
 
     expect(setActiveGoal).toHaveBeenCalledOnce()
     const [sessionId, goal] = setActiveGoal.mock.calls[0]!
@@ -1372,6 +1372,44 @@ describe('rebuildGoalFromHistory', () => {
     expect(goal.maxTurns).toBe(5)
     expect(goal.verdict).toBe('met')
     expect(goal.reason).toBe('tests green')
+  })
+
+  it('seeds the mid-loop goalProgress entry from the same latest snapshot', () => {
+    // goal_progress events stay transient; their telemetry reaches durable
+    // storage through the paired goal_status snapshot emitted in the same
+    // beat (orchestrator_goal.go emits both at the loop tail). The rebuild
+    // must fill the progress entry from that snapshot so it survives reload.
+    const setActiveGoal = vi.fn()
+    const setGoalProgress = vi.fn()
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'gs-1',
+        type: 'goal_status',
+        content: '',
+        metadata: { status: 'active', turn: 3, condition: 'ship it', max_turns: 10 },
+      }),
+    ]
+
+    rebuildGoalFromHistory(messages, { setActiveGoal, setGoalProgress }, undefined)
+
+    expect(setGoalProgress).toHaveBeenCalledOnce()
+    expect(setGoalProgress).toHaveBeenCalledWith('sess-1', {
+      turn: 3,
+      maxTurns: 10,
+      condition: 'ship it',
+    })
+  })
+
+  it('does not seed goalProgress when no valid snapshot exists', () => {
+    const setActiveGoal = vi.fn()
+    const setGoalProgress = vi.fn()
+    const messages: ChatMessageUI[] = [
+      makeUI({ type: 'user', content: 'hello' }),
+    ]
+
+    rebuildGoalFromHistory(messages, { setActiveGoal, setGoalProgress }, undefined)
+
+    expect(setGoalProgress).not.toHaveBeenCalled()
   })
 
   it('preserves the proposal verify clause and verification mode on rebuild', () => {
@@ -1397,7 +1435,7 @@ describe('rebuildGoalFromHistory', () => {
       }),
     ]
 
-    rebuildGoalFromHistory(messages, { setActiveGoal }, undefined)
+    rebuildGoalFromHistory(messages, { setActiveGoal, setGoalProgress: vi.fn() }, undefined)
 
     expect(setActiveGoal).toHaveBeenCalledOnce()
     const [, goal] = setActiveGoal.mock.calls[0]!
@@ -1422,7 +1460,7 @@ describe('rebuildGoalFromHistory', () => {
       }),
     ]
 
-    rebuildGoalFromHistory(messages, { setActiveGoal }, undefined)
+    rebuildGoalFromHistory(messages, { setActiveGoal, setGoalProgress: vi.fn() }, undefined)
 
     expect(setActiveGoal).toHaveBeenCalledOnce()
     const [, goal] = setActiveGoal.mock.calls[0]!
@@ -1437,7 +1475,7 @@ describe('rebuildGoalFromHistory', () => {
       makeUI({ type: 'assistant', content: 'hi' }),
     ]
 
-    rebuildGoalFromHistory(messages, { setActiveGoal }, undefined)
+    rebuildGoalFromHistory(messages, { setActiveGoal, setGoalProgress: vi.fn() }, undefined)
 
     expect(setActiveGoal).not.toHaveBeenCalled()
   })
@@ -1453,7 +1491,7 @@ describe('rebuildGoalFromHistory', () => {
       }),
     ]
 
-    rebuildGoalFromHistory(messages, { setActiveGoal }, undefined)
+    rebuildGoalFromHistory(messages, { setActiveGoal, setGoalProgress: vi.fn() }, undefined)
 
     expect(setActiveGoal).not.toHaveBeenCalled()
   })
@@ -1469,7 +1507,7 @@ describe('rebuildGoalFromHistory', () => {
       }),
     ]
 
-    rebuildGoalFromHistory(messages, { setActiveGoal }, {
+    rebuildGoalFromHistory(messages, { setActiveGoal, setGoalProgress: vi.fn() }, {
       condition: 'ship it',
       status: 'met',
       turn: 5,
@@ -1490,7 +1528,7 @@ describe('rebuildGoalFromHistory', () => {
       }),
     ]
 
-    rebuildGoalFromHistory(messages, { setActiveGoal }, {
+    rebuildGoalFromHistory(messages, { setActiveGoal, setGoalProgress: vi.fn() }, {
       condition: 'ship it',
       status: 'active',
       turn: 0,
@@ -1511,7 +1549,7 @@ describe('rebuildGoalFromHistory', () => {
       }),
     ]
 
-    rebuildGoalFromHistory(messages, { setActiveGoal }, {
+    rebuildGoalFromHistory(messages, { setActiveGoal, setGoalProgress: vi.fn() }, {
       condition: 'ship it',
       status: 'active',
       turn: 1,
@@ -1533,7 +1571,7 @@ describe('rebuildGoalFromHistory', () => {
       }),
     ]
 
-    rebuildGoalFromHistory(messages, { setActiveGoal }, {
+    rebuildGoalFromHistory(messages, { setActiveGoal, setGoalProgress: vi.fn() }, {
       condition: 'ship it',
       status: 'met',
       turn: 5,
@@ -1559,7 +1597,7 @@ describe('rebuildGoalFromHistory', () => {
       }),
     ]
 
-    rebuildGoalFromHistory(messages, { setActiveGoal }, {
+    rebuildGoalFromHistory(messages, { setActiveGoal, setGoalProgress: vi.fn() }, {
       condition: 'ship it',
       status: 'active',
       turn: 3,
@@ -1581,7 +1619,7 @@ describe('rebuildGoalFromHistory', () => {
       }),
     ]
 
-    rebuildGoalFromHistory(messages, { setActiveGoal }, {
+    rebuildGoalFromHistory(messages, { setActiveGoal, setGoalProgress: vi.fn() }, {
       condition: 'ship it',
       status: 'active',
       turn: 2,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isAgentMetricsData, normalizeAgentMetricsData, isTaskCompleteData, isCompactionFinishedData, isPlanStepCompleteData, isPlanStepPausedData, isSubAgentPausedData, isSubAgentCompleteData, isGitConfigRiskData, isE2SStateData, isE2SSigma, isTaskFailedResumableData } from './events'
+import { isAgentMetricsData, normalizeAgentMetricsData, isTaskCompleteData, isCompactionFinishedData, isPlanStepCompleteData, isPlanStepPausedData, isSubAgentPausedData, isSubAgentCompleteData, isGitConfigRiskData, isE2SStateData, isE2SSigma, isTaskFailedResumableData, isEmbeddedLLMInstallProgressData, isEmbeddedLLMStateData, isSessionTokensData } from './events'
 
 describe('isTaskFailedResumableData', () => {
     it('accepts a payload without auto_retry_at (timer not armed)', () => {
@@ -541,5 +541,132 @@ describe('isE2SSigma', () => {
         expect(isE2SSigma([])).toBe(false)
         expect(isE2SSigma({ next_steps: [null] })).toBe(false)
         expect(isE2SSigma({ checklist: [{ text: 't', checked: 'yes' }] })).toBe(false)
+    })
+})
+
+describe('isEmbeddedLLMInstallProgressData', () => {
+    const valid = { component: 'model', stage: 'downloading', bytes_done: 1024, bytes_total: 7206168928 }
+
+    it('accepts every documented component/stage pair', () => {
+        for (const component of ['runtime', 'cudart', 'model', 'mmproj']) {
+            for (const stage of ['downloading', 'verifying', 'extracting', 'signing', 'done']) {
+                expect(isEmbeddedLLMInstallProgressData({ ...valid, component, stage })).toBe(true)
+            }
+        }
+    })
+
+    it('accepts the non-transfer stages with zero byte counts', () => {
+        expect(isEmbeddedLLMInstallProgressData({
+            component: 'runtime', stage: 'verifying', bytes_done: 0, bytes_total: 0,
+        })).toBe(true)
+    })
+
+    it('rejects an unknown component or stage instead of rendering a mystery row', () => {
+        expect(isEmbeddedLLMInstallProgressData({ ...valid, component: 'weights' })).toBe(false)
+        expect(isEmbeddedLLMInstallProgressData({ ...valid, stage: 'uploading' })).toBe(false)
+    })
+
+    it('rejects malformed byte counts and non-objects', () => {
+        expect(isEmbeddedLLMInstallProgressData({ ...valid, bytes_done: '1024' })).toBe(false)
+        expect(isEmbeddedLLMInstallProgressData({ ...valid, bytes_total: null })).toBe(false)
+        expect(isEmbeddedLLMInstallProgressData(null)).toBe(false)
+        expect(isEmbeddedLLMInstallProgressData('downloading')).toBe(false)
+        expect(isEmbeddedLLMInstallProgressData([])).toBe(false)
+        expect(isEmbeddedLLMInstallProgressData({})).toBe(false)
+    })
+})
+
+describe('isEmbeddedLLMStateData', () => {
+    const valid = {
+        installed: true, loading: false, loaded: true,
+        packing: 'PQ2_0', backend: 'metal', port: 4321,
+        context_size: 32768, auto_unload_minutes: 60, error: '', install_error: '',
+    }
+
+    it('accepts the loaded state', () => {
+        expect(isEmbeddedLLMStateData(valid)).toBe(true)
+    })
+
+    it('accepts the not-installed state (empty record, no error)', () => {
+        expect(isEmbeddedLLMStateData({
+            installed: false, loading: false, loaded: false, packing: '', backend: '',
+            port: 0, context_size: 0, auto_unload_minutes: 60, error: '', install_error: '',
+        })).toBe(true)
+    })
+
+    it('accepts an unknown backend string: it is informational, not a closed set', () => {
+        expect(isEmbeddedLLMStateData({ ...valid, backend: 'cuda-14.0', packing: 'PTQ1_0' })).toBe(true)
+    })
+
+    it('accepts a state carrying a failure cause', () => {
+        expect(isEmbeddedLLMStateData({
+            ...valid, loaded: false, error: 'the embedded LLM server process exited',
+        })).toBe(true)
+    })
+
+    it('rejects a payload missing any documented field', () => {
+        for (const key of Object.keys(valid)) {
+            const partial = { ...valid } as Record<string, unknown>
+            delete partial[key]
+            expect(isEmbeddedLLMStateData(partial)).toBe(false)
+        }
+    })
+
+    it('rejects wrong types and non-objects', () => {
+        expect(isEmbeddedLLMStateData({ ...valid, installed: 'yes' })).toBe(false)
+        expect(isEmbeddedLLMStateData({ ...valid, port: '4321' })).toBe(false)
+        expect(isEmbeddedLLMStateData({ ...valid, error: null })).toBe(false)
+        expect(isEmbeddedLLMStateData(null)).toBe(false)
+        expect(isEmbeddedLLMStateData('loaded')).toBe(false)
+        expect(isEmbeddedLLMStateData([])).toBe(false)
+    })
+})
+
+describe('isSessionTokensData', () => {
+    // The throughput pair (median_output_tok_s / tok_s_samples) is ADDITIVE:
+    // payloads that predate the metric simply omit both, so the guard accepts
+    // the legacy shape untouched and validates the new fields only when
+    // present — the same pattern as the compaction no-op flags.
+    const legacy = { session_input_tokens: 1200, session_output_tokens: 340 }
+
+    it('accepts the legacy payload (no throughput fields)', () => {
+        expect(isSessionTokensData(legacy)).toBe(true)
+    })
+
+    it('accepts the legacy payload with the optional fill fields', () => {
+        expect(isSessionTokensData({
+            ...legacy,
+            model: 'embedded/Bonsai 2 27B',
+            family: 'embedded',
+            fill_percent: 12.5,
+            used_tokens: 2500,
+            max_tokens: 20000,
+        })).toBe(true)
+    })
+
+    it('accepts a payload carrying the throughput pair', () => {
+        expect(isSessionTokensData({ ...legacy, median_output_tok_s: 27.44, tok_s_samples: 5 })).toBe(true)
+    })
+
+    it('accepts the throughput fields present but undefined (treated as absent)', () => {
+        expect(isSessionTokensData({ ...legacy, median_output_tok_s: undefined })).toBe(true)
+        expect(isSessionTokensData({ ...legacy, tok_s_samples: undefined })).toBe(true)
+    })
+
+    it('rejects a non-number median rate', () => {
+        expect(isSessionTokensData({ ...legacy, median_output_tok_s: '27.4' })).toBe(false)
+        expect(isSessionTokensData({ ...legacy, median_output_tok_s: null })).toBe(false)
+    })
+
+    it('rejects a non-number sample count', () => {
+        expect(isSessionTokensData({ ...legacy, tok_s_samples: '5' })).toBe(false)
+        expect(isSessionTokensData({ ...legacy, tok_s_samples: null })).toBe(false)
+    })
+
+    it('still rejects payloads missing the required totals and non-objects', () => {
+        expect(isSessionTokensData({ session_input_tokens: 1200 })).toBe(false)
+        expect(isSessionTokensData({ session_output_tokens: 340 })).toBe(false)
+        expect(isSessionTokensData(null)).toBe(false)
+        expect(isSessionTokensData('session_tokens')).toBe(false)
     })
 })

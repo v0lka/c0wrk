@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -211,8 +212,8 @@ func (p *EventPersister) Persist(evt Event) {
 		// update and the row count stays bounded at one row per step.
 		role = "step_todo_update"
 	case "session_tokens",
-		"assistant_chunk", "context_fill", "context_compaction", "finishing",
-		"memory_read", "message_received", "blackboard_updated",
+		"assistant_chunk", "context_fill", "finishing",
+		"message_received", "blackboard_updated",
 		"tool_judge_response", "session_created", "session_deleted",
 		"session_renamed",
 		// Strict-judge (Smart Approve) phase telemetry: transient activity
@@ -261,6 +262,40 @@ func (p *EventPersister) Persist(evt Event) {
 		// GetPendingActions after a reload (the agent remains blocked until
 		// the user confirms/cancels via the goal_proposal_response flow).
 		role = "goal_proposal"
+	case "context_compaction":
+		// Auto compaction (executor fill-trigger / conductor compact-on-start):
+		// a durable record of a history mutation. The row renders as the
+		// compaction card on session reload — keeping the event transient lost
+		// the card on every session switch (the chat store's history merge
+		// keeps only persisted rows) and on app restart. The MANUAL flow emits
+		// no context_compaction event — its live card comes from
+		// compaction_finished and its durable record is the richer marker row
+		// (persistCompactionMarker, carrying the compacted-history snapshot) —
+		// so no duplication arises.
+		role = "context_compaction"
+		switch d := evt.Data.(type) {
+		case ContextCompactionEventData:
+			content = fmt.Sprintf("Context compacted from %.0f%% to %.0f%%", d.BeforePercent, d.AfterPercent)
+		case map[string]any:
+			bp, _ := d["before_percent"].(float64)
+			ap, _ := d["after_percent"].(float64)
+			content = fmt.Sprintf("Context compacted from %.0f%% to %.0f%%", bp, ap)
+		}
+	case "memory_read":
+		// A memory read renders as a compact "memory read" card in the chat
+		// stream. The row must survive session switches (the chat store's
+		// history merge keeps only persisted rows) and app restarts, so it
+		// persists as a durable row — the frontend already maps the role
+		// through roleToType and renders it via the 'memory_read' DisplayItem.
+		// Content carries the human-readable summary so the restored card
+		// matches the live one; metadata keeps the raw payload ({step_num,
+		// content}) with the plan-step nesting hint.
+		role = "memory_read"
+		if d, ok := evt.Data.(map[string]any); ok {
+			if c, ok := d["content"].(string); ok {
+				content = c
+			}
+		}
 	default:
 		// Unknown event types are persisted with a generic role so they survive
 		// session reloads. The frontend can still show them (or ignore them).

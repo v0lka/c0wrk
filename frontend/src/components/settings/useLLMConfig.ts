@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { getConfig } from '@/api/config'
 import { logger } from '@/lib/logger'
 import { useProxyDraftStore, isProxyEffective } from '@/stores/proxyDraftStore'
-import { FIXED_PROVIDERS, type CompatibleType } from '@/lib/llm-providers'
+import { FIXED_PROVIDERS, isBackendOwnedProvider, type CompatibleType } from '@/lib/llm-providers'
 import { compositeModelId, isCompositeModelId, decomposeCompositeModelId } from '@/lib/modelId'
 import type { ConfigProviderFull } from '@/types/models'
 import { useLLMConfigSave } from './useLLMConfigSave'
@@ -45,7 +45,11 @@ interface UseLLMConfigResult {
      *  fails the load loudly instead of silently clamping against a stale
      *  constant. Undefined only until the first successful load. */
     autoRetryMaxSeconds: number | undefined
-    /** Names of providers loaded from the openai_compatible map (non-fixed providers). */
+    /** Names of providers loaded from the openai_compatible map (non-fixed
+     *  providers) that the settings dialog may EDIT. Backend-owned generated
+     *  records (`embedded`) are absent: they stay in `providerConfigs` as a
+     *  model source but render no accordion. Drives the accordion list and the
+     *  add-provider uniqueness check. */
     openaiCompatibleProviderNames: Set<string>
     /** Names of providers loaded from the anthropic_compatible map. */
     anthropicCompatibleProviderNames: Set<string>
@@ -231,11 +235,22 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
                 }
 
                 // Load openai_compatible providers from the map.
+                //
+                // The backend-owned `embedded` record IS loaded into
+                // providerConfigs — the default-model picker is built from it
+                // and the composite default `embedded/Bonsai 2 27B` must
+                // validate — but it is NOT registered as an editable compatible
+                // provider. It has no editor: base_url, api_key and the model
+                // list are regenerated from the authoritative `embedded_llm`
+                // state on every load and save, so anything typed into an
+                // accordion for it would be silently discarded.
                 const ocProviders = llm.openai_compatible
                 if (ocProviders && typeof ocProviders === 'object') {
                     for (const [name, cfg] of Object.entries(ocProviders)) {
                         configs[name] = toProviderConfig(cfg, 'openai')
-                        openaiNames.add(name)
+                        if (!isBackendOwnedProvider(name)) {
+                            openaiNames.add(name)
+                        }
                     }
                 }
 
