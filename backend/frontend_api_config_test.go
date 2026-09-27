@@ -37,6 +37,7 @@ type mockBuilder struct {
 	mu                        sync.Mutex
 	rebuildJudgeCalls         int
 	rebuildRouterCalls        int
+	updateModelOverridesCalls int
 	rebuildProxyCalls         int
 	updateSearchToolCalls     int
 	updateSecPolicyCalls      int
@@ -157,6 +158,11 @@ func (m *mockBuilder) routerCfgSnapshot() []string {
 	out := make([]string, len(m.rebuildRouterCfgs))
 	copy(out, m.rebuildRouterCfgs)
 	return out
+}
+func (m *mockBuilder) UpdateModelOverrides(_ *core.BuilderConfig) {
+	m.mu.Lock()
+	m.updateModelOverridesCalls++
+	m.mu.Unlock()
 }
 func (m *mockBuilder) RebuildProxy(ctx context.Context, cfg *core.BuilderConfig) error {
 	m.mu.Lock()

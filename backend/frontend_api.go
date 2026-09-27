@@ -282,6 +282,22 @@ type FrontendAPI struct {
 	// accessor. Used by tests to substitute a fake appBuilder so config/MCP
 	// mutations can be verified without the real LLM router or MCP gateway.
 	builderOverride appBuilder
+
+	// Embedded-context refresh state. The /props context read-back lands the
+	// corrected llm.models window while Server.Load is on the request path,
+	// where a SYNCHRONOUS router rebuild is forbidden (it would swap the
+	// router under the request that triggered the load); instead the persist
+	// schedules rebuildAfterEmbeddedConfigChange through
+	// scheduleEmbeddedRouterRefresh, which runs it on its own goroutine once
+	// the persist has released its locks. embeddedRefreshScheduled owns the
+	// single-flight window and embeddedRefreshDirty records a change that
+	// landed while a refresh was already running, so the loop reruns once
+	// more and no correction is ever lost between two loads. Both guarded by
+	// embeddedRefreshMu.
+	embeddedRefreshMu        sync.Mutex
+	embeddedRefreshScheduled bool
+	embeddedRefreshDirty     bool
+	embeddedRefreshDispatch  func(func())
 }
 
 // TerminalManager is the interface for the terminal subsystem.

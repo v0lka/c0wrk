@@ -20,6 +20,7 @@ type appBuilder interface {
 	RebuildJudge(*core.BuilderConfig)
 	RebuildRouter(*core.BuilderConfig) error
 	RebuildProxy(context.Context, *core.BuilderConfig) error
+	UpdateModelOverrides(*core.BuilderConfig)
 	UpdateSearchTool(*core.BuilderConfig)
 	UpdateSecurityPolicies(*core.BuilderConfig)
 	UpdateShellBlocklist(*core.BuilderConfig) error

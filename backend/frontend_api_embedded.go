@@ -729,12 +729,22 @@ func (f *FrontendAPI) embeddedTuning() embeddedllm.Tuning {
 // later. The load path is the only one that already has a resident server to
 // ask, and it keeps GetConfig network-free.
 //
-// It does NOT rebuild the router, for the reason persistEmbeddedPort gives: this
-// runs inside Load, usually on behalf of an in-flight request the ensure-loaded
-// transport is waiting on, and swapping the router underneath it would be worse
-// than serving one session with the previous — still valid — window. The
-// persisted value is what the next rebuild (a settings save, a profile change, a
-// restart) picks up.
+// It does not rebuild the router SYNCHRONOUSLY: this runs inside Load, usually
+// on behalf of an in-flight request the ensure-loaded transport is waiting on,
+// which holds the supervisor's single-instance gate and the saveMu a rebuild
+// needs. But unlike a port change — the transport redirects to the live port,
+// so no rebuild is ever needed there — the previous CONTEXT is not "still
+// valid": it is the install-time DefaultFitMinContext estimate, which
+// under-represents the server and makes the router's pre-call guard refuse
+// every prompt the real window would accept (observed as
+// "context window exceeded ... allows 31129 (context_window=65536)" on a
+// machine whose fit-sized server actually ran 262144). So a successful persist
+// SCHEDULES rebuildAfterEmbeddedConfigChange — which also pushes the fresh
+// metadata into every live per-session model registry — through
+// scheduleEmbeddedRouterRefresh; the refresh runs on its own goroutine once
+// the locks below are released. The request that triggered the load is the one
+// request that still sees the stale window: its validation already ran before
+// the transport dispatched. Everything after it is corrected without a restart.
 //
 // A persistence failure is deliberately NOT fatal: it is returned to core, which
 // logs it and keeps the load successful, because the model is resident and
@@ -806,7 +816,16 @@ func (f *FrontendAPI) persistEmbeddedContext(_ context.Context, contextSize int)
 		return nil
 	}
 
-	return sink.saveOrRollback(previousLLM, previousEmbedded)
+	if err := sink.saveOrRollback(previousLLM, previousEmbedded); err != nil {
+		return err
+	}
+
+	// The corrected window is durable and config:updated is on its way.
+	// Schedule the async refresh so the live router stops guarding prompts
+	// with the stale estimate — see scheduleEmbeddedRouterRefresh for why it
+	// must not run synchronously on this path.
+	f.scheduleEmbeddedRouterRefresh()
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -2194,10 +2213,73 @@ func (f *FrontendAPI) rebuildAfterEmbeddedConfigChange() {
 	f.configMu.RLock()
 	fresh := f.toBuilderConfigLocked()
 	b.RebuildJudge(fresh)
+	// Push the fresh model metadata into every LIVE per-session model
+	// registry. RebuildRouter below replaces the builder-cached pair — which
+	// only sessions built AFTER this point see — while sessions built before
+	// it keep their own registries and would otherwise guard prompts with
+	// stale metadata forever. The push is an upsert of the current cfg, so it
+	// is idempotent, and running it before the rebuild means the correction
+	// reaches live sessions even when the rebuild fails.
+	b.UpdateModelOverrides(fresh)
 	err := b.RebuildRouter(fresh)
 	f.configMu.RUnlock()
 	if err != nil {
 		f.log().Warn("failed to rebuild the LLM router after an embedded LLM config change", "error", err)
+	}
+}
+
+// scheduleEmbeddedRouterRefresh runs rebuildAfterEmbeddedConfigChange outside
+// the caller's critical section — on its own goroutine by default. It is the
+// async half of the embedded context read-back contract: persistEmbeddedContext
+// must not rebuild the router synchronously (it runs inside Server.Load, on
+// behalf of the request the ensure-loaded transport is waiting on, which holds
+// the supervisor's single-instance gate and the saveMu the rebuild needs), and
+// a skipped rebuild is NOT acceptable either — the previous window is the
+// install-time DefaultFitMinContext ESTIMATE, which under-represents the
+// server and makes the router's pre-call guard refuse every prompt above
+// roughly (window − output_reserve) × 95% until an unrelated rebuild.
+//
+// Single-flight: loads are serialized by the supervisor's gate, but the
+// scheduled refresh runs AFTER the persist released its locks, so a fast
+// second load can schedule while the first refresh is still running. That
+// second schedule sets the dirty flag instead; the running loop reruns the
+// refresh once more before closing, so no correction is ever lost — each run
+// snapshots the CURRENT config, and the change itself is already durable.
+//
+// Tests inject embeddedRefreshDispatch to run the work synchronously and
+// deterministically; production leaves it nil and gets a goroutine.
+func (f *FrontendAPI) scheduleEmbeddedRouterRefresh() {
+	f.embeddedRefreshMu.Lock()
+	if f.embeddedRefreshScheduled {
+		f.embeddedRefreshDirty = true
+		f.embeddedRefreshMu.Unlock()
+		return
+	}
+	f.embeddedRefreshScheduled = true
+	f.embeddedRefreshMu.Unlock()
+
+	dispatch := f.embeddedRefreshDispatch
+	if dispatch == nil {
+		dispatch = func(fn func()) { go fn() }
+	}
+	dispatch(f.runEmbeddedRouterRefresh)
+}
+
+// runEmbeddedRouterRefresh is the scheduled refresh body: one rebuild, plus
+// exactly one more when a change landed while this window was open. It always
+// ends with the scheduled flag cleared.
+func (f *FrontendAPI) runEmbeddedRouterRefresh() {
+	for {
+		f.rebuildAfterEmbeddedConfigChange()
+
+		f.embeddedRefreshMu.Lock()
+		if !f.embeddedRefreshDirty {
+			f.embeddedRefreshScheduled = false
+			f.embeddedRefreshMu.Unlock()
+			return
+		}
+		f.embeddedRefreshDirty = false
+		f.embeddedRefreshMu.Unlock()
 	}
 }
 

@@ -66,6 +66,14 @@ type OrchestratorBuilder struct {
 	// session manager invokes on session delete and app shutdown. Guarded by
 	// b.mu.
 	sessionRegistries map[*tools.ToolRegistry]struct{}
+	// sessionModelRegistries tracks the per-session model registries created
+	// by buildRouter so runtime metadata pushes (UpdateModelOverrides — the
+	// embedded LLM context read-back being the motivating correction) reach
+	// already-open sessions, not only sessions built after the change.
+	// Entries are added by registerSessionModelRegistry (Build) and removed
+	// by the same cleanup hook that releases sessionRegistries. Guarded by
+	// b.mu.
+	sessionModelRegistries map[*llm.ModelRegistry]struct{}
 	// mcpWorkDir is the default working directory requested for MCP stdio
 	// server processes. It is applied to the gateway by runMCPInit (when the
 	// gateway is first assigned) or by SetMCPWorkDir (when the gateway is
@@ -507,6 +515,9 @@ func (b *OrchestratorBuilder) Build(
 	if err != nil {
 		return nil, fmt.Errorf("failed to build LLM router: %w", err)
 	}
+	// Track the model registry for runtime metadata pushes (see
+	// registerSessionModelRegistry) and release it via the cleanup hook below.
+	b.registerSessionModelRegistry(modelReg)
 	if d := time.Since(routerStart); d > 50*time.Millisecond {
 		b.log().Warn("build_router slow", "elapsed_ms", d.Milliseconds())
 	}
@@ -776,10 +787,13 @@ func (b *OrchestratorBuilder) Build(
 		// RunConductor, defaultGoalTurnRunner).
 		VerifyOnEdit:               verifyOnEditRunner,
 		VerifyOnEditMaxOutputChars: cfg.Executor.VerifyOnEdit.MaxOutputChars,
-		// Release the session registry's live-tracking entry when the session
-		// orchestrator is cleaned up, so security pushes stop reaching dead
+		// Release the session registry's live-tracking entry when the
+		// session orchestrator is cleaned up, so security pushes stop reaching dead
 		// clones and the builder does not accumulate registries forever.
-		OnCleanup: func() { b.unregisterSessionRegistry(sessionRegistry) },
+		OnCleanup: func() {
+			b.unregisterSessionRegistry(sessionRegistry)
+			b.unregisterSessionModelRegistry(modelReg)
+		},
 	}), nil
 }
 
@@ -1768,6 +1782,59 @@ func activeSkillPathResolver(ctx context.Context, skillName string) (string, boo
 // ---------------------------------------------------------------------------
 
 // buildRouter creates a fresh LLM Router + ModelRegistry from config.
+// modelOverridesFromConfig derives the tier-1 model-metadata override map a
+// model registry is seeded with. Both buildRouter (registry construction) and
+// UpdateModelOverrides (runtime pushes into live session registries) derive
+// their overrides through this one helper so the two writers cannot drift.
+//
+// Entries are seeded PARTIAL: only the fields the user actually set in
+// cfg.LLM.Models are carried (unset scalars stay zero/empty = inherit), and
+// the registry's enrichPartialOverride fills the rest at Resolve time from
+// the tiers below (observed runtime -> built-in catalog -> cache -> fallback).
+// Merging ResolveBuiltInModel values HERE — as an earlier version did —
+// pins the catalog window (262144) or the fallback (128000) into tier 1,
+// permanently shadowing both the lazy server probe and the model's real
+// non-standard window: a user override pinning only the output limit still
+// carried a wrong context window at tier 1.
+//
+// Two post-processing passes run on the raw map, matching the seeded entries:
+//
+//   - Auto-remap of the Google protocol for Gemma/Gemini checkpoints served by
+//     a local OpenAI-compatible server (LM Studio/vLLM/Ollama). These servers
+//     expose /v1/chat/completions (and the /v1/responses, /v1/messages
+//     delegates) but NOT Google's :generateContent endpoint — which they
+//     answer with a misleading 200 OK + empty body (see the bug log). Remapping
+//     only the Google protocol → chat_completions keeps the request on an
+//     endpoint the server actually serves, while GPT-5 (Responses) and Claude
+//     (Anthropic) keep working unchanged. An explicit protocol override from
+//     cfg.LLM.Models always wins and is never clobbered.
+//
+//   - Per-provider output-token reserve: seed ModelMetadata.OutputLimit for
+//     every model of a provider that sets output_token_reserve. The registry
+//     uses OutputLimit both as the context-window reserve and as the executor
+//     MaxTokens ceiling, so a provider-level budget raises the generation
+//     ceiling for all of its models at once. Priority: per-model llm.models
+//     output_limit > per-provider output_token_reserve > global
+//     executor.output_token_reserve (the RouterConfig fallback).
+func modelOverridesFromConfig(cfg *BuilderConfig) map[string]llm.ModelMetadata {
+	overrides := make(map[string]llm.ModelMetadata)
+	for name, override := range cfg.LLM.Models {
+		entry := llm.ModelMetadata{
+			ContextWindow: override.ContextWindow,
+			OutputLimit:   override.OutputLimit,
+			TokenizerType: override.TokenizerType,
+			Family:        override.Family,
+			Protocol:      llm.APIProtocol(override.Protocol),
+			Capabilities:  override.Capabilities,
+		}
+		overrides[name] = entry
+	}
+
+	remapLocalGoogleProtocols(overrides, cfg.LLM.ProviderConfigs, cfg.ExpandEnvVars)
+	applyProviderOutputReserves(overrides, cfg.LLM.ProviderConfigs)
+	return overrides
+}
+
 func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfig) (*llm.Router, *llm.ModelRegistry, error) {
 	// Snapshot proxyClient under lock to avoid data races with RebuildProxy.
 	b.mu.RLock()
@@ -1791,47 +1858,9 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	// non-standard window: a user override pinning only the output limit still
 	// carried a wrong context window at tier 1.
 	//
-	// Capabilities is overridden atomically via its pointer: nil = inherit
-	// (the registry fills the effective set from the tiers below), non-nil =
-	// authoritative — including an all-false set, which is exactly why the
-	// field is a pointer (a value struct could not distinguish "user disabled
-	// everything" from "user set nothing"). There is no per-flag partial
-	// override, matching the dialog's "submit the full capability set" UX.
-	// TokenizerType/Family/Protocol are string sentinels — empty = inherit
-	// (DetectProtocol/resolveFamily derive the effective value at Resolve
-	// time), non-empty = authoritative override.
-	overrides := make(map[string]llm.ModelMetadata)
-	for name, override := range cfg.LLM.Models {
-		entry := llm.ModelMetadata{
-			ContextWindow: override.ContextWindow,
-			OutputLimit:   override.OutputLimit,
-			TokenizerType: override.TokenizerType,
-			Family:        override.Family,
-			Protocol:      llm.APIProtocol(override.Protocol),
-			Capabilities:  override.Capabilities,
-		}
-		overrides[name] = entry
-	}
-
-	// Auto-remap the Google protocol for Gemma/Gemini checkpoints served by a
-	// local OpenAI-compatible server (LM Studio/vLLM/Ollama). These servers
-	// expose /v1/chat/completions (and the /v1/responses, /v1/messages
-	// delegates) but NOT Google's :generateContent endpoint — which they
-	// answer with a misleading 200 OK + empty body (see the bug log). Remapping
-	// only the Google protocol → chat_completions keeps the request on an
-	// endpoint the server actually serves, while GPT-5 (Responses) and Claude
-	// (Anthropic) keep working unchanged. An explicit protocol override seeded
-	// above from cfg.LLM.Models always wins and is never clobbered here.
-	remapLocalGoogleProtocols(overrides, cfg.LLM.ProviderConfigs, cfg.ExpandEnvVars)
-
-	// Per-provider output-token reserve: seed ModelMetadata.OutputLimit for
-	// every model of a provider that sets output_token_reserve. The registry
-	// uses OutputLimit both as the context-window reserve and as the executor
-	// MaxTokens ceiling, so a provider-level budget raises the generation
-	// ceiling for all of its models at once. Priority: per-model llm.models
-	// output_limit > per-provider output_token_reserve > global
-	// executor.output_token_reserve (the RouterConfig fallback).
-	applyProviderOutputReserves(overrides, cfg.LLM.ProviderConfigs)
+	//   - 1. User overrides (from config): seeded by modelOverridesFromConfig
+	//     below — see that helper for the partial-entry and shadowing rules.
+	overrides := modelOverridesFromConfig(cfg)
 
 	modelRegistry := llm.NewModelRegistry(overrides)
 	if proxyClient != nil {
@@ -2565,6 +2594,64 @@ func (b *OrchestratorBuilder) unregisterSessionRegistry(r *tools.ToolRegistry) {
 	b.mu.Lock()
 	delete(b.sessionRegistries, r)
 	b.mu.Unlock()
+}
+
+// registerSessionModelRegistry records a freshly built per-session model
+// registry in the live set so UpdateModelOverrides pushes reach it. It runs
+// under b.mu so a concurrent push either sees the registry (and includes it)
+// or ran entirely before the registry existed — sessions built after a
+// metadata change carry the new metadata from construction, having read the
+// changed config. The gap this cannot close is the one INSIDE buildRouter:
+// the registry is constructed there, outside b.mu, a few statements before
+// registration. A push landing in that gap skips the session; the tool
+// registry's equivalent closes it by cloning under b.mu, which the model
+// registry cannot mirror cheaply — the accepted consequence is that such a
+// session re-syncs on the NEXT push, and only the motivating read-back push
+// exists today.
+func (b *OrchestratorBuilder) registerSessionModelRegistry(reg *llm.ModelRegistry) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.sessionModelRegistries == nil {
+		b.sessionModelRegistries = make(map[*llm.ModelRegistry]struct{})
+	}
+	b.sessionModelRegistries[reg] = struct{}{}
+}
+
+// unregisterSessionModelRegistry removes a session model registry from the
+// live set. It shares the cleanup hook with unregisterSessionRegistry so
+// tracked registries do not outlive their sessions.
+func (b *OrchestratorBuilder) unregisterSessionModelRegistry(reg *llm.ModelRegistry) {
+	b.mu.Lock()
+	delete(b.sessionModelRegistries, reg)
+	b.mu.Unlock()
+}
+
+// UpdateModelOverrides pushes the config-derived tier-1 model metadata into
+// every live per-session model registry, so a runtime metadata correction
+// reaches already-open sessions instead of only sessions built after it —
+// the model-registry counterpart of the security-policy push. The motivating
+// caller is the embedded LLM context read-back: the /props-reported window
+// lands in llm.models while a session built before it keeps refusing prompts
+// with the stale window unless the correction is pushed to it.
+//
+// The overrides derive from the CURRENT cfg — the same map a session built
+// right now would be seeded with — and are applied as an upsert: models the
+// cfg no longer mentions keep their stored entries. The builder-cached
+// router/registry pair is deliberately NOT touched here; RebuildRouter
+// replaces that pair wholesale and the backend always pairs the two calls.
+func (b *OrchestratorBuilder) UpdateModelOverrides(cfg *BuilderConfig) {
+	overrides := modelOverridesFromConfig(cfg)
+	if len(overrides) == 0 {
+		return
+	}
+	// Lock ordering is b.mu → registry mu, the same order the security push
+	// and registerSessionModelRegistry use; the registries never call back
+	// into the builder.
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for reg := range b.sessionModelRegistries {
+		reg.ApplyOverrides(overrides)
+	}
 }
 
 // applySecurityPolicies applies group-based security policies to the tool

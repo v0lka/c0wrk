@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -457,23 +458,146 @@ func mustEmbeddedManifestPath(t *testing.T, f *FrontendAPI) string {
 	return path
 }
 
-// TestPersistEmbeddedContextDoesNotRebuildTheRouter pins the deliberate omission.
-// This runs inside Server.Load, usually on behalf of an in-flight request the
-// ensure-loaded transport is waiting on, so swapping the router underneath it
-// would be worse than serving one session with the previous — still valid —
-// window. The persisted value is what the next rebuild picks up.
-func TestPersistEmbeddedContextDoesNotRebuildTheRouter(t *testing.T) {
+// TestPersistEmbeddedContextSchedulesAnAsyncRouterRefresh pins the read-back
+// contract. persistEmbeddedContext runs inside Server.Load — on behalf of the
+// request the ensure-loaded transport is waiting on — so it must not rebuild
+// the router synchronously; but the previous window is the install-time
+// DefaultFitMinContext ESTIMATE, which under-represents the server and makes
+// the live router refuse every prompt above (window − reserve) × 95% until an
+// unrelated rebuild. The successful persist therefore schedules the refresh,
+// and the refreshed rebuild must also PUSH the fresh metadata into the live
+// per-session model registries (UpdateModelOverrides) — RebuildRouter alone
+// only fixes sessions built afterwards.
+func TestPersistEmbeddedContextSchedulesAnAsyncRouterRefresh(t *testing.T) {
 	f, _, mock := newEmbeddedTestAPI(t)
 	installEmbeddedLLM(t, f, 4321)
 	if !f.config.SyncEmbeddedLLMProvider(16384) {
 		t.Fatal("pinning the estimate reported no change")
 	}
 
-	before := mock.rebuildRouterCalls
+	// Capture the scheduled work instead of running it, so the synchronous
+	// half of the contract is observable: nothing may rebuild DURING persist.
+	var scheduled []func()
+	f.embeddedRefreshDispatch = func(fn func()) { scheduled = append(scheduled, fn) }
+
+	beforeRebuild := mock.rebuildRouterCalls
+	beforePush := mock.updateModelOverridesCalls
 	if err := f.persistEmbeddedContext(context.Background(), 65536); err != nil {
 		t.Fatalf("persistEmbeddedContext: %v", err)
 	}
-	if got := mock.rebuildRouterCalls; got != before {
-		t.Errorf("the router was rebuilt %d time(s) inside the load path, want 0", got-before)
+
+	if got := mock.rebuildRouterCalls; got != beforeRebuild {
+		t.Fatalf("the router was rebuilt %d time(s) inside the load path, want 0", got-beforeRebuild)
+	}
+	if len(scheduled) != 1 {
+		t.Fatalf("the refresh was scheduled %d time(s), want exactly 1", len(scheduled))
+	}
+
+	// Flushing the scheduled work performs the rebuild AND the live-session
+	// push, exactly once.
+	scheduled[0]()
+	if got := mock.rebuildRouterCalls; got != beforeRebuild+1 {
+		t.Errorf("RebuildRouter ran %d time(s) after the flush, want 1", got-beforeRebuild)
+	}
+	if got := mock.updateModelOverridesCalls; got != beforePush+1 {
+		t.Errorf("UpdateModelOverrides ran %d time(s) after the flush, want 1", got-beforePush)
+	}
+
+	// The single-flight window is closed: a fresh change schedules again.
+	// (The value is persisted directly — persisting it pre-synced through
+	// SyncEmbeddedLLMProvider would make the persist itself a no-op.)
+	if err := f.persistEmbeddedContext(context.Background(), 131072); err != nil {
+		t.Fatalf("second persistEmbeddedContext: %v", err)
+	}
+	if len(scheduled) != 2 {
+		t.Errorf("the second change scheduled %d refresh(es), want 1 more", len(scheduled)-1)
+	}
+}
+
+// TestPersistEmbeddedContextUnchangedContextSchedulesNothing: a value that did
+// not move produces no write, no config:updated — and no refresh.
+func TestPersistEmbeddedContextUnchangedContextSchedulesNothing(t *testing.T) {
+	f, _, _ := newEmbeddedTestAPI(t)
+	installEmbeddedLLM(t, f, 4321)
+
+	scheduled := 0
+	f.embeddedRefreshDispatch = func(func()) { scheduled++ }
+
+	if err := f.persistEmbeddedContext(context.Background(), 65536); err != nil {
+		t.Fatalf("persistEmbeddedContext: %v", err)
+	}
+	if err := f.persistEmbeddedContext(context.Background(), 65536); err != nil {
+		t.Fatalf("second persistEmbeddedContext: %v", err)
+	}
+	if scheduled != 1 {
+		t.Errorf("the refresh was scheduled %d time(s) across a change and a no-op, want 1", scheduled)
+	}
+}
+
+// TestPersistEmbeddedContextFailedPersistSchedulesNothing: a save that rolled
+// back must not leave a refresh scheduled against a config that no longer
+// carries the corrected window.
+func TestPersistEmbeddedContextFailedPersistSchedulesNothing(t *testing.T) {
+	f, _, _ := newEmbeddedTestAPI(t)
+	installEmbeddedLLM(t, f, 4321)
+	if !f.config.SyncEmbeddedLLMProvider(16384) {
+		t.Fatal("pinning the estimate reported no change")
+	}
+
+	scheduled := 0
+	f.embeddedRefreshDispatch = func(func()) { scheduled++ }
+
+	// An unpersistable path makes config.Save fail and saveOrRollback restore
+	// the previous state.
+	f.configPath = filepath.Join(t.TempDir(), "no-such-dir", "config.yaml")
+
+	if err := f.persistEmbeddedContext(context.Background(), 65536); err == nil {
+		t.Fatal("persistEmbeddedContext: expected the failed save to surface")
+	}
+	if scheduled != 0 {
+		t.Errorf("the refresh was scheduled %d time(s) after a failed persist, want 0", scheduled)
+	}
+}
+
+// TestEmbeddedRefreshRerunsForAChangeLandedMidFlight: a change scheduling
+// while a refresh is already open must not be lost — the open loop reruns the
+// refresh once more before closing (the dirty-flag single-flight).
+func TestEmbeddedRefreshRerunsForAChangeLandedMidFlight(t *testing.T) {
+	f, _, mock := newEmbeddedTestAPI(t)
+	installEmbeddedLLM(t, f, 4321)
+
+	// Hold every scheduled refresh instead of running it, so a second
+	// schedule lands while the first is guaranteed to still be "open".
+	var pending []func()
+	f.embeddedRefreshDispatch = func(fn func()) { pending = append(pending, fn) }
+
+	if !f.config.SyncEmbeddedLLMProvider(16384) {
+		t.Fatal("pinning the estimate reported no change")
+	}
+	if err := f.persistEmbeddedContext(context.Background(), 65536); err != nil {
+		t.Fatalf("first persistEmbeddedContext: %v", err)
+	}
+	// A second change lands while the first refresh is still held open.
+	if err := f.persistEmbeddedContext(context.Background(), 131072); err != nil {
+		t.Fatalf("second persistEmbeddedContext: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("two changes produced %d scheduled refresh(es), want 1 (single-flight)", len(pending))
+	}
+
+	// The single open loop observes the dirty flag, refreshes a second time,
+	// and only then closes: two rebuilds in total.
+	pending[0]()
+	if got := mock.rebuildRouterCalls; got != 2 {
+		t.Errorf("RebuildRouter ran %d time(s), want 2 (one per landed change)", got)
+	}
+
+	// And the window is genuinely closed afterwards: a further change
+	// schedules a fresh refresh instead of setting a dead flag.
+	if err := f.persistEmbeddedContext(context.Background(), 262144); err != nil {
+		t.Fatalf("third persistEmbeddedContext: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Errorf("the third change scheduled %d new refresh(es), want 1", len(pending)-1)
 	}
 }
