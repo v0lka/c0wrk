@@ -6,9 +6,8 @@
 // SetEmbeddedLLMAutoUnload. Every embedded-LLM surface (the Settings block, the
 // status-bar indicator) routes through this module — components never import
 // wailsjs directly, so the boundary validation lives here exactly once. The
-// TUNING RPCs (Get/SetEmbeddedLLMTuning, ProbeEmbeddedLLMDevices) and the
-// status snapshot's measured-topology additions live in the sibling
-// @/api/embeddedTuning.
+// TUNING RPCs (Get/SetEmbeddedLLMTuning) and the status snapshot's
+// measured-topology additions live in the sibling @/api/embeddedTuning.
 //
 // The two global events (`embedded_llm:state`, `embedded_llm:install_progress`)
 // are typed in @/types/events; the subscription helpers below validate each
@@ -17,7 +16,9 @@
 //
 // Blocking semantics (mirrors specs/contracts/desktop-frontend.md):
 //   - InstallEmbeddedLLM runs only the synchronous gates (single-run, bounded
-//     hardware probe, the 16 GiB RAM refusal) and returns; the multi-gigabyte
+//     hardware probe, and the COMBINED memory gate — `embeddedllm.
+//     CheckMemoryBudget` prices BOTH memory pools, the accelerator's and system
+//     RAM; there is no flat RAM floor) and returns; the multi-gigabyte
 //     download continues in the background and reports through
 //     `embedded_llm:install_progress`. A rejection is therefore an actionable
 //     REFUSAL, not a failed download.
@@ -47,6 +48,17 @@ export const DEFAULT_AUTO_UNLOAD_MINUTES = 60
  *  refuses anything below it, so the wrapper refuses it locally too instead of
  *  paying a round trip for a guaranteed rejection. */
 export const MIN_AUTO_UNLOAD_MINUTES = 1
+
+/** Inclusive upper bound of the auto-unload budget (one year of residency).
+ *  Mirrors `embeddedllm.MaxAutoUnloadMinutes` in core/embeddedllm/limits.go,
+ *  which the backend refuses anything above: the minutes→nanoseconds multiply
+ *  overflows int64 above 153,722,867 minutes, and the wrapped result can be a
+ *  budget of tens of SECONDS — or, at the residues of the 2^11 divisor, single
+ *  microseconds — so an "effectively never" value silently inverts into
+ *  "unload immediately". The wrapper refuses it locally, with an actionable
+ *  message, instead of persisting a budget that means the opposite of what the
+ *  field says. */
+export const MAX_AUTO_UNLOAD_MINUTES = 525600
 
 /** Supervision state of the embedded local model. Mirrors the string values of
  *  core/embeddedllm `State`; kept open (not a union) so a newly added state
@@ -168,8 +180,9 @@ export async function getEmbeddedLLMStatus(): Promise<EmbeddedLLMStatus> {
 
 /** Provision the pinned runtime and weights. Runs ONLY the synchronous gates and
  *  then returns: a rejection is an actionable refusal (an install already in
- *  flight, an unreadable hardware probe, the 16 GiB RAM gate) and means NOT ONE
- *  BYTE was downloaded. A started run reports through
+ *  flight, an unreadable hardware probe, or the combined accelerator+RAM
+ *  memory-budget gate) and means NOT ONE BYTE was downloaded. A started run
+ *  reports through
  *  `embedded_llm:install_progress`, its outcome through `embedded_llm:state` +
  *  `config:updated`, and a BACKGROUND failure additionally through a
  *  `runtime_error` toast (`embedded_llm_install_failed`). Never loads the
@@ -206,12 +219,18 @@ export async function unloadEmbeddedLLM(): Promise<void> {
 
 /** Persist `embedded_llm.auto_unload` and apply it to the supervisor
  *  immediately. The setting is an operator preference, not install state: it
- *  survives a removal. `minutes` below MIN_AUTO_UNLOAD_MINUTES is refused
- *  locally (the backend refuses it too) without touching the config. */
+ *  survives a removal. `minutes` outside
+ *  MIN_AUTO_UNLOAD_MINUTES..MAX_AUTO_UNLOAD_MINUTES (or not a whole number) is
+ *  refused locally — the backend refuses the same range — without touching the
+ *  config. */
 export async function setEmbeddedLLMAutoUnload(enabled: boolean, minutes: number): Promise<void> {
-  if (!Number.isInteger(minutes) || minutes < MIN_AUTO_UNLOAD_MINUTES) {
+  if (
+    !Number.isInteger(minutes) ||
+    minutes < MIN_AUTO_UNLOAD_MINUTES ||
+    minutes > MAX_AUTO_UNLOAD_MINUTES
+  ) {
     throw new Error(
-      `The auto-unload budget must be a whole number of minutes ≥ ${MIN_AUTO_UNLOAD_MINUTES} (got ${minutes})`,
+      `The auto-unload budget must be a whole number of minutes between ${MIN_AUTO_UNLOAD_MINUTES} and ${MAX_AUTO_UNLOAD_MINUTES} (got ${minutes})`,
     )
   }
   const app = getApp()

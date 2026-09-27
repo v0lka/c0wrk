@@ -739,9 +739,22 @@ type BuilderEmbeddedLLMConfig struct {
 	// hardcode the literal, so an unset name guards nothing rather than guessing.
 	ProviderName string
 
-	// Loader is the supervisor seam (*embeddedllm.Server in production). nil
-	// disables the transport entirely, which is the posture until the app owns a
-	// server instance.
+	// Loader is the supervisor seam. nil disables the transport entirely, which
+	// is the posture until the app owns a server instance.
+	//
+	// In production this is NOT a *Server but backend.embeddedLoaderRef — a
+	// small value type that resolves the supervisor lazily, at call time, and
+	// also carries the two optional capabilities the transport probes for
+	// (embeddedllm.RequestTracker and embeddedllm.PortSource). It is a ref
+	// rather than a direct pointer for an ordering reason: the router is first
+	// built before the embedded subsystem exists, and the per-session router is
+	// built from a config converted while the backend's config lock is held,
+	// where taking the subsystem's lock would invert the documented lock order.
+	// Resolving at call time lets the seam be attached before the supervisor
+	// exists and still reach the real one later.
+	//
+	// A *Server also satisfies the interface (and both optional capabilities),
+	// so tests may hand one over directly.
 	Loader embeddedllm.Loader
 
 	// LoadWaitTimeout bounds how long one request waits for a cold load.

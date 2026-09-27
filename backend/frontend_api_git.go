@@ -1278,6 +1278,16 @@ func (f *FrontendAPI) GenerateCommitMessage() (string, error) {
 	// to the request would fail the call instead of serving it. A no-op for
 	// every other provider. Deliberately after the staged-diff check, so a
 	// nothing-to-generate call does not load gigabytes for no reason.
+	//
+	// BY DESIGN this gate is outside the latency envelope the service timeout
+	// describes (ADR-066 D13: no LLM request may start before the model is
+	// resident, and the load is never charged to the request's own budget). The
+	// worst case for a caller of this RPC is therefore
+	// serviceLLMTimeout + embeddedllm.DefaultLoadWaitTimeout when the local
+	// model is the default and cold — not serviceLLMTimeout alone. How that wait
+	// bound is derived is stated once, on the constant itself. The frontend
+	// keeps the per-project "generating" spinner lit across the whole wait and
+	// no client-side RPC timeout aborts it.
 	if err := f.ensureEmbeddedReadyForLLMRequest(f.ctx()); err != nil {
 		f.log().Warn("GenerateCommitMessage: the embedded model could not be loaded", "err", err)
 		return "", err

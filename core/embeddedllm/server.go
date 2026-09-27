@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,8 +19,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/v0lka/sp4rk/sysproc"
 )
 
 // This file supervises the one long-lived process the embedded LLM runs on:
@@ -209,6 +213,15 @@ var (
 	ErrServerBusy = errors.New("the embedded LLM server is running")
 )
 
+// errStoppedDuringLoad is Load's diagnosis for a readiness wait that succeeded
+// against a process the supervisor had already stopped and given up ownership
+// of — the ready-race half of a force stop (see forceUnload and the ownership
+// re-check in Load). Unexported: no caller outside this package branches on it,
+// and the backend surfaces Load's error text verbatim to the request that
+// triggered the load, which is the whole point of naming what happened.
+var errStoppedDuringLoad = errors.New(
+	"the embedded LLM was stopped while it was loading the model, so it is not resident; ask again to reload it")
+
 // layerKind is LayerMode's private discriminator. It is unexported so that no
 // caller outside this package can build a fifth answer, and so that the mapping
 // from a kind to an argv element stays the single switch in LayerMode.arg.
@@ -354,7 +367,11 @@ type LaunchSpec struct {
 	// the KV cache.
 	ContextSize int
 	// ImageMaxTokens is --image-max-tokens. ImageMaxTokensUncapped omits the
-	// flag entirely (CUDA/ROCm run uncapped).
+	// flag entirely (CUDA/ROCm run uncapped). Validate bounds it on both ends:
+	// a negative cap is refused, and so is one above the model's own training
+	// context (maxTrainingContext) — the ceiling the resolver's derived values
+	// sit far below, since imageMaxTokensFor yields either the uncapped zero or
+	// the 1,024-token vision cap.
 	ImageMaxTokens int
 
 	// ── the memory-plan surface ──
@@ -429,6 +446,15 @@ type LaunchSpec struct {
 // Validate refuses a specification that must never reach exec: spawning it
 // would either fail obscurely, abort inside the fork's own fit pass, or — worse
 // — start a server whose offload and context nobody decided.
+//
+// Every argv-bound numeric field is bounded on BOTH ends. The floors are launch
+// semantics. The ceilings are limits.go's overflow and absurdity guards for the
+// operator-tunable knobs — enforced here as well as in backend/config because a
+// bound that exists at only one of the two layers is a bound an operator can walk
+// around by hand-editing config.yaml — and the model's own training context
+// (memory.go's maxTrainingContext) for the three context-derived fields, `-c`,
+// `-fitc` and `--image-max-tokens`. Either way the value that reaches this gate is
+// the one that becomes a command line, whichever path it arrived by.
 func (spec LaunchSpec) Validate() error {
 	if spec.ServerBinary == "" {
 		return fmt.Errorf("%w: no llama-server binary", ErrLaunchSpecInvalid)
@@ -443,8 +469,8 @@ func (spec LaunchSpec) Validate() error {
 	if !usablePort(spec.Port) {
 		return fmt.Errorf("%w: port %d is not a usable TCP port", ErrLaunchSpecInvalid, spec.Port)
 	}
-	if spec.Layers.kind == layerKindExact && spec.Layers.layers < 0 {
-		return fmt.Errorf("%w: -ngl %d is negative", ErrLaunchSpecInvalid, spec.Layers.layers)
+	if spec.Layers.kind == layerKindExact && (spec.Layers.layers < 0 || spec.Layers.layers > MaxTuningLayers) {
+		return fmt.Errorf("%w: -ngl %d is outside 0..%d", ErrLaunchSpecInvalid, spec.Layers.layers, MaxTuningLayers)
 	}
 	if err := spec.validateFitExclusivity(); err != nil {
 		return err
@@ -456,8 +482,9 @@ func (spec LaunchSpec) Validate() error {
 		return fmt.Errorf("%w: -fit on needs a -fitc floor in 1..%d, got %d — the runtime's own default of %d is the truncated-answer failure DefaultFitMinContext exists to prevent",
 			ErrLaunchSpecInvalid, maxTrainingContext, spec.FitMinContext, upstreamFitMinContext)
 	}
-	if spec.FitTargetMiB < 0 {
-		return fmt.Errorf("%w: -fitt %d is negative", ErrLaunchSpecInvalid, spec.FitTargetMiB)
+	if spec.FitTargetMiB < 0 || spec.FitTargetMiB > MaxTuningMiB {
+		return fmt.Errorf("%w: -fitt %d MiB is outside 0..%d",
+			ErrLaunchSpecInvalid, spec.FitTargetMiB, MaxTuningMiB)
 	}
 	if spec.KVType != "" && !spec.KVType.Valid() {
 		return fmt.Errorf("%w: -ctk/-ctv %q is outside the modelled set (%s)",
@@ -467,9 +494,17 @@ func (spec LaunchSpec) Validate() error {
 		return fmt.Errorf("%w: -np %d is below the single slot this subsystem serves; the runtime's own auto default splits -c across slots",
 			ErrLaunchSpecInvalid, spec.Parallel)
 	}
+	if spec.Parallel > MaxTuningParallel {
+		return fmt.Errorf("%w: -np %d exceeds the %d-slot ceiling; slots split -c and each one carries its own KV cache",
+			ErrLaunchSpecInvalid, spec.Parallel, MaxTuningParallel)
+	}
 	if spec.CacheRAMMiB != nil && *spec.CacheRAMMiB < cacheRAMNoLimit {
 		return fmt.Errorf("%w: --cache-ram %d MiB is below %d, the runtime's own spelling of no limit",
 			ErrLaunchSpecInvalid, *spec.CacheRAMMiB, cacheRAMNoLimit)
+	}
+	if spec.CacheRAMMiB != nil && *spec.CacheRAMMiB > MaxTuningMiB {
+		return fmt.Errorf("%w: --cache-ram %d MiB exceeds the %d MiB ceiling",
+			ErrLaunchSpecInvalid, *spec.CacheRAMMiB, MaxTuningMiB)
 	}
 	if !splitModeIsKnown(spec.SplitMode) {
 		return fmt.Errorf("%w: -sm %q is not one of the runtime's split modes (%s)",
@@ -483,6 +518,10 @@ func (spec LaunchSpec) Validate() error {
 	if spec.ImageMaxTokens < 0 {
 		return fmt.Errorf("%w: --image-max-tokens %d is negative",
 			ErrLaunchSpecInvalid, spec.ImageMaxTokens)
+	}
+	if spec.ImageMaxTokens > maxTrainingContext {
+		return fmt.Errorf("%w: --image-max-tokens %d exceeds the model's own %d-token training context",
+			ErrLaunchSpecInvalid, spec.ImageMaxTokens, maxTrainingContext)
 	}
 	return nil
 }
@@ -792,7 +831,8 @@ type Server struct {
 	// Layout locates the installed runtime tree and weights. Required.
 	Layout Layout
 	// Logger receives the subsystem's diagnostics AND the server's own
-	// stdout/stderr. nil → slog.Default().
+	// stdout/stderr. nil → a discard logger (never the global slog.Default),
+	// matching the package's own no-global-logging rule.
 	Logger *slog.Logger
 	// AutoUnload is the operator's idle policy (embedded_llm.auto_unload).
 	// Change it at runtime with SetAutoUnload, not by writing this field.
@@ -881,6 +921,11 @@ type Server struct {
 	// timeout with no operator meaning, and only a test needs it small.
 	killWaitFor time.Duration
 
+	// drainWaitFor shortens the post-exit output drain. Unexported for the same
+	// reason as killWaitFor: it is a recovery timeout, and only a test that
+	// stages a pump that never ends needs it small.
+	drainWaitFor time.Duration
+
 	mu      sync.Mutex
 	state   State
 	message string
@@ -898,6 +943,21 @@ type Server struct {
 	// deadlocking.
 	gate chan struct{}
 	idle idleTimer
+	// inFlight counts the requests the ensure-loaded transport currently has
+	// open (BeginRequest/EndRequest). Atomic rather than mu-guarded: the
+	// transport touches it on every request, and the idle path reads it right
+	// after releasing mu.
+	inFlight atomic.Int64
+	// loadsInFlight counts the Load calls that are inside the part of their
+	// sequence which OWNS a terminal state transition — from just before they
+	// report StateLoading until they return. Guarded by mu, because its only
+	// reader is forceUnload, which decides under that same lock whether the
+	// terminal transition is its own to make or the interrupted load's.
+	//
+	// A Load that finds the model already resident returns without transitioning
+	// anything, so it is deliberately NOT counted: counting it would leave the
+	// state wherever forceUnload put it, with nobody to move it on.
+	loadsInFlight int
 }
 
 // NewServer returns a Server for an installation described by layout. The state
@@ -946,7 +1006,12 @@ type processRun struct {
 //     start draining its output into slog;
 //  6. poll /v1/models until it answers with a non-empty model list, bounded by
 //     ReadyTimeout, ctx, and the death of the process;
-//  7. only now: state → loaded and the idle budget starts.
+//  7. only now: state → loaded and the idle budget starts — and only while this
+//     call still owns the process it published. A run detached during step 6 is
+//     refused residency: a force stop is answered with state → installed, a child
+//     that died right after answering the probe leaves the supervisor's crash
+//     report in place, and either way the load returns an error naming what
+//     happened instead of claiming a residency the supervisor no longer tracks.
 //
 // Step 7's position is the user-visible requirement behind idle.go: the weight
 // load can take minutes, and that time must never be charged against the
@@ -970,10 +1035,33 @@ func (s *Server) Load(ctx context.Context) error {
 
 	if s.State() == StateLoaded {
 		// Idempotent: the model is already serving, so a Load is a no-op that
-		// still counts as activity (the caller is about to use it).
+		// still counts as activity (the caller is about to use it). It performs
+		// no state transition, which is why the count below starts AFTER this
+		// return rather than at the gate.
 		s.MarkActivity()
 		return nil
 	}
+
+	// From here every exit path of this call writes a terminal transition —
+	// StateError on any failure (a child that died after answering readiness
+	// leaves the supervisor's own StateError standing rather than adding one),
+	// StateLoaded on success, StateInstalled when the process was force-stopped
+	// underneath a readiness wait that still succeeded — so a force stop that
+	// finds this count positive and the state still StateLoading may leave that
+	// transition to this call instead of making its own. See forceUnload.
+	//
+	// Registered after the gate release above, so LIFO runs this one FIRST: the
+	// count is back to zero before the gate is free again, and forceUnload —
+	// which only runs while the gate is held — can never see a count left behind
+	// by a load that has already finished.
+	s.mu.Lock()
+	s.loadsInFlight++
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.loadsInFlight--
+		s.mu.Unlock()
+	}()
 
 	// A process can still be alive from an attempt whose stop timed out. Single
 	// instance means at most one llama-server per install, so it is discarded
@@ -1053,6 +1141,65 @@ func (s *Server) Load(ctx context.Context) error {
 	}
 
 	s.mu.Lock()
+	// Residency is re-validated against the PUBLISHED handle before it is
+	// claimed. Two paths can detach a run this Load published while it was still
+	// inside waitReady, and in both the process must not be reported as resident:
+	//
+	//   - a force stop (forceUnload) takes the handle with takeRun, and its
+	//     snapshot of who owes the terminal transition is made BEFORE it signals
+	//     the child — an emit (which runs the backend's synchronous OnState
+	//     handler) and a Warn log sit in between — so a readiness poll landing in
+	//     that window is answered by a server already on its way out and this Load
+	//     takes its success path anyway. Such a run is marked `expected`: a stop
+	//     was asked for.
+	//   - the child died right after answering the readiness probe, and supervise
+	//     detached the handle while reporting the crash. Such a run is NOT
+	//     `expected`.
+	//
+	// Claiming StateLoaded in either case would report a process the supervisor no
+	// longer owns as resident: s.run is nil, so Status().Pid is 0, the
+	// ensure-loaded transport short-circuits on State() == StateLoaded, and every
+	// later request goes to a dead loopback port and fails with a bare connection
+	// error — exactly what StateError's "a dead server is never reported as
+	// loaded" rule forbids. In the force-stop case NEITHER death reporter fires
+	// either (supervise's `current := s.run == run` is false and run.expected is
+	// set), so nothing would ever reconcile the claim.
+	//
+	// The diagnosis travels in the returned error rather than in a transition
+	// message, which StateEvent documents as StateError-only. No idle budget is
+	// stamped on either branch: there is nothing resident to be idle, and
+	// transitionLocked disarms the timer for any state other than StateLoaded.
+	//
+	// One window is deliberately left alone: a force stop whose terminate did NOT
+	// take RE-ATTACHES the handle (see forceUnload), so this check passes and the
+	// load claims a residency that is real — the child is alive and just answered
+	// the probe — replacing the StateError the force path wrote. Reporting
+	// `installed` there instead would misreport a still-resident process, which is
+	// the mistake the gated unload's own doc forbids, and the failed stop is
+	// already reported to the caller that asked for it.
+	if s.run != run {
+		pid := run.pid
+		if run.expected {
+			// A stop was asked for, so the honest terminal state is StateInstalled
+			// — the bytes are on disk, the model is not resident.
+			event := s.transitionLocked(StateInstalled, "")
+			s.mu.Unlock()
+			s.emit(event)
+			s.logger().Warn("the embedded LLM was stopped while its load was in flight; the weights are not resident",
+				"pid", pid, "port", spec.Port)
+			return fmt.Errorf("embeddedllm: %w", errStoppedDuringLoad)
+		}
+		// The child died and supervise already reported that crash, so its
+		// StateError IS the honest terminal state: this call adds no transition of
+		// its own and only returns the diagnosis. run.exitErr was written under
+		// this same lock before the handle was detached, so it is safe to read.
+		exitErr := run.exitErr
+		s.mu.Unlock()
+		s.logger().Error("the embedded LLM answered its readiness probe and then died before the load could claim it",
+			"pid", pid, "port", spec.Port, "error", exitErr)
+		return fmt.Errorf("embeddedllm: %w after it became ready (%s)",
+			ErrServerDied, exitReason(exitErr))
+	}
 	// A launch that became ready proves the fit contract held; whatever the
 	// previous run complained about no longer describes this installation.
 	s.fitWarning = ""
@@ -1085,7 +1232,52 @@ func (s *Server) Load(ctx context.Context) error {
 // Termination is graceful first: the process is asked to exit, and killed only
 // after StopTimeout. The resulting state is installed — the bytes stay on disk,
 // the model is simply not resident.
+//
+// The caller's ctx bounds ONLY the wait for the single-instance gate. Once the
+// gate is held, the stop runs on a detached context budgeted at
+// StopTimeout + the kill wait, so a budget nearly spent behind a cold load still
+// gets the full graceful window rather than being cut down to whatever was left
+// and killing the child early.
+//
+// A caller whose ctx expires while the single-instance gate is held by an
+// in-flight Load does NOT get a timeout error back: the live process is stopped
+// anyway (forceUnload), because the alternative is an orphan the app can never
+// identify again.
 func (s *Server) Unload(ctx context.Context) error {
+	return s.unload(ctx, nil, true)
+}
+
+// Stop is Unload under the name the shutdown path and Installer.Stop use: the
+// signatures match, so wiring is `installer.Stop = server.Stop`.
+//
+// Shutdown is exactly the caller the force path exists for: it budgets 30 s
+// against a Load that can hold the gate for DefaultReadyTimeout (15 min), and a
+// Stop that returned "context deadline exceeded" there would leave llama-server
+// running — detached from every caller context, unrecorded in the manifest, and
+// routed around rather than adopted by the next launch's port scan — holding its
+// gigabytes of RAM and VRAM until a manual kill or a reboot.
+func (s *Server) Stop(ctx context.Context) error {
+	return s.unload(ctx, nil, true)
+}
+
+// unloadIfIdle is Unload for the idle path, with two differences.
+//
+// It carries the activity generation the expiry decided on and abandons the
+// unload if activity moved in the meantime — Unload has to re-acquire both the
+// gate and Server.mu, and a request that finished exactly at the deadline must
+// not have the model pulled out from under it.
+//
+// It never takes the force path: an idle unload that cannot get the gate is a
+// load in progress, and killing that would trade a deferrable unload for a
+// failed cold start.
+func (s *Server) unloadIfIdle(ctx context.Context, generation uint64) error {
+	return s.unload(ctx, &generation, false)
+}
+
+// unload is the shared teardown. idleGen non-nil enables the idle path's
+// activity re-check; force enables the no-gate stop a caller with an expired
+// budget gets.
+func (s *Server) unload(ctx context.Context, idleGen *uint64, force bool) error {
 	if s == nil {
 		return errors.New("embeddedllm: nil Server")
 	}
@@ -1094,9 +1286,38 @@ func (s *Server) Unload(ctx context.Context) error {
 	}
 	release, err := s.acquireGate(ctx)
 	if err != nil {
-		return fmt.Errorf("embeddedllm: waiting for the embedded LLM to become available: %w", err)
+		if !force {
+			return fmt.Errorf("embeddedllm: waiting for the embedded LLM to become available: %w", err)
+		}
+		return s.forceUnload(ctx, err)
 	}
 	defer release()
+
+	// The caller's budget bounds the GATE WAIT and nothing else — the contract
+	// Unload/Stop document and the backend's embeddedStopTimeout is sized on. A
+	// ctx that arrives here nearly spent, because a cold load held the gate until
+	// just before the deadline, must not have terminate's graceful window cut down
+	// to what is left of it: terminate's `case <-ctx.Done()` sits INSIDE that
+	// window and falls straight through to Kill, so a late acquisition would
+	// SIGKILL llama-server instead of giving it the full SIGTERM window. The stop
+	// therefore gets its own budget on a detached context, derived exactly the way
+	// forceUnload derives its own: the values the caller's context carries travel
+	// with it, only its deadline does not.
+	stopCtx, cancelStop := context.WithTimeout(context.WithoutCancel(ctx),
+		s.stopTimeout()+s.killWait())
+	defer cancelStop()
+
+	if idleGen != nil {
+		s.mu.Lock()
+		moved := s.idle.generation() != *idleGen
+		s.mu.Unlock()
+		if moved {
+			// Activity landed between the expiry's decision and this call: a
+			// fresh budget is already armed and this unload is the stale one.
+			s.logger().Debug("an idle unload was superseded by activity; keeping the model resident")
+			return nil
+		}
+	}
 
 	s.mu.Lock()
 	run := s.run
@@ -1117,7 +1338,7 @@ func (s *Server) Unload(ctx context.Context) error {
 	s.mu.Unlock()
 	s.emit(event)
 
-	err = s.terminate(ctx, run)
+	err = s.terminate(stopCtx, run)
 
 	// The supervisor normally records the final transition; do it here too so
 	// Unload's caller can rely on the state when it returns. transitionLocked
@@ -1146,10 +1367,108 @@ func (s *Server) Unload(ctx context.Context) error {
 	return nil
 }
 
-// Stop is Unload under the name the shutdown path and Installer.Stop use: the
-// signatures match, so wiring is `installer.Stop = server.Stop`.
-func (s *Server) Stop(ctx context.Context) error {
-	return s.Unload(ctx)
+// forceUnload stops a live process WITHOUT the single-instance gate, which is
+// what an in-flight Load holds for up to ReadyTimeout. It reuses the leftover-run
+// machinery Load already has: takeRun detaches the handle — which also tells the
+// supervisor that this exit is nobody's news — and terminate performs the same
+// graceful-then-kill stop the gated path does.
+//
+// The detach is provisional: a stop that does NOT take re-attaches the handle
+// before it reports the failure, so the invariant the gated unload documents and
+// TestUnloadReportsAStopThatDidNotTake pins holds on this path too — a live child
+// is always tracked, and the next attempt targets the same process instead of
+// stacking a second one beside it.
+//
+// The caller's context is deliberately NOT the one bounding the stop: it has
+// already expired, which is why this path is running at all. The stop gets its
+// own budget, so a wedged child cannot outlast it either.
+//
+// A Load still in flight owns the terminal transition, and forceUnload leaves it
+// there. Both sides wake on the same close(run.died) and then transition
+// independently under s.mu, so a success transition made here could land second
+// and erase the interrupted load's diagnosis. forceUnload therefore snapshots,
+// under the same lock hold that marks the run expected, whether a Load is still
+// inside the part of its sequence that owns a terminal transition
+// (loadsInFlight positive with the state still the StateLoading that Load wrote
+// before it spawned). When it is, the success transition is SKIPPED entirely.
+// When no Load owes a transition, the model was merely resident and "installed"
+// is the honest terminal state, exactly as before.
+//
+// What that snapshot does NOT guarantee is which transition the interrupted Load
+// writes, because the snapshot is taken BEFORE terminate signals the child — an
+// s.emit (which runs the backend's synchronous OnState handler) and a Warn log
+// sit in between. A readiness poll that lands in that window answers against a
+// server that is still serving, so waitReady can return NIL and the load can take
+// its success path after the child has been asked to die. That branch is handled
+// on the Load side, not here: Load re-validates that the run it published is
+// still the published one before it claims residency, and reports StateInstalled
+// with an error naming the interrupted load instead of StateLoaded for a process
+// that no longer exists (see errStoppedDuringLoad). The invariant that survives
+// every interleaving is therefore the one that matters — a dead child is never
+// reported as loaded — and the two terminal outcomes are StateError carrying the
+// load's own diagnosis (the death was observed first) or StateInstalled with the
+// load returning that error (readiness won the race).
+func (s *Server) forceUnload(ctx context.Context, gateErr error) error {
+	run := s.takeRun()
+	if run == nil {
+		// Nothing to kill: the gate is held by a Load that has not spawned yet
+		// (it is still reading the manifest or scanning for a port), so the
+		// caller's timeout is the truth and no process is left behind.
+		return fmt.Errorf("embeddedllm: waiting for the embedded LLM to become available: %w", gateErr)
+	}
+
+	s.mu.Lock()
+	run.expected = true
+	// Snapshotted BEFORE the transition below, which moves the state off
+	// StateLoading and would otherwise hide the very fact being asked about.
+	loadOwesTerminal := s.loadsInFlight > 0 && s.stateLocked() == StateLoading
+	event := s.transitionLocked(StateUnloading, "")
+	s.mu.Unlock()
+	s.emit(event)
+
+	s.logger().Warn("stopping the embedded LLM without the single-instance gate",
+		"pid", run.pid, "gate", gateErr, "load_in_flight", loadOwesTerminal)
+
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx),
+		s.stopTimeout()+s.killWait()+time.Second)
+	defer cancel()
+	err := s.terminate(stopCtx, run)
+
+	s.mu.Lock()
+	var final *StateEvent
+	leftToLoad := false
+	switch {
+	case err != nil:
+		// A stop that did not take KEEPS the run handle, exactly as the gated
+		// unload does. takeRun already detached it, and leaving it detached would
+		// orphan a live child: supervise compares s.run against its own run and
+		// reports nothing, a later Unload finds no handle and claims success while
+		// the process keeps running — surviving app exit with its gigabytes and
+		// its loopback port — and the next Load spawns a SECOND server on a
+		// machine whose memory gate was priced for one. Re-attaching makes the
+		// next attempt target the same process. `expected` stays set: this stop
+		// WAS asked for, so an exit that lands later is not a crash to report.
+		if s.run == nil {
+			s.run = run
+		}
+		final = s.transitionLocked(StateError, err.Error())
+	case loadOwesTerminal:
+		// The interrupted Load writes the terminal transition — see the doc.
+		leftToLoad = true
+	default:
+		final = s.transitionLocked(StateInstalled, "")
+	}
+	s.mu.Unlock()
+	s.emit(final)
+	if leftToLoad {
+		s.logger().Debug("leaving the terminal state of the force-stopped embedded LLM to the interrupted load")
+	}
+
+	if err != nil {
+		return err
+	}
+	s.logger().Info("embedded LLM stopped without the gate", "pid", run.pid)
+	return nil
 }
 
 // SetInstalled records whether the weights and runtime are present, without
@@ -1342,6 +1661,11 @@ func (s *Server) launchSpec(ctx context.Context, manifest Manifest, port int) (r
 // the runtime binary, the recorded weights, the optional vision projector, the
 // loopback socket and the backend-keyed image-token cap. It carries no memory
 // decision, so neither half can overwrite the other — see ApplyMemoryPlan.
+//
+// Both path halves are containment-checked against the layout, so a tampered
+// install record cannot aim the launch at bytes outside it: the binary is
+// derived from the runtime tree and walked through ServerBinaryPath, and the
+// recorded model file must lie inside the model root (Layout.OwnsModel).
 func (s *Server) launchIdentity(manifest Manifest, port int) (LaunchSpec, error) {
 	runtimeDir, err := s.Layout.RuntimeDir(manifest.Backend)
 	if err != nil {
@@ -1353,11 +1677,22 @@ func (s *Server) launchIdentity(manifest Manifest, port int) (LaunchSpec, error)
 	}
 
 	modelFile := manifest.ModelFile
-	if modelFile == "" {
-		modelFile, err = s.Layout.ModelFile(manifest.Packing)
-		if err != nil {
-			return LaunchSpec{}, err
+	if modelFile == "" || !s.Layout.OwnsModel(modelFile) {
+		// The recorded path is trusted only inside the layout's model root (see
+		// Layout.OwnsModel). A violation falls back to the layout-derived path for
+		// the recorded packing rather than refusing: the derivation is what an
+		// install writes, so it is also the honest recovery — and the divergence
+		// is logged, because a record that does not describe the layout is a fact
+		// an operator should see.
+		derived, deriveErr := s.Layout.ModelFile(manifest.Packing)
+		if deriveErr != nil {
+			return LaunchSpec{}, deriveErr
 		}
+		if modelFile != "" {
+			s.logger().Warn("the recorded model file is outside the model root; launching the layout-derived path instead",
+				"recorded", modelFile, "derived", derived, "model_root", s.Layout.ModelRoot)
+		}
+		modelFile = derived
 	}
 	if !pathExists(modelFile) {
 		return LaunchSpec{}, fmt.Errorf("%w: the recorded model file %q is missing — reinstall the model",
@@ -1550,11 +1885,23 @@ type propsPayload struct {
 //
 // It is fail-soft and returns (0, false) for every way the question can go wrong
 // — a non-200, an unreadable or unparseable body, a missing or non-positive
-// `n_ctx` — because the answer refines a recorded value and must never become
-// the reason a load that is already serving gets reported as failed.
+// `n_ctx`, a product that would overflow, and a product above the model's own
+// training context — because the answer refines a recorded value and must never
+// become the reason a load that is already serving gets reported as failed.
 // `total_slots` is the one field allowed to be absent: a server that does not
 // report it is serving one slot, and treating an absent count as zero would
 // report a context of 0.
+//
+// The ceiling is not a refinement of that fail-softness but the point of it: this
+// is the only context figure in the subsystem that arrives from an external
+// process over HTTP, and it lands in two durable stores — the manifest and, via
+// PersistContext, the tier-1 `llm.models` `context_window` override that shadows
+// every later attempt to correct it. An absurd value therefore poisons the
+// router's context accounting (a huge positive figure reports "ok" forever, so
+// compaction never triggers) with no way for an operator to repair it: the
+// readback re-runs on every load and clobbers a hand-edit. Every other context
+// figure in the package is bounded (LaunchSpec.validateContext, the tuning range
+// in config); this one is bounded here.
 func readPropsContext(ctx context.Context, client *http.Client, url string, timeout time.Duration) (int, bool) {
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -1585,6 +1932,25 @@ func readPropsContext(ctx context.Context, client *http.Client, url string, time
 	if slots <= 0 {
 		slots = 1
 	}
+	// Total AND bounded, for the two reasons the doc gives: an unchecked
+	// `perSlot * slots` wraps (4611686018427387904 × 4 is exactly 0, which the
+	// guards above would happily report as an answer), and a huge positive
+	// product is worse still.
+	total, ok := mulContext(perSlot, slots)
+	if !ok || total > maxTrainingContext {
+		return 0, false
+	}
+	return total, true
+}
+
+// mulContext multiplies two context figures, reporting false when the product
+// would overflow an int. Both operands come from an untrusted local socket, so
+// the multiplication has to be total rather than relying on a wrap that a later
+// `<= 0` check may or may not catch.
+func mulContext(perSlot, slots int) (int, bool) {
+	if perSlot > 0 && slots > math.MaxInt/perSlot {
+		return 0, false
+	}
 	return perSlot * slots, true
 }
 
@@ -1600,6 +1966,18 @@ func readPropsContext(ctx context.Context, client *http.Client, url string, time
 // and leaves `GetConfig` network-free — is what keeps the override honest
 // instead of frozen at an estimate.
 //
+// The write is a MERGE onto the record as it is NOW, not a whole-file rewrite of
+// the snapshot this load started from. `Installer.Install` never takes the
+// supervisor's single-instance gate, so a repair or reinstall can complete while
+// a cold load — started from the OLD runtime by the ensure-loaded transport — is
+// becoming ready; overwriting manifest.json from the stale snapshot would then
+// silently lose the install's refreshed plan, topology, checksums and port, which
+// is exactly the degraded-plan visibility this record exists to guarantee. Only
+// the three fields this load actually learned (ContextSize, Plan, Topology) are
+// written, and the write is abandoned entirely when the record now describes a
+// DIFFERENT install (sameInstall) — those three fields price the old bytes, so
+// merging them onto a new record would corrupt it.
+//
 // It returns the context now on record. Fail-soft throughout: a readback that
 // does not answer keeps the previous value, and a manifest or config write that
 // fails is logged and otherwise ignored, because the model is resident and
@@ -1614,11 +1992,36 @@ func (s *Server) recordEffectiveContext(ctx context.Context, launch resolvedLaun
 			"port", launch.Spec.Port, "context_size", recorded)
 	}
 
+	path, err := s.Layout.ManifestPath()
+	if err != nil {
+		s.logger().Debug("the embedded LLM context readback was not persisted",
+			"error", err, "context_size", effective)
+		return effective
+	}
+	current, err := ReadManifest(path)
+	if err != nil {
+		// No record to merge onto: the install was removed (or its manifest
+		// corrupted) while the load was running. Writing one back would resurrect
+		// a record the operator just deleted.
+		s.logger().Warn("the embedded LLM install record could not be re-read for the context readback",
+			"error", err, "context_size", effective)
+		return effective
+	}
+	if !sameInstall(current, manifest) {
+		s.logger().Warn("the embedded LLM install record changed during the load; the context readback was not persisted",
+			"context_size", effective,
+			"loaded_packing", manifest.Packing, "recorded_packing", current.Packing,
+			"loaded_backend", manifest.Backend, "recorded_backend", current.Backend)
+		return effective
+	}
+	recorded = current.ContextSize
 	if effective == recorded && !launch.Refreshed {
+		// Nothing this load learned differs from the record: no write, no new
+		// mtime and no spurious change signal.
 		return effective
 	}
 
-	updated := manifest
+	updated := current
 	updated.ContextSize = effective
 	updated.Plan = launch.Plan
 	updated.Topology = launch.Topology
@@ -1626,13 +2029,7 @@ func (s *Server) recordEffectiveContext(ctx context.Context, launch resolvedLaun
 	// the port the install allocated, which is the preference the next load
 	// re-scans from — see backend.persistEmbeddedPort.
 
-	path, err := s.Layout.ManifestPath()
-	if err != nil {
-		s.logger().Debug("the embedded LLM context readback was not persisted",
-			"error", err, "context_size", effective)
-		return effective
-	}
-	if err := writeManifest(path, updated); err != nil {
+	if err := writeManifest(path, updated, s.logger()); err != nil {
 		s.logger().Warn("failed to persist the embedded LLM context readback",
 			"error", err, "context_size", effective)
 		return effective
@@ -1651,6 +2048,25 @@ func (s *Server) recordEffectiveContext(ctx context.Context, launch resolvedLaun
 			"context_size", effective, "error", err)
 	}
 	return effective
+}
+
+// sameInstall reports whether two manifest records describe the SAME installed
+// bytes: the identity fields an install rewrites when it provisions a different
+// artifact set.
+//
+// The fields a load legitimately refines (ContextSize, Plan, Topology) are
+// deliberately NOT part of the identity, and neither is the port — a preference
+// the load re-scans and the backend persists separately. What is left is the set
+// that makes a plan and a readback meaningless when it changes: a different
+// packing or backend prices different bytes, a different runtime version or
+// install time means the tree was replaced, and a different model path means the
+// GGUF is not the one this load measured.
+func sameInstall(recorded, loaded Manifest) bool {
+	return recorded.Packing == loaded.Packing &&
+		recorded.Backend == loaded.Backend &&
+		recorded.RuntimeVersion == loaded.RuntimeVersion &&
+		recorded.InstalledAt == loaded.InstalledAt &&
+		recorded.ModelFile == loaded.ModelFile
 }
 
 // launchEnv builds the child environment: the parent's, with the runtime's own
@@ -1748,44 +2164,107 @@ func (s *Server) spawner() SpawnFunc {
 	}
 }
 
+// serverWaitDelay bounds how long the supervised server's output may keep the
+// supervision goroutine waiting after the process itself is gone. It is the
+// long-lived sibling of hardware.go's probeWaitDelay and exists for the same
+// documented hazard: killing (or losing) the child is not enough to end the
+// read, because a grandchild that inherited the write end of its stdout keeps
+// the pipe open and EOF never arrives.
+//
+// It bounds two things, which must agree:
+//
+//   - os/exec's own copy of the child's output into this package's relay (see
+//     spawnOSServer): when the delay expires, os/exec closes the descriptor the
+//     copy is blocked on and Wait returns exec.ErrWaitDelay;
+//   - the pump drain in supervise, so a Process implementation whose readers do
+//     not reach EOF cannot wedge supervision either.
+//
+// It is seconds rather than milliseconds because the pump is draining the real
+// server's log tail, and abandoning it early would truncate the diagnostics a
+// failed launch is reported with (crashMessage, scanFitFailure).
+const serverWaitDelay = 5 * time.Second
+
 // spawnOSServer starts the real llama-server.
 //
 // The context is detached with context.WithoutCancel: the one that started a load
 // is usually an RPC or a UI action, and the server must outlive both. Its lifetime
 // is owned by Unload/Stop, the idle timer and app shutdown — never by the caller
 // that happened to ask for the load.
+//
+// The child's stdout/stderr are relayed through io.Pipes this package owns
+// rather than handed out by exec.Cmd.StdoutPipe, and WaitDelay is set on the
+// command. The pairing is the point: with a caller-owned *os.File os/exec starts
+// no copy goroutine, so WaitDelay has nothing to bound and the ONLY thing that
+// ends the read is the child's own exit — a grandchild holding the write end
+// wedges the pumps and their supervisor for the lifetime of the app. Relaying
+// through an io.Writer makes os/exec own the descriptor, which is what lets the
+// delay close it. Nothing is lost in exchange: cmd.Wait still drains the copy
+// goroutines to EOF before it returns, so the log tail keeps every line the
+// server wrote before it died.
 func spawnOSServer(ctx context.Context, cmd LaunchCommand, logger *slog.Logger) (Process, error) {
 	// The binary and every argument come from the pinned install record and the
 	// pure launch policy — never from a model, a user string or the network.
 	proc := exec.CommandContext(context.WithoutCancel(ctx), cmd.Binary, cmd.Args...)
 	proc.Dir = cmd.Dir
 	proc.Env = cmd.Env
+	// Suppress the console window a GUI-subsystem host would otherwise allocate
+	// for the child (CREATE_NO_WINDOW on Windows, a no-op elsewhere). This is
+	// the one child that runs for HOURS — up to the whole idle budget — so it is
+	// the spawn where an allocated console is most visible: a Windows user would
+	// otherwise get a terminal window they cannot dismiss without killing the
+	// model.
+	sysproc.HideConsole(proc)
+	// Bound the output as well as the process: see serverWaitDelay.
+	proc.WaitDelay = serverWaitDelay
 
-	stdout, err := proc.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("capturing %s stdout: %w", ServerBinaryName, err)
-	}
-	stderr, err := proc.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("capturing %s stderr: %w", ServerBinaryName, err)
-	}
+	stdoutRead, stdoutWrite := io.Pipe()
+	stderrRead, stderrWrite := io.Pipe()
+	proc.Stdout = stdoutWrite
+	proc.Stderr = stderrWrite
+
 	if err := proc.Start(); err != nil {
+		closeRelays([]*io.PipeWriter{stdoutWrite, stderrWrite})
+		_ = stdoutRead.Close()
+		_ = stderrRead.Close()
 		return nil, err
 	}
 	logger.Debug("embedded LLM server started", "pid", proc.Process.Pid, "binary", cmd.Binary)
-	return &osProcess{cmd: proc, stdout: stdout, stderr: stderr}, nil
+	return &osProcess{
+		cmd:    proc,
+		stdout: stdoutRead,
+		stderr: stderrRead,
+		relay:  []*io.PipeWriter{stdoutWrite, stderrWrite},
+	}, nil
 }
 
-// osProcess adapts *exec.Cmd to Process. Stdout/Stderr hand out the pipes once;
-// the supervisor drains them and only then calls Wait, which is the ordering
-// os/exec requires for piped output.
+// closeRelays closes the relay write ends, which is what turns the end of a
+// copy into io.EOF for the pumps reading the other end. Errors are dropped: the
+// only one possible is a double close, and the caller is already tearing down.
+func closeRelays(relay []*io.PipeWriter) {
+	for _, w := range relay {
+		_ = w.Close()
+	}
+}
+
+// osProcess adapts *exec.Cmd to Process. Stdout/Stderr hand out the read ends of
+// the relays spawnOSServer installed; Wait closes their write ends once os/exec
+// has finished copying, so the pumps always reach EOF.
 type osProcess struct {
 	cmd    *exec.Cmd
 	stdout io.Reader
 	stderr io.Reader
+
+	relayOnce sync.Once
+	relay     []*io.PipeWriter
 }
 
-func (p *osProcess) Wait() error { return p.cmd.Wait() }
+// Wait blocks until the child has exited AND os/exec has finished (or, at
+// serverWaitDelay, abandoned) copying its output, then ends the relays.
+func (p *osProcess) Wait() error {
+	err := p.cmd.Wait()
+	p.relayOnce.Do(func() { closeRelays(p.relay) })
+	return err
+}
 
 func (p *osProcess) Pid() int {
 	if p.cmd.Process == nil {
@@ -1819,13 +2298,23 @@ func gracefulSignal() os.Signal { return syscall.SIGTERM }
 
 // ── output ──
 
-// pumpOutput drains both streams into slog and into the run's tail. It returns
-// once both readers have hit EOF, which is the precondition for Wait.
+// pumpOutput starts one drain goroutine per output stream, into slog and into
+// the run's tail. wg reports when both have finished, which is what supervise
+// waits on (bounded — see waitExit).
 func (s *Server) pumpOutput(run *processRun, wg *sync.WaitGroup) {
 	s.pump(run, wg, run.proc.Stdout(), "stdout")
 	s.pump(run, wg, run.proc.Stderr(), "stderr")
 }
 
+// pump drains one output stream into slog and into the run's tail until it ends.
+//
+// An over-long line is SKIPPED, not fatal. bufio.Scanner stops for good at
+// bufio.ErrTooLong, which would leave the child running with nothing draining
+// its pipe: once the OS pipe buffer filled, the server's own writes would block
+// and it would wedge mid-generation while the supervisor still reported
+// "loaded". So the stream is read with ReadSlice, which reports a too-long line
+// as a full buffer instead of an error, and the rest of that line is discarded
+// before pumping continues.
 func (s *Server) pump(run *processRun, wg *sync.WaitGroup, r io.Reader, stream string) {
 	if r == nil {
 		return
@@ -1834,22 +2323,49 @@ func (s *Server) pump(run *processRun, wg *sync.WaitGroup, r io.Reader, stream s
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		scanner := bufio.NewScanner(r)
-		scanner.Buffer(make([]byte, 0, 8*1024), maxLogLineBytes)
-		for scanner.Scan() {
-			line := strings.TrimRight(scanner.Text(), "\r")
-			if line == "" {
+		reader := bufio.NewReaderSize(r, maxLogLineBytes)
+		for {
+			chunk, readErr := reader.ReadSlice('\n')
+			if errors.Is(readErr, bufio.ErrBufferFull) {
+				// A line longer than the cap is dropped WHOLE: keeping the first
+				// cap-sized chunk would turn the tail's bound (tailLines ×
+				// maxLogLineBytes) into a megabyte-scale buffer for one line, and
+				// a partial line is not a more useful diagnostic than the marker.
+				skipped := len(chunk) + skipLine(reader)
+				run.tail.add(fmt.Sprintf("[a log line longer than %d bytes was skipped: %d bytes]",
+					maxLogLineBytes, skipped))
+				logger.Debug("the embedded LLM emitted an over-long output line; it was skipped",
+					"stream", stream, "pid", run.pid, "cap", maxLogLineBytes, "skipped", skipped)
 				continue
 			}
-			run.tail.add(line)
-			logger.Debug("embedded LLM server output",
-				"stream", stream, "pid", run.pid, "line", line)
-		}
-		if err := scanner.Err(); err != nil {
-			logger.Debug("the embedded LLM output stream ended early",
-				"stream", stream, "pid", run.pid, "error", err)
+			if line := strings.TrimRight(string(chunk), "\r\n"); line != "" {
+				run.tail.add(line)
+				logger.Debug("embedded LLM server output",
+					"stream", stream, "pid", run.pid, "line", line)
+			}
+			if readErr != nil {
+				if !errors.Is(readErr, io.EOF) {
+					logger.Debug("the embedded LLM output stream ended early",
+						"stream", stream, "pid", run.pid, "error", readErr)
+				}
+				return
+			}
 		}
 	}()
+}
+
+// skipLine discards the remainder of an over-long line and reports how many
+// bytes went. It stops at the newline that ends the line, at EOF, or at a read
+// error — all of which mean the caller's next ReadSlice sees the same condition.
+func skipLine(r *bufio.Reader) int {
+	skipped := 0
+	for {
+		chunk, err := r.ReadSlice('\n')
+		skipped += len(chunk)
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return skipped
+		}
+	}
 }
 
 // lineTail keeps the last n lines of server output. A crash or a failed load is
@@ -1891,13 +2407,24 @@ func (t *lineTail) String() string {
 
 // ── supervision ──
 
-// supervise owns one process lifetime: drain its output, wait for the exit,
-// then report it. It is the only goroutine that closes run.died.
+// supervise owns one process lifetime: observe the child's exit, let the output
+// pumps finish within drainWait, then report it. It is the only goroutine that
+// closes run.died.
+//
+// The exit comes FIRST and the drain is bounded and abandonable — waitExit owns
+// that ordering and its doc says why the naive "drain the pipes, then Wait"
+// shape it inverts would let a grandchild holding the child's stdout wedge this
+// goroutine for the lifetime of the app. Supervision may abandon a pump; it may
+// never hang.
 func (s *Server) supervise(run *processRun) {
 	var wg sync.WaitGroup
 	s.pumpOutput(run, &wg)
-	wg.Wait()
-	exitErr := run.proc.Wait()
+	pumpsDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(pumpsDone)
+	}()
+	exitErr := s.waitExit(run, pumpsDone)
 
 	s.mu.Lock()
 	run.exitErr = exitErr
@@ -1925,6 +2452,48 @@ func (s *Server) supervise(run *processRun) {
 			"pid", pid, "error", exitErr, "last_output", run.tail.String())
 	}
 	s.emit(event)
+}
+
+// waitExit observes the child's exit and then lets the output pumps finish,
+// bounded.
+//
+// The exit is observed FIRST, which inverts the naive "drain the pipes, then
+// Wait" ordering on purpose. cmd.Wait is what bounds the output relay
+// (serverWaitDelay) and what ends it, so waiting for EOF first would leave a
+// grandchild that inherited the child's stdout able to wedge this goroutine and
+// its two pumps for the lifetime of the app — and every later Load would then pay
+// a killWait discard delay against the zombie run. Ordering it this way costs
+// nothing in diagnostics: cmd.Wait does not return until os/exec's copy has
+// reached EOF, so the tail still holds every line the server wrote before it died.
+//
+// The bounded pump wait extends the same guarantee to a Process implementation
+// that does not relay through os/exec (a test double whose readers never end):
+// supervision may abandon a pump, but it may never hang. Abandoning is safe —
+// lineTail is mutex-guarded and the tail is only ever read for diagnostics.
+//
+// exec.ErrWaitDelay is NOT a crash. os/exec returns it in place of a NIL exit
+// error when the process exited successfully but its output had to be abandoned
+// at the delay, so passing it through would turn a clean exit into a spurious
+// StateError whose cause reads "exec: WaitDelay expired before I/O complete".
+func (s *Server) waitExit(run *processRun, pumpsDone <-chan struct{}) error {
+	exitErr := run.proc.Wait()
+
+	grace := s.drainWait()
+	drain := time.NewTimer(grace)
+	defer drain.Stop()
+	select {
+	case <-pumpsDone:
+	case <-drain.C:
+		s.logger().Warn("the embedded LLM output pumps did not finish; abandoning them",
+			"pid", run.pid, "grace", grace)
+	}
+
+	if errors.Is(exitErr, exec.ErrWaitDelay) {
+		s.logger().Warn("the embedded LLM server's output outlived the process; it was abandoned",
+			"pid", run.pid, "wait_delay", serverWaitDelay)
+		return nil
+	}
+	return exitErr
 }
 
 // crashMessage renders the user-facing cause of an unexpected exit.
@@ -1980,6 +2549,13 @@ func (s *Server) discardRun(run *processRun) {
 
 // terminate asks the process to stop, gracefully first, and kills it after the
 // graceful window. It returns once the exit has been observed.
+//
+// ctx is a BACKSTOP, not the graceful window: a `case <-ctx.Done()` inside it
+// falls straight through to the kill, so every caller derives one budgeted for
+// the whole stop (unload and forceUnload both use
+// `context.WithoutCancel(ctx)` + at least StopTimeout + the kill wait). Passing a
+// caller's own nearly-spent budget here would silently shorten the window and
+// SIGKILL a server that was about to exit on its own.
 func (s *Server) terminate(ctx context.Context, run *processRun) error {
 	if err := run.proc.Signal(gracefulSignal()); err != nil &&
 		!errors.Is(err, os.ErrProcessDone) {
@@ -2009,8 +2585,11 @@ func (s *Server) terminate(ctx context.Context, run *processRun) error {
 	case <-run.died:
 		return nil
 	case <-hardWait.C:
+		// Only killWait was waited SINCE the kill — the graceful stopTimeout
+		// was consumed before it — so the message must name killWait alone,
+		// not the caller-facing stopTimeout+killWait total.
 		return fmt.Errorf("embeddedllm: %s (pid %d) did not exit within %s of being killed",
-			ServerBinaryName, run.pid, s.stopTimeout()+s.killWait())
+			ServerBinaryName, run.pid, s.killWait())
 	}
 }
 
@@ -2189,7 +2768,7 @@ func (s *Server) logger() *slog.Logger {
 	if s != nil && s.Logger != nil {
 		return s.Logger
 	}
-	return slog.Default()
+	return slog.New(slog.DiscardHandler)
 }
 
 func (s *Server) now() time.Time {
@@ -2248,4 +2827,13 @@ func (s *Server) killWait() time.Duration {
 		return s.killWaitFor
 	}
 	return defaultKillWait
+}
+
+// drainWait is how long supervise gives the output pumps to finish after the
+// child's exit has been observed. See serverWaitDelay.
+func (s *Server) drainWait() time.Duration {
+	if s.drainWaitFor > 0 {
+		return s.drainWaitFor
+	}
+	return serverWaitDelay
 }

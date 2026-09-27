@@ -137,7 +137,7 @@ const (
 	contextTierTop = 131072
 )
 
-// ErrInsufficientRAM is the typed refusal of ADR-065 D6's flat 16 GiB floor.
+// ErrInsufficientRAM is the typed refusal of ADR-067 D6's flat 16 GiB floor.
 //
 // Deprecated: the floor is gone. The gate that replaced it prices BOTH memory
 // pools (see ErrInsufficientMemory and memoryGate in plan.go), because a floor
@@ -198,7 +198,7 @@ func (pinnedRegistry) ArtifactSet(platform string, backend Backend, packing Pack
 //   - a packing with no measured residency -> ErrMemoryNotMeasured
 //   - a machine whose memory no modelled shape fits -> ErrInsufficientMemory,
 //     BEFORE any asset is planned. This is the combined, unified-aware gate
-//     that replaced ADR-065 D6's flat RAM floor; see memoryGate.
+//     that replaced ADR-067 D6's flat RAM floor; see memoryGate.
 //   - no pinned artifact for the platform at all -> ErrArtifactNotPinned
 //
 // A probed backend that this pin cannot serve is NOT a refusal: Resolve
@@ -298,7 +298,7 @@ func resolveWith(table AssetTable, in ResolveInput) (Resolution, error) {
 	}
 
 	// THE GATE — before a single asset is planned, and so before any caller can
-	// create a directory or fetch a byte. It replaced ADR-065 D6's flat RAM
+	// create a directory or fetch a byte. It replaced ADR-067 D6's flat RAM
 	// floor: see memoryGate for why measuring one pool was wrong in both
 	// directions at once.
 	profile, err := PinnedMemoryProfile()
@@ -360,7 +360,7 @@ func resolveWith(table AssetTable, in ResolveInput) (Resolution, error) {
 // plan the derived packing, and if the measured budgets refuse it, re-decide
 // the packing with that refusal as the fit verdict and plan once more. A second
 // refusal is final — PTQ1_0 is the smallest packing this model ships, so there
-// is nothing left to downgrade to. This is what makes ADR-065 D2's "PTQ1_0 when
+// is nothing left to downgrade to. This is what makes ADR-067 D2's "PTQ1_0 when
 // memory is short" a measurement instead of a heuristic.
 //
 // An explicit `Tuning.Packing` short-circuits the loop: the operator named a

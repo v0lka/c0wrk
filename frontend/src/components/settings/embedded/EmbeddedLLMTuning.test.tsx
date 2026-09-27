@@ -11,7 +11,6 @@
 // locally with no round trip.
 
 import { act } from 'react'
-import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.stubGlobal(
@@ -35,6 +34,7 @@ vi.mock('@/lib/logger', () => ({
 vi.mock('@/api/embedded', () => ({
   DEFAULT_AUTO_UNLOAD_MINUTES: 60,
   MIN_AUTO_UNLOAD_MINUTES: 1,
+  MAX_AUTO_UNLOAD_MINUTES: 525600,
   getEmbeddedLLMStatus: vi.fn(async () => {
     throw new Error('Wails App bindings are not available')
   }),
@@ -54,183 +54,36 @@ vi.mock('@/api/embeddedTuning', async (importOriginal) => ({
   setEmbeddedLLMTuning: mocks.setEmbeddedLLMTuning,
 }))
 
-import { EmbeddedLLMTuning as TuningSection } from './EmbeddedLLMTuning'
-import { useEmbeddedLLMTuning } from '@/hooks/useEmbeddedLLMTuning'
-import { refreshEmbeddedLLMTuning, useEmbeddedLLMStore } from '@/stores/embeddedLLMStore'
-import type { EmbeddedLLMStatus } from '@/api/embedded'
+import { useEmbeddedLLMStore } from '@/stores/embeddedLLMStore'
 import type { EmbeddedLLMTuning, EmbeddedLLMTuningPatch } from '@/api/embeddedTuning'
-
-let container: HTMLDivElement
-let root: Root
+// The fixtures, the mini fold and every DOM interaction are shared with the
+// Advanced suite — see @/test/tuningTestHarness for why ONE copy matters. Only
+// the `vi.mock` blocks above stay per-file (vitest hoists them).
+import {
+  applyPatch,
+  blurField,
+  container,
+  editField,
+  emptyField,
+  enterField,
+  field,
+  flush,
+  focusField,
+  makeTuning,
+  mountHarness,
+  pickOption,
+  reloadTuning,
+  render,
+  retypeField,
+  seedStatus,
+  touchField,
+  trigger,
+  typeField,
+  unmountHarness,
+} from '@/test/tuningTestHarness'
 
 /** The live "backend" tuning section the mini fold mutates. */
 let current: EmbeddedLLMTuning
-
-function makeTuning(overrides: Partial<EmbeddedLLMTuning> = {}): EmbeddedLLMTuning {
-  return {
-    context: { mode: null, tokens: null },
-    kv_cache_type: null,
-    offload: { mode: null, layers: null },
-    fit: null,
-    fit_target_mib: null,
-    fit_min_context: null,
-    kv_offload: null,
-    mmproj_offload: null,
-    packing: null,
-    parallel: null,
-    cache_ram_mib: null,
-    host_reserve_gib: null,
-    ...overrides,
-  }
-}
-
-/** The fold the backend performs: nil keeps, present replaces, reset clears. */
-/** The fold the backend performs: nil keeps, present replaces, reset clears.
- *  Works on a mutable record copy — the DTO mirror is deeply readonly. */
-function applyPatch(t: EmbeddedLLMTuning, patch: EmbeddedLLMTuningPatch): EmbeddedLLMTuning {
-  const next = {
-    ...t,
-    context: { ...t.context },
-    offload: { ...t.offload },
-  } as unknown as Record<string, unknown>
-  if (patch.context) next.context = { ...patch.context }
-  if (patch.kv_cache_type !== undefined) next.kv_cache_type = patch.kv_cache_type
-  if (patch.offload) next.offload = { ...patch.offload }
-  for (const key of ['fit', 'fit_target_mib', 'fit_min_context', 'kv_offload', 'mmproj_offload', 'packing', 'parallel', 'cache_ram_mib', 'host_reserve_gib'] as const) {
-    if (patch[key] !== undefined) next[key] = patch[key]
-  }
-  if (patch.reset) {
-    for (const knob of patch.reset) {
-      if (knob === 'context') next.context = { mode: null, tokens: null }
-      else if (knob === 'offload') next.offload = { mode: null, layers: null }
-      else next[knob] = null
-    }
-  }
-  return next as unknown as EmbeddedLLMTuning
-}
-
-function Harness() {
-  const tuning = useEmbeddedLLMTuning()
-  return <TuningSection {...tuning.primary} />
-}
-
-async function flush(): Promise<void> {
-  await act(async () => {
-    await Promise.resolve()
-    await Promise.resolve()
-    await Promise.resolve()
-  })
-}
-
-async function render(): Promise<void> {
-  await act(async () => {
-    root.render(<Harness />)
-  })
-  await flush()
-}
-
-/** Seed the store's status snapshot (reload_required, etc.). */
-function seedStatus(overrides: Partial<EmbeddedLLMStatus>): void {
-  act(() => {
-    useEmbeddedLLMStore.getState().setStatus({
-      state: 'installed',
-      installed: true,
-      installing: false,
-      loading: false,
-      loaded: false,
-      packing: 'PQ2_0',
-      backend: 'metal',
-      port: 43211,
-      context_size: 131072,
-      auto_unload_enabled: false,
-      auto_unload_minutes: 60,
-      idle_remaining_seconds: 0,
-      base_url: 'http://127.0.0.1:43211/v1',
-      model_id: 'embedded/Bonsai 2 27B',
-      model_name: 'Bonsai 2 27B',
-      runtime_version: 'prism-b10735',
-      installed_at: '2026-01-01T00:00:00Z',
-      model_file: '/x.gguf',
-      devices: [],
-      unified: false,
-      host_ram_gib: 0,
-      device_budget_mib: 0,
-      host_budget_mib: 0,
-      topology_probed_at: '',
-      plan: {
-        recorded: false, packing: '', kv_type: '', context_size: 0, fit: false, fit_arg: '',
-        fit_target_mib: 0, fit_min_context: 0, offload_mode: 'auto', layers: -1, kv_offload: false,
-        mmproj_offload: false, parallel: 0, cache_ram_mib: -1, gpu_family: '', device_budget_mib: 0,
-        host_budget_mib: 0, expected_device_mib: 0, expected_host_mib: 0, notes: [],
-      },
-      reload_required: false,
-      pid: 0,
-      error: '',
-      available: true,
-      ...overrides,
-    })
-  })
-}
-
-/** A fresh authoritative tuning read (what a commit / event triggers). */
-async function reloadTuning(): Promise<void> {
-  await act(async () => {
-    await refreshEmbeddedLLMTuning()
-  })
-  await flush()
-}
-
-/** One combobox trigger, by its accessible name. */
-function trigger(ariaLabel: string): HTMLButtonElement {
-  const el = Array.from(container.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="menu"]')).find(
-    (b) => b.getAttribute('aria-label') === ariaLabel,
-  )
-  if (!el) throw new Error(`trigger ${ariaLabel} not found`)
-  return el
-}
-
-/** Open the combobox with `ariaLabel` and click its `optionLabel` option. */
-async function pickOption(ariaLabel: string, optionLabel: string): Promise<void> {
-  const t = trigger(ariaLabel)
-  await act(async () => {
-    t.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
-    await new Promise((r) => setTimeout(r, 10))
-  })
-  const items = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'))
-  const option = items.find((o) => o.textContent?.trim() === optionLabel)
-  if (!option) throw new Error(`Option "${optionLabel}" not found in ${ariaLabel} menu`)
-  await act(async () => {
-    option.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-  })
-  await flush()
-}
-
-/** Focus + type + blur a NumberField by its label. */
-async function editField(label: string, value: string): Promise<void> {
-  const input = container.querySelector<HTMLInputElement>(`input[data-field="${label}"]`)
-  if (!input) throw new Error(`field ${label} not found`)
-  await act(async () => {
-    input.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
-    await Promise.resolve()
-  })
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!
-  act(() => {
-    setter.call(input, value)
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-  })
-  await act(async () => {
-    input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
-    await Promise.resolve()
-    await Promise.resolve()
-  })
-  await flush()
-}
-
-function field(label: string): HTMLInputElement {
-  const el = container.querySelector<HTMLInputElement>(`input[data-field="${label}"]`)
-  if (!el) throw new Error(`field ${label} not found`)
-  return el
-}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -240,16 +93,10 @@ beforeEach(() => {
     current = applyPatch(current, patch)
   })
   useEmbeddedLLMStore.getState().reset()
-  container = document.createElement('div')
-  document.body.replaceChildren(container)
-  root = createRoot(container)
+  mountHarness('primary')
 })
 
-afterEach(() => {
-  act(() => root.unmount())
-  container.remove()
-  document.body.innerHTML = ''
-})
+afterEach(unmountHarness)
 
 describe('EmbeddedLLMTuning — render', () => {
   it('defaults every control to Auto while nothing is overridden', async () => {
@@ -296,16 +143,25 @@ describe('EmbeddedLLMTuning — render', () => {
 })
 
 describe('EmbeddedLLMTuning — combobox commits', () => {
-  it('persists an exact context through the RPC', async () => {
+  it('drafts an Exact context: the mode switch alone persists nothing', async () => {
     await render()
     await pickOption('Context mode', 'Exact')
 
-    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({
-      context: { mode: 'exact', tokens: 65536 },
-    })
-    // The re-read lands the override: the mode and the tokens field persist.
+    // A count-bearing mode is a DRAFT: the only count available at that instant
+    // is a fallback, and committing it would persist an override nobody chose.
+    expect(mocks.setEmbeddedLLMTuning).not.toHaveBeenCalled()
     expect(trigger('Context mode').textContent).toContain('Exact')
     expect(field('Tokens').value).toBe('65536')
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-draft"]')).not.toBeNull()
+
+    // Committing a count writes the mode AND the count, and retires the draft.
+    await editField('Tokens', '49152')
+    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({
+      context: { mode: 'exact', tokens: 49152 },
+    })
+    expect(trigger('Context mode').textContent).toContain('Exact')
+    expect(field('Tokens').value).toBe('49152')
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-draft"]')).toBeNull()
   })
 
   it('clears the context back to Auto via reset', async () => {
@@ -326,7 +182,7 @@ describe('EmbeddedLLMTuning — combobox commits', () => {
     expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({ reset: ['kv_cache_type'] })
   })
 
-  it('persists the offload shape (All / CPU / N layers)', async () => {
+  it('persists All / CPU at once and drafts "N layers" until a count is committed', async () => {
     await render()
     await pickOption('Layer offload', 'All')
     expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({ offload: { mode: 'all', layers: null } })
@@ -334,11 +190,56 @@ describe('EmbeddedLLMTuning — combobox commits', () => {
     await pickOption('Layer offload', 'CPU')
     expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({ offload: { mode: 'cpu', layers: null } })
 
+    // "N layers" carries a count, and the only count available at that instant
+    // is the fallback 0 — `-ngl 0`, an all-CPU launch shape for a 27B model. So
+    // the mode switch is a DRAFT and persists nothing.
+    mocks.setEmbeddedLLMTuning.mockClear()
     await pickOption('Layer offload', 'N layers')
-    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({
-      offload: { mode: 'layers', layers: 0 },
-    })
+    expect(mocks.setEmbeddedLLMTuning).not.toHaveBeenCalled()
+    expect(trigger('Layer offload').textContent).toContain('N layers')
     expect(field('Layers').value).toBe('0')
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-draft"]')).not.toBeNull()
+
+    // Committing a count writes the mode AND the count, and retires the draft.
+    await editField('Layers', '30')
+    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({
+      offload: { mode: 'layers', layers: 30 },
+    })
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-draft"]')).toBeNull()
+  })
+
+  it('seeds a drafted layer count from the recorded plan instead of 0', async () => {
+    seedStatus({
+      plan: {
+        recorded: true,
+        packing: 'PQ2_0',
+        kv_type: 'q8_0',
+        context_size: 131072,
+        fit: false,
+        fit_arg: 'off',
+        fit_target_mib: 0,
+        fit_min_context: 0,
+        offload_mode: 'layers',
+        layers: 42,
+        kv_offload: true,
+        mmproj_offload: true,
+        parallel: 1,
+        cache_ram_mib: -1,
+        gpu_family: '',
+        device_budget_mib: 0,
+        host_budget_mib: 0,
+        expected_device_mib: 0,
+        expected_host_mib: 0,
+        notes: [],
+      },
+    })
+    await render()
+
+    await pickOption('Layer offload', 'N layers')
+
+    expect(mocks.setEmbeddedLLMTuning).not.toHaveBeenCalled()
+    // The field offers a real launch shape, not a number nobody chose.
+    expect(field('Layers').value).toBe('42')
   })
 })
 
@@ -408,6 +309,319 @@ describe('EmbeddedLLMTuning — offload layers (the four cases)', () => {
   it('refuses a negative value locally, without a round trip', async () => {
     mocks.setEmbeddedLLMTuning.mockClear()
     await editField('Layers', '-3')
+
+    expect(mocks.setEmbeddedLLMTuning).not.toHaveBeenCalled()
+    expect(field('Layers').value).toBe('24')
+  })
+
+  it('refuses a count above the mirrored ceiling locally, without a round trip', async () => {
+    mocks.setEmbeddedLLMTuning.mockClear()
+    // MAX_TUNING_LAYERS mirrors embeddedllm.MaxTuningLayers (1 << 20); the
+    // input's `max` and the local refusal are the same figure.
+    await editField('Layers', '1048577')
+
+    expect(mocks.setEmbeddedLLMTuning).not.toHaveBeenCalled()
+    expect(field('Layers').value).toBe('24')
+  })
+})
+
+// The controls render their FALLBACKS until the first `GetEmbeddedLLMTuning`
+// read lands, and `busy` is what their `disabled` reads — so both the first
+// read and the post-commit read-back must keep them disabled. A commit inside
+// either window would persist a patch derived from values the user never saw.
+describe('EmbeddedLLMTuning — the disabled windows', () => {
+  it('disables every control while the first tuning read is in flight', async () => {
+    mocks.getEmbeddedLLMTuning.mockImplementation(() => new Promise<EmbeddedLLMTuning>(() => {}))
+    await render()
+
+    expect(useEmbeddedLLMStore.getState().tuning).toBeNull()
+    expect(useEmbeddedLLMStore.getState().tuningLoading).toBe(true)
+    expect(trigger('Context mode').disabled).toBe(true)
+    expect(trigger('KV cache precision').disabled).toBe(true)
+    expect(trigger('Layer offload').disabled).toBe(true)
+  })
+
+  it('holds the busy flag — and the controls — until the post-commit read-back lands', async () => {
+    await render()
+    let release: (t: EmbeddedLLMTuning) => void = () => {}
+    mocks.getEmbeddedLLMTuning.mockImplementation(
+      () =>
+        new Promise<EmbeddedLLMTuning>((resolve) => {
+          release = resolve
+        }),
+    )
+
+    await pickOption('KV cache precision', 'q8_0')
+
+    // The write is done, the re-read is not: a second click here must not be
+    // able to fire another RPC against a stale snapshot.
+    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledTimes(1)
+    expect(useEmbeddedLLMStore.getState().busy).toBe('tuning')
+    expect(trigger('KV cache precision').disabled).toBe(true)
+
+    await act(async () => {
+      release(makeTuning({ kv_cache_type: 'q8_0' }))
+    })
+    await flush()
+
+    expect(useEmbeddedLLMStore.getState().busy).toBeNull()
+    expect(trigger('KV cache precision').disabled).toBe(false)
+  })
+})
+
+// The count beside a drafted count-bearing mode is a FALLBACK (`seedCount`), so
+// a bare focus+blur must not persist it: that is how a keyboard user tabbing
+// through the tuning surface would end up with `-ngl 0` (an all-CPU launch
+// shape) and a hint line that lies. The edit-dirty check in NumberField is what
+// separates "tabbed through" from "typed the fallback on purpose" — a value
+// comparison could not, since the two look identical at commit time.
+describe('EmbeddedLLMTuning — a blur without an edit persists nothing', () => {
+  it('leaves a drafted Layers count unpersisted on focus+blur, and still pins a typed 0', async () => {
+    await render()
+    await pickOption('Layer offload', 'N layers')
+    mocks.setEmbeddedLLMTuning.mockClear()
+
+    await touchField('Layers')
+
+    expect(mocks.setEmbeddedLLMTuning).not.toHaveBeenCalled()
+    expect(field('Layers').value).toBe('0')
+    // Still a draft: nothing was written, so the hint stays honest.
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-draft"]')).not.toBeNull()
+
+    // (ii) Typing the very value that was already rendered DOES pin it — the
+    // operator asked for `-ngl 0` explicitly, so it must round-trip.
+    await retypeField('Layers', '0')
+    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({
+      offload: { mode: 'layers', layers: 0 },
+    })
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-draft"]')).toBeNull()
+  })
+
+  it('leaves a drafted Tokens count unpersisted on focus+blur, and still pins a typed fallback', async () => {
+    await render()
+    await pickOption('Context mode', 'Exact')
+    mocks.setEmbeddedLLMTuning.mockClear()
+
+    await touchField('Tokens')
+
+    expect(mocks.setEmbeddedLLMTuning).not.toHaveBeenCalled()
+    expect(field('Tokens').value).toBe('65536')
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-draft"]')).not.toBeNull()
+
+    // (ii) 65536 is the rendered fallback (DEFAULT_FIT_MIN_CONTEXT) and still
+    // commits when the user actually typed it.
+    await retypeField('Tokens', '65536')
+    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({
+      context: { mode: 'exact', tokens: 65536 },
+    })
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-draft"]')).toBeNull()
+  })
+
+  it('persists nothing when tabbing through an already-stored count either', async () => {
+    current = makeTuning({ offload: { mode: 'layers', layers: 24 } })
+    await render()
+    mocks.setEmbeddedLLMTuning.mockClear()
+
+    await touchField('Layers')
+
+    expect(mocks.setEmbeddedLLMTuning).not.toHaveBeenCalled()
+    expect(field('Layers').value).toBe('24')
+  })
+})
+
+// An EMPTIED Layers field is "no value", not `-ngl 0`. The operator select-all +
+// Backspaces to retype the 42 the recorded plan seeded, is interrupted, clicks
+// away — and ECMAScript `ToNumber('')` is +0, which passes `Number.isFinite` and
+// this knob's `min` of 0. Committing it would launch a 27B model on the CPU alone,
+// retire the draft (so the "picking the mode alone saves nothing" hint disappears)
+// and report the change as applied. `<input type="number">` reports '' for a
+// half-typed value too, so this is not only select-all-and-delete.
+describe('EmbeddedLLMTuning — an emptied count field persists nothing', () => {
+  it('reverts a drafted Layers count seeded from the recorded plan', async () => {
+    seedStatus({ plan: { recorded: true, offload_mode: 'layers', layers: 42 } })
+    await render()
+    await pickOption('Layer offload', 'N layers')
+    expect(field('Layers').value).toBe('42')
+    mocks.setEmbeddedLLMTuning.mockClear()
+
+    await emptyField('Layers')
+
+    expect(mocks.setEmbeddedLLMTuning).not.toHaveBeenCalled()
+    expect(field('Layers').value).toBe('42')
+    // Nothing was written, so the draft hint stays honest.
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-draft"]')).not.toBeNull()
+  })
+
+  it('reverts a stored Layers count and keeps the override', async () => {
+    current = makeTuning({ offload: { mode: 'layers', layers: 24 } })
+    await render()
+    mocks.setEmbeddedLLMTuning.mockClear()
+
+    await emptyField('Layers')
+
+    expect(mocks.setEmbeddedLLMTuning).not.toHaveBeenCalled()
+    expect(field('Layers').value).toBe('24')
+  })
+
+  it('still commits an explicitly typed 0 (all-CPU) after an empty revert', async () => {
+    current = makeTuning({ offload: { mode: 'layers', layers: 24 } })
+    await render()
+    mocks.setEmbeddedLLMTuning.mockClear()
+
+    await emptyField('Layers')
+    expect(mocks.setEmbeddedLLMTuning).not.toHaveBeenCalled()
+
+    // `0` stays reachable by typing `0`: the operator asked for `-ngl 0`.
+    await editField('Layers', '0')
+    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({
+      offload: { mode: 'layers', layers: 0 },
+    })
+    expect(field('Layers').value).toBe('0')
+  })
+})
+
+// `type="number"` outside a `<form>` gives Enter no default action, so without an
+// explicit handler these fields would commit on blur only — while the sibling
+// auto-unload minutes field in the SAME Settings block has always committed on
+// Enter. One gesture, one persist: `commit` consumes the dirty flag, so the blur
+// that follows writes nothing more.
+//
+// The same "no default action" is why Enter must NOT clear the focus flag: the
+// DOM node KEEPS focus, so a false flag would leave the field rendering
+// `String(value)` while every further keystroke still landed in `draft` and
+// re-armed the dirty flag — text the operator never sees, persisted by the
+// eventual blur. The blur half of the gesture is therefore dispatched with
+// `blurField` (a bare `focusout`); `touchField` would re-focus first, and
+// `onFocus` clearing the dirty flag would make these tests pass with `commit`'s
+// flag reset deleted.
+describe('EmbeddedLLMTuning — Enter commits like blur', () => {
+  it('commits a drafted Layers count on Enter, retiring the draft hint', async () => {
+    await render()
+    await pickOption('Layer offload', 'N layers')
+    mocks.setEmbeddedLLMTuning.mockClear()
+
+    await enterField('Layers', '30')
+
+    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({
+      offload: { mode: 'layers', layers: 30 },
+    })
+    expect(field('Layers').value).toBe('30')
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-draft"]')).toBeNull()
+  })
+
+  it('commits an exact Tokens count on Enter', async () => {
+    current = makeTuning({ context: { mode: 'exact', tokens: 32768 } })
+    await render()
+    mocks.setEmbeddedLLMTuning.mockClear()
+
+    await enterField('Tokens', '49152')
+
+    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({
+      context: { mode: 'exact', tokens: 49152 },
+    })
+    expect(field('Tokens').value).toBe('49152')
+  })
+
+  it('persists nothing when Enter is pressed on an unchanged draft', async () => {
+    await render()
+    await pickOption('Layer offload', 'N layers')
+    mocks.setEmbeddedLLMTuning.mockClear()
+
+    await enterField('Layers')
+
+    expect(mocks.setEmbeddedLLMTuning).not.toHaveBeenCalled()
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-draft"]')).not.toBeNull()
+  })
+
+  it('refuses an out-of-range count on Enter exactly as on blur', async () => {
+    current = makeTuning({ offload: { mode: 'layers', layers: 24 } })
+    await render()
+    mocks.setEmbeddedLLMTuning.mockClear()
+
+    await enterField('Layers', '-3')
+
+    expect(mocks.setEmbeddedLLMTuning).not.toHaveBeenCalled()
+    expect(field('Layers').value).toBe('24')
+  })
+
+  it('consumes the dirty flag once — the blur after an Enter writes nothing more', async () => {
+    current = makeTuning({ offload: { mode: 'layers', layers: 24 } })
+    await render()
+    await enterField('Layers', '30')
+    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledTimes(1)
+    mocks.setEmbeddedLLMTuning.mockClear()
+
+    // The REAL gesture: Enter, then click away. The DOM node never lost focus, so
+    // the blur arrives as a bare `focusout` with no `focusin` in between — which
+    // is exactly what `blurField` dispatches and `touchField` does not.
+    await blurField('Layers')
+
+    expect(mocks.setEmbeddedLLMTuning).not.toHaveBeenCalled()
+    expect(field('Layers').value).toBe('30')
+  })
+
+  it('keeps the field editable after an Enter — the next keystroke is rendered, not swallowed', async () => {
+    current = makeTuning({ offload: { mode: 'layers', layers: 24 } })
+    await render()
+    await enterField('Layers', '30')
+    expect(field('Layers').value).toBe('30')
+    mocks.setEmbeddedLLMTuning.mockClear()
+
+    // Enter left the DOM focus where it was, so this IS a real keystroke and it
+    // must be echoed. Before the fix the field cleared its focus flag on Enter
+    // and rendered `String(value)` from then on: "300" below went into `draft`,
+    // re-armed the dirty flag, stayed invisible, and the eventual blur persisted
+    // it — a `-ngl 300` the operator never saw on screen.
+    await typeField('Layers', '300')
+    expect(field('Layers').value).toBe('300')
+
+    // …and because it is a genuine NEW edit, the bare blur that follows commits
+    // it exactly once — the Enter value is not persisted a second time.
+    await blurField('Layers')
+    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledTimes(1)
+    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({
+      offload: { mode: 'layers', layers: 300 },
+    })
+    expect(field('Layers').value).toBe('300')
+  })
+
+  it('re-seeds the draft when the field is re-focused after an Enter', async () => {
+    current = makeTuning({ offload: { mode: 'layers', layers: 24 } })
+    await render()
+    await enterField('Layers', '30')
+    mocks.setEmbeddedLLMTuning.mockClear()
+
+    // The other half of the same rule, stated from the re-focus side: clicking
+    // back into the field shows the COMMITTED value (not a stale draft), and the
+    // next keystroke is visible from the first character.
+    //
+    // The blur is part of the gesture, not padding: a browser never fires a
+    // second `focus` without a preceding `blur`, so Enter → click away → click
+    // back is the sequence a user actually produces. It also re-pins the other
+    // half of the Enter contract on the way — the blur persists nothing,
+    // because the Enter already consumed the edit-dirty flag.
+    await blurField('Layers')
+    expect(mocks.setEmbeddedLLMTuning).not.toHaveBeenCalled()
+
+    await focusField('Layers')
+    expect(field('Layers').value).toBe('30')
+
+    await typeField('Layers', '31')
+    expect(field('Layers').value).toBe('31')
+
+    await blurField('Layers')
+    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledTimes(1)
+    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({
+      offload: { mode: 'layers', layers: 31 },
+    })
+  })
+
+  it('never renders a decimal it would refuse — an Enter on 2.5 reverts', async () => {
+    current = makeTuning({ offload: { mode: 'layers', layers: 24 } })
+    await render()
+    mocks.setEmbeddedLLMTuning.mockClear()
+
+    await enterField('Layers', '2.5')
 
     expect(mocks.setEmbeddedLLMTuning).not.toHaveBeenCalled()
     expect(field('Layers').value).toBe('24')

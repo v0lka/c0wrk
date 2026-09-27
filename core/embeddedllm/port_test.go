@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -97,6 +98,53 @@ func TestSearchFreePortClampsAnUnusablePreference(t *testing.T) {
 		if prober.probed[0] != MinLoopbackPort {
 			t.Errorf("preferred %d probed %d first, want %d", preferred, prober.probed[0], MinLoopbackPort)
 		}
+	}
+}
+
+// An above-range preference — the shape only a hand-edited or corrupted
+// manifest.json reaches, since ReadManifest performs no range validation — must
+// clamp DOWN to MaxLoopbackPort instead of leaving the scan with an empty range.
+// An empty range produced zero probes and an inverted exhaustion message ("every
+// port from 99999 to 65535 is taken"), which misdiagnoses a bad preference as
+// port exhaustion.
+func TestSearchFreePortClampsAnAboveRangePreference(t *testing.T) {
+	t.Parallel()
+
+	for _, preferred := range []int{MaxLoopbackPort + 1, 99999, 1 << 20} {
+		prober := newRecordingProber()
+		got, err := SearchFreePort(context.Background(), preferred, prober.probe)
+		if err != nil {
+			t.Fatalf("SearchFreePort(preferred=%d): %v", preferred, err)
+		}
+		if got != MaxLoopbackPort {
+			t.Errorf("preferred %d → port %d, want %d", preferred, got, MaxLoopbackPort)
+		}
+		if len(prober.probed) != 1 || prober.probed[0] != MaxLoopbackPort {
+			t.Errorf("preferred %d probed %v, want exactly one probe of %d",
+				preferred, prober.probed, MaxLoopbackPort)
+		}
+	}
+}
+
+// The exhaustion message must never name an inverted range: an above-range
+// preference that finds its one clamped candidate taken reports a range whose
+// start is at most its end.
+func TestSearchFreePortExhaustionMessageIsNeverAnInvertedRange(t *testing.T) {
+	t.Parallel()
+
+	prober := newRecordingProber(MaxLoopbackPort)
+	_, err := SearchFreePort(context.Background(), 99999, prober.probe)
+	if !errors.Is(err, ErrNoFreePort) {
+		t.Fatalf("error = %v, want ErrNoFreePort", err)
+	}
+	message := err.Error()
+	inverted := "from " + strconv.Itoa(99999) + " to " + strconv.Itoa(MaxLoopbackPort)
+	if strings.Contains(message, inverted) {
+		t.Errorf("error = %q, must not report the inverted range %q", message, inverted)
+	}
+	want := "from " + strconv.Itoa(MaxLoopbackPort) + " to " + strconv.Itoa(MaxLoopbackPort)
+	if !strings.Contains(message, want) {
+		t.Errorf("error = %q, want it to name the clamped range %q", message, want)
 	}
 }
 

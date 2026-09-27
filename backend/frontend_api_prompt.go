@@ -24,6 +24,16 @@ func (f *FrontendAPI) OptimizePrompt(prompt string) (*OptimizePromptResponse, er
 	// a cold weight load takes longer than the service timeout, and charging it
 	// to the request would fail the call instead of serving it. A no-op for
 	// every other provider.
+	//
+	// BY DESIGN this gate is outside the latency envelope the service timeout
+	// describes (ADR-066 D13: no LLM request may start before the model is
+	// resident, and the load is never charged to the request's own budget). The
+	// worst case for a caller of this RPC is therefore
+	// serviceLLMTimeout + embeddedllm.DefaultLoadWaitTimeout when the local
+	// model is the default and cold — not serviceLLMTimeout alone. How that wait
+	// bound is derived is stated once, on the constant itself. The frontend
+	// keeps a per-session in-flight spinner across the whole wait and no
+	// client-side RPC timeout aborts it.
 	if err := f.ensureEmbeddedReadyForLLMRequest(f.ctx()); err != nil {
 		return nil, err
 	}

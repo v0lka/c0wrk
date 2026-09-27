@@ -1461,7 +1461,42 @@ func (a *App) initEmbeddedLLM(log *slog.Logger) {
 // never loaded, or one already stopped by the idle budget, makes it a no-op.
 //
 // A failure is logged, never fatal — quitting must not be blocked by a server
-// that refuses to die, and the OS reclaims the child when this process exits.
+// that refuses to die.
+//
+// THE TEARDOWN CONTRACT, and why "never fatal" is safe: the supervised child is
+// deliberately DETACHED (core spawns it with context.WithoutCancel and sets no
+// Pdeathsig/Setpgid/job-object tie), so the OS does NOT reclaim it when this
+// process exits — an unstopped llama-server outlives c0wrk and keeps its
+// gigabytes and its loopback port until a manual kill or a reboot. This call is
+// therefore the ONLY thing that terminates it, and the guarantee comes from the
+// bounded context rather than from the OS: backend.stopEmbeddedLLM arms
+// embeddedStopTimeout (30s) around core's Stop, and Stop takes a force path when
+// it cannot acquire the supervisor's single-instance gate in time — the gate an
+// in-flight cold load holds for up to DefaultReadyTimeout (15 min) — so a busy
+// gate ends in the child being killed instead of in a stop that merely reports it
+// gave up. The force path arms its OWN budget (core's stopTimeout + killWait + 1s)
+// on a detached context, because the caller's has just expired, so the real
+// ceiling on a quit is the 30s gate wait PLUS that force budget. Handing Stop an
+// UNBOUNDED context would break all of it: the quit would then hang for the length
+// of the load, which is exactly what the budget prevents.
+//
+// What the bound does NOT promise is that a quit always ends with the child dead.
+// The guarantee it does provide is TRACKING: a stop that did not take — the wedged
+// native child sitting in an uninterruptible syscall that survives BOTH the
+// graceful signal and the kill, precisely what core's killWait exists for — makes
+// core's terminate exhaust its own budget and return an error, and both stop paths
+// then RE-ATTACH the live run handle and record StateError instead of dropping it
+// (pinned by TestForceUnloadReportsAStopThatDidNotTake and
+// TestUnloadReportsAStopThatDidNotTake in core). Shutdown logs that error here as
+// non-fatal and the app exits, so this is the ONE quit outcome that can still
+// leave llama-server running. What no quit outcome can leave is a live child the
+// supervisor has lost sight of — unrecorded, unkillable through the UI, and with a
+// second server spawned beside it on the next load.
+//
+// This is the graceful-quit path only. A crash or a SIGKILL runs neither this nor
+// Shutdown, so nothing terminates the child; the port self-heals on the next
+// launch (EnsurePort walks upward past a squatted or foreign listener) but the
+// memory does not, and no persisted state identifies the orphan.
 func (a *App) stopEmbeddedLLM(ctx context.Context) {
 	if a.FrontendAPI == nil {
 		return

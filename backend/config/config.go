@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -580,6 +581,22 @@ type ChatGPTConfig struct {
 	OutputTokenReserve int `yaml:"output_token_reserve"`
 }
 
+// MaxModelContextWindow is the sanity ceiling for a
+// llm.models.<name>.context_window override. 1<<24 = 16,777,216 tokens, which
+// is roughly eight times the largest context any real remote model serves
+// today (2M), so it can never refuse a legitimate configuration — it exists to
+// reject the absurd instead.
+//
+// Why it is needed at all: this override is a TIER-1 value that shadows the
+// tier-1.5 lazy probe, so a poisoned one is never corrected by asking the model
+// again. Two writers feed it — an operator hand-editing config.yaml, and the
+// embedded LLM's `/props` context readback (backend.persistEmbeddedContext,
+// which reads the figure off a local HTTP endpoint) — and an absurd value is
+// worse than a wrong one: sp4rk's memory-context arithmetic reports "fits" for
+// every prompt, so compaction never triggers. Both writers therefore bound the
+// value against this one constant rather than each keeping its own figure.
+const MaxModelContextWindow = 1 << 24
+
 // ModelOverride allows overriding built-in model metadata.
 // Fields use omitempty so a 0/empty/nil value (meaning "inherit the built-in
 // default") is not serialized — only fields that actually differ from the
@@ -592,6 +609,9 @@ type ChatGPTConfig struct {
 // sentinels ensure a deliberate override to "default"/""/all-false is still
 // distinguishable from "no override", so a user can force e.g. a false
 // Attachment capability that differs from the built-in true.
+//
+// ContextWindow is 0 (unset → inherit) or within 1..MaxModelContextWindow;
+// validate() rejects anything else.
 type ModelOverride struct {
 	ContextWindow int                    `yaml:"context_window,omitempty"`
 	OutputLimit   int                    `yaml:"output_limit,omitempty"`
@@ -654,6 +674,14 @@ type EmbeddedLLMConfig struct {
 	// Backend is the accelerator the hardware probe selected ("metal",
 	// "cuda-12.4", "cuda-12.8", "cuda-13.3", "rocm", "vulkan", "cpu").
 	// Informational.
+	//
+	// "cuda-13.3" is PINNED and therefore recordable here — it is part of the
+	// pinned runtime artifact set — but it is NOT selectable in practice:
+	// core's compat guard `cuda-13.3-crash` (PrismML-Eng/llama.cpp#222)
+	// substitutes it on every CUDA platform, to cuda-12.8 on linux/amd64 and
+	// cuda-12.4 on windows/amd64, so no machine resolves to it while that guard
+	// is in force. Recordable-in-the-manifest and user-selectable are different
+	// predicates; this field records.
 	Backend string `yaml:"backend"`
 	// Port is the persisted loopback port; 0 = allocate at install time. The
 	// provider base URL is ALWAYS derived from it, never stored separately.
@@ -680,7 +708,8 @@ type EmbeddedLLMConfig struct {
 type AutoUnloadConfig struct {
 	// Enabled is the idle-timer master switch. Default: true.
 	Enabled *bool `yaml:"enabled"`
-	// Minutes is the idle budget before unload. Default: 60; must be >= 1.
+	// Minutes is the idle budget before unload. Default: 60; must be within
+	// 1..embeddedllm.MaxAutoUnloadMinutes.
 	Minutes *int `yaml:"minutes"`
 }
 
@@ -690,8 +719,9 @@ func (a AutoUnloadConfig) IsEnabled() bool {
 }
 
 // IdleMinutes resolves the idle budget (nil → EmbeddedLLMDefaultAutoUnloadMinutes).
-// An explicit non-positive value is rejected by validate(), so a config that
-// loaded always resolves to >= 1.
+// An explicit value outside 1..embeddedllm.MaxAutoUnloadMinutes is rejected by
+// validate(), so a config that loaded always resolves to a budget the
+// minutes→duration conversion can represent.
 func (a AutoUnloadConfig) IdleMinutes() int {
 	if a.Minutes == nil {
 		return EmbeddedLLMDefaultAutoUnloadMinutes
@@ -819,7 +849,8 @@ type TuningConfig struct {
 	Fit *bool `yaml:"fit,omitempty"`
 	// FitTargetMiB overrides `-fitt`, the per-device margin fit leaves free.
 	// Absent keeps the runtime's own 1024 MiB target; an explicit 0 also omits
-	// the flag. Must be >= 0. Only emitted under fit.
+	// the flag. Must be within 0..embeddedllm.MaxTuningMiB. Only emitted under
+	// fit.
 	FitTargetMiB *int `yaml:"fit_target_mib,omitempty"`
 	// FitMinContext overrides `-fitc`, the smallest context fit may settle on.
 	// Absent means c0wrk's 65536 floor — deliberately NOT the runtime's own
@@ -845,18 +876,23 @@ type TuningConfig struct {
 	// one agent loop over one loopback socket and issues one request at a time,
 	// and `-np 4` was measured to inflate fit's own projection from 24450 MiB
 	// to 77297 MiB while SPLITTING the context across slots (`-c 8192 -np 4`
-	// yields 2048-token slots). Must be >= 1.
+	// yields 2048-token slots). Must be within
+	// 1..embeddedllm.MaxTuningParallel.
 	Parallel *int `yaml:"parallel,omitempty"`
 	// CacheRAMMiB overrides `-cram`, the prompt-cache ceiling. Absent omits the
 	// flag and keeps the runtime default; an explicit 0 DISABLES the cache and
 	// is passed through verbatim, because disabling it is a legitimate choice.
-	// Must be >= 0.
+	// Must be within 0..embeddedllm.MaxTuningMiB.
 	CacheRAMMiB *int `yaml:"cache_ram_mib,omitempty"`
 	// HostReserveGiB overrides the system RAM kept out of the host budget.
 	// Absent keeps the topology's own derivation (the larger of a 4 GiB floor
 	// and 1/8 of RAM). It is a PLANNER-side budget knob, not a runtime flag —
 	// the pinned fork has no `--host-reserve` — and it REPLACES the derived
-	// reserve rather than stacking on it. Must be >= 0.
+	// reserve rather than stacking on it. Must be a FINITE number within
+	// 0..embeddedllm.MaxTuningHostReserveGiB: the planner converts it to an
+	// integer MiB count, and a float→int conversion the result type cannot
+	// represent is implementation-defined (it saturates on arm64 and goes
+	// negative on amd64, which would fail the memory gate open).
 	HostReserveGiB *float64 `yaml:"host_reserve_gib,omitempty"`
 }
 
@@ -877,7 +913,8 @@ type EmbeddedLLMOffloadConfig struct {
 	// Mode is "auto" (absent is a synonym), "all", "cpu" or "layers".
 	Mode *string `yaml:"mode,omitempty"`
 	// Layers is the explicit `-ngl` count. Validated even while Mode is not
-	// "layers", for the same reason as Tokens above.
+	// "layers", for the same reason as Tokens above. Must be within
+	// 0..embeddedllm.MaxTuningLayers.
 	Layers *int `yaml:"layers,omitempty"`
 }
 
@@ -929,13 +966,25 @@ func tuningPackingChoices() []string {
 	return out
 }
 
-// tuningRange checks one numeric knob. The key is named in the message and the
-// fix is stated, matching validateEmbeddedLLM's existing style.
-func tuningRange(key string, value *int, floor int, fix string) error {
-	if value == nil || *value >= floor {
+// tuningRange checks one integer knob against a closed range. The key is named
+// in the message and the fix is stated, matching validateEmbeddedLLM's existing
+// style.
+//
+// The CEILING is as load-bearing as the floor. Core owns the figures
+// (embeddedllm.MaxTuning*) and they are overflow/absurdity guards, not tuning
+// opinions: every one of these values is multiplied by a per-unit footprint
+// downstream (MiB→bytes, layers→per-layer weights, slots→per-slot KV caches), so
+// an unbounded knob makes that arithmetic wrap instead of merely being refused
+// by the memory gate — and a bound that exists at only one layer is a bound an
+// operator walks around by hand-editing config.yaml.
+func tuningRange(key string, value *int, floor, ceiling int, fix string) error {
+	if value == nil {
 		return nil
 	}
-	return fmt.Errorf("%s %d is not valid; must be >= %d%s", key, *value, floor, fix)
+	if *value < floor || *value > ceiling {
+		return fmt.Errorf("%s %d is not valid; must be within %d-%d%s", key, *value, floor, ceiling, fix)
+	}
+	return nil
 }
 
 // ToTuning translates the persisted override surface into the planner's
@@ -1014,6 +1063,7 @@ func (t TuningConfig) ToTuning() (embeddedllm.Tuning, error) {
 		return embeddedllm.Tuning{}, err
 	}
 	if err := tuningRange("embedded_llm.tuning.offload.layers", t.Offload.Layers, 0,
+		embeddedllm.MaxTuningLayers,
 		" (a layer count is never negative; use offload.mode: cpu for nothing offloaded)"); err != nil {
 		return embeddedllm.Tuning{}, err
 	}
@@ -1051,6 +1101,7 @@ func (t TuningConfig) ToTuning() (embeddedllm.Tuning, error) {
 	// knob is currently inert — an out-of-range fit_min_context beside
 	// `fit: false` is still a dead budget waiting for the flag to be flipped.
 	if err := tuningRange("embedded_llm.tuning.fit_target_mib", t.FitTargetMiB, 0,
+		embeddedllm.MaxTuningMiB,
 		" (0 keeps the runtime's own 1024 MiB target)"); err != nil {
 		return embeddedllm.Tuning{}, err
 	}
@@ -1059,19 +1110,34 @@ func (t TuningConfig) ToTuning() (embeddedllm.Tuning, error) {
 		return embeddedllm.Tuning{}, err
 	}
 	if err := tuningRange("embedded_llm.tuning.parallel", t.Parallel, 1,
+		embeddedllm.MaxTuningParallel,
 		fmt.Sprintf(" (default %d: one slot, because -np also SPLITS the context across slots)",
 			embeddedllm.DefaultParallel)); err != nil {
 		return embeddedllm.Tuning{}, err
 	}
 	if err := tuningRange("embedded_llm.tuning.cache_ram_mib", t.CacheRAMMiB, 0,
+		embeddedllm.MaxTuningMiB,
 		" (0 disables the prompt cache, which is a legitimate choice)"); err != nil {
 		return embeddedllm.Tuning{}, err
 	}
-	if t.HostReserveGiB != nil && *t.HostReserveGiB < 0 {
-		return embeddedllm.Tuning{}, fmt.Errorf(
-			"embedded_llm.tuning.host_reserve_gib %g is not valid; must be >= 0 (it REPLACES the derived reserve, so a negative one would inflate the host budget)",
-			*t.HostReserveGiB,
-		)
+	if t.HostReserveGiB != nil {
+		// A FINITE-and-bounded check, not just `< 0`. NaN compares false against
+		// every bound, so the old floor-only check let an operator typo through
+		// and the planner then silently ignored it; and a float→int conversion
+		// whose value the result type cannot represent is implementation-defined
+		// in Go — the planner's `int64(reserve * mibPerGiB)` saturates on arm64
+		// and yields the negative "indefinite value" on amd64, which would make
+		// host = ram − reserve enormous and fail the memory gate OPEN on the one
+		// knob meant to shrink the budget. Rejecting ±Inf keeps that conversion
+		// total on every architecture.
+		reserve := *t.HostReserveGiB
+		if math.IsNaN(reserve) || math.IsInf(reserve, 0) ||
+			reserve < 0 || reserve > embeddedllm.MaxTuningHostReserveGiB {
+			return embeddedllm.Tuning{}, fmt.Errorf(
+				"embedded_llm.tuning.host_reserve_gib %g is not valid; must be a finite number within 0-%d (it REPLACES the derived reserve, so a negative one would inflate the host budget)",
+				reserve, embeddedllm.MaxTuningHostReserveGiB,
+			)
+		}
 	}
 
 	return out, nil
@@ -1263,10 +1329,19 @@ func validateEmbeddedLLM(c *EmbeddedLLMConfig) error {
 		)
 	}
 
-	if minutes := c.AutoUnload.IdleMinutes(); minutes < 1 {
+	// The idle budget is bounded on BOTH sides. The floor keeps the timer from
+	// being armed with a non-positive budget; the ceiling
+	// (embeddedllm.MaxAutoUnloadMinutes) keeps the minutes→nanoseconds multiply
+	// total — past it `time.Duration(minutes) * time.Minute` wraps, and the
+	// wrapped result can be a short POSITIVE budget (seconds, or at the residues
+	// of the 2^11 divisor even microseconds), so an "effectively never" value
+	// would silently invert into "unload immediately" and the UI would keep
+	// echoing the operator's number. Same overflow class maxMemoryLimitMiB
+	// already guards for the two MiB-valued memory knobs.
+	if minutes := c.AutoUnload.IdleMinutes(); minutes < 1 || minutes > embeddedllm.MaxAutoUnloadMinutes {
 		return fmt.Errorf(
-			"embedded_llm.auto_unload.minutes %d is not valid; must be >= 1 (default %d), or set embedded_llm.auto_unload.enabled: false to disable the idle timer",
-			minutes, EmbeddedLLMDefaultAutoUnloadMinutes,
+			"embedded_llm.auto_unload.minutes %d is not valid; must be within 1-%d (default %d), or set embedded_llm.auto_unload.enabled: false to disable the idle timer",
+			minutes, embeddedllm.MaxAutoUnloadMinutes, EmbeddedLLMDefaultAutoUnloadMinutes,
 		)
 	}
 
@@ -2631,6 +2706,31 @@ func validate(cfg *Config) error {
 			return fmt.Errorf(
 				"llm provider %q auto_retry_seconds must be within [0, %d], got %d",
 				p.name, maxAutoRetrySeconds, p.autoRetrySeconds,
+			)
+		}
+	}
+
+	// Range-check the llm.models context_window overrides. 0 means "inherit the
+	// built-in metadata" and stays legal; anything else must be a plausible
+	// token count. The override is a TIER-1 value that shadows the tier-1.5 lazy
+	// probe, so a poisoned one is never corrected by asking the model again, and
+	// an absurd window makes every prompt "fit" — which silently disables
+	// context compaction. Keys are sorted so a config with several bad overrides
+	// reports the same one every run. See MaxModelContextWindow.
+	modelNames := make([]string, 0, len(cfg.LLM.Models))
+	for name := range cfg.LLM.Models {
+		modelNames = append(modelNames, name)
+	}
+	sort.Strings(modelNames)
+	for _, name := range modelNames {
+		window := cfg.LLM.Models[name].ContextWindow
+		if window == 0 {
+			continue
+		}
+		if window < 0 || window > MaxModelContextWindow {
+			return fmt.Errorf(
+				"llm.models.%q.context_window %d is not valid; must be within 1-%d tokens, or 0/unset to inherit the built-in metadata",
+				name, window, MaxModelContextWindow,
 			)
 		}
 	}

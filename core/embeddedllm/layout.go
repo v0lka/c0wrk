@@ -199,6 +199,25 @@ func (l Layout) Owns(p string) bool {
 	return false
 }
 
+// OwnsModel reports whether p lies inside the MODEL root — the weights tree the
+// install writes the GGUFs and manifest.json into.
+//
+// It is the containment check a launch applies to the recorded model file before
+// that path becomes the `-m` argv element. The manifest is an ordinary file in
+// the agent's own directory, so without this a tampered record could point the
+// launch at an arbitrary GGUF and have it served under the pinned model's
+// trusted identity — a model swap the provider name and the install-time digests
+// both claim cannot happen. The binary half of the identity already has the
+// equivalent discipline (ServerBinaryPath walks the runtime tree); this is the
+// weights half.
+func (l Layout) OwnsModel(p string) bool {
+	if l.ModelRoot == "" || p == "" {
+		return false
+	}
+	inside, err := pathutil.IsWithinPath(l.ModelRoot, p)
+	return err == nil && inside
+}
+
 // EnsureRoots creates both roots (and the archive staging area). It is called
 // before the whole-set disk guard so the guard can measure a directory that
 // exists.

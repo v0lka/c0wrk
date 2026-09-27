@@ -312,8 +312,9 @@ func TestEmbeddedLLMRemoveClearsProviderRecordEndToEnd(t *testing.T) {
 // removal case with no migration target: the embedded model was the only
 // enabled model. The record is still erased and llm.default_model ends up
 // empty, which validate() reports — a config with no provider at all is invalid
-// independently of this subsystem, and ApplyDefaults fills the first available
-// model on the next load once the operator configures one.
+// independently of this subsystem. Nothing reseeds the key (ApplyDefaults never
+// touches DefaultModel), so the config stays invalid until the operator picks
+// or adds a provider; that is deliberate, see firstNonEmbeddedModelID.
 func TestEmbeddedLLMRemoveWithNoOtherModelLeavesAnEmptyDefault(t *testing.T) {
 	agentDir := t.TempDir()
 	layout, err := embeddedllm.NewLayout(RuntimesDir(agentDir), EmbeddedModelDir(agentDir))

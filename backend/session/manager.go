@@ -190,6 +190,13 @@ type Manager struct {
 	// local model: a cold weight load takes longer than the service timeout, so
 	// a budget armed first would be consumed by the load and the request would
 	// fail instead of waiting. Guarded by mu.
+	//
+	// Consequence, deliberate per ADR-066 D13: serviceLLMTimeout bounds the
+	// REQUEST only, never the gate. The production gate
+	// (backend.ensureEmbeddedReadyForLLMRequest) can wait
+	// embeddedllm.DefaultLoadWaitTimeout — derived from the supervisor's own
+	// ready budget, as that constant's doc states — so a caller must not assume
+	// the whole one-shot call fits inside serviceLLMTimeout.
 	serviceLLMGate  func(context.Context) error
 	projectResolver ProjectResolverFunc // resolves projectID -> workspacePath for lazy session restoration
 	fileTracker     *FileCoherenceTracker

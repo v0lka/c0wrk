@@ -64,9 +64,10 @@ type installCase struct {
 	// missingCommand makes every command whose base name equals it report
 	// exec.ErrNotFound.
 	missingCommand string
-	// sinkErr / stopErr make the config sink / server stop fail.
+	// sinkErr makes the config sink fail. A failing server stop is set per test
+	// on fx.installer.Stop, because Install now stops the resident server too
+	// and mustInstall would otherwise inherit the failure.
 	sinkErr error
-	stopErr error
 	// devices is the accelerator inventory the fixture's device probe answers
 	// with. Empty means "the probe did not answer", which is what a machine with
 	// no runtime to ask reports.
@@ -217,9 +218,6 @@ func newInstallFixture(t *testing.T, tc installCase) *installFixture {
 		AllocatePort: func(context.Context) (int, error) { return 41977, nil },
 		Now:          func() time.Time { return testInstallInstant },
 		HostOS:       tc.hostOS,
-	}
-	if tc.stopErr != nil {
-		fx.installer.Stop = func(context.Context) error { return tc.stopErr }
 	}
 	return fx
 }
@@ -999,6 +997,246 @@ func TestInstallRuntimeVerificationFailureStopsBeforeTheWeights(t *testing.T) {
 // 8 GiB on Apple Silicon is refused on the measurements, not on a threshold:
 // the accelerator's pool IS the host pool there, so the RAM probe priced both,
 // and the smallest modelled shape still does not fit inside the reserve.
+func TestInstallStopsTheServerFirst(t *testing.T) {
+	// A repair runs on a machine that may already host the model: the resident
+	// server executes out of the runtime tree this install retires, and holds
+	// the memory step 2's gate is about to price. Stopping it is step 0, so it
+	// happens even when the install is refused afterwards, and a server that
+	// will not stop refuses the install outright.
+	t.Run("a stop failure refuses the install before anything is fetched", func(t *testing.T) {
+		fx := newInstallFixture(t, darwinMetalCase())
+		fx.installer.Stop = func(context.Context) error { return errors.New("the server did not exit") }
+
+		_, err := fx.Install(context.Background(), InstallOptions{})
+		if err == nil {
+			t.Fatal("Install succeeded although the resident server would not stop")
+		}
+		if !strings.Contains(err.Error(), "stopping the inference server before installation") {
+			t.Errorf("error %q does not say which stop failed", err)
+		}
+		if n := fx.totalRequests(); n != 0 {
+			t.Errorf("a refused install made %d HTTP requests, want 0", n)
+		}
+		if len(fx.sink.installCalls()) != 0 {
+			t.Error("a refused install registered a provider")
+		}
+		requireNoManifest(t, fx.layout)
+	})
+
+	t.Run("the stop precedes the memory gate", func(t *testing.T) {
+		tc := darwinMetalCase()
+		tc.ramGiB = 8 // a machine the gate refuses
+		fx := newInstallFixture(t, tc)
+		var stopped bool
+		fx.installer.Stop = func(context.Context) error { stopped = true; return nil }
+
+		if _, err := fx.Install(context.Background(), InstallOptions{}); !errors.Is(err, ErrInsufficientMemory) {
+			t.Fatalf("Install error = %v, want ErrInsufficientMemory", err)
+		}
+		if !stopped {
+			t.Error("the gate refused before the resident server was stopped, " +
+				"so it priced memory the old server still holds")
+		}
+	})
+
+	t.Run("a successful install stops the server exactly once", func(t *testing.T) {
+		fx := newInstallFixture(t, darwinMetalCase())
+		var stops int
+		fx.installer.Stop = func(context.Context) error { stops++; return nil }
+
+		fx.mustInstall(t)
+		if stops != 1 {
+			t.Errorf("Install called Stop %d times, want 1", stops)
+		}
+	})
+
+	// The shape step 0 exists for: a REPAIR on a machine whose server is actually
+	// RESIDENT. The subtests above pin the refusal, the gate ordering and the call
+	// count through a stub seam; this one pins that the seam really takes a live
+	// process down while the tree it executes from is still in place — i.e. before
+	// step 7 retires it, which on Windows is the difference between a repair and
+	// ERROR_ACCESS_DENIED.
+	t.Run("a resident server is stopped before the runtime tree is retired", func(t *testing.T) {
+		fx := newInstallFixture(t, darwinMetalCase())
+		previous := fx.mustInstall(t)
+
+		// A marker inside the installed runtime tree: promoteRuntime retires the
+		// whole tree, so the marker disappears exactly when the tree does.
+		marker := filepath.Join(previous.RuntimeDir, "c0wrk-repair-marker")
+		if err := os.WriteFile(marker, []byte("the tree the resident server executes from"), 0o600); err != nil {
+			t.Fatalf("planting the runtime marker: %v", err)
+		}
+
+		// A genuinely resident server over the same layout: loaded, supervised and
+		// holding a live process.
+		endpoint := newModelsEndpoint(t)
+		endpoint.serveProps(16384, 1)
+		manifestPath, err := fx.layout.ManifestPath()
+		if err != nil {
+			t.Fatalf("ManifestPath: %v", err)
+		}
+		record, err := ReadManifest(manifestPath)
+		if err != nil {
+			t.Fatalf("ReadManifest: %v", err)
+		}
+		record.Port = endpoint.port
+		if err := writeManifest(manifestPath, record, nil); err != nil {
+			t.Fatalf("aiming the record at the fake server: %v", err)
+		}
+
+		spawner := &fakeSpawner{}
+		srv := NewServer(fx.layout, dlDiscardLogger())
+		srv.Spawn = spawner.spawn
+		srv.HostOS = fx.case_.hostOS
+		srv.Platform = fx.case_.platform
+		srv.ReadyPollInterval = 2 * time.Millisecond
+		if err := srv.SetInstalled(true); err != nil {
+			t.Fatalf("SetInstalled: %v", err)
+		}
+		if err := srv.Load(context.Background()); err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		proc := spawner.lastProcess()
+		if proc == nil || !proc.alive() {
+			t.Fatal("the repair fixture has no resident server to stop")
+		}
+
+		// The seam observed from the inside: at the moment Install calls Stop, the
+		// process must still be alive and the tree it executes from must still be
+		// in place — the latter is only true before step 7 retires it.
+		var (
+			residentAtStop bool
+			treeAtStop     bool
+			stateAtStop    State
+		)
+		fx.installer.Stop = func(ctx context.Context) error {
+			residentAtStop = proc.alive()
+			stateAtStop = srv.State()
+			_, statErr := os.Stat(marker)
+			treeAtStop = statErr == nil
+			return srv.Stop(ctx)
+		}
+
+		fx.mustInstall(t)
+
+		if !residentAtStop || stateAtStop != StateLoaded {
+			t.Errorf("Install stopped a server that was resident=%v state=%s, want a live loaded one",
+				residentAtStop, stateAtStop)
+		}
+		if !treeAtStop {
+			t.Error("the runtime tree was already retired when Install stopped the server: " +
+				"on Windows that rename is refused while the process executes from it")
+		}
+		if proc.alive() {
+			t.Error("the resident server survived the repair install")
+		}
+		if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the previous runtime tree was not retired by the repair (stat: %v)", err)
+		}
+		if got := srv.State(); got != StateInstalled {
+			t.Errorf("state after the repair = %s, want %s", got, StateInstalled)
+		}
+	})
+
+	// The BOUND on that seam, which is what Installer.StopTimeout delivers. Step 0
+	// runs on the caller's context, and the backend's install runs on the
+	// never-deadlined APPLICATION context, so without a bound a Load that claimed
+	// the supervisor's single-instance gate first parks the install here for the
+	// length of that load — up to DefaultReadyTimeout (15 min). Step 0 precedes
+	// plan, so it precedes the first install_progress event: the operator watches a
+	// bar at 0% that never moves while the operation gate makes every other
+	// embedded call refuse. An expired budget is not a worse outcome than that
+	// wait, it is core's force path: the resident child is terminated on a
+	// detached budget of its own and the repair proceeds.
+	t.Run("a load holding the gate cannot wedge step 0 past StopTimeout", func(t *testing.T) {
+		fx := newInstallFixture(t, darwinMetalCase())
+		fx.mustInstall(t) // a repair: the trees and the manifest already exist
+
+		// A load whose model list never appears holds the gate for its whole ready
+		// budget, which is the production hazard: a cold load in flight when the
+		// operator clicks Install or repair.
+		const readyBudget = 20 * time.Second
+		endpoint := newModelsEndpoint(t)
+		endpoint.neverReady = true
+		manifestPath, err := fx.layout.ManifestPath()
+		if err != nil {
+			t.Fatalf("ManifestPath: %v", err)
+		}
+		record, err := ReadManifest(manifestPath)
+		if err != nil {
+			t.Fatalf("ReadManifest: %v", err)
+		}
+		record.Port = endpoint.port
+		if err := writeManifest(manifestPath, record, nil); err != nil {
+			t.Fatalf("aiming the record at the never-ready server: %v", err)
+		}
+
+		spawner := &fakeSpawner{}
+		srv := NewServer(fx.layout, dlDiscardLogger())
+		srv.Spawn = spawner.spawn
+		srv.HostOS = fx.case_.hostOS
+		srv.Platform = fx.case_.platform
+		srv.ReadyPollInterval = 2 * time.Millisecond
+		srv.ReadyTimeout = readyBudget
+		srv.StopTimeout = 250 * time.Millisecond
+		if err := srv.SetInstalled(true); err != nil {
+			t.Fatalf("SetInstalled: %v", err)
+		}
+		loadDone := make(chan error, 1)
+		go func() { loadDone <- srv.Load(context.Background()) }()
+		// The run handle must be PUBLISHED, not merely spawned: forceUnload takes it
+		// with takeRun, and a step 0 that lands before the publish finds no child to
+		// kill and reports the gate timeout instead — the honest answer for that
+		// interleaving, but not the one under test here.
+		waitFor(t, 5*time.Second, func() bool { return srv.Status().Pid != 0 },
+			"the in-flight load to publish its process")
+
+		const stepZeroBudget = 200 * time.Millisecond
+		// Measured from INSIDE the seam so the assertion is about step 0 and not
+		// about the download that follows it. Install calls Stop synchronously on
+		// this goroutine, so the write needs no synchronization.
+		var stopElapsed time.Duration
+		fx.installer.Stop = func(ctx context.Context) error {
+			started := time.Now()
+			defer func() { stopElapsed = time.Since(started) }()
+			return srv.Stop(ctx)
+		}
+		fx.installer.StopTimeout = stepZeroBudget
+
+		// Derived from this fixture's own budgets rather than hardcoded, the way the
+		// backend's equivalent bound is: the gate wait is stepZeroBudget, and the
+		// force path that follows arms srv.StopTimeout + killWait + 1s on a detached
+		// context. The slack multiple covers a loaded CI machine; the pre-fix shape
+		// it must reject is readyBudget — 20s, and ~3× this bound.
+		const slack = 4
+		bound := slack * (stepZeroBudget + srv.StopTimeout + time.Second)
+
+		report, err := fx.Install(context.Background(), InstallOptions{})
+
+		if stopElapsed > bound {
+			t.Errorf("step 0 waited %v, over the %v bound derived from its own budgets: the "+
+				"install sat out a load that holds the gate for %v instead of taking core's "+
+				"force path, which is a progress bar at 0%% with no event ever emitted",
+				stopElapsed, bound, readyBudget)
+		}
+		if err != nil {
+			t.Fatalf("Install = %v, want the repair to proceed once the force path took the "+
+				"resident child down", err)
+		}
+		if report.Manifest.RuntimeVersion == "" {
+			t.Errorf("the repair reported no runtime version: %+v", report.Manifest)
+		}
+		if proc := spawner.lastProcess(); proc == nil || proc.alive() {
+			t.Error("the in-flight load's child survived the bounded step-0 stop")
+		}
+		select {
+		case <-loadDone:
+		case <-time.After(5 * time.Second):
+			t.Error("the interrupted load never returned")
+		}
+	})
+}
+
 func TestInstallMemoryGateRefusesBeforeAnyDownload(t *testing.T) {
 	tc := darwinMetalCase()
 	tc.ramGiB = 8
@@ -1123,8 +1361,10 @@ func TestInstallProvisionsMacOSRuntime(t *testing.T) {
 		t.Fatalf("recorded commands = %v, want xattr + 2 codesign + the smoke test", lines)
 	}
 
-	// 1. the quarantine is cleared from the whole staged tree
-	if want := "xattr -cr " + staging; lines[0] != want {
+	// 1. the quarantine is cleared from the whole staged tree — through the
+	// ABSOLUTE helper path, never a PATH lookup an attacker-controlled PATH
+	// element could answer (see provisionDarwin).
+	if want := darwinXattr + " -cr " + staging; lines[0] != want {
 		t.Errorf("command[0] = %q, want %q", lines[0], want)
 	}
 	// 2. every Mach-O image is ad-hoc signed, libraries before the executable
@@ -1133,9 +1373,15 @@ func TestInstallProvisionsMacOSRuntime(t *testing.T) {
 		filepath.Join(staging, "build", "bin", "llama-server"),
 	}
 	for i, image := range signed {
-		want := "codesign --force --sign - " + image
+		want := darwinCodesign + " --force --sign - " + image
 		if lines[1+i] != want {
 			t.Errorf("command[%d] = %q, want %q", 1+i, lines[1+i], want)
+		}
+	}
+	// No provisioning helper is resolved through PATH.
+	for _, line := range lines {
+		if strings.HasPrefix(line, "xattr ") || strings.HasPrefix(line, "codesign ") {
+			t.Errorf("command %q resolves a macOS helper through PATH, want the absolute path", line)
 		}
 	}
 	// A non-Mach-O file in the tree is not signed.
@@ -1426,10 +1672,10 @@ func TestRemoveDeletesEveryRuntimeTreeAndStagingLeftovers(t *testing.T) {
 
 func TestRemoveStopsTheServerFirst(t *testing.T) {
 	tc := darwinMetalCase()
-	tc.stopErr = errors.New("the server did not exit")
 	fx := newInstallFixture(t, tc)
 	report := fx.mustInstall(t)
-	fx.installer.Stop = func(context.Context) error { return tc.stopErr }
+	stopErr := errors.New("the server did not exit")
+	fx.installer.Stop = func(context.Context) error { return stopErr }
 
 	err := fx.installer.Remove(context.Background())
 	if err == nil {
@@ -1574,7 +1820,7 @@ func TestManifestRoundTripAndAtomicWrite(t *testing.T) {
 			t.Errorf("manifest JSON is missing the %q field: %s", key, raw)
 		}
 	}
-	requireAbsent(t, filepath.Join(fx.layout.ModelRoot, manifestTempName), "the manifest temporary")
+	requireNoManifestTemp(t, fx.layout.ModelRoot)
 
 	got, err := ReadManifest(manifestPath)
 	if err != nil {
@@ -1607,12 +1853,12 @@ func TestWriteManifestIsAtomicOverAnExistingRecord(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ManifestFileName)
 	previous := Manifest{Packing: PackingPQ2_0, Backend: BackendCPU, Port: 1, RuntimeVersion: RuntimeTag}
-	if err := writeManifest(path, previous); err != nil {
+	if err := writeManifest(path, previous, nil); err != nil {
 		t.Fatalf("writeManifest: %v", err)
 	}
 
 	next := Manifest{Packing: PackingPTQ1_0, Backend: BackendVulkan, Port: 2, RuntimeVersion: RuntimeTag}
-	if err := writeManifest(path, next); err != nil {
+	if err := writeManifest(path, next, nil); err != nil {
 		t.Fatalf("second writeManifest: %v", err)
 	}
 	got, err := ReadManifest(path)
@@ -1622,7 +1868,110 @@ func TestWriteManifestIsAtomicOverAnExistingRecord(t *testing.T) {
 	if got.Packing != PackingPTQ1_0 || got.Backend != BackendVulkan || got.Port != 2 {
 		t.Errorf("manifest = %+v, want the rewritten record", got)
 	}
-	requireAbsent(t, filepath.Join(dir, manifestTempName), "the manifest temporary")
+	requireNoManifestTemp(t, dir)
+}
+
+// TestWriteManifestSweepsTheTemporariesACrashedWriteLeftBehind pins the cleanup
+// half of the unique temporary. A crash between CreateTemp and the rename is the
+// one path that cannot remove its own temporary, and a uniquely named one is then
+// a PERMANENTLY leaked one — nothing else knows its name — where the fixed name it
+// replaced used to self-overwrite on the next write. The sweep is age-gated, so a
+// concurrent writer's live temporary survives it.
+func TestWriteManifestSweepsTheTemporariesACrashedWriteLeftBehind(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, ManifestFileName)
+	logs := &logCapture{}
+
+	// Two leftovers of crashed writes, backdated past the staleness threshold.
+	stale := []string{
+		filepath.Join(dir, ManifestFileName+".111111111"+manifestTempSuffix),
+		filepath.Join(dir, ManifestFileName+".222222222"+manifestTempSuffix),
+	}
+	backdated := time.Now().Add(-2 * manifestTempStaleAfter)
+	for _, name := range stale {
+		if err := os.WriteFile(name, []byte("{ a torn manifest"), 0o600); err != nil {
+			t.Fatalf("planting %q: %v", name, err)
+		}
+		if err := os.Chtimes(name, backdated, backdated); err != nil {
+			t.Fatalf("backdating %q: %v", name, err)
+		}
+	}
+
+	// A FRESH temporary — the shape a concurrent writer's live one has — plus the
+	// entries the sweep must never consider: the manifest itself, an unrelated
+	// file, and a directory that happens to match the temporary name shape.
+	live := filepath.Join(dir, ManifestFileName+".333333333"+manifestTempSuffix)
+	if err := os.WriteFile(live, []byte("{ still being written"), 0o600); err != nil {
+		t.Fatalf("planting %q: %v", live, err)
+	}
+	unrelated := filepath.Join(dir, "model.gguf")
+	if err := os.WriteFile(unrelated, []byte("weights"), 0o600); err != nil {
+		t.Fatalf("planting %q: %v", unrelated, err)
+	}
+	dirShaped := filepath.Join(dir, ManifestFileName+".444444444"+manifestTempSuffix)
+	if err := os.MkdirAll(dirShaped, 0o750); err != nil {
+		t.Fatalf("planting %q: %v", dirShaped, err)
+	}
+
+	record := Manifest{Packing: PackingPQ2_0, Backend: BackendCPU, Port: 3, RuntimeVersion: RuntimeTag}
+	if err := writeManifest(path, record, logs.logger()); err != nil {
+		t.Fatalf("writeManifest: %v", err)
+	}
+
+	// The record still lands atomically and completely.
+	got, err := ReadManifest(path)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	if got.Port != record.Port || got.Packing != record.Packing || got.Backend != record.Backend {
+		t.Errorf("manifest = %+v, want %+v", got, record)
+	}
+
+	for _, name := range stale {
+		if _, err := os.Stat(name); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the stale temporary %q survived the sweep (stat: %v)", filepath.Base(name), err)
+		}
+	}
+	for _, kept := range []string{live, unrelated, dirShaped, path} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Errorf("%q was removed by the sweep: %v", filepath.Base(kept), err)
+		}
+	}
+
+	// The removals are visible, at Debug, by name.
+	captured := logs.String()
+	if !strings.Contains(captured, "level=DEBUG") {
+		t.Errorf("the sweep did not report its removals at Debug: %q", captured)
+	}
+	for _, name := range stale {
+		if !strings.Contains(captured, filepath.Base(name)) {
+			t.Errorf("no Debug line names the removed temporary %q: %q", filepath.Base(name), captured)
+		}
+	}
+	// And this write's OWN temporary is gone: the fresh one left behind is the
+	// planted one, not the record that was just promoted.
+	if got, err := ReadManifest(live); err == nil {
+		t.Errorf("the planted live temporary holds a promoted record: %+v", got)
+	}
+}
+
+// requireNoManifestTemp fails when a manifest write left its temporary behind.
+// The name is unique per write (os.CreateTemp with manifestTempPattern), so the
+// check is a scan of the directory rather than a stat of one known path.
+func requireNoManifestTemp(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading %q: %v", dir, err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, manifestTempPrefix) && strings.HasSuffix(name, manifestTempSuffix) {
+			t.Errorf("a manifest temporary was left behind: %s", filepath.Join(dir, name))
+		}
+	}
 }
 
 // ── extraction guards ──
@@ -2031,8 +2380,11 @@ func TestRefineWithStagedDevicesAppliesTheGPUGenerationPacking(t *testing.T) {
 	_, weights := splitRuntimeAssets(res.Assets)
 
 	hw := Hardware{Platform: PlatformLinuxAMD64, Arch: "amd64", RAMGiB: 64, Backend: BackendCUDA124}
-	refined, refinedWeights, refinedTopology := in.refineWithStagedDevices(
+	refined, refinedWeights, refinedTopology, err := in.refineWithStagedDevices(
 		context.Background(), profile.Platform, hw, res, "/nonexistent/llama-server", weights)
+	if err != nil {
+		t.Fatalf("refineWithStagedDevices: %v", err)
+	}
 
 	// The measurement is handed back with the resolution it refined, so the
 	// manifest can record a topology and a plan that describe one another.
@@ -2076,6 +2428,58 @@ func TestRefineWithStagedDevicesAppliesTheGPUGenerationPacking(t *testing.T) {
 	}
 }
 
+// TestRefineWithStagedDevicesStopsOnAMemoryRefusal pins the one failure the late
+// probe is allowed to produce: a measured budget that REFUSES the machine must
+// stop the install exactly like the same verdict from Installer.plan does, rather
+// than degrade to a Debug line and continue into a multi-gigabyte weight download
+// for a machine the topology has just turned away.
+func TestRefineWithStagedDevicesStopsOnAMemoryRefusal(t *testing.T) {
+	agentDir := t.TempDir()
+	layout, err := NewLayout(
+		filepath.Join(agentDir, "runtimes"),
+		filepath.Join(agentDir, "models", testModelDirName),
+	)
+	if err != nil {
+		t.Fatalf("NewLayout: %v", err)
+	}
+	in := &Installer{
+		Layout: layout,
+		Logger: dlDiscardLogger(),
+		// A recognized family (so the refinement runs at all) beside budgets no
+		// modelled shape fits: one gibibyte on each side. The RAM total stays a
+		// plausible 64 GiB so the refusal comes from the MEASURED budgets rather
+		// than from an unreadable host.
+		ProbeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+			return MemoryTopology{
+				Devices: []DeviceMemory{
+					{Name: "CUDA0", Description: "NVIDIA GeForce RTX 4090", TotalMiB: 1024, FreeMiB: 1024},
+				},
+				HostRAMGiB:        64,
+				Unified:           false,
+				DeviceBudgetBytes: 1 << 30,
+				HostBudgetBytes:   1 << 30,
+			}, true
+		},
+	}
+
+	profile := MachineProfile{Platform: PlatformLinuxAMD64, Backend: BackendCUDA124, RAMGiB: 64}
+	res, err := ResolveProfile(profile)
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	_, weights := splitRuntimeAssets(res.Assets)
+
+	hw := Hardware{Platform: PlatformLinuxAMD64, Arch: "amd64", RAMGiB: 64, Backend: BackendCUDA124}
+	_, _, topology, err := in.refineWithStagedDevices(
+		context.Background(), profile.Platform, hw, res, "/nonexistent/llama-server", weights)
+	if !errors.Is(err, ErrInsufficientMemory) {
+		t.Fatalf("refineWithStagedDevices = %v, want ErrInsufficientMemory", err)
+	}
+	if topology != nil {
+		t.Errorf("a refused refinement returned a topology: %+v", *topology)
+	}
+}
+
 // TestRefineWithStagedDevicesKeepsThePlanWithoutAnAnswer covers the fail-soft
 // contract: a probe that does not answer leaves the resolution byte-for-byte
 // alone, so a machine whose runtime will not enumerate its devices still gets
@@ -2105,8 +2509,11 @@ func TestRefineWithStagedDevicesKeepsThePlanWithoutAnAnswer(t *testing.T) {
 	_, weights := splitRuntimeAssets(res.Assets)
 
 	hw := Hardware{Platform: PlatformLinuxAMD64, Arch: "amd64", RAMGiB: 64, Backend: BackendCUDA124}
-	got, gotWeights, gotTopology := in.refineWithStagedDevices(
+	got, gotWeights, gotTopology, err := in.refineWithStagedDevices(
 		context.Background(), profile.Platform, hw, res, "/nonexistent/llama-server", weights)
+	if err != nil {
+		t.Fatalf("refineWithStagedDevices: %v", err)
+	}
 
 	if gotTopology != nil {
 		t.Errorf("an unanswered probe returned a topology: %+v", *gotTopology)
@@ -2381,4 +2788,154 @@ func TestRecordableContextIsTheFitFloorUnderFit(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ── the manifest write is atomic under concurrency ──
+
+// TestWriteManifestIsSafeUnderConcurrentWriters pins the unique-temporary fix.
+// Installer.Install holds no supervisor gate while Server.recordEffectiveContext
+// writes under one, so two writers can overlap; a shared FIXED temporary name let
+// one rename promote a file the other was still writing, producing a torn
+// manifest.json — and a manifest that fails to parse reports the model as not
+// installed until a reinstall.
+func TestWriteManifestIsSafeUnderConcurrentWriters(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, ManifestFileName)
+
+	const (
+		writers = 8
+		rounds  = 25
+	)
+	var wg sync.WaitGroup
+	for w := range writers {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for range rounds {
+				m := Manifest{
+					Packing:        PackingPQ2_0,
+					Backend:        BackendMetal,
+					RuntimeVersion: RuntimeTag,
+					InstalledAt:    "2026-09-26T00:00:00Z",
+					ModelFile:      fmt.Sprintf("model-%d.gguf", w),
+					Port:           1024 + w,
+					ContextSize:    16384 + w,
+				}
+				if err := writeManifest(path, m, nil); err != nil {
+					t.Errorf("writeManifest: %v", err)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	// Whatever won, it is ONE complete record — never an interleaving of two.
+	got, err := ReadManifest(path)
+	if err != nil {
+		t.Fatalf("ReadManifest after %d concurrent writes: %v", writers*rounds, err)
+	}
+	if got.Port < 1024 || got.Port >= 1024+writers {
+		t.Fatalf("the surviving record has port %d, which no writer wrote", got.Port)
+	}
+	writer := got.Port - 1024
+	if want := fmt.Sprintf("model-%d.gguf", writer); got.ModelFile != want {
+		t.Errorf("the surviving record mixes two writers: port %d beside model file %q, want %q",
+			got.Port, got.ModelFile, want)
+	}
+	if want := 16384 + writer; got.ContextSize != want {
+		t.Errorf("the surviving record mixes two writers: port %d beside context %d, want %d",
+			got.Port, got.ContextSize, want)
+	}
+	requireNoManifestTemp(t, dir)
+}
+
+// ── the install command runner is bounded ──
+
+// TestDefaultCommandRunnerIsBounded pins the two bounds the runner adds on top of
+// its caller's context deadline. A deadline kills the child but does NOT end the
+// read: Stdout is not an *os.File, so os/exec copies through a pipe, and a
+// grandchild holding the write end keeps cmd.Run blocked after the child is gone —
+// which would hold the backend's install slot for the lifetime of the process,
+// since that slot is released on the runner's exit paths rather than in a defer.
+// WaitDelay is what closes the pipe, and it is pinned where it is set because it
+// is not observable through the runner's result.
+func TestDefaultCommandRunnerIsBounded(t *testing.T) {
+	source, err := os.ReadFile("install.go")
+	if err != nil {
+		t.Fatalf("reading install.go: %v", err)
+	}
+	body := string(source)
+	start := strings.Index(body, "func defaultCommandRunner(")
+	if start < 0 {
+		t.Fatal("defaultCommandRunner is missing from install.go")
+	}
+	body = body[start:]
+	if end := strings.Index(body, "\n}\n"); end > 0 {
+		body = body[:end]
+	}
+	if !strings.Contains(body, "cmd.WaitDelay = probeWaitDelay") {
+		t.Error("defaultCommandRunner sets no cmd.WaitDelay: a grandchild holding the output pipe would block cmd.Run past the context deadline")
+	}
+
+	// The captured output is capped. It is diagnostic only, so an uncapped buffer
+	// is an unbounded allocation driven by an external process.
+	t.Setenv(helperFloodEnv, "1")
+	out, err := defaultCommandRunner(context.Background(), os.Args[0],
+		"-test.run=TestHelperFloodsOutput", "-test.v=false")
+	if err != nil {
+		t.Fatalf("defaultCommandRunner: %v", err)
+	}
+	if len(out) > maxCommandOutputBytes+512 {
+		t.Errorf("captured %d bytes, want at most the %d-byte cap plus a marker",
+			len(out), maxCommandOutputBytes)
+	}
+	if !strings.Contains(out, "dropped") {
+		tail := out
+		if len(tail) > 200 {
+			tail = tail[len(tail)-200:]
+		}
+		t.Errorf("the truncated output carries no marker; its tail is %q", tail)
+	}
+	if !strings.Contains(out, "x") {
+		t.Error("the capped buffer kept none of the command's own output")
+	}
+}
+
+// TestDefaultCommandRunnerReportsAFailingCommand keeps the runner honest about
+// exit status: the cap and the delay bound the call, they do not swallow failures.
+func TestDefaultCommandRunnerReportsAFailingCommand(t *testing.T) {
+	t.Setenv(helperFloodEnv, "1")
+	_, err := defaultCommandRunner(context.Background(), os.Args[0],
+		"-test.run=TestHelperFailsCommand", "-test.v=false")
+	if err == nil {
+		t.Error("a failing command reported no error")
+	}
+}
+
+// helperFloodEnv guards the two helper modes below, which are re-executed as
+// child processes rather than run as tests.
+const helperFloodEnv = "EMBEDDEDLLM_HELPER_FLOOD"
+
+// TestHelperFloodsOutput is not a test. It is the child process
+// TestDefaultCommandRunnerIsBounded re-executes: it writes four times the output
+// cap, which is the shape of a provisioning helper that floods its diagnostics.
+func TestHelperFloodsOutput(t *testing.T) {
+	if os.Getenv(helperFloodEnv) != "1" {
+		t.Skip("helper mode only; re-executed by TestDefaultCommandRunnerIsBounded")
+	}
+	chunk := strings.Repeat("x", 64*1024)
+	for range 64 {
+		fmt.Print(chunk)
+	}
+}
+
+// TestHelperFailsCommand is not a test either: it is the child that fails.
+func TestHelperFailsCommand(t *testing.T) {
+	if os.Getenv(helperFloodEnv) != "1" {
+		t.Skip("helper mode only; re-executed by TestDefaultCommandRunnerReportsAFailingCommand")
+	}
+	t.Fatal("this helper always fails")
 }

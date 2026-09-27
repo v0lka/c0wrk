@@ -43,6 +43,7 @@ vi.stubGlobal(
 
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useExperimentalStore } from '@/stores/experimentalStore'
+import { focusIn, focusOut, pressKey, typeValue } from '@/test/domNumberInput'
 import type { ModelProfilesResponse, ModelProfileValues } from '@/types/models'
 import { ModelProfilesSettings } from './ModelProfilesSettings'
 
@@ -640,5 +641,75 @@ describe('ModelProfilesSettings — independent of the experimental switch', () 
 
     // Rendering the profile surface leaves the experimental switch untouched.
     expect(useExperimentalStore.getState().enabled).toBe(false)
+  })
+})
+
+// Model Profiles is the one NumberField surface with NO save button and NO busy
+// gate: `patch` → `patchValues` → `save()` calls `updateModelProfile` on every
+// commit, which rewrites ~/.c0wrk/model-profiles.yaml immediately. Nothing here
+// drops the DOM focus either, so a commit that persisted a value the field never
+// rendered is a silent, instant config write — the failure mode the shared
+// NumberField's Enter handling must not reintroduce.
+describe('ModelProfilesSettings — Context Management auto-save', () => {
+  const numberField = (label: string): HTMLInputElement => {
+    const el = field(label)
+    expect(el).not.toBeNull()
+    return el as HTMLInputElement
+  }
+
+  /** The `block_size` of every config the auto-save received, in order. */
+  const savedBlockSizes = (): number[] =>
+    updateModelProfileMock.mock.calls.map(
+      (c) => (c[1] as { config: ModelProfileValues }).config.context.compaction.block_size,
+    )
+
+  it('persists only values it rendered, across an Enter and a following click-away', async () => {
+    await render()
+    const input = numberField('Block size')
+    expect(input.value).toBe('5')
+
+    // Focus, select-all, type, Enter. `type="number"` outside a <form> gives
+    // Enter no default action, so the DOM node KEEPS focus after the commit.
+    await focusIn(input)
+    typeValue(input, '256')
+    await pressKey(input, 'Enter')
+
+    expect(input.value).toBe('256')
+    expect(savedBlockSizes()).toEqual([256])
+
+    // One more keystroke, still without a re-focus: it MUST be echoed. Before the
+    // fix the field cleared its focus flag on Enter and rendered `String(value)`
+    // from then on, so this text was invisible — and the click-away below
+    // persisted it anyway.
+    typeValue(input, '25')
+    const shownBeforeBlur = input.value
+    expect(shownBeforeBlur).toBe('25')
+
+    // The real second half of the gesture: a bare `focusout`, no `focusin`.
+    await focusOut(input)
+
+    const saved = savedBlockSizes()
+    expect(saved).toEqual([256, 25])
+    // The auto-save received EXACTLY what was on screen when it was committed.
+    expect(saved[saved.length - 1]).toBe(Number(shownBeforeBlur))
+    expect(numberField('Block size').value).toBe('25')
+  })
+
+  it('refuses a decimal threshold locally — the auto-save never sees it', async () => {
+    await render()
+    const input = numberField('Block size')
+
+    // `block_size` is an `int` on the wire; `step=1` constrains only the spinner
+    // buttons, so typed text needs the field's own integrality check. Without it
+    // 2.5 was written straight into model-profiles.yaml for Go to reject.
+    await focusIn(input)
+    typeValue(input, '2.5')
+    await pressKey(input, 'Enter')
+
+    expect(updateModelProfileMock).not.toHaveBeenCalled()
+    expect(numberField('Block size').value).toBe('5')
+
+    await focusOut(input)
+    expect(updateModelProfileMock).not.toHaveBeenCalled()
   })
 })

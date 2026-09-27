@@ -27,19 +27,22 @@ import (
 //
 //   - The wait is BOUNDED. A cold load can take minutes, but it can also wedge;
 //     a request that waits forever is indistinguishable from a hung session, so
-//     the load runs under DefaultLoadWaitTimeout and exceeding it is an explicit
-//     ErrLoadWaitTimeout.
+//     every REQUEST waits under DefaultLoadWaitTimeout and exceeding it is an
+//     explicit ErrLoadWaitTimeout. The budget bounds the WAITING and never the
+//     load: it is armed per waiter, so its expiry stops that request and leaves
+//     the in-flight load alone, bounded by the supervisor's own ready budget.
 //   - Concurrent requests COALESCE. One cold load serves every waiter instead of
 //     N loads queueing on the supervisor's single-instance gate.
-//   - The load is NOT bound to a request context. timeouts.llmRequestTimeout
-//     (default 10 min) is shorter than the supervisor's own ready budget
-//     (DefaultReadyTimeout, 15 min), so a client timeout during a cold load
-//     would otherwise cancel the load and throw the half-loaded weights away —
-//     and the next request would start from zero, so the model would never
-//     become resident. A cancelled request therefore stops WAITING (promptly,
-//     with its own context error) while the load runs to completion detached.
-//     This mirrors the supervisor's own rule that the process outlives the Load
-//     that started it.
+//   - The load is NOT bound to a request context, nor to the wait budget.
+//     timeouts.llmRequestTimeout (default 10 min) is shorter than the
+//     supervisor's own ready budget (DefaultReadyTimeout, 15 min), so a client
+//     timeout during a cold load would otherwise cancel the load and throw the
+//     half-loaded weights away — and the next request would start from zero, so
+//     the model would never become resident. A cancelled request therefore stops
+//     WAITING (promptly, with its own context error) while the load runs to
+//     completion detached, and the same is true of a request that runs out of
+//     wait budget. This mirrors the supervisor's own rule that the process
+//     outlives the Load that started it.
 //
 // A fourth property is what makes the wait honest: THE LOAD IS NOT CHARGED TO
 // THE REQUEST. http.Client.Timeout covers the whole exchange, gate included, so
@@ -63,12 +66,25 @@ type Loader interface {
 	MarkActivity()
 }
 
-// The supervisor is the production Loader; the assertion keeps the seam honest
-// if either side drifts.
+// *Server satisfies Loader, and so does the value production actually hands
+// this transport: backend.embeddedLoaderRef, a lazy atomic reference that
+// resolves to the supervisor at call time (the router is first built before the
+// subsystem exists, and a per-session router is built under a lock the
+// supervisor's own state must never be taken under).
+//
+// That indirection is why the three assertions below are NOT sufficient on
+// their own. A capability discovered through an optional type assertion on the
+// Loader value is invisible to the compiler at the wiring site, so asserting it
+// here only proves the SUPERVISOR has it — a production Loader that forwards to
+// the supervisor but forgets the method silently loses the capability, and
+// every test that substitutes a double keeps passing. The backend therefore
+// pins the same three interfaces on embeddedLoaderRef; this pair of assertions
+// is the two halves of one contract, and neither half may be removed.
 var _ Loader = (*Server)(nil)
 
 // PortSource is an OPTIONAL Loader capability: the loopback port the supervisor
-// actually bound. *Server satisfies it as-is.
+// actually bound. *Server satisfies it as-is, and so does production's
+// embeddedLoaderRef — the redirect below is a live control, not a hypothetical.
 //
 // It exists because the request URL is not authoritative. The router builds it
 // from the provider base_url, which is derived from the PERSISTED port — and the
@@ -86,6 +102,29 @@ type PortSource interface {
 
 var _ PortSource = (*Server)(nil)
 
+// RequestTracker is an OPTIONAL Loader capability: the count of requests the
+// transport currently has open against the model. *Server satisfies it as-is, and
+// so does production's embeddedLoaderRef — the mid-generation deferral below is a
+// live control, not a hypothetical.
+//
+// It exists because activity is stamped on COMPLETION (Loader.MarkActivity),
+// which cannot protect a single generation that outlives the whole idle budget:
+// the timer would fire mid-answer and stop the server out from under the request
+// that is using it. Bracketing the exchange with a count lets the idle path defer
+// that unload instead. Declaring it as optional — rather than growing Loader —
+// keeps every existing double and test loader valid: one that does not track
+// requests simply gets the completion stamp alone, which is the pre-existing
+// behaviour — and which is exactly why the backend pins this interface on its own
+// Loader value too (see the Loader assertion above).
+type RequestTracker interface {
+	// BeginRequest records that a request is now in flight.
+	BeginRequest()
+	// EndRequest releases one in-flight request.
+	EndRequest()
+}
+
+var _ RequestTracker = (*Server)(nil)
+
 // DefaultLoadWaitTimeout bounds how long one request waits for the model to
 // become resident.
 //
@@ -98,10 +137,19 @@ const DefaultLoadWaitTimeout = DefaultReadyTimeout + 2*time.Minute
 
 // ErrLoadWaitTimeout reports that the transport's own wait budget expired before
 // the model became resident. It is distinct from ErrLoadTimeout, which is the
-// supervisor's ready budget: an ErrLoadWaitTimeout means the load was still
-// legitimately in progress (or the supervisor's budget is misconfigured above
-// the transport's), and the load itself is NOT cancelled — a following request
-// finds the model resident.
+// supervisor's ready budget.
+//
+// The load is NOT cancelled by it. The budget is armed per waiter (see
+// ensureLoaded), so its expiry stops THAT request from waiting and leaves the
+// in-flight load running detached, bounded by the supervisor's own
+// ReadyTimeout — which is the budget that decides a load is wedged and carries
+// the diagnosis. A following request therefore joins the same load, or finds the
+// model already resident, instead of paying for a second cold start.
+//
+// An ErrLoadWaitTimeout means exactly one of: the load was still legitimately in
+// progress, or the supervisor's ready budget is misconfigured above the
+// transport's wait budget. Since the load survives, the honest recovery for a
+// caller is to retry — not to report the model as broken.
 var ErrLoadWaitTimeout = errors.New("the embedded LLM did not become resident within the load wait budget")
 
 // EnsureLoadedTransport is an http.RoundTripper that makes the embedded model
@@ -177,8 +225,9 @@ func newEnsureLoadedTransport(base http.RoundTripper, loader Loader, waitTimeout
 
 // RoundTrip implements http.RoundTripper: ensure the model is resident, aim the
 // request at the port it is actually serving on, hand it to the wrapped
-// transport, and arrange for activity to be marked when the response is
-// finished.
+// transport, and arrange for the request to be counted in flight — and activity
+// to be marked — when the response is finished rather than when its headers
+// arrive.
 //
 // A load failure is returned instead of the request being sent — dialing a
 // socket nothing is listening on would only add a confusing "connection
@@ -211,8 +260,24 @@ func (t *EnsureLoadedTransport) RoundTrip(req *http.Request) (*http.Response, er
 		req = req.WithContext(ctx)
 	}
 
+	// The in-flight count is the other half of "a long generation is activity":
+	// the mark below only fires when the response COMPLETES, so a single request
+	// that outlives the whole idle budget would look idle for its entire life and
+	// be killed mid-answer. Bracketing the exchange lets the supervisor defer
+	// that unload instead. See RequestTracker.
+	var begin, end func()
+	if tracker, ok := t.loader.(RequestTracker); ok {
+		begin, end = tracker.BeginRequest, tracker.EndRequest
+	}
+	if begin != nil {
+		begin()
+	}
+
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
+		if end != nil {
+			end()
+		}
 		if release != nil {
 			release()
 		}
@@ -221,6 +286,9 @@ func (t *EnsureLoadedTransport) RoundTrip(req *http.Request) (*http.Response, er
 	if resp == nil {
 		// A RoundTripper must not return (nil, nil); a base that does would
 		// panic on the body access below and strand the deadline's timer.
+		if end != nil {
+			end()
+		}
 		if release != nil {
 			release()
 		}
@@ -237,12 +305,17 @@ func (t *EnsureLoadedTransport) RoundTrip(req *http.Request) (*http.Response, er
 	if t.loader != nil {
 		mark = t.loader.MarkActivity
 	}
-	switch {
-	case resp.Body != nil && (mark != nil || release != nil):
-		resp.Body = &activityBody{ReadCloser: resp.Body, mark: mark, release: release}
-	case release != nil:
-		// A RoundTripper must return a body; a nil one leaves nothing to read,
-		// so the deadline is released at once instead of leaking its timer.
+	if resp.Body != nil && (mark != nil || end != nil || release != nil) {
+		resp.Body = &activityBody{ReadCloser: resp.Body, mark: mark, end: end, release: release}
+		return resp, nil
+	}
+	// A RoundTripper must return a body; a nil one leaves nothing to read, so
+	// this request is over now — the count and the deadline are released at once
+	// instead of leaking.
+	if end != nil {
+		end()
+	}
+	if release != nil {
 		release()
 	}
 	return resp, nil
@@ -297,21 +370,46 @@ func (t *EnsureLoadedTransport) CloseIdleConnections() {
 	}
 }
 
-// ensureLoaded blocks until the model is resident, the load fails, or the
-// caller's own context gives up.
+// ensureLoaded blocks until the model is resident, the load fails, the caller's
+// own context gives up, or THIS request's wait budget expires.
+//
+// The wait budget is armed here, per waiter, and deliberately NOT around the
+// Load call — that placement is the whole contract of ErrLoadWaitTimeout. A
+// budget that bounded the load itself would cancel it, and a cancelled Load
+// discards the half-loaded weights, so an expiry would cost the NEXT request a
+// second multi-minute cold start: precisely the failure the file header promises
+// cannot happen. Bounding the wait instead leaves the load running detached,
+// bounded by the supervisor's own ready budget, and the next request joins it.
 func (t *EnsureLoadedTransport) ensureLoaded(ctx context.Context) error {
 	call := t.joinOrStart()
 	t.waiters.Add(1)
 	defer t.waiters.Add(-1)
+
+	waitCtx, cancel := context.WithTimeout(ctx, t.waitTimeout)
+	defer cancel()
+
 	select {
 	case <-call.done:
 		return call.err
-	case <-ctx.Done():
-		// The request's own budget ran out first — typically
-		// timeouts.llmRequestTimeout, which is shorter than a cold weight load.
-		// The load keeps running detached (see the file comment) so the NEXT
-		// request finds the model resident instead of starting over.
-		return fmt.Errorf("embeddedllm: waiting for the model to load: %w", ctx.Err())
+	case <-waitCtx.Done():
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// The request's own budget ran out first — typically
+			// timeouts.llmRequestTimeout, which is shorter than a cold weight
+			// load. The load keeps running detached (see the file comment) so
+			// the NEXT request finds the model resident instead of starting over.
+			return fmt.Errorf("embeddedllm: waiting for the model to load: %w", ctxErr)
+		}
+		// The transport's wait budget expired while the load was still
+		// legitimately in progress. Report it as such — the supervisor's own
+		// ErrLoadTimeout carries the ready-budget diagnosis, and conflating the
+		// two would send an operator tuning the wrong knob — and leave the load
+		// running: it is bounded by the supervisor, and a retry joins it.
+		err := fmt.Errorf("%w of %s: %w", ErrLoadWaitTimeout, t.waitTimeout, waitCtx.Err())
+		if t.logger != nil {
+			t.logger.Warn("embeddedllm: the load wait budget expired before the model became resident; the load continues",
+				"wait_budget", t.waitTimeout, "error", err)
+		}
+		return err
 	}
 }
 
@@ -332,10 +430,16 @@ func (t *EnsureLoadedTransport) joinOrStart() *loadCall {
 }
 
 // load performs the one coalesced load. It runs on its own goroutine with a
-// context derived from NOTHING the caller owns, bounded only by waitTimeout.
+// context derived from NOTHING the caller owns and carrying NO deadline of the
+// transport's: the wait budget belongs to each waiter (see ensureLoaded), and
+// arming it here would cancel the load — and a cancelled Load discards the
+// half-loaded weights — the moment a request ran out of patience.
+//
+// The load is still bounded. The supervisor's own ReadyTimeout is the authority
+// on "this load is wedged", and its error carries the diagnosis (the server's
+// own log tail), which is what DefaultLoadWaitTimeout's slack exists to let it
+// deliver.
 func (t *EnsureLoadedTransport) load(call *loadCall) {
-	ctx, cancel := context.WithTimeout(context.Background(), t.waitTimeout)
-	defer cancel()
 	started := time.Now()
 
 	if t.logger != nil {
@@ -343,19 +447,14 @@ func (t *EnsureLoadedTransport) load(call *loadCall) {
 			"wait_budget", t.waitTimeout)
 	}
 
-	err := t.loader.Load(ctx)
-	if err != nil && ctx.Err() != nil {
-		// Our budget cut the wait short. Report it as such: the supervisor's own
-		// ErrLoadTimeout carries the ready-budget diagnosis, and conflating the
-		// two would send an operator tuning the wrong knob.
-		err = fmt.Errorf("%w of %s: %w", ErrLoadWaitTimeout, t.waitTimeout, err)
-		if t.logger != nil {
-			t.logger.Warn("embeddedllm: the load wait budget expired before the model became resident",
-				"wait_budget", t.waitTimeout, "error", err)
-		}
-	} else if err == nil && t.logger != nil {
+	err := t.loader.Load(context.Background())
+	switch {
+	case err == nil && t.logger != nil:
 		t.logger.Debug("embeddedllm: the model is resident, releasing the waiting requests",
 			"waiters", t.waiters.Load(), "waited", time.Since(started))
+	case err != nil && t.logger != nil:
+		t.logger.Warn("embeddedllm: the load failed",
+			"error", err, "waited", time.Since(started))
 	}
 
 	call.err = err
@@ -367,38 +466,54 @@ func (t *EnsureLoadedTransport) load(call *loadCall) {
 	close(call.done)
 }
 
-// activityBody marks activity once, when the response it carries is finished —
-// fully read or closed, whichever happens first. Wrapping the body (instead of
-// marking when RoundTrip returns) is what keeps a long streamed generation from
-// being charged to the idle budget.
+// activityBody marks activity and releases the in-flight count once, when the
+// response it carries is finished — fully read or closed, whichever happens
+// first. Wrapping the body (instead of acting when RoundTrip returns) is what
+// keeps a long streamed generation from being charged to the idle budget, and
+// from being mistaken for an idle model while it is still streaming.
 //
 // It also owns the request deadline's release hook for the same reason: the
 // context armed after the gate must stay alive while the body is being read, so
 // it is cancelled on Close rather than when RoundTrip returns.
 //
-// mark may be nil (a pass-through transport that only carries a deadline) and
-// release may be nil (a transport with no request budget of its own).
+// mark and end may each be nil (a pass-through transport that only carries a
+// deadline, or a loader that does not track requests) and release may be nil (a
+// transport with no request budget of its own).
 type activityBody struct {
 	io.ReadCloser
 	mark    func()
+	end     func()
 	release func()
 	once    sync.Once
 }
 
+// finish runs mark and end exactly once between them. The once matters for end in
+// a way it does not for mark: releasing an in-flight count twice would take
+// another request's slot with it, and the idle path would then unload a model
+// that is still serving.
+func (b *activityBody) finish() {
+	b.once.Do(func() {
+		if b.mark != nil {
+			b.mark()
+		}
+		if b.end != nil {
+			b.end()
+		}
+	})
+}
+
 func (b *activityBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
-	if err != nil && b.mark != nil {
+	if err != nil {
 		// EOF or a broken stream: either way this response is over.
-		b.once.Do(b.mark)
+		b.finish()
 	}
 	return n, err
 }
 
 func (b *activityBody) Close() error {
 	err := b.ReadCloser.Close()
-	if b.mark != nil {
-		b.once.Do(b.mark)
-	}
+	b.finish()
 	if b.release != nil {
 		b.release()
 	}

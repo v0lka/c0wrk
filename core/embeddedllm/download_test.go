@@ -56,6 +56,11 @@ const (
 	dlIgnoreRange                      // always 200 with the full body
 	dlRejectRange                      // 416 for any ranged request, 200 otherwise
 	dlAlwaysReject                     // 416 for every request, ranged or not
+	// dlTruncateBody answers 200 with NO Content-Length and a body that ends
+	// cleanly at half the artifact — the shape a proxy that strips
+	// Content-Length produces, where io.Copy reports a short count and a nil
+	// error rather than a transport failure.
+	dlTruncateBody
 )
 
 func newDLRangeServer(t *testing.T, body []byte, mode dlServerMode) *dlRangeServer {
@@ -101,6 +106,16 @@ func (s *dlRangeServer) handle(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", strconv.Itoa(len(chunk)))
 		w.WriteHeader(http.StatusPartialContent)
 		s.writeBody(w, chunk)
+		return
+	}
+
+	if s.mode == dlTruncateBody {
+		s.record(http.StatusOK)
+		w.Header().Set("Accept-Ranges", "none")
+		// Deliberately no Content-Length: the transfer is chunked, so the client
+		// sees a clean EOF after half the artifact instead of a transport error.
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(s.body[:len(s.body)/2])
 		return
 	}
 
@@ -1181,5 +1196,93 @@ func TestPlatformFreeSpace(t *testing.T) {
 	}
 	if _, err := platformFreeSpace(filepath.Join(t.TempDir(), "does-not-exist")); err == nil {
 		t.Error("platformFreeSpace accepted a nonexistent path")
+	}
+}
+
+// TestDownload_CleanlyShortBodyKeepsThePartialForResume covers a body that ends
+// CLEANLY short of the pin — no transport error, just fewer bytes than the pin
+// expects, which is what a proxy that strips Content-Length looks like from here.
+// The bytes are unverified and must not be promoted, but they are also a valid
+// resume prefix: falling through to the digest gate reported ErrChecksumMismatch
+// and DELETED a multi-gigabyte partial that could simply have been continued.
+func TestDownload_CleanlyShortBodyKeepsThePartialForResume(t *testing.T) {
+	body := dlBody(64 * 1024)
+	srv := newDLRangeServer(t, body, dlTruncateBody)
+	d := newDLTestDownloader(srv.Server)
+	d.FreeSpace = dlUnlimitedSpace
+
+	dst := filepath.Join(t.TempDir(), "m.gguf")
+	_, err := d.Download(context.Background(), dlAssetFor(srv.URL+"/m.gguf", body), dst, nil)
+	if !errors.Is(err, ErrIncompleteTransfer) {
+		t.Fatalf("err = %v, want ErrIncompleteTransfer", err)
+	}
+	if errors.Is(err, ErrChecksumMismatch) {
+		t.Error("a cleanly short body was reported as a checksum mismatch")
+	}
+
+	partial := dst + PartialSuffix
+	info, statErr := os.Stat(partial)
+	if statErr != nil {
+		t.Fatalf("the resumable partial was deleted: %v", statErr)
+	}
+	if want := int64(len(body) / 2); info.Size() != want {
+		t.Errorf("the partial holds %d bytes, want the %d the body carried", info.Size(), want)
+	}
+	if _, statErr := os.Stat(dst); !errors.Is(statErr, os.ErrNotExist) {
+		t.Error("unverified bytes reached the destination path")
+	}
+}
+
+// TestDownload_RefusesToResumeThroughASymlinkedPartial covers the pre-planted
+// partial: `os.OpenFile(partial, O_RDWR|O_CREATE, …)` FOLLOWS a symlink, so the
+// truncate and every appended byte would land on the link's target — pinned
+// artifact bytes written at an attacker-chosen offset into an arbitrary same-user
+// path. The digest gate would still refuse to promote anything, but no
+// verification can undo a write to the wrong file, so the link is discarded
+// instead of written through.
+func TestDownload_RefusesToResumeThroughASymlinkedPartial(t *testing.T) {
+	body := dlBody(16 * 1024)
+	srv := newDLRangeServer(t, body, dlServeRange)
+	d := newDLTestDownloader(srv.Server)
+	d.FreeSpace = dlUnlimitedSpace
+
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "m.gguf")
+	partial := dst + PartialSuffix
+
+	target := filepath.Join(dir, "an-unrelated-file.txt")
+	const untouched = "bytes this download has no business writing"
+	if err := os.WriteFile(target, []byte(untouched), 0o600); err != nil {
+		t.Fatalf("staging the symlink target: %v", err)
+	}
+	if err := os.Symlink(target, partial); err != nil {
+		t.Skipf("symlinks are not available here: %v", err)
+	}
+
+	res, err := d.Download(context.Background(), dlAssetFor(srv.URL+"/m.gguf", body), dst, nil)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if !res.Verified || res.SizeBytes != int64(len(body)) {
+		t.Errorf("result = %+v, want a verified full download", res)
+	}
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("reading the symlink target: %v", err)
+	}
+	if string(got) != untouched {
+		t.Errorf("the symlink target was written through: %q", got)
+	}
+	// The link is gone and the artifact was promoted to a regular file.
+	if info, err := os.Lstat(partial); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		t.Error("the symlinked partial survived the download")
+	}
+	info, err := os.Lstat(dst)
+	if err != nil {
+		t.Fatalf("the destination is missing: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Errorf("the destination is a %s, want a regular file", info.Mode())
 	}
 }

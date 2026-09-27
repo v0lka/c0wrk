@@ -112,7 +112,9 @@ type Downloader struct {
 	// Client performs the transfer. nil → defaultTransferClient(), which has
 	// no overall timeout.
 	Client *http.Client
-	// Logger receives resume/restart/fallback diagnostics. nil → slog.Default().
+	// Logger receives resume/restart/fallback diagnostics. nil → a discard
+	// logger (never the global slog.Default), matching the package's own
+	// no-global-logging rule.
 	Logger *slog.Logger
 	// ProgressInterval throttles progress callbacks. <= 0 → DefaultProgressInterval.
 	ProgressInterval time.Duration
@@ -219,7 +221,11 @@ func RequiredFreeBytes(totalBytes int64) int64 {
 // Contract:
 //   - an artifact with no usable pinned digest is refused before any I/O;
 //   - a checksum mismatch deletes the partial and returns ErrChecksumMismatch;
-//   - a transport failure keeps the partial so the next call resumes;
+//   - a transfer that ends short of the pin — dropped, cancelled, or a body that
+//     closed cleanly early — keeps the partial and returns ErrIncompleteTransfer,
+//     so the next call resumes rather than restarts;
+//   - a partial that is not a regular file this package wrote (a symlink, above
+//     all) is discarded rather than written through;
 //   - cancellation through ctx aborts at any stage and keeps the partial;
 //   - dstPath is only ever created after verification (it is renamed from the
 //     partial), so an unverified file never occupies the destination path.
@@ -305,6 +311,10 @@ func (d *Downloader) Download(ctx context.Context, asset Asset, dstPath string, 
 // promotion. It never leaves an unverified file at dstPath.
 func (d *Downloader) transfer(ctx context.Context, asset Asset, dstPath, partial string, progress ProgressFunc) (*Result, error) {
 	total := asset.SizeBytes
+
+	if err := d.discardForeignPartial(partial, asset); err != nil {
+		return nil, err
+	}
 
 	offset, err := d.resumeOffset(partial, asset)
 	if err != nil {
@@ -449,6 +459,16 @@ func (d *Downloader) transfer(ctx context.Context, asset Asset, dstPath, partial
 		return nil, fmt.Errorf("embeddedllm: %s: %w after %d of %d bytes (partial kept at %s for resume): %w",
 			asset.Component, ErrIncompleteTransfer, written, remaining, partial, copyErr)
 	}
+	if written < remaining {
+		// The body ended CLEANLY short of the pin — a proxy that stripped
+		// Content-Length, or a host that closed a chunked stream early. The bytes
+		// are unverified, so they must not be promoted; but they are a valid
+		// resume prefix, and letting them fall through to the digest gate would
+		// report a checksum mismatch and DELETE a multi-gigabyte partial that
+		// could simply have been continued.
+		return nil, fmt.Errorf("embeddedllm: %s: %w after %d of %d bytes (partial kept at %s for resume): the response ended cleanly short of the pinned size",
+			asset.Component, ErrIncompleteTransfer, written, remaining, partial)
+	}
 	// Sync before Close and before promotion, so a crash right after the
 	// rename cannot leave a zero-length artifact at the destination path.
 	if serr := f.Sync(); serr != nil {
@@ -481,6 +501,44 @@ func (d *Downloader) transfer(ctx context.Context, asset Asset, dstPath, partial
 		progress(total, total)
 	}
 	return res, nil
+}
+
+// discardForeignPartial removes a partial path that is NOT a regular file this
+// package wrote — a symlink above all — so the resumable open below cannot be
+// redirected through it.
+//
+// `os.OpenFile(partial, O_RDWR|O_CREATE, …)` follows a pre-planted symlink: the
+// truncate and every appended byte would land on the link's TARGET, with pinned
+// (non-attacker-controlled) artifact bytes written at an attacker-chosen offset.
+// The digest gate still fires and deletes the symlink rather than promoting
+// anything, so this is hardening and not a hole — but writing through a link into
+// an arbitrary same-user path is a side effect no verification can undo.
+//
+// os.Lstat is the portable check: O_NOFOLLOW is not available on every platform
+// this runs on, and nothing legitimate can put a non-regular file at this path —
+// the partial is created by this package, as a regular file, in a directory it
+// also created. A residual TOCTOU window remains between this check and the open
+// (an actor with same-user write access to the downloads directory could swap the
+// path in between); closing it portably would need an O_EXCL create-and-rename
+// per chunk, which is not what a resumable multi-gigabyte transfer can do.
+func (d *Downloader) discardForeignPartial(partial string, asset Asset) error {
+	info, err := os.Lstat(partial)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("embeddedllm: inspecting partial %q: %w", partial, err)
+	}
+	if info.Mode().IsRegular() {
+		return nil
+	}
+	d.logger().Warn("the download partial is not a regular file this package wrote; discarding it",
+		"component", asset.Component, "partial", partial, "mode", info.Mode().String())
+	// os.Remove on a symlink unlinks the link itself, never its target.
+	if rerr := os.Remove(partial); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+		return fmt.Errorf("embeddedllm: removing non-regular partial %q: %w", partial, rerr)
+	}
+	return nil
 }
 
 // resumeOffset reports how many already-downloaded bytes of asset the partial
@@ -709,7 +767,7 @@ func (d *Downloader) logger() *slog.Logger {
 	if d.Logger != nil {
 		return d.Logger
 	}
-	return slog.Default()
+	return slog.New(slog.DiscardHandler)
 }
 
 func (d *Downloader) progressInterval() time.Duration {

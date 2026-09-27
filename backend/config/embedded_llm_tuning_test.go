@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"go/parser"
 	"go/token"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -343,6 +345,59 @@ func TestEmbeddedLLMTuningValidateRejected(t *testing.T) {
 		"negative parallel": {
 			mutate:  func(c *TuningConfig) { c.Parallel = embeddedIntPtr(-2) },
 			wantMsg: "embedded_llm.tuning.parallel -2 is not valid",
+		},
+
+		// The CEILINGS. Core owns the figures (embeddedllm.MaxTuning*) and they
+		// are overflow guards, not tuning opinions: every one of these values is
+		// multiplied by a per-unit footprint downstream, so an unbounded knob
+		// makes that arithmetic wrap instead of merely being refused later by the
+		// memory gate — and a bound at only one layer is a bound an operator
+		// walks around by hand-editing config.yaml.
+		"fit_target_mib above the ceiling": {
+			mutate:  func(c *TuningConfig) { c.FitTargetMiB = embeddedIntPtr(embeddedllm.MaxTuningMiB + 1) },
+			wantMsg: fmt.Sprintf("embedded_llm.tuning.fit_target_mib %d is not valid", embeddedllm.MaxTuningMiB+1),
+		},
+		"cache_ram_mib above the ceiling": {
+			mutate:  func(c *TuningConfig) { c.CacheRAMMiB = embeddedIntPtr(embeddedllm.MaxTuningMiB + 1) },
+			wantMsg: fmt.Sprintf("embedded_llm.tuning.cache_ram_mib %d is not valid", embeddedllm.MaxTuningMiB+1),
+		},
+		"parallel above the ceiling": {
+			mutate:  func(c *TuningConfig) { c.Parallel = embeddedIntPtr(embeddedllm.MaxTuningParallel + 1) },
+			wantMsg: fmt.Sprintf("embedded_llm.tuning.parallel %d is not valid", embeddedllm.MaxTuningParallel+1),
+		},
+		"layer count above the ceiling": {
+			mutate: func(c *TuningConfig) {
+				c.Offload.Mode = embeddedStrPtr(EmbeddedLLMOffloadLayers)
+				c.Offload.Layers = embeddedIntPtr(embeddedllm.MaxTuningLayers + 1)
+			},
+			wantMsg: fmt.Sprintf("embedded_llm.tuning.offload.layers %d is not valid", embeddedllm.MaxTuningLayers+1),
+		},
+		// host_reserve_gib is a float64 the planner converts to an integer MiB
+		// count, and a float→int conversion the result type cannot represent is
+		// IMPLEMENTATION-DEFINED in Go: it saturates on arm64 and yields the
+		// negative "indefinite value" on amd64, which would make
+		// host = ram − reserve enormous and fail the memory gate OPEN. NaN is
+		// rejected for a second reason: it compares false against every bound,
+		// so the floor-only check let it through and the planner then silently
+		// ignored it.
+		"host_reserve_gib is NaN": {
+			mutate:  func(c *TuningConfig) { c.HostReserveGiB = embeddedFloatPtr(math.NaN()) },
+			wantMsg: "embedded_llm.tuning.host_reserve_gib NaN is not valid",
+		},
+		"host_reserve_gib is +Inf": {
+			mutate:  func(c *TuningConfig) { c.HostReserveGiB = embeddedFloatPtr(math.Inf(1)) },
+			wantMsg: "embedded_llm.tuning.host_reserve_gib +Inf is not valid",
+		},
+		"host_reserve_gib is -Inf": {
+			mutate:  func(c *TuningConfig) { c.HostReserveGiB = embeddedFloatPtr(math.Inf(-1)) },
+			wantMsg: "embedded_llm.tuning.host_reserve_gib -Inf is not valid",
+		},
+		"host_reserve_gib above the ceiling": {
+			mutate: func(c *TuningConfig) {
+				c.HostReserveGiB = embeddedFloatPtr(float64(embeddedllm.MaxTuningHostReserveGiB) * 2)
+			},
+			wantMsg: fmt.Sprintf("embedded_llm.tuning.host_reserve_gib %g is not valid",
+				float64(embeddedllm.MaxTuningHostReserveGiB)*2),
 		},
 	}
 
@@ -779,5 +834,81 @@ func TestEmbeddedLLMTuningKeepsTheImportDirection(t *testing.T) {
 	}
 	if scanned == 0 {
 		t.Fatal("no core/embeddedllm sources were scanned — the assertion is vacuous")
+	}
+}
+
+// TestEmbeddedLLMTuningCeilingsAcceptTheirBoundary keeps the new ceilings honest
+// about what they are: overflow and absurdity guards sitting far above any real
+// machine, NOT tuning policy. A ceiling that refused the value it names would be
+// an off-by-one that silently rejects a legitimate configuration, and the
+// translation ToTuning performs must still succeed at the boundary — otherwise
+// "validate() accepts it" and "the planner can honour it" would drift apart.
+func TestEmbeddedLLMTuningCeilingsAcceptTheirBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*TuningConfig)
+	}{
+		{"fit_target_mib at the ceiling", func(c *TuningConfig) {
+			c.FitTargetMiB = embeddedIntPtr(embeddedllm.MaxTuningMiB)
+		}},
+		{"cache_ram_mib at the ceiling", func(c *TuningConfig) {
+			c.CacheRAMMiB = embeddedIntPtr(embeddedllm.MaxTuningMiB)
+		}},
+		{"parallel at the ceiling", func(c *TuningConfig) {
+			c.Parallel = embeddedIntPtr(embeddedllm.MaxTuningParallel)
+		}},
+		{"offload.layers at the ceiling", func(c *TuningConfig) {
+			c.Offload.Mode = embeddedStrPtr(EmbeddedLLMOffloadLayers)
+			c.Offload.Layers = embeddedIntPtr(embeddedllm.MaxTuningLayers)
+		}},
+		{"host_reserve_gib at the ceiling", func(c *TuningConfig) {
+			c.HostReserveGiB = embeddedFloatPtr(float64(embeddedllm.MaxTuningHostReserveGiB))
+		}},
+		{"host_reserve_gib just below the ceiling", func(c *TuningConfig) {
+			c.HostReserveGiB = embeddedFloatPtr(float64(embeddedllm.MaxTuningHostReserveGiB) - 0.5)
+		}},
+		{"host_reserve_gib zero", func(c *TuningConfig) {
+			c.HostReserveGiB = embeddedFloatPtr(0)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := minimalValidConfig()
+			tc.mutate(&cfg.EmbeddedLLM.Tuning)
+
+			if err := validate(cfg); err != nil {
+				t.Fatalf("validate() rejected a value at its documented ceiling: %v", err)
+			}
+			// And the translation the planner consumes must agree.
+			if _, err := cfg.EmbeddedLLM.Tuning.ToTuning(); err != nil {
+				t.Fatalf("ToTuning() rejected a value validate() accepted: %v", err)
+			}
+		})
+	}
+}
+
+// TestEmbeddedLLMTuningHostReserveRejectsEveryNonFiniteShape is the focused pin
+// for the float→int hazard: the planner's `int64(reserve * mibPerGiB)` is total
+// only because validation rejects the shapes that would make it
+// implementation-defined.
+func TestEmbeddedLLMTuningHostReserveRejectsEveryNonFiniteShape(t *testing.T) {
+	for name, value := range map[string]float64{
+		"NaN":                              math.NaN(),
+		"+Inf":                             math.Inf(1),
+		"-Inf":                             math.Inf(-1),
+		"1e19 (saturates int64 on arm64)":  1e19,
+		"1e300 (saturates int64 on arm64)": 1e300,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := minimalValidConfig()
+			cfg.EmbeddedLLM.Tuning.HostReserveGiB = embeddedFloatPtr(value)
+
+			err := validate(cfg)
+			if err == nil {
+				t.Fatalf("validate() accepted host_reserve_gib = %g", value)
+			}
+			if !strings.Contains(err.Error(), "finite") {
+				t.Errorf("error = %q, want it to say the value must be finite", err)
+			}
+		})
 	}
 }

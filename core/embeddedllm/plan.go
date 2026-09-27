@@ -67,6 +67,7 @@ package embeddedllm
 import (
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 )
@@ -406,8 +407,21 @@ func DefaultHostReserveGiB(ramGiB float64) float64 {
 // card on amd64) leaves the device axis unreadable, while one whose memory IS
 // host RAM (Apple Silicon's Metal, and Vulkan — which `classifyUnified` also
 // resolves to unified when unsure) can be priced from the RAM probe alone.
-func gateBudgetsFor(in ResolveInput, backend Backend, family GPUFamily) gateBudgets {
-	override := in.Tuning.HostReserveGiB
+func gateBudgetsFor(in ResolveInput, backend Backend, family GPUFamily) (gateBudgets, error) {
+	// A set override REPLACES the derived reserve; an unset one leaves it alone.
+	// The conversion is range-checked (hostReserveBytesFromGiB) instead of relying
+	// on Go's implementation-defined float→int behaviour, and NaN is refused here
+	// rather than silently skipped by a `>= 0` test — an operator typo must not
+	// vanish without a word.
+	var overrideBytes int64
+	hasOverride := false
+	if override := in.Tuning.HostReserveGiB; override != nil {
+		reserve, err := hostReserveBytesFromGiB(*override)
+		if err != nil {
+			return gateBudgets{}, err
+		}
+		overrideBytes, hasOverride = reserve, true
+	}
 
 	if in.Topology != nil {
 		// The topology's HostRAMGiB is documented as the SAME figure the RAM
@@ -417,8 +431,8 @@ func gateBudgetsFor(in ResolveInput, backend Backend, family GPUFamily) gateBudg
 		ramBytes := int64(topology.HostRAMGiB * gibibyte)
 
 		hostBytes := topology.HostBudgetBytes
-		if override != nil && *override >= 0 {
-			hostBytes = max(ramBytes-int64(*override*gibibyte), 0)
+		if hasOverride {
+			hostBytes = max(ramBytes-overrideBytes, 0)
 		}
 		reserveBytes := max(ramBytes-hostBytes, 0)
 
@@ -437,7 +451,7 @@ func gateBudgetsFor(in ResolveInput, backend Backend, family GPUFamily) gateBudg
 			reserveMiB: reserveBytes / bytesPerMiB,
 			ramGiB:     topology.HostRAMGiB,
 			unified:    topology.Unified,
-		}
+		}, nil
 	}
 
 	// No probe answered. The host side is still derivable — the RAM probe is a
@@ -445,8 +459,8 @@ func gateBudgetsFor(in ResolveInput, backend Backend, family GPUFamily) gateBudg
 	ramGiB := in.RAMGiB
 	ramBytes := int64(ramGiB * gibibyte)
 	reserve := hostReserveBytes(ramBytes)
-	if override != nil && *override >= 0 {
-		reserve = int64(*override * gibibyte)
+	if hasOverride {
+		reserve = overrideBytes
 	}
 	host := ramBytes - reserve
 	if host < 0 {
@@ -488,7 +502,7 @@ func gateBudgetsFor(in ResolveInput, backend Backend, family GPUFamily) gateBudg
 		g.unified = true
 		g.deviceMiB = g.hostMiB
 	}
-	return g
+	return g, nil
 }
 
 // backendHasIndependentVRAM reports whether a platform+backend pair implies an
@@ -613,7 +627,13 @@ func gateKVTypes(tuning Tuning) []KVType {
 // A refusal is an `*InsufficientMemoryError` naming both pools with both
 // numbers. An unreadable device budget is NOT a refusal — see deviceUnreadable.
 func memoryGate(in ResolveInput, backend Backend, family GPUFamily, profile ModelMemoryProfile) (gateVerdict, error) {
-	g := gateBudgetsFor(in, backend, family)
+	g, err := gateBudgetsFor(in, backend, family)
+	if err != nil {
+		// An override no budget can be derived from (NaN, infinite, or above the
+		// ceiling). Refusing here is what makes the conversion total downstream:
+		// every later float→int of this knob is inside range by construction.
+		return gateVerdict{}, err
+	}
 
 	ctx := gateContext(in.Tuning)
 	packings := gatePackings(in, backend, family)
@@ -841,7 +861,8 @@ type Tuning struct {
 	FitEnabled *bool
 	// FitTargetMiB overrides `-fitt`, the per-device margin fit leaves free.
 	// nil (and an explicit 0) omit the flag and keep the runtime's own default
-	// of 1024 MiB. It is only emitted under fit.
+	// of 1024 MiB. It is only emitted under fit, and it is bounded by
+	// MaxTuningMiB.
 	FitTargetMiB *int
 	// FitMinContext overrides `-fitc`, the smallest context fit may settle on.
 	// nil means DefaultFitMinContext (65536, NOT the runtime's 4096 — see that
@@ -865,16 +886,26 @@ type Tuning struct {
 	// than projected from a file size.
 	Packing Packing
 	// Parallel overrides `-np`. nil means DefaultParallel (1 — see that
-	// constant for the two measurements behind it).
+	// constant for the two measurements behind it); a set value is bounded by
+	// MaxTuningParallel.
 	Parallel *int
 	// CacheRAMMiB overrides `-cram`, the prompt cache ceiling. nil omits the
 	// flag and keeps the runtime's own default; 0 would disable the cache and
 	// is passed through verbatim, because disabling it is a legitimate choice.
+	// A set value is bounded by MaxTuningMiB.
 	CacheRAMMiB *int
 	// HostReserveGiB overrides the RAM kept out of the host budget. nil keeps
 	// the topology's own derivation (the larger of a 4 GiB floor and 1/8 of
 	// RAM). It is a planner-side budget knob, NOT a runtime flag: the pinned
 	// fork has no `--host-reserve`.
+	//
+	// A SET value is always converted, and the conversion is range-checked:
+	// NaN, an infinite or negative figure, and anything above
+	// MaxTuningHostReserveGiB are refused as ErrTuningInvalid by both the gate
+	// and the planner rather than silently ignored. The ceiling exists because a
+	// float→int conversion the result type cannot represent is
+	// implementation-defined in Go, and the amd64 result would fail the memory
+	// gate OPEN — see hostReserveMiB.
 	HostReserveGiB *float64
 	// Devices overrides `-dev`, the comma-separated offload target list. Any
 	// entry forces fit off: naming the devices is pinning the offload.
@@ -1226,7 +1257,13 @@ func insufficientForPlan(
 	family GPUFamily,
 	packing Packing,
 ) error {
-	b := planBudgets(topology, tuning, family)
+	b, err := planBudgets(topology, tuning, family)
+	if err != nil {
+		// Unreachable in practice: Plan returns a budget error from planShape
+		// before it ever asks for a refusal message. Propagating it keeps this
+		// builder total rather than inventing budgets to describe.
+		return err
+	}
 	g := gateBudgets{
 		device:     deviceKnown,
 		deviceMiB:  b.deviceMiB,
@@ -1293,7 +1330,10 @@ func planShape(
 		return MemoryPlan{}, err
 	}
 
-	budgets := planBudgets(topology, tuning, family)
+	budgets, err := planBudgets(topology, tuning, family)
+	if err != nil {
+		return MemoryPlan{}, err
+	}
 
 	// Fit exclusivity: one decider, chosen by the override vocabulary alone.
 	fit := !tuning.explicitOffloadShape()
@@ -1439,6 +1479,32 @@ func planPacking(tuning Tuning, backend Backend, family GPUFamily, profile Model
 type budgets struct {
 	deviceMiB int64
 	hostMiB   int64
+	// unified reports that the two pools are the SAME bytes, which makes the two
+	// footprints additive against one pool — see fits.
+	unified bool
+}
+
+// fits reports whether a (device, host) footprint pair fits these budgets.
+//
+// The unified case is why this is a method and not two comparisons: it is
+// gateBudgets.overflow's rule on the planner's side of the same arithmetic. When
+// the pools are the same bytes, a shape whose two footprints EACH fit a pool can
+// still need twice the machine's memory in sum, and accepting it is what turned a
+// narrow unified-memory configuration into a failed launch — the KV escalation
+// loop settled on a precision the runtime's own `--fit` pass then could not fit
+// even at the `-fitc` floor, so the load aborted with the FitWarning marker
+// instead of escalating to q8_0 as the gate's verdict would have.
+//
+// The device term is checked on its own as well, because the topology's margin
+// and the family's split allowance live in the device budget alone.
+func (b budgets) fits(deviceMiB, hostMiB int64) bool {
+	if deviceMiB > b.deviceMiB || hostMiB > b.hostMiB {
+		return false
+	}
+	if b.unified {
+		return deviceMiB+hostMiB <= b.hostMiB
+	}
+	return true
 }
 
 // planBudgets derives the two numbers the gate spends, from the topology's own
@@ -1450,22 +1516,83 @@ type budgets struct {
 //
 // The host budget is the topology's own unless HostReserveGiB overrides it, in
 // which case it is re-derived from the topology's RAM total — the override
-// replaces the reserve policy, it does not stack on top of it.
-func planBudgets(topology MemoryTopology, tuning Tuning, family GPUFamily) budgets {
+// replaces the reserve policy, it does not stack on top of it. A SET override is
+// always converted, and the conversion is range-checked (hostReserveMiB) because
+// a float→int whose value the result type cannot represent is
+// implementation-defined in Go: an unusable override (NaN, negative, or above
+// MaxTuningHostReserveGiB) is refused as ErrTuningInvalid here exactly as the gate
+// refuses it, rather than being silently skipped — which is what a `>= 0` test did
+// to a NaN, making an operator typo vanish without a word.
+//
+// The topology's Unified flag is carried through so the budgets can be spent the
+// way the memory gate spends them — see budgets.fits.
+func planBudgets(topology MemoryTopology, tuning Tuning, family GPUFamily) (budgets, error) {
 	device := topology.DeviceBudgetMiB() - splitAllowanceMiB(family)
 	if device < 0 {
 		device = 0
 	}
 
 	host := topology.HostBudgetMiB()
-	if tuning.HostReserveGiB != nil && *tuning.HostReserveGiB >= 0 {
-		reserveMiB := int64(*tuning.HostReserveGiB * mibPerGiB)
+	if tuning.HostReserveGiB != nil {
+		reserveMiB, err := hostReserveMiB(*tuning.HostReserveGiB)
+		if err != nil {
+			return budgets{}, err
+		}
 		host = int64(topology.HostRAMGiB*mibPerGiB) - reserveMiB
 		if host < 0 {
 			host = 0
 		}
 	}
-	return budgets{deviceMiB: device, hostMiB: host}
+	return budgets{deviceMiB: device, hostMiB: host, unified: topology.Unified}, nil
+}
+
+// hostReserveMiB converts the operator's host-reserve override (GiB) into the MiB
+// every budget in this file uses.
+//
+// The check is explicit because Go leaves a float→int conversion whose value the
+// result type cannot represent IMPLEMENTATION-DEFINED: this host saturates it to
+// MaxInt64 (which yields a zero host budget and a fail-closed plan), while amd64
+// conventionally produces the negative "indefinite value" — which would make
+// `host = ram − reserve` enormous and fail the memory gate OPEN on the very knob
+// meant to shrink it. NaN is refused rather than silently ignored, which is what
+// the `>= 0` guards at the call sites did to it before: an operator typo
+// vanished without a word.
+func hostReserveMiB(gib float64) (int64, error) {
+	if err := checkHostReserve(gib); err != nil {
+		return 0, err
+	}
+	return int64(gib * mibPerGiB), nil
+}
+
+// hostReserveBytesFromGiB is hostReserveMiB in the byte unit the gate's own
+// derivation uses. (topology.go's hostReserveBytes takes the RAM total in bytes
+// and applies the default reserve policy; this one converts an operator override.)
+func hostReserveBytesFromGiB(gib float64) (int64, error) {
+	if err := checkHostReserve(gib); err != nil {
+		return 0, err
+	}
+	return int64(gib * gibibyte), nil
+}
+
+// checkHostReserve refuses a reserve override no total conversion can represent.
+// The ceiling is limits.go's MaxTuningHostReserveGiB, which backend/config
+// enforces on the persisted value as well: a bound that exists at only one of the
+// two layers is a bound an operator can walk around by hand-editing config.yaml.
+func checkHostReserve(gib float64) error {
+	if math.IsNaN(gib) {
+		return fmt.Errorf("%w: host_reserve_gib is NaN, which no budget can be derived from", ErrTuningInvalid)
+	}
+	if math.IsInf(gib, 0) {
+		return fmt.Errorf("%w: host_reserve_gib is infinite", ErrTuningInvalid)
+	}
+	if gib < 0 {
+		return fmt.Errorf("%w: host_reserve_gib %s is negative", ErrTuningInvalid, gibString(gib))
+	}
+	if gib > MaxTuningHostReserveGiB {
+		return fmt.Errorf("%w: host_reserve_gib %s exceeds the %d GiB ceiling",
+			ErrTuningInvalid, gibString(gib), MaxTuningHostReserveGiB)
+	}
+	return nil
 }
 
 // mibPerGiB converts a GiB figure into the MiB every budget in this file uses.
@@ -1606,6 +1733,12 @@ func planTargetContext(
 //
 // When no precision fits, the refusal carries the arithmetic: which budget,
 // which footprint, at the least-lossy precision that was tried.
+//
+// "Fits" is budgets.fits, not two independent comparisons: on a unified-memory
+// machine the two footprints are spent from ONE pool, so gating each against its
+// own budget would accept a precision whose sum exceeds the machine — the exact
+// case the memory gate's additive rule exists to refuse, and one that turned a
+// narrow unified configuration into a failed launch instead of a degraded one.
 func planKVType(
 	tuning Tuning,
 	profile ModelMemoryProfile,
@@ -1643,7 +1776,7 @@ func planKVType(
 		if err != nil {
 			return "", nil, err
 		}
-		if deviceMiB <= budgets.deviceMiB && hostMiB <= budgets.hostMiB {
+		if budgets.fits(deviceMiB, hostMiB) {
 			var notes []string
 			if candidate != KVTypeF16 {
 				notes = append(notes, fmt.Sprintf(

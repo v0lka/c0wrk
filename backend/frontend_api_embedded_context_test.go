@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -206,6 +207,57 @@ func TestPersistEmbeddedContextIgnoresANonPositiveValue(t *testing.T) {
 			t.Errorf("persistEmbeddedContext(%d) moved the override to %d, want it left at 16384",
 				bad, got)
 		}
+	}
+}
+
+// TestPersistEmbeddedContextIgnoresAnOutOfRangeValue is the CEILING side of the
+// same guard. This is the one context figure in the subsystem that arrives from
+// an external process over HTTP, and the override it lands in is a tier-1 value
+// that shadows the tier-1.5 lazy probe — so a poisoned readback (a squatted
+// loopback port answering /props with an absurd n_ctx, or a perSlot*slots product
+// that wrapped) would otherwise be persisted durably, in TWO stores, and never
+// corrected. An enormous window is worse than a wrong one: every prompt "fits",
+// so context compaction silently stops triggering for this model.
+//
+// The ceiling itself must still be written — it is an absurdity guard, not a
+// policy, and refusing a legitimate value would be its own bug.
+func TestPersistEmbeddedContextIgnoresAnOutOfRangeValue(t *testing.T) {
+	f, _, _ := newEmbeddedTestAPI(t)
+	installEmbeddedLLM(t, f, 4321)
+	if !f.config.SyncEmbeddedLLMProvider(16384) {
+		t.Fatal("pinning the estimate reported no change")
+	}
+
+	for _, absurd := range []int{
+		config.MaxModelContextWindow + 1,
+		math.MaxInt,
+		math.MinInt64,
+	} {
+		if err := f.persistEmbeddedContext(context.Background(), absurd); err != nil {
+			t.Fatalf("persistEmbeddedContext(%d): %v", absurd, err)
+		}
+		if got := embeddedContextWindow(f); got != 16384 {
+			t.Errorf("persistEmbeddedContext(%d) moved the override to %d, want it left at 16384",
+				absurd, got)
+		}
+		if record, ok := f.embedded.installRecord(); ok && record.ContextSize == absurd {
+			t.Errorf("persistEmbeddedContext(%d) poisoned the cached install record", absurd)
+		}
+	}
+
+	// The boundary value is legitimate and must reach the override.
+	if err := f.persistEmbeddedContext(context.Background(), config.MaxModelContextWindow); err != nil {
+		t.Fatalf("persistEmbeddedContext at the ceiling: %v", err)
+	}
+	if got := embeddedContextWindow(f); got != config.MaxModelContextWindow {
+		t.Errorf("llm.models override = %d, want the ceiling %d to be written",
+			got, config.MaxModelContextWindow)
+	}
+	// And the config it produced must still load: a write that validate() would
+	// reject turns an administrative correction into an unloadable config. Save
+	// does not validate, so the round trip through the loader is the check.
+	if _, err := config.LoadWithResult(f.configPath); err != nil {
+		t.Errorf("the persisted config no longer loads: %v", err)
 	}
 }
 

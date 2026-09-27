@@ -47,11 +47,18 @@ type PortProber func(ctx context.Context, port int) bool
 // SearchFreePort returns the first bindable loopback port at or above
 // preferred, scanning upward one port at a time.
 //
-// A preferred below MinLoopbackPort (including the 0 "not allocated yet"
-// sentinel) starts the scan at MinLoopbackPort rather than failing: the caller
-// wants a usable port, and the persisted preference is only a hint. The scan is
-// bounded by MaxLoopbackPort, so it always terminates — exhaustion is reported
-// as ErrNoFreePort.
+// A preferred OUTSIDE [MinLoopbackPort, MaxLoopbackPort] is CLAMPED into it
+// rather than failing: the caller wants a usable port, and the persisted
+// preference is only a hint. Clamping the low end (including the 0 "not
+// allocated yet" sentinel) starts the scan at MinLoopbackPort; clamping the
+// high end — the case a hand-edited or corrupted manifest.json produces, since
+// ReadManifest performs no range validation — starts it at MaxLoopbackPort.
+// Without the high clamp the loop below would never execute and the exhaustion
+// message would name an inverted range ("every port from 99999 to 65535 is
+// taken"), misdiagnosing a bad preference as port exhaustion.
+//
+// The scan is bounded by MaxLoopbackPort, so it always terminates — exhaustion
+// is reported as ErrNoFreePort.
 //
 // probe nil selects the production prober. ctx bounds the whole scan and is
 // checked per candidate, so a cancelled load stops probing instead of walking
@@ -70,10 +77,7 @@ func SearchFreePort(ctx context.Context, preferred int, probe PortProber) (int, 
 		probe = loopbackPortFree
 	}
 
-	start := preferred
-	if start < MinLoopbackPort {
-		start = MinLoopbackPort
-	}
+	start := min(max(preferred, MinLoopbackPort), MaxLoopbackPort)
 	for port := start; port <= MaxLoopbackPort; port++ {
 		if err := ctx.Err(); err != nil {
 			return 0, fmt.Errorf("embeddedllm: searching for a free loopback port: %w", err)

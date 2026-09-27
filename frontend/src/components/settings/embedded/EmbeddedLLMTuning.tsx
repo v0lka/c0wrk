@@ -2,19 +2,24 @@
 // context mode, the KV-cache precision and the layer-offload shape. A fully
 // controlled leaf with ZERO local state — every value and the commit flow live
 // in the parent (useEmbeddedLLMTuning); see that hook for the pattern.
+//
+// A count-bearing mode ("Exact" context, "N layers" offload) is a DRAFT the
+// parent holds: picking it shows the mode and its count field but persists
+// nothing, because the only count available at that instant is a fallback
+// (`-ngl 0` is an all-CPU launch shape). The write happens when the user
+// commits a count — the hint line below says so out loud.
 
 import { Combobox, type ComboboxOption } from '@/components/ui/combobox'
-import { NumberField } from '@/components/settings/ModelProfilesControls'
+import { NumberField } from '@/components/settings/NumberField'
 import {
   CONTEXT_MODE_EXACT,
   KV_CACHE_TYPES,
-  MAX_CONTEXT_TOKENS,
-  MIN_CONTEXT_TOKENS,
   OFFLOAD_MODE_ALL,
   OFFLOAD_MODE_CPU,
   OFFLOAD_MODE_LAYERS,
 } from '@/api/embeddedTuning'
-import { TUNING_AUTO, type EmbeddedLLMTuningPrimaryProps } from '@/hooks/useEmbeddedLLMTuning'
+import { TUNING_AUTO, TUNING_RANGES } from '@/lib/embeddedTuningDisplay'
+import type { EmbeddedLLMTuningPrimaryProps } from '@/hooks/useEmbeddedLLMTuning'
 
 const CONTEXT_OPTIONS: readonly ComboboxOption[] = [
   { value: TUNING_AUTO, label: 'Auto (RAM-tiered)' },
@@ -35,6 +40,7 @@ const OFFLOAD_OPTIONS: readonly ComboboxOption[] = [
 
 export function EmbeddedLLMTuning(props: EmbeddedLLMTuningPrimaryProps) {
   const { onSet, disabled } = props
+  const draftPending = props.contextDraft || props.offloadDraft
   return (
     <div className="flex flex-col gap-2" data-testid="embedded-llm-tuning">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -55,20 +61,15 @@ export function EmbeddedLLMTuning(props: EmbeddedLLMTuningPrimaryProps) {
               options={CONTEXT_OPTIONS}
               className="h-8 w-40 text-xs"
               disabled={disabled}
-              onChange={(mode) =>
-                onSet(
-                  mode === CONTEXT_MODE_EXACT
-                    ? { context: { mode: CONTEXT_MODE_EXACT, tokens: props.contextTokens } }
-                    : { reset: ['context'] },
-                )
-              }
+              onChange={props.onContextModeChange}
             />
             {props.contextMode === CONTEXT_MODE_EXACT && (
               <NumberField
                 label="Tokens"
                 value={props.contextTokens}
-                min={MIN_CONTEXT_TOKENS}
-                max={MAX_CONTEXT_TOKENS}
+                min={TUNING_RANGES.context_tokens.min}
+                max={TUNING_RANGES.context_tokens.max}
+                integer
                 disabled={disabled}
                 onChange={(tokens) => onSet({ context: { mode: CONTEXT_MODE_EXACT, tokens } })}
               />
@@ -95,18 +96,15 @@ export function EmbeddedLLMTuning(props: EmbeddedLLMTuningPrimaryProps) {
               options={OFFLOAD_OPTIONS}
               className="h-8 w-40 text-xs"
               disabled={disabled}
-              onChange={(mode) => {
-                if (mode === TUNING_AUTO) return onSet({ reset: ['offload'] })
-                if (mode === OFFLOAD_MODE_LAYERS)
-                  return onSet({ offload: { mode: OFFLOAD_MODE_LAYERS, layers: props.offloadLayers } })
-                onSet({ offload: { mode, layers: null } })
-              }}
+              onChange={props.onOffloadModeChange}
             />
             {props.offloadMode === OFFLOAD_MODE_LAYERS && (
               <NumberField
                 label="Layers"
                 value={props.offloadLayers}
-                min={0}
+                min={TUNING_RANGES.offload_layers.min}
+                max={TUNING_RANGES.offload_layers.max}
+                integer
                 disabled={disabled}
                 onChange={(layers) => onSet({ offload: { mode: OFFLOAD_MODE_LAYERS, layers } })}
               />
@@ -114,6 +112,11 @@ export function EmbeddedLLMTuning(props: EmbeddedLLMTuningPrimaryProps) {
           </div>
         </div>
       </div>
+      {draftPending && (
+        <p className="text-xs text-warning" data-testid="embedded-llm-tuning-draft">
+          Enter a count to apply it — picking the mode alone saves nothing.
+        </p>
+      )}
       <p className="text-xs text-muted-foreground">
         Auto leaves every launch flag to the memory planner; overrides apply to the next Load and never
         restart a resident model.

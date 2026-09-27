@@ -5,12 +5,22 @@ import { createRoot, type Root } from 'react-dom/client'
 
 import { ChatInputToolbar } from './ChatInputToolbar'
 import { GOAL_BLOCKED_BY_MODEL_PROFILES_REASON } from '@/lib/goalGate'
+import { COLD_EMBEDDED_LOAD_HINT } from '@/lib/embeddedColdLoadHint'
 import type { ChatInputController } from '@/hooks/useChatInputController'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useChatStore } from '@/stores/chatStore'
+import { useEmbeddedLLMStore } from '@/stores/embeddedLLMStore'
+import { makeColdEmbeddedStatus } from '@/test/embeddedStatusFixture'
 
 // Mock the config hook so the comboboxes render synchronously with a
-// reasoning-capable model, without touching the Wails backend.
+// reasoning-capable model, without touching the Wails backend. `defaultModel` is
+// mutable because the service-call tooltip resolves `effectiveModelId ??
+// defaultModel` (hooks/useServiceCallTitle) and the toolbar passes `null` for
+// `effectiveModelId` — `OptimizePrompt` takes no model argument, so the RPC runs
+// on the CONFIGURED DEFAULT and the cold-load hint follows it alone. The cases
+// below therefore vary the default, and vary the per-message `selectedModel`
+// only to prove it is NOT consulted.
+const configCache = vi.hoisted(() => ({ defaultModel: 'claude-sonnet' }))
 vi.mock('@/hooks/useConfigData', () => ({
   useConfigData: () => ({
     allModels: [
@@ -22,7 +32,7 @@ vi.mock('@/hooks/useConfigData', () => ({
         reasoning: { default: 'high', options: ['low', 'medium', 'high'] },
       },
     ],
-    defaultModel: 'claude-sonnet',
+    defaultModel: configCache.defaultModel,
     loaded: true,
   }),
   invalidateConfigCache: vi.fn(),
@@ -130,8 +140,10 @@ function e2sTrigger(): HTMLButtonElement {
 }
 
 beforeEach(() => {
-  useInputModeStore.setState({ goalEnabled: false, e2sEnabled: false })
+  useInputModeStore.setState({ goalEnabled: false, e2sEnabled: false, selectedModel: null })
+  useEmbeddedLLMStore.getState().reset()
   experimentalGate.enabled = false
+  configCache.defaultModel = 'claude-sonnet'
   // The toolbar reads the active session's live unfinished-task overlay (the
   // goal/E2S mode-toggle lock) straight from chatStore — reset it so tests
   // seed exactly the state they assert on.
@@ -283,5 +295,119 @@ describe('ChatInputToolbar goal block under the Model Profiles gate', () => {
     renderToolbar()
     expect(goalTrigger().disabled).toBe(false)
     expect(container.querySelector('[data-testid="goal-blocked-hint"]')).toBeNull()
+  })
+})
+
+// The optimize call has NO client-side timeout, so the pending tooltip is the
+// only thing that tells a long wait apart from a hang — but the backend's cold
+// embedded-model gate (`ensureEmbeddedReadyForLLMRequest`) is a no-op for every
+// other provider. The clause must therefore follow the model the RPC ACTUALLY
+// RUNS ON, not the in-flight flag and not the per-message override:
+// `optimizePrompt(text)` takes no model argument
+// (backend/frontend_api_prompt.go `OptimizePrompt(prompt string)`), and the
+// backend's own gate resolves `llm.default_model`. So the toolbar passes `null`
+// and the hint is decided by the CONFIGURED DEFAULT alone — the same argument
+// CommitSection passes for `GenerateCommitMessage`.
+describe('ChatInputToolbar optimize-prompt pending title', () => {
+  const optimizeButton = (): HTMLButtonElement => {
+    const btn = container.querySelector<HTMLButtonElement>('button[aria-label="Optimize prompt"]')
+    expect(btn).not.toBeNull()
+    return btn as HTMLButtonElement
+  }
+
+  /** Seed a cold (installed, not resident) embedded model and, separately, the
+   *  per-message override the model combobox would send with the NEXT TASK. */
+  function seedColdEmbedded(perMessageModel: string | null): void {
+    act(() => {
+      useEmbeddedLLMStore.getState().setStatus(makeColdEmbeddedStatus())
+      useInputModeStore.setState({ selectedModel: perMessageModel })
+    })
+  }
+
+  it('warns about the cold load when the CONFIGURED DEFAULT is the embedded model', () => {
+    // The default is the point: `selectedModel` is null, so the clause has to be
+    // resolved from the global default. Deleting `?? defaultModel` in
+    // useServiceCallTitle would resolve to nothing and silently lose the hint —
+    // this positive case is what catches that.
+    configCache.defaultModel = 'embedded/Bonsai 2 27B'
+    seedColdEmbedded(null)
+    renderToolbar({ hasContent: true, isOptimizing: true })
+    expect(optimizeButton().title).toBe(`Optimizing… — ${COLD_EMBEDDED_LOAD_HINT}`)
+  })
+
+  it('warns even when a REMOTE model is picked for the next message (no false negative)', () => {
+    // The optimize RPC never sends the per-message override — it runs on the
+    // cached router's active model, i.e. the configured default. Gating on
+    // `selectedModel` here read plain "Optimizing…" while the call blocked for
+    // minutes on the cold weight load, which is the exact case the hint exists
+    // for.
+    configCache.defaultModel = 'embedded/Bonsai 2 27B'
+    seedColdEmbedded('anthropic/claude-sonnet')
+    renderToolbar({ hasContent: true, isOptimizing: true })
+    expect(optimizeButton().title).toBe(`Optimizing… — ${COLD_EMBEDDED_LOAD_HINT}`)
+  })
+
+  it('stays plain when the default is REMOTE and the cold embedded model is only the per-message pick (no false positive)', () => {
+    // The mirror image: a sub-second remote call must never claim that a
+    // multi-gigabyte local model is loading (lib/embeddedColdLoadHint's header
+    // rule). Gating on `selectedModel` produced exactly this lie.
+    configCache.defaultModel = 'anthropic/claude-sonnet'
+    seedColdEmbedded('embedded/Bonsai 2 27B')
+    renderToolbar({ hasContent: true, isOptimizing: true })
+    expect(optimizeButton().title).toBe('Optimizing…')
+    expect(optimizeButton().title).not.toContain(COLD_EMBEDDED_LOAD_HINT)
+  })
+
+  it('keeps a plain pending title for a remote default, even with the embedded model installed cold', () => {
+    configCache.defaultModel = 'anthropic/claude-sonnet'
+    seedColdEmbedded('anthropic/claude-sonnet')
+    renderToolbar({ hasContent: true, isOptimizing: true })
+    expect(optimizeButton().title).toBe('Optimizing…')
+    expect(optimizeButton().title).not.toContain(COLD_EMBEDDED_LOAD_HINT)
+  })
+
+  it('keeps a plain pending title once the embedded model is resident', () => {
+    act(() => {
+      useEmbeddedLLMStore
+        .getState()
+        .setStatus(makeColdEmbeddedStatus({ state: 'loaded', loaded: true, pid: 4242 }))
+      useInputModeStore.setState({ selectedModel: 'embedded/Bonsai 2 27B' })
+    })
+    configCache.defaultModel = 'embedded/Bonsai 2 27B'
+    renderToolbar({ hasContent: true, isOptimizing: true })
+    expect(optimizeButton().title).toBe('Optimizing…')
+  })
+
+  it('matches a BARE default-model name against the snapshot’s composite id', () => {
+    // `llm.default_model` may be stored bare while the snapshot's `model_id` is
+    // always "embedded/<name>".
+    configCache.defaultModel = 'Bonsai 2 27B'
+    seedColdEmbedded(null)
+    renderToolbar({ hasContent: true, isOptimizing: true })
+    expect(optimizeButton().title).toBe(`Optimizing… — ${COLD_EMBEDDED_LOAD_HINT}`)
+  })
+
+  it('keeps a plain pending title when the configured default is REMOTE and no override is picked', () => {
+    configCache.defaultModel = 'anthropic/claude-sonnet'
+    seedColdEmbedded(null)
+    renderToolbar({ hasContent: true, isOptimizing: true })
+    expect(optimizeButton().title).toBe('Optimizing…')
+    expect(optimizeButton().title).not.toContain(COLD_EMBEDDED_LOAD_HINT)
+  })
+
+  it('keeps a plain pending title before any embedded snapshot was read', () => {
+    configCache.defaultModel = 'embedded/Bonsai 2 27B'
+    act(() => {
+      useInputModeStore.setState({ selectedModel: 'embedded/Bonsai 2 27B' })
+    })
+    renderToolbar({ hasContent: true, isOptimizing: true })
+    expect(optimizeButton().title).toBe('Optimizing…')
+  })
+
+  it('shows the idle title while nothing is in flight', () => {
+    configCache.defaultModel = 'embedded/Bonsai 2 27B'
+    seedColdEmbedded('embedded/Bonsai 2 27B')
+    renderToolbar({ hasContent: true })
+    expect(optimizeButton().title).toBe('Optimize prompt')
   })
 })

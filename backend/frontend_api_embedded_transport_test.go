@@ -2,8 +2,13 @@ package backend
 
 import (
 	"context"
+	"io"
 	"log/slog"
+	"net"
+	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -248,6 +253,15 @@ func TestEmbeddedLoaderRefWithoutAnAgentDirIsAnErrorNotAPanic(t *testing.T) {
 		t.Errorf("the error %q does not name the missing agent directory", err)
 	}
 	ref.MarkActivity() // must not panic
+	// The two optional capabilities resolve the same cached supervisor, so with
+	// none cached they must be inert rather than an error path: Port reports 0,
+	// which is what redirectToLivePort reads as "do not redirect".
+	ref.BeginRequest()
+	ref.EndRequest()
+	if got := ref.Port(); got != 0 {
+		t.Errorf("Port() = %d with no supervisor cached, want 0 (the transport's "+
+			"no-redirect answer)", got)
+	}
 }
 
 // panicError carries a recovered panic value out of a test goroutine.
@@ -263,4 +277,229 @@ func errString(v any) string {
 		return s
 	}
 	return "unknown"
+}
+
+// ── the production seam's optional capabilities ────────────────────────────
+//
+// The transport discovers BOTH of its optional Loader capabilities —
+// embeddedllm.RequestTracker (the in-flight counter that lets an idle expiry
+// defer instead of killing a generation) and embeddedllm.PortSource (the
+// live-port redirect) — through an interface assertion on whatever Loader it was
+// handed. Production never hands it a *Server: applyEmbeddedLoader and
+// syncEmbeddedBuilderSeam both inject embeddedLoaderRef, so a ref that
+// implements only Load and MarkActivity fails those assertions SILENTLY and
+// both controls become dead code while every fake-loader test still passes.
+// The tests below therefore drive the value applyEmbeddedLoader actually
+// produces, wrapped by the same EnsureLoadedClient call core.buildRouter makes.
+
+// seamProbeTransport is the inner RoundTripper the seam wraps in tests. It
+// records the request the transport actually sent — which is the only way to
+// see a redirect — and returns a response whose body stays open until the test
+// closes it, because that open body is the window the in-flight counter has to
+// cover.
+type seamProbeTransport struct {
+	mu   sync.Mutex
+	reqs []*http.Request
+}
+
+func (p *seamProbeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	p.mu.Lock()
+	p.reqs = append(p.reqs, req.Clone(req.Context()))
+	p.mu.Unlock()
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"choices":[]}`)),
+		Request:    req,
+	}, nil
+}
+
+// lastHost is the URL host of the most recent request that reached the wire.
+func (p *seamProbeTransport) lastHost() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.reqs) == 0 {
+		return ""
+	}
+	return p.reqs[len(p.reqs)-1].URL.Host
+}
+
+func (p *seamProbeTransport) requests() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.reqs)
+}
+
+// productionSeamClient builds the ensure-loaded client the way core.buildRouter
+// does from the BuilderConfig applyEmbeddedLoader produced: same Loader value,
+// same ProviderName guard, same LoadWaitTimeout (left zero so core applies
+// embeddedllm.DefaultLoadWaitTimeout), same EnsureLoadedClient call. inner is
+// what the seam wraps, so a test can inspect the request that goes out.
+func productionSeamClient(t *testing.T, f *FrontendAPI, inner http.RoundTripper) (*http.Client, embeddedllm.Loader) {
+	t.Helper()
+	bc := builderConfigUnderLock(f)
+	if bc.EmbeddedLLM.Loader == nil {
+		t.Fatal("BuilderConfig.EmbeddedLLM.Loader = nil: applyEmbeddedLoader did not " +
+			"inject the production seam, so there is nothing to test")
+	}
+	if bc.EmbeddedLLM.ProviderName != config.EmbeddedLLMProviderName {
+		t.Fatalf("ProviderName = %q, want %q", bc.EmbeddedLLM.ProviderName, config.EmbeddedLLMProviderName)
+	}
+	base := &http.Client{Transport: inner}
+	client := embeddedllm.EnsureLoadedClient(base, base, bc.EmbeddedLLM.Loader,
+		bc.EmbeddedLLM.LoadWaitTimeout, slog.New(slog.DiscardHandler))
+	return client, bc.EmbeddedLLM.Loader
+}
+
+// stageSeamSpawn fakes the spawn and tightens the supervision budgets on an API
+// whose install tree and config are already written, so a load through the
+// production seam becomes resident against the caller's own /v1/models
+// responder. A nil portProbe keeps the persisted port (nothing else is
+// listening on it in a test); pass takenBelow to stage the collision the
+// live-port redirect exists for.
+func stageSeamSpawn(t *testing.T, f *FrontendAPI, portProbe embeddedllm.PortProber) {
+	t.Helper()
+	if portProbe == nil {
+		stubFreePortProbe(t, f)
+	} else {
+		f.embedded.portProbeFn = portProbe
+	}
+	f.embedded.spawnFn = func(context.Context, embeddedllm.LaunchCommand) (embeddedllm.Process, error) {
+		return newFakeEmbeddedProcess(4242), nil
+	}
+	tightenEmbeddedBudgets(t, f)
+}
+
+// TestProductionLoaderSeamCountsARequestInFlightOnTheSupervisor is the
+// regression for the dead-code half of "never unload mid-generation". With a
+// loader that cannot reach the counter, BeginRequest/EndRequest are never
+// called, Server.inFlight stays 0 for the whole life of a generation, the idle
+// path sees nothing to defer for, and an expiry stops llama-server mid-stream —
+// with auto_unload.minutes validated down to 1, any generation longer than the
+// budget is cut off.
+func TestProductionLoaderSeamCountsARequestInFlightOnTheSupervisor(t *testing.T) {
+	f, _, _ := newEmbeddedTestAPI(t)
+	_, port := modelsEndpoint(t)
+	writeEmbeddedInstallTree(t, f.agentDir, embeddedTestManifest(port, 32768))
+	installEmbeddedLLM(t, f, port)
+	stageSeamSpawn(t, f, nil)
+
+	inner := &seamProbeTransport{}
+	client, loader := productionSeamClient(t, f, inner)
+
+	if err := loader.Load(t.Context()); err != nil {
+		t.Fatalf("Load through the production seam: %v", err)
+	}
+	server := supervisorOf(t, f)
+	if got := server.InFlightRequests(); got != 0 {
+		t.Fatalf("in-flight = %d before any request was sent", got)
+	}
+
+	resp := seamGet(t, client, embeddedBaseURL(port)+"/chat/completions")
+	// The body is still open. This is the window an idle expiry must be
+	// deferred out of, and it is the assertion a fake loader cannot make.
+	if got := server.InFlightRequests(); got != 1 {
+		t.Errorf("in-flight = %d while the response body is open, want 1 — the "+
+			"production loader does not reach the supervisor's counter, so an idle "+
+			"expiry during a generation still stops llama-server mid-stream", got)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("closing the response body: %v", err)
+	}
+	if got := server.InFlightRequests(); got != 0 {
+		t.Errorf("in-flight = %d after the body was closed, want 0 — the count "+
+			"leaked, so every later idle expiry would be deferred forever", got)
+	}
+	if inner.requests() != 1 {
+		t.Errorf("the seam sent %d request(s), want 1", inner.requests())
+	}
+}
+
+// TestProductionLoaderSeamRedirectsToTheLivePort is the regression for the
+// other silently-dead control. persistEmbeddedPort deliberately does NOT rebuild
+// the router, because the entry's transport is supposed to redirect to the port
+// the supervisor actually bound; a loader that cannot report a port leaves that
+// promise unkept, and the request — full prompt included — is POSTed to
+// whatever unrelated local process squats the old port, whose answer is then
+// reported as the assistant's reply.
+func TestProductionLoaderSeamRedirectsToTheLivePort(t *testing.T) {
+	f, _, _ := newEmbeddedTestAPI(t)
+	_, livePort := modelsEndpoint(t)
+	// The persisted port is the one below the responder, so the pre-spawn scan
+	// has exactly one collision to walk past and the load lands on livePort.
+	stale := livePort - 1
+	writeEmbeddedInstallTree(t, f.agentDir, embeddedTestManifest(stale, 32768))
+	installEmbeddedLLM(t, f, stale)
+	stageSeamSpawn(t, f, takenBelow(livePort))
+
+	inner := &seamProbeTransport{}
+	client, loader := productionSeamClient(t, f, inner)
+
+	// Before any load the supervisor has bound nothing, so the ref must report
+	// the transport's no-redirect answer rather than the stale preference.
+	if got := loaderPort(t, loader); got != 0 {
+		t.Fatalf("Port() = %d before a load, want 0", got)
+	}
+
+	if err := loader.Load(t.Context()); err != nil {
+		t.Fatalf("Load through the production seam: %v", err)
+	}
+	server := supervisorOf(t, f)
+	if server.Port() != livePort {
+		t.Fatalf("the fixture did not move the port: supervisor = %d, want %d",
+			server.Port(), livePort)
+	}
+	if got := loaderPort(t, loader); got != livePort {
+		t.Errorf("Port() = %d through the production seam, want the live %d", got, livePort)
+	}
+
+	// The router entry this request came from was built BEFORE the move and was
+	// deliberately not rebuilt, so it still names the stale port.
+	staleURL := embeddedBaseURL(stale) + "/chat/completions"
+	resp := seamGet(t, client, staleURL)
+	defer func() { _ = resp.Body.Close() }()
+
+	wantHost := net.JoinHostPort(embeddedllm.LoopbackHost, strconv.Itoa(livePort))
+	if got := inner.lastHost(); got != wantHost {
+		t.Errorf("the request went to %q, want %q — the prompt would be handed to "+
+			"whatever holds the stale port %d", got, wantHost, stale)
+	}
+
+	// A request already aimed at the live port must be left alone.
+	resp2 := seamGet(t, client, embeddedBaseURL(livePort)+"/chat/completions")
+	defer func() { _ = resp2.Body.Close() }()
+	if got := inner.lastHost(); got != wantHost {
+		t.Errorf("an already-correct request was rewritten to %q, want %q", got, wantHost)
+	}
+}
+
+// seamGet issues one GET through the production seam and fails the test on a
+// transport error. It builds the request explicitly rather than calling
+// client.Get because the repo's noctx linter bans the context-free form
+// everywhere, tests included — and a request with no context would also be
+// immune to the test's own cancellation.
+func seamGet(t *testing.T, client *http.Client, url string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, http.NoBody)
+	if err != nil {
+		t.Fatalf("building a request for %s: %v", url, err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("the request through the production seam (%s): %v", url, err)
+	}
+	return resp
+}
+
+// loaderPort reads the optional PortSource capability the way the transport
+// does, so a test fails on the assertion rather than silently skipping.
+func loaderPort(t *testing.T, loader embeddedllm.Loader) int {
+	t.Helper()
+	source, ok := loader.(embeddedllm.PortSource)
+	if !ok {
+		t.Fatalf("%T does not implement embeddedllm.PortSource, so the transport's "+
+			"live-port redirect can never fire in production", loader)
+	}
+	return source.Port()
 }

@@ -2,77 +2,41 @@
 // wrapped in the Model Profiles `VariantSection` (the shared collapsible
 // shape). A fully controlled leaf with ZERO local state — the open/closed flag
 // and every value live in the parent (useEmbeddedLLMTuning). Each numeric knob
-// carries a per-knob Auto affordance: a knob the operator never overrode shows
-// "Auto" beside the effective default, and a set knob gets an Auto button that
-// clears the override back to unset (`reset`), because "unset — the planner
-// decides" is a different value from any explicit number.
+// carries a per-knob Auto affordance (./TuningNumber) and each boolean knob is a
+// TRI-STATE Auto/On/Off control (./TuningTriState), because "unset — the planner
+// decides" is a different value from any explicit one and can resolve to OFF.
+// The recorded plan's own outcome is quoted beside every unset knob, so Auto is
+// never a guess.
 
-import { Button } from '@/components/ui/button'
 import { Combobox, type ComboboxOption } from '@/components/ui/combobox'
 import { VariantSection } from '@/components/settings/ModelProfilesSections'
-import { NumberField, Toggle } from '@/components/settings/ModelProfilesControls'
-import { TUNING_PACKINGS, type EmbeddedLLMTuningKnob, type EmbeddedLLMTuningPatch } from '@/api/embeddedTuning'
-import { TUNING_AUTO, type EmbeddedLLMAdvancedTuningProps } from '@/hooks/useEmbeddedLLMTuning'
+import { TUNING_PACKINGS } from '@/api/embeddedTuning'
+import { TRI_OFF, TRI_ON, TUNING_AUTO, TUNING_RANGES } from '@/lib/embeddedTuningDisplay'
+import { TuningNumber } from './TuningNumber'
+import { TuningTriState } from './TuningTriState'
+import type { EmbeddedLLMAdvancedTuningProps } from '@/hooks/useEmbeddedLLMAdvancedTuning'
 
 const PACKING_OPTIONS: readonly ComboboxOption[] = [
   { value: TUNING_AUTO, label: 'Auto (resolver)' },
   ...TUNING_PACKINGS.map((p) => ({ value: p, label: p })),
 ]
 
-/** The numeric knobs this section edits, spelled as the patch/YAML key. */
-type NumericKnob = Extract<
-  EmbeddedLLMTuningKnob,
-  'fit_target_mib' | 'fit_min_context' | 'parallel' | 'cache_ram_mib' | 'host_reserve_gib'
->
+const FIT_OPTIONS: readonly ComboboxOption[] = [
+  { value: TUNING_AUTO, label: 'Auto (offload rule)' },
+  { value: TRI_ON, label: 'On' },
+  { value: TRI_OFF, label: 'Off' },
+]
 
-function TuningNumber({
-  label,
-  knob,
-  value,
-  auto,
-  min,
-  max,
-  step,
-  disabled,
-  onSet,
-}: {
-  label: string
-  knob: NumericKnob
-  value: number
-  auto: boolean
-  min: number
-  max?: number
-  step?: number
-  disabled: boolean
-  onSet: (patch: EmbeddedLLMTuningPatch) => void
-}) {
-  return (
-    <div className="flex items-end gap-1.5" data-testid={`embedded-llm-tuning-${knob}`}>
-      <NumberField
-        label={label}
-        value={value}
-        min={min}
-        max={max}
-        step={step}
-        disabled={disabled}
-        onChange={(v) => onSet({ [knob]: v } as EmbeddedLLMTuningPatch)}
-      />
-      {auto ? (
-        <span className="pb-1.5 text-xs text-muted-foreground">Auto</span>
-      ) : (
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-6 px-2 text-xs text-muted-foreground"
-          disabled={disabled}
-          aria-label={`${label} back to auto`}
-          onClick={() => onSet({ reset: [knob] })}
-        >
-          Auto
-        </Button>
-      )}
-    </div>
-  )
+const DEVICE_OFFLOAD_OPTIONS: readonly ComboboxOption[] = [
+  { value: TUNING_AUTO, label: 'Auto (memory gate)' },
+  { value: TRI_ON, label: 'On' },
+  { value: TRI_OFF, label: 'Off' },
+]
+
+/** The clause quoting the recorded plan beside an unset knob, or null while no
+ *  plan was recorded. */
+function planNote(prefix: string, quoted: string | null): string | null {
+  return quoted === null ? null : `${prefix} ${quoted}`
 }
 
 export function EmbeddedLLMAdvancedTuning(props: EmbeddedLLMAdvancedTuningProps) {
@@ -84,12 +48,15 @@ export function EmbeddedLLMAdvancedTuning(props: EmbeddedLLMAdvancedTuningProps)
         on the next Load. Host-side knobs trade RAM for speed — see the plan notes in the install
         record.
       </p>
-      <Toggle
-        checked={props.fit}
-        onChange={(fit) => onSet({ fit })}
-        disabled={disabled}
+      <TuningTriState
+        knob="fit"
         label="Fit to device memory"
-        description="Let the runtime size the layer count and the context (--fit). Off computes them from the profile instead."
+        value={props.fitMode}
+        options={FIT_OPTIONS}
+        hint="Let the runtime size the layer count and the context (--fit); Off computes them from the profile instead. Auto leaves the choice to the offload exclusivity rule"
+        planned={planNote('the recorded plan runs -fit', props.fitPlanned)}
+        disabled={disabled}
+        onSet={onSet}
       />
       <div className="grid grid-cols-2 gap-3">
         <TuningNumber
@@ -97,7 +64,8 @@ export function EmbeddedLLMAdvancedTuning(props: EmbeddedLLMAdvancedTuningProps)
           knob="fit_target_mib"
           value={props.fitTargetMiB}
           auto={props.auto.fitTargetMiB}
-          min={0}
+          min={TUNING_RANGES.fit_target_mib.min}
+          max={TUNING_RANGES.fit_target_mib.max}
           disabled={disabled}
           onSet={onSet}
         />
@@ -106,24 +74,31 @@ export function EmbeddedLLMAdvancedTuning(props: EmbeddedLLMAdvancedTuningProps)
           knob="fit_min_context"
           value={props.fitMinContext}
           auto={props.auto.fitMinContext}
-          min={1}
+          min={TUNING_RANGES.fit_min_context.min}
+          max={TUNING_RANGES.fit_min_context.max}
           disabled={disabled}
           onSet={onSet}
         />
       </div>
-      <Toggle
-        checked={props.kvOffload}
-        onChange={(kv_offload) => onSet({ kv_offload })}
-        disabled={disabled}
+      <TuningTriState
+        knob="kv_offload"
         label="KV cache on device"
-        description="Off keeps the KV cache in system RAM (-nkvo), trading device memory for host memory."
-      />
-      <Toggle
-        checked={props.mmprojOffload}
-        onChange={(mmproj_offload) => onSet({ mmproj_offload })}
+        value={props.kvMode}
+        options={DEVICE_OFFLOAD_OPTIONS}
+        hint="Off keeps the KV cache in system RAM (-nkvo), trading device memory for host memory. Auto leaves the choice to the memory gate"
+        planned={planNote('the recorded plan keeps it', props.kvPlanned)}
         disabled={disabled}
+        onSet={onSet}
+      />
+      <TuningTriState
+        knob="mmproj_offload"
         label="Vision projector on device"
-        description="Off moves the projector's worst-case reserve to system RAM."
+        value={props.mmprojMode}
+        options={DEVICE_OFFLOAD_OPTIONS}
+        hint="Off moves the projector's worst-case reserve to system RAM (--no-mmproj-offload). Auto leaves the choice to the memory gate"
+        planned={planNote('the recorded plan keeps it', props.mmprojPlanned)}
+        disabled={disabled}
+        onSet={onSet}
       />
       <div className="flex flex-col gap-1" data-testid="embedded-llm-tuning-packing">
         <label className="text-xs text-muted-foreground">Packing</label>
@@ -142,7 +117,8 @@ export function EmbeddedLLMAdvancedTuning(props: EmbeddedLLMAdvancedTuningProps)
           knob="parallel"
           value={props.parallel}
           auto={props.auto.parallel}
-          min={1}
+          min={TUNING_RANGES.parallel.min}
+          max={TUNING_RANGES.parallel.max}
           disabled={disabled}
           onSet={onSet}
         />
@@ -151,7 +127,8 @@ export function EmbeddedLLMAdvancedTuning(props: EmbeddedLLMAdvancedTuningProps)
           knob="cache_ram_mib"
           value={props.cacheRamMiB}
           auto={props.auto.cacheRamMiB}
-          min={0}
+          min={TUNING_RANGES.cache_ram_mib.min}
+          max={TUNING_RANGES.cache_ram_mib.max}
           disabled={disabled}
           onSet={onSet}
         />
@@ -161,7 +138,8 @@ export function EmbeddedLLMAdvancedTuning(props: EmbeddedLLMAdvancedTuningProps)
         knob="host_reserve_gib"
         value={props.hostReserveGiB}
         auto={props.auto.hostReserveGiB}
-        min={0}
+        min={TUNING_RANGES.host_reserve_gib.min}
+        max={TUNING_RANGES.host_reserve_gib.max}
         step={0.5}
         disabled={disabled}
         onSet={onSet}

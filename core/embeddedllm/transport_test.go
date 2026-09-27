@@ -106,6 +106,8 @@ type fakeLoader struct {
 	mu       sync.Mutex
 	loads    int
 	marks    int
+	begins   int
+	ends     int
 	block    chan struct{}
 	err      error
 	onLoad   func(ctx context.Context) error
@@ -141,6 +143,21 @@ func (l *fakeLoader) MarkActivity() {
 	l.mu.Unlock()
 }
 
+// BeginRequest and EndRequest make the double satisfy the optional
+// RequestTracker capability, so the in-flight bracketing the transport performs
+// around a response body is exercised by every test that uses it.
+func (l *fakeLoader) BeginRequest() {
+	l.mu.Lock()
+	l.begins++
+	l.mu.Unlock()
+}
+
+func (l *fakeLoader) EndRequest() {
+	l.mu.Lock()
+	l.ends++
+	l.mu.Unlock()
+}
+
 func (l *fakeLoader) loadCount() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -148,6 +165,42 @@ func (l *fakeLoader) loadCount() int {
 }
 
 func (l *fakeLoader) markCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.marks
+}
+
+func (l *fakeLoader) beginCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.begins
+}
+
+func (l *fakeLoader) endCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.ends
+}
+
+// untrackedLoader satisfies Loader and nothing else: no PortSource, no
+// RequestTracker. Both capabilities are optional, and this double is what keeps
+// them that way — a transport that required either would fail here.
+type untrackedLoader struct {
+	mu    sync.Mutex
+	marks int
+}
+
+var _ Loader = (*untrackedLoader)(nil)
+
+func (l *untrackedLoader) Load(context.Context) error { return nil }
+
+func (l *untrackedLoader) MarkActivity() {
+	l.mu.Lock()
+	l.marks++
+	l.mu.Unlock()
+}
+
+func (l *untrackedLoader) markCount() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.marks
@@ -495,6 +548,9 @@ func TestActivityIsMarkedWhenTheResponseCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the cold request must succeed: %v", err)
 	}
+	if got := fx.srv.InFlightRequests(); got != 1 {
+		t.Errorf("in-flight requests while the response is open = %d, want 1", got)
+	}
 
 	// The load stamped activity when it finished (start + the 10-minute load).
 	wantLoadStamp := start.Add(10 * time.Minute)
@@ -513,6 +569,9 @@ func TestActivityIsMarkedWhenTheResponseCompletes(t *testing.T) {
 	if left, armed := fx.srv.IdleRemaining(); !armed || left != 35*time.Minute {
 		t.Errorf("idle budget mid-response = %v (armed %v), want 35m0s left", left, armed)
 	}
+	if got := fx.srv.InFlightRequests(); got != 1 {
+		t.Errorf("in-flight requests mid-response = %d, want 1", got)
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -523,6 +582,9 @@ func TestActivityIsMarkedWhenTheResponseCompletes(t *testing.T) {
 	}
 	if len(body) == 0 {
 		t.Error("the response carried no body")
+	}
+	if got := fx.srv.InFlightRequests(); got != 0 {
+		t.Errorf("in-flight requests after the response completed = %d, want 0", got)
 	}
 
 	// Completing the response restarts the budget from now.
@@ -576,12 +638,138 @@ func TestActivityBodyMarksExactlyOnce(t *testing.T) {
 			if got := loader.markCount(); got != 0 {
 				t.Fatalf("marks before the response completed = %d, want 0", got)
 			}
+			// The in-flight count brackets the SAME window: it is what keeps a
+			// generation longer than the idle budget from being killed mid-answer.
+			if got := loader.beginCount(); got != 1 {
+				t.Fatalf("BeginRequest calls = %d, want exactly 1 before the body is read", got)
+			}
+			if got := loader.endCount(); got != 0 {
+				t.Fatalf("EndRequest calls = %d, want 0 while the body is still open", got)
+			}
 			tc.use(t, resp)
 			if got := loader.markCount(); got != 1 {
 				t.Errorf("marks after the response completed = %d, want exactly 1", got)
 			}
+			if got := loader.endCount(); got != 1 {
+				t.Errorf("EndRequest calls after the response completed = %d, want exactly 1 — "+
+					"a second release would take another request's slot and let the idle path "+
+					"unload a model still in use", got)
+			}
 		})
 	}
+}
+
+// A request that fails before it produces a body must not leave the in-flight
+// count behind. A leaked count is not the permanent residency it once was —
+// idle.go bounds one deferral episode by wall time — but it still holds the model
+// resident for a FULL EXTRA IDLE BUDGET past the operator's own, and every
+// request that leaks a count pays that again. And a loader that does not
+// implement the optional capability must still work — the count is an addition,
+// not a requirement.
+func TestInFlightCountIsReleasedOnAFailedRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	loader := &fakeLoader{}
+	stub := &stubTransport{err: errors.New("the socket is gone")}
+	tr := NewEnsureLoadedTransport(stub, loader, time.Minute, nil)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		"http://127.0.0.1:9/v1/chat/completions", http.NoBody)
+	if err != nil {
+		t.Fatalf("building the request: %v", err)
+	}
+	resp, err := tr.RoundTrip(req)
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("RoundTrip succeeded against a failing transport")
+	}
+	if got := loader.beginCount(); got != 1 {
+		t.Errorf("BeginRequest calls = %d, want 1", got)
+	}
+	if got := loader.endCount(); got != 1 {
+		t.Errorf("EndRequest calls after a failed request = %d, want 1", got)
+	}
+	if got := loader.markCount(); got != 0 {
+		t.Errorf("marks after a failed request = %d, want 0 (nothing was served)", got)
+	}
+}
+
+// A loader that only satisfies Loader (no request tracking) must be tolerated:
+// the capability is optional, exactly like PortSource, so an existing double or
+// an embedding that does not track requests keeps the pre-existing behaviour.
+func TestLoaderWithoutRequestTrackingIsTolerated(t *testing.T) {
+	t.Parallel()
+
+	loader := &untrackedLoader{}
+	stub := &stubTransport{body: `{"ok":true}`}
+	tr := NewEnsureLoadedTransport(stub, loader, time.Minute, nil)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
+		"http://127.0.0.1:9/v1/models", http.NoBody)
+	if err != nil {
+		t.Fatalf("building the request: %v", err)
+	}
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("reading the response: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("closing the response: %v", err)
+	}
+	if got := loader.markCount(); got != 1 {
+		t.Errorf("marks = %d, want 1 — activity is Loader's own contract, not the tracker's", got)
+	}
+}
+
+// TestARequestThatOutlivesTheIdleBudgetIsNotKilled is the end-to-end pin of the
+// mid-flight rule: the idle budget expires WHILE a response is still open, and
+// the server must survive it. Stamping activity on completion cannot express
+// this — the completion is still in the future when the timer fires — so the
+// in-flight count is what defers the unload. Once the response does complete, the
+// deferral ends with it and the model goes on the next expiry.
+func TestARequestThatOutlivesTheIdleBudgetIsNotKilled(t *testing.T) {
+	fx := newFixture(t, fixtureOptions{
+		autoUnload: AutoUnload{Enabled: true, Idle: 40 * time.Millisecond},
+	})
+	client := EnsureLoadedClient(nil, &http.Client{Timeout: 30 * time.Second}, fx.srv, 0, nil)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		providerBaseURL(fx)+"/models", http.NoBody)
+	if err != nil {
+		t.Fatalf("building the request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("the request must succeed: %v", err)
+	}
+	proc := fx.spawner.lastProcess()
+
+	// Several times the whole budget, with the response still open — the shape a
+	// streamed generation longer than an aggressive `auto_unload.minutes` has.
+	time.Sleep(250 * time.Millisecond)
+	if !proc.alive() {
+		t.Error("the model was stopped mid-generation, killing the answer it was serving")
+	}
+	if got := fx.srv.State(); got != StateLoaded {
+		t.Errorf("state = %s, want %s while a request is in flight", got, StateLoaded)
+	}
+	if got := fx.srv.InFlightRequests(); got != 1 {
+		t.Errorf("in-flight requests = %d, want 1 while the response is open", got)
+	}
+
+	// Completing the response releases the count and stamps a fresh budget; the
+	// expiry after that has nothing left to defer for, so the model does go.
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("reading the response: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("closing the response: %v", err)
+	}
+	waitFor(t, 5*time.Second, func() bool { return !proc.alive() },
+		"the idle unload to run once the in-flight request completed")
 }
 
 // ---------------------------------------------------------------------------
@@ -589,11 +777,26 @@ func TestActivityBodyMarksExactlyOnce(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // Exceeding the transport's own wait budget must be an explicit, typed error —
-// and the request must not be sent to a server that is not listening.
+// the request must not be sent to a server that is not listening — and it must
+// NOT touch the load: the budget bounds the waiting, so the in-flight load runs
+// on to completion (bounded by the supervisor's own ready budget) and a following
+// request joins it instead of paying for a second cold start.
 func TestLoadWaitBudgetExpiryIsAnExplicitError(t *testing.T) {
-	// A load that never finishes on its own: like waitReady, it waits on the
-	// context the transport handed it, so only the budget can end it.
-	loader := &fakeLoader{block: make(chan struct{})}
+	// A load that never finishes on its own. It blocks on `block` and reports
+	// through loadDone whether anything ever cancelled it, which is the property
+	// under test: the transport's wait budget must not reach it.
+	release := make(chan struct{})
+	loadDone := make(chan error, 8)
+	loader := &fakeLoader{onLoad: func(ctx context.Context) error {
+		select {
+		case <-release:
+			loadDone <- nil
+			return nil
+		case <-ctx.Done():
+			loadDone <- ctx.Err()
+			return ctx.Err()
+		}
+	}}
 	stub := &stubTransport{}
 	tr := NewEnsureLoadedTransport(stub, loader, 25*time.Millisecond, nil)
 
@@ -625,14 +828,52 @@ func TestLoadWaitBudgetExpiryIsAnExplicitError(t *testing.T) {
 	if elapsed > 5*time.Second {
 		t.Errorf("the wait took %v — the budget must bound it, not hang", elapsed)
 	}
-	// The context the loader saw is the transport's own bounded one, never the
-	// caller's: a cold load survives the request that triggered it.
+	// The context the loader saw is the transport's own detached one, never the
+	// caller's, and the wait budget must NOT have cancelled it: a cancelled Load
+	// discards the half-loaded weights, so the next request would start from zero
+	// and the model would never become resident.
 	loadCtx := loader.capturedCtx()
 	if loadCtx == nil {
 		t.Fatal("the loader captured no context")
 	}
-	if loadCtx.Err() == nil {
-		t.Error("the load context was still live — the wait budget must be what ended it")
+	if ctxErr := loadCtx.Err(); ctxErr != nil {
+		t.Errorf("the load context was cancelled (%v) — the wait budget must stop the WAIT, not the load", ctxErr)
+	}
+
+	// A SECOND request joins the still-running load rather than starting another,
+	// and completes with it — the property the detachment exists for.
+	second := make(chan error, 1)
+	go func() {
+		req2, reqErr := http.NewRequestWithContext(context.Background(), http.MethodGet,
+			"http://127.0.0.1:9/v1/models", http.NoBody)
+		if reqErr != nil {
+			second <- reqErr
+			return
+		}
+		resp2, rtErr := tr.RoundTrip(req2)
+		if rtErr != nil {
+			second <- rtErr
+			return
+		}
+		_, _ = io.Copy(io.Discard, resp2.Body)
+		_ = resp2.Body.Close()
+		second <- nil
+	}()
+	waitFor(t, 5*time.Second, func() bool { return tr.waiters.Load() == 1 },
+		"the second request to join the in-flight load")
+	close(release)
+
+	if err := <-second; err != nil {
+		t.Errorf("the request that joined the load failed: %v", err)
+	}
+	if err := <-loadDone; err != nil {
+		t.Errorf("the load was cancelled after the wait budget expired: %v", err)
+	}
+	if got := loader.loadCount(); got != 1 {
+		t.Errorf("Load calls = %d, want 1 (an expired wait budget must not waste the load)", got)
+	}
+	if got := stub.callCount(); got != 1 {
+		t.Errorf("requests reaching the wrapped transport = %d, want 1", got)
 	}
 }
 

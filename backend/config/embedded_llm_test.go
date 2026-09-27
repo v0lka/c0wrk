@@ -1,11 +1,14 @@
 package config
 
 import (
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/v0lka/c0wrk/core/embeddedllm"
 	"github.com/v0lka/sp4rk/llm"
 	"gopkg.in/yaml.v3"
 )
@@ -650,5 +653,120 @@ llm:
 	}
 	if _, ok := result.Config.LLM.OpenAICompatible[EmbeddedLLMProviderName]; ok {
 		t.Errorf("a provider record with no install behind it survived the load: %+v", result.Config.LLM.OpenAICompatible)
+	}
+}
+
+// TestEmbeddedLLMAutoUnloadMinutesAreBoundedOnBothSides pins the idle budget's
+// range. The floor is old; the CEILING is the fix, and it is an overflow guard
+// rather than a tuning opinion: `time.Duration(minutes) * time.Minute` wraps
+// above 153,722,867 minutes, and the wrapped result can be a short POSITIVE
+// budget — seconds, or at the residues of the 2^11 divisor single-digit
+// microseconds — so an operator's "effectively never" silently becomes "unload
+// immediately", with the UI still echoing the number they typed. The bound is
+// core's own (embeddedllm.MaxAutoUnloadMinutes), so config and the timer cannot
+// disagree.
+func TestEmbeddedLLMAutoUnloadMinutesAreBoundedOnBothSides(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		minutes int
+		wantErr bool
+	}{
+		{"the default", EmbeddedLLMDefaultAutoUnloadMinutes, false},
+		{"one minute", 1, false},
+		{"a year of residency", embeddedllm.MaxAutoUnloadMinutes, false},
+		{"zero", 0, true},
+		{"negative", -30, true},
+		{"one past the ceiling", embeddedllm.MaxAutoUnloadMinutes + 1, true},
+		{"the first value whose minutes→nanoseconds multiply wraps", 153722868, true},
+		{"the 2-microsecond residue", 3749353613647811, true},
+		{"the largest int", math.MaxInt, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := minimalValidConfig()
+			cfg.EmbeddedLLM.AutoUnload.Minutes = embeddedIntPtr(tc.minutes)
+
+			err := validate(cfg)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("validate() rejected %d minutes: %v", tc.minutes, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validate() accepted auto_unload.minutes = %d", tc.minutes)
+			}
+			// The message must name the key, the value and the accepted range —
+			// an operator who cannot see the range cannot fix a hand edit.
+			wantKey := fmt.Sprintf("embedded_llm.auto_unload.minutes %d is not valid", tc.minutes)
+			if !strings.Contains(err.Error(), wantKey) {
+				t.Errorf("error = %q, want it to contain %q", err, wantKey)
+			}
+			wantRange := fmt.Sprintf("must be within 1-%d", embeddedllm.MaxAutoUnloadMinutes)
+			if !strings.Contains(err.Error(), wantRange) {
+				t.Errorf("error = %q, want it to state the range %q", err, wantRange)
+			}
+		})
+	}
+}
+
+// TestModelContextWindowOverrideIsRangeChecked covers the llm.models
+// context_window ceiling. The override is a TIER-1 value that shadows the
+// tier-1.5 lazy probe, so a poisoned one is never corrected by asking the model
+// again — and an absurd window makes every prompt "fit", silently disabling
+// context compaction. Two writers feed it (an operator hand edit and the embedded
+// model's /props readback), which is why the bound lives here rather than in
+// either writer.
+func TestModelContextWindowOverrideIsRangeChecked(t *testing.T) {
+	const model = "claude-3-haiku"
+	for _, tc := range []struct {
+		name    string
+		window  int
+		wantErr bool
+	}{
+		{"unset inherits the built-in metadata", 0, false},
+		{"a common remote window", 200000, false},
+		{"a 2M-context model", 2_000_000, false},
+		{"the ceiling itself", MaxModelContextWindow, false},
+		{"one past the ceiling", MaxModelContextWindow + 1, true},
+		{"negative", -1, true},
+		{"a wrapped int64 product", math.MinInt64, true},
+		{"the largest int", math.MaxInt, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := minimalValidConfig()
+			cfg.LLM.Models = map[string]ModelOverride{model: {ContextWindow: tc.window}}
+
+			err := validate(cfg)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("validate() rejected context_window = %d: %v", tc.window, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validate() accepted context_window = %d", tc.window)
+			}
+			if !strings.Contains(err.Error(), "context_window") {
+				t.Errorf("error = %q, want it to name the key", err)
+			}
+			wantRange := fmt.Sprintf("must be within 1-%d tokens", MaxModelContextWindow)
+			if !strings.Contains(err.Error(), wantRange) {
+				t.Errorf("error = %q, want it to state the range %q", err, wantRange)
+			}
+		})
+	}
+}
+
+// TestModelContextWindowCeilingAdmitsEveryRealModel keeps the ceiling honest
+// about its own claim: it is an absurdity guard, not a policy, so it must sit far
+// above the largest context any real model serves.
+func TestModelContextWindowCeilingAdmitsEveryRealModel(t *testing.T) {
+	if MaxModelContextWindow != 1<<24 {
+		t.Errorf("MaxModelContextWindow = %d, want the documented 1<<24", MaxModelContextWindow)
+	}
+	const largestRealContext = 2_000_000 // a 2M-context remote model
+	if MaxModelContextWindow < 8*largestRealContext {
+		t.Errorf("MaxModelContextWindow = %d, want at least 8x the largest real context (%d) "+
+			"so it can never refuse a legitimate configuration", MaxModelContextWindow, largestRealContext)
 	}
 }

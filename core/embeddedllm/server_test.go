@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"reflect"
@@ -658,7 +659,7 @@ func newFixture(t *testing.T, opts fixtureOptions) *fixture {
 		if err != nil {
 			t.Fatalf("ManifestPath: %v", err)
 		}
-		if err := writeManifest(path, manifest); err != nil {
+		if err := writeManifest(path, manifest, nil); err != nil {
 			t.Fatalf("writeManifest: %v", err)
 		}
 	}
@@ -753,7 +754,7 @@ func installedTree(t *testing.T, layout Layout, opts treeOptions) Manifest {
 	if err != nil {
 		t.Fatalf("ManifestPath: %v", err)
 	}
-	if err := writeManifest(path, manifest); err != nil {
+	if err := writeManifest(path, manifest, nil); err != nil {
 		t.Fatalf("writeManifest: %v", err)
 	}
 	return manifest
@@ -765,6 +766,33 @@ func waitForState(t *testing.T, srv *Server, want State) {
 	t.Helper()
 	waitFor(t, 5*time.Second, func() bool { return srv.State() == want },
 		fmt.Sprintf("state %s", want))
+}
+
+// waitForEventState waits for the RECORDER to hold the transition to want as its
+// latest event, and returns that event.
+//
+// Synchronising on Server.State() is NOT the same as synchronising on the event,
+// and reading last() after a state wait is the bug this helper exists for:
+// transition writes the new state under s.mu and calls s.emit AFTER unlocking —
+// deliberately, so an OnState handler may read the state it is being told about —
+// so a state wait can return while the emit is still in flight. last() then names
+// the PREVIOUS transition, and on a recorder that is still empty it returns the
+// zero StateEvent, which reads as an empty message and turns a synchronisation
+// miss into a misleading "the failure carried no diagnostic".
+//
+// Emitting inside the lock is not the fix: the backend's onEmbeddedLLMState
+// re-enters the supervisor, which would deadlock on s.mu.
+func waitForEventState(t *testing.T, rec *eventRecorder, want State) StateEvent {
+	t.Helper()
+	var (
+		last StateEvent
+		ok   bool
+	)
+	waitFor(t, 5*time.Second, func() bool {
+		last, ok = rec.last()
+		return ok && last.State == want
+	}, fmt.Sprintf("an emitted %s event", want))
+	return last
 }
 
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool, what string) {
@@ -915,10 +943,7 @@ func TestLoadFailsFastWhenTheProcessDiesWhileLoading(t *testing.T) {
 	if got := fx.srv.State(); got != StateError {
 		t.Errorf("state = %s, want %s", got, StateError)
 	}
-	event, ok := fx.events.last()
-	if !ok || event.State != StateError {
-		t.Fatalf("last event = %+v, want an error transition", event)
-	}
+	event := waitForEventState(t, fx.events, StateError)
 	if !strings.Contains(event.Message, "ggml_cuda_init") {
 		t.Errorf("the error carries no server output:\n%s", event.Message)
 	}
@@ -1108,7 +1133,7 @@ func TestLoadReportsASpawnFailure(t *testing.T) {
 	if got := fx.srv.State(); got != StateError {
 		t.Errorf("state = %s, want %s", got, StateError)
 	}
-	event, _ := fx.events.last()
+	event := waitForEventState(t, fx.events, StateError)
 	if !strings.Contains(event.Message, "permission denied") {
 		t.Errorf("the event message lost the cause: %q", event.Message)
 	}
@@ -1154,7 +1179,9 @@ func TestUnexpectedCleanExitIsStillAnError(t *testing.T) {
 	proc.exit(nil)
 
 	waitForState(t, fx.srv, StateError)
-	event, _ := fx.events.last()
+	// The recorder is waited on separately: transition emits AFTER it unlocks, so
+	// the state above can be observable before this event is recorded.
+	event := waitForEventState(t, fx.events, StateError)
 	if !strings.Contains(event.Message, "exited with status 0") {
 		t.Errorf("a clean unexpected exit is not explained: %q", event.Message)
 	}
@@ -1303,12 +1330,14 @@ func TestProcessDeathTransitionsToErrorAndEmits(t *testing.T) {
 	if got := fx.srv.State(); got == StateLoaded {
 		t.Fatal("a dead process is still reported as loaded")
 	}
+	// Synchronise on the RECORDER before counting: transition publishes the state
+	// under s.mu and emits after unlocking, so a state wait can return while the
+	// emit is still in flight (see waitForEventState). Counting here rather than
+	// above keeps the "a NEW error event, not a re-emit of an old one" check
+	// without racing the emit.
+	event := waitForEventState(t, fx.events, StateError)
 	if fx.events.count(StateError) <= before {
-		t.Errorf("no error event was emitted: %v", fx.events.states())
-	}
-	event, _ := fx.events.last()
-	if event.State != StateError {
-		t.Errorf("last event state = %s, want %s", event.State, StateError)
+		t.Errorf("the crash produced no NEW error event: %v", fx.events.states())
 	}
 	if event.Port != fx.endpoint.port {
 		t.Errorf("event port = %d, want %d", event.Port, fx.endpoint.port)
@@ -1372,7 +1401,7 @@ func TestLoadDiscardsALeftoverProcessBeforeSpawning(t *testing.T) {
 	// Server still owns.
 	fx.srv.mu.Lock()
 	fx.srv.state = StateError
-	fx.srv.message = "llama-server did not exit within 15s of being killed"
+	fx.srv.message = "llama-server did not exit within 5s of being killed"
 	fx.srv.mu.Unlock()
 	fx.events.reset()
 
@@ -1442,6 +1471,170 @@ func TestUnloadReportsAStopThatDidNotTake(t *testing.T) {
 	}
 	if got := fx.spawner.spawnCount(); got != 1 {
 		t.Errorf("%d processes were spawned, want 1", got)
+	}
+}
+
+// TestForceUnloadReportsAStopThatDidNotTake is the force path's counterpart to
+// TestUnloadReportsAStopThatDidNotTake, and it pins the same invariant on the
+// path that detaches the handle FIRST: forceUnload calls takeRun up front, so a
+// terminate that does not take has to put the handle back. A live child with no
+// handle is an orphan the app can never stop again — supervise compares s.run
+// against its own run and reports nothing, a later Unload finds nothing and
+// claims SUCCESS while the process keeps running (surviving app exit with its
+// gigabytes and its loopback port), and the next Load spawns a SECOND
+// multi-gigabyte server on a machine whose memory gate was priced for one.
+//
+// The stop that does not take is the wedged native child: it survives the
+// graceful signal AND the kill, which is also what makes a cold load hold the
+// gate long enough for the force path to run at all.
+func TestForceUnloadReportsAStopThatDidNotTake(t *testing.T) {
+	t.Parallel()
+
+	fx := newFixture(t, fixtureOptions{
+		// The load never becomes ready, so it holds the gate for its whole ready
+		// budget — the cold load the force path exists for.
+		neverReady:   true,
+		readyTimeout: time.Second,
+		readyDelay:   5 * time.Millisecond,
+		stopTimeout:  20 * time.Millisecond,
+	})
+	fx.srv.killWaitFor = 30 * time.Millisecond
+	fx.spawner.configure = func(proc *fakeProcess, _ LaunchCommand) {
+		proc.ignoreSignals = true
+		proc.unkillable = true
+	}
+
+	loadErr := make(chan error, 1)
+	go func() { loadErr <- fx.srv.Load(context.Background()) }()
+	waitFor(t, 5*time.Second, func() bool { return fx.spawner.spawnCount() == 1 },
+		"the in-flight load to spawn its process")
+	live := fx.spawner.lastProcess()
+	if live == nil {
+		t.Fatal("no process was spawned")
+	}
+
+	// Shutdown's shape: a budget that expires while the load holds the gate, so
+	// the stop takes the force path — and then the stop does not take.
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	err := fx.srv.Stop(ctx)
+	if err == nil {
+		t.Fatal("the force stop reported success for a process that is still running")
+	}
+	if !live.alive() {
+		t.Error("the double was supposed to survive both the signal and the kill")
+	}
+	if got := fx.srv.State(); got != StateError {
+		t.Errorf("state = %s, want %s", got, StateError)
+	}
+	if !strings.Contains(fx.srv.Status().Message, "did not exit") {
+		t.Errorf("the status message is not actionable: %q", fx.srv.Status().Message)
+	}
+	// The handle SURVIVED the failed stop, so the live child is still tracked and
+	// still has a pid to report.
+	if got := fx.srv.Status().Pid; got != live.pid {
+		t.Errorf("Status().Pid = %d, want %d: the force path dropped the handle of a "+
+			"process that is still running", got, live.pid)
+	}
+
+	// The interrupted load reports its own failure and releases the gate.
+	select {
+	case <-loadErr:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the interrupted Load never returned")
+	}
+
+	// A retry targets the SAME process instead of stacking a second one beside it.
+	live.setUnkillable(false)
+	if err := fx.srv.Unload(context.Background()); err != nil {
+		t.Errorf("the retry once the process became killable: %v", err)
+	}
+	if live.alive() {
+		t.Error("the retry left the process running")
+	}
+	if got := fx.srv.State(); got != StateInstalled {
+		t.Errorf("state = %s, want %s after a successful retry", got, StateInstalled)
+	}
+	if got := fx.spawner.spawnCount(); got != 1 {
+		t.Errorf("%d processes were spawned, want 1: the retry stacked a second server "+
+			"beside the live one", got)
+	}
+	if got := fx.srv.Status().Pid; got != 0 {
+		t.Errorf("Status().Pid = %d after the successful retry, want 0", got)
+	}
+}
+
+// TestALateGateAcquisitionStillGetsAFullGracefulWindow pins the other half of the
+// documented stop contract: the caller's budget bounds the GATE WAIT and nothing
+// else. A cold load can hold the gate until moments before that budget expires,
+// and acquireGate then SUCCEEDS — so the force path (which arms its own detached
+// budget) never runs. terminate's `case <-ctx.Done()` sits INSIDE the graceful
+// window and falls straight through to Kill, so handing it the caller's own
+// nearly-spent context silently shortens the window and SIGKILLs a llama-server
+// that was about to exit on its own.
+func TestALateGateAcquisitionStillGetsAFullGracefulWindow(t *testing.T) {
+	t.Parallel()
+
+	const (
+		gateHold     = 250 * time.Millisecond
+		callerBudget = 1250 * time.Millisecond
+		graceful     = 1500 * time.Millisecond
+	)
+	fx := newFixture(t, fixtureOptions{stopTimeout: graceful})
+	fx.srv.killWaitFor = 50 * time.Millisecond
+	// The child ignores the graceful signal, so the kill is what stops it — and
+	// WHEN that kill happens is exactly what this test measures.
+	fx.spawner.configure = func(proc *fakeProcess, _ LaunchCommand) {
+		proc.ignoreSignals = true
+	}
+	if err := fx.srv.Load(context.Background()); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	proc := fx.spawner.lastProcess()
+
+	// A cold load's shape: the gate is held while the caller's budget burns, and
+	// is released with ~1 s of it left — comfortably less than the graceful
+	// window the stop is owed.
+	release, err := fx.srv.acquireGate(context.Background())
+	if err != nil {
+		t.Fatalf("acquireGate: %v", err)
+	}
+	go func() {
+		time.Sleep(gateHold)
+		release()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), callerBudget)
+	defer cancel()
+	started := time.Now()
+	if err := fx.srv.Unload(ctx); err != nil {
+		t.Fatalf("Unload with a budget mostly spent behind the gate: %v", err)
+	}
+	elapsed := time.Since(started)
+
+	logs := fx.logs.String()
+	if strings.Contains(logs, "without the single-instance gate") {
+		t.Fatalf("the gate wait overran the caller's budget, so the force path ran and "+
+			"this test measured the wrong thing: %q", logs)
+	}
+	if strings.Contains(logs, "the graceful stop was interrupted") {
+		t.Errorf("the caller's leftover budget truncated the graceful window: %q", logs)
+	}
+	if want := gateHold + graceful - 100*time.Millisecond; elapsed < want {
+		t.Errorf("the stop finished after %s, want at least %s — the full graceful "+
+			"window after the gate wait", elapsed, want)
+	}
+	if proc.alive() {
+		t.Error("the process survived the unload")
+	}
+	if got := fx.srv.State(); got != StateInstalled {
+		t.Errorf("state = %s, want %s", got, StateInstalled)
+	}
+	if got := len(proc.signalLog()); got == 0 {
+		t.Error("the process was never asked to stop gracefully")
+	}
+	if got := proc.killCount(); got != 1 {
+		t.Errorf("the process was killed %d time(s), want exactly 1, after the full window", got)
 	}
 }
 
@@ -2352,9 +2545,15 @@ func TestLaunchSpecRejectsUnmodelledKVTypes(t *testing.T) {
 	}
 }
 
-// TestLaunchSpecRejectsUnusableBudgets covers the remaining numeric gates: one
-// slot at minimum, the runtime's own no-limit spelling as the cache floor, and a
-// non-negative fit margin.
+// TestLaunchSpecRejectsUnusableBudgets covers the remaining numeric gates, on
+// BOTH ends: one slot at minimum and MaxTuningParallel at most, the runtime's own
+// no-limit spelling as the cache floor and MaxTuningMiB as its ceiling, a fit
+// margin that is neither negative nor above the same ceiling, and an image-token
+// cap that is neither negative nor above the model's own training context. The
+// ceilings are limits.go's overflow and absurdity guards — plus maxTrainingContext
+// for the two context-derived fields — enforced here as well as in backend/config,
+// because a bound at only one of the two layers is a bound a hand-edited
+// config.yaml walks around.
 func TestLaunchSpecRejectsUnusableBudgets(t *testing.T) {
 	t.Parallel()
 
@@ -2372,6 +2571,17 @@ func TestLaunchSpecRejectsUnusableBudgets(t *testing.T) {
 		"-sm injected":       func(s *LaunchSpec) { s.SplitMode = SplitMode("layer --agent") },
 		"-ngl negative":      func(s *LaunchSpec) { s.Layers = LayerCount(-1) },
 		"--image-max-tokens": func(s *LaunchSpec) { s.ImageMaxTokens = -1 },
+		// The ceilings: limits.go's overflow and absurdity guards, enforced here as
+		// well as in backend/config so a hand-edited config.yaml cannot walk around
+		// them on its way to argv.
+		"-np above the ceiling":         func(s *LaunchSpec) { s.Parallel = MaxTuningParallel + 1 },
+		"--cache-ram above the ceiling": func(s *LaunchSpec) { s.CacheRAMMiB = intPtr(MaxTuningMiB + 1) },
+		"-fitt above the ceiling":       func(s *LaunchSpec) { s.FitTargetMiB = MaxTuningMiB + 1 },
+		"-ngl above the ceiling":        func(s *LaunchSpec) { s.Layers = LayerCount(MaxTuningLayers + 1) },
+		// The image-token cap is bounded by the model's own training context, the
+		// same figure -c and -fitc are: Args renders it verbatim, so an
+		// unbounded value would reach argv unchecked.
+		"--image-max-tokens above the ceiling": func(s *LaunchSpec) { s.ImageMaxTokens = maxTrainingContext + 1 },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -2392,6 +2602,16 @@ func TestLaunchSpecRejectsUnusableBudgets(t *testing.T) {
 		"--cache-ram omitted":  func(s *LaunchSpec) { s.CacheRAMMiB = nil },
 		"-sm none":             func(s *LaunchSpec) { s.SplitMode = SplitModeNone },
 		"-sm tensor":           func(s *LaunchSpec) { s.SplitMode = SplitModeTensor },
+		// A ceiling is an absurdity guard, not a tuning opinion: the value AT it is
+		// still accepted, so rejecting one can never refuse a legitimate launch.
+		"-np at the ceiling":         func(s *LaunchSpec) { s.Parallel = MaxTuningParallel },
+		"--cache-ram at the ceiling": func(s *LaunchSpec) { s.CacheRAMMiB = intPtr(MaxTuningMiB) },
+		"-fitt at the ceiling":       func(s *LaunchSpec) { s.FitTargetMiB = MaxTuningMiB },
+		"-ngl at the ceiling":        func(s *LaunchSpec) { s.Layers = LayerCount(MaxTuningLayers) },
+		// The value AT the ceiling is accepted, and so is the uncapped zero that
+		// omits the flag.
+		"--image-max-tokens at the ceiling": func(s *LaunchSpec) { s.ImageMaxTokens = maxTrainingContext },
+		"--image-max-tokens uncapped":       func(s *LaunchSpec) { s.ImageMaxTokens = ImageMaxTokensUncapped },
 	}
 	for name, mutate := range accept {
 		t.Run(name, func(t *testing.T) {
@@ -2402,6 +2622,22 @@ func TestLaunchSpecRejectsUnusableBudgets(t *testing.T) {
 				t.Errorf("Validate = %v, want it accepted", err)
 			}
 		})
+	}
+
+	// The ceiling must never refuse a value the resolver actually derives:
+	// imageMaxTokensFor yields either the uncapped zero (which omits the flag) or
+	// the vision cap, both far below the model's training context, so no
+	// legitimate launch shape can land on this gate.
+	for _, backend := range []Backend{
+		BackendCPU, BackendMetal, BackendVulkan, BackendROCm,
+		BackendCUDA124, BackendCUDA128, BackendCUDA133,
+	} {
+		derived := base
+		derived.ImageMaxTokens = imageMaxTokensFor(backend)
+		if err := derived.Validate(); err != nil {
+			t.Errorf("%s: imageMaxTokensFor derived %d and Validate refused it: %v",
+				backend, derived.ImageMaxTokens, err)
+		}
 	}
 
 	// A disabled prompt cache is passed through verbatim, not dropped: 0 is a
@@ -3271,6 +3507,385 @@ func TestStopIsTheInstallerSeam(t *testing.T) {
 	}
 }
 
+// TestStopDuringAColdLoadTerminatesTheProcess is the orphan pin. Quitting while a
+// cold load holds the single-instance gate must still take the child down: the
+// spawned process is deliberately detached from every caller context
+// (spawnOSServer), nothing persisted identifies it (the manifest carries no pid),
+// and the next launch's port scan walks AROUND a listener it finds rather than
+// adopting it — so a Stop that returned "context deadline exceeded" would leave
+// llama-server holding its gigabytes of RAM and VRAM until a manual kill or a
+// reboot, and repeated quit-during-load cycles would accumulate them.
+//
+// Both exported teardowns are covered: shutdown calls Stop, and the Remove RPC
+// and the Unload action call Unload.
+func TestStopDuringAColdLoadTerminatesTheProcess(t *testing.T) {
+	t.Parallel()
+
+	for name, teardown := range map[string]func(*Server, context.Context) error{
+		"Stop":   (*Server).Stop,
+		"Unload": (*Server).Unload,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fx := newFixture(t, fixtureOptions{
+				// The load never completes on its own, so it holds the gate for
+				// the whole ready budget — the shape of a multi-gigabyte cold
+				// weight load.
+				neverReady:   true,
+				readyTimeout: time.Minute,
+				readyDelay:   5 * time.Millisecond,
+				stopTimeout:  50 * time.Millisecond,
+			})
+			loadErr := make(chan error, 1)
+			go func() { loadErr <- fx.srv.Load(context.Background()) }()
+
+			waitFor(t, 5*time.Second, func() bool { return fx.spawner.spawnCount() == 1 },
+				"the in-flight load to spawn its process")
+			proc := fx.spawner.lastProcess()
+			if proc == nil {
+				t.Fatal("no process was spawned")
+			}
+
+			// Shutdown's shape: a budget an order of magnitude shorter than the
+			// ready timeout of the load that holds the gate.
+			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			defer cancel()
+			if err := teardown(fx.srv, ctx); err != nil {
+				t.Errorf("%s while a cold load held the gate = %v, want the process stopped", name, err)
+			}
+			if proc.alive() {
+				t.Errorf("the child outlived a %s whose budget expired behind the gate", name)
+			}
+
+			// The interrupted load reports its own failure rather than hanging
+			// for the rest of its ready budget.
+			select {
+			case err := <-loadErr:
+				if err == nil {
+					t.Error("the interrupted Load reported success")
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the interrupted Load never returned")
+			}
+		})
+	}
+}
+
+// TestForceUnloadWithoutAProcessReportsTheGateTimeout keeps the force path from
+// inventing a success: when the gate is held by a Load that has not spawned yet
+// (it is still reading the manifest or scanning for a port) there is no process to
+// kill, and the caller's timeout is the truth.
+func TestForceUnloadWithoutAProcessReportsTheGateTimeout(t *testing.T) {
+	t.Parallel()
+
+	fx := newFixture(t, fixtureOptions{})
+	err := fx.srv.forceUnload(context.Background(), context.DeadlineExceeded)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("forceUnload with no live process = %v, want the gate timeout", err)
+	}
+	if n := fx.spawner.spawnCount(); n != 0 {
+		t.Errorf("forceUnload spawned %d process(es)", n)
+	}
+}
+
+// TestForceUnloadDuringAnInFlightLoadEndsAtTheLoadsOwnDiagnosis pins the
+// ordering guarantee forceUnload's doc makes. Both sides wake on the same
+// close(run.died) and then transition independently under s.mu, so the force
+// path's own success transition could land second and erase the interrupted
+// load's diagnosis — reporting a load that WAS interrupted as a clean unload,
+// with no message saying what went wrong.
+func TestForceUnloadDuringAnInFlightLoadEndsAtTheLoadsOwnDiagnosis(t *testing.T) {
+	t.Parallel()
+
+	fx := newFixture(t, fixtureOptions{
+		// The load never completes on its own, so it holds the gate for the whole
+		// ready budget — the shape of a multi-gigabyte cold weight load.
+		neverReady:   true,
+		readyTimeout: time.Minute,
+		readyDelay:   5 * time.Millisecond,
+		stopTimeout:  50 * time.Millisecond,
+	})
+	loadErr := make(chan error, 1)
+	go func() { loadErr <- fx.srv.Load(context.Background()) }()
+
+	waitFor(t, 5*time.Second, func() bool { return fx.spawner.spawnCount() == 1 },
+		"the in-flight load to spawn its process")
+	waitForState(t, fx.srv, StateLoading)
+
+	// Shutdown's shape: a budget that expires while the load holds the gate, so
+	// the teardown takes the force path.
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	if err := fx.srv.Stop(ctx); err != nil {
+		t.Errorf("Stop while a cold load held the gate = %v, want the process stopped", err)
+	}
+	if proc := fx.spawner.lastProcess(); proc.alive() {
+		t.Error("the child outlived a Stop whose budget expired behind the gate")
+	}
+
+	select {
+	case err := <-loadErr:
+		if !errors.Is(err, ErrServerDied) {
+			t.Fatalf("the interrupted Load reported %v, want it to wrap ErrServerDied", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the interrupted Load never returned")
+	}
+
+	// The interrupted load's own diagnosis is the terminal state, and its message
+	// is the one the force path left in place.
+	waitForState(t, fx.srv, StateError)
+	got := fx.srv.Status().Message
+	if !strings.Contains(got, ErrServerDied.Error()) {
+		t.Errorf("Status().Message = %q, want the interrupted load's diagnosis (%q)",
+			got, ErrServerDied.Error())
+	}
+	if !strings.Contains(got, "before it became ready") {
+		t.Errorf("Status().Message = %q, want the load's own wording rather than the force path's", got)
+	}
+}
+
+// TestForceUnloadWithNoLoadInFlightEndsAtInstalled is the other half of the same
+// rule: when no Load owes a terminal transition — the caller's budget expired
+// against a model that was merely resident — "installed" is the honest terminal
+// state and the force path still reports it.
+func TestForceUnloadWithNoLoadInFlightEndsAtInstalled(t *testing.T) {
+	t.Parallel()
+
+	fx := newFixture(t, fixtureOptions{})
+	if err := fx.srv.Load(context.Background()); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	proc := fx.spawner.lastProcess()
+	if got := fx.srv.State(); got != StateLoaded {
+		t.Fatalf("state = %s, want %s before the force stop", got, StateLoaded)
+	}
+
+	if err := fx.srv.forceUnload(context.Background(), context.DeadlineExceeded); err != nil {
+		t.Fatalf("forceUnload on a resident model: %v", err)
+	}
+	if proc.alive() {
+		t.Error("the resident process survived a force stop")
+	}
+	if got := fx.srv.State(); got != StateInstalled {
+		t.Errorf("state = %s, want %s: nothing was interrupted, the model was only stopped",
+			got, StateInstalled)
+	}
+	if got := fx.srv.Status().Message; got != "" {
+		t.Errorf("Status().Message = %q, want no diagnosis on a clean force stop", got)
+	}
+}
+
+// TestForceUnloadDuringAReadyLoadDoesNotClaimResidency is the ready-race half of
+// a force stop, which the never-ready interleaving above cannot reach: the
+// ownership snapshot forceUnload takes is made BEFORE terminate signals the child
+// — an s.emit (which runs the backend's synchronous OnState handler) and a Warn
+// log sit in between — so a readiness poll that lands inside that window is
+// answered by a server that is still serving, and the interrupted Load takes its
+// SUCCESS path. Without the ownership re-check in Load that branch wrote
+// StateLoaded for a process that no longer existed: Status() reported loaded with
+// pid 0, run.expected silenced BOTH death reporters (supervise's `current` was
+// false and the run was detached), the ensure-loaded transport short-circuited on
+// State() == StateLoaded, and every later request went to a dead loopback port and
+// failed with a bare connection error. Nothing reconciled it short of an explicit
+// Unload, an idle expiry or a restart — and the force path exists precisely for
+// this shape (quit / Unload / Remove during a cold load whose weights land as the
+// caller's 30 s budget expires).
+//
+// The interleaving is STAGED rather than timed: the readiness endpoint withholds
+// the model list until the force stop has run to completion, so the window is
+// entered on every run and never by luck.
+func TestForceUnloadDuringAReadyLoadDoesNotClaimResidency(t *testing.T) {
+	t.Parallel()
+
+	// The /v1/models probe that is staged to be the first READY answer.
+	const readyProbeHits = 2
+
+	var reachedOnce, releaseOnce sync.Once
+	probeReached := make(chan struct{})
+	releaseProbe := make(chan struct{})
+
+	fx := newFixture(t, fixtureOptions{
+		notReady:    readyProbeHits - 1,
+		readyDelay:  5 * time.Millisecond,
+		stopTimeout: 50 * time.Millisecond,
+		// An ARMED policy is what makes a wrongly stamped idle budget visible:
+		// recordActivityLocked only arms the timer for a StateLoaded model, which
+		// is exactly the claim under test.
+		autoUnload: AutoUnload{Enabled: true, Idle: 60 * time.Minute},
+		onProbe: func(hits int) {
+			if hits < readyProbeHits {
+				return
+			}
+			// Hold the ready answer until the force stop has detached the run and
+			// taken the child down. This is the window a Load must not be able to
+			// claim residency from.
+			reachedOnce.Do(func() { close(probeReached) })
+			<-releaseProbe
+		},
+	})
+	// The staged hold spans a whole force stop; keep the probe budget well clear
+	// of it so the load fails on the race and not on a probe timeout.
+	fx.srv.ProbeTimeout = 30 * time.Second
+
+	loadErr := make(chan error, 1)
+	go func() { loadErr <- fx.srv.Load(context.Background()) }()
+
+	select {
+	case <-probeReached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the load never reached the readiness probe staged to answer it")
+	}
+
+	proc := fx.spawner.lastProcess()
+	if proc == nil {
+		t.Fatal("no process was spawned")
+	}
+	if got := fx.srv.State(); got != StateLoading {
+		t.Fatalf("state = %s, want %s while the load is in flight", got, StateLoading)
+	}
+
+	// Shutdown's shape: a budget that expires while the load holds the gate, so
+	// the teardown takes the force path. It runs to COMPLETION before the ready
+	// answer is released, which is what makes the interleaving deterministic.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := fx.srv.Stop(ctx); err != nil {
+		t.Errorf("Stop while a cold load held the gate = %v, want the process stopped", err)
+	}
+	if proc.alive() {
+		t.Error("the child outlived the force stop that was staged before the ready answer")
+	}
+	releaseOnce.Do(func() { close(releaseProbe) })
+
+	var err error
+	select {
+	case err = <-loadErr:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the interrupted Load never returned")
+	}
+	if err == nil {
+		t.Error("a Load whose process was force-stopped underneath it reported success")
+	} else if !errors.Is(err, errStoppedDuringLoad) {
+		t.Errorf("the interrupted Load reported %v, want it to wrap errStoppedDuringLoad and name what happened", err)
+	}
+
+	// The model is NOT resident and the state says so: installed — the bytes are
+	// on disk, nothing is in memory.
+	if got := fx.srv.State(); got == StateLoaded {
+		t.Errorf("state = %s: a force-stopped load claimed residency for a child the supervisor no longer owns", got)
+	} else if got != StateInstalled {
+		t.Errorf("state = %s, want %s", got, StateInstalled)
+	}
+	if pid := fx.srv.Status().Pid; pid != 0 {
+		t.Errorf("Status().Pid = %d, want 0: no process is running", pid)
+	}
+	// No idle budget was stamped — there is nothing resident to be idle, and a
+	// stamp here would arm an auto-unload against a dead child.
+	if left, armed := fx.srv.IdleRemaining(); armed || left != 0 {
+		t.Errorf("IdleRemaining() = (%s, %v), want (0, false): a load that never became resident stamps no budget",
+			left, armed)
+	}
+	if got := fx.srv.LastActivity(); !got.IsZero() {
+		t.Errorf("LastActivity() = %s, want the zero time: no activity was stamped", got)
+	}
+	if proc.alive() {
+		t.Error("the child is alive after the load returned")
+	}
+}
+
+// TestLoadDoesNotClaimResidencyForAChildThatDiedAfterAnsweringReadiness pins the
+// other half of Load's ownership re-check: the supervisor is the second path that
+// can detach a run this Load published, when the child dies right AFTER answering
+// the readiness probe (an OOM kill or a segfault on the first served token). Load
+// used to overwrite the crash the supervisor had just reported with StateLoaded —
+// "loaded" with pid 0, a dead loopback port, and the ensure-loaded transport
+// short-circuiting on State() == StateLoaded, which is exactly what StateError's
+// "a dead server is never reported as loaded" rule forbids. The supervisor's
+// StateError and its crash message must survive, and the load must fail.
+//
+// Staged, not timed: the readiness answer is withheld until the crash has been
+// reported, so the interleaving is entered on every run.
+func TestLoadDoesNotClaimResidencyForAChildThatDiedAfterAnsweringReadiness(t *testing.T) {
+	t.Parallel()
+
+	// The /v1/models probe that is staged to be the first READY answer.
+	const readyProbeHits = 2
+
+	var reachedOnce, releaseOnce sync.Once
+	probeReached := make(chan struct{})
+	releaseProbe := make(chan struct{})
+
+	fx := newFixture(t, fixtureOptions{
+		notReady:   readyProbeHits - 1,
+		readyDelay: 5 * time.Millisecond,
+		// An armed policy makes a wrongly stamped idle budget visible.
+		autoUnload: AutoUnload{Enabled: true, Idle: 60 * time.Minute},
+		onProbe: func(hits int) {
+			if hits < readyProbeHits {
+				return
+			}
+			reachedOnce.Do(func() { close(probeReached) })
+			<-releaseProbe
+		},
+	})
+	fx.srv.ProbeTimeout = 30 * time.Second
+
+	loadErr := make(chan error, 1)
+	go func() { loadErr <- fx.srv.Load(context.Background()) }()
+
+	select {
+	case <-probeReached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the load never reached the readiness probe staged to answer it")
+	}
+
+	proc := fx.spawner.lastProcess()
+	if proc == nil {
+		t.Fatal("no process was spawned")
+	}
+	// The child dies while the ready answer is still withheld, and the supervisor
+	// reports the crash before the load is allowed to go on.
+	proc.crash(9)
+	waitForState(t, fx.srv, StateError)
+	crashMessage := fx.srv.Status().Message
+	if crashMessage == "" {
+		t.Fatal("the supervisor reported the crash without a message")
+	}
+	releaseOnce.Do(func() { close(releaseProbe) })
+
+	var err error
+	select {
+	case err = <-loadErr:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the Load never returned")
+	}
+	switch {
+	case err == nil:
+		t.Fatal("a Load whose child died after answering readiness reported success")
+	case !errors.Is(err, ErrServerDied):
+		t.Errorf("the Load reported %v, want it to wrap ErrServerDied", err)
+	case !strings.Contains(err.Error(), "after it became ready"):
+		t.Errorf("the Load reported %v, want it to say the death landed after readiness", err)
+	}
+
+	// The supervisor's crash report is still the state of record: the load did
+	// not overwrite it with a residency claim for a dead child.
+	if got := fx.srv.State(); got != StateError {
+		t.Errorf("state = %s, want %s: the crash the supervisor reported must survive the load",
+			got, StateError)
+	}
+	if got := fx.srv.Status().Message; got != crashMessage {
+		t.Errorf("Status().Message = %q, want the supervisor's crash message %q", got, crashMessage)
+	}
+	if pid := fx.srv.Status().Pid; pid != 0 {
+		t.Errorf("Status().Pid = %d, want 0: no process is running", pid)
+	}
+	if left, armed := fx.srv.IdleRemaining(); armed || left != 0 {
+		t.Errorf("IdleRemaining() = (%s, %v), want (0, false): a load that never became resident stamps no budget",
+			left, armed)
+	}
+}
+
 // TestSetInstalledRefusesWhileRunning keeps the state of a live process owned by
 // the supervisor.
 func TestSetInstalledRefusesWhileRunning(t *testing.T) {
@@ -3470,6 +4085,17 @@ func TestSpawnOSServerStartsARealProcess(t *testing.T) {
 	if proc.Stdout() == nil || proc.Stderr() == nil {
 		t.Fatal("the child's output streams were not captured")
 	}
+	// The one child that runs for hours is the one whose output must be bounded:
+	// without WaitDelay a grandchild holding the pipe write end keeps os/exec
+	// reading forever (serverWaitDelay).
+	osProc, ok := proc.(*osProcess)
+	if !ok {
+		t.Fatalf("spawnOSServer returned %T, want *osProcess", proc)
+	}
+	if osProc.cmd.WaitDelay != serverWaitDelay {
+		t.Errorf("the spawned child carries WaitDelay = %s, want %s",
+			osProc.cmd.WaitDelay, serverWaitDelay)
+	}
 
 	// Reading the startup lines first is also the barrier: it proves the child is
 	// up and has installed its signal handler before we ask it to stop.
@@ -3493,6 +4119,152 @@ func TestSpawnOSServerStartsARealProcess(t *testing.T) {
 	}
 	if err := proc.Wait(); err != nil && graceful {
 		t.Errorf("Wait after a graceful stop = %v, want a clean exit", err)
+	}
+}
+
+// ── output pumping and exit classification ──
+
+// An over-long line must not end the pump. bufio.Scanner stops for good at
+// bufio.ErrTooLong, and an exited pump leaves the child running with nothing
+// draining its pipe: once the OS pipe buffer fills, the server's own writes
+// block and it wedges mid-generation while the supervisor still reports
+// "loaded". The line is skipped, marked in the tail, and the stream keeps being
+// drained to its real end.
+func TestPumpSkipsAnOverLongLineAndKeepsDraining(t *testing.T) {
+	t.Parallel()
+
+	logs := &logCapture{}
+	srv := NewServer(Layout{}, logs.logger())
+	run := &processRun{pid: 4242, tail: newLineTail(tailLines)}
+
+	const before = "a line before the over-long one"
+	const after = "a line after it, which the pump must still see"
+	stream := strings.NewReader(before + "\n" +
+		strings.Repeat("x", maxLogLineBytes+1) + "\n" +
+		after) // no trailing newline: a final partial line is still a line
+
+	var wg sync.WaitGroup
+	srv.pump(run, &wg, stream, "stdout")
+	wg.Wait()
+
+	lines := strings.Split(run.tail.String(), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("tail = %q, want three entries (before, the skip marker, after)", run.tail.String())
+	}
+	if lines[0] != before {
+		t.Errorf("tail[0] = %q, want %q", lines[0], before)
+	}
+	if !strings.Contains(lines[1], "skipped") {
+		t.Errorf("tail[1] = %q, want a marker naming the skipped line", lines[1])
+	}
+	if lines[2] != after {
+		t.Errorf("tail[2] = %q, want %q — the pump must survive the over-long line", lines[2], after)
+	}
+	if !strings.Contains(logs.String(), "over-long output line") {
+		t.Errorf("the skip was not logged: %q", logs.String())
+	}
+}
+
+// exec.ErrWaitDelay means "the process exited successfully but its output had to
+// be abandoned at the delay" — os/exec returns it in place of a NIL exit error
+// only. Passing it through would turn a clean exit into a spurious StateError
+// whose cause is an os/exec internal, so supervise classifies it as a clean exit.
+func TestWaitExitClassifiesErrWaitDelayAsACleanExit(t *testing.T) {
+	t.Parallel()
+
+	crash := errors.New("signal: segmentation fault (exit status 139)")
+	cases := map[string]struct {
+		exitErr    error
+		want       error
+		wantLogged string
+	}{
+		"the delay abandoned the output": {exec.ErrWaitDelay, nil, "output outlived the process"},
+		"a real crash":                   {crash, crash, ""},
+		"a clean exit":                   {nil, nil, ""},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			logs := &logCapture{}
+			srv := NewServer(Layout{}, logs.logger())
+			proc := newFakeProcess(4242)
+			proc.exit(tc.exitErr)
+			run := &processRun{proc: proc, pid: proc.Pid(), tail: newLineTail(tailLines)}
+
+			done := make(chan struct{})
+			close(done)
+			got := srv.waitExit(run, done)
+			switch {
+			case tc.want == nil && got != nil:
+				t.Errorf("waitExit = %v, want a clean exit", got)
+			case tc.want != nil && !errors.Is(got, tc.want):
+				t.Errorf("waitExit = %v, want %v", got, tc.want)
+			}
+			if tc.wantLogged != "" && !strings.Contains(logs.String(), tc.wantLogged) {
+				t.Errorf("the abandoned output was not logged: %q", logs.String())
+			}
+		})
+	}
+}
+
+// A Process implementation whose readers never end must not wedge supervision:
+// the post-exit drain is bounded, so supervise still observes the exit and closes
+// run.died — a leaked pump goroutine beats a supervisor that never reports a
+// dead server.
+func TestWaitExitAbandonsAPumpThatNeverEnds(t *testing.T) {
+	t.Parallel()
+
+	logs := &logCapture{}
+	srv := NewServer(Layout{}, logs.logger())
+	srv.drainWaitFor = 20 * time.Millisecond
+
+	proc := newFakeProcess(4242)
+	proc.exit(nil)
+	run := &processRun{proc: proc, pid: proc.Pid(), tail: newLineTail(tailLines)}
+
+	start := time.Now()
+	if err := srv.waitExit(run, make(chan struct{})); err != nil {
+		t.Errorf("waitExit = %v, want a clean exit", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("waitExit blocked for %s, want it bounded by the drain grace", elapsed)
+	}
+	if !strings.Contains(logs.String(), "abandoning them") {
+		t.Errorf("the abandoned drain was not logged: %q", logs.String())
+	}
+}
+
+// HideConsole is only observable on Windows (it is a no-op elsewhere), so the
+// call itself is pinned at the source level — including its ORDER, because
+// sysproc documents that mutating SysProcAttr after Start has no effect. The
+// long-lived llama-server is the one child a Windows user would otherwise see a
+// console window for, for the whole residency.
+func TestSpawnOSServerHidesTheConsoleBeforeItStarts(t *testing.T) {
+	t.Parallel()
+
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("reading server.go: %v", err)
+	}
+	body := string(source)
+	start := strings.Index(body, "func spawnOSServer(")
+	if start < 0 {
+		t.Fatal("spawnOSServer is missing from server.go")
+	}
+	body = body[start:]
+	end := strings.Index(body, "proc.Start()")
+	if end < 0 {
+		t.Fatal("spawnOSServer no longer starts the process with proc.Start()")
+	}
+	body = body[:end]
+
+	if !strings.Contains(body, "sysproc.HideConsole(proc)") {
+		t.Error("spawnOSServer does not call sysproc.HideConsole before proc.Start(); " +
+			"a Windows GUI host would allocate a console window for the whole residency")
+	}
+	if !strings.Contains(body, "proc.WaitDelay = serverWaitDelay") {
+		t.Error("spawnOSServer does not bound the child's output with proc.WaitDelay")
 	}
 }
 
@@ -4012,6 +4784,14 @@ func mustManifestPath(t *testing.T, layout Layout) string {
 // wrong. None of them may produce a number: a value invented from a broken
 // response would be persisted into a tier-1 config override that shadows every
 // later attempt to correct it.
+//
+// The value cases are as much a part of the table as the transport ones, and for
+// the same reason: this is the only context figure in the subsystem that arrives
+// from an external process over HTTP, and the only one that used to have no
+// ceiling. An absurd positive figure makes the router's context accounting report
+// "ok" forever (so compaction never triggers), and an unchecked `n_ctx ×
+// total_slots` wraps — 4611686018427387904 × 4 is exactly 0, which the
+// non-positive guards would otherwise have let through as an answer.
 func TestReadPropsContextIsFailSoft(t *testing.T) {
 	t.Parallel()
 
@@ -4027,6 +4807,16 @@ func TestReadPropsContextIsFailSoft(t *testing.T) {
 		{"a zero n_ctx", http.StatusOK, `{"default_generation_settings":{"n_ctx":0},"total_slots":1}`},
 		{"a negative n_ctx", http.StatusOK, `{"default_generation_settings":{"n_ctx":-1},"total_slots":1}`},
 		{"an empty object", http.StatusOK, `{}`},
+		{"an absurdly large positive n_ctx", http.StatusOK,
+			`{"default_generation_settings":{"n_ctx":` + strconv.Itoa(maxTrainingContext+1) + `},"total_slots":1}`},
+		{"a product above the training context", http.StatusOK,
+			`{"default_generation_settings":{"n_ctx":` + strconv.Itoa(maxTrainingContext) + `},"total_slots":2}`},
+		{"a product that wraps to exactly zero", http.StatusOK,
+			`{"default_generation_settings":{"n_ctx":4611686018427387904},"total_slots":4}`},
+		{"a product that overflows past zero", http.StatusOK,
+			`{"default_generation_settings":{"n_ctx":9223372036854775807},"total_slots":3}`},
+		{"an absurd slot count", http.StatusOK,
+			`{"default_generation_settings":{"n_ctx":4096},"total_slots":9223372036854775807}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -4057,6 +4847,21 @@ func TestReadPropsContextIsFailSoft(t *testing.T) {
 		got, ok := readPropsContext(t.Context(), srv.Client(), srv.URL+"/props", 2*time.Second)
 		if !ok || got != 4096 {
 			t.Errorf("readPropsContext = (%d, %v), want (4096, true)", got, ok)
+		}
+	})
+
+	t.Run("the training context itself is still an answer", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"default_generation_settings":{"n_ctx":` +
+				strconv.Itoa(maxTrainingContext) + `},"total_slots":1}`))
+		}))
+		t.Cleanup(srv.Close)
+
+		got, ok := readPropsContext(t.Context(), srv.Client(), srv.URL+"/props", 2*time.Second)
+		if !ok || got != maxTrainingContext {
+			t.Errorf("readPropsContext = (%d, %v), want (%d, true) — the ceiling is inclusive",
+				got, ok, maxTrainingContext)
 		}
 	})
 
@@ -4133,4 +4938,234 @@ func TestLaunchSpecFallsBackToThePurePolicyForAPlanLessManifest(t *testing.T) {
 	requireArgs(t, args, "-fit", "off")
 	requireArgs(t, args, "-c", "16384")
 	requireArgs(t, args, "-np", strconv.Itoa(DefaultParallel))
+}
+
+// ── the context readback is a merge, not a whole-file rewrite ──
+
+// TestRecordEffectiveContextMergesOntoTheCurrentRecord pins the lost-update fix.
+// Installer.Install never takes the supervisor's single-instance gate, so a repair
+// or reinstall can complete while a cold load — started from the OLD runtime by
+// the ensure-loaded transport — is becoming ready. Rewriting manifest.json from
+// the snapshot the load started with would then silently discard the install's
+// refreshed record; only the three fields the load actually learned may be
+// written, and they are written onto the record as it is NOW.
+func TestRecordEffectiveContextMergesOntoTheCurrentRecord(t *testing.T) {
+	t.Parallel()
+
+	var fx *fixture
+	fx = newFixture(t, fixtureOptions{
+		contextSize: 16384,
+		propsNCtx:   65536,
+		// The install finishes in the window between readiness and the readback,
+		// which is exactly where the load's snapshot goes stale.
+		readyHook: func() {
+			path := mustManifestPath(t, fx.layout)
+			current := fx.diskManifest(t)
+			current.Port += 7
+			current.Checksums = map[string]string{"runtime": "a-fresh-install-checksum"}
+			current.GPUFamily = GPUFamilyNVIDIAAda
+			if err := writeManifest(path, current, nil); err != nil {
+				t.Errorf("staging the concurrent install write: %v", err)
+			}
+		},
+	})
+
+	if err := fx.srv.Load(t.Context()); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	waitForState(t, fx.srv, StateLoaded)
+
+	got := fx.diskManifest(t)
+	if got.ContextSize != 65536 {
+		t.Errorf("context_size = %d, want the 65536 the live server reported", got.ContextSize)
+	}
+	if got.Port == 0 || got.Checksums["runtime"] != "a-fresh-install-checksum" ||
+		got.GPUFamily != GPUFamilyNVIDIAAda {
+		t.Errorf("the concurrent install's record was clobbered by the load's stale snapshot: %+v", got)
+	}
+}
+
+// TestRecordEffectiveContextAbandonsAMergeAcrossInstalls is the unsafe half of the
+// same rule: when the record now describes DIFFERENT bytes (another packing,
+// backend, runtime version, install time or model path), the plan, topology and
+// context this load learned all price the OLD install, so merging them onto the
+// new record would corrupt it. The write is abandoned and the fresh record is
+// left alone; the next load re-derives against it.
+func TestRecordEffectiveContextAbandonsAMergeAcrossInstalls(t *testing.T) {
+	t.Parallel()
+
+	var fx *fixture
+	fx = newFixture(t, fixtureOptions{
+		contextSize: 16384,
+		propsNCtx:   65536,
+		readyHook: func() {
+			path := mustManifestPath(t, fx.layout)
+			current := fx.diskManifest(t)
+			current.InstalledAt = "2026-09-26T00:00:00Z"
+			current.Checksums = map[string]string{"runtime": "a-fresh-install-checksum"}
+			if err := writeManifest(path, current, nil); err != nil {
+				t.Errorf("staging the reinstall: %v", err)
+			}
+		},
+	})
+
+	if err := fx.srv.Load(t.Context()); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	waitForState(t, fx.srv, StateLoaded)
+
+	got := fx.diskManifest(t)
+	if got.ContextSize != 16384 {
+		t.Errorf("context_size = %d, want the reinstall's 16384 — a readback that priced the old bytes must not be merged",
+			got.ContextSize)
+	}
+	if got.InstalledAt != "2026-09-26T00:00:00Z" || got.Checksums["runtime"] != "a-fresh-install-checksum" {
+		t.Errorf("the reinstall's record was modified: %+v", got)
+	}
+	if !strings.Contains(fx.logs.String(), "install record changed during the load") {
+		t.Errorf("the abandoned merge was not reported: %q", fx.logs.String())
+	}
+}
+
+// TestSameInstallIsTheRecordIdentity pins what counts as "the same install" for
+// the merge above: the fields an install rewrites when it provisions a different
+// artifact set — and NOT the ones a load legitimately refines.
+func TestSameInstallIsTheRecordIdentity(t *testing.T) {
+	t.Parallel()
+
+	base := Manifest{
+		Packing:        PackingPQ2_0,
+		Backend:        BackendMetal,
+		RuntimeVersion: RuntimeTag,
+		InstalledAt:    "2026-09-26T00:00:00Z",
+		ModelFile:      "/models/bonsai-2-27b/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+		Port:           4321,
+		ContextSize:    16384,
+	}
+	if !sameInstall(base, base) {
+		t.Fatal("a record is not the same install as itself")
+	}
+
+	refined := base
+	refined.ContextSize = 65536
+	refined.Port = 4322
+	refined.Plan = &MemoryPlan{KVType: KVTypeQ8_0}
+	refined.Topology = &MemoryTopology{HostRAMGiB: 64}
+	if !sameInstall(refined, base) {
+		t.Error("the fields a load refines (context, port, plan, topology) are not part of the install identity")
+	}
+
+	for name, mutate := range map[string]func(*Manifest){
+		"another packing":    func(m *Manifest) { m.Packing = PackingPTQ1_0 },
+		"another backend":    func(m *Manifest) { m.Backend = BackendVulkan },
+		"another runtime":    func(m *Manifest) { m.RuntimeVersion = "llama-other-0000000" },
+		"another install":    func(m *Manifest) { m.InstalledAt = "2026-09-27T00:00:00Z" },
+		"another model file": func(m *Manifest) { m.ModelFile = "/models/bonsai-2-27b/other.gguf" },
+	} {
+		other := base
+		mutate(&other)
+		if sameInstall(other, base) {
+			t.Errorf("%s was accepted as the same install", name)
+		}
+	}
+}
+
+// ── the recorded model path is containment-checked ──
+
+// TestLaunchIdentitySubstitutesAModelFileOutsideTheModelRoot pins the weights half
+// of the identity discipline. The contract is SUBSTITUTION, not refusal: the
+// manifest is an ordinary file in the agent's own directory, so a tampered record
+// must not be able to aim `-m` at an arbitrary GGUF and have it served under the
+// pinned model's trusted identity — the recorded path is honoured only inside the
+// layout's model root. A violation does NOT fail the load. The layout-derived path
+// for the recorded packing replaces it, because that derivation is exactly what an
+// install writes and is therefore also the honest recovery, and the divergence is
+// logged at Warn so an operator can see that the record does not describe the
+// layout.
+func TestLaunchIdentitySubstitutesAModelFileOutsideTheModelRoot(t *testing.T) {
+	t.Parallel()
+
+	fx := newFixture(t, fixtureOptions{})
+
+	outside := filepath.Join(t.TempDir(), "not-the-pinned-model.gguf")
+	if err := os.WriteFile(outside, []byte("GGUF, but not the pinned weights"), 0o600); err != nil {
+		t.Fatalf("staging the outside model: %v", err)
+	}
+	path := mustManifestPath(t, fx.layout)
+	tampered := fx.diskManifest(t)
+	tampered.ModelFile = outside
+	if err := writeManifest(path, tampered, nil); err != nil {
+		t.Fatalf("writing the tampered record: %v", err)
+	}
+
+	// The load SUCCEEDS: the substituted path is a launchable install, so a
+	// tampered record costs the operator a Warn rather than a dead model.
+	if err := fx.srv.Load(t.Context()); err != nil {
+		t.Fatalf("Load with a tampered model path: %v", err)
+	}
+	waitForState(t, fx.srv, StateLoaded)
+
+	want, err := fx.layout.ModelFile(tampered.Packing)
+	if err != nil {
+		t.Fatalf("ModelFile: %v", err)
+	}
+	if got := flagValue(t, fx.spawner.lastCommand().Args, "-m"); got != want {
+		t.Errorf("-m = %q, want the layout-derived %q", got, want)
+	}
+	if got := flagValue(t, fx.spawner.lastCommand().Args, "-m"); got == outside {
+		t.Errorf("-m = %q: the recorded path outside the model root reached argv", got)
+	}
+	if !strings.Contains(fx.logs.String(), "outside the model root") {
+		t.Errorf("the divergence was not logged: %q", fx.logs.String())
+	}
+	if !fx.layout.OwnsModel(want) {
+		t.Errorf("the layout-derived model path %q is not inside the model root", want)
+	}
+	if fx.layout.OwnsModel(outside) {
+		t.Errorf("OwnsModel accepted %q, which is outside the model root", outside)
+	}
+}
+
+// flagValue returns the element after flag in an argv slice.
+func flagValue(t *testing.T, args []string, flag string) string {
+	t.Helper()
+	for i, arg := range args {
+		if arg == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	t.Fatalf("argv carries no %s element: %v", flag, args)
+	return ""
+}
+
+// TestNilLoggersDiscardRatherThanReachTheGlobalDefault pins the package's
+// no-global-logging rule at the three seams that used to fall back to
+// slog.Default(): a caller that injects no logger gets a discard logger, matching
+// hardware.go and topology.go, so nothing this subsystem logs can reach the
+// process-wide default. Not parallel: it swaps the global default.
+func TestNilLoggersDiscardRatherThanReachTheGlobalDefault(t *testing.T) {
+	capture := &logCapture{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(capture, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	loggers := map[string]*slog.Logger{
+		"server":     (&Server{}).logger(),
+		"installer":  (&Installer{}).logger(),
+		"downloader": (&Downloader{}).logger(),
+	}
+	for name, logger := range loggers {
+		if logger == nil {
+			t.Errorf("%s: a nil Logger produced a nil *slog.Logger", name)
+			continue
+		}
+		logger.Info("this line must go nowhere", "component", name)
+	}
+	// A nil *Installer is also tolerated, and must discard just the same.
+	var nilInstaller *Installer
+	nilInstaller.logger().Info("this line must go nowhere either")
+
+	if got := capture.String(); got != "" {
+		t.Errorf("a nil logger reached the global slog default: %q", got)
+	}
 }

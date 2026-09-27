@@ -2,14 +2,10 @@ package backend
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"reflect"
-	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,7 +23,10 @@ import (
 // Ownership: this file owns the FrontendAPI-side wiring of
 // core/embeddedllm — the supervisor, the installer, the config sink and the
 // two global events. It owns NO policy: the command line, the resolution, the
-// state machine and the idle budget all live in core.
+// state machine and the idle budget all live in core. Two slices of the same
+// surface live beside it: the wire shapes and their mappers in
+// frontend_api_embedded_dto.go, and the operator tuning / device-probe RPCs in
+// frontend_api_embedded_tuning.go.
 //
 // The conventions the surface follows:
 //
@@ -54,10 +53,45 @@ const (
 	// machine with every probe helper installed and wedged must still return
 	// an actionable error instead of hanging the settings dialog.
 	embeddedProbeTimeout = 30 * time.Second
-	// embeddedStopTimeout bounds the shutdown stop. The supervisor's own
-	// graceful window is DefaultStopTimeout (10s) followed by a kill and a
-	// bounded post-kill wait, so this only covers a wedged terminate path —
-	// quitting must not hang on a model that refuses to die.
+	// embeddedStopTimeout bounds every supervisor stop this surface waits for:
+	// the shutdown stop, UnloadEmbeddedLLM, the stop RemoveEmbeddedLLM runs
+	// first, and the step-0 stop a background install performs before its first
+	// numbered step. The install one travels to core as Installer.StopTimeout
+	// rather than as a wrapped context, because the install runs on the
+	// application context and its stop is the only call in that sequence nobody
+	// else bounds. The supervisor's own graceful window is DefaultStopTimeout (10s)
+	// followed by a kill and a bounded post-kill wait, so this only covers a
+	// wedged terminate path — and, more importantly, the wait for the
+	// single-instance gate an in-flight load holds for up to DefaultReadyTimeout
+	// (minutes). Quitting must not hang on a model that refuses to die, a
+	// blocking RPC must not hang its UI spinner for the length of a cold weight
+	// load, and an install must not sit in step 0 for that same length while
+	// holding the operation gate every other embedded call refuses behind —
+	// step 0 precedes the plan, so it precedes the first install_progress event,
+	// and the operator would be left watching a bar at 0%.
+	//
+	// This budget bounds the GATE WAIT, not the whole stop: when it expires with a
+	// child still live, core's force path takes over, arms its own budget
+	// (stopTimeout + killWait + 1s) on a detached context, terminates the child and
+	// returns SUCCESS. So a stop-shaped call's real ceiling is this plus that force
+	// budget, and the TRANSLATED "a load is still in progress" error — the one
+	// embeddedBoundedStopErr produces, and it fires only on
+	// errors.Is(err, context.DeadlineExceeded) — comes back only when no child had
+	// spawned yet, the one case where there is nothing to kill and the gate timeout
+	// is the whole truth. All four bounded paths can produce it, each on its own
+	// channel: the shutdown stop logs it, UnloadEmbeddedLLM and RemoveEmbeddedLLM
+	// return it to their caller, and an install carries it into its
+	// background-failure toast.
+	//
+	// That scoping is deliberate: it is a claim about THIS translation, not about
+	// every error a stop-shaped call can return. Two other paths produce actionable
+	// errors with a child very much involved or none at all — a stop that did NOT
+	// take is reported by core's terminate on BOTH the gated and the force path
+	// ("did not exit within … of being killed", precisely the uninterruptible-
+	// syscall case defaultKillWait exists for), and RemoveEmbeddedLLM's post-stop
+	// work returns errors.Join over the three tree deletions plus Sink.ApplyRemoved,
+	// so a read-only or busy tree yields an actionable error and no child was ever
+	// part of it.
 	embeddedStopTimeout = 30 * time.Second
 )
 
@@ -67,923 +101,21 @@ const (
 	embeddedErrCodeRemove  = "embedded_llm_remove_failed"
 )
 
-// ---------------------------------------------------------------------------
-// DTOs
-// ---------------------------------------------------------------------------
+// embeddedOpKind names the embedded-LLM operation that currently holds the
+// busy gate. Its spelling is also the operator-facing noun the refusals use, so
+// a refusal names the operation that is actually in flight instead of always
+// blaming an install.
+type embeddedOpKind string
 
-// EmbeddedLLMStatus is the payload of GetEmbeddedLLMStatus: the supervision
-// state plus the install record the Settings page and the status bar render.
-// Every field is always present (no omitempty) so the frontend never has to
-// distinguish "absent" from "zero".
-//
-// Fields are ADDITIVE at this boundary and stay that way: the hand-written
-// frontend guard (isEmbeddedLLMStatus in frontend/src/api/embedded.ts) checks
-// the presence and type of the fields IT knows, so a payload from a newer
-// backend still validates and a renderer that has not caught up simply ignores
-// what it does not read. The two composite additions follow the same rule from
-// the other side — Devices and Plan.Notes are always arrays and Plan is a value
-// carrying its own Recorded flag — so there is no null to distinguish from an
-// empty one anywhere in the payload.
-type EmbeddedLLMStatus struct {
-	// State is the raw supervision state: not_installed | installed | loading
-	// | loaded | unloading | error.
-	State string `json:"state"`
-	// Installed reports that the runtime and the weights are on disk and
-	// verified (manifest.json restored). It does NOT imply resident.
-	Installed bool `json:"installed"`
-	// Installing reports a background install run in flight.
-	Installing bool `json:"installing"`
-	// Loading reports a weight load in progress (the process is up, /v1/models
-	// has not answered yet).
-	Loading bool `json:"loading"`
-	// Loaded reports a serving model: /v1/models answered with a non-empty
-	// model list.
-	Loaded bool `json:"loaded"`
-	// Packing is the ternary quantization on disk ("PQ2_0" | "PTQ1_0").
-	Packing string `json:"packing"`
-	// Backend is the accelerator the runtime was provisioned for.
-	Backend string `json:"backend"`
-	// Port is the persisted loopback port (0 when nothing is installed).
-	Port int `json:"port"`
-	// ContextSize is the LAST KNOWN EFFECTIVE context of the installation (0
-	// when nothing is installed): the planner's figure at install time, corrected
-	// by every successful load with the value the server itself reported through
-	// /props. It is the same figure the tier-1
-	// llm.models."Bonsai 2 27B".context_window override carries.
-	ContextSize int `json:"context_size"`
-	// AutoUnloadEnabled is the resolved idle-timer master switch.
-	AutoUnloadEnabled bool `json:"auto_unload_enabled"`
-	// AutoUnloadMinutes is the resolved idle budget in minutes.
-	AutoUnloadMinutes int `json:"auto_unload_minutes"`
-	// IdleRemainingSeconds is the idle budget left before the process is
-	// stopped, 0 when no timer is armed (the model is not loaded or the
-	// auto-unload is off).
-	IdleRemainingSeconds int64 `json:"idle_remaining_seconds"`
-	// BaseURL is the OpenAI-compatible endpoint derived from the port, empty
-	// when nothing is installed.
-	BaseURL string `json:"base_url"`
-	// ModelID is the composite provider/model id the router exposes
-	// ("embedded/Bonsai 2 27B"), empty when nothing is installed.
-	ModelID string `json:"model_id"`
-	// ModelName is the bare model name of the generated provider record.
-	ModelName string `json:"model_name"`
-	// RuntimeVersion is the pinned fork release the runtime came from.
-	RuntimeVersion string `json:"runtime_version"`
-	// InstalledAt is the RFC 3339 install timestamp.
-	InstalledAt string `json:"installed_at"`
-	// ModelFile is the absolute path of the GGUF weights.
-	ModelFile string `json:"model_file"`
-	// PackingReason says why the installed packing is what it is: "default", or
-	// the typed cause of a downgrade ("no_pq2_0_kernels",
-	// "avx512_pq2_0_segfault", "pq2_0_does_not_fit",
-	// "gpu_generation_decode"). Empty on an install recorded before the field
-	// existed, which readers must treat as unknown rather than as "default".
-	PackingReason string `json:"packing_reason"`
-	// GPUFamily is the accelerator generation the install was planned for,
-	// empty when no device probe answered.
-	GPUFamily string `json:"gpu_family"`
-	// Guards are the backend compatibility decisions this install was planned
-	// under, each with its typed reason, its severity, its upstream issue
-	// citation and an Applied flag saying whether the plan actually changed
-	// because of it. This is how a DEGRADED install becomes visible instead of
-	// silent: a machine whose runtime is documented to hang, abort or garble
-	// output says so here, whether or not c0wrk could act on it. Empty on a
-	// machine no documented failure covers, which is the healthy common case.
-	//
-	// Always an array, never null (an unguarded install carries an empty one),
-	// so a renderer has one code path. The hand-written mirror in
-	// frontend/src/api/embedded.ts does not carry these three fields yet: the
-	// Settings surface that renders the degradation record is a separate change,
-	// and until it lands the fields are simply unused on the wire.
-	Guards []EmbeddedLLMGuard `json:"guards"`
-	// Devices is the accelerator inventory of the RECORDED topology — the
-	// snapshot the recorded plan was made from, as the provisioned runtime
-	// reported it at provision time. Always an array, never null: an empty one
-	// means either "no accelerator this build can use" or "no probe ever
-	// answered", and TopologyProbedAt says which (empty = never). Call
-	// ProbeEmbeddedLLMDevices for a measurement of THIS instant.
-	Devices []EmbeddedLLMDevice `json:"devices"`
-	// Unified reports whether the device pool and host RAM are the SAME memory
-	// on the recorded topology. It is the one fact a reader must trust over any
-	// OS intuition: when it is true, DeviceBudgetMiB and HostBudgetMiB are two
-	// views of one pool and must never be added together. false on a topology no
-	// probe answered, where it means "unknown" rather than "discrete".
-	Unified bool `json:"unified"`
-	// HostRAMGiB is the total system RAM of the recorded topology, 0 when no
-	// probe ever answered.
-	HostRAMGiB float64 `json:"host_ram_gib"`
-	// DeviceBudgetMiB and HostBudgetMiB are the two budgets the recorded plan
-	// was gated against, 0 when no probe answered (where 0 means UNREADABLE, not
-	// "no memory" — the distinction the combined memory gate exists to keep).
-	DeviceBudgetMiB int64 `json:"device_budget_mib"`
-	HostBudgetMiB   int64 `json:"host_budget_mib"`
-	// TopologyProbedAt is the RFC 3339 UTC stamp of the recorded topology. EMPTY
-	// MEANS NO PROBE EVER ANSWERED, which is the only way to tell an empty
-	// Devices array that means "CPU-only machine" from one that means "unknown".
-	TopologyProbedAt string `json:"topology_probed_at"`
-	// Plan is the launch shape LAST APPLIED to this installation — every
-	// flag-bearing value the supervisor renders, the two footprints it expects
-	// and the Notes saying why each non-default decision was made. Read
-	// Plan.Recorded first: a manifest written before the field existed carries
-	// no plan, and every other Plan field is then the zero value rather than a
-	// decision. This is the OUTCOME of the planner over the operator's tuning;
-	// the tuning itself is GetEmbeddedLLMTuning.
-	Plan EmbeddedLLMPlan `json:"plan"`
-	// ReloadRequired reports that the model is RESIDENT and was launched with
-	// memory-plan overrides the operator has since changed — i.e. the persisted
-	// tuning takes effect on the NEXT load, not on the running process. Every
-	// tuning knob is a launch flag (`-c`, `-ngl`, `-ctk`, `-fit`, …), so only a
-	// fresh process can pick one up; see SetEmbeddedLLMTuning for why this
-	// surface reports instead of restarting. Always false while nothing is
-	// resident.
-	ReloadRequired bool `json:"reload_required"`
-	// Pid is the OS process id of the supervised server, 0 when no process is
-	// running.
-	Pid int `json:"pid"`
-	// FitWarning is the fit-contract finding of the last failed launch: the
-	// fork's "failed to fit params to free device memory" complaint, scanned
-	// from the dead run's bounded output tail by the supervisor and carried
-	// here so the install record can show it. A launch that becomes ready
-	// clears it. Empty when no launch has failed that way — the healthy
-	// common case.
-	FitWarning string `json:"fit_warning,omitempty"`
-	// Error is a human-readable cause: the supervisor's message while State is
-	// "error", otherwise the last failed install or removal. Empty when nothing
-	// failed since the last successful operation.
-	Error string `json:"error"`
-	// Available reports whether the subsystem could be constructed at all
-	// (false only when the agent directory is unset, i.e. before startup).
-	Available bool `json:"available"`
-}
-
-// EmbeddedLLMGuard is the frontend-facing shape of one
-// core/embeddedllm.GuardDecision: a backend compatibility decision derived from
-// the pinned model's KNOWN_ISSUES, recorded at install time and replayed here so
-// a degraded install is visible in Settings rather than silent.
-//
-// The string fields are the core enum values verbatim (snake_case), so the UI can
-// switch on them without this layer inventing a second vocabulary. The
-// frontend mirror is pending: see EmbeddedLLMStatus.Guards.
-type EmbeddedLLMGuard struct {
-	// Guard is the stable id of the guard that fired, e.g. "cuda-13.3-crash".
-	Guard string `json:"guard"`
-	// Action is what the guard asked for: prefer_backend | prefer_packing |
-	// advisory.
-	Action string `json:"action"`
-	// Reason is the typed cause: crash_on_load | process_abort |
-	// garbled_output | hang | fails_to_start.
-	Reason string `json:"reason"`
-	// Severity ranks the guarded failure: critical | warning.
-	Severity string `json:"severity"`
-	// Issue is the upstream citation, "<repo>#<number>".
-	Issue string `json:"issue"`
-	// Applied reports whether the install actually changed because of this
-	// decision. false is not "nothing happened": it is "we know about this and
-	// could not, or chose not to, act on it" — and Guidance says which.
-	Applied bool `json:"applied"`
-	// Backend is the substituted backend, empty unless Action is prefer_backend.
-	Backend string `json:"backend,omitempty"`
-	// Packing is the substituted packing, empty unless Action is prefer_packing.
-	Packing string `json:"packing,omitempty"`
-	// Guidance is the user-facing sentence: what is documented, what c0wrk did
-	// or could not do, and what the upstream workaround is.
-	Guidance string `json:"guidance"`
-}
-
-// embeddedGuardIDs renders the recorded compatibility decisions for one log
-// line, marking the ones the install could not act on. A degradation that only
-// ever reached a log is still better than one that reached nothing, and this is
-// the operator-facing half of the same record the status DTO carries.
-func embeddedGuardIDs(decisions []embeddedllm.GuardDecision) string {
-	if len(decisions) == 0 {
-		return "none"
-	}
-	ids := make([]string, 0, len(decisions))
-	for _, decision := range decisions {
-		if decision.Applied {
-			ids = append(ids, string(decision.Guard))
-			continue
-		}
-		ids = append(ids, string(decision.Guard)+"(unapplied)")
-	}
-	return strings.Join(ids, ",")
-}
-
-// embeddedGuardsDTO maps the persisted guard decisions onto the status DTO. It
-// returns an empty slice rather than nil so the boundary always carries an array
-// and the frontend never has to distinguish "no guards" from "no field".
-func embeddedGuardsDTO(decisions []embeddedllm.GuardDecision) []EmbeddedLLMGuard {
-	guards := make([]EmbeddedLLMGuard, 0, len(decisions))
-	for _, decision := range decisions {
-		guards = append(guards, EmbeddedLLMGuard{
-			Guard:    string(decision.Guard),
-			Action:   string(decision.Action),
-			Reason:   string(decision.Reason),
-			Severity: string(decision.Severity),
-			Issue:    decision.Issue,
-			Applied:  decision.Applied,
-			Backend:  string(decision.Backend),
-			Packing:  string(decision.Packing),
-			Guidance: decision.Guidance,
-		})
-	}
-	return guards
-}
-
-// EmbeddedLLMStateData is the payload of the global embedded_llm:state event.
-// It is deliberately narrower than EmbeddedLLMStatus: it carries exactly what a
-// status indicator needs, so a transition event stays cheap. Mirrors
-// EmbeddedLLMStateData in frontend/src/types/events.ts.
-type EmbeddedLLMStateData struct {
-	Installed         bool   `json:"installed"`
-	Loading           bool   `json:"loading"`
-	Loaded            bool   `json:"loaded"`
-	Packing           string `json:"packing"`
-	Backend           string `json:"backend"`
-	Port              int    `json:"port"`
-	ContextSize       int    `json:"context_size"`
-	AutoUnloadMinutes int    `json:"auto_unload_minutes"`
-	Error             string `json:"error"`
-}
-
-// EmbeddedLLMProgressData is the payload of the global
-// embedded_llm:install_progress event: one component's one stage. It is the
-// frontend-facing shape of core/embeddedllm.Progress (snake_case JSON keys,
-// mirroring tool_manager:progress). Mirrors EmbeddedLLMInstallProgressData in
-// frontend/src/types/events.ts.
-type EmbeddedLLMProgressData struct {
-	// Component is the artifact being worked on: runtime | cudart | model |
-	// mmproj.
-	Component string `json:"component"`
-	// Stage is downloading | verifying | extracting | signing | done.
-	Stage string `json:"stage"`
-	// BytesDone and BytesTotal describe the component's own transfer. Both are
-	// 0 for the non-transfer stages (verifying, extracting, signing, done),
-	// where a byte count would be a lie.
-	BytesDone  int64 `json:"bytes_done"`
-	BytesTotal int64 `json:"bytes_total"`
-}
-
-// EmbeddedLLMDevice is one accelerator as the provisioned runtime reported it:
-// the frontend-facing shape of core/embeddedllm.DeviceMemory. The name is the
-// runtime's own device id ("MTL0", "CUDA0", "Vulkan0", "HIP0") and the
-// description its human label ("Apple M4 Max", "NVIDIA GeForce RTX 4090").
-//
-// FreeMiB is a snapshot of the instant the probe ran and is informational: the
-// two BUDGETS a fit decision spends are derived from TotalMiB, because a
-// capacity plan that moved with whatever else happened to be running would not
-// be reproducible.
-type EmbeddedLLMDevice struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	TotalMiB    int64  `json:"total_mib"`
-	FreeMiB     int64  `json:"free_mib"`
-}
-
-// EmbeddedLLMPlan is the effective launch shape: the frontend-facing view of
-// core/embeddedllm.MemoryPlan, i.e. every flag-bearing value the supervisor
-// renders into a llama-server argv, the two footprints that shape expects, the
-// budgets it was gated against, and the human-readable reason for each
-// non-default decision.
-//
-// It is a VALUE with a Recorded flag rather than a pointer, so the status DTO
-// keeps its "every field is always present" contract: a renderer has one code
-// path and never has to distinguish an absent plan from an empty one.
-type EmbeddedLLMPlan struct {
-	// Recorded reports that a plan exists at all. false means the installation
-	// carries no recorded launch shape — a manifest written before the field
-	// existed — and every other field below is then the zero value, NOT a
-	// decision. A reader must treat false as unknown.
-	Recorded bool `json:"recorded"`
-	// Packing is the weights quantization the plan was projected for
-	// ("PQ2_0" | "PTQ1_0").
-	Packing string `json:"packing"`
-	// KVType is the resolved `-ctk`/`-ctv` precision ("f16" | "q8_0" |
-	// "q4_0"). Never empty on a recorded plan: `auto` is resolved to a
-	// concrete precision and the escalation that got there is in Notes.
-	KVType string `json:"kv_type"`
-	// ContextSize is `-c`. ZERO ON A FIT-SIZED PLAN IS NOT A ZERO CONTEXT: it
-	// means the runtime's own fit pass chooses the window at launch, held to
-	// FitMinContext as its floor. Fit says which of the two readings applies.
-	ContextSize int `json:"context_size"`
-	// Fit reports whether the runtime's `--fit` pass sizes the layer count and
-	// the context. When true, Layers is nil and ContextSize is 0 — the
-	// exclusivity rule: `-fit on` and an explicit `-ngl` abort the launch.
-	Fit bool `json:"fit"`
-	// FitArg is the literal `-fit` value ("on" | "off"), echoed so a renderer
-	// shows the flag as the runtime receives it instead of re-deriving it from
-	// a boolean.
-	FitArg string `json:"fit_arg"`
-	// FitTargetMiB is `-fitt`, the per-device margin fit leaves free. 0 omits
-	// the flag and keeps the runtime's own 1024 MiB default. Only meaningful
-	// when Fit is true.
-	FitTargetMiB int `json:"fit_target_mib"`
-	// FitMinContext is `-fitc`, the floor fit is held to. Only meaningful when
-	// Fit is true.
-	FitMinContext int `json:"fit_min_context"`
-	// OffloadMode renders the EFFECTIVE `-ngl` decision in the operator's own
-	// vocabulary: "auto" (fit sizes it, or the flag is omitted), "cpu" (nothing
-	// offloaded) or "layers" (an explicit count, in Layers). Derived from Fit +
-	// Layers, so it always agrees with the number beside it. "all" is not a
-	// separate label here — see embeddedPlanDTO for why an every-layer offload
-	// renders as a count instead.
-	OffloadMode string `json:"offload_mode"`
-	// Layers is the resolved `-ngl` count. -1 means the flag is OMITTED (fit
-	// chooses the count), which is a different fact from 0 ("nothing
-	// offloaded") and is why the sentinel is negative rather than a second
-	// boolean.
-	Layers int `json:"layers"`
-	// KVOffload false means `-nkvo`: the KV cache stays in system RAM.
-	KVOffload bool `json:"kv_offload"`
-	// MMProjOffload false means `--no-mmproj-offload`: the vision projector's
-	// reserve stays in system RAM.
-	MMProjOffload bool `json:"mmproj_offload"`
-	// Parallel is `-np`, the slot count.
-	Parallel int `json:"parallel"`
-	// CacheRAMMiB is `-cram`, the prompt-cache ceiling. -1 means the flag is
-	// omitted (the runtime's own default); 0 is a real value that DISABLES the
-	// cache, so the two must stay distinguishable.
-	CacheRAMMiB int `json:"cache_ram_mib"`
-	// GPUFamily is the accelerator generation the plan was classified as, empty
-	// when no device probe answered. It is what priced the split allowance in
-	// the two budgets below.
-	GPUFamily string `json:"gpu_family"`
-	// DeviceBudgetMiB and HostBudgetMiB are the budgets the plan was gated
-	// against. On a UNIFIED machine these are the same physical bytes viewed
-	// from two sides and must never be added together — the clamp lives in the
-	// device term precisely so the pair cannot describe one pool twice.
-	DeviceBudgetMiB int64 `json:"device_budget_mib"`
-	HostBudgetMiB   int64 `json:"host_budget_mib"`
-	// ExpectedDeviceMiB and ExpectedHostMiB are the projected footprints of
-	// this shape, INCLUDING the vision projector's reserve. When the offload is
-	// a PARTIAL layer count neither figure is exact: device is the full-offload
-	// upper bound and host the CPU-only upper bound, and Notes says so.
-	ExpectedDeviceMiB int64 `json:"expected_device_mib"`
-	ExpectedHostMiB   int64 `json:"expected_host_mib"`
-	// Notes is the human-readable "why", one entry per non-default decision,
-	// rendered verbatim. Always an array, never null.
-	Notes []string `json:"notes"`
-}
-
-// EmbeddedLLMDevicesDTO is the payload of ProbeEmbeddedLLMDevices and the
-// topology half of EmbeddedLLMStatus: the measured device-memory shape of this
-// machine plus the two budgets a fit decision may spend.
-type EmbeddedLLMDevicesDTO struct {
-	// Devices is the accelerator inventory in the order the runtime printed it,
-	// without the entries that report no memory of their own and without
-	// duplicates. Always an array, never null: an EMPTY one is a real answer
-	// from a machine with no accelerator this build can use, not a failed probe
-	// (a failed probe is an error, never a DTO).
-	Devices []EmbeddedLLMDevice `json:"devices"`
-	// Unified reports whether the device pool and host RAM are the SAME memory.
-	// It is DETECTED, never assumed from the OS: unified pools exist well
-	// beyond macOS (AMD APUs, Intel iGPUs, Jetson/Grace-Hopper class SoCs) and
-	// a discrete GPU on a Mac would be the mirror-image mistake. When the
-	// evidence is inconclusive core falls back to true, because treating a
-	// discrete card as unified can only shrink its budget while the reverse
-	// overcounts capacity that does not exist.
-	Unified bool `json:"unified"`
-	// HostRAMGiB is total system RAM, from the same probe that reports the
-	// devices, so the two can never disagree about the host.
-	HostRAMGiB float64 `json:"host_ram_gib"`
-	// DeviceBudgetMiB and HostBudgetMiB are the two spendable budgets after the
-	// accelerator margin and the OS reserve. See EmbeddedLLMPlan for why they
-	// must not be summed on a unified machine.
-	DeviceBudgetMiB int64 `json:"device_budget_mib"`
-	HostBudgetMiB   int64 `json:"host_budget_mib"`
-	// ProbedAt stamps the snapshot in RFC 3339 UTC. A topology is a snapshot:
-	// free memory and even the device list change when a driver or a build
-	// changes, which is why an explicit re-probe exists.
-	ProbedAt string `json:"probed_at"`
-}
-
-// EmbeddedLLMContextTuningDTO is the `tuning.context` knob: a mode plus, for
-// `mode: exact` only, the token count. Mirrors config.EmbeddedLLMContextConfig.
-//
-// Both fields are NULLABLE and nil is load-bearing: an absent mode means "the
-// operator never wrote this", which is NOT the same value as an explicit
-// "auto" — the config section's whole reason for keeping pointers. A DTO that
-// collapsed the two could not round-trip the section it mirrors.
-type EmbeddedLLMContextTuningDTO struct {
-	// Mode is nil (unset), "auto" or "exact".
-	Mode *string `json:"mode"`
-	// Tokens is the pinned `-c`, nil when the operator never wrote one.
-	Tokens *int `json:"tokens"`
-}
-
-// EmbeddedLLMOffloadTuningDTO is the `tuning.offload` knob: a mode plus, for
-// `mode: layers` only, the layer count. Mirrors config.EmbeddedLLMOffloadConfig.
-type EmbeddedLLMOffloadTuningDTO struct {
-	// Mode is nil (unset), "auto", "all", "cpu" or "layers".
-	Mode *string `json:"mode"`
-	// Layers is the explicit `-ngl` count, nil when the operator never wrote
-	// one.
-	Layers *int `json:"layers"`
-}
-
-// EmbeddedLLMTuningDTO is the payload of GetEmbeddedLLMTuning: the operator's
-// persisted memory-plan overrides (embedded_llm.tuning), field for field.
-//
-// EVERY field is nullable and nil means "unset — the planner decides", which is
-// a different value from an explicit "auto": the planner treats them the same,
-// but the persisted section does not, and this DTO mirrors the section rather
-// than the plan. Read the effective, resolved decision from
-// EmbeddedLLMStatus.Plan instead; this is the OVERRIDE, not the outcome.
-//
-// The legal spellings are not enumerated here on purpose. They live in exactly
-// one place (config.tuningChoice's closed sets, derived from core's vocabulary)
-// and a rejected SetEmbeddedLLMTuning names the offending key and lists every
-// legal spelling, so an editor learns them from the refusal instead of from a
-// second copy that can drift.
-type EmbeddedLLMTuningDTO struct {
-	// Context is the `-c` knob: nil mode = unset, "auto" = the planner sizes it,
-	// "exact" = Tokens pins it.
-	Context EmbeddedLLMContextTuningDTO `json:"context"`
-	// KVCacheType overrides BOTH `-ctk` and `-ctv` (one value for both: a mixed
-	// pair silently drops to CPU flash attention). nil = unset, "auto" = the
-	// adaptive escalation f16 -> q8_0 -> q4_0 until the target context fits.
-	KVCacheType *string `json:"kv_cache_type"`
-	// Offload is the `-ngl` knob: nil mode = unset, "auto" = fit sizes it,
-	// "all"/"cpu"/"layers" pin it.
-	Offload EmbeddedLLMOffloadTuningDTO `json:"offload"`
-	// Fit overrides `-fit`. nil lets the exclusivity rule decide; an explicit
-	// false forces `-fit off` and hands context sizing back to the planner; an
-	// explicit true beside an explicit offload loses to that rule (and the
-	// planner records the loss in the plan's Notes).
-	Fit *bool `json:"fit"`
-	// FitTargetMiB overrides `-fitt`, the per-device margin fit leaves free. nil
-	// keeps the runtime's own 1024 MiB; an explicit 0 also omits the flag.
-	FitTargetMiB *int `json:"fit_target_mib"`
-	// FitMinContext overrides `-fitc`, the smallest context fit may settle on.
-	// nil means c0wrk's own floor, deliberately NOT the runtime's 4096.
-	FitMinContext *int `json:"fit_min_context"`
-	// KVOffload is `-kvo`/`-nkvo`. nil and an explicit true keep the KV cache on
-	// the device; false leaves it in system RAM.
-	KVOffload *bool `json:"kv_offload"`
-	// MMProjOffload is `--mmproj-offload`/`--no-mmproj-offload`. nil and an
-	// explicit true keep the vision projector's reserve on the device.
-	MMProjOffload *bool `json:"mmproj_offload"`
-	// Packing overrides the weights quantization. nil or "auto" keeps the
-	// packing the hardware probe resolved (reported separately as
-	// EmbeddedLLMStatus.Packing); any other spelling must be one the registry
-	// pins AND the memory model has measured residency for.
-	Packing *string `json:"packing"`
-	// Parallel overrides `-np`, the slot count. nil means 1: c0wrk serves one
-	// agent loop over one loopback socket and issues one request at a time.
-	Parallel *int `json:"parallel"`
-	// CacheRAMMiB overrides `-cram`, the prompt-cache ceiling. nil omits the
-	// flag; an explicit 0 DISABLES the cache and is passed through verbatim,
-	// because disabling it is a legitimate choice.
-	CacheRAMMiB *int `json:"cache_ram_mib"`
-	// HostReserveGiB overrides the RAM kept out of the host budget. nil keeps
-	// the topology's own derivation. It is a PLANNER-side budget knob, not a
-	// runtime flag -- the pinned fork has no `--host-reserve`.
-	HostReserveGiB *float64 `json:"host_reserve_gib"`
-}
-
-// EmbeddedLLMContextTuningRequest is the `context` knob of a tuning patch. Its
-// presence in the request (a non-nil EmbeddedLLMTuningRequest.Context) is what
-// says "replace this knob"; the fields inside then REPLACE it wholesale, so
-// `{mode: "exact", tokens: null}` is a validation error rather than a silent
-// half-update.
-type EmbeddedLLMContextTuningRequest struct {
-	Mode   *string `json:"mode"`
-	Tokens *int    `json:"tokens"`
-}
-
-// EmbeddedLLMOffloadTuningRequest is the `offload` knob of a tuning patch, with
-// the same whole-knob replacement semantics as the context one.
-type EmbeddedLLMOffloadTuningRequest struct {
-	Mode   *string `json:"mode"`
-	Layers *int    `json:"layers"`
-}
-
-// EmbeddedLLMTuningRequest is the payload of SetEmbeddedLLMTuning: a PARTIAL
-// update of embedded_llm.tuning, mirroring ModelProfileUpdateRequest's "nil
-// keeps the stored value" contract.
-//
-// Three states per knob, because the section this writes has three:
-//
-//   - field NIL                    -> keep the stored value, untouched
-//   - field PRESENT                -> store it verbatim (an explicit "auto"
-//     spelling included — it is a real value, not a synonym for unset)
-//   - knob named in Reset          -> clear it back to unset, so the planner
-//     decides again
-//
-// Reset is what makes the third state expressible at all. Every knob here is a
-// pointer whose nil already means "absent from this request", so nil cannot
-// ALSO mean "clear the override" — and for the bool/int knobs there is no
-// "auto" spelling to send instead. Naming the keys is the one encoding that
-// covers all twelve knobs uniformly, and it uses the config-file vocabulary the
-// operator already reads in config.example.yaml and in every validation error.
-//
-// Resetting and setting the same knob in one request is a contradiction and is
-// refused before anything is written.
-type EmbeddedLLMTuningRequest struct {
-	// Reset names the knobs to clear back to unset. Keys are the
-	// embedded_llm.tuning YAML keys (see embeddedTuningKnobs); an unknown key
-	// is refused without a write.
-	Reset []string `json:"reset"`
-
-	Context        *EmbeddedLLMContextTuningRequest `json:"context"`
-	KVCacheType    *string                          `json:"kv_cache_type"`
-	Offload        *EmbeddedLLMOffloadTuningRequest `json:"offload"`
-	Fit            *bool                            `json:"fit"`
-	FitTargetMiB   *int                             `json:"fit_target_mib"`
-	FitMinContext  *int                             `json:"fit_min_context"`
-	KVOffload      *bool                            `json:"kv_offload"`
-	MMProjOffload  *bool                            `json:"mmproj_offload"`
-	Packing        *string                          `json:"packing"`
-	Parallel       *int                             `json:"parallel"`
-	CacheRAMMiB    *int                             `json:"cache_ram_mib"`
-	HostReserveGiB *float64                         `json:"host_reserve_gib"`
-}
-
-// The `reset` vocabulary: the embedded_llm.tuning YAML key of every knob, so a
-// request names an override the way config.example.yaml and every validation
-// error already name it. `context` and `offload` are included even though they
-// are composite — one uniform clear mechanism for all twelve knobs beats two.
 const (
-	embeddedTuningKnobContext        = "context"
-	embeddedTuningKnobKVCacheType    = "kv_cache_type"
-	embeddedTuningKnobOffload        = "offload"
-	embeddedTuningKnobFit            = "fit"
-	embeddedTuningKnobFitTargetMiB   = "fit_target_mib"
-	embeddedTuningKnobFitMinContext  = "fit_min_context"
-	embeddedTuningKnobKVOffload      = "kv_offload"
-	embeddedTuningKnobMMProjOffload  = "mmproj_offload"
-	embeddedTuningKnobPacking        = "packing"
-	embeddedTuningKnobParallel       = "parallel"
-	embeddedTuningKnobCacheRAMMiB    = "cache_ram_mib"
-	embeddedTuningKnobHostReserveGiB = "host_reserve_gib"
+	// embeddedOpIdle is the zero value: no embedded operation is in flight and
+	// the gate is free.
+	embeddedOpIdle embeddedOpKind = ""
+	// embeddedOpInstall is the background download/verify/provision run.
+	embeddedOpInstall embeddedOpKind = "install"
+	// embeddedOpRemove is the blocking stop + tree removal + config save.
+	embeddedOpRemove embeddedOpKind = "removal"
 )
-
-// embeddedTuningKnobs is every legal `reset` key, in the order
-// config.TuningConfig declares them. It is the authority behind both the
-// unknown-key refusal and that refusal's message, so the list a caller is told
-// about is the list that is actually checked.
-var embeddedTuningKnobs = []string{
-	embeddedTuningKnobContext,
-	embeddedTuningKnobKVCacheType,
-	embeddedTuningKnobOffload,
-	embeddedTuningKnobFit,
-	embeddedTuningKnobFitTargetMiB,
-	embeddedTuningKnobFitMinContext,
-	embeddedTuningKnobKVOffload,
-	embeddedTuningKnobMMProjOffload,
-	embeddedTuningKnobPacking,
-	embeddedTuningKnobParallel,
-	embeddedTuningKnobCacheRAMMiB,
-	embeddedTuningKnobHostReserveGiB,
-}
-
-// embeddedDevicesDTO maps a measured topology onto the wire shape. It returns
-// an empty slice rather than nil so the boundary always carries an array.
-func embeddedDevicesDTO(topology embeddedllm.MemoryTopology) EmbeddedLLMDevicesDTO {
-	devices := make([]EmbeddedLLMDevice, 0, len(topology.Devices))
-	for _, device := range topology.Devices {
-		devices = append(devices, EmbeddedLLMDevice{
-			Name:        device.Name,
-			Description: device.Description,
-			TotalMiB:    device.TotalMiB,
-			FreeMiB:     device.FreeMiB,
-		})
-	}
-	return EmbeddedLLMDevicesDTO{
-		Devices:         devices,
-		Unified:         topology.Unified,
-		HostRAMGiB:      topology.HostRAMGiB,
-		DeviceBudgetMiB: topology.DeviceBudgetMiB(),
-		HostBudgetMiB:   topology.HostBudgetMiB(),
-		ProbedAt:        topology.ProbedAt,
-	}
-}
-
-// embeddedPlanDTO renders a recorded launch shape. A nil plan (a manifest
-// written before the field existed) yields Recorded=false with every other
-// field zero, which is the DTO's "unknown" — never a plan of zeros that a
-// renderer would read as a decision to run nothing offloaded with no context.
-func embeddedPlanDTO(plan *embeddedllm.MemoryPlan) EmbeddedLLMPlan {
-	dto := EmbeddedLLMPlan{
-		Layers:      -1,
-		CacheRAMMiB: -1,
-		OffloadMode: config.EmbeddedLLMTuningAuto,
-		Notes:       []string{},
-	}
-	if plan == nil {
-		return dto
-	}
-
-	dto.Recorded = true
-	dto.Packing = string(plan.Packing)
-	dto.KVType = string(plan.KVType)
-	dto.ContextSize = plan.ContextSize
-	dto.Fit = plan.Fit
-	dto.FitArg = plan.FitArg()
-	dto.FitTargetMiB = plan.FitTargetMiB
-	dto.FitMinContext = plan.FitMinContext
-	dto.KVOffload = plan.KVOffload
-	dto.MMProjOffload = plan.MMProjOffload
-	dto.Parallel = plan.Parallel
-	dto.GPUFamily = string(plan.GPUFamily)
-	dto.DeviceBudgetMiB = plan.DeviceBudgetMiB
-	dto.HostBudgetMiB = plan.HostBudgetMiB
-	dto.ExpectedDeviceMiB = plan.ExpectedDeviceMiB
-	dto.ExpectedHostMiB = plan.ExpectedHostMiB
-	if plan.CacheRAMMiB != nil {
-		dto.CacheRAMMiB = *plan.CacheRAMMiB
-	}
-	if plan.Layers != nil {
-		dto.Layers = *plan.Layers
-	}
-	if notes := plan.Notes; len(notes) > 0 {
-		dto.Notes = slices.Clone(notes)
-	}
-
-	// The offload mode is DERIVED, not copied: MemoryPlan carries the resolved
-	// `-ngl` (nil = omit the flag), and the operator's vocabulary is the one the
-	// tuning knob uses. Deriving it here keeps the badge beside the number from
-	// ever disagreeing with it.
-	//
-	// `all` deliberately has no label of its own at this boundary. Core spells it
-	// as its own `-ngl` ceiling, a sentinel this layer must not transcribe — so
-	// an offload of every layer renders as `layers` with the count beside it,
-	// which is exactly the flag the runtime receives. Nothing is lost: the
-	// operator's OWN choice is read from GetEmbeddedLLMTuning, where `all` is
-	// spelled `all`. This DTO describes the OUTCOME, and the outcome is a count.
-	switch {
-	case plan.Fit || plan.Layers == nil:
-		dto.OffloadMode = config.EmbeddedLLMTuningAuto
-	case *plan.Layers == 0:
-		dto.OffloadMode = config.EmbeddedLLMOffloadCPU
-	default:
-		dto.OffloadMode = config.EmbeddedLLMOffloadLayers
-	}
-	return dto
-}
-
-// embeddedTuningDTO mirrors the persisted override surface field for field. The
-// pointers are copied rather than shared, so the returned DTO never aliases the
-// live config — a caller may hold it across a config reload without watching
-// its contents change underneath.
-func embeddedTuningDTO(tuning config.TuningConfig) EmbeddedLLMTuningDTO {
-	dto := EmbeddedLLMTuningDTO{
-		Context: EmbeddedLLMContextTuningDTO{
-			Mode:   copyStringPtr(tuning.Context.Mode),
-			Tokens: copyIntPtr(tuning.Context.Tokens),
-		},
-		KVCacheType: copyStringPtr(tuning.KVCacheType),
-		Offload: EmbeddedLLMOffloadTuningDTO{
-			Mode:   copyStringPtr(tuning.Offload.Mode),
-			Layers: copyIntPtr(tuning.Offload.Layers),
-		},
-		Fit:            copyBoolPtr(tuning.Fit),
-		FitTargetMiB:   copyIntPtr(tuning.FitTargetMiB),
-		FitMinContext:  copyIntPtr(tuning.FitMinContext),
-		KVOffload:      copyBoolPtr(tuning.KVOffload),
-		MMProjOffload:  copyBoolPtr(tuning.MMProjOffload),
-		Packing:        copyStringPtr(tuning.Packing),
-		Parallel:       copyIntPtr(tuning.Parallel),
-		CacheRAMMiB:    copyIntPtr(tuning.CacheRAMMiB),
-		HostReserveGiB: copyFloat64Ptr(tuning.HostReserveGiB),
-	}
-	return dto
-}
-
-// copyStringPtr, copyIntPtr, copyBoolPtr and copyFloat64Ptr clone one nullable
-// knob. A shared pointer would let the DTO and the live config alias the same
-// cell, so a later write to one would silently appear in the other.
-func copyStringPtr(v *string) *string {
-	if v == nil {
-		return nil
-	}
-	out := *v
-	return &out
-}
-
-func copyIntPtr(v *int) *int {
-	if v == nil {
-		return nil
-	}
-	out := *v
-	return &out
-}
-
-func copyBoolPtr(v *bool) *bool {
-	if v == nil {
-		return nil
-	}
-	out := *v
-	return &out
-}
-
-func copyFloat64Ptr(v *float64) *float64 {
-	if v == nil {
-		return nil
-	}
-	out := *v
-	return &out
-}
-
-// applyEmbeddedTuningRequest folds a partial patch onto the stored section and
-// returns the result WITHOUT writing it. Validation is the caller's next step,
-// so an invalid patch is rejected before a lock is taken on the write path and
-// before any byte of config.yaml changes.
-//
-// The fold order is Reset-then-set, but a knob named in both is refused rather
-// than resolved by precedence: "clear this" and "set this to that" in one
-// request is a caller bug, and silently picking a winner would hide it.
-func applyEmbeddedTuningRequest(stored config.TuningConfig, req EmbeddedLLMTuningRequest) (config.TuningConfig, error) {
-	reset := make(map[string]bool, len(req.Reset))
-	for _, key := range req.Reset {
-		trimmed := strings.TrimSpace(key)
-		if !slices.Contains(embeddedTuningKnobs, trimmed) {
-			return config.TuningConfig{}, fmt.Errorf(
-				"unknown embedded_llm.tuning knob %q in reset; the legal keys are %s",
-				key, strings.Join(embeddedTuningKnobs, ", "))
-		}
-		if reset[trimmed] {
-			continue
-		}
-		reset[trimmed] = true
-	}
-
-	// The knobs this request also SETS. Checked against the reset list before
-	// anything is folded, so the refusal names every contradiction at once.
-	set := map[string]bool{
-		embeddedTuningKnobContext:        req.Context != nil,
-		embeddedTuningKnobKVCacheType:    req.KVCacheType != nil,
-		embeddedTuningKnobOffload:        req.Offload != nil,
-		embeddedTuningKnobFit:            req.Fit != nil,
-		embeddedTuningKnobFitTargetMiB:   req.FitTargetMiB != nil,
-		embeddedTuningKnobFitMinContext:  req.FitMinContext != nil,
-		embeddedTuningKnobKVOffload:      req.KVOffload != nil,
-		embeddedTuningKnobMMProjOffload:  req.MMProjOffload != nil,
-		embeddedTuningKnobPacking:        req.Packing != nil,
-		embeddedTuningKnobParallel:       req.Parallel != nil,
-		embeddedTuningKnobCacheRAMMiB:    req.CacheRAMMiB != nil,
-		embeddedTuningKnobHostReserveGiB: req.HostReserveGiB != nil,
-	}
-	contradictions := make([]string, 0, len(reset))
-	for key := range reset {
-		if set[key] {
-			contradictions = append(contradictions, key)
-		}
-	}
-	if len(contradictions) > 0 {
-		slices.Sort(contradictions)
-		return config.TuningConfig{}, fmt.Errorf(
-			"the request both resets and sets embedded_llm.tuning.%s; send one or the other",
-			strings.Join(contradictions, ", embedded_llm.tuning."))
-	}
-
-	next := stored
-	for key := range reset {
-		switch key {
-		case embeddedTuningKnobContext:
-			next.Context = config.EmbeddedLLMContextConfig{}
-		case embeddedTuningKnobKVCacheType:
-			next.KVCacheType = nil
-		case embeddedTuningKnobOffload:
-			next.Offload = config.EmbeddedLLMOffloadConfig{}
-		case embeddedTuningKnobFit:
-			next.Fit = nil
-		case embeddedTuningKnobFitTargetMiB:
-			next.FitTargetMiB = nil
-		case embeddedTuningKnobFitMinContext:
-			next.FitMinContext = nil
-		case embeddedTuningKnobKVOffload:
-			next.KVOffload = nil
-		case embeddedTuningKnobMMProjOffload:
-			next.MMProjOffload = nil
-		case embeddedTuningKnobPacking:
-			next.Packing = nil
-		case embeddedTuningKnobParallel:
-			next.Parallel = nil
-		case embeddedTuningKnobCacheRAMMiB:
-			next.CacheRAMMiB = nil
-		case embeddedTuningKnobHostReserveGiB:
-			next.HostReserveGiB = nil
-		}
-	}
-
-	if req.Context != nil {
-		next.Context = config.EmbeddedLLMContextConfig{
-			Mode:   copyStringPtr(req.Context.Mode),
-			Tokens: copyIntPtr(req.Context.Tokens),
-		}
-	}
-	if req.KVCacheType != nil {
-		next.KVCacheType = copyStringPtr(req.KVCacheType)
-	}
-	if req.Offload != nil {
-		next.Offload = config.EmbeddedLLMOffloadConfig{
-			Mode:   copyStringPtr(req.Offload.Mode),
-			Layers: copyIntPtr(req.Offload.Layers),
-		}
-	}
-	if req.Fit != nil {
-		next.Fit = copyBoolPtr(req.Fit)
-	}
-	if req.FitTargetMiB != nil {
-		next.FitTargetMiB = copyIntPtr(req.FitTargetMiB)
-	}
-	if req.FitMinContext != nil {
-		next.FitMinContext = copyIntPtr(req.FitMinContext)
-	}
-	if req.KVOffload != nil {
-		next.KVOffload = copyBoolPtr(req.KVOffload)
-	}
-	if req.MMProjOffload != nil {
-		next.MMProjOffload = copyBoolPtr(req.MMProjOffload)
-	}
-	if req.Packing != nil {
-		next.Packing = copyStringPtr(req.Packing)
-	}
-	if req.Parallel != nil {
-		next.Parallel = copyIntPtr(req.Parallel)
-	}
-	if req.CacheRAMMiB != nil {
-		next.CacheRAMMiB = copyIntPtr(req.CacheRAMMiB)
-	}
-	if req.HostReserveGiB != nil {
-		next.HostReserveGiB = copyFloat64Ptr(req.HostReserveGiB)
-	}
-	return next, nil
-}
-
-// embeddedTuningFingerprint renders a tuning section as a comparable string. It
-// fingerprints the TRANSLATED planner vocabulary rather than the config section,
-// so two spellings that resolve to the same launch shape — an absent
-// `kv_cache_type` and an explicit `auto`, an untrimmed spelling and a canonical
-// one — are the same fingerprint and do not raise a spurious "reload required".
-//
-// It is an in-memory comparison key only: never persisted, never sent over the
-// wire, and never parsed back. A translation failure yields the fingerprint of
-// the all-Auto plan, matching embeddedTuning's own fail-soft, so a section the
-// planner cannot read is not reported as a change from itself.
-func (f *FrontendAPI) embeddedTuningFingerprint() string {
-	tuning := f.embeddedTuning()
-	encoded, err := json.Marshal(tuning)
-	if err != nil {
-		// Unreachable for a struct of scalars, pointers and string slices. A
-		// stable fallback keeps the comparison total rather than panicking on
-		// the status path.
-		f.log().Debug("the embedded LLM tuning fingerprint could not be rendered", "error", err)
-		return "unrenderable"
-	}
-	return string(encoded)
-}
-
-// noteEmbeddedLaunchTuning records which overrides the process behind a
-// supervision transition was launched with. Called from onEmbeddedLLMState, on
-// the goroutine that made the transition.
-//
-// `loading` is the transition to key off, and the ordering inside Server.Load is
-// what makes it correct: launchSpec — which reads the tuning through the
-// Server.Tuning seam — runs BEFORE the loading transition, so the fingerprint
-// taken here is the one the argv being spawned was built from. Every
-// non-resident state clears the record, because after a stop or a removal there
-// is no process to be out of date.
-func (f *FrontendAPI) noteEmbeddedLaunchTuning(state embeddedllm.State) {
-	st := &f.embedded
-	if state != embeddedllm.StateLoading && state != embeddedllm.StateLoaded {
-		st.setLaunchedTuning("", false)
-		return
-	}
-	if state != embeddedllm.StateLoading {
-		// `loaded` follows `loading` in the same run; keep the fingerprint that
-		// run recorded rather than re-reading a config the operator may have
-		// edited mid-load (which would hide the very staleness this exists to
-		// report).
-		return
-	}
-	// Config first, then the record: embeddedTuningFingerprint takes and
-	// releases configMu internally, and infoMu must never be held across it —
-	// the documented lock order is one-directional, (st.mu | st.infoMu) →
-	// configMu.
-	st.setLaunchedTuning(f.embeddedTuningFingerprint(), true)
-}
-
-// embeddedTuningReloadRequired reports whether a resident model was launched
-// with overrides the operator has since changed, i.e. whether the persisted
-// tuning only takes effect on the NEXT load.
-//
-// A missing fingerprint (no resident process, or one this app instance did not
-// start) answers false rather than true: "unknown" must not surface as a demand
-// to reload a model that may already be running exactly what was asked for. The
-// flag is a hint for the operator, not a gate — the launch always reads the live
-// config, so a missed hint costs a stale badge, never a wrong launch.
-func (f *FrontendAPI) embeddedTuningReloadRequired(loading, loaded bool) bool {
-	if !loading && !loaded {
-		return false
-	}
-	launched, ok := f.embedded.launchedTuningFingerprint()
-	if !ok {
-		return false
-	}
-	return launched != f.embeddedTuningFingerprint()
-}
 
 // ---------------------------------------------------------------------------
 // Subsystem state
@@ -991,15 +123,15 @@ func (f *FrontendAPI) embeddedTuningReloadRequired(loading, loaded bool) bool {
 
 // embeddedLLMState is the FrontendAPI-owned bookkeeping of the embedded local
 // model: the storage layout, the supervisor, the installer, the cached install
-// record and the in-flight-install flag. It lives on FrontendAPI as the value
+// record and the operation-busy gate. It lives on FrontendAPI as the value
 // field `embedded`, so the zero value is usable and no construction call is
 // needed before the first RPC.
 //
 // TWO mutexes, deliberately separate:
 //
-//   - mu guards construction and the install-run bookkeeping. It is NEVER held
-//     across a call into the supervisor: core calls OnState synchronously from
-//     the transitioning goroutine and that handler reads the cached install
+//   - mu guards construction and the operation-gate bookkeeping. It is NEVER
+//     held across a call into the supervisor: core calls OnState synchronously
+//     from the transitioning goroutine and that handler reads the cached install
 //     record, so holding mu there would deadlock on the first transition.
 //   - infoMu guards the cached manifest snapshot, the restore-in-progress flag
 //     and the last background failure. It is likewise never held across a
@@ -1021,10 +153,16 @@ type embeddedLLMState struct {
 	// current supervisor or nil. Only embeddedBuild writes it, and it writes the
 	// winner's instance, so a concurrent build publishes one supervisor.
 	loader atomic.Pointer[embeddedllm.Server]
-	// installing is true while a background install run is in flight. It is
-	// the single-run gate: a second InstallEmbeddedLLM is refused instead of
-	// racing the first one for the same staging tree.
-	installing bool
+	// busyOp names the embedded operation currently holding the busy gate, or
+	// embeddedOpIdle when the gate is free. It is the single-run gate for the
+	// WHOLE subsystem, not just for installs: the installer is a plain struct
+	// with no internal synchronization, and Install and Remove write and delete
+	// the same staging/runtime/model trees. An install that starts mid-removal
+	// therefore races the deletion for a half-staged tree (and can complete
+	// after ApplyRemoved, silently re-adding what the user just removed), so
+	// both directions claim the one gate and every gated entry point refuses
+	// while it is held.
+	busyOp embeddedOpKind
 
 	infoMu sync.Mutex
 	// manifest is the cached manifest.json snapshot (the durable install
@@ -1083,6 +221,35 @@ type embeddedLLMState struct {
 	// load-time hook is wired to, so an explicit re-probe and a load-time
 	// re-plan can never disagree about the machine.
 	deviceProbeFn func(ctx context.Context, binaryPath string, logger *slog.Logger) (embeddedllm.MemoryTopology, bool)
+	// stopBudget overrides embeddedStopTimeout on the stop-shaped paths (the
+	// shutdown stop, UnloadEmbeddedLLM, RemoveEmbeddedLLM's stop and the install's
+	// step-0 stop). Zero in production, where the documented const runs; a test
+	// tightens it so the deadline path — a gate an in-flight load holds for
+	// minutes — is observable without waiting the real 30s.
+	stopBudget time.Duration
+}
+
+// embeddedStopBudget resolves the budget every stop-shaped path hands core: the
+// test override when one is set, the documented embeddedStopTimeout otherwise.
+// Three of those paths wrap a context with it; the fourth — a background install's
+// step-0 stop — passes it to core as Installer.StopTimeout, because the install's
+// own context must stay deadline-free for the download.
+//
+// The bound is the whole point of the contract. Core's Stop acquires the
+// supervisor's single-instance gate first, and an in-flight cold load holds that
+// gate for up to DefaultReadyTimeout (15 min); the application context carries no
+// deadline, so an unbounded stop would hang a blocking RPC — and a quit — for the
+// length of the load. Bounding it is what makes core's force path reachable: a
+// budget that expires terminates the child instead of merely reporting that the
+// gate was busy.
+func (f *FrontendAPI) embeddedStopBudget() time.Duration {
+	st := &f.embedded
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.stopBudget > 0 {
+		return st.stopBudget
+	}
+	return embeddedStopTimeout
 }
 
 // installRecord returns the cached manifest snapshot.
@@ -1216,9 +383,24 @@ func (f *FrontendAPI) embeddedBuild() (*embeddedllm.Server, *embeddedllm.Install
 	server.PersistContext = f.persistEmbeddedContext
 	installer := embeddedllm.NewInstaller(layout, logger)
 	installer.Sink = embeddedConfigSink{f: f}
-	// The supervisor owns the process, so the removal stop and the shutdown
-	// stop are the same call — the signatures match by design.
+	// The supervisor owns the process, so the install stop, the removal stop and
+	// the shutdown stop are the same call — the signatures match by design.
+	// Install stops too: a repair retires the runtime tree a resident server
+	// executes from, and that server holds the memory the install's own gate is
+	// about to price.
 	installer.Stop = server.Stop
+	// The install's step-0 stop is the one stop nobody else bounds: the install
+	// runs on the never-deadlined application context, so the budget has to travel
+	// with the seam instead of with a wrapped context. Without it a Load that
+	// claimed the supervisor's single-instance gate before this install did would
+	// park step 0 for the length of that load — up to DefaultReadyTimeout, 15 min —
+	// and step 0 precedes plan, so the operator would watch an install bar at 0%
+	// that never emits a progress event while the operation gate makes every other
+	// embedded call refuse. Bounding it is also what makes core's force path
+	// reachable: an expired budget terminates a resident child rather than waiting
+	// the load out. runEmbeddedInstall re-resolves this onto its per-run copy, so a
+	// tightened test seam is honoured after the first build.
+	installer.StopTimeout = f.embeddedStopBudget()
 
 	// Test seams override the core defaults; production leaves them nil.
 	if st.probeFn != nil {
@@ -1271,10 +453,14 @@ func (f *FrontendAPI) embeddedRestore(server *embeddedllm.Server, layout embedde
 		}
 		st.setInstallRecord(embeddedllm.Manifest{}, false)
 		if f.embeddedConfig().Installed {
-			// The bytes are gone but config.yaml still claims an install. The
-			// generated provider entry is reconciled away on the next config
-			// load; report the mismatch instead of silently serving a model
-			// that cannot start.
+			// The bytes are gone but config.yaml still claims an install.
+			// Nothing reconciles the mismatch away: the generated `embedded`
+			// provider record is regenerated on EVERY config load from
+			// embedded_llm.installed alone (LoadWithResult →
+			// SyncEmbeddedLLMProvider), with no manifest read on that path, so
+			// it survives until a Remove (ApplyRemoved) or a successful
+			// reinstall clears it. Report the mismatch instead of silently
+			// serving a model that cannot start.
 			logger.Warn("embedded_llm.installed is true but no manifest was found; the model needs a reinstall",
 				"path", path)
 		}
@@ -1330,7 +516,16 @@ func (f *FrontendAPI) initEmbeddedLLM() {
 
 // stopEmbeddedLLM stops the supervised server if one is running (Shutdown). It
 // is a no-op when the subsystem was never constructed — nothing can be running
-// then — and idempotent, so calling it twice (or after Cleanup) is safe.
+// then — and idempotent, so calling it twice is safe.
+//
+// The stop is BOUNDED by embeddedStopBudget: core's Stop must first acquire the
+// supervisor's single-instance gate, which an in-flight cold load holds for up to
+// DefaultReadyTimeout, and the shutdown context Wails hands us carries no
+// deadline. The bound is what keeps a quit from hanging for the length of a
+// weight load, and it is what makes core's force path reachable — an expired
+// budget terminates the child instead of merely reporting a busy gate. That
+// matters because the child is detached and the OS will NOT reclaim it when this
+// process exits (see desktop.App.stopEmbeddedLLM).
 func (f *FrontendAPI) stopEmbeddedLLM(ctx context.Context) error {
 	st := &f.embedded
 	st.mu.Lock()
@@ -1342,10 +537,23 @@ func (f *FrontendAPI) stopEmbeddedLLM(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	stopCtx, cancel := context.WithTimeout(ctx, embeddedStopTimeout)
+	budget := f.embeddedStopBudget()
+	stopCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	if err := server.Stop(stopCtx); err != nil {
-		f.log().Error("failed to stop the embedded LLM server", "error", err)
+		// A deadline here has exactly one likely cause worth putting in the log:
+		// the supervisor's single-instance gate was still held by an in-flight
+		// load when the budget ran out. Naming it matters because the child is
+		// DETACHED — an unstopped llama-server outlives this process, keeps its
+		// gigabytes and its loopback port, and nothing persisted identifies it.
+		// Unlike the RPC paths there is no "try again" to advise: this is a quit.
+		if errors.Is(err, context.DeadlineExceeded) {
+			err = fmt.Errorf(
+				"the embedded LLM server did not stop within %s, most likely because a load is still in progress: %w",
+				budget, err)
+		}
+		f.log().Error("failed to stop the embedded LLM server",
+			"error", err, "budget", budget)
 		return err
 	}
 	return nil
@@ -1489,12 +697,31 @@ func (f *FrontendAPI) embeddedTuning() embeddedllm.Tuning {
 // A persistence failure is deliberately NOT fatal: it is returned to core, which
 // logs it and keeps the load successful, because the model is resident and
 // serving and the manifest already carries the corrected value, so the next load
-// retries.
+// retries. The value is range-guarded on both sides before it is written — see
+// config.MaxModelContextWindow.
 func (f *FrontendAPI) persistEmbeddedContext(_ context.Context, contextSize int) error {
 	if contextSize <= 0 {
 		// Core only calls this with a value it read off the server, but the
 		// override treats <= 0 as "leave the existing one alone", and a
 		// non-positive window would fail validate() on the next config load.
+		return nil
+	}
+	if contextSize > config.MaxModelContextWindow {
+		// The CEILING side of the same guard, and the reason it is a range
+		// rather than a sign check. This is the one context figure in the
+		// subsystem that arrives from an external process over HTTP, and the
+		// override it lands in is a TIER-1 value that shadows the tier-1.5 lazy
+		// probe — so a poisoned readback (a squatted loopback port answering
+		// /props with an absurd n_ctx, or a perSlot*slots product that wrapped)
+		// would otherwise be persisted durably, in TWO stores, and never
+		// corrected: an enormous window makes every prompt "fit", so context
+		// compaction silently stops triggering for this model.
+		//
+		// Skipping the write is the fail-soft answer, matching the <= 0 side:
+		// the load stays successful, the model is resident and serving, and the
+		// next load retries the readback.
+		f.log().Warn("ignoring an out-of-range embedded LLM context readback",
+			"context_size", contextSize, "max", config.MaxModelContextWindow)
 		return nil
 	}
 
@@ -1784,13 +1011,25 @@ func (f *FrontendAPI) GetEmbeddedLLMStatus() EmbeddedLLMStatus {
 // additionally raises a runtime_error toast, because no RPC is left to carry
 // it. The install is resumable: verified artifacts are kept as cache hits, so a
 // retry continues where the previous attempt stopped.
+//
+// The background run's first act is core's step-0 stop of a resident server: a
+// repair retires the runtime tree that server executes from — refused outright on
+// Windows while the process is live — and it holds the gigabytes step 2's memory
+// gate is about to price. That stop is bounded by the same embeddedStopTimeout
+// every other stop-shaped path hands core (delivered as Installer.StopTimeout,
+// since the install's own context must stay deadline-free for the download), so a
+// repair clicked during a cold load either takes the model down through core's
+// force path and proceeds, or fails with the translated "a load is still in
+// progress" error. What it never does is park the progress bar at 0% — step 0
+// precedes the plan, and therefore the first progress event — for the length of
+// that load while holding the operation gate.
 func (f *FrontendAPI) InstallEmbeddedLLM() error {
 	server, installer, err := f.embeddedBuild()
 	if err != nil {
 		return err
 	}
-	if !f.beginEmbeddedInstall() {
-		return errors.New("an embedded LLM install is already running")
+	if claimed, holder := f.beginEmbeddedOperation(embeddedOpInstall); !claimed {
+		return embeddedBusyRefusal(holder, embeddedOpInstall, "starting an install")
 	}
 
 	// The MEMORY GATE runs HERE, synchronously: a refusal the caller only
@@ -1806,13 +1045,38 @@ func (f *FrontendAPI) InstallEmbeddedLLM() error {
 	// instead of a flat RAM floor: an unreadable ACCELERATOR budget degrades
 	// rather than refuses, while an unreadable RAM total still does
 	// (ErrRAMUnknown), because the host budget is derived from it on every path.
+	hw, err := f.embeddedInstallPreflight()
+	if err != nil {
+		return err
+	}
+
+	go f.runEmbeddedInstall(server, installer, hw)
+	return nil
+}
+
+// embeddedInstallPreflight runs the two synchronous install gates — the bounded
+// hardware probe and the combined memory refusal — for a caller that already
+// holds the operation gate. Every failure path releases that gate through
+// refuseEmbeddedInstall before returning, including a PANIC in either gate: the
+// background run's release defer does not exist until its goroutine starts, so
+// an unguarded panic here would leave the gate claimed for the process lifetime
+// and every embedded RPC refusing until a restart — the same unrecoverable
+// outcome runEmbeddedInstall's own recover exists to prevent.
+func (f *FrontendAPI) embeddedInstallPreflight() (hw embeddedllm.Hardware, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicErr := fmt.Errorf("the embedded LLM install panicked before it started: %v", r)
+			f.refuseEmbeddedInstall(panicErr)
+			hw, err = embeddedllm.Hardware{}, panicErr
+		}
+	}()
 	probeCtx, cancel := context.WithTimeout(f.ctx(), embeddedProbeTimeout)
 	defer cancel()
-	hw, err := f.embeddedProbe(probeCtx)
+	hw, err = f.embeddedProbe(probeCtx)
 	if err != nil {
 		refusal := fmt.Errorf("the embedded LLM install was refused: %w", err)
 		f.refuseEmbeddedInstall(refusal)
-		return refusal
+		return hw, refusal
 	}
 	if err := embeddedllm.CheckMemoryBudget(embeddedllm.ResolveInput{
 		MachineProfile: embeddedllm.MachineProfile{
@@ -1823,31 +1087,53 @@ func (f *FrontendAPI) InstallEmbeddedLLM() error {
 	}); err != nil {
 		refusal := fmt.Errorf("the embedded LLM install was refused: %w", err)
 		f.refuseEmbeddedInstall(refusal)
-		return refusal
+		return hw, refusal
 	}
-
-	go f.runEmbeddedInstall(server, installer, hw)
-	return nil
+	return hw, nil
 }
 
 // RemoveEmbeddedLLM stops a running server and removes the runtime, the weights
 // and the manifest, then clears the backend-owned provider record (migrating
 // llm.default_model off the embedded composite in the same operation).
 //
-// Blocking: the work is local file removal plus a config save. Verified
-// artifacts of an unrelated component are never touched, and the flat
-// embedding-model files sharing <agentDir>/models survive.
+// Blocking, and BOUNDED: the work is local file removal plus a config save, but
+// it starts with a supervisor stop that must first acquire the single-instance
+// gate — which an in-flight load holds for up to the supervisor's ready budget
+// (minutes). The app context has no deadline, so the stop runs under
+// embeddedStopTimeout instead. That budget bounds the GATE WAIT, not the whole
+// stop: when it expires with a child still live, core's force path arms its own
+// budget, terminates the child and returns success, so the call finishes bounded
+// (rather than hanging the RPC and its UI spinner for the length of a cold weight
+// load) and the TRANSLATED "a load is still in progress" error comes back only
+// when no child had spawned yet.
+//
+// It is NOT the only actionable error this call returns. A stop that did not take
+// is reported by core's terminate, and the work that FOLLOWS the stop — the three
+// tree deletions and Sink.ApplyRemoved, joined — returns its own errors when the
+// tree is read-only or busy, with no child involved at all.
+//
+// It also holds the embedded-operation gate for its whole duration, so an
+// install cannot start mid-removal and race the tree deletion (see
+// embeddedLLMState.busyOp). Verified artifacts of an unrelated component are
+// never touched, and the flat embedding-model files sharing <agentDir>/models
+// survive.
 func (f *FrontendAPI) RemoveEmbeddedLLM() error {
 	server, installer, err := f.embeddedBuild()
 	if err != nil {
 		return err
 	}
-	if f.embeddedInstalling() {
-		return errors.New("an embedded LLM install is running; wait for it to finish before removing the model")
+	claimed, holder := f.beginEmbeddedOperation(embeddedOpRemove)
+	if !claimed {
+		return embeddedBusyRefusal(holder, embeddedOpRemove, "removing the model")
 	}
+	defer f.endEmbeddedOperation()
 	f.embedded.setError(nil)
 
-	if err := installer.Remove(f.ctx()); err != nil {
+	budget := f.embeddedStopBudget()
+	removeCtx, cancel := context.WithTimeout(f.ctx(), budget)
+	defer cancel()
+	if err := installer.Remove(removeCtx); err != nil {
+		err = embeddedBoundedStopErr("the local model removal", err, budget)
 		f.embedded.setError(err)
 		f.log().Error("embedded LLM removal failed", "error", err)
 		f.emitEmbeddedRuntimeError(embeddedErrCodeRemove,
@@ -1888,8 +1174,8 @@ func (f *FrontendAPI) LoadEmbeddedLLM() error {
 	if err != nil {
 		return err
 	}
-	if f.embeddedInstalling() {
-		return errors.New("an embedded LLM install is running; wait for it to finish before loading the model")
+	if op := f.embeddedBusyOperation(); op != embeddedOpIdle {
+		return embeddedBusyRefusal(op, embeddedOpIdle, "loading the model")
 	}
 	f.embedded.setError(nil)
 
@@ -1908,15 +1194,59 @@ func (f *FrontendAPI) LoadEmbeddedLLM() error {
 // RAM/VRAM. The bytes stay on disk, so the state afterwards is "installed"
 // (unloaded) and a later Load restarts it without a download.
 //
-// Blocking and idempotent: unloading a model that is not resident succeeds. A
-// stop that did not take is reported as an error and keeps the state honest
-// (error) instead of claiming the memory was released.
+// Blocking, idempotent and BOUNDED: unloading a model that is not resident
+// succeeds. A stop that did not take is reported as an error and keeps the
+// state honest (error) instead of claiming the memory was released. The
+// supervisor's single-instance gate is held by an in-flight load for up to its
+// ready budget (minutes) and the app context carries no deadline, so the stop
+// runs under embeddedStopTimeout. That budget bounds the GATE WAIT, not the whole
+// stop: when it expires with a child still live, core's force path arms its own
+// budget, terminates the child and returns success, so the RPC and its UI spinner
+// stay bounded instead of hanging for the length of a cold weight load, and the
+// TRANSLATED "a load is still in progress" error comes back only when no child
+// had spawned yet — the one case where the gate timeout is the whole truth. The
+// stop that did not take, described above, stays an error of its own on BOTH the
+// gated and the force path; the scoping is about that one translation, not about
+// every error this RPC can return.
+//
+// Refused while an install or removal holds the subsystem-wide operation gate,
+// for uniformity with Load, the probe and the request-path loader: during those
+// operations nothing can be resident (the holder's own step-0 or removal stop
+// already ran), so the unload would be a no-op — but one refusal rule for every
+// reader keeps the contract a single sentence and stays correct if an install
+// flow ever ends by auto-loading.
 func (f *FrontendAPI) UnloadEmbeddedLLM() error {
 	server, _, err := f.embeddedBuild()
 	if err != nil {
 		return err
 	}
-	return server.Unload(f.ctx())
+	if op := f.embeddedBusyOperation(); op != embeddedOpIdle {
+		return embeddedBusyRefusal(op, embeddedOpIdle, "unloading the model")
+	}
+	budget := f.embeddedStopBudget()
+	unloadCtx, cancel := context.WithTimeout(f.ctx(), budget)
+	defer cancel()
+	if err := server.Unload(unloadCtx); err != nil {
+		return embeddedBoundedStopErr("the local model unload", err, budget)
+	}
+	return nil
+}
+
+// embeddedBoundedStopErr translates a bounded stop/unload/removal failure into
+// an actionable one. Only the deadline case is translated, and only because its
+// cause is known: the supervisor's single-instance gate is still held by a load
+// that started before this call, so the operator is told what the wait is and
+// that retrying once the load settles is the fix. Every other failure is
+// returned as core reported it. The original error stays wrapped so
+// errors.Is(err, context.DeadlineExceeded) keeps working for callers.
+func embeddedBoundedStopErr(op string, err error, budget time.Duration) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf(
+			"%s did not finish within %s, most likely because a load is still in progress: "+
+				"wait for the model to report loaded or error, then try again: %w",
+			op, budget, err)
+	}
+	return err
 }
 
 // SetEmbeddedLLMAutoUnload persists the idle-unload policy
@@ -1924,13 +1254,18 @@ func (f *FrontendAPI) UnloadEmbeddedLLM() error {
 // timer is re-armed against the existing activity stamp while the model is
 // loaded, and disarmed when the policy is off.
 //
-// minutes must be at least 1 — the same rule config validation enforces, so a
-// rejected value never reaches config.yaml. The setting is an operator
-// preference, not install state: it survives a removal and applies to the next
-// install.
+// minutes must be within 1..embeddedllm.MaxAutoUnloadMinutes — the same rule
+// config validation enforces, so a rejected value never reaches config.yaml.
+// The ceiling is not a tuning opinion: past it the minutes→nanoseconds multiply
+// overflows int64 and the wrapped result can be a short positive budget, so an
+// "effectively never" value would silently invert into "unload immediately".
+// The setting is an operator preference, not install state: it survives a
+// removal and applies to the next install.
 func (f *FrontendAPI) SetEmbeddedLLMAutoUnload(enabled bool, minutes int) error {
-	if minutes < 1 {
-		return fmt.Errorf("the auto-unload budget must be at least 1 minute (got %d)", minutes)
+	if minutes < 1 || minutes > embeddedllm.MaxAutoUnloadMinutes {
+		return fmt.Errorf(
+			"embedded_llm.auto_unload.minutes %d is not valid; must be within 1-%d",
+			minutes, embeddedllm.MaxAutoUnloadMinutes)
 	}
 
 	server, _, err := f.embeddedBuild()
@@ -1949,21 +1284,26 @@ func (f *FrontendAPI) SetEmbeddedLLMAutoUnload(enabled bool, minutes int) error 
 		f.configMu.Unlock()
 		return errors.New("config not initialized")
 	}
-	previous := f.config.EmbeddedLLM.AutoUnload
+	// Snapshot the whole section, not just AutoUnload: saveOrRollback is the
+	// shared tail every embedded config write ends in, and it restores the pair
+	// it is given. AutoUnload is the only field mutated here, and the mutation
+	// REPLACES the struct with fresh pointers, so the snapshot's own pointers
+	// are untouched by it.
+	previousLLM := f.config.LLM
+	previousEmbedded := f.config.EmbeddedLLM
 	enabledValue, minutesValue := enabled, minutes
 	f.config.EmbeddedLLM.AutoUnload = config.AutoUnloadConfig{
 		Enabled: &enabledValue,
 		Minutes: &minutesValue,
 	}
-	// Persist under configMu so a failed write restores the exact prior value
-	// before any reader observes the new one (the UpdateLLMConfig pattern).
-	if err := config.Save(f.config, f.configPath); err != nil {
-		f.config.EmbeddedLLM.AutoUnload = previous
-		f.configMu.Unlock()
-		return fmt.Errorf("failed to persist the auto-unload setting: %w", err)
+	// The shared tail: one save-or-rollback path rather than a per-method
+	// variation on one. It persists under configMu (so a failed write restores
+	// the exact prior value before any reader observes the new one — the
+	// UpdateLLMConfig pattern), clears configLoadErrors like every sibling
+	// write, releases configMu and emits config:updated.
+	if err := (embeddedConfigSink{f: f}).saveOrRollback(previousLLM, previousEmbedded); err != nil {
+		return err
 	}
-	f.configMu.Unlock()
-	f.emitConfigUpdated()
 
 	if server != nil {
 		server.SetAutoUnload(embeddedllm.NewAutoUnload(enabled, minutes))
@@ -1972,252 +1312,77 @@ func (f *FrontendAPI) SetEmbeddedLLMAutoUnload(enabled bool, minutes int) error 
 	return nil
 }
 
-// GetEmbeddedLLMTuning returns the operator's persisted memory-plan overrides
-// (embedded_llm.tuning), field for field, with nil meaning "unset — the planner
-// decides".
-//
-// Unlike GetEmbeddedLLMStatus this getter DOES return an error, and the reason is
-// the one case it has: before startup there is no config to read, and the
-// fail-soft answer an error-free signature would force — an all-nil DTO — is
-// indistinguishable from "the operator overrode nothing". An editor rendering
-// that would then offer a Save button whose click WIPES the real tuning. A
-// getter that cannot read the truth must not fabricate one, so the missing
-// config is reported instead.
-//
-// It performs no network I/O, no hardware probe and no translation: this is the
-// OVERRIDE, not the outcome. The resolved launch shape — what these knobs
-// actually produced — is EmbeddedLLMStatus.Plan.
-func (f *FrontendAPI) GetEmbeddedLLMTuning() (EmbeddedLLMTuningDTO, error) {
-	f.configMu.RLock()
-	if f.config == nil {
-		f.configMu.RUnlock()
-		return EmbeddedLLMTuningDTO{}, errors.New("config not initialized")
-	}
-	tuning := f.config.EmbeddedLLM.Tuning
-	f.configMu.RUnlock()
-
-	return embeddedTuningDTO(tuning), nil
-}
-
-// SetEmbeddedLLMTuning writes a PARTIAL update of embedded_llm.tuning: a nil
-// field keeps the stored value, a present field replaces it verbatim, and a knob
-// named in Reset is cleared back to unset. See EmbeddedLLMTuningRequest for the
-// three-state encoding and why Reset exists.
-//
-// An invalid patch is refused WITHOUT A WRITE. The whole fold-validate-write
-// sequence runs under configMu, so the section it validated is byte-for-byte the
-// section it persists — there is no window in which a concurrent writer could
-// substitute a different stored tuning between the two. Validation is
-// `TuningConfig.ToTuning`, the single translation config.validate() itself
-// delegates to, so "the RPC accepted it" and "the next config load accepts it"
-// are the same statement and a refused key can never reach config.yaml. The
-// error names the offending key and lists every legal spelling.
-//
-// A failed persist rolls the in-memory state back through the shared
-// save-or-rollback tail, so a rejected write and a failed write are
-// indistinguishable from the caller's side. A patch that changes nothing is a
-// success with no write at all: no config.yaml rewrite, no config:updated, no
-// router rebuild — the same no-op-no-write rule the load-path context persist
-// follows.
-//
-// THE RESIDENT MODEL IS NOT RESTARTED, AND THAT IS THE DECISION, NOT AN
-// OMISSION. Every tuning knob is a launch flag (`-c`, `-ngl`, `-ctk`/`-ctv`,
-// `-fit`, `-np`, `-cram`, `-kvo`, `--mmproj-offload`), so a change can only take
-// effect on the NEXT load — and a load of a 6–8 GiB weight file takes minutes
-// and drops every in-flight request. Restarting one because an operator moved a
-// slider in Settings would be a multi-minute denial of service with no
-// confirmation behind it, and doing it silently is worse than not doing it. So
-// this method persists, reports, and leaves the timing to the operator:
-// EmbeddedLLMStatus.reload_required says whether the running process predates
-// the stored tuning, and UnloadEmbeddedLLM followed by LoadEmbeddedLLM (or the
-// next launch, or the next app start) applies it. An operator who wants the
-// change NOW has an explicit, already-bound two-click path for it.
-//
-// The write ends on the same tail as every other embedded-LLM config mutation:
-// atomic save-or-rollback, config:updated, then the judge/router rebuild that
-// keeps the in-memory router in step with the file just written. The rebuild is
-// idempotent here — no tuning knob feeds the generated provider record — and is
-// done anyway so this surface has ONE tail rather than a per-method variation on
-// one.
-//
-// Tuning is an operator SETTING, not install state: it survives a removal,
-// applies to the next install, and this method does not require the model to be
-// installed.
-func (f *FrontendAPI) SetEmbeddedLLMTuning(req EmbeddedLLMTuningRequest) error {
-	server, _, err := f.embeddedBuild()
-	if err != nil {
-		// The subsystem being unavailable is not a reason to lose the
-		// operator's tuning: persist it, and report the supervisor problem
-		// through the missing state event rather than by dropping the write.
-		// Mirrors SetEmbeddedLLMAutoUnload.
-		f.log().Warn("embedded LLM subsystem unavailable; persisting the tuning only", "error", err)
-		server = nil
-	}
-
-	// saveMu FIRST (the documented saveMu → configMu order), so this write is
-	// serialized against the install/remove sink writes and against every other
-	// whole-config save.
-	f.saveMu.Lock()
-	defer f.saveMu.Unlock()
-
-	sink := embeddedConfigSink{f: f}
-
-	f.configMu.Lock()
-	if f.config == nil {
-		f.configMu.Unlock()
-		return errors.New("config not initialized")
-	}
-
-	stored := f.config.EmbeddedLLM.Tuning
-	next, err := applyEmbeddedTuningRequest(stored, req)
-	if err != nil {
-		f.configMu.Unlock()
-		return err
-	}
-	// Translate BEFORE writing: this is the same check validate() runs on load,
-	// so a patch that would make config.yaml unloadable is refused while the
-	// file is still intact.
-	if _, terr := next.ToTuning(); terr != nil {
-		f.configMu.Unlock()
-		return fmt.Errorf("invalid embedded LLM tuning: %w", terr)
-	}
-	if reflect.DeepEqual(next, stored) {
-		// Nothing moved. A no-op must not rewrite config.yaml, emit
-		// config:updated or rebuild the router: all three would tell the app a
-		// change happened that did not.
-		f.configMu.Unlock()
-		return nil
-	}
-
-	previousLLM := f.config.LLM
-	previousEmbedded := f.config.EmbeddedLLM
-	f.config.EmbeddedLLM.Tuning = next
-	// saveOrRollback is called with configMu HELD and releases it: on success it
-	// emits config:updated, on failure it restores both sections so a reader
-	// never observes a tuning the file does not carry.
-	if err := sink.saveOrRollback(previousLLM, previousEmbedded); err != nil {
-		return err
-	}
-
-	f.rebuildAfterEmbeddedConfigChange()
-	if server != nil {
-		// One explicit snapshot so the UI re-reads status and picks up the
-		// reload_required this write may have just set. The store's contract is
-		// invalidate-and-re-read, not patch, so an event is enough.
-		f.emitEmbeddedStateFrom(server)
-	}
-	return nil
-}
-
-// ProbeEmbeddedLLMDevices measures THIS machine's accelerator memory on demand
-// and returns the topology: the device inventory, whether the pool is unified
-// with host RAM, and the two budgets a fit decision may spend.
-//
-// It exists because the topology EmbeddedLLMStatus reports is a RECORDED
-// snapshot taken at provision time, and a snapshot goes stale: a GPU appears or
-// disappears, a driver updates, another process takes the memory. The supervisor
-// already re-measures opportunistically on every load, but that measurement is
-// fail-soft and invisible, so an operator diagnosing "why did it plan this
-// shape?" needs a way to ask directly and to see a REFUSAL rather than a silent
-// fallback.
-//
-// This is the one embedded-LLM read that is allowed to be slow and to fail, and
-// therefore the one that returns an error: it spawns the provisioned
-// llama-server with --list-devices, and a probe that does not answer is reported
-// as the actionable failure it is instead of being rendered as a machine with no
-// accelerator. Core's ProbeDevices is fail-soft by contract — a load must not
-// fail because a driver query wedged — and this RPC converts exactly that
-// (zero, false) into an error, because here nothing depends on the load and
-// everything depends on the answer being real.
-//
-// It does NOT persist anything and does NOT re-plan: the measurement is returned
-// to the caller and discarded. The install record keeps the snapshot the plan
-// was actually made from, so a support bundle still describes the decision
-// rather than the machine as it happens to look now.
-//
-// Requires an installed runtime — the probe asks the provisioned binary, which
-// is the only source that agrees with the runtime's own allocation decisions —
-// and is refused while an install is in flight, because a half-staged runtime
-// tree has no trustworthy binary to ask.
-func (f *FrontendAPI) ProbeEmbeddedLLMDevices() (EmbeddedLLMDevicesDTO, error) {
-	server, _, err := f.embeddedBuild()
-	if err != nil {
-		return EmbeddedLLMDevicesDTO{}, err
-	}
-	if f.embeddedInstalling() {
-		return EmbeddedLLMDevicesDTO{}, errors.New(
-			"an embedded LLM install is running; wait for it to finish before probing the devices")
-	}
-
-	manifest, ok := f.embedded.installRecord()
-	if !ok {
-		return EmbeddedLLMDevicesDTO{}, errors.New(
-			"the embedded LLM is not installed — the device probe asks the provisioned runtime, so install it first")
-	}
-
-	runtimeDir, err := server.Layout.RuntimeDir(manifest.Backend)
-	if err != nil {
-		return EmbeddedLLMDevicesDTO{}, fmt.Errorf("the embedded LLM runtime tree is unusable: %w", err)
-	}
-	// The supervisor's own HostOS override, so a test (or a future cross-host
-	// probe) resolves the same binary name the launch would. Empty means host.
-	binary, err := embeddedllm.ServerBinaryPath(runtimeDir, server.HostOS)
-	if err != nil {
-		return EmbeddedLLMDevicesDTO{}, fmt.Errorf("the embedded LLM runtime binary is missing: %w", err)
-	}
-
-	ctx, cancel := context.WithTimeout(f.ctx(), embeddedProbeTimeout)
-	defer cancel()
-
-	logger := f.log().With("subsystem", "embedded_llm")
-	topology, ok := f.embedded.deviceProber()(ctx, binary, logger)
-	if !ok {
-		// Fail-soft in core, actionable here. The cause is already at Debug in
-		// the probe; this is the operator-facing half, and it deliberately does
-		// not guess which of "no binary", "wedged driver" or "unparseable
-		// output" it was.
-		logger.Warn("the embedded LLM device probe did not answer", "binary", binary)
-		return EmbeddedLLMDevicesDTO{}, errors.New(
-			"the device probe did not answer: the provisioned runtime reported no recognizable accelerator inventory (see the debug log for the cause)")
-	}
-
-	logger.Debug("embedded LLM device probe answered on demand",
-		"devices", len(topology.Devices), "unified", topology.Unified,
-		"device_budget_mib", topology.DeviceBudgetMiB(), "host_budget_mib", topology.HostBudgetMiB())
-	return embeddedDevicesDTO(topology), nil
-}
-
 // ---------------------------------------------------------------------------
 // Background install run
 // ---------------------------------------------------------------------------
 
-// beginEmbeddedInstall claims the single install slot. False means a run is
-// already in flight.
-func (f *FrontendAPI) beginEmbeddedInstall() bool {
+// beginEmbeddedOperation claims the single embedded-operation gate for kind.
+// claimed=false means another embedded operation (an install OR a removal) is
+// already in flight and the caller must refuse; holder names it, read under the
+// same lock acquisition so a refusal can never race the other operation's
+// release and name nothing. See embeddedLLMState.busyOp for why the two
+// directions share one gate.
+func (f *FrontendAPI) beginEmbeddedOperation(kind embeddedOpKind) (claimed bool, holder embeddedOpKind) {
 	st := &f.embedded
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if st.installing {
-		return false
+	if st.busyOp != embeddedOpIdle {
+		return false, st.busyOp
 	}
-	st.installing = true
-	return true
+	st.busyOp = kind
+	return true, embeddedOpIdle
 }
 
-// embeddedInstalling reports whether a background install run is in flight.
-func (f *FrontendAPI) embeddedInstalling() bool {
+// embeddedBusyOperation returns the kind of the embedded operation holding the
+// gate, or embeddedOpIdle when it is free.
+func (f *FrontendAPI) embeddedBusyOperation() embeddedOpKind {
 	st := &f.embedded
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return st.installing
+	return st.busyOp
 }
 
-// endEmbeddedInstall releases the install slot.
-func (f *FrontendAPI) endEmbeddedInstall() {
+// embeddedInstalling reports whether a background INSTALL run is in flight.
+//
+// This is the narrow predicate, deliberately: it is what
+// EmbeddedLLMStatus.Installing reports, and the frontend renders that field as
+// the per-component install progress bar. A removal holds the same gate but
+// must not light an install bar, so it is visible only through
+// embeddedBusyOperation.
+func (f *FrontendAPI) embeddedInstalling() bool {
+	return f.embeddedBusyOperation() == embeddedOpInstall
+}
+
+// endEmbeddedOperation releases the embedded-operation gate.
+func (f *FrontendAPI) endEmbeddedOperation() {
 	st := &f.embedded
 	st.mu.Lock()
-	st.installing = false
+	st.busyOp = embeddedOpIdle
 	st.mu.Unlock()
+}
+
+// embeddedBusyRefusal builds the actionable refusal every gated entry point
+// returns while an embedded operation holds the single-run gate. It names the
+// in-flight operation (holder) and the action that was refused, so the message
+// stays true whether an install or a removal is what is running.
+//
+// wanted is the operation the CALLER asked for, and it decides the wording:
+// "already running" is true only when the gate is held by that same operation.
+// An install refused by an in-flight removal must not claim another install is
+// already running — there is none — and the string is rendered verbatim in the
+// Settings error line, so a wrong noun reads as a bug to the operator. For the
+// same reason `refused` must be phrased so it is true in BOTH cases.
+//
+// A caller that is not itself a gate-holding operation (LoadEmbeddedLLM,
+// UnloadEmbeddedLLM, ProbeEmbeddedLLMDevices and the request-path loader seam)
+// passes embeddedOpIdle as wanted and always gets the plain wording.
+func embeddedBusyRefusal(holder, wanted embeddedOpKind, refused string) error {
+	if holder == wanted {
+		return fmt.Errorf("an embedded LLM %s is already running; wait for it to finish before %s",
+			string(holder), refused)
+	}
+	return fmt.Errorf("an embedded LLM %s is running; wait for it to finish before %s",
+		string(holder), refused)
 }
 
 // embeddedProbe runs the hardware probe through the seam (production:
@@ -2231,15 +1396,30 @@ func (f *FrontendAPI) embeddedProbe(ctx context.Context) (embeddedllm.Hardware, 
 
 // runEmbeddedInstall performs the download/verify/extract/provision run on a
 // background goroutine. ctx is the APPLICATION context, not the RPC's: the run
-// must outlive the call that started it and stop only when the app quits.
+// must outlive the call that started it and stop only when the app quits. The
+// step-0 stop is the exception — it runs under embeddedStopBudget, handed to core
+// as Installer.StopTimeout, because that context carries no deadline and the
+// supervisor's gate is exactly the thing a cold load holds for minutes.
 func (f *FrontendAPI) runEmbeddedInstall(server *embeddedllm.Server, installer *embeddedllm.Installer, hw embeddedllm.Hardware) {
+	// The gate release is a DEFER, and it is registered FIRST so it runs LAST
+	// (defers are LIFO, after the panic report below): an observer reads the
+	// gate as "the run is over", so every effect of the run — the config save,
+	// the supervisor state, the completion event and a panic's failure report —
+	// must already be visible through this mutex by the time it flips.
+	//
+	// It is a defer rather than an explicit call on each exit path because the
+	// release must not be reachable-or-not by accident. `run.Install` can block
+	// indefinitely (its ctx is the never-cancelled application context) and any
+	// future return added below would inherit the obligation; a leaked gate is
+	// unrecoverable for the process lifetime — Install, Remove, Load, Unload,
+	// Probe and the request-path loader would all refuse until a restart.
+	defer f.endEmbeddedOperation()
 	defer func() {
 		if r := recover(); r != nil {
 			err := fmt.Errorf("the embedded LLM install panicked: %v", r)
 			f.log().Error("panic during the embedded LLM install", "panic", r)
 			f.failEmbeddedInstall(err)
 			f.emitEmbeddedStateFrom(server)
-			f.endEmbeddedInstall()
 		}
 	}()
 
@@ -2254,6 +1434,27 @@ func (f *FrontendAPI) runEmbeddedInstall(server *embeddedllm.Server, installer *
 	// struct of injectable fields with no internal synchronization.
 	run := *installer
 	run.Probe = func(context.Context, *slog.Logger) (embeddedllm.Hardware, error) { return hw, nil }
+	// Step 0's stop budget is resolved PER RUN, exactly as the three other
+	// stop-shaped paths resolve theirs per call, rather than frozen at
+	// construction: ctx below is the application context and carries no deadline,
+	// so this is the only bound between a repair click and a wait for the length of
+	// an in-flight cold load — and its expiry is what makes core's force path
+	// reachable, which terminates a resident model instead of reporting a busy
+	// gate.
+	stopBudget := f.embeddedStopBudget()
+	run.StopTimeout = stopBudget
+	if stop := run.Stop; stop != nil {
+		// Translated on this run's own copy of the seam and NOT on the shared
+		// installer, so RemoveEmbeddedLLM's stop keeps handing core's error to that
+		// call's own translation — wrapping both would name one removal twice. A
+		// step-0 deadline has exactly one likely cause worth acting on: the
+		// supervisor's single-instance gate was still held by a load that started
+		// before this install, which is also the only case with no child for the
+		// force path to kill.
+		run.Stop = func(stopCtx context.Context) error {
+			return embeddedBoundedStopErr("the pre-install stop", stop(stopCtx), stopBudget)
+		}
+	}
 
 	opts := embeddedllm.InstallOptions{
 		Platform: hw.Platform,
@@ -2281,7 +1482,6 @@ func (f *FrontendAPI) runEmbeddedInstall(server *embeddedllm.Server, installer *
 	if err != nil {
 		f.failEmbeddedInstall(err)
 		f.emitEmbeddedStateFrom(server)
-		f.endEmbeddedInstall()
 		return
 	}
 
@@ -2304,27 +1504,23 @@ func (f *FrontendAPI) runEmbeddedInstall(server *embeddedllm.Server, installer *
 		"guards", embeddedGuardIDs(report.Guards),
 		"port", report.Manifest.Port, "context_size", report.Manifest.ContextSize)
 	f.emitEmbeddedStateFrom(server)
-	// The slot is released LAST: it is what an observer (the status RPC, the
-	// UI) reads as "the run is over", so every effect of the run — the config
-	// save, the supervisor state and the completion event — is already visible
-	// through this mutex by the time it flips.
-	f.endEmbeddedInstall()
 }
 
-// refuseEmbeddedInstall releases the install slot and records a SYNCHRONOUS
-// refusal (the single-run gate, an unreadable hardware probe, the combined
-// memory gate). It raises no toast: the RPC returns the error to its caller, which is
-// the report, and a toast on top of it would say the same thing twice.
+// refuseEmbeddedInstall releases the embedded-operation gate and records a
+// SYNCHRONOUS refusal (the single-run gate, an unreadable hardware probe, the
+// combined memory gate). It raises no toast: the RPC returns the error to its
+// caller, which is the report, and a toast on top of it would say the same
+// thing twice.
 func (f *FrontendAPI) refuseEmbeddedInstall(err error) {
-	f.endEmbeddedInstall()
+	f.endEmbeddedOperation()
 	f.embedded.setError(err)
 	f.log().Warn("embedded LLM install refused", "error", err)
 }
 
 // failEmbeddedInstall records a BACKGROUND failure: the cause is kept for the
 // status/event error field, and a runtime_error toast is raised because no RPC
-// is left to carry it. The caller releases the install slot afterwards, so the
-// failure is fully reported before the run looks finished.
+// is left to carry it. The deferred gate release in runEmbeddedInstall runs
+// afterwards, so the failure is fully reported before the run looks finished.
 func (f *FrontendAPI) failEmbeddedInstall(err error) {
 	f.embedded.setError(err)
 	f.log().Error("embedded LLM install failed", "error", err)
@@ -2492,8 +1688,9 @@ func (s embeddedConfigSink) saveOrRollback(previousLLM config.LLMConfig, previou
 //
 // The indirection resolves the supervisor at CALL time instead of at build
 // time, so the transport can be attached before the supervisor exists and still
-// reach the real one later. Reads are a single atomic load: no mutex, no
-// configMu re-entry, no change to the lock order.
+// reach the real one later. The supervisor read is a single atomic load and the
+// operation-gate read is one short st.mu acquisition — neither takes configMu,
+// so the lock order is unchanged (see Load).
 type embeddedLoaderRef struct {
 	f *FrontendAPI
 }
@@ -2503,7 +1700,24 @@ type embeddedLoaderRef struct {
 // local work and takes configMu.RLock internally, which is safe here: a request
 // goroutine holds no configMu, so neither lock-order rule nor self-deadlock
 // applies.
+//
+// It REFUSES while the embedded-operation gate is held — a background install
+// or a removal is in flight. This is the seam all three ungated request paths
+// converge on (the service-LLM gate, the router's Loader default and the
+// ensure-loaded transport), so refusing here closes all three at once: without
+// it a chat message arriving during a repair/reinstall cold-loads the OLD
+// install, and the install's promote step then renames and deletes the tree the
+// child is executing from (its working directory is that tree). The refusal is
+// an error, not a wait: the caller reports it and the request is retryable,
+// whereas waiting would charge a multi-gigabyte download to a request budget.
+//
+// Taking st.mu here is safe for the same reason embeddedBuild's is: no caller
+// holds configMu. Every path in is a request goroutine (transport, service
+// gate) whose only configMu use — activeModelIsEmbedded — has already returned.
 func (r embeddedLoaderRef) Load(ctx context.Context) error {
+	if op := r.f.embeddedBusyOperation(); op != embeddedOpIdle {
+		return embeddedBusyRefusal(op, embeddedOpIdle, "loading the model for a request")
+	}
 	server := r.f.embedded.loader.Load()
 	if server == nil {
 		built, _, err := r.f.embeddedBuild()
@@ -2527,14 +1741,79 @@ func (r embeddedLoaderRef) MarkActivity() {
 	}
 }
 
-// The ref satisfies the core seam; the assertion keeps the wiring honest if
-// either side drifts.
-var _ embeddedllm.Loader = embeddedLoaderRef{}
+// BeginRequest and EndRequest bracket one in-flight request on the supervisor's
+// counter, which is what lets the idle path DEFER an expiry that lands
+// mid-generation instead of stopping llama-server out from under its own
+// response (see embeddedllm.RequestTracker).
+//
+// They resolve the supervisor the same way MarkActivity does — from the cached
+// value, never by building it — and are no-ops when there is none: a counter
+// that does not exist yet has nothing to protect, and the request that would
+// have created it goes through Load first, which does build it. Building here
+// instead would be both wrong (Load owns the gate check) and unsafe (this runs
+// on a request goroutine inside http.Client.Do).
+func (r embeddedLoaderRef) BeginRequest() {
+	if server := r.f.embedded.loader.Load(); server != nil {
+		server.BeginRequest()
+	}
+}
+
+// EndRequest releases one in-flight request. The supervisor's counter is
+// idempotent at zero, so a release that finds no supervisor cannot drive it
+// negative.
+func (r embeddedLoaderRef) EndRequest() {
+	if server := r.f.embedded.loader.Load(); server != nil {
+		server.EndRequest()
+	}
+}
+
+// Port is the loopback port the supervisor actually bound, or 0 when no
+// supervisor is cached — which the transport reads as "do not redirect" (see
+// embeddedllm.PortSource).
+//
+// It exists because the request URL is NOT authoritative: the router builds it
+// from the provider base_url, which is derived from the PERSISTED port, and the
+// persisted port is only a preference the load re-checks. When it turns out to
+// be squatted the supervisor moves upward and persistEmbeddedPort rewrites the
+// config — but deliberately does NOT rebuild the router, because this seam is
+// what makes the rebuild unnecessary. Without it the request that triggered the
+// move would still be POSTed, full prompt included, to whatever unrelated local
+// process holds the old port, and that stranger's answer would be reported as
+// the assistant's reply.
+func (r embeddedLoaderRef) Port() int {
+	if server := r.f.embedded.loader.Load(); server != nil {
+		return server.Port()
+	}
+	return 0
+}
+
+// The ref satisfies the core seam AND both of its optional capabilities; the
+// assertions keep the wiring honest if either side drifts. They are written
+// against the REF, not against *embeddedllm.Server, because the ref is the value
+// production actually hands to EnsureLoadedClient (applyEmbeddedLoader,
+// syncEmbeddedBuilderSeam) — an assertion on the supervisor alone proves nothing
+// about the seam in use, which is how the in-flight bracketing and the live-port
+// redirect both went dead in production while every test still passed.
+var (
+	_ embeddedllm.Loader         = embeddedLoaderRef{}
+	_ embeddedllm.RequestTracker = embeddedLoaderRef{}
+	_ embeddedllm.PortSource     = embeddedLoaderRef{}
+)
 
 // applyEmbeddedLoader attaches the ensure-loaded transport seam to a freshly
 // converted BuilderConfig, so the embedded provider's router entry starts a
-// cold model before its first request goes out and restarts the idle budget on
-// every completed response.
+// cold model before its first request goes out, aims that request at the port
+// the supervisor actually bound, brackets it on the in-flight counter that
+// keeps an idle expiry from unloading the model mid-generation, and restarts the
+// idle budget on every completed response.
+//
+// The middle two of those only happen because the injected value also carries
+// the transport's two OPTIONAL capabilities (embeddedllm.PortSource and
+// embeddedllm.RequestTracker), which it discovers by an interface assertion on
+// whatever Loader it was handed rather than requiring them of the interface.
+// Pin those assertions on embeddedLoaderRef — the value production actually
+// injects — not only on *embeddedllm.Server, or the controls are dead code that
+// every fake-loader test still passes.
 //
 // MUST be called with configMu held (it reads f.config) and MUST NOT take st.mu
 // or call embeddedBuild — see embeddedLoaderRef for why the loader resolves
@@ -2698,9 +1977,14 @@ func (f *FrontendAPI) rebuildAfterEmbeddedConfigChange() {
 }
 
 // firstNonEmbeddedModelID picks the migration target for llm.default_model when
-// the embedded model is removed. Empty when it was the only enabled model:
-// ApplyDefaults fills the first available model on the next load, and a config
-// with no provider at all is already invalid independently of this subsystem.
+// the embedded model is removed. Empty when it was the only enabled model, and
+// the config is then DELIBERATELY left invalid: nothing reseeds
+// llm.default_model (ApplyDefaults never touches it), so the next load fails
+// validate() with "llm.default_model is not set" and the operator must pick or
+// add a provider. Guessing a default here would silently select a model the
+// operator never chose — the same rule as a config with no provider at all,
+// which is invalid independently of this subsystem. Pinned by
+// config.TestEmbeddedLLMRemoveWithNoOtherModelLeavesAnEmptyDefault.
 func firstNonEmbeddedModelID(cfg *config.Config, composite string) string {
 	for _, id := range cfg.LLM.AllModelIDs() {
 		if id != composite {

@@ -4,6 +4,7 @@ import { useGitPanelStore, EMPTY_COMMIT_DRAFT, selectSkipCommitSuppress } from "
 import { useProjectStore } from "@/stores/projectStore";
 import { commit, generateCommitMessage, type CommitResult } from "@/api/git";
 import { runGitOperation } from "@/lib/gitOperation";
+import { useServiceCallTitle } from "@/hooks/useServiceCallTitle";
 import { useCommitSuppressedFlow } from "./useCommitSuppressedFlow";
 import { CommitSuppressedDialog } from "./CommitSuppressedDialog";
 import { cn } from "@/lib/utils";
@@ -56,6 +57,8 @@ export function CommitSection() {
   const setCommitting = useGitPanelStore((s) => s.setCommitting);
   const setCommitError = useGitPanelStore((s) => s.setCommitError);
   const setSkipCommitSuppress = useGitPanelStore((s) => s.setSkipCommitSuppress);
+  // Commit messages run on the configured default model — no per-message pick.
+  const serviceCallTitle = useServiceCallTitle(null);
 
   // The Trust/continue flow for suppressed commits: owns the withheld
   // commit, the trust→re-commit sequence, and the force-commit path. Its
@@ -206,7 +209,7 @@ export function CommitSection() {
             type="button"
             onClick={handleGenerate}
             disabled={isGenerateDisabled}
-            title="Generate commit message with AI"
+            title={serviceCallTitle(isGenerating, "Generating…", "Generate commit message with AI")}
             aria-label="Generate commit message with AI"
             className={cn(
               "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",

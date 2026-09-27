@@ -117,6 +117,16 @@ llm:
   models: {}
   #   "custom-model-name":
   #     # Maximum input+output tokens the model accepts / produces.
+  #     # 0 (or omitted) inherits the built-in default; any other value must be
+  #     # within 1-16777216. The ceiling is a sanity guard, not a model limit —
+  #     # it is ~8x the largest context any real remote model serves today, so
+  #     # it can never refuse a legitimate configuration. It exists because this
+  #     # override is a TIER-1 value that shadows the lazy probe, so a poisoned
+  #     # one is never corrected by asking the model again, and an absurd figure
+  #     # is worse than a merely wrong one: the memory-context arithmetic then
+  #     # reports "fits" for every prompt and compaction never triggers. Both
+  #     # writers of this key — your hand-edit and the embedded LLM's `/props`
+  #     # context readback — are bounded by the same constant.
   #     context_window: 128000
   #     # Maximum tokens the model may emit in a single response.
   #     output_limit: 8192
@@ -252,12 +262,19 @@ llm:
 #   # Informational: the accelerator the plan settled on, AFTER the
 #   # compatibility guards — never the raw probed value. Default: "" (not
 #   # installed). One of:
-#   #   metal | cuda-12.4 | cuda-12.8 | rocm | vulkan | cpu
-#   # (cuda-13.3 is pinned but not selectable while upstream #222 is open: the
-#   # 13.3 builds are documented to crash, so a 13.3 driver resolves to the 12.8
-#   # build on Linux and the 12.4 build on Windows, both of which it still runs.
+#   #   metal | cuda-12.4 | cuda-12.8 | cuda-13.3 | rocm | vulkan | cpu
+#   # This field RECORDS; it does not offer a choice. It transcribes whatever
+#   # the resolver settled on, so every value in the pinned artifact vocabulary
+#   # is legal here — recordable-in-the-manifest and user-selectable are
+#   # different predicates. `cuda-13.3` is the case that shows the difference:
+#   # it is pinned (part of the pinned runtime artifact set) and therefore
+#   # recordable, but it is NOT selectable in practice while upstream #222 is
+#   # open — the 13.3 builds are documented to crash, so core's compat guard
+#   # `cuda-13.3-crash` substitutes it on every CUDA platform, to the 12.8 build
+#   # on Linux and the 12.4 build on Windows, both of which a 13.3 driver still
+#   # runs. No machine resolves to 13.3 while that guard is in force.
 #   # CUDA and ROCm builds are x64-only; Windows CUDA additionally downloads a
-#   # paired cudart archive as a separate, separately-verified component.)
+#   # paired cudart archive as a separate, separately-verified component.
 #   backend: ""
 #   # Loopback port the local inference server listens on. 0 = allocate a free
 #   # port at install time. The allocated port is a PREFERENCE, not a
@@ -280,11 +297,32 @@ llm:
 #   # request so RAM/VRAM is returned deterministically. Weight-load time is
 #   # excluded from the budget (the timer restarts when the load completes), and
 #   # activity is counted when a request completes.
+#   # An expiry never kills a generation mid-answer: while a request is in
+#   # flight the unload DEFERS itself by a bounded 30 s grace, re-armed on every
+#   # expiry for as long as requests stay open. The one exception: a deferral is
+#   # SKIPPED when a request completed in the same instant and already armed a
+#   # fresh full budget, which the deferral re-reads and keeps rather than
+#   # trading away for a 30 s grace. The grace is a re-check interval,
+#   # not a second budget — it does not stamp activity, so the unload lands one
+#   # grace after the last request completes rather than a full budget after it.
+#   # The re-checks are bounded by WALL TIME, not by their number: one deferral
+#   # episode may not outlast a full idle budget, so a leaked in-flight count (a
+#   # response body nobody ever closed) costs AT MOST ONE EXTRA FULL IDLE BUDGET
+#   # and then loses the model — the unload proceeds and names the leaked count
+#   # in a Warn log, instead of pinning gigabytes resident forever.
 #   auto_unload:
 #     enabled: true # false disables the timer; the model stays loaded. Default: true.
-#     # Idle minutes before unload. Must be >= 1 — validated even while the
-#     # timer is disabled, so re-enabling it can never activate a dead budget.
-#     # Default: 60.
+#     # Idle minutes before unload. Must be within 1-525600 (one year) —
+#     # validated even while the timer is disabled, so re-enabling it can never
+#     # activate a dead budget. The ceiling is an overflow guard, not a tuning
+#     # opinion: minutes are converted to nanoseconds by a multiply that wraps
+#     # int64 above 153722867, and the wrapped result can be a budget of tens of
+#     # seconds — or single-digit microseconds — so an "effectively never" value
+#     # would silently invert into "unload immediately". Use `enabled: false`
+#     # for indefinite residency. Changing either key re-arms against the
+#     # EXISTING activity stamp and grants no fresh budget, so enabling the
+#     # timer on a model already idle longer than this value — or shortening the
+#     # value below the time already idle — unloads it at once. Default: 60.
 #     minutes: 60
 #   # ---------------------------------------------------------------------
 #   # MEMORY-PLAN TUNING — the other operator-owned sub-section. Everything
@@ -316,6 +354,15 @@ llm:
 #   # is not installed, while fit is off, while another knob makes it moot —
 #   # for the reason auto_unload.minutes already is: arming a value must never
 #   # activate a dead one. A rejected key names itself and states the fix.
+#   #
+#   # The numeric knobs carry a CEILING as well as a floor. The ceilings are
+#   # exported from core/embeddedllm/limits.go and shared with this validation,
+#   # so a bound that exists at only one layer — and that an operator could walk
+#   # around by hand-editing config.yaml — does not exist. Each one is an
+#   # OVERFLOW or absurdity guard set far above any real machine, never a tuning
+#   # opinion: rejecting it cannot refuse a legitimate configuration, while
+#   # still keeping the arithmetic downstream total. What actually fits remains
+#   # the memory gate's and the planner's call.
 #   #
 #   # Two planner knobs are deliberately NOT exposed: `-dev` (the offload
 #   # device list) and `-sm`/`--split-mode`. Both pin the offload, which turns
@@ -356,14 +403,14 @@ llm:
 #     #   mode: all     `-ngl 99` — every offloadable layer on the device.
 #     #   mode: cpu     `-ngl 0` — nothing offloaded, the model runs from
 #     #                 system RAM (the Intel-Mac and CPU-build shape).
-#     #   mode: layers  `-ngl <layers>`, which then becomes REQUIRED (>= 0).
+#     #   mode: layers  `-ngl <layers>`, which then becomes REQUIRED (0-1048576).
 #     # ANY explicit mode turns fit OFF: naming the offload IS pinning it, and
 #     # `-fit on` beside a pinned `-ngl` is the shape the fork's fit.cpp aborts
 #     # on. The planner then computes the context itself, and never above the
 #     # model's training context.
 #     offload:
 #       mode: auto #        auto | all | cpu | layers
-#       layers: 40 #        >= 0; required by mode: layers
+#       layers: 40 #        0-1048576; required by mode: layers
 #     # The runtime's own memory-sizing pass (`-fit`). Default: unset.
 #     #   unset   the exclusivity rule decides: fit stays ON unless something
 #     #           else pins the offload (see `offload`).
@@ -372,8 +419,10 @@ llm:
 #     #           explicit offload, and the plan records that in its notes.
 #     fit: true
 #     # The per-device margin fit leaves free (`-fitt`), in MiB. Default: unset
-#     # = the runtime's own 1024 MiB. Valid >= 0; an explicit 0 also omits the
-#     # flag. Only emitted under fit.
+#     # = the runtime's own 1024 MiB. Valid 0-2147483648; an explicit 0 also
+#     # omits the flag. Only emitted under fit. The ceiling keeps the MiB→bytes
+#     # shift inside an int64 with room to spare — it is 2 PiB, orders of
+#     # magnitude past any accelerator or host pool.
 #     fit_target_mib: 1024
 #     # The smallest context fit may settle on (`-fitc`). Default: unset =
 #     # 65536. Valid 1-262144. Only emitted under fit — and it doubles as the
@@ -383,14 +432,21 @@ llm:
 #     # 4096 this model produces empty and truncated answers, which is the
 #     # entire reason the two defaults diverge.
 #     fit_min_context: 65536
-#     # Where the KV cache lives (`-kvo` / `-nkvo`). Default: unset = on the
-#     # device, with the layers. false passes `-nkvo` and leaves the cache in
-#     # system RAM, trading device memory for host memory and for attention
-#     # bandwidth.
+#     # Where the KV cache lives (`-kvo` / `-nkvo`). Default: unset = the
+#     # PLANNER decides — it starts on the device with the layers, but the
+#     # memory gate's first degradation rung spills it to host RAM when the
+#     # accelerator cannot hold it, so unset is not a promise of "on device".
+#     # false passes `-nkvo` and leaves the cache in system RAM, trading device
+#     # memory for host memory and for attention bandwidth; true pins it to the
+#     # device and the degradation ladder then leaves that half alone. Deleting
+#     # the key hands the choice back to the planner, which is what the Auto
+#     # position of Settings → LLM → Embedded LLM → Advanced tuning does.
 #     kv_offload: true
 #     # Where the vision projector's worst-case reserve lives
-#     # (`--mmproj-offload` / `--no-mmproj-offload`). Default: unset = on the
-#     # device. false moves it to system RAM.
+#     # (`--mmproj-offload` / `--no-mmproj-offload`). Default: unset = the
+#     # PLANNER decides — on the device until that same degradation rung moves
+#     # it to system RAM. false moves it to system RAM; true pins it to the
+#     # device. Auto in the tuning UI clears the override again.
 #     mmproj_offload: true
 #     # The weights quantization the PLAN is built for. Default: unset =
 #     # whatever the hardware probe resolved, which `packing` above RECORDS.
@@ -403,24 +459,35 @@ llm:
 #     # fit. Overriding this does not fetch different weights — the packing is
 #     # an install-time artifact, so change it and reinstall.
 #     packing: auto #       auto | PQ2_0 | PTQ1_0
-#     # Slot count (`-np`). Default: unset = 1. Valid >= 1.
+#     # Slot count (`-np`). Default: unset = 1. Valid 1-64.
 #     # 1 is a measurement, not a preference: `-np 4` inflates fit's own
 #     # projection from 24450 MiB to 77297 MiB (the compute reserve is sized
 #     # per stream), and `-np` also SPLITS the context across slots — `-c 8192
 #     # -np 4` yields 2048-token slots, which is exactly the truncated-answer
 #     # failure fit_min_context exists to prevent. c0wrk serves one agent loop
 #     # over one loopback socket and issues one request at a time per server.
+#     # A large value is already refused by the memory gate; the ceiling keeps
+#     # the KV projection's multiplication total for the values the gate never
+#     # sees (an unmeasured host, a gate disabled in a test harness).
 #     parallel: 1
 #     # The prompt-cache ceiling (`-cram`), in MiB. Default: unset = the
-#     # runtime's own. Valid >= 0, and an explicit 0 DISABLES the cache — a
-#     # legitimate choice, so it is passed through verbatim rather than read as
-#     # "unset".
+#     # runtime's own. Valid 0-2147483648, and an explicit 0 DISABLES the cache
+#     # — a legitimate choice, so it is passed through verbatim rather than read
+#     # as "unset".
 #     cache_ram_mib: 0
 #     # System RAM kept OUT of the host budget, in GiB. Default: unset = the
 #     # topology's own derivation (the larger of a 4 GiB floor and 1/8 of RAM).
-#     # Valid >= 0. A PLANNER-side budget knob and not a runtime flag — the
-#     # pinned fork has no `--host-reserve` — and it REPLACES the derived
-#     # reserve rather than stacking on it.
+#     # Must be a FINITE number within 0-1048576: NaN and ±Inf are rejected, not
+#     # coerced. A PLANNER-side budget knob and not a runtime flag — the pinned
+#     # fork has no `--host-reserve` — and it REPLACES the derived reserve rather
+#     # than stacking on it.
+#     # The finiteness check is the point of the ceiling. NaN compares false
+#     # against every bound, so a floor-only check lets a typo through and the
+#     # planner then silently ignores it; and a float→int conversion whose value
+#     # the result type cannot represent is implementation-defined in Go — it
+#     # saturates on arm64 and yields the negative "indefinite value" on amd64,
+#     # which would make `host = ram − reserve` enormous and fail the memory gate
+#     # OPEN on the one knob meant to shrink the budget.
 #     host_reserve_gib: 4
 
 # ---------------------------------------------------------------------------

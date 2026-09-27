@@ -298,3 +298,55 @@ func TestNewFrontendAPIInstallsTheServiceLLMGate(t *testing.T) {
 			"spend its whole budget on the weight load")
 	}
 }
+
+// TestEmbeddedLoaderRefusesWhileAnEmbeddedOperationRuns is the request-path half
+// of the install gate — the invariant TestLoadEmbeddedLLMRefusesWhileAnInstallRuns
+// documents for the RPC, pinned here for the transport.
+//
+// The gate RPCs (Remove, Load, Probe) were never the whole surface: three paths
+// reached Server.Load without consulting it — this file's own service-LLM gate,
+// the router's Loader seam and the ensure-loaded transport. All three end at
+// embeddedLoaderRef.Load, so refusing there closes them at the seam. Without it a
+// chat message arriving during a repair/reinstall cold-loads the OLD install, and
+// the install's promote step then renames and deletes the tree the child is
+// executing from (its working directory IS that tree, which on Windows makes the
+// rename of a live process's executable ERROR_ACCESS_DENIED unconditionally).
+//
+// A removal is covered too: it holds the same gate, and loading weights that are
+// being deleted is the same hazard with a wider window.
+func TestEmbeddedLoaderRefusesWhileAnEmbeddedOperationRuns(t *testing.T) {
+	for _, op := range []embeddedOpKind{embeddedOpInstall, embeddedOpRemove} {
+		t.Run(string(op), func(t *testing.T) {
+			f, _, _ := newEmbeddedTestAPI(t)
+			installEmbeddedAsDefault(t, f)
+			f.embedded.spawnFn = func(context.Context, embeddedllm.LaunchCommand) (embeddedllm.Process, error) {
+				t.Error("the request-path loader spawned a server while an operation held the gate")
+				return nil, errors.New("spawn forbidden")
+			}
+
+			if claimed, holder := f.beginEmbeddedOperation(op); !claimed {
+				t.Fatalf("the gate refused %q on an idle subsystem (held by %q)", op, holder)
+			}
+			defer f.endEmbeddedOperation()
+
+			err := (embeddedLoaderRef{f: f}).Load(t.Context())
+			if err == nil {
+				t.Fatal("the request-path loader started a load while an operation held the gate: " +
+					"it would cold-load the install being replaced")
+			}
+			if !strings.Contains(err.Error(), string(op)+" is running") {
+				t.Errorf("the refusal = %q, want it to name the in-flight %s", err, op)
+			}
+
+			// The service-LLM gate surfaces the same refusal to its caller
+			// rather than dispatching a request at a model that must not load.
+			gateErr := f.ensureEmbeddedReadyForLLMRequest(t.Context())
+			if gateErr == nil {
+				t.Fatal("ensureEmbeddedReadyForLLMRequest succeeded while an operation held the gate")
+			}
+			if !strings.Contains(gateErr.Error(), string(op)+" is running") {
+				t.Errorf("the service gate = %q, want it to carry the refusal", gateErr)
+			}
+		})
+	}
+}

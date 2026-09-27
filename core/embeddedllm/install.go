@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/v0lka/sp4rk/pathutil"
@@ -176,13 +177,50 @@ func ReadManifest(path string) (Manifest, error) {
 	return m, nil
 }
 
-// manifestTempName is the sibling temporary file the atomic write renames from.
-const manifestTempName = ManifestFileName + ".tmp"
+// manifestTempPattern is the shape of the sibling temporary file the atomic write
+// renames from. The `*` makes the name UNIQUE PER WRITE: Installer.Install holds
+// no supervisor gate while Server.recordEffectiveContext writes under one, so two
+// writers can overlap, and a shared fixed name would let one of them rename a file
+// the other is still writing — promoting a torn manifest that the next ReadManifest
+// then fails on, reporting the model as not installed until a reinstall.
+const manifestTempPattern = ManifestFileName + ".*.tmp"
 
-// writeManifest persists m atomically: bytes land in a sibling temporary file
-// and are renamed over the target, so a crash mid-write leaves the previous
-// manifest intact instead of a truncated one.
-func writeManifest(path string, m Manifest) error {
+// manifestTempPrefix and manifestTempSuffix let a test — and the cleanup,
+// sweepStaleManifestTemps — recognise a leftover temporary without knowing the
+// random middle os.CreateTemp picked.
+const (
+	manifestTempPrefix = ManifestFileName + "."
+	manifestTempSuffix = ".tmp"
+)
+
+// manifestTempStaleAfter is how old a leftover temporary must be before
+// sweepStaleManifestTemps will remove it.
+//
+// The age gate is what keeps the sweep safe against the very concurrency the
+// unique name exists for: Installer.Install holds no supervisor gate while
+// Server.recordEffectiveContext writes under one, so two writers CAN overlap, and
+// an unconditional sweep would delete a temporary another writer is between
+// creating and renaming — failing its write, which is the torn-manifest outcome
+// this pattern was introduced to prevent. A manifest write is a few kilobytes, a
+// sync and a rename, so a minute is orders of magnitude beyond one and still far
+// short of the "forever" a crashed writer's leftover would otherwise last.
+const manifestTempStaleAfter = time.Minute
+
+// writeManifest persists m atomically: bytes land in a uniquely named sibling
+// temporary file and are renamed over the target, so a crash mid-write leaves the
+// previous manifest intact instead of a truncated one, and a concurrent writer
+// cannot interleave with this one. Every error path removes the temporary.
+//
+// The one path that cannot clean up after itself is a crash BETWEEN CreateTemp and
+// the rename, so the write begins by sweeping leftovers of that shape out of the
+// directory (sweepStaleManifestTemps) — otherwise a uniquely named temporary is
+// also a permanently leaked one, since nothing else knows its name.
+//
+// logger may be nil, which discards: the package's rule for an uninjected logger.
+func writeManifest(path string, m Manifest, logger *slog.Logger) error {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Errorf("embeddedllm: encoding manifest: %w", err)
@@ -193,13 +231,93 @@ func writeManifest(path string, m Manifest) error {
 	if err := mkdirAll(dir); err != nil {
 		return err
 	}
-	tmp := filepath.Join(dir, manifestTempName)
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return fmt.Errorf("embeddedllm: writing %q: %w", tmp, err)
+	// The temporary this write is about to create does not exist yet, so the
+	// sweep can only ever see PREVIOUS writers' leftovers — never this call's own.
+	sweepStaleManifestTemps(dir, logger)
+	tmp, err := os.CreateTemp(dir, manifestTempPattern)
+	if err != nil {
+		return fmt.Errorf("embeddedllm: creating a temporary manifest in %q: %w", dir, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	name := tmp.Name()
+	if err := writeAndClose(tmp, data); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		_ = os.Remove(name)
 		return fmt.Errorf("embeddedllm: promoting manifest into place: %w", err)
+	}
+	return nil
+}
+
+// sweepStaleManifestTemps removes the temporaries a crashed writeManifest left
+// behind in dir, reporting each removal at Debug.
+//
+// It is best-effort in both directions: an unreadable directory or an unremovable
+// entry is logged and skipped, because a leftover temporary costs a few kilobytes
+// of disk and must never fail the manifest write that happened to notice it. Only
+// entries whose name is the temporary shape AND whose modification time is older
+// than manifestTempStaleAfter are touched — never the manifest itself, never a
+// directory, and never a concurrent writer's live temporary.
+func sweepStaleManifestTemps(dir string, logger *slog.Logger) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		logger.Debug("embeddedllm: stale manifest temporaries could not be listed",
+			"dir", dir, "error", err)
+		return
+	}
+	cutoff := time.Now().Add(-manifestTempStaleAfter)
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !isManifestTempName(name) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			logger.Debug("embeddedllm: a manifest temporary could not be stat'd for the stale sweep",
+				"path", filepath.Join(dir, name), "error", err)
+			continue
+		}
+		if info.ModTime().After(cutoff) {
+			// Recent enough to be a live concurrent writer's temporary rather than
+			// a crash leftover — see manifestTempStaleAfter.
+			continue
+		}
+		stale := filepath.Join(dir, name)
+		if err := os.Remove(stale); err != nil {
+			logger.Debug("embeddedllm: a stale manifest temporary could not be removed",
+				"path", stale, "error", err)
+			continue
+		}
+		logger.Debug("embeddedllm: removed a manifest temporary a crashed write left behind",
+			"path", stale, "age", time.Since(info.ModTime()).Truncate(time.Second))
+	}
+}
+
+// isManifestTempName reports whether name is the shape os.CreateTemp produces from
+// manifestTempPattern: the manifest's own name, a random middle, and the temporary
+// suffix. The manifest itself does not match, and neither does a name with nothing
+// between the prefix and the suffix.
+func isManifestTempName(name string) bool {
+	return len(name) > len(manifestTempPrefix)+len(manifestTempSuffix) &&
+		strings.HasPrefix(name, manifestTempPrefix) &&
+		strings.HasSuffix(name, manifestTempSuffix)
+}
+
+// writeAndClose writes data to f and closes it whichever way the write goes, so
+// the rename always operates on a complete file and no descriptor leaks on the
+// error path.
+func writeAndClose(f *os.File, data []byte) error {
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("embeddedllm: writing %q: %w", f.Name(), err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("embeddedllm: syncing %q: %w", f.Name(), err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("embeddedllm: closing %q: %w", f.Name(), err)
 	}
 	return nil
 }
@@ -303,15 +421,84 @@ type ConfigSink interface {
 // smoke test) are testable on every platform without those binaries present.
 type CommandRunner func(ctx context.Context, name string, args ...string) (string, error)
 
+// maxCommandOutputBytes caps what one provisioning command may contribute to the
+// captured output. The output is diagnostic only — runBounded wraps it into an
+// error message and the smoke test logs it — so an uncapped buffer is an
+// unbounded allocation driven by an external process.
+const maxCommandOutputBytes = 1 << 20
+
 // defaultCommandRunner is the production runner. Every call site bounds it with
 // its own context timeout, so a wedged codesign cannot stall the install.
+//
+// A context deadline alone does not bound the call, which is why two more bounds
+// live here:
+//
+//   - cmd.WaitDelay. Killing the child is not enough to end the read: Stdout is
+//     not an *os.File, so os/exec copies the child's output through a pipe, and a
+//     grandchild that inherited the write end keeps that copy blocked long after
+//     the child is gone. cmd.Run would then never return — and it runs on the
+//     goroutine that owns the whole install for its duration, so that goroutine is
+//     stranded for the lifetime of the process and whatever it serializes stays
+//     serialized with it. No caller-side convention recovers that: a release
+//     written as a defer never runs, and one written on the exit paths is never
+//     reached. This is the hazard hardware.go's probe layer documents, and it
+//     takes the same value.
+//   - a cap on the captured bytes (limitedWriter — the write-side twin of
+//     io.LimitReader, which does not fit because cmd.Stdout is a Writer).
 func defaultCommandRunner(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	cmd.WaitDelay = probeWaitDelay
+	out := &limitedWriter{limit: maxCommandOutputBytes}
+	cmd.Stdout = out
+	cmd.Stderr = out
+
 	err := cmd.Run()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// The command itself exited successfully — ErrWaitDelay replaces a nil
+		// exit status, never a real one — and only its output had to be abandoned
+		// because something else kept the pipe open. The exit status is the
+		// authority on whether xattr, codesign or --version worked, so this is not
+		// a failure; the captured output may simply be short.
+		return out.String(), nil
+	}
 	return out.String(), err
+}
+
+// limitedWriter captures at most limit bytes and counts the rest. Write always
+// reports the full length: a short write would fail os/exec's copy and turn a
+// successful command into an error. It is mutex-guarded because os/exec may copy
+// stdout and stderr concurrently into the same writer.
+type limitedWriter struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	limit   int
+	dropped int
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	room := w.limit - w.buf.Len()
+	switch {
+	case room <= 0:
+		w.dropped += len(p)
+	case len(p) > room:
+		_, _ = w.buf.Write(p[:room])
+		w.dropped += len(p) - room
+	default:
+		_, _ = w.buf.Write(p)
+	}
+	return len(p), nil
+}
+
+// String is the captured output, marked when the cap dropped some of it.
+func (w *limitedWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.dropped == 0 {
+		return w.buf.String()
+	}
+	return w.buf.String() + fmt.Sprintf("\n[... %d further output bytes dropped ...]", w.dropped)
 }
 
 // Auto-unload defaults established by an install. The minutes value mirrors
@@ -329,6 +516,24 @@ const (
 	macOSCommandTimeout = 2 * time.Minute
 	smokeTestTimeout    = 60 * time.Second
 )
+
+// macOS provisioning helpers, invoked by absolute path. Both ship with the base
+// system, so there is nothing to resolve — and resolving through PATH would let
+// an attacker-controlled PATH element substitute a binary that runs during an
+// install click. See provisionDarwin.
+const (
+	darwinXattr    = "/usr/bin/xattr"
+	darwinCodesign = "/usr/bin/codesign"
+)
+
+// toolMissing reports whether a provisioning helper is simply not installed. An
+// absolute path is not resolved through exec.LookPath, so a missing one surfaces
+// as fs.ErrNotExist from the spawn rather than as exec.ErrNotFound; both mean the
+// same thing here, and both stay a warning rather than a failure — the smoke test
+// is the authority on whether the runtime runs.
+func toolMissing(err error) bool {
+	return errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist)
+}
 
 // Extraction guards. Defence-in-depth against a checksum-valid-but-malicious
 // archive, mirroring core/toolmanager's posture but sized for this subsystem:
@@ -356,7 +561,9 @@ type Installer struct {
 	// with no provider, and a removal that cannot clear the config would leave
 	// a provider pointing at nothing.
 	Sink ConfigSink
-	// Logger receives the subsystem's diagnostics. nil → slog.Default().
+	// Logger receives the subsystem's diagnostics. nil → a discard logger
+	// (never the global slog.Default), matching the package's own
+	// no-global-logging rule.
 	Logger *slog.Logger
 	// Downloader fetches and verifies artifacts. nil → NewDownloader(nil, Logger).
 	Downloader *Downloader
@@ -375,10 +582,30 @@ type Installer struct {
 	// The supervisor (server.go) owns port persistence and the pre-load
 	// collision re-check; it may substitute a richer allocator.
 	AllocatePort func(ctx context.Context) (int, error)
-	// Stop terminates a running server before Remove deletes its files. nil is
-	// legal and means "no supervisor is wired yet" — Remove then proceeds, and
-	// the OS releases the files when the process exits.
+	// Stop terminates a running server before Install replaces the runtime tree
+	// it executes from, and before Remove deletes its files. nil is legal and
+	// means "no supervisor is wired yet" — both then proceed, and the OS
+	// releases the files when the process exits.
 	Stop func(ctx context.Context) error
+	// StopTimeout bounds Install's step-0 Stop. Zero — the default — inherits
+	// the caller's context, deadline and all: an install run on a
+	// never-deadlined context then waits out whatever holds the supervisor.
+	//
+	// A caller that wires Stop to a supervisor SHOULD set it, because
+	// Server.Stop acquires the single-instance gate FIRST and an in-flight Load
+	// holds that gate for up to DefaultReadyTimeout (15 min). An expired budget
+	// is not a worse outcome than the wait: it is what makes the supervisor's
+	// no-gate force path reachable at all, so a resident child is terminated on
+	// the force path's own detached budget instead of being waited out — and
+	// step 0 runs before plan, so an unbounded wait here is an install bar stuck
+	// at 0% with no progress event ever emitted.
+	//
+	// This is NOT Server.StopTimeout, which is the graceful window between the
+	// termination signal and the kill. This one bounds the whole step-0 call,
+	// gate wait included. Remove's stop is left to the ctx its caller passes
+	// (the backend wraps the entire Remove in the same budget), so the field
+	// governs step 0 only.
+	StopTimeout time.Duration
 	// Now stamps InstalledAt. nil → time.Now.
 	Now func() time.Time
 	// HostOS overrides the OS the macOS provisioning branch keys off. Empty →
@@ -434,7 +661,17 @@ type InstallReport struct {
 
 // Install provisions the pinned runtime and weights for this machine.
 //
-// The order is fixed and each step is a gate:
+// A resident server is stopped BEFORE the first numbered step, symmetrically
+// with Remove: it executes out of the runtime tree step 7 retires (on Windows
+// renaming a live process's own tree and working directory is refused
+// outright), and the gigabytes it holds would otherwise be priced as
+// unavailable by step 1's probe and step 2's memory gate. That stop is bounded
+// by StopTimeout when the caller set one; Remove's is bounded by the ctx its
+// caller passes instead.
+//
+// The order is fixed and each step is a gate. The numbering starts at 1 because
+// the stop above is step 0 — a precondition the rest of the sequence relies on,
+// not one of the install's own gates:
 //
 //  1. hardware probe — RAM is a hard input (ErrRAMUnknown refuses);
 //  2. Resolve — the combined memory gate is its FIRST check, so a machine
@@ -471,6 +708,31 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*Install
 	}
 	if _, err := in.Layout.ManifestPath(); err != nil {
 		return nil, err
+	}
+
+	// Step 0, and the reason it precedes the probe: a server that is still
+	// resident executes out of the runtime tree this install is about to retire,
+	// and holds the very memory the gate below is about to price. Stopping first
+	// is what makes a repair safe on Windows (renaming a live process's own tree
+	// and working directory is ERROR_ACCESS_DENIED there) and honest everywhere
+	// else. It is a no-op when nothing is running.
+	//
+	// The wait is BOUNDED by StopTimeout when the caller set one, and the bound
+	// is the difference between a repair and a stall: the supervisor's Stop
+	// takes its single-instance gate first, and a Load that claimed that gate
+	// before this install did can hold it for DefaultReadyTimeout (15 min) —
+	// which, step 0 running before plan and therefore before the first
+	// install_progress event, would present as an install bar at 0% that never
+	// moves while every other embedded operation refuses. An EXPIRED budget is
+	// not a failure mode, it is the force path: core then stops the resident
+	// child without the gate, on a detached budget of its own, so the model is
+	// terminated rather than waited out. Only a stop that finds no child to kill
+	// — a Load still reading the manifest or scanning for a port — reports the
+	// gate timeout as an error, and that error is the whole truth.
+	if in.Stop != nil {
+		if err := in.stopBeforeInstall(ctx); err != nil {
+			return nil, fmt.Errorf("embeddedllm: stopping the inference server before installation: %w", err)
+		}
 	}
 
 	hw, platform, res, topology, err := in.plan(ctx, opts)
@@ -524,7 +786,12 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*Install
 	// downloaded. A guard that wants a DIFFERENT RUNTIME is past its moment —
 	// the archive is on disk and signed — so it is recorded as guidance rather
 	// than silently dropped.
-	res, weightAssets, refinedTopology := in.refineWithStagedDevices(ctx, platform, hw, res, serverBinary, weightAssets)
+	res, weightAssets, refinedTopology, err := in.refineWithStagedDevices(ctx, platform, hw, res, serverBinary, weightAssets)
+	if err != nil {
+		// The measured budget refused the machine after the runtime was staged:
+		// stop before the multi-gigabyte weights are fetched.
+		return nil, err
+	}
 	if refinedTopology != nil {
 		// The staged runtime answered, and the resolution that goes with it was
 		// refined by that answer, so the pair the manifest records is the pair
@@ -569,7 +836,7 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*Install
 	if err != nil {
 		return nil, err
 	}
-	if err := writeManifest(manifestPath, manifest); err != nil {
+	if err := writeManifest(manifestPath, manifest, in.logger()); err != nil {
 		return nil, err
 	}
 	in.logger().Info("embedded LLM installed",
@@ -614,6 +881,20 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*Install
 		Guards:        manifest.Guards,
 		PackingReason: manifest.PackingReason,
 	}, nil
+}
+
+// stopBeforeInstall performs Install's step-0 stop, under StopTimeout when one
+// is set and under the caller's ctx alone otherwise. The caller has already
+// checked Stop for nil. The helper exists so the bound cannot be lost by a future
+// edit to the call site, and so the derived context is cancelled as soon as the
+// stop returns instead of living for the rest of a multi-gigabyte install.
+func (in *Installer) stopBeforeInstall(ctx context.Context) error {
+	if in.StopTimeout <= 0 {
+		return in.Stop(ctx)
+	}
+	stopCtx, cancel := context.WithTimeout(ctx, in.StopTimeout)
+	defer cancel()
+	return in.Stop(stopCtx)
 }
 
 // plan runs the pure gates — the hardware probe, the memory gate and
@@ -770,8 +1051,8 @@ func guardIDsForLog(decisions []GuardDecision) string {
 // probes the freshly staged runtime, classifies the accelerator, and folds what
 // that reveals into the resolution BEFORE the weights are fetched.
 //
-// It never fails and never downloads. Three outcomes, in increasing order of
-// what could still be changed:
+// It never downloads. Four outcomes, in increasing order of what could still be
+// changed:
 //
 //   - no answer (no probe, an unrecognized inventory, or a plan that already
 //     knew its GPU family): the resolution is returned untouched;
@@ -785,7 +1066,16 @@ func guardIDsForLog(decisions []GuardDecision) string {
 //     backend is already staged, signed and smoke-tested, so the substitution
 //     is recorded as guidance instead of applied. The install completes and the
 //     record says why it may not work, which is the difference between a
-//     documented upstream failure and a mystery.
+//     documented upstream failure and a mystery;
+//   - the measured budget REFUSES the machine: ErrInsufficientMemory is returned
+//     and the install stops. This is the one failure, and it is not "lost
+//     information" — it is the same verdict `Installer.plan` treats as a hard
+//     stop when the same Resolve produces it before anything is staged. Both
+//     passes run the same host-budget arithmetic today, so the branch is not
+//     reachable in practice; making it a stop rather than a Debug line keeps that
+//     equivalence from being load-bearing, because a future divergence would
+//     otherwise spend an hour downloading multi-gigabyte weights for a machine
+//     the measured topology has just refused.
 //
 // Guards are merged rather than replaced, so a decision that WAS applied in
 // plan (a static one, like #222) keeps its Applied flag and its place in the
@@ -798,13 +1088,13 @@ func guardIDsForLog(decisions []GuardDecision) string {
 // returns nil and the caller keeps whatever `plan` measured.
 func (in *Installer) refineWithStagedDevices(ctx context.Context, platform string, hw Hardware,
 	res Resolution, serverBinary string, weightAssets []Asset,
-) (Resolution, []Asset, *MemoryTopology) {
+) (Resolution, []Asset, *MemoryTopology, error) {
 	if res.GPU != GPUFamilyUnknown {
-		return res, weightAssets, nil
+		return res, weightAssets, nil, nil
 	}
 	topology, ok := in.memoryTopologyFromBinary(ctx, serverBinary)
 	if !ok {
-		return res, weightAssets, nil
+		return res, weightAssets, nil, nil
 	}
 	gpu := ClassifyGPUs(topology.Devices)
 
@@ -815,11 +1105,15 @@ func (in *Installer) refineWithStagedDevices(ctx context.Context, platform strin
 		GPU:      gpu,
 	}, Topology: &topology})
 	if err != nil {
-		// The unrefined plan is valid; only the extra information is lost.
+		if errors.Is(err, ErrInsufficientMemory) {
+			return res, nil, nil, fmt.Errorf("embeddedllm: %w", err)
+		}
+		// Anything else: the unrefined plan is valid and only the extra
+		// information is lost.
 		in.logger().Debug("embedded LLM device-aware refinement skipped",
 			"gpu_family", gpu, "error", err)
 		res.GPU = gpu
-		return res, weightAssets, nil
+		return res, weightAssets, nil, nil
 	}
 
 	if refined.Backend != res.Backend {
@@ -828,7 +1122,7 @@ func (in *Installer) refineWithStagedDevices(ctx context.Context, platform strin
 			"guards", guardIDsForLog(refined.Guards))
 		res.GPU = gpu
 		res.Guards = mergeGuardDecisions(res.Guards, markGuardsUnappliable(refined.Guards))
-		return res, weightAssets, nil
+		return res, weightAssets, nil, nil
 	}
 
 	res = refined
@@ -842,7 +1136,7 @@ func (in *Installer) refineWithStagedDevices(ctx context.Context, platform strin
 	// it came in with, so it keeps the topology (if any) that plan was made
 	// from — see Installer.plan for why the pair must not be split.
 	measured := topology
-	return res, weights, &measured
+	return res, weights, &measured, nil
 }
 
 // markGuardsUnappliable rewrites a set of decisions that were computed for a
@@ -1005,12 +1299,18 @@ func (in *Installer) provisionRuntime(ctx context.Context, opts InstallOptions, 
 // signature is missing or invalid. The pinned fork archives are unsigned CI
 // builds, so both steps are required before llama-server will run at all.
 //
-// A missing xattr/codesign helper is a warning, not a failure: the smoke test
-// is the authority on whether the runtime runs, and refusing to install on a
-// machine without /usr/bin/codesign would be a worse outcome than trying.
+// Both helpers are invoked by ABSOLUTE path. They are part of the base system,
+// and resolving them through PATH instead would let a PATH element an attacker
+// controls (a hijacked shell profile plus an app relaunch — the app loads the
+// login shell's environment at startup) substitute a `codesign` that runs
+// arbitrary code during a later install click.
+//
+// A missing helper is still a warning, not a failure: the smoke test is the
+// authority on whether the runtime runs, and refusing to install on a machine
+// without /usr/bin/codesign would be a worse outcome than trying.
 func (in *Installer) provisionDarwin(ctx context.Context, runtimeDir string) error {
-	if err := in.runBounded(ctx, macOSCommandTimeout, "xattr", "-cr", runtimeDir); err != nil {
-		if errors.Is(err, exec.ErrNotFound) {
+	if err := in.runBounded(ctx, macOSCommandTimeout, darwinXattr, "-cr", runtimeDir); err != nil {
+		if toolMissing(err) {
 			in.logger().Warn("xattr is unavailable; quarantine attributes were not cleared",
 				"path", runtimeDir, "error", err)
 		} else {
@@ -1023,9 +1323,9 @@ func (in *Installer) provisionDarwin(ctx context.Context, runtimeDir string) err
 		return err
 	}
 	for _, image := range images {
-		err := in.runBounded(ctx, macOSCommandTimeout, "codesign", "--force", "--sign", "-", image)
+		err := in.runBounded(ctx, macOSCommandTimeout, darwinCodesign, "--force", "--sign", "-", image)
 		if err != nil {
-			if errors.Is(err, exec.ErrNotFound) {
+			if toolMissing(err) {
 				in.logger().Warn("codesign is unavailable; the runtime keeps its upstream signatures",
 					"path", runtimeDir)
 				break
@@ -1476,7 +1776,7 @@ func (in *Installer) emit(opts InstallOptions, p Progress) {
 
 func (in *Installer) logger() *slog.Logger {
 	if in == nil || in.Logger == nil {
-		return slog.Default()
+		return slog.New(slog.DiscardHandler)
 	}
 	return in.Logger
 }

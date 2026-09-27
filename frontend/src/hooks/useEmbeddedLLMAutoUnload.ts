@@ -4,23 +4,24 @@
 // Exactly the block's control pattern: the minutes DRAFT lives here — in the
 // parent of the leaf control, which stays fully controlled with zero local
 // state — an out-of-range entry reverts locally instead of paying a round
-// trip for a guaranteed backend refusal, and a commit runs
-// RPC → setBusy/setError → re-read in BOTH success and failure. The values
-// rendered always come from the authoritative status snapshot; there is no
-// optimistic copy.
+// trip for a guaranteed backend refusal, and a commit runs through the store's
+// `runEmbeddedLLMAction`: RPC → busy window → re-read, with the window kept
+// open across the read-back so the controls cannot be re-enabled against a
+// stale snapshot. The values rendered always come from the authoritative
+// status snapshot; there is no optimistic copy.
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   DEFAULT_AUTO_UNLOAD_MINUTES,
+  MAX_AUTO_UNLOAD_MINUTES,
   MIN_AUTO_UNLOAD_MINUTES,
   setEmbeddedLLMAutoUnload,
 } from '@/api/embedded'
-import { logger } from '@/lib/logger'
 import {
   refreshEmbeddedLLMStatus,
+  runEmbeddedLLMAction,
   useEmbeddedLLMBusy,
   useEmbeddedLLMStatus,
-  useEmbeddedLLMStore,
 } from '@/stores/embeddedLLMStore'
 
 /** The props EmbeddedLLMAutoUnload renders, exactly (spread onto the leaf). */
@@ -34,16 +35,9 @@ export interface EmbeddedLLMAutoUnloadProps {
   onCommit: () => void
 }
 
-/** Wails rejects with a Go error string, so the message IS the report. */
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
-
 export function useEmbeddedLLMAutoUnload(): EmbeddedLLMAutoUnloadProps {
   const status = useEmbeddedLLMStatus()
   const busy = useEmbeddedLLMBusy()
-  const setBusy = useEmbeddedLLMStore((s) => s.setBusy)
-  const setError = useEmbeddedLLMStore((s) => s.setError)
   // Pure draft state for the minutes field (null = showing the authority).
   const [draft, setDraft] = useState<string | null>(null)
 
@@ -58,33 +52,33 @@ export function useEmbeddedLLMAutoUnload(): EmbeddedLLMAutoUnloadProps {
     setDraft(null)
   }, [minutes])
 
-  const commit = useCallback(
-    async (nextEnabled: boolean, nextMinutes: number) => {
-      setBusy('auto-unload')
-      setError(null)
-      try {
-        await setEmbeddedLLMAutoUnload(nextEnabled, nextMinutes)
-      } catch (err) {
-        logger.warn('[embedded-llm] auto-unload change failed', err)
-        setError(errorMessage(err))
-      } finally {
-        setBusy(null)
-        setDraft(null)
-      }
-      // Read back in BOTH cases: a refusal is also a state the block must
-      // show honestly.
-      await refreshEmbeddedLLMStatus()
-    },
-    [setBusy, setError],
-  )
+  const commit = useCallback(async (nextEnabled: boolean, nextMinutes: number) => {
+    await runEmbeddedLLMAction(
+      'auto-unload',
+      () => setEmbeddedLLMAutoUnload(nextEnabled, nextMinutes),
+      refreshEmbeddedLLMStatus,
+    )
+    // The window has closed and the authoritative budget has landed; a draft
+    // must not outlive either — in EITHER outcome, since a refusal is also a
+    // state the block shows honestly.
+    setDraft(null)
+  }, [])
 
   const commitDraft = useCallback(() => {
     if (draft === null) return
     const parsed = Number(draft)
     setDraft(null)
-    // Out of range: revert to the authoritative value instead of paying a
-    // round trip for a guaranteed refusal.
-    if (!Number.isInteger(parsed) || parsed < MIN_AUTO_UNLOAD_MINUTES) return
+    // Out of range: revert to the authoritative value instead of paying a round
+    // trip for a guaranteed refusal. The ceiling matters as much as the floor —
+    // above MAX_AUTO_UNLOAD_MINUTES the backend's minutes→nanoseconds multiply
+    // overflows, and an "effectively never" budget inverts into "unload
+    // immediately" (see the constant's doc in @/api/embedded).
+    if (
+      !Number.isInteger(parsed) ||
+      parsed < MIN_AUTO_UNLOAD_MINUTES ||
+      parsed > MAX_AUTO_UNLOAD_MINUTES
+    )
+      return
     void commit(enabled, parsed)
   }, [draft, enabled, commit])
 

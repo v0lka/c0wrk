@@ -1,12 +1,18 @@
 // Embedded local-model TUNING RPC wrappers (the Settings tuning surface).
 //
 // Thin, validating wrappers over the desktop App bindings of
-// backend/frontend_api_embedded.go: GetEmbeddedLLMTuning / SetEmbeddedLLMTuning
-// / ProbeEmbeddedLLMDevices, plus the TS mirror of the status snapshot's
+// backend/frontend_api_embedded_tuning.go: GetEmbeddedLLMTuning /
+// SetEmbeddedLLMTuning, plus the TS mirror of the status snapshot's
 // measured-topology additions (devices / unified / budgets / plan /
-// reload_required). Sibling of @/api/embedded — split out so each module stays
-// at one concern (lifecycle vs tuning); components import from either, never
-// from wailsjs.
+// reload_required) whose DTOs live in backend/frontend_api_embedded_dto.go.
+// Sibling of @/api/embedded — split out so each module stays at one concern
+// (lifecycle vs tuning); components import from either, never from wailsjs.
+//
+// The on-demand `ProbeEmbeddedLLMDevices` RPC is deliberately NOT wrapped here:
+// nothing in the UI consumes it. The topology the install record renders comes
+// from the status snapshot's own fields (mirrored below), and no "Re-probe"
+// affordance exists — the RPC stays reachable from diagnostics on the Go side.
+// Add a wrapper only together with the surface that calls it.
 //
 // Every knob is NULLABLE and null is load-bearing: it means "unset — the
 // planner decides", which is NOT the same value as an explicit "auto" spelling
@@ -16,36 +22,24 @@
 // named in `reset` clears back to unset — so a commit from this UI names only
 // the knob it changed.
 //
-// The numeric bounds mirror config.ToTuning one for one (the backend's own
-// validation) so the wrapper refuses a guaranteed rejection locally instead of
-// paying a round trip — the same contract as setEmbeddedLLMAutoUnload.
+// The numeric bounds mirror the backend one for one — the floors come from
+// config.ToTuning's own validation, the CEILINGS from core/embeddedllm/limits.go
+// — and live in lib/embeddedTuningLimits, ONE copy shared by the local range
+// check below, the display fallbacks and the inputs' own `min`/`max`. So the
+// wrapper refuses a guaranteed rejection locally instead of paying a round trip,
+// the same contract as setEmbeddedLLMAutoUnload.
 
 import { getApp } from './runtime'
+import {
+  MAX_CONTEXT_TOKENS,
+  MAX_TUNING_HOST_RESERVE_GIB,
+  MAX_TUNING_LAYERS,
+  MAX_TUNING_MIB,
+  MAX_TUNING_PARALLEL,
+  MIN_CONTEXT_TOKENS,
+  MIN_PARALLEL,
+} from '@/lib/embeddedTuningLimits'
 import { logger } from '@/lib/logger'
-
-// --- Validation constants (mirror backend/config ToTuning ranges) ---
-
-/** Smallest legal explicit context / fit floor. There is no zero-token
- *  context window. Mirrors config.EmbeddedLLMMinContextTokens. */
-export const MIN_CONTEXT_TOKENS = 1
-
-/** The pinned model's own training context — the ceiling for every
- *  context-shaped knob (core/embeddedllm `maxTrainingContext`, 1<<18). A pin
- *  bump changes the backend figure, not this mirror; the wrapper's refusal is
- *  only a fast path, the backend stays authoritative. */
-export const MAX_CONTEXT_TOKENS = 262144
-
-/** The `-np` default and floor (core DefaultParallel: one slot, because -np
- *  also SPLITS the context across slots). */
-export const MIN_PARALLEL = 1
-export const DEFAULT_PARALLEL = 1
-
-/** The fit-floor default when unset (core DefaultFitMinContext — deliberately
- *  NOT the runtime's own 4096, which truncates answers on this model). */
-export const DEFAULT_FIT_MIN_CONTEXT = 65536
-
-/** The per-device fit margin the runtime itself uses when unset. */
-export const DEFAULT_FIT_TARGET_MIB = 1024
 
 /** The closed KV-precision set (core KVTypes; q5_0 is excluded on a measured
  *  long-context decode regression). "auto" is the planner's adaptive
@@ -168,21 +162,27 @@ export interface EmbeddedLLMTuningPatch {
   readonly host_reserve_gib?: number
 }
 
-/** The on-demand probe answer (ProbeEmbeddedLLMDevices). */
-export interface EmbeddedLLMDevices {
-  readonly devices: readonly EmbeddedLLMDevice[]
-  readonly unified: boolean
-  readonly host_ram_gib: number
-  readonly device_budget_mib: number
-  readonly host_budget_mib: number
-  readonly probed_at: string
-}
-
 // --- Guards (presence + type only; null and "" stay legal values) ---
 
 const isNullable = (v: unknown, is: (x: unknown) => boolean) => v === null || is(v)
 const isStr = (v: unknown): v is string => typeof v === 'string'
 const isNum = (v: unknown): v is number => typeof v === 'number'
+
+/** Inclusive numeric range check. `Number.isFinite` is part of the check on
+ *  purpose: NaN and Infinity fail EVERY relational comparison, so a bare
+ *  `min <= v <= max` test would wave them through and hand the planner a value
+ *  whose float→int conversion is implementation-defined in Go. */
+const withinRange = (v: number, min: number, max: number): boolean =>
+  Number.isFinite(v) && v >= min && v <= max
+
+/** Inclusive range check for a knob whose wire type is an `int`. Every tuning
+ *  knob but `host_reserve_gib` is one. `Number.isInteger` subsumes the finite
+ *  check (NaN and ±Infinity are not integers) and adds the part a decimal needs:
+ *  `2.5` passes every relational comparison, reaches Go, and comes back as a raw
+ *  `json: cannot unmarshal number 2.5 into Go struct field … of type int` painted
+ *  in the Settings error line — the round trip this module exists to avoid. */
+const wholeInRange = (v: number, min: number, max: number): boolean =>
+  Number.isInteger(v) && v >= min && v <= max
 
 function isDevice(d: unknown): d is EmbeddedLLMDevice {
   if (typeof d !== 'object' || d === null) return false
@@ -190,6 +190,41 @@ function isDevice(d: unknown): d is EmbeddedLLMDevice {
   return isStr(o.name) && isStr(o.description) && isNum(o.total_mib) && isNum(o.free_mib)
 }
 
+/** Guard for the recorded launch shape. Every field `formatPlan` (the install
+ *  record) and the tuning surfaces read is checked, so a backend schema drift
+ *  fails the read loudly instead of painting "undefined ctx / undefined device".
+ *  Presence and types only — the VALUES (`packing`, `kv_type`, `offload_mode`)
+ *  are deliberately not enumerated, and the sentinel spellings (`layers` -1,
+ *  `cache_ram_mib` -1) stay legal. */
+export function isEmbeddedLLMPlan(d: unknown): d is EmbeddedLLMPlan {
+  if (typeof d !== 'object' || d === null) return false
+  const o = d as Record<string, unknown>
+  return (
+    typeof o.recorded === 'boolean' &&
+    isStr(o.packing) &&
+    isStr(o.kv_type) &&
+    isNum(o.context_size) &&
+    typeof o.fit === 'boolean' &&
+    isStr(o.fit_arg) &&
+    isNum(o.fit_target_mib) &&
+    isNum(o.fit_min_context) &&
+    isStr(o.offload_mode) &&
+    isNum(o.layers) &&
+    typeof o.kv_offload === 'boolean' &&
+    typeof o.mmproj_offload === 'boolean' &&
+    isNum(o.parallel) &&
+    isNum(o.cache_ram_mib) &&
+    isStr(o.gpu_family) &&
+    isNum(o.device_budget_mib) &&
+    isNum(o.host_budget_mib) &&
+    isNum(o.expected_device_mib) &&
+    isNum(o.expected_host_mib) &&
+    Array.isArray(o.notes) &&
+    o.notes.every(isStr)
+  )
+}
+
+/** Guard for the measured-topology block of the status snapshot. */
 export function isEmbeddedLLMStatusExtras(d: unknown): d is EmbeddedLLMStatusExtras {
   if (typeof d !== 'object' || d === null) return false
   const o = d as Record<string, unknown>
@@ -201,9 +236,7 @@ export function isEmbeddedLLMStatusExtras(d: unknown): d is EmbeddedLLMStatusExt
     isNum(o.device_budget_mib) &&
     isNum(o.host_budget_mib) &&
     isStr(o.topology_probed_at) &&
-    typeof o.plan === 'object' &&
-    o.plan !== null &&
-    Array.isArray((o.plan as Record<string, unknown>).notes) &&
+    isEmbeddedLLMPlan(o.plan) &&
     typeof o.reload_required === 'boolean'
   )
 }
@@ -241,33 +274,44 @@ export async function getEmbeddedLLMTuning(): Promise<EmbeddedLLMTuning> {
   return result
 }
 
-/** Local range check of one patch — the mirror of config.ToTuning's numeric
- *  bounds, so an out-of-range commit is refused WITHOUT a round trip. */
+/** Local range check of one patch — the mirror of config.ToTuning's floors and
+ *  core/embeddedllm/limits.go's ceilings, so an out-of-range commit is refused
+ *  WITHOUT a round trip. Every knob but `host_reserve_gib` is an `int` on the
+ *  wire, so those are also checked for INTEGRALITY: a decimal is a guaranteed
+ *  Go unmarshal rejection, and the raw driver string is not an actionable
+ *  message for the Settings error line. */
 export function validateEmbeddedLLMTuningPatch(patch: EmbeddedLLMTuningPatch): void {
   const bad = (key: string, value: number | string, want: string): Error =>
     new Error(`embedded_llm.tuning.${key} ${value} is not valid; must be ${want}`)
+  const whole = (min: number, max: number): string => `a whole number within ${min}-${max}`
   if (patch.context?.mode === CONTEXT_MODE_EXACT) {
     const tokens = patch.context.tokens
     if (tokens === null || tokens === undefined)
       throw bad('context.tokens', 'null', `paired with ${CONTEXT_MODE_EXACT}`)
-    if (tokens < MIN_CONTEXT_TOKENS || tokens > MAX_CONTEXT_TOKENS)
-      throw bad('context.tokens', tokens, `within ${MIN_CONTEXT_TOKENS}-${MAX_CONTEXT_TOKENS}`)
+    if (!wholeInRange(tokens, MIN_CONTEXT_TOKENS, MAX_CONTEXT_TOKENS))
+      throw bad('context.tokens', tokens, whole(MIN_CONTEXT_TOKENS, MAX_CONTEXT_TOKENS))
   }
   if (patch.offload?.mode === OFFLOAD_MODE_LAYERS) {
     const layers = patch.offload.layers
-    if (layers === null || layers === undefined || layers < 0)
-      throw bad('offload.layers', String(layers), '>= 0 beside mode "layers"')
+    if (layers === null || layers === undefined || !wholeInRange(layers, 0, MAX_TUNING_LAYERS))
+      throw bad('offload.layers', String(layers), `${whole(0, MAX_TUNING_LAYERS)} beside mode "layers"`)
   }
-  if (patch.fit_target_mib !== undefined && patch.fit_target_mib < 0)
-    throw bad('fit_target_mib', patch.fit_target_mib, '>= 0')
-  if (patch.fit_min_context !== undefined && (patch.fit_min_context < MIN_CONTEXT_TOKENS || patch.fit_min_context > MAX_CONTEXT_TOKENS))
-    throw bad('fit_min_context', patch.fit_min_context, `within ${MIN_CONTEXT_TOKENS}-${MAX_CONTEXT_TOKENS}`)
-  if (patch.parallel !== undefined && patch.parallel < MIN_PARALLEL)
-    throw bad('parallel', patch.parallel, `>= ${MIN_PARALLEL}`)
-  if (patch.cache_ram_mib !== undefined && patch.cache_ram_mib < 0)
-    throw bad('cache_ram_mib', patch.cache_ram_mib, '>= 0 (0 disables the cache)')
-  if (patch.host_reserve_gib !== undefined && patch.host_reserve_gib < 0)
-    throw bad('host_reserve_gib', patch.host_reserve_gib, '>= 0')
+  if (patch.fit_target_mib !== undefined && !wholeInRange(patch.fit_target_mib, 0, MAX_TUNING_MIB))
+    throw bad('fit_target_mib', patch.fit_target_mib, whole(0, MAX_TUNING_MIB))
+  if (
+    patch.fit_min_context !== undefined &&
+    !wholeInRange(patch.fit_min_context, MIN_CONTEXT_TOKENS, MAX_CONTEXT_TOKENS)
+  )
+    throw bad('fit_min_context', patch.fit_min_context, whole(MIN_CONTEXT_TOKENS, MAX_CONTEXT_TOKENS))
+  if (patch.parallel !== undefined && !wholeInRange(patch.parallel, MIN_PARALLEL, MAX_TUNING_PARALLEL))
+    throw bad('parallel', patch.parallel, whole(MIN_PARALLEL, MAX_TUNING_PARALLEL))
+  if (patch.cache_ram_mib !== undefined && !wholeInRange(patch.cache_ram_mib, 0, MAX_TUNING_MIB))
+    throw bad('cache_ram_mib', patch.cache_ram_mib, `${whole(0, MAX_TUNING_MIB)} (0 disables the cache)`)
+  if (
+    patch.host_reserve_gib !== undefined &&
+    !withinRange(patch.host_reserve_gib, 0, MAX_TUNING_HOST_RESERVE_GIB)
+  )
+    throw bad('host_reserve_gib', patch.host_reserve_gib, `within 0-${MAX_TUNING_HOST_RESERVE_GIB}`)
 }
 
 /** Persist a partial tuning patch. Out-of-range values are refused locally
@@ -277,15 +321,4 @@ export function validateEmbeddedLLMTuningPatch(patch: EmbeddedLLMTuningPatch): v
 export async function setEmbeddedLLMTuning(patch: EmbeddedLLMTuningPatch): Promise<void> {
   validateEmbeddedLLMTuningPatch(patch)
   await getApp().SetEmbeddedLLMTuning(patch)
-}
-
-/** On-demand topology re-probe. Refused when not installed / while an install
- *  runs; persists nothing. */
-export async function probeEmbeddedLLMDevices(): Promise<EmbeddedLLMDevices> {
-  const result = await getApp().ProbeEmbeddedLLMDevices()
-  if (typeof result !== 'object' || result === null || !Array.isArray(result.devices) || !result.devices.every(isDevice)) {
-    logger.error('probeEmbeddedLLMDevices: unexpected response shape', result)
-    throw new Error('ProbeEmbeddedLLMDevices returned an invalid devices payload')
-  }
-  return result as EmbeddedLLMDevices
 }

@@ -5,14 +5,17 @@
 // ProxySettings); the minutes field is a DRAFT that commits on blur/Enter, so
 // typing does not fire an RPC per keystroke, and an out-of-range entry reverts
 // locally instead of paying a round trip for a guaranteed backend refusal
-// (`SetEmbeddedLLMAutoUnload` requires minutes >= 1).
+// (`SetEmbeddedLLMAutoUnload` requires MIN_AUTO_UNLOAD_MINUTES ≤ minutes ≤
+// MAX_AUTO_UNLOAD_MINUTES; the ceiling mirrors `embeddedllm.
+// MaxAutoUnloadMinutes`, above which the backend's minutes→nanoseconds multiply
+// overflows and an "effectively never" budget inverts into "unload at once").
 //
 // The setting is an operator preference, not install state: the backend keeps
 // it across a removal, and the values rendered here always come from the
 // authoritative status snapshot — there is no optimistic copy.
 
 import { Input } from '@/components/ui/input'
-import { MIN_AUTO_UNLOAD_MINUTES } from '@/api/embedded'
+import { MAX_AUTO_UNLOAD_MINUTES, MIN_AUTO_UNLOAD_MINUTES } from '@/api/embedded'
 
 export function EmbeddedLLMAutoUnload({
   enabled,
@@ -55,6 +58,7 @@ export function EmbeddedLLMAutoUnload({
           data-testid="embedded-llm-auto-unload-minutes"
           type="number"
           min={MIN_AUTO_UNLOAD_MINUTES}
+          max={MAX_AUTO_UNLOAD_MINUTES}
           step={1}
           className="h-8 w-20 text-sm"
           value={draft ?? String(minutes)}

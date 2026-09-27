@@ -2953,6 +2953,17 @@ func (m *Manager) maybeSpawnTitleGeneration(session *Session, id, text string, p
 		// skips the rename and leaves the generated name in place — the
 		// session is still usable, and the run's own request reports the
 		// cause to the user.
+		//
+		// BY DESIGN the gate sits outside the serviceLLMTimeout envelope
+		// (ADR-066 D13: no LLM request may start before the model is
+		// resident, and the load is never charged to the request's own
+		// budget). The worst-case wait before this goroutine's budget
+		// starts is therefore embeddedllm.DefaultLoadWaitTimeout when the
+		// local model is the default and cold; how that bound is derived is
+		// stated once, on the constant itself. Nothing user-facing blocks on
+		// it: this runs on a tracked background goroutine, so the only
+		// observable effect is that the auto-name lands late (or not at all
+		// if the gate fails).
 		if serviceLLMGate != nil {
 			if err := serviceLLMGate(m.shutdownCtx); err != nil {
 				m.log().Warn("skipping session title generation: the model is not ready",

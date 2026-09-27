@@ -2,11 +2,12 @@ package backend
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
+	"math"
 	"os"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,14 +16,15 @@ import (
 )
 
 // Tests of the embedded local model's TOPOLOGY / PLAN / TUNING surface:
-// the additive EmbeddedLLMStatus fields, GetEmbeddedLLMTuning,
-// SetEmbeddedLLMTuning and ProbeEmbeddedLLMDevices
-// (backend/frontend_api_embedded.go).
+// GetEmbeddedLLMTuning, SetEmbeddedLLMTuning and ProbeEmbeddedLLMDevices
+// (backend/frontend_api_embedded_tuning.go), plus the topology and plan the
+// status RPC records.
 //
 // Scope: the boundary contract. The planner's own decisions (which shape fits,
 // which relaxation fires, what a note says) belong to core/embeddedllm and are
 // covered there; nothing here re-tests a plan, only that this layer renders one
 // faithfully and refuses to write a tuning the next config load would reject.
+// The wire shapes themselves are pinned in frontend_api_embedded_dto_test.go.
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -448,6 +450,35 @@ func TestSetEmbeddedLLMTuningRefusesInvalidValuesWithoutWriting(t *testing.T) {
 				Mode: strPtr(config.EmbeddedLLMOffloadLayers), Layers: tuningIntPtr(-1),
 			},
 		}},
+		// The CEILINGS. The RPC validates through the same ToTuning the config
+		// loader does, so a value past a core ceiling is refused here too —
+		// before a byte of config.yaml changes, which is the criterion this table
+		// exists for. The figures are core's own, not transcribed ones.
+		{"slots above the ceiling", EmbeddedLLMTuningRequest{
+			Parallel: tuningIntPtr(embeddedllm.MaxTuningParallel + 1),
+		}},
+		{"a prompt-cache ceiling above the bound", EmbeddedLLMTuningRequest{
+			CacheRAMMiB: tuningIntPtr(embeddedllm.MaxTuningMiB + 1),
+		}},
+		{"a fit target above the bound", EmbeddedLLMTuningRequest{
+			FitTargetMiB: tuningIntPtr(embeddedllm.MaxTuningMiB + 1),
+		}},
+		{"a layer count above the bound", EmbeddedLLMTuningRequest{
+			Offload: &EmbeddedLLMOffloadTuningRequest{
+				Mode:   strPtr(config.EmbeddedLLMOffloadLayers),
+				Layers: tuningIntPtr(embeddedllm.MaxTuningLayers + 1),
+			},
+		}},
+		// host_reserve_gib reaches an implementation-defined float→int
+		// conversion in the planner, so the non-finite shapes are refused too.
+		{"a NaN host reserve", EmbeddedLLMTuningRequest{HostReserveGiB: tuningF64Ptr(math.NaN())}},
+		{"an infinite host reserve", EmbeddedLLMTuningRequest{HostReserveGiB: tuningF64Ptr(math.Inf(1))}},
+		{"a negatively infinite host reserve", EmbeddedLLMTuningRequest{
+			HostReserveGiB: tuningF64Ptr(math.Inf(-1)),
+		}},
+		{"a host reserve above the bound", EmbeddedLLMTuningRequest{
+			HostReserveGiB: tuningF64Ptr(float64(embeddedllm.MaxTuningHostReserveGiB) * 2),
+		}},
 	}
 
 	for _, tc := range cases {
@@ -684,7 +715,7 @@ func TestApplyEmbeddedTuningRequestDoesNotAliasTheRequest(t *testing.T) {
 	}
 }
 
-// ── the status DTO additions ───────────────────────────────────────────────
+// ── the status topology and plan ───────────────────────────────────────────
 
 // embeddedTopologyFixture is the reference machine's measured shape, quoted in
 // core/embeddedllm/topology.go's header: one Metal device whose pool IS host RAM,
@@ -835,175 +866,6 @@ func TestGetEmbeddedLLMStatusReportsAnUnrecordedTopologyAsUnknownNotZero(t *test
 	}
 }
 
-// TestEmbeddedPlanDTORendersTheOffloadDecision pins the derived offload mode,
-// including the two sentinels a renderer would otherwise have to guess at: a nil
-// Layers is -1 ("the flag is omitted"), and an explicit zero cache ceiling is 0
-// ("the cache is disabled"), which are different facts.
-func TestEmbeddedPlanDTORendersTheOffloadDecision(t *testing.T) {
-	cpuOnly := 0
-	partial := 24
-	every := 99
-
-	cases := []struct {
-		name      string
-		plan      *embeddedllm.MemoryPlan
-		wantMode  string
-		wantLayer int
-		wantCache int
-	}{
-		{"nil plan", nil, config.EmbeddedLLMTuningAuto, -1, -1},
-		{"under fit the runtime sizes it", &embeddedllm.MemoryPlan{Fit: true},
-			config.EmbeddedLLMTuningAuto, -1, -1},
-		{"no -ngl at all", &embeddedllm.MemoryPlan{}, config.EmbeddedLLMTuningAuto, -1, -1},
-		{"nothing offloaded", &embeddedllm.MemoryPlan{Layers: &cpuOnly},
-			config.EmbeddedLLMOffloadCPU, 0, -1},
-		{"a partial offload", &embeddedllm.MemoryPlan{Layers: &partial},
-			config.EmbeddedLLMOffloadLayers, 24, -1},
-		// Core spells "every layer" with its own ceiling sentinel, which this
-		// layer must not transcribe: an every-layer offload renders as a count.
-		{"every layer is a count, not a label", &embeddedllm.MemoryPlan{Layers: &every},
-			config.EmbeddedLLMOffloadLayers, 99, -1},
-		{"a disabled prompt cache is 0, not omitted", &embeddedllm.MemoryPlan{CacheRAMMiB: tuningIntPtr(0)},
-			config.EmbeddedLLMTuningAuto, -1, 0},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := embeddedPlanDTO(tc.plan)
-			if got.OffloadMode != tc.wantMode {
-				t.Errorf("OffloadMode = %q, want %q", got.OffloadMode, tc.wantMode)
-			}
-			if got.Layers != tc.wantLayer {
-				t.Errorf("Layers = %d, want %d", got.Layers, tc.wantLayer)
-			}
-			if got.CacheRAMMiB != tc.wantCache {
-				t.Errorf("CacheRAMMiB = %d, want %d", got.CacheRAMMiB, tc.wantCache)
-			}
-			if got.Notes == nil {
-				t.Error("Notes is nil, want an array — the boundary never carries null")
-			}
-			if got.Recorded != (tc.plan != nil) {
-				t.Errorf("Recorded = %v, want %v", got.Recorded, tc.plan != nil)
-			}
-		})
-	}
-}
-
-// TestEmbeddedLLMStatusAdditionsAreAdditiveOnTheWire is the guard-degradation
-// criterion expressed on this side of the boundary: the payload still serializes
-// with every pre-existing key present and correctly typed, the new composite
-// fields never serialize as null, and nothing was renamed or retyped.
-func TestEmbeddedLLMStatusAdditionsAreAdditiveOnTheWire(t *testing.T) {
-	f, _, _ := newEmbeddedTestAPI(t)
-	manifest := embeddedTestManifest(4321, 32768)
-	topology := embeddedTopologyFixture()
-	manifest.Topology = &topology
-	manifest.Plan = &embeddedllm.MemoryPlan{Packing: embeddedllm.PackingPQ2_0, Parallel: 1}
-	writeEmbeddedInstallTree(t, f.agentDir, manifest)
-	f.Lifecycle().InitEmbeddedLLM()
-
-	encoded, err := json.Marshal(f.GetEmbeddedLLMStatus())
-	if err != nil {
-		t.Fatalf("marshalling the status: %v", err)
-	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(encoded, &raw); err != nil {
-		t.Fatalf("unmarshalling the status: %v", err)
-	}
-
-	// The 21 fields the existing frontend guard checks, with the type each
-	// typeof-branch expects. A rename or a retype here is what would break an
-	// older UI, so they are pinned explicitly.
-	older := map[string]string{
-		"state": "string", "installed": "boolean", "installing": "boolean",
-		"loading": "boolean", "loaded": "boolean", "packing": "string",
-		"backend": "string", "port": "number", "context_size": "number",
-		"auto_unload_enabled": "boolean", "auto_unload_minutes": "number",
-		"idle_remaining_seconds": "number", "base_url": "string",
-		"model_id": "string", "model_name": "string", "runtime_version": "string",
-		"installed_at": "string", "model_file": "string", "pid": "number",
-		"error": "string", "available": "boolean",
-	}
-	for key, want := range older {
-		value, ok := raw[key]
-		if !ok {
-			t.Errorf("the pre-existing field %q is missing from the payload", key)
-			continue
-		}
-		if got := jsonKind(value); got != want {
-			t.Errorf("the pre-existing field %q is a %s, want %s", key, got, want)
-		}
-	}
-
-	// The additions.
-	additions := map[string]string{
-		"devices": "array", "unified": "boolean", "host_ram_gib": "number",
-		"device_budget_mib": "number", "host_budget_mib": "number",
-		"topology_probed_at": "string", "plan": "object",
-		"reload_required": "boolean",
-	}
-	for key, want := range additions {
-		value, ok := raw[key]
-		if !ok {
-			t.Errorf("the new field %q is missing from the payload", key)
-			continue
-		}
-		if got := jsonKind(value); got != want {
-			t.Errorf("the new field %q is a %s, want %s", key, got, want)
-		}
-	}
-
-	// fit_warning is the one addition allowed to be ABSENT: omitempty keeps a
-	// healthy status free of it, so the additive contract here is "absent or a
-	// string", never null and never another type.
-	if value, ok := raw["fit_warning"]; ok {
-		if got := jsonKind(value); got != "string" {
-			t.Errorf("fit_warning is a %s, want a string", got)
-		}
-	}
-
-	// A null array is the one shape the "always present" contract forbids, so
-	// check it on the unpopulated payload too.
-	var plan struct {
-		Notes    []string `json:"notes"`
-		Recorded bool     `json:"recorded"`
-	}
-	if err := json.Unmarshal(raw["plan"], &plan); err != nil {
-		t.Fatalf("unmarshalling plan: %v", err)
-	}
-	if plan.Notes == nil {
-		t.Error("plan.notes serialized as null, want an array")
-	}
-
-	empty, err := json.Marshal(EmbeddedLLMStatus{Devices: []EmbeddedLLMDevice{}, Plan: embeddedPlanDTO(nil)})
-	if err != nil {
-		t.Fatalf("marshalling an empty status: %v", err)
-	}
-	if strings.Contains(string(empty), `"devices":null`) || strings.Contains(string(empty), `"notes":null`) {
-		t.Errorf("an unpopulated status serialized a null array: %s", empty)
-	}
-}
-
-// jsonKind reports the JSON typeof of a raw value, using the same vocabulary as
-// the frontend guard's typeof checks.
-func jsonKind(raw json.RawMessage) string {
-	text := strings.TrimSpace(string(raw))
-	switch {
-	case text == "null":
-		return "null"
-	case strings.HasPrefix(text, "\""):
-		return "string"
-	case strings.HasPrefix(text, "["):
-		return "array"
-	case strings.HasPrefix(text, "{"):
-		return "object"
-	case text == "true" || text == "false":
-		return "boolean"
-	default:
-		return "number"
-	}
-}
-
 // ── reload_required ────────────────────────────────────────────────────────
 
 // residentEmbeddedModel drives a real load through the faked spawn so the model
@@ -1013,9 +875,16 @@ func residentEmbeddedModel(t *testing.T, f *FrontendAPI) {
 	_, port := modelsEndpoint(t)
 	writeEmbeddedInstallTree(t, f.agentDir, embeddedTestManifest(port, 32768))
 	stubFreePortProbe(t, f)
-	proc := newFakeEmbeddedProcess(4242)
+	// A FRESH process per spawn, the way the real spawner behaves. Sharing one
+	// double across loads would hand the SECOND load a process the first Unload
+	// already exited: its readiness probe is still answered by the endpoint
+	// stand-in, so the load used to claim residency for a dead child — the exact
+	// claim Load now refuses (see the ownership re-check in Load's success path).
+	// Each spawn also gets its OWN pid, so a caller's "the resident process was
+	// not restarted" assertion compares a pid that a restart would have changed.
+	var spawns atomic.Int32
 	f.embedded.spawnFn = func(context.Context, embeddedllm.LaunchCommand) (embeddedllm.Process, error) {
-		return proc, nil
+		return newFakeEmbeddedProcess(4242 + int(spawns.Add(1))), nil
 	}
 	tightenEmbeddedBudgets(t, f)
 	f.Lifecycle().InitEmbeddedLLM()
@@ -1223,10 +1092,10 @@ func TestProbeEmbeddedLLMDevicesRefusesWhileAnInstallRuns(t *testing.T) {
 		t.Error("the device probe ran during an install")
 		return embeddedllm.MemoryTopology{}, false
 	}
-	if !f.beginEmbeddedInstall() {
-		t.Fatal("the single-run gate refused the first install")
+	if claimed, holder := f.beginEmbeddedOperation(embeddedOpInstall); !claimed {
+		t.Fatalf("the single-run gate refused the first install (held by %q)", holder)
 	}
-	defer f.endEmbeddedInstall()
+	defer f.endEmbeddedOperation()
 
 	if _, err := f.ProbeEmbeddedLLMDevices(); err == nil {
 		t.Fatal("ProbeEmbeddedLLMDevices succeeded during an install")
@@ -1273,22 +1142,6 @@ func readConfigBytes(t *testing.T, path string) (string, error) {
 		return "", err
 	}
 	return string(data), nil
-}
-
-// TestEmbeddedDevicesDTONeverCarriesANullArray pins the always-an-array rule on
-// the probe's own DTO, which the status additions share.
-func TestEmbeddedDevicesDTONeverCarriesANullArray(t *testing.T) {
-	dto := embeddedDevicesDTO(embeddedllm.MemoryTopology{})
-	if dto.Devices == nil {
-		t.Fatal("Devices is nil for an empty topology, want an empty array")
-	}
-	encoded, err := json.Marshal(dto)
-	if err != nil {
-		t.Fatalf("marshalling: %v", err)
-	}
-	if strings.Contains(string(encoded), `"devices":null`) {
-		t.Errorf("an empty topology serialized a null array: %s", encoded)
-	}
 }
 
 // TestEmbeddedTuningFingerprintIsStableForEquivalentSections is the property

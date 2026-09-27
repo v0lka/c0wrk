@@ -3,10 +3,14 @@
 // The single source of truth for the two embedded-LLM surfaces: the Settings
 // block (install / per-component progress / remove / load-unload / auto-unload /
 // the informational packing label) and the status-bar indicator. The store holds
-// exactly what those surfaces render; RPC side effects live in @/api/embedded and
-// reach the store through the module-level functions at the bottom
-// (`refreshEmbeddedLLMStatus`, `subscribeEmbeddedLLMEvents`), following the
-// paperStore convention so the zustand reducer stays pure and trivially testable.
+// exactly what those surfaces render. This file is PURE state + selectors: the
+// RPC side effects live in @/api/embedded / @/api/embeddedTuning and reach the
+// store through the module-level sync functions in ./embeddedLLMSync
+// (`refreshEmbeddedLLMStatus`, `refreshEmbeddedLLMTuning`,
+// `runEmbeddedLLMAction`, `subscribeEmbeddedLLMEvents`), following the
+// paperStore convention so the zustand reducers stay pure and trivially
+// testable. Those four are re-exported at the bottom, so the historical import
+// path (`@/stores/embeddedLLMStore`) keeps working for every consumer.
 //
 // Authority model — deliberately one writer per field, no parallel bookkeeping:
 //   - `status` is the authoritative snapshot and is replaced WHOLE by
@@ -30,24 +34,17 @@
 // allocated object/array. Derivations (the ordered progress rows, the display
 // error) happen in the consumer's `useMemo`.
 //
-// One deliberate cross-store side effect lives in `refreshEmbeddedLLMStatus` —
-// in the module-level sync function, NOT in a reducer, so the reducers above
-// stay pure: an install/remove transition changes which providers `GetConfig`
-// reports, so the shared `useConfigData` model cache (the chat toolbar picker's
-// source) is invalidated there. That function's comment explains why load/unload
-// is excluded.
+// One deliberate cross-store side effect belongs to this store's sync module —
+// `refreshEmbeddedLLMStatus` in ./embeddedLLMSync, NOT a reducer, so the
+// reducers below stay pure: an install/remove transition changes which
+// providers `GetConfig` reports, so the shared `useConfigData` model cache (the
+// chat toolbar picker's source) is invalidated there. That function's comment
+// explains why load/unload is excluded.
 
 import { create } from 'zustand'
-import {
-  getEmbeddedLLMStatus,
-  onEmbeddedLLMInstallProgress,
-  onEmbeddedLLMState,
-  type EmbeddedLLMStatus,
-} from '@/api/embedded'
-import { getEmbeddedLLMTuning, type EmbeddedLLMTuning } from '@/api/embeddedTuning'
+import type { EmbeddedLLMStatus } from '@/api/embedded'
+import type { EmbeddedLLMTuning } from '@/api/embeddedTuning'
 import type { EmbeddedLLMComponent, EmbeddedLLMInstallProgressData } from '@/types/events'
-import { invalidateConfigCache } from '@/hooks/useConfigData'
-import { logger } from '@/lib/logger'
 
 export type { EmbeddedLLMStatus } from '@/api/embedded'
 export type { EmbeddedLLMTuning } from '@/api/embeddedTuning'
@@ -76,13 +73,19 @@ export type EmbeddedLLMProgressByComponent = Readonly<
 interface EmbeddedLLMState {
   /** The last authoritative status snapshot (null = never read). */
   status: EmbeddedLLMStatus | null
-  /** True while the first status read is in flight (skeleton/spinner). */
+  /** True while the FIRST status read is in flight (skeleton/spinner).
+   *  `refreshEmbeddedLLMStatus` arms it only while `status === null`: an
+   *  event-driven re-read or a post-RPC read-back refreshes the snapshot in
+   *  place and must NOT re-raise it, or every helper text rendered from this
+   *  flag blinks on each refresh. The in-flight window of an action is `busy`. */
   statusLoading: boolean
   /** True while a background install run is in flight. */
   installing: boolean
   /** Per-component install progress (empty unless `installing`). */
   progress: EmbeddedLLMProgressByComponent
-  /** The mutating RPC in flight, if any. */
+  /** The mutating RPC in flight, if any. Named by the FIRST action of an
+   *  overlapping set and cleared only when the last one has read back — see
+   *  `runEmbeddedLLMAction`, the sole owner. */
   busy: EmbeddedLLMBusyAction | null
   /** The message of the last FAILED action taken from this UI (null = none).
    *  Distinct from `status.error`, which is the backend-reported cause of the
@@ -95,17 +98,27 @@ interface EmbeddedLLMState {
    *  shared `embedded_llm:state` invalidation (which re-reads the STATUS)
    *  cannot leave the slice stale. */
   tuning: EmbeddedLLMTuning | null
-  /** True while the first tuning read is in flight. */
+  /** True while a tuning read is in flight — the first one AND each post-commit
+   *  re-read (`refreshEmbeddedLLMTuning` arms it on every read, unlike
+   *  `statusLoading`). Consumed by the tuning controls' `disabled` derivation:
+   *  until the snapshot lands every knob renders its fallback, so a commit in
+   *  that window would persist a patch derived from values the user never saw.
+   *  The sync module counts the pending reads, so an OVERLAPPING pair of commits
+   *  keeps it set until the LAST snapshot has landed — one early clear would
+   *  re-enable the controls against a snapshot the sibling write predates. */
   tuningLoading: boolean
 }
 
 interface EmbeddedLLMActions {
   /** Replace the snapshot wholesale (a `GetEmbeddedLLMStatus` read). */
   setStatus: (status: EmbeddedLLMStatus) => void
-  /** Toggle the initial-read spinner. */
+  /** Toggle the FIRST-read spinner (see the `statusLoading` field). */
   setStatusLoading: (loading: boolean) => void
   /** Mark a background install run as started: raise the flag, drop the bars of
-   *  any previous run and clear the previous failure. */
+   *  any previous run and clear the previous failure. `busy` is deliberately
+   *  NOT touched — `runEmbeddedLLMAction` owns it end-to-end, and the install
+   *  flow calls this from INSIDE its own busy window, so clearing it here would
+   *  re-enable every control before the read-back snapshot lands. */
   beginInstall: () => void
   /** One component's one stage of a live install run. */
   applyProgress: (data: EmbeddedLLMInstallProgressData) => void
@@ -115,7 +128,7 @@ interface EmbeddedLLMActions {
   setError: (message: string | null) => void
   /** Replace the tuning snapshot wholesale (a `GetEmbeddedLLMTuning` read). */
   setTuning: (tuning: EmbeddedLLMTuning) => void
-  /** Toggle the first tuning-read spinner. */
+  /** Toggle the tuning-read flag (see the `tuningLoading` field). */
   setTuningLoading: (loading: boolean) => void
   /** Drop every local field (used by tests and by an app-level teardown). */
   reset: () => void
@@ -154,7 +167,7 @@ export const useEmbeddedLLMStore = create<EmbeddedLLMStore>()((set) => ({
 
   setStatusLoading: (loading) => set({ statusLoading: loading }),
 
-  beginInstall: () => set({ installing: true, progress: {}, error: null, busy: null }),
+  beginInstall: () => set({ installing: true, progress: {}, error: null }),
 
   applyProgress: (data) =>
     set((s) => ({
@@ -203,7 +216,8 @@ export function useEmbeddedLLMError(): string | null {
   return useEmbeddedLLMStore((s) => s.error)
 }
 
-/** Whether the first status read is in flight. Primitive — safe. */
+/** Whether the FIRST status read is in flight (never re-raised by a later
+ *  re-read). Primitive — safe. */
 export function useEmbeddedLLMStatusLoading(): boolean {
   return useEmbeddedLLMStore((s) => s.statusLoading)
 }
@@ -214,104 +228,21 @@ export function useEmbeddedLLMTuningSnapshot(): EmbeddedLLMTuning | null {
   return useEmbeddedLLMStore((s) => s.tuning)
 }
 
-/** Whether the first tuning read is in flight. Primitive — safe. */
+/** Whether a tuning read is in flight. Primitive — safe. */
 export function useEmbeddedLLMTuningLoading(): boolean {
   return useEmbeddedLLMStore((s) => s.tuningLoading)
 }
 
-// --- Backend sync (module-level functions, not actions) ---
-
-/** Re-read the authoritative snapshot. NEVER throws: an unavailable backend
- *  (no Wails bindings — dev-frontend, vitest) or a schema drift is logged and
- *  leaves the previous snapshot in place, so a status surface degrades to "not
- *  installed" instead of unmounting. Returns whether the snapshot was applied. */
-export async function refreshEmbeddedLLMStatus(): Promise<boolean> {
-  const { setStatusLoading, setStatus } = useEmbeddedLLMStore.getState()
-  setStatusLoading(true)
-  try {
-    const status = await getEmbeddedLLMStatus()
-    const prev = useEmbeddedLLMStore.getState().status
-    setStatus(status)
-    // The install state decides whether the local model EXISTS as a provider at
-    // all: the backend generates `llm.openai_compatible.embedded` from it, so an
-    // install/remove transition changes `GetConfig().llm.all_models` — the list
-    // the chat toolbar's ModelCombobox renders. That list is served from
-    // useConfigData's module-level cache, which no other embedded path
-    // invalidates (the settings dialog re-reads config on every open, which is
-    // why only the chat picker went stale after an install). Invalidate on the
-    // transition ONLY: load/unload/auto-unload changes neither add nor remove a
-    // selectable model — an unloaded model stays listed, since the first request
-    // to it loads it — so invalidating there would refetch config on every load
-    // for nothing. The FIRST read (prev === null) is skipped deliberately: at
-    // startup the config cache is fetched after the backend has already synced
-    // the provider, so there is no stale entry to drop.
-    if (prev !== null && prev.installed !== status.installed) {
-      invalidateConfigCache()
-    }
-    return true
-  } catch (err) {
-    // A failed READ is not a failed action: it must not paint the action-error
-    // line (which the user reads as "my install broke"). Log, drop the spinner
-    // and leave the previous snapshot in place.
-    logger.warn('[embedded-llm] status read failed', err)
-    setStatusLoading(false)
-    return false
-  }
-}
-
-/** Re-read the authoritative tuning overrides. NEVER throws — the exact
- *  contract as `refreshEmbeddedLLMStatus`: a failed read is logged, the
- *  previous snapshot stays and no action error is painted. Returns whether the
- *  snapshot was applied. */
-export async function refreshEmbeddedLLMTuning(): Promise<boolean> {
-  const { setTuningLoading, setTuning } = useEmbeddedLLMStore.getState()
-  setTuningLoading(true)
-  try {
-    setTuning(await getEmbeddedLLMTuning())
-    return true
-  } catch (err) {
-    logger.warn('[embedded-llm] tuning read failed', err)
-    setTuningLoading(false)
-    return false
-  }
-}
-
-/** Live subscription count. Both embedded-LLM surfaces (the Settings block and
- *  the status-bar indicator) can be mounted at once; one shared Wails
- *  subscription keeps a single event from being applied twice. */
-let eventSubscribers = 0
-let eventUnsubscribe: (() => void) | null = null
-
-/** Subscribe to the two global `embedded_llm:*` events and feed the store.
- *
- *  Refcounted: the returned unsubscribe tears the shared Wails subscription down
- *  only when the LAST consumer goes away, and is idempotent (a double call from
- *  a StrictMode effect cannot drop another consumer's subscription). Safe to
- *  call when the runtime is absent — @/api/runtime's `subscribe` no-ops there. */
-export function subscribeEmbeddedLLMEvents(): () => void {
-  eventSubscribers += 1
-  if (eventUnsubscribe === null) {
-    const offState = onEmbeddedLLMState(() => {
-      // A transition is an invalidation, not a patch: re-read the authoritative
-      // snapshot (which also carries the fields the event payload omits).
-      void refreshEmbeddedLLMStatus()
-    })
-    const offProgress = onEmbeddedLLMInstallProgress((data) => {
-      useEmbeddedLLMStore.getState().applyProgress(data)
-    })
-    eventUnsubscribe = () => {
-      offState()
-      offProgress()
-    }
-  }
-
-  let released = false
-  return () => {
-    if (released) return
-    released = true
-    eventSubscribers -= 1
-    if (eventSubscribers > 0 || eventUnsubscribe === null) return
-    eventUnsubscribe()
-    eventUnsubscribe = null
-  }
-}
+// --- Backend sync ---
+//
+// The four module-level sync functions (the two authoritative re-reads, the one
+// shared mutating runner, the refcounted event subscription) live in
+// ./embeddedLLMSync so this file stays pure state + selectors. They are
+// re-exported here so every existing consumer keeps importing them from
+// `@/stores/embeddedLLMStore`.
+export {
+  refreshEmbeddedLLMStatus,
+  refreshEmbeddedLLMTuning,
+  runEmbeddedLLMAction,
+  subscribeEmbeddedLLMEvents,
+} from './embeddedLLMSync'

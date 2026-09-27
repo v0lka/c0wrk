@@ -8,7 +8,8 @@ import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/component
 import { Combobox } from '@/components/ui/combobox'
 import { ChevronDown } from 'lucide-react'
 import { essentialToolPickerOptions } from '@/lib/modelProfilesTools'
-import { Toggle, NumberField, TagList } from './ModelProfilesControls'
+import { Toggle, TagList } from './ModelProfilesControls'
+import { NumberField } from './NumberField'
 import { OptionalNumberField } from './ModelProfilesOptionalNumberField'
 
 // `""` is a first-class stored value meaning "inherit the model default": the
@@ -248,11 +249,11 @@ export function LoopHardeningSection({ slice, patch, open, onOpenChange, disable
         <div className="grid grid-cols-2 gap-3">
           {/* These fields render only while the variant is enabled, the exact
               state in which the backend requires every threshold >= 1. */}
-          <NumberField label="Repeat nudge" value={slice.repeat_nudge_threshold} onChange={(v) => patch({ repeat_nudge_threshold: v })} min={1} disabled={disabled} />
-          <NumberField label="Parse-error abort" value={slice.parse_error_abort_threshold} onChange={(v) => patch({ parse_error_abort_threshold: v })} min={1} disabled={disabled} />
-          <NumberField label="Fruitless nudge" value={slice.fruitless_nudge_threshold} onChange={(v) => patch({ fruitless_nudge_threshold: v })} min={1} disabled={disabled} />
-          <NumberField label="Fruitless abort" value={slice.fruitless_abort_threshold} onChange={(v) => patch({ fruitless_abort_threshold: v })} min={1} disabled={disabled} />
-          <NumberField label="Same-tool repeat nudge" value={slice.same_tool_repeat_nudge_threshold} onChange={(v) => patch({ same_tool_repeat_nudge_threshold: v })} min={1} disabled={disabled} />
+          <NumberField label="Repeat nudge" value={slice.repeat_nudge_threshold} onChange={(v) => patch({ repeat_nudge_threshold: v })} min={1} integer disabled={disabled} />
+          <NumberField label="Parse-error abort" value={slice.parse_error_abort_threshold} onChange={(v) => patch({ parse_error_abort_threshold: v })} min={1} integer disabled={disabled} />
+          <NumberField label="Fruitless nudge" value={slice.fruitless_nudge_threshold} onChange={(v) => patch({ fruitless_nudge_threshold: v })} min={1} integer disabled={disabled} />
+          <NumberField label="Fruitless abort" value={slice.fruitless_abort_threshold} onChange={(v) => patch({ fruitless_abort_threshold: v })} min={1} integer disabled={disabled} />
+          <NumberField label="Same-tool repeat nudge" value={slice.same_tool_repeat_nudge_threshold} onChange={(v) => patch({ same_tool_repeat_nudge_threshold: v })} min={1} integer disabled={disabled} />
         </div>
       )}
     </VariantSection>

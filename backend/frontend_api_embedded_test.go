@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -704,10 +705,10 @@ func TestInstallEmbeddedLLMRefusesBelowTheMemoryGateWithoutDownloading(t *testin
 	if got := rec.runtimeErrors(); len(got) != 0 {
 		t.Errorf("a synchronous refusal raised %d runtime_error toast(s): %+v", len(got), got)
 	}
-	// The install slot is released, the cause is visible in the status.
+	// The operation gate is released, the cause is visible in the status.
 	status := f.GetEmbeddedLLMStatus()
 	if status.Installing {
-		t.Error("Installing = true after a refusal; the slot was not released")
+		t.Error("Installing = true after a refusal; the gate was not released")
 	}
 	if !strings.Contains(status.Error, "does not fit this machine's memory") {
 		t.Errorf("status.Error = %q, want the refusal cause", status.Error)
@@ -778,7 +779,7 @@ func TestInstallEmbeddedLLMRefusesAnUnreadableHardwareProbe(t *testing.T) {
 		t.Fatalf("error = %v, want it to wrap ErrRAMUnknown", err)
 	}
 	if f.embeddedInstalling() {
-		t.Error("the install slot stayed claimed after a refused install")
+		t.Error("the operation gate stayed claimed after a refused install")
 	}
 }
 
@@ -1025,7 +1026,7 @@ func TestInstallEmbeddedLLMRefusesASecondConcurrentRun(t *testing.T) {
 // TestInstallEmbeddedLLMBackgroundFailureRaisesAToast covers the case with no
 // RPC left to carry the error: the failure must reach the user as a
 // runtime_error toast AND as the state event's error field, and it must release
-// the install slot so a retry is possible.
+// the operation gate so a retry is possible.
 func TestInstallEmbeddedLLMBackgroundFailureRaisesAToast(t *testing.T) {
 	f, rec, _ := newEmbeddedTestAPI(t)
 	f.embedded.probeFn = func(context.Context, *slog.Logger) (embeddedllm.Hardware, error) {
@@ -1420,49 +1421,120 @@ func TestSetEmbeddedLLMAutoUnloadPersistsAndApplies(t *testing.T) {
 	}
 }
 
-// ── event payload shape ────────────────────────────────────────────────────
-
-// TestEmbeddedLLMEventPayloadsSerializeToTheCatalogShape pins the wire shape of
-// both events: the JSON keys the frontend type guards and the event catalog
-// depend on. A renamed Go field would otherwise silently break the UI.
-func TestEmbeddedLLMEventPayloadsSerializeToTheCatalogShape(t *testing.T) {
-	state := EmbeddedLLMStateData{
-		Installed: true, Loading: false, Loaded: true,
-		Packing: "PQ2_0", Backend: "metal", Port: 4321,
-		ContextSize: 32768, AutoUnloadMinutes: 60, Error: "",
-	}
-	stateJSON, err := json.Marshal(state)
-	if err != nil {
-		t.Fatalf("marshalling the state payload: %v", err)
-	}
-	var stateKeys map[string]any
-	if err := json.Unmarshal(stateJSON, &stateKeys); err != nil {
-		t.Fatalf("unmarshalling the state payload: %v", err)
-	}
-	for _, key := range []string{
-		"installed", "loading", "loaded", "packing", "backend",
-		"port", "context_size", "auto_unload_minutes", "error",
+// TestSetEmbeddedLLMAutoUnloadIsBoundedOnBothSides pins the RPC-side range. The
+// ceiling is core's own constant, so the setter, config validation and the timer
+// arithmetic all agree; without it an operator could persist a value whose
+// minutes→nanoseconds multiply wraps into a short POSITIVE budget and the model
+// would unload microseconds after every load.
+func TestSetEmbeddedLLMAutoUnloadIsBoundedOnBothSides(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		minutes int
+		wantErr bool
+	}{
+		{"one minute", 1, false},
+		{"a year of residency", embeddedllm.MaxAutoUnloadMinutes, false},
+		{"zero", 0, true},
+		{"negative", -5, true},
+		{"one past the ceiling", embeddedllm.MaxAutoUnloadMinutes + 1, true},
+		{"the 2-microsecond residue", 3749353613647811, true},
+		{"the largest int", math.MaxInt, true},
 	} {
-		if _, ok := stateKeys[key]; !ok {
-			t.Errorf("the state payload is missing the %q key: %s", key, stateJSON)
-		}
-	}
-	if len(stateKeys) != 9 {
-		t.Errorf("the state payload carries %d keys (%s), want exactly the 9 documented ones",
-			len(stateKeys), stateJSON)
-	}
+		t.Run(tc.name, func(t *testing.T) {
+			f, _, _ := newEmbeddedTestAPI(t)
+			writeEmbeddedInstallTree(t, f.agentDir, embeddedTestManifest(4321, 32768))
+			f.Lifecycle().InitEmbeddedLLM()
+			if err := f.SetEmbeddedLLMAutoUnload(true, 42); err != nil {
+				t.Fatalf("seeding the prior budget: %v", err)
+			}
 
-	progress := EmbeddedLLMProgressData{
-		Component: "model", Stage: "downloading", BytesDone: 1, BytesTotal: 2,
-	}
-	progressJSON, err := json.Marshal(progress)
-	if err != nil {
-		t.Fatalf("marshalling the progress payload: %v", err)
-	}
-	if want := `{"component":"model","stage":"downloading","bytes_done":1,"bytes_total":2}`; string(progressJSON) != want {
-		t.Errorf("progress payload = %s, want %s", progressJSON, want)
+			err := f.SetEmbeddedLLMAutoUnload(true, tc.minutes)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("SetEmbeddedLLMAutoUnload(%d): %v", tc.minutes, err)
+				}
+				if got := f.config.EmbeddedLLM.AutoUnload.IdleMinutes(); got != tc.minutes {
+					t.Errorf("the persisted budget = %d, want %d", got, tc.minutes)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("SetEmbeddedLLMAutoUnload accepted %d minutes", tc.minutes)
+			}
+			// Actionable: the key, the value and the accepted range.
+			want := fmt.Sprintf("embedded_llm.auto_unload.minutes %d is not valid", tc.minutes)
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal = %q, want it to contain %q", err, want)
+			}
+			wantRange := fmt.Sprintf("must be within 1-%d", embeddedllm.MaxAutoUnloadMinutes)
+			if !strings.Contains(err.Error(), wantRange) {
+				t.Errorf("the refusal = %q, want it to state the range %q", err, wantRange)
+			}
+			// A rejected write changes nothing.
+			if got := f.config.EmbeddedLLM.AutoUnload.IdleMinutes(); got != 42 {
+				t.Errorf("the persisted budget = %d after a rejected write, want the prior 42", got)
+			}
+		})
 	}
 }
+
+// TestSetEmbeddedLLMAutoUnloadClearsTheConfigLoadErrorChannel is the shared-tail
+// invariant: every embedded config write ends on saveOrRollback, which clears
+// configLoadErrors after a successful save. Before the setter was routed through
+// it, a stale load-error banner could outlive a successful auto-unload write —
+// the file's own rule for this surface is ONE tail rather than a per-method
+// variation on one.
+func TestSetEmbeddedLLMAutoUnloadClearsTheConfigLoadErrorChannel(t *testing.T) {
+	f, rec, _ := newEmbeddedTestAPI(t)
+	writeEmbeddedInstallTree(t, f.agentDir, embeddedTestManifest(4321, 32768))
+	f.Lifecycle().InitEmbeddedLLM()
+	f.Lifecycle().SetConfigLoadState([]string{"a stale load error"})
+	if len(f.configLoadErrors) != 1 {
+		t.Fatalf("the stale load error was not installed: %v", f.configLoadErrors)
+	}
+
+	if err := f.SetEmbeddedLLMAutoUnload(true, 45); err != nil {
+		t.Fatalf("SetEmbeddedLLMAutoUnload: %v", err)
+	}
+
+	if f.configLoadErrors != nil {
+		t.Errorf("configLoadErrors = %v after a successful save, want it cleared", f.configLoadErrors)
+	}
+	if got := f.GetConfig().ConfigErrors; len(got) != 0 {
+		t.Errorf("GetConfig().ConfigErrors = %v, want empty after a successful save", got)
+	}
+	// The write still persisted, applied and announced itself.
+	if got := f.config.EmbeddedLLM.AutoUnload.IdleMinutes(); got != 45 {
+		t.Errorf("the persisted budget = %d, want 45", got)
+	}
+	rec.waitForCount(t, EventConfigUpdated, 1)
+}
+
+// TestSetEmbeddedLLMAutoUnloadRollsBackOnAFailedSave keeps the rollback half of
+// the shared tail honest now that the setter runs through it: a failed write must
+// leave the in-memory config exactly as it was.
+func TestSetEmbeddedLLMAutoUnloadRollsBackOnAFailedSave(t *testing.T) {
+	f, _, _ := newEmbeddedTestAPI(t)
+	writeEmbeddedInstallTree(t, f.agentDir, embeddedTestManifest(4321, 32768))
+	f.Lifecycle().InitEmbeddedLLM()
+	if err := f.SetEmbeddedLLMAutoUnload(true, 42); err != nil {
+		t.Fatalf("seeding the prior budget: %v", err)
+	}
+	f.configPath = f.agentDir + "/does-not-exist/nested/config.yaml"
+
+	err := f.SetEmbeddedLLMAutoUnload(false, 90)
+	if err == nil {
+		t.Fatal("SetEmbeddedLLMAutoUnload reported success for an unwritable config path")
+	}
+	if got := f.config.EmbeddedLLM.AutoUnload.IdleMinutes(); got != 42 {
+		t.Errorf("the in-memory budget = %d after a failed save, want the rollback to 42", got)
+	}
+	if enabled := f.config.EmbeddedLLM.AutoUnload.IsEnabled(); !enabled {
+		t.Error("auto_unload.enabled = false after a failed save, want the rollback to true")
+	}
+}
+
+// ── status guards ──────────────────────────────────────────────────────────
 
 // TestGetEmbeddedLLMStatusCarriesTheCompatibilityGuards covers the disclosure
 // half of the guard contract at the boundary the Settings UI reads: an install
@@ -1565,21 +1637,5 @@ func TestGetEmbeddedLLMStatusWithoutGuardsCarriesAnEmptyArray(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"guards":[]`) {
 		t.Errorf("the serialized status does not carry an empty guards array: %s", data)
-	}
-}
-
-// TestEmbeddedGuardIDsMarksUnappliedDecisions covers the log rendering: an
-// unapplied guard must not read like an applied one, because the difference is
-// whether the install is actually running the recommended build.
-func TestEmbeddedGuardIDsMarksUnappliedDecisions(t *testing.T) {
-	if got := embeddedGuardIDs(nil); got != "none" {
-		t.Errorf("embeddedGuardIDs(nil) = %q, want %q", got, "none")
-	}
-	got := embeddedGuardIDs([]embeddedllm.GuardDecision{
-		{Guard: embeddedllm.GuardCUDA133Crash, Applied: true},
-		{Guard: embeddedllm.GuardVulkanIntelArcHang},
-	})
-	if got != "cuda-13.3-crash,vulkan-intel-arc-hang(unapplied)" {
-		t.Errorf("embeddedGuardIDs = %q", got)
 	}
 }

@@ -43,6 +43,7 @@ vi.mock('@/lib/logger', () => ({
 vi.mock('@/api/embedded', () => ({
   DEFAULT_AUTO_UNLOAD_MINUTES: 60,
   MIN_AUTO_UNLOAD_MINUTES: 1,
+  MAX_AUTO_UNLOAD_MINUTES: 525600,
   getEmbeddedLLMStatus: mocks.getEmbeddedLLMStatus,
   installEmbeddedLLM: mocks.installEmbeddedLLM,
   removeEmbeddedLLM: mocks.removeEmbeddedLLM,
@@ -74,8 +75,11 @@ import { EmbeddedLLMSettings } from './EmbeddedLLMSettings'
 import { useEmbeddedLLMStore } from '@/stores/embeddedLLMStore'
 import { formatBytes } from '@/lib/formatters'
 import type { EmbeddedLLMStatus } from '@/api/embedded'
-import type { EmbeddedLLMPlan, EmbeddedLLMTuning } from '@/api/embeddedTuning'
+import type { EmbeddedLLMPlan } from '@/api/embeddedTuning'
 import type { EmbeddedLLMInstallProgressData, EmbeddedLLMStateData } from '@/types/events'
+// The all-unset tuning snapshot is shared with the two tuning suites so the DTO
+// mirror has exactly one test-side definition.
+import { makeTuning } from '@/test/embeddedTuningFixture'
 
 let container: HTMLDivElement
 let root: Root
@@ -137,25 +141,6 @@ function makeStatus(overrides: Partial<EmbeddedLLMStatus> = {}): EmbeddedLLMStat
     pid: 0,
     error: '',
     available: true,
-    ...overrides,
-  }
-}
-
-/** The all-unset tuning snapshot (the all-Auto plan). */
-function makeTuning(overrides: Partial<EmbeddedLLMTuning> = {}): EmbeddedLLMTuning {
-  return {
-    context: { mode: null, tokens: null },
-    kv_cache_type: null,
-    offload: { mode: null, layers: null },
-    fit: null,
-    fit_target_mib: null,
-    fit_min_context: null,
-    kv_offload: null,
-    mmproj_offload: null,
-    packing: null,
-    parallel: null,
-    cache_ram_mib: null,
-    host_reserve_gib: null,
     ...overrides,
   }
 }
@@ -285,8 +270,10 @@ describe('EmbeddedLLMSettings — before an install', () => {
 
   it('shows a synchronous refusal inline (no toast channel)', async () => {
     mocks.getEmbeddedLLMStatus.mockResolvedValue(makeStatus())
+    // The real gate's wording (core/embeddedllm `ErrInsufficientMemory`): the
+    // combined accelerator+RAM budget, not a flat RAM floor.
     mocks.installEmbeddedLLM.mockRejectedValue(
-      new Error('the embedded model needs 16 GiB of RAM; this machine has 8.0 GiB'),
+      new Error("the embedded LLM does not fit this machine's memory"),
     )
     await render()
     await act(async () => {
@@ -295,7 +282,7 @@ describe('EmbeddedLLMSettings — before an install', () => {
 
     const err = q('embedded-llm-error')
     expect(err).not.toBeNull()
-    expect(err?.textContent).toContain('16 GiB of RAM')
+    expect(err?.textContent).toContain('does not fit this machine')
     // A refusal downloaded nothing, so no progress surface appeared.
     expect(q('embedded-llm-progress')).toBeNull()
   })
@@ -636,6 +623,65 @@ describe('EmbeddedLLMSettings — auto unload', () => {
     // The field reverted to the authoritative value.
     expect((q('embedded-llm-auto-unload-minutes') as HTMLInputElement).value).toBe('60')
   })
+
+  it('carries the ceiling on the input and refuses a larger budget locally', async () => {
+    await render()
+
+    const minutes = q('embedded-llm-auto-unload-minutes') as HTMLInputElement
+    // MAX_AUTO_UNLOAD_MINUTES mirrors embeddedllm.MaxAutoUnloadMinutes: above
+    // it the backend's minutes→nanoseconds multiply overflows, and an
+    // "effectively never" budget inverts into "unload immediately".
+    expect(minutes.getAttribute('min')).toBe('1')
+    expect(minutes.getAttribute('max')).toBe('525600')
+
+    typeInto(minutes, '525601')
+    await blur(minutes)
+    await flush()
+
+    expect(mocks.setEmbeddedLLMAutoUnload).not.toHaveBeenCalled()
+    expect((q('embedded-llm-auto-unload-minutes') as HTMLInputElement).value).toBe('60')
+  })
+
+  it('accepts the ceiling itself', async () => {
+    await render()
+
+    const minutes = q('embedded-llm-auto-unload-minutes') as HTMLInputElement
+    typeInto(minutes, '525600')
+    await blur(minutes)
+    await flush()
+
+    expect(mocks.setEmbeddedLLMAutoUnload).toHaveBeenCalledWith(true, 525600)
+  })
+
+  it('holds the switch and the field disabled until the read-back lands', async () => {
+    await render()
+
+    let release: (s: EmbeddedLLMStatus) => void = () => {}
+    mocks.getEmbeddedLLMStatus.mockImplementation(
+      () =>
+        new Promise<EmbeddedLLMStatus>((resolve) => {
+          release = resolve
+        }),
+    )
+
+    const checkbox = q('embedded-llm-auto-unload') as HTMLInputElement
+    act(() => {
+      checkbox.click()
+    })
+    await flush()
+
+    expect(mocks.setEmbeddedLLMAutoUnload).toHaveBeenCalledTimes(1)
+    expect(useEmbeddedLLMStore.getState().busy).toBe('auto-unload')
+    expect((q('embedded-llm-auto-unload') as HTMLInputElement).disabled).toBe(true)
+    expect((q('embedded-llm-auto-unload-minutes') as HTMLInputElement).disabled).toBe(true)
+
+    await act(async () => {
+      release(makeStatus({ state: 'installed', installed: true, auto_unload_enabled: false }))
+    })
+    await flush()
+
+    expect(useEmbeddedLLMStore.getState().busy).toBeNull()
+  })
 })
 
 describe('EmbeddedLLMSettings — tuning section', () => {
@@ -739,3 +785,123 @@ async function clickAsync(el: Element | null): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
 }
+
+// The buttons' `disabled` reads the store's `busy`, and `busy` is cleared only
+// AFTER the post-action read-back has landed. Clearing it first would re-enable
+// the row while the rendered snapshot is still the pre-action one, so a fast
+// second click would fire a duplicate RPC.
+describe('EmbeddedLLMSettings — the busy window covers the read-back', () => {
+  beforeEach(() => {
+    mocks.getEmbeddedLLMStatus.mockResolvedValue(
+      makeStatus({ state: 'installed', installed: true, packing: 'PQ2_0' }),
+    )
+  })
+
+  it('holds Load and Remove disabled while the post-action read is pending', async () => {
+    await render()
+
+    let release: (s: EmbeddedLLMStatus) => void = () => {}
+    mocks.getEmbeddedLLMStatus.mockImplementation(
+      () =>
+        new Promise<EmbeddedLLMStatus>((resolve) => {
+          release = resolve
+        }),
+    )
+
+    await clickAsync(q('embedded-llm-load'))
+
+    // The load RPC has returned; the snapshot has not been re-read yet.
+    expect(mocks.loadEmbeddedLLM).toHaveBeenCalledTimes(1)
+    expect(useEmbeddedLLMStore.getState().busy).toBe('load')
+    expect((q('embedded-llm-load') as HTMLButtonElement).disabled).toBe(true)
+    expect((q('embedded-llm-remove') as HTMLButtonElement).disabled).toBe(true)
+
+    await act(async () => {
+      release(makeStatus({ state: 'loaded', installed: true, loaded: true }))
+    })
+    await flush()
+
+    expect(useEmbeddedLLMStore.getState().busy).toBeNull()
+    expect(q('embedded-llm-unload')).not.toBeNull()
+  })
+
+  it('releases the busy window even when the action was refused', async () => {
+    mocks.unloadEmbeddedLLM.mockRejectedValue(new Error('an install is in flight'))
+    mocks.getEmbeddedLLMStatus.mockResolvedValue(
+      makeStatus({ state: 'installed', installed: true, loaded: true }),
+    )
+    await render()
+
+    await clickAsync(q('embedded-llm-unload'))
+    await flush()
+
+    expect(useEmbeddedLLMStore.getState().busy).toBeNull()
+    expect(q('embedded-llm-error')?.textContent).toContain('an install is in flight')
+  })
+})
+
+// The install refusal is a COMBINED memory gate (CheckMemoryBudget prices the
+// accelerator pool and system RAM together); the flat 16 GiB floor it replaced
+// is gone, so the copy must not state it — an 8 GiB-RAM machine with a 24 GiB
+// accelerator is admitted, and a 16 GiB-RAM-only machine is not guaranteed.
+describe('EmbeddedLLMSettings — the install copy describes the real gate', () => {
+  it('names no flat RAM floor anywhere in the block', async () => {
+    await render()
+
+    expect(container.textContent).not.toContain('16 GiB')
+    expect(container.textContent).not.toContain('less than 16')
+  })
+
+  it('keeps the disk figure and describes the memory gate as both pools', async () => {
+    await render()
+
+    expect(container.textContent).toContain('8 GiB of disk')
+    const hint = q('embedded-llm-install-hint')?.textContent ?? ''
+    expect(hint).toContain('accelerator memory')
+    expect(hint).toContain('system RAM')
+    expect(hint).toContain('Refused up front')
+  })
+
+  it('shows the reading hint only while the FIRST snapshot read is in flight', async () => {
+    mocks.getEmbeddedLLMStatus.mockImplementation(
+      () => new Promise<EmbeddedLLMStatus>(() => {}),
+    )
+    await render()
+    expect(q('embedded-llm-install-hint')?.textContent).toBe('Reading the installed state…')
+  })
+
+  it('does not blink the helper text when an event re-reads the snapshot', async () => {
+    await render()
+    expect(q('embedded-llm-install-hint')?.textContent).toContain('Refused up front')
+
+    // A state event invalidates the snapshot; the re-read must not re-arm the
+    // first-read spinner, or this line swaps to "Reading…" on every event.
+    let release: (s: EmbeddedLLMStatus) => void = () => {}
+    mocks.getEmbeddedLLMStatus.mockImplementation(
+      () =>
+        new Promise<EmbeddedLLMStatus>((resolve) => {
+          release = resolve
+        }),
+    )
+    await emitState({
+      installed: false,
+      loading: false,
+      loaded: false,
+      packing: '',
+      backend: '',
+      port: 0,
+      context_size: 0,
+      auto_unload_minutes: 60,
+      error: '',
+    })
+
+    expect(useEmbeddedLLMStore.getState().statusLoading).toBe(false)
+    expect(q('embedded-llm-install-hint')?.textContent).toContain('Refused up front')
+
+    await act(async () => {
+      release(makeStatus())
+    })
+    await flush()
+    expect(q('embedded-llm-install-hint')?.textContent).not.toContain('Reading the installed state')
+  })
+})

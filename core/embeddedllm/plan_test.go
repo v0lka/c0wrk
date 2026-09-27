@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"math"
 	"os"
 	"reflect"
 	"strconv"
@@ -1380,4 +1381,136 @@ func TestPlanIsNotReachedByTheAstGuard(t *testing.T) {
 	if !declared {
 		t.Fatal("plan.go declares no Plan function; the purity guard is guarding nothing")
 	}
+}
+
+// TestPlanRefusesAHostReserveItCannotConvert pins the total conversion of
+// `tuning.host_reserve_gib`. A float→int conversion whose value the result type
+// cannot represent is IMPLEMENTATION-DEFINED in Go: it saturates to MaxInt64 on
+// arm64 (a zero host budget, fail-closed) and conventionally yields the negative
+// "indefinite value" on amd64, which would make `host = ram − reserve` enormous
+// and fail the memory gate OPEN on the very knob meant to shrink it. NaN was
+// worse still: it passed config validation and was then silently skipped by the
+// planner's `>= 0` test, so an operator typo vanished without a word.
+func TestPlanRefusesAHostReserveItCannotConvert(t *testing.T) {
+	t.Parallel()
+
+	profile := profileOrFail(t)
+	topology := probedTopology(t, PlatformDarwinARM64, 64,
+		DeviceMemory{Name: "MTL0", Description: "Apple M4 Max", TotalMiB: 49152, FreeMiB: 49152})
+
+	cases := map[string]float64{
+		"NaN":                          math.NaN(),
+		"positive infinity":            math.Inf(1),
+		"negative infinity":            math.Inf(-1),
+		"negative":                     -1,
+		"one above the ceiling":        MaxTuningHostReserveGiB + 1,
+		"a value that saturates int64": 1e19,
+	}
+	for name, gib := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			tuning := Tuning{HostReserveGiB: floatPtr(gib)}
+			if _, err := Plan(topology, profile, tuning, BackendMetal, GPUFamilyAppleSilicon); !errors.Is(err, ErrTuningInvalid) {
+				t.Errorf("Plan error = %v, want it to wrap ErrTuningInvalid", err)
+			}
+			// The gate runs the same conversion on the install path, before
+			// anything is planned or downloaded, and must refuse it identically.
+			err := CheckMemoryBudget(ResolveInput{
+				MachineProfile: MachineProfile{
+					Platform: PlatformDarwinARM64,
+					Backend:  BackendMetal,
+					RAMGiB:   64,
+				},
+				Tuning:   tuning,
+				Topology: &topology,
+			})
+			if !errors.Is(err, ErrTuningInvalid) {
+				t.Errorf("CheckMemoryBudget error = %v, want it to wrap ErrTuningInvalid", err)
+			}
+		})
+	}
+
+	// The ceiling itself is convertible, so it must not be refused AS INVALID —
+	// an absurdity guard that rejects its own boundary would be a tuning opinion.
+	// (A reserve that big leaves no host budget, so the memory gate may still
+	// refuse the machine; that is a different error about the machine, not the
+	// knob.)
+	at := Tuning{HostReserveGiB: floatPtr(MaxTuningHostReserveGiB)}
+	if _, err := Plan(topology, profile, at, BackendMetal, GPUFamilyAppleSilicon); errors.Is(err, ErrTuningInvalid) {
+		t.Errorf("Plan refused a reserve at the ceiling as an invalid override: %v", err)
+	}
+	if err := hostReserveMiBMustFail(t, math.NaN()); err == nil {
+		t.Error("hostReserveMiB accepted NaN")
+	}
+}
+
+func hostReserveMiBMustFail(t *testing.T, gib float64) error {
+	t.Helper()
+	_, err := hostReserveMiB(gib)
+	return err
+}
+
+// TestPlanKVTypeGatesAUnifiedPoolAdditively pins that the KV escalation loop
+// spends a unified pool the way the memory gate does. On a unified machine the
+// device and host footprints come out of the SAME bytes, so comparing each
+// against its own budget accepts a precision whose sum exceeds the machine — and
+// the launch's `--fit` pass then cannot fit even at the `-fitc` floor, turning a
+// degraded-but-working configuration into a failed load.
+func TestPlanKVTypeGatesAUnifiedPoolAdditively(t *testing.T) {
+	t.Parallel()
+
+	// budgets.fits is the rule; pin it on its own first.
+	split := budgets{deviceMiB: 100, hostMiB: 100}
+	if !split.fits(60, 60) {
+		t.Error("two independent pools must be gated per pool: 60+60 fits 100 and 100")
+	}
+	unified := budgets{deviceMiB: 100, hostMiB: 100, unified: true}
+	if unified.fits(60, 60) {
+		t.Error("a unified pool must be gated additively: 60+60 does not fit one 100 MiB pool")
+	}
+	if !unified.fits(40, 60) {
+		t.Error("a unified pool must still accept a sum that fits: 40+60 = 100")
+	}
+	if split.fits(101, 0) || unified.fits(0, 101) {
+		t.Error("a footprint above its own budget must never fit")
+	}
+
+	// And the escalation loop must use it. The witness pool is constructed from
+	// the profile's own f16 projection, so it fits each half separately and their
+	// sum by exactly one MiB.
+	profile := profileOrFail(t)
+	target := DefaultFitMinContext
+	deviceMiB, hostMiB, _, err := footprint(profile, PackingPQ2_0, target, KVTypeF16, true, false, true, true)
+	if err != nil {
+		t.Fatalf("footprint: %v", err)
+	}
+	if deviceMiB <= 0 || hostMiB <= 0 {
+		t.Fatalf("f16 projection = (%d, %d) MiB, want two positive footprints", deviceMiB, hostMiB)
+	}
+	pool := max(deviceMiB, hostMiB) + min(deviceMiB, hostMiB) - 1
+
+	if !splitPool(pool).fits(deviceMiB, hostMiB) {
+		t.Fatalf("precondition: %d MiB device and %d MiB host must each fit a %d MiB split pool",
+			deviceMiB, hostMiB, pool)
+	}
+
+	kv, _, err := planKVType(Tuning{}, profile, PackingPQ2_0, target,
+		budgets{deviceMiB: pool, hostMiB: pool, unified: true}, nil, true, false)
+	switch {
+	case errors.Is(err, ErrMemoryPlanInfeasible):
+		// A refusal is the other acceptable answer: no precision fits the pool.
+	case err != nil:
+		t.Fatalf("planKVType: %v", err)
+	case kv == KVTypeF16:
+		t.Errorf("planKVType kept f16 on a unified pool: %d MiB device + %d MiB host = %d MiB against a %d MiB pool",
+			deviceMiB, hostMiB, deviceMiB+hostMiB, pool)
+	default:
+		t.Logf("the unified gate escalated the KV cache to %s", kv)
+	}
+}
+
+// splitPool is a same-sized non-unified budget pair, for the precondition above.
+func splitPool(pool int64) budgets {
+	return budgets{deviceMiB: pool, hostMiB: pool}
 }

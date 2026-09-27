@@ -1,11 +1,25 @@
 // @vitest-environment jsdom
 //
-// Tests for the EmbeddedModelStatus status-bar block: the surface it renders per
-// embedded-LLM state (install download → weight load → residency → error), the
-// separator it owns appearing ONLY together with a visible indicator, the
-// per-artifact (never aggregated, never invented) progress fraction, and the
-// residency indicator's lifetime — it stays across refreshes and disappears on
-// an unload, manual or idle-timer driven.
+// Tests for the EmbeddedModelStatus status-bar block — WIRING ONLY.
+//
+// The division of labour is deliberate and recorded in BOTH suite headers:
+//
+//   • lib/embeddedModelView.test.ts (renderer-free) OWNS every derivation rule —
+//     which surface a snapshot selects, when there is nothing to say, the exact
+//     words of each tooltip, the per-artifact (never aggregated, never invented)
+//     progress fraction, and the install ordering that picks the active artifact.
+//     A change to a RULE is made there, once.
+//   • This suite OWNS the markup and plumbing the pure module cannot see: the
+//     leading `Separator` appearing ONLY together with a visible indicator,
+//     `data-state`, `role="progressbar"` and the `aria-valuenow` omission for an
+//     indeterminate bar, the `truncate`/`max-w-[…]` overflow classes, the
+//     `view.label ?? 'Installing…'` markup fallback, the store → component →
+//     `deriveView` wiring (snapshot refreshes, event-raised progress, the
+//     residency indicator's lifetime across an unload), and the mount /
+//     subscription lifecycle including the `backend:ready` retry.
+//
+// An assertion that merely restates a derivation rule does not belong here: it
+// would have to be edited in two suites for one behaviour change.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act } from 'react'
@@ -211,6 +225,10 @@ afterEach(() => {
 
 // --- Absent surfaces ------------------------------------------------------
 
+// WHEN the block has nothing to say is a derivation rule, pinned case by case by
+// lib/embeddedModelView.test.ts (`deriveView` → null). This suite pins only what
+// null must mean in the MARKUP: no element, no text, and above all no stray
+// leading `Separator` left behind in the status bar.
 describe('EmbeddedModelStatus — when there is nothing to say', () => {
   it('renders nothing — separator included — before any status arrives', async () => {
     // A read that never settles: the block has no snapshot at all.
@@ -277,8 +295,10 @@ describe('EmbeddedModelStatus — install download', () => {
     expect(progressbar!.getAttribute('aria-valuenow')).toBe('42')
     expect(el!.textContent).toContain('Model weights')
     expect(el!.textContent).toContain('42%')
-    // The tooltip carries the bytes the compact label has no room for.
-    expect(el!.getAttribute('title')).toMatch(/Model weights: Downloading \(.+ \/ .+\)/)
+    // WIRING: the tooltip the pure derivation built is bound to the element. Its
+    // exact wording (artifact label, stage, the byte pair the compact label has
+    // no room for) is pinned by lib/embeddedModelView.test.ts.
+    expect(el!.getAttribute('title')).toContain('Downloading')
   })
 
   it('advances the bar as bytes arrive', async () => {
@@ -293,21 +313,11 @@ describe('EmbeddedModelStatus — install download', () => {
     expect(block()!.textContent).toContain('55%')
   })
 
-  it('moves on to the next artifact once the previous one is done', async () => {
-    await mountWith(statusWith({ installing: true }))
-
-    progress('runtime', 'downloading', 50_000_000, 100_000_000)
-    expect(block()!.textContent).toContain('Inference runtime')
-    expect(bar()!.getAttribute('aria-valuenow')).toBe('50')
-
-    progress('runtime', 'done')
-    progress('model', 'downloading', 671_088_640, MODEL_BYTES_TOTAL)
-
-    // The finished runtime must not keep the bar: the weights are in flight.
-    expect(block()!.textContent).toContain('Model weights')
-    expect(block()!.textContent).not.toContain('Inference runtime')
-    expect(bar()!.getAttribute('aria-valuenow')).toBe('10')
-  })
+  // Which artifact is active — the install order, moving on once one is `done` —
+  // is a DERIVATION rule and is pinned by lib/embeddedModelView.test.ts
+  // (`activeProgress`). The two cases above are what this suite adds: a store
+  // progress event actually reaches `deriveView`, and the fraction it returns is
+  // painted into `aria-valuenow` and the `%` span.
 
   it('renders an indeterminate bar — no invented percentage — for a byte-less stage', async () => {
     await mountWith(statusWith({ installing: true }))
@@ -375,19 +385,16 @@ describe('EmbeddedModelStatus — residency indicator', () => {
     expect(bar()).toBeNull()
     expect(seps()).toHaveLength(1)
 
-    const title = el!.getAttribute('title') ?? ''
-    expect(title).toContain('resident')
-    expect(title).toContain('PTQ1_0/vulkan')
-    expect(title).toContain('context 16384')
-    expect(title).toContain('http://127.0.0.1:52341/v1')
-    expect(title).toContain('pid 4123')
-    expect(title).toContain('auto-unloads after 60 min idle')
-  })
-
-  it('states the residency policy when the idle timer is off', async () => {
-    await mountWith({ ...LOADED, auto_unload_enabled: false })
-
-    expect(block()!.getAttribute('title')).toContain('stays resident until unloaded')
+    // WIRING: the tooltip the pure derivation built is bound to the element, and
+    // the name is truncated rather than allowed to stretch the bar. The tooltip's
+    // CONTENTS — identity, context, endpoint, pid and the residency policy, the
+    // idle timer on or off — are pinned by lib/embeddedModelView.test.ts
+    // (`loadedTitle`); restating them here would mean editing two suites for one
+    // wording change.
+    expect(el!.getAttribute('title')).toContain('Embedded model resident')
+    const name = el!.querySelector('span.truncate')
+    expect(name?.textContent).toBe('Bonsai 2 27B')
+    expect(name?.className).toContain('max-w-[160px]')
   })
 
   it('keeps the indicator across snapshot refreshes until the model is unloaded', async () => {
@@ -453,8 +460,16 @@ describe('EmbeddedModelStatus — error', () => {
     const el = block()
     expect(el!.getAttribute('data-state')).toBe('error')
     expect(el!.textContent).toContain('vulkan driver refused the device')
-    expect(el!.getAttribute('title')).toContain('Settings → LLM')
     expect(seps()).toHaveLength(1)
+
+    // WIRING: the message is truncated instead of stretching the bar, and the
+    // tooltip is bound. Its exact wording — including the "Settings → LLM →
+    // Embedded LLM" pointer and the empty-message fallback — is pinned by
+    // lib/embeddedModelView.test.ts.
+    const msg = el!.querySelector('span.truncate')
+    expect(msg?.textContent).toBe('llama-server exited after 3s: vulkan driver refused the device')
+    expect(msg?.className).toContain('max-w-[200px]')
+    expect(el!.getAttribute('title')).toContain('vulkan driver refused the device')
   })
 
   it('surfaces a failed install even though nothing is installed', async () => {
@@ -462,23 +477,20 @@ describe('EmbeddedModelStatus — error', () => {
       statusWith({ state: 'not_installed', error: 'checksum mismatch for the model weights' }),
     )
 
-    // This is the one case where a NOT-installed snapshot still has something
-    // to say: the failure is otherwise invisible outside the Settings dialog.
+    // WIRING: the error surface renders — separator and all — for a snapshot the
+    // block stays silent about in every other respect. That it SHOULD speak here
+    // is the derivation rule, pinned by lib/embeddedModelView.test.ts ("surfaces
+    // a failure message even while nothing is installed").
     expect(block()!.getAttribute('data-state')).toBe('error')
     expect(block()!.textContent).toContain('checksum mismatch')
     expect(seps()).toHaveLength(1)
   })
 
-  it('gives way to a live install run', async () => {
-    await mountWith(statusWith({ state: 'error', error: 'previous run failed' }))
-    expect(block()!.getAttribute('data-state')).toBe('error')
-
-    snapshot(statusWith({ installing: true }))
-    progress('runtime', 'downloading', 10_000_000, 100_000_000)
-
-    expect(block()!.getAttribute('data-state')).toBe('install')
-    expect(block()!.textContent).not.toContain('previous run failed')
-  })
+  // That a live install run OUTRANKS an erroring snapshot is a derivation rule,
+  // pinned by lib/embeddedModelView.test.ts ("gives way to a live install run",
+  // "outranks every snapshot, including a loaded one"). The event-raised
+  // `installing` flag reaching this component at all is pinned by the
+  // "from a progress event alone" case above and by stores/embeddedLLMStore.test.ts.
 })
 
 // --- Lifecycle -------------------------------------------------------------
