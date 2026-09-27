@@ -250,15 +250,23 @@ type AssistantDoneEventData struct {
 
 // ContextFillEventData is the typed Data payload for "context_fill" events.
 type ContextFillEventData struct {
-	FillPercent         float64 `json:"fill_percent"`
-	UsedTokens          int     `json:"used_tokens"`
-	MaxTokens           int     `json:"max_tokens"`
-	Status              string  `json:"status"`
-	PlanStepID          string  `json:"plan_step_id,omitempty"`
-	SessionInputTokens  int     `json:"session_input_tokens"`
-	SessionOutputTokens int     `json:"session_output_tokens"`
-	Model               string  `json:"model"`
-	Family              string  `json:"family"`
+	FillPercent float64 `json:"fill_percent"`
+	UsedTokens  int     `json:"used_tokens"`
+	MaxTokens   int     `json:"max_tokens"`
+	Status      string  `json:"status"`
+	PlanStepID  string  `json:"plan_step_id,omitempty"`
+	// SessionRootMirror marks a step-scoped event (PlanStepID set) emitted by
+	// the root conductor emitter (dynamic inline-step scope): the frontend may
+	// mirror this fill to the session-level status bar immediately instead of
+	// waiting for the session_tokens re-broadcast, which lags one executor
+	// iteration. Never set for delegated subagent emitters (WithPlanStepID
+	// copies) or session-root events — a subagent's fill must not clobber the
+	// conductor's session-level fill.
+	SessionRootMirror   bool   `json:"session_root_mirror,omitempty"`
+	SessionInputTokens  int    `json:"session_input_tokens"`
+	SessionOutputTokens int    `json:"session_output_tokens"`
+	Model               string `json:"model"`
+	Family              string `json:"family"`
 }
 
 // SessionTokensEventData is the typed Data payload for "session_tokens" events.

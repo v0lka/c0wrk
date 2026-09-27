@@ -1013,6 +1013,14 @@ func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens in
 	// to the emitter's own scope (fixed via WithPlanStepID, dynamic via
 	// SetCurrentStepID) when the caller has none; "" on both sides keeps the
 	// event session-root (planning/idle emissions between steps).
+	//
+	// The dynamic scope is valid only between a task's start and its
+	// completion: the inline lifecycle sets it per step and clears it in
+	// completeStep/completeAll, and the orchestrator clears it unconditionally
+	// at task entry (resetDynamicStepScope) — a pause→abandon or crash can
+	// otherwise leave it dangling into the next task. Session-root emissions
+	// that must never inherit a scope (the initial fill, the manual-compaction
+	// refresh) reset it explicitly right before emitting.
 	if stepID == "" {
 		e.mu.Lock()
 		stepID = e.planStepID
@@ -1056,11 +1064,17 @@ func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens in
 		SessionID: e.sessionID,
 		Type:      "context_fill",
 		Data: ContextFillEventData{
-			FillPercent:         displayPercent,
-			UsedTokens:          usedTokens,
-			MaxTokens:           displayMax,
-			Status:              status,
-			PlanStepID:          stepID,
+			FillPercent: displayPercent,
+			UsedTokens:  usedTokens,
+			MaxTokens:   displayMax,
+			Status:      status,
+			PlanStepID:  stepID,
+			// Root emitter + dynamic inline-step scope: the frontend may
+			// mirror this fill to the session-level status bar (the
+			// session_tokens re-broadcast lags one executor iteration).
+			// Subagent copies never set it — WithPlanStepID does not carry
+			// isSessionRoot.
+			SessionRootMirror:   e.isSessionRoot && stepID != "",
 			SessionInputTokens:  totalIn,
 			SessionOutputTokens: totalOut,
 			Model:               lastModel,
