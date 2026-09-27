@@ -13,11 +13,15 @@ import (
 )
 
 // compactionSpyEmitter records the emissions the manual-compaction path must
-// produce (ContextCompaction + refreshed ContextFill).
+// produce (ContextCompaction + refreshed ContextFill). It also mirrors the
+// dynamic plan-step scope contract (CurrentStepScopable) so tests can verify
+// the orchestrator resets a stale scope before session-root emissions.
 type compactionSpyEmitter struct {
 	mockEmitter
 	compactions []compactionRecord
 	fills       []fillRecord
+	// currentStepID mirrors the dynamic scope of the real root emitter.
+	currentStepID string
 }
 
 type compactionRecord struct {
@@ -30,6 +34,7 @@ type fillRecord struct {
 	usedTokens int
 	maxTokens  int
 	status     string
+	stepID     string
 }
 
 func (s *compactionSpyEmitter) ContextCompaction(before, after float64, stepID string) {
@@ -37,7 +42,14 @@ func (s *compactionSpyEmitter) ContextCompaction(before, after float64, stepID s
 }
 
 func (s *compactionSpyEmitter) ContextFill(percent float64, used, maxTokens int, status, stepID string) {
-	s.fills = append(s.fills, fillRecord{percent, used, maxTokens, status})
+	s.fills = append(s.fills, fillRecord{percent, used, maxTokens, status, stepID})
+}
+
+// SetCurrentStepID implements CurrentStepScopable like the real root emitter:
+// the scope is mutated in place so tests can plant a stale id and observe the
+// orchestrator's reset.
+func (s *compactionSpyEmitter) SetCurrentStepID(id string) {
+	s.currentStepID = id
 }
 
 // newCompactionTestOrchestrator builds a minimal orchestrator wired for
@@ -252,6 +264,29 @@ func TestCompactConversationHistory_SlidingWindowReplacesHistoryAndEmits(t *test
 	}
 	if math.Abs(spy.fills[0].percent-wantAfterEff) > 0.001 {
 		t.Errorf("ContextFill percent = %.2f, want effective-based %.2f", spy.fills[0].percent, wantAfterEff)
+	}
+}
+
+// TestCompactConversationHistory_ResetsStaleStepScope verifies the refresh
+// emissions cannot inherit a dynamic plan-step scope left by an inline step
+// (task still open after a pause, resumed mid-step): the orchestrator clears
+// the scope on the root emitter before emitting the compaction card and the
+// status-bar refresh, and the conductor re-scopes the resumed step on its
+// next start.
+func TestCompactConversationHistory_ResetsStaleStepScope(t *testing.T) {
+	o, spy := newCompactionTestOrchestrator(nil)
+	o.SetConversationHistory(compactionHistory(30))
+	spy.SetCurrentStepID("step_3") // stale scope planted on the root emitter
+
+	if _, _, err := o.CompactConversationHistory(context.Background(), "sliding_window"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if spy.currentStepID != "" {
+		t.Fatalf("dynamic step scope must be reset before session-root refresh emissions, got %q", spy.currentStepID)
+	}
+	if len(spy.fills) != 1 {
+		t.Fatalf("expected exactly 1 ContextFill emission, got %d", len(spy.fills))
 	}
 }
 

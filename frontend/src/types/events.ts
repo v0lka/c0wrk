@@ -145,7 +145,13 @@ export interface AutonomyDecisionData {
 
 export interface ContextFillData {
   fill_percent: number; used_tokens: number; max_tokens: number; status: string
-  plan_step_id?: string; session_input_tokens: number; session_output_tokens: number
+  plan_step_id?: string
+  /** Step-scoped event from the root conductor emitter (dynamic inline-step
+   *  scope): the fill may be mirrored to the session-level status bar — the
+   *  session_tokens re-broadcast lags one executor iteration. Never set for
+   *  delegated subagent events. */
+  session_root_mirror?: boolean
+  session_input_tokens: number; session_output_tokens: number
   model: string; family: string
 }
 

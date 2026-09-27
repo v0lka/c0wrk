@@ -2503,7 +2503,30 @@ func (o *Orchestrator) capAgentsMD(content string) string {
 // config override, observed runtime (lazy server probe), built-in catalog,
 // lazy cache — and a late-arriving probe result refreshes the display via
 // SetDisplayContextWindowForModel once it lands.
+// resetDynamicStepScope clears the root emitter's dynamic plan-step scope, if
+// it supports one. Task-boundary insurance: SetCurrentStepID("") normally
+// happens in the inline lifecycle's completeStep/completeAll, but a
+// pause→abandon path, a panic, or a hard crash mid-run can leave the scope
+// pointing at a previous task's step; every later empty-stepID ContextFill
+// (E2S turns, the orchestrator's initial fill, the manual-compaction refresh)
+// would then inherit that stale id and land under a step it does not belong
+// to. Called unconditionally at task entry and before session-root emissions
+// that must never inherit a scope; the Conductor re-scopes each inline step on
+// start, so resetting here never disturbs a resumed step.
+func (o *Orchestrator) resetDynamicStepScope() {
+	if o.emitter == nil {
+		return
+	}
+	if scoper, ok := o.emitter.(CurrentStepScopable); ok {
+		scoper.SetCurrentStepID("")
+	}
+}
+
 func (o *Orchestrator) emitInitialContextFill() {
+	// Task boundary: drop any stale dynamic step scope left by a previous
+	// task (pause→abandon, crash) so this baseline fill and every subsequent
+	// empty-stepID emission start session-root.
+	o.resetDynamicStepScope()
 	var contextWindow int
 	if o.modelRegistry != nil {
 		model := o.currentModel()

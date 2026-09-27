@@ -5,6 +5,7 @@ import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isContextFillData, isContextCompactionData, isSessionTokensData, isCompactionStartedData, isCompactionFinishedData } from '@/types/events'
 import type { ContextFillData } from '@/types/events'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
+import type { StepContextTokens } from '@/stores/chatStore'
 import type { TokenInfo, CompactionAvailability } from '@/types/models'
 import type { ChatMessageUI } from '@/types/messages'
 import { generateMessageId } from '@/lib/ids'
@@ -12,6 +13,7 @@ import { generateMessageId } from '@/lib/ids'
 /** Minimal store surface handleContextFill needs — the chatStore subset. */
 export interface ContextFillStore {
   setStepContextFill: (sessionId: string, stepId: string, fill: number) => void
+  setStepContextTokens: (sessionId: string, stepId: string, tokens: Partial<StepContextTokens>) => void
   setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
 }
 
@@ -20,8 +22,18 @@ export interface ContextFillStore {
  *
  * Two shapes arrive on this channel:
  * - Step-scoped copies (plan_step_id set — subagent/executor steps): update
- *   only the step fill and the token totals. A subagent's own fill must not
- *   clobber the conductor's session-level fill the status bar renders.
+ *   only the step fill, the step's own token totals (stepContextTokens map —
+ *   the step reports its own context window, separate from the conductor's)
+ *   and the session token sums — UNLESS the event carries
+ *   session_root_mirror: then it was emitted by the root conductor emitter
+ *   running an inline step (dynamic scope), so the same fill is also the
+ *   conductor's own session-level fill and is mirrored into the status-bar
+ *   state immediately. Without the mirror the mid-step status bar rested on
+ *   the session_tokens re-broadcast alone, which fires before ContextFill
+ *   within one sp4rk executor iteration and therefore carried the previous
+ *   iteration's fill — a one-iteration lag. A subagent's own fill (no flag)
+ *   must not clobber the conductor's session-level fill the status bar
+ *   renders.
  * - Session-root events (no plan_step_id — conductor emissions AND the
  *   SetDisplayContextWindowForModel re-broadcast that corrects the window
  *   after a lazy local-model probe lands): also refresh the session-level
@@ -49,6 +61,31 @@ export function handleContextFill(store: ContextFillStore, sessionId: string, da
   }
   if (data.plan_step_id) {
     store.setStepContextFill(sessionId, data.plan_step_id, data.fill_percent)
+    // Step-scoped context_fill also carries the step's own context-window
+    // totals (a subagent/executor step reports its own window, separate from
+    // the conductor's session-level one). Same optional-spread guards as the
+    // session-root branch below: the type guard does not verify the fields, so
+    // an absent value must not overwrite the previously-known totals.
+    if (typeof data.used_tokens === 'number' || typeof data.max_tokens === 'number') {
+      store.setStepContextTokens(sessionId, data.plan_step_id, {
+        ...(typeof data.used_tokens === 'number' ? { used_tokens: data.used_tokens } : {}),
+        ...(typeof data.max_tokens === 'number' ? { max_tokens: data.max_tokens } : {}),
+      })
+    }
+    // Mirror-authorized step fill (root conductor emitter, dynamic inline-step
+    // scope): the step's fill IS the conductor's session-level fill here, so
+    // refresh the status bar immediately instead of waiting for the one
+    // iteration-stale session_tokens re-broadcast. Subagent events (no flag)
+    // never take this branch.
+    if (data.session_root_mirror === true) {
+      store.setSessionTokens(sessionId, {
+        ...totals,
+        ...(typeof data.fill_percent === 'number' ? { fill_percent: data.fill_percent } : {}),
+        ...(typeof data.used_tokens === 'number' ? { used_tokens: data.used_tokens } : {}),
+        ...(typeof data.max_tokens === 'number' ? { max_tokens: data.max_tokens } : {}),
+      })
+      return
+    }
     store.setSessionTokens(sessionId, totals)
     return
   }
@@ -213,8 +250,9 @@ export function useContextEvents(sessionId: string | null): void {
     // Carries the conductor's context-window fill_percent (guarded server-side by
     // the isSessionRoot emitter, so subagent emissions never leak their own fill).
     // Session-root context_fill events (see handleContextFill) update the same
-    // cached fill; step-scoped ones update only token totals, preserving the
-    // session-level fill. used_tokens/max_tokens follow the same
+    // cached fill; step-scoped ones update only token totals unless they carry
+    // session_root_mirror (root-emitter inline steps — those mirror the fill to
+    // the session level immediately). used_tokens/max_tokens follow the same
     // session-root-only cache path as fill_percent, so the status bar can
     // render a "N of M" tooltip.
     cleanups.push(

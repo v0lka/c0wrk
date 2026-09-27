@@ -169,6 +169,12 @@ func (o *Orchestrator) CompactConversationHistory(ctx context.Context, strategy 
 		"before_percent", roundFill(beforePercent),
 		"after_percent", roundFill(afterPercent),
 		"messages", len(compacted))
+	// Session-root refresh emissions: drop the dynamic step scope first so a
+	// scope left by an inline step (task still open after a pause, resumed
+	// mid-step) cannot tag the compaction card or the status-bar refresh with
+	// a foreign plan_step_id. The conductor re-scopes the resumed step on its
+	// next start, so this is transient.
+	o.resetDynamicStepScope()
 	o.emitter.ContextCompaction(beforeEff, afterEff, "")
 	// Refresh the status bar with the post-compaction fill. maxTokens is the
 	// effective max (the executor basis); the emitter's display override

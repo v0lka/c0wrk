@@ -521,6 +521,121 @@ func TestEventEmitterContextFill(t *testing.T) {
 	}
 }
 
+// TestEventEmitterContextFillDynamicStepScope verifies that an inline
+// Conductor step's context_fill carries the dynamically-set plan-step id:
+// the executor passes an empty stepID (only delegated subagent executors get
+// SetPlanContext), so the emitter must fall back to its own current scope
+// (SetCurrentStepID). Without the fallback the event arrived session-root and
+// the frontend's per-step context-fill badge never populated.
+func TestEventEmitterContextFillDynamicStepScope(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.SetCurrentStepID("step_2")
+	// The executor loop passes e.planStepID, which is empty for the inline
+	// Conductor executor (SetPlanContext is never called on it).
+	emitter.ContextFill(42.0, 4200, 10000, "ok", "")
+
+	data, ok := received.Data.(ContextFillEventData)
+	if !ok {
+		t.Fatalf("expected ContextFillEventData, got %T", received.Data)
+	}
+	if data.PlanStepID != "step_2" {
+		t.Errorf("expected PlanStepID 'step_2' from the emitter's dynamic scope, got %q", data.PlanStepID)
+	}
+}
+
+// TestEventEmitterContextFillNoScopeStaysSessionRoot verifies the fallback
+// does not invent a scope: with no dynamic step set, an empty caller stepID
+// keeps the event session-root (planning/idle emissions between steps).
+func TestEventEmitterContextFillNoScopeStaysSessionRoot(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.ContextFill(10.0, 1000, 10000, "ok", "")
+
+	data, ok := received.Data.(ContextFillEventData)
+	if !ok {
+		t.Fatalf("expected ContextFillEventData, got %T", received.Data)
+	}
+	if data.PlanStepID != "" {
+		t.Errorf("expected empty PlanStepID (session-root), got %q", data.PlanStepID)
+	}
+}
+
+// TestEventEmitterContextFillRootMirrorFlagOnDynamicScope verifies the
+// session_root_mirror flag is set exactly on the load-bearing combination:
+// the ROOT conductor emitter (isSessionRoot) emitting a step-scoped fill via
+// its dynamic inline-step scope. The frontend mirrors such fills to the
+// session-level status bar immediately — the session_tokens re-broadcast
+// lags one executor iteration (EmitSessionTokens fires before ContextFill
+// within one iteration).
+func TestEventEmitterContextFillRootMirrorFlagOnDynamicScope(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.SetCurrentStepID("step_2")
+	emitter.ContextFill(42.0, 4200, 10000, "ok", "")
+
+	data, ok := received.Data.(ContextFillEventData)
+	if !ok {
+		t.Fatalf("expected ContextFillEventData, got %T", received.Data)
+	}
+	if !data.SessionRootMirror {
+		t.Error("expected SessionRootMirror true on a root-emitter dynamic-scope fill")
+	}
+	if data.PlanStepID != "step_2" {
+		t.Errorf("expected PlanStepID 'step_2', got %q", data.PlanStepID)
+	}
+}
+
+// TestEventEmitterContextFillNoMirrorFlagSessionRoot verifies session-root
+// events (planning/idle emissions between steps) carry no mirror flag: the
+// frontend's session-root branch already applies them directly.
+func TestEventEmitterContextFillNoMirrorFlagSessionRoot(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.ContextFill(10.0, 1000, 10000, "ok", "")
+
+	data, ok := received.Data.(ContextFillEventData)
+	if !ok {
+		t.Fatalf("expected ContextFillEventData, got %T", received.Data)
+	}
+	if data.SessionRootMirror {
+		t.Error("expected SessionRootMirror false on a session-root fill")
+	}
+}
+
+// TestEventEmitterContextFillNoMirrorForSubagentCopy verifies subagent
+// isolation is preserved by the flag: a WithPlanStepID-scoped copy (delegated
+// subagent executor) never sets session_root_mirror, so a subagent's own fill
+// can never clobber the conductor's session-level status-bar fill on the
+// frontend.
+func TestEventEmitterContextFillNoMirrorForSubagentCopy(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+
+	root := NewEventEmitter("test-session", emit)
+	sub := root.WithPlanStepID("step_9")
+	sub.ContextFill(55.0, 5500, 20000, "ok", "step_9")
+
+	data, ok := received.Data.(ContextFillEventData)
+	if !ok {
+		t.Fatalf("expected ContextFillEventData, got %T", received.Data)
+	}
+	if data.SessionRootMirror {
+		t.Error("expected SessionRootMirror false on a subagent-scoped fill")
+	}
+	if data.PlanStepID != "step_9" {
+		t.Errorf("expected PlanStepID 'step_9', got %q", data.PlanStepID)
+	}
+}
+
 // TestEventEmitterContextFillDisplayWindow verifies that when a display context
 // window is injected, ContextFill recomputes the fill percent and max relative
 // to the real advertised window — not the executor's internal effective max.
