@@ -39,11 +39,18 @@ func turnResponse(patch, tool, args string, in, out int) *llm.ChatResponse {
 // median_output_tok_s) subscribes to: E2S is COVERED by the throughput seam,
 // not excluded.
 func TestRun_TrackingCallerFeedsTimedObserver(t *testing.T) {
-	scripted := &scriptedCaller{responses: []*llm.ChatResponse{
-		turnResponse(`{}`, "probe", `{"q":1}`, 20, 40),
-		turnResponse(`{}`, "probe", `{"q":2}`, 20, 40),
-		turnResponse(`{}`, "finish", `{"answer":"done"}`, 15, 35),
-	}}
+	// The 2ms delay mirrors sp4rk's delayedCaller: the assertion below pins
+	// that TrackingCaller feeds the timed observer a strictly positive
+	// duration, and an instant scripted call can measure as exactly 0 on
+	// Windows' coarse system clock.
+	scripted := &scriptedCaller{
+		delay: 2 * time.Millisecond,
+		responses: []*llm.ChatResponse{
+			turnResponse(`{}`, "probe", `{"q":1}`, 20, 40),
+			turnResponse(`{}`, "probe", `{"q":2}`, 20, 40),
+			turnResponse(`{}`, "finish", `{"answer":"done"}`, 15, 35),
+		},
+	}
 
 	tracker := llm.NewUsageTracker()
 	var mu sync.Mutex

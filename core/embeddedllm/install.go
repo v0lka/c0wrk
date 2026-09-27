@@ -243,11 +243,52 @@ func writeManifest(path string, m Manifest, logger *slog.Logger) error {
 		_ = os.Remove(name)
 		return err
 	}
-	if err := os.Rename(name, path); err != nil {
+	if err := promoteManifest(name, path, logger); err != nil {
 		_ = os.Remove(name)
 		return fmt.Errorf("embeddedllm: promoting manifest into place: %w", err)
 	}
 	return nil
+}
+
+// A promotion rename can fail transiently on Windows: two concurrent
+// writeManifest callers promote onto the SAME manifest.json (Install holds no
+// supervisor gate while Server.recordEffectiveContext writes under one), and
+// one MoveFileEx(REPLACE_EXISTING) can hold the destination while it swaps,
+// answering Access denied to the other for a moment; a real-time scanner
+// holding a freshly written temporary does the same. The lock is momentary —
+// neither file is permanently unavailable — so a short bounded backoff turns
+// the collision into a successful promotion instead of a failed manifest
+// write, which is exactly what the concurrent-writers test pins. Off Windows
+// the classifier always answers false and the first attempt decides.
+const (
+	// manifestPromoteAttempts bounds the promotion retry budget.
+	manifestPromoteAttempts = 8
+
+	// manifestPromoteBackoff is the base backoff between promotion retries,
+	// doubled on every attempt (2ms..128ms; ~254ms in total at the cap).
+	manifestPromoteBackoff = 2 * time.Millisecond
+)
+
+// promoteManifest renames the fully written temporary over the target
+// manifest, retrying a transient Windows sharing error (see
+// isTransientRenameError) with a bounded doubling backoff. Any other error —
+// or a retry budget that runs out — returns the last error unchanged, and the
+// caller removes the temporary as on any failure.
+func promoteManifest(tmp, path string, logger *slog.Logger) error {
+	backoff := manifestPromoteBackoff
+	for attempt := 1; ; attempt++ {
+		err := os.Rename(tmp, path)
+		if err == nil {
+			return nil
+		}
+		if !isTransientRenameError(err) || attempt == manifestPromoteAttempts {
+			return err
+		}
+		logger.Debug("embeddedllm: manifest promotion hit a transient sharing error, retrying",
+			"tmp", tmp, "target", path, "attempt", attempt, "backoff", backoff, "error", err)
+		time.Sleep(backoff)
+		backoff *= 2
+	}
 }
 
 // sweepStaleManifestTemps removes the temporaries a crashed writeManifest left

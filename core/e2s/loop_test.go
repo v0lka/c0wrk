@@ -28,9 +28,18 @@ type scriptedCaller struct {
 	responses []*llm.ChatResponse
 	errs      []error
 	requests  []llm.ChatRequest
+	// delay, when positive, is slept before every Call. It exists so a
+	// TrackingCaller wrapping this caller measures a strictly positive
+	// wall-clock duration: an instant scripted call can read as exactly 0 on
+	// Windows, whose system clock granularity is coarser than the call takes.
+	// Zero (the default) adds no delay.
+	delay time.Duration
 }
 
 func (c *scriptedCaller) Call(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	if c.delay > 0 {
+		time.Sleep(c.delay)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.requests = append(c.requests, req)
