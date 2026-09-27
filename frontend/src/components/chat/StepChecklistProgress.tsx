@@ -53,7 +53,15 @@ export function StepChecklistProgress({ total, completed, accent }: StepChecklis
   const label = `Checklist: ${done} of ${total}`
 
   return (
-    <div className="flex shrink-0 items-center gap-1.5 text-xs" title={label} aria-label={label}>
+    <div
+      className="flex shrink-0 items-center gap-1.5 text-xs"
+      role="progressbar"
+      aria-valuenow={done}
+      aria-valuemin={0}
+      aria-valuemax={total}
+      title={label}
+      aria-label={label}
+    >
       <ListChecks className={cn('h-3.5 w-3.5 shrink-0', ACCENT_TEXT[accent])} />
       <span className="relative h-1.5 w-12 overflow-hidden rounded-full bg-muted">
         <span
