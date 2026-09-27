@@ -189,7 +189,17 @@ export interface CompactionFinishedData {
   before_percent: number; after_percent: number; resumed?: boolean; paused_without_resume?: boolean
   nothing_compacted?: boolean; deferred_to_resume?: boolean; compaction_availability?: CompactionAvailability[]
 }
-export interface SessionTokensData { session_input_tokens: number; session_output_tokens: number; model: string; family: string; fill_percent?: number; used_tokens?: number; max_tokens?: number }
+export interface SessionTokensData {
+  session_input_tokens: number; session_output_tokens: number; model: string; family: string
+  fill_percent?: number; used_tokens?: number; max_tokens?: number
+  /** Median end-to-end output-token throughput (tok/s) over the recent
+   *  per-call window (last 64 calls; the backend omits the field below three
+   *  samples). Absent on payloads that predate the metric. */
+  median_output_tok_s?: number
+  /** Per-call sample count behind median_output_tok_s. Absent on payloads that
+   *  predate the metric. */
+  tok_s_samples?: number
+}
 export interface AssistantChunkData { content: string; accumulated_content?: string; plan_step_id?: string }
 /** Final assistant response for one executor step. `plan_step_id` is set when
  *  the answer belongs to a plan-step/subagent block (scoped emitter) rather
@@ -751,10 +761,13 @@ export interface EmbeddedLLMInstallProgressData {
  *  quantization on disk ("PQ2_0" | "PTQ1_0"), `backend` the accelerator the
  *  runtime was provisioned for ("metal", "cuda-12.4", "cuda-12.8", "cuda-13.3",
  *  "rocm", "vulkan", "cpu"); both are empty when nothing is installed.
- *  `context_size` is the RAM-tiered context frozen in the manifest. `error`
- *  carries a human-readable cause (the supervisor's message for a failed load
- *  or a crashed process, otherwise the last failed install/removal) and is empty
- *  when nothing failed. Mirrors backend EmbeddedLLMStateData. */
+ *  `context_size` is the RAM-tiered context frozen in the manifest. The two
+ *  error fields are split by surface: `error` is the supervisor's own message
+ *  and only while the state is `error` — the status-bar indicator renders it,
+ *  so install failures never land there; `install_error` is the operator-
+ *  friendly cause of the last failed install run, a Settings-only surface (a
+ *  resumable transfer failure never reaches it — the backend retries those
+ *  silently). Mirrors backend EmbeddedLLMStateData. */
 export interface EmbeddedLLMStateData {
   readonly installed: boolean
   readonly loading: boolean
@@ -765,6 +778,7 @@ export interface EmbeddedLLMStateData {
   readonly context_size: number
   readonly auto_unload_minutes: number
   readonly error: string
+  readonly install_error: string
 }
 
 export interface GlobalEventMap {
@@ -1009,7 +1023,14 @@ export function isCompactionAvailability(d: unknown): d is CompactionAvailabilit
   if (typeof (d as Record<string, unknown>).exact !== 'boolean') return false
   return true
 }
-export function isSessionTokensData(d: unknown): d is SessionTokensData { return isObj(d) && has(d, 'session_input_tokens', 'session_output_tokens') }
+export function isSessionTokensData(d: unknown): d is SessionTokensData {
+  if (!isObj(d) || !has(d, 'session_input_tokens', 'session_output_tokens')) return false
+  // Validate the optional throughput fields when present (additive fields —
+  // older payloads simply omit them, mirroring the compaction flags above).
+  if ('median_output_tok_s' in d && d.median_output_tok_s !== undefined && typeof d.median_output_tok_s !== 'number') return false
+  if ('tok_s_samples' in d && d.tok_s_samples !== undefined && typeof d.tok_s_samples !== 'number') return false
+  return true
+}
 export function isSessionRenamedData(d: unknown): d is SessionRenamedData { return isObj(d) && has(d, 'new_name') }
 export function isTaskFailedResumableData(d: unknown): d is TaskFailedResumableData {
   if (!isObjLocal(d)) return false
@@ -1425,5 +1446,6 @@ export function isEmbeddedLLMStateData(d: unknown): d is EmbeddedLLMStateData {
   if (typeof d.port !== 'number') return false
   if (typeof d.context_size !== 'number') return false
   if (typeof d.auto_unload_minutes !== 'number') return false
-  return typeof d.error === 'string'
+  if (typeof d.error !== 'string') return false
+  return typeof d.install_error === 'string'
 }

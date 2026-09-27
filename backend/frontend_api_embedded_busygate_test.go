@@ -293,7 +293,7 @@ func TestRunEmbeddedInstallReleasesTheGateOnEveryPath(t *testing.T) {
 			// Synchronous: runEmbeddedInstall is exactly what
 			// InstallEmbeddedLLM's goroutine body runs, so calling it directly
 			// observes the release without a poll.
-			f.runEmbeddedInstall(server, installerOf(t, f), hw)
+			f.runEmbeddedInstall(t.Context(), server, installerOf(t, f), hw)
 
 			if got := f.embeddedBusyOperation(); got != embeddedOpIdle {
 				t.Errorf("the gate is still held by %q after the run finished", got)
@@ -536,7 +536,7 @@ func TestInstallStepZeroStopCarriesTheStopBudget(t *testing.T) {
 	if claimed, holder := f.beginEmbeddedOperation(embeddedOpInstall); !claimed {
 		t.Fatalf("the gate refused the install it was about to run (held by %q)", holder)
 	}
-	f.runEmbeddedInstall(server, installer, hw)
+	f.runEmbeddedInstall(t.Context(), server, installer, hw)
 
 	if runBudget != testBudget {
 		t.Errorf("the per-run installer carries StopTimeout = %v, want %v", runBudget, testBudget)

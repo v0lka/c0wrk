@@ -36,6 +36,7 @@ export function makeEmbeddedStatus(
     model_file: '',
     pid: 0,
     error: '',
+    install_error: '',
     available: true,
     devices: [],
     unified: false,

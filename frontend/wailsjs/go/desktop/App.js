@@ -38,6 +38,10 @@ export function AttachFiles(arg1, arg2) {
   return window['go']['desktop']['App']['AttachFiles'](arg1, arg2);
 }
 
+export function CancelEmbeddedLLMInstall() {
+  return window['go']['desktop']['App']['CancelEmbeddedLLMInstall']();
+}
+
 export function CancelGoal(arg1, arg2) {
   return window['go']['desktop']['App']['CancelGoal'](arg1, arg2);
 }

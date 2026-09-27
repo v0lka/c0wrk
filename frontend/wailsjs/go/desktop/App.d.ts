@@ -27,6 +27,8 @@ export function ArchiveSession(arg1:string):Promise<void>;
 
 export function AttachFiles(arg1:string,arg2:Array<string>):Promise<Array<session.AttachmentInfo>>;
 
+export function CancelEmbeddedLLMInstall():Promise<void>;
+
 export function CancelGoal(arg1:string,arg2:string):Promise<void>;
 
 export function CancelSessionCompaction(arg1:string):Promise<void>;

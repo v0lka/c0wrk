@@ -1,7 +1,7 @@
-// The Embedded LLM block's mutating lifecycle actions (install / load / unload /
-// remove) plus its store subscription, extracted from EmbeddedLLMSettings next
-// to the two commit hooks that block already delegates to
-// (useEmbeddedLLMAutoUnload / useEmbeddedLLMTuning).
+// The Embedded LLM block's mutating lifecycle actions (install / cancel /
+// load / unload / remove) plus its store subscription, extracted from
+// EmbeddedLLMSettings next to the two commit hooks that block already delegates
+// to (useEmbeddedLLMAutoUnload / useEmbeddedLLMTuning).
 //
 // Every flow runs through the store's `runEmbeddedLLMAction`, which holds the
 // busy window open across the post-action read-back: `busy` is what the block's
@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect } from 'react'
 import {
+  cancelEmbeddedLLMInstall,
   installEmbeddedLLM,
   loadEmbeddedLLM,
   removeEmbeddedLLM,
@@ -26,10 +27,15 @@ import {
   useEmbeddedLLMStore,
 } from '@/stores/embeddedLLMStore'
 
-/** The block's four lifecycle actions, each already bound to its busy window. */
+/** The block's lifecycle actions, each already bound to its busy window. */
 export interface EmbeddedLLMLifecycle {
   /** Runs the synchronous install gates; a rejection is an actionable refusal. */
   install: () => void
+  /** Asks the in-flight background install to stop. Idempotent and
+   *  asynchronous — the RPC only delivers the request, and the run's quiet end
+   *  arrives later through `embedded_llm:state`, which re-reads the snapshot
+   *  (and drops `installing`, returning the block to the Install button). */
+  cancelInstall: () => void
   load: () => void
   unload: () => void
   /** Runs the removal. The caller confirms first — this is irreversible. */
@@ -63,6 +69,11 @@ export function useEmbeddedLLMLifecycle(): EmbeddedLLMLifecycle {
     )
   }, [beginInstall])
 
+  const cancelInstall = useCallback(
+    () => void runEmbeddedLLMAction('cancel', cancelEmbeddedLLMInstall, refreshEmbeddedLLMStatus),
+    [],
+  )
+
   const load = useCallback(
     () => void runEmbeddedLLMAction('load', loadEmbeddedLLM, refreshEmbeddedLLMStatus),
     [],
@@ -76,5 +87,5 @@ export function useEmbeddedLLMLifecycle(): EmbeddedLLMLifecycle {
     [],
   )
 
-  return { install, load, unload, remove }
+  return { install, cancelInstall, load, unload, remove }
 }

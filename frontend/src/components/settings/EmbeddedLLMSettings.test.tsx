@@ -25,6 +25,7 @@ vi.stubGlobal(
 const mocks = vi.hoisted(() => ({
   getEmbeddedLLMStatus: vi.fn(),
   installEmbeddedLLM: vi.fn(),
+  cancelEmbeddedLLMInstall: vi.fn(),
   removeEmbeddedLLM: vi.fn(),
   loadEmbeddedLLM: vi.fn(),
   unloadEmbeddedLLM: vi.fn(),
@@ -46,6 +47,7 @@ vi.mock('@/api/embedded', () => ({
   MAX_AUTO_UNLOAD_MINUTES: 525600,
   getEmbeddedLLMStatus: mocks.getEmbeddedLLMStatus,
   installEmbeddedLLM: mocks.installEmbeddedLLM,
+  cancelEmbeddedLLMInstall: mocks.cancelEmbeddedLLMInstall,
   removeEmbeddedLLM: mocks.removeEmbeddedLLM,
   loadEmbeddedLLM: mocks.loadEmbeddedLLM,
   unloadEmbeddedLLM: mocks.unloadEmbeddedLLM,
@@ -140,6 +142,7 @@ function makeStatus(overrides: Partial<EmbeddedLLMStatus> = {}): EmbeddedLLMStat
     reload_required: false,
     pid: 0,
     error: '',
+    install_error: '',
     available: true,
     ...overrides,
   }
@@ -218,6 +221,7 @@ beforeEach(() => {
   mocks.progressHandlers.clear()
   mocks.getEmbeddedLLMStatus.mockResolvedValue(makeStatus())
   mocks.installEmbeddedLLM.mockResolvedValue(undefined)
+  mocks.cancelEmbeddedLLMInstall.mockResolvedValue(undefined)
   mocks.removeEmbeddedLLM.mockResolvedValue(undefined)
   mocks.loadEmbeddedLLM.mockResolvedValue(undefined)
   mocks.unloadEmbeddedLLM.mockResolvedValue(undefined)
@@ -257,6 +261,8 @@ describe('EmbeddedLLMSettings — before an install', () => {
     expect(q('embedded-llm-auto-unload-minutes')).toBeNull()
     expect(q('embedded-llm-install-record')).toBeNull()
     expect(q('embedded-llm-progress')).toBeNull()
+    // Nothing that only exists while an install run is in flight either.
+    expect(q('embedded-llm-cancel-install')).toBeNull()
   })
 
   it('starts the background install on click', async () => {
@@ -284,6 +290,26 @@ describe('EmbeddedLLMSettings — before an install', () => {
     expect(err).not.toBeNull()
     expect(err?.textContent).toContain('does not fit this machine')
     // A refusal downloaded nothing, so no progress surface appeared.
+    expect(q('embedded-llm-progress')).toBeNull()
+  })
+
+  it('shows a fatal background install failure from install_error (the status bar does not)', async () => {
+    // The backend retries resumable download failures silently; only a FATAL
+    // one reaches the snapshot, as the operator-friendly install_error line.
+    mocks.getEmbeddedLLMStatus.mockResolvedValue(
+      makeStatus({
+        installing: false,
+        install_error:
+          'the download server could not be reached after 3 attempts — check the network connection and try again',
+      }),
+    )
+    await render()
+
+    const err = q('embedded-llm-error')
+    expect(err).not.toBeNull()
+    expect(err?.textContent).toContain('could not be reached after 3 attempts')
+    // The failed run is over: the Install button (the retry) is back.
+    expect(q('embedded-llm-install')).not.toBeNull()
     expect(q('embedded-llm-progress')).toBeNull()
   })
 })
@@ -376,11 +402,127 @@ describe('EmbeddedLLMSettings — during an install', () => {
       context_size: 32768,
       auto_unload_minutes: 60,
       error: '',
+      install_error: '',
     })
 
     expect(q('embedded-llm-progress')).toBeNull()
     expect(q('embedded-llm-install-record')).not.toBeNull()
     expect(q('embedded-llm-remove')).not.toBeNull()
+  })
+})
+
+// The header Cancel action of the installing block. It only DELIVERS the stop
+// request: the RPC resolves once the request is in, while the run's actual
+// unwind is asynchronous and quiet — its end arrives through
+// `embedded_llm:state` (no toast, no recorded error), which re-reads the
+// snapshot and drops `installing`, returning the block to the Install button.
+describe('EmbeddedLLMSettings — cancelling an install', () => {
+  beforeEach(() => {
+    mocks.getEmbeddedLLMStatus.mockResolvedValue(makeStatus({ installing: true }))
+  })
+
+  it('offers an enabled Cancel action in the installing block header', async () => {
+    await render()
+
+    const cancel = q('embedded-llm-cancel-install') as HTMLButtonElement
+    expect(cancel).not.toBeNull()
+    // During the download itself the busy window is idle — the install RPC
+    // resolved long ago — so Cancel is clickable exactly when there is
+    // something to stop.
+    expect(cancel.disabled).toBe(false)
+    expect(cancel.textContent).toContain('Cancel')
+    expect(cancel.textContent).not.toContain('Cancelling…')
+    // The rest icon, not a working spinner.
+    expect(cancel.querySelector('svg.animate-spin')).toBeNull()
+  })
+
+  it('delivers the stop request through the cancel RPC on click', async () => {
+    await render()
+
+    await act(async () => {
+      await clickAsync(q('embedded-llm-cancel-install'))
+    })
+
+    expect(mocks.cancelEmbeddedLLMInstall).toHaveBeenCalledTimes(1)
+    expect(mocks.installEmbeddedLLM).not.toHaveBeenCalled()
+  })
+
+  it('disables and spinners the button for the whole cancel window', async () => {
+    await render()
+
+    // Hold the stop request in flight: the busy window stays open until the
+    // post-action read-back lands, and the button reflects it live.
+    let release: () => void = () => {}
+    mocks.cancelEmbeddedLLMInstall.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve
+        }),
+    )
+
+    await act(async () => {
+      await clickAsync(q('embedded-llm-cancel-install'))
+    })
+
+    const busy = q('embedded-llm-cancel-install') as HTMLButtonElement
+    expect(useEmbeddedLLMStore.getState().busy).toBe('cancel')
+    expect(busy.disabled).toBe(true)
+    expect(busy.textContent).toContain('Cancelling…')
+    expect(busy.querySelector('svg.animate-spin')).not.toBeNull()
+
+    await act(async () => {
+      release()
+    })
+    await flush()
+
+    const idle = q('embedded-llm-cancel-install') as HTMLButtonElement
+    expect(useEmbeddedLLMStore.getState().busy).toBeNull()
+    expect(idle.disabled).toBe(false)
+    expect(idle.textContent).not.toContain('Cancelling')
+    expect(idle.querySelector('svg.animate-spin')).toBeNull()
+  })
+
+  it('returns to the Install button when the stopped run reports its quiet end', async () => {
+    await render()
+    emitProgress({ component: 'model', stage: 'downloading', bytes_done: 1, bytes_total: 10 })
+    expect(q('embedded-llm-progress')).not.toBeNull()
+
+    await act(async () => {
+      await clickAsync(q('embedded-llm-cancel-install'))
+    })
+
+    // The request was delivered (and its read-back has landed — the window is
+    // closed), but the run has not unwound yet: the snapshot still reports the
+    // live install, so the block and its Cancel action stay.
+    expect(mocks.cancelEmbeddedLLMInstall).toHaveBeenCalledTimes(1)
+    expect(useEmbeddedLLMStore.getState().busy).toBeNull()
+    expect(q('embedded-llm-progress')).not.toBeNull()
+    expect(q('embedded-llm-cancel-install')).not.toBeNull()
+
+    // The run's asynchronous, quiet end: `embedded_llm:state` invalidates the
+    // snapshot and the re-read reports installing=false, not-installed.
+    mocks.getEmbeddedLLMStatus.mockResolvedValue(makeStatus())
+    await emitState({
+      installed: false,
+      loading: false,
+      loaded: false,
+      packing: '',
+      backend: '',
+      port: 0,
+      context_size: 0,
+      auto_unload_minutes: 60,
+      error: '',
+      install_error: '',
+    })
+
+    expect(q('embedded-llm-progress')).toBeNull()
+    expect(q('embedded-progress-model')).toBeNull()
+    expect(q('embedded-llm-cancel-install')).toBeNull()
+    // Partial bytes were kept as the resume point, so the block offers the
+    // Install action again — the retry resumes instead of restarting.
+    const install = q('embedded-llm-install')
+    expect(install).not.toBeNull()
+    expect(install?.textContent).toContain('Install')
   })
 })
 
@@ -414,6 +556,8 @@ describe('EmbeddedLLMSettings — after an install', () => {
     expect(q('embedded-llm-unload')).toBeNull()
     // The Install action is gone — the model is already on disk.
     expect(q('embedded-llm-install')).toBeNull()
+    // And so is the install-run Cancel action — there is no run to stop.
+    expect(q('embedded-llm-cancel-install')).toBeNull()
 
     const checkbox = q('embedded-llm-auto-unload') as HTMLInputElement | null
     expect(checkbox).not.toBeNull()
@@ -473,6 +617,7 @@ describe('EmbeddedLLMSettings — after an install', () => {
       context_size: 32768,
       auto_unload_minutes: 60,
       error: '',
+      install_error: '',
     })
 
     expect(q('embedded-llm-packing')?.textContent).toBe('PTQ1_0')
@@ -498,6 +643,7 @@ describe('EmbeddedLLMSettings — after an install', () => {
       context_size: 32768,
       auto_unload_minutes: 60,
       error: '',
+      install_error: '',
     })
 
     await act(async () => {
@@ -893,6 +1039,7 @@ describe('EmbeddedLLMSettings — the install copy describes the real gate', () 
       context_size: 0,
       auto_unload_minutes: 60,
       error: '',
+      install_error: '',
     })
 
     expect(useEmbeddedLLMStore.getState().statusLoading).toBe(false)

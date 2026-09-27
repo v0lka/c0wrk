@@ -2,8 +2,8 @@
 //
 // Thin, validating wrappers over the desktop App bindings of
 // backend/frontend_api_embedded.go: GetEmbeddedLLMStatus / InstallEmbeddedLLM /
-// RemoveEmbeddedLLM / LoadEmbeddedLLM / UnloadEmbeddedLLM /
-// SetEmbeddedLLMAutoUnload. Every embedded-LLM surface (the Settings block, the
+// CancelEmbeddedLLMInstall / RemoveEmbeddedLLM / LoadEmbeddedLLM /
+// UnloadEmbeddedLLM / SetEmbeddedLLMAutoUnload. Every embedded-LLM surface (the Settings block, the
 // status-bar indicator) routes through this module — components never import
 // wailsjs directly, so the boundary validation lives here exactly once. The
 // TUNING RPCs (Get/SetEmbeddedLLMTuning) and the status snapshot's
@@ -121,9 +121,16 @@ export interface EmbeddedLLMStatus extends EmbeddedLLMStatusExtras {
    *  dead run's output tail. Absent while no launch has failed that way (the
    *  backend marks it omitempty); a launch that becomes ready clears it. */
   readonly fit_warning?: string
-  /** Human-readable cause: the supervisor's message while state is "error",
-   *  otherwise the last failed install or removal. */
+  /** Human-readable cause of the SUPERVISION state: the supervisor's message
+   *  while state is "error" (a failed load, a crashed process). Empty
+   *  otherwise — install failures live in `install_error`, a Settings-only
+   *  surface the status bar deliberately does not render. */
   readonly error: string
+  /** Operator-friendly cause of the last FAILED install run (fatal download
+   *  failures only — resumable ones are retried silently in the backend).
+   *  Empty when no install has failed since the last successful/cancelled
+   *  run. */
+  readonly install_error: string
   /** Whether the subsystem could be constructed at all (false only before
    *  startup, when the agent directory is unset). */
   readonly available: boolean
@@ -158,6 +165,7 @@ export function isEmbeddedLLMStatus(d: unknown): d is EmbeddedLLMStatus {
     typeof o.model_file === 'string' &&
     typeof o.pid === 'number' &&
     typeof o.error === 'string' &&
+    typeof o.install_error === 'string' &&
     typeof o.available === 'boolean' &&
     isEmbeddedLLMStatusExtras(o)
   )
@@ -190,6 +198,20 @@ export async function getEmbeddedLLMStatus(): Promise<EmbeddedLLMStatus> {
 export async function installEmbeddedLLM(): Promise<void> {
   const app = getApp()
   await app.InstallEmbeddedLLM()
+}
+
+/** Ask the in-flight background install to stop. IDEMPOTENT: with no install
+ *  running it is a success no-op — the outcome the operator wants already
+ *  holds, so a late double click must not surface as an error. The stop is
+ *  COOPERATIVE and asynchronous: the RPC resolves once the request is
+ *  delivered, not once the run has unwound — the run itself keeps the
+ *  operation gate held until its cleanup finishes, then reports the quiet
+ *  outcome through `embedded_llm:state` (no `runtime_error` toast, no recorded
+ *  error: the click IS the report). Core keeps the partial bytes as the resume
+ *  point, so a retry continues the download instead of restarting it. */
+export async function cancelEmbeddedLLMInstall(): Promise<void> {
+  const app = getApp()
+  await app.CancelEmbeddedLLMInstall()
 }
 
 /** Stop a running server, delete both trees and the manifest, clear the

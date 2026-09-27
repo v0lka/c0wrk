@@ -30,11 +30,19 @@ import {
   useEmbeddedLLMProgress,
   useEmbeddedLLMStatus,
 } from '@/stores/embeddedLLMStore'
+import { useChatStore } from '@/stores/chatStore'
+import { useSessionStore } from '@/stores/sessionStore'
 
 export function EmbeddedModelStatus() {
   const status = useEmbeddedLLMStatus()
   const installing = useEmbeddedLLMInstalling()
   const progress = useEmbeddedLLMProgress()
+  // The active session's cached token info carries the (gated) throughput
+  // metric the resident surface may append. Both selectors return a stable
+  // reference — the active id (primitive) or the store's own TokenInfo object
+  // / undefined — never an allocation.
+  const activeSessionId = useSessionStore(s => s.activeSessionId)
+  const tokens = useChatStore(s => (activeSessionId ? s.sessionTokens[activeSessionId] : undefined))
 
   // Lifecycle: the ONE shared, refcounted event subscription (so mounting
   // alongside the Settings block never applies an event twice) plus the
@@ -55,9 +63,12 @@ export function EmbeddedModelStatus() {
   }, [])
 
   // Derived here, never stored: every input is a stable primitive or a direct
-  // store reference, so this rebuilds only when the snapshot or a progress
-  // payload actually changed.
-  const view = useMemo(() => deriveView(status, installing, progress), [status, installing, progress])
+  // store reference, so this rebuilds only when the snapshot, a progress
+  // payload or the active session's token info actually changed.
+  const view = useMemo(
+    () => deriveView(status, installing, progress, tokens),
+    [status, installing, progress, tokens],
+  )
 
   if (view === null) return null
 
@@ -101,6 +112,13 @@ export function EmbeddedModelStatus() {
           <>
             <Cpu className="size-3 shrink-0" aria-hidden="true" />
             <span className="min-w-0 max-w-[160px] truncate">{view.name}</span>
+            {view.tokPerSec !== null && (
+              // Text-only, fixed-size layout px — zoom-safe by construction
+              // (see the zoom-safety note in the file header). Gated by the
+              // pure derivation: absent metric, foreign-model session or
+              // fewer than three samples render nothing here at all.
+              <span className="shrink-0 tabular-nums">· {view.tokPerSec} tok/s</span>
+            )}
           </>
         )}
 

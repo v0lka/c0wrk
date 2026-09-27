@@ -11,19 +11,24 @@
 // Windows CUDA, so inventing a pending row for it would promise an artifact
 // this install will never download.
 //
+// The header's Cancel button is fully controlled (`busy` + `onCancel` from the
+// parent): it only DELIVERS the stop request — the run's asynchronous, quiet
+// end arrives through `embedded_llm:state`.
+//
 // The component/stage WORDS (and the render order) are shared with the
 // status-bar indicator through `lib/embeddedLLMLabels`, so the two surfaces
 // describing the same payload cannot drift apart.
 
 import { useMemo } from 'react'
-import { Download, Loader2, PackageOpen } from 'lucide-react'
+import { Download, Loader2, PackageOpen, Square } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { formatBytes } from '@/lib/formatters'
 import {
   EMBEDDED_COMPONENT_ORDER,
   embeddedComponentLabel,
   embeddedStageLabel,
 } from '@/lib/embeddedLLMLabels'
-import type { EmbeddedLLMProgressByComponent } from '@/stores/embeddedLLMStore'
+import type { EmbeddedLLMBusyAction, EmbeddedLLMProgressByComponent } from '@/stores/embeddedLLMStore'
 import type { EmbeddedLLMComponent, EmbeddedLLMInstallProgressData } from '@/types/events'
 
 function pct(done: number, total: number): number {
@@ -92,10 +97,22 @@ export function EmbeddedProgressRow({
   )
 }
 
-/** The whole installing surface: the header, one row per reporting component
- *  and the "closing this does not interrupt it" note (the run lives on the app
- *  context, not on this dialog). */
-export function EmbeddedLLMProgress({ progress }: { progress: EmbeddedLLMProgressByComponent }) {
+export interface EmbeddedLLMProgressProps {
+  /** The per-component progress map. */
+  progress: EmbeddedLLMProgressByComponent
+  /** The store's busy window, passed through (not a plain boolean) so the
+   *  Cancel button can spinner ONLY its own action. During the download itself
+   *  the window is idle — the install RPC resolved long ago — so Cancel stays
+   *  clickable exactly when there is something to stop. */
+  busy: EmbeddedLLMBusyAction | null
+  /** Asks the in-flight run to stop (the parent's lifecycle.cancelInstall). */
+  onCancel: () => void
+}
+
+/** The whole installing surface: the header with its Cancel action, one row per
+ *  reporting component and the "closing this does not interrupt it" note (the
+ *  run lives on the app context, not on this dialog). */
+export function EmbeddedLLMProgress({ progress, busy, onCancel }: EmbeddedLLMProgressProps) {
   // Derived here (not in a selector): the map reference is stable, so this
   // rebuilds only when a component actually reported.
   const rows = useMemo(
@@ -109,10 +126,31 @@ export function EmbeddedLLMProgress({ progress }: { progress: EmbeddedLLMProgres
 
   return (
     <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 p-3">
-      <p className="flex items-center gap-2 text-sm text-foreground">
-        <Loader2 className="size-4 shrink-0 animate-spin text-primary" />
-        Installing the embedded model…
-      </p>
+      <div className="flex items-center justify-between gap-2">
+        <p className="flex items-center gap-2 text-sm text-foreground">
+          <Loader2 className="size-4 shrink-0 animate-spin text-primary" />
+          Installing the embedded model…
+        </p>
+        {/* The stop request is asynchronous and idempotent, so the button stays
+            disabled for the whole busy window and the run's quiet end arrives
+            later through `embedded_llm:state`, which re-reads the snapshot and
+            drops `installing`. */}
+        <Button
+          size="xs"
+          variant="outline"
+          className="gap-1.5"
+          onClick={onCancel}
+          disabled={busy !== null}
+          data-testid="embedded-llm-cancel-install"
+        >
+          {busy === 'cancel' ? (
+            <Loader2 className="size-3 animate-spin" />
+          ) : (
+            <Square className="size-3" />
+          )}
+          {busy === 'cancel' ? 'Cancelling…' : 'Cancel'}
+        </Button>
+      </div>
       <div className="flex flex-col" data-testid="embedded-llm-progress">
         {rows.map(({ component, entry }) => (
           <EmbeddedProgressRow key={component} component={component} progress={entry} />

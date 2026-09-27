@@ -52,7 +52,9 @@ export type { EmbeddedLLMTuning } from '@/api/embeddedTuning'
 /** The mutating RPC currently in flight (null = idle). Drives button disabling
  *  and the spinner. `load` is the long one: LoadEmbeddedLLM blocks for the whole
  *  multi-gigabyte weight load; `tuning` is a quick config write whose re-read
- *  still has to settle before the controls un-disable. */
+ *  still has to settle before the controls un-disable; `cancel` is the install
+ *  stop request — a fast RPC whose window covers only the request + read-back
+ *  (the run's actual unwind is asynchronous and reported by the state event). */
 export type EmbeddedLLMBusyAction =
   | 'install'
   | 'remove'
@@ -60,6 +62,7 @@ export type EmbeddedLLMBusyAction =
   | 'unload'
   | 'auto-unload'
   | 'tuning'
+  | 'cancel'
 
 /** The latest progress payload per component. A component that never reported
  *  (e.g. `cudart` outside Windows CUDA) is simply absent — the UI must not

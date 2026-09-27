@@ -710,8 +710,8 @@ func TestInstallEmbeddedLLMRefusesBelowTheMemoryGateWithoutDownloading(t *testin
 	if status.Installing {
 		t.Error("Installing = true after a refusal; the gate was not released")
 	}
-	if !strings.Contains(status.Error, "does not fit this machine's memory") {
-		t.Errorf("status.Error = %q, want the refusal cause", status.Error)
+	if !strings.Contains(status.InstallError, "does not fit this machine's memory") {
+		t.Errorf("status.InstallError = %q, want the refusal cause", status.InstallError)
 	}
 	if status.Installed {
 		t.Error("Installed = true after a refused install")
@@ -756,8 +756,8 @@ func TestInstallEmbeddedLLMDegradesWhenTheAcceleratorWasNotMeasured(t *testing.T
 	case <-time.After(2 * time.Second):
 		t.Fatal("the install run never started; the gate refused an unmeasured accelerator")
 	}
-	if got := f.GetEmbeddedLLMStatus().Error; got != "" {
-		t.Errorf("status.Error = %q, want no refusal recorded", got)
+	if got := f.GetEmbeddedLLMStatus().InstallError; got != "" {
+		t.Errorf("status.InstallError = %q, want no refusal recorded", got)
 	}
 }
 
@@ -975,6 +975,9 @@ func TestInstallEmbeddedLLMRunsInBackgroundAndEmitsProgressPerComponent(t *testi
 	if status.Error != "" {
 		t.Errorf("status.Error = %q after a successful install, want empty", status.Error)
 	}
+	if status.InstallError != "" {
+		t.Errorf("status.InstallError = %q after a successful install, want empty", status.InstallError)
+	}
 
 	// The completion snapshot arrived as a state event.
 	rec.waitForCount(t, EventEmbeddedLLMState, 1)
@@ -1027,6 +1030,79 @@ func TestInstallEmbeddedLLMRefusesASecondConcurrentRun(t *testing.T) {
 // RPC left to carry the error: the failure must reach the user as a
 // runtime_error toast AND as the state event's error field, and it must release
 // the operation gate so a retry is possible.
+// TestEmbeddedInstallFailureMessageTranslatesDownloadFatalities pins the
+// operator-facing wording of the fatal download failures: the Settings error
+// line and the toast render this text verbatim, so it must name the action to
+// take (check the network / retry) instead of the transport-level diagnostics
+// ("unexpected EOF", byte counts, partial paths) the raw errors carry.
+func TestEmbeddedInstallFailureMessageTranslatesDownloadFatalities(t *testing.T) {
+	unreachable := fmt.Errorf("embeddedllm: model: %w after %d consecutive attempts without progress: %w",
+		embeddedllm.ErrAttemptsExhausted, embeddedllm.DefaultMaxFailedAttempts,
+		fmt.Errorf("embeddedllm: model: %w: the request failed: connection refused",
+			embeddedllm.ErrUnreachable))
+	noProgress := fmt.Errorf("embeddedllm: model: %w after 3 attempts: unexpected EOF",
+		embeddedllm.ErrAttemptsExhausted)
+	interrupted := fmt.Errorf("embeddedllm: model: %w: %w",
+		embeddedllm.ErrIncompleteTransfer, context.Canceled)
+	shutdown := fmt.Errorf("embeddedllm: downloading model: %w", context.Canceled)
+	plain := errors.New("sha256 mismatch: the partial file was deleted")
+
+	cases := []struct {
+		name string
+		err  error
+		want []string
+		bad  []string
+	}{
+		{
+			name: "unreachable after the attempt bound",
+			err:  unreachable,
+			want: []string{
+				fmt.Sprintf("after %d attempts", embeddedllm.DefaultMaxFailedAttempts),
+				"check the network connection",
+				"resumes from them",
+			},
+			bad: []string{"unexpected EOF", "connection refused", "partial kept at"},
+		},
+		{
+			name: "zero progress",
+			err:  noProgress,
+			want: []string{"stopped making progress", "resumes from them"},
+			bad:  []string{"unexpected EOF"},
+		},
+		{
+			name: "interrupted transfer",
+			err:  interrupted,
+			want: []string{"interrupted before it finished", "resumes from them"},
+			bad:  []string{"unexpected EOF"},
+		},
+		{
+			name: "shutdown mid-download keeps the cause diagnosable",
+			err:  shutdown,
+			want: []string{"interrupted before it finished", context.Canceled.Error()},
+		},
+		{
+			name: "non-download failures pass through",
+			err:  plain,
+			want: []string{plain.Error()},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := embeddedInstallFailureMessage(tc.err)
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("message %q does not mention %q", got, want)
+				}
+			}
+			for _, bad := range tc.bad {
+				if strings.Contains(got, bad) {
+					t.Errorf("message %q leaks the raw diagnostic %q", got, bad)
+				}
+			}
+		})
+	}
+}
+
 func TestInstallEmbeddedLLMBackgroundFailureRaisesAToast(t *testing.T) {
 	f, rec, _ := newEmbeddedTestAPI(t)
 	f.embedded.probeFn = func(context.Context, *slog.Logger) (embeddedllm.Hardware, error) {
@@ -1061,13 +1137,13 @@ func TestInstallEmbeddedLLMBackgroundFailureRaisesAToast(t *testing.T) {
 	}
 
 	status := waitForStatus(t, f, "the failure to be recorded", func(s EmbeddedLLMStatus) bool {
-		return !s.Installing && s.Error != ""
+		return !s.Installing && s.InstallError != ""
 	})
 	if status.Installed {
 		t.Error("Installed = true after a failed install")
 	}
-	if !strings.Contains(status.Error, "sha256 mismatch") {
-		t.Errorf("status.Error = %q, want the failure cause", status.Error)
+	if !strings.Contains(status.InstallError, "sha256 mismatch") {
+		t.Errorf("status.InstallError = %q, want the failure cause", status.InstallError)
 	}
 	// The state event carries the same cause.
 	states := rec.of(EventEmbeddedLLMState)
@@ -1075,7 +1151,7 @@ func TestInstallEmbeddedLLMBackgroundFailureRaisesAToast(t *testing.T) {
 		t.Fatal("no state event after a failed install")
 	}
 	last := statePayload(t, states[len(states)-1])
-	if !strings.Contains(last.Error, "sha256 mismatch") || last.Installed {
+	if !strings.Contains(last.InstallError, "sha256 mismatch") || last.Installed {
 		t.Errorf("final state event = %+v, want the failure cause and not installed", last)
 	}
 	if f.config.EmbeddedLLM.Installed {
@@ -1089,6 +1165,78 @@ func TestInstallEmbeddedLLMBackgroundFailureRaisesAToast(t *testing.T) {
 	if err := f.InstallEmbeddedLLM(); err != nil {
 		t.Errorf("a retry after a failed install was refused: %v", err)
 	}
+}
+
+// TestInstallEmbeddedLLMAppContextCancellationIsStillAReportedFailure pins the
+// OTHER half of the quiet-cancellation predicate: a cancellation cause without
+// the operator's flag — the application context dying, the way it does at
+// shutdown — must NOT buy the quiet outcome. The run ends in context.Canceled
+// exactly like an operator-cancelled one, but nobody clicked
+// CancelEmbeddedLLMInstall, so the failure has no report of its own and must
+// reach the user as every background failure does: a runtime_error toast, a
+// recorded status.InstallError, the state event's install_error field, and the
+// gate released. Only the AND of the requested flag and the cancellation cause
+// is quiet.
+func TestInstallEmbeddedLLMAppContextCancellationIsStillAReportedFailure(t *testing.T) {
+	f, rec, _ := newEmbeddedTestAPI(t)
+	// A cancellable application context plays the shutdown: f.ctx() is the
+	// parent InstallEmbeddedLLM derives the run's cancellable child from, so
+	// cancelling it cancels the run the way an app quit does.
+	appCtx, cancelApp := context.WithCancel(context.Background())
+	defer cancelApp()
+	f.appCtx = func() context.Context { return appCtx }
+	f.embedded.probeFn = func(context.Context, *slog.Logger) (embeddedllm.Hardware, error) {
+		return embeddedllm.Hardware{Platform: "darwin-arm64", Arch: "arm64", RAMGiB: 32,
+			Backend: embeddedllm.BackendMetal}, nil
+	}
+	entered := make(chan struct{})
+	f.embedded.installFn = func(runCtx context.Context, _ *embeddedllm.Installer,
+		_ embeddedllm.InstallOptions) (*embeddedllm.InstallReport, error) {
+		close(entered)
+		<-runCtx.Done()
+		return nil, runCtx.Err()
+	}
+
+	if err := f.InstallEmbeddedLLM(); err != nil {
+		t.Fatalf("InstallEmbeddedLLM: %v", err)
+	}
+	<-entered
+	if !f.GetEmbeddedLLMStatus().Installing {
+		t.Fatal("Installing = false while the background run is in flight")
+	}
+
+	// The parent dies with NO cancel click. The requested flag stays false,
+	// so the cancellation cause alone must not silence the report.
+	cancelApp()
+
+	rec.waitForCount(t, EventRuntimeError, 1)
+	toasts := rec.runtimeErrors()
+	if len(toasts) != 1 {
+		t.Fatalf("runtime_error emitted %d time(s), want 1: an app-context cancellation is a reported failure", len(toasts))
+	}
+	if toasts[0]["error_code"] != embeddedErrCodeInstall {
+		t.Errorf("error_code = %q, want %q", toasts[0]["error_code"], embeddedErrCodeInstall)
+	}
+	if !strings.Contains(toasts[0]["message"], context.Canceled.Error()) {
+		t.Errorf("the toast message %q does not carry the cancellation cause", toasts[0]["message"])
+	}
+
+	status := waitForStatus(t, f, "the app-context cancellation to be recorded", func(s EmbeddedLLMStatus) bool {
+		return !s.Installing && s.InstallError != ""
+	})
+	if !strings.Contains(status.InstallError, context.Canceled.Error()) {
+		t.Errorf("status.InstallError = %q, want the cancellation cause", status.InstallError)
+	}
+	// The state event carries the same cause.
+	states := rec.of(EventEmbeddedLLMState)
+	if len(states) == 0 {
+		t.Fatal("no state event after the app-context cancellation")
+	}
+	last := statePayload(t, states[len(states)-1])
+	if !strings.Contains(last.InstallError, context.Canceled.Error()) || last.Installed {
+		t.Errorf("final state event = %+v, want the cancellation cause and not installed", last)
+	}
+	waitForIdleGate(t, f, "the cancelled run to release the gate")
 }
 
 // ── load / unload / stop ───────────────────────────────────────────────────

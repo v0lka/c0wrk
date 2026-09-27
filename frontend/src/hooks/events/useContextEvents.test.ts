@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { handleContextFill, handleCompactionStarted, handleCompactionFinished, stripAutoRetryFromBanner, type ContextFillStore } from '@/hooks/events/useContextEvents'
-import type { ContextFillData } from '@/types/events'
+import { handleContextFill, handleSessionTokens, handleCompactionStarted, handleCompactionFinished, stripAutoRetryFromBanner, type ContextFillStore } from '@/hooks/events/useContextEvents'
+import type { ContextFillData, SessionTokensData } from '@/types/events'
 import type { TokenInfo, CompactionAvailability } from '@/types/models'
 import type { StepContextTokens } from '@/stores/chatStore'
 import type { ChatMessageUI } from '@/types/messages'
@@ -207,7 +207,51 @@ describe('stripAutoRetryFromBanner', () => {
   })
 })
 
-describe('handleCompactionStarted / handleCompactionFinished', () => {  interface CompactionRecorded {
+describe('handleSessionTokens', () => {
+  function makeTokensData(overrides: Partial<SessionTokensData> = {}): SessionTokensData {
+    return {
+      session_input_tokens: 1200,
+      session_output_tokens: 340,
+      model: 'embedded/Bonsai 2 27B',
+      family: 'embedded',
+      ...overrides,
+    }
+  }
+
+  it('forwards the throughput pair when the payload carries it', () => {
+    const store = makeStore()
+    handleSessionTokens(store, 'sess-1', makeTokensData({ median_output_tok_s: 27.44, tok_s_samples: 5 }))
+    expect(store.recorded.sessionTokens).toHaveLength(1)
+    expect(store.recorded.sessionTokens[0]).toMatchObject({
+      total_input_tokens: 1200,
+      total_output_tokens: 340,
+      model: 'embedded/Bonsai 2 27B',
+      family: 'embedded',
+      median_output_tok_s: 27.44,
+      tok_s_samples: 5,
+    })
+  })
+
+  it('omits the throughput pair on legacy payloads (no clobbering with zeros)', () => {
+    // A payload that predates the metric must not overwrite a previously-known
+    // median with 0 — the same merge-preservation contract as fill_percent.
+    const store = makeStore()
+    handleSessionTokens(store, 'sess-1', makeTokensData({ median_output_tok_s: undefined, tok_s_samples: undefined }))
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('median_output_tok_s')
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('tok_s_samples')
+  })
+
+  it('keeps guarding the optional fill fields exactly as before', () => {
+    const store = makeStore()
+    handleSessionTokens(store, 'sess-1', makeTokensData({ fill_percent: undefined, used_tokens: undefined, max_tokens: undefined }))
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('fill_percent')
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('used_tokens')
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('max_tokens')
+  })
+})
+
+describe('handleCompactionStarted / handleCompactionFinished', () => {
+  interface CompactionRecorded {
     compacting: Array<{ sessionId: string; value: boolean }>
     compactionAvailability: Array<{ sessionId: string; value: CompactionAvailability[] }>
     activity: Array<{ sessionId: string; status: string | null }>

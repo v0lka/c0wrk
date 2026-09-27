@@ -62,6 +62,17 @@ import (
 //     (the object shrank, or the partial is longer than the pin). The partial
 //     is discarded and the download restarts once from byte 0.
 //
+// SILENT AUTO-RESUME (see Download): a transfer that drops mid-body, a server
+// that could not be reached at all, and a retryable HTTP refusal (408/429/5xx)
+// are all retried inside Download with a growing backoff — the resume machinery
+// this file already owns makes each retry continue the partial instead of
+// restarting it, and the retry is invisible to every caller: no error surfaces
+// while progress is still being made. The loop stops and reports
+// ErrAttemptsExhausted only after MaxFailedAttempts consecutive attempts that
+// grew the partial by nothing at all — the "no network" shape. A cancelled
+// context is never retried: the operator's cancel click and an app shutdown
+// are the only producers, and both mean STOP.
+//
 // A transfer is never left "silently partial": every byte that reaches the
 // destination path has been SHA256-verified against the compile-time pin.
 const (
@@ -89,6 +100,27 @@ const DefaultDiskHeadroom int64 = 2 << 30 // 2 GiB
 // from-scratch attempt. A host that keeps rejecting ranges is a hard error, not
 // a retry loop.
 const maxTransferAttempts = 2
+
+// Silent auto-resume policy.
+const (
+	// DefaultMaxFailedAttempts bounds how many CONSECUTIVE resumable failures
+	// (an unreachable server, a dropped transfer, a retryable HTTP refusal)
+	// may pass while the partial on disk has not grown by a single byte. Three
+	// zero-progress attempts in a row is the "no network" shape: the download
+	// stops and reports instead of retrying forever. Any attempt that grows
+	// the partial resets the count, so a flaky link that keeps moving bytes is
+	// retried without bound.
+	DefaultMaxFailedAttempts = 3
+
+	// DefaultRetryBackoff is the pause before the FIRST retry of a resumable
+	// failure. It doubles with every consecutive zero-progress failure and is
+	// capped at maxRetryBackoff; an attempt that makes progress resets it.
+	DefaultRetryBackoff = time.Second
+
+	// maxRetryBackoff caps the backoff doubling so a long outage polls the
+	// server at a bounded rate instead of stacking ever-longer sleeps.
+	maxRetryBackoff = 30 * time.Second
+)
 
 // ProgressFunc reports transfer progress as (bytesDone, bytesTotal). It is
 // called immediately at the start (with the resume offset, so the UI shows a
@@ -125,6 +157,18 @@ type Downloader struct {
 	// nil → platformFreeSpace. Injectable so the guard is testable without
 	// filling a disk.
 	FreeSpace func(path string) (int64, error)
+	// MaxFailedAttempts bounds how many consecutive resumable failures may
+	// pass while the partial has not grown. <= 0 → DefaultMaxFailedAttempts.
+	// See Download for the full retry contract.
+	MaxFailedAttempts int
+	// RetryBackoff is the pause before the first retry of a resumable failure;
+	// it doubles per consecutive zero-progress failure up to maxRetryBackoff
+	// and resets after any progress. <= 0 → DefaultRetryBackoff.
+	RetryBackoff time.Duration
+	// RetrySleep waits between retries, aborting early when ctx is done.
+	// nil → a real timer. Injectable so tests run retry loops without
+	// wall-clock pauses.
+	RetrySleep func(ctx context.Context, d time.Duration) error
 }
 
 // Result reports the outcome of a verified download.
@@ -133,8 +177,11 @@ type Result struct {
 	Path string
 	// SizeBytes is the artifact size, equal to the pinned size on success.
 	SizeBytes int64
-	// BytesWritten is the number of bytes this call transferred; 0 on a cache
-	// hit and less than SizeBytes when the transfer resumed.
+	// BytesWritten is the number of bytes the SUCCESSFUL attempt transferred;
+	// 0 on a cache hit and less than SizeBytes when the transfer resumed. It
+	// does not accumulate the bytes of attempts a silent retry discarded — it
+	// answers "how much network did the finishing transfer cost", not "how
+	// flaky was the link".
 	BytesWritten int64
 	// SHA256 is the verified digest.
 	SHA256 string
@@ -170,6 +217,18 @@ var (
 	// ErrIncompleteTransfer reports a transfer that stopped early. The partial
 	// is KEPT so the next attempt resumes instead of restarting.
 	ErrIncompleteTransfer = errors.New("transfer stopped before the pinned artifact size")
+	// ErrUnreachable reports that the server could not be asked for bytes at
+	// all: the connection attempt failed (DNS, dial, TLS, the response-header
+	// timeout) or the server answered a refusal a retry can plausibly fix
+	// (408, 429, 5xx). Like ErrIncompleteTransfer it is RESUMABLE — Download
+	// retries it silently — but nothing was transferred, so the retry is a
+	// fresh connection rather than a resume.
+	ErrUnreachable = errors.New("the artifact server could not be reached")
+	// ErrAttemptsExhausted reports that the transfer was abandoned after
+	// MaxFailedAttempts consecutive attempts made no progress — the operator
+	// is offline or the server is down. The partial is KEPT: the next call
+	// resumes rather than restarts.
+	ErrAttemptsExhausted = errors.New("the transfer could not make progress")
 	// errStalePartial signals that the partial cannot be resumed (server
 	// answered 416) and the download must restart from byte 0.
 	errStalePartial = errors.New("resume offset rejected by the server")
@@ -179,10 +238,12 @@ var (
 // transfer timeout, ~100 ms progress throttle and a 2 GiB disk headroom.
 func NewDownloader(client *http.Client, logger *slog.Logger) *Downloader {
 	return &Downloader{
-		Client:           client,
-		Logger:           logger,
-		ProgressInterval: DefaultProgressInterval,
-		DiskHeadroom:     DefaultDiskHeadroom,
+		Client:            client,
+		Logger:            logger,
+		ProgressInterval:  DefaultProgressInterval,
+		DiskHeadroom:      DefaultDiskHeadroom,
+		MaxFailedAttempts: DefaultMaxFailedAttempts,
+		RetryBackoff:      DefaultRetryBackoff,
 	}
 }
 
@@ -230,6 +291,22 @@ func RequiredFreeBytes(totalBytes int64) int64 {
 //   - dstPath is only ever created after verification (it is renamed from the
 //     partial), so an unverified file never occupies the destination path.
 //
+// SILENT AUTO-RESUME. A resumable failure — ErrIncompleteTransfer (the
+// transfer dropped or ended short) or ErrUnreachable (the server could not be
+// reached, or answered 408/429/5xx) — is RETRIED inside this call, after a
+// backoff that starts at RetryBackoff and doubles per consecutive failure. The
+// retry is invisible to the caller: the resume machinery above continues the
+// partial, the progress callback keeps reporting the growing offset, and no
+// error surfaces while the transfer is still making progress. The loop gives
+// up — returning ErrAttemptsExhausted (wrapping the last cause) — only after
+// MaxFailedAttempts consecutive attempts that grew the partial by NOTHING, the
+// "no network" shape; the partial is still kept for the next call. Progress is
+// measured as the partial's size delta, not bytes transferred, so a server
+// that keeps restarting the transfer from byte 0 (a 200 fallback against a
+// short body) does not count as progress. A cancelled context is never
+// retried, and a 416-rejected resume restarts from byte 0 at most once, as
+// before.
+//
 // progress may be nil.
 func (d *Downloader) Download(ctx context.Context, asset Asset, dstPath string, progress ProgressFunc) (*Result, error) {
 	if err := validateAsset(asset); err != nil {
@@ -276,9 +353,17 @@ func (d *Downloader) Download(ctx context.Context, asset Asset, dstPath string, 
 	}
 
 	partial := dstPath + PartialSuffix
-	var lastErr error
+	var restarts int
 	var restartReason string
-	for attempt := 1; attempt <= maxTransferAttempts; attempt++ {
+	// Silent auto-resume bookkeeping. failStreak counts CONSECUTIVE resumable
+	// failures that grew the partial by nothing; sizeBefore is the partial's
+	// size at the end of the previous attempt (its growth, not the bytes an
+	// attempt transferred, is what counts as progress — a 200 fallback that
+	// rewrites the same prefix from byte 0 transfers bytes without advancing).
+	failStreak := 0
+	sizeBefore := d.partialSize(partial)
+	backoff := d.retryBackoff()
+	for {
 		res, err := d.transfer(ctx, asset, dstPath, partial, progress)
 		if err == nil {
 			// Carry the fallback reason out even though the retry succeeded:
@@ -289,22 +374,62 @@ func (d *Downloader) Download(ctx context.Context, asset Asset, dstPath string, 
 			}
 			return res, nil
 		}
-		if !errors.Is(err, errStalePartial) {
+		// A cancelled context is never retried: the operator's cancel click
+		// and an app shutdown are the only producers, and both mean STOP. The
+		// partial stays on disk for the resume either way.
+		if ctx.Err() != nil {
 			return nil, err
 		}
-		// The partial is irreconcilable with the server object. Discard it and
-		// restart once from byte 0 — explicitly, never silently.
-		reason := fmt.Sprintf("the server rejected the resume offset (%v); the download restarted from the beginning", err)
-		d.logger().Warn("discarding unresumable partial and restarting the download",
-			"component", asset.Component, "url", asset.URL, "partial", partial, "error", err)
-		if rerr := os.Remove(partial); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
-			return nil, fmt.Errorf("embeddedllm: removing stale partial %q: %w", partial, rerr)
+		switch {
+		case errors.Is(err, errStalePartial):
+			if restarts >= maxTransferAttempts-1 {
+				return nil, fmt.Errorf("embeddedllm: %s: download failed after %d attempts: %w",
+					asset.Component, maxTransferAttempts, err)
+			}
+			restarts++
+			// The partial is irreconcilable with the server object. Discard it
+			// and restart once from byte 0 — explicitly, never silently.
+			reason := fmt.Sprintf("the server rejected the resume offset (%v); the download restarted from the beginning", err)
+			d.logger().Warn("discarding unresumable partial and restarting the download",
+				"component", asset.Component, "url", asset.URL, "partial", partial, "error", err)
+			if rerr := os.Remove(partial); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+				return nil, fmt.Errorf("embeddedllm: removing stale partial %q: %w", partial, rerr)
+			}
+			restartReason = reason
+			sizeBefore = 0
+			continue
+		case errors.Is(err, ErrIncompleteTransfer) || errors.Is(err, ErrUnreachable):
+			// Resumable: retry silently after a backoff, resuming the partial.
+			// Progress resets the streak and the backoff; zero progress
+			// counts toward the fatal bound.
+			sizeAfter := d.partialSize(partial)
+			if sizeAfter > sizeBefore {
+				failStreak = 0
+				backoff = d.retryBackoff()
+			} else {
+				failStreak++
+			}
+			sizeBefore = sizeAfter
+			if failStreak >= d.maxFailedAttempts() {
+				return nil, fmt.Errorf("embeddedllm: %s: %w after %d consecutive attempts without progress (partial kept at %s for resume): %w",
+					asset.Component, ErrAttemptsExhausted, failStreak, partial, err)
+			}
+			d.logger().Warn("resumable transfer failure; retrying the download",
+				"component", asset.Component, "url", asset.URL,
+				"zero_progress_failures", failStreak, "attempt_bound", d.maxFailedAttempts(),
+				"partial_bytes", sizeAfter, "artifact_bytes", asset.SizeBytes,
+				"backoff", backoff.String(), "error", err)
+			if serr := d.sleep(ctx, backoff); serr != nil {
+				return nil, fmt.Errorf("embeddedllm: %s: %w: %w", asset.Component, err, serr)
+			}
+			backoff = min(backoff*2, maxRetryBackoff)
+		default:
+			// Fatal as reported: a checksum mismatch, insufficient disk, an
+			// oversized object, a verdict-style HTTP status (403/404/410…), a
+			// local I/O failure. Retrying cannot change any of them.
+			return nil, err
 		}
-		restartReason = reason
-		lastErr = errors.New(reason)
 	}
-	return nil, fmt.Errorf("embeddedllm: %s: download failed after %d attempts: %w",
-		asset.Component, maxTransferAttempts, lastErr)
 }
 
 // transfer runs a single fetch: resume offset → ranged request → verified
@@ -369,7 +494,10 @@ func (d *Downloader) transfer(ctx context.Context, asset Asset, dstPath, partial
 	resp, err := d.client().Do(req)
 	if err != nil {
 		// Transport/context failure: the partial stays on disk for resume.
-		return nil, fmt.Errorf("embeddedllm: %s: request failed: %w", asset.Component, err)
+		// Wrapped with ErrUnreachable so the retry loop classifies it as
+		// resumable (and the cancellation still unwraps to context.Canceled).
+		return nil, fmt.Errorf("embeddedllm: %s: %w: the request failed: %w",
+			asset.Component, ErrUnreachable, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -404,6 +532,12 @@ func (d *Downloader) transfer(ctx context.Context, asset Asset, dstPath, partial
 		return nil, fmt.Errorf("%w: Content-Range %q for offset %d of a %d-byte pin",
 			errStalePartial, resp.Header.Get("Content-Range"), offset, total)
 	default:
+		if retryableHTTPStatus(resp.StatusCode) {
+			// A refusal a retry can plausibly fix — the transient server-side
+			// shape. The retry loop treats it like an unreachable server.
+			return nil, fmt.Errorf("embeddedllm: %s: %w: HTTP %d from %s",
+				asset.Component, ErrUnreachable, resp.StatusCode, asset.URL)
+		}
 		return nil, fmt.Errorf("embeddedllm: %s: HTTP %d from %s", asset.Component, resp.StatusCode, asset.URL)
 	}
 
@@ -566,6 +700,57 @@ func (d *Downloader) resumeOffset(partial string, asset Asset) (int64, error) {
 	default:
 		return size, nil
 	}
+}
+
+// retryableHTTPStatus reports whether an HTTP answer is the server-side shape
+// a retry can plausibly fix — a request timeout, a rate limit or a 5xx —
+// rather than a verdict about the request itself (403, 404, 410…), which
+// retrying cannot change.
+func retryableHTTPStatus(code int) bool {
+	return code == http.StatusRequestTimeout ||
+		code == http.StatusTooManyRequests ||
+		code >= http.StatusInternalServerError
+}
+
+// partialSize reports the current size of the partial file, 0 when it does not
+// exist. The retry loop uses the partial's GROWTH as its progress signal, so an
+// unstatable partial reads as no progress rather than as a failure of its own.
+func (d *Downloader) partialSize(partial string) int64 {
+	fi, err := os.Stat(partial)
+	if err != nil || fi.IsDir() {
+		return 0
+	}
+	return fi.Size()
+}
+
+// sleep pauses for dur, aborting when ctx is done. The RetrySleep seam exists
+// so tests run retry loops without wall-clock pauses.
+func (d *Downloader) sleep(ctx context.Context, dur time.Duration) error {
+	if d.RetrySleep != nil {
+		return d.RetrySleep(ctx, dur)
+	}
+	timer := time.NewTimer(dur)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (d *Downloader) maxFailedAttempts() int {
+	if d.MaxFailedAttempts > 0 {
+		return d.MaxFailedAttempts
+	}
+	return DefaultMaxFailedAttempts
+}
+
+func (d *Downloader) retryBackoff() time.Duration {
+	if d.RetryBackoff > 0 {
+		return d.RetryBackoff
+	}
+	return DefaultRetryBackoff
 }
 
 // VerifyFile checks an on-disk file against its pin, fail-closed: a missing or

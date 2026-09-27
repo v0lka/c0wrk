@@ -132,6 +132,7 @@ function makeStatus(overrides: Partial<EmbeddedLLMStatus> = {}): EmbeddedLLMStat
     reload_required: false,
     pid: 0,
     error: '',
+    install_error: '',
     available: true,
     ...overrides,
   }

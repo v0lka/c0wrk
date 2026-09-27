@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +43,13 @@ type dlRangeServer struct {
 	// and a flush between them, so cancellation lands mid-transfer.
 	writeDelay time.Duration
 	chunkSize  int
+
+	// dropFirst > 0 makes the first N requests abort the connection after
+	// writing HALF the bytes they would have served (a forced transport error
+	// mid-body — the "unexpected EOF" shape a flaky link produces), while
+	// every later request serves normally. Only meaningful in dlServeRange
+	// mode, where the retry resumes through a ranged request.
+	dropFirst int
 
 	mu       sync.Mutex
 	requests int
@@ -128,8 +136,15 @@ func (s *dlRangeServer) handle(w http.ResponseWriter, r *http.Request) {
 
 // writeBody streams the body, optionally in delayed chunks so a test can
 // cancel a transfer that is genuinely still in flight rather than racing a
-// loopback write that completes before the callback runs.
+// loopback write that completes before the callback runs. A request from the
+// dropFirst budget is aborted after HALF its bytes: net/http recovers
+// ErrAbortHandler by closing the connection, so the client sees a transport
+// error (unexpected EOF) after genuine bytes have landed — the flaky-link shape.
 func (s *dlRangeServer) writeBody(w http.ResponseWriter, chunk []byte) {
+	if s.shouldDrop() {
+		_, _ = w.Write(chunk[:len(chunk)/2])
+		panic(http.ErrAbortHandler)
+	}
 	if s.writeDelay <= 0 {
 		_, _ = w.Write(chunk)
 		return
@@ -155,6 +170,18 @@ func (s *dlRangeServer) record(status int) {
 	s.mu.Lock()
 	s.statuses = append(s.statuses, status)
 	s.mu.Unlock()
+}
+
+// shouldDrop reports whether THIS request is one of the dropFirst requests
+// that must abort mid-body, and consumes the drop budget when it is.
+func (s *dlRangeServer) shouldDrop() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dropFirst <= 0 {
+		return false
+	}
+	s.dropFirst--
+	return true
 }
 
 func (s *dlRangeServer) hits() int {
@@ -218,9 +245,33 @@ func dlDiscardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// newDLTestDownloader returns a Downloader wired to a test server's TLS client.
+// newDLTestDownloader returns a Downloader wired to a test server's TLS
+// client. RetrySleep is a no-op by default so tests that drive a retry loop to
+// its bound do not pay the real backoff pauses; a test that asserts the
+// backoff sequence replaces the seam with its own recorder.
 func newDLTestDownloader(srv *httptest.Server) *Downloader {
-	return NewDownloader(srv.Client(), dlDiscardLogger())
+	d := NewDownloader(srv.Client(), dlDiscardLogger())
+	d.RetrySleep = func(context.Context, time.Duration) error { return nil }
+	return d
+}
+
+// dlSleepRecorder captures every backoff the retry loop asks for.
+type dlSleepRecorder struct {
+	mu     sync.Mutex
+	pauses []time.Duration
+}
+
+func (r *dlSleepRecorder) fn(_ context.Context, d time.Duration) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pauses = append(r.pauses, d)
+	return nil
+}
+
+func (r *dlSleepRecorder) snapshot() []time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]time.Duration(nil), r.pauses...)
 }
 
 // dlProgressRecorder captures every (done, total) pair a callback receives.
@@ -798,9 +849,13 @@ func TestDownload_DiskGuardRefusesRealSizedModel(t *testing.T) {
 			}
 			// Not refused: the guard must let the transfer start, so the request
 			// has to reach the server. (The transfer itself then fails on the
-			// size/digest gate — the point here is that the GUARD passed.)
-			if got := srv.hits() - before; got != 1 {
-				t.Errorf("the guard passed but %d request(s) reached the server, want 1", got)
+			// size/digest gate — the point here is that the GUARD passed. The
+			// silent auto-resume retries the cleanly-short body up to the
+			// zero-progress bound before reporting, so the guard-passed verdict
+			// costs one progress attempt plus DefaultMaxFailedAttempts
+			// zero-progress retries.)
+			if got, want := srv.hits()-before, DefaultMaxFailedAttempts+1; got != want {
+				t.Errorf("the guard passed but %d request(s) reached the server, want %d", got, want)
 			}
 			if errors.Is(err, ErrInsufficientDisk) {
 				t.Errorf("err = %v, want the guard to pass with %d free bytes", err, free)
@@ -1153,16 +1208,31 @@ func TestNewDownloaderDefaults(t *testing.T) {
 	if d.DiskHeadroom != DefaultDiskHeadroom {
 		t.Errorf("DiskHeadroom = %d, want %d", d.DiskHeadroom, DefaultDiskHeadroom)
 	}
+	if d.MaxFailedAttempts != DefaultMaxFailedAttempts {
+		t.Errorf("MaxFailedAttempts = %d, want %d", d.MaxFailedAttempts, DefaultMaxFailedAttempts)
+	}
+	if d.RetryBackoff != DefaultRetryBackoff {
+		t.Errorf("RetryBackoff = %v, want %v", d.RetryBackoff, DefaultRetryBackoff)
+	}
 	if d.progressInterval() != DefaultProgressInterval {
 		t.Errorf("progressInterval() = %v, want the default", d.progressInterval())
 	}
 	if d.headroom() != DefaultDiskHeadroom {
 		t.Errorf("headroom() = %d, want the default", d.headroom())
 	}
+	if d.maxFailedAttempts() != DefaultMaxFailedAttempts {
+		t.Errorf("maxFailedAttempts() = %d, want the default", d.maxFailedAttempts())
+	}
+	if d.retryBackoff() != DefaultRetryBackoff {
+		t.Errorf("retryBackoff() = %v, want the default", d.retryBackoff())
+	}
 	// The zero value must also fall back to the defaults rather than to 0.
 	var zero Downloader
 	if zero.progressInterval() != DefaultProgressInterval || zero.headroom() != DefaultDiskHeadroom {
 		t.Error("the zero-value Downloader did not fall back to the documented defaults")
+	}
+	if zero.maxFailedAttempts() != DefaultMaxFailedAttempts || zero.retryBackoff() != DefaultRetryBackoff {
+		t.Error("the zero-value Downloader did not fall back to the retry defaults")
 	}
 	if zero.client() == nil {
 		t.Error("the zero-value Downloader has no HTTP client")
@@ -1199,13 +1269,16 @@ func TestPlatformFreeSpace(t *testing.T) {
 	}
 }
 
-// TestDownload_CleanlyShortBodyKeepsThePartialForResume covers a body that ends
-// CLEANLY short of the pin — no transport error, just fewer bytes than the pin
-// expects, which is what a proxy that strips Content-Length looks like from here.
-// The bytes are unverified and must not be promoted, but they are also a valid
-// resume prefix: falling through to the digest gate reported ErrChecksumMismatch
-// and DELETED a multi-gigabyte partial that could simply have been continued.
-func TestDownload_CleanlyShortBodyKeepsThePartialForResume(t *testing.T) {
+// TestDownload_CleanlyShortBodyRetriesSilentlyThenStops covers a body that
+// ends CLEANLY short of the pin — no transport error, just fewer bytes than
+// the pin expects, which is what a proxy that strips Content-Length looks like
+// from here. The bytes are unverified and must not be promoted, but they are
+// also a valid resume prefix — so the first short answer is RETRIED silently.
+// The retry mode here ignores Range and answers 200 with the same half body,
+// so no attempt after the first grows the partial: the loop must count
+// zero-progress attempts and give up after DefaultMaxFailedAttempts instead of
+// retrying forever, and the partial must survive for the next call.
+func TestDownload_CleanlyShortBodyRetriesSilentlyThenStops(t *testing.T) {
 	body := dlBody(64 * 1024)
 	srv := newDLRangeServer(t, body, dlTruncateBody)
 	d := newDLTestDownloader(srv.Server)
@@ -1216,8 +1289,17 @@ func TestDownload_CleanlyShortBodyKeepsThePartialForResume(t *testing.T) {
 	if !errors.Is(err, ErrIncompleteTransfer) {
 		t.Fatalf("err = %v, want ErrIncompleteTransfer", err)
 	}
+	if !errors.Is(err, ErrAttemptsExhausted) {
+		t.Errorf("err = %v, want ErrAttemptsExhausted (the silent retries are bounded)", err)
+	}
 	if errors.Is(err, ErrChecksumMismatch) {
 		t.Error("a cleanly short body was reported as a checksum mismatch")
+	}
+	// One attempt that grew the partial plus DefaultMaxFailedAttempts
+	// zero-progress attempts.
+	if got, want := srv.hits(), DefaultMaxFailedAttempts+1; got != want {
+		t.Errorf("server saw %d request(s), want %d (first progress + %d zero-progress retries)",
+			got, want, DefaultMaxFailedAttempts)
 	}
 
 	partial := dst + PartialSuffix
@@ -1230,6 +1312,151 @@ func TestDownload_CleanlyShortBodyKeepsThePartialForResume(t *testing.T) {
 	}
 	if _, statErr := os.Stat(dst); !errors.Is(statErr, os.ErrNotExist) {
 		t.Error("unverified bytes reached the destination path")
+	}
+}
+
+// TestDownload_DroppedTransferResumesSilently is the operator's scenario: a
+// multi-gigabyte transfer dies mid-body with an "unexpected EOF" after real
+// bytes have landed. Download must retry WITHOUT surfacing an error, resume
+// from the partial through a ranged request, and finish verified — the drop is
+// invisible to the caller (and therefore to the UI).
+func TestDownload_DroppedTransferResumesSilently(t *testing.T) {
+	body := dlBody(256 * 1024)
+	srv := newDLRangeServer(t, body, dlServeRange)
+	srv.dropFirst = 1 // the first request aborts after half the body
+
+	d := newDLTestDownloader(srv.Server)
+	d.FreeSpace = dlUnlimitedSpace
+
+	dst := filepath.Join(t.TempDir(), "m.gguf")
+	res, err := d.Download(context.Background(), dlAssetFor(srv.URL+"/m.gguf", body), dst, nil)
+	if err != nil {
+		t.Fatalf("Download: %v — a dropped transfer with a resumable partial must retry silently", err)
+	}
+	if !res.Verified || !res.Resumed {
+		t.Errorf("res = %+v, want a verified resumed download", res)
+	}
+	if got := srv.hits(); got != 2 {
+		t.Errorf("server saw %d request(s), want 2 (dropped attempt + resumed attempt)", got)
+	}
+	if res.BytesWritten != int64(len(body))/2 {
+		t.Errorf("BytesWritten = %d, want %d (the bytes of the successful resumed attempt; the dropped attempt's bytes are reported through Resumed, not double-counted)",
+			res.BytesWritten, int64(len(body))/2)
+	}
+	ranges := srv.rangeHeaders()
+	if len(ranges) != 2 || ranges[1] != fmt.Sprintf("bytes=%d-", len(body)/2) {
+		t.Errorf("range headers = %v, want the retry to resume at %d", ranges, len(body)/2)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Error("the promoted file differs from the served body")
+	}
+}
+
+// TestDownload_ConnectFailuresAreBounded pins the "no network" verdict: a
+// server that cannot be reached at all is retried DefaultMaxFailedAttempts
+// times (with the operator's documented three-attempt bound), then reported as
+// ErrAttemptsExhausted wrapping ErrUnreachable. The partial — here a prefix
+// left by a previous run — is kept for the resume.
+func TestDownload_ConnectFailuresAreBounded(t *testing.T) {
+	body := dlBody(16 * 1024)
+	srv := newDLRangeServer(t, body, dlServeRange)
+	client := srv.Client()
+	url := srv.URL + "/m.gguf"
+	srv.Close() // the port now refuses connections
+
+	d := NewDownloader(client, dlDiscardLogger())
+	d.FreeSpace = dlUnlimitedSpace
+	sleeps := &dlSleepRecorder{}
+	d.RetrySleep = sleeps.fn
+
+	dst := filepath.Join(t.TempDir(), "m.gguf")
+	// A pre-existing partial makes the zero-progress accounting observable:
+	// every refused connect leaves it exactly as it was.
+	if err := os.WriteFile(dst+PartialSuffix, body[:4096], 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := d.Download(context.Background(), dlAssetFor(url, body), dst, nil)
+	if !errors.Is(err, ErrUnreachable) {
+		t.Fatalf("err = %v, want ErrUnreachable", err)
+	}
+	if !errors.Is(err, ErrAttemptsExhausted) {
+		t.Errorf("err = %v, want ErrAttemptsExhausted after %d connect failures", err, DefaultMaxFailedAttempts)
+	}
+	if got, want := len(sleeps.snapshot()), DefaultMaxFailedAttempts-1; got != want {
+		t.Errorf("%d backoff pause(s), want %d", got, want)
+	}
+	if fi, statErr := os.Stat(dst + PartialSuffix); statErr != nil || fi.Size() != 4096 {
+		t.Errorf("the pre-existing partial changed: %v (%d bytes)", statErr, fi.Size())
+	}
+}
+
+// TestDownload_RetryableHTTPStatusesAreRetried tables the server-side refusals
+// a retry can plausibly fix: each is retried up to the zero-progress bound and
+// surfaces ErrUnreachable, while a verdict status (410) fails on the first
+// answer — pinned by TestDownload_HTTPErrorIsSurfaced.
+func TestDownload_RetryableHTTPStatusesAreRetried(t *testing.T) {
+	for _, code := range []int{
+		http.StatusRequestTimeout,
+		http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusServiceUnavailable,
+	} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			var hits atomic.Int64
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				hits.Add(1)
+				http.Error(w, "busy", code)
+			}))
+			t.Cleanup(srv.Close)
+
+			d := newDLTestDownloader(srv)
+			d.FreeSpace = dlUnlimitedSpace
+
+			dst := filepath.Join(t.TempDir(), "m.gguf")
+			_, err := d.Download(context.Background(), dlAssetFor(srv.URL+"/m.gguf", dlBody(64)), dst, nil)
+			if !errors.Is(err, ErrUnreachable) {
+				t.Fatalf("err = %v, want ErrUnreachable for HTTP %d", err, code)
+			}
+			if !errors.Is(err, ErrAttemptsExhausted) {
+				t.Errorf("err = %v, want ErrAttemptsExhausted", err)
+			}
+			if got := hits.Load(); got != DefaultMaxFailedAttempts {
+				t.Errorf("server saw %d request(s), want %d", got, DefaultMaxFailedAttempts)
+			}
+		})
+	}
+}
+
+// TestDownload_BackoffDoublesAndIsCapped pins the pause policy between
+// zero-progress retries: it starts at RetryBackoff, doubles per consecutive
+// failure and is capped at maxRetryBackoff.
+func TestDownload_BackoffDoublesAndIsCapped(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		http.Error(w, "busy", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+
+	d := newDLTestDownloader(srv)
+	d.FreeSpace = dlUnlimitedSpace
+	d.MaxFailedAttempts = 4
+	d.RetryBackoff = 10 * time.Second
+	sleeps := &dlSleepRecorder{}
+	d.RetrySleep = sleeps.fn
+
+	_, err := d.Download(context.Background(), dlAssetFor(srv.URL+"/m.gguf", dlBody(64)), filepath.Join(t.TempDir(), "m.gguf"), nil)
+	if !errors.Is(err, ErrAttemptsExhausted) {
+		t.Fatalf("err = %v, want ErrAttemptsExhausted", err)
+	}
+	want := []time.Duration{10 * time.Second, 20 * time.Second, maxRetryBackoff}
+	if got := sleeps.snapshot(); !slices.Equal(got, want) {
+		t.Errorf("backoff pauses = %v, want %v (doubling, capped at %v)", got, want, maxRetryBackoff)
 	}
 }
 

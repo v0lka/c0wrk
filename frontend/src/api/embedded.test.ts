@@ -60,6 +60,7 @@ const STATUS = {
   model_file: '/x.gguf',
   pid: 4242,
   error: '',
+  install_error: '',
   available: true,
   devices: [],
   unified: true,

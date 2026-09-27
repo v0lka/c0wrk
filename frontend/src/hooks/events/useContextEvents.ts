@@ -3,7 +3,7 @@
 import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isContextFillData, isContextCompactionData, isSessionTokensData, isCompactionStartedData, isCompactionFinishedData } from '@/types/events'
-import type { ContextFillData } from '@/types/events'
+import type { ContextFillData, SessionTokensData } from '@/types/events'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import type { StepContextTokens } from '@/stores/chatStore'
 import type { TokenInfo, CompactionAvailability } from '@/types/models'
@@ -94,6 +94,36 @@ export function handleContextFill(store: ContextFillStore, sessionId: string, da
     ...(typeof data.fill_percent === 'number' ? { fill_percent: data.fill_percent } : {}),
     ...(typeof data.used_tokens === 'number' ? { used_tokens: data.used_tokens } : {}),
     ...(typeof data.max_tokens === 'number' ? { max_tokens: data.max_tokens } : {}),
+  })
+}
+
+/** Minimal store surface the session_tokens handler needs. */
+export interface SessionTokensStore {
+  setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
+}
+
+/**
+ * Applies a session_tokens event to the store.
+ *
+ * Every optional field is forwarded only when actually present: the type guard
+ * (isSessionTokensData) does not require fill_percent/used_tokens/max_tokens,
+ * so coercing an absent value to 0 would overwrite a previously-valid fill and
+ * make ContextFillStatus show a false "0%". The same holds for the throughput
+ * pair (median_output_tok_s/tok_s_samples) — an older payload that predates
+ * the metric must not clobber the last known median with a zero. Omitting the
+ * keys lets the store's merge semantics preserve the last known values.
+ */
+export function handleSessionTokens(store: SessionTokensStore, sessionId: string, data: SessionTokensData): void {
+  store.setSessionTokens(sessionId, {
+    total_input_tokens: data.session_input_tokens,
+    total_output_tokens: data.session_output_tokens,
+    model: data.model,
+    family: data.family,
+    ...(typeof data.fill_percent === 'number' ? { fill_percent: data.fill_percent } : {}),
+    ...(typeof data.used_tokens === 'number' ? { used_tokens: data.used_tokens } : {}),
+    ...(typeof data.max_tokens === 'number' ? { max_tokens: data.max_tokens } : {}),
+    ...(typeof data.median_output_tok_s === 'number' ? { median_output_tok_s: data.median_output_tok_s } : {}),
+    ...(typeof data.tok_s_samples === 'number' ? { tok_s_samples: data.tok_s_samples } : {}),
   })
 }
 
@@ -254,25 +284,12 @@ export function useContextEvents(sessionId: string | null): void {
     // session_root_mirror (root-emitter inline steps — those mirror the fill to
     // the session level immediately). used_tokens/max_tokens follow the same
     // session-root-only cache path as fill_percent, so the status bar can
-    // render a "N of M" tooltip.
+    // render a "N of M" tooltip. The throughput pair (median_output_tok_s /
+    // tok_s_samples) rides along the same guarded-passthrough path.
     cleanups.push(
       onSessionEvent(sessionId, 'session_tokens', (data) => {
         if (!isSessionTokensData(data)) { reportDroppedEvent('session_tokens', data); return }
-        useChatStore.getState().setSessionTokens(sessionId, {
-          total_input_tokens: data.session_input_tokens,
-          total_output_tokens: data.session_output_tokens,
-          model: data.model,
-          family: data.family,
-          // Only forward fill_percent / used_tokens / max_tokens when actually
-          // present. The type guard (isSessionTokensData) does not require these
-          // fields, so coercing an absent value to 0 would overwrite a previously-
-          // valid fill and make ContextFillStatus show a false "0%". Omitting them
-          // lets the store's merge semantics preserve the last known session-level
-          // values.
-          ...(typeof data.fill_percent === 'number' ? { fill_percent: data.fill_percent } : {}),
-          ...(typeof data.used_tokens === 'number' ? { used_tokens: data.used_tokens } : {}),
-          ...(typeof data.max_tokens === 'number' ? { max_tokens: data.max_tokens } : {}),
-        })
+        handleSessionTokens(useChatStore.getState(), sessionId, data)
       }),
     )
 

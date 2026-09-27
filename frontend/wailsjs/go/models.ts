@@ -702,6 +702,7 @@ export namespace backend {
 	    pid: number;
 	    fit_warning?: string;
 	    error: string;
+	    install_error: string;
 	    available: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -742,6 +743,7 @@ export namespace backend {
 	        this.pid = source["pid"];
 	        this.fit_warning = source["fit_warning"];
 	        this.error = source["error"];
+	        this.install_error = source["install_error"];
 	        this.available = source["available"];
 	    }
 	

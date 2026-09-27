@@ -192,6 +192,28 @@ type LastModelSetter interface {
 	SetLastModel(model, family string)
 }
 
+// SessionTokenEmitter is an optional interface Emitter implementations can
+// implement to receive cumulative session token totals after every tracked
+// LLM call. The builder's UsageTracker observer discovers it via type
+// assertion (see core/builder.go); emitters without it simply miss token
+// accounting. loggingEmitter forwards it when the inner emitter supports it.
+type SessionTokenEmitter interface {
+	EmitSessionTokens(totalIn, totalOut int, model, family string)
+}
+
+// SessionTokenThroughputEmitter is the timing-augmented extension of
+// SessionTokenEmitter: alongside the cumulative totals it carries the median
+// per-call output-token throughput (tokens/second) over the session's recent
+// LLM calls, plus the sample count behind that median. The builder feeds a
+// per-session sliding window from the UsageTracker's timed observer (sp4rk
+// llm.TimedUsageObserver) and prefers this seam, falling back to
+// SessionTokenEmitter when the emitter predates it. A median of 0 with a
+// non-zero sample count means the window is still below its minimum sample
+// threshold (warming up), not that the session stalled.
+type SessionTokenThroughputEmitter interface {
+	EmitSessionTokensWithThroughput(totalIn, totalOut int, model, family string, medianOutputTokPerSec float64, throughputSamples int)
+}
+
 // noopEmitter is a no-op implementation of Emitter.
 // Used as a default when nil emitter is provided.
 type noopEmitter struct {

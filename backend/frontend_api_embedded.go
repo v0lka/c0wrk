@@ -38,8 +38,25 @@ import (
 //   - the multi-gigabyte install runs in the BACKGROUND: InstallEmbeddedLLM
 //     performs only the synchronous gates (single-run, hardware probe, the
 //     combined memory refusal) and then returns, so the RPC never blocks on a
-//     download. Progress arrives through embedded_llm:install_progress and a
-//     background failure through the runtime_error toast.
+//     download. Progress arrives through embedded_llm:install_progress.
+//   - download failures are split by resumability, and only the fatal half is
+//     ever user-visible: a resumable transfer failure (a dropped connection,
+//     an unreachable server, a retryable HTTP refusal) is retried SILENTLY
+//     inside core/embeddedllm's Downloader — no toast, no error field, the
+//     progress bar simply continues from the kept partial. A FATAL failure
+//     (core's ErrAttemptsExhausted: no network after
+//     embeddedllm.DefaultMaxFailedAttempts consecutive zero-progress attempts,
+//     a checksum mismatch, the disk guard, …) is recorded as the
+//     Settings-facing install_error (embeddedInstallFailureMessage translates
+//     it) and raises the runtime_error toast with the same friendly text —
+//     never the raw transport diagnostics. The status-bar indicator shows
+//     NONE of them: its error surface is the supervisor's own error state.
+//   - the background install is CANCELLABLE: CancelEmbeddedLLMInstall delivers
+//     the operator's stop through the cancel published at gate-claim time, and
+//     a REQUESTED cancellation (the flag AND the cancellation cause agreeing)
+//     is the quiet outcome — no toast, no recorded error, the click is the
+//     report — while core keeps the partial download as the resume point. A
+//     genuine failure and a shutdown-cancellation stay reported failures.
 //   - startup performs no network I/O and never loads the model
 //     (initEmbeddedLLM); it only restores the state from manifest.json.
 
@@ -163,6 +180,25 @@ type embeddedLLMState struct {
 	// both directions claim the one gate and every gated entry point refuses
 	// while it is held.
 	busyOp embeddedOpKind
+	// installCancel is the cancel of the cancellable context the CURRENT
+	// background install runs under, published the moment the gate is claimed —
+	// before the preflight, before the goroutine exists — so a
+	// CancelEmbeddedLLMInstall click is honored at every point of the run,
+	// including one racing the first progress event. nil when no install is in
+	// flight. Published by embeddedBeginInstallRun; withdrawn (and CALLED, so
+	// the context is released rather than living until the app context dies) by
+	// embeddedEndInstallRun, which is the run's bookkeeping defer and the
+	// preflight-refusal path both go through. Guarded by mu like the gate
+	// bookkeeping beside it.
+	installCancel context.CancelFunc
+	// installCancelRequested records that the OPERATOR asked to cancel the
+	// current install, so the run's failure branch can tell a REQUESTED
+	// cancellation (this flag AND errors.Is(err, context.Canceled)) from a
+	// genuine fault. The flag alone must not silence anything: a run that
+	// fails for an unrelated reason after the click stays a reported failure,
+	// and the cause alone must not either — a shutdown of the application
+	// context cancels the parent without anybody asking.
+	installCancelRequested bool
 
 	infoMu sync.Mutex
 	// manifest is the cached manifest.json snapshot (the durable install
@@ -178,8 +214,13 @@ type embeddedLLMState struct {
 	// operation — core calls OnState synchronously — so the window is
 	// microseconds wide and never spans another caller's transition.
 	muted bool
-	// lastError carries the cause of the last failed background operation
-	// (install, removal). Cleared when the next one starts.
+	// lastError carries the operator-friendly cause of the last failed INSTALL
+	// run (fatal download failures included; a resumable one never fails the
+	// run — core retries it silently). It surfaces as the status/event
+	// install_error field, a Settings-only surface. Removal failures do NOT
+	// land here: they are carried by their own RPC's rejected promise (and its
+	// toast), and painting them into a field named after installs would lie
+	// about which action failed. Cleared when the next install run starts.
 	lastError string
 	// launchedTuning is the fingerprint of the memory-plan overrides the
 	// CURRENTLY RESIDENT process was launched with, recorded on the
@@ -280,7 +321,8 @@ func (s *embeddedLLMState) stateEventMuted() bool {
 	return s.muted
 }
 
-// setError records the cause of a failed background operation.
+// setError records the operator-friendly cause of a failed install run (see
+// lastError for why removals never land here).
 func (s *embeddedLLMState) setError(err error) {
 	msg := ""
 	if err != nil {
@@ -291,7 +333,7 @@ func (s *embeddedLLMState) setError(err error) {
 	s.infoMu.Unlock()
 }
 
-// lastFailure returns the recorded background failure ("" when none).
+// lastFailure returns the recorded install failure ("" when none).
 func (s *embeddedLLMState) lastFailure() string {
 	s.infoMu.Lock()
 	defer s.infoMu.Unlock()
@@ -803,10 +845,15 @@ func (f *FrontendAPI) emitEmbeddedLLMState(state embeddedllm.State, port int, me
 
 // embeddedStatePayload merges a supervision state with the install record and
 // the persisted config. Precedence is explicit: the live supervisor port wins
-// over the persisted one, the manifest (what is actually on disk) wins over the
-// informational config copy of packing/backend, and the error field carries the
-// supervisor's cause only for the error state — otherwise the last background
-// failure, so a failed install is visible in the same field the UI reads.
+// over the persisted one, and the manifest (what is actually on disk) wins over
+// the informational config copy of packing/backend.
+//
+// The two error fields are deliberately split: Error carries the supervisor's
+// own cause and only while the state IS error (a failed launch, a dead process)
+// — it is what the status-bar indicator renders. InstallError carries the last
+// failed install run and is a Settings-only surface: a background download that
+// is still retrying silently never paints the bar, and a fatal one is acted on
+// in Settings, where the retry button lives.
 func (f *FrontendAPI) embeddedStatePayload(state embeddedllm.State, port int, message string) EmbeddedLLMStateData {
 	manifest, hasManifest := f.embedded.installRecord()
 	cfg := f.embeddedConfig()
@@ -827,7 +874,7 @@ func (f *FrontendAPI) embeddedStatePayload(state embeddedllm.State, port int, me
 
 	errText := message
 	if state != embeddedllm.StateError {
-		errText = f.embedded.lastFailure()
+		errText = ""
 	}
 
 	return EmbeddedLLMStateData{
@@ -840,6 +887,7 @@ func (f *FrontendAPI) embeddedStatePayload(state embeddedllm.State, port int, me
 		ContextSize:       contextSize,
 		AutoUnloadMinutes: cfg.AutoUnload.IdleMinutes(),
 		Error:             errText,
+		InstallError:      f.embedded.lastFailure(),
 	}
 }
 
@@ -904,10 +952,14 @@ func (f *FrontendAPI) GetEmbeddedLLMStatus() EmbeddedLLMStatus {
 		InstalledAt:       cfg.InstalledAt,
 		ModelFile:         cfg.ModelFile,
 		ModelName:         config.EmbeddedLLMModelName,
-		Error:             f.embedded.lastFailure(),
-		Guards:            []EmbeddedLLMGuard{},
-		Devices:           []EmbeddedLLMDevice{},
-		Plan:              embeddedPlanDTO(nil),
+		// Error stays empty unless the supervisor itself reports an error state
+		// (set from the snapshot below): the status-bar indicator renders it,
+		// and an install failure is a Settings-only surface (InstallError).
+		Error:        "",
+		InstallError: f.embedded.lastFailure(),
+		Guards:       []EmbeddedLLMGuard{},
+		Devices:      []EmbeddedLLMDevice{},
+		Plan:         embeddedPlanDTO(nil),
 	}
 	if manifest, ok := f.embedded.installRecord(); ok {
 		// The manifest is what is actually on disk; the config copy of
@@ -1007,10 +1059,20 @@ func (f *FrontendAPI) GetEmbeddedLLMStatus() EmbeddedLLMStatus {
 // a background goroutine: the RPC returns as soon as the run is started.
 //
 // Progress arrives as embedded_llm:install_progress (one event per component
-// and stage) and the outcome as embedded_llm:state; a background failure
-// additionally raises a runtime_error toast, because no RPC is left to carry
-// it. The install is resumable: verified artifacts are kept as cache hits, so a
-// retry continues where the previous attempt stopped.
+// and stage) and the outcome as embedded_llm:state. A download failure is
+// visible only when it is FATAL: resumable transfer failures are retried
+// silently inside core (the bar resumes from the kept partial, nothing is
+// reported), while a fatal one records the friendly install_error line and
+// raises a runtime_error toast with the same text, because no RPC is left to
+// carry it. The install is resumable: verified artifacts are kept as cache
+// hits, so a retry continues where the previous attempt stopped.
+//
+// The run is CANCELLABLE: CancelEmbeddedLLMInstall cancels the context the
+// background goroutine runs under, and a REQUESTED cancellation is the quiet
+// outcome — no toast, no recorded error, an Info log and a state event —
+// because the click is the report, and core keeps the partial bytes as the
+// resume point for the retry. A cancellation nobody asked for (the application
+// context dying at shutdown) and a genuine failure stay reported failures.
 //
 // The background run's first act is core's step-0 stop of a resident server: a
 // repair retires the runtime tree that server executes from — refused outright on
@@ -1032,6 +1094,20 @@ func (f *FrontendAPI) InstallEmbeddedLLM() error {
 		return embeddedBusyRefusal(holder, embeddedOpInstall, "starting an install")
 	}
 
+	// The run's context is a CANCELLABLE child of the application context, and
+	// its cancel is published the moment the gate is claimed — before the
+	// preflight and before the goroutine exists — so a cancellation click is
+	// honored at every point of the run. A preflight refusal withdraws the
+	// publication through refuseEmbeddedInstall (embeddedEndInstallRun), which
+	// also calls the cancel, so no path leaks the context.
+	installCtx, cancelInstall := context.WithCancel(f.ctx())
+	f.embeddedBeginInstallRun(cancelInstall)
+	// A new run retires the previous run's failure line: the retry that line
+	// was asking for is happening right now, and a stale install error beside
+	// a live progress bar is a contradiction (the store's beginInstall clears
+	// the action error for the same reason).
+	f.embedded.setError(nil)
+
 	// The MEMORY GATE runs HERE, synchronously: a refusal the caller only
 	// learns about from a toast ten minutes into a download is not actionable.
 	// The probe is local and bounded (each external helper carries its own 2s
@@ -1050,7 +1126,47 @@ func (f *FrontendAPI) InstallEmbeddedLLM() error {
 		return err
 	}
 
-	go f.runEmbeddedInstall(server, installer, hw)
+	go f.runEmbeddedInstall(installCtx, server, installer, hw)
+	return nil
+}
+
+// CancelEmbeddedLLMInstall asks the in-flight background install to stop.
+//
+// IDEMPOTENT: with no install in flight it is a success no-op, because the
+// outcome the operator wants — no install running — already holds; a late
+// double click must not turn into an error. It never CLAIMS the operation gate
+// (it is a reader of the run's bookkeeping, not a second operation): claiming
+// would make a cancel click refuse against the very install it is meant to
+// stop, and the run it addresses releases the gate itself through its own
+// defer.
+//
+// What it does is call the run's published cancel. Core wraps the cancellation
+// as context.Canceled through Install and the downloader, KEEPS the partial
+// bytes as the resume point, and the run's failure branch turns the requested
+// cancellation into the quiet outcome: no toast and no recorded error — the
+// click is the report — plus a state event and an Info log. A retry continues
+// from the partial download instead of starting over.
+//
+// The stop is COOPERATIVE and asynchronous: the RPC returns once the request
+// is delivered, not once the run has unwound — the gate stays held (and every
+// other embedded RPC keeps refusing) until the background goroutine finishes
+// its own cleanup.
+func (f *FrontendAPI) CancelEmbeddedLLMInstall() error {
+	st := &f.embedded
+	st.mu.Lock()
+	cancel := st.installCancel
+	if cancel != nil {
+		// Recorded BEFORE the cancel fires, so the run's failure branch — which
+		// may race this very call — cannot observe the cancellation cause
+		// without the flag that makes it quiet.
+		st.installCancelRequested = true
+	}
+	st.mu.Unlock()
+	if cancel == nil {
+		return nil
+	}
+	f.log().Info("cancelling the embedded LLM install at the operator's request")
+	cancel()
 	return nil
 }
 
@@ -1134,7 +1250,9 @@ func (f *FrontendAPI) RemoveEmbeddedLLM() error {
 	defer cancel()
 	if err := installer.Remove(removeCtx); err != nil {
 		err = embeddedBoundedStopErr("the local model removal", err, budget)
-		f.embedded.setError(err)
+		// The failure is carried by THIS call's rejected promise (the Settings
+		// error line) and the toast below — deliberately NOT recorded as the
+		// install failure, which it is not (see embeddedLLMState.lastError).
 		f.log().Error("embedded LLM removal failed", "error", err)
 		f.emitEmbeddedRuntimeError(embeddedErrCodeRemove,
 			"The local model could not be removed: "+err.Error())
@@ -1361,6 +1479,51 @@ func (f *FrontendAPI) endEmbeddedOperation() {
 	st.mu.Unlock()
 }
 
+// embeddedBeginInstallRun publishes the cancel of the install run that just
+// claimed the gate. It runs BEFORE the preflight and before the goroutine
+// starts, so a cancellation clicked while the synchronous gates are still
+// running is delivered the moment the run begins: the context is already
+// cancelled and core's Install fails immediately with the quiet outcome.
+func (f *FrontendAPI) embeddedBeginInstallRun(cancel context.CancelFunc) {
+	st := &f.embedded
+	st.mu.Lock()
+	st.installCancel = cancel
+	st.installCancelRequested = false
+	st.mu.Unlock()
+}
+
+// embeddedEndInstallRun withdraws the published install cancel. It CALLS the
+// cancel too (idempotent), so the cancellable context is released on every
+// exit — success, failure, a requested cancellation and a panic — instead of
+// staying live until the application context is cancelled at shutdown. Both
+// the run's bookkeeping defer and the preflight-refusal path go through here,
+// which is what keeps a refusal from leaving a stale cancel aimed at a run
+// that never started.
+func (f *FrontendAPI) embeddedEndInstallRun() {
+	st := &f.embedded
+	st.mu.Lock()
+	cancel := st.installCancel
+	st.installCancel = nil
+	st.installCancelRequested = false
+	st.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// embeddedInstallCancelled reports whether err is the run ending because the
+// OPERATOR cancelled it. Both signals must agree: the requested flag alone
+// would silence a run that failed for an unrelated reason after the click, and
+// the cancellation cause alone would treat a shutdown of the application
+// context as a cancellation nobody asked for.
+func (f *FrontendAPI) embeddedInstallCancelled(err error) bool {
+	st := &f.embedded
+	st.mu.Lock()
+	requested := st.installCancelRequested
+	st.mu.Unlock()
+	return requested && errors.Is(err, context.Canceled)
+}
+
 // embeddedBusyRefusal builds the actionable refusal every gated entry point
 // returns while an embedded operation holds the single-run gate. It names the
 // in-flight operation (holder) and the action that was refused, so the message
@@ -1395,12 +1558,14 @@ func (f *FrontendAPI) embeddedProbe(ctx context.Context) (embeddedllm.Hardware, 
 }
 
 // runEmbeddedInstall performs the download/verify/extract/provision run on a
-// background goroutine. ctx is the APPLICATION context, not the RPC's: the run
-// must outlive the call that started it and stop only when the app quits. The
-// step-0 stop is the exception — it runs under embeddedStopBudget, handed to core
-// as Installer.StopTimeout, because that context carries no deadline and the
-// supervisor's gate is exactly the thing a cold load holds for minutes.
-func (f *FrontendAPI) runEmbeddedInstall(server *embeddedllm.Server, installer *embeddedllm.Installer, hw embeddedllm.Hardware) {
+// background goroutine. ctx is the CANCELLABLE child of the application context
+// InstallEmbeddedLLM derived when it claimed the gate — the run must outlive the
+// call that started it and stop only when the app quits or the operator cancels
+// it (CancelEmbeddedLLMInstall). The step-0 stop is the exception — it runs
+// under embeddedStopBudget, handed to core as Installer.StopTimeout, because
+// that context carries no deadline and the supervisor's gate is exactly the
+// thing a cold load holds for minutes.
+func (f *FrontendAPI) runEmbeddedInstall(ctx context.Context, server *embeddedllm.Server, installer *embeddedllm.Installer, hw embeddedllm.Hardware) {
 	// The gate release is a DEFER, and it is registered FIRST so it runs LAST
 	// (defers are LIFO, after the panic report below): an observer reads the
 	// gate as "the run is over", so every effect of the run — the config save,
@@ -1422,11 +1587,12 @@ func (f *FrontendAPI) runEmbeddedInstall(server *embeddedllm.Server, installer *
 			f.emitEmbeddedStateFrom(server)
 		}
 	}()
-
-	ctx := f.ctx()
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	// The bookkeeping withdrawal runs BEFORE the gate release (LIFO): the
+	// published cancel and the requested flag are effects of this run, so they
+	// must be gone by the time the gate flip says "the run is over". Calling
+	// the cancel here also releases the context on every exit — including the
+	// success path, where nobody else ever would.
+	defer f.embeddedEndInstallRun()
 
 	// A per-run copy of the installer pins the probe result the RPC already
 	// paid for, so the background run neither re-probes nor races a second
@@ -1480,6 +1646,18 @@ func (f *FrontendAPI) runEmbeddedInstall(server *embeddedllm.Server, installer *
 		err = errors.New("the embedded LLM install finished without reporting its result")
 	}
 	if err != nil {
+		if f.embeddedInstallCancelled(err) {
+			// The operator cancelled the run: a QUIET outcome. The click is the
+			// report, so no runtime_error toast on top of it and no recorded
+			// failure — a retry must not inherit a stale error line — just the
+			// state snapshot and an Info log. Core kept the partial bytes as
+			// the resume point, which is the whole point of cancelling instead
+			// of removing.
+			f.embedded.setError(nil)
+			f.log().Info("embedded LLM install cancelled at the operator's request", "error", err)
+			f.emitEmbeddedStateFrom(server)
+			return
+		}
 		f.failEmbeddedInstall(err)
 		f.emitEmbeddedStateFrom(server)
 		return
@@ -1511,21 +1689,68 @@ func (f *FrontendAPI) runEmbeddedInstall(server *embeddedllm.Server, installer *
 // combined memory gate). It raises no toast: the RPC returns the error to its
 // caller, which is the report, and a toast on top of it would say the same
 // thing twice.
+//
+// It also withdraws the run's published cancel: this is the only exit between
+// embeddedBeginInstallRun and the goroutine's own defers, so without it a
+// refused preflight would leave a live cancel aimed at a run that never
+// started (and the context itself alive until shutdown). embeddedEndInstallRun
+// calls the cancel too, releasing the context.
 func (f *FrontendAPI) refuseEmbeddedInstall(err error) {
+	f.embeddedEndInstallRun()
 	f.endEmbeddedOperation()
 	f.embedded.setError(err)
 	f.log().Warn("embedded LLM install refused", "error", err)
 }
 
-// failEmbeddedInstall records a BACKGROUND failure: the cause is kept for the
-// status/event error field, and a runtime_error toast is raised because no RPC
-// is left to carry it. The deferred gate release in runEmbeddedInstall runs
-// afterwards, so the failure is fully reported before the run looks finished.
+// failEmbeddedInstall records a BACKGROUND failure: the operator-friendly
+// cause is kept for the status/event install_error field (the Settings error
+// line renders it verbatim), the raw cause goes to the log, and a
+// runtime_error toast is raised because no RPC is left to carry it — a fatal
+// install failure must reach the operator even with the Settings dialog closed.
+// Only FATAL failures reach this function: a resumable download failure is
+// retried silently inside core and never becomes a reported failure at all.
+// The deferred gate release in runEmbeddedInstall runs afterwards, so the
+// failure is fully reported before the run looks finished.
 func (f *FrontendAPI) failEmbeddedInstall(err error) {
-	f.embedded.setError(err)
+	message := embeddedInstallFailureMessage(err)
+	f.embedded.setError(errors.New(message))
 	f.log().Error("embedded LLM install failed", "error", err)
 	f.emitEmbeddedRuntimeError(embeddedErrCodeInstall,
-		"The local model could not be installed: "+err.Error())
+		"The local model could not be installed: "+message)
+}
+
+// embeddedInstallFailureMessage translates a fatal install error into the
+// sentence the Settings error line and the background-failure toast render.
+// Download fatalities carry transport-level diagnostics in their raw form
+// ("unexpected EOF", byte counts, partial paths) that mean nothing to an
+// operator, so the download sentinels get dedicated wording that names the
+// action to take (check the network / retry — the bytes are kept); everything
+// else is already operator-facing at its source (the memory gate, the disk
+// guard, the smoke test) and is passed through unchanged.
+func embeddedInstallFailureMessage(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		// Reached when the application context died mid-run without an
+		// operator's cancel click (a shutdown during the download). The raw
+		// cause rides along in parentheses: the sentence explains what to do,
+		// the cause keeps the record diagnosable.
+		return fmt.Sprintf(
+			"the installation was interrupted before it finished — the bytes already downloaded are kept, and starting it again resumes from them (%v)",
+			err)
+	case errors.Is(err, embeddedllm.ErrAttemptsExhausted):
+		if errors.Is(err, embeddedllm.ErrUnreachable) {
+			return fmt.Sprintf(
+				"the download server could not be reached after %d attempts — check the network connection and try again; the bytes already downloaded are kept, and the install resumes from them",
+				embeddedllm.DefaultMaxFailedAttempts)
+		}
+		return "the download stopped making progress — the server kept dropping the transfer before any bytes arrived; the bytes already downloaded are kept, and starting the install again resumes from them"
+	case errors.Is(err, embeddedllm.ErrUnreachable):
+		return "the download server could not be reached — check the network connection and try again"
+	case errors.Is(err, embeddedllm.ErrIncompleteTransfer):
+		return "the download was interrupted before it finished — the bytes already downloaded are kept, and starting the install again resumes from them"
+	default:
+		return err.Error()
+	}
 }
 
 // embeddedBaseURL derives the OpenAI-compatible endpoint from a loopback port.

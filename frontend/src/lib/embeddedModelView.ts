@@ -17,6 +17,13 @@
 // computed from it would be wrong within a second. The tooltip states the
 // policy instead.
 //
+// The resident surface MAY additionally show the active session's median
+// output-token throughput ("name · N tok/s"). The metric is GATED here, not in
+// the component: only when the session's tracked model is the resident embedded
+// model (normalized comparison, composite selectors reduced via bareModel) and
+// the median rests on at least three per-call samples. Gated off, the loaded
+// surface renders exactly as it did before the metric existed.
+//
 // `status.available` is deliberately NOT part of the contract either: it is
 // false only before startup (the agent directory is unset), in which case the
 // same snapshot also reports nothing installed — so the flag carries no surface
@@ -34,6 +41,7 @@ import {
 import type { EmbeddedLLMStatus } from '@/api/embedded'
 import type { EmbeddedLLMProgressByComponent } from '@/stores/embeddedLLMStore'
 import type { EmbeddedLLMComponent, EmbeddedLLMInstallProgressData } from '@/types/events'
+import type { TokenInfo } from '@/types/models'
 
 /** The artifact whose transfer is currently in flight, in install order — the
  *  first reported component that has not reached `done`. Null before the first
@@ -61,7 +69,18 @@ export type EmbeddedModelView =
       title: string
     }
   | { kind: 'loading'; title: string }
-  | { kind: 'loaded'; name: string; title: string }
+  | {
+      kind: 'loaded'
+      name: string
+      /** Visible median output-token throughput ("N tok/s" is appended by the
+       *  component as "name · N tok/s"). Null when the metric is gated off —
+       *  the surface then renders exactly as it did before the metric existed. */
+      tokPerSec: string | null
+      /** Per-call sample count behind the median (tooltip wording); 0 when
+       *  tokPerSec is null. */
+      tokSamples: number
+      title: string
+    }
   | { kind: 'error'; message: string; title: string }
 
 /** Human-readable model name of the resident install. */
@@ -69,9 +88,53 @@ export function modelName(status: EmbeddedLLMStatus): string {
   return status.model_name || bareModel(status.model_id) || 'Embedded model'
 }
 
-/** The resident indicator's tooltip: identity, endpoint, pid and the residency
- *  policy (the idle countdown itself is not rendered — see the file header). */
-export function loadedTitle(status: EmbeddedLLMStatus, name: string): string {
+/** True when the session's tracked model is the resident embedded model — the
+ *  throughput metric describes THIS model, so a session running anything else
+ *  (a remote API model, another local server) must not paint its rate here.
+ *  The session side may arrive as a composite "provider/name" selector (the
+ *  backend's canonical form, e.g. "embedded/Bonsai 2 27B"); bareModel strips
+ *  the provider prefix before the normalized (trim + case-insensitive)
+ *  comparison against the resident model's display name. */
+export function isEmbeddedSessionModel(
+  tokens: Pick<TokenInfo, 'model'> | null | undefined,
+  status: EmbeddedLLMStatus,
+): boolean {
+  if (!tokens || tokens.model === '') return false
+  const session = bareModel(tokens.model).trim().toLowerCase()
+  if (session === '') return false
+  return session === modelName(status).trim().toLowerCase()
+}
+
+/** The gated throughput metric for the resident surface: the session's median
+ *  end-to-end output-token rate when it belongs to THIS model and rests on at
+ *  least three per-call samples (below that a median is noise); null
+ *  otherwise. A non-positive or absent median is treated as "no metric". */
+export function sessionThroughput(
+  status: EmbeddedLLMStatus,
+  tokens: TokenInfo | null | undefined,
+): { tokPerSec: number; samples: number } | null {
+  if (!isEmbeddedSessionModel(tokens, status)) return null
+  const median = tokens?.median_output_tok_s
+  const samples = tokens?.tok_s_samples
+  if (typeof median !== 'number' || !(median > 0)) return null
+  if (typeof samples !== 'number' || samples < 3) return null
+  return { tokPerSec: median, samples }
+}
+
+/** One decimal at most, trailing ".0" dropped — bar text, not a lab readout. */
+function formatTokPerSec(v: number): string {
+  return `${Math.round(v * 10) / 10}`
+}
+
+/** The resident indicator's tooltip: identity, endpoint, pid, the residency
+ *  policy (the idle countdown itself is not rendered — see the file header)
+ *  and, when the session's gated metric is available, what the visible rate
+ *  actually measures. */
+export function loadedTitle(
+  status: EmbeddedLLMStatus,
+  name: string,
+  throughput?: { tokPerSec: number; samples: number } | null,
+): string {
   const parts: string[] = [`Embedded model resident — ${name}`]
   const identity = [status.packing, status.backend].filter((v) => v !== '').join('/')
   if (identity) parts.push(identity)
@@ -83,15 +146,24 @@ export function loadedTitle(status: EmbeddedLLMStatus, name: string): string {
       ? `auto-unloads after ${status.auto_unload_minutes} min idle`
       : 'stays resident until unloaded',
   )
+  if (throughput) {
+    parts.push(`end-to-end per request · median of last ${throughput.samples} samples`)
+  }
   return parts.join(' · ')
 }
 
 /** Pure state → surface derivation. Returns null when the block has nothing to
- *  say (and must therefore render no separator either). */
+ *  say (and must therefore render no separator either).
+ *
+ *  `tokens` is the ACTIVE session's cached TokenInfo (chatStore.sessionTokens)
+ *  or null — the only consumer of the throughput metric; when absent, gated
+ *  off, or short of samples every surface renders exactly as it did before
+ *  the metric existed. */
 export function deriveView(
   status: EmbeddedLLMStatus | null,
   installing: boolean,
   progress: EmbeddedLLMProgressByComponent,
+  tokens?: TokenInfo | null,
 ): EmbeddedModelView | null {
   // A live install run outranks every snapshot: the backend refuses a load
   // while one is in flight, and `installing` is raised by the progress events
@@ -131,7 +203,14 @@ export function deriveView(
   }
   if (status.loaded) {
     const name = modelName(status)
-    return { kind: 'loaded', name, title: loadedTitle(status, name) }
+    const throughput = sessionThroughput(status, tokens)
+    return {
+      kind: 'loaded',
+      name,
+      tokPerSec: throughput !== null ? formatTokPerSec(throughput.tokPerSec) : null,
+      tokSamples: throughput?.samples ?? 0,
+      title: loadedTitle(status, name, throughput),
+    }
   }
 
   const message = status.error

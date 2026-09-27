@@ -526,10 +526,21 @@ func (b *OrchestratorBuilder) Build(
 	usageTracker := llm.NewUsageTracker()
 	trackingCaller := llm.NewTrackingCaller(llmRouter, usageTracker)
 
-	// Register emitter as observer for session token events and persistence
-	if te, ok := emitter.(interface {
-		EmitSessionTokens(totalIn, totalOut int, model, family string)
-	}); ok {
+	// Register emitter as observer for session token events and persistence.
+	// Preferred seam: SessionTokenThroughputEmitter carries the median
+	// per-call output-token rate computed by a per-session sliding window fed
+	// from the UsageTracker's timed observer (every successful call through
+	// the shared TrackingCaller — conductor steps, subagents, E2S turns —
+	// reports one sample). Emitters predating the throughput seam keep the
+	// plain-totals path.
+	switch te := emitter.(type) {
+	case SessionTokenThroughputEmitter:
+		throughput := newSessionThroughputWindow()
+		usageTracker.AddTimedObserver(func(usage llm.TokenUsage, duration time.Duration, totalIn, totalOut int, model, family string) {
+			median, samples := throughput.record(usage.OutputTokens, duration)
+			te.EmitSessionTokensWithThroughput(totalIn, totalOut, model, family, median, samples)
+		})
+	case SessionTokenEmitter:
 		usageTracker.AddObserver(func(_ llm.TokenUsage, totalIn, totalOut int, model, family string) {
 			te.EmitSessionTokens(totalIn, totalOut, model, family)
 		})

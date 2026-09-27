@@ -167,10 +167,20 @@ type EmbeddedLLMStatus struct {
 	// clears it. Empty when no launch has failed that way — the healthy
 	// common case.
 	FitWarning string `json:"fit_warning,omitempty"`
-	// Error is a human-readable cause: the supervisor's message while State is
-	// "error", otherwise the last failed install or removal. Empty when nothing
-	// failed since the last successful operation.
+	// Error is a human-readable cause of the SUPERVISION state: the
+	// supervisor's message while State is "error" (a launch that failed, a
+	// resident process that died). Empty otherwise — an install failure is
+	// deliberately NOT folded in here: it lives in InstallError, because the
+	// status-bar indicator renders this field while install errors are a
+	// Settings-only surface (a background download that is still retrying
+	// silently must not paint the bar, and a fatal one belongs to the Settings
+	// error line).
 	Error string `json:"error"`
+	// InstallError is the operator-friendly cause of the last FAILED install
+	// run (fatal download failures only — a resumable transfer failure is
+	// retried silently inside core and never reaches this field). Empty when
+	// no install has failed since the last successful or cancelled run.
+	InstallError string `json:"install_error"`
 	// Available reports whether the subsystem could be constructed at all
 	// (false only when the agent directory is unset, i.e. before startup).
 	Available bool `json:"available"`
@@ -263,7 +273,11 @@ type EmbeddedLLMStateData struct {
 	Port              int    `json:"port"`
 	ContextSize       int    `json:"context_size"`
 	AutoUnloadMinutes int    `json:"auto_unload_minutes"`
-	Error             string `json:"error"`
+	// Error is the supervisor's own message (state "error" only); InstallError
+	// is the last failed install run — the same split the status DTO carries,
+	// so the status-bar indicator can show the first and never the second.
+	Error        string `json:"error"`
+	InstallError string `json:"install_error"`
 }
 
 // EmbeddedLLMProgressData is the payload of the global

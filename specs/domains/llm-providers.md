@@ -47,6 +47,38 @@ per-session Orchestrator
   └─ TrackingCaller wraps usage tracking → persisted via emitter callback
 ```
 
+## Token accounting & throughput seam (c0wrk consumption)
+
+Every session owns one `llm.UsageTracker` wrapped by `llm.NewTrackingCaller`
+(`core/builder.go`); the conductor's step caller, delegated subagents, and the
+E2S loop all call through this single chain (`OrchestratorDeps.LLM` wraps the
+same `TrackingCaller`; `OrchestratorDeps.TrackingCaller` exposes it for
+per-step context tracking — E2S is **covered** by the seam via `deps.llm`, not
+excluded). `TrackingCaller.Call` measures wall-clock time and reports through
+`RecordTimed`, so both observer kinds fire (see the
+[sp4rk llm-providers spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/llm-providers.md)
+§ token accounting for the timed recording seam).
+
+The builder subscribes to the tracker with a capability-selected emitter seam
+(optional interfaces declared in `core/types.go`):
+
+- `SessionTokenThroughputEmitter` (preferred) —
+  `EmitSessionTokensWithThroughput(totalIn, totalOut, model, family,
+  medianOutputTokPerSec, throughputSamples)`. The builder owns a per-session
+  sliding window (`core/session_throughput.go`) over the timed observer's
+  per-call `output_tokens / duration` ratios: last 64 samples, median over the
+  window, samples with `output_tokens == 0` or `duration <= 0` skipped, no
+  median until 3 samples exist. `backend/session.EventEmitter` implements it
+  and emits `session_tokens` events with `median_output_tok_s` / `tok_s_samples`
+  (both `omitempty`; the persistence callback still receives plain totals —
+  the sessions-table schema is unchanged).
+- `SessionTokenEmitter` (fallback) — plain `EmitSessionTokens` totals for
+  emitters predating the throughput seam; the timed window is not built.
+
+`core/loggingEmitter` implements both methods and mirrors the same fallback
+when forwarding to its inner emitter, so the logging wrapper never masks an
+inner capability.
+
 ## Model Override (c0wrk consumption)
 
 - **Per-task**: `HandleOptions.ModelOverride` (from the frontend model selector) switches the Conductor's model via `Router.SetModel`. The switch also re-binds the session's strict tool judge to the new provider/model (`ApplyRequestOverrides` invokes the `JudgeSync` closure wired by `Build`; see [ADR-028](../decisions/028-session-pinned-judge.md)) — the judge always evaluates on the provider/model the session itself runs on, and a global default-model change elsewhere never re-binds a live session's judge.

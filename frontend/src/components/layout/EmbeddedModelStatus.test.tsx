@@ -67,6 +67,8 @@ vi.mock('@/components/ui/separator', () => ({
 
 import { EmbeddedModelStatus } from './EmbeddedModelStatus'
 import { useEmbeddedLLMStore } from '@/stores/embeddedLLMStore'
+import { useChatStore } from '@/stores/chatStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import type { EmbeddedLLMStatus } from '@/api/embedded'
 import type { EmbeddedLLMPlan } from '@/api/embeddedTuning'
 import type { EmbeddedLLMComponent, EmbeddedLLMStage } from '@/types/events'
@@ -127,6 +129,7 @@ function statusWith(overrides: Partial<EmbeddedLLMStatus> = {}): EmbeddedLLMStat
     reload_required: false,
     pid: 0,
     error: '',
+    install_error: '',
     available: true,
     ...overrides,
   }
@@ -442,6 +445,82 @@ describe('EmbeddedModelStatus — residency indicator', () => {
     snapshot(LOADED)
     expect(block()!.getAttribute('data-state')).toBe('loaded')
     expect(block()!.textContent).toContain('Bonsai 2 27B')
+  })
+})
+
+// --- Residency throughput wiring ------------------------------------------
+
+// The WHICH/WHEN of the throughput metric (model gate, >= 3 samples, the exact
+// tooltip fragment) is a derivation rule pinned by lib/embeddedModelView.test.ts.
+// This suite pins only the plumbing: the ACTIVE session's chatStore tokens
+// reach `deriveView` live, and a session without the metric renders exactly
+// the pre-metric surface. (Every other describe above already runs with the
+// real sessionStore/chatStore holding no active session — the no-tokens
+// baseline for "renders exactly as before".)
+describe('EmbeddedModelStatus — residency throughput wiring', () => {
+  afterEach(() => {
+    act(() => {
+      useSessionStore.setState({ activeSessionId: null })
+      useChatStore.setState({ sessionTokens: {} })
+    })
+  })
+
+  it('paints the active session’s median rate as it arrives in the store', async () => {
+    act(() => {
+      useSessionStore.getState().setActiveSessionId('s-1')
+      useChatStore.getState().setSessionTokens('s-1', {
+        total_input_tokens: 12_000,
+        total_output_tokens: 3_400,
+        model: 'embedded/Bonsai 2 27B',
+        family: 'embedded',
+      })
+    })
+    await mountWith(LOADED)
+    expect(block()!.getAttribute('data-state')).toBe('loaded')
+    // No metric yet: the pre-metric surface — name only, no rate span.
+    expect(block()!.textContent).toContain('Bonsai 2 27B')
+    expect(block()!.textContent).not.toContain('tok/s')
+
+    // The session_tokens event lands AFTER mount; the store selector is the
+    // subscription, so the rate paints without a remount.
+    act(() => {
+      useChatStore.getState().setSessionTokens('s-1', {
+        total_input_tokens: 12_500,
+        total_output_tokens: 3_600,
+        model: 'embedded/Bonsai 2 27B',
+        family: 'embedded',
+        median_output_tok_s: 27.44,
+        tok_s_samples: 5,
+      })
+    })
+
+    const el = block()
+    expect(el?.textContent).toContain('Bonsai 2 27B')
+    expect(el?.textContent).toContain('27.4 tok/s')
+    expect(el?.getAttribute('title')).toContain('median of last 5 samples')
+  })
+
+  it('renders the pre-metric surface while the active session runs another model', async () => {
+    // The tokens reach the derivation and the gate holds through the whole
+    // wiring: a foreign-model session never paints a rate here.
+    act(() => {
+      useSessionStore.getState().setActiveSessionId('s-2')
+      useChatStore.getState().setSessionTokens('s-2', {
+        total_input_tokens: 10,
+        total_output_tokens: 5,
+        model: 'qwen3.6-35b-a3b',
+        family: 'openai_compatible',
+        median_output_tok_s: 99.9,
+        tok_s_samples: 12,
+      })
+    })
+    await mountWith(LOADED)
+
+    const el = block()
+    expect(el?.getAttribute('data-state')).toBe('loaded')
+    expect(el?.textContent).toContain('Bonsai 2 27B')
+    expect(el?.textContent).not.toContain('tok/s')
+    expect(el?.getAttribute('title')).not.toContain('median of last')
   })
 })
 

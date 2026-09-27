@@ -14,7 +14,11 @@
 //                   inline, never as a toast (the backend toasts only
 //                   BACKGROUND failures).
 //   installing    → an inline progress bar PER COMPONENT (runtime, cudart when
-//                   this machine gets one, model, mmproj).
+//                   this machine gets one, model, mmproj) with a Cancel button
+//                   that asks the run to stop; its quiet end re-reads the
+//                   snapshot through `embedded_llm:state` and returns the
+//                   block to the Install button (partial bytes are kept, so a
+//                   retry resumes instead of restarting).
 //   installed     → the INFORMATIONAL install record (the packing resolved, the
 //                   effective backend, context, the MEASURED topology and the
 //                   effective plan with its notes), the Load/Unload/Remove row,
@@ -73,7 +77,13 @@ export function EmbeddedLLMSettings() {
   const loading = status?.loading ?? false
   const unavailable = status !== null && !status.available
   const idleSeconds = status?.idle_remaining_seconds ?? 0
-  const error = actionError ?? (status && status.error !== '' ? status.error : null)
+  // Error precedence: the action the operator just took (its rejected promise
+  // is the report), then the last FATAL install failure (the backend retries
+  // resumable download failures silently, so this line only ever carries the
+  // fatal, operator-friendly text), then the supervisor's own error state.
+  const error = actionError
+    ?? (status && status.install_error !== '' ? status.install_error : null)
+    ?? (status && status.error !== '' ? status.error : null)
 
   return (
     <div className="flex flex-col gap-3" data-testid="embedded-llm-settings">
@@ -106,7 +116,7 @@ export function EmbeddedLLMSettings() {
       )}
 
       {installing ? (
-        <EmbeddedLLMProgress progress={progress} />
+        <EmbeddedLLMProgress progress={progress} busy={busy} onCancel={lifecycle.cancelInstall} />
       ) : installed && status ? (
         <>
           <EmbeddedLLMInstallRecord status={status} />

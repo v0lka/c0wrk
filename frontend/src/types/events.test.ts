@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isAgentMetricsData, normalizeAgentMetricsData, isTaskCompleteData, isCompactionFinishedData, isPlanStepCompleteData, isPlanStepPausedData, isSubAgentPausedData, isSubAgentCompleteData, isGitConfigRiskData, isE2SStateData, isE2SSigma, isTaskFailedResumableData, isEmbeddedLLMInstallProgressData, isEmbeddedLLMStateData } from './events'
+import { isAgentMetricsData, normalizeAgentMetricsData, isTaskCompleteData, isCompactionFinishedData, isPlanStepCompleteData, isPlanStepPausedData, isSubAgentPausedData, isSubAgentCompleteData, isGitConfigRiskData, isE2SStateData, isE2SSigma, isTaskFailedResumableData, isEmbeddedLLMInstallProgressData, isEmbeddedLLMStateData, isSessionTokensData } from './events'
 
 describe('isTaskFailedResumableData', () => {
     it('accepts a payload without auto_retry_at (timer not armed)', () => {
@@ -580,7 +580,7 @@ describe('isEmbeddedLLMStateData', () => {
     const valid = {
         installed: true, loading: false, loaded: true,
         packing: 'PQ2_0', backend: 'metal', port: 4321,
-        context_size: 32768, auto_unload_minutes: 60, error: '',
+        context_size: 32768, auto_unload_minutes: 60, error: '', install_error: '',
     }
 
     it('accepts the loaded state', () => {
@@ -590,7 +590,7 @@ describe('isEmbeddedLLMStateData', () => {
     it('accepts the not-installed state (empty record, no error)', () => {
         expect(isEmbeddedLLMStateData({
             installed: false, loading: false, loaded: false, packing: '', backend: '',
-            port: 0, context_size: 0, auto_unload_minutes: 60, error: '',
+            port: 0, context_size: 0, auto_unload_minutes: 60, error: '', install_error: '',
         })).toBe(true)
     })
 
@@ -619,5 +619,54 @@ describe('isEmbeddedLLMStateData', () => {
         expect(isEmbeddedLLMStateData(null)).toBe(false)
         expect(isEmbeddedLLMStateData('loaded')).toBe(false)
         expect(isEmbeddedLLMStateData([])).toBe(false)
+    })
+})
+
+describe('isSessionTokensData', () => {
+    // The throughput pair (median_output_tok_s / tok_s_samples) is ADDITIVE:
+    // payloads that predate the metric simply omit both, so the guard accepts
+    // the legacy shape untouched and validates the new fields only when
+    // present — the same pattern as the compaction no-op flags.
+    const legacy = { session_input_tokens: 1200, session_output_tokens: 340 }
+
+    it('accepts the legacy payload (no throughput fields)', () => {
+        expect(isSessionTokensData(legacy)).toBe(true)
+    })
+
+    it('accepts the legacy payload with the optional fill fields', () => {
+        expect(isSessionTokensData({
+            ...legacy,
+            model: 'embedded/Bonsai 2 27B',
+            family: 'embedded',
+            fill_percent: 12.5,
+            used_tokens: 2500,
+            max_tokens: 20000,
+        })).toBe(true)
+    })
+
+    it('accepts a payload carrying the throughput pair', () => {
+        expect(isSessionTokensData({ ...legacy, median_output_tok_s: 27.44, tok_s_samples: 5 })).toBe(true)
+    })
+
+    it('accepts the throughput fields present but undefined (treated as absent)', () => {
+        expect(isSessionTokensData({ ...legacy, median_output_tok_s: undefined })).toBe(true)
+        expect(isSessionTokensData({ ...legacy, tok_s_samples: undefined })).toBe(true)
+    })
+
+    it('rejects a non-number median rate', () => {
+        expect(isSessionTokensData({ ...legacy, median_output_tok_s: '27.4' })).toBe(false)
+        expect(isSessionTokensData({ ...legacy, median_output_tok_s: null })).toBe(false)
+    })
+
+    it('rejects a non-number sample count', () => {
+        expect(isSessionTokensData({ ...legacy, tok_s_samples: '5' })).toBe(false)
+        expect(isSessionTokensData({ ...legacy, tok_s_samples: null })).toBe(false)
+    })
+
+    it('still rejects payloads missing the required totals and non-objects', () => {
+        expect(isSessionTokensData({ session_input_tokens: 1200 })).toBe(false)
+        expect(isSessionTokensData({ session_output_tokens: 340 })).toBe(false)
+        expect(isSessionTokensData(null)).toBe(false)
+        expect(isSessionTokensData('session_tokens')).toBe(false)
     })
 })

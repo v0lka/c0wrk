@@ -39,14 +39,14 @@ func TestEmbeddedLLMEventPayloadsSerializeToTheCatalogShape(t *testing.T) {
 	}
 	for _, key := range []string{
 		"installed", "loading", "loaded", "packing", "backend",
-		"port", "context_size", "auto_unload_minutes", "error",
+		"port", "context_size", "auto_unload_minutes", "error", "install_error",
 	} {
 		if _, ok := stateKeys[key]; !ok {
 			t.Errorf("the state payload is missing the %q key: %s", key, stateJSON)
 		}
 	}
-	if len(stateKeys) != 9 {
-		t.Errorf("the state payload carries %d keys (%s), want exactly the 9 documented ones",
+	if len(stateKeys) != 10 {
+		t.Errorf("the state payload carries %d keys (%s), want exactly the 10 documented ones",
 			len(stateKeys), stateJSON)
 	}
 
