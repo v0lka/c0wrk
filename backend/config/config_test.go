@@ -2300,6 +2300,67 @@ security:
 	}
 }
 
+// TestConfigValidation_TrustedGitReposSemanticFingerprint verifies the
+// semantic_fingerprint key of trusted_git_repos entries: a 64-character hex
+// SHA-256 (what TrustGitRepo writes) loads and survives validation; an
+// absent key loads as empty (a v1 record the backend migrates on the next
+// open); anything else is rejected at load time, since a malformed value can
+// never match a computed fingerprint.
+func TestConfigValidation_TrustedGitReposSemanticFingerprint(t *testing.T) {
+	repoOne := filepath.Join(os.TempDir(), "trusted-repo-one")
+	valid := strings.Repeat("0f1e2d3c4b5a69788796a5b4c3d2e1f0", 2)
+
+	t.Run("valid hex loads and survives validation", func(t *testing.T) {
+		content := securityGroupsTestBase + fmt.Sprintf(`
+security:
+  trusted_git_repos:
+    - path: %s
+      fingerprint: fp-one
+      semantic_fingerprint: %s
+`, repoOne, valid)
+
+		cfg, err := Load(writeTestConfig(t, content))
+		if err != nil {
+			t.Fatalf("Load() failed: %v", err)
+		}
+		want := []TrustedGitRepo{{Path: repoOne, Fingerprint: "fp-one", SemanticFingerprint: valid}}
+		if !reflect.DeepEqual(cfg.Security.TrustedGitRepos, want) {
+			t.Errorf("TrustedGitRepos = %v, want %v", cfg.Security.TrustedGitRepos, want)
+		}
+	})
+
+	t.Run("malformed value rejected", func(t *testing.T) {
+		for name, bad := range map[string]string{
+			"too short":   "a1b2c3d4",
+			"not hex":     strings.Repeat("zz", 32),
+			"empty value": "",
+		} {
+			content := securityGroupsTestBase + fmt.Sprintf(`
+security:
+  trusted_git_repos:
+    - path: %s
+      semantic_fingerprint: %s
+`, repoOne, bad)
+			_, err := Load(writeTestConfig(t, content))
+			if name == "empty value" {
+				// An explicit empty value is a v2 record without a semantic
+				// identity yet — valid, migrated on the next open.
+				if err != nil {
+					t.Errorf("%s: expected the empty value to load, got: %v", name, err)
+				}
+				continue
+			}
+			if err == nil {
+				t.Errorf("%s: expected a validation error, got none", name)
+				continue
+			}
+			if !contains(err.Error(), "semantic_fingerprint") {
+				t.Errorf("%s: expected the error to mention semantic_fingerprint, got: %v", name, err)
+			}
+		}
+	})
+}
+
 // TestConfigValidation_HardenGitRepos verifies the security.harden_git_repos
 // list: absolute entries load (and are cleaned in place), while relative,
 // empty, and duplicate entries are rejected.

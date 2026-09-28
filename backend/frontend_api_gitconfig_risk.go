@@ -27,6 +27,8 @@ package backend
 // Untrusted and hardened repositories keep the full neutralization.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -55,9 +57,20 @@ const (
 const gitConfigRiskNotice = "Repository-defined git hooks do not run inside c0wrk: the config-driven programs listed below are blocked or neutralized on every git invocation c0wrk makes, remote operations (pull, push, fetch) included. Continue only if you trust this repository."
 
 // gitConfigDriftReason is the Reason carried when a previously-trusted
-// repository's configuration changed since the trust decision. The trust was
-// evicted and the repository returned to the hardened default.
-const gitConfigDriftReason = "This repository was previously trusted, but its git configuration changed since you trusted it. The trust has been revoked and the repository is hardened again; review the diff below and re-trust it only if the change is expected."
+// repository's command-bearing git configuration changed semantically since
+// the trust decision (any change outside the inert branch/alias allowlist —
+// see workspace.SemanticFingerprint; inert branch/alias bookkeeping never
+// fires this event). The trust was evicted and the repository returned to
+// the hardened default.
+const gitConfigDriftReason = "This repository was previously trusted, but its command-bearing git configuration changed since you trusted it — the diff below shows the security-relevant changes only (routine branch-tracking and alias bookkeeping never triggers this warning). The trust has been revoked and the repository is hardened again; re-trust it only if the change is expected."
+
+// gitConfigTrustUnverifiableReason is the Reason carried when a previously
+// trusted repository's trust record could not be verified against the trust
+// model — its v1 record could not be migrated to the semantic fingerprint
+// (missing fingerprint, or a snapshot that is missing, corrupted, or not a
+// snapshot this scanner wrote). The trust cannot be carried over, so it is
+// revoked fail-closed; re-trusting re-captures a fresh snapshot.
+const gitConfigTrustUnverifiableReason = "This repository was previously trusted, but the git-config snapshot recorded at trust time could no longer be read or interpreted, so the trust cannot be carried over. The trust has been revoked and the repository is hardened again; review the repository's current git configuration and re-trust it only if it is the configuration you originally trusted."
 
 // GitConfigRiskFinding is one detected danger, as delivered to the frontend.
 type GitConfigRiskFinding struct {
@@ -209,13 +222,17 @@ func (f *FrontendAPI) GetTrustedGitRepos() []string {
 // repository is discoverable from the path, the cleaned path itself is stored
 // (the fail-closed pairing with the warning's fallback attribution).
 //
-// The trust decision is bound to a snapshot: the scanned config (common
-// config, config.worktree overlay, and attribute routing sources) is hashed
-// into a fingerprint recorded on the entry, and the snapshot bytes are stored
-// under ~/.c0wrk/git-config-snapshots/ so notifyGitConfigRisk can diff a later
-// scan against them. If the config changes after trust, the next open evicts
-// the trust and re-warns. A config that cannot be scanned is refused
-// fail-closed (a trust decision cannot be bound to bytes that cannot be read).
+// The trust decision is bound to two identities of one snapshot: the scanned
+// config (common config, config.worktree overlay, and attribute routing
+// sources, plus any resolved include target) is hashed into its byte-level
+// fingerprint AND into its semantic fingerprint — the hash of the DANGEROUS
+// subset only (see workspace.SemanticSnapshot), which is what the trust
+// lifecycle keys on. Both snapshot forms are stored content-addressed under
+// ~/.c0wrk/git-config-snapshots/ so notifyGitConfigRisk can recheck a later
+// scan against them: inert branch/alias churn silently refreshes the stored
+// bytes, any semantic change evicts the trust and re-warns with a semantic
+// diff. A config that cannot be scanned is refused fail-closed (a trust
+// decision cannot be bound to bytes that cannot be read).
 // Idempotent: trusting an already-trusted root is a no-op.
 func (f *FrontendAPI) TrustGitRepo(path string) error {
 	path = strings.TrimSpace(path)
@@ -250,7 +267,11 @@ func (f *FrontendAPI) TrustGitRepo(path string) error {
 	}
 
 	// Capture the snapshot BEFORE mutating config: the trust decision is
-	// bound to the exact bytes the user reviewed.
+	// bound to the exact bytes the user reviewed. Both identities are bound
+	// at once — the byte-level fingerprint (its snapshot feeds the drift
+	// diff and the v1→v2 migration of this very record) and the semantic
+	// fingerprint (what the trust lifecycle actually keys on, so inert
+	// branch/alias churn never evicts the trust).
 	scanned, err := workspace.ScanGitConfig(cleaned, f.log())
 	if err != nil {
 		return fmt.Errorf("cannot fingerprint repository config (fail closed): %w", err)
@@ -259,6 +280,10 @@ func (f *FrontendAPI) TrustGitRepo(path string) error {
 	fingerprint := scanned.Fingerprint()
 	if err := f.writeGitConfigSnapshot(fingerprint, scanned.Snapshot()); err != nil {
 		return fmt.Errorf("cannot store repository config snapshot (fail closed): %w", err)
+	}
+	semanticFingerprint := scanned.SemanticFingerprint()
+	if err := f.writeGitConfigSnapshot(semanticFingerprint, scanned.SemanticSnapshot()); err != nil {
+		return fmt.Errorf("cannot store repository config semantic snapshot (fail closed): %w", err)
 	}
 
 	f.configMu.Lock()
@@ -275,7 +300,7 @@ func (f *FrontendAPI) TrustGitRepo(path string) error {
 	// A root cannot be both trusted and hardened (validation enforces the
 	// exclusion); trusting a hardened root drops the hardening.
 	f.removeHardenPathLocked(cleaned)
-	f.config.Security.TrustedGitRepos = append(f.config.Security.TrustedGitRepos, config.TrustedGitRepo{Path: cleaned, Fingerprint: fingerprint})
+	f.config.Security.TrustedGitRepos = append(f.config.Security.TrustedGitRepos, config.TrustedGitRepo{Path: cleaned, Fingerprint: fingerprint, SemanticFingerprint: semanticFingerprint})
 	f.syncGitTrustRegistry()
 	if err := f.persistConfig(); err != nil {
 		f.log().Warn("failed to persist trusted git repositories", "error", err)
@@ -544,14 +569,31 @@ func (f *FrontendAPI) notifyGitConfigRisk(source, path string) {
 }
 
 // recheckTrustedGitRepo decides whether a repository the user trusted is still
-// safe to leave silent. A trusted entry carries the fingerprint of the config
-// snapshot captured at trust time; if a fresh scan produces the same
-// fingerprint, the config is unchanged and nothing is emitted. If it differs
-// (or the config can no longer be read — fail closed), the trust is evicted
-// and the repository returns to the hardened default with a warning carrying
-// the drift reason and a diff of the config change. Legacy entries with no
-// fingerprint (migrated from the pre-fingerprint string form) have no snapshot
-// to diff against and keep suppressing the warning unconditionally.
+// safe to leave silent. The trust lifecycle is bound to the SEMANTIC
+// fingerprint of the config snapshot captured at trust time (the hash of its
+// DANGEROUS subset — see workspace.SemanticSnapshot), so a fresh scan is
+// classified three ways:
+//
+//   - semantic fingerprint unchanged, byte-level fingerprint unchanged: the
+//     configuration is exactly what the user trusted; nothing is emitted.
+//   - semantic fingerprint unchanged, byte-level fingerprint differs: the
+//     delta is INERT by construction (branch/alias bookkeeping — the only
+//     records outside the semantic identity). The trust stands and the stored
+//     raw snapshot is silently refreshed to the new bytes, so the byte-level
+//     binding follows the config without an event.
+//   - semantic fingerprint differs (or the config can no longer be scanned —
+//     fail closed): the trust is evicted and the repository returns to the
+//     hardened default with a warning carrying the drift reason and a diff of
+//     the SEMANTIC change (DiffGitConfigSnapshots over the stored and current
+//     semantic snapshots), so inert churn never buries the real difference.
+//
+// Records written before the semantic layer (a fingerprint but no semantic
+// fingerprint, or the legacy bare-path form with neither) are migrated on
+// this path: the semantic identity is recovered from the raw snapshot the
+// record stored — describing the bytes the user actually trusted — and
+// persisted. A record whose identity cannot be recovered fails closed: the
+// trust is evicted and the repository warns (see
+// migrateTrustedGitRepoRecord).
 //
 // The scan runs on displayPath (the work-tree root), NOT the caller's path:
 // trust is stored — and fingerprinted — under the root TrustGitRepo resolved,
@@ -559,25 +601,51 @@ func (f *FrontendAPI) notifyGitConfigRisk(source, path string) {
 // core.attributesFile anchors where git runs; scanning a subdirectory would
 // resolve it differently and false-trigger drift).
 func (f *FrontendAPI) recheckTrustedGitRepo(source, displayPath string, trusted config.TrustedGitRepo) {
-	if trusted.Fingerprint == "" {
-		f.log().Debug("git-config risk warning suppressed: trusted repository has no fingerprint (legacy)", "path", displayPath)
-		return
+	// v1→v2 migration: a record predating the semantic layer carries no
+	// semantic fingerprint. Recover it from the stored raw snapshot before
+	// anything else — an unrecoverable record fails closed below.
+	if trusted.SemanticFingerprint == "" {
+		migrated := f.migrateTrustedGitRepoRecord(trusted)
+		if migrated == nil {
+			f.log().Debug("trusted git repository record cannot be migrated to the semantic fingerprint; evicting (fail closed)", "path", displayPath)
+			f.evictTrustedGitRepo(displayPath)
+			f.emitEvent(EventGitConfigRisk, GitConfigRiskData{
+				Path:   displayPath,
+				Source: source,
+				Notice: gitConfigRiskNotice,
+				Reason: gitConfigTrustUnverifiableReason,
+				Findings: []GitConfigRiskFinding{{
+					Key: "(trust unverifiable)",
+					Description: "The trust record of this repository predates the semantic trust model and its recorded snapshot could not be recovered (missing, corrupted, or not written by this scanner). " +
+						"Treat this repository as untrusted.",
+				}},
+			})
+			return
+		}
+		trusted = *migrated
 	}
 
 	scanned, err := workspace.ScanGitConfig(displayPath, f.log())
 	if err == nil {
 		scanned.ResolveIncludes(f.log())
 	}
-	if err == nil && scanned.Fingerprint() == trusted.Fingerprint {
-		f.log().Debug("git-config risk warning suppressed: trusted repository unchanged", "path", displayPath)
+
+	if err == nil && scanned.SemanticFingerprint() == trusted.SemanticFingerprint {
+		if scanned.Fingerprint() == trusted.Fingerprint {
+			f.log().Debug("git-config risk warning suppressed: trusted repository unchanged", "path", displayPath)
+			return
+		}
+		// The bytes moved but the meaning did not: the delta is inert by
+		// construction (branch/alias churn). Keep the trust and follow the
+		// bytes silently — no event.
+		f.refreshTrustedGitRepoRawSnapshot(displayPath, trusted, scanned)
 		return
 	}
 
-	// The config changed (or is now unreadable): the trust is stale. Evict it
-	// so the spawn layer stops running raw git and the repo hardens again.
-	if err := f.RemoveTrustedGitRepo(displayPath); err != nil {
-		f.log().Warn("failed to evict drifted trusted git repository", "path", displayPath, "error", err)
-	}
+	// Semantic drift (or an unreadable config — fail closed): the trust is
+	// stale. Evict it so the spawn layer stops running raw git and the repo
+	// hardens again.
+	f.evictTrustedGitRepo(displayPath)
 
 	data := GitConfigRiskData{
 		Path:   displayPath,
@@ -586,12 +654,12 @@ func (f *FrontendAPI) recheckTrustedGitRepo(source, displayPath string, trusted 
 		Reason: gitConfigDriftReason,
 	}
 
-	var current []byte
+	var currentSemantic []byte
 	if err == nil {
-		current = scanned.Snapshot()
+		currentSemantic = scanned.SemanticSnapshot()
 	}
-	if previous, readErr := f.readGitConfigSnapshot(trusted.Fingerprint); readErr == nil {
-		data.Diff = workspace.DiffGitConfigSnapshots(previous, current)
+	if previous, readErr := f.readGitConfigSnapshot(trusted.SemanticFingerprint); readErr == nil {
+		data.Diff = workspace.DiffGitConfigSnapshots(previous, currentSemantic)
 	}
 
 	switch {
@@ -602,8 +670,8 @@ func (f *FrontendAPI) recheckTrustedGitRepo(source, displayPath string, trusted 
 				"The repository's git configuration changed since it was trusted and can no longer be read (%v). Treat this repository as untrusted.", err),
 		}}
 	case scanned.Clean():
-		// The config changed but is no longer dangerous; the drift itself is
-		// still material because the trust was bound to the old snapshot.
+		// The config is no longer dangerous; the drift itself is still
+		// material because the trust was bound to the old snapshot.
 		data.Findings = []GitConfigRiskFinding{{
 			Key:         "(config changed)",
 			Description: "The repository's git configuration changed since it was trusted.",
@@ -613,6 +681,119 @@ func (f *FrontendAPI) recheckTrustedGitRepo(source, displayPath string, trusted 
 	}
 
 	f.emitEvent(EventGitConfigRisk, data)
+}
+
+// migrateTrustedGitRepoRecord recovers the semantic fingerprint of a v1 trust
+// record — one written before the semantic layer, carrying only the raw
+// byte-level fingerprint (or, in the legacy bare-path form, neither
+// fingerprint). The identity is recovered from the raw snapshot the record
+// stored, deliberately WITHOUT re-scanning the repository: the recovered
+// identity must describe the bytes the user actually reviewed at trust time,
+// whatever the repository carries now. On success the record in the config is
+// updated and persisted, and the semantic snapshot is stored content-
+// addressed next to the raw one. A nil return means the record cannot be
+// migrated — no fingerprint, a missing or corrupted snapshot (one that no
+// longer hashes to its content-addressed name), or a snapshot this scanner
+// cannot interpret — and the caller must fail closed: evict the trust rather
+// than carry an unverifiable one over.
+func (f *FrontendAPI) migrateTrustedGitRepoRecord(trusted config.TrustedGitRepo) *config.TrustedGitRepo {
+	if trusted.Fingerprint == "" {
+		// Legacy bare-path record: no snapshot was ever captured, so there
+		// is nothing to recover the trusted identity from.
+		f.log().Debug("trusted git repository record has no snapshot (legacy); cannot migrate", "path", trusted.Path)
+		return nil
+	}
+	raw, err := f.readGitConfigSnapshot(trusted.Fingerprint)
+	if err != nil {
+		f.log().Debug("trusted git repository record migration failed: raw snapshot unreadable", "path", trusted.Path, "error", err)
+		return nil
+	}
+	// The snapshot store is content-addressed: a file that no longer hashes
+	// to its name is corrupted, and carrying trust over from it would bind
+	// the trust to bytes the user never reviewed.
+	if sum := sha256.Sum256(raw); hex.EncodeToString(sum[:]) != trusted.Fingerprint {
+		f.log().Debug("trusted git repository record migration failed: raw snapshot does not match its fingerprint (corrupted)", "path", trusted.Path)
+		return nil
+	}
+	semanticFingerprint, semantic, err := workspace.SemanticFingerprintFromSnapshot(raw)
+	if err != nil {
+		f.log().Debug("trusted git repository record migration failed: snapshot cannot be interpreted", "path", trusted.Path, "error", err)
+		return nil
+	}
+	if err := f.writeGitConfigSnapshot(semanticFingerprint, semantic); err != nil {
+		// The identity itself is recovered; only its stored copy is missing,
+		// which degrades a future drift diff, never the detection.
+		f.log().Warn("failed to store migrated git-config semantic snapshot", "path", trusted.Path, "error", err)
+	}
+
+	f.configMu.Lock()
+	updated := false
+	for i := range f.config.Security.TrustedGitRepos {
+		entry := &f.config.Security.TrustedGitRepos[i]
+		if filepath.Clean(entry.Path) == filepath.Clean(trusted.Path) &&
+			entry.Fingerprint == trusted.Fingerprint && entry.SemanticFingerprint == "" {
+			entry.SemanticFingerprint = semanticFingerprint
+			updated = true
+		}
+	}
+	f.configMu.Unlock()
+	if !updated {
+		// The record changed or vanished concurrently; do not report a
+		// migration for a trust that is no longer the one being rechecked.
+		return nil
+	}
+	if err := f.persistConfig(); err != nil {
+		f.log().Warn("failed to persist migrated trusted git repositories", "error", err)
+	}
+	f.log().Debug("trusted git repository record migrated to the semantic fingerprint", "path", trusted.Path)
+	out := trusted
+	out.SemanticFingerprint = semanticFingerprint
+	return &out
+}
+
+// refreshTrustedGitRepoRawSnapshot rebinds a trusted entry to the freshly
+// scanned bytes after inert drift: the semantic identity is unchanged, so the
+// delta cannot affect how c0wrk's git operations behave, and only the
+// byte-level fingerprint and its snapshot follow the config. The semantic
+// snapshot is rewritten too — content-addressed, so the write is a no-op
+// unless a previous write was lost, in which case it heals the store.
+// Nothing is emitted: the user trusted a meaning, and the meaning did not
+// change.
+func (f *FrontendAPI) refreshTrustedGitRepoRawSnapshot(displayPath string, trusted config.TrustedGitRepo, scanned *workspace.GitConfigInfo) {
+	fingerprint := scanned.Fingerprint()
+	if err := f.writeGitConfigSnapshot(fingerprint, scanned.Snapshot()); err != nil {
+		f.log().Warn("failed to refresh git-config snapshot for trusted repository", "path", displayPath, "error", err)
+	}
+	if err := f.writeGitConfigSnapshot(trusted.SemanticFingerprint, scanned.SemanticSnapshot()); err != nil {
+		f.log().Warn("failed to refresh git-config semantic snapshot for trusted repository", "path", displayPath, "error", err)
+	}
+	f.configMu.Lock()
+	updated := false
+	for i := range f.config.Security.TrustedGitRepos {
+		entry := &f.config.Security.TrustedGitRepos[i]
+		if filepath.Clean(entry.Path) == displayPath && entry.Fingerprint == trusted.Fingerprint {
+			entry.Fingerprint = fingerprint
+			updated = true
+		}
+	}
+	f.configMu.Unlock()
+	if !updated {
+		return // the entry was evicted concurrently; nothing to refresh
+	}
+	if err := f.persistConfig(); err != nil {
+		f.log().Warn("failed to persist refreshed trusted git repositories", "error", err)
+	}
+	f.log().Debug("git-config drift for trusted repository is inert; raw snapshot refreshed", "path", displayPath)
+}
+
+// evictTrustedGitRepo removes the trusted entry for displayPath, mirroring
+// the removal into the process-wide git trust registry so the repository
+// hardens again. Best-effort: failures are logged, not returned — the caller
+// always emits the warning event either way.
+func (f *FrontendAPI) evictTrustedGitRepo(displayPath string) {
+	if err := f.RemoveTrustedGitRepo(displayPath); err != nil {
+		f.log().Warn("failed to evict drifted trusted git repository", "path", displayPath, "error", err)
+	}
 }
 
 // buildGitConfigFindings renders a scan result into the findings slice the

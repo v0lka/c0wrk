@@ -872,8 +872,8 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		})
 	}
 
-	// Restore full conversation history from persistent storage so the planner
-	// sees all previous messages across backend restarts.
+	// Restore full conversation history from persistent storage so the router
+	// and Conductor see all previous messages across backend restarts.
 	if m.sessionStore != nil {
 		storedMsgs, loadErr := m.sessionStore.LoadMessages(context.Background(), id)
 		if loadErr != nil {
@@ -893,9 +893,9 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	m.loadCompactionForecast(orchestrator)
 
 	// Restore the continuation anchor from the task store so the next user
-	// message continues the previous task via PlanContinuation (which receives
-	// the conversation history) instead of planning from scratch. Mirrors the
-	// in-memory behavior where lastCompletedTaskID survives between messages.
+	// message continues the previous task (restored blackboard + conversation
+	// history) instead of starting a fresh task. Mirrors the in-memory
+	// behavior where lastCompletedTaskID survives between messages.
 	var restoredTaskID string
 	if ts != nil {
 		latestTaskID, taskErr := ts.GetLatestTaskID(context.Background(), id)
@@ -1916,7 +1916,7 @@ func (m *Manager) Shutdown() {
 }
 
 // convertChatMessagesToLLM converts stored ChatMessages to llm.Message format,
-// reconstructing the conversation history exactly as the router and planner
+// reconstructing the conversation history exactly as the router and Conductor
 // saw it during the live session:
 //
 //   - "user" rows keep only user/assistant conversational content; the raw

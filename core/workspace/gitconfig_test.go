@@ -1191,3 +1191,283 @@ func TestGitConfigSnapshotFingerprint(t *testing.T) {
 		t.Error("fingerprint must change when the config content changes")
 	}
 }
+
+// mustRecord returns the retained record with the given (lowercased)
+// section, verbatim subsection and lowercased key, plus its classification.
+func mustRecord(t *testing.T, info *GitConfigInfo, section, subsection, key string) (gitConfigRecord, gitConfigRecordClass) {
+	t.Helper()
+	for i := range info.records {
+		r := info.records[i]
+		if r.Section == section && r.Subsection == subsection && r.Key == key {
+			return r, classifyGitConfigRecord(r)
+		}
+	}
+	t.Fatalf("no record [%s %q] %s among %+v", section, subsection, key, info.records)
+	return gitConfigRecord{}, 0
+}
+
+// TestGitConfigRecordClassification pins the inert allowlist of the record
+// classifier: every record under [branch] or [alias] is INERT — section
+// names case-insensitively, subsections ignored, every key, bare-boolean
+// form included — while everything else is DANGEROUS fail-closed: lookalike
+// sections, command keys, structural include directives, unknown keys under
+// unknown sections. A UTF-8 BOM must not shift classification of the first
+// record.
+func TestGitConfigRecordClassification(t *testing.T) {
+	info := parseTestConfig(t, "\ufeff"+ // BOM must not shift classification of the first record
+		"[BRANCH]\n"+ // allowlisted section, upper-case
+		"\tremote = origin\n"+
+		"\tmerge = refs/heads/main\n"+
+		"[Branch \"Feature/One\"]\n"+ // mixed case, quoted subsection ignored
+		"\trebase\n"+ // bare boolean form stays a retained record
+		"[ALIAS]\n"+ // allowlisted section, upper-case
+		"\tco = checkout\n"+
+		"[branchx]\n"+ // lookalike section is NOT in the allowlist
+		"\tremote = origin\n"+
+		"[core]\n"+
+		"\tfsmonitor = /tmp/evil\n"+
+		"[filter \"lfs\"]\n"+
+		"\tprocess = /tmp/filter\n"+
+		"[include]\n"+ // structural directive: dangerous
+		"\tpath = /tmp/evil\n"+
+		"[misc]\n"+ // unknown section, unknown key: dangerous (fail-closed)
+		"\tunknownkey = value\n")
+	if len(info.records) != 9 {
+		t.Fatalf("retained %d records, want 9 (every dispatched entry, BOM included): %+v",
+			len(info.records), info.records)
+	}
+	for _, id := range [][3]string{
+		{"branch", "", "remote"}, {"branch", "", "merge"},
+		{"branch", "Feature/One", "rebase"}, {"alias", "", "co"},
+	} {
+		if _, cls := mustRecord(t, info, id[0], id[1], id[2]); cls != gitConfigRecordInert {
+			t.Errorf("record %v classified dangerous, want inert (allowlist is case-insensitive, subsection ignored)", id)
+		}
+	}
+	for _, id := range [][3]string{
+		{"branchx", "", "remote"}, {"core", "", "fsmonitor"},
+		{"filter", "lfs", "process"}, {"include", "", "path"}, {"misc", "", "unknownkey"},
+	} {
+		if _, cls := mustRecord(t, info, id[0], id[1], id[2]); cls != gitConfigRecordDangerous {
+			t.Errorf("record %v classified inert, want dangerous (fail-closed outside the allowlist)", id)
+		}
+	}
+}
+
+// TestGitConfigRecordRetention pins the retention contract: every dispatched
+// entry is kept in file order with its full parse (section lowercased,
+// subsection verbatim, key lowercased, parsed value, bare-boolean flag,
+// 1-based line). Multi-value keys are retained as separate records, in
+// order, and both classify independently.
+func TestGitConfigRecordRetention(t *testing.T) {
+	info := parseTestConfig(t, "[branch]\n"+ // line 1
+		"\ta = 1\n"+ // line 2 — multi-value: BOTH occurrences retained, in order
+		"\ta = 2\n"+ // line 3
+		"[Filter \"LFS\"]\n"+ // line 4 — section lowercased, subsection verbatim
+		"\tPROCESS = x\n"+ // line 5 — key lowercased
+		"[core]\n"+ // line 6
+		"\teditor\n") // line 7 — bare boolean record
+	type want struct {
+		section, subsection, key, value string
+		boolean                         bool
+		line                            int
+	}
+	wants := []want{
+		{"branch", "", "a", "1", false, 2},
+		{"branch", "", "a", "2", false, 3},
+		{"filter", "LFS", "process", "x", false, 5},
+		{"core", "", "editor", "", true, 7},
+	}
+	if len(info.records) != len(wants) {
+		t.Fatalf("retained %d records, want %d: %+v", len(info.records), len(wants), info.records)
+	}
+	for i, w := range wants {
+		if r := info.records[i]; r.Section != w.section || r.Subsection != w.subsection ||
+			r.Key != w.key || r.Value != w.value || r.Boolean != w.boolean || r.Line != w.line {
+			t.Errorf("records[%d] = %+v, want %+v", i, r, w)
+		}
+	}
+	// Only the non-allowlisted records reach the semantic serialization, in
+	// file order (the branch records are inert; filter + core remain).
+	lines := semanticRecordLines(info.records, 0)
+	wantLines := []string{`[filter "LFS"] process = x`, "[core] editor"}
+	if !slices.Equal(lines, wantLines) {
+		t.Errorf("semantic lines = %q, want %q", lines, wantLines)
+	}
+}
+
+// TestSemanticSnapshotDeterminism pins that the semantic serialization is a
+// pure function of the parsed records: re-parsing identical text yields the
+// identical fingerprint, and syntactic differences that parse to the same
+// records (quoting, comments, whitespace) do not move it either.
+func TestSemanticSnapshotDeterminism(t *testing.T) {
+	a := parseTestConfig(t, "[core]\n\tfsmonitor = /tmp/evil\n[branch \"x\"]\n\tremote = o\n")
+	b := parseTestConfig(t, "[core]\n\tfsmonitor = \"/tmp/evil\"\n# a comment\n [branch \"x\"]\n\tremote = o\n")
+	if !bytes.Equal(a.SemanticSnapshot(), b.SemanticSnapshot()) {
+		t.Errorf("semantically identical configs must serialize identically:\n%q\nvs\n%q",
+			a.SemanticSnapshot(), b.SemanticSnapshot())
+	}
+	if a.SemanticFingerprint() != b.SemanticFingerprint() {
+		t.Error("semantic fingerprints of identical records must match")
+	}
+	c := parseTestConfig(t, "[core]\n\tfsmonitor = /tmp/evil\n[branch \"x\"]\n\tremote = o\n")
+	if a.SemanticFingerprint() != c.SemanticFingerprint() {
+		t.Error("fingerprint must be deterministic for identical input")
+	}
+}
+
+// TestSemanticSnapshotShape pins the serialization format: Snapshot-style
+// source headers, one canonical line per DANGEROUS record, inert records
+// absent, values escaped so a record is always exactly one line, an
+// inert-only parse contributing nothing, and the nil receiver yielding nil.
+func TestSemanticSnapshotShape(t *testing.T) {
+	info := parseTestConfig(t, "[core]\n"+
+		"\tfsmonitor = /tmp/evil\n"+
+		"\tmulti = \"a\\nb\"\n"+ // the \n escape parses to a real newline in the value
+		"[branch \"dev\"]\n"+
+		"\tremote = o\n")
+	snap := string(info.SemanticSnapshot())
+	if !strings.Contains(snap, "===== config (") {
+		t.Errorf("semantic snapshot must use the Snapshot source-header format, got %q", snap)
+	}
+	if !strings.Contains(snap, "[core] fsmonitor = /tmp/evil\n") {
+		t.Errorf("dangerous record must be serialized canonically, got %q", snap)
+	}
+	if !strings.Contains(snap, "[core] multi = a\\nb\n") { // escaped: still exactly one line
+		t.Errorf("newline-bearing value must be escaped, got %q", snap)
+	}
+	if strings.Contains(snap, "[branch") {
+		t.Errorf("inert records must not appear in the semantic snapshot, got %q", snap)
+	}
+	if got := strings.Count(snap, "\n"); got != 3 { // header + two record lines
+		t.Errorf("semantic snapshot must carry one line per record (+ header), got %d newlines: %q", got, snap)
+	}
+	inertOnly := parseTestConfig(t, "[branch]\n\tremote = o\n")
+	if got := inertOnly.SemanticSnapshot(); len(got) != 0 {
+		t.Errorf("an inert-only parse must serialize to nothing, got %q", got)
+	}
+	if got := (*GitConfigInfo)(nil).SemanticSnapshot(); got != nil {
+		t.Errorf("nil info must yield a nil snapshot, got %q", got)
+	}
+	if (*GitConfigInfo)(nil).SemanticFingerprint() == "" {
+		t.Error("nil info still hashes the empty content into a fingerprint")
+	}
+}
+
+// TestSemanticSnapshotDiffCompatibility pins that DiffGitConfigSnapshots
+// works over semantic snapshots unchanged: inert churn diffs to nothing,
+// while a dangerous change is rendered and attributed like any snapshot
+// diff.
+func TestSemanticSnapshotDiffCompatibility(t *testing.T) {
+	a := parseTestConfig(t, "[core]\n\tfsmonitor = /tmp/evil\n[branch \"x\"]\n\tremote = o\n")
+	b := parseTestConfig(t, "[core]\n\tfsmonitor = /tmp/evil\n")
+	if d := DiffGitConfigSnapshots(a.SemanticSnapshot(), b.SemanticSnapshot()); d != "" {
+		t.Errorf("branch/alias churn must not produce a semantic diff, got %q", d)
+	}
+	c := parseTestConfig(t, "[core]\n\tfsmonitor = /tmp/other\n[branch \"x\"]\n\tremote = o\n")
+	d := DiffGitConfigSnapshots(a.SemanticSnapshot(), c.SemanticSnapshot())
+	if !strings.Contains(d, "-[core] fsmonitor = /tmp/evil") || !strings.Contains(d, "+[core] fsmonitor = /tmp/other") {
+		t.Errorf("semantic diff must render the dangerous change, got %q", d)
+	}
+}
+
+// TestMergeGitConfigInfoCarriesRecords pins the worktree-overlay merge for
+// records: the overlay's records append with their source index shifted
+// onto the appended overlay source, so SemanticSnapshot serializes each
+// layer's dangerous records under its own header — and the merged
+// fingerprint is deterministic.
+func TestMergeGitConfigInfoCarriesRecords(t *testing.T) {
+	base := parseTestConfig(t, "[core]\n\tfsmonitor = /tmp/a\n[branch \"main\"]\n\tremote = o\n")
+	base.rawSources = []gitConfigSource{{kind: "config", path: "/r/.git/config"}}
+	overlay := parseTestConfig(t, "[diff \"d\"]\n\ttextconv = /tmp/b\n")
+	overlay.rawSources = []gitConfigSource{{kind: "config.worktree", path: "/r/.git/worktrees/w/config.worktree"}}
+	mergeGitConfigInfo(base, overlay)
+	if len(base.records) != 3 {
+		t.Fatalf("merged record count = %d, want 3: %+v", len(base.records), base.records)
+	}
+	for i, wantSource := range []int{0, 0, 1} { // base records keep 0; the overlay's shift to 1
+		if base.records[i].Source != wantSource {
+			t.Errorf("records[%d].Source = %d, want %d", i, base.records[i].Source, wantSource)
+		}
+	}
+	snap := string(base.SemanticSnapshot())
+	if !strings.Contains(snap, "===== config (/r/.git/config) =====\n[core] fsmonitor = /tmp/a\n") {
+		t.Errorf("the common config's dangerous records must serialize under its own header, got %q", snap)
+	}
+	if !strings.Contains(snap, "===== config.worktree (/r/.git/worktrees/w/config.worktree) =====\n[diff \"d\"] textconv = /tmp/b\n") {
+		t.Errorf("the overlay's dangerous records must serialize under the overlay header, got %q", snap)
+	}
+	if strings.Contains(snap, "[branch") {
+		t.Errorf("inert records must not appear, got %q", snap)
+	}
+	other := parseTestConfig(t, "[core]\n\tfsmonitor = /tmp/a\n[branch \"main\"]\n\tremote = o\n")
+	other.rawSources = []gitConfigSource{{kind: "config", path: "/r/.git/config"}}
+	ov2 := parseTestConfig(t, "[diff \"d\"]\n\ttextconv = /tmp/b\n")
+	ov2.rawSources = []gitConfigSource{{kind: "config.worktree", path: "/r/.git/worktrees/w/config.worktree"}}
+	mergeGitConfigInfo(other, ov2)
+	if base.SemanticFingerprint() != other.SemanticFingerprint() {
+		t.Error("the merged semantic fingerprint must be deterministic")
+	}
+}
+
+// TestSemanticFingerprintFromSnapshotRoundTrip pins the v1→v2 migration
+// primitive: the semantic fingerprint recovered from a stored RAW snapshot
+// is byte-identical to the semantic snapshot the originating scan produced,
+// across the full source mix (config layer, worktree overlay, attribute
+// routing sources, include target), and refuses to interpret text that is
+// not a snapshot this scanner wrote.
+func TestSemanticFingerprintFromSnapshotRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git", "info"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	extra := filepath.Join(root, "extra.conf")
+	if err := os.WriteFile(extra, []byte("[filter \"x\"]\n\tclean = /tmp/inc.sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".git", "config"),
+		[]byte("[core]\n\tfsmonitor = /tmp/evil\n[branch \"main\"]\n\tremote = origin\n[include]\n\tpath = "+extra+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".git", "info", "attributes"), []byte("*.bin filter=lfs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := ScanGitConfig(root)
+	if err != nil {
+		t.Fatalf("ScanGitConfig: %v", err)
+	}
+	info.ResolveIncludes()
+
+	fingerprint, semantic, err := SemanticFingerprintFromSnapshot(info.Snapshot())
+	if err != nil {
+		t.Fatalf("SemanticFingerprintFromSnapshot: %v", err)
+	}
+	if fingerprint != info.SemanticFingerprint() {
+		t.Errorf("recovered semantic fingerprint = %s, want %s", fingerprint, info.SemanticFingerprint())
+	}
+	if !bytes.Equal(semantic, info.SemanticSnapshot()) {
+		t.Errorf("recovered semantic snapshot is not byte-identical:\nrecovered:\n%s\nscan:\n%s", semantic, info.SemanticSnapshot())
+	}
+
+	// An empty snapshot is a legitimate v1 record (a path with no
+	// discoverable repository): it recovers to the empty semantic identity.
+	emptyFp, emptySem, err := SemanticFingerprintFromSnapshot(nil)
+	if err != nil {
+		t.Fatalf("SemanticFingerprintFromSnapshot(nil): %v", err)
+	}
+	if len(emptySem) != 0 || emptyFp == "" {
+		t.Errorf("empty snapshot recovery = (%q, %d bytes), want (non-empty fp, 0 bytes)", emptyFp, len(emptySem))
+	}
+
+	// Text that is not a snapshot fails closed.
+	for name, garbage := range map[string]string{
+		"no header":        "not a snapshot at all\n",
+		"unknown kind":     "===== mystery (/tmp/x) =====\n[core]\n\tfsmonitor = /tmp/evil\n",
+		"malformed header": "===== config no parens =====\n",
+	} {
+		if _, _, err := SemanticFingerprintFromSnapshot([]byte(garbage)); err == nil {
+			t.Errorf("%s: expected an error, got none", name)
+		}
+	}
+}

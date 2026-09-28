@@ -396,7 +396,7 @@ describe('isGitConfigRiskData', () => {
         expect(
             isGitConfigRiskData({
                 ...valid,
-                reason: 'This repository was previously trusted, but its git configuration changed.',
+                reason: 'This repository was previously trusted, but its command-bearing git configuration changed.',
                 diff: '@@ -1 +1 @@\n- old\n+ new',
             }),
         ).toBe(true)

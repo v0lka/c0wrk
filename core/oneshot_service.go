@@ -14,7 +14,7 @@ import (
 // Precedence for these calls: oneshot policy > profile reasoningEffort seed >
 // family default. The seed (OrchestratorBuilder.reasoningEffort, seeded from
 // model_profiles.sampling.reasoning_effort) keeps governing the main
-// execution loop (executor, planner, reflector, router); service calls
+// execution loop (executor, reflector, router); service calls
 // deliberately bypass it so a "deep reasoning" profile cannot inflate short
 // auxiliary compositions.
 //

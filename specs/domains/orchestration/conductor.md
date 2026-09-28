@@ -124,11 +124,16 @@ message(s) and the current task content, giving the LLM dialogue context for
 follow-up messages. Without this, a follow-up like "implement variant a"
 would have no referent — the Conductor would see only the current message.
 
-`Resume` does NOT inject conversation history: the Conductor continues the
-same interrupted task, the original request is the task message, and the
-restored blackboard carries the task state (plan, step results, facts).
+`Resume` injects the same windowed history: the last `ConductorHistoryWindow`
+messages (default 20) after `dropFailedExchangeTail` against the task's
+original request (regression pinned by
+`TestResume_InjectsPriorConversationHistory`), so a resumed task keeps the
+session's prior dialogue while a retried request is never shown twice with a
+failure note in between. The Conductor still continues the same interrupted
+task: the original request is the task message and the restored blackboard
+carries the task state (plan, step results, facts).
 
-Instead of conversation history, `Resume` seeds the persisted ReAct
+On top of the history, `Resume` seeds the persisted ReAct
 **trajectory** (`resumeSteps`) into the ContextManager via its optional
 `StepSeedable.SeedSteps` capability and into the Executor via the
 `WithResumeSteps` option. The seeded steps render as assistant+tool messages in

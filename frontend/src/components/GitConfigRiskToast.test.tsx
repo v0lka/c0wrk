@@ -44,8 +44,13 @@ const DANGEROUS: GitConfigRiskData = {
 
 const DRIFTED: GitConfigRiskData = {
   ...DANGEROUS,
-  reason: 'This repository was previously trusted, but its git configuration changed since you trusted it.',
-  diff: '--- trusted\n+++ current\n@@ -1 +1 @@\n-core.fsmonitor = /safe/bin\n+core.fsmonitor = /evil/bin',
+  reason:
+    'This repository was previously trusted, but its command-bearing git configuration changed since you trusted it — the diff below shows the security-relevant changes only (routine branch-tracking and alias bookkeeping never triggers this warning). The trust has been revoked and the repository is hardened again; re-trust it only if the change is expected.',
+  // What the backend sends for semantic drift: a unified diff over the
+  // SEMANTIC snapshots — the source header plus only the security-relevant
+  // changes; inert branch/alias churn is filtered out by construction.
+  diff:
+    '===== config (/tmp/untrusted-repo/.git/config) =====\n@@ -1 +1 @@\n-[core] fsmonitor = /safe/bin\n+[core] fsmonitor = /evil/bin',
 }
 
 describe('GitConfigRiskToast', () => {
@@ -166,14 +171,20 @@ describe('GitConfigRiskToast', () => {
     expect(container.querySelector('[data-testid="git-config-risk-diff"]')).toBeNull()
   })
 
-  it('renders the re-confirmation reason and diff when a trusted repo drifted', () => {
+  it('renders the re-confirmation reason and the semantic (filtered) diff when a trusted repo drifted', () => {
     render()
     act(() => fire?.(DRIFTED))
+    // The reason names the command-bearing configuration as what changed —
+    // not "any change": inert branch/alias bookkeeping never fires this
+    // warning.
     expect(container.querySelector('[data-testid="git-config-risk-reason"]')?.textContent).toContain(
-      'its git configuration changed',
+      'command-bearing git configuration',
     )
+    // The diff is already filtered by the backend (a diff over the semantic
+    // snapshots); the toast renders it verbatim — source header, hunk marker
+    // and both record lines, no inert churn.
     const diff = container.querySelector('[data-testid="git-config-risk-diff"]')
-    expect(diff?.textContent).toContain('core.fsmonitor = /evil/bin')
+    expect(diff?.textContent).toBe(DRIFTED.diff)
   })
 
   it('the close (×) dismisses the warning without deciding (repo stays pending)', async () => {

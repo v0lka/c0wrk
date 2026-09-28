@@ -715,21 +715,24 @@ export interface GitConfigRiskFinding {
  *  standing backend statement that repository-defined hooks never run inside
  *  c0wrk — the detected keys are blocked or neutralized on every git call.
  *  `reason` and `diff` are present only when the warning fired for a
- *  repository that was previously trusted but whose configuration changed
- *  since the trust decision (the trust was evicted and the repository
- *  returned to the hardened default); they are absent for ordinary
- *  first-time intake warnings. */
+ *  repository that was previously trusted but whose command-bearing
+ *  configuration changed since the trust decision (the trust was evicted and
+ *  the repository returned to the hardened default; inert branch/alias
+ *  bookkeeping never evicts the trust and never fires this event); they are
+ *  absent for ordinary first-time intake warnings. */
 export interface GitConfigRiskData {
   readonly path: string
   readonly source: 'project' | 'workdir'
   readonly notice: string
   readonly findings: readonly GitConfigRiskFinding[]
   /** Set when the warning fired because a previously-trusted repository's
-   *  configuration drifted (trust revoked). Empty/absent for first-time
-   *  intake warnings. */
+   *  command-bearing configuration drifted (trust revoked). Empty/absent for
+   *  first-time intake warnings. */
   readonly reason?: string
   /** Human-readable unified diff between the trusted snapshot and the current
-   *  configuration (absent for first-time intake warnings). */
+   *  configuration — the semantic, filtered one: only the security-relevant
+   *  changes appear (inert branch/alias churn is excluded by construction);
+   *  absent for first-time intake warnings. */
   readonly diff?: string
 }
 

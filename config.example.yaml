@@ -805,16 +805,25 @@ security:
   # Repositories whose "untrusted git configuration" intake warning has been
   # dismissed via the toast's "Trust this repo" action (also manageable from
   # Settings → Security → Trusted repos). Each entry is a mapping with an
-  # absolute repository-root `path` (matching is exact, after cleaning) and an
-  # optional `fingerprint` — the hash of the git-config snapshot captured when
-  # the repository was trusted (snapshots live under ~/.c0wrk/git-config-snapshots/),
-  # used to detect config drift after the trust decision. A bare path string
+  # absolute repository-root `path` (matching is exact, after cleaning) and
+  # the fingerprints of the git-config snapshot captured when the repository
+  # was trusted (snapshots live under ~/.c0wrk/git-config-snapshots/):
+  # `fingerprint` hashes the snapshot bytes, `semantic_fingerprint` hashes
+  # their dangerous semantic content — what the trust lifecycle keys on. On a
+  # later open, inert churn in the branch/alias sections silently refreshes
+  # the stored snapshot, while any semantic change (a command key, a
+  # structural key, an unknown key, an attribute-routing or include edit)
+  # evicts the trust and re-warns with a semantic diff. Entries without a
+  # semantic_fingerprint (written by older builds) are migrated from their
+  # stored snapshot on the next open; a record whose snapshot cannot be
+  # recovered loses its trust (fail closed) and re-warns. A bare path string
   # (the legacy pre-fingerprint format) is also accepted and loads as a path
-  # with no fingerprint. Default: empty (every suspicious .git/config warns
-  # once per open).
+  # with no fingerprints. Both fingerprint keys are written by the app;
+  # default: empty (every suspicious .git/config warns once per open).
   # trusted_git_repos:
   #   - path: /Users/you/work/my-legit-lfs-repo
-  #     fingerprint: a1b2c3d4
+  #     fingerprint: a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8a1b2c3d4e5f6a7b8
+  #     semantic_fingerprint: 0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0
 
   # Repositories that are ALWAYS treated as hardened: their intake warning is
   # never suppressed and they are excluded from the trusted list (a root cannot
