@@ -232,14 +232,21 @@ type modelsEndpoint struct {
 	server *httptest.Server
 	port   int
 
-	mu          sync.Mutex
-	healthHits  int
-	modelsHits  int
-	propsHits   int
-	notReady    int
-	readyHook   func()
-	onProbe     func(hits int)
-	hookFired   bool
+	mu         sync.Mutex
+	healthHits int
+	modelsHits int
+	propsHits  int
+	notReady   int
+	readyHook  func()
+	onProbe    func(hits int)
+	hookFired  bool
+	// hookDone is closed once a fired readyHook returns. A hook can outlive the
+	// request that scheduled it — a real-world install staging takes seconds,
+	// longer than the supervisor's ProbeTimeout — so every /v1/models answer
+	// waits for it: readiness must never be reported while a staged mutation
+	// (the reinstall a readback test stages) is still in flight, or the
+	// supervisor's post-ready record read races the hook's manifest write.
+	hookDone    chan struct{}
 	modelsBody  string
 	propsBody   string
 	propsFail   bool
@@ -277,7 +284,7 @@ func newModelsEndpoint(t *testing.T) *modelsEndpoint {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
 		ep.mu.Lock()
 		ep.modelsHits++
 		ep.lastRequest = "/v1/models"
@@ -288,7 +295,15 @@ func newModelsEndpoint(t *testing.T) *modelsEndpoint {
 		fireHook := hook != nil && !ep.hookFired && !stillNotReady
 		if fireHook {
 			ep.hookFired = true
+			ep.hookDone = make(chan struct{})
 		}
+		// A hook scheduled by an earlier request may still be running: a slow
+		// one (a real install staging is seconds of file I/O) outlives that
+		// request's ProbeTimeout, and the poll that arrives next must not be
+		// answered — with 200 or with 503 — before the hook's side effects are
+		// durable. The request that scheduled the hook runs it instead of
+		// waiting on it.
+		pendingHook := ep.hookDone
 		body := ep.modelsBody
 		ep.mu.Unlock()
 
@@ -299,6 +314,17 @@ func newModelsEndpoint(t *testing.T) *modelsEndpoint {
 		}
 		if fireHook {
 			hook()
+			ep.mu.Lock()
+			close(ep.hookDone)
+			ep.mu.Unlock()
+		} else if pendingHook != nil {
+			select {
+			case <-pendingHook:
+			case <-r.Context().Done():
+				// The probe gave up while the hook was still running; there is
+				// no answer left to deliver to it.
+				return
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if stillNotReady {
