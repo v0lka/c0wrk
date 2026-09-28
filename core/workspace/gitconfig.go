@@ -362,6 +362,15 @@ type GitConfigInfo struct {
 	// there). Snapshot/Fingerprint serialize these after rawSources, binding
 	// the trust decision to the included files' bytes as well.
 	includeSources []gitConfigSource
+
+	// records retains EVERY config entry the parser dispatched, in file
+	// order (section, subsection, key, value, boolean form, line). Findings
+	// keep only the dangerous subset; records keep the full picture so the
+	// semantic snapshot layer can re-derive it: every record is classified
+	// (classifyGitConfigRecord) and only DANGEROUS ones are serialized into
+	// SemanticSnapshot/SemanticFingerprint. Source indexes the config layer
+	// (into rawSources) the record was parsed from.
+	records []gitConfigRecord
 }
 
 // gitConfigSource is one raw config/routing source read by the scan, kept for
@@ -449,6 +458,392 @@ func DiffGitConfigSnapshots(previous, current []byte) string {
 	a := strings.Split(string(previous), "\n")
 	b := strings.Split(string(current), "\n")
 	return unifiedDiff(a, b)
+}
+
+// --- semantic snapshot: drift detection over classified records ---
+//
+// The byte-level Snapshot/Fingerprint bind trust to the exact bytes of every
+// scanned source, which makes ANY edit — including the benign churn a git
+// user legitimately produces — a trust-drift event. The semantic layer
+// narrows the identity to what the configuration MEANS for c0wrk's git
+// operations: every retained record is classified (classifyGitConfigRecord)
+// and only DANGEROUS ones are serialized, so branch/alias bookkeeping (the
+// explicit allowlist — the only records that can neither execute a command
+// nor redirect how git reads the repository) no longer trips drift
+// detection, while every other change — a command key, a structural key, an
+// unknown key, or any edit to an attribute routing source — still does. The
+// serialization reuses the Snapshot source-header format
+// (writeSnapshotSource), so DiffGitConfigSnapshots attributes semantic
+// drift to the right source unchanged.
+
+// Source-kind labels for the attribute routing sources scanAttributeSources
+// attaches and the include targets ResolveIncludes reads (the same strings
+// written into the snapshot diff headers).
+const (
+	sourceKindInfoAttributes     = "info/attributes"
+	sourceKindCoreAttributesFile = "core.attributesFile"
+	sourceKindInclude            = "include"
+	sourceKindIncludeUnreadable  = "include (unreadable)"
+)
+
+// gitConfigRecord is one retained config entry: every key line the parser
+// dispatched, in file order, with the section context it was read under. It
+// is the raw material of the semantic snapshot layer.
+type gitConfigRecord struct {
+	// Section is the lowercased section name ("core", "branch", ...).
+	Section string
+	// Subsection is the verbatim quoted subsection name (case-sensitive, as
+	// git treats it); empty for plain sections.
+	Subsection string
+	// Key is the lowercased key name within the section.
+	Key string
+	// Value is the parsed value ("" for bare boolean keys, with
+	// Boolean=true).
+	Value string
+	// Boolean reports a bare key (no '='), which git reads as boolean true.
+	Boolean bool
+	// Line is the 1-based line number of the occurrence.
+	Line int
+	// Source is the index into GitConfigInfo.rawSources of the config layer
+	// this record was parsed from. parseGitConfigData always produces 0
+	// (the record's own info has exactly one config source when it is
+	// attached); mergeGitConfigInfo shifts the worktree overlay's records
+	// when it appends the overlay's source.
+	Source int
+}
+
+// gitConfigRecordClass classifies a retained record for the semantic
+// snapshot: INERT records are safe to leave out of the identity, DANGEROUS
+// records must appear in it.
+type gitConfigRecordClass int
+
+const (
+	gitConfigRecordInert gitConfigRecordClass = iota
+	gitConfigRecordDangerous
+)
+
+// semanticInertSections is the explicit allowlist of sections whose EVERY
+// key is inert. The allowlist is deliberately tiny and closed: a section
+// that is not listed here — every command-bearing key, the structural
+// core.worktree and include/includeif directives, and any key c0wrk does
+// not know about — classifies DANGEROUS, fail-closed. branch.* is
+// remote-tracking bookkeeping and alias.* only expands when git is invoked
+// through the alias name, which c0wrk never does (it invokes git by
+// subcommand with a fixed argv); neither can execute a command on c0wrk's
+// behalf or redirect what git reads.
+var semanticInertSections = map[string]bool{
+	"branch": true,
+	"alias":  true,
+}
+
+// classifyGitConfigRecord applies the inert allowlist: a record whose
+// section is listed in semanticInertSections (checked case-insensitively;
+// subsections are ignored — branch.<name>.* is inert whatever the branch is
+// called) is INERT; every other record is DANGEROUS.
+func classifyGitConfigRecord(r gitConfigRecord) gitConfigRecordClass {
+	if semanticInertSections[strings.ToLower(r.Section)] {
+		return gitConfigRecordInert
+	}
+	return gitConfigRecordDangerous
+}
+
+// SemanticSnapshot returns a canonical, diff-able byte representation of the
+// DANGEROUS subset of the scan, in the same format as Snapshot(): one
+// "===== kind (path) =====" header per source (writeSnapshotSource),
+// followed by the source's semantic content — one canonical line per
+// DANGEROUS record for config layers, and the full raw bytes for the sources
+// that are dangerous as a whole (attribute routing files, which have no
+// per-key neutralization, and include targets, which the scanner
+// deliberately does not key-scan). A nil info yields nil.
+//
+// The representation is deterministic for a given set of records and
+// sources: every record line is a pure function of the parsed record, each
+// record is exactly one line (values are escaped, so a hostile value cannot
+// span or forge lines), and sources serialize in their stable scan order.
+// It is what SemanticFingerprint hashes, and DiffGitConfigSnapshots works
+// on semantic snapshots unchanged.
+func (info *GitConfigInfo) SemanticSnapshot() []byte {
+	if info == nil {
+		return nil
+	}
+	var b strings.Builder
+	if len(info.rawSources) == 0 {
+		// A pure-parse result (parseGitConfigData without
+		// ScanGitConfigFile's source attachment): serialize the dangerous
+		// records under a synthetic header so they still have a stable
+		// identity. No records, no header — there is no source to name.
+		if lines := semanticRecordLines(info.records, 0); len(lines) > 0 {
+			writeSnapshotSource(&b, gitConfigSource{kind: "config", data: []byte(strings.Join(lines, "\n") + "\n")})
+		}
+		return []byte(b.String())
+	}
+	for i, src := range info.rawSources {
+		if isAttributeRoutingSourceKind(src.kind) {
+			// Attribute routing sources are dangerous as a whole (no
+			// per-key neutralization exists): the raw bytes stay in the
+			// identity unchanged.
+			writeSnapshotSource(&b, src)
+			continue
+		}
+		// A config layer: its header always appears (every scanned source
+		// stays represented, so diff attribution is stable even when a
+		// layer currently carries no dangerous records), with only the
+		// DANGEROUS records under it.
+		writeSnapshotSource(&b, gitConfigSource{
+			kind: src.kind,
+			path: src.path,
+			data: []byte(strings.Join(semanticRecordLines(info.records, i), "\n") + "\n"),
+		})
+	}
+	for _, src := range info.includeSources {
+		// Include targets are config files the scanner deliberately does
+		// not key-scan (ADR-033), so every record they may carry is
+		// potentially dangerous: the raw bytes stay in the identity.
+		writeSnapshotSource(&b, src)
+	}
+	return []byte(b.String())
+}
+
+// SemanticFingerprint returns the SHA-256 hex digest of SemanticSnapshot():
+// a stable identity for the dangerous semantic content the scan saw.
+// Comparing the fingerprint of a later scan against the stored value detects
+// semantic drift — any change outside the inert branch/alias allowlist,
+// including attribute-routing and include-target edits — while tolerating
+// the branch/alias churn a git user legitimately produces.
+func (info *GitConfigInfo) SemanticFingerprint() string {
+	sum := sha256.Sum256(info.SemanticSnapshot())
+	return hex.EncodeToString(sum[:])
+}
+
+// semanticRecordLines renders the canonical lines of the DANGEROUS records
+// parsed from the config layer with the given rawSources index, in file
+// order. Inert records (and records of other layers) are left out.
+func semanticRecordLines(records []gitConfigRecord, source int) []string {
+	var lines []string
+	for i := range records {
+		r := records[i]
+		if r.Source != source || classifyGitConfigRecord(r) == gitConfigRecordInert {
+			continue
+		}
+		lines = append(lines, canonicalGitConfigRecordLine(r))
+	}
+	return lines
+}
+
+// canonicalGitConfigRecordLine renders one record as a single deterministic
+// line: `[section "sub"] key = value`. A bare boolean key renders without
+// the "= value" part (git reads it as boolean true — distinct from an empty
+// value, which renders as "key ="). Section and key names are already
+// lowercased by the parser; the subsection stays verbatim.
+func canonicalGitConfigRecordLine(r gitConfigRecord) string {
+	var b strings.Builder
+	b.WriteByte('[')
+	b.WriteString(r.Section)
+	if r.Subsection != "" {
+		b.WriteString(" \"")
+		b.WriteString(escapeSnapshotRecordText(r.Subsection))
+		b.WriteByte('"')
+	}
+	b.WriteString("] ")
+	b.WriteString(r.Key)
+	if !r.Boolean {
+		if r.Value == "" {
+			b.WriteString(" =")
+		} else {
+			b.WriteString(" = ")
+			b.WriteString(escapeSnapshotRecordText(r.Value))
+		}
+	}
+	return b.String()
+}
+
+// escapeSnapshotRecordText escapes the bytes that would break the
+// one-record-one-line invariant — backslash, newline, carriage return —
+// into their backslash-letter forms. Escaping the backslash first keeps the
+// mapping reversible; the function is a pure function of its input, so the
+// serialization stays deterministic.
+func escapeSnapshotRecordText(s string) string {
+	if !strings.ContainsAny(s, "\\\n\r") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// isAttributeRoutingSourceKind reports whether a snapshot source kind labels
+// an attribute routing source (info/attributes or a core.attributesFile
+// target). Those sources are dangerous as a whole and are serialized into
+// the semantic snapshot verbatim.
+func isAttributeRoutingSourceKind(kind string) bool {
+	return kind == sourceKindInfoAttributes || kind == sourceKindCoreAttributesFile
+}
+
+// --- raw-snapshot recovery: v1→v2 trust-record migration ---
+//
+// Trust records written before the semantic layer (v1) store only the raw
+// byte-level fingerprint and its snapshot. Rebasing the trust lifecycle onto
+// the semantic fingerprint needs each such record's semantic identity
+// recovered from the snapshot it stored — deliberately WITHOUT re-scanning
+// the repository (the recovered identity must describe the bytes the user
+// actually reviewed at trust time, not whatever the repository carries now)
+// and without a git binary (snapshots are plain text).
+
+// isConfigLayerSourceKind reports whether a snapshot source kind labels a
+// config layer (common config or worktree overlay) — the sources whose
+// semantic content is the canonical DANGEROUS record lines, as opposed to
+// the sources serialized verbatim (attribute routing files, include targets).
+func isConfigLayerSourceKind(kind string) bool {
+	return kind == "config" || kind == "config.worktree"
+}
+
+// isKnownSnapshotSourceKind reports whether kind is a label the scanner
+// writes into snapshot headers. Recovery fails closed on anything else: a
+// snapshot carrying an unknown kind was not produced by this scanner, so its
+// semantic content cannot be recovered faithfully.
+func isKnownSnapshotSourceKind(kind string) bool {
+	switch kind {
+	case "config", "config.worktree",
+		sourceKindInfoAttributes, sourceKindCoreAttributesFile,
+		sourceKindInclude, sourceKindIncludeUnreadable:
+		return true
+	}
+	return false
+}
+
+// parseSnapshotHeader parses one "===== kind (path) =====" snapshot header
+// line into its kind and path. It reports false for any other line — the
+// delimiter spaces and the trailing " =====" are part of the match, so a
+// config-file line that merely resembles a header stays data. The kind may
+// itself contain parentheses ("include (unreadable)"), so the split lands on
+// the LAST " (".
+func parseSnapshotHeader(line string) (kind, path string, ok bool) {
+	const prefix = "===== "
+	const suffix = " ====="
+	if len(line) < len(prefix)+len(suffix) ||
+		!strings.HasPrefix(line, prefix) || !strings.HasSuffix(line, suffix) {
+		return "", "", false
+	}
+	inner := line[len(prefix) : len(line)-len(suffix)]
+	idx := strings.LastIndex(inner, " (")
+	if idx < 0 || !strings.HasSuffix(inner, ")") {
+		return "", "", false
+	}
+	return inner[:idx], inner[idx+2 : len(inner)-1], true
+}
+
+// snapshotSection is one source section recovered from a snapshot's text.
+type snapshotSection struct {
+	kind string
+	path string
+	data []byte
+}
+
+// splitSnapshotSections splits a snapshot (Snapshot() output) into its
+// per-source sections. Data bytes are never validated — they are the raw
+// file content the snapshot captured, reproduced byte-exactly here (each
+// section's data ends with a newline, as writeSnapshotSource guarantees).
+// Errors when the text is not a well-formed snapshot: a non-empty snapshot
+// must start with a source header, every header must be well-formed, and
+// every kind must be one of the labels the scanner writes.
+func splitSnapshotSections(snapshot []byte) ([]snapshotSection, error) {
+	var (
+		sections []snapshotSection
+		cur      *snapshotSection
+		data     strings.Builder
+	)
+	flush := func() {
+		if cur != nil {
+			cur.data = []byte(data.String())
+			sections = append(sections, *cur)
+			cur = nil
+			data.Reset()
+		}
+	}
+	lines := strings.Split(string(snapshot), "\n")
+	for i, line := range lines {
+		if i == len(lines)-1 && line == "" {
+			break // the artifact of a trailing newline, not content
+		}
+		if kind, path, ok := parseSnapshotHeader(line); ok {
+			flush()
+			cur = &snapshotSection{kind: kind, path: path}
+			continue
+		}
+		if cur == nil {
+			return nil, errors.New("snapshot does not start with a source header")
+		}
+		data.WriteString(line)
+		data.WriteByte('\n')
+	}
+	flush()
+	for _, s := range sections {
+		if !isKnownSnapshotSourceKind(s.kind) {
+			return nil, fmt.Errorf("snapshot source %q has an unknown kind %q", s.path, s.kind)
+		}
+	}
+	return sections, nil
+}
+
+// semanticSnapshotFromSnapshot reconstructs the semantic snapshot content of
+// a stored RAW snapshot: every config layer is re-parsed (parseGitConfigData
+// is a pure function of its bytes) and re-serialized as its DANGEROUS
+// canonical record lines, while attribute routing and include sections stay
+// verbatim — the exact split SemanticSnapshot applies at scan time. For a
+// snapshot produced by ScanGitConfig + ResolveIncludes the reconstruction is
+// byte-identical to the scan's SemanticSnapshot(), because each layer's
+// canonical lines are a pure function of the layer's raw bytes and the
+// verbatim sections are carried over unchanged.
+func semanticSnapshotFromSnapshot(raw []byte) ([]byte, error) {
+	sections, err := splitSnapshotSections(raw)
+	if err != nil {
+		return nil, err
+	}
+	var b strings.Builder
+	for _, sec := range sections {
+		if !isConfigLayerSourceKind(sec.kind) {
+			// Attribute routing sources and include targets are dangerous
+			// as a whole: the raw bytes stay in the identity verbatim.
+			writeSnapshotSource(&b, gitConfigSource(sec))
+			continue
+		}
+		parsed := parseGitConfigData(string(sec.data), slog.Default())
+		writeSnapshotSource(&b, gitConfigSource{
+			kind: sec.kind,
+			path: sec.path,
+			data: []byte(strings.Join(semanticRecordLines(parsed.records, 0), "\n") + "\n"),
+		})
+	}
+	return []byte(b.String()), nil
+}
+
+// SemanticFingerprintFromSnapshot recovers the semantic fingerprint of a
+// stored RAW snapshot — the migration path for v1 trust records, which
+// predate the semantic layer. It returns the semantic fingerprint (the same
+// value SemanticFingerprint reports for a scan of the same configuration)
+// together with the semantic snapshot bytes it hashes, so the caller can
+// store both content-addressed. An error means the snapshot lacks structure
+// the recovery can interpret (not a snapshot, an unknown source kind): the
+// caller must fail closed and evict the trust rather than carry an
+// unverifiable one over.
+func SemanticFingerprintFromSnapshot(raw []byte) (fingerprint string, semantic []byte, err error) {
+	semantic, err = semanticSnapshotFromSnapshot(raw)
+	if err != nil {
+		return "", nil, err
+	}
+	sum := sha256.Sum256(semantic)
+	return hex.EncodeToString(sum[:]), semantic, nil
 }
 
 // ResolveIncludes follows the config's include/includeIf directives for
@@ -539,18 +934,18 @@ func (r *includeResolver) read(inc *GitConfigInclude, depth int) {
 	case errors.Is(err, os.ErrNotExist):
 		// A missing include is inert (git ignores it); record an empty
 		// source so its later appearance still changes the fingerprint.
-		r.info.includeSources = append(r.info.includeSources, gitConfigSource{kind: "include", path: target})
+		r.info.includeSources = append(r.info.includeSources, gitConfigSource{kind: sourceKindInclude, path: target})
 		return
 	case err != nil:
 		// Unreadable, oversized, or non-regular: record a marker so a
 		// change to the target's state still shows as drift, without making
 		// the repo untrustable.
 		r.logger.Warn("git config include target could not be fingerprinted", "path", target, "error", err)
-		r.info.includeSources = append(r.info.includeSources, gitConfigSource{kind: "include (unreadable)", path: target})
+		r.info.includeSources = append(r.info.includeSources, gitConfigSource{kind: sourceKindIncludeUnreadable, path: target})
 		return
 	}
 
-	r.info.includeSources = append(r.info.includeSources, gitConfigSource{kind: "include", path: target, data: data})
+	r.info.includeSources = append(r.info.includeSources, gitConfigSource{kind: sourceKindInclude, path: target, data: data})
 
 	// Recurse into the included file's own include directives so a transitive
 	// change anywhere in the tree revokes trust. The included file is parsed
@@ -1276,7 +1671,16 @@ func mergeGitConfigInfo(base, overlay *GitConfigInfo) {
 	}
 	base.Includes = append(base.Includes, overlay.Includes...)
 	base.Errors = append(base.Errors, overlay.Errors...)
+	// Records carry over with their source index shifted: the overlay's
+	// records were parsed from overlay.rawSources[0], which lands at index
+	// len(base.rawSources) once the overlay's sources are appended.
+	shift := len(base.rawSources)
 	base.rawSources = append(base.rawSources, overlay.rawSources...)
+	for i := range overlay.records {
+		r := overlay.records[i]
+		r.Source += shift
+		base.records = append(base.records, r)
+	}
 	if overlay.repositoryFormatVersionSet {
 		base.repositoryFormatVersion = overlay.repositoryFormatVersion
 		base.repositoryFormatVersionSet = true
@@ -1327,10 +1731,10 @@ func scanAttributeSources(repoRoot, commonDir string, info *GitConfigInfo, logge
 	type source struct {
 		path, label string
 	}
-	sources := []source{{filepath.Join(commonDir, "info", "attributes"), "info/attributes"}}
+	sources := []source{{filepath.Join(commonDir, "info", "attributes"), sourceKindInfoAttributes}}
 	if raw := info.attributesFilePath; raw != "" {
 		if resolved := resolveAttributesFilePath(raw, repoRoot); resolved != "" {
-			sources = append(sources, source{resolved, "core.attributesFile"})
+			sources = append(sources, source{resolved, sourceKindCoreAttributesFile})
 		}
 	}
 	for _, src := range sources {
@@ -1994,6 +2398,18 @@ func (p *gitConfigParser) parseQuotedSegment(b *strings.Builder) bool {
 
 // dispatchEntry routes a parsed key to findings, include records, or silence.
 func (p *gitConfigParser) dispatchEntry(line int, key, value string, boolean bool) {
+	// Retain every dispatched entry for the semantic snapshot layer BEFORE
+	// any routing (findings, include records, silence) narrows the picture:
+	// retention is unconditional, classification happens at serialization
+	// time (classifyGitConfigRecord).
+	p.info.records = append(p.info.records, gitConfigRecord{
+		Section:    p.section,
+		Subsection: p.subsection,
+		Key:        key,
+		Value:      value,
+		Boolean:    boolean,
+		Line:       line,
+	})
 	if p.section == "include" || p.section == "includeif" {
 		inc := GitConfigInclude{
 			Conditional: p.section == "includeif",

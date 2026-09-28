@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -1695,23 +1696,34 @@ const (
 // Fingerprint identifies the git-config snapshot captured at trust time
 // (stored separately under ~/.c0wrk/git-config-snapshots/, see
 // GitConfigSnapshotsDir) so a later scan can diff against it and reinstate the
-// warning when the config changed after the trust decision. Fingerprint may be
-// empty for entries migrated from the pre-fingerprint string format (a bare
-// path) — those keep suppressing the warning unconditionally until re-trusted.
+// warning when the config changed after the trust decision.
+// SemanticFingerprint identifies the same snapshot's DANGEROUS semantic
+// content (every config entry outside the inert branch/alias allowlist, plus
+// the attribute routing and include sources verbatim — see
+// workspace.SemanticFingerprint): the trust lifecycle is bound to it, so the
+// benign branch/alias churn a git user legitimately produces no longer evicts
+// the trust, while any semantic change still does. Fingerprint and
+// SemanticFingerprint may be empty for entries written before fingerprinting
+// (or before the semantic layer) — the backend migrates those on the next
+// open, evicting the trust fail-closed when the migration cannot recover the
+// semantic identity.
 type TrustedGitRepo struct {
-	Path        string `yaml:"path"`
-	Fingerprint string `yaml:"fingerprint,omitempty"`
+	Path                string `yaml:"path"`
+	Fingerprint         string `yaml:"fingerprint,omitempty"`
+	SemanticFingerprint string `yaml:"semantic_fingerprint,omitempty"`
 }
 
-// UnmarshalYAML accepts both the current mapping form ({path, fingerprint})
-// and the legacy string form (a bare absolute path, pre-fingerprint). A legacy
-// string migrates to a Path with an empty Fingerprint, preserving warning
-// suppression for already-trusted repositories without inventing a snapshot
-// that was never captured.
+// UnmarshalYAML accepts both the current mapping form
+// ({path, fingerprint, semantic_fingerprint}) and the legacy string form (a
+// bare absolute path, pre-fingerprint). A legacy string migrates to a Path
+// with empty fingerprints, preserving warning suppression for
+// already-trusted repositories without inventing a snapshot that was never
+// captured (the backend migrates such records on the next open).
 func (r *TrustedGitRepo) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind == yaml.ScalarNode {
 		r.Path = value.Value
 		r.Fingerprint = ""
+		r.SemanticFingerprint = ""
 		return nil
 	}
 	type plain TrustedGitRepo
@@ -1720,6 +1732,25 @@ func (r *TrustedGitRepo) UnmarshalYAML(value *yaml.Node) error {
 		return err
 	}
 	*r = TrustedGitRepo(p)
+	return nil
+}
+
+// validateGitSemanticFingerprint checks a trusted_git_repos entry's
+// semantic_fingerprint: it must be empty (a record the backend has not
+// migrated to the semantic trust lifecycle yet) or the 64-character hex
+// SHA-256 the scanner writes. Anything else can never match a computed
+// value, so it is rejected at load time instead of silently turning every
+// later open into a trust eviction.
+func validateGitSemanticFingerprint(v string) error {
+	if v == "" {
+		return nil
+	}
+	if len(v) != 64 {
+		return errors.New("semantic_fingerprint must be a 64-character hex SHA-256 or empty")
+	}
+	if _, err := hex.DecodeString(v); err != nil {
+		return fmt.Errorf("semantic_fingerprint must be hex: %w", err)
+	}
 	return nil
 }
 
@@ -2865,11 +2896,14 @@ func validate(cfg *Config) error {
 				repo.Path,
 			)
 		}
+		if err := validateGitSemanticFingerprint(repo.SemanticFingerprint); err != nil {
+			return fmt.Errorf("security.trusted_git_repos entry %q: %w", cleaned, err)
+		}
 		if _, dup := seenTrusted[cleaned]; dup {
 			return fmt.Errorf("security.trusted_git_repos contains duplicate path %q", cleaned)
 		}
 		seenTrusted[cleaned] = struct{}{}
-		cleanTrusted = append(cleanTrusted, TrustedGitRepo{Path: cleaned, Fingerprint: repo.Fingerprint})
+		cleanTrusted = append(cleanTrusted, TrustedGitRepo{Path: cleaned, Fingerprint: repo.Fingerprint, SemanticFingerprint: repo.SemanticFingerprint})
 	}
 	cfg.Security.TrustedGitRepos = cleanTrusted
 

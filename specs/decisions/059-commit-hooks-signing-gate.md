@@ -217,7 +217,8 @@ rewording required.
 - One extra interaction for untrusted armed repositories: the first commit is
   withheld until the user picks. This is the price of not guessing; the
   override is one click and per-repo trust removes the gate permanently
-  (snapshot-bound, ADR-034).
+  (bound to the trusted config's semantics — ADR-034, as amended by
+  [ADR-070](./070-git-semantic-trust.md)).
 - The intake warning population widens: repositories with armed signing that
   previously stayed silent now warn. Deliberate — the findings are marked
   baseline-covered, and the alternative is the invisible trust gap this ADR
@@ -258,8 +259,11 @@ rewording required.
   an actionable notice, and keeps the RPC boundary honest about the
   difference between "withheld, decide" and failure.
 - **Auto-trust or heuristic trust for armed repositories.** Rejected: trust
-  is an explicit, snapshot-bound user decision (ADR-034); automating it
-  reopens the drift-blind "trust forever" gap that decision closed.
+  is an explicit user decision bound to the config's semantics (ADR-034, as
+  amended by [ADR-070](./070-git-semantic-trust.md) — only provably-inert
+  branch/alias churn refreshes silently); automating it beyond that narrow,
+  proven-inert class reopens the drift-blind "trust forever" gap that
+  decision closed.
 
 ## Related
 
@@ -267,7 +271,9 @@ rewording required.
   gate builds on (baseline hooks/signing neutralization; amended by this ADR
   at the commit boundary).
 - [ADR-034](./034-git-trust-opt-out.md) — the trust opt-out the gate routes
-  decisions to (snapshot-bound, recheck-with-diff, fail-closed).
+  decisions to (bound to the trusted config's semantics as amended by
+  [ADR-070](./070-git-semantic-trust.md); recheck on every open,
+  fail-closed).
 - [../domains/workspace.md](../domains/workspace.md) — Git Integration and
   Git Subprocess Hardening: the gate, the detection surface, and the intake
   findings in their domain context.

@@ -4,6 +4,28 @@
 
 Accepted
 
+Amended 2026-09-28 ([ADR-070](./070-git-semantic-trust.md)): the trust
+*lifecycle* rebinds from the raw byte snapshot to a **semantic fingerprint**
+— the SHA-256 of a canonical serialization of only the DANGEROUS config
+records, with a closed inert allowlist of exactly `branch.*`/`alias.*` and
+attribute-routing/include sources embedded verbatim. The recheck becomes
+three-path: both fingerprints matching stays silent; a semantic match with a
+raw mismatch is provably-inert churn and **silently refreshes** the stored
+raw snapshot (no event — the user trusted a meaning, and the meaning did not
+change); a semantic difference (or an unscannable config) evicts with a
+**semantic diff** in which inert churn cannot appear by construction.
+`TrustedGitRepo` additionally stores `semantic_fingerprint` (validated at
+load: empty or 64-char hex), and §6's unconditional legacy suppression below
+is **replaced** by a fail-closed v1→v2 migration — a record whose stored
+snapshot cannot be recovered from the config store is evicted and re-warns
+with a `(trust unverifiable)` finding instead of suppressing on faith. The
+raw snapshot and fingerprint remain the byte-level record of what the user
+reviewed; they no longer decide eviction. The "Auto-re-trust on drift"
+rejection in Alternatives is narrowed accordingly: it stands for
+**unclassified drift** — anything outside the closed inert allowlist,
+including all semantic drift; only the provably-inert class is refreshed
+without a re-warning.
+
 ## Context
 
 ADR-033 established the four-layer git subprocess hardening model, and inside

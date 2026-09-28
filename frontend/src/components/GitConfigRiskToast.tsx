@@ -17,10 +17,11 @@
 //   • The close (×) — dismisses the warning without deciding (the repo stays
 //     "pending" and re-warns on the next open).
 //
-// When the warning fires because a previously-trusted repository's configuration
-// changed (payload `reason` set), the toast additionally shows the
-// re-confirmation text and the config diff so the user can judge whether the
-// change was expected before re-trusting.
+// When the warning fires because a previously-trusted repository's
+// command-bearing configuration changed (payload `reason` set — inert
+// branch/alias churn never fires it), the toast additionally shows the
+// re-confirmation text and the semantic (filtered) config diff so the user
+// can judge whether the change was expected before re-trusting.
 //
 // The warning is dropped when the user switches to a different project: a
 // decision must never be recorded for the wrong repository. The backend re-emits

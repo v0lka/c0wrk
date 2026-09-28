@@ -775,9 +775,19 @@ func TestTrustGitRepo_StoresFingerprintAndSnapshot(t *testing.T) {
 	if entry.Fingerprint == "" {
 		t.Error("expected a non-empty fingerprint on the trusted entry")
 	}
+	if entry.SemanticFingerprint == "" {
+		t.Error("expected a non-empty semantic fingerprint on the trusted entry")
+	}
+	if entry.SemanticFingerprint == entry.Fingerprint {
+		t.Error("the semantic fingerprint must be a distinct identity from the raw one")
+	}
 	snap := filepath.Join(config.GitConfigSnapshotsDir(f.agentDir), entry.Fingerprint)
 	if _, err := os.Stat(snap); err != nil {
 		t.Errorf("expected snapshot file %s: %v", snap, err)
+	}
+	semSnap := filepath.Join(config.GitConfigSnapshotsDir(f.agentDir), entry.SemanticFingerprint)
+	if _, err := os.Stat(semSnap); err != nil {
+		t.Errorf("expected semantic snapshot file %s: %v", semSnap, err)
 	}
 }
 
@@ -877,8 +887,10 @@ func TestNotifyGitConfigRisk_TrustedRepoDriftEvictsAndWarns(t *testing.T) {
 	if rec.data.Diff == "" {
 		t.Error("expected a diff in the payload")
 	}
-	if !strings.Contains(rec.data.Diff, "hooksPath") {
-		t.Errorf("diff should mention the added key, got: %q", rec.data.Diff)
+	// The drift diff is SEMANTIC now: one canonical (lowercased-key) line per
+	// dangerous record, not the raw file text.
+	if !strings.Contains(rec.data.Diff, "[core] hookspath = .evil-hooks") {
+		t.Errorf("diff should mention the added key canonically, got: %q", rec.data.Diff)
 	}
 	if got := f.GetTrustedGitRepos(); len(got) != 0 {
 		t.Errorf("trusted repos after drift = %v, want empty (evicted)", got)

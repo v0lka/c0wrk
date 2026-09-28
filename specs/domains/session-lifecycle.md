@@ -798,15 +798,18 @@ that accumulates one user/assistant pair per exchange, without truncation:
   replaces the failed pair instead of duplicating the user message.
 - History sent to Router for context-aware classification (last
   `router.history_window` messages, default 10).
-- History sent to the planner: `PlanContinuation` and first-message `Plan`
-  both receive the history (compacted to `PlannerHistoryBudgetTokens`).
-- History sent to the Conductor: `HandleMessage` injects the last
+- Planning runs inside the Conductor: under ADR-012 the Conductor plans via
+  `declare_plan` in its ReAct loop, consuming exactly the history injected
+  into the Conductor (next bullet).
+- History sent to the Conductor: `HandleMessage` and `Resume` inject the last
   `ConductorHistoryWindow` messages (default 20) into the Conductor's
-  ContextManager as prior conversation, so the LLM sees the dialogue context
+  ContextManager as prior conversation (via the ContextManager's
+  `SetPriorConversation` capability), so the LLM sees the dialogue context
   leading up to the current message. Without this, a follow-up like
-  "implement variant a" has no referent. `Resume` does NOT inject history —
-  the Conductor continues the same task and the original request is already
-  the task message.
+  "implement variant a" has no referent. Both paths drop the failed exchange
+  for the same request first (`dropFailedExchangeTail`), so a retried request
+  never appears twice with a failure note in between; goal turns apply the
+  same window without the drop.
 
 On lazy session restore (`getOrRestoreSession`), the history is reconstructed
 from the message store via `convertChatMessagesToLLM` to match what the live
@@ -832,10 +835,9 @@ files for all LLM calls within the session:
 
 ```
 ~/.c0wrk/projects/<projectID>/<sessionID>/dumps/
-├── session_<id>_llm_dump.jsonl       ← router, planner, reflector, title gen, ToolJudge
+├── session_<id>_llm_dump.jsonl       ← router, reflector, title gen, ToolJudge
 └── steps/
-    ├── step_<stepID>.jsonl           ← executor step (initial + retries append to same file)
-    └── step_planner-exploration.jsonl ← planner exploration sub-agent
+    └── step_<stepID>.jsonl           ← executor step (initial + retries append to same file)
 ```
 
 Each `.jsonl` file contains full, untruncated request/response pairs for every LLM

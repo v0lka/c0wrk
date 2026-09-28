@@ -238,7 +238,7 @@ Vector index needs ONNX Runtime plus a quantized embedding model + tokenizer (fe
 .
 ├── desktop/        # Wails app entrypoints, lifecycle, embeds backend.FrontendAPI
 ├── backend/        # App/view-model layer: config/session/project/persistence/workspace services
-├── core/           # Planner/router/reflector/orchestration/tool + MCP wiring
+├── core/           # Orchestrator/router/reflector/orchestration/tool + MCP wiring
 ├── frontend/       # React + TS app and generated Wails JS bindings
 ├── specs/          # System specs: architecture, contracts, domains, decisions (see specs/INDEX.md)
 ├── config.example.yaml
