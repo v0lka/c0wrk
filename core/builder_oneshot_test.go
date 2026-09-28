@@ -28,6 +28,8 @@ func TestServiceReasoningEffort(t *testing.T) {
 		{"qwen3.8 off", "qwen3.8-max", llm.ReasoningTierOff, "Off"},
 		{"qwen3.8 minimal", "qwen3.8-max", llm.ReasoningTierMinimal, "low"},
 		{"bonsai alias off (catalog-first family)", "Bonsai 2 27B", llm.ReasoningTierOff, "Off"},
+		{"deepseek off (title/commit 1-shot tier)", "deepseek-v4-pro", llm.ReasoningTierOff, "Off"},
+		{"deepseek minimal", "deepseek-v4-pro", llm.ReasoningTierMinimal, "High"},
 		{"openai off degrades to minimal", "gpt-5", llm.ReasoningTierOff, "minimal"},
 		{"openai minimal", "gpt-5", llm.ReasoningTierMinimal, "minimal"},
 		{"unknown model fails closed", "totally-unknown-model", llm.ReasoningTierOff, ""},
