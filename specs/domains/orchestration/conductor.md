@@ -90,7 +90,7 @@ The Conductor chooses how to handle a task based on its system prompt, not on a 
 | ------ | -------- |
 | Task is a single read/answer | Handle inline; do not call `delegate`. |
 | Task involves multiple files or subsystems and warrants user sign-off | Call `declare_plan` with `mode: "await_approval"`, then `execute_plan` to run the steps. |
-| A plan step consumes another step's output, artifacts, or decisions | Declare `depends_on` for it. A step with no `depends_on` runs CONCURRENTLY with its siblings — an omitted link is a correctness bug, not a harmless omission; when unsure, declare the dependency (a spurious edge only serializes; a missing edge runs the steps in parallel). |
+| Declaring a plan step's dependencies | EVERY plan task MUST declare `depends_on` — list the prerequisite task ids whose output, artifacts, or decisions it consumes, or declare an explicit `[]` (empty array) for a task with no dependencies; omitting the field fails validation at declaration (a spurious edge only serializes; a missing edge runs the steps in parallel). See [ADR-069](../../decisions/069-plan-step-dependencies-mandatory.md). |
 | Plan-less task needs context optimization | Call `delegate` with one task per coherent unit of work. |
 | Requirements are ambiguous | Call `ask_user` before delegating or implementing. |
 | An interactive skill is active and prescribes an approval gate | Call `declare_plan` with `mode: "await_approval"` before implementing; after approval, run `execute_plan` to execute the steps. |

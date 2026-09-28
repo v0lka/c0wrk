@@ -89,7 +89,10 @@ Direction: Conductor → `delegate` tool → `RunSubAgent` → subagent `Executo
 Conductor
   │
   ├─ tool_call: declare_plan({
-  │    "tasks": [{ id, summary, description, depends_on?, agent? }, ...],
+  │    "tasks": [{ id, summary, description, depends_on, agent? }, ...],
+  │    │              // depends_on is REQUIRED on every task — an explicit
+  │    │              // [] declares independence; omitting the field is
+  │    │              // rejected at both validation layers
   │    "mode": "present" | "await_approval"   // default present
   │  })
   │
@@ -104,7 +107,9 @@ declare_plan.Execute(ctx, input)
   │    it precedes the system-group bypass in the pipeline.
   ├─ validatePlanTasks(tasks): semantic checks the schema cannot express —
   │    every task needs a non-empty id, summary, description; ids must be
-  │    unique; every depends_on entry must reference a declared id. All
+  │    unique; every task must DECLARE depends_on (an absent field or JSON
+  │    null is rejected — an explicit [] declares independence); every
+  │    depends_on entry must reference a declared id. All
   │    violations are reported at once; on failure returns an ErrorResult
   │    BEFORE any persistence/blackboard/approval side effect.
   ├─ Resolve PlanPublisher from ctx (core's conductorPublisher)
@@ -143,8 +148,9 @@ Direction: Conductor → `declare_plan` tool → `PlanPublisher` (blackboard + e
 
 **Behavioral notes:**
 
+- **Mandatory `depends_on` declaration:** every task must state its `depends_on` explicitly; a task with no dependencies declares an empty array `[]`. An omitted field (or JSON `null`, which unmarshals to the same nil slice) is rejected twice: structurally by registry Gate 1 (`depends_on` is in the schema's task-level `required`, so the violation is named as `tasks[2].depends_on` before dispatch) and semantically by `validatePlanTasks` (1-based task number + the `[]` fix). This makes a flat plan a *deliberate declaration* rather than an omission — a declared-flat plan still produces the single wave below. `execute_plan` and the plan-restore path never re-validate presence, so persisted plans from before this rule resume unaffected. See [ADR-069](../decisions/069-plan-step-dependencies-mandatory.md).
 - **Execution-wave echo:** every successful call (both modes) appends the plan's execution waves to the tool result. Waves are computed by Kahn-layering the validated `depends_on` DAG (`planExecutionWaves`, rendered by `formatExecutionWaves`): wave 1 holds every dependency-free step, wave N+1 holds the steps whose prerequisites all completed in waves ≤ N, and steps inside a wave keep their declaration order. The echo looks like `Execution waves: 1=[step_1, step_3] · 2=[step_2] · 3=[step_4]` and makes an under-specified dependency graph visible to the Conductor *before* `execute_plan` fans the steps into concurrency. Acyclicity is guaranteed upstream by `validatePlanTasks`, so the layering is always total.
-- **Single-wave hint (present only):** when a multi-step plan collapses into a single wave (every step dependency-free, so all run concurrently) the `present` result additionally carries a **non-blocking** hint (`IsError: false`): *"All N steps are in a single parallel wave — every step will run concurrently. If any step consumes another's output, re-declare with depends_on before executing."* The hint never fires for a one-step plan, and it is suppressed in `await_approval` mode (the user is already reviewing the plan there; only the wave echo is surfaced, on approval). The validation-error, continuation-hint, and `request_changes` paths are unchanged. The `abandon` path returns the same `IsError: true` result as before, but now first releases this run's plan workflow and settles the abandoned plan's steps as terminal (via the optional `planAbandoner` capability → `AbandonPlan()`; see the abandon invariant in [../domains/orchestration/conductor.md](../domains/orchestration/conductor.md)).
+- **Single-wave hint (present only):** when a multi-step plan collapses into a single wave (every step declared dependency-free, so all run concurrently) the `present` result additionally carries a **non-blocking** hint (`IsError: false`): *"All N steps are in a single parallel wave — every step will run concurrently. If any step consumes another's output, re-declare with depends_on before executing."* The hint never fires for a one-step plan, and it is suppressed in `await_approval` mode (the user is already reviewing the plan there; only the wave echo is surfaced, on approval). The validation-error, continuation-hint, and `request_changes` paths are unchanged. The `abandon` path returns the same `IsError: true` result as before, but now first releases this run's plan workflow and settles the abandoned plan's steps as terminal (via the optional `planAbandoner` capability → `AbandonPlan()`; see the abandon invariant in [../domains/orchestration/conductor.md](../domains/orchestration/conductor.md)).
 
 ### `execute_plan`
 

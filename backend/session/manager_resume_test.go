@@ -1637,7 +1637,7 @@ func declarePlanCall(id string) *llm.ChatResponse {
 			Role:    "assistant",
 			Content: "declaring the plan",
 			ToolCalls: []llm.ToolCall{{ID: id, Name: "declare_plan", Input: json.RawMessage(`{"tasks":[
-				{"id":"s1","summary":"Do the groundwork","description":"s1: do the groundwork"},
+				{"id":"s1","summary":"Do the groundwork","description":"s1: do the groundwork","depends_on":[]},
 				{"id":"s2","summary":"Finish the build","description":"s2: finish the build","depends_on":["s1"]}]}`)}},
 		},
 		StopReason: "tool_use",
