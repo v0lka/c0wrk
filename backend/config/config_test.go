@@ -2802,7 +2802,11 @@ func TestLegacySecuritySchema_RoundTripWipesLegacyKeys(t *testing.T) {
 	}
 	text := string(raw)
 
-	for _, legacyKey := range []string{"tool_policies", "default_policy", "always_allow", "legacy-pattern"} {
+	// "judge-model" is the removed security.judge.model atavism: the legacy
+	// key is silently ignored at load and must be physically erased by the
+	// next Save. (A bare "judge" substring is not a marker — legit fields
+	// like a "mode: judge" enum or maxJudgeCacheSize contain it.)
+	for _, legacyKey := range []string{"tool_policies", "default_policy", "always_allow", "judge-model", "legacy-pattern"} {
 		if strings.Contains(text, legacyKey) {
 			t.Errorf("saved config still contains legacy key %q:\n%s", legacyKey, text)
 		}

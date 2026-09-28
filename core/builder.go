@@ -1010,9 +1010,14 @@ func generateTitleWithCaller(ctx context.Context, caller oneshot.Caller, model s
 	})
 }
 
-// titleContent passes the response content through unchanged: an empty title
-// is a valid result (the backend falls back to first-words text), so the
-// oneshot nudge loop never engages for titles.
+// titleContent passes the response content through unchanged: any content is
+// a valid title (the backend falls back to first-words text for an empty
+// one), so the nudge loop has nothing to repair on a well-formed response.
+// A nil response never reaches this function — oneshot.Do itself treats
+// (nil, nil) as a parse failure — so the nil branch here is unreachable
+// defensive code; the observable behavior for that input is three attempts
+// and a final refusal, not an empty title. Transport errors are returned
+// as-is by Do.
 func titleContent(resp *llm.ChatResponse) (string, error) {
 	if resp == nil {
 		return "", nil

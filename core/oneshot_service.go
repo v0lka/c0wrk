@@ -78,8 +78,12 @@ func bareActiveModel(router *llm.Router) string {
 
 // compactionSummarizeContent passes the summary text through unchanged: any
 // content is a valid summary (the compaction strategy owns its quality
-// judgment), so the oneshot nudge loop never engages for compaction; a nil
-// response yields an empty summary. Transport errors are returned as-is.
+// judgment), so the nudge loop has nothing to repair on a well-formed
+// response. A nil response never reaches this function — oneshot.Do itself
+// treats (nil, nil) as a parse failure — so the nil branch here is
+// unreachable defensive code; the observable behavior for that input is
+// three attempts and a final refusal, not an empty summary. Transport
+// errors are returned as-is.
 func compactionSummarizeContent(resp *llm.ChatResponse) (string, error) {
 	if resp == nil {
 		return "", nil
