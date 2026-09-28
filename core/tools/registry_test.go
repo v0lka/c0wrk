@@ -2903,7 +2903,7 @@ func TestGateOrder_DenyBeforeJudgeAndSymlink(t *testing.T) {
 
 // gateProbePlanSchema mirrors declare_plan's schema shape (the incident that
 // motivated Gate 1's structural validator): a tasks array whose item objects
-// declare id, summary, description as required.
+// declare id, summary, description, and the mandatory depends_on as required.
 const gateProbePlanSchema = `{
 	"type": "object",
 	"properties": {
@@ -2917,7 +2917,7 @@ const gateProbePlanSchema = `{
 					"description": {"type": "string"},
 					"depends_on":  {"type": "array", "items": {"type": "string"}}
 				},
-				"required": ["id", "summary", "description"]
+				"required": ["id", "summary", "description", "depends_on"]
 			}
 		},
 		"mode": {"type": "string"}
@@ -2957,11 +2957,12 @@ func newGateProbeRegistry(t *testing.T) (*ToolRegistry, *gateProbeTool) {
 // carries only a description — no id, no summary — violating the items
 // schema's required fields. The old shallow gate missed this (the top-level
 // "tasks" key was present); the structural validator must reject it naming
-// the nested path.
+// the nested path. Tasks 0 and 1 declare the now-mandatory depends_on so the
+// single remaining violation is tasks[2].
 const gateProbeIncidentInput = `{
 	"tasks": [
-		{"id": "step_1", "summary": "first", "description": "d1"},
-		{"id": "step_2", "summary": "second", "description": "d2"},
+		{"id": "step_1", "summary": "first", "description": "d1", "depends_on": []},
+		{"id": "step_2", "summary": "second", "description": "d2", "depends_on": []},
 		{"description": "no id, no summary"}
 	]
 }`
@@ -2993,7 +2994,7 @@ func TestExecute_Gate1_NestedInvalidInputRejectedBeforeDispatch(t *testing.T) {
 func TestExecute_Gate1_ValidNestedInputDispatches(t *testing.T) {
 	registry, probe := newGateProbeRegistry(t)
 
-	input := json.RawMessage(`{"tasks":[{"id":"step_1","summary":"s","description":"d"}],"mode":"present"}`)
+	input := json.RawMessage(`{"tasks":[{"id":"step_1","summary":"s","description":"d","depends_on":[]}],"mode":"present"}`)
 	result, err := registry.Execute(context.Background(), "gate_probe", input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -3033,7 +3034,7 @@ func TestExecuteUnattended_Gate1_NestedInvalidInputRejectedBeforeDispatch(t *tes
 func TestExecuteUnattended_Gate1_ValidNestedInputDispatches(t *testing.T) {
 	registry, probe := newGateProbeRegistry(t)
 
-	input := json.RawMessage(`{"tasks":[{"id":"step_1","summary":"s","description":"d"}],"mode":"present"}`)
+	input := json.RawMessage(`{"tasks":[{"id":"step_1","summary":"s","description":"d","depends_on":[]}],"mode":"present"}`)
 	result, err := registry.ExecuteUnattended(context.Background(), "gate_probe", input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

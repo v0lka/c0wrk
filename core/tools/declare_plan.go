@@ -11,11 +11,11 @@ import (
 )
 
 const toolDeclarePlanDescription = `Purpose: publish the task roadmap — ordered steps with acceptance criteria — for user sign-off.
-Use when: the user asked to plan first or the task is multi-step; call once before acting. Declare depends_on whenever a step consumes another step's output, artifacts, or decisions; a step with no depends_on runs CONCURRENTLY with its siblings, so an omitted link is a correctness bug, not a harmless omission. When unsure, declare the dependency: a spurious edge only serializes, a missing edge runs the steps in parallel. Approved plans are append-only: never edit or delete.
-Inputs: mode ("present" | "await_approval"); tasks: array of {id (e.g. step_1), summary (label), description (What/How/Where/AC), depends_on (prerequisite ids), agent (Subagent name)}.
+Use when: the user asked to plan first or the task is multi-step; call once before acting. EVERY task MUST declare depends_on: list the prerequisite task ids, or declare [] (empty array) for a task with no dependencies — omitting the field is a validation error. A spurious edge only serializes; a missing edge runs the steps in parallel. Approved plans are append-only: never edit or delete.
+Inputs: mode ("present" | "await_approval"); tasks: array of {id (e.g. step_1), summary (label), description (What/How/Where/AC), depends_on (REQUIRED prerequisite ids; [] = none), agent (Subagent name)}.
 Outputs: "present" displays the plan and continues; "await_approval" blocks for approval.
-Example: step 1 "write failing tests", step 2 "implement" with depends_on ["step_1"].
-Anti-example: a flat plan whose step 1 "write failing tests" and step 2 "implement" both omit depends_on — step 2 consumes step 1's tests yet runs CONCURRENTLY and fails. Also: never implement before approval; single-step tasks need no plan.`
+Example: step 1 "write failing tests", step 2 "implement" with depends_on ["step_1"]; a genuinely independent step 3 declares depends_on [].
+Anti-example: a plan whose step 2 "implement" omits depends_on though it consumes step 1's failing tests — declare ["step_1"] or the steps run CONCURRENTLY and fail. Also: never implement before approval; single-step tasks need no plan.`
 
 // PlanPublisher serializes a plan, persists it to the session plans directory,
 // emits the PlanGenerated event, and sets the plan on the blackboard.
@@ -108,10 +108,10 @@ func NewDeclarePlanTool(approvalFunc ApprovalFunc) *DeclarePlanTool {
 					"id": {"type": "string", "description": "Unique task identifier (e.g. step_1)"},
 					"summary": {"type": "string", "description": "5-7 word label for UI display"},
 					"description": {"type": "string", "description": "Full task description with What/How/Where/Acceptance Criteria"},
-					"depends_on": {"type": "array", "items": {"type": "string"}, "description": "IDs of tasks that must complete before this one. A step with no depends_on runs CONCURRENTLY with its siblings — declare the dependency whenever this step consumes another step's output, artifacts, or decisions; an omitted link is a correctness bug, not a harmless omission (a spurious edge only serializes; a missing edge runs the steps in parallel)."},
+					"depends_on": {"type": "array", "items": {"type": "string"}, "description": "REQUIRED. IDs of tasks that must complete before this one; declare [] (empty array) for a task with no dependencies — omitting the field is a validation error. Declare the dependency whenever this task consumes another task's output, artifacts, or decisions (a spurious edge only serializes; a missing edge runs the steps in parallel)."},
 					"agent": {"type": "string", "description": "Optional Subagent Profile name to execute this step with (e.g. \"code-reviewer\"). When set, the step runs with that profile's system prompt, tools, max-steps, and model instead of the orchestrator defaults. Omit for a generic step."}
 				},
-				"required": ["id", "summary", "description"]
+				"required": ["id", "summary", "description", "depends_on"]
 			}
 		}
 	},
@@ -148,6 +148,15 @@ func validatePlanTasks(tasks []PlanTaskInput) error {
 		}
 		if strings.TrimSpace(task.Description) == "" {
 			problems = append(problems, fmt.Sprintf("task %d: missing required field %q", num, "description"))
+		}
+		// Mandatory declaration: every task must state depends_on explicitly.
+		// JSON absence and null both unmarshal to a nil slice, while an
+		// explicit "no dependencies" declaration ([]) unmarshals to a non-nil
+		// empty slice — so nil here means the field was never declared. This
+		// duplicates the schema-level required check (registry Gate 1) so the
+		// rule also holds for direct Execute paths.
+		if task.DependsOn == nil {
+			problems = append(problems, fmt.Sprintf("task %d: depends_on is required on every task — declare [] (empty array) when the task has no dependencies", num))
 		}
 		if id := strings.TrimSpace(task.ID); id != "" {
 			if first, dup := ids[id]; dup {

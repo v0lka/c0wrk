@@ -45,6 +45,7 @@ func validDeclarePlanInput(t *testing.T) json.RawMessage {
 			"id":          "step_1",
 			"summary":     "A",
 			"description": "Do A",
+			"depends_on":  []string{},
 		}},
 	})
 	if err != nil {
@@ -127,9 +128,11 @@ func marshalPlanInput(t *testing.T, tasks ...map[string]any) json.RawMessage {
 	return raw
 }
 
-// validTask returns a minimal schema-valid task with the given id.
+// validTask returns a minimal schema-valid task with the given id. The empty
+// depends_on is the explicit "no dependencies" declaration the mandatory
+// field requires.
 func validTask(id string) map[string]any {
-	return map[string]any{"id": id, "summary": "Step " + id, "description": "Do " + id}
+	return map[string]any{"id": id, "summary": "Step " + id, "description": "Do " + id, "depends_on": []string{}}
 }
 
 // TestDeclarePlan_Validation_MissingRequiredFields: a task without id,
@@ -301,7 +304,7 @@ func TestDeclarePlan_Validation_BeforeContinuationGuard(t *testing.T) {
 // transitive) dependencies.
 func TestValidatePlanTasks_ValidPlanPasses(t *testing.T) {
 	tasks := []PlanTaskInput{
-		{ID: "step_1", Summary: "A", Description: "Do A"},
+		{ID: "step_1", Summary: "A", Description: "Do A", DependsOn: []string{}},
 		{ID: "step_2", Summary: "B", Description: "Do B", DependsOn: []string{"step_1"}},
 		{ID: "step_3", Summary: "C", Description: "Do C", DependsOn: []string{"step_2"}}, // transitive dep on step_1
 	}
@@ -349,7 +352,7 @@ func TestValidatePlanTasks_CyclesRejected(t *testing.T) {
 	}
 
 	valid := []PlanTaskInput{
-		{ID: "p", Summary: "s", Description: "d"},
+		{ID: "p", Summary: "s", Description: "d", DependsOn: []string{}},
 		{ID: "q", Summary: "s", Description: "d", DependsOn: []string{"p"}},
 	}
 	if err := validatePlanTasks(valid); err != nil {
@@ -523,5 +526,126 @@ func TestDeclarePlan_AwaitApprovalNoHint(t *testing.T) {
 	}
 	if publisher.publishCalls != 1 {
 		t.Errorf("expected exactly 1 publish, got %d", publisher.publishCalls)
+	}
+}
+
+// TestDeclarePlan_Validation_MissingDependsOn: a task that omits depends_on
+// entirely is rejected — independence must be declared explicitly with an
+// empty array — with the 1-based task number and the corrective fix named;
+// nothing is published.
+func TestDeclarePlan_Validation_MissingDependsOn(t *testing.T) {
+	publisher := &stubPlanPublisher{}
+	ctx := WithPlanPublisher(context.Background(), publisher)
+
+	// Task 1 declares [], task 2 omits the field: proves 1-based numbering.
+	res, err := NewDeclarePlanTool(nil).Execute(ctx, marshalPlanInput(t,
+		validTask("step_1"),
+		map[string]any{"id": "step_2", "summary": "B", "description": "Do B"},
+	))
+	if err != nil {
+		t.Fatalf("validation must be a tool result, not a Go error, got: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected IsError result, got: %+v", res)
+	}
+	for _, want := range []string{"task 2", "depends_on", "[]", "declare_plan"} {
+		if !strings.Contains(res.Content, want) {
+			t.Errorf("error should mention %q, got: %q", want, res.Content)
+		}
+	}
+	if publisher.publishCalls != 0 {
+		t.Errorf("invalid plan must not be published, got %d publishes", publisher.publishCalls)
+	}
+}
+
+// TestDeclarePlan_Validation_NullDependsOnRejected: JSON null is not a
+// declaration — it unmarshals to the same nil slice as an absent field, so it
+// is rejected with the same explicit-[] fix instead of passing silently.
+func TestDeclarePlan_Validation_NullDependsOnRejected(t *testing.T) {
+	publisher := &stubPlanPublisher{}
+	ctx := WithPlanPublisher(context.Background(), publisher)
+
+	res, err := NewDeclarePlanTool(nil).Execute(ctx, marshalPlanInput(t,
+		map[string]any{"id": "step_1", "summary": "A", "description": "Do A", "depends_on": nil},
+	))
+	if err != nil {
+		t.Fatalf("validation must be a tool result, not a Go error, got: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected IsError result, got: %+v", res)
+	}
+	for _, want := range []string{"task 1", "depends_on", "[]"} {
+		if !strings.Contains(res.Content, want) {
+			t.Errorf("error should mention %q, got: %q", want, res.Content)
+		}
+	}
+	if publisher.publishCalls != 0 {
+		t.Errorf("invalid plan must not be published, got %d publishes", publisher.publishCalls)
+	}
+}
+
+// TestDeclarePlan_ExplicitEmptyDependsOnPublishes: "depends_on": [] is the
+// explicit independence declaration — the plan publishes, the tasks reach the
+// publisher with a non-nil (empty) DependsOn, and the declared-flat plan still
+// gets the single-wave echo and hint.
+func TestDeclarePlan_ExplicitEmptyDependsOnPublishes(t *testing.T) {
+	publisher := &stubPlanPublisher{}
+	ctx := WithPlanPublisher(context.Background(), publisher)
+
+	res, err := NewDeclarePlanTool(nil).Execute(ctx, marshalPlanInput(t,
+		validTask("step_1"), validTask("step_2"),
+	))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("explicit [] must pass validation, got: %+v", res)
+	}
+	if publisher.publishCalls != 1 {
+		t.Fatalf("expected exactly 1 publish, got %d", publisher.publishCalls)
+	}
+	if len(publisher.lastTasks) != 2 {
+		t.Fatalf("expected 2 published tasks, got %d", len(publisher.lastTasks))
+	}
+	for _, task := range publisher.lastTasks {
+		if task.DependsOn == nil {
+			t.Errorf("task %q: an explicit [] must unmarshal to a non-nil empty slice", task.ID)
+		}
+		if len(task.DependsOn) != 0 {
+			t.Errorf("task %q: expected no dependencies, got %v", task.ID, task.DependsOn)
+		}
+	}
+	if !strings.Contains(res.Content, "Execution waves: 1=[step_1, step_2]") {
+		t.Errorf("declared-flat plan should echo the single wave, got: %q", res.Content)
+	}
+}
+
+// TestUnmarshalDependsOnNilSentinel pins the encoding/json behavior the
+// mandatory-declaration check relies on: an omitted depends_on and a JSON null
+// both leave the slice nil, while an explicit [] yields a non-nil empty slice.
+func TestUnmarshalDependsOnNilSentinel(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		nonNil  bool
+		wantLen int
+	}{
+		{"absent field", `{"id":"a","summary":"s","description":"d"}`, false, 0},
+		{"explicit empty array", `{"id":"a","summary":"s","description":"d","depends_on":[]}`, true, 0},
+		{"dependencies", `{"id":"a","summary":"s","description":"d","depends_on":["x"]}`, true, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var task PlanTaskInput
+			if err := json.Unmarshal([]byte(tc.input), &task); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got := task.DependsOn != nil; got != tc.nonNil {
+				t.Errorf("DependsOn non-nil = %v, want %v", got, tc.nonNil)
+			}
+			if len(task.DependsOn) != tc.wantLen {
+				t.Errorf("len(DependsOn) = %d, want %d", len(task.DependsOn), tc.wantLen)
+			}
+		})
 	}
 }

@@ -171,7 +171,7 @@ func TestRunConductor_PauseMidPlan_ResumeCompletesAllStepsTerminal(t *testing.T)
 	caller := &pauseScriptLLM{script: []pauseScriptStep{
 		// Run 1 (declared plan): publish the roadmap, start executing it.
 		{respond: assistantToolCall("c1", "declare_plan", `{"tasks":[
-			{"id":"s1","summary":"Do the groundwork","description":"s1: do the groundwork"},
+			{"id":"s1","summary":"Do the groundwork","description":"s1: do the groundwork","depends_on":[]},
 			{"id":"s2","summary":"Finish the build","description":"s2: finish the build","depends_on":["s1"]}]}`)},
 		{respond: assistantToolCall("c2", "execute_plan", `{}`)},
 		// s1's subagent: its first LLM call is gated — the test arms the pause
