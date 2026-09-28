@@ -2444,8 +2444,25 @@ type E2SConfig struct {
 	PatchRetries int `yaml:"patch_retries"`
 
 	// ObservationTruncate caps the tool observation fed back to the model per
-	// turn, in characters; longer observations are truncated. Default: 2000.
+	// turn, in characters; longer observations are truncated. It is the
+	// FALLBACK cap used when the loop has no model context window to scale
+	// against (ContextWindowTokens == 0); with a window the token-proportional
+	// budget below takes over. Default: 8000.
 	ObservationTruncate int `yaml:"observation_truncate"`
+
+	// ObservationBudgetTokens is the per-turn observation budget in TOKENS —
+	// the ReAct-scale cap (the executor's tool-result budget is 30K tokens
+	// against a comparable window share). It engages when the loop resolves a
+	// model context window: the effective cap is
+	// min(observation_budget_tokens, observation_fill_fraction × window) × 4
+	// characters. Default: 8192.
+	ObservationBudgetTokens int `yaml:"observation_budget_tokens"`
+
+	// ObservationFillFraction caps the observation budget as a fraction of
+	// the model's context window, so a small-window model gets
+	// proportionally smaller observations. Only meaningful together with
+	// observation_budget_tokens and a resolved window. Default: 0.4.
+	ObservationFillFraction float64 `yaml:"observation_fill_fraction"`
 
 	// RepeatNudgeThreshold is the number of consecutive identical step
 	// actions (same tool + target anchor — the semantic fingerprint of
@@ -2460,6 +2477,48 @@ type E2SConfig struct {
 	// threshold so the model always gets at least one nudge first.
 	// Default: 5.
 	RepeatAbortThreshold int `yaml:"repeat_abort_threshold"`
+
+	// Tools narrows the E2S available-tool catalog: the "Available Tools"
+	// section of every turn's system prompt AND the action-dispatch surface.
+	// The default core preset keeps the relevant local-work core (~19 tools:
+	// local_read + local_write + execute + remote_read groups plus the E2S
+	// system plumbing) instead of the full ~85-tool catalog, so the per-turn
+	// prompt stays within budget for small-context models. Filtering happens
+	// BEFORE the E2S plan/delegation/goal stripping, and every filtered-out
+	// name is also rejected fail-closed at dispatch (the catalog is the
+	// dispatch contract). See core/orchestrator_e2s.go.
+	Tools E2SToolsConfig `yaml:"tools"`
+}
+
+// E2S tool-catalog preset values (must match core.E2SToolsPresetCore /
+// core.E2SToolsPresetAll — backend/config does not import the core package).
+const (
+	// E2SToolsPresetCore keeps the capability groups local_read, local_write,
+	// execute, and remote_read plus the E2S system plumbing tools (batch,
+	// tool_result_read, ask_user, store_fact, search_facts,
+	// read_attachment). This is the DEFAULT.
+	E2SToolsPresetCore = "core"
+	// E2SToolsPresetAll restores the full former surface (every registered
+	// tool minus the goal/plan/delegation stripping that always applies).
+	E2SToolsPresetAll = "all"
+)
+
+// E2SToolsConfig configures the E2S tool-catalog narrowing (e2s.tools).
+type E2SToolsConfig struct {
+	// Preset selects the base catalog: "core" (default — the relevant local
+	// work core described on the E2SConfig.Tools field) or "all" (the full
+	// former surface). Any other value is rejected at config load.
+	Preset string `yaml:"preset"`
+
+	// Allow re-includes specific tools the preset excluded (e.g. the
+	// system-group semantic_search, or one MCP tool). Ignored under
+	// preset=all (nothing left to re-include).
+	Allow []string `yaml:"allow"`
+
+	// Deny removes specific tools from the catalog regardless of the preset
+	// or allow — deny wins over allow. A denied name is absent from the
+	// prompt catalog AND rejected fail-closed at action dispatch.
+	Deny []string `yaml:"deny"`
 }
 
 // ExpandEnvVars expands ${ENV_VAR} patterns in a string with their environment variable values.
@@ -2948,22 +3007,49 @@ func validate(cfg *Config) error {
 	// the model always gets at least one corrective nudge before the loop
 	// aborts. Fail fast at load rather than misbehaving mid-run.
 	for name, v := range map[string]int{
-		"max_steps":              cfg.E2S.MaxSteps,
-		"state_byte_limit":       cfg.E2S.StateByteLimit,
-		"patch_retries":          cfg.E2S.PatchRetries,
-		"observation_truncate":   cfg.E2S.ObservationTruncate,
-		"repeat_nudge_threshold": cfg.E2S.RepeatNudgeThreshold,
-		"repeat_abort_threshold": cfg.E2S.RepeatAbortThreshold,
+		"max_steps":                 cfg.E2S.MaxSteps,
+		"state_byte_limit":          cfg.E2S.StateByteLimit,
+		"patch_retries":             cfg.E2S.PatchRetries,
+		"observation_truncate":      cfg.E2S.ObservationTruncate,
+		"observation_budget_tokens": cfg.E2S.ObservationBudgetTokens,
+		"repeat_nudge_threshold":    cfg.E2S.RepeatNudgeThreshold,
+		"repeat_abort_threshold":    cfg.E2S.RepeatAbortThreshold,
 	} {
 		if v < 0 {
 			return fmt.Errorf("e2s.%s must be >= 0, got %d", name, v)
 		}
+	}
+	if cfg.E2S.ObservationFillFraction < 0 {
+		return fmt.Errorf("e2s.observation_fill_fraction must be >= 0, got %v", cfg.E2S.ObservationFillFraction)
 	}
 	if cfg.E2S.RepeatNudgeThreshold > cfg.E2S.RepeatAbortThreshold {
 		return fmt.Errorf(
 			"e2s.repeat_nudge_threshold (%d) must be <= e2s.repeat_abort_threshold (%d) so a nudge always precedes the abort",
 			cfg.E2S.RepeatNudgeThreshold, cfg.E2S.RepeatAbortThreshold,
 		)
+	}
+	// Validate the E2S tool-catalog narrowing: an unknown preset is a typo,
+	// not a sentinel — reject it at load (the core filter fails closed to the
+	// core preset for anything but "all", so a silent fallback here would
+	// hide the mistake). allow/deny entries must name tools.
+	switch cfg.E2S.Tools.Preset {
+	case E2SToolsPresetCore, E2SToolsPresetAll:
+		// valid
+	default:
+		return fmt.Errorf(
+			"e2s.tools.preset %q is not valid; must be one of: %s, %s",
+			cfg.E2S.Tools.Preset, E2SToolsPresetCore, E2SToolsPresetAll,
+		)
+	}
+	for _, name := range cfg.E2S.Tools.Allow {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("e2s.tools.allow entries must be non-empty tool names")
+		}
+	}
+	for _, name := range cfg.E2S.Tools.Deny {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("e2s.tools.deny entries must be non-empty tool names")
+		}
 	}
 
 	// Validate vector_index.execution_provider enum. ApplyDefaults has

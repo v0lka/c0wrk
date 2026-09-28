@@ -70,6 +70,16 @@ const (
 	CoreKeyStatus       = "status"        // Status string — lifecycle status
 )
 
+// NotesFileName is the file name of the E2S scratchpad inside the session
+// temp directory: the overflow channel for raw data that does not fit the
+// byte-capped Σ (long tool output, dumps, excerpts). Σ stores the distilled
+// facts plus pointers into the file; the file stores the evidence. The full
+// path is derived by Config.withDefaults (<TempDir>/NotesFileName) and
+// rendered into the Workspace section of the system prompt with its usage
+// rules; no dedicated tool exists — the model reaches it through the
+// ordinary write_file/read_file security gates.
+const NotesFileName = "e2s-notes.md"
+
 // coreTypeKind is the internal JSON-type marker used by coreTypes.
 type coreTypeKind string
 

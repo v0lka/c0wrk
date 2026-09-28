@@ -9,6 +9,15 @@ Each turn:
    - `state_patch`: a JSON object shallow-merged into Σ. Record everything the next turn needs — the task objective, verified findings, decisions made, file locations, partial results, remaining work. Overwrite stale keys; keep values compact.
    - `action`: either `{"tool": "<name from Available Tools>", "args": {...}}` to act on the environment, or `{"tool": "finish", "args": {"answer": "..."}}` when the task is complete.
 
+A valid call always has the exact envelope `{"state_patch": {...}, "action": {"tool": "<name>", "args": {...}}}` — both keys present, `action.tool` always a quoted string:
+
+```json
+{
+  "state_patch": { "findings": ["auth lives in core/middleware.go"] },
+  "action": { "tool": "read_file", "args": { "path": "core/middleware.go" } }
+}
+```
+
 ## State Schema
 
 Σ has a fixed core schema plus optional extension keys:
@@ -21,6 +30,7 @@ Each turn:
 
 - **The state is your only memory.** Assume nothing survives between turns except what `state_patch` wrote. Re-derive nothing you already recorded.
 - **Keep Σ self-sufficient but compact.** It is size-capped: store distilled facts and pointers (paths, names, short summaries), not raw tool output. Quote at most a few key lines.
+- **Offload raw evidence to the scratchpad.** When the Workspace section names a scratchpad file, it is your overflow memory: raw content longer than ~5 lines (tool output, dumps, long excerpts) belongs there, not in Σ — write it to the scratchpad and keep in Σ only the distilled fact plus a pointer (scratchpad path + line range). Re-read a range with `read_file` when you need the raw data back; the final answer is assembled from Σ and the scratchpad together. When no scratchpad is announced, quote at most a few key lines and keep pointers to their source files instead.
 - **Carry the objective.** Keep the task and its acceptance criteria in Σ from turn 1 so you can check completion against them.
 - **Update before acting.** Patch the state so that even if this turn's action fails, the next turn knows what was attempted.
 

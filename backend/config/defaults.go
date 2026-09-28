@@ -575,13 +575,24 @@ func ApplyDefaults(cfg *Config) {
 		cfg.E2S.PatchRetries = 1
 	}
 	if cfg.E2S.ObservationTruncate == 0 {
-		cfg.E2S.ObservationTruncate = 2000
+		cfg.E2S.ObservationTruncate = 8000
+	}
+	if cfg.E2S.ObservationBudgetTokens == 0 {
+		cfg.E2S.ObservationBudgetTokens = 8192
+	}
+	if cfg.E2S.ObservationFillFraction == 0 {
+		cfg.E2S.ObservationFillFraction = 0.4
 	}
 	if cfg.E2S.RepeatNudgeThreshold == 0 {
 		cfg.E2S.RepeatNudgeThreshold = 3
 	}
 	if cfg.E2S.RepeatAbortThreshold == 0 {
 		cfg.E2S.RepeatAbortThreshold = 5
+	}
+	// E2S tool catalog: the core preset is the default (the relevant
+	// local-work core); allow/deny default to empty sets.
+	if cfg.E2S.Tools.Preset == "" {
+		cfg.E2S.Tools.Preset = E2SToolsPresetCore
 	}
 
 	// Self-update defaults. Enabled is the master switch and defaults to true

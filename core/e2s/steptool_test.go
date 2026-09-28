@@ -102,50 +102,80 @@ func TestParseStepCall_Finish(t *testing.T) {
 
 func TestParseStepCall_Errors(t *testing.T) {
 	tests := []struct {
-		name     string
-		calls    []llm.ToolCall
-		wantErr  error
-		wantText string
+		name      string
+		calls     []llm.ToolCall
+		wantErr   error
+		wantTexts []string
 	}{
 		{
-			name:    "no tool calls",
-			calls:   nil,
-			wantErr: nil,
+			name:      "no tool calls",
+			calls:     nil,
+			wantTexts: []string{"no tool call", "every turn must call e2s_step exactly once", stepEnvelope},
 		},
 		{
-			name:  "wrong tool name",
-			calls: []llm.ToolCall{{ID: "c", Name: "read_file", Input: json.RawMessage(`{}`)}},
+			name:      "wrong tool name",
+			calls:     []llm.ToolCall{{ID: "c", Name: "read_file", Input: json.RawMessage(`{}`)}},
+			wantTexts: []string{`unexpected tool "read_file"`, "the only tool you may call is e2s_step", stepEnvelope},
 		},
 		{
-			name:  "malformed envelope JSON",
-			calls: []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{not json`)}},
+			name:      "malformed envelope JSON",
+			calls:     []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{not json`)}},
+			wantTexts: []string{"invalid e2s_step input JSON", stepEnvelope},
 		},
 		{
-			name:  "missing action",
-			calls: []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{"state_patch":{}}`)}},
+			name:      "missing action",
+			calls:     []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{"state_patch":{}}`)}},
+			wantTexts: []string{"e2s_step.action is required", stepEnvelope},
 		},
 		{
-			name:    "empty tool",
-			calls:   []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{"action":{"tool":"","args":{}}}`)}},
-			wantErr: ErrActionEmpty,
+			name:      "action is explicit null",
+			calls:     []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{"action":null}`)}},
+			wantTexts: []string{"e2s_step.action is required", stepEnvelope},
 		},
 		{
-			name:  "args not an object",
-			calls: []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{"action":{"tool":"x","args":[1,2]}}`)}},
+			name:      "action is not an object",
+			calls:     []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{"action":[1,2]}`)}},
+			wantTexts: []string{"e2s_step.action must be an object", stepActionEnvelope},
 		},
 		{
-			name:  "args malformed JSON",
-			calls: []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{"action":{"tool":"x","args":{"a":}}}`)}},
+			name:      "action without tool",
+			calls:     []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{"action":{"args":{}}}`)}},
+			wantErr:   ErrActionEmpty,
+			wantTexts: []string{"e2s_step.action.tool is required", `"finish"`, stepActionEnvelope},
 		},
 		{
-			name:    "finish without answer field",
-			calls:   []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{"action":{"tool":"finish","args":{}}}`)}},
-			wantErr: ErrActionNoAnswer,
+			name:      "empty tool",
+			calls:     []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{"action":{"tool":"","args":{}}}`)}},
+			wantErr:   ErrActionEmpty,
+			wantTexts: []string{"e2s_step.action.tool is required", stepActionEnvelope},
 		},
 		{
-			name:     "finish with non-string answer",
-			calls:    []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{"action":{"tool":"finish","args":{"answer":7}}}`)}},
-			wantText: "answer must be a string",
+			name:      "tool is not a string",
+			calls:     []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{"action":{"tool":123,"args":{}}}`)}},
+			wantTexts: []string{"e2s_step.action.tool must be a string", "got: 123"},
+		},
+		{
+			name:      "args not an object",
+			calls:     []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{"action":{"tool":"x","args":[1,2]}}`)}},
+			wantTexts: []string{"e2s_step.action.args must be a JSON object", stepActionEnvelope, "[1,2]"},
+		},
+		{
+			// Malformed nested JSON fails the whole-document unmarshal, so it
+			// surfaces as an envelope-level error (still with the form shown).
+			name:      "args malformed JSON",
+			calls:     []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{"action":{"tool":"x","args":{"a":}}}`)}},
+			wantTexts: []string{"invalid e2s_step input JSON", stepEnvelope},
+		},
+		{
+			name:      "finish without answer field",
+			calls:     []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{"action":{"tool":"finish","args":{}}}`)}},
+			wantErr:   ErrActionNoAnswer,
+			wantTexts: []string{"requires an answer"},
+		},
+		{
+			name:      "finish with non-string answer",
+			calls:     []llm.ToolCall{{ID: "c", Name: StepToolName, Input: json.RawMessage(`{"action":{"tool":"finish","args":{"answer":7}}}`)}},
+			wantTexts: []string{"answer must be a string"},
 		},
 	}
 
@@ -158,8 +188,10 @@ func TestParseStepCall_Errors(t *testing.T) {
 			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
 				t.Errorf("err = %v, want wrapping %v", err, tt.wantErr)
 			}
-			if tt.wantText != "" && !strings.Contains(err.Error(), tt.wantText) {
-				t.Errorf("err = %v, want text %q", err, tt.wantText)
+			for _, want := range tt.wantTexts {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("err = %v, want text %q", err, want)
+				}
 			}
 		})
 	}

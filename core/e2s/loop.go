@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -124,10 +126,28 @@ type Config struct {
 	// e2s.max_steps; 16 when the config supplies no value (withDefaults
 	// fallback).
 	MaxSteps int
-	// MaxObservationChars caps an observation fed back to the model. Default
-	// 4000 runes when the config supplies no value (withDefaults fallback);
-	// the shipped e2s.observation_truncate default is 2000.
+	// MaxObservationChars caps an observation fed back to the model, in
+	// characters. It is the FALLBACK cap used when ContextWindowTokens == 0
+	// (no window to scale the budget against): Default 8000 runes when the
+	// config supplies no value (withDefaults fallback, mirroring the shipped
+	// e2s.observation_truncate default). With a resolved window the
+	// token-proportional budget below takes over.
 	MaxObservationChars int
+	// ObservationBudgetTokens is the per-turn observation budget in TOKENS —
+	// the ReAct-scale cap (the executor's tool-result budget is 30K tokens
+	// against a comparable window share; DefaultToolResultBudget). It engages
+	// only when ContextWindowTokens > 0: the effective per-observation cap is
+	// then min(ObservationBudgetTokens, ObservationFillFraction ×
+	// ContextWindowTokens) × 4 characters. Default 8192
+	// (e2s.observation_budget_tokens); values <= 0 fall back to the default.
+	ObservationBudgetTokens int
+	// ObservationFillFraction caps the observation budget as a fraction of
+	// the model's context window, so a small-window model gets
+	// proportionally smaller observations (default 0.4 — the executor's
+	// MaxFillFraction share). Only meaningful together with
+	// ContextWindowTokens > 0; ignored otherwise. Default 0.4
+	// (e2s.observation_fill_fraction); values <= 0 fall back to the default.
+	ObservationFillFraction float64
 	// StateByteLimit caps the JSON-encoded Σ (ApplyPatch's byte limit).
 	// Default DefaultStateByteLimit. A patch whose merged Σ exceeds the cap
 	// is rejected (validation error path: bounded retry, then error
@@ -161,18 +181,6 @@ type Config struct {
 	// mandates the directive for every model-facing loop, not just the
 	// Conductor.
 	InjectionDefense bool
-	// AgentSections carries pre-rendered "## Available Subagents" /
-	// "## Requested Subagents" prompt sections (the host renders them from
-	// the discovered profile catalog and any explicit #agent mentions).
-	// Appended after the delegation directive so explicit user requests keep
-	// their mandatory-delegation force in E2S mode.
-	AgentSections string
-	// FinishGuard, when non-nil, is consulted before a finish action is
-	// accepted. A non-nil error vetoes the finish for that turn: the error
-	// becomes the next observation and the run continues (the model must
-	// resolve the blocker — e.g. pending async delegations — or finish
-	// later). Mirrors the executor's finish-join guard.
-	FinishGuard func(ctx context.Context) error
 	// EditVerify, when non-nil, is the config-authored verify-on-edit
 	// runner: after any turn whose action (or batch sub-call) contains a
 	// successful write_file/edit_file, the runner executes once and its
@@ -210,9 +218,19 @@ type Config struct {
 	// of the system prompt.
 	WorkspacePath string
 	TempDir       string
-	// DelegateDirective is an optional "## Delegation" section body for the
-	// system prompt (e.g. how/when to use the delegate tool).
-	DelegateDirective string
+	// NotesPath is the session scratchpad file — the sanctioned overflow
+	// channel for raw data that does not fit the byte-capped Σ (long tool
+	// output, dumps, excerpts). The Workspace section of the system prompt
+	// renders the path plus its usage rules: raw content beyond a few lines
+	// is appended to the file, Σ keeps only distilled facts and pointers
+	// (path + line range), and the final answer is assembled from both. The
+	// model reaches the file through the ordinary write_file/read_file tools,
+	// so every write/read passes the standard security gates — no dedicated
+	// tool and no new policy exists. Empty disables the section. withDefaults
+	// derives it as <TempDir>/NotesFileName when unset, so runE2SWithState —
+	// which already threads the session temp dir through TempDir — provides
+	// the scratchpad for free; a run without a temp dir has no scratchpad.
+	NotesPath string
 	// Skills are the active skill sections injected into the system prompt.
 	Skills []SkillSection
 	// ContentBlocks, when non-empty, are attached to every turn's user message
@@ -245,7 +263,13 @@ func (c Config) withDefaults() Config {
 		c.MaxSteps = 16
 	}
 	if c.MaxObservationChars <= 0 {
-		c.MaxObservationChars = 4000
+		c.MaxObservationChars = 8000
+	}
+	if c.ObservationBudgetTokens <= 0 {
+		c.ObservationBudgetTokens = 8192
+	}
+	if c.ObservationFillFraction <= 0 {
+		c.ObservationFillFraction = 0.4
 	}
 	if c.StateByteLimit <= 0 {
 		c.StateByteLimit = DefaultStateByteLimit
@@ -258,6 +282,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.PatchRetries <= 0 {
 		c.PatchRetries = 1
+	}
+	if c.NotesPath == "" && c.TempDir != "" {
+		c.NotesPath = filepath.Join(c.TempDir, NotesFileName)
 	}
 	if c.SpinAbortThreshold <= c.SpinNudgeThreshold {
 		// Fail-safe ordering: abort must strictly exceed nudge so the model
@@ -273,6 +300,26 @@ func (c Config) withDefaults() Config {
 // value — a zero MaxSteps means "compiled-in default", not "zero turns".
 func EffectiveMaxSteps(cfg Config) int {
 	return cfg.withDefaults().MaxSteps
+}
+
+// EffectiveObservationCapChars reports the per-observation cap in characters
+// a run with this config would use (withDefaults applied). With a resolved
+// context window (ContextWindowTokens > 0) the cap is token-proportional —
+// min(ObservationBudgetTokens, ObservationFillFraction × ContextWindowTokens)
+// tokens at ~4 chars/token — so an observation can breathe with the model's
+// window instead of the fixed 2000-char cap that truncated 77% of turns.
+// Without a window (ContextWindowTokens == 0) there is nothing to scale
+// against and the plain MaxObservationChars cap applies. Hosts that render
+// or reason about the cap must use this, not the raw config fields — a zero
+// budget/fraction means "compiled-in default", not "zero characters".
+func EffectiveObservationCapChars(cfg Config) int {
+	c := cfg.withDefaults()
+	if c.ContextWindowTokens <= 0 {
+		return c.MaxObservationChars
+	}
+	budgetTokens := float64(c.ObservationBudgetTokens)
+	fillTokens := c.ObservationFillFraction * float64(c.ContextWindowTokens)
+	return int(math.Min(budgetTokens, fillTokens) * 4)
 }
 
 // stepResult is the outcome of one turn's LLM interaction: either a valid
@@ -433,14 +480,7 @@ func (l *Loop) Run(ctx context.Context) (*Result, error) {
 			}
 			return l.checkpoint(RunStatusFailed, state, turn-1, steps), res.fatal
 		}
-		// Finish-guard veto is computed BEFORE reportResponse so a rejected
-		// finish never emits its answer as an assistant message (the UI must
-		// not show a delivered answer for a run that continues).
-		var finishVeto error
-		if res.invalid == nil && res.call.Action.IsFinish() && l.cfg.FinishGuard != nil {
-			finishVeto = l.cfg.FinishGuard(ctx)
-		}
-		l.reportResponse(turn, res, finishVeto == nil)
+		l.reportResponse(turn, res, true)
 
 		// Invalid turn (both attempts failed): the error becomes the next
 		// observation; Σ is untouched (ApplyPatch never mutated it), nothing
@@ -466,27 +506,8 @@ func (l *Loop) Run(ctx context.Context) (*Result, error) {
 			l.emitState(turn, state)
 		}
 
-		// Finish: intercepted by the loop, never dispatched. The finish
-		// guard (when configured) vets the finish first — e.g. pending
-		// async delegations must not be silently abandoned. A veto is NOT a
-		// validation error (no retry budget consumed): the reason becomes
-		// the next observation and the run continues.
+		// Finish: intercepted by the loop, never dispatched.
 		if res.call.Action.IsFinish() {
-			if finishVeto != nil {
-				steps = append(steps, agent.Step{
-					Thought:     res.thought,
-					Action:      llm.ToolCall{ID: res.call.ID, Name: FinishActionName},
-					Observation: "finish rejected: " + finishVeto.Error(),
-					IsError:     true,
-				})
-				l.syncTrajectory(steps)
-				observation = "finish rejected: " + finishVeto.Error()
-				l.emit(func(e Emitter) {
-					e.ExecutorDiagnostic(turn, "finish_vetoed", map[string]any{"error": finishVeto.Error()})
-				})
-				l.emit(func(e Emitter) { e.StepComplete(turn, time.Since(started)) })
-				continue
-			}
 			steps = append(steps, agent.Step{
 				Thought: res.thought,
 				Action: llm.ToolCall{
@@ -690,8 +711,8 @@ func mustMarshalString(s string) string {
 }
 
 // reportResponse emits the per-response events: the finish answer as
-// assistant chunk/done (only when the finish is actually accepted — a
-// guard-vetoed finish must not render as a delivered answer), the turn
+// assistant chunk/done (emitAnswer is the accepted-finish gate; finishes are
+// never vetoed here, so hosts pass true), the turn
 // thought, and the flat context fill.
 func (l *Loop) reportResponse(turn int, res stepResult, emitAnswer bool) {
 	if emitAnswer && res.call.Action.IsFinish() && res.call.Action.Answer != "" {
@@ -773,12 +794,16 @@ func (l *Loop) dispatch(ctx context.Context, turn int, thought string, call Step
 		}
 	}
 
-	truncated := strutil.TruncateUTF8(observation, l.cfg.MaxObservationChars)
+	// The effective observation cap (token-proportional with a resolved
+	// window, plain chars fallback without one) governs both the single path
+	// and the batch join barrier below.
+	capChars := EffectiveObservationCapChars(l.cfg)
+	truncated := strutil.TruncateUTF8(observation, capChars)
 	// Cache-on-truncate: the full raw result goes into the shared cache and
 	// the standard fragmentation nudge (identical format to the Conductor's
 	// executor) tells the model how to recover the dropped content via
 	// tool_result_read. Without a cache the legacy plain truncation applies.
-	if l.cfg.ToolCache != nil && utf8.RuneCountInString(observation) > l.cfg.MaxObservationChars {
+	if l.cfg.ToolCache != nil && utf8.RuneCountInString(observation) > capChars {
 		meta := agent.ToolCacheMeta{Input: string(call.Action.Args)}
 		hash := l.cfg.ToolCache.Store(call.Action.Tool, observation, meta)
 		truncated += agent.FormatFragmentationNudge(hash, call.Action.Tool, 0)
@@ -800,7 +825,7 @@ func (l *Loop) dispatch(ctx context.Context, turn int, thought string, call Step
 	// observation's length) beside the preview body, so a capped preview makes
 	// the card self-contradictory and leaves the tail of the result unreachable
 	// (a "Show more" that reveals nothing). Truncation for the MODEL context
-	// (truncated, MaxObservationChars + cache-on-truncate) happens above and is
+	// (truncated, effective observation cap + cache-on-truncate) happens above and is
 	// untouched.
 	if rawPreview == "" {
 		rawPreview = observation
@@ -850,7 +875,10 @@ func (l *Loop) executeSingle(ctx context.Context, tool string, args json.RawMess
 // dispatchBatch executes the batch meta-tool's sub-calls sequentially. Each
 // sub-call runs the full single-dispatch path — schema validation (against
 // the sub-tool's own schema), registry execution with every security gate,
-// and per-sub-call untrusted wrapping by tool class — and the numbered
+// per-sub-result cache-on-truncate (an oversized sub-result is cached IN
+// FULL under its own hash so the model pages through it via
+// tool_result_read instead of re-running the tool), and per-sub-call
+// untrusted wrapping by tool class — and the numbered
 // results are joined into one observation. Per-call errors never abort the
 // batch (mirroring the executor's batch semantics); nested batch and the
 // E2S envelope targets (e2s_step, finish) are rejected fail-closed: finish
@@ -870,6 +898,11 @@ func (l *Loop) dispatchBatch(ctx context.Context, args json.RawMessage) (observa
 	if len(input.Calls) == 0 {
 		return "batch: no calls provided (empty calls array)", true, "", false
 	}
+
+	// capChars is the same effective observation cap a single action sees;
+	// each oversized sub-result is truncated against it individually, and
+	// the joined observation goes through it once more as the last barrier.
+	capChars := EffectiveObservationCapChars(l.cfg)
 
 	// sb carries the model-facing join (each untrusted sub-result wrapped);
 	// raw carries the same join pre-wrap for the UI preview — the
@@ -908,13 +941,29 @@ func (l *Loop) dispatchBatch(ctx context.Context, args json.RawMessage) (observa
 		} else if agent.IsFileEditTool(sub.Tool) {
 			editSucceeded = true
 		}
-		rawContent := content
-		if l.registry.IsToolUntrusted(sub.Tool) {
-			content = untrustedWrap(sub.Tool, content)
+		// Per-sub-result cache-on-truncate (mirrors the single-action path):
+		// an oversized sub-result is truncated against the cap and cached IN
+		// FULL under its OWN hash with the standard fragmentation nudge —
+		// three big reads yield three independently recoverable fragments
+		// instead of one join-level cache entry keyed on the whole (itself
+		// truncated) join. Without a cache the plain truncation applies.
+		// The join-level cap in dispatch stays the LAST barrier for a batch
+		// whose combined results still overflow it.
+		modelContent := content
+		if utf8.RuneCountInString(content) > capChars {
+			modelContent = strutil.TruncateUTF8(content, capChars)
+			if l.cfg.ToolCache != nil {
+				meta := agent.ToolCacheMeta{Input: string(sub.Input)}
+				hash := l.cfg.ToolCache.Store(sub.Tool, content, meta)
+				modelContent += agent.FormatFragmentationNudge(hash, sub.Tool, 0)
+			}
 		}
-		sb.WriteString(content)
+		if l.registry.IsToolUntrusted(sub.Tool) {
+			modelContent = untrustedWrap(sub.Tool, modelContent)
+		}
+		sb.WriteString(modelContent)
 		sb.WriteString("\n\n")
-		raw.WriteString(rawContent)
+		raw.WriteString(content)
 		raw.WriteString("\n\n")
 	}
 	return strings.TrimRight(sb.String(), "\n"), anyError, strings.TrimRight(raw.String(), "\n"), editSucceeded

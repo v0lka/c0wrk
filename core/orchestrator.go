@@ -502,13 +502,6 @@ type Orchestrator struct {
 	// defaultGoalTurnRunner, which reuses runConductor under the hood.
 	goalTurnRunner func(ctx context.Context, turn int, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message, deps conductorDeps) (toolCallCount int, result *orchestration.ExecutionResult, err error)
 
-	// e2sLauncher overrides the delegation launcher injected into the E2S
-	// loop's context (test seam, mirroring goalTurnRunner). The default (nil)
-	// resolves to the standard conductorLauncher built over conductorDeps —
-	// the SAME launcher a Conductor run uses, so delegated subagents inherit
-	// identical wiring (executor options, security gates, resolvers).
-	e2sLauncher tools.DelegationLauncher
-
 	// goalVerifier is the independent verifier that re-checks an agent's "met"
 	// goal verdict. When the goal loop reaches a "met" verdict and independent
 	// verification is configured (config.GoalLoop.Verification == "independent"),

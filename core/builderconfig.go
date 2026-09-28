@@ -652,12 +652,51 @@ type BuilderE2SConfig struct {
 	StateByteLimit int
 	// PatchRetries bounds the corrective re-requests for a rejected patch.
 	PatchRetries int
-	// MaxObservationChars caps the per-turn observation fed back to the model.
+	// MaxObservationChars caps the per-turn observation fed back to the model
+	// (the char fallback used when no model window is resolved).
 	MaxObservationChars int
+	// ObservationBudgetTokens is the per-turn observation budget in tokens
+	// (token-proportional mode, engaged when the loop resolves a window).
+	ObservationBudgetTokens int
+	// ObservationFillFraction caps the observation budget as a fraction of
+	// the model context window.
+	ObservationFillFraction float64
 	// RepeatNudgeThreshold / RepeatAbortThreshold are the anti-spin
 	// thresholds (identical consecutive actions before a nudge / an abort).
 	RepeatNudgeThreshold int
 	RepeatAbortThreshold int
+	// Tools narrows the E2S available-tool catalog (preset + allow/deny).
+	// See filterE2SToolsByConfig in core/orchestrator_e2s.go — the filter
+	// runs before the E2S plan/delegation stripping, and the resulting
+	// catalog is the dispatch contract (filtered-out names are rejected
+	// fail-closed at action dispatch).
+	Tools BuilderE2SToolsConfig
+}
+
+// E2S tool-catalog preset values (mirrored by backend/config's
+// E2SToolsPresetCore / E2SToolsPresetAll — core never imports backend/config,
+// so the two constant sets must stay in sync; the config layer validates the
+// value at load, and the core filter treats anything but "all" as core —
+// fail-closed to the narrower surface).
+const (
+	// E2SToolsPresetCore keeps the local_read + local_write + execute +
+	// remote_read capability groups plus the E2S system plumbing tools.
+	E2SToolsPresetCore = "core"
+	// E2SToolsPresetAll restores the full former tool surface.
+	E2SToolsPresetAll = "all"
+)
+
+// BuilderE2SToolsConfig mirrors config.E2SToolsConfig — the E2S tool-catalog
+// narrowing knobs. core never imports backend/config, so the values are
+// copied field-by-field via ToBuilderConfig.
+type BuilderE2SToolsConfig struct {
+	// Preset selects the base catalog: "core" (default) or "all". Any other
+	// value is treated as core (fail-closed to the narrower surface).
+	Preset string
+	// Allow re-includes tools the preset excluded.
+	Allow []string
+	// Deny removes tools with precedence over the preset and allow.
+	Deny []string
 }
 
 // ---------------------------------------------------------------------------
