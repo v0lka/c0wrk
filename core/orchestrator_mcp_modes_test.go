@@ -92,6 +92,10 @@ func TestMCPModesLiveSnapshot_ExistingOrchestratorBoundaries(t *testing.T) {
 					o.SetTaskStore(nil) // This case exercises explicit nonpersistent callers.
 					o.bbFactory = nil
 					o.config.E2S.Enabled = true
+					// The `all` preset keeps the MCP probe in the E2S catalog so
+					// the assertions target the per-server MODE gate, not the
+					// slim default catalog that excludes MCP tools.
+					o.config.E2S.Tools = BuilderE2SToolsConfig{Preset: E2SToolsPresetAll}
 				}
 				for round, mode := range []string{transition.from, transition.to} {
 					wantMode = mode

@@ -1787,11 +1787,24 @@ orchestration:
 #   # Σ) may be re-requested from the model before the failure becomes an
 #   # error observation (the run continues with Σ unchanged). Default: 1.
 #   patch_retries: 1
-#   # Cap on the tool observation fed back to the model each turn, in
-#   # characters (longer observations are truncated; the full content is
+#   # Fallback cap on the tool observation fed back to the model each turn,
+#   # in characters (longer observations are truncated; the full content is
 #   # cached and the truncation nudge lets the model page through it via
-#   # tool_result_read). Default: 2000.
-#   observation_truncate: 2000
+#   # tool_result_read). Used only when the loop has no model context window
+#   # to scale against; with a window the token-proportional budget below
+#   # takes over. Default: 8000.
+#   observation_truncate: 8000
+#   # Per-turn observation budget in TOKENS — the ReAct-scale cap (the
+#   # executor's tool-result budget is 30K tokens against a comparable
+#   # window share). Engages when the loop resolves a model context window:
+#   # the effective cap is min(observation_budget_tokens,
+#   # observation_fill_fraction × window) × 4 characters. Default: 8192.
+#   observation_budget_tokens: 8192
+#   # Observation budget as a fraction of the model's context window, so a
+#   # small-window model gets proportionally smaller observations. Only
+#   # meaningful together with observation_budget_tokens and a resolved
+#   # window. Default: 0.4.
+#   observation_fill_fraction: 0.4
 #   # Anti-spin: consecutive semantically identical step actions before a
 #   # corrective nudge observation is injected instead of dispatching the
 #   # redundant action again. The fingerprint is SEMANTIC — tool + the
@@ -1806,6 +1819,31 @@ orchestration:
 #   # run is aborted as a spin. Must be >= the nudge threshold so the model
 #   # always gets at least one nudge first. Default: 5.
 #   repeat_abort_threshold: 5
+#   # Tool catalog narrowing. E2S renders an "Available Tools" catalog into
+#   # EVERY turn's system prompt (each turn is a fresh one-shot dialog), so
+#   # the catalog size is a per-turn prompt cost. The default core preset
+#   # keeps the relevant local-work core (~19 tools: the local_read +
+#   # local_write + execute + remote_read capability groups plus the E2S
+#   # system plumbing — batch, tool_result_read, ask_user, store_fact,
+#   # search_facts, read_attachment) instead of the full ~85-tool surface
+#   # (dominated by MCP endpoints), keeping the system prompt within budget
+#   # for small-context models. Filtering happens before the E2S
+#   # plan/delegation stripping, and the resulting catalog is the DISPATCH
+#   # contract: a filtered-out name is rejected fail-closed if the model
+#   # tries to dispatch it.
+#   tools:
+#     # Base catalog: "core" (default) or "all" (the full former surface —
+#     # every registered tool minus the plan/delegation/goal stripping that
+#     # always applies).
+#     preset: core
+#     # allow: re-include specific tools the preset excluded (e.g. the
+#     # system-group semantic_search, or one MCP tool by name). Ignored
+#     # under preset=all.
+#     allow: []
+#     # deny: remove specific tools regardless of preset or allow — deny
+#     # wins over allow. A denied name is absent from the catalog AND
+#     # rejected at action dispatch.
+#     deny: []
 
 # ---------------------------------------------------------------------------
 # Go runtime tunables (process-level; consumed once at startup)

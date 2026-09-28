@@ -174,8 +174,8 @@ var InjectionDefense string
 // E2S system directive — the compact core prompt for the E2S execution loop
 // (core/e2s). Defines the agent role, the e2s_step protocol (state_patch +
 // action), state discipline, acting/finishing rules. The loop's prompt
-// builder (core/e2s/prompt.go) appends the workspace, available-tools,
-// delegation, and active-skills sections around this directive.
+// builder (core/e2s/prompt.go) appends the workspace, available-tools, and
+// active-skills sections around this directive.
 
 //go:embed e2s.md
 var E2SSystem string
@@ -185,7 +185,7 @@ var E2SSystem string
 // verbose orchestrator directive for a compact one). The orchestrator's E2S
 // integration selects it when the Model Profiles profile's SystemPrompt variant
 // is active; the surrounding sections (verification/injection directives,
-// workspace, tools, delegation, skills) are appended unchanged by the same
+// workspace, tools, skills) are appended unchanged by the same
 // prompt builder.
 
 //go:embed e2s-lite.md

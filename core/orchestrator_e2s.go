@@ -11,7 +11,6 @@ import (
 	"github.com/v0lka/c0wrk/core/e2s"
 	"github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/c0wrk/core/units"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -32,31 +31,42 @@ var ErrE2SGoalConflict = errors.New("e2s: E2S and Goal modes are mutually exclus
 // side effect: a direct core caller cannot run E2S while the mode is disabled.
 var ErrE2SModeDisabled = errors.New("e2s: E2S mode is disabled — enable experimental features to use it")
 
-// e2sStrippedToolNames are the plan-workflow tools removed from the E2S
-// available-tool catalog. E2S replaces the plan/roadmap machinery with the
-// explicit state Σ + checklist: declare_plan/execute_plan would resurrect a
-// parallel plan workflow over the same task, declare_step_complete targets
-// plan steps that cannot exist here, update_checklist writes the per-step
-// todo list (in E2S the Σ "checklist" core key IS the checklist, and the
-// tool's StepTodoUpdate event has no consumer here), and reflect replays a
-// trajectory the E2S protocol already externalizes into Σ. (Goal-only tools
-// are stripped by tools.StripGoalModeTools, applied alongside this set.)
+// e2sStrippedToolNames are the plan-workflow and delegation tools removed
+// from the E2S available-tool catalog. E2S is SELF-SUFFICIENT: it replaces
+// the plan/roadmap machinery with the explicit state Σ + checklist, and it
+// does not delegate — declare_plan/execute_plan would resurrect a parallel
+// plan workflow over the same task, declare_step_complete targets plan steps
+// that cannot exist here, update_checklist writes the per-step todo list (in
+// E2S the Σ "checklist" core key IS the checklist, and the tool's
+// StepTodoUpdate event has no consumer here), and reflect replays a
+// trajectory the E2S protocol already externalizes into Σ. The delegation
+// pair (delegate, cancel_delegation) and the blackboard step-store trio
+// (read_step_output, list_step_outputs, read_final_result) exist only to
+// serve launched subagents and their parent — with delegation gone from E2S
+// they have no consumer, so they leave the catalog with it. The remaining
+// blackboard stores (store_fact, search_facts, read_attachment) STAY: they
+// are E2S's external memory. (Goal-only tools are stripped by
+// tools.StripGoalModeTools, applied alongside this set.)
 //
-// These names without a core constant (declare_plan, execute_plan, reflect)
-// are referenced as literals because no constant is exported for them — the
-// same convention as verifierExcludedToolNames.
+// These names without a core constant (declare_plan, execute_plan, reflect,
+// delegate, …) are referenced as literals because no constant is exported
+// for them — the same convention as verifierExcludedToolNames.
 var e2sStrippedToolNames = map[string]struct{}{
 	"declare_plan":          {},
 	"execute_plan":          {},
 	ToolDeclareStepComplete: {},
 	ToolUpdateChecklist:     {},
 	"reflect":               {},
+	"delegate":              {},
+	"cancel_delegation":     {},
+	"read_step_output":      {},
+	"list_step_outputs":     {},
+	"read_final_result":     {},
 }
 
-// stripE2SUnavailableTools removes the plan-workflow tools from a descriptor
-// list, leaving everything else (file/search/execute tools, delegate,
-// cancel_delegation, memory, ask_user …) available to the E2S action
-// dispatch.
+// stripE2SUnavailableTools removes the plan-workflow and delegation tools
+// from a descriptor list, leaving everything else (file/search/execute
+// tools, memory, ask_user …) available to the E2S action dispatch.
 func stripE2SUnavailableTools(in []sdktools.ToolDescriptor) []sdktools.ToolDescriptor {
 	if len(in) == 0 {
 		return in
@@ -71,15 +81,118 @@ func stripE2SUnavailableTools(in []sdktools.ToolDescriptor) []sdktools.ToolDescr
 	return out
 }
 
+// e2sCorePresetGroups are the capability groups the default core preset
+// keeps: the local file/search surface, local writes, command execution,
+// and remote reads — the relevant core of a coding task. Everything else is
+// left out: MCP tools (local_mcp/remote_mcp groups — often dozens of GitHub/
+// PR endpoints), remote_write, and the orchestration-heavy system group
+// (whose useful members are re-included by name via e2sCorePresetTools).
+// A tool with an UNDECLARED group ("") matches no group — fail-closed per
+// ADR-024, consistent with the security policy's group matching.
+//
+// The group ALONE determines preset membership — never a tool-name list —
+// mirroring the ADR-024 rule that policy and toolsets key off capability
+// groups.
+var e2sCorePresetGroups = map[sdktools.ToolGroup]struct{}{
+	sdktools.GroupLocalRead:  {},
+	sdktools.GroupLocalWrite: {},
+	sdktools.GroupExecute:    {},
+	sdktools.GroupRemoteRead: {},
+}
+
+// e2sCorePresetTools are the system-group plumbing tools the E2S protocol
+// itself depends on, kept by the core preset alongside the group selection:
+// the blackboard memory trio (store_fact / search_facts / read_attachment —
+// E2S's external memory), the batching and truncated-result recovery pair
+// (batch / tool_result_read), and the HITL channel (ask_user). The rest of
+// the system group (plan/goal/delegation workflow tools — already stripped
+// — plus reflect, semantic_search, and other orchestration surface) stays
+// out; an operator can re-include a specific name via e2s.tools.allow.
+var e2sCorePresetTools = map[string]struct{}{
+	"batch":            {},
+	"tool_result_read": {},
+	"ask_user":         {},
+	"store_fact":       {},
+	"search_facts":     {},
+	"read_attachment":  {},
+}
+
+// filterE2SToolsByConfig applies the e2s.tools catalog narrowing to the raw
+// available-tool descriptors. It runs BEFORE stripE2SUnavailableTools (the
+// preset operates on the full surface; the plan/delegation/goal stripping
+// then always applies on top), and its output is the E2S dispatch contract:
+// the registry adapter is built from the filtered list, so every filtered-out
+// name — preset-excluded, denied, or merely unlisted — is rejected
+// fail-closed at action dispatch.
+//
+// Semantics:
+//   - preset "core" (default; anything unrecognized fails closed to core):
+//     descriptors of the e2sCorePresetGroups groups plus the
+//     e2sCorePresetTools plumbing names;
+//   - preset "all": the full former surface (no group/name selection);
+//   - allow re-includes specific names the preset excluded (a no-op under
+//     "all", where nothing was excluded);
+//   - deny removes names with PRECEDENCE over both the preset and allow —
+//     a denied tool is absent from the catalog and unreachable at dispatch
+//     even when explicitly allowed.
+//
+// The input slice and its descriptors are never mutated; a fresh slice is
+// returned.
+func filterE2SToolsByConfig(in []sdktools.ToolDescriptor, cfg BuilderE2SToolsConfig) []sdktools.ToolDescriptor {
+	deny := e2sNameSet(cfg.Deny)
+	if strings.TrimSpace(cfg.Preset) == E2SToolsPresetAll {
+		// Full former surface; only deny still applies.
+		if len(deny) == 0 {
+			return in
+		}
+		out := make([]sdktools.ToolDescriptor, 0, len(in))
+		for _, d := range in {
+			if _, blocked := deny[d.Name]; !blocked {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+	allow := e2sNameSet(cfg.Allow)
+	out := make([]sdktools.ToolDescriptor, 0, len(in))
+	for _, d := range in {
+		if _, blocked := deny[d.Name]; blocked {
+			continue
+		}
+		if _, ok := e2sCorePresetGroups[d.Group]; ok {
+			out = append(out, d)
+			continue
+		}
+		if _, ok := e2sCorePresetTools[d.Name]; ok {
+			out = append(out, d)
+			continue
+		}
+		if _, ok := allow[d.Name]; ok {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// e2sNameSet builds a name set from a config string list (nil-safe; empty
+// for an empty list).
+func e2sNameSet(names []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		set[n] = struct{}{}
+	}
+	return set
+}
+
 // e2sRegistryAdapter adapts the orchestrator's tool-execution surface to the
 // e2s.Loop Registry contract. The catalog (List) is the FILTERED E2S view —
-// goal-only and plan-workflow tools never reach the model — while Execute
-// dispatches to the SAME agent.ToolExecutor the Conductor's executor uses
-// (the per-session policy view), so every security gate (group policies,
-// judge, HITL confirmation, verify-on-edit) applies to the target tool
-// exactly as in a Conductor run. Dispatching a stripped name is rejected
-// fail-closed: the catalog is the contract, and a hallucinated plan/goal tool
-// call must not silently execute the real tool.
+// goal-only, plan-workflow, and delegation tools never reach the model —
+// while Execute dispatches to the SAME agent.ToolExecutor the Conductor's
+// executor uses (the per-session policy view), so every security gate (group
+// policies, judge, HITL confirmation, verify-on-edit) applies to the target
+// tool exactly as in a Conductor run. Dispatching a stripped name is rejected
+// fail-closed: the catalog is the contract, and a hallucinated plan/goal/
+// delegation tool call must not silently execute the real tool.
 type e2sRegistryAdapter struct {
 	inner   agent.ToolExecutor
 	descs   []sdktools.ToolDescriptor
@@ -87,7 +200,7 @@ type e2sRegistryAdapter struct {
 }
 
 // newE2SRegistryAdapter builds the filtered registry view over the given
-// descriptors (already stripped of goal-only and plan tools).
+// descriptors (already stripped of goal-only, plan, and delegation tools).
 func newE2SRegistryAdapter(inner agent.ToolExecutor, descs []sdktools.ToolDescriptor) *e2sRegistryAdapter {
 	allowed := make(map[string]struct{}, len(descs))
 	for _, d := range descs {
@@ -102,7 +215,7 @@ func (a *e2sRegistryAdapter) List() []sdktools.ToolDescriptor {
 
 func (a *e2sRegistryAdapter) Execute(ctx context.Context, name string, input json.RawMessage) (sdktools.ToolResult, error) {
 	if _, ok := a.allowed[name]; !ok {
-		return sdktools.ErrorResult("e2s: tool %q is not available in E2S mode (plan and goal-loop tools are disabled; the state Σ and its checklist replace them)", name), nil
+		return sdktools.ErrorResult("e2s: tool %q is not available in E2S mode (plan, delegation, and goal-loop tools are disabled; the state Σ and its checklist replace them)", name), nil
 	}
 	if a.inner == nil {
 		return sdktools.ErrorResult("e2s: no tool registry configured"), nil
@@ -233,14 +346,6 @@ func e2sStatusResumable(s e2s.StateStatus) bool {
 	return s == e2s.StateStatusActive || s == e2s.StateStatusPaused
 }
 
-// e2sDelegateDirective is the "## Delegation" section body injected into the
-// E2S system prompt. Delegation in E2S goes through the SAME delegate tool
-// and conductorLauncher as a Conductor run (injected via
-// tools.WithDelegationLauncher): subagent isolation, budgets, and security
-// gates are identical; only the caller is the E2S loop instead of the ReAct
-// executor.
-const e2sDelegateDirective = `The delegate tool launches specialized subagents through the same machinery a Conductor run uses. Each delegation carries an id, a short summary, a full task description (What/How/Where/Acceptance criteria), and optional tool-group grants, dependencies, and agent profile. Prefer delegate for self-contained work that benefits from isolation or parallelism (exploration, review, focused implementation); when the observation returns, distill the outcome into your state_patch (findings/decisions) — the raw delegation output is NOT kept between turns.`
-
 // runE2SLoop is the E2S-mode driver, entered from HandleMessage when
 // HandleOptions.E2S is set — on a fresh task (TaskID == "") and on a
 // continuation (TaskID != ""), mirroring the goal-mode early return. The
@@ -285,12 +390,11 @@ func (o *Orchestrator) runE2SLoop(
 // and refusing to resume it would strand the task with no way to continue the
 // run. Skills requested at send time are likewise not re-resolved here — the
 // E2S session's Σ is the continuation point, and (unlike the plan/goal resume
-// paths) there is no restored message to re-parse skill refs from, and the
-// fresh send's HandleOptions.UserAgents ("/agent" → "## Requested Subagents")
-// is not persisted, so only the Available Subagents roster rebuilt from the
-// live agent catalog carries over. MCP-server mentions are the exception:
-// they are recovered by the common durable task preparation before the wave,
-// so the requested-server directive and catalog use the same current policy.
+// paths) there is no restored message to re-parse skill refs from; E2S has no
+// subagent roster to carry over either (the mode does not delegate).
+// MCP-server mentions are the exception: they are recovered by the common
+// durable task preparation before the wave, so the gated tool catalog the
+// loop receives reflects the same current policy.
 //
 // A user follow-up (nudge), when present, is delivered as the turn-1
 // observation (e2sResumeNote) so the resumed run reacts to it rather than
@@ -327,7 +431,6 @@ func (o *Orchestrator) resumeE2SLoop(
 	// image-only list the provider prepends Content as the text block, so both
 	// the images and Σ reach the model.
 	resumeOpts := HandleOptions{}
-	resumeOpts.UserMCPServers = UserMCPServersFromContext(ctx)
 	if origReq := bb.GetOriginalRequest(); origReq != "" {
 		if imageBlocks := imageBlocksForRequest(o.historySnapshot(), origReq); len(imageBlocks) > 0 {
 			resumeOpts.PendingImages = imageBlocks
@@ -372,72 +475,53 @@ func (o *Orchestrator) runE2SWithState(
 ) (*HandleResult, error) {
 	// Conductor deps carry the full caller stack (model overrides already
 	// applied by HandleMessage's ApplyRequestOverrides), the tool executor,
-	// model/agent/skill resolvers, and the universal pause checker — the
-	// delegation launcher reuses them unchanged.
+	// model/agent/skill resolvers, and the universal pause checker.
 	deps := o.buildConductorDeps(nil, nil)
 
-	// Delegation seam: the SAME conductorLauncher a Conductor run uses, with
-	// an INERT plan state (newPlanRunState(false) — no plan workflow ever
-	// activates in E2S). Only the pair the delegate tool reads is injected:
-	// registry + launcher. PlanChecker/PlanPublisher/ReflectionRunner/
-	// StepCompleteFunc are deliberately NOT injected — their tools are
-	// stripped below, and a stray call fails closed on the missing context
-	// dependency instead of resurrecting the plan workflow.
-	planState := newPlanRunState(false)
-	registry := tools.NewDelegationRegistry()
-	e2sConductorLauncher := &conductorLauncher{deps: deps, bb: bb, planState: planState}
-	launcher := tools.DelegationLauncher(e2sConductorLauncher)
-	if o.e2sLauncher != nil {
-		launcher = o.e2sLauncher
-	}
-	ctx = tools.WithDelegationRegistry(ctx, registry)
-	ctx = tools.WithDelegationLauncher(ctx, launcher)
-	// Also inject the registry under the sp4rk orchestration context key so
-	// subagent executors launched from E2S inherit a working finish guard
-	// (their SetFinishGuard resolves the registry via this key — the same
-	// reason RunConductor sets it before building the launcher).
-	ctx = orchestration.WithDelegationRegistry(ctx, registry)
-
-	// Context parity with RunConductor (the E2S loop replaces the executor,
-	// so every ctx value the engine — or its tools — set must be mirrored
-	// here):
-	//   - the subagent profile resolver (delegate's `agent` field resolves
-	//     profiles; without it profile-targeted delegation fails closed);
-	//   - the agent roster + explicit #mentions (the prompt sections below
-	//     and the delegate tool both read them);
-	//   - routing seeds: a fresh E2S handle never passes routeOrContinue, so
-	//     domain/complexity would be unset and buildSubAgentTask's default
-	//     budget (complexity × steps-per-complexity) would collapse to 0 —
-	//     seed the same neutral pair the synthesized RoutingDecision below
-	//     carries. The seed is authoritative: an E2S run is unrouted, so any
-	//     routing restored by a resume is intentionally overwritten here;
-	//   - the blackboard-backed stores so read_step_output / list_step_outputs
-	//     / read_final_result / store_fact / search_facts / read_attachment
-	//     work in E2S exactly as in a Conductor run (the catalog advertises
-	//     them; without the stores every call errors "store not available");
+	// Context seams the E2S loop still needs. E2S is self-sufficient and does
+	// NOT delegate, so the delegation wiring a Conductor run installs — the
+	// delegation registry + launcher, the subagent profile resolver, the
+	// agent roster + #mention context, the routing seeds that size subagent
+	// budgets, the delegation spec sink, and the finish-join guard — is
+	// deliberately absent: a delegation action can never reach the real
+	// registry because the adapter below rejects stripped names fail-closed.
+	// What remains:
+	//   - the blackboard-backed memory stores so store_fact / search_facts /
+	//     read_attachment — E2S's external memory — work in E2S exactly as in
+	//     a Conductor run (without the stores every call errors "store not
+	//     available"). The step-output/final-result stores are NOT wired:
+	//     their reader tools (read_step_output, list_step_outputs,
+	//     read_final_result) are delegation-only and stripped below;
 	//   - the task context so the strict judge sees the actual task rather
 	//     than an empty string on user-confirm escalations.
-	ctx = tools.WithAgentResolver(ctx, deps.agentResolver)
-	ctx = o.enrichAgentContext(ctx, opts.UserAgents, opts.UserMCPServers)
-	ctx = WithDomain(ctx, "general")
-	ctx = WithComplexity(ctx, defaultResumeComplexity)
-	ctx = agent.WithStepOutputStore(ctx, orchestration.NewStepOutputStore(bb))
 	ctx = agent.WithFactStore(ctx, orchestration.NewFactStore(bb))
 	ctx = agent.WithAttachmentStore(ctx, orchestration.NewAttachmentStore(bb))
-	ctx = agent.WithFinalResultStore(ctx, orchestration.NewFinalResultStore(bb))
 	ctx = sdktools.WithTaskContext(ctx, message)
 
-	// Filtered catalog: goal-only tools (propose_goal, declare_goal_status,
-	// declare_verification) and plan-workflow tools never reach the model;
+	// Effective E2S settings, resolved once for this run (the runtime
+	// override wins over the build-time snapshot): the catalog narrowing
+	// below and the loop knobs further down both read it.
+	e2sCfg := o.e2sSettings()
+
+	// Filtered catalog, narrowing inward:
+	//  1. filterE2SToolsByConfig — the e2s.tools operator narrowing (the
+	//     core preset: local_read + local_write + execute + remote_read
+	//     groups plus the system plumbing; allow re-includes excluded
+	//     names; deny removes with precedence over both). Runs FIRST so a
+	//     deny entry is absolute — no later stage can resurrect the name.
+	//  2. Model Profiles essential-tools narrowing — full parity with the
+	//     Conductor path (goal mode is the only documented exception). With
+	//     profiles off (the default) this is the identity.
+	//  3. StripGoalModeTools + stripE2SUnavailableTools — goal-only tools
+	//     (propose_goal, declare_goal_status, declare_verification),
+	//     plan-workflow tools, and delegation tools never reach the model.
 	// Execute stays on the real registry (all security gates intact) and
-	// rejects stripped names fail-closed.
-	// Model Profiles essential-tools narrowing applies to E2S too — full parity
-	// with the Conductor path (goal mode is the only documented exception):
-	// the same static selection (always-present list + protected
-	// orchestration tools + MCP tools + the turn-scoped delegate guarantee)
-	// narrows the E2S catalog exactly once here, before stripping.
+	// rejects every filtered-out name fail-closed — the catalog is the
+	// dispatch contract. The Conductor's turn-scoped delegate guarantee
+	// does not apply — E2S has no delegate tool and no subagent roster.
 	e2sTools := stripE2SUnavailableTools(tools.StripGoalModeTools(
-		o.applyModelProfilesToolFilter(availableTools, modelProfilesAgentGuaranteedTools(ctx)...)))
+		o.applyModelProfilesToolFilter(
+			filterE2SToolsByConfig(availableTools, e2sCfg.Tools))))
 
 	// Trajectory: same composite store as a Conductor run (in-memory for
 	// synchronous reads + best-effort DB persistence), synced by the loop
@@ -446,17 +530,6 @@ func (o *Orchestrator) runE2SWithState(
 	taskID := ""
 	if pbb, ok := bb.(PersistableBlackboard); ok {
 		taskID = pbb.TaskID()
-	}
-	// Delegation spec sink (mirrors RunConductor's wiring): persist every
-	// delegation registered in this run as a full spec so the auto-resume
-	// wave can rebuild in-flight delegations after a pause or shutdown.
-	// Without the sink a resumed E2S run silently drops its delegated work.
-	if taskID != "" && deps.taskStore != nil {
-		var unitLedger units.Ledger
-		if pbb, ok := bb.(PersistableBlackboard); ok {
-			unitLedger = NewBlackboardLedger(pbb)
-		}
-		wireDelegationSpecSink(registry, unitLedger, "", taskID, deps.taskStore, deps.logger)
 	}
 	trajStore := newCompositeTrajectoryStore(trajHolder, taskID, deps.taskStore, deps.logger)
 	defer trajStore.Flush()
@@ -507,7 +580,6 @@ func (o *Orchestrator) runE2SWithState(
 		}
 	}
 
-	e2sCfg := o.e2sSettings()
 	// Model Profiles loop-hardening parity: the executor's circuit breaker gets a
 	// tighter repeat-nudge threshold under the profile; the E2S anti-spin
 	// nudge is the same concept, so the override applies here too (the
@@ -537,12 +609,14 @@ func (o *Orchestrator) runE2SWithState(
 		// hand-built OrchestratorConfig) fall back to the core/e2s defaults
 		// via Config.withDefaults, so the documented defaults and the
 		// compiled-in ones cannot fight.
-		MaxSteps:            e2sCfg.MaxSteps,
-		StateByteLimit:      e2sCfg.StateByteLimit,
-		PatchRetries:        e2sCfg.PatchRetries,
-		MaxObservationChars: e2sCfg.MaxObservationChars,
-		SpinNudgeThreshold:  spinNudge,
-		SpinAbortThreshold:  e2sCfg.RepeatAbortThreshold,
+		MaxSteps:                e2sCfg.MaxSteps,
+		StateByteLimit:          e2sCfg.StateByteLimit,
+		PatchRetries:            e2sCfg.PatchRetries,
+		MaxObservationChars:     e2sCfg.MaxObservationChars,
+		ObservationBudgetTokens: e2sCfg.ObservationBudgetTokens,
+		ObservationFillFraction: e2sCfg.ObservationFillFraction,
+		SpinNudgeThreshold:      spinNudge,
+		SpinAbortThreshold:      e2sCfg.RepeatAbortThreshold,
 		// ResumeState seeds the ENTIRE state (fresh runs pass the canonically
 		// seeded NewE2SState; resumed runs pass the persisted checkpoint), so
 		// a continuation inherits the accumulated Σ — core keys and
@@ -551,14 +625,13 @@ func (o *Orchestrator) runE2SWithState(
 		Task: bb.GetOriginalRequest(),
 		// Image attachments staged for this send ride on every turn's user
 		// message (each turn is a fresh dialog; see e2s.Config.ContentBlocks).
-		ContentBlocks:     opts.PendingImages,
-		ResumeState:       es,
-		ResumeNote:        resumeNote,
-		WorkspacePath:     sdktools.WorkspacePathFrom(ctx),
-		TempDir:           sdktools.TempDirFrom(ctx),
-		DelegateDirective: e2sDelegateDirective,
-		Skills:            skillSections,
-		Trajectory:        trajStore,
+		ContentBlocks: opts.PendingImages,
+		ResumeState:   es,
+		ResumeNote:    resumeNote,
+		WorkspacePath: sdktools.WorkspacePathFrom(ctx),
+		TempDir:       sdktools.TempDirFrom(ctx),
+		Skills:        skillSections,
+		Trajectory:    trajStore,
 		// Shared tool-result cache (same instance as the Conductor's
 		// executor): E2S truncation becomes cache-on-truncate with a
 		// tool_result_read recovery nudge, and tool_result_read actions
@@ -572,37 +645,16 @@ func (o *Orchestrator) runE2SWithState(
 		ToolCallTimeout: deps.toolCallTimeout,
 		// Conductor-parity knobs (review fix cycle): the resolved reasoning
 		// effort (per-message override / Model Profiles sampling), the
-		// config-gated injection-defense directive, the subagent prompt
-		// sections (roster + explicit /-mentions) plus the soft
-		// "Requested MCP Servers" section for mentioned manual-mode servers,
-		// the Model Profiles Lite prompt swap, the verify-on-edit hook, and
-		// the finish-join guard over pending async delegations.
+		// config-gated injection-defense directive, the Model Profiles Lite
+		// prompt swap, and the verify-on-edit hook. (The subagent prompt
+		// sections and the finish-join guard were removed with delegation —
+		// E2S does not delegate.)
 		ReasoningEffort:    deps.reasoningEffort,
 		InjectionDefense:   o.config.InjectionDefenseEnabled,
-		AgentSections:      formatAvailableAgents(ctx) + formatRequestedAgents(ctx) + formatRequestedMCPServers(ctx),
 		SystemPrompt:       e2sCoreDirective(ctx),
 		EditVerify:         deps.verifyOnEdit,
 		EditVerifyMaxChars: deps.verifyOnEditMaxOutputChars,
-		FinishGuard:        e2sFinishGuard(registry),
 		Logger:             o.logger,
-	}
-
-	// Bind the launcher to the run-scoped context NOW that every context value
-	// the delegate tool and its subagents rely on is injected: an ASYNC
-	// delegation launches in the background and the delegate tool returns at
-	// once, but the E2S dispatch watchdog (executeToolCall) cancels the
-	// per-call context the moment the call returns — which would tear the
-	// just-launched background subagent down before it does any work. The run
-	// context outlives the tool call yet still dies with a task cancel / the
-	// run, so an E2S async delegation keeps exactly the lifetime it had before
-	// the watchdog existed (survives the delegate call and a cooperative
-	// pause). Mirrors RunConductor's conductorLauncher.asyncBaseCtx wiring;
-	// E2S advertises delegate with mode:"async" and its finish-join guard
-	// (e2sFinishGuard) explicitly awaits pending async delegations, so their
-	// lifetime must survive the delegate call. Skipped when a test launcher
-	// was injected through the o.e2sLauncher seam.
-	if o.e2sLauncher == nil {
-		e2sConductorLauncher.asyncBaseCtx = ctx
 	}
 
 	// deps.llm IS the session TrackingCaller chain (builder.go wraps the
@@ -707,19 +759,6 @@ func e2sCoreDirective(ctx context.Context) string {
 		return prompts.E2SSystemLite
 	}
 	return ""
-}
-
-// e2sFinishGuard mirrors the sp4rk Conductor's finish-join guard for the
-// E2S loop: finish is vetoed while async delegations are still pending, so
-// the run cannot silently abandon background subagents (the model must
-// cancel or await them, then finish).
-func e2sFinishGuard(registry *tools.DelegationRegistry) func(context.Context) error {
-	return func(context.Context) error {
-		if pending := registry.ListPending(); len(pending) > 0 {
-			return fmt.Errorf("you have %d pending async delegation(s): %s. Call cancel_delegation for each if you no longer need them, or wait for them to complete via read_step_output before calling finish", len(pending), strings.Join(pending, ", "))
-		}
-		return nil
-	}
 }
 
 // resolveE2SSkills resolves explicitly requested skill names into prompt

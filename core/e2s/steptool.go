@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -32,6 +33,21 @@ const StepToolName = "e2s_step"
 
 // FinishActionName is the reserved action target that terminates the loop.
 const FinishActionName = "finish"
+
+// The canonical shapes quoted verbatim in every shape-violation error and in
+// the correction suffix: an invalid move is retried with the form in view, so
+// the retry can copy the envelope instead of re-guessing it (the analyzed
+// production session lost ~12% of its turns to shape errors whose messages
+// named the violation but never showed the expected envelope).
+const (
+	// stepEnvelope is the full e2s_step input: both keys, always.
+	stepEnvelope = `{"state_patch": {...}, "action": {"tool": "<name>", "args": {...}}}`
+	// stepActionEnvelope is the action object alone — the fragment relevant
+	// to per-action shape errors.
+	stepActionEnvelope = `{"tool": "<name>", "args": {...}}`
+	// stepFinishEnvelope is the action that ends the task.
+	stepFinishEnvelope = `{"tool": "finish", "args": {"answer": "..."}}`
+)
 
 const toolStepDescription = `Purpose: advance the E2S loop one step — patch your working state and name the next action.
 Use when: on EVERY turn. This is the only tool you may call; a turn without an e2s_step call is invalid and will be retried once, then reported back as an error observation.
@@ -138,11 +154,11 @@ type StepCall struct {
 // a protocol violation).
 func ParseStepCall(toolCalls []llm.ToolCall) (StepCall, error) {
 	if len(toolCalls) == 0 {
-		return StepCall{}, fmt.Errorf("response contains no tool call: every turn must call %s exactly once", StepToolName)
+		return StepCall{}, fmt.Errorf("response contains no tool call: every turn must call %s exactly once — %s", StepToolName, stepEnvelope)
 	}
 	first := toolCalls[0]
 	if first.Name != StepToolName {
-		return StepCall{}, fmt.Errorf("unexpected tool %q: the only tool you may call is %s", first.Name, StepToolName)
+		return StepCall{}, fmt.Errorf("unexpected tool %q: the only tool you may call is %s — %s", first.Name, StepToolName, stepEnvelope)
 	}
 	call, err := parseStepInput(first.Input)
 	if err != nil {
@@ -155,28 +171,48 @@ func ParseStepCall(toolCalls []llm.ToolCall) (StepCall, error) {
 func parseStepInput(raw json.RawMessage) (StepCall, error) {
 	var input struct {
 		StatePatch map[string]json.RawMessage `json:"state_patch"`
-		Action     *struct {
-			Tool string          `json:"tool"`
-			Args json.RawMessage `json:"args"`
-		} `json:"action"`
+		Action     json.RawMessage            `json:"action"`
 	}
 	if err := json.Unmarshal(raw, &input); err != nil {
-		return StepCall{}, fmt.Errorf("invalid %s input JSON: %w", StepToolName, err)
+		return StepCall{}, fmt.Errorf("invalid %s input JSON: %w — the envelope is %s", StepToolName, err, stepEnvelope)
 	}
 
-	if input.Action == nil {
-		return StepCall{}, fmt.Errorf("%s.action is required (object with tool and args)", StepToolName)
+	// Absent action (or an explicit null) is the most frequent invalid move:
+	// name the whole envelope, not just the missing key.
+	if trimmed := bytes.TrimSpace(input.Action); len(trimmed) == 0 || string(trimmed) == "null" {
+		return StepCall{}, fmt.Errorf("%s.action is required — the envelope is %s", StepToolName, stepEnvelope)
 	}
 
-	args, err := normalizeArgs(input.Action.Args)
+	// Parse the action generically (tool as raw JSON) so a non-string tool or
+	// a non-object action produces an explicit shape error instead of a Go
+	// reflection message buried under "invalid input JSON".
+	var action struct {
+		Tool json.RawMessage `json:"tool"`
+		Args json.RawMessage `json:"args"`
+	}
+	if err := json.Unmarshal(input.Action, &action); err != nil {
+		return StepCall{}, fmt.Errorf("%s.action must be an object — %s", StepToolName, stepActionEnvelope)
+	}
+
+	if trimmed := bytes.TrimSpace(action.Tool); len(trimmed) == 0 || string(trimmed) == "null" {
+		return StepCall{}, fmt.Errorf("%s.action.tool is required (a name from the Available Tools list, or %q) — %s: %w",
+			StepToolName, FinishActionName, stepActionEnvelope, ErrActionEmpty)
+	}
+	var tool string
+	if err := json.Unmarshal(action.Tool, &tool); err != nil {
+		return StepCall{}, fmt.Errorf("%s.action.tool must be a string (a name from the Available Tools list, or %q), got: %s",
+			StepToolName, FinishActionName, truncateForError(action.Tool))
+	}
+
+	args, err := normalizeArgs(action.Args)
 	if err != nil {
-		return StepCall{}, fmt.Errorf("%s.action.args: %w", StepToolName, err)
+		return StepCall{}, fmt.Errorf("%s.action.args must be a JSON object — %s: %w", StepToolName, stepActionEnvelope, err)
 	}
 
 	call := StepCall{
 		StatePatch: input.StatePatch,
 		Action: StepAction{
-			Tool: input.Action.Tool,
+			Tool: tool,
 			Args: args,
 		},
 	}
@@ -189,8 +225,13 @@ func parseStepInput(raw json.RawMessage) (StepCall, error) {
 		call.Action.Answer = answer
 	}
 	// Enforce the domain action contract (exactly-one-of tool call / finish
-	// with an answer) on top of the envelope shape checks.
+	// with an answer) on top of the envelope shape checks. An empty tool
+	// (absent, null, or "") is re-reported with the action envelope in view.
 	if err := call.Action.Validate(); err != nil {
+		if errors.Is(err, ErrActionEmpty) {
+			return StepCall{}, fmt.Errorf("%s.action.tool is required (a name from the Available Tools list, or %q) — %s: %w",
+				StepToolName, FinishActionName, stepActionEnvelope, err)
+		}
 		return StepCall{}, err
 	}
 	return call, nil

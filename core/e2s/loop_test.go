@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1051,8 +1052,202 @@ func TestRun_LongBatchResultTruncatedWithNudge(t *testing.T) {
 	if !strings.Contains(user, "This output was truncated") || !strings.Contains(user, "cached with hash: ") {
 		t.Errorf("long batch observation must carry the truncation nudge: %q", user)
 	}
-	if cache.Len() != 1 {
-		t.Errorf("cache entries = %d, want 1", cache.Len())
+	// Two entries: the oversized SUB-result cached under its own hash
+	// (per-sub-result cache-on-truncate) plus the join, which still overflows
+	// the cap (sub truncation + nudge push it past it) and is cached under
+	// the join-level hash — the last barrier.
+	if cache.Len() != 2 {
+		t.Errorf("cache entries = %d, want 2 (sub-result + join)", cache.Len())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Token-proportional observation budget
+// ---------------------------------------------------------------------------
+
+// TestEffectiveObservationCapChars pins the cap formula: with a resolved
+// context window (ContextWindowTokens > 0) the cap is token-proportional —
+// min(ObservationBudgetTokens, ObservationFillFraction × window) × 4 chars —
+// and without a window (ContextWindowTokens == 0) the plain
+// MaxObservationChars fallback applies.
+func TestEffectiveObservationCapChars(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want int
+	}{
+		{
+			// The documented default shape: window 128k with the compiled-in
+			// budget 8192 / fill 0.4 → min(8192, 51200) × 4 = 32768 chars.
+			name: "budget-limited: 8192 tokens at a 128k window = 32768 chars",
+			cfg:  Config{ContextWindowTokens: 128_000},
+			want: 32768,
+		},
+		{
+			name: "fill-limited: 40% of a small window beats the budget",
+			cfg:  Config{ContextWindowTokens: 8_000},
+			want: 12800, // min(8192, 3200) × 4
+		},
+		{
+			name: "explicit budget below the fill share",
+			cfg:  Config{ContextWindowTokens: 128_000, ObservationBudgetTokens: 1024, ObservationFillFraction: 0.4},
+			want: 4096, // min(1024, 51200) × 4
+		},
+		{
+			name: "no window: the plain char fallback applies",
+			cfg:  Config{MaxObservationChars: 1234},
+			want: 1234,
+		},
+		{
+			name: "zero config: compiled-in defaults (8000-char fallback)",
+			cfg:  Config{},
+			want: 8000,
+		},
+	}
+	for _, tc := range tests {
+		if got := EffectiveObservationCapChars(tc.cfg); got != tc.want {
+			t.Errorf("%s: cap = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestRun_ZeroWindowFallsBackToCharTruncate pins the fallback split end to
+// end: without a resolved window (ContextWindowTokens == 0) the observation
+// is capped by MaxObservationChars; with a window the token-proportional
+// budget takes over and the same char cap no longer binds.
+func TestRun_ZeroWindowFallsBackToCharTruncate(t *testing.T) {
+	content := strings.Repeat("x", 1000)
+	responses := []*llm.ChatResponse{
+		stepResponse(`{}`, "big", `{}`),
+		stepResponse(`{}`, "finish", `{"answer":"done"}`),
+	}
+
+	// No window: the MaxObservationChars fallback truncates at 500.
+	caller := &scriptedCaller{responses: responses}
+	cfg := testConfig()
+	cfg.MaxObservationChars = 500
+	loop := New(caller, &bigResultRegistry{long: content}, nil, cfg)
+	if _, err := loop.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := caller.request(1).Messages[1].Content; strings.Contains(got, content) {
+		t.Error("full 1000-char observation leaked: the char fallback must truncate at MaxObservationChars")
+	}
+
+	// With a window: the token budget yields a 32768-char cap, so the same
+	// 1000-char observation passes through untruncated.
+	caller = &scriptedCaller{responses: responses}
+	cfg = testConfig()
+	cfg.ContextWindowTokens = 128_000
+	loop = New(caller, &bigResultRegistry{long: content}, nil, cfg)
+	if _, err := loop.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := caller.request(1).Messages[1].Content; !strings.Contains(got, content) {
+		t.Error("1000-char observation must survive under the 32768-char token-proportional cap")
+	}
+}
+
+// mapResultRegistry returns a fixed result per tool name (batch tests).
+type mapResultRegistry struct{ results map[string]string }
+
+func (r *mapResultRegistry) List() []sdktools.ToolDescriptor { return nil }
+
+func (r *mapResultRegistry) Execute(_ context.Context, name string, _ json.RawMessage) (sdktools.ToolResult, error) {
+	return sdktools.ToolResult{Content: r.results[name]}, nil
+}
+
+func (r *mapResultRegistry) IsToolUntrusted(string) bool { return false }
+
+func (r *mapResultRegistry) ToolSource(string) string { return "core" }
+
+// subNudgeRe matches the fragmentation nudge's tool + hash pair inside a
+// cached join: "… for 'read_alpha'. The full result is cached with hash: ab12…".
+var subNudgeRe = regexp.MustCompile(`for '([^']+)'\. The full result is cached with hash: ([0-9a-f]+)`)
+
+// TestRun_BatchCachesEachOversizedSubResult pins the per-sub-result
+// cache-on-truncate: a batch of three big reads comes back as three
+// truncated fragments, EACH cached IN FULL under its own distinct hash and
+// recoverable from the shared cache (what tool_result_read reads), instead
+// of one join-level cache entry keyed on the whole truncated join.
+func TestRun_BatchCachesEachOversizedSubResult(t *testing.T) {
+	longs := map[string]string{
+		"read_alpha": strings.Repeat("α", 6000),
+		"read_beta":  strings.Repeat("β", 6000),
+		"read_gamma": strings.Repeat("γ", 6000),
+	}
+	caller := &scriptedCaller{responses: []*llm.ChatResponse{
+		stepResponse(`{}`, "batch", batchArgs(
+			`{"tool":"read_alpha","input":{"path":"a"}}`,
+			`{"tool":"read_beta","input":{"path":"b"}}`,
+			`{"tool":"read_gamma","input":{"path":"c"}}`,
+		)),
+		stepResponse(`{}`, "finish", `{"answer":"done"}`),
+	}}
+	cache := agent.NewToolResultCache(time.Minute)
+	cfg := testConfig()
+	cfg.ToolCache = cache
+	// Token-proportional cap: min(1024, 0.4×128000) × 4 = 4096 chars — every
+	// 6000-char read overflows it individually.
+	cfg.ContextWindowTokens = 128_000
+	cfg.ObservationBudgetTokens = 1024
+	loop := New(caller, &mapResultRegistry{results: longs}, nil, cfg)
+
+	if _, err := loop.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// No full sub-result may leak into the model context: each was truncated.
+	user := caller.request(1).Messages[1].Content
+	for _, long := range longs {
+		if strings.Contains(user, long) {
+			t.Error("full 6000-char sub-result leaked into the request")
+		}
+	}
+
+	// The join overflowed the cap too (three truncated fragments + nudges),
+	// so the model-facing observation carries the join-level nudge — the
+	// LAST barrier. Its cache entry holds the FULL join, which itself
+	// carries one per-sub nudge with a per-sub hash.
+	matches := subNudgeRe.FindAllStringSubmatch(user, -1)
+	if len(matches) == 0 {
+		t.Fatalf("model observation carries no tool+hash nudge: %q", user)
+	}
+	joinHash := matches[len(matches)-1][2]
+	joinEntry, ok := cache.Get(joinHash)
+	if !ok {
+		t.Fatalf("join cache entry %q not found", joinHash)
+	}
+
+	// Exactly three distinct per-sub hashes, one per oversized read.
+	pairs := subNudgeRe.FindAllStringSubmatch(joinEntry.Content, -1)
+	if len(pairs) != 3 {
+		t.Fatalf("join entry carries %d sub-nudges, want 3", len(pairs))
+	}
+	seen := map[string]bool{}
+	for _, p := range pairs {
+		tool, hash := p[1], p[2]
+		if seen[hash] {
+			t.Errorf("duplicate sub-hash %q — each sub-result must get its own entry", hash)
+		}
+		seen[hash] = true
+		want, known := longs[tool]
+		if !known {
+			t.Fatalf("sub-nudge names unknown tool %q", tool)
+		}
+		entry, found := cache.Get(hash)
+		if !found {
+			t.Errorf("cache entry %q (%s) not found", hash, tool)
+			continue
+		}
+		// Full recoverability: the entry carries the COMPLETE original
+		// content of that sub-call — exactly what tool_result_read returns.
+		if entry.Content != want {
+			t.Errorf("cached content for %s = %d chars, want the full %d", tool, len(entry.Content), len(want))
+		}
+	}
+	if len(seen) != 3 {
+		t.Errorf("got %d distinct sub-hashes, want 3", len(seen))
 	}
 }
 
@@ -1248,7 +1443,6 @@ func TestSystemPrompt_Sections(t *testing.T) {
 	cfg := testConfig()
 	cfg.WorkspacePath = "/ws/project"
 	cfg.TempDir = "/ws/tmp"
-	cfg.DelegateDirective = "Delegate via delegate(agent:...)."
 	cfg.Skills = []SkillSection{{Name: "explore", Description: "think first", Body: "Body of skill."}}
 	reg := &mockRegistry{descriptors: []sdktools.ToolDescriptor{
 		{Name: "read_file", Description: "Read a file.\nSecond line.", InputSchema: json.RawMessage(readFileSchema)},
@@ -1266,17 +1460,24 @@ func TestSystemPrompt_Sections(t *testing.T) {
 		"## Available Tools",
 		"`read_file`",
 		"`bash_exec`",
-		"## Delegation",
 		"## Active Skills",
 		"Body of skill.",
-		// Full input schemas render inline so the model knows parameter names.
-		"args schema: {\"type\":\"object\",\"properties\":{\"path\"",
+		// Compact, description-free input schemas render inline (keys sorted
+		// deterministically) so the model knows parameter names.
+		"args schema: {\"properties\":{\"",
 		`"start_line"`,
-		"args schema: {\"type\":\"object\",\"properties\":{\"command\"",
+		"args schema: {\"properties\":{\"command\"",
 		"MUST use exactly the parameter names",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("system prompt missing %q", want)
+		}
+	}
+	// E2S is self-sufficient: no delegation directive and no subagent roster,
+	// regardless of what the catalog carries.
+	for _, banned := range []string{"## Delegation", "## Available Subagents", "## Requested Subagents"} {
+		if strings.Contains(prompt, banned) {
+			t.Errorf("system prompt must not contain %q (E2S does not delegate):\n%s", banned, prompt)
 		}
 	}
 	// Only the first line of a description is inlined.
@@ -1286,6 +1487,59 @@ func TestSystemPrompt_Sections(t *testing.T) {
 	// A tool without a schema gets no schema line (no dangling marker).
 	if strings.Contains(prompt, "`no_schema`: Schema-less tool.\n  args schema:") {
 		t.Error("schema-less tool must not render an args-schema line")
+	}
+}
+
+// TestSystemPrompt_Scratchpad covers the scratchpad (NotesPath) block of the
+// Workspace section: the path renders together with its usage rules whenever
+// a temp dir provides one, and the whole block stays out of the prompt when
+// there is no scratchpad (no temp dir → withDefaults derives no NotesPath).
+func TestSystemPrompt_Scratchpad(t *testing.T) {
+	// With a temp dir, withDefaults derives <TempDir>/e2s-notes.md and the
+	// prompt names the path plus the discipline (raw evidence → file, Σ keeps
+	// distilled facts + pointers, answer assembled from both).
+	cfg := testConfig()
+	cfg.WorkspacePath = "/ws/project"
+	cfg.TempDir = "/ws/tmp"
+	cfg = cfg.withDefaults()
+	if cfg.NotesPath != "/ws/tmp/"+NotesFileName {
+		t.Fatalf("withDefaults NotesPath = %q, want %q", cfg.NotesPath, "/ws/tmp/"+NotesFileName)
+	}
+	prompt := BuildSystemPrompt(cfg, nil)
+	for _, want := range []string{
+		"/ws/tmp/e2s-notes.md",
+		"scratchpad",
+		"~5 lines",
+		"line range",
+		"assembled from Σ and the scratchpad",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("system prompt missing scratchpad directive %q:\n%s", want, prompt)
+		}
+	}
+
+	// An explicit NotesPath is never clobbered by the derivation.
+	explicit := testConfig()
+	explicit.TempDir = "/ws/tmp"
+	explicit.NotesPath = "/custom/notes.md"
+	if got := explicit.withDefaults().NotesPath; got != "/custom/notes.md" {
+		t.Errorf("withDefaults overrode an explicit NotesPath: got %q", got)
+	}
+
+	// No temp dir → no derived NotesPath → no scratchpad block at all.
+	// (The core directive legitimately MENTIONS the scratchpad conditionally;
+	// the absence check targets the Workspace-section rendering.)
+	empty := testConfig()
+	empty.WorkspacePath = "/ws/project"
+	empty = empty.withDefaults()
+	if empty.NotesPath != "" {
+		t.Fatalf("NotesPath derived without a TempDir: %q", empty.NotesPath)
+	}
+	bare := BuildSystemPrompt(empty, nil)
+	for _, banned := range []string{"Your scratchpad file is", NotesFileName} {
+		if strings.Contains(bare, banned) {
+			t.Errorf("scratchpad section rendered without a NotesPath (found %q):\n%s", banned, bare)
+		}
 	}
 }
 
@@ -1392,53 +1646,6 @@ func mustStatus(res *Result) RunStatus {
 		return ""
 	}
 	return res.Status
-}
-
-// TestRun_FinishGuardVetoContinues pins the finish-join guard: a finish
-// while async delegations are pending is vetoed (the reason becomes the next
-// observation, no answer is emitted), and a later finish after the blocker
-// clears is accepted.
-func TestRun_FinishGuardVetoContinues(t *testing.T) {
-	pending := atomic.Bool{}
-	pending.Store(true)
-	vetoes := atomic.Int32{}
-	caller := &scriptedCaller{responses: []*llm.ChatResponse{
-		stepResponse(`{}`, "finish", `{"answer":"too early"}`),
-		stepResponse(`{}`, "finish", `{"answer":"all clear"}`),
-	}}
-	em := &recordingEmitter{}
-	loop := New(caller, nil, em, Config{
-		Model: "m", Task: "t", Logger: slogDiscard(),
-		FinishGuard: func(context.Context) error {
-			// Veto exactly once — the second finish models the model having
-			// resolved the blocker (delegation completed/cancelled).
-			if pending.Load() {
-				pending.Store(false)
-				vetoes.Add(1)
-				return errors.New("1 pending async delegation(s): del_1")
-			}
-			return nil
-		},
-	})
-	res, err := loop.Run(context.Background())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if res.Status != RunStatusFinished || res.Answer != "all clear" {
-		t.Fatalf("Status=%s Answer=%q, want finished with the second answer", res.Status, res.Answer)
-	}
-	// The vetoed finish must not surface as an assistant message: exactly
-	// ONE answer emission is allowed — the accepted finish's. (The event
-	// list interleaves both turns, so count rather than scan.)
-	if cnt := strings.Count(strings.Join(em.eventList(), ","), "AssistantChunk"); cnt != 1 {
-		t.Errorf("AssistantChunk count = %d, want 1 (only the accepted finish): %v", cnt, em.eventList())
-	}
-	if cnt := strings.Count(strings.Join(em.eventList(), ","), "AssistantDone"); cnt != 1 {
-		t.Errorf("AssistantDone count = %d, want 1", cnt)
-	}
-	if !strings.Contains(res.Steps[0].Observation, "finish rejected") {
-		t.Errorf("first step observation should carry the veto: %q", res.Steps[0].Observation)
-	}
 }
 
 // TestRun_EditVerifyAppendedToObservation pins the verify-on-edit hook: a

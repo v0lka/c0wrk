@@ -7,12 +7,9 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
-	"testing/synctest"
 
 	"github.com/v0lka/c0wrk/core/e2s"
-	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -43,36 +40,6 @@ func e2sStepResponse(callID, patchJSON, tool, argsJSON string) *llm.ChatResponse
 // e2sFinishResponse builds an e2s_step response that finishes the run.
 func e2sFinishResponse(callID, answer string) *llm.ChatResponse {
 	return e2sStepResponse(callID, `{}`, e2s.FinishActionName, fmt.Sprintf(`{"answer": %q}`, answer))
-}
-
-// mockDelegationLauncher records Launch invocations and returns canned
-// results — the injected-launcher seam (Orchestrator.e2sLauncher) test double.
-type mockDelegationLauncher struct {
-	mu     sync.Mutex
-	launch int
-	tasks  []tools.DelegationTask
-	out    []tools.DelegationResult
-}
-
-func (m *mockDelegationLauncher) Launch(_ context.Context, tasks []tools.DelegationTask, registry *tools.DelegationRegistry) []tools.DelegationResult {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.launch++
-	m.tasks = append(m.tasks, tasks...)
-	// Mirror the real launcher's blocking-delegation bookkeeping: a
-	// delegation whose result is returned synchronously is marked completed
-	// in the registry, so the E2S finish-join guard (ListPending) does not
-	// veto a later finish over already-settled work.
-	for _, res := range m.out {
-		if res.Status == tools.DelegationStatusCompleted && registry != nil {
-			registry.Complete(res.ID, res.Output, nil, nil)
-		}
-	}
-	return m.out
-}
-
-func (m *mockDelegationLauncher) CompletedStep(string) (tools.DelegationCompletedStep, bool) {
-	return tools.DelegationCompletedStep{}, false
 }
 
 // e2sCheckpointStore extends the plain mock task store with the optional
@@ -156,19 +123,31 @@ func TestStripE2SUnavailableTools(t *testing.T) {
 		{Name: "read_file"}, {Name: "bash_exec"}, {Name: "delegate"},
 		{Name: "cancel_delegation"}, {Name: "finish"}, {Name: "update_checklist"},
 		{Name: "declare_plan"}, {Name: "execute_plan"}, {Name: "declare_step_complete"},
-		{Name: "reflect"},
+		{Name: "reflect"}, {Name: "read_step_output"}, {Name: "list_step_outputs"},
+		{Name: "read_final_result"}, {Name: "store_fact"}, {Name: "search_facts"},
+		{Name: "read_attachment"},
 	}
 	got := stripE2SUnavailableTools(in)
 	want := map[string]bool{
-		"read_file": true, "bash_exec": true, "delegate": true,
-		"cancel_delegation": true, "finish": true,
+		"read_file": true, "bash_exec": true, "finish": true,
+		// E2S's external memory stays available.
+		"store_fact": true, "search_facts": true, "read_attachment": true,
 	}
 	if len(got) != len(want) {
-		t.Fatalf("stripped list = %v, want exactly %d entries", got, len(want))
+		t.Fatalf("stripped list has %d entries, want exactly %d", len(got), len(want))
 	}
 	for _, d := range got {
 		if !want[d.Name] {
-			t.Errorf("tool %q survived the E2S strip; plan-workflow tools must be removed", d.Name)
+			t.Errorf("tool %q survived the E2S strip; plan/delegation tools must be removed", d.Name)
+		}
+	}
+	// The delegation pair and the blackboard step-store trio must never
+	// reach the E2S catalog — E2S is self-sufficient.
+	for _, stripped := range []string{"delegate", "cancel_delegation", "read_step_output", "list_step_outputs", "read_final_result"} {
+		for _, d := range got {
+			if d.Name == stripped {
+				t.Errorf("tool %q must not appear in the E2S catalog", stripped)
+			}
 		}
 	}
 }
@@ -202,7 +181,7 @@ var _ agent.ToolExecutor = (*recordingToolExec)(nil)
 func TestE2SRegistryAdapter_CatalogFilteredAndDispatchGated(t *testing.T) {
 	inner := &recordingToolExec{}
 	descs := []sdktools.ToolDescriptor{
-		{Name: "bash_exec"}, {Name: "read_file"}, {Name: "delegate"},
+		{Name: "bash_exec"}, {Name: "read_file"}, {Name: "store_fact"},
 	}
 	adapter := newE2SRegistryAdapter(inner, descs)
 
@@ -221,8 +200,8 @@ func TestE2SRegistryAdapter_CatalogFilteredAndDispatchGated(t *testing.T) {
 		t.Fatalf("inner executor saw %v, want one bash_exec dispatch", inner.calls)
 	}
 
-	// A stripped (hallucinated) plan tool is rejected fail-closed and never
-	// reaches the real executor.
+	// A hallucinated plan tool is rejected fail-closed and never reaches the
+	// real executor.
 	res, err = adapter.Execute(context.Background(), "declare_plan", json.RawMessage(`{"steps":[]}`))
 	if err != nil {
 		t.Fatalf("Execute(stripped) returned error %v, want error RESULT (not a Go error)", err)
@@ -232,6 +211,47 @@ func TestE2SRegistryAdapter_CatalogFilteredAndDispatchGated(t *testing.T) {
 	}
 	if len(inner.calls) != 1 {
 		t.Fatalf("stripped dispatch reached the real executor: %v", inner.calls)
+	}
+}
+
+// TestE2SRegistryAdapter_DelegationFailsClosed pins the self-sufficiency
+// gate: delegate/cancel_delegation and the blackboard step-store trio
+// (read_step_output, list_step_outputs, read_final_result) are NOT in the
+// E2S catalog, so a model action naming them is rejected fail-closed — even
+// when the underlying registry actually has the tool registered (the error
+// must come from the adapter, not from the tool's absence). E2S's external
+// memory (store_fact) still dispatches.
+func TestE2SRegistryAdapter_DelegationFailsClosed(t *testing.T) {
+	inner := &recordingToolExec{}
+	// The descriptor list is what stripE2SUnavailableTools produced: no
+	// delegation or step-store tools in it.
+	descs := stripE2SUnavailableTools([]sdktools.ToolDescriptor{
+		{Name: "bash_exec"}, {Name: "delegate"}, {Name: "cancel_delegation"},
+		{Name: "read_step_output"}, {Name: "list_step_outputs"}, {Name: "read_final_result"},
+		{Name: "store_fact"},
+	})
+	adapter := newE2SRegistryAdapter(inner, descs)
+
+	for _, name := range []string{"delegate", "cancel_delegation", "read_step_output", "list_step_outputs", "read_final_result"} {
+		res, err := adapter.Execute(context.Background(), name, json.RawMessage(`{}`))
+		if err != nil {
+			t.Errorf("Execute(%q) returned a Go error %v, want an error RESULT", name, err)
+			continue
+		}
+		if !res.IsError {
+			t.Errorf("Execute(%q) succeeded — a delegation tool must be rejected fail-closed in E2S", name)
+		}
+		if !strings.Contains(res.Content, "not available in E2S mode") {
+			t.Errorf("Execute(%q) error text %q does not name the E2S unavailability", name, res.Content)
+		}
+	}
+	// None of the rejected dispatches may have reached the real executor.
+	if len(inner.calls) != 0 {
+		t.Fatalf("rejected delegation dispatches reached the real executor: %v", inner.calls)
+	}
+	// The memory store still dispatches (E2S's external memory).
+	if res, err := adapter.Execute(context.Background(), "store_fact", json.RawMessage(`{"content":"x"}`)); err != nil || res.IsError {
+		t.Errorf("Execute(store_fact) = (%v, %v), want a clean dispatch (external memory stays)", res, err)
 	}
 }
 
@@ -464,19 +484,12 @@ func TestE2SStepLimitStaysResumable(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// Acceptance: a delegate action reaches the injected launcher and its output
-// becomes the next observation
+// Acceptance: a delegate action is rejected fail-closed (E2S is
+// self-sufficient — no delegation wiring exists at all)
 // ----------------------------------------------------------------------------
 
-func TestRunE2SLoop_DelegateReachesInjectedLauncher(t *testing.T) {
-	const delegationOutput = "SUBAGENT-OUTPUT-7f3a"
-	launcher := &mockDelegationLauncher{
-		out: []tools.DelegationResult{{
-			ID:     "del_1",
-			Status: tools.DelegationStatusCompleted,
-			Output: delegationOutput,
-		}},
-	}
+func TestRunE2SLoop_DelegateActionFailsClosed(t *testing.T) {
+	const gateError = "not available in E2S mode"
 
 	var secondUserMessage string
 	var mockLLM *mockLLMCaller
@@ -486,167 +499,43 @@ func TestRunE2SLoop_DelegateReachesInjectedLauncher(t *testing.T) {
 			n := len(mockLLM.calls)
 			mockLLM.mu.Unlock()
 			if n == 1 {
-				// Turn 1: delegate a self-contained exploration.
+				// Turn 1: the model hallucinates a delegate action. The real
+				// DelegateTool IS registered in the underlying registry — the
+				// rejection must come from the filtered-adapter gate, not from
+				// the tool's absence.
 				return e2sStepResponse("e2s-d1", `{"findings": []}`, "delegate",
-					`{"tasks":[{"id":"del_1","summary":"explore auth module","task":"Find where auth middleware lives and report the file path."}]}`), nil
+					`{"tasks":[{"id":"del_1","summary":"explore auth module","task":"Find where auth middleware lives."}]}`), nil
 			}
-			// Turn 2: the delegation output must be the observation.
+			// Turn 2: the fail-closed rejection must be the observation.
 			if len(req.Messages) > 0 && req.Messages[len(req.Messages)-1].Role == "user" {
 				secondUserMessage = req.Messages[len(req.Messages)-1].Content
 			}
-			return e2sFinishResponse("e2s-d2", "delegation done"), nil
+			return e2sFinishResponse("e2s-d2", "delegation refused, finished anyway"), nil
 		},
 	}
 
 	o := newE2STestOrchestrator(mockLLM, createTestRegistryWithDelegate(t), &spyEmitter{}, nil)
-	o.e2sLauncher = launcher
 
 	result, err := o.HandleMessage(context.Background(), "explore via delegation", "session-e2s-delegate", HandleOptions{E2S: true})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
 	}
 
-	t.Run("launcher received the delegate action", func(t *testing.T) {
-		launcher.mu.Lock()
-		defer launcher.mu.Unlock()
-		if launcher.launch != 1 {
-			t.Fatalf("Launch calls = %d, want exactly 1", launcher.launch)
-		}
-		if len(launcher.tasks) != 1 || launcher.tasks[0].ID != "del_1" {
-			t.Fatalf("launched tasks = %+v, want the single del_1 task", launcher.tasks)
-		}
-	})
-
-	t.Run("launcher output became the next observation", func(t *testing.T) {
+	t.Run("delegate action never executed — the gate error became the observation", func(t *testing.T) {
 		if secondUserMessage == "" {
-			t.Fatal("the second LLM call never ran — the loop did not continue past the delegation turn")
+			t.Fatal("the second LLM call never ran — the loop did not continue past the delegate turn")
 		}
-		if !strings.Contains(secondUserMessage, delegationOutput) {
-			t.Errorf("turn-2 user message does not carry the delegation output %q:\n%s", delegationOutput, secondUserMessage)
+		if !strings.Contains(secondUserMessage, gateError) {
+			t.Errorf("turn-2 user message does not carry the fail-closed gate error:\n%s", secondUserMessage)
+		}
+		if strings.Contains(secondUserMessage, `"explore auth module"`) {
+			t.Errorf("turn-2 user message looks like a delegation observation — the delegate tool must never execute in E2S:\n%s", secondUserMessage)
 		}
 	})
 
-	t.Run("run finished successfully", func(t *testing.T) {
+	t.Run("run continued and finished successfully", func(t *testing.T) {
 		if result == nil || result.Status != orchestration.ExecutionStatusSuccess {
-			t.Fatalf("HandleResult.Status = %+v, want success", result)
-		}
-	})
-}
-
-// TestRunE2SLoop_AsyncDelegationSurvivesDelegateCall is the regression test for
-// the E2S async-delegation lifetime fix. The E2S dispatch watchdog
-// (core/e2s/tool_watchdog.go executeToolCall) derives a PER-CALL context and
-// cancels it the instant the delegate call returns; the E2S launcher must
-// therefore base a mode:"async" background subagent on the RUN context
-// (mirroring RunConductor's conductorLauncher.asyncBaseCtx), not on that
-// per-call context — otherwise the background subagent is torn down the moment
-// the delegate tool returns, even though E2S's finish-join guard
-// (e2sFinishGuard) explicitly awaits pending async delegations.
-//
-// The test parks the subagent's first LLM call, lets the delegate call return
-// (signalled by the main loop reaching its SECOND request, which is strictly
-// after the watchdog's deferred cancel has run), then releases the subagent and
-// asserts its context was still live. A cancelled subagent context means the
-// per-call context leaked into the background lifetime.
-func TestRunE2SLoop_AsyncDelegationSurvivesDelegateCall(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		var (
-			subagentRelease = make(chan struct{})
-			mainTurn2       = make(chan struct{}, 1)
-			mainTurn        atomic.Int32
-			subagentEntered atomic.Bool
-			sawCancel       atomic.Bool
-		)
-
-		isE2SRequest := func(req llm.ChatRequest) bool {
-			for _, td := range req.Tools {
-				if td.Name == e2s.StepToolName {
-					return true
-				}
-			}
-			return false
-		}
-
-		mockLLM := &mockLLMCaller{callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			if isE2SRequest(req) {
-				if mainTurn.Add(1) == 1 {
-					// Turn 1: launch the async delegation.
-					return e2sStepResponse("e2s-async-1", `{"findings": []}`, "delegate",
-						`{"tasks":[{"id":"del_1","summary":"background work","task":"do the background work","mode":"async"}]}`), nil
-				}
-				// Turn 2+: the delegate call has returned by now and — on the
-				// buggy path — the watchdog has already cancelled the per-call
-				// context. Signal the test, then block until the run context is
-				// cancelled so the loop does not spin through its turn budget.
-				select {
-				case mainTurn2 <- struct{}{}:
-				default:
-				}
-				<-ctx.Done()
-				return nil, ctx.Err()
-			}
-			// Subagent call: record that the background work actually began,
-			// then park until the test releases it.
-			subagentEntered.Store(true)
-			select {
-			case <-subagentRelease:
-				if ctx.Err() != nil {
-					sawCancel.Store(true)
-				}
-			case <-ctx.Done():
-				sawCancel.Store(true)
-			}
-			return &llm.ChatResponse{
-				Message: llm.Message{
-					Role:    "assistant",
-					Content: "done",
-					ToolCalls: []llm.ToolCall{
-						{ID: "sub-1", Name: "finish", Input: json.RawMessage(`{"answer":"ok"}`)},
-					},
-				},
-				StopReason: "tool_use",
-				Usage:      llm.TokenUsage{InputTokens: 5, OutputTokens: 5},
-			}, nil
-		}}
-
-		registry := createTestRegistryWithDelegate(t)
-		registry.Register(&mockTool{
-			name: "finish", description: "finish", group: sdktools.GroupSystem,
-			result: sdktools.ToolResult{Content: "done"},
-		})
-
-		o := newE2STestOrchestrator(mockLLM, registry, &spyEmitter{}, nil)
-
-		runCtx, cancelRun := context.WithCancel(context.Background())
-		defer cancelRun()
-
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			// The error is ctx.Canceled on the teardown path; only the async
-			// subagent's observed context is under test.
-			_, _ = o.HandleMessage(runCtx, "run the background work", "session-e2s-async", HandleOptions{E2S: true})
-		}()
-
-		// The main loop reaching its second request proves the delegate call
-		// returned — and thus that the watchdog's deferred per-call cancel has
-		// run (when the bug is present). Then let every goroutine settle.
-		<-mainTurn2
-		synctest.Wait()
-
-		subagentRan := subagentEntered.Load()
-		if subagentRan {
-			close(subagentRelease)
-			synctest.Wait()
-		}
-		cancelRun()
-		<-done
-
-		if !subagentRan {
-			t.Fatal("the async subagent never began its work: the delegate call tore it down before its first step (E2S must base async delegations on the run context, not the per-call watchdog context)")
-		}
-		if sawCancel.Load() {
-			t.Fatal("the async subagent context was cancelled after the delegate call returned (E2S must base async delegations on the run context, not the per-call watchdog context)")
+			t.Fatalf("HandleResult.Status = %+v, want success (a rejected delegation is an observation, not a fatal error)", result)
 		}
 	})
 }
@@ -868,14 +757,16 @@ func TestE2SResumeNote_InformsBudgetRefresh(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// Review-fix regressions: UserAgents directive, spin_stop output
+// Review-fix regressions: no subagent sections, spin_stop output
 // ----------------------------------------------------------------------------
 
-// TestRunE2SLoop_UserAgentsRenderRequestedSection pins #agent-mention
-// parity: an explicit UserAgents request must reach the E2S system prompt as
-// the same mandatory "## Requested Subagents" directive the Conductor
-// renders, instead of being silently dropped by the E2S early return.
-func TestRunE2SLoop_UserAgentsRenderRequestedSection(t *testing.T) {
+// TestRunE2SLoop_NoSubagentSectionsEvenWithUserAgents pins E2S
+// self-sufficiency: an explicit UserAgents request (#agent mention) must NOT
+// render the "## Requested Subagents" / "## Available Subagents" sections or
+// any "## Delegation" directive into the E2S system prompt — the mode does
+// not delegate, so the Conductor's subagent prompt sections have no place
+// here (a delegation action is rejected fail-closed by the adapter).
+func TestRunE2SLoop_NoSubagentSectionsEvenWithUserAgents(t *testing.T) {
 	var systemPrompt string
 	var mockLLM *mockLLMCaller
 	mockLLM = &mockLLMCaller{
@@ -894,11 +785,10 @@ func TestRunE2SLoop_UserAgentsRenderRequestedSection(t *testing.T) {
 		HandleOptions{E2S: true, UserAgents: []string{"code-reviewer"}}); err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
 	}
-	if !strings.Contains(systemPrompt, "## Requested Subagents") {
-		t.Errorf("E2S system prompt missing the Requested Subagents section:\n%s", systemPrompt)
-	}
-	if !strings.Contains(systemPrompt, "code-reviewer") {
-		t.Errorf("E2S system prompt missing the requested agent name:\n%s", systemPrompt)
+	for _, banned := range []string{"## Requested Subagents", "## Available Subagents", "## Delegation", "code-reviewer"} {
+		if strings.Contains(systemPrompt, banned) {
+			t.Errorf("E2S system prompt must not contain %q (E2S does not delegate):\n%s", banned, systemPrompt)
+		}
 	}
 }
 
@@ -996,9 +886,12 @@ func TestRunE2SLoop_ModelProfilesNudgeOverrideCannotBypassOrdering(t *testing.T)
 
 // TestHandleMessage_E2S_MCPModeGating drives the E2S branch end-to-end over
 // the per-server MCP mode gate: without a mention the manual server's tool is
-// absent from the prompt catalog (and no directive renders); with a mention it
-// joins the catalog and the soft "Requested MCP Servers" section renders. The
-// disabled server never surfaces in either case.
+// absent from the prompt catalog; with a mention it joins the catalog. E2S
+// renders NO server sections (self-sufficient mode — the durable mention
+// union lives in the task store and the entry gate, not in the prompt), so no
+// "Requested MCP Servers" section renders in either case. The disabled server
+// never surfaces. The catalog uses the `all` preset so the assertions target
+// the MODE gate, not the slim default catalog that excludes MCP tools.
 func TestHandleMessage_E2S_MCPModeGating(t *testing.T) {
 	build := func() (*sdktools.ToolRegistry, *Orchestrator, *mockLLMCaller) {
 		reg := sdktools.NewToolRegistry()
@@ -1018,7 +911,10 @@ func TestHandleMessage_E2S_MCPModeGating(t *testing.T) {
 			CircuitBreaker: defaultCircuitBreakerConfig,
 		}
 		o := NewOrchestrator(OrchestratorConfig{
-			E2S: E2SSettings{Enabled: true},
+			E2S: E2SSettings{
+				Enabled: true,
+				Tools:   BuilderE2SToolsConfig{Preset: E2SToolsPresetAll},
+			},
 			MCPServerModes: map[string]string{
 				"auto-srv":     "auto",
 				"manual-srv":   "manual",
@@ -1060,8 +956,8 @@ func TestHandleMessage_E2S_MCPModeGating(t *testing.T) {
 	if !strings.Contains(prompt, "manual_query") {
 		t.Fatal("a mentioned manual server's tool must join the E2S catalog")
 	}
-	if !strings.Contains(prompt, "## Requested MCP Servers") || !strings.Contains(prompt, "manual-srv") {
-		t.Fatal("a mention must render the Requested MCP Servers section naming the server")
+	if strings.Contains(prompt, "Requested MCP Servers") {
+		t.Fatal("E2S renders no server sections — the mention gates the catalog, it must not render a directive")
 	}
 	if strings.Contains(prompt, "stale_query") {
 		t.Fatal("disabled server tools must never surface, mention or not")

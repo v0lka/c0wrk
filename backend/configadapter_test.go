@@ -493,6 +493,32 @@ func TestE2SConfigExperimentalGate(t *testing.T) {
 	}
 }
 
+// TestToBuilderConfig_E2SObservationBudget pins that the token-proportional
+// observation-budget knobs reach the core layer: e2s.observation_budget_tokens
+// and e2s.observation_fill_fraction pass through to BuilderE2SConfig (from
+// where the orchestrator bridge copies them into e2s.Config next to the
+// MaxObservationChars char fallback) — seeded defaults included.
+func TestToBuilderConfig_E2SObservationBudget(t *testing.T) {
+	cfg := &config.Config{}
+	config.ApplyDefaults(cfg)
+
+	got := ToBuilderConfig(cfg, config.PredefinedModelProfiles()).E2S
+	if got.ObservationBudgetTokens != 8192 {
+		t.Errorf("default ObservationBudgetTokens = %d, want 8192", got.ObservationBudgetTokens)
+	}
+	if got.ObservationFillFraction != 0.4 {
+		t.Errorf("default ObservationFillFraction = %v, want 0.4", got.ObservationFillFraction)
+	}
+
+	cfg.E2S.ObservationBudgetTokens = 4096
+	cfg.E2S.ObservationFillFraction = 0.25
+	cfg.E2S.ObservationTruncate = 1234
+	got = ToBuilderConfig(cfg, config.PredefinedModelProfiles()).E2S
+	if got.ObservationBudgetTokens != 4096 || got.ObservationFillFraction != 0.25 || got.MaxObservationChars != 1234 {
+		t.Errorf("observation knobs must pass through verbatim: %+v", got)
+	}
+}
+
 // The per-provider TLS pin (ADR-054) must reach the builder layer; the core
 // dial paths read it from BuilderProviderConfig. Providers without a pin must
 // map to the empty string (system verification), never to a neighbour's pin.
@@ -715,5 +741,29 @@ func TestActiveModelProfile_RetiredPredefinedID(t *testing.T) {
 		append(config.PredefinedModelProfiles(), custom))
 	if p.ID != "bonsai-2-27b" || p.Kind != config.ModelProfileKindCustom {
 		t.Errorf("retired id resolved to %q (%s), want the custom profile that owns the id", p.ID, p.Kind)
+	}
+}
+
+// TestToBuilderConfig_E2SToolsMapping verifies the config→builder mapping for
+// the E2S tool-catalog narrowing: preset, allow, and deny flow into
+// BuilderE2SToolsConfig so the orchestrator's filter sees the operator's
+// e2s.tools section (core never imports backend/config — the field-by-field
+// copy in ToBuilderConfig IS the seam).
+func TestToBuilderConfig_E2SToolsMapping(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.E2S.Tools.Preset = config.E2SToolsPresetAll
+	cfg.E2S.Tools.Allow = []string{"semantic_search", "read_skill_resource"}
+	cfg.E2S.Tools.Deny = []string{"web_search"}
+
+	bc := ToBuilderConfig(cfg, nil)
+
+	if bc.E2S.Tools.Preset != config.E2SToolsPresetAll {
+		t.Errorf("E2S.Tools.Preset = %q, want %q", bc.E2S.Tools.Preset, config.E2SToolsPresetAll)
+	}
+	if len(bc.E2S.Tools.Allow) != 2 || bc.E2S.Tools.Allow[0] != "semantic_search" {
+		t.Errorf("E2S.Tools.Allow = %v, want [semantic_search read_skill_resource]", bc.E2S.Tools.Allow)
+	}
+	if len(bc.E2S.Tools.Deny) != 1 || bc.E2S.Tools.Deny[0] != "web_search" {
+		t.Errorf("E2S.Tools.Deny = %v, want [web_search]", bc.E2S.Tools.Deny)
 	}
 }
