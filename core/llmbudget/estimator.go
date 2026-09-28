@@ -284,13 +284,23 @@ func percentile(vals []float64, p float64) float64 {
 // secondsToDuration converts float seconds to a Duration, saturating instead
 // of overflowing: a pathological fit can produce an astronomically large raw
 // budget, and the class clamp — not int64 wraparound — must be what bounds it.
+//
+// The saturation ceiling is derived in INTEGER arithmetic. Computing it in
+// float — float64(math.MaxInt64) / float64(time.Second) — rounds math.MaxInt64
+// UP to 2^63 (the nearest float64), so the back-conversion
+// sec * float64(time.Second) reaches exactly 2^63, which is out of int64 range.
+// That out-of-range float→int conversion is implementation-defined: amd64 and
+// Windows produce math.MinInt64 (a NEGATIVE duration, defeating the clamp),
+// while arm64 saturates to math.MaxInt64. The integer quotient is strictly
+// below 2^63, so the product is always representable and the result is
+// identical on every architecture.
 func secondsToDuration(sec float64) time.Duration {
 	if math.IsNaN(sec) || sec <= 0 {
 		return 0
 	}
-	const maxSeconds = float64(math.MaxInt64) / float64(time.Second)
-	if sec > maxSeconds {
-		sec = maxSeconds
+	const maxSeconds = math.MaxInt64 / int64(time.Second)
+	if sec >= float64(maxSeconds) {
+		return time.Duration(maxSeconds) * time.Second
 	}
 	return time.Duration(sec * float64(time.Second))
 }

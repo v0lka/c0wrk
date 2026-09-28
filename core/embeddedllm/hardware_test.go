@@ -2,9 +2,14 @@ package embeddedllm
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // TestCudaBackendFor pins the driver-version → asset-tag map. The direction
@@ -548,5 +553,144 @@ func TestRunProbeCommandAbsentToolIsNotAnError(t *testing.T) {
 	}
 	if !commandAvailable(shell) {
 		t.Errorf("commandAvailable(%q) = false on %s, want true", shell, runtime.GOOS)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ETXTBSY retry: the transient spawn refusal runProbeCommand absorbs
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestIsTransientExecError pins the ONE errno runProbeCommand retries. Getting
+// it wrong in either direction is costly: retrying a real failure re-runs a
+// child, and NOT retrying ETXTBSY turns a momentary kernel hiccup into a
+// fail-soft "no accelerator" verdict.
+func TestIsTransientExecError(t *testing.T) {
+	t.Parallel()
+
+	forkExec := &os.PathError{Op: "fork/exec", Path: "/tmp/llama-server", Err: syscall.ETXTBSY}
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"a bare ETXTBSY errno", syscall.ETXTBSY, true},
+		{"the fork/exec PathError the kernel actually returns", forkExec, true},
+		{"ETXTBSY wrapped again by a caller", fmt.Errorf("probe: %w", forkExec), true},
+		{"a missing binary is a real answer", syscall.ENOENT, false},
+		{"a permission refusal is a real answer", syscall.EACCES, false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isTransientExecError(tc.err); got != tc.want {
+				t.Errorf("isTransientExecError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// holdExecTargetForWriting stages a fake runtime and opens it for writing, then
+// PROVES that this kernel refuses to exec a file held open for writing — the
+// ETXTBSY condition runProbeCommand retries. Linux enforces that at execve;
+// macOS and Windows do not, so there the test skips rather than certifying a
+// condition the platform cannot produce (and the assertion cannot silently
+// rot into certifying nothing). The descriptor is left open; the caller
+// releases it to shape the scenario.
+func holdExecTargetForWriting(t *testing.T, body string) (file *os.File, script string) {
+	t.Helper()
+
+	script = stageFakeRuntime(t, body)
+	file, err := os.OpenFile(script, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("opening the fake runtime for writing: %v", err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+
+	if _, err := runProbeOnce(t.Context(), script, nil); !errors.Is(err, syscall.ETXTBSY) {
+		t.Skipf("this kernel does not refuse exec of a file open for writing (exec error = %v); ETXTBSY-on-exec is enforced on Linux only", err)
+	}
+	return file, script
+}
+
+// TestRunProbeCommandRetriesWhileTheTargetIsOpenForWriting is the happy path
+// the retry exists for: execve is refused with ETXTBSY while the target is held
+// open for writing, and the call still succeeds once the writer lets go —
+// without the caller ever seeing a failure. Holding the descriptor HERE
+// reproduces the kernel condition deterministically (the check is process-wide,
+// not tied to the fork that runs the child); a sibling parallel test would only
+// ever hit it by accident.
+func TestRunProbeCommandRetriesWhileTheTargetIsOpenForWriting(t *testing.T) {
+	t.Parallel()
+
+	f, script := holdExecTargetForWriting(t, "echo retried\n")
+
+	released := make(chan struct{})
+	go func() {
+		defer close(released)
+		// Hold for one backoff: the first attempt loses the race, and an
+		// attempt a couple of backoffs later is guaranteed to win it.
+		time.Sleep(probeCommandRetryBackoff)
+		_ = f.Close()
+	}()
+	t.Cleanup(func() { <-released })
+
+	out, err := runProbeCommand(t.Context(), script)
+	if err != nil {
+		t.Fatalf("runProbeCommand error = %v, want it to retry past ETXTBSY", err)
+	}
+	if out != "retried\n" {
+		t.Errorf("runProbeCommand output = %q, want %q", out, "retried\n")
+	}
+}
+
+// TestRunProbeCommandGivesUpOnAPersistentlyBusyTarget proves the retry is
+// BOUNDED: a target held open for writing for the whole call surfaces the
+// errno once the attempts are spent rather than being retried forever. The
+// elapsed floor also proves the retries really happened instead of the first
+// refusal being returned immediately.
+func TestRunProbeCommandGivesUpOnAPersistentlyBusyTarget(t *testing.T) {
+	t.Parallel()
+
+	// The descriptor stays open for the whole call; t.Cleanup closes it.
+	_, script := holdExecTargetForWriting(t, "echo unreachable\n")
+
+	start := time.Now()
+	_, err := runProbeCommand(t.Context(), script)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, syscall.ETXTBSY) {
+		t.Fatalf("runProbeCommand error = %v, want it to surface ETXTBSY once the attempts are spent", err)
+	}
+	if elapsed < probeCommandRetryBackoff {
+		t.Errorf("runProbeCommand returned after %v, want at least one retry (>= %v)", elapsed, probeCommandRetryBackoff)
+	}
+	if elapsed > probeCommandTimeout {
+		t.Errorf("runProbeCommand took %v, want it inside the %v probe budget", elapsed, probeCommandTimeout)
+	}
+}
+
+// TestRunProbeCommandDoesNotRetryANonTransientFailure guards the other
+// direction: a child that RUNS and exits nonzero is a real answer, so the spawn
+// must not be repeated — the counter proves the script executed exactly once.
+func TestRunProbeCommandDoesNotRetryANonTransientFailure(t *testing.T) {
+	t.Parallel()
+
+	counter := filepath.Join(t.TempDir(), "runs.txt")
+	script := stageFakeRuntime(t, fmt.Sprintf("echo run >> %s\nexit 7\n", counter))
+
+	_, err := runProbeCommand(t.Context(), script)
+	if err == nil {
+		t.Fatal("runProbeCommand error = nil, want the child's nonzero exit to surface")
+	}
+	if errors.Is(err, errProbeToolAbsent) || errors.Is(err, syscall.ETXTBSY) {
+		t.Errorf("runProbeCommand error = %v, want the child's own exit failure, not a spawn verdict", err)
+	}
+	body, readErr := os.ReadFile(counter)
+	if readErr != nil {
+		t.Fatalf("reading the run counter: %v", readErr)
+	}
+	if runs := strings.Count(string(body), "run\n"); runs != 1 {
+		t.Errorf("the script ran %d time(s), want exactly 1 — a nonzero exit must not be retried", runs)
 	}
 }

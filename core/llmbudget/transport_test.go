@@ -28,9 +28,19 @@ type stubTransport struct {
 	getBodyOK   bool
 	resp        *http.Response
 	err         error
+
+	// delay makes the stub occupy measurable wall-clock time. Without it a
+	// canned reply completes in well under one clock tick, and on coarse-clock
+	// platforms (the Windows CI runners) time.Since of an instant call is 0 —
+	// which the recorder honestly reports and the table then drops as an
+	// unmeasured sample. Tests that assert a positive measured duration set it.
+	delay time.Duration
 }
 
 func (s *stubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if s.delay > 0 {
+		time.Sleep(s.delay)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	deadline, ok := req.Context().Deadline()
@@ -200,7 +210,11 @@ func TestTransportUnknownModelArmsWarmupNotATrainedModelBudget(t *testing.T) {
 // caller-installed recorder (ADR-071 D1), and only once the body has completed
 // — the value the ingest uses instead of the router-call aggregate.
 func TestTransportRecordsWinningAttemptDuration(t *testing.T) {
-	stub := &stubTransport{resp: &http.Response{
+	// A measurable delay: the assertion below requires a POSITIVE duration, and
+	// a canned reply that returns in under one clock tick measures as 0 on the
+	// coarse Windows runners (the assertion is about the recorder, not about
+	// clock resolution).
+	stub := &stubTransport{delay: 20 * time.Millisecond, resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Body:       io.NopCloser(strings.NewReader("ok")),
 		Header:     make(http.Header),

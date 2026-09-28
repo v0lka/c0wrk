@@ -581,9 +581,15 @@ func TestBudgetIngestCallerSkipsFailureAndFallsBack(t *testing.T) {
 		t.Fatalf("SampleCount = %d after a failed call, want 0", got)
 	}
 
+	// The fallback path measures the call with the WALL CLOCK, so the mock must
+	// occupy measurable time: an instant reply measures as 0 on the coarse
+	// Windows runners and the table then drops it as an unmeasured sample
+	// (Ingest ignores a non-positive duration). This is a property of the mock,
+	// not of the fallback logic under test.
 	fallback := &budgetIngestCaller{
-		inner: &mockLLMCaller{responses: []*llm.ChatResponse{
-			{Model: "m", Usage: llm.TokenUsage{InputTokens: 5, OutputTokens: 5}},
+		inner: &mockLLMCaller{callFn: func(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+			time.Sleep(20 * time.Millisecond)
+			return &llm.ChatResponse{Model: "m", Usage: llm.TokenUsage{InputTokens: 5, OutputTokens: 5}}, nil
 		}},
 		table: table,
 	}
