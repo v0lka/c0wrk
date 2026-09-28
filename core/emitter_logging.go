@@ -292,10 +292,25 @@ func (l *loggingEmitter) MemoryRead(stepNum int, content string) {
 // propagate accumulated tokens through the logging wrapper.
 func (l *loggingEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
 	l.logger.Debug("session tokens update", "totalIn", totalIn, "totalOut", totalOut, "model", model, "family", family)
-	type sessionTokenEmitter interface {
-		EmitSessionTokens(totalIn, totalOut int, model, family string)
+	if te, ok := l.inner.(SessionTokenEmitter); ok {
+		te.EmitSessionTokens(totalIn, totalOut, model, family)
 	}
-	if te, ok := l.inner.(sessionTokenEmitter); ok {
+}
+
+// EmitSessionTokensWithThroughput forwards session token totals plus the median
+// output-token throughput to the inner emitter. The inner emitter's capability
+// decides the path: the throughput seam when it supports it, degraded to the
+// plain totals seam otherwise — mirroring the builder's observer-selection
+// fallback so the logging wrapper never masks an inner capability.
+func (l *loggingEmitter) EmitSessionTokensWithThroughput(totalIn, totalOut int, model, family string, medianOutputTokPerSec float64, throughputSamples int) {
+	l.logger.Debug("session tokens update",
+		"totalIn", totalIn, "totalOut", totalOut, "model", model, "family", family,
+		"medianOutputTokPerSec", medianOutputTokPerSec, "throughputSamples", throughputSamples)
+	if te, ok := l.inner.(SessionTokenThroughputEmitter); ok {
+		te.EmitSessionTokensWithThroughput(totalIn, totalOut, model, family, medianOutputTokPerSec, throughputSamples)
+		return
+	}
+	if te, ok := l.inner.(SessionTokenEmitter); ok {
 		te.EmitSessionTokens(totalIn, totalOut, model, family)
 	}
 }

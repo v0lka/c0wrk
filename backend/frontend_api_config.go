@@ -104,6 +104,11 @@ func (f *FrontendAPI) experimentalFeaturesEnabled() bool {
 func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 	resp := ConfigLLMResponse{
 		DefaultModel: f.config.LLM.DefaultModel,
+		// The clamping bound for the Settings form's auto-retry interval
+		// input: the same constant validate() and UpdateLLMConfig enforce
+		// (ADR-065). Published so the frontend has a single source of truth
+		// instead of a duplicated constant.
+		AutoRetryMaxSeconds: config.MaxAutoRetrySeconds(),
 		Anthropic: ConfigProviderFull{
 			APIKey: maskAPIKey(f.config.LLM.Anthropic.APIKey),
 			Models: f.config.LLM.Anthropic.Models,
@@ -117,18 +122,20 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 	}
 	for name, cfg := range f.config.LLM.OpenAICompatible {
 		resp.OpenAICompatible[name] = ConfigProviderFull{
-			APIKey:         maskAPIKey(cfg.APIKey),
-			BaseURL:        cfg.BaseURL,
-			Models:         cfg.Models,
-			TLSFingerprint: cfg.TLSFingerprint,
+			APIKey:           maskAPIKey(cfg.APIKey),
+			BaseURL:          cfg.BaseURL,
+			Models:           cfg.Models,
+			TLSFingerprint:   cfg.TLSFingerprint,
+			AutoRetrySeconds: cfg.AutoRetrySeconds,
 		}
 	}
 	for name, cfg := range f.config.LLM.AnthropicCompatible {
 		resp.AnthropicCompatible[name] = ConfigProviderFull{
-			APIKey:         maskAPIKey(cfg.APIKey),
-			BaseURL:        cfg.BaseURL,
-			Models:         cfg.Models,
-			TLSFingerprint: cfg.TLSFingerprint,
+			APIKey:           maskAPIKey(cfg.APIKey),
+			BaseURL:          cfg.BaseURL,
+			Models:           cfg.Models,
+			TLSFingerprint:   cfg.TLSFingerprint,
+			AutoRetrySeconds: cfg.AutoRetrySeconds,
 		}
 	}
 	return resp
@@ -261,6 +268,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 				Models:             ocReq.Models,
 				TLSFingerprint:     resolveTLSFingerprint(ocReq.TLSFingerprint, existing.TLSFingerprint, exists),
 				OutputTokenReserve: outputReserve,
+				AutoRetrySeconds:   resolveAutoRetrySeconds(ocReq.AutoRetrySeconds, existing.AutoRetrySeconds, exists),
 			}
 		}
 		candidate.OpenAICompatible = newMap
@@ -283,6 +291,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 				Models:             acReq.Models,
 				TLSFingerprint:     resolveTLSFingerprint(acReq.TLSFingerprint, existing.TLSFingerprint, exists),
 				OutputTokenReserve: outputReserve,
+				AutoRetrySeconds:   resolveAutoRetrySeconds(acReq.AutoRetrySeconds, existing.AutoRetrySeconds, exists),
 			}
 		}
 		candidate.AnthropicCompatible = newMap
@@ -296,6 +305,22 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		}
 	}
 
+	// The `embedded` provider record is BACKEND-OWNED: it is generated from the
+	// authoritative embedded_llm state and is not part of the UI's draft. A
+	// request that carries openai_compatible REPLACES the whole map, so a draft
+	// that never saw the generated entry (a stale settings dialog, a provider
+	// deletion, a hand-built request) would silently delete the local model —
+	// re-inject it from the authoritative state after the candidate is built
+	// and before it is validated. This also removes the record when the model
+	// has been uninstalled, keeping the two sections consistent in both
+	// directions.
+	//
+	// contextWindow is 0 on purpose: this path performs no hardware probe and
+	// no network I/O (the server may well be stopped), so an existing
+	// llm.models context_window override is left exactly as the install path
+	// wrote it.
+	candidate.SyncEmbeddedProvider(f.config.EmbeddedLLM, 0)
+
 	// A first-run config intentionally has no default until setup finishes.
 	// Once a default exists, however, every candidate must still resolve after
 	// all requested provider/model replacements have been applied. Validate
@@ -307,7 +332,35 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		}
 	}
 
+	// Reject out-of-range auto_retry_seconds before anything is committed
+	// (ADR-065): the same [0, 3600] bound Load enforces. The Settings UI
+	// clamps its own input, but this RPC is a trust boundary for arbitrary
+	// callers (devtools, future scripts), so the clamp cannot be assumed.
+	for name, oc := range candidate.OpenAICompatible {
+		if oc.AutoRetrySeconds < 0 || oc.AutoRetrySeconds > config.MaxAutoRetrySeconds() {
+			f.configMu.Unlock()
+			return fmt.Errorf("invalid LLM configuration: openai_compatible %q auto_retry_seconds must be within [0, %d], got %d",
+				name, config.MaxAutoRetrySeconds(), oc.AutoRetrySeconds)
+		}
+	}
+	for name, ac := range candidate.AnthropicCompatible {
+		if ac.AutoRetrySeconds < 0 || ac.AutoRetrySeconds > config.MaxAutoRetrySeconds() {
+			f.configMu.Unlock()
+			return fmt.Errorf("invalid LLM configuration: anthropic_compatible %q auto_retry_seconds must be within [0, %d], got %d",
+				name, config.MaxAutoRetrySeconds(), ac.AutoRetrySeconds)
+		}
+	}
+
 	f.config.LLM = candidate
+
+	// Republish the auto-retry interval snapshot (ADR-065) from the committed
+	// candidate BEFORE the persist: the session-layer resolver reads it
+	// lock-free, and doing it under configMu keeps the snapshot exactly in
+	// lockstep with f.config.LLM — a failed persist rolls f.config.LLM back
+	// below, and this same path republishes the restored previous state.
+	if f.app != nil {
+		f.app.publishAutoRetryIntervals(f.config)
+	}
 
 	// Persist while configMu is held so a failed disk write can restore the
 	// exact prior LLM state before any reader, rebuild, or frontend RPC result
@@ -316,6 +369,13 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 	// request to consumers.
 	if err := config.Save(f.config, f.configPath); err != nil {
 		f.config.LLM = previous
+		if f.app != nil {
+			f.app.publishAutoRetryIntervals(f.config)
+		}
+		// Release configMu before returning: a failed persist must leave the
+		// config stack as usable as a rejected request. Holding the lock here
+		// would deadlock every GetConfig/Settings RPC on the first persist
+		// failure (full disk, missing directory, permissions).
 		f.configMu.Unlock()
 		return fmt.Errorf("failed to persist LLM config: %w", err)
 	}
@@ -375,7 +435,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 	// FrontendAPI, so holding the RLock across them cannot deadlock.
 	if b := f.builder(); b != nil {
 		f.configMu.RLock()
-		fresh := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+		fresh := f.toBuilderConfigLocked()
 		b.RebuildJudge(fresh)
 		rebuildErr := b.RebuildRouter(fresh)
 		f.configMu.RUnlock()
@@ -408,7 +468,7 @@ func (f *FrontendAPI) UpdateSearchSettings(settings SearchSettingsRequest) error
 
 	// Rebuild web search tool via the backend builder.
 	if b := f.builder(); b != nil {
-		b.UpdateSearchTool(ToBuilderConfig(f.config, f.modelProfilesCatalog()))
+		b.UpdateSearchTool(f.toBuilderConfigLocked())
 	}
 
 	return nil
@@ -518,7 +578,7 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 	// Snapshot what the rebuild needs while the lock is still held; after the
 	// unlock f.config must only be touched under configMu again.
 	b := f.builder()
-	bcfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+	bcfg := f.toBuilderConfigLocked()
 	f.configMu.Unlock()
 
 	// --- Heavy work below runs OUTSIDE configMu (readers stay responsive) ---
@@ -548,7 +608,8 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 
 // UpdateExperimentalFeatures toggles the master experimental-features switch
 // at runtime. It persists the change and rebuilds the LLM router so the
-// gated features (the E2S execution mode) take effect for new sessions without
+// gated features (the E2S execution mode — the embedded-model gate is
+// frontend-only and needs no rebuild) take effect for new sessions without
 // an app restart. Model Profiles is not gated by this switch, so this method
 // never touches its persisted master toggle (model_profiles.enabled).
 func (f *FrontendAPI) UpdateExperimentalFeatures(enabled bool) error {
@@ -569,7 +630,7 @@ func (f *FrontendAPI) UpdateExperimentalFeatures(enabled bool) error {
 	// immediately. The builder config carries the effective E2S settings,
 	// reused below to refresh the live orchestrators. Model Profiles is not
 	// gated by this switch, so no Model Profiles state is recomputed or pushed.
-	builderCfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+	builderCfg := f.toBuilderConfigLocked()
 	if b := f.builder(); b != nil {
 		if err := b.RebuildRouter(builderCfg); err != nil {
 			f.log().Warn("failed to rebuild LLM router after experimental-features toggle", "error", err)
@@ -755,7 +816,7 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 
 	// Apply policies to the shared tool registry via the backend builder.
 	if b := f.builder(); b != nil {
-		builderCfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+		builderCfg := f.toBuilderConfigLocked()
 		// Re-register the shell tool FIRST: the blocklist is compiled into
 		// the tool instance at registration, so runtime edits need it to
 		// take effect without an app restart. The call is atomic (a compile
@@ -885,7 +946,7 @@ func (f *FrontendAPI) UpdateShellExecSettings(settings ShellExecSettingsResponse
 	f.config.ShellExec = config.ShellExecConfig{BashExec: newBash, PoshExec: newPosh}
 
 	if b := f.builder(); b != nil {
-		builderCfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+		builderCfg := f.toBuilderConfigLocked()
 		if err := b.UpdateShellBlocklist(builderCfg); err != nil {
 			f.config.ShellExec = prev
 			return fmt.Errorf("failed to apply shell command override: %w", err)
@@ -1093,17 +1154,42 @@ func normalizeModelProfilesModelToken(s string) string {
 	return b.String()
 }
 
+// modelProfilesSuggestAliasIDs maps a model whose shipping name shares no token
+// with the architecture it is derived from to the predefined profile slug that
+// fits it. The embedded local model ("Bonsai 2 27B") is derived from
+// Qwen/Qwen3.8-27B, but its normalized name ("bonsai227b") contains no
+// predefined slug, so the containment match below can never reach
+// "qwen3.8-27b" — hence the explicit entry. Keys are produced by
+// normalizeModelProfilesModelToken, so the bare name and the composite
+// "embedded/Bonsai 2 27B" id both resolve to the same key. An alias stays a
+// HINT: nothing here flips model_profiles.enabled or changes active_profile
+// (ADR-066 D8).
+var modelProfilesSuggestAliasIDs = map[string]string{
+	normalizeModelProfilesModelToken(config.EmbeddedLLMModelName): "qwen3.8-27b",
+}
+
 // suggestModelProfileID returns the predefined profile whose slug best matches
 // the configured default model name, or "" when nothing matches. "generic"
 // is never suggested — it is the model-agnostic fallback the picker already
 // offers. The match is containment on the normalized tokens (model name
 // contains the slug), so vendor decorations ("Qwen/Qwen3.8-27B",
 // "qwen3.8-27b-instruct-2507") still land on "qwen3.8-27b"; the longest
-// matching slug wins so a more specific profile beats a shorter one.
+// matching slug wins so a more specific profile beats a shorter one. A model
+// listed in modelProfilesSuggestAliasIDs is matched by identity instead and
+// therefore outranks containment (an exact alias is strictly more specific than
+// a substring); an alias whose target is missing from the predefined catalog
+// yields no suggestion rather than a dangling id.
 func suggestModelProfileID(defaultModel string) string {
 	norm := normalizeModelProfilesModelToken(defaultModel)
 	if norm == "" {
 		return ""
+	}
+	if alias, ok := modelProfilesSuggestAliasIDs[norm]; ok {
+		p, found := config.FindPredefinedModelProfile(alias)
+		if !found || p.ID == config.ModelProfilesGenericProfileID {
+			return ""
+		}
+		return p.ID
 	}
 	best := ""
 	bestLen := 0
@@ -1294,7 +1380,7 @@ func (f *FrontendAPI) applyModelProfilesChange() {
 	// runs under configMu.Lock), so the goal-mode block the settings UI mirrors
 	// tracks the just-applied change.
 	f.refreshModelProfilesGateLocked()
-	builderCfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+	builderCfg := f.toBuilderConfigLocked()
 	if b := f.builder(); b != nil {
 		if err := b.RebuildRouter(builderCfg); err != nil {
 			f.log().Warn("failed to rebuild LLM router after model-profile profile change", "error", err)
@@ -1727,7 +1813,7 @@ func (f *FrontendAPI) ListProviderModels(req ListProviderModelsRequest) ([]strin
 		f.configMu.RUnlock()
 		return nil, errors.New("application not initialized")
 	}
-	cfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+	cfg := f.toBuilderConfigLocked()
 	f.configMu.RUnlock()
 
 	if err := applyListProviderModelsOverrides(cfg, req); err != nil {
@@ -1840,6 +1926,23 @@ func resolveTLSFingerprint(requested *string, persisted string, providerExists b
 		return persisted
 	}
 	return ""
+}
+
+// resolveAutoRetrySeconds applies the pointer sentinel for the per-provider
+// session-layer auto-retry interval (compatible providers only): nil means
+// "keep the persisted interval", which is what a debounced partial save from
+// the settings dialog sends when only credentials or the model list changed —
+// without this, every such save would silently reset the timer. A non-nil
+// pointer applies verbatim, so an explicit 0 is the deliberate "disable the
+// retry timer" signal.
+func resolveAutoRetrySeconds(requested *int, persisted int, providerExists bool) int {
+	if requested != nil {
+		return *requested
+	}
+	if providerExists {
+		return persisted
+	}
+	return 0
 }
 
 // applyListProviderModelsOverrides merges draft credentials from the settings
@@ -2120,7 +2223,7 @@ func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error
 
 	// Rebuild the LLM router so the new override takes effect for new sessions.
 	if b := f.builder(); b != nil {
-		bcfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+		bcfg := f.toBuilderConfigLocked()
 		if err := b.RebuildRouter(bcfg); err != nil {
 			f.log().Warn("failed to rebuild LLM router after model config update", "error", err)
 		}

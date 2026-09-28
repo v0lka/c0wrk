@@ -1345,7 +1345,7 @@ func TestGoalLoopResult_MapsStatus(t *testing.T) {
 		{goal.StatusBlockedIdle, orchestration.ExecutionStatusPartial},
 	}
 	for _, tc := range cases {
-		result := o.goalLoopResult("out", bb, nil, tc.status, "cond", false, "")
+		result := o.goalLoopResult("out", bb, nil, tc.status, "cond", false, nil)
 		if result.Status != tc.want {
 			t.Errorf("goalLoopResult(%q).Status = %q, want %q", tc.status, result.Status, tc.want)
 		}
@@ -1354,7 +1354,7 @@ func TestGoalLoopResult_MapsStatus(t *testing.T) {
 	// A cooperative mid-turn pause (paused=true) overrides the active→partial
 	// default so the task is persisted as paused (resumable) and the manager
 	// emits session_paused instead of a degraded task_complete/resumable banner.
-	pausedResult := o.goalLoopResult("out", bb, nil, goal.StatusActive, "cond", true, "")
+	pausedResult := o.goalLoopResult("out", bb, nil, goal.StatusActive, "cond", true, nil)
 	if pausedResult.Status != orchestration.ExecutionStatusPaused {
 		t.Errorf("goalLoopResult(active, paused=true).Status = %q, want %q", pausedResult.Status, orchestration.ExecutionStatusPaused)
 	}
@@ -1362,12 +1362,22 @@ func TestGoalLoopResult_MapsStatus(t *testing.T) {
 	// A turn error (turnErr non-empty) on a non-terminal goal overrides the
 	// active→partial default to a RESUMABLE FAILURE (failed), never "partial",
 	// and carries the concrete cause as the task output.
-	errResult := o.goalLoopResult("out", bb, nil, goal.StatusActive, "cond", false, "provider unavailable")
+	errResult := o.goalLoopResult("out", bb, nil, goal.StatusActive, "cond", false, errors.New("provider unavailable"))
 	if errResult.Status != orchestration.ExecutionStatusFailed {
 		t.Errorf("goalLoopResult(active, turnErr set).Status = %q, want %q", errResult.Status, orchestration.ExecutionStatusFailed)
 	}
 	if !strings.Contains(errResult.Output, "provider unavailable") {
 		t.Errorf("goalLoopResult(active, turnErr set).Output = %q, want it to carry the error reason", errResult.Output)
+	}
+	// The typed cause must survive on HandleResult.Err for the session
+	// manager's auto-retry classifier (errors.As on *llm.Error, ADR-065):
+	// a degraded completion (nil returned error) loses the classification
+	// without this. Every non-errored outcome leaves it nil.
+	if errResult.Err == nil || errResult.Err.Error() != "provider unavailable" {
+		t.Errorf("goalLoopResult(active, turnErr set).Err = %v, want the typed turn error", errResult.Err)
+	}
+	if pausedResult.Err != nil {
+		t.Errorf("goalLoopResult(active, paused).Err = %v, want nil (a pause is not an error)", pausedResult.Err)
 	}
 }
 

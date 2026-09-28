@@ -1,6 +1,4 @@
-import { useState } from 'react'
 import { X, Lock } from 'lucide-react'
-import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
 import { Markdown } from '@/lib/markdownConfig'
@@ -36,65 +34,6 @@ export function Toggle({ checked, onChange, label, description, disabled }: Togg
         <span className={`text-sm font-medium ${disabled ? 'text-muted-foreground' : ''}`}>{label}</span>
       </div>
       {description && <p className="text-xs text-muted-foreground pl-12">{description}</p>}
-    </div>
-  )
-}
-
-/**
- * NumberField — integer input for thresholds / counts. Persists on blur to
- * avoid a save storm while typing. `min`/`max` are the inclusive bounds;
- * an out-of-range entry on blur is rejected (the field reverts) so the value
- * committed here always matches the backend's accepted range.
- */
-interface NumberFieldProps {
-  label: string
-  value: number
-  onChange: (value: number) => void
-  min?: number
-  max?: number
-  step?: number
-  disabled?: boolean
-}
-
-export function NumberField({ label, value, onChange, min, max, step, disabled }: NumberFieldProps) {
-  const [draft, setDraft] = useState(String(value))
-  const [focused, setFocused] = useState(false)
-
-  const display = focused ? draft : String(value)
-
-  const commit = () => {
-    setFocused(false)
-    const parsed = Number(draft)
-    if (
-      Number.isFinite(parsed) &&
-      (min === undefined || parsed >= min) &&
-      (max === undefined || parsed <= max)
-    ) {
-      onChange(parsed)
-    } else {
-      setDraft(String(value))
-    }
-  }
-
-  return (
-    <div className="flex flex-col gap-1">
-      <label className="text-xs text-muted-foreground">{label}</label>
-      <Input
-        type="number"
-        data-field={label}
-        value={display}
-        disabled={disabled}
-        min={min}
-        max={max}
-        step={step}
-        onFocus={() => {
-          setFocused(true)
-          setDraft(String(value))
-        }}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        className="h-8 w-24 text-sm"
-      />
     </div>
   )
 }

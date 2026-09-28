@@ -1,18 +1,22 @@
 import { describe, it, expect } from 'vitest'
-import { handleContextFill, handleCompactionStarted, handleCompactionFinished, type ContextFillStore } from '@/hooks/events/useContextEvents'
-import type { ContextFillData } from '@/types/events'
+import { handleContextFill, handleSessionTokens, handleCompactionStarted, handleCompactionFinished, stripAutoRetryFromBanner, type ContextFillStore } from '@/hooks/events/useContextEvents'
+import type { ContextFillData, SessionTokensData } from '@/types/events'
 import type { TokenInfo, CompactionAvailability } from '@/types/models'
+import type { StepContextTokens } from '@/stores/chatStore'
+import type { ChatMessageUI } from '@/types/messages'
 
 interface Recorded {
   stepFill: Array<{ sessionId: string; stepId: string; fill: number }>
+  stepTokens: Array<{ sessionId: string; stepId: string; tokens: Partial<StepContextTokens> }>
   sessionTokens: Array<Partial<TokenInfo>>
 }
 
 function makeStore(): ContextFillStore & { recorded: Recorded } {
-  const recorded: Recorded = { stepFill: [], sessionTokens: [] }
+  const recorded: Recorded = { stepFill: [], stepTokens: [], sessionTokens: [] }
   return {
     recorded,
     setStepContextFill: (sessionId, stepId, fill) => { recorded.stepFill.push({ sessionId, stepId, fill }) },
+    setStepContextTokens: (sessionId, stepId, tokens) => { recorded.stepTokens.push({ sessionId, stepId, tokens }) },
     setSessionTokens: (_sessionId, tokens) => { recorded.sessionTokens.push(tokens) },
   }
 }
@@ -57,6 +61,9 @@ describe('handleContextFill', () => {
     const store = makeStore()
     handleContextFill(store, 'sess-1', makeData({ plan_step_id: 'step-9' }))
     expect(store.recorded.stepFill).toEqual([{ sessionId: 'sess-1', stepId: 'step-9', fill: 42.5 }])
+    expect(store.recorded.stepTokens).toEqual([
+      { sessionId: 'sess-1', stepId: 'step-9', tokens: { used_tokens: 8500, max_tokens: 20000 } },
+    ])
     expect(store.recorded.sessionTokens).toHaveLength(1)
     expect(store.recorded.sessionTokens[0]).toEqual({
       total_input_tokens: 100,
@@ -64,6 +71,70 @@ describe('handleContextFill', () => {
       model: 'qwen3.6',
       family: 'openai_compatible',
     })
+  })
+
+  it('step-scoped event without used/max tokens does not touch the step token map', () => {
+    // The type guard does not verify used_tokens/max_tokens; a payload missing
+    // them (older backend) must not write the stepContextTokens map at all —
+    // merge semantics would keep the previous values, so a no-op write is
+    // pointless and an undefined coercion would corrupt them.
+    const store = makeStore()
+    handleContextFill(store, 'sess-1', makeData({ plan_step_id: 'step-9', used_tokens: undefined, max_tokens: undefined }))
+    expect(store.recorded.stepFill).toEqual([{ sessionId: 'sess-1', stepId: 'step-9', fill: 42.5 }])
+    expect(store.recorded.stepTokens).toHaveLength(0)
+  })
+
+  it('step-scoped event merges partial token totals without erasing the other field', () => {
+    // Only max_tokens present (e.g. the window was re-probed): the merge
+    // semantics of setStepContextTokens keep the previously-known used_tokens.
+    const store = makeStore()
+    handleContextFill(store, 'sess-1', makeData({ plan_step_id: 'step-9' }))
+    handleContextFill(store, 'sess-1', makeData({ plan_step_id: 'step-9', used_tokens: undefined }))
+    expect(store.recorded.stepTokens).toEqual([
+      { sessionId: 'sess-1', stepId: 'step-9', tokens: { used_tokens: 8500, max_tokens: 20000 } },
+      { sessionId: 'sess-1', stepId: 'step-9', tokens: { max_tokens: 20000 } },
+    ])
+  })
+
+  it('session-root event does not write the step token map', () => {
+    // Session-root events carry the conductor's window; they must never land
+    // in the per-step token maps (same isolation as the step fill).
+    const store = makeStore()
+    handleContextFill(store, 'sess-1', makeData({}))
+    expect(store.recorded.stepFill).toHaveLength(0)
+    expect(store.recorded.stepTokens).toHaveLength(0)
+  })
+
+  it('step-scoped event with session_root_mirror also refreshes the session-level fill', () => {
+    // Root-emitter inline-step fill (dynamic scope): the step fill IS the
+    // conductor's session-level fill here — mirror it to the status bar
+    // immediately instead of waiting for the one iteration-stale
+    // session_tokens re-broadcast.
+    const store = makeStore()
+    handleContextFill(store, 'sess-1', makeData({ plan_step_id: 'step-2', session_root_mirror: true }))
+    expect(store.recorded.stepFill).toEqual([{ sessionId: 'sess-1', stepId: 'step-2', fill: 42.5 }])
+    expect(store.recorded.stepTokens).toEqual([
+      { sessionId: 'sess-1', stepId: 'step-2', tokens: { used_tokens: 8500, max_tokens: 20000 } },
+    ])
+    expect(store.recorded.sessionTokens).toHaveLength(1)
+    expect(store.recorded.sessionTokens[0]).toMatchObject({
+      total_input_tokens: 100,
+      total_output_tokens: 50,
+      fill_percent: 42.5,
+      used_tokens: 8500,
+      max_tokens: 20000,
+    })
+  })
+
+  it('session_root_mirror respects absent optional fields like the session-root branch', () => {
+    // The flag authorizes the mirror, not a field coercion: a payload missing
+    // used_tokens/max_tokens must not overwrite the last known session-level
+    // values with 0/undefined.
+    const store = makeStore()
+    handleContextFill(store, 'sess-1', makeData({ plan_step_id: 'step-2', session_root_mirror: true, used_tokens: undefined, max_tokens: undefined }))
+    expect(store.recorded.sessionTokens[0]).toMatchObject({ fill_percent: 42.5 })
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('used_tokens')
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('max_tokens')
   })
 
   it('session-root event preserves previously-known fill when fields are absent', () => {
@@ -78,6 +149,107 @@ describe('handleContextFill', () => {
   })
 })
 
+describe('stripAutoRetryFromBanner', () => {
+  function makeStripStore() {
+    const updates: Array<{ sessionId: string; messageId: string; metadata: Record<string, unknown> }> = []
+    return {
+      updates,
+      updateMessage: (sessionId: string, messageId: string, updates2: Partial<{ metadata: Record<string, unknown> }>) => {
+        updates.push({ sessionId, messageId, metadata: updates2.metadata ?? {} })
+      },
+    }
+  }
+  function bannerMsg(id: string, metadata: Record<string, unknown> | undefined) {
+    return { id, sessionId: 'sess-1', type: 'task_failed_resumable', content: 'x', metadata, timestamp: 1 } as unknown as ChatMessageUI
+  }
+
+  it('strips the live auto-resend keys from the latest unresolved live banner', () => {
+    const store = makeStripStore()
+    stripAutoRetryFromBanner(store, 'sess-1', [
+      bannerMsg('older', { resolved: false, auto_retry_at: 100, auto_retry_live: true }),
+      bannerMsg('latest', { resolved: false, auto_retry_at: 200, auto_retry_live: true, decision: 'none' }),
+    ])
+    // Only the LAST unresolved banner is touched. Key removal is expressed as
+    // undefined overwrites (updateMessage shallow-merges metadata), so the
+    // live keys read as absent afterwards; the rest of the metadata survives.
+    expect(store.updates).toHaveLength(1)
+    expect(store.updates[0]).toEqual({
+      sessionId: 'sess-1',
+      messageId: 'latest',
+      metadata: { resolved: false, decision: 'none', auto_retry_at: undefined, auto_retry_live: undefined },
+    })
+  })
+
+  it('leaves a restored banner (deadline without the live flag) untouched', () => {
+    const store = makeStripStore()
+    // A history-reload row carries the raw persisted payload (auto_retry_at
+    // with no auto_retry_live): it never counts down, so there is nothing
+    // to strip.
+    stripAutoRetryFromBanner(store, 'sess-1', [
+      bannerMsg('restored', { resolved: false, auto_retry_at: 100 }),
+    ])
+    expect(store.updates).toHaveLength(0)
+  })
+
+  it('skips resolved banners and is a no-op when no live deadline exists', () => {
+    const store = makeStripStore()
+    stripAutoRetryFromBanner(store, 'sess-1', [
+      bannerMsg('resolved', { resolved: true, auto_retry_at: 100, auto_retry_live: true }),
+      bannerMsg('no-deadline', { resolved: false }),
+    ])
+    expect(store.updates).toHaveLength(0)
+  })
+
+  it('does nothing when there is no banner at all', () => {
+    const store = makeStripStore()
+    stripAutoRetryFromBanner(store, 'sess-1', [{ id: 'other', sessionId: 'sess-1', type: 'assistant', content: 'hi', timestamp: 1 } as unknown as ChatMessageUI])
+    expect(store.updates).toHaveLength(0)
+  })
+})
+
+describe('handleSessionTokens', () => {
+  function makeTokensData(overrides: Partial<SessionTokensData> = {}): SessionTokensData {
+    return {
+      session_input_tokens: 1200,
+      session_output_tokens: 340,
+      model: 'embedded/Bonsai 2 27B',
+      family: 'embedded',
+      ...overrides,
+    }
+  }
+
+  it('forwards the throughput pair when the payload carries it', () => {
+    const store = makeStore()
+    handleSessionTokens(store, 'sess-1', makeTokensData({ median_output_tok_s: 27.44, tok_s_samples: 5 }))
+    expect(store.recorded.sessionTokens).toHaveLength(1)
+    expect(store.recorded.sessionTokens[0]).toMatchObject({
+      total_input_tokens: 1200,
+      total_output_tokens: 340,
+      model: 'embedded/Bonsai 2 27B',
+      family: 'embedded',
+      median_output_tok_s: 27.44,
+      tok_s_samples: 5,
+    })
+  })
+
+  it('omits the throughput pair on legacy payloads (no clobbering with zeros)', () => {
+    // A payload that predates the metric must not overwrite a previously-known
+    // median with 0 — the same merge-preservation contract as fill_percent.
+    const store = makeStore()
+    handleSessionTokens(store, 'sess-1', makeTokensData({ median_output_tok_s: undefined, tok_s_samples: undefined }))
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('median_output_tok_s')
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('tok_s_samples')
+  })
+
+  it('keeps guarding the optional fill fields exactly as before', () => {
+    const store = makeStore()
+    handleSessionTokens(store, 'sess-1', makeTokensData({ fill_percent: undefined, used_tokens: undefined, max_tokens: undefined }))
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('fill_percent')
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('used_tokens')
+    expect(store.recorded.sessionTokens[0]).not.toHaveProperty('max_tokens')
+  })
+})
+
 describe('handleCompactionStarted / handleCompactionFinished', () => {
   interface CompactionRecorded {
     compacting: Array<{ sessionId: string; value: boolean }>
@@ -86,10 +258,11 @@ describe('handleCompactionStarted / handleCompactionFinished', () => {
     pausing: Array<{ sessionId: string; value: boolean }>
     paused: Array<{ sessionId: string; value: boolean }>
     taskActive: Array<{ sessionId: string; value: boolean }>
+    messages: Array<{ sessionId: string; message: ChatMessageUI }>
   }
 
   function makeCompactionStore() {
-    const recorded: CompactionRecorded = { compacting: [], compactionAvailability: [], activity: [], pausing: [], paused: [], taskActive: [] }
+    const recorded: CompactionRecorded = { compacting: [], compactionAvailability: [], activity: [], pausing: [], paused: [], taskActive: [], messages: [] }
     return {
       recorded,
       setCompacting: (sessionId: string, value: boolean) => { recorded.compacting.push({ sessionId, value }) },
@@ -98,6 +271,7 @@ describe('handleCompactionStarted / handleCompactionFinished', () => {
       setPausing: (sessionId: string, value: boolean) => { recorded.pausing.push({ sessionId, value }) },
       setPaused: (sessionId: string, value: boolean) => { recorded.paused.push({ sessionId, value }) },
       setTaskActive: (sessionId: string, value: boolean) => { recorded.taskActive.push({ sessionId, value }) },
+      addMessage: (sessionId: string, message: ChatMessageUI) => { recorded.messages.push({ sessionId, message }) },
     }
   }
 
@@ -113,6 +287,47 @@ describe('handleCompactionStarted / handleCompactionFinished', () => {
     handleCompactionFinished(store, 'sess-1', { success: true, resumed: true })
     expect(store.recorded.compacting).toEqual([{ sessionId: 'sess-1', value: false }])
     expect(store.recorded.activity).toHaveLength(0)
+  })
+
+  it('finished on success lands the manual compaction card with rounded percentages', () => {
+    // The manual flow emits no context_compaction event (that type means
+    // "auto compaction" and is persisted by the backend event pipeline), so
+    // the live card is derived here from compaction_finished's display-basis
+    // percentages — the same numbers the marker row stores, keeping the live
+    // and reloaded cards identical.
+    const store = makeCompactionStore()
+    handleCompactionFinished(store, 'sess-1', { success: true, resumed: true, before_percent: 45.6, after_percent: 12.3 })
+    expect(store.recorded.messages).toHaveLength(1)
+    const card = store.recorded.messages[0]!
+    expect(card.sessionId).toBe('sess-1')
+    expect(card.message.type).toBe('context_compaction')
+    expect(card.message.content).toBe('Context compacted from 46% to 12%')
+    expect(card.message.metadata).toEqual({ before_percent: 45.6, after_percent: 12.3 })
+  })
+
+  it('finished with nothing_compacted adds no card (the label is the outcome)', () => {
+    const store = makeCompactionStore()
+    handleCompactionFinished(store, 'sess-1', { success: true, resumed: false, nothing_compacted: true, before_percent: 0, after_percent: 0 })
+    expect(store.recorded.messages).toHaveLength(0)
+  })
+
+  it('finished on error or cancellation adds no card', () => {
+    const errStore = makeCompactionStore()
+    handleCompactionFinished(errStore, 'sess-1', { success: false, error: 'boom', before_percent: 45.6, after_percent: 12.3 })
+    expect(errStore.recorded.messages).toHaveLength(0)
+
+    const cancelStore = makeCompactionStore()
+    handleCompactionFinished(cancelStore, 'sess-1', { success: false, cancelled: true, resumed: false, before_percent: 45.6, after_percent: 12.3 })
+    expect(cancelStore.recorded.messages).toHaveLength(0)
+  })
+
+  it('finished with a failed auto-resume still lands the card (the compaction succeeded)', () => {
+    // paused_without_resume means the flow compacted fine but could not
+    // auto-resume the task — the card records the compaction either way.
+    const store = makeCompactionStore()
+    handleCompactionFinished(store, 'sess-1', { success: true, resumed: false, paused_without_resume: true, before_percent: 45.6, after_percent: 12.3 })
+    expect(store.recorded.messages).toHaveLength(1)
+    expect(store.recorded.messages[0]!.message.type).toBe('context_compaction')
   })
 
   it('finished on success without a resume clears the activity (idle session)', () => {

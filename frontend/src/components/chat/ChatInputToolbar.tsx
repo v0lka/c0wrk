@@ -15,6 +15,7 @@ import { useInputModeStore } from '@/stores/inputModeStore'
 import { useChatStore } from '@/stores/chatStore'
 import { computeModeTogglesLocked, modeToggleLockReason } from '@/lib/chatInputLock'
 import { useAttachmentsInput } from '@/hooks/useAttachmentsInput'
+import { useServiceCallTitle } from '@/hooks/useServiceCallTitle'
 
 interface ChatInputToolbarProps {
   controller: ChatInputController
@@ -56,6 +57,12 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
 
   // Budget selector is only meaningful when goal mode is enabled.
   const goalEnabled = useInputModeStore((s) => s.goalEnabled)
+  // The optimize call has no client-side timeout — the pending tooltip explains
+  // a long wait only when it really is a cold embedded-model load. `null` is the
+  // honest argument: OptimizePrompt takes no model, so the RPC runs on the
+  // CONFIGURED DEFAULT, never on the per-message `selectedModel` override the
+  // toolbar's model combobox picks (see useServiceCallTitle).
+  const serviceCallTitle = useServiceCallTitle(null)
 
   // Goal mode is unavailable while the Model Profiles profile's essential-tools
   // variant is active: the narrowing is applied only to the non-goal Conductor
@@ -289,7 +296,7 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
             size="icon-xs"
             onClick={handleOptimize}
             disabled={!hasContent || isOptimizing || isInputDisabled}
-            title="Optimize prompt"
+            title={serviceCallTitle(isOptimizing, 'Optimizing…', 'Optimize prompt')}
             aria-label="Optimize prompt"
             className="text-muted-foreground hover:text-foreground"
           >

@@ -3,8 +3,9 @@
 // Tests for the StatusBar composition contract: the live process-memory
 // indicator is the last right-hand block, separated from the vector-index
 // block, and stays visible in No Project mode while the index block is
-// hidden. When the indicator has no sample it renders nothing at all — in
-// particular no stray separator is left after the last visible block.
+// hidden — as does the embedded-model block, which sits between the two. When
+// the indicator has no sample it renders nothing at all — in particular no
+// stray separator is left after the last visible block.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { act } from 'react'
@@ -70,6 +71,10 @@ vi.mock('./IndexingStatus', () => ({ IndexingStatus: () => <span>IDX</span> }))
 vi.mock('./ContextFillStatus', () => ({ ContextFillStatus: () => <span>FILL</span> }))
 vi.mock('./CompactContextButton', () => ({ CompactContextButton: () => <span>COMPACT</span> }))
 vi.mock('./GoalStatusIndicator', () => ({ GoalStatusIndicator: () => null }))
+// The embedded-model block is mounted for real in its own test; here it is a
+// text marker (no separator of its own) so the composition order is observable
+// without an embedded-LLM status read.
+vi.mock('./EmbeddedModelStatus', () => ({ EmbeddedModelStatus: () => <span>EMB</span> }))
 
 import { StatusBar } from './StatusBar'
 
@@ -96,13 +101,19 @@ describe('StatusBar process-memory placement', () => {
 
     const text = container.textContent ?? ''
     const idxPos = text.indexOf('IDX')
+    const embPos = text.indexOf('EMB')
     const memPos = text.indexOf('MiB')
     expect(idxPos).toBeGreaterThanOrEqual(0)
     expect(memPos).toBeGreaterThan(idxPos)
+    // The embedded-model block sits between the index block and the memory
+    // indicator, i.e. on the right-hand side of the spacer.
+    expect(embPos).toBeGreaterThan(idxPos)
+    expect(memPos).toBeGreaterThan(embPos)
 
     // Token/context blocks are hidden (no session tokens) so exactly two
     // separators exist: the one before the index block and the one before
-    // the process-memory block.
+    // the process-memory block. The embedded block's own separator is part of
+    // its mock-free implementation and is asserted in EmbeddedModelStatus.test.
     expect(container.querySelectorAll('[data-testid="sep"]')).toHaveLength(2)
   })
 
@@ -115,6 +126,9 @@ describe('StatusBar process-memory placement', () => {
     const text = container.textContent ?? ''
     expect(text).not.toContain('IDX')
     expect(text).toContain('MiB')
+    // The embedded model is process-wide, not per-project: like the memory
+    // indicator it stays in No Project mode.
+    expect(text).toContain('EMB')
     // Only the process-memory indicator's separator remains.
     expect(container.querySelectorAll('[data-testid="sep"]')).toHaveLength(1)
   })
@@ -127,8 +141,10 @@ describe('StatusBar process-memory placement', () => {
     const text = container.textContent ?? ''
     expect(text).toContain('IDX')
     expect(text).not.toContain('MiB')
-    // Only the index block's separator remains, and nothing trails it.
+    // Only the index block's separator remains, and nothing trails it except
+    // the blocks that own their (here: mocked-away) separator.
     expect(container.querySelectorAll('[data-testid="sep"]')).toHaveLength(1)
-    expect(container.lastElementChild?.textContent).toBe('IDX')
+    const bar = container.firstElementChild as HTMLElement
+    expect(bar.lastElementChild?.textContent).toBe('EMB')
   })
 })

@@ -5,6 +5,7 @@ import { getConfig, updateVectorIndexSettings } from '@/api/config'
 import { listVectorIndexGPUs } from '@/api/vector'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { logger } from '@/lib/logger'
+import { isLinuxHost } from '@/lib/platform'
 import { VectorIndexDevicePicker } from './VectorIndexDevicePicker'
 import { VectorIndexDiagnostics } from './VectorIndexDiagnostics'
 import type { ExecutionProvider, GPUDeviceResponse } from '@/types/models'
@@ -48,9 +49,22 @@ const DEFAULT_CONFIG: SavedConfig = { execution_provider: 'auto', device_id: 0 }
  * created once per process, so a changed provider/device only takes effect
  * after an app restart. The restart hint and diagnostics block make that
  * contract visible instead of letting edits look ignored.
+ *
+ * The provider/device controls are Linux-host-only (`isLinuxHost()`): the
+ * CUDA flavor they configure is linux/amd64 (ADR-046) and Windows/macOS
+ * hardware acceleration is a separate future implementation. Off Linux the
+ * section renders a muted note plus the cross-platform diagnostics block —
+ * and issues neither mount-time RPC nor any save.
  */
 export function VectorIndexSettings() {
   const status = useVectorIndexStore((s) => s.status)
+
+  // Provider/device selection ships for Linux hosts only: the CUDA ONNX
+  // Runtime flavor is linux/amd64 (ADR-046) and Windows/macOS hardware
+  // acceleration is a separate future implementation. The runtime
+  // diagnostics below stay cross-platform — they describe whatever embedder
+  // is actually running.
+  const showControls = isLinuxHost()
 
   const [config, setConfig] = useState<SavedConfig>(DEFAULT_CONFIG)
   const [isLoading, setIsLoading] = useState(true)
@@ -63,8 +77,14 @@ export function VectorIndexSettings() {
   const pendingConfigRef = useRef<SavedConfig | null>(null)
 
   // Load the persisted config; the GPU probe runs in parallel so a slow
-  // nvidia-smi never delays rendering the saved provider/device.
+  // nvidia-smi never delays rendering the saved provider/device. Skipped
+  // entirely off Linux: without the controls there is nothing to hydrate,
+  // so the section skips straight past the loading state.
   useEffect(() => {
+    if (!showControls) {
+      setIsLoading(false)
+      return
+    }
     let cancelled = false
     const load = async () => {
       try {
@@ -82,13 +102,16 @@ export function VectorIndexSettings() {
     }
     void load()
     return () => { cancelled = true }
-  }, [])
+    // `showControls` is host-constant for the app's lifetime; it appears in
+    // deps only to satisfy exhaustive-deps — the effect runs once per mount.
+  }, [showControls])
 
   // GPU list for the device picker. An empty list is the "no nvidia-smi"
   // path (numeric fallback input). A rejection means the probe itself failed
   // (driver present but broken); diagnostics degrade to the numeric fallback
-  // with the failure surfaced next to it.
+  // with the failure surfaced next to it. Off Linux the probe never runs.
   useEffect(() => {
+    if (!showControls) return
     let cancelled = false
     const load = async () => {
       try {
@@ -105,7 +128,8 @@ export function VectorIndexSettings() {
     }
     void load()
     return () => { cancelled = true }
-  }, [])
+    // See the config-load effect above for why `showControls` is in deps.
+  }, [showControls])
 
   const saveSettings = useCallback(async (newConfig: SavedConfig) => {
     try {
@@ -187,34 +211,47 @@ export function VectorIndexSettings() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-2">
-        <label className="text-xs text-muted-foreground">Execution Provider</label>
-        <Combobox
-          ariaLabel="Embedder execution provider"
-          value={config.execution_provider}
-          onChange={handleProviderChange}
-          className="min-w-[180px]"
-          options={PROVIDER_OPTIONS}
-        />
-        <p className="text-xs text-muted-foreground">
-          {PROVIDER_DESCRIPTIONS[config.execution_provider]}
+      {!showControls && (
+        <p data-testid="vector-controls-unavailable" className="text-xs text-muted-foreground">
+          Execution-provider and GPU-device selection is available on Linux hosts only —
+          the CUDA acceleration it configures ships as a Linux build, and Windows/macOS
+          hardware acceleration is a separate future implementation. The runtime
+          diagnostics below still apply.
         </p>
-      </div>
+      )}
 
-      <VectorIndexDevicePicker
-        gpus={gpus}
-        gpusLoaded={gpusLoaded}
-        disabled={deviceDisabled}
-        value={config.device_id}
-        input={deviceInput}
-        error={deviceError}
-        probeError={gpuLoadError}
-        onChange={handleDeviceChange}
-      />
+      {showControls && (
+        <div className="flex flex-col gap-2">
+          <label className="text-xs text-muted-foreground">Execution Provider</label>
+          <Combobox
+            ariaLabel="Embedder execution provider"
+            value={config.execution_provider}
+            onChange={handleProviderChange}
+            className="min-w-[180px]"
+            options={PROVIDER_OPTIONS}
+          />
+          <p className="text-xs text-muted-foreground">
+            {PROVIDER_DESCRIPTIONS[config.execution_provider]}
+          </p>
+        </div>
+      )}
+
+      {showControls && (
+        <VectorIndexDevicePicker
+          gpus={gpus}
+          gpusLoaded={gpusLoaded}
+          disabled={deviceDisabled}
+          value={config.device_id}
+          input={deviceInput}
+          error={deviceError}
+          probeError={gpuLoadError}
+          onChange={handleDeviceChange}
+        />
+      )}
 
       <VectorIndexDiagnostics status={status} />
 
-      {restartPending && (
+      {showControls && restartPending && (
         <div
           data-testid="vector-restart-hint"
           className="flex items-start gap-2 rounded-md border border-info/30 bg-info/10 p-3 text-sm text-info"
@@ -229,7 +266,9 @@ export function VectorIndexSettings() {
         </div>
       )}
 
-      {saveError && <p className="text-sm text-destructive mt-2">{saveError}</p>}
+      {showControls && saveError && (
+        <p className="text-sm text-destructive mt-2">{saveError}</p>
+      )}
     </div>
   )
 }

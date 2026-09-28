@@ -32,15 +32,29 @@ export function useActionEvents(sessionId: string | null): void {
     // --- task_failed_resumable ---
     cleanups.push(
       onSessionEvent(sessionId, 'task_failed_resumable', (data) => {
-        const msg = isTaskFailedResumableData(data) && data.message
+        const valid = isTaskFailedResumableData(data)
+        const msg = valid && data.message
           ? data.message
           : 'Plan execution failed.'
+        // auto_retry_at (unix seconds) rides along when the backend stamped
+        // an auto-resend deadline into the payload. The LIVE handler marks
+        // it with auto_retry_live: true — the countdown may only ever run
+        // for a banner created by a live event in THIS app run. Restored
+        // rows (history reload) carry the raw persisted payload without the
+        // flag and always render the plain manual banner: after a restart
+        // there is no timer to keep (the deadline served the open session;
+        // the user decides manually from then on).
+        const autoRetryAt = valid && typeof data.auto_retry_at === 'number' && data.auto_retry_at > 0
+          ? data.auto_retry_at
+          : undefined
         useChatStore.getState().addMessage(sessionId, {
           id: generateMessageId(),
           sessionId,
           type: 'task_failed_resumable',
           content: msg,
-          metadata: { resolved: false },
+          metadata: autoRetryAt !== undefined
+            ? { resolved: false, auto_retry_at: autoRetryAt, auto_retry_live: true }
+            : { resolved: false },
           timestamp: Date.now(),
         })
         useChatStore.getState().setActivityStatus(sessionId, null)

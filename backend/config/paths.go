@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/sp4rk/pathutil"
 )
 
@@ -80,6 +81,26 @@ func ProjectsDir(agentDir string) string {
 // ModelsDir returns the user models directory (embedding model files).
 func ModelsDir(agentDir string) string {
 	return filepath.Join(agentDir, "models")
+}
+
+// RuntimesDir returns the embedded-LLM inference-runtime root
+// (~/.c0wrk/runtimes/). Each pinned runtime occupies its own
+// "llama-<tag>-<backend>" subdirectory, derived by core/embeddedllm's Layout.
+//
+// It is deliberately a sibling of ToolsDir, never a child of it:
+// Manager.PrependToPATH() puts <toolsDir>/bin on the agent's PATH, and the
+// inference runtime must not be agent-invokable (ADR-066 D3, ASI05).
+func RuntimesDir(agentDir string) string {
+	return filepath.Join(agentDir, core.EmbeddedRuntimesRelativePath)
+}
+
+// EmbeddedModelDir returns the embedded-LLM weights directory
+// (~/.c0wrk/models/bonsai-2-27b/), the dedicated subdirectory of ModelsDir
+// that holds the GGUF files and manifest.json. Nesting keeps the flat
+// embedding-model files resolved by desktop/startup.go resolveModelPath
+// untouched, so removing the embedded model can never delete them.
+func EmbeddedModelDir(agentDir string) string {
+	return filepath.Join(agentDir, core.EmbeddedModelRelativePath)
 }
 
 // ToolsDir returns the managed external tools directory (~/.c0wrk/tools/).

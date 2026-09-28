@@ -2,7 +2,7 @@ import type { ChatMessageUI, MessageType, DisplayItem, GroupedMessages, WorkUnit
 import type { ChatMessage, PlanGroup, PlanItem } from '@/types/models'
 import type { AgentMetricsData } from '@/types/events'
 import { normalizeAgentMetricsData, isGoalStatusData } from '@/types/events'
-import type { ActiveGoal } from '@/stores/goalStore'
+import type { ActiveGoal, GoalProgress } from '@/stores/goalStore'
 import { reconstructContent, buildHistoryId, collapseThoughts, dedupThoughtVsAnswer, extractMeta, normalizeThoughtContent } from './chatUtilsHelpers'
 import { buildGoalTransitionNotice, goalStatusToActiveGoal, type GoalCarryOver } from './goalTransition'
 import {
@@ -438,6 +438,7 @@ export function rebuildPlanFromHistory(messages: ChatMessageUI[], store: PlanSto
 /** Actions interface for goal store dependency injection. */
 export interface GoalStoreActions {
   setActiveGoal: (sessionId: string, goal: ActiveGoal) => void
+  setGoalProgress: (sessionId: string, progress: GoalProgress) => void
 }
 
 /** Rebuild goalStore from persisted history messages (called after history
@@ -446,6 +447,12 @@ export interface GoalStoreActions {
  *  badge and the settled goal proposal card's verdict survive a restart. The
  *  latest snapshot wins (it carries the final status, turn, verdict, evidence
  *  and verification outcome).
+ *
+ *  The mid-loop `goal_progress` entry is seeded from the same snapshot:
+ *  goal_progress events stay transient (one row per turn would be chat noise),
+ *  but each is emitted in the same beat as a goal_status snapshot carrying
+ *  identical turn/budget telemetry, so rebuilding the progress entry from the
+ *  last persisted snapshot keeps it consistent with activeGoal after a reload.
  */
 export function rebuildGoalFromHistory(
   messages: ChatMessageUI[],
@@ -506,4 +513,13 @@ export function rebuildGoalFromHistory(
     return
   }
   store.setActiveGoal(last.sessionId, last.goal)
+  // Seed the mid-loop progress entry from the same snapshot (see the doc
+  // comment): setGoalProgress mirrors turn/maxTurns/condition back onto the
+  // freshly-set activeGoal entry — identical values, so this is a no-op for
+  // the badge and only fills the progress map after a reload.
+  store.setGoalProgress(last.sessionId, {
+    turn: last.goal.turn,
+    maxTurns: last.goal.maxTurns,
+    condition: last.goal.condition,
+  })
 }

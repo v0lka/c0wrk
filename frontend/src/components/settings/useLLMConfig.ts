@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { getConfig } from '@/api/config'
 import { logger } from '@/lib/logger'
 import { useProxyDraftStore, isProxyEffective } from '@/stores/proxyDraftStore'
-import { FIXED_PROVIDERS, type CompatibleType } from '@/lib/llm-providers'
+import { FIXED_PROVIDERS, isBackendOwnedProvider, type CompatibleType } from '@/lib/llm-providers'
 import { compositeModelId, isCompositeModelId, decomposeCompositeModelId } from '@/lib/modelId'
 import type { ConfigProviderFull } from '@/types/models'
 import { useLLMConfigSave } from './useLLMConfigSave'
@@ -21,6 +21,14 @@ export interface ProviderConfig {
     /** Per-provider TLS pin (ADR-054): '' = standard CA verification
      *  (override off), non-empty = only the pinned key is accepted. */
     tls_fingerprint: string
+    /**
+     * Per-provider session-layer auto-retry interval in seconds (compatible
+     * providers only). Undefined = not set in the payload → the backend
+     * pointer sentinel keeps the persisted value (debounce-safe); 0 = the
+     * auto-resend timer is off (explicit zero is sent verbatim); a positive
+     * value is the resend interval. Fixed providers never carry the field.
+     */
+    auto_retry_seconds?: number
 }
 
 const defaultProviderConfigs: Record<string, ProviderConfig> = Object.fromEntries(
@@ -30,7 +38,18 @@ const defaultProviderConfigs: Record<string, ProviderConfig> = Object.fromEntrie
 interface UseLLMConfigResult {
     defaultModel: string
     providerConfigs: Record<string, ProviderConfig>
-    /** Names of providers loaded from the openai_compatible map (non-fixed providers). */
+    /** Server-published inclusive upper bound for auto_retry_seconds
+     *  (ADR-065). REQUIRED from the GetConfig payload: the backend always
+     *  serializes it (no omitempty) and frontend/backend ship in one
+     *  binary, so there is no compiled-in fallback — a payload without it
+     *  fails the load loudly instead of silently clamping against a stale
+     *  constant. Undefined only until the first successful load. */
+    autoRetryMaxSeconds: number | undefined
+    /** Names of providers loaded from the openai_compatible map (non-fixed
+     *  providers) that the settings dialog may EDIT. Backend-owned generated
+     *  records (`embedded`) are absent: they stay in `providerConfigs` as a
+     *  model source but render no accordion. Drives the accordion list and the
+     *  add-provider uniqueness check. */
     openaiCompatibleProviderNames: Set<string>
     /** Names of providers loaded from the anthropic_compatible map. */
     anthropicCompatibleProviderNames: Set<string>
@@ -49,6 +68,12 @@ function toProviderConfig(p: ConfigProviderFull, type?: CompatibleType): Provide
         models: Array.isArray(p.models) ? [...p.models] : [],
         type,
         tls_fingerprint: p.tls_fingerprint ?? '',
+        // Passed through VERBATIM (undefined stays undefined): a disabled or
+        // absent interval must not become an explicit 0 in the draft, or every
+        // full-form save would send 0 and disable a persisted interval. An
+        // undefined draft omits the key from the save payload, which the
+        // backend pointer sentinel treats as "keep the persisted value".
+        auto_retry_seconds: p.auto_retry_seconds,
     }
 }
 
@@ -111,6 +136,7 @@ export function defaultModelIsValid(
 export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?: (model: string) => void): UseLLMConfigResult {
     const [defaultModel, setDefaultModelState] = useState('')
     const [providerConfigs, setProviderConfigs] = useState<Record<string, ProviderConfig>>({})
+    const [autoRetryMaxSeconds, setAutoRetryMaxSeconds] = useState<number | undefined>(undefined)
     const [openaiCompatibleProviderNames, setOpenaiCompatibleProviderNames] = useState<Set<string>>(new Set())
     const [anthropicCompatibleProviderNames, setAnthropicCompatibleProviderNames] = useState<Set<string>>(new Set())
     const [isLoading, setIsLoading] = useState(true)
@@ -182,6 +208,19 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
             seedBypassList(result?.proxy?.bypass_list ?? [])
             const llm = result?.llm
             if (llm) {
+                // The auto-retry bound is a REQUIRED field of the payload
+                // (backend always serializes it; ADR-065): a missing or
+                // non-positive value means the frontend/backend contract is
+                // broken — fail the load LOUDLY instead of silently clamping
+                // against a stale compiled-in constant. The throw lands in
+                // the catch below (logger.error) and leaves the previous
+                // successfully loaded state untouched.
+                if (typeof llm.auto_retry_max_seconds !== 'number' || llm.auto_retry_max_seconds <= 0) {
+                    throw new Error(
+                        `getConfig: llm.auto_retry_max_seconds missing or invalid (${String(llm.auto_retry_max_seconds)}) — the Settings form cannot clamp the auto-retry interval`,
+                    )
+                }
+                setAutoRetryMaxSeconds(llm.auto_retry_max_seconds)
                 const rawDefault = llm.default_model || ''
                 const configs: Record<string, ProviderConfig> = {}
                 const openaiNames = new Set<string>()
@@ -196,11 +235,22 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
                 }
 
                 // Load openai_compatible providers from the map.
+                //
+                // The backend-owned `embedded` record IS loaded into
+                // providerConfigs — the default-model picker is built from it
+                // and the composite default `embedded/Bonsai 2 27B` must
+                // validate — but it is NOT registered as an editable compatible
+                // provider. It has no editor: base_url, api_key and the model
+                // list are regenerated from the authoritative `embedded_llm`
+                // state on every load and save, so anything typed into an
+                // accordion for it would be silently discarded.
                 const ocProviders = llm.openai_compatible
                 if (ocProviders && typeof ocProviders === 'object') {
                     for (const [name, cfg] of Object.entries(ocProviders)) {
                         configs[name] = toProviderConfig(cfg, 'openai')
-                        openaiNames.add(name)
+                        if (!isBackendOwnedProvider(name)) {
+                            openaiNames.add(name)
+                        }
                     }
                 }
 
@@ -357,6 +407,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
     return {
         defaultModel,
         providerConfigs,
+        autoRetryMaxSeconds,
         openaiCompatibleProviderNames,
         anthropicCompatibleProviderNames,
         isLoading,

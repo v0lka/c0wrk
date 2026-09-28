@@ -107,6 +107,15 @@ type TaskFailedResumableData struct {
 	// execution error or the completion outcome) so the banner can explain
 	// WHY the task is resumable rather than always showing a generic message.
 	Reason string `json:"reason,omitempty"`
+	// AutoRetryAt, when non-zero, is the unix timestamp (seconds) at which
+	// the UI auto-resend countdown reaches zero and the frontend re-sends
+	// the failed task (resumeTask). It is stamped only when the failure
+	// cause is a classified rate-limit/overload *llm.Error (see
+	// Manager.maybeAutoRetryAt) from a compatible provider configured with
+	// auto_retry_seconds > 0; absent (0) means no countdown is scheduled
+	// and the user's manual Resume/Cancel decision is final. There is no
+	// backend timer (ADR-065): the deadline is advisory to the UI.
+	AutoRetryAt int64 `json:"auto_retry_at,omitempty"`
 }
 
 // ErrorData is the payload for "error" events.
@@ -241,21 +250,32 @@ type AssistantDoneEventData struct {
 
 // ContextFillEventData is the typed Data payload for "context_fill" events.
 type ContextFillEventData struct {
-	FillPercent         float64 `json:"fill_percent"`
-	UsedTokens          int     `json:"used_tokens"`
-	MaxTokens           int     `json:"max_tokens"`
-	Status              string  `json:"status"`
-	PlanStepID          string  `json:"plan_step_id,omitempty"`
-	SessionInputTokens  int     `json:"session_input_tokens"`
-	SessionOutputTokens int     `json:"session_output_tokens"`
-	Model               string  `json:"model"`
-	Family              string  `json:"family"`
+	FillPercent float64 `json:"fill_percent"`
+	UsedTokens  int     `json:"used_tokens"`
+	MaxTokens   int     `json:"max_tokens"`
+	Status      string  `json:"status"`
+	PlanStepID  string  `json:"plan_step_id,omitempty"`
+	// SessionRootMirror marks a step-scoped event (PlanStepID set) emitted by
+	// the root conductor emitter (dynamic inline-step scope): the frontend may
+	// mirror this fill to the session-level status bar immediately instead of
+	// waiting for the session_tokens re-broadcast, which lags one executor
+	// iteration. Never set for delegated subagent emitters (WithPlanStepID
+	// copies) or session-root events — a subagent's fill must not clobber the
+	// conductor's session-level fill.
+	SessionRootMirror   bool   `json:"session_root_mirror,omitempty"`
+	SessionInputTokens  int    `json:"session_input_tokens"`
+	SessionOutputTokens int    `json:"session_output_tokens"`
+	Model               string `json:"model"`
+	Family              string `json:"family"`
 }
 
 // SessionTokensEventData is the typed Data payload for "session_tokens" events.
 // UsedTokens/MaxTokens mirror the session-root (conductor) context-window fill,
 // cached by ContextFill and forwarded here alongside FillPercent so the status
 // bar can render a "N of M" tooltip without waiting for the next context_fill.
+// MedianOutputTokS/TokSSamples carry the median per-call output-token
+// throughput over the session's recent LLM calls; both are omitted until the
+// per-session sliding window reaches its minimum sample count.
 type SessionTokensEventData struct {
 	SessionInputTokens  int     `json:"session_input_tokens"`
 	SessionOutputTokens int     `json:"session_output_tokens"`
@@ -264,6 +284,8 @@ type SessionTokensEventData struct {
 	FillPercent         float64 `json:"fill_percent"`
 	UsedTokens          int     `json:"used_tokens"`
 	MaxTokens           int     `json:"max_tokens"`
+	MedianOutputTokS    float64 `json:"median_output_tok_s,omitempty"`
+	TokSSamples         int     `json:"tok_s_samples,omitempty"`
 }
 
 // ContextCompactionEventData is the typed Data payload for "context_compaction" events.

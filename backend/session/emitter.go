@@ -959,7 +959,26 @@ func (e *EventEmitter) SetLastModel(model, family string) {
 // cache (updated only by the session-root emitter in ContextFill) and forwarded for
 // persistence and display.
 func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
-	e.log().Debug("emitter: session tokens update", "sessionID", e.sessionID, "totalIn", totalIn, "totalOut", totalOut, "model", model, "family", family)
+	e.emitSessionTokens(totalIn, totalOut, model, family, 0, 0)
+}
+
+// EmitSessionTokensWithThroughput emits a "session_tokens" event that
+// additionally carries the median per-call output-token throughput
+// (medianOutputTokPerSec, tokens/second) and the sample count behind it
+// (throughputSamples). It is the preferred seam of the UsageTracker's timed
+// observer in core/builder.go; the plain EmitSessionTokens remains for
+// emitters/callers that only have cumulative totals. Values of 0 mean the
+// per-session throughput window has not reached its minimum sample count —
+// the fields are omitted from the wire payload (omitempty).
+func (e *EventEmitter) EmitSessionTokensWithThroughput(totalIn, totalOut int, model, family string, medianOutputTokPerSec float64, throughputSamples int) {
+	e.emitSessionTokens(totalIn, totalOut, model, family, medianOutputTokPerSec, throughputSamples)
+}
+
+// emitSessionTokens is the shared body of both session-token emission seams:
+// it refreshes the cached totals (used by ContextFill enrichment and
+// TokenSnapshot), invokes the persistence callback, and emits the typed event.
+func (e *EventEmitter) emitSessionTokens(totalIn, totalOut int, model, family string, medianOutputTokPerSec float64, throughputSamples int) {
+	e.log().Debug("emitter: session tokens update", "sessionID", e.sessionID, "totalIn", totalIn, "totalOut", totalOut, "model", model, "family", family, "medianOutputTokPerSec", medianOutputTokPerSec, "throughputSamples", throughputSamples)
 	e.tokens.mu.Lock()
 	// Update cached state for ContextFill enrichment
 	e.tokens.sessionInputTokens = totalIn
@@ -989,6 +1008,8 @@ func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family st
 			FillPercent:         fillPercent,
 			UsedTokens:          usedTokens,
 			MaxTokens:           maxTokens,
+			MedianOutputTokS:    medianOutputTokPerSec,
+			TokSSamples:         throughputSamples,
 		},
 	})
 }
@@ -1003,6 +1024,29 @@ func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family st
 // been injected via SetDisplayContextWindow, the percent and max are
 // recomputed relative to that real window before emission and caching.
 func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens int, status, stepID string) {
+	// The executor passes its own plan-step id (SetPlanContext — delegated
+	// subagent executors only). Inline Conductor steps never set one: their
+	// scoping is dynamic on the ROOT emitter (SetCurrentStepID), and
+	// emitEvent's plan_step_id injection covers only map[string]any payloads,
+	// NOT this typed struct — so the inline steps' context_fill arrived
+	// session-root and the frontend never populated the step header's
+	// context-fill badge (the status bar swallowed every emission). Fall back
+	// to the emitter's own scope (fixed via WithPlanStepID, dynamic via
+	// SetCurrentStepID) when the caller has none; "" on both sides keeps the
+	// event session-root (planning/idle emissions between steps).
+	//
+	// The dynamic scope is valid only between a task's start and its
+	// completion: the inline lifecycle sets it per step and clears it in
+	// completeStep/completeAll, and the orchestrator clears it unconditionally
+	// at task entry (resetDynamicStepScope) — a pause→abandon or crash can
+	// otherwise leave it dangling into the next task. Session-root emissions
+	// that must never inherit a scope (the initial fill, the manual-compaction
+	// refresh) reset it explicitly right before emitting.
+	if stepID == "" {
+		e.mu.Lock()
+		stepID = e.planStepID
+		e.mu.Unlock()
+	}
 	// Cache fill state and read session totals atomically.
 	e.tokens.mu.Lock()
 	// The executor's maxTokens is the internal effective max; remember it so
@@ -1041,11 +1085,17 @@ func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens in
 		SessionID: e.sessionID,
 		Type:      "context_fill",
 		Data: ContextFillEventData{
-			FillPercent:         displayPercent,
-			UsedTokens:          usedTokens,
-			MaxTokens:           displayMax,
-			Status:              status,
-			PlanStepID:          stepID,
+			FillPercent: displayPercent,
+			UsedTokens:  usedTokens,
+			MaxTokens:   displayMax,
+			Status:      status,
+			PlanStepID:  stepID,
+			// Root emitter + dynamic inline-step scope: the frontend may
+			// mirror this fill to the session-level status bar (the
+			// session_tokens re-broadcast lags one executor iteration).
+			// Subagent copies never set it — WithPlanStepID does not carry
+			// isSessionRoot.
+			SessionRootMirror:   e.isSessionRoot && stepID != "",
 			SessionInputTokens:  totalIn,
 			SessionOutputTokens: totalOut,
 			Model:               lastModel,

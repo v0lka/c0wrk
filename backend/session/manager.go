@@ -183,12 +183,26 @@ type Manager struct {
 	envInfoOnce         sync.Once            // guards StartEnvInfoCollection against double-launch
 	stopTimeout         time.Duration        // how long to wait for goroutine on cancel/delete
 	maxSummaryLen       int                  // character limit for auto-generated step summaries
-	serviceLLMTimeout   time.Duration        // timeout for one-shot service LLM requests (session title); default 2m
-	projectResolver     ProjectResolverFunc  // resolves projectID -> workspacePath for lazy session restoration
-	fileTracker         *FileCoherenceTracker
-	converter           *markitdown.Converter // lazy-init markitdown converter for AttachFiles
-	converterMu         sync.Mutex            // guards lazy converter initialization
-	modelProfiles       ModelProfilesMetaInfo // Model Profiles profile annotating agent_metrics events (guarded by mu)
+	serviceLLMTimeout   time.Duration        // timeout for one-shot service LLM requests (session title); default 10m
+	// serviceLLMGate, when set, is invoked BEFORE a one-shot service LLM
+	// request's timeout context is created, and must return once whatever the
+	// request needs in order to be served is ready. It exists for the embedded
+	// local model: a cold weight load takes longer than the service timeout, so
+	// a budget armed first would be consumed by the load and the request would
+	// fail instead of waiting. Guarded by mu.
+	//
+	// Consequence, deliberate per ADR-066 D13: serviceLLMTimeout bounds the
+	// REQUEST only, never the gate. The production gate
+	// (backend.ensureEmbeddedReadyForLLMRequest) can wait
+	// embeddedllm.DefaultLoadWaitTimeout — derived from the supervisor's own
+	// ready budget, as that constant's doc states — so a caller must not assume
+	// the whole one-shot call fits inside serviceLLMTimeout.
+	serviceLLMGate  func(context.Context) error
+	projectResolver ProjectResolverFunc // resolves projectID -> workspacePath for lazy session restoration
+	fileTracker     *FileCoherenceTracker
+	converter       *markitdown.Converter // lazy-init markitdown converter for AttachFiles
+	converterMu     sync.Mutex            // guards lazy converter initialization
+	modelProfiles   ModelProfilesMetaInfo // Model Profiles profile annotating agent_metrics events (guarded by mu)
 
 	// ignoreCache caches per-root ignore.Resolver instances so the directory
 	// tree is walked only once per root (not on every SendMessage). The key
@@ -259,6 +273,15 @@ type Manager struct {
 	// otherwise leave the worker goroutine blocked on its channel. Guarded by
 	// mu.
 	blackboards []*PersistentBlackboard
+
+	// autoRetryResolver maps a provider name (the logical config key carried
+	// by *llm.Error.Provider) to that provider's auto-resend interval in
+	// seconds (0 = disabled). Wired by the backend Application to the live
+	// LLM config, so Settings changes apply to the next surfaced deadline.
+	// Guarded by mu. There is NO backend timer (ADR-065): the deadline is
+	// only stamped into the task_failed_resumable payload; the UI owns the
+	// countdown and the resume-on-zero.
+	autoRetryResolver func(provider string) int
 }
 
 // SetLogger sets the logger for the manager.
@@ -288,7 +311,7 @@ func NewManager(factory OrchestratorFactory, emitFunc func(Event), agentDir stri
 		agentDir:            agentDir,
 		logLevel:            "DEBUG",
 		stopTimeout:         10 * time.Second,
-		serviceLLMTimeout:   2 * time.Minute,
+		serviceLLMTimeout:   10 * time.Minute,
 		envInfoDone:         make(chan struct{}),
 	}
 	m.bg = newBackgroundTracker()
@@ -553,7 +576,7 @@ func (m *Manager) modelProfile() ModelProfilesMetaInfo {
 
 // SetServiceLLMTimeout sets the timeout for one-shot "service" LLM requests
 // performed by the manager itself (currently session title generation). A
-// value <= 0 leaves the default (2 min) in place.
+// value <= 0 leaves the default (10 min) in place.
 func (m *Manager) SetServiceLLMTimeout(d time.Duration) {
 	if d <= 0 {
 		return
@@ -561,6 +584,17 @@ func (m *Manager) SetServiceLLMTimeout(d time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.serviceLLMTimeout = d
+}
+
+// SetServiceLLMGate installs the pre-dispatch readiness gate for one-shot
+// service LLM requests (see serviceLLMGate). It is called with the manager's
+// shutdown context and must block until the request can be served; returning an
+// error skips the request rather than issuing it against something not ready.
+// A nil gate is the normal posture for every provider that is always listening.
+func (m *Manager) SetServiceLLMGate(fn func(context.Context) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.serviceLLMGate = fn
 }
 
 // SetTitleGenerator sets the title generator for auto-naming sessions.

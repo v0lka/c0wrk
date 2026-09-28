@@ -48,7 +48,7 @@ type sequenceJudgeProvider struct {
 	script func(call int) (string, error)
 }
 
-func (p *sequenceJudgeProvider) ChatCompletion(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+func (p *sequenceJudgeProvider) Call(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls++
@@ -58,8 +58,6 @@ func (p *sequenceJudgeProvider) ChatCompletion(_ context.Context, _ llm.ChatRequ
 	}
 	return &llm.ChatResponse{Message: llm.Message{Content: content}}, nil
 }
-
-func (p *sequenceJudgeProvider) Name() string { return "sequence-judge" }
 
 func (p *sequenceJudgeProvider) callCount() int {
 	p.mu.Lock()
@@ -77,7 +75,7 @@ func newSilentMemoRegistry(mode string, provider *sequenceJudgeProvider) (*ToolR
 	registry := NewToolRegistry()
 	setDefaultGroupPolicies(registry)
 	registry.ApplySecurityState(registry.GroupPolicies(), false, AutonomyModeSilent, SilentModeState{ToolConfirm: mode})
-	registry.SetJudge(sdktools.NewToolJudge(provider, "sequence-judge", 1, nil))
+	registry.SetJudge(sdktools.NewToolJudge(provider, nil, 1, nil))
 	rec := &autonomyDecisionRecorder{}
 	registry.SetAutonomyDecisionObserver(rec.observe)
 	return registry, rec
@@ -412,8 +410,9 @@ func TestStrictJudgeFailureReasonMarkers_Pin(t *testing.T) {
 		t.Fatalf("outage: verdict/reasoning = %d/%q, want CONFIRM/%q", verdict, reasoning, strictJudgeFailureReason)
 	}
 
-	// Twice-unparseable response → retry once, then fail-safe CONFIRM with
-	// the unparsed marker.
+	// Twice-unparseable response → the unified sp4rk nudge loop (two nudges,
+	// three attempts) exhausts, then fail-safe CONFIRM with the unparsed
+	// marker.
 	judge2, provider2 := newStrictJudge("probably fine", nil)
 	verdict2, reasoning2, err2 := judge2.JudgeStrict(context.Background(), sdktools.StrictJudgeRequest{ToolName: sdktools.ToolBashExec})
 	if err2 != nil {
@@ -422,8 +421,8 @@ func TestStrictJudgeFailureReasonMarkers_Pin(t *testing.T) {
 	if verdict2 != sdktools.VerdictConfirm || reasoning2 != judgeUnparsedReason {
 		t.Fatalf("unparseable: verdict/reasoning = %d/%q, want CONFIRM/%q", verdict2, reasoning2, judgeUnparsedReason)
 	}
-	if got := provider2.callCount(); got != 2 {
-		t.Errorf("unparseable response must retry exactly once: calls = %d, want 2", got)
+	if got := provider2.callCount(); got != 3 {
+		t.Errorf("unparseable response must exhaust the two-nudge loop: calls = %d, want 3", got)
 	}
 
 	// judgeSpoke: parsed verdicts always spoke; only the two fail-safe
@@ -450,7 +449,7 @@ func TestAutonomyDecisionAssistedDenyCarriesPolicyAndSignature(t *testing.T) {
 	registry := NewToolRegistry()
 	setDefaultGroupPolicies(registry)
 	registry.SetAutonomyMode(AutonomyModeAssisted)
-	registry.SetJudge(sdktools.NewToolJudge(provider, "sequence-judge", 1, nil))
+	registry.SetJudge(sdktools.NewToolJudge(provider, nil, 1, nil))
 	rec := &autonomyDecisionRecorder{}
 	registry.SetAutonomyDecisionObserver(rec.observe)
 	registry.Register(newMockTool(sdktools.ToolBashExec, "mock shell exec"))

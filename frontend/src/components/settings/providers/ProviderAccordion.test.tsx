@@ -64,6 +64,7 @@ function renderAccordion(models: string[], mountKey = 'mount') {
         onToggleModel={() => {}}
         defaultModel=""
         providerConfigs={{ local: config }}
+        autoRetryMaxSeconds={3600}
       />,
     )
   })

@@ -30,6 +30,7 @@ Everything else from ADR-025 carries over unchanged:
 - The `go.mod` pin lags the sp4rk working tree **by design** until the release step; a `// mid-cycle` note at the top of `go.mod` marks the state.
 - Publishing checklist: commit+push sp4rk → `GOWORK=off go get github.com/v0lka/sp4rk@main && go mod tidy` → verify `GOWORK=off go build ./...` → pre-PR gates (`make build` / `make lint` / `make test`) → commit+push c0wrk.
 - CI on c0wrk `main` is green only at published-pin points; mid-cycle pushes are expected to fail and must be avoided.
+- Wails invocations from the Makefile (`build`, `build-gpu`, `dev-desktop`) pass `-m` (skip mod tidy) **while `go.work` exists**: wails runs `go mod tidy` before generating bindings, and tidy ignores the workspace — it would try to resolve packages that exist only in the unpublished sp4rk tree from the module proxy and fail the build. The flag is conditional on the presence of `go.work` (`WAILS_MOD_FLAG` in the Makefile), so the release flow and CI keep the default tidy behavior.
 
 Scope note: `go` commands run inside the sp4rk checkout no longer see the workspace — sp4rk builds there as a standalone module. This is safe (sp4rk has no dependency on c0wrk) and arguably cleaner. If a combined view is ever needed from the sp4rk side, set `GOWORK=<path-to-c0wrk>/go.work` explicitly.
 

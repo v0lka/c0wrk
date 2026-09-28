@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatDuration, formatTokenCount, formatVersion } from './formatters'
+import { formatDuration, formatIdleCountdown, formatTokenCount, formatVersion } from './formatters'
 
 describe('formatDuration', () => {
   it('returns "0ms" for 0', () => {
@@ -89,5 +89,30 @@ describe('formatVersion', () => {
 
   it('preserves non-release channel labels', () => {
     expect(formatVersion('dev')).toBe('dev')
+  })
+})
+
+describe('formatIdleCountdown', () => {
+  it('reads minutes and padded seconds under an hour', () => {
+    expect(formatIdleCountdown(0)).toBe('0m 00s')
+    expect(formatIdleCountdown(9)).toBe('0m 09s')
+    expect(formatIdleCountdown(2500)).toBe('41m 40s')
+    expect(formatIdleCountdown(3599)).toBe('59m 59s')
+  })
+
+  it('promotes to hours and padded minutes at the hour boundary', () => {
+    expect(formatIdleCountdown(3600)).toBe('1h 00m')
+    expect(formatIdleCountdown(3900)).toBe('1h 05m')
+    expect(formatIdleCountdown(7200 + 60)).toBe('2h 01m')
+  })
+
+  it('floors fractional seconds', () => {
+    expect(formatIdleCountdown(89.9)).toBe('1m 29s')
+  })
+
+  it('clamps negatives and non-finite inputs to zero', () => {
+    expect(formatIdleCountdown(-30)).toBe('0m 00s')
+    expect(formatIdleCountdown(Number.NaN)).toBe('0m 00s')
+    expect(formatIdleCountdown(Number.POSITIVE_INFINITY)).toBe('0m 00s')
   })
 })

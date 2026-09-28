@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [069](069-plan-step-dependencies-mandatory.md)
 
 ## Context
 

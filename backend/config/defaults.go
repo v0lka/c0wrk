@@ -106,6 +106,32 @@ func ApplyDefaults(cfg *Config) {
 		cfg.LLM.Retry.MaxBackoff = "30s"
 	}
 
+	// Embedded LLM idle-unload defaults. Both are pointers so an explicit
+	// `enabled: false` / `minutes: N` in YAML is respected rather than
+	// overwritten by the default. The rest of the section is app-written
+	// install state whose zero values ARE the documented not-installed
+	// defaults (installed: false, port: 0, empty packing/backend/model_file/
+	// runtime_version/installed_at), so nothing else needs seeding here.
+	if cfg.EmbeddedLLM.AutoUnload.Enabled == nil {
+		autoUnload := true
+		cfg.EmbeddedLLM.AutoUnload.Enabled = &autoUnload
+	}
+	if cfg.EmbeddedLLM.AutoUnload.Minutes == nil {
+		minutes := EmbeddedLLMDefaultAutoUnloadMinutes
+		cfg.EmbeddedLLM.AutoUnload.Minutes = &minutes
+	}
+
+	// embedded_llm.tuning is deliberately NOT seeded, and the omission is the
+	// whole point: every one of its knobs is a pointer so that "the operator
+	// never wrote this" stays distinguishable from "the operator wrote auto"
+	// (and, for `cache_ram_mib` and `fit`, from an explicit 0 / false — which
+	// mean something different again). Materializing the defaults here would
+	// collapse that distinction on the first save and silently change which
+	// memory plan gets built. The zero TuningConfig — every knob absent — IS
+	// the documented all-Auto default, and the planner's own defaults
+	// (embeddedllm.DefaultParallel, embeddedllm.DefaultFitMinContext) are where
+	// the resolved values live. See TuningConfig.
+
 	// Executor defaults
 	if cfg.Executor.MaxRetries == 0 {
 		cfg.Executor.MaxRetries = 2
@@ -353,7 +379,7 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Timeouts.LLMRequestTimeout = 600
 	}
 	if cfg.Timeouts.ServiceLLMRequestTimeout == 0 {
-		cfg.Timeouts.ServiceLLMRequestTimeout = 120
+		cfg.Timeouts.ServiceLLMRequestTimeout = 600
 	}
 	if cfg.Timeouts.GitCommitTimeout == 0 {
 		cfg.Timeouts.GitCommitTimeout = 300

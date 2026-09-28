@@ -19,6 +19,7 @@ import (
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 
+	"github.com/v0lka/c0wrk/core/embeddedllm"
 	"github.com/v0lka/c0wrk/core/llmtls"
 	coreprompts "github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/c0wrk/core/proxy"
@@ -29,6 +30,7 @@ import (
 	"github.com/v0lka/sp4rk/agents"
 	"github.com/v0lka/sp4rk/llm"
 	sdkmemory "github.com/v0lka/sp4rk/memory"
+	"github.com/v0lka/sp4rk/oneshot"
 	"github.com/v0lka/sp4rk/orchestration"
 	"github.com/v0lka/sp4rk/prompt"
 	"github.com/v0lka/sp4rk/skills"
@@ -65,6 +67,14 @@ type OrchestratorBuilder struct {
 	// session manager invokes on session delete and app shutdown. Guarded by
 	// b.mu.
 	sessionRegistries map[*tools.ToolRegistry]struct{}
+	// sessionModelRegistries tracks the per-session model registries created
+	// by buildRouter so runtime metadata pushes (UpdateModelOverrides — the
+	// embedded LLM context read-back being the motivating correction) reach
+	// already-open sessions, not only sessions built after the change.
+	// Entries are added by registerSessionModelRegistry (Build) and removed
+	// by the same cleanup hook that releases sessionRegistries. Guarded by
+	// b.mu.
+	sessionModelRegistries map[*llm.ModelRegistry]struct{}
 	// mcpWorkDir is the default working directory requested for MCP stdio
 	// server processes. It is applied to the gateway by runMCPInit (when the
 	// gateway is first assigned) or by SetMCPWorkDir (when the gateway is
@@ -93,6 +103,17 @@ type OrchestratorBuilder struct {
 	baseSkillDirs            []string     // resolved skill directories shared across sessions (highest priority first)
 	baseAgentDirs            []string     // resolved Subagent Profile directories shared across sessions (highest priority first)
 	proxyClient              *http.Client // proxy-configured HTTP client (nil = direct connection)
+
+	// embeddedLLM is the builder-level embedded-model seam: the default
+	// BuilderEmbeddedLLMConfig applied to EVERY router this builder constructs
+	// when the per-build cfg carries no Loader of its own. It exists because a
+	// BuilderConfig is built in more than one place — and the one that matters
+	// most, the per-session orchestrator factory in backend/application.go,
+	// converts the live config directly and cannot reach the supervisor. Without
+	// this default the session router would carry no ensure-loaded transport, so
+	// a chat request to a cold model would be dispatched to a loopback socket
+	// nothing is listening on. Guarded by b.mu. See SetEmbeddedLLM.
+	embeddedLLM BuilderEmbeddedLLMConfig
 
 	// askUserFunc is the ask_user callback supplied at construction. It is
 	// retained so a runtime silent-mode toggle can re-register the ask_user
@@ -495,6 +516,9 @@ func (b *OrchestratorBuilder) Build(
 	if err != nil {
 		return nil, fmt.Errorf("failed to build LLM router: %w", err)
 	}
+	// Track the model registry for runtime metadata pushes (see
+	// registerSessionModelRegistry) and release it via the cleanup hook below.
+	b.registerSessionModelRegistry(modelReg)
 	if d := time.Since(routerStart); d > 50*time.Millisecond {
 		b.log().Warn("build_router slow", "elapsed_ms", d.Milliseconds())
 	}
@@ -514,17 +538,28 @@ func (b *OrchestratorBuilder) Build(
 	usageTracker := llm.NewUsageTracker()
 	trackingCaller := llm.NewTrackingCaller(llmRouter, usageTracker)
 
-	// Register emitter as observer for session token events and persistence
-	if te, ok := emitter.(interface {
-		EmitSessionTokens(totalIn, totalOut int, model, family string)
-	}); ok {
+	// Register emitter as observer for session token events and persistence.
+	// Preferred seam: SessionTokenThroughputEmitter carries the median
+	// per-call output-token rate computed by a per-session sliding window fed
+	// from the UsageTracker's timed observer (every successful call through
+	// the shared TrackingCaller — conductor steps, subagents, E2S turns —
+	// reports one sample). Emitters predating the throughput seam keep the
+	// plain-totals path.
+	switch te := emitter.(type) {
+	case SessionTokenThroughputEmitter:
+		throughput := newSessionThroughputWindow()
+		usageTracker.AddTimedObserver(func(usage llm.TokenUsage, duration time.Duration, totalIn, totalOut int, model, family string) {
+			median, samples := throughput.record(usage.OutputTokens, duration)
+			te.EmitSessionTokensWithThroughput(totalIn, totalOut, model, family, median, samples)
+		})
+	case SessionTokenEmitter:
 		usageTracker.AddObserver(func(_ llm.TokenUsage, totalIn, totalOut int, model, family string) {
 			te.EmitSessionTokens(totalIn, totalOut, model, family)
 		})
 	}
 
 	// Build context factory
-	contextFactory := b.buildContextFactory(trackingCaller, cfg, modelReg, dumpWriter)
+	contextFactory := b.buildContextFactory(trackingCaller, cfg, modelReg, dumpWriter, llmRouter)
 
 	// Build core agents (router, planner, reflector) with tracking caller
 	tokenCounter := llm.NewSimpleTokenCounter()
@@ -638,15 +673,14 @@ func (b *OrchestratorBuilder) Build(
 	// hook wired into OrchestratorDeps below.
 	sessionRegistry := b.registerSessionRegistry()
 
-	// Session-pinned tool judge (sessionJudgeSyncer): bind this session's
-	// judge to the session's own router NOW so even the first tool escalation
-	// is evaluated on the provider/model this session runs on — not on the
-	// builder's global active model, which may have been switched by another
-	// session's model picker or the settings UI after this Build began. The
-	// closure is also handed to the orchestrator (JudgeSync) so the session's
-	// own model switches re-bind the judge; global default changes never do.
-	syncSessionJudge := b.sessionJudgeSyncer(cfg, llmRouter, sessionRegistry)
-	syncSessionJudge()
+	// Session judge: bind this session's judge to the session's OWN router NOW
+	// so even the first tool escalation is evaluated on the provider/model this
+	// session runs on — not on the builder's global active model, which may
+	// have been switched by another session's model picker or the settings UI
+	// after this Build began. The judge rides the router as a plain caller, so
+	// the session's own model switches are followed with NO re-binding; global
+	// default changes never move a live session's judge.
+	b.bindSessionJudge(cfg, llmRouter, sessionRegistry, usageTracker)
 
 	// HITLHandler.OnToolCall is invoked by the executor before every tool call
 	// (see executor_run.go processSingleToolCall). PolicyUserConfirm tools fall
@@ -742,7 +776,6 @@ func (b *OrchestratorBuilder) Build(
 		SkillManager:             sessionSkillMgr,
 		AgentManager:             sessionAgentMgr,
 		CoreToolRegistry:         sessionRegistry, // per-session registry (No-Project tool disabling)
-		JudgeSync:                syncSessionJudge,
 		ToolCache:                toolCache,
 		PerToolTruncation:        perToolTruncation,
 		StepDumpTracker:          stepDumpTracker,
@@ -753,10 +786,13 @@ func (b *OrchestratorBuilder) Build(
 		// RunConductor, defaultGoalTurnRunner).
 		VerifyOnEdit:               verifyOnEditRunner,
 		VerifyOnEditMaxOutputChars: cfg.Executor.VerifyOnEdit.MaxOutputChars,
-		// Release the session registry's live-tracking entry when the session
-		// orchestrator is cleaned up, so security pushes stop reaching dead
+		// Release the session registry's live-tracking entry when the
+		// session orchestrator is cleaned up, so security pushes stop reaching dead
 		// clones and the builder does not accumulate registries forever.
-		OnCleanup: func() { b.unregisterSessionRegistry(sessionRegistry) },
+		OnCleanup: func() {
+			b.unregisterSessionRegistry(sessionRegistry)
+			b.unregisterSessionModelRegistry(modelReg)
+		},
 	}), nil
 }
 
@@ -921,6 +957,12 @@ func (b *OrchestratorBuilder) UpdateWebTools(cfg *BuilderConfig) {
 }
 
 // GenerateTitle generates a concise title for a conversation using the cached LLM router.
+// The call rides the sp4rk oneshot client under the oneshot service policy:
+// temperature 0.3 and the reasoning tier resolved per active model (off),
+// overriding any Model Profiles reasoningEffort seed. The parse never fails —
+// an empty title is a valid result (the backend TitleGenerator replaces it
+// with its fallback text), so no nudge loop engages; transport errors pass
+// through as-is.
 func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage string, activeSkills []string) (string, error) {
 	if err := b.waitReady(ctx); err != nil {
 		return "", err
@@ -928,89 +970,60 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 
 	b.mu.RLock()
 	llmRouter := b.llmRouter
-	reasoningEffort := b.reasoningEffort
 	b.mu.RUnlock()
 
 	if llmRouter == nil {
 		return "", errors.New("llm router not available")
 	}
 
+	var caller oneshot.Caller = llmRouter
+	if dw := agent.DumpWriterFromContext(ctx); dw != nil {
+		caller = agent.NewLoggingLLMCaller(caller, llmRouter.ActiveProviderName(), b.logger)
+		caller = agent.NewDumpCaller(caller, dw, b.logger)
+	}
+	return generateTitleWithCaller(ctx, caller, bareActiveModel(llmRouter), b.log(), userMessage, activeSkills)
+}
+
+// generateTitleWithCaller issues the title one-shot. It is a separate function
+// so that tests can inject a mock caller and verify the request shape
+// deterministically.
+func generateTitleWithCaller(ctx context.Context, caller oneshot.Caller, model string, logger *slog.Logger, userMessage string, activeSkills []string) (string, error) {
 	systemPrompt := "Generate a concise title (3-7 words) describing the primary goal for a conversation that starts with the following user message. Output ONLY the title text, no quotes, no punctuation at the end."
 	if len(activeSkills) > 0 {
 		systemPrompt += "\n\nThe user has explicitly activated the following skills: " + strings.Join(activeSkills, ", ") + ". Consider these when determining the topic."
 	}
 
-	temp := 1.0
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userMessage},
 		},
 		MaxTokens:       30,
-		Temperature:     &temp, // explicit value wins over any profile
-		ReasoningEffort: reasoningEffort,
+		Temperature:     &oneshotTempTitle, // oneshot service policy — explicit value wins over any profile
+		ReasoningEffort: serviceReasoningEffort(model, oneshotTierTitle),
 		// Auxiliary text composition call — summarization class.
 		CallPurpose: llm.CallPurposeSummarization,
 	}
-	caller := agent.LLMCaller(llmRouter)
-	if dw := agent.DumpWriterFromContext(ctx); dw != nil {
-		caller = agent.NewLoggingLLMCaller(caller, llmRouter.ActiveProviderName(), b.logger)
-		caller = agent.NewDumpCaller(caller, dw, b.logger)
-	}
-	resp, err := caller.Call(ctx, req)
-	if err != nil {
-		return "", err
-	}
+	return oneshot.Do(ctx, caller, req, titleContent, oneshot.Options[string]{
+		Kind:   "title",
+		Logger: logger,
+	})
+}
+
+// titleContent passes the response content through unchanged: any content is
+// a valid title (the backend falls back to first-words text for an empty
+// one), so the nudge loop has nothing to repair on a well-formed response.
+// A nil response never reaches this function — oneshot.Do itself treats
+// (nil, nil) as a parse failure — so the nil branch here is unreachable
+// defensive code; the observable behavior for that input is three attempts
+// and a final refusal, not an empty title. Transport errors are returned
+// as-is by Do.
+func titleContent(resp *llm.ChatResponse) (string, error) {
 	if resp == nil {
 		return "", nil
 	}
 	return resp.Message.Content, nil
 }
-
-// commitMarkdownFenceRe matches a commit message that the model has wrapped
-// in a single markdown code block, e.g.:
-//
-//	```
-//	feat(auth): add token refresh
-//	```
-//
-// or with an optional language tag such as "text"/"markdown":
-//
-//	```text
-//	feat(auth): add token refresh
-//	```
-//
-// The opening fence must be at the very start and the closing fence at the
-// very end (after TrimSpace), so legitimate backticks inside a body are left
-// untouched. The captured group holds the inner content.
-//
-// The (.+?) pattern (non-greedy) is used instead of (.*) so that multi-line
-// messages with a body (blank line + paragraphs) are captured correctly even
-// when the closing fence appears at the very end.
-var commitMarkdownFenceRe = regexp.MustCompile("(?s)^```[a-zA-Z0-9+-]*[ \t]*\n(.+?)\n```[ \t]*$")
-
-// commitMessageReasoningPrefixRe matches common reasoning/thinking prefixes
-// that some LLMs (especially small models like Qwen) may accidentally include
-// at the start of the content field.  The regex is case-insensitive and
-// captures everything after the prefix so we can strip it.
-var commitMessageReasoningPrefixRe = regexp.MustCompile(
-	`(?i)^` +
-		`(?:` +
-		`based on my analysis(?:,| of|:) ` +
-		`|here(?:['′]s|s) (?:the )?commit message(?:,|:) ` +
-		`|the commit message(?:,| is|:) ` +
-		`|sure,? ` +
-		`|ok,? ` +
-		`|ok sure,? ` +
-		`|here(?:['′]s|s) an? ` +
-		`|below(?:,| is|:) ` +
-		`|according to my analysis ` +
-		`|from the diff ` +
-		`|from the provided diff ` +
-		`|from the staged diff ` +
-		`|this commit ` +
-		`)`,
-)
 
 // conventionalCommitRe validates that a string follows the Conventional Commits
 // format: <type>[optional scope]: <description>.
@@ -1046,82 +1059,17 @@ func isValidConventionalCommit(msg string) bool {
 	return descLine[0] >= 'a' && descLine[0] <= 'z'
 }
 
-// stripMarkdownCodeFence removes a single surrounding markdown code block from
-// s if the entire (trimmed) string is wrapped in one. It is a defensive
-// safety net for commit-message generation: the prompt already forbids
-// fencing, but some models still emit it. Input without fencing is returned
-// unchanged apart from leading/trailing whitespace trimming.
-func stripMarkdownCodeFence(s string) string {
-	trimmed := strings.TrimSpace(s)
-	if m := commitMarkdownFenceRe.FindStringSubmatch(trimmed); m != nil {
-		return strings.TrimSpace(m[1])
-	}
-	return trimmed
-}
-
 // extractCommitMessage extracts the best available commit message text from an
-// LLM response. It tries fields in order of preference:
-//
-//  1. resp.Message.Content (after stripping markdown fences and reasoning prefixes)
-//  2. resp.Message.ReasoningContent (for DeepSeek-style providers)
-//  3. resp.Reasoning (for OpenAI Responses API)
-//
-// This handles the failure mode where small models (especially Qwen) put the
+// LLM response via the oneshot parser toolkit: candidates in priority order —
+// resp.Message.Content, resp.Message.ReasoningContent (for DeepSeek-style
+// providers), resp.Reasoning (for OpenAI Responses API) — each after stripping
+// a wrapping markdown fence and a leading conversational preamble. This
+// handles the failure mode where small models (especially Qwen) put the
 // actual commit message into a reasoning field instead of Content.
+// Returns "" when no field yields usable text.
 func extractCommitMessage(resp *llm.ChatResponse) string {
-	if resp == nil {
-		return ""
-	}
-
-	// Collect candidates in priority order.
-	candidates := []string{
-		resp.Message.Content,
-		resp.Message.ReasoningContent,
-		resp.Reasoning,
-	}
-
-	for _, candidate := range candidates {
-		if candidate == "" {
-			continue
-		}
-		// Strip markdown fencing first.
-		candidate = stripMarkdownCodeFence(candidate)
-		if candidate == "" {
-			continue
-		}
-		// Strip common reasoning/thinking prefixes that some models
-		// (especially small ones) may accidentally include.
-		candidate = commitMessageReasoningPrefixRe.ReplaceAllString(candidate, "")
-		candidate = strings.TrimSpace(candidate)
-		if candidate != "" {
-			return candidate
-		}
-	}
-
-	return ""
+	return oneshot.Text(resp)
 }
-
-// optimizedPromptReasoningPrefixRe matches common reasoning/thinking prefixes
-// that some LLMs (especially small models) may accidentally include at the
-// start of the content field when generating an optimized prompt.  The regex
-// is case-insensitive and captures everything after the prefix so we can strip
-// it.
-var optimizedPromptReasoningPrefixRe = regexp.MustCompile(
-	`(?i)^` +
-		`(?:` +
-		`here(?:['′]s|s) (?:the )?(?:optimized )?prompt(?:,|:) ` +
-		`|the optimized prompt(?:,| is|:) ` +
-		`|based on my analysis(?:,| of|:) ` +
-		`|sure,? ` +
-		`|ok,? ` +
-		`|ok sure,? ` +
-		`|here(?:['′]s|s) an? ` +
-		`|below(?:,| is|:) ` +
-		`|according to my analysis ` +
-		`|this is the optimized prompt ` +
-		`|this prompt ` +
-		`)`,
-)
 
 // --- Prompt optimization extraction markers ---
 
@@ -1135,109 +1083,78 @@ const (
 )
 
 // extractOptimizedPrompt extracts the optimized prompt text from an LLM
-// response.  It uses a two-phase strategy:
+// response. It uses a two-phase strategy:
 //
-//  1. Marker-based extraction (preferred): searches all candidate fields
-//     (Content, ReasoningContent, Reasoning) for the
-//     OPTIMIZED_PROMPT_START / OPTIMIZED_PROMPT_END markers.  If both
-//     markers are present in any field, the text between them is returned.
-//  2. Heuristic fallback (legacy): when no markers are found at all, falls
-//     back to stripping markdown fences and common reasoning prefixes.
+//  1. Marker-based extraction (preferred): oneshot.Marked searches all
+//     candidate fields (Content, ReasoningContent, Reasoning) for the
+//     OPTIMIZED_PROMPT_START / OPTIMIZED_PROMPT_END markers; the first
+//     candidate carrying both markers wins (even when the text between them
+//     is empty).
+//  2. Heuristic fallback (legacy): when no markers are found at all, the
+//     oneshot toolkit strips wrapping markdown fences and common reasoning
+//     prefixes per candidate field.
 //
 // This ensures that reasoning-model outputs containing the markers are
 // extracted unambiguously, while older models that don't use markers still
 // work via the heuristic fallback.
 func extractOptimizedPrompt(resp *llm.ChatResponse) string {
-	if resp == nil {
-		return ""
-	}
-
-	// Collect candidates in priority order.
-	candidates := []string{
-		resp.Message.Content,
-		resp.Message.ReasoningContent,
-		resp.Reasoning,
-	}
-
-	// Phase 1 — marker-based extraction.
-	// Search all candidates for the marker pair. Return the first match.
-	for _, candidate := range candidates {
-		if candidate == "" {
-			continue
-		}
-		if extracted, ok := extractBetweenMarkers(candidate); ok {
-			// Markers were found — return whatever is between them
-			// (may be empty).  Do NOT fall through to heuristic.
-			return extracted
-		}
+	// Phase 1 — marker-based extraction. Markers were found — return
+	// whatever is between them (may be empty); do NOT fall through to the
+	// heuristic.
+	if extracted, ok := oneshot.Marked(resp, optimizedPromptMarkerStart, optimizedPromptMarkerEnd); ok {
+		return extracted
 	}
 
 	// Phase 2 — heuristic fallback (legacy, for models that don't use markers).
-	for _, candidate := range candidates {
-		if candidate == "" {
-			continue
-		}
-		candidate = stripMarkdownCodeFence(candidate)
-		if candidate == "" {
-			continue
-		}
-		candidate = optimizedPromptReasoningPrefixRe.ReplaceAllString(candidate, "")
-		candidate = strings.TrimSpace(candidate)
-		if candidate != "" {
-			return candidate
+	for _, candidate := range oneshot.CandidateTexts(resp) {
+		stripped := strings.TrimSpace(oneshot.StripReasoningPrefix(oneshot.StripFence(candidate)))
+		if stripped != "" {
+			return stripped
 		}
 	}
 
 	return ""
 }
 
-// extractBetweenMarkers searches s for optimizedPromptMarkerStart and
-// optimizedPromptMarkerEnd and returns the text between them.  It returns the
-// text and true when both markers are present (even if the content between
-// them is empty or whitespace-only); otherwise it returns ("", false).
-func extractBetweenMarkers(s string) (string, bool) {
-	startIdx := strings.Index(s, optimizedPromptMarkerStart)
-	if startIdx < 0 {
-		return "", false
-	}
-	endIdx := strings.Index(s[startIdx:], optimizedPromptMarkerEnd)
-	if endIdx < 0 {
-		return "", false
-	}
-	// Content starts after the start marker.
-	contentStart := startIdx + len(optimizedPromptMarkerStart)
-	// Content ends at the start of the end marker.
-	contentEnd := startIdx + endIdx
-	extracted := strings.TrimSpace(s[contentStart:contentEnd])
-	return extracted, true
-}
+// errCommitUnparseable marks commit-message parse failures so the final
+// oneshot refusal (which wraps the last parse error) can be recognized and
+// re-surfaced with the operator-facing advice. Both empty-output and
+// invalid-format responses ride the client's nudge loop.
+var errCommitUnparseable = errors.New("commit message unparseable")
 
-// buildCommitMessageRequest constructs a commit-message request without forcing
-// sampling parameters. The request declares a summarization purpose, so the
-// router applies the deterministic profile (temperature 0 or the family-safe
-// floor) instead of the vendor preset — only when the active model advertises
-// temperature support; reasoning models such as GPT-5/o-series and
-// kimi-k2-thinking therefore receive no unsupported temperature field.
-func buildCommitMessageRequest(diff, extraUserText, reasoningEffort string) llm.ChatRequest {
+// commitMessageRetryHint restates the Conventional Commits contract inside the
+// oneshot "[System]" nudge. The failed output itself rides the assistant echo
+// message, so the nudge only has to restate the required format (the tail of
+// the previous manual retry feedback).
+const commitMessageRetryHint = "The previous output did not follow the Conventional Commits format.\n" +
+	"Your output MUST start with a valid type prefix: feat, fix, docs, " +
+	"style, refactor, perf, test, build, ci, chore, or revert.\n" +
+	"Example: feat(auth): add token validation\n\n" +
+	"DO NOT prefix with phrases like 'this commit', 'Here is the commit message:', " +
+	"'Based on my analysis:', or similar."
+
+// buildCommitMessageRequest constructs a commit-message request under the
+// oneshot service policy: temperature pinned to 0.3 (explicit values win over
+// any profile; the Router strips sampling for models that authoritatively
+// cannot take the parameter, so the pin is capability-safe), the reasoning
+// tier resolved per active model by the caller, and the summarization purpose
+// for observability.
+func buildCommitMessageRequest(diff, reasoningEffort string) llm.ChatRequest {
 	// Reasoning models count reasoning tokens against the output-token budget.
 	// 2048 comfortably covers reasoning plus a short Conventional Commits
 	// message while still capping runaway output. Non-reasoning models stop
 	// naturally well before this.
 	const commitMsgMaxTokens = 2048
 
-	userContent := "## Staged Diff\n\n" + diff
-	if extraUserText != "" {
-		userContent += "\n\n" + extraUserText
-	}
-
 	return llm.ChatRequest{
 		Messages: []llm.Message{
 			{Role: "system", Content: coreprompts.CommitMessage},
-			{Role: "user", Content: userContent},
+			{Role: "user", Content: "## Staged Diff\n\n" + diff},
 		},
 		MaxTokens:       commitMsgMaxTokens,
+		Temperature:     &oneshotTempCommit, // oneshot service policy — explicit value wins over any profile
 		ReasoningEffort: reasoningEffort,
-		// Auxiliary text composition call — deterministic profile.
+		// Auxiliary text composition call — summarization class.
 		CallPurpose: llm.CallPurposeSummarization,
 	}
 }
@@ -1245,7 +1162,9 @@ func buildCommitMessageRequest(diff, extraUserText, reasoningEffort string) llm.
 // GenerateCommitMessage produces a Conventional Commits-formatted commit
 // message from the given staged diff using the cached LLM router. The diff
 // is typically the output of `git diff --staged`. The caller is responsible
-// for enforcing any request timeout via the supplied context.
+// for enforcing any request timeout via the supplied context. The
+// parse-retry loop is the oneshot client's (two nudges → final refusal);
+// transport failures are never retried here — the Router owns provider retry.
 func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff string) (string, error) {
 	if err := b.waitReady(ctx); err != nil {
 		b.log().Warn("commit message generation aborted: builder not ready",
@@ -1255,7 +1174,6 @@ func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff st
 
 	b.mu.RLock()
 	llmRouter := b.llmRouter
-	reasoningEffort := b.reasoningEffort
 	b.mu.RUnlock()
 
 	if llmRouter == nil {
@@ -1264,7 +1182,7 @@ func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff st
 		return "", errors.New("llm router not available")
 	}
 
-	caller := agent.LLMCaller(llmRouter)
+	var caller oneshot.Caller = llmRouter
 	if dw := agent.DumpWriterFromContext(ctx); dw != nil {
 		caller = agent.NewLoggingLLMCaller(caller, llmRouter.ActiveProviderName(), b.logger)
 		caller = agent.NewDumpCaller(caller, dw, b.logger)
@@ -1273,113 +1191,98 @@ func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff st
 	b.log().Debug("generating commit message",
 		"provider", providerName, "diff_bytes", len(diff))
 
-	buildRequest := func(extraUserText string) llm.ChatRequest {
-		return buildCommitMessageRequest(diff, extraUserText, reasoningEffort)
-	}
-
-	return b.generateCommitMessageWithCaller(ctx, caller, providerName, diff, buildRequest)
+	return b.generateCommitMessageWithCaller(ctx, caller, providerName, bareActiveModel(llmRouter), diff)
 }
 
-// generateCommitMessageWithCaller runs the retry loop for commit message
-// generation. It is a separate method so that tests can inject a mock
-// LLMCaller and verify retry behavior deterministically.
+// generateCommitMessageWithCaller runs the commit-message one-shot. It is a
+// separate method so that tests can inject a mock caller and verify the
+// client-owned retry behavior deterministically.
 func (b *OrchestratorBuilder) generateCommitMessageWithCaller(
 	ctx context.Context,
-	caller agent.LLMCaller,
+	caller oneshot.Caller,
 	providerName string,
+	model string,
 	diff string,
-	buildRequest func(extraUserText string) llm.ChatRequest,
 ) (string, error) {
-	// Attempt generation with up to 2 retries if the first result is not a
-	// valid Conventional Commits message.
-	const maxRetries = 2
-	var lastInvalidMsg string
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		var extraUserText string
-		if attempt > 0 && lastInvalidMsg != "" {
-			extraUserText = "PREVIOUS ATTEMPT FAILED VALIDATION\n\n" +
-				"The previous output did not follow the Conventional Commits format.\n" +
-				"Here is what was produced (DO NOT repeat this format):\n" +
-				"```\n" + lastInvalidMsg + "\n```\n\n" +
-				"Your output MUST start with a valid type prefix: feat, fix, docs, " +
-				"style, refactor, perf, test, build, ci, chore, or revert.\n" +
-				"Example: feat(auth): add token validation\n\n" +
-				"DO NOT prefix with phrases like 'this commit', 'Here is the commit message:', " +
-				"'Based on my analysis:', or similar."
-		}
+	req := buildCommitMessageRequest(diff, serviceReasoningEffort(model, oneshotTierCommit))
 
-		req := buildRequest(extraUserText)
-		resp, err := caller.Call(ctx, req)
-		if err != nil {
-			// Classify the failure so operators can distinguish a too-large
-			// staged diff (context window) from a slow or unresponsive
-			// provider (deadline) or a provider-side error. This is the
-			// single place the LLM-side cause is logged; the backend RPC
-			// layer only logs its own preconditions and passes this through.
-			switch {
-			case errors.Is(err, llm.ErrContextWindowExceeded):
-				b.log().Error("commit message generation failed: staged diff exceeds model context window",
-					"err", err, "diff_bytes", len(diff), "provider", providerName)
-			case errors.Is(err, context.DeadlineExceeded):
-				b.log().Error("commit message generation failed: LLM call timed out",
-					"err", err, "diff_bytes", len(diff), "provider", providerName)
-			default:
-				b.log().Error("commit message generation failed: LLM call error",
-					"err", err, "diff_bytes", len(diff), "provider", providerName)
-			}
-			return "", err
-		}
-		if resp == nil {
-			b.log().Warn("commit message generation returned empty response",
+	message, err := oneshot.Do(ctx, caller, req, b.commitMessageParse(providerName, diff), oneshot.Options[string]{
+		Kind:      "commit_message",
+		Logger:    b.log(),
+		RetryHint: commitMessageRetryHint,
+	})
+	if err != nil {
+		if errors.Is(err, errCommitUnparseable) {
+			b.log().Warn("commit message generation failed validation after all retries",
 				"diff_bytes", len(diff), "provider", providerName)
-			return "", nil
+			return "", fmt.Errorf("the model produced an invalid commit message after "+
+				"multiple attempts; try a different model or reduce the staged diff size: %w", err)
 		}
+		// Transport error — never retried here (the Router owns provider
+		// retry). Classify the failure so operators can distinguish a
+		// too-large staged diff (context window) from a slow or unresponsive
+		// provider (deadline) or a provider-side error. This is the single
+		// place the LLM-side cause is logged; the backend RPC layer only
+		// logs its own preconditions and passes this through.
+		switch {
+		case errors.Is(err, llm.ErrContextWindowExceeded):
+			b.log().Error("commit message generation failed: staged diff exceeds model context window",
+				"err", err, "diff_bytes", len(diff), "provider", providerName)
+		case errors.Is(err, context.DeadlineExceeded):
+			b.log().Error("commit message generation failed: LLM call timed out",
+				"err", err, "diff_bytes", len(diff), "provider", providerName)
+		default:
+			b.log().Error("commit message generation failed: LLM call error",
+				"err", err, "diff_bytes", len(diff), "provider", providerName)
+		}
+		return "", err
+	}
+	return message, nil
+}
 
-		// Extract the best available commit message from the response.
-		// This handles the failure mode where small models (especially Qwen)
-		// put the actual commit message into a reasoning field instead of
-		// Content, and also strips common reasoning prefixes.
+// commitMessageParse extracts and validates the commit message. The
+// multi-candidate extraction is the oneshot toolkit's (Content →
+// ReasoningContent → Reasoning, fence and preamble stripped); empty and
+// invalid outputs are retryable parse failures — the nudge loop shows the
+// model its own output via the assistant echo — while transport errors never
+// reach this function.
+func (b *OrchestratorBuilder) commitMessageParse(providerName, diff string) oneshot.Parse[string] {
+	return func(resp *llm.ChatResponse) (string, error) {
 		message := extractCommitMessage(resp)
 		if message == "" {
-			// The LLM call succeeded (no error) but produced no usable text.
-			// This is the failure mode that previously surfaced as a silent
-			// no-op in the UI: with a reasoning model, a too-small output
-			// budget is consumed by reasoning tokens and the model emits no
-			// text content (status=incomplete, reason=max_output_tokens).
-			// Surface it explicitly instead of returning an empty string so
-			// the UI reports an error and operators see a log entry.
-			hasReasoning := resp.Message.ReasoningContent != "" || resp.Reasoning != ""
+			// The LLM call succeeded but produced no usable text. This is
+			// the failure mode that previously surfaced as a silent no-op in
+			// the UI: with a reasoning model, a too-small output budget is
+			// consumed by reasoning tokens and the model emits no text
+			// content (status=incomplete, reason=max_output_tokens). Surface
+			// it explicitly so the UI reports an error and operators see a
+			// log entry.
+			hasReasoning := resp != nil && (resp.Message.ReasoningContent != "" || resp.Reasoning != "")
+			stopReason := ""
+			if resp != nil {
+				stopReason = resp.StopReason
+			}
 			b.log().Warn("commit message generation produced no usable output",
 				"diff_bytes", len(diff), "provider", providerName,
-				"stop_reason", resp.StopReason, "has_reasoning", hasReasoning)
+				"stop_reason", stopReason, "has_reasoning", hasReasoning)
 			if hasReasoning {
-				return "", errors.New("the model produced no commit message text " +
-					"(its output budget was likely consumed by reasoning); " +
-					"try a non-reasoning model, a smaller staged diff, or a larger model")
+				return "", fmt.Errorf("%w: the model produced no commit message text "+
+					"(its output budget was likely consumed by reasoning); "+
+					"try a non-reasoning model, a smaller staged diff, or a larger model", errCommitUnparseable)
 			}
-			return "", errors.New("the model produced an empty commit message; " +
-				"try again or use a different model")
+			return "", fmt.Errorf("%w: the model produced an empty commit message; "+
+				"try again or use a different model", errCommitUnparseable)
 		}
 
 		// Validate Conventional Commits format.
-		if isValidConventionalCommit(message) {
-			// Success — valid format.
-			return message, nil
+		if !isValidConventionalCommit(message) {
+			b.log().Debug("commit message validation failed, will retry",
+				"diff_bytes", len(diff), "provider", providerName)
+			return "", fmt.Errorf("%w: output does not follow the Conventional Commits format "+
+				"(a valid type prefix plus a lowercase description is required)", errCommitUnparseable)
 		}
-
-		// Invalid format — store for retry feedback.
-		lastInvalidMsg = message
-		b.log().Debug("commit message validation failed, will retry",
-			"diff_bytes", len(diff), "provider", providerName,
-			"attempt", attempt+1, "raw", message)
+		return message, nil
 	}
-
-	// All attempts exhausted — return an error with the last invalid output.
-	b.log().Warn("commit message generation failed validation after all retries",
-		"diff_bytes", len(diff), "provider", providerName,
-		"last_output", lastInvalidMsg)
-	return "", errors.New("the model produced an invalid commit message after " +
-		"multiple attempts; try a different model or reduce the staged diff size")
 }
 
 // ListProviderModels returns available model names for a given provider,
@@ -1504,6 +1407,44 @@ func dedupeModelNames(names []string) []string {
 		result = append(result, n)
 	}
 	return result
+}
+
+// SetEmbeddedLLM installs (or, with a zero value, withdraws) the builder-level
+// embedded-model seam applied to every router this builder constructs.
+//
+// The backend calls it from the embedded-LLM lifecycle — on the startup restore,
+// after a successful install, and on removal — each time mirroring the persisted
+// install state, exactly like the per-build injection in
+// FrontendAPI.applyEmbeddedLoader. Both produce the same value; this one is the
+// net for the router builds that do not go through it.
+//
+// Installing it here rather than only in BuilderConfig is what makes the
+// guarantee unmissable. A per-session orchestrator is built from a BuilderConfig
+// converted deep inside the session factory, which has no path to the
+// supervisor; a seam that has to be remembered at every conversion site will
+// eventually be forgotten at one, and the failure is silent — a chat request to
+// a cold model is dispatched to a loopback socket nothing is listening on.
+//
+// It does NOT rebuild anything. Callers that need the change to reach the
+// already-cached router follow it with RebuildRouter, as the embedded lifecycle
+// does; per-session routers pick it up when they are next built.
+func (b *OrchestratorBuilder) SetEmbeddedLLM(cfg BuilderEmbeddedLLMConfig) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.embeddedLLM = cfg
+}
+
+// embeddedSeam resolves the effective embedded-model seam for a router build: an
+// explicit per-build Loader wins, otherwise the builder-level default applies.
+// buildRouter is the single place every router — cached or per-session — is
+// constructed, so resolving here is what covers both.
+func (b *OrchestratorBuilder) embeddedSeam(cfg *BuilderConfig) BuilderEmbeddedLLMConfig {
+	if cfg.EmbeddedLLM.Loader != nil && cfg.EmbeddedLLM.ProviderName != "" {
+		return cfg.EmbeddedLLM
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.embeddedLLM
 }
 
 // RegisterVectorSearch adds the semantic_search tool to the shared registry.
@@ -1707,6 +1648,59 @@ func activeSkillPathResolver(ctx context.Context, skillName string) (string, boo
 // ---------------------------------------------------------------------------
 
 // buildRouter creates a fresh LLM Router + ModelRegistry from config.
+// modelOverridesFromConfig derives the tier-1 model-metadata override map a
+// model registry is seeded with. Both buildRouter (registry construction) and
+// UpdateModelOverrides (runtime pushes into live session registries) derive
+// their overrides through this one helper so the two writers cannot drift.
+//
+// Entries are seeded PARTIAL: only the fields the user actually set in
+// cfg.LLM.Models are carried (unset scalars stay zero/empty = inherit), and
+// the registry's enrichPartialOverride fills the rest at Resolve time from
+// the tiers below (observed runtime -> built-in catalog -> cache -> fallback).
+// Merging ResolveBuiltInModel values HERE — as an earlier version did —
+// pins the catalog window (262144) or the fallback (128000) into tier 1,
+// permanently shadowing both the lazy server probe and the model's real
+// non-standard window: a user override pinning only the output limit still
+// carried a wrong context window at tier 1.
+//
+// Two post-processing passes run on the raw map, matching the seeded entries:
+//
+//   - Auto-remap of the Google protocol for Gemma/Gemini checkpoints served by
+//     a local OpenAI-compatible server (LM Studio/vLLM/Ollama). These servers
+//     expose /v1/chat/completions (and the /v1/responses, /v1/messages
+//     delegates) but NOT Google's :generateContent endpoint — which they
+//     answer with a misleading 200 OK + empty body (see the bug log). Remapping
+//     only the Google protocol → chat_completions keeps the request on an
+//     endpoint the server actually serves, while GPT-5 (Responses) and Claude
+//     (Anthropic) keep working unchanged. An explicit protocol override from
+//     cfg.LLM.Models always wins and is never clobbered.
+//
+//   - Per-provider output-token reserve: seed ModelMetadata.OutputLimit for
+//     every model of a provider that sets output_token_reserve. The registry
+//     uses OutputLimit both as the context-window reserve and as the executor
+//     MaxTokens ceiling, so a provider-level budget raises the generation
+//     ceiling for all of its models at once. Priority: per-model llm.models
+//     output_limit > per-provider output_token_reserve > global
+//     executor.output_token_reserve (the RouterConfig fallback).
+func modelOverridesFromConfig(cfg *BuilderConfig) map[string]llm.ModelMetadata {
+	overrides := make(map[string]llm.ModelMetadata)
+	for name, override := range cfg.LLM.Models {
+		entry := llm.ModelMetadata{
+			ContextWindow: override.ContextWindow,
+			OutputLimit:   override.OutputLimit,
+			TokenizerType: override.TokenizerType,
+			Family:        override.Family,
+			Protocol:      llm.APIProtocol(override.Protocol),
+			Capabilities:  override.Capabilities,
+		}
+		overrides[name] = entry
+	}
+
+	remapLocalGoogleProtocols(overrides, cfg.LLM.ProviderConfigs, cfg.ExpandEnvVars)
+	applyProviderOutputReserves(overrides, cfg.LLM.ProviderConfigs)
+	return overrides
+}
+
 func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfig) (*llm.Router, *llm.ModelRegistry, error) {
 	// Snapshot proxyClient under lock to avoid data races with RebuildProxy.
 	b.mu.RLock()
@@ -1730,47 +1724,9 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	// non-standard window: a user override pinning only the output limit still
 	// carried a wrong context window at tier 1.
 	//
-	// Capabilities is overridden atomically via its pointer: nil = inherit
-	// (the registry fills the effective set from the tiers below), non-nil =
-	// authoritative — including an all-false set, which is exactly why the
-	// field is a pointer (a value struct could not distinguish "user disabled
-	// everything" from "user set nothing"). There is no per-flag partial
-	// override, matching the dialog's "submit the full capability set" UX.
-	// TokenizerType/Family/Protocol are string sentinels — empty = inherit
-	// (DetectProtocol/resolveFamily derive the effective value at Resolve
-	// time), non-empty = authoritative override.
-	overrides := make(map[string]llm.ModelMetadata)
-	for name, override := range cfg.LLM.Models {
-		entry := llm.ModelMetadata{
-			ContextWindow: override.ContextWindow,
-			OutputLimit:   override.OutputLimit,
-			TokenizerType: override.TokenizerType,
-			Family:        override.Family,
-			Protocol:      llm.APIProtocol(override.Protocol),
-			Capabilities:  override.Capabilities,
-		}
-		overrides[name] = entry
-	}
-
-	// Auto-remap the Google protocol for Gemma/Gemini checkpoints served by a
-	// local OpenAI-compatible server (LM Studio/vLLM/Ollama). These servers
-	// expose /v1/chat/completions (and the /v1/responses, /v1/messages
-	// delegates) but NOT Google's :generateContent endpoint — which they
-	// answer with a misleading 200 OK + empty body (see the bug log). Remapping
-	// only the Google protocol → chat_completions keeps the request on an
-	// endpoint the server actually serves, while GPT-5 (Responses) and Claude
-	// (Anthropic) keep working unchanged. An explicit protocol override seeded
-	// above from cfg.LLM.Models always wins and is never clobbered here.
-	remapLocalGoogleProtocols(overrides, cfg.LLM.ProviderConfigs, cfg.ExpandEnvVars)
-
-	// Per-provider output-token reserve: seed ModelMetadata.OutputLimit for
-	// every model of a provider that sets output_token_reserve. The registry
-	// uses OutputLimit both as the context-window reserve and as the executor
-	// MaxTokens ceiling, so a provider-level budget raises the generation
-	// ceiling for all of its models at once. Priority: per-model llm.models
-	// output_limit > per-provider output_token_reserve > global
-	// executor.output_token_reserve (the RouterConfig fallback).
-	applyProviderOutputReserves(overrides, cfg.LLM.ProviderConfigs)
+	//   - 1. User overrides (from config): seeded by modelOverridesFromConfig
+	//     below — see that helper for the partial-entry and shadowing rules.
+	overrides := modelOverridesFromConfig(cfg)
 
 	modelRegistry := llm.NewModelRegistry(overrides)
 	if proxyClient != nil {
@@ -1795,6 +1751,12 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	// Build provider entries from all enabled providers.
 	// Iterate in a deterministic order (matching backend/config allProviderEntries)
 	// to ensure the first provider in the list is predictable.
+	//
+	// The embedded seam is resolved ONCE for the whole build, not per entry: it
+	// falls back to the builder-level default when this BuilderConfig carries no
+	// Loader, which is the case for the per-session config the orchestrator
+	// factory converts (see SetEmbeddedLLM).
+	embedded := b.embeddedSeam(cfg)
 	providers := make([]llm.ProviderEntry, 0, len(cfg.LLM.ProviderConfigs))
 	// The proxy client is non-nil exactly when the proxy is effective
 	// (proxy.enabled && proxy.url != "", the proxy.BuildClient rule); the
@@ -1808,7 +1770,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		if !ok || len(pc.Models) == 0 {
 			continue
 		}
-		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, cfg.ExpandEnvVars, b.log()))
+		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, embedded, cfg.ExpandEnvVars, b.log()))
 	}
 	// Also include any providers not in the standard order (e.g. future additions).
 	// Collect unknown names and iterate in sorted order for determinism.
@@ -1822,7 +1784,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	sort.Strings(unknown)
 	for _, name := range unknown {
 		pc := cfg.LLM.ProviderConfigs[name]
-		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, cfg.ExpandEnvVars, b.log()))
+		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, embedded, cfg.ExpandEnvVars, b.log()))
 	}
 
 	// Model Profiles context-management override: keeps the router's token budget
@@ -2130,23 +2092,58 @@ func buildLLMHTTPClient(proxyClient *http.Client, timeoutSec int) *http.Client {
 //
 // logger (may be nil) flows to llmtls for its malformed-pin and
 // custom-RoundTripper warnings.
+//
+// The embedded provider's ensure-loaded transport (embedded) is the SECOND
+// resolver on this hook, and the order is fixed: the pin rule decides whether
+// the entry carries a client at all, and the embedded transport only decorates
+// that decision (embedding it first would hand llmtls a client whose transport
+// is a wrapper, which cannot hold a tls.Config). Both resolvers clone from
+// sharedClient, so whichever applies, timeouts.llmRequestTimeout survives.
+//
+// The same guard is also the ONLY thing that sets ProviderEntry.ReasoningWire:
+// the embedded llama-server spells Qwen reasoning controls as
+// chat_template_kwargs, while every other openai_compatible entry keeps the
+// vendor-default top-level spelling.
 func providerEntryFromConfig(
 	name string,
 	pc BuilderProviderConfig,
 	sharedClient *http.Client,
 	proxyClient *http.Client,
 	bypass proxy.BypassMatcher,
+	embedded BuilderEmbeddedLLMConfig,
 	expand func(string) string,
 	logger *slog.Logger,
 ) llm.ProviderEntry {
 	policy := dialPolicy(proxyClient, bypass, expand(pc.BaseURL))
+	client := llmtls.RouterEntryClient(policy, sharedClient, pc.TLSFingerprint, logger)
+	reasoningWire := llm.ReasoningWireVendorDefault
+	if embedded.guards(name) {
+		// A cold embedded model is not listening, so this entry's client must
+		// start it before the request goes out and restart the idle budget when
+		// the response completes. The clone inherits sharedClient's Timeout (or
+		// the pinned client's, which is itself cloned from sharedClient) —
+		// handing over a client without the long LLM timeout would cap inference
+		// at the web-fetch proxy budget, the exact mistake llmtls warns about.
+		client = embeddedllm.EnsureLoadedClient(client, sharedClient, embedded.Loader, embedded.LoadWaitTimeout, logger)
+		// The embedded server is the pinned PrismML-Eng/llama.cpp fork, which
+		// reads enable_thinking ONLY from chat_template_kwargs — a top-level
+		// field is silently ignored, so "Off" would not turn thinking off. This
+		// is a property of the server the supervisor spawns (never of a
+		// user-authored base URL), which is why it rides the same guard as the
+		// transport and no other entry can pick it up.
+		reasoningWire = llm.ReasoningWireChatTemplateKwargs
+	}
 	return llm.ProviderEntry{
 		Name:         name,
 		ProviderType: pc.ProviderType,
 		APIKey:       expand(pc.APIKey),
 		BaseURL:      expand(pc.BaseURL),
 		Models:       pc.Models,
-		HTTPClient:   llmtls.RouterEntryClient(policy, sharedClient, pc.TLSFingerprint, logger),
+		HTTPClient:   client,
+		// Zero value for every non-embedded provider: the vendor-default
+		// top-level spelling stays the answer for LM Studio/vLLM/Ollama entries
+		// an operator points at the same loopback.
+		ReasoningWire: reasoningWire,
 	}
 }
 
@@ -2196,10 +2193,9 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 
 // buildContextFactory creates a ContextManagerFactory using the tracking caller for
 // compaction summarization (ensuring those tokens are counted in session totals).
-func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cfg *BuilderConfig, modelRegistry *llm.ModelRegistry, dumpWriter io.Writer) ContextManagerFactory {
+func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cfg *BuilderConfig, modelRegistry *llm.ModelRegistry, dumpWriter io.Writer, llmRouter *llm.Router) ContextManagerFactory {
 	var summarizeCaller agent.LLMCaller = caller
 	summarizeCaller = agent.NewDumpCaller(summarizeCaller, dumpWriter, b.logger)
-	compactionEffort := b.reasoningEffort
 
 	// Model Profiles context-management override: tightens the compaction strategy
 	// and tool-output pruning baselines when both the master toggle and the
@@ -2246,16 +2242,24 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 						{Role: "system", Content: coreprompts.CompactionSummarize},
 						{Role: "user", Content: blockText},
 					},
-					ReasoningEffort: compactionEffort,
+					// Oneshot service policy: reasoning tier minimal,
+					// resolved per call from the session router's ACTIVE
+					// model (model switches ride along) via the model
+					// catalog — the Model Profiles reasoningEffort seed does
+					// not reach service calls.
+					ReasoningEffort: serviceReasoningEffort(bareActiveModel(llmRouter), oneshotTierCompaction),
 					// Compaction summaries are deterministic calls: no vendor
 					// preset, temperature pinned to the family-safe floor.
 					CallPurpose: llm.CallPurposeCompaction,
 				}
-				resp, err := summarizeCaller.Call(ctx, req)
+				summary, err := oneshot.Do(ctx, summarizeCaller, req, compactionSummarizeContent, oneshot.Options[string]{
+					Kind:   "compaction_summarize",
+					Logger: b.log(),
+				})
 				if err != nil {
 					return "", fmt.Errorf("compaction summarize: %w", err)
 				}
-				return resp.Message.Content, nil
+				return summary, nil
 			},
 		})
 
@@ -2302,66 +2306,53 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 	}
 }
 
-// newJudgeForProvider builds a ToolJudge bound to the given provider and the
-// given active model. The judge calls the provider DIRECTLY (bypassing the
-// Router), so the model it sends must be the bare model name — the provider
-// prefix is stripped from any composite identifier (ActiveModel() may be
-// "provider/model"). judgeModel (security.judge.model), when set, pins the
-// judge's model name; providerName feeds the DEBUG-level dump wrapper.
-// Returns nil when the provider is nil (NewToolJudgeFromConfig refuses to
-// build) — callers treat nil as "keep the previous judge" (fail-safe).
-func (b *OrchestratorBuilder) newJudgeForProvider(cfg *BuilderConfig, judgeProvider llm.Provider, providerName, activeModel string) *sdktools.ToolJudge {
-	// Test-only observation point (see BuilderConfig.JudgeProviderHook):
-	// records/replaces the provider each judge binding resolves to. A nil
-	// hook — the production case — passes the provider through untouched.
-	if hook := cfg.JudgeProviderHook; hook != nil {
-		judgeProvider = hook(judgeProvider)
+// newJudgeForRouter builds a ToolJudge that rides the given router: the
+// judge's one-shot calls go through the router as a plain llm.Caller with NO
+// model pinned, so every call resolves to the router's ACTIVE provider and
+// model — a session model switch (Router.SetModel) is picked up by the next
+// judge call with no re-binding. usageTracker, when non-nil, routes the
+// judge's calls through a TrackingCaller so judge token usage lands in the
+// session's accounting; pass nil for judges that must not be accounted (the
+// shared-registry fallback judge — no session tracker exists at builder
+// level). Returns nil when the router is nil — callers treat nil as "keep the
+// previous judge" (fail-safe).
+func (b *OrchestratorBuilder) newJudgeForRouter(cfg *BuilderConfig, llmRouter *llm.Router, usageTracker *llm.UsageTracker) *sdktools.ToolJudge {
+	if llmRouter == nil {
+		return nil
 	}
 
-	defaultModel := llm.BareModel(activeModel)
-	judgeModel := llm.BareModel(cfg.Security.JudgeModel)
-
 	debugEnabled := b.logger != nil && b.logger.Enabled(context.Background(), slog.LevelDebug)
-	judgeProvider = newJudgeDumpProvider(judgeProvider, b.logger, providerName, debugEnabled)
 
 	return sdktools.NewToolJudgeFromConfig(sdktools.JudgeConfig{
-		Model:        judgeModel,
-		DefaultModel: defaultModel,
-		Provider:     judgeProvider,
+		Caller:       newJudgeDumpCaller(llmRouter, b.logger, debugEnabled),
+		UsageTracker: usageTracker,
 		MaxCacheSize: cfg.Orchestration.MaxJudgeCacheSize,
 	}, b.logger)
 }
 
 // rebuildJudgeInternal recreates the SHARED registry's judge from the builder's
 // global state. That judge is only a clone-time fallback for new sessions —
-// Build immediately overrides every session clone with a judge bound to the
-// session's own router (see sessionJudgeSyncer), so this rebuild (triggered by
-// a default-model change in the settings UI or another session's model picker)
-// never re-binds a live session's judge.
+// Build binds every session clone to a judge riding the session's own router
+// (see bindSessionJudge), so this rebuild (triggered by a default-model change
+// in the settings UI or another session's model picker) never re-binds a live
+// session's judge. The fallback judge rides the builder's cached router and is
+// not usage-tracked (no session tracker exists at builder level).
 func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter *llm.Router) {
 	if b.registry == nil {
 		return
 	}
 
-	activeModel := cfg.LLM.DefaultModel
-	providerName := cfg.LLM.DefaultProviderName()
-	var judgeProvider llm.Provider
-	if llmRouter != nil {
-		activeModel = llmRouter.ActiveModel()
-		judgeProvider = llmRouter.DefaultProvider()
-		providerName = llmRouter.ActiveProviderName()
-	} else {
+	if llmRouter == nil {
 		// Try building a fresh router
 		newRouter, _, err := b.buildRouter(context.Background(), cfg)
 		if err == nil && newRouter != nil {
-			judgeProvider = newRouter.DefaultProvider()
-			providerName = newRouter.ActiveProviderName()
+			llmRouter = newRouter
 		} else if err != nil && b.logger != nil {
 			b.logger.Warn("rebuildJudge: failed to build LLM router for judge", "error", err)
 		}
 	}
 
-	judge := b.newJudgeForProvider(cfg, judgeProvider, providerName, activeModel)
+	judge := b.newJudgeForRouter(cfg, llmRouter, nil)
 
 	if judge != nil {
 		b.registry.SetJudge(judge)
@@ -2373,68 +2364,58 @@ func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter
 	}
 }
 
-// sessionJudgeSyncer returns a closure that re-binds the SESSION registry's
-// tool judge to the session's OWN router — the per-session router Build
-// created, whose active provider/model is exactly what the session runs on.
-// This is the session-pinning invariant: the global default-model switch
-// (settings UI, another session's model picker) rebuilds only the shared
-// registry's judge for FUTURE sessions, while a live session keeps evaluating
-// escalations on its own provider. The only path that may move a session's
-// judge is the session's own model switch, which invokes the returned closure
-// via OrchestratorDeps.JudgeSync (ApplyRequestOverrides). A nil judge (no
-// active provider) keeps the previous binding — the clone-inherited shared
-// judge on first use — so a session never loses a judge it had.
-func (b *OrchestratorBuilder) sessionJudgeSyncer(cfg *BuilderConfig, llmRouter *llm.Router, sessionRegistry *tools.ToolRegistry) func() {
-	return func() {
-		judge := b.newJudgeForProvider(
-			cfg,
-			llmRouter.DefaultProvider(),
-			llmRouter.ActiveProviderName(),
-			llmRouter.ActiveModel(),
-		)
-		if judge == nil {
-			return
-		}
-		sessionRegistry.SetJudge(judge)
+// bindSessionJudge binds the SESSION registry's tool judge to the session's
+// OWN router — the per-session router Build created — replacing the
+// clone-inherited shared-registry fallback judge. The judge issues its calls
+// through the router as a plain llm.Caller with no model pinned, so it rides
+// the router's ACTIVE provider and model by construction: the session's own
+// model switch (Router.SetModel in ApplyRequestOverrides) is picked up by the
+// next judge call with NO re-binding, while a global default-model change
+// elsewhere rebuilds only the shared registry's clone-time fallback judge.
+// The session's usage tracker is passed so judge token usage lands in the
+// session's accounting. A nil judge (no router) keeps the previous binding —
+// the clone-inherited shared judge — so a session never loses a judge it had.
+func (b *OrchestratorBuilder) bindSessionJudge(cfg *BuilderConfig, llmRouter *llm.Router, sessionRegistry *tools.ToolRegistry, usageTracker *llm.UsageTracker) {
+	judge := b.newJudgeForRouter(cfg, llmRouter, usageTracker)
+	if judge == nil {
+		return
 	}
+	sessionRegistry.SetJudge(judge)
 }
 
-// judgeDumpProvider wraps an llm.Provider to add context-aware LLM dump support.
-// When a DumpWriter exists in the context, it wraps the LLM call with
-// agent.NewDumpCaller + agent.NewLoggingLLMCaller for DEBUG-level observability.
-type judgeDumpProvider struct {
-	inner        llm.Provider
+// judgeDumpCaller wraps the session router as the judge's llm.Caller and adds
+// context-aware LLM dump support: when a DumpWriter exists in the context, it
+// wraps the call with agent.NewDumpCaller + agent.NewLoggingLLMCaller (the
+// provider name resolved live per call) for DEBUG-level observability. It
+// forwards ActiveModel() so ToolJudge's activeModelSource probe keeps
+// resolving the tier-off reasoning spelling and per-model advisory cache keys
+// through the wrapper.
+type judgeDumpCaller struct {
+	router       *llm.Router
 	logger       *slog.Logger
-	providerName string
+	debugEnabled bool
 }
 
-func (p *judgeDumpProvider) ChatCompletion(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-	caller := agent.LLMCaller(&providerAsLLMCaller{p: p.inner})
-	if dw := agent.DumpWriterFromContext(ctx); dw != nil {
-		caller = agent.NewLoggingLLMCaller(caller, p.providerName, p.logger)
-		caller = agent.NewDumpCaller(caller, dw, p.logger)
+// newJudgeDumpCaller wraps the router for context-aware dump support. When
+// debug is disabled the wrapper degenerates to a pass-through caller: no
+// dump/logging layers are ever constructed.
+func newJudgeDumpCaller(llmRouter *llm.Router, logger *slog.Logger, debugEnabled bool) *judgeDumpCaller {
+	return &judgeDumpCaller{router: llmRouter, logger: logger, debugEnabled: debugEnabled}
+}
+
+func (c *judgeDumpCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	var caller agent.LLMCaller = c.router
+	if c.debugEnabled {
+		if dw := agent.DumpWriterFromContext(ctx); dw != nil {
+			caller = agent.NewLoggingLLMCaller(caller, c.router.ActiveProviderName(), c.logger)
+			caller = agent.NewDumpCaller(caller, dw, c.logger)
+		}
 	}
 	return caller.Call(ctx, req)
 }
 
-func (p *judgeDumpProvider) Name() string { return p.inner.Name() }
-
-// providerAsLLMCaller adapts llm.Provider to agent.LLMCaller so it can be
-// wrapped with agent.NewDumpCaller and agent.NewLoggingLLMCaller.
-type providerAsLLMCaller struct{ p llm.Provider }
-
-func (a *providerAsLLMCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-	return a.p.ChatCompletion(ctx, req)
-}
-
-// newJudgeDumpProvider wraps a provider for context-aware dump support.
-// Returns inner unchanged if logger is nil, providerName is empty, or debug is disabled.
-func newJudgeDumpProvider(inner llm.Provider, logger *slog.Logger, providerName string, debugEnabled bool) llm.Provider {
-	if inner == nil || logger == nil || providerName == "" || !debugEnabled {
-		return inner
-	}
-	return &judgeDumpProvider{inner: inner, logger: logger, providerName: providerName}
-}
+// ActiveModel forwards the router's active model (composite id).
+func (c *judgeDumpCaller) ActiveModel() string { return c.router.ActiveModel() }
 
 // registerSessionRegistry clones the shared registry for a new session and
 // records the clone as live. The clone and the insert happen atomically under
@@ -2463,6 +2444,64 @@ func (b *OrchestratorBuilder) unregisterSessionRegistry(r *tools.ToolRegistry) {
 	b.mu.Lock()
 	delete(b.sessionRegistries, r)
 	b.mu.Unlock()
+}
+
+// registerSessionModelRegistry records a freshly built per-session model
+// registry in the live set so UpdateModelOverrides pushes reach it. It runs
+// under b.mu so a concurrent push either sees the registry (and includes it)
+// or ran entirely before the registry existed — sessions built after a
+// metadata change carry the new metadata from construction, having read the
+// changed config. The gap this cannot close is the one INSIDE buildRouter:
+// the registry is constructed there, outside b.mu, a few statements before
+// registration. A push landing in that gap skips the session; the tool
+// registry's equivalent closes it by cloning under b.mu, which the model
+// registry cannot mirror cheaply — the accepted consequence is that such a
+// session re-syncs on the NEXT push, and only the motivating read-back push
+// exists today.
+func (b *OrchestratorBuilder) registerSessionModelRegistry(reg *llm.ModelRegistry) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.sessionModelRegistries == nil {
+		b.sessionModelRegistries = make(map[*llm.ModelRegistry]struct{})
+	}
+	b.sessionModelRegistries[reg] = struct{}{}
+}
+
+// unregisterSessionModelRegistry removes a session model registry from the
+// live set. It shares the cleanup hook with unregisterSessionRegistry so
+// tracked registries do not outlive their sessions.
+func (b *OrchestratorBuilder) unregisterSessionModelRegistry(reg *llm.ModelRegistry) {
+	b.mu.Lock()
+	delete(b.sessionModelRegistries, reg)
+	b.mu.Unlock()
+}
+
+// UpdateModelOverrides pushes the config-derived tier-1 model metadata into
+// every live per-session model registry, so a runtime metadata correction
+// reaches already-open sessions instead of only sessions built after it —
+// the model-registry counterpart of the security-policy push. The motivating
+// caller is the embedded LLM context read-back: the /props-reported window
+// lands in llm.models while a session built before it keeps refusing prompts
+// with the stale window unless the correction is pushed to it.
+//
+// The overrides derive from the CURRENT cfg — the same map a session built
+// right now would be seeded with — and are applied as an upsert: models the
+// cfg no longer mentions keep their stored entries. The builder-cached
+// router/registry pair is deliberately NOT touched here; RebuildRouter
+// replaces that pair wholesale and the backend always pairs the two calls.
+func (b *OrchestratorBuilder) UpdateModelOverrides(cfg *BuilderConfig) {
+	overrides := modelOverridesFromConfig(cfg)
+	if len(overrides) == 0 {
+		return
+	}
+	// Lock ordering is b.mu → registry mu, the same order the security push
+	// and registerSessionModelRegistry use; the registries never call back
+	// into the builder.
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for reg := range b.sessionModelRegistries {
+		reg.ApplyOverrides(overrides)
+	}
 }
 
 // applySecurityPolicies applies group-based security policies to the tool

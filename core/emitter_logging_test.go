@@ -80,6 +80,9 @@ func (s *spyEmitter) SkillsActivated(skills []string)            { s.record("Ski
 func (s *spyEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
 	s.record("EmitSessionTokens", totalIn, totalOut, model, family)
 }
+func (s *spyEmitter) EmitSessionTokensWithThroughput(totalIn, totalOut int, model, family string, medianOutputTokPerSec float64, throughputSamples int) {
+	s.record("EmitSessionTokensWithThroughput", totalIn, totalOut, model, family, medianOutputTokPerSec, throughputSamples)
+}
 func (s *spyEmitter) StepTodoUpdate(stepID string, items []agent.TodoItem) {
 	s.record("StepTodoUpdate", stepID, items)
 }
@@ -236,6 +239,73 @@ func TestLoggingEmitter_EmitSessionTokens_ForwardsToInner(t *testing.T) {
 	}
 	if spy.calls[0].method != "EmitSessionTokens" {
 		t.Errorf("expected method EmitSessionTokens, got %q", spy.calls[0].method)
+	}
+}
+
+// legacyTokenInner is an Emitter that supports ONLY the plain session-token
+// seam — the shape every emitter had before the throughput seam existed. It
+// exists to pin the degraded forwarding path.
+type legacyTokenInner struct {
+	*noopEmitter
+	plainCalls int
+	lastIn     int
+	lastOut    int
+}
+
+func (l *legacyTokenInner) EmitSessionTokens(totalIn, totalOut int, _, _ string) {
+	l.plainCalls++
+	l.lastIn = totalIn
+	l.lastOut = totalOut
+}
+
+func TestLoggingEmitter_EmitSessionTokensWithThroughput_ForwardsToInner(t *testing.T) {
+	spy := &spyEmitter{}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	le := NewLoggingEmitter(spy, logger)
+
+	// The type assertion used in builder.go must succeed on the logging wrapper.
+	te, ok := le.(SessionTokenThroughputEmitter)
+	if !ok {
+		t.Fatal("expected loggingEmitter to satisfy SessionTokenThroughputEmitter")
+	}
+	te.EmitSessionTokensWithThroughput(100, 50, "gpt-4o", "openai", 37.5, 4)
+
+	if len(spy.calls) != 1 {
+		t.Fatalf("expected 1 call to inner, got %d", len(spy.calls))
+	}
+	call := spy.calls[0]
+	if call.method != "EmitSessionTokensWithThroughput" {
+		t.Fatalf("expected method EmitSessionTokensWithThroughput, got %q", call.method)
+	}
+	wantArgs := []any{100, 50, "gpt-4o", "openai", 37.5, 4}
+	if len(call.args) != len(wantArgs) {
+		t.Fatalf("expected %d args, got %d (%v)", len(wantArgs), len(call.args), call.args)
+	}
+	for i, want := range wantArgs {
+		if call.args[i] != want {
+			t.Errorf("arg %d = %v, want %v", i, call.args[i], want)
+		}
+	}
+}
+
+func TestLoggingEmitter_EmitSessionTokensWithThroughput_FallsBackToPlain(t *testing.T) {
+	inner := &legacyTokenInner{}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	le := NewLoggingEmitter(inner, logger)
+
+	te, ok := le.(SessionTokenThroughputEmitter)
+	if !ok {
+		t.Fatal("expected loggingEmitter to satisfy SessionTokenThroughputEmitter regardless of inner")
+	}
+	te.EmitSessionTokensWithThroughput(210, 90, "glm-5.2", "glm", 12.5, 64)
+
+	if inner.plainCalls != 1 {
+		t.Fatalf("expected degraded forward to inner EmitSessionTokens once, got %d", inner.plainCalls)
+	}
+	if inner.lastIn != 210 || inner.lastOut != 90 {
+		t.Errorf("degraded totals = %d/%d, want 210/90", inner.lastIn, inner.lastOut)
 	}
 }
 

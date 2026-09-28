@@ -577,6 +577,13 @@ func (o *Orchestrator) runE2SWithState(
 		Logger:             o.logger,
 	}
 
+	// deps.llm IS the session TrackingCaller chain (builder.go wraps the
+	// session UsageTracker's tracking caller in the logging/dump wrappers and
+	// hands it here via OrchestratorDeps.LLM), so every E2S turn's usage and
+	// wall-clock duration feed the same session UsageTracker — including the
+	// timed observer that drives the per-session output-token throughput
+	// window behind session_tokens events. E2S is therefore COVERED by the
+	// throughput seam, not excluded; see core/e2s/tracking_test.go.
 	loop := e2s.New(deps.llm, newE2SRegistryAdapter(deps.toolExec, e2sTools), perStep, cfg)
 	res, runErr := loop.Run(ctx)
 

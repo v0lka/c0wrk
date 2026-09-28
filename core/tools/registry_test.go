@@ -119,14 +119,12 @@ type scriptedJudgeProvider struct {
 	calls    int
 }
 
-func (p *scriptedJudgeProvider) ChatCompletion(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+func (p *scriptedJudgeProvider) Call(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls++
 	return p.response, p.err
 }
-
-func (p *scriptedJudgeProvider) Name() string { return "scripted-judge" }
 
 func (p *scriptedJudgeProvider) callCount() int {
 	p.mu.Lock()
@@ -139,7 +137,7 @@ func newStrictJudge(response string, err error) (*sdktools.ToolJudge, *scriptedJ
 	if response != "" {
 		provider.response = &llm.ChatResponse{Message: llm.Message{Content: response}}
 	}
-	return sdktools.NewToolJudge(provider, "test-model", 1, nil), provider
+	return sdktools.NewToolJudge(provider, nil, 1, nil), provider
 }
 
 // ── Registry basics ───────────────────────────────────────────────────────
@@ -2028,9 +2026,10 @@ func TestSmartApprove_UserConfirmFlow(t *testing.T) {
 		{name: "strict allow executes without UI", mode: AutonomyModeAssisted, judgeResponse: "VERDICT: ALLOW\nREASON: safe and relevant", setJudge: true, wantJudgeCalls: 1},
 		{name: "strict deny terminates without UI or execution", mode: AutonomyModeAssisted, judgeResponse: "VERDICT: DENY\nREASON: destructive write to a system path", setJudge: true, wantJudgeCalls: 1, wantResultError: true},
 		{name: "strict confirm uses manual UI", mode: AutonomyModeAssisted, judgeResponse: "VERDICT: CONFIRM\nREASON: destructive operation", setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 1},
-		// wantJudgeCalls 2: an unparseable response retries exactly once with
-		// format feedback (sp4rk retry-once) before failing safe to CONFIRM.
-		{name: "unparseable uses manual UI", mode: AutonomyModeAssisted, judgeResponse: "probably fine", setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 2},
+		// wantJudgeCalls 3: the unified sp4rk nudge loop retries an unparseable
+		// response twice (two nudges, three attempts) before failing safe to
+		// CONFIRM.
+		{name: "unparseable uses manual UI", mode: AutonomyModeAssisted, judgeResponse: "probably fine", setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 3},
 		{name: "provider error uses manual UI", mode: AutonomyModeAssisted, judgeErr: errors.New("provider failed"), setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 1},
 		{name: "unavailable judge uses manual UI", mode: AutonomyModeAssisted, wantConfirm: true, wantDisableJudge: true},
 	}
@@ -2400,9 +2399,10 @@ func TestSilentMode_ToolConfirm_Terminals(t *testing.T) {
 		{
 			name: "judge unparseable auto-denies",
 			mode: SilentToolConfirmJudge, judgeResponse: "probably fine", setJudge: true,
-			// 2 calls: the unparseable response retries exactly once with
-			// format feedback (sp4rk retry-once) before the fail-closed CONFIRM.
-			wantErr: true, wantJudgeCalls: 2,
+			// 3 calls: the unified sp4rk nudge loop retries an unparseable
+			// response twice (two nudges, three attempts) before the
+			// fail-closed CONFIRM.
+			wantErr: true, wantJudgeCalls: 3,
 		},
 		{
 			// Decision 1c: the silent judge path has NO canonical backstop —
@@ -2903,7 +2903,7 @@ func TestGateOrder_DenyBeforeJudgeAndSymlink(t *testing.T) {
 
 // gateProbePlanSchema mirrors declare_plan's schema shape (the incident that
 // motivated Gate 1's structural validator): a tasks array whose item objects
-// declare id, summary, description as required.
+// declare id, summary, description, and the mandatory depends_on as required.
 const gateProbePlanSchema = `{
 	"type": "object",
 	"properties": {
@@ -2917,7 +2917,7 @@ const gateProbePlanSchema = `{
 					"description": {"type": "string"},
 					"depends_on":  {"type": "array", "items": {"type": "string"}}
 				},
-				"required": ["id", "summary", "description"]
+				"required": ["id", "summary", "description", "depends_on"]
 			}
 		},
 		"mode": {"type": "string"}
@@ -2957,11 +2957,12 @@ func newGateProbeRegistry(t *testing.T) (*ToolRegistry, *gateProbeTool) {
 // carries only a description — no id, no summary — violating the items
 // schema's required fields. The old shallow gate missed this (the top-level
 // "tasks" key was present); the structural validator must reject it naming
-// the nested path.
+// the nested path. Tasks 0 and 1 declare the now-mandatory depends_on so the
+// single remaining violation is tasks[2].
 const gateProbeIncidentInput = `{
 	"tasks": [
-		{"id": "step_1", "summary": "first", "description": "d1"},
-		{"id": "step_2", "summary": "second", "description": "d2"},
+		{"id": "step_1", "summary": "first", "description": "d1", "depends_on": []},
+		{"id": "step_2", "summary": "second", "description": "d2", "depends_on": []},
 		{"description": "no id, no summary"}
 	]
 }`
@@ -2993,7 +2994,7 @@ func TestExecute_Gate1_NestedInvalidInputRejectedBeforeDispatch(t *testing.T) {
 func TestExecute_Gate1_ValidNestedInputDispatches(t *testing.T) {
 	registry, probe := newGateProbeRegistry(t)
 
-	input := json.RawMessage(`{"tasks":[{"id":"step_1","summary":"s","description":"d"}],"mode":"present"}`)
+	input := json.RawMessage(`{"tasks":[{"id":"step_1","summary":"s","description":"d","depends_on":[]}],"mode":"present"}`)
 	result, err := registry.Execute(context.Background(), "gate_probe", input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -3033,7 +3034,7 @@ func TestExecuteUnattended_Gate1_NestedInvalidInputRejectedBeforeDispatch(t *tes
 func TestExecuteUnattended_Gate1_ValidNestedInputDispatches(t *testing.T) {
 	registry, probe := newGateProbeRegistry(t)
 
-	input := json.RawMessage(`{"tasks":[{"id":"step_1","summary":"s","description":"d"}],"mode":"present"}`)
+	input := json.RawMessage(`{"tasks":[{"id":"step_1","summary":"s","description":"d","depends_on":[]}],"mode":"present"}`)
 	result, err := registry.ExecuteUnattended(context.Background(), "gate_probe", input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

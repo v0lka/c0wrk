@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
@@ -103,6 +104,15 @@ type Application struct {
 
 	// hitlHandler is captured for the orchestrator factory closure.
 	hitlHandler agent.HITLHandler
+
+	// autoRetryIntervals is the published snapshot of every provider's
+	// auto_retry_seconds (ADR-065), keyed by logical provider name. The
+	// session-manager resolver reads it lock-free via atomic load; FrontendAPI
+	// republishes it on every committed LLM config mutation. The map is
+	// immutable once stored — the pointer swap is the only synchronization
+	// (reading the live config maps from the resolver would race Settings
+	// saves, which replace them under configMu).
+	autoRetryIntervals atomic.Pointer[map[string]int]
 }
 
 func (app *Application) log() *slog.Logger {
@@ -321,6 +331,21 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	if cfg.SessionStore != nil {
 		manager.SetSessionStore(cfg.SessionStore)
 	}
+	// Auto-retry resolver: resolves a provider name (the logical config key
+	// carried by *llm.Error.Provider) to its auto_retry_seconds interval.
+	// The resolver reads the ATOMIC snapshot published from the live config
+	// (publishAutoRetryIntervals): the session manager calls it without
+	// configMu, so reading the live config maps here would race Settings
+	// saves (which replace those maps under configMu — a fatal
+	// concurrent-map-access crash). FrontendAPI republishes the snapshot on
+	// every committed mutation, so interval changes still apply to the NEXT
+	// failure that arms a timer. Fixed providers (anthropic, chatgpt) have
+	// no auto_retry_seconds field and always resolve to 0: no automatic
+	// retry, only the manual resume banner.
+	app.publishAutoRetryIntervals(cfg.Config)
+	manager.SetAutoRetryResolver(func(provider string) int {
+		return app.autoRetryIntervalSnapshot()[provider]
+	})
 	app.manager = manager
 
 	// 7. Title generator backed by the builder's cached LLM router.
@@ -596,4 +621,39 @@ func (app *Application) LastToolCallID(sessionID string) (id, tool string) {
 		return "", ""
 	}
 	return app.manager.LastToolCallID(sessionID)
+}
+
+// buildAutoRetryIntervals derives the provider→interval snapshot from a
+// config. The returned map is immutable by convention — every consumer of the
+// published pointer treats it read-only.
+func buildAutoRetryIntervals(cfg *config.Config) map[string]int {
+	if cfg == nil {
+		return map[string]int{}
+	}
+	intervals := make(map[string]int, len(cfg.LLM.OpenAICompatible)+len(cfg.LLM.AnthropicCompatible))
+	for name, c := range cfg.LLM.OpenAICompatible {
+		intervals[name] = c.AutoRetrySeconds
+	}
+	for name, f := range cfg.LLM.AnthropicCompatible {
+		intervals[name] = f.AutoRetrySeconds
+	}
+	return intervals
+}
+
+// publishAutoRetryIntervals rebuilds and stores the atomic snapshot from the
+// given config. Called at Application construction and after every committed
+// LLM config mutation.
+func (app *Application) publishAutoRetryIntervals(cfg *config.Config) {
+	snapshot := buildAutoRetryIntervals(cfg)
+	app.autoRetryIntervals.Store(&snapshot)
+}
+
+// autoRetryIntervalSnapshot returns the published provider→interval snapshot
+// (nil before the first publish — reads on a nil map are safe and yield 0,
+// "no provider has an interval").
+func (app *Application) autoRetryIntervalSnapshot() map[string]int {
+	if p := app.autoRetryIntervals.Load(); p != nil {
+		return *p
+	}
+	return nil
 }

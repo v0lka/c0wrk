@@ -75,6 +75,13 @@ llm:
       #   pin applies. A configured pin is preserved while the proxy is on
       #   and takes effect again once the proxy stops dialing for the host.
       # tls_fingerprint: ""
+      #
+      # Optional: automatic retry timer for this provider (compatible
+      # providers only). After a failed LLM request the session waits this
+      # many seconds, then re-sends automatically instead of asking how to
+      # proceed. 0 / omitted = disabled (the default). Not a router-level
+      # retry knob: the timer lives in the c0wrk session layer.
+      # auto_retry_seconds: 30
 
   anthropic_compatible:
     # Each key is a named provider speaking Anthropic's Messages API
@@ -92,6 +99,11 @@ llm:
     #   # while the proxy dials for the host; add the host to
     #   # proxy.bypass_list to pin and proxy simultaneously.
     #   # tls_fingerprint: ""
+    #   # Same automatic retry timer as openai_compatible above
+    #   # (auto_retry_seconds, compatible providers only; 0 / omitted =
+    #   # disabled). After a failed request the session waits this many
+    #   # seconds, then re-sends automatically.
+    #   # auto_retry_seconds: 30
 
   chatgpt:
     api_key: "${OPENAI_API_KEY}"
@@ -105,6 +117,16 @@ llm:
   models: {}
   #   "custom-model-name":
   #     # Maximum input+output tokens the model accepts / produces.
+  #     # 0 (or omitted) inherits the built-in default; any other value must be
+  #     # within 1-16777216. The ceiling is a sanity guard, not a model limit —
+  #     # it is ~8x the largest context any real remote model serves today, so
+  #     # it can never refuse a legitimate configuration. It exists because this
+  #     # override is a TIER-1 value that shadows the lazy probe, so a poisoned
+  #     # one is never corrected by asking the model again, and an absurd figure
+  #     # is worse than a merely wrong one: the memory-context arithmetic then
+  #     # reports "fits" for every prompt and compaction never triggers. Both
+  #     # writers of this key — your hand-edit and the embedded LLM's `/props`
+  #     # context readback — are bounded by the same constant.
   #     context_window: 128000
   #     # Maximum tokens the model may emit in a single response.
   #     output_limit: 8192
@@ -139,6 +161,334 @@ llm:
     max_retries: 3 # Max retry attempts (0 = no retries)
     initial_backoff: "1s" # Initial backoff duration
     max_backoff: "30s" # Maximum backoff duration
+
+# ---------------------------------------------------------------------------
+# Embedded LLM (embedded_llm)
+# ---------------------------------------------------------------------------
+# The optional in-app local model. On an explicit user action (Settings → LLM →
+# Embedded LLM → Install) c0wrk downloads a pinned inference runtime — the
+# PrismML-Eng/llama.cpp fork at release `prism-b10735-842b188`, because stock
+# llama.cpp rejects the PQ2_0/PTQ1_0 ternary packings and silently produces
+# garbage on Q2_0 — plus the Ternary-Bonsai-2-27B weights, provisions both for
+# THIS machine, supervises `llama-server` as a loopback OpenAI-compatible
+# endpoint, and registers it as the provider `embedded` with the model
+# `Bonsai 2 27B`. An explicit Load (Settings or the status bar) makes the model
+# resident; an idle budget unloads it again.
+#
+# MOST OF THIS SECTION IS APP-WRITTEN STATE, NOT TUNING. Install writes it,
+# Remove clears it, and hand-editing it does not download, install or start
+# anything. The values below are the not-installed defaults.
+#
+# TWO sub-sections are the exception, and both are OPERATOR SETTINGS that
+# Install and Remove carry through verbatim — provisioning or uninstalling the
+# model never resets either:
+#
+#   - `auto_unload:` — the idle budget (was always a setting; it just lives
+#     here because it is the one knob this section had before `tuning:`);
+#   - `tuning:`      — the memory-plan overrides, documented at the end of this
+#     section. Everything else above them is a record.
+#
+# This section is the AUTHORITATIVE state; `llm.openai_compatible.embedded` is
+# GENERATED from it (base_url http://127.0.0.1:<port>/v1, empty api_key,
+# models ["Bonsai 2 27B"]) while `installed: true`, and dropped when it is not.
+# Saving LLM settings replaces the whole openai_compatible map, so the backend
+# re-injects the record from here on every load and every save — the provider
+# cannot be deleted or redirected from the UI. The LLM tab renders no editor for
+# it either (the model appears only in the pickers), and `embedded` is a reserved
+# provider name in the add-provider form even while the model is not installed.
+#
+# Deliberately absent from config:
+#   - artifact versions, URLs and SHA256 checksums are compile-time pins in
+#     `core/embeddedllm/registry.go` — no upstream version queries, no
+#     auto-update; a bump is a manual, CVE-reviewed pin change;
+#   - the accelerator and the image-token cap are RESOLVED from the hardware
+#     probe and are never configured. The resolved outcome is reported back
+#     through `backend` and `packing` and through the generated
+#     `llm.models."Bonsai 2 27B".context_window` override (RAM-tiered; never
+#     the fork's 262144 maximum).
+#     Packing, layer offload (`-ngl`), the context window and the KV precision
+#     used to belong to this list too. They are now OVERRIDABLE through
+#     `tuning:` below — resolved by default, pinned on request. Note that
+#     `tuning.packing` changes what the PLAN assumes, not what is on disk: the
+#     weights are an install-time artifact, so override it and reinstall.
+#   - the backend compatibility guards: machine classes the pinned model's own
+#     KNOWN_ISSUES documents as crashing, aborting, hanging or producing GARBLED
+#     output are substituted onto a working build, or disclosed when they cannot
+#     be. Every decision — applied or not — is recorded in the install manifest
+#     and reported through the Settings status, so a degraded install is visible
+#     rather than silent. Nothing here is configurable: the guards are derived
+#     from the pin, and a pin bump re-reads them.
+#
+# Artifacts are stored OUTSIDE ~/.c0wrk/tools/ — runtimes in
+# ~/.c0wrk/runtimes/llama-<tag>-<backend>/, weights in
+# ~/.c0wrk/models/bonsai-2-27b/ — because <toolsDir>/bin is prepended to the
+# agent's PATH and the inference runtime must not become agent-invokable.
+# Install has NO fixed RAM threshold. A combined memory gate prices both of the
+# machine's pools — accelerator memory and system RAM — against the measured
+# footprint of the smallest launch shape that fits, and refuses only when no
+# modelled shape fits either. On a unified-memory machine (Apple Silicon, an
+# AMD APU) the two pools are the same bytes and the derived floor lands just
+# above 12 GiB of RAM; beside a discrete card the RAM total is not the binding
+# constraint at all, so 8 GiB of RAM with a large GPU is admitted. The refusal
+# names both pools with both numbers. Disk budget: ~7.3 GiB
+# (PQ2_0 + mmproj) or ~6.1 GiB (PTQ1_0 + mmproj) plus a 150–650 MB runtime.
+# The server binds strictly 127.0.0.1 with its built-in Web UI disabled.
+# See specs/domains/embedded-llm.md and
+# specs/decisions/066-embedded-llm-runtime.md (the runtime),
+# specs/decisions/067-memory-aware-embedded-llm-provisioning.md (the memory
+# planner `tuning:` overrides).
+#
+# embedded_llm:
+#   # True once runtime and weights are downloaded, SHA256-verified (fail-closed)
+#   # and recorded in the install manifest. Gates the generated provider entry.
+#   # Default: false.
+#   installed: false
+#   # Informational: the packing actually resolved for this machine, shown in
+#   # Settings together with the typed REASON for it. Default: "" (not installed).
+#   #   "PQ2_0"   (6.71 GiB) — default everywhere it is supported
+#   #   "PTQ1_0"  (5.54 GiB) — chosen when ANY of these holds:
+#   #     * the backend has no PQ2_0 kernels (Vulkan), so PQ2_0 would silently
+#   #       run dequantized;
+#   #     * the host has AVX-512 AND the pinned runtime predates upstream #245,
+#   #       where PQ2_0 segfaults at load (inert on the current pin);
+#   #     * the MEASURED device budget does not fit PQ2_0 — the model card calls
+#   #       PTQ1_0 "the pick wherever memory is tightest";
+#   #     * the GPU generation decodes PTQ1_0 faster (the Ada-generation cards
+#   #       and the L4, per the card's own throughput table).
+#   # Installed system RAM alone never downgrades the packing: the constraint is
+#   # the accelerator budget, and it downgrades only when it was measured.
+#   # The vision projector mmproj-Q8_0 (600 MiB) is always installed alongside.
+#   packing: ""
+#   # Informational: the accelerator the plan settled on, AFTER the
+#   # compatibility guards — never the raw probed value. Default: "" (not
+#   # installed). One of:
+#   #   metal | cuda-12.4 | cuda-12.8 | cuda-13.3 | rocm | vulkan | cpu
+#   # This field RECORDS; it does not offer a choice. It transcribes whatever
+#   # the resolver settled on, so every value in the pinned artifact vocabulary
+#   # is legal here — recordable-in-the-manifest and user-selectable are
+#   # different predicates. `cuda-13.3` is the case that shows the difference:
+#   # it is pinned (part of the pinned runtime artifact set) and therefore
+#   # recordable, but it is NOT selectable in practice while upstream #222 is
+#   # open — the 13.3 builds are documented to crash, so core's compat guard
+#   # `cuda-13.3-crash` substitutes it on every CUDA platform, to the 12.8 build
+#   # on Linux and the 12.4 build on Windows, both of which a 13.3 driver still
+#   # runs. No machine resolves to 13.3 while that guard is in force.
+#   # CUDA and ROCm builds are x64-only; Windows CUDA additionally downloads a
+#   # paired cudart archive as a separate, separately-verified component.
+#   backend: ""
+#   # Loopback port the local inference server listens on. 0 = allocate a free
+#   # port at install time. The allocated port is a PREFERENCE, not a
+#   # reservation: it is re-checked immediately before every start and, if
+#   # another process holds it, walks upward to the next free port — the move is
+#   # written back here, so this value always drives the provider base URL
+#   # (http://127.0.0.1:<port>/v1). Valid: 1024–65535; `installed: true` with
+#   # port 0 is rejected at load (a completed install always has one).
+#   # Default: 0.
+#   port: 0
+#   # Absolute path of the installed GGUF weights. Default: "".
+#   model_file: ""
+#   # The pinned fork release the installed runtime came from
+#   # (e.g. "prism-b10735-842b188"). A pin change forces a runtime re-download
+#   # and keeps the weights. Default: "".
+#   runtime_version: ""
+#   # RFC 3339 timestamp of the install. Default: "".
+#   installed_at: ""
+#   # Idle auto-unload: stop the server process after N minutes without a
+#   # request so RAM/VRAM is returned deterministically. Weight-load time is
+#   # excluded from the budget (the timer restarts when the load completes), and
+#   # activity is counted when a request completes.
+#   # An expiry never kills a generation mid-answer: while a request is in
+#   # flight the unload DEFERS itself by a bounded 30 s grace, re-armed on every
+#   # expiry for as long as requests stay open. The one exception: a deferral is
+#   # SKIPPED when a request completed in the same instant and already armed a
+#   # fresh full budget, which the deferral re-reads and keeps rather than
+#   # trading away for a 30 s grace. The grace is a re-check interval,
+#   # not a second budget — it does not stamp activity, so the unload lands one
+#   # grace after the last request completes rather than a full budget after it.
+#   # The re-checks are bounded by WALL TIME, not by their number: one deferral
+#   # episode may not outlast a full idle budget, so a leaked in-flight count (a
+#   # response body nobody ever closed) costs AT MOST ONE EXTRA FULL IDLE BUDGET
+#   # and then loses the model — the unload proceeds and names the leaked count
+#   # in a Warn log, instead of pinning gigabytes resident forever.
+#   auto_unload:
+#     enabled: true # false disables the timer; the model stays loaded. Default: true.
+#     # Idle minutes before unload. Must be within 1-525600 (one year) —
+#     # validated even while the timer is disabled, so re-enabling it can never
+#     # activate a dead budget. The ceiling is an overflow guard, not a tuning
+#     # opinion: minutes are converted to nanoseconds by a multiply that wraps
+#     # int64 above 153722867, and the wrapped result can be a budget of tens of
+#     # seconds — or single-digit microseconds — so an "effectively never" value
+#     # would silently invert into "unload immediately". Use `enabled: false`
+#     # for indefinite residency. Changing either key re-arms against the
+#     # EXISTING activity stamp and grants no fresh budget, so enabling the
+#     # timer on a model already idle longer than this value — or shortening the
+#     # value below the time already idle — unloads it at once. Default: 60.
+#     minutes: 60
+#   # ---------------------------------------------------------------------
+#   # MEMORY-PLAN TUNING — the other operator-owned sub-section. Everything
+#   # above it is a RECORD of what the app did; this is a SETTING of what you
+#   # want the memory plan to be. It is the persisted form of the override
+#   # vocabulary the planner in core/embeddedllm/plan.go accepts, and the legal
+#   # spellings for the two closed sets (the KV precisions, the packings) are
+#   # READ from core rather than transcribed here, so the two cannot drift.
+#   #
+#   # Every knob is OPTIONAL and defaults to ABSENT. Absent is not the same
+#   # value as an explicit `auto`: both build the same plan, but only an absent
+#   # key means "the operator chose nothing". For two knobs the difference is
+#   # not cosmetic at all — an unset `fit` lets the exclusivity rule decide
+#   # while `fit: false` forces `-fit off`, and an unset `cache_ram_mib` keeps
+#   # the runtime default while `cache_ram_mib: 0` DISABLES the prompt cache.
+#   # That is why nothing here is seeded by defaults, and why an unauthored
+#   # block writes nothing: config.yaml only grows a `tuning:` section when you
+#   # author one, and a save never converts your "unset" into an "explicit
+#   # auto".
+#   #
+#   # Install and Remove preserve this section verbatim (same rule as
+#   # auto_unload), so provisioning or uninstalling the model never resets a
+#   # tuned memory plan, and editing a knob never touches the app-written
+#   # record beside it — `installed`, `packing`, `backend`, `port`,
+#   # `model_file`, `runtime_version` and `installed_at` are all owned by the
+#   # install flow alone.
+#   #
+#   # Every knob is validated on load EVEN WHILE IT IS INERT — while the model
+#   # is not installed, while fit is off, while another knob makes it moot —
+#   # for the reason auto_unload.minutes already is: arming a value must never
+#   # activate a dead one. A rejected key names itself and states the fix.
+#   #
+#   # The numeric knobs carry a CEILING as well as a floor. The ceilings are
+#   # exported from core/embeddedllm/limits.go and shared with this validation,
+#   # so a bound that exists at only one layer — and that an operator could walk
+#   # around by hand-editing config.yaml — does not exist. Each one is an
+#   # OVERFLOW or absurdity guard set far above any real machine, never a tuning
+#   # opinion: rejecting it cannot refuse a legitimate configuration, while
+#   # still keeping the arithmetic downstream total. What actually fits remains
+#   # the memory gate's and the planner's call.
+#   #
+#   # Two planner knobs are deliberately NOT exposed: `-dev` (the offload
+#   # device list) and `-sm`/`--split-mode`. Both pin the offload, which turns
+#   # fit off, and naming a device this machine does not have yields an
+#   # unlaunchable server rather than a slower one.
+#   tuning:
+#     # The context window (`-c`). Default: unset.
+#     #   mode: auto   the planner sizes it — from fit_min_context under fit,
+#     #                otherwise from the system-RAM ladder, never above the
+#     #                model's own training context.
+#     #   mode: exact  pins `-c` to tokens, which then becomes REQUIRED.
+#     # tokens is valid 1-262144 (the pinned model's own training context, read
+#     # from the memory profile rather than written down here) and is validated
+#     # even while mode is auto, so switching to exact can never activate a
+#     # window the model cannot serve.
+#     context:
+#       mode: auto #        auto | exact
+#       tokens: 32768 #     1-262144; required by mode: exact
+#     # The KV-cache precision, applied to BOTH `-ctk` and `-ctv` — a mixed pair
+#     # silently drops to CPU flash attention, so one value drives both.
+#     # Default: unset = adaptive.
+#     #   auto   f16, escalating to q8_0 and then q4_0 until the target context
+#     #          fits the MEASURED device budget. Precision is spent first
+#     #          because it is nearly free: the fork measures q8_0 and q4_0
+#     #          within ~1% of f16's throughput on this model while cutting the
+#     #          cache to 53% and 28% of its size. Every escalation is recorded
+#     #          in the plan's notes.
+#     #   f16 | q8_0 | q4_0
+#     #          honoured exactly as given and never escalated.
+#     # Anything else is REFUSED, not coerced to f16: q5_0 is excluded on a
+#     # measured ~8x long-context decode slowdown (and buys no capacity over
+#     # q4_0), and q4_1 / iq4_nl / q5_1 have no measurement on this model.
+#     kv_cache_type: auto # auto | f16 | q8_0 | q4_0
+#     # Layer offload (`-ngl`). Default: unset.
+#     #   mode: auto    nothing pinned. Under fit the RUNTIME sizes the layer
+#     #                 count; otherwise every offloadable layer goes to the
+#     #                 device when there is one, and none when there is not.
+#     #   mode: all     `-ngl 99` — every offloadable layer on the device.
+#     #   mode: cpu     `-ngl 0` — nothing offloaded, the model runs from
+#     #                 system RAM (the Intel-Mac and CPU-build shape).
+#     #   mode: layers  `-ngl <layers>`, which then becomes REQUIRED (0-1048576).
+#     # ANY explicit mode turns fit OFF: naming the offload IS pinning it, and
+#     # `-fit on` beside a pinned `-ngl` is the shape the fork's fit.cpp aborts
+#     # on. The planner then computes the context itself, and never above the
+#     # model's training context.
+#     offload:
+#       mode: auto #        auto | all | cpu | layers
+#       layers: 40 #        0-1048576; required by mode: layers
+#     # The runtime's own memory-sizing pass (`-fit`). Default: unset.
+#     #   unset   the exclusivity rule decides: fit stays ON unless something
+#     #           else pins the offload (see `offload`).
+#     #   false   forces `-fit off`; the planner computes the context.
+#     #   true    asks for fit. It LOSES to the exclusivity rule next to an
+#     #           explicit offload, and the plan records that in its notes.
+#     fit: true
+#     # The per-device margin fit leaves free (`-fitt`), in MiB. Default: unset
+#     # = the runtime's own 1024 MiB. Valid 0-2147483648; an explicit 0 also
+#     # omits the flag. Only emitted under fit. The ceiling keeps the MiB→bytes
+#     # shift inside an int64 with room to spare — it is 2 PiB, orders of
+#     # magnitude past any accelerator or host pool.
+#     fit_target_mib: 1024
+#     # The smallest context fit may settle on (`-fitc`). Default: unset =
+#     # 65536. Valid 1-262144. Only emitted under fit — and it doubles as the
+#     # context the feasibility gate checks, because a fit run that cannot
+#     # reach its own floor aborts instead of launching.
+#     # 65536 is c0wrk's floor and deliberately NOT the runtime's own 4096: at
+#     # 4096 this model produces empty and truncated answers, which is the
+#     # entire reason the two defaults diverge.
+#     fit_min_context: 65536
+#     # Where the KV cache lives (`-kvo` / `-nkvo`). Default: unset = the
+#     # PLANNER decides — it starts on the device with the layers, but the
+#     # memory gate's first degradation rung spills it to host RAM when the
+#     # accelerator cannot hold it, so unset is not a promise of "on device".
+#     # false passes `-nkvo` and leaves the cache in system RAM, trading device
+#     # memory for host memory and for attention bandwidth; true pins it to the
+#     # device and the degradation ladder then leaves that half alone. Deleting
+#     # the key hands the choice back to the planner, which is what the Auto
+#     # position of Settings → LLM → Embedded LLM → Advanced tuning does.
+#     kv_offload: true
+#     # Where the vision projector's worst-case reserve lives
+#     # (`--mmproj-offload` / `--no-mmproj-offload`). Default: unset = the
+#     # PLANNER decides — on the device until that same degradation rung moves
+#     # it to system RAM. false moves it to system RAM; true pins it to the
+#     # device. Auto in the tuning UI clears the override again.
+#     mmproj_offload: true
+#     # The weights quantization the PLAN is built for. Default: unset =
+#     # whatever the hardware probe resolved, which `packing` above RECORDS.
+#     # Valid: auto | PQ2_0 (6.71 GiB) | PTQ1_0 (5.54 GiB), matched
+#     # case-insensitively.
+#     # An explicit packing short-circuits the probe's decision and is recorded
+#     # as an operator override. One the memory model has no MEASURED residency
+#     # for is refused rather than projected from a file size, because a gate
+#     # built on a guessed device/host split could pass a launch that does not
+#     # fit. Overriding this does not fetch different weights — the packing is
+#     # an install-time artifact, so change it and reinstall.
+#     packing: auto #       auto | PQ2_0 | PTQ1_0
+#     # Slot count (`-np`). Default: unset = 1. Valid 1-64.
+#     # 1 is a measurement, not a preference: `-np 4` inflates fit's own
+#     # projection from 24450 MiB to 77297 MiB (the compute reserve is sized
+#     # per stream), and `-np` also SPLITS the context across slots — `-c 8192
+#     # -np 4` yields 2048-token slots, which is exactly the truncated-answer
+#     # failure fit_min_context exists to prevent. c0wrk serves one agent loop
+#     # over one loopback socket and issues one request at a time per server.
+#     # A large value is already refused by the memory gate; the ceiling keeps
+#     # the KV projection's multiplication total for the values the gate never
+#     # sees (an unmeasured host, a gate disabled in a test harness).
+#     parallel: 1
+#     # The prompt-cache ceiling (`-cram`), in MiB. Default: unset = the
+#     # runtime's own. Valid 0-2147483648, and an explicit 0 DISABLES the cache
+#     # — a legitimate choice, so it is passed through verbatim rather than read
+#     # as "unset".
+#     cache_ram_mib: 0
+#     # System RAM kept OUT of the host budget, in GiB. Default: unset = the
+#     # topology's own derivation (the larger of a 4 GiB floor and 1/8 of RAM).
+#     # Must be a FINITE number within 0-1048576: NaN and ±Inf are rejected, not
+#     # coerced. A PLANNER-side budget knob and not a runtime flag — the pinned
+#     # fork has no `--host-reserve` — and it REPLACES the derived reserve rather
+#     # than stacking on it.
+#     # The finiteness check is the point of the ceiling. NaN compares false
+#     # against every bound, so a floor-only check lets a typo through and the
+#     # planner then silently ignores it; and a float→int conversion whose value
+#     # the result type cannot represent is implementation-defined in Go — it
+#     # saturates on arm64 and yields the negative "indefinite value" on amd64,
+#     # which would make `host = ram − reserve` enormous and fail the memory gate
+#     # OPEN on the one knob meant to shrink the budget.
+#     host_reserve_gib: 4
 
 # ---------------------------------------------------------------------------
 # MCP (Model Context Protocol) Servers
@@ -332,10 +682,6 @@ executor:
 # Security & Tool Access Policies
 # ---------------------------------------------------------------------------
 security:
-  # LLM-based safety judge (used on-demand via "Ask agent" button)
-  judge:
-    model: "" # Model override for judge calls (empty = use default)
-
   # When true, file write tools (write_file, edit_file, delete_file,
   # delete_directory, create_directory) execute without confirmation when
   # all paths in their input are within the session roots — the workspace,
@@ -614,8 +960,13 @@ timeouts:
   webFetchRetries: 2 # Retries for failed web page fetches; each retry doubles the active timeout (webFetchTimeout, or webFetchProxyTimeout when proxy is on). 0 = use default 2
   webSearchTimeout: 30 # Timeout for web search queries
   persistenceTimeout: 5 # Timeout for persistence (DB) operations
+  # Both budgets start when the request is issued, not when the model becomes
+  # reachable. For the Embedded LLM that matters: a cold request first loads the
+  # weights (bounded by the supervisor's own ready budget, not by these), and
+  # only then is the request sent with its full timeout — so a slow weight load
+  # never shortens the generation that follows it.
   llmRequestTimeout: 600 # Timeout for a single LLM API call in the main chat loop (10 min). 0 = use default 600s
-  serviceLLMRequestTimeout: 120 # Timeout for one-shot "service" LLM requests (session title, commit message, prompt optimization) (2 min). 0 = use default 120s
+  serviceLLMRequestTimeout: 600 # Timeout for one-shot "service" LLM requests (session title, commit message, prompt optimization) — one budget for the whole client exchange incl. automatic re-sends of retryable failures (10 min). 0 = use default 600s
   # Timeout for the git commit spawn (git hooks, GPG signing, or large repos
   # can hold a commit open for a long time). Applies only to the commit
   # command itself; quick git probes (rev-parse and friends) keep the fast
@@ -1060,9 +1411,12 @@ orchestration:
 # all-or-nothing: enabling it exposes every gated feature, disabling it hides
 # every gated feature and treats each as off. Gated features today:
 #   - the E2S explicit-state execution mode (e2s.*)
+#   - the embedded local model's frontend surfaces (the Settings → LLM block
+#     and its entries in both model pickers; a frontend-only gate — the
+#     backend keeps serving the subsystem's RPCs regardless)
 #
 # experimental:
-#   # Master switch. Default: false (E2S mode off).
+#   # Master switch. Default: false (gated features off).
 #   enabled: false
 
 # ---------------------------------------------------------------------------

@@ -163,7 +163,8 @@ export function ModelProfilesSettings() {
    * Master switch (config.yaml model_profiles.enabled): persist + apply, then reload the
    * catalog so the profile UI reflects the new state. On failure the error is
    * surfaced and the toggle reverts. This NEVER touches the experimental-features
-   * switch — that gates only E2S and is owned by the General tab.
+   * switch — that gates E2S and the embedded model's frontend surfaces, and is
+    * owned by the General tab.
    */
   const handleToggleEnabled = async (next: boolean) => {
     if (busy) return
@@ -248,7 +249,8 @@ export function ModelProfilesSettings() {
 
   // Master toggle (config.yaml model_profiles.enabled): the first element, always visible.
   // It gates the whole profile UI below. This is NOT the experimental-features
-  // switch, which gates only E2S and lives on the General tab.
+  // switch, which gates E2S and the embedded model's frontend surfaces and
+   // lives on the General tab.
   const masterToggle = (
     <div className="flex flex-col gap-2 p-4 rounded-lg border border-border bg-card/50">
       <Toggle

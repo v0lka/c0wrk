@@ -1428,3 +1428,84 @@ func (a *App) startUpdateCheckerBackground(log *slog.Logger) {
 func (a *App) startAutoFetchBackground() {
 	a.Lifecycle().StartAutoFetch()
 }
+
+// initEmbeddedLLM restores the embedded local-model state on the startup path.
+//
+// The whole phase is a manifest.json read plus one embedded_llm:state event: it
+// performs NO download, NO network I/O, NO hardware probe and NO model load.
+// Startup must never depend on the network (the offline-first rule the managed
+// tools follow) and must never block on a multi-gigabyte weight load, so the
+// model stays unloaded until something asks for it — an explicit
+// LoadEmbeddedLLM or the ensure-loaded transport of a request that targets it.
+// Both the install and the load are RPC-driven, and the install runs in the
+// background so its RPC does not block either.
+//
+// Cost: one stat + one small JSON read inside the agent dir, far below the 50ms
+// critical-phase budget, which is why it runs inline in Phase 5 instead of a
+// background goroutine — the restore has to be complete before the first
+// GetEmbeddedLLMStatus can report anything truthful.
+func (a *App) initEmbeddedLLM(log *slog.Logger) {
+	if a.FrontendAPI == nil {
+		return
+	}
+	startTime := time.Now()
+	a.Lifecycle().InitEmbeddedLLM()
+	log.Info("startup phase complete", "phase", "embedded_llm",
+		"elapsed_ms", time.Since(startTime).Milliseconds())
+}
+
+// stopEmbeddedLLM stops the supervised llama-server during Shutdown, releasing
+// the RAM/VRAM the loaded weights hold. It runs early in the teardown (before
+// the judge drain and the store closes) so the gigabytes are returned while the
+// rest of the shutdown is still working, and it is idempotent: a model that was
+// never loaded, or one already stopped by the idle budget, makes it a no-op.
+//
+// A failure is logged, never fatal — quitting must not be blocked by a server
+// that refuses to die.
+//
+// THE TEARDOWN CONTRACT, and why "never fatal" is safe: the supervised child is
+// deliberately DETACHED (core spawns it with context.WithoutCancel and sets no
+// Pdeathsig/Setpgid/job-object tie), so the OS does NOT reclaim it when this
+// process exits — an unstopped llama-server outlives c0wrk and keeps its
+// gigabytes and its loopback port until a manual kill or a reboot. This call is
+// therefore the ONLY thing that terminates it, and the guarantee comes from the
+// bounded context rather than from the OS: backend.stopEmbeddedLLM arms
+// embeddedStopTimeout (30s) around core's Stop, and Stop takes a force path when
+// it cannot acquire the supervisor's single-instance gate in time — the gate an
+// in-flight cold load holds for up to DefaultReadyTimeout (15 min) — so a busy
+// gate ends in the child being killed instead of in a stop that merely reports it
+// gave up. The force path arms its OWN budget (core's stopTimeout + killWait + 1s)
+// on a detached context, because the caller's has just expired, so the real
+// ceiling on a quit is the 30s gate wait PLUS that force budget. Handing Stop an
+// UNBOUNDED context would break all of it: the quit would then hang for the length
+// of the load, which is exactly what the budget prevents.
+//
+// What the bound does NOT promise is that a quit always ends with the child dead.
+// The guarantee it does provide is TRACKING: a stop that did not take — the wedged
+// native child sitting in an uninterruptible syscall that survives BOTH the
+// graceful signal and the kill, precisely what core's killWait exists for — makes
+// core's terminate exhaust its own budget and return an error, and both stop paths
+// then RE-ATTACH the live run handle and record StateError instead of dropping it
+// (pinned by TestForceUnloadReportsAStopThatDidNotTake and
+// TestUnloadReportsAStopThatDidNotTake in core). Shutdown logs that error here as
+// non-fatal and the app exits, so this is the ONE quit outcome that can still
+// leave llama-server running. What no quit outcome can leave is a live child the
+// supervisor has lost sight of — unrecorded, unkillable through the UI, and with a
+// second server spawned beside it on the next load.
+//
+// This is the graceful-quit path only. A crash or a SIGKILL runs neither this nor
+// Shutdown, so nothing terminates the child; the port self-heals on the next
+// launch (EnsurePort walks upward past a squatted or foreign listener) but the
+// memory does not, and no persisted state identifies the orphan.
+func (a *App) stopEmbeddedLLM(ctx context.Context) {
+	if a.FrontendAPI == nil {
+		return
+	}
+	stop := a.embeddedLLMStopFn
+	if stop == nil {
+		stop = a.Lifecycle().StopEmbeddedLLM
+	}
+	if err := stop(ctx); err != nil {
+		a.log().Error("failed to stop the embedded LLM server during shutdown", "error", err)
+	}
+}

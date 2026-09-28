@@ -145,7 +145,13 @@ export interface AutonomyDecisionData {
 
 export interface ContextFillData {
   fill_percent: number; used_tokens: number; max_tokens: number; status: string
-  plan_step_id?: string; session_input_tokens: number; session_output_tokens: number
+  plan_step_id?: string
+  /** Step-scoped event from the root conductor emitter (dynamic inline-step
+   *  scope): the fill may be mirrored to the session-level status bar — the
+   *  session_tokens re-broadcast lags one executor iteration. Never set for
+   *  delegated subagent events. */
+  session_root_mirror?: boolean
+  session_input_tokens: number; session_output_tokens: number
   model: string; family: string
 }
 
@@ -183,7 +189,17 @@ export interface CompactionFinishedData {
   before_percent: number; after_percent: number; resumed?: boolean; paused_without_resume?: boolean
   nothing_compacted?: boolean; deferred_to_resume?: boolean; compaction_availability?: CompactionAvailability[]
 }
-export interface SessionTokensData { session_input_tokens: number; session_output_tokens: number; model: string; family: string; fill_percent?: number; used_tokens?: number; max_tokens?: number }
+export interface SessionTokensData {
+  session_input_tokens: number; session_output_tokens: number; model: string; family: string
+  fill_percent?: number; used_tokens?: number; max_tokens?: number
+  /** Median end-to-end output-token throughput (tok/s) over the recent
+   *  per-call window (last 64 calls; the backend omits the field below three
+   *  samples). Absent on payloads that predate the metric. */
+  median_output_tok_s?: number
+  /** Per-call sample count behind median_output_tok_s. Absent on payloads that
+   *  predate the metric. */
+  tok_s_samples?: number
+}
 export interface AssistantChunkData { content: string; accumulated_content?: string; plan_step_id?: string }
 /** Final assistant response for one executor step. `plan_step_id` is set when
  *  the answer belongs to a plan-step/subagent block (scoped emitter) rather
@@ -213,7 +229,17 @@ export interface RetryData { attempt: number; max_attempts: number }
 export interface StepRetryData { step_id: string; attempt: number; max_attempts: number }
 export interface ServiceData { content: string; phase?: string }
 export interface SessionRenamedData { new_name: string; old_name?: string; id?: string }
-export interface TaskFailedResumableData { message?: string }
+export interface TaskFailedResumableData {
+  message?: string
+  /** Unix timestamp (seconds) at which the UI auto-resend countdown reaches
+   *  zero. Present only when the backend classified the terminal failure as
+   *  a rate-limit/overload error from a provider with a configured retry
+   *  interval; absent/0 means no countdown. There is no backend timer: the
+   *  live event handler copies the deadline into the banner metadata with
+   *  `auto_retry_live: true`, and ONLY a live-marked banner may count down
+   *  (a restored row renders the plain manual banner). */
+  auto_retry_at?: number
+}
 export interface ReflectionData {
   summary: string
   insights?: string[]
@@ -405,6 +431,16 @@ export interface GoalStatusData {
 }
 
 /**
+ * Agent read from its persistent memory — facts restored from the blackboard
+ * at task start. Emitted as a dedicated `memory_read` session event; persisted
+ * as role `memory_read` so the compact card survives session switches.
+ */
+export interface MemoryReadData {
+  readonly step_num: number
+  readonly content: string
+}
+
+/**
  * Mid-loop goal progress telemetry. Emitted as its OWN dedicated
  * `goal_progress` session event after a non-terminal turn.
  */
@@ -564,7 +600,7 @@ export interface SessionEventMap {
   readonly blackboard_updated: BlackboardUpdatedData
   readonly step_todo_update: StepTodoUpdateData
   readonly plan_review_ready: PlanReviewReadyData
-  readonly memory_read: { readonly step_num: number; readonly content: string }
+  readonly memory_read: MemoryReadData
   /** Goal lifecycle events, each its OWN dedicated session event:
    *  goal_proposal (a pending proposal awaiting approval), goal_status (the
    *  full goal state snapshot, emitted on every turn transition), and
@@ -697,6 +733,64 @@ export interface GitConfigRiskData {
   readonly diff?: string
 }
 
+// --- Embedded local-model event payloads ---
+//
+// Mirror the backend DTOs in backend/frontend_api_embedded.go (snake_case JSON
+// keys). Both events are GLOBAL (bare names, not session-scoped): the embedded
+// model belongs to the machine, not to a conversation. See
+// specs/contracts/event-catalog.md and specs/domains/embedded-llm.md.
+
+/** The artifact one `embedded_llm:install_progress` update belongs to. `cudart`
+ *  is the paired Windows CUDA DLL archive; `mmproj` is the vision projector. */
+export type EmbeddedLLMComponent = 'runtime' | 'cudart' | 'model' | 'mmproj'
+
+/** The stage of one component during an install. A component walks
+ *  downloading → verifying → (extracting → signing for runtime archives) →
+ *  done, with exactly one `done`. */
+export type EmbeddedLLMStage = 'downloading' | 'verifying' | 'extracting' | 'signing' | 'done'
+
+/** Payload of the global `embedded_llm:install_progress` event: one component's
+ *  one stage. `bytes_done`/`bytes_total` describe that component's own transfer
+ *  and are both 0 for the non-transfer stages (verifying, extracting, signing,
+ *  done), where a byte count would be a lie. Mirrors backend
+ *  EmbeddedLLMProgressData. */
+export interface EmbeddedLLMInstallProgressData {
+  readonly component: EmbeddedLLMComponent
+  readonly stage: EmbeddedLLMStage
+  readonly bytes_done: number
+  readonly bytes_total: number
+}
+
+/** Payload of the global `embedded_llm:state` event: the supervision state of
+ *  the local model plus the install record a status indicator shows. Fires on
+ *  every observable transition, once at startup after the manifest restore, and
+ *  after an install, a removal or an auto-unload policy change.
+ *
+ *  `installed` means "the runtime and the weights are on disk and verified" —
+ *  it does NOT imply resident; `loaded` does. `packing` is the ternary
+ *  quantization on disk ("PQ2_0" | "PTQ1_0"), `backend` the accelerator the
+ *  runtime was provisioned for ("metal", "cuda-12.4", "cuda-12.8", "cuda-13.3",
+ *  "rocm", "vulkan", "cpu"); both are empty when nothing is installed.
+ *  `context_size` is the RAM-tiered context frozen in the manifest. The two
+ *  error fields are split by surface: `error` is the supervisor's own message
+ *  and only while the state is `error` — the status-bar indicator renders it,
+ *  so install failures never land there; `install_error` is the operator-
+ *  friendly cause of the last failed install run, a Settings-only surface (a
+ *  resumable transfer failure never reaches it — the backend retries those
+ *  silently). Mirrors backend EmbeddedLLMStateData. */
+export interface EmbeddedLLMStateData {
+  readonly installed: boolean
+  readonly loading: boolean
+  readonly loaded: boolean
+  readonly packing: string
+  readonly backend: string
+  readonly port: number
+  readonly context_size: number
+  readonly auto_unload_minutes: number
+  readonly error: string
+  readonly install_error: string
+}
+
 export interface GlobalEventMap {
   readonly 'startup_error': { readonly message: string; readonly error: string; readonly error_code?: string }
   readonly 'runtime_error': { readonly id: string; readonly message: string; readonly error_code?: string }
@@ -744,6 +838,15 @@ export interface GlobalEventMap {
   readonly 'tool_manager:start': ToolManagerStartData
   readonly 'tool_manager:progress': ToolManagerProgressData
   readonly 'tool_manager:done': ToolManagerDoneData
+  /** Embedded local-model install progress: one component's one stage
+   *  (runtime, cudart, model, mmproj × downloading, verifying, extracting,
+   *  signing, done). Emitted by the background install run started by
+   *  InstallEmbeddedLLM (backend/frontend_api_embedded.go). */
+  readonly 'embedded_llm:install_progress': EmbeddedLLMInstallProgressData
+  /** Embedded local-model supervision state. Emitted on every observable
+   *  transition, once at startup after the manifest restore, and after an
+   *  install, a removal or an auto-unload policy change. */
+  readonly 'embedded_llm:state': EmbeddedLLMStateData
   readonly 'workdirs:changed': void
   readonly 'files:dropped': FilesDroppedData
   /** Quit attempt intercepted because sessions have live work; the user
@@ -930,11 +1033,27 @@ export function isCompactionAvailability(d: unknown): d is CompactionAvailabilit
   if (typeof (d as Record<string, unknown>).exact !== 'boolean') return false
   return true
 }
-export function isSessionTokensData(d: unknown): d is SessionTokensData { return isObj(d) && has(d, 'session_input_tokens', 'session_output_tokens') }
+export function isSessionTokensData(d: unknown): d is SessionTokensData {
+  if (!isObj(d) || !has(d, 'session_input_tokens', 'session_output_tokens')) return false
+  // Validate the optional throughput fields when present (additive fields —
+  // older payloads simply omit them, mirroring the compaction flags above).
+  if ('median_output_tok_s' in d && d.median_output_tok_s !== undefined && typeof d.median_output_tok_s !== 'number') return false
+  if ('tok_s_samples' in d && d.tok_s_samples !== undefined && typeof d.tok_s_samples !== 'number') return false
+  return true
+}
 export function isSessionRenamedData(d: unknown): d is SessionRenamedData { return isObj(d) && has(d, 'new_name') }
 export function isTaskFailedResumableData(d: unknown): d is TaskFailedResumableData {
   if (!isObjLocal(d)) return false
-  return !('message' in d) || typeof d.message === 'string'
+  if ('message' in d && typeof d.message !== 'string') return false
+  // auto_retry_at is optional. A malformed value (non-number — e.g. a
+  // backend-schema drift) does NOT invalidate the payload: the banner stays
+  // actionable with the backend's real message, and the live handler
+  // independently gates on `typeof === 'number' && > 0` before copying it
+  // into the banner metadata — so a malformed deadline degrades to
+  // treat-as-absent (plain manual banner) instead of discarding the event's
+  // message. Dropping the whole payload over an optional field was
+  // disproportionate (review fix, ADR-065 follow-up).
+  return true
 }
 export function isTerminalOutputData(d: unknown): d is TerminalOutputData { return isObj(d) && typeof d.data === 'string' }
 export function isSkillsActivatedData(d: unknown): d is SkillsActivatedData { return isObj(d) && Array.isArray(d.skills) }
@@ -1156,6 +1275,15 @@ export function isGoalProgressData(d: unknown): d is GoalProgressData {
     && typeof d.condition === 'string'
 }
 
+/**
+ * Guard for a memory_read payload — facts restored from the agent's
+ * persistent memory (blackboard) at task start.
+ */
+export function isMemoryReadData(d: unknown): d is MemoryReadData {
+  if (!isObj(d)) return false
+  return typeof d.step_num === 'number' && typeof d.content === 'string'
+}
+
 // --- E2S event type guards ---
 
 /** Guard for a single Σ checklist item: text + checked flag. */
@@ -1303,3 +1431,40 @@ export function isToolManagerProgressData(d: unknown): d is ToolManagerProgressD
     typeof d.bytes_done === 'number' && typeof d.bytes_total === 'number'
 }
 
+
+// --- Embedded local-model event type guards ---
+
+const VALID_EMBEDDED_LLM_COMPONENTS: ReadonlySet<string> = new Set(['runtime', 'cudart', 'model', 'mmproj'])
+const VALID_EMBEDDED_LLM_STAGES: ReadonlySet<string> = new Set([
+  'downloading', 'verifying', 'extracting', 'signing', 'done',
+])
+
+/** Guard for an `embedded_llm:install_progress` payload. The component and the
+ *  stage are closed vocabularies owned by core/embeddedllm — an unknown value
+ *  is dropped rather than rendered as a mystery row. `packing`/`backend` of the
+ *  state payload are deliberately NOT enumerated here: they are informational
+ *  display strings, and a newly pinned backend must not make the state event
+ *  fail validation. */
+export function isEmbeddedLLMInstallProgressData(d: unknown): d is EmbeddedLLMInstallProgressData {
+  if (!isObj(d)) return false
+  if (typeof d.component !== 'string' || !VALID_EMBEDDED_LLM_COMPONENTS.has(d.component)) return false
+  if (typeof d.stage !== 'string' || !VALID_EMBEDDED_LLM_STAGES.has(d.stage)) return false
+  return typeof d.bytes_done === 'number' && typeof d.bytes_total === 'number'
+}
+
+/** Guard for an `embedded_llm:state` payload. Every field is always present in
+ *  the backend DTO (no omitempty), so a payload missing one of them is not a
+ *  state event this UI knows how to render. */
+export function isEmbeddedLLMStateData(d: unknown): d is EmbeddedLLMStateData {
+  if (!isObj(d)) return false
+  if (typeof d.installed !== 'boolean') return false
+  if (typeof d.loading !== 'boolean') return false
+  if (typeof d.loaded !== 'boolean') return false
+  if (typeof d.packing !== 'string') return false
+  if (typeof d.backend !== 'string') return false
+  if (typeof d.port !== 'number') return false
+  if (typeof d.context_size !== 'number') return false
+  if (typeof d.auto_unload_minutes !== 'number') return false
+  if (typeof d.error !== 'string') return false
+  return typeof d.install_error === 'string'
+}

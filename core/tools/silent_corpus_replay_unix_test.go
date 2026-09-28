@@ -108,14 +108,12 @@ type corpusStubJudgeProvider struct {
 	calls    int
 }
 
-func (p *corpusStubJudgeProvider) ChatCompletion(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+func (p *corpusStubJudgeProvider) Call(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls++
 	return &llm.ChatResponse{Message: llm.Message{Content: p.response}}, nil
 }
-
-func (p *corpusStubJudgeProvider) Name() string { return "corpus-stub-judge" }
 
 func (p *corpusStubJudgeProvider) setVerdict(allow bool) {
 	p.mu.Lock()
@@ -201,7 +199,7 @@ func newCorpusReplayRegistries(t *testing.T, provider *corpusStubJudgeProvider, 
 		registry := NewToolRegistry()
 		setDefaultGroupPolicies(registry)
 		registry.ApplySecurityState(registry.GroupPolicies(), false, AutonomyModeSilent, SilentModeState{ToolConfirm: mode})
-		registry.SetJudge(sdktools.NewToolJudge(provider, "corpus-stub", 1, nil))
+		registry.SetJudge(sdktools.NewToolJudge(provider, nil, 1, nil))
 		rec := &autonomyDecisionRecorder{}
 		registry.SetAutonomyDecisionObserver(rec.observe)
 		registry.Register(inertBashTool{bash})

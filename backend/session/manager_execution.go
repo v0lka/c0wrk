@@ -863,55 +863,8 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 		})
 	}
 
-	// Check if this is the first message (session has default name)
-	// and spawn title generation in background.
-	session.mu.Lock()
-	sessionName := session.Name
-	session.mu.Unlock()
-	m.mu.RLock()
-	titleGen := m.titleGen
-	store := m.sessionStore
-	serviceLLMTimeout := m.serviceLLMTimeout
-	m.mu.RUnlock()
-	if !presented && sessionName == "Session "+safeSessionPrefix(id) && titleGen != nil {
-		dumpFile := session.DumpFile()
-		// Tracked by the manager and derived from its shutdown context: the
-		// goroutine writes through the session dump file, so Shutdown must be
-		// able to abort it and wait for it before closing that handle.
-		titleSpawned := m.spawnBackground(func() {
-			if dumpFile != nil {
-				defer func() { _ = dumpFile.Close() }()
-			}
-			ctx, cancel := context.WithTimeout(m.shutdownCtx, serviceLLMTimeout)
-			defer cancel()
-			if dumpFile != nil {
-				ctx = agent.WithDumpWriter(ctx, dumpFile)
-			}
-			title := titleGen.Generate(ctx, text, activeSkills)
-			if title == "" {
-				return
-			}
-			if err := m.RenameSession(id, title); err != nil {
-				m.log().Warn("failed to rename session with generated title", "session", id, "error", err)
-				return
-			}
-			m.log().Info("session auto-named", "session", id, "title", title)
-			// Persist rename to store
-			if store != nil {
-				if err := store.RenameSession(context.Background(), id, title); err != nil {
-					m.log().Warn("failed to persist session title", "session", id, "error", err)
-				}
-			}
-		})
-		if !titleSpawned && dumpFile != nil {
-			// Shutdown closed the tracker concurrently, so the closure never
-			// runs and its deferred close never happens. DumpFile duplicated
-			// the descriptor for the closure to own; close it here or it leaks
-			// until process exit (and on Windows it blocks the dump file's
-			// removal from the agent dir).
-			_ = dumpFile.Close()
-		}
-	}
+	// Auto-name the session from its first message (background).
+	m.maybeSpawnTitleGeneration(session, id, text, presented, activeSkills)
 
 	// Launch goroutine to handle the message
 	go func(ctx context.Context, msg string, skills []string, agents []string) {
@@ -1121,7 +1074,7 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 				},
 			})
 			m.emitAgentMetrics(id, "failed")
-			m.emitResumableIfUnfinished(id, resumableReasonFromError(err))
+			m.emitResumableIfUnfinished(id, resumableReasonFromError(err), err)
 			return
 		}
 
@@ -1330,7 +1283,7 @@ func (m *Manager) tryContinueInterruptedTask(
 			},
 		})
 		m.emitAgentMetrics(id, "failed")
-		m.emitResumableIfUnfinished(id, resumableReasonFromError(err))
+		m.emitResumableIfUnfinished(id, resumableReasonFromError(err), err)
 		m.deactivateSessionTask(session, liveActionNone)
 		return true
 	}
@@ -1647,7 +1600,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 				},
 			})
 			m.emitAgentMetrics(id, "failed")
-			m.emitResumableIfUnfinished(id, resumableReasonFromError(err))
+			m.emitResumableIfUnfinished(id, resumableReasonFromError(err), err)
 			return
 		}
 
@@ -2536,13 +2489,16 @@ func (m *Manager) unfinishedTaskID(sessionID string) string {
 // fallback warning when the resumable safety net is unavailable (nil task
 // store, lookup error, or no unfinished record). reason is a concise,
 // contextual cause prepended to the banner message and carried in the
-// structured Reason field; pass "" for the generic message.
+// structured Reason field; pass "" for the generic message. cause, when
+// non-nil, is the terminal execution error inspected for the automatic-retry
+// timer (a classified *llm.Error with a rate-limit status arms the timer and
+// surfaces AutoRetryAt in the payload; pass nil to never arm).
 //
 // This helper emits ONLY the banner. The "agent_metrics" counters reset on
 // every emission, so exactly one agent_metrics event must fire per terminal
 // path — emitting it here would double-count on the emitTaskComplete path
 // (which already emits) and zero out the real per-run report in the UI.
-func (m *Manager) emitResumableIfUnfinished(sessionID, reason string) bool {
+func (m *Manager) emitResumableIfUnfinished(sessionID, reason string, cause error) bool {
 	taskID := m.unfinishedTaskID(sessionID)
 	if taskID == "" {
 		return false
@@ -2553,13 +2509,16 @@ func (m *Manager) emitResumableIfUnfinished(sessionID, reason string) bool {
 		message = reason + " You can resume to retry from where it left off."
 	}
 
+	autoRetryAt := m.maybeAutoRetryAt(cause)
+
 	m.emitFunc(Event{
 		SessionID: sessionID,
 		Type:      "task_failed_resumable",
 		Data: TaskFailedResumableData{
-			Message: message,
-			TaskID:  taskID,
-			Reason:  reason,
+			Message:     message,
+			TaskID:      taskID,
+			Reason:      reason,
+			AutoRetryAt: autoRetryAt,
 		},
 	})
 	return true
@@ -2685,7 +2644,17 @@ func (m *Manager) emitTaskComplete(sessionID string, result *core.HandleResult, 
 		return
 	}
 
-	resumableEmitted := m.emitResumableIfUnfinished(sessionID, completionReason(completion))
+	// The typed degraded-completion cause (ADR-065 follow-up): a result
+	// whose run collapsed its error into the output (the goal loop's
+	// errored-turn halt) carries it on HandleResult.Err so the auto-retry
+	// classifier still sees the *llm.Error chain. Non-degraded outcomes
+	// (plain partial/aborted/cancelled — budget/reflector outcomes with no
+	// typed cause) pass nil and never arm the timer, exactly as before.
+	cause := error(nil)
+	if result != nil {
+		cause = result.Err
+	}
+	resumableEmitted := m.emitResumableIfUnfinished(sessionID, completionReason(completion), cause)
 	if !resumableEmitted {
 		m.log().Warn("degraded task completion without resumable safety net", "session", sessionID, "completion", completion)
 		m.emitFunc(Event{
@@ -2940,4 +2909,95 @@ func (m *Manager) GetBlackboardState(sessionID string) (*BlackboardState, error)
 // BlackboardState wraps a core.TaskState for the GetBlackboardState API.
 type BlackboardState struct {
 	TaskState *core.TaskState
+}
+
+// maybeSpawnTitleGeneration auto-names a session from its first message.
+//
+// It runs the generation in a tracked background goroutine derived from the
+// manager's shutdown context: the goroutine writes through the session dump
+// file, so Shutdown must be able to abort it and wait for it before closing that
+// handle.
+//
+// Only a session still carrying its generated placeholder name is renamed, and
+// never a presented relaunch (the live-send follow-up), whose first message was
+// already handled when the original task launched.
+//
+// The readiness gate runs BEFORE the service timeout is armed — see
+// serviceLLMGate. A gate failure skips the rename and leaves the placeholder in
+// place: the session stays usable, and the run's own request is what reports the
+// cause to the user.
+func (m *Manager) maybeSpawnTitleGeneration(session *Session, id, text string, presented bool, activeSkills []string) {
+	session.mu.Lock()
+	sessionName := session.Name
+	session.mu.Unlock()
+	m.mu.RLock()
+	titleGen := m.titleGen
+	store := m.sessionStore
+	serviceLLMTimeout := m.serviceLLMTimeout
+	serviceLLMGate := m.serviceLLMGate
+	m.mu.RUnlock()
+	if presented || sessionName != "Session "+safeSessionPrefix(id) || titleGen == nil {
+		return
+	}
+	dumpFile := session.DumpFile()
+	// Tracked by the manager and derived from its shutdown context: the
+	// goroutine writes through the session dump file, so Shutdown must be
+	// able to abort it and wait for it before closing that handle.
+	titleSpawned := m.spawnBackground(func() {
+		if dumpFile != nil {
+			defer func() { _ = dumpFile.Close() }()
+		}
+		// Readiness BEFORE the budget: the embedded model's cold load is
+		// longer than the service timeout, so arming the timeout first
+		// would spend it on the load and lose the title. A failure here
+		// skips the rename and leaves the generated name in place — the
+		// session is still usable, and the run's own request reports the
+		// cause to the user.
+		//
+		// BY DESIGN the gate sits outside the serviceLLMTimeout envelope
+		// (ADR-066 D13: no LLM request may start before the model is
+		// resident, and the load is never charged to the request's own
+		// budget). The worst-case wait before this goroutine's budget
+		// starts is therefore embeddedllm.DefaultLoadWaitTimeout when the
+		// local model is the default and cold; how that bound is derived is
+		// stated once, on the constant itself. Nothing user-facing blocks on
+		// it: this runs on a tracked background goroutine, so the only
+		// observable effect is that the auto-name lands late (or not at all
+		// if the gate fails).
+		if serviceLLMGate != nil {
+			if err := serviceLLMGate(m.shutdownCtx); err != nil {
+				m.log().Warn("skipping session title generation: the model is not ready",
+					"session", id, "error", err)
+				return
+			}
+		}
+		ctx, cancel := context.WithTimeout(m.shutdownCtx, serviceLLMTimeout)
+		defer cancel()
+		if dumpFile != nil {
+			ctx = agent.WithDumpWriter(ctx, dumpFile)
+		}
+		title := titleGen.Generate(ctx, text, activeSkills)
+		if title == "" {
+			return
+		}
+		if err := m.RenameSession(id, title); err != nil {
+			m.log().Warn("failed to rename session with generated title", "session", id, "error", err)
+			return
+		}
+		m.log().Info("session auto-named", "session", id, "title", title)
+		// Persist rename to store
+		if store != nil {
+			if err := store.RenameSession(context.Background(), id, title); err != nil {
+				m.log().Warn("failed to persist session title", "session", id, "error", err)
+			}
+		}
+	})
+	if !titleSpawned && dumpFile != nil {
+		// Shutdown closed the tracker concurrently, so the closure never
+		// runs and its deferred close never happens. DumpFile duplicated
+		// the descriptor for the closure to own; close it here or it leaks
+		// until process exit (and on Windows it blocks the dump file's
+		// removal from the agent dir).
+		_ = dumpFile.Close()
+	}
 }

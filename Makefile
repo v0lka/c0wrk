@@ -72,6 +72,16 @@ else
 	WAILS_TAGS :=
 endif
 
+# Mid-cycle cross-repo development (ADR-031): a gitignored go.work at the repo
+# root routes sp4rk imports to the local ../sp4rk checkout. `wails build` /
+# `wails dev` run `go mod tidy` before generating bindings, and tidy IGNORES
+# the workspace — it would try to resolve packages that exist only in the
+# unpublished sp4rk tree from the module proxy and fail the build. While
+# go.work exists, skip the tidy step (wails -m); workspace resolution covers
+# the actual compile. Release flow (no go.work, sp4rk pinned in go.mod) keeps
+# the default tidy behavior, and CI (no go.work) is unaffected.
+WAILS_MOD_FLAG := $(if $(wildcard go.work),-m,)
+
 # Application icon staged for `wails build`. Wails always reads the app icon
 # from build/appicon.png regardless of the target platform (the build packager's
 # buildassets.ReadFile hard-codes that name), so a platform-specific icon must be
@@ -208,7 +218,7 @@ frontend-deps:
 	cd frontend && npm install
 
 build: frontend-deps
-	$(WAILS_APPICON_STAGE)wails build $(WAILS_TAGS) -ldflags "$(VERSION_LDFLAGS)"
+	$(WAILS_APPICON_STAGE)wails build $(WAILS_MOD_FLAG) $(WAILS_TAGS) -ldflags "$(VERSION_LDFLAGS)"
 	$(MAKE) fetch-onnx
 	$(MAKE) fetch-embedding-model
 
@@ -219,7 +229,7 @@ build: frontend-deps
 # flavor on a stamp mismatch). Linux x64 only — fetch-onnx-gpu fails closed
 # elsewhere, so this target does too.
 build-gpu: frontend-deps
-	$(WAILS_APPICON_STAGE)wails build $(WAILS_TAGS) -ldflags "$(VERSION_LDFLAGS)"
+	$(WAILS_APPICON_STAGE)wails build $(WAILS_MOD_FLAG) $(WAILS_TAGS) -ldflags "$(VERSION_LDFLAGS)"
 	$(MAKE) fetch-onnx-gpu
 	$(MAKE) fetch-embedding-model
 
@@ -265,7 +275,7 @@ fmt-check:
 # error, keeps the Vite watcher alive and waits for a file change, so the
 # session looks healthy while no window ever appears.
 dev-desktop:
-	wails dev $(WAILS_TAGS)
+	wails dev $(WAILS_MOD_FLAG) $(WAILS_TAGS)
 
 # Frontend-only Vite server. No Go, no window: `window.runtime`/`window.go`
 # are absent, so the UI stays on the startup splash (backend:ready never

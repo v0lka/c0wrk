@@ -2,13 +2,13 @@ package core
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
 	coreprompts "github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/oneshot"
 	"github.com/v0lka/sp4rk/strutil"
 	"github.com/v0lka/sp4rk/tools/builtins"
 )
@@ -26,53 +26,54 @@ type extractResult struct {
 	Keywords   []string `json:"keywords"`
 }
 
-// OptimizePrompt runs a 3-step prompt optimization pipeline with retry:
-//  1. Translate the prompt to English and extract semantic keywords (LLM).
+// errOptimizeUnparseable marks optimize-rewrite parse failures so the final
+// oneshot refusal (which wraps the last parse error) can be recognized and
+// re-surfaced with the operator-facing advice. Transport errors never carry
+// this sentinel.
+var errOptimizeUnparseable = errors.New("optimized prompt unparseable")
+
+// optimizeRewriteRetryHint restates the marker contract inside the oneshot
+// "[System]" nudge (verbatim from the previous manual retry feedback; the
+// failed output itself rides the assistant echo).
+const optimizeRewriteRetryHint = "Your output MUST be a clear, actionable prompt wrapped between the markers:\n" +
+	"### OPTIMIZED_PROMPT_START\n<your prompt>\n### OPTIMIZED_PROMPT_END\n" +
+	"Place NOTHING before the start marker and NOTHING after the end marker."
+
+// OptimizePrompt runs a 3-step prompt optimization pipeline:
+//  1. Translate the prompt to English and extract semantic keywords (LLM) —
+//     a oneshot call with the JSON parse; an unparseable extraction falls
+//     back to the original prompt after the standard nudge loop.
 //  2. Search the vector index for relevant codebase context (optional, skipped when unavailable).
-//  3. Rewrite the prompt using the translated text and codebase context (LLM) — retried up to 2 times
-//     on empty or invalid output, with feedback from previous failures.
+//  3. Rewrite the prompt using the translated text and codebase context (LLM) —
+//     a oneshot call with the marker parse and legacy heuristic fallback.
+//
+// Both calls run under the oneshot service policy (temperature 0.3 / 0.5,
+// reasoning tier minimal resolved per active model); the retry loop is the
+// client's — the manual c0wrk retry loops are gone, and transport failures
+// are never retried here (the Router owns provider retry).
 func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt string) (*OptimizePromptResult, error) {
 	b.mu.RLock()
 	router := b.llmRouter
 	searchFunc := b.vectorSearchFunc
-	reasoningEffort := b.reasoningEffort
 	b.mu.RUnlock()
 
 	if router == nil {
 		return nil, errors.New("llm router not available")
 	}
+	model := bareActiveModel(router)
 
-	// Step A: Translate + extract keywords (single attempt — no retry needed).
-	extractTemp := 0.3
-	extractReq := llm.ChatRequest{
-		Messages: []llm.Message{
-			{Role: "system", Content: coreprompts.PromptOptimizeExtract},
-			{Role: "user", Content: userPrompt},
-		},
-		MaxTokens:   500,
-		Temperature: &extractTemp, // explicit value wins over any profile
-		// Auxiliary text composition call — summarization class.
-		CallPurpose:     llm.CallPurposeSummarization,
-		ReasoningEffort: reasoningEffort,
-	}
-	extractResp, err := router.Call(ctx, extractReq)
+	// Step A: Translate + extract keywords. An unparseable extraction falls
+	// back to the zero result — translated=="" keeps the original prompt and
+	// no keywords skips the context step (the historical fallback behavior).
+	extracted, err := b.optimizeExtract(ctx, router, model, userPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("optimize prompt: translate/extract: %w", err)
 	}
-
-	var extracted extractResult
 	translated := userPrompt
-	var keywords []string
-
-	if err := json.Unmarshal([]byte(extractResp.Message.Content), &extracted); err != nil {
-		b.log().Warn("optimize prompt: failed to parse extraction JSON, using original prompt",
-			"error", err, "content", extractResp.Message.Content)
-	} else {
-		if extracted.Translated != "" {
-			translated = extracted.Translated
-		}
-		keywords = extracted.Keywords
+	if extracted.Translated != "" {
+		translated = extracted.Translated
 	}
+	keywords := extracted.Keywords
 
 	// Step B: Semantic search (optional — graceful skip).
 	var contextBlock string
@@ -97,7 +98,7 @@ func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt str
 		}
 	}
 
-	// Step C: Build the rewrite prompt (shared across retries).
+	// Step C: Build the rewrite prompt.
 	var userMsg strings.Builder
 	userMsg.WriteString("## Original Prompt\n\n")
 	userMsg.WriteString(translated)
@@ -106,8 +107,8 @@ func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt str
 		userMsg.WriteString(contextBlock)
 	}
 
-	// Step C (with retries): Rewrite the prompt.
-	result, err := b.runOptimizeRewriteLoop(ctx, router, reasoningEffort, userMsg.String())
+	// Step C: Rewrite the prompt (client-owned nudge retry policy).
+	result, err := b.optimizeRewrite(ctx, router, model, userMsg.String())
 	if err != nil {
 		return nil, err
 	}
@@ -119,115 +120,82 @@ func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt str
 	}, nil
 }
 
-// runOptimizeRewriteLoop runs the rewrite step with up to 2 retries.
-// On each retry, the previous failed output is fed back to the model as
-// context so it can correct its behavior. LLM call failures (network errors,
-// timeouts) are retried independently up to 2 extra times.
-func (b *OrchestratorBuilder) runOptimizeRewriteLoop(
-	ctx context.Context,
-	router *llm.Router,
-	reasoningEffort string,
-	userPrompt string,
-) (string, error) {
-	const (
-		maxRetries     = 2
-		maxCallRetries = 2
-	)
-
-	var lastFailedOutput string
-
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		rewriteTemp := 0.5
-		rewriteReq := llm.ChatRequest{
-			Messages: []llm.Message{
-				{Role: "system", Content: coreprompts.PromptOptimizeRewrite},
-				{Role: "user", Content: userPrompt},
-			},
-			MaxTokens:   2000,
-			Temperature: &rewriteTemp, // explicit value wins over any profile
-			// Auxiliary text composition call — summarization class.
-			CallPurpose:     llm.CallPurposeSummarization,
-			ReasoningEffort: reasoningEffort,
-		}
-
-		// On retry, replace the user message with an augmented version
-		// that includes feedback from the previous attempt.
-		if attempt > 0 {
-			var augmentedUser strings.Builder
-			augmentedUser.WriteString(userPrompt)
-			augmentedUser.WriteString("\n\n## Previous Attempt (DO NOT repeat this format)\n\n")
-			augmentedUser.WriteString("The previous output was empty or not a usable prompt. Here is what was produced:\n\n")
-			augmentedUser.WriteString("```\n")
-			augmentedUser.WriteString(lastFailedOutput)
-			augmentedUser.WriteString("\n```\n\n")
-			augmentedUser.WriteString("Your output MUST be a clear, actionable prompt wrapped between the markers:\n")
-			augmentedUser.WriteString("### OPTIMIZED_PROMPT_START\n<your prompt>\n### OPTIMIZED_PROMPT_END\n")
-			augmentedUser.WriteString("Place NOTHING before the start marker and NOTHING after the end marker.")
-			rewriteReq.Messages = []llm.Message{
-				{Role: "system", Content: coreprompts.PromptOptimizeRewrite},
-				{Role: "user", Content: augmentedUser.String()},
-			}
-		}
-
-		// Retry LLM call failures independently (up to maxCallRetries extra attempts).
-		var rewriteResp *llm.ChatResponse
-		callErr := error(nil)
-		for callRetry := 0; callRetry <= maxCallRetries; callRetry++ {
-			rewriteResp, callErr = router.Call(ctx, rewriteReq)
-			if callErr == nil {
-				break
-			}
-			if callRetry < maxCallRetries {
-				b.log().Warn("optimize prompt: rewrite LLM call failed, retrying",
-					"attempt", attempt+1, "call_retry", callRetry+1, "error", callErr)
-			}
-		}
-		if callErr != nil {
-			return "", fmt.Errorf("optimize prompt: rewrite attempt %d (after %d call retries): %w", attempt+1, maxCallRetries, callErr)
-		}
-
-		// Extract the optimized prompt from the best available response field.
-		optimized := extractOptimizedPrompt(rewriteResp)
-		if optimized == "" {
-			// The LLM call succeeded but produced no usable text.
-			// Collect what was actually in the response for diagnostic feedback.
-			hasReasoning := rewriteResp.Message.ReasoningContent != "" || rewriteResp.Reasoning != ""
-			b.log().Warn("optimize prompt: rewrite produced no usable output",
-				"attempt", attempt+1,
-				"has_reasoning", hasReasoning,
-				"stop_reason", rewriteResp.StopReason,
-				"content_len", len(rewriteResp.Message.Content),
-				"reasoning_content_len", len(rewriteResp.Message.ReasoningContent),
-			)
-
-			if hasReasoning {
-				// The model likely consumed the output budget with reasoning.
-				// Include the reasoning content as feedback for the next retry.
-				lastFailedOutput = rewriteResp.Message.ReasoningContent
-				if lastFailedOutput == "" {
-					lastFailedOutput = rewriteResp.Reasoning
-				}
-				continue
-			}
-
-			// No reasoning content either — empty response.
-			// Provide a diagnostic message so the next retry has something to work with.
-			if rewriteResp.Message.Content == "" {
-				lastFailedOutput = "The output was empty — no content or reasoning was produced."
-			} else {
-				lastFailedOutput = rewriteResp.Message.Content
-			}
-			continue
-		}
-
-		// Success — valid optimized prompt extracted.
-		return optimized, nil
+// optimizeExtract issues the translate/extract one-shot: oneshot.ParseJSON
+// over all candidate response fields, OnFailureFallback to the zero
+// extractResult after the standard two-nudge loop, transport errors returned
+// as-is. It is a separate method so that tests can inject a mock caller.
+func (b *OrchestratorBuilder) optimizeExtract(ctx context.Context, caller oneshot.Caller, model, userPrompt string) (extractResult, error) {
+	req := llm.ChatRequest{
+		Messages: []llm.Message{
+			{Role: "system", Content: coreprompts.PromptOptimizeExtract},
+			{Role: "user", Content: userPrompt},
+		},
+		MaxTokens:       500,
+		Temperature:     &oneshotTempExtract, // oneshot service policy — explicit value wins over any profile
+		ReasoningEffort: serviceReasoningEffort(model, oneshotTierOptimize),
+		// Auxiliary text composition call — summarization class.
+		CallPurpose: llm.CallPurposeSummarization,
 	}
+	return oneshot.Do(ctx, caller, req, oneshot.ParseJSON[extractResult], oneshot.Options[extractResult]{
+		Kind:          "optimize_extract",
+		Logger:        b.log(),
+		OnFailure:     oneshot.OnFailureFallback,
+		FallbackValue: extractResult{},
+	})
+}
 
-	// All attempts exhausted.
-	b.log().Warn("optimize prompt: rewrite failed after all retries",
-		"last_output", lastFailedOutput)
-	return "", errors.New("the model produced no optimized prompt after multiple attempts; " +
-		"ensure the model follows the OPTIMIZED_PROMPT_START / OPTIMIZED_PROMPT_END markers, " +
-		"try a non-reasoning model, or use a shorter original prompt")
+// optimizeRewrite issues the rewrite one-shot with the marker parse and the
+// legacy heuristic fallback. Parse failures ride the client's two-nudge loop;
+// the final refusal is re-surfaced with the operator-facing advice, while
+// transport errors pass through wrapped as "optimize prompt: rewrite".
+func (b *OrchestratorBuilder) optimizeRewrite(ctx context.Context, caller oneshot.Caller, model, userPrompt string) (string, error) {
+	req := llm.ChatRequest{
+		Messages: []llm.Message{
+			{Role: "system", Content: coreprompts.PromptOptimizeRewrite},
+			{Role: "user", Content: userPrompt},
+		},
+		MaxTokens:       2000,
+		Temperature:     &oneshotTempRewrite, // oneshot service policy — explicit value wins over any profile
+		ReasoningEffort: serviceReasoningEffort(model, oneshotTierOptimize),
+		// Auxiliary text composition call — summarization class.
+		CallPurpose: llm.CallPurposeSummarization,
+	}
+	result, err := oneshot.Do(ctx, caller, req, b.optimizeRewriteParse(), oneshot.Options[string]{
+		Kind:      "optimize_rewrite",
+		Logger:    b.log(),
+		RetryHint: optimizeRewriteRetryHint,
+	})
+	if err != nil {
+		if errors.Is(err, errOptimizeUnparseable) {
+			return "", fmt.Errorf("the model produced no optimized prompt after multiple attempts; "+
+				"ensure the model follows the OPTIMIZED_PROMPT_START / OPTIMIZED_PROMPT_END markers, "+
+				"try a non-reasoning model, or use a shorter original prompt: %w", err)
+		}
+		return "", fmt.Errorf("optimize prompt: rewrite: %w", err)
+	}
+	return result, nil
+}
+
+// optimizeRewriteParse extracts the optimized prompt: markers first
+// (extractOptimizedPrompt — any candidate field, first hit wins), then the
+// legacy heuristic fallback. A response with neither markers nor usable text
+// is a retryable parse failure; the Warn diagnostic mirrors the previous
+// manual loop's empty-output log (no raw model output in logs).
+func (b *OrchestratorBuilder) optimizeRewriteParse() oneshot.Parse[string] {
+	return func(resp *llm.ChatResponse) (string, error) {
+		if optimized := extractOptimizedPrompt(resp); optimized != "" {
+			return optimized, nil
+		}
+		hasReasoning := resp != nil && (resp.Message.ReasoningContent != "" || resp.Reasoning != "")
+		contentLen := 0
+		if resp != nil {
+			contentLen = len(resp.Message.Content)
+		}
+		b.log().Warn("optimize prompt: rewrite produced no usable output",
+			"has_reasoning", hasReasoning,
+			"content_len", contentLen,
+		)
+		return "", fmt.Errorf("%w: no OPTIMIZED_PROMPT_START / OPTIMIZED_PROMPT_END markers "+
+			"and no usable prompt text in any response field", errOptimizeUnparseable)
+	}
 }

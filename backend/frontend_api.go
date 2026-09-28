@@ -261,6 +261,13 @@ type FrontendAPI struct {
 	lastCheckResult       *updater.Result
 	downloadedArchivePath string
 
+	// Embedded local-model subsystem state: the storage layout, the
+	// core/embeddedllm supervisor and installer, the cached manifest snapshot
+	// and the in-flight-install flag. A value field with its own two mutexes,
+	// constructed lazily on first use — see frontend_api_embedded.go for the
+	// lock order and the RPC surface.
+	embedded embeddedLLMState
+
 	// Terminal
 	terminalManager TerminalManager
 
@@ -275,6 +282,36 @@ type FrontendAPI struct {
 	// accessor. Used by tests to substitute a fake appBuilder so config/MCP
 	// mutations can be verified without the real LLM router or MCP gateway.
 	builderOverride appBuilder
+
+	// Embedded-context refresh state. The /props context read-back lands the
+	// corrected llm.models window while Server.Load is on the request path,
+	// where a SYNCHRONOUS router rebuild is forbidden (it would swap the
+	// router under the request that triggered the load); instead the persist
+	// schedules rebuildAfterEmbeddedConfigChange through
+	// scheduleEmbeddedRouterRefresh, which runs it on its own goroutine once
+	// the persist has released its locks. embeddedRefreshScheduled owns the
+	// single-flight window and embeddedRefreshDirty records a change that
+	// landed while a refresh was already running, so the loop reruns once
+	// more and no correction is ever lost between two loads. Both guarded by
+	// embeddedRefreshMu.
+	embeddedRefreshMu        sync.Mutex
+	embeddedRefreshScheduled bool
+	embeddedRefreshDirty     bool
+	embeddedRefreshDispatch  func(func())
+
+	// displayWindowPush, when non-nil (tests), replaces the default
+	// session-manager fan-out of the corrected display context window — the
+	// same injection shape as embeddedRefreshDispatch. Production leaves it
+	// nil; pushDisplayContextWindow then routes through app.Manager().
+	displayWindowPush func(model string, window int)
+
+	// activeSessionCount reports how many sessions currently carry live
+	// background work. It is the agent-idle seam the service gate
+	// (serviceEmbeddedGate) waits on: production wires it to the session
+	// manager in installServiceLLMGate, and a nil value — tests, a headless
+	// embedding without a manager — reads as "no agent is running", which
+	// keeps the gate inert rather than blocking on a manager nobody wired.
+	activeSessionCount func() int
 }
 
 // TerminalManager is the interface for the terminal subsystem.
@@ -388,7 +425,30 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 		warnIfSeedDirUndiscovered(f.logger, "agents", seedAgentsDir, nil)
 	}
 
+	// Route the session manager's one-shot service LLM requests (session title
+	// generation) through the embedded readiness gate.
+	f.installServiceLLMGate()
+
 	return f
+}
+
+// installServiceLLMGate routes the session manager's one-shot service LLM
+// requests (session title generation) through the embedded readiness gate.
+//
+// Installed unconditionally: the gate resolves the active model per call and
+// returns at once for every provider that is always listening, so a machine
+// without the local model pays one config read and nothing else. It is a method
+// (rather than inline code) because the manager is created before any
+// FrontendAPI exists, so this is the one place the two can meet — and a wiring
+// line nobody can observe is a wiring line that silently goes missing.
+func (f *FrontendAPI) installServiceLLMGate() {
+	if f.app == nil {
+		return
+	}
+	if m := f.app.Manager(); m != nil {
+		f.activeSessionCount = func() int { return len(m.ActiveSessions()) }
+		m.SetServiceLLMGate(f.serviceEmbeddedGateBackground)
+	}
 }
 
 // warnIfSeedDirUndiscovered emits a startup warning when the compiled-in
@@ -447,7 +507,7 @@ func (f *FrontendAPI) ctx() context.Context {
 // LLM requests (session title, commit message, prompt optimization) —
 // i.e. requests that are not part of the main chat loop. It reads the
 // ServiceLLMRequestTimeout config value (seconds) and falls back to the
-// default of 120s (2 min) when config is unset or the value is zero, so the
+// default of 600s (10 min) when config is unset or the value is zero, so the
 // frontend never hangs on an unresponsive provider even before config load.
 func (f *FrontendAPI) serviceLLMTimeout() time.Duration {
 	f.configMu.RLock()
@@ -456,7 +516,7 @@ func (f *FrontendAPI) serviceLLMTimeout() time.Duration {
 	if cfg != nil && cfg.Timeouts.ServiceLLMRequestTimeout > 0 {
 		return time.Duration(cfg.Timeouts.ServiceLLMRequestTimeout) * time.Second
 	}
-	return 120 * time.Second
+	return 600 * time.Second
 }
 
 // EmitSessionEvent emits a session-scoped event through the combined UI +

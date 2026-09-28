@@ -139,7 +139,7 @@ func TestRecoveryContract_VerifierPauseSuspendsInsteadOfRejecting(t *testing.T) 
 		t.Errorf("agent turns = %d, want 1 (a paused verification runs no extra turn)", runner.calls)
 	}
 	// The contract maps a verifier pause to a resumable PAUSE task outcome.
-	mapped := o.goalLoopResult("", bb, nil, result.Status, gs.Condition, paused, result.LastError)
+	mapped := o.goalLoopResult("", bb, nil, result.Status, gs.Condition, paused, result.LastErrorTyped)
 	if mapped.Status != orchestration.ExecutionStatusPaused {
 		t.Fatalf("mapped task status = %q, want %q (session_paused, resumable)", mapped.Status, orchestration.ExecutionStatusPaused)
 	}
@@ -186,7 +186,7 @@ func TestRecoveryContract_GoalTurnErrorIsResumableFailure(t *testing.T) {
 	if want := 1 + goalTurnMaxErrorRetries; runner.calls != want {
 		t.Errorf("turn attempts = %d, want %d (bounded retry)", runner.calls, want)
 	}
-	mapped := o.goalLoopResult("", bb, nil, loopResult.Status, "ship it", paused, loopResult.LastError)
+	mapped := o.goalLoopResult("", bb, nil, loopResult.Status, "ship it", paused, loopResult.LastErrorTyped)
 	if mapped.Status != orchestration.ExecutionStatusFailed {
 		t.Errorf("mapped task status = %q, want %q", mapped.Status, orchestration.ExecutionStatusFailed)
 	}
@@ -249,7 +249,7 @@ func TestRecoveryContract_GoalCancelIsNotATurnError(t *testing.T) {
 	if gs.LastError != "" {
 		t.Errorf("gs.LastError = %q, want it cleared on a cancel", gs.LastError)
 	}
-	mapped := o.goalLoopResult("", orchestration.NewMapBlackboard(), nil, loopResult.Status, gs.Condition, paused, gs.LastError)
+	mapped := o.goalLoopResult("", orchestration.NewMapBlackboard(), nil, loopResult.Status, gs.Condition, paused, gs.LastErrorTyped)
 	if mapped.Status == orchestration.ExecutionStatusFailed {
 		t.Errorf("mapped task status = %q, want a cancel/partial — never the turn-error failure", mapped.Status)
 	}

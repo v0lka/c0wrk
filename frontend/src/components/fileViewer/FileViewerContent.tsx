@@ -50,8 +50,8 @@ export function FileViewerContent() {
 
   // Research workspace: synthetic pseudo-path renders the hypothesis DAG with
   // an inline editable card instead of a raw file. Always available — RESEARCH
-  // is not gated on the experimental-features switch (which gates only the E2S
-  // execution mode).
+  // is not gated on the experimental-features switch (which gates the E2S
+  // execution mode and the embedded model's frontend surfaces).
   if (activeFile === RESEARCH_TAB_PATH) {
     return <ResearchWorkspace />
   }

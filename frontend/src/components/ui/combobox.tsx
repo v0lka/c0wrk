@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'react'
 import { CheckIcon, ChevronDownIcon } from 'lucide-react'
 
 import {
@@ -46,6 +46,13 @@ interface ComboboxProps {
   ariaLabel: string
   /** Trigger label shown when `value` matches no option. */
   placeholder?: string
+  /** Marks the trigger as unusable AND forces an already-open menu shut.
+   *  Radix applies `disabled` to the trigger only: a menu opened before the
+   *  flip keeps its portaled items clickable, so one physical click on such an
+   *  item can still fire `onChange` after the control became unavailable.
+   *  Every consumer's `disabled` means "this control may not be used right
+   *  now", so an open menu anchored to a disabled trigger is stale by
+   *  definition. */
   disabled?: boolean
   /**
    * Trigger overrides (height, width, font size). Base styling comes from the
@@ -88,6 +95,15 @@ export function Combobox({
   className,
 }: ComboboxProps) {
   const [open, setOpen] = useState(false)
+
+  // `disabled` reaches the TRIGGER only, so a menu opened before the flip stays
+  // mounted in its portal with clickable items — a control that just became
+  // unavailable would still accept a pick. Force it shut. The functional update
+  // returns `prev` whenever the control is usable, so this is a no-op (no
+  // re-render) for the five consumers that never pass `disabled`.
+  useEffect(() => {
+    setOpen((prev) => (disabled ? false : prev))
+  }, [disabled])
 
   const selected = options.find((o) => o.value === value) ?? null
   const displayLabel = selected?.label ?? placeholder ?? value

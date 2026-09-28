@@ -40,7 +40,7 @@ func runAwaitApprovalDeclare(t *testing.T, publisher *conductorPublisher, launch
 	ctx = tools.WithPlanChecker(ctx, launcher)
 	raw, err := json.Marshal(map[string]any{
 		"mode":  "await_approval",
-		"tasks": []map[string]any{{"id": "step_1", "summary": "A", "description": "Do A"}},
+		"tasks": []map[string]any{{"id": "step_1", "summary": "A", "description": "Do A", "depends_on": []string{}}},
 	})
 	if err != nil {
 		t.Fatalf("marshal declare_plan input: %v", err)
@@ -186,7 +186,7 @@ func TestPresent_KeepsPlanWorkflowActive(t *testing.T) {
 	ctx = tools.WithPlanChecker(ctx, launcher)
 	raw, err := json.Marshal(map[string]any{
 		"mode":  "present",
-		"tasks": []map[string]any{{"id": "step_1", "summary": "A", "description": "Do A"}},
+		"tasks": []map[string]any{{"id": "step_1", "summary": "A", "description": "Do A", "depends_on": []string{}}},
 	})
 	if err != nil {
 		t.Fatalf("marshal declare_plan input: %v", err)

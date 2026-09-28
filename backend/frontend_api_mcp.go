@@ -235,7 +235,7 @@ func (f *FrontendAPI) UpdateMCPServers(servers map[string]config.MCPServerConfig
 	// Snapshot what the reconfigure needs while the lock is still held; after
 	// the unlock f.config must only be touched under configMu again.
 	b := f.builder()
-	bcfg := ToBuilderConfig(f.config, f.modelProfilesCatalog())
+	bcfg := f.toBuilderConfigLocked()
 	f.configMu.Unlock()
 
 	// --- Heavy work below runs OUTSIDE configMu (readers stay responsive) ---

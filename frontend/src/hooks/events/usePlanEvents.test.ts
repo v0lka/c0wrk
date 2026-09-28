@@ -25,6 +25,7 @@ beforeEach(() => {
     paused: {},
     pausing: {},
     stepContextFill: {},
+    stepContextTokens: {},
     runtimeEventAt: {},
   })
   usePlanStore.setState({ planGroups: [] })
