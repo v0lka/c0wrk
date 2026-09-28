@@ -682,10 +682,6 @@ executor:
 # Security & Tool Access Policies
 # ---------------------------------------------------------------------------
 security:
-  # LLM-based safety judge (used on-demand via "Ask agent" button)
-  judge:
-    model: "" # Model override for judge calls (empty = use default)
-
   # When true, file write tools (write_file, edit_file, delete_file,
   # delete_directory, create_directory) execute without confirmation when
   # all paths in their input are within the session roots — the workspace,
@@ -970,7 +966,7 @@ timeouts:
   # only then is the request sent with its full timeout — so a slow weight load
   # never shortens the generation that follows it.
   llmRequestTimeout: 600 # Timeout for a single LLM API call in the main chat loop (10 min). 0 = use default 600s
-  serviceLLMRequestTimeout: 120 # Timeout for one-shot "service" LLM requests (session title, commit message, prompt optimization) (2 min). 0 = use default 120s
+  serviceLLMRequestTimeout: 600 # Timeout for one-shot "service" LLM requests (session title, commit message, prompt optimization) — one budget for the whole client exchange incl. automatic re-sends of retryable failures (10 min). 0 = use default 600s
   # Timeout for the git commit spawn (git hooks, GPG signing, or large repos
   # can hold a commit open for a long time). Applies only to the commit
   # command itself; quick git probes (rev-parse and friends) keep the fast

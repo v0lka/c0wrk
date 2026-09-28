@@ -284,8 +284,8 @@ llm:
 	if cfg.Timeouts.LLMRequestTimeout != 600 {
 		t.Errorf("Expected default llmRequestTimeout 600, got %d", cfg.Timeouts.LLMRequestTimeout)
 	}
-	if cfg.Timeouts.ServiceLLMRequestTimeout != 120 {
-		t.Errorf("Expected default serviceLLMRequestTimeout 120, got %d", cfg.Timeouts.ServiceLLMRequestTimeout)
+	if cfg.Timeouts.ServiceLLMRequestTimeout != 600 {
+		t.Errorf("Expected default serviceLLMRequestTimeout 600, got %d", cfg.Timeouts.ServiceLLMRequestTimeout)
 	}
 	if cfg.Timeouts.GitCommitTimeout != 300 {
 		t.Errorf("Expected default gitCommitTimeout 300, got %d", cfg.Timeouts.GitCommitTimeout)
@@ -2775,10 +2775,10 @@ func TestLoad_LegacySecuritySchema_DroppedAndDefaultsApplied(t *testing.T) {
 	if got := groups[ToolGroupExecute].Blocklist; len(got) > 0 {
 		t.Errorf("execute blocklist = %v, want empty (legacy per-tool blacklist must not leak)", got)
 	}
-	// Unrelated security settings survive untouched.
-	if result.Config.Security.Judge.Model != "judge-model" {
-		t.Errorf("judge model = %q, want %q", result.Config.Security.Judge.Model, "judge-model")
-	}
+	// The former security.judge.model atavism is gone (the judge rides the
+	// session's active model by construction): the legacy key in the YAML is
+	// silently ignored — the clean LoadErrors check above is the tolerance
+	// proof.
 }
 
 // TestLegacySecuritySchema_RoundTripWipesLegacyKeys proves the second half of

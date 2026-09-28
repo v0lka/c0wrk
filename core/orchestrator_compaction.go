@@ -8,6 +8,7 @@ import (
 	coreprompts "github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/sp4rk/llm"
 	sdkmemory "github.com/v0lka/sp4rk/memory"
+	"github.com/v0lka/sp4rk/oneshot"
 )
 
 // ErrNothingToCompact is returned by CompactConversationHistory when the
@@ -281,16 +282,22 @@ func (o *Orchestrator) manualCompactionDeps() sdkmemory.CompactionDeps {
 					{Role: "system", Content: coreprompts.CompactionSummarize},
 					{Role: "user", Content: blockText},
 				},
-				ReasoningEffort: o.currentReasoningEffort(),
+				// Oneshot service policy: reasoning tier minimal, resolved
+				// per call from the session's ACTIVE model (model switches
+				// ride along) via the model catalog — the Model Profiles
+				// reasoningEffort seed does not reach service calls.
+				ReasoningEffort: serviceReasoningEffort(o.currentModel(), oneshotTierCompaction),
 				// Compaction summaries are deterministic calls: no vendor
 				// preset, temperature pinned to the family-safe floor.
 				CallPurpose: llm.CallPurposeCompaction,
 			}
-			resp, err := o.llm.Call(ctx, req)
+			summary, err := oneshot.Do(ctx, o.llm, req, compactionSummarizeContent, oneshot.Options[string]{
+				Kind: "compaction_summarize",
+			})
 			if err != nil {
 				return "", fmt.Errorf("compaction summarize: %w", err)
 			}
-			return resp.Message.Content, nil
+			return summary, nil
 		},
 	}
 }

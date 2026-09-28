@@ -12,7 +12,7 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-// capturingJudgeProvider snapshots every LLM request the judge issues, so
+// capturingJudgeCaller snapshots every LLM request the judge issues, so
 // tests can assert what the strict/advisory judge actually SAW in its prompt
 // (the strict envelope is a JSON user message; the advisory user prompt is
 // the templated markdown). Scripted with one response string.
@@ -23,7 +23,7 @@ type capturingJudgeProvider struct {
 	requests []llm.ChatRequest
 }
 
-func (p *capturingJudgeProvider) ChatCompletion(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+func (p *capturingJudgeProvider) Call(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.requests = append(p.requests, req)
@@ -32,8 +32,6 @@ func (p *capturingJudgeProvider) ChatCompletion(_ context.Context, req llm.ChatR
 	}
 	return &llm.ChatResponse{Message: llm.Message{Content: p.response}}, nil
 }
-
-func (p *capturingJudgeProvider) Name() string { return "capturing-judge" }
 
 func (p *capturingJudgeProvider) snapshot() []llm.ChatRequest {
 	p.mu.Lock()
@@ -86,7 +84,7 @@ func newShellAnalysisRegistry(t *testing.T, judgeResponse string) (*ToolRegistry
 	registry := NewToolRegistry()
 	registry.SetAutonomyMode(AutonomyModeAssisted)
 	provider := &capturingJudgeProvider{response: judgeResponse}
-	registry.SetJudge(sdktools.NewToolJudge(provider, "test-model", 10, nil))
+	registry.SetJudge(sdktools.NewToolJudge(provider, nil, 10, nil))
 
 	confirmCalled := false
 	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {

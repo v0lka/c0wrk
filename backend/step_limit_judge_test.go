@@ -14,7 +14,7 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-// stepLimitFakeProvider is a scripted llm.Provider for the loop judge. It
+// stepLimitFakeCaller is a scripted llm.Caller for the loop judge. It
 // captures the last request so tests can assert the judge actually received
 // the trajectory context.
 type stepLimitFakeProvider struct {
@@ -24,7 +24,7 @@ type stepLimitFakeProvider struct {
 	lastReq  llm.ChatRequest
 }
 
-func (p *stepLimitFakeProvider) ChatCompletion(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+func (p *stepLimitFakeProvider) Call(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	p.calls++
 	p.lastReq = req
 	if p.err != nil {
@@ -33,10 +33,8 @@ func (p *stepLimitFakeProvider) ChatCompletion(_ context.Context, req llm.ChatRe
 	return &llm.ChatResponse{Message: llm.Message{Content: p.response}}, nil
 }
 
-func (p *stepLimitFakeProvider) Name() string { return "step-limit-fake" }
-
-func newStepLimitJudge(p llm.Provider) *sdktools.ToolJudge {
-	return sdktools.NewToolJudge(p, "judge-model", 0, nil)
+func newStepLimitJudge(p llm.Caller) *sdktools.ToolJudge {
+	return sdktools.NewToolJudge(p, nil, 0, nil)
 }
 
 func autoSilentMode() coretools.SilentModeState {

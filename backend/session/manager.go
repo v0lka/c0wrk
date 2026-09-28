@@ -183,7 +183,7 @@ type Manager struct {
 	envInfoOnce         sync.Once            // guards StartEnvInfoCollection against double-launch
 	stopTimeout         time.Duration        // how long to wait for goroutine on cancel/delete
 	maxSummaryLen       int                  // character limit for auto-generated step summaries
-	serviceLLMTimeout   time.Duration        // timeout for one-shot service LLM requests (session title); default 2m
+	serviceLLMTimeout   time.Duration        // timeout for one-shot service LLM requests (session title); default 10m
 	// serviceLLMGate, when set, is invoked BEFORE a one-shot service LLM
 	// request's timeout context is created, and must return once whatever the
 	// request needs in order to be served is ready. It exists for the embedded
@@ -311,7 +311,7 @@ func NewManager(factory OrchestratorFactory, emitFunc func(Event), agentDir stri
 		agentDir:            agentDir,
 		logLevel:            "DEBUG",
 		stopTimeout:         10 * time.Second,
-		serviceLLMTimeout:   2 * time.Minute,
+		serviceLLMTimeout:   10 * time.Minute,
 		envInfoDone:         make(chan struct{}),
 	}
 	m.bg = newBackgroundTracker()
@@ -576,7 +576,7 @@ func (m *Manager) modelProfile() ModelProfilesMetaInfo {
 
 // SetServiceLLMTimeout sets the timeout for one-shot "service" LLM requests
 // performed by the manager itself (currently session title generation). A
-// value <= 0 leaves the default (2 min) in place.
+// value <= 0 leaves the default (10 min) in place.
 func (m *Manager) SetServiceLLMTimeout(d time.Duration) {
 	if d <= 0 {
 		return

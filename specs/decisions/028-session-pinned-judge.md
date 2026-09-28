@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Accepted (amended 2026-09-28: the judge follows the session's ACTIVE model by
+construction — the per-session model-NAME pin `security.judge.model` is
+removed and no re-bind path exists; Decision items 1–2 rewritten accordingly)
 
 ## Context
 
@@ -31,26 +33,45 @@ controls only take effect at the next `ApplyRequestOverrides`, so a mid-task
 pick was either silently deferred or raced the run — and the model-picker
 persist also mutated the global default mid-run.
 
+The first generation of this decision bound the judge to a snapshot of the
+session router's active provider PLUS a per-session model-NAME pin
+(`security.judge.model`), and re-bound both on every model switch through a
+sync closure (`sessionJudgeSyncer` handed to the orchestrator as
+`JudgeSync`). Both halves later proved to be atavisms: the judge's calls carry
+no model of their own, and the router already resolves its active
+provider/model per call — so the pin could only ever duplicate (or fight) the
+router's own state, and the re-bind existed only to refresh data the judge
+need not have captured in the first place.
+
 ## Decision
 
-1. **The strict judge is session-pinned.** `Build` constructs a judge bound to
-   the session's OWN router — active provider + active model
-   (`sessionJudgeSyncer`) — and installs it on the per-session registry clone,
-   overriding the clone-inherited shared-registry judge. The shared-registry
-   judge remains as a clone-time fallback only (used when a session's own
-   judge construction yields none).
+1. **The strict judge rides the session's own router.** `Build` binds a judge
+   to the session's OWN router ONCE (`bindSessionJudge`) and installs it on
+   the per-session registry clone, overriding the clone-inherited
+   shared-registry judge. The judge issues its one-shot calls through the
+   router as a plain `llm.Caller` with NO model pinned, so every call
+   resolves to the router's ACTIVE provider and model, with the deterministic
+   sampling profile from the model catalog layered on by the router. The
+   session's usage tracker is passed at bind time, so judge token usage lands
+   in the session's accounting. The shared-registry judge remains as a
+   clone-time fallback only (used when a session's own bind yields none —
+   no router).
 
-2. **Only the session's own model switch re-binds its judge.**
-   `ApplyRequestOverrides` invokes the sync closure after a SUCCESSFUL
-   `Router.SetModel`; a failed switch re-binds nothing. The per-message
-   override, `ResumeSession`, and `ResumeTask` all route through this single
-   point, so the judge follows the session's model in every legal switch
-   path. `security.judge.model` keeps its meaning — a per-session model-NAME
-   pin — while the endpoint always follows the session's active provider.
+2. **The session's model switch needs NO re-bind.** The judge holds the
+   router itself, not a captured provider/model pair, so `Router.SetModel`
+   (via `ApplyRequestOverrides`; the per-message override, `ResumeSession`,
+   and `ResumeTask` all route through it) is picked up by the judge's next
+   call with no re-binding — the tier-off reasoning spelling and the
+   advisory cache key's model component are resolved LIVE from the router's
+   `ActiveModel()` per call. There is no sync closure: the former
+   `JudgeSync` orchestrator plumbing is gone. `security.judge.model` is
+   removed from the config schema (a leftover key in a user config is
+   silently ignored and dropped at the next save).
 
 3. **Global default-model changes never re-bind a live session's judge.**
-   `RebuildJudge` rebuilds only the shared registry's judge, which affects
-   sessions built afterwards (the fallback) — never a live session.
+   `RebuildJudge` rebuilds only the shared registry's judge (the fallback,
+   riding the builder's cached router), which affects sessions built
+   afterwards — never a live session.
 
 4. **Per-message selectors lock with the run.** The chat toolbar's selector
    cluster (model, reasoning, goal toggle, goal budget, E2S toggle) is
@@ -65,17 +86,23 @@ persist also mutated the global default mid-run.
 
 - Everything inside a running session — LLM calls and judge evaluations alike
   — runs on the provider/model the session runs on, regardless of where the
-  global default moved.
+  global default moved; and a mid-session model switch moves the judge with
+  zero additional machinery.
 - A judge outage now means the session's OWN provider is unhealthy (visible in
   its own responses), not a foreign endpoint picked in another session.
+- Judge calls are structurally usage-accounted (the bind passes the session's
+  `UsageTracker`; the shared fallback judge is untracked — no session tracker
+  exists at builder level).
 - Each session's judge has its own LRU cache (size
-  `orchestration.maxJudgeCacheSize` per session); verdicts were already
-  per-task-context and never shared across sessions, so no reuse semantics
-  change.
+  `orchestration.maxJudgeCacheSize` per session); the advisory cache key
+  includes the bare active model, resolved per call from the router — verdicts
+  were already per-task-context and never shared across sessions, so no reuse
+  semantics change.
 - After an app restart, a restored session re-seeds its router from the
   current global default (as before); the first message's explicit override
-  (persisted `selectedModel`) re-pins it via the same sync path.
+  (persisted `selectedModel`) switches the router and the judge follows
+  automatically on its next call.
 - Documented in [security-model.md](../architecture/security-model.md)
-  ("Judge Provisioning (session-pinned)"), [llm-providers.md](../domains/llm-providers.md)
+  ("Judge Provisioning"), [llm-providers.md](../domains/llm-providers.md)
   (Model Override), and [rendering.md](../domains/frontend/rendering.md)
   (Per-message selector lock).

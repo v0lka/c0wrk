@@ -339,7 +339,6 @@ type Orchestrator struct {
 	router           *router.Router
 	llm              agent.LLMCaller
 	modelSwitcher    *llm.Router // raw LLM router for per-message model override
-	judgeSync        func()      // re-binds the session judge when the session's own model switches (nil-safe)
 	visionResolver   markitdown.VisionResolver
 	toolRegistry     *sdktools.ToolRegistry
 	toolExec         agent.ToolExecutor  // executor tool surface (per-session policy view)
@@ -894,7 +893,6 @@ type OrchestratorDeps struct {
 	AgentManager             *agents.AgentManager // optional, for subagent discovery ("Available/Requested Subagents" prompt sections); nil-safe
 	CoreToolRegistry         *tools.ToolRegistry  // per-session registry for No-Project tool disabling
 	ModelSwitcher            *llm.Router          // raw LLM router for per-message model override
-	JudgeSync                func()               // optional: re-binds the session's tool judge to the session router after a model switch (session-pinning; nil-safe)
 
 	// VisionResolver inspects the CURRENT active model (per call) and returns
 	// markitdown connection parameters when that model is vision-capable and
@@ -972,7 +970,6 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		router:                     deps.Router,
 		llm:                        deps.LLM,
 		modelSwitcher:              deps.ModelSwitcher,
-		judgeSync:                  deps.JudgeSync,
 		visionResolver:             deps.VisionResolver,
 		toolRegistry:               deps.ToolRegistry,
 		toolExec:                   deps.ToolExec,
@@ -2574,8 +2571,8 @@ func (o *Orchestrator) Emitter() Emitter {
 }
 
 // ToolRegistry returns the orchestrator's per-session tool registry — the
-// session-scoped clone Build created, whose tool judge is pinned to the
-// session's own router (see builder.sessionJudgeSyncer). External callers use
+// session-scoped clone Build created, whose tool judge rides the session's
+// own router (see builder.bindSessionJudge). External callers use
 // it to evaluate pending confirmations with the session's judge, so a manual
 // "Judge" evaluation follows the same provider/model the session runs on —
 // exactly like automatic escalations. Returns nil when no registry was wired;
@@ -2710,14 +2707,6 @@ func (o *Orchestrator) ApplyRequestOverrides(ctx context.Context, modelOverride,
 		} else {
 			bare := llm.BareModel(modelOverride)
 			o.setCurrentModel(bare)
-			// Re-bind the session's tool judge to the newly selected model:
-			// judge calls must follow the session's OWN provider/model. This
-			// is the only path that may move a session's judge — a global
-			// default-model change elsewhere never does (session-pinning
-			// invariant, see builder.sessionJudgeSyncer).
-			if o.judgeSync != nil {
-				o.judgeSync()
-			}
 			// Lazily probe the newly-selected model's real context window when
 			// it is served from an OpenAI-compatible endpoint. The probe is
 			// fire-and-forget (returns immediately); the discovered window

@@ -34,7 +34,9 @@ import (
 // terminal with the Track-D effect memo), but with the stub replaced by the
 // REAL strict judge running on the OPERATOR-CONFIGURED provider
 // (~/.c0wrk/config.yaml — the same provider/model production would use for
-// security.judge.model unset), exactly as newJudgeForProvider binds it.
+// the config's default_model), exactly as newJudgeForRouter binds it: the
+// judge rides a router as a plain llm.Caller with NO model pinned, so it
+// follows the router's active model.
 //
 // It verifies the live prompt contract after the A+B+C+D package: the real
 // LLM must respect the Track-B marker rule ("workspaceScopedVerification: true
@@ -51,8 +53,8 @@ import (
 //
 //	SILENT_CORPUS_LIVE_CONFIG   config.yaml path (default ~/.c0wrk/config.yaml)
 //	SILENT_CORPUS_LIVE_MODEL    bare judge-model override (default: the config's
-//	                            security.judge.model, else the default model —
-//	                            what production does)
+//	                            llm.default_model — what production does; the
+//	                            override switches the harness router's model)
 //	SILENT_CORPUS_LIVE_REPORT   report path (default <repo>/silent-mode-live-audit-report.md)
 //
 // The run writes a markdown report (cross-tab, deny-precision / allow-recall,
@@ -91,11 +93,6 @@ type liveJudgeUserConfig struct {
 		ChatGPT             liveProviderYAML            `yaml:"chatgpt"`
 		Anthropic           liveProviderYAML            `yaml:"anthropic"`
 	} `yaml:"llm"`
-	Security struct {
-		Judge struct {
-			Model string `yaml:"model"`
-		} `yaml:"judge"`
-	} `yaml:"security"`
 }
 
 // liveProviderSpec is one resolved provider entry, ProviderEntry-shaped.
@@ -204,19 +201,22 @@ func sortedKeys[M ~map[string]liveProviderYAML](m M) []string {
 	return keys
 }
 
-// liveCallCounter wraps the real provider so the harness can tell, per event,
-// whether the judge was consulted (a memo hit makes no provider call) and how
-// many LLM round-trips the run consumed (JudgeStrict retry-once included).
+// liveCallCounter wraps the live router (the judge's caller) so the harness
+// can tell, per event, whether the judge was consulted (a memo hit makes no
+// caller call) and how many LLM round-trips the run consumed. It forwards
+// ActiveModel() so the judge's activeModelSource probe (the tier-off
+// reasoning spelling, per-model advisory cache keys) keeps working through
+// the counter, exactly as production where the caller IS the router.
 type liveCallCounter struct {
-	inner llm.Provider
-	mu    sync.Mutex
-	calls int
-	spent time.Duration
+	router *llm.Router
+	mu     sync.Mutex
+	calls  int
+	spent  time.Duration
 }
 
-func (c *liveCallCounter) ChatCompletion(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+func (c *liveCallCounter) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	start := time.Now()
-	resp, err := c.inner.ChatCompletion(ctx, req)
+	resp, err := c.router.Call(ctx, req)
 	c.mu.Lock()
 	c.calls++
 	c.spent += time.Since(start)
@@ -224,7 +224,8 @@ func (c *liveCallCounter) ChatCompletion(ctx context.Context, req llm.ChatReques
 	return resp, err
 }
 
-func (c *liveCallCounter) Name() string { return c.inner.Name() }
+// ActiveModel forwards the router's active model (composite id).
+func (c *liveCallCounter) ActiveModel() string { return c.router.ActiveModel() }
 
 func (c *liveCallCounter) snapshot() (calls int, spent time.Duration) {
 	c.mu.Lock()
@@ -436,46 +437,52 @@ func TestSilentCorpus_LiveJudge(t *testing.T) {
 	cfg := loadLiveJudgeConfig(t)
 	spec, defaultBare := resolveLiveProvider(t, cfg)
 
-	// The production judge binding (newJudgeForProvider): security.judge.model
-	// pins the judge model when set, else the default model — both bare.
-	judgeModel := llm.BareModel(liveExpandEnv(cfg.Security.Judge.Model))
+	// The production judge binding (newJudgeForRouter): the judge rides a
+	// router as a plain llm.Caller with NO model pinned — the router fills
+	// its active model into every call. The harness mirrors that with a
+	// one-provider router over the operator's default provider;
+	// SILENT_CORPUS_LIVE_MODEL switches the router's active model instead of
+	// pinning the judge's.
+	judgeModel := defaultBare
 	if override := os.Getenv("SILENT_CORPUS_LIVE_MODEL"); override != "" {
 		judgeModel = override
 	}
-	if judgeModel == "" {
-		judgeModel = defaultBare
-	}
 
-	var provider llm.Provider
-	var err error
-	switch spec.provType {
-	case "openai":
-		provider, err = llm.NewOpenAIProvider(llm.OpenAIProviderConfig{Name: spec.name, APIKey: spec.apiKey, BaseURL: spec.baseURL})
-	case "anthropic":
-		provider, err = llm.NewAnthropicProvider(llm.AnthropicProviderConfig{Name: spec.name, APIKey: spec.apiKey, BaseURL: spec.baseURL})
-	default:
-		t.Fatalf("provider %q has unsupported type %q for the live harness", spec.name, spec.provType)
+	models := []string{defaultBare}
+	if judgeModel != defaultBare {
+		models = append(models, judgeModel)
 	}
+	router, err := llm.NewRouter(context.Background(), llm.RouterConfig{
+		Providers: []llm.ProviderEntry{
+			{Name: spec.name, ProviderType: spec.provType, APIKey: spec.apiKey, BaseURL: spec.baseURL, Models: models},
+		},
+		MaxRetries:     -1,
+		InitialBackoff: time.Millisecond,
+		MaxBackoff:     time.Millisecond,
+	}, nil)
 	if err != nil {
-		t.Fatalf("build provider %q: %v", spec.name, err)
+		t.Fatalf("build live router for provider %q: %v", spec.name, err)
+	}
+	if judgeModel != defaultBare {
+		if err := router.SetModel(context.Background(), judgeModel); err != nil {
+			t.Fatalf("SILENT_CORPUS_LIVE_MODEL %q: SetModel: %v", judgeModel, err)
+		}
 	}
 	if spec.apiKey == "" && strings.Contains(spec.baseURL, "://api.") {
 		t.Logf("WARNING: provider %q has an empty API key — expect fail-safe CONFIRM denials if the endpoint requires auth", spec.name)
 	}
 
-	counter := &liveCallCounter{inner: provider}
+	counter := &liveCallCounter{router: router}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	judge := sdktools.NewToolJudgeFromConfig(sdktools.JudgeConfig{
-		Model:        judgeModel,
-		DefaultModel: defaultBare,
-		Provider:     counter,
+		Caller:       counter,
 		MaxCacheSize: 1000,
 	}, logger)
 	if judge == nil {
-		t.Fatalf("NewToolJudgeFromConfig refused to build (model %q)", judgeModel)
+		t.Fatal("NewToolJudgeFromConfig refused to build")
 	}
-	t.Logf("live judge: provider=%s type=%s baseURL=%s judge-model=%s default-model=%s",
-		spec.name, spec.provType, spec.baseURL, judgeModel, defaultBare)
+	t.Logf("live judge: provider=%s type=%s baseURL=%s judge-model=%s (the router's active model)",
+		spec.name, spec.provType, spec.baseURL, judgeModel)
 
 	cases := loadSilentCorpus(t)
 

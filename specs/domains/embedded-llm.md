@@ -1975,7 +1975,7 @@ Serve, short-budget callers: the transport gates inside http.Client.Do, which is
        service requests (prompt optimization, commit message, session title)
        therefore run ensureEmbeddedReadyForLLMRequest — or the manager's
        serviceLLMGate — BEFORE creating their serviceLLMRequestTimeout context
-       (default 120 s, far shorter than a cold load), and skip the request
+       (default 600 s — a cold load can still overrun it), and skip the request
        entirely when the gate fails. Every other provider returns from the gate
        at once.
 
@@ -2677,7 +2677,7 @@ error      → an explicit hint carrying the backend's message (truncated in the
 
 **Pre-dispatch gate (short-budget callers):**
 
-- The transport gates on the wire, inside `http.Client.Do`, which is too late for a caller that has ALREADY armed a short deadline: the one-shot service requests create a `timeouts.serviceLLMRequestTimeout` context (default 120 s) first and issue the request second, so a cold load measured in minutes would be charged to it and the call would fail instead of waiting. Those paths call `FrontendAPI.ensureEmbeddedReadyForLLMRequest` BEFORE the context exists — `OptimizePrompt`, `GenerateCommitMessage` and the session manager's title generation (through `Manager.SetServiceLLMGate`, wired by `installServiceLLMGate`).
+- The transport gates on the wire, inside `http.Client.Do`, which is too late for a caller that has ALREADY armed a short deadline: the one-shot service requests create a `timeouts.serviceLLMRequestTimeout` context (default 600 s) first and issue the request second, so a cold load measured in minutes would be charged to it and the call would fail instead of waiting. Those paths call `FrontendAPI.ensureEmbeddedReadyForLLMRequest` BEFORE the context exists — `OptimizePrompt`, `GenerateCommitMessage` and the session manager's title generation (through `Manager.SetServiceLLMGate`, wired by `installServiceLLMGate`).
 - The gate is keyed on `activeModelIsEmbedded`: the persisted install state AND the default model resolving to the backend-owned provider. Service calls run on the cached router, whose active model is `llm.default_model` (`buildRouter` applies it via `SetModel`), so resolving the default answers the same question the router will. For any other provider the gate returns at once — one config read.
 - The load runs under the app context, bounded by the supervisor's own `ReadyTimeout` — not by the caller's deadline and not by `DefaultLoadWaitTimeout`, which bounds only how long the gate WAITS: an expired service budget must not abort a load that is legitimately in progress (the transport detaches for the same reason), and concurrent callers coalesce on the supervisor's single-instance gate.
 - A gate failure skips the request rather than issuing it. For the title that means the session keeps its generated placeholder name and the failure is logged — best-effort by design; for the two RPCs the error is returned to the caller, who is the one that asked for a generation.

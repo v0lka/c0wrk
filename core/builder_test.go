@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,6 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/llm"
 	sdktools "github.com/v0lka/sp4rk/tools"
 	"github.com/v0lka/sp4rk/tools/builtins"
@@ -435,87 +435,6 @@ func TestListProviderModels_DeduplicatesAnthropicCompatible(t *testing.T) {
 	}
 }
 
-// TestStripMarkdownCodeFence verifies the defensive safety net that removes a
-// surrounding markdown code block from a model-generated commit message. The
-// prompt forbids fencing, but some models still emit it; the helper must
-// strip exactly one outer block and leave everything else untouched.
-func TestStripMarkdownCodeFence(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{
-			name: "no fencing, single line",
-			in:   "feat(auth): add token refresh on 401",
-			want: "feat(auth): add token refresh on 401",
-		},
-		{
-			name: "plain fenced block",
-			in:   "```\nfeat(auth): add token refresh\n```",
-			want: "feat(auth): add token refresh",
-		},
-		{
-			name: "fenced block with language tag",
-			in:   "```text\nfeat(auth): add token refresh\n```",
-			want: "feat(auth): add token refresh",
-		},
-		{
-			name: "fenced block with markdown language tag",
-			in:   "```markdown\nfeat(auth): add token refresh\n```",
-			want: "feat(auth): add token refresh",
-		},
-		{
-			name: "fenced block preserves multi-line body",
-			in:   "```\nfeat(auth): add token refresh\n\nRefetch the token when the API returns 401.\n```",
-			want: "feat(auth): add token refresh\n\nRefetch the token when the API returns 401.",
-		},
-		{
-			name: "fenced block with surrounding whitespace",
-			in:   "\n\n  ```\nfeat: add thing\n```\n\n",
-			want: "feat: add thing",
-		},
-		{
-			name: "trailing spaces after closing fence",
-			in:   "```\nfeat: add thing\n```   ",
-			want: "feat: add thing",
-		},
-		{
-			name: "inner backticks are preserved when not wrapping",
-			in:   "feat: use `git diff --staged`",
-			want: "feat: use `git diff --staged`",
-		},
-		{
-			name: "empty string stays empty",
-			in:   "",
-			want: "",
-		},
-		{
-			name: "whitespace only collapses to empty",
-			in:   "   \n\t\n",
-			want: "",
-		},
-		{
-			name: "partial fence at start only is left unchanged",
-			in:   "```\nfeat: add thing",
-			want: "```\nfeat: add thing",
-		},
-		{
-			name: "single-line fence not treated as wrapper",
-			in:   "``feat``",
-			want: "``feat``",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := stripMarkdownCodeFence(tt.in); got != tt.want {
-				t.Errorf("stripMarkdownCodeFence(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
-}
-
 // TestBuildSessionAgentManager_Discovery verifies that buildSessionAgentManager
 // (the per-session wiring called from Build()) discovers project-local
 // Subagent Profiles from `<workspace>/.agents/agents/<name>/AGENT.md`. This
@@ -686,48 +605,18 @@ func TestIsValidConventionalCommit(t *testing.T) {
 	}
 }
 
-// --- stripMarkdownCodeFence multi-line tests ---
-
-func TestStripMarkdownCodeFence_MultiLine(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{
-			name: "multi-line with body",
-			in:   "```\nfeat(database): resolve connection pool exhaustion under load\n\nThe pool size was hardcoded to 10 instead of using the\nconfigured MaxConnections value.\n```",
-			want: "feat(database): resolve connection pool exhaustion under load\n\nThe pool size was hardcoded to 10 instead of using the\nconfigured MaxConnections value.",
-		},
-		{
-			name: "with language tag",
-			in:   "```text\nfeat(api): add rate limiting\n```",
-			want: "feat(api): add rate limiting",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := stripMarkdownCodeFence(tt.in); got != tt.want {
-				t.Errorf("stripMarkdownCodeFence(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
-}
-
 // --- GenerateCommitMessage request tests ---
 
-func TestBuildCommitMessageRequest_OmitsTemperature(t *testing.T) {
+func TestBuildCommitMessageRequest_OneshotPolicy(t *testing.T) {
 	const (
 		diff            = "diff --git a/file.go b/file.go"
-		feedback        = "PREVIOUS ATTEMPT FAILED VALIDATION"
-		reasoningEffort = "high"
+		reasoningEffort = "Off" // resolved per active model by the caller
 	)
 
-	req := buildCommitMessageRequest(diff, feedback, reasoningEffort)
+	req := buildCommitMessageRequest(diff, reasoningEffort)
 
-	if req.Temperature != nil {
-		t.Fatalf("Temperature = %v, want nil so the router can apply model capabilities", *req.Temperature)
+	if req.Temperature == nil || *req.Temperature != oneshotTempCommit {
+		t.Fatalf("Temperature = %v, want the oneshot service policy pin %v", req.Temperature, oneshotTempCommit)
 	}
 	if req.MaxTokens != 2048 {
 		t.Errorf("MaxTokens = %d, want 2048", req.MaxTokens)
@@ -735,23 +624,27 @@ func TestBuildCommitMessageRequest_OmitsTemperature(t *testing.T) {
 	if req.ReasoningEffort != reasoningEffort {
 		t.Errorf("ReasoningEffort = %q, want %q", req.ReasoningEffort, reasoningEffort)
 	}
+	if req.CallPurpose != llm.CallPurposeSummarization {
+		t.Errorf("CallPurpose = %q, want %q", req.CallPurpose, llm.CallPurposeSummarization)
+	}
 	if len(req.Messages) != 2 {
 		t.Fatalf("len(Messages) = %d, want 2", len(req.Messages))
 	}
 	if req.Messages[0].Role != "system" || req.Messages[0].Content == "" {
 		t.Errorf("system message = %+v, want non-empty system prompt", req.Messages[0])
 	}
-	wantUser := "## Staged Diff\n\n" + diff + "\n\n" + feedback
-	if req.Messages[1].Role != "user" || req.Messages[1].Content != wantUser {
-		t.Errorf("user message = %+v, want role=user content=%q", req.Messages[1], wantUser)
+	if req.Messages[1].Role != "user" || req.Messages[1].Content != "## Staged Diff\n\n"+diff {
+		t.Errorf("user message = %+v, want role=user content=%q", req.Messages[1], "## Staged Diff\n\n"+diff)
 	}
 }
 
 // --- GenerateCommitMessage retry loop test ---
 
-// TestGenerateCommitMessage_RetryLoop verifies the retry loop in
-// GenerateCommitMessage: when the first response is not a valid Conventional
-// Commits message, the caller retries up to 2 times with feedback.
+// TestGenerateCommitMessage_RetryLoop verifies the client-owned oneshot retry
+// loop: when a response is not a valid Conventional Commits message (or
+// carries no usable text), the oneshot client nudges with the assistant echo
+// plus a "[System]" format restatement and gives up after exactly 3 attempts;
+// the refusal error keeps the operator-facing advice.
 func TestGenerateCommitMessage_RetryLoop(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -794,7 +687,7 @@ func TestGenerateCommitMessage_RetryLoop(t *testing.T) {
 			wantErrContain: "invalid commit message after multiple attempts",
 		},
 		{
-			name: "empty content returns no usable output",
+			name: "empty content rides the nudge loop then refuses",
 			responses: []*llm.ChatResponse{
 				{Message: llm.Message{Content: ""}},
 			},
@@ -812,15 +705,7 @@ func TestGenerateCommitMessage_RetryLoop(t *testing.T) {
 				mu:     sync.RWMutex{},
 			}
 
-			buildRequest := func(extraUserText string) llm.ChatRequest {
-				return llm.ChatRequest{
-					Messages: []llm.Message{
-						{Role: "user", Content: "## Staged Diff\n\n" + extraUserText},
-					},
-				}
-			}
-
-			msg, err := b.generateCommitMessageWithCaller(context.Background(), agent.LLMCaller(mock), "test-provider", "", buildRequest)
+			msg, err := b.generateCommitMessageWithCaller(context.Background(), mock, "test-provider", "", "")
 
 			if tt.wantErr {
 				if err == nil {
@@ -841,85 +726,63 @@ func TestGenerateCommitMessage_RetryLoop(t *testing.T) {
 	}
 }
 
-// --- extractBetweenMarkers tests ---
+// TestGenerateCommitMessage_OneshotNudgeShape pins the client-owned nudge
+// convention on the commit-message path: the retried request carries the
+// model's failed output as an assistant echo followed by a "[System]" user
+// message restating the Conventional Commits contract, and the loop stops
+// after exactly three attempts.
+func TestGenerateCommitMessage_OneshotNudgeShape(t *testing.T) {
+	mock := &mockLLMCaller{responses: []*llm.ChatResponse{
+		{Message: llm.Message{Content: "feat: Add New Feature"}},
+		{Message: llm.Message{Content: "feat: Another Uppercase Message"}},
+		{Message: llm.Message{Content: "fix(auth): resolve token leak"}},
+	}}
 
-func TestExtractBetweenMarkers_Found(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{
-			name: "simple content between markers",
-			in:   "### OPTIMIZED_PROMPT_START\nFix the login bug\n### OPTIMIZED_PROMPT_END",
-			want: "Fix the login bug",
-		},
-		{
-			name: "multi-line prompt between markers",
-			in:   "### OPTIMIZED_PROMPT_START\nFix the login bug\n\nSteps:\n1. Check auth middleware\n2. Fix token validation\n### OPTIMIZED_PROMPT_END",
-			want: "Fix the login bug\n\nSteps:\n1. Check auth middleware\n2. Fix token validation",
-		},
-		{
-			name: "with surrounding text before start marker",
-			in:   "Some preamble\n### OPTIMIZED_PROMPT_START\nExtracted prompt\n### OPTIMIZED_PROMPT_END",
-			want: "Extracted prompt",
-		},
-		{
-			name: "with surrounding text after end marker",
-			in:   "### OPTIMIZED_PROMPT_START\nExtracted prompt\n### OPTIMIZED_PROMPT_END\nSome trailing text",
-			want: "Extracted prompt",
-		},
-		{
-			name: "markers with extra whitespace",
-			in:   "### OPTIMIZED_PROMPT_START\n\n  Trimmed content  \n\n### OPTIMIZED_PROMPT_END",
-			want: "Trimmed content",
-		},
-		{
-			name: "empty content between markers",
-			in:   "### OPTIMIZED_PROMPT_START\n\n### OPTIMIZED_PROMPT_END",
-			want: "",
-		},
-		{
-			name: "only whitespace between markers",
-			in:   "### OPTIMIZED_PROMPT_START\n   \n### OPTIMIZED_PROMPT_END",
-			want: "",
-		},
+	b := &OrchestratorBuilder{logger: slog.Default(), mu: sync.RWMutex{}}
+	msg, err := b.generateCommitMessageWithCaller(context.Background(), mock, "test-provider", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if msg != "fix(auth): resolve token leak" {
+		t.Errorf("message = %q, want %q", msg, "fix(auth): resolve token leak")
+	}
+	if len(mock.calls) != 3 {
+		t.Fatalf("call count = %d, want 3 (first attempt + two nudges)", len(mock.calls))
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := extractBetweenMarkers(tt.in)
-			if !ok {
-				t.Fatalf("extractBetweenMarkers() ok = false, want true")
-			}
-			if got != tt.want {
-				t.Errorf("extractBetweenMarkers(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
+	retry := mock.calls[1]
+	if len(retry.Messages) != 4 {
+		t.Fatalf("retry request has %d messages, want 4 ([system, user, assistant echo, user nudge])", len(retry.Messages))
+	}
+	echo, nudge := retry.Messages[2], retry.Messages[3]
+	if echo.Role != "assistant" || echo.Content != "feat: Add New Feature" {
+		t.Errorf("echo = (%q, %q), want assistant role carrying the model's own failed output", echo.Role, echo.Content)
+	}
+	if nudge.Role != "user" || !strings.HasPrefix(nudge.Content, "[System]") {
+		t.Errorf("nudge = (%q, %q), want a user message starting with %q", nudge.Role, nudge.Content, "[System]")
+	}
+	if !strings.Contains(nudge.Content, "MUST start with a valid type prefix") {
+		t.Errorf("nudge %q must restate the Conventional Commits contract", nudge.Content)
+	}
+	// The retried request must keep the oneshot service policy intact.
+	if retry.Temperature == nil || *retry.Temperature != oneshotTempCommit {
+		t.Errorf("retry Temperature = %v, want the policy pin %v", retry.Temperature, oneshotTempCommit)
 	}
 }
 
-func TestExtractBetweenMarkers_NotFound(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-	}{
-		{"empty string", ""},
-		{"only start marker", "### OPTIMIZED_PROMPT_START"},
-		{"only end marker", "### OPTIMIZED_PROMPT_END"},
-		{"start but no end", "### OPTIMIZED_PROMPT_START\ncontent"},
-		{"end but no start", "content\n### OPTIMIZED_PROMPT_END"},
-		{"markers in wrong order", "### OPTIMIZED_PROMPT_END\ncontent\n### OPTIMIZED_PROMPT_START"},
-		{"no markers at all", "just plain text"},
-	}
+// TestGenerateCommitMessage_TransportErrorNotRetried pins the oneshot
+// contract that transport failures are never retried by the client — the
+// Router owns provider retry — so exactly one call is made.
+func TestGenerateCommitMessage_TransportErrorNotRetried(t *testing.T) {
+	boom := errors.New("provider unavailable")
+	mock := &mockLLMCaller{err: boom}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := extractBetweenMarkers(tt.in)
-			if ok {
-				t.Errorf("extractBetweenMarkers(%q) = ok=true, content=%q, want ok=false", tt.in, got)
-			}
-		})
+	b := &OrchestratorBuilder{logger: slog.Default(), mu: sync.RWMutex{}}
+	if _, err := b.generateCommitMessageWithCaller(context.Background(), mock, "test-provider", "", ""); !errors.Is(err, boom) {
+		t.Fatalf("error = %v, want the transport error passed through as-is", err)
+	}
+	if len(mock.calls) != 1 {
+		t.Errorf("call count = %d, want 1 (transport errors are never retried by the client)", len(mock.calls))
 	}
 }
 
