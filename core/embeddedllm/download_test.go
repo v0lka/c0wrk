@@ -295,6 +295,35 @@ func (r *dlProgressRecorder) snapshot() [][2]int64 {
 // dlUnlimitedSpace is a FreeSpace stub that never trips the disk guard.
 func dlUnlimitedSpace(string) (int64, error) { return int64(1) << 62, nil }
 
+// dlClock is a deterministic stand-in for the wall clock: every call to Now
+// advances the reported time by a fixed step. The progress throttle only ever
+// compares elapsed time, so a stepped clock makes the callback count a
+// function of the number of Write calls — immune to the platform's clock
+// granularity. The real time.Now made the "unthrottled" progress assertion
+// flaky on Windows, whose monotonic clock advances in ~0.5 ms steps: the whole
+// loopback transfer of 1 MiB completed inside a handful of ticks and the
+// callback count collapsed to five.
+type dlClock struct {
+	mu   sync.Mutex
+	now  time.Time
+	step time.Duration
+}
+
+func newDLClock(step time.Duration) *dlClock {
+	return &dlClock{
+		now:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		step: step,
+	}
+}
+
+// Now advances and returns the fake time; it matches the Downloader.Now seam.
+func (c *dlClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(c.step)
+	return c.now
+}
+
 // ---------------------------------------------------------------------------
 // Fail-closed verification
 // ---------------------------------------------------------------------------
@@ -705,7 +734,8 @@ func TestDownload_ProgressThrottledAndAlwaysCompletes(t *testing.T) {
 		srv := newDLRangeServer(t, body, dlServeRange)
 		d := newDLTestDownloader(srv.Server)
 		d.FreeSpace = dlUnlimitedSpace
-		d.ProgressInterval = time.Hour // no intermediate callback can pass the gate
+		d.ProgressInterval = time.Hour           // no intermediate callback can pass the gate
+		d.Now = newDLClock(time.Millisecond).Now // a 1 ms step is far below the interval
 
 		rec := &dlProgressRecorder{}
 		if _, err := d.Download(context.Background(), dlAssetFor(srv.URL+"/m.gguf", body), filepath.Join(t.TempDir(), "m.gguf"), rec.fn); err != nil {
@@ -728,6 +758,10 @@ func TestDownload_ProgressThrottledAndAlwaysCompletes(t *testing.T) {
 		d := newDLTestDownloader(srv.Server)
 		d.FreeSpace = dlUnlimitedSpace
 		d.ProgressInterval = time.Nanosecond
+		// Every stepped-clock call clears the 1 ns gate, so one callback per
+		// Write is guaranteed on every platform — the count no longer depends
+		// on how fast the host clock advances (Windows ticks in ~0.5 ms steps).
+		d.Now = newDLClock(time.Millisecond).Now
 
 		rec := &dlProgressRecorder{}
 		if _, err := d.Download(context.Background(), dlAssetFor(srv.URL+"/m.gguf", body), filepath.Join(t.TempDir(), "m.gguf"), rec.fn); err != nil {

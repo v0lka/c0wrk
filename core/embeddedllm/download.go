@@ -169,6 +169,12 @@ type Downloader struct {
 	// nil → a real timer. Injectable so tests run retry loops without
 	// wall-clock pauses.
 	RetrySleep func(ctx context.Context, d time.Duration) error
+	// Now reports the clock used to throttle progress callbacks. nil →
+	// time.Now. Injectable so tests are deterministic regardless of the
+	// platform's clock granularity: the monotonic clock on Windows advances
+	// in ~0.5 ms steps, so a fast loopback transfer clears the throttle gate
+	// only a handful of times no matter how many chunks were written.
+	Now func() time.Time
 }
 
 // Result reports the outcome of a verified download.
@@ -572,7 +578,8 @@ func (d *Downloader) transfer(ctx context.Context, asset Asset, dstPath, partial
 			base:     offset,
 			total:    total,
 			interval: d.progressInterval(),
-			last:     time.Now(),
+			last:     d.now(),
+			now:      d.now,
 		}
 	}
 	// remaining+1 so an oversized object is detected instead of truncated
@@ -929,12 +936,13 @@ type progressWriter struct {
 	written  int64
 	interval time.Duration
 	last     time.Time
+	now      func() time.Time
 }
 
 func (pw *progressWriter) Write(p []byte) (int, error) {
 	n, err := pw.w.Write(p)
 	pw.written += int64(n)
-	if now := time.Now(); now.Sub(pw.last) >= pw.interval {
+	if now := pw.now(); now.Sub(pw.last) >= pw.interval {
 		pw.progress(pw.base+pw.written, pw.total)
 		pw.last = now
 	}
@@ -960,6 +968,13 @@ func (d *Downloader) progressInterval() time.Duration {
 		return d.ProgressInterval
 	}
 	return DefaultProgressInterval
+}
+
+func (d *Downloader) now() time.Time {
+	if d.Now != nil {
+		return d.Now()
+	}
+	return time.Now()
 }
 
 func (d *Downloader) headroom() int64 {
