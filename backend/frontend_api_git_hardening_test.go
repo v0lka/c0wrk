@@ -13,6 +13,7 @@ import (
 
 func TestMain(m *testing.M) {
 	gittest.MaybeRecordFakeGit()
+	gittest.SuppressGitAutoMaintenance()
 	os.Exit(m.Run())
 }
 
