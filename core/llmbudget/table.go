@@ -126,6 +126,13 @@ func (t *BudgetTable) SampleCount(key string) int {
 	return count
 }
 
+// Samples returns a copy of the retained samples for the key, oldest first. It
+// is the read-only diagnostics accessor over the same snapshot the estimator
+// consumes (a later Ingest cannot mutate the returned slice).
+func (t *BudgetTable) Samples(key string) []Sample {
+	return t.snapshot(key)
+}
+
 // state returns the retained sample count and the escalation multiplier for
 // the key under one lock acquisition.
 func (t *BudgetTable) state(key string) (count int, escal float64) {

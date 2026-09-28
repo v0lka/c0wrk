@@ -242,3 +242,39 @@ func TestProviderTimeoutClass_RoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// The reserved `embedded` provider is backend-owned: its timeout class is fixed
+// by its identity, so validate() rejects a hand-written timeout_class on it —
+// Classify would otherwise honor the override and cap the local model at the
+// remote 600 s ceiling. The generated record carries no class, so normal
+// operation is unaffected.
+func TestProviderTimeoutClass_EmbeddedIsNotConfigurable(t *testing.T) {
+	if !ValidTimeoutClass("") || !ValidTimeoutClass("local") || !ValidTimeoutClass("remote") {
+		t.Fatal("ValidTimeoutClass rejected a legal value")
+	}
+	if ValidTimeoutClass("embedded") || ValidTimeoutClass("bogus") {
+		t.Fatal("ValidTimeoutClass accepted an illegal value")
+	}
+
+	cfg := minimalValidConfig()
+	cfg.EmbeddedLLM = installedEmbeddedState()
+	cfg.SyncEmbeddedLLMProvider(0) // generate the backend-owned record
+
+	entry, ok := cfg.LLM.OpenAICompatible[EmbeddedLLMProviderName]
+	if !ok {
+		t.Fatal("the embedded provider record was not generated")
+	}
+	if entry.TimeoutClass != "" {
+		t.Fatalf("generated embedded timeout_class = %q, want empty", entry.TimeoutClass)
+	}
+	if err := validate(cfg); err != nil {
+		t.Fatalf("validate rejected the generated config: %v", err)
+	}
+
+	// A hand-written class on the backend-owned provider must be rejected.
+	entry.TimeoutClass = "remote"
+	cfg.LLM.OpenAICompatible[EmbeddedLLMProviderName] = entry
+	if err := validate(cfg); err == nil {
+		t.Fatal("validate accepted a timeout_class on the backend-owned embedded provider")
+	}
+}

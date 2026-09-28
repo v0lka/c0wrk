@@ -546,14 +546,18 @@ func (b *OrchestratorBuilder) Build(
 	usageTracker := llm.NewUsageTracker()
 	// Adaptive request budget (ADR-071 D1): every successful call through the
 	// shared TrackingCaller — conductor steps, subagents, E2S turns — reports
-	// one timed sample into the session's budget table, keyed by the model the
-	// provider actually served. This is the ONLY writer of the table the
-	// entry transports read their budgets from; the tracker rides the same
-	// session lifetime, so the table needs no separate teardown.
+	// one sample into the session's budget table, keyed by the model the
+	// provider actually served. budgetIngestCaller sits between the tracker and
+	// the router so the learned DURATION is the single provider attempt that
+	// produced the response, not the router call (which may wrap a retry and its
+	// backoff). This is the ONLY writer of the table the entry transports read
+	// their budgets from; both ride the same session lifetime, so the table
+	// needs no separate teardown.
+	var routerCaller llm.Caller = llmRouter
 	if budgetTable != nil {
-		usageTracker.AddTimedObserver(budgetIngestObserver(budgetTable))
+		routerCaller = &budgetIngestCaller{inner: llmRouter, table: budgetTable}
 	}
-	trackingCaller := llm.NewTrackingCaller(llmRouter, usageTracker)
+	trackingCaller := llm.NewTrackingCaller(routerCaller, usageTracker)
 
 	// Register emitter as observer for session token events and persistence.
 	// Preferred seam: SessionTokenThroughputEmitter carries the median
@@ -2159,15 +2163,48 @@ func (w llmBudgetWiring) overridesFor(model string) llmbudget.ModelOverrides {
 	return mo
 }
 
-// budgetIngestObserver adapts the UsageTracker timed-observer shape to the
-// budget table's Ingest (ADR-071 D1): one successful LLM call becomes one
-// timed sample keyed by the model the provider actually served. totalIn/
-// totalOut/family carry no size information the estimator does not already
-// have from the sample itself, so they are dropped here.
-func budgetIngestObserver(table *llmbudget.BudgetTable) func(usage llm.TokenUsage, duration time.Duration, totalIn, totalOut int, model, family string) {
-	return func(usage llm.TokenUsage, duration time.Duration, totalIn, totalOut int, model, family string) {
-		table.Ingest(model, usage.InputTokens, usage.OutputTokens, duration)
+// budgetIngestCaller feeds the session-scoped adaptive-budget table (ADR-071
+// D1) with one sample per successful LLM call, keyed by the model the provider
+// actually served. It sits BETWEEN the UsageTracker's TrackingCaller and the
+// router deliberately, because it must control the sample's DURATION:
+//
+//   - The router retries a request that died of its own armed budget (D9),
+//     sleeping an exponential backoff between attempts. A duration measured
+//     around the whole router call therefore folds the failed attempt, the
+//     backoff, and the successful attempt into one sample and inflates the
+//     fitted r_in/r_out — worst of all in exactly the escalation scenario the
+//     feature exists for. The budget transport (which wraps each provider's
+//     HTTP client) instead reports the winning attempt's own duration through
+//     the context recorder this caller installs, so a retried call is measured
+//     by the attempt that actually succeeded.
+//   - When a request takes the transport's pass-through path (a caller-owned
+//     deadline), no recorder is filled and this caller falls back to its own
+//     wall-clock measurement, exactly the pre-existing behavior.
+//
+// The tracker observes the same calls for its own totals; this caller only owns
+// the budget table write.
+type budgetIngestCaller struct {
+	inner llm.Caller
+	table *llmbudget.BudgetTable
+}
+
+// Call delegates to the inner caller and, on success, ingests one timed sample
+// into the budget table (Ingest ignores an empty model or a non-positive
+// duration). A failed call records nothing, matching the sp4rk feed's
+// successful-calls-only contract.
+func (c *budgetIngestCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	rec := llmbudget.NewAttemptRecorder()
+	start := time.Now()
+	resp, err := c.inner.Call(llmbudget.WithAttemptRecorder(ctx, rec), req)
+	if err != nil {
+		return nil, err
 	}
+	d, ok := rec.Duration()
+	if !ok {
+		d = time.Since(start)
+	}
+	c.table.Ingest(resp.Model, resp.Usage.InputTokens, resp.Usage.OutputTokens, d)
+	return resp, nil
 }
 
 // budgetWire selects the model-extraction strategy for one provider entry

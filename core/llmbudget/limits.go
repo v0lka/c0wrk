@@ -42,12 +42,14 @@ const (
 
 const (
 	// WarmupMinSamples is the number of retained samples a model needs before
-	// the trained budget engages (ADR-071 D4). Below it the deadline is the
-	// warmup override or DefaultWarmupBudget — exactly today's behavior.
+	// the trained budget engages (ADR-071 D4). Below it the deadline is
+	// DefaultWarmupBudget — exactly today's behavior. There is no per-model
+	// warmup override: an operator wanting a longer deadline from the first call
+	// sets the fixed per-model request_timeout, which is senior (D5).
 	WarmupMinSamples = 3
 
-	// DefaultWarmupBudget is the warmup deadline when no per-model warmup
-	// override is configured: the legacy fixed 600 s, for every class.
+	// DefaultWarmupBudget is the warmup deadline for every class: the legacy
+	// fixed 600 s. It is not overridable — D4 carries no separate warmup knob.
 	DefaultWarmupBudget time.Duration = 600 * time.Second
 
 	// LegacyFixedBudget is the legacy meaning of a zero llmRequestTimeout when

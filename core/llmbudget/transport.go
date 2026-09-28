@@ -30,12 +30,14 @@ const (
 
 // ModelOverrides carries the per-model operator opinions the transport feeds
 // the resolver (ADR-071 D5/D7). Zero values mean "no opinion". The wiring
-// supplies them from llm.models.<name>.{request_timeout,warmup_timeout,
-// output_limit}; only a wire-extracted model name can match config.
+// supplies them from llm.models.<name>.{request_timeout,output_limit}; only a
+// wire-extracted model name can match config. There is deliberately no warmup
+// override: a fixed per-model request_timeout already gives an operator a
+// longer deadline from the first call, so warmup stays the legacy
+// DefaultWarmupBudget until the model has samples (D4).
 type ModelOverrides struct {
 	RequestTimeout time.Duration // >0: fixed deadline, never escalated
-	Warmup         time.Duration // >0: warmup deadline, else DefaultWarmupBudget
-	OutputLimit    int           // >0: generation ceiling for out_reserve
+	OutputLimit    int           // >0: explicit llm.models.<name>.output_limit ceiling for out_reserve
 }
 
 // TransportOptions configures a budget Transport for one provider entry.
@@ -81,11 +83,15 @@ type TransportOptions struct {
 //
 //   - It ALWAYS arms when enabled and the request context carries no deadline
 //     of its own — the stalled-upstream invariant. Even a request whose model
-//     could not be extracted gets a deadline (provider-level key: warmup, then
-//     the trained budget, always at least the class floor). The one exception
-//     is the service-call path, where the caller already owns the deadline —
-//     arming over it would shorten someone else's budget, so the request
-//     passes through untouched.
+//     could not be extracted gets a deadline under the provider-level key
+//     ("@" + provider). That key is never TRAINED: samples are ingested keyed
+//     by the model the provider actually served (resp.Model), and no ingest ever
+//     writes the provider-level key, so it never accumulates evidence and
+//     resolves to DefaultWarmupBudget (at least the class floor for every
+//     class) rather than a fitted budget. The one exception is the
+//     service-call path, where the caller already owns the deadline — arming
+//     over it would shorten someone else's budget, so the request passes
+//     through untouched.
 //   - Expiry detection is honest: only an error that chains
 //     context.DeadlineExceeded while the CALLER's context is still alive is
 //     this transport's own expiry. That is what escalates the model's next
@@ -128,6 +134,19 @@ func NewTransport(base http.RoundTripper, opts TransportOptions) *Transport {
 // accessor is how the builder tests pin it.
 func (tr *Transport) Base() http.RoundTripper { return tr.base }
 
+// CloseIdleConnections forwards to the transport beneath the budget arming when
+// it supports it (symmetric with embeddedllm.EnsureLoadedTransport). Without it
+// the wrapper silently truncates the closeIdler chain the pin resolver and the
+// ensure-loaded gate deliberately maintain: http.Client.CloseIdleConnections
+// only recognises the method on the RoundTripper it was handed, so a budget
+// wrapper without it would strand the provider's keep-alive pool.
+func (tr *Transport) CloseIdleConnections() {
+	type closeIdler interface{ CloseIdleConnections() }
+	if idler, ok := tr.base.(closeIdler); ok {
+		idler.CloseIdleConnections()
+	}
+}
+
 // RoundTrip implements http.RoundTripper.
 func (tr *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req == nil {
@@ -136,8 +155,10 @@ func (tr *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if _, hasDeadline := req.Context().Deadline(); !tr.opts.AdaptiveEnabled || hasDeadline {
 		// Kill-switch off (defensively; the wiring should not install the
 		// transport at all in that state), or the caller already owns the
-		// deadline — the service-call path. Pass through untouched.
-		return tr.base.RoundTrip(req)
+		// deadline — the service-call path. Forward untouched, but still report
+		// the attempt's duration when the caller installed a recorder, so the
+		// ingest never falls back to the retrying-router aggregate.
+		return tr.passThrough(req)
 	}
 
 	bodyHad := req.Body != nil
@@ -155,10 +176,15 @@ func (tr *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		OutputLimit:            ov.OutputLimit,
 		PerModelRequestTimeout: ov.RequestTimeout,
 		GlobalRequestTimeout:   tr.opts.GlobalRequestTimeout,
-		WarmupOverride:         ov.Warmup,
 		AdaptiveEnabled:        true,
 	})
 	tr.logBudgetChange(key, budget)
+
+	// The caller may have installed an AttemptRecorder to receive the duration
+	// of the attempt that actually wins (ADR-071 D1): the router wraps retries
+	// and backoff around this transport, so the caller-level timer aggregates
+	// them and would inflate the learned rates. nil when the caller did not ask.
+	rec := attemptRecorderFrom(req.Context())
 
 	parent := req.Context()
 	armedCtx, cancel := context.WithTimeout(parent, budget)
@@ -170,6 +196,7 @@ func (tr *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 
+	start := time.Now()
 	resp, err := tr.base.RoundTrip(armed)
 	if err != nil {
 		cancel()
@@ -189,11 +216,15 @@ func (tr *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, errors.New("llmbudget: the wrapped transport returned no response")
 	}
 	if resp.Body == nil {
+		if rec != nil {
+			rec.record(time.Since(start))
+		}
 		cancel()
 		return resp, nil
 	}
 	// The deadline must outlive RoundTrip for the streamed body; the wrapper
-	// releases the timer and detects a mid-body own-expiry.
+	// releases the timer, detects a mid-body own-expiry, and reports the
+	// attempt's duration once the body is over.
 	resp.Body = &budgetBody{
 		ReadCloser: resp.Body,
 		cancel:     cancel,
@@ -201,20 +232,79 @@ func (tr *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		escalate: func() {
 			tr.escalate(key, budget)
 		},
+		rec:   rec,
+		start: start,
 	}
 	return resp, nil
 }
 
+// passThrough forwards the request untouched (the kill-switch-off or
+// caller-owned-deadline path) while still reporting the provider attempt's
+// duration to a caller-installed recorder, measured to body completion like the
+// armed path. This keeps the learned sample free of any router retry and its
+// backoff even for a call the budget transport does not itself arm.
+func (tr *Transport) passThrough(req *http.Request) (*http.Response, error) {
+	rec := attemptRecorderFrom(req.Context())
+	if rec == nil {
+		return tr.base.RoundTrip(req)
+	}
+	start := time.Now()
+	resp, err := tr.base.RoundTrip(req)
+	if err != nil || resp == nil {
+		return resp, err
+	}
+	if resp.Body == nil {
+		rec.record(time.Since(start))
+		return resp, nil
+	}
+	resp.Body = &recordingBody{ReadCloser: resp.Body, rec: rec, start: start}
+	return resp, nil
+}
+
+// recordingBody reports a provider attempt's wall-clock duration to the caller's
+// AttemptRecorder once the body is over — the pass-through counterpart of
+// budgetBody, which does the same on top of releasing the armed deadline and
+// detecting an own-expiry.
+type recordingBody struct {
+	io.ReadCloser
+	rec   *AttemptRecorder
+	start time.Time
+	once  sync.Once
+}
+
+func (b *recordingBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil {
+		b.once.Do(func() { b.rec.recordSince(err, b.start) })
+	}
+	return n, err
+}
+
+func (b *recordingBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.once.Do(func() { b.rec.recordSince(nil, b.start) })
+	return err
+}
+
 // budgetBody releases the armed deadline exactly once the response is over
-// (EOF, read error, or Close) and escalates when that end was the transport's
-// own expiry — a body read that died of the armed deadline while the caller's
-// context is still alive.
+// (EOF, read error, or Close), escalates when that end was the transport's own
+// expiry — a body read that died of the armed deadline while the caller's
+// context is still alive — and reports the attempt's duration to the caller's
+// recorder once the body completes cleanly.
+//
+// A single sync.Once guards the WHOLE end-of-request handler: the io.ReadCloser
+// contract does not forbid a Close concurrent with a Read (a context
+// cancellation while a streamed body is still being read, for instance), and a
+// bare bool checked-then-set without synchronisation is a data race that can
+// let two goroutines through and escalate twice.
 type budgetBody struct {
 	io.ReadCloser
 	cancel   context.CancelFunc
 	parent   context.Context
 	escalate func()
-	finished bool
+	once     sync.Once
+	rec      *AttemptRecorder
+	start    time.Time
 }
 
 func (b *budgetBody) Read(p []byte) (int, error) {
@@ -231,19 +321,23 @@ func (b *budgetBody) Close() error {
 	return err
 }
 
-// finish ends the request's budget once. A non-EOF error that chains
+// finish ends the request's budget exactly once. A non-EOF error that chains
 // context.DeadlineExceeded while the parent is alive is the transport's own
 // expiry and escalates; an EOF or a Close is a completed (or abandoned)
-// response and does not.
+// response and does not. The attempt's duration is reported only when the body
+// ended cleanly (EOF, or a close with no read error): the value is consumed
+// only on a successful call, and a later retried attempt overwrites an earlier
+// failed one, so a partial read never pollutes the sample.
 func (b *budgetBody) finish(err error) {
-	if b.finished {
-		return
-	}
-	b.finished = true
-	if err != nil && !errors.Is(err, io.EOF) && isOwnExpiry(b.parent, err) {
-		b.escalate()
-	}
-	b.cancel()
+	b.once.Do(func() {
+		if err != nil && !errors.Is(err, io.EOF) && isOwnExpiry(b.parent, err) {
+			b.escalate()
+		}
+		if b.rec != nil {
+			b.rec.recordSince(err, b.start)
+		}
+		b.cancel()
+	})
 }
 
 // isOwnExpiry reports whether err is the deadline THIS transport armed, as

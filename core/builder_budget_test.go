@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -503,20 +504,94 @@ func TestProviderEntryFromConfig_AdaptiveSharesTheSessionTable(t *testing.T) {
 	}
 }
 
-// The observer adapter maps the UsageTracker timed-observer shape onto
-// Ingest — the model the provider served keys the sample.
-func TestBudgetIngestObserverFeedsTable(t *testing.T) {
+// attemptStubTransport sleeps a fixed delay and replies OK — the provider
+// attempt the budget transport measures.
+type attemptStubTransport struct{ delay time.Duration }
+
+func (s attemptStubTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	time.Sleep(s.delay)
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("ok")),
+		Header:     make(http.Header),
+	}, nil
+}
+
+// budgetIngestCaller must ingest one sample per successful call, keyed by the
+// model the provider served, with the duration of the SINGLE provider attempt
+// that produced the response — not the whole router call, which may wrap a
+// retry and its backoff (ADR-071 D1/D9). The fake inner caller sleeps a long
+// "backoff" around a short provider attempt, so the sample's duration has to
+// track the attempt: the transport's recorder must win over the caller's clock.
+func TestBudgetIngestCallerFeedsTableWithAttemptDuration(t *testing.T) {
 	table := llmbudget.NewBudgetTable()
-	obs := budgetIngestObserver(table)
-	obs(llm.TokenUsage{InputTokens: 42, OutputTokens: 7}, 3*time.Second, 1, 2, "m", "qwen")
-	if got := table.SampleCount("m"); got != 1 {
-		t.Errorf("SampleCount(m) = %d, want 1", got)
+	const attempt = 20 * time.Millisecond
+	tr := llmbudget.NewTransport(attemptStubTransport{delay: attempt}, llmbudget.TransportOptions{
+		Table:           table,
+		Class:           llmbudget.ClassRemote,
+		Wire:            llmbudget.WireJSONModel,
+		ProviderName:    "prov",
+		AdaptiveEnabled: true,
+	})
+	client := &http.Client{Transport: tr}
+
+	inner := &mockLLMCaller{callFn: func(ctx context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+		time.Sleep(200 * time.Millisecond) // simulated router retry backoff
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			"https://api.example.com/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+		if err != nil {
+			return nil, err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		return &llm.ChatResponse{Model: "m", Usage: llm.TokenUsage{InputTokens: 42, OutputTokens: 7}}, nil
+	}}
+
+	caller := &budgetIngestCaller{inner: inner, table: table}
+	if _, err := caller.Call(context.Background(), llm.ChatRequest{}); err != nil {
+		t.Fatalf("Call: %v", err)
 	}
-	// A zero-duration or empty-model observation is dropped by Ingest.
-	obs(llm.TokenUsage{InputTokens: 42}, 0, 1, 2, "m", "qwen")
-	obs(llm.TokenUsage{InputTokens: 42}, 3*time.Second, 1, 2, "", "qwen")
+
+	samples := table.Samples("m")
+	if len(samples) != 1 {
+		t.Fatalf("ingested samples = %d, want 1 (keyed by the served model)", len(samples))
+	}
+	if samples[0].Duration >= 100*time.Millisecond {
+		t.Fatalf("sample duration = %v, want the ~%v provider attempt, not the router call incl. backoff", samples[0].Duration, attempt)
+	}
+	if samples[0].Duration <= 0 {
+		t.Fatalf("sample duration = %v, want positive", samples[0].Duration)
+	}
+}
+
+// A failed call ingests nothing (the feed is successful-calls-only); without a
+// transport recorder the caller still ingests, falling back to its own
+// wall-clock measurement (the adaptive-off / pass-through path).
+func TestBudgetIngestCallerSkipsFailureAndFallsBack(t *testing.T) {
+	table := llmbudget.NewBudgetTable()
+	failing := &budgetIngestCaller{inner: &mockLLMCaller{err: errors.New("upstream down")}, table: table}
+	if _, err := failing.Call(context.Background(), llm.ChatRequest{}); err == nil {
+		t.Fatal("expected the inner error")
+	}
+	if got := table.SampleCount("m"); got != 0 {
+		t.Fatalf("SampleCount = %d after a failed call, want 0", got)
+	}
+
+	fallback := &budgetIngestCaller{
+		inner: &mockLLMCaller{responses: []*llm.ChatResponse{
+			{Model: "m", Usage: llm.TokenUsage{InputTokens: 5, OutputTokens: 5}},
+		}},
+		table: table,
+	}
+	if _, err := fallback.Call(context.Background(), llm.ChatRequest{}); err != nil {
+		t.Fatalf("fallback Call: %v", err)
+	}
 	if got := table.SampleCount("m"); got != 1 {
-		t.Errorf("SampleCount(m) = %d after skip-shaped observations, want 1", got)
+		t.Fatalf("SampleCount = %d, want 1 on the fallback path", got)
 	}
 }
 

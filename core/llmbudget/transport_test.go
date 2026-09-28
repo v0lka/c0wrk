@@ -169,12 +169,13 @@ func TestTransportAlwaysArmsForUnknownModel(t *testing.T) {
 	}
 }
 
-func TestTransportUnknownModelFallsToClassFloorOnceSampled(t *testing.T) {
+func TestTransportUnknownModelArmsWarmupNotATrainedModelBudget(t *testing.T) {
 	tb := NewBudgetTable()
-	// The provider-level key accumulates samples from earlier failed
-	// extractions; zero-token samples land the ladder on the class floor.
-	for _, d := range []time.Duration{time.Second, 2 * time.Second, 3 * time.Second} {
-		tb.Ingest("@prov", 0, 0, d)
+	// Heavily train a MODEL key. If the transport wrongly consulted it for an
+	// unknown model, the budget would clamp to the class floor (ClassLocal is
+	// this fixture's class, 300s), below the 600s warmup we expect.
+	for range WarmupMinSamples + 1 {
+		tb.Ingest("gpt-test", 1000, 100, 5*time.Second)
 	}
 	stub := &stubTransport{}
 	tr := budgetTransport(t, stub, tb, nil)
@@ -187,8 +188,70 @@ func TestTransportUnknownModelFallsToClassFloorOnceSampled(t *testing.T) {
 	_ = resp.Body.Close()
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
-	if !nearDuration(stub.remaining, FloorLocal, time.Millisecond) {
-		t.Fatalf("armed %v, want the class floor %v", stub.remaining, FloorLocal)
+	// The provider-level key ("@prov") is never trained in production — the
+	// ingest keys by the served model — so the request arms the warmup
+	// deadline, and a trained MODEL key must not leak into it.
+	if !nearDuration(stub.remaining, DefaultWarmupBudget, time.Second) {
+		t.Fatalf("armed %v, want the warmup budget %v", stub.remaining, DefaultWarmupBudget)
+	}
+}
+
+// The transport reports the WINNING provider attempt's duration to a
+// caller-installed recorder (ADR-071 D1), and only once the body has completed
+// — the value the ingest uses instead of the router-call aggregate.
+func TestTransportRecordsWinningAttemptDuration(t *testing.T) {
+	stub := &stubTransport{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("ok")),
+		Header:     make(http.Header),
+	}}
+	tr := budgetTransport(t, stub, NewBudgetTable(), nil)
+	rec := NewAttemptRecorder()
+	req := jsonRequest(t, "gpt-test").WithContext(WithAttemptRecorder(context.Background(), rec))
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	if _, ok := rec.Duration(); ok {
+		t.Fatal("duration must not be recorded before the body is read to completion")
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	d, ok := rec.Duration()
+	if !ok || d <= 0 {
+		t.Fatalf("recorded duration = (%v, %v), want a positive duration", d, ok)
+	}
+}
+
+// A pass-through request (a caller-owned deadline) is forwarded with the
+// deadline untouched, yet still reports the attempt duration once the body
+// completes — so a router retry's backoff never leaks into the learned sample
+// even for a call the transport does not itself arm.
+func TestTransportPassThroughRecordsAttempt(t *testing.T) {
+	stub := &stubTransport{}
+	tr := budgetTransport(t, stub, NewBudgetTable(), nil)
+	rec := NewAttemptRecorder()
+	ctx, cancel := context.WithTimeout(WithAttemptRecorder(context.Background(), rec), 42*time.Second)
+	defer cancel()
+	req := jsonRequest(t, "gpt-test").WithContext(ctx)
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	stub.mu.Lock()
+	if !stub.hasDeadline || stub.remaining > 42*time.Second || stub.remaining <= 41*time.Second {
+		remaining, has := stub.remaining, stub.hasDeadline
+		stub.mu.Unlock()
+		t.Fatalf("armed %v (hasDeadline=%v), want the caller's ~42s", remaining, has)
+	}
+	stub.mu.Unlock()
+	if _, ok := rec.Duration(); ok {
+		t.Fatal("duration must not be recorded before the body is read to completion")
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if _, ok := rec.Duration(); !ok {
+		t.Fatal("the pass-through path must record the attempt duration")
 	}
 }
 

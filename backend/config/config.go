@@ -551,6 +551,50 @@ func MaxAutoRetrySeconds() int {
 	return maxAutoRetrySeconds
 }
 
+// ValidTimeoutClass reports whether s is a legal per-provider timeout_class
+// override (ADR-071 D3): unset (""), "local", or "remote". The reserved
+// "embedded" class is intentionally not accepted — it is fixed by the
+// backend-owned provider identity rather than selected.
+func ValidTimeoutClass(s string) bool {
+	switch s {
+	case "", string(llmbudget.ClassLocal), string(llmbudget.ClassRemote):
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidateProviderTimeoutClass enforces the FULL per-provider timeout_class
+// rules (ADR-071 D3) on a (provider name, class) pair:
+//
+//   - the enum is exactly "local" | "remote" | unset (ValidTimeoutClass);
+//   - the reserved, backend-owned `embedded` provider must carry no override at
+//     all: its envelope is fixed by its identity, so an override would let a
+//     hand-edited entry downgrade it (a "remote" override caps the local model
+//     at 600 s) even though Classify honors such an override.
+//
+// This is the single gate shared by validate() (the load-time frontier) and the
+// UpdateLLMConfig RPC trust boundary. Both MUST go through it: an invalid value
+// passes the enum check alone, is persisted verbatim by Save (which does not run
+// validate), and then fails validate() on the next Load — which rolls the
+// ENTIRE config back to defaults. Keeping one function is what stops the two
+// gates from drifting out of step.
+func ValidateProviderTimeoutClass(name, class string) error {
+	if !ValidTimeoutClass(class) {
+		return fmt.Errorf(
+			"llm provider %q timeout_class %q is not valid; must be %q, %q, or unset",
+			name, class, llmbudget.ClassLocal, llmbudget.ClassRemote,
+		)
+	}
+	if name == EmbeddedLLMProviderName && class != "" {
+		return fmt.Errorf(
+			"llm provider %q is backend-owned and its timeout class is fixed; timeout_class must be unset",
+			name,
+		)
+	}
+	return nil
+}
+
 // AnthropicCompatibleConfig holds Anthropic-compatible provider configuration
 // (custom endpoints speaking Anthropic's Messages API, e.g. a proxy or gateway).
 type AnthropicCompatibleConfig struct {
@@ -2826,20 +2870,15 @@ func validate(cfg *Config) error {
 			)
 		}
 		// Validate the per-provider timeout_class override (ADR-071 D3): the
-		// enum is exactly "local" | "remote" | unset. The reserved "embedded"
-		// class is deliberately NOT configurable — that provider's envelope
-		// is fixed by its backend-owned identity. An unknown value would
+		// enum is exactly "local" | "remote" | unset, and the reserved
+		// `embedded` provider must carry no override. An unknown value would
 		// otherwise be silently ignored by Classify and infer the class
 		// anyway, so a typo would silently change which envelope bounds the
-		// provider's budgets.
-		switch p.timeoutClass {
-		case "", string(llmbudget.ClassLocal), string(llmbudget.ClassRemote):
-			// valid
-		default:
-			return fmt.Errorf(
-				"llm provider %q timeout_class %q is not valid; must be %q, %q, or unset",
-				p.name, p.timeoutClass, llmbudget.ClassLocal, llmbudget.ClassRemote,
-			)
+		// provider's budgets; a hand-written override on `embedded` would let
+		// the backend-owned local model be downgraded. Shared with the
+		// UpdateLLMConfig trust boundary so the two gates cannot drift.
+		if err := ValidateProviderTimeoutClass(p.name, p.timeoutClass); err != nil {
+			return err
 		}
 	}
 

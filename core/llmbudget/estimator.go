@@ -13,10 +13,11 @@ type BudgetInput struct {
 	// from it as ceil(bytes/BytesPerTokenEstimate) — erring toward a larger
 	// input estimate.
 	BodyBytes int
-	// OutputLimit is the model's resolved generation ceiling
-	// (llm.ModelMetadata.OutputLimit, overridable via
-	// llm.models.<name>.output_limit). Zero or negative means unknown: the
-	// observed p85 output is then used without an upper clamp.
+	// OutputLimit is the EXPLICIT per-model generation ceiling from
+	// llm.models.<name>.output_limit. Zero or negative means no override is set,
+	// so the observed p85 output is used without an upper clamp (the clamp only
+	// ever bounds a value that is already below the model's real ceiling, so
+	// omitting it is safe; the wiring does not resolve the built-in metadata).
 	OutputLimit int
 }
 
@@ -34,9 +35,9 @@ const MinFitSamples = 3
 //
 //  1. PerModelRequestTimeout > 0 — fixed, never escalated;
 //  2. GlobalRequestTimeout > 0 — fixed, never escalated;
-//  3. the adaptive budget: warmup (WarmupOverride, else DefaultWarmupBudget)
-//     while the key holds fewer than WarmupMinSamples samples, then the
-//     trained budget (estimate + any latched escalation, D9);
+//  3. the adaptive budget: DefaultWarmupBudget while the key holds fewer than
+//     WarmupMinSamples samples, then the trained budget (estimate + any latched
+//     escalation, D9);
 //  4. the kill-switch off — the legacy fixed regime: GlobalRequestTimeout
 //     when positive, else LegacyFixedBudget ("no opinion" never means "no
 //     deadline", D11).
@@ -60,9 +61,6 @@ func (t *BudgetTable) ResolveDeadline(in ResolverInput) time.Duration {
 	}
 	count, escal := t.state(in.Key)
 	if count < WarmupMinSamples {
-		if in.WarmupOverride > 0 {
-			return in.WarmupOverride
-		}
 		return DefaultWarmupBudget
 	}
 	budget := t.estimate(in.Key, in.Class, BudgetInput{
@@ -97,9 +95,6 @@ type ResolverInput struct {
 	// GlobalRequestTimeout is timeouts.llmRequestTimeout: a positive value is
 	// a fixed deadline that is never escalated (D5).
 	GlobalRequestTimeout time.Duration
-	// WarmupOverride is the per-model warmup deadline; zero means
-	// DefaultWarmupBudget (D4).
-	WarmupOverride time.Duration
 	// AdaptiveEnabled mirrors timeouts.adaptive_budget.enabled (D11).
 	AdaptiveEnabled bool
 }
@@ -227,11 +222,12 @@ func estInputTokens(bodyBytes int) int {
 }
 
 // outputReserve is out_reserve of ADR-071 D7: the model's observed p85 output,
-// never below MinOutputReserve, never above the resolved generation ceiling.
+// never below MinOutputReserve, never above the explicit generation ceiling
+// when one is set (llm.models.<name>.output_limit).
 // The p85 spans every retained sample's output (zero-output samples included;
 // at an 85th percentile they can only pull the reserve down when more than
 // 15% of outputs are zero, which is itself evidence of a small-output
-// workload). An unknown OutputLimit applies no upper clamp.
+// workload). An unset OutputLimit applies no upper clamp.
 func outputReserve(samples []Sample, outputLimit int) int {
 	outs := make([]float64, 0, len(samples))
 	for _, s := range samples {

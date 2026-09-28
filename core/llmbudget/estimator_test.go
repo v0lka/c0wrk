@@ -215,11 +215,6 @@ func TestResolveWarmupUnderThreeSamples(t *testing.T) {
 		}
 		tb.Ingest("m", 1000, 100, time.Second)
 	}
-	// The per-model warmup override wins while still under the threshold.
-	in.WarmupOverride = 42 * time.Second
-	if got := tb.ResolveDeadline(in); got != 42*time.Second {
-		t.Fatalf("warmup override = %v, want 42s", got)
-	}
 	// The third sample flips to the trained path: three identical samples are
 	// rank-deficient, so the ladder renormalizes 1s/1100tok against
 	// out_reserve 1024 → 0.93s, clamped to the remote floor.
