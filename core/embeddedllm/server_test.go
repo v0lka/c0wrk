@@ -4351,11 +4351,17 @@ func TestHelperServerProcess(t *testing.T) {
 	if os.Getenv(helperProcessEnv) != "1" {
 		t.Skip("helper mode only; re-executed by TestSpawnOSServerStartsARealProcess")
 	}
-	_, _ = fmt.Fprintln(os.Stdout, helperStdoutLine)
-	_, _ = fmt.Fprintln(os.Stderr, helperStderrLine)
-
+	// The signal handler goes up BEFORE the readiness lines: the parent uses
+	// those lines as the barrier that proves it is safe to signal us. Arming
+	// the handler after announcing readiness left a window where a fast parent
+	// delivered SIGTERM while the default disposition was still installed —
+	// the child died as "signal: terminated" and the parent's clean-exit
+	// expectation failed (observed on a loaded Linux CI runner).
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, gracefulSignal(), os.Interrupt)
+
+	_, _ = fmt.Fprintln(os.Stdout, helperStdoutLine)
+	_, _ = fmt.Fprintln(os.Stderr, helperStderrLine)
 	select {
 	case <-signals:
 		os.Exit(0)
