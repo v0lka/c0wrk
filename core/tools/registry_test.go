@@ -119,14 +119,12 @@ type scriptedJudgeProvider struct {
 	calls    int
 }
 
-func (p *scriptedJudgeProvider) ChatCompletion(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+func (p *scriptedJudgeProvider) Call(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls++
 	return p.response, p.err
 }
-
-func (p *scriptedJudgeProvider) Name() string { return "scripted-judge" }
 
 func (p *scriptedJudgeProvider) callCount() int {
 	p.mu.Lock()
@@ -139,7 +137,7 @@ func newStrictJudge(response string, err error) (*sdktools.ToolJudge, *scriptedJ
 	if response != "" {
 		provider.response = &llm.ChatResponse{Message: llm.Message{Content: response}}
 	}
-	return sdktools.NewToolJudge(provider, "test-model", 1, nil), provider
+	return sdktools.NewToolJudge(provider, nil, 1, nil), provider
 }
 
 // ── Registry basics ───────────────────────────────────────────────────────
@@ -2028,9 +2026,10 @@ func TestSmartApprove_UserConfirmFlow(t *testing.T) {
 		{name: "strict allow executes without UI", mode: AutonomyModeAssisted, judgeResponse: "VERDICT: ALLOW\nREASON: safe and relevant", setJudge: true, wantJudgeCalls: 1},
 		{name: "strict deny terminates without UI or execution", mode: AutonomyModeAssisted, judgeResponse: "VERDICT: DENY\nREASON: destructive write to a system path", setJudge: true, wantJudgeCalls: 1, wantResultError: true},
 		{name: "strict confirm uses manual UI", mode: AutonomyModeAssisted, judgeResponse: "VERDICT: CONFIRM\nREASON: destructive operation", setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 1},
-		// wantJudgeCalls 2: an unparseable response retries exactly once with
-		// format feedback (sp4rk retry-once) before failing safe to CONFIRM.
-		{name: "unparseable uses manual UI", mode: AutonomyModeAssisted, judgeResponse: "probably fine", setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 2},
+		// wantJudgeCalls 3: the unified sp4rk nudge loop retries an unparseable
+		// response twice (two nudges, three attempts) before failing safe to
+		// CONFIRM.
+		{name: "unparseable uses manual UI", mode: AutonomyModeAssisted, judgeResponse: "probably fine", setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 3},
 		{name: "provider error uses manual UI", mode: AutonomyModeAssisted, judgeErr: errors.New("provider failed"), setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 1},
 		{name: "unavailable judge uses manual UI", mode: AutonomyModeAssisted, wantConfirm: true, wantDisableJudge: true},
 	}
@@ -2400,9 +2399,10 @@ func TestSilentMode_ToolConfirm_Terminals(t *testing.T) {
 		{
 			name: "judge unparseable auto-denies",
 			mode: SilentToolConfirmJudge, judgeResponse: "probably fine", setJudge: true,
-			// 2 calls: the unparseable response retries exactly once with
-			// format feedback (sp4rk retry-once) before the fail-closed CONFIRM.
-			wantErr: true, wantJudgeCalls: 2,
+			// 3 calls: the unified sp4rk nudge loop retries an unparseable
+			// response twice (two nudges, three attempts) before the
+			// fail-closed CONFIRM.
+			wantErr: true, wantJudgeCalls: 3,
 		},
 		{
 			// Decision 1c: the silent judge path has NO canonical backstop —

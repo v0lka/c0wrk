@@ -1725,7 +1725,6 @@ func (r *TrustedGitRepo) UnmarshalYAML(value *yaml.Node) error {
 
 // SecurityConfig holds security settings.
 type SecurityConfig struct {
-	Judge            JudgeConfig            `yaml:"judge"`
 	InjectionDefense InjectionDefenseConfig `yaml:"injection_defense"`
 
 	// Groups is the tool-security schema: a fixed set of tool groups, each
@@ -2018,11 +2017,6 @@ func migrateLegacyAutonomyMode(sec *SecurityConfig) []string {
 	return nil
 }
 
-// JudgeConfig holds LLM-based tool safety judge settings.
-type JudgeConfig struct {
-	Model string `yaml:"model"` // LLM model override for judge calls (empty = use default)
-}
-
 // SearchConfig holds web search configuration.
 type SearchConfig struct {
 	Provider string `yaml:"provider"`
@@ -2060,7 +2054,7 @@ type TimeoutsConfig struct {
 	WebSearchTimeout         int `yaml:"webSearchTimeout"`         // seconds, default: 30
 	PersistenceTimeout       int `yaml:"persistenceTimeout"`       // seconds, default: 5
 	LLMRequestTimeout        int `yaml:"llmRequestTimeout"`        // seconds, default: 600 (10 min) — main chat loop
-	ServiceLLMRequestTimeout int `yaml:"serviceLLMRequestTimeout"` // seconds, default: 120 (2 min) — one-shot service LLM requests (session title, commit message, prompt optimization)
+	ServiceLLMRequestTimeout int `yaml:"serviceLLMRequestTimeout"` // seconds, default: 600 (10 min) — one-shot service LLM requests (session title, commit message, prompt optimization); one budget for the whole client exchange incl. auto-retry re-sends
 	GitCommitTimeout         int `yaml:"gitCommitTimeout"`         // seconds, default: 300 (5 min) — git commit spawn (rev-parse and other quick git probes keep the fast 30s timeout)
 }
 

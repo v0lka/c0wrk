@@ -379,7 +379,7 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Timeouts.LLMRequestTimeout = 600
 	}
 	if cfg.Timeouts.ServiceLLMRequestTimeout == 0 {
-		cfg.Timeouts.ServiceLLMRequestTimeout = 120
+		cfg.Timeouts.ServiceLLMRequestTimeout = 600
 	}
 	if cfg.Timeouts.GitCommitTimeout == 0 {
 		cfg.Timeouts.GitCommitTimeout = 300

@@ -242,7 +242,6 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			},
 		},
 		Security: core.BuilderSecurityConfig{
-			JudgeModel:                 cfg.Security.Judge.Model,
 			InjectionDefenseEnabled:    derefBool(cfg.Security.InjectionDefense.Enabled),
 			Groups:                     groups,
 			AutoApproveWorkspaceWrites: cfg.Security.AutoApproveWorkspaceWrites,
