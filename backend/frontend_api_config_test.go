@@ -657,6 +657,93 @@ func TestUpdateLLMConfig_RejectsOutOfRangeAutoRetry(t *testing.T) {
 	}
 }
 
+// TestUpdateLLMConfig_RejectsInvalidTimeoutClass pins the ADR-071 D3 trust
+// boundary: an invalid timeout_class must be rejected here, because Save does
+// not run validate() and a persisted bad value would fail the next Load, which
+// rolls the ENTIRE config back to defaults.
+func TestUpdateLLMConfig_RejectsInvalidTimeoutClass(t *testing.T) {
+	bad := "bogus"
+	t.Run("openai_compatible", func(t *testing.T) {
+		f, _, _ := newTestAPI(t)
+		err := f.UpdateLLMConfig(LLMFullConfigRequest{
+			OpenAICompatible: map[string]ProviderConfigRequest{
+				"lmstudio": {BaseURL: "http://localhost:1234/v1", Models: []string{"test-model"}, TimeoutClass: &bad},
+			},
+		})
+		if err == nil {
+			t.Fatal("UpdateLLMConfig accepted timeout_class \"bogus\", want rejection")
+		}
+		f.configMu.RLock()
+		got := f.config.LLM.OpenAICompatible["lmstudio"].TimeoutClass
+		f.configMu.RUnlock()
+		if got != "" {
+			t.Errorf("config mutated to timeout_class %q despite rejection", got)
+		}
+	})
+	t.Run("anthropic_compatible", func(t *testing.T) {
+		f, _, _ := newTestAPI(t)
+		err := f.UpdateLLMConfig(LLMFullConfigRequest{
+			AnthropicCompatible: map[string]ProviderConfigRequest{
+				"gateway": {BaseURL: "https://claude.lan:8443", Models: []string{"test-model"}, TimeoutClass: &bad},
+			},
+		})
+		if err == nil {
+			t.Fatal("UpdateLLMConfig accepted timeout_class \"bogus\", want rejection")
+		}
+		f.configMu.RLock()
+		got := f.config.LLM.AnthropicCompatible["gateway"].TimeoutClass
+		f.configMu.RUnlock()
+		if got != "" {
+			t.Errorf("config mutated to timeout_class %q despite rejection", got)
+		}
+	})
+}
+
+// TestUpdateLLMConfig_RejectsTimeoutClassOnEmbedded pins the reserved-name half
+// of the ADR-071 D3 trust boundary. The enum check alone would accept "remote"
+// on the backend-owned `embedded` provider, and SyncEmbeddedProvider does NOT
+// rewrite the class (embeddedProviderEqual deliberately ignores it, comparing
+// only the generated fields), so a request that mirrors the generated record
+// would carry the bogus class straight into the persisted config. Save does not
+// run validate(), so the next Load would reject it and roll the ENTIRE config
+// back to defaults. The RPC must therefore enforce the same reserved-name rule,
+// via the one shared validator.
+func TestUpdateLLMConfig_RejectsTimeoutClassOnEmbedded(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	// Make the backend-owned provider real: install the local model and let the
+	// sync generate its record, then capture the exact generated shape.
+	f.config.EmbeddedLLM = config.EmbeddedLLMConfig{Installed: true, Port: 4321}
+	f.config.SyncEmbeddedLLMProvider(0)
+	generated, ok := f.config.LLM.OpenAICompatible[config.EmbeddedLLMProviderName]
+	if !ok {
+		t.Fatal("the embedded provider record was not generated")
+	}
+
+	// Mirror the generated record exactly except for a hand-written class. The
+	// sync considers the two equal and leaves the entry, so only the
+	// trust-boundary check can stop it from being persisted.
+	remote := "remote"
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		OpenAICompatible: map[string]ProviderConfigRequest{
+			config.EmbeddedLLMProviderName: {
+				BaseURL:      generated.BaseURL,
+				Models:       generated.Models,
+				TimeoutClass: &remote,
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("UpdateLLMConfig accepted a timeout_class on the backend-owned embedded provider")
+	}
+	f.configMu.RLock()
+	got := f.config.LLM.OpenAICompatible[config.EmbeddedLLMProviderName].TimeoutClass
+	f.configMu.RUnlock()
+	if got != "" {
+		t.Errorf("embedded provider mutated to timeout_class %q despite rejection", got)
+	}
+}
+
 // TestUpdateLLMConfig_RejectsDanglingDefaultOnProviderRemoval verifies that
 // deleting the provider that owns an already-valid default model without a
 // replacement is rejected before it can mutate memory, YAML, or the router.
@@ -988,6 +1075,40 @@ func TestSetModelConfig_AllDefaultsRemovesEntry(t *testing.T) {
 	}
 	if _, ok := reloaded.LLM.Models["gpt-4o"]; ok {
 		t.Error("expected gpt-4o override absent from persisted config")
+	}
+}
+
+// request_timeout is a hand-edited config.yaml key (ADR-071 D5) with no editor
+// in the Configure dialog, so SetModelConfig must carry the persisted value
+// through: both when another field changes, and when it is the entry's ONLY
+// field (the "everything matches the default" branch would otherwise delete the
+// whole entry).
+func TestSetModelConfig_PreservesRequestTimeout(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	f.config.LLM.Models = map[string]config.ModelOverride{
+		"gpt-4o": {RequestTimeout: 900},
+	}
+
+	// A save that matches every editable default must keep the entry: the
+	// request_timeout override is still set.
+	if err := f.SetModelConfig("gpt-4o", ModelConfigRequest{ContextWindow: 128000, OutputLimit: 16384}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, ok := f.config.LLM.Models["gpt-4o"]
+	if !ok {
+		t.Fatal("an entry carrying only request_timeout was deleted")
+	}
+	if got.RequestTimeout != 900 {
+		t.Fatalf("request_timeout = %d, want 900", got.RequestTimeout)
+	}
+
+	// A save that changes another field must also keep request_timeout.
+	if err := f.SetModelConfig("gpt-4o", ModelConfigRequest{ContextWindow: 64000, OutputLimit: 4096}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got = f.config.LLM.Models["gpt-4o"]
+	if got.RequestTimeout != 900 || got.ContextWindow != 64000 {
+		t.Fatalf("entry = %+v, want request_timeout 900 preserved with context_window 64000", got)
 	}
 }
 

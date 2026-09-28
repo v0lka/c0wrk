@@ -54,6 +54,19 @@ import (
 // budget to this transport as requestTimeout, which arms it only AFTER the model
 // is resident. The request still gets the full configured timeout; it simply
 // starts when the model can answer, which is the point of the gate.
+//
+// The adaptive request budget (ADR-071) NARROWS that arrangement without
+// breaking it: when the wiring is active, the builder wraps a llmbudget
+// Transport BENEATH this gate (ensure-loaded → budget → pin → dial) and zeroes
+// the entry client's Timeout, so the requestTimeout derived here is 0 and the
+// fixed post-readiness arming is suppressed. The budget transport below then
+// arms the adaptive deadline — after the gate, for the same reason: the load
+// wait stays outside every deadline. Without that suppression a fixed 600 s
+// post-readiness budget would cap an embedded model whose trained budget
+// legitimately runs to its class ceiling (1800 s), and the escalation ladder
+// could never help it. The builder-level wiring is the only writer of that
+// posture; this file's rule is unchanged — requestTimeout <= 0 arms nothing,
+// and the request keeps whatever budget its context carries.
 
 // Loader is the supervisor seam the ensure-loaded transport drives. *Server
 // satisfies it as-is: Load is idempotent and single-instance, and MarkActivity
@@ -540,6 +553,15 @@ func (b *activityBody) Close() error {
 // configured timeout, and the load no longer eats into it. The zero Timeout on
 // the clone is therefore deliberate — read it together with
 // EnsureLoadedTransport.requestTimeout.
+//
+// The ONE case where the source Timeout is legitimately 0 is the adaptive
+// request budget wiring (ADR-071): the builder wraps a llmbudget Transport
+// beneath this gate and zeroes the entry clone, so the derived requestTimeout
+// is 0, this transport arms nothing post-readiness, and the budget transport
+// below arms the ADAPTIVE deadline after the gate — under D13 for both, the
+// load wait never lands inside any deadline. A 0 arriving without that wrapper
+// would mean an unbounded request, which is why the wiring — not the caller —
+// is responsible for installing it; the builder tests pin the pairing.
 //
 // base is used as the timeout source when present so a pinned entry keeps the
 // budget the pin resolver gave it. Neither client carrying a timeout yields a

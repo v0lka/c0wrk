@@ -288,6 +288,14 @@ type BuilderProviderConfig struct {
 	// so it drives both the context-window reserve and the executor MaxTokens
 	// ceiling. A per-model llm.models output_limit still wins over it.
 	OutputTokenReserve int
+	// TimeoutClass is the operator's llm.<provider>.timeout_class override for
+	// the adaptive request budget (ADR-071 D3): "local" | "remote" (the
+	// embedded class is fixed by the reserved provider name). Empty = infer:
+	// the reserved name "embedded" wins first, then a loopback base_url is
+	// local, everything else remote. Consumed by llmbudget.Classify at entry
+	// build; an unrecognized value was already rejected by the config
+	// validation and degrades to the empty (infer) reading here.
+	TimeoutClass string
 }
 
 // DefaultProviderName returns the logical name of the provider that owns DefaultModel.
@@ -318,6 +326,12 @@ type BuilderModelOverride struct {
 	Family        string
 	Protocol      string
 	Capabilities  *llm.ModelCapabilities
+	// RequestTimeout is llm.models.<name>.request_timeout in seconds
+	// (ADR-071 D5): a positive value is a FIXED per-model deadline — it is
+	// never escalated and short-circuits the adaptive estimate. 0 = no
+	// opinion (the adaptive budget governs; under the kill-switch the global
+	// timeout does). The backend config validation bounds it to [0, 3600].
+	RequestTimeout int
 }
 
 // ---------------------------------------------------------------------------
@@ -694,6 +708,13 @@ type BuilderTimeoutsConfig struct {
 	WebFetchRetries      int // retry count (not seconds); each retry doubles the active web fetch timeout
 	WebSearchTimeout     int
 	LLMRequestTimeout    int
+	// AdaptiveBudgetEnabled mirrors timeouts.adaptive_budget.enabled
+	// (ADR-071 D11, default true). When false NO llmbudget transport is
+	// installed on any provider entry and every client is built exactly as
+	// before the feature existed — the legacy fixed regime. When true, a
+	// positive LLMRequestTimeout is still a fixed override fed to the
+	// resolver, while 0 means "no opinion" and the adaptive budgets govern.
+	AdaptiveBudgetEnabled bool
 }
 
 // ---------------------------------------------------------------------------

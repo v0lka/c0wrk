@@ -127,6 +127,7 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 			Models:           cfg.Models,
 			TLSFingerprint:   cfg.TLSFingerprint,
 			AutoRetrySeconds: cfg.AutoRetrySeconds,
+			TimeoutClass:     cfg.TimeoutClass,
 		}
 	}
 	for name, cfg := range f.config.LLM.AnthropicCompatible {
@@ -136,6 +137,7 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 			Models:           cfg.Models,
 			TLSFingerprint:   cfg.TLSFingerprint,
 			AutoRetrySeconds: cfg.AutoRetrySeconds,
+			TimeoutClass:     cfg.TimeoutClass,
 		}
 	}
 	return resp
@@ -269,6 +271,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 				TLSFingerprint:     resolveTLSFingerprint(ocReq.TLSFingerprint, existing.TLSFingerprint, exists),
 				OutputTokenReserve: outputReserve,
 				AutoRetrySeconds:   resolveAutoRetrySeconds(ocReq.AutoRetrySeconds, existing.AutoRetrySeconds, exists),
+				TimeoutClass:       resolveTimeoutClass(ocReq.TimeoutClass, existing.TimeoutClass, exists),
 			}
 		}
 		candidate.OpenAICompatible = newMap
@@ -292,6 +295,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 				TLSFingerprint:     resolveTLSFingerprint(acReq.TLSFingerprint, existing.TLSFingerprint, exists),
 				OutputTokenReserve: outputReserve,
 				AutoRetrySeconds:   resolveAutoRetrySeconds(acReq.AutoRetrySeconds, existing.AutoRetrySeconds, exists),
+				TimeoutClass:       resolveTimeoutClass(acReq.TimeoutClass, existing.TimeoutClass, exists),
 			}
 		}
 		candidate.AnthropicCompatible = newMap
@@ -332,15 +336,28 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		}
 	}
 
-	// Reject out-of-range auto_retry_seconds before anything is committed
-	// (ADR-065): the same [0, 3600] bound Load enforces. The Settings UI
-	// clamps its own input, but this RPC is a trust boundary for arbitrary
-	// callers (devtools, future scripts), so the clamp cannot be assumed.
+	// Reject out-of-range auto_retry_seconds (ADR-065) and invalid
+	// timeout_class (ADR-071 D3) before anything is committed: the same bounds
+	// Load enforces. The Settings UI clamps its own inputs, but this RPC is a
+	// trust boundary for arbitrary callers (devtools, future scripts), so
+	// neither can be assumed — and an invalid value would only be caught at the
+	// next Load, which rolls the whole config back to defaults.
 	for name, oc := range candidate.OpenAICompatible {
 		if oc.AutoRetrySeconds < 0 || oc.AutoRetrySeconds > config.MaxAutoRetrySeconds() {
 			f.configMu.Unlock()
 			return fmt.Errorf("invalid LLM configuration: openai_compatible %q auto_retry_seconds must be within [0, %d], got %d",
 				name, config.MaxAutoRetrySeconds(), oc.AutoRetrySeconds)
+		}
+		// timeout_class (ADR-071 D3) is the same trust boundary: the shared
+		// validator applies the full rule (enum AND the reserved-name guard for
+		// the backend-owned `embedded` provider). An invalid value would be
+		// persisted verbatim and then fail validate() on the next Load, which
+		// rolls the ENTIRE config back to defaults (providers, keys, settings).
+		// Save does not run validate(), so this gate must mirror the Load-time
+		// one exactly — hence the single shared function.
+		if err := config.ValidateProviderTimeoutClass(name, oc.TimeoutClass); err != nil {
+			f.configMu.Unlock()
+			return fmt.Errorf("invalid LLM configuration: %w", err)
 		}
 	}
 	for name, ac := range candidate.AnthropicCompatible {
@@ -348,6 +365,10 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 			f.configMu.Unlock()
 			return fmt.Errorf("invalid LLM configuration: anthropic_compatible %q auto_retry_seconds must be within [0, %d], got %d",
 				name, config.MaxAutoRetrySeconds(), ac.AutoRetrySeconds)
+		}
+		if err := config.ValidateProviderTimeoutClass(name, ac.TimeoutClass); err != nil {
+			f.configMu.Unlock()
+			return fmt.Errorf("invalid LLM configuration: %w", err)
 		}
 	}
 
@@ -1945,6 +1966,23 @@ func resolveAutoRetrySeconds(requested *int, persisted int, providerExists bool)
 	return 0
 }
 
+// resolveTimeoutClass applies the pointer sentinel for the per-provider
+// adaptive-budget class override (ADR-071 D3): nil means "keep the persisted
+// class", which is what a debounced partial save from the settings dialog
+// sends — the UI has no timeout_class editor yet, so without this every such
+// save would silently clear a hand-edited override and flip the provider back
+// to class inference. A non-nil pointer applies verbatim, so an explicit empty
+// string is the deliberate "infer the class" signal.
+func resolveTimeoutClass(requested *string, persisted string, providerExists bool) string {
+	if requested != nil {
+		return *requested
+	}
+	if providerExists {
+		return persisted
+	}
+	return ""
+}
+
 // applyListProviderModelsOverrides merges draft credentials from the settings
 // UI into cfg so ListProviderModels can resolve providers that exist only in
 // the frontend draft (not yet written to config.yaml). cfg must be a
@@ -2120,6 +2158,9 @@ func (f *FrontendAPI) GetModelConfig(model string) (ModelConfigResponse, error) 
 // equal to the default is recorded as its "inherit" sentinel — 0 for ints, ""
 // for strings, nil for the capabilities pointer); when every field matches the
 // default the model's entry is removed entirely so config.yaml stays minimal.
+// The one field this dialog does not own — request_timeout, a hand-edited
+// config.yaml key (ADR-071 D5) — is carried through from the persisted entry
+// untouched, so a Configure save never drops it.
 // The change is persisted and the LLM router rebuilt so the new values take
 // effect immediately.
 //
@@ -2199,18 +2240,27 @@ func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error
 		f.config.LLM.Models = make(map[string]config.ModelOverride)
 	}
 
-	if newCW == 0 && newOL == 0 && newTok == "" && newFam == "" && newProto == "" && newCaps == nil {
+	// This dialog has no editor for request_timeout — it is a hand-edited
+	// config.yaml key (ADR-071 D5) — so the RPC must carry the persisted value
+	// through untouched. The entry is rebuilt "from scratch" below, and a
+	// hand-authored deadline would otherwise silently vanish; when it is the
+	// entry's ONLY field, the "everything matches the default" branch would
+	// delete the whole entry.
+	existing := f.config.LLM.Models[model]
+
+	if newCW == 0 && newOL == 0 && newTok == "" && newFam == "" && newProto == "" && newCaps == nil && existing.RequestTimeout == 0 {
 		// Everything matches the built-in default — drop the override so the
 		// model resolves purely from the built-in catalog.
 		delete(f.config.LLM.Models, model)
 	} else {
 		f.config.LLM.Models[model] = config.ModelOverride{
-			ContextWindow: newCW,
-			OutputLimit:   newOL,
-			TokenizerType: newTok,
-			Family:        newFam,
-			Protocol:      newProto,
-			Capabilities:  newCaps,
+			ContextWindow:  newCW,
+			OutputLimit:    newOL,
+			TokenizerType:  newTok,
+			Family:         newFam,
+			Protocol:       newProto,
+			Capabilities:   newCaps,
+			RequestTimeout: existing.RequestTimeout,
 		}
 	}
 

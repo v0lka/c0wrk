@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/v0lka/sp4rk/sysproc"
@@ -123,6 +124,18 @@ const probeCommandTimeout = 2 * time.Second
 // the pipes and Wait returns (with exec.ErrWaitDelay), which every caller here
 // already treats as "the probe did not answer".
 const probeWaitDelay = 500 * time.Millisecond
+
+// probeCommandAttempts and probeCommandRetryBackoff bound the one retry
+// runProbeCommand allows: a bounded number of re-execs, spaced by a short
+// backoff, all inside the single probeCommandTimeout budget. Four attempts
+// (three retries) with a 20 ms gap is far more than the transient ETXTBSY
+// window needs — the writer's descriptor is gone within microseconds of the
+// write — while still keeping the worst case (~60 ms) negligible against the
+// 2 s cap.
+const (
+	probeCommandAttempts     = 4
+	probeCommandRetryBackoff = 20 * time.Millisecond
+)
 
 // gibibyte is the divisor turning a byte count into GiB. The fork's demo
 // scripts divide by exactly this value, so the RAM tiers line up with them.
@@ -407,6 +420,20 @@ func commandAvailable(name string) bool {
 
 // runProbeCommand runs an external probe and returns its stdout. An absent
 // tool yields errProbeToolAbsent, which callers treat as "keep looking".
+//
+// A probe may exec a freshly written artefact — the fake runtime the tests
+// stage, or a system tool a package manager is mid-replace — and the kernel
+// answers execve with ETXTBSY ("text file busy") for as long as ANY process
+// still holds that file open for writing. That window belongs to the writer,
+// not to this probe, and it is transient by construction: it closes the
+// instant the writer's descriptor goes away. Every caller here is fail-soft,
+// so letting an ETXTBSY through would misreport a momentary kernel hiccup as
+// the definitive "this tool did not answer" — for ProbeDevices that reads as a
+// machine with no accelerator at all. The spawn, and only the spawn, is
+// therefore retried on that one transient errno, inside the same
+// probeCommandTimeout budget. Nothing that is not ETXTBSY is retried, and
+// ETXTBSY is raised before the child ever runs, so a retry can never repeat a
+// child's side effects.
 func runProbeCommand(ctx context.Context, name string, args ...string) (string, error) {
 	bin, err := exec.LookPath(name)
 	if err != nil {
@@ -416,6 +443,25 @@ func runProbeCommand(ctx context.Context, name string, args ...string) (string, 
 	ctx, cancel := context.WithTimeout(ctx, probeCommandTimeout)
 	defer cancel()
 
+	for attempt := 1; ; attempt++ {
+		out, err := runProbeOnce(ctx, bin, args)
+		if err == nil {
+			return out, nil
+		}
+		if attempt >= probeCommandAttempts || !isTransientExecError(err) {
+			return "", fmt.Errorf("%s: %w", name, err)
+		}
+		if !waitForRetry(ctx, probeCommandRetryBackoff) {
+			return "", fmt.Errorf("%s: %w", name, err)
+		}
+	}
+}
+
+// runProbeOnce performs one bounded, console-suppressed spawn. A failure here
+// may be the kernel's pre-exec ETXTBSY refusal (the child never ran) or a real
+// error from the child, and the caller distinguishes the two; nothing is
+// retried that is not the former.
+func runProbeOnce(ctx context.Context, bin string, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	// Bound the read as well as the process: see probeWaitDelay.
 	cmd.WaitDelay = probeWaitDelay
@@ -425,7 +471,31 @@ func runProbeCommand(ctx context.Context, name string, args ...string) (string, 
 
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", name, err)
+		return "", err
 	}
 	return string(out), nil
+}
+
+// isTransientExecError reports whether err is the kernel refusing an execve
+// because the target is momentarily held open for writing (ETXTBSY). It is the
+// ONLY condition runProbeCommand retries: it is provably transient, and it is
+// raised before the child runs, so re-execing cannot duplicate anything. A
+// missing, non-executable or denied binary is a real answer and is returned
+// unchanged. On Windows ETXTBSY is never produced by a spawn, so this is
+// effectively always false there — which is exactly the intended behaviour.
+func isTransientExecError(err error) bool {
+	return errors.Is(err, syscall.ETXTBSY)
+}
+
+// waitForRetry sleeps for d, reporting false if ctx is done first so a retry
+// never outlives the probeCommandTimeout budget.
+func waitForRetry(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }

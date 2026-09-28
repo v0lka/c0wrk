@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/v0lka/c0wrk/core/embeddedllm"
+	"github.com/v0lka/c0wrk/core/llmbudget"
 	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/sp4rk/llm"
 
@@ -528,6 +529,13 @@ type OpenAICompatibleConfig struct {
 	// ToBuilderConfig: the timer lives in the c0wrk session layer, not in
 	// the router/SDK layer.
 	AutoRetrySeconds int `yaml:"auto_retry_seconds,omitempty"`
+	// TimeoutClass is the adaptive request budget's class override for this
+	// provider (ADR-071 D3): "local" or "remote". Empty = infer (a loopback
+	// base_url is local, everything else remote; the reserved "embedded"
+	// provider is fixed by its name and accepts no override). The class
+	// selects the floor/ceiling envelope that bounds the provider's trained
+	// budgets. validate() rejects anything but the enum.
+	TimeoutClass string `yaml:"timeout_class,omitempty"`
 }
 
 // maxAutoRetrySeconds is the inclusive upper bound for per-provider
@@ -541,6 +549,50 @@ const maxAutoRetrySeconds = 3600
 // incoming values against the same bound Load enforces).
 func MaxAutoRetrySeconds() int {
 	return maxAutoRetrySeconds
+}
+
+// ValidTimeoutClass reports whether s is a legal per-provider timeout_class
+// override (ADR-071 D3): unset (""), "local", or "remote". The reserved
+// "embedded" class is intentionally not accepted — it is fixed by the
+// backend-owned provider identity rather than selected.
+func ValidTimeoutClass(s string) bool {
+	switch s {
+	case "", string(llmbudget.ClassLocal), string(llmbudget.ClassRemote):
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidateProviderTimeoutClass enforces the FULL per-provider timeout_class
+// rules (ADR-071 D3) on a (provider name, class) pair:
+//
+//   - the enum is exactly "local" | "remote" | unset (ValidTimeoutClass);
+//   - the reserved, backend-owned `embedded` provider must carry no override at
+//     all: its envelope is fixed by its identity, so an override would let a
+//     hand-edited entry downgrade it (a "remote" override caps the local model
+//     at 600 s) even though Classify honors such an override.
+//
+// This is the single gate shared by validate() (the load-time frontier) and the
+// UpdateLLMConfig RPC trust boundary. Both MUST go through it: an invalid value
+// passes the enum check alone, is persisted verbatim by Save (which does not run
+// validate), and then fails validate() on the next Load — which rolls the
+// ENTIRE config back to defaults. Keeping one function is what stops the two
+// gates from drifting out of step.
+func ValidateProviderTimeoutClass(name, class string) error {
+	if !ValidTimeoutClass(class) {
+		return fmt.Errorf(
+			"llm provider %q timeout_class %q is not valid; must be %q, %q, or unset",
+			name, class, llmbudget.ClassLocal, llmbudget.ClassRemote,
+		)
+	}
+	if name == EmbeddedLLMProviderName && class != "" {
+		return fmt.Errorf(
+			"llm provider %q is backend-owned and its timeout class is fixed; timeout_class must be unset",
+			name,
+		)
+	}
+	return nil
 }
 
 // AnthropicCompatibleConfig holds Anthropic-compatible provider configuration
@@ -569,6 +621,13 @@ type AnthropicCompatibleConfig struct {
 	// ToBuilderConfig: the timer lives in the c0wrk session layer, not in
 	// the router/SDK layer.
 	AutoRetrySeconds int `yaml:"auto_retry_seconds,omitempty"`
+	// TimeoutClass is the adaptive request budget's class override for this
+	// provider (ADR-071 D3): "local" or "remote". Empty = infer (a loopback
+	// base_url is local, everything else remote; the reserved "embedded"
+	// provider is fixed by its name and accepts no override). The class
+	// selects the floor/ceiling envelope that bounds the provider's trained
+	// budgets. validate() rejects anything but the enum.
+	TimeoutClass string `yaml:"timeout_class,omitempty"`
 }
 
 // ChatGPTConfig holds ChatGPT (OpenAI) provider configuration.
@@ -602,7 +661,6 @@ const MaxModelContextWindow = 1 << 24
 // Fields use omitempty so a 0/empty/nil value (meaning "inherit the built-in
 // default") is not serialized — only fields that actually differ from the
 // built-in metadata are persisted to config.yaml.
-//
 // TokenizerType/Family/Protocol use the empty string as the "inherit" sentinel
 // (the built-in resolver derives them via DetectFamily/DetectProtocol when
 // unset). Capabilities uses a nil pointer: nil = inherit default, a non-nil
@@ -620,6 +678,13 @@ type ModelOverride struct {
 	Family        string                 `yaml:"family,omitempty"`
 	Protocol      string                 `yaml:"protocol,omitempty"`
 	Capabilities  *llm.ModelCapabilities `yaml:"capabilities,omitempty"`
+	// RequestTimeout is the per-model FIXED request deadline in seconds
+	// (ADR-071 D5): when positive, every request for this model is armed
+	// with exactly this budget — never escalated, immune to the adaptive
+	// estimate. 0 (unset) = "no opinion": the adaptive budget governs (or,
+	// with the kill-switch off, the global timeouts.llmRequestTimeout).
+	// validate() bounds it to [0, 3600].
+	RequestTimeout int `yaml:"request_timeout,omitempty"`
 }
 
 // LLMRetryConfig configures retry behavior for LLM API calls.
@@ -2084,9 +2149,28 @@ type TimeoutsConfig struct {
 	WebFetchRetries          int `yaml:"webFetchRetries"`          // retry count (not seconds) for failed web fetches; each retry doubles the active timeout (webFetchTimeout, or webFetchProxyTimeout when the proxy is on), default: 2
 	WebSearchTimeout         int `yaml:"webSearchTimeout"`         // seconds, default: 30
 	PersistenceTimeout       int `yaml:"persistenceTimeout"`       // seconds, default: 5
-	LLMRequestTimeout        int `yaml:"llmRequestTimeout"`        // seconds, default: 600 (10 min) — main chat loop
+	LLMRequestTimeout        int `yaml:"llmRequestTimeout"`        // seconds; the main chat loop. Under the adaptive budget (ADR-071): >0 is a FIXED, never-escalated override, 0 (the default) means "no opinion" and the trained per-model budgets govern; with the adaptive budget disabled it keeps the legacy fixed semantics (0 behaves as 600).
 	ServiceLLMRequestTimeout int `yaml:"serviceLLMRequestTimeout"` // seconds, default: 600 (10 min) — one-shot service LLM requests (session title, commit message, prompt optimization); one budget for the whole client exchange incl. auto-retry re-sends
 	GitCommitTimeout         int `yaml:"gitCommitTimeout"`         // seconds, default: 300 (5 min) — git commit spawn (rev-parse and other quick git probes keep the fast 30s timeout)
+	// AdaptiveBudget configures the adaptive per-model LLM request budget
+	// (ADR-071). See AdaptiveBudgetConfig.
+	AdaptiveBudget AdaptiveBudgetConfig `yaml:"adaptive_budget"`
+}
+
+// AdaptiveBudgetConfig holds the adaptive per-model LLM request budget
+// kill-switch (ADR-071 D11). When enabled (the default), provider entry
+// clients carry the core/llmbudget transport: it arms every main-agent LLM
+// request with a per-model deadline learned from the session's own traffic —
+// warmup 600 s until three samples, then the trained estimate bounded by the
+// provider class envelope, ×2 escalation on the transport's own expiry. When
+// disabled, NO budget transport is installed anywhere and the behavior is
+// exactly the pre-ADR-071 fixed regime — timeouts.llmRequestTimeout, with 0
+// behaving as the legacy 600 s.
+type AdaptiveBudgetConfig struct {
+	// Enabled is the kill-switch. A *bool so an explicit `enabled: false`
+	// survives defaults (a plain bool would be indistinguishable from unset
+	// and coerced back to true). nil = unset → default true.
+	Enabled *bool `yaml:"enabled"`
 }
 
 // OrchestrationConfig holds orchestration-specific limits and settings.
@@ -2497,6 +2581,10 @@ type ProviderWithModels struct {
 	// compatible providers (0 = disabled). Fixed providers (anthropic,
 	// chatgpt) have no such knob and always report 0.
 	AutoRetrySeconds int
+	// TimeoutClass is the adaptive request budget's class override for
+	// compatible providers (ADR-071 D3); empty = infer. Fixed providers
+	// (anthropic, chatgpt) have no such knob and always report "".
+	TimeoutClass string
 }
 
 // providerEntry is the canonical, single-source-of-truth provider list.
@@ -2508,6 +2596,7 @@ type providerEntry struct {
 	tlsFingerprint     string
 	outputTokenReserve int
 	autoRetrySeconds   int
+	timeoutClass       string
 }
 
 // allProviderEntries returns the flat list of all known providers.
@@ -2531,11 +2620,11 @@ func (c *LLMConfig) allProviderEntries() []providerEntry {
 	)
 	for _, name := range openaiKeys {
 		cfg := c.OpenAICompatible[name]
-		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, tlsFingerprint: cfg.TLSFingerprint, outputTokenReserve: cfg.OutputTokenReserve, autoRetrySeconds: cfg.AutoRetrySeconds})
+		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, tlsFingerprint: cfg.TLSFingerprint, outputTokenReserve: cfg.OutputTokenReserve, autoRetrySeconds: cfg.AutoRetrySeconds, timeoutClass: cfg.TimeoutClass})
 	}
 	for _, name := range anthropicKeys {
 		cfg := c.AnthropicCompatible[name]
-		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, tlsFingerprint: cfg.TLSFingerprint, outputTokenReserve: cfg.OutputTokenReserve, autoRetrySeconds: cfg.AutoRetrySeconds})
+		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, tlsFingerprint: cfg.TLSFingerprint, outputTokenReserve: cfg.OutputTokenReserve, autoRetrySeconds: cfg.AutoRetrySeconds, timeoutClass: cfg.TimeoutClass})
 	}
 	return entries
 }
@@ -2573,6 +2662,7 @@ func (c *LLMConfig) GetAllProviderConfigs() []ProviderWithModels {
 			TLSFingerprint:     p.tlsFingerprint,
 			OutputTokenReserve: p.outputTokenReserve,
 			AutoRetrySeconds:   p.autoRetrySeconds,
+			TimeoutClass:       p.timeoutClass,
 		})
 	}
 	return result
@@ -2779,6 +2869,17 @@ func validate(cfg *Config) error {
 				p.name, maxAutoRetrySeconds, p.autoRetrySeconds,
 			)
 		}
+		// Validate the per-provider timeout_class override (ADR-071 D3): the
+		// enum is exactly "local" | "remote" | unset, and the reserved
+		// `embedded` provider must carry no override. An unknown value would
+		// otherwise be silently ignored by Classify and infer the class
+		// anyway, so a typo would silently change which envelope bounds the
+		// provider's budgets; a hand-written override on `embedded` would let
+		// the backend-owned local model be downgraded. Shared with the
+		// UpdateLLMConfig trust boundary so the two gates cannot drift.
+		if err := ValidateProviderTimeoutClass(p.name, p.timeoutClass); err != nil {
+			return err
+		}
 	}
 
 	// Range-check the llm.models context_window overrides. 0 means "inherit the
@@ -2802,6 +2903,25 @@ func validate(cfg *Config) error {
 			return fmt.Errorf(
 				"llm.models.%q.context_window %d is not valid; must be within 1-%d tokens, or 0/unset to inherit the built-in metadata",
 				name, window, MaxModelContextWindow,
+			)
+		}
+	}
+
+	// Validate the per-model request_timeout override (ADR-071 D5): the fixed
+	// deadline accepts [0, 3600] seconds. 0 = "no opinion" (the adaptive
+	// budget governs); a positive value is armed EXACTLY as configured and
+	// never escalated, so an absurd value would silently disable the
+	// stalled-upstream protection the budget exists to provide (or strangle a
+	// legitimate long generation). Same bound and rationale as the
+	// per-provider auto_retry_seconds. The loop is separate from the
+	// context_window check above: a model with no window override must still
+	// get its deadline validated.
+	for _, name := range modelNames {
+		timeout := cfg.LLM.Models[name].RequestTimeout
+		if timeout < 0 || timeout > maxAutoRetrySeconds {
+			return fmt.Errorf(
+				"llm.models.%q.request_timeout %d is not valid; must be within [0, %d] seconds, or 0/unset for the adaptive budget",
+				name, timeout, maxAutoRetrySeconds,
 			)
 		}
 	}

@@ -102,7 +102,7 @@ func newEmbeddedRouterBuilder(t *testing.T) *OrchestratorBuilder {
 // it, returning the response.
 func callEmbeddedOnce(t *testing.T, b *OrchestratorBuilder, cfg *BuilderConfig) (*llm.ChatResponse, error) {
 	t.Helper()
-	router, _, err := b.buildRouter(t.Context(), cfg)
+	router, _, err := b.buildRouter(t.Context(), cfg, nil)
 	if err != nil {
 		t.Fatalf("buildRouter: %v", err)
 	}
