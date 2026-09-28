@@ -94,6 +94,11 @@ type ConfigProviderFull struct {
 	// interval: 0 = disabled. Only compatible providers carry one; the fixed
 	// anthropic/chatgpt providers always report 0.
 	AutoRetrySeconds int `json:"auto_retry_seconds,omitempty"`
+	// TimeoutClass exposes the adaptive request budget's class override for
+	// compatible providers (ADR-071 D3): "local" | "remote"; empty = infer.
+	// The fixed anthropic/chatgpt providers and the reserved embedded
+	// provider always report "".
+	TimeoutClass string `json:"timeout_class,omitempty"`
 }
 
 // ConfigSearchResp holds search config values.
@@ -146,6 +151,14 @@ type ProviderConfigRequest struct {
 	// the timer lives in the c0wrk session layer, so it only round-trips
 	// through config. Ignored for the fixed anthropic/chatgpt providers.
 	AutoRetrySeconds *int `json:"auto_retry_seconds,omitempty"`
+	// TimeoutClass is the adaptive request budget's class override for
+	// compatible providers (ADR-071 D3): "local" | "remote". nil = keep the
+	// persisted value (debounced partial saves must not drop it); non-nil =
+	// apply verbatim, so an explicit empty string CLEARS the override (back
+	// to class inference). validate() rejects anything but the enum; the
+	// fixed anthropic/chatgpt providers and the reserved embedded provider
+	// have no such knob and ignore it.
+	TimeoutClass *string `json:"timeout_class,omitempty"`
 }
 
 // ListProviderModelsRequest is the payload for ListProviderModels.

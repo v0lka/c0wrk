@@ -375,8 +375,16 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Timeouts.PersistenceTimeout == 0 {
 		cfg.Timeouts.PersistenceTimeout = 5
 	}
-	if cfg.Timeouts.LLMRequestTimeout == 0 {
-		cfg.Timeouts.LLMRequestTimeout = 600
+	// LLMRequestTimeout deliberately gets NO 0→600 coercion (ADR-071): 0 is
+	// the default and means "no opinion" — under the adaptive request budget
+	// the trained per-model budgets govern, and the legacy fixed semantics
+	// (0 behaving as 600 s) live inside the budget resolver's kill-switch-off
+	// path and the shared HTTP client's fallback instead. Only a positive
+	// operator value reaches the builder, where it acts as a fixed,
+	// never-escalated override.
+	if cfg.Timeouts.AdaptiveBudget.Enabled == nil {
+		enabled := true
+		cfg.Timeouts.AdaptiveBudget.Enabled = &enabled
 	}
 	if cfg.Timeouts.ServiceLLMRequestTimeout == 0 {
 		cfg.Timeouts.ServiceLLMRequestTimeout = 600

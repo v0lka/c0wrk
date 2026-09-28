@@ -20,6 +20,7 @@ import (
 	"github.com/openai/openai-go/option"
 
 	"github.com/v0lka/c0wrk/core/embeddedllm"
+	"github.com/v0lka/c0wrk/core/llmbudget"
 	"github.com/v0lka/c0wrk/core/llmtls"
 	coreprompts "github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/c0wrk/core/proxy"
@@ -303,7 +304,7 @@ func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
 	defer cancel()
 
 	// LLM Router
-	llmRouter, modelReg, err := b.buildRouter(ctx, cfg)
+	llmRouter, modelReg, err := b.buildRouter(ctx, cfg, nil)
 	if err != nil {
 		b.log().Warn("failed to initialize LLM router at startup", "error", err)
 		b.initErr = err
@@ -510,9 +511,16 @@ func (b *OrchestratorBuilder) Build(
 	// Wrap emitter with logging
 	emitter = NewLoggingEmitter(emitter, logger)
 
-	// Build per-session LLM router + model registry
+	// Build per-session LLM router + model registry. The session-scoped
+	// adaptive-budget table (ADR-071 D10) is created HERE — beside the
+	// UsageTracker that feeds it below — and handed to the router build so
+	// every provider entry's budget transport shares it.
 	routerStart := time.Now()
-	llmRouter, modelReg, err := b.buildRouter(context.Background(), cfg)
+	var budgetTable *llmbudget.BudgetTable
+	if cfg.Timeouts.AdaptiveBudgetEnabled {
+		budgetTable = llmbudget.NewBudgetTable()
+	}
+	llmRouter, modelReg, err := b.buildRouter(context.Background(), cfg, budgetTable)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build LLM router: %w", err)
 	}
@@ -536,6 +544,15 @@ func (b *OrchestratorBuilder) Build(
 
 	// Create session-level UsageTracker and TrackingCaller
 	usageTracker := llm.NewUsageTracker()
+	// Adaptive request budget (ADR-071 D1): every successful call through the
+	// shared TrackingCaller — conductor steps, subagents, E2S turns — reports
+	// one timed sample into the session's budget table, keyed by the model the
+	// provider actually served. This is the ONLY writer of the table the
+	// entry transports read their budgets from; the tracker rides the same
+	// session lifetime, so the table needs no separate teardown.
+	if budgetTable != nil {
+		usageTracker.AddTimedObserver(budgetIngestObserver(budgetTable))
+	}
 	trackingCaller := llm.NewTrackingCaller(llmRouter, usageTracker)
 
 	// Register emitter as observer for session token events and persistence.
@@ -806,7 +823,7 @@ func (b *OrchestratorBuilder) RebuildRouter(cfg *BuilderConfig) error {
 	if err := b.waitReady(waitCtx); err != nil {
 		return err
 	}
-	llmRouter, modelReg, err := b.buildRouter(context.Background(), cfg)
+	llmRouter, modelReg, err := b.buildRouter(context.Background(), cfg, nil)
 	if err != nil {
 		return err
 	}
@@ -1648,10 +1665,13 @@ func activeSkillPathResolver(ctx context.Context, skillName string) (string, boo
 // ---------------------------------------------------------------------------
 
 // buildRouter creates a fresh LLM Router + ModelRegistry from config.
-// modelOverridesFromConfig derives the tier-1 model-metadata override map a
-// model registry is seeded with. Both buildRouter (registry construction) and
-// UpdateModelOverrides (runtime pushes into live session registries) derive
-// their overrides through this one helper so the two writers cannot drift.
+// budgetTable is the session-scoped adaptive-budget sample table (ADR-071);
+// nil (the builder-level routers: startup init, RebuildRouter, the judge)
+// installs no budget transport on any entry. modelOverridesFromConfig derives
+// the tier-1 model-metadata override map a model registry is seeded with.
+// Both buildRouter (registry construction) and UpdateModelOverrides (runtime
+// pushes into live session registries) derive their overrides through this
+// one helper so the two writers cannot drift.
 //
 // Entries are seeded PARTIAL: only the fields the user actually set in
 // cfg.LLM.Models are carried (unset scalars stay zero/empty = inherit), and
@@ -1701,7 +1721,7 @@ func modelOverridesFromConfig(cfg *BuilderConfig) map[string]llm.ModelMetadata {
 	return overrides
 }
 
-func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfig) (*llm.Router, *llm.ModelRegistry, error) {
+func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfig, budgetTable *llmbudget.BudgetTable) (*llm.Router, *llm.ModelRegistry, error) {
 	// Snapshot proxyClient under lock to avoid data races with RebuildProxy.
 	b.mu.RLock()
 	proxyClient := b.proxyClient
@@ -1757,6 +1777,10 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	// Loader, which is the case for the per-session config the orchestrator
 	// factory converts (see SetEmbeddedLLM).
 	embedded := b.embeddedSeam(cfg)
+	// The adaptive request budget wiring (ADR-071): when the kill-switch is on
+	// and a session table was supplied, every provider entry's client gets the
+	// budget RoundTripper (on top of the pin, beneath the ensure-loaded gate).
+	budget := budgetWiringFromConfig(cfg, budgetTable)
 	providers := make([]llm.ProviderEntry, 0, len(cfg.LLM.ProviderConfigs))
 	// The proxy client is non-nil exactly when the proxy is effective
 	// (proxy.enabled && proxy.url != "", the proxy.BuildClient rule); the
@@ -1770,7 +1794,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		if !ok || len(pc.Models) == 0 {
 			continue
 		}
-		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, embedded, cfg.ExpandEnvVars, b.log()))
+		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, embedded, budget, cfg.ExpandEnvVars, b.log()))
 	}
 	// Also include any providers not in the standard order (e.g. future additions).
 	// Collect unknown names and iterate in sorted order for determinism.
@@ -1784,7 +1808,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	sort.Strings(unknown)
 	for _, name := range unknown {
 		pc := cfg.LLM.ProviderConfigs[name]
-		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, embedded, cfg.ExpandEnvVars, b.log()))
+		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, embedded, budget, cfg.ExpandEnvVars, b.log()))
 	}
 
 	// Model Profiles context-management override: keeps the router's token budget
@@ -2073,6 +2097,162 @@ func buildLLMHTTPClient(proxyClient *http.Client, timeoutSec int) *http.Client {
 	return client
 }
 
+// llmBudgetWiring carries the adaptive per-model LLM request budget
+// (ADR-071) into providerEntryFromConfig. The zero value is the disabled
+// posture: every entry client is built exactly as before the feature existed.
+//
+// enabled is the conjunctive gate — the transport is installed only when the
+// kill-switch is on (timeouts.adaptive_budget.enabled) AND a session-scoped
+// BudgetTable was supplied. The builder-level routers (startup init,
+// RebuildRouter, the judge) get no table: they serve service-shaped calls
+// that own their ctx deadlines, and a table without a tracker feeding it
+// would only ever arm warmup budgets.
+type llmBudgetWiring struct {
+	enabled bool
+	// table is the session-scoped sample store, shared by every entry
+	// transport of one session and fed by that session's UsageTracker
+	// timed observer. Non-nil exactly when enabled.
+	table *llmbudget.BudgetTable
+	// global is timeouts.llmRequestTimeout as a duration. Under the
+	// kill-switch a positive value is a fixed, never-escalated override
+	// (ADR-071 D5); 0 is "no opinion" and the trained budgets govern.
+	global time.Duration
+	// overrides are the raw llm.models entries, consulted per wire-extracted
+	// model name for the fixed request_timeout and the output_limit reserve.
+	overrides map[string]BuilderModelOverride
+}
+
+// budgetWiringFromConfig derives the wiring for one router build. A nil
+// budgetTable (builder-level router) always disables the transport.
+func budgetWiringFromConfig(cfg *BuilderConfig, budgetTable *llmbudget.BudgetTable) llmBudgetWiring {
+	if !cfg.Timeouts.AdaptiveBudgetEnabled || budgetTable == nil {
+		return llmBudgetWiring{}
+	}
+	var global time.Duration
+	if cfg.Timeouts.LLMRequestTimeout > 0 {
+		global = time.Duration(cfg.Timeouts.LLMRequestTimeout) * time.Second
+	}
+	return llmBudgetWiring{
+		enabled:   true,
+		table:     budgetTable,
+		global:    global,
+		overrides: cfg.LLM.Models,
+	}
+}
+
+// overridesFor resolves the per-model operator opinions for one wire-extracted
+// model name (ADR-071 D5/D7): llm.models.<name>.request_timeout as the fixed
+// deadline and llm.models.<name>.output_limit as the out-reserve ceiling.
+// Unknown model, empty map — zero values, i.e. "no opinion".
+func (w llmBudgetWiring) overridesFor(model string) llmbudget.ModelOverrides {
+	ov, ok := w.overrides[model]
+	if !ok {
+		return llmbudget.ModelOverrides{}
+	}
+	mo := llmbudget.ModelOverrides{}
+	if ov.RequestTimeout > 0 {
+		mo.RequestTimeout = time.Duration(ov.RequestTimeout) * time.Second
+	}
+	if ov.OutputLimit > 0 {
+		mo.OutputLimit = ov.OutputLimit
+	}
+	return mo
+}
+
+// budgetIngestObserver adapts the UsageTracker timed-observer shape to the
+// budget table's Ingest (ADR-071 D1): one successful LLM call becomes one
+// timed sample keyed by the model the provider actually served. totalIn/
+// totalOut/family carry no size information the estimator does not already
+// have from the sample itself, so they are dropped here.
+func budgetIngestObserver(table *llmbudget.BudgetTable) func(usage llm.TokenUsage, duration time.Duration, totalIn, totalOut int, model, family string) {
+	return func(usage llm.TokenUsage, duration time.Duration, totalIn, totalOut int, model, family string) {
+		table.Ingest(model, usage.InputTokens, usage.OutputTokens, duration)
+	}
+}
+
+// budgetWire selects the model-extraction strategy for one provider entry
+// (ADR-071 D9). The openai and anthropic wires carry the model as a top-level
+// JSON field; only an explicitly google-protocol model speaks the gemini URL
+// shape (POST {base}/models/{model}:generateContent). Local google-protocol
+// checkpoints are remapped to chat_completions before this point
+// (remapLocalGoogleProtocols), so the URL wire is chosen ONLY when EVERY
+// enabled model of the provider carries an explicit llm.models protocol
+// override of "google" — a mixed provider keeps the JSON wire and its
+// google-wire requests degrade to the provider-level budget key (still armed,
+// never unbounded).
+func budgetWire(pc BuilderProviderConfig, overrides map[string]BuilderModelOverride) llmbudget.WireFormat {
+	if len(pc.Models) == 0 {
+		return llmbudget.WireJSONModel
+	}
+	for _, model := range pc.Models {
+		if ov, ok := overrides[model]; !ok || ov.Protocol != string(llm.ProtocolGoogle) {
+			return llmbudget.WireJSONModel
+		}
+	}
+	return llmbudget.WireURLModel
+}
+
+// attachBudgetClient wraps one provider entry's dial client with the adaptive
+// budget RoundTripper (ADR-071 D9). It must run AFTER llmtls.RouterEntryClient
+// (the budget wrapper goes on TOP of the pin: llmtls needs a concrete
+// *http.Transport beneath it to hold its tls.Config) and BEFORE the embedded
+// ensure-loaded decoration (the wrapper goes UNDER that gate, so the armed
+// deadline never covers the cold-load wait — D13).
+//
+// The kill-switch-off posture returns client untouched: no wrapper, no clone,
+// byte-for-byte the pre-ADR-071 entry.
+//
+// When enabled, the entry gets an EXPLICIT client — never the load-bearing
+// nil:
+//
+//   - pin path: the pinned client is cloned (never mutated), its Timeout is
+//     zeroed and its transport wrapped — pin beneath, budget above.
+//   - nil path (proxy dials or no pin): the shared router client is cloned,
+//     preserving its transport (the proxy transport — the whole point of the
+//     load-bearing nil) and replacing its fixed Timeout with the budget
+//     transport's ALWAYS-ARM (the stalled-upstream invariant). The clone is
+//     required because nil makes the SDK fall back to RouterConfig.HTTPClient,
+//     which carries no budget transport.
+//
+// In both paths the entry clone carries Client.Timeout = 0: with the budget
+// transport on the wire a client-level timeout would double-cap the request,
+// and on the embedded entry it is what keeps EnsureLoadedClient from arming
+// the fixed post-readiness budget that would cap inference at 600 s under a
+// trained adaptive budget of up to the class ceiling (ADR-071 D8).
+func (w llmBudgetWiring) attachBudgetClient(
+	client, sharedClient *http.Client,
+	name, baseURL, timeoutClass string,
+	wire llmbudget.WireFormat,
+	logger *slog.Logger,
+) *http.Client {
+	if !w.enabled {
+		return client
+	}
+	base := client
+	if base == nil {
+		base = sharedClient
+	}
+	if base == nil {
+		// Defensive: no client to derive from (no pin, nil shared). Leave the
+		// entry on the router-level fallback — the pre-adaptive posture.
+		return client
+	}
+	class := llmbudget.Classify(name, baseURL, timeoutClass)
+	clone := *base
+	clone.Timeout = 0
+	clone.Transport = llmbudget.NewTransport(base.Transport, llmbudget.TransportOptions{
+		Table:                w.table,
+		Class:                class,
+		Wire:                 wire,
+		ProviderName:         name,
+		Overrides:            w.overridesFor,
+		GlobalRequestTimeout: w.global,
+		AdaptiveEnabled:      true,
+		Logger:               logger,
+	})
+	return &clone
+}
+
 // providerEntryFromConfig builds one llm.ProviderEntry from a provider's
 // BuilderConfig slice.
 //
@@ -2104,6 +2284,15 @@ func buildLLMHTTPClient(proxyClient *http.Client, timeoutSec int) *http.Client {
 // the embedded llama-server spells Qwen reasoning controls as
 // chat_template_kwargs, while every other openai_compatible entry keeps the
 // vendor-default top-level spelling.
+//
+// The adaptive budget wiring (ADR-071) sits BETWEEN those two resolvers: its
+// RoundTripper wraps the client's transport on top of the pin and beneath the
+// ensure-loaded gate. When it is enabled, the entry clone carries
+// Client.Timeout = 0 — arming is the budget transport's ALWAYS-ARM, which is
+// also what keeps the embedded entry's post-readiness budget from capping a
+// trained adaptive budget at the fixed 600 s (see attachBudgetClient). When
+// the kill-switch is off the wiring is inert and every entry is byte-for-byte
+// the pre-ADR-071 shape.
 func providerEntryFromConfig(
 	name string,
 	pc BuilderProviderConfig,
@@ -2111,11 +2300,19 @@ func providerEntryFromConfig(
 	proxyClient *http.Client,
 	bypass proxy.BypassMatcher,
 	embedded BuilderEmbeddedLLMConfig,
+	budget llmBudgetWiring,
 	expand func(string) string,
 	logger *slog.Logger,
 ) llm.ProviderEntry {
-	policy := dialPolicy(proxyClient, bypass, expand(pc.BaseURL))
+	resolvedBase := expand(pc.BaseURL)
+	policy := dialPolicy(proxyClient, bypass, resolvedBase)
 	client := llmtls.RouterEntryClient(policy, sharedClient, pc.TLSFingerprint, logger)
+	// Adaptive request budget (ADR-071): wrap on top of the pin, beneath the
+	// ensure-loaded gate. The wire is derived from the same explicit protocol
+	// overrides the registry sees; the class from the operator override and
+	// the resolved loopback shape of base_url.
+	client = budget.attachBudgetClient(client, sharedClient, name, resolvedBase,
+		pc.TimeoutClass, budgetWire(pc, budget.overrides), logger)
 	reasoningWire := llm.ReasoningWireVendorDefault
 	if embedded.guards(name) {
 		// A cold embedded model is not listening, so this entry's client must
@@ -2124,6 +2321,10 @@ func providerEntryFromConfig(
 		// the pinned client's, which is itself cloned from sharedClient) —
 		// handing over a client without the long LLM timeout would cap inference
 		// at the web-fetch proxy budget, the exact mistake llmtls warns about.
+		// Under the adaptive budget wiring the clone's Timeout is already 0 (the
+		// budget transport arms instead), so the ensure-loaded gate adds no
+		// fixed post-readiness budget of its own and a trained adaptive budget
+		// up to the class ceiling is honored (ADR-071 D8/D13).
 		client = embeddedllm.EnsureLoadedClient(client, sharedClient, embedded.Loader, embedded.LoadWaitTimeout, logger)
 		// The embedded server is the pinned PrismML-Eng/llama.cpp fork, which
 		// reads enable_thinking ONLY from chat_template_kwargs — a top-level
@@ -2137,7 +2338,7 @@ func providerEntryFromConfig(
 		Name:         name,
 		ProviderType: pc.ProviderType,
 		APIKey:       expand(pc.APIKey),
-		BaseURL:      expand(pc.BaseURL),
+		BaseURL:      resolvedBase,
 		Models:       pc.Models,
 		HTTPClient:   client,
 		// Zero value for every non-embedded provider: the vendor-default
@@ -2344,7 +2545,7 @@ func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter
 
 	if llmRouter == nil {
 		// Try building a fresh router
-		newRouter, _, err := b.buildRouter(context.Background(), cfg)
+		newRouter, _, err := b.buildRouter(context.Background(), cfg, nil)
 		if err == nil && newRouter != nil {
 			llmRouter = newRouter
 		} else if err != nil && b.logger != nil {

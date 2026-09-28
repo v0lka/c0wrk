@@ -280,15 +280,22 @@ llm:
 		t.Errorf("Expected default llm.retry.max_backoff '30s', got %q", cfg.LLM.Retry.MaxBackoff)
 	}
 
-	// Check Timeouts defaults
-	if cfg.Timeouts.LLMRequestTimeout != 600 {
-		t.Errorf("Expected default llmRequestTimeout 600, got %d", cfg.Timeouts.LLMRequestTimeout)
+	// Check Timeouts defaults. llmRequestTimeout has NO default value since
+	// ADR-071: 0 flows through as "no opinion" and the adaptive request
+	// budget governs; the legacy fixed 0→600 semantics live inside the
+	// budget resolver's kill-switch-off path instead of the config.
+	if cfg.Timeouts.LLMRequestTimeout != 0 {
+		t.Errorf("Expected default llmRequestTimeout 0 (no opinion), got %d", cfg.Timeouts.LLMRequestTimeout)
 	}
 	if cfg.Timeouts.ServiceLLMRequestTimeout != 600 {
 		t.Errorf("Expected default serviceLLMRequestTimeout 600, got %d", cfg.Timeouts.ServiceLLMRequestTimeout)
 	}
 	if cfg.Timeouts.GitCommitTimeout != 300 {
 		t.Errorf("Expected default gitCommitTimeout 300, got %d", cfg.Timeouts.GitCommitTimeout)
+	}
+	// Adaptive request budget defaults to ON (ADR-071 D11).
+	if cfg.Timeouts.AdaptiveBudget.Enabled == nil || !*cfg.Timeouts.AdaptiveBudget.Enabled {
+		t.Errorf("Expected default adaptive_budget.enabled true, got %v", cfg.Timeouts.AdaptiveBudget.Enabled)
 	}
 
 	// Check Models map is initialized

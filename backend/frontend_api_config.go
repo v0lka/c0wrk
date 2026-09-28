@@ -127,6 +127,7 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 			Models:           cfg.Models,
 			TLSFingerprint:   cfg.TLSFingerprint,
 			AutoRetrySeconds: cfg.AutoRetrySeconds,
+			TimeoutClass:     cfg.TimeoutClass,
 		}
 	}
 	for name, cfg := range f.config.LLM.AnthropicCompatible {
@@ -136,6 +137,7 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 			Models:           cfg.Models,
 			TLSFingerprint:   cfg.TLSFingerprint,
 			AutoRetrySeconds: cfg.AutoRetrySeconds,
+			TimeoutClass:     cfg.TimeoutClass,
 		}
 	}
 	return resp
@@ -269,6 +271,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 				TLSFingerprint:     resolveTLSFingerprint(ocReq.TLSFingerprint, existing.TLSFingerprint, exists),
 				OutputTokenReserve: outputReserve,
 				AutoRetrySeconds:   resolveAutoRetrySeconds(ocReq.AutoRetrySeconds, existing.AutoRetrySeconds, exists),
+				TimeoutClass:       resolveTimeoutClass(ocReq.TimeoutClass, existing.TimeoutClass, exists),
 			}
 		}
 		candidate.OpenAICompatible = newMap
@@ -292,6 +295,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 				TLSFingerprint:     resolveTLSFingerprint(acReq.TLSFingerprint, existing.TLSFingerprint, exists),
 				OutputTokenReserve: outputReserve,
 				AutoRetrySeconds:   resolveAutoRetrySeconds(acReq.AutoRetrySeconds, existing.AutoRetrySeconds, exists),
+				TimeoutClass:       resolveTimeoutClass(acReq.TimeoutClass, existing.TimeoutClass, exists),
 			}
 		}
 		candidate.AnthropicCompatible = newMap
@@ -1943,6 +1947,23 @@ func resolveAutoRetrySeconds(requested *int, persisted int, providerExists bool)
 		return persisted
 	}
 	return 0
+}
+
+// resolveTimeoutClass applies the pointer sentinel for the per-provider
+// adaptive-budget class override (ADR-071 D3): nil means "keep the persisted
+// class", which is what a debounced partial save from the settings dialog
+// sends — the UI has no timeout_class editor yet, so without this every such
+// save would silently clear a hand-edited override and flip the provider back
+// to class inference. A non-nil pointer applies verbatim, so an explicit empty
+// string is the deliberate "infer the class" signal.
+func resolveTimeoutClass(requested *string, persisted string, providerExists bool) string {
+	if requested != nil {
+		return *requested
+	}
+	if providerExists {
+		return persisted
+	}
+	return ""
 }
 
 // applyListProviderModelsOverrides merges draft credentials from the settings

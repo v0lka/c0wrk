@@ -134,7 +134,7 @@ func TestBuildRouterSeedsOverridesFromSharedHelper(t *testing.T) {
 		embeddedModelName: {ContextWindow: 262144},
 	}
 
-	_, reg, err := b.buildRouter(t.Context(), cfg)
+	_, reg, err := b.buildRouter(t.Context(), cfg, nil)
 	if err != nil {
 		t.Fatalf("buildRouter: %v", err)
 	}

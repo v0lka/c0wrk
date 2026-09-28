@@ -91,6 +91,7 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 
 			TLSFingerprint:     p.TLSFingerprint,
 			OutputTokenReserve: p.OutputTokenReserve,
+			TimeoutClass:       p.TimeoutClass,
 		}
 	}
 
@@ -98,12 +99,13 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 	models := make(map[string]core.BuilderModelOverride, len(cfg.LLM.Models))
 	for name, m := range cfg.LLM.Models {
 		models[name] = core.BuilderModelOverride{
-			ContextWindow: m.ContextWindow,
-			OutputLimit:   m.OutputLimit,
-			TokenizerType: m.TokenizerType,
-			Family:        m.Family,
-			Protocol:      m.Protocol,
-			Capabilities:  m.Capabilities,
+			ContextWindow:  m.ContextWindow,
+			OutputLimit:    m.OutputLimit,
+			TokenizerType:  m.TokenizerType,
+			Family:         m.Family,
+			Protocol:       m.Protocol,
+			Capabilities:   m.Capabilities,
+			RequestTimeout: m.RequestTimeout,
 		}
 	}
 
@@ -336,6 +338,10 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			WebFetchRetries:      cfg.Timeouts.WebFetchRetries,
 			WebSearchTimeout:     cfg.Timeouts.WebSearchTimeout,
 			LLMRequestTimeout:    cfg.Timeouts.LLMRequestTimeout,
+			// Adaptive request budget kill-switch (ADR-071 D11). derefBool
+			// defaults a nil (unset — a programmatic config that bypassed
+			// ApplyDefaults) to the feature's enabled-by-default posture.
+			AdaptiveBudgetEnabled: derefBool(cfg.Timeouts.AdaptiveBudget.Enabled),
 		},
 		ShellExec: convertShellExecConfig(cfg.ShellExec, log),
 		Proxy: proxy.Config{

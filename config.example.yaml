@@ -82,6 +82,16 @@ llm:
       # proceed. 0 / omitted = disabled (the default). Not a router-level
       # retry knob: the timer lives in the c0wrk session layer.
       # auto_retry_seconds: 30
+      #
+      # Optional: request-budget timeout class for this provider (ADR-071).
+      # Selects the floor/ceiling envelope the provider's adaptive per-model
+      # budgets are clamped to: "remote" = 120 s-10 min, "local" = 5-30 min.
+      # Omitted = inferred: a loopback base_url is "local", everything else
+      # "remote" (the backend-owned "embedded" provider is always the
+      # embedded class by definition of its reserved name — NOT
+      # configurable). Exactly "local" or "remote": any other value is
+      # rejected at load.
+      # timeout_class: local
 
   anthropic_compatible:
     # Each key is a named provider speaking Anthropic's Messages API
@@ -104,6 +114,10 @@ llm:
     #   # disabled). After a failed request the session waits this many
     #   # seconds, then re-sends automatically.
     #   # auto_retry_seconds: 30
+    #   # Same request-budget timeout class as openai_compatible above
+    #   # (timeout_class, ADR-071): exactly "local" or "remote", omitted =
+    #   # inferred from base_url.
+    #   # timeout_class: local
 
   chatgpt:
     api_key: "${OPENAI_API_KEY}"
@@ -130,6 +144,13 @@ llm:
   #     context_window: 128000
   #     # Maximum tokens the model may emit in a single response.
   #     output_limit: 8192
+  #     # Fixed per-model request budget in seconds (ADR-071). A positive
+  #     # value arms every main-loop call to this model with EXACTLY this
+  #     # deadline — never escalated by the adaptive ×2 ladder, senior to
+  #     # both the trained adaptive budget and the global llmRequestTimeout
+  #     # override. 0 / omitted = "no opinion": the adaptive budget governs.
+  #     # Valid 0-3600.
+  #     request_timeout: 900
   #     # Token counting strategy. One of:
   #     #   "approximate"           — character-ratio heuristic (no network)
   #     #   "tiktoken/o200k_base"   — GPT-4o / o1-family BPE encoding
@@ -974,7 +995,28 @@ timeouts:
   # weights (bounded by the supervisor's own ready budget, not by these), and
   # only then is the request sent with its full timeout — so a slow weight load
   # never shortens the generation that follows it.
-  llmRequestTimeout: 600 # Timeout for a single LLM API call in the main chat loop (10 min). 0 = use default 600s
+  # Budget for a single LLM API call in the main chat loop (ADR-071). 0 (the
+  # shipped default) = "no opinion": the adaptive per-model request budgets
+  # govern (see adaptive_budget below). A positive value is a FIXED override
+  # in seconds — every main-loop call to every model gets exactly this
+  # deadline, and the adaptive ×2 escalation never applies to it.
+  llmRequestTimeout: 0
+  # Adaptive per-model request budgets (ADR-071): c0wrk learns each model's
+  # deadline from live traffic — one timed sample per successful call, a
+  # per-model ring of the last 32 samples, session-scoped and in-memory
+  # (nothing is persisted). The budget is
+  #   clamp(est_in·r_in + out_reserve·r_out, floor(class), ceiling(class))
+  # with the two rates fitted per model from those samples and priced at the
+  # p85 tail, and the envelope set by the provider's timeout class — remote
+  # 120 s-10 min, local 5-30 min, embedded 10-30 min. A conservative 600 s
+  # warmup deadline arms every model until 3 samples exist; an expired own
+  # budget escalates the model's NEXT budget ×2 (re-clamped at the class
+  # ceiling, cleared by the next successful call). The entry client always
+  # carries a budget resolved per request; explicit overrides survive.
+  # false = the legacy fixed regime, byte-for-byte: llmRequestTimeout > 0
+  # wins, 0 falls back to 600 s.
+  adaptive_budget:
+    enabled: true
   serviceLLMRequestTimeout: 600 # Timeout for one-shot "service" LLM requests (session title, commit message, prompt optimization) — one budget for the whole client exchange incl. automatic re-sends of retryable failures (10 min). 0 = use default 600s
   # Timeout for the git commit spawn (git hooks, GPG signing, or large repos
   # can hold a commit open for a long time). Applies only to the commit
