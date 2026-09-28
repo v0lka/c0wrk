@@ -538,7 +538,10 @@ func (o *Orchestrator) resumeGoalLoop(
 		return turnRunner(ctx, turn, msg, b, tl, pd, hist, deps)
 	}
 
-	gs, paused := o.runGoalTurns(ctx, message, bb, availableTools, plansDir, conversationHistory, gs, wrapped)
+	// withResumeContinuation: this re-entry CONTINUES the interrupted turn — the
+	// first turn reuses the interrupted turn's number (no budget re-charge) and
+	// tolerates an idle outcome (Issue #94).
+	gs, paused := o.runGoalTurns(ctx, message, bb, availableTools, plansDir, conversationHistory, gs, wrapped, withResumeContinuation())
 
 	o.persistGoalStateBestEffort(bb, gs)
 	// The output fallback is the clean original request, mirroring runGoalLoop
@@ -599,6 +602,31 @@ func goalTurnBudgetSpent(gs *goal.GoalState) bool {
 	return gs.Budget.MaxTurns > 0 && gs.TurnCount >= gs.Budget.MaxTurns
 }
 
+// goalTurnOption configures a runGoalTurns invocation. Options are supplied
+// variadically so the many fresh-run callers (and the unit tests) need no
+// change.
+type goalTurnOption func(*goalTurnConfig)
+
+// goalTurnConfig is the resolved runGoalTurns option set.
+type goalTurnConfig struct {
+	// resumeContinuesTurn marks a RESUME re-entry seeded from a checkpoint.
+	// It makes the loop's FIRST iteration CONTINUE the interrupted turn: the
+	// turn counter is NOT advanced (the interrupted turn was already charged
+	// before the pause, so advancing would burn an extra budgeted turn on every
+	// pause/resume cycle), and an idle first turn (zero tool calls, no verdict)
+	// is tolerated instead of halting the loop as blocked_idle — a resumed
+	// turn's apparent idleness is a resume artifact (the interrupted turn's
+	// work is already in the seeded checkpoint), not a stuck agent.
+	resumeContinuesTurn bool
+}
+
+// withResumeContinuation marks a runGoalTurns call as a resume re-entry (see
+// goalTurnConfig.resumeContinuesTurn). resumeGoalLoop passes it; runGoalLoop
+// (a fresh run) does not.
+func withResumeContinuation() goalTurnOption {
+	return func(c *goalTurnConfig) { c.resumeContinuesTurn = true }
+}
+
 // runGoalTurns is the turn-iteration core of the goal loop, extracted so it can
 // be unit-tested with a mock turn runner and a pre-built GoalState (bypassing
 // the LLM-driven deriveGoal). It mutates and returns gs.
@@ -619,6 +647,13 @@ func goalTurnBudgetSpent(gs *goal.GoalState) bool {
 //   - anti-spin: zero tool calls AND no verdict → Status=blocked_idle, break.
 //   - budget (MaxTurns) hit → Status=exhausted, break.
 //   - emit goal_progress + goal_status each iteration.
+//
+// With withResumeContinuation (a resume re-entry) the FIRST iteration CONTINUES
+// the interrupted turn: it re-uses gs.TurnCount (no re-charge) and an idle
+// first turn is tolerated (the loop advances to a fresh turn) rather than
+// halting as blocked_idle — a resumed turn's apparent idleness is a resume
+// artifact. The tolerance is bounded to that one turn; a budget-spent resumed
+// idle turn still terminates (exhausted). See goalTurnConfig.resumeContinuesTurn.
 func (o *Orchestrator) runGoalTurns(
 	ctx context.Context,
 	message string,
@@ -628,7 +663,20 @@ func (o *Orchestrator) runGoalTurns(
 	conversationHistory []llm.Message,
 	gs *goal.GoalState,
 	turnRunner func(ctx context.Context, turn int, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message, deps conductorDeps) (toolCallCount int, result *orchestration.ExecutionResult, err error),
+	opts ...goalTurnOption,
 ) (*goal.GoalState, bool) {
+	// cfg carries the optional resume-continuation mode (Issue #94): a resumed
+	// loop's FIRST turn CONTINUES the interrupted turn instead of starting a
+	// fresh one. Variadic so the many existing (fresh-run) call sites and tests
+	// stay unchanged.
+	var cfg goalTurnConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	resumeContinuation := cfg.resumeContinuesTurn
+	// consumedResumeTurn flips after the first iteration so only the FIRST
+	// iteration of a resumed loop re-uses the interrupted turn's number.
+	consumedResumeTurn := false
 	var paused bool
 	// consecutiveErrors counts consecutive turns that returned an error without
 	// a clean completion, for the bounded retry below. A clean turn resets it.
@@ -652,7 +700,18 @@ func (o *Orchestrator) runGoalTurns(
 			break
 		}
 
+		// On a resumed loop the FIRST iteration CONTINUES the interrupted turn:
+		// the interrupted turn was already charged before the pause, so re-using
+		// gs.TurnCount (rather than +1) stops every pause/resume cycle from
+		// burning an extra budgeted turn — the design contract is that resume
+		// "CONTINUES the interrupted turn (does not start a new one)". Every
+		// later iteration (and every iteration of a fresh run) advances normally.
+		firstResumedTurn := resumeContinuation && !consumedResumeTurn
+		consumedResumeTurn = true
 		turn := gs.TurnCount + 1
+		if firstResumedTurn && gs.TurnCount > 0 {
+			turn = gs.TurnCount
+		}
 		// Charge the turn up front (before the run) so the per-turn system
 		// prompt renders the CURRENT turn number rather than the previous one.
 		// The goal-mode budget line (renderGoalModeVolatile) reads gs.TurnCount,
@@ -882,7 +941,29 @@ func (o *Orchestrator) runGoalTurns(
 		// Anti-spin: a turn that made NO tool calls AND declared no verdict is
 		// idle — the agent is stuck and further turns would likely repeat the
 		// same non-action. Halt as blocked_idle rather than spinning.
+		//
+		// Exception (resume continuity, Issue #94): on the FIRST turn of a
+		// RESUMED loop an idle outcome is tolerated — the interrupted turn's
+		// work already lives in the seeded checkpoint, so the model can answer
+		// without a registry tool call or a verdict even though the goal is not
+		// met. Continuing to the next turn keeps the loop alive instead of
+		// collapsing an unfinished goal into a blocked/failed session. The
+		// tolerance is bounded to this one turn, and a resumed turn with NO
+		// budget headroom still terminates as exhausted (a repeated resume must
+		// not spin).
 		if toolCalls == 0 && sink.Last() == nil {
+			if firstResumedTurn {
+				if goalTurnBudgetSpent(gs) {
+					gs.Status = goal.StatusExhausted
+					o.logInfo("goal_loop: idle resumed turn with no budget headroom (exhausted)", "turn", turn)
+					o.emitGoalStatus(ctx, gs)
+					break
+				}
+				o.logInfo("goal_loop: idle first resumed turn tolerated (goal stays active)", "turn", turn)
+				o.emitGoalProgress(ctx, gs)
+				o.emitGoalStatus(ctx, gs)
+				continue
+			}
 			gs.Status = goal.StatusBlockedIdle
 			o.logInfo("goal_loop: blocked_idle (zero tool calls, no verdict)", "turn", turn)
 			o.emitGoalStatus(ctx, gs)
@@ -1012,7 +1093,17 @@ func (o *Orchestrator) goalLoopResult(output string, bb orchestration.Blackboard
 		execResult.Status = orchestration.ExecutionStatusFailed
 	case goal.StatusCancelled:
 		execResult.Status = orchestration.ExecutionStatusCancelled
-	default: // active, blocked_idle (pause / derivation / turn-error path)
+	case goal.StatusBlockedIdle:
+		// A blocked_idle halt is NOT a failure: the goal cannot make progress
+		// right now (the agent declared `blocked`, or an idle turn tripped the
+		// anti-spin guard) and the goal stays NON-terminal. Surface it as a
+		// session SUSPENSION — the same resumable checkpoint a cooperative
+		// pause produces — so every status surface shows a resumable (paused)
+		// session and the goal badge renders "Goal blocked", instead of the
+		// misleading task_failed_resumable banner the Partial mapping produced
+		// (Issue #94 AC3). Resume (button or nudge) re-enters the loop.
+		execResult.Status = orchestration.ExecutionStatusPaused
+	default: // active (pause / derivation / turn-error path)
 		switch {
 		case paused:
 			execResult.Status = orchestration.ExecutionStatusPaused

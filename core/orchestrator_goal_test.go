@@ -713,6 +713,122 @@ func TestRunGoalTurns_IdleTurnWithoutErrorIsBlockedIdle(t *testing.T) {
 	}
 }
 
+// ----------------------------------------------------------------------------
+// Issue #94 regression tests: resume continuity
+// ----------------------------------------------------------------------------
+
+// TestRunGoalTurns_ResumeToleratesIdleFirstTurn is the Issue #94 AC1 regression:
+// a resumed loop whose FIRST turn looks idle (zero tool calls, no verdict — the
+// resume-artifact shape) must NOT halt as blocked_idle. It continues, and the
+// goal is reached on the next turn.
+func TestRunGoalTurns_ResumeToleratesIdleFirstTurn(t *testing.T) {
+	o := newGoalTestOrchestrator()
+	runner := &mockGoalTurnRunner{
+		turnCalls: []int{0, 3},                            // turn 1: idle; turn 2: works
+		turnVerds: []*goal.Verdict{nil, metVerdict("ok")}, // turn 2 declares met
+	}
+	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "x", TurnCount: 1, Budget: goal.GoalBudget{MaxTurns: 5}}
+	bb := orchestration.NewMapBlackboard()
+
+	result, _ := o.runGoalTurns(
+		context.Background(), "msg", bb, nil, "", nil, gs, runner.run, withResumeContinuation(),
+	)
+
+	if result.Status == goal.StatusBlockedIdle {
+		t.Fatalf("Status = blocked_idle — an idle first RESUMED turn must be tolerated, not halt the loop")
+	}
+	if result.Status != goal.StatusMet {
+		t.Fatalf("Status = %q, want %q (the loop must continue past the idle resumed turn)", result.Status, goal.StatusMet)
+	}
+	if runner.calls != 2 {
+		t.Errorf("runner.calls = %d, want 2 (idle turn tolerated, then met)", runner.calls)
+	}
+}
+
+// TestRunGoalTurns_FreshIdleFirstTurnStillBlockedIdle pins the contrast: the SAME
+// idle-turn shape on a FRESH (non-resumed) run still halts as blocked_idle — the
+// Issue #94 tolerance is scoped to a resume re-entry only.
+func TestRunGoalTurns_FreshIdleFirstTurnStillBlockedIdle(t *testing.T) {
+	o := newGoalTestOrchestrator()
+	runner := &mockGoalTurnRunner{turnCalls: []int{0}, turnVerds: []*goal.Verdict{nil}}
+	gs := &goal.GoalState{Status: goal.StatusActive, TurnCount: 1, Budget: goal.GoalBudget{MaxTurns: 5}}
+	bb := orchestration.NewMapBlackboard()
+
+	result, _ := o.runGoalTurns(
+		context.Background(), "msg", bb, nil, "", nil, gs, runner.run, // no resume option
+	)
+
+	if result.Status != goal.StatusBlockedIdle {
+		t.Fatalf("Status = %q, want %q (a fresh idle turn still halts)", result.Status, goal.StatusBlockedIdle)
+	}
+}
+
+// TestRunGoalTurns_ResumeContinuesInterruptedTurnWithoutRecharge is the Issue #94
+// AC2 regression: the first resumed turn CONTINUES the interrupted turn — it
+// re-uses gs.TurnCount (no extra budgeted turn burned) and the loop then advances
+// normally.
+func TestRunGoalTurns_ResumeContinuesInterruptedTurnWithoutRecharge(t *testing.T) {
+	o := newGoalTestOrchestrator()
+	var seen []int
+	runner := &mockGoalTurnRunner{
+		turnCalls: []int{1, 1, 1, 1},
+		turnVerds: []*goal.Verdict{
+			nil,
+			nil,
+			{Status: "not_met", Reason: "still going", DeclaredAt: time.Now()},
+			metVerdict("done"),
+		},
+		onTurn: func(turn int) { seen = append(seen, turn) },
+	}
+	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "x", TurnCount: 3, Budget: goal.GoalBudget{MaxTurns: 4}}
+	bb := orchestration.NewMapBlackboard()
+
+	result, _ := o.runGoalTurns(
+		context.Background(), "msg", bb, nil, "", nil, gs, runner.run, withResumeContinuation(),
+	)
+
+	if len(seen) == 0 || seen[0] != 3 {
+		t.Fatalf("observed turns = %v, want the first resumed turn to be 3 (the interrupted turn, not re-charged)", seen)
+	}
+	if result.Status != goal.StatusMet {
+		t.Fatalf("Status = %q, want %q", result.Status, goal.StatusMet)
+	}
+}
+
+// TestRunGoalTurns_ResumeIdleWithNoBudgetHeadroomExhausts verifies the tolerance
+// is bounded by the budget: an idle resumed turn with NO headroom (TurnCount ==
+// MaxTurns) terminates as exhausted rather than being tolerated (which would let
+// repeated resumes spin).
+func TestRunGoalTurns_ResumeIdleWithNoBudgetHeadroomExhausts(t *testing.T) {
+	o := newGoalTestOrchestrator()
+	runner := &mockGoalTurnRunner{turnCalls: []int{0}, turnVerds: []*goal.Verdict{nil}}
+	gs := &goal.GoalState{Status: goal.StatusActive, TurnCount: 2, Budget: goal.GoalBudget{MaxTurns: 2}}
+	bb := orchestration.NewMapBlackboard()
+
+	result, _ := o.runGoalTurns(
+		context.Background(), "msg", bb, nil, "", nil, gs, runner.run, withResumeContinuation(),
+	)
+
+	if result.Status != goal.StatusExhausted {
+		t.Fatalf("Status = %q, want %q (no budget headroom on a resumed idle turn)", result.Status, goal.StatusExhausted)
+	}
+}
+
+// TestGoalLoopResult_BlockedIdleIsSuspensionNotFailure is the Issue #94 AC3
+// regression: a blocked_idle goal halt maps to a resumable SUSPENSION
+// (ExecutionStatusPaused), never to a failure — so the session is not painted
+// failed and no task_failed_resumable banner is produced.
+func TestGoalLoopResult_BlockedIdleIsSuspensionNotFailure(t *testing.T) {
+	o := newGoalTestOrchestrator()
+	res := o.goalLoopResult("out", orchestration.NewMapBlackboard(), nil, goal.StatusBlockedIdle, "cond", false, nil)
+	if res == nil {
+		t.Fatal("goalLoopResult returned nil")
+	}
+	if res.Status != orchestration.ExecutionStatusPaused {
+		t.Fatalf("Status = %q, want %q (blocked_idle is a resumable suspension, not a failure)", res.Status, orchestration.ExecutionStatusPaused)
+	}
+}
+
 // TestResolveGoalBudget verifies the turn-only resolution: a non-zero
 // override sets MaxTurns; nil or a zero MaxTurns means unlimited.
 func TestResolveGoalBudget(t *testing.T) {
@@ -1342,7 +1458,10 @@ func TestGoalLoopResult_MapsStatus(t *testing.T) {
 		{goal.StatusExhausted, orchestration.ExecutionStatusFailed},
 		{goal.StatusCancelled, orchestration.ExecutionStatusCancelled},
 		{goal.StatusActive, orchestration.ExecutionStatusPartial},
-		{goal.StatusBlockedIdle, orchestration.ExecutionStatusPartial},
+		// A blocked_idle halt is a resumable SUSPENSION, not a failure (Issue #94
+		// AC3): it maps to paused so every status surface shows a resumable
+		// session instead of the failed framing the former Partial mapping gave.
+		{goal.StatusBlockedIdle, orchestration.ExecutionStatusPaused},
 	}
 	for _, tc := range cases {
 		result := o.goalLoopResult("out", bb, nil, tc.status, "cond", false, nil)

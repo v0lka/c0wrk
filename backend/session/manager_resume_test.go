@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1846,4 +1847,74 @@ func (e *e2sRecordingLLM) userMessages() []string {
 		}
 	}
 	return out
+}
+
+// TestResumeTask_ExhaustedGoalEmitsNoticeAndContinuesPlain verifies Issue #95
+// AC3: resuming a terminally exhausted goal tells the user the goal is over
+// (a visible notice) and continues as a REGULAR task — it neither silently drops
+// the goal nor re-enters the goal loop.
+func TestResumeTask_ExhaustedGoalEmitsNoticeAndContinuesPlain(t *testing.T) {
+	gsJSON, err := json.Marshal(&goal.GoalState{
+		Condition:    "ship the feature",
+		VerifyClause: "go test ./...",
+		Status:       goal.StatusExhausted,
+		TurnCount:    5,
+		Budget:       goal.GoalBudget{MaxTurns: 5},
+		CreatedAt:    time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("marshal goal state: %v", err)
+	}
+	// A persisted trajectory so the plain resume does NOT arm a never-started
+	// re-route (which would need a routing-capable LLM).
+	trajSteps := []agent.Step{
+		{Thought: "prior", Action: llm.ToolCall{ID: "pc1", Name: "read_file", Input: json.RawMessage(`{}`)}, Observation: "PRIOR"},
+	}
+	trajJSON, _ := json.Marshal(trajSteps)
+
+	store := &resumeTaskStore{
+		task:       &TaskRecord{ID: "task-exhausted-goal", SessionID: "ignored", OriginalRequest: "goal task", Status: "failed"},
+		trajectory: trajJSON,
+		goalState:  gsJSON,
+	}
+
+	emit, mu, events := recordingEventSink()
+	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "plain-done"}), emit, runtimeTempDir(t))
+	t.Cleanup(mgr.Shutdown)
+	mgr.SetTaskStore(store)
+
+	info, err := mgr.CreateSession(testProjectID, runtimeTempDir(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	store.mu.Lock()
+	store.task.SessionID = info.ID
+	store.mu.Unlock()
+
+	if err := mgr.ResumeTask(context.Background(), info.ID, "", "", ""); err != nil {
+		t.Fatalf("ResumeTask failed: %v", err)
+	}
+	if !waitForBufferedEvent(mu, events, "task_complete", 5*time.Second) {
+		t.Fatal("timeout waiting for task_complete (the plain continuation did not run)")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var noticeFound, goalLoopRan bool
+	for _, e := range *events {
+		switch e.Type {
+		case "goal_status", "goal_progress":
+			goalLoopRan = true
+		case "service":
+			if content, ok := e.Data.(map[string]any)["content"].(string); ok && strings.Contains(content, "goal for this task is over") {
+				noticeFound = true
+			}
+		}
+	}
+	if goalLoopRan {
+		t.Error("the goal loop must NOT be re-entered for a terminally exhausted goal")
+	}
+	if !noticeFound {
+		t.Error("expected a visible 'goal is over' service notice on an exhausted-goal resume")
+	}
 }
