@@ -1250,11 +1250,44 @@ func (m *Manager) tryContinueInterruptedTask(
 		session.orchestrator.RequestResumeReroute()
 	}
 
+	// Load the persisted goal state. A NON-terminal goal (e.g. a goal that
+	// halted as a resumable turn-error failure, leaving the task "failed", or
+	// an active goal) must NOT be continued as a plain task: it re-enters the
+	// goal loop so the pursuit is preserved (Issue #95 AC2). A nil goal state
+	// (an ordinary paused/failed task) continues as a plain run. A TERMINAL
+	// goal (exhausted) is over by design — resumeGoalLoop must not re-enter it,
+	// and Manager.ResumeTask surfaces an explicit notice on that path — so it
+	// is deliberately dropped here too.
+	goalState, gerr := adapter.LoadGoalState(taskID)
+	if gerr != nil {
+		m.log().Warn("continue-interrupted-task: failed to load goal state; continuing as a plain task", "session", id, "error", gerr)
+		goalState = nil
+	}
+	// Model Profiles gate (mirrors Manager.ResumeTask): goal mode and the
+	// essential-tools narrowing are mutually exclusive (see
+	// core.ErrGoalBlockedByModelProfiles). Refuse the goal continuation under
+	// narrowing with a visible error instead of silently degrading it to a
+	// plain run. Checked BEFORE the run starts so the paused task row is left
+	// untouched and a later message re-enters this path.
+	if goalState != nil && !goalState.Status.IsTerminal() &&
+		session.orchestrator != nil && session.orchestrator.ModelProfilesNarrowingEnabled() {
+		m.emitFunc(Event{
+			SessionID: id,
+			Type:      "error",
+			Data: ErrorData{
+				SessionID: id,
+				Error:     core.ErrGoalBlockedByModelProfiles.Error(),
+			},
+		})
+		m.deactivateSessionTask(session, liveActionNone)
+		return true
+	}
+
 	// Resolve the prior task_failed_resumable banner so it does not linger
 	// after the resumed execution finishes.
 	m.resolveResumableTaskMessage(id, taskID, "resumed")
 
-	result, err := session.orchestrator.Resume(ctx, bb, routing, config.SessionPlansDir(m.agentDir, session.ProjectID, id), resumeSteps, nil, "")
+	result, err := session.orchestrator.Resume(ctx, bb, routing, config.SessionPlansDir(m.agentDir, session.ProjectID, id), resumeSteps, goalState, "")
 
 	// Shared completion handling (mirrors ResumeTask's goroutine tail).
 	if err != nil && errors.Is(err, orchestration.ErrExecutionIncomplete) && result != nil {
@@ -1416,6 +1449,18 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 		return fmt.Errorf("failed to load goal state: %w", err)
 	}
 
+	// A goal that ended TERMINALLY (turn budget exhausted) cannot be
+	// re-entered — goal mode is over by design. Resuming such a task therefore
+	// continues it as a REGULAR task; tell the user plainly (Issue #95 AC3)
+	// instead of silently dropping the goal pursuit. goalModeOver drives a
+	// visible notice at the committed point below; the terminal goal state is
+	// dropped so Resume takes the plain Conductor path.
+	goalModeOver := false
+	if goalState != nil && goalState.Status.IsTerminal() {
+		goalModeOver = true
+		goalState = nil
+	}
+
 	// Determine RESEARCH mode from the project's research root (loaded before
 	// the session lock to avoid a DB query while holding it).
 	researchRoot, isResearch := m.researchProjectInfo(session.ProjectID)
@@ -1518,6 +1563,20 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	// session_resumed clears the UI's paused state (complementary to
 	// session_paused) so the input re-locks and Pause/Stop controls show again.
 	m.emitFunc(Event{SessionID: id, Type: "session_resumed"})
+
+	// Goal-mode-over notice (Issue #95 AC3): the resumed task's goal ended
+	// terminally (budget exhausted) and will NOT be re-armed — the user must
+	// know the continuation is a regular run, not a resumed goal pursuit.
+	if goalModeOver {
+		m.emitFunc(Event{
+			SessionID: id,
+			Type:      "service",
+			Data: map[string]any{
+				"content": "The goal for this task is over — its turn budget was exhausted, so goal mode will not be resumed. The task continues as a regular run. Send a new /goal message to pursue a new goal.",
+				"phase":   "orchestration",
+			},
+		})
+	}
 
 	// Mark the prior task_failed_resumable banner as resolved so it does not
 	// reappear as pending after the resume goroutine finishes. Done here (at

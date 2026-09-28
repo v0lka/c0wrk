@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/goal"
 	"github.com/v0lka/c0wrk/core/prompts"
 	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
@@ -896,4 +897,204 @@ func TestSendMessage_GoalOnResume_AbandonsInterruptedTaskAndRunsGoal(t *testing.
 
 	// NOTE: the recorder goroutine is intentionally left running (the channel is
 	// buffered and the emitter may fire events during t.Cleanup's Shutdown).
+}
+
+// ----------------------------------------------------------------------------
+// Issue #95 regression tests: the nudge-resume path preserves goal mode
+// ----------------------------------------------------------------------------
+
+// recordingEventSink wires a Manager emit func to a mutex-guarded event slice
+// (mirroring the goal test's harness) so a test can scan ALL emitted events.
+func recordingEventSink() (func(Event), *sync.Mutex, *[]Event) {
+	var (
+		mu     sync.Mutex
+		events []Event
+	)
+	ch := make(chan Event, 200)
+	go func() {
+		for e := range ch {
+			mu.Lock()
+			events = append(events, e)
+			mu.Unlock()
+		}
+	}()
+	return func(e Event) { ch <- e }, &mu, &events
+}
+
+// TestTryContinueInterruptedTask_ReentersGoalLoop verifies Issue #95 AC2: a plain
+// (non-goal) message that continues a non-terminal GOAL task must re-enter the
+// goal loop instead of silently degrading to a plain Conductor run.
+//
+// A "failed" (non-paused) unfinished task is the entry that routes through
+// tryContinueInterruptedTask — a "paused" task instead goes to ResumeTask. A goal
+// that halted as a resumable turn-error failure lands in exactly this state. The
+// tell is the goal loop's goal_status/goal_progress events, which a plain run
+// never emits.
+func TestTryContinueInterruptedTask_ReentersGoalLoop(t *testing.T) {
+	gsJSON, err := json.Marshal(&goal.GoalState{
+		Condition:    "finish the refactor",
+		VerifyClause: "go test ./...",
+		Status:       goal.StatusActive,
+		CreatedAt:    time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("marshal goal state: %v", err)
+	}
+	trajSteps := []agent.Step{
+		{Thought: "prior", Action: llm.ToolCall{ID: "pc1", Name: "read_file", Input: json.RawMessage(`{}`)}, Observation: "PRIOR"},
+	}
+	trajJSON, _ := json.Marshal(trajSteps)
+
+	store := &resumeTaskStore{
+		task:       &TaskRecord{ID: "task-goal-nudge", SessionID: "ignored", OriginalRequest: "goal task", Status: "failed"},
+		trajectory: trajJSON,
+		goalState:  gsJSON,
+	}
+
+	emit, mu, events := recordingEventSink()
+	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "done"}), emit, runtimeTempDir(t))
+	t.Cleanup(mgr.Shutdown)
+	mgr.SetTaskStore(store)
+
+	info, err := mgr.CreateSession(testProjectID, runtimeTempDir(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	store.mu.Lock()
+	store.task.SessionID = info.ID
+	store.mu.Unlock()
+
+	sess, ok := mgr.GetSession(info.ID)
+	if !ok || sess == nil || sess.orchestrator == nil {
+		t.Fatal("session/orchestrator not available after CreateSession")
+	}
+
+	if !mgr.tryContinueInterruptedTask(context.Background(), info.ID, sess, "keep going", "", "", nil) {
+		t.Fatal("tryContinueInterruptedTask returned false; expected it to take the resume path")
+	}
+
+	if !waitForBufferedEvent(mu, events, "goal_status", 5*time.Second) {
+		mu.Lock()
+		defer mu.Unlock()
+		types := make([]string, 0, len(*events))
+		for _, e := range *events {
+			types = append(types, e.Type)
+		}
+		t.Fatalf("no goal_status event — the nudge-resume ran as a PLAIN task (goal mode lost); events=%v", types)
+	}
+}
+
+// TestTryContinueInterruptedTask_GoalBlockedByNarrowing verifies the nudge-resume
+// path mirrors ResumeTask's Model Profiles gate: continuing a non-terminal GOAL
+// under the essential-tools narrowing is refused with a visible error instead of
+// silently degrading to a plain run.
+func TestTryContinueInterruptedTask_GoalBlockedByNarrowing(t *testing.T) {
+	gsJSON, err := json.Marshal(&goal.GoalState{Condition: "goal", Status: goal.StatusActive, CreatedAt: time.Now()})
+	if err != nil {
+		t.Fatalf("marshal goal state: %v", err)
+	}
+	trajSteps := []agent.Step{
+		{Thought: "prior", Action: llm.ToolCall{ID: "pc1", Name: "read_file", Input: json.RawMessage(`{}`)}, Observation: "PRIOR"},
+	}
+	trajJSON, _ := json.Marshal(trajSteps)
+	store := &resumeTaskStore{
+		task:       &TaskRecord{ID: "task-goal-nudge-blocked", SessionID: "ignored", OriginalRequest: "goal task", Status: "failed"},
+		trajectory: trajJSON,
+		goalState:  gsJSON,
+	}
+
+	emit, mu, events := recordingEventSink()
+	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "should-not-run"}), emit, runtimeTempDir(t))
+	t.Cleanup(mgr.Shutdown)
+	mgr.SetTaskStore(store)
+
+	info, err := mgr.CreateSession(testProjectID, runtimeTempDir(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	store.mu.Lock()
+	store.task.SessionID = info.ID
+	store.mu.Unlock()
+
+	sess, ok := mgr.GetSession(info.ID)
+	if !ok || sess == nil || sess.orchestrator == nil {
+		t.Fatal("session/orchestrator not available after CreateSession")
+	}
+	sess.orchestrator.SetModelProfilesSettings(core.ModelProfilesSettings{
+		Enabled:        true,
+		EssentialTools: core.ModelProfilesEssentialSettings{Enabled: true},
+	})
+
+	if !mgr.tryContinueInterruptedTask(context.Background(), info.ID, sess, "msg", "", "", nil) {
+		t.Fatal("expected the narrowing guard to handle the message (return true)")
+	}
+	if !waitForBufferedEvent(mu, events, "error", 2*time.Second) {
+		t.Fatal("expected a visible error event for the goal resume blocked by the Model Profiles narrowing")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, e := range *events {
+		if e.Type != "error" {
+			continue
+		}
+		if d, ok := e.Data.(ErrorData); ok && strings.Contains(d.Error, "goal mode is unavailable") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("error event did not carry the goal/narrowing sentinel message")
+	}
+}
+
+// TestSendMessage_NudgeIntoPausedGoalReentersGoalLoop covers the paused-branch of
+// the resume matrix (Issue #95 AC4): a plain message into a session whose PAUSED
+// unfinished task is a GOAL goes through the nudge-resume router
+// (SendMessage → ResumeSession → ResumeTask) and re-enters the goal loop.
+func TestSendMessage_NudgeIntoPausedGoalReentersGoalLoop(t *testing.T) {
+	gsJSON, err := json.Marshal(&goal.GoalState{
+		Condition: "finish the refactor",
+		Status:    goal.StatusActive,
+		CreatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("marshal goal state: %v", err)
+	}
+	trajSteps := []agent.Step{
+		{Thought: "prior", Action: llm.ToolCall{ID: "pc1", Name: "read_file", Input: json.RawMessage(`{}`)}, Observation: "PRIOR"},
+	}
+	trajJSON, _ := json.Marshal(trajSteps)
+
+	store := &resumeTaskStore{
+		task:       &TaskRecord{ID: "task-goal-paused-nudge", SessionID: "ignored", OriginalRequest: "goal task", Status: "paused"},
+		trajectory: trajJSON,
+		goalState:  gsJSON,
+	}
+	emit, mu, events := recordingEventSink()
+	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "done"}), emit, runtimeTempDir(t))
+	t.Cleanup(mgr.Shutdown)
+	mgr.SetTaskStore(store)
+
+	info, err := mgr.CreateSession(testProjectID, runtimeTempDir(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	store.mu.Lock()
+	store.task.SessionID = info.ID
+	store.mu.Unlock()
+
+	// A plain (non-goal) message into the paused session.
+	if err := mgr.SendMessage(context.Background(), info.ID, "keep going", nil, nil, "", "", false, "", false, false); err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	if !waitForBufferedEvent(mu, events, "goal_status", 5*time.Second) {
+		mu.Lock()
+		defer mu.Unlock()
+		types := make([]string, 0, len(*events))
+		for _, e := range *events {
+			types = append(types, e.Type)
+		}
+		t.Fatalf("no goal_status event — the paused-goal nudge did not re-enter the goal loop; events=%v", types)
+	}
 }
