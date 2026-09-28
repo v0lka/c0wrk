@@ -5,6 +5,8 @@ import { cssEscape } from '@/lib/cssEscape'
 import { useChatStore } from '@/stores/chatStore'
 import type { ChatMessageUI } from '@/types/messages'
 import { ChatNewActivityBanner } from './ChatNewActivityBanner'
+import { ChatBlockOverflowToolbar } from './ChatBlockOverflowToolbar'
+import { NAVIGATION_SUPPRESS_MS, useOversizedBlockNav } from './useOversizedBlockNav'
 
 interface ChatScrollManagerProps {
   /** Session whose transcript this viewport shows. The component remounts per
@@ -19,12 +21,13 @@ interface ChatScrollManagerProps {
 }
 
 // After an explicit bookmark/step navigation, stick-to-bottom auto-scroll is
-// suppressed for this window. During the smooth scroll's first frames the
-// recorded scroll state still says "at bottom" (the passive scroll handler
-// only updates it as frames land), so an assistant_chunk arriving
-// mid-navigation would otherwise yank the viewport straight back to the bottom
-// and abort the navigation (finding [27]).
-const NAVIGATION_AUTO_SCROLL_SUPPRESS_MS = 500
+// suppressed for the shared NAVIGATION_SUPPRESS_MS window (imported from
+// useOversizedBlockNav — the same constant also freezes that hook's nav
+// anchor, so the coupled windows cannot drift apart). During the smooth
+// scroll's first frames the recorded scroll state still says "at bottom" (the
+// passive scroll handler only updates it as frames land), so an
+// assistant_chunk arriving mid-navigation would otherwise yank the viewport
+// straight back to the bottom and abort the navigation (finding [27]).
 
 // Distance (px) from the content bottom within which the viewport counts as
 // "at the bottom" — the single threshold behind stick-to-bottom engagement,
@@ -75,6 +78,16 @@ export function ChatScrollManager({
   // every at-bottom-intent write; cleared when an event diverges from it.
   const lastWriteTopRef = useRef<number | null>(null)
   const [hasNewActivity, setHasNewActivity] = useState(false)
+  // Oversized-block navigation (first/prev/collapse/next/last) for the
+  // transcript's expandable blocks. The hook composes with this manager: it
+  // scrolls via the sticky-bar-aware scrollBlockStartIntoView and reports its
+  // navigations through OUR isAtBottomRef/suppressAutoScrollUntilRef, exactly
+  // like the step/bookmark navigation above, so a navigation leaves the
+  // bottom and holds off stick-to-bottom while the smooth scroll settles.
+  const blockNav = useOversizedBlockNav(viewportRef, {
+    isAtBottomRef,
+    suppressAutoScrollUntilRef,
+  })
 
   const scrollToBottom = useCallback(() => {
     const viewport = viewportRef.current
@@ -164,7 +177,7 @@ export function ChatScrollManager({
   // saved position notwithstanding; on incremental content growth, stick to
   // the bottom only if the user was already there. Both behaviors are
   // suppressed for a short window after an explicit bookmark/step navigation
-  // (see NAVIGATION_AUTO_SCROLL_SUPPRESS_MS).
+  // (see NAVIGATION_SUPPRESS_MS).
   useLayoutEffect(() => {
     const viewport = viewportRef.current
     if (!viewport) return
@@ -328,7 +341,7 @@ export function ChatScrollManager({
       if (target) {
         scrollBlockStartIntoView(viewport, target)
         isAtBottomRef.current = false
-        suppressAutoScrollUntilRef.current = Date.now() + NAVIGATION_AUTO_SCROLL_SUPPRESS_MS
+        suppressAutoScrollUntilRef.current = Date.now() + NAVIGATION_SUPPRESS_MS
       }
     }
     setScrollToStep(scrollToStepFn)
@@ -355,7 +368,7 @@ export function ChatScrollManager({
       if (target) {
         scrollBlockStartIntoView(viewport, target)
         isAtBottomRef.current = false
-        suppressAutoScrollUntilRef.current = Date.now() + NAVIGATION_AUTO_SCROLL_SUPPRESS_MS
+        suppressAutoScrollUntilRef.current = Date.now() + NAVIGATION_SUPPRESS_MS
       }
     }
     setScrollToBookmark(scrollToBookmarkFn)
@@ -365,10 +378,29 @@ export function ChatScrollManager({
   return (
     <div className="flex-1 min-w-0 overflow-auto custom-scrollbar" ref={scrollRef}>
       {children}
-      <ChatNewActivityBanner
-        hasNewActivity={hasNewActivity && !isAtBottomRef.current}
-        scrollToBottom={scrollToBottom}
-      />
+      {/* Single sticky bottom stack for the transcript's floating controls.
+       * The wrapper is the only sticky element (bottom-2), centered via
+       * flexbox — no per-child sticky positioning, so the banner and the
+       * block-overflow toolbar can never overlap each other. Children stack
+       * vertically (flex-col, gap in the token scale) above the bottom edge.
+       * `pointer-events-none` keeps the invisible wrapper's full row from
+       * blocking transcript interactions; each interactive child re-enables
+       * pointer events on itself. The sticky bottom overlay is NOT a
+       * [data-sticky-user-message] bar, so scrollBlockStartIntoView's
+       * top-overlay compensation is unaffected. */}
+      <div className="sticky bottom-2 left-1/2 z-10 -translate-x-1/2 pointer-events-none flex w-fit flex-col items-center gap-1">
+        <ChatNewActivityBanner
+          hasNewActivity={hasNewActivity && !isAtBottomRef.current}
+          scrollToBottom={scrollToBottom}
+        />
+        {/* AC #4 (issue #55): the toolbar is chrome FOR oversized expanded
+         * blocks — it disappears entirely when no expanded block overflows
+         * the viewport (empty session, all collapsed, or every open block
+         * fits one screen). `hasOversizedBlock` covers existence anywhere in
+         * the transcript, so navigation to an off-screen oversized block
+         * remains available while any exists. */}
+        {blockNav.hasOversizedBlock && <ChatBlockOverflowToolbar nav={blockNav} />}
+      </div>
     </div>
   )
 }

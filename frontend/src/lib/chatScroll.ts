@@ -14,6 +14,8 @@
  * it.
  */
 
+import { getUiZoomFactor } from '@/stores/uiScaleStore'
+
 /** Selector for the floating sticky user-message bar (see `UserMessage`). */
 export const STICKY_USER_MESSAGE_SELECTOR = '[data-sticky-user-message]'
 
@@ -64,8 +66,13 @@ export function stickyBarOverlaying(viewport: HTMLElement, target: Element): Ele
  * resizes it, so the current rect equals the post-scroll height).
  */
 export function scrollBlockStartIntoView(viewport: HTMLElement, target: Element): void {
+  // getBoundingClientRect() reports VISUAL px (layout × zoom factor) while
+  // scrollTop is LAYOUT px, so every measured quantity is divided by the
+  // factor before it is combined with scrollTop (see specs/domains/frontend/
+  // ui-scale.md — the coordinate model). Identity at zoom 1.
+  const zoom = getUiZoomFactor()
   const overlay = stickyBarOverlaying(viewport, target)
-  let overlayHeight = overlay ? overlay.getBoundingClientRect().height : 0
+  let overlayHeight = overlay ? overlay.getBoundingClientRect().height / zoom : 0
   if (viewport.clientHeight > 0) {
     // An expanded pinned message can be taller than the scrollport itself.
     // Cap the offset so at least a sliver of the target stays visible below
@@ -74,7 +81,7 @@ export function scrollBlockStartIntoView(viewport: HTMLElement, target: Element)
   }
   const targetTop = target.getBoundingClientRect().top
   const viewportTop = viewport.getBoundingClientRect().top
-  const top = Math.max(0, viewport.scrollTop + targetTop - viewportTop - overlayHeight)
+  const top = Math.max(0, viewport.scrollTop + (targetTop - viewportTop) / zoom - overlayHeight)
   viewport.scrollTo({ top, behavior: 'smooth' })
 }
 

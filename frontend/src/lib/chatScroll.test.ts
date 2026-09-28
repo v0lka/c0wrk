@@ -4,8 +4,9 @@
 // scroll container; scrollBlockStartIntoView must subtract that bar's height
 // so the target block's beginning lands below the overlay instead of hidden
 // beneath it.
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { scrollBlockStartIntoView, stickyBarOverlaying, STICKY_USER_MESSAGE_SELECTOR } from './chatScroll'
+import { useUiScaleStore } from '@/stores/uiScaleStore'
 
 interface RectInit {
   top: number
@@ -59,6 +60,12 @@ function bookmarkRow(key: string): HTMLElement {
 
 beforeEach(() => {
   vi.restoreAllMocks()
+  useUiScaleStore.setState({ scale: 100 })
+})
+
+afterEach(() => {
+  // Zoom state is global; leave it identity for any test that follows.
+  useUiScaleStore.setState({ scale: 100 })
 })
 
 describe('stickyBarOverlaying', () => {
@@ -219,5 +226,25 @@ describe('scrollBlockStartIntoView', () => {
     scrollBlockStartIntoView(viewport, target)
 
     expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: 'smooth' })
+  })
+
+  it('divides the VISUAL-px rect delta by the zoom factor before adding it to scrollTop (LAYOUT px)', () => {
+    // getBoundingClientRect() reports VISUAL px = LAYOUT px × zoom, while
+    // scrollTop is LAYOUT px — see specs/domains/frontend/ui-scale.md. At
+    // 150% the raw delta must be divided by 1.5 or the scroll overshoots by
+    // 50% of the distance.
+    useUiScaleStore.setState({ scale: 150 })
+    const { viewport, scrollTo } = makeViewport(500)
+    const bar = withRect(stickyBar(), { top: 150, height: 120 })
+    const target = withRect(bookmarkRow('evt-1'), { top: 4500, height: 600 })
+    withRect(viewport, { top: 150, height: 900 })
+    viewport.append(bar, target)
+
+    scrollBlockStartIntoView(viewport, target)
+
+    // Raw VISUAL delta: 4500 - 150 = 4350 → LAYOUT: 4350 / 1.5 = 2900.
+    // Overlay height (VISUAL 120) → LAYOUT: 120 / 1.5 = 80.
+    // scrollTop = 500 + 2900 - 80 = 3320.
+    expect(scrollTo).toHaveBeenCalledWith({ top: 3320, behavior: 'smooth' })
   })
 })
