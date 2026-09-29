@@ -2794,6 +2794,7 @@ func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 	autonomyMode := cfg.Security.AutonomyMode
 	silentMode := tools.SilentModeState{
 		ToolConfirm: cfg.Security.SilentMode.ToolConfirm,
+		UserConfirm: cfg.Security.SilentMode.UserConfirm,
 		StepLimit:   cfg.Security.SilentMode.StepLimit,
 		AskUser:     cfg.Security.SilentMode.AskUser,
 	}
@@ -3022,6 +3023,7 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 
 		SilentMode: tools.SilentModeState{
 			ToolConfirm: cfg.Security.SilentMode.ToolConfirm,
+			UserConfirm: cfg.Security.SilentMode.UserConfirm,
 			StepLimit:   cfg.Security.SilentMode.StepLimit,
 			AskUser:     cfg.Security.SilentMode.AskUser,
 		},

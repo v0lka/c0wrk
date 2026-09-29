@@ -311,14 +311,16 @@ type GroupPolicyResponse struct {
 }
 
 // SilentModeResponse is the frontend view of security.silent_mode: the
-// container for the three unattended-operation sub-policies (live only while
+// container for the four unattended-operation sub-policies (live only while
 // the autonomy mode is "silent" — see SecuritySettingsResponse.AutonomyMode).
 // Each sub-policy Mode uses that sub-policy's config enum (see
-// config.SilentToolConfirm*, SilentStepLimit*, SilentAskUser*).
+// config.SilentToolConfirm*, SilentUserConfirm*, SilentStepLimit*,
+// SilentAskUser*).
 // UpdateSecuritySettings validates the modes against the same enums the
 // config loader uses.
 type SilentModeResponse struct {
 	ToolConfirm SilentSubPolicyResponse `json:"tool_confirm"`
+	UserConfirm SilentSubPolicyResponse `json:"user_confirm"`
 	StepLimit   SilentSubPolicyResponse `json:"step_limit"`
 	AskUser     SilentSubPolicyResponse `json:"ask_user"`
 }

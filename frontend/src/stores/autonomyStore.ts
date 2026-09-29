@@ -13,7 +13,7 @@ import type { AutonomyMode, SilentModeSettings } from '@/types/models'
  * keep it in sync.
  *
  * The autonomy mode owns liveness: the silent-mode sub-policies are live only
- * while the mode is "silent" — there is no separate master switch. All three
+ * while the mode is "silent" — there is no separate master switch. All four
  * sub-policies are enforced entirely in the backend; the mode flag itself is
  * what gates the frontend's one post-task UI interception (the auto-review
  * loop reopen, see isSilentMode).
@@ -22,6 +22,7 @@ import type { AutonomyMode, SilentModeSettings } from '@/types/models'
 /** Documented sub-policy defaults — mirror config.SilentModeDefaults. */
 export const DEFAULT_SILENT_POLICIES: SilentModeSettings = {
   tool_confirm: { mode: 'judge' },
+  user_confirm: { mode: 'deny' },
   step_limit: { mode: 'auto' },
   ask_user: { mode: 'disable' },
 }
@@ -62,6 +63,7 @@ export const useAutonomyStore = create<AutonomyState & AutonomyActions>((set) =>
     set({
       autonomy_mode: normalizeAutonomyMode(posture.autonomy_mode ?? DEFAULT_AUTONOMY_MODE),
       tool_confirm: posture.tool_confirm ?? DEFAULT_SILENT_POLICIES.tool_confirm,
+      user_confirm: posture.user_confirm ?? DEFAULT_SILENT_POLICIES.user_confirm,
       step_limit: posture.step_limit ?? DEFAULT_SILENT_POLICIES.step_limit,
       ask_user: posture.ask_user ?? DEFAULT_SILENT_POLICIES.ask_user,
       loaded: true,

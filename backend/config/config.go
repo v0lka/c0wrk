@@ -1699,19 +1699,41 @@ const (
 // must resolve without a human. This enum selects how:
 const (
 	// SilentToolConfirmJudge routes the call through the strict judge (the
-	// same OWASP ASI evaluation Smart Approve uses): a strict ALLOW executes,
-	// every other outcome (CONFIRM, error, timeout, unparseable) denies. A
-	// CANONICAL hard reason is deterministically denied even on a strict ALLOW
-	// (the isCanonicalHardReason backstop, as on the interactive path).
-	// Default.
+	// same OWASP ASI evaluation Smart Approve uses): a strict ALLOW executes —
+	// canonical hard reasons included (the silent terminal deliberately drops
+	// the interactive canonical backstop; the executed decision is audited) —
+	// while a deliberate DENY denies. A fail-closed CONFIRM outcome (a spoken
+	// CONFIRM, a missing judge, an error/timeout, or an unparseable verdict) is
+	// resolved by security.silent_mode.user_confirm (deny default | escalate |
+	// confirm). Default.
 	SilentToolConfirmJudge = "judge"
 	// SilentToolConfirmAllow executes a confirmation-gated call without UI when
 	// it carries no hard safety reason; a call carrying a HARD reason (canonical
-	// or not) escalates to the strict judge, which decides (a canonical ALLOW is
-	// still backstopped to a denial).
+	// or not) escalates to the strict judge, which decides (its ALLOW executes,
+	// canonical included; a fail-closed CONFIRM follows user_confirm).
 	SilentToolConfirmAllow = "allow"
 	// SilentToolConfirmDeny blocks every confirmation-gated call.
 	SilentToolConfirmDeny = "deny"
+)
+
+// Mode values accepted by security.silent_mode.user_confirm.mode.
+//
+// Refines the tool_confirm terminal for a fail-closed CONFIRM outcome (the
+// judge returns CONFIRM, or is unavailable, errors, times out, or produces an
+// unparseable verdict): when silent mode would otherwise auto-deny such a call,
+// this sub-policy decides whether it executes unattended, still auto-denies, or
+// opens the blocking card. It never governs a deliberate judge DENY or an
+// ALLOW — those are resolved by tool_confirm alone.
+const (
+	// SilentUserConfirmConfirm executes a fail-closed CONFIRM outcome
+	// unattended, audited as an allow. The most permissive value.
+	SilentUserConfirmConfirm = "confirm"
+	// SilentUserConfirmDeny is the fail-closed default: a CONFIRM outcome
+	// auto-denies with the reasoning, exactly as before the refinement.
+	SilentUserConfirmDeny = "deny"
+	// SilentUserConfirmEscalate falls back to the blocking confirmation card,
+	// deferring the decision to a human. The least permissive value.
+	SilentUserConfirmEscalate = "escalate"
 )
 
 // Mode values accepted by security.silent_mode.step_limit.mode.
@@ -1930,22 +1952,25 @@ type GroupPolicyConfig struct {
 	LegacyBlacklist []string `yaml:"blacklist,omitempty" json:"-"`
 }
 
-// SilentModeConfig is security.silent_mode: the container for the three
-// unattended-operation sub-policies. It is scoped to three interactive
-// decisions the execution loops would otherwise punt to the user. The
+// SilentModeConfig is security.silent_mode: the container for the four
+// unattended-operation sub-policies. It is scoped to the three interactive
+// decisions the execution loops would otherwise punt to the user (the tool
+// confirmation decision is refined by user_confirm, below). The
 // policies are live only while the unified autonomy mode is "silent"
 // (security.autonomy_mode — the former master switch silent_mode.enabled is
 // migrated onto that enum by the loader); in every other mode each
 // sub-policy is inert. When live, each sub-policy decides how its prompt is
-// resolved without a human — see the SilentToolConfirm*, SilentStepLimit*,
-// and SilentAskUser* enum constants for the accepted Mode values and their
-// meaning.
+// resolved without a human — see the SilentToolConfirm*, SilentUserConfirm*,
+// SilentStepLimit*, and SilentAskUser* enum constants for the accepted Mode
+// values and their meaning.
 //
 // Silent mode only replaces the human ANSWER to a prompt; it never weakens a
-// gate: `deny` groups, the deterministic pre-funnel floor, and the canonical
-// hard-reason backstop (isCanonicalHardReason) are preserved under every mode —
-// a canonical reason is never auto-executed, regardless of the tool_confirm
-// mode.
+// gate: `deny` groups and the deterministic pre-funnel floor are preserved
+// under every mode. The canonical hard-reason backstop (isCanonicalHardReason)
+// is scoped to the interactive paths (standard/assisted) — the silent `judge`
+// terminal deliberately drops it, so a strict ALLOW (and, under
+// user_confirm=confirm, a fail-closed CONFIRM) executes a canonical reason
+// unattended, with every such execution audited.
 type SilentModeConfig struct {
 	// LegacyEnabled is the load-time mirror of the pre-enum
 	// `silent_mode.enabled` yaml key. It is populated only by yaml decoding
@@ -1960,6 +1985,10 @@ type SilentModeConfig struct {
 	// ToolConfirm resolves a tool call that would open a confirmation card.
 	// Default mode: "judge".
 	ToolConfirm SilentSubPolicyConfig `yaml:"tool_confirm"`
+	// UserConfirm refines the ToolConfirm terminal for a fail-closed CONFIRM
+	// outcome: "confirm" executes it unattended, "escalate" opens the blocking
+	// card, "deny" auto-denies. Default mode: "deny".
+	UserConfirm SilentSubPolicyConfig `yaml:"user_confirm"`
 	// StepLimit resolves the step-budget-exhaustion card.
 	// Default mode: "auto".
 	StepLimit SilentSubPolicyConfig `yaml:"step_limit"`
@@ -1988,6 +2017,7 @@ func ValidateSilentMode(sm SilentModeConfig) error {
 		allowed []string
 	}{
 		{"tool_confirm", sm.ToolConfirm.Mode, []string{SilentToolConfirmJudge, SilentToolConfirmAllow, SilentToolConfirmDeny}},
+		{"user_confirm", sm.UserConfirm.Mode, []string{SilentUserConfirmConfirm, SilentUserConfirmDeny, SilentUserConfirmEscalate}},
 		{"step_limit", sm.StepLimit.Mode, []string{SilentStepLimitAuto, SilentStepLimitAllowOnce, SilentStepLimitAllowMore, SilentStepLimitAllowAlways, SilentStepLimitDeny, SilentStepLimitStop}},
 		{"ask_user", sm.AskUser.Mode, []string{SilentAskUserDisable, SilentAskUserEnable}},
 	}
@@ -2020,6 +2050,7 @@ func ValidateSilentMode(sm SilentModeConfig) error {
 func SilentModeDefaults() SilentModeConfig {
 	return SilentModeConfig{
 		ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmJudge},
+		UserConfirm: SilentSubPolicyConfig{Mode: SilentUserConfirmDeny},
 		StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitAuto},
 		AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserDisable},
 	}
@@ -2031,6 +2062,9 @@ func ApplySilentModeDefaults(sm *SilentModeConfig) {
 	d := SilentModeDefaults()
 	if sm.ToolConfirm.Mode == "" {
 		sm.ToolConfirm.Mode = d.ToolConfirm.Mode
+	}
+	if sm.UserConfirm.Mode == "" {
+		sm.UserConfirm.Mode = d.UserConfirm.Mode
 	}
 	if sm.StepLimit.Mode == "" {
 		sm.StepLimit.Mode = d.StepLimit.Mode
