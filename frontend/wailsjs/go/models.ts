@@ -299,6 +299,7 @@ export namespace backend {
 	    models: string[];
 	    tls_fingerprint?: string;
 	    auto_retry_seconds?: number;
+	    timeout_class?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigProviderFull(source);
@@ -311,6 +312,7 @@ export namespace backend {
 	        this.models = source["models"];
 	        this.tls_fingerprint = source["tls_fingerprint"];
 	        this.auto_retry_seconds = source["auto_retry_seconds"];
+	        this.timeout_class = source["timeout_class"];
 	    }
 	}
 	export class ConfigLLMResponse {
@@ -974,6 +976,7 @@ export namespace backend {
 	    models?: string[];
 	    tls_fingerprint?: string;
 	    auto_retry_seconds?: number;
+	    timeout_class?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProviderConfigRequest(source);
@@ -986,6 +989,7 @@ export namespace backend {
 	        this.models = source["models"];
 	        this.tls_fingerprint = source["tls_fingerprint"];
 	        this.auto_retry_seconds = source["auto_retry_seconds"];
+	        this.timeout_class = source["timeout_class"];
 	    }
 	}
 	export class LLMFullConfigRequest {
