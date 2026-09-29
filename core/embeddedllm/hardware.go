@@ -154,10 +154,15 @@ var errProbeToolAbsent = errors.New("probe tool not found in PATH")
 // deviceUnreadable in plan.go.
 var ErrRAMUnknown = errors.New("cannot determine total system RAM")
 
-// cudaVersionRE matches the "CUDA Version: 12.4" field of the nvidia-smi
-// header table. nvidia-smi prints "N/A" there when the driver reports no CUDA
-// support, which simply does not match.
-var cudaVersionRE = regexp.MustCompile(`CUDA Version:\s*(\d+)\.(\d+)`)
+// cudaVersionRE matches the CUDA-version field of the nvidia-smi header table.
+// Two spellings exist and BOTH must be accepted: drivers up to the 5xx series
+// print "CUDA Version: 12.4", while newer drivers (610.x) renamed the column to
+// "CUDA UMD Version: 13.3" and no longer emit the legacy field at all. Matching
+// only the legacy spelling is what silently dropped a CUDA-capable machine to
+// the Vulkan rung of the detection ladder (and thus to the PTQ1_0 packing).
+// nvidia-smi prints "N/A" or "[Not Supported]" there when the driver reports no
+// CUDA support, which simply does not match.
+var cudaVersionRE = regexp.MustCompile(`CUDA (?:UMD )?Version:\s*(\d+)\.(\d+)`)
 
 // nvccReleaseRE matches "Cuda compilation tools, release 12.4, V12.4.131".
 var nvccReleaseRE = regexp.MustCompile(`release\s+(\d+)\.(\d+)`)
@@ -271,6 +276,9 @@ func probeCUDA(ctx context.Context, logger *slog.Logger) (Backend, string, bool)
 		logger.Debug("embedded LLM CUDA probe", "backend", backend, "cuda_tag", tag, "via", "nvidia-smi")
 		return backend, tag, true
 	}
+	if smiErr == nil && strings.TrimSpace(smiOut) != "" {
+		logCUDAProbeMiss(logger, "nvidia-smi", smiOut)
+	}
 
 	// Toolkit fallback: a container or a toolkit-only install can have nvcc
 	// without the driver userspace.
@@ -311,6 +319,34 @@ func logProbeFailure(logger *slog.Logger, tool string, err error) {
 	if err != nil && !errors.Is(err, errProbeToolAbsent) {
 		logger.Debug("embedded LLM accelerator probe failed", "tool", tool, "error", err)
 	}
+}
+
+// logCUDAProbeMiss records a probe that ran but yielded no usable CUDA version,
+// together with a bounded excerpt of its output. The nvidia-smi header is the
+// exact field this package parses, and a driver release can rename that column
+// (610.x prints "CUDA UMD Version" where older drivers print "CUDA Version"),
+// so without the raw header a future rename is indistinguishable from "this is
+// not a CUDA machine" — which is precisely how a CUDA-capable host silently
+// fell through to the Vulkan rung. Debug-only, and bounded by
+// cudaProbeExcerptLines so a support bundle stays readable.
+func logCUDAProbeMiss(logger *slog.Logger, tool, out string) {
+	logger.Debug("embedded LLM CUDA probe found no usable version",
+		"tool", tool, "output", excerptLines(out, cudaProbeExcerptLines))
+}
+
+// cudaProbeExcerptLines bounds how many leading lines of a probe's output are
+// logged on a miss. The nvidia-smi version field sits in the first few lines of
+// the header table, so a handful is ample.
+const cudaProbeExcerptLines = 5
+
+// excerptLines returns the first n lines of s, normalizing CRLF so the excerpt
+// reads the same on every platform.
+func excerptLines(s string, n int) string {
+	lines := strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // cudaBackendFor maps a detected CUDA version onto the pinned asset tag:

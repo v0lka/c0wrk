@@ -107,6 +107,9 @@ func TestParseNvidiaSMICUDAVersion(t *testing.T) {
 		wantMinor int
 	}{
 		{name: "driver reporting 13.0", out: header, wantOK: true, wantMajor: 13, wantMinor: 0},
+		{name: "new driver reports CUDA UMD version", out: "| NVIDIA-SMI 610.88                 KMD Version: 610.88        CUDA UMD Version: 13.3     |", wantOK: true, wantMajor: 13, wantMinor: 3},
+		{name: "CUDA UMD version with no space after the colon", out: "CUDA UMD Version:12.8", wantOK: true, wantMajor: 12, wantMinor: 8},
+		{name: "CUDA UMD version reports N/A", out: "CUDA UMD Version: N/A", wantOK: false},
 		{
 			name:   "driver reporting 12.4",
 			out:    "| NVIDIA-SMI 550.54.15   Driver Version: 550.54.15   CUDA Version: 12.4     |",
@@ -268,6 +271,7 @@ func TestBackendFromCUDAOutput(t *testing.T) {
 			nvcc:   "Cuda compilation tools, release 11.8, V11.8.89",
 			wantOK: false,
 		},
+		{name: "new driver reports CUDA UMD version", nvidiaSMI: "| NVIDIA-SMI 610.88                 KMD Version: 610.88        CUDA UMD Version: 13.3     |", wantOK: true, wantBackend: BackendCUDA133, wantTag: "13.3"},
 		{name: "neither source answered", wantOK: false},
 		{name: "unparsable output", nvidiaSMI: "garbage", nvcc: "garbage", wantOK: false},
 	}
@@ -288,6 +292,35 @@ func TestBackendFromCUDAOutput(t *testing.T) {
 			}
 			if backend != tc.wantBackend || tag != tc.wantTag {
 				t.Errorf("got (%q, %q), want (%q, %q)", backend, tag, tc.wantBackend, tc.wantTag)
+			}
+		})
+	}
+}
+
+// TestExcerptLines pins the bounding helper the miss logger uses: it clips to
+// the first n lines and normalizes CRLF so a Windows probe excerpt reads the
+// same as a Unix one.
+func TestExcerptLines(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		n    int
+		want string
+	}{
+		{name: "fewer lines than the cap", in: "a\nb\n", n: 5, want: "a\nb\n"},
+		{name: "exactly the cap", in: "a\nb\nc", n: 3, want: "a\nb\nc"},
+		{name: "clips to the first n lines", in: "a\nb\nc\nd", n: 2, want: "a\nb"},
+		{name: "normalizes CRLF", in: "a\r\nb\r\nc", n: 5, want: "a\nb\nc"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := excerptLines(tc.in, tc.n); got != tc.want {
+				t.Errorf("excerptLines(%q, %d) = %q, want %q", tc.in, tc.n, got, tc.want)
 			}
 		})
 	}

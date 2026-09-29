@@ -1006,6 +1006,10 @@ probeHardware()
                         12.x            → "12.4"
                         < 12.x          → NOT a hit; the ladder keeps looking,
                                           since no pinned archive would load
+   The driver CUDA version is read from the nvidia-smi header, matching BOTH the
+   legacy "CUDA Version:" column and the newer "CUDA UMD Version:" column (NVIDIA
+   renamed it in the 610.x drivers); a probe that answers but yields no usable
+   version is logged at Debug with a bounded excerpt, so a rename is not silent.
    CUDA and ROCm are x64-only: a non-x64 platform with CUDA detected
    resolves to the CPU build (linux-arm64 + CUDA → cpu).
    RAM is a hard input, not a best-effort one: an unreadable size yields
@@ -2471,7 +2475,7 @@ error      → an explicit hint carrying the backend's message (truncated in the
 - Total RAM is a hard input: when it cannot be read the probe returns `ErrRAMUnknown` rather than guessing, and `resolveWith` refuses a non-positive total itself — because the gate derives its HOST budget from that figure on *every* path, measured topology or not. An unreadable **device** budget is the opposite case and is deliberately not fatal; see the memory-gate invariants below.
 - **There is no RAM threshold.** ADR-067 D6's flat 16 GiB floor is gone, and nothing replaced it with another round number: viability is wherever the smallest shape `memory.go` has measured stops fitting, which is a fact about the model and both of the machine's memory pools rather than a constant anyone has to remember to revisit. `MinRAMGiB` no longer exists.
 - `Resolve` is a pure function of its `ResolveInput`: no I/O, no probing, no clock. That is what keeps the whole platform × backend × RAM × topology × tuning matrix table-testable.
-- The accelerator ladder is fixed (`nvidia-smi` → `nvcc` → ROCm tools → `vulkaninfo` → Metal on darwin/arm64 → CPU) and first hit wins. Every external probe is bounded by a 2 s budget, so a wedged driver cannot stall installation; an absent probe helper is a normal outcome, not an error.
+- The accelerator ladder is fixed (`nvidia-smi` → `nvcc` → ROCm tools → `vulkaninfo` → Metal on darwin/arm64 → CPU) and first hit wins. Every external probe is bounded by a 2 s budget, so a wedged driver cannot stall installation; an absent probe helper is a normal outcome, not an error. The CUDA rung reads the version from the `nvidia-smi` header and accepts both the legacy `CUDA Version:` column and the newer `CUDA UMD Version:` column (NVIDIA renamed it in the 610.x drivers); a probe that answers but yields no usable version is logged at Debug with a bounded output excerpt, so the next rename cannot again be silent.
 - A detected CUDA version older than the oldest pinned asset tag is not a hit: the ladder keeps looking instead of provisioning an archive the driver cannot load.
 - Resolution degrades an unsupported backend rather than refusing it, and a CUDA tag with no archive for the platform clamps DOWN to the nearest older pinned tag — never up, because a binary built against a newer toolkit will not load on an older driver.
 - `PQ2_0` is the default packing, and `PTQ1_0` is selected only when one of four documented triggers fires — Vulkan (the one backend with no `PQ2_0` kernels), an AVX-512 host on a pin that predates `#245`, a **measured** device budget `PQ2_0` does not fit, or an Ada/L4-class GPU (the generations the model card measures as `PTQ1_0`-faster for decode). The decision is one pure table (`decidePacking`) with a documented precedence, and every outcome carries a typed `PackingReason`.
