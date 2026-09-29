@@ -35,8 +35,96 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { cn } from '@/lib/utils'
 import type { EmbeddedLLMBusyAction } from '@/stores/embeddedLLMStore'
 import type { EmbeddedLLMRemoveScope } from '@/api/embedded'
+
+export interface EmbeddedLLMSplitRemoveButtonProps {
+  busy: EmbeddedLLMBusyAction | null
+  /** Which artifact groups are on disk right now. A scope with nothing to
+   *  delete renders disabled. */
+  leftovers: { runtime: boolean; weights: boolean; projection: boolean }
+  /** Opens the confirmation dialog for the chosen scope; the parent runs the
+   *  RPC. */
+  onRemove: (scope: EmbeddedLLMRemoveScope) => void
+  /** The testid prefix: the main button is `${idPrefix}`, the dropdown trigger
+   *  `${idPrefix}-menu-trigger`, the items `${idPrefix}-runtime|-weights|
+   *  -projection`, the wrapper `${idPrefix}-group`. The installed row passes
+   *  "embedded-llm-remove", the leftover row "embedded-llm-leftover-remove". */
+  idPrefix: string
+  /** Extra wrapper classes (the leftover row self-starts under its copy). */
+  className?: string
+}
+
+/** The shared split button behind both Remove surfaces: the main click means
+ *  "remove everything" (the historical behaviour), and the attached dropdown
+ *  offers the three scoped removals — runtime / weights / vision projector —
+ *  each disabled while its bytes are not on disk. Fully controlled: busy,
+ *  leftovers and the dialog state all live in the parent. */
+export function EmbeddedLLMSplitRemoveButton({
+  busy,
+  leftovers,
+  onRemove,
+  idPrefix,
+  className,
+}: EmbeddedLLMSplitRemoveButtonProps) {
+  const busyNow = busy !== null
+  return (
+    <div className={cn('inline-flex', className)} data-testid={`${idPrefix}-group`}>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="gap-2 rounded-r-none border border-border/50 text-destructive enabled:hover:bg-destructive/10 enabled:hover:text-destructive"
+        onClick={() => onRemove('all')}
+        disabled={busyNow}
+        data-testid={idPrefix}
+      >
+        <Trash2 className="size-4" />
+        Remove
+      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="rounded-l-none border border-l-0 border-border/50 px-1 text-destructive enabled:hover:bg-destructive/10 enabled:hover:text-destructive"
+            disabled={busyNow}
+            aria-label="Remove options"
+            data-testid={`${idPrefix}-menu-trigger`}
+          >
+            <ChevronDown className="size-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem
+            disabled={busyNow || !leftovers.runtime}
+            onClick={() => onRemove('runtime')}
+            data-testid={`${idPrefix}-runtime`}
+          >
+            Remove runtime only
+            {!leftovers.runtime && ' (none on disk)'}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={busyNow || !leftovers.weights}
+            onClick={() => onRemove('weights')}
+            data-testid={`${idPrefix}-weights`}
+          >
+            Remove weights only
+            {!leftovers.weights && ' (none on disk)'}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={busyNow || !leftovers.projection}
+            onClick={() => onRemove('projection')}
+            data-testid={`${idPrefix}-projection`}
+          >
+            Remove vision projector only
+            {!leftovers.projection && ' (none on disk)'}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  )
+}
 
 export interface EmbeddedLLMActionsProps {
   /** The model is resident, so the row offers Unload instead of Load. */
@@ -106,59 +194,12 @@ export function EmbeddedLLMActions({
       )}
 
       {anyLeft && (
-        <div className="inline-flex" data-testid="embedded-llm-remove-group">
-          <Button
-            size="sm"
-            variant="ghost"
-            className="gap-2 rounded-r-none border border-border/50 text-destructive enabled:hover:bg-destructive/10 enabled:hover:text-destructive"
-            onClick={() => onRemove('all')}
-            disabled={busyNow}
-            data-testid="embedded-llm-remove"
-          >
-            <Trash2 className="size-4" />
-            Remove
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="rounded-l-none border border-l-0 border-border/50 px-1 text-destructive enabled:hover:bg-destructive/10 enabled:hover:text-destructive"
-                disabled={busyNow}
-                aria-label="Remove options"
-                data-testid="embedded-llm-remove-menu-trigger"
-              >
-                <ChevronDown className="size-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                disabled={busyNow || !leftovers.runtime}
-                onClick={() => onRemove('runtime')}
-                data-testid="embedded-llm-remove-runtime"
-              >
-                Remove runtime only
-                {!leftovers.runtime && ' (none on disk)'}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={busyNow || !leftovers.weights}
-                onClick={() => onRemove('weights')}
-                data-testid="embedded-llm-remove-weights"
-              >
-                Remove weights only
-                {!leftovers.weights && ' (none on disk)'}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={busyNow || !leftovers.projection}
-                onClick={() => onRemove('projection')}
-                data-testid="embedded-llm-remove-projection"
-              >
-                Remove vision projector only
-                {!leftovers.projection && ' (none on disk)'}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+        <EmbeddedLLMSplitRemoveButton
+          busy={busy}
+          leftovers={leftovers}
+          onRemove={onRemove}
+          idPrefix="embedded-llm-remove"
+        />
       )}
     </div>
   )
@@ -236,74 +277,13 @@ export function EmbeddedLLMCleanupAction({
           re-downloading; removing clears it for good.
         </p>
       )}
-      <EmbeddedLLMCleanupButton busy={busy} leftovers={leftovers} onRemove={onRemove} />
-    </div>
-  )
-}
-
-function EmbeddedLLMCleanupButton({
-  busy,
-  leftovers,
-  onRemove,
-}: {
-  busy: EmbeddedLLMBusyAction | null
-  leftovers: { runtime: boolean; weights: boolean; projection: boolean }
-  onRemove: (scope: EmbeddedLLMRemoveScope) => void
-}) {
-  const busyNow = busy !== null
-  return (
-    <div className="inline-flex self-start">
-      <Button
-        size="sm"
-        variant="ghost"
-        className="gap-2 rounded-r-none border border-border/50 text-destructive enabled:hover:bg-destructive/10 enabled:hover:text-destructive"
-        onClick={() => onRemove('all')}
-        disabled={busyNow}
-        data-testid="embedded-llm-leftover-remove"
-      >
-        <Trash2 className="size-4" />
-        Remove
-      </Button>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="rounded-l-none border border-l-0 border-border/50 px-1 text-destructive enabled:hover:bg-destructive/10 enabled:hover:text-destructive"
-            disabled={busyNow}
-            aria-label="Remove options"
-            data-testid="embedded-llm-leftover-menu-trigger"
-          >
-            <ChevronDown className="size-4" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem
-            disabled={busyNow || !leftovers.runtime}
-            onClick={() => onRemove('runtime')}
-            data-testid="embedded-llm-leftover-remove-runtime"
-          >
-            Remove runtime only
-            {!leftovers.runtime && ' (none on disk)'}
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={busyNow || !leftovers.weights}
-            onClick={() => onRemove('weights')}
-            data-testid="embedded-llm-leftover-remove-weights"
-          >
-            Remove weights only
-            {!leftovers.weights && ' (none on disk)'}
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={busyNow || !leftovers.projection}
-            onClick={() => onRemove('projection')}
-            data-testid="embedded-llm-leftover-remove-projection"
-          >
-            Remove vision projector only
-            {!leftovers.projection && ' (none on disk)'}
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <EmbeddedLLMSplitRemoveButton
+        busy={busy}
+        leftovers={leftovers}
+        onRemove={onRemove}
+        idPrefix="embedded-llm-leftover-remove"
+        className="self-start"
+      />
     </div>
   )
 }
