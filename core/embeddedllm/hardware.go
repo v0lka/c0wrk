@@ -516,6 +516,10 @@ func parseLdconfigEntries(out string) map[string][]string {
 		if !found || path == "" {
 			continue
 		}
+		// A CR from a CRLF-emitting ldconfig is output noise, not part of
+		// the path: a "\r"-suffixed path would fail to open and downgrade a
+		// working CUDA 12 userland to an unsupported unknown.
+		path = strings.TrimRight(path, "\r")
 		name, rest, _ := strings.Cut(strings.TrimSpace(line), " ")
 		// A cache entry is "<soname> (<cache-brief>) => <path>"; the
 		// parenthesized brief is what distinguishes it from prose that merely

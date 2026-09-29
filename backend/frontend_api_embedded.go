@@ -1242,9 +1242,10 @@ func (f *FrontendAPI) embeddedInstallPreflight() (hw embeddedllm.Hardware, err e
 	}
 	if err := embeddedllm.CheckMemoryBudget(embeddedllm.ResolveInput{
 		MachineProfile: embeddedllm.MachineProfile{
-			Platform: hw.Platform,
-			Backend:  hw.Backend,
-			RAMGiB:   hw.RAMGiB,
+			Platform:       hw.Platform,
+			Backend:        hw.Backend,
+			RAMGiB:         hw.RAMGiB,
+			CUDA12Userland: hw.CUDA12Userland,
 		},
 	}); err != nil {
 		refusal := fmt.Errorf("the embedded LLM install was refused: %w", err)
