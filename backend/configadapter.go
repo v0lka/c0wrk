@@ -250,6 +250,7 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			AutonomyMode:               cfg.Security.AutonomyMode,
 			SilentMode: core.BuilderSilentModeConfig{
 				ToolConfirm: cfg.Security.SilentMode.ToolConfirm.Mode,
+				UserConfirm: cfg.Security.SilentMode.UserConfirm.Mode,
 				StepLimit:   cfg.Security.SilentMode.StepLimit.Mode,
 				AskUser:     cfg.Security.SilentMode.AskUser.Mode,
 			},

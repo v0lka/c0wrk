@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { AlertTriangle, ShieldAlert } from 'lucide-react'
 import { Combobox, type ComboboxOption } from '@/components/ui/combobox'
+import { UserConfirmDangerDialog } from './UserConfirmDangerDialog'
 import {
   SILENT_SUB_POLICIES,
   modeRequiresJudge,
@@ -31,9 +33,10 @@ interface SilentModeCardProps {
 }
 
 /**
- * Silent mode (security.silent_mode): the three sub-policies that decide how
- * each interactive decision (tool confirmation, step-limit exhaustion,
- * ask_user) resolves without a human. The card has
+ * Silent mode (security.silent_mode): the four sub-policies that decide how
+ * each interactive decision (tool confirmation — refined by user
+ * confirmations, step-limit exhaustion, ask_user) resolves without a human.
+ * The card has
  * no enable switch — the autonomy mode (security.autonomy_mode = "silent")
  * owns liveness, and SecuritySettings renders this card only in that mode —
  * and the autonomy warning is always visible so the risk is stated up front.
@@ -51,6 +54,21 @@ export function SilentModeCard({ mode, value, judgeAvailable, onModeChange }: Si
   const judgeStarved: SilentModeSubPolicyMeta[] = !judgeAvailable
     ? SILENT_SUB_POLICIES.filter((sp) => modeRequiresJudge(sp.key, value[sp.key].mode))
     : []
+
+  // The danger-gated "Confirm" user_confirm selection. The dropdown never saves
+  // it — it opens the confirmation dialog instead, and only the dialog's
+  // explicit confirm routes the save through onModeChange, where
+  // SecuritySettings persists it. A dismissal is a cancel: the controlled
+  // dropdown keeps rendering the stored value, which is the revert.
+  const [pendingUserConfirm, setPendingUserConfirm] = useState(false)
+
+  const handleModeChange = (key: SilentSubPolicyKey, next: string) => {
+    if (key === 'user_confirm' && next === 'confirm') {
+      setPendingUserConfirm(true)
+      return
+    }
+    onModeChange(key, next)
+  }
 
   return (
     <div className="flex flex-col gap-3 p-4 rounded-lg border border-border bg-card/50" data-testid="silent-mode-card">
@@ -90,12 +108,28 @@ export function SilentModeCard({ mode, value, judgeAvailable, onModeChange }: Si
             <Combobox
               ariaLabel={`${sp.label} mode`}
               value={value[sp.key].mode}
-              onChange={(v) => onModeChange(sp.key, v)}
+              onChange={(v) => handleModeChange(sp.key, v)}
               className="h-8 w-auto px-2 text-xs min-w-[130px] shrink-0"
               options={sp.options as readonly ComboboxOption[]}
             />
           </div>
         ))}
+
+        {value.user_confirm.mode === 'confirm' && (
+          <div
+            role="note"
+            data-testid="silent-mode-user-confirm-warning"
+            className="flex items-start gap-2 text-xs text-destructive"
+          >
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+            <span>
+              <strong>Unattended confirm is on.</strong> A confirmation-gated call whose strict-judge
+              outcome is CONFIRM — including a missing, failing, timed-out, or unparseable judge —
+              executes with no confirmation and is audited as an allow. A deliberate judge DENY is
+              still blocked. Switch to Deny to restore the fail-closed auto-denial.
+            </span>
+          </div>
+        )}
 
         {judgeStarved.length > 0 && (
           <div
@@ -115,6 +149,19 @@ export function SilentModeCard({ mode, value, judgeAvailable, onModeChange }: Si
           </div>
         )}
       </div>
+
+      <UserConfirmDangerDialog
+        open={pendingUserConfirm}
+        onOpenChange={(open) => {
+          // A dismissal is a cancel: drop the pending selection and leave the
+          // controlled dropdown showing the stored value.
+          if (!open) setPendingUserConfirm(false)
+        }}
+        onConfirm={() => {
+          setPendingUserConfirm(false)
+          onModeChange('user_confirm', 'confirm')
+        }}
+      />
     </div>
   )
 }

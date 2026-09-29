@@ -299,6 +299,7 @@ export namespace backend {
 	    models: string[];
 	    tls_fingerprint?: string;
 	    auto_retry_seconds?: number;
+	    timeout_class?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigProviderFull(source);
@@ -311,6 +312,7 @@ export namespace backend {
 	        this.models = source["models"];
 	        this.tls_fingerprint = source["tls_fingerprint"];
 	        this.auto_retry_seconds = source["auto_retry_seconds"];
+	        this.timeout_class = source["timeout_class"];
 	    }
 	}
 	export class ConfigLLMResponse {
@@ -974,6 +976,7 @@ export namespace backend {
 	    models?: string[];
 	    tls_fingerprint?: string;
 	    auto_retry_seconds?: number;
+	    timeout_class?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProviderConfigRequest(source);
@@ -986,6 +989,7 @@ export namespace backend {
 	        this.models = source["models"];
 	        this.tls_fingerprint = source["tls_fingerprint"];
 	        this.auto_retry_seconds = source["auto_retry_seconds"];
+	        this.timeout_class = source["timeout_class"];
 	    }
 	}
 	export class LLMFullConfigRequest {
@@ -1913,6 +1917,7 @@ export namespace backend {
 	}
 	export class SilentModeResponse {
 	    tool_confirm: SilentSubPolicyResponse;
+	    user_confirm: SilentSubPolicyResponse;
 	    step_limit: SilentSubPolicyResponse;
 	    ask_user: SilentSubPolicyResponse;
 	
@@ -1923,6 +1928,7 @@ export namespace backend {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.tool_confirm = this.convertValues(source["tool_confirm"], SilentSubPolicyResponse);
+	        this.user_confirm = this.convertValues(source["user_confirm"], SilentSubPolicyResponse);
 	        this.step_limit = this.convertValues(source["step_limit"], SilentSubPolicyResponse);
 	        this.ask_user = this.convertValues(source["ask_user"], SilentSubPolicyResponse);
 	    }

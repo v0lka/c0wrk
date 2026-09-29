@@ -24,6 +24,9 @@ func TestSilentMode_DefaultsAndValidation(t *testing.T) {
 	if got, want := cfg.Security.SilentMode, SilentModeDefaults(); got != want {
 		t.Errorf("silent-mode defaults = %+v, want %+v", got, want)
 	}
+	if got, want := cfg.Security.SilentMode.UserConfirm.Mode, SilentUserConfirmDeny; got != want {
+		t.Errorf("user_confirm default = %q, want the fail-closed %q", got, want)
+	}
 
 	// Explicit values (including the autonomy mode) survive ApplyDefaults
 	// untouched.
@@ -31,6 +34,7 @@ func TestSilentMode_DefaultsAndValidation(t *testing.T) {
 		AutonomyMode: AutonomyModeSilent,
 		SilentMode: SilentModeConfig{
 			ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmDeny},
+			UserConfirm: SilentSubPolicyConfig{Mode: SilentUserConfirmEscalate},
 			StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitStop},
 			AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserEnable},
 		}}}
@@ -40,6 +44,7 @@ func TestSilentMode_DefaultsAndValidation(t *testing.T) {
 	}
 	if got, want := explicit.Security.SilentMode, (SilentModeConfig{
 		ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmDeny},
+		UserConfirm: SilentSubPolicyConfig{Mode: SilentUserConfirmEscalate},
 		StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitStop},
 		AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserEnable},
 	}); got != want {
@@ -64,6 +69,18 @@ func TestSilentMode_DefaultsAndValidation(t *testing.T) {
 			StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitAllowAlways},
 			AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserDisable},
 		},
+		{
+			ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmJudge},
+			UserConfirm: SilentSubPolicyConfig{Mode: SilentUserConfirmConfirm},
+			StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitAuto},
+			AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserDisable},
+		},
+		{
+			ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmJudge},
+			UserConfirm: SilentSubPolicyConfig{Mode: SilentUserConfirmEscalate},
+			StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitAuto},
+			AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserDisable},
+		},
 	}
 	for _, c := range valid {
 		if err := ValidateSilentMode(c); err != nil {
@@ -79,6 +96,7 @@ func TestSilentMode_DefaultsAndValidation(t *testing.T) {
 		{"tool_confirm", SilentModeConfig{ToolConfirm: SilentSubPolicyConfig{Mode: "always"}}},
 		{"step_limit", SilentModeConfig{StepLimit: SilentSubPolicyConfig{Mode: "forever"}}},
 		{"ask_user", SilentModeConfig{AskUser: SilentSubPolicyConfig{Mode: "maybe"}}},
+		{"user_confirm", SilentModeConfig{UserConfirm: SilentSubPolicyConfig{Mode: "sometimes"}}},
 	}
 	for _, tc := range invalid {
 		err := ValidateSilentMode(tc.sm)
@@ -112,10 +130,11 @@ func TestAutonomyMode_AskUserDisabled(t *testing.T) {
 
 // TestSilentMode_YAMLRoundTrip verifies the yaml keys the docs promise and a
 // faithful marshal/unmarshal round trip. The legacy `enabled` key must NOT be
-// written anymore — the container persists only the three sub-policies.
+// written anymore — the container persists only the four sub-policies.
 func TestSilentMode_YAMLRoundTrip(t *testing.T) {
 	src := SilentModeConfig{
 		ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmAllow},
+		UserConfirm: SilentSubPolicyConfig{Mode: SilentUserConfirmEscalate},
 		StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitStop},
 		AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserEnable},
 	}
@@ -123,7 +142,7 @@ func TestSilentMode_YAMLRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("yaml.Marshal: %v", err)
 	}
-	for _, key := range []string{"tool_confirm", "step_limit", "ask_user", "mode"} {
+	for _, key := range []string{"tool_confirm", "user_confirm", "step_limit", "ask_user", "mode"} {
 		if !strings.Contains(string(data), key) {
 			t.Errorf("silent-mode yaml is missing key %q; got:\n%s", key, data)
 		}
@@ -156,6 +175,7 @@ security:
 
 	t.Run("valid block loads", func(t *testing.T) {
 		content := base + `    tool_confirm: {mode: deny}
+    user_confirm: {mode: escalate}
     step_limit: {mode: stop}
     ask_user: {mode: enable}
 `
@@ -166,6 +186,7 @@ security:
 		got := cfg.Security.SilentMode
 		want := SilentModeConfig{
 			ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmDeny},
+			UserConfirm: SilentSubPolicyConfig{Mode: SilentUserConfirmEscalate},
 			StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitStop},
 			AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserEnable},
 		}
@@ -189,6 +210,7 @@ security:
 
 	for name, line := range map[string]string{
 		"tool_confirm": "    tool_confirm: {mode: always}\n",
+		"user_confirm": "    user_confirm: {mode: sometimes}\n",
 		"step_limit":   "    step_limit: {mode: forever}\n",
 		"ask_user":     "    ask_user: {mode: maybe}\n",
 	} {
@@ -228,6 +250,7 @@ security:
 	}
 	want := SilentModeConfig{
 		ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmDeny},
+		UserConfirm: SilentSubPolicyConfig{Mode: SilentUserConfirmDeny},
 		StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitAuto},
 		AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserDisable},
 	}
@@ -333,6 +356,7 @@ func TestAutonomyMode_Migration(t *testing.T) {
 			if strings.Contains(tc.security, "tool_confirm") {
 				want := SilentModeConfig{
 					ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmDeny},
+					UserConfirm: SilentSubPolicyConfig{Mode: SilentUserConfirmDeny},
 					StepLimit:   SilentSubPolicyConfig{Mode: SilentStepLimitStop},
 					AskUser:     SilentSubPolicyConfig{Mode: SilentAskUserEnable},
 				}

@@ -429,6 +429,15 @@ func TestToBuilderConfig_SilentModeEnumPin(t *testing.T) {
 			config.SilentAskUserDisable, coretools.SilentAskUserDisable,
 		)
 	}
+	if config.SilentUserConfirmConfirm != coretools.SilentUserConfirmConfirm ||
+		config.SilentUserConfirmDeny != coretools.SilentUserConfirmDeny ||
+		config.SilentUserConfirmEscalate != coretools.SilentUserConfirmEscalate {
+		t.Fatalf(
+			"silent-mode user_confirm enum desynchronized: config(confirm=%q, deny=%q, escalate=%q) vs core(confirm=%q, deny=%q, escalate=%q) — rename both sides together",
+			config.SilentUserConfirmConfirm, config.SilentUserConfirmDeny, config.SilentUserConfirmEscalate,
+			coretools.SilentUserConfirmConfirm, coretools.SilentUserConfirmDeny, coretools.SilentUserConfirmEscalate,
+		)
+	}
 	// Same pin for the unified autonomy-mode vocabulary: config re-declares
 	// core's constants (core never imports backend/config), so a one-sided
 	// rename would silently strand the posture on the loader's fail-safe
@@ -450,12 +459,13 @@ func TestToBuilderConfig_SilentModeEnumPin(t *testing.T) {
 	cfg.Security.AutonomyMode = config.AutonomyModeSilent
 	cfg.Security.SilentMode = config.SilentModeConfig{
 		ToolConfirm: config.SilentSubPolicyConfig{Mode: config.SilentToolConfirmDeny},
+		UserConfirm: config.SilentSubPolicyConfig{Mode: config.SilentUserConfirmEscalate},
 		StepLimit:   config.SilentSubPolicyConfig{Mode: config.SilentStepLimitStop},
 		AskUser:     config.SilentSubPolicyConfig{Mode: config.SilentAskUserDisable},
 	}
 	builderSecurity := ToBuilderConfig(cfg, config.PredefinedModelProfiles()).Security
 	posture := builderSecurity.SilentMode
-	if posture.ToolConfirm != coretools.SilentToolConfirmDeny || posture.AskUser != coretools.SilentAskUserDisable {
+	if posture.ToolConfirm != coretools.SilentToolConfirmDeny || posture.UserConfirm != coretools.SilentUserConfirmEscalate || posture.AskUser != coretools.SilentAskUserDisable {
 		t.Fatalf("ToBuilderConfig must pass the silent-mode modes through verbatim, got %+v", posture)
 	}
 	if builderSecurity.AutonomyMode != config.AutonomyModeSilent {

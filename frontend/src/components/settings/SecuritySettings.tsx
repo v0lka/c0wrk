@@ -48,6 +48,7 @@ const initialSettings: LocalSettings = {
 function normalizeSilentMode(sm: SilentModeSettings | undefined): SilentModeSettings {
   return {
     tool_confirm: sm?.tool_confirm ?? DEFAULT_SILENT_POLICIES.tool_confirm,
+    user_confirm: sm?.user_confirm ?? DEFAULT_SILENT_POLICIES.user_confirm,
     step_limit: sm?.step_limit ?? DEFAULT_SILENT_POLICIES.step_limit,
     ask_user: sm?.ask_user ?? DEFAULT_SILENT_POLICIES.ask_user,
   };
@@ -191,6 +192,11 @@ export function SecuritySettings() {
     save({ ...settings, autonomy_mode: mode });
   };
 
+  // The single silent-mode save route. The gated user_confirm = "confirm"
+  // selection also arrives here — SilentModeCard only calls back once its
+  // danger dialog is explicitly confirmed — and spreading the full
+  // silent_mode echoes every sub-policy (user_confirm included), so a save
+  // never resets one.
   const handleSilentMode = (key: SilentSubPolicyKey, mode: string) => {
     save({
       ...settings,

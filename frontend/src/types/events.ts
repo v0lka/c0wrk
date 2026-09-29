@@ -104,12 +104,13 @@ export interface AutonomyDecisionData {
   readonly kind: 'tool_confirm' | 'assisted_deny' | 'step_limit'
   /** The autonomy posture that decided: "assisted" | "silent". */
   readonly mode?: string
-  /** The posture's sub-policy that decided (tool_confirm: judge|allow|deny;
-   *  assisted_deny: judge — the strict judge IS the decider there; step_limit:
-   *  auto or a pinned response). Guaranteed non-empty on every emitted
-   *  decision: the host funnel (Manager.EmitAutonomyDecision) defaults an empty
-   *  policy from the decision kind, so the audit trail always names the
-   *  deciding mechanism. */
+  /** The posture's sub-policy that decided (tool_confirm: judge|allow|deny —
+   *  and user_confirm when the silent user_confirm refinement auto-approved a
+   *  fail-closed CONFIRM; assisted_deny: judge — the strict judge IS the
+   *  decider there; step_limit: auto or a pinned response). Guaranteed
+   *  non-empty on every emitted decision: the host funnel
+   *  (Manager.EmitAutonomyDecision) defaults an empty policy from the decision
+   *  kind, so the audit trail always names the deciding mechanism. */
   readonly policy?: string
   /** The decision: allow|deny (tool_confirm) or allow_once|allow_more|allow_always|deny (step_limit). */
   readonly verdict: string

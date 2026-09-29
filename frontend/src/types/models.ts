@@ -690,6 +690,7 @@ export interface SilentSubPolicy {
  */
 export interface SilentModeSettings {
   tool_confirm: SilentSubPolicy
+  user_confirm: SilentSubPolicy
   step_limit: SilentSubPolicy
   ask_user: SilentSubPolicy
 }

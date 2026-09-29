@@ -1,12 +1,12 @@
 /**
  * Presentation metadata for silent mode (security.silent_mode). The enum VALUES
  * are owned by the backend (config.Silent*); this module only carries the human
- * labels, descriptions, and option order for the three sub-policy dropdowns, so
+ * labels, descriptions, and option order for the four sub-policy dropdowns, so
  * SecuritySettings stays a thin view.
  */
 
-/** The three silent-mode sub-policies, keyed like SilentModeSettings. */
-export type SilentSubPolicyKey = 'tool_confirm' | 'step_limit' | 'ask_user'
+/** The four silent-mode sub-policies, keyed like SilentModeSettings. */
+export type SilentSubPolicyKey = 'tool_confirm' | 'user_confirm' | 'step_limit' | 'ask_user'
 
 export interface SilentModeSubPolicyMeta {
   key: SilentSubPolicyKey
@@ -34,6 +34,17 @@ export const SILENT_SUB_POLICIES: readonly SilentModeSubPolicyMeta[] = [
       { value: 'deny', label: 'Deny' },
     ],
     requiresJudge: ['judge'],
+  },
+  {
+    key: 'user_confirm',
+    label: 'User confirmations',
+    description:
+      'Refines the tool confirmation terminal for a fail-closed CONFIRM outcome — the strict judge returns CONFIRM, or the judge is unavailable, errors, times out, or produces an unparseable verdict. Deny auto-denies such a call with its reasoning (the fail-closed default); Escalate falls back to the blocking confirmation card, so a human decides; Confirm runs the call unattended — audited as an allow — the most permissive value, and UNSAFE: it lets a confirmation-gated call execute with no human whenever the judge cannot clear it. A deliberate judge DENY is never governed by this policy.',
+    options: [
+      { value: 'deny', label: 'Deny (default)' },
+      { value: 'escalate', label: 'Escalate (prompt)' },
+      { value: 'confirm', label: 'Confirm (unsafe)' },
+    ],
   },
   {
     key: 'step_limit',

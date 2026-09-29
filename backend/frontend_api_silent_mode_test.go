@@ -20,12 +20,13 @@ func TestUpdateSecuritySettings_SilentModeRoundTrip(t *testing.T) {
 		t.Fatalf("autonomy mode must default to %q, got %q", config.AutonomyModeStandard, got)
 	}
 	got := f.GetSecuritySettings().SilentMode
-	if got.ToolConfirm.Mode != config.SilentToolConfirmJudge || got.AskUser.Mode != config.SilentAskUserDisable {
+	if got.ToolConfirm.Mode != config.SilentToolConfirmJudge || got.UserConfirm.Mode != config.SilentUserConfirmDeny || got.AskUser.Mode != config.SilentAskUserDisable {
 		t.Fatalf("default silent mode = %+v", got)
 	}
 
 	in := SilentModeResponse{
 		ToolConfirm: SilentSubPolicyResponse{Mode: config.SilentToolConfirmDeny},
+		UserConfirm: SilentSubPolicyResponse{Mode: config.SilentUserConfirmEscalate},
 		StepLimit:   SilentSubPolicyResponse{Mode: config.SilentStepLimitStop},
 		AskUser:     SilentSubPolicyResponse{Mode: config.SilentAskUserEnable},
 	}
@@ -39,6 +40,7 @@ func TestUpdateSecuritySettings_SilentModeRoundTrip(t *testing.T) {
 
 	wantCfg := config.SilentModeConfig{
 		ToolConfirm: config.SilentSubPolicyConfig{Mode: config.SilentToolConfirmDeny},
+		UserConfirm: config.SilentSubPolicyConfig{Mode: config.SilentUserConfirmEscalate},
 		StepLimit:   config.SilentSubPolicyConfig{Mode: config.SilentStepLimitStop},
 		AskUser:     config.SilentSubPolicyConfig{Mode: config.SilentAskUserEnable},
 	}
@@ -63,6 +65,7 @@ func TestUpdateSecuritySettings_SilentModeRoundTrip(t *testing.T) {
 	}
 	if got := mock.updateSecPolicyLastCfg.Security.SilentMode; got != (core.BuilderSilentModeConfig{
 		ToolConfirm: config.SilentToolConfirmDeny,
+		UserConfirm: config.SilentUserConfirmEscalate,
 		StepLimit:   config.SilentStepLimitStop,
 		AskUser:     config.SilentAskUserEnable,
 	}) {
@@ -108,7 +111,32 @@ func TestUpdateSecuritySettings_UnsetSilentModeModeDefaults(t *testing.T) {
 		t.Errorf("autonomy mode = %q, want the stored silent selection", got)
 	}
 	got := f.config.Security.SilentMode
-	if got.ToolConfirm.Mode != config.SilentToolConfirmJudge || got.AskUser.Mode != config.SilentAskUserDisable {
+	if got.ToolConfirm.Mode != config.SilentToolConfirmJudge || got.UserConfirm.Mode != config.SilentUserConfirmDeny || got.AskUser.Mode != config.SilentAskUserDisable {
 		t.Errorf("omitted modes must default, got %+v", got)
+	}
+}
+
+// TestUpdateSecuritySettings_RejectsInvalidUserConfirmEnum verifies a UI-sourced
+// invalid user_confirm enum is rejected, names the offending
+// security.silent_mode.user_confirm.mode field, and mutates nothing.
+func TestUpdateSecuritySettings_RejectsInvalidUserConfirmEnum(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	before := f.config.Security.SilentMode
+
+	err := f.UpdateSecuritySettings(SecuritySettingsResponse{
+		Groups: fullGroupPayload(nil),
+		SilentMode: SilentModeResponse{
+			ToolConfirm: SilentSubPolicyResponse{Mode: config.SilentToolConfirmJudge},
+			UserConfirm: SilentSubPolicyResponse{Mode: "sometimes"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected an error for an invalid user_confirm enum")
+	}
+	if !strings.Contains(err.Error(), "security.silent_mode.user_confirm.mode") {
+		t.Errorf("error %q must name the offending field", err)
+	}
+	if f.config.Security.SilentMode != before {
+		t.Error("an invalid payload must mutate nothing")
 	}
 }
