@@ -751,12 +751,14 @@ type EmbeddedLLMConfig struct {
 	// Informational.
 	//
 	// "cuda-13.3" is PINNED and therefore recordable here — it is part of the
-	// pinned runtime artifact set — but it is NOT selectable in practice:
-	// core's compat guard `cuda-13.3-crash` (PrismML-Eng/llama.cpp#222)
-	// substitutes it on every CUDA platform, to cuda-12.8 on linux/amd64 and
-	// cuda-12.4 on windows/amd64, so no machine resolves to it while that guard
-	// is in force. Recordable-in-the-manifest and user-selectable are different
-	// predicates; this field records.
+	// pinned runtime artifact set — but the compat guard
+	// `cuda-13.3-crash` (PrismML-Eng/llama.cpp#222)
+	// substitutes it only where that is safe: cuda-12.8 on linux/amd64 when the
+	// probed CUDA 12.x userland verdict is present (absent/unknown keep 13.3 and
+	// the guard is recorded unapplied), cuda-12.4 on windows/amd64
+	// unconditionally, so a machine resolves to 13.3 exactly when the Linux
+	// substitution is withheld. Recordable-in-the-manifest and user-selectable
+	// are different predicates; this field records.
 	Backend string `yaml:"backend"`
 	// Port is the persisted loopback port; 0 = allocate at install time. The
 	// provider base URL is ALWAYS derived from it, never stored separately.

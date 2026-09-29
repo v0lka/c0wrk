@@ -156,7 +156,8 @@ var ErrNotInstalled = errors.New("embedded LLM is not installed")
 
 // ErrSmokeTestFailed reports that the freshly provisioned llama-server did not
 // run. On macOS the cause is almost always Gatekeeper still blocking an
-// unsigned binary; the wrapped message carries the fix.
+// unsigned binary; on Linux with a GPU backend it is missing CUDA 12 runtime
+// libraries. The wrapped message carries the platform-appropriate fix.
 var ErrSmokeTestFailed = errors.New("the provisioned llama-server did not run")
 
 // ReadManifest loads the manifest at path. A missing file is reported as
@@ -724,9 +725,11 @@ type InstallReport struct {
 //  5. the runtime archives (and the Windows CUDA companion): download with
 //     resume and per-component progress → SHA256 verification gate → extract
 //     into a staging tree;
-//  6. macOS only: quarantine-clear, ad-hoc codesign and a --version smoke test
-//     of the staged runtime — before the weights, so an unrunnable runtime
-//     fails in seconds instead of after a multi-gigabyte download;
+//  6. runtime provisioning: quarantine-clear + ad-hoc codesign on macOS, then
+//     a --version smoke test on EVERY platform, all against the staged tree —
+//     before the weights, so an unrunnable runtime (Gatekeeper, missing CUDA
+//     12 libraries) fails in seconds instead of after a multi-gigabyte
+//     download;
 //  7. the staged runtime replaces the previous one — the old tree is retired
 //     only after every new byte is secured and proven to run;
 //  8. the weights (model, mmproj): download → SHA256 verification gate,
@@ -796,10 +799,11 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*Install
 		}
 	}
 
-	// Phase order is deliberate: the runtime is downloaded, extracted, signed
-	// and smoke-tested BEFORE the multi-gigabyte weights are fetched, so a
-	// runtime that cannot execute (Gatekeeper, a missing GPU library) fails the
-	// install in seconds instead of after an hour of downloading.
+	// Phase order is deliberate: the runtime is downloaded, extracted,
+	// provisioned (macOS signing where applicable) and smoke-tested BEFORE the
+	// multi-gigabyte weights are fetched, so a runtime that cannot execute
+	// (Gatekeeper, a missing GPU library) fails the install in seconds instead
+	// of after an hour of downloading.
 	runtimeAssets, weightAssets := splitRuntimeAssets(res.Assets)
 	checksums := make(map[string]string, len(res.Assets))
 
@@ -980,7 +984,15 @@ func (in *Installer) plan(ctx context.Context, opts InstallOptions) (Hardware, s
 		backend = opts.Backend
 	}
 
-	profile := MachineProfile{Platform: platform, Backend: backend, RAMGiB: hw.RAMGiB}
+	// The CUDA 12.x userland verdict rides with the profile so BOTH passes —
+	// this statically decidable one and the device-aware refinement below —
+	// gate the Linux #222 substitution on the same measured fact.
+	profile := MachineProfile{
+		Platform:       platform,
+		Backend:        backend,
+		RAMGiB:         hw.RAMGiB,
+		CUDA12Userland: hw.CUDA12Userland,
+	}
 	res, err := ResolveProfile(profile)
 	if err != nil {
 		return Hardware{}, "", Resolution{}, nil, fmt.Errorf("embeddedllm: %w", err)
@@ -1140,10 +1152,11 @@ func (in *Installer) refineWithStagedDevices(ctx context.Context, platform strin
 	gpu := ClassifyGPUs(topology.Devices)
 
 	refined, err := Resolve(ResolveInput{MachineProfile: MachineProfile{
-		Platform: platform,
-		Backend:  res.Backend,
-		RAMGiB:   hw.RAMGiB,
-		GPU:      gpu,
+		Platform:       platform,
+		Backend:        res.Backend,
+		RAMGiB:         hw.RAMGiB,
+		GPU:            gpu,
+		CUDA12Userland: hw.CUDA12Userland,
 	}, Topology: &topology})
 	if err != nil {
 		if errors.Is(err, ErrInsufficientMemory) {
@@ -1297,9 +1310,16 @@ func (in *Installer) fetchOne(ctx context.Context, opts InstallOptions, asset As
 	return result.SHA256, nil
 }
 
-// provisionRuntime signs and smoke-tests the staged runtime on macOS, swaps it
-// into place, locates the server binary and closes out the runtime components'
-// progress streams.
+// provisionRuntime provisions the staged runtime, smoke-tests it on every
+// platform, swaps it into place, locates the server binary and closes out the
+// runtime components' progress streams.
+//
+// The macOS-only halves (quarantine-clear and ad-hoc codesign) run first when
+// the host is darwin; the --version smoke test runs on EVERY platform. The
+// order matters: a Linux CUDA runtime that cannot load its libraries and a
+// macOS binary Gatekeeper still blocks are the same failure — an unrunnable
+// runtime — and both must fail the install here, in seconds, before the
+// multi-gigabyte weights are fetched.
 func (in *Installer) provisionRuntime(ctx context.Context, opts InstallOptions, res Resolution,
 	runtimeAssets []Asset,
 ) (string, error) {
@@ -1311,9 +1331,11 @@ func (in *Installer) provisionRuntime(ctx context.Context, opts InstallOptions, 
 		total := TotalBytes(runtimeAssets)
 		in.emit(opts, Progress{Component: ComponentRuntime, Stage: StageSigning,
 			BytesDone: total, BytesTotal: total})
-		if err := in.provisionDarwin(ctx, staging); err != nil {
+		if err := in.provisionDarwin(ctx, res.Backend, staging); err != nil {
 			return "", err
 		}
+	} else if err := in.smokeTest(ctx, res.Backend, staging); err != nil {
+		return "", err
 	}
 
 	runtimeDir, err := in.promoteRuntime(res.Backend)
@@ -1349,7 +1371,7 @@ func (in *Installer) provisionRuntime(ctx context.Context, opts InstallOptions, 
 // A missing helper is still a warning, not a failure: the smoke test is the
 // authority on whether the runtime runs, and refusing to install on a machine
 // without /usr/bin/codesign would be a worse outcome than trying.
-func (in *Installer) provisionDarwin(ctx context.Context, runtimeDir string) error {
+func (in *Installer) provisionDarwin(ctx context.Context, backend Backend, runtimeDir string) error {
 	if err := in.runBounded(ctx, macOSCommandTimeout, darwinXattr, "-cr", runtimeDir); err != nil {
 		if toolMissing(err) {
 			in.logger().Warn("xattr is unavailable; quarantine attributes were not cleared",
@@ -1377,14 +1399,15 @@ func (in *Installer) provisionDarwin(ctx context.Context, runtimeDir string) err
 	in.logger().Info("embedded LLM runtime provisioned for macOS",
 		"path", runtimeDir, "signed_images", len(images))
 
-	return in.smokeTest(ctx, runtimeDir)
+	return in.smokeTest(ctx, backend, runtimeDir)
 }
 
 // smokeTest runs "llama-server --version" against the staged tree and turns a
-// failure into an actionable message: on macOS the overwhelmingly likely cause
-// is Gatekeeper, and "the install failed" with no next step is not an
+// failure into an actionable message. On macOS the overwhelmingly likely cause
+// is Gatekeeper; on Linux a GPU-accelerated build it is missing CUDA 12
+// runtime libraries. "the install failed" with no next step is not an
 // acceptable outcome for a user who just downloaded 7 GiB.
-func (in *Installer) smokeTest(ctx context.Context, runtimeDir string) error {
+func (in *Installer) smokeTest(ctx context.Context, backend Backend, runtimeDir string) error {
 	binary, err := ServerBinaryPath(runtimeDir, in.hostOS())
 	if err != nil {
 		return err
@@ -1395,16 +1418,42 @@ func (in *Installer) smokeTest(ctx context.Context, runtimeDir string) error {
 	out, err := in.runner()(smokeCtx, binary, "--version")
 	if err != nil {
 		return fmt.Errorf("%w: %s --version failed: %v\n"+
-			"macOS Gatekeeper is most likely still blocking the unsigned runtime. To fix it, run:\n"+
-			"  xattr -dr com.apple.quarantine %s\n"+
-			"or open System Settings → Privacy & Security, find the blocked llama-server "+
-			"entry and click \"Allow Anyway\", then install again.\n"+
+			"%s\n"+
 			"Command output: %s",
-			ErrSmokeTestFailed, binary, err, runtimeDir, strings.TrimSpace(out))
+			ErrSmokeTestFailed, binary, err, in.smokeTestHint(backend, runtimeDir),
+			strings.TrimSpace(out))
 	}
 	in.logger().Debug("embedded LLM runtime smoke test passed", "binary", binary,
 		"output", strings.TrimSpace(out))
 	return nil
+}
+
+// smokeTestHint is the platform- and backend-specific next step appended to a
+// failed smoke test. The backend names the build that failed; on Linux the
+// CUDA builds are the ones whose failure mode is an environment problem
+// (missing CUDA 12 runtime libraries) rather than a broken download, so the
+// hint points there.
+func (in *Installer) smokeTestHint(backend Backend, runtimeDir string) string {
+	switch {
+	case in.hostOS() == "darwin":
+		return "macOS Gatekeeper is most likely still blocking the unsigned runtime. To fix it, run:\n" +
+			"  xattr -dr com.apple.quarantine " + runtimeDir + "\n" +
+			"or open System Settings → Privacy & Security, find the blocked llama-server " +
+			`entry and click "Allow Anyway", then install again.`
+	case backend.IsCUDA():
+		return fmt.Sprintf("the %s runtime most likely cannot load its CUDA 12 libraries "+
+			"(libcudart, libcublas). Install the CUDA 12 runtime libraries for your "+
+			"distribution and install again.", backend)
+	default:
+		binaryName := ServerBinaryName
+		if in.hostOS() == "windows" {
+			binaryName += ".exe"
+		}
+		return fmt.Sprintf("the %s runtime failed to execute. The download is verified by "+
+			"SHA256, so a system library or an unsupported CPU feature is the most likely "+
+			"cause — run the binary directly for the loader's diagnostics:\n"+
+			"  %s/build/bin/%s --version", backend, runtimeDir, binaryName)
+	}
 }
 
 // promoteRuntime swaps the staged tree into place. The previous tree is

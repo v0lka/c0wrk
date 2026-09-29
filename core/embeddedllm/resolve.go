@@ -246,6 +246,23 @@ type MachineProfile struct {
 	// footprint against the probed budget (memory.go over topology.go) owns the
 	// measurement and supplies the verdict.
 	FitsPQ2_0 BudgetFit
+	// CUDA12Userland is the probe verdict on the CUDA 12.x load-time libraries
+	// (libcudart.so.12 + libcublas.so.12; Hardware.CUDA12Userland carries the
+	// measured value). It gates the Linux half of the #222 guard: the
+	// substituted cuda-12.8 build dynamically links that userland, so the
+	// substitution is safe only when the libraries are genuinely there
+	// (present). absent — including a ".so.12" symlink onto a 13-series ELF —
+	// means the fallback could not load here and the plan keeps 13.3; unknown
+	// means the probe could not decide, and the substitution must not fire on
+	// a guess.
+	//
+	// The zero value IS unknown, the conservative side: a caller that has not
+	// probed the userland is indistinguishable from one the probe could not
+	// answer. The Linux substitution then keeps the probed backend and the
+	// guard is recorded unapplied; Windows and every non-#222 guard are
+	// decided without the verdict (Windows bundles its CUDA runtime in the
+	// cudart companion archive, so no userland probe applies).
+	CUDA12Userland CUDA12Userland
 }
 
 // ResolveProfile is Resolve for a caller that knows the machine but has no
@@ -285,7 +302,7 @@ func resolveWith(table AssetTable, in ResolveInput) (Resolution, error) {
 	if gpu == GPUFamilyUnknown && in.Topology != nil {
 		gpu = ClassifyGPUs(in.Topology.Devices)
 	}
-	effective, guards := applyCompatGuards(table, in.Platform, effective, gpu)
+	effective, guards := applyCompatGuards(table, in.Platform, effective, gpu, in.CUDA12Userland)
 
 	// Normalize ONCE, here, so the gate and the planner price the same machine.
 	// `Plan` normalizes too, but it has no RAM total to fall back on — a
@@ -562,12 +579,36 @@ func explicitLayers(offload Offload) int {
 // the backend it ends up with (a ROCm→Vulkan substitution yields PTQ1_0
 // because Vulkan has no PQ2_0 kernels, exactly as upstream's workaround for
 // #223 prescribes).
-func applyCompatGuards(table AssetTable, platform string, backend Backend, gpu GPUFamily) (Backend, []GuardDecision) {
+//
+// The Linux #222 substitution additionally requires a CUDA 12.x userland the
+// cuda-12.8 build can load against (cu12 == CUDA12Present): absent means the
+// fallback would fail at load time on this machine — the trap the probe exists
+// for, a ".so.12" symlink onto a 13-series ELF included — and unknown means
+// nobody measured it, which is not evidence of safety. Both keep the probed
+// 13.3 backend and record the decision with Applied=false and guidance saying
+// why, so the plan stays honest without breaking a working build. The Windows
+// half of #222 (and every other guard) is decided without the verdict: Windows
+// bundles its CUDA runtime in the cudart companion archive.
+func applyCompatGuards(table AssetTable, platform string, backend Backend, gpu GPUFamily, cu12 CUDA12Userland) (Backend, []GuardDecision) {
 	decisions := CompatibilityGuards(backend, gpu, platform)
 	effective := backend
 	for i := range decisions {
 		decision := &decisions[i]
 		if decision.Action != GuardActionPreferBackend {
+			continue
+		}
+		if platform == PlatformLinuxAMD64 && decision.Guard == GuardCUDA133Crash && cu12 != CUDA12Present {
+			decision.Applied = false
+			switch cu12 {
+			case CUDA12Absent:
+				decision.Guidance += " (c0wrk probed this system and found no usable CUDA 12.x " +
+					"runtime libraries, so the " + string(decision.Backend) +
+					" build could not be loaded here; this install keeps " + string(effective) + ")"
+			default: // CUDA12Unknown — the zero value: not probed, or the probe could not decide.
+				decision.Guidance += " (c0wrk could not determine whether this system has the CUDA 12.x " +
+					"runtime libraries the " + string(decision.Backend) +
+					" build needs; this install keeps " + string(effective) + ")"
+			}
 			continue
 		}
 		if _, pinned := table.RuntimeAsset(platform, decision.Backend); !pinned {

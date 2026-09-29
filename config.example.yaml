@@ -289,11 +289,15 @@ llm:
 #   # is legal here — recordable-in-the-manifest and user-selectable are
 #   # different predicates. `cuda-13.3` is the case that shows the difference:
 #   # it is pinned (part of the pinned runtime artifact set) and therefore
-#   # recordable, but it is NOT selectable in practice while upstream #222 is
-#   # open — the 13.3 builds are documented to crash, so core's compat guard
-#   # `cuda-13.3-crash` substitutes it on every CUDA platform, to the 12.8 build
-#   # on Linux and the 12.4 build on Windows, both of which a 13.3 driver still
-#   # runs. No machine resolves to 13.3 while that guard is in force.
+#   # recordable — and, while upstream #222 is open, it is in fact what a
+#   # machine records when the substitution cannot fire: the 13.3 builds are
+#   # documented to crash, so core's compat guard
+#   # `cuda-13.3-crash` substitutes it on the CUDA platforms where that is safe:
+#   # the 12.8 build on Linux (only when the probed CUDA 12.x userland verdict is
+#   # `present`; `absent`/`unknown` keep the 13.3 build and the guard is recorded
+#   # unapplied) and the 12.4 build on Windows unconditionally — both of which a
+#   # 13.3 driver still runs. A machine resolves to 13.3 exactly when the Linux
+#   # substitution is withheld.
 #   # CUDA and ROCm builds are x64-only; Windows CUDA additionally downloads a
 #   # paired cudart archive as a separate, separately-verified component.
 #   backend: ""

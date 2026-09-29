@@ -66,6 +66,11 @@ type matrixCase struct {
 	wantImageTokens int
 	wantCudart      bool
 	wantComponents  []Component
+	// cu12 is the CUDA 12.x userland verdict the resolution is built with.
+	// The zero value (unknown) is deliberate for every case that does not
+	// name it: it pins that a plan only the Linux #222 substitution could
+	// change is unaffected by an unanswered probe.
+	cu12 CUDA12Userland
 }
 
 // resolveMatrix enumerates every supported platform against every backend the
@@ -173,12 +178,34 @@ var resolveMatrix = []matrixCase{
 	// message." Upstream's workaround is the 12.8 build on Linux and the 12.4
 	// build on Windows, and a newer driver still runs an older-toolkit build —
 	// the same backwards compatibility clampCUDABackend relies on. So a probed
-	// 13.3 resolves to the fallback and the compatibility guard records why.
+	// 13.3 resolves to the fallback and the compatibility guard records why —
+	// but on Linux the fallback needs the CUDA 12.x userland (present) to be
+	// loadable, so the substitution is gated on that probe.
 	{
 		name: "linux x64 cuda 13.3 is guarded down to 12.8", platform: PlatformLinuxAMD64, probed: BackendCUDA133,
 		wantBackend: BackendCUDA128, wantArchive: "llama-" + RuntimeTag + "-bin-linux-cuda-12.8-x64.tar.gz",
 		wantPacking: PackingPQ2_0, wantLayers: 99, wantImageTokens: ImageMaxTokensUncapped,
 		wantComponents: componentsPlain,
+		cu12:           CUDA12Present,
+	},
+	{
+		// The trap from the userland probe: a ".so.12" tree that is really a
+		// 13-series ELF. The 12.8 fallback could not load, so the plan keeps
+		// the probed 13.3 and the guard stays in the record unapplied.
+		name: "linux x64 cuda 13.3 keeps 13.3 without a CUDA 12 userland", platform: PlatformLinuxAMD64, probed: BackendCUDA133,
+		wantBackend: BackendCUDA133, wantArchive: "llama-" + RuntimeTag + "-bin-linux-cuda-13.3-x64.tar.gz",
+		wantPacking: PackingPQ2_0, wantLayers: 99, wantImageTokens: ImageMaxTokensUncapped,
+		wantComponents: componentsPlain,
+		cu12:           CUDA12Absent,
+	},
+	{
+		// No userland answer at all is not evidence of safety: the probe could
+		// not decide, so the substitution must not fire on a guess.
+		name: "linux x64 cuda 13.3 keeps 13.3 on an unknown CUDA 12 userland", platform: PlatformLinuxAMD64, probed: BackendCUDA133,
+		wantBackend: BackendCUDA133, wantArchive: "llama-" + RuntimeTag + "-bin-linux-cuda-13.3-x64.tar.gz",
+		wantPacking: PackingPQ2_0, wantLayers: 99, wantImageTokens: ImageMaxTokensUncapped,
+		wantComponents: componentsPlain,
+		cu12:           CUDA12Unknown,
 	},
 	{
 		name: "linux x64 probed metal degrades to cpu", platform: PlatformLinuxAMD64, probed: BackendMetal,
@@ -289,9 +316,16 @@ func TestResolveFullMatrix(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 
-				got, err := ResolveMachine(mc.platform, mc.probed, tier.ramGiB)
+				got, err := Resolve(ResolveInput{
+					MachineProfile: MachineProfile{
+						Platform:       mc.platform,
+						Backend:        mc.probed,
+						RAMGiB:         tier.ramGiB,
+						CUDA12Userland: mc.cu12,
+					},
+				})
 				if err != nil {
-					t.Fatalf("ResolveMachine(%q, %q, %v) error = %v, want success",
+					t.Fatalf("Resolve(%q, %q, %v) error = %v, want success",
 						mc.platform, mc.probed, tier.ramGiB, err)
 				}
 
@@ -313,6 +347,41 @@ func TestResolveFullMatrix(t *testing.T) {
 				}
 				if got.NeedsCudart != mc.wantCudart {
 					t.Errorf("NeedsCudart = %v, want %v", got.NeedsCudart, mc.wantCudart)
+				}
+				// The #222 record must match what the plan did: applied when the
+				// guard substituted (Linux present / any Windows), unapplied
+				// (but still recorded) when the Linux substitution was held back
+				// by the userland probe, and ABSENT whenever the plan degraded
+				// below a 13.3 build before the guard table ran (x64-only and
+				// clamp rules) — a guard about a build the plan does not carry
+				// would be noise.
+				applied133 := slices.Contains(guardIDs(got.Guards, true), GuardCUDA133Crash)
+				unapplied133 := slices.Contains(guardIDs(got.Guards, false), GuardCUDA133Crash)
+				recorded := applied133 || unapplied133
+				switch {
+				case mc.probed != BackendCUDA133:
+					if recorded {
+						t.Errorf("%s: #222 recorded for a non-13.3 probed backend", mc.name)
+					}
+				case !got.Backend.IsCUDA():
+					// The plan degraded below CUDA (x64-only / clamp rules)
+					// before the guard table ran, so it never saw a 13.3
+					// backend and no #222 decision exists.
+					if recorded {
+						t.Errorf("%s: #222 recorded but the plan degraded to %q", mc.name, got.Backend)
+					}
+				case mc.platform == PlatformWindowsAMD64:
+					if !applied133 {
+						t.Errorf("%s: #222 must stay applied on Windows", mc.name)
+					}
+				case mc.cu12 == CUDA12Present:
+					if !applied133 {
+						t.Errorf("%s: #222 applied=false with a present CUDA 12 userland", mc.name)
+					}
+				default:
+					if !unapplied133 {
+						t.Errorf("%s: #222 must be recorded unapplied without a present userland", mc.name)
+					}
 				}
 
 				assertComponents(t, got, mc.wantComponents)

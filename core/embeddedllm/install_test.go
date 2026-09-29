@@ -76,6 +76,10 @@ type installCase struct {
 	// which the fixture's asset table must then also serve: a guard that swaps
 	// cuda-13.3 for cuda-12.8 needs a 12.8 archive to swap TO.
 	guardBackends []Backend
+	// cu12 is the CUDA 12.x userland verdict the injected hardware probe
+	// reports. Zero (unknown) is the honest default: an install fixture that
+	// does not name it models a machine nobody could measure.
+	cu12 CUDA12Userland
 }
 
 // darwinMetalCase is the canonical happy path: Apple Silicon, 32 GiB, Metal.
@@ -225,10 +229,11 @@ func newInstallFixture(t *testing.T, tc installCase) *installFixture {
 // probe is the injected hardware probe.
 func (fx *installFixture) probe(context.Context, *slog.Logger) (Hardware, error) {
 	return Hardware{
-		Platform: fx.case_.platform,
-		Arch:     fx.case_.arch,
-		RAMGiB:   fx.case_.ramGiB,
-		Backend:  fx.case_.backend,
+		Platform:       fx.case_.platform,
+		Arch:           fx.case_.arch,
+		RAMGiB:         fx.case_.ramGiB,
+		Backend:        fx.case_.backend,
+		CUDA12Userland: fx.case_.cu12,
 	}, nil
 }
 
@@ -1407,13 +1412,19 @@ func TestInstallProvisionsMacOSRuntime(t *testing.T) {
 	}
 }
 
+// TestInstallSkipsMacOSProvisioningOnOtherPlatforms pins the platform split:
+// xattr/codesign never run off darwin, while the --version smoke test runs on
+// EVERY platform — a Linux or Windows runtime that cannot execute must fail
+// the install before the weights, exactly like Gatekeeper does on macOS.
 func TestInstallSkipsMacOSProvisioningOnOtherPlatforms(t *testing.T) {
 	for _, tc := range []installCase{linuxCPUCase(), windowsCUDACase()} {
 		t.Run(tc.hostOS, func(t *testing.T) {
 			fx := newInstallFixture(t, tc)
 			fx.mustInstall(t)
-			if lines := fx.cmds.lines(); len(lines) != 0 {
-				t.Errorf("%s ran %d provisioning commands %v, want none", tc.hostOS, len(lines), lines)
+			for _, line := range fx.cmds.lines() {
+				if strings.HasPrefix(line, "xattr ") || strings.HasPrefix(line, "codesign ") {
+					t.Errorf("%s ran a macOS provisioning command %q", tc.hostOS, line)
+				}
 			}
 		})
 	}
@@ -1490,6 +1501,127 @@ func TestInstallCodesignFailureIsFatal(t *testing.T) {
 		t.Errorf("error %q does not explain that signing failed", err)
 	}
 	requireNoManifest(t, fx.layout)
+}
+
+// ── cross-platform smoke testing ──
+
+// TestInstallSmokeTestsTheStagedRuntimeOnEveryPlatform pins the ordering
+// invariant behind provisioning the runtime on all platforms: the --version
+// smoke test runs against the STAGED tree on linux and windows too, BEFORE the
+// weights — a runtime that cannot execute (missing CUDA 12 libraries, a
+// Gatekeeper block, a broken binary) must fail the install in seconds rather
+// than after a multi-gigabyte download.
+func TestInstallSmokeTestsTheStagedRuntimeOnEveryPlatform(t *testing.T) {
+	for _, tc := range []installCase{linuxCPUCase(), windowsCUDACase()} {
+		t.Run(tc.hostOS, func(t *testing.T) {
+			fx := newInstallFixture(t, tc)
+			report := fx.mustInstall(t)
+
+			smokeTest := fx.eventIndex("--version")
+			if smokeTest < 0 {
+				t.Fatalf("the %s smoke test never ran; events = %v", tc.hostOS, fx.eventLog())
+			}
+			probe := fx.eventIndex("device-probe")
+			model := fx.eventIndex("download:" + string(ComponentModel))
+			projector := fx.eventIndex("download:" + string(ComponentMMProj))
+			if probe < 0 || model < 0 || projector < 0 {
+				t.Fatalf("the install is incomplete; events = %v", fx.eventLog())
+			}
+			if smokeTest >= probe {
+				t.Errorf("the device probe (event %d) ran BEFORE the smoke test (event %d):\n%v",
+					probe, smokeTest, fx.eventLog())
+			}
+			if probe >= model || probe >= projector {
+				t.Errorf("the device probe (event %d) ran AFTER the weights (model %d, mmproj %d):\n%v",
+					probe, model, projector, fx.eventLog())
+			}
+
+			// The smoke test ran against the STAGING copy, i.e. before
+			// promotion: a runtime that does not run must never reach its
+			// final location.
+			staging, err := fx.layout.RuntimeStagingDir(tc.backend)
+			if err != nil {
+				t.Fatalf("RuntimeStagingDir: %v", err)
+			}
+			if !strings.Contains(fx.eventLog()[smokeTest], staging) {
+				t.Errorf("the smoke test %q did not run inside the staging tree %q",
+					fx.eventLog()[smokeTest], staging)
+			}
+			if report.Resolution.Backend != tc.backend {
+				t.Errorf("report backend = %q, want %q", report.Resolution.Backend, tc.backend)
+			}
+		})
+	}
+}
+
+// TestInstallLinuxSmokeFailureStopsBeforeTheWeights is the Linux twin of the
+// macOS smoke-failure test: an unrunnable staged runtime must abort the
+// install with an actionable message BEFORE a single weight byte is fetched,
+// and leave nothing behind — no manifest, no provider, no promoted tree.
+func TestInstallLinuxSmokeFailureStopsBeforeTheWeights(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		backend   Backend
+		wantParts []string
+	}{
+		{
+			name:      "cpu backend names the backend and points at the loader",
+			backend:   BackendCPU,
+			wantParts: []string{"cpu", "--version failed"},
+		},
+		{
+			name:      "cuda backend names the backend and the CUDA 12 libraries",
+			backend:   BackendCUDA128,
+			wantParts: []string{"cuda-12.8", "CUDA 12", "libcudart"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newInstallFixture(t, installCase{
+				platform: PlatformLinuxAMD64,
+				arch:     "amd64",
+				backend:  tc.backend,
+				ramGiB:   64,
+				hostOS:   "linux",
+			})
+			fx.cmds.fail = "--version"
+
+			_, err := fx.Install(context.Background(), InstallOptions{})
+			if !errors.Is(err, ErrSmokeTestFailed) {
+				t.Fatalf("Install error = %v, want ErrSmokeTestFailed", err)
+			}
+			message := err.Error()
+			for _, want := range tc.wantParts {
+				if !strings.Contains(message, want) {
+					t.Errorf("smoke-test error does not mention %q:\n%s", want, message)
+				}
+			}
+
+			// A runtime that does not run is never promoted and never
+			// registered.
+			requireNoManifest(t, fx.layout)
+			if len(fx.sink.installCalls()) != 0 {
+				t.Error("a failed smoke test registered a provider")
+			}
+			runtimeDir, err := fx.layout.RuntimeDir(tc.backend)
+			if err != nil {
+				t.Fatalf("RuntimeDir: %v", err)
+			}
+			requireAbsent(t, runtimeDir, "the runtime tree")
+			staging, err := fx.layout.RuntimeStagingDir(tc.backend)
+			if err != nil {
+				t.Fatalf("RuntimeStagingDir: %v", err)
+			}
+			requireDir(t, staging, "the staged runtime, kept for diagnosis")
+
+			// Fail-fast: the weights were never downloaded.
+			if n := fx.requestCount(ComponentModel); n != 0 {
+				t.Errorf("the model was requested %d times although the runtime does not run", n)
+			}
+			if n := fx.requestCount(ComponentMMProj); n != 0 {
+				t.Errorf("the mmproj was requested %d times although the runtime does not run", n)
+			}
+		})
+	}
 }
 
 // ── the secure-bytes-before-destroy invariant ──
@@ -2191,6 +2323,8 @@ func TestInstallRecordsAnAppliedCompatibilityGuard(t *testing.T) {
 		// The guard substitutes into this backend, so the fixture table has to
 		// be able to serve it.
 		guardBackends: []Backend{BackendCUDA128},
+		// A genuine CUDA 12.x userland is what lets the substitution fire.
+		cu12: CUDA12Present,
 	})
 	report := fx.mustInstall(t)
 
@@ -2234,6 +2368,71 @@ func TestInstallRecordsAnAppliedCompatibilityGuard(t *testing.T) {
 	persisted := guardFor(t, onDisk.Guards, GuardCUDA133Crash)
 	if !persisted.Applied || persisted.Reason != GuardReasonCrashOnLoad {
 		t.Errorf("persisted #222 = %+v, want the applied crash_on_load decision", persisted)
+	}
+	if persisted.Issue != decision.Issue || persisted.Guidance != decision.Guidance {
+		t.Error("the persisted #222 decision lost its citation or its guidance")
+	}
+	if onDisk.PackingReason != PackingReasonDefault {
+		t.Errorf("manifest packing_reason = %q, want %q", onDisk.PackingReason, PackingReasonDefault)
+	}
+}
+
+// TestInstallKeepsProbedBackendWithoutCUDA12Userland covers the other half of
+// the #222 record: a Linux CUDA 13.3 machine with NO usable CUDA 12.x userland
+// (the absent verdict — the real-machine shape behind issue #222's
+// non-reproduction, a ".so.12"-named symlink onto a 13-series ELF included)
+// keeps the probed 13.3 build. The substituted 12.8 build could not even load
+// here, so the guard is recorded unapplied — in the report AND on disk — with
+// guidance saying why, instead of trading a working build for one that cannot
+// start.
+func TestInstallKeepsProbedBackendWithoutCUDA12Userland(t *testing.T) {
+	fx := newInstallFixture(t, installCase{
+		platform: PlatformLinuxAMD64,
+		arch:     "amd64",
+		backend:  BackendCUDA133,
+		ramGiB:   64,
+		hostOS:   "linux",
+		// The substitution target stays servable, so the record shows the
+		// refusal is the probe's verdict and not a missing archive.
+		guardBackends: []Backend{BackendCUDA128},
+		cu12:          CUDA12Absent,
+	})
+	report := fx.mustInstall(t)
+
+	if report.Resolution.Backend != BackendCUDA133 {
+		t.Errorf("resolution backend = %q, want the probed %q (no CUDA 12 userland to substitute onto)",
+			report.Resolution.Backend, BackendCUDA133)
+	}
+	if report.Manifest.Backend != BackendCUDA133 {
+		t.Errorf("manifest backend = %q, want %q", report.Manifest.Backend, BackendCUDA133)
+	}
+
+	decision := guardFor(t, report.Guards, GuardCUDA133Crash)
+	if decision.Applied {
+		t.Error("the #222 substitution fired without a CUDA 12 userland; it must stay unapplied")
+	}
+	if decision.Backend != BackendCUDA128 {
+		t.Errorf("#222 target = %q, want the documented %q fallback", decision.Backend, BackendCUDA128)
+	}
+	if decision.Reason != GuardReasonCrashOnLoad || decision.Severity != GuardSeverityCritical {
+		t.Errorf("#222 reason/severity = %q/%q, want %q/%q",
+			decision.Reason, decision.Severity, GuardReasonCrashOnLoad, GuardSeverityCritical)
+	}
+	if !strings.Contains(decision.Guidance, "no usable CUDA 12.x") {
+		t.Errorf("#222 guidance does not say why the substitution was skipped: %q", decision.Guidance)
+	}
+
+	manifestPath, err := fx.layout.ManifestPath()
+	if err != nil {
+		t.Fatalf("ManifestPath: %v", err)
+	}
+	onDisk, err := ReadManifest(manifestPath)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	persisted := guardFor(t, onDisk.Guards, GuardCUDA133Crash)
+	if persisted.Applied {
+		t.Error("the persisted #222 decision claims a substitution that was not made")
 	}
 	if persisted.Issue != decision.Issue || persisted.Guidance != decision.Guidance {
 		t.Error("the persisted #222 decision lost its citation or its guidance")

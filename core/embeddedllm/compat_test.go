@@ -830,12 +830,35 @@ func TestResolveProfileAppliesBackendGuards(t *testing.T) {
 	}{
 		{
 			// #222: a Linux CUDA 13.3 machine gets the 12.8 build, which its
-			// newer driver still runs.
-			name:        "CUDA 13.3 on Linux resolves to 12.8",
-			profile:     MachineProfile{Platform: PlatformLinuxAMD64, Backend: BackendCUDA133, RAMGiB: 64},
+			// newer driver still runs — provided the CUDA 12.x userland the
+			// 12.8 build links against is really there.
+			name: "CUDA 13.3 on Linux resolves to 12.8",
+			profile: MachineProfile{Platform: PlatformLinuxAMD64, Backend: BackendCUDA133,
+				RAMGiB: 64, CUDA12Userland: CUDA12Present},
 			wantBackend: BackendCUDA128,
 			wantPacking: PackingPQ2_0,
 			wantApplied: GuardCUDA133Crash,
+		},
+		{
+			// The userland probe says the fallback could not load here: absent
+			// — including the ".so.12"-onto-13 symlink trap — or unknown. The
+			// probed 13.3 build stays, and the guard is recorded unapplied
+			// with guidance explaining why.
+			name: "CUDA 13.3 on Linux keeps 13.3 without a CUDA 12 userland",
+			profile: MachineProfile{Platform: PlatformLinuxAMD64, Backend: BackendCUDA133,
+				RAMGiB: 64, CUDA12Userland: CUDA12Absent},
+			wantBackend: BackendCUDA133,
+			wantPacking: PackingPQ2_0,
+			wantApplied: "",
+		},
+		{
+			// An unanswered probe is not evidence of safety either.
+			name: "CUDA 13.3 on Linux keeps 13.3 on an unknown CUDA 12 userland",
+			profile: MachineProfile{Platform: PlatformLinuxAMD64, Backend: BackendCUDA133,
+				RAMGiB: 64, CUDA12Userland: CUDA12Unknown},
+			wantBackend: BackendCUDA133,
+			wantPacking: PackingPQ2_0,
+			wantApplied: "",
 		},
 		{
 			// #222: Windows has no pinned 12.8 archive, so the substitution is
@@ -889,7 +912,17 @@ func TestResolveProfileAppliesBackendGuards(t *testing.T) {
 			}
 
 			applied := guardIDs(got.Guards, true)
-			if !slices.Contains(applied, tc.wantApplied) {
+			if tc.wantApplied == "" {
+				// The guard fired in the table but must NOT have changed the
+				// plan: no applied decision at all, and the recorded #222
+				// decision carries its skipped-substitution guidance.
+				if len(applied) != 0 {
+					t.Errorf("applied guards = %v, want none", applied)
+				}
+				if decision := findGuard(t, got.Guards, GuardCUDA133Crash); !strings.Contains(decision.Guidance, "CUDA 12.x") {
+					t.Errorf("#222 guidance does not say why the substitution was skipped: %q", decision.Guidance)
+				}
+			} else if !slices.Contains(applied, tc.wantApplied) {
 				t.Errorf("applied guards = %v, want %q among them", applied, tc.wantApplied)
 			}
 
@@ -970,9 +1003,10 @@ func TestResolveProfileRecordsWindowsCUDAAdvisory(t *testing.T) {
 }
 
 // TestResolveMachineKeepsTheStaticGuards pins the machine-only convenience
-// form: no GPU information means no GPU-specific guard, but a statically
-// decidable one still fires — a CUDA 13.3 Linux machine must not get a build
-// KNOWN_ISSUES says segfaults just because no device probe ran.
+// form: no GPU information means no GPU-specific guard, and the Linux #222
+// substitution — statically decidable only in the presence of a measured CUDA
+// 12.x userland — is held back with the guard recorded unapplied, while a
+// profile that DID probe the userland gets the substitution.
 func TestResolveMachineKeepsTheStaticGuards(t *testing.T) {
 	t.Parallel()
 
@@ -980,15 +1014,20 @@ func TestResolveMachineKeepsTheStaticGuards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveMachine error = %v, want success", err)
 	}
-	if got.Backend != BackendCUDA128 {
-		t.Errorf("Backend = %q, want %q (the #222 substitution is static)", got.Backend, BackendCUDA128)
+	if got.Backend != BackendCUDA133 {
+		t.Errorf("Backend = %q, want %q (an unanswered probe must not justify the substitution)",
+			got.Backend, BackendCUDA133)
 	}
 	if got.GPU != GPUFamilyUnknown {
 		t.Errorf("GPU = %q, want unknown", got.GPU)
 	}
-	applied := guardIDs(got.Guards, true)
-	if !slices.Contains(applied, GuardCUDA133Crash) {
-		t.Errorf("applied guards = %v, want %q", applied, GuardCUDA133Crash)
+	unapplied := guardIDs(got.Guards, false)
+	if !slices.Contains(unapplied, GuardCUDA133Crash) {
+		t.Errorf("unapplied guards = %v, want %q among them", unapplied, GuardCUDA133Crash)
+	}
+	decision := findGuard(t, got.Guards, GuardCUDA133Crash)
+	if !strings.Contains(decision.Guidance, "could not determine") {
+		t.Errorf("#222 guidance does not say why the substitution was skipped: %q", decision.Guidance)
 	}
 	if got.PackingReason != PackingReasonDefault {
 		t.Errorf("PackingReason = %q, want %q", got.PackingReason, PackingReasonDefault)
