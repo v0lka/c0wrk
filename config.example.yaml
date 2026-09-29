@@ -774,7 +774,7 @@ security:
   # The sub-policies of the unattended-operation posture. They are live only
   # while security.autonomy_mode is "silent" (the master switch above — the
   # former enabled key no longer exists); in every other mode each sub-policy
-  # is inert and the app behaves exactly as before. When live, the three
+  # is inert and the app behaves exactly as before. When live, the four
   # sub-policies resolve the prompts that would otherwise need a human, so a
   # task can run to completion without blocking:
   #   tool_confirm.mode  — a tool call that would open a confirmation card.
@@ -789,6 +789,22 @@ security:
   #                        runs every confirmation-gated call with no hard
   #                        reason (a hard reason still escalates to the
   #                        judge); "deny" blocks them all.
+  #   user_confirm.mode  — refines ONLY the fail-closed CONFIRM outcome of the
+  #                        judge terminal above (a spoken CONFIRM, or a
+  #                        missing / failing / timed-out / unparseable judge).
+  #                        It never governs a deliberate judge DENY or an
+  #                        ALLOW. "deny" (default) auto-denies such a call with
+  #                        its reasoning — the fail-closed behavior; "escalate"
+  #                        falls back to the blocking confirmation card so a
+  #                        human decides; "confirm" RUNS it unattended (audited
+  #                        as an allow) — the most permissive value, and UNSAFE:
+  #                        it lets a confirmation-gated call execute with no
+  #                        human whenever the judge cannot clear it, including a
+  #                        canonical hard reason, and it fails open when the
+  #                        judge is unavailable. The Settings UI gates the
+  #                        switch to "confirm" behind a danger dialog and
+  #                        shows a persistent warning while it is stored. Prefer
+  #                        "deny" or "escalate".
   #   step_limit.mode    — a step-budget / circuit-breaker boundary. "auto"
   #                        (default) lets the strict judge decide from the
   #                        trajectory (allow_once / allow_more / allow_always /
@@ -799,11 +815,11 @@ security:
   #                        it in a disabled form that reports the tool as
   #                        unavailable, so the agent can never block on a
   #                        question; "enable" keeps it fully available.
-  # (A former fourth sub-policy for the post-task code-review prompt was
-  # removed together with that prompt — it fired on nearly every task; a
-  # config still carrying the stale key loads with it ignored.)
-  # Every automatic decision (a tool_confirm / step_limit prompt resolved
-  # without a human) is recorded as a persisted, non-blocking
+  # (The historical review_prompt sub-policy for the post-task code-review
+  # prompt was removed together with that prompt — it fired on nearly every
+  # task; a config still carrying the stale key loads with it ignored.)
+  # Every automatic decision (a tool_confirm / user_confirm / step_limit prompt
+  # resolved without a human) is recorded as a persisted, non-blocking
   # `autonomy_decision` event (kind, mode, policy, verdict, tool/reason,
   # justification), so an unattended run stays auditable (OWASP ASI10). Silent
   # mode only replaces the human
@@ -813,8 +829,9 @@ security:
   # without the judge (allow mode escalates it; judge mode lets the judge
   # decide, and the judge's ALLOW is final — the ONE deliberate exception to
   # the assisted-mode canonical backstop, which forces a confirmation card
-  # instead). Pick tool_confirm "deny" if you want a judge-free hard floor for
-  # unattended runs.
+  # instead). The judge's fail-closed CONFIRM outcome then follows the
+  # user_confirm sub-policy above. Pick tool_confirm "deny" if you want a
+  # judge-free hard floor for unattended runs.
   # A runtime change from Settings → Security takes effect without an app
   # restart: sub-policy edits apply at each task's launch (a running task
   # keeps the posture it started with; the next fresh or resumed task picks
@@ -822,6 +839,8 @@ security:
   silent_mode:
     tool_confirm:
       mode: "judge"
+    user_confirm:
+      mode: "deny"      # deny (default) | escalate | confirm (unsafe)
     step_limit:
       mode: "auto"
     ask_user:

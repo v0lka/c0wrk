@@ -572,14 +572,17 @@ type BuilderGroupPolicy struct {
 }
 
 // BuilderSilentModeConfig is the core mirror of security.silent_mode: the
-// container for the three unattended-operation sub-policies. The former
-// Enabled bool is gone — whether the policies are live is derived from
-// BuilderSecurityConfig.AutonomyMode ("silent"). The sub-policy mode strings
-// are the config enum values passed through verbatim; core never imports
-// backend/config, so it does not reference the enum constants.
-// ApplyDefaults has already seeded every mode before conversion.
+// container for the unattended-operation sub-policies. The former Enabled bool
+// is gone — whether the policies are live is derived from
+// BuilderSecurityConfig.AutonomyMode ("silent"). UserConfirm is the
+// refinement of ToolConfirm for a fail-closed (CONFIRM) tool_confirm outcome
+// (see tools.SilentModeState). The sub-policy mode strings are the config enum
+// values passed through verbatim; core never imports backend/config, so it
+// does not reference the enum constants. ApplyDefaults has already seeded
+// every mode before conversion.
 type BuilderSilentModeConfig struct {
 	ToolConfirm string
+	UserConfirm string
 	StepLimit   string
 	AskUser     string
 }

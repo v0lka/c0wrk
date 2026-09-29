@@ -266,3 +266,70 @@ func TestApplyAutonomyPostureIfTightening(t *testing.T) {
 		})
 	}
 }
+
+// TestSilentUserConfirmPermissiveness_RanksConfirmAboveDenyAboveEscalate pins
+// the user_confirm ranking that governs the tightening check:
+// confirm (2) > deny (1) > escalate (0), with unknown/empty ranking as the
+// documented deny default.
+func TestSilentUserConfirmPermissiveness_RanksConfirmAboveDenyAboveEscalate(t *testing.T) {
+	if got := silentUserConfirmPermissiveness(SilentUserConfirmConfirm); got != 2 {
+		t.Errorf("confirm = %d, want 2", got)
+	}
+	if got := silentUserConfirmPermissiveness(SilentUserConfirmDeny); got != 1 {
+		t.Errorf("deny = %d, want 1", got)
+	}
+	if got := silentUserConfirmPermissiveness(SilentUserConfirmEscalate); got != 0 {
+		t.Errorf("escalate = %d, want 0", got)
+	}
+	for _, unknown := range []string{"", "bogus"} {
+		if got := silentUserConfirmPermissiveness(unknown); got != 1 {
+			t.Errorf("unknown %q = %d, want the deny default (1)", unknown, got)
+		}
+	}
+	if silentUserConfirmPermissiveness(SilentUserConfirmConfirm) <= silentUserConfirmPermissiveness(SilentUserConfirmDeny) ||
+		silentUserConfirmPermissiveness(SilentUserConfirmDeny) <= silentUserConfirmPermissiveness(SilentUserConfirmEscalate) {
+		t.Error("ordering must be confirm > deny > escalate")
+	}
+}
+
+// TestApplyAutonomyPostureIfTightening_UserConfirm pins that the user_confirm
+// refinement participates in the same-mode tightening check: a save that
+// revokes unattended execution for fail-closed CONFIRMs (confirm -> deny or
+// confirm -> escalate) reaches a live clone, while a loosening save
+// (deny/escalate -> confirm) is ignored so a running task never becomes MORE
+// automatic mid-run.
+func TestApplyAutonomyPostureIfTightening_UserConfirm(t *testing.T) {
+	const judge = SilentToolConfirmJudge
+	tests := []struct {
+		name      string
+		current   SilentModeState
+		incoming  SilentModeState
+		wantApply bool
+	}{
+		{"confirm -> deny tightens", SilentModeState{ToolConfirm: judge, UserConfirm: SilentUserConfirmConfirm}, SilentModeState{ToolConfirm: judge, UserConfirm: SilentUserConfirmDeny}, true},
+		{"confirm -> escalate tightens", SilentModeState{ToolConfirm: judge, UserConfirm: SilentUserConfirmConfirm}, SilentModeState{ToolConfirm: judge, UserConfirm: SilentUserConfirmEscalate}, true},
+		{"confirm -> empty (deny default) tightens", SilentModeState{ToolConfirm: judge, UserConfirm: SilentUserConfirmConfirm}, SilentModeState{ToolConfirm: judge}, true},
+		{"deny -> escalate tightens", SilentModeState{ToolConfirm: judge, UserConfirm: SilentUserConfirmDeny}, SilentModeState{ToolConfirm: judge, UserConfirm: SilentUserConfirmEscalate}, true},
+		{"deny -> confirm loosens (ignored)", SilentModeState{ToolConfirm: judge, UserConfirm: SilentUserConfirmDeny}, SilentModeState{ToolConfirm: judge, UserConfirm: SilentUserConfirmConfirm}, false},
+		{"escalate -> confirm loosens (ignored)", SilentModeState{ToolConfirm: judge, UserConfirm: SilentUserConfirmEscalate}, SilentModeState{ToolConfirm: judge, UserConfirm: SilentUserConfirmConfirm}, false},
+		{"equal (confirm) is a no-op", SilentModeState{ToolConfirm: judge, UserConfirm: SilentUserConfirmConfirm}, SilentModeState{ToolConfirm: judge, UserConfirm: SilentUserConfirmConfirm}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewToolRegistry()
+			r.ApplySecurityState(nil, false, AutonomyModeSilent, tt.current)
+			got := r.ApplyAutonomyPostureIfTightening(AutonomyModeSilent, tt.incoming)
+			if got != tt.wantApply {
+				t.Fatalf("ApplyAutonomyPostureIfTightening = %v, want %v", got, tt.wantApply)
+			}
+			want := tt.current
+			if tt.wantApply {
+				want = tt.incoming
+			}
+			if gotMode := r.SilentMode(); gotMode != want {
+				t.Errorf("silent mode = %+v, want %+v", gotMode, want)
+			}
+		})
+	}
+}

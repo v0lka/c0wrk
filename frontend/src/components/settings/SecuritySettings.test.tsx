@@ -336,6 +336,7 @@ describe('SecuritySettings — autonomy mode', () => {
         autonomy_mode: 'silent',
         silent_mode: {
           tool_confirm: { mode: 'judge' },
+          user_confirm: { mode: 'deny' },
           step_limit: { mode: 'auto' },
           ask_user: { mode: 'enable' },
         },
@@ -362,13 +363,14 @@ describe('SecuritySettings — autonomy mode', () => {
     expect(selects()).toHaveLength(7)
   })
 
-  it('switching to silent persists the mode and reveals the three sub-policy editors', async () => {
+  it('switching to silent persists the mode and reveals the four sub-policy editors', async () => {
     await render()
     await switchMode('silent')
 
-    // 7 group dropdowns + 3 silent-mode sub-policy dropdowns.
-    expect(selects()).toHaveLength(10)
+    // 7 group dropdowns + 4 silent-mode sub-policy dropdowns.
+    expect(selects()).toHaveLength(11)
     expect(findSelect('Tool confirmations mode')).toBeTruthy()
+    expect(findSelect('User confirmations mode')).toBeTruthy()
     expect(findSelect('Step limit mode')).toBeTruthy()
     expect(findSelect('Ask user mode')).toBeTruthy()
 
@@ -379,6 +381,7 @@ describe('SecuritySettings — autonomy mode', () => {
     expect(lastPayload().autonomy_mode).toBe('silent')
     expect(lastPayload().silent_mode).toEqual({
       tool_confirm: { mode: 'judge' },
+      user_confirm: { mode: 'deny' },
       step_limit: { mode: 'auto' },
       ask_user: { mode: 'disable' },
     })
@@ -391,6 +394,7 @@ describe('SecuritySettings — autonomy mode', () => {
     expect(lastPayload().autonomy_mode).toBe('standard')
     expect(lastPayload().silent_mode).toEqual({
       tool_confirm: { mode: 'judge' },
+      user_confirm: { mode: 'deny' },
       step_limit: { mode: 'auto' },
       ask_user: { mode: 'disable' },
     })
@@ -405,6 +409,7 @@ describe('SecuritySettings — autonomy mode', () => {
     expect(lastPayload().autonomy_mode).toBe('silent')
     expect(lastPayload().silent_mode).toEqual({
       tool_confirm: { mode: 'judge' },
+      user_confirm: { mode: 'deny' },
       step_limit: { mode: 'auto' },
       ask_user: { mode: 'enable' },
     })
@@ -465,6 +470,7 @@ describe('SecuritySettings — silent mode judge gating', () => {
         autonomy_mode: 'silent',
         silent_mode: {
           tool_confirm: { mode: 'deny' },
+          user_confirm: { mode: 'deny' },
           step_limit: { mode: 'auto' },
           ask_user: { mode: 'disable' },
         },
@@ -512,6 +518,7 @@ describe('SecuritySettings — silent mode judge gating', () => {
         autonomy_mode: 'silent',
         silent_mode: {
           tool_confirm: { mode: 'deny' },
+          user_confirm: { mode: 'deny' },
           step_limit: { mode: 'stop' },
           ask_user: { mode: 'disable' },
         },
@@ -525,6 +532,107 @@ describe('SecuritySettings — silent mode judge gating', () => {
     // The fixed modes stay selectable without a judge.
     await pickOption('Tool confirmations mode', 'Allow')
     expect(lastPayload().silent_mode).toMatchObject({ tool_confirm: { mode: 'allow' } })
+  })
+})
+
+describe('SecuritySettings — user confirmations gating', () => {
+  /** A silent posture whose user_confirm value is the given mode. */
+  const silentWithUserConfirm = (mode: string) =>
+    securityResponse({
+      autonomy_mode: 'silent',
+      silent_mode: {
+        tool_confirm: { mode: 'judge' },
+        user_confirm: { mode },
+        step_limit: { mode: 'auto' },
+        ask_user: { mode: 'disable' },
+      },
+    })
+
+  it('selecting Confirm opens the modal and issues NO save until it is confirmed', async () => {
+    await render()
+    await switchMode('silent')
+    updateSecuritySettingsMock.mockClear()
+
+    await pickOption('User confirmations mode', 'Confirm (unsafe)')
+
+    // No RPC yet: the selection is gated behind the danger dialog.
+    expect(updateSecuritySettingsMock).not.toHaveBeenCalled()
+    // The danger dialog is open (Radix portals it to document.body)...
+    expect(document.querySelector('[data-testid="user-confirm-danger-dialog"]')).not.toBeNull()
+    // ...and the dropdown still shows the stored value (the gate reverted it).
+    expect(findSelect('User confirmations mode')?.textContent).toContain('Deny')
+  })
+
+  it('cancelling the modal reverts the dropdown and saves nothing', async () => {
+    await render()
+    await switchMode('silent')
+    updateSecuritySettingsMock.mockClear()
+
+    await pickOption('User confirmations mode', 'Confirm (unsafe)')
+    const cancel = document.querySelector<HTMLButtonElement>('[data-testid="user-confirm-danger-cancel"]')
+    expect(cancel).not.toBeNull()
+    await act(async () => {
+      cancel?.click()
+    })
+
+    expect(updateSecuritySettingsMock).not.toHaveBeenCalled()
+    expect(document.querySelector('[data-testid="user-confirm-danger-dialog"]')).toBeNull()
+    expect(findSelect('User confirmations mode')?.textContent).toContain('Deny')
+    expect(container.querySelector('[data-testid="silent-mode-user-confirm-warning"]')).toBeNull()
+  })
+
+  it('confirming the modal persists user_confirm = confirm and shows the persistent note', async () => {
+    await render()
+    await switchMode('silent')
+    updateSecuritySettingsMock.mockClear()
+
+    await pickOption('User confirmations mode', 'Confirm (unsafe)')
+    const confirm = document.querySelector<HTMLButtonElement>('[data-testid="user-confirm-danger-confirm"]')
+    expect(confirm).not.toBeNull()
+    await act(async () => {
+      confirm?.click()
+    })
+
+    expect(updateSecuritySettingsMock).toHaveBeenCalledTimes(1)
+    expect(lastPayload().silent_mode).toEqual({
+      tool_confirm: { mode: 'judge' },
+      user_confirm: { mode: 'confirm' },
+      step_limit: { mode: 'auto' },
+      ask_user: { mode: 'disable' },
+    })
+    // The persistent danger note renders while the stored value is confirm.
+    expect(
+      container.querySelector('[data-testid="silent-mode-user-confirm-warning"]')?.textContent,
+    ).toContain('Unattended confirm is on')
+  })
+
+  it('renders the persistent danger note for a stored confirm without opening the dialog', async () => {
+    vi.mocked(getSecuritySettings).mockResolvedValueOnce(silentWithUserConfirm('confirm'))
+    await render()
+
+    expect(
+      container.querySelector('[data-testid="silent-mode-user-confirm-warning"]')?.textContent,
+    ).toContain('Unattended confirm is on')
+    expect(document.querySelector('[data-testid="user-confirm-danger-dialog"]')).toBeNull()
+    expect(findSelect('User confirmations mode')?.textContent).toContain('Confirm (unsafe)')
+  })
+
+  it('echoes user_confirm on every save so it is never reset to a default', async () => {
+    await render()
+    await switchMode('silent')
+    updateSecuritySettingsMock.mockClear()
+
+    // A non-gated value saves immediately and carries user_confirm alongside
+    // every other sub-policy.
+    await pickOption('User confirmations mode', 'Escalate (prompt)')
+
+    expect(updateSecuritySettingsMock).toHaveBeenCalledTimes(1)
+    expect(lastPayload().silent_mode).toEqual({
+      tool_confirm: { mode: 'judge' },
+      user_confirm: { mode: 'escalate' },
+      step_limit: { mode: 'auto' },
+      ask_user: { mode: 'disable' },
+    })
   })
 })
 

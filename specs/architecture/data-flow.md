@@ -250,7 +250,8 @@ core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
                  canonical backstop; otherwise the autonomy gate decides:
                  assisted — strict ALLOW ⇒ execute, strict DENY ⇒ terminate
                  (audited), anything else ⇒ confirm; standard ⇒ plain confirm;
-                 silent ⇒ terminal execute-or-deny, no card)
+                 silent ⇒ terminal execute-or-deny; the opt-in
+                 user_confirm: escalate may instead open the card)
                 │
                 ▼ (if confirmed)
          tool.Execute(ctx, input)

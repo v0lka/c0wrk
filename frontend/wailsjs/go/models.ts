@@ -1923,6 +1923,7 @@ export namespace backend {
 	}
 	export class SilentModeResponse {
 	    tool_confirm: SilentSubPolicyResponse;
+	    user_confirm: SilentSubPolicyResponse;
 	    step_limit: SilentSubPolicyResponse;
 	    ask_user: SilentSubPolicyResponse;
 	
@@ -1933,6 +1934,7 @@ export namespace backend {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.tool_confirm = this.convertValues(source["tool_confirm"], SilentSubPolicyResponse);
+	        this.user_confirm = this.convertValues(source["user_confirm"], SilentSubPolicyResponse);
 	        this.step_limit = this.convertValues(source["step_limit"], SilentSubPolicyResponse);
 	        this.ask_user = this.convertValues(source["ask_user"], SilentSubPolicyResponse);
 	    }

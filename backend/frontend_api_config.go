@@ -731,6 +731,7 @@ func groupPoliciesToResponse(groups map[string]config.GroupPolicyConfig) map[str
 func silentModeToResponse(sm config.SilentModeConfig) SilentModeResponse {
 	return SilentModeResponse{
 		ToolConfirm: SilentSubPolicyResponse{Mode: sm.ToolConfirm.Mode},
+		UserConfirm: SilentSubPolicyResponse{Mode: sm.UserConfirm.Mode},
 		StepLimit:   SilentSubPolicyResponse{Mode: sm.StepLimit.Mode},
 		AskUser:     SilentSubPolicyResponse{Mode: sm.AskUser.Mode},
 	}
@@ -745,6 +746,7 @@ func silentModeToResponse(sm config.SilentModeConfig) SilentModeResponse {
 func responseToSilentMode(r SilentModeResponse) (config.SilentModeConfig, error) {
 	sm := config.SilentModeConfig{
 		ToolConfirm: config.SilentSubPolicyConfig{Mode: r.ToolConfirm.Mode},
+		UserConfirm: config.SilentSubPolicyConfig{Mode: r.UserConfirm.Mode},
 		StepLimit:   config.SilentSubPolicyConfig{Mode: r.StepLimit.Mode},
 		AskUser:     config.SilentSubPolicyConfig{Mode: r.AskUser.Mode},
 	}

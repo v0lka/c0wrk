@@ -1,4 +1,4 @@
-# ADR-072: Userland-aware guard substitution and the universal runtime smoke test
+# ADR-073: Userland-aware guard substitution and the universal runtime smoke test
 
 ## Status
 

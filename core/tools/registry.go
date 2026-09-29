@@ -97,6 +97,14 @@ const (
 // the fields they need).
 type SilentModeState struct {
 	ToolConfirm string
+	// UserConfirm refines the tool_confirm terminal for a fail-closed
+	// (CONFIRM) outcome — a spoken CONFIRM, a missing judge, a judge
+	// error/timeout, or an unparseable verdict — selecting whether the silent
+	// terminal auto-denies (the "deny" default), executes the call unattended
+	// ("confirm"), or falls back to the blocking confirmation card
+	// ("escalate"). It never governs a deliberate judge DENY: a positive
+	// rejection is neither auto-approved nor escalated.
+	UserConfirm string
 	StepLimit   string
 	AskUser     string
 }
@@ -300,6 +308,12 @@ const (
 	autonomyDecisionKindAssistedDeny = "assisted_deny"
 	autonomyDecisionVerdictAllow     = "allow"
 	autonomyDecisionVerdictDeny      = "deny"
+	// autonomyDecisionPolicyUserConfirm is the Policy value recorded when the
+	// silent-mode user_confirm sub-policy auto-approves a fail-closed
+	// (CONFIRM) terminal. It names the deciding sub-policy (the user_confirm
+	// policy) rather than the tool_confirm mode, per the audit contract that
+	// Policy names the mechanism that answered the gate.
+	autonomyDecisionPolicyUserConfirm = "user_confirm"
 )
 
 // NewToolRegistry creates a new ToolRegistry with an empty tool map.
@@ -658,6 +672,24 @@ func silentToolConfirmPermissiveness(mode string) int {
 	}
 }
 
+// silentUserConfirmPermissiveness ranks the user_confirm refinement of
+// security.silent_mode (the terminal policy for a fail-closed CONFIRM
+// tool_confirm outcome) by how UNATTENDED it lets that outcome resolve:
+// HIGHER is more permissive (more automatic). "confirm" (run it unattended)
+// ranks highest, "deny" (fail-closed auto-denial) next, "escalate" (fall back
+// to a human card) lowest. Unknown/empty values rank as the documented default
+// (deny). A transition to a lower-or-equal rank is a TIGHTENING.
+func silentUserConfirmPermissiveness(mode string) int {
+	switch mode {
+	case SilentUserConfirmConfirm:
+		return 2
+	case SilentUserConfirmEscalate:
+		return 0
+	default: // deny, empty, unknown
+		return 1
+	}
+}
+
 // silentStepLimitPermissiveness ranks security.silent_mode.step_limit.mode by
 // how UNATTENDED it lets a step-limit boundary resolve: allow_always (suspends
 // the budget) is the most permissive, stop (keeps the interactive card, i.e.
@@ -698,6 +730,7 @@ func silentAskUserPermissiveness(mode string) int {
 // without ever making it more permissive.
 func silentModeAtLeastAsStrict(incoming, current SilentModeState) bool {
 	return silentToolConfirmPermissiveness(incoming.ToolConfirm) <= silentToolConfirmPermissiveness(current.ToolConfirm) &&
+		silentUserConfirmPermissiveness(incoming.UserConfirm) <= silentUserConfirmPermissiveness(current.UserConfirm) &&
 		silentStepLimitPermissiveness(incoming.StepLimit) <= silentStepLimitPermissiveness(current.StepLimit) &&
 		silentAskUserPermissiveness(incoming.AskUser) <= silentAskUserPermissiveness(current.AskUser)
 }
@@ -1226,7 +1259,7 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 	// decision to run unattended, and a confirmation card would contradict
 	// that.
 	if autonomyMode == AutonomyModeSilent {
-		return r.silentToolTerminal(ctx, tool, name, source, input, reason, code, severity, silentMode.ToolConfirm, strictJudge, judgeObserver)
+		return r.silentToolTerminal(ctx, tool, name, source, input, reason, code, severity, silentMode.ToolConfirm, silentMode.UserConfirm, strictJudge, judgeObserver)
 	}
 
 	if autonomyMode != AutonomyModeAssisted {
@@ -1349,6 +1382,20 @@ const (
 	// SilentToolConfirmDeny blocks every confirmation-gated call.
 	SilentToolConfirmDeny = "deny"
 
+	// SilentUserConfirmConfirm makes the silent terminal execute a fail-closed
+	// (CONFIRM) tool_confirm outcome unattended, audited as an allow. It is
+	// the most permissive user_confirm value: the operator accepts the risk
+	// the fail-closed verdict flagged.
+	SilentUserConfirmConfirm = "confirm"
+	// SilentUserConfirmDeny is the fail-closed default: a CONFIRM outcome
+	// auto-denies with the reasoning, exactly as before the user_confirm
+	// refinement existed.
+	SilentUserConfirmDeny = "deny"
+	// SilentUserConfirmEscalate falls back to the blocking confirmation card
+	// for a CONFIRM outcome, deferring the decision to a human. It is the
+	// least permissive value (the only one that may block an unattended run).
+	SilentUserConfirmEscalate = "escalate"
+
 	// SilentAskUserDisable registers the ask_user tool in a form that reports
 	// itself as unavailable, so an unattended run can never block on a question.
 	SilentAskUserDisable = "disable"
@@ -1378,7 +1425,13 @@ const (
 //
 // An empty or unrecognized mode falls back to the "judge" default (the value
 // ApplySilentModeDefaults seeds).
-func (r *ToolRegistry) silentToolTerminal(ctx context.Context, tool sdktools.Tool, name, source string, input json.RawMessage, reason string, code sdktools.JudgeReasonCode, severity sdktools.JudgeSeverity, mode string, strictJudge *sdktools.ToolJudge, judgeObserver JudgeObserver) (sdktools.ToolResult, error) {
+//
+// The userConfirm parameter is the tool_confirm.user_confirm refinement
+// (security.silent_mode.user_confirm): it selects how a fail-closed CONFIRM
+// outcome of the judge terminal resolves when no human is available. It is
+// threaded through to silentJudgeDecide, which owns the CONFIRM terminal (the
+// deny/allow modes decide outright and never reach the judge for a clean call).
+func (r *ToolRegistry) silentToolTerminal(ctx context.Context, tool sdktools.Tool, name, source string, input json.RawMessage, reason string, code sdktools.JudgeReasonCode, severity sdktools.JudgeSeverity, mode, userConfirm string, strictJudge *sdktools.ToolJudge, judgeObserver JudgeObserver) (sdktools.ToolResult, error) {
 	if reason == "" {
 		reason = defaultConfirmReason(name)
 	}
@@ -1422,49 +1475,57 @@ func (r *ToolRegistry) silentToolTerminal(ctx context.Context, tool sdktools.Too
 			})
 			return result, execErr
 		}
-		return r.silentJudgeDecide(ctx, tool, name, source, input, reason, code, severity, mode, strictJudge, judgeObserver)
+		return r.silentJudgeDecide(ctx, tool, name, source, input, reason, code, severity, mode, userConfirm, strictJudge, judgeObserver)
 	default: // SilentToolConfirmJudge, the empty mode, and any unrecognized value
-		return r.silentJudgeDecide(ctx, tool, name, source, input, reason, code, severity, SilentToolConfirmJudge, strictJudge, judgeObserver)
+		return r.silentJudgeDecide(ctx, tool, name, source, input, reason, code, severity, SilentToolConfirmJudge, userConfirm, strictJudge, judgeObserver)
 	}
 }
 
 // silentJudgeDecide runs the strict judge for a silent-mode escalation and
-// returns the terminal outcome: a strict ALLOW executes, anything else
-// auto-denies carrying the reasoning. There is deliberately NO canonical
+// returns the terminal outcome: a strict ALLOW executes, and everything else
+// is terminal. There is deliberately NO canonical
 // backstop here (decision 1c): in silent mode the operator explicitly
 // delegated the decision to the judge and no human can override it either
 // way, so the judge's ALLOW executes even for a canonical hard reason — the
 // executed decision is fully audited (the autonomy_decision event carries the
-// judge's justification for allowing a fired control). A deliberate DENY and
-// the fail-closed outcomes (CONFIRM, a missing judge, an error/timeout, an
-// unparseable verdict) all deny — there is no human to fall back to and no
-// confirmation card to open — but their Justification is explicitly
-// distinguishable: a judge DENY is tagged "strict judge verdict DENY", the
-// fail-closed causes carry their own prefixes, so the audit trail says WHO
-// refused the call. mode is the governing tool_confirm sub-policy, recorded on
+// judge's justification for allowing a fired control). A deliberate DENY is
+// non-negotiable: it always takes the fail-closed terminal and is NEVER
+// governed by the user_confirm refinement (a positive rejection is neither
+// auto-approved nor escalated). The fail-closed outcomes (a spoken CONFIRM, a
+// missing judge, an error/timeout, an unparseable verdict) auto-deny by
+// default — there is no human to fall back to — but the user_confirm
+// sub-policy (userConfirm) may instead execute the call unattended
+// ("confirm") or fall back to the blocking confirmation card ("escalate").
+// Their Justification is explicitly distinguishable: a judge DENY is tagged
+// "strict judge verdict DENY", the fail-closed causes carry their own
+// prefixes, so the audit trail says WHO refused the call. mode is the
+// governing tool_confirm sub-policy, recorded on
 // the emitted autonomy-decision event (its Policy field, with Mode carrying
 // the silent posture) for the audit trail.
 //
 // Verdicts are memoized by EFFECT signature (ShellAnalysisDigest.Signature)
 // for the life of this registry's task, keying on the signature plus the
 // escalation severity (see judgeMemoKey). Memoization is deliberately
-// restricted to FAIL-CLOSED verdicts: a re-escalation of an
-// already-adjudicated effect — the identical command, or a retry re-spelled
-// so the deterministic analysis lands on the same drivers, canonical effects
-// and fired criteria — replays the FIRST DENY (or spoken CONFIRM) and its
+// restricted to the DENY verdict — the only genuinely fail-closed outcome: a
+// re-escalation of an already-denied effect — the identical command, or a
+// retry re-spelled so the deterministic analysis lands on the same drivers,
+// canonical effects and fired criteria — replays the FIRST DENY and its
 // reasoning verbatim without consulting the judge again (audit Track D: pair
 // 961130 allow vs 961162 deny is exactly a judge flip on identical input; a
-// denied retry must not re-pay the call either). An ALLOW is NEVER memoized,
-// because the signature is not injective: every command the analyzer cannot
-// see through (node -e / python -c / eval code, rm -rf $VAR, …) collapses to
-// the same command_unbounded_analysis signature, so replaying an ALLOW would
-// let a materially different command inherit a verdict the judge never gave
-// it — a fail-open. A replayed DENY is fail-closed; a replayed ALLOW is not.
-// Only a judge that SPOKE is memoized — a provider
-// error/timeout or an unparseable response is infrastructure failure, not a
-// verdict about the effect, so the next occurrence retries the judge. A
-// missing signature (non-shell tool, failed analysis) never memoizes.
-func (r *ToolRegistry) silentJudgeDecide(ctx context.Context, tool sdktools.Tool, name, source string, input json.RawMessage, reason string, code sdktools.JudgeReasonCode, severity sdktools.JudgeSeverity, mode string, strictJudge *sdktools.ToolJudge, judgeObserver JudgeObserver) (sdktools.ToolResult, error) {
+// denied retry must not re-pay the call either). Neither an ALLOW nor a
+// spoken CONFIRM is memoized, because the signature is not injective: every
+// command the analyzer cannot see through (node -e / python -c / eval code,
+// rm -rf $VAR, …) collapses to the same command_unbounded_analysis signature,
+// so replaying either would let a materially different command inherit a
+// verdict the judge never gave it. For an ALLOW that is a fail-open; for a
+// CONFIRM it is equally so under user_confirm=confirm, where the CONFIRM
+// terminal executes the call unattended — so any call that could execute is
+// always re-adjudicated. A replayed DENY is fail-closed. Only a judge that
+// SPOKE is memoized — a provider error/timeout or an unparseable response is
+// infrastructure failure, not a verdict about the effect, so the next
+// occurrence retries the judge. A missing signature (non-shell tool, failed
+// analysis) never memoizes.
+func (r *ToolRegistry) silentJudgeDecide(ctx context.Context, tool sdktools.Tool, name, source string, input json.RawMessage, reason string, code sdktools.JudgeReasonCode, severity sdktools.JudgeSeverity, mode, userConfirm string, strictJudge *sdktools.ToolJudge, judgeObserver JudgeObserver) (sdktools.ToolResult, error) {
 	reasoning := "Strict judge is unavailable; " + reason
 	verdict := sdktools.VerdictConfirm
 	// The effect signature of the attached analysis: the memo key and the
@@ -1503,10 +1564,14 @@ func (r *ToolRegistry) silentJudgeDecide(ctx context.Context, tool sdktools.Tool
 			if judgeErr != nil {
 				verdict = sdktools.VerdictConfirm
 				reasoning = "Strict judge evaluation failed; " + reason
-			} else if judgeSpoke(verdict, reasoning) && verdict != sdktools.VerdictAllow {
-				// Only a fail-closed verdict is memoized. An ALLOW must never
-				// be replayed for a later command, even one sharing the same
-				// (non-injective) effect signature — see the method doc.
+			} else if verdict == sdktools.VerdictDeny {
+				// Only a DENY is memoized — the sole genuinely fail-closed
+				// verdict. Neither an ALLOW nor a spoken CONFIRM may be
+				// replayed for a later command sharing the (non-injective)
+				// effect signature: replaying an ALLOW is a fail-open, and so
+				// is replaying a CONFIRM under user_confirm=confirm, where the
+				// CONFIRM terminal executes the call unattended — see the
+				// method doc. A judge that did not DENY is re-consulted.
 				r.recordJudgeMemo(signature, severity, verdict, reasoning)
 			}
 		}
@@ -1528,6 +1593,15 @@ func (r *ToolRegistry) silentJudgeDecide(ctx context.Context, tool sdktools.Tool
 		"verdict", verdictText,
 		"asi_scope", "ASI01,ASI02,ASI03,ASI05,ASI09")
 
+	// judgeRan reports whether the strict judge actually adjudicated this
+	// call — as opposed to being missing, erroring, or returning an
+	// unparseable verdict (no judgment exists to duplicate then). The
+	// escalated card disables the advisory Ask Agent action whenever the
+	// judge ran, so the advisory judge cannot re-decide what the strict judge
+	// already adjudicated — matching the assisted path in
+	// smartApproveOrConfirm.
+	judgeRan := strictJudge != nil && judgeSpoke(verdict, reasoning)
+
 	if verdict == sdktools.VerdictAllow {
 		result, execErr := tool.Execute(ctx, input)
 		r.observeAutonomyDecision(ctx, AutonomyDecision{
@@ -1542,6 +1616,17 @@ func (r *ToolRegistry) silentJudgeDecide(ctx context.Context, tool sdktools.Tool
 			Justification: reasoning,
 		})
 		return result, execErr
+	}
+	// A CONFIRM terminal (a spoken CONFIRM, a missing judge, a judge
+	// error/timeout, or an unparseable verdict) is governed by the
+	// user_confirm sub-policy: "confirm" executes the call unattended and
+	// audits it as an allow, "escalate" falls back to the blocking
+	// confirmation card. Every other value — the "deny" default and any
+	// unrecognized value — keeps the fail-closed auto-denial below. A
+	// deliberate judge DENY is NOT routed here: it is never governed by this
+	// policy and always takes the fail-closed terminal.
+	if verdict == sdktools.VerdictConfirm && (userConfirm == SilentUserConfirmConfirm || userConfirm == SilentUserConfirmEscalate) {
+		return r.silentConfirmTerminal(ctx, tool, name, source, input, reason, reasoning, verdictText, signature, judgeRan, userConfirm)
 	}
 	// Terminal denial — no human is available. The Justification distinguishes
 	// a deliberate judge rejection (DENY: the judge positively assessed the
@@ -1564,6 +1649,56 @@ func (r *ToolRegistry) silentJudgeDecide(ctx context.Context, tool sdktools.Tool
 		Justification: justification,
 	})
 	return silentDenial(justification), nil
+}
+
+// silentConfirmTerminal resolves a silent-mode terminal whose strict-judge (or
+// fail-safe) verdict is CONFIRM, per the user_confirm sub-policy
+// (security.silent_mode.user_confirm). The judge already ran and did not
+// return an ALLOW — it positively returned CONFIRM, was missing, errored, or
+// returned an unparseable response — yet no human is available to answer a
+// card by default. The sub-policy selects the terminal:
+//
+//   - "confirm": execute the call unattended and audit it as an allow. The
+//     operator explicitly accepted the risk the fail-closed verdict flagged;
+//     the emitted autonomy_decision names the deciding policy (user_confirm)
+//     and carries verdict allow.
+//   - "escalate": fall back to the blocking confirmation card
+//     (confirmAndExecuteWithOptions), so a human answers. No autonomy_decision
+//     is emitted — a human, not the registry, decided — and the advisory Ask
+//     Agent action is disabled (DisableJudge=true) whenever the strict judge
+//     actually ran (judgeRan): the advisory judge must not re-decide what the
+//     strict judge already adjudicated, exactly as on the assisted path
+//     (smartApproveOrConfirm). It stays available only when the judge was
+//     missing, errored, or returned an unparseable verdict — no judgment
+//     exists to duplicate then.
+//
+// The caller routes only these two values here; the "deny" default (and any
+// unrecognized value) keeps the fail-closed auto-denial in silentJudgeDecide.
+// The defensive default below preserves that fail-closed behavior if the
+// routing ever changes.
+func (r *ToolRegistry) silentConfirmTerminal(ctx context.Context, tool sdktools.Tool, name, source string, input json.RawMessage, reason, reasoning, verdictText, signature string, judgeRan bool, userConfirm string) (sdktools.ToolResult, error) {
+	switch userConfirm {
+	case SilentUserConfirmEscalate:
+		return r.confirmAndExecuteWithOptions(ctx, tool, name, input, reasoning, judgeRan)
+	case SilentUserConfirmConfirm:
+		result, execErr := tool.Execute(ctx, input)
+		r.observeAutonomyDecision(ctx, AutonomyDecision{
+			Kind:          autonomyDecisionKindToolConfirm,
+			Mode:          AutonomyModeSilent,
+			Policy:        autonomyDecisionPolicyUserConfirm,
+			Verdict:       autonomyDecisionVerdictAllow,
+			Tool:          name,
+			Source:        source,
+			Signature:     signature,
+			Reason:        reason,
+			Justification: "ran unattended: the fail-closed judge verdict " + verdictText + " was auto-approved by security.silent_mode.user_confirm=confirm (no human available): " + reasoning,
+		})
+		return result, execErr
+	default:
+		// Defensive: unreachable via silentJudgeDecide's routing, but a
+		// misroute must still fail closed.
+		return silentDenial(reasoning), nil
+	}
 }
 
 // Strict-judge fail-safe reason markers. JudgeStrict NEVER returns a non-nil
@@ -1611,10 +1746,11 @@ func judgeMemoKey(signature string, severity sdktools.JudgeSeverity) string {
 	return strconv.Itoa(int(severity)) + "\x00" + signature
 }
 
-// consultJudgeMemo returns the memoized fail-closed verdict for the effect
-// signature, if this task's memo holds one. Because only fail-closed verdicts
-// are ever recorded, a hit can only ever DENY (or auto-confirm-deny); it can
-// never replay an ALLOW. An empty signature (non-shell tool, failed
+// consultJudgeMemo returns the memoized DENY verdict for the effect
+// signature, if this task's memo holds one. Because only a DENY is ever
+// recorded, a hit is always fail-closed — it can never replay an ALLOW (a
+// fail-open), nor a CONFIRM, which under user_confirm=confirm would execute
+// unattended. An empty signature (non-shell tool, failed
 // analysis) never consults — without an effect identity there is nothing to
 // key on, so every such escalation goes to the judge.
 func (r *ToolRegistry) consultJudgeMemo(signature string, severity sdktools.JudgeSeverity) (judgeMemoEntry, bool) {
@@ -1628,13 +1764,15 @@ func (r *ToolRegistry) consultJudgeMemo(signature string, severity sdktools.Judg
 	return entry, ok
 }
 
-// recordJudgeMemo fixes the FIRST FAIL-CLOSED verdict for the effect
-// signature in this task's memo (audit Track D: "первый вердикт в рамках
-// задачи фиксируется"). Callers must only pass a fail-closed verdict
-// (DENY / spoken CONFIRM): an ALLOW is never recorded, because a non-injective
-// signature would otherwise let a materially different command inherit it
-// (see the method doc). A later recording for the same key never overwrites,
-// so a retried effect keeps resolving the way it first resolved even if a
+// recordJudgeMemo fixes the FIRST DENY verdict for the effect signature in
+// this task's memo (audit Track D: "первый вердикт в рамках задачи
+// фиксируется"). Callers must only pass a DENY — the sole genuinely
+// fail-closed verdict: neither an ALLOW nor a spoken CONFIRM is recorded,
+// because a non-injective signature would otherwise let a materially
+// different command inherit a verdict the judge never gave it (for a CONFIRM
+// that means it would execute unattended under user_confirm=confirm — see the
+// method doc). A later recording for the same key never overwrites, so a
+// retried effect keeps resolving the way it first resolved even if a
 // concurrent adjudication of the same effect returned differently. An empty
 // signature never records.
 func (r *ToolRegistry) recordJudgeMemo(signature string, severity sdktools.JudgeSeverity, verdict sdktools.JudgeVerdict, reasoning string) {

@@ -95,6 +95,7 @@ describe('useAutonomyLoader', () => {
         autonomy_mode: 'silent',
         silent_mode: {
           tool_confirm: { mode: 'deny' },
+          user_confirm: { mode: 'deny' },
           step_limit: { mode: 'stop' },
           ask_user: { mode: 'enable' },
         },

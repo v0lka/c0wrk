@@ -208,18 +208,51 @@ ToolRegistry.Execute()
 
 ## Silent Mode (Unattended Operation)
 
-`security.autonomy_mode: silent` is the unattended-operation posture — the third value of the autonomy axis (`standard` | `assisted` | `silent`, default `standard`, [ADR-053](../decisions/053-silent-mode.md); the legacy `security.smart_approve` / `security.silent_mode.enabled` booleans migrate onto the enum at load, silent winning, and are dropped at the next save). While the mode is `silent`, the three interactive prompts that would otherwise block a
+`security.autonomy_mode: silent` is the unattended-operation posture — the third value of the autonomy axis (`standard` | `assisted` | `silent`, default `standard`, [ADR-053](../decisions/053-silent-mode.md); the legacy `security.smart_approve` / `security.silent_mode.enabled` booleans migrate onto the enum at load, silent winning, and are dropped at the next save). While the mode is `silent`, the interactive prompts that would otherwise block a
 run are resolved without a human — `tool_confirm` (a confirmation-gated tool
 call), `step_limit` (a step-budget / circuit-breaker boundary), and `ask_user`
-(the question tool). Each has
-its own sub-policy under `security.silent_mode` (`tool_confirm`: `judge`|`allow`|`deny`; `step_limit`:
-`auto`|`allow_once`|`allow_more`|`allow_always`|`deny`|`stop`; `ask_user`:
-`disable`|`enable`) — the sub-policies are live **only** in this mode (the former `enabled` master switch no longer exists; the enum value is the switch). The posture is a plain value with **per-task delivery**: a Settings save updates the shared registry immediately (`ApplySecurityState`) while live per-session clones receive only group policies and auto-approval (`ApplyGroupPolicies`); the autonomy mode and sub-policies are pinned at task launch (`RefreshAutonomyPosture`, called by the session manager at fresh sends and every resume path), so a running task keeps the posture it started with — enabling silent never converts a live interactive task mid-run — and a resumed task adopts the current Settings. `tool_confirm` acts in the registry,
+(the question tool). The prompts are governed by four sub-policies under
+`security.silent_mode`: `tool_confirm` (`judge`|`allow`|`deny`) together with its
+refinement `user_confirm` (`confirm`|`deny`|`escalate`, see below), `step_limit`
+(`auto`|`allow_once`|`allow_more`|`allow_always`|`deny`|`stop`), and `ask_user`
+(`disable`|`enable`) — the sub-policies are live **only** in this mode (the former `enabled` master switch no longer exists; the enum value is the switch). The posture is a plain value with **per-task delivery**: a Settings save updates the shared registry immediately (`ApplySecurityState`) while live per-session clones receive only group policies and auto-approval (`ApplyGroupPolicies`); the autonomy mode and sub-policies are pinned at task launch (`RefreshAutonomyPosture`, called by the session manager at fresh sends and every resume path), so a running task keeps the posture it started with — enabling silent never converts a live interactive task mid-run — and a resumed task adopts the current Settings. `tool_confirm` acts in the registry,
 `ask_user` at tool registration (registration-scoped: follows Settings immediately), and
-`step_limit.mode: auto` through the backend's `ResolveSilentStepLimit`. (A former fourth sub-policy, `review_prompt` for the removed post-task code-review prompt, was deleted by
+`step_limit.mode: auto` through the backend's `ResolveSilentStepLimit`. (The historical `review_prompt` sub-policy, for the removed post-task code-review prompt, was deleted by
 [ADR-060](../decisions/060-remove-post-task-review-prompt.md) — silent mode now
 performs no post-task UI interception at all.) See
-[ADR-053](../decisions/053-silent-mode.md).
+[ADR-053](../decisions/053-silent-mode.md) and
+[ADR-072](../decisions/072-silent-mode-user-confirm-policy.md).
+
+**The `user_confirm` refinement (the fourth sub-policy).** `tool_confirm` decides
+whether a gated call runs unattended, is escalated to the strict judge, or is
+denied; `user_confirm` refines only the **fail-closed CONFIRM outcome** of the
+judge terminal — the strict judge *spoke* CONFIRM, or the judge is missing,
+errors, times out, or returns an unparseable verdict. It never governs a
+deliberate judge DENY (which always takes the non-negotiable fail-closed
+terminal) nor a judge ALLOW (which always executes). Its three values:
+
+- `deny` (the **default**) auto-denies the CONFIRM outcome with its reasoning —
+  byte-for-byte the behavior before the refinement existed, and any unrecognized
+  value ranks as this default.
+- `escalate` **restores the blocking confirmation card** so a human answers
+  (`confirmAndExecuteWithOptions`), with the advisory judge action disabled for a
+  **hard** reason — a fired control is never weakened by an advisory judgment; no
+  `autonomy_decision` is emitted, because a human decided rather than the
+  registry. It is the least permissive value: the only one that can *block* an
+  unattended run.
+- `confirm` executes the call **unattended, canonical hard reasons included**, and
+  audits it as an allow (an `autonomy_decision` with `policy: user_confirm`,
+  `verdict: allow`, naming the policy in its justification) — the operator
+  explicitly accepts the risk the fail-closed verdict flagged. Because it also
+  executes when the judge is entirely unavailable (the judge-outage fail-open it
+  is purchased with), `confirm` is the **unsafe**, most-permissive value; the
+  Settings UI gates the transition into it behind a danger modal and renders a
+  persistent warning while it is stored.
+
+The refinement is ranked for the tightening direction as `confirm` > `deny` >
+`escalate`, so a Settings save that loosens it is ignored on a running task
+(pinning preserved) while a tightening reaches it at once — the same
+`ApplyAutonomyPostureIfTightening` rule as the rest of the posture.
 
 **Where it sits.** Silent mode is reached only from `smartApproveOrConfirm`, the
 unified confirmation funnel — that is, *after* every deterministic gate.
@@ -237,11 +270,18 @@ Silent mode replaces the **human answer** to a prompt; it never removes a gate.
 - **A fired control is never auto-executed without the judge.** In
   `tool_confirm.mode: allow`, a call carrying a **hard** safety reason — canonical
   or not — is escalated to the strict judge; only a judge ALLOW executes it (the
-  judge's decision is final — next bullet). Every
-  other outcome (CONFIRM, error, timeout, missing judge, unparseable) auto-denies,
-  carrying the reasoning in the tool result.
-- **The canonical backstop is scoped to the interactive paths; the silent `judge` terminal delegates final authority to the judge** ([ADR-053](../decisions/053-silent-mode.md) D4). In `standard` a canonical hard reason is always a card; in `assisted` a strict ALLOW on a canonical reason is overridden to a confirmation. In silent `judge` mode there is **deliberately no backstop**: the operator selected unattended operation and delegated the final decision to the strict judge — its ALLOW **executes, canonical hard reasons included**, fully audited (the `autonomy_decision` event carries the judge's justification for allowing a fired control) — while every other outcome (a deliberate DENY, CONFIRM, a missing judge, an error/timeout, an unparseable verdict) auto-denies fail-closed, with justifications distinguishing a judge DENY from the fail-closed causes. `tool_confirm.mode: deny` denies every gated call outright without consulting the judge (the judge-free hard floor for unattended runs). The split behavior is pinned by
-  `TestSilentMode_JudgeTerminalCanonicalAllowExecutes` (silent: the canonical ALLOW executes; assisted: the same reason still forces a confirmation).
+  judge's decision is final — next bullet). The fail-closed CONFIRM outcome
+  (CONFIRM, error, timeout, missing judge, unparseable) auto-denies under the
+  default `user_confirm: deny`, carrying the reasoning in the tool result;
+  `user_confirm: escalate` restores the confirmation card instead, and
+  `user_confirm: confirm` is the one deliberate exception that executes it
+  unattended — audited as an allow — as the refinement paragraph above describes.
+- **The canonical backstop is scoped to the interactive paths; the silent `judge` terminal delegates final authority to the judge** ([ADR-053](../decisions/053-silent-mode.md) D4). In `standard` a canonical hard reason is always a card; in `assisted` a strict ALLOW on a canonical reason is overridden to a confirmation. In silent `judge` mode there is **deliberately no backstop**: the operator selected unattended operation and delegated the final decision to the strict judge — its ALLOW **executes, canonical hard reasons included**, fully audited (the `autonomy_decision` event carries the judge's justification for allowing a fired control) — while every other outcome (a deliberate DENY, CONFIRM, a missing judge, an error/timeout, an unparseable verdict) auto-denies fail-closed **under the default `user_confirm: deny`** — with justifications distinguishing a judge DENY from the fail-closed causes — and the `user_confirm` refinement may instead execute a fail-closed CONFIRM outcome unattended (`confirm`) or restore the blocking card (`escalate`). `tool_confirm.mode: deny` denies every gated call outright without consulting the judge (the judge-free hard floor for unattended runs). The split behavior is pinned by
+  `TestSilentMode_JudgeTerminalCanonicalAllowExecutes` (silent: the canonical ALLOW executes; assisted: the same reason still forces a confirmation). The `user_confirm` terminals are pinned by
+  `TestSilentUserConfirm_ConfirmExecutesFailClosedTerminals`,
+  `TestSilentUserConfirm_EscalateOpensCard`,
+  `TestSilentUserConfirm_DefaultAutoDeniesUnchanged`, and
+  `TestSilentUserConfirm_JudgeDenyNeverGovernedByPolicy`.
 
 **Deny-accuracy evidence (judge-terminal precision).** The silent `judge` terminal fail-closed denies on every non-ALLOW outcome, so the quality of the evidence under a non-canonical hard reason decides whether unattended runs live or collapse on false positives (the silent-mode audit measured an 84% false-deny rate before this landed). Two deterministic-evidence mechanisms keep the terminal precise **without relaxing any gate** ([ADR-052](../decisions/052-flowsh-command-analysis.md) D3/D5): the **flow-based cradle verdict** — C5 fires on the established cradle **flow** (digest `cradleFlows`), so a canonical cradle verdict is the evidence it ships and no phantom egress target (git subcommand names, commit SHAs) can manufacture a canonical deny the digest cannot point at, the former C5-consistency evidence proxy being removed ([ADR-057](../decisions/057-flow-based-network-verdicts.md)) — and the **workspace-scoped verification marker** — positive ALLOW evidence for the routine `go test`/`tsc`/lint verification shape, where C6 still fires and escalates but the judge is handed grounds instead of an analysis dead-end (never a bypass: `exfilPairs`, canonical criteria, and every pre-funnel gate are untouched). The marker rests on the operator-trust premise that session roots are trusted — the audit's *repository-as-files from an untrusted source* caveat stands, and any future untrusted-workdir signal must disable the marker for that root.
 
@@ -463,9 +503,9 @@ Source: `github.com/v0lka/sp4rk/security/wrap.go` (wrapping), `core/prompts/inje
 - Symlink analysis runs for every non-system tool during safety-signal gathering: a symlink whose resolution stays inside the session roots is NOT a concern; an escape out of the roots is a **hard** reason
 - Every git process c0wrk spawns carries the sysproc baseline overrides (`core.fsmonitor=false`, safe `core.hooksPath`, `commit.gpgsign=false`, `GIT_EDITOR=true`); repo-scoped git invocations re-scan `.git/config` fresh before every call and fail closed (git is not executed) on unscannable configs — repository-defined hooks, fsmonitor daemons, filters, merge drivers, textconv, and signing programs never execute (see [Git Subprocess Hardening](#git-subprocess-hardening))
 - A mutating file-tool target resolving inside a workspace `.git` tree is a hard `git_internal_path` reason that escalates under any group policy — an `allow` policy can never execute it silently
-- HARD safety reasons (blocklist match, a flowsh criterion, SSRF, symlink escape, or an unassessable input) are ALWAYS routed through the unified confirmation funnel and consult the strict judge, under any group policy; a **canonical** reason — a fired control (`command_blacklist`, the flowsh controls `command_exfil_flow`/`command_privilege_escalation`/`command_system_write`/`command_destructive_outside_roots`/`command_download_cradle`, `ssrf_private_address`, `symlink_escape`) or an unassessable input (`command_analysis_unavailable`, `ssrf_protection_degraded`, `unassessable_url`, `unassessable_path`), matched by typed code — is deterministically backstopped to confirmation with `DisableJudge=true` on the **interactive paths** (`standard`/`assisted`): it never passes assisted-mode auto-approval there; the silent `judge` terminal is the one deliberate, audited exception. A non-canonical hard reason (an analysis-limitation question, most notably `command_unbounded_analysis` — the flowsh ⊤ criterion) may be cleared by a strict ALLOW. SOFT reasons (path containment, credential access) force confirmation unless the assisted-mode strict judge allows the call
+- HARD safety reasons (blocklist match, a flowsh criterion, SSRF, symlink escape, or an unassessable input) are ALWAYS routed through the unified confirmation funnel and consult the strict judge, under any group policy; a **canonical** reason — a fired control (`command_blacklist`, the flowsh controls `command_exfil_flow`/`command_privilege_escalation`/`command_system_write`/`command_destructive_outside_roots`/`command_download_cradle`, `ssrf_private_address`, `symlink_escape`) or an unassessable input (`command_analysis_unavailable`, `ssrf_protection_degraded`, `unassessable_url`, `unassessable_path`), matched by typed code — is deterministically backstopped to confirmation with `DisableJudge=true` on the **interactive paths** (`standard`/`assisted`): it never passes assisted-mode auto-approval there; the silent `judge` terminal — its judge ALLOW, and its optional `user_confirm: confirm` refinement for the fail-closed CONFIRM outcome — is the deliberate, audited exception. A non-canonical hard reason (an analysis-limitation question, most notably `command_unbounded_analysis` — the flowsh ⊤ criterion) may be cleared by a strict ALLOW. SOFT reasons (path containment, credential access) force confirmation unless the assisted-mode strict judge allows the call
 - `deny` group policy is NEVER bypassed (not by auto-approval, not by judge, not by symlink check, not by any mechanism)
-- **Silent mode** (`security.autonomy_mode: silent`, default `standard`) resolves the three interactive prompts without a human, but only from inside the confirmation funnel: `deny` groups and every deterministic pre-funnel gate (Judge ordering, auto-approval priority, containment, symlink escape, flowsh criteria) are unchanged, and a hard safety reason is never auto-executed by `allow` mode (it escalates to the strict judge). The canonical hard-reason backstop is scoped to the interactive paths — in silent `judge` mode the strict judge holds final authority over canonical reasons (its ALLOW executes, fully audited; every other outcome auto-denies fail-closed) — pinned by `TestSilentMode_JudgeTerminalCanonicalAllowExecutes`. See [Silent Mode](#silent-mode-unattended-operation)
+- **Silent mode** (`security.autonomy_mode: silent`, default `standard`) resolves the interactive prompts without a human through four sub-policies (`tool_confirm`, its `user_confirm` refinement, `step_limit`, `ask_user`), but only from inside the confirmation funnel: `deny` groups and every deterministic pre-funnel gate (Judge ordering, auto-approval priority, containment, symlink escape, flowsh criteria) are unchanged, and a hard safety reason is never auto-executed by `allow` mode without the judge (it escalates to the strict judge). The canonical hard-reason backstop is scoped to the interactive paths — in silent `judge` mode the strict judge holds final authority over canonical reasons (its ALLOW executes, fully audited; every other outcome auto-denies fail-closed under the default `user_confirm: deny`) — pinned by `TestSilentMode_JudgeTerminalCanonicalAllowExecutes`. The `user_confirm: confirm` refinement is the sole value that executes a fail-closed CONFIRM outcome unattended, canonical hard reasons included, and is audited. See [Silent Mode](#silent-mode-unattended-operation)
 - **Every automatic decision emits a persisted, non-blocking `autonomy_decision` event** (`kind`, `mode`, `policy`, `verdict`, `tool`/`reason`, `justification`) — the auditable receipt of a gate a human would otherwise have answered (in silent mode, or an assisted-mode strict-judge DENY), so the trajectory stays reconstructable (ASI10)
 - For `allow`-policy tools implementing `ToolJudger`, the Judge runs BEFORE workspace/temp auto-approval — safety checks (blocklist, flowsh criteria, SSRF, path containment) NEVER bypassed by path-locality
 - The session workspace, temp directory, and auxiliary work directories are equal peers — any operation permitted in one is permitted in the others
@@ -514,17 +554,23 @@ security:
   autonomy_mode: standard
 
   # Silent-mode sub-policies (live only while autonomy_mode is "silent"). They
-  # only replace the HUMAN ANSWER to a prompt (tool_confirm / step_limit /
-  # ask_user); they never weaken a gate: `deny` groups,
+  # only replace the HUMAN ANSWER to a prompt (tool_confirm / user_confirm /
+  # step_limit / ask_user); they never weaken a gate: `deny` groups,
   # containment, symlink/flowsh analysis and workspace auto-approval are
   # unchanged, and every automatic decision is recorded as a persisted
   # `autonomy_decision` session event (ASI10). In tool_confirm "judge" mode
   # the strict judge holds final authority — its ALLOW executes, canonical
   # hard reasons included, fully audited; "deny" is the judge-free hard floor.
-  # See [Silent Mode](#silent-mode-unattended-operation) and
-  # [ADR-053](../decisions/053-silent-mode.md).
+  # user_confirm refines only the fail-closed CONFIRM outcome of that judge
+  # terminal: "deny" (default) auto-denies it, "escalate" restores the blocking
+  # card, and "confirm" runs it unattended — canonical hard reasons included —
+  # the UNSAFE, most-permissive value (it also fails open when the judge is
+  # unavailable). See [Silent Mode](#silent-mode-unattended-operation),
+  # [ADR-053](../decisions/053-silent-mode.md) and
+  # [ADR-072](../decisions/072-silent-mode-user-confirm-policy.md).
   silent_mode:
     tool_confirm:  { mode: judge }    # judge | allow | deny
+    user_confirm:  { mode: deny }     # confirm | deny | escalate
     step_limit:    { mode: auto }     # auto | allow_once | allow_more | allow_always | deny | stop
     ask_user:      { mode: disable }  # disable | enable
 
@@ -539,7 +585,7 @@ Notes: the `system` group is reserved (config validation rejects it); a blocklis
 
 - Setting a mutating group's policy to `allow` in production — removes all safety gates for every tool in that group
 - Tagging a tool `GroupSystem` without careful consideration — it bypasses everything; leaving a tool's group undeclared is equally wrong (it fails closed everywhere, including tool budgets and verifier sets)
-- Relying on the **advisory** judge as a primary safety mechanism — it is on-demand only; the assisted-mode strict judge is a gate, and when active it applies to every escalation through the unified funnel (including hard reasons); even so, a **canonical** hard reason (blocklist, a flowsh control, SSRF, symlink escape, or an unassessable input) is deterministically backstopped to confirmation on the interactive paths and never passes assisted-mode auto-approval (the silent `judge` terminal is the one deliberate, audited exception)
+- Relying on the **advisory** judge as a primary safety mechanism — it is on-demand only; the assisted-mode strict judge is a gate, and when active it applies to every escalation through the unified funnel (including hard reasons); even so, a **canonical** hard reason (blocklist, a flowsh control, SSRF, symlink escape, or an unassessable input) is deterministically backstopped to confirmation on the interactive paths and never passes assisted-mode auto-approval (the silent `judge` terminal is the one deliberate, audited exception, and its `user_confirm: confirm` refinement likewise executes an explicitly-opted-in fail-closed CONFIRM outcome unattended)
 - Implementing confirmation timeout — blocking indefinitely is intentional (user may be away)
 
 ## Related Specs
