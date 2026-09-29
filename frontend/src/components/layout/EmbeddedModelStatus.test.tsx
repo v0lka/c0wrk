@@ -131,6 +131,10 @@ function statusWith(overrides: Partial<EmbeddedLLMStatus> = {}): EmbeddedLLMStat
     error: '',
     install_error: '',
     available: true,
+    guards: [],
+    leftover_runtime: false,
+    leftover_weights: false,
+    leftover_projection: false,
     ...overrides,
   }
 }

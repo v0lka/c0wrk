@@ -706,6 +706,9 @@ export namespace backend {
 	    error: string;
 	    install_error: string;
 	    available: boolean;
+	    leftover_runtime: boolean;
+	    leftover_weights: boolean;
+	    leftover_projection: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new EmbeddedLLMStatus(source);
@@ -747,6 +750,9 @@ export namespace backend {
 	        this.error = source["error"];
 	        this.install_error = source["install_error"];
 	        this.available = source["available"];
+	        this.leftover_runtime = source["leftover_runtime"];
+	        this.leftover_weights = source["leftover_weights"];
+	        this.leftover_projection = source["leftover_projection"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

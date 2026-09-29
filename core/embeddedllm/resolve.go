@@ -603,11 +603,16 @@ func applyCompatGuards(table AssetTable, platform string, backend Backend, gpu G
 			case CUDA12Absent:
 				decision.Guidance += " (c0wrk probed this system and found no usable CUDA 12.x " +
 					"runtime libraries, so the " + string(decision.Backend) +
-					" build could not be loaded here; this install keeps " + string(effective) + ")"
+					" build could not be loaded here; this install keeps " + string(effective) +
+					"; install the CUDA 12.x runtime libraries (e.g. via the nvidia driver's " +
+					"cuda-12 package) and reinstall the runtime to get the " +
+					string(decision.Backend) + " build)"
 			default: // CUDA12Unknown — the zero value: not probed, or the probe could not decide.
 				decision.Guidance += " (c0wrk could not determine whether this system has the CUDA 12.x " +
 					"runtime libraries the " + string(decision.Backend) +
-					" build needs; this install keeps " + string(effective) + ")"
+					" build needs; this install keeps " + string(effective) +
+					"; install the CUDA 12.x runtime libraries and reinstall the runtime " +
+					"to get the " + string(decision.Backend) + " build)"
 			}
 			continue
 		}

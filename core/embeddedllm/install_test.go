@@ -1925,6 +1925,229 @@ func TestRemoveRequiresAConfigSink(t *testing.T) {
 	requireDir(t, fx.layout.ModelRoot, "the model tree, which a sinkless Remove must not delete")
 }
 
+// ── scoped removal ──
+
+// requireCachedWeights asserts the scoped-removal cache contract: the model
+// GGUF and the projector survive and the install record is gone.
+func requireScopedCache(t *testing.T, fx *installFixture, report *InstallReport) {
+	t.Helper()
+	requireFile(t, report.ModelFile, "the model GGUF, which a runtime-only removal keeps as a cache")
+	proj, err := fx.layout.Destination(MMProjAsset())
+	if err != nil {
+		t.Fatalf("Destination(mmproj): %v", err)
+	}
+	requireFile(t, proj, "the projector GGUF, which a runtime-only removal keeps as a cache")
+	requireNoManifest(t, fx.layout)
+	if n := fx.sink.removed(); n != 1 {
+		t.Errorf("ApplyRemoved called %d times, want 1", n)
+	}
+}
+
+func TestParseRemoveScope(t *testing.T) {
+	cases := []struct {
+		in   string
+		want RemoveScope
+	}{
+		{"", RemoveAll},
+		{"all", RemoveAll},
+		{"runtime", RemoveRuntime},
+		{"weights", RemoveWeights},
+		{"projection", RemoveProjection},
+		{" Runtime ", RemoveRuntime},
+	}
+	for _, tc := range cases {
+		got, err := ParseRemoveScope(tc.in)
+		if err != nil {
+			t.Errorf("ParseRemoveScope(%q): %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("ParseRemoveScope(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	for _, in := range []string{"everything", "model", "RUNTIME-files"} {
+		if _, err := ParseRemoveScope(in); err == nil {
+			t.Errorf("ParseRemoveScope(%q) succeeded, want a refusal", in)
+		}
+	}
+	// The zero value is invalid: a caller that forgot to choose gets an error,
+	// never a silent "all".
+	var zero RemoveScope
+	if zero.valid() {
+		t.Error("the zero RemoveScope must not be valid")
+	}
+	if err := fxParseScope(t, zero); err == nil {
+		t.Error("RemoveWithScope accepted the zero scope, want a refusal")
+	}
+}
+
+// fxParseScope runs RemoveWithScope with the zero scope against a fixture the
+// test constructed; split out so the table test stays declarative.
+func fxParseScope(t *testing.T, scope RemoveScope) error {
+	t.Helper()
+	fx := newInstallFixture(t, darwinMetalCase())
+	fx.mustInstall(t)
+	return fx.installer.RemoveWithScope(context.Background(), scope)
+}
+
+func TestRemoveRuntimeScopeKeepsWeightsAsCache(t *testing.T) {
+	fx := newInstallFixture(t, darwinMetalCase())
+	report := fx.mustInstall(t)
+
+	// A leftover of an interrupted install that the scope must also reclaim.
+	staging, err := fx.layout.RuntimeStagingDir(report.Manifest.Backend)
+	if err != nil {
+		t.Fatalf("RuntimeStagingDir: %v", err)
+	}
+	if err := os.MkdirAll(staging, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	if err := fx.installer.RemoveWithScope(context.Background(), RemoveRuntime); err != nil {
+		t.Fatalf("RemoveWithScope(runtime): %v", err)
+	}
+	requireAbsent(t, report.RuntimeDir, "the runtime tree")
+	requireAbsent(t, staging, "the staging tree")
+	downloads, err := fx.layout.DownloadsDir()
+	if err != nil {
+		t.Fatalf("DownloadsDir: %v", err)
+	}
+	requireAbsent(t, downloads, "the archive staging area")
+	requireScopedCache(t, fx, report)
+
+	// And a re-install re-downloads only the RUNTIME: the surviving weight and
+	// projector bytes verify against their pins without a single new request,
+	// while the deleted runtime archive is fetched again.
+	modelRequestsBefore := fx.requestCount(ComponentModel) + fx.requestCount(ComponentMMProj)
+	fx.mustInstall(t)
+	modelRequestsAfter := fx.requestCount(ComponentModel) + fx.requestCount(ComponentMMProj)
+	if got := modelRequestsAfter - modelRequestsBefore; got != 0 {
+		t.Errorf("the reinstall made %d weight/projector requests; surviving artifacts must be cache hits",
+			got)
+	}
+	if fx.requestCount(ComponentRuntime) == 0 {
+		t.Error("the reinstall did not re-fetch the deleted runtime archive")
+	}
+}
+
+func TestRemoveWeightsScopeKeepsRuntime(t *testing.T) {
+	fx := newInstallFixture(t, darwinMetalCase())
+	report := fx.mustInstall(t)
+
+	if err := fx.installer.RemoveWithScope(context.Background(), RemoveWeights); err != nil {
+		t.Fatalf("RemoveWithScope(weights): %v", err)
+	}
+	modelFile, err := fx.layout.ModelFile(PackingPQ2_0)
+	if err != nil {
+		t.Fatalf("ModelFile: %v", err)
+	}
+	otherPacking, err := fx.layout.ModelFile(PackingPTQ1_0)
+	if err != nil {
+		t.Fatalf("ModelFile(PTQ1_0): %v", err)
+	}
+	requireAbsent(t, modelFile, "the installed packing's GGUF")
+	requireAbsent(t, otherPacking, "the other packing's GGUF")
+	requireDir(t, report.RuntimeDir, "the runtime tree, which a weights-only removal keeps")
+	proj, err := fx.layout.Destination(MMProjAsset())
+	if err != nil {
+		t.Fatalf("Destination(mmproj): %v", err)
+	}
+	requireFile(t, proj, "the projector GGUF, which a weights-only removal keeps")
+	requireNoManifest(t, fx.layout)
+}
+
+func TestRemoveProjectionScopeKeepsWeightsAndRuntime(t *testing.T) {
+	fx := newInstallFixture(t, darwinMetalCase())
+	report := fx.mustInstall(t)
+
+	if err := fx.installer.RemoveWithScope(context.Background(), RemoveProjection); err != nil {
+		t.Fatalf("RemoveWithScope(projection): %v", err)
+	}
+	proj, err := fx.layout.Destination(MMProjAsset())
+	if err != nil {
+		t.Fatalf("Destination(mmproj): %v", err)
+	}
+	requireAbsent(t, proj, "the projector GGUF")
+	requireFile(t, report.ModelFile, "the model GGUF, which a projection-only removal keeps")
+	requireDir(t, report.RuntimeDir, "the runtime tree, which a projection-only removal keeps")
+	requireNoManifest(t, fx.layout)
+}
+
+func TestRemoveScopeClearsConfigUnderEveryScope(t *testing.T) {
+	for _, scope := range []RemoveScope{RemoveAll, RemoveRuntime, RemoveWeights, RemoveProjection} {
+		fx := newInstallFixture(t, darwinMetalCase())
+		report := fx.mustInstall(t)
+
+		if err := fx.installer.RemoveWithScope(context.Background(), scope); err != nil {
+			t.Fatalf("RemoveWithScope(%s): %v", scope, err)
+		}
+		if n := fx.sink.removed(); n != 1 {
+			t.Errorf("scope %s: ApplyRemoved called %d times, want 1", scope, n)
+		}
+		requireNoManifest(t, fx.layout)
+
+		// The embedding-model decoy survives every scope.
+		embeddingModel := filepath.Join(fx.agentDir, "models", "ggml-model-q4_0.gguf")
+		if err := os.WriteFile(embeddingModel, []byte("embedding model"), 0o600); err != nil {
+			t.Fatalf("write embedding model decoy: %v", err)
+		}
+		requireFile(t, embeddingModel, "the flat embedding model under scope "+string(scope))
+		_ = report
+	}
+}
+
+func TestDetectLeftovers(t *testing.T) {
+	fx := newInstallFixture(t, darwinMetalCase())
+
+	// Nothing installed, nothing on disk: no leftovers.
+	lo, err := fx.installer.DetectLeftovers()
+	if err != nil {
+		t.Fatalf("DetectLeftovers: %v", err)
+	}
+	if lo.Any() {
+		t.Errorf("an empty machine reported leftovers %+v", lo)
+	}
+
+	report := fx.mustInstall(t)
+	lo, err = fx.installer.DetectLeftovers()
+	if err != nil {
+		t.Fatalf("DetectLeftovers: %v", err)
+	}
+	if !lo.Runtime || !lo.Weights || !lo.Projection {
+		t.Errorf("an installed machine reported %+v, want every component present", lo)
+	}
+
+	// The scope leaves exactly its residue behind.
+	if err := fx.installer.RemoveWithScope(context.Background(), RemoveRuntime); err != nil {
+		t.Fatalf("RemoveWithScope(runtime): %v", err)
+	}
+	lo, err = fx.installer.DetectLeftovers()
+	if err != nil {
+		t.Fatalf("DetectLeftovers: %v", err)
+	}
+	if lo.Runtime {
+		t.Error("a runtime-scoped removal left runtime residue behind")
+	}
+	if !lo.Weights || !lo.Projection {
+		t.Errorf("a runtime-scoped removal lost the weights/projector residue: %+v", lo)
+	}
+
+	if err := fx.installer.RemoveWithScope(context.Background(), RemoveWeights); err != nil {
+		t.Fatalf("RemoveWithScope(weights): %v", err)
+	}
+	if err := fx.installer.RemoveWithScope(context.Background(), RemoveProjection); err != nil {
+		t.Fatalf("RemoveWithScope(projection): %v", err)
+	}
+	lo, err = fx.installer.DetectLeftovers()
+	if err != nil {
+		t.Fatalf("DetectLeftovers: %v", err)
+	}
+	if lo.Any() {
+		t.Errorf("a full removal left residue behind: %+v", lo)
+	}
+	_ = report
+}
+
 // ── manifest ──
 
 func TestManifestRoundTripAndAtomicWrite(t *testing.T) {

@@ -184,6 +184,19 @@ type EmbeddedLLMStatus struct {
 	// Available reports whether the subsystem could be constructed at all
 	// (false only when the agent directory is unset, i.e. before startup).
 	Available bool `json:"available"`
+	// LeftoverRuntime / LeftoverWeights / LeftoverProjection report which
+	// embedded-LLM artifacts are on disk RIGHT NOW: any "llama-*" runtime tree
+	// (or the archive staging area), a pinned model GGUF, the vision projector
+	// GGUF. While Installed is true these are simply the install's own bytes;
+	// their purpose is the NOT-installed state, where they describe what a
+	// scoped removal left behind — a cache the next install re-verifies without
+	// re-downloading, or residue a further removal can reclaim. Computed with a
+	// cheap existence scan (directory listing + per-file stats, never a walk
+	// and never a hash); all three are false when the subsystem could not be
+	// constructed.
+	LeftoverRuntime    bool `json:"leftover_runtime"`
+	LeftoverWeights    bool `json:"leftover_weights"`
+	LeftoverProjection bool `json:"leftover_projection"`
 }
 
 // EmbeddedLLMGuard is the frontend-facing shape of one

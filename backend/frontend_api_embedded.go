@@ -1051,7 +1051,7 @@ func (f *FrontendAPI) GetEmbeddedLLMStatus() EmbeddedLLMStatus {
 		}
 	}
 
-	server, _, err := f.embeddedBuild()
+	server, installer, err := f.embeddedBuild()
 	if err != nil {
 		f.log().Debug("embedded LLM status without a supervisor", "error", err)
 		if status.Installed && status.Port > 0 {
@@ -1092,6 +1092,21 @@ func (f *FrontendAPI) GetEmbeddedLLMStatus() EmbeddedLLMStatus {
 	// reaches a process that has not been spawned yet, so the question is
 	// whether the resident one was started with the overrides now on disk.
 	status.ReloadRequired = f.embeddedTuningReloadRequired(status.Loading, status.Loaded)
+
+	// The leftover scan is LAST of all and fail-soft: a read error leaves the
+	// three flags false (an honest "unknown — do not offer cleanup" for the UI)
+	// and never degrades the status read itself. While the model is installed
+	// the flags merely restate the install's own bytes; their real audience is
+	// the not-installed state with residue.
+	if installer != nil {
+		if lo, err := installer.DetectLeftovers(); err == nil {
+			status.LeftoverRuntime = lo.Runtime
+			status.LeftoverWeights = lo.Weights
+			status.LeftoverProjection = lo.Projection
+		} else {
+			f.log().Debug("embedded LLM leftover scan failed", "error", err)
+		}
+	}
 	return status
 }
 
@@ -1255,9 +1270,16 @@ func (f *FrontendAPI) embeddedInstallPreflight() (hw embeddedllm.Hardware, err e
 	return hw, nil
 }
 
-// RemoveEmbeddedLLM stops a running server and removes the runtime, the weights
-// and the manifest, then clears the backend-owned provider record (migrating
-// llm.default_model off the embedded composite in the same operation).
+// RemoveEmbeddedLLM stops a running server and removes the parts of the
+// installation the scope names. The empty scope (and "all") removes everything
+// — the historical behaviour every older frontend call means; "runtime"
+// removes the inference runtime and keeps the weights as a verified cache, so
+// a runtime reinstall does not re-download the multi-gigabyte model; "weights"
+// and "projection" remove their own GGUFs the same way. Under EVERY scope the
+// manifest and the config registration are cleared and llm.default_model
+// migrates off the embedded composite: a partial removal leaves a cache, never
+// a half-registered install, and the next Install re-verifies the survivors
+// instead of re-downloading them.
 //
 // Blocking, and BOUNDED: the work is local file removal plus a config save, but
 // it starts with a supervisor stop that must first acquire the single-instance
@@ -1271,16 +1293,23 @@ func (f *FrontendAPI) embeddedInstallPreflight() (hw embeddedllm.Hardware, err e
 // when no child had spawned yet.
 //
 // It is NOT the only actionable error this call returns. A stop that did not take
-// is reported by core's terminate, and the work that FOLLOWS the stop — the three
-// tree deletions and Sink.ApplyRemoved, joined — returns its own errors when the
-// tree is read-only or busy, with no child involved at all.
+// is reported by core's terminate, and the work that FOLLOWS the stop — the tree
+// deletions and Sink.ApplyRemoved, joined — returns its own errors when the
+// tree is read-only or busy, with no child involved at all. An unknown scope is
+// refused before the stop, so a typo can never stop a resident server.
 //
 // It also holds the embedded-operation gate for its whole duration, so an
 // install cannot start mid-removal and race the tree deletion (see
 // embeddedLLMState.busyOp). Verified artifacts of an unrelated component are
 // never touched, and the flat embedding-model files sharing <agentDir>/models
 // survive.
-func (f *FrontendAPI) RemoveEmbeddedLLM() error {
+func (f *FrontendAPI) RemoveEmbeddedLLM(scope string) error {
+	// Parse the scope BEFORE anything else: an unknown value must not stop a
+	// resident server or delete anything.
+	removeScope, err := embeddedllm.ParseRemoveScope(scope)
+	if err != nil {
+		return err
+	}
 	server, installer, err := f.embeddedBuild()
 	if err != nil {
 		return err
@@ -1295,7 +1324,7 @@ func (f *FrontendAPI) RemoveEmbeddedLLM() error {
 	budget := f.embeddedStopBudget()
 	removeCtx, cancel := context.WithTimeout(f.ctx(), budget)
 	defer cancel()
-	if err := installer.Remove(removeCtx); err != nil {
+	if err := installer.RemoveWithScope(removeCtx, removeScope); err != nil {
 		err = embeddedBoundedStopErr("the local model removal", err, budget)
 		// The failure is carried by THIS call's rejected promise (the Settings
 		// error line) and the toast below — deliberately NOT recorded as the

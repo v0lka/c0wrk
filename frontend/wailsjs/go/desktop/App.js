@@ -570,8 +570,8 @@ export function RemoveAttachment(arg1, arg2) {
   return window['go']['desktop']['App']['RemoveAttachment'](arg1, arg2);
 }
 
-export function RemoveEmbeddedLLM() {
-  return window['go']['desktop']['App']['RemoveEmbeddedLLM']();
+export function RemoveEmbeddedLLM(arg1) {
+  return window['go']['desktop']['App']['RemoveEmbeddedLLM'](arg1);
 }
 
 export function RemoveHardenGitRepo(arg1) {

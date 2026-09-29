@@ -293,7 +293,7 @@ export function ReindexVectorIndex():Promise<void>;
 
 export function RemoveAttachment(arg1:string,arg2:string):Promise<void>;
 
-export function RemoveEmbeddedLLM():Promise<void>;
+export function RemoveEmbeddedLLM(arg1:string):Promise<void>;
 
 export function RemoveHardenGitRepo(arg1:string):Promise<void>;
 

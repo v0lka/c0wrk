@@ -1502,9 +1502,87 @@ func (in *Installer) promoteRuntime(backend Backend) (string, error) {
 	return final, nil
 }
 
-// Remove deletes an installation: it stops a running server, removes the model
-// tree (manifest and weights), removes every runtime tree and the archive
-// staging area, and finally clears the config.
+// RemoveScope names what a Remove deletes. The scope only chooses WHICH
+// embedded-LLM bytes are deleted — the manifest and the config registration
+// are cleared under every scope, so a partial removal leaves a cache, never a
+// half-registered install.
+type RemoveScope string
+
+const (
+	// RemoveAll — the manifest, the whole model root (weights, vision
+	// projector), every runtime tree and the archive staging area: the
+	// historical full removal.
+	RemoveAll RemoveScope = "all"
+	// RemoveRuntime — the "llama-*" trees (installed, staged, retired) and the
+	// archive staging area. The weights and the projector survive on disk as a
+	// verified cache: a later install re-verifies them without re-downloading.
+	RemoveRuntime RemoveScope = "runtime"
+	// RemoveWeights — the pinned model GGUFs (both packings). The runtime tree
+	// and the projector survive.
+	RemoveWeights RemoveScope = "weights"
+	// RemoveProjection — the vision projector GGUF. The runtime tree and the
+	// weights survive.
+	RemoveProjection RemoveScope = "projection"
+)
+
+// valid reports whether s is one of the four known scopes. The zero value is
+// deliberately invalid: a caller that forgot to choose must not get "all".
+func (s RemoveScope) valid() bool {
+	switch s {
+	case RemoveAll, RemoveRuntime, RemoveWeights, RemoveProjection:
+		return true
+	default:
+		return false
+	}
+}
+
+// ParseRemoveScope maps a wire-scope string onto a RemoveScope. The empty
+// string means RemoveAll — the historical, scope-less removal — so an older
+// caller (or a generated binding invoked without the argument) keeps its
+// meaning. Anything else unknown is refused, never defaulted.
+func ParseRemoveScope(scope string) (RemoveScope, error) {
+	if scope == "" {
+		return RemoveAll, nil
+	}
+	parsed := RemoveScope(strings.ToLower(strings.TrimSpace(scope)))
+	if !parsed.valid() {
+		return "", fmt.Errorf("embeddedllm: unknown remove scope %q (want one of %q, %q, %q, %q)",
+			scope, RemoveAll, RemoveRuntime, RemoveWeights, RemoveProjection)
+	}
+	return parsed, nil
+}
+
+// Leftovers reports which embedded-LLM artifacts are still on disk. While an
+// install is recorded these fields are not interesting (everything present is
+// accounted for by the manifest); their use is the NOT-installed state, where
+// they describe what a scoped removal left behind — a cache a reinstall
+// re-verifies, or bytes a further removal can reclaim.
+type Leftovers struct {
+	// Runtime — at least one "llama-*" tree (installed, staged or retired) or
+	// the archive staging area exists under the runtimes root.
+	Runtime bool
+	// Weights — at least one pinned model GGUF exists in the model root.
+	Weights bool
+	// Projection — the vision projector GGUF exists in the model root.
+	Projection bool
+}
+
+// Any reports whether anything at all is left on disk.
+func (l Leftovers) Any() bool { return l.Runtime || l.Weights || l.Projection }
+
+// Remove stops the server and removes the whole installation: the historical,
+// scope-less form every existing caller means.
+func (in *Installer) Remove(ctx context.Context) error {
+	return in.RemoveWithScope(ctx, RemoveAll)
+}
+
+// RemoveWithScope stops a running server and removes the parts of the
+// installation the scope names, plus — under EVERY scope — the manifest and
+// the config registration. A partial removal is therefore uniform: the
+// on-disk state becomes "not installed", and whatever the scope spared is a
+// cache, not an install. A later Install verifies the surviving artifacts
+// against their pins and re-downloads only what is missing (the downloader's
+// verified-cache fast path).
 //
 // The config is cleared even when a deletion failed, and the deletion error is
 // returned afterwards: a leftover directory wastes disk and a retry reclaims
@@ -1513,13 +1591,16 @@ func (in *Installer) promoteRuntime(backend Backend) (string, error) {
 // path outside the two embedded-LLM trees can be removed — in particular never
 // the flat embedding-model files that share <agentDir>/models and never
 // anything under <toolsDir>/bin.
-func (in *Installer) Remove(ctx context.Context) error {
+func (in *Installer) RemoveWithScope(ctx context.Context, scope RemoveScope) error {
 	if in == nil {
 		return errors.New("embeddedllm: nil Installer")
 	}
 	if in.Sink == nil {
 		return errors.New("embeddedllm: no ConfigSink wired — refusing to delete an install " +
 			"whose provider entry could not be cleared")
+	}
+	if !scope.valid() {
+		return fmt.Errorf("embeddedllm: unknown remove scope %q", string(scope))
 	}
 	if in.Stop != nil {
 		if err := in.Stop(ctx); err != nil {
@@ -1528,25 +1609,130 @@ func (in *Installer) Remove(ctx context.Context) error {
 	}
 
 	var errs []error
-	if err := in.removeOwned(in.Layout.ModelRoot); err != nil {
+	// The manifest goes with EVERY scope: it is install state, not artifact
+	// bytes, and a record describing files a scoped removal just deleted — or
+	// one describing an install coexisting with no runtime tree — would point
+	// the supervisor at bytes that may no longer be there. It goes FIRST, so
+	// the on-disk state is "not installed" before anything else happens.
+	if manifest, err := in.Layout.ManifestPath(); err != nil {
+		errs = append(errs, err)
+	} else if err := in.removeOwned(manifest); err != nil {
 		errs = append(errs, err)
 	}
-	removed, err := in.removeRuntimeTrees()
-	if err != nil {
-		errs = append(errs, err)
-	}
-	if downloads, derr := in.Layout.DownloadsDir(); derr != nil {
-		errs = append(errs, derr)
-	} else if err := in.removeOwned(downloads); err != nil {
-		errs = append(errs, err)
+
+	removed := 0
+	switch scope {
+	case RemoveRuntime:
+		removed = in.removeScopeRuntimeTrees(&errs)
+	case RemoveWeights:
+		in.removeScopeWeights(&errs)
+	case RemoveProjection:
+		in.removeScopeProjection(&errs)
+	default: // RemoveAll — the historical full removal
+		if err := in.removeOwned(in.Layout.ModelRoot); err != nil {
+			errs = append(errs, err)
+		}
+		var err error
+		removed, err = in.removeRuntimeTrees()
+		if err != nil {
+			errs = append(errs, err)
+		}
+		if downloads, derr := in.Layout.DownloadsDir(); derr != nil {
+			errs = append(errs, derr)
+		} else if err := in.removeOwned(downloads); err != nil {
+			errs = append(errs, err)
+		}
 	}
 
 	if serr := in.Sink.ApplyRemoved(ctx); serr != nil {
 		errs = append(errs, fmt.Errorf("clearing the config: %w", serr))
 	} else {
-		in.logger().Info("embedded LLM removed", "runtime_trees_deleted", removed)
+		in.logger().Info("embedded LLM removed", "scope", string(scope),
+			"runtime_trees_deleted", removed)
 	}
 	return errors.Join(errs...)
+}
+
+// removeScopeRuntimeTrees is RemoveWithScope's runtime half: every llama-* tree
+// plus the archive staging area. Returns the number of trees deleted.
+func (in *Installer) removeScopeRuntimeTrees(errs *[]error) int {
+	removed, err := in.removeRuntimeTrees()
+	if err != nil {
+		*errs = append(*errs, err)
+	}
+	if downloads, derr := in.Layout.DownloadsDir(); derr != nil {
+		*errs = append(*errs, derr)
+	} else if err := in.removeOwned(downloads); err != nil {
+		*errs = append(*errs, err)
+	}
+	return removed
+}
+
+// removeScopeWeights is RemoveWithScope's weights half: both pinned packings'
+// GGUFs, so the cleanup reaches a packing the recorded install did not use too.
+func (in *Installer) removeScopeWeights(errs *[]error) {
+	for _, packing := range []Packing{PackingPQ2_0, PackingPTQ1_0} {
+		file, ferr := in.Layout.ModelFile(packing)
+		if ferr != nil {
+			*errs = append(*errs, ferr)
+			continue
+		}
+		if err := in.removeOwned(file); err != nil {
+			*errs = append(*errs, err)
+		}
+	}
+}
+
+// removeScopeProjection is RemoveWithScope's projection half: the vision
+// projector GGUF.
+func (in *Installer) removeScopeProjection(errs *[]error) {
+	file, ferr := in.Layout.Destination(MMProjAsset())
+	if ferr != nil {
+		*errs = append(*errs, ferr)
+		return
+	}
+	if err := in.removeOwned(file); err != nil {
+		*errs = append(*errs, err)
+	}
+}
+
+// DetectLeftovers reports which embedded-LLM artifacts are on disk right now.
+// It is a cheap existence scan — one directory listing and per-file stats,
+// never a walk of multi-gigabyte trees and never a hash — so the status read
+// can afford it. It reports what EXISTS; whether those bytes are still wanted
+// is the caller's question (it differs between an installed model and a
+// not-installed one with residue).
+func (in *Installer) DetectLeftovers() (Leftovers, error) {
+	var lo Leftovers
+	entries, err := os.ReadDir(in.Layout.RuntimesRoot)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return lo, fmt.Errorf("embeddedllm: listing %q: %w", in.Layout.RuntimesRoot, err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), runtimeDirPrefix) {
+			lo.Runtime = true
+			break
+		}
+	}
+	// The archive staging area counts as runtime residue: its contents are
+	// runtime/cudart archives (and their resumable partials).
+	if downloads, derr := in.Layout.DownloadsDir(); derr == nil && pathExists(downloads) {
+		lo.Runtime = true
+	}
+	for _, packing := range []Packing{PackingPQ2_0, PackingPTQ1_0} {
+		file, ferr := in.Layout.ModelFile(packing)
+		if ferr != nil {
+			continue
+		}
+		if pathExists(file) {
+			lo.Weights = true
+			break
+		}
+	}
+	if file, ferr := in.Layout.Destination(MMProjAsset()); ferr == nil && pathExists(file) {
+		lo.Projection = true
+	}
+	return lo, nil
 }
 
 // removeRuntimeTrees deletes every "llama-*" tree under the runtime root —

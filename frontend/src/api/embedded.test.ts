@@ -30,6 +30,7 @@ import {
   MIN_AUTO_UNLOAD_MINUTES,
   getEmbeddedLLMStatus,
   isEmbeddedLLMStatus,
+  removeEmbeddedLLM,
   setEmbeddedLLMAutoUnload,
 } from './embedded'
 
@@ -62,6 +63,10 @@ const STATUS = {
   error: '',
   install_error: '',
   available: true,
+  guards: [],
+  leftover_runtime: false,
+  leftover_weights: false,
+  leftover_projection: false,
   devices: [],
   unified: true,
   host_ram_gib: 128,
@@ -162,5 +167,58 @@ describe('isEmbeddedLLMStatus / getEmbeddedLLMStatus — the boundary guard', ()
 
     mockApp.GetEmbeddedLLMStatus = async () => ({ ...STATUS, plan: { notes: [] } })
     await expect(getEmbeddedLLMStatus()).rejects.toThrow(/invalid status payload/)
+  })
+
+  it('accepts a snapshot carrying a guard record and rejects a drifted one', () => {
+    const guarded = {
+      ...STATUS,
+      guards: [
+        {
+          guard: 'cuda-13.3-crash',
+          action: 'prefer_backend',
+          reason: 'crash_on_load',
+          severity: 'critical',
+          issue: 'PrismML-Eng/llama.cpp#222',
+          applied: false,
+          backend: 'cuda-12.8',
+          packing: '',
+          guidance: 'the CUDA 13.3 build is documented to segfault …',
+        },
+      ],
+    }
+    expect(isEmbeddedLLMStatus(guarded)).toBe(true)
+    expect(isEmbeddedLLMStatus({ ...guarded, guards: [{ guard: 222 }] })).toBe(false)
+    expect(isEmbeddedLLMStatus({ ...guarded, guards: 'none' })).toBe(false)
+  })
+
+  it('rejects a snapshot whose leftover flags drifted', () => {
+    expect(isEmbeddedLLMStatus({ ...STATUS, leftover_runtime: 'yes' })).toBe(false)
+    expect(isEmbeddedLLMStatus({ ...STATUS, leftover_weights: 1 })).toBe(false)
+    expect(isEmbeddedLLMStatus({ ...STATUS, leftover_projection: null })).toBe(false)
+  })
+})
+
+describe('removeEmbeddedLLM — the scope pass-through', () => {
+  it('defaults to the full removal', async () => {
+    const calls: unknown[][] = []
+    mockApp.RemoveEmbeddedLLM = (...args: unknown[]) => {
+      calls.push(args)
+      return Promise.resolve()
+    }
+    await removeEmbeddedLLM()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toEqual(['all'])
+  })
+
+  it('passes every scope through verbatim', async () => {
+    const calls: unknown[][] = []
+    mockApp.RemoveEmbeddedLLM = (...args: unknown[]) => {
+      calls.push(args)
+      return Promise.resolve()
+    }
+    await removeEmbeddedLLM('runtime')
+    await removeEmbeddedLLM('weights')
+    await removeEmbeddedLLM('projection')
+    expect(calls.map((c) => c[0])).toEqual(['runtime', 'weights', 'projection'])
   })
 })
