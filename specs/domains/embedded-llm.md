@@ -490,7 +490,16 @@ type Installer struct {
 	HostOS       string // "" → runtime.GOOS; tests force the darwin branch
 }
 
-type CommandRunner func(ctx context.Context, name string, args ...string) (string, error)
+type CommandRunner func(ctx context.Context, name string, opts *RunOptions, args ...string) (string, error)
+
+// RunOptions is the launch configuration of one runner call: Env replaces the
+// child's whole environment (nil → inherit), Dir sets its working directory
+// (empty → inherit). The smoke test passes the launch environment
+// (launchEnv + the binary directory); every other call site passes nil. The
+// production runner (defaultCommandRunner) also spawns every child
+// console-less (sysproc.HideConsole — the Windows llama-server.exe is a
+// console-subsystem binary, and the universal smoke test runs it on Windows
+// too).
 
 type InstallOptions struct {
 	Port     int          // 0 → AllocatePort

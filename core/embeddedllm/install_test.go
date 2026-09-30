@@ -117,16 +117,17 @@ func linuxCPUCase() installCase {
 }
 
 type installFixture struct {
-	t         *testing.T
-	case_     installCase
-	agentDir  string
-	layout    Layout
-	toolsBin  string
-	installer *Installer
-	sink      *recordingSink
-	cmds      *commandRecorder
-	assets    []Asset
-	digests   map[Component]string
+	t          *testing.T
+	case_      installCase
+	agentDir   string
+	layout     Layout
+	toolsBin   string
+	installer  *Installer
+	sink       *recordingSink
+	cmds       *commandRecorder
+	assets     []Asset
+	digests    map[Component]string
+	runOptions []RunOptions
 
 	mu       sync.Mutex
 	progress []Progress
@@ -253,8 +254,15 @@ func (fx *installFixture) probeDevices(context.Context, string, *slog.Logger) (M
 }
 
 // runCommand is the injected CommandRunner. It records every invocation and
-// answers the smoke test with a plausible llama-server banner.
-func (fx *installFixture) runCommand(_ context.Context, name string, args ...string) (string, error) {
+// answers the smoke test with a plausible llama-server banner. The launch
+// options (the smoke test's launch configuration) are recorded separately for
+// TestSmokeTestRunsUnderTheLaunchEnvironment.
+func (fx *installFixture) runCommand(_ context.Context, name string, opts *RunOptions, args ...string) (string, error) {
+	if opts != nil {
+		fx.mu.Lock()
+		fx.runOptions = append(fx.runOptions, *opts)
+		fx.mu.Unlock()
+	}
 	line := strings.TrimSpace(name + " " + strings.Join(args, " "))
 	fx.cmds.record(line)
 	fx.recordEvent("cmd:" + line)
@@ -268,6 +276,16 @@ func (fx *installFixture) runCommand(_ context.Context, name string, args ...str
 		return "build 10709 (9a9394a)\n", nil
 	}
 	return "", nil
+}
+
+// smokeRunOptions returns copies of the launch options runner calls carried,
+// in call order.
+func (fx *installFixture) smokeRunOptions() []RunOptions {
+	fx.mu.Lock()
+	defer fx.mu.Unlock()
+	out := make([]RunOptions, len(fx.runOptions))
+	copy(out, fx.runOptions)
+	return out
 }
 
 // Install runs the installer and records the progress stream.
@@ -1554,6 +1572,79 @@ func TestInstallSmokeTestsTheStagedRuntimeOnEveryPlatform(t *testing.T) {
 	}
 }
 
+// TestSmokeTestRunsUnderTheLaunchEnvironment pins the launch environment of
+// the fatal smoke test: it must exercise the same loader path as the real
+// launch (spawn's launchEnv + Dir), because a Linux CUDA/ROCm build that
+// resolves its sibling libraries through the launch-provided search path
+// fails a bare-exec --version with a library-not-found error that would
+// abort a perfectly installable runtime. The captured options carry the
+// runtime's binary directory prepended to the platform's library-path
+// variable and set the working directory to that same binary directory.
+func TestSmokeTestRunsUnderTheLaunchEnvironment(t *testing.T) {
+	for _, tc := range []installCase{linuxCPUCase(), windowsCUDACase(), darwinMetalCase()} {
+		t.Run(tc.hostOS, func(t *testing.T) {
+			fx := newInstallFixture(t, tc)
+			report := fx.mustInstall(t)
+
+			opts := fx.smokeRunOptions()
+			if len(opts) != 1 {
+				t.Fatalf("the smoke test carried %d RunOptions, want exactly one; events = %v",
+					len(opts), fx.eventLog())
+			}
+			// The staging tree was renamed away by the promotion that
+			// followed the smoke test, so the expected binary path is
+			// reconstructed from the promoted tree: same relative location,
+			// staging name.
+			runtimeDir, err := fx.layout.RuntimeDir(report.Resolution.Backend)
+			if err != nil {
+				t.Fatalf("RuntimeDir: %v", err)
+			}
+			staging, err := fx.layout.RuntimeStagingDir(report.Resolution.Backend)
+			if err != nil {
+				t.Fatalf("RuntimeStagingDir: %v", err)
+			}
+			promoted, err := ServerBinaryPath(runtimeDir, tc.hostOS)
+			if err != nil {
+				t.Fatalf("ServerBinaryPath: %v", err)
+			}
+			rel, err := filepath.Rel(runtimeDir, promoted)
+			if err != nil {
+				t.Fatalf("Rel: %v", err)
+			}
+			binaryDir := filepath.Join(staging, filepath.Dir(rel))
+
+			// The working directory is the runtime's binary directory.
+			if opts[0].Dir != binaryDir {
+				t.Errorf("smoke test Dir = %q, want the binary directory %q", opts[0].Dir, binaryDir)
+			}
+
+			// The environment is exactly launchEnv's output: the parent's
+			// environment with the binary directory prepended to the
+			// platform's dynamic-library search path.
+			want := launchEnv(binaryDir, tc.hostOS, os.Environ())
+			if !reflect.DeepEqual(opts[0].Env, want) {
+				t.Errorf("smoke test Env = %v, want launchEnv's %v", opts[0].Env, want)
+			}
+			key := libraryPathVar(tc.hostOS)
+			found := false
+			for _, entry := range opts[0].Env {
+				name, value, ok := strings.Cut(entry, "=")
+				if ok && strings.EqualFold(name, key) {
+					found = true
+					if !strings.HasPrefix(value, binaryDir+pathListSeparator(tc.hostOS)) &&
+						value != binaryDir {
+						t.Errorf("%s = %q, want it to start with the binary dir %q",
+							key, value, binaryDir)
+					}
+				}
+			}
+			if !found {
+				t.Errorf("the smoke test environment carries no %s entry: %v", key, opts[0].Env)
+			}
+		})
+	}
+}
+
 // TestInstallLinuxSmokeFailureStopsBeforeTheWeights is the Linux twin of the
 // macOS smoke-failure test: an unrunnable staged runtime must abort the
 // install with an actionable message BEFORE a single weight byte is fetched,
@@ -1621,6 +1712,35 @@ func TestInstallLinuxSmokeFailureStopsBeforeTheWeights(t *testing.T) {
 				t.Errorf("the mmproj was requested %d times although the runtime does not run", n)
 			}
 		})
+	}
+}
+
+// TestInstallWindowsSmokeFailureNamesTheRunDiagnostics pins the Windows half
+// of the smoke-test hint split: the Windows CUDA builds ship their CUDA
+// runtime as a bundled companion archive and never consult the system CUDA
+// userland (ADR-073), so a Windows CUDA failure must NOT tell the user to
+// install CUDA 12 libraries — the honest next step is the run-the-binary
+// loader diagnostics (missing MSVC runtime, incomplete extraction, a
+// Defender block).
+func TestInstallWindowsSmokeFailureNamesTheRunDiagnostics(t *testing.T) {
+	fx := newInstallFixture(t, windowsCUDACase())
+	fx.cmds.fail = "--version"
+
+	_, err := fx.Install(context.Background(), InstallOptions{})
+	if !errors.Is(err, ErrSmokeTestFailed) {
+		t.Fatalf("Install error = %v, want ErrSmokeTestFailed", err)
+	}
+	message := err.Error()
+	for _, banned := range []string{"libcudart", "libcublas", "CUDA 12 runtime libraries"} {
+		if strings.Contains(message, banned) {
+			t.Errorf("the Windows CUDA smoke-test hint points at the system CUDA "+
+				"userland the platform never consults (%q):\n%s", banned, message)
+		}
+	}
+	for _, want := range []string{"cuda-12.4", "--version failed", "run the binary directly"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("smoke-test error does not mention %q:\n%s", want, message)
+		}
 	}
 }
 
@@ -3302,10 +3422,19 @@ func TestDefaultCommandRunnerIsBounded(t *testing.T) {
 		t.Error("defaultCommandRunner sets no cmd.WaitDelay: a grandchild holding the output pipe would block cmd.Run past the context deadline")
 	}
 
+	// The child must be spawned console-less. HideConsole is a no-op off
+	// Windows, but the source pin is what keeps the guarantee — the smoke
+	// test runs llama-server (a console-subsystem binary on Windows) through
+	// this runner, and without CREATE_NO_WINDOW every install click on
+	// Windows allocates and flashes a visible console window.
+	if !strings.Contains(body, "sysproc.HideConsole(cmd)") {
+		t.Error("defaultCommandRunner does not call sysproc.HideConsole(cmd): a Windows install would flash a console window for the llama-server smoke test")
+	}
+
 	// The captured output is capped. It is diagnostic only, so an uncapped buffer
 	// is an unbounded allocation driven by an external process.
 	t.Setenv(helperFloodEnv, "1")
-	out, err := defaultCommandRunner(context.Background(), os.Args[0],
+	out, err := defaultCommandRunner(context.Background(), os.Args[0], nil,
 		"-test.run=TestHelperFloodsOutput", "-test.v=false")
 	if err != nil {
 		t.Fatalf("defaultCommandRunner: %v", err)
@@ -3330,7 +3459,7 @@ func TestDefaultCommandRunnerIsBounded(t *testing.T) {
 // exit status: the cap and the delay bound the call, they do not swallow failures.
 func TestDefaultCommandRunnerReportsAFailingCommand(t *testing.T) {
 	t.Setenv(helperFloodEnv, "1")
-	_, err := defaultCommandRunner(context.Background(), os.Args[0],
+	_, err := defaultCommandRunner(context.Background(), os.Args[0], nil,
 		"-test.run=TestHelperFailsCommand", "-test.v=false")
 	if err == nil {
 		t.Error("a failing command reported no error")
@@ -3360,4 +3489,71 @@ func TestHelperFailsCommand(t *testing.T) {
 		t.Skip("helper mode only; re-executed by TestDefaultCommandRunnerReportsAFailingCommand")
 	}
 	t.Fatal("this helper always fails")
+}
+
+// helperOptionsEnv marks the child TestDefaultCommandRunnerAppliesRunOptions
+// re-executes; the helper asserts the launch configuration the runner was
+// asked to apply and reports what it observed.
+const helperOptionsEnv = "EMBEDDEDLLM_HELPER_RUN_OPTIONS"
+
+// helperMarkerFile is the file the helper reads by RELATIVE path: reading it
+// succeeds only when the child's working directory is the Dir the runner was
+// asked to apply.
+const helperMarkerFile = "run-options-marker.txt"
+
+// TestDefaultCommandRunnerAppliesRunOptions proves the trailing *RunOptions
+// actually reaches the child on the production runner: a non-nil Env replaces
+// the child's whole environment and Dir moves its working directory. This is
+// the execution half of the smoke test's launch-environment guarantee — the
+// fixture-based TestSmokeTestRunsUnderTheLaunchEnvironment only proves what
+// smokeTest ASKS for, this proves the runner DELIVERS it.
+func TestDefaultCommandRunnerAppliesRunOptions(t *testing.T) {
+	t.Setenv(helperOptionsEnv, "1")
+	t.Setenv("EMBEDDEDLLM_HELPER_SHOULD_NOT_INHERIT", "1")
+
+	dir := t.TempDir()
+	marker := "marker-content"
+	if err := os.WriteFile(filepath.Join(dir, helperMarkerFile), []byte(marker), 0o600); err != nil {
+		t.Fatalf("writing the marker: %v", err)
+	}
+	env := []string{helperOptionsEnv + "=1", "EMBEDDEDLLM_HELPER_MARK=" + marker}
+	out, err := defaultCommandRunner(context.Background(), os.Args[0],
+		&RunOptions{Env: env, Dir: dir},
+		"-test.run=TestHelperAssertsRunOptions", "-test.v=false")
+	if err != nil {
+		t.Fatalf("defaultCommandRunner: %v (output: %s)", err, out)
+	}
+	// A re-executed test binary prints its own "PASS" line after whatever the
+	// helper wrote, so the assertion is prefix-shaped rather than exact.
+	if !strings.HasPrefix(strings.TrimSpace(out), "ok "+marker) {
+		t.Errorf("helper reported %q, want the prefix %q (env/dir not applied?)",
+			strings.TrimSpace(out), "ok "+marker)
+	}
+}
+
+// TestHelperAssertsRunOptions is the child TestDefaultCommandRunnerAppliesRunOptions
+// re-executes: it verifies its own environment and working directory and
+// prints "ok <marker>" only when both match the RunOptions the runner was
+// given. The marker value arrives only through Env (so a non-applied Env is a
+// wrong answer, not a missing one) and the marker file is read by a relative
+// path (so only the applied Dir can find it).
+func TestHelperAssertsRunOptions(t *testing.T) {
+	if os.Getenv(helperOptionsEnv) != "1" {
+		t.Skip("helper mode only; re-executed by TestDefaultCommandRunnerAppliesRunOptions")
+	}
+	marker := os.Getenv("EMBEDDEDLLM_HELPER_MARK")
+	if marker == "" {
+		t.Fatal("Env not applied: EMBEDDEDLLM_HELPER_MARK is absent")
+	}
+	if os.Getenv("EMBEDDEDLLM_HELPER_SHOULD_NOT_INHERIT") != "" {
+		t.Fatal("Env replaced: the parent environment leaked into the child")
+	}
+	content, err := os.ReadFile(helperMarkerFile)
+	if err != nil {
+		t.Fatalf("reading %s relative to the working directory: %v", helperMarkerFile, err)
+	}
+	if string(content) != marker {
+		t.Errorf("marker file carries %q, want %q", string(content), marker)
+	}
+	fmt.Print("ok " + marker)
 }

@@ -72,14 +72,27 @@ without the verdict.
 byte is fetched.** `provisionRuntime` keeps the darwin-only signing branch
 (`xattr` + ad-hoc `codesign`) but every platform now runs `smokeTest` against
 the staged runtime tree immediately after extraction — before `promoteRuntime`
-and before the model/mmproj downloads. A failing smoke test is fatal
-(`ErrSmokeTestFailed`), leaves no manifest and no provider entry, keeps the
-staging tree for diagnosis, and its message composes a platform- and
-backend-specific hint (`smokeTestHint`): the Gatekeeper remedy on macOS;
-"the `<backend>` runtime most likely cannot load its CUDA 12 libraries
-(libcudart, libcublas). Install the CUDA 12 runtime libraries for your
-distribution and install again." for a CUDA backend; run-the-binary loader
-diagnostics otherwise.
+and before the model/mmproj downloads. The test binary runs under the LAUNCH
+environment — the same `launchEnv` the supervisor's spawn builds, with the
+runtime's binary directory prepended to the platform's dynamic-library search
+path, and the same working directory — so the fatal test exercises the loader
+path the resident server will use and cannot fail on a build the real launch
+would run (the RPATH-relocatability of the pinned archives is therefore not
+load-bearing). A failing smoke test is fatal (`ErrSmokeTestFailed`), leaves no
+manifest and no provider entry, keeps the staging tree for diagnosis, and its
+message composes a platform- and backend-specific hint (`smokeTestHint`): the
+Gatekeeper remedy on macOS; "the `<backend>` runtime most likely cannot load
+its CUDA 12 libraries (libcudart, libcublas). Install the CUDA 12 runtime
+libraries for your distribution and install again." for a CUDA backend **on
+non-Windows platforms** (the Windows CUDA builds bundle the `cudart`
+companion and never consult the system CUDA userland, so their failures get
+the run-the-binary loader diagnostics); run-the-binary loader diagnostics
+otherwise. The launch configuration rides the `CommandRunner` seam as an
+explicit `*RunOptions` parameter (`Env`/`Dir`), so test runners can observe
+exactly what the production runner delivers; the production runner also
+spawns every child console-less (`sysproc.HideConsole`), because the
+console-subsystem `llama-server.exe` would otherwise flash a console window
+on every Windows install click.
 
 Both changes are recorded in the compatibility record that already flows
 `Resolution.Guards` → `InstallReport.Guards` → `Manifest.guards` →
@@ -116,7 +129,10 @@ Settings.
   `probeCommandTimeout`-bounded subprocess to the probe phase.
 - The smoke test on every platform adds one `--version` invocation (60 s
   budget) per install; a false negative there (a loader quirk that blocks
-  `--version` but not serving) aborts an otherwise viable install.
+  `--version` but not serving) aborts an otherwise viable install. Because
+  the test runs under the same launch environment and working directory as
+  the real spawn, an environment-shaped false negative (a search path the
+  launch provides) is excluded — what remains is a binary-level quirk.
 - An existing installed 13.3 runtime on a `present` machine keeps running
   until the next install/repair click: the guard re-evaluates at plan time,
   so a repair applies the substitution, but c0wrk does not force a reinstall.

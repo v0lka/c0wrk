@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/v0lka/sp4rk/pathutil"
+	"github.com/v0lka/sp4rk/sysproc"
 )
 
 // Progress stages reported through InstallProgressFunc. One component walks
@@ -461,7 +462,21 @@ type ConfigSink interface {
 // CommandRunner executes one external command and returns its combined output.
 // It exists so the macOS provisioning steps (xattr, codesign, the --version
 // smoke test) are testable on every platform without those binaries present.
-type CommandRunner func(ctx context.Context, name string, args ...string) (string, error)
+//
+// opts carries the launch configuration (see RunOptions): the smoke test passes
+// one (the launch environment), every other call site passes nil and runs bare.
+type CommandRunner func(ctx context.Context, name string, opts *RunOptions, args ...string) (string, error)
+
+// RunOptions is the launch configuration a CommandRunner call can carry beyond
+// the command itself. A nil pointer means "no opinion": the child inherits the
+// parent's environment and working directory. The fields mirror exec.Cmd's
+// semantics one-to-one.
+type RunOptions struct {
+	// Env is the child's complete environment; nil inherits the parent's.
+	Env []string
+	// Dir is the child's working directory; empty inherits the caller's.
+	Dir string
+}
 
 // maxCommandOutputBytes caps what one provisioning command may contribute to the
 // captured output. The output is diagnostic only — runBounded wraps it into an
@@ -487,9 +502,27 @@ const maxCommandOutputBytes = 1 << 20
 //     takes the same value.
 //   - a cap on the captured bytes (limitedWriter — the write-side twin of
 //     io.LimitReader, which does not fit because cmd.Stdout is a Writer).
-func defaultCommandRunner(ctx context.Context, name string, args ...string) (string, error) {
+//
+// The child is spawned without a console window: since the smoke test became
+// universal, this runner also executes llama-server, whose Windows build is a
+// console-subsystem binary that would otherwise flash a console window (and
+// steal focus) on every install click. HideConsole is a no-op off Windows, so
+// the xattr/codesign calls are unaffected.
+//
+// opts configures the launch (env/dir); nil means "no opinion" — the child
+// inherits the parent's environment and working directory.
+func defaultCommandRunner(ctx context.Context, name string, opts *RunOptions, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	sysproc.HideConsole(cmd)
 	cmd.WaitDelay = probeWaitDelay
+	if opts != nil {
+		if opts.Env != nil {
+			cmd.Env = opts.Env
+		}
+		if opts.Dir != "" {
+			cmd.Dir = opts.Dir
+		}
+	}
 	out := &limitedWriter{limit: maxCommandOutputBytes}
 	cmd.Stdout = out
 	cmd.Stderr = out
@@ -1407,15 +1440,28 @@ func (in *Installer) provisionDarwin(ctx context.Context, backend Backend, runti
 // is Gatekeeper; on Linux a GPU-accelerated build it is missing CUDA 12
 // runtime libraries. "the install failed" with no next step is not an
 // acceptable outcome for a user who just downloaded 7 GiB.
+//
+// The binary runs under the LAUNCH environment — the same launchEnv the
+// supervisor's spawn builds, with the runtime's binary directory prepended to
+// the platform's dynamic-library search path, and with the same working
+// directory — so the smoke test exercises the loader path the resident server
+// will use. A Linux CUDA or ROCm build that resolves its sibling libraries
+// through the launch-provided search path would otherwise fail this test (and
+// with it the whole install) with a library-not-found error the real launch
+// would never hit.
 func (in *Installer) smokeTest(ctx context.Context, backend Backend, runtimeDir string) error {
 	binary, err := ServerBinaryPath(runtimeDir, in.hostOS())
 	if err != nil {
 		return err
 	}
+	binaryDir := filepath.Dir(binary)
 	smokeCtx, cancel := context.WithTimeout(ctx, smokeTestTimeout)
 	defer cancel()
 
-	out, err := in.runner()(smokeCtx, binary, "--version")
+	out, err := in.runner()(smokeCtx, binary, &RunOptions{
+		Env: launchEnv(binaryDir, in.hostOS(), os.Environ()),
+		Dir: binaryDir,
+	}, "--version")
 	if err != nil {
 		return fmt.Errorf("%w: %s --version failed: %v\n"+
 			"%s\n"+
@@ -1432,7 +1478,11 @@ func (in *Installer) smokeTest(ctx context.Context, backend Backend, runtimeDir 
 // failed smoke test. The backend names the build that failed; on Linux the
 // CUDA builds are the ones whose failure mode is an environment problem
 // (missing CUDA 12 runtime libraries) rather than a broken download, so the
-// hint points there.
+// hint points there. Windows CUDA builds are excluded: they ship their CUDA
+// runtime as a bundled companion archive and never consult the system CUDA
+// userland (ADR-073), so a Windows failure cannot be the missing-libraries
+// case — the generic run-the-binary diagnostics below name the real suspects
+// (a missing MSVC runtime, an incomplete extraction, a Defender block).
 func (in *Installer) smokeTestHint(backend Backend, runtimeDir string) string {
 	switch {
 	case in.hostOS() == "darwin":
@@ -1440,7 +1490,7 @@ func (in *Installer) smokeTestHint(backend Backend, runtimeDir string) string {
 			"  xattr -dr com.apple.quarantine " + runtimeDir + "\n" +
 			"or open System Settings → Privacy & Security, find the blocked llama-server " +
 			`entry and click "Allow Anyway", then install again.`
-	case backend.IsCUDA():
+	case backend.IsCUDA() && in.hostOS() != "windows":
 		return fmt.Sprintf("the %s runtime most likely cannot load its CUDA 12 libraries "+
 			"(libcudart, libcublas). Install the CUDA 12 runtime libraries for your "+
 			"distribution and install again.", backend)
@@ -2138,7 +2188,7 @@ func (in *Installer) runBounded(ctx context.Context, timeout time.Duration,
 ) error {
 	bounded, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	out, err := in.runner()(bounded, name, args...)
+	out, err := in.runner()(bounded, name, nil, args...)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w (output: %s)", name, strings.Join(args, " "),
 			err, strings.TrimSpace(out))
