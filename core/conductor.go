@@ -847,12 +847,21 @@ func (l *conductorLauncher) Execute(ctx context.Context, stepIDs []string) ([]to
 					Status: "completed", Output: sr.FullOutput,
 				})
 				// The step already succeeded on the blackboard. If this run has
-				// not yet recorded its terminal state (the plan was re-declared
-				// on a continuation), emit a synthesized success pair so the
-				// plan panel does not leave it "pending". On a same-run retry
-				// the step is already completed and needs no new events.
+				// not yet recorded its terminal state, settle it according to
+				// who owns the plan panel state (issue #99):
+				//   - plan re-declared in THIS run (declare_plan): the panel
+				//     was reset to pending, so emit the synthesized success
+				//     pair to mark the skipped step completed again;
+				//   - continuation resume (plan active without a re-declare):
+				//     the terminal events were emitted by the run that executed
+				//     the step and history already shows it completed — record
+				//     the terminal state silently.
+				// On a same-run retry the step is already completed and needs
+				// no new events either way.
 				if l.deps.lifecycle != nil && !l.deps.lifecycle.isCompleted(step.ID) {
-					l.emitSkippedStepCompleted(step.ID)
+					if l.deps.lifecycle.planDeclaredThisRun() {
+						l.emitSkippedStepCompleted(step.ID)
+					}
 					l.deps.lifecycle.markCompleted(step.ID)
 				}
 				continue
@@ -3228,6 +3237,31 @@ func (l *inlineStepLifecycle) planDeclaredInRun() bool {
 	return l.bb != nil && l.bb.GetPlan() != nil
 }
 
+// planDeclaredThisRun reports whether the plan on the blackboard was declared
+// in THIS Conductor run via declare_plan. Unlike planDeclaredInRun it EXCLUDES
+// the continuable-resume activation: a resumed run continues the approved plan
+// without a re-declare, and its skipped-step bookkeeping must stay silent —
+// the terminal events for the already-executed steps were emitted by the run
+// that ran them (issue #99). Used to gate synthesized terminal pairs for
+// steps that are merely replayed from a previous run's durable results:
+//   - plan re-declared in this run: the plan panel was reset to pending, so
+//     the synthesized pair is what marks the replayed step completed;
+//   - continuation resume: the pair would duplicate history — record the
+//     terminal state without events instead.
+//
+// When planState is nil (direct construction in tests), it falls back to the
+// raw blackboard plan so existing direct-construction tests keep working
+// (mirrors planDeclaredInRun).
+func (l *inlineStepLifecycle) planDeclaredThisRun() bool {
+	if l == nil {
+		return false
+	}
+	if l.planState != nil {
+		return l.planState.isDeclared()
+	}
+	return l.bb != nil && l.bb.GetPlan() != nil
+}
+
 // stepSucceededPreviously reports whether the step already has a SUCCESSFUL
 // (error-free) StepResult on the blackboard — possibly restored from a
 // previous run of this task (pause/resume or restart). Used by completeAll to
@@ -3238,6 +3272,33 @@ func (l *inlineStepLifecycle) stepSucceededPreviously(stepID string) bool {
 	}
 	sr, ok := l.bb.GetStepResult(stepID)
 	return ok && sr.Error == nil
+}
+
+// seedCompletedFromBlackboard silently records every plan step that already
+// has a successful (error-free) StepResult on the blackboard as completed in
+// this run's lifecycle — WITHOUT emitting any event. Called on the resume
+// path (Orchestrator.resumePausedWork) right after the fresh lifecycle is
+// built: the restored steps' terminal events were emitted by the run that
+// executed them, so the resumed run must treat them as settled from the start
+// (issue #99) — a late checklist update must not re-Start them, the launcher's
+// skip branch and the finish-fallback completeAll must not re-announce them.
+func (l *inlineStepLifecycle) seedCompletedFromBlackboard() {
+	if l == nil || l.bb == nil {
+		return
+	}
+	plan := l.bb.GetPlan()
+	if plan == nil {
+		return
+	}
+	l.mu.Lock()
+	for _, step := range plan.Steps {
+		if sr, ok := l.bb.GetStepResult(step.ID); ok && sr.Error == nil {
+			l.completed[step.ID] = true
+			delete(l.started, step.ID)
+			delete(l.startedAt, step.ID)
+		}
+	}
+	l.mu.Unlock()
 }
 
 // completeAll auto-completes any plan steps that have not reached a terminal
@@ -3311,17 +3372,25 @@ func (l *inlineStepLifecycle) completeAll(success bool, errMsg string) {
 		l.emitter.PlanStepComplete(id, success, time.Since(startTimes[id]), errMsg)
 	}
 	for _, id := range neverStarted {
-		desc, summary := lookupStepDesc(l.bb, id)
-		l.emitter.PlanStepStart(id, desc, summary)
 		// A step with a successful StepResult restored from a previous run
-		// (continuable resume where execute_plan skipped it) must NOT be
-		// repainted with this run's terminal failure — replay its success so
-		// the plan panel keeps it completed (mirrors the launcher's
-		// emitSkippedStepCompleted).
+		// must NOT be repainted with this run's terminal failure. When the
+		// plan was re-declared in THIS run the panel was reset to pending, so
+		// replay its success (mirrors the launcher's emitSkippedStepCompleted).
+		// When the plan was NOT declared in this run (continuation resume) the
+		// terminal events came from the run that executed the step and history
+		// already shows it completed (issue #99) — emit nothing. The resume
+		// path seeds such steps into the completed set before the run starts,
+		// so reaching this branch unseeded is a defensive fallback.
 		if l.stepSucceededPreviously(id) {
-			l.emitter.PlanStepComplete(id, true, 0, "")
+			if l.planDeclaredThisRun() {
+				desc, summary := lookupStepDesc(l.bb, id)
+				l.emitter.PlanStepStart(id, desc, summary)
+				l.emitter.PlanStepComplete(id, true, 0, "")
+			}
 			continue
 		}
+		desc, summary := lookupStepDesc(l.bb, id)
+		l.emitter.PlanStepStart(id, desc, summary)
 		l.emitter.PlanStepComplete(id, success, 0, errMsg)
 	}
 	// Clear the dynamic step scope after all steps are completed so any

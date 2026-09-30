@@ -449,6 +449,41 @@ Under ADR-012 the router's `needs_clarification` flag is ignored
 the `ask_user` tool during execution. A clarification never short-circuits the
 pipeline, so there is no router-driven clarification branch to resume.
 
+#### Resume wave: silent replay of completed steps
+
+A terminal ledger unit is **replayed, never re-run** (above), and that replay
+does not re-announce lifecycle events for inline plan steps
+(issue [#99](https://github.com/v0lka/c0wrk/issues/99)). Before the resume
+wave runs, `resumePausedWork` (`core/orchestrator.go`) seeds the fresh wave's
+`inlineStepLifecycle` (`core/conductor.go`) via `seedCompletedFromBlackboard`:
+every plan step with an error-free persisted `StepResult` on the blackboard
+becomes `completed` **silently** — its terminal events were emitted by the run
+that executed it, so the resumed run treats it as settled from the start (a
+late checklist update cannot re-Start it, and neither the launcher's skip
+branch nor the finish fallback re-announces it). Two defensive gates keep the
+same silence if a restored-successful step still reaches them: the
+`conductorLauncher.Execute` skip branch records the terminal state via
+`markCompleted` and emits the synthesized `PlanStepStart` +
+`PlanStepComplete(success)` pair ONLY when the plan was declared in the
+CURRENT run (`planDeclaredThisRun()` reads `planRunState.isDeclared()`; the
+continuable-resume activation does not count as a declare), and
+`completeAll`'s never-started sweep applies the same gate to its replay pair.
+The distinction the gate encodes: a plan **re-declared in a fresh run** resets
+the plan panel to pending, so the synthesized pair is what visibly settles the
+replayed step; a **continuation resume** (plan active without a re-declare)
+inherits the history written by the run that executed the step — its terminal
+events were already emitted and persisted, and re-announcing them would
+duplicate completed plan-step blocks with retry badges (the emitter's
+per-session dedupe sets start empty after an app relaunch, which is why a
+same-process resume masked the bug while a post-restart resume exposed it).
+Consistently, the wave summary omits pre-wave successful steps:
+`resumePausedWork` snapshots `preWaveSuccess` before `launcher.Execute` and
+skips those steps when writing summary lines, so a resume does not grow the
+task message with one factually wrong "settled by the system" line per
+completed step. A genuinely FAILED step's re-run still opens a legitimate
+retry block, and a forced re-run via `execute_plan` with explicit `step_ids`
+still shows as retry — only durable successes are silenced.
+
 #### Continuing an interrupted task with a new message
 
 Sending a message to a session that has an **unfinished (interrupted) task**
