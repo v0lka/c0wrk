@@ -15,6 +15,7 @@ This document covers everything a contributor needs: architecture, requirements,
 - [Frontend stack](#frontend-stack)
 - [Requirements](#requirements)
 - [Linux build dependencies](#linux-build-dependencies)
+- [Windows build](#windows-build)
 - [Build from source](#build-from-source)
 - [Configuration](#configuration)
 - [Development commands](#development-commands)
@@ -55,10 +56,11 @@ See the "Frontend architecture" section of [`AGENTS.md`](AGENTS.md) for the full
 
 Verified from project configuration and build files:
 
-- **Go 1.26.3** (single root module; `go.mod` at repo root)
-- **Node.js + npm** (used by Wails frontend commands and `frontend/package.json` scripts)
-- **Wails v2 CLI, matching the version pinned in `go.mod`** (`github.com/wailsapp/wails/v2`) — the CI and release workflows install the same pinned version; `wails build`/`wails dev` are used by the Makefile
-- **golangci-lint** (for `make lint`)
+- **Go 1.27.1** (single root module; `go.mod` at repo root). The `go` directive in `go.mod` and the `go-version` pins in `.github/workflows/*.yml` must stay in lockstep — CI builds with exactly this toolchain and `govulncheck` scans its stdlib, so bump both together whenever Go ships a security patch.
+- **Node.js 24 + npm** (used by Wails frontend commands and `frontend/package.json` scripts). CI pins `node-version: "24"`.
+- **Wails v2 CLI, matching the version pinned in `go.mod`** (`github.com/wailsapp/wails/v2`, currently **v2.15.0**) — CI and the release workflow install the same pinned version (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0`); `wails build`/`wails dev` are used by the Makefile and, on Windows, by [`build.ps1`](build.ps1).
+- **golangci-lint v2.13.2** (for `make lint` / `./build.ps1 lint`) — pinned to match CI (`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2`).
+- **govulncheck v1.7.0** (for `make vulncheck` / `./build.ps1 vulncheck`) — the Makefile pins the version and runs it via `go run`, so no separate install is needed.
 - **`git`** — required for CODE mode only; checked on first project switch. CHAT mode (No Project) works without git.
 - **`rg` (ripgrep)** — auto-downloaded by the tool-manager on first run; no manual install needed.
 - Platform support in the Makefile ONNX fetch logic:
@@ -97,6 +99,108 @@ For CI/headless builds, also install `xvfb` (`sudo apt install xvfb` on Debian/U
 
 > End users running a prebuilt binary only need the runtime shared libraries (`libgtk-3-0`, `libwebkit2gtk-4.1-0`) — see [README.md](README.md#linux-amd64).
 
+## Windows build
+
+c0wrk builds on Windows with the same Go toolchain as CI. The `Makefile` carries
+a Windows branch, but GNU Make is not part of a default Windows install — a
+PowerShell analog of every Makefile target ships at the repository root as
+**[`build.ps1`](build.ps1)**. Use it instead of `make` on Windows.
+
+### Prerequisites
+
+Install once per machine. Every version below is pinned to what CI uses
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
+
+- **Go 1.27.1** — `winget install GoLang.Go`, or the official MSI from
+  [go.dev/dl](https://go.dev/dl/). Must match the `go 1.27.1` directive in `go.mod`.
+- **Node.js 24 + npm** — `winget install OpenJS.NodeJS.LTS`. CI pins `node-version: "24"`.
+- **Wails v2 CLI (v2.15.0)** —
+  `go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0`.
+- **golangci-lint v2.13.2** —
+  `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2`.
+  `winget install GolangCI.golangci-lint` also works but currently installs a
+  newer minor — pin v2.13.2 to match CI exactly.
+- **A C toolchain (MinGW-w64 gcc)** — **required.** `onnxruntime_go` (transitive
+  via sp4rk) is CGO-dependent, so `go build`, `go test`, `golangci-lint`, and
+  `wails build` all need a working C compiler. Install MSYS2 (from
+  [msys2.org](https://www.msys2.org/)) and add the `mingw-w64-x86_64-gcc`
+  package (`pacman -S mingw-w64-x86_64-gcc`), or an equivalent MinGW-w64
+  distribution, then put its `...\mingw64\bin` on `PATH`. CI does the same via
+  `msys2/setup-msys2` (`msystem: MINGW64`, `install: mingw-w64-x86_64-gcc`).
+- **WebView2 Runtime** — bundled with Windows 11 and current Windows 10. If
+  `wails doctor` reports it missing, install the Evergreen Runtime from Microsoft.
+- **`git`** — required for CODE mode and used by the `build` / `bump` targets.
+- **PowerShell 5.1+** — ships with Windows; `build.ps1` runs under the default
+  Windows PowerShell.
+
+`rg` (ripgrep) is auto-downloaded by the tool-manager on first run — no manual
+install. `upx` and `nsis` (used only to compress / install a release) are optional
+and not needed for a normal development build.
+
+### Environment
+
+- **CGO must be enabled** (`CGO_ENABLED=1`, as CI exports it for the whole
+  Windows job) so the CGO-dependent dependencies compile with the MinGW gcc.
+- **Keep LF line endings.** A CRLF checkout breaks `gofmt -l` (which would flag
+  every Go file) and Go tooling that assumes LF. The repository ships a
+  [`.gitattributes`](.gitattributes) (`* text=auto eol=lf`) that makes LF
+  canonical regardless of the host config, and CI additionally runs
+  `git config --global core.autocrlf false` before checkout. If you checked the
+  tree out with `core.autocrlf=true`, set it to `false` (or rely on
+  `.gitattributes`) and re-checkout before running `./build.ps1 fmt-check`.
+- **`GODEBUG=http2client=0`** — CI sets this to dodge intermittent
+  `proxy.golang.org` HTTP/2 stream resets when fetching modules (seen with the
+  Windows-only `conpty` dependency). Set it if module downloads flake.
+
+### Building
+
+From the repository root:
+
+```powershell
+./build.ps1 build        # frontend-deps + wails build + fetch-onnx + fetch-embedding-model
+./build.ps1 test         # go test ./... + frontend npm test
+./build.ps1 lint         # fmt-check + golangci-lint + frontend eslint
+./build.ps1 vulncheck    # govulncheck ./...
+./build.ps1 help         # list every target
+```
+
+`build.ps1` mirrors the Makefile one-to-one:
+
+| Makefile | `build.ps1` |
+| --- | --- |
+| `make build` | `./build.ps1 build` |
+| `make frontend-deps` | `./build.ps1 frontend-deps` |
+| `make test` | `./build.ps1 test` |
+| `make bench-startup` | `./build.ps1 bench-startup` |
+| `make lint` | `./build.ps1 lint` |
+| `make fmt-check` | `./build.ps1 fmt-check` |
+| `make vulncheck` | `./build.ps1 vulncheck` |
+| `make dev-desktop` | `./build.ps1 dev-desktop` |
+| `make dev-frontend` | `./build.ps1 dev-frontend` |
+| `make fetch-onnx` | `./build.ps1 fetch-onnx` |
+| `make fetch-embedding-model` | `./build.ps1 fetch-embedding-model` |
+| `make clean-onnx` | `./build.ps1 clean-onnx` |
+| `make clean` | `./build.ps1 clean` |
+| `make bump` | `./build.ps1 bump` |
+| `make build-gpu` / `make fetch-onnx-gpu` | `./build.ps1 build-gpu` / `./build.ps1 fetch-onnx-gpu` — **fail closed on Windows** |
+
+`build.ps1` also exposes `./build.ps1 ps-check`, which parse-checks the bundled
+PowerShell scripts — the same step the CI Windows job runs.
+
+The ONNX Runtime fetch and the embedding-model fetch delegate to
+[`scripts/fetch-onnx.ps1`](scripts/fetch-onnx.ps1) and
+[`scripts/fetch-embedding-model.ps1`](scripts/fetch-embedding-model.ps1); both use
+`Expand-Archive` / `Invoke-WebRequest` (no Unix tooling) and verify every artifact
+fail-closed against the SHA256 digests passed in from `build.ps1`.
+
+`-Version`, `-GitCommit`, and `-BuildDate` override the injected linker metadata
+(the same values the Makefile derives from git/time); the `VERSION`, `GITCOMMIT`,
+and `BUILDDATE` environment variables are honoured as fallbacks.
+
+> The GPU (CUDA-13) flavor is **Linux amd64 only**: the pinned artifact has no
+> Windows build and no digest can be verified, so `build-gpu` and `fetch-onnx-gpu`
+> fail closed. Use the CPU flavor on Windows.
+
 ## Build from source
 
 ### 1) Clone the repository
@@ -111,6 +215,8 @@ cd c0wrk
 ```bash
 make frontend-deps
 ```
+
+> On Windows use `./build.ps1 frontend-deps` (see [Windows build](#windows-build)) — a default Windows install has no `make`.
 
 ### 3) Create user config
 
@@ -152,9 +258,12 @@ make lint            # make fmt-check + golangci-lint + frontend ESLint
 make dev-desktop     # full desktop hot-reload loop (wails dev + platform tags)
 make dev-frontend    # frontend Vite dev server only (no Go bridge)
 make build           # versioned wails build + ONNX runtime + embedding model
+make vulncheck       # Go dependency vulnerability gate (govulncheck, pinned)
 make bump            # update the pinned sp4rk revision with GOWORK=off (release point only)
 make clean           # remove build/bin, .cache, frontend/dist
 ```
+
+> **Windows:** there is no `make` on a default install — every target above has a `./build.ps1 <target>` equivalent (`./build.ps1 build`, `./build.ps1 test`, …). See [Windows build](#windows-build) for prerequisites and the full target mapping.
 
 Asset/runtime fetch commands:
 
@@ -193,6 +302,8 @@ frontend dev server attached:
 make dev-desktop
 ```
 
+On Windows use `./build.ps1 dev-desktop`.
+
 On Linux this passes `-tags webkit2_41`. Invoking `wails dev` directly without
 that tag fails the cgo build against `webkit2gtk-4.0` (absent on Ubuntu 24.04+
 and Arch) — and `wails dev` does not exit on that failure, so it looks like it
@@ -205,11 +316,15 @@ stays on the startup splash):
 make dev-frontend
 ```
 
+On Windows use `./build.ps1 dev-frontend`.
+
 ### Production build
 
 ```bash
 make build
 ```
+
+On Windows use `./build.ps1 build`.
 
 This runs:
 
@@ -243,7 +358,9 @@ Vector index needs ONNX Runtime plus a quantized embedding model + tokenizer (fe
 ├── specs/          # System specs: architecture, contracts, domains, decisions (see specs/INDEX.md)
 ├── config.example.yaml
 ├── wails.json
-└── Makefile
+├── Makefile          # POSIX build entrypoint (GNU Make)
+├── build.ps1         # Windows PowerShell analog of the Makefile
+└── .gitattributes    # forces LF line endings repo-wide
 ```
 
 ## Troubleshooting
@@ -254,18 +371,31 @@ Vector index needs ONNX Runtime plus a quantized embedding model + tokenizer (fe
 - **`make dev-frontend` shows only the splash screen**: expected — it runs Vite alone, with no Wails runtime behind it. Use `make dev-desktop` for the full desktop loop.
 - **`wails dev` prints `Package 'webkit2gtk-4.0' not found` and never opens a window**: pass the Linux build tag (`wails dev -tags webkit2_41`), or just use `make dev-desktop`, which applies it for you. The command deliberately keeps running after a failed build, so the missing window is the only symptom.
 - **Generated Wails bindings drift** (`frontend/wailsjs/go/desktop/App.*`): regenerate via `wails build` or `wails dev` (do not hand-edit generated files).
+- **Windows: `cgo: C compiler "gcc" not found`** during `go build` / `go test` / `wails build`: install the MinGW-w64 gcc and put `...\mingw64\bin` on `PATH`, then set `CGO_ENABLED=1` (see [Windows build](#windows-build)). `onnxruntime_go` is CGO-dependent, so a missing gcc fails the whole build.
+- **Windows: `gofmt -l` flags every file** (or `./build.ps1 fmt-check` fails wholesale): the tree was checked out with CRLF. The repo's [`.gitattributes`](.gitattributes) normalizes to LF; if it is not in effect, set `git config core.autocrlf false` and re-checkout.
+- **Windows: `npm`/`npx` reports "running scripts is disabled on this system"**: the machine's PowerShell execution policy blocks the `npm.ps1` shim. `build.ps1` invokes `npm.cmd` instead, so run targets through `./build.ps1 <target>` rather than raw `npm`.
 
 ## Continuous integration
 
-CI runs on pushes to `main` and pull requests targeting `main` across Linux, macOS, and Windows (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). Before opening a PR, run the full local validation sequence:
+CI runs on pushes to `main` and pull requests targeting `main` across Linux, macOS, and Windows (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). Every job installs the same pinned toolchain — Go 1.27.1, Node 24, Wails v2.15.0, golangci-lint v2.13.2 — and the Windows job additionally sets `CGO_ENABLED=1` with MinGW-w64 gcc and normalizes line endings (`core.autocrlf false`). Before opening a PR, run the full local validation sequence:
 
 ```bash
 make build
 make lint
 make test
+make vulncheck
 ```
 
-All three must pass clean. `make lint` includes `fmt-check`; `make test` runs both Go tests (`go test ./...`) and frontend tests (`cd frontend && npm test` via vitest).
+On Windows (no `make`):
+
+```powershell
+./build.ps1 build
+./build.ps1 lint
+./build.ps1 test
+./build.ps1 vulncheck
+```
+
+All must pass clean. `make lint` includes `fmt-check`; `make test` runs both Go tests (`go test ./...`) and frontend tests (`cd frontend && npm test` via vitest).
 
 Every contribution must also follow [`SECURITY.md`](SECURITY.md). Treat files, web/MCP output, attachments, clipboard/drop content, and generated artifacts as untrusted; preserve capability-group policy, path/symlink/SSRF/blocklist gates, and never place secrets in source, logs, prompts, facts, or test fixtures. If behavior, a cross-layer interface, configuration, or an architectural invariant changes, update the affected documents under [`specs/`](specs/) according to [`specs/META.md`](specs/META.md); accepted ADRs are immutable and are superseded by a new ADR.
 

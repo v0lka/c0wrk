@@ -1,0 +1,13 @@
+# Normalize line endings so every platform checks out and stores LF, regardless
+# of the host's core.autocrlf setting. Windows CI sets `core.autocrlf false`
+# before checkout for the same reason (see .github/workflows/ci.yml): CRLF
+# conversion breaks shell scripts and Go tooling that assume LF — notably
+# `gofmt -l`, which flags every file it would rewrite when the working tree
+# carries CRLF.
+#
+# `text=auto` lets git auto-detect text files and leave binary assets (images,
+# archives, the ONNX library, the .onnx model) untouched. `eol=lf` pins the
+# working-tree line ending to LF for the text files it detects. This makes LF
+# canonical in the repository itself instead of relying on each contributor's
+# local git config.
+* text=auto eol=lf
