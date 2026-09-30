@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/v0lka/sp4rk/pathutil"
+	"github.com/v0lka/sp4rk/sysproc"
 )
 
 // Progress stages reported through InstallProgressFunc. One component walks
@@ -156,7 +157,8 @@ var ErrNotInstalled = errors.New("embedded LLM is not installed")
 
 // ErrSmokeTestFailed reports that the freshly provisioned llama-server did not
 // run. On macOS the cause is almost always Gatekeeper still blocking an
-// unsigned binary; the wrapped message carries the fix.
+// unsigned binary; on Linux with a GPU backend it is missing CUDA 12 runtime
+// libraries. The wrapped message carries the platform-appropriate fix.
 var ErrSmokeTestFailed = errors.New("the provisioned llama-server did not run")
 
 // ReadManifest loads the manifest at path. A missing file is reported as
@@ -460,7 +462,21 @@ type ConfigSink interface {
 // CommandRunner executes one external command and returns its combined output.
 // It exists so the macOS provisioning steps (xattr, codesign, the --version
 // smoke test) are testable on every platform without those binaries present.
-type CommandRunner func(ctx context.Context, name string, args ...string) (string, error)
+//
+// opts carries the launch configuration (see RunOptions): the smoke test passes
+// one (the launch environment), every other call site passes nil and runs bare.
+type CommandRunner func(ctx context.Context, name string, opts *RunOptions, args ...string) (string, error)
+
+// RunOptions is the launch configuration a CommandRunner call can carry beyond
+// the command itself. A nil pointer means "no opinion": the child inherits the
+// parent's environment and working directory. The fields mirror exec.Cmd's
+// semantics one-to-one.
+type RunOptions struct {
+	// Env is the child's complete environment; nil inherits the parent's.
+	Env []string
+	// Dir is the child's working directory; empty inherits the caller's.
+	Dir string
+}
 
 // maxCommandOutputBytes caps what one provisioning command may contribute to the
 // captured output. The output is diagnostic only — runBounded wraps it into an
@@ -486,9 +502,27 @@ const maxCommandOutputBytes = 1 << 20
 //     takes the same value.
 //   - a cap on the captured bytes (limitedWriter — the write-side twin of
 //     io.LimitReader, which does not fit because cmd.Stdout is a Writer).
-func defaultCommandRunner(ctx context.Context, name string, args ...string) (string, error) {
+//
+// The child is spawned without a console window: since the smoke test became
+// universal, this runner also executes llama-server, whose Windows build is a
+// console-subsystem binary that would otherwise flash a console window (and
+// steal focus) on every install click. HideConsole is a no-op off Windows, so
+// the xattr/codesign calls are unaffected.
+//
+// opts configures the launch (env/dir); nil means "no opinion" — the child
+// inherits the parent's environment and working directory.
+func defaultCommandRunner(ctx context.Context, name string, opts *RunOptions, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	sysproc.HideConsole(cmd)
 	cmd.WaitDelay = probeWaitDelay
+	if opts != nil {
+		if opts.Env != nil {
+			cmd.Env = opts.Env
+		}
+		if opts.Dir != "" {
+			cmd.Dir = opts.Dir
+		}
+	}
 	out := &limitedWriter{limit: maxCommandOutputBytes}
 	cmd.Stdout = out
 	cmd.Stderr = out
@@ -724,9 +758,11 @@ type InstallReport struct {
 //  5. the runtime archives (and the Windows CUDA companion): download with
 //     resume and per-component progress → SHA256 verification gate → extract
 //     into a staging tree;
-//  6. macOS only: quarantine-clear, ad-hoc codesign and a --version smoke test
-//     of the staged runtime — before the weights, so an unrunnable runtime
-//     fails in seconds instead of after a multi-gigabyte download;
+//  6. runtime provisioning: quarantine-clear + ad-hoc codesign on macOS, then
+//     a --version smoke test on EVERY platform, all against the staged tree —
+//     before the weights, so an unrunnable runtime (Gatekeeper, missing CUDA
+//     12 libraries) fails in seconds instead of after a multi-gigabyte
+//     download;
 //  7. the staged runtime replaces the previous one — the old tree is retired
 //     only after every new byte is secured and proven to run;
 //  8. the weights (model, mmproj): download → SHA256 verification gate,
@@ -796,10 +832,11 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*Install
 		}
 	}
 
-	// Phase order is deliberate: the runtime is downloaded, extracted, signed
-	// and smoke-tested BEFORE the multi-gigabyte weights are fetched, so a
-	// runtime that cannot execute (Gatekeeper, a missing GPU library) fails the
-	// install in seconds instead of after an hour of downloading.
+	// Phase order is deliberate: the runtime is downloaded, extracted,
+	// provisioned (macOS signing where applicable) and smoke-tested BEFORE the
+	// multi-gigabyte weights are fetched, so a runtime that cannot execute
+	// (Gatekeeper, a missing GPU library) fails the install in seconds instead
+	// of after an hour of downloading.
 	runtimeAssets, weightAssets := splitRuntimeAssets(res.Assets)
 	checksums := make(map[string]string, len(res.Assets))
 
@@ -980,7 +1017,15 @@ func (in *Installer) plan(ctx context.Context, opts InstallOptions) (Hardware, s
 		backend = opts.Backend
 	}
 
-	profile := MachineProfile{Platform: platform, Backend: backend, RAMGiB: hw.RAMGiB}
+	// The CUDA 12.x userland verdict rides with the profile so BOTH passes —
+	// this statically decidable one and the device-aware refinement below —
+	// gate the Linux #222 substitution on the same measured fact.
+	profile := MachineProfile{
+		Platform:       platform,
+		Backend:        backend,
+		RAMGiB:         hw.RAMGiB,
+		CUDA12Userland: hw.CUDA12Userland,
+	}
 	res, err := ResolveProfile(profile)
 	if err != nil {
 		return Hardware{}, "", Resolution{}, nil, fmt.Errorf("embeddedllm: %w", err)
@@ -1140,10 +1185,11 @@ func (in *Installer) refineWithStagedDevices(ctx context.Context, platform strin
 	gpu := ClassifyGPUs(topology.Devices)
 
 	refined, err := Resolve(ResolveInput{MachineProfile: MachineProfile{
-		Platform: platform,
-		Backend:  res.Backend,
-		RAMGiB:   hw.RAMGiB,
-		GPU:      gpu,
+		Platform:       platform,
+		Backend:        res.Backend,
+		RAMGiB:         hw.RAMGiB,
+		GPU:            gpu,
+		CUDA12Userland: hw.CUDA12Userland,
 	}, Topology: &topology})
 	if err != nil {
 		if errors.Is(err, ErrInsufficientMemory) {
@@ -1297,9 +1343,16 @@ func (in *Installer) fetchOne(ctx context.Context, opts InstallOptions, asset As
 	return result.SHA256, nil
 }
 
-// provisionRuntime signs and smoke-tests the staged runtime on macOS, swaps it
-// into place, locates the server binary and closes out the runtime components'
-// progress streams.
+// provisionRuntime provisions the staged runtime, smoke-tests it on every
+// platform, swaps it into place, locates the server binary and closes out the
+// runtime components' progress streams.
+//
+// The macOS-only halves (quarantine-clear and ad-hoc codesign) run first when
+// the host is darwin; the --version smoke test runs on EVERY platform. The
+// order matters: a Linux CUDA runtime that cannot load its libraries and a
+// macOS binary Gatekeeper still blocks are the same failure — an unrunnable
+// runtime — and both must fail the install here, in seconds, before the
+// multi-gigabyte weights are fetched.
 func (in *Installer) provisionRuntime(ctx context.Context, opts InstallOptions, res Resolution,
 	runtimeAssets []Asset,
 ) (string, error) {
@@ -1311,9 +1364,11 @@ func (in *Installer) provisionRuntime(ctx context.Context, opts InstallOptions, 
 		total := TotalBytes(runtimeAssets)
 		in.emit(opts, Progress{Component: ComponentRuntime, Stage: StageSigning,
 			BytesDone: total, BytesTotal: total})
-		if err := in.provisionDarwin(ctx, staging); err != nil {
+		if err := in.provisionDarwin(ctx, res.Backend, staging); err != nil {
 			return "", err
 		}
+	} else if err := in.smokeTest(ctx, res.Backend, staging); err != nil {
+		return "", err
 	}
 
 	runtimeDir, err := in.promoteRuntime(res.Backend)
@@ -1349,7 +1404,7 @@ func (in *Installer) provisionRuntime(ctx context.Context, opts InstallOptions, 
 // A missing helper is still a warning, not a failure: the smoke test is the
 // authority on whether the runtime runs, and refusing to install on a machine
 // without /usr/bin/codesign would be a worse outcome than trying.
-func (in *Installer) provisionDarwin(ctx context.Context, runtimeDir string) error {
+func (in *Installer) provisionDarwin(ctx context.Context, backend Backend, runtimeDir string) error {
 	if err := in.runBounded(ctx, macOSCommandTimeout, darwinXattr, "-cr", runtimeDir); err != nil {
 		if toolMissing(err) {
 			in.logger().Warn("xattr is unavailable; quarantine attributes were not cleared",
@@ -1377,34 +1432,78 @@ func (in *Installer) provisionDarwin(ctx context.Context, runtimeDir string) err
 	in.logger().Info("embedded LLM runtime provisioned for macOS",
 		"path", runtimeDir, "signed_images", len(images))
 
-	return in.smokeTest(ctx, runtimeDir)
+	return in.smokeTest(ctx, backend, runtimeDir)
 }
 
 // smokeTest runs "llama-server --version" against the staged tree and turns a
-// failure into an actionable message: on macOS the overwhelmingly likely cause
-// is Gatekeeper, and "the install failed" with no next step is not an
+// failure into an actionable message. On macOS the overwhelmingly likely cause
+// is Gatekeeper; on Linux a GPU-accelerated build it is missing CUDA 12
+// runtime libraries. "the install failed" with no next step is not an
 // acceptable outcome for a user who just downloaded 7 GiB.
-func (in *Installer) smokeTest(ctx context.Context, runtimeDir string) error {
+//
+// The binary runs under the LAUNCH environment — the same launchEnv the
+// supervisor's spawn builds, with the runtime's binary directory prepended to
+// the platform's dynamic-library search path, and with the same working
+// directory — so the smoke test exercises the loader path the resident server
+// will use. A Linux CUDA or ROCm build that resolves its sibling libraries
+// through the launch-provided search path would otherwise fail this test (and
+// with it the whole install) with a library-not-found error the real launch
+// would never hit.
+func (in *Installer) smokeTest(ctx context.Context, backend Backend, runtimeDir string) error {
 	binary, err := ServerBinaryPath(runtimeDir, in.hostOS())
 	if err != nil {
 		return err
 	}
+	binaryDir := filepath.Dir(binary)
 	smokeCtx, cancel := context.WithTimeout(ctx, smokeTestTimeout)
 	defer cancel()
 
-	out, err := in.runner()(smokeCtx, binary, "--version")
+	out, err := in.runner()(smokeCtx, binary, &RunOptions{
+		Env: launchEnv(binaryDir, in.hostOS(), os.Environ()),
+		Dir: binaryDir,
+	}, "--version")
 	if err != nil {
 		return fmt.Errorf("%w: %s --version failed: %v\n"+
-			"macOS Gatekeeper is most likely still blocking the unsigned runtime. To fix it, run:\n"+
-			"  xattr -dr com.apple.quarantine %s\n"+
-			"or open System Settings → Privacy & Security, find the blocked llama-server "+
-			"entry and click \"Allow Anyway\", then install again.\n"+
+			"%s\n"+
 			"Command output: %s",
-			ErrSmokeTestFailed, binary, err, runtimeDir, strings.TrimSpace(out))
+			ErrSmokeTestFailed, binary, err, in.smokeTestHint(backend, runtimeDir),
+			strings.TrimSpace(out))
 	}
 	in.logger().Debug("embedded LLM runtime smoke test passed", "binary", binary,
 		"output", strings.TrimSpace(out))
 	return nil
+}
+
+// smokeTestHint is the platform- and backend-specific next step appended to a
+// failed smoke test. The backend names the build that failed; on Linux the
+// CUDA builds are the ones whose failure mode is an environment problem
+// (missing CUDA 12 runtime libraries) rather than a broken download, so the
+// hint points there. Windows CUDA builds are excluded: they ship their CUDA
+// runtime as a bundled companion archive and never consult the system CUDA
+// userland (ADR-073), so a Windows failure cannot be the missing-libraries
+// case — the generic run-the-binary diagnostics below name the real suspects
+// (a missing MSVC runtime, an incomplete extraction, a Defender block).
+func (in *Installer) smokeTestHint(backend Backend, runtimeDir string) string {
+	switch {
+	case in.hostOS() == "darwin":
+		return "macOS Gatekeeper is most likely still blocking the unsigned runtime. To fix it, run:\n" +
+			"  xattr -dr com.apple.quarantine " + runtimeDir + "\n" +
+			"or open System Settings → Privacy & Security, find the blocked llama-server " +
+			`entry and click "Allow Anyway", then install again.`
+	case backend.IsCUDA() && in.hostOS() != "windows":
+		return fmt.Sprintf("the %s runtime most likely cannot load its CUDA 12 libraries "+
+			"(libcudart, libcublas). Install the CUDA 12 runtime libraries for your "+
+			"distribution and install again.", backend)
+	default:
+		binaryName := ServerBinaryName
+		if in.hostOS() == "windows" {
+			binaryName += ".exe"
+		}
+		return fmt.Sprintf("the %s runtime failed to execute. The download is verified by "+
+			"SHA256, so a system library or an unsupported CPU feature is the most likely "+
+			"cause — run the binary directly for the loader's diagnostics:\n"+
+			"  %s/build/bin/%s --version", backend, runtimeDir, binaryName)
+	}
 }
 
 // promoteRuntime swaps the staged tree into place. The previous tree is
@@ -1453,9 +1552,87 @@ func (in *Installer) promoteRuntime(backend Backend) (string, error) {
 	return final, nil
 }
 
-// Remove deletes an installation: it stops a running server, removes the model
-// tree (manifest and weights), removes every runtime tree and the archive
-// staging area, and finally clears the config.
+// RemoveScope names what a Remove deletes. The scope only chooses WHICH
+// embedded-LLM bytes are deleted — the manifest and the config registration
+// are cleared under every scope, so a partial removal leaves a cache, never a
+// half-registered install.
+type RemoveScope string
+
+const (
+	// RemoveAll — the manifest, the whole model root (weights, vision
+	// projector), every runtime tree and the archive staging area: the
+	// historical full removal.
+	RemoveAll RemoveScope = "all"
+	// RemoveRuntime — the "llama-*" trees (installed, staged, retired) and the
+	// archive staging area. The weights and the projector survive on disk as a
+	// verified cache: a later install re-verifies them without re-downloading.
+	RemoveRuntime RemoveScope = "runtime"
+	// RemoveWeights — the pinned model GGUFs (both packings). The runtime tree
+	// and the projector survive.
+	RemoveWeights RemoveScope = "weights"
+	// RemoveProjection — the vision projector GGUF. The runtime tree and the
+	// weights survive.
+	RemoveProjection RemoveScope = "projection"
+)
+
+// valid reports whether s is one of the four known scopes. The zero value is
+// deliberately invalid: a caller that forgot to choose must not get "all".
+func (s RemoveScope) valid() bool {
+	switch s {
+	case RemoveAll, RemoveRuntime, RemoveWeights, RemoveProjection:
+		return true
+	default:
+		return false
+	}
+}
+
+// ParseRemoveScope maps a wire-scope string onto a RemoveScope. The empty
+// string means RemoveAll — the historical, scope-less removal — so an older
+// caller (or a generated binding invoked without the argument) keeps its
+// meaning. Anything else unknown is refused, never defaulted.
+func ParseRemoveScope(scope string) (RemoveScope, error) {
+	if scope == "" {
+		return RemoveAll, nil
+	}
+	parsed := RemoveScope(strings.ToLower(strings.TrimSpace(scope)))
+	if !parsed.valid() {
+		return "", fmt.Errorf("embeddedllm: unknown remove scope %q (want one of %q, %q, %q, %q)",
+			scope, RemoveAll, RemoveRuntime, RemoveWeights, RemoveProjection)
+	}
+	return parsed, nil
+}
+
+// Leftovers reports which embedded-LLM artifacts are still on disk. While an
+// install is recorded these fields are not interesting (everything present is
+// accounted for by the manifest); their use is the NOT-installed state, where
+// they describe what a scoped removal left behind — a cache a reinstall
+// re-verifies, or bytes a further removal can reclaim.
+type Leftovers struct {
+	// Runtime — at least one "llama-*" tree (installed, staged or retired) or
+	// the archive staging area exists under the runtimes root.
+	Runtime bool
+	// Weights — at least one pinned model GGUF exists in the model root.
+	Weights bool
+	// Projection — the vision projector GGUF exists in the model root.
+	Projection bool
+}
+
+// Any reports whether anything at all is left on disk.
+func (l Leftovers) Any() bool { return l.Runtime || l.Weights || l.Projection }
+
+// Remove stops the server and removes the whole installation: the historical,
+// scope-less form every existing caller means.
+func (in *Installer) Remove(ctx context.Context) error {
+	return in.RemoveWithScope(ctx, RemoveAll)
+}
+
+// RemoveWithScope stops a running server and removes the parts of the
+// installation the scope names, plus — under EVERY scope — the manifest and
+// the config registration. A partial removal is therefore uniform: the
+// on-disk state becomes "not installed", and whatever the scope spared is a
+// cache, not an install. A later Install verifies the surviving artifacts
+// against their pins and re-downloads only what is missing (the downloader's
+// verified-cache fast path).
 //
 // The config is cleared even when a deletion failed, and the deletion error is
 // returned afterwards: a leftover directory wastes disk and a retry reclaims
@@ -1464,13 +1641,16 @@ func (in *Installer) promoteRuntime(backend Backend) (string, error) {
 // path outside the two embedded-LLM trees can be removed — in particular never
 // the flat embedding-model files that share <agentDir>/models and never
 // anything under <toolsDir>/bin.
-func (in *Installer) Remove(ctx context.Context) error {
+func (in *Installer) RemoveWithScope(ctx context.Context, scope RemoveScope) error {
 	if in == nil {
 		return errors.New("embeddedllm: nil Installer")
 	}
 	if in.Sink == nil {
 		return errors.New("embeddedllm: no ConfigSink wired — refusing to delete an install " +
 			"whose provider entry could not be cleared")
+	}
+	if !scope.valid() {
+		return fmt.Errorf("embeddedllm: unknown remove scope %q", string(scope))
 	}
 	if in.Stop != nil {
 		if err := in.Stop(ctx); err != nil {
@@ -1479,25 +1659,130 @@ func (in *Installer) Remove(ctx context.Context) error {
 	}
 
 	var errs []error
-	if err := in.removeOwned(in.Layout.ModelRoot); err != nil {
+	// The manifest goes with EVERY scope: it is install state, not artifact
+	// bytes, and a record describing files a scoped removal just deleted — or
+	// one describing an install coexisting with no runtime tree — would point
+	// the supervisor at bytes that may no longer be there. It goes FIRST, so
+	// the on-disk state is "not installed" before anything else happens.
+	if manifest, err := in.Layout.ManifestPath(); err != nil {
+		errs = append(errs, err)
+	} else if err := in.removeOwned(manifest); err != nil {
 		errs = append(errs, err)
 	}
-	removed, err := in.removeRuntimeTrees()
-	if err != nil {
-		errs = append(errs, err)
-	}
-	if downloads, derr := in.Layout.DownloadsDir(); derr != nil {
-		errs = append(errs, derr)
-	} else if err := in.removeOwned(downloads); err != nil {
-		errs = append(errs, err)
+
+	removed := 0
+	switch scope {
+	case RemoveRuntime:
+		removed = in.removeScopeRuntimeTrees(&errs)
+	case RemoveWeights:
+		in.removeScopeWeights(&errs)
+	case RemoveProjection:
+		in.removeScopeProjection(&errs)
+	default: // RemoveAll — the historical full removal
+		if err := in.removeOwned(in.Layout.ModelRoot); err != nil {
+			errs = append(errs, err)
+		}
+		var err error
+		removed, err = in.removeRuntimeTrees()
+		if err != nil {
+			errs = append(errs, err)
+		}
+		if downloads, derr := in.Layout.DownloadsDir(); derr != nil {
+			errs = append(errs, derr)
+		} else if err := in.removeOwned(downloads); err != nil {
+			errs = append(errs, err)
+		}
 	}
 
 	if serr := in.Sink.ApplyRemoved(ctx); serr != nil {
 		errs = append(errs, fmt.Errorf("clearing the config: %w", serr))
 	} else {
-		in.logger().Info("embedded LLM removed", "runtime_trees_deleted", removed)
+		in.logger().Info("embedded LLM removed", "scope", string(scope),
+			"runtime_trees_deleted", removed)
 	}
 	return errors.Join(errs...)
+}
+
+// removeScopeRuntimeTrees is RemoveWithScope's runtime half: every llama-* tree
+// plus the archive staging area. Returns the number of trees deleted.
+func (in *Installer) removeScopeRuntimeTrees(errs *[]error) int {
+	removed, err := in.removeRuntimeTrees()
+	if err != nil {
+		*errs = append(*errs, err)
+	}
+	if downloads, derr := in.Layout.DownloadsDir(); derr != nil {
+		*errs = append(*errs, derr)
+	} else if err := in.removeOwned(downloads); err != nil {
+		*errs = append(*errs, err)
+	}
+	return removed
+}
+
+// removeScopeWeights is RemoveWithScope's weights half: both pinned packings'
+// GGUFs, so the cleanup reaches a packing the recorded install did not use too.
+func (in *Installer) removeScopeWeights(errs *[]error) {
+	for _, packing := range []Packing{PackingPQ2_0, PackingPTQ1_0} {
+		file, ferr := in.Layout.ModelFile(packing)
+		if ferr != nil {
+			*errs = append(*errs, ferr)
+			continue
+		}
+		if err := in.removeOwned(file); err != nil {
+			*errs = append(*errs, err)
+		}
+	}
+}
+
+// removeScopeProjection is RemoveWithScope's projection half: the vision
+// projector GGUF.
+func (in *Installer) removeScopeProjection(errs *[]error) {
+	file, ferr := in.Layout.Destination(MMProjAsset())
+	if ferr != nil {
+		*errs = append(*errs, ferr)
+		return
+	}
+	if err := in.removeOwned(file); err != nil {
+		*errs = append(*errs, err)
+	}
+}
+
+// DetectLeftovers reports which embedded-LLM artifacts are on disk right now.
+// It is a cheap existence scan — one directory listing and per-file stats,
+// never a walk of multi-gigabyte trees and never a hash — so the status read
+// can afford it. It reports what EXISTS; whether those bytes are still wanted
+// is the caller's question (it differs between an installed model and a
+// not-installed one with residue).
+func (in *Installer) DetectLeftovers() (Leftovers, error) {
+	var lo Leftovers
+	entries, err := os.ReadDir(in.Layout.RuntimesRoot)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return lo, fmt.Errorf("embeddedllm: listing %q: %w", in.Layout.RuntimesRoot, err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), runtimeDirPrefix) {
+			lo.Runtime = true
+			break
+		}
+	}
+	// The archive staging area counts as runtime residue: its contents are
+	// runtime/cudart archives (and their resumable partials).
+	if downloads, derr := in.Layout.DownloadsDir(); derr == nil && pathExists(downloads) {
+		lo.Runtime = true
+	}
+	for _, packing := range []Packing{PackingPQ2_0, PackingPTQ1_0} {
+		file, ferr := in.Layout.ModelFile(packing)
+		if ferr != nil {
+			continue
+		}
+		if pathExists(file) {
+			lo.Weights = true
+			break
+		}
+	}
+	if file, ferr := in.Layout.Destination(MMProjAsset()); ferr == nil && pathExists(file) {
+		lo.Projection = true
+	}
+	return lo, nil
 }
 
 // removeRuntimeTrees deletes every "llama-*" tree under the runtime root —
@@ -1903,7 +2188,7 @@ func (in *Installer) runBounded(ctx context.Context, timeout time.Duration,
 ) error {
 	bounded, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	out, err := in.runner()(bounded, name, args...)
+	out, err := in.runner()(bounded, name, nil, args...)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w (output: %s)", name, strings.Join(args, " "),
 			err, strings.TrimSpace(out))

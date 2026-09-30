@@ -12,8 +12,43 @@
 // § Hardware probe → resolution, § Settings block).
 
 import { Cpu } from 'lucide-react'
-import type { EmbeddedLLMStatus } from '@/api/embedded'
+import type { EmbeddedLLMStatus, EmbeddedLLMGuard } from '@/api/embedded'
+import { guardIssueURL, guardIsUnapplied } from '@/lib/embeddedGuardView'
 import type { EmbeddedLLMPlan } from '@/api/embeddedTuning'
+
+/** One compatibility decision as a visible line: an UNAPPLIED guard is a
+ *  warning (the install works, but not the way the resolver would prefer —
+ *  and the guidance says what to do), an applied one is muted context. The
+ *  issue citation renders as a link when it has the expected shape. */
+function GuardLine({ decision }: { decision: EmbeddedLLMGuard }) {
+  const url = guardIssueURL(decision.issue)
+  const unapplied = guardIsUnapplied(decision)
+  return (
+    <p
+      className={
+        unapplied ? 'text-xs text-warning' : 'text-xs text-muted-foreground'
+      }
+      data-testid={unapplied ? 'embedded-llm-guard-warning' : 'embedded-llm-guard-applied'}
+      title={decision.guidance}
+    >
+      {decision.guidance}
+      {url && (
+        <>
+          {' '}
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            className="underline underline-offset-2"
+            data-testid="embedded-llm-guard-issue-link"
+          >
+            {decision.issue}
+          </a>
+        </>
+      )}
+    </p>
+  )
+}
 
 /** MiB with a GiB promotion at the 1024 boundary; whole GiB without decimals. */
 function formatMiB(mib: number): string {
@@ -92,6 +127,16 @@ export function EmbeddedLLMInstallRecord({ status }: { status: EmbeddedLLMStatus
           </span>
         ))}
       </div>
+      {status.guards.length > 0 && (
+        <div
+          className="flex flex-col gap-0.5"
+          data-testid="embedded-llm-guard-records"
+        >
+          {status.guards.map((decision) => (
+            <GuardLine key={`${decision.guard}:${decision.issue}`} decision={decision} />
+          ))}
+        </div>
+      )}
       {status.devices.length > 0 ? (
         <p className="text-xs text-muted-foreground" data-testid="embedded-llm-devices">
           {status.devices

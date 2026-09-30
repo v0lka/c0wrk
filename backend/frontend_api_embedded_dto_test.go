@@ -78,6 +78,77 @@ func TestEmbeddedGuardIDsMarksUnappliedDecisions(t *testing.T) {
 	}
 }
 
+// TestEmbeddedLLMGuardWireShapeMatchesTheFrontendMirror pins the guard record's
+// WIRE shape against the hand-written frontend mirror. The mirror
+// (isEmbeddedLLMGuard in frontend/src/api/embedded.ts) validates all nine keys
+// as present strings/booleans, so a single omitempty on any guard field — both
+// substitutes have carried one in the past — silently drops the key from every
+// payload and makes isEmbeddedLLMStatus reject the whole status: the Settings
+// surface and the status-bar indicator stop rendering on exactly the machines
+// a guard fired for. The golden string catches a retype, the per-element
+// key-count catches a dropped key, and the nil case pins the always-an-array
+// rule the status DTO inherits.
+func TestEmbeddedLLMGuardWireShapeMatchesTheFrontendMirror(t *testing.T) {
+	// One applied substitution (#222 on Linux, the resolve-path decision) and
+	// one advisory (#192, no substitutes) — the two shapes a renderer must
+	// distinguish, and the only two shapes the substitutes take.
+	decisions := []embeddedllm.GuardDecision{
+		{
+			Guard:    embeddedllm.GuardCUDA133Crash,
+			Action:   embeddedllm.GuardActionPreferBackend,
+			Reason:   embeddedllm.GuardReasonCrashOnLoad,
+			Severity: embeddedllm.GuardSeverityCritical,
+			Issue:    "PrismML-Eng/llama.cpp#222",
+			Applied:  true,
+			Backend:  embeddedllm.BackendCUDA128,
+			Guidance: "the CUDA 13.3 build is documented to segfault on some Linux systems; this install uses the CUDA 12.8 build instead",
+		},
+		{
+			Guard:    embeddedllm.GuardVulkanIntelArcHang,
+			Action:   embeddedllm.GuardActionAdvisory,
+			Reason:   embeddedllm.GuardReasonHang,
+			Severity: embeddedllm.GuardSeverityWarning,
+			Issue:    "PrismML-Eng/llama.cpp#192",
+			Applied:  false,
+			Guidance: "PTQ1_0 on Vulkan with Intel Arc is documented to hang on long outputs; no automatic substitution exists",
+		},
+	}
+
+	encoded, err := json.Marshal(embeddedGuardsDTO(decisions))
+	if err != nil {
+		t.Fatalf("marshalling the guards: %v", err)
+	}
+	want := "[" +
+		`{"guard":"cuda-13.3-crash","action":"prefer_backend","reason":"crash_on_load","severity":"critical",` +
+		`"issue":"PrismML-Eng/llama.cpp#222","applied":true,"backend":"cuda-12.8","packing":"",` +
+		`"guidance":"the CUDA 13.3 build is documented to segfault on some Linux systems; this install uses the CUDA 12.8 build instead"},` +
+		`{"guard":"vulkan-intel-arc-hang","action":"advisory","reason":"hang","severity":"warning",` +
+		`"issue":"PrismML-Eng/llama.cpp#192","applied":false,"backend":"","packing":"",` +
+		`"guidance":"PTQ1_0 on Vulkan with Intel Arc is documented to hang on long outputs; no automatic substitution exists"}]`
+	if string(encoded) != want {
+		t.Errorf("guards wire shape drifted:\n got %s\nwant %s", encoded, want)
+	}
+
+	var parsed []map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &parsed); err != nil {
+		t.Fatalf("unmarshalling the guards: %v", err)
+	}
+	for i, element := range parsed {
+		if len(element) != 9 {
+			t.Errorf("guard %d carries %d JSON keys, want exactly the 9 the frontend mirror validates (an omitted key breaks isEmbeddedLLMStatus): %s",
+				i, len(element), encoded)
+		}
+	}
+
+	empty, err := json.Marshal(embeddedGuardsDTO(nil))
+	if err != nil {
+		t.Fatalf("marshalling an empty guard list: %v", err)
+	}
+	if string(empty) != "[]" {
+		t.Errorf("an unguarded install serialized %s, want [] — the boundary never carries null", empty)
+	}
+}
+
 // TestEmbeddedPlanDTORendersTheOffloadDecision pins the derived offload mode,
 // including the two sentinels a renderer would otherwise have to guess at: a nil
 // Layers is -1 ("the flag is omitted"), and an explicit zero cache ceiling is 0

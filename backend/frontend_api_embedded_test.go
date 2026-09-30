@@ -440,7 +440,7 @@ func TestEmbeddedLLMRPCSignaturesFollowTheBoundaryConvention(t *testing.T) {
 	})
 
 	for _, name := range []string{
-		"InstallEmbeddedLLM", "RemoveEmbeddedLLM", "LoadEmbeddedLLM", "UnloadEmbeddedLLM",
+		"InstallEmbeddedLLM", "LoadEmbeddedLLM", "UnloadEmbeddedLLM",
 	} {
 		t.Run(name+" returns only an error", func(t *testing.T) {
 			m, ok := api.MethodByName(name)
@@ -456,6 +456,21 @@ func TestEmbeddedLLMRPCSignaturesFollowTheBoundaryConvention(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("RemoveEmbeddedLLM takes exactly the scope string", func(t *testing.T) {
+		m, ok := api.MethodByName("RemoveEmbeddedLLM")
+		if !ok {
+			t.Fatal("RemoveEmbeddedLLM is not exported on *FrontendAPI")
+		}
+		// One string argument: the remove scope ("" = all). A second argument
+		// or a non-string first argument is a boundary drift.
+		if m.Type.NumIn() != 2 || m.Type.In(1) != reflect.TypeOf("") {
+			t.Fatalf("RemoveEmbeddedLLM signature is %s, want func(scope string) error", m.Type)
+		}
+		if m.Type.NumOut() != 1 || m.Type.Out(0) != errorType {
+			t.Errorf("RemoveEmbeddedLLM returns %s, want exactly error", m.Type)
+		}
+	})
 
 	t.Run("auto-unload setter", func(t *testing.T) {
 		m, ok := api.MethodByName("SetEmbeddedLLMAutoUnload")
@@ -1412,7 +1427,7 @@ func TestLoadEmbeddedLLMRefusesWhileAnInstallRuns(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "install is running") {
 		t.Errorf("LoadEmbeddedLLM during an install = %v, want a refusal", err)
 	}
-	if err := f.RemoveEmbeddedLLM(); err == nil || !strings.Contains(err.Error(), "install is running") {
+	if err := f.RemoveEmbeddedLLM(""); err == nil || !strings.Contains(err.Error(), "install is running") {
 		t.Errorf("RemoveEmbeddedLLM during an install = %v, want a refusal", err)
 	}
 	close(release)
@@ -1439,7 +1454,7 @@ func TestRemoveEmbeddedLLMClearsTreesConfigAndSupervisorState(t *testing.T) {
 		t.Fatalf("saving the installed config: %v", err)
 	}
 
-	if err := f.RemoveEmbeddedLLM(); err != nil {
+	if err := f.RemoveEmbeddedLLM(""); err != nil {
 		t.Fatalf("RemoveEmbeddedLLM: %v", err)
 	}
 
@@ -1502,6 +1517,110 @@ func TestRemoveEmbeddedLLMClearsTreesConfigAndSupervisorState(t *testing.T) {
 	}
 	if got := rec.runtimeErrors(); len(got) != 0 {
 		t.Errorf("a successful removal raised %d toast(s): %+v", len(got), got)
+	}
+}
+
+// TestRemoveEmbeddedLLMScopeKeepsWeightsAsCache drives a runtime-scoped
+// removal through the REAL core removal: the runtime tree and the manifest are
+// gone, the weights and the projector survive as a cache, the config is
+// cleared exactly as after a full removal, and the status read flips to
+// not-installed with the leftover flags describing the residue.
+func TestRemoveEmbeddedLLMScopeKeepsWeightsAsCache(t *testing.T) {
+	f, rec, mock := newEmbeddedTestAPI(t)
+	layout, manifest := writeEmbeddedInstallTree(t, f.agentDir, embeddedTestManifest(4321, 32768))
+	// The projector the scope must spare (the shared tree writer does not
+	// create it).
+	proj := filepath.Join(layout.ModelRoot, "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf")
+	if err := os.WriteFile(proj, []byte("mmproj-stub"), 0o640); err != nil {
+		t.Fatalf("writing the projector: %v", err)
+	}
+	f.Lifecycle().InitEmbeddedLLM()
+	installEmbeddedLLM(t, f, 4321)
+
+	// While installed, every leftover flag is true: the bytes are the
+	// install's own.
+	status := f.GetEmbeddedLLMStatus()
+	if !status.LeftoverRuntime || !status.LeftoverWeights || !status.LeftoverProjection {
+		t.Errorf("status leftover flags = %v/%v/%v, want all true while installed",
+			status.LeftoverRuntime, status.LeftoverWeights, status.LeftoverProjection)
+	}
+
+	if err := f.RemoveEmbeddedLLM("runtime"); err != nil {
+		t.Fatalf("RemoveEmbeddedLLM(runtime): %v", err)
+	}
+
+	runtimeDir, err := layout.RuntimeDir(manifest.Backend)
+	if err != nil {
+		t.Fatalf("RuntimeDir: %v", err)
+	}
+	if _, err := os.Stat(runtimeDir); !os.IsNotExist(err) {
+		t.Errorf("the runtime tree still exists (stat err = %v)", err)
+	}
+	if _, err := os.Stat(layout.ModelRoot); err != nil {
+		t.Errorf("the weights root was deleted by a runtime-scoped removal: %v", err)
+	}
+	if _, err := os.Stat(manifest.ModelFile); err != nil {
+		t.Errorf("the model GGUF was deleted by a runtime-scoped removal: %v", err)
+	}
+	if _, err := os.Stat(proj); err != nil {
+		t.Errorf("the projector GGUF was deleted by a runtime-scoped removal: %v", err)
+	}
+	if f.config.EmbeddedLLM.Installed || f.config.EmbeddedLLM.Port != 0 {
+		t.Errorf("config = %+v, want the cleared state after a scoped removal too", f.config.EmbeddedLLM)
+	}
+	if entry, ok := f.config.LLM.OpenAICompatible[config.EmbeddedLLMProviderName]; ok {
+		t.Errorf("the provider record survived a scoped removal: %+v", entry)
+	}
+	if mock.rebuildRouterCalls == 0 {
+		t.Error("the router was not rebuilt after the scoped removal")
+	}
+
+	// The status read agrees: not installed, with the residue named.
+	status = f.GetEmbeddedLLMStatus()
+	if status.Installed || status.State != string(embeddedllm.StateNotInstalled) {
+		t.Errorf("status = %+v, want not installed after a scoped removal", status)
+	}
+	if status.LeftoverRuntime {
+		t.Error("leftover_runtime still true after the runtime-scoped removal")
+	}
+	if !status.LeftoverWeights || !status.LeftoverProjection {
+		t.Errorf("leftover weights/projection = %v/%v, want both true (the cache)",
+			status.LeftoverWeights, status.LeftoverProjection)
+	}
+	rec.waitForCount(t, EventEmbeddedLLMState, 2) // restore + removal
+
+	// An unknown scope is refused BEFORE the stop and before anything is
+	// touched — the resident install is still intact here.
+	f2, _, _ := newEmbeddedTestAPI(t)
+	layout2, _ := writeEmbeddedInstallTree(t, f2.agentDir, embeddedTestManifest(4321, 32768))
+	f2.Lifecycle().InitEmbeddedLLM()
+	installEmbeddedLLM(t, f2, 4321)
+	if err := f2.RemoveEmbeddedLLM("everything"); err == nil {
+		t.Fatal("RemoveEmbeddedLLM accepted an unknown scope")
+	}
+	if _, err := os.Stat(layout2.ModelRoot); err != nil {
+		t.Errorf("a refused scope touched the model root: %v", err)
+	}
+	if !f2.config.EmbeddedLLM.Installed {
+		t.Error("a refused scope cleared the config")
+	}
+}
+
+// TestGetEmbeddedLLMStatusLeftoversAfterFullRemoval covers the clean case: a
+// full removal leaves no residue, so every leftover flag is false.
+func TestGetEmbeddedLLMStatusLeftoversAfterFullRemoval(t *testing.T) {
+	f, _, _ := newEmbeddedTestAPI(t)
+	writeEmbeddedInstallTree(t, f.agentDir, embeddedTestManifest(4321, 32768))
+	f.Lifecycle().InitEmbeddedLLM()
+	installEmbeddedLLM(t, f, 4321)
+
+	if err := f.RemoveEmbeddedLLM(""); err != nil {
+		t.Fatalf("RemoveEmbeddedLLM: %v", err)
+	}
+	status := f.GetEmbeddedLLMStatus()
+	if status.LeftoverRuntime || status.LeftoverWeights || status.LeftoverProjection {
+		t.Errorf("status leftover flags = %v/%v/%v, want all false after a full removal",
+			status.LeftoverRuntime, status.LeftoverWeights, status.LeftoverProjection)
 	}
 }
 

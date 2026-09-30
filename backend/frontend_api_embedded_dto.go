@@ -112,9 +112,8 @@ type EmbeddedLLMStatus struct {
 	//
 	// Always an array, never null (an unguarded install carries an empty one),
 	// so a renderer has one code path. The hand-written mirror in
-	// frontend/src/api/embedded.ts does not carry these three fields yet: the
-	// Settings surface that renders the degradation record is a separate change,
-	// and until it lands the fields are simply unused on the wire.
+	// frontend/src/api/embedded.ts validates and renders these three fields
+	// (EmbeddedLLMInstallRecord).
 	Guards []EmbeddedLLMGuard `json:"guards"`
 	// Devices is the accelerator inventory of the RECORDED topology — the
 	// snapshot the recorded plan was made from, as the provisioned runtime
@@ -184,6 +183,19 @@ type EmbeddedLLMStatus struct {
 	// Available reports whether the subsystem could be constructed at all
 	// (false only when the agent directory is unset, i.e. before startup).
 	Available bool `json:"available"`
+	// LeftoverRuntime / LeftoverWeights / LeftoverProjection report which
+	// embedded-LLM artifacts are on disk RIGHT NOW: any "llama-*" runtime tree
+	// (or the archive staging area), a pinned model GGUF, the vision projector
+	// GGUF. While Installed is true these are simply the install's own bytes;
+	// their purpose is the NOT-installed state, where they describe what a
+	// scoped removal left behind — a cache the next install re-verifies without
+	// re-downloading, or residue a further removal can reclaim. Computed with a
+	// cheap existence scan (directory listing + per-file stats, never a walk
+	// and never a hash); all three are false when the subsystem could not be
+	// constructed.
+	LeftoverRuntime    bool `json:"leftover_runtime"`
+	LeftoverWeights    bool `json:"leftover_weights"`
+	LeftoverProjection bool `json:"leftover_projection"`
 }
 
 // EmbeddedLLMGuard is the frontend-facing shape of one
@@ -193,7 +205,8 @@ type EmbeddedLLMStatus struct {
 //
 // The string fields are the core enum values verbatim (snake_case), so the UI can
 // switch on them without this layer inventing a second vocabulary. The
-// frontend mirror is pending: see EmbeddedLLMStatus.Guards.
+// frontend mirror in frontend/src/api/embedded.ts (EmbeddedLLMGuard) validates
+// every field, including both substitutes.
 type EmbeddedLLMGuard struct {
 	// Guard is the stable id of the guard that fired, e.g. "cuda-13.3-crash".
 	Guard string `json:"guard"`
@@ -212,9 +225,13 @@ type EmbeddedLLMGuard struct {
 	// could not, or chose not to, act on it" — and Guidance says which.
 	Applied bool `json:"applied"`
 	// Backend is the substituted backend, empty unless Action is prefer_backend.
-	Backend string `json:"backend,omitempty"`
+	// Always present on the wire (empty string, never omitted) — the frontend
+	// mirror validates both substitutes as plain strings.
+	Backend string `json:"backend"`
 	// Packing is the substituted packing, empty unless Action is prefer_packing.
-	Packing string `json:"packing,omitempty"`
+	// Always present on the wire (empty string, never omitted) — the frontend
+	// mirror validates both substitutes as plain strings.
+	Packing string `json:"packing"`
 	// Guidance is the user-facing sentence: what is documented, what c0wrk did
 	// or could not do, and what the upstream workaround is.
 	Guidance string `json:"guidance"`

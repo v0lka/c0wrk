@@ -48,11 +48,12 @@ import {
 } from '@/stores/embeddedLLMStore'
 import { EmbeddedLLMProgress } from './embedded/EmbeddedLLMProgress'
 import { EmbeddedLLMInstallRecord } from './embedded/EmbeddedLLMInstallRecord'
-import { EmbeddedLLMActions, EmbeddedLLMInstallAction } from './embedded/EmbeddedLLMActions'
+import { EmbeddedLLMActions, EmbeddedLLMInstallAction, EmbeddedLLMCleanupAction } from './embedded/EmbeddedLLMActions'
 import { EmbeddedLLMAutoUnload } from './embedded/EmbeddedLLMAutoUnload'
 import { EmbeddedLLMTuning } from './embedded/EmbeddedLLMTuning'
 import { EmbeddedLLMAdvancedTuning } from './embedded/EmbeddedLLMAdvancedTuning'
 import { EmbeddedLLMRemoveDialog } from './embedded/EmbeddedLLMRemoveDialog'
+import type { EmbeddedLLMRemoveScope } from '@/api/embedded'
 import { useEmbeddedLLMAutoUnload } from '@/hooks/useEmbeddedLLMAutoUnload'
 import { useEmbeddedLLMLifecycle } from '@/hooks/useEmbeddedLLMLifecycle'
 import { useEmbeddedLLMTuning } from '@/hooks/useEmbeddedLLMTuning'
@@ -66,8 +67,10 @@ export function EmbeddedLLMSettings() {
   const statusLoading = useEmbeddedLLMStatusLoading()
   const lifecycle = useEmbeddedLLMLifecycle()
 
-  // Pure UI state: the destructive-action confirmation.
+  // Pure UI state: the destructive-action confirmation and the scope the
+  // dialog is about to confirm.
   const [confirmRemove, setConfirmRemove] = useState(false)
+  const [removeScope, setRemoveScope] = useState<EmbeddedLLMRemoveScope>('all')
   const autoUnload = useEmbeddedLLMAutoUnload()
   const tuning = useEmbeddedLLMTuning()
 
@@ -77,6 +80,15 @@ export function EmbeddedLLMSettings() {
   const loading = status?.loading ?? false
   const unavailable = status !== null && !status.available
   const idleSeconds = status?.idle_remaining_seconds ?? 0
+  // The artifact groups on disk right now. An installed model has all three
+  // (the manifest describes them); a not-installed machine reports whatever a
+  // scoped removal left behind.
+  const leftovers = {
+    runtime: installed || (status?.leftover_runtime ?? false),
+    weights: installed || (status?.leftover_weights ?? false),
+    projection: installed || (status?.leftover_projection ?? false),
+  }
+  const anyLeftover = leftovers.runtime || leftovers.weights || leftovers.projection
   // Error precedence: the action the operator just took (its rejected promise
   // is the report), then the last FATAL install failure (the backend retries
   // resumable download failures silently, so this line only ever carries the
@@ -84,6 +96,12 @@ export function EmbeddedLLMSettings() {
   const error = actionError
     ?? (status && status.install_error !== '' ? status.install_error : null)
     ?? (status && status.error !== '' ? status.error : null)
+
+  /** Opens the confirmation dialog for the chosen scope. */
+  const requestRemove = (scope: EmbeddedLLMRemoveScope) => {
+    setRemoveScope(scope)
+    setConfirmRemove(true)
+  }
 
   return (
     <div className="flex flex-col gap-3" data-testid="embedded-llm-settings">
@@ -127,7 +145,8 @@ export function EmbeddedLLMSettings() {
             busy={busy}
             onLoad={lifecycle.load}
             onUnload={lifecycle.unload}
-            onRemove={() => setConfirmRemove(true)}
+            onRemove={requestRemove}
+            leftovers={leftovers}
           />
 
           <EmbeddedLLMAutoUnload {...autoUnload} />
@@ -143,21 +162,27 @@ export function EmbeddedLLMSettings() {
           )}
         </>
       ) : (
-        <EmbeddedLLMInstallAction
-          busy={busy}
-          unavailable={unavailable}
-          statusLoading={statusLoading}
-          onInstall={lifecycle.install}
-        />
+        <>
+          <EmbeddedLLMInstallAction
+            busy={busy}
+            unavailable={unavailable}
+            statusLoading={statusLoading}
+            onInstall={lifecycle.install}
+          />
+          {anyLeftover && (
+            <EmbeddedLLMCleanupAction busy={busy} leftovers={leftovers} onRemove={requestRemove} />
+          )}
+        </>
       )}
 
       <EmbeddedLLMRemoveDialog
         open={confirmRemove}
         busy={busy === 'remove'}
+        scope={removeScope}
         onCancel={() => setConfirmRemove(false)}
         onConfirm={() => {
           setConfirmRemove(false)
-          lifecycle.remove()
+          lifecycle.remove(removeScope)
         }}
       />
     </div>

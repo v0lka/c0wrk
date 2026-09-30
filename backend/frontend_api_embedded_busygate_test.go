@@ -208,7 +208,7 @@ func TestRemoveEmbeddedLLMHoldsTheGateForItsWholeDuration(t *testing.T) {
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- f.RemoveEmbeddedLLM() }()
+	go func() { done <- f.RemoveEmbeddedLLM("") }()
 	<-entered
 
 	if got := f.embeddedBusyOperation(); got != embeddedOpRemove {
@@ -422,7 +422,7 @@ func TestStopShapedPathsAreBoundedByTheStopBudget(t *testing.T) {
 		call func(*FrontendAPI) error
 	}{
 		{"UnloadEmbeddedLLM", func(f *FrontendAPI) error { return f.UnloadEmbeddedLLM() }},
-		{"RemoveEmbeddedLLM", func(f *FrontendAPI) error { return f.RemoveEmbeddedLLM() }},
+		{"RemoveEmbeddedLLM", func(f *FrontendAPI) error { return f.RemoveEmbeddedLLM("") }},
 		{"the shutdown stop", func(f *FrontendAPI) error {
 			return f.Lifecycle().StopEmbeddedLLM(context.Background())
 		}},

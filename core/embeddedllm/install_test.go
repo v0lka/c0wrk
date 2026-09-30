@@ -76,6 +76,10 @@ type installCase struct {
 	// which the fixture's asset table must then also serve: a guard that swaps
 	// cuda-13.3 for cuda-12.8 needs a 12.8 archive to swap TO.
 	guardBackends []Backend
+	// cu12 is the CUDA 12.x userland verdict the injected hardware probe
+	// reports. Zero (unknown) is the honest default: an install fixture that
+	// does not name it models a machine nobody could measure.
+	cu12 CUDA12Userland
 }
 
 // darwinMetalCase is the canonical happy path: Apple Silicon, 32 GiB, Metal.
@@ -113,16 +117,17 @@ func linuxCPUCase() installCase {
 }
 
 type installFixture struct {
-	t         *testing.T
-	case_     installCase
-	agentDir  string
-	layout    Layout
-	toolsBin  string
-	installer *Installer
-	sink      *recordingSink
-	cmds      *commandRecorder
-	assets    []Asset
-	digests   map[Component]string
+	t          *testing.T
+	case_      installCase
+	agentDir   string
+	layout     Layout
+	toolsBin   string
+	installer  *Installer
+	sink       *recordingSink
+	cmds       *commandRecorder
+	assets     []Asset
+	digests    map[Component]string
+	runOptions []RunOptions
 
 	mu       sync.Mutex
 	progress []Progress
@@ -225,10 +230,11 @@ func newInstallFixture(t *testing.T, tc installCase) *installFixture {
 // probe is the injected hardware probe.
 func (fx *installFixture) probe(context.Context, *slog.Logger) (Hardware, error) {
 	return Hardware{
-		Platform: fx.case_.platform,
-		Arch:     fx.case_.arch,
-		RAMGiB:   fx.case_.ramGiB,
-		Backend:  fx.case_.backend,
+		Platform:       fx.case_.platform,
+		Arch:           fx.case_.arch,
+		RAMGiB:         fx.case_.ramGiB,
+		Backend:        fx.case_.backend,
+		CUDA12Userland: fx.case_.cu12,
 	}, nil
 }
 
@@ -248,8 +254,15 @@ func (fx *installFixture) probeDevices(context.Context, string, *slog.Logger) (M
 }
 
 // runCommand is the injected CommandRunner. It records every invocation and
-// answers the smoke test with a plausible llama-server banner.
-func (fx *installFixture) runCommand(_ context.Context, name string, args ...string) (string, error) {
+// answers the smoke test with a plausible llama-server banner. The launch
+// options (the smoke test's launch configuration) are recorded separately for
+// TestSmokeTestRunsUnderTheLaunchEnvironment.
+func (fx *installFixture) runCommand(_ context.Context, name string, opts *RunOptions, args ...string) (string, error) {
+	if opts != nil {
+		fx.mu.Lock()
+		fx.runOptions = append(fx.runOptions, *opts)
+		fx.mu.Unlock()
+	}
 	line := strings.TrimSpace(name + " " + strings.Join(args, " "))
 	fx.cmds.record(line)
 	fx.recordEvent("cmd:" + line)
@@ -263,6 +276,16 @@ func (fx *installFixture) runCommand(_ context.Context, name string, args ...str
 		return "build 10709 (9a9394a)\n", nil
 	}
 	return "", nil
+}
+
+// smokeRunOptions returns copies of the launch options runner calls carried,
+// in call order.
+func (fx *installFixture) smokeRunOptions() []RunOptions {
+	fx.mu.Lock()
+	defer fx.mu.Unlock()
+	out := make([]RunOptions, len(fx.runOptions))
+	copy(out, fx.runOptions)
+	return out
 }
 
 // Install runs the installer and records the progress stream.
@@ -1407,13 +1430,19 @@ func TestInstallProvisionsMacOSRuntime(t *testing.T) {
 	}
 }
 
+// TestInstallSkipsMacOSProvisioningOnOtherPlatforms pins the platform split:
+// xattr/codesign never run off darwin, while the --version smoke test runs on
+// EVERY platform — a Linux or Windows runtime that cannot execute must fail
+// the install before the weights, exactly like Gatekeeper does on macOS.
 func TestInstallSkipsMacOSProvisioningOnOtherPlatforms(t *testing.T) {
 	for _, tc := range []installCase{linuxCPUCase(), windowsCUDACase()} {
 		t.Run(tc.hostOS, func(t *testing.T) {
 			fx := newInstallFixture(t, tc)
 			fx.mustInstall(t)
-			if lines := fx.cmds.lines(); len(lines) != 0 {
-				t.Errorf("%s ran %d provisioning commands %v, want none", tc.hostOS, len(lines), lines)
+			for _, line := range fx.cmds.lines() {
+				if strings.HasPrefix(line, "xattr ") || strings.HasPrefix(line, "codesign ") {
+					t.Errorf("%s ran a macOS provisioning command %q", tc.hostOS, line)
+				}
 			}
 		})
 	}
@@ -1490,6 +1519,229 @@ func TestInstallCodesignFailureIsFatal(t *testing.T) {
 		t.Errorf("error %q does not explain that signing failed", err)
 	}
 	requireNoManifest(t, fx.layout)
+}
+
+// ── cross-platform smoke testing ──
+
+// TestInstallSmokeTestsTheStagedRuntimeOnEveryPlatform pins the ordering
+// invariant behind provisioning the runtime on all platforms: the --version
+// smoke test runs against the STAGED tree on linux and windows too, BEFORE the
+// weights — a runtime that cannot execute (missing CUDA 12 libraries, a
+// Gatekeeper block, a broken binary) must fail the install in seconds rather
+// than after a multi-gigabyte download.
+func TestInstallSmokeTestsTheStagedRuntimeOnEveryPlatform(t *testing.T) {
+	for _, tc := range []installCase{linuxCPUCase(), windowsCUDACase()} {
+		t.Run(tc.hostOS, func(t *testing.T) {
+			fx := newInstallFixture(t, tc)
+			report := fx.mustInstall(t)
+
+			smokeTest := fx.eventIndex("--version")
+			if smokeTest < 0 {
+				t.Fatalf("the %s smoke test never ran; events = %v", tc.hostOS, fx.eventLog())
+			}
+			probe := fx.eventIndex("device-probe")
+			model := fx.eventIndex("download:" + string(ComponentModel))
+			projector := fx.eventIndex("download:" + string(ComponentMMProj))
+			if probe < 0 || model < 0 || projector < 0 {
+				t.Fatalf("the install is incomplete; events = %v", fx.eventLog())
+			}
+			if smokeTest >= probe {
+				t.Errorf("the device probe (event %d) ran BEFORE the smoke test (event %d):\n%v",
+					probe, smokeTest, fx.eventLog())
+			}
+			if probe >= model || probe >= projector {
+				t.Errorf("the device probe (event %d) ran AFTER the weights (model %d, mmproj %d):\n%v",
+					probe, model, projector, fx.eventLog())
+			}
+
+			// The smoke test ran against the STAGING copy, i.e. before
+			// promotion: a runtime that does not run must never reach its
+			// final location.
+			staging, err := fx.layout.RuntimeStagingDir(tc.backend)
+			if err != nil {
+				t.Fatalf("RuntimeStagingDir: %v", err)
+			}
+			if !strings.Contains(fx.eventLog()[smokeTest], staging) {
+				t.Errorf("the smoke test %q did not run inside the staging tree %q",
+					fx.eventLog()[smokeTest], staging)
+			}
+			if report.Resolution.Backend != tc.backend {
+				t.Errorf("report backend = %q, want %q", report.Resolution.Backend, tc.backend)
+			}
+		})
+	}
+}
+
+// TestSmokeTestRunsUnderTheLaunchEnvironment pins the launch environment of
+// the fatal smoke test: it must exercise the same loader path as the real
+// launch (spawn's launchEnv + Dir), because a Linux CUDA/ROCm build that
+// resolves its sibling libraries through the launch-provided search path
+// fails a bare-exec --version with a library-not-found error that would
+// abort a perfectly installable runtime. The captured options carry the
+// runtime's binary directory prepended to the platform's library-path
+// variable and set the working directory to that same binary directory.
+func TestSmokeTestRunsUnderTheLaunchEnvironment(t *testing.T) {
+	for _, tc := range []installCase{linuxCPUCase(), windowsCUDACase(), darwinMetalCase()} {
+		t.Run(tc.hostOS, func(t *testing.T) {
+			fx := newInstallFixture(t, tc)
+			report := fx.mustInstall(t)
+
+			opts := fx.smokeRunOptions()
+			if len(opts) != 1 {
+				t.Fatalf("the smoke test carried %d RunOptions, want exactly one; events = %v",
+					len(opts), fx.eventLog())
+			}
+			// The staging tree was renamed away by the promotion that
+			// followed the smoke test, so the expected binary path is
+			// reconstructed from the promoted tree: same relative location,
+			// staging name.
+			runtimeDir, err := fx.layout.RuntimeDir(report.Resolution.Backend)
+			if err != nil {
+				t.Fatalf("RuntimeDir: %v", err)
+			}
+			staging, err := fx.layout.RuntimeStagingDir(report.Resolution.Backend)
+			if err != nil {
+				t.Fatalf("RuntimeStagingDir: %v", err)
+			}
+			promoted, err := ServerBinaryPath(runtimeDir, tc.hostOS)
+			if err != nil {
+				t.Fatalf("ServerBinaryPath: %v", err)
+			}
+			rel, err := filepath.Rel(runtimeDir, promoted)
+			if err != nil {
+				t.Fatalf("Rel: %v", err)
+			}
+			binaryDir := filepath.Join(staging, filepath.Dir(rel))
+
+			// The working directory is the runtime's binary directory.
+			if opts[0].Dir != binaryDir {
+				t.Errorf("smoke test Dir = %q, want the binary directory %q", opts[0].Dir, binaryDir)
+			}
+
+			// The environment is exactly launchEnv's output: the parent's
+			// environment with the binary directory prepended to the
+			// platform's dynamic-library search path.
+			want := launchEnv(binaryDir, tc.hostOS, os.Environ())
+			if !reflect.DeepEqual(opts[0].Env, want) {
+				t.Errorf("smoke test Env = %v, want launchEnv's %v", opts[0].Env, want)
+			}
+			key := libraryPathVar(tc.hostOS)
+			found := false
+			for _, entry := range opts[0].Env {
+				name, value, ok := strings.Cut(entry, "=")
+				if ok && strings.EqualFold(name, key) {
+					found = true
+					if !strings.HasPrefix(value, binaryDir+pathListSeparator(tc.hostOS)) &&
+						value != binaryDir {
+						t.Errorf("%s = %q, want it to start with the binary dir %q",
+							key, value, binaryDir)
+					}
+				}
+			}
+			if !found {
+				t.Errorf("the smoke test environment carries no %s entry: %v", key, opts[0].Env)
+			}
+		})
+	}
+}
+
+// TestInstallLinuxSmokeFailureStopsBeforeTheWeights is the Linux twin of the
+// macOS smoke-failure test: an unrunnable staged runtime must abort the
+// install with an actionable message BEFORE a single weight byte is fetched,
+// and leave nothing behind — no manifest, no provider, no promoted tree.
+func TestInstallLinuxSmokeFailureStopsBeforeTheWeights(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		backend   Backend
+		wantParts []string
+	}{
+		{
+			name:      "cpu backend names the backend and points at the loader",
+			backend:   BackendCPU,
+			wantParts: []string{"cpu", "--version failed"},
+		},
+		{
+			name:      "cuda backend names the backend and the CUDA 12 libraries",
+			backend:   BackendCUDA128,
+			wantParts: []string{"cuda-12.8", "CUDA 12", "libcudart"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newInstallFixture(t, installCase{
+				platform: PlatformLinuxAMD64,
+				arch:     "amd64",
+				backend:  tc.backend,
+				ramGiB:   64,
+				hostOS:   "linux",
+			})
+			fx.cmds.fail = "--version"
+
+			_, err := fx.Install(context.Background(), InstallOptions{})
+			if !errors.Is(err, ErrSmokeTestFailed) {
+				t.Fatalf("Install error = %v, want ErrSmokeTestFailed", err)
+			}
+			message := err.Error()
+			for _, want := range tc.wantParts {
+				if !strings.Contains(message, want) {
+					t.Errorf("smoke-test error does not mention %q:\n%s", want, message)
+				}
+			}
+
+			// A runtime that does not run is never promoted and never
+			// registered.
+			requireNoManifest(t, fx.layout)
+			if len(fx.sink.installCalls()) != 0 {
+				t.Error("a failed smoke test registered a provider")
+			}
+			runtimeDir, err := fx.layout.RuntimeDir(tc.backend)
+			if err != nil {
+				t.Fatalf("RuntimeDir: %v", err)
+			}
+			requireAbsent(t, runtimeDir, "the runtime tree")
+			staging, err := fx.layout.RuntimeStagingDir(tc.backend)
+			if err != nil {
+				t.Fatalf("RuntimeStagingDir: %v", err)
+			}
+			requireDir(t, staging, "the staged runtime, kept for diagnosis")
+
+			// Fail-fast: the weights were never downloaded.
+			if n := fx.requestCount(ComponentModel); n != 0 {
+				t.Errorf("the model was requested %d times although the runtime does not run", n)
+			}
+			if n := fx.requestCount(ComponentMMProj); n != 0 {
+				t.Errorf("the mmproj was requested %d times although the runtime does not run", n)
+			}
+		})
+	}
+}
+
+// TestInstallWindowsSmokeFailureNamesTheRunDiagnostics pins the Windows half
+// of the smoke-test hint split: the Windows CUDA builds ship their CUDA
+// runtime as a bundled companion archive and never consult the system CUDA
+// userland (ADR-073), so a Windows CUDA failure must NOT tell the user to
+// install CUDA 12 libraries — the honest next step is the run-the-binary
+// loader diagnostics (missing MSVC runtime, incomplete extraction, a
+// Defender block).
+func TestInstallWindowsSmokeFailureNamesTheRunDiagnostics(t *testing.T) {
+	fx := newInstallFixture(t, windowsCUDACase())
+	fx.cmds.fail = "--version"
+
+	_, err := fx.Install(context.Background(), InstallOptions{})
+	if !errors.Is(err, ErrSmokeTestFailed) {
+		t.Fatalf("Install error = %v, want ErrSmokeTestFailed", err)
+	}
+	message := err.Error()
+	for _, banned := range []string{"libcudart", "libcublas", "CUDA 12 runtime libraries"} {
+		if strings.Contains(message, banned) {
+			t.Errorf("the Windows CUDA smoke-test hint points at the system CUDA "+
+				"userland the platform never consults (%q):\n%s", banned, message)
+		}
+	}
+	for _, want := range []string{"cuda-12.4", "--version failed", "run the binary directly"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("smoke-test error does not mention %q:\n%s", want, message)
+		}
+	}
 }
 
 // ── the secure-bytes-before-destroy invariant ──
@@ -1791,6 +2043,229 @@ func TestRemoveRequiresAConfigSink(t *testing.T) {
 		t.Fatal("Remove without a ConfigSink succeeded, want a refusal")
 	}
 	requireDir(t, fx.layout.ModelRoot, "the model tree, which a sinkless Remove must not delete")
+}
+
+// ── scoped removal ──
+
+// requireCachedWeights asserts the scoped-removal cache contract: the model
+// GGUF and the projector survive and the install record is gone.
+func requireScopedCache(t *testing.T, fx *installFixture, report *InstallReport) {
+	t.Helper()
+	requireFile(t, report.ModelFile, "the model GGUF, which a runtime-only removal keeps as a cache")
+	proj, err := fx.layout.Destination(MMProjAsset())
+	if err != nil {
+		t.Fatalf("Destination(mmproj): %v", err)
+	}
+	requireFile(t, proj, "the projector GGUF, which a runtime-only removal keeps as a cache")
+	requireNoManifest(t, fx.layout)
+	if n := fx.sink.removed(); n != 1 {
+		t.Errorf("ApplyRemoved called %d times, want 1", n)
+	}
+}
+
+func TestParseRemoveScope(t *testing.T) {
+	cases := []struct {
+		in   string
+		want RemoveScope
+	}{
+		{"", RemoveAll},
+		{"all", RemoveAll},
+		{"runtime", RemoveRuntime},
+		{"weights", RemoveWeights},
+		{"projection", RemoveProjection},
+		{" Runtime ", RemoveRuntime},
+	}
+	for _, tc := range cases {
+		got, err := ParseRemoveScope(tc.in)
+		if err != nil {
+			t.Errorf("ParseRemoveScope(%q): %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("ParseRemoveScope(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	for _, in := range []string{"everything", "model", "RUNTIME-files"} {
+		if _, err := ParseRemoveScope(in); err == nil {
+			t.Errorf("ParseRemoveScope(%q) succeeded, want a refusal", in)
+		}
+	}
+	// The zero value is invalid: a caller that forgot to choose gets an error,
+	// never a silent "all".
+	var zero RemoveScope
+	if zero.valid() {
+		t.Error("the zero RemoveScope must not be valid")
+	}
+	if err := fxParseScope(t, zero); err == nil {
+		t.Error("RemoveWithScope accepted the zero scope, want a refusal")
+	}
+}
+
+// fxParseScope runs RemoveWithScope with the zero scope against a fixture the
+// test constructed; split out so the table test stays declarative.
+func fxParseScope(t *testing.T, scope RemoveScope) error {
+	t.Helper()
+	fx := newInstallFixture(t, darwinMetalCase())
+	fx.mustInstall(t)
+	return fx.installer.RemoveWithScope(context.Background(), scope)
+}
+
+func TestRemoveRuntimeScopeKeepsWeightsAsCache(t *testing.T) {
+	fx := newInstallFixture(t, darwinMetalCase())
+	report := fx.mustInstall(t)
+
+	// A leftover of an interrupted install that the scope must also reclaim.
+	staging, err := fx.layout.RuntimeStagingDir(report.Manifest.Backend)
+	if err != nil {
+		t.Fatalf("RuntimeStagingDir: %v", err)
+	}
+	if err := os.MkdirAll(staging, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	if err := fx.installer.RemoveWithScope(context.Background(), RemoveRuntime); err != nil {
+		t.Fatalf("RemoveWithScope(runtime): %v", err)
+	}
+	requireAbsent(t, report.RuntimeDir, "the runtime tree")
+	requireAbsent(t, staging, "the staging tree")
+	downloads, err := fx.layout.DownloadsDir()
+	if err != nil {
+		t.Fatalf("DownloadsDir: %v", err)
+	}
+	requireAbsent(t, downloads, "the archive staging area")
+	requireScopedCache(t, fx, report)
+
+	// And a re-install re-downloads only the RUNTIME: the surviving weight and
+	// projector bytes verify against their pins without a single new request,
+	// while the deleted runtime archive is fetched again.
+	modelRequestsBefore := fx.requestCount(ComponentModel) + fx.requestCount(ComponentMMProj)
+	fx.mustInstall(t)
+	modelRequestsAfter := fx.requestCount(ComponentModel) + fx.requestCount(ComponentMMProj)
+	if got := modelRequestsAfter - modelRequestsBefore; got != 0 {
+		t.Errorf("the reinstall made %d weight/projector requests; surviving artifacts must be cache hits",
+			got)
+	}
+	if fx.requestCount(ComponentRuntime) == 0 {
+		t.Error("the reinstall did not re-fetch the deleted runtime archive")
+	}
+}
+
+func TestRemoveWeightsScopeKeepsRuntime(t *testing.T) {
+	fx := newInstallFixture(t, darwinMetalCase())
+	report := fx.mustInstall(t)
+
+	if err := fx.installer.RemoveWithScope(context.Background(), RemoveWeights); err != nil {
+		t.Fatalf("RemoveWithScope(weights): %v", err)
+	}
+	modelFile, err := fx.layout.ModelFile(PackingPQ2_0)
+	if err != nil {
+		t.Fatalf("ModelFile: %v", err)
+	}
+	otherPacking, err := fx.layout.ModelFile(PackingPTQ1_0)
+	if err != nil {
+		t.Fatalf("ModelFile(PTQ1_0): %v", err)
+	}
+	requireAbsent(t, modelFile, "the installed packing's GGUF")
+	requireAbsent(t, otherPacking, "the other packing's GGUF")
+	requireDir(t, report.RuntimeDir, "the runtime tree, which a weights-only removal keeps")
+	proj, err := fx.layout.Destination(MMProjAsset())
+	if err != nil {
+		t.Fatalf("Destination(mmproj): %v", err)
+	}
+	requireFile(t, proj, "the projector GGUF, which a weights-only removal keeps")
+	requireNoManifest(t, fx.layout)
+}
+
+func TestRemoveProjectionScopeKeepsWeightsAndRuntime(t *testing.T) {
+	fx := newInstallFixture(t, darwinMetalCase())
+	report := fx.mustInstall(t)
+
+	if err := fx.installer.RemoveWithScope(context.Background(), RemoveProjection); err != nil {
+		t.Fatalf("RemoveWithScope(projection): %v", err)
+	}
+	proj, err := fx.layout.Destination(MMProjAsset())
+	if err != nil {
+		t.Fatalf("Destination(mmproj): %v", err)
+	}
+	requireAbsent(t, proj, "the projector GGUF")
+	requireFile(t, report.ModelFile, "the model GGUF, which a projection-only removal keeps")
+	requireDir(t, report.RuntimeDir, "the runtime tree, which a projection-only removal keeps")
+	requireNoManifest(t, fx.layout)
+}
+
+func TestRemoveScopeClearsConfigUnderEveryScope(t *testing.T) {
+	for _, scope := range []RemoveScope{RemoveAll, RemoveRuntime, RemoveWeights, RemoveProjection} {
+		fx := newInstallFixture(t, darwinMetalCase())
+		report := fx.mustInstall(t)
+
+		if err := fx.installer.RemoveWithScope(context.Background(), scope); err != nil {
+			t.Fatalf("RemoveWithScope(%s): %v", scope, err)
+		}
+		if n := fx.sink.removed(); n != 1 {
+			t.Errorf("scope %s: ApplyRemoved called %d times, want 1", scope, n)
+		}
+		requireNoManifest(t, fx.layout)
+
+		// The embedding-model decoy survives every scope.
+		embeddingModel := filepath.Join(fx.agentDir, "models", "ggml-model-q4_0.gguf")
+		if err := os.WriteFile(embeddingModel, []byte("embedding model"), 0o600); err != nil {
+			t.Fatalf("write embedding model decoy: %v", err)
+		}
+		requireFile(t, embeddingModel, "the flat embedding model under scope "+string(scope))
+		_ = report
+	}
+}
+
+func TestDetectLeftovers(t *testing.T) {
+	fx := newInstallFixture(t, darwinMetalCase())
+
+	// Nothing installed, nothing on disk: no leftovers.
+	lo, err := fx.installer.DetectLeftovers()
+	if err != nil {
+		t.Fatalf("DetectLeftovers: %v", err)
+	}
+	if lo.Any() {
+		t.Errorf("an empty machine reported leftovers %+v", lo)
+	}
+
+	report := fx.mustInstall(t)
+	lo, err = fx.installer.DetectLeftovers()
+	if err != nil {
+		t.Fatalf("DetectLeftovers: %v", err)
+	}
+	if !lo.Runtime || !lo.Weights || !lo.Projection {
+		t.Errorf("an installed machine reported %+v, want every component present", lo)
+	}
+
+	// The scope leaves exactly its residue behind.
+	if err := fx.installer.RemoveWithScope(context.Background(), RemoveRuntime); err != nil {
+		t.Fatalf("RemoveWithScope(runtime): %v", err)
+	}
+	lo, err = fx.installer.DetectLeftovers()
+	if err != nil {
+		t.Fatalf("DetectLeftovers: %v", err)
+	}
+	if lo.Runtime {
+		t.Error("a runtime-scoped removal left runtime residue behind")
+	}
+	if !lo.Weights || !lo.Projection {
+		t.Errorf("a runtime-scoped removal lost the weights/projector residue: %+v", lo)
+	}
+
+	if err := fx.installer.RemoveWithScope(context.Background(), RemoveWeights); err != nil {
+		t.Fatalf("RemoveWithScope(weights): %v", err)
+	}
+	if err := fx.installer.RemoveWithScope(context.Background(), RemoveProjection); err != nil {
+		t.Fatalf("RemoveWithScope(projection): %v", err)
+	}
+	lo, err = fx.installer.DetectLeftovers()
+	if err != nil {
+		t.Fatalf("DetectLeftovers: %v", err)
+	}
+	if lo.Any() {
+		t.Errorf("a full removal left residue behind: %+v", lo)
+	}
+	_ = report
 }
 
 // ── manifest ──
@@ -2191,6 +2666,8 @@ func TestInstallRecordsAnAppliedCompatibilityGuard(t *testing.T) {
 		// The guard substitutes into this backend, so the fixture table has to
 		// be able to serve it.
 		guardBackends: []Backend{BackendCUDA128},
+		// A genuine CUDA 12.x userland is what lets the substitution fire.
+		cu12: CUDA12Present,
 	})
 	report := fx.mustInstall(t)
 
@@ -2234,6 +2711,71 @@ func TestInstallRecordsAnAppliedCompatibilityGuard(t *testing.T) {
 	persisted := guardFor(t, onDisk.Guards, GuardCUDA133Crash)
 	if !persisted.Applied || persisted.Reason != GuardReasonCrashOnLoad {
 		t.Errorf("persisted #222 = %+v, want the applied crash_on_load decision", persisted)
+	}
+	if persisted.Issue != decision.Issue || persisted.Guidance != decision.Guidance {
+		t.Error("the persisted #222 decision lost its citation or its guidance")
+	}
+	if onDisk.PackingReason != PackingReasonDefault {
+		t.Errorf("manifest packing_reason = %q, want %q", onDisk.PackingReason, PackingReasonDefault)
+	}
+}
+
+// TestInstallKeepsProbedBackendWithoutCUDA12Userland covers the other half of
+// the #222 record: a Linux CUDA 13.3 machine with NO usable CUDA 12.x userland
+// (the absent verdict — the real-machine shape behind issue #222's
+// non-reproduction, a ".so.12"-named symlink onto a 13-series ELF included)
+// keeps the probed 13.3 build. The substituted 12.8 build could not even load
+// here, so the guard is recorded unapplied — in the report AND on disk — with
+// guidance saying why, instead of trading a working build for one that cannot
+// start.
+func TestInstallKeepsProbedBackendWithoutCUDA12Userland(t *testing.T) {
+	fx := newInstallFixture(t, installCase{
+		platform: PlatformLinuxAMD64,
+		arch:     "amd64",
+		backend:  BackendCUDA133,
+		ramGiB:   64,
+		hostOS:   "linux",
+		// The substitution target stays servable, so the record shows the
+		// refusal is the probe's verdict and not a missing archive.
+		guardBackends: []Backend{BackendCUDA128},
+		cu12:          CUDA12Absent,
+	})
+	report := fx.mustInstall(t)
+
+	if report.Resolution.Backend != BackendCUDA133 {
+		t.Errorf("resolution backend = %q, want the probed %q (no CUDA 12 userland to substitute onto)",
+			report.Resolution.Backend, BackendCUDA133)
+	}
+	if report.Manifest.Backend != BackendCUDA133 {
+		t.Errorf("manifest backend = %q, want %q", report.Manifest.Backend, BackendCUDA133)
+	}
+
+	decision := guardFor(t, report.Guards, GuardCUDA133Crash)
+	if decision.Applied {
+		t.Error("the #222 substitution fired without a CUDA 12 userland; it must stay unapplied")
+	}
+	if decision.Backend != BackendCUDA128 {
+		t.Errorf("#222 target = %q, want the documented %q fallback", decision.Backend, BackendCUDA128)
+	}
+	if decision.Reason != GuardReasonCrashOnLoad || decision.Severity != GuardSeverityCritical {
+		t.Errorf("#222 reason/severity = %q/%q, want %q/%q",
+			decision.Reason, decision.Severity, GuardReasonCrashOnLoad, GuardSeverityCritical)
+	}
+	if !strings.Contains(decision.Guidance, "no usable CUDA 12.x") {
+		t.Errorf("#222 guidance does not say why the substitution was skipped: %q", decision.Guidance)
+	}
+
+	manifestPath, err := fx.layout.ManifestPath()
+	if err != nil {
+		t.Fatalf("ManifestPath: %v", err)
+	}
+	onDisk, err := ReadManifest(manifestPath)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	persisted := guardFor(t, onDisk.Guards, GuardCUDA133Crash)
+	if persisted.Applied {
+		t.Error("the persisted #222 decision claims a substitution that was not made")
 	}
 	if persisted.Issue != decision.Issue || persisted.Guidance != decision.Guidance {
 		t.Error("the persisted #222 decision lost its citation or its guidance")
@@ -2880,10 +3422,19 @@ func TestDefaultCommandRunnerIsBounded(t *testing.T) {
 		t.Error("defaultCommandRunner sets no cmd.WaitDelay: a grandchild holding the output pipe would block cmd.Run past the context deadline")
 	}
 
+	// The child must be spawned console-less. HideConsole is a no-op off
+	// Windows, but the source pin is what keeps the guarantee — the smoke
+	// test runs llama-server (a console-subsystem binary on Windows) through
+	// this runner, and without CREATE_NO_WINDOW every install click on
+	// Windows allocates and flashes a visible console window.
+	if !strings.Contains(body, "sysproc.HideConsole(cmd)") {
+		t.Error("defaultCommandRunner does not call sysproc.HideConsole(cmd): a Windows install would flash a console window for the llama-server smoke test")
+	}
+
 	// The captured output is capped. It is diagnostic only, so an uncapped buffer
 	// is an unbounded allocation driven by an external process.
 	t.Setenv(helperFloodEnv, "1")
-	out, err := defaultCommandRunner(context.Background(), os.Args[0],
+	out, err := defaultCommandRunner(context.Background(), os.Args[0], nil,
 		"-test.run=TestHelperFloodsOutput", "-test.v=false")
 	if err != nil {
 		t.Fatalf("defaultCommandRunner: %v", err)
@@ -2908,7 +3459,7 @@ func TestDefaultCommandRunnerIsBounded(t *testing.T) {
 // exit status: the cap and the delay bound the call, they do not swallow failures.
 func TestDefaultCommandRunnerReportsAFailingCommand(t *testing.T) {
 	t.Setenv(helperFloodEnv, "1")
-	_, err := defaultCommandRunner(context.Background(), os.Args[0],
+	_, err := defaultCommandRunner(context.Background(), os.Args[0], nil,
 		"-test.run=TestHelperFailsCommand", "-test.v=false")
 	if err == nil {
 		t.Error("a failing command reported no error")
@@ -2938,4 +3489,71 @@ func TestHelperFailsCommand(t *testing.T) {
 		t.Skip("helper mode only; re-executed by TestDefaultCommandRunnerReportsAFailingCommand")
 	}
 	t.Fatal("this helper always fails")
+}
+
+// helperOptionsEnv marks the child TestDefaultCommandRunnerAppliesRunOptions
+// re-executes; the helper asserts the launch configuration the runner was
+// asked to apply and reports what it observed.
+const helperOptionsEnv = "EMBEDDEDLLM_HELPER_RUN_OPTIONS"
+
+// helperMarkerFile is the file the helper reads by RELATIVE path: reading it
+// succeeds only when the child's working directory is the Dir the runner was
+// asked to apply.
+const helperMarkerFile = "run-options-marker.txt"
+
+// TestDefaultCommandRunnerAppliesRunOptions proves the trailing *RunOptions
+// actually reaches the child on the production runner: a non-nil Env replaces
+// the child's whole environment and Dir moves its working directory. This is
+// the execution half of the smoke test's launch-environment guarantee — the
+// fixture-based TestSmokeTestRunsUnderTheLaunchEnvironment only proves what
+// smokeTest ASKS for, this proves the runner DELIVERS it.
+func TestDefaultCommandRunnerAppliesRunOptions(t *testing.T) {
+	t.Setenv(helperOptionsEnv, "1")
+	t.Setenv("EMBEDDEDLLM_HELPER_SHOULD_NOT_INHERIT", "1")
+
+	dir := t.TempDir()
+	marker := "marker-content"
+	if err := os.WriteFile(filepath.Join(dir, helperMarkerFile), []byte(marker), 0o600); err != nil {
+		t.Fatalf("writing the marker: %v", err)
+	}
+	env := []string{helperOptionsEnv + "=1", "EMBEDDEDLLM_HELPER_MARK=" + marker}
+	out, err := defaultCommandRunner(context.Background(), os.Args[0],
+		&RunOptions{Env: env, Dir: dir},
+		"-test.run=TestHelperAssertsRunOptions", "-test.v=false")
+	if err != nil {
+		t.Fatalf("defaultCommandRunner: %v (output: %s)", err, out)
+	}
+	// A re-executed test binary prints its own "PASS" line after whatever the
+	// helper wrote, so the assertion is prefix-shaped rather than exact.
+	if !strings.HasPrefix(strings.TrimSpace(out), "ok "+marker) {
+		t.Errorf("helper reported %q, want the prefix %q (env/dir not applied?)",
+			strings.TrimSpace(out), "ok "+marker)
+	}
+}
+
+// TestHelperAssertsRunOptions is the child TestDefaultCommandRunnerAppliesRunOptions
+// re-executes: it verifies its own environment and working directory and
+// prints "ok <marker>" only when both match the RunOptions the runner was
+// given. The marker value arrives only through Env (so a non-applied Env is a
+// wrong answer, not a missing one) and the marker file is read by a relative
+// path (so only the applied Dir can find it).
+func TestHelperAssertsRunOptions(t *testing.T) {
+	if os.Getenv(helperOptionsEnv) != "1" {
+		t.Skip("helper mode only; re-executed by TestDefaultCommandRunnerAppliesRunOptions")
+	}
+	marker := os.Getenv("EMBEDDEDLLM_HELPER_MARK")
+	if marker == "" {
+		t.Fatal("Env not applied: EMBEDDEDLLM_HELPER_MARK is absent")
+	}
+	if os.Getenv("EMBEDDEDLLM_HELPER_SHOULD_NOT_INHERIT") != "" {
+		t.Fatal("Env replaced: the parent environment leaked into the child")
+	}
+	content, err := os.ReadFile(helperMarkerFile)
+	if err != nil {
+		t.Fatalf("reading %s relative to the working directory: %v", helperMarkerFile, err)
+	}
+	if string(content) != marker {
+		t.Errorf("marker file carries %q, want %q", string(content), marker)
+	}
+	fmt.Print("ok " + marker)
 }

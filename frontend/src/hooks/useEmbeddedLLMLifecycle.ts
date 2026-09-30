@@ -20,6 +20,7 @@ import {
   removeEmbeddedLLM,
   unloadEmbeddedLLM,
 } from '@/api/embedded'
+import type { EmbeddedLLMRemoveScope } from '@/api/embedded'
 import {
   refreshEmbeddedLLMStatus,
   runEmbeddedLLMAction,
@@ -38,8 +39,11 @@ export interface EmbeddedLLMLifecycle {
   cancelInstall: () => void
   load: () => void
   unload: () => void
-  /** Runs the removal. The caller confirms first — this is irreversible. */
-  remove: () => void
+  /** Runs the removal. The caller confirms first — this is irreversible. The
+   *  scope chooses which bytes are deleted ("all" by default); the install
+   *  record and the config are cleared under every scope, so a partial
+   *  removal leaves a cache, not an install. */
+  remove: (scope?: EmbeddedLLMRemoveScope) => void
 }
 
 export function useEmbeddedLLMLifecycle(): EmbeddedLLMLifecycle {
@@ -83,7 +87,8 @@ export function useEmbeddedLLMLifecycle(): EmbeddedLLMLifecycle {
     [],
   )
   const remove = useCallback(
-    () => void runEmbeddedLLMAction('remove', removeEmbeddedLLM, refreshEmbeddedLLMStatus),
+    (scope: EmbeddedLLMRemoveScope = 'all') =>
+      void runEmbeddedLLMAction('remove', () => removeEmbeddedLLM(scope), refreshEmbeddedLLMStatus),
     [],
   )
 

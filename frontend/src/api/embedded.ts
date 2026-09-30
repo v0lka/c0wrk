@@ -65,6 +65,54 @@ export const MAX_AUTO_UNLOAD_MINUTES = 525600
  *  degrades to "unknown" instead of failing validation. */
 export type EmbeddedLLMState = string
 
+/** The scope of a removal: which embedded-LLM bytes are deleted. Mirrors
+ *  core/embeddedllm `RemoveScope`. "all" is the historical full removal; the
+ *  partial scopes clear the install record and the config under every value,
+ *  so what they spare is a verified cache a reinstall re-uses — not a
+ *  half-registered install. */
+export type EmbeddedLLMRemoveScope = 'all' | 'runtime' | 'weights' | 'projection'
+
+/** One backend-compatibility decision of an install (mirrors backend
+ *  `EmbeddedLLMGuard`, i.e. core/embeddedllm `GuardDecision`): the documented
+ *  upstream failure the install was planned under, what c0wrk did about it
+ *  (`applied`) and the human sentence describing both. The string enum fields
+ *  are the core values verbatim and deliberately not enumerated, so a new
+ *  guard reason cannot break validation. */
+export interface EmbeddedLLMGuard {
+  readonly guard: string
+  readonly action: string
+  readonly reason: string
+  readonly severity: string
+  /** Upstream citation, "<repo>#<number>" (e.g.
+   *  "PrismML-Eng/llama.cpp#222"). */
+  readonly issue: string
+  /** Whether the install actually changed because of this decision. */
+  readonly applied: boolean
+  /** The substituted backend, "" unless action is prefer_backend. */
+  readonly backend: string
+  /** The substituted packing, "" unless action is prefer_packing. */
+  readonly packing: string
+  /** The user-facing sentence: what is documented, what c0wrk did or could
+   *  not do, and what the upstream workaround is. */
+  readonly guidance: string
+}
+
+function isEmbeddedLLMGuard(d: unknown): d is EmbeddedLLMGuard {
+  if (typeof d !== 'object' || d === null) return false
+  const o = d as Record<string, unknown>
+  return (
+    typeof o.guard === 'string' &&
+    typeof o.action === 'string' &&
+    typeof o.reason === 'string' &&
+    typeof o.severity === 'string' &&
+    typeof o.issue === 'string' &&
+    typeof o.applied === 'boolean' &&
+    typeof o.backend === 'string' &&
+    typeof o.packing === 'string' &&
+    typeof o.guidance === 'string'
+  )
+}
+
 /** The status snapshot. Mirrors backend `EmbeddedLLMStatus`
  *  (frontend/wailsjs/go/models.ts) field for field — every field is always
  *  present in the DTO (no omitempty), so the frontend never distinguishes
@@ -134,6 +182,20 @@ export interface EmbeddedLLMStatus extends EmbeddedLLMStatusExtras {
   /** Whether the subsystem could be constructed at all (false only before
    *  startup, when the agent directory is unset). */
   readonly available: boolean
+  /** The backend-compatibility decisions this install was planned under,
+   *  empty on a machine no documented failure covers (the healthy common
+   *  case). ALWAYS an array — never undefined — so a renderer has one code
+   *  path. This is how a degraded install (an unapplied guard: "it works, but
+   *  not the way you think") becomes visible in Settings. */
+  readonly guards: readonly EmbeddedLLMGuard[]
+  /** Which embedded-LLM artifacts are on disk right now. While `installed`
+   *  these are simply the install's own bytes; their purpose is the
+   *  not-installed state, where they describe what a scoped removal left
+   *  behind — a cache the next install re-verifies without re-downloading, or
+   *  residue a further removal can reclaim. */
+  readonly leftover_runtime: boolean
+  readonly leftover_weights: boolean
+  readonly leftover_projection: boolean
 }
 
 /** Guard for a `GetEmbeddedLLMStatus` response. Field presence and types only —
@@ -167,6 +229,11 @@ export function isEmbeddedLLMStatus(d: unknown): d is EmbeddedLLMStatus {
     typeof o.error === 'string' &&
     typeof o.install_error === 'string' &&
     typeof o.available === 'boolean' &&
+    Array.isArray(o.guards) &&
+    o.guards.every(isEmbeddedLLMGuard) &&
+    typeof o.leftover_runtime === 'boolean' &&
+    typeof o.leftover_weights === 'boolean' &&
+    typeof o.leftover_projection === 'boolean' &&
     isEmbeddedLLMStatusExtras(o)
   )
 }
@@ -214,13 +281,17 @@ export async function cancelEmbeddedLLMInstall(): Promise<void> {
   await app.CancelEmbeddedLLMInstall()
 }
 
-/** Stop a running server, delete both trees and the manifest, clear the
- *  generated provider record and migrate `llm.default_model` off the embedded
- *  composite. Blocking; refused while an install is in flight. Irreversible —
- *  the multi-gigabyte weights have to be downloaded again. */
-export async function removeEmbeddedLLM(): Promise<void> {
+/** Stop a running server and remove the parts of the installation `scope`
+ *  names (mirrors core/embeddedllm `RemoveScope`; the default "all" is the
+ *  historical full removal). Under EVERY scope the manifest and the generated
+ *  provider record are cleared and `llm.default_model` migrates off the
+ *  embedded composite — a partial removal leaves a CACHE, never a
+ *  half-registered install, so a runtime-scoped removal followed by an
+ *  install re-verifies the surviving weights instead of re-downloading the
+ *  multi-gigabyte model. Blocking; refused while an install is in flight. */
+export async function removeEmbeddedLLM(scope: EmbeddedLLMRemoveScope = 'all'): Promise<void> {
   const app = getApp()
-  await app.RemoveEmbeddedLLM()
+  await app.RemoveEmbeddedLLM(scope)
 }
 
 /** Start the server and BLOCK until the model can answer (a non-empty
