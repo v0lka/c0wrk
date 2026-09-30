@@ -35,13 +35,29 @@ type mockLLMCaller struct {
 
 	// optional error to return
 	err error
+
+	// delay is optional wall-clock latency the Call occupies before answering.
+	// A mock measured by the wall clock (serviceCall telemetry, the budget
+	// fallback path) must spend measurable time: an instant reply rounds down
+	// to 0 on Windows, whose monotonic clock ticks in system-timer steps
+	// (~1ms under the runtime's timeBeginPeriod(1), up to 15.6ms when the
+	// runtime relaxes it), so any "duration > 0" assertion reads a flat 0.
+	// See TestBudgetIngestCallerSkipsFailureAndFallsBack for the precedent.
+	delay time.Duration
 }
 
 func (m *mockLLMCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	// Record the call
 	m.mu.Lock()
 	m.calls = append(m.calls, req)
+	delay := m.delay
 	m.mu.Unlock()
+
+	// Occupy measurable time before answering (see the delay field comment).
+	// Slept outside the mutex so concurrent callers don't serialize on it.
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 
 	// If callFn is set, use it
 	if m.callFn != nil {

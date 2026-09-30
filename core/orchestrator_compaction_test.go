@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	coreprompts "github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/sp4rk/llm"
@@ -378,6 +379,10 @@ func TestCompactConversationHistory_SummarizationUsesCompactionCallPurpose(t *te
 // collector (OrchestratorDeps.ServiceMetrics), not into a loose one.
 func TestManualCompaction_RecordsServiceMetrics(t *testing.T) {
 	caller := &mockLLMCaller{
+		// Spend measurable time: the TotalDuration > 0 assertion below reads a
+		// flat 0 on Windows when the mock answers instantly (coarse monotonic
+		// clock), see mockLLMCaller.delay.
+		delay: 20 * time.Millisecond,
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			return &llm.ChatResponse{Message: llm.Message{Role: "assistant", Content: "SUMMARY"}}, nil
 		},

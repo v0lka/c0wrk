@@ -23,10 +23,15 @@ import (
 func TestServiceMetrics_PerKindCounters(t *testing.T) {
 	metrics := newServiceMetrics()
 
-	// Title: one successful call.
-	titleMock := &mockLLMCaller{responses: []*llm.ChatResponse{
-		{Message: llm.Message{Content: "Fix auth"}},
-	}}
+	// Title: one successful call. The mock must spend measurable time — the
+	// test asserts recorded latency > 0, and an instant reply rounds to a flat
+	// 0 on Windows' coarse monotonic clock (see mockLLMCaller.delay).
+	titleMock := &mockLLMCaller{
+		delay: 20 * time.Millisecond,
+		responses: []*llm.ChatResponse{
+			{Message: llm.Message{Content: "Fix auth"}},
+		},
+	}
 	if _, err := generateTitleWithCaller(context.Background(), titleMock, metrics, "qwen3.8-max", slog.Default(), "fix auth", nil); err != nil {
 		t.Fatalf("title: unexpected error: %v", err)
 	}
