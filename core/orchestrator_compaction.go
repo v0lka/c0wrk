@@ -291,9 +291,7 @@ func (o *Orchestrator) manualCompactionDeps() sdkmemory.CompactionDeps {
 				// preset, temperature pinned to the family-safe floor.
 				CallPurpose: llm.CallPurposeCompaction,
 			}
-			summary, err := oneshot.Do(ctx, o.llm, req, compactionSummarizeContent, oneshot.Options[string]{
-				Kind: "compaction_summarize",
-			})
+			summary, err := serviceCall(ctx, o.serviceMetrics, o.logger, ServiceKindCompactionSummary, o.currentModel(), o.llm, req, compactionSummarizeContent, oneshot.Options[string]{})
 			if err != nil {
 				return "", fmt.Errorf("compaction summarize: %w", err)
 			}

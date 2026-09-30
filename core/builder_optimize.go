@@ -136,9 +136,7 @@ func (b *OrchestratorBuilder) optimizeExtract(ctx context.Context, caller onesho
 		// Auxiliary text composition call — summarization class.
 		CallPurpose: llm.CallPurposeSummarization,
 	}
-	return oneshot.Do(ctx, caller, req, oneshot.ParseJSON[extractResult], oneshot.Options[extractResult]{
-		Kind:          "optimize_extract",
-		Logger:        b.log(),
+	return serviceCall(ctx, b.serviceMetrics, b.log(), ServiceKindOptimizeExtract, model, caller, req, oneshot.ParseJSON[extractResult], oneshot.Options[extractResult]{
 		OnFailure:     oneshot.OnFailureFallback,
 		FallbackValue: extractResult{},
 	})
@@ -160,9 +158,7 @@ func (b *OrchestratorBuilder) optimizeRewrite(ctx context.Context, caller onesho
 		// Auxiliary text composition call — summarization class.
 		CallPurpose: llm.CallPurposeSummarization,
 	}
-	result, err := oneshot.Do(ctx, caller, req, b.optimizeRewriteParse(), oneshot.Options[string]{
-		Kind:      "optimize_rewrite",
-		Logger:    b.log(),
+	result, err := serviceCall(ctx, b.serviceMetrics, b.log(), ServiceKindOptimizeRewrite, model, caller, req, b.optimizeRewriteParse(), oneshot.Options[string]{
 		RetryHint: optimizeRewriteRetryHint,
 	})
 	if err != nil {

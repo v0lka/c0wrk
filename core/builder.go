@@ -81,10 +81,17 @@ type OrchestratorBuilder struct {
 	// gateway is first assigned) or by SetMCPWorkDir (when the gateway is
 	// already assigned), using a record-and-apply pattern so SetMCPWorkDir
 	// never blocks on network-bound MCP startup. Guarded by b.mu.
-	mcpWorkDir       string
-	llmRouter        *llm.Router
-	modelRegistry    *llm.ModelRegistry
-	logger           *slog.Logger
+	mcpWorkDir    string
+	llmRouter     *llm.Router
+	modelRegistry *llm.ModelRegistry
+	logger        *slog.Logger
+	// serviceMetrics collects the per-kind counters/latency for the auxiliary
+	// one-shot service calls (issue #64): session title, commit message,
+	// prompt-optimizer extract/rewrite, compaction summarization. It is
+	// created once at construction and never mutated (only its internal
+	// aggregates are, under its own lock), so it needs no b.mu guarding and is
+	// shared into every per-session orchestrator via OrchestratorDeps.
+	serviceMetrics   *ServiceMetrics
 	vectorSearchFunc builtins.VectorSearchFunc
 	// vectorSearchWaitFunc is the bounded readiness waiter paired with
 	// vectorSearchFunc (OrchestratorDeps.VectorSearchWaitFunc): the RAG-hint
@@ -158,6 +165,15 @@ func (b *OrchestratorBuilder) log() *slog.Logger {
 	return slog.Default()
 }
 
+// ServiceMetricsSnapshot returns a copy of the per-kind telemetry for the
+// auxiliary one-shot service calls (issue #64): calls, attempts/retries, outcome
+// counts (ok/fallback/error/transport_error) and latency, keyed by ServiceKind.
+// Nil-safe — a builder without a collector (only a hand-built test literal)
+// yields an empty map.
+func (b *OrchestratorBuilder) ServiceMetricsSnapshot() map[ServiceKind]ServiceKindMetrics {
+	return b.serviceMetrics.Snapshot()
+}
+
 // asyncRunner returns the background-work dispatcher. When b.goAsync is set
 // (by tests) it is used directly; otherwise real goroutines are spawned. This
 // indirection lets tests run detached work synchronously and deterministically.
@@ -186,9 +202,10 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, p
 	}
 
 	b := &OrchestratorBuilder{
-		logger:   logger,
-		initDone: make(chan struct{}),
-		mcpDone:  make(chan struct{}),
+		logger:         logger,
+		initDone:       make(chan struct{}),
+		mcpDone:        make(chan struct{}),
+		serviceMetrics: newServiceMetrics(),
 	}
 
 	// 0. Build proxy client (fast — no network, just config parsing)
@@ -781,6 +798,7 @@ func (b *OrchestratorBuilder) Build(
 		ContextFactory:       contextFactory,
 		Reflector:            coreReflector,
 		Logger:               logger,
+		ServiceMetrics:       b.serviceMetrics,
 		Emitter:              emitter,
 		ModelRegistry:        modelReg,
 		ToolResultBudget:     toolResultBudget,
@@ -1002,13 +1020,13 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 		caller = agent.NewLoggingLLMCaller(caller, llmRouter.ActiveProviderName(), b.logger)
 		caller = agent.NewDumpCaller(caller, dw, b.logger)
 	}
-	return generateTitleWithCaller(ctx, caller, bareActiveModel(llmRouter), b.log(), userMessage, activeSkills)
+	return generateTitleWithCaller(ctx, caller, b.serviceMetrics, bareActiveModel(llmRouter), b.log(), userMessage, activeSkills)
 }
 
 // generateTitleWithCaller issues the title one-shot. It is a separate function
 // so that tests can inject a mock caller and verify the request shape
 // deterministically.
-func generateTitleWithCaller(ctx context.Context, caller oneshot.Caller, model string, logger *slog.Logger, userMessage string, activeSkills []string) (string, error) {
+func generateTitleWithCaller(ctx context.Context, caller oneshot.Caller, metrics *ServiceMetrics, model string, logger *slog.Logger, userMessage string, activeSkills []string) (string, error) {
 	systemPrompt := "Generate a concise title (3-7 words) describing the primary goal for a conversation that starts with the following user message. Output ONLY the title text, no quotes, no punctuation at the end."
 	if len(activeSkills) > 0 {
 		systemPrompt += "\n\nThe user has explicitly activated the following skills: " + strings.Join(activeSkills, ", ") + ". Consider these when determining the topic."
@@ -1025,10 +1043,7 @@ func generateTitleWithCaller(ctx context.Context, caller oneshot.Caller, model s
 		// Auxiliary text composition call — summarization class.
 		CallPurpose: llm.CallPurposeSummarization,
 	}
-	return oneshot.Do(ctx, caller, req, titleContent, oneshot.Options[string]{
-		Kind:   "title",
-		Logger: logger,
-	})
+	return serviceCall(ctx, metrics, logger, ServiceKindTitle, model, caller, req, titleContent, oneshot.Options[string]{})
 }
 
 // titleContent passes the response content through unchanged: any content is
@@ -1227,9 +1242,7 @@ func (b *OrchestratorBuilder) generateCommitMessageWithCaller(
 ) (string, error) {
 	req := buildCommitMessageRequest(diff, serviceReasoningEffort(model, oneshotTierCommit))
 
-	message, err := oneshot.Do(ctx, caller, req, b.commitMessageParse(providerName, diff), oneshot.Options[string]{
-		Kind:      "commit_message",
-		Logger:    b.log(),
+	message, err := serviceCall(ctx, b.serviceMetrics, b.log(), ServiceKindCommitMessage, model, caller, req, b.commitMessageParse(providerName, diff), oneshot.Options[string]{
 		RetryHint: commitMessageRetryHint,
 	})
 	if err != nil {
@@ -2490,10 +2503,7 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 					// preset, temperature pinned to the family-safe floor.
 					CallPurpose: llm.CallPurposeCompaction,
 				}
-				summary, err := oneshot.Do(ctx, summarizeCaller, req, compactionSummarizeContent, oneshot.Options[string]{
-					Kind:   "compaction_summarize",
-					Logger: b.log(),
-				})
+				summary, err := serviceCall(ctx, b.serviceMetrics, b.log(), ServiceKindCompactionSummary, bareActiveModel(llmRouter), summarizeCaller, req, compactionSummarizeContent, oneshot.Options[string]{})
 				if err != nil {
 					return "", fmt.Errorf("compaction summarize: %w", err)
 				}

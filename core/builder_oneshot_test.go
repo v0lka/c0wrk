@@ -56,7 +56,7 @@ func TestGenerateTitleWithCaller_RequestShape(t *testing.T) {
 		{Message: llm.Message{Content: "Refactor auth middleware"}},
 	}}
 
-	title, err := generateTitleWithCaller(context.Background(), mock, "qwen3.8-max", slog.Default(),
+	title, err := generateTitleWithCaller(context.Background(), mock, nil, "qwen3.8-max", slog.Default(),
 		"please refactor my auth middleware", []string{"review", "study-paper"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -100,7 +100,7 @@ func TestGenerateTitleWithCaller_EmptyContentNoRetry(t *testing.T) {
 		{Message: llm.Message{Content: ""}},
 	}}
 
-	title, err := generateTitleWithCaller(context.Background(), mock, "qwen3.8-max", slog.Default(), "hello", nil)
+	title, err := generateTitleWithCaller(context.Background(), mock, nil, "qwen3.8-max", slog.Default(), "hello", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
