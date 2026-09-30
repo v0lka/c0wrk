@@ -44,10 +44,15 @@ const (
 // ServiceKindMetrics is the aggregate telemetry for one ServiceKind. All
 // counters are monotonic; the durations are wall-clock and cover the whole
 // client exchange (including any nudge re-sends).
+//
+// Retries = Attempts - Calls holds only for calls that reached the wire
+// (nudge re-sends); a call cancelled before its first attempt records
+// Calls=1 with Attempts=0, so consumers must not derive Retries from the
+// difference unconditionally.
 type ServiceKindMetrics struct {
 	Calls           int64         // serviceCall invocations
 	Attempts        int64         // underlying LLM calls (first try + nudges)
-	Retries         int64         // Attempts - Calls (nudge re-sends)
+	Retries         int64         // nudge re-sends; see the invariant caveat above
 	OK              int64         // terminal parse success
 	Fallback        int64         // nudge loop exhausted, degraded value returned
 	Errors          int64         // terminal refusal (non-transport)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/oneshot"
 )
 
 // --- per-kind metrics ---
@@ -116,6 +117,27 @@ func TestServiceCall_TimeoutClassifiedAsTransportError(t *testing.T) {
 	km := metrics.Snapshot()[ServiceKindOptimizeRewrite]
 	if km.Attempts != 1 || km.TransportErrors != 1 || km.Errors != 0 {
 		t.Errorf("metrics = %+v, want one attempt classified as a transport error", km)
+	}
+}
+
+// TestServiceCall_NilCallerRejected pins the defensive contract: the oneshot
+// client's own nil-caller refusal never fires (it sees only the metering
+// wrapper), so serviceCall must reject a nil caller itself — with an error,
+// never a panic — and record and log nothing.
+func TestServiceCall_NilCallerRejected(t *testing.T) {
+	metrics := newServiceMetrics()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	_, err := serviceCall[string](context.Background(), metrics, logger, ServiceKindTitle, "m", nil, llm.ChatRequest{}, nil, oneshot.Options[string]{})
+	if err == nil || !strings.Contains(err.Error(), "nil caller") {
+		t.Fatalf("err = %v, want a nil-caller error", err)
+	}
+	if snap := metrics.Snapshot(); len(snap) != 0 {
+		t.Errorf("a rejected call must record nothing, got %+v", snap)
+	}
+	if out := buf.String(); out != "" {
+		t.Errorf("a rejected call must log nothing, got: %s", out)
 	}
 }
 

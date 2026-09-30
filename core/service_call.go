@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -42,10 +43,12 @@ func (c *serviceMeteringCaller) Call(ctx context.Context, req llm.ChatRequest) (
 //   - one consistent structured log record per call, carrying service_kind,
 //     model, outcome, attempts and duration.
 //
-// The client is the SOLE log emitter for this record: opts.Logger is cleared
-// here (the caller passes no logger), so the fields never drift between helpers
-// and a failure is never logged twice — matching the "one shared client"
-// contract in Issue #64.
+// serviceCall is the sole log emitter for this record: opts.Logger is cleared
+// here, so the client's own logging is suppressed — the fields never drift
+// between helpers, and c0wrk and the client never log the same record twice
+// (matching the "one shared client" contract in Issue #64). Domain-level
+// diagnostics at the call sites (the commit-message validation warning, the
+// per-attempt rewrite warnings) are separate records by design and unaffected.
 //
 // Transport failures are never retried here (the Router owns provider retry);
 // the client's terminal refusal and fallback values pass through unchanged.
@@ -60,6 +63,16 @@ func serviceCall[T any](
 	parse oneshot.Parse[T],
 	opts oneshot.Options[T],
 ) (T, error) {
+	// Re-assert the client's nil-caller contract here: oneshot.Do refuses a
+	// nil caller, but it sees only the serviceMeteringCaller wrapper, so a nil
+	// inner caller would panic inside the wrapper's first Call instead of
+	// returning an error. Every current call site pre-checks its caller; this
+	// guard keeps the contract intact for the next one.
+	if caller == nil {
+		var zero T
+		return zero, errors.New("service call: nil caller")
+	}
+
 	// c0wrk, not the client, labels and logs the record: force the kind and
 	// suppress the client's own logger so exactly one record is emitted.
 	opts.Kind = string(kind)
@@ -110,6 +123,12 @@ func classifyServiceOutcome(err, lastParseErr error, transportErrors int) Servic
 // degraded outcome (fallback, terminal refusal, transport failure) at Warn. It
 // deliberately carries no raw model output and no provider error text — both
 // can echo untrusted input — only the low-cardinality classifier fields.
+//
+// The optimize-extract fallback logs at Warn even though it is a normal
+// by-design outcome (the historical behavior returns the original prompt after
+// the nudge loop): surfacing every degraded call is a deliberate spec decision,
+// to be revisited — lowered to Info for that kind+outcome pair — only if
+// release telemetry shows regular noise.
 func logServiceCall(logger *slog.Logger, kind ServiceKind, model string, outcome ServiceOutcome, attempts int, duration time.Duration) {
 	if logger == nil {
 		return
