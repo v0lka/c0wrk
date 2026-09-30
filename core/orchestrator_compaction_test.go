@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	coreprompts "github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/sp4rk/llm"
@@ -370,6 +371,37 @@ func TestCompactConversationHistory_SummarizationUsesCompactionCallPurpose(t *te
 	}
 	if len(got) >= len(hist) {
 		t.Errorf("expected fewer messages after compaction, got %d of %d", len(got), len(hist))
+	}
+}
+
+// TestManualCompaction_RecordsServiceMetrics pins that the manual-compaction
+// summarization call records its telemetry into the builder-shared per-kind
+// collector (OrchestratorDeps.ServiceMetrics), not into a loose one.
+func TestManualCompaction_RecordsServiceMetrics(t *testing.T) {
+	caller := &mockLLMCaller{
+		// Spend measurable time: the TotalDuration > 0 assertion below reads a
+		// flat 0 on Windows when the mock answers instantly (coarse monotonic
+		// clock), see mockLLMCaller.delay.
+		delay: 20 * time.Millisecond,
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			return &llm.ChatResponse{Message: llm.Message{Role: "assistant", Content: "SUMMARY"}}, nil
+		},
+	}
+	o, _ := newCompactionTestOrchestrator(caller)
+	metrics := newServiceMetrics()
+	o.serviceMetrics = metrics
+	o.SetConversationHistory(compactionHistory(30))
+
+	if _, _, err := o.CompactConversationHistory(context.Background(), "summarization"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	km := metrics.Snapshot()[ServiceKindCompactionSummary]
+	if km.Calls == 0 || km.Attempts == 0 || km.OK == 0 {
+		t.Errorf("compaction metrics = %+v, want at least one successful call", km)
+	}
+	if km.TotalDuration <= 0 {
+		t.Errorf("compaction TotalDuration = %v, want > 0", km.TotalDuration)
 	}
 }
 
