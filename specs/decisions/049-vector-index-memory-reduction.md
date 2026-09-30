@@ -18,6 +18,8 @@ Field reports showed the desktop process growing to multi-gigabyte RSS during an
 
 The accepted program is **A + B + C + F**: the cheap-to-medium wins that close the OOM symptoms and cut the resident constant. D's dedup effect is delivered as a by-product of F's implementation (commit-time metadata narrowing + per-file sidecar rows) without forking chromem. E and G stay rejected for this cycle (see Alternatives). Steps 1–6 of the program shipped one item each; this ADR records the whole.
 
+> Forward reference (added by [ADR-064](064-branch-scoped-lazy-vector-index-open.md)): the multiplier list above did not include the ×branches cost of the then-eager whole-project open, which gob-decoded every branch's collection at `SetProject`; that multiplier was eliminated separately, after this ADR, by per-branch DB roots — the accepted program here is unchanged.
+
 ## Decision
 
 1. **A — GC soft memory limit + explicit scavenges** (`desktop/memlimit.go`, `desktop/memlimit_ram_*.go`, knob `runtime.memory_soft_limit_mb`).
