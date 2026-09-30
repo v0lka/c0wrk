@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/orchestration"
 )
 
@@ -90,8 +91,10 @@ func TestHasDeclaredPlan_ContinuableResume(t *testing.T) {
 
 // TestExecute_ContinuableResume_ProceedsWithoutRedeclare is the core fix: a
 // paused task's approved plan (s1 succeeded, s2 never ran) executes WITHOUT a
-// re-declare. s1 is skipped via its restored successful StepResult (replayed
-// as a success event), s2 runs through the wave dispatcher.
+// re-declare. s1 is skipped via its restored successful StepResult — silently
+// (issue #99: its terminal events were emitted by the run that executed it,
+// so the resume wave's Execute emits none) — while s2 still runs through the
+// wave dispatcher.
 func TestExecute_ContinuableResume_ProceedsWithoutRedeclare(t *testing.T) {
 	bb := orchestration.NewMapBlackboard()
 	bb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{
@@ -103,10 +106,13 @@ func TestExecute_ContinuableResume_ProceedsWithoutRedeclare(t *testing.T) {
 
 	emitter := &mockEmitter{}
 	deps := conductorDeps{emitter: emitter}
-	// Production wires the inline lifecycle in RunConductor; Execute needs it
-	// to synthesize the skipped-step success pair.
+	// Production wires the inline lifecycle in RunConductor and shares the
+	// planRunState between it and the launcher; mirror that wiring here — a
+	// nil lifecycle planState would take the direct-construction fallback and
+	// wrongly treat the restored plan as declared in this run.
 	deps.lifecycle = newInlineStepLifecycle(emitter, bb)
 	planState := newPlanRunState(true) // continuable — NOT declared in this run
+	deps.lifecycle.planState = planState
 	rec := &waveRecorder{}
 	l := &conductorLauncher{
 		deps:            deps,
@@ -135,18 +141,18 @@ func TestExecute_ContinuableResume_ProceedsWithoutRedeclare(t *testing.T) {
 	if byID["s2"].Status != "completed" {
 		t.Errorf("s2 should have run, got %+v", byID["s2"])
 	}
-	// The skipped step must have been (re)announced as a SUCCESS to the UI.
-	foundS1Success := false
-	for _, pc := range emitter.planStepCompletes {
-		if pc.stepID == "s1" {
-			if !pc.success {
-				t.Errorf("skipped step s1 must replay success, got errMsg=%q", pc.errMsg)
-			}
-			foundS1Success = true
-		}
+	// Issue #99 pin: the resume wave's Execute emits NO events for
+	// durable-success steps. The wave stub emits nothing for s2 either, so
+	// the emitter must stay empty overall.
+	if len(emitter.planStepStarts) != 0 {
+		t.Errorf("resume Execute must emit no PlanStepStart for durable-success steps, got %+v", emitter.planStepStarts)
 	}
-	if !foundS1Success {
-		t.Error("expected a synthesized success PlanStepComplete for skipped s1")
+	if len(emitter.planStepCompletes) != 0 {
+		t.Errorf("resume Execute must emit no PlanStepComplete for durable-success steps, got %+v", emitter.planStepCompletes)
+	}
+	// The terminal state is still recorded, just silently.
+	if !deps.lifecycle.isCompleted("s1") {
+		t.Error("skipped durable-success s1 must be settled silently in the lifecycle")
 	}
 }
 
@@ -235,47 +241,155 @@ func TestPlanHasUnreachedSteps(t *testing.T) {
 	})
 }
 
-// TestInlineStepLifecycle_CompleteAll_ContinuableReplaysRestoredSuccess: on a
-// continuable resume the finish-fallback sweep must NOT repaint a step that
-// already succeeded in a previous run — it replays success — while genuinely
-// unreached steps get this run's terminal failure.
+// TestInlineStepLifecycle_CompleteAll_ContinuableReplaysRestoredSuccess pins
+// the finish-fallback sweep's issue #99 contract for a step that already
+// succeeded in a previous run: who owns the plan panel state decides.
+//   - continuation resume (plan active, NOT declared this run): silence —
+//     the terminal events came from the run that executed the step;
+//   - plan re-declared in this run: the panel was reset to pending, so the
+//     sweep replays the restored success as a Start+Complete(success) pair.
+//
+// In both cases a genuinely unreached step gets this run's terminal failure.
 func TestInlineStepLifecycle_CompleteAll_ContinuableReplaysRestoredSuccess(t *testing.T) {
+	newFixture := func() (*mockEmitter, *inlineStepLifecycle) {
+		bb := orchestration.NewMapBlackboard()
+		bb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{
+			{ID: "s1", Summary: "done earlier", Description: "d1"},
+			{ID: "s2", Summary: "never ran", Description: "d2"},
+		}})
+		// s1 succeeded in the PREVIOUS run (restored StepResult, error-free).
+		bb.SetStepResult("s1", "s1 output", nil, nil)
+		emitter := &mockEmitter{}
+		return emitter, newInlineStepLifecycle(emitter, bb)
+	}
+
+	t.Run("continuable resume: restored success stays silent", func(t *testing.T) {
+		emitter, lc := newFixture()
+		lc.planState = newPlanRunState(true) // continuable — NOT declared in this run
+
+		lc.completeAll(false, "run failed")
+
+		for _, ps := range emitter.planStepStarts {
+			if ps.stepID == "s1" {
+				t.Error("restored-successful s1 must not be re-Started on a continuation resume")
+			}
+		}
+		for _, pc := range emitter.planStepCompletes {
+			if pc.stepID == "s1" {
+				t.Errorf("restored-successful s1 must stay silent on a continuation resume, got Complete(success=%v errMsg=%q)", pc.success, pc.errMsg)
+			}
+		}
+		// The genuinely unreached step still gets this run's terminal failure.
+		s2done := false
+		for _, pc := range emitter.planStepCompletes {
+			if pc.stepID == "s2" {
+				s2done = true
+				if pc.success || pc.errMsg != "run failed" {
+					t.Errorf("unreached s2 must carry the run failure, got success=%v errMsg=%q", pc.success, pc.errMsg)
+				}
+			}
+		}
+		if !s2done {
+			t.Error("expected a terminal event for unreached s2")
+		}
+	})
+
+	t.Run("re-declared this run: restored success is replayed", func(t *testing.T) {
+		emitter, lc := newFixture()
+		planState := newPlanRunState(false)
+		planState.markDeclared() // declare_plan in THIS run — panel reset to pending
+		lc.planState = planState
+
+		lc.completeAll(false, "run failed")
+
+		starts := 0
+		for _, ps := range emitter.planStepStarts {
+			if ps.stepID == "s1" {
+				starts++
+			}
+		}
+		if starts != 1 {
+			t.Errorf("expected exactly 1 replay PlanStepStart for restored-successful s1, got %d", starts)
+		}
+		completes := 0
+		for _, pc := range emitter.planStepCompletes {
+			if pc.stepID == "s1" {
+				completes++
+				if !pc.success || pc.errMsg != "" {
+					t.Errorf("re-declared run must replay s1 success, got success=%v errMsg=%q", pc.success, pc.errMsg)
+				}
+			}
+		}
+		if completes != 1 {
+			t.Errorf("expected exactly 1 replay PlanStepComplete for restored-successful s1, got %d", completes)
+		}
+		// The genuinely unreached step still gets this run's terminal failure.
+		s2done := false
+		for _, pc := range emitter.planStepCompletes {
+			if pc.stepID == "s2" {
+				s2done = true
+				if pc.success || pc.errMsg != "run failed" {
+					t.Errorf("unreached s2 must carry the run failure, got success=%v errMsg=%q", pc.success, pc.errMsg)
+				}
+			}
+		}
+		if !s2done {
+			t.Error("expected a terminal event for unreached s2")
+		}
+	})
+}
+
+// TestInlineStepLifecycle_SeedCompletedFromBlackboard pins the resume-path
+// seeding (issue #99): seedCompletedFromBlackboard silently settles every
+// plan step carrying an error-free restored StepResult — no events — so a
+// late checklist update cannot re-Start the step and neither the launcher's
+// skip branch nor the finish-fallback sweep can re-announce it.
+func TestInlineStepLifecycle_SeedCompletedFromBlackboard(t *testing.T) {
 	bb := orchestration.NewMapBlackboard()
 	bb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{
 		{ID: "s1", Summary: "done earlier", Description: "d1"},
 		{ID: "s2", Summary: "never ran", Description: "d2"},
+		{ID: "s3", Summary: "failed earlier", Description: "d3"},
 	}})
 	bb.SetStepResult("s1", "s1 output", nil, nil)
+	bb.SetStepResult("s3", "", context.DeadlineExceeded, nil)
 
 	emitter := &mockEmitter{}
 	lc := newInlineStepLifecycle(emitter, bb)
-	lc.planState = newPlanRunState(true) // continuable resume
 
-	lc.completeAll(false, "run failed")
+	lc.seedCompletedFromBlackboard()
 
-	saw := map[string]struct {
-		success bool
-		errMsg  string
-	}{}
-	for _, pc := range emitter.planStepCompletes {
-		saw[pc.stepID] = struct {
-			success bool
-			errMsg  string
-		}{pc.success, pc.errMsg}
+	// Seeding itself is silent.
+	if len(emitter.planStepStarts) != 0 || len(emitter.planStepCompletes) != 0 {
+		t.Errorf("seeding must not emit events, got starts=%d completes=%d", len(emitter.planStepStarts), len(emitter.planStepCompletes))
 	}
-	s1, ok := saw["s1"]
-	if !ok {
-		t.Fatal("expected a terminal event for restored-successful s1")
+	// Only the restored-successful step is settled.
+	if !lc.isCompleted("s1") {
+		t.Error("restored-successful s1 must be seeded as completed")
 	}
-	if !s1.success || s1.errMsg != "" {
-		t.Errorf("restored-successful s1 must replay success, got success=%v errMsg=%q", s1.success, s1.errMsg)
+	if lc.isCompleted("s2") {
+		t.Error("never-run s2 must not be seeded as completed")
 	}
-	s2, ok := saw["s2"]
-	if !ok {
-		t.Fatal("expected a terminal event for unreached s2")
+	if lc.isCompleted("s3") {
+		t.Error("failed s3 must not be seeded as completed")
 	}
-	if s2.success || s2.errMsg != "run failed" {
-		t.Errorf("unreached s2 must carry the run failure, got success=%v errMsg=%q", s2.success, s2.errMsg)
+
+	// A late checklist update for the seeded step must NOT re-emit
+	// PlanStepStart (the onChecklistUpdate re-Start protection).
+	lc.onChecklistUpdate("s1", []agent.TodoItem{{Text: "leftover item"}})
+	if len(emitter.planStepStarts) != 0 {
+		t.Errorf("seeded step must not be re-Started by a late checklist update, got %+v", emitter.planStepStarts)
+	}
+	if len(emitter.stepTodoUpdates) != 1 || emitter.stepTodoUpdates[0].stepID != "s1" {
+		t.Errorf("checklist update itself must still flow through, got %+v", emitter.stepTodoUpdates)
+	}
+
+	// Contrast: an unseeded step still infers PlanStepStart from its first
+	// checklist update — the suppression comes from the seeding, not from a
+	// global mute of the lifecycle.
+	lc.onChecklistUpdate("s2", []agent.TodoItem{{Text: "fresh item"}})
+	if len(emitter.planStepStarts) != 1 || emitter.planStepStarts[0].stepID != "s2" {
+		t.Errorf("unseeded s2 must infer PlanStepStart from its first checklist update, got %+v", emitter.planStepStarts)
 	}
 }
 

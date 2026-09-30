@@ -963,6 +963,82 @@ describe('groupMessages — pause checkpoints', () => {
     expect(retry.status).toBe('completed')
   })
 
+  it('groups a restart+resume history with one block per step and no isRetry (post-fix resume emits only the pending step)', () => {
+    // Regression (issue AC#1): A and B completed, C still pending, then the
+    // app restarts. After the restart the full persisted history is
+    // regrouped from scratch (groupMessages over every row), and the resumed
+    // run appends its events. Post-fix the resume re-emits plan_step_start
+    // ONLY for the unfinished step — so the regrouped tree must show exactly
+    // one block per step, no isRetry duplicates for the completed steps, and
+    // the fresh start for the pending step must not be miscounted as a retry
+    // (it is that step's first start in this grouping pass).
+    const result = groupMessages([
+      makeUI({
+        id: 'plan-1',
+        type: 'plan',
+        content: '',
+        metadata: {
+          steps: [
+            { id: 'step-0', description: 'Setup project', summary: 'Setup' },
+            { id: 'step-1', description: 'Implement feature', summary: 'Implement' },
+            { id: 'step-2', description: 'Ship it', summary: 'Ship' },
+          ],
+        },
+      }),
+      // Pre-restart run: A and B completed, C never started.
+      makeUI({ id: 'start-a', type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup project', summary: 'Setup' } }),
+      makeUI({ id: 'done-a', type: 'plan_step_complete', metadata: { step_id: 'step-0', success: true, duration: 1000 } }),
+      makeUI({ id: 'start-b', type: 'plan_step_start', metadata: { step_id: 'step-1', description: 'Implement feature', summary: 'Implement' } }),
+      makeUI({ id: 'done-b', type: 'plan_step_complete', metadata: { step_id: 'step-1', success: true, duration: 2000 } }),
+      // --- restart: the history regrouping above is the restart boundary;
+      // the resumed run appends events for the pending step only.
+      makeUI({ id: 'start-c-resume', type: 'plan_step_start', metadata: { step_id: 'step-2', description: 'Ship it', summary: 'Ship' } }),
+      makeUI({ id: 'done-c-resume', type: 'plan_step_complete', metadata: { step_id: 'step-2', success: true, duration: 3000 } }),
+    ])
+
+    const steps = result.items.filter((it) => it.kind === 'plan_step')
+    // Exactly one block per plan step — no duplicate isRetry blocks.
+    expect(steps).toHaveLength(3)
+    expect(steps.map((s) => (s as { stepId: string }).stepId)).toEqual(['step-0', 'step-1', 'step-2'])
+    for (const s of steps) {
+      expect((s as { isRetry?: boolean }).isRetry).toBeUndefined()
+      // A/B keep their completed status through the regroup; C completes too.
+      expect((s as { status: string }).status).toBe('completed')
+    }
+  })
+
+  it('opens a fresh isRetry block when a COMPLETED step is forcibly re-run (execute_plan)', () => {
+    // Pin (issue AC#3), contrast with the resume-reuse cases above: a
+    // deliberate re-run of an already COMPLETED step is a genuine retry. The
+    // terminal plan_step_complete removed the block from openSteps, so the
+    // forced re-run opens a SEPARATE isRetry block and the original
+    // completed block keeps its own status.
+    const result = groupMessages([
+      makeUI({
+        id: 'plan-1',
+        type: 'plan',
+        content: '',
+        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup' }] },
+      }),
+      makeUI({ id: 'start-1', type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
+      makeUI({ id: 'done-1', type: 'plan_step_complete', metadata: { step_id: 'step-0', success: true, duration: 1000 } }),
+      // Forced re-run of the completed step via execute_plan: a new block.
+      makeUI({ id: 'start-2', type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
+      makeUI({ id: 'done-2', type: 'plan_step_complete', metadata: { step_id: 'step-0', success: true, duration: 2000 } }),
+    ])
+
+    const steps = result.items.filter((it) => it.kind === 'plan_step')
+    expect(steps).toHaveLength(2)
+    const first = steps[0] as { id: string; status: string; isRetry?: boolean }
+    expect(first.id).toBe('start-1')
+    expect(first.status).toBe('completed')
+    expect(first.isRetry).toBeUndefined()
+    const rerun = steps[1] as { id: string; status: string; isRetry?: boolean }
+    expect(rerun.id).toBe('start-2')
+    expect(rerun.isRetry).toBe(true)
+    expect(rerun.status).toBe('completed')
+  })
+
   it('flips a subagent block to paused on subagent_paused (pure delegate run)', () => {
     const result = groupMessages([
       makeUI({ type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),

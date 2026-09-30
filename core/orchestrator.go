@@ -1641,6 +1641,13 @@ func (o *Orchestrator) resumePausedWork(ctx context.Context, bb orchestration.Bl
 	deps := o.buildConductorDeps(nil, nil)
 	planState := newPlanRunState(true)
 	inlineLifecycle := newInlineStepLifecycle(deps.emitter, bb)
+	// Issue #99: steps whose successful StepResult was restored from the
+	// paused run are settled BEFORE the wave — the fresh lifecycle must
+	// already treat them as completed (a late checklist update must not
+	// re-Start them, the launcher's skip branch and the finish fallback must
+	// not re-announce them). Seeding is silent: their terminal events were
+	// emitted by the run that executed them.
+	inlineLifecycle.seedCompletedFromBlackboard()
 	inlineLifecycle.planState = planState
 	deps.lifecycle = inlineLifecycle
 	launcher := &conductorLauncher{deps: deps, bb: bb, planState: planState}
