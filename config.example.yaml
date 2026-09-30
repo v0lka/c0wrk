@@ -1355,19 +1355,23 @@ orchestration:
 #
 #   park_capacity: 3           # how many recently-closed projects keep their
 #                              # vector-index state resident in RAM (default
-#                              # 3). Opening a project synchronously
-#                              # gob-decodes every branch document into memory
-#                              # and reopens the bleve lexical index — the
-#                              # dominant project-switch cost. Parking keeps
-#                              # that state alive so returning to a recent
-#                              # project restores it instantly and only
-#                              # re-indexes files that changed while away
-#                              # (IndexIncremental). Tradeoff: each parked
-#                              # project holds its full vector + lexical index
-#                              # in memory — raise this on a RAM-rich machine
-#                              # to make frequent project hopping instant,
-#                              # lower it (or set 0) on a constrained one.
-#                              # 0 disables parking: every switch reopens the
+#                              # 3). Opening a project gob-decodes only the
+#                              # ACTIVE branch's collection into memory and
+#                              # reopens its bleve lexical index — the
+#                              # dominant project-switch cost (ADR-064:
+#                              # SetProject opens no DB at all; the per-branch
+#                              # DB root is decoded once, at SwitchBranch).
+#                              # Parking keeps that state alive so returning
+#                              # to a recent project restores it instantly
+#                              # and only re-indexes files that changed
+#                              # while away (IndexIncremental). Tradeoff:
+#                              # each parked project holds its active
+#                              # branch's vector + lexical index in memory
+#                              # (one branch, not all of them) — raise this
+#                              # on a RAM-rich machine to make frequent
+#                              # project hopping instant, lower it (or set
+#                              # 0) on a constrained one. 0 disables
+#                              # parking: every switch reopens the
 #                              # persistent DB from scratch (the historical
 #                              # behaviour). Negative is treated as 0.
 #
