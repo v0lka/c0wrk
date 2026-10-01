@@ -116,6 +116,12 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 		ChatGPT: ConfigProviderFull{
 			APIKey: maskAPIKey(f.config.LLM.ChatGPT.APIKey),
 			Models: f.config.LLM.ChatGPT.Models,
+			// The auth mode round-trips so the settings UI renders the
+			// active mode; the empty stored value reads as api_key (the
+			// config layer's default semantics), so the response always
+			// carries an explicit mode. No secret travels with it — the
+			// OAuth tokens live in the OS keychain and never enter config.
+			AuthMode: chatGPTAuthModeOrAPIKey(f.config.LLM.ChatGPT.Auth.Mode),
 		},
 		OpenAICompatible:    make(map[string]ConfigProviderFull, len(f.config.LLM.OpenAICompatible)),
 		AnthropicCompatible: make(map[string]ConfigProviderFull, len(f.config.LLM.AnthropicCompatible)),
@@ -306,6 +312,23 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		}
 		if req.ChatGPT.APIKey != "" && req.ChatGPT.APIKey != maskedAPIKey {
 			candidate.ChatGPT.APIKey = req.ChatGPT.APIKey
+		}
+		// The auth mode is an explicit two-state switch, not a nullable
+		// override: nil keeps the persisted mode (debounced partial saves
+		// must not flip it), while a non-nil value must name a real mode —
+		// an empty or misspelled string is rejected here rather than
+		// silently falling back to key auth while the operator believes
+		// subscription auth is on (the same fail-closed stance the config
+		// loader's validate() takes). The value carries no secret.
+		if req.ChatGPT.AuthMode != nil {
+			switch mode := *req.ChatGPT.AuthMode; mode {
+			case config.ChatGPTAuthModeAPIKey, config.ChatGPTAuthModeOAuth:
+				candidate.ChatGPT.Auth.Mode = mode
+			default:
+				f.configMu.Unlock()
+				return fmt.Errorf("invalid LLM configuration: chatgpt auth_mode must be %q or %q, got %q",
+					config.ChatGPTAuthModeAPIKey, config.ChatGPTAuthModeOAuth, mode)
+			}
 		}
 	}
 

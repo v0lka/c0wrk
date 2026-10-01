@@ -795,6 +795,29 @@ export interface EmbeddedLLMStateData {
   readonly install_error: string
 }
 
+/** Payload of the global `chatgpt_auth:state` event: one transition of the
+ *  ChatGPT subscription sign-in flow (backend/frontend_api_auth.go). Exactly
+ *  one flow transition per event; the fields are state-dependent — `auth_url`
+ *  only on pending, the identity snapshot only on success, `error` only on
+ *  error — and never include a secret (no OAuth token value ever crosses the
+ *  boundary). Sign-out emits nothing; at most one sign-in flow exists at a
+ *  time. Mirrors backend ChatGPTAuthEventData. */
+export interface ChatGPTAuthEventData {
+  /** One of pending | success | error | cancelled. */
+  readonly state: 'pending' | 'success' | 'error' | 'cancelled'
+  /** pending only: the authorization URL the frontend opens in the system
+   *  browser. */
+  readonly auth_url?: string
+  /** success only: the account's email claim. */
+  readonly email?: string
+  /** success only: the ChatGPT account id backing the subscription. */
+  readonly account_id?: string
+  /** success only: the access token's expiry (RFC3339). */
+  readonly expires_at?: string
+  /** error only: the actionable failure cause. */
+  readonly error?: string
+}
+
 export interface GlobalEventMap {
   readonly 'startup_error': { readonly message: string; readonly error: string; readonly error_code?: string }
   readonly 'runtime_error': { readonly id: string; readonly message: string; readonly error_code?: string }
@@ -851,6 +874,10 @@ export interface GlobalEventMap {
    *  transition, once at startup after the manifest restore, and after an
    *  install, a removal or an auto-unload policy change. */
   readonly 'embedded_llm:state': EmbeddedLLMStateData
+  /** ChatGPT subscription sign-in flow transition (pending → success |
+   *  error | cancelled). Emitted by the background flow started with
+   *  StartChatGPTSignIn; sign-out emits nothing. */
+  readonly 'chatgpt_auth:state': ChatGPTAuthEventData
   readonly 'workdirs:changed': void
   readonly 'files:dropped': FilesDroppedData
   /** Quit attempt intercepted because sessions have live work; the user
@@ -1471,4 +1498,28 @@ export function isEmbeddedLLMStateData(d: unknown): d is EmbeddedLLMStateData {
   if (typeof d.auto_unload_minutes !== 'number') return false
   if (typeof d.error !== 'string') return false
   return typeof d.install_error === 'string'
+}
+
+/** The four `chatgpt_auth:state` payload states (backend chatgptAuthEvent*
+ * constants). A payload with any other state is not a transition this UI
+ * knows how to render. */
+const CHATGPT_AUTH_EVENT_STATES: ReadonlySet<string> = new Set([
+  'pending',
+  'success',
+  'error',
+  'cancelled',
+])
+
+/** Guard for a `chatgpt_auth:state` payload. `state` is the only field every
+ *  transition carries (the rest are state-dependent and `omitempty` on the Go
+ *  side), so the guard checks the enum and that every PRESENT optional field
+ *  has the type its renderer assumes — a corrupted value must fail here
+ *  instead of reaching a render path that string-operations it. */
+export function isChatGPTAuthEventData(d: unknown): d is ChatGPTAuthEventData {
+  if (!isObj(d)) return false
+  if (typeof d.state !== 'string' || !CHATGPT_AUTH_EVENT_STATES.has(d.state)) return false
+  for (const key of ['auth_url', 'email', 'account_id', 'expires_at', 'error'] as const) {
+    if (key in d && d[key] !== undefined && typeof d[key] !== 'string') return false
+  }
+  return true
 }

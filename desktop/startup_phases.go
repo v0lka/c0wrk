@@ -1454,6 +1454,24 @@ func (a *App) initEmbeddedLLM(log *slog.Logger) {
 		"elapsed_ms", time.Since(startTime).Milliseconds())
 }
 
+// initChatGPTAuth constructs the ChatGPT subscription-auth token manager and
+// restores whatever credentials the OS keychain holds. Mirrors initEmbeddedLLM:
+// no network I/O, no browser flow — a failed construction (most commonly a
+// Linux desktop without a reachable Secret Service) records the actionable
+// error and leaves the app fully usable on api_key auth. When an account is
+// restored AND the config selects oauth mode, the live token source is
+// mirrored into the builder seam so the first chat request already carries
+// subscription credentials.
+func (a *App) initChatGPTAuth(log *slog.Logger) {
+	if a.FrontendAPI == nil {
+		return
+	}
+	startTime := time.Now()
+	a.Lifecycle().InitChatGPTAuth()
+	log.Info("startup phase complete", "phase", "chatgpt_auth",
+		"elapsed_ms", time.Since(startTime).Milliseconds())
+}
+
 // stopEmbeddedLLM stops the supervised llama-server during Shutdown, releasing
 // the RAM/VRAM the loaded weights hold. It runs early in the teardown (before
 // the judge drain and the store closes) so the gigabytes are returned while the

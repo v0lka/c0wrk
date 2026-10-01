@@ -92,7 +92,7 @@ func TestProviderEntryFromConfig_PinAndProxyMatrix(t *testing.T) {
 				TLSFingerprint: tc.pin,
 			}
 
-			entry := providerEntryFromConfig("selfhosted", pc, llmClient, tc.proxyClient, proxy.NewBypassMatcher(tc.bypass), BuilderEmbeddedLLMConfig{}, llmBudgetWiring{}, identityExpand, nil)
+			entry := providerEntryFromConfig("selfhosted", pc, llmClient, tc.proxyClient, proxy.NewBypassMatcher(tc.bypass), BuilderEmbeddedLLMConfig{}, llmBudgetWiring{}, BuilderSubscriptionAuthConfig{}, identityExpand, nil)
 
 			if entry.Name != "selfhosted" || entry.ProviderType != "openai" ||
 				entry.APIKey != "key" || entry.BaseURL != "https://llm.lan:8443/v1" {
@@ -142,7 +142,7 @@ func TestProviderEntryFromConfig_ExpandsEnvVars(t *testing.T) {
 		Models:       []string{"qwen3"},
 	}
 
-	entry := providerEntryFromConfig("selfhosted", pc, nil, nil, proxy.BypassMatcher{}, BuilderEmbeddedLLMConfig{}, llmBudgetWiring{}, expand, nil)
+	entry := providerEntryFromConfig("selfhosted", pc, nil, nil, proxy.BypassMatcher{}, BuilderEmbeddedLLMConfig{}, llmBudgetWiring{}, BuilderSubscriptionAuthConfig{}, expand, nil)
 
 	if entry.APIKey != "secret" {
 		t.Errorf("APIKey = %q, want expanded 'secret'", entry.APIKey)
@@ -161,7 +161,7 @@ func TestProviderEntryFromConfig_ExpandsEnvVars(t *testing.T) {
 func TestProviderEntryFromConfig_NilSharedClient(t *testing.T) {
 	pc := BuilderProviderConfig{ProviderType: "openai", Models: []string{"m"}, TLSFingerprint: pinFixture}
 
-	entry := providerEntryFromConfig("selfhosted", pc, nil, nil, proxy.BypassMatcher{}, BuilderEmbeddedLLMConfig{}, llmBudgetWiring{}, identityExpand, nil)
+	entry := providerEntryFromConfig("selfhosted", pc, nil, nil, proxy.BypassMatcher{}, BuilderEmbeddedLLMConfig{}, llmBudgetWiring{}, BuilderSubscriptionAuthConfig{}, identityExpand, nil)
 
 	if entry.HTTPClient == nil {
 		t.Fatal("HTTPClient = nil, want a pinned client even without a shared base client")

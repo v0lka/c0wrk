@@ -123,6 +123,17 @@ type OrchestratorBuilder struct {
 	// nothing is listening on. Guarded by b.mu. See SetEmbeddedLLM.
 	embeddedLLM BuilderEmbeddedLLMConfig
 
+	// subscriptionAuth is the builder-level subscription-auth seam: the
+	// default BuilderSubscriptionAuthConfig applied to EVERY router this
+	// builder constructs when the per-build cfg carries no TokenSource of its
+	// own. It exists for the same reason as embeddedLLM above: the per-session
+	// orchestrator factory converts the live config where the token manager is
+	// not in scope, and without this default that router's chatgpt entry would
+	// run in the signed-out posture while the user is signed in — every
+	// request failing with "sign in with ChatGPT". Guarded by b.mu. See
+	// SetSubscriptionTokenSource.
+	subscriptionAuth BuilderSubscriptionAuthConfig
+
 	// askUserFunc is the ask_user callback supplied at construction. It is
 	// retained so a runtime silent-mode toggle can re-register the ask_user
 	// tool on the shared registry — with the live callback or, when silent mode
@@ -1481,6 +1492,44 @@ func (b *OrchestratorBuilder) embeddedSeam(cfg *BuilderConfig) BuilderEmbeddedLL
 	return b.embeddedLLM
 }
 
+// SetSubscriptionTokenSource installs (or, with a zero value, withdraws) the
+// builder-level subscription-auth seam applied to every router this builder
+// constructs.
+//
+// The backend calls it from the sign-in lifecycle — after a successful sign-in
+// with the live token manager, and on sign-out with the zero value — each time
+// mirroring the live auth state, exactly like syncEmbeddedBuilderSeam mirrors
+// the embedded install state. Both produce the same value; this one is the net
+// for the router builds that do not go through a per-build injection.
+//
+// The mechanism is identical to SetEmbeddedLLM's: a per-session orchestrator is
+// built from a BuilderConfig converted deep inside the session factory, which
+// has no path to the token manager, and a seam that has to be remembered at
+// every conversion site will eventually be forgotten at one — leaving a signed
+// IN user's requests failing with the signed-out error.
+//
+// It does NOT rebuild anything. Callers that need the change to reach the
+// already-cached router follow it with RebuildRouter; per-session routers pick
+// it up when they are next built.
+func (b *OrchestratorBuilder) SetSubscriptionTokenSource(cfg BuilderSubscriptionAuthConfig) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.subscriptionAuth = cfg
+}
+
+// subscriptionAuthSeam resolves the effective subscription-auth seam for a
+// router build: an explicit per-build TokenSource wins, otherwise the
+// builder-level default applies — the same single-resolution-point rule as
+// embeddedSeam, covering the per-session router too.
+func (b *OrchestratorBuilder) subscriptionAuthSeam(cfg *BuilderConfig) BuilderSubscriptionAuthConfig {
+	if cfg.SubscriptionAuth.TokenSource != nil && cfg.SubscriptionAuth.ProviderName != "" {
+		return cfg.SubscriptionAuth
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.subscriptionAuth
+}
+
 // RegisterVectorSearch adds the semantic_search tool to the shared registry.
 // This must be called after NewOrchestratorBuilder when the vector index backend
 // is available. The searchFunc and waitFunc are provided by the desktop layer;
@@ -1794,6 +1843,10 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	// Loader, which is the case for the per-session config the orchestrator
 	// factory converts (see SetEmbeddedLLM).
 	embedded := b.embeddedSeam(cfg)
+	// The subscription-auth seam resolves the same way (per-build wins, else
+	// the builder-level default) so the per-session router — whose config is
+	// converted where the token manager is not in scope — is covered too.
+	subscription := b.subscriptionAuthSeam(cfg)
 	// The adaptive request budget wiring (ADR-071): when the kill-switch is on
 	// and a session table was supplied, every provider entry's client gets the
 	// budget RoundTripper (on top of the pin, beneath the ensure-loaded gate).
@@ -1811,7 +1864,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		if !ok || len(pc.Models) == 0 {
 			continue
 		}
-		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, embedded, budget, cfg.ExpandEnvVars, b.log()))
+		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, embedded, budget, subscription, cfg.ExpandEnvVars, b.log()))
 	}
 	// Also include any providers not in the standard order (e.g. future additions).
 	// Collect unknown names and iterate in sorted order for determinism.
@@ -1825,7 +1878,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	sort.Strings(unknown)
 	for _, name := range unknown {
 		pc := cfg.LLM.ProviderConfigs[name]
-		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, embedded, budget, cfg.ExpandEnvVars, b.log()))
+		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, embedded, budget, subscription, cfg.ExpandEnvVars, b.log()))
 	}
 
 	// Model Profiles context-management override: keeps the router's token budget
@@ -2343,6 +2396,13 @@ func (w llmBudgetWiring) attachBudgetClient(
 // trained adaptive budget at the fixed 600 s (see attachBudgetClient). When
 // the kill-switch is off the wiring is inert and every entry is byte-for-byte
 // the pre-ADR-071 shape.
+//
+// Subscription auth (BuilderProviderConfig.SubscriptionAuth, set by
+// ToBuilderConfig for llm.chatgpt.auth.mode: "oauth") is resolved through the
+// subscription seam and expressed on the entry as TokenSource +
+// RequireStreaming. With the marker off — the api_key mode — neither field is
+// ever set and the entry is built exactly as before the mode existed, whatever
+// the seam carries.
 func providerEntryFromConfig(
 	name string,
 	pc BuilderProviderConfig,
@@ -2351,6 +2411,7 @@ func providerEntryFromConfig(
 	bypass proxy.BypassMatcher,
 	embedded BuilderEmbeddedLLMConfig,
 	budget llmBudgetWiring,
+	subscription BuilderSubscriptionAuthConfig,
 	expand func(string) string,
 	logger *slog.Logger,
 ) llm.ProviderEntry {
@@ -2384,6 +2445,7 @@ func providerEntryFromConfig(
 		// transport and no other entry can pick it up.
 		reasoningWire = llm.ReasoningWireChatTemplateKwargs
 	}
+	tokenSource, requireStreaming := subscriptionAuthEntry(name, pc, subscription)
 	return llm.ProviderEntry{
 		Name:         name,
 		ProviderType: pc.ProviderType,
@@ -2395,7 +2457,62 @@ func providerEntryFromConfig(
 		// top-level spelling stays the answer for LM Studio/vLLM/Ollama entries
 		// an operator points at the same loopback.
 		ReasoningWire: reasoningWire,
+		// Subscription auth (nil unless BuilderProviderConfig.SubscriptionAuth
+		// is set): the token source's per-request credentials override the
+		// static APIKey on the wire, so a key that lingers in config.yaml can
+		// never act as a silent fallback. RequireStreaming marks the
+		// subscription endpoint, which accepts streaming calls only.
+		TokenSource:      tokenSource,
+		RequireStreaming: requireStreaming,
 	}
+}
+
+// subscriptionAuthEntry resolves the auth shape of one provider entry from the
+// subscription marker and the seam:
+//
+//   - marker off (api_key mode): (nil, false) unconditionally — the historical
+//     entry, byte-for-byte, whatever the seam carries. This is the AC that
+//     api_key configs never change behavior.
+//
+//   - marker on + seam serving this entry: the seam's live token source. The
+//     static APIKey stays on the entry but the provider's middleware overrides
+//     it with the subscription credentials on every request.
+//
+//   - marker on + no serving seam (signed out, or not wired yet): the
+//     signInRequiredTokenSource stand-in. The entry keeps its place in the
+//     router — models stay visible and selectable — but every request fails
+//     fast with the actionable "sign in with ChatGPT" error instead of a
+//     silent fallback to the static api_key.
+func subscriptionAuthEntry(name string, pc BuilderProviderConfig, seam BuilderSubscriptionAuthConfig) (llm.TokenSource, bool) {
+	if !pc.SubscriptionAuth {
+		return nil, false
+	}
+	if seam.serves(name) {
+		return seam.TokenSource, true
+	}
+	return signInRequiredTokenSource{}, true
+}
+
+// errSignInRequired is the signed-out subscription-auth failure. It is the
+// ACTIONABLE error the task demands: it names the one action that fixes it
+// (sign in with ChatGPT) rather than a bare 401 the model or user would have
+// to diagnose. It contains no token material and is safe to surface anywhere.
+var errSignInRequired = errors.New(
+	"the chatgpt provider is set to ChatGPT subscription auth (llm.chatgpt.auth.mode: \"oauth\") " +
+		"but no account is signed in — sign in with ChatGPT to send requests through it",
+)
+
+// signInRequiredTokenSource is the signed-out stand-in TokenSource. The
+// provider's request middleware resolves credentials per attempt; failing
+// here aborts the request before any bytes reach the endpoint, so a signed-out
+// subscription entry never leaks a request to the codex backend and never
+// falls back to the static api_key.
+type signInRequiredTokenSource struct{}
+
+// Token implements llm.TokenSource by failing every call with the actionable
+// sign-in error.
+func (signInRequiredTokenSource) Token(context.Context) (llm.BearerToken, error) {
+	return llm.BearerToken{}, errSignInRequired
 }
 
 // dialPolicy derives the llmtls.DialPolicy for dialing targetURL (the

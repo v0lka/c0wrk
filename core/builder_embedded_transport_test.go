@@ -89,7 +89,7 @@ func TestProviderEntryFromConfig_EmbeddedGetsTheEnsureLoadedClient(t *testing.T)
 	}
 
 	entry := providerEntryFromConfig("embedded", embeddedProviderConfig(srv.URL+"/v1"),
-		shared, proxyClient, proxy.BypassMatcher{}, embedded, llmBudgetWiring{}, identityExpand, nil)
+		shared, proxyClient, proxy.BypassMatcher{}, embedded, llmBudgetWiring{}, BuilderSubscriptionAuthConfig{}, identityExpand, nil)
 
 	if entry.HTTPClient == nil {
 		t.Fatal("HTTPClient = nil, want the ensure-loaded client (a cold model is not listening)")
@@ -145,7 +145,7 @@ func TestProviderEntryFromConfig_EmbeddedGuardIsNameScoped(t *testing.T) {
 
 	for _, name := range []string{"anthropic", "chatgpt", "selfhosted", "Embedded", ""} {
 		entry := providerEntryFromConfig(name, embeddedProviderConfig("http://127.0.0.1:1/v1"),
-			shared, nil, proxy.BypassMatcher{}, embedded, llmBudgetWiring{}, identityExpand, nil)
+			shared, nil, proxy.BypassMatcher{}, embedded, llmBudgetWiring{}, BuilderSubscriptionAuthConfig{}, identityExpand, nil)
 		if entry.HTTPClient != nil {
 			t.Errorf("provider %q got a client (%T) — only the embedded entry may carry the transport",
 				name, entry.HTTPClient.Transport)
@@ -160,7 +160,7 @@ func TestProviderEntryFromConfig_EmbeddedWithoutALoaderIsInert(t *testing.T) {
 
 	entry := providerEntryFromConfig("embedded", embeddedProviderConfig("http://127.0.0.1:1/v1"),
 		shared, nil, proxy.BypassMatcher{}, BuilderEmbeddedLLMConfig{ProviderName: "embedded"},
-		llmBudgetWiring{}, identityExpand, nil)
+		llmBudgetWiring{}, BuilderSubscriptionAuthConfig{}, identityExpand, nil)
 
 	if entry.HTTPClient != nil {
 		t.Errorf("HTTPClient = %T, want nil with no loader wired", entry.HTTPClient)
@@ -188,7 +188,7 @@ func TestProviderEntryFromConfig_EmbeddedKeepsThePinResolution(t *testing.T) {
 	pc := embeddedProviderConfig(srv.URL + "/v1")
 	pc.TLSFingerprint = pinFixture // a well-formed pin that matches no certificate
 
-	entry := providerEntryFromConfig("embedded", pc, shared, nil, proxy.BypassMatcher{}, embedded, llmBudgetWiring{}, identityExpand, nil)
+	entry := providerEntryFromConfig("embedded", pc, shared, nil, proxy.BypassMatcher{}, embedded, llmBudgetWiring{}, BuilderSubscriptionAuthConfig{}, identityExpand, nil)
 
 	if entry.HTTPClient == nil {
 		t.Fatal("HTTPClient = nil, want the pinned client wrapped by the ensure-loaded transport")
@@ -233,7 +233,7 @@ func TestProviderEntryFromConfig_EmbeddedSelectsTheChatTemplateKwargsWire(t *tes
 	embedded := BuilderEmbeddedLLMConfig{ProviderName: "embedded", Loader: &fakeEmbeddedLoader{}}
 
 	entry := providerEntryFromConfig("embedded", embeddedProviderConfig("http://127.0.0.1:1/v1"),
-		shared, nil, proxy.BypassMatcher{}, embedded, llmBudgetWiring{}, identityExpand, nil)
+		shared, nil, proxy.BypassMatcher{}, embedded, llmBudgetWiring{}, BuilderSubscriptionAuthConfig{}, identityExpand, nil)
 
 	if entry.ReasoningWire != llm.ReasoningWireChatTemplateKwargs {
 		t.Errorf("embedded ReasoningWire = %q, want %q", entry.ReasoningWire, llm.ReasoningWireChatTemplateKwargs)
@@ -244,7 +244,7 @@ func TestProviderEntryFromConfig_EmbeddedSelectsTheChatTemplateKwargsWire(t *tes
 	// default, because c0wrk does not know which binary answers there.
 	for _, name := range []string{"anthropic", "chatgpt", "selfhosted", "lmstudio", "Embedded", ""} {
 		sibling := providerEntryFromConfig(name, embeddedProviderConfig("http://127.0.0.1:1/v1"),
-			shared, nil, proxy.BypassMatcher{}, embedded, llmBudgetWiring{}, identityExpand, nil)
+			shared, nil, proxy.BypassMatcher{}, embedded, llmBudgetWiring{}, BuilderSubscriptionAuthConfig{}, identityExpand, nil)
 		if sibling.ReasoningWire != llm.ReasoningWireVendorDefault {
 			t.Errorf("provider %q ReasoningWire = %q, want the zero value %q",
 				name, sibling.ReasoningWire, llm.ReasoningWireVendorDefault)
@@ -257,7 +257,7 @@ func TestProviderEntryFromConfig_EmbeddedSelectsTheChatTemplateKwargsWire(t *tes
 	// the request body of an unrelated provider.
 	inert := providerEntryFromConfig("embedded", embeddedProviderConfig("http://127.0.0.1:1/v1"),
 		shared, nil, proxy.BypassMatcher{}, BuilderEmbeddedLLMConfig{ProviderName: "embedded"},
-		llmBudgetWiring{}, identityExpand, nil)
+		llmBudgetWiring{}, BuilderSubscriptionAuthConfig{}, identityExpand, nil)
 	if inert.ReasoningWire != llm.ReasoningWireVendorDefault {
 		t.Errorf("ReasoningWire without a loader = %q, want the vendor default %q",
 			inert.ReasoningWire, llm.ReasoningWireVendorDefault)

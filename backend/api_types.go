@@ -99,6 +99,11 @@ type ConfigProviderFull struct {
 	// The fixed anthropic/chatgpt providers and the reserved embedded
 	// provider always report "".
 	TimeoutClass string `json:"timeout_class,omitempty"`
+	// AuthMode exposes the CHATGPT provider's authentication mode:
+	// "api_key" (default) | "oauth" (ChatGPT subscription auth via browser
+	// sign-in). Only the chatgpt entry carries it; every other provider
+	// leaves it empty.
+	AuthMode string `json:"auth_mode,omitempty"`
 }
 
 // ConfigSearchResp holds search config values.
@@ -159,6 +164,82 @@ type ProviderConfigRequest struct {
 	// fixed anthropic/chatgpt providers and the reserved embedded provider
 	// have no such knob and ignore it.
 	TimeoutClass *string `json:"timeout_class,omitempty"`
+	// AuthMode selects how the CHATGPT provider authenticates: "api_key"
+	// (the static llm.chatgpt.api_key — the historical behavior) or "oauth"
+	// (ChatGPT subscription auth via browser sign-in). nil = keep the
+	// persisted mode (debounced partial saves must not flip it); non-nil
+	// applies verbatim after enum validation. Only meaningful for the
+	// chatgpt provider; other providers ignore it.
+	AuthMode *string `json:"auth_mode,omitempty"`
+}
+
+// ChatGPTSignInResponse is the synchronous answer of StartChatGPTSignIn: the
+// authorization URL the FRONTEND opens in the system browser
+// (runtime.BrowserOpenURL). The flow continues in the background; later
+// transitions arrive through the chatgpt_auth:state event.
+type ChatGPTSignInResponse struct {
+	// AuthURL is the issuer's authorization endpoint URL (PKCE S256 + state
+	// included) with the loopback redirect already bound.
+	AuthURL string `json:"auth_url"`
+}
+
+// ChatGPTAuthStatusResponse is the snapshot GetChatGPTAuthStatus serves. It
+// carries identity fields and the configured mode only — no OAuth token
+// value ever crosses this boundary.
+type ChatGPTAuthStatusResponse struct {
+	// SignedIn reports whether credentials exist for the provider (the
+	// keychain's answer; no refresh is attempted).
+	SignedIn bool `json:"signed_in"`
+	// Email is the account's email claim, when the identity is known.
+	Email string `json:"email,omitempty"`
+	// AccountID is the ChatGPT account id backing the subscription.
+	AccountID string `json:"account_id,omitempty"`
+	// ExpiresAt is the stored access token's expiry (RFC3339), when signed
+	// in and the expiry is known.
+	ExpiresAt string `json:"expires_at,omitempty"`
+	// Mode is the configured chatgpt auth mode: "api_key" | "oauth".
+	Mode string `json:"mode"`
+	// LastError names the last FAILED sign-in attempt's cause (or the
+	// subsystem construction failure when the keychain is unavailable).
+	// Empty when the last attempt succeeded or none ran.
+	LastError string `json:"last_error,omitempty"`
+}
+
+// ChatGPTModelPresetResponse is the curated ChatGPT (Codex) model preset
+// GetChatGPTModelPreset serves — the models the subscription backend serves
+// that c0wrk's registry knows, ordered most capable first.
+type ChatGPTModelPresetResponse struct {
+	Models []ChatGPTModelPresetEntry `json:"models"`
+}
+
+// ChatGPTModelPresetEntry is one preset model. Metadata is fail-soft: zeros
+// when the async model registry is not wired yet (the name is then the whole
+// entry, exactly like collectAllModels' pre-registry behavior).
+type ChatGPTModelPresetEntry struct {
+	Name string `json:"name"`
+	// ContextWindow / OutputLimit come from the model registry (tokens).
+	ContextWindow int  `json:"context_window,omitempty"`
+	OutputLimit   int  `json:"output_limit,omitempty"`
+	Reasoning     bool `json:"reasoning,omitempty"`
+}
+
+// ChatGPTAuthEventData is the chatgpt_auth:state event payload. Exactly one
+// flow transition per event; the fields are state-dependent (AuthURL on
+// pending only, the identity snapshot on success, Error on error only) and
+// never include a secret.
+type ChatGPTAuthEventData struct {
+	// State is one of pending | success | error | cancelled.
+	State string `json:"state"`
+	// AuthURL (pending only) is the authorization URL the frontend opens in
+	// the system browser.
+	AuthURL string `json:"auth_url,omitempty"`
+	// Error (error only) is the actionable failure cause.
+	Error string `json:"error,omitempty"`
+	// Email / AccountID / ExpiresAt (success only) describe the signed-in
+	// account; ExpiresAt is RFC3339.
+	Email     string `json:"email,omitempty"`
+	AccountID string `json:"account_id,omitempty"`
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 // ListProviderModelsRequest is the payload for ListProviderModels.

@@ -124,7 +124,7 @@ func TestProviderEntryFromConfig_AdaptiveDisabledLeavesEntriesUntouched(t *testi
 		TLSFingerprint: pinFixture,
 	}
 	entry := providerEntryFromConfig("selfhosted", pc, shared, nil, proxy.BypassMatcher{},
-		BuilderEmbeddedLLMConfig{}, llmBudgetWiring{}, identityExpand, nil)
+		BuilderEmbeddedLLMConfig{}, llmBudgetWiring{}, BuilderSubscriptionAuthConfig{}, identityExpand, nil)
 	if entry.HTTPClient == nil {
 		t.Fatal("HTTPClient = nil, want the pinned client")
 	}
@@ -138,7 +138,7 @@ func TestProviderEntryFromConfig_AdaptiveDisabledLeavesEntriesUntouched(t *testi
 	// No pin → the load-bearing nil (the SDK falls back to the router client).
 	plain := BuilderProviderConfig{ProviderType: "openai", BaseURL: "https://api.example.com/v1", Models: []string{"m"}}
 	entry = providerEntryFromConfig("chatgpt", plain, shared, nil, proxy.BypassMatcher{},
-		BuilderEmbeddedLLMConfig{}, llmBudgetWiring{}, identityExpand, nil)
+		BuilderEmbeddedLLMConfig{}, llmBudgetWiring{}, BuilderSubscriptionAuthConfig{}, identityExpand, nil)
 	if entry.HTTPClient != nil {
 		t.Errorf("HTTPClient = %T, want nil (kill-switch off must not materialize a client)", entry.HTTPClient)
 	}
@@ -158,7 +158,7 @@ func TestProviderEntryFromConfig_AdaptiveWrapsPinUnderBudget(t *testing.T) {
 	}
 	control := llmtls.RouterEntryClient(llmtls.ZeroDialPolicy, shared, pc.TLSFingerprint, nil)
 	entry := providerEntryFromConfig("selfhosted", pc, shared, nil, proxy.BypassMatcher{},
-		BuilderEmbeddedLLMConfig{}, adaptiveWiring(llmbudget.NewBudgetTable(), 0), identityExpand, nil)
+		BuilderEmbeddedLLMConfig{}, adaptiveWiring(llmbudget.NewBudgetTable(), 0), BuilderSubscriptionAuthConfig{}, identityExpand, nil)
 
 	if entry.HTTPClient == nil {
 		t.Fatal("HTTPClient = nil, want the budget-wrapped pinned client")
@@ -191,7 +191,7 @@ func TestProviderEntryFromConfig_AdaptiveNilPathClonesSharedClient(t *testing.T)
 	shared := buildLLMHTTPClient(proxyClient, 600)
 	plain := BuilderProviderConfig{ProviderType: "openai", BaseURL: "https://api.example.com/v1", Models: []string{"m"}}
 	entry := providerEntryFromConfig("chatgpt", plain, shared, proxyClient, proxy.BypassMatcher{},
-		BuilderEmbeddedLLMConfig{}, adaptiveWiring(llmbudget.NewBudgetTable(), 0), identityExpand, nil)
+		BuilderEmbeddedLLMConfig{}, adaptiveWiring(llmbudget.NewBudgetTable(), 0), BuilderSubscriptionAuthConfig{}, identityExpand, nil)
 
 	if entry.HTTPClient == nil {
 		t.Fatal("HTTPClient = nil, want an explicit clone (nil would lose the budget arming)")
@@ -307,7 +307,7 @@ func TestProviderEntryFromConfig_AdaptiveEmbeddedNotCappedAtFixedBudget(t *testi
 	shared := &http.Client{Timeout: 600 * time.Second, Transport: spy}
 	pc := BuilderProviderConfig{ProviderType: "openai", BaseURL: srv.URL, Models: []string{"m"}}
 	entry := providerEntryFromConfig("embedded", pc, shared, nil, proxy.BypassMatcher{},
-		embedded, adaptiveWiring(table, 0), identityExpand, nil)
+		embedded, adaptiveWiring(table, 0), BuilderSubscriptionAuthConfig{}, identityExpand, nil)
 
 	// Outermost = the ensure-loaded gate; the budget transport beneath it.
 	if _, ok := entry.HTTPClient.Transport.(*embeddedllm.EnsureLoadedTransport); !ok {
@@ -380,7 +380,7 @@ func TestProviderEntryFromConfig_AdaptiveSkipsArmingWhenCallerOwnsDeadline(t *te
 	entry := providerEntryFromConfig("chatgpt",
 		BuilderProviderConfig{ProviderType: "openai", BaseURL: srv.URL, Models: []string{"m"}},
 		shared, nil, proxy.BypassMatcher{}, BuilderEmbeddedLLMConfig{},
-		adaptiveWiring(llmbudget.NewBudgetTable(), 0), identityExpand, nil)
+		adaptiveWiring(llmbudget.NewBudgetTable(), 0), BuilderSubscriptionAuthConfig{}, identityExpand, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -417,7 +417,7 @@ func TestProviderEntryFromConfig_AdaptiveGlobalOverrideIsFixed(t *testing.T) {
 	entry := providerEntryFromConfig("chatgpt",
 		BuilderProviderConfig{ProviderType: "openai", BaseURL: srv.URL, Models: []string{"m"}},
 		shared, nil, proxy.BypassMatcher{}, BuilderEmbeddedLLMConfig{},
-		adaptiveWiring(llmbudget.NewBudgetTable(), 120*time.Second), identityExpand, nil)
+		adaptiveWiring(llmbudget.NewBudgetTable(), 120*time.Second), BuilderSubscriptionAuthConfig{}, identityExpand, nil)
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+"/v1/chat/completions",
 		bytes.NewReader([]byte(`{"model":"m"}`)))
@@ -455,7 +455,7 @@ func TestProviderEntryFromConfig_AdaptiveSharesTheSessionTable(t *testing.T) {
 	entry := providerEntryFromConfig("chatgpt",
 		BuilderProviderConfig{ProviderType: "openai", BaseURL: srv.URL, Models: []string{"m"}},
 		shared, nil, proxy.BypassMatcher{}, BuilderEmbeddedLLMConfig{},
-		adaptiveWiring(table, 0), identityExpand, nil)
+		adaptiveWiring(table, 0), BuilderSubscriptionAuthConfig{}, identityExpand, nil)
 
 	do := func(body []byte) {
 		t.Helper()

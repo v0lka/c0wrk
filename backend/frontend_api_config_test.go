@@ -57,6 +57,13 @@ type mockBuilder struct {
 	embeddedSeam     core.BuilderEmbeddedLLMConfig
 	embeddedSeamSets int
 
+	// subscriptionSeam captures the most recent SetSubscriptionTokenSource
+	// argument, and subscriptionSeamSets how many times it was pushed, so
+	// tests can assert the builder-level default follows the live ChatGPT
+	// auth state (live manager when signed in, zero value when signed out).
+	subscriptionSeam     core.BuilderSubscriptionAuthConfig
+	subscriptionSeamSets int
+
 	// optimizePromptCtx is the context of the most recent OptimizePrompt call,
 	// snapshotted AT CALL TIME: the caller cancels it as soon as the RPC
 	// returns, so inspecting it afterwards would only observe that.
@@ -159,6 +166,15 @@ func (m *mockBuilder) routerCfgSnapshot() []string {
 	copy(out, m.rebuildRouterCfgs)
 	return out
 }
+
+// rebuildRouterCallsSnapshot reads the RebuildRouter counter under the mock's
+// lock, for tests whose rebuilds run on a background goroutine (the ChatGPT
+// auth lifecycle) and must not race the assertion.
+func (m *mockBuilder) rebuildRouterCallsSnapshot() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rebuildRouterCalls
+}
 func (m *mockBuilder) UpdateModelOverrides(_ *core.BuilderConfig) {
 	m.mu.Lock()
 	m.updateModelOverridesCalls++
@@ -250,6 +266,21 @@ func (m *mockBuilder) lastEmbeddedSeam() (seam core.BuilderEmbeddedLLMConfig, se
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.embeddedSeam, m.embeddedSeamSets
+}
+
+func (m *mockBuilder) SetSubscriptionTokenSource(cfg core.BuilderSubscriptionAuthConfig) {
+	m.mu.Lock()
+	m.subscriptionSeam = cfg
+	m.subscriptionSeamSets++
+	m.mu.Unlock()
+}
+
+// lastSubscriptionSeam reports the most recently pushed builder-level
+// subscription-auth seam.
+func (m *mockBuilder) lastSubscriptionSeam() (seam core.BuilderSubscriptionAuthConfig, sets int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.subscriptionSeam, m.subscriptionSeamSets
 }
 func (m *mockBuilder) OptimizePrompt(ctx context.Context, _ string) (*core.OptimizePromptResult, error) {
 	m.mu.Lock()

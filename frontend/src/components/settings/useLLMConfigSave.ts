@@ -36,6 +36,11 @@ interface ProviderEntryPayload {
    *  backend pointer sentinel; an explicit number, including 0, is applied
    *  verbatim. */
   auto_retry_seconds?: number
+  /** ChatGPT-only authentication mode ('api_key' | 'oauth'). Undefined
+   *  (dropped by JSON serialization) keeps the persisted mode via the
+   *  backend pointer sentinel; the draft always carries a concrete value for
+   *  a loaded chatgpt entry, so switching the selector persists verbatim. */
+  auth_mode?: 'api_key' | 'oauth'
 }
 
 export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSaveResult {
@@ -90,6 +95,14 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
             openaiCompatible[p] = entry
           }
         } else {
+          // The ChatGPT auth mode rides along the fixed entry it belongs to:
+          // the draft always carries a concrete mode for a LOADED chatgpt
+          // entry, so the selector's flip persists atomically with the rest
+          // of the form. Anthropic has no such field — undefined drops the
+          // key and the backend keeps the persisted (nonexistent) mode.
+          if (p === 'chatgpt' && cfg.auth_mode !== undefined) {
+            entry.auth_mode = cfg.auth_mode
+          }
           req[p] = entry
         }
       }
