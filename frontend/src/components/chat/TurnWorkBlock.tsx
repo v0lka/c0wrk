@@ -35,7 +35,10 @@ interface TurnWorkBlockProps {
   live?: boolean
   /** The turn's work items, between the last user message and its answer. */
   work: DisplayItem[]
-  /** The final answer plus trailing items; empty until the answer commits. */
+  /** The final answer, any trailing items, and every UNRESOLVED
+   * pending-action panel lifted out of the work (panels may be present while
+   * the answer itself is still pending).
+   */
   tail: DisplayItem[]
   /**
    * Render-slot: trailing content (the streaming answer, passed to the root
@@ -111,7 +114,11 @@ export const TurnWorkBlock = memo(function TurnWorkBlock({ live = false, work, t
   // the last one) remounts the block — nothing to reset here.
   useEffect(() => { setUserOverride(null) }, [settled])
 
-  const answerCommitted = tail.length > 0
+  // An answer committed only when the tail holds the assistant item — the
+  // split now lifts unresolved pending-action panels into the tail even while
+  // the turn is still running (no answer yet), so bare tail length is NOT an
+  // answer signal anymore.
+  const answerCommitted = tail.some(it => it.kind === 'assistant')
   const status: WorkStatus = useMemo(
     () =>
       work.some(it => it.kind === 'error')

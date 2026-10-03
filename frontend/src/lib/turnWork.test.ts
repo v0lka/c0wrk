@@ -74,6 +74,43 @@ describe('splitTurnWork', () => {
     expect(idsOf(tail)).toEqual(idsOf([fin, tc, au, cl]))
   })
 
+  it('lifts an unresolved panel out of the work segment while the turn is still running (no answer yet)', () => {
+    // The confirmation wait IS this shape: the run pauses mid-work with no
+    // final assistant item, so the anchor-only split would bury the panel
+    // inside the collapsible work container (its collapsed content is
+    // unmounted — unreachable exactly when the user must act on it).
+    const u = user()
+    const tl = tool()
+    const tc = toolConfirm()
+    const { work, tail } = splitTurnWork([u, tl, tc])
+
+    expect(idsOf(work)).toEqual(idsOf([tl]))
+    expect(idsOf(tail)).toEqual(idsOf([tc]))
+    expect(tail[0]).toBe(tc)
+  })
+
+  it('a resolved panel keeps its stream position inside the work (settled decision history)', () => {
+    const u = user()
+    const tl = tool()
+    const resolvedMsg = { ...mkMsg('tool_confirm', 'Allow bash?'), metadata: { resolved: true, decision: 'confirmed' } }
+    const resolved = { kind: 'tool_confirm', message: resolvedMsg } as DisplayItem
+    const { work, tail } = splitTurnWork([u, tl, resolved])
+
+    expect(idsOf(work)).toEqual(idsOf([tl, resolved]))
+    expect(tail).toEqual([])
+  })
+
+  it('lifts multiple panels keeping their order, after the answer when one exists', () => {
+    const u = user()
+    const fin = assistant('Working, need input.')
+    const tc = toolConfirm()
+    const au = askUser()
+    const { work, tail } = splitTurnWork([u, fin, tc, au])
+
+    expect(work).toEqual([])
+    expect(idsOf(tail)).toEqual(idsOf([fin, tc, au]))
+  })
+
   it('multiple answers: intermediate ones go to work, only the last heads the tail', () => {
     const u = user()
     const a1 = assistant('First part.')

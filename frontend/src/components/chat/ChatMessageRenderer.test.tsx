@@ -186,6 +186,34 @@ describe('ChatMessageRenderer sticky user turns', () => {
     expect(text.indexOf('thinking')).toBeLessThan(text.indexOf('partial'))
   })
 
+  it('renders an unresolved confirmation panel OUTSIDE the work block while the run waits on it', () => {
+    // The wait-for-confirmation shape: no answer yet, the panel is the only
+    // tail item. It must sit outside the collapsible (Radix unmounts collapsed
+    // content — a buried panel would be unreachable while the user must act).
+    const live: DisplayItem[] = [
+      { kind: 'user', message: message('user-1', 'user', 'Do it') },
+      tool('tool-1'),
+      {
+        kind: 'tool_confirm',
+        message: message('tool-confirm-1', 'tool_confirm', 'Confirm: bash_exec'),
+      },
+    ]
+    const container = renderRenderer({ items: live, lastTurnActive: true })
+    const turn = turnRoots(container)[0]!
+    const block = turn.querySelector('[data-chevron-reveal-id^="turn-work:"]')!
+    const panel = turn.querySelector('[data-bookmark-id="tool-confirm-1"]')
+
+    expect(panel).not.toBeNull()
+    // Outside the block entirely — a sibling of the collapsible, not its child.
+    expect(block.contains(panel!)).toBe(false)
+    // The tool card (plain work) stays inside the block.
+    expect(
+      block.querySelector('[data-slot="collapsible-content"]')!.contains(
+        turn.querySelector('[data-bookmark-id="tool-1"]')!,
+      ),
+    ).toBe(true)
+  })
+
   it('commits the live turn in place: stream swaps from slot to outside rows when the task ends', () => {
     const live: DisplayItem[] = [
       { kind: 'user', message: message('user-1', 'user', 'Do it') },
