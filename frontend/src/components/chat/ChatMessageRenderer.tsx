@@ -191,11 +191,14 @@ export function ChatMessageRenderer({
       {turns.map((turn, index) => {
         const startsWithUser = turn[0]?.kind === 'user'
         const isLastTurn = index === turns.length - 1
-        // Turn segmentation: user row → TurnWorkBlock(work) → tail rows.
-        // Nested renderers (plan_step/subagent children) are NOT touched —
-        // the work-block wrapper is applied only here, at the root sticky
-        // level. Turns without a work segment keep the plain flat layout.
-        const { work, tail } = splitTurnWork(turn)
+        // Turn segmentation: user row → TurnWorkBlock(work) → pinned plan/
+        // subagent step blocks → tail rows. Top-level plan_step/subagent are
+        // lifted OUT of the collapsible (the same status-outside-the-
+        // collapsed-container contract the plan panel follows): each block
+        // owns the events nested under its plan_step_id, so lifting the
+        // block alone keeps the stream order — work → pinned → tail. Turns
+        // without a work segment keep the plain flat layout.
+        const { work, pinned, tail } = splitTurnWork(turn)
         // "Live" = the turn can still produce new items: it is the session's
         // last turn AND the session's task is active. When the task ends
         // without an answer (stop / error / app exit) the block settles the
@@ -226,7 +229,10 @@ export function ChatMessageRenderer({
              * lead row to render and no double render. */}
             {startsWithUser && renderItem(turn[0]!, true, bookmarkable)}
             {blockTurn && <TurnWorkBlock live={live} work={work} tail={tail} tailSlot={slot} />}
-            {!blockTurn && work.map((item) => renderItem(item, false, bookmarkable))}
+            {/* Pinned plan/subagent steps render OUTSIDE the work block —
+             * their status chips must survive a collapse of the work block
+             * (the plan-panel contract). */}
+            {pinned.map((item) => renderItem(item, false, bookmarkable))}
             {tail.map((item) => renderItem(item, false, bookmarkable))}
             {!blockTurn && slot}
             {/* The activity indicator renders OUTSIDE the work block (and

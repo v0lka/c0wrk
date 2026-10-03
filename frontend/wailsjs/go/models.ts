@@ -572,8 +572,8 @@ export namespace backend {
 	    severity: string;
 	    issue: string;
 	    applied: boolean;
-	    backend?: string;
-	    packing?: string;
+	    backend: string;
+	    packing: string;
 	    guidance: string;
 	
 	    static createFrom(source: any = {}) {

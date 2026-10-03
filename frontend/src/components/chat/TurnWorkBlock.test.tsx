@@ -261,6 +261,47 @@ describe('TurnWorkBlock', () => {
     expect(container.textContent).not.toContain('partial answer')
   })
 
+  // --- header: checklist progress chip (plan-step parity) ---
+
+  it('renders a checklist progress chip in the header, tinted by the block status accent', () => {
+    const mkChecklist = (items: Array<{ text: string; checked: boolean }>): DisplayItem =>
+      ({ kind: 'checklist', id: `cl-${++seq}`, stepId: null, items, active: true })
+    // Running block: the chip follows the info accent.
+    render([tool()], [mkChecklist([
+      { text: 'a', checked: true },
+      { text: 'b', checked: false },
+    ])], undefined, { live: true })
+    const chip = trigger().querySelector('[role="progressbar"]')
+    expect(chip).not.toBeNull()
+    expect(chip!.getAttribute('aria-valuenow')).toBe('1')
+    expect(chip!.getAttribute('aria-valuemax')).toBe('2')
+    expect(chip!.querySelector('svg.text-info')).not.toBeNull()
+    // Settled with an answer: the chip follows the success accent.
+    render([tool()], [mkChecklist([{ text: 'a', checked: true }]), assistant()], undefined, { live: false })
+    const settledChip = trigger().querySelector('[role="progressbar"]')
+    expect(settledChip).not.toBeNull()
+    expect(settledChip!.querySelector('svg.text-success')).not.toBeNull()
+  })
+
+  it('shows the LAST checklist in the tree when several exist (they supersede each other)', () => {
+    const mkChecklist = (items: Array<{ text: string; checked: boolean }>): DisplayItem =>
+      ({ kind: 'checklist', id: `cl-${++seq}`, stepId: null, items, active: true })
+    render(
+      [mkChecklist([{ text: 'old-1', checked: true }, { text: 'old-2', checked: true }])],
+      [mkChecklist([{ text: 'new-1', checked: true }, { text: 'new-2', checked: false }, { text: 'new-3', checked: false }])],
+      undefined,
+      { live: true },
+    )
+    const chip = trigger().querySelector('[role="progressbar"]')!
+    expect(chip.getAttribute('aria-valuenow')).toBe('1')
+    expect(chip.getAttribute('aria-valuemax')).toBe('3')
+  })
+
+  it('renders no checklist chip without a checklist', () => {
+    render([tool()], [assistant()], undefined, { live: false })
+    expect(trigger().querySelector('[role="progressbar"]')).toBeNull()
+  })
+
   // --- header preview: in-flight checklist shows its last unchecked entry ---
 
   it('previews the last UNCHECKED entry of the current checklist (work or tail)', () => {

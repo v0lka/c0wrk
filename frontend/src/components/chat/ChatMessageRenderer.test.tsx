@@ -275,6 +275,61 @@ describe('ChatMessageRenderer sticky user turns', () => {
     expect(turns[1]?.querySelector('[data-chevron-reveal-id^="turn-work:"]')).toBeNull()
   })
 
+  it('renders top-level plan/subagent steps OUTSIDE the work block (status survives a collapse)', () => {
+    const withSteps: DisplayItem[] = [
+      { kind: 'user', message: message('user-1', 'user', 'Run the plan') },
+      thought('th-1', 'thinking'),
+      {
+        kind: 'plan_step', id: 'step-evt-1', stepId: 'step-1', stepNum: 1,
+        title: 'Implement auth', status: 'running', children: [],
+      },
+      tool('tool-1'),
+      {
+        kind: 'subagent', id: 'sub-1', stepId: 'step-2',
+        title: 'Reviewer', status: 'completed', children: [],
+      },
+    ]
+    // Settled shape (task not active): the work block is COLLAPSED, yet the
+    // step blocks must stay visible outside it — the plan-panel contract.
+    const container = renderRenderer({ items: withSteps, lastTurnActive: false })
+    const turn = turnRoots(container)[0]!
+    const block = turn.querySelector('[data-chevron-reveal-id^="turn-work:"]')!
+
+    expect(block).not.toBeNull()
+    expect(block.querySelector('[data-slot="collapsible-content"]')?.getAttribute('data-state')).toBe('closed')
+    // Both step blocks render outside the collapsible, in stream order.
+    const stepEl = turn.querySelector('[data-step-id="step-1"]')
+    const subEl = turn.querySelector('[data-bookmark-id="sub-1"]')
+    expect(stepEl).not.toBeNull()
+    expect(subEl).not.toBeNull()
+    expect(block.contains(stepEl!)).toBe(false)
+    expect(block.contains(subEl!)).toBe(false)
+    // Stream order preserved: step-1 (plan_step) renders before sub-1.
+    expect(stepEl!.compareDocumentPosition(subEl!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // Work content stays hidden inside the collapsed block.
+    expect(turn.textContent).not.toContain('thinking')
+  })
+
+  it('keeps pinned steps mounted while the live turn runs (status chips visible)', () => {
+    const withSteps: DisplayItem[] = [
+      { kind: 'user', message: message('user-1', 'user', 'Run the plan') },
+      {
+        kind: 'plan_step', id: 'step-evt-1', stepId: 'step-1', stepNum: 1,
+        title: 'Implement auth', status: 'running', children: [],
+      },
+      tool('tool-1'),
+    ]
+    const container = renderRenderer({ items: withSteps, lastTurnActive: true })
+    const turn = turnRoots(container)[0]!
+    expect(turn.querySelector('[data-step-id="step-1"]')).not.toBeNull()
+    // The step renders AFTER the work block (which is open and holds the
+    // trailing slot) — work → pinned → tail order.
+    const block = turn.querySelector('[data-chevron-reveal-id^="turn-work:"]')!
+    const stepEl = turn.querySelector('[data-step-id="step-1"]')!
+    expect(block.compareDocumentPosition(stepEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(block.querySelector('[data-testid="trailing"]')).not.toBeNull()
+  })
+
   it('exposes no duplicate DOM anchors: work items render exactly once (inside the block)', () => {
     const container = renderRenderer()
     // The thought and the tool belong to turn 2's work and live only inside

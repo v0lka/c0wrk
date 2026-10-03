@@ -5,6 +5,7 @@ import { bookmarkDefaultTitle, bookmarkKey, flattenDisplayItems } from '@/lib/bo
 import { areDisplayItemsEqual } from '@/lib/displayItemStability'
 import { formatDuration } from '@/lib/formatters'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
+import { StepChecklistProgress } from './StepChecklistProgress'
 import { turnWorkOwners } from './turnWorkOwners'
 import { ChatMessageRenderer } from './ChatMessageRenderer'
 import { BookmarkableContext } from './BookmarkableContext'
@@ -12,8 +13,10 @@ import type { DisplayItem } from '@/types/messages'
 
 /**
  * Collapsible wrapper around a chat turn's WORK — the activity (thoughts, tool
- * cards, plan steps, intermediate texts, …) that produced the turn's answer,
- * as split by `splitTurnWork`.
+ * cards, intermediate texts, …) that produced the turn's answer, as split by
+ * `splitTurnWork`. Top-level plan_step/subagent blocks are NOT part of it —
+ * the split pins them outside the collapsible so their status chips survive
+ * a collapse (the plan-panel contract).
  *
  * Open-state rule: the block is OPEN while the turn is LIVE (it is the last
  * turn AND the session's task is still active — streaming, plan steps, tool
@@ -191,16 +194,38 @@ export const TurnWorkBlock = memo(function TurnWorkBlock({ live = false, work, t
     return last ? bookmarkDefaultTitle(last) : ''
   }, [work, tail])
 
+  // Checklist status chip in the header (the plan-step contract): counts from
+  // the LAST checklist in the flattened work+tail tree — checklists supersede
+  // each other, and the active one sinks to the tail (grouping rule 7), so
+  // the last one in the scan is the current one. Hidden while there is no
+  // checklist (StepChecklistProgress itself hides on a non-positive total).
+  const checklistCounts = useMemo((): { total: number; done: number } | undefined => {
+    const flat = flattenDisplayItems([...work, ...tail])
+    for (let i = flat.length - 1; i >= 0; i--) {
+      const it = flat[i]!
+      if (it.kind !== 'checklist') continue
+      return { total: it.items.length, done: it.items.filter(x => x.checked).length }
+    }
+    return undefined
+  }, [work, tail])
+
   const headerExtra = useMemo(() => (
     <>
       {status === 'interrupted' && (
         <span className="text-xs text-muted-foreground truncate min-w-0">— interrupted</span>
       )}
+      {checklistCounts !== undefined && (
+        <StepChecklistProgress
+          total={checklistCounts.total}
+          completed={checklistCounts.done}
+          accent={cfg.accent}
+        />
+      )}
       {preview && (
         <span className="text-xs text-muted-foreground truncate min-w-0" title={preview}>— {preview}</span>
       )}
     </>
-  ), [status, preview])
+  ), [status, checklistCounts, cfg.accent, preview])
 
   // Stable chevron-reveal id derived from the block's first work item; falls
   // back to CollapsibleBlock's useId() while the work is empty.

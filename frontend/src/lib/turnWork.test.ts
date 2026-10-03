@@ -35,7 +35,7 @@ describe('splitTurnWork', () => {
     expect(tail[0]).toBe(a)
   })
 
-  it('typical ReAct turn: thoughts/tools/plan_step and intermediate texts go to work, final answer to tail', () => {
+  it('typical ReAct turn: thoughts/tools and intermediate texts go to work, plan_step pins out, final answer to tail', () => {
     const u = user('refactor the parser')
     const th = thought()
     const tl = tool()
@@ -43,10 +43,35 @@ describe('splitTurnWork', () => {
     const mid = assistant('Progress: half done.')
     const tl2 = tool()
     const fin = assistant('All done.')
-    const { work, tail } = splitTurnWork([u, th, tl, ps, mid, tl2, fin])
+    const { work, pinned, tail } = splitTurnWork([u, th, tl, ps, mid, tl2, fin])
 
-    expect(idsOf(work)).toEqual(idsOf([th, tl, ps, mid, tl2]))
+    expect(idsOf(work)).toEqual(idsOf([th, tl, mid, tl2]))
+    expect(idsOf(pinned)).toEqual(idsOf([ps]))
     expect(idsOf(tail)).toEqual(idsOf([fin]))
+  })
+
+  it('pinned steps keep their stream order across multiple lifts', () => {
+    const u = user('run the plan')
+    const ps1 = planStep()
+    const tl = tool()
+    const ps2 = planStep()
+    const fin = assistant('done')
+    const { work, pinned, tail } = splitTurnWork([u, ps1, tl, ps2, fin])
+
+    expect(idsOf(work)).toEqual(idsOf([tl]))
+    expect(idsOf(pinned)).toEqual(idsOf([ps1, ps2]))
+    expect(idsOf(tail)).toEqual(idsOf([fin]))
+  })
+
+  it('lifts a pinned step while the turn is still running (no answer yet)', () => {
+    const u = user('run the plan')
+    const th = thought()
+    const ps = planStep()
+    const { work, pinned, tail } = splitTurnWork([u, th, ps])
+
+    expect(idsOf(work)).toEqual(idsOf([th]))
+    expect(idsOf(pinned)).toEqual(idsOf([ps]))
+    expect(tail).toEqual([])
   })
 
   it('errors mid-turn go to work; errors after the final answer stay in the tail', () => {
@@ -141,8 +166,8 @@ describe('splitTurnWork', () => {
     expect(tail).toEqual([])
   })
 
-  it('empty input splits into two empty lists', () => {
-    expect(splitTurnWork([])).toEqual({ work: [], tail: [] })
+  it('empty input splits into three empty lists', () => {
+    expect(splitTurnWork([])).toEqual({ work: [], pinned: [], tail: [] })
   })
 
   it('only the last user message anchors the turn: earlier turns belong to neither half', () => {
@@ -168,6 +193,15 @@ describe('splitTurnWork', () => {
     const { work, tail } = splitTurnWork([u1, a1, u2, th])
 
     expect(idsOf(work)).toEqual(idsOf([th]))
+    expect(tail).toEqual([])
+  })
+
+  it('a turn consisting of a single pinned step (no user, no assistant)', () => {
+    const ps = planStep()
+    const { work, pinned, tail } = splitTurnWork([ps])
+
+    expect(work).toEqual([])
+    expect(idsOf(pinned)).toEqual(idsOf([ps]))
     expect(tail).toEqual([])
   })
 
