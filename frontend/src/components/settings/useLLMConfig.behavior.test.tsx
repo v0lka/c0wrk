@@ -743,3 +743,66 @@ describe('useLLMConfig backend-owned embedded provider', () => {
     expect(result.defaultModel).toBe('embedded/Bonsai 2 27B')
   })
 })
+
+describe('useLLMConfig chatgpt auth mode round-trip', () => {
+  it('loads the mode into the draft and persists a flip in the full-form save', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'chatgpt/gpt-5.5',
+        chatgpt: { api_key: '***configured***', models: ['gpt-5.5'], auth_mode: 'oauth' },
+      },
+    })
+
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    // The loaded draft carries the backend-reported mode verbatim.
+    expect(result.providerConfigs.chatgpt?.auth_mode).toBe('oauth')
+
+    // Flipping the selector updates the draft…
+    act(() => result.updateProviderConfig('chatgpt', { auth_mode: 'api_key' }))
+    expect(result.providerConfigs.chatgpt?.auth_mode).toBe('api_key')
+    // …and the debounced full-form save carries it on the chatgpt entry,
+    // atomically with the rest of the form (the masked key sentinel rides
+    // along as before — the backend keeps the stored key on that value).
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+
+    expect(mocks.updateLLMConfig).toHaveBeenCalledTimes(1)
+    expect(mocks.updateLLMConfig).toHaveBeenCalledWith({
+      default_model: 'chatgpt/gpt-5.5',
+      chatgpt: { api_key: '***configured***', models: ['gpt-5.5'], auth_mode: 'api_key' },
+      openai_compatible: {},
+      anthropic_compatible: {},
+    })
+  })
+
+  it('reads an absent mode as not-applicable and omits it from the save payload', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'chatgpt/gpt-5.4',
+        chatgpt: { api_key: 'sk-live', models: ['gpt-5.4'] },
+      },
+    })
+
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    // Absent field → undefined draft → the save payload omits the key, which
+    // the backend pointer sentinel treats as "keep the persisted mode".
+    expect(result.providerConfigs.chatgpt?.auth_mode).toBeUndefined()
+
+    act(() => result.updateProviderConfig('chatgpt', { api_key: 'sk-live2' }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+
+    expect(mocks.updateLLMConfig).toHaveBeenCalledWith({
+      default_model: 'chatgpt/gpt-5.4',
+      chatgpt: { api_key: 'sk-live2', models: ['gpt-5.4'] },
+      openai_compatible: {},
+      anthropic_compatible: {},
+    })
+  })
+})

@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -211,11 +212,42 @@ func newCorpusReplayRegistries(t *testing.T, provider *corpusStubJudgeProvider, 
 	return judge, allow, judgeRec, allowRec
 }
 
-// replayCorpus runs every fixture through the real pipeline and returns the
-// cross-tab. The per-case flow mirrors production exactly once per call:
-// precompute the flowsh analysis (what AttachShellAnalysis will recompute
-// deterministically inside Execute), derive the stub verdict from it, then
-// let the registry decide through its own gates.
+// TestSilentCorpus_ReplayHostSymlinkDiagnostic reproduces the extra filesystem
+// signal independently of a runner's /usr/bin layout. The inert read never
+// opens the outside file; this tests diagnostic accounting, not tool execution.
+func TestSilentCorpus_ReplayHostSymlinkDiagnostic(t *testing.T) {
+	ws, outside := t.TempDir(), t.TempDir()
+	target := filepath.Join(outside, "target")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(ws, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	ctx := sdktools.WithWorkspacePathNoProbe(context.Background(), ws)
+	registry := NewToolRegistry()
+	input, err := json.Marshal(map[string]string{"path": link})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := builtins.NewReadFileTool()
+	if reason, code := registry.symlinkHardReason(ctx, "read_file", read, input); reason == "" || code != sdktools.ReasonCodeSymlinkEscape {
+		t.Fatalf("controlled symlink reason = %q, code = %q, want a canonical escape", reason, code)
+	}
+	for _, path := range []string{target, link} {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			out := replayCorpus(t, []silentCorpusCase{{EventID: 1, Tool: "read_file", Path: path, Workspace: ws, AuditClass: corpusClassTrueAllow, GateMode: SilentToolConfirmJudge}})
+			if out.deniedByEvent[1] || out.trueAllowDenied != 0 {
+				t.Errorf("replayCorpus(%q) = %#v, want unchanged analyzer-stub allow", path, out)
+			}
+		})
+	}
+}
+
+// replayCorpus runs every fixture through the real registry pipeline. Analyzer
+// evidence determines the stub verdict; an additional filesystem preflight
+// accounts for host-specific symlink diagnostics without changing that verdict.
 func replayCorpus(t *testing.T, cases []silentCorpusCase) corpusReplayOutcome {
 	t.Helper()
 
@@ -256,6 +288,7 @@ func replayCorpus(t *testing.T, cases []silentCorpusCase) corpusReplayOutcome {
 
 		var input json.RawMessage
 		var analysis *sdktools.ShellAnalysis
+		var outcome sdktools.JudgeOutcome
 		hard := false
 		switch c.Tool {
 		case sdktools.ToolBashExec:
@@ -273,14 +306,14 @@ func replayCorpus(t *testing.T, cases []silentCorpusCase) corpusReplayOutcome {
 			}
 			// The same attachment the registry performs inside Execute; the
 			// real bash Judge folds the winning criterion into the outcome.
-			outcome := bash.Judge(sdktools.WithShellAnalysis(ctx, analysis, nil), input)
+			outcome = bash.Judge(sdktools.WithShellAnalysis(ctx, analysis, nil), input)
 			hard = !outcome.Allow && outcome.Severity == sdktools.JudgeSeverityHard
 		case "read_file":
 			input, err = json.Marshal(map[string]string{"path": c.Path})
 			if err != nil {
 				t.Fatalf("event %d: marshal input: %v", c.EventID, err)
 			}
-			outcome := read.Judge(ctx, input)
+			outcome = read.Judge(ctx, input)
 			hard = !outcome.Allow && outcome.Severity == sdktools.JudgeSeverityHard
 		default:
 			t.Fatalf("event %d: unsupported corpus tool %q", c.EventID, c.Tool)
@@ -295,6 +328,27 @@ func replayCorpus(t *testing.T, cases []silentCorpusCase) corpusReplayOutcome {
 		if c.GateMode == SilentToolConfirmAllow {
 			registry, rec = allowReg, allowRec
 		}
+		// The corpus stub models analyzer evidence, not the host filesystem.
+		// Keep its verdict above unchanged, but account for the real registry's
+		// additional symlink stage in the exact diagnostic contract. Historical
+		// absolute paths can traverse host-specific links (e.g. tool installs).
+		// Neither the symlink gate nor any must-stay-denied assertion is bypassed.
+		var tool sdktools.Tool = inertBashTool{bash}
+		if c.Tool == "read_file" {
+			tool = inertReadFileTool{read}
+		}
+		symlinkReason, symlinkCode := registry.symlinkHardReason(ctx, c.Tool, tool, input)
+		reasons := splitSafetyReasons(outcome, symlinkReason, symlinkCode)
+		hardReason := reasons.hard
+		var diagnostics []expectedToolDiagnostic
+		if hardReason != "" {
+			message := "security: user_confirm tool escalated by hard safety reason"
+			if registry.groupPolicy(sdktools.ToolGroupOf(tool)) == sdktools.PolicyAlwaysAllow {
+				message = "security: allow-policy tool escalated by hard safety reason"
+			}
+			diagnostics = append(diagnostics, expectedToolDiagnostic{message: message, attrs: map[string]string{"tool": c.Tool, "group": string(sdktools.ToolGroupOf(tool)), "reason": hardReason}})
+		}
+		registry.SetLogger(newToolDiagnosticLoggerFor(t, fmt.Sprintf("%s/event-%d/%s", t.Name(), c.EventID, c.GateMode), diagnostics...))
 		before := len(rec.decisions)
 		res, execErr := registry.Execute(ctx, c.Tool, input)
 		if execErr != nil {

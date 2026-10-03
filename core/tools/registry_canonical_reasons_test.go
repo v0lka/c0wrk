@@ -274,6 +274,7 @@ func TestSilentMode_JudgeTerminalCanonicalAllowExecutes(t *testing.T) {
 
 	newRegistry := func(mode string) (*ToolRegistry, *scriptedJudgeProvider, *bool) {
 		registry := NewToolRegistry()
+		captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "local_read", "reason": "command matches blacklist pattern: mkfs", "tool": "esc_tool"}})
 		registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
 			sdktools.GroupLocalRead: sdktools.PolicyAlwaysAllow,
 		})

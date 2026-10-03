@@ -116,6 +116,12 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 		ChatGPT: ConfigProviderFull{
 			APIKey: maskAPIKey(f.config.LLM.ChatGPT.APIKey),
 			Models: f.config.LLM.ChatGPT.Models,
+			// The auth mode round-trips so the settings UI renders the
+			// active mode; the empty stored value reads as api_key (the
+			// config layer's default semantics), so the response always
+			// carries an explicit mode. No secret travels with it — the
+			// OAuth tokens live in the OS keychain and never enter config.
+			AuthMode: chatGPTAuthModeOrAPIKey(f.config.LLM.ChatGPT.Auth.Mode),
 		},
 		OpenAICompatible:    make(map[string]ConfigProviderFull, len(f.config.LLM.OpenAICompatible)),
 		AnthropicCompatible: make(map[string]ConfigProviderFull, len(f.config.LLM.AnthropicCompatible)),
@@ -307,6 +313,23 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		if req.ChatGPT.APIKey != "" && req.ChatGPT.APIKey != maskedAPIKey {
 			candidate.ChatGPT.APIKey = req.ChatGPT.APIKey
 		}
+		// The auth mode is an explicit two-state switch, not a nullable
+		// override: nil keeps the persisted mode (debounced partial saves
+		// must not flip it), while a non-nil value must name a real mode —
+		// an empty or misspelled string is rejected here rather than
+		// silently falling back to key auth while the operator believes
+		// subscription auth is on (the same fail-closed stance the config
+		// loader's validate() takes). The value carries no secret.
+		if req.ChatGPT.AuthMode != nil {
+			switch mode := *req.ChatGPT.AuthMode; mode {
+			case config.ChatGPTAuthModeAPIKey, config.ChatGPTAuthModeOAuth:
+				candidate.ChatGPT.Auth.Mode = mode
+			default:
+				f.configMu.Unlock()
+				return fmt.Errorf("invalid LLM configuration: chatgpt auth_mode must be %q or %q, got %q",
+					config.ChatGPTAuthModeAPIKey, config.ChatGPTAuthModeOAuth, mode)
+			}
+		}
 	}
 
 	// The `embedded` provider record is BACKEND-OWNED: it is generated from the
@@ -455,6 +478,15 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 	// RebuildJudge/RebuildRouter are core calls that never re-enter
 	// FrontendAPI, so holding the RLock across them cannot deadlock.
 	if b := f.builder(); b != nil {
+		// An auth-mode switch to oauth must find the builder's
+		// subscription-auth seam mirroring the LIVE manager before the
+		// rebuild runs: the per-build conversion (toBuilderConfigLocked)
+		// carries no OAuth token source, so without this sync a switch to
+		// oauth after an api_key-mode restore would rebuild the router with
+		// the signed-out stand-in even though the keychain holds a signed-in
+		// account. The sync takes NO config lock (see
+		// syncChatGPTBuilderSeam) and is a no-op when nothing is signed in.
+		f.syncChatGPTBuilderSeam()
 		f.configMu.RLock()
 		fresh := f.toBuilderConfigLocked()
 		b.RebuildJudge(fresh)
@@ -614,16 +646,36 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 	// matches the one runMCPInit gives MCP startup. Expiry only aborts the
 	// gateway step: RebuildProxy logs it and still rebuilds the router and
 	// the judge, which carry their own budgets.
+	var rebuildErr error
 	if b != nil {
 		rebuildCtx, cancel := context.WithTimeout(context.Background(), proxyRebuildTimeout)
-		err := b.RebuildProxy(rebuildCtx, bcfg)
+		rebuildErr = b.RebuildProxy(rebuildCtx, bcfg)
 		cancel()
-		if err != nil {
-			f.log().Warn("failed to rebuild proxy after settings update", "error", err)
-			return fmt.Errorf("proxy rebuild failed: %w", err)
+		if rebuildErr != nil {
+			f.log().Warn("failed to rebuild proxy after settings update", "error", rebuildErr)
 		}
 	}
 
+	// The ChatGPT auth manager's token-endpoint client rides the same
+	// effective proxy configuration (see chatGPTOutboundHTTPClient): re-point
+	// it at the NEW configuration so an OAuth refresh after a proxy change
+	// takes the new route instead of the transport captured at startup. The
+	// push runs even when the rebuild above failed: the settings change is
+	// already live in memory and persisted, so every other outbound client
+	// follows the new configuration — leaving the auth manager on the old
+	// transport would desynchronize it until the next successful update. The
+	// push runs under the auth lock with the client built inside it (see
+	// pushChatGPTManagerProxyClientLocked); the catalog fetch builds its
+	// client per call and needs no push. A nil manager (auth unavailable or
+	// the restore still in flight — the restore's own post-publication push
+	// covers that case) or a mock without the seam is skipped.
+	f.chatgptAuth.mu.Lock()
+	f.pushChatGPTManagerProxyClientLocked()
+	f.chatgptAuth.mu.Unlock()
+
+	if rebuildErr != nil {
+		return fmt.Errorf("proxy rebuild failed: %w", rebuildErr)
+	}
 	return nil
 }
 

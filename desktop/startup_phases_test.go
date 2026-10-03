@@ -262,6 +262,10 @@ func TestBuildAskUserCallback_NoSessionInContext(t *testing.T) {
 
 func TestBuildConfirmCallback_NoAppContext_DenyAndStop(t *testing.T) {
 	a := &App{} // a.ctx == nil
+	injectExpectedDiagnostics(t, a, diagnosticExpectation{
+		level: slog.LevelWarn, message: "confirmation callback denied: app context unavailable",
+		attrs: map[string]string{"tool": "bash_exec", "reason": "ctx_nil"},
+	})
 	uiEmit := func(session.Event) {}
 	cb := a.buildConfirmCallback(uiEmit)
 
@@ -276,6 +280,10 @@ func TestBuildConfirmCallback_NoAppContext_DenyAndStop(t *testing.T) {
 
 func TestBuildConfirmCallback_NoSessionID_DenyAndStop(t *testing.T) {
 	a := &App{ctx: context.Background()}
+	injectExpectedDiagnostics(t, a, diagnosticExpectation{
+		level: slog.LevelWarn, message: "confirmation callback denied: no session ID in context",
+		attrs: map[string]string{"tool": "edit_file", "reason": "session_id_missing"},
+	})
 	uiEmit := func(session.Event) {}
 	cb := a.buildConfirmCallback(uiEmit)
 
@@ -758,8 +766,12 @@ func TestEmit_UsesWailsEmitWhenSet(t *testing.T) {
 }
 
 func TestEmit_NoOpWhenCtxNilAndNoFake(t *testing.T) {
-	// a.wailsEmit nil + a.ctx nil → emit should silently no-op without panicking.
+	// A missing runtime drops the event with one diagnostic, without panicking.
 	a := &App{}
+	injectExpectedDiagnostics(t, a, diagnosticExpectation{
+		level: slog.LevelWarn, message: "emit called with nil ctx, event dropped",
+		attrs: map[string]string{"event": "ev:test"},
+	})
 	a.emit("ev:test", "p1") // must not panic
 }
 

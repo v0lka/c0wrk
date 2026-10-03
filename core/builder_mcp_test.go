@@ -466,66 +466,50 @@ func TestReconfigureMCP_ConcurrentStartsSerialized(t *testing.T) {
 	}
 }
 
-// The proxy client must be read under b.mu: RebuildProxy writes it
-// concurrently. Run under -race to catch a regression.
-func TestReconfigureMCP_ProxyClientReadIsSynchronized(t *testing.T) {
-	url, entered, _, release := hangingMCPServer(t)
-	defer release()
-
+// TestStressReconfigureMCPProxyClient supplements the default controlled HTTP
+// lock-release regressions. Interleavings remain probabilistic: run with -race.
+// Finite reader/writer rounds and joins prove actual work, not scheduler dwell.
+func TestStressReconfigureMCPProxyClient(t *testing.T) {
 	b := &OrchestratorBuilder{
 		registry: tools.NewToolRegistry(),
 		gateway:  newFailingGateway(t),
 		mcpDone:  closedChan(),
 	}
-
-	done := make(chan struct{})
+	const rounds = 1000
+	start := make(chan struct{})
+	var reads, writes atomic.Int32
+	var wg sync.WaitGroup
+	wg.Add(2)
 	go func() {
-		defer close(done)
-		_ = b.ReconfigureMCP(context.Background(), hangingServerConfig(url))
-	}()
-
-	select {
-	case <-entered:
-	case <-time.After(15 * time.Second):
-		t.Fatal("the gateway reconfigure never reached the MCP endpoint")
-	}
-
-	// Hammer the field the way RebuildProxy does.
-	stop := make(chan struct{})
-	writerDone := make(chan struct{})
-	go func() {
-		defer close(writerDone)
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
+		defer wg.Done()
+		<-start
+		for range rounds {
 			b.mu.Lock()
 			b.proxyClient = &http.Client{}
 			b.mu.Unlock()
 			b.mu.Lock()
 			b.proxyClient = nil
 			b.mu.Unlock()
+			writes.Add(1)
 		}
 	}()
-
-	time.Sleep(200 * time.Millisecond)
-	close(stop)
-	// Bounded: if b.mu were held across the network call again, the writer
-	// would be parked on b.mu.Lock forever. Fail with a diagnosis instead of
-	// hanging until the package timeout.
-	select {
-	case <-writerDone:
-	case <-time.After(5 * time.Second):
-		release()
-		<-writerDone
-		t.Fatal("the writer never acquired b.mu — it is held across the gateway reconfigure")
+	go func() {
+		defer wg.Done()
+		<-start
+		for range rounds {
+			if err := b.ReconfigureMCP(context.Background(), &BuilderConfig{}); err != nil {
+				t.Errorf("ReconfigureMCP(empty) = %v, want nil", err)
+				return
+			}
+			reads.Add(1)
+		}
+	}()
+	close(start)
+	wg.Wait() // finite loops, before gateway cleanup and assertions
+	if got := reads.Load(); got != rounds {
+		t.Errorf("ReconfigureMCP completions = %d, want %d", got, rounds)
 	}
-	release()
-	select {
-	case <-done:
-	case <-time.After(20 * time.Second):
-		t.Fatal("ReconfigureMCP did not return")
+	if got := writes.Load(); got != rounds {
+		t.Errorf("ProxyClient writer rounds = %d, want %d", got, rounds)
 	}
 }

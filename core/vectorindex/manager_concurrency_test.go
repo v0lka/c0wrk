@@ -15,126 +15,135 @@ import (
 	"github.com/v0lka/sp4rk/embedding"
 )
 
-// TestManagerNotifyFileChangeSerializesOverlappingPasses verifies that two
-// near-simultaneous NotifyFileChange calls never embed concurrently (observed
-// peak embed concurrency must be ≤ 1).
-//
-// Note on scope: embedding serialization is primarily guaranteed by the
-// service write lock (IndexIncremental → AddDocuments holds s.mu), so this test
-// passes even without the m.indexing guard. The guard's distinct job —
-// coalescing the trailing pass so a change arriving mid-pass yields one final
-// run rather than a redundant serial no-op pass — is an efficiency property
-// that this peak-concurrency assertion does not measure.
+// TestManagerNotifyFileChangeSerializesOverlappingPasses keeps real filesystem
+// and index storage coverage, but controls debounce dispatch rather than waiting
+// for a quiet window. Both passes must embed and finish; the trailing callback
+// must re-arm while A is in flight, without invoking the embedder concurrently.
 func TestManagerNotifyFileChangeSerializesOverlappingPasses(t *testing.T) {
-	persistDir := t.TempDir()
-
-	var (
-		callCount   atomic.Int32 // total embed invocations
-		inFlight    atomic.Int32 // currently-executing embed invocations
-		gateEnabled atomic.Bool  // when true, embed calls block on `block`
-		maxMu       sync.Mutex
-		maxConc     int32 // observed peak concurrency of embed calls
-	)
-	block := make(chan struct{})
-
-	trackMax := func(cur int32) {
-		maxMu.Lock()
-		if cur > maxConc {
-			maxConc = cur
-		}
-		maxMu.Unlock()
-	}
-
-	embed := func(_ context.Context, _ string) ([]float32, error) {
-		callCount.Add(1)
+	persistDir, ws := t.TempDir(), t.TempDir()
+	var gated atomic.Bool
+	var inFlight, peak, passEmbeds atomic.Int32
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	embed := func(ctx context.Context, _ string) ([]float32, error) {
 		cur := inFlight.Add(1)
-		trackMax(cur)
-		// Only block when the test has enabled the gate (after IndexFull).
-		if gateEnabled.Load() {
-			<-block // hold until the test releases
-		}
-		inFlight.Add(-1)
-		return []float32{0.01, 0.02}, nil
-	}
-
-	svc, err := NewService(ServiceConfig{EmbeddingFunc: embed})
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	t.Cleanup(func() { _ = svc.Close() })
-
-	mgr := &Manager{
-		service: svc,
-		logger:  slog.New(slog.DiscardHandler),
-		chunkFn: defaultChunkFn,
-		hashFn:  embedding.ComputeFileHash,
-	}
-
-	ws := t.TempDir()
-	if err := os.WriteFile(filepath.Join(ws, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
-		t.Fatalf("write main.go: %v", err)
-	}
-	viPath := filepath.Join(persistDir, "project-x")
-
-	if err := mgr.SwitchProject("project-x", ws, viPath, ProjectCallbacks{}); err != nil {
-		t.Fatalf("SwitchProject: %v", err)
-	}
-	if err := svc.WaitReady(context.Background()); err != nil {
-		t.Fatalf("WaitReady: %v", err)
-	}
-	// Freeze the gate threshold: subsequent (incremental) embed calls block.
-	threshold := callCount.Load()
-	gateEnabled.Store(true)
-
-	// Add a new file so the incremental pass performs embedding work.
-	if err := os.WriteFile(filepath.Join(ws, "added.go"), []byte("package main\nfunc added() {}\n"), 0o644); err != nil {
-		t.Fatalf("write added.go: %v", err)
-	}
-
-	// Trigger pass A (1s debounce → IndexIncremental → embeds → blocks).
-	mgr.NotifyFileChange()
-	// Wait for pass A to reach the embedder and block (callCount grows).
-	deadline := time.Now().Add(4 * time.Second)
-	for time.Now().Before(deadline) {
-		if callCount.Load() > threshold {
-			break
-		}
-		time.Sleep(15 * time.Millisecond)
-	}
-	if callCount.Load() <= threshold {
-		t.Fatal("pass A never reached the embedder")
-	}
-
-	// While pass A is blocked/in-flight, reset the peak counter and trigger B.
-	maxMu.Lock()
-	maxConc = 0
-	maxMu.Unlock()
-	mgr.NotifyFileChange()
-	// Let pass B's debounce (1s) elapse. With the guard, B re-arms instead of
-	// running concurrently; without the guard, B would embed now (peak=2).
-	time.Sleep(1500 * time.Millisecond)
-
-	// Release pass A; the trailing pass B then runs sequentially.
-	close(block)
-
-	// Wait for everything to settle (indexing flag cleared).
-	deadline = time.Now().Add(6 * time.Second)
-	for time.Now().Before(deadline) {
-		if !mgr.indexing.Load() {
-			// Give the re-armed trailing run a moment, then re-check stability.
-			time.Sleep(1500 * time.Millisecond)
-			if !mgr.indexing.Load() {
+		defer inFlight.Add(-1)
+		for old := peak.Load(); cur > old; old = peak.Load() {
+			if peak.CompareAndSwap(old, cur) {
 				break
 			}
 		}
-		time.Sleep(25 * time.Millisecond)
+		if gated.Load() {
+			passEmbeds.Add(1)
+			entered <- struct{}{}
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		return []float32{0.01, 0.02}, nil
 	}
+	mgr, err := NewManager(ManagerConfig{EmbeddingFunc: embed, Debounce: 150 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	// One notification/re-arm is consumed at a time, so capacity one cannot
+	// fill during dispatch. The callback itself is joined by the test.
+	armed := make(chan func(), 1)
+	mgr.afterFunc = func(d time.Duration, f func()) *time.Timer {
+		if d != 150*time.Millisecond {
+			t.Errorf("debounce = %v, want 150ms", d)
+		}
+		armed <- f
+		return nil
+	}
+	var workers []<-chan struct{}
+	t.Cleanup(func() {
+		unblock()
+		for _, done := range workers {
+			awaitVectorSignal(t, done, "incremental callback cleanup")
+		}
+		mgr.Shutdown()
+	})
+	write := func(name string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(ws, name), []byte("package main\nfunc "+name[:len(name)-3]+"() {}\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	write("main.go")
+	if err := mgr.SwitchProject("project-x", ws, filepath.Join(persistDir, "project-x"), ProjectCallbacks{}); err != nil {
+		t.Fatalf("SwitchProject: %v", err)
+	}
+	waitForBackgroundPasses(t, mgr, mgr.Service())
+	gated.Store(true)
+	write("added.go")
+	mgr.NotifyFileChange()
+	launch := func(f func()) <-chan struct{} {
+		done := make(chan struct{})
+		workers = append(workers, done)
+		go func() { defer close(done); f() }()
+		return done
+	}
+	doneA := launch(awaitVectorCallback(t, armed))
+	awaitVectorSignal(t, entered, "pass A embed entry")
 
-	maxMu.Lock()
-	peak := maxConc
-	maxMu.Unlock()
-	if peak > 1 {
-		t.Errorf("expected at most 1 concurrent embed call (serialized passes), got peak %d", peak)
+	// A's file snapshot has already reached embedding. This file must be
+	// picked up by B, not silently folded into A before the overlap begins.
+	write("trailing.go")
+	mgr.NotifyFileChange()
+	guardDone := launch(awaitVectorCallback(t, armed))
+	trailing := awaitVectorCallback(t, armed)
+	awaitVectorSignal(t, guardDone, "overlap re-arm completion")
+	if got := passEmbeds.Load(); got != 1 {
+		t.Fatalf("embeds while A blocked = %d, want 1", got)
+	}
+	unblock()
+	awaitVectorSignal(t, doneA, "pass A completion")
+	doneB := launch(trailing)
+	awaitVectorSignal(t, entered, "pass B embed entry")
+	awaitVectorSignal(t, doneB, "pass B completion")
+	if got := passEmbeds.Load(); got != 2 {
+		t.Errorf("incremental embed calls = %d, want 2", got)
+	}
+	if got := peak.Load(); got != 1 {
+		t.Errorf("peak embed concurrency = %d, want 1", got)
+	}
+	if mgr.indexing.Load() {
+		t.Error("indexing remains true after both callbacks completed")
+	}
+	files, err := mgr.Service().GetCollectionFiles()
+	if err != nil {
+		t.Fatalf("GetCollectionFiles: %v", err)
+	}
+	for _, name := range []string{"main.go", "added.go", "trailing.go"} {
+		if _, ok := files[filepath.Join(ws, name)]; !ok {
+			t.Errorf("completed passes did not index %s", name)
+		}
+	}
+}
+
+// awaitVectorSignal bounds hangs only; channels establish all ordering.
+func awaitVectorSignal(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+func awaitVectorCallback(t *testing.T, ch <-chan func()) func() {
+	t.Helper()
+	select {
+	case f := <-ch:
+		return f
+	case <-time.After(10 * time.Second):
+		t.Fatal("debounce callback was not armed")
+		return nil
 	}
 }
 

@@ -1074,9 +1074,9 @@ func TestUpdateSessionActivity(t *testing.T) {
 		t.Fatalf("failed to load session: %v", err)
 	}
 	originalLastActive := before.LastActiveAt
-
-	// Wait a tiny bit so timestamps differ
-	time.Sleep(10 * time.Millisecond)
+	if originalLastActive != "2024-01-15T10:00:00Z" {
+		t.Fatalf("stored activity fixture = %q, want fixed 2024 timestamp", originalLastActive)
+	}
 
 	// Update activity
 	if err := store.UpdateSessionActivity(context.Background(), session.ID); err != nil {
@@ -1088,7 +1088,15 @@ func TestUpdateSessionActivity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to load session after update: %v", err)
 	}
-	if after.LastActiveAt == originalLastActive {
+	updated, err := time.Parse(time.RFC3339, after.LastActiveAt)
+	if err != nil {
+		t.Fatalf("updated activity %q is invalid: %v", after.LastActiveAt, err)
+	}
+	initial, err := time.Parse(time.RFC3339, originalLastActive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.After(initial) {
 		t.Error("last_active_at should have changed after UpdateSessionActivity")
 	}
 }

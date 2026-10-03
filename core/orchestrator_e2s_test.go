@@ -794,6 +794,7 @@ func TestRunE2SLoop_SpinStopOutputNotUserEcho(t *testing.T) {
 		},
 	}
 	o := newE2STestOrchestrator(mockLLM, createTestRegistryWithDelegate(t), &spyEmitter{}, nil)
+	o.logger = expectedCoreLogger(t, expectedCoreDiagnostic{"WARN", "e2s: anti-spin abort", map[string]string{"tool": "read_file", "repeat_count": "5"}})
 	result, err := o.HandleMessage(context.Background(), "read same.txt forever", "session-e2s-spin",
 		HandleOptions{E2S: true})
 	if err != nil {
@@ -835,6 +836,7 @@ func TestRunE2SLoop_ModelProfilesNudgeOverrideCannotBypassOrdering(t *testing.T)
 		LoopHardening: ModelProfilesLoopHardeningSettings{Enabled: true, RepeatNudgeThreshold: 9},
 	}
 
+	o.logger = expectedCoreLogger(t, expectedCoreDiagnostic{"WARN", "e2s_loop: ignoring Model Profiles repeat-nudge override — not strictly below the configured abort threshold", map[string]string{"override": "9", "abort_threshold": "5", "using_nudge": "3"}}, expectedCoreDiagnostic{"WARN", "e2s: anti-spin abort", map[string]string{"tool": "read_file", "repeat_count": "5"}})
 	result, err := o.HandleMessage(context.Background(), "read same.txt forever", "session-e2s-sl", HandleOptions{E2S: true})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)

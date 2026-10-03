@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -33,22 +34,24 @@ func TestDeferredWakeReload_NilCtx_NoPanic(t *testing.T) {
 // and — because the reload is deferred off the synchronous wake callback — is
 // also what stopped the silent-exit race.
 func TestDeferredWakeReload_ContextCanceled_NoReload(t *testing.T) {
-	var called atomic.Bool
-	a := &App{
-		reloadAppFn: func(context.Context) { called.Store(true) },
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	a.ctx = ctx
-	// Cancel before the goroutine's select can fire on the timer: the select
-	// must observe ctx.Done() and return without reloading.
-	cancel()
+	synctest.Test(t, func(t *testing.T) {
+		var called atomic.Bool
+		a := &App{
+			reloadAppFn: func(context.Context) { called.Store(true) },
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		a.ctx = ctx
+		cancel()
 
-	a.deferredWakeReload()
-	// Let the goroutine observe the cancellation. It returns near-instantly;
-	// the sleep only guards the scheduler.
-	time.Sleep(150 * time.Millisecond)
-
-	if called.Load() {
-		t.Fatal("reloadFrontend was called despite context being canceled before the delay")
-	}
+		a.deferredWakeReload()
+		// Drain cancellation, then cross the full virtual reload deadline:
+		// Wait alone could also observe a worker parked on its timer.
+		synctest.Wait()
+		<-time.After(wakeReloadDelay)
+		synctest.Wait()
+		if called.Load() {
+			t.Fatal("reloadFrontend was called despite context being canceled before the delay")
+		}
+	})
 }

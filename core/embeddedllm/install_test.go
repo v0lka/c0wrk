@@ -3334,13 +3334,14 @@ func TestRecordableContextIsTheFitFloorUnderFit(t *testing.T) {
 
 // ── the manifest write is atomic under concurrency ──
 
-// TestWriteManifestIsSafeUnderConcurrentWriters pins the unique-temporary fix.
-// Installer.Install holds no supervisor gate while Server.recordEffectiveContext
+// TestStressWriteManifestConcurrentWriters exercises real concurrent promotion.
+// Interleavings are probabilistic; TestManifestPromotionFaults retains default
+// deterministic branch coverage. Installer.Install holds no supervisor gate while Server.recordEffectiveContext
 // writes under one, so two writers can overlap; a shared FIXED temporary name let
 // one rename promote a file the other was still writing, producing a torn
 // manifest.json — and a manifest that fails to parse reports the model as not
 // installed until a reinstall.
-func TestWriteManifestIsSafeUnderConcurrentWriters(t *testing.T) {
+func TestStressWriteManifestConcurrentWriters(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()

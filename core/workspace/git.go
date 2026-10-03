@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,8 +78,14 @@ func errNotGitRepo(err error, stderr string) bool {
 // repoPath IS the working directory for every repo-scoped invocation) may
 // override it.
 func GitCmdInRepo(ctx context.Context, repoPath string, args ...string) (*exec.Cmd, error) {
-	return gitCmdInRepoScanned(ctx, newGitScanMemo(repoPath), args...)
+	scan := newGitScanMemo(repoPath)
+	scan.logger, _ = ctx.Value(gitScanLoggerKey{}).(*slog.Logger)
+	return gitCmdInRepoScanned(ctx, scan, args...)
 }
+
+// gitScanLoggerKey carries an operation-local scanner logger. It never changes
+// the global logger or the default scanner seam.
+type gitScanLoggerKey struct{}
 
 // gitScanMemo carries ONE ScanGitConfig through a single logical operation
 // (review [15]). GitCmdInRepo scans fresh per invocation — the deliberate
@@ -91,10 +98,11 @@ func GitCmdInRepo(ctx context.Context, repoPath string, args ...string) (*exec.C
 // for the rest; sharing across operations remains forbidden — freshness
 // per user operation is the security property. Not safe for concurrent use.
 type gitScanMemo struct {
-	path string
-	done bool
-	info *GitConfigInfo
-	err  error
+	logger *slog.Logger
+	path   string
+	done   bool
+	info   *GitConfigInfo
+	err    error
 }
 
 func newGitScanMemo(repoPath string) *gitScanMemo {
@@ -105,7 +113,11 @@ func newGitScanMemo(repoPath string) *gitScanMemo {
 // key found, scanning the repository config at most once.
 func (m *gitScanMemo) argv() ([]string, error) {
 	if !m.done {
-		m.info, m.err = scanGitConfigFn(m.path)
+		if m.logger != nil {
+			m.info, m.err = ScanGitConfig(m.path, m.logger)
+		} else {
+			m.info, m.err = scanGitConfigFn(m.path)
+		}
 		if m.err != nil {
 			m.err = fmt.Errorf("scanning git config for repo %s (fail closed): %w", m.path, m.err)
 		}

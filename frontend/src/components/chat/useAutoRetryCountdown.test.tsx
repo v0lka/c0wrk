@@ -9,6 +9,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
+import { logger } from '@/lib/logger'
 import { createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
@@ -157,7 +158,9 @@ describe('useAutoRetryCountdown', () => {
     expect(resumeTask).not.toHaveBeenCalled()
   })
 
-  it('strips the live keys from the banner when the auto fire fails', async () => {
+  it('strips the live keys from the banner when the auto fire fails', async ({ onTestFinished }) => {
+    const logSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    onTestFinished(() => logSpy.mockRestore())
     const { useChatStore } = await import('@/stores/chatStore')
     const meta = { resolved: false, auto_retry_at: 1, auto_retry_live: true }
     useChatStore.getState().messages['sess-1'] = {
@@ -177,6 +180,7 @@ describe('useAutoRetryCountdown', () => {
     const after = useChatStore.getState().messages['sess-1']?.['msg-1' as never] as { metadata?: Record<string, unknown> } | undefined
     expect(after?.metadata).toEqual({ resolved: false })
     delete useChatStore.getState().messages['sess-1']
+    expect(logSpy).toHaveBeenCalledExactlyOnceWith('Auto-resend failed; falling back to the manual resume banner', { sessionId: 'sess-1', error: 'Error: session busy' })
   })
 
   it('clears the interval on unmount', () => {

@@ -122,6 +122,20 @@ llm:
   chatgpt:
     api_key: "${OPENAI_API_KEY}"
     models: []
+    # Authentication mode for this provider:
+    #   api_key (default) — the static api_key above; exactly the historical
+    #                        behavior, nothing else changes.
+    #   oauth              — ChatGPT subscription auth: sign in with ChatGPT
+    #                        in the app (a browser OAuth flow; credentials are
+    #                        kept in the OS keychain, never in this file).
+    #                        In this mode requests are routed to the pinned
+    #                        ChatGPT Codex backend instead of the public
+    #                        OpenAI API, and api_key is NOT used as a silent
+    #                        fallback: while signed out, requests to this
+    #                        provider fail with a "sign in with ChatGPT"
+    #                        error until an account signs in.
+    # auth:
+    #   mode: api_key
 
   # Override built-in model metadata per model name. Every field is optional and
   # uses a sentinel value meaning "inherit the built-in default": 0 for integers,

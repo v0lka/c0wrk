@@ -204,6 +204,9 @@ type Manager struct {
 
 	debounceMu    sync.Mutex
 	debounceTimer *time.Timer
+	// afterFunc is an immutable instance-local timer factory for tests; nil
+	// uses time.AfterFunc. Set it before any file notifications or workers.
+	afterFunc func(time.Duration, func()) *time.Timer
 	// debounce is the configured watcher debounce window (ManagerConfig.Debounce
 	// via vector_index.debounce_ms). Zero falls back to DefaultDebounce at arm
 	// time (see effectiveDebounce) so zero-value Manager literals — used by
@@ -905,7 +908,16 @@ func (m *Manager) NotifyFileChange() {
 // firing is honored rather than indexing a stale workspace. The caller must
 // hold m.debounceMu.
 func (m *Manager) scheduleIncrementalLocked() {
-	m.debounceTimer = time.AfterFunc(m.effectiveDebounce(), m.runIncrementalGuarded)
+	m.debounceTimer = m.armIncremental()
+}
+
+// armIncremental preserves the production timer while allowing in-process
+// timing tests to control dispatch independently of filesystem indexing.
+func (m *Manager) armIncremental() *time.Timer {
+	if m.afterFunc != nil {
+		return m.afterFunc(m.effectiveDebounce(), m.runIncrementalGuarded)
+	}
+	return time.AfterFunc(m.effectiveDebounce(), m.runIncrementalGuarded)
 }
 
 // effectiveDebounce returns the configured watcher debounce window, falling
@@ -943,7 +955,7 @@ func (m *Manager) runIncrementalGuarded() {
 		// A pass is in flight: re-arm rather than launching a redundant
 		// trailing pass that would find no new changes.
 		m.debounceMu.Lock()
-		m.debounceTimer = time.AfterFunc(m.effectiveDebounce(), m.runIncrementalGuarded)
+		m.debounceTimer = m.armIncremental()
 		m.debounceMu.Unlock()
 		return
 	}
@@ -1119,17 +1131,18 @@ func (m *Manager) NotReadyError() error {
 }
 
 // freeOSMemoryAfterFullIndex returns the transient allocations of a
-// completed FULL indexing pass to the OS through the package-level
-// freeOSMemory seam (runtime/debug.FreeOSMemory — a forced GC cycle plus
-// scavenge), the SAME seam the park-eviction and content-less-migration
-// paths use (see service.go). Sharing one seam means a test swaps a single
-// variable. Incremental passes deliberately do NOT call it: they allocate
+// completed FULL indexing pass to the OS through the service's immutable
+// instance-local freeOSMemory dependency (runtime/debug.FreeOSMemory — a forced
+// GC cycle plus scavenge), the SAME dependency the park-eviction and content-less
+// migration paths use (see service.go). Tests inject it before creating workers,
+// so one service's recorder cannot affect another service's full pass.
+// Incremental passes deliberately do NOT call it: they allocate
 // proportionally to the changed files, and a forced full GC per debounce
 // flush would burn CPU for no memory win. Call only from background
 // goroutines, never under s.mu or m.mu — FreeOSMemory blocks for a full GC
 // cycle and would stall every lock holder.
 func (m *Manager) freeOSMemoryAfterFullIndex() {
-	freeOSMemory()
+	m.service.freeOSMemory()
 }
 
 // handleBranchSwitch reacts to a branch change reported by the git monitor:

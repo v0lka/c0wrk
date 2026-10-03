@@ -27,10 +27,11 @@ func sameEnvKey(a, b string) bool {
 
 // Session represents a single PTY-backed shell session.
 type Session struct {
-	cmd    *exec.Cmd
-	ptmx   *os.File
-	cancel context.CancelFunc
-	mu     sync.Mutex // per-session mutex for PTY I/O (avoids serializing writes across sessions)
+	cmd      *exec.Cmd
+	ptmx     *os.File
+	cancel   context.CancelFunc
+	readDone chan struct{} // closed after readLoop and all its callbacks return
+	mu       sync.Mutex    // per-session mutex for PTY I/O (avoids serializing writes across sessions)
 }
 
 // NewManager creates a new terminal manager.
@@ -96,10 +97,15 @@ func (m *Manager) Start(sessionID, workDir string) error {
 	// before emitting a prompt.
 	_ = pty.Setsize(ptmx, &pty.Winsize{Cols: 80, Rows: 24})
 
-	m.sessions[sessionID] = &Session{cmd: cmd, ptmx: ptmx, cancel: cancel}
+	sess := &Session{cmd: cmd, ptmx: ptmx, cancel: cancel, readDone: make(chan struct{})}
+	m.sessions[sessionID] = sess
 
-	// Start goroutine to read output and emit events.
-	go m.readLoop(ctx, sessionID, ptmx)
+	// Stop cancels/closes the PTY to end this worker. The completion signal
+	// includes callbacks; Stop itself must not join a callback that calls Stop.
+	go func() {
+		defer close(sess.readDone)
+		m.readLoop(ctx, sessionID, ptmx)
+	}()
 
 	m.logger.Info("terminal started", "session_id", sessionID, "shell", shell, "workDir", workDir)
 	return nil

@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -175,20 +176,24 @@ type fakeSpawner struct {
 
 func (sp *fakeSpawner) spawn(_ context.Context, cmd LaunchCommand) (Process, error) {
 	sp.mu.Lock()
-	sp.commands = append(sp.commands, cmd)
 	err := sp.err
 	sp.nextPID += 4242
 	pid := sp.nextPID
 	configure := sp.configure
-	sp.mu.Unlock()
 	if err != nil {
+		sp.commands = append(sp.commands, cmd)
+		sp.mu.Unlock()
 		return nil, err
 	}
+	sp.mu.Unlock()
 	proc := newFakeProcess(pid)
 	if configure != nil {
 		configure(proc, cmd)
 	}
 	sp.mu.Lock()
+	// Publish the completed spawn atomically: count observers may immediately
+	// inspect lastProcess and must never see an unconfigured or absent child.
+	sp.commands = append(sp.commands, cmd)
 	sp.procs = append(sp.procs, proc)
 	sp.mu.Unlock()
 	return proc, nil
@@ -1520,7 +1525,7 @@ func TestForceUnloadReportsAStopThatDidNotTake(t *testing.T) {
 		// The load never becomes ready, so it holds the gate for its whole ready
 		// budget — the cold load the force path exists for.
 		neverReady:   true,
-		readyTimeout: time.Second,
+		readyTimeout: time.Minute,
 		readyDelay:   5 * time.Millisecond,
 		stopTimeout:  20 * time.Millisecond,
 	})
@@ -1530,10 +1535,8 @@ func TestForceUnloadReportsAStopThatDidNotTake(t *testing.T) {
 		proc.unkillable = true
 	}
 
-	loadErr := make(chan error, 1)
-	go func() { loadErr <- fx.srv.Load(context.Background()) }()
-	waitFor(t, 5*time.Second, func() bool { return fx.spawner.spawnCount() == 1 },
-		"the in-flight load to spawn its process")
+	loadErr, cancelLoad := startLoadAtReadinessProbe(t, fx)
+	defer cancelLoad()
 	live := fx.spawner.lastProcess()
 	if live == nil {
 		t.Fatal("no process was spawned")
@@ -1541,7 +1544,8 @@ func TestForceUnloadReportsAStopThatDidNotTake(t *testing.T) {
 
 	// Shutdown's shape: a budget that expires while the load holds the gate, so
 	// the stop takes the force path — and then the stop does not take.
-	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Gate is held by the entered Load; deterministically take force path.
 	defer cancel()
 	err := fx.srv.Stop(ctx)
 	if err == nil {
@@ -1563,7 +1567,9 @@ func TestForceUnloadReportsAStopThatDidNotTake(t *testing.T) {
 			"process that is still running", got, live.pid)
 	}
 
-	// The interrupted load reports its own failure and releases the gate.
+	// The failed stop cannot close run.died for an unkillable child. Cancel
+	// the owning Load explicitly, then join its own failure and gate release.
+	cancelLoad()
 	select {
 	case <-loadErr:
 	case <-time.After(10 * time.Second):
@@ -1599,69 +1605,68 @@ func TestForceUnloadReportsAStopThatDidNotTake(t *testing.T) {
 // nearly-spent context silently shortens the window and SIGKILLs a llama-server
 // that was about to exit on its own.
 func TestALateGateAcquisitionStillGetsAFullGracefulWindow(t *testing.T) {
-	t.Parallel()
-
-	const (
-		gateHold     = 250 * time.Millisecond
-		callerBudget = 1250 * time.Millisecond
-		graceful     = 1500 * time.Millisecond
-	)
-	fx := newFixture(t, fixtureOptions{stopTimeout: graceful})
-	fx.srv.killWaitFor = 50 * time.Millisecond
-	// The child ignores the graceful signal, so the kill is what stops it — and
-	// WHEN that kill happens is exactly what this test measures.
-	fx.spawner.configure = func(proc *fakeProcess, _ LaunchCommand) {
+	synctest.Test(t, func(t *testing.T) {
+		const callerBudget = 1250 * time.Millisecond
+		const graceful = 1500 * time.Millisecond
+		logs := &logCapture{}
+		srv := NewServer(Layout{}, logs.logger()) // No manifest, endpoint, or OS handles.
+		srv.StopTimeout = graceful
+		srv.killWaitFor = 50 * time.Millisecond
+		proc := newFakeProcess(4242)
 		proc.ignoreSignals = true
-	}
-	if err := fx.srv.Load(context.Background()); err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	proc := fx.spawner.lastProcess()
-
-	// A cold load's shape: the gate is held while the caller's budget burns, and
-	// is released with ~1 s of it left — comfortably less than the graceful
-	// window the stop is owed.
-	release, err := fx.srv.acquireGate(context.Background())
-	if err != nil {
-		t.Fatalf("acquireGate: %v", err)
-	}
-	go func() {
-		time.Sleep(gateHold)
-		release()
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), callerBudget)
-	defer cancel()
-	started := time.Now()
-	if err := fx.srv.Unload(ctx); err != nil {
-		t.Fatalf("Unload with a budget mostly spent behind the gate: %v", err)
-	}
-	elapsed := time.Since(started)
-
-	logs := fx.logs.String()
-	if strings.Contains(logs, "without the single-instance gate") {
-		t.Fatalf("the gate wait overran the caller's budget, so the force path ran and "+
-			"this test measured the wrong thing: %q", logs)
-	}
-	if strings.Contains(logs, "the graceful stop was interrupted") {
-		t.Errorf("the caller's leftover budget truncated the graceful window: %q", logs)
-	}
-	if want := gateHold + graceful - 100*time.Millisecond; elapsed < want {
-		t.Errorf("the stop finished after %s, want at least %s — the full graceful "+
-			"window after the gate wait", elapsed, want)
-	}
-	if proc.alive() {
-		t.Error("the process survived the unload")
-	}
-	if got := fx.srv.State(); got != StateInstalled {
-		t.Errorf("state = %s, want %s", got, StateInstalled)
-	}
-	if got := len(proc.signalLog()); got == 0 {
-		t.Error("the process was never asked to stop gracefully")
-	}
-	if got := proc.killCount(); got != 1 {
-		t.Errorf("the process was killed %d time(s), want exactly 1, after the full window", got)
-	}
+		run := &processRun{proc: proc, pid: proc.pid, died: make(chan struct{})}
+		srv.run = run
+		srv.state = StateLoaded
+		go func() { run.exitErr = proc.Wait(); close(run.died) }()
+		release, err := srv.acquireGate(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var once sync.Once
+		done := make(chan error, 1)
+		defer func() {
+			once.Do(release)
+			proc.exit(nil)
+			synctest.Wait()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), callerBudget)
+		defer cancel()
+		go func() { done <- srv.Unload(ctx) }()
+		synctest.Wait() // Unload is parked behind the occupied gate.
+		time.Sleep(time.Second)
+		once.Do(release)
+		synctest.Wait() // Graceful signal sent; timer starts AFTER admission.
+		if got := len(proc.signalLog()); got != 1 {
+			t.Fatalf("graceful signals after admission = %d, want 1", got)
+		}
+		time.Sleep(graceful - time.Nanosecond)
+		synctest.Wait()
+		if ctx.Err() != context.DeadlineExceeded {
+			t.Fatal("caller budget did not expire during the stop")
+		}
+		if !proc.alive() || proc.killCount() != 0 {
+			t.Fatal("caller deadline shortened the detached graceful window")
+		}
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatal("Unload did not join at grace boundary")
+		}
+		if proc.alive() || proc.killCount() != 1 {
+			t.Errorf("after grace: alive=%t kills=%d, want false/1", proc.alive(), proc.killCount())
+		}
+		if srv.State() != StateInstalled {
+			t.Errorf("state = %s, want installed", srv.State())
+		}
+		if strings.Contains(logs.String(), "the graceful stop was interrupted") || strings.Contains(logs.String(), "without the single-instance gate") {
+			t.Errorf("wrong stop phase: %s", logs.String())
+		}
+	})
 }
 
 // ── acceptance: the command line ──
@@ -3544,6 +3549,39 @@ func TestStopIsTheInstallerSeam(t *testing.T) {
 //
 // Both exported teardowns are covered: shutdown calls Stop, and the Remove RPC
 // and the Unload action call Unload.
+// startLoadAtReadinessProbe proves the live run was published before teardown.
+// Real manifest/HTTP readiness I/O stays outside synctest. Cleanup cancels and
+// joins Load before newFixture closes its endpoint and removes its disk tree.
+func startLoadAtReadinessProbe(t *testing.T, fx *fixture) (<-chan error, context.CancelFunc) {
+	t.Helper()
+	entered := make(chan struct{})
+	var once sync.Once
+	fx.endpoint.mu.Lock()
+	fx.endpoint.onProbe = func(int) { once.Do(func() { close(entered) }) }
+	fx.endpoint.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		for _, proc := range fx.spawner.allProcesses() {
+			proc.exit(errors.New("test cleanup"))
+		}
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("Load cleanup did not join")
+		}
+	})
+	go func() { defer close(done); result <- fx.srv.Load(ctx) }()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Load did not enter readiness probe")
+	}
+	return result, cancel
+}
+
 func TestStopDuringAColdLoadTerminatesTheProcess(t *testing.T) {
 	t.Parallel()
 
@@ -3561,11 +3599,8 @@ func TestStopDuringAColdLoadTerminatesTheProcess(t *testing.T) {
 				readyDelay:   5 * time.Millisecond,
 				stopTimeout:  50 * time.Millisecond,
 			})
-			loadErr := make(chan error, 1)
-			go func() { loadErr <- fx.srv.Load(context.Background()) }()
-
-			waitFor(t, 5*time.Second, func() bool { return fx.spawner.spawnCount() == 1 },
-				"the in-flight load to spawn its process")
+			loadErr, cancelLoad := startLoadAtReadinessProbe(t, fx)
+			defer cancelLoad()
 			proc := fx.spawner.lastProcess()
 			if proc == nil {
 				t.Fatal("no process was spawned")
@@ -3573,7 +3608,8 @@ func TestStopDuringAColdLoadTerminatesTheProcess(t *testing.T) {
 
 			// Shutdown's shape: a budget an order of magnitude shorter than the
 			// ready timeout of the load that holds the gate.
-			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel() // Gate is held by the entered Load; deterministically take force path.
 			defer cancel()
 			if err := teardown(fx.srv, ctx); err != nil {
 				t.Errorf("%s while a cold load held the gate = %v, want the process stopped", name, err)
@@ -3630,16 +3666,14 @@ func TestForceUnloadDuringAnInFlightLoadEndsAtTheLoadsOwnDiagnosis(t *testing.T)
 		readyDelay:   5 * time.Millisecond,
 		stopTimeout:  50 * time.Millisecond,
 	})
-	loadErr := make(chan error, 1)
-	go func() { loadErr <- fx.srv.Load(context.Background()) }()
-
-	waitFor(t, 5*time.Second, func() bool { return fx.spawner.spawnCount() == 1 },
-		"the in-flight load to spawn its process")
+	loadErr, cancelLoad := startLoadAtReadinessProbe(t, fx)
+	defer cancelLoad()
 	waitForState(t, fx.srv, StateLoading)
 
 	// Shutdown's shape: a budget that expires while the load holds the gate, so
 	// the teardown takes the force path.
-	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Gate is held by the entered Load; deterministically take force path.
 	defer cancel()
 	if err := fx.srv.Stop(ctx); err != nil {
 		t.Errorf("Stop while a cold load held the gate = %v, want the process stopped", err)
@@ -3754,7 +3788,18 @@ func TestForceUnloadDuringAReadyLoadDoesNotClaimResidency(t *testing.T) {
 	fx.srv.ProbeTimeout = 30 * time.Second
 
 	loadErr := make(chan error, 1)
-	go func() { loadErr <- fx.srv.Load(context.Background()) }()
+	loadDone := make(chan struct{})
+	loadCtx, cancelLoad := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(releaseProbe) })
+		cancelLoad()
+		select {
+		case <-loadDone:
+		case <-time.After(10 * time.Second):
+			t.Error("staged ready Load cleanup did not join")
+		}
+	})
+	go func() { defer close(loadDone); loadErr <- fx.srv.Load(loadCtx) }()
 
 	select {
 	case <-probeReached:
@@ -3773,7 +3818,8 @@ func TestForceUnloadDuringAReadyLoadDoesNotClaimResidency(t *testing.T) {
 	// Shutdown's shape: a budget that expires while the load holds the gate, so
 	// the teardown takes the force path. It runs to COMPLETION before the ready
 	// answer is released, which is what makes the interleaving deterministic.
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // The readiness barrier still holds the gate.
 	defer cancel()
 	if err := fx.srv.Stop(ctx); err != nil {
 		t.Errorf("Stop while a cold load held the gate = %v, want the process stopped", err)

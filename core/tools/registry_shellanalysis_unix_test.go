@@ -33,6 +33,24 @@ func TestSmartApproveRealBash_FlowshCanonicalControls_Backstop(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			registry, provider, confirmCalled := newShellAnalysisRegistry(t, "VERDICT: ALLOW\nREASON: looks safe to me")
+			{
+				var want []expectedToolDiagnostic
+				switch t.Name() {
+				case "TestSmartApproveRealBash_FlowshCanonicalControls_Backstop/download_cradle":
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "Shell analysis: downloaded network content reaches code execution (download cradle)", "tool": "bash_exec"}},
+					}
+				case "TestSmartApproveRealBash_FlowshCanonicalControls_Backstop/exfiltration_flow":
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "Shell analysis: secret/credential read paired with tainted network egress (exfiltration flow)", "tool": "bash_exec"}},
+					}
+				case "TestSmartApproveRealBash_FlowshCanonicalControls_Backstop/system_write":
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "Shell analysis: filesystem write/metadata effect on a system path or raw device", "tool": "bash_exec"}},
+					}
+				}
+				captureToolDiagnostics(t, registry, want...)
+			}
 			bashTool, err := builtins.NewBashExecTool(nil)
 			if err != nil {
 				t.Fatalf("NewBashExecTool: %v", err)
@@ -87,6 +105,7 @@ func TestSmartApproveRealBash_FlowshCanonicalControls_Backstop(t *testing.T) {
 // block outright (there is no confirmation flow to escalate to).
 func TestExecuteUnattended_TopPasses_CanonicalAndBlocklistBlock(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: unattended tool blocked by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "command matches blacklist pattern: rm\\s+-rf\\s+/", "tool": "bash_exec"}}, expectedToolDiagnostic{message: "security: unattended tool blocked by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "Shell analysis: filesystem write/metadata effect on a system path or raw device", "tool": "bash_exec"}})
 	bashTool, err := builtins.NewBashExecTool([]string{`rm\s+-rf\s+/`})
 	if err != nil {
 		t.Fatalf("NewBashExecTool: %v", err)

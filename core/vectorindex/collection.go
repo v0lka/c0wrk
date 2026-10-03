@@ -1297,7 +1297,7 @@ func (s *Service) finishContentless(ctx context.Context, ps *projectState, branc
 
 	s.logger.Info("content-less migration complete",
 		"branch", branch, "probed", probed, "stripped", stripped)
-	go freeOSMemory()
+	go s.freeOSMemory()
 }
 
 // WaitContentlessMigration blocks until the current branch's background

@@ -110,6 +110,14 @@ func TestFetchPaperOriginal_StatusMapping(t *testing.T) {
 			libraryRoot := config.PaperLibraryPath(ws)
 			dir := seedTestPaper(t, libraryRoot, papers.PaperRecord{Title: "Mapped", Slug: "mapped"})
 			res := tc.res
+			var wantDiagnostics []miscExpectedDiagnostic
+			if res.Err != nil {
+				wantDiagnostics = append(wantDiagnostics, miscExpectedDiagnostic{
+					message: "paper original fetch did not succeed",
+					attrs:   map[string]string{"paper": "mapped", "status": string(res.Status), "error": res.Err.Error()},
+				})
+			}
+			captureMiscDiagnostics(t, api, wantDiagnostics...)
 			api.fetchPaperOriginalFn = func(context.Context, *http.Client, string, papers.PaperRecord) papers.FetchResult {
 				return res
 			}

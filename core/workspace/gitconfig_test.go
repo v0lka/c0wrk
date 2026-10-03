@@ -1433,13 +1433,15 @@ func TestSemanticFingerprintFromSnapshotRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	info, err := ScanGitConfig(root)
+	logger := expectedDiagnostics(t, ignoredIncludeDiagnostic(6, extra), ignoredIncludeDiagnostic(6, extra))
+
+	info, err := ScanGitConfig(root, logger)
 	if err != nil {
 		t.Fatalf("ScanGitConfig: %v", err)
 	}
-	info.ResolveIncludes()
+	info.ResolveIncludes(logger)
 
-	fingerprint, semantic, err := SemanticFingerprintFromSnapshot(info.Snapshot())
+	fingerprint, semantic, err := SemanticFingerprintFromSnapshot(info.Snapshot(), logger)
 	if err != nil {
 		t.Fatalf("SemanticFingerprintFromSnapshot: %v", err)
 	}

@@ -39,15 +39,11 @@ var estimateStateBytes = func(ps *projectState, embeddingDimension int) int64 {
 	return int64(ps.collection.Count()) * (int64(embeddingDimension)*4 + 1024)
 }
 
-// freeOSMemory is a test seam over debug.FreeOSMemory: an actual park
-// eviction schedules it (as its own goroutine, off the service lock) so the
-// potentially hundreds of MiB a parked state kept resident are returned to
-// the OS promptly instead of lingering until the next natural GC cycle.
-// Tests swap it to observe the call without a real stop-the-world pause.
-var freeOSMemory = debug.FreeOSMemory
-
 // ServiceConfig holds configuration for creating a Service.
 type ServiceConfig struct {
+	// freeOSMemory is an instance-local test dependency. NewService resolves
+	// nil to debug.FreeOSMemory; it is immutable after construction.
+	freeOSMemory func()
 	// EmbeddingFunc is the chromem-go compatible embedding function
 	// (from Embedder.EmbeddingFunc()). Required. It is attached to every
 	// chromem collection and used for query-side embedding; when
@@ -335,6 +331,9 @@ type Service struct {
 	readyGen  int64
 	logger    *slog.Logger
 	telemetry *Telemetry
+	// freeOSMemory is resolved at construction and never reassigned. Eviction
+	// and migration invoke it asynchronously, outside the service lock.
+	freeOSMemory func()
 
 	// hybridConfig holds resolved RRF tuning + pre-fusion score
 	// thresholds. Threshold fields of 0 mean "disabled".
@@ -390,6 +389,7 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	}
 
 	s := &Service{
+		freeOSMemory:              cfg.freeOSMemory,
 		embeddingFunc:             cfg.EmbeddingFunc,
 		batchEmbedder:             cfg.BatchEmbedder,
 		readyCh:                   make(chan struct{}),
@@ -401,6 +401,9 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		embeddingCacheMaxBytes:    cfg.EmbeddingCacheMaxBytes,
 		parkCapacity:              cfg.ParkCapacity,
 		parkBudgetBytes:           cfg.ParkBudgetBytes,
+	}
+	if s.freeOSMemory == nil {
+		s.freeOSMemory = debug.FreeOSMemory
 	}
 	// current starts as an empty in-memory state so every accessor (including
 	// the lock-free GetCollection/GetDB) is safe before the first SetProject.
@@ -824,7 +827,7 @@ func (s *Service) parkCurrentLocked() {
 		// goroutine — the func value is captured now, the goroutine never
 		// takes s.mu, and the lock is released the moment
 		// parkCurrentLocked returns.
-		go freeOSMemory()
+		go s.freeOSMemory()
 	}
 }
 

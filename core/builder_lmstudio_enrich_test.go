@@ -423,3 +423,30 @@ func TestLookupOpenAIProviderBaseURL(t *testing.T) {
 		t.Error("unknown model should not match")
 	}
 }
+
+// TestLookupOpenAIProviderBaseURL_ExcludesSubscriptionAuth pins that a
+// SubscriptionAuth-marked entry (the ChatGPT oauth provider, whose BaseURL
+// ToBuilderConfig pins to the vendor backend) is NEVER probed: the probe
+// stamps the entry's retained static API key onto the vendor's keyless
+// self-hosted paths — using a key the operator believed unused (ADR-074
+// D2/D6). Subscription metadata comes from the dedicated catalog instead.
+func TestLookupOpenAIProviderBaseURL_ExcludesSubscriptionAuth(t *testing.T) {
+	expand := func(s string) string { return s }
+	cfg := &BuilderConfig{
+		LLM: BuilderLLMConfig{
+			ProviderConfigs: map[string]BuilderProviderConfig{
+				"chatgpt": {
+					ProviderType:     "openai",
+					SubscriptionAuth: true,
+					BaseURL:          "https://chatgpt.com/backend-api/codex",
+					APIKey:           "retained-static-key",
+					Models:           []string{"gpt-5.5"},
+				},
+			},
+		},
+		ExpandEnvVars: expand,
+	}
+	if _, _, _, ok := lookupOpenAIProviderBaseURL(cfg, "gpt-5.5", expand); ok {
+		t.Fatal("subscription-auth entry matched the probe lookup — the retained static API key would be stamped onto the vendor probe path")
+	}
+}

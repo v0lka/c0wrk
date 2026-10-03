@@ -1454,6 +1454,50 @@ func (a *App) initEmbeddedLLM(log *slog.Logger) {
 		"elapsed_ms", time.Since(startTime).Milliseconds())
 }
 
+// initChatGPTAuth constructs the ChatGPT subscription-auth token manager and
+// restores whatever credentials the OS keychain holds. Mirrors initEmbeddedLLM
+// in doing no network I/O and no browser flow — a failed construction (most
+// commonly a Linux desktop without a reachable Secret Service) records the
+// actionable error and leaves the app fully usable on api_key auth.
+//
+// UNLIKE initEmbeddedLLM, the restore runs on a BACKGROUND goroutine: the OS
+// keychain read is not provably bounded (a locked Linux login collection
+// makes the Secret Service unlock and wait for an interactive prompt BEFORE
+// it even looks for the c0wrk record, with no timeout and no cancellation),
+// so a synchronous restore could hold backend readiness hostage for an
+// api_key-only user who never asked for subscription auth. The frontend's
+// auth surface tolerates the gap by design: the status RPC answers the
+// signed-out posture from the zero state, the mutating RPCs (sign-in,
+// sign-out, model fetch) refuse with a transient "still reading the OS
+// keychain" error naming the moment to retry, and the late restore publishes
+// itself through the seam mirror + router rebuild and (when an account was
+// restored) the chatgpt_auth:state success correction, exactly like an
+// interactive sign-in would. The keychain read itself cannot be interrupted
+// (nothing can cancel a native keyring call); on shutdown the pre-/post-read
+// context checks inside InitChatGPTAuth simply DISCARD the restore result, so
+// a late restore never races the teardown — the goroutine itself may linger
+// on a wedged prompt until the process exits.
+func (a *App) initChatGPTAuth(log *slog.Logger) {
+	if a.FrontendAPI == nil {
+		return
+	}
+	// Run the restore off the startup path, through safeGo — the same
+	// panic containment every other startup-phase goroutine carries: the
+	// keyring backend is native code (the same class of surface the
+	// vector-index goroutine recovers against), and an unrecovered panic
+	// would take the whole desktop process down for a feature designed to
+	// degrade gracefully. a.ctx cancellation (app shutdown) does not
+	// interrupt the underlying keychain call itself — nothing can — but the
+	// goroutine checks it before touching FrontendAPI state, so a shutdown
+	// is never raced by a late restore.
+	safeGo(log, "chatgpt_auth", func() {
+		startTime := time.Now()
+		a.Lifecycle().InitChatGPTAuth()
+		log.Info("startup phase complete", "phase", "chatgpt_auth",
+			"elapsed_ms", time.Since(startTime).Milliseconds())
+	})
+}
+
 // stopEmbeddedLLM stops the supervised llama-server during Shutdown, releasing
 // the RAM/VRAM the loaded weights hold. It runs early in the teardown (before
 // the judge drain and the store closes) so the gigabytes are returned while the

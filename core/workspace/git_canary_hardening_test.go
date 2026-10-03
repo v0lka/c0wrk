@@ -79,6 +79,9 @@ func TestGitCmdInRepo_AttrTreeVersionGateFailsClosed(t *testing.T) {
 	f := newCanaryFixture(t, "hello\n")
 	f.repo.AppendConfig(t, "[include]\n\tpath = /nonexistent-extra.conf\n")
 
+	logger := expectedDiagnostics(t, plantedIncludeDiagnostic(t, f.repo.Root, "/nonexistent-extra.conf"), plantedIncludeDiagnostic(t, f.repo.Root, "/nonexistent-extra.conf"), plantedIncludeDiagnostic(t, f.repo.Root, "/nonexistent-extra.conf"), plantedIncludeDiagnostic(t, f.repo.Root, "/nonexistent-extra.conf"))
+	f.ctx = gitDiagnosticContext(f.ctx, logger)
+
 	injectGitVersion(t, "git version 2.44.9\n", nil)
 	_, err := GitCmdInRepo(f.ctx, f.repo.Root, "status")
 	if err == nil {
@@ -222,10 +225,13 @@ func TestCanaryIncludeHiddenSSHCommandNeutered(t *testing.T) {
 	}
 	f.repo.AppendConfig(t, "[include]\n\tpath = "+extra+"\n")
 
+	logger := expectedDiagnostics(t, plantedIncludeDiagnostic(t, f.repo.Root, extra), plantedIncludeDiagnostic(t, f.repo.Root, extra))
+	f.ctx = gitDiagnosticContext(f.ctx, logger)
+
 	// The hidden key itself is invisible to the scan (the include is not
 	// followed): the include record plus the name-independent pins are the
 	// whole defense.
-	info, err := ScanGitConfig(f.repo.Root)
+	info, err := ScanGitConfig(f.repo.Root, logger)
 	if err != nil {
 		t.Fatalf("ScanGitConfig: %v", err)
 	}
@@ -269,6 +275,9 @@ func TestCanaryIncludeHiddenDiffExternalNeutered(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.repo.AppendConfig(t, "[include]\n\tpath = "+extra+"\n")
+
+	logger := expectedDiagnostics(t, plantedIncludeDiagnostic(t, f.repo.Root, extra))
+	f.ctx = gitDiagnosticContext(f.ctx, logger)
 
 	cmd, err := GitCmdInRepo(f.ctx, f.repo.Root, "diff", "--no-ext-diff", "--cached")
 	if err != nil {

@@ -22,6 +22,7 @@ vi.stubGlobal(
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
+import { logger } from '@/lib/logger'
 import { createRoot, type Root } from 'react-dom/client'
 
 const spies = vi.hoisted(() => ({
@@ -88,8 +89,8 @@ function render({
   autoRetryMax,
   expandPin = true,
 }: RenderOpts = {}) {
-  useProxyDraftStore.setState({ active: proxyActive, bypassList })
   act(() => {
+    useProxyDraftStore.setState({ active: proxyActive, bypassList })
     root.render(
       <ProviderConfigForm
         activeProvider={provider}
@@ -274,7 +275,9 @@ describe('ProviderConfigForm Get button', () => {
     expect(getButton()?.disabled).toBe(true)
   })
 
-  it('shows the error and emits no change when the fetch fails', async () => {
+  it('shows the error and emits no change when the fetch fails', async ({ onTestFinished }) => {
+    const logSpy = vi.spyOn(logger, 'error').mockImplementation(() => {})
+    onTestFinished(() => logSpy.mockRestore())
     spies.getProviderTLSCertificate.mockRejectedValueOnce(new Error('TLS dial 10.0.0.1:8443: connection refused'))
     render({ fingerprint: pin })
 
@@ -287,9 +290,12 @@ describe('ProviderConfigForm Get button', () => {
     expect(container.textContent).toContain('connection refused')
     // The component survives and the button is usable again.
     expect(getButton()?.disabled).toBe(false)
+    expect(logSpy).toHaveBeenCalledExactlyOnceWith('Get fingerprint failed:', new Error('TLS dial 10.0.0.1:8443: connection refused'))
   })
 
-  it('recovers after a failed attempt', async () => {
+  it('recovers after a failed attempt', async ({ onTestFinished }) => {
+    const logSpy = vi.spyOn(logger, 'error').mockImplementation(() => {})
+    onTestFinished(() => logSpy.mockRestore())
     spies.getProviderTLSCertificate.mockRejectedValueOnce(new Error('connection refused'))
     render({ fingerprint: '' })
     await act(async () => { getButton()!.click() })
@@ -300,6 +306,7 @@ describe('ProviderConfigForm Get button', () => {
     await flush()
     expect(changes).toEqual([{ tls_fingerprint: serverPin }])
     expect(container.textContent).not.toContain('connection refused')
+    expect(logSpy).toHaveBeenCalledExactlyOnceWith('Get fingerprint failed:', new Error('connection refused'))
   })
 })
 

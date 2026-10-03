@@ -67,8 +67,12 @@ jobs:
         if: matrix.arch == 'amd64'
         run: cd frontend && npm run lint
 
-      - name: Test (Go)
-        run: go test ./...
+      - name: Test (Go default, including controlled integration)
+        run: go test -count=1 -v -skip '^TestStress' ./...
+
+      - name: Test (Go probabilistic stress, required coverage)
+        if: ${{ !cancelled() }}
+        run: go run ./internal/teststress
 
       - name: Test (frontend)
         run: cd frontend && npm test
@@ -125,8 +129,12 @@ jobs:
       - name: Lint (frontend)
         run: cd frontend && npm run lint
 
-      - name: Test (Go)
-        run: go test ./...
+      - name: Test (Go default, including controlled integration)
+        run: go test -count=1 -v -skip '^TestStress' ./...
+
+      - name: Test (Go probabilistic stress, required coverage)
+        if: ${{ !cancelled() }}
+        run: go run ./internal/teststress
 
       - name: Test (frontend)
         run: cd frontend && npm test
@@ -217,8 +225,12 @@ jobs:
             Write-Host "OK: $script"
           }
 
-      - name: Test (Go)
-        run: go test ./...
+      - name: Test (Go default, including controlled integration)
+        run: go test -count=1 -v -skip '^TestStress' ./...
+
+      - name: Test (Go probabilistic stress, required coverage)
+        if: ${{ !cancelled() }}
+        run: go run ./internal/teststress
 
       - name: Test (frontend)
         run: cd frontend && npm test

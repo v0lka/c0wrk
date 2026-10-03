@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EditorView } from '@codemirror/view'
 import { EditorState } from '@codemirror/state'
-import { startCompletion, currentCompletions } from '@codemirror/autocomplete'
+import { startCompletion, currentCompletions, completionStatus } from '@codemirror/autocomplete'
 import type { FileEntry } from '@/types/models'
 import { useFileTreeStore } from '@/stores/fileTreeStore'
 
@@ -32,6 +32,7 @@ vi.mock('@/lib/logger', () => ({
 }))
 
 import { createChatAutocomplete } from './cmChatAutocomplete'
+import { logger } from '@/lib/logger'
 import { createChatExtensions } from './cmChatExtensions'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -44,14 +45,27 @@ const ENTRIES: FileEntry[] = [
   { name: 'beta', path: '/ws/beta', is_dir: true },
 ]
 
+// Bounded virtual scheduler drain for a positive completion condition. No real
+// timeout is used as absence evidence; negative checks follow source completion.
 async function until(cond: () => boolean, what: string, timeoutMs = 4000): Promise<void> {
-  const start = Date.now()
-  while (!cond()) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`timeout waiting for: ${what}`)
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20))
+  for (let elapsed = 0; elapsed <= timeoutMs; elapsed += 20) {
+    if (cond()) return
+    await vi.advanceTimersByTimeAsync(20)
   }
+  throw new Error(`timeout waiting for: ${what}`)
+}
+
+beforeEach(() => {
+  vi.useFakeTimers()
+  vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+})
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.useRealTimers()
+})
+
+async function settledCompletion(view: EditorView): Promise<void> {
+  await until(() => completionStatus(view.state) !== 'pending', 'completion source to settle')
 }
 
 function makeView(): { view: EditorView; host: HTMLElement } {
@@ -67,6 +81,7 @@ function makeView(): { view: EditorView; host: HTMLElement } {
 function typeAndComplete(view: EditorView, text: string): void {
   view.dispatch(view.state.replaceSelection(text))
   startCompletion(view)
+  expect(completionStatus(view.state)).toBe('pending')
 }
 
 const views: { view: EditorView; host: HTMLElement }[] = []
@@ -99,7 +114,7 @@ describe('cmChatAutocomplete @-file source', () => {
     await until(() => listDirectoryMock.mock.calls.length >= 1, 'first listDirectory call')
     expect(listDirectoryMock).toHaveBeenCalledWith('/ws', true)
     // Let the async source settle, then confirm no options were produced.
-    await new Promise((resolve) => setTimeout(resolve, 200))
+    await settledCompletion(view)
     expect(currentCompletions(view.state)).toEqual([])
 
     // Phase 2 — the directory now exists. Typing more must trigger a
@@ -115,7 +130,7 @@ describe('cmChatAutocomplete @-file source', () => {
     // Phase 3 — a non-empty listing IS cached: further triggers must not
     // refetch.
     typeAndComplete(view, 'l')
-    await new Promise((resolve) => setTimeout(resolve, 200))
+    await settledCompletion(view)
     expect(listDirectoryMock).toHaveBeenCalledTimes(2)
     expect(currentCompletions(view.state).some((c) => c.label === 'alpha.txt')).toBe(true)
   })
@@ -170,7 +185,7 @@ describe('cmChatAutocomplete @-file source', () => {
 
     // Further triggers within the same session hit the memo — no extra RPC.
     typeAndComplete(view, 'n')
-    await new Promise((resolve) => setTimeout(resolve, 200))
+    await settledCompletion(view)
     expect(getSessionWorkspaceMock).toHaveBeenCalledTimes(1)
     expect(currentCompletions(view.state).some((c) => c.label === 'one.txt')).toBe(true)
 
@@ -216,7 +231,10 @@ describe('cmChatAutocomplete @-file source', () => {
 
   it('throttles refetching while the listing keeps failing, then retries after the cooldown', async () => {
     useFileTreeStore.setState({ rootPath: '/ws' })
-    listDirectoryMock.mockRejectedValue(new Error('path outside project workspace'))
+    let clock = Date.now()
+    vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    const failure = new Error('path outside project workspace')
+    listDirectoryMock.mockRejectedValue(failure)
 
     const fixture = makeView()
     views.push(fixture)
@@ -224,17 +242,26 @@ describe('cmChatAutocomplete @-file source', () => {
 
     typeAndComplete(view, '@')
     await until(() => listDirectoryMock.mock.calls.length >= 1, 'first failing fetch')
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await settledCompletion(view)
 
     // Failures repeat per keystroke while broken — the cooldown bounds the
     // retry storm without giving up self-healing.
     typeAndComplete(view, 'a')
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await settledCompletion(view)
     expect(listDirectoryMock.mock.calls.length).toBe(1)
+
+    clock += 999
+    typeAndComplete(view, 'l')
+    await settledCompletion(view)
+    expect(listDirectoryMock).toHaveBeenCalledTimes(1)
+    clock += 1
+
+    expect(logger.error).toHaveBeenCalledExactlyOnceWith('completion: ListDirectory failed for root /ws', failure)
+    expect(logger.warn).not.toHaveBeenCalled()
 
     // After the cooldown the next trigger retries and recovers.
     listDirectoryMock.mockResolvedValue(ENTRIES)
-    await new Promise((resolve) => setTimeout(resolve, 1100))
+    // Now exactly at the cooldown boundary; scheduler advancement does not move it.
     typeAndComplete(view, 'a')
     await until(
       () => currentCompletions(view.state).some((c) => c.label === 'alpha.txt'),
@@ -262,7 +289,7 @@ describe('cmChatAutocomplete @-file source', () => {
     )
     // acceptCompletion is suppressed within the config's interactionDelay
     // (75ms default) of the tooltip opening — let that window elapse.
-    await new Promise((resolve) => setTimeout(resolve, 100))
+    await vi.advanceTimersByTimeAsync(100)
 
     acceptCompletion(view)
     expect(view.state.doc.toString()).toBe("@'my file.txt' ")
@@ -283,7 +310,7 @@ describe('cmChatAutocomplete @-file source', () => {
       () => currentCompletions(view.state).some((c) => c.label === 'my file.txt'),
       'completions for an unquoted query',
     )
-    await new Promise((resolve) => setTimeout(resolve, 100))
+    await vi.advanceTimersByTimeAsync(100)
 
     acceptCompletion(view)
     expect(view.state.doc.toString()).toBe("@'my file.txt' ")
@@ -305,7 +332,7 @@ describe('cmChatAutocomplete @-file source', () => {
       () => currentCompletions(view.state).some((c) => c.label === 'beta'),
       'directory completion inside a quoted ref',
     )
-    await new Promise((resolve) => setTimeout(resolve, 100))
+    await vi.advanceTimersByTimeAsync(100)
 
     acceptCompletion(view)
     expect(view.state.doc.toString()).toBe("@'beta/")
@@ -320,7 +347,7 @@ describe('cmChatAutocomplete @-file source', () => {
     const { view } = fixture
 
     typeAndComplete(view, "@'alpha.txt'")
-    await new Promise((resolve) => setTimeout(resolve, 200))
+    await settledCompletion(view)
     expect(currentCompletions(view.state)).toEqual([])
   })
 
@@ -335,7 +362,7 @@ describe('cmChatAutocomplete @-file source', () => {
     const { view } = fixture
 
     typeAndComplete(view, 'see @x.go and more')
-    await new Promise((resolve) => setTimeout(resolve, 200))
+    await settledCompletion(view)
     expect(currentCompletions(view.state)).toEqual([])
   })
 
@@ -359,7 +386,7 @@ describe('cmChatAutocomplete @-file source', () => {
       () => currentCompletions(view.state).some((c) => c.label === 'beta dir'),
       'completion for a space-named directory from an unquoted query',
     )
-    await new Promise((resolve) => setTimeout(resolve, 100))
+    await vi.advanceTimersByTimeAsync(100)
 
     acceptCompletion(view)
     // Quote still OPEN — the ref can continue into the child path.

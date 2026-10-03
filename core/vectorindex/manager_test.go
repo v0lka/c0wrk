@@ -90,6 +90,7 @@ func TestManagerSwitchProject(t *testing.T) {
 // before the new project starts indexing.
 func TestManagerSwitchProject_CancelsDebounce(t *testing.T) {
 	persistDir := t.TempDir()
+	wsA, wsB := t.TempDir(), t.TempDir()
 
 	svc, err := NewService(ServiceConfig{
 		EmbeddingFunc: fakeEmbeddingFunc(),
@@ -97,11 +98,6 @@ func TestManagerSwitchProject_CancelsDebounce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := svc.Close(); err != nil {
-			t.Logf("Service.Close in cleanup: %v", err)
-		}
-	})
 
 	mgr := &Manager{
 		service: svc,
@@ -110,14 +106,13 @@ func TestManagerSwitchProject_CancelsDebounce(t *testing.T) {
 		hashFn:  embedding.ComputeFileHash,
 	}
 
+	t.Cleanup(mgr.Shutdown)
 	// Workspace A with one file.
-	wsA := t.TempDir()
 	if err := os.WriteFile(filepath.Join(wsA, "a.go"), []byte("package a\n"), 0o644); err != nil {
 		t.Fatalf("write a.go: %v", err)
 	}
 
 	// Workspace B with a different file.
-	wsB := t.TempDir()
 	if err := os.WriteFile(filepath.Join(wsB, "b.go"), []byte("package b\n"), 0o644); err != nil {
 		t.Fatalf("write b.go: %v", err)
 	}
@@ -144,8 +139,15 @@ func TestManagerSwitchProject_CancelsDebounce(t *testing.T) {
 		t.Fatalf("WaitReady B: %v", err)
 	}
 
-	// Give any stray debounce a chance to fire.
-	time.Sleep(1500 * time.Millisecond)
+	// SwitchProject synchronously removes the pending timer. Its actual
+	// no-dispatch boundary is covered by TestManagerDebounce_StopPreventsDispatch.
+	mgr.debounceMu.Lock()
+	pending := mgr.debounceTimer != nil
+	mgr.debounceMu.Unlock()
+	if pending {
+		t.Fatal("project switch retained the previous project's debounce timer")
+	}
+	waitForBackgroundPasses(t, mgr, svc)
 
 	// Verify project B's collection only contains its own file.
 	files, err := svc.GetCollectionFiles()

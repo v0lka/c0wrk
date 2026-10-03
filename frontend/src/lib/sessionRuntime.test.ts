@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, onTestFinished, vi } from 'vitest'
 import { reconcileRuntimeStatus, reconcilePendingActions, refreshCompactionAvailability, stalePromptMatchField } from './sessionRuntime'
 import { handleSessionPausedEvent, handleSessionResumedEvent } from '@/hooks/events/sessionLifecycleHandlers'
 import { useChatStore } from '@/stores/chatStore'
@@ -15,6 +15,11 @@ vi.mock('@/api/chat', () => ({
 }))
 
 const SESSION = 'sess-1'
+
+function fixedRuntimeClock(): void {
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+  onTestFinished(() => clock.mockRestore())
+}
 
 function resetStore(): void {
   useChatStore.setState({
@@ -347,6 +352,7 @@ describe('reconcileRuntimeStatus', () => {
   // --- stale-snapshot guard (snapshotReadAt) ---
 
   it('keeps a newer live label and open stream over a stale snapshot', () => {
+    fixedRuntimeClock()
     // An assistant_chunk lands while the status RPC is in flight (the event
     // subscription mounts before the RPC resolves): the live handler updated
     // the label and streaming text, stamping runtimeEventAt AFTER the caller
@@ -368,6 +374,7 @@ describe('reconcileRuntimeStatus', () => {
   })
 
   it('applies the snapshot label/streaming when no live event beat the read', () => {
+    fixedRuntimeClock()
     // Same shape as above, but the read is NEWER than the last live mark —
     // the snapshot is the freshest knowledge and applies normally.
     useChatStore.setState({ streamingText: { [SESSION]: 'frozen partial' } })
@@ -384,6 +391,7 @@ describe('reconcileRuntimeStatus', () => {
   })
 
   it('keeps a live label over the paused snapshot but still sets the paused flag', () => {
+    fixedRuntimeClock()
     // The pause landed live on switch-back (session_paused arrived after the
     // snapshot was read): its label survives; the paused flag itself still
     // comes from the snapshot, which stays authoritative for it.
@@ -401,6 +409,7 @@ describe('reconcileRuntimeStatus', () => {
   })
 
   it('keeps a live terminal clear over a stale active snapshot', () => {
+    fixedRuntimeClock()
     // task_complete arrived live while the RPC was in flight and already
     // cleared the label/stream; an older active=true snapshot must not
     // resurrect them.

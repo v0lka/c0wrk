@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -26,8 +27,24 @@ func writeTestFile(t *testing.T, path, content string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	stamp := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if info, err := os.Stat(path); err == nil {
+		stamp = info.ModTime().Add(time.Second)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(stamp) {
+		t.Fatalf("fixture mtime(%s) = %v, want %v", path, info.ModTime(), stamp)
 	}
 }
 
@@ -83,7 +100,6 @@ func TestFileCoherenceTracker_ReadAfterExternalChange_Conflict(t *testing.T) {
 	tracker.Unlock(path)
 
 	// Modify file externally (simulate another process or manual edit)
-	time.Sleep(10 * time.Millisecond) // ensure mtime differs
 	writeTestFile(t, path, "hello world — modified externally")
 
 	// Second read should detect conflict
@@ -117,7 +133,6 @@ func TestFileCoherenceTracker_ReadAfterOtherSessionWrite_Conflict(t *testing.T) 
 	tracker.Unlock(path)
 
 	// Session B writes (simulating a write_file call)
-	time.Sleep(10 * time.Millisecond)
 	writeTestFile(t, path, "modified by session B")
 	tracker.Lock(path)
 	tracker.RecordWrite(ctxB, path)
@@ -168,7 +183,6 @@ func TestFileCoherenceTracker_WriteAfterExternalChange_Conflict(t *testing.T) {
 	tracker.Unlock(path)
 
 	// Modify externally
-	time.Sleep(10 * time.Millisecond)
 	writeTestFile(t, path, "modified externally")
 
 	// Try to write — should get conflict
@@ -195,7 +209,6 @@ func TestFileCoherenceTracker_RecordWrite_UpdatesSnapshot(t *testing.T) {
 	tracker.Unlock(path)
 
 	// Simulate write: modify file, then record
-	time.Sleep(10 * time.Millisecond)
 	writeTestFile(t, path, "v2 written by session")
 	tracker.Lock(path)
 	tracker.RecordWrite(ctx, path)
@@ -266,7 +279,6 @@ func TestFileCoherenceTracker_PurgeSession(t *testing.T) {
 	tracker.PurgeSession("sess-1")
 
 	// After purge, write should not conflict (no snapshot)
-	time.Sleep(10 * time.Millisecond)
 	writeTestFile(t, path, "modified")
 	tracker.Lock(path)
 	conflict := tracker.CheckWrite(ctx, path)
@@ -334,7 +346,6 @@ func TestFileCoherenceTracker_ActivityRingBuffer_Cap(t *testing.T) {
 
 	// Record more writes than cap
 	for i := range 10 {
-		time.Sleep(time.Millisecond)
 		writeTestFile(t, path, "v"+string(rune('0'+i)))
 		tracker.Lock(path)
 		tracker.RecordWrite(ctx, path)
@@ -346,8 +357,8 @@ func TestFileCoherenceTracker_ActivityRingBuffer_Cap(t *testing.T) {
 	actLen := len(tracker.activity)
 	tracker.mu.RUnlock()
 
-	if actLen > 5 {
-		t.Errorf("expected activity length <= 5, got %d", actLen)
+	if actLen != 5 {
+		t.Errorf("activity length = %d, want 5", actLen)
 	}
 }
 

@@ -24,6 +24,12 @@ func TestEmitAutonomyDecision_PolicyGuaranteed(t *testing.T) {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
 
+	captureManagerDiagnostics(t, mgr,
+		warningDiagnostic("autonomy decision carried no policy; defaulted at the emit boundary", map[string]string{"session_id": info.ID, "kind": "tool_confirm", "policy": "judge"}),
+		warningDiagnostic("autonomy decision carried no policy; defaulted at the emit boundary", map[string]string{"session_id": info.ID, "kind": "assisted_deny", "policy": "judge"}),
+		warningDiagnostic("autonomy decision carried no policy; defaulted at the emit boundary", map[string]string{"session_id": info.ID, "kind": "step_limit", "policy": "auto"}),
+	)
+
 	emit := func(payload coretools.AutonomyDecision) AutonomyDecisionData {
 		t.Helper()
 		mgr.EmitAutonomyDecision(context.Background(), info.ID, payload)

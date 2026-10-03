@@ -470,6 +470,7 @@ func TestPolicyAlwaysAllow_ExecutesImmediately(t *testing.T) {
 // TestPolicyAlwaysDeny_BlocksExecution tests that a deny group blocks execution.
 func TestPolicyAlwaysDeny_BlocksExecution(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: tool blocked by group policy (deny)", attrs: map[string]string{"group": "local_write", "tool": "always_deny"}})
 	tool := newMockTool("always_deny", "A tool in a deny-postured group")
 	registry.Register(tool)
 
@@ -713,6 +714,7 @@ func TestGroupPolicies_FailSafeDefault(t *testing.T) {
 // configuration round (mirrors UpdateSecurityPolicies re-application).
 func TestGroupPolicies_ReplacementNotMerge(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: tool blocked by group policy (deny)", attrs: map[string]string{"group": "local_read", "tool": "reader"}})
 	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
 		sdktools.GroupLocalRead: sdktools.PolicyAlwaysAllow,
 	})
@@ -943,6 +945,7 @@ func TestPolicyAlwaysAllow_WithToolJudgerFlags(t *testing.T) {
 // security control must never be weakened by the advisory Ask Agent action.
 func TestPolicyAlwaysAllow_HardReasonForcesConfirmationWithDisabledJudge(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "local_read", "reason": "command matches blacklist pattern: rm\\s+-rf\\s+/", "tool": "judger_tool"}})
 	setDefaultGroupPolicies(registry)
 	const pattern = `rm\s+-rf\s+/`
 	registry.Register(newMockHardJudgerTool("judger_tool", "command matches blacklist pattern: "+pattern, sdktools.ReasonCodeCommandBlacklist))
@@ -975,6 +978,7 @@ func TestPolicyAlwaysAllow_HardReasonForcesConfirmationWithDisabledJudge(t *test
 // to a forced confirmation.
 func TestPolicyAlwaysAllow_HardReasonNeverAutoApprovedBySmartApprove(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "local_read", "reason": "command matches blacklist pattern: shutdown", "tool": "judger_tool"}})
 	setDefaultGroupPolicies(registry)
 	registry.SetAutonomyMode(AutonomyModeAssisted)
 	registry.Register(newMockHardJudgerTool("judger_tool", "command matches blacklist pattern: shutdown", sdktools.ReasonCodeCommandBlacklist))
@@ -1413,6 +1417,7 @@ func TestAutoApproval_AllowedRoot(t *testing.T) {
 // are inside the session workspace — and with the advisory judge disabled.
 func TestAutoApproval_AllowGroup_JudgerHardFlagsBeforeAutoApprove(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "local_read", "reason": "command matches blacklist pattern: rm -rf", "tool": "bash_exec"}})
 	setDefaultGroupPolicies(registry)
 	registry.Register(newMockHardJudgerTool("bash_exec", "command matches blacklist pattern: rm -rf", sdktools.ReasonCodeCommandBlacklist))
 
@@ -1536,6 +1541,7 @@ func TestLocalWriteAutoApproval_SymlinkInsideRootsAutoApproved(t *testing.T) {
 	}
 
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "symlink detection narrowed by path-field allowlist; non-path string fields not scanned", attrs: map[string]string{"tool": "write_file", "scanned_path_fields": "[path]", "unscanned_string_fields": "[content]"}})
 	registry.SetAutoApproveWorkspaceWrites(true)
 	registry.Register(builtins.NewWriteFileTool())
 
@@ -1570,6 +1576,8 @@ func TestLocalWriteAutoApproval_SymlinkEscapeForcesHardConfirm(t *testing.T) {
 	}
 
 	registry := NewToolRegistry()
+	reasonAttrs := map[string]string{"tool": "write_file", "group": "local_write", "reason": ""}
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "symlink detection narrowed by path-field allowlist; non-path string fields not scanned", attrs: map[string]string{"tool": "write_file", "scanned_path_fields": "[path]", "unscanned_string_fields": "[content]"}}, expectedToolDiagnostic{message: "security: user_confirm tool escalated by hard safety reason", attrs: reasonAttrs})
 	registry.SetAutoApproveWorkspaceWrites(true)
 	registry.SetAutonomyMode(AutonomyModeAssisted)
 	registry.Register(builtins.NewWriteFileTool())
@@ -1579,6 +1587,7 @@ func TestLocalWriteAutoApproval_SymlinkEscapeForcesHardConfirm(t *testing.T) {
 	var req sdktools.ConfirmationRequest
 	confirmCalled := false
 	registry.SetConfirmFunc(func(_ context.Context, r sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		reasonAttrs["reason"] = strings.TrimPrefix(r.JudgeReasoning, "A security control fired on this destructive call and cannot be waived by an advisory judge; manual confirmation required. ")
 		confirmCalled = true
 		req = r
 		return sdktools.ConfirmDeny, nil
@@ -1615,6 +1624,7 @@ func TestLocalWriteAutoApproval_DotDotNormalizationAutoApproved(t *testing.T) {
 	}
 
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "symlink detection narrowed by path-field allowlist; non-path string fields not scanned", attrs: map[string]string{"tool": "write_file", "scanned_path_fields": "[path]", "unscanned_string_fields": "[content]"}})
 	registry.SetAutoApproveWorkspaceWrites(true)
 	registry.Register(builtins.NewWriteFileTool())
 
@@ -1646,6 +1656,7 @@ func TestLocalWriteAutoApproval_DotDotEscapeBlocked(t *testing.T) {
 	}
 
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "symlink detection narrowed by path-field allowlist; non-path string fields not scanned", attrs: map[string]string{"tool": "write_file", "scanned_path_fields": "[path]", "unscanned_string_fields": "[content]"}})
 	registry.SetAutoApproveWorkspaceWrites(true)
 	registry.Register(builtins.NewWriteFileTool())
 
@@ -1743,6 +1754,7 @@ func TestSystemGroupByDeclarationNotName(t *testing.T) {
 // so a disabled system tool (semantic_search) is blocked at execution time.
 func TestSystemToolDisabledInNoProjectStillBlocked(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: tool blocked in No Project mode", attrs: map[string]string{"reason": "disabled_in_no_project", "tool": "semantic_search"}})
 	registry.Register(newMockSystemTool("semantic_search", "vector search"))
 	registry.SetDisabledTools(map[string]bool{"semantic_search": true})
 
@@ -2174,6 +2186,7 @@ func TestSmartApprove_UnavailableJudgeKeepsConcreteReason(t *testing.T) {
 // auto-approved.
 func TestSmartApprove_UserConfirmHardReasonConsultsJudgeThenForcesConfirm(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: user_confirm tool escalated by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "command matches blacklist pattern: mkfs", "tool": "bash_exec"}})
 	setDefaultGroupPolicies(registry)
 	registry.SetAutonomyMode(AutonomyModeAssisted)
 	registry.Register(newMockExecuteJudgerTool("bash_exec", sdktools.JudgeOutcome{
@@ -2222,6 +2235,7 @@ func TestSmartApprove_UserConfirmHardReasonConsultsJudgeThenForcesConfirm(t *tes
 // are hard-blocked by the backstop.
 func TestSmartApprove_HardScopePatternReasonCanBeClearedByJudge(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: user_confirm tool escalated by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "command contains unresolvable path-like token(s): /tmp/nope", "tool": "bash_exec"}})
 	setDefaultGroupPolicies(registry)
 	registry.SetAutonomyMode(AutonomyModeAssisted)
 	registry.Register(newMockExecuteJudgerTool("bash_exec", sdktools.JudgeOutcome{
@@ -2300,6 +2314,15 @@ func TestSmartApprove_CleanAllowAndDenyBypassJudge(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			registry := NewToolRegistry()
+			{
+				var want []expectedToolDiagnostic
+				if tt.policy == sdktools.PolicyAlwaysDeny {
+					want = []expectedToolDiagnostic{
+						{message: "security: tool blocked by group policy (deny)", attrs: map[string]string{"group": "local_write", "tool": "policy_tool"}},
+					}
+				}
+				captureToolDiagnostics(t, registry, want...)
+			}
 			registry.SetAutonomyMode(AutonomyModeAssisted)
 			registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{tt.group: tt.policy})
 			tool := newMockReadOnlyTool("policy_tool", "policy test")
@@ -2440,6 +2463,28 @@ func TestSilentMode_ToolConfirm_Terminals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			registry := NewToolRegistry()
+			{
+				var want []expectedToolDiagnostic
+				switch t.Name() {
+				case "TestSilentMode_ToolConfirm_Terminals/judge_ALLOW_executes_a_canonical_hard_reason_(no_silent_backstop)":
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "local_read", "reason": "command matches blacklist pattern: mkfs", "tool": "esc_tool"}},
+					}
+				case "TestSilentMode_ToolConfirm_Terminals/allow_escalates_a_canonical_hard_reason_to_the_judge,_whose_ALLOW_executes":
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "local_read", "reason": "command matches blacklist pattern: mkfs", "tool": "esc_tool"}},
+					}
+				case "TestSilentMode_ToolConfirm_Terminals/allow_escalates_a_hard_reason_to_the_judge,_which_denies":
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "local_read", "reason": "symlink escapes the session roots", "tool": "esc_tool"}},
+					}
+				case "TestSilentMode_ToolConfirm_Terminals/deny_blocks_without_consulting_the_judge":
+					want = []expectedToolDiagnostic{
+						{message: "security: silent mode denied confirmation-gated call", attrs: map[string]string{"group": "local_write", "mode": "deny", "tool": "mutating"}},
+					}
+				}
+				captureToolDiagnostics(t, registry, want...)
+			}
 			setDefaultGroupPolicies(registry)
 			// The autonomy mode is silent so the silent terminal is exercised
 			// on its own.
@@ -2545,6 +2590,7 @@ func TestSilentMode_JudgesOnItsOwnWithoutConfirmFunc(t *testing.T) {
 // fail-closed behaviour) is untouched.
 func TestSilentMode_NonSilentPathUnchanged(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: tool confirmation unavailable; execution denied", attrs: map[string]string{"asi_scope": "ASI02,ASI09", "reason": "confirm_func_nil", "tool": "mutating"}})
 	setDefaultGroupPolicies(registry)
 	registry.Register(newMockTool("mutating", "mutates"))
 
@@ -2565,6 +2611,7 @@ func TestSilentMode_NonSilentPathUnchanged(t *testing.T) {
 func TestSilentMode_DenyGroupsAndWorkspaceAutoApproveUnchanged(t *testing.T) {
 	// A deny group is blocked outright, regardless of the silent tool_confirm mode.
 	denyReg := NewToolRegistry()
+	captureToolDiagnostics(t, denyReg, expectedToolDiagnostic{message: "security: tool blocked by group policy (deny)", attrs: map[string]string{"group": "local_write", "tool": "mutating"}})
 	denyReg.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
 		sdktools.GroupLocalWrite: sdktools.PolicyAlwaysDeny,
 	})
@@ -2616,6 +2663,7 @@ func TestSilentMode_DenyGroupsAndWorkspaceAutoApproveUnchanged(t *testing.T) {
 
 func TestConfirmFunc_NilUserConfirmFailsClosed(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: tool confirmation unavailable; execution denied", attrs: map[string]string{"asi_scope": "ASI02,ASI09", "reason": "confirm_func_nil", "tool": "mutating"}})
 	registry.Register(newMockTool("mutating", "mutates"))
 
 	result, err := registry.Execute(context.Background(), "mutating", json.RawMessage(`{"data":"test"}`))
@@ -2708,6 +2756,7 @@ func TestPostExecuteHook_NotCalledForSystemTools(t *testing.T) {
 // result.IsError.
 func TestPostExecuteHook_CalledOnGroupDeny(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: tool blocked by group policy (deny)", attrs: map[string]string{"group": "local_write", "tool": "denied_tool"}})
 	tool := newMockTool("denied_tool", "A tool in a deny group")
 	registry.Register(tool)
 	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
@@ -2827,6 +2876,7 @@ func TestToolFilter_NilAllowsAll(t *testing.T) {
 // respected even when all paths are within the workspace.
 func TestAutoApproval_DenyGroupRespected(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: tool blocked by group policy (deny)", attrs: map[string]string{"group": "local_write", "tool": "always_deny"}})
 	tool := newMockTool("always_deny", "A tool in a deny-postured group")
 	registry.Register(tool)
 	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
@@ -2872,6 +2922,7 @@ func TestGateOrder_DenyBeforeJudgeAndSymlink(t *testing.T) {
 	}
 
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: tool blocked by group policy (deny)", attrs: map[string]string{"group": "local_read", "tool": "read_file"}})
 	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
 		sdktools.GroupLocalRead: sdktools.PolicyAlwaysDeny,
 	})

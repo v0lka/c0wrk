@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -348,9 +349,9 @@ func contains(haystack, needle string) bool {
 // scanRequireFinding asserts ScanGitConfig(root) reports a finding of the
 // given kind (fixture sanity for canary tests whose hostile keys live in
 // files other than the repo root's own .git/config).
-func scanRequireFinding(t *testing.T, root, kind string) {
+func scanRequireFinding(t *testing.T, root, kind string, loggers ...*slog.Logger) {
 	t.Helper()
-	info, err := ScanGitConfig(root)
+	info, err := ScanGitConfig(root, loggers...)
 	if err != nil {
 		t.Fatalf("ScanGitConfig(%s): %v", root, err)
 	}
@@ -437,7 +438,10 @@ func TestCanaryIncludeHiddenFilterViaInfoAttributesNeutered(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.repo.Write(t, "file.txt", "hello\nchanged\n")
-	scanRequireFinding(t, f.repo.Root, GitConfigFindingAttrRouting)
+	logger := expectedDiagnostics(t, plantedIncludeDiagnostic(t, f.repo.Root, extra), plantedIncludeDiagnostic(t, f.repo.Root, extra))
+	f.ctx = gitDiagnosticContext(f.ctx, logger)
+
+	scanRequireFinding(t, f.repo.Root, GitConfigFindingAttrRouting, logger)
 
 	cmd, err := GitCmdInRepo(f.ctx, f.repo.Root, "add", "file.txt")
 	if err != nil {
@@ -515,9 +519,12 @@ func TestCanarySHA256RepoAttrTreeNeutered(t *testing.T) {
 	repo.Write(t, ".gitattributes", "*.txt filter=x\n")
 	repo.Write(t, "file.txt", "hello\nchanged\n")
 
+	logger := expectedDiagnostics(t, plantedIncludeDiagnostic(t, repo.Root, "extra.conf"), plantedIncludeDiagnostic(t, repo.Root, "extra.conf"))
+	f.ctx = gitDiagnosticContext(f.ctx, logger)
+
 	// Self-validating discriminator: the derived set must carry the SHA-256
 	// empty tree (the SHA-1 constant is inert here and the canary would run).
-	info, err := ScanGitConfig(root)
+	info, err := ScanGitConfig(root, logger)
 	if err != nil {
 		t.Fatalf("ScanGitConfig: %v", err)
 	}

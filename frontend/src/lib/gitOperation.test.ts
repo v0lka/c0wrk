@@ -94,7 +94,9 @@ describe('runGitOperation', () => {
 
   // ── Failure path ──
 
-  it('records a failure with the error message and ok=false', async () => {
+  it('records a failure with the error message and ok=false', async ({ onTestFinished }) => {
+    const logSpy = vi.spyOn(logger, 'error').mockImplementation(() => {})
+    onTestFinished(() => logSpy.mockRestore())
     const outcome = await runGitOperation({
       projectId: 'proj-a',
       kind: 'pull',
@@ -118,9 +120,12 @@ describe('runGitOperation', () => {
       acknowledged: false,
     })
     expect(typeof recordFor('proj-a')!.at).toBe('number')
+    expect(logSpy).toHaveBeenCalledExactlyOnceWith('gitOperation: "pull" failed for project proj-a:', new Error('CONFLICT (content): Merge conflict in src/app.ts'))
   })
 
-  it('captures errors instead of rethrowing (the promise never rejects)', async () => {
+  it('captures errors instead of rethrowing (the promise never rejects)', async ({ onTestFinished }) => {
+    const logSpy = vi.spyOn(logger, 'error').mockImplementation(() => {})
+    onTestFinished(() => logSpy.mockRestore())
     await expect(
       runGitOperation({
         projectId: 'proj-a',
@@ -131,10 +136,11 @@ describe('runGitOperation', () => {
         },
       }),
     ).resolves.toEqual({ ok: false, result: undefined, error: 'boom' })
+    expect(logSpy).toHaveBeenCalledExactlyOnceWith('gitOperation: "fetch" failed for project proj-a:', new Error('boom'))
   })
 
   it('logs failures but not successes', async () => {
-    const errorSpy = vi.spyOn(logger, 'error')
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {})
 
     await runGitOperation({
       projectId: 'proj-a',
@@ -152,12 +158,12 @@ describe('runGitOperation', () => {
         throw new Error('nope')
       },
     })
-    expect(errorSpy).toHaveBeenCalledTimes(1)
+    expect(errorSpy).toHaveBeenCalledExactlyOnceWith('gitOperation: "pull" failed for project proj-a:', new Error('nope'))
   })
 
   it('logs a failure at warn when the call site opts into warn severity', async () => {
-    const errorSpy = vi.spyOn(logger, 'error')
-    const warnSpy = vi.spyOn(logger, 'warn')
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {})
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
 
     await runGitOperation({
       projectId: 'proj-a',
@@ -170,13 +176,13 @@ describe('runGitOperation', () => {
       },
     })
 
-    expect(warnSpy).toHaveBeenCalledTimes(1)
+    expect(warnSpy).toHaveBeenCalledExactlyOnceWith('gitOperation: "discard" failed for project proj-a:', new Error('nothing to discard'))
     expect(errorSpy).not.toHaveBeenCalled()
   })
 
   it('keeps ERROR severity independent of recordSuccess', async () => {
-    const errorSpy = vi.spyOn(logger, 'error')
-    const warnSpy = vi.spyOn(logger, 'warn')
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {})
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
 
     // `recordSuccess: false` alone must NOT downgrade the log: severity is the
     // call site's explicit `logLevel` choice, not implied by the recording flag.
@@ -190,13 +196,15 @@ describe('runGitOperation', () => {
       },
     })
 
-    expect(errorSpy).toHaveBeenCalledTimes(1)
+    expect(errorSpy).toHaveBeenCalledExactlyOnceWith('gitOperation: "stage" failed for project proj-a:', new Error('boom'))
     expect(warnSpy).not.toHaveBeenCalled()
   })
 
   // ── Outcome / record lifecycle ──
 
-  it('replaces the project record with the latest operation', async () => {
+  it('replaces the project record with the latest operation', async ({ onTestFinished }) => {
+    const logSpy = vi.spyOn(logger, 'error').mockImplementation(() => {})
+    onTestFinished(() => logSpy.mockRestore())
     await runGitOperation({
       projectId: 'proj-a',
       kind: 'push',
@@ -217,6 +225,7 @@ describe('runGitOperation', () => {
     expect(rec.ok).toBe(false)
     expect(rec.error).toBe('second failed')
     expect(rec.output).toBe('')
+    expect(logSpy).toHaveBeenCalledExactlyOnceWith('gitOperation: "commit" failed for project proj-a:', new Error('second failed'))
   })
 
   it('resets acknowledgement when a new operation is recorded', async () => {
@@ -240,7 +249,9 @@ describe('runGitOperation', () => {
 
   // ── Per-project isolation ──
 
-  it('keeps records isolated per project', async () => {
+  it('keeps records isolated per project', async ({ onTestFinished }) => {
+    const logSpy = vi.spyOn(logger, 'error').mockImplementation(() => {})
+    onTestFinished(() => logSpy.mockRestore())
     await runGitOperation({
       projectId: 'proj-a',
       kind: 'push',
@@ -268,6 +279,7 @@ describe('runGitOperation', () => {
       output: '',
       error: 'B failed',
     })
+    expect(logSpy).toHaveBeenCalledExactlyOnceWith('gitOperation: "pull" failed for project proj-b:', new Error('B failed'))
   })
 
   it('attributes a result to the project captured at call time under a concurrent switch', async () => {
@@ -332,7 +344,9 @@ describe('runGitOperation — recordSuccess: false', () => {
     expect(recordFor('proj-a')).toBeUndefined()
   })
 
-  it('still records a failure when recordSuccess is false', async () => {
+  it('still records a failure when recordSuccess is false', async ({ onTestFinished }) => {
+    const logSpy = vi.spyOn(logger, 'error').mockImplementation(() => {})
+    onTestFinished(() => logSpy.mockRestore())
     const outcome = await runGitOperation({
       projectId: 'proj-a',
       kind: 'discard',
@@ -349,5 +363,6 @@ describe('runGitOperation — recordSuccess: false', () => {
       ok: false,
       error: 'discard failed',
     })
+    expect(logSpy).toHaveBeenCalledExactlyOnceWith('gitOperation: "discard" failed for project proj-a:', new Error('discard failed'))
   })
 })

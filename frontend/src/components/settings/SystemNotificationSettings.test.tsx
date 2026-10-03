@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
+import { logger } from '@/lib/logger'
 import { createRoot, type Root } from 'react-dom/client'
 
 // Spies created via vi.hoisted so they exist before vi.mock factories run.
@@ -267,7 +268,9 @@ describe('banner lifetime control', () => {
     expect(bannerTimeoutButtons()).toHaveLength(0)
   })
 
-  it('reverts the selection when the backend rejects the write', async () => {
+  it('reverts the selection when the backend rejects the write', async ({ onTestFinished }) => {
+    const logSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    onTestFinished(() => logSpy.mockRestore())
     mocks.getBannerTimeout.mockResolvedValue(-1)
     mocks.setBannerTimeout.mockRejectedValue(new Error('nope'))
     render()
@@ -282,6 +285,7 @@ describe('banner lifetime control', () => {
     // The optimistic update must roll back to what the backend still holds.
     const selected = bannerTimeoutButtons().find((b) => b.className.includes('bg-background'))
     expect(selected?.textContent).toBe('Default')
+    expect(logSpy).toHaveBeenCalledExactlyOnceWith('[system-notifications] banner timeout write failed', new Error('nope'))
   })
 
   it('renders on Linux arm64 hosts — the matcher must stay architecture-agnostic', async () => {

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -731,8 +732,10 @@ func TestLoaderWithoutRequestTrackingIsTolerated(t *testing.T) {
 // in-flight count is what defers the unload. Once the response does complete, the
 // deferral ends with it and the model goes on the next expiry.
 func TestARequestThatOutlivesTheIdleBudgetIsNotKilled(t *testing.T) {
+	clock := newFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	fx := newFixture(t, fixtureOptions{
-		autoUnload: AutoUnload{Enabled: true, Idle: 40 * time.Millisecond},
+		now:        clock.Now,
+		autoUnload: AutoUnload{Enabled: true, Idle: time.Minute},
 	})
 	client := EnsureLoadedClient(nil, &http.Client{Timeout: 30 * time.Second}, fx.srv, 0, nil)
 
@@ -745,11 +748,20 @@ func TestARequestThatOutlivesTheIdleBudgetIsNotKilled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the request must succeed: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("cleanup response: %v", err)
+		}
+	})
 	proc := fx.spawner.lastProcess()
 
 	// Several times the whole budget, with the response still open — the shape a
 	// streamed generation longer than an aggressive `auto_unload.minutes` has.
-	time.Sleep(250 * time.Millisecond)
+	clock.advance(2 * time.Minute)
+	fx.srv.onIdleExpired() // The response is open when the expiry decision runs.
+	if left, armed := fx.srv.IdleRemaining(); !armed || left != idleGracePeriod {
+		t.Errorf("deferred idle = %v/%t, want grace/true", left, armed)
+	}
 	if !proc.alive() {
 		t.Error("the model was stopped mid-generation, killing the answer it was serving")
 	}
@@ -768,8 +780,15 @@ func TestARequestThatOutlivesTheIdleBudgetIsNotKilled(t *testing.T) {
 	if err := resp.Body.Close(); err != nil {
 		t.Fatalf("closing the response: %v", err)
 	}
-	waitFor(t, 5*time.Second, func() bool { return !proc.alive() },
-		"the idle unload to run once the in-flight request completed")
+	if got := fx.srv.InFlightRequests(); got != 0 {
+		t.Fatalf("requests after body close = %d, want 0", got)
+	}
+	clock.advance(time.Minute)
+	fx.srv.onIdleExpired()
+	if proc.alive() || fx.srv.State() != StateInstalled {
+		t.Error("completed request's next idle expiry did not unload")
+	}
+	waitForEventState(t, fx.events, StateInstalled)
 }
 
 // ---------------------------------------------------------------------------
@@ -782,99 +801,108 @@ func TestARequestThatOutlivesTheIdleBudgetIsNotKilled(t *testing.T) {
 // on to completion (bounded by the supervisor's own ready budget) and a following
 // request joins it instead of paying for a second cold start.
 func TestLoadWaitBudgetExpiryIsAnExplicitError(t *testing.T) {
-	// A load that never finishes on its own. It blocks on `block` and reports
-	// through loadDone whether anything ever cancelled it, which is the property
-	// under test: the transport's wait budget must not reach it.
-	release := make(chan struct{})
-	loadDone := make(chan error, 8)
-	loader := &fakeLoader{onLoad: func(ctx context.Context) error {
-		select {
-		case <-release:
-			loadDone <- nil
-			return nil
-		case <-ctx.Done():
-			loadDone <- ctx.Err()
-			return ctx.Err()
+	synctest.Test(t, func(t *testing.T) {
+		// A load that never finishes on its own. It blocks on `block` and reports
+		// through loadDone whether anything ever cancelled it, which is the property
+		// under test: the transport's wait budget must not reach it.
+		release := make(chan struct{})
+		var releaseOnce sync.Once
+		defer func() {
+			releaseOnce.Do(func() { close(release) })
+			synctest.Wait() // Release before joining the detached load and waiters.
+		}()
+		loadDone := make(chan error, 8)
+		loader := &fakeLoader{onLoad: func(ctx context.Context) error {
+			select {
+			case <-release:
+				loadDone <- nil
+				return nil
+			case <-ctx.Done():
+				loadDone <- ctx.Err()
+				return ctx.Err()
+			}
+		}}
+		stub := &stubTransport{}
+		tr := NewEnsureLoadedTransport(stub, loader, 25*time.Millisecond, nil)
+
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:9/v1/models", http.NoBody)
+		if err != nil {
+			t.Fatalf("building the request: %v", err)
 		}
-	}}
-	stub := &stubTransport{}
-	tr := NewEnsureLoadedTransport(stub, loader, 25*time.Millisecond, nil)
 
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:9/v1/models", http.NoBody)
-	if err != nil {
-		t.Fatalf("building the request: %v", err)
-	}
+		startedAt := time.Now()
+		resp, err := tr.RoundTrip(req)
+		elapsed := time.Since(startedAt)
 
-	startedAt := time.Now()
-	resp, err := tr.RoundTrip(req)
-	elapsed := time.Since(startedAt)
-
-	if resp != nil {
-		_ = resp.Body.Close()
-		t.Error("a request whose load budget expired must not produce a response")
-	}
-	if err == nil {
-		t.Fatal("err = nil, want the load wait budget to be reported")
-	}
-	if !errors.Is(err, ErrLoadWaitTimeout) {
-		t.Errorf("err = %v, want it to match ErrLoadWaitTimeout", err)
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("err = %v, want it to also carry the deadline", err)
-	}
-	if got := stub.callCount(); got != 0 {
-		t.Errorf("the wrapped transport was called %d times, want 0", got)
-	}
-	if elapsed > 5*time.Second {
-		t.Errorf("the wait took %v — the budget must bound it, not hang", elapsed)
-	}
-	// The context the loader saw is the transport's own detached one, never the
-	// caller's, and the wait budget must NOT have cancelled it: a cancelled Load
-	// discards the half-loaded weights, so the next request would start from zero
-	// and the model would never become resident.
-	loadCtx := loader.capturedCtx()
-	if loadCtx == nil {
-		t.Fatal("the loader captured no context")
-	}
-	if ctxErr := loadCtx.Err(); ctxErr != nil {
-		t.Errorf("the load context was cancelled (%v) — the wait budget must stop the WAIT, not the load", ctxErr)
-	}
-
-	// A SECOND request joins the still-running load rather than starting another,
-	// and completes with it — the property the detachment exists for.
-	second := make(chan error, 1)
-	go func() {
-		req2, reqErr := http.NewRequestWithContext(context.Background(), http.MethodGet,
-			"http://127.0.0.1:9/v1/models", http.NoBody)
-		if reqErr != nil {
-			second <- reqErr
-			return
+		if resp != nil {
+			_ = resp.Body.Close()
+			t.Error("a request whose load budget expired must not produce a response")
 		}
-		resp2, rtErr := tr.RoundTrip(req2)
-		if rtErr != nil {
-			second <- rtErr
-			return
+		if err == nil {
+			t.Fatal("err = nil, want the load wait budget to be reported")
 		}
-		_, _ = io.Copy(io.Discard, resp2.Body)
-		_ = resp2.Body.Close()
-		second <- nil
-	}()
-	waitFor(t, 5*time.Second, func() bool { return tr.waiters.Load() == 1 },
-		"the second request to join the in-flight load")
-	close(release)
+		if !errors.Is(err, ErrLoadWaitTimeout) {
+			t.Errorf("err = %v, want it to match ErrLoadWaitTimeout", err)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("err = %v, want it to also carry the deadline", err)
+		}
+		if got := stub.callCount(); got != 0 {
+			t.Errorf("the wrapped transport was called %d times, want 0", got)
+		}
+		if elapsed > 5*time.Second {
+			t.Errorf("the wait took %v — the budget must bound it, not hang", elapsed)
+		}
+		// The context the loader saw is the transport's own detached one, never the
+		// caller's, and the wait budget must NOT have cancelled it: a cancelled Load
+		// discards the half-loaded weights, so the next request would start from zero
+		// and the model would never become resident.
+		loadCtx := loader.capturedCtx()
+		if loadCtx == nil {
+			t.Fatal("the loader captured no context")
+		}
+		if ctxErr := loadCtx.Err(); ctxErr != nil {
+			t.Errorf("the load context was cancelled (%v) — the wait budget must stop the WAIT, not the load", ctxErr)
+		}
 
-	if err := <-second; err != nil {
-		t.Errorf("the request that joined the load failed: %v", err)
-	}
-	if err := <-loadDone; err != nil {
-		t.Errorf("the load was cancelled after the wait budget expired: %v", err)
-	}
-	if got := loader.loadCount(); got != 1 {
-		t.Errorf("Load calls = %d, want 1 (an expired wait budget must not waste the load)", got)
-	}
-	if got := stub.callCount(); got != 1 {
-		t.Errorf("requests reaching the wrapped transport = %d, want 1", got)
-	}
+		// A SECOND request joins the still-running load rather than starting another,
+		// and completes with it — the property the detachment exists for.
+		second := make(chan error, 1)
+		go func() {
+			req2, reqErr := http.NewRequestWithContext(context.Background(), http.MethodGet,
+				"http://127.0.0.1:9/v1/models", http.NoBody)
+			if reqErr != nil {
+				second <- reqErr
+				return
+			}
+			resp2, rtErr := tr.RoundTrip(req2)
+			if rtErr != nil {
+				second <- rtErr
+				return
+			}
+			_, _ = io.Copy(io.Discard, resp2.Body)
+			_ = resp2.Body.Close()
+			second <- nil
+		}()
+		synctest.Wait()
+		if got := tr.waiters.Load(); got != 1 {
+			t.Fatalf("joined waiters = %d, want 1", got)
+		}
+		releaseOnce.Do(func() { close(release) })
+
+		if err := <-second; err != nil {
+			t.Errorf("the request that joined the load failed: %v", err)
+		}
+		if err := <-loadDone; err != nil {
+			t.Errorf("the load was cancelled after the wait budget expired: %v", err)
+		}
+		if got := loader.loadCount(); got != 1 {
+			t.Errorf("Load calls = %d, want 1 (an expired wait budget must not waste the load)", got)
+		}
+		if got := stub.callCount(); got != 1 {
+			t.Errorf("requests reaching the wrapped transport = %d, want 1", got)
+		}
+	})
 }
 
 // timeouts.llmRequestTimeout (default 10 min) is SHORTER than the supervisor's
@@ -883,84 +911,97 @@ func TestLoadWaitBudgetExpiryIsAnExplicitError(t *testing.T) {
 // thrown away and the next request starts from zero, so the model would never
 // become resident.
 func TestRequestCancellationStopsWaitingButNotTheLoad(t *testing.T) {
-	release := make(chan struct{})
-	// Buffered well past one: a coalescing regression would start a second load,
-	// and that must fail the assertion rather than block on an unbuffered send.
-	loadDone := make(chan error, 8)
-	loader := &fakeLoader{onLoad: func(ctx context.Context) error {
-		select {
-		case <-release:
-			loadDone <- nil
-			return nil
-		case <-ctx.Done():
-			loadDone <- ctx.Err()
-			return ctx.Err()
-		}
-	}}
-	stub := &stubTransport{}
-	tr := NewEnsureLoadedTransport(stub, loader, time.Minute, nil)
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		var releaseOnce sync.Once
+		defer func() {
+			releaseOnce.Do(func() { close(release) })
+			synctest.Wait() // Release before joining the detached load and waiters.
+		}()
+		// Buffered well past one: a coalescing regression would start a second load,
+		// and that must fail the assertion rather than block on an unbuffered send.
+		loadDone := make(chan error, 8)
+		loader := &fakeLoader{onLoad: func(ctx context.Context) error {
+			select {
+			case <-release:
+				loadDone <- nil
+				return nil
+			case <-ctx.Done():
+				loadDone <- ctx.Err()
+				return ctx.Err()
+			}
+		}}
+		stub := &stubTransport{}
+		tr := NewEnsureLoadedTransport(stub, loader, time.Minute, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:9/v1/models", http.NoBody)
-	if err != nil {
-		t.Fatalf("building the request: %v", err)
-	}
-	abandoned, err := tr.RoundTrip(req)
-	if abandoned != nil {
-		_ = abandoned.Body.Close()
-		t.Error("a request that stopped waiting must not produce a response")
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("err = %v, want the caller's own deadline", err)
-	}
-	if got := stub.callCount(); got != 0 {
-		t.Errorf("the wrapped transport was called %d times, want 0", got)
-	}
-
-	// The load is still running, detached from the dead request.
-	loadCtx := loader.capturedCtx()
-	if loadCtx == nil {
-		t.Fatal("the loader captured no context")
-	}
-	if err := loadCtx.Err(); err != nil {
-		t.Fatalf("the load context was cancelled with the request (%v) — the load must be detached", err)
-	}
-
-	// A SECOND request joins the load the first one started instead of starting
-	// another, which is the whole point of detaching it.
-	waitFor(t, time.Second, func() bool { return tr.waiters.Load() == 0 }, "the cancelled request to stop waiting")
-	secondErr := make(chan error, 1)
-	go func() {
-		req2, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:9/v1/models", http.NoBody)
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:9/v1/models", http.NoBody)
 		if err != nil {
-			secondErr <- err
-			return
+			t.Fatalf("building the request: %v", err)
 		}
-		resp, err := tr.RoundTrip(req2)
-		if err != nil {
-			secondErr <- err
-			return
+		abandoned, err := tr.RoundTrip(req)
+		if abandoned != nil {
+			_ = abandoned.Body.Close()
+			t.Error("a request that stopped waiting must not produce a response")
 		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-		secondErr <- nil
-	}()
-	waitFor(t, 5*time.Second, func() bool { return tr.waiters.Load() == 1 }, "the second request to join the in-flight load")
-	close(release)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err = %v, want the caller's own deadline", err)
+		}
+		if got := stub.callCount(); got != 0 {
+			t.Errorf("the wrapped transport was called %d times, want 0", got)
+		}
 
-	if err := <-secondErr; err != nil {
-		t.Errorf("the request that joined the detached load failed: %v", err)
-	}
-	if err := <-loadDone; err != nil {
-		t.Errorf("the detached load failed: %v", err)
-	}
-	if got := loader.loadCount(); got != 1 {
-		t.Errorf("Load calls = %d, want 1 (the cancelled request must not waste the load)", got)
-	}
-	if got := stub.callCount(); got != 1 {
-		t.Errorf("requests reaching the wrapped transport = %d, want 1", got)
-	}
+		// The load is still running, detached from the dead request.
+		loadCtx := loader.capturedCtx()
+		if loadCtx == nil {
+			t.Fatal("the loader captured no context")
+		}
+		if err := loadCtx.Err(); err != nil {
+			t.Fatalf("the load context was cancelled with the request (%v) — the load must be detached", err)
+		}
+
+		// A SECOND request joins the load the first one started instead of starting
+		// another, which is the whole point of detaching it.
+		synctest.Wait()
+		if got := tr.waiters.Load(); got != 0 {
+			t.Fatalf("waiters after cancellation = %d, want 0", got)
+		}
+		secondErr := make(chan error, 1)
+		go func() {
+			req2, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:9/v1/models", http.NoBody)
+			if err != nil {
+				secondErr <- err
+				return
+			}
+			resp, err := tr.RoundTrip(req2)
+			if err != nil {
+				secondErr <- err
+				return
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			secondErr <- nil
+		}()
+		synctest.Wait()
+		if got := tr.waiters.Load(); got != 1 {
+			t.Fatalf("joined waiters = %d, want 1", got)
+		}
+		releaseOnce.Do(func() { close(release) })
+
+		if err := <-secondErr; err != nil {
+			t.Errorf("the request that joined the detached load failed: %v", err)
+		}
+		if err := <-loadDone; err != nil {
+			t.Errorf("the detached load failed: %v", err)
+		}
+		if got := loader.loadCount(); got != 1 {
+			t.Errorf("Load calls = %d, want 1 (the cancelled request must not waste the load)", got)
+		}
+		if got := stub.callCount(); got != 1 {
+			t.Errorf("requests reaching the wrapped transport = %d, want 1", got)
+		}
+	})
 }
 
 // A load that fails for its own reason reports that reason — not a timeout — and
@@ -1270,9 +1311,37 @@ func TestMatchingPortIsNotRedirected(t *testing.T) {
 // the client was configured with, and the request still succeeds with that
 // budget whole.
 func TestTheLoadIsNotChargedToTheRequestBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const requestBudget = 150 * time.Millisecond
+		loader := &fakeLoader{onLoad: func(context.Context) error { time.Sleep(400 * time.Millisecond); return nil }}
+		base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			deadline, ok := req.Context().Deadline()
+			if !ok || req.Context().Err() != nil || time.Until(deadline) != requestBudget {
+				t.Errorf("base entry deadline=%t remaining=%v err=%v, want full %v", ok, time.Until(deadline), req.Context().Err(), requestBudget)
+			}
+			return (&stubTransport{}).RoundTrip(req)
+		})
+		client := EnsureLoadedClient(nil, &http.Client{Timeout: requestBudget, Transport: base}, loader, time.Minute, nil)
+		started := time.Now()
+		resp, err := client.Do(newLoopbackRequest(t, 52341))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if elapsed := time.Since(started); elapsed != 400*time.Millisecond {
+			t.Errorf("virtual exchange=%v, want 400ms", elapsed)
+		}
+		if got := loader.loadCount(); got != 1 {
+			t.Errorf("loads = %d, want 1", got)
+		}
+	})
+}
+
+func TestEnsureLoadedClientRealHTTPAfterGate(t *testing.T) {
 	const (
-		requestBudget = 150 * time.Millisecond
-		loadTime      = 400 * time.Millisecond
+		requestBudget = 30 * time.Second
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1280,10 +1349,18 @@ func TestTheLoadIsNotChargedToTheRequestBudget(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	loader := &fakeLoader{onLoad: func(context.Context) error {
-		time.Sleep(loadTime)
-		return nil
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	loader := &fakeLoader{onLoad: func(ctx context.Context) error {
+		close(entered)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}}
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
 	shared := &http.Client{Timeout: requestBudget}
 	client := EnsureLoadedClient(nil, shared, loader, time.Minute, nil)
 
@@ -1291,24 +1368,51 @@ func TestTheLoadIsNotChargedToTheRequestBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("building the request: %v", err)
 	}
-	start := time.Now()
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("the request failed after a %v load with a %v budget: %v — the load was "+
-			"charged to the request timeout", loadTime, requestBudget, err)
+	if client.Timeout != 0 {
+		t.Fatalf("derived client Timeout = %v, want 0", client.Timeout)
 	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("reading the body: %v", err)
+	type outcome struct {
+		body []byte
+		err  error
 	}
-	if err := resp.Body.Close(); err != nil {
-		t.Fatalf("closing the body: %v", err)
+	result := make(chan outcome, 1)
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		once.Do(func() { close(release) })
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("HTTP request cleanup did not join")
+		}
+	})
+	go func() {
+		defer close(done)
+		resp, err := client.Do(req)
+		if err != nil {
+			result <- outcome{err: err}
+			return
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
+		result <- outcome{body: body, err: errors.Join(readErr, closeErr)}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("loader never entered")
 	}
-	if elapsed := time.Since(start); elapsed < loadTime {
-		t.Errorf("the exchange finished in %v, before the %v load could have completed", elapsed, loadTime)
+	once.Do(func() { close(release) })
+	var got outcome
+	select {
+	case got = <-result:
+	case <-time.After(10 * time.Second):
+		t.Fatal("HTTP request never completed")
 	}
-	if !strings.Contains(string(body), "ok") {
-		t.Errorf("body = %q, want the endpoint's reply", body)
+	if got.err != nil {
+		t.Fatalf("request after released gate failed: %v", got.err)
+	}
+	if !strings.Contains(string(got.body), "ok") {
+		t.Errorf("body = %q, want the endpoint's reply", got.body)
 	}
 	if loader.loadCount() != 1 {
 		t.Errorf("loads = %d, want 1", loader.loadCount())
@@ -1319,45 +1423,49 @@ func TestTheLoadIsNotChargedToTheRequestBudget(t *testing.T) {
 // a deadline of (almost) the full requestTimeout even though the load took a
 // visible slice of time first.
 func TestTheRequestBudgetIsArmedOnlyAfterTheGate(t *testing.T) {
-	const (
-		requestBudget = time.Second
-		loadTime      = 300 * time.Millisecond
-	)
-	var (
-		deadline time.Time
-		hasDDL   bool
-	)
-	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		deadline, hasDDL = req.Context().Deadline()
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{},
-			Body:       io.NopCloser(strings.NewReader("{}")),
-			Request:    req,
-		}, nil
+	synctest.Test(t, func(t *testing.T) {
+		const (
+			requestBudget = time.Second
+			loadTime      = 300 * time.Millisecond
+		)
+		var (
+			remaining time.Duration
+			hasDDL    bool
+		)
+		base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			deadline, ok := req.Context().Deadline()
+			hasDDL = ok
+			remaining = time.Until(deadline)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader("{}")),
+				Request:    req,
+			}, nil
+		})
+		loader := &fakeLoader{onLoad: func(context.Context) error {
+			time.Sleep(loadTime)
+			return nil
+		}}
+		tr := newEnsureLoadedTransport(base, loader, time.Minute, requestBudget, nil)
+
+		resp, err := tr.RoundTrip(newLoopbackRequest(t, 52341))
+		if err != nil {
+			t.Fatalf("RoundTrip: %v", err)
+		}
+		_ = resp.Body.Close()
+
+		if !hasDDL {
+			t.Fatal("the request reached the base transport with no deadline: the configured " +
+				"budget was dropped instead of moved")
+		}
+		// Armed before the gate, the remaining budget would be requestBudget minus
+		// the load; armed after it, the load is free.
+		if remaining != requestBudget {
+			t.Errorf("remaining budget = %v, want ≈%v — the %v load was charged to it",
+				remaining, requestBudget, loadTime)
+		}
 	})
-	loader := &fakeLoader{onLoad: func(context.Context) error {
-		time.Sleep(loadTime)
-		return nil
-	}}
-	tr := newEnsureLoadedTransport(base, loader, time.Minute, requestBudget, nil)
-
-	resp, err := tr.RoundTrip(newLoopbackRequest(t, 52341))
-	if err != nil {
-		t.Fatalf("RoundTrip: %v", err)
-	}
-	_ = resp.Body.Close()
-
-	if !hasDDL {
-		t.Fatal("the request reached the base transport with no deadline: the configured " +
-			"budget was dropped instead of moved")
-	}
-	// Armed before the gate, the remaining budget would be requestBudget minus
-	// the load; armed after it, the load is free.
-	if remaining := time.Until(deadline); remaining < requestBudget-loadTime/2 {
-		t.Errorf("remaining budget = %v, want ≈%v — the %v load was charged to it",
-			remaining, requestBudget, loadTime)
-	}
 }
 
 // The exported constructor keeps the historical contract: no request budget of

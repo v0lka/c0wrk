@@ -199,6 +199,8 @@ func TestEvaluateJudgeForSession(t *testing.T) {
 	})
 
 	t.Run("unknown session falls back to the shared judge", func(t *testing.T) {
+		manager.SetLogger(expectAPIDiagnostic(t, "session restoration skipped: session store not configured", "session_id", "no-such-session"))
+		t.Cleanup(func() { manager.SetLogger(slog.Default()) })
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
 		_, _, err := app.EvaluateJudgeForSession(ctx, "no-such-session", "bash_exec", json.RawMessage(`{"command":"ls"}`), "test task context")

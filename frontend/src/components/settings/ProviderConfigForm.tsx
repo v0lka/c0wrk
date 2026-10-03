@@ -9,6 +9,7 @@ import { getProviderTLSCertificate } from '@/api/config'
 import { logger } from '@/lib/logger'
 import { useProxyDraftStore, pinGatedByProxy } from '@/stores/proxyDraftStore'
 import { EditableCombobox } from '@/components/ui/EditableCombobox'
+import type { ChatGPTAuthMode } from '@/types/models'
 
 interface ProviderConfig {
   api_key: string
@@ -42,6 +43,22 @@ interface ProviderConfigFormProps {
    *  compiled-in fallback; LLMSettings gates the forms until the bound is
    *  loaded. */
   autoRetryMaxSeconds: number
+  /** How the CHATGPT provider authenticates. Only the chatgpt accordion
+   *  passes 'oauth': the API key input is then inert (the subscription
+   *  signs requests) and the Fetch models button drives the live
+   *  subscription catalog (FetchChatGPTModels) instead of a provider API
+   *  listing. Defaults to the historical api_key behavior for every other
+   *  provider. */
+  authMode?: ChatGPTAuthMode
+  /** The live-catalog fetch controls (oauth mode only; see
+   *  ProviderAccordion.ChatGPTFetchControls). Drives the Fetch models
+   *  button: spinner while loading, the actionable error below the input on
+   *  failure. */
+  chatGPTFetch?: {
+    loading: boolean
+    error: string | null
+    onRefresh: () => void
+  }
 }
 
 export function ProviderConfigForm({
@@ -53,12 +70,16 @@ export function ProviderConfigForm({
   onConfigChange,
   onApply,
   autoRetryMaxSeconds,
+  authMode = 'api_key',
+  chatGPTFetch,
 }: ProviderConfigFormProps) {
   const showBaseUrl = isOpenAICompatibleProvider(activeProvider)
   const showApiKey = true
   // Only compatible providers store a pin: the fixed ones talk to vendor
   // endpoints with public certificates, where pinning is pointless.
   const showTLSSection = showBaseUrl
+  // Subscription auth (chatgpt oauth): the static key is not the credential.
+  const isOAuth = authMode === 'oauth'
 
   // The pin itself is the switch (ADR-054) — an empty field means standard
   // verification — so there is deliberately no checkbox mirroring it. The
@@ -165,9 +186,15 @@ export function ProviderConfigForm({
                 const val = config?.api_key === '***configured***' ? '' : (config?.api_key ?? '')
                 return val.startsWith('${') ? 'text' : 'password'
               })()}
-              placeholder="Enter API key"
+              placeholder={isOAuth ? 'Not used — subscription signs requests' : 'Enter API key'}
               value={config?.api_key === '***configured***' ? '' : (config?.api_key ?? '')}
               onChange={(e) => onConfigChange({ api_key: e.target.value })}
+              disabled={isOAuth}
+              title={
+                isOAuth
+                  ? 'The API key is not used while ChatGPT subscription sign-in is active. Switch Authentication back to API key to edit it.'
+                  : undefined
+              }
               className="h-9 text-sm flex-1"
             />
             {config?.api_key === '***configured***' && (
@@ -175,12 +202,39 @@ export function ProviderConfigForm({
                 Configured
               </Badge>
             )}
-            {apiKeyDirty && hasRequiredCredentials && (
-              <Button size="sm" onClick={onApply} disabled={modelsLoading}>
-                {modelsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Fetch models'}
-              </Button>
+            {isOAuth ? (
+              // Subscription mode fetches the models the SUBSCRIPTION
+              // serves (FetchChatGPTModels — the backend's own catalog),
+              // not a provider API listing; the button stays in its
+              // familiar place and drives that live fetch.
+              <>
+                <Button
+                  size="sm"
+                  onClick={chatGPTFetch?.onRefresh}
+                  disabled={!chatGPTFetch || chatGPTFetch.loading}
+                  title="Fetch the models your ChatGPT subscription serves (requires sign-in)."
+                >
+                  {chatGPTFetch?.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Fetch models'}
+                </Button>
+                {chatGPTFetch?.error && (
+                  <span className="text-xs text-destructive">{chatGPTFetch.error}</span>
+                )}
+              </>
+            ) : (
+              apiKeyDirty && hasRequiredCredentials && (
+                <Button size="sm" onClick={onApply} disabled={modelsLoading}>
+                  {modelsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Fetch models'}
+                </Button>
+              )
             )}
           </div>
+          {isOAuth && (
+            <span className="text-[11px] text-muted-foreground">
+              Subscription sign-in is active — the model list below is served by your
+              ChatGPT subscription (press Fetch models to refresh); the API key stays
+              stored but unused.
+            </span>
+          )}
         </div>
       )}
 

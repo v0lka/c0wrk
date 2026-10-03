@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { getConfig } from '@/api/config'
+import { normalizeChatGPTAuthMode } from '@/api/auth'
 import { logger } from '@/lib/logger'
 import { useProxyDraftStore, isProxyEffective } from '@/stores/proxyDraftStore'
 import { FIXED_PROVIDERS, isBackendOwnedProvider, type CompatibleType } from '@/lib/llm-providers'
 import { compositeModelId, isCompositeModelId, decomposeCompositeModelId } from '@/lib/modelId'
-import type { ConfigProviderFull } from '@/types/models'
+import type { ChatGPTAuthMode, ConfigProviderFull } from '@/types/models'
 import { useLLMConfigSave } from './useLLMConfigSave'
 
 export interface ProviderConfig {
@@ -29,6 +30,15 @@ export interface ProviderConfig {
      * value is the resend interval. Fixed providers never carry the field.
      */
     auto_retry_seconds?: number
+    /**
+     * How the CHATGPT provider authenticates ('api_key' | 'oauth'). Only the
+     * chatgpt draft entry carries it — the backend normalizes the stored
+     * value before serializing, so a loaded chatgpt entry always has a real
+     * mode, and the save sends it verbatim (a two-state switch, not a
+     * nullable override). Undefined = keep the persisted mode (the save
+     * payload omits the key; the backend pointer sentinel preserves it).
+     */
+    auth_mode?: ChatGPTAuthMode
 }
 
 const defaultProviderConfigs: Record<string, ProviderConfig> = Object.fromEntries(
@@ -74,6 +84,12 @@ function toProviderConfig(p: ConfigProviderFull, type?: CompatibleType): Provide
         // undefined draft omits the key from the save payload, which the
         // backend pointer sentinel treats as "keep the persisted value".
         auto_retry_seconds: p.auto_retry_seconds,
+        // ChatGPT-only authentication mode. The backend normalizes the empty
+        // stored value to api_key before serializing and only the chatgpt
+        // entry carries the field, so undefined (every other provider) means
+        // "not applicable" and the save payload omits the key — the backend
+        // keeps the persisted mode.
+        auth_mode: p.auth_mode !== undefined ? normalizeChatGPTAuthMode(p.auth_mode) : undefined,
     }
 }
 

@@ -522,12 +522,16 @@ describe('LLMSettings — Embedded LLM block placement', () => {
   beforeEach(() => {
     // The gate-ON view: this describe pins the block's placement, which only
     // exists while the experimental switch is on (its default is OFF).
-    useExperimentalStore.setState({ enabled: true, loaded: true })
+    act(() => {
+      useExperimentalStore.setState({ enabled: true, loaded: true })
+    })
     mocks.getConfig.mockResolvedValue(makeConfig())
   })
 
   afterEach(() => {
-    useExperimentalStore.setState({ enabled: false, loaded: false })
+    act(() => {
+      useExperimentalStore.setState({ enabled: false, loaded: false })
+    })
   })
 
   async function renderSettings() {
@@ -581,11 +585,15 @@ describe('LLMSettings — embedded model in the default-model picker', () => {
   // frontend availability gate and its default is OFF, so these tests turn it
   // on explicitly and restore the default afterwards.
   beforeEach(() => {
-    useExperimentalStore.setState({ enabled: true, loaded: true })
+    act(() => {
+      useExperimentalStore.setState({ enabled: true, loaded: true })
+    })
   })
 
   afterEach(() => {
-    useExperimentalStore.setState({ enabled: false, loaded: false })
+    act(() => {
+      useExperimentalStore.setState({ enabled: false, loaded: false })
+    })
   })
 
   function embeddedConfig() {
@@ -668,11 +676,15 @@ describe('LLMSettings — embedded model in the default-model picker', () => {
 // not disable the subsystem.
 describe('LLMSettings — the experimental gate hides the embedded surfaces', () => {
   beforeEach(() => {
-    useExperimentalStore.setState({ enabled: false, loaded: true })
+    act(() => {
+      useExperimentalStore.setState({ enabled: false, loaded: true })
+    })
   })
 
   afterEach(() => {
-    useExperimentalStore.setState({ enabled: false, loaded: false })
+    act(() => {
+      useExperimentalStore.setState({ enabled: false, loaded: false })
+    })
   })
 
   function gateConfig() {
@@ -756,11 +768,15 @@ describe('LLMSettings — the backend-owned embedded provider is not user-editab
   // The gate-ON view: the picker assertions below need the embedded surfaces
   // available (the experimental switch's default is OFF).
   beforeEach(() => {
-    useExperimentalStore.setState({ enabled: true, loaded: true })
+    act(() => {
+      useExperimentalStore.setState({ enabled: true, loaded: true })
+    })
   })
 
   afterEach(() => {
-    useExperimentalStore.setState({ enabled: false, loaded: false })
+    act(() => {
+      useExperimentalStore.setState({ enabled: false, loaded: false })
+    })
   })
 
   function configWithEmbedded() {

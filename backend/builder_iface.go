@@ -28,6 +28,7 @@ type appBuilder interface {
 	ListProviderModels(context.Context, string, *core.BuilderConfig) ([]string, error)
 	SetMCPWorkDir(string)
 	SetEmbeddedLLM(core.BuilderEmbeddedLLMConfig)
+	SetSubscriptionTokenSource(core.BuilderSubscriptionAuthConfig)
 	OptimizePrompt(context.Context, string) (*core.OptimizePromptResult, error)
 	GenerateCommitMessage(context.Context, string) (string, error)
 	GetBaseSkillDirs() []string

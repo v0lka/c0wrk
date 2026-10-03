@@ -92,6 +92,11 @@ func serviceCall[T any](
 	}
 
 	start := time.Now()
+	// Reasoning tokens share the output ceiling with the final answer. A
+	// title-sized ceiling would exhaust on mandatory thinking before the
+	// model could produce any text. Apply the same floor to every service
+	// kind; disabled/unknown reasoning and unspecified ceilings stay intact.
+	req.MaxTokens = serviceOutputTokenBudget(req.MaxTokens, req.ReasoningEffort)
 	result, err := oneshot.Do(ctx, metered, req, wrapParse, opts)
 	duration := time.Since(start)
 
