@@ -45,6 +45,12 @@ export function ChatArea() {
   // plan-step blocks. A stable store reference (no per-render allocation).
   const workUnits = useSessionWorkUnits(activeSessionId)
   const streamingText = useChatStore(s => activeSessionId ? s.streamingText[activeSessionId] : undefined)
+  // Drives the live turn's open state in ChatMessageRenderer: while the task
+  // runs, the last turn's work block stays open (status running); when the
+  // task ends (or the session is paused), it settles (collapsed,
+  // completed/interrupted). Boolean coercion keeps the selector referentially
+  // stable (undefined -> false).
+  const isTaskActive = useChatStore(s => activeSessionId ? (s.taskActive[activeSessionId] ?? false) : false)
   const scrollRef = useRef<HTMLDivElement>(null)
   // Baseline for transcript stabilization (see the displayItems memo below):
   // the previous committed item tree, reused for identity-stable items.
@@ -262,6 +268,7 @@ export function ChatArea() {
             <ChatMessageRenderer
               items={displayItems}
               stickyUserMessages
+              lastTurnActive={isTaskActive}
               trailingContent={(
                 <>
                   {streamingText && (
@@ -269,9 +276,9 @@ export function ChatArea() {
                       <AssistantMessage content={streamingText} isStreaming />
                     </ErrorBoundary>
                   )}
-                  <ActivityIndicator />
                 </>
               )}
+              trailingFooter={<ActivityIndicator />}
             />
           </ChatHoverRegion>
         </ChatScrollManager>

@@ -1,6 +1,7 @@
 import React from 'react'
 import type { DisplayItem, DisplayItemKind } from '@/types/messages'
 import { bookmarkKey } from '@/lib/bookmarks'
+import { splitTurnWork } from '@/lib/turnWork'
 import { BookmarkableContext } from './BookmarkableContext'
 import { UserMessage } from './UserMessage'
 import { AssistantMessage } from './AssistantMessage'
@@ -22,6 +23,7 @@ import { ThoughtGroupBlock } from './ThoughtGroupBlock'
 import { ChecklistCard } from './ChecklistCard'
 import { BookmarkStar } from './BookmarkStar'
 import { BookmarkableRow } from './BookmarkableRow'
+import { TurnWorkBlock } from './TurnWorkBlock'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { CheckCircle2, Minimize2, BookOpen } from 'lucide-react'
 
@@ -134,7 +136,29 @@ function groupIntoStickyTurns(items: DisplayItem[]): DisplayItem[][] {
 interface ChatMessageRendererProps {
   items: DisplayItem[]
   stickyUserMessages?: boolean
+  /**
+   * Trailing content of the live turn — the streaming answer. Rendered
+   * INSIDE the live turn's work block (below the work list) while the block
+   * is open, so the stream never jumps between containers.
+   * `trailingFooter` carries the always-visible trailing chrome (the activity
+   * indicator) that renders OUTSIDE the block.
+   */
   trailingContent?: React.ReactNode
+  /**
+   * Always-visible trailing chrome rendered OUTSIDE the live turn's work
+   * block — currently the ActivityIndicator. Because it sits outside the
+   * collapsible, the live status ("Thinking...", "Routing request...", the
+   * gap dot) stays visible even when the user collapses the live block — the
+   * same "status outside the collapsed container" contract the plan view
+   * follows for its steps.
+   */
+  trailingFooter?: React.ReactNode
+  /**
+   * Whether the session's task is active — decides whether the last turn is
+   * still LIVE (block open, running status) or has settled (block collapsed;
+   * completed/interrupted status). Only the LAST turn consults it.
+   */
+  lastTurnActive?: boolean
   /**
    * Whether to render the bookmark gutter/star and data-bookmark-id anchors.
    * Defaults true (chat stream). Disable for bookmark tooltip previews so a
@@ -147,6 +171,8 @@ export function ChatMessageRenderer({
   items,
   stickyUserMessages = false,
   trailingContent,
+  trailingFooter,
+  lastTurnActive = false,
   bookmarkable = true,
 }: ChatMessageRendererProps) {
   if (!stickyUserMessages) {
@@ -154,6 +180,7 @@ export function ChatMessageRenderer({
       <BookmarkableContext.Provider value={bookmarkable}>
         {items.map((item) => renderItem(item, false, bookmarkable))}
         {trailingContent}
+        {trailingFooter}
       </BookmarkableContext.Provider>
     )
   }
@@ -164,14 +191,53 @@ export function ChatMessageRenderer({
       {turns.map((turn, index) => {
         const startsWithUser = turn[0]?.kind === 'user'
         const isLastTurn = index === turns.length - 1
+        // Turn segmentation: user row → TurnWorkBlock(work) → tail rows.
+        // Nested renderers (plan_step/subagent children) are NOT touched —
+        // the work-block wrapper is applied only here, at the root sticky
+        // level. Turns without a work segment keep the plain flat layout.
+        const { work, tail } = splitTurnWork(turn)
+        // "Live" = the turn can still produce new items: it is the session's
+        // last turn AND the session's task is active. When the task ends
+        // without an answer (stop / error / app exit) the block settles the
+        // same way a nudge-superseded turn does — fixing both the
+        // nudge-superseded-turn rendering and the never-collapsing historical
+        // dead turn after a reload.
+        const live = isLastTurn && lastTurnActive
+        // Tail content of the live turn (the streaming answer) streams INSIDE
+        // the work block via its render-slot: the block is open while the
+        // turn runs, so the stream is visible from the first chunk, and the
+        // settled answer swaps to a tail row without the stream ever jumping
+        // between containers. The activity indicator is NOT in the slot — it
+        // renders OUTSIDE the block (below it), so it stays visible when the
+        // user collapses the live block.
+        const slot = isLastTurn ? trailingContent : undefined
+        // A work block is mounted whenever there is work — including dead
+        // turns (stopped / superseded by a nudge / never answered after a
+        // reload): they render a COLLAPSED block with the interrupted status
+        // instead of spreading their items flat forever. Only an EMPTY work
+        // segment keeps the flat layout.
+        const blockTurn = work.length > 0
         return (
           <div key={bookmarkKey(turn[0]!)} className="space-y-4 min-w-0">
-            {turn.map((item) => renderItem(item, startsWithUser && item.kind === 'user', bookmarkable))}
-            {isLastTurn && trailingContent}
+            {/* A turn that does not start with a user message (an orphan
+             * lead — service/status rows before the first user message) has
+             * its ENTIRE content inside `work` (splitTurnWork anchors on the
+             * last user message, -1 when absent), so there is no separate
+             * lead row to render and no double render. */}
+            {startsWithUser && renderItem(turn[0]!, true, bookmarkable)}
+            {blockTurn && <TurnWorkBlock live={live} work={work} tail={tail} tailSlot={slot} />}
+            {!blockTurn && work.map((item) => renderItem(item, false, bookmarkable))}
+            {tail.map((item) => renderItem(item, false, bookmarkable))}
+            {!blockTurn && slot}
+            {/* The activity indicator renders OUTSIDE the work block (and
+             * outside any collapsible), so the live status survives a manual
+             * collapse of the live turn's block. Last turn only. */}
+            {isLastTurn && trailingFooter}
           </div>
         )
       })}
       {turns.length === 0 && trailingContent}
+      {turns.length === 0 && trailingFooter}
     </BookmarkableContext.Provider>
   )
 }

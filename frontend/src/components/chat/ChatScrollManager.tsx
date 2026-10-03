@@ -7,6 +7,8 @@ import type { ChatMessageUI } from '@/types/messages'
 import { ChatNewActivityBanner } from './ChatNewActivityBanner'
 import { ChatBlockOverflowToolbar } from './ChatBlockOverflowToolbar'
 import { NAVIGATION_SUPPRESS_MS, useOversizedBlockNav } from './useOversizedBlockNav'
+import { collapsibleRegistry } from './collapsibleRegistry'
+import { turnWorkOwners } from './turnWorkOwners'
 
 interface ChatScrollManagerProps {
   /** Session whose transcript this viewport shows. The component remounts per
@@ -326,27 +328,64 @@ export function ChatScrollManager({
     return () => observer.disconnect()
   }, [])
 
+  // Shared navigation write: scroll the block's start into view (below the
+  // floating sticky user-message bar) and report the navigation to the
+  // stick-to-bottom machinery exactly like every other nav source.
+  const navigateTo = useCallback((target: Element) => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+    scrollBlockStartIntoView(viewport, target)
+    isAtBottomRef.current = false
+    suppressAutoScrollUntilRef.current = Date.now() + NAVIGATION_SUPPRESS_MS
+  }, [])
+
+  // Expand-then-retry fallback for anchors that the DOM scan misses: the
+  // sticky-turn renderer nests a turn's work items inside the turn's
+  // TurnWorkBlock, and Radix unmounts COLLAPSED CollapsibleContent — so a
+  // bookmark/plan-step anchored on a work item has no DOM anchor while the
+  // block is collapsed. The turnWorkOwners registry maps the anchor key to
+  // the owning block's revealId; expanding it via collapsibleRegistry mounts
+  // the content, and the scan is retried once React has committed the
+  // expansion (double rAF — the same mount timing the collapsible tests
+  // rely on). A session switch remounts the manager and swaps viewportRef,
+  // so a stale pending retry abandons instead of scrolling a detached node.
+  const navigateWithCollapsedReveal = useCallback((key: string, find: (viewport: HTMLElement) => Element | null) => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+    const target = find(viewport)
+    if (target) {
+      navigateTo(target)
+      return
+    }
+    const revealId = turnWorkOwners.get(key)
+    if (!revealId) return
+    collapsibleRegistry.get(revealId)?.(true)
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const vp = viewportRef.current
+        if (!vp || vp !== viewport) return
+        const t = find(vp)
+        if (t) navigateTo(t)
+      })
+    })
+  }, [navigateTo])
+
   // Register scroll-to-step callback
   useEffect(() => {
     const scrollToStepFn = (stepId: string) => {
-      const viewport = viewportRef.current
-      if (!viewport) return
-      // Step ids originate from LLM-authored declare_plan payloads and can
-      // contain selector metacharacters (quotes, backslashes) — escape the
-      // id before interpolating it into the attribute selector, or the
-      // querySelectorAll call throws a SyntaxError DOMException and the
-      // navigation silently dies inside the click handler.
-      const elements = viewport.querySelectorAll(`[data-step-id="${cssEscape(stepId)}"]`)
-      const target = elements[elements.length - 1]
-      if (target) {
-        scrollBlockStartIntoView(viewport, target)
-        isAtBottomRef.current = false
-        suppressAutoScrollUntilRef.current = Date.now() + NAVIGATION_SUPPRESS_MS
-      }
+      navigateWithCollapsedReveal(stepId, (viewport) => {
+        // Step ids originate from LLM-authored declare_plan payloads and can
+        // contain selector metacharacters (quotes, backslashes) — escape the
+        // id before interpolating it into the attribute selector, or the
+        // querySelectorAll call throws a SyntaxError DOMException and the
+        // navigation silently dies inside the click handler.
+        const elements = viewport.querySelectorAll(`[data-step-id="${cssEscape(stepId)}"]`)
+        return elements[elements.length - 1] ?? null
+      })
     }
     setScrollToStep(scrollToStepFn)
     return () => setScrollToStep(null)
-  }, [setScrollToStep])
+  }, [setScrollToStep, navigateWithCollapsedReveal])
 
   // Register scroll-to-bookmark callback. Unlike steps, a bookmark key can
   // contain arbitrary characters (plan step ids, tool ids), so match via
@@ -355,25 +394,16 @@ export function ChatScrollManager({
   // for the floating sticky user-message bar covering the scrollport top.
   useEffect(() => {
     const scrollToBookmarkFn = (key: string) => {
-      const viewport = viewportRef.current
-      if (!viewport) return
-      const elements = viewport.querySelectorAll('[data-bookmark-id]')
-      let target: Element | null = null
-      for (const el of Array.from(elements)) {
-        if (el.getAttribute('data-bookmark-id') === key) {
-          target = el
-          break
+      navigateWithCollapsedReveal(key, (viewport) => {
+        for (const el of Array.from(viewport.querySelectorAll('[data-bookmark-id]'))) {
+          if (el.getAttribute('data-bookmark-id') === key) return el
         }
-      }
-      if (target) {
-        scrollBlockStartIntoView(viewport, target)
-        isAtBottomRef.current = false
-        suppressAutoScrollUntilRef.current = Date.now() + NAVIGATION_SUPPRESS_MS
-      }
+        return null
+      })
     }
     setScrollToBookmark(scrollToBookmarkFn)
     return () => setScrollToBookmark(null)
-  }, [setScrollToBookmark])
+  }, [setScrollToBookmark, navigateWithCollapsedReveal])
 
   return (
     <div className="flex-1 min-w-0 overflow-auto custom-scrollbar" ref={scrollRef}>

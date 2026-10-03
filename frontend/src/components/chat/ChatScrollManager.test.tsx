@@ -3,11 +3,13 @@
 // ChatScrollManager must land the target block BELOW the floating sticky
 // user-message bar (which covers the scrollport top while its turn is in
 // view), not at the geometric top where the bar hides the block's beginning.
-import { act } from 'react'
+import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChatScrollManager } from './ChatScrollManager'
 import { ScrollProvider, useScrollContext } from './ScrollContext'
+import { collapsibleRegistry } from './collapsibleRegistry'
+import { turnWorkOwners } from './turnWorkOwners'
 import { useChatStore } from '@/stores/chatStore'
 import type { ChatMessageUI } from '@/types/messages'
 
@@ -254,6 +256,131 @@ describe('ChatScrollManager navigation suppresses auto-scroll', () => {
     expect(h.scrollTopWrites()).toEqual([])
 
     vi.useRealTimers()
+  })
+
+  // Sticky-turn work blocks: an anchor inside a COLLAPSED TurnWorkBlock has
+  // no DOM node (Radix unmounts CollapsibleContent). The navigation must
+  // resolve the owning block via turnWorkOwners, expand it through
+  // collapsibleRegistry, wait for the expansion to mount, then scroll.
+  describe('bookmark navigation into a collapsed turn-work block', () => {
+    // rAF callbacks are QUEUED, not run synchronously: in production the
+    // double-rAF re-scan fires in a LATER frame — after React has committed
+    // the expansion. Running them synchronously would scan before the commit
+    // and reproduce a race the real browser never has. Tests flush the queue
+    // inside act() after the navigation call.
+    let frames: FrameRequestCallback[] = []
+
+    beforeEach(() => {
+      frames = []
+      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback): number => {
+        frames.push(cb)
+        return frames.length
+      })
+      vi.stubGlobal('cancelAnimationFrame', () => {})
+    })
+
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    /** Flush one queued rAF hop inside act (React work included). */
+    const flushFrame = () =>
+      act(() => {
+        const queued = frames
+        frames = []
+        for (const cb of queued) cb(0)
+      })
+
+    /** Stable identities for the manager's effect deps (see Host). */
+    const NO_MESSAGES: ChatMessageUI[] = []
+
+    // A stable handle onto a Host state setter; the collapsible registry
+    // callback flips it, mimicking TurnWorkBlock's setUserOverride.
+    const expandRef: { current: ((open: boolean) => void) | null } = { current: null }
+
+    function Host({ scrollRef }: { scrollRef: React.RefObject<HTMLDivElement | null> }) {
+      const [open, setOpen] = useState(false)
+      expandRef.current = setOpen
+      return (
+        <ScrollProvider>
+          <Probe />
+          {/* Stable messages/streamingText identities: a fresh [] per render
+           * would re-run the manager's auto-scroll effect on every expansion
+           * re-render and re-pin scrollTop (test-only artifact). */}
+          <ChatScrollManager sessionId={null} messages={NO_MESSAGES} streamingText={undefined} scrollRef={scrollRef}>
+            <div>
+              <div data-sticky-user-message data-bookmark-id="user-1" />
+              {/* Radix collapsed content is UNMOUNTED — the anchor exists
+               * only while the owning block is open. */}
+              {open && <div data-bookmark-id="evt-1" data-step-id="step-9" />}
+            </div>
+          </ChatScrollManager>
+        </ScrollProvider>
+      )
+    }
+
+    function renderCollapsedWorkBookmark({ viewportTop, barHeight, scrollTop }: Omit<Geometry, 'targetTop'>) {
+      const container = document.createElement('div')
+      document.body.appendChild(container)
+      const scrollRef: React.RefObject<HTMLDivElement | null> = { current: null }
+      root = createRoot(container)
+      // The owning block registers itself in turnWorkOwners on mount
+      // (TurnWorkBlock does); registered here by hand to keep this test
+      // scoped to the scroll manager.
+      turnWorkOwners.register('evt-1', 'turn-work:owner-1')
+      collapsibleRegistry.register('turn-work:owner-1', (open) => {
+        act(() => { expandRef.current?.(open) })
+      })
+
+      // jsdom computes no layout, and the freshly-mounted evt-1 element only
+      // exists AFTER the fallback expands the block — so the geometry is
+      // pinned at the prototype level for the duration of this test
+      // (restored by the file-level vi.restoreAllMocks in beforeEach).
+      vi.spyOn(window.Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+        if (this.getAttribute('data-bookmark-id') === 'evt-1') return rect({ top: 3000, height: 400 })
+        if (this.hasAttribute('data-sticky-user-message')) return rect({ top: viewportTop + 20, height: barHeight })
+        return rect({ top: viewportTop, height: 600 })
+      })
+
+      act(() => {
+        root!.render(<Host scrollRef={scrollRef} />)
+      })
+
+      const viewport = scrollRef.current!
+      Object.defineProperty(viewport, 'scrollTop', { value: scrollTop, writable: true, configurable: true })
+      const scrollTo = vi.fn()
+      viewport.scrollTo = scrollTo as unknown as typeof viewport.scrollTo
+      // Collapsed: the anchor must be absent from the DOM.
+      expect(viewport.querySelector('[data-bookmark-id="evt-1"]')).toBeNull()
+      return { scrollTo, viewport }
+    }
+
+    it('expands the owning block and scrolls to the freshly-mounted anchor', () => {
+      const { scrollTo, viewport } = renderCollapsedWorkBookmark({ viewportTop: 100, barHeight: 80, scrollTop: 500 })
+
+      // The first scan misses (collapsed); the fallback expands the owner and
+      // schedules the re-scan two frames ahead.
+      act(() => navigateBookmark!('evt-1'))
+      expect(scrollTo).not.toHaveBeenCalled() // still collapsed
+      expect(viewport.querySelector('[data-bookmark-id="evt-1"]')).not.toBeNull() // expanded
+
+      flushFrame() // first rAF hop
+      flushFrame() // second hop → re-scan + scroll
+
+      // The re-scan found the now-mounted anchor and scrolled with the same
+      // floating-bar compensation as a direct hit: 500 + (3000 - 100) - 80.
+      expect(scrollTo).toHaveBeenCalledWith({ top: 3400 - 80, behavior: 'smooth' })
+    })
+
+    it('is a no-op for a key with no owner and no DOM anchor', () => {
+      const { scrollTo } = renderCollapsedWorkBookmark({ viewportTop: 100, barHeight: 80, scrollTop: 500 })
+
+      act(() => navigateBookmark!('no-such-key'))
+      flushFrame()
+      flushFrame()
+
+      expect(scrollTo).not.toHaveBeenCalled()
+    })
   })
 })
 
