@@ -340,4 +340,30 @@ describe('TurnWorkBlock', () => {
     expect(turnWorkOwners.get(bookmarkKey(t1))).toBe(id1)
     expect(id1).toBeDefined()
   })
+
+  it('registers plan_step/subagent items under BOTH their event id and step id', () => {
+    const planStep: DisplayItem = {
+      kind: 'plan_step', id: 'plan-step-evt-1', stepId: 'step_7', stepNum: 1,
+      title: 'Do it', status: 'completed', children: [],
+    }
+    const subagentItem: DisplayItem = {
+      kind: 'subagent', id: 'sub-1', stepId: 'step_8',
+      title: 'Agent', status: 'completed', children: [],
+    }
+    render([planStep, subagentItem], [])
+    // Bookmarks navigate by the item's `id` (the plan_step_start EVENT id);
+    // PlanView's scrollToStep navigates by the plan `stepId`. Both keys must
+    // resolve to the same owning block.
+    expect(turnWorkOwners.get('plan-step-evt-1')).toBeDefined()
+    expect(turnWorkOwners.get('step_7')).toBe(turnWorkOwners.get('plan-step-evt-1'))
+    expect(turnWorkOwners.get('sub-1')).toBeDefined()
+    expect(turnWorkOwners.get('step_8')).toBe(turnWorkOwners.get('sub-1'))
+
+    act(() => { root.unmount() })
+    // Cleanup is symmetric: both key spaces are evicted.
+    expect(turnWorkOwners.get('plan-step-evt-1')).toBeUndefined()
+    expect(turnWorkOwners.get('step_7')).toBeUndefined()
+    expect(turnWorkOwners.get('step_8')).toBeUndefined()
+    root = createRoot(container) // afterEach unmounts again — tolerate that
+  })
 })

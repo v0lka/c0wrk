@@ -95,6 +95,19 @@ function displayItemsArraysEqual(a: readonly DisplayItem[], b: readonly DisplayI
   return true
 }
 
+/**
+ * Every anchor key a top-level work item is navigable by: its bookmark key,
+ * plus — for plan_step/subagent — the plan `stepId` PlanView's scrollToStep
+ * navigates by (the item's `id` is the plan_step_start EVENT id, not the step
+ * id, so registering the bookmark key alone leaves plan-step navigation into
+ * a collapsed block unresolved).
+ */
+function anchorKeysFor(it: DisplayItem): string[] {
+  const keys = [bookmarkKey(it)]
+  if (it.kind === 'plan_step' || it.kind === 'subagent') keys.push(it.stepId)
+  return keys
+}
+
 export const TurnWorkBlock = memo(function TurnWorkBlock({ live = false, work, tail, tailSlot }: TurnWorkBlockProps) {
   const bookmarkable = useContext(BookmarkableContext)
 
@@ -201,9 +214,9 @@ export const TurnWorkBlock = memo(function TurnWorkBlock({ live = false, work, t
   // unregister cannot evict a newer block re-using the same revealId.
   useEffect(() => {
     if (!revealId) return
-    for (const it of work) turnWorkOwners.register(bookmarkKey(it), revealId)
+    for (const it of work) for (const key of anchorKeysFor(it)) turnWorkOwners.register(key, revealId)
     return () => {
-      for (const it of work) turnWorkOwners.unregister(bookmarkKey(it), revealId)
+      for (const it of work) for (const key of anchorKeysFor(it)) turnWorkOwners.unregister(key, revealId)
     }
   }, [revealId, work])
 

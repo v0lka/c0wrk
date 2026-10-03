@@ -56,6 +56,22 @@ export function ChatArea() {
   // the previous committed item tree, reused for identity-stable items.
   const prevItemsRef = useRef<DisplayItem[]>([])
 
+  // Trailing streaming answer, rendered INSIDE the live turn's TurnWorkBlock
+  // (the renderer's tailSlot). Memoized by content so the slot keeps a stable
+  // identity across unrelated ChatArea re-renders: TurnWorkBlock's memo
+  // comparator treats a slot identity change as "a new chunk landed" and
+  // re-renders the block — a fresh fragment allocated on every render would
+  // keep that comparator clause permanently false.
+  const trailingContent = useMemo(() => (
+    <>
+      {streamingText && (
+        <ErrorBoundary fallback={<CompactErrorFallback />}>
+          <AssistantMessage content={streamingText} isStreaming />
+        </ErrorBoundary>
+      )}
+    </>
+  ), [streamingText])
+
   // Load persisted history on session change, then reconcile the chat store
   // against the backend runtime status and pending-action set AFTER the merge.
   //
@@ -269,15 +285,7 @@ export function ChatArea() {
               items={displayItems}
               stickyUserMessages
               lastTurnActive={isTaskActive}
-              trailingContent={(
-                <>
-                  {streamingText && (
-                    <ErrorBoundary fallback={<CompactErrorFallback />}>
-                      <AssistantMessage content={streamingText} isStreaming />
-                    </ErrorBoundary>
-                  )}
-                </>
-              )}
+              trailingContent={trailingContent}
               trailingFooter={<ActivityIndicator />}
             />
           </ChatHoverRegion>

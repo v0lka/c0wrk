@@ -372,6 +372,26 @@ describe('ChatScrollManager navigation suppresses auto-scroll', () => {
       expect(scrollTo).toHaveBeenCalledWith({ top: 3400 - 80, behavior: 'smooth' })
     })
 
+    it('resolves a plan-step navigation by its stepId registry key (step key space)', () => {
+      const { scrollTo, viewport } = renderCollapsedWorkBookmark({ viewportTop: 100, barHeight: 80, scrollTop: 500 })
+      // TurnWorkBlock registers plan_step items under BOTH the event id (the
+      // bookmark key) and the plan stepId; PlanView's scrollToStep navigates
+      // by the stepId key space, so the fallback must resolve it too.
+      turnWorkOwners.register('step-9', 'turn-work:owner-1')
+
+      act(() => navigateStep!('step-9'))
+      // The DOM scan misses `[data-step-id="step-9"]` while collapsed — the
+      // registry fallback must expand the owner and retry, or the click is a
+      // silent no-op.
+      expect(scrollTo).not.toHaveBeenCalled()
+      expect(viewport.querySelector('[data-step-id="step-9"]')).not.toBeNull()
+
+      flushFrame()
+      flushFrame()
+
+      expect(scrollTo).toHaveBeenCalledWith({ top: 3400 - 80, behavior: 'smooth' })
+    })
+
     it('is a no-op for a key with no owner and no DOM anchor', () => {
       const { scrollTo } = renderCollapsedWorkBookmark({ viewportTop: 100, barHeight: 80, scrollTop: 500 })
 
