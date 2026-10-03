@@ -46,7 +46,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   authStateHandler = null
   modeChanges = []
-  spies.getChatGPTAuthStatus.mockResolvedValue({ signed_in: false, mode: 'api_key' })
+  spies.getChatGPTAuthStatus.mockResolvedValue({ signed_in: false, mode: 'api_key', in_flight: false })
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -155,6 +155,7 @@ describe('ChatGPTAuthSection sign-in flow', () => {
   it('shows the identity snapshot and signs out when already signed in', async () => {
     spies.getChatGPTAuthStatus.mockResolvedValue({
       signed_in: true,
+      in_flight: false,
       email: 'dev@example.com',
       account_id: 'acct-7',
       expires_at: '2026-10-01T10:00:00Z',
@@ -194,6 +195,7 @@ describe('ChatGPTAuthSection sign-in flow', () => {
     // authoritative snapshot and clears the busy state.
     spies.getChatGPTAuthStatus.mockResolvedValue({
       signed_in: true,
+      in_flight: false,
       email: 'dev@example.com',
       mode: 'oauth',
     })
@@ -265,6 +267,42 @@ describe('ChatGPTAuthSection sign-in flow', () => {
       await new Promise((r) => setTimeout(r, 10))
     })
     expect(spies.cancelChatGPTSignIn).toHaveBeenCalledTimes(1)
+  })
+
+  it('restores the busy posture from status.in_flight after a remount (a pending event was missed)', async () => {
+    // Start the flow in one panel instance...
+    spies.startChatGPTSignIn.mockResolvedValue({ auth_url: 'https://auth.example/abc' })
+    renderSection('oauth')
+    await flush()
+    await act(async () => {
+      buttonByText('Sign in with ChatGPT').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 10))
+    })
+    expect(container.textContent).toContain('Waiting for browser')
+
+    // ...unmount it (collapsed accordion / closed settings) BEFORE any
+    // terminal event, then remount: the fresh mount never sees the pending
+    // event, so only the authoritative status snapshot can restore the
+    // Waiting/Cancel posture.
+    act(() => {
+      root.unmount()
+    })
+    spies.getChatGPTAuthStatus.mockResolvedValue({ signed_in: false, mode: 'oauth', in_flight: true })
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    renderSection('oauth')
+    await flush()
+
+    expect(container.textContent).toContain('Waiting for browser')
+    expect(container.textContent).toContain('Cancel')
+    expect(container.textContent).not.toContain('Sign in with ChatGPT')
+
+    // The terminal transition still clears it.
+    spies.getChatGPTAuthStatus.mockResolvedValue({ signed_in: false, mode: 'oauth', in_flight: false })
+    emitAuthState({ state: 'cancelled' })
+    await flush()
+    expect(container.textContent).not.toContain('Waiting for browser')
   })
 
   it('ignores malformed chatgpt_auth:state payloads (guarded upstream)', async () => {

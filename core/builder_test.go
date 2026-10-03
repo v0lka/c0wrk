@@ -162,10 +162,21 @@ func TestNewOrchestratorBuilder_NilExpandEnvVars(t *testing.T) {
 		// ExpandEnvVars intentionally omitted.
 	}
 
-	b, err := NewOrchestratorBuilder(cfg, nil, nil, nil)
+	b, err := NewOrchestratorBuilder(cfg, nil, nil, expectedCoreLogger(t, expectedStartupDiagnostic(), expectedCoreDiagnostic{"WARN", "rebuildJudge: failed to build LLM router for judge", map[string]string{"error": "no providers configured"}}, expectedCoreDiagnostic{"WARN", "tool judge rebuild failed: judge will not be available for on-demand evaluation", nil}))
 	if err != nil {
 		t.Fatalf("NewOrchestratorBuilder failed: %v", err)
 	}
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := b.waitReady(ctx); err != nil {
+			t.Errorf("waitReady(empty providers) = %v, want completed init", err)
+		}
+		if err := b.waitMCPReady(ctx); err != nil {
+			t.Errorf("waitMCPReady(empty config) = %v, want completed init", err)
+		}
+	})
 	if b == nil {
 		t.Fatal("expected non-nil builder")
 	}
@@ -388,10 +399,21 @@ func TestListProviderModels_DeduplicatesOpenAI(t *testing.T) {
 			},
 		},
 	}
-	b, err := NewOrchestratorBuilder(cfg, nil, nil, nil)
+	b, err := NewOrchestratorBuilder(cfg, nil, nil, expectedCoreLogger(t, expectedStartupDiagnostic(), expectedCoreDiagnostic{"WARN", "rebuildJudge: failed to build LLM router for judge", map[string]string{"error": "no providers configured"}}, expectedCoreDiagnostic{"WARN", "tool judge rebuild failed: judge will not be available for on-demand evaluation", nil}))
 	if err != nil {
 		t.Fatalf("NewOrchestratorBuilder failed: %v", err)
 	}
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := b.waitReady(ctx); err != nil {
+			t.Errorf("waitReady(empty providers) = %v, want completed init", err)
+		}
+		if err := b.waitMCPReady(ctx); err != nil {
+			t.Errorf("waitMCPReady(empty config) = %v, want completed init", err)
+		}
+	})
 
 	names, err := b.ListProviderModels(context.Background(), "local", cfg)
 	if err != nil {
@@ -420,10 +442,21 @@ func TestListProviderModels_DeduplicatesAnthropicCompatible(t *testing.T) {
 			},
 		},
 	}
-	b, err := NewOrchestratorBuilder(cfg, nil, nil, nil)
+	b, err := NewOrchestratorBuilder(cfg, nil, nil, expectedCoreLogger(t, expectedStartupDiagnostic(), expectedCoreDiagnostic{"WARN", "rebuildJudge: failed to build LLM router for judge", map[string]string{"error": "no providers configured"}}, expectedCoreDiagnostic{"WARN", "tool judge rebuild failed: judge will not be available for on-demand evaluation", nil}))
 	if err != nil {
 		t.Fatalf("NewOrchestratorBuilder failed: %v", err)
 	}
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := b.waitReady(ctx); err != nil {
+			t.Errorf("waitReady(empty providers) = %v, want completed init", err)
+		}
+		if err := b.waitMCPReady(ctx); err != nil {
+			t.Errorf("waitMCPReady(empty config) = %v, want completed init", err)
+		}
+	})
 
 	names, err := b.ListProviderModels(context.Background(), "proxy", cfg)
 	if err != nil {
@@ -699,9 +732,22 @@ func TestGenerateCommitMessage_RetryLoop(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mock := &mockLLMCaller{responses: tt.responses}
+			var diagnostics []expectedCoreDiagnostic
+			if tt.wantErr {
+				if tt.wantErrContain == "empty commit message" {
+					for i := 0; i < 3; i++ {
+						stop := "end_turn"
+						if i == 0 {
+							stop = ""
+						}
+						diagnostics = append(diagnostics, expectedCoreDiagnostic{"WARN", "commit message generation produced no usable output", map[string]string{"diff_bytes": "0", "provider": "test-provider", "stop_reason": stop, "has_reasoning": "false"}})
+					}
+				}
+				diagnostics = append(diagnostics, expectedServiceDiagnostic("commit_message", "", "error", 3), expectedCoreDiagnostic{"WARN", "commit message generation failed validation after all retries", map[string]string{"diff_bytes": "0", "provider": "test-provider"}})
+			}
 
 			b := &OrchestratorBuilder{
-				logger: slog.Default(),
+				logger: expectedCoreLogger(t, diagnostics...),
 				mu:     sync.RWMutex{},
 			}
 
@@ -777,7 +823,7 @@ func TestGenerateCommitMessage_TransportErrorNotRetried(t *testing.T) {
 	boom := errors.New("provider unavailable")
 	mock := &mockLLMCaller{err: boom}
 
-	b := &OrchestratorBuilder{logger: slog.Default(), mu: sync.RWMutex{}}
+	b := &OrchestratorBuilder{logger: expectedCoreLogger(t, expectedServiceDiagnostic("commit_message", "", "transport_error", 1), expectedCoreDiagnostic{"ERROR", "commit message generation failed: LLM call error", map[string]string{"err": "provider unavailable", "diff_bytes": "0", "provider": "test-provider"}}), mu: sync.RWMutex{}}
 	if _, err := b.generateCommitMessageWithCaller(context.Background(), mock, "test-provider", "", ""); !errors.Is(err, boom) {
 		t.Fatalf("error = %v, want the transport error passed through as-is", err)
 	}
@@ -1014,10 +1060,21 @@ func TestRegisterVectorSearch_StoresWaitTimeout(t *testing.T) {
 		Security:      BuilderSecurityConfig{},
 		ExpandEnvVars: func(string) string { return "" },
 	}
-	b, err := NewOrchestratorBuilder(cfg, nil, nil, nil)
+	b, err := NewOrchestratorBuilder(cfg, nil, nil, expectedCoreLogger(t, expectedStartupDiagnostic(), expectedCoreDiagnostic{"WARN", "rebuildJudge: failed to build LLM router for judge", map[string]string{"error": "no providers configured"}}, expectedCoreDiagnostic{"WARN", "tool judge rebuild failed: judge will not be available for on-demand evaluation", nil}))
 	if err != nil {
 		t.Fatalf("NewOrchestratorBuilder: %v", err)
 	}
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := b.waitReady(ctx); err != nil {
+			t.Errorf("waitReady(empty providers) = %v, want completed init", err)
+		}
+		if err := b.waitMCPReady(ctx); err != nil {
+			t.Errorf("waitMCPReady(empty config) = %v, want completed init", err)
+		}
+	})
 
 	search := builtins.VectorSearchFunc(func(ctx context.Context, opts builtins.VectorSearchOptions) ([]builtins.VectorSearchResult, error) {
 		return nil, nil

@@ -179,6 +179,13 @@ type callbackWaiter struct {
 	srv      *http.Server
 	done     chan callbackResult
 	serveErr chan error
+	// publish serializes result publication: exactly ONE callback result
+	// ever enters the (buffered) channel, so a stray second redirect (the
+	// browser retrying, a second tab, a local process hammering the port)
+	// cannot fill the buffer and leave later handlers blocked forever on
+	// the send. Late callbacks are answered (the browser gets its page) and
+	// dropped.
+	publishOnce sync.Once
 }
 
 // startCallbackServer begins serving exactly one redirect request on
@@ -206,7 +213,10 @@ func startCallbackServer(listener net.Listener, callbackPath, state string) *cal
 			rw.WriteHeader(http.StatusOK)
 			_, _ = rw.Write([]byte("<html><body><h1>Sign-in complete</h1><p>You can close this tab and return to c0wrk.</p></body></html>"))
 		}
-		w.done <- cb
+		// Publish the verdict at most once; late callbacks (a second
+		// redirect while the waiter is concluding) are answered above and
+		// never block this handler goroutine.
+		w.publishOnce.Do(func() { w.done <- cb })
 	})
 	w.srv.Handler = mux
 
@@ -305,11 +315,28 @@ func newState() (string, error) {
 // family. The port itself is not negotiable: the issuer allow-lists the
 // exact redirect URI, so a busy port must fail the sign-in with an
 // actionable error rather than silently moving to an unregistered port.
+//
+// A family the host cannot provide (no IPv6 stack) is skipped silently, but
+// EADDRINUSE on a family the host DOES provide is fatal even when the other
+// family bound fine: the redirect URI names "localhost", and the browser may
+// resolve it to the busy family — another process would then accept the
+// redirect and the sign-in would wait for its full timeout instead of
+// failing fast with the busy-port error.
 func listenLoopback(port int) (net.Listener, error) {
 	var listeners []net.Listener
 	for _, host := range []string{"127.0.0.1", "::1"} {
-		if ln, err := listenTCP(net.JoinHostPort(host, strconv.Itoa(port))); err == nil {
+		ln, err := listenTCP(net.JoinHostPort(host, strconv.Itoa(port)))
+		switch {
+		case err == nil:
 			listeners = append(listeners, ln)
+		case isAddrInUse(err):
+			// Busy on a family the host provides: fail the whole bind.
+			for _, opened := range listeners {
+				_ = opened.Close()
+			}
+			return nil, fmt.Errorf("providerauth: binding the loopback redirect listener on port %d: the port is already in use on %s (another sign-in or the Codex CLI may be listening there)", port, host)
+		default:
+			// Unavailable family (no stack / no address): skip it.
 		}
 	}
 	switch len(listeners) {

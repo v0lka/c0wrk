@@ -60,6 +60,13 @@ Use the Makefile; it handles platform-specific ONNX Runtime bootstrap across the
 
 Frontend-only: `cd frontend && npm run lint | build | dev | test`. Frontend tests use **vitest** (`npm test` / `npm run test:watch`); test files live alongside source (`*.test.ts`).
 
+### Test output quality (TypeScript and Go)
+
+- A successful TS/Go test run requires **both passing tests and zero errors or warnings in the test output**, including messages from deliberately exercised failure paths. A zero exit code or a `passed` summary alone is insufficient. Inspect the complete stdout/stderr (for Go, use an uncached run with `-count=1` and inspect `-v` or `-json` output so passing-package output is visible).
+- **Expected diagnostics are intercepted at their source in the specific test that triggers them**, with assertions on their severity, payload/message and call count when diagnostics are part of the behavior under test. TS tests use scoped console/logger spies; Go tests use a test-local injected logger/handler or the test server's error logger. Restore spies and release resources with test cleanup (`onTestFinished`/`afterEach`, `t.Cleanup`). Preserve the failure/recovery assertions and production logging behavior.
+- **Unexpected diagnostics are fixed at their cause** (including React `act()` warnings, unhandled rejections, races and leaked asynchronous work), then the affected tests and full suite are rerun. Global console/logger silencing, broad warning filters, raised log thresholds, output redirection to discard, and weakened assertions are not substitutes for a clean run.
+- Build/lint results and their diagnostics are reported separately from test results; any unresolved diagnostics or incomplete checks are explicit blockers, not an unconditional clean-verification claim. See [Testing Environment Conventions](specs/domains/testing.md).
+
 ### Focused Go workflows
 
 - Single package (root module): `go test ./core/...`

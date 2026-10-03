@@ -1732,6 +1732,10 @@ func TestGetBranchBases_SkipsSymbolicHeadKeepsBranchNamedHEAD(t *testing.T) {
 
 func TestGenerateCommitMessage_NoBuilder(t *testing.T) {
 	f := &FrontendAPI{}
+	captureMiscDiagnostics(t, f, miscExpectedDiagnostic{
+		message: "GenerateCommitMessage: application not initialized (builder is nil)",
+		attrs:   map[string]string{},
+	})
 	if _, err := f.GenerateCommitMessage(); err == nil {
 		t.Fatal("expected error when application not initialized")
 	}
@@ -1739,6 +1743,10 @@ func TestGenerateCommitMessage_NoBuilder(t *testing.T) {
 
 func TestGenerateCommitMessage_NoProject(t *testing.T) {
 	f := &FrontendAPI{builderOverride: &mockBuilder{}}
+	captureMiscDiagnostics(t, f, miscExpectedDiagnostic{
+		message: "GenerateCommitMessage: no active project",
+		attrs:   map[string]string{"err": "no active project"},
+	})
 	if _, err := f.GenerateCommitMessage(); err == nil {
 		t.Fatal("expected error when no active project")
 	}
@@ -2577,6 +2585,10 @@ func TestPhase5Git_NoProject(t *testing.T) {
 
 func TestPhase5Git_NoProjectMode(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: "NO_PROJECT", activeProjectPath: t.TempDir()}
+	captureMiscDiagnostics(t, f,
+		miscRemoteFailure("[pull origin]"),
+		miscRemoteFailure("[push origin]"),
+		miscRemoteFailure("[fetch origin]"))
 	if _, err := f.Pull("origin", nil); err == nil {
 		t.Error("Pull: expected error")
 	}
@@ -2721,6 +2733,7 @@ func TestPull_FFOnlyFlag_Diverged(t *testing.T) {
 	if _, err := f.Fetch("origin", nil); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
+	captureMiscDiagnostics(t, f, miscRemoteFailure("[pull origin --ff-only]"))
 	if _, err := f.Pull("origin", []string{"--ff-only"}); err == nil {
 		t.Fatal("Pull --ff-only (diverged): expected error, got nil")
 	}

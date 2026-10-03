@@ -21,6 +21,7 @@ package workspace
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -35,7 +36,12 @@ import (
 // combined output, failing the test on a non-zero exit.
 func runInRepoGit(t *testing.T, root string, args ...string) string {
 	t.Helper()
-	cmd, err := GitCmdInRepo(t.Context(), root, args...)
+	return runInRepoGitWithContext(t.Context(), t, root, args...)
+}
+
+func runInRepoGitWithContext(ctx context.Context, t *testing.T, root string, args ...string) string {
+	t.Helper()
+	cmd, err := GitCmdInRepo(ctx, root, args...)
 	if err != nil {
 		t.Fatalf("GitCmdInRepo(%v): %v", args, err)
 	}
@@ -172,10 +178,13 @@ func TestCanaryIncludeHiddenFilterViaAttributesFileNeutered(t *testing.T) {
 	}
 	f.repo.AppendConfig(t, "[include]\n\tpath = "+extra+"\n[core]\n\tattributesFile = "+attrsFile+"\n")
 	f.repo.Write(t, "file.txt", "hello\nchanged\n")
-	scanRequireFinding(t, f.repo.Root, GitConfigFindingAttrRouting)
+	logger := expectedDiagnostics(t, ignoredIncludeDiagnostic(15, extra), ignoredIncludeDiagnostic(15, extra), ignoredIncludeDiagnostic(15, extra))
+	f.ctx = gitDiagnosticContext(f.ctx, logger)
+
+	scanRequireFinding(t, f.repo.Root, GitConfigFindingAttrRouting, logger)
 
 	// The narrowing's guard: includes keep the blanket kill engaged.
-	info, err := ScanGitConfig(f.repo.Root)
+	info, err := ScanGitConfig(f.repo.Root, logger)
 	if err != nil {
 		t.Fatalf("ScanGitConfig: %v", err)
 	}
@@ -192,6 +201,6 @@ func TestCanaryIncludeHiddenFilterViaAttributesFileNeutered(t *testing.T) {
 		}
 	}
 
-	runInRepoGit(t, f.repo.Root, "add", "file.txt")
+	runInRepoGitWithContext(f.ctx, t, f.repo.Root, "add", "file.txt")
 	f.canary.RequireNotFired(t)
 }

@@ -3,6 +3,7 @@ package backend
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -240,6 +241,10 @@ func TestFrontendAPI_Themes_ListSortsByNameAndSkipsNonCSS(t *testing.T) {
 
 func TestFrontendAPI_Themes_ListSkipsInvalidSlug(t *testing.T) {
 	f, agentDir := newThemesTestAPI(t)
+	captureMiscDiagnostics(t, f, miscExpectedDiagnostic{
+		message: "skipping theme with invalid file name",
+		attrs:   map[string]string{"file": "default-dark.css", "error": "theme id \"default-dark\" is reserved for built-in themes"},
+	})
 	themesDir := filepath.Join(agentDir, "themes")
 
 	// Hand-dropped reserved id — listed never, but must not break the scan.
@@ -288,6 +293,10 @@ func TestFrontendAPI_Themes_ImportStoresSanitizedCSS(t *testing.T) {
 // is skipped on listing instead of reaching the webview.
 func TestFrontendAPI_Themes_ListSkipsUnsanitizableFiles(t *testing.T) {
 	f, agentDir := newThemesTestAPI(t)
+	captureMiscDiagnostics(t, f, miscExpectedDiagnostic{
+		message: "skipping theme that fails sanitization",
+		attrs:   map[string]string{"file": "hostile.css", "error": "theme CSS: unexpected declaration \"background-image\" in :root (only custom properties and color-scheme are allowed)"},
+	})
 	themesDir := filepath.Join(agentDir, "themes")
 	writeThemeFile(t, themesDir, "ok.css",
 		"/* c0wrk-theme: Ok | dark */\n:root { --color-background: #282c34; --color-foreground: #abb2bf; }\n")
@@ -311,6 +320,10 @@ func TestFrontendAPI_Themes_ListSkipsOversizedFiles(t *testing.T) {
 		"/* c0wrk-theme: Ok | dark */\n:root { --color-background: #282c34; --color-foreground: #abb2bf; }\n")
 	oversized := validThemeCSS + "\n/* " + strings.Repeat("x", maxThemeCSSSize) + " */"
 	writeThemeFile(t, themesDir, "big.css", oversized)
+	captureMiscDiagnostics(t, f, miscExpectedDiagnostic{
+		message: "skipping theme larger than the size cap",
+		attrs:   map[string]string{"file": "big.css", "size": strconv.Itoa(len(oversized)), "limit": strconv.Itoa(maxThemeCSSSize)},
+	})
 
 	list := f.ListThemes()
 	if len(list) != 1 || list[0].ID != "ok" {

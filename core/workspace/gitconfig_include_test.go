@@ -20,7 +20,9 @@ func TestResolveIncludes_FingerprintsIncludeTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	info, err := ScanGitConfig(root)
+	logger := expectedDiagnostics(t, ignoredIncludeDiagnostic(2, "../extra.conf"), ignoredIncludeDiagnostic(2, "../extra.conf"))
+
+	info, err := ScanGitConfig(root, logger)
 	if err != nil {
 		t.Fatalf("ScanGitConfig: %v", err)
 	}
@@ -30,7 +32,7 @@ func TestResolveIncludes_FingerprintsIncludeTargets(t *testing.T) {
 
 	// Before resolution the include target contributes nothing.
 	baseFP := info.Fingerprint()
-	info.ResolveIncludes()
+	info.ResolveIncludes(logger)
 	if len(info.includeSources) != 1 {
 		t.Fatalf("includeSources = %+v, want 1", info.includeSources)
 	}
@@ -50,11 +52,11 @@ func TestResolveIncludes_FingerprintsIncludeTargets(t *testing.T) {
 	if err := os.WriteFile(extra, []byte("[filter \"x\"]\n\tclean = /tmp/other.sh\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	after, err := ScanGitConfig(root)
+	after, err := ScanGitConfig(root, logger)
 	if err != nil {
 		t.Fatalf("ScanGitConfig (changed): %v", err)
 	}
-	after.ResolveIncludes()
+	after.ResolveIncludes(logger)
 	if after.Fingerprint() == info.Fingerprint() {
 		t.Error("fingerprint must change when an included file changes")
 	}
@@ -74,11 +76,13 @@ func TestResolveIncludes_RecursiveAndCycleSafe(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	info, err := ScanGitConfig(root)
+	logger := expectedDiagnostics(t, ignoredIncludeDiagnostic(2, "a.conf"), ignoredIncludeDiagnostic(2, "b.conf"), ignoredIncludeDiagnostic(2, "a.conf"))
+
+	info, err := ScanGitConfig(root, logger)
 	if err != nil {
 		t.Fatalf("ScanGitConfig: %v", err)
 	}
-	info.ResolveIncludes()
+	info.ResolveIncludes(logger)
 	if len(info.includeSources) != 2 {
 		t.Fatalf("includeSources = %+v, want 2 distinct targets (a.conf, b.conf)", info.includeSources)
 	}
@@ -101,11 +105,13 @@ func TestResolveIncludes_MissingAndUnreadableMarkers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	info, err := ScanGitConfig(root)
+	logger := expectedDiagnostics(t, ignoredIncludeDiagnostic(2, "missing.conf"), ignoredIncludeDiagnostic(4, "subdir"), unreadableIncludeDiagnostic(evalDir(t, filepath.Join(root, ".git", "subdir"))))
+
+	info, err := ScanGitConfig(root, logger)
 	if err != nil {
 		t.Fatalf("ScanGitConfig: %v", err)
 	}
-	info.ResolveIncludes()
+	info.ResolveIncludes(logger)
 	if len(info.includeSources) != 2 {
 		t.Fatalf("includeSources = %+v, want 2 (missing + unreadable)", info.includeSources)
 	}

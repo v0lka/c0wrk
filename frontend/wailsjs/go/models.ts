@@ -196,6 +196,7 @@ export namespace backend {
 	    account_id?: string;
 	    expires_at?: string;
 	    mode: string;
+	    in_flight: boolean;
 	    last_error?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -209,6 +210,7 @@ export namespace backend {
 	        this.account_id = source["account_id"];
 	        this.expires_at = source["expires_at"];
 	        this.mode = source["mode"];
+	        this.in_flight = source["in_flight"];
 	        this.last_error = source["last_error"];
 	    }
 	}

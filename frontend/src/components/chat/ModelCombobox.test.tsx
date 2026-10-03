@@ -421,7 +421,9 @@ describe('ModelCombobox — embedded local model entry', () => {
   beforeEach(() => {
     // The gate-ON view: the experimental switch is the embedded entry's
     // frontend availability gate and its default is OFF.
-    useExperimentalStore.setState({ enabled: true, loaded: true })
+    act(() => {
+      useExperimentalStore.setState({ enabled: true, loaded: true })
+    })
     spies.configData.allModels = [
       { name: 'claude-sonnet', provider: 'anthropic', family: 'anthropic', vision: true },
       { name: 'Bonsai 2 27B', provider: 'embedded', family: 'qwen3', vision: true },
@@ -433,7 +435,9 @@ describe('ModelCombobox — embedded local model entry', () => {
   })
 
   afterEach(() => {
-    useExperimentalStore.setState({ enabled: false, loaded: false })
+    act(() => {
+      useExperimentalStore.setState({ enabled: false, loaded: false })
+    })
   })
 
   it('lists the local model under the human-readable provider "Embedded"', async () => {
@@ -473,7 +477,9 @@ describe('ModelCombobox — embedded local model entry', () => {
 // entry, it does not disable the subsystem.
 describe('ModelCombobox — the experimental gate hides the embedded entry', () => {
   beforeEach(() => {
-    useExperimentalStore.setState({ enabled: false, loaded: true })
+    act(() => {
+      useExperimentalStore.setState({ enabled: false, loaded: true })
+    })
     spies.configData.allModels = [
       { name: 'claude-sonnet', provider: 'anthropic', family: 'anthropic', vision: true },
       { name: 'Bonsai 2 27B', provider: 'embedded', family: 'qwen3', vision: true },
@@ -485,7 +491,9 @@ describe('ModelCombobox — the experimental gate hides the embedded entry', () 
   })
 
   afterEach(() => {
-    useExperimentalStore.setState({ enabled: false, loaded: false })
+    act(() => {
+      useExperimentalStore.setState({ enabled: false, loaded: false })
+    })
   })
 
   it('omits the embedded entry from the menu while the gate is off', async () => {

@@ -255,6 +255,24 @@ func newDLTestDownloader(srv *httptest.Server) *Downloader {
 	return d
 }
 
+// newDLRetryTestDownloader serializes connections as well as requests. With
+// instant test backoffs, an unlimited Transport can start a speculative dial
+// just before the previous connection becomes idle, then satisfy the retry by
+// reusing that connection instead. The unused TLS dial can outlive Download and
+// race server cleanup. A one-connection limit retains keep-alive coverage without
+// those spare handshakes; close the client's idle pool before closing the server.
+func newDLRetryTestDownloader(t *testing.T, srv *httptest.Server) *Downloader {
+	t.Helper()
+	d := newDLTestDownloader(srv)
+	transport, ok := d.Client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("newDLRetryTestDownloader(%q) transport = %T, want *http.Transport", srv.URL, d.Client.Transport)
+	}
+	transport.MaxConnsPerHost = 1
+	t.Cleanup(d.Client.CloseIdleConnections)
+	return d
+}
+
 // dlSleepRecorder captures every backoff the retry loop asks for.
 type dlSleepRecorder struct {
 	mu     sync.Mutex
@@ -1448,7 +1466,7 @@ func TestDownload_RetryableHTTPStatusesAreRetried(t *testing.T) {
 			}))
 			t.Cleanup(srv.Close)
 
-			d := newDLTestDownloader(srv)
+			d := newDLRetryTestDownloader(t, srv)
 			d.FreeSpace = dlUnlimitedSpace
 
 			dst := filepath.Join(t.TempDir(), "m.gguf")
@@ -1477,7 +1495,7 @@ func TestDownload_BackoffDoublesAndIsCapped(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	d := newDLTestDownloader(srv)
+	d := newDLRetryTestDownloader(t, srv)
 	d.FreeSpace = dlUnlimitedSpace
 	d.MaxFailedAttempts = 4
 	d.RetryBackoff = 10 * time.Second
@@ -1487,6 +1505,9 @@ func TestDownload_BackoffDoublesAndIsCapped(t *testing.T) {
 	_, err := d.Download(context.Background(), dlAssetFor(srv.URL+"/m.gguf", dlBody(64)), filepath.Join(t.TempDir(), "m.gguf"), nil)
 	if !errors.Is(err, ErrAttemptsExhausted) {
 		t.Fatalf("err = %v, want ErrAttemptsExhausted", err)
+	}
+	if got := hits.Load(); got != int64(d.MaxFailedAttempts) {
+		t.Errorf("Download(HTTP 503, MaxFailedAttempts=%d) requests = %d, want %d", d.MaxFailedAttempts, got, d.MaxFailedAttempts)
 	}
 	want := []time.Duration{10 * time.Second, 20 * time.Second, maxRetryBackoff}
 	if got := sleeps.snapshot(); !slices.Equal(got, want) {

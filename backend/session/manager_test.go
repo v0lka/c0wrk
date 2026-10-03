@@ -43,6 +43,12 @@ func testManager(t *testing.T) (manager *Manager, events chan Event, agentDir st
 	}
 
 	manager = NewManager(factory, emitFunc, agentDir)
+	// These are in-memory lifecycle tests, not missing-dependency tests. An
+	// empty persistence view makes unknown IDs genuinely absent on restore.
+	manager.SetSessionStore(&emptySessionStore{mockSessionStoreForRestore: newMockSessionStore()})
+	manager.SetProjectResolver(func(projectID string) (string, error) {
+		return "", fmt.Errorf("unexpected restore of project %s in in-memory fixture", projectID)
+	})
 	// Ensure all session file handles (log/dump files) are closed so their
 	// temp-dir cleanup can remove them — Windows refuses to delete files
 	// that still have open handles.
@@ -416,6 +422,8 @@ func TestManager_ListSessionsAll(t *testing.T) {
 func TestManager_ListSessionsAll_NoStoreFallsBackToMemory(t *testing.T) {
 	manager, _, _ := testManager(t) // no SetSessionStore
 
+	manager.SetSessionStore(nil)
+
 	// Empty in-memory manager: empty slice, no error.
 	got, err := manager.ListSessionsAll()
 	if err != nil {
@@ -496,6 +504,7 @@ func TestManager_ListSessionsAll_ExcludesArchived(t *testing.T) {
 
 	t.Run("memory", func(t *testing.T) {
 		manager, _, _ := testManager(t) // no SetSessionStore → in-memory fallback
+		manager.SetSessionStore(nil)
 
 		a, err := manager.CreateSession("project-a", testWorkspacePath(t))
 		if err != nil {
@@ -1749,6 +1758,8 @@ func TestEmitTaskComplete_DegradedWithoutSafetyNetEmitsWarning(t *testing.T) {
 	// No SetTaskStore — resumable safety net unavailable.
 	drainEvents(eventChan)
 
+	captureManagerDiagnostics(t, manager, warningDiagnostic("degraded task completion without resumable safety net", map[string]string{"session": "sess-1", "completion": "partial"}))
+
 	manager.emitTaskComplete("sess-1", &core.HandleResult{
 		Output: "partial output",
 		Status: orchestration.ExecutionStatusPartial,
@@ -2897,6 +2908,8 @@ func TestRestoreSession_NoProjectResolver(t *testing.T) {
 	mgr.SetSessionStore(store)
 	seedSession(t, store, "no-resolver", testProjectID, "No Resolver", false)
 
+	captureManagerDiagnostics(t, mgr, warningDiagnostic("session restoration skipped: project resolver not configured", map[string]string{"session_id": "no-resolver"}))
+
 	// GetSession should return false — cannot restore without resolver.
 	_, ok := mgr.GetSession("no-resolver")
 	if ok {
@@ -2908,8 +2921,10 @@ func TestRestoreSession_NoProjectResolver(t *testing.T) {
 // gracefully when no session store is configured.
 func TestRestoreSession_NoSessionStore(t *testing.T) {
 	mgr, _, _ := testManager(t)
+	mgr.SetSessionStore(nil)
+	captureManagerDiagnostics(t, mgr, expectedDiagnostic{slog.LevelWarn, "session restoration skipped: session store not configured", map[string]string{"session_id": "no-store-session"}})
 
-	// No SetSessionStore or SetProjectResolver.
+	// No session store is configured.
 	_, ok := mgr.GetSession("no-store-session")
 	if ok {
 		t.Error("GetSession should return false when no session store is configured")
@@ -3119,6 +3134,8 @@ func TestRestoreSession_ProjectResolverError(t *testing.T) {
 	})
 
 	seedSession(t, store, "resolver-err", testProjectID, "Resolver Error", false)
+
+	captureManagerDiagnostics(t, mgr, warningDiagnostic("failed to restore session", map[string]string{"session_id": "resolver-err", "error": "failed to resolve workspace for project test-project-1: project test-project-1 not found"}))
 
 	_, ok := mgr.GetSession("resolver-err")
 	if ok {

@@ -373,6 +373,8 @@ func TestCompactSessionContext_AutoResumeFailureReportsPaused(t *testing.T) {
 		mockTaskStoreForResumable{unfinished: taskRec, loadTaskResult: taskRec},
 	})
 
+	captureManagerDiagnostics(t, manager, warningDiagnostic("manual compaction: auto-resume failed", map[string]string{"session": sess.ID, "error": "failed to load trajectory: load trajectory: trajectory load failure"}))
+
 	// Simulate a running request the flow pauses.
 	sess.mu.Lock()
 	doneCh := make(chan struct{})
@@ -604,6 +606,8 @@ func TestCompactSessionContext_OwnedPauseAutoResumes(t *testing.T) {
 	store := &resumeProbeStore{mockTaskStoreForResumable: mockTaskStoreForResumable{unfinished: taskRec, loadTaskResult: taskRec}}
 	manager.SetTaskStore(store)
 
+	captureManagerDiagnostics(t, manager, warningDiagnostic("manual compaction: auto-resume failed", map[string]string{"session": sess.ID, "error": "failed to load trajectory: load trajectory: trajectory load failure"}))
+
 	// Simulate a running request the flow pauses (no user pause this time).
 	sess.mu.Lock()
 	doneCh := make(chan struct{})
@@ -772,7 +776,7 @@ func TestCompactSessionContext_NoOpDefersCompactionToResume(t *testing.T) {
 	// A paused unfinished task: the flow must defer the no-op compaction to
 	// its resume and auto-resume the checkpoint.
 	taskRec := &TaskRecord{ID: "task-paused", SessionID: sess.ID, Status: "paused", OriginalRequest: "long running task", RoutingDecision: json.RawMessage(`{"domain":"general","complexity":2}`)}
-	manager.SetTaskStore(&mockTaskStoreForResumable{unfinished: taskRec, loadTaskResult: taskRec})
+	manager.SetTaskStore(&resumeTaskStore{task: taskRec})
 
 	// Simulate a running request the flow pauses.
 	sess.mu.Lock()
@@ -884,7 +888,7 @@ func TestDiscardUnfinishedTask_ClearsDeferredResumeCompaction(t *testing.T) {
 		// user-paused scenario: the flow pauses nothing and auto-resumes
 		// nothing).
 		taskRec := &TaskRecord{ID: "task-paused", SessionID: sess.ID, Status: "paused", OriginalRequest: "long running task", RoutingDecision: json.RawMessage(`{"domain":"general","complexity":2}`)}
-		manager.SetTaskStore(&mockTaskStoreForResumable{unfinished: taskRec, loadTaskResult: taskRec})
+		manager.SetTaskStore(&resumeTaskStore{task: taskRec})
 
 		if err := manager.CompactSessionContext(context.Background(), sess.ID, "sliding_window"); err != nil {
 			t.Fatalf("CompactSessionContext failed: %v", err)

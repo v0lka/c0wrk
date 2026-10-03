@@ -64,6 +64,7 @@ describe('getChatGPTAuthStatus', () => {
       account_id: 'acct-1',
       expires_at: '2026-10-01T10:00:00Z',
       mode: 'oauth',
+      in_flight: false,
     })
     const st = await getChatGPTAuthStatus()
     expect(st.signed_in).toBe(true)
@@ -75,6 +76,7 @@ describe('getChatGPTAuthStatus', () => {
     mockApp.GetChatGPTAuthStatus = vi.fn().mockResolvedValue({
       signed_in: false,
       mode: 'weird-mode',
+      in_flight: false,
       last_error: 'keychain unavailable',
     })
     const st = await getChatGPTAuthStatus()
@@ -83,7 +85,20 @@ describe('getChatGPTAuthStatus', () => {
   })
 
   it('throws on a payload missing the signed_in flag', async () => {
-    mockApp.GetChatGPTAuthStatus = vi.fn().mockResolvedValue({ mode: 'api_key' })
+    mockApp.GetChatGPTAuthStatus = vi.fn().mockResolvedValue({ mode: 'api_key', in_flight: false })
+    await expect(getChatGPTAuthStatus()).rejects.toThrow('invalid data')
+  })
+
+  it('throws on a payload missing the in_flight flag', async () => {
+    // in_flight is non-optional on the wire; reading it as undefined would
+    // silently render a running sign-in as idle (the remount-restore path
+    // keys off it), so schema drift must fail the guard.
+    mockApp.GetChatGPTAuthStatus = vi.fn().mockResolvedValue({ signed_in: false, mode: 'api_key' })
+    await expect(getChatGPTAuthStatus()).rejects.toThrow('invalid data')
+  })
+
+  it('throws on a payload with a non-string mode', async () => {
+    mockApp.GetChatGPTAuthStatus = vi.fn().mockResolvedValue({ signed_in: false, mode: 7, in_flight: false })
     await expect(getChatGPTAuthStatus()).rejects.toThrow('invalid data')
   })
 })

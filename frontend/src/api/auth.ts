@@ -39,6 +39,13 @@ function isChatGPTAuthStatusResponse(v: unknown): v is ChatGPTAuthStatusResponse
   if (typeof v !== 'object' || v === null) return false
   const o = v as Record<string, unknown>
   if (typeof o.signed_in !== 'boolean') return false
+  // in_flight and mode are non-optional on the wire (the Go struct carries
+  // no omitempty for either): a payload missing them is schema drift, and
+  // an undefined in_flight would silently render a running sign-in as idle
+  // (the remount-restore path keys off it). mode is normalized to the enum
+  // after the guard, but must at least be a string here.
+  if (typeof o.in_flight !== 'boolean') return false
+  if (typeof o.mode !== 'string') return false
   for (const key of ['email', 'account_id', 'expires_at', 'last_error'] as const) {
     if (key in o && o[key] !== undefined && typeof o[key] !== 'string') return false
   }

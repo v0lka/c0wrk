@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"testing"
 
 	sdktools "github.com/v0lka/sp4rk/tools"
@@ -92,8 +93,16 @@ func platformShellJudgeCases(t *testing.T) []canonicalJudgeCase {
 		// CLOSED: the shell judge must not run with the deterministic floor
 		// silently absent, so it escalates with a hard canonical code.
 		{
-			name:          "bash analysis error fails closed",
-			outcome:       bashTool.Judge(sdktools.WithShellAnalysis(baseCtx, nil, errors.New("kb load failed")), json.RawMessage(`{"command":"ls"}`)),
+			name: "bash analysis error fails closed",
+			outcome: func() sdktools.JudgeOutcome {
+				// The SDK shell judge has no injected logger seam. Scope capture to
+				// this single intentional failure, restoring immediately and on cleanup.
+				previous := slog.Default()
+				t.Cleanup(func() { slog.SetDefault(previous) })
+				defer slog.SetDefault(previous)
+				slog.SetDefault(newToolDiagnosticLogger(t, expectedToolDiagnostic{message: "shell judge: pre-computed analysis failed; failing closed", attrs: map[string]string{"tool": "bash_exec", "error": "kb load failed"}}))
+				return bashTool.Judge(sdktools.WithShellAnalysis(baseCtx, nil, errors.New("kb load failed")), json.RawMessage(`{"command":"ls"}`))
+			}(),
 			wantCanonical: true,
 		},
 	}

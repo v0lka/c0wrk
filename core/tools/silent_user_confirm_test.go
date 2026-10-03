@@ -73,6 +73,15 @@ func TestSilentUserConfirm_ConfirmExecutesFailClosedTerminals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			registry, rec := newSilentUserConfirmRegistry(tt.toolConfirm, SilentUserConfirmConfirm, tt.judgeResp, tt.judgeErr, tt.setJudge)
+			{
+				var want []expectedToolDiagnostic
+				if tt.hardReason != "" {
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "local_read", "reason": "symlink escapes the session roots", "tool": "esc_tool"}},
+					}
+				}
+				captureToolDiagnostics(t, registry, want...)
+			}
 			confirmCalls := 0
 			registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 				confirmCalls++
@@ -205,6 +214,15 @@ func TestSilentUserConfirm_EscalateOpensCard(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			registry, rec := newSilentUserConfirmRegistry(SilentToolConfirmJudge, SilentUserConfirmEscalate, tt.judgeResp, tt.judgeErr, tt.setJudge)
+			{
+				var want []expectedToolDiagnostic
+				if tt.hardReason != "" {
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "local_read", "reason": "symlink escapes the session roots", "tool": "esc_tool"}},
+					}
+				}
+				captureToolDiagnostics(t, registry, want...)
+			}
 			var gotReq sdktools.ConfirmationRequest
 			calls := 0
 			registry.SetConfirmFunc(func(_ context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {

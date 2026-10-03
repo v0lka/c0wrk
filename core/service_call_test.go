@@ -22,6 +22,7 @@ import (
 // nudge loop, and a terminal refusal — and that kinds never bleed together.
 func TestServiceMetrics_PerKindCounters(t *testing.T) {
 	metrics := newServiceMetrics()
+	logger := expectedCoreLogger(t, expectedServiceDiagnostic("optimize_extract", "qwen3.8-max", "fallback", 3), expectedRewriteDiagnostic(), expectedRewriteDiagnostic(), expectedRewriteDiagnostic(), expectedServiceDiagnostic("optimize_rewrite", "qwen3.8-max", "error", 3))
 
 	// Title: one successful call. The mock must spend measurable time — the
 	// test asserts recorded latency > 0, and an instant reply rounds to a flat
@@ -32,11 +33,11 @@ func TestServiceMetrics_PerKindCounters(t *testing.T) {
 			{Message: llm.Message{Content: "Fix auth"}},
 		},
 	}
-	if _, err := generateTitleWithCaller(context.Background(), titleMock, metrics, "qwen3.8-max", slog.Default(), "fix auth", nil); err != nil {
+	if _, err := generateTitleWithCaller(context.Background(), titleMock, metrics, "qwen3.8-max", logger, "fix auth", nil); err != nil {
 		t.Fatalf("title: unexpected error: %v", err)
 	}
 
-	b := &OrchestratorBuilder{logger: slog.Default(), mu: sync.RWMutex{}, serviceMetrics: metrics}
+	b := &OrchestratorBuilder{logger: logger, mu: sync.RWMutex{}, serviceMetrics: metrics}
 
 	// Optimize extract: unparseable JSON → fallback after 3 attempts (2 nudges).
 	extractMock := &mockLLMCaller{responses: []*llm.ChatResponse{
@@ -88,7 +89,7 @@ func TestServiceMetrics_PerKindCounters(t *testing.T) {
 func TestServiceCall_TransportErrorClassified(t *testing.T) {
 	metrics := newServiceMetrics()
 	mock := &mockLLMCaller{err: errors.New("connection refused")}
-	b := &OrchestratorBuilder{logger: slog.Default(), mu: sync.RWMutex{}, serviceMetrics: metrics}
+	b := &OrchestratorBuilder{logger: expectedCoreLogger(t, expectedServiceDiagnostic("optimize_rewrite", "qwen3.8-max", "transport_error", 1)), mu: sync.RWMutex{}, serviceMetrics: metrics}
 
 	if _, err := b.optimizeRewrite(context.Background(), mock, "qwen3.8-max", "prompt"); err == nil {
 		t.Fatal("expected the transport error to propagate")
@@ -110,7 +111,7 @@ func TestServiceCall_TimeoutClassifiedAsTransportError(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}}
-	b := &OrchestratorBuilder{logger: slog.Default(), mu: sync.RWMutex{}, serviceMetrics: metrics}
+	b := &OrchestratorBuilder{logger: expectedCoreLogger(t, expectedServiceDiagnostic("optimize_rewrite", "qwen3.8-max", "transport_error", 1)), mu: sync.RWMutex{}, serviceMetrics: metrics}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()

@@ -930,10 +930,12 @@ describe('EmbeddedLLMSettings — tuning section', () => {
  *  status re-read). */
 async function clickAsync(el: Element | null): Promise<void> {
   if (!el) throw new Error('element to click not found')
-  el.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-  await Promise.resolve()
-  await Promise.resolve()
-  await Promise.resolve()
+  await act(async () => {
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+  })
 }
 
 // The buttons' `disabled` reads the store's `busy`, and `busy` is cleared only

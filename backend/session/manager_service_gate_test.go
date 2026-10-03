@@ -91,7 +91,7 @@ func (c *recordingTitleCaller) callCount() int {
 // title request starts already expired, gate first and it starts with its whole
 // budget. Comparing the two order log entries alone would NOT catch a
 // gate-after-budget regression — both orders still run the gate before the call.
-func gateThenTitle(t *testing.T, gate func(context.Context) error) (*recordingTitleCaller, *orderLog, *Manager) {
+func gateThenTitle(t *testing.T, gate func(context.Context) error, configure ...func(*Manager, string)) (*recordingTitleCaller, *orderLog, *Manager) {
 	t.Helper()
 	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "done"}), func(Event) {}, runtimeTempDir(t))
 	t.Cleanup(mgr.Shutdown)
@@ -120,6 +120,9 @@ func gateThenTitle(t *testing.T, gate func(context.Context) error) (*recordingTi
 		t.Fatalf("session %s is not in the manager", info.ID)
 	}
 
+	for _, setup := range configure {
+		setup(mgr, info.ID)
+	}
 	mgr.maybeSpawnTitleGeneration(session, info.ID, "hello world", false, nil)
 	return caller, order, mgr
 }
@@ -173,16 +176,12 @@ func TestServiceLLMGateRunsBeforeTheTitleRequest(t *testing.T) {
 // reports the cause to the user.
 func TestServiceLLMGateFailureSkipsTheTitleRequest(t *testing.T) {
 	gateErr := errors.New("the embedded model could not be loaded")
-	caller, order, mgr := gateThenTitle(t, func(context.Context) error { return gateErr })
+	caller, order, mgr := gateThenTitle(t, func(context.Context) error { return gateErr }, func(m *Manager, id string) {
+		captureManagerDiagnostics(t, m, warningDiagnostic("skipping session title generation: the model is not ready", map[string]string{"session": id, "error": gateErr.Error()}))
+	})
 
-	// The gate failure returns from the goroutine without ever reaching the
-	// caller, so there is no signal to wait for; give the goroutine room to run
-	// and then assert nothing was issued. Shutdown joins it deterministically.
-	select {
-	case <-caller.done:
-		t.Fatal("the title request ran although the readiness gate failed")
-	case <-time.After(300 * time.Millisecond):
-	}
+	// Shutdown joins the gate goroutine deterministically; no sleep or polling
+	// is needed to prove that the title caller was not reached.
 	mgr.Shutdown()
 
 	if got := caller.callCount(); got != 0 {

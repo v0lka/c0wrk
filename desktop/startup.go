@@ -457,9 +457,11 @@ func (a *App) Startup(ctx context.Context) {
 	a.initEmbeddedLLM(log)
 
 	// ── ChatGPT subscription auth: keychain restore only ─────────────
-	// Constructs the token manager and loads persisted credentials; when a
-	// signed-in account is restored and the config selects oauth mode, the
-	// live token source is mirrored into the builder seam. No network, no
+	// Constructs the token manager and loads persisted credentials; the live
+	// token source is mirrored into the builder seam for EVERY restored
+	// state (mode-independent — the seam is inert in api_key mode), and the
+	// router is rebuilt when a signed-in account is restored and the config
+	// selects oauth mode. No network, no
 	// browser, no refresh: an expired-but-restored token is renewed lazily
 	// on the first request that needs it (Token's skew-aware refresh).
 	a.initChatGPTAuth(log)

@@ -86,7 +86,10 @@ func TestHandleGoalProposalResponse_MissingRequestID(t *testing.T) {
 	// No request_id in the payload — should be a no-op (channel stays empty).
 	a.handleGoalProposalResponse(map[string]any{
 		"decision": "approve",
-	}, slog.Default().WithGroup("test"))
+	}, expectedDiagnostics(t, diagnosticExpectation{
+		level: slog.LevelWarn, message: "goal_proposal response: missing request_id",
+		attrs: map[string]string{"key": "request_id"},
+	}))
 
 	select {
 	case <-ch:
@@ -109,7 +112,10 @@ func TestHandleGoalProposalResponse_MissingDecision(t *testing.T) {
 
 	a.handleGoalProposalResponse(map[string]any{
 		"request_id": "req-5",
-	}, slog.Default().WithGroup("test"))
+	}, expectedDiagnostics(t, diagnosticExpectation{
+		level: slog.LevelWarn, message: "goal proposal response missing decision field",
+		attrs: map[string]string{"request_id": "req-5"},
+	}))
 
 	select {
 	case <-ch:

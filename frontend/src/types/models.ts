@@ -557,8 +557,9 @@ export interface ChatGPTSignInResponse {
   auth_url: string
 }
 
-/** Snapshot served by GetChatGPTAuthStatus. Identity fields and the
- *  configured mode only — no OAuth token value ever crosses this boundary. */
+/** Snapshot served by GetChatGPTAuthStatus. Identity fields, the configured
+ *  mode, and the authoritative in-flight flag — no OAuth token value ever
+ *  crosses this boundary. */
 export interface ChatGPTAuthStatusResponse {
   /** Whether credentials exist in the OS keychain (no refresh attempted). */
   signed_in: boolean
@@ -570,9 +571,13 @@ export interface ChatGPTAuthStatusResponse {
   expires_at?: string
   /** Configured chatgpt auth mode. */
   mode: ChatGPTAuthMode
-  /** Operator-friendly cause of the last FAILED sign-in (or the subsystem
-   *  construction failure when the keychain is unavailable). Empty when the
-   *  last attempt succeeded or none ran. */
+  /** Whether a browser sign-in flow is currently running — the busy flag a
+   *  remounted auth panel restores its Waiting/Cancel posture from. */
+  in_flight: boolean
+  /** Operator-friendly cause of the last FAILED sign-in, the subsystem
+   *  construction failure when the keychain is unavailable, or a non-fatal
+   *  startup restore problem such as an unreadable stored record (sign in
+   *  again to replace it). Empty when none of those ran. */
   last_error?: string
 }
 

@@ -1,8 +1,23 @@
 package core
 
 import (
+	"strings"
+
 	"github.com/v0lka/sp4rk/llm"
 )
+
+// serviceOutputTokenBudget leaves room for reasoning before a short answer.
+// The floor matches the existing commit-message budget; it is a ceiling on
+// generated tokens, not a request to generate that many. A zero ceiling stays
+// unspecified so the router/compaction strategy retains ownership of it.
+func serviceOutputTokenBudget(maxTokens int, effort string) int {
+	const reasoningOutputFloor = 2048
+	if maxTokens > 0 && maxTokens < reasoningOutputFloor && effort != "" &&
+		!strings.EqualFold(effort, "off") && !strings.EqualFold(effort, "none") {
+		return reasoningOutputFloor
+	}
+	return maxTokens
+}
 
 // The oneshot service-call policy: the fixed per-kind contract for c0wrk's
 // auxiliary LLM calls (title, commit message, prompt-optimizer

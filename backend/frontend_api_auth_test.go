@@ -47,9 +47,27 @@ type fakeChatGPTManager struct {
 	// ChatGPT-Account-Id).
 	tokenExtraHeaders map[string]string
 
+	// lastPushedClient records the most recent SetHTTPClient push (the
+	// proxy re-point seam the real TokenManager exposes) so tests can
+	// assert the manager's outbound client rides the current proxy.
+	lastPushedClient *http.Client
+	pushedClients    int
+
 	signInCalls  int
 	signOutErr   error
 	signOutCalls int
+}
+
+// SetHTTPClient mirrors the real TokenManager's seam: the proxy push path
+// type-asserts it. A nil client is ignored, exactly like the real one.
+func (m *fakeChatGPTManager) SetHTTPClient(c *http.Client) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if c == nil {
+		return
+	}
+	m.lastPushedClient = c
+	m.pushedClients++
 }
 
 // defaultSignInURL is the fake authorization URL the default flow presents.
@@ -330,8 +348,8 @@ func TestStartChatGPTSignIn_FailureRecordsError(t *testing.T) {
 	if st.LastError != boom.Error() {
 		t.Fatalf("status last_error = %q, want the failure cause", st.LastError)
 	}
-	if _, sets := mock.lastSubscriptionSeam(); sets != 0 {
-		t.Fatal("the subscription seam was pushed although the run failed")
+	if seam, _ := mock.lastSubscriptionSeam(); seam.TokenSource != nil {
+		t.Fatal("the subscription seam carries a live source although the run failed")
 	}
 
 	// The busy gate is free again: a second run may start.
@@ -504,6 +522,7 @@ func TestCleanupCancelsAnInFlightSignIn(t *testing.T) {
 // with the actionable cause.
 func TestGetChatGPTAuthStatus_UnavailableSubsystem(t *testing.T) {
 	f, _, _ := newChatGPTAuthTestAPI(t)
+	captureAPIDiagnostic(t, f, "ChatGPT subscription auth unavailable", "error", "no Secret Service reachable")
 	boom := errors.New("providerauth: reading \"providerauth:chatgpt\" from the OS keychain: no Secret Service reachable")
 	f.chatgptAuth.newManagerFn = func() (chatGPTAuthManager, error) { return nil, boom }
 	f.Lifecycle().InitChatGPTAuth()
@@ -524,6 +543,66 @@ func TestGetChatGPTAuthStatus_UnavailableSubsystem(t *testing.T) {
 	}
 	if err := f.SignOutChatGPT(); err == nil || !strings.Contains(err.Error(), "unavailable") {
 		t.Fatalf("SignOutChatGPT refusal = %v, want the unavailable cause", err)
+	}
+}
+
+// TestChatGPTRPCsDuringRestoreWindowNameTheTransientState covers the
+// startup window in which the background keychain restore is still in
+// flight: the manager is nil and no construction error exists yet, so the
+// refusal must say the restore is still running (try again in a moment)
+// instead of claiming the subsystem was never initialized — and the RPC
+// must succeed once the restore concludes.
+func TestChatGPTRPCsDuringRestoreWindowNameTheTransientState(t *testing.T) {
+	f, _, _ := newChatGPTAuthTestAPI(t)
+	m := &fakeChatGPTManager{}
+
+	unblock := make(chan struct{})
+	enteredKeychainRead := make(chan struct{})
+	f.chatgptAuth.newManagerFn = func() (chatGPTAuthManager, error) {
+		// Signal entry AFTER InitChatGPTAuth has published restoring=true
+		// (the flag write precedes this call in the same goroutine), so the
+		// test's RPC below deterministically observes the window.
+		close(enteredKeychainRead)
+		<-unblock
+		return m, nil
+	}
+	initDone := make(chan struct{})
+	go func() {
+		defer close(initDone)
+		f.Lifecycle().InitChatGPTAuth()
+	}()
+	select {
+	case <-enteredKeychainRead:
+	case <-time.After(5 * time.Second):
+		t.Fatal("InitChatGPTAuth never reached the keychain read")
+	}
+
+	// The restore is blocked inside newManagerFn: the mutating RPCs refuse
+	// with the TRANSIENT wording, not the not-initialized claim.
+	if _, err := f.StartChatGPTSignIn(); err == nil ||
+		!strings.Contains(err.Error(), "still reading the OS keychain") {
+		t.Fatalf("StartChatGPTSignIn during the restore window = %v, want the transient still-reading refusal", err)
+	}
+	if err := f.SignOutChatGPT(); err == nil ||
+		!strings.Contains(err.Error(), "still reading the OS keychain") {
+		t.Fatalf("SignOutChatGPT during the restore window = %v, want the transient still-reading refusal", err)
+	}
+	if _, err := f.FetchChatGPTModels(); err == nil ||
+		!strings.Contains(err.Error(), "still reading the OS keychain") {
+		t.Fatalf("FetchChatGPTModels during the restore window = %v, want the transient still-reading refusal", err)
+	}
+
+	close(unblock)
+	select {
+	case <-initDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("InitChatGPTAuth did not conclude after the keychain read unblocked")
+	}
+
+	// After the restore concludes the same RPC proceeds past the nil-manager
+	// refusal (the fake is signed out, so the sign-in RPC returns its URL).
+	if _, err := f.StartChatGPTSignIn(); err != nil {
+		t.Fatalf("StartChatGPTSignIn after the restore concluded: %v", err)
 	}
 }
 
@@ -636,10 +715,13 @@ func TestSignOutChatGPT_CancelsAndJoinsAnInFlightSignIn(t *testing.T) {
 
 // --- InitChatGPTAuth restore ---
 
-// TestInitChatGPTAuth_RestoreMirrorsSeamOnlyInOAuthMode pins the startup
-// restore matrix: the seam + rebuild happen only when an account was
-// restored AND the config selects oauth mode.
-func TestInitChatGPTAuth_RestoreMirrorsSeamOnlyInOAuthMode(t *testing.T) {
+// TestInitChatGPTAuth_RestoreMirrorsSeamRebuildsOnlyInOAuth pins the startup
+// restore matrix: the seam is mirrored for EVERY restored state (it is
+// inert in api_key mode — only SubscriptionAuth-marked entries consume it —
+// and guarantees a later mode switch to oauth picks the credentials up),
+// while the router REBUILD happens only when an account was restored AND
+// the config selects oauth mode.
+func TestInitChatGPTAuth_RestoreMirrorsSeamRebuildsOnlyInOAuth(t *testing.T) {
 	t.Run("signed in + oauth restores the seam", func(t *testing.T) {
 		f, mock, _ := newChatGPTAuthTestAPI(t)
 		f.configMu.Lock()
@@ -662,20 +744,28 @@ func TestInitChatGPTAuth_RestoreMirrorsSeamOnlyInOAuthMode(t *testing.T) {
 		}
 	})
 
-	t.Run("signed in + api_key mode installs nothing", func(t *testing.T) {
+	t.Run("signed in + api_key mode mirrors the inert seam but rebuilds nothing", func(t *testing.T) {
 		f, mock, _ := newChatGPTAuthTestAPI(t)
 		m := &fakeChatGPTManager{signedIn: true}
 		installChatGPTManager(t, f, m)
 
-		if _, sets := mock.lastSubscriptionSeam(); sets != 0 {
-			t.Fatal("the seam was pushed although the config keeps api_key mode")
+		// The seam IS mirrored (mode-independent): a later switch to oauth
+		// through UpdateLLMConfig rebuilds the router and must find the live
+		// source installed — otherwise the switch leaves the account
+		// signed-in on the surface but every request failing.
+		seam, sets := mock.lastSubscriptionSeam()
+		if sets == 0 {
+			t.Fatal("the restore never pushed the subscription seam")
+		}
+		if seam.ProviderName != chatGPTProviderName || seam.TokenSource == nil {
+			t.Fatalf("restored seam = %+v, want the live chatgpt source (inert until the mode flips)", seam)
 		}
 		if got := mock.rebuildRouterCallsSnapshot(); got != 0 {
 			t.Fatal("the router was rebuilt although the config keeps api_key mode")
 		}
 	})
 
-	t.Run("signed out + oauth installs nothing", func(t *testing.T) {
+	t.Run("signed out + oauth mirrors the empty seam and rebuilds nothing", func(t *testing.T) {
 		f, mock, _ := newChatGPTAuthTestAPI(t)
 		f.configMu.Lock()
 		f.config.LLM.ChatGPT.Auth.Mode = config.ChatGPTAuthModeOAuth
@@ -683,8 +773,14 @@ func TestInitChatGPTAuth_RestoreMirrorsSeamOnlyInOAuthMode(t *testing.T) {
 		m := &fakeChatGPTManager{}
 		installChatGPTManager(t, f, m)
 
-		if _, sets := mock.lastSubscriptionSeam(); sets != 0 {
-			t.Fatal("the seam was pushed although no account was restored")
+		// The zero-value seam is mirrored too (the signed-out stand-in);
+		// no live source is installed and no rebuild happens.
+		seam, sets := mock.lastSubscriptionSeam()
+		if sets == 0 {
+			t.Fatal("the restore never pushed the subscription seam")
+		}
+		if seam.TokenSource != nil {
+			t.Fatalf("restored seam = %+v, want no live source while signed out", seam)
 		}
 		if got := mock.rebuildRouterCallsSnapshot(); got != 0 {
 			t.Fatal("the router was rebuilt although no account was restored")
@@ -896,7 +992,7 @@ func signedInChatGPTAPI(t *testing.T) (*FrontendAPI, *fakeChatGPTManager, *mockB
 // (bearer + account id) with the client_version parameter present.
 func TestFetchChatGPTModels_LiveCatalog(t *testing.T) {
 	catalog := `{"models":[
-		{"slug":"gpt-6-luna","visibility":"list","priority":3,"context_window":272000},
+		{"slug":"c0wrk-registry-unknown-fixture","visibility":"list","priority":3,"context_window":272000},
 		{"slug":"gpt-5.5","visibility":"list","priority":1},
 		{"slug":"gpt-5.4","visibility":"list","priority":2,"max_context_window":400000},
 		{"slug":"gpt-5.5-pro","visibility":"hide","priority":4},
@@ -914,7 +1010,7 @@ func TestFetchChatGPTModels_LiveCatalog(t *testing.T) {
 	}
 
 	// Picker order: priority rank ascending, hide/none entries dropped.
-	wantOrder := []string{"gpt-5.5", "gpt-5.4", "gpt-6-luna"}
+	wantOrder := []string{"gpt-5.5", "gpt-5.4", "c0wrk-registry-unknown-fixture"}
 	if len(resp.Models) != len(wantOrder) {
 		t.Fatalf("models = %v, want exactly %v", resp.Models, wantOrder)
 	}
@@ -941,14 +1037,21 @@ func TestFetchChatGPTModels_LiveCatalog(t *testing.T) {
 		}
 	}
 
-	// A slug ahead of the registry keeps the endpoint's own window and
-	// zero output metadata — usable, just unenriched.
-	luna := resp.Models[indexOfString(t, resp.Models, "gpt-6-luna")]
+	// A slug the registry cannot know keeps the endpoint's own window and
+	// zero output metadata — usable, just unenriched. The slug is
+	// deliberately synthetic (it names the fixture's purpose, not a real
+	// model) so a future registry entry can never make it known and silently
+	// flip this branch into the registry-first one.
+	unknownSlug := "c0wrk-registry-unknown-fixture"
+	if _, known := mock.registry.ResolveLocal(unknownSlug); known {
+		t.Fatalf("fixture slug %q is already known to the sp4rk registry — pick a fresh synthetic one", unknownSlug)
+	}
+	luna := resp.Models[indexOfString(t, resp.Models, unknownSlug)]
 	if luna.ContextWindow != 272000 {
-		t.Errorf("gpt-6-luna context window = %d, want the endpoint's 272000", luna.ContextWindow)
+		t.Errorf("%s context window = %d, want the endpoint's 272000", unknownSlug, luna.ContextWindow)
 	}
 	if luna.OutputLimit != 0 {
-		t.Errorf("gpt-6-luna output limit = %d, want 0 (registry fallback posture)", luna.OutputLimit)
+		t.Errorf("%s output limit = %d, want 0 (registry fallback posture)", unknownSlug, luna.OutputLimit)
 	}
 
 	// The request authenticates like a chat request and names its client.
@@ -963,6 +1066,139 @@ func TestFetchChatGPTModels_LiveCatalog(t *testing.T) {
 	}
 	if rec.accountID != "acct-123" {
 		t.Errorf("catalog ChatGPT-Account-Id = %q, want acct-123 (ExtraHeaders pass-through)", rec.accountID)
+	}
+}
+
+// TestFetchChatGPTModels_RidesConfiguredProxy pins the wire-level transit:
+// with the proxy enabled, the catalog request leaves through the configured
+// proxy (an absolute-form request URI naming the catalog origin, carrying
+// the same authentication) instead of a direct default-route connection —
+// the parity the OAuth exchange relies on in a proxy-only network. The
+// default bypass list (localhost, 127.0.0.1) is cleared so the loopback
+// test servers do not accidentally bypass the proxy under test.
+func TestFetchChatGPTModels_RidesConfiguredProxy(t *testing.T) {
+	// The catalog origin: if the request bypassed the proxy and dialed
+	// directly, this recorder stays empty and the test fails.
+	origin, originRec := newChatGPTCatalogServer(t, http.StatusOK, `{"models":[]}`)
+
+	var mu sync.Mutex
+	seenURI, seenAuth := "", ""
+	proxySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seenURI, seenAuth = r.RequestURI, r.Header.Get("Authorization")
+		mu.Unlock()
+		// Answer from the proxy: the transit (not the origin) is what this
+		// test pins.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"models":[]}`))
+	}))
+	t.Cleanup(proxySrv.Close)
+
+	f, _, _ := signedInChatGPTAPI(t)
+	f.configMu.Lock()
+	f.config.Proxy.Enabled = true
+	f.config.Proxy.URL = proxySrv.URL
+	f.config.Proxy.BypassList = []string{}
+	f.configMu.Unlock()
+	f.chatgptAuth.modelsBaseURLOverride = origin.URL
+
+	if _, err := f.FetchChatGPTModels(); err != nil {
+		t.Fatalf("FetchChatGPTModels through the proxy: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	wantPrefix := origin.URL + chatGPTModelsPath
+	if !strings.HasPrefix(seenURI, wantPrefix) {
+		t.Fatalf("proxy saw request URI %q, want the absolute-form %q… (the request did not transit the proxy)", seenURI, wantPrefix)
+	}
+	if seenAuth != "Bearer fake-access" {
+		t.Fatalf("proxy saw Authorization %q, want the manager's bearer", seenAuth)
+	}
+	if originRec.method != "" {
+		t.Fatalf("the catalog origin saw a direct %s request — the fetch must ride the proxy, not the default route", originRec.method)
+	}
+}
+
+// TestInitChatGPTAuth_RestorePicksUpProxyChangeFromTheWindow pins the
+// restore-window proxy gap: the manager's construction client is captured
+// BEFORE the (unbounded) keychain read, so a proxy change landing while that
+// read is still in flight cannot reach it through the construction capture —
+// and UpdateProxySettings' push would skip it too (the manager is still
+// nil). The post-publication push must therefore re-point the manager at
+// the CURRENT configuration, provable at the wire level: a request through
+// the pushed client transits the proxy the config selected mid-restore.
+func TestInitChatGPTAuth_RestorePicksUpProxyChangeFromTheWindow(t *testing.T) {
+	var mu sync.Mutex
+	proxyHit := ""
+	proxySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		proxyHit = r.RequestURI
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(proxySrv.Close)
+
+	m := &fakeChatGPTManager{}
+	enteredKeychainRead := make(chan struct{})
+	unblock := make(chan struct{})
+	f, _, _ := newChatGPTAuthTestAPI(t)
+	f.chatgptAuth.newManagerFn = func() (chatGPTAuthManager, error) {
+		close(enteredKeychainRead)
+		<-unblock
+		return m, nil
+	}
+	initDone := make(chan struct{})
+	go func() {
+		defer close(initDone)
+		f.Lifecycle().InitChatGPTAuth()
+	}()
+	select {
+	case <-enteredKeychainRead:
+	case <-time.After(5 * time.Second):
+		t.Fatal("InitChatGPTAuth never reached the keychain read")
+	}
+
+	// The proxy changes while the keychain read is still in flight.
+	f.configMu.Lock()
+	f.config.Proxy.Enabled = true
+	f.config.Proxy.URL = proxySrv.URL
+	f.config.Proxy.BypassList = []string{}
+	f.configMu.Unlock()
+
+	close(unblock)
+	select {
+	case <-initDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("InitChatGPTAuth did not conclude after the keychain read unblocked")
+	}
+
+	m.mu.Lock()
+	client, pushes := m.lastPushedClient, m.pushedClients
+	m.mu.Unlock()
+	if client == nil || pushes == 0 {
+		t.Fatal("the published manager never received a SetHTTPClient push")
+	}
+
+	// One request through the pushed client must transit the NEW proxy
+	// (absolute-form URI naming the origin; the proxy answers, so the
+	// origin host never needs to resolve).
+	origin := "http://chatgpt-catalog-origin.test/v1/models"
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, origin, http.NoBody)
+	if err != nil {
+		t.Fatalf("building the probe request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request through the pushed client: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if proxyHit != origin {
+		t.Fatalf("proxy saw %q, want the origin %q (the pushed client must ride the proxy the config selected mid-restore)", proxyHit, origin)
 	}
 }
 
@@ -1073,4 +1309,202 @@ func indexOfString(t *testing.T, models []ChatGPTModelPresetEntry, name string) 
 	}
 	t.Fatalf("model %q not found in %v", name, models)
 	return -1
+}
+
+// TestStartChatGPTSignIn_SuccessWithoutIdentity pins the nil-safe success
+// path: an issuer response that issued tokens but no ID token yields a
+// successful sign-in with a nil identity (providerauth treats the identity
+// as optional), and the success event must carry empty identity fields —
+// not panic in the background goroutine (which would take the whole desktop
+// process down).
+func TestStartChatGPTSignIn_SuccessWithoutIdentity(t *testing.T) {
+	f, _, rec := newChatGPTAuthTestAPI(t)
+	m := &fakeChatGPTManager{}
+	expiry := time.Now().Add(time.Hour).UTC()
+	m.signInHook = func(ctx context.Context, opener providerauth.BrowserOpener) (*providerauth.SignInResult, error) {
+		_ = opener(defaultSignInURL)
+		// Mirror the manager state transition the real flow performs: signed
+		// in, but with a nil identity — exactly the no-ID-token response.
+		m.mu.Lock()
+		m.signedIn = true
+		m.identity = nil
+		m.expiresAt = expiry
+		m.mu.Unlock()
+		return &providerauth.SignInResult{
+			Tokens:   &providerauth.Tokens{AccessToken: "at", RefreshToken: "rt", TokenType: "Bearer", Expiry: expiry},
+			Identity: nil,
+		}, nil
+	}
+	installChatGPTManager(t, f, m)
+
+	if _, err := f.StartChatGPTSignIn(); err != nil {
+		t.Fatalf("StartChatGPTSignIn: %v", err)
+	}
+	success := rec.waitForState(t, chatgptAuthEventSuccess)
+	if success.Email != "" || success.AccountID != "" {
+		t.Errorf("success event identity = (%q, %q), want empty fields for a nil identity", success.Email, success.AccountID)
+	}
+	// The status reflects the signed-in state with empty identity fields
+	// (chatGPTIdentityField is nil-safe there too).
+	st := f.GetChatGPTAuthStatus()
+	if !st.SignedIn {
+		t.Fatal("status reports signed out after a nil-identity sign-in")
+	}
+	if st.Email != "" || st.AccountID != "" {
+		t.Errorf("status identity = (%q, %q), want empty fields for a nil identity", st.Email, st.AccountID)
+	}
+}
+
+// TestChatGPTProxyConfig_ExpandsEnvVarsInURLAndTLSCertDir pins the parity
+// with the builder's own normalization (backend/configadapter.go): BOTH the
+// proxy URL and the TLS CA directory are ${VAR}-expanded on the auth/catalog
+// outbound path, so a proxy-only network whose CA directory is configured
+// through an env var does not hand the OAuth exchange or the model-catalog
+// fetch a literal "${VAR}" path and fail the TLS handshake that LLM traffic
+// survives.
+func TestChatGPTProxyConfig_ExpandsEnvVarsInURLAndTLSCertDir(t *testing.T) {
+	f, _, _ := newChatGPTAuthTestAPI(t)
+	f.configMu.Lock()
+	f.config.Proxy.URL = "${C0WRK_TEST_PROXY_URL}"
+	f.config.Proxy.TLSCertDir = "${C0WRK_TEST_CA_DIR}/certs"
+	f.config.Proxy.BypassList = []string{"localhost"}
+	f.configMu.Unlock()
+
+	t.Setenv("C0WRK_TEST_PROXY_URL", "http://127.0.0.1:3128")
+	t.Setenv("C0WRK_TEST_CA_DIR", "/tmp/test-ca")
+
+	got := f.chatGPTProxyConfig()
+	if got.URL != "http://127.0.0.1:3128" {
+		t.Errorf("proxy URL = %q, want the expanded http://127.0.0.1:3128", got.URL)
+	}
+	if got.TLSCertDir != "/tmp/test-ca/certs" {
+		t.Errorf("TLS cert dir = %q, want the expanded /tmp/test-ca/certs", got.TLSCertDir)
+	}
+	if len(got.BypassList) != 1 || got.BypassList[0] != "localhost" {
+		t.Errorf("bypass list = %v, want it carried verbatim", got.BypassList)
+	}
+}
+
+// TestInitChatGPTAuth_RestoreEmitsSuccessCorrection pins the cold-start
+// correction: the restore may complete after the frontend has already
+// rendered the pre-restore zero state (a Settings panel keeps its
+// mount-time snapshot and nothing else refreshes it), so a SIGNED-IN
+// restore must publish the same success transition an interactive sign-in
+// emits. A signed-out restore publishes nothing — the pre-restore zero
+// state it would "correct" is already the truth.
+func TestInitChatGPTAuth_RestoreEmitsSuccessCorrection(t *testing.T) {
+	f, _, rec := newChatGPTAuthTestAPI(t)
+	expiry := time.Now().Add(time.Hour).UTC()
+	m := &fakeChatGPTManager{
+		signedIn:  true,
+		identity:  &providerauth.Identity{Email: "restored@example.com", ChatGPTAccountID: "acct-restore"},
+		expiresAt: expiry,
+	}
+	installChatGPTManager(t, f, m)
+
+	success := rec.waitForState(t, chatgptAuthEventSuccess)
+	if success.Email != "restored@example.com" || success.AccountID != "acct-restore" {
+		t.Errorf("restore success event identity = (%q, %q), want the restored account", success.Email, success.AccountID)
+	}
+	if success.ExpiresAt != expiry.Format(time.RFC3339) {
+		t.Errorf("restore success event expires_at = %q, want %q", success.ExpiresAt, expiry.Format(time.RFC3339))
+	}
+
+	// A signed-out restore emits no state event.
+	f2, _, rec2 := newChatGPTAuthTestAPI(t)
+	installChatGPTManager(t, f2, &fakeChatGPTManager{})
+	if states := rec2.states(); len(states) != 0 {
+		t.Errorf("signed-out restore emitted %v, want no state events", states)
+	}
+}
+
+// TestInitChatGPTAuth_RestoreSkipsCorrectionDuringInFlightSignIn pins the
+// mid-flow guard: a restore that concludes while an interactive sign-in is
+// already running must NOT emit its success correction — the flow's pending
+// event has the panel in the busy posture, a restore-success would clear it
+// prematurely, and the flow's own terminal event re-reads the authoritative
+// snapshot anyway.
+func TestInitChatGPTAuth_RestoreSkipsCorrectionDuringInFlightSignIn(t *testing.T) {
+	f, _, rec := newChatGPTAuthTestAPI(t)
+
+	// Block the interactive flow AFTER its pending event, so the restore
+	// runs while inFlight is true.
+	flowReleased := make(chan struct{})
+	signInStarted := make(chan struct{})
+	m := &fakeChatGPTManager{
+		signInHook: func(ctx context.Context, opener providerauth.BrowserOpener) (*providerauth.SignInResult, error) {
+			if err := opener(defaultSignInURL); err != nil {
+				return nil, err
+			}
+			close(signInStarted)
+			<-flowReleased
+			expiry := time.Now().Add(time.Hour).UTC()
+			return &providerauth.SignInResult{
+				Tokens:   &providerauth.Tokens{AccessToken: "at", RefreshToken: "rt", TokenType: "Bearer", Expiry: expiry},
+				Identity: &providerauth.Identity{Email: "new@example.com", ChatGPTAccountID: "acct-new"},
+			}, nil
+		},
+	}
+	installChatGPTManager(t, f, m)
+
+	if _, err := f.StartChatGPTSignIn(); err != nil {
+		t.Fatalf("StartChatGPTSignIn: %v", err)
+	}
+	<-signInStarted
+	rec.waitForState(t, chatgptAuthEventPending)
+
+	// The restore concludes mid-flow: signed in, but NO success correction
+	// may be emitted while the flow is in flight. The restore runs through
+	// the REAL InitChatGPTAuth path with newManagerFn re-pointed at the
+	// signed-in fake — a direct manager-field assignment would be OVERWRITTEN
+	// by newManagerFn's return value before the emit decision runs, leaving
+	// the signed-out fake published and the whole emit block trivially
+	// skipped (the guard never even consulted).
+	restored := &fakeChatGPTManager{
+		signedIn: true,
+		identity: &providerauth.Identity{Email: "restored@example.com", ChatGPTAccountID: "acct-restore"},
+		expiresAt: func() time.Time {
+			return time.Now().Add(2 * time.Hour).UTC()
+		}(),
+	}
+	f.chatgptAuth.mu.Lock()
+	f.chatgptAuth.newManagerFn = func() (chatGPTAuthManager, error) { return restored, nil }
+	f.chatgptAuth.mu.Unlock()
+	f.Lifecycle().InitChatGPTAuth()
+
+	// Give the (synchronous) restore a moment; only the flow's own events
+	// may exist. pending is expected; a restore-success is not.
+	time.Sleep(50 * time.Millisecond)
+	for _, s := range rec.states() {
+		if s == chatgptAuthEventSuccess {
+			t.Fatalf("restore emitted a success correction while a sign-in is in flight; states so far: %v", rec.states())
+		}
+	}
+
+	// Release the flow; its own terminal event arrives normally.
+	close(flowReleased)
+	rec.waitForState(t, chatgptAuthEventSuccess)
+}
+
+// TestInitChatGPTAuth_PanickingKeychainReadDoesNotWedgeRestoring pins the
+// panic-containment around the manager construction: a keyring backend that
+// panics (native code surface) must surface as an actionable construction
+// error with the restoring flag CLEARED — not as a permanent "still reading
+// the OS keychain" refusal that only an app restart clears.
+func TestInitChatGPTAuth_PanickingKeychainReadDoesNotWedgeRestoring(t *testing.T) {
+	f, _, _ := newChatGPTAuthTestAPI(t)
+	captureAPIDiagnostic(t, f, "ChatGPT subscription auth unavailable", "error", "keyring: native crash")
+	f.chatgptAuth.newManagerFn = func() (chatGPTAuthManager, error) {
+		panic("keyring: native crash")
+	}
+	f.Lifecycle().InitChatGPTAuth()
+
+	// The flag is cleared and the panic is recorded as the construction
+	// failure; the RPC refusal is the permanent unavailable one (naming the
+	// panic), never the transient still-reading one.
+	if _, err := f.StartChatGPTSignIn(); err == nil ||
+		!strings.Contains(err.Error(), "keychain backend panicked") ||
+		strings.Contains(err.Error(), "still reading the OS keychain") {
+		t.Fatalf("StartChatGPTSignIn after a panicking keychain read = %v, want the unavailable refusal naming the panic (not the transient wording)", err)
+	}
 }

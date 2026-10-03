@@ -142,7 +142,9 @@ func TestScanGitConfig_WorktreeOverlayPreservesCommonObjectFormat(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	info, err := ScanGitConfig(wt)
+	logger := expectedDiagnostics(t, ignoredIncludeDiagnostic(18, "./hidden"))
+
+	info, err := ScanGitConfig(wt, logger)
 	if err != nil {
 		t.Fatalf("ScanGitConfig(worktree): %v", err)
 	}
@@ -282,7 +284,9 @@ func TestScanGitConfig_InfoAttributesRoutingNeutered(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	info, err := ScanGitConfig(repo.Root)
+	logger := expectedDiagnostics(t, ignoredIncludeDiagnostic(15, filepath.Join(repo.Root, "extra.conf")))
+
+	info, err := ScanGitConfig(repo.Root, logger)
 	if err != nil {
 		t.Fatalf("ScanGitConfig: %v", err)
 	}
@@ -484,7 +488,9 @@ func TestScanGitConfig_SHA256RepoUsesSHA256EmptyTree(t *testing.T) {
 	setup.AppendConfig(t, "[filter \"x\"]\n\tclean = /tmp/evil.sh\n[include]\n\tpath = extra.conf\n")
 	setup.Write(t, ".gitattributes", "*.txt filter=x\n")
 
-	info, err := ScanGitConfig(root)
+	logger := expectedDiagnostics(t, ignoredIncludeDiagnostic(17, "extra.conf"))
+
+	info, err := ScanGitConfig(root, logger)
 	if err != nil {
 		t.Fatalf("ScanGitConfig: %v", err)
 	}

@@ -1128,6 +1128,17 @@ func TestSwitchProject_AcquireSwitchLockTimesOut(t *testing.T) {
 	h := newProjectSwitchHarness(t)
 	defer h.close(t)
 	prepareAtomicSwitchHarness(t, h)
+	// This test exercises lock acquisition, not activation or auto-fetch.
+	// The already-active path still takes switchMu and the in-progress hook,
+	// but leaves no fire-and-forget fetch reading the logger during cleanup.
+	h.api.activeProjectMu.Lock()
+	h.api.activeProjectID = h.projectID
+	h.api.activeProjectPath = h.workspace
+	h.api.activeProjectMu.Unlock()
+	captureMiscDiagnostics(t, h.api, miscExpectedDiagnostic{
+		message: "SwitchProject: timed out waiting for an in-flight switch",
+		attrs:   map[string]string{"project": h.projectID, "error": errSwitchLockTimeout.Error()},
+	})
 
 	// The bounded-acquire failure must be user-visible: record the emitted
 	// runtime_error (the only channel that reaches the user — the toggle's own

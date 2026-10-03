@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -379,5 +381,114 @@ func TestPKCEHelpers(t *testing.T) {
 	s2, _ := newState()
 	if s1 == s2 || len(s1) != 43 {
 		t.Errorf("state values not fresh/uniform: %q %q", s1, s2)
+	}
+}
+
+// TestStartCallbackServer_LateCallbacksDoNotBlock pins the one-shot publish
+// contract: after the first callback's verdict entered the channel, any
+// number of additional redirects must be ANSWERED and dropped — never left
+// blocked on the send — so a browser retry (or a second tab, or a local
+// process hitting the port) cannot leak handler goroutines past the flow's
+// conclusion.
+func TestStartCallbackServer_LateCallbacksDoNotBlock(t *testing.T) {
+	ln, err := listenLoopback(0)
+	if err != nil {
+		t.Fatalf("listenLoopback: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	tcpAddr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("loopback listener bound a non-TCP address %T", ln.Addr())
+	}
+	port := tcpAddr.Port
+	w := startCallbackServer(ln, "/auth/callback", "state-1")
+	t.Cleanup(w.stop)
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	statusOf := func(t *testing.T, target string) int {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, target, http.NoBody)
+		if err != nil {
+			t.Fatalf("building request: %v", err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("callback request: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode
+	}
+
+	// First callback publishes the verdict.
+	if code := statusOf(t, fmt.Sprintf("http://localhost:%d/auth/callback?code=code-1&state=state-1", port)); code != http.StatusOK {
+		t.Errorf("first callback status = %d, want 200", code)
+	}
+
+	// A burst of late callbacks must all be answered promptly — a blocked
+	// send would hang the requests (and this test) long before the server
+	// is stopped.
+	for i := range 5 {
+		code := statusOf(t, fmt.Sprintf("http://localhost:%d/auth/callback?error=access_denied&state=late-%d", port, i))
+		if code != http.StatusBadRequest {
+			t.Errorf("late callback %d status = %d, want 400 (answered, verdict dropped)", i, code)
+		}
+	}
+
+	// Exactly one verdict was published and it is the first callback's.
+	select {
+	case cb := <-w.done:
+		if cb.code != "code-1" || cb.err != nil {
+			t.Errorf("published verdict = %+v, want the first callback's code-1", cb)
+		}
+	default:
+		t.Fatal("no verdict was published")
+	}
+	select {
+	case cb := <-w.done:
+		t.Errorf("a second verdict was published: %+v", cb)
+	default:
+	}
+}
+
+// TestListenLoopback_PortBusyOnOneFamilyFails pins the busy-port rule: when
+// another process holds the port on ONE loopback family (the other being
+// free — or unavailable on this host), the bind must fail with the
+// actionable in-use error instead of succeeding on the remaining family and
+// leaving the sign-in waiting for a redirect another process will swallow.
+func TestListenLoopback_PortBusyOnOneFamilyFails(t *testing.T) {
+	// Hold the port on IPv4 loopback only.
+	hold, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("holding IPv4 listener: %v", err)
+	}
+	t.Cleanup(func() { _ = hold.Close() })
+	holdAddr, ok := hold.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("hold listener bound a non-TCP address %T", hold.Addr())
+	}
+	port := holdAddr.Port
+
+	if _, err := listenLoopback(port); err == nil {
+		t.Fatal("listenLoopback succeeded although the port is busy on 127.0.0.1 (the browser may resolve localhost to the busy family)")
+	} else if !strings.Contains(err.Error(), "already in use") {
+		t.Errorf("listenLoopback error = %v, want the actionable in-use message", err)
+	}
+}
+
+// TestIsAddrInUse_RecognizesThePlatformErrno pins the synthetic spelling on
+// both platforms and the real Winsock code on Windows: the syscall package's
+// EADDRINUSE is an invented value there that no OS call produces, so the
+// Windows implementation must additionally recognize WSAEADDRINUSE (10048) —
+// the code an actual busy bind returns.
+func TestIsAddrInUse_RecognizesThePlatformErrno(t *testing.T) {
+	if !isAddrInUse(syscall.EADDRINUSE) {
+		t.Errorf("isAddrInUse(syscall.EADDRINUSE) = false, want true")
+	}
+	if isAddrInUse(errors.New("providerauth: not an errno")) {
+		t.Errorf("isAddrInUse(plain error) = true, want false")
+	}
+	if runtime.GOOS == "windows" && !isAddrInUse(syscall.Errno(10048)) {
+		t.Errorf("isAddrInUse(WSAEADDRINUSE 10048) = false, want true on Windows")
 	}
 }

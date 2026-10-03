@@ -215,6 +215,7 @@ func TestPushTag_EmptyName(t *testing.T) {
 // assert it appears there.
 func TestPushTag_DefaultRemoteOrigin(t *testing.T) {
 	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		captureMiscDiagnostics(t, f, miscRemoteFailure("[push origin refs/tags/v3.0]"))
 		disableGpgSign(t, dir)
 		sha := gitOut(t, dir, "rev-parse", "HEAD")
 		gitOut(t, dir, "tag", "v3.0", sha)
@@ -234,6 +235,7 @@ func TestPushTag_DefaultRemoteOrigin(t *testing.T) {
 
 func TestPushTag_NonexistentRemote(t *testing.T) {
 	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		captureMiscDiagnostics(t, f, miscRemoteFailure("[push no-such-remote refs/tags/v3.0]"))
 		disableGpgSign(t, dir)
 		sha := gitOut(t, dir, "rev-parse", "HEAD")
 		gitOut(t, dir, "tag", "v3.0", sha)
@@ -267,6 +269,7 @@ func TestDeleteRemoteTag_EmptyName(t *testing.T) {
 // stderr (referencing "origin") is in the combined output.
 func TestDeleteRemoteTag_DefaultRemoteOrigin(t *testing.T) {
 	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		captureMiscDiagnostics(t, f, miscRemoteFailure("[push origin :refs/tags/v4.0]"))
 		disableGpgSign(t, dir)
 		sha := gitOut(t, dir, "rev-parse", "HEAD")
 		gitOut(t, dir, "tag", "v4.0", sha)
@@ -284,6 +287,7 @@ func TestDeleteRemoteTag_DefaultRemoteOrigin(t *testing.T) {
 
 func TestDeleteRemoteTag_NonexistentRemote(t *testing.T) {
 	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		captureMiscDiagnostics(t, f, miscRemoteFailure("[push no-such-remote :refs/tags/v4.0]"))
 		out, err := f.DeleteRemoteTag("v4.0", "no-such-remote")
 		if err == nil {
 			t.Fatal("expected error when deleting remote tag on a nonexistent remote")

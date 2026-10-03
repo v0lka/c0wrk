@@ -82,9 +82,12 @@ func subscriptionRouterCfg(baseURL string) *BuilderConfig {
 }
 
 func newSubscriptionRouterBuilder() *OrchestratorBuilder {
+	initDone := make(chan struct{})
+	close(initDone) // already-initialized posture, so RebuildRouter never waits
 	return &OrchestratorBuilder{
-		logger:  slog.New(slog.DiscardHandler),
-		goAsync: func(fn func()) { fn() },
+		logger:   slog.New(slog.DiscardHandler),
+		initDone: initDone,
+		goAsync:  func(fn func()) { fn() },
 	}
 }
 
@@ -98,7 +101,7 @@ func TestProviderEntryFromConfig_APIKeyModeIsHistorical(t *testing.T) {
 
 	entry := providerEntryFromConfig("chatgpt",
 		BuilderProviderConfig{ProviderType: "openai", APIKey: "sk-static", Models: []string{"gpt-test"}},
-		shared, nil, proxy.BypassMatcher{}, BuilderEmbeddedLLMConfig{}, llmBudgetWiring{}, seam, identityExpand, nil)
+		shared, nil, proxy.BypassMatcher{}, BuilderEmbeddedLLMConfig{}, llmBudgetWiring{}, seam, identityExpand, nil, nil)
 
 	if entry.TokenSource != nil {
 		t.Errorf("TokenSource = %T, want nil — api_key mode must never carry credentials", entry.TokenSource)
@@ -122,7 +125,7 @@ func TestProviderEntryFromConfig_SubscriptionEntryCarriesTheSeamSource(t *testin
 
 	entry := providerEntryFromConfig("chatgpt",
 		BuilderProviderConfig{ProviderType: "openai", APIKey: "sk-static", Models: []string{"gpt-test"}, SubscriptionAuth: true},
-		shared, nil, proxy.BypassMatcher{}, BuilderEmbeddedLLMConfig{}, llmBudgetWiring{}, seam, identityExpand, nil)
+		shared, nil, proxy.BypassMatcher{}, BuilderEmbeddedLLMConfig{}, llmBudgetWiring{}, seam, identityExpand, nil, nil)
 
 	if entry.TokenSource == nil {
 		t.Fatal("TokenSource = nil, want the seam's live source")
@@ -154,7 +157,7 @@ func TestProviderEntryFromConfig_SignedOutEntryFailsActionably(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			entry := providerEntryFromConfig("chatgpt",
 				BuilderProviderConfig{ProviderType: "openai", APIKey: "sk-static", Models: []string{"gpt-test"}, SubscriptionAuth: true},
-				shared, nil, proxy.BypassMatcher{}, BuilderEmbeddedLLMConfig{}, llmBudgetWiring{}, seam, identityExpand, nil)
+				shared, nil, proxy.BypassMatcher{}, BuilderEmbeddedLLMConfig{}, llmBudgetWiring{}, seam, identityExpand, nil, nil)
 
 			if entry.TokenSource == nil {
 				t.Fatal("TokenSource = nil, want the signed-out stand-in (the entry must survive)")
@@ -310,5 +313,137 @@ func TestBuildRouterSignedOutFailsActionably(t *testing.T) {
 	if hits != 0 {
 		t.Errorf("endpoint hits = %d, want 0 — a signed-out entry must abort before the wire "+
 			"(and must never fall back to the static api_key)", hits)
+	}
+}
+
+// TestBuildRouterSignedOutThenSignInServesThroughTheSameRouter pins the
+// lifecycle transition at the heart of ADR-074 D8: a router built while the
+// account was signed out (exactly the shape a live session holds — its
+// router is cached and never rebuilt by the sign-in path) must start serving
+// subscription credentials after the builder seam is updated by a sign-in,
+// WITHOUT a rebuild, and must return to the actionable signed-out error
+// after a sign-out. The dynamic stand-in consults the builder's CURRENT seam
+// on every request instead of freezing the build-time posture.
+func TestBuildRouterSignedOutThenSignInServesThroughTheSameRouter(t *testing.T) {
+	var mu sync.Mutex
+	authorizations := []string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		authorizations = append(authorizations, r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(subscriptionChatBody))
+	}))
+	defer srv.Close()
+
+	// The session's router is built SIGNED OUT (no seam installed yet).
+	b := newSubscriptionRouterBuilder()
+	router, _, err := b.buildRouter(t.Context(), subscriptionRouterCfg(srv.URL), nil)
+	if err != nil {
+		t.Fatalf("buildRouter: %v", err)
+	}
+
+	// Signed out: the request fails actionably, nothing reaches the wire.
+	_, err = router.Call(t.Context(), llm.ChatRequest{
+		Messages:  []llm.Message{{Role: "user", Content: "ping"}},
+		MaxTokens: 8,
+	})
+	if err == nil || !strings.Contains(err.Error(), "sign in with ChatGPT") {
+		t.Fatalf("signed-out call err = %v, want the actionable sign-in error", err)
+	}
+
+	// The sign-in: the backend mirrors the live manager into the builder
+	// seam. No rebuild — the SAME router must pick it up.
+	src := &stubTokenSource{}
+	b.SetSubscriptionTokenSource(BuilderSubscriptionAuthConfig{ProviderName: "chatgpt", TokenSource: src})
+
+	resp, err := router.Call(t.Context(), llm.ChatRequest{
+		Messages:  []llm.Message{{Role: "user", Content: "ping"}},
+		MaxTokens: 8,
+	})
+	if err != nil {
+		t.Fatalf("the request through the previously signed-out router: %v", err)
+	}
+	if resp == nil || resp.Message.Content != "ok" {
+		t.Fatalf("response = %+v, want the endpoint's reply", resp)
+	}
+	mu.Lock()
+	if len(authorizations) != 1 || authorizations[0] != "Bearer sub-token-1" {
+		t.Errorf("Authorization history = %v, want exactly [Bearer sub-token-1] (subscription credentials through the same router)", authorizations)
+	}
+	mu.Unlock()
+
+	// The sign-out: the seam is withdrawn, and the SAME router must return
+	// to the actionable signed-out error — not serve stale credentials.
+	b.SetSubscriptionTokenSource(BuilderSubscriptionAuthConfig{})
+	if _, err = router.Call(t.Context(), llm.ChatRequest{
+		Messages:  []llm.Message{{Role: "user", Content: "ping"}},
+		MaxTokens: 8,
+	}); err == nil || !strings.Contains(err.Error(), "sign in with ChatGPT") {
+		t.Fatalf("signed-out-after-sign-out call err = %v, want the actionable sign-in error", err)
+	}
+	mu.Lock()
+	if got := len(authorizations); got != 1 {
+		t.Errorf("endpoint saw %d requests after the sign-out, want still 1 (no stale credentials, no static-key fallback)", got)
+	}
+	mu.Unlock()
+}
+
+// TestBuildRouterRebuiltAfterSignInServesThroughTheRebuiltRouter pins the
+// REBUILD half of the sign-in/restore lifecycle — the sequence
+// rebuildRouterAfterChatGPTAuthChange performs after a sign-in or a
+// background restore: the builder-level seam is mirrored, then the app-level
+// router is replaced by a rebuild carrying a FRESH config (the per-session
+// shape — no seam of its own). The rebuilt router must serve the
+// subscription credentials the seam now mirrors. Together with
+// TestBuildRouterSignedOutThenSignInServesThroughTheSameRouter this covers
+// both propagation channels: the cached session routers (the dynamic
+// stand-in) and the app-level rebuild.
+func TestBuildRouterRebuiltAfterSignInServesThroughTheRebuiltRouter(t *testing.T) {
+	var mu sync.Mutex
+	authorizations := []string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		authorizations = append(authorizations, r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(subscriptionChatBody))
+	}))
+	defer srv.Close()
+
+	// The app-level router is built while the account is signed out.
+	b := newSubscriptionRouterBuilder()
+	if _, _, err := b.buildRouter(t.Context(), subscriptionRouterCfg(srv.URL), nil); err != nil {
+		t.Fatalf("initial buildRouter: %v", err)
+	}
+
+	// The sign-in/restore: the seam is mirrored and the app-level router is
+	// rebuilt from a fresh config that carries no seam of its own.
+	b.SetSubscriptionTokenSource(BuilderSubscriptionAuthConfig{ProviderName: "chatgpt", TokenSource: &stubTokenSource{}})
+	if err := b.RebuildRouter(subscriptionRouterCfg(srv.URL)); err != nil {
+		t.Fatalf("RebuildRouter after the sign-in: %v", err)
+	}
+
+	b.mu.RLock()
+	router := b.llmRouter
+	b.mu.RUnlock()
+	if router == nil {
+		t.Fatal("the rebuild left no cached router")
+	}
+	resp, err := router.Call(t.Context(), llm.ChatRequest{
+		Messages:  []llm.Message{{Role: "user", Content: "ping"}},
+		MaxTokens: 8,
+	})
+	if err != nil {
+		t.Fatalf("the request through the rebuilt router: %v", err)
+	}
+	if resp == nil || resp.Message.Content != "ok" {
+		t.Fatalf("response = %+v, want the endpoint's reply", resp)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(authorizations) != 1 || authorizations[0] != "Bearer sub-token-1" {
+		t.Errorf("Authorization history = %v, want exactly [Bearer sub-token-1] (subscription credentials through the rebuilt router)", authorizations)
 	}
 }

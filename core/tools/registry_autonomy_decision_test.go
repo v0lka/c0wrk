@@ -110,6 +110,20 @@ func TestAutonomyDecisionObserver_RecordsEveryToolConfirmDecision(t *testing.T) 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			registry, rec := newSilentRegistry(tt.mode, tt.judgeResp, tt.judgeErr, tt.setJudge)
+			{
+				var want []expectedToolDiagnostic
+				switch t.Name() {
+				case "TestAutonomyDecisionObserver_RecordsEveryToolConfirmDecision/deny_mode_records_a_denial":
+					want = []expectedToolDiagnostic{
+						{message: "security: silent mode denied confirmation-gated call", attrs: map[string]string{"group": "local_write", "mode": "deny", "tool": "mutating"}},
+					}
+				case "TestAutonomyDecisionObserver_RecordsEveryToolConfirmDecision/allow_mode_escalates_a_hard_reason_to_the_judge_and_records_its_denial":
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "local_read", "reason": "symlink escapes the session roots", "tool": "esc_tool"}},
+					}
+				}
+				captureToolDiagnostics(t, registry, want...)
+			}
 			name := "mutating"
 			registry.Register(newMockTool("mutating", "mutates"))
 			if tt.hardReason != "" {
@@ -222,6 +236,7 @@ func TestAutonomyDecisionObserver_NotInvokedWhenSilentOff(t *testing.T) {
 // answers, not the ones it never reaches.
 func TestAutonomyDecisionObserver_DenyGroupRecordsNothing(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: tool blocked by group policy (deny)", attrs: map[string]string{"group": "local_write", "tool": "mutating"}})
 	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
 		sdktools.GroupLocalWrite: sdktools.PolicyAlwaysDeny,
 	})
@@ -247,6 +262,7 @@ func TestAutonomyDecisionObserver_DenyGroupRecordsNothing(t *testing.T) {
 // every per-session registry clone must report its own automatic decisions.
 func TestAutonomyDecisionObserver_ClonePreservesObserver(t *testing.T) {
 	parent := NewToolRegistry()
+	captureToolDiagnostics(t, parent, expectedToolDiagnostic{message: "security: silent mode denied confirmation-gated call", attrs: map[string]string{"group": "local_write", "mode": "deny", "tool": "mutating"}})
 	setDefaultGroupPolicies(parent)
 	parent.ApplySecurityState(parent.GroupPolicies(), false, AutonomyModeSilent, SilentModeState{ToolConfirm: SilentToolConfirmDeny})
 	parent.Register(newMockTool("mutating", "mutates"))

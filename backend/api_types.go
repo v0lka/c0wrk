@@ -199,9 +199,18 @@ type ChatGPTAuthStatusResponse struct {
 	ExpiresAt string `json:"expires_at,omitempty"`
 	// Mode is the configured chatgpt auth mode: "api_key" | "oauth".
 	Mode string `json:"mode"`
-	// LastError names the last FAILED sign-in attempt's cause (or the
-	// subsystem construction failure when the keychain is unavailable).
-	// Empty when the last attempt succeeded or none ran.
+	// InFlight reports whether a browser sign-in flow is currently running.
+	// It is the authoritative busy flag: a remounted auth panel (collapsed
+	// accordion, reopened settings) restores its Waiting/Cancel posture
+	// from THIS field instead of losing the run to a missed `pending`
+	// event, and a Start refused with "already in progress" is always
+	// backed by a visible Cancel.
+	InFlight bool `json:"in_flight"`
+	// LastError names the last FAILED sign-in attempt's cause, the
+	// subsystem construction failure when the keychain is unavailable, or a
+	// non-fatal restore problem surfaced at startup (an unreadable or
+	// incomplete stored record — the manager stays usable and signing in
+	// again replaces the record). Empty when none of those ran.
 	LastError string `json:"last_error,omitempty"`
 }
 

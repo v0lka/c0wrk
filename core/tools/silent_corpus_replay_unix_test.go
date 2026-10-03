@@ -257,6 +257,7 @@ func replayCorpus(t *testing.T, cases []silentCorpusCase) corpusReplayOutcome {
 		var input json.RawMessage
 		var analysis *sdktools.ShellAnalysis
 		hard := false
+		var hardReason string
 		switch c.Tool {
 		case sdktools.ToolBashExec:
 			input, err = json.Marshal(map[string]string{"command": c.Command, "working_directory": c.Workdir})
@@ -275,6 +276,7 @@ func replayCorpus(t *testing.T, cases []silentCorpusCase) corpusReplayOutcome {
 			// real bash Judge folds the winning criterion into the outcome.
 			outcome := bash.Judge(sdktools.WithShellAnalysis(ctx, analysis, nil), input)
 			hard = !outcome.Allow && outcome.Severity == sdktools.JudgeSeverityHard
+			hardReason = outcome.Reason
 		case "read_file":
 			input, err = json.Marshal(map[string]string{"path": c.Path})
 			if err != nil {
@@ -282,6 +284,7 @@ func replayCorpus(t *testing.T, cases []silentCorpusCase) corpusReplayOutcome {
 			}
 			outcome := read.Judge(ctx, input)
 			hard = !outcome.Allow && outcome.Severity == sdktools.JudgeSeverityHard
+			hardReason = outcome.Reason
 		default:
 			t.Fatalf("event %d: unsupported corpus tool %q", c.EventID, c.Tool)
 		}
@@ -295,6 +298,11 @@ func replayCorpus(t *testing.T, cases []silentCorpusCase) corpusReplayOutcome {
 		if c.GateMode == SilentToolConfirmAllow {
 			registry, rec = allowReg, allowRec
 		}
+		var diagnostics []expectedToolDiagnostic
+		if hard {
+			diagnostics = append(diagnostics, expectedToolDiagnostic{message: "security: user_confirm tool escalated by hard safety reason", attrs: map[string]string{"tool": c.Tool, "group": "execute", "reason": hardReason}})
+		}
+		captureToolDiagnostics(t, registry, diagnostics...)
 		before := len(rec.decisions)
 		res, execErr := registry.Execute(ctx, c.Tool, input)
 		if execErr != nil {

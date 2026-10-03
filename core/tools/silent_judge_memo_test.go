@@ -377,6 +377,11 @@ func TestSilentJudgeMemo_OutrightSubPoliciesCarrySignature(t *testing.T) {
 				return "VERDICT: DENY\nREASON: must never be consulted on these paths", nil
 			}}
 			registry, rec := newSilentMemoRegistry(mode, provider)
+			var want []expectedToolDiagnostic
+			if mode == SilentToolConfirmDeny {
+				want = append(want, expectedToolDiagnostic{message: "security: silent mode denied confirmation-gated call", attrs: map[string]string{"tool": "bash_exec", "group": "local_write", "mode": "deny"}})
+			}
+			captureToolDiagnostics(t, registry, want...)
 			registry.Register(newMockTool(sdktools.ToolBashExec, "mock shell exec"))
 
 			_, decision := executeMockShell(t, registry, rec, "cat notes.txt 2>&1 | tail -20")
