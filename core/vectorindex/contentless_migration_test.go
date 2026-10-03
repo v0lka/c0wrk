@@ -148,8 +148,9 @@ func TestContentlessMigration_StripsLegacyDocsAndWritesMarker(t *testing.T) {
 	// the background; WaitContentlessMigration gates on its completion. The
 	// migration is the path that churns every document, so its completion must
 	// schedule the freeOSMemory scavenge (ADR-049 §1) — record the seam.
-	freeCalled := installFreeOSMemoryRecorder(t)
+	freeMemory, freeCalled := newFreeOSMemoryRecorder(t)
 	svc, err := NewService(ServiceConfig{
+		freeOSMemory:       freeMemory,
 		EmbeddingFunc:      countingEmbed4(&embedCalls),
 		EmbeddingDimension: 4,
 	})

@@ -5,8 +5,11 @@ package terminal
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -226,40 +229,95 @@ func TestManager_OnExitFiredOnNaturalExit(t *testing.T) {
 	}
 }
 
-// TestManager_OnExitNotFiredOnStop verifies that explicit teardown (Stop /
-// StopAll — session deletion, app shutdown, StartTerminalInDir restarts) does
-// not fire onExit: those paths own their follow-up state.
+// TestManager_OnExitNotFiredOnStop verifies that explicit teardown never
+// emits the natural-exit marker or callback, after the real PTY reader joins.
 func TestManager_OnExitNotFiredOnStop(t *testing.T) {
-	exited := make(chan string, 1)
-	outputChan := make(chan []byte, 100)
-	emitFunc := func(_ string, data []byte) {
-		select {
-		case outputChan <- data:
-		default:
-		}
+	for _, operation := range []string{"Stop", "StopAll"} {
+		t.Run(operation, func(t *testing.T) {
+			workDir := t.TempDir()
+			// A real shell/PTY, but no inherited login-shell startup files or
+			// prompt plugins: the fixture explicitly announces reader readiness.
+			shell := filepath.Join(workDir, "pty-shell")
+			if err := os.WriteFile(shell, []byte("#!/bin/sh\nprintf 'PTY fixture ready\\n'\nwhile IFS= read -r line; do :; done\n"), 0o700); err != nil {
+				t.Fatalf("write PTY shell fixture = %v, want nil", err)
+			}
+			t.Setenv("SHELL", shell)
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			var releaseOnce, emitOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			var output bytes.Buffer
+			var outputMu sync.Mutex
+			exited := make(chan string, 1)
+			mgr := NewManager(context.Background(), slog.New(slog.NewTextHandler(os.Stderr, nil)), func(_ string, data []byte) {
+				outputMu.Lock()
+				output.Write(data)
+				outputMu.Unlock()
+				emitOnce.Do(func() {
+					close(entered)
+					<-release
+				})
+			}, func(id string) { exited <- id }, nil)
+			if err := mgr.Start("sess-stop", workDir); err != nil {
+				t.Fatalf("Start(sess-stop) = %v, want nil", err)
+			}
+			mgr.mu.Lock()
+			sess := mgr.sessions["sess-stop"]
+			mgr.mu.Unlock()
+			t.Cleanup(func() {
+				// Release before Stop/join; join before TempDir removal, even on Fatal.
+				unblock()
+				mgr.StopAll()
+				waitPTYReader(t, sess)
+				waited := make(chan error, 1)
+				go func() { waited <- sess.cmd.Wait() }()
+				select {
+				case err := <-waited:
+					var exitErr *exec.ExitError
+					if err != nil && !errors.As(err, &exitErr) {
+						t.Errorf("shell Wait() = %v, want exit status or nil", err)
+					}
+				case <-time.After(10 * time.Second):
+					t.Fatal("shell Wait did not join after PTY teardown")
+				}
+			})
+			select {
+			case <-entered:
+			case <-time.After(10 * time.Second):
+				t.Fatal("real PTY reader never entered its output callback")
+			}
+			if operation == "Stop" {
+				if err := mgr.Stop("sess-stop"); err != nil {
+					t.Fatalf("Stop(sess-stop) = %v, want nil", err)
+				}
+			} else {
+				mgr.StopAll()
+			}
+			if mgr.IsActive("sess-stop") {
+				t.Error("IsActive(sess-stop) = true after teardown, want false")
+			}
+			unblock()
+			waitPTYReader(t, sess)
+			select {
+			case id := <-exited:
+				t.Errorf("onExit(%q) after %s and reader completion, want no callback", id, operation)
+			default:
+			}
+			outputMu.Lock()
+			defer outputMu.Unlock()
+			if bytes.Contains(output.Bytes(), []byte("[Terminal session ended]")) {
+				t.Errorf("PTY output after %s contains natural-exit marker: %q", operation, output.String())
+			}
+		})
 	}
-	onExit := func(sessionID string) {
-		select {
-		case exited <- sessionID:
-		default:
-		}
-	}
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := NewManager(context.Background(), logger, emitFunc, onExit, nil)
+}
 
-	workDir := t.TempDir()
-	if err := mgr.Start("sess-stop", workDir); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-
-	if err := mgr.Stop("sess-stop"); err != nil {
-		t.Fatalf("Stop failed: %v", err)
-	}
-
+// waitPTYReader is a positive hang watchdog, never an absence window.
+func waitPTYReader(t *testing.T, sess *Session) {
+	t.Helper()
 	select {
-	case id := <-exited:
-		t.Errorf("onExit fired for %q on explicit Stop; want no callback", id)
-	case <-time.After(500 * time.Millisecond):
-		// Expected: no callback for explicit teardown.
+	case <-sess.readDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("PTY readLoop did not join after teardown")
 	}
 }

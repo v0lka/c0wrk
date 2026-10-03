@@ -20,23 +20,12 @@ func newMemFreeManager(t *testing.T, counter *atomic.Int32) (*Manager, *Service)
 	t.Helper()
 
 	svc, err := NewService(ServiceConfig{
+		freeOSMemory:  func() { counter.Add(1) },
 		EmbeddingFunc: fakeEmbeddingFunc(),
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := svc.Close(); err != nil {
-			t.Logf("Service.Close in cleanup: %v", err)
-		}
-	})
-
-	// Swap the single package-level freeOSMemory seam (the same one the park
-	// eviction and content-less migration use) so the tests assert WHEN the
-	// seam fires without paying a forced GC cycle.
-	orig := freeOSMemory
-	freeOSMemory = func() { counter.Add(1) }
-	t.Cleanup(func() { freeOSMemory = orig })
 
 	mgr := &Manager{
 		service: svc,
@@ -44,6 +33,7 @@ func newMemFreeManager(t *testing.T, counter *atomic.Int32) (*Manager, *Service)
 		chunkFn: defaultChunkFn,
 		hashFn:  embedding.ComputeFileHash,
 	}
+	t.Cleanup(mgr.Shutdown)
 	return mgr, svc
 }
 
@@ -145,11 +135,10 @@ func TestReindex_EmptyCollectionFullPassFreesOSMemory(t *testing.T) {
 	// cleanup (t.Cleanup is LIFO): svc.Close must release the bleve
 	// .bolt/.zap handles before TempDir's RemoveAll on Windows.
 	viDir := filepath.Join(t.TempDir(), "vi")
-	mgr, svc := newMemFreeManager(t, &calls)
-
 	// Empty workspace: the collection stays empty after the init pass, so a
 	// manual Reindex takes the IndexFull branch deterministically.
 	ws := t.TempDir()
+	mgr, svc := newMemFreeManager(t, &calls)
 	if err := mgr.SwitchProject("project-a", ws, viDir, ProjectCallbacks{}); err != nil {
 		t.Fatalf("SwitchProject: %v", err)
 	}

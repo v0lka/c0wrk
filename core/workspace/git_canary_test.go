@@ -438,7 +438,7 @@ func TestCanaryIncludeHiddenFilterViaInfoAttributesNeutered(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.repo.Write(t, "file.txt", "hello\nchanged\n")
-	logger := expectedDiagnostics(t, ignoredIncludeDiagnostic(15, extra), ignoredIncludeDiagnostic(15, extra))
+	logger := expectedDiagnostics(t, plantedIncludeDiagnostic(t, f.repo.Root, extra), plantedIncludeDiagnostic(t, f.repo.Root, extra))
 	f.ctx = gitDiagnosticContext(f.ctx, logger)
 
 	scanRequireFinding(t, f.repo.Root, GitConfigFindingAttrRouting, logger)
@@ -519,7 +519,7 @@ func TestCanarySHA256RepoAttrTreeNeutered(t *testing.T) {
 	repo.Write(t, ".gitattributes", "*.txt filter=x\n")
 	repo.Write(t, "file.txt", "hello\nchanged\n")
 
-	logger := expectedDiagnostics(t, ignoredIncludeDiagnostic(20, "extra.conf"), ignoredIncludeDiagnostic(20, "extra.conf"))
+	logger := expectedDiagnostics(t, plantedIncludeDiagnostic(t, repo.Root, "extra.conf"), plantedIncludeDiagnostic(t, repo.Root, "extra.conf"))
 	f.ctx = gitDiagnosticContext(f.ctx, logger)
 
 	// Self-validating discriminator: the derived set must carry the SHA-256

@@ -437,17 +437,13 @@ func installParkBudgetEstimator(t *testing.T, bytesByID map[string]int64) {
 	t.Cleanup(func() { estimateStateBytes = orig })
 }
 
-// installFreeOSMemoryRecorder swaps the freeOSMemory seam for a recorder and
-// returns a channel receiving one value per call. The eviction path invokes
-// the seam in its own goroutine, so tests wait on the channel with a timeout
-// (assertFreeOSMemoryCalled).
-func installFreeOSMemoryRecorder(t *testing.T) <-chan struct{} {
+// newFreeOSMemoryRecorder returns an instance-local recorder. The buffer
+// accommodates every eviction/migration in these fixtures (at most 16), so
+// an asynchronous scavenge cannot block on a test's fatal path.
+func newFreeOSMemoryRecorder(t *testing.T) (record func(), called <-chan struct{}) {
 	t.Helper()
-	orig := freeOSMemory
-	called := make(chan struct{}, 16)
-	freeOSMemory = func() { called <- struct{}{} }
-	t.Cleanup(func() { freeOSMemory = orig })
-	return called
+	calls := make(chan struct{}, 16)
+	return func() { calls <- struct{}{} }, calls
 }
 
 // assertFreeOSMemoryCalled waits for the asynchronous freeOSMemory nudge that
@@ -552,7 +548,7 @@ func TestService_ParkBudgetNegativeDisablesByteBudget(t *testing.T) {
 // freeOSMemory seam is invoked asynchronously so the freed RAM is returned
 // to the OS.
 func TestService_ParkBudgetEvictionFlushesSidecarAndFreesMemory(t *testing.T) {
-	called := installFreeOSMemoryRecorder(t)
+	freeMemory, called := newFreeOSMemoryRecorder(t)
 	installParkBudgetEstimator(t, map[string]int64{
 		"A": 100,
 		"B": 1000,
@@ -564,6 +560,7 @@ func TestService_ParkBudgetEvictionFlushesSidecarAndFreesMemory(t *testing.T) {
 
 	svc, err := NewService(ServiceConfig{
 		EmbeddingFunc:   fakeEmbeddingFunc(),
+		freeOSMemory:    freeMemory,
 		ParkCapacity:    5, // generous: only the byte budget may evict
 		ParkBudgetBytes: 1024,
 	})

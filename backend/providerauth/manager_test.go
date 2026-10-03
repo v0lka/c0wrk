@@ -626,10 +626,24 @@ func TestTokenManager_LoadMigratesLegacyV1Shape(t *testing.T) {
 // TestTokenManager_TokenHonorsContextCancellation verifies the renewal path
 // propagates caller cancellation.
 func TestTokenManager_TokenHonorsContextCancellation(t *testing.T) {
-	unreachable := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		time.Sleep(30 * time.Second)
+	entered := make(chan struct{})
+	finished := make(chan struct{})
+	release := make(chan struct{})
+	unreachable := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		defer close(finished)
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("refresh ParseForm: %v", err)
+			return
+		}
+		close(entered)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
 	}))
 	t.Cleanup(unreachable.Close)
+	// Cleanup is LIFO: unblock the handler before waiting in Server.Close.
+	t.Cleanup(func() { close(release) })
 
 	// Seed a signed-in state whose persisted secret is refresh-token-only,
 	// so Token() must refresh (there is no stored access token at all).
@@ -660,6 +674,33 @@ func TestTokenManager_TokenHonorsContextCancellation(t *testing.T) {
 	cancel()
 	if _, err := m.Token(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Token with cancelled ctx err = %v, want context.Canceled", err)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.Token(ctx)
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Token refresh did not enter the HTTP handler")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("in-flight Token err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Token did not conclude after cancellation")
+	}
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("HTTP handler did not conclude after cancellation")
 	}
 }
 
@@ -701,6 +742,9 @@ func TestTokenManager_SignOutDuringRefreshKeepsAccountSignedOut(t *testing.T) {
 	idToken := makeJWT(map[string]any{"sub": "user-1", "email": "dev@example.com"})
 	issuer := newManagerIssuer(t, idToken)
 	block := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseRefresh := func() { releaseOnce.Do(func() { close(block) }) }
+	t.Cleanup(releaseRefresh)
 	refreshStarted := make(chan struct{})
 	// Wrap the issuer's handler to gate refresh_token grants.
 	origHandler := issuer.Config.Handler
@@ -738,7 +782,7 @@ func TestTokenManager_SignOutDuringRefreshKeepsAccountSignedOut(t *testing.T) {
 	if err := m.SignOut(); err != nil {
 		t.Fatalf("SignOut: %v", err)
 	}
-	close(block)
+	releaseRefresh()
 
 	select {
 	case err := <-tokenErr:
@@ -1017,6 +1061,21 @@ func TestTokenManager_ReSignInDuringRefreshKeepsNewerAccount(t *testing.T) {
 	}
 }
 
+// refreshWaiterContext acknowledges evaluation of the cancellation arm in
+// Token's in-flight wait select. The leader already holds the real HTTP gate;
+// these contexts belong only to its followers, not to the network refresher.
+// Embedding preserves the caller's cancellation, deadline and values.
+type refreshWaiterContext struct {
+	context.Context
+	admitted chan<- struct{}
+	once     sync.Once
+}
+
+func (c *refreshWaiterContext) Done() <-chan struct{} {
+	c.once.Do(func() { c.admitted <- struct{}{} })
+	return c.Context.Done()
+}
+
 // TestTokenManager_FailedRefreshIsSharedByWaiters pins that single-flight
 // covers the FAILURE path too: when the in-flight refresh fails (e.g.
 // invalid_grant), every waiter woken by it returns the SAME error instead of
@@ -1025,28 +1084,77 @@ func TestTokenManager_FailedRefreshIsSharedByWaiters(t *testing.T) {
 	idToken := makeJWT(map[string]any{"sub": "user-1", "email": "dev@example.com"})
 	issuer := newManagerIssuer(t, idToken)
 	issuer.invalidGrant.Store(true)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce, enterOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock) // Release before issuer.Close, including setup failures.
+	original := issuer.Config.Handler
+	issuer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("refresh ParseForm() = %v, want nil", err)
+			return
+		}
+		if r.Form.Get("grant_type") == "refresh_token" {
+			enterOnce.Do(func() { close(entered) })
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		original.ServeHTTP(w, r)
+	})
 
 	store := NewMemorySecretStore()
 	clock := newManualClock()
 	m := newTestManager(t, issuer, store, clock)
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	if _, err := m.SignIn(ctx, managerBrowser(issuer)); err != nil {
 		t.Fatalf("SignIn: %v", err)
 	}
-	// Expire the access token so the next Token calls must refresh.
 	clock.Advance(7200 * time.Second)
 
 	const waiters = 4
 	errs := make([]error, waiters)
+	admitted := make(chan struct{}, waiters-1) // One acknowledgement per follower.
 	var wg sync.WaitGroup
-	for i := range waiters {
+	launch := func(i int, caller context.Context) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, errs[i] = m.Token(ctx)
+			_, errs[i] = m.Token(caller)
 		}()
 	}
-	wg.Wait()
+	launch(0, ctx) // Establish the leader before admitting any follower.
+	t.Cleanup(func() {
+		unblock()
+		cancel()
+		done := make(chan struct{})
+		go func() { defer close(done); wg.Wait() }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("Token callers did not join after refresh release/cancellation")
+		}
+	})
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("leader refresh did not enter the real HTTP handler")
+	}
+	for i := 1; i < waiters; i++ {
+		launch(i, &refreshWaiterContext{Context: ctx, admitted: admitted})
+	}
+	for range waiters - 1 {
+		select {
+		case <-admitted:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Token follower did not enter the in-flight wait select")
+		}
+	}
+	unblock()
+	wg.Wait() // All callers complete before result and network-count assertions.
 	for i, err := range errs {
 		if !errors.Is(err, ErrReauthRequired) {
 			t.Errorf("waiter %d err = %v, want ErrReauthRequired (shared failure)", i, err)

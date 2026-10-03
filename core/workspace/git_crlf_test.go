@@ -178,7 +178,7 @@ func TestCanaryIncludeHiddenFilterViaAttributesFileNeutered(t *testing.T) {
 	}
 	f.repo.AppendConfig(t, "[include]\n\tpath = "+extra+"\n[core]\n\tattributesFile = "+attrsFile+"\n")
 	f.repo.Write(t, "file.txt", "hello\nchanged\n")
-	logger := expectedDiagnostics(t, ignoredIncludeDiagnostic(15, extra), ignoredIncludeDiagnostic(15, extra), ignoredIncludeDiagnostic(15, extra))
+	logger := expectedDiagnostics(t, plantedIncludeDiagnostic(t, f.repo.Root, extra), plantedIncludeDiagnostic(t, f.repo.Root, extra), plantedIncludeDiagnostic(t, f.repo.Root, extra))
 	f.ctx = gitDiagnosticContext(f.ctx, logger)
 
 	scanRequireFinding(t, f.repo.Root, GitConfigFindingAttrRouting, logger)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -46,12 +47,13 @@ func (o *orderLog) snapshot() []string {
 // recordingTitleCaller is an LLMTitleCaller double: it reports when it ran and
 // what budget it was handed.
 type recordingTitleCaller struct {
-	mu       sync.Mutex
-	calls    int
-	deadline time.Time
-	hasDDL   bool
-	live     bool
-	done     chan struct{}
+	mu        sync.Mutex
+	calls     int
+	deadline  time.Time
+	remaining time.Duration
+	hasDDL    bool
+	live      bool
+	done      chan struct{}
 	// onCall, when set, records the call in a shared ordering log so a test can
 	// compare it with the gate's.
 	onCall func()
@@ -66,6 +68,7 @@ func (c *recordingTitleCaller) GenerateTitle(ctx context.Context, _ string, _ []
 	c.calls++
 	c.live = ctx.Err() == nil
 	c.deadline, c.hasDDL = ctx.Deadline()
+	c.remaining = time.Until(c.deadline)
 	first := c.calls == 1
 	c.mu.Unlock()
 	if c.onCall != nil {
@@ -131,43 +134,70 @@ func gateThenTitle(t *testing.T, gate func(context.Context) error, configure ...
 // completes before the LLM call is issued, and the call's own budget is armed
 // only afterwards — so a slow load cannot spend it.
 func TestServiceLLMGateRunsBeforeTheTitleRequest(t *testing.T) {
-	caller, order, _ := gateThenTitle(t, func(context.Context) error {
+	synctest.Test(t, func(t *testing.T) {
+		// No CreateSession, dump/log handles, persistent store, or real transport:
+		// the SAME title-generation path is exercised with in-memory state only.
+		mgr := NewManager(nil, func(Event) {}, "")
+		id := "timing-session"
+		sess := &Session{ID: id, Name: "Session " + safeSessionPrefix(id)}
+		mgr.sessions[id] = sess
+		mgr.SetServiceLLMTimeout(testServiceLLMBudget)
+		caller := newRecordingTitleCaller()
+		order := &orderLog{}
+		caller.onCall = func() { order.record("title request") }
+		mgr.SetTitleGenerator(NewTitleGenerator(caller))
+		entered, release := make(chan struct{}), make(chan struct{})
+		var releaseOnce sync.Once
+		defer func() {
+			releaseOnce.Do(func() { close(release) })
+			synctest.Wait()
+			mgr.Shutdown()
+		}()
+		mgr.SetServiceLLMGate(func(ctx context.Context) error {
+			order.record("gate")
+			close(entered)
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+		mgr.maybeSpawnTitleGeneration(sess, id, "hello world", false, nil)
+		synctest.Wait()
+		<-entered
 		time.Sleep(testGateDelay)
-		return nil
+		synctest.Wait()
+		if got := caller.callCount(); got != 0 {
+			t.Fatalf("calls before gate release = %d, want 0", got)
+		}
+		releaseOnce.Do(func() { close(release) })
+		synctest.Wait()
+		select {
+		case <-caller.done:
+		default:
+			t.Fatal("title request missing after gate release")
+		}
+		if !mgr.bg.closeAndWait(mgr.stopTimeout) {
+			t.Fatal("title worker did not join")
+		}
+		if got := order.snapshot(); len(got) != 2 || got[0] != "gate" || got[1] != "title request" {
+			t.Errorf("order = %v, want [gate, title request]", got)
+		}
+		caller.mu.Lock()
+		defer caller.mu.Unlock()
+		if caller.calls != 1 {
+			t.Errorf("title calls = %d, want 1", caller.calls)
+		}
+		if !caller.hasDDL || !caller.live || caller.remaining != testServiceLLMBudget {
+			t.Errorf("title entry: deadline=%t live=%t remaining=%v, want true/true/%v", caller.hasDDL, caller.live, caller.remaining, testServiceLLMBudget)
+		}
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		if sess.Name != "a generated title" {
+			t.Errorf("session name = %q, want generated title", sess.Name)
+		}
 	})
-
-	select {
-	case <-caller.done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the title request never ran")
-	}
-
-	if snapshot := order.snapshot(); len(snapshot) != 2 || snapshot[0] != "gate" || snapshot[1] != "title request" {
-		t.Errorf("order = %v, want [gate, title request]", snapshot)
-	}
-
-	caller.mu.Lock()
-	live, hasDDL, deadline := caller.live, caller.hasDDL, caller.deadline
-	calls := caller.calls
-	caller.mu.Unlock()
-
-	if calls != 1 {
-		t.Errorf("title calls = %d, want 1", calls)
-	}
-	if !hasDDL {
-		t.Fatal("the title request carries no deadline — serviceLLMTimeout was not applied")
-	}
-	// The gate slept longer than the budget, so this is the discriminating
-	// assertion: a budget armed AFTER the gate still has (almost) all of it
-	// left, while one armed BEFORE it expired during the wait.
-	if remaining := time.Until(deadline); remaining < testServiceLLMBudget/2 {
-		t.Errorf("remaining budget = %v, want ≈%v — the %v gate was charged to it",
-			remaining, testServiceLLMBudget, testGateDelay)
-	}
-	if !live {
-		t.Error("the title request started with an already-expired context: the gate " +
-			"ran after the budget was armed and the load was charged to it")
-	}
 }
 
 // TestServiceLLMGateFailureSkipsTheTitleRequest is the fail-closed half: a model
@@ -235,11 +265,7 @@ func TestTitleGenerationIsSkippedForAnAlreadyNamedSession(t *testing.T) {
 
 	mgr.maybeSpawnTitleGeneration(session, info.ID, "hello world", false, nil)
 
-	select {
-	case <-caller.done:
-		t.Error("an already-named session was renamed again")
-	case <-time.After(200 * time.Millisecond):
-	}
+	mgr.Shutdown() // Join all tracked title work before proving absence.
 	if got := caller.callCount(); got != 0 {
 		t.Errorf("title calls = %d, want 0", got)
 	}

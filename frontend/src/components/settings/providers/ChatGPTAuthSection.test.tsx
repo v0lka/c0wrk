@@ -52,10 +52,11 @@ beforeEach(() => {
   root = createRoot(container)
 })
 
-afterEach(() => {
-  act(() => {
+afterEach(async () => {
+  await act(async () => {
     root.unmount()
   })
+  expect(authStateHandler).toBeNull()
   container.remove()
   document.body.innerHTML = ''
 })
@@ -73,11 +74,11 @@ function renderSection(authMode: Mode): void {
   })
 }
 
-/** Flush pending microtasks so RPC promises resolve and state settles. */
-function flush(ms = 20): Promise<void> {
-  return act(async () => {
-    await new Promise((r) => setTimeout(r, ms))
-  })
+/** Await the status RPC actually issued by the mounted component. */
+async function settleStatus(): Promise<void> {
+ const result = spies.getChatGPTAuthStatus.mock.results[spies.getChatGPTAuthStatus.mock.results.length - 1]
+ if (!result || result.type !== 'return') throw new Error('no status RPC to settle')
+ await act(async () => { await result.value })
 }
 
 function buttonByText(text: string): HTMLButtonElement {
@@ -93,7 +94,6 @@ async function pickOption(ariaLabel: string, optionLabel: string): Promise<void>
   if (!trigger) throw new Error(`${ariaLabel} trigger not found`)
   await act(async () => {
     trigger.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
-    await new Promise((r) => setTimeout(r, 10))
   })
   const option = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(
     (o) => o.textContent?.includes(optionLabel),
@@ -127,7 +127,7 @@ describe('formatAuthExpiry', () => {
 describe('ChatGPTAuthSection mode selector', () => {
   it('renders the selector without subscription UI in api_key mode', async () => {
     renderSection('api_key')
-    await flush()
+    await settleStatus()
     expect(container.querySelector('button[aria-label="ChatGPT authentication mode"]')).not.toBeNull()
     expect(container.textContent).toContain('API key')
     expect(container.textContent).not.toContain('Sign in with ChatGPT')
@@ -138,14 +138,14 @@ describe('ChatGPTAuthSection mode selector', () => {
 
   it('reports oauth when the subscription option is picked', async () => {
     renderSection('api_key')
-    await flush()
+    await settleStatus()
     await pickOption('ChatGPT authentication mode', 'ChatGPT subscription')
     expect(modeChanges).toEqual(['oauth'])
   })
 
   it('reports api_key when the API key option is re-picked from oauth', async () => {
     renderSection('oauth')
-    await flush()
+    await settleStatus()
     await pickOption('ChatGPT authentication mode', 'API key')
     expect(modeChanges).toEqual(['api_key'])
   })
@@ -162,7 +162,7 @@ describe('ChatGPTAuthSection sign-in flow', () => {
       mode: 'oauth',
     })
     renderSection('oauth')
-    await flush()
+    await settleStatus()
 
     expect(container.textContent).toContain('Signed in with ChatGPT')
     expect(container.textContent).toContain('dev@example.com')
@@ -172,7 +172,7 @@ describe('ChatGPTAuthSection sign-in flow', () => {
     spies.signOutChatGPT.mockResolvedValue(undefined)
     await act(async () => {
       buttonByText('Sign out').dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await new Promise((r) => setTimeout(r, 10))
+      await spies.signOutChatGPT.mock.results[spies.signOutChatGPT.mock.results.length - 1]!.value.catch(() => undefined)
     })
     expect(spies.signOutChatGPT).toHaveBeenCalledTimes(1)
     // The snapshot is re-read after the mutation settles.
@@ -181,12 +181,12 @@ describe('ChatGPTAuthSection sign-in flow', () => {
 
   it('starts the flow, shows the busy state, and clears it on success', async () => {
     renderSection('oauth')
-    await flush()
+    await settleStatus()
 
     spies.startChatGPTSignIn.mockResolvedValue({ auth_url: 'https://auth.example/abc' })
     await act(async () => {
       buttonByText('Sign in with ChatGPT').dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await new Promise((r) => setTimeout(r, 10))
+      await spies.startChatGPTSignIn.mock.results[spies.startChatGPTSignIn.mock.results.length - 1]!.value.catch(() => undefined)
     })
     expect(spies.startChatGPTSignIn).toHaveBeenCalledTimes(1)
     expect(container.textContent).toContain('Waiting for browser')
@@ -200,23 +200,23 @@ describe('ChatGPTAuthSection sign-in flow', () => {
       mode: 'oauth',
     })
     emitAuthState({ state: 'success', email: 'dev@example.com' })
-    await flush()
+    await settleStatus()
     expect(container.textContent).not.toContain('Waiting for browser')
     expect(container.textContent).toContain('Signed in with ChatGPT')
   })
 
   it('surfaces the error transition and keeps the panel usable', async () => {
     renderSection('oauth')
-    await flush()
+    await settleStatus()
 
     spies.startChatGPTSignIn.mockResolvedValue({ auth_url: 'https://auth.example/abc' })
     await act(async () => {
       buttonByText('Sign in with ChatGPT').dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await new Promise((r) => setTimeout(r, 10))
+      await spies.startChatGPTSignIn.mock.results[spies.startChatGPTSignIn.mock.results.length - 1]!.value.catch(() => undefined)
     })
 
     emitAuthState({ state: 'error', error: 'the keychain refused the persist' })
-    await flush()
+    await settleStatus()
     expect(container.textContent).toContain('the keychain refused the persist')
     expect(container.textContent).not.toContain('Waiting for browser')
     // The Sign in button is back — a retry is one click away.
@@ -225,14 +225,14 @@ describe('ChatGPTAuthSection sign-in flow', () => {
 
   it('keeps the refusal error when the RPC itself fails (a flow already runs)', async () => {
     renderSection('oauth')
-    await flush()
+    await settleStatus()
 
     spies.startChatGPTSignIn.mockRejectedValue(
       new Error('a ChatGPT sign-in is already in progress — cancel it before starting another'),
     )
     await act(async () => {
       buttonByText('Sign in with ChatGPT').dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await new Promise((r) => setTimeout(r, 10))
+      await spies.startChatGPTSignIn.mock.results[spies.startChatGPTSignIn.mock.results.length - 1]!.value.catch(() => undefined)
     })
     expect(container.textContent).toContain('already in progress')
     expect(container.textContent).not.toContain('Waiting for browser')
@@ -240,31 +240,31 @@ describe('ChatGPTAuthSection sign-in flow', () => {
 
   it('clears the busy state on the quiet cancelled transition', async () => {
     renderSection('oauth')
-    await flush()
+    await settleStatus()
 
     spies.startChatGPTSignIn.mockResolvedValue({ auth_url: 'https://auth.example/abc' })
     await act(async () => {
       buttonByText('Sign in with ChatGPT').dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await new Promise((r) => setTimeout(r, 10))
+      await spies.startChatGPTSignIn.mock.results[spies.startChatGPTSignIn.mock.results.length - 1]!.value.catch(() => undefined)
     })
     emitAuthState({ state: 'cancelled' })
-    await flush()
+    await settleStatus()
     expect(container.textContent).not.toContain('Waiting for browser')
   })
 
   it('cancel click calls CancelChatGPTSignIn while the flow is in flight', async () => {
     renderSection('oauth')
-    await flush()
+    await settleStatus()
 
     spies.startChatGPTSignIn.mockResolvedValue({ auth_url: 'https://auth.example/abc' })
     spies.cancelChatGPTSignIn.mockResolvedValue(undefined)
     await act(async () => {
       buttonByText('Sign in with ChatGPT').dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await new Promise((r) => setTimeout(r, 10))
+      await spies.startChatGPTSignIn.mock.results[spies.startChatGPTSignIn.mock.results.length - 1]!.value.catch(() => undefined)
     })
     await act(async () => {
       buttonByText('Cancel').dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await new Promise((r) => setTimeout(r, 10))
+      await spies.cancelChatGPTSignIn.mock.results[spies.cancelChatGPTSignIn.mock.results.length - 1]!.value.catch(() => undefined)
     })
     expect(spies.cancelChatGPTSignIn).toHaveBeenCalledTimes(1)
   })
@@ -273,10 +273,10 @@ describe('ChatGPTAuthSection sign-in flow', () => {
     // Start the flow in one panel instance...
     spies.startChatGPTSignIn.mockResolvedValue({ auth_url: 'https://auth.example/abc' })
     renderSection('oauth')
-    await flush()
+    await settleStatus()
     await act(async () => {
       buttonByText('Sign in with ChatGPT').dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await new Promise((r) => setTimeout(r, 10))
+      await spies.startChatGPTSignIn.mock.results[spies.startChatGPTSignIn.mock.results.length - 1]!.value.catch(() => undefined)
     })
     expect(container.textContent).toContain('Waiting for browser')
 
@@ -292,7 +292,7 @@ describe('ChatGPTAuthSection sign-in flow', () => {
     document.body.appendChild(container)
     root = createRoot(container)
     renderSection('oauth')
-    await flush()
+    await settleStatus()
 
     expect(container.textContent).toContain('Waiting for browser')
     expect(container.textContent).toContain('Cancel')
@@ -301,13 +301,13 @@ describe('ChatGPTAuthSection sign-in flow', () => {
     // The terminal transition still clears it.
     spies.getChatGPTAuthStatus.mockResolvedValue({ signed_in: false, mode: 'oauth', in_flight: false })
     emitAuthState({ state: 'cancelled' })
-    await flush()
+    await settleStatus()
     expect(container.textContent).not.toContain('Waiting for browser')
   })
 
   it('ignores malformed chatgpt_auth:state payloads (guarded upstream)', async () => {
     renderSection('oauth')
-    await flush()
+    await settleStatus()
     // The api module's guard drops malformed payloads before they reach this
     // component; a handler is only ever invoked with a valid state enum.
     emitAuthState({ state: 'pending' })

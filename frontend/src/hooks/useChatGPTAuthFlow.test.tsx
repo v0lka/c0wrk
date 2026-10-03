@@ -72,11 +72,11 @@ function deferredSnapshot(): {
   return { promise, resolve }
 }
 
-/** Flush pending microtasks so RPC promises resolve and state settles. */
-function flush(ms = 20): Promise<void> {
-  return act(async () => {
-    await new Promise((r) => setTimeout(r, ms))
-  })
+/** Await the specific status RPC triggered by mount/event/cancel. */
+async function settleStatus(): Promise<void> {
+  const result = spies.getChatGPTAuthStatus.mock.results[spies.getChatGPTAuthStatus.mock.results.length - 1]
+  if (!result || result.type !== 'return') throw new Error('no status RPC to settle')
+  await act(async () => { await result.value })
 }
 
 function emitAuthState(data: ChatGPTAuthEventData): void {
@@ -103,10 +103,11 @@ beforeEach(() => {
   root = createRoot(container)
 })
 
-afterEach(() => {
-  act(() => {
+afterEach(async () => {
+  await act(async () => {
     root.unmount()
   })
+  expect(authStateHandler).toBeNull()
   container.remove()
   document.body.innerHTML = ''
 })
@@ -124,7 +125,7 @@ describe('useChatGPTAuthFlow snapshot ordering (epoch guard)', () => {
     // with the post-conclusion state.
     spies.getChatGPTAuthStatus.mockResolvedValueOnce({ signed_in: true, mode: 'oauth', in_flight: false })
     emitAuthState({ state: 'success', email: 'dev@example.com' })
-    await flush()
+    await settleStatus()
     expect(harnessOutput.busy).toBe(false)
 
     // The STALE older read resolves LAST with in_flight=true: the epoch
@@ -132,7 +133,7 @@ describe('useChatGPTAuthFlow snapshot ordering (epoch guard)', () => {
     // posture with no flow left to cancel (Cancel cannot recover).
     await act(async () => {
       stale.resolve({ signed_in: false, mode: 'oauth', in_flight: true })
-      await new Promise((r) => setTimeout(r, 10))
+      await stale.promise
     })
     expect(harnessOutput.busy).toBe(false)
   })
@@ -150,7 +151,7 @@ describe('useChatGPTAuthFlow snapshot ordering (epoch guard)', () => {
     // posture from the authoritative snapshot.
     spies.getChatGPTAuthStatus.mockResolvedValueOnce({ signed_in: false, mode: 'oauth', in_flight: true })
     emitAuthState({ state: 'cancelled' })
-    await flush()
+    await settleStatus()
     expect(harnessOutput.busy).toBe(true)
 
     // The stale PRE-flow read (in_flight=false) resolves LAST: the epoch
@@ -158,7 +159,7 @@ describe('useChatGPTAuthFlow snapshot ordering (epoch guard)', () => {
     // restored waiting posture while the flow still runs.
     await act(async () => {
       stale.resolve({ signed_in: false, mode: 'oauth', in_flight: false })
-      await new Promise((r) => setTimeout(r, 10))
+      await stale.promise
     })
     expect(harnessOutput.busy).toBe(true)
   })
@@ -167,7 +168,7 @@ describe('useChatGPTAuthFlow snapshot ordering (epoch guard)', () => {
 describe('useChatGPTAuthFlow cancel recovery', () => {
   it('releases the waiting posture when the cancel RPC fails and nothing runs', async () => {
     renderHarness()
-    await flush()
+    await settleStatus()
 
     await act(async () => {
       await handlers().signIn()
@@ -181,7 +182,7 @@ describe('useChatGPTAuthFlow cancel recovery', () => {
     await act(async () => {
       await handlers().cancel()
     })
-    await flush()
+    await settleStatus()
 
     expect(harnessOutput.busy).toBe(false)
     expect(harnessOutput.error).toBe('no sign-in in progress')
@@ -189,7 +190,7 @@ describe('useChatGPTAuthFlow cancel recovery', () => {
 
   it('re-arms the waiting posture after a failed cancel when a flow still runs', async () => {
     renderHarness()
-    await flush()
+    await settleStatus()
 
     await act(async () => {
       await handlers().signIn()
@@ -203,7 +204,7 @@ describe('useChatGPTAuthFlow cancel recovery', () => {
     await act(async () => {
       await handlers().cancel()
     })
-    await flush()
+    await settleStatus()
 
     expect(harnessOutput.busy).toBe(true)
     expect(harnessOutput.error).toBe('transient RPC failure')

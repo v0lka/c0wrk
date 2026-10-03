@@ -153,7 +153,7 @@ describe('ProviderAccordion oauth checklist', () => {
   it('never dials the provider listing API in oauth mode', async () => {
     renderOAuthAccordion([])
     await act(async () => {
-      await new Promise((r) => setTimeout(r, 30))
+      root.render(null) // Complete mount effects and their cleanup before absence assertion.
     })
     expect(spies.listProviderModels).not.toHaveBeenCalled()
   })

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/v0lka/sp4rk/llm"
@@ -21,6 +22,10 @@ import (
 // calls/attempts/retries/outcomes/latency: a success, a fallback after the full
 // nudge loop, and a terminal refusal — and that kinds never bleed together.
 func TestServiceMetrics_PerKindCounters(t *testing.T) {
+	synctest.Test(t, testServiceMetricsPerKindCounters)
+}
+
+func testServiceMetricsPerKindCounters(t *testing.T) {
 	metrics := newServiceMetrics()
 	logger := expectedCoreLogger(t, expectedServiceDiagnostic("optimize_extract", "qwen3.8-max", "fallback", 3), expectedRewriteDiagnostic(), expectedRewriteDiagnostic(), expectedRewriteDiagnostic(), expectedServiceDiagnostic("optimize_rewrite", "qwen3.8-max", "error", 3))
 
@@ -106,6 +111,10 @@ func TestServiceCall_TransportErrorClassified(t *testing.T) {
 // error, and the call is not retried (the client never retries transport
 // failures).
 func TestServiceCall_TimeoutClassifiedAsTransportError(t *testing.T) {
+	synctest.Test(t, testServiceCallTimeoutClassifiedAsTransportError)
+}
+
+func testServiceCallTimeoutClassifiedAsTransportError(t *testing.T) {
 	metrics := newServiceMetrics()
 	mock := &mockLLMCaller{callFn: func(ctx context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
 		<-ctx.Done()

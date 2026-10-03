@@ -41,6 +41,11 @@ func captureToolDiagnostics(t *testing.T, registry *ToolRegistry, want ...expect
 
 func newToolDiagnosticLogger(t *testing.T, want ...expectedToolDiagnostic) *slog.Logger {
 	t.Helper()
+	return newToolDiagnosticLoggerFor(t, t.Name(), want...)
+}
+
+func newToolDiagnosticLoggerFor(t *testing.T, label string, want ...expectedToolDiagnostic) *slog.Logger {
+	t.Helper()
 	h := &toolDiagnosticCapture{}
 	logger := slog.New(h)
 	t.Cleanup(func() {
@@ -53,17 +58,17 @@ func newToolDiagnosticLogger(t *testing.T, want ...expectedToolDiagnostic) *slog
 			}
 		}
 		if len(got) != len(want) {
-			t.Errorf("ToolRegistry diagnostics(%s) count = %d, want %d", t.Name(), len(got), len(want))
+			t.Errorf("ToolRegistry diagnostics(%s) count = %d, want %d", label, len(got), len(want))
 		}
 		for i, r := range got {
-			if i >= len(want) {
-				t.Errorf("ToolRegistry diagnostics(%s) unexpected = %v %q, want none", t.Name(), r.Level, r.Message)
-				continue
-			}
 			attrs := map[string]string{}
 			r.Attrs(func(a slog.Attr) bool { attrs[a.Key] = a.Value.String(); return true })
+			if i >= len(want) {
+				t.Errorf("ToolRegistry diagnostics(%s) unexpected = %v %q %v, want none", label, r.Level, r.Message, attrs)
+				continue
+			}
 			if r.Level != slog.LevelWarn || r.Message != want[i].message || !reflect.DeepEqual(attrs, want[i].attrs) {
-				t.Errorf("ToolRegistry diagnostics(%s)[%d] = %v %q %v, want WARN %q %v", t.Name(), i, r.Level, r.Message, attrs, want[i].message, want[i].attrs)
+				t.Errorf("ToolRegistry diagnostics(%s)[%d] = %v %q %v, want WARN %q %v", label, i, r.Level, r.Message, attrs, want[i].message, want[i].attrs)
 			}
 		}
 	})

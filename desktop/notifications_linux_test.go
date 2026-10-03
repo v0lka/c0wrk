@@ -628,6 +628,11 @@ func TestSendSystemNotification_DialFailureFallsBackToWails(t *testing.T) {
 	t.Cleanup(linuxNotifications.teardown)
 
 	f := newNotificationsFixture(t)
+	injectExpectedDiagnostics(t, f.app, diagnosticExpectation{
+		level:   slog.LevelWarn,
+		message: "linux D-Bus notification transport failed; falling back to the Wails transport",
+		attrs:   map[string]string{"error": "dial session bus: no session bus"},
+	})
 	f.app.notificationsSendFn = nil // bypass the send seam → platform routing
 	var wailsOpts []wailsRuntime.NotificationOptions
 	f.app.notificationsSendViaWailsFn = func(_ context.Context, opts wailsRuntime.NotificationOptions) error {
@@ -664,6 +669,11 @@ func TestSendSystemNotification_NotifyFailureFallsBackAndRedials(t *testing.T) {
 	t.Cleanup(linuxNotifications.teardown)
 
 	f := newNotificationsFixture(t)
+	injectExpectedDiagnostics(t, f.app, diagnosticExpectation{
+		level:   slog.LevelWarn,
+		message: "linux D-Bus notification transport failed; falling back to the Wails transport",
+		attrs:   map[string]string{"error": "notify call: daemon rejected"},
+	})
 	f.app.notificationsSendFn = nil
 	var wailsOpts []wailsRuntime.NotificationOptions
 	f.app.notificationsSendViaWailsFn = func(_ context.Context, opts wailsRuntime.NotificationOptions) error {

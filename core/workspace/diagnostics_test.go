@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -99,6 +102,28 @@ func expectedDiagnostics(t *testing.T, want ...diagnosticExpectation) *slog.Logg
 	})
 	return slog.New(&diagnosticHandler{fallback: slog.Default().Handler(), records: records})
 }
+
+// plantedIncludeDiagnostic derives the exact line from fixture bytes, not the
+// production parser or git's platform-dependent initial config layout.
+func plantedIncludeDiagnostic(t *testing.T, root, path string) diagnosticExpectation {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, matches := 0, 0
+	for i, text := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(text) == "path = "+path {
+			line = i + 1
+			matches++
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("config include %q has %d literal matches, want 1", path, matches)
+	}
+	return ignoredIncludeDiagnostic(line, path)
+}
+
 func ignoredIncludeDiagnostic(line int, path string) diagnosticExpectation {
 	return diagnosticExpectation{slog.LevelWarn, "git config include directive ignored (not followed); config is an incomplete view", map[string]string{"line": strconv.Itoa(line), "conditional": "false", "condition": "", "path": path}}
 }
