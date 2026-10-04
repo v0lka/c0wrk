@@ -275,7 +275,7 @@ describe('ChatMessageRenderer sticky user turns', () => {
     expect(turns[1]?.querySelector('[data-chevron-reveal-id^="turn-work:"]')).toBeNull()
   })
 
-  it('renders top-level plan/subagent steps OUTSIDE the work block (status survives a collapse)', () => {
+  it('renders plan/subagent steps OUTSIDE the work blocks; a step splits the turn (status survives a collapse)', () => {
     const withSteps: DisplayItem[] = [
       { kind: 'user', message: message('user-1', 'user', 'Run the plan') },
       thought('th-1', 'thinking'),
@@ -289,25 +289,43 @@ describe('ChatMessageRenderer sticky user turns', () => {
         title: 'Reviewer', status: 'completed', children: [],
       },
     ]
-    // Settled shape (task not active): the work block is COLLAPSED, yet the
-    // step blocks must stay visible outside it — the plan-panel contract.
+    // Settled shape (task not active): the work blocks are COLLAPSED, yet the
+    // step blocks must stay visible outside them — the plan-panel contract.
+    // The step closed the block holding the thought and opened the next
+    // segment: render order block₁ → step-1 → block₂ → sub-1.
     const container = renderRenderer({ items: withSteps, lastTurnActive: false })
     const turn = turnRoots(container)[0]!
-    const block = turn.querySelector('[data-chevron-reveal-id^="turn-work:"]')!
+    const blocks = turn.querySelectorAll('[data-chevron-reveal-id^="turn-work:"]')
+    expect(blocks).toHaveLength(2)
 
-    expect(block).not.toBeNull()
-    expect(block.querySelector('[data-slot="collapsible-content"]')?.getAttribute('data-state')).toBe('closed')
-    // Both step blocks render outside the collapsible, in stream order.
+    for (const block of blocks) {
+      expect(block.querySelector('[data-slot="collapsible-content"]')?.getAttribute('data-state')).toBe('closed')
+    }
+    // Both step blocks render outside any collapsible, in stream order.
     const stepEl = turn.querySelector('[data-step-id="step-1"]')
     const subEl = turn.querySelector('[data-bookmark-id="sub-1"]')
     expect(stepEl).not.toBeNull()
     expect(subEl).not.toBeNull()
-    expect(block.contains(stepEl!)).toBe(false)
-    expect(block.contains(subEl!)).toBe(false)
+    for (const block of blocks) {
+      expect(block.contains(stepEl!)).toBe(false)
+      expect(block.contains(subEl!)).toBe(false)
+    }
     // Stream order preserved: step-1 (plan_step) renders before sub-1.
     expect(stepEl!.compareDocumentPosition(subEl!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    // Work content stays hidden inside the collapsed block.
-    expect(turn.textContent).not.toContain('thinking')
+    // Segment order: block₁ (thought's work) → step-1 → block₂ (post-step
+    // work) → sub-1.
+    expect(blocks[0]!.compareDocumentPosition(stepEl!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(stepEl!.compareDocumentPosition(blocks[1]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(blocks[1]!.compareDocumentPosition(subEl!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The work CONTENT stays hidden inside the collapsed blocks (only the
+    // header previews surface it).
+    expect(turn.querySelector('[data-bookmark-id="th-1"]')).toBeNull()
+    expect(turn.querySelector('[data-bookmark-id="tool-1"]')).toBeNull()
+    // The first block settled by its step: completed, not interrupted; the
+    // LAST segment (interrupted — the turn ended after the subagent without
+    // an answer) carries the interrupted marker.
+    expect(blocks[0]!.textContent).not.toContain('interrupted')
+    expect(blocks[1]!.textContent).toContain('interrupted')
   })
 
   it('keeps pinned steps mounted while the live turn runs (status chips visible)', () => {
@@ -322,12 +340,60 @@ describe('ChatMessageRenderer sticky user turns', () => {
     const container = renderRenderer({ items: withSteps, lastTurnActive: true })
     const turn = turnRoots(container)[0]!
     expect(turn.querySelector('[data-step-id="step-1"]')).not.toBeNull()
-    // The step renders AFTER the work block (which is open and holds the
-    // trailing slot) — work → pinned → tail order.
+    // The step closed the (empty) pre-step segment and the post-step work
+    // streams in the OPEN live block after it: step-1 → live block (holding
+    // the trailing slot).
     const block = turn.querySelector('[data-chevron-reveal-id^="turn-work:"]')!
     const stepEl = turn.querySelector('[data-step-id="step-1"]')!
-    expect(block.compareDocumentPosition(stepEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(stepEl.compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(block.querySelector('[data-testid="trailing"]')).not.toBeNull()
+  })
+
+  it('renders the launcher card WITH its step hierarchy, outside the work blocks', () => {
+    // "Executing: plan" (the execute_plan tool card) opens the plan: the
+    // card belongs to the same outside-the-collapsible region as the steps
+    // it started — never buried inside the work container whose cut it
+    // caused. Same for a delegate card before its subagent blocks.
+    const withLauncher: DisplayItem[] = [
+      { kind: 'user', message: message('user-1', 'user', 'Run the plan') },
+      thought('th-1', 'planning'),
+      tool('launcher-1', 'execute_plan'),
+      {
+        kind: 'plan_step', id: 'step-evt-1', stepId: 'step-1', stepNum: 1,
+        title: 'Implement auth', status: 'completed', children: [],
+      },
+      tool('launcher-2', 'delegate'),
+      {
+        kind: 'subagent', id: 'sub-1', stepId: 'step-2',
+        title: 'Reviewer', status: 'completed', children: [],
+      },
+      tool('tool-1'),
+      assistant('assistant-2', 'All done.'),
+    ]
+    const container = renderRenderer({ items: withLauncher, lastTurnActive: false })
+    const turn = turnRoots(container)[0]!
+    const launchers = [turn.querySelector('[data-bookmark-id="launcher-1"]'), turn.querySelector('[data-bookmark-id="launcher-2"]')]
+    const stepEl = turn.querySelector('[data-step-id="step-1"]')
+    const subEl = turn.querySelector('[data-bookmark-id="sub-1"]')
+    for (const el of [...launchers, stepEl, subEl]) expect(el).not.toBeNull()
+    // All pinned elements stay outside every work block — settled shape, so
+    // the blocks are collapsed and their content is unmounted; if a launcher
+    // were still filed as work, its anchor would be gone entirely.
+    for (const block of turn.querySelectorAll('[data-chevron-reveal-id^="turn-work:"]')) {
+      for (const el of [...launchers, stepEl!, subEl!]) {
+        expect(block.contains(el!)).toBe(false)
+      }
+    }
+    // Stream order preserved: launcher-1 → step-1 → launcher-2 → sub-1 →
+    // block₂'s work (tool-1 is INSIDE the collapsed block — gone) → answer.
+    const order = [launchers[0]!, stepEl!, launchers[1]!, subEl!] as HTMLElement[]
+    for (let i = 0; i < order.length - 1; i++) {
+      expect(order[i]!.compareDocumentPosition(order[i + 1]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
+    // The post-launcher work stays inside its collapsed block; the answer is
+    // the tail.
+    expect(turn.querySelector('[data-bookmark-id="tool-1"]')).toBeNull()
+    expect(turn.querySelector('[data-bookmark-id="assistant-2"]')).not.toBeNull()
   })
 
   it('exposes no duplicate DOM anchors: work items render exactly once (inside the block)', () => {

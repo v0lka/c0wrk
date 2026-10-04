@@ -12,22 +12,26 @@ import { BookmarkableContext } from './BookmarkableContext'
 import type { DisplayItem } from '@/types/messages'
 
 /**
- * Collapsible wrapper around a chat turn's WORK — the activity (thoughts, tool
- * cards, intermediate texts, …) that produced the turn's answer, as split by
- * `splitTurnWork`. Top-level plan_step/subagent blocks are NOT part of it —
- * the split pins them outside the collapsible so their status chips survive
- * a collapse (the plan-panel contract).
+ * Collapsible wrapper around ONE work segment of a chat turn — the activity
+ * (thoughts, tool cards, intermediate texts, …) that ran before the segment's
+ * plan/subagent steps, as split by `splitTurnWork`. Step blocks render OUTSIDE
+ * any collapsible (the plan-panel contract), between their segment's block
+ * and the next one.
  *
- * Open-state rule: the block is OPEN while the turn is LIVE (it is the last
- * turn AND the session's task is still active — streaming, plan steps, tool
- * calls can still land) and auto-COLLAPSES when the turn settles: the answer
- * commits, OR the turn is superseded (a nudge / resume started a new turn), OR
- * the task ended without an answer (stop / error / app exit — historical dead
- * turns settle the same way after a reload). A manual toggle wins until the
- * next auto edge, mirroring SubAgentBlock: `userOverride ?? derived`, with the
- * override reset by a `useEffect` keyed on the settle edge. The reverse edge —
- * the turn stops being the last one — remounts the block (the next turn's
- * split takes over), which naturally resets the override.
+ * Open-state rule: the LAST segment of a turn is OPEN while the turn is LIVE
+ * (it is the last turn AND the session's task is still active — streaming,
+ * plan steps, tool calls can still land) and auto-COLLAPSES when the turn
+ * settles: the answer commits, OR the turn is superseded (a nudge / resume
+ * started a new turn), OR the task ended without an answer (stop / error /
+ * app exit — historical dead turns settle the same way after a reload).
+ * EARLIER segments are settled from birth (`superseded`): the step that cut
+ * them out completed the activity they hold, so they render COLLAPSED with
+ * the completed status — "block considered finished when a step appeared".
+ * A manual toggle wins until the next auto edge, mirroring SubAgentBlock:
+ * `userOverride ?? derived`, with the override reset by a `useEffect` keyed
+ * on the settle edge. The reverse edge — the turn stops being the last one —
+ * remounts the block (the next turn's split takes over), which naturally
+ * resets the override.
  */
 interface TurnWorkBlockProps {
   /** The turn "can still produce new items": it is the session's last turn
@@ -36,11 +40,17 @@ interface TurnWorkBlockProps {
    * answer — a stop, an error, or a superseding turn (nudge / resume).
    */
   live?: boolean
-  /** The turn's work items, between the last user message and its answer. */
+  /**
+   * This segment was cut out by a later plan/subagent step: settled from
+   * birth with the completed status (failed when its work holds an error) —
+   * never open, regardless of `live`.
+   */
+  superseded?: boolean
+  /** The segment's work items — one collapsible block's content. */
   work: DisplayItem[]
-  /** The final answer, any trailing items, and every UNRESOLVED
-   * pending-action panel lifted out of the work (panels may be present while
-   * the answer itself is still pending).
+  /** The turn's tail (final answer + lifted panels) — LAST segment only.
+   * Scanned for the header preview / checklist chip / answer-committed
+   * status; rendered as tail rows by the chat renderer, not here.
    */
   tail: DisplayItem[]
   /**
@@ -49,11 +59,11 @@ interface TurnWorkBlockProps {
    * the work list. Slot-only — never folded into `work` or `tail` — so the
    * memo comparator's structural item equality is unaffected by it, exactly
    * as SubAgentBlock's memo treats its own non-item children. The renderer
-   * mounts the slot only while the block should be open, so the stream lives
+   * mounts the slot only on the live segment's block, so the stream lives
    * inside the block from the first chunk and the settled answer swaps out to
    * the tail row without any block-boundary remount. The activity indicator
-   * is NOT part of this slot — it renders outside the block (below it), so it
-   * stays visible when the user collapses the live block.
+   * is NOT part of this slot — it renders outside the blocks (below them), so
+   * it stays visible when the user collapses the live block.
    */
   tailSlot?: ReactNode
 }
@@ -111,17 +121,19 @@ function anchorKeysFor(it: DisplayItem): string[] {
   return keys
 }
 
-export const TurnWorkBlock = memo(function TurnWorkBlock({ live = false, work, tail, tailSlot }: TurnWorkBlockProps) {
+export const TurnWorkBlock = memo(function TurnWorkBlock({ live = false, superseded = false, work, tail, tailSlot }: TurnWorkBlockProps) {
   const bookmarkable = useContext(BookmarkableContext)
 
-  // The auto-open state: expanded while the turn is live — the LAST turn of an
-  // ACTIVE task — regardless of whether an answer has committed yet (a
-  // multi-step task commits intermediate answers between steps; the turn keeps
-  // producing items). The block settles (collapses) when the turn is done:
-  // answer committed AND the turn is no longer live, or the turn is not live
-  // anymore without an answer (stop / error / superseded by nudge / historical
-  // dead turn after a reload).
-  const settled = !live
+  // The auto-open state: the LAST segment of a turn is expanded while the
+  // turn is live — the LAST turn of an ACTIVE task — regardless of whether an
+  // answer has committed yet (a multi-step task commits intermediate answers
+  // between steps; the turn keeps producing items). The block settles
+  // (collapses) when the turn is done: answer committed AND the turn is no
+  // longer live, or the turn is not live anymore without an answer (stop /
+  // error / superseded by nudge / historical dead turn after a reload).
+  // EARLIER segments (superseded) are settled from birth: the step that cut
+  // them out completed the activity they hold.
+  const settled = !live || superseded
   const derivedOpen = !settled
   const [userOverride, setUserOverride] = useState<boolean | null>(null)
   const isOpen = userOverride ?? derivedOpen
@@ -133,18 +145,22 @@ export const TurnWorkBlock = memo(function TurnWorkBlock({ live = false, work, t
   // An answer committed only when the tail holds the assistant item — the
   // split now lifts unresolved pending-action panels into the tail even while
   // the turn is still running (no answer yet), so bare tail length is NOT an
-  // answer signal anymore.
+  // answer signal anymore. A superseded segment settled when the step that
+  // cut it out started — completed, not interrupted (unless its work holds an
+  // error → failed).
   const answerCommitted = tail.some(it => it.kind === 'assistant')
   const status: WorkStatus = useMemo(
     () =>
       work.some(it => it.kind === 'error')
         ? 'failed'
-        : live
+        : live && !superseded
           ? 'running'
           : answerCommitted
             ? 'completed'
-            : 'interrupted',
-    [work, live, answerCommitted],
+            : superseded
+              ? 'completed'
+              : 'interrupted',
+    [work, live, superseded, answerCommitted],
   )
   const cfg = statusConfig[status]
   const StatusIcon = cfg.Icon
@@ -264,6 +280,7 @@ export const TurnWorkBlock = memo(function TurnWorkBlock({ live = false, work, t
   displayItemsArraysEqual(prev.work, next.work) &&
   displayItemsArraysEqual(prev.tail, next.tail) &&
   prev.live === next.live &&
+  prev.superseded === next.superseded &&
   // Slot-only streaming content: false when the node changed (a new chunk
   // landed) so the block re-renders and the stream keeps flowing inside it.
   prev.tailSlot === next.tailSlot)

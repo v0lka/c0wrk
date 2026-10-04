@@ -573,6 +573,98 @@ describe('groupMessages', () => {
     expect(sub.children).toEqual([])
   })
 
+  it('sinks an OPEN plan_step block below the nudge that resumed the run', () => {
+    // Turn 1: the plan started its first step. The run pauses / the user
+    // nudges — the nudge is a NEW turn: a fresh user row at root carrying
+    // only is_nudge (no plan_step_id). The still-open step block must sink
+    // BELOW the nudge card so the active step renders at the bottom.
+    const result = groupMessages([
+      makeUI({ id: 'user-1', type: 'user', content: 'Run the plan' }),
+      makeUI({ id: 'plan-1', type: 'plan', content: '', metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup' }] } }),
+      makeUI({ type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
+      makeUI({ id: 'nudge-1', type: 'user', content: 'keep going', metadata: { is_nudge: true } }),
+    ])
+    const kinds = result.items.map((it) => it.kind)
+    expect(kinds).toEqual(['user', 'user', 'plan_step'])
+    const step = result.items[2]! as DisplayItem & { kind: 'plan_step' }
+    expect(step.stepId).toBe('step-0')
+    expect(step.status).toBe('running')
+  })
+
+  it('streams post-nudge step work INTO the sunk block and releases it on completion', () => {
+    const result = groupMessages([
+      makeUI({ id: 'user-1', type: 'user', content: 'Run the plan' }),
+      makeUI({ id: 'plan-1', type: 'plan', content: '', metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup' }] } }),
+      makeUI({ type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
+      makeUI({ id: 'nudge-1', type: 'user', content: 'keep going', metadata: { is_nudge: true } }),
+      makeUI({ type: 'tool_call', metadata: { tool: 'read_file', plan_step_id: 'step-0', args: '{}', completed: true } }),
+      makeUI({ type: 'plan_step_complete', metadata: { step_id: 'step-0', success: true, duration: 1000 } }),
+      makeUI({ type: 'assistant', content: 'Done' }),
+    ])
+    // The step settled: the sink released it — it is back at its STREAM
+    // position (its plan_step_start slot, above the nudge card), the resumed
+    // work nests inside it, and the answer flows after the nudge.
+    const kinds = result.items.map((it) => it.kind)
+    expect(kinds).toEqual(['user', 'plan_step', 'user', 'assistant'])
+    const step = result.items[1]! as DisplayItem & { kind: 'plan_step' }
+    expect(step.status).toBe('completed')
+    expect(step.children).toHaveLength(1)
+  })
+
+  it('keeps an unresolved panel BELOW the sunk open step', () => {
+    const result = groupMessages([
+      makeUI({ id: 'user-1', type: 'user', content: 'go' }),
+      makeUI({ id: 'plan-1', type: 'plan', content: '', metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup' }] } }),
+      makeUI({ type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
+      makeUI({ type: 'tool_confirm', metadata: { confirm_id: 'c1', tool: 'bash' } }),
+    ])
+    const kinds = result.items.map((it) => it.kind)
+    // Action sinking runs after step sinking: the blocking panel stays the
+    // bottom-most element of the chat.
+    expect(kinds).toEqual(['user', 'plan_step', 'tool_confirm'])
+  })
+
+  it('sinks an open subagent WITH its whole delegated hierarchy below the nudge', () => {
+    const result = groupMessages([
+      makeUI({ type: 'subagent_launch', metadata: { step_id: 'sa1', description: 'Research' } }),
+      makeUI({ type: 'tool_call', metadata: { tool: 'execute_plan', plan_step_id: 'sa1', args: '{}' } }),
+      makeUI({ type: 'plan_step_start', metadata: { step_id: 'step-1', description: 'Read', summary: 'Read', plan_step_id: 'sa1' } }),
+      makeUI({ id: 'nudge-1', type: 'user', content: 'go on', metadata: { is_nudge: true } }),
+    ])
+    const kinds = result.items.map((it) => it.kind)
+    // One root block (the subagent, carrying its launcher card + nested step)
+    // below the nudge — the hierarchy moves as a unit.
+    expect(kinds).toEqual(['user', 'subagent'])
+    const sub = result.items[1]! as DisplayItem & { kind: 'subagent' }
+    expect(sub.status).toBe('running')
+    expect(sub.children.some((c) => c.kind === 'tool')).toBe(true)
+    expect(sub.children.some((c) => c.kind === 'plan_step')).toBe(true)
+  })
+
+  it('keeps the stream order among multiple sunk open blocks', () => {
+    const result = groupMessages([
+      makeUI({ type: 'subagent_launch', metadata: { step_id: 'sa1', description: 'First' } }),
+      makeUI({ id: 'plan-1', type: 'plan', content: '', metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup' }] } }),
+      makeUI({ type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
+    ])
+    const kinds = result.items.map((it) => it.kind)
+    expect(kinds).toEqual(['subagent', 'plan_step'])
+  })
+
+  it('does not sink a crash-recovered step the work-unit snapshot settled', () => {
+    const result = groupMessages([
+      makeUI({ id: 'user-1', type: 'user', content: 'go' }),
+      makeUI({ id: 'plan-1', type: 'plan', content: '', metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup' }] } }),
+      makeUI({ type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
+      // History ends without a terminal event; the durable snapshot reports
+      // the step settled — the overlay applies BEFORE the sink, so the block
+      // stays at its stream position.
+    ], { 'step-0': 'completed' })
+    const kinds = result.items.map((it) => it.kind)
+    expect(kinds).toEqual(['user', 'plan_step'])
+    expect((result.items[1]! as DisplayItem & { kind: 'plan_step' }).status).toBe('completed')
+  })
+
   it('nests subagent children under the subagent block', () => {
     const launch = makeUI({
       type: 'subagent_launch',
@@ -615,11 +707,14 @@ describe('groupMessages', () => {
     })
     const result = groupMessages([launch, notice, rootNotice])
     expect(result.items).toHaveLength(2)
-    const sub = result.items[0]! as DisplayItem & { kind: 'subagent' }
+    // The still-RUNNING subagent block sinks to the bottom of the root list
+    // (active-step sinking) — the root decision renders above it.
+    expect(result.items[0]!.kind).toBe('autonomy_decision')
+    const rootDecision = result.items[0]! as DisplayItem & { kind: 'autonomy_decision' }
+    expect(rootDecision.message.metadata?.plan_step_id).toBeUndefined()
+    const sub = result.items[1]! as DisplayItem & { kind: 'subagent' }
     expect(sub.children).toHaveLength(1)
     expect(sub.children[0]!.kind).toBe('autonomy_decision')
-    const rootDecision = result.items[1]! as DisplayItem & { kind: 'autonomy_decision' }
-    expect(rootDecision.kind).toBe('autonomy_decision')
   })
 
   it('updates subagent status on subagent_complete', () => {

@@ -88,6 +88,9 @@ export function CompactErrorFallback() {
   return <div className="text-xs text-destructive p-2">Failed to render message</div>
 }
 
+/** Shared empty array — a stable tail for non-last segments. */
+const EMPTY: DisplayItem[] = []
+
 const compactErrorFallback = <CompactErrorFallback />
 
 function renderItem(item: DisplayItem, stickyUserMessage: boolean, bookmarkable: boolean): React.ReactNode {
@@ -191,14 +194,14 @@ export function ChatMessageRenderer({
       {turns.map((turn, index) => {
         const startsWithUser = turn[0]?.kind === 'user'
         const isLastTurn = index === turns.length - 1
-        // Turn segmentation: user row → TurnWorkBlock(work) → pinned plan/
-        // subagent step blocks → tail rows. Top-level plan_step/subagent are
-        // lifted OUT of the collapsible (the same status-outside-the-
-        // collapsed-container contract the plan panel follows): each block
-        // owns the events nested under its plan_step_id, so lifting the
-        // block alone keeps the stream order — work → pinned → tail. Turns
-        // without a work segment keep the plain flat layout.
-        const { work, pinned, tail } = splitTurnWork(turn)
+        // Turn segmentation: the turn's work region is cut into ORDERED
+        // SEGMENTS by its top-level plan/subagent step blocks — each segment
+        // renders [block → its steps]; the step that closed a segment is the
+        // FIRST pinned of the next one, so the sequence reproduces the stream
+        // exactly: work₁ → step₁ → work₂ → step₂ → … → tail. Only the LAST
+        // segment is the live block; every earlier one settled when its step
+        // appeared. Turns without a work region keep the plain flat layout.
+        const { segments, tail } = splitTurnWork(turn)
         // "Live" = the turn can still produce new items: it is the session's
         // last turn AND the session's task is active. When the task ends
         // without an answer (stop / error / app exit) the block settles the
@@ -207,35 +210,55 @@ export function ChatMessageRenderer({
         // dead turn after a reload.
         const live = isLastTurn && lastTurnActive
         // Tail content of the live turn (the streaming answer) streams INSIDE
-        // the work block via its render-slot: the block is open while the
-        // turn runs, so the stream is visible from the first chunk, and the
-        // settled answer swaps to a tail row without the stream ever jumping
-        // between containers. The activity indicator is NOT in the slot — it
-        // renders OUTSIDE the block (below it), so it stays visible when the
-        // user collapses the live block.
+        // the live segment's block via its render-slot: the block is open
+        // while the turn runs, so the stream is visible from the first chunk,
+        // and the settled answer swaps to a tail row without the stream ever
+        // jumping between containers. The activity indicator is NOT in the
+        // slot — it renders OUTSIDE the blocks (below them), so it stays
+        // visible when the user collapses the live block.
         const slot = isLastTurn ? trailingContent : undefined
-        // A work block is mounted whenever there is work — including dead
-        // turns (stopped / superseded by a nudge / never answered after a
-        // reload): they render a COLLAPSED block with the interrupted status
-        // instead of spreading their items flat forever. Only an EMPTY work
-        // segment keeps the flat layout.
-        const blockTurn = work.length > 0
+        // Every segment mounts a block — including empty-work ones (steps
+        // with no observable work between them render their block as a thin
+        // separator row) — EXCEPT when the whole turn has no segments at all
+        // (a plain chat turn: user → answer). The LAST segment is the live
+        // one; earlier segments are superseded (settled from birth).
+        const hasSegments = segments.length > 0
         return (
           <div key={bookmarkKey(turn[0]!)} className="space-y-4 min-w-0">
             {/* A turn that does not start with a user message (an orphan
              * lead — service/status rows before the first user message) has
-             * its ENTIRE content inside `work` (splitTurnWork anchors on the
-             * last user message, -1 when absent), so there is no separate
-             * lead row to render and no double render. */}
+             * its ENTIRE content inside the last segment's work (splitTurnWork
+             * anchors on the last user message, -1 when absent), so there is
+             * no separate lead row to render and no double render. */}
             {startsWithUser && renderItem(turn[0]!, true, bookmarkable)}
-            {blockTurn && <TurnWorkBlock live={live} work={work} tail={tail} tailSlot={slot} />}
-            {/* Pinned plan/subagent steps render OUTSIDE the work block —
-             * their status chips must survive a collapse of the work block
-             * (the plan-panel contract). */}
-            {pinned.map((item) => renderItem(item, false, bookmarkable))}
-            {tail.map((item) => renderItem(item, false, bookmarkable))}
-            {!blockTurn && slot}
-            {/* The activity indicator renders OUTSIDE the work block (and
+            {segments.map((seg, segIdx) => {
+              const isLastSegment = segIdx === segments.length - 1
+              return (
+                <div key={seg.work[0] ? bookmarkKey(seg.work[0]) : seg.pinned[0] ? bookmarkKey(seg.pinned[0]) : segIdx} className="space-y-4 min-w-0">
+                  {seg.work.length > 0 && (
+                    <TurnWorkBlock
+                      live={live && isLastSegment}
+                      superseded={!isLastSegment}
+                      work={seg.work}
+                      tail={isLastSegment ? tail : EMPTY}
+                      tailSlot={isLastSegment ? slot : undefined}
+                    />
+                  )}
+                  {/* Pinned plan/subagent steps render OUTSIDE the work
+                   * block — their status chips must survive a collapse of the
+                   * work block (the plan-panel contract). */}
+                  {seg.pinned.map((item) => renderItem(item, false, bookmarkable))}
+                  {/* An empty LAST segment (steps ran with no observable
+                   * work after them) keeps the stream/tail flat — no empty
+                   * "Work steps (0)" block. */}
+                  {isLastSegment && seg.work.length === 0 && slot}
+                  {isLastSegment && tail.map((item) => renderItem(item, false, bookmarkable))}
+                </div>
+              )
+            })}
+            {!hasSegments && slot}
+            {!hasSegments && tail.map((item) => renderItem(item, false, bookmarkable))}
+            {/* The activity indicator renders OUTSIDE the work blocks (and
              * outside any collapsible), so the live status survives a manual
              * collapse of the live turn's block. Last turn only. */}
             {isLastTurn && trailingFooter}
