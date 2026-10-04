@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/backend/providerauth"
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/core/proxy"
 	sdktools "github.com/v0lka/sp4rk/tools"
@@ -83,7 +84,7 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 	allProviders := cfg.LLM.GetAllProviderConfigs()
 	providerConfigs := make(map[string]core.BuilderProviderConfig, len(allProviders))
 	for _, p := range allProviders {
-		providerConfigs[p.Name] = core.BuilderProviderConfig{
+		bpc := core.BuilderProviderConfig{
 			ProviderType: p.ProviderType,
 			APIKey:       p.APIKey,
 			BaseURL:      p.BaseURL,
@@ -93,6 +94,19 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			OutputTokenReserve: p.OutputTokenReserve,
 			TimeoutClass:       p.TimeoutClass,
 		}
+		// ChatGPT subscription auth (llm.chatgpt.auth.mode: "oauth"): the
+		// entry is marked SubscriptionAuth — core attaches the token source
+		// and pins streaming via the builder seam — and its BaseURL is
+		// pinned to the ChatGPT Codex backend, because subscription
+		// credentials are accepted only there, never on the public
+		// api.openai.com API. The static api_key still travels on the entry
+		// but is overridden on the wire by the token source; a signed-out
+		// user gets an actionable error, never a silent key fallback.
+		if p.Name == "chatgpt" && cfg.LLM.ChatGPT.Auth.Mode == config.ChatGPTAuthModeOAuth {
+			bpc.SubscriptionAuth = true
+			bpc.BaseURL = providerauth.ChatGPT().APIBaseURL
+		}
+		providerConfigs[p.Name] = bpc
 	}
 
 	// Convert model overrides.

@@ -659,6 +659,11 @@ func TestGetPapers_UnreadableLibraryIsAnError(t *testing.T) {
 		t.Fatalf("write library path: %v", err)
 	}
 
+	wantDiagnostic := miscExpectedDiagnostic{
+		message: "paper library is unreadable",
+		attrs:   map[string]string{"root": libraryRoot, "error": "paper library path is not a directory: " + libraryRoot},
+	}
+	captureMiscDiagnostics(t, api, wantDiagnostic, wantDiagnostic)
 	if _, err := api.GetPapers(projectID); err == nil {
 		t.Fatal("GetPapers must surface an unreadable library root, not render it as empty")
 	}

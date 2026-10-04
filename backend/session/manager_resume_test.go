@@ -94,7 +94,7 @@ type resumeTaskStore struct {
 func (s *resumeTaskStore) GetUnfinishedTask(_ context.Context, _ string) (*TaskRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.task == nil {
+	if s.task == nil || s.task.Status == "completed" || s.task.Status == "cancelled" {
 		return nil, nil
 	}
 	// Return a copy so the caller can't mutate the canned record.
@@ -128,10 +128,15 @@ func (s *resumeTaskStore) LoadGoalState(_ context.Context, _ string) (json.RawMe
 	return s.goalState, nil
 }
 
-func (s *resumeTaskStore) CompleteTask(_ context.Context, _, _ string, _ int) error {
+func (s *resumeTaskStore) CompleteTask(_ context.Context, taskID, finalOutput string, attemptCount int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.completedCalls++
+	if s.task != nil && s.task.ID == taskID {
+		s.task.Status = "completed"
+		s.task.FinalOutput = finalOutput
+		s.task.AttemptCount = attemptCount
+	}
 	return nil
 }
 
@@ -818,6 +823,11 @@ func TestResumeTask_ModelSwitchToCatalogModel_WindowFollowsCatalog(t *testing.T)
 		t.Fatal("timeout waiting for task_complete event (unknown model run)")
 	}
 
+	// Seed a fresh paused checkpoint after the first, completed run. The store
+	// must not report a completed row as unfinished just to enable this phase.
+	store.mu.Lock()
+	store.task.Status = "paused"
+	store.mu.Unlock()
 	// Switch during pause to the catalog-known model and resume.
 	if err := mgr.ResumeTask(context.Background(), info.ID, llm.CompositeModelID(provider, knownModel), "", ""); err != nil {
 		t.Fatalf("ResumeTask (known model) failed: %v", err)
@@ -1112,6 +1122,8 @@ func TestResumeTask_ReactivationFailureDoesNotAbortResume(t *testing.T) {
 	store.mu.Lock()
 	store.task.SessionID = info.ID
 	store.mu.Unlock()
+
+	captureManagerDiagnostics(t, mgr, warningDiagnostic("failed to reactivate task row on resume", map[string]string{"session_id": info.ID, "task_id": "task-resume-reactivate-err", "error": "database is locked"}))
 
 	if err := mgr.ResumeTask(context.Background(), info.ID, "", "", ""); err != nil {
 		t.Fatalf("ResumeTask failed: %v", err)

@@ -211,7 +211,8 @@ const manifestTempStaleAfter = time.Minute
 // writeManifest persists m atomically: bytes land in a uniquely named sibling
 // temporary file and are renamed over the target, so a crash mid-write leaves the
 // previous manifest intact instead of a truncated one, and a concurrent writer
-// cannot interleave with this one. Every error path removes the temporary.
+// cannot interleave with this one. Every error path attempts temporary cleanup;
+// a failed cleanup is reported alongside the original write/promotion error.
 //
 // The one path that cannot clean up after itself is a crash BETWEEN CreateTemp and
 // the rename, so the write begins by sweeping leftovers of that shape out of the
@@ -220,6 +221,12 @@ const manifestTempStaleAfter = time.Minute
 //
 // logger may be nil, which discards: the package's rule for an uninjected logger.
 func writeManifest(path string, m Manifest, logger *slog.Logger) error {
+	return writeManifestWithOps(path, m, logger, promoteManifest, os.Remove)
+}
+
+// writeManifestWithOps keeps fault injection local to one write; production
+// always uses the bounded promotion and real removal above.
+func writeManifestWithOps(path string, m Manifest, logger *slog.Logger, promote func(string, string, *slog.Logger) error, remove func(string) error) error {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
@@ -242,14 +249,19 @@ func writeManifest(path string, m Manifest, logger *slog.Logger) error {
 	}
 	name := tmp.Name()
 	if err := writeAndClose(tmp, data); err != nil {
-		_ = os.Remove(name)
-		return err
+		return cleanupManifestTemp(name, err, remove)
 	}
-	if err := promoteManifest(name, path, logger); err != nil {
-		_ = os.Remove(name)
-		return fmt.Errorf("embeddedllm: promoting manifest into place: %w", err)
+	if err := promote(name, path, logger); err != nil {
+		return cleanupManifestTemp(name, fmt.Errorf("embeddedllm: promoting manifest into place: %w", err), remove)
 	}
 	return nil
+}
+
+func cleanupManifestTemp(name string, cause error, remove func(string) error) error {
+	if err := remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errors.Join(cause, fmt.Errorf("embeddedllm: removing temporary manifest %q: %w", name, err))
+	}
+	return cause
 }
 
 // A promotion rename can fail transiently on Windows: two concurrent
@@ -271,24 +283,34 @@ const (
 	manifestPromoteBackoff = 2 * time.Millisecond
 )
 
-// promoteManifest renames the fully written temporary over the target
-// manifest, retrying a transient Windows sharing error (see
-// isTransientRenameError) with a bounded doubling backoff. Any other error —
-// or a retry budget that runs out — returns the last error unchanged, and the
-// caller removes the temporary as on any failure.
+// manifestPromotionMu prevents this process's writers from colliding while
+// replacing a manifest. Temp creation/write/sync stays concurrent. External
+// sharing handles still use the bounded retry; no destination is removed.
+var manifestPromotionMu sync.Mutex
+
+// promoteManifest renames the fully written temporary over the target manifest,
+// serializing in-process promotions and retrying transient Windows sharing
+// errors with the same bounded backoff. Failure leaves the destination intact
+// and returns the final rename error for the caller's cleanup/reporting.
 func promoteManifest(tmp, path string, logger *slog.Logger) error {
+	manifestPromotionMu.Lock()
+	defer manifestPromotionMu.Unlock()
+	return promoteManifestWithOps(tmp, path, logger, os.Rename, isTransientRenameError, time.Sleep)
+}
+
+func promoteManifestWithOps(tmp, path string, logger *slog.Logger, rename func(string, string) error, transient func(error) bool, wait func(time.Duration)) error {
 	backoff := manifestPromoteBackoff
 	for attempt := 1; ; attempt++ {
-		err := os.Rename(tmp, path)
+		err := rename(tmp, path)
 		if err == nil {
 			return nil
 		}
-		if !isTransientRenameError(err) || attempt == manifestPromoteAttempts {
+		if !transient(err) || attempt == manifestPromoteAttempts {
 			return err
 		}
 		logger.Debug("embeddedllm: manifest promotion hit a transient sharing error, retrying",
 			"tmp", tmp, "target", path, "attempt", attempt, "backoff", backoff, "error", err)
-		time.Sleep(backoff)
+		wait(backoff)
 		backoff *= 2
 	}
 }

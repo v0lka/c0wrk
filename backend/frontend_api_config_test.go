@@ -57,6 +57,13 @@ type mockBuilder struct {
 	embeddedSeam     core.BuilderEmbeddedLLMConfig
 	embeddedSeamSets int
 
+	// subscriptionSeam captures the most recent SetSubscriptionTokenSource
+	// argument, and subscriptionSeamSets how many times it was pushed, so
+	// tests can assert the builder-level default follows the live ChatGPT
+	// auth state (live manager when signed in, zero value when signed out).
+	subscriptionSeam     core.BuilderSubscriptionAuthConfig
+	subscriptionSeamSets int
+
 	// optimizePromptCtx is the context of the most recent OptimizePrompt call,
 	// snapshotted AT CALL TIME: the caller cancels it as soon as the RPC
 	// returns, so inspecting it afterwards would only observe that.
@@ -159,6 +166,15 @@ func (m *mockBuilder) routerCfgSnapshot() []string {
 	copy(out, m.rebuildRouterCfgs)
 	return out
 }
+
+// rebuildRouterCallsSnapshot reads the RebuildRouter counter under the mock's
+// lock, for tests whose rebuilds run on a background goroutine (the ChatGPT
+// auth lifecycle) and must not race the assertion.
+func (m *mockBuilder) rebuildRouterCallsSnapshot() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rebuildRouterCalls
+}
 func (m *mockBuilder) UpdateModelOverrides(_ *core.BuilderConfig) {
 	m.mu.Lock()
 	m.updateModelOverridesCalls++
@@ -250,6 +266,21 @@ func (m *mockBuilder) lastEmbeddedSeam() (seam core.BuilderEmbeddedLLMConfig, se
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.embeddedSeam, m.embeddedSeamSets
+}
+
+func (m *mockBuilder) SetSubscriptionTokenSource(cfg core.BuilderSubscriptionAuthConfig) {
+	m.mu.Lock()
+	m.subscriptionSeam = cfg
+	m.subscriptionSeamSets++
+	m.mu.Unlock()
+}
+
+// lastSubscriptionSeam reports the most recently pushed builder-level
+// subscription-auth seam.
+func (m *mockBuilder) lastSubscriptionSeam() (seam core.BuilderSubscriptionAuthConfig, sets int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.subscriptionSeam, m.subscriptionSeamSets
 }
 func (m *mockBuilder) OptimizePrompt(ctx context.Context, _ string) (*core.OptimizePromptResult, error) {
 	m.mu.Lock()
@@ -2309,6 +2340,7 @@ func TestGetModelProfiles_EmbeddedSuggestionIsHintOnly(t *testing.T) {
 
 func TestGetModelProfiles_DanglingActiveWarns(t *testing.T) {
 	f, _, _ := newTestAPI(t)
+	captureAPIDiagnostic(t, f, "model-profile profile warning", "warning", "ghost-profile")
 	f.config.ModelProfiles.ActiveProfile = "ghost-profile"
 
 	got := f.GetModelProfiles()
@@ -4444,8 +4476,7 @@ func TestApplyListProviderModelsOverrides_TLSFingerprintSentinel(t *testing.T) {
 // --- GetProviderTLSCertificate ---
 
 func TestGetProviderTLSCertificate_ReturnsServerSPKI(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	defer srv.Close()
+	srv := newCertificateProbeServer(t)
 	want := llmtls.SPKIFingerprint(srv.Certificate())
 
 	f, _ := newPinnedTestAPI(t)
@@ -4466,8 +4497,7 @@ func TestGetProviderTLSCertificate_ReturnsServerSPKI(t *testing.T) {
 // result is identical whether the provider is unpinned, correctly pinned, or
 // pinned to a value that does not match the server at all.
 func TestGetProviderTLSCertificate_IndependentOfConfiguredPin(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	defer srv.Close()
+	srv := newCertificateProbeServer(t)
 	want := llmtls.SPKIFingerprint(srv.Certificate())
 
 	for _, pin := range []string{"", tlsPinFixture, want} {
@@ -4512,8 +4542,7 @@ func TestNotificationBannerTimeout_RoundTrip(t *testing.T) {
 // The draft base URL from the settings form wins over the persisted one, so
 // "Get" works on an endpoint the user just typed and has not saved.
 func TestGetProviderTLSCertificate_DraftBaseURLWins(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	defer srv.Close()
+	srv := newCertificateProbeServer(t)
 	want := llmtls.SPKIFingerprint(srv.Certificate())
 
 	f, _ := newPinnedTestAPI(t)
@@ -4533,8 +4562,7 @@ func TestGetProviderTLSCertificate_DraftBaseURLWins(t *testing.T) {
 // ${VAR} in a base URL is expanded like on every other dial path; a literal
 // "${...}" would fail url.Parse.
 func TestGetProviderTLSCertificate_ExpandsEnvVars(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	defer srv.Close()
+	srv := newCertificateProbeServer(t)
 	want := llmtls.SPKIFingerprint(srv.Certificate())
 
 	t.Setenv("C0WRK_TEST_LLM_BASE_URL", srv.URL+"/v1")
@@ -4592,8 +4620,7 @@ func TestGetProviderTLSCertificate_RejectedWhileProxyActive(t *testing.T) {
 // is direct, so the Get probe is meaningful again and must be allowed — the
 // fingerprint it fetches applies once saved.
 func TestGetProviderTLSCertificate_BypassedHostAllowed(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	defer srv.Close()
+	srv := newCertificateProbeServer(t)
 	want := llmtls.SPKIFingerprint(srv.Certificate())
 
 	f, _ := newPinnedTestAPI(t)
@@ -4617,8 +4644,7 @@ func TestGetProviderTLSCertificate_BypassedHostAllowed(t *testing.T) {
 // An enabled-but-empty proxy URL dials directly (the proxy.BuildTransport
 // rule), so the pin stays meaningful and the button keeps working.
 func TestGetProviderTLSCertificate_EnabledButEmptyProxyURLStillWorks(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	defer srv.Close()
+	srv := newCertificateProbeServer(t)
 	want := llmtls.SPKIFingerprint(srv.Certificate())
 
 	f, _ := newPinnedTestAPI(t)
@@ -4944,6 +4970,7 @@ func TestUpdateProxySettings_PersistsAndPropagatesNewSettings(t *testing.T) {
 // A rebuild failure still surfaces to the caller after the lock split.
 func TestUpdateProxySettings_RebuildErrorSurfaces(t *testing.T) {
 	f, mock, _ := newTestAPI(t)
+	captureAPIDiagnostic(t, f, "failed to rebuild proxy after settings update", "error", "boom")
 	mock.rebuildProxyErr = errors.New("boom")
 
 	err := f.UpdateProxySettings(ProxySettingsRequest{Enabled: true, URL: "http://proxy.lan:3128"})

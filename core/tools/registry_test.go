@@ -142,6 +142,128 @@ func newStrictJudge(response string, err error) (*sdktools.ToolJudge, *scriptedJ
 
 // ── Registry basics ───────────────────────────────────────────────────────
 
+func TestToolRegistry_NamespacedDiagnostic(t *testing.T) {
+	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
+	probe := &gateProbeTool{mockTool: *newMockTool("echo", "candidate")}
+	registry.Register(probe)
+	confirmations := 0
+	response := sdktools.ConfirmDeny
+	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmations++
+		return response, nil
+	})
+	result, err := registry.Execute(context.Background(), "functions.echo", json.RawMessage(`{}`))
+	if err != nil || !result.IsError || !strings.HasPrefix(result.Content, "tool not found: functions.echo") {
+		t.Errorf("Execute(functions.echo) = %+v, %v, want not-found error result", result, err)
+	}
+	for _, hint := range []string{`"echo"`, "batch.calls[].tool", "direct tool call name"} {
+		if !strings.Contains(result.Content, hint) {
+			t.Errorf("Execute(functions.echo).Content = %q, want hint %q", result.Content, hint)
+		}
+	}
+	if probe.execCalls != 0 || confirmations != 0 {
+		t.Errorf("Execute(functions.echo) executions/confirmations = %d/%d, want 0/0", probe.execCalls, confirmations)
+	}
+	result, err = registry.Execute(context.Background(), "echo", json.RawMessage(`{}`))
+	if err != nil || !result.IsError || probe.execCalls != 0 || confirmations != 1 {
+		t.Errorf("Execute(echo, denied retry) = %+v, %v, executions/confirmations %d/%d, want error and 0/1", result, err, probe.execCalls, confirmations)
+	}
+	response = sdktools.ConfirmAllowOnce
+	result, err = registry.Execute(context.Background(), "echo", json.RawMessage(`{}`))
+	if err != nil || result.IsError || probe.execCalls != 1 || confirmations != 2 {
+		t.Errorf("Execute(echo, approved retry) = %+v, %v, executions/confirmations %d/%d, want success and 1/2", result, err, probe.execCalls, confirmations)
+	}
+}
+
+func TestToolRegistry_NamespacedUnavailableCandidate(t *testing.T) {
+	for _, state := range []string{"missing", "disabled", "filtered"} {
+		t.Run(state, func(t *testing.T) {
+			registry := NewToolRegistry()
+			probe := &gateProbeTool{mockTool: *newMockSystemTool("echo", "candidate")}
+			switch state {
+			case "disabled":
+				registry.Register(probe)
+				registry.SetDisabledTools(map[string]bool{"echo": true})
+			case "filtered":
+				registry.SetToolFilter(func(string, string) bool { return false })
+				registry.RegisterWithSource(probe, "filtered-source")
+			}
+			for _, name := range []string{"functions.echo", "other.echo", "functions.missing", "functions."} {
+				result, err := registry.Execute(context.Background(), name, json.RawMessage(`{}`))
+				if err != nil || !result.IsError || result.Content != "tool not found: "+name || probe.execCalls != 0 {
+					t.Errorf("Execute(%q, %s) = %+v, %v, executions %d, want generic error and no execution", name, state, result, err, probe.execCalls)
+				}
+			}
+		})
+	}
+}
+
+func TestToolRegistry_ExactNamespacedName(t *testing.T) {
+	registry := NewToolRegistry()
+	candidate := &gateProbeTool{mockTool: *newMockSystemTool("echo", "candidate")}
+	exact := &gateProbeTool{mockTool: *newMockSystemTool("functions.echo", "exact")}
+	registry.Register(candidate)
+	registry.Register(exact)
+	registry.SetDisabledTools(map[string]bool{"echo": true})
+	result, err := registry.Execute(context.Background(), "functions.echo", json.RawMessage(`{}`))
+	if err != nil || result.IsError || exact.execCalls != 1 || candidate.execCalls != 0 {
+		t.Errorf("Execute(functions.echo) = %+v, %v, exact/candidate executions %d/%d, want success and 1/0", result, err, exact.execCalls, candidate.execCalls)
+	}
+}
+
+// TestToolRegistry_NamespacedDiagnosticCatalogScope is the regression for the
+// run-scoped tool-not-found hint: with an effective catalog attached to the
+// context (sdktools.WithCatalogScope — what Executor.Run injects from the
+// delegation's TaskTools), a registered and enabled candidate outside that
+// catalog is never recommended, while a candidate inside it keeps the
+// actionable hint.
+func TestToolRegistry_NamespacedDiagnosticCatalogScope(t *testing.T) {
+	t.Run("excluded candidate gets no hint", func(t *testing.T) {
+		registry := NewToolRegistry()
+		probe := &gateProbeTool{mockTool: *newMockSystemTool("echo", "candidate")}
+		registry.Register(probe)
+		excludedCtx := sdktools.WithCatalogScope(context.Background(), []string{"read_file", "list_directory", "finish"})
+		result, err := registry.Execute(excludedCtx, "functions.echo", json.RawMessage(`{}`))
+		if err != nil || !result.IsError || result.Content != "tool not found: functions.echo" {
+			t.Errorf("Execute(functions.echo, excluded scope) = %+v, %v, want generic not-found without catalog hint", result, err)
+		}
+		if probe.execCalls != 0 {
+			t.Errorf("executions = %d, want 0 (the hint path never dispatches)", probe.execCalls)
+		}
+	})
+	t.Run("disabled candidate inside scope gets no hint", func(t *testing.T) {
+		registry := NewToolRegistry()
+		probe := &gateProbeTool{mockTool: *newMockSystemTool("echo", "candidate")}
+		registry.Register(probe)
+		registry.SetDisabledTools(map[string]bool{"echo": true})
+		scopedCtx := sdktools.WithCatalogScope(context.Background(), []string{"echo"})
+		result, err := registry.Execute(scopedCtx, "functions.echo", json.RawMessage(`{}`))
+		if err != nil || !result.IsError || result.Content != "tool not found: functions.echo" {
+			t.Errorf("Execute(functions.echo, disabled in scope) = %+v, %v, want generic not-found without catalog hint", result, err)
+		}
+	})
+	t.Run("granted candidate gets hint", func(t *testing.T) {
+		registry := NewToolRegistry()
+		setDefaultGroupPolicies(registry)
+		probe := &gateProbeTool{mockTool: *newMockTool("echo", "candidate")}
+		registry.Register(probe)
+		scopedCtx := sdktools.WithCatalogScope(context.Background(), []string{"echo"})
+		result, err := registry.Execute(scopedCtx, "functions.echo", json.RawMessage(`{}`))
+		if err != nil || !result.IsError || !strings.HasPrefix(result.Content, "tool not found: functions.echo") {
+			t.Errorf("Execute(functions.echo, granted scope) = %+v, %v, want not-found error result", result, err)
+		}
+		for _, hint := range []string{`"echo"`, "batch.calls[].tool", "direct tool call name"} {
+			if !strings.Contains(result.Content, hint) {
+				t.Errorf("Execute(functions.echo, granted scope).Content = %q, want hint %q", result.Content, hint)
+			}
+		}
+		if probe.execCalls != 0 {
+			t.Errorf("executions = %d, want 0 (the hint path never dispatches)", probe.execCalls)
+		}
+	})
+}
+
 func TestToolRegistry_RegisterAndGet(t *testing.T) {
 	registry := NewToolRegistry()
 	tool := newMockTool("echo", "An echo tool")
@@ -470,6 +592,7 @@ func TestPolicyAlwaysAllow_ExecutesImmediately(t *testing.T) {
 // TestPolicyAlwaysDeny_BlocksExecution tests that a deny group blocks execution.
 func TestPolicyAlwaysDeny_BlocksExecution(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: tool blocked by group policy (deny)", attrs: map[string]string{"group": "local_write", "tool": "always_deny"}})
 	tool := newMockTool("always_deny", "A tool in a deny-postured group")
 	registry.Register(tool)
 
@@ -713,6 +836,7 @@ func TestGroupPolicies_FailSafeDefault(t *testing.T) {
 // configuration round (mirrors UpdateSecurityPolicies re-application).
 func TestGroupPolicies_ReplacementNotMerge(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: tool blocked by group policy (deny)", attrs: map[string]string{"group": "local_read", "tool": "reader"}})
 	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
 		sdktools.GroupLocalRead: sdktools.PolicyAlwaysAllow,
 	})
@@ -943,6 +1067,7 @@ func TestPolicyAlwaysAllow_WithToolJudgerFlags(t *testing.T) {
 // security control must never be weakened by the advisory Ask Agent action.
 func TestPolicyAlwaysAllow_HardReasonForcesConfirmationWithDisabledJudge(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "local_read", "reason": "command matches blacklist pattern: rm\\s+-rf\\s+/", "tool": "judger_tool"}})
 	setDefaultGroupPolicies(registry)
 	const pattern = `rm\s+-rf\s+/`
 	registry.Register(newMockHardJudgerTool("judger_tool", "command matches blacklist pattern: "+pattern, sdktools.ReasonCodeCommandBlacklist))
@@ -975,6 +1100,7 @@ func TestPolicyAlwaysAllow_HardReasonForcesConfirmationWithDisabledJudge(t *test
 // to a forced confirmation.
 func TestPolicyAlwaysAllow_HardReasonNeverAutoApprovedBySmartApprove(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "local_read", "reason": "command matches blacklist pattern: shutdown", "tool": "judger_tool"}})
 	setDefaultGroupPolicies(registry)
 	registry.SetAutonomyMode(AutonomyModeAssisted)
 	registry.Register(newMockHardJudgerTool("judger_tool", "command matches blacklist pattern: shutdown", sdktools.ReasonCodeCommandBlacklist))
@@ -1413,6 +1539,7 @@ func TestAutoApproval_AllowedRoot(t *testing.T) {
 // are inside the session workspace — and with the advisory judge disabled.
 func TestAutoApproval_AllowGroup_JudgerHardFlagsBeforeAutoApprove(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "local_read", "reason": "command matches blacklist pattern: rm -rf", "tool": "bash_exec"}})
 	setDefaultGroupPolicies(registry)
 	registry.Register(newMockHardJudgerTool("bash_exec", "command matches blacklist pattern: rm -rf", sdktools.ReasonCodeCommandBlacklist))
 
@@ -1536,6 +1663,7 @@ func TestLocalWriteAutoApproval_SymlinkInsideRootsAutoApproved(t *testing.T) {
 	}
 
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "symlink detection narrowed by path-field allowlist; non-path string fields not scanned", attrs: map[string]string{"tool": "write_file", "scanned_path_fields": "[path]", "unscanned_string_fields": "[content]"}})
 	registry.SetAutoApproveWorkspaceWrites(true)
 	registry.Register(builtins.NewWriteFileTool())
 
@@ -1570,6 +1698,8 @@ func TestLocalWriteAutoApproval_SymlinkEscapeForcesHardConfirm(t *testing.T) {
 	}
 
 	registry := NewToolRegistry()
+	reasonAttrs := map[string]string{"tool": "write_file", "group": "local_write", "reason": ""}
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "symlink detection narrowed by path-field allowlist; non-path string fields not scanned", attrs: map[string]string{"tool": "write_file", "scanned_path_fields": "[path]", "unscanned_string_fields": "[content]"}}, expectedToolDiagnostic{message: "security: user_confirm tool escalated by hard safety reason", attrs: reasonAttrs})
 	registry.SetAutoApproveWorkspaceWrites(true)
 	registry.SetAutonomyMode(AutonomyModeAssisted)
 	registry.Register(builtins.NewWriteFileTool())
@@ -1579,6 +1709,7 @@ func TestLocalWriteAutoApproval_SymlinkEscapeForcesHardConfirm(t *testing.T) {
 	var req sdktools.ConfirmationRequest
 	confirmCalled := false
 	registry.SetConfirmFunc(func(_ context.Context, r sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		reasonAttrs["reason"] = strings.TrimPrefix(r.JudgeReasoning, "A security control fired on this destructive call and cannot be waived by an advisory judge; manual confirmation required. ")
 		confirmCalled = true
 		req = r
 		return sdktools.ConfirmDeny, nil
@@ -1615,6 +1746,7 @@ func TestLocalWriteAutoApproval_DotDotNormalizationAutoApproved(t *testing.T) {
 	}
 
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "symlink detection narrowed by path-field allowlist; non-path string fields not scanned", attrs: map[string]string{"tool": "write_file", "scanned_path_fields": "[path]", "unscanned_string_fields": "[content]"}})
 	registry.SetAutoApproveWorkspaceWrites(true)
 	registry.Register(builtins.NewWriteFileTool())
 
@@ -1646,6 +1778,7 @@ func TestLocalWriteAutoApproval_DotDotEscapeBlocked(t *testing.T) {
 	}
 
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "symlink detection narrowed by path-field allowlist; non-path string fields not scanned", attrs: map[string]string{"tool": "write_file", "scanned_path_fields": "[path]", "unscanned_string_fields": "[content]"}})
 	registry.SetAutoApproveWorkspaceWrites(true)
 	registry.Register(builtins.NewWriteFileTool())
 
@@ -1743,6 +1876,7 @@ func TestSystemGroupByDeclarationNotName(t *testing.T) {
 // so a disabled system tool (semantic_search) is blocked at execution time.
 func TestSystemToolDisabledInNoProjectStillBlocked(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: tool blocked in No Project mode", attrs: map[string]string{"reason": "disabled_in_no_project", "tool": "semantic_search"}})
 	registry.Register(newMockSystemTool("semantic_search", "vector search"))
 	registry.SetDisabledTools(map[string]bool{"semantic_search": true})
 
@@ -2174,6 +2308,7 @@ func TestSmartApprove_UnavailableJudgeKeepsConcreteReason(t *testing.T) {
 // auto-approved.
 func TestSmartApprove_UserConfirmHardReasonConsultsJudgeThenForcesConfirm(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: user_confirm tool escalated by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "command matches blacklist pattern: mkfs", "tool": "bash_exec"}})
 	setDefaultGroupPolicies(registry)
 	registry.SetAutonomyMode(AutonomyModeAssisted)
 	registry.Register(newMockExecuteJudgerTool("bash_exec", sdktools.JudgeOutcome{
@@ -2222,6 +2357,7 @@ func TestSmartApprove_UserConfirmHardReasonConsultsJudgeThenForcesConfirm(t *tes
 // are hard-blocked by the backstop.
 func TestSmartApprove_HardScopePatternReasonCanBeClearedByJudge(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: user_confirm tool escalated by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "command contains unresolvable path-like token(s): /tmp/nope", "tool": "bash_exec"}})
 	setDefaultGroupPolicies(registry)
 	registry.SetAutonomyMode(AutonomyModeAssisted)
 	registry.Register(newMockExecuteJudgerTool("bash_exec", sdktools.JudgeOutcome{
@@ -2300,6 +2436,15 @@ func TestSmartApprove_CleanAllowAndDenyBypassJudge(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			registry := NewToolRegistry()
+			{
+				var want []expectedToolDiagnostic
+				if tt.policy == sdktools.PolicyAlwaysDeny {
+					want = []expectedToolDiagnostic{
+						{message: "security: tool blocked by group policy (deny)", attrs: map[string]string{"group": "local_write", "tool": "policy_tool"}},
+					}
+				}
+				captureToolDiagnostics(t, registry, want...)
+			}
 			registry.SetAutonomyMode(AutonomyModeAssisted)
 			registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{tt.group: tt.policy})
 			tool := newMockReadOnlyTool("policy_tool", "policy test")
@@ -2440,6 +2585,28 @@ func TestSilentMode_ToolConfirm_Terminals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			registry := NewToolRegistry()
+			{
+				var want []expectedToolDiagnostic
+				switch t.Name() {
+				case "TestSilentMode_ToolConfirm_Terminals/judge_ALLOW_executes_a_canonical_hard_reason_(no_silent_backstop)":
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "local_read", "reason": "command matches blacklist pattern: mkfs", "tool": "esc_tool"}},
+					}
+				case "TestSilentMode_ToolConfirm_Terminals/allow_escalates_a_canonical_hard_reason_to_the_judge,_whose_ALLOW_executes":
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "local_read", "reason": "command matches blacklist pattern: mkfs", "tool": "esc_tool"}},
+					}
+				case "TestSilentMode_ToolConfirm_Terminals/allow_escalates_a_hard_reason_to_the_judge,_which_denies":
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "local_read", "reason": "symlink escapes the session roots", "tool": "esc_tool"}},
+					}
+				case "TestSilentMode_ToolConfirm_Terminals/deny_blocks_without_consulting_the_judge":
+					want = []expectedToolDiagnostic{
+						{message: "security: silent mode denied confirmation-gated call", attrs: map[string]string{"group": "local_write", "mode": "deny", "tool": "mutating"}},
+					}
+				}
+				captureToolDiagnostics(t, registry, want...)
+			}
 			setDefaultGroupPolicies(registry)
 			// The autonomy mode is silent so the silent terminal is exercised
 			// on its own.
@@ -2545,6 +2712,7 @@ func TestSilentMode_JudgesOnItsOwnWithoutConfirmFunc(t *testing.T) {
 // fail-closed behaviour) is untouched.
 func TestSilentMode_NonSilentPathUnchanged(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: tool confirmation unavailable; execution denied", attrs: map[string]string{"asi_scope": "ASI02,ASI09", "reason": "confirm_func_nil", "tool": "mutating"}})
 	setDefaultGroupPolicies(registry)
 	registry.Register(newMockTool("mutating", "mutates"))
 
@@ -2565,6 +2733,7 @@ func TestSilentMode_NonSilentPathUnchanged(t *testing.T) {
 func TestSilentMode_DenyGroupsAndWorkspaceAutoApproveUnchanged(t *testing.T) {
 	// A deny group is blocked outright, regardless of the silent tool_confirm mode.
 	denyReg := NewToolRegistry()
+	captureToolDiagnostics(t, denyReg, expectedToolDiagnostic{message: "security: tool blocked by group policy (deny)", attrs: map[string]string{"group": "local_write", "tool": "mutating"}})
 	denyReg.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
 		sdktools.GroupLocalWrite: sdktools.PolicyAlwaysDeny,
 	})
@@ -2616,6 +2785,7 @@ func TestSilentMode_DenyGroupsAndWorkspaceAutoApproveUnchanged(t *testing.T) {
 
 func TestConfirmFunc_NilUserConfirmFailsClosed(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: tool confirmation unavailable; execution denied", attrs: map[string]string{"asi_scope": "ASI02,ASI09", "reason": "confirm_func_nil", "tool": "mutating"}})
 	registry.Register(newMockTool("mutating", "mutates"))
 
 	result, err := registry.Execute(context.Background(), "mutating", json.RawMessage(`{"data":"test"}`))
@@ -2708,6 +2878,7 @@ func TestPostExecuteHook_NotCalledForSystemTools(t *testing.T) {
 // result.IsError.
 func TestPostExecuteHook_CalledOnGroupDeny(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: tool blocked by group policy (deny)", attrs: map[string]string{"group": "local_write", "tool": "denied_tool"}})
 	tool := newMockTool("denied_tool", "A tool in a deny group")
 	registry.Register(tool)
 	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
@@ -2827,6 +2998,7 @@ func TestToolFilter_NilAllowsAll(t *testing.T) {
 // respected even when all paths are within the workspace.
 func TestAutoApproval_DenyGroupRespected(t *testing.T) {
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: tool blocked by group policy (deny)", attrs: map[string]string{"group": "local_write", "tool": "always_deny"}})
 	tool := newMockTool("always_deny", "A tool in a deny-postured group")
 	registry.Register(tool)
 	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
@@ -2872,6 +3044,7 @@ func TestGateOrder_DenyBeforeJudgeAndSymlink(t *testing.T) {
 	}
 
 	registry := NewToolRegistry()
+	captureToolDiagnostics(t, registry, expectedToolDiagnostic{message: "security: tool blocked by group policy (deny)", attrs: map[string]string{"group": "local_read", "tool": "read_file"}})
 	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
 		sdktools.GroupLocalRead: sdktools.PolicyAlwaysDeny,
 	})

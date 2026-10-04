@@ -209,10 +209,11 @@ func TestEventBatcher_FlushOnEmptyIsNoOp(t *testing.T) {
 	defer b.Stop()
 
 	b.Flush()
+	b.Stop() // join the only asynchronous emitter before asserting absence
 	select {
 	case ev := <-sink.ch:
 		t.Fatalf("empty flush emitted %+v", ev)
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 }
 

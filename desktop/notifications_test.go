@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -339,6 +340,12 @@ func TestInitNotifications_DarwinAuthorizationBranch(t *testing.T) {
 			notificationAuthorizationPlatform = "darwin"
 			f.authGranted = tc.granted
 			f.authErr = tc.authErr
+			if tc.authErr != nil {
+				injectExpectedDiagnostics(t, f.app, diagnosticExpectation{
+					level: slog.LevelWarn, message: "notification authorization request failed",
+					attrs: map[string]string{"error": tc.authErr.Error()},
+				})
+			}
 
 			if err := f.app.InitNotifications(); err != nil {
 				t.Fatalf("InitNotifications failed: %v", err)
@@ -566,6 +573,17 @@ func TestNotificationExpireTimeoutMs(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			app := NewApp()
+			if tc.seconds != nil && *tc.seconds > config.NotificationBannerTimeoutMaxSeconds {
+				injectExpectedDiagnostics(t, app, diagnosticExpectation{
+					level: slog.LevelWarn, message: "notification banner timeout exceeds the maximum; clamping",
+					attrs: map[string]string{"configured_seconds": strconv.Itoa(*tc.seconds), "max_seconds": strconv.Itoa(config.NotificationBannerTimeoutMaxSeconds)},
+				})
+			} else if tc.seconds != nil && *tc.seconds < config.NotificationBannerTimeoutDaemonDefault {
+				injectExpectedDiagnostics(t, app, diagnosticExpectation{
+					level: slog.LevelWarn, message: "notification banner timeout is below the -1 sentinel; using the daemon default",
+					attrs: map[string]string{"configured_seconds": strconv.Itoa(*tc.seconds)},
+				})
+			}
 			if tc.seconds != nil {
 				app.FrontendAPI = backend.NewFrontendAPI(backend.FrontendAPIConfig{
 					Config: &config.Config{

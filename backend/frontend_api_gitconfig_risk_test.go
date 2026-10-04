@@ -257,6 +257,10 @@ func TestNotifyGitConfigRisk_IncludeDirectiveFailsClosed(t *testing.T) {
 	writeGitConfig(t, dir, "[include]\n\tpath = ~/.gitconfig-evil\n")
 
 	f := &FrontendAPI{}
+	captureMiscDiagnostics(t, f, miscExpectedDiagnostic{
+		message: "git config include directive ignored (not followed); config is an incomplete view",
+		attrs:   map[string]string{"line": "2", "conditional": "false", "condition": "", "path": "~/.gitconfig-evil"},
+	})
 	rec := newRiskRecorder(t, f)
 	f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
 
@@ -287,6 +291,10 @@ func TestNotifyGitConfigRisk_AttributesDisabledDisclosure(t *testing.T) {
 		writeGitConfig(t, dir, "[include]\n\tpath = ~/.gitconfig-evil\n")
 
 		f := &FrontendAPI{}
+		captureMiscDiagnostics(t, f, miscExpectedDiagnostic{
+			message: "git config include directive ignored (not followed); config is an incomplete view",
+			attrs:   map[string]string{"line": "2", "conditional": "false", "condition": "", "path": "~/.gitconfig-evil"},
+		})
 		rec := newRiskRecorder(t, f)
 		f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
 
@@ -617,6 +625,10 @@ func TestNotifyGitConfigRisk_AttributeRoutingSourcesEmitted(t *testing.T) {
 	}
 
 	f := &FrontendAPI{}
+	captureMiscDiagnostics(t, f, miscExpectedDiagnostic{
+		message: "git config include directive ignored (not followed); config is an incomplete view",
+		attrs:   map[string]string{"line": "2", "conditional": "false", "condition": "", "path": "/abs/extra.conf"},
+	})
 	rec := newRiskRecorder(t, f)
 	f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
 
@@ -950,6 +962,11 @@ func TestNotifyGitConfigRisk_TrustedRepoDriftCoversIncludes(t *testing.T) {
 	writeGitConfig(t, dir, "[include]\n\tpath = "+extra+"\n")
 
 	f, _, _ := newTestAPI(t)
+	wantDiagnostic := miscExpectedDiagnostic{
+		message: "git config include directive ignored (not followed); config is an incomplete view",
+		attrs:   map[string]string{"line": "2", "conditional": "false", "condition": "", "path": extra},
+	}
+	captureMiscDiagnostics(t, f, wantDiagnostic, wantDiagnostic)
 	if err := f.TrustGitRepo(dir); err != nil {
 		t.Fatalf("TrustGitRepo: %v", err)
 	}

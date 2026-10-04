@@ -805,7 +805,11 @@ func splitSnapshotSections(snapshot []byte) ([]snapshotSection, error) {
 // byte-identical to the scan's SemanticSnapshot(), because each layer's
 // canonical lines are a pure function of the layer's raw bytes and the
 // verbatim sections are carried over unchanged.
-func semanticSnapshotFromSnapshot(raw []byte) ([]byte, error) {
+func semanticSnapshotFromSnapshot(raw []byte, loggers ...*slog.Logger) ([]byte, error) {
+	logger := slog.Default()
+	if len(loggers) > 0 && loggers[0] != nil {
+		logger = loggers[0]
+	}
 	sections, err := splitSnapshotSections(raw)
 	if err != nil {
 		return nil, err
@@ -818,7 +822,7 @@ func semanticSnapshotFromSnapshot(raw []byte) ([]byte, error) {
 			writeSnapshotSource(&b, gitConfigSource(sec))
 			continue
 		}
-		parsed := parseGitConfigData(string(sec.data), slog.Default())
+		parsed := parseGitConfigData(string(sec.data), logger)
 		writeSnapshotSource(&b, gitConfigSource{
 			kind: sec.kind,
 			path: sec.path,
@@ -836,9 +840,10 @@ func semanticSnapshotFromSnapshot(raw []byte) ([]byte, error) {
 // store both content-addressed. An error means the snapshot lacks structure
 // the recovery can interpret (not a snapshot, an unknown source kind): the
 // caller must fail closed and evict the trust rather than carry an
-// unverifiable one over.
-func SemanticFingerprintFromSnapshot(raw []byte) (fingerprint string, semantic []byte, err error) {
-	semantic, err = semanticSnapshotFromSnapshot(raw)
+// unverifiable one over. An optional logger receives the same parser warnings
+// as ScanGitConfig; when omitted the default logger is preserved.
+func SemanticFingerprintFromSnapshot(raw []byte, loggers ...*slog.Logger) (fingerprint string, semantic []byte, err error) {
+	semantic, err = semanticSnapshotFromSnapshot(raw, loggers...)
 	if err != nil {
 		return "", nil, err
 	}

@@ -29,6 +29,8 @@ func (s *workDirsSessionStore) ListSessionWorkDirs(_ context.Context, _ string) 
 func TestJudgeContext_UnknownSession_ReturnsUnchanged(t *testing.T) {
 	m, _, _ := testManager(t)
 
+	captureManagerDiagnostics(t, m, warningDiagnostic("judge context: session not found", map[string]string{"session_id": "missing-session"}))
+
 	ctx := m.JudgeContext(context.Background(), "missing-session")
 
 	if got := sdktools.WorkspacePathFrom(ctx); got != "" {

@@ -214,6 +214,8 @@ func TestRestoreSession_LastTaskIDStoreError(t *testing.T) {
 	mgr, store := restoreTestManagerWithTaskStore(t, ts)
 	seedSession(t, store, "restore-task-3", testProjectID, "Session Store Error", false)
 
+	captureManagerDiagnostics(t, mgr, warningDiagnostic("failed to restore last task ID for session", map[string]string{"session_id": "restore-task-3", "error": "db locked"}))
+
 	sess, ok := mgr.GetSession("restore-task-3")
 	if !ok {
 		t.Fatal("GetSession should restore the session despite task store error")

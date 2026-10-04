@@ -47,7 +47,8 @@ Rule enforced by layout: `backend/` and `desktop/` import `core` directly. `core
 
 Use the Makefile; it handles platform-specific ONNX Runtime bootstrap across the single root Go module and the frontend:
 
-- `make test` — `go test ./...` (root) + `cd frontend && npm test` (vitest)
+- `make test` — default Go checks (`make test-go`: uncached verbose run, explicit `-skip '^TestStress'`) + frontend vitest. Real HTTP/PTY/SQLite integration stays default.
+- `make test-stress` (Windows: `go run ./internal/teststress`) — required probabilistic category, 20 race/shuffled repetitions with per-test run/pass counts (output is buffered and printed in full only when the run fails, keeping CI logs compact). All CI OS/arch legs run it separately; failure, skip or missing coverage fails. Raw `go test ./...` still includes stress. CI default-test steps keep `-v` but filter the stream through awk so only failures, skips and stray diagnostics land in the log.
 - `make lint` — `make fmt-check` + `golangci-lint run` (root) + `cd frontend && npm run lint` (config at `.golangci.yml`, v2 schema)
 - `make vulncheck` — Go dependency vulnerability gate (`govulncheck`, version pinned in the Makefile). Fails when a vulnerability from the official Go vulnerability database is reachable from this module's code. The CI `security` job runs the exact same command. **Mandatory before every PR** — a stale Go toolchain (go.mod below the latest security patch) fails this gate even when lint and test are clean. On Windows (no make): `go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...`
 - `make fmt-check` — fails when `gofmt -l` reports any Go file under the root package, `internal/`, `core/`, `backend/`, or `desktop/`
@@ -59,6 +60,20 @@ Use the Makefile; it handles platform-specific ONNX Runtime bootstrap across the
 - `make clean` — removes `build/bin`, `.cache`, `frontend/dist`
 
 Frontend-only: `cd frontend && npm run lint | build | dev | test`. Frontend tests use **vitest** (`npm test` / `npm run test:watch`); test files live alongside source (`*.test.ts`).
+
+### Test output quality (TypeScript and Go)
+
+- A successful TS/Go test run requires **both passing tests and zero errors or warnings in the test output**, including messages from deliberately exercised failure paths. A zero exit code or a `passed` summary alone is insufficient. Inspect the complete stdout/stderr (for Go, use an uncached run with `-count=1` and inspect `-v` or `-json` output so passing-package output is visible).
+- **Expected diagnostics are intercepted at their source in the specific test that triggers them**, with assertions on their severity, payload/message and call count when diagnostics are part of the behavior under test. TS tests use scoped console/logger spies; Go tests use a test-local injected logger/handler or the test server's error logger. Restore spies and release resources with test cleanup (`onTestFinished`/`afterEach`, `t.Cleanup`). Preserve the failure/recovery assertions and production logging behavior.
+- **Unexpected diagnostics are fixed at their cause** (including React `act()` warnings, unhandled rejections, races and leaked asynchronous work), then the affected tests and full suite are rerun. Global console/logger silencing, broad warning filters, raised log thresholds, output redirection to discard, and weakened assertions are not substitutes for a clean run.
+- Build/lint results and their diagnostics are reported separately from test results; any unresolved diagnostics or incomplete checks are explicit blockers, not an unconditional clean-verification claim. See [Testing Environment Conventions](specs/domains/testing.md).
+
+### Timer and concurrency tests
+
+- Use virtual time for self-contained timer units, and entered/release/done barriers plus join for ordering. Never use sleep to give the scheduler a chance, make mtime distinct, or flush RPC microtasks. Register idempotent release cleanup before any fatal assertion; join before resource cleanup and no-call assertions.
+- Keep real OS/HTTP/fsnotify/SQLite/PTY/process integration outside synctest. Bounded watchdogs detect hangs, not absence or exact elapsed-time behavior. Name any OS sampling exception and its limitations; keep deterministic timer/state regressions alongside real stress.
+- Run `go test -count=1 -v ./internal/testtiming`: the default-suite guard rejects new Sleep/empty timeout-select/direct TS delay-promise debt and increased duplicate counts. `timing-debt.json` is a visible legacy backlog, **not** permission to add sleeps. Update it only as an explicitly reviewed migration operation, never automatically in CI. Current scope, residual risks and stress commands: [Timing migration ledger](docs/development/test-timing-migration.md).
+- Do not hide contention/stress coverage behind silent skips. Preserve explicit execution and result visibility when separating it from default unit checks.
 
 ### Focused Go workflows
 
@@ -247,4 +262,4 @@ Session event handler subscribes to all session-scoped events on session change.
 
 ## Pre-PR checklist
 
-`make build` → `make lint` → `make test` → `make vulncheck`. All four must be clean. CI (`.github/workflows/ci.yml`) runs the corresponding build/lint/test matrix on Linux, macOS, and Windows plus the `security` job (`make vulncheck`) for pushes and PRs to `main`; local verification is the gate before pushing — if `make vulncheck` passes locally but fails in CI (or vice versa), the Go toolchain pins in `go.mod` and `.github/workflows/*.yml` have drifted and must be realigned first.
+`make build` → `make lint` → `make test` → `make test-stress` → `make vulncheck`. All five must be clean. CI (`.github/workflows/ci.yml`) runs the corresponding build/lint/test matrix on Linux, macOS, and Windows plus the `security` job (`make vulncheck`) for pushes and PRs to `main`; local verification is the gate before pushing — if `make vulncheck` passes locally but fails in CI (or vice versa), the Go toolchain pins in `go.mod` and `.github/workflows/*.yml` have drifted and must be realigned first.

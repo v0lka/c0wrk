@@ -142,8 +142,8 @@ func TestOptimizeExtract_RequestShapeAndFallback(t *testing.T) {
 		if req.ReasoningEffort != "low" {
 			t.Errorf("ReasoningEffort = %q, want the tier-minimal spelling %q", req.ReasoningEffort, "low")
 		}
-		if req.MaxTokens != 500 {
-			t.Errorf("MaxTokens = %d, want 500", req.MaxTokens)
+		if req.MaxTokens != 2048 {
+			t.Errorf("MaxTokens = %d, want reasoning output floor 2048", req.MaxTokens)
 		}
 		if req.CallPurpose != llm.CallPurposeSummarization {
 			t.Errorf("CallPurpose = %q, want %q", req.CallPurpose, llm.CallPurposeSummarization)
@@ -154,7 +154,7 @@ func TestOptimizeExtract_RequestShapeAndFallback(t *testing.T) {
 		mock := &mockLLMCaller{responses: []*llm.ChatResponse{
 			{Message: llm.Message{Content: "not json at all"}},
 		}}
-		b := &OrchestratorBuilder{logger: slog.Default(), mu: sync.RWMutex{}}
+		b := &OrchestratorBuilder{logger: expectedCoreLogger(t, expectedServiceDiagnostic("optimize_extract", "qwen3.8-max", "fallback", 3)), mu: sync.RWMutex{}}
 
 		got, err := b.optimizeExtract(context.Background(), mock, "qwen3.8-max", "почини баг логина")
 		if err != nil {
@@ -193,8 +193,8 @@ func TestOptimizeRewrite_ParseAndRefusal(t *testing.T) {
 		if req.ReasoningEffort != "low" {
 			t.Errorf("ReasoningEffort = %q, want the tier-minimal spelling %q", req.ReasoningEffort, "low")
 		}
-		if req.MaxTokens != 2000 {
-			t.Errorf("MaxTokens = %d, want 2000", req.MaxTokens)
+		if req.MaxTokens != 2048 {
+			t.Errorf("MaxTokens = %d, want reasoning output floor 2048", req.MaxTokens)
 		}
 	})
 
@@ -217,7 +217,7 @@ func TestOptimizeRewrite_ParseAndRefusal(t *testing.T) {
 		mock := &mockLLMCaller{responses: []*llm.ChatResponse{
 			{Message: llm.Message{Content: ""}},
 		}}
-		b := &OrchestratorBuilder{logger: slog.Default(), mu: sync.RWMutex{}}
+		b := &OrchestratorBuilder{logger: expectedCoreLogger(t, expectedRewriteDiagnostic(), expectedRewriteDiagnostic(), expectedRewriteDiagnostic(), expectedServiceDiagnostic("optimize_rewrite", "qwen3.8-max", "error", 3)), mu: sync.RWMutex{}}
 
 		_, err := b.optimizeRewrite(context.Background(), mock, "qwen3.8-max", "## Original Prompt\n\nfix auth")
 		if err == nil {

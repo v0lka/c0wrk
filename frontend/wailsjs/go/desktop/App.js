@@ -38,6 +38,10 @@ export function AttachFiles(arg1, arg2) {
   return window['go']['desktop']['App']['AttachFiles'](arg1, arg2);
 }
 
+export function CancelChatGPTSignIn() {
+  return window['go']['desktop']['App']['CancelChatGPTSignIn']();
+}
+
 export function CancelEmbeddedLLMInstall() {
   return window['go']['desktop']['App']['CancelEmbeddedLLMInstall']();
 }
@@ -186,6 +190,10 @@ export function Fetch(arg1, arg2) {
   return window['go']['desktop']['App']['Fetch'](arg1, arg2);
 }
 
+export function FetchChatGPTModels() {
+  return window['go']['desktop']['App']['FetchChatGPTModels']();
+}
+
 export function FetchPaperOriginal(arg1, arg2) {
   return window['go']['desktop']['App']['FetchPaperOriginal'](arg1, arg2);
 }
@@ -216,6 +224,14 @@ export function GetBranchBases() {
 
 export function GetBranches() {
   return window['go']['desktop']['App']['GetBranches']();
+}
+
+export function GetChatGPTAuthStatus() {
+  return window['go']['desktop']['App']['GetChatGPTAuthStatus']();
+}
+
+export function GetChatGPTModelPreset() {
+  return window['go']['desktop']['App']['GetChatGPTModelPreset']();
 }
 
 export function GetCommitDiff(arg1) {
@@ -730,6 +746,10 @@ export function ShowTestNotification() {
   return window['go']['desktop']['App']['ShowTestNotification']();
 }
 
+export function SignOutChatGPT() {
+  return window['go']['desktop']['App']['SignOutChatGPT']();
+}
+
 export function SkipVersion(arg1) {
   return window['go']['desktop']['App']['SkipVersion'](arg1);
 }
@@ -740,6 +760,10 @@ export function StageAll() {
 
 export function StageFile(arg1) {
   return window['go']['desktop']['App']['StageFile'](arg1);
+}
+
+export function StartChatGPTSignIn() {
+  return window['go']['desktop']['App']['StartChatGPTSignIn']();
 }
 
 export function StartTerminal(arg1) {

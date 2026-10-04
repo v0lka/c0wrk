@@ -118,8 +118,11 @@ func TestSymlinkGate_EscapeForcesHardConfirm(t *testing.T) {
 	_ = os.Symlink(outside, symlinkPath)
 
 	r := newRegistryForSymlinkTest(t)
+	reasonAttrs := map[string]string{"tool": "read_file", "group": "local_read", "reason": ""}
+	captureToolDiagnostics(t, r, expectedToolDiagnostic{message: "security: allow-policy tool escalated by hard safety reason", attrs: reasonAttrs})
 	confirmed := make(chan sdktools.ConfirmationRequest, 1)
 	r.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		reasonAttrs["reason"] = req.JudgeReasoning
 		confirmed <- req
 		return sdktools.ConfirmAllowOnce, nil
 	})
@@ -160,6 +163,7 @@ func TestSymlinkGate_RespectsGroupDeny(t *testing.T) {
 	_ = os.Symlink(realDir, symlinkPath)
 
 	r := newRegistryForSymlinkTest(t)
+	captureToolDiagnostics(t, r, expectedToolDiagnostic{message: "security: tool blocked by group policy (deny)", attrs: map[string]string{"tool": "read_file", "group": "local_read"}})
 	r.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
 		sdktools.GroupLocalRead: sdktools.PolicyAlwaysDeny,
 	})
@@ -191,7 +195,10 @@ func TestSymlinkGate_DenyResponse(t *testing.T) {
 	_ = os.Symlink(outside, symlinkPath)
 
 	r := newRegistryForSymlinkTest(t)
+	reasonAttrs := map[string]string{"tool": "read_file", "group": "local_read", "reason": ""}
+	captureToolDiagnostics(t, r, expectedToolDiagnostic{message: "security: allow-policy tool escalated by hard safety reason", attrs: reasonAttrs})
 	r.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		reasonAttrs["reason"] = req.JudgeReasoning
 		return sdktools.ConfirmDeny, nil
 	})
 

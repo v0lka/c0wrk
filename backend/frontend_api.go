@@ -268,6 +268,12 @@ type FrontendAPI struct {
 	// lock order and the RPC surface.
 	embedded embeddedLLMState
 
+	// ChatGPT subscription-auth subsystem state: the providerauth token
+	// manager, the in-flight browser sign-in run and its last error. A value
+	// field with its own mutex, constructed by InitChatGPTAuth on the startup
+	// path — see frontend_api_auth.go for the lock order and the RPC surface.
+	chatgptAuth chatgptAuthState
+
 	// Terminal
 	terminalManager TerminalManager
 
@@ -604,6 +610,20 @@ func (f *FrontendAPI) isNoProject() bool {
 // Moved to FrontendAPILifecycle to avoid exposure on the Wails RPC surface.
 func (l *FrontendAPILifecycle) Cleanup() {
 	f := l.f
+	// Cancel an in-flight ChatGPT browser sign-in FIRST: its loopback
+	// listener and its goroutine must not outlive the teardown. The stop is
+	// marked REQUESTED — a quit is a deliberate stop of the flow, not a
+	// fault of it — so the run closes with the quiet `cancelled` event
+	// instead of recording a bogus last_error nobody will ever read (the
+	// process is exiting; the recorder dies with it). The run's own failure
+	// branch does the bookkeeping whenever it unblocks, so this is
+	// fire-and-forget — non-blocking by construction.
+	f.chatgptAuth.mu.Lock()
+	if f.chatgptAuth.inFlight && f.chatgptAuth.cancel != nil {
+		f.chatgptAuth.cancelRequested = true
+		f.chatgptAuth.cancel()
+	}
+	f.chatgptAuth.mu.Unlock()
 	// Stop the periodic auto-fetch ticker first so no new background fetch
 	// starts while the rest of the backend tears down. Non-blocking: an
 	// in-flight fetch is already bounded by remoteGitCmdTimeout and

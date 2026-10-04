@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -81,36 +82,66 @@ func TestLoadTimeIsNotChargedToTheIdleBudget(t *testing.T) {
 	}
 }
 
-// TestIdleBudgetSurvivesASlowLoadInRealTime repeats the same property with the
-// real clock and a real timer, so it cannot be satisfied by fake-clock arithmetic
-// alone: the process must still be alive well past the point at which a
-// load-start stamp would have expired the budget.
-func TestIdleBudgetSurvivesASlowLoadInRealTime(t *testing.T) {
-	t.Parallel()
-
-	fx := newFixture(t, fixtureOptions{
-		autoUnload: AutoUnload{Enabled: true, Idle: 300 * time.Millisecond},
-		notReady:   25,
-		readyDelay: 10 * time.Millisecond, // the ticker floors the load at ~250 ms
+// TestIdleTimerStartsOnlyWhenArmed pairs actual AfterFunc firing with the
+// Server/HTTP load-stamp acceptance above, without putting OS I/O in a bubble.
+func TestIdleTimerStartsOnlyWhenArmed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var idle idleTimer
+		idle.seed(AutoUnload{Enabled: true, Idle: 300 * time.Millisecond})
+		defer idle.disarm()
+		var expired atomic.Int32
+		expire := func() { expired.Add(1) }
+		idle.mark(time.Now(), false, expire) // Model is not usable yet.
+		time.Sleep(time.Hour)
+		synctest.Wait()
+		if expired.Load() != 0 {
+			t.Fatal("idle callback ran while model was not armed")
+		}
+		idle.mark(time.Now(), true, expire) // Completion grants a whole budget.
+		time.Sleep(300*time.Millisecond - time.Nanosecond)
+		synctest.Wait()
+		if left, armed := idle.remaining(time.Now()); !armed || left != time.Nanosecond {
+			t.Fatalf("remaining before expiry = %v/%t, want 1ns/true", left, armed)
+		}
+		if expired.Load() != 0 {
+			t.Fatal("idle callback fired before budget boundary")
+		}
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		if got := expired.Load(); got != 1 {
+			t.Errorf("expiry callbacks at boundary = %d, want 1", got)
+		}
 	})
+}
 
-	if err := fx.srv.Load(context.Background()); err != nil {
-		t.Fatalf("Load: %v", err)
+func TestIdleTimerDisabledAndDisarmedCannotExpire(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		enabled, disarm bool
+	}{
+		{name: "disabled"}, {name: "explicit disarm", enabled: true, disarm: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var idle idleTimer
+				idle.seed(AutoUnload{Enabled: tc.enabled, Idle: time.Minute})
+				defer idle.disarm()
+				var expired atomic.Int32
+				idle.mark(time.Now(), true, func() { expired.Add(1) })
+				if tc.disarm {
+					idle.disarm()
+				}
+				time.Sleep(2 * time.Minute)
+				synctest.Wait()
+				if got := expired.Load(); got != 0 {
+					t.Errorf("callbacks after disabled/disarm = %d, want 0", got)
+				}
+				if left, armed := idle.remaining(time.Now()); armed || left != 0 {
+					t.Errorf("remaining = %v/%t, want 0/false", left, armed)
+				}
+			})
+		})
 	}
-	proc := fx.spawner.lastProcess()
-
-	// Half the budget after the load COMPLETED. A budget stamped at the spawn
-	// would already have consumed the ~250 ms of loading against the 300 ms
-	// idle, and the model would be gone by now.
-	time.Sleep(150 * time.Millisecond)
-	if got := fx.srv.State(); got != StateLoaded {
-		t.Fatalf("state = %s, want %s while the budget still has time left", got, StateLoaded)
-	}
-	if !proc.alive() {
-		t.Fatal("the process was stopped while the user was still inside the idle budget")
-	}
-	waitFor(t, 3*time.Second, func() bool { return !proc.alive() },
-		"the idle unload to stop the process once the budget really ran out")
 }
 
 // ── acceptance: the timer fires ──
@@ -178,8 +209,7 @@ func TestAutoUnloadDisabledKeepsTheModelResident(t *testing.T) {
 	}
 	proc := fx.spawner.lastProcess()
 
-	// Several times the (ignored) budget.
-	time.Sleep(250 * time.Millisecond)
+	// No timer is armed; virtual disabled-expiry proof is above.
 
 	if got := fx.srv.State(); got != StateLoaded {
 		t.Errorf("state = %s, want %s with the timer disabled", got, StateLoaded)
@@ -591,7 +621,7 @@ func TestIdleTimerIsDisarmedByAnExplicitUnload(t *testing.T) {
 		t.Errorf("the timer survived an explicit unload: %v armed=%v", left, armed)
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	// The disarm is structural; the virtual timer test proves no stale callback.
 	if got := fx.srv.State(); got != StateInstalled {
 		t.Errorf("state = %s, want %s (a stale timer fired)", got, StateInstalled)
 	}

@@ -27,6 +27,8 @@ export function ArchiveSession(arg1:string):Promise<void>;
 
 export function AttachFiles(arg1:string,arg2:Array<string>):Promise<Array<session.AttachmentInfo>>;
 
+export function CancelChatGPTSignIn():Promise<void>;
+
 export function CancelEmbeddedLLMInstall():Promise<void>;
 
 export function CancelGoal(arg1:string,arg2:string):Promise<void>;
@@ -101,6 +103,8 @@ export function EmitSessionEvent(arg1:session.Event):Promise<void>;
 
 export function Fetch(arg1:string,arg2:Array<string>):Promise<string>;
 
+export function FetchChatGPTModels():Promise<backend.ChatGPTModelPresetResponse>;
+
 export function FetchPaperOriginal(arg1:string,arg2:string):Promise<backend.PaperOriginalDTO>;
 
 export function ForkSession(arg1:string):Promise<session.SessionInfo>;
@@ -116,6 +120,10 @@ export function GetBlackboardState(arg1:string):Promise<backend.BlackboardStateR
 export function GetBranchBases():Promise<Array<workspace.BranchBase>>;
 
 export function GetBranches():Promise<Array<workspace.Branch>>;
+
+export function GetChatGPTAuthStatus():Promise<backend.ChatGPTAuthStatusResponse>;
+
+export function GetChatGPTModelPreset():Promise<backend.ChatGPTModelPresetResponse>;
 
 export function GetCommitDiff(arg1:string):Promise<Array<workspace.ReviewFileDiff>>;
 
@@ -373,11 +381,15 @@ export function SetWailsLogger(arg1:desktop.wailsLogAdapter):Promise<void>;
 
 export function ShowTestNotification():Promise<void>;
 
+export function SignOutChatGPT():Promise<void>;
+
 export function SkipVersion(arg1:string):Promise<void>;
 
 export function StageAll():Promise<void>;
 
 export function StageFile(arg1:string):Promise<void>;
+
+export function StartChatGPTSignIn():Promise<backend.ChatGPTSignInResponse>;
 
 export function StartTerminal(arg1:string):Promise<void>;
 

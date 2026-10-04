@@ -6,20 +6,9 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
-
-	chromem "github.com/philippgille/chromem-go"
 )
-
-// countingEmbedFunc wraps fakeEmbeddingFunc with an invocation counter so
-// tests can observe when an index pass reaches the embedder.
-func countingEmbedFunc(counter *atomic.Int64) chromem.EmbeddingFunc {
-	base := fakeEmbeddingFunc()
-	return func(ctx context.Context, text string) ([]float32, error) {
-		counter.Add(1)
-		return base(ctx, text)
-	}
-}
 
 // TestNewManager_TuningKnobs_ResolvedAndStored verifies that every
 // vector_index tuning knob set on ManagerConfig is resolved and stored on
@@ -97,63 +86,52 @@ func TestNewManager_TuningKnobs_ZeroValuesKeepDefaults(t *testing.T) {
 	}
 }
 
-// TestManagerDebounce_ConfiguredDurationReachesTimer proves the configured
-// debounce (vector_index.debounce_ms) reaches the incremental-pass timer in
-// scheduleIncrementalLocked: after NotifyFileChange with a 150 ms window, no
-// embed call may happen within the first 60 ms (timers never fire early, so
-// the negative half is deterministic), and one must land shortly after the
-// window elapses. A regression back to the hardcoded 1 s would fail the
-// second half of the assertion.
+// TestManagerDebounce_ConfiguredDurationReachesTimer isolates timer dispatch
+// from filesystem indexing. The virtual boundary rejects a hardcoded 1s timer.
 func TestManagerDebounce_ConfiguredDurationReachesTimer(t *testing.T) {
-	const debounce = 150 * time.Millisecond
-	var embeds atomic.Int64
+	synctest.Test(t, func(t *testing.T) {
+		const debounce = 150 * time.Millisecond
+		var fires atomic.Int32
+		mgr := &Manager{debounce: debounce}
+		mgr.afterFunc = func(d time.Duration, f func()) *time.Timer {
+			return time.AfterFunc(d, func() { fires.Add(1); f() })
+		}
+		mgr.debounceMu.Lock()
+		mgr.scheduleIncrementalLocked()
+		mgr.debounceMu.Unlock()
+		defer mgr.stopDebounce()
 
-	mgr, err := NewManager(ManagerConfig{
-		EmbeddingFunc: countingEmbedFunc(&embeds),
-		Debounce:      debounce,
+		<-time.NewTimer(debounce - time.Nanosecond).C
+		synctest.Wait()
+		if got := fires.Load(); got != 0 {
+			t.Fatalf("timer fired before %v: got %d calls, want 0", debounce, got)
+		}
+		<-time.NewTimer(time.Nanosecond).C
+		synctest.Wait()
+		if got := fires.Load(); got != 1 {
+			t.Fatalf("timer calls at %v = %d, want 1 (not the historical 1s)", debounce, got)
+		}
 	})
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
-	// Create the temp dirs BEFORE registering the Shutdown cleanup:
-	// t.Cleanup is LIFO, so Shutdown (registered later) runs first and
-	// releases the lexical store (.zap/.bolt) handles before TempDir's
-	// RemoveAll. Windows refuses to delete files with open handles (EBUSY).
-	ws := t.TempDir()
-	viRoot := t.TempDir()
-	t.Cleanup(func() { mgr.Shutdown() })
+}
 
-	if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644); err != nil {
-		t.Fatalf("write a.go: %v", err)
-	}
-	if err := mgr.SwitchProject("proj-debounce", ws, filepath.Join(viRoot, "vi"), ProjectCallbacks{}); err != nil {
-		t.Fatalf("SwitchProject: %v", err)
-	}
-	if err := mgr.Service().WaitReady(context.Background()); err != nil {
-		t.Fatalf("initial index never became ready: %v", err)
-	}
-	baseline := embeds.Load()
-
-	// A change that requires an incremental pass once the debounce fires.
-	if err := os.WriteFile(filepath.Join(ws, "b.go"), []byte("package b\n"), 0o644); err != nil {
-		t.Fatalf("write b.go: %v", err)
-	}
-	mgr.NotifyFileChange()
-
-	// Before the window elapses nothing may have fired.
-	time.Sleep(60 * time.Millisecond)
-	if got := embeds.Load(); got != baseline {
-		t.Fatalf("incremental pass fired before the configured %v debounce elapsed: embeds %d → %d", debounce, baseline, got)
-	}
-
-	// After the window (+ generous execution margin) the pass must have run.
-	deadline := time.Now().Add(3 * time.Second)
-	for embeds.Load() == baseline && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if got := embeds.Load(); got == baseline {
-		t.Fatal("incremental pass never fired after the configured debounce (a 1 s hardcoded window would also fail this deadline)")
-	}
+func TestManagerDebounce_StopPreventsDispatch(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const debounce = 150 * time.Millisecond
+		var fires atomic.Int32
+		mgr := &Manager{debounce: debounce}
+		mgr.afterFunc = func(d time.Duration, f func()) *time.Timer {
+			return time.AfterFunc(d, func() { fires.Add(1); f() })
+		}
+		mgr.debounceMu.Lock()
+		mgr.scheduleIncrementalLocked()
+		mgr.debounceMu.Unlock()
+		mgr.stopDebounce()
+		<-time.NewTimer(2 * debounce).C
+		synctest.Wait()
+		if got := fires.Load(); got != 0 {
+			t.Errorf("stopped debounce dispatched %d callbacks, want 0", got)
+		}
+	})
 }
 
 // TestManagerChunkOverlap_ReachesChunker proves vector_index.chunk_overlap

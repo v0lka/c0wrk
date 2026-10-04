@@ -1,4 +1,4 @@
-.PHONY: build build-gpu test bench-startup lint fmt-check vulncheck dev-desktop dev-frontend bump fetch-onnx fetch-onnx-gpu fetch-embedding-model clean-onnx clean frontend-deps
+.PHONY: build build-gpu test test-go test-stress bench-startup lint fmt-check vulncheck dev-desktop dev-frontend bump fetch-onnx fetch-onnx-gpu fetch-embedding-model clean-onnx clean frontend-deps
 
 # govulncheck version pinned for reproducible vulnerability scans (CI runs the
 # same `make vulncheck` command; upgrade deliberately, both repos in lockstep).
@@ -233,9 +233,18 @@ build-gpu: frontend-deps
 	$(MAKE) fetch-onnx-gpu
 	$(MAKE) fetch-embedding-model
 
-test:
-	go test ./...
+test: test-go
 	cd frontend && npm test
+
+# Controlled/default coverage, including real HTTP/PTY/SQLite integration.
+# Raw `go test ./...` still includes stress; only these explicit drivers split it.
+test-go:
+	go test -count=1 -v -skip '^TestStress' ./...
+
+# Fixed repetitions, not retries-to-green. The runner reports and requires
+# every category member to run/pass 20 times; any skip/failure/missing test fails.
+test-stress:
+	go run ./internal/teststress
 
 # Explicit startup performance check. It is intentionally not part of `test`
 # or CI's `go test ./...`: benchmark wall-clock metrics depend on host load.

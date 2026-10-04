@@ -52,6 +52,26 @@ func TestSilentMode_NetworkDecisionShowsFlowAndHost(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			registry := NewToolRegistry()
+			{
+				var want []expectedToolDiagnostic
+				switch t.Name() {
+				case "TestSilentMode_NetworkDecisionShowsFlowAndHost/non-canonical_ingest_shows_flow,_host_and_operand":
+					want = []expectedToolDiagnostic{
+						{message: "security: user_confirm tool escalated by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "Shell analysis: download client wrote fetched external content to a file (external-content ingest)", "tool": "bash_exec"}},
+						{message: "security: silent mode denied confirmation-gated call", attrs: map[string]string{"group": "execute", "mode": "deny", "tool": "bash_exec"}},
+					}
+				case "TestSilentMode_NetworkDecisionShowsFlowAndHost/canonical_cradle_shows_flow_and_host":
+					want = []expectedToolDiagnostic{
+						{message: "security: user_confirm tool escalated by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "Shell analysis: downloaded network content reaches code execution (download cradle)", "tool": "bash_exec"}},
+						{message: "security: silent mode denied confirmation-gated call", attrs: map[string]string{"group": "execute", "mode": "deny", "tool": "bash_exec"}},
+					}
+				case "TestSilentMode_NetworkDecisionShowsFlowAndHost/clean_fetch_shows_flow_and_host":
+					want = []expectedToolDiagnostic{
+						{message: "security: silent mode denied confirmation-gated call", attrs: map[string]string{"group": "execute", "mode": "deny", "tool": "bash_exec"}},
+					}
+				}
+				captureToolDiagnostics(t, registry, want...)
+			}
 			setDefaultGroupPolicies(registry)
 			// deny is the judge-free silent terminal: every confirmation-gated
 			// call is denied outright and recorded, so the decision — with its

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/llm"
@@ -14,34 +14,32 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-// concurrencyProbe is a shared LLM caller that records the peak number of
-// simultaneous calls and, to make the measurement deterministic, parks each
-// call until `target` calls are in flight (or a grace period elapses). Each
-// subagent makes exactly one LLM call (the scripted finish terminates the
-// loop), so peak in-flight calls == peak concurrent subagents.
+// concurrencyProbe parks each call on its own release channel. The test owns
+// wave admission and drains all in-process workers before reading the result.
 type concurrencyProbe struct {
-	target    int32
-	active    int32
-	maxActive int32
+	active    atomic.Int32
+	maxActive atomic.Int32
+	entered   chan chan struct{}
+	abort     chan struct{}
 }
 
-func (p *concurrencyProbe) call(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
-	cur := atomic.AddInt32(&p.active, 1)
+func (p *concurrencyProbe) call(ctx context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+	cur := p.active.Add(1)
+	defer p.active.Add(-1)
 	for {
-		prev := atomic.LoadInt32(&p.maxActive)
-		if cur <= prev || atomic.CompareAndSwapInt32(&p.maxActive, prev, cur) {
+		prev := p.maxActive.Load()
+		if cur <= prev || p.maxActive.CompareAndSwap(prev, cur) {
 			break
 		}
 	}
-	// Park until the expected peak is reached so the observation is not racy.
-	// The grace deadline keeps the run from hanging when the cap is lower than
-	// target (the target is then simply unreachable).
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for atomic.LoadInt32(&p.active) < p.target && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+	release := make(chan struct{})
+	p.entered <- release
+	select {
+	case <-release:
+	case <-p.abort:
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	time.Sleep(5 * time.Millisecond)
-	atomic.AddInt32(&p.active, -1)
 
 	return &llm.ChatResponse{
 		Message: llm.Message{
@@ -54,6 +52,40 @@ func (p *concurrencyProbe) call(_ context.Context, _ llm.ChatRequest) (*llm.Chat
 		StopReason: "tool_use",
 		Usage:      llm.TokenUsage{InputTokens: 5, OutputTokens: 5},
 	}, nil
+}
+
+// driveLimitWaves runs only inside a synctest bubble. Wait proves all remaining
+// workers are parked, so an occupancy assertion is not a quiet-window sample.
+func driveLimitWaves(t *testing.T, p *concurrencyProbe, total, limit int, launch func()) {
+	t.Helper()
+	done := make(chan struct{})
+	defer func() {
+		close(p.abort) // Release every entered call before joining, even on Fatal.
+		synctest.Wait()
+		<-done
+	}()
+	go func() {
+		defer close(done)
+		launch()
+	}()
+	for completed := 0; completed < total; completed += limit {
+		synctest.Wait()
+		want := min(limit, total-completed)
+		if got := len(p.entered); got != want {
+			t.Fatalf("wave at completed=%d has %d entrants, want %d", completed, got, want)
+		}
+		if got := p.active.Load(); got != int32(want) {
+			t.Fatalf("wave at completed=%d has %d active calls, want %d", completed, got, want)
+		}
+		for range want {
+			close(<-p.entered)
+		}
+	}
+	synctest.Wait()
+	<-done
+	if got := p.active.Load(); got != 0 {
+		t.Errorf("active calls after join = %d, want 0", got)
+	}
 }
 
 // newLimitTestLauncher builds a conductorLauncher wired with the shared probe
@@ -86,30 +118,35 @@ func limitTestCtx() context.Context {
 // honors agents.max_parallel_subagents: a wave of independent steps must not
 // run more than the configured number of subagents concurrently.
 func TestDefaultPlanStepWave_HonorsMaxParallelSubagents(t *testing.T) {
-	const (
-		steps = 6
-		limit = 2
-	)
-	probe := &concurrencyProbe{target: limit}
-	l := newLimitTestLauncher(probe, limit)
+	synctest.Test(t, func(t *testing.T) {
+		const (
+			steps = 6
+			limit = 2
+		)
+		probe := &concurrencyProbe{entered: make(chan chan struct{}, 6), abort: make(chan struct{})}
+		l := newLimitTestLauncher(probe, limit)
 
-	ready := make([]orchestration.PlanStep, steps)
-	for i := range ready {
-		ready[i] = orchestration.PlanStep{ID: fmt.Sprintf("s%d", i), Summary: "s", Description: "d"}
-	}
-
-	outcomes := l.defaultPlanStepWave(limitTestCtx(), ready, tools.NewDelegationRegistry())
-	if len(outcomes) != steps {
-		t.Fatalf("got %d outcomes, want %d", len(outcomes), steps)
-	}
-	for _, o := range outcomes {
-		if o.err != nil {
-			t.Fatalf("step %s failed to launch: %v", o.stepID, o.err)
+		ready := make([]orchestration.PlanStep, steps)
+		for i := range ready {
+			ready[i] = orchestration.PlanStep{ID: fmt.Sprintf("s%d", i), Summary: "s", Description: "d"}
 		}
-	}
-	if got := atomic.LoadInt32(&probe.maxActive); got != limit {
-		t.Errorf("plan wave ran %d subagents concurrently, want exactly %d (cap must bind)", got, limit)
-	}
+
+		var outcomes []planStepOutcome
+		driveLimitWaves(t, probe, steps, limit, func() {
+			outcomes = l.defaultPlanStepWave(limitTestCtx(), ready, tools.NewDelegationRegistry())
+		})
+		if len(outcomes) != steps {
+			t.Fatalf("got %d outcomes, want %d", len(outcomes), steps)
+		}
+		for _, o := range outcomes {
+			if o.err != nil {
+				t.Fatalf("step %s failed to launch: %v", o.stepID, o.err)
+			}
+		}
+		if got := probe.maxActive.Load(); got != limit {
+			t.Errorf("plan wave ran %d subagents concurrently, want exactly %d (cap must bind)", got, limit)
+		}
+	})
 }
 
 // TestRunRegularBlocking_HonorsMaxParallelSubagents proves the delegate path
@@ -118,30 +155,35 @@ func TestDefaultPlanStepWave_HonorsMaxParallelSubagents(t *testing.T) {
 // test this covers the shared single-limit requirement for both batch call
 // kinds.
 func TestRunRegularBlocking_HonorsMaxParallelSubagents(t *testing.T) {
-	const (
-		n     = 6
-		limit = 2
-	)
-	probe := &concurrencyProbe{target: limit}
-	l := newLimitTestLauncher(probe, limit)
+	synctest.Test(t, func(t *testing.T) {
+		const (
+			n     = 6
+			limit = 2
+		)
+		probe := &concurrencyProbe{entered: make(chan chan struct{}, 6), abort: make(chan struct{})}
+		l := newLimitTestLauncher(probe, limit)
 
-	tasks := make([]tools.DelegationTask, n)
-	for i := range tasks {
-		tasks[i] = tools.DelegationTask{ID: fmt.Sprintf("d%d", i), Summary: "s", Task: "t"}
-	}
-
-	results := l.runRegularBlocking(limitTestCtx(), tasks, tools.NewDelegationRegistry())
-	if len(results) != n {
-		t.Fatalf("got %d results, want %d", len(results), n)
-	}
-	for _, r := range results {
-		if r.Status == tools.DelegationStatusFailed {
-			t.Fatalf("delegation %s failed to launch: %v", r.ID, r.Error)
+		tasks := make([]tools.DelegationTask, n)
+		for i := range tasks {
+			tasks[i] = tools.DelegationTask{ID: fmt.Sprintf("d%d", i), Summary: "s", Task: "t"}
 		}
-	}
-	if got := atomic.LoadInt32(&probe.maxActive); got != limit {
-		t.Errorf("delegate blocking ran %d subagents concurrently, want exactly %d (cap must bind)", got, limit)
-	}
+
+		var results []tools.DelegationResult
+		driveLimitWaves(t, probe, n, limit, func() {
+			results = l.runRegularBlocking(limitTestCtx(), tasks, tools.NewDelegationRegistry())
+		})
+		if len(results) != n {
+			t.Fatalf("got %d results, want %d", len(results), n)
+		}
+		for _, r := range results {
+			if r.Status == tools.DelegationStatusFailed {
+				t.Fatalf("delegation %s failed to launch: %v", r.ID, r.Error)
+			}
+		}
+		if got := probe.maxActive.Load(); got != limit {
+			t.Errorf("delegate blocking ran %d subagents concurrently, want exactly %d (cap must bind)", got, limit)
+		}
+	})
 }
 
 // TestLaunchAsync_HonorsMaxParallelSubagents proves the async delegate path
@@ -151,45 +193,45 @@ func TestRunRegularBlocking_HonorsMaxParallelSubagents(t *testing.T) {
 // all at once. The cap must bind there too, so this asserts the async fan-out
 // never exceeds it.
 func TestLaunchAsync_HonorsMaxParallelSubagents(t *testing.T) {
-	const (
-		n     = 6
-		limit = 2
-	)
-	probe := &concurrencyProbe{target: limit}
-	l := newLimitTestLauncher(probe, limit)
+	synctest.Test(t, func(t *testing.T) {
+		const (
+			n     = 6
+			limit = 2
+		)
+		probe := &concurrencyProbe{entered: make(chan chan struct{}, 6), abort: make(chan struct{})}
+		l := newLimitTestLauncher(probe, limit)
 
-	registry := tools.NewDelegationRegistry()
-	tasks := make([]tools.DelegationTask, n)
-	for i := range tasks {
-		id := fmt.Sprintf("a%d", i)
-		tasks[i] = tools.DelegationTask{ID: id, Summary: "s", Task: "t", Mode: "async"}
-		if err := registry.Register(id, "s", nil, "async"); err != nil {
-			t.Fatalf("register %s: %v", id, err)
+		registry := tools.NewDelegationRegistry()
+		tasks := make([]tools.DelegationTask, n)
+		for i := range tasks {
+			id := fmt.Sprintf("a%d", i)
+			tasks[i] = tools.DelegationTask{ID: id, Summary: "s", Task: "t", Mode: "async"}
+			if err := registry.Register(id, "s", nil, "async"); err != nil {
+				t.Fatalf("register %s: %v", id, err)
+			}
 		}
-	}
 
-	// Launch returns as soon as every async task is dispatched (each reports
-	// "running"); the subagents keep running in the background.
-	results := l.Launch(limitTestCtx(), tasks, registry)
-	if len(results) != n {
-		t.Fatalf("got %d results, want %d", len(results), n)
-	}
-	for _, r := range results {
-		if r.Status != tools.DelegationStatusRunning {
-			t.Fatalf("async delegation %s status = %v, want running", r.ID, r.Status)
+		// Launch returns as soon as every async task is dispatched (each reports
+		// "running"); the subagents keep running in the background.
+		var results []tools.DelegationResult
+		driveLimitWaves(t, probe, n, limit, func() {
+			results = l.Launch(limitTestCtx(), tasks, registry)
+		})
+		if len(results) != n {
+			t.Fatalf("got %d results, want %d", len(results), n)
 		}
-	}
+		for _, r := range results {
+			if r.Status != tools.DelegationStatusRunning {
+				t.Fatalf("async delegation %s status = %v, want running", r.ID, r.Status)
+			}
+		}
 
-	// Wait for every background subagent to settle before reading the peak.
-	deadline := time.Now().Add(5 * time.Second)
-	for len(registry.ListPending()) > 0 && time.Now().Before(deadline) {
-		time.Sleep(2 * time.Millisecond)
-	}
-	if pending := registry.ListPending(); len(pending) > 0 {
-		t.Fatalf("async delegations did not settle before deadline: %v", pending)
-	}
+		if pending := registry.ListPending(); len(pending) > 0 {
+			t.Fatalf("async delegations pending after worker drain: %v", pending)
+		}
 
-	if got := atomic.LoadInt32(&probe.maxActive); got != limit {
-		t.Errorf("delegate async ran %d subagents concurrently, want exactly %d (cap must bind)", got, limit)
-	}
+		if got := probe.maxActive.Load(); got != limit {
+			t.Errorf("delegate async ran %d subagents concurrently, want exactly %d (cap must bind)", got, limit)
+		}
+	})
 }

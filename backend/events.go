@@ -198,6 +198,18 @@ const EventEmbeddedLLMInstallProgress = "embedded_llm:install_progress"
 // specs/contracts/event-catalog.md.
 const EventEmbeddedLLMState = "embedded_llm:state"
 
+// EventChatGPTAuthState reports a transition of the ChatGPT subscription
+// sign-in flow (pending | success | error | cancelled). The payload is a
+// ChatGPTAuthEventData. It is a global event with a bare name (not
+// session-scoped): the account belongs to the app, not to a conversation.
+// Emitted from the background sign-in run started by StartChatGPTSignIn
+// (backend/frontend_api_auth.go): "pending" carries the authorization URL the
+// frontend opens in the system browser (via runtime.BrowserOpenURL),
+// "success" carries the signed-in identity snapshot, and "error"/"cancelled"
+// close the flow. The synchronous sign-out does not emit — its RPC return is
+// the report. See specs/contracts/event-catalog.md.
+const EventChatGPTAuthState = "chatgpt_auth:state"
+
 // ---------------------------------------------------------------------------
 // Wails event names received FROM the frontend
 // ---------------------------------------------------------------------------

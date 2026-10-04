@@ -67,8 +67,13 @@ jobs:
         if: matrix.arch == 'amd64'
         run: cd frontend && npm run lint
 
-      - name: Test (Go)
-        run: go test ./...
+      - name: Test (Go default, including controlled integration)
+        shell: bash
+        run: go test -count=1 -v -skip '^TestStress' ./... 2>&1 | awk '!/^( *--- PASS|=== (RUN|PAUSE|CONT|NAME)|PASS$|ok[ \t])/'
+
+      - name: Test (Go probabilistic stress, required coverage)
+        if: ${{ !cancelled() }}
+        run: go run ./internal/teststress
 
       - name: Test (frontend)
         run: cd frontend && npm test
@@ -125,8 +130,13 @@ jobs:
       - name: Lint (frontend)
         run: cd frontend && npm run lint
 
-      - name: Test (Go)
-        run: go test ./...
+      - name: Test (Go default, including controlled integration)
+        shell: bash
+        run: go test -count=1 -v -skip '^TestStress' ./... 2>&1 | awk '!/^( *--- PASS|=== (RUN|PAUSE|CONT|NAME)|PASS$|ok[ \t])/'
+
+      - name: Test (Go probabilistic stress, required coverage)
+        if: ${{ !cancelled() }}
+        run: go run ./internal/teststress
 
       - name: Test (frontend)
         run: cd frontend && npm test
@@ -217,8 +227,19 @@ jobs:
             Write-Host "OK: $script"
           }
 
-      - name: Test (Go)
-        run: go test ./...
+      # The -v stream is filtered down to the signal: the awk pass-through
+      # drops only the verbose pass markers (=== RUN/PAUSE/CONT/NAME,
+      # --- PASS at any depth, bare PASS, `ok` package lines), so a clean run
+      # logs nothing while every failure, skip and stray test diagnostic
+      # stays visible. shell: bash guarantees pipefail propagates go test's
+      # exit code on every OS (pwsh on Windows would mask it).
+      - name: Test (Go default, including controlled integration)
+        shell: bash
+        run: go test -count=1 -v -skip '^TestStress' ./... 2>&1 | awk '!/^( *--- PASS|=== (RUN|PAUSE|CONT|NAME)|PASS$|ok[ \t])/'
+
+      - name: Test (Go probabilistic stress, required coverage)
+        if: ${{ !cancelled() }}
+        run: go run ./internal/teststress
 
       - name: Test (frontend)
         run: cd frontend && npm test

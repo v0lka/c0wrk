@@ -249,6 +249,40 @@ func TestSmartApproveCanonicalFlowshCodes_BackstopUnderAllowPolicy(t *testing.T)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			registry, provider, confirmCalled := newShellAnalysisRegistry(t, "VERDICT: ALLOW\nREASON: looks safe to me")
+			{
+				var want []expectedToolDiagnostic
+				switch t.Name() {
+				case "TestSmartApproveCanonicalFlowshCodes_BackstopUnderAllowPolicy/exfiltration_flow":
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "command fired a hard flowsh control", "tool": "bash_exec"}},
+					}
+				case "TestSmartApproveCanonicalFlowshCodes_BackstopUnderAllowPolicy/privilege_escalation":
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "command fired a hard flowsh control", "tool": "bash_exec"}},
+					}
+				case "TestSmartApproveCanonicalFlowshCodes_BackstopUnderAllowPolicy/system_write":
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "command fired a hard flowsh control", "tool": "bash_exec"}},
+					}
+				case "TestSmartApproveCanonicalFlowshCodes_BackstopUnderAllowPolicy/destructive_outside_roots":
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "command fired a hard flowsh control", "tool": "bash_exec"}},
+					}
+				case "TestSmartApproveCanonicalFlowshCodes_BackstopUnderAllowPolicy/download_cradle":
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "command fired a hard flowsh control", "tool": "bash_exec"}},
+					}
+				case "TestSmartApproveCanonicalFlowshCodes_BackstopUnderAllowPolicy/unbounded_analysis_stays_clearable":
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "command fired a hard flowsh control", "tool": "bash_exec"}},
+					}
+				case "TestSmartApproveCanonicalFlowshCodes_BackstopUnderAllowPolicy/external-content_ingest_stays_clearable":
+					want = []expectedToolDiagnostic{
+						{message: "security: allow-policy tool escalated by hard safety reason", attrs: map[string]string{"group": "execute", "reason": "command fired a hard flowsh control", "tool": "bash_exec"}},
+					}
+				}
+				captureToolDiagnostics(t, registry, want...)
+			}
 			hardMock := newMockHardJudgerTool("bash_exec", "command fired a hard flowsh control", tt.code)
 			hardMock.group = sdktools.GroupExecute
 			registry.Register(hardMock)

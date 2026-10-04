@@ -106,6 +106,14 @@ func ApplyDefaults(cfg *Config) {
 		cfg.LLM.Retry.MaxBackoff = "30s"
 	}
 
+	// ChatGPT auth mode defaults to the static API key — the historical
+	// behavior. Every consumer also reads the empty mode as "api_key", so a
+	// programmatically built config that bypassed ApplyDefaults behaves the
+	// same; seeding here mainly makes the persisted value explicit.
+	if cfg.LLM.ChatGPT.Auth.Mode == "" {
+		cfg.LLM.ChatGPT.Auth.Mode = ChatGPTAuthModeAPIKey
+	}
+
 	// Embedded LLM idle-unload defaults. Both are pointers so an explicit
 	// `enabled: false` / `minutes: N` in YAML is respected rather than
 	// overwritten by the default. The rest of the section is app-written

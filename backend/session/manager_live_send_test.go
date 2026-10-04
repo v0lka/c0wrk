@@ -193,6 +193,8 @@ func TestFinishLiveLeftover_FailureEmitsServiceNotice(t *testing.T) {
 	sess.active = false
 	sess.mu.Unlock()
 
+	captureManagerDiagnostics(t, manager, errorDiagnostic("failed to launch follow-up task for live messages", map[string]string{"session_id": sess.ID, "error": "session is archived: restore it before sending messages or resuming tasks"}))
+
 	manager.finishLiveLeftover(context.Background(), sess.ID, sess, []string{"queued text"})
 
 	var got []Event

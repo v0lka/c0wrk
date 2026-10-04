@@ -190,6 +190,90 @@ export namespace backend {
 		}
 	}
 	
+	export class ChatGPTAuthStatusResponse {
+	    signed_in: boolean;
+	    email?: string;
+	    account_id?: string;
+	    expires_at?: string;
+	    mode: string;
+	    in_flight: boolean;
+	    last_error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatGPTAuthStatusResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.signed_in = source["signed_in"];
+	        this.email = source["email"];
+	        this.account_id = source["account_id"];
+	        this.expires_at = source["expires_at"];
+	        this.mode = source["mode"];
+	        this.in_flight = source["in_flight"];
+	        this.last_error = source["last_error"];
+	    }
+	}
+	export class ChatGPTModelPresetEntry {
+	    name: string;
+	    context_window?: number;
+	    output_limit?: number;
+	    reasoning?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatGPTModelPresetEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.context_window = source["context_window"];
+	        this.output_limit = source["output_limit"];
+	        this.reasoning = source["reasoning"];
+	    }
+	}
+	export class ChatGPTModelPresetResponse {
+	    models: ChatGPTModelPresetEntry[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatGPTModelPresetResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.models = this.convertValues(source["models"], ChatGPTModelPresetEntry);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ChatGPTSignInResponse {
+	    auth_url: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatGPTSignInResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.auth_url = source["auth_url"];
+	    }
+	}
 	export class CommitSuppression {
 	    hooks?: string[];
 	    signing_repo?: boolean;
@@ -300,6 +384,7 @@ export namespace backend {
 	    tls_fingerprint?: string;
 	    auto_retry_seconds?: number;
 	    timeout_class?: string;
+	    auth_mode?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigProviderFull(source);
@@ -313,6 +398,7 @@ export namespace backend {
 	        this.tls_fingerprint = source["tls_fingerprint"];
 	        this.auto_retry_seconds = source["auto_retry_seconds"];
 	        this.timeout_class = source["timeout_class"];
+	        this.auth_mode = source["auth_mode"];
 	    }
 	}
 	export class ConfigLLMResponse {
@@ -983,6 +1069,7 @@ export namespace backend {
 	    tls_fingerprint?: string;
 	    auto_retry_seconds?: number;
 	    timeout_class?: string;
+	    auth_mode?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProviderConfigRequest(source);
@@ -996,6 +1083,7 @@ export namespace backend {
 	        this.tls_fingerprint = source["tls_fingerprint"];
 	        this.auto_retry_seconds = source["auto_retry_seconds"];
 	        this.timeout_class = source["timeout_class"];
+	        this.auth_mode = source["auth_mode"];
 	    }
 	}
 	export class LLMFullConfigRequest {

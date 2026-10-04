@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
@@ -349,232 +350,177 @@ func TestAutoFetchInterval_Resolution(t *testing.T) {
 	}
 }
 
-// TestStartAutoFetch_TicksAtInterval verifies the ticker dispatches into the
-// funnel with the "ticker" trigger and no faster than the configured rate
-// (seam-shortened to 40ms for test speed).
-func TestStartAutoFetch_TicksAtInterval(t *testing.T) {
-	f, _ := newAutoFetchAPI(t.TempDir(), "proj-1", nil)
-	const interval = 40 * time.Millisecond
-	f.autoFetchIntervalOverride = interval
+// startVirtualAutoFetch creates only in-memory state; the real git funnel is
+// replaced by the existing tick seam. All callers run inside a synctest bubble.
+func startVirtualAutoFetch(t *testing.T, raw string) (*FrontendAPI, *tickRecorder) {
+	t.Helper()
+	f, _ := newAutoFetchAPI("", "proj-1", &config.Config{Git: config.GitConfig{AutoFetchInterval: raw}})
 	rec := &tickRecorder{}
 	f.autoFetchTickFn = rec.record
-
 	f.Lifecycle().StartAutoFetch()
-	t.Cleanup(func() { f.Lifecycle().Cleanup() })
-
-	pollUntil(t, 5*time.Second, func() bool { return rec.count() >= 1 },
-		"ticker did not fire within 5s")
-
-	if got := rec.lastReason(); got != "ticker" {
-		t.Errorf("tick trigger = %q, want %q", got, "ticker")
-	}
-
-	// The "at most one dispatch per interval" guarantee is checked as an
-	// UPPER BOUND on the dispatch count inside a fixed window — never as a
-	// per-gap minimum. A per-gap minimum is unsound for a time.Ticker: the
-	// ticker holds an ABSOLUTE schedule, so a delivery delayed by the
-	// scheduler (routine on a loaded CI runner) is followed by the next
-	// already-due slot, and adjacent gaps drop well below the period (a 40ms
-	// ticker measured ~24ms gaps under load) even though the long-run rate
-	// stays exactly the period. A count ceiling is immune to that: a delay
-	// can only push ticks later, i.e. lower the count, so it can never cause
-	// a false failure here — while an implementation that genuinely fired
-	// faster than the period would blow past the ceiling (2x rate → ~2x the
-	// dispatches).
-	const window = 20 * interval
-	start := rec.count()
-	time.Sleep(window)
-	dispatches := rec.count() - start
-
-	maxDispatches := int(window/interval) + 2 // + slack for a tick on the window edge
-	if dispatches > maxDispatches {
-		t.Errorf("dispatches in %v = %d, want <= %d (interval %v)", window, dispatches, maxDispatches, interval)
-	}
+	synctest.Wait() // The loop has constructed its ticker and parked.
+	return f, rec
 }
 
-// TestStartAutoFetch_Idempotent verifies a second StartAutoFetch does not
-// spawn a second loop: the registered done channel keeps its identity, so
-// the desktop startup path can never accidentally double the fetch cadence.
-func TestStartAutoFetch_Idempotent(t *testing.T) {
-	f, _ := newAutoFetchAPI(t.TempDir(), "proj-1", nil)
-	f.autoFetchIntervalOverride = 50 * time.Millisecond
-	f.autoFetchTickFn = func(string) {}
-
-	f.Lifecycle().StartAutoFetch()
-
-	f.autoFetchLoopMu.Lock()
-	done1 := f.autoFetchLoopDone
-	f.autoFetchLoopMu.Unlock()
-
-	f.Lifecycle().StartAutoFetch() // must be a no-op
-
-	f.autoFetchLoopMu.Lock()
-	done2 := f.autoFetchLoopDone
-	f.autoFetchLoopMu.Unlock()
-
-	if done1 == nil {
-		t.Fatal("first StartAutoFetch did not register loop state")
-	}
-	if done2 != done1 {
-		t.Error("second StartAutoFetch replaced the running loop; want idempotent no-op")
-	}
-
+func joinVirtualAutoFetch(t *testing.T, f *FrontendAPI) {
+	t.Helper()
 	f.Lifecycle().Cleanup()
-}
-
-// TestCleanup_StopsAutoFetchLoop proves the loop goroutine terminates after
-// Cleanup (the done channel closes) and no further ticks fire afterwards —
-// no goroutine leak. The test API has no appCtx, so Cleanup's cancel is the
-// ONLY stop signal, exercising exactly the production stop path.
-func TestCleanup_StopsAutoFetchLoop(t *testing.T) {
-	f, _ := newAutoFetchAPI(t.TempDir(), "proj-1", nil)
-	f.autoFetchIntervalOverride = 40 * time.Millisecond
-	rec := &tickRecorder{}
-	f.autoFetchTickFn = rec.record
-
-	f.Lifecycle().StartAutoFetch()
-	pollUntil(t, 5*time.Second, func() bool { return rec.count() >= 1 },
-		"ticker did not fire before cleanup")
-
-	f.Lifecycle().Cleanup()
-
-	f.autoFetchLoopMu.Lock()
-	done := f.autoFetchLoopDone
-	f.autoFetchLoopMu.Unlock()
-	if done == nil {
-		t.Fatal("loop done channel missing")
-	}
+	synctest.Wait()
 	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("auto-fetch loop goroutine did not exit within 2s after Cleanup")
-	}
-
-	// No further ticks after Cleanup.
-	before := rec.count()
-	time.Sleep(150 * time.Millisecond)
-	if after := rec.count(); after != before {
-		t.Errorf("ticks after Cleanup: %d → %d, want stable", before, after)
+	case <-f.autoFetchLoopDone:
+	default:
+		t.Fatal("auto-fetch loop did not join after Cleanup")
 	}
 }
 
-// TestAutoFetchLoop_IntervalChangePickedUpAtRuntime verifies a runtime edit
-// of git.auto_fetch_interval (under configMu, exactly how UpdateConfig
-// mutates f.config) is picked up on the next tick without an app restart:
-// switching to "0" stops the periodic fetches mid-run.
-func TestAutoFetchLoop_IntervalChangePickedUpAtRuntime(t *testing.T) {
-	f, _ := newAutoFetchAPI(t.TempDir(), "proj-1",
-		&config.Config{Git: config.GitConfig{AutoFetchInterval: "40ms"}})
-	rec := &tickRecorder{}
-	f.autoFetchTickFn = rec.record
-
-	f.Lifecycle().StartAutoFetch()
-	t.Cleanup(func() { f.Lifecycle().Cleanup() })
-
-	pollUntil(t, 5*time.Second, func() bool { return rec.count() >= 2 },
-		"ticker did not fire twice before the config change")
-
-	// Flip the interval to "0" under configMu — the next tick must observe
-	// it and park the ticker.
-	f.configMu.Lock()
-	f.config.Git.AutoFetchInterval = "0"
-	f.configMu.Unlock()
-
-	// Give the loop a chance to (wrongly) keep ticking, then assert it has
-	// stopped: the count must be stable across a second quiet window.
-	time.Sleep(300 * time.Millisecond)
-	baseline := rec.count()
-	time.Sleep(300 * time.Millisecond)
-	if after := rec.count(); after != baseline {
-		t.Errorf("ticks continued after interval changed to %q: %d → %d, want stable", "0", baseline, after)
-	}
-}
-
-// TestAutoFetchLoop_ZeroInterval_NeverTicks verifies the "0" sentinel: the
-// ticker never fires from the start, yet the loop goroutine is alive and
-// terminates cleanly on Cleanup (no leak in the disabled state).
-func TestAutoFetchLoop_ZeroInterval_NeverTicks(t *testing.T) {
-	f, _ := newAutoFetchAPI(t.TempDir(), "proj-1",
-		&config.Config{Git: config.GitConfig{AutoFetchInterval: "0"}})
-	rec := &tickRecorder{}
-	f.autoFetchTickFn = rec.record
-
-	f.Lifecycle().StartAutoFetch()
-	time.Sleep(250 * time.Millisecond)
-	if n := rec.count(); n != 0 {
-		t.Errorf("ticker fired %d times with interval \"0\", want 0", n)
-	}
-
-	// The parked loop must still stop cleanly on Cleanup.
-	f.Lifecycle().Cleanup()
-	f.autoFetchLoopMu.Lock()
-	done := f.autoFetchLoopDone
-	f.autoFetchLoopMu.Unlock()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("parked (interval \"0\") loop did not exit after Cleanup")
-	}
-}
-
-// TestAutoFetchLoop_ZeroIntervalReArmsWhenRestored pins review [C3-3]: a
-// parked loop (git.auto_fetch_interval "0") keeps re-reading the interval at
-// the re-check cadence, so restoring a positive value re-arms the periodic
-// fetch without an app restart — the loop must not strand itself on
-// ctx.Done() until the app exits.
-func TestAutoFetchLoop_ZeroIntervalReArmsWhenRestored(t *testing.T) {
-	f, _ := newAutoFetchAPI(t.TempDir(), "proj-1",
-		&config.Config{Git: config.GitConfig{AutoFetchInterval: "0"}})
-	rec := &tickRecorder{}
-	f.autoFetchTickFn = rec.record
-	f.autoFetchDisabledRecheckOverride = 20 * time.Millisecond
-
-	f.Lifecycle().StartAutoFetch()
-	t.Cleanup(func() { f.Lifecycle().Cleanup() })
-
-	// Parked: the re-check cadence must never dispatch a fetch.
-	time.Sleep(150 * time.Millisecond)
-	if n := rec.count(); n != 0 {
-		t.Fatalf("ticker fired %d times while interval was \"0\", want 0", n)
-	}
-
-	// Restore a positive interval under configMu. The pointer swap (rather
-	// than an in-place field write) keeps this test clean under -race:
-	// autoFetchInterval snapshots f.config under RLock and reads the field
-	// after releasing it, so a swapped-in immutable copy is always safe to
-	// read, while the loop's next re-check observes the new value exactly as
-	// a runtime config edit would.
+func setVirtualAutoFetchInterval(f *FrontendAPI, raw string) {
 	f.configMu.Lock()
 	cfg := *f.config
-	cfg.Git.AutoFetchInterval = "40ms"
-	f.config = &cfg
+	cfg.Git.AutoFetchInterval = raw
+	f.config = &cfg // Immutable snapshot, matching runtime config updates.
 	f.configMu.Unlock()
-
-	pollUntil(t, 5*time.Second, func() bool { return rec.count() >= 2 },
-		"ticker did not re-arm after the interval changed from \"0\" to \"40ms\"")
 }
 
-// TestAutoFetchLoop_NoProjectMode_NoPanic verifies the ticker in CHAT (No
-// Project) mode: the loop ticks normally, and the real funnel — invoked
-// directly, exactly as the loop's production dispatch would — is a silent
-// no-op (its internal gates reject No Project). Nothing panics; the loop
-// stops cleanly on Cleanup.
+func TestStartAutoFetch_TicksAtInterval(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f, rec := startVirtualAutoFetch(t, "40ms")
+		defer joinVirtualAutoFetch(t, f)
+		time.Sleep(40*time.Millisecond - time.Nanosecond)
+		synctest.Wait()
+		if got := rec.count(); got != 0 {
+			t.Fatalf("ticks before boundary = %d, want 0", got)
+		}
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		if got := rec.count(); got != 1 {
+			t.Fatalf("ticks at boundary = %d, want 1", got)
+		}
+		if got := rec.lastReason(); got != autoFetchTriggerTicker {
+			t.Errorf("reason = %q, want %q", got, autoFetchTriggerTicker)
+		}
+		for want := 2; want <= 21; want++ {
+			time.Sleep(40 * time.Millisecond)
+			synctest.Wait()
+			if got := rec.count(); got != want {
+				t.Fatalf("ticks at boundary %d = %d, want %d", want, got, want)
+			}
+		}
+	})
+}
+
+func TestStartAutoFetch_Idempotent(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f, rec := startVirtualAutoFetch(t, "40ms")
+		defer joinVirtualAutoFetch(t, f)
+		done := f.autoFetchLoopDone
+		f.Lifecycle().StartAutoFetch()
+		synctest.Wait()
+		if f.autoFetchLoopDone != done {
+			t.Fatal("second start replaced running loop")
+		}
+		time.Sleep(40 * time.Millisecond)
+		synctest.Wait()
+		if got := rec.count(); got != 1 {
+			t.Errorf("ticks after second start = %d, want 1", got)
+		}
+	})
+}
+
+func TestCleanup_StopsAutoFetchLoop(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f, rec := startVirtualAutoFetch(t, "40ms")
+		defer joinVirtualAutoFetch(t, f)
+		time.Sleep(40 * time.Millisecond)
+		synctest.Wait()
+		if got := rec.count(); got != 1 {
+			t.Fatal("first tick missing")
+		}
+		joinVirtualAutoFetch(t, f)
+		time.Sleep(time.Hour)
+		synctest.Wait()
+		if got := rec.count(); got != 1 {
+			t.Errorf("ticks after loop join = %d, want 1", got)
+		}
+	})
+}
+
+func TestAutoFetchLoop_IntervalChangePickedUpAtRuntime(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f, rec := startVirtualAutoFetch(t, "40ms")
+		defer joinVirtualAutoFetch(t, f)
+		time.Sleep(80 * time.Millisecond)
+		synctest.Wait()
+		if got := rec.count(); got != 2 {
+			t.Fatalf("ticks before edit = %d, want 2", got)
+		}
+		setVirtualAutoFetchInterval(f, "0")
+		time.Sleep(40 * time.Millisecond) // Old tick observes the edit, without fetching.
+		synctest.Wait()
+		time.Sleep(2 * autoFetchDisabledRecheck)
+		synctest.Wait()
+		if got := rec.count(); got != 2 {
+			t.Errorf("ticks after parking = %d, want 2", got)
+		}
+	})
+}
+
+func TestAutoFetchLoop_ZeroInterval_NeverTicks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f, rec := startVirtualAutoFetch(t, "0")
+		defer joinVirtualAutoFetch(t, f)
+		time.Sleep(3 * autoFetchDisabledRecheck)
+		synctest.Wait()
+		if got := rec.count(); got != 0 {
+			t.Errorf("ticks while disabled = %d, want 0", got)
+		}
+		joinVirtualAutoFetch(t, f)
+	})
+}
+
+func TestAutoFetchLoop_ZeroIntervalReArmsWhenRestored(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f, rec := startVirtualAutoFetch(t, "0")
+		defer joinVirtualAutoFetch(t, f)
+		setVirtualAutoFetchInterval(f, "40ms")
+		time.Sleep(autoFetchDisabledRecheck - time.Nanosecond)
+		synctest.Wait()
+		if got := rec.count(); got != 0 {
+			t.Fatal("parked loop dispatched before recheck")
+		}
+		time.Sleep(time.Nanosecond) // Recheck re-arms, but is not itself a fetch.
+		synctest.Wait()
+		if got := rec.count(); got != 0 {
+			t.Fatal("recheck dispatched a fetch")
+		}
+		time.Sleep(40*time.Millisecond - time.Nanosecond)
+		synctest.Wait()
+		if got := rec.count(); got != 0 {
+			t.Fatal("restored ticker fired early")
+		}
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		if got := rec.count(); got != 1 {
+			t.Errorf("ticks after restored boundary = %d, want 1", got)
+		}
+	})
+}
+
 func TestAutoFetchLoop_NoProjectMode_NoPanic(t *testing.T) {
-	f, rec := newAutoFetchAPI(t.TempDir(), project.NoProjectID, nil)
-	f.autoFetchIntervalOverride = 30 * time.Millisecond
-	ticks := &tickRecorder{}
-	f.autoFetchTickFn = ticks.record
-
-	f.Lifecycle().StartAutoFetch()
-	t.Cleanup(func() { f.Lifecycle().Cleanup() })
-
-	pollUntil(t, 5*time.Second, func() bool { return ticks.count() >= 2 },
-		"ticker did not fire in No Project mode")
-
-	// The real funnel must be a silent no-op in CHAT mode (no fetch event,
-	// no panic) — belt and braces next to the loop-level ticking check.
-	f.autoFetchOnce("ticker")
-	if n := rec.count(EventGitStatusChanged); n != 0 {
-		t.Errorf("auto-fetch in No Project mode emitted git:status_changed %d times, want 0", n)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		f, ticks := startVirtualAutoFetch(t, "40ms")
+		defer joinVirtualAutoFetch(t, f)
+		f.activeProjectID = project.NoProjectID
+		events := &gitEventRecorder{}
+		f.emitEvent = events.record
+		// Keep enabled: exercise the No Project gate, not the master switch.
+		time.Sleep(80 * time.Millisecond)
+		synctest.Wait()
+		if got := ticks.count(); got != 2 {
+			t.Fatalf("No Project ticks = %d, want 2", got)
+		}
+		f.autoFetchOnce(autoFetchTriggerTicker)
+		if got := events.count(EventGitStatusChanged); got != 0 {
+			t.Errorf("No Project git events = %d, want 0", got)
+		}
+	})
 }

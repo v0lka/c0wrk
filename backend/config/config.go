@@ -630,10 +630,40 @@ type AnthropicCompatibleConfig struct {
 	TimeoutClass string `yaml:"timeout_class,omitempty"`
 }
 
+// ChatGPT auth-mode values (llm.chatgpt.auth.mode).
+const (
+	// ChatGPTAuthModeAPIKey is the default: the provider authenticates with
+	// the static llm.chatgpt.api_key exactly as it always has.
+	ChatGPTAuthModeAPIKey = "api_key"
+	// ChatGPTAuthModeOAuth switches the provider to ChatGPT subscription
+	// auth: the app signs in through the browser (backend/providerauth),
+	// keeps the OAuth tokens fresh, and routes requests to the pinned
+	// ChatGPT Codex endpoint instead of the public OpenAI API.
+	ChatGPTAuthModeOAuth = "oauth"
+)
+
+// ChatGPTAuthConfig selects how the chatgpt provider authenticates.
+type ChatGPTAuthConfig struct {
+	// Mode is "api_key" (default) or "oauth". ApplyDefaults seeds the empty
+	// value with "api_key"; validate() rejects any other value so a typo can
+	// never silently keep key auth while the operator believes subscription
+	// auth is on (or vice versa). Every consumer reads the empty mode as
+	// "api_key", so a programmatically built config that bypassed
+	// ApplyDefaults gets the historical behavior, never an undefined one.
+	Mode string `yaml:"mode,omitempty"`
+}
+
 // ChatGPTConfig holds ChatGPT (OpenAI) provider configuration.
 type ChatGPTConfig struct {
 	APIKey string   `yaml:"api_key"`
 	Models []string `yaml:"models"` // enabled models for this provider
+	// Auth selects the authentication mode for this provider: "api_key"
+	// (the default — the static key above, exactly the historical behavior)
+	// or "oauth" (ChatGPT subscription auth via browser sign-in; see
+	// ChatGPTAuthConfig). In oauth mode api_key is never used as a silent
+	// fallback: while signed out, requests to this provider fail with an
+	// actionable "sign in with ChatGPT" error until an account signs in.
+	Auth ChatGPTAuthConfig `yaml:"auth,omitempty"`
 	// OutputTokenReserve overrides the output-token budget for every model
 	// served by this provider: it is subtracted from the context window in
 	// overflow validation and caps executor MaxTokens. 0 = inherit the global
@@ -2891,6 +2921,22 @@ func validate(cfg *Config) error {
 	_, _, err := cfg.LLM.ResolveDefaultModelProvider()
 	if err != nil {
 		return err
+	}
+
+	// Validate the chatgpt auth-mode enum: exactly "api_key" | "oauth"
+	// (empty reads as the default "api_key" for programmatically built
+	// configs that bypassed ApplyDefaults). An unknown value must fail the
+	// load rather than be silently ignored: the mode decides whether the
+	// provider's requests carry subscription credentials or a static key,
+	// and a typo would leave the operator believing the opposite of what
+	// runs.
+	switch cfg.LLM.ChatGPT.Auth.Mode {
+	case "", ChatGPTAuthModeAPIKey, ChatGPTAuthModeOAuth:
+	default:
+		return fmt.Errorf(
+			"llm.chatgpt.auth.mode %q is not valid; must be one of: %s, %s",
+			cfg.LLM.ChatGPT.Auth.Mode, ChatGPTAuthModeAPIKey, ChatGPTAuthModeOAuth,
+		)
 	}
 
 	// Validate per-provider auto_retry_seconds (ADR-065): the timer accepts
