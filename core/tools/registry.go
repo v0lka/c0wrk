@@ -881,7 +881,13 @@ func (r *ToolRegistry) RegisterWithSource(tool sdktools.Tool, source string) {
 func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawMessage) (result sdktools.ToolResult, err error) {
 	tool, ok := r.Get(name)
 	if !ok {
-		return sdktools.ToolResult{Content: "tool not found: " + name, IsError: true}, nil
+		return sdktools.ToolNotFoundResult(name, func(candidate string) bool {
+			_, registered := r.Get(candidate)
+			r.mu.RLock()
+			disabled := r.disabledTools[candidate]
+			r.mu.RUnlock()
+			return registered && !disabled
+		}), nil
 	}
 
 	// Gate 1: centralized structural input validation (ASI02-R2,

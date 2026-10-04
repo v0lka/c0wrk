@@ -142,6 +142,76 @@ func newStrictJudge(response string, err error) (*sdktools.ToolJudge, *scriptedJ
 
 // ── Registry basics ───────────────────────────────────────────────────────
 
+func TestToolRegistry_NamespacedDiagnostic(t *testing.T) {
+	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
+	probe := &gateProbeTool{mockTool: *newMockTool("echo", "candidate")}
+	registry.Register(probe)
+	confirmations := 0
+	response := sdktools.ConfirmDeny
+	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmations++
+		return response, nil
+	})
+	result, err := registry.Execute(context.Background(), "functions.echo", json.RawMessage(`{}`))
+	if err != nil || !result.IsError || !strings.HasPrefix(result.Content, "tool not found: functions.echo") {
+		t.Errorf("Execute(functions.echo) = %+v, %v, want not-found error result", result, err)
+	}
+	for _, hint := range []string{`"echo"`, "batch.calls[].tool", "direct tool call name"} {
+		if !strings.Contains(result.Content, hint) {
+			t.Errorf("Execute(functions.echo).Content = %q, want hint %q", result.Content, hint)
+		}
+	}
+	if probe.execCalls != 0 || confirmations != 0 {
+		t.Errorf("Execute(functions.echo) executions/confirmations = %d/%d, want 0/0", probe.execCalls, confirmations)
+	}
+	result, err = registry.Execute(context.Background(), "echo", json.RawMessage(`{}`))
+	if err != nil || !result.IsError || probe.execCalls != 0 || confirmations != 1 {
+		t.Errorf("Execute(echo, denied retry) = %+v, %v, executions/confirmations %d/%d, want error and 0/1", result, err, probe.execCalls, confirmations)
+	}
+	response = sdktools.ConfirmAllowOnce
+	result, err = registry.Execute(context.Background(), "echo", json.RawMessage(`{}`))
+	if err != nil || result.IsError || probe.execCalls != 1 || confirmations != 2 {
+		t.Errorf("Execute(echo, approved retry) = %+v, %v, executions/confirmations %d/%d, want success and 1/2", result, err, probe.execCalls, confirmations)
+	}
+}
+
+func TestToolRegistry_NamespacedUnavailableCandidate(t *testing.T) {
+	for _, state := range []string{"missing", "disabled", "filtered"} {
+		t.Run(state, func(t *testing.T) {
+			registry := NewToolRegistry()
+			probe := &gateProbeTool{mockTool: *newMockSystemTool("echo", "candidate")}
+			switch state {
+			case "disabled":
+				registry.Register(probe)
+				registry.SetDisabledTools(map[string]bool{"echo": true})
+			case "filtered":
+				registry.SetToolFilter(func(string, string) bool { return false })
+				registry.RegisterWithSource(probe, "filtered-source")
+			}
+			for _, name := range []string{"functions.echo", "other.echo", "functions.missing", "functions."} {
+				result, err := registry.Execute(context.Background(), name, json.RawMessage(`{}`))
+				if err != nil || !result.IsError || result.Content != "tool not found: "+name || probe.execCalls != 0 {
+					t.Errorf("Execute(%q, %s) = %+v, %v, executions %d, want generic error and no execution", name, state, result, err, probe.execCalls)
+				}
+			}
+		})
+	}
+}
+
+func TestToolRegistry_ExactNamespacedName(t *testing.T) {
+	registry := NewToolRegistry()
+	candidate := &gateProbeTool{mockTool: *newMockSystemTool("echo", "candidate")}
+	exact := &gateProbeTool{mockTool: *newMockSystemTool("functions.echo", "exact")}
+	registry.Register(candidate)
+	registry.Register(exact)
+	registry.SetDisabledTools(map[string]bool{"echo": true})
+	result, err := registry.Execute(context.Background(), "functions.echo", json.RawMessage(`{}`))
+	if err != nil || result.IsError || exact.execCalls != 1 || candidate.execCalls != 0 {
+		t.Errorf("Execute(functions.echo) = %+v, %v, exact/candidate executions %d/%d, want success and 1/0", result, err, exact.execCalls, candidate.execCalls)
+	}
+}
+
 func TestToolRegistry_RegisterAndGet(t *testing.T) {
 	registry := NewToolRegistry()
 	tool := newMockTool("echo", "An echo tool")
