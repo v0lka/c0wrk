@@ -68,7 +68,8 @@ jobs:
         run: cd frontend && npm run lint
 
       - name: Test (Go default, including controlled integration)
-        run: go test -count=1 -v -skip '^TestStress' ./...
+        shell: bash
+        run: go test -count=1 -v -skip '^TestStress' ./... 2>&1 | awk '!/^( *--- PASS|=== (RUN|PAUSE|CONT|NAME)|PASS$|ok[ \t])/'
 
       - name: Test (Go probabilistic stress, required coverage)
         if: ${{ !cancelled() }}
@@ -130,7 +131,8 @@ jobs:
         run: cd frontend && npm run lint
 
       - name: Test (Go default, including controlled integration)
-        run: go test -count=1 -v -skip '^TestStress' ./...
+        shell: bash
+        run: go test -count=1 -v -skip '^TestStress' ./... 2>&1 | awk '!/^( *--- PASS|=== (RUN|PAUSE|CONT|NAME)|PASS$|ok[ \t])/'
 
       - name: Test (Go probabilistic stress, required coverage)
         if: ${{ !cancelled() }}
@@ -225,8 +227,15 @@ jobs:
             Write-Host "OK: $script"
           }
 
+      # The -v stream is filtered down to the signal: the awk pass-through
+      # drops only the verbose pass markers (=== RUN/PAUSE/CONT/NAME,
+      # --- PASS at any depth, bare PASS, `ok` package lines), so a clean run
+      # logs nothing while every failure, skip and stray test diagnostic
+      # stays visible. shell: bash guarantees pipefail propagates go test's
+      # exit code on every OS (pwsh on Windows would mask it).
       - name: Test (Go default, including controlled integration)
-        run: go test -count=1 -v -skip '^TestStress' ./...
+        shell: bash
+        run: go test -count=1 -v -skip '^TestStress' ./... 2>&1 | awk '!/^( *--- PASS|=== (RUN|PAUSE|CONT|NAME)|PASS$|ok[ \t])/'
 
       - name: Test (Go probabilistic stress, required coverage)
         if: ${{ !cancelled() }}
