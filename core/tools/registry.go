@@ -881,7 +881,7 @@ func (r *ToolRegistry) RegisterWithSource(tool sdktools.Tool, source string) {
 func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawMessage) (result sdktools.ToolResult, err error) {
 	tool, ok := r.Get(name)
 	if !ok {
-		return sdktools.ToolNotFoundResult(name, func(candidate string) bool {
+		return sdktools.ToolNotFoundResult(ctx, name, func(candidate string) bool {
 			_, registered := r.Get(candidate)
 			r.mu.RLock()
 			disabled := r.disabledTools[candidate]

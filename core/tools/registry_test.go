@@ -212,6 +212,58 @@ func TestToolRegistry_ExactNamespacedName(t *testing.T) {
 	}
 }
 
+// TestToolRegistry_NamespacedDiagnosticCatalogScope is the regression for the
+// run-scoped tool-not-found hint: with an effective catalog attached to the
+// context (sdktools.WithCatalogScope — what Executor.Run injects from the
+// delegation's TaskTools), a registered and enabled candidate outside that
+// catalog is never recommended, while a candidate inside it keeps the
+// actionable hint.
+func TestToolRegistry_NamespacedDiagnosticCatalogScope(t *testing.T) {
+	t.Run("excluded candidate gets no hint", func(t *testing.T) {
+		registry := NewToolRegistry()
+		probe := &gateProbeTool{mockTool: *newMockSystemTool("echo", "candidate")}
+		registry.Register(probe)
+		excludedCtx := sdktools.WithCatalogScope(context.Background(), []string{"read_file", "list_directory", "finish"})
+		result, err := registry.Execute(excludedCtx, "functions.echo", json.RawMessage(`{}`))
+		if err != nil || !result.IsError || result.Content != "tool not found: functions.echo" {
+			t.Errorf("Execute(functions.echo, excluded scope) = %+v, %v, want generic not-found without catalog hint", result, err)
+		}
+		if probe.execCalls != 0 {
+			t.Errorf("executions = %d, want 0 (the hint path never dispatches)", probe.execCalls)
+		}
+	})
+	t.Run("disabled candidate inside scope gets no hint", func(t *testing.T) {
+		registry := NewToolRegistry()
+		probe := &gateProbeTool{mockTool: *newMockSystemTool("echo", "candidate")}
+		registry.Register(probe)
+		registry.SetDisabledTools(map[string]bool{"echo": true})
+		scopedCtx := sdktools.WithCatalogScope(context.Background(), []string{"echo"})
+		result, err := registry.Execute(scopedCtx, "functions.echo", json.RawMessage(`{}`))
+		if err != nil || !result.IsError || result.Content != "tool not found: functions.echo" {
+			t.Errorf("Execute(functions.echo, disabled in scope) = %+v, %v, want generic not-found without catalog hint", result, err)
+		}
+	})
+	t.Run("granted candidate gets hint", func(t *testing.T) {
+		registry := NewToolRegistry()
+		setDefaultGroupPolicies(registry)
+		probe := &gateProbeTool{mockTool: *newMockTool("echo", "candidate")}
+		registry.Register(probe)
+		scopedCtx := sdktools.WithCatalogScope(context.Background(), []string{"echo"})
+		result, err := registry.Execute(scopedCtx, "functions.echo", json.RawMessage(`{}`))
+		if err != nil || !result.IsError || !strings.HasPrefix(result.Content, "tool not found: functions.echo") {
+			t.Errorf("Execute(functions.echo, granted scope) = %+v, %v, want not-found error result", result, err)
+		}
+		for _, hint := range []string{`"echo"`, "batch.calls[].tool", "direct tool call name"} {
+			if !strings.Contains(result.Content, hint) {
+				t.Errorf("Execute(functions.echo, granted scope).Content = %q, want hint %q", result.Content, hint)
+			}
+		}
+		if probe.execCalls != 0 {
+			t.Errorf("executions = %d, want 0 (the hint path never dispatches)", probe.execCalls)
+		}
+	})
+}
+
 func TestToolRegistry_RegisterAndGet(t *testing.T) {
 	registry := NewToolRegistry()
 	tool := newMockTool("echo", "An echo tool")
