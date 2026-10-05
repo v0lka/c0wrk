@@ -4,6 +4,7 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import type { ChatMessageUI, DisplayItem } from '@/types/messages'
 import { ChatMessageRenderer } from './ChatMessageRenderer'
 import { turnWorkOwners } from './turnWorkOwners'
@@ -52,14 +53,16 @@ function renderRenderer(overrides?: {
   root = createRoot(container)
   act(() => {
     root!.render(
-      <ChatMessageRenderer
-        items={overrides?.items ?? items}
-        stickyUserMessages
-        lastTurnActive={overrides?.lastTurnActive ?? false}
-        trailingContent={overrides?.trailingContent ?? <div data-testid="trailing">Streaming</div>}
-        trailingFooter={overrides?.trailingFooter}
-        bookmarkable={overrides?.bookmarkable}
-      />,
+      <TooltipProvider>
+        <ChatMessageRenderer
+          items={overrides?.items ?? items}
+          stickyUserMessages
+          lastTurnActive={overrides?.lastTurnActive ?? false}
+          trailingContent={overrides?.trailingContent ?? <div data-testid="trailing">Streaming</div>}
+          trailingFooter={overrides?.trailingFooter}
+          bookmarkable={overrides?.bookmarkable}
+        />
+      </TooltipProvider>,
     )
   })
   return container
@@ -227,12 +230,14 @@ describe('ChatMessageRenderer sticky user turns', () => {
     const renderWith = (its: DisplayItem[], taskActive: boolean) =>
       act(() => {
         root!.render(
-          <ChatMessageRenderer
-            items={its}
-            stickyUserMessages
-            lastTurnActive={taskActive}
-            trailingContent={<div data-testid="stream">partial</div>}
-          />,
+          <TooltipProvider>
+            <ChatMessageRenderer
+              items={its}
+              stickyUserMessages
+              lastTurnActive={taskActive}
+              trailingContent={<div data-testid="stream">partial</div>}
+            />
+          </TooltipProvider>,
         )
       })
 

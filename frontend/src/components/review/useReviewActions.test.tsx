@@ -151,7 +151,7 @@ describe('useReviewActions.handleSubmit optimistic presentation', () => {
     // LAST position — e2s sits before it and must stay false here).
     expect(spies.sendMessage).toHaveBeenCalledTimes(1)
     expect(spies.sendMessage).toHaveBeenCalledWith(
-      's1', 'General comment:\nfix the null deref', [], [], '', '', false, '', false, true,
+      's1', 'General comment:\nfix the null deref', [], [], [], '', '', false, '', false, true,
     )
 
     // Fresh-task state: the session shows as running with an activity label,

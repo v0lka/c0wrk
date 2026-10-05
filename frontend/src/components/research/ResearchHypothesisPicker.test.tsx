@@ -576,6 +576,7 @@ describe('ResearchHypothesisPicker — Create hypothesis', () => {
       ['research-hypothesis'],
       undefined,
       undefined,
+      undefined,
       { newSession: false },
     )
   })
@@ -590,7 +591,7 @@ describe('ResearchHypothesisPicker — Create hypothesis', () => {
       plus.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))
     })
 
-    const [, , , , options] = sendSpy.mock.calls[0]!
+    const [, , , , , options] = sendSpy.mock.calls[0]!
     expect(options).toEqual({ newSession: true })
   })
 })

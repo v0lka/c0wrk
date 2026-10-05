@@ -1781,7 +1781,7 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 			t.Tools = pref
 		}
 	}
-	taskTools, err := l.resolveTaskTools(t)
+	taskTools, err := l.resolveTaskTools(ctx, t)
 	if err != nil {
 		return agent.SubAgentTask{}, err
 	}
@@ -1986,8 +1986,15 @@ func stripSubagentTools(descs []sdktools.ToolDescriptor) []sdktools.ToolDescript
 // belong to the goal-loop Conductor and the independent verifier only; the
 // redelegating path re-adds delegate and cancel_delegation explicitly (see
 // runRedelegBlocking).
-func (l *conductorLauncher) resolveTaskTools(t tools.DelegationTask) ([]sdktools.ToolDescriptor, error) {
-	all := l.stripDisabled(l.allToolDescriptors())
+//
+// The base list is additionally filtered by the task's per-server MCP mode
+// gating (stripGatedMCPTools): the launcher builds from the RAW registry
+// list, so without this filter a gated-off manual/disabled server's tools
+// would ride the "all"/group grants straight back into every subagent —
+// defeating the orchestrator-level filter. The gated set arrives via ctx
+// (attached once per task, inherited by every delegation).
+func (l *conductorLauncher) resolveTaskTools(ctx context.Context, t tools.DelegationTask) ([]sdktools.ToolDescriptor, error) {
+	all := stripGatedMCPTools(ctx, l.stripDisabled(l.allToolDescriptors()))
 
 	// No explicit tool request: give everything (minus conductor-only and
 	// mode-disabled tools).

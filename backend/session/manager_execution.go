@@ -69,7 +69,7 @@ func (m *Manager) finishLiveLeftover(_ context.Context, id string, session *Sess
 	}
 	joined := strings.Join(leftover, "\n\n")
 	m.log().Info("launching follow-up task for undelivered live messages", "session_id", id, "count", len(leftover))
-	if _, err := m.sendMessage(ContextWithSessionID(context.Background(), id), id, joined, nil, nil, "", "", false, "", false, false, true); err != nil {
+	if _, err := m.sendMessage(ContextWithSessionID(context.Background(), id), id, joined, nil, nil, nil, "", "", false, "", false, false, true); err != nil {
 		if errors.Is(err, ErrSessionCompacting) && m.requeueLiveMessages(session, joined) {
 			m.log().Info("follow-up deferred by manual compaction: live messages re-queued", "session_id", id)
 			m.emitFunc(Event{
@@ -582,8 +582,8 @@ func (m *Manager) InvalidateIgnoreCache(changedPaths []string) {
 //
 // This is the single-return convenience form of SendMessageClassified for
 // callers that do not need the authoritative send classification.
-func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills, activeAgents []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, e2s, reviewMode bool) error {
-	_, err := m.SendMessageClassified(ctx, id, text, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, e2s, reviewMode)
+func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills, activeAgents, activeMCPServers []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, e2s, reviewMode bool) error {
+	_, err := m.SendMessageClassified(ctx, id, text, activeSkills, activeAgents, activeMCPServers, modelOverride, reasoningEffort, goal, goalBudget, e2s, reviewMode)
 	return err
 }
 
@@ -611,8 +611,8 @@ const (
 // classification (fresh / nudge-resume / live) so the caller can persist the
 // correct is_nudge metadata after the decision is made under the session lock.
 // The task itself runs in a goroutine and reports via events.
-func (m *Manager) SendMessageClassified(ctx context.Context, id, text string, activeSkills, activeAgents []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, e2s, reviewMode bool) (SendClassification, error) {
-	return m.sendMessage(ctx, id, text, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, e2s, reviewMode, false)
+func (m *Manager) SendMessageClassified(ctx context.Context, id, text string, activeSkills, activeAgents, activeMCPServers []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, e2s, reviewMode bool) (SendClassification, error) {
+	return m.sendMessage(ctx, id, text, activeSkills, activeAgents, activeMCPServers, modelOverride, reasoningEffort, goal, goalBudget, e2s, reviewMode, false)
 }
 
 // liveAction tells the request epilogue what to do with live user messages
@@ -641,7 +641,7 @@ const (
 // the send may queue. The caller must hold session.mu. The same conditions are
 // checked by ValidateLiveSend before the frontend persists the message and by
 // the live branch here under the lock (the authoritative gate).
-func liveSendRejectionLocked(session *Session, goal, e2s bool, text string, activeSkills, activeAgents []string) error {
+func liveSendRejectionLocked(session *Session, goal, e2s bool, text string, activeSkills, activeAgents, activeMCPServers []string) error {
 	// A leading "/goal" command selects goal mode even when the explicit goal
 	// flag is absent. The fresh-task path detects it via
 	// DetectAndStripGoalMode; the live-send gate must reject it identically
@@ -660,8 +660,12 @@ func liveSendRejectionLocked(session *Session, goal, e2s bool, text string, acti
 		// is seeded only at task start), so it can never join a running task
 		// as a live interjection.
 		return errors.New("E2S requests cannot be sent while a task is running — pause or wait for completion first")
-	case len(activeSkills) > 0 || len(activeAgents) > 0:
-		return errors.New("skill or agent references cannot be sent while a task is running — pause or wait for completion first")
+	case len(activeSkills) > 0 || len(activeAgents) > 0 || len(activeMCPServers) > 0:
+		// An MCP-server mention is rejected with the same reasoning as skill
+		// and agent refs: the task's per-server MCP gating was fixed at task
+		// start, so a mention arriving mid-run could never take effect —
+		// reject it up front instead of silently ignoring it.
+		return errors.New("skill, agent, or MCP server references cannot be sent while a task is running — pause or wait for completion first")
 	case session.orchestrator == nil:
 		return errors.New("session is already processing a task")
 	}
@@ -699,7 +703,7 @@ func (m *Manager) refreshAutonomyPosture(session *Session) {
 // relaunch of an already-rendered message (the live-send follow-up): it skips
 // the message_received emission and title generation because the UI and the
 // message store already hold the message from the original send.
-func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills, activeAgents []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, e2s, reviewMode, presented bool) (SendClassification, error) {
+func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills, activeAgents, activeMCPServers []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, e2s, reviewMode, presented bool) (SendClassification, error) {
 	// No task may be launched once Shutdown has begun (see ResumeTask).
 	if m.shuttingDown.Load() {
 		return SendFresh, errors.New("session manager is shutting down")
@@ -730,7 +734,7 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 	// delivered by that request or becomes its follow-up task — never lost
 	// and never duplicated.
 	if session.active {
-		if err := liveSendRejectionLocked(session, goal, e2s, text, activeSkills, activeAgents); err != nil {
+		if err := liveSendRejectionLocked(session, goal, e2s, text, activeSkills, activeAgents, activeMCPServers); err != nil {
 			session.mu.Unlock()
 			return SendFresh, err
 		}
@@ -867,7 +871,7 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 	m.maybeSpawnTitleGeneration(session, id, text, presented, activeSkills)
 
 	// Launch goroutine to handle the message
-	go func(ctx context.Context, msg string, skills []string, agents []string) {
+	go func(ctx context.Context, msg string, skills []string, agents []string, mcpServers []string) {
 		// action tells the request epilogue what to do with queued-but-
 		// undelivered live messages. The zero value (liveActionNone) keeps
 		// them queued — the default for every path that either delegated to
@@ -990,6 +994,7 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 			TaskID:             lastTaskID,
 			UserSkills:         skills,
 			UserAgents:         agents,
+			UserMCPServers:     mcpServers,
 			ModelOverride:      modelOverride,
 			ReasoningEffort:    reasoningEffort,
 			SessionPlansDir:    config.SessionPlansDir(m.agentDir, session.ProjectID, id),
@@ -1022,7 +1027,7 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 		// goal task rather than silently dropping the flag (and, when goal was
 		// enabled via the "/goal" prefix, leaking the prefix into the fresh task
 		// — hmMsg is already /goal-stripped, msg is not).
-		if err != nil && m.shouldRetryContinuationFresh(id, lastTaskID, anchorWasUnfinished) {
+		if err != nil && !errors.Is(err, core.ErrMCPAuthorizationState) && m.shouldRetryContinuationFresh(id, lastTaskID, anchorWasUnfinished) {
 			m.log().Warn("continuation failed, falling back to fresh workflow", "session_id", id, "task_id", lastTaskID, "error", err)
 			session.mu.Lock()
 			session.lastCompletedTaskID = ""
@@ -1031,6 +1036,7 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 				TaskID:             "",
 				UserSkills:         skills,
 				UserAgents:         agents,
+				UserMCPServers:     mcpServers,
 				ModelOverride:      modelOverride,
 				ReasoningEffort:    reasoningEffort,
 				SessionPlansDir:    config.SessionPlansDir(m.agentDir, session.ProjectID, id),
@@ -1122,7 +1128,7 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 		finished = true
 		m.emitTaskComplete(id, result, nil)
 		m.finishLiveLeftover(ctx, id, session, leftover)
-	}(taskCtx, text, activeSkills, activeAgents)
+	}(taskCtx, text, activeSkills, activeAgents, activeMCPServers)
 
 	return SendFresh, nil
 }
@@ -2151,14 +2157,14 @@ func (m *Manager) LiveTokenSnapshot(sessionID string) (TokenSnapshot, bool) {
 
 // ValidateLiveSend performs the live-send gate checks without queuing: when a
 // task is currently running, it returns the same rejection errors the live
-// branch of sendMessage would (pause window, goal, E2S, skill/agent
+// branch of sendMessage would (pause window, goal, E2S, skill/agent/MCP-server
 // references). The frontend API calls this BEFORE persisting the user message
 // so a rejected live send never leaves a phantom persisted message. It is a
 // memory-only lookup (no session restore side effect); when no task is running
 // it is a no-op. The authoritative re-check still happens under the session
 // lock in sendMessage — a message that passes here but finds the task finished
 // afterwards simply starts a normal task.
-func (m *Manager) ValidateLiveSend(sessionID string, goal, e2s bool, text string, activeSkills, activeAgents []string) error {
+func (m *Manager) ValidateLiveSend(sessionID string, goal, e2s bool, text string, activeSkills, activeAgents, activeMCPServers []string) error {
 	m.mu.RLock()
 	sess := m.sessions[sessionID]
 	m.mu.RUnlock()
@@ -2176,7 +2182,7 @@ func (m *Manager) ValidateLiveSend(sessionID string, goal, e2s bool, text string
 	if !sess.active {
 		return nil
 	}
-	return liveSendRejectionLocked(sess, goal, e2s, text, activeSkills, activeAgents)
+	return liveSendRejectionLocked(sess, goal, e2s, text, activeSkills, activeAgents, activeMCPServers)
 }
 
 // emitTaskCancelledUnlessShuttingDown emits the "task_cancelled" event for the

@@ -966,6 +966,13 @@ export interface MCPServerConfig {
    *  applied to both transports. Empty inherits `timeout`; when set it must
    *  parse and be positive. */
   call_timeout: string
+  /** Per-server activation mode: "auto" (default — connect whenever the MCP
+   *  gateway starts or reconfigures), "manual" (kept in the config and
+   *  surfaced as mentionable for the chat-input `/`-completion / send flow
+   *  instead of always-on), or "disabled" (never dialed). The backend
+   *  marshals it `omitempty`, so an absent key means "auto" — normalized at
+   *  this boundary so downstream consumers never see undefined. */
+  mode?: 'auto' | 'manual' | 'disabled'
 }
 
 export interface MCPServerStatus {
@@ -981,6 +988,21 @@ export interface MCPServerStatus {
   tool_count: number
   tools: string[]
   error?: string
+  /** Configured activation mode ("auto" | "manual" | "disabled"; see
+   *  MCPServerConfig.mode). Always set by GetMCPStatus except on the
+   *  synthetic `_gateway` startup placeholder, which renders by its
+   *  `starting` flag anyway. A `disabled` entry carries no error/flags — it
+   *  is intentionally not dialed, never broken. */
+  mode?: 'auto' | 'manual' | 'disabled'
+}
+
+/** Secret-free identity of one configured MCP server for the chat input's
+ *  `/`-completion and the send path (GetMCPMentionableServers): name plus
+ *  per-server mode, nothing else — command args, env and headers can embed
+ *  secrets and are excluded by construction. */
+export interface MCPMentionableServer {
+  name: string
+  mode: 'auto' | 'manual' | 'disabled'
 }
 
 // --- Blackboard Viewer types ---

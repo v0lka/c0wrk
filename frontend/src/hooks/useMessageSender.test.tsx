@@ -138,11 +138,11 @@ describe('useMessageSender optimistic metadata', () => {
     // uploads guard). The explicit originSessionId wins.
     useSessionStore.setState({ activeSessionId: 's-other' })
     await act(async () => {
-      await capturedSend!('review this', undefined, [], 's-origin')
+      await capturedSend!('review this', undefined, [], [], 's-origin')
     })
 
     expect(spies.sendMessage).toHaveBeenCalledWith(
-      's-origin', 'review this', [], [], '', '', false, '', false,
+      's-origin', 'review this', [], [], [], '', '', false, '', false,
     )
     expect(userMessages('s-origin')).toHaveLength(1)
     expect(userMessages('s-other')).toHaveLength(0)
@@ -161,7 +161,7 @@ describe('useMessageSender optimistic metadata', () => {
     expect(useInputModeStore.getState().goalEnabled).toBe(false)
     expect(useInputModeStore.getState().goalBudget).toBe('')
     expect(spies.sendMessage).toHaveBeenCalledWith(
-      's1', 'fix the bug', [], [], '', '', true, '{"max_turns":3}', false,
+      's1', 'fix the bug', [], [], [], '', '', true, '{"max_turns":3}', false,
     )
   })
 
@@ -177,10 +177,10 @@ describe('useMessageSender optimistic metadata', () => {
     await act(async () => {
       await capturedSend!('run with explicit state')
     })
-    // e2s rides in position 9 (after goalBudget) — and goal must NOT be
+    // e2s rides after goalBudget (position 10) — and goal must NOT be
     // re-armed by the send.
     expect(spies.sendMessage).toHaveBeenCalledWith(
-      's1', 'run with explicit state', [], [], '', '', false, '', true,
+      's1', 'run with explicit state', [], [], [], '', '', false, '', true,
     )
     // E2S is per-task opt-in: the toggle resets after the defining message.
     expect(useInputModeStore.getState().e2sEnabled).toBe(false)
@@ -199,7 +199,7 @@ describe('useMessageSender optimistic metadata', () => {
       await capturedSend!('plain message')
     })
     expect(spies.sendMessage).toHaveBeenCalledWith(
-      's1', 'plain message', [], [], '', '', false, '', false,
+      's1', 'plain message', [], [], [], '', '', false, '', false,
     )
   })
 

@@ -1,110 +1,272 @@
 import { describe, it, expect } from 'vitest'
-import { extractSkillRefs, extractAgentRefs, filterKnownAgentRefs, formatFileRefPath } from './parseReferences'
+import { extractRefs, partitionRefs, formatFileRefPath } from './parseReferences'
 import { fuzzyMatch, fuzzyFilter } from './fuzzyMatch'
 
-describe('extractSkillRefs', () => {
-  it('extracts a single skill ref', () => {
-    expect(extractSkillRefs('Fix using /commit approach')).toEqual(['commit'])
+describe('extractRefs', () => {
+  it.each([
+    '/github/cache/config.json', '/agentName/path',
+    '/github.json', '/agentName,', '/githubé',
+    '/mcp:github/cache', '/mcp: github/cache',
+    '/agent:agentName/path', '/agent: agentName/path',
+    '/skill:github/path', '/skill: github/path',
+    '/mcp:github.json', '/agent: agentName,',
+    '/mcp:', '/agent: ', '/skill:  github',
+    '/github\v', '\v/github', '/github\u00a0', '\u00a0/github',
+    '/github\u2028', '\u2028/github', '/github\u2029', '\u2029/github',
+  ])('never extracts a truncated ref from %j', (text) => {
+    expect(extractRefs(text)).toEqual([])
+    expect(partitionRefs(extractRefs(text), ['agentName', 'agent'], ['skill'], ['github', 'mcp']))
+      .toEqual({ agents: [], skills: [], mcpServers: [], ambiguous: [] })
   })
 
-  it('extracts multiple skill refs', () => {
-    expect(extractSkillRefs('/go-error-handling and /go-concurrency')).toEqual([
-      'go-error-handling',
-      'go-concurrency',
+  it.each(['github-extra', 'github_extra', 'github2', 'agentName-extra', 'agentName_extra', 'agentName2'])(
+    'keeps the entire longer token %s without activating its registered prefix', (name) => {
+      const refs = extractRefs(`/${name}`)
+      expect(refs).toEqual([{ kind: 'skill', qualified: false, name }])
+      const result = partitionRefs(refs, ['agentName'], [], ['github'])
+      expect(result.agents).toEqual([])
+      expect(result.mcpServers).toEqual([])
+      expect(result.skills).toEqual([name])
+    })
+
+  it.each(['agent', 'skill', 'mcp'] as const)('keeps qualified %s names whole', (kind) => {
+    for (const separator of ['', ' ', '\t']) {
+      expect(extractRefs(`/${kind}:${separator}github-extra`)).toEqual([
+        { kind, qualified: true, name: 'github-extra' },
+      ])
+    }
+  })
+
+  it.each([' ', '\t', '\n', '\r', '\f'])('uses Go-compatible boundary whitespace %j', (space) => {
+    expect(extractRefs(`before${space}/github${space}/agent:agentName${space}after`)).toEqual([
+      { kind: 'skill', qualified: false, name: 'github' },
+      { kind: 'agent', qualified: true, name: 'agentName' },
     ])
   })
 
-  it('deduplicates skill refs', () => {
-    expect(extractSkillRefs('/commit and again /commit')).toEqual(['commit'])
+  it('finds valid mentions after invalid path and qualified tokens without backtracking', () => {
+    expect(extractRefs('/mcp: github/cache /agent:agentName/path /github /agentName')).toEqual([
+      { kind: 'skill', qualified: false, name: 'github' },
+      { kind: 'skill', qualified: false, name: 'agentName' },
+    ])
+  })
+
+  it('extracts a single plain ref', () => {
+    expect(extractRefs('Fix using /commit approach')).toEqual([
+      { kind: 'skill', qualified: false, name: 'commit' },
+    ])
+  })
+
+  it('extracts multiple plain refs preserving order', () => {
+    expect(extractRefs('/go-error-handling and /go-concurrency')).toEqual([
+      { kind: 'skill', qualified: false, name: 'go-error-handling' },
+      { kind: 'skill', qualified: false, name: 'go-concurrency' },
+    ])
+  })
+
+  it('deduplicates identical plain refs', () => {
+    expect(extractRefs('/commit and again /commit')).toEqual([
+      { kind: 'skill', qualified: false, name: 'commit' },
+    ])
   })
 
   it('does not match mid-word slashes', () => {
-    expect(extractSkillRefs('http://example.com')).toEqual([])
+    expect(extractRefs('http://example.com')).toEqual([])
   })
 
-  it('matches at start of text', () => {
-    expect(extractSkillRefs('/my-skill is great')).toEqual(['my-skill'])
+  it('matches at start of text and after newline', () => {
+    expect(extractRefs('/my-ref is great')).toEqual([{ kind: 'skill', qualified: false, name: 'my-ref' }])
+    expect(extractRefs('line one\n/skill-two')).toEqual([{ kind: 'skill', qualified: false, name: 'skill-two' }])
   })
 
-  it('matches after newline', () => {
-    expect(extractSkillRefs('line one\n/skill-two')).toEqual(['skill-two'])
+  it('extracts qualified refs in the canonical spaced form', () => {
+    expect(extractRefs('/agent: code-reviewer')).toEqual([
+      { kind: 'agent', qualified: true, name: 'code-reviewer' },
+    ])
+    expect(extractRefs('/skill: study-paper')).toEqual([
+      { kind: 'skill', qualified: true, name: 'study-paper' },
+    ])
+  })
+
+  it('extracts the mcp qualified form (spaced and glued)', () => {
+    expect(extractRefs('/mcp: context7')).toEqual([
+      { kind: 'mcp', qualified: true, name: 'context7' },
+    ])
+    expect(extractRefs('/mcp:context7')).toEqual([
+      { kind: 'mcp', qualified: true, name: 'context7' },
+    ])
+  })
+
+  it('extracts the mcp qualified form inside prose', () => {
+    expect(extractRefs('use tools from /mcp: github now')).toEqual([
+      { kind: 'mcp', qualified: true, name: 'github' },
+    ])
+  })
+
+  it('keeps a plain mcp-server mention as a plain ref (kind resolved later)', () => {
+    expect(extractRefs('/context7 look up repos')).toEqual([
+      { kind: 'skill', qualified: false, name: 'context7' },
+    ])
+  })
+
+  it('does not treat a plain name of mcp specially without a colon', () => {
+    // `/mcp` is a plain ref named "mcp" — not the qualified prefix.
+    expect(extractRefs('/mcp')).toEqual([{ kind: 'skill', qualified: false, name: 'mcp' }])
+  })
+
+  it('accepts the glued qualified form (no space after the colon)', () => {
+    expect(extractRefs('/agent:code-reviewer')).toEqual([
+      { kind: 'agent', qualified: true, name: 'code-reviewer' },
+    ])
+    expect(extractRefs('/skill:study-paper')).toEqual([
+      { kind: 'skill', qualified: true, name: 'study-paper' },
+    ])
+  })
+
+  it('extracts qualified refs inside prose', () => {
+    expect(extractRefs('please run /agent: code-reviewer now')).toEqual([
+      { kind: 'agent', qualified: true, name: 'code-reviewer' },
+    ])
+  })
+
+  it('keeps a plain ref and a qualified ref of the same name as distinct refs', () => {
+    expect(extractRefs('/review /agent: review /skill: review')).toEqual([
+      { kind: 'skill', qualified: false, name: 'review' },
+      { kind: 'agent', qualified: true, name: 'review' },
+      { kind: 'skill', qualified: true, name: 'review' },
+    ])
+  })
+
+  it('never extracts #-mentions (historical syntax is plain text)', () => {
+    expect(extractRefs('see #code-reviewer and #42 here')).toEqual([])
+  })
+
+  it('does not match the # of an @file line anchor', () => {
+    expect(extractRefs('see @x.go#L20 here')).toEqual([])
   })
 
   it('returns empty array for no refs', () => {
-    expect(extractSkillRefs('just plain text')).toEqual([])
+    expect(extractRefs('just plain text')).toEqual([])
+  })
+
+  it('does not treat a plain name of agent/skill specially without a colon', () => {
+    // `/agent` is a plain ref named "agent" — not the qualified prefix.
+    expect(extractRefs('/agent')).toEqual([{ kind: 'skill', qualified: false, name: 'agent' }])
   })
 })
 
-describe('extractAgentRefs', () => {
-  it('extracts a single agent ref', () => {
-    expect(extractAgentRefs('Please use #code-reviewer')).toEqual(['code-reviewer'])
+describe('partitionRefs', () => {
+  it('partitions plain refs by catalog membership', () => {
+    const refs = extractRefs('/code-reviewer and /commit')
+    const result = partitionRefs(refs, ['code-reviewer'], ['commit'])
+    expect(result.agents).toEqual(['code-reviewer'])
+    expect(result.skills).toEqual(['commit'])
+    expect(result.ambiguous).toEqual([])
   })
 
-  it('extracts multiple agent refs', () => {
-    expect(extractAgentRefs('#code-reviewer and #test-writer please')).toEqual([
-      'code-reviewer',
-      'test-writer',
-    ])
+  it('threads qualified refs verbatim without a catalog check', () => {
+    const refs = extractRefs('/agent: typo-name /skill: unknown-skill')
+    const result = partitionRefs(refs, [], [])
+    expect(result.agents).toEqual(['typo-name'])
+    expect(result.skills).toEqual(['unknown-skill'])
+    expect(result.ambiguous).toEqual([])
   })
 
-  it('deduplicates agent refs', () => {
-    expect(extractAgentRefs('#reviewer and again #reviewer')).toEqual(['reviewer'])
+  it('reports a plain ref present in BOTH catalogs as ambiguous (never guessed)', () => {
+    const refs = extractRefs('/review')
+    const result = partitionRefs(refs, ['review'], ['review'])
+    expect(result.agents).toEqual([])
+    expect(result.skills).toEqual([])
+    expect(result.ambiguous).toEqual(['review'])
   })
 
-  it('does not match mid-word hashes (line anchors)', () => {
-    expect(extractAgentRefs('see @x.go#L20 here')).toEqual([])
+  it('is exactly case-sensitive: Review and review are different names', () => {
+    const refs = extractRefs('/Review')
+    const result = partitionRefs(refs, ['review'], ['review'])
+    // /Review matches neither catalog (case-sensitive) → permissive skill.
+    expect(result.agents).toEqual([])
+    expect(result.skills).toEqual(['Review'])
+    expect(result.ambiguous).toEqual([])
   })
 
-  it('matches at start of text', () => {
-    expect(extractAgentRefs('#my-agent is great')).toEqual(['my-agent'])
+  it('degrades a plain ref in neither catalog to a skill (permissive passthrough)', () => {
+    const refs = extractRefs('/commit')
+    const result = partitionRefs(refs, [], [])
+    expect(result.skills).toEqual(['commit'])
+    expect(result.agents).toEqual([])
   })
 
-  it('matches after newline', () => {
-    expect(extractAgentRefs('line one\n#agent-two')).toEqual(['agent-two'])
+  it('deduplicates a name reached via both a plain and a qualified spelling', () => {
+    const refs = extractRefs('/commit /skill: commit')
+    const result = partitionRefs(refs, [], ['commit'])
+    expect(result.skills).toEqual(['commit'])
   })
 
-  it('returns empty array for no refs', () => {
-    expect(extractAgentRefs('just plain text')).toEqual([])
+  it('deduplicates ambiguous names and preserves order', () => {
+    const refs = extractRefs('/a /b /a')
+    const result = partitionRefs(refs, ['a', 'b'], ['a', 'b'])
+    expect(result.ambiguous).toEqual(['a', 'b'])
   })
 
-  it('collision: #review distinct from /review', () => {
-    expect(extractAgentRefs('#review /review')).toEqual(['review'])
-    expect(extractSkillRefs('#review /review')).toEqual(['review'])
+  it('mixed: qualified, plain agent, plain skill, ambiguous together', () => {
+    const refs = extractRefs('/agent: explicit /reviewer /deploy /dup')
+    const result = partitionRefs(refs, ['reviewer', 'dup'], ['deploy', 'dup'])
+    expect(result.agents).toEqual(['explicit', 'reviewer'])
+    expect(result.skills).toEqual(['deploy'])
+    expect(result.mcpServers).toEqual([])
+    expect(result.ambiguous).toEqual(['dup'])
   })
 })
 
-describe('filterKnownAgentRefs', () => {
-  it('keeps refs matching known profile names', () => {
-    expect(filterKnownAgentRefs(['code-reviewer', 'test-writer'], ['code-reviewer'])).toEqual([
-      'code-reviewer',
-    ])
+describe('partitionRefs — mcp catalog', () => {
+  it('partitions a plain ref present only in the mcp catalog as an mcp mention', () => {
+    const refs = extractRefs('/context7 find docs')
+    const result = partitionRefs(refs, [], [], ['context7'])
+    expect(result.mcpServers).toEqual(['context7'])
+    expect(result.agents).toEqual([])
+    expect(result.skills).toEqual([])
+    expect(result.ambiguous).toEqual([])
   })
 
-  it('drops refs absent from the catalog', () => {
-    // "#42" (issue/PR number) and "#refactor" (hashtag) are not profiles.
-    expect(filterKnownAgentRefs(['42', 'refactor', 'code-reviewer'], ['code-reviewer'])).toEqual([
-      'code-reviewer',
-    ])
+  it('threads /mcp: qualified refs verbatim without a catalog check', () => {
+    const refs = extractRefs('/mcp: context7 and /mcp:glued-name')
+    const result = partitionRefs(refs, [], [], [])
+    expect(result.mcpServers).toEqual(['context7', 'glued-name'])
+    expect(result.skills).toEqual([])
+    expect(result.agents).toEqual([])
   })
 
-  it('returns empty when no profiles are known (no false positives)', () => {
-    expect(filterKnownAgentRefs(['42', 'refactor'], [])).toEqual([])
+  it('reports a plain ref colliding with the mcp catalog as ambiguous (never guessed)', () => {
+    // mcp × skill collision…
+    const skillCollision = partitionRefs(extractRefs('/deploy'), [], ['deploy'], ['deploy'])
+    expect(skillCollision.ambiguous).toEqual(['deploy'])
+    expect(skillCollision.mcpServers).toEqual([])
+    expect(skillCollision.skills).toEqual([])
+    // …and an mcp × agent collision.
+    const agentCollision = partitionRefs(extractRefs('/deploy'), ['deploy'], [], ['deploy'])
+    expect(agentCollision.ambiguous).toEqual(['deploy'])
   })
 
-  it('preserves extraction order (dedup is upstream in extractAgentRefs)', () => {
-    expect(filterKnownAgentRefs(['a', 'b', 'c'], ['b', 'c', 'a'])).toEqual(['a', 'b', 'c'])
+  it('treats a triple-catalog collision as ambiguous too', () => {
+    const result = partitionRefs(extractRefs('/review'), ['review'], ['review'], ['review'])
+    expect(result.ambiguous).toEqual(['review'])
   })
 
-  it('accepts a legitimately all-numeric profile name', () => {
-    // ADR-021 allows lowercase-alnum names; the catalog is the gate, not the
-    // regex, so a real "#42" profile must still resolve.
-    expect(filterKnownAgentRefs(['42'], ['42'])).toEqual(['42'])
+  it('a name unknown to every catalog still degrades to the permissive skill path', () => {
+    const result = partitionRefs(extractRefs('/mystery'), [], [], ['context7'])
+    expect(result.skills).toEqual(['mystery'])
+    expect(result.mcpServers).toEqual([])
   })
 
-  it('end-to-end: extraction + filter rejects prose #N refs', () => {
-    const text = 'this relates to issue #42 and #123, please run #code-reviewer'
-    const known = ['code-reviewer', 'test-writer']
-    expect(filterKnownAgentRefs(extractAgentRefs(text), known)).toEqual(['code-reviewer'])
+  it('deduplicates an mcp name reached via both a plain and a qualified spelling', () => {
+    const result = partitionRefs(extractRefs('/context7 /mcp: context7'), [], [], ['context7'])
+    expect(result.mcpServers).toEqual(['context7'])
+  })
+
+  it('omitting the mcp catalog (legacy 3-arg call) keeps the historical behavior', () => {
+    const result = partitionRefs(extractRefs('/context7'), [], ['context7'])
+    expect(result.skills).toEqual(['context7'])
+    expect(result.mcpServers).toEqual([])
   })
 })
 

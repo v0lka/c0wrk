@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — amended by [ADR-076](./076-unified-slash-mentions.md): the explicit `#agent-name` mention syntax (§3, and §4's explicit-request mode) is superseded by the unified `/`-mention syntax — plain `/agent-name` plus the collision-qualified `/agent: name` / `/skill: name` forms — and `#` is no longer a trigger anywhere (`#foo` is plain text, never extracted, threaded, or stripped). The profile format, discovery, delegation modes, plan-step targeting, and the Available/Requested Subagents prompt sections stand unchanged.
 
 ## Context
 

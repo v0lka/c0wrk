@@ -778,10 +778,13 @@ func TestResumeTask_ModelSwitchToCatalogModel_WindowFollowsCatalog(t *testing.T)
 		return core.NewCoreContextManager(cw)
 	}
 
+	caller := &gatingLLM{started: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(caller.release) }) }
 	factory := func(emitter core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		registry := sdktools.NewToolRegistry()
 		return core.NewOrchestrator(core.OrchestratorConfig{Model: unknownModel}, core.OrchestratorDeps{
-			LLM:            &finishLLM{answer: "resumed-catalog-done"},
+			LLM:            caller,
 			ModelSwitcher:  switcher,
 			ModelRegistry:  modelReg,
 			ToolExec:       registry,
@@ -816,11 +819,35 @@ func TestResumeTask_ModelSwitchToCatalogModel_WindowFollowsCatalog(t *testing.T)
 
 	// First task on the UNKNOWN model: initial fill must carry the 128000
 	// fallback — the state the status bar was left in when the task paused.
+	t.Cleanup(release)
 	if err := mgr.ResumeTask(context.Background(), info.ID, llm.CompositeModelID(provider, unknownModel), "", ""); err != nil {
 		t.Fatalf("ResumeTask (unknown model) failed: %v", err)
 	}
+	select {
+	case <-caller.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("unknown model run never entered the LLM call")
+	}
+	sess, ok := mgr.GetSession(info.ID)
+	if !ok {
+		t.Fatal("GetSession returned no session")
+	}
+	sess.mu.RLock()
+	done := sess.done
+	sess.mu.RUnlock()
+	if done == nil {
+		t.Fatal("ResumeTask did not publish a done channel")
+	}
+	release()
 	if _, ok := waitForEvent(eventChan, "task_complete", 3*time.Second); !ok {
 		t.Fatal("timeout waiting for task_complete event (unknown model run)")
+	}
+	// task_complete precedes the persistence checks. Join the first run
+	// before changing its completed record into the next paused checkpoint.
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("unknown model run did not finish its epilogue")
 	}
 
 	// Seed a fresh paused checkpoint after the first, completed run. The store
@@ -1236,6 +1263,7 @@ func TestResumeTask_CooperativePauseDuringResumedRunRewritesPaused(t *testing.T)
 // it and a later restore reading it back — the persistence half of the
 // pause→resume scenario.
 type inMemoryTaskStore struct {
+	mockMCPMentions
 	mu           sync.Mutex
 	tasks        map[string]TaskRecord
 	steps        map[string][]TaskStepRecord // taskID → records (replace by StepID)
@@ -1718,7 +1746,7 @@ func TestResumeTask_PausedMidPlan_ResumeCompletesAllStepsTerminal(t *testing.T) 
 		t.Fatalf("CreateSession failed: %v", err)
 	}
 
-	if err := mgr.SendMessage(context.Background(), info.ID, "build the widget in two planned steps", nil, nil, "", "", false, "", false, false); err != nil {
+	if err := mgr.SendMessage(context.Background(), info.ID, "build the widget in two planned steps", nil, nil, nil, "", "", false, "", false, false); err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
 

@@ -295,6 +295,40 @@ func TestToBuilderConfig_MCPTimeouts(t *testing.T) {
 	}
 }
 
+// TestToBuilderConfig_MCPMode verifies the per-server activation mode is
+// carried verbatim into BuilderMCPServer. The adapter deliberately does NOT
+// normalize (empty/invalid → "auto" is owned by the load pipeline's
+// normalizeMCPModes; the frontend rebuild paths start from that validated
+// config), and core only skips "disabled" when building the gateway config —
+// every other value, including empty, behaves as "auto" there by construction.
+func TestToBuilderConfig_MCPMode(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"autoMode":     {Command: "cmd", Mode: config.MCPServerModeAuto},
+		"manualMode":   {Command: "cmd", Mode: config.MCPServerModeManual},
+		"disabledMode": {Command: "cmd", Mode: config.MCPServerModeDisabled},
+		"emptyMode":    {Command: "cmd"},
+	}
+
+	bc := ToBuilderConfig(cfg, config.PredefinedModelProfiles())
+
+	want := map[string]string{
+		"autoMode":     config.MCPServerModeAuto,
+		"manualMode":   config.MCPServerModeManual,
+		"disabledMode": config.MCPServerModeDisabled,
+		"emptyMode":    "",
+	}
+	for name, mode := range want {
+		got, ok := bc.MCP.Servers[name]
+		if !ok {
+			t.Fatalf("server %q missing from BuilderConfig.MCP.Servers", name)
+		}
+		if got.Mode != mode {
+			t.Errorf("BuilderMCPServer(%q).Mode = %q, want %q (verbatim carry)", name, got.Mode, mode)
+		}
+	}
+}
+
 // TestToBuilderConfig_WebFetchTimeouts verifies the config→builder mapping for
 // the web fetch timeout/retry knobs: the proxy-path timeout and the retry
 // count flow into BuilderTimeoutsConfig so both reach sp4rk's web_fetch tool

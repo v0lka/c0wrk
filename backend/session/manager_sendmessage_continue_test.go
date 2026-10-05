@@ -102,7 +102,7 @@ func capturingFunctionalFactory(caller agent.LLMCaller, out **core.Orchestrator)
 // execute path can run end-to-end in tests. The same caller backs the router
 // and the executor.
 func routingFunctionalFactory(caller agent.LLMCaller) OrchestratorFactory {
-	return func(emitter core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	return func(emitter core.Emitter, _ *slog.Logger, _ string, bbFactory core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		registry := sdktools.NewToolRegistry()
 		cf := func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...orchestration.PruningOverride) core.ContextManager {
 			cw := memory.NewContextWindow(memory.ContextWindowConfig{
@@ -118,6 +118,7 @@ func routingFunctionalFactory(caller agent.LLMCaller) OrchestratorFactory {
 		return core.NewOrchestrator(core.OrchestratorConfig{}, core.OrchestratorDeps{
 			LLM:            caller,
 			Router:         rtr,
+			BBFactory:      bbFactory,
 			ToolExec:       registry,
 			ToolRegistry:   registry,
 			TokenCounter:   llm.NewSimpleTokenCounter(),
@@ -192,7 +193,7 @@ func TestSendMessage_UnfinishedTask_ContinuesCycle(t *testing.T) {
 	store.mu.Unlock()
 
 	// The user message must appear in the UI (message_received) regardless of path.
-	if err := mgr.SendMessage(context.Background(), info.ID, nudge, nil, nil, "", "", false, "", false, false); err != nil {
+	if err := mgr.SendMessage(context.Background(), info.ID, nudge, nil, nil, nil, "", "", false, "", false, false); err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
 
@@ -312,7 +313,7 @@ func TestSendMessage_IdleSession_StartsNewTaskWithRouting(t *testing.T) {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
 
-	if err := mgr.SendMessage(context.Background(), info.ID, userMsg, nil, nil, "", "", false, "", false, false); err != nil {
+	if err := mgr.SendMessage(context.Background(), info.ID, userMsg, nil, nil, nil, "", "", false, "", false, false); err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
 
@@ -593,7 +594,7 @@ func TestSendMessage_ResumePath_AppliesOverridesAndFlushesAttachments(t *testing
 
 	// Send a message that BOTH continues the interrupted task AND overrides the
 	// model + reasoning effort.
-	if err := mgr.SendMessage(context.Background(), info.ID, nudge, nil, nil, overrideModel, reasoning, false, "", false, false); err != nil {
+	if err := mgr.SendMessage(context.Background(), info.ID, nudge, nil, nil, nil, overrideModel, reasoning, false, "", false, false); err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
 
@@ -840,7 +841,7 @@ func TestSendMessage_GoalOnResume_AbandonsInterruptedTaskAndRunsGoal(t *testing.
 	sess.orchestrator.SetGoalProposer(autoApproveProposer{})
 
 	// Send a goal request that ALSO has an unfinished task to resume.
-	if err := mgr.SendMessage(context.Background(), info.ID, goalCondition, nil, nil, "", "", true, "", false, false); err != nil {
+	if err := mgr.SendMessage(context.Background(), info.ID, goalCondition, nil, nil, nil, "", "", true, "", false, false); err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
 
@@ -1084,7 +1085,7 @@ func TestSendMessage_NudgeIntoPausedGoalReentersGoalLoop(t *testing.T) {
 	store.mu.Unlock()
 
 	// A plain (non-goal) message into the paused session.
-	if err := mgr.SendMessage(context.Background(), info.ID, "keep going", nil, nil, "", "", false, "", false, false); err != nil {
+	if err := mgr.SendMessage(context.Background(), info.ID, "keep going", nil, nil, nil, "", "", false, "", false, false); err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
 

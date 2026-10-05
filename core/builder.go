@@ -47,7 +47,8 @@ import (
 // OrchestratorBuilder lives in core so that all sp4rk imports are confined to
 // the core layer. The backend.Application wraps it without importing sp4rk.
 type OrchestratorBuilder struct {
-	mu sync.RWMutex
+	mu       sync.RWMutex
+	mcpModes map[string]string // immutable snapshots published under mu
 	// reconfigureMu serializes ReconfigureMCP calls end to end. Its reason to
 	// exist is the start branch: two concurrent callers that both find no
 	// gateway would each dial one, and the loser would be orphaned with its
@@ -216,6 +217,7 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, p
 		logger:         logger,
 		initDone:       make(chan struct{}),
 		mcpDone:        make(chan struct{}),
+		mcpModes:       mcpServerModesFromConfig(cfg),
 		serviceMetrics: newServiceMetrics(),
 	}
 
@@ -661,6 +663,11 @@ func (b *OrchestratorBuilder) Build(
 			RepeatAbortThreshold: cfg.E2S.RepeatAbortThreshold,
 		},
 		ModelProfiles: ModelProfilesSettingsFromBuilderConfig(cfg.ModelProfiles),
+		// Per-server MCP modes ("auto" | "manual" | "disabled") drive the
+		// task-level tool gating (manual without a mention / disabled are
+		// hidden and rejected at dispatch). Empty map = nothing gated.
+		MCPServerModes:         mcpServerModesFromConfig(cfg),
+		MCPServerModesResolver: b.currentMCPServerModes,
 	}
 
 	// Create tool result cache (per-session lifetime).

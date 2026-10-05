@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/v0lka/c0wrk/core/goal"
@@ -98,6 +99,10 @@ func NewBlackboardLedger(bb PersistableBlackboard) units.Ledger {
 // Implementations must be safe for concurrent use.
 // This interface lives in core/ to avoid a dependency from core -> backend.
 type TaskPersistence interface {
+	// PersistMCPMentions atomically unions server names into durable task intent.
+	PersistMCPMentions(ctx context.Context, taskID string, names []string) error
+	// LoadMCPMentions returns the ordered task intent; legacy empty state is not an error.
+	LoadMCPMentions(ctx context.Context, taskID string) ([]string, error)
 	PersistNewTask(taskID, sessionID, originalRequest string) error
 	PersistPlan(taskID string, plan *orchestration.Plan) error
 	PersistRouting(taskID string, routing *router.RoutingDecision) error

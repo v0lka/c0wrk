@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, CheckCircle2, AlertCircle, TriangleAlert, Loader2, Pencil, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, CheckCircle2, AlertCircle, TriangleAlert, CircleOff, Loader2, Pencil, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -58,13 +58,29 @@ export function MCPServerCard({ server, tools, expanded, onToggleExpand, onEdit,
               ? <ChevronDown className="h-4 w-4 text-muted-foreground" />
               : <ChevronRight className="h-4 w-4 text-muted-foreground" />
             }
-            {server.connected
-              ? (server.unhealthy
-                  ? <TriangleAlert className="h-4 w-4 text-warning" />
-                  : <CheckCircle2 className="h-4 w-4 text-success" />)
-              : <AlertCircle className="h-4 w-4 text-destructive" />
+            {server.mode === 'disabled'
+              ? <CircleOff className="h-4 w-4 text-muted-foreground" />
+              : server.connected
+                ? (server.unhealthy
+                    ? <TriangleAlert className="h-4 w-4 text-warning" />
+                    : <CheckCircle2 className="h-4 w-4 text-success" />)
+                : <AlertCircle className="h-4 w-4 text-destructive" />
             }
             <span className="font-medium text-sm flex-1">{server.name}</span>
+            {/* Mode badge: only the non-default modes carry one — "auto" is
+                the implicit default and would be noise on every card. Manual
+                is the mention-driven mode, disabled is inert-by-design (and
+                renders neutrally: no red state, see the icon above). */}
+            {server.mode === 'manual' && (
+              <Badge variant="outline" className="text-xs text-info border-info/50 gap-1">
+                manual
+              </Badge>
+            )}
+            {server.mode === 'disabled' && (
+              <Badge variant="outline" className="text-xs text-muted-foreground gap-1">
+                disabled
+              </Badge>
+            )}
             {server.unhealthy && (
               <Badge variant="outline" className="text-xs border-warning text-warning gap-1">
                 <TriangleAlert className="h-3 w-3" />

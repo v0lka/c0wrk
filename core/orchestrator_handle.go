@@ -192,13 +192,15 @@ func (o *Orchestrator) routeOrContinue(
 	availableTools []sdktools.ToolDescriptor,
 ) (context.Context, *router.RoutingDecision, []skills.SkillDescriptor, *HandleResult, error) {
 	// Enrich the context with the subagent roster (discovered catalog + any
-	// explicit #mentions) before routing. Both are routing-independent, so
-	// enriching here covers the continuation fast-path and fresh routing in a
-	// single spot. The context flows into the Conductor's system prompt, which
-	// renders "Available Subagents" (implicit delegation view) and, when
-	// present, "Requested Subagents" (explicit delegation directive). Nil
-	// agentManager / empty opts leave the context untouched (no regression).
-	ctx = o.enrichAgentContext(ctx, opts.UserAgents)
+	// explicit /-mentions) and the user's MCP-server mentions before routing.
+	// All are routing-independent, so enriching here covers the continuation
+	// fast-path and fresh routing in a single spot. The context flows into
+	// the Conductor's system prompt, which renders "Available Subagents"
+	// (implicit delegation view) and, when present, "Requested Subagents"
+	// (explicit delegation directive) and "Requested MCP Servers" (soft
+	// preference for mentioned manual-mode servers). Nil agentManager / empty
+	// lists leave the context untouched (no regression).
+	ctx = o.enrichAgentContext(ctx, opts.UserAgents, opts.UserMCPServers)
 
 	if opts.TaskID != "" {
 		if pbb, ok := bb.(PersistableBlackboard); ok {
@@ -223,15 +225,16 @@ func (o *Orchestrator) routeOrContinue(
 	return o.routeAndActivateSkills(ctx, message, opts, bb, availableTools)
 }
 
-// enrichAgentContext attaches the discovered subagent catalog and any explicit
-// #agent-name mentions to the context so the Conductor's system prompt can
-// render the "Available Subagents" and "Requested Subagents" sections. The
-// catalog is the full discovery list (including hidden agents — the prompt
-// formatter filters hidden entries for the public roster but keeps them
-// resolvable for explicit mentions). Both attachments are nil/empty-safe:
-// a nil agentManager or empty userAgents leaves the context unchanged, so a
-// project with no subagents sees no regression.
-func (o *Orchestrator) enrichAgentContext(ctx context.Context, userAgents []string) context.Context {
+// enrichAgentContext attaches the discovered subagent catalog, any explicit
+// /-mention subagent names, and the user's MCP-server mentions to the context
+// so the Conductor's system prompt can render the "Available Subagents",
+// "Requested Subagents", and "Requested MCP Servers" sections. The catalog is
+// the full discovery list (including hidden agents — the prompt formatter
+// filters hidden entries for the public roster but keeps them resolvable for
+// explicit mentions). All attachments are nil/empty-safe: a nil agentManager
+// or empty name lists leave the context unchanged, so a project with no
+// subagents and no MCP mentions sees no regression.
+func (o *Orchestrator) enrichAgentContext(ctx context.Context, userAgents, userMCPServers []string) context.Context {
 	if o.agentManager != nil {
 		if descriptors := o.agentManager.List(); len(descriptors) > 0 {
 			ctx = WithAvailableAgents(ctx, descriptors)
@@ -239,6 +242,9 @@ func (o *Orchestrator) enrichAgentContext(ctx context.Context, userAgents []stri
 	}
 	if len(userAgents) > 0 {
 		ctx = WithUserAgents(ctx, userAgents)
+	}
+	if len(userMCPServers) > 0 {
+		ctx = WithUserMCPServers(ctx, userMCPServers)
 	}
 	return ctx
 }

@@ -1372,3 +1372,25 @@ func TestBuildSpecializedSystemPromptWithLite_RealGoalDirectives(t *testing.T) {
 		t.Error("verifier prompt carries an unresolved placeholder")
 	}
 }
+
+// TestBuildSystemPrompt_RequestedMCPServers: a user MCP-server mention adds a
+// SOFT "Requested MCP Servers" preference section (no MUST-delegate force —
+// unlike Requested Subagents); no mention → no section.
+func TestBuildSystemPrompt_RequestedMCPServers(t *testing.T) {
+	ctx := WithUserMCPServers(context.Background(), []string{"github"})
+	result := buildSystemPrompt(ctx, "deploy the service", llmModelMetaForTests())
+	if !strings.Contains(result, "## Requested MCP Servers") {
+		t.Fatal("prompt should contain Requested MCP Servers section when a server is mentioned")
+	}
+	if !strings.Contains(result, "- github") {
+		t.Fatal("section should list the mentioned server")
+	}
+	if !strings.Contains(result, "preference, not an obligation") {
+		t.Fatal("section wording must stay soft (preference, not obligation)")
+	}
+
+	plain := buildSystemPrompt(context.Background(), "deploy the service", llmModelMetaForTests())
+	if strings.Contains(plain, "Requested MCP Servers") {
+		t.Fatal("no mention must produce no Requested MCP Servers section")
+	}
+}

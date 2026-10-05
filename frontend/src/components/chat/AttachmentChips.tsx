@@ -136,6 +136,7 @@ export function AttachmentChips(): React.JSX.Element | null {
           [STUDY_PAPER_SKILL],
           undefined,
           undefined,
+          undefined,
           { newSession: false },
         ),
       ).catch((err) => {

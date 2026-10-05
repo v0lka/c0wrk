@@ -283,7 +283,8 @@ type HandleResult struct {
 type HandleOptions struct {
 	TaskID             string                     // non-empty = continuation of existing task
 	UserSkills         []string                   // explicitly requested by user via /skill refs (bypass router)
-	UserAgents         []string                   // explicitly requested by user via #agent-name mentions (drives the "Requested Subagents" prompt directive)
+	UserAgents         []string                   // explicitly requested by user via /-mentions (plain or /agent:-qualified; drives the "Requested Subagents" prompt directive)
+	UserMCPServers     []string                   // MCP servers explicitly mentioned by user via /-mentions (plain or /mcp:-qualified); enables manual-mode servers task-wide and drives the soft "Requested MCP Servers" prompt directive
 	ModelOverride      string                     // non-empty → use this model for all LLM calls; empty → router default
 	ReasoningEffort    string                     // non-empty → native reasoning value for all LLM calls; empty → use family default
 	SessionPlansDir    string                     // directory for session-scoped plan files (used by declare_plan tool)

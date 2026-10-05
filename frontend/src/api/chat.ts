@@ -9,6 +9,15 @@ import type { ChatMessage, TokenInfo, CompactionAvailability } from '@/types/mod
 /**
  * Send a user message to the session's agent.
  *
+ * `activeSkills` (arg 3), `activeAgents` (arg 4) and `activeMCPServers`
+ * (arg 5) are the partitioned `/`-refs of the message text (issue #110,
+ * extended by the MCP mention flow): skill names → activeSkills (`## Active
+ * Skills`), agent names → activeAgents (`## Requested Subagents`), MCP
+ * server names → activeMCPServers (`## Requested MCP Servers` soft
+ * directive + manual-mode gating); collision-qualified `/skill: x` /
+ * `/agent: x` / `/mcp: x` spellings carry their explicit kind. `#` has no
+ * ref meaning anymore.
+ *
  * @param goal       Enable goal mode for the first message of a task (OR-ed
  *                   with any /goal prefix the message text carries).
  * @param goalBudget Optional JSON budget override ({"max_turns":N});
@@ -23,6 +32,7 @@ export async function sendMessage(
   text: string,
   activeSkills: string[] = [],
   activeAgents: string[] = [],
+  activeMCPServers: string[] = [],
   modelOverride: string = '',
   reasoningOverride: string = '',
   goal: boolean = false,
@@ -33,10 +43,10 @@ export async function sendMessage(
   try {
     const app = getApp()
     // Positional args must match the Go SendMessage binding EXACTLY
-    // (id, text, skills, agents, modelOverride, reasoning, goal, goalBudget,
-    // e2s, reviewMode) — a drift silently drops mode flags before they reach
-    // HandleOptions.
-    await app.SendMessage(sessionId, text, activeSkills, activeAgents, modelOverride, reasoningOverride, goal, goalBudget, e2s, reviewMode)
+    // (id, text, skills, agents, mcpServers, modelOverride, reasoning, goal,
+    // goalBudget, e2s, reviewMode) — a drift silently drops mode flags
+    // before they reach HandleOptions.
+    await app.SendMessage(sessionId, text, activeSkills, activeAgents, activeMCPServers, modelOverride, reasoningOverride, goal, goalBudget, e2s, reviewMode)
   } catch (err) {
     logger.error('Failed to send message:', err)
     throw err

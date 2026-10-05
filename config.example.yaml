@@ -565,6 +565,17 @@ mcp:
   #       SOME_VAR: "value"
   #     url: ""                    # HTTP endpoint URL (http transport)
   #     headers: {}                # HTTP headers (http transport)
+  #     # Per-server activation mode. "auto" (the default) connects the
+  #     # server whenever the MCP gateway starts or reconfigures and its
+  #     # tools are always available; "manual" keeps the server connected
+  #     # but its tools join a task only after you mention it in the chat
+  #     # input ("/server-name", or "/mcp: server-name" under a name
+  #     # collision — the mention takes effect task-wide); "disabled" never
+  #     # dials it — no process is spawned and no connection is opened, and
+  #     # the settings UI renders it neutrally (never as an error). An
+  #     # omitted key or empty value is "auto"; an unrecognized value fails
+  #     # soft to "auto" with a load warning.
+  #     mode: "auto"                # "auto" | "manual" | "disabled"
   #     # Per-server timeouts. Both are Go duration strings — a unit suffix is
   #     # required (e.g. "60s", "2m", "500ms", "1h30m"); a bare number is
   #     # rejected. An omitted, empty, unparseable, or non-positive `timeout`
