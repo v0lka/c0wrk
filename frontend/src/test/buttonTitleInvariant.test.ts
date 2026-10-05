@@ -20,7 +20,7 @@
 // flags that combination as a violation in its own right.
 //
 // A bare ICON-ONLY button — or one whose markup hides its label (responsive
-// `hidden @min-[…]:inline` chrome, collapsed layouts) — leaves a user with
+// `hidden @min-[272px]:inline` chrome, collapsed layouts) — leaves a user with
 // no way to learn what it does, which is what the guard exists to prevent.
 // The guard cannot see CSS, so "this label can disappear" is a review-time
 // obligation (see specs/domains/frontend/button-tooltips.md): markup that

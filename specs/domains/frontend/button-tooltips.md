@@ -26,7 +26,7 @@ The channels are **mutually exclusive**: a button under a `<TooltipTrigger>` car
 
 The three channels answer different visibility regimes:
 
-- **The label may hide** (responsive collapse `hidden @min-[…]:inline`, overflow truncation, a later redesign into icon-only) — the `title` is REQUIRED regardless of what the source shows, because at the moment it hides, the tooltip becomes the only name the button has. The guard cannot see CSS, so this obligation is enforced at review time: markup that hides its label and relies on the static-label channel is a review defect even though the guard accepts it.
+- **The label may hide** (responsive collapse `hidden @min-[272px]:inline`, overflow truncation, a later redesign into icon-only) — the `title` is REQUIRED regardless of what the source shows, because at the moment it hides, the tooltip becomes the only name the button has. The guard cannot see CSS, so this obligation is enforced at review time: markup that hides its label and relies on the static-label channel is a review defect even though the guard accepts it.
 - **The label always shows** — the `title` is NOT needed; write one only when it adds information the label lacks (the four-rule title policy below), never as an echo.
 
 `title=""` technically passes the guard but is still an empty tooltip, so the text should stay meaningful.
