@@ -23,6 +23,12 @@ import (
 // intact, and no temp/backup litter left behind.
 func TestWriteFilesAtomic_LockedSecondTargetRollsBackSet(t *testing.T) {
 	root, first, second := writeAtomicFixture(t)
+	// writeAtomicFixture leaves the second target as a brand-new file; this
+	// test needs it present on disk (an EXISTING locked target whose original
+	// must survive byte-for-byte), so create it before locking the handle.
+	if err := os.WriteFile(second, []byte("second original\n"), 0o644); err != nil {
+		t.Fatalf("writing second target: %v", err)
+	}
 	restoreSecond := makeUnreadable(t, second)
 	defer restoreSecond()
 
