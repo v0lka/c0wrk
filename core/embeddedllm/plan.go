@@ -116,6 +116,38 @@ const upstreamFitMinContext = 4096
 // command line).
 const DefaultParallel = 1
 
+// DefaultCtxCheckpoints is the `--ctx-checkpoints` value every plan emits
+// unless overridden.
+//
+// It is **32**, which IS the fork's own default (`common/common.h`:
+// `int32_t n_ctx_checkpoints = 32;`, rendered as `-ctxcp, --ctx-checkpoints N
+// max number of context checkpoints to create per slot (default: 32)` at the
+// pinned tag prism-b10735-842b188). Unlike DefaultFitMinContext and
+// DefaultParallel this constant does not DIVERGE from the runtime — it pins
+// the same figure in this struct, because the flag is rendered
+// unconditionally: the runtime also reads the `LLAMA_ARG_CTX_CHECKPOINTS`
+// environment variable, and an inherited env override on the fork's side of
+// the boundary would otherwise decide a memory-bearing setting (each
+// checkpoint can hold a saved KV prefix) that no c0wrk layer chose. Rendering
+// the value explicitly makes the launch shape a property of this struct
+// rather than of the process environment.
+//
+// 0 is a legitimate operator choice ("never snapshot the KV prefix") and is
+// passed through verbatim; see Tuning.CtxCheckpoints.
+const DefaultCtxCheckpoints = 32
+
+// runtimeCacheRAMDefaultMiB is the pinned fork's own `--cache-ram` default
+// (`-cram, --cache-ram N   set the maximum cache size in MiB (default: 8192,
+// -1 - no limit, 0 - disable)`). Unlike the two defaults above it is KEPT, not
+// diverged from — but it stops being the answer the moment the measured
+// budgets hold more than it: the prompt cache lives in memory the launch was
+// already granted, and every prefix past the ceiling is re-prefilled from
+// scratch, so a flat 8192 MiB on a machine with tens of GiB to spare turns
+// each long agent step back into a cold start. It is the FLOOR of the derived
+// ceiling (see planPromptCacheCeiling): the planner only ever raises the
+// cache above it, never lowers it below it.
+const runtimeCacheRAMDefaultMiB = 8192
+
 // Policy margins for the device/host SPLIT, which memory.go documents as
 // measured on **Metal only**. The weight, cache, recurrent-state and compute
 // terms are model+runtime properties and travel across backends; the division
@@ -889,11 +921,24 @@ type Tuning struct {
 	// constant for the two measurements behind it); a set value is bounded by
 	// MaxTuningParallel.
 	Parallel *int
-	// CacheRAMMiB overrides `-cram`, the prompt cache ceiling. nil omits the
-	// flag and keeps the runtime's own default; 0 would disable the cache and
-	// is passed through verbatim, because disabling it is a legitimate choice.
-	// A set value is bounded by MaxTuningMiB.
+	// CacheRAMMiB overrides `-cram`, the prompt cache ceiling. nil leaves the
+	// ceiling to the planner: it keeps the runtime's own default unless the
+	// measured budgets hold more than that beyond the expected footprint AND
+	// per-slot context checkpoints are disabled (see planPromptCacheCeiling
+	// for why enabled checkpoints keep the runtime default); 0 would disable
+	// the cache and is passed through verbatim, because disabling it is a
+	// legitimate choice. A set value is bounded by MaxTuningMiB.
 	CacheRAMMiB *int
+	// CtxCheckpoints overrides `--ctx-checkpoints`, the per-slot KV snapshot
+	// count. nil means DefaultCtxCheckpoints (32, the runtime's own figure —
+	// see that constant for why the pin exists); 0 disables the snapshots
+	// verbatim, because disabling them is a legitimate choice. A set value is
+	// bounded by MaxTuningCtxCheckpoints.
+	CtxCheckpoints *int
+	// CacheIdleSlots is `--cache-idle-slots`/`--no-cache-idle-slots`. nil and
+	// an explicit true keep the runtime's default of saving idle slots to the
+	// prompt cache on a new task; false passes `--no-cache-idle-slots`.
+	CacheIdleSlots *bool
 	// HostReserveGiB overrides the RAM kept out of the host budget. nil keeps
 	// the topology's own derivation (the larger of a 4 GiB floor and 1/8 of
 	// RAM). It is a planner-side budget knob, NOT a runtime flag: the pinned
@@ -997,10 +1042,22 @@ type MemoryPlan struct {
 	// Parallel is `-np`. Always DefaultParallel unless overridden; see that
 	// constant for why the runtime's own auto default is unsafe here.
 	Parallel int `json:"parallel"`
-	// CacheRAMMiB is `-cram`. Nil omits the flag (the runtime's own default);
-	// a non-nil value — including 0, which disables the prompt cache — is
-	// passed through verbatim.
+	// CacheRAMMiB is `-cram`. A non-nil value — including 0, which disables
+	// the prompt cache — is passed through verbatim. Nil omits the flag: the
+	// planner emits a derived ceiling (planPromptCacheCeiling) only when the
+	// measured budgets hold MORE than the runtime's own default beyond the
+	// expected footprint and per-slot checkpoints are disabled, so an omitted
+	// flag always means "the runtime's own number already covers the spare
+	// memory" or "the spare is held for the active slots' checkpoint storage".
 	CacheRAMMiB *int `json:"cache_ram_mib,omitempty"`
+	// CtxCheckpoints is `--ctx-checkpoints`, the per-slot KV snapshot count.
+	// Always DefaultCtxCheckpoints unless overridden — 0 (snapshots disabled)
+	// included verbatim, because disabling them is a legitimate choice.
+	CtxCheckpoints int `json:"ctx_checkpoints"`
+	// CacheIdleSlots is the resolved `--cache-idle-slots`/
+	// `--no-cache-idle-slots`. True unless explicitly disabled: idle slots are
+	// saved to the prompt cache on a new task, the runtime's own default.
+	CacheIdleSlots bool `json:"cache_idle_slots"`
 	// Devices is `-dev`. Empty omits the flag.
 	Devices []string `json:"devices,omitempty"`
 	// SplitMode is `-sm`. SplitModeAuto omits the flag.
@@ -1398,18 +1455,25 @@ func planShape(
 		}
 	}
 
+	ctxCheckpoints, err := planCtxCheckpoints(tuning)
+	if err != nil {
+		return MemoryPlan{}, err
+	}
+
 	plan := MemoryPlan{
-		Fit:           fit,
-		FitMinContext: fitMinContext,
-		Layers:        layers,
-		KVType:        kv,
-		Packing:       packing,
-		KVOffload:     tuning.KVOffload == nil || *tuning.KVOffload,
-		MMProjOffload: tuning.MMProjOffload == nil || *tuning.MMProjOffload,
-		Parallel:      parallel,
-		Devices:       slices.Clone(tuning.Devices),
-		SplitMode:     tuning.SplitMode,
-		GPUFamily:     family,
+		Fit:            fit,
+		FitMinContext:  fitMinContext,
+		Layers:         layers,
+		KVType:         kv,
+		Packing:        packing,
+		KVOffload:      tuning.KVOffload == nil || *tuning.KVOffload,
+		MMProjOffload:  tuning.MMProjOffload == nil || *tuning.MMProjOffload,
+		Parallel:       parallel,
+		CtxCheckpoints: ctxCheckpoints,
+		CacheIdleSlots: tuning.CacheIdleSlots == nil || *tuning.CacheIdleSlots,
+		Devices:        slices.Clone(tuning.Devices),
+		SplitMode:      tuning.SplitMode,
+		GPUFamily:      family,
 
 		DeviceBudgetMiB:   budgets.deviceMiB,
 		HostBudgetMiB:     budgets.hostMiB,
@@ -1447,11 +1511,91 @@ func planShape(
 		} else {
 			notes = append(notes, fmt.Sprintf("the prompt cache was capped at %d MiB", value))
 		}
+	} else if cache, note, ok := planPromptCacheCeiling(budgets, plan); ok {
+		plan.CacheRAMMiB = &cache
+		notes = append(notes, note)
+	}
+	if tuning.CtxCheckpoints != nil && *tuning.CtxCheckpoints != DefaultCtxCheckpoints {
+		if *tuning.CtxCheckpoints == 0 {
+			notes = append(notes, "the per-slot context checkpoints were disabled (--ctx-checkpoints 0)")
+		} else {
+			notes = append(notes, fmt.Sprintf(
+				"the per-slot context checkpoint count was overridden to %d (the runtime's own default is %d)",
+				*tuning.CtxCheckpoints, DefaultCtxCheckpoints))
+		}
 	}
 
 	notes = append(notes, shapeNotes(tuning, plan, profile, budgets, topology)...)
 	plan.Notes = notes
 	return plan, nil
+}
+
+// planCtxCheckpoints resolves `--ctx-checkpoints`: DefaultCtxCheckpoints when
+// unset, the operator's figure verbatim otherwise — including 0, which
+// disables the per-slot KV snapshots. A value outside 0..MaxTuningCtxCheckpoints
+// is refused as ErrTuningInvalid rather than clamped or silently defaulted: a
+// negative or absurd count is a typo, and defaulting it would plan a different
+// launch than the one written — the same reason checkHostReserve refuses
+// instead of skipping an unusable figure.
+func planCtxCheckpoints(tuning Tuning) (int, error) {
+	if tuning.CtxCheckpoints == nil {
+		return DefaultCtxCheckpoints, nil
+	}
+	if *tuning.CtxCheckpoints < 0 || *tuning.CtxCheckpoints > MaxTuningCtxCheckpoints {
+		return 0, fmt.Errorf("%w: ctx_checkpoints %d is outside 0..%d",
+			ErrTuningInvalid, *tuning.CtxCheckpoints, MaxTuningCtxCheckpoints)
+	}
+	return *tuning.CtxCheckpoints, nil
+}
+
+// planPromptCacheCeiling derives the `--cache-ram` value an unset
+// `cache_ram_mib` leaves the planner free to choose: the memory the measured
+// budgets hold BEYOND the launch's expected footprint, so the prompt cache
+// grows with the machine instead of sitting at the runtime's flat
+// runtimeCacheRAMDefaultMiB while tens of GiB the launch was already granted
+// sit idle — and every prefix past the ceiling is re-prefilled from scratch.
+//
+// It derives nothing while per-slot context checkpoints are enabled (any
+// nonzero resolved count). Every ACTIVE slot keeps its own saved KV-prefix
+// snapshots in host-side vectors that sit OUTSIDE the `--cache-ram`
+// accounting — the fork's cache limit prices only the cached/evicted entries
+// (server_prompt_cache in tools/server, while slot.prompt.checkpoints is the
+// live slots' own storage) — and a snapshot's bytes are bounded by nothing
+// the planner has measured, only by the slot's context. There is therefore no
+// validated reserve the spare could be granted against: the runtime's own
+// default stands, and an operator who wants a larger cache alongside
+// checkpoints pins `cache_ram_mib` explicitly. With the snapshots disabled
+// (`ctx_checkpoints: 0`) that storage is structurally zero and the spare is
+// free to grant.
+//
+// The leftover is drawn from the HOST budget. On a unified machine both
+// expected footprints spend the SAME bytes (budgets.fits' rule), so the device
+// footprint is subtracted as well; on a discrete machine the device pool is
+// the accelerator's own and the host leftover is the whole story.
+//
+// The ceiling is emitted only when it EXCEEDS the runtime's own default: this
+// path can only RAISE the cache, never lower it — a smaller ceiling is a
+// decision the operator did not make, and the flag stays omitted so the
+// runtime's own number applies. The emitted value is clamped to MaxTuningMiB
+// so a probe that reported an absurd host figure still renders a value
+// Validate accepts.
+func planPromptCacheCeiling(b budgets, plan MemoryPlan) (value int, note string, ok bool) {
+	if plan.CtxCheckpoints != 0 {
+		return 0, "", false
+	}
+	leftover := b.hostMiB - plan.ExpectedHostMiB
+	pool := "host"
+	if b.unified {
+		leftover -= plan.ExpectedDeviceMiB
+		pool = "unified"
+	}
+	if leftover <= runtimeCacheRAMDefaultMiB {
+		return 0, "", false
+	}
+	value = int(min(leftover, MaxTuningMiB))
+	return value, fmt.Sprintf(
+		"the prompt cache ceiling was raised to %d MiB — the memory the measured %s budget holds beyond the launch's expected footprint, above the runtime's own %d MiB default (a prefix past the ceiling is re-prefilled from scratch)",
+		value, pool, runtimeCacheRAMDefaultMiB), true
 }
 
 // planPacking resolves the weights quantization: an explicit override, or the

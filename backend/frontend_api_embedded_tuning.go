@@ -36,10 +36,15 @@ import (
 //   - a probe performs no network I/O beyond asking the already-provisioned
 //     runtime binary, and it is bounded by embeddedProbeTimeout.
 
-// The `reset` vocabulary: the embedded_llm.tuning YAML key of every knob, so a
-// request names an override the way config.example.yaml and every validation
-// error already name it. `context` and `offload` are included even though they
-// are composite — one uniform clear mechanism for all twelve knobs beats two.
+// The `reset` vocabulary: the embedded_llm.tuning YAML key of every
+// UI-exposed knob, so a request names an override the way config.example.yaml
+// and every validation error already name it. `context` and `offload` are
+// included even though they are composite — one uniform clear mechanism for
+// all twelve knobs beats two. The two YAML-only checkpoint-policy knobs
+// (`ctx_checkpoints`, `cache_idle_slots`) are deliberately NOT part of this
+// vocabulary: they have no tuning DTO field, no request spelling and no reset
+// key, and are editable only through config.yaml (see
+// specs/domains/embedded-llm.md).
 const (
 	embeddedTuningKnobContext        = "context"
 	embeddedTuningKnobKVCacheType    = "kv_cache_type"
@@ -203,9 +208,15 @@ func applyEmbeddedTuningRequest(stored config.TuningConfig, req EmbeddedLLMTunin
 
 // embeddedTuningFingerprint renders a tuning section as a comparable string. It
 // fingerprints the TRANSLATED planner vocabulary rather than the config section,
-// so two spellings that resolve to the same launch shape — an absent
+// so two CLOSED-SET spellings that resolve to the same launch shape — an absent
 // `kv_cache_type` and an explicit `auto`, an untrimmed spelling and a canonical
 // one — are the same fingerprint and do not raise a spurious "reload required".
+// The collapse covers only the closed-set knobs TuningConfig.ToTuning resolves
+// through tuningChoice (`context.mode`, `offload.mode`, `kv_cache_type`,
+// `packing`): the pointer knobs are cloned verbatim, so an explicit pin equal
+// to the derived default (a `ctx_checkpoints: 32`, a `parallel: 1`) still
+// fingerprints as a distinct operator statement. reload_required therefore errs
+// toward suggesting a reload — a hint for the operator, never a gate.
 //
 // It is an in-memory comparison key only: never persisted, never sent over the
 // wire, and never parsed back. A translation failure yields the fingerprint of

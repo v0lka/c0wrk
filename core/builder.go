@@ -2394,10 +2394,13 @@ func (w llmBudgetWiring) attachBudgetClient(
 // is a wrapper, which cannot hold a tls.Config). Both resolvers clone from
 // sharedClient, so whichever applies, timeouts.llmRequestTimeout survives.
 //
-// The same guard is also the ONLY thing that sets ProviderEntry.ReasoningWire:
-// the embedded llama-server spells Qwen reasoning controls as
-// chat_template_kwargs, while every other openai_compatible entry keeps the
-// vendor-default top-level spelling.
+// The same guard is also the ONLY thing that sets ProviderEntry.ReasoningWire
+// and ProviderEntry.OmitReasoningHistory: the embedded llama-server spells
+// Qwen reasoning controls as chat_template_kwargs (while every other
+// openai_compatible entry keeps the vendor-default top-level spelling), and
+// its chat template rejects the reasoning_content history echo the DeepSeek
+// V4 contract adds to every assistant request message — so that entry alone
+// opts out of the echo while every other entry keeps it.
 //
 // The adaptive budget wiring (ADR-071) sits BETWEEN those two resolvers: its
 // RoundTripper wraps the client's transport on top of the pin and beneath the
@@ -2437,6 +2440,7 @@ func providerEntryFromConfig(
 	client = budget.attachBudgetClient(client, sharedClient, name, resolvedBase,
 		pc.TimeoutClass, budgetWire(pc, budget.overrides), logger)
 	reasoningWire := llm.ReasoningWireVendorDefault
+	omitReasoningHistory := false
 	if embedded.guards(name) {
 		// A cold embedded model is not listening, so this entry's client must
 		// start it before the request goes out and restart the idle budget when
@@ -2456,6 +2460,12 @@ func providerEntryFromConfig(
 		// user-authored base URL), which is why it rides the same guard as the
 		// transport and no other entry can pick it up.
 		reasoningWire = llm.ReasoningWireChatTemplateKwargs
+		// The same template rejects the reasoning_content history echo: the
+		// DeepSeek V4 contract adds the field to EVERY replayed assistant
+		// message, and a llama.cpp chat template that does not know the
+		// variable fails the whole request on it. The embedded entry opts out;
+		// DeepSeek-style endpoints keep the echo via the zero value.
+		omitReasoningHistory = true
 	}
 	tokenSource, requireStreaming := subscriptionAuthEntry(name, pc, subscription, builder)
 	return llm.ProviderEntry{
@@ -2469,6 +2479,11 @@ func providerEntryFromConfig(
 		// top-level spelling stays the answer for LM Studio/vLLM/Ollama entries
 		// an operator points at the same loopback.
 		ReasoningWire: reasoningWire,
+		// Also the guard's call: only the embedded entry opts out of the
+		// reasoning_content history echo. Every other provider keeps the
+		// DeepSeek V4 contract (reasoning_content rides every replayed
+		// assistant message) via the zero value.
+		OmitReasoningHistory: omitReasoningHistory,
 		// Subscription auth (nil unless BuilderProviderConfig.SubscriptionAuth
 		// is set): the token source's per-request credentials override the
 		// static APIKey on the wire, so a key that lingers in config.yaml can

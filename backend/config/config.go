@@ -916,8 +916,9 @@ func EmbeddedLLMMaxContextTokens() (int, error) { return embeddedLLMMaxContext()
 //
 //   - an UNSET `fit` lets the fit-exclusivity rule decide, while an explicit
 //     `fit: false` forces `-fit off`;
-//   - an UNSET `cache_ram_mib` omits `-cram` and keeps the runtime default,
-//     while an explicit `0` DISABLES the prompt cache.
+//   - an UNSET `cache_ram_mib` leaves the ceiling to the planner (the
+//     runtime's own default, raised to the measured spare memory when that
+//     exceeds it), while an explicit `0` DISABLES the prompt cache.
 //
 // Nothing here is seeded by ApplyDefaults, for the same reason: materializing
 // the pointers would turn every "unset" into an "explicit auto" on the first
@@ -986,11 +987,26 @@ type TuningConfig struct {
 	// yields 2048-token slots). Must be within
 	// 1..embeddedllm.MaxTuningParallel.
 	Parallel *int `yaml:"parallel,omitempty"`
-	// CacheRAMMiB overrides `-cram`, the prompt-cache ceiling. Absent omits the
-	// flag and keeps the runtime default; an explicit 0 DISABLES the cache and
-	// is passed through verbatim, because disabling it is a legitimate choice.
-	// Must be within 0..embeddedllm.MaxTuningMiB.
+	// CacheRAMMiB overrides `-cram`, the prompt-cache ceiling. Absent leaves
+	// the ceiling to the planner (the runtime's own default, raised to the
+	// measured spare memory only when that exceeds it AND per-slot context
+	// checkpoints are disabled — with snapshots enabled the spare is held for
+	// their active-slot storage, which sits outside the cache limit and has no
+	// measured bound); an explicit 0 DISABLES the cache and is passed through
+	// verbatim, because disabling it is a legitimate choice. Must be within
+	// 0..embeddedllm.MaxTuningMiB.
 	CacheRAMMiB *int `yaml:"cache_ram_mib,omitempty"`
+	// CtxCheckpoints overrides `--ctx-checkpoints`, the per-slot KV snapshot
+	// count. Absent means embeddedllm.DefaultCtxCheckpoints (32, the runtime's
+	// own figure, rendered explicitly so an inherited LLAMA_ARG_CTX_CHECKPOINTS
+	// env value cannot decide it); an explicit 0 DISABLES the snapshots and is
+	// passed through verbatim, because disabling them is a legitimate choice.
+	// Must be within 0..embeddedllm.MaxTuningCtxCheckpoints.
+	CtxCheckpoints *int `yaml:"ctx_checkpoints,omitempty"`
+	// CacheIdleSlots is `--cache-idle-slots`/`--no-cache-idle-slots`. Absent
+	// and an explicit true keep the runtime's default of saving idle slots to
+	// the prompt cache on a new task; false passes `--no-cache-idle-slots`.
+	CacheIdleSlots *bool `yaml:"cache_idle_slots,omitempty"`
 	// HostReserveGiB overrides the system RAM kept out of the host budget.
 	// Absent keeps the topology's own derivation (the larger of a 4 GiB floor
 	// and 1/8 of RAM). It is a PLANNER-side budget knob, not a runtime flag —
@@ -1121,6 +1137,8 @@ func (t TuningConfig) ToTuning() (embeddedllm.Tuning, error) {
 		MMProjOffload:  cloneBoolPtr(t.MMProjOffload),
 		Parallel:       cloneIntPtr(t.Parallel),
 		CacheRAMMiB:    cloneIntPtr(t.CacheRAMMiB),
+		CtxCheckpoints: cloneIntPtr(t.CtxCheckpoints),
+		CacheIdleSlots: cloneBoolPtr(t.CacheIdleSlots),
 		HostReserveGiB: cloneFloat64Ptr(t.HostReserveGiB),
 	}
 
@@ -1225,6 +1243,12 @@ func (t TuningConfig) ToTuning() (embeddedllm.Tuning, error) {
 	if err := tuningRange("embedded_llm.tuning.cache_ram_mib", t.CacheRAMMiB, 0,
 		embeddedllm.MaxTuningMiB,
 		" (0 disables the prompt cache, which is a legitimate choice)"); err != nil {
+		return embeddedllm.Tuning{}, err
+	}
+	if err := tuningRange("embedded_llm.tuning.ctx_checkpoints", t.CtxCheckpoints, 0,
+		embeddedllm.MaxTuningCtxCheckpoints,
+		fmt.Sprintf(" (default %d: the runtime's own figure; 0 disables the per-slot snapshots, which is a legitimate choice)",
+			embeddedllm.DefaultCtxCheckpoints)); err != nil {
 		return embeddedllm.Tuning{}, err
 	}
 	if t.HostReserveGiB != nil {
@@ -2319,8 +2343,9 @@ type ModelProfilesPersistConfig struct {
 
 	// ActiveProfile is the id of the profile whose 25 knob values form the
 	// effective runtime configuration (see ResolveModelProfilesConfig). ApplyDefaults
-	// seeds it with the model-agnostic "generic" profile; an id that no longer
-	// resolves (e.g. a custom profile deleted by hand) falls back to "generic"
+	// seeds it with the model-agnostic "generic" profile; a retired predefined
+	// id resolves to its replacement, and an id that no longer resolves (e.g. a
+	// custom profile deleted by hand) falls back to "generic"
 	// with a warning instead of failing the run.
 	ActiveProfile string `yaml:"active_profile"`
 }
@@ -2341,6 +2366,10 @@ func FindModelProfile(profiles []ModelProfile, id string) (ModelProfile, bool) {
 // LoadModelProfilesCatalog). Resolution rules:
 //
 //   - a known profile id → that profile's values;
+//   - a retired predefined id with no catalog entry of its own → the
+//     replacement predefined profile (see legacyPredefinedModelProfileAliases)
+//     plus one warning — a predefined rename must not strand a stored
+//     active_profile;
 //   - an empty or unknown id → soft fallback to the model-agnostic "generic"
 //     profile plus one warning each — a stale id must never break the run.
 //
@@ -2351,7 +2380,12 @@ func FindModelProfile(profiles []ModelProfile, id string) (ModelProfile, bool) {
 func ResolveModelProfilesConfig(persist ModelProfilesPersistConfig, catalog []ModelProfile) (resolved ModelProfilesConfig, warnings []string) {
 	var profile ModelProfile
 	if id := persist.ActiveProfile; id != "" {
-		if found, ok := FindModelProfile(catalog, id); ok {
+		if found, resolvedID, ok := FindModelProfileResolvingLegacy(catalog, id); ok {
+			if resolvedID != id {
+				warnings = append(warnings, fmt.Sprintf(
+					"model_profiles.active_profile %q is a retired predefined id; resolving to the %q profile",
+					id, resolvedID))
+			}
 			profile = found
 		} else {
 			warnings = append(warnings, fmt.Sprintf(

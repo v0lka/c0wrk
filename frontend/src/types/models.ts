@@ -516,10 +516,26 @@ export interface ConfigExperimentalResponse {
  *  the backend's ModelProfilesSettingsResponse, NOT the raw persisted `model_profiles:` section.
  *  `enabled` is the resolved master toggle (config `model_profiles.enabled`);
  *  `essential_tools_enabled` is the resolved essential-tools
- *  variant sub-toggle. Both are false when the config is not yet loaded. */
+ *  variant sub-toggle. Both are false when the config is not yet loaded.
+ *
+ *  `active_profile` / `suggested_profile_id` are the advisory identity half,
+ *  served by GetConfig as pure reads so background consumers never need
+ *  GetModelProfiles (a CONSUMING read that drains the one-shot profile
+ *  notices meant for Settings). Optional on the wire (older payloads); a
+ *  missing value reads as "unknown". */
 export interface ConfigModelProfilesResponse {
   enabled: boolean
   essential_tools_enabled: boolean
+  /** Stored active profile id, verbatim; '' / absent means unknown or not loaded. */
+  active_profile?: string
+  /** Id the resolver resolved the stored id to (retired-predefined alias /
+   *  soft fallback applied); '' / absent means unknown or not loaded.
+   *  Value-wise decisions ("is the effective profile already X?") compare
+   *  against this, never the verbatim `active_profile`. Served from the
+   *  backend's cached gate, unlike the two fresh fields above. */
+  resolved_profile_id?: string
+  /** Predefined profile the DEFAULT model suggests; null/absent when nothing matches. Advisory only. */
+  suggested_profile_id?: string | null
 }
 
 export interface ProviderConfigRequest {

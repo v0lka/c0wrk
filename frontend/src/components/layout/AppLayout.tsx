@@ -5,6 +5,7 @@ import { useResize } from '@/hooks/useResize'
 import { ResizeHandle } from '@/components/ResizeHandle'
 import { Sidebar } from './Sidebar'
 import { ChatArea } from '@/components/chat/ChatArea'
+import { BonsaiProfileBanner } from '@/components/chat/BonsaiProfileBanner'
 import { StatusBar } from '@/components/layout/StatusBar'
 import { FileViewerPanel } from '@/components/fileViewer/FileViewerPanel'
 import { createFloatingViewerOutsideHandler } from './floatingViewerOutside'
@@ -152,6 +153,7 @@ export function AppLayout() {
 
       {/* Main content area — relative so the floating viewer can overlay it */}
       <div className="relative flex min-w-0 flex-1 flex-col">
+        <BonsaiProfileBanner />
         <ChatArea />
         <StatusBar />
 

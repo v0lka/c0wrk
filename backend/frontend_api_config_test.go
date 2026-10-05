@@ -2207,7 +2207,7 @@ func TestGetModelProfiles_SuggestedFromDefaultModel(t *testing.T) {
 		{"Qwen/Qwen3.8-27B", "qwen3.8-27b"},
 		{"Qwen/Qwen3.8-27B-Instruct", "qwen3.8-27b"},
 		{"gemma-4-26b-a4b-it", "gemma-4-26b-a4b-it"},
-		{"embedded/Bonsai 2 27B", "qwen3.8-27b"},
+		{"embedded/Bonsai 2 27B", "bonsai.2-27b"},
 		{"my-custom-model", ""},
 		{"", ""},
 	}
@@ -2247,12 +2247,14 @@ func TestSuggestModelProfileID_Normalization(t *testing.T) {
 		{"google/gemma-4-26b-a4b-it", "gemma-4-26b-a4b-it"},
 		{"gemma-4-31b-it", "gemma-4-31b-it"},
 		{"qwen3_8_27b", "qwen3.8-27b"},
-		// The embedded local model is derived from Qwen/Qwen3.8-27B but its
-		// shipping name shares no token with it, so it matches through the
-		// explicit alias, not containment (bare name and composite id alike).
-		{"Bonsai 2 27B", "qwen3.8-27b"},
-		{"embedded/Bonsai 2 27B", "qwen3.8-27b"},
-		{"  bonsai 2 27b  ", "qwen3.8-27b"},
+		// The embedded local model is a rebrand of Qwen/Qwen3.8-27B with its
+		// own dedicated profile: the shipping name and the "bonsai.2-27b"
+		// slug normalize to the same "bonsai227b" token, and the explicit
+		// alias pins the mapping to the model-name constant (bare name and
+		// composite id alike).
+		{"Bonsai 2 27B", "bonsai.2-27b"},
+		{"embedded/Bonsai 2 27B", "bonsai.2-27b"},
+		{"  bonsai 2 27b  ", "bonsai.2-27b"},
 		// No matches.
 		{"claude-sonnet-4", ""},
 		{"my-tuned-model", ""},
@@ -2267,16 +2269,16 @@ func TestSuggestModelProfileID_Normalization(t *testing.T) {
 }
 
 // TestSuggestModelProfileID_EmbeddedModelAlias pins the explicit alias for the
-// backend-owned embedded model: it is derived from Qwen/Qwen3.8-27B, but
-// normalizing "Bonsai 2 27B" yields "bonsai227b", which contains no predefined
-// slug, so ONLY the identity mapping can produce the suggestion. The alias is
-// keyed off config.EmbeddedLLMModelName — the bare name and the
-// "embedded/<model>" composite the pickers and the router use both resolve to
-// it — and its target must be a real, suggestible predefined profile: a renamed
-// slug degrades to "no suggestion" instead of a dangling id the picker cannot
-// select.
+// backend-owned embedded model: it is a rebrand of Qwen/Qwen3.8-27B with its
+// own dedicated "bonsai.2-27b" profile (every knob targets the measured local
+// prefill/token cost). The alias is keyed off config.EmbeddedLLMModelName —
+// the bare name and the "embedded/<model>" composite the pickers and the
+// router use both resolve to it — so the mapping is stated once and moves with
+// a model rename, and its target must be a real, suggestible predefined
+// profile: a renamed slug degrades to "no suggestion" instead of a dangling id
+// the picker cannot select.
 func TestSuggestModelProfileID_EmbeddedModelAlias(t *testing.T) {
-	const want = "qwen3.8-27b"
+	const want = "bonsai.2-27b"
 
 	for _, model := range []string{
 		config.EmbeddedLLMModelName,
@@ -2313,7 +2315,7 @@ func TestSuggestModelProfileID_EmbeddedModelAlias(t *testing.T) {
 
 // TestGetModelProfiles_EmbeddedSuggestionIsHintOnly pins the ADR-066 D8
 // invariant on the RPC surface: with the embedded model selected as the default,
-// GetModelProfiles suggests "qwen3.8-27b" while the stored master toggle and the
+// GetModelProfiles suggests "bonsai.2-27b" while the stored master toggle and the
 // active profile are reported exactly as persisted — the suggestion is never
 // auto-applied.
 func TestGetModelProfiles_EmbeddedSuggestionIsHintOnly(t *testing.T) {
@@ -2323,8 +2325,8 @@ func TestGetModelProfiles_EmbeddedSuggestionIsHintOnly(t *testing.T) {
 	f.config.LLM.DefaultModel = embeddedCompositeID()
 
 	got := f.GetModelProfiles()
-	if got.SuggestedProfileID == nil || *got.SuggestedProfileID != "qwen3.8-27b" {
-		t.Fatalf("SuggestedProfileID = %v, want \"qwen3.8-27b\"", got.SuggestedProfileID)
+	if got.SuggestedProfileID == nil || *got.SuggestedProfileID != "bonsai.2-27b" {
+		t.Fatalf("SuggestedProfileID = %v, want \"bonsai.2-27b\"", got.SuggestedProfileID)
 	}
 	if got.Enabled != wantEnabled {
 		t.Errorf("Enabled = %v, want the stored %v (the hint must not enable Model Profiles)", got.Enabled, wantEnabled)
@@ -2894,6 +2896,101 @@ func TestDeleteModelProfile_ActiveCustomFallsBackToGeneric(t *testing.T) {
 		if strings.Contains(w, "was deleted") {
 			t.Errorf("the delete notice must not repeat, got warnings: %v", again.Warnings)
 		}
+	}
+}
+
+// TestGetConfigModelProfilesIdentityIsNonConsuming pins the property that
+// keeps the deletion notice reachable by Settings: the ConfigResponse
+// model_profiles block carries the active/suggested profile identity as PURE
+// in-memory reads and never drains the one-shot notices. The background gate
+// refresh (config:updated → GetConfig) therefore cannot swallow the
+// explanation that a later GetModelProfiles — Settings reloading after the
+// same mutation — is meant to display.
+func TestGetConfigModelProfilesIdentityIsNonConsuming(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	// The embedded default model makes the advisory suggestion deterministic.
+	f.config.LLM.DefaultModel = config.EmbeddedLLMModelName
+	f.config.ModelProfiles.ActiveProfile = ""
+	active := activateCustomModelProfile(t, f)
+	// The helper writes the active id directly (no RPC), so refresh the gate
+	// cache the way a config load or Model Profiles mutation would — otherwise
+	// the cached resolved id keeps its construction-time value.
+	f.configMu.Lock()
+	f.refreshModelProfilesGateLocked()
+	f.configMu.Unlock()
+
+	// Before the mutation: the identity half rides GetConfig — the stored
+	// active id verbatim, and the default model's dedicated suggestion.
+	cfg := f.GetConfig()
+	if cfg.ModelProfiles.ActiveProfileID != active.ID {
+		t.Fatalf("GetConfig model_profiles.active_profile = %q, want the custom id %q",
+			cfg.ModelProfiles.ActiveProfileID, active.ID)
+	}
+	if cfg.ModelProfiles.ResolvedProfileID != active.ID {
+		t.Fatalf("GetConfig model_profiles.resolved_profile_id = %q, want the same direct-hit id %q",
+			cfg.ModelProfiles.ResolvedProfileID, active.ID)
+	}
+	if cfg.ModelProfiles.SuggestedProfileID == nil || *cfg.ModelProfiles.SuggestedProfileID != "bonsai.2-27b" {
+		t.Fatalf("GetConfig model_profiles.suggested_profile_id = %v, want the embedded suggestion %q",
+			cfg.ModelProfiles.SuggestedProfileID, "bonsai.2-27b")
+	}
+
+	if err := f.DeleteModelProfile(active.ID); err != nil {
+		t.Fatalf("DeleteModelProfile(active): %v", err)
+	}
+
+	// The background refresh shape: a GetConfig after the mutation reflects
+	// the generic fallback WITHOUT consuming the notice...
+	cfg = f.GetConfig()
+	if cfg.ModelProfiles.ActiveProfileID != config.ModelProfilesGenericProfileID {
+		t.Fatalf("GetConfig model_profiles.active_profile = %q, want generic after the delete",
+			cfg.ModelProfiles.ActiveProfileID)
+	}
+	if cfg.ModelProfiles.ResolvedProfileID != config.ModelProfilesGenericProfileID {
+		t.Fatalf("GetConfig model_profiles.resolved_profile_id = %q, want generic after the delete",
+			cfg.ModelProfiles.ResolvedProfileID)
+	}
+	// ...which Settings' subsequent GetModelProfiles still receives.
+	got := f.GetModelProfiles()
+	if got.ActiveID != config.ModelProfilesGenericProfileID {
+		t.Fatalf("GetModelProfiles active = %q, want generic", got.ActiveID)
+	}
+	found := false
+	for _, w := range got.Warnings {
+		if strings.Contains(w, "was deleted") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the delete notice must survive a GetConfig refresh, got warnings: %v", got.Warnings)
+	}
+}
+
+// TestGetConfigModelProfilesResolvedIDAppliesLegacyAlias pins the resolved-id
+// half of the gate block for the retired dashed bonsai spelling: a config
+// loaded from disk (the only way the dashed id can be stored —
+// SelectModelProfile validates ids against the catalog) keeps the verbatim id
+// visible while ResolvedProfileID already names the renamed preset, so
+// value-wise consumers (the Bonsai banner) see "already on the preset"
+// instead of over-advising.
+func TestGetConfigModelProfilesResolvedIDAppliesLegacyAlias(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	// A dev-era config.yaml: the dashed id, no custom owner. Set it the way
+	// construction would (direct field write + gate refresh under the lock) —
+	// the RPC path would reject the retired id outright.
+	f.configMu.Lock()
+	f.config.ModelProfiles.ActiveProfile = "bonsai-2-27b"
+	f.refreshModelProfilesGateLocked()
+	f.configMu.Unlock()
+
+	cfg := f.GetConfig()
+	if cfg.ModelProfiles.ActiveProfileID != "bonsai-2-27b" {
+		t.Fatalf("GetConfig model_profiles.active_profile = %q, want the stored dashed id verbatim",
+			cfg.ModelProfiles.ActiveProfileID)
+	}
+	if cfg.ModelProfiles.ResolvedProfileID != "bonsai.2-27b" {
+		t.Fatalf("GetConfig model_profiles.resolved_profile_id = %q, want the alias-resolved %q",
+			cfg.ModelProfiles.ResolvedProfileID, "bonsai.2-27b")
 	}
 }
 
@@ -5461,7 +5558,7 @@ func TestUpdateLLMConfig_EmbeddedContextWindowOverrideUntouched(t *testing.T) {
 // installed embedded model as the default persists the LLM state WITHOUT
 // touching model_profiles — neither the master toggle nor the active profile,
 // in memory or in the saved YAML — while GetModelProfiles starts suggesting
-// "qwen3.8-27b". Applying that suggestion stays an explicit user action.
+// "bonsai.2-27b". Applying that suggestion stays an explicit user action.
 func TestUpdateLLMConfig_EmbeddedInstallKeepsModelProfilesUntouched(t *testing.T) {
 	f, _, cfgPath := newTestAPI(t)
 	installEmbeddedLLM(t, f, 4321)
@@ -5471,7 +5568,7 @@ func TestUpdateLLMConfig_EmbeddedInstallKeepsModelProfilesUntouched(t *testing.T
 	if wantEnabled {
 		t.Fatal("test precondition: the master Model Profiles toggle starts off")
 	}
-	if wantActive == "qwen3.8-27b" {
+	if wantActive == "bonsai.2-27b" {
 		t.Fatal("test precondition: the active profile must differ from the suggestion")
 	}
 
@@ -5505,8 +5602,8 @@ func TestUpdateLLMConfig_EmbeddedInstallKeepsModelProfilesUntouched(t *testing.T
 
 	// The suggestion is the ONLY model-profiles effect of the install.
 	got := f.GetModelProfiles()
-	if got.SuggestedProfileID == nil || *got.SuggestedProfileID != "qwen3.8-27b" {
-		t.Fatalf("SuggestedProfileID = %v, want \"qwen3.8-27b\"", got.SuggestedProfileID)
+	if got.SuggestedProfileID == nil || *got.SuggestedProfileID != "bonsai.2-27b" {
+		t.Fatalf("SuggestedProfileID = %v, want \"bonsai.2-27b\"", got.SuggestedProfileID)
 	}
 	if got.Enabled != wantEnabled || got.ActiveID != wantActive {
 		t.Errorf("GetModelProfiles = {enabled:%v active:%q}, want {enabled:%v active:%q}",

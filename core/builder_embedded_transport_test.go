@@ -17,11 +17,12 @@ import (
 	"github.com/v0lka/sp4rk/llm"
 )
 
-// This file pins the wiring of the embedded provider's two ProviderEntry
-// effects, both decided by the same name-scoped guard in
+// This file pins the wiring of the embedded provider's three ProviderEntry
+// effects, all decided by the same name-scoped guard in
 // providerEntryFromConfig: the ensure-loaded transport on
-// ProviderEntry.HTTPClient, and the reasoning wire on
-// ProviderEntry.ReasoningWire. The transport invariant it guards is the one
+// ProviderEntry.HTTPClient, the reasoning wire on
+// ProviderEntry.ReasoningWire, and the reasoning-history opt-out on
+// ProviderEntry.OmitReasoningHistory. The transport invariant it guards is the one
 // llm-providers.md states for that hook: a client attached to an entry shadows
 // RouterConfig.HTTPClient, so it MUST carry timeouts.llmRequestTimeout and
 // never the 30 s web-fetch proxy budget.
@@ -261,5 +262,46 @@ func TestProviderEntryFromConfig_EmbeddedSelectsTheChatTemplateKwargsWire(t *tes
 	if inert.ReasoningWire != llm.ReasoningWireVendorDefault {
 		t.Errorf("ReasoningWire without a loader = %q, want the vendor default %q",
 			inert.ReasoningWire, llm.ReasoningWireVendorDefault)
+	}
+}
+
+// The embedded guard is also the ONLY selector of the reasoning-history
+// opt-out. The DeepSeek V4 contract echoes reasoning_content back on every
+// replayed assistant request message (even an empty one) — but the supervised
+// llama.cpp fork's chat template does not know the field and fails the whole
+// request on it, so the embedded entry must omit the echo. Every sibling keeps
+// the zero value, which is what DeepSeek-style endpoints require.
+func TestProviderEntryFromConfig_EmbeddedOmitsReasoningHistory(t *testing.T) {
+	shared := &http.Client{Timeout: 10 * time.Minute}
+	embedded := BuilderEmbeddedLLMConfig{ProviderName: "embedded", Loader: &fakeEmbeddedLoader{}}
+
+	entry := providerEntryFromConfig("embedded", embeddedProviderConfig("http://127.0.0.1:1/v1"),
+		shared, nil, proxy.BypassMatcher{}, embedded, llmBudgetWiring{}, BuilderSubscriptionAuthConfig{}, identityExpand, nil, nil)
+
+	if !entry.OmitReasoningHistory {
+		t.Error("embedded OmitReasoningHistory = false, want true (the llama.cpp template rejects the reasoning_content echo)")
+	}
+
+	// The opt-out follows the supervisor, never the name or the URL shape: a
+	// user provider pointed at the very same loopback llama-server keeps the
+	// DeepSeek V4 echo, because c0wrk does not know which binary answers there
+	// — and a DeepSeek-compatible gateway must keep receiving the field.
+	for _, name := range []string{"anthropic", "chatgpt", "selfhosted", "deepseek", "Embedded", ""} {
+		sibling := providerEntryFromConfig(name, embeddedProviderConfig("http://127.0.0.1:1/v1"),
+			shared, nil, proxy.BypassMatcher{}, embedded, llmBudgetWiring{}, BuilderSubscriptionAuthConfig{}, identityExpand, nil, nil)
+		if sibling.OmitReasoningHistory {
+			t.Errorf("provider %q OmitReasoningHistory = true, want false (the DeepSeek V4 echo contract)", name)
+		}
+	}
+
+	// A configured name with no supervisor behind it (the posture before an
+	// install and after a Remove) must not opt out either — the guard is inert
+	// as a whole, so a stale embedded_llm.provider_name cannot change the
+	// request body of an unrelated provider.
+	inert := providerEntryFromConfig("embedded", embeddedProviderConfig("http://127.0.0.1:1/v1"),
+		shared, nil, proxy.BypassMatcher{}, BuilderEmbeddedLLMConfig{ProviderName: "embedded"},
+		llmBudgetWiring{}, BuilderSubscriptionAuthConfig{}, identityExpand, nil, nil)
+	if inert.OmitReasoningHistory {
+		t.Error("OmitReasoningHistory without a loader = true, want false (the guard must be inert as a whole)")
 	}
 }

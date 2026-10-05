@@ -10,6 +10,7 @@ import { ConfigWarningBanner } from './ConfigWarningBanner'
 import { LogLevelSelector } from './LogLevelSelector'
 import { ThemeSelector } from './ThemeSelector'
 import { UIScaleSelector } from './UIScaleSelector'
+import { SystemFontToggle } from './SystemFontToggle'
 import { ProxySettings } from './ProxySettings'
 import { SoundSettings } from './SoundSettings'
 import { SystemNotificationSettings } from './SystemNotificationSettings'
@@ -267,8 +268,12 @@ export function SettingsModal() {
           <TabsContent value="appearance" className={TAB_CONTENT_CLASS}>
             <div className="space-y-6">
               <ThemeSelector />
-              <div className="border-t border-border pt-4">
+              <div className="border-t border-border pt-4 flex flex-col gap-6">
                 <UIScaleSelector />
+                {/* Renders nothing until a system font is detected (or the
+                    user's persisted opt-in keeps it around), so the gap
+                    above never opens on KDE/Windows/macOS. */}
+                <SystemFontToggle />
               </div>
             </div>
           </TabsContent>
