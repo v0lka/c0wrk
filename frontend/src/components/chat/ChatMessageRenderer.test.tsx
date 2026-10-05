@@ -2,6 +2,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import type { ChatMessageUI, DisplayItem } from '@/types/messages'
 import { ChatMessageRenderer } from './ChatMessageRenderer'
 
@@ -31,11 +32,13 @@ function renderRenderer(): HTMLElement {
   root = createRoot(container)
   act(() => {
     root!.render(
-      <ChatMessageRenderer
-        items={items}
-        stickyUserMessages
-        trailingContent={<div data-testid="trailing">Streaming</div>}
-      />,
+      <TooltipProvider>
+        <ChatMessageRenderer
+          items={items}
+          stickyUserMessages
+          trailingContent={<div data-testid="trailing">Streaming</div>}
+        />
+      </TooltipProvider>,
     )
   })
   return container
