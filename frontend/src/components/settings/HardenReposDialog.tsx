@@ -125,6 +125,7 @@ export function HardenReposDialog({ open, onOpenChange }: HardenReposDialogProps
                   variant="ghost"
                   size="icon-xs"
                   aria-label={`Remove ${path}`}
+                  title={`Remove ${path}`}
                   onClick={() => void handleRemove(path)}
                   disabled={removing !== null}
                   data-testid={`harden-repo-remove-${repos.indexOf(path)}`}

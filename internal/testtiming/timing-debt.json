@@ -95,7 +95,6 @@
   "frontend/src/components/research/ResearchDashboard.test.tsx | promise-delay: new Promise((r) =\u003e setTimeout(r, 0))": 1,
   "frontend/src/components/research/ResearchDashboard.test.tsx | promise-delay: new Promise((r) =\u003e setTimeout(r, 10))": 1,
   "frontend/src/components/research/ResearchHypothesisPicker.test.tsx | promise-delay: new Promise((r) =\u003e setTimeout(r, 0))": 1,
-  "frontend/src/components/research/ResearchHypothesisPicker.test.tsx | promise-delay: new Promise((r) =\u003e setTimeout(r, 10))": 1,
   "frontend/src/components/research/ResearchNextStep.test.tsx | promise-delay: new Promise((r) =\u003e setTimeout(r, 0))": 1,
   "frontend/src/components/research/ResearchProjectPicker.test.tsx | promise-delay: new Promise((r) =\u003e setTimeout(r, 0))": 2,
   "frontend/src/components/research/ResearchProjectPicker.test.tsx | promise-delay: new Promise((r) =\u003e setTimeout(r, 10))": 1,

@@ -20,7 +20,8 @@ import {
   Pin,
   PinOff,
   Lightbulb,
-  Save,
+  FolderOpen,
+  GraduationCap,
 } from 'lucide-react'
 import { useMessageSender } from '@/hooks/useMessageSender'
 import {
@@ -36,6 +37,7 @@ import {
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore, selectIsNoProject } from '@/stores/projectStore'
 import { cn } from '@/lib/utils'
+import { Combobox } from '@/components/ui/combobox'
 import { pickStudyDocument } from '@/api/papers'
 import type { PaperRecord } from '@/api/papers'
 import {
@@ -458,7 +460,7 @@ export function PapersView() {
             onClick={() => void studyPicked()}
             className="shrink-0 rounded border border-border bg-background p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <Save className="size-3.5" />
+            <FolderOpen className="size-3.5" />
           </button>
           <button
             type="button"
@@ -466,26 +468,24 @@ export function PapersView() {
             disabled={reference.trim() === ''}
             title="Study this paper in a new session"
             onClick={() => void study()}
-            className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-[11px] text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+            className="inline-flex shrink-0 items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[11px] text-foreground transition-colors hover:bg-muted disabled:opacity-50"
           >
+            <GraduationCap className="size-3.5" />
             Study
           </button>
         </div>
         <label className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
           Mode
-          <select
-            data-testid="papers-mode-select"
-            aria-label="Study mode"
+          <Combobox
+            ariaLabel="Study mode"
             value={mode}
-            onChange={(e) => setMode(e.target.value as StudyMode)}
-            className="rounded border border-border bg-background px-1 py-0.5 text-[11px] normal-case tracking-normal text-foreground focus:outline-none"
-          >
-            {STUDY_MODE_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => setMode(v as StudyMode)}
+            options={STUDY_MODE_OPTIONS.map((option) => ({
+              value: option.value,
+              label: option.label,
+            }))}
+            className="h-auto w-auto gap-0.5 rounded border border-border bg-background px-1 py-0.5 text-[11px] normal-case tracking-normal text-foreground"
+          />
         </label>
       </div>
 

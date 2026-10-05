@@ -9,7 +9,6 @@
 
 import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
-import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 
 // --- Single action button ---
 
@@ -23,31 +22,39 @@ interface ItemActionProps {
 }
 
 /**
- * A single row action button with a left-aligned tooltip.
+ * A single row action button. The native `title` attribute is the ONLY
+ * tooltip mechanism — no Radix Tooltip. For a disabled button (which never
+ * receives pointer events, so its own `title` never shows) the reason is
+ * carried by the `title` on the focusable wrapper span instead.
  *
  * Generic across list types — the calling site supplies the icon and intent
  * color (e.g. `text-info`, `text-destructive`).
  */
 export function ItemAction({ label, onClick, disabled, disabledReason, children }: ItemActionProps) {
+  const reason = disabled && disabledReason ? disabledReason : undefined
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span tabIndex={disabled ? 0 : undefined} className={disabled ? 'cursor-not-allowed' : undefined}>
-          <button
-            type="button"
-            onClick={onClick}
-            disabled={disabled}
-            className={cn(
-              'rounded p-0.5 transition-colors enabled:hover:bg-accent/20 enabled:active:bg-accent/30',
-              disabled && 'pointer-events-none opacity-30',
-            )}
-          >
-            {children}
-          </button>
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="left">{disabled && disabledReason ? disabledReason : label}</TooltipContent>
-    </Tooltip>
+    <span
+      tabIndex={disabled ? 0 : undefined}
+      title={reason}
+      // The span is the tab stop while disabled and its contents (a disabled
+      // button) are excluded from accessible-name computation, so the action
+      // name must be carried explicitly: "label: reason".
+      aria-label={reason ? `${label}: ${reason}` : undefined}
+      className={disabled ? 'cursor-not-allowed' : undefined}
+    >
+      <button
+        type="button"
+        title={reason ?? label}
+        onClick={onClick}
+        disabled={disabled}
+        className={cn(
+          'rounded p-0.5 transition-colors enabled:hover:bg-accent/20 enabled:active:bg-accent/30',
+          disabled && 'pointer-events-none opacity-30',
+        )}
+      >
+        {children}
+      </button>
+    </span>
   )
 }
 

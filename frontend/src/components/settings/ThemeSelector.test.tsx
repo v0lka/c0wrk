@@ -47,32 +47,9 @@ vi.mock('@/api/themes', async (importOriginal) => {
   }
 })
 
-// ItemAction renders Radix Tooltips, which require the app-root
-// TooltipProvider; render plain buttons instead (the same stopPropagation +
-// onClick contract the real overlay provides inside a menu row).
-vi.mock('@/components/layout/ItemAction', () => ({
-  ItemAction: ({
-    label,
-    onClick,
-    children,
-  }: {
-    label: string
-    onClick: () => void
-    children: React.ReactNode
-  }) => (
-    <button
-      type="button"
-      aria-label={label}
-      onClick={(e) => {
-        e.stopPropagation()
-        onClick()
-      }}
-    >
-      {children}
-    </button>
-  ),
-  ItemActions: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
-}))
+// ItemAction now carries a native `title` instead of a Radix Tooltip, so the
+// real component renders fine without the app-root TooltipProvider — no mock
+// needed. Delete buttons are located by `button[title="Delete theme"]`.
 
 const emitSpy = vi.hoisted(() => vi.fn())
 vi.mock('@/api/runtime', () => ({
@@ -183,8 +160,8 @@ describe('ThemeSelector combobox', () => {
     expect(menuItem('Default Dark').querySelector('.lucide-moon')).not.toBeNull()
     expect(menuItem('Default Light').querySelector('.lucide-sun')).not.toBeNull()
     // Builtins expose no delete action.
-    expect(menuItem('Default Dark').querySelector('button[aria-label="Delete theme"]')).toBeNull()
-    expect(menuItem('Default Light').querySelector('button[aria-label="Delete theme"]')).toBeNull()
+    expect(menuItem('Default Dark').querySelector('button[title="Delete theme"]')).toBeNull()
+    expect(menuItem('Default Light').querySelector('button[title="Delete theme"]')).toBeNull()
   })
 
   it('trigger shows the active theme type icon and name', () => {
@@ -230,7 +207,7 @@ describe('ThemeSelector delete', () => {
     await openWithCustoms([NORD, PAPER])
     await act(async () => {
       const trash = menuItem('Nord').querySelector<HTMLButtonElement>(
-        'button[aria-label="Delete theme"]',
+        'button[title="Delete theme"]',
       )
       expect(trash).not.toBeNull()
       trash!.click()
@@ -245,7 +222,7 @@ describe('ThemeSelector delete', () => {
     await openWithCustoms([NORD], 'nord')
     expect(useThemeStore.getState().themeId).toBe('nord')
     await act(async () => {
-      menuItem('Nord').querySelector<HTMLButtonElement>('button[aria-label="Delete theme"]')!.click()
+      menuItem('Nord').querySelector<HTMLButtonElement>('button[title="Delete theme"]')!.click()
       await new Promise((r) => setTimeout(r, 0))
     })
     const state = useThemeStore.getState()
@@ -258,7 +235,7 @@ describe('ThemeSelector delete', () => {
     vi.mocked(deleteTheme).mockRejectedValueOnce(new Error('boom'))
     await openWithCustoms([NORD])
     await act(async () => {
-      menuItem('Nord').querySelector<HTMLButtonElement>('button[aria-label="Delete theme"]')!.click()
+      menuItem('Nord').querySelector<HTMLButtonElement>('button[title="Delete theme"]')!.click()
       await new Promise((r) => setTimeout(r, 0))
     })
     expect(emitSpy).toHaveBeenCalledWith(

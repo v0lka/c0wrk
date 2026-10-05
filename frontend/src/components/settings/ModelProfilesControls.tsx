@@ -98,6 +98,7 @@ export function TagList({ label, values, onChange, options, disabled, lockedValu
                     onClick={() => remove(v)}
                     disabled={disabled}
                     aria-label={`Remove ${v}`}
+                    title={`Remove ${v}`}
                   >
                     <X className="h-3 w-3" />
                   </Button>

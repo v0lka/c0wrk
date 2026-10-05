@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { roleToType, chatMessageToUI, rebuildPlanFromHistory, rebuildGoalFromHistory, groupMessages, isPersistableHistoryMessage, isLegacyReviewPromptRow, lastAgentMetricsFromHistory, isAgentMetricsRow, isRoutingRequestRow } from './chatUtils'
 import type { ChatMessage } from '@/types/models'
-import type { ChatMessageUI } from '@/types/messages'
+import type { ChatMessageUI, DisplayItem } from '@/types/messages'
 
 /**
  * Helper to create ChatMessage-like objects.
@@ -1074,6 +1074,74 @@ describe('groupMessages — pause checkpoints', () => {
     expect(sub).toBeDefined()
     expect(sub.status).toBe('failed')
     expect(sub.error).toBe('max steps exceeded')
+  })
+
+  it('nests a delegated subagent\u2019s OWN plan steps under the subagent block (plan_step_id = delegation id)', () => {
+    // The delegate's emitter is a WithPlanStepID copy scoped to the
+    // delegation step id, so its own plan_step_start events carry
+    // plan_step_id = 'delegate-1' — they must nest under the subagent block,
+    // not spread at root level.
+    const result = groupMessages([
+      makeUI({ type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),
+      makeUI({ id: 'exec-1', type: 'tool_call', content: '', metadata: { tool: 'execute_plan', plan_step_id: 'delegate-1', args: '{}' } }),
+      makeUI({ id: 'start-1', type: 'plan_step_start', metadata: { step_id: 'step-1', description: 'Read', summary: 'Read', plan_step_id: 'delegate-1' } }),
+      makeUI({ id: 'done-1', type: 'plan_step_complete', metadata: { step_id: 'step-1', success: true, duration: 1000, plan_step_id: 'delegate-1' } }),
+      makeUI({ id: 'start-2', type: 'plan_step_start', metadata: { step_id: 'step-2', description: 'Write', summary: 'Write', plan_step_id: 'delegate-1' } }),
+      makeUI({ id: 'done-2', type: 'plan_step_complete', metadata: { step_id: 'step-2', success: true, duration: 2000, plan_step_id: 'delegate-1' } }),
+      makeUI({ id: 'fin-1', type: 'subagent_complete', metadata: { step_id: 'delegate-1', success: true, duration: 9000 } }),
+    ])
+
+    const rootSteps = result.items.filter((it) => it.kind === 'plan_step')
+    expect(rootSteps).toHaveLength(0) // both steps nest inside the block
+    const sub = result.items.find((it) => it.kind === 'subagent') as { children: DisplayItem[]; status: string }
+    expect(sub).toBeDefined()
+    expect(sub.status).toBe('completed')
+    const nested = sub.children.filter((it) => it.kind === 'plan_step') as Array<{ stepId: string; status: string }>
+    expect(nested.map((s) => s.stepId)).toEqual(['step-1', 'step-2'])
+    expect(nested.every((s) => s.status === 'completed')).toBe(true)
+  })
+
+  it('does NOT nest a root-plan step whose parent block already settled (no live openSteps entry)', () => {
+    // The parent delegation completed and left openSteps; a late
+    // plan_step_start carrying its id must not resurrect the block as a
+    // nesting target — the root placement keeps the step visible.
+    const result = groupMessages([
+      makeUI({ type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),
+      makeUI({ type: 'subagent_complete', metadata: { step_id: 'delegate-1', success: true, duration: 1000 } }),
+      makeUI({ id: 'late-start', type: 'plan_step_start', metadata: { step_id: 'step-9', description: 'Late', summary: 'Late', plan_step_id: 'delegate-1' } }),
+    ])
+
+    const rootSteps = result.items.filter((it) => it.kind === 'plan_step')
+    expect(rootSteps).toHaveLength(1)
+    expect((rootSteps[0] as { stepId: string }).stepId).toBe('step-9')
+  })
+
+  it('does not nest a block under ITSELF when a resume re-launch carries its own id (guard parent !== item)', () => {
+    // A resume re-emits subagent_launch for a still-open delegation; the
+    // event's plan_step_id IS the delegation's own step id. Nesting the fresh
+    // block under itself would drop it from the tree entirely.
+    const result = groupMessages([
+      makeUI({ type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),
+      makeUI({ type: 'subagent_paused', metadata: { step_id: 'delegate-1', duration: 700 } }),
+      // Resume: backend re-emits the launch with the SAME task id — and the
+      // scoped emitter's plan_step_id is that same id.
+      makeUI({ id: 'relaunch', type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic', plan_step_id: 'delegate-1' } }),
+      makeUI({ id: 'th-1', type: 'thought', content: 'working', metadata: { reasoning: '', plan_step_id: 'delegate-1' } }),
+    ])
+
+    const subs = result.items.filter((it) => it.kind === 'subagent')
+    // No self-nesting: both blocks stay at ROOT level (a same-id re-launch
+    // collapses into one row at the store level; distinct ids make two root
+    // blocks — either way nothing is nested under itself and dropped).
+    expect(subs).toHaveLength(2)
+    for (const s of subs) {
+      const children = (s as { children: DisplayItem[] }).children
+      expect(children.some((it) => it.kind === 'subagent')).toBe(false)
+    }
+    // The thought still nests under the now-running (latest) block.
+    const latest = subs[subs.length - 1] as { children: DisplayItem[]; status: string }
+    expect(latest.status).toBe('running')
+    expect(latest.children.some((it) => it.kind === 'thought')).toBe(true)
   })
 
   it('resumes a paused subagent in the SAME block on the first post-pause child', () => {

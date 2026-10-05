@@ -55,6 +55,9 @@
 | Frontend stores, state management        | [domains/frontend/stores.md](domains/frontend/stores.md)                 |
 | UI scale / zoom-safe sizing & popover placement | [domains/frontend/ui-scale.md](domains/frontend/ui-scale.md)       |
 | Follow the desktop UI font (GNOME/gsettings, Linux; opt-in) | [domains/frontend/system-font.md](domains/frontend/system-font.md) |
+| Button tooltips (`title=` / TooltipTrigger / visible-label convention, the project-wide guard) | [domains/frontend/button-tooltips.md](domains/frontend/button-tooltips.md)       |
+| Row-action hover overlay (`ItemAction`/`ItemActions`: sidebar/git/theme/bookmark/research rows, native-title tooltips) | [domains/frontend/row-actions.md](domains/frontend/row-actions.md)       |
+| Git Changes tab file list (sections, flat name-first rows, tree basename rows, path tooltips) | [domains/frontend/git-changes-list.md](domains/frontend/git-changes-list.md)       |
 | Frontend events, streaming               | [domains/frontend/events.md](domains/frontend/events.md)                 |
 | Message rendering, display items         | [domains/frontend/rendering.md](domains/frontend/rendering.md)           |
 | Sound notifications, audio reliability   | [domains/frontend/sound-notifications.md](domains/frontend/sound-notifications.md) |
@@ -154,6 +157,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [system-font.md](domains/frontend/system-font.md) - Follow-system-font feature: WebKitGTK does not follow `gtk-font-name`, so the app reads the GNOME interface font (`gsettings`, Linux-only) via `GetSystemUIFont` and applies the family as the inline `--default-font-family` override on `<html>` over Tailwind v4 preflight (family only — the 14px base + UI Scale own the size, mono untouched; opt-in, persisted `c0wrk-follow-system-font`; desktop font changes apply after an app restart)
 - [stores.md](domains/frontend/stores.md) - Zustand store catalog
 - [git-operation-console.md](domains/frontend/git-operation-console.md) - Git operation console: the footer log button + anchored popover for the last git mutation result (button tint, popover contents, per-project scope, which operations feed it, acknowledge semantics, zoom-safe sizing)
+- [button-tooltips.md](domains/frontend/button-tooltips.md) - Button tooltip convention: every `<button>`/`<Button>` exposes its purpose via a native `title=`, a Radix `TooltipTrigger` wrapper, or a statically visible label — exactly one: the channels never combine (a `title` under a `TooltipTrigger` is flagged by both AST guards); label-hiding markup keeps a `title` at review time, always-labeled buttons skip the echo; picker triggers follow the heading rule (R2/R3); the disabled-button `ItemAction` wrapper pattern, `TOOLTIP_DELAY_MS`, root-level `TooltipProvider`
 - [events.md](domains/frontend/events.md) - Event subscription and handling
 - [rendering.md](domains/frontend/rendering.md) - Message grouping and display pipeline
 - [sound-notifications.md](domains/frontend/sound-notifications.md) - Web Audio notification cues: event→tone pipeline, AudioContext lifecycle, recovery/replacement guarantees

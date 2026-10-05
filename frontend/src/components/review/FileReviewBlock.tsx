@@ -62,6 +62,7 @@ export function FileReviewBlock({ sessionId, file, readOnly }: FileReviewBlockPr
           <Button
             variant="ghost"
             size="xs"
+            title={comment ? 'Edit comment' : 'Add comment'}
             onClick={() => (showComment ? setShowComment(false) : openComment())}
             className="text-xs"
           >
@@ -84,7 +85,7 @@ export function FileReviewBlock({ sessionId, file, readOnly }: FileReviewBlockPr
               placeholder="Leave a comment on this file..."
               autoFocus
             />
-            <Button size="xs" onClick={handleSave} className="shrink-0">
+            <Button size="xs" title="Save comment" onClick={handleSave} className="shrink-0">
               Save
             </Button>
             <Button

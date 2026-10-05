@@ -124,6 +124,7 @@ export function ExecutionStatePanel({ sessionId }: { sessionId: string }) {
         onClick={() => setOpen(!open)}
         className="flex items-center gap-2 w-full px-3 py-2 text-left text-foreground hover:bg-muted transition-colors rounded-sm"
         aria-expanded={open}
+        title={open ? 'Collapse execution state panel' : 'Expand execution state panel'}
       >
         <span className="opacity-0 group-hover:opacity-100 transition-opacity inline-flex">
           {open

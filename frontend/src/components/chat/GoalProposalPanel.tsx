@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Check, X, Target, Terminal, RefreshCw, CheckCircle2 } from 'lucide-react'
 import { goal } from '@/api'
 import type { DisplayItem } from '@/types/messages'
@@ -291,48 +292,33 @@ export function GoalProposalPanel({ item }: GoalProposalPanelProps) {
             compact segmented toggle so the user can override the derivation-chosen
             mode at sign-off; the chosen value is sent through goal.confirmGoal. */}
         <span className="block text-xs text-muted-foreground/80">Verification mode</span>
-        <div
-          className="flex gap-1 rounded-md border border-border bg-background p-0.5"
-          role="radiogroup"
-          aria-label="Verification mode"
-        >
-          <button
-            type="button"
-            role="radio"
-            aria-checked={verificationMode === VERIFICATION_MODE_EXECUTABLE}
-            aria-label="Executable check"
-            title="Run the verify clause as a command/test (default)"
-            className={`flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
-              verificationMode === VERIFICATION_MODE_EXECUTABLE
-                ? 'bg-info/15 text-info'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-            onClick={() => setVerificationMode(VERIFICATION_MODE_EXECUTABLE)}
-          >
-            <Terminal className="h-3 w-3 shrink-0" /> Executable check
-          </button>
-          <button
-            type="button"
-            role="radio"
-            aria-checked={verificationMode === VERIFICATION_MODE_RE_DERIVATION}
-            aria-label="Re-run verification (re-derivation)"
-            title="Re-derive the goal from conversation state and compare"
-            className={`flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
-              verificationMode === VERIFICATION_MODE_RE_DERIVATION
-                ? 'bg-info/15 text-info'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-            onClick={() => setVerificationMode(VERIFICATION_MODE_RE_DERIVATION)}
-          >
-            <RefreshCw className="h-3 w-3 shrink-0" /> Re-run verification
-          </button>
-        </div>
+        <SegmentedControl
+          semantic="radio"
+          fullWidth
+          ariaLabel="Verification mode"
+          items={[
+            {
+              value: VERIFICATION_MODE_EXECUTABLE,
+              icon: <Terminal className="size-3 shrink-0" />,
+              label: 'Executable check',
+              title: 'Run the verify clause as a command/test (default)',
+            },
+            {
+              value: VERIFICATION_MODE_RE_DERIVATION,
+              icon: <RefreshCw className="size-3 shrink-0" />,
+              label: 'Re-run verification',
+              title: 'Re-derive the goal from conversation state and compare',
+            },
+          ]}
+          value={verificationMode}
+          onValueChange={setVerificationMode}
+        />
 
         <div className="flex gap-2 pt-0.5">
-          <Button variant="default" size="sm" onClick={onApprove} disabled={submitting || condition.trim() === ''}>
+          <Button variant="default" size="sm" onClick={onApprove} disabled={submitting || condition.trim() === ''} title="Accept the goal and start tracking it">
             <Check className="size-3.5 mr-1" /> Approve
           </Button>
-          <Button variant="ghost" size="sm" onClick={onCancel} disabled={submitting}>
+          <Button variant="ghost" size="sm" onClick={onCancel} disabled={submitting} title="Reject the goal proposal">
             <X className="size-3.5 mr-1" /> Cancel
           </Button>
         </div>

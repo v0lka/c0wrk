@@ -138,7 +138,7 @@ export function FileViewerTabContextMenu({ path, position, onClose }: FileViewer
   const menuItemClass = cn(
     'relative flex w-full select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
     'hover:bg-muted/50 focus:bg-muted/50 disabled:opacity-50 disabled:pointer-events-none',
-    '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg]:text-muted-foreground',
+    '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-3.5 [&_svg]:text-muted-foreground',
   )
 
   return (
@@ -161,33 +161,33 @@ export function FileViewerTabContextMenu({ path, position, onClose }: FileViewer
           )}
         >
           <button role="menuitem" onClick={handleClose} className={menuItemClass}>
-            <X className="size-4" />
+            <X className="size-3.5" />
             Close
           </button>
           <button role="menuitem" onClick={handleCloseOthers} className={menuItemClass}>
-            <X className="size-4" />
+            <X className="size-3.5" />
             Close Others
           </button>
           <button role="menuitem" onClick={handleCloseAll} className={menuItemClass}>
-            <X className="size-4" />
+            <X className="size-3.5" />
             Close All
           </button>
           <MenuSeparator />
           <button role="menuitem" disabled={!isRealFile} onClick={() => void handleCopyPath()} className={menuItemClass}>
-            <Copy className="size-4" />
+            <Copy className="size-3.5" />
             Copy Path
           </button>
           <button role="menuitem" disabled={!isRealFile} onClick={() => void handleCopyRelativePath()} className={menuItemClass}>
-            <Copy className="size-4" />
+            <Copy className="size-3.5" />
             Copy Relative Path
           </button>
           <MenuSeparator />
           <button role="menuitem" disabled={!isRealFile} onClick={() => void handleRevealInWorkspace()} className={menuItemClass}>
-            <FolderTree className="size-4" />
+            <FolderTree className="size-3.5" />
             Reveal In Workspace
           </button>
           <button role="menuitem" disabled={!isRealFile} onClick={handleOpenInTerminal} className={menuItemClass}>
-            <Terminal className="size-4" />
+            <Terminal className="size-3.5" />
             Open In Terminal
           </button>
         </div>

@@ -77,6 +77,7 @@ export function TreeRow({
         entry={node.entry}
         side={side}
         workspaceRoot={workspaceRoot}
+        pathDisplay="name-only"
         onToggle={onToggleFile}
         onOpenDiff={onOpenDiff}
       />

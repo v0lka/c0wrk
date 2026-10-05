@@ -68,6 +68,7 @@ export function BookmarksPanel({ displayItems }: { displayItems: DisplayItem[] }
         <button
           onClick={() => setOpen(!open)}
           className="flex items-center gap-2 w-full px-3 py-2 text-left text-foreground hover:bg-muted transition-colors rounded-sm"
+          title={open ? 'Collapse bookmarks panel' : 'Expand bookmarks panel'}
         >
           <span className="opacity-0 group-hover:opacity-100 transition-opacity inline-flex">
             {open

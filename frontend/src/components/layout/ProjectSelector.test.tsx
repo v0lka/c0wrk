@@ -50,32 +50,9 @@ vi.mock('@/components/project/CreateProjectDialog', () => ({
   CreateProjectDialog: () => null,
 }))
 
-// ItemAction renders Radix Tooltips, which require the app-root
-// TooltipProvider; render plain buttons instead (the same stopPropagation +
-// onClick contract the real overlay provides inside a menu row).
-vi.mock('@/components/layout/ItemAction', () => ({
-  ItemAction: ({
-    label,
-    onClick,
-    children,
-  }: {
-    label: string
-    onClick: () => void
-    children: ReactNode
-  }) => (
-    <button
-      type="button"
-      aria-label={label}
-      onClick={(e) => {
-        e.stopPropagation()
-        onClick()
-      }}
-    >
-      {children}
-    </button>
-  ),
-  ItemActions: ({ children }: { children: ReactNode }) => <span>{children}</span>,
-}))
+// ItemAction now carries a native `title` instead of a Radix Tooltip, so the
+// real component renders fine without the app-root TooltipProvider — no mock
+// needed. Delete buttons are located by `button[title="Delete"]`.
 
 // Radix dropdown positioning observes the trigger with ResizeObserver, which
 // jsdom does not provide.
@@ -191,7 +168,7 @@ describe('ProjectSelector — snapshot invalidation', () => {
     const container = await render(<ProjectSelector />)
     const menu = await openMenu(container)
     const alphaRow = menuItems(menu).find((i) => i.textContent?.includes('Alpha'))!
-    const deleteButton = alphaRow.querySelector<HTMLButtonElement>('button[aria-label="Delete"]')!
+    const deleteButton = alphaRow.querySelector<HTMLButtonElement>('button[title="Delete"]')!
 
     await selectItem(deleteButton)
 
@@ -213,7 +190,7 @@ describe('ProjectSelector — per-project tab cleanup', () => {
     const container = await render(<ProjectSelector />)
     const menu = await openMenu(container)
     const alphaRow = menuItems(menu).find((i) => i.textContent?.includes('Alpha'))!
-    const deleteButton = alphaRow.querySelector<HTMLButtonElement>('button[aria-label="Delete"]')!
+    const deleteButton = alphaRow.querySelector<HTMLButtonElement>('button[title="Delete"]')!
 
     await selectItem(deleteButton)
 

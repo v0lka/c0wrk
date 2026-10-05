@@ -90,6 +90,7 @@ export function EmbeddedLLMSplitRemoveButton({
             className="rounded-l-none border border-l-0 border-border/50 px-1 text-destructive enabled:hover:bg-destructive/10 enabled:hover:text-destructive"
             disabled={busyNow}
             aria-label="Remove options"
+            title="Remove options"
             data-testid={`${idPrefix}-menu-trigger`}
           >
             <ChevronDown className="size-4" />

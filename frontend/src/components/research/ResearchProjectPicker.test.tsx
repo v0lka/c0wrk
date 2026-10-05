@@ -25,34 +25,9 @@ vi.mock('@/hooks/useMessageSender', () => ({
   useMessageSender: () => ({ send: sendSpy, cancel: vi.fn(), isProcessing: false }),
 }))
 
-// ItemAction renders Radix Tooltips, which require the app-root
-// TooltipProvider; render plain buttons instead (the same stopPropagation +
-// onClick contract the real overlay provides inside a menu row).
-vi.mock('@/components/layout/ItemAction', () => ({
-  ItemAction: ({
-    label,
-    onClick,
-    children,
-  }: {
-    label: string
-    onClick: () => void
-    children: React.ReactNode
-  }) => (
-    <button
-      type="button"
-      aria-label={label}
-      onClick={(e) => {
-        e.stopPropagation()
-        onClick()
-      }}
-    >
-      {children}
-    </button>
-  ),
-  ItemActions: ({ children }: { children: React.ReactNode }) => (
-    <span>{children}</span>
-  ),
-}))
+// ItemAction now carries a native `title` instead of a Radix Tooltip, so the
+// real component renders fine without the app-root TooltipProvider — no mock
+// needed. Row action buttons are located positionally (see rowActions below).
 
 vi.mock('@/api/research', () => ({
   setActiveResearch: vi.fn(),

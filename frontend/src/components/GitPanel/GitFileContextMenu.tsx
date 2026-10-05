@@ -193,10 +193,10 @@ export function GitFileContextMenu({
             className={cn(
               'relative flex w-full select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
               'hover:bg-muted/50 focus:bg-muted/50',
-              '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg]:text-muted-foreground',
+              '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-3.5 [&_svg]:text-muted-foreground',
             )}
           >
-            <FileCode className="size-4" />
+            <FileCode className="size-3.5" />
             Open in Viewer
           </button>
           <button
@@ -206,15 +206,15 @@ export function GitFileContextMenu({
             className={cn(
               'relative flex w-full select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
               'hover:bg-muted/50 focus:bg-muted/50 disabled:opacity-50',
-              '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg]:text-muted-foreground',
+              '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-3.5 [&_svg]:text-muted-foreground',
             )}
           >
             {isStaging ? (
-              <Loader2 className="size-4 animate-spin" />
+              <Loader2 className="size-3.5 animate-spin" />
             ) : side === 'index' ? (
-              <Minus className="size-4" />
+              <Minus className="size-3.5" />
             ) : (
-              <Plus className="size-4" />
+              <Plus className="size-3.5" />
             )}
             {side === 'index' ? 'Unstage' : 'Stage'}
           </button>
@@ -227,10 +227,10 @@ export function GitFileContextMenu({
             className={cn(
               'relative flex w-full select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
               'hover:bg-destructive/10 focus:bg-destructive/10 text-destructive',
-              '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4',
+              '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-3.5',
             )}
           >
-            <Trash2 className="size-4" />
+            <Trash2 className="size-3.5" />
             Discard Changes
           </button>
           <button
@@ -240,10 +240,10 @@ export function GitFileContextMenu({
             className={cn(
               'relative flex w-full select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
               'hover:bg-muted/50 focus:bg-muted/50 disabled:opacity-50',
-              '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg]:text-muted-foreground',
+              '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-3.5 [&_svg]:text-muted-foreground',
             )}
           >
-            {isIgnoring ? <Loader2 className="size-4 animate-spin" /> : <EyeOff className="size-4" />}
+            {isIgnoring ? <Loader2 className="size-3.5 animate-spin" /> : <EyeOff className="size-3.5" />}
             Add to .gitignore
           </button>
         </div>
@@ -263,10 +263,11 @@ export function GitFileContextMenu({
               variant="outline"
               onClick={() => setConfirmOpen(false)}
               disabled={isDiscarding}
+              title="Keep the changes"
             >
               Cancel
             </Button>
-            <Button variant="destructive" onClick={() => void handleConfirmDiscard()} disabled={isDiscarding}>
+            <Button variant="destructive" onClick={() => void handleConfirmDiscard()} disabled={isDiscarding} title="git checkout -- <file>">
               {isDiscarding && <Loader2 className="size-4 animate-spin" />}
               Discard
             </Button>

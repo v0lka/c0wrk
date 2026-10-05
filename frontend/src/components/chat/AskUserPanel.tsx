@@ -88,6 +88,7 @@ export function AskUserPanel({ item }: { item: AskUserItem }) {
               <div className="space-y-1.5 mb-2">
                 {q.options.map((opt: { label: string; value: string }) => (
                   <button key={opt.value} type="button" onClick={() => toggleOption(q.id, opt.value)}
+                    title={sel.has(opt.value) ? `Deselect ${opt.label}` : `Select ${opt.label}`}
                     className={`w-full flex items-center gap-2 p-2 rounded-md border text-left transition-colors ${sel.has(opt.value) ? 'bg-info/10 border-info/50' : 'border-border hover:bg-accent/50'}`}
                   >
                     <div className={`shrink-0 flex items-center justify-center ${q.multi_select ? 'h-3.5 w-3.5 rounded-sm' : 'h-3.5 w-3.5 rounded-full'} border ${sel.has(opt.value) ? 'border-info bg-info' : 'border-muted-foreground'}`}>
@@ -108,7 +109,7 @@ export function AskUserPanel({ item }: { item: AskUserItem }) {
           </div>
         )
       })}
-      <Button size="sm" onClick={handleSubmit} disabled={!canSubmit} className="text-xs">Submit</Button>
+      <Button size="sm" onClick={handleSubmit} disabled={!canSubmit} className="text-xs" title="Send the answers back to the agent">Submit</Button>
     </div>
   )
 }

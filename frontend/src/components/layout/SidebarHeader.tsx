@@ -53,7 +53,7 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
     // where the row actually fits it (see LAYOUT_FIT_CLASSES there) — the
     // header must stay intact at the 180px sidebar minimum.
     <div className="@container flex h-10 shrink-0 items-center gap-1 border-b border-border px-2">
-      <Button variant="ghost" size="icon-xs" onClick={onToggleCollapse} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
+      <Button variant="ghost" size="icon-sm" onClick={onToggleCollapse} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
         {collapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
       </Button>
       <div className="flex-1" />
@@ -87,7 +87,7 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
         </div>
       )}
       <div className="flex-1" />
-      <Button variant="ghost" size="icon-xs" onClick={() => openSettings()} aria-label="Settings">
+      <Button variant="ghost" size="icon-sm" onClick={() => openSettings()} aria-label="Settings" title="Settings">
         <Settings className="size-4" />
       </Button>
     </div>

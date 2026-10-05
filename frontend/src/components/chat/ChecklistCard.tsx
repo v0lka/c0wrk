@@ -22,6 +22,7 @@ export const ChecklistCard = memo(function ChecklistCard({ item }: { item: Check
       <button
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1.5 w-full text-left text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+        title={open ? 'Collapse the checklist' : 'Expand the checklist'}
       >
         <span className="opacity-0 group-hover:opacity-100 transition-opacity inline-flex shrink-0">
           {open

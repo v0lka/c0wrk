@@ -58,6 +58,7 @@ function ToastShell({
         <div className="min-w-0 flex-1">{children}</div>
         {onClose && (
           <button
+            title="Close"
             onClick={onClose}
             className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             aria-label="Close"

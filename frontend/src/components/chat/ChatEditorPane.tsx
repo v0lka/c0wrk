@@ -65,7 +65,7 @@ export function ChatEditorPane({ controller }: ChatEditorPaneProps) {
           fallback={(
             <div className="flex h-full flex-col items-center justify-center gap-2 px-3 text-center text-xs text-destructive">
               <span>The terminal failed to start. Your chat input is unaffected.</span>
-              <Button variant="outline" size="sm" onClick={() => setMode('chat')}>
+              <Button variant="outline" size="sm" onClick={() => setMode('chat')} title="Return from the terminal to the chat input">
                 Back to chat
               </Button>
             </div>

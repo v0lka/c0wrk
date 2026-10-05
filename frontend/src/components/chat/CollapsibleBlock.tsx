@@ -130,7 +130,10 @@ export function CollapsibleBlock({
        * toward 0 as the title overflows. The chevron span, the tool `icon`, and
        * the `statusIcon` all carry it.
        */}
-      <CollapsibleTrigger className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors max-w-full min-w-0">
+      <CollapsibleTrigger
+        className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors max-w-full min-w-0"
+        title={typeof label === 'string' ? label : undefined}
+      >
         <span
           className="inline-flex shrink-0"
           style={{ visibility: chevronActive ? 'visible' : 'hidden' }}

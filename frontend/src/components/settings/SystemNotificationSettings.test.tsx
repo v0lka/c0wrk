@@ -283,7 +283,8 @@ describe('banner lifetime control', () => {
     await flush()
 
     // The optimistic update must roll back to what the backend still holds.
-    const selected = bannerTimeoutButtons().find((b) => b.className.includes('bg-background'))
+    // The active pill is marked by the shared control's `bg-primary` chrome.
+    const selected = bannerTimeoutButtons().find((b) => b.className.includes('bg-primary'))
     expect(selected?.textContent).toBe('Default')
     expect(logSpy).toHaveBeenCalledExactlyOnceWith('[system-notifications] banner timeout write failed', new Error('nope'))
   })

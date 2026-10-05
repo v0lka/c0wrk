@@ -105,12 +105,12 @@ export function StepLimitPrompt({ item }: { item: StepLimitItem }) {
         {reason && <p className="text-xs text-muted-foreground mt-0.5">Allow the agent to continue?</p>}
       </div>
       <div className="mt-2 flex flex-wrap gap-2">
-        <Button size="sm" onClick={handleAllowOnce} className="text-xs">Allow Once</Button>
+        <Button size="sm" onClick={handleAllowOnce} className="text-xs" title="Allow the agent to run one more step">Allow Once</Button>
         {!reason && maxSteps > 0 && (
-          <Button size="sm" onClick={handleAllowMore} className="text-xs">Allow More</Button>
+          <Button size="sm" onClick={handleAllowMore} className="text-xs" title="Allow additional steps beyond the limit">Allow More</Button>
         )}
-        <Button size="sm" variant="secondary" onClick={handleAllowAlways} className="text-xs">Allow Always</Button>
-        <Button size="sm" variant="outline" onClick={handleDeny} className="text-xs">Deny</Button>
+        <Button size="sm" variant="secondary" onClick={handleAllowAlways} className="text-xs" title="Always allow this step-limit request">Allow Always</Button>
+        <Button size="sm" variant="outline" onClick={handleDeny} className="text-xs" title="Deny the continuation request">Deny</Button>
       </div>
     </div>
   )

@@ -204,3 +204,40 @@ describe('ChangesList — two-axis section routing', () => {
     expect(nameSpans(sectionRoot(el, 'Untracked Files')!, '/repo/untracked.txt')).toHaveLength(1)
   })
 })
+
+// ─────────────────────────── Tree mode file naming ───────────────────────────
+
+describe('ChangesList — tree mode file naming', () => {
+  it('renders only the basename in a tree file row, keeping the full path in the tooltip', () => {
+    const deep = '/repo/src/deep/nested/f.txt'
+    useGitPanelStore.getState().loadEntries([
+      makeEntry({ path: deep, status: 'M', staged: false, indexStatus: ' ', worktreeStatus: 'M' }),
+    ])
+    useGitPanelStore.setState({
+      viewMode: 'tree',
+      // Display-relative paths — the same semantics buildTree/expandedDirs use.
+      // Every ancestor directory must be expanded for the leaf to render.
+      expandedDirs: new Set(['src', 'src/deep', 'src/deep/nested']),
+    })
+    useProjectStore.setState({
+      projects: [{
+        id: 'p1',
+        name: 'repo',
+        workspace_path: '/repo',
+        is_external: false,
+        is_no_project: false,
+        created_at: '',
+        last_active_at: '',
+      }],
+      activeProjectId: 'p1',
+    })
+
+    const el = render()
+
+    // The row locates by its workspace-relative tooltip; the visible text is
+    // the bare basename — the directory structure is carried by the tree.
+    const rows = nameSpans(el, 'src/deep/nested/f.txt')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.textContent).toBe('f.txt')
+  })
+})

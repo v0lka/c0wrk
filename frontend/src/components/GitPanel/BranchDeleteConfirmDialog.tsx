@@ -44,7 +44,7 @@ export function BranchDeleteConfirmDialog({
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" onClick={onCancel}>Cancel</Button>
+          <Button variant="outline" onClick={onCancel} title="Close without deleting">Cancel</Button>
           {isLocal ? (
             <>
               <Button
@@ -63,7 +63,7 @@ export function BranchDeleteConfirmDialog({
               </Button>
             </>
           ) : (
-            <Button variant="destructive" onClick={() => onConfirm('safe')}>
+            <Button variant="destructive" onClick={() => onConfirm('safe')} title="git push --delete">
               Delete
             </Button>
           )}

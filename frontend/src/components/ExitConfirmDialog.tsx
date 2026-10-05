@@ -117,10 +117,22 @@ export function ExitConfirmDialog() {
         )}
 
         <DialogFooter>
-          <Button variant="outline" onClick={clear} autoFocus disabled={isConfirming}>
+          <Button
+            variant="outline"
+            onClick={clear}
+            autoFocus
+            disabled={isConfirming}
+          >
             Cancel
           </Button>
-          <Button variant="destructive" onClick={confirm} disabled={isConfirming}>
+          <Button
+            variant="destructive"
+            onClick={confirm}
+            disabled={isConfirming}
+            title={
+              updatePending ? 'Restart now to apply the update' : 'Quit without waiting for sessions'
+            }
+          >
             {updatePending ? 'Restart & Update' : 'Quit anyway'}
           </Button>
         </DialogFooter>

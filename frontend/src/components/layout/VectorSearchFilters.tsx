@@ -1,6 +1,7 @@
 import { useRef } from 'react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { DatabaseZap, Loader2, Search, X } from 'lucide-react'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { useVectorReindex } from '@/hooks/useVectorReindex'
@@ -79,6 +80,7 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
         <Button
           variant="default"
           size="sm"
+          title="Search"
           onClick={onSearch}
           disabled={isLoading || searchDisabled}
           className="h-7 px-2"
@@ -89,6 +91,7 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
           <Button
             variant="ghost"
             size="sm"
+            title="Clear"
             onClick={onClear}
             className="h-7 px-2"
           >
@@ -97,19 +100,17 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
         )}
       </div>
 
-      {/* Mode selector */}
+      {/* Mode selector — the shared app-wide segmented control. The reindex
+          button sits on the same row, after the segments. */}
       <div className="flex gap-1">
-        {MODES.map((m) => (
-          <Button
-            key={m}
-            variant={mode === m ? 'default' : 'ghost'}
-            size="sm"
-            onClick={() => setMode(m)}
-            className="h-6 flex-1 px-2 text-[11px] capitalize"
-          >
-            {m}
-          </Button>
-        ))}
+        <SegmentedControl
+          items={MODES.map((m) => ({ value: m, label: m }))}
+          value={mode}
+          onValueChange={setMode}
+          fullWidth
+          ariaLabel="Search mode"
+          itemClassName="capitalize flex-1"
+        />
         {!reindexUnavailable && (
           <Button
             variant="ghost"

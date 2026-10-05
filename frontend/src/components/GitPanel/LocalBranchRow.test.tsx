@@ -81,6 +81,37 @@ describe('LocalBranchRow', () => {
     expect(btns.length).toBe(3)
     const [, , del] = btns
     expect(del?.disabled).toBe(true)
+    // The disabled delete must explain itself via the wrapper-span tooltip.
+    expect(del?.title).toBe('Cannot delete the current branch')
+    expect(del?.parentElement?.title).toBe('Cannot delete the current branch')
+  })
+
+  it('explains blocked actions with the in-progress reason while another operation runs', () => {
+    const { container } = render(
+      <LocalBranchRow branch={makeBranch()} inFlight={null} disabled={true} {...defaultCallbacks} />,
+    )
+    for (const b of buttons(container)) {
+      expect(b.disabled).toBe(true)
+      // Every blocked action carries the reason on its own title (mirrored
+      // for assistive tech) and on the focusable wrapper span.
+      expect(b.title).toBe('A git operation is in progress')
+      expect(b.parentElement?.title).toBe('A git operation is in progress')
+    }
+    // The wrapper span is the tab stop while disabled, so it carries the
+    // accessible name as "label: reason".
+    expect(buttons(container)[0]?.parentElement?.getAttribute('aria-label')).toBe(
+      'Push feature/x: A git operation is in progress',
+    )
+  })
+
+  it('labels idle actions with their name only (no in-progress reason)', () => {
+    const { container } = render(
+      <LocalBranchRow branch={makeBranch()} inFlight={null} disabled={false} {...defaultCallbacks} />,
+    )
+    const push = buttons(container)[0]!
+    expect(push.disabled).toBe(false)
+    expect(push.title).toBe('Push feature/x')
+    expect(push.parentElement?.title).toBe('')
   })
 
   it('calls onCheckout when a non-current row is clicked', () => {
