@@ -6,6 +6,9 @@ import { isMergeConflict, isUntracked, rowStatusChar } from '@/lib/gitStatus'
 import type { StageSide, StageToggleHandler } from '@/lib/gitStatus'
 import type { GitPanelEntry } from '@/stores/gitPanelStore'
 
+/** How the file path renders inside the truncating name span. */
+type PathDisplay = 'name-first' | 'name-only'
+
 // --- Props ---
 
 interface GitFileEntryProps {
@@ -18,6 +21,14 @@ interface GitFileEntryProps {
   side: StageSide
   /** Optional workspace root path — when provided, strips it for display rendering */
   workspaceRoot?: string
+  /**
+   * Display order inside the truncating span. 'name-first' (default — flat
+   * mode) renders the basename, then the muted directory: the ellipsis
+   * consumes the directory tail under overflow and the name stays visible.
+   * 'name-only' (tree mode) renders just the basename — the directory is
+   * already visible as the enclosing tree structure.
+   */
+  pathDisplay?: PathDisplay
   onToggle: StageToggleHandler
   onOpenDiff: (path: string) => void
 }
@@ -44,21 +55,26 @@ function statusColorClass(status: string): string {
   }
 }
 
-/** Split a git file path into directory (muted) and basename (normal) parts */
+/**
+ * Split a git file path into directory (muted) and basename (normal) parts.
+ * The directory carries NO trailing slash — it renders AFTER the name in the
+ * name-first display order ("name path/to/dir"), where a trailing slash would
+ * read as a dangling separator.
+ */
 function splitPathParts(filePath: string): { dir: string; name: string } {
   const lastSep = filePath.lastIndexOf('/')
   if (lastSep === -1) {
     return { dir: '', name: filePath }
   }
   return {
-    dir: filePath.slice(0, lastSep + 1),
+    dir: filePath.slice(0, lastSep),
     name: filePath.slice(lastSep + 1),
   }
 }
 
 // --- Component ---
 
-export function GitFileEntry({ entry, side, workspaceRoot, onToggle, onOpenDiff }: GitFileEntryProps) {
+export function GitFileEntry({ entry, side, workspaceRoot, pathDisplay = 'name-first', onToggle, onOpenDiff }: GitFileEntryProps) {
   const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null)
 
   // The checkbox is server-derived (an index row is staged, a worktree row is
@@ -208,17 +224,19 @@ export function GitFileEntry({ entry, side, workspaceRoot, onToggle, onOpenDiff 
         <File className="size-3.5 shrink-0 text-muted-foreground" />
       )}
 
-      {/* File name — grows to fill remaining space so the diff stat and
-          status badge are pushed to the right edge of the row. The native
-          title exposes the untruncated path when the name overflows. */}
+      {/* File path — grows to fill remaining space so the diff stat and
+          status badge are pushed to the right edge of the row. Name-first
+          order: the basename renders before the muted directory, so when the
+          row overflows the ellipsis consumes the directory tail and the file
+          name stays visible. The native title exposes the untruncated path. */}
       <span
         className="min-w-0 flex-1 truncate text-sm leading-none"
         title={displayPath}
       >
-        {dir && (
-          <span className="text-muted-foreground/60">{dir}</span>
-        )}
         <span>{name}</span>
+        {pathDisplay === 'name-first' && dir && (
+          <span className="text-muted-foreground/60"> {dir}</span>
+        )}
       </span>
 
       {/* Diff stat — added/deleted line counts (rendered before the badge) */}

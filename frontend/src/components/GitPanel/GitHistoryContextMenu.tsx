@@ -65,7 +65,7 @@ function tagNamesFromRefs(refs: string[]): string[] {
 
 /** Shared class for a menu button (mirrors GitFileContextMenu item styling). */
 const itemClass =
-  'relative flex w-full select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg:not([class*=\'text-\'])]:text-muted-foreground'
+  'relative flex w-full select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-3.5 [&_svg:not([class*=\'text-\'])]:text-muted-foreground'
 
 // ---------------------------------------------------------------------------
 // Submenu — a self-contained hover-driven nested menu. Opens on mouseenter,
@@ -552,12 +552,14 @@ export function GitHistoryContextMenu({
               variant="outline"
               onClick={() => setTagDialogOpen(false)}
               disabled={creatingTag}
+              title="Close without creating the tag"
             >
               Cancel
             </Button>
             <Button
               onClick={() => void handleConfirmCreateTag()}
               disabled={!tagName.trim() || creatingTag}
+              title="Create the tag on this commit"
             >
               {creatingTag && <Loader2 className="size-4 animate-spin" />}
               Create
@@ -591,6 +593,7 @@ export function GitHistoryContextMenu({
               variant="outline"
               onClick={() => setResetConfirmOpen(false)}
               disabled={resetting}
+              title="Cancel the hard reset"
             >
               Cancel
             </Button>
@@ -598,6 +601,7 @@ export function GitHistoryContextMenu({
               variant="destructive"
               onClick={() => void handleConfirmHardReset()}
               disabled={resetting}
+              title="git reset --hard <commit>"
             >
               {resetting && <Loader2 className="size-4 animate-spin" />}
               Hard Reset

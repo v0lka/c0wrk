@@ -1,6 +1,6 @@
 import { List, FolderTree, Loader2, Plus, Minus, Ban, Eye } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { cn } from '@/lib/utils'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useGitToolbarActions } from '@/hooks/useGitToolbarActions'
@@ -144,35 +144,26 @@ export function ChangesToolbar() {
       {/* Spacer */}
       <div className="flex-1" />
 
-      {/* View mode toggle */}
-      <div className="flex items-center rounded-md border border-border/50 overflow-hidden">
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          className={cn(
-            'rounded-none text-muted-foreground hover:text-foreground',
-            viewMode === 'flat' && 'text-primary bg-muted/50',
-          )}
-          onClick={() => setViewMode('flat')}
-          title="Flat view"
-          aria-label="Switch to flat view"
-        >
-          <List className="size-3.5" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          className={cn(
-            'rounded-none text-muted-foreground hover:text-foreground',
-            viewMode === 'tree' && 'text-primary bg-muted/50',
-          )}
-          onClick={() => setViewMode('tree')}
-          title="Tree view"
-          aria-label="Switch to tree view"
-        >
-          <FolderTree className="size-3.5" />
-        </Button>
-      </div>
+      {/* View mode toggle — the shared app-wide segmented control */}
+      <SegmentedControl
+        items={[
+          {
+            value: 'flat',
+            icon: <List className="size-3.5" />,
+            title: 'Flat view',
+            testId: 'view-mode-flat',
+          },
+          {
+            value: 'tree',
+            icon: <FolderTree className="size-3.5" />,
+            title: 'Tree view',
+            testId: 'view-mode-tree',
+          },
+        ]}
+        value={viewMode}
+        onValueChange={setViewMode}
+        ariaLabel="Changes view mode"
+      />
     </div>
   )
 }

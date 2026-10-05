@@ -24,9 +24,9 @@ export function GitPanelToolbar() {
         onClick={openBranchPicker}
         title="Manage branches"
         aria-label="Manage branches"
-        className="mr-1 flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+        className="mr-1 flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
       >
-        <GitGraph className="size-3.5" />
+        <GitGraph className="size-4" />
       </button>
     </div>
   )
