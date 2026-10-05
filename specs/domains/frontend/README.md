@@ -205,6 +205,7 @@ Frontend configuration is derived from backend (no separate frontend config file
 ## Related Specs
 
 - [ui-scale.md](ui-scale.md) — UI scale feature and the zoom-safety invariant
+- [system-font.md](system-font.md) — opt-in follow-system-font feature (GNOME UI font via gsettings → the inline `--default-font-family` override over Tailwind v4 preflight)
 - [stores.md](stores.md) — Zustand store catalog
 - [git-operation-console.md](git-operation-console.md) — the footer log of the last git mutation result (button tint, anchored popover, per-project scope, acknowledge semantics)
 - [events.md](events.md) — event handling architecture

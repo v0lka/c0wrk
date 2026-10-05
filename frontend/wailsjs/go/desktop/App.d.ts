@@ -211,6 +211,8 @@ export function GetShellExecSettings():Promise<backend.ShellExecSettingsResponse
 
 export function GetStepOutput(arg1:string,arg2:string):Promise<string>;
 
+export function GetSystemUIFont():Promise<backend.SystemUIFontResponse>;
+
 export function GetTerminalHistory(arg1:string):Promise<Array<session.TerminalCommand>>;
 
 export function GetToolList():Promise<Array<backend.ToolInfo>>;

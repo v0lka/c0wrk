@@ -61,6 +61,10 @@ vi.mock('@/api/projects', () => ({ listProjects: vi.fn().mockResolvedValue([]) }
 // test about audio-unlock wiring, so both API modules are stubbed instead.
 vi.mock('@/api/themes', () => ({ listThemes: vi.fn().mockResolvedValue([]) }))
 vi.mock('@/api/vector', () => ({ getVectorIndexStatus: vi.fn().mockResolvedValue(null) }))
+// The system-UI-font fetch (App → useSystemFont → getSystemUIFont) is the
+// same kind of quiet RPC path: null = "no system font detected", the normal
+// not-an-error outcome that keeps the suite's output clean.
+vi.mock('@/api/systemFont', () => ({ getSystemUIFont: vi.fn().mockResolvedValue(null) }))
 
 // --- stores: direct-field selector mocks, no session active ---
 vi.mock('@/stores/sessionStore', () => ({

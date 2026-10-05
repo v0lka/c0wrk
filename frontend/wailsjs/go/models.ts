@@ -2170,6 +2170,20 @@ export namespace backend {
 	        this.description = source["description"];
 	    }
 	}
+	export class SystemUIFontResponse {
+	    available: boolean;
+	    font_family: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SystemUIFontResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.available = source["available"];
+	        this.font_family = source["font_family"];
+	    }
+	}
 	export class TLSCertificateResponse {
 	    fingerprint: string;
 	

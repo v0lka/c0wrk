@@ -87,6 +87,12 @@ type FrontendAPI struct {
 	// in production, where readProcessRSS from processmem.go runs), mirroring
 	// gitStatusFn.
 	readProcessRSSFn func() (uint64, error)
+	// readSystemFontFn, when non-nil, overrides the desktop-environment UI
+	// font read behind GetSystemUIFont (frontend_api_system.go). Test-only
+	// seam (nil in production, where readSystemFontName from
+	// systemfont_linux.go / systemfont_other.go runs), mirroring
+	// readProcessRSSFn.
+	readSystemFontFn func() (string, error)
 	// fetchPaperOriginalFn, when non-nil, replaces the
 	// papers.FetchOriginalHTML call behind FetchPaperOriginal
 	// (frontend_api_papers_source.go). Test-only seam (nil in production),
