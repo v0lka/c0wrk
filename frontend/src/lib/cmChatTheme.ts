@@ -25,7 +25,7 @@ export function createChatEditorTheme(isDark: boolean = true): Extension {
     },
     '.cm-content': {
       caretColor: 'transparent',
-      fontSize: '0.875rem',
+      fontSize: 'var(--text-sm)',
       lineHeight: '1.5',
       padding: '0.25rem 0',
     },

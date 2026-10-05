@@ -9,8 +9,9 @@
 /* ==========================================================================
    Design Tokens — @theme
    All color values are defined here and ONLY here. Component styles
-   reference var(--color-*) exclusively. Typography font families are
-   tokenized here too (--font-*, mirrored in frontend/src/lib/fonts.ts).
+   reference var(--color-*) exclusively. Typography font families and the
+   type scale are tokenized here too (--font-* mirrored in
+   frontend/src/lib/fonts.ts; --text-* in rem).
    ========================================================================== */
 
 @theme {
@@ -21,6 +22,22 @@
     /* Icon font ONLY — Nerd Font glyphs for file/tree/completion icons.
        Never use for text; text mono is --font-mono. */
     --font-icon: "SauceCodePro NF", monospace;
+
+    /* Typography — type scale (xs..lg). Values mirror the Tailwind defaults
+       in tailwindcss/theme.css exactly, so the text-* utilities render
+       unchanged; component CSS references var(--text-*) instead of raw rem,
+       so retuning the scale never means touching component rules. Sizes stay
+       rem so they resolve against the 14px html root below, like every other
+       rem length; line-heights are unitless multipliers mirroring the default
+       Tailwind ratios. */
+    --text-xs: 0.75rem;
+    --text-xs--line-height: calc(1 / 0.75);
+    --text-sm: 0.875rem;
+    --text-sm--line-height: calc(1.25 / 0.875);
+    --text-base: 1rem;
+    --text-base--line-height: calc(1.5 / 1);
+    --text-lg: 1.125rem;
+    --text-lg--line-height: calc(1.75 / 1.125);
 
     /* Core palette */
     --color-background: #282c34;
@@ -524,7 +541,7 @@ body {
 
 /* Compact prose variant for tooltips and tight spaces */
 .prose-xs {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
 }
 
 /* Markdown rendered inside a hover tooltip (e.g. the Model Profiles essential-tools
@@ -532,12 +549,12 @@ body {
    generous paragraph/list spacing so a multi-section, list-bearing description
    stays compact. Doubled class raises specificity above `.prose :where(...)`. */
 .prose.prose-tooltip {
-    font-size: 0.75rem;
-    line-height: 1.4;
+    font-size: var(--text-xs);
+    line-height: var(--text-xs--line-height);
 }
 
 .prose.prose-tooltip :where(p, ul, ol, li) {
-    line-height: 1.4;
+    line-height: var(--text-xs--line-height);
 }
 
 .prose.prose-tooltip :where(p, ul, ol) {
@@ -663,7 +680,7 @@ body {
 
 .cm-viewer-container .cm-editor {
     background: transparent;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     height: 100%;
 }
 
@@ -760,7 +777,7 @@ body {
     min-height: 1.25rem;
     background-color: rgba(var(--color-destructive-rgb), 0.15);
     color: var(--color-destructive);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1.25rem;
     white-space: pre;
 }
@@ -845,7 +862,7 @@ body {
 .cm-chat-container .cm-scroller {
     overflow: auto;
     font-family: var(--font-sans);
-    font-size: 0.875rem;
+    font-size: var(--text-sm);
     line-height: 1.5;
 }
 
@@ -914,7 +931,7 @@ body {
 .cm-tooltip-autocomplete ul {
     max-height: 240px;
     font-family: var(--font-mono);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
 }
 
 .cm-tooltip-autocomplete li {

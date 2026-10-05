@@ -206,11 +206,18 @@ describe("type-scale guard (relative typography invariant)", () => {
     expect(htmlRootRange(css)).toBeDefined();
   });
 
-  it("defines the font-family tokens in @theme", () => {
+  it("defines the type-scale and font-family tokens in @theme", () => {
     const css = readFileSync(join(SRC_DIR, "index.css"), "utf8");
     expect(css).toMatch(/--font-sans:/);
     expect(css).toMatch(/--font-mono:/);
     expect(css).toMatch(/--font-icon:/);
+    // Text-size tokens mirror the Tailwind defaults exactly (rem, resolved
+    // against the 14px html root) so the text-* utilities render unchanged;
+    // component CSS sizes text through var(--text-*) instead of raw rem.
+    expect(css).toMatch(/--text-xs:\s*0\.75rem/);
+    expect(css).toMatch(/--text-sm:\s*0\.875rem/);
+    expect(css).toMatch(/--text-base:\s*1rem/);
+    expect(css).toMatch(/--text-lg:\s*1\.125rem/);
   });
 
   it("never hardcodes a font-family stack in TS outside lib/fonts.ts", () => {

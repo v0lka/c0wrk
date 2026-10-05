@@ -138,10 +138,21 @@ One Dark theme. All colors as Tailwind v4 `@theme` custom properties:
 
 Font sizes are relative: text is sized with the named Tailwind scale (`text-xs`, `text-sm`, `text-base`, `text-lg`, …), whose rem values resolve against the single absolute anchor — `html { font-size: 14px }` in `frontend/src/index.css` (deliberately not 16px — rem-based spacing and radii are tuned for it). Absolute (px) font sizes are forbidden everywhere else.
 
+The scale is tokenized in the `@theme` block of `frontend/src/index.css` — values mirror the Tailwind defaults exactly (rem, like every other rem length behind the 14px root), so the `text-*` utilities render unchanged; component CSS sizes text through `var(--text-*)` instead of raw rem, so retuning the scale never means touching component rules.
+
+| Token            | Value      | Line-height        | Utility      |
+| ---------------- | ---------- | ------------------ | ------------ |
+| `--text-xs`      | `0.75rem`  | `calc(1 / 0.75)`   | `text-xs`    |
+| `--text-sm`      | `0.875rem` | `calc(1.25 / 0.875)` | `text-sm`  |
+| `--text-base`    | `1rem`     | `calc(1.5 / 1)`    | `text-base`  |
+| `--text-lg`      | `1.125rem` | `calc(1.75 / 1.125)` | `text-lg`  |
+
+The guard pins these values to the Tailwind defaults; a deliberate scale retune is a two-place edit (`@theme` values + this table) that re-renders utilities and component CSS together.
+
 Invariants:
 
 - Text sizes come from the named scale only; arbitrary `text-[Npx]`/`text-[Nrem]` font sizes are forbidden — only color arbitrary values are legal in the `text-[…]` slot (enforced by `frontend/src/test/typeScaleInvariant.test.ts`).
-- CSS carries no `font-size: Npx` outside the `html` root rule — every other CSS font size is rem (enforced by the same guard via brace-matched location of the root rule).
+- CSS carries no `font-size: Npx` outside the `html` root rule — every other CSS font size is rem (enforced by the same guard via brace-matched location of the root rule). Component CSS references the `--text-*` tokens instead of raw rem; the one non-token rem size left is `.cm-completion-nerd-icon`'s `0.8125rem` (icon optical sizing with no slot on the xs..lg scale).
 - Inline TS/TSX font sizes are relative too: a bare number or a number/px string (`fontSize: 10`, `fontSize: '13px'`) is forbidden; rem strings (CodeMirror themes) stay legal (enforced by the same guard).
 - Deliberate exceptions, bound to an external API or canvas geometry: the xterm constructor option in `Terminal.tsx` (a px number by API) and the SVG labels on the research DAG canvas (`ResearchDagCanvas.tsx`, fontSize 9/11).
 
