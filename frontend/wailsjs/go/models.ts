@@ -463,6 +463,9 @@ export namespace backend {
 	export class ModelProfilesSettingsResponse {
 	    enabled: boolean;
 	    essential_tools_enabled: boolean;
+	    active_profile?: string;
+	    resolved_profile_id?: string;
+	    suggested_profile_id?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ModelProfilesSettingsResponse(source);
@@ -472,6 +475,9 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.enabled = source["enabled"];
 	        this.essential_tools_enabled = source["essential_tools_enabled"];
+	        this.active_profile = source["active_profile"];
+	        this.resolved_profile_id = source["resolved_profile_id"];
+	        this.suggested_profile_id = source["suggested_profile_id"];
 	    }
 	}
 	export class ExperimentalSettingsResponse {
