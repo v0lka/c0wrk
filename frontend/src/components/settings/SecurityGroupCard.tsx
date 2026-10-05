@@ -146,6 +146,7 @@ function BlocklistEditor({ blocklist, onChange }: BlocklistEditorProps) {
                 variant="ghost"
                 size="sm"
                 aria-label={`Remove pattern ${p}`}
+                title={`Remove pattern ${p}`}
                 className="h-4 w-4 p-0 hover:bg-destructive/20"
                 onClick={() => removePattern(p)}
               >
@@ -175,6 +176,7 @@ function BlocklistEditor({ blocklist, onChange }: BlocklistEditorProps) {
           onClick={addPattern}
           disabled={!newPattern.trim()}
           aria-label="Add blocklist pattern"
+          title="Add blocklist pattern"
         >
           <Plus className="h-3 w-3" />
         </Button>

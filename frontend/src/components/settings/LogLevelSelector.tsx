@@ -51,14 +51,23 @@ export function LogLevelSelector() {
             key={option.value}
             variant={logLevel === option.value ? 'secondary' : 'ghost'}
             size="sm"
-            className={`flex-1 gap-2 justify-center transition-all duration-200 ${
+            className={`flex-1 gap-2 justify-center text-xs transition-all duration-200 ${
               logLevel === option.value
                 ? 'bg-background shadow-sm text-foreground'
                 : 'text-muted-foreground hover:text-foreground'
             }`}
             onClick={() => handleLogLevelChange(option.value)}
           >
-            <span className="text-xs">{option.label}</span>
+            {/* Literal ternary (the four-level enum is closed) so the
+                buttonTitleInvariant guard proves the static label — the label
+                IS the explanation, no echo title needed. */}
+            {option.label === 'Debug'
+              ? 'Debug'
+              : option.label === 'Info'
+                ? 'Info'
+                : option.label === 'Warn'
+                  ? 'Warn'
+                  : 'Error'}
           </Button>
         ))}
       </div>

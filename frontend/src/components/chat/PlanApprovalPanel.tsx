@@ -124,8 +124,8 @@ export const PlanApprovalPanel = React.memo(function PlanApprovalPanel({ item }:
             placeholder="Your feedback for the plan..."
           />
           <div className="flex gap-2 justify-end">
-            <Button variant="ghost" size="sm" onClick={() => setShowFeedback(false)}>Cancel</Button>
-            <Button size="sm" onClick={() => resolve('request_changes', feedback)}>Send Feedback</Button>
+            <Button variant="ghost" size="sm" onClick={() => setShowFeedback(false)} title="Discard feedback and return to the plan">Cancel</Button>
+            <Button size="sm" onClick={() => resolve('request_changes', feedback)} title="Send the feedback to the Conductor">Send Feedback</Button>
           </div>
         </div>
       </div>
@@ -153,19 +153,19 @@ export const PlanApprovalPanel = React.memo(function PlanApprovalPanel({ item }:
           <AlertTriangle className="h-3 w-3 shrink-0 text-info" />
           <span>The Conductor has published a plan for your approval.</span>
           {planPath && (
-            <Button variant="ghost" size="sm" onClick={openInViewer} className="text-xs h-6 px-1.5">
+            <Button variant="ghost" size="sm" onClick={openInViewer} className="text-xs h-6 px-1.5" title="Open the plan file in the file viewer">
               <ExternalLink className="size-3 mr-1" /> Open in viewer
             </Button>
           )}
         </div>
         <div className="flex gap-2 pt-0.5">
-          <Button variant="default" size="sm" onClick={() => resolve('approve')}>
+          <Button variant="default" size="sm" onClick={() => resolve('approve')} title="Approve the plan and let execution start">
             <Check className="size-3.5 mr-1" /> Approve
           </Button>
-          <Button variant="outline" size="sm" onClick={() => setShowFeedback(true)}>
+          <Button variant="outline" size="sm" onClick={() => setShowFeedback(true)} title="Send changes back to the Conductor">
             <MessageSquare className="size-3.5 mr-1" /> Request Changes
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => resolve('abandon')}>
+          <Button variant="ghost" size="sm" onClick={() => resolve('abandon')} title="Abandon the plan without executing it">
             <X className="size-3.5 mr-1" /> Abandon
           </Button>
         </div>

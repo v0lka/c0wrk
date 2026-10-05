@@ -23,6 +23,7 @@ export function TruncatedContent({ content, maxLines = 20, className }: Truncate
         <button
           onClick={(e) => { e.stopPropagation(); setExpanded(!expanded) }}
           className="text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 rounded px-1 py-0.5 mt-1 transition-colors"
+          title={expanded ? 'Collapse the content' : `Show all ${lines.length} lines`}
         >
           {expanded ? 'Show less' : `Show all (${lines.length} lines)`}
         </button>

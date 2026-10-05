@@ -24,6 +24,7 @@ export function ChatNewActivityBanner({
       onClick={scrollToBottom}
       className="pointer-events-auto px-3 py-1.5 rounded-full bg-primary text-primary-foreground text-xs shadow-lg hover:bg-primary/90 active:bg-primary/75 transition-colors flex items-center gap-1.5"
       aria-label="Jump to new activity"
+      title="Jump to new activity"
     >
       <ArrowDown className="h-3 w-3" />
       <span>New activity</span>

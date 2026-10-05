@@ -32,6 +32,7 @@ export const ThoughtBlock = React.memo(function ThoughtBlock({ item }: { item: T
               <button
                 onClick={(e) => { e.stopPropagation(); setShowFull(!showFull) }}
                 className="text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 rounded px-1 py-0.5 mt-1 transition-colors"
+                title={showFull ? 'Show less of the reasoning' : 'Show the full reasoning'}
               >
                 {showFull ? 'Show less' : 'Show more'}
               </button>

@@ -50,7 +50,7 @@ const TAB_CONTENT_CLASS = 'overflow-y-auto min-h-0 min-w-0 custom-scrollbar pr-2
  * the dialog surface.
  */
 const TAB_LIST_CLASS =
-  'h-fit w-40 shrink-0 flex-col items-stretch justify-start gap-3 bg-transparent p-0'
+  'h-fit w-44 shrink-0 flex-col items-stretch justify-start gap-3 bg-transparent p-0'
 
 /**
  * One entry in the left section nav. Beyond dropping the pill chrome, the
@@ -159,7 +159,7 @@ export function SettingsModal() {
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        className="sm:max-w-[600px] h-[calc(var(--ui-vh)*0.8)] flex flex-col overflow-hidden"
+        className="sm:max-w-[800px] h-[calc(var(--ui-vh)*0.8)] flex flex-col overflow-hidden"
         showCloseButton={false}
         // No DialogDescription in this panel; opt out explicitly so Radix
         // does not warn about the missing description (and does not point
@@ -169,6 +169,7 @@ export function SettingsModal() {
         <DialogHeader className="flex flex-row items-center justify-between">
           <DialogTitle>Settings</DialogTitle>
           <button
+            title="Close"
             onClick={() => handleOpenChange(false)}
             disabled={checkingClose}
             className="rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:outline-none disabled:opacity-50"

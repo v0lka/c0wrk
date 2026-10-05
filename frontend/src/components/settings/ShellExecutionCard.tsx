@@ -247,6 +247,7 @@ function ToolEditor({ testIdPrefix, toolName, appliesTo, state, onChange }: Tool
               size="icon"
               className="h-6 w-6"
               aria-label={`Remove argument ${arg}`}
+              title={`Remove argument ${arg}`}
               disabled={!overrideOn}
               onClick={() => onChange({ ...state, args: state.args.filter((_, j) => j !== i) })}
               data-testid={`${testIdPrefix}-arg-remove-${i}`}
@@ -270,7 +271,7 @@ function ToolEditor({ testIdPrefix, toolName, appliesTo, state, onChange }: Tool
             className="h-9 text-sm font-mono flex-1"
             data-testid={`${testIdPrefix}-new-arg`}
           />
-          <Button variant="ghost" size="icon" className="h-6 w-6" aria-label="Add argument" disabled={!overrideOn} onClick={addArg} data-testid={`${testIdPrefix}-arg-add`}>
+          <Button variant="ghost" size="icon" className="h-6 w-6" aria-label="Add argument" title="Add argument" disabled={!overrideOn} onClick={addArg} data-testid={`${testIdPrefix}-arg-add`}>
             <Plus className="h-3 w-3" />
           </Button>
         </div>

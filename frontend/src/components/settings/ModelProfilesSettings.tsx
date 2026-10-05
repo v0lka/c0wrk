@@ -312,6 +312,7 @@ export function ModelProfilesSettings() {
       {masterToggle}
       {/* Profile block: grouped picker + kind-scoped actions. */}
       <div className="flex flex-col gap-3 p-4 rounded-lg border border-border bg-card/50">
+        <h3 className="text-sm font-medium">Active profile</h3>
         <div className="flex items-center gap-3 flex-wrap">
           <ModelProfileSelector
             profiles={resp.profiles}

@@ -332,7 +332,7 @@ export function WorkDirsModal() {
               {/* Add flow */}
               <div className="mt-3 pt-3 border-t border-border">
                 {!pendingPath ? (
-                  <Button variant="outline" size="sm" onClick={handlePick}>
+                  <Button variant="outline" size="sm" onClick={handlePick} title="Pick a directory to add">
                     <FolderPlus className="size-4" />
                     Add directory
                   </Button>
@@ -377,6 +377,7 @@ export function WorkDirsModal() {
                           <button
                             type="button"
                             onClick={() => setPendingScope('project')}
+                            title="Scope this working directory to the current project"
                             className={`px-2 py-1 text-xs transition-colors ${pendingScope === 'project' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted/50'}`}
                           >
                             Project
@@ -384,6 +385,7 @@ export function WorkDirsModal() {
                           <button
                             type="button"
                             onClick={() => setPendingScope('session')}
+                            title="Scope this working directory to the current session"
                             className={`px-2 py-1 text-xs transition-colors ${pendingScope === 'session' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted/50'}`}
                           >
                             Session
@@ -397,10 +399,10 @@ export function WorkDirsModal() {
                       </span>
                     )}
                     <div className="flex items-center gap-2">
-                      <Button size="sm" onClick={handleConfirmAdd} disabled={adding}>
+                      <Button size="sm" onClick={handleConfirmAdd} disabled={adding} title="Save the new working directory">
                         {adding ? <Loader2 className="size-3.5 animate-spin" /> : 'Save'}
                       </Button>
-                      <Button variant="ghost" size="sm" onClick={cancelAdd}>
+                      <Button variant="ghost" size="sm" onClick={cancelAdd} title="Discard the pending directory">
                         Cancel
                       </Button>
                     </div>

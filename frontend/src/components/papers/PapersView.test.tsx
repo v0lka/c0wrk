@@ -28,6 +28,17 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { PAPER_TAB_PREFIX } from '@/stores/paperStore'
 
 const { sendMock } = vi.hoisted(() => ({ sendMock: vi.fn() }))
+
+// Radix popper positioning (the study-mode combobox menu) observes the
+// trigger/content with ResizeObserver, which jsdom does not provide.
+vi.stubGlobal(
+  'ResizeObserver',
+  class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  },
+)
 vi.mock('@/hooks/useMessageSender', () => ({
   useMessageSender: () => ({ send: sendMock, cancel: vi.fn(), isProcessing: false }),
 }))
@@ -110,15 +121,26 @@ function setInputValue(container: HTMLElement, label: string, value: string) {
   field.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
-/** Choose a controlled <select> option by aria-label via the native value
- *  setter so React's value tracker observes the change. */
-function setSelectValue(container: HTMLElement, label: string, value: string) {
-  const field = container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!
-  const proto = Object.getPrototypeOf(field) as {
-    value: PropertyDescriptor & { set?: (v: string) => void }
-  }
-  Object.getOwnPropertyDescriptor(proto, 'value')?.set?.call(field, value)
-  field.dispatchEvent(new Event('change', { bubbles: true }))
+/** Open the study-mode combobox and pick `optionLabel` (the menu is portaled
+ *  to document.body; Radix toggles the trigger on pointerdown). */
+async function pickStudyMode(optionLabel: string) {
+  const trigger = document.querySelector<HTMLButtonElement>('button[aria-label="Study mode"]')
+  if (!trigger) throw new Error('Study mode combobox not found')
+  await act(async () => {
+    trigger.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+  })
+  await vi.waitFor(() => {
+    if (document.body.querySelectorAll('[role="menuitem"]').length === 0) {
+      throw new Error('Study mode menu did not open')
+    }
+  })
+  const option = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(
+    (o) => o.textContent?.includes(optionLabel),
+  )
+  if (!option) throw new Error(`Option "${optionLabel}" not found in the Study mode menu`)
+  await act(async () => {
+    option.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
 }
 
 beforeEach(() => {
@@ -173,11 +195,11 @@ describe('PapersView — invocation surface', () => {
 
   it('threads the selected mode into the dispatched prompt', async () => {
     const container = await render()
-    const mode = container.querySelector<HTMLSelectElement>('[data-testid="papers-mode-select"]')!
+    const mode = document.querySelector<HTMLButtonElement>('button[aria-label="Study mode"]')!
 
-    expect(mode.value).toBe('auto')
+    expect(mode.textContent).toContain('Auto')
     await act(async () => {
-      setSelectValue(container, 'Study mode', 'implement')
+      await pickStudyMode('Implement')
       setInputValue(container, 'Study paper', '10.1145/xyz')
     })
 
@@ -306,7 +328,7 @@ describe('PapersView — invocation surface', () => {
     const container = await render()
 
     await act(async () => {
-      setSelectValue(container, 'Study mode', 'review')
+      await pickStudyMode('Review')
     })
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-testid="papers-invoke-pick"]')!.click()

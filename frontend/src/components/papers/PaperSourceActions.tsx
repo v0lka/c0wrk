@@ -126,6 +126,7 @@ export function PaperSourceActions({ paper, hasHtml, onFetched }: PaperSourceAct
         <Button
           variant="ghost"
           size="sm"
+          title={hasHtml ? 'Reload HTML original' : 'Load HTML original'}
           className="h-6 shrink-0 gap-1 px-2 text-[11px]"
           onClick={onFetch}
           data-testid="paper-source-fetch"
@@ -158,6 +159,7 @@ export function PaperSourceActions({ paper, hasHtml, onFetched }: PaperSourceAct
         <Button
           variant="ghost"
           size="sm"
+          title="Open original source in browser"
           className="ml-auto h-6 shrink-0 gap-1 px-2 text-[11px]"
           onClick={() => openExternalURL(absUrl)}
           data-testid="paper-source-open"

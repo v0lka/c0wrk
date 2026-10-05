@@ -31,7 +31,7 @@ export function Sidebar({ width, collapsed, onToggleCollapse }: SidebarProps) {
         style={{ width }}
         data-sidebar
       >
-        <Button variant="ghost" size="icon-xs" onClick={onToggleCollapse} aria-label="Expand sidebar">
+        <Button variant="ghost" size="icon-sm" onClick={onToggleCollapse} aria-label="Expand sidebar" title="Expand sidebar">
           <PanelLeftOpen className="size-4" />
         </Button>
       </div>

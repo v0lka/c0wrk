@@ -161,6 +161,7 @@ export function FlashcardsReview({
         <button
           type="button"
           data-testid={`${testId}-restart`}
+          title="Restart flashcard session"
           onClick={() => {
             setIndex(0)
             setFlipped(false)
@@ -226,6 +227,7 @@ export function FlashcardsReview({
                   key={grade}
                   type="button"
                   data-testid={`${testId}-rate-${grade}`}
+                  title={`Rate recall: ${label}`}
                   onClick={() => rate(grade, state, index)}
                   className={cn('rounded border px-2 py-1 text-[11px] transition-colors', className)}
                 >

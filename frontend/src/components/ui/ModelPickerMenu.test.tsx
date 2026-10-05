@@ -257,7 +257,9 @@ describe('ModelPickerMenu — embedded local model entry', () => {
     })
 
     // Exact equality: nothing hand-truncates the label (a CSS ellipsis under a
-    // narrow trigger would still leave the full string in the DOM).
+    // narrow trigger would still leave the full string in the DOM). The title
+    // is the sanctioned selector-trigger enrich case: it adds the provider to
+    // the bare model label instead of repeating it.
     expect(trigger().textContent).toBe('Bonsai 2 27B')
     expect(trigger().getAttribute('title')).toBe('Embedded: Bonsai 2 27B')
   })

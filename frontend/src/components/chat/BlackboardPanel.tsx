@@ -49,6 +49,7 @@ export function BlackboardPanel() {
                 <button
                     onClick={() => setOpen(!open)}
                     className="flex items-center gap-2 w-full px-3 py-2 text-left text-foreground hover:bg-muted transition-colors rounded-sm"
+                    title={open ? 'Collapse blackboard panel' : 'Expand blackboard panel'}
                 >
                     <span className="opacity-0 group-hover:opacity-100 transition-opacity inline-flex">
                         {open
@@ -306,6 +307,7 @@ function CollapsibleSection({ title, count, children }: { title: string; count: 
         <div>
             <button
                 onClick={() => setOpen(!open)}
+                title={open ? `Collapse ${title} section` : `Expand ${title} section`}
                 className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors w-full text-left"
             >
                 {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}

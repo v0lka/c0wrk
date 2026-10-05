@@ -465,6 +465,9 @@ describe('ModelCombobox — embedded local model entry', () => {
 
     expect(spies.setDefaultModel).toHaveBeenCalledWith('embedded/Bonsai 2 27B')
     expect(useInputModeStore.getState().selectedModel).toBe('embedded/Bonsai 2 27B')
+    // Exact equality: nothing hand-truncates the label. The trigger title adds
+    // the provider to the bare model name — the sanctioned enrich case of the
+    // selector-trigger tooltip rule.
     expect(container.querySelector('button')?.textContent).toBe('Bonsai 2 27B')
     expect(container.querySelector('button')?.getAttribute('title')).toBe('Embedded: Bonsai 2 27B')
   })
