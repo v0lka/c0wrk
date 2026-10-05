@@ -24,7 +24,7 @@ beforeEach(() => {
   ]
   useModelProfilesGateStore.setState({
     enabled: true, essentialToolsEnabled: false, loaded: true,
-    activeProfileId: 'generic', suggestedProfileId: 'bonsai-2-27b',
+    activeProfileId: 'generic', resolvedProfileId: 'generic', suggestedProfileId: 'bonsai.2-27b',
   })
   useInputModeStore.setState({ selectedModel: null })
   useSettingsStore.setState({ open: false, activeTab: 'general' })
@@ -44,9 +44,13 @@ function render() {
 }
 
 describe('BonsaiProfileBanner', () => {
-  it('shows a one-line warning above chat for the embedded default with a different active profile', () => {
+  it('shows a one-line advisory above chat for the embedded default with a different active profile', () => {
     const banner = render()
-    expect(banner?.textContent).toContain('Bonsai profile')
+    // Existence wording, not a performance claim: the Bonsai preset currently
+    // shares every value with `generic`, so "works best" would recommend a
+    // no-op switch.
+    expect(banner?.textContent).toContain('dedicated Bonsai 2 27B profile')
+    expect(banner?.textContent).not.toContain('works best')
     expect(banner?.className).toContain('text-warning')
     expect(banner?.className).toContain('bg-warning/10')
     expect(banner?.querySelector('span')?.className).toContain('truncate')
@@ -65,12 +69,26 @@ describe('BonsaiProfileBanner', () => {
   })
 
   it('is hidden when the Bonsai profile is already active', () => {
-    useModelProfilesGateStore.setState({ activeProfileId: 'bonsai-2-27b' })
+    useModelProfilesGateStore.setState({ activeProfileId: 'bonsai.2-27b', resolvedProfileId: 'bonsai.2-27b' })
     expect(render()).toBeNull()
   })
 
+  it('is hidden when a legacy dashed stored id already resolves to the Bonsai preset', () => {
+    // A config written by the intermediate dev builds: the verbatim id is the
+    // retired dashed spelling, the backend-resolved id already names the
+    // preset — the effective values ARE the preset's, so the advisory line
+    // would recommend a value-wise no-op.
+    useModelProfilesGateStore.setState({ activeProfileId: 'bonsai-2-27b', resolvedProfileId: 'bonsai.2-27b' })
+    expect(render()).toBeNull()
+  })
+
+  it('shows when the resolved id is a genuinely different profile', () => {
+    useModelProfilesGateStore.setState({ activeProfileId: 'bonsai-2-27b', resolvedProfileId: 'generic' })
+    expect(render()).not.toBeNull()
+  })
+
   it('is hidden before profile identity has loaded', () => {
-    useModelProfilesGateStore.setState({ activeProfileId: null, loaded: false })
+    useModelProfilesGateStore.setState({ activeProfileId: null, resolvedProfileId: null, loaded: false })
     expect(render()).toBeNull()
   })
 
@@ -104,9 +122,9 @@ describe('BonsaiProfileBanner', () => {
 
   it('reacts immediately to profile, master toggle, and selected-model changes', () => {
     expect(render()).not.toBeNull()
-    act(() => useModelProfilesGateStore.getState().setProfileIds('bonsai-2-27b', 'bonsai-2-27b'))
+    act(() => useModelProfilesGateStore.getState().setProfileIds('bonsai.2-27b', 'bonsai.2-27b', 'bonsai.2-27b'))
     expect(container.querySelector('button')).toBeNull()
-    act(() => useModelProfilesGateStore.getState().setProfileIds('custom', null))
+    act(() => useModelProfilesGateStore.getState().setProfileIds('custom', 'custom', null))
     expect(container.querySelector('button')).not.toBeNull()
     act(() => useModelProfilesGateStore.getState().setEnabled(false))
     expect(container.querySelector('button')).toBeNull()

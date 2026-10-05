@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { getConfig, getModelProfiles } from '@/api/config'
+import { getConfig } from '@/api/config'
 import { onGlobalEvent } from '@/api/runtime'
 import { logger } from '@/lib/logger'
 import { isGoalBlockedByModelProfiles } from '@/lib/goalGate'
@@ -25,6 +25,17 @@ import { useModelProfilesGateStore } from '@/stores/modelProfilesGateStore'
  *     effect without an app restart. When the response still reports
  *     `loaded=false` (mid-startup) it leaves the store untouched rather than
  *     downgrading an existing good latch.
+ *
+ * Profile identity (active/suggested ids) rides the SAME GetConfig response —
+ * the backend fills `model_profiles.active_profile` (verbatim),
+ * `resolved_profile_id` (the catalog-resolved counterpart) and
+ * `suggested_profile_id` as pure reads — so this hook NEVER calls
+ * GetModelProfiles: that RPC is a consuming read which drains the one-shot
+ * profile notices (e.g. the active-profile-deletion fallback explanation)
+ * that Settings is the intended audience for. A background refresh here must
+ * not compete for them. The identity fields are optional on the wire (older
+ * payloads); a missing block or missing fields read as "unknown" (null)
+ * rather than a definite profile.
  *
  * Fail-safe: on a fetch error the store is left as it was — `loaded=false` on
  * the initial load, so consumers see "unknown" rather than "definitively off",
@@ -66,7 +77,7 @@ export function useModelProfilesGate(): boolean {
       inFlight = true
 
       getConfig()
-        .then(async (cfg) => {
+        .then((cfg) => {
           if (cancelled) return
           // Startup race: before the backend's Startup finishes, GetConfig
           // SUCCEEDS with loaded=false (config not yet initialized) and a
@@ -79,24 +90,17 @@ export function useModelProfilesGate(): boolean {
           if (cfg.loaded === false) return
           // The `model_profiles` block is optional on the wire (older payloads): a missing
           // block means "ModelProfiles off", which never blocks.
-          useModelProfilesGateStore.getState().setEnabled(cfg.model_profiles?.enabled ?? false)
+          const block = cfg.model_profiles
+          useModelProfilesGateStore.getState().setEnabled(block?.enabled ?? false)
           useModelProfilesGateStore
             .getState()
-            .setEssentialToolsEnabled(cfg.model_profiles?.essential_tools_enabled ?? false)
+            .setEssentialToolsEnabled(block?.essential_tools_enabled ?? false)
+          useModelProfilesGateStore.getState().setProfileIds(
+            block?.active_profile || null,
+            block?.resolved_profile_id || null,
+            block?.suggested_profile_id ?? null,
+          )
           useModelProfilesGateStore.getState().setLoaded(true)
-          // Metadata is advisory: a catalog fetch failure must never weaken
-          // the resolved goal gate above, or discard a previously good identity.
-          try {
-            const profiles = await getModelProfiles()
-            if (!cancelled) {
-              useModelProfilesGateStore.getState().setProfileIds(
-                profiles.active_id,
-                profiles.suggested_profile_id,
-              )
-            }
-          } catch (err) {
-            if (!cancelled) logger.error('useModelProfilesGate: failed to load profile metadata:', err)
-          }
         })
         .catch((err) => {
           // Fail-safe: keep the store as it was (not blocking on the initial

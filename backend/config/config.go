@@ -989,9 +989,12 @@ type TuningConfig struct {
 	Parallel *int `yaml:"parallel,omitempty"`
 	// CacheRAMMiB overrides `-cram`, the prompt-cache ceiling. Absent leaves
 	// the ceiling to the planner (the runtime's own default, raised to the
-	// measured spare memory when that exceeds it); an explicit 0 DISABLES the
-	// cache and is passed through verbatim, because disabling it is a
-	// legitimate choice. Must be within 0..embeddedllm.MaxTuningMiB.
+	// measured spare memory only when that exceeds it AND per-slot context
+	// checkpoints are disabled — with snapshots enabled the spare is held for
+	// their active-slot storage, which sits outside the cache limit and has no
+	// measured bound); an explicit 0 DISABLES the cache and is passed through
+	// verbatim, because disabling it is a legitimate choice. Must be within
+	// 0..embeddedllm.MaxTuningMiB.
 	CacheRAMMiB *int `yaml:"cache_ram_mib,omitempty"`
 	// CtxCheckpoints overrides `--ctx-checkpoints`, the per-slot KV snapshot
 	// count. Absent means embeddedllm.DefaultCtxCheckpoints (32, the runtime's
@@ -2340,8 +2343,9 @@ type ModelProfilesPersistConfig struct {
 
 	// ActiveProfile is the id of the profile whose 25 knob values form the
 	// effective runtime configuration (see ResolveModelProfilesConfig). ApplyDefaults
-	// seeds it with the model-agnostic "generic" profile; an id that no longer
-	// resolves (e.g. a custom profile deleted by hand) falls back to "generic"
+	// seeds it with the model-agnostic "generic" profile; a retired predefined
+	// id resolves to its replacement, and an id that no longer resolves (e.g. a
+	// custom profile deleted by hand) falls back to "generic"
 	// with a warning instead of failing the run.
 	ActiveProfile string `yaml:"active_profile"`
 }
@@ -2362,6 +2366,10 @@ func FindModelProfile(profiles []ModelProfile, id string) (ModelProfile, bool) {
 // LoadModelProfilesCatalog). Resolution rules:
 //
 //   - a known profile id → that profile's values;
+//   - a retired predefined id with no catalog entry of its own → the
+//     replacement predefined profile (see legacyPredefinedModelProfileAliases)
+//     plus one warning — a predefined rename must not strand a stored
+//     active_profile;
 //   - an empty or unknown id → soft fallback to the model-agnostic "generic"
 //     profile plus one warning each — a stale id must never break the run.
 //
@@ -2372,7 +2380,12 @@ func FindModelProfile(profiles []ModelProfile, id string) (ModelProfile, bool) {
 func ResolveModelProfilesConfig(persist ModelProfilesPersistConfig, catalog []ModelProfile) (resolved ModelProfilesConfig, warnings []string) {
 	var profile ModelProfile
 	if id := persist.ActiveProfile; id != "" {
-		if found, ok := FindModelProfile(catalog, id); ok {
+		if found, resolvedID, ok := FindModelProfileResolvingLegacy(catalog, id); ok {
+			if resolvedID != id {
+				warnings = append(warnings, fmt.Sprintf(
+					"model_profiles.active_profile %q is a retired predefined id; resolving to the %q profile",
+					id, resolvedID))
+			}
 			profile = found
 		} else {
 			warnings = append(warnings, fmt.Sprintf(

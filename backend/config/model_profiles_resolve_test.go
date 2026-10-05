@@ -153,3 +153,47 @@ func TestResolveModelProfilesConfig_FallbackToGeneric(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveModelProfilesConfig_RetiredPredefinedID pins the alias resolution
+// for the one retired predefined id: intermediate development builds compiled
+// the embedded profile in as "bonsai-2-27b" before the dotted rename, and a
+// config.yaml whose active_profile was selected against that spelling must
+// keep resolving to the bonsai profile (with a visible remap warning) instead
+// of dangling into the generic fallback. The alias is consulted only after a
+// direct lookup fails, so a custom profile that owns the retired id — exactly
+// the pre-bonsai "Bonsai 2 27B" case the dot protects (see
+// TestPredefinedBonsaiIDCannotCollideWithLegacyCustom) — still wins outright.
+func TestResolveModelProfilesConfig_RetiredPredefinedID(t *testing.T) {
+	t.Run("retired id resolves to the renamed profile with one warning", func(t *testing.T) {
+		resolved, warnings := ResolveModelProfilesConfig(
+			ModelProfilesPersistConfig{ActiveProfile: "bonsai-2-27b"}, PredefinedModelProfiles())
+		if len(warnings) != 1 {
+			t.Fatalf("warnings = %v, want exactly one remap warning", warnings)
+		}
+		want := "model_profiles.active_profile \"bonsai-2-27b\" is a retired predefined id; resolving to the \"bonsai.2-27b\" profile"
+		if warnings[0] != want {
+			t.Errorf("warning = %q, want %q", warnings[0], want)
+		}
+		bonsai, _ := FindPredefinedModelProfile("bonsai.2-27b")
+		if !resolved.SystemPrompt.Lite || resolved.Context.OutputTokenReserve != bonsai.Config.Context.OutputTokenReserve {
+			t.Errorf("retired id did not resolve to the bonsai.2-27b values: %+v", resolved)
+		}
+	})
+
+	t.Run("a custom profile owning the retired id beats the alias", func(t *testing.T) {
+		customCfg := ModelProfileConfig{}
+		customCfg.Context.OutputTokenReserve = 4096 // marker: neither the zero value nor bonsai's 16384
+		custom, err := NewModelProfile("bonsai-2-27b", "Bonsai 2 27B", ModelProfileKindCustom, customCfg)
+		if err != nil {
+			t.Fatalf("NewModelProfile: %v", err)
+		}
+		resolved, warnings := ResolveModelProfilesConfig(
+			ModelProfilesPersistConfig{ActiveProfile: "bonsai-2-27b"}, append(PredefinedModelProfiles(), custom))
+		if len(warnings) != 0 {
+			t.Errorf("warnings = %v, want none — the custom profile owns the id outright", warnings)
+		}
+		if got := resolved.Context.OutputTokenReserve; got != 4096 {
+			t.Errorf("output_token_reserve = %d, want the custom profile's 4096 (the alias must not hijack a custom id)", got)
+		}
+	})
+}

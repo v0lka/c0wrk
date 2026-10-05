@@ -624,20 +624,16 @@ func TestPlanDefaultsAreTheAllAutoShape(t *testing.T) {
 	if !plan.CacheIdleSlots {
 		t.Error("CacheIdleSlots = false, want true: --no-cache-idle-slots is an opt-in")
 	}
-	// The all-auto shape derives the prompt-cache ceiling from the spare
-	// memory: on this unified machine both expected footprints spend the one
-	// pool, so the ceiling is the host budget beyond both of them — well above
-	// the runtime's own flat 8192 MiB default, which is why it is emitted at
-	// all rather than left to the runtime.
-	if plan.CacheRAMMiB == nil {
-		t.Error("CacheRAMMiB = nil, want the derived ceiling so -cram is rendered")
-	} else {
-		if want := plan.HostBudgetMiB - plan.ExpectedHostMiB - plan.ExpectedDeviceMiB; *plan.CacheRAMMiB != int(want) {
-			t.Errorf("CacheRAMMiB = %d, want the unified leftover %d", *plan.CacheRAMMiB, want)
-		}
-		if !noteContaining(plan.Notes, "prompt cache") {
-			t.Errorf("Notes = %v, want one explaining the derived prompt-cache ceiling", plan.Notes)
-		}
+	// The all-auto shape keeps the prompt-cache ceiling at the runtime's own
+	// default: per-slot checkpoints are enabled (32, asserted above), and the
+	// spare memory is held for their active-slot storage instead of being
+	// granted to the cache — see planPromptCacheCeiling; the
+	// checkpoints-disabled derivation is tabled in TestPlanPromptCacheCeiling.
+	if plan.CacheRAMMiB != nil {
+		t.Errorf("CacheRAMMiB = %d, want nil so the runtime's own default stands while checkpoints are enabled", *plan.CacheRAMMiB)
+	}
+	if noteContaining(plan.Notes, "prompt cache") {
+		t.Errorf("Notes = %v, want no derived prompt-cache note while checkpoints are enabled", plan.Notes)
 	}
 	if len(plan.Devices) != 0 {
 		t.Errorf("Devices = %v, want none so -dev is omitted", plan.Devices)
@@ -665,7 +661,10 @@ func TestPlanDefaultsAreTheAllAutoShape(t *testing.T) {
 // pool — minus the device footprint too on a unified machine, where both
 // footprints spend the same bytes — and emitted only when it EXCEEDS the
 // runtime's own 8192 MiB default, so the planner can only RAISE a cache the
-// operator left unset, never lower it.
+// operator left unset, never lower it. The derivation applies only while
+// per-slot context checkpoints are disabled: with snapshots enabled the spare
+// is NOT spent, because the active slots' checkpoint storage sits outside the
+// cache limit and has no measured bound to reserve against.
 func TestPlanPromptCacheCeiling(t *testing.T) {
 	t.Parallel()
 
@@ -674,11 +673,12 @@ func TestPlanPromptCacheCeiling(t *testing.T) {
 		DeviceMemory{Name: "MTL0", Description: "Apple M4 Max", TotalMiB: 110100, FreeMiB: 110100})
 	discrete := probedTopology(t, PlatformLinuxAMD64, 64,
 		DeviceMemory{Name: "CUDA0", Description: "NVIDIA L4", TotalMiB: 24576, FreeMiB: 24576})
+	noCheckpoints := Tuning{CtxCheckpoints: intPtr(0)}
 
 	t.Run("unified subtracts both footprints", func(t *testing.T) {
 		t.Parallel()
 
-		plan, err := Plan(unified, profile, Tuning{}, BackendMetal, GPUFamilyAppleSilicon)
+		plan, err := Plan(unified, profile, noCheckpoints, BackendMetal, GPUFamilyAppleSilicon)
 		if err != nil {
 			t.Fatalf("Plan error = %v", err)
 		}
@@ -702,7 +702,7 @@ func TestPlanPromptCacheCeiling(t *testing.T) {
 	t.Run("discrete leaves the device pool alone", func(t *testing.T) {
 		t.Parallel()
 
-		plan, err := Plan(discrete, profile, Tuning{}, BackendCUDA124, GPUFamilyNVIDIAAda)
+		plan, err := Plan(discrete, profile, noCheckpoints, BackendCUDA124, GPUFamilyNVIDIAAda)
 		if err != nil {
 			t.Fatalf("Plan error = %v", err)
 		}
@@ -734,7 +734,7 @@ func TestPlanPromptCacheCeiling(t *testing.T) {
 			t.Fatalf("Plan (base) error = %v", err)
 		}
 		reserve := float64(64*1024-base.ExpectedHostMiB-runtimeCacheRAMDefaultMiB) / 1024
-		plan, err := Plan(discrete, profile, Tuning{HostReserveGiB: floatPtr(reserve)},
+		plan, err := Plan(discrete, profile, Tuning{HostReserveGiB: floatPtr(reserve), CtxCheckpoints: intPtr(0)},
 			BackendCUDA124, GPUFamilyNVIDIAAda)
 		if err != nil {
 			t.Fatalf("Plan (at floor) error = %v", err)
@@ -764,7 +764,7 @@ func TestPlanPromptCacheCeiling(t *testing.T) {
 			t.Fatalf("Plan (base) error = %v", err)
 		}
 		reserve := float64(64*1024-base.ExpectedHostMiB-runtimeCacheRAMDefaultMiB-1) / 1024
-		plan, err := Plan(discrete, profile, Tuning{HostReserveGiB: floatPtr(reserve)},
+		plan, err := Plan(discrete, profile, Tuning{HostReserveGiB: floatPtr(reserve), CtxCheckpoints: intPtr(0)},
 			BackendCUDA124, GPUFamilyNVIDIAAda)
 		if err != nil {
 			t.Fatalf("Plan (above floor) error = %v", err)
@@ -772,6 +772,50 @@ func TestPlanPromptCacheCeiling(t *testing.T) {
 		if plan.CacheRAMMiB == nil || *plan.CacheRAMMiB != runtimeCacheRAMDefaultMiB+1 {
 			t.Errorf("CacheRAMMiB = %v, want %d — one above the floor is emitted verbatim",
 				derefOrOmit(plan.CacheRAMMiB), runtimeCacheRAMDefaultMiB+1)
+		}
+	})
+
+	t.Run("enabled checkpoints keep the runtime default", func(t *testing.T) {
+		t.Parallel()
+
+		// The same roomy machines as above, with per-slot context checkpoints
+		// enabled: unset (the runtime's own 32) and an explicit count both
+		// leave `--cache-ram` omitted no matter how much spare the budget
+		// holds, because the active slots' checkpoint storage sits outside the
+		// cache limit and has no measured bound the spare could be granted
+		// against (see planPromptCacheCeiling). The regression the gate
+		// exists for: base footprint + checkpoint storage + the derived cache
+		// would exceed the host/unified budget the plan was priced against.
+		for _, tc := range []struct {
+			name   string
+			tuning Tuning
+		}{
+			{"unset count (default 32)", Tuning{}},
+			{"explicit count", Tuning{CtxCheckpoints: intPtr(8)}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				plan, err := Plan(unified, profile, tc.tuning, BackendMetal, GPUFamilyAppleSilicon)
+				if err != nil {
+					t.Fatalf("Plan error = %v", err)
+				}
+				spare := plan.HostBudgetMiB - plan.ExpectedHostMiB - plan.ExpectedDeviceMiB
+				if spare <= runtimeCacheRAMDefaultMiB {
+					t.Fatalf("spare = %d MiB, want the 128 GiB unified machine to sit above the %d MiB floor",
+						spare, runtimeCacheRAMDefaultMiB)
+				}
+				if plan.CtxCheckpoints == 0 {
+					t.Fatal("CtxCheckpoints = 0, want snapshots enabled so the gate is exercised")
+				}
+				if plan.CacheRAMMiB != nil {
+					t.Errorf("CacheRAMMiB = %d, want nil so the runtime's own default stands while checkpoints are enabled",
+						*plan.CacheRAMMiB)
+				}
+				if noteContaining(plan.Notes, "prompt cache ceiling was raised") {
+					t.Errorf("Notes = %v, want no derived prompt-cache note while checkpoints are enabled", plan.Notes)
+				}
+			})
 		}
 	})
 

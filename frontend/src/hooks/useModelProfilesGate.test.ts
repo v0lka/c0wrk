@@ -7,7 +7,10 @@ import { createRoot, type Root } from 'react-dom/client'
 const { configMocks, onGlobalEventMock } = vi.hoisted(() => ({
   configMocks: {
     getConfig: vi.fn(),
-    getModelProfiles: vi.fn(),
+    // GetModelProfiles is intentionally NOT provided: the hook must not
+    // import it at all — it is a CONSUMING read whose one-shot profile
+    // notices belong to Settings, and a module-resolution failure here would
+    // fail the test file loudly if that contract regressed.
   },
   // Typed to the real onGlobalEvent() signature (event name + handler) so
   // mockImplementation below type-checks under `tsc -b`.
@@ -93,15 +96,12 @@ function fireConfigUpdated(): void {
 beforeEach(() => {
   configMocks.getConfig.mockReset()
   vi.mocked(logger.error).mockClear()
-  configMocks.getModelProfiles.mockReset().mockResolvedValue({
-    active_id: 'generic', suggested_profile_id: 'bonsai-2-27b',
-  })
   onGlobalEventMock.mockClear()
   capturedHandlers.clear()
   rendered.blocked = false
   useModelProfilesGateStore.setState({
     enabled: false, essentialToolsEnabled: false, loaded: false,
-    activeProfileId: null, suggestedProfileId: null,
+    activeProfileId: null, resolvedProfileId: null, suggestedProfileId: null,
   })
 })
 
@@ -118,9 +118,15 @@ afterEach(() => {
 })
 
 describe('useModelProfilesGate', () => {
-  it('latches the resolved gate on a normal (loaded) response', async () => {
+  it('latches the resolved gate and its profile identity from the SAME GetConfig call', async () => {
     configMocks.getConfig.mockResolvedValue(
-      makeConfig(true, { enabled: true, essential_tools_enabled: true }),
+      makeConfig(true, {
+        enabled: true,
+        essential_tools_enabled: true,
+        active_profile: 'generic',
+        resolved_profile_id: 'generic',
+        suggested_profile_id: 'bonsai.2-27b',
+      }),
     )
 
     renderHook()
@@ -130,10 +136,13 @@ describe('useModelProfilesGate', () => {
       enabled: true,
       essentialToolsEnabled: true,
       activeProfileId: 'generic',
-      suggestedProfileId: 'bonsai-2-27b',
+      resolvedProfileId: 'generic',
+      suggestedProfileId: 'bonsai.2-27b',
       loaded: true,
     })
     expect(rendered.blocked).toBe(true)
+    // Identity rides the one config fetch — no second RPC that could drain
+    // the one-shot profile notices Settings consumes via GetModelProfiles.
     expect(configMocks.getConfig).toHaveBeenCalledTimes(1)
     // The hook subscribes to both retry triggers.
     expect(onGlobalEventMock).toHaveBeenCalledWith('backend:ready', expect.any(Function))
@@ -156,7 +165,7 @@ describe('useModelProfilesGate', () => {
     expect(rendered.blocked).toBe(false)
   })
 
-  it('treats a missing model_profiles block as "off" and does not block', async () => {
+  it('treats a missing model_profiles block as "off", does not block, and reads identity as unknown', async () => {
     // Older payload without the optional field.
     configMocks.getConfig.mockResolvedValue(makeConfig(true))
 
@@ -166,9 +175,50 @@ describe('useModelProfilesGate', () => {
     expect(useModelProfilesGateStore.getState()).toMatchObject({
       enabled: false,
       essentialToolsEnabled: false,
+      activeProfileId: null,
+      resolvedProfileId: null,
+      suggestedProfileId: null,
       loaded: true,
     })
     expect(rendered.blocked).toBe(false)
+  })
+
+  it('treats a block without the optional identity fields as unknown identity', async () => {
+    // Older payload whose model_profiles block predates the identity fields.
+    configMocks.getConfig.mockResolvedValue(
+      makeConfig(true, { enabled: false, essential_tools_enabled: false }),
+    )
+
+    renderHook()
+    await flushMicrotasks()
+
+    expect(useModelProfilesGateStore.getState()).toMatchObject({
+      activeProfileId: null,
+      resolvedProfileId: null,
+      suggestedProfileId: null,
+      loaded: true,
+    })
+  })
+
+  it('reads an empty active_profile as unknown rather than a definite profile', async () => {
+    configMocks.getConfig.mockResolvedValue(
+      makeConfig(true, {
+        enabled: true,
+        essential_tools_enabled: false,
+        active_profile: '',
+        suggested_profile_id: null,
+      }),
+    )
+
+    renderHook()
+    await flushMicrotasks()
+
+    expect(useModelProfilesGateStore.getState()).toMatchObject({
+      activeProfileId: null,
+      resolvedProfileId: null,
+      suggestedProfileId: null,
+      loaded: true,
+    })
   })
 
   it('does NOT latch when the backend answers loaded=false during startup', async () => {
@@ -241,36 +291,59 @@ describe('useModelProfilesGate', () => {
     expect(configMocks.getConfig).toHaveBeenCalledTimes(3)
   })
 
-  it('refreshes on both config:updated and backend:ready after latch', async () => {
+  it('refreshes identity on both config:updated and backend:ready after latch', async () => {
     configMocks.getConfig.mockResolvedValue(
-      makeConfig(true, { enabled: true, essential_tools_enabled: true }),
+      makeConfig(true, {
+        enabled: true,
+        essential_tools_enabled: true,
+        active_profile: 'generic',
+        suggested_profile_id: 'bonsai.2-27b',
+      }),
     )
 
     renderHook()
     await flushMicrotasks()
     expect(useModelProfilesGateStore.getState().loaded).toBe(true)
 
-    // backend:ready refreshes metadata even after a good mount response.
-    configMocks.getModelProfiles.mockResolvedValue({
-      active_id: 'bonsai-2-27b', suggested_profile_id: 'bonsai-2-27b',
-    })
+    // backend:ready refreshes identity even after a good mount response.
+    // The retired dashed spelling with its alias-resolved counterpart is the
+    // shape a dev-era config produces: verbatim and resolved ids DIVERGE.
+    configMocks.getConfig.mockResolvedValue(
+      makeConfig(true, {
+        enabled: true,
+        essential_tools_enabled: true,
+        active_profile: 'bonsai-2-27b',
+        resolved_profile_id: 'bonsai.2-27b',
+        suggested_profile_id: 'bonsai.2-27b',
+      }),
+    )
     fireBackendReady()
     await flushMicrotasks()
     expect(configMocks.getConfig).toHaveBeenCalledTimes(2)
-    expect(useModelProfilesGateStore.getState().activeProfileId).toBe('bonsai-2-27b')
+    expect(useModelProfilesGateStore.getState()).toMatchObject({
+      activeProfileId: 'bonsai-2-27b',
+      resolvedProfileId: 'bonsai.2-27b',
+    })
 
     // config:updated is a REFRESH trigger: it re-reads the config even after
     // latching, because this store has no direct writer (unlike the
     // experimental store, which Settings updates directly).
-    configMocks.getModelProfiles.mockResolvedValue({
-      active_id: 'generic', suggested_profile_id: null,
-    })
+    configMocks.getConfig.mockResolvedValue(
+      makeConfig(true, {
+        enabled: true,
+        essential_tools_enabled: true,
+        active_profile: 'generic',
+        resolved_profile_id: 'generic',
+        suggested_profile_id: null,
+      }),
+    )
     fireConfigUpdated()
     await flushMicrotasks()
     expect(configMocks.getConfig).toHaveBeenCalledTimes(3)
-    expect(configMocks.getModelProfiles).toHaveBeenCalledTimes(3)
     expect(useModelProfilesGateStore.getState()).toMatchObject({
-      activeProfileId: 'generic', suggestedProfileId: null,
+      activeProfileId: 'generic',
+      resolvedProfileId: 'generic',
+      suggestedProfileId: null,
     })
     expect(useModelProfilesGateStore.getState().loaded).toBe(true)
     expect(rendered.blocked).toBe(true)
@@ -323,75 +396,92 @@ describe('useModelProfilesGate', () => {
     expect(rendered.blocked).toBe(true)
   })
 
-  it('keeps the goal gate and previous profile identity when metadata refresh fails', async () => {
-    configMocks.getConfig.mockResolvedValue(
-      makeConfig(true, { enabled: true, essential_tools_enabled: true }),
+  it('keeps the latched gate and identity when a post-latch refresh fails', async () => {
+    // Regression: a THROWN refresh after a good latch must leave the
+    // known-good gate and identity untouched (the catch path logs and keeps
+    // the store as-is) rather than discarding either back to unknown.
+    configMocks.getConfig.mockResolvedValueOnce(
+      makeConfig(true, {
+        enabled: true,
+        essential_tools_enabled: true,
+        active_profile: 'generic',
+        suggested_profile_id: 'bonsai.2-27b',
+      }),
     )
     renderHook()
     await flushMicrotasks()
-    const failure = new Error('catalog unavailable')
-    configMocks.getModelProfiles.mockRejectedValueOnce(failure)
+    expect(useModelProfilesGateStore.getState().loaded).toBe(true)
+
+    configMocks.getConfig.mockRejectedValueOnce(new Error('refresh exploded'))
     fireConfigUpdated()
     await flushMicrotasks()
+
+    expect(configMocks.getConfig).toHaveBeenCalledTimes(2)
+    expect(useModelProfilesGateStore.getState()).toMatchObject({
+      enabled: true,
+      essentialToolsEnabled: true,
+      activeProfileId: 'generic',
+      suggestedProfileId: 'bonsai.2-27b',
+      loaded: true,
+    })
     expect(rendered.blocked).toBe(true)
-    expect(useModelProfilesGateStore.getState()).toMatchObject({
-      activeProfileId: 'generic', suggestedProfileId: 'bonsai-2-27b', loaded: true,
-    })
     expect(logger.error).toHaveBeenCalledExactlyOnceWith(
-      'useModelProfilesGate: failed to load profile metadata:', failure,
+      'useModelProfilesGate: failed to load config:', expect.objectContaining({ message: 'refresh exploded' }),
     )
-    configMocks.getModelProfiles.mockResolvedValueOnce({
-      active_id: 'bonsai-2-27b', suggested_profile_id: null,
-    })
-    fireBackendReady()
-    await flushMicrotasks()
-    expect(useModelProfilesGateStore.getState()).toMatchObject({
-      activeProfileId: 'bonsai-2-27b', suggestedProfileId: null,
-    })
   })
 
-  it('replays a config refresh that arrives while profile metadata is in flight', async () => {
-    let resolveMetadata!: (value: { active_id: string; suggested_profile_id: string | null }) => void
-    const pending = new Promise<{ active_id: string; suggested_profile_id: string | null }>((resolve) => {
-      resolveMetadata = resolve
+  it('replays a config refresh that arrives while a fetch is in flight', async () => {
+    let resolveConfig!: (value: ConfigResponse) => void
+    const pending = new Promise<ConfigResponse>((resolve) => {
+      resolveConfig = resolve
     })
-    configMocks.getConfig.mockResolvedValue(
-      makeConfig(true, { enabled: true, essential_tools_enabled: true }),
-    )
-    configMocks.getModelProfiles.mockReturnValueOnce(pending).mockResolvedValueOnce({
-      active_id: 'bonsai-2-27b', suggested_profile_id: null,
-    })
+    configMocks.getConfig
+      .mockReturnValueOnce(pending)
+      .mockResolvedValueOnce(
+        makeConfig(true, {
+          enabled: true,
+          essential_tools_enabled: true,
+          active_profile: 'bonsai.2-27b',
+          suggested_profile_id: null,
+        }),
+      )
     renderHook()
     await flushMicrotasks()
     fireConfigUpdated()
     expect(configMocks.getConfig).toHaveBeenCalledTimes(1)
     await act(async () => {
-      resolveMetadata({ active_id: 'generic', suggested_profile_id: 'bonsai-2-27b' })
+      resolveConfig(
+        makeConfig(true, {
+          enabled: true,
+          essential_tools_enabled: true,
+          active_profile: 'generic',
+          suggested_profile_id: 'bonsai.2-27b',
+        }),
+      )
       await pending
     })
     await flushMicrotasks()
     expect(configMocks.getConfig).toHaveBeenCalledTimes(2)
-    expect(configMocks.getModelProfiles).toHaveBeenCalledTimes(2)
     expect(useModelProfilesGateStore.getState()).toMatchObject({
-      activeProfileId: 'bonsai-2-27b', suggestedProfileId: null,
+      activeProfileId: 'bonsai.2-27b',
+      suggestedProfileId: null,
     })
   })
 
-  it('does not write late profile metadata after unmount', async () => {
-    let resolveMetadata!: (value: { active_id: string; suggested_profile_id: string | null }) => void
-    const pending = new Promise<{ active_id: string; suggested_profile_id: string | null }>((resolve) => {
-      resolveMetadata = resolve
+  it('does not write a late response after unmount', async () => {
+    let resolveConfig!: (value: ConfigResponse) => void
+    const pending = new Promise<ConfigResponse>((resolve) => {
+      resolveConfig = resolve
     })
-    configMocks.getConfig.mockResolvedValue(makeConfig(true))
-    configMocks.getModelProfiles.mockReturnValueOnce(pending)
+    configMocks.getConfig.mockReturnValueOnce(pending)
     renderHook()
     await flushMicrotasks()
     act(() => root?.unmount())
     root = null
-    resolveMetadata({ active_id: 'late', suggested_profile_id: null })
+    resolveConfig(makeConfig(true))
     await pending
     await flushMicrotasks()
-    expect(useModelProfilesGateStore.getState().activeProfileId).toBeNull()
+    expect(useModelProfilesGateStore.getState().loaded).toBe(false)
   })
 
   it('keeps the fail-safe state (loaded=false, not blocking) on a fetch error', async () => {

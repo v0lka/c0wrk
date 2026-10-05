@@ -61,6 +61,21 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 		ModelProfiles: f.modelProfilesGateResp,
 	}
 
+	// The gate block's ACTIVE/SUGGESTED identity half is filled FRESH (pure
+	// in-memory reads of the stored active id and the default-model
+	// suggestion) rather than served from modelProfilesGateResp, so a
+	// default-model change is visible without waiting for the next Model
+	// Profiles mutation to refresh the cache — and so background consumers
+	// never need the notice-consuming GetModelProfiles (see
+	// ModelProfilesSettingsResponse). ResolvedProfileID deliberately stays
+	// the cached value: resolving it needs the profile catalog (a disk
+	// read), and its inputs change only through the mutations that already
+	// refresh the cache.
+	resp.ModelProfiles.ActiveProfileID = f.config.ModelProfiles.ActiveProfile
+	if id := suggestModelProfileID(f.config.LLM.DefaultModel); id != "" {
+		resp.ModelProfiles.SuggestedProfileID = &id
+	}
+
 	// Populate AllModels: flat list of all enabled models.
 	// Always build from the per-provider config lists so the frontend sees
 	// configured models immediately, even before the async ModelRegistry
@@ -1232,7 +1247,7 @@ func normalizeModelProfilesModelToken(s string) string {
 // modelProfilesSuggestAliasIDs maps a model whose shipping name shares no token
 // with the architecture it is derived from to the predefined profile slug that
 // fits it. The embedded local model ("Bonsai 2 27B") is a rebrand of
-// Qwen/Qwen3.8-27B; it suggests its own dedicated "bonsai-2-27b" profile.
+// Qwen/Qwen3.8-27B; it suggests its own dedicated "bonsai.2-27b" profile.
 // Normalizing the rebrand yields "bonsai227b" — the same token the dedicated
 // slug normalizes to — so containment would reach it too, but the identity
 // entry stays: it states the derivation once, keyed off the
@@ -1242,7 +1257,7 @@ func normalizeModelProfilesModelToken(s string) string {
 // stays a HINT: nothing here flips model_profiles.enabled or changes
 // active_profile (ADR-066 D8).
 var modelProfilesSuggestAliasIDs = map[string]string{
-	normalizeModelProfilesModelToken(config.EmbeddedLLMModelName): "bonsai-2-27b",
+	normalizeModelProfilesModelToken(config.EmbeddedLLMModelName): "bonsai.2-27b",
 }
 
 // suggestModelProfileID returns the predefined profile whose slug best matches
@@ -1305,10 +1320,17 @@ func (f *FrontendAPI) refreshModelProfilesGateLocked() {
 		f.modelProfilesGateResp = ModelProfilesSettingsResponse{}
 		return
 	}
-	profile, _ := effectiveModelProfilesConfig(f.config, f.modelProfilesCatalog())
+	catalog := f.modelProfilesCatalog()
+	profile, _ := effectiveModelProfilesConfig(f.config, catalog)
 	f.modelProfilesGateResp = ModelProfilesSettingsResponse{
 		Enabled:               profile.Enabled,
 		EssentialToolsEnabled: profile.EssentialTools.Enabled,
+		// The resolved id shares the cache's inputs exactly (the stored
+		// active id + the catalog), so it cannot go stale without one of the
+		// mutations that already trigger this refresh; it applies the same
+		// soft fallback and retired-predefined-id aliasing as the value and
+		// metrics-identity paths (activeModelProfile).
+		ResolvedProfileID: activeModelProfile(f.config.ModelProfiles, catalog).ID,
 	}
 }
 

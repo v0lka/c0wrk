@@ -1,9 +1,25 @@
 import { create } from 'zustand'
 
 /**
- * Model Profiles gate state, loaded from GetConfig (the effective/resolved ModelProfiles
- * section) and GetModelProfiles (profile identity) — see `useModelProfilesGate`.
- * Single source of truth for the goal-mode block and profile recommendation UI.
+ * Model Profiles gate state, loaded from GetConfig alone — the effective/resolved
+ * ModelProfiles section plus its advisory identity half (`active_profile` /
+ * `resolved_profile_id` / `suggested_profile_id`) — see `useModelProfilesGate`.
+ * Single source of truth for the goal-mode block and profile identity /
+ * recommendation state. `suggestedProfileId` is reserved surface: no component
+ * renders it yet (the Bonsai banner resolves its recommendation through the
+ * model catalog, not this field); it stays latched so a future recommendation
+ * UI starts from live state.
+ *
+ * `activeProfileId` is the STORED id, verbatim; `resolvedProfileId` is the id
+ * the backend resolver resolved it to (retired-predefined alias / soft
+ * fallback applied). Value-wise decisions — the Bonsai banner's "already on
+ * the preset?" check — compare against `resolvedProfileId`, never the
+ * verbatim id: a legacy dashed id that already resolves to the bonsai preset
+ * must not re-trigger the advisory.
+ *
+ * GetModelProfiles is deliberately NOT a source for this store: it is a
+ * consuming read that drains the one-shot profile notices Settings displays,
+ * so a background refresh must never issue it.
  *
  * This store carries the following facts:
  *   - `enabled` — the resolved Model Profiles master toggle (config
@@ -26,7 +42,9 @@ interface ModelProfilesGateState {
   essentialToolsEnabled: boolean
   /** null until profile metadata has been fetched successfully. */
   activeProfileId: string | null
-  /** Advisory default-model match only; never auto-applied. */
+  /** Backend-resolved counterpart of `activeProfileId` (alias/fallback applied); null until fetched. */
+  resolvedProfileId: string | null
+  /** Advisory default-model match only; never auto-applied. Reserved surface — nothing renders it yet (see header). */
   suggestedProfileId: string | null
   loaded: boolean
 }
@@ -35,17 +53,19 @@ interface ModelProfilesGateActions {
   setEnabled: (enabled: boolean) => void
   setEssentialToolsEnabled: (essentialToolsEnabled: boolean) => void
   setLoaded: (loaded: boolean) => void
-  setProfileIds: (activeProfileId: string, suggestedProfileId: string | null) => void
+  setProfileIds: (activeProfileId: string | null, resolvedProfileId: string | null, suggestedProfileId: string | null) => void
 }
 
 export const useModelProfilesGateStore = create<ModelProfilesGateState & ModelProfilesGateActions>((set) => ({
   enabled: false,
   essentialToolsEnabled: false,
   activeProfileId: null,
+  resolvedProfileId: null,
   suggestedProfileId: null,
   loaded: false,
   setEnabled: (enabled) => set({ enabled }),
   setEssentialToolsEnabled: (essentialToolsEnabled) => set({ essentialToolsEnabled }),
   setLoaded: (loaded) => set({ loaded }),
-  setProfileIds: (activeProfileId, suggestedProfileId) => set({ activeProfileId, suggestedProfileId }),
+  setProfileIds: (activeProfileId, resolvedProfileId, suggestedProfileId) =>
+    set({ activeProfileId, resolvedProfileId, suggestedProfileId }),
 }))

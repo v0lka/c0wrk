@@ -31,7 +31,7 @@ var goldenModelProfilesTools = []string{
 
 // goldenModelProfiles fixes the exact catalog: 6 profiles, fixed ids, names,
 // kinds, and all 25 knob values each. Sources: four-model study (2026-09-11),
-// the embedded-local-model prefill/token cost measurements (bonsai-2-27b), and
+// the embedded-local-model prefill/token cost measurements (bonsai.2-27b), and
 // the docs/development/model-profiles-defaults-research.md addendum (generic).
 func goldenModelProfiles() []ModelProfile {
 	return []ModelProfile{
@@ -212,7 +212,7 @@ func goldenModelProfiles() []ModelProfile {
 			},
 		},
 		{
-			ID:   "bonsai-2-27b",
+			ID:   "bonsai.2-27b",
 			Name: "Bonsai 2 27B (embedded)",
 			Kind: ModelProfileKindPredefined,
 			Config: ModelProfileConfig{
@@ -338,7 +338,7 @@ func TestPredefinedModelProfilesGolden(t *testing.T) {
 }
 
 func TestPredefinedModelProfilesCatalog(t *testing.T) {
-	wantIDs := []string{"qwen3.8-27b", "qwen3.6-35b-a3b", "gemma-4-26b-a4b-it", "gemma-4-31b-it", "bonsai-2-27b", "generic"}
+	wantIDs := []string{"qwen3.8-27b", "qwen3.6-35b-a3b", "gemma-4-26b-a4b-it", "gemma-4-31b-it", "bonsai.2-27b", "generic"}
 	profiles := PredefinedModelProfiles()
 	if len(profiles) != len(wantIDs) {
 		t.Fatalf("catalog has %d profiles, want exactly %d", len(profiles), len(wantIDs))

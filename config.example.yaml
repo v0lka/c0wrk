@@ -376,7 +376,9 @@ llm:
 #   # key means "the operator chose nothing". For two knobs the difference is
 #   # not cosmetic at all — an unset `fit` lets the exclusivity rule decide
 #   # while `fit: false` forces `-fit off`, and an unset `cache_ram_mib` keeps
-#   # the runtime default while `cache_ram_mib: 0` DISABLES the prompt cache.
+#   # the runtime's own default (the planner raises it to the measured spare
+#   # memory only while `ctx_checkpoints: 0` disables the per-slot snapshots)
+#   # while `cache_ram_mib: 0` DISABLES the prompt cache.
 #   # That is why nothing here is seeded by defaults, and why an unauthored
 #   # block writes nothing: config.yaml only grows a `tuning:` section when you
 #   # author one, and a save never converts your "unset" into an "explicit
@@ -510,9 +512,15 @@ llm:
 #     # sees (an unmeasured host, a gate disabled in a test harness).
 #     parallel: 1
 #     # The prompt-cache ceiling (`-cram`), in MiB. Default: unset = the
-#     # runtime's own. Valid 0-2147483648, and an explicit 0 DISABLES the cache
-#     # — a legitimate choice, so it is passed through verbatim rather than read
-#     # as "unset".
+#     # runtime's own 8192 MiB. The planner raises an unset ceiling to the
+#     # measured spare host/unified memory only when that exceeds the runtime
+#     # default AND `ctx_checkpoints: 0` has disabled the per-slot snapshots:
+#     # while snapshots are enabled (the default) the spare stays unspent,
+#     # because each active slot's saved KV prefixes live outside the cache
+#     # limit and have no measured bound to reserve against. A larger ceiling
+#     # alongside snapshots is therefore an explicit operator choice. Valid
+#     # 0-2147483648, and an explicit 0 DISABLES the cache — a legitimate
+#     # choice, so it is passed through verbatim rather than read as "unset".
 #     cache_ram_mib: 0
 #     # The per-slot context-checkpoint count (`--ctx-checkpoints`) — how many
 #     # saved KV prefixes the runtime may snapshot per slot. Default: unset =
@@ -1602,8 +1610,10 @@ orchestration:
 # resolved at runtime:
 #
 #   - predefined profiles are compiled into the app: qwen3.8-27b,
-#     qwen3.6-35b-a3b, gemma-4-26b-a4b-it, gemma-4-31b-it, bonsai-2-27b
-#     (the embedded local model), and the model-agnostic "generic"
+#     qwen3.6-35b-a3b, gemma-4-26b-a4b-it, gemma-4-31b-it, bonsai.2-27b
+#     (the embedded local model; the '.' keeps the id outside the custom
+#     slug namespace, so a pre-existing custom "bonsai-2-27b" profile keeps
+#     working), and the model-agnostic "generic"
 #     (read-only in the UI);
 #   - custom profiles are created/edited in the Settings UI and persisted to
 #     ~/.c0wrk/model-profiles.yaml (create-from-base, edit values and name,
