@@ -1,11 +1,11 @@
 import { create } from 'zustand'
 
 /**
- * Model Profiles gate state, loaded once from GetConfig (the effective/resolved ModelProfiles
- * section — see `useModelProfilesGate`) and the single source of truth for the goal-mode
- * block that the ModelProfiles profile implies.
+ * Model Profiles gate state, loaded from GetConfig (the effective/resolved ModelProfiles
+ * section) and GetModelProfiles (profile identity) — see `useModelProfilesGate`.
+ * Single source of truth for the goal-mode block and profile recommendation UI.
  *
- * This store carries THREE facts, not one:
+ * This store carries the following facts:
  *   - `enabled` — the resolved Model Profiles master toggle (config
  *     `model_profiles.enabled`).
  *   - `essentialToolsEnabled` — the resolved essential-tools variant
@@ -24,6 +24,10 @@ import { create } from 'zustand'
 interface ModelProfilesGateState {
   enabled: boolean
   essentialToolsEnabled: boolean
+  /** null until profile metadata has been fetched successfully. */
+  activeProfileId: string | null
+  /** Advisory default-model match only; never auto-applied. */
+  suggestedProfileId: string | null
   loaded: boolean
 }
 
@@ -31,13 +35,17 @@ interface ModelProfilesGateActions {
   setEnabled: (enabled: boolean) => void
   setEssentialToolsEnabled: (essentialToolsEnabled: boolean) => void
   setLoaded: (loaded: boolean) => void
+  setProfileIds: (activeProfileId: string, suggestedProfileId: string | null) => void
 }
 
 export const useModelProfilesGateStore = create<ModelProfilesGateState & ModelProfilesGateActions>((set) => ({
   enabled: false,
   essentialToolsEnabled: false,
+  activeProfileId: null,
+  suggestedProfileId: null,
   loaded: false,
   setEnabled: (enabled) => set({ enabled }),
   setEssentialToolsEnabled: (essentialToolsEnabled) => set({ essentialToolsEnabled }),
   setLoaded: (loaded) => set({ loaded }),
+  setProfileIds: (activeProfileId, suggestedProfileId) => set({ activeProfileId, suggestedProfileId }),
 }))

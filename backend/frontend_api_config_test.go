@@ -2207,7 +2207,7 @@ func TestGetModelProfiles_SuggestedFromDefaultModel(t *testing.T) {
 		{"Qwen/Qwen3.8-27B", "qwen3.8-27b"},
 		{"Qwen/Qwen3.8-27B-Instruct", "qwen3.8-27b"},
 		{"gemma-4-26b-a4b-it", "gemma-4-26b-a4b-it"},
-		{"embedded/Bonsai 2 27B", "qwen3.8-27b"},
+		{"embedded/Bonsai 2 27B", "bonsai-2-27b"},
 		{"my-custom-model", ""},
 		{"", ""},
 	}
@@ -2247,12 +2247,14 @@ func TestSuggestModelProfileID_Normalization(t *testing.T) {
 		{"google/gemma-4-26b-a4b-it", "gemma-4-26b-a4b-it"},
 		{"gemma-4-31b-it", "gemma-4-31b-it"},
 		{"qwen3_8_27b", "qwen3.8-27b"},
-		// The embedded local model is derived from Qwen/Qwen3.8-27B but its
-		// shipping name shares no token with it, so it matches through the
-		// explicit alias, not containment (bare name and composite id alike).
-		{"Bonsai 2 27B", "qwen3.8-27b"},
-		{"embedded/Bonsai 2 27B", "qwen3.8-27b"},
-		{"  bonsai 2 27b  ", "qwen3.8-27b"},
+		// The embedded local model is a rebrand of Qwen/Qwen3.8-27B with its
+		// own dedicated profile: the shipping name and the "bonsai-2-27b"
+		// slug normalize to the same "bonsai227b" token, and the explicit
+		// alias pins the mapping to the model-name constant (bare name and
+		// composite id alike).
+		{"Bonsai 2 27B", "bonsai-2-27b"},
+		{"embedded/Bonsai 2 27B", "bonsai-2-27b"},
+		{"  bonsai 2 27b  ", "bonsai-2-27b"},
 		// No matches.
 		{"claude-sonnet-4", ""},
 		{"my-tuned-model", ""},
@@ -2267,16 +2269,16 @@ func TestSuggestModelProfileID_Normalization(t *testing.T) {
 }
 
 // TestSuggestModelProfileID_EmbeddedModelAlias pins the explicit alias for the
-// backend-owned embedded model: it is derived from Qwen/Qwen3.8-27B, but
-// normalizing "Bonsai 2 27B" yields "bonsai227b", which contains no predefined
-// slug, so ONLY the identity mapping can produce the suggestion. The alias is
-// keyed off config.EmbeddedLLMModelName — the bare name and the
-// "embedded/<model>" composite the pickers and the router use both resolve to
-// it — and its target must be a real, suggestible predefined profile: a renamed
-// slug degrades to "no suggestion" instead of a dangling id the picker cannot
-// select.
+// backend-owned embedded model: it is a rebrand of Qwen/Qwen3.8-27B with its
+// own dedicated "bonsai-2-27b" profile (every knob targets the measured local
+// prefill/token cost). The alias is keyed off config.EmbeddedLLMModelName —
+// the bare name and the "embedded/<model>" composite the pickers and the
+// router use both resolve to it — so the mapping is stated once and moves with
+// a model rename, and its target must be a real, suggestible predefined
+// profile: a renamed slug degrades to "no suggestion" instead of a dangling id
+// the picker cannot select.
 func TestSuggestModelProfileID_EmbeddedModelAlias(t *testing.T) {
-	const want = "qwen3.8-27b"
+	const want = "bonsai-2-27b"
 
 	for _, model := range []string{
 		config.EmbeddedLLMModelName,
@@ -2313,7 +2315,7 @@ func TestSuggestModelProfileID_EmbeddedModelAlias(t *testing.T) {
 
 // TestGetModelProfiles_EmbeddedSuggestionIsHintOnly pins the ADR-066 D8
 // invariant on the RPC surface: with the embedded model selected as the default,
-// GetModelProfiles suggests "qwen3.8-27b" while the stored master toggle and the
+// GetModelProfiles suggests "bonsai-2-27b" while the stored master toggle and the
 // active profile are reported exactly as persisted — the suggestion is never
 // auto-applied.
 func TestGetModelProfiles_EmbeddedSuggestionIsHintOnly(t *testing.T) {
@@ -2323,8 +2325,8 @@ func TestGetModelProfiles_EmbeddedSuggestionIsHintOnly(t *testing.T) {
 	f.config.LLM.DefaultModel = embeddedCompositeID()
 
 	got := f.GetModelProfiles()
-	if got.SuggestedProfileID == nil || *got.SuggestedProfileID != "qwen3.8-27b" {
-		t.Fatalf("SuggestedProfileID = %v, want \"qwen3.8-27b\"", got.SuggestedProfileID)
+	if got.SuggestedProfileID == nil || *got.SuggestedProfileID != "bonsai-2-27b" {
+		t.Fatalf("SuggestedProfileID = %v, want \"bonsai-2-27b\"", got.SuggestedProfileID)
 	}
 	if got.Enabled != wantEnabled {
 		t.Errorf("Enabled = %v, want the stored %v (the hint must not enable Model Profiles)", got.Enabled, wantEnabled)
@@ -5461,7 +5463,7 @@ func TestUpdateLLMConfig_EmbeddedContextWindowOverrideUntouched(t *testing.T) {
 // installed embedded model as the default persists the LLM state WITHOUT
 // touching model_profiles — neither the master toggle nor the active profile,
 // in memory or in the saved YAML — while GetModelProfiles starts suggesting
-// "qwen3.8-27b". Applying that suggestion stays an explicit user action.
+// "bonsai-2-27b". Applying that suggestion stays an explicit user action.
 func TestUpdateLLMConfig_EmbeddedInstallKeepsModelProfilesUntouched(t *testing.T) {
 	f, _, cfgPath := newTestAPI(t)
 	installEmbeddedLLM(t, f, 4321)
@@ -5471,7 +5473,7 @@ func TestUpdateLLMConfig_EmbeddedInstallKeepsModelProfilesUntouched(t *testing.T
 	if wantEnabled {
 		t.Fatal("test precondition: the master Model Profiles toggle starts off")
 	}
-	if wantActive == "qwen3.8-27b" {
+	if wantActive == "bonsai-2-27b" {
 		t.Fatal("test precondition: the active profile must differ from the suggestion")
 	}
 
@@ -5505,8 +5507,8 @@ func TestUpdateLLMConfig_EmbeddedInstallKeepsModelProfilesUntouched(t *testing.T
 
 	// The suggestion is the ONLY model-profiles effect of the install.
 	got := f.GetModelProfiles()
-	if got.SuggestedProfileID == nil || *got.SuggestedProfileID != "qwen3.8-27b" {
-		t.Fatalf("SuggestedProfileID = %v, want \"qwen3.8-27b\"", got.SuggestedProfileID)
+	if got.SuggestedProfileID == nil || *got.SuggestedProfileID != "bonsai-2-27b" {
+		t.Fatalf("SuggestedProfileID = %v, want \"bonsai-2-27b\"", got.SuggestedProfileID)
 	}
 	if got.Enabled != wantEnabled || got.ActiveID != wantActive {
 		t.Errorf("GetModelProfiles = {enabled:%v active:%q}, want {enabled:%v active:%q}",

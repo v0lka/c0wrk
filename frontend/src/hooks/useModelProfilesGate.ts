@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { getConfig } from '@/api/config'
+import { getConfig, getModelProfiles } from '@/api/config'
 import { onGlobalEvent } from '@/api/runtime'
 import { logger } from '@/lib/logger'
 import { isGoalBlockedByModelProfiles } from '@/lib/goalGate'
@@ -15,10 +15,8 @@ import { useModelProfilesGateStore } from '@/stores/modelProfilesGateStore'
  * events are the only way a runtime config change reaches it.
  *
  * The fetch runs on mount and on two global events:
- *   - `backend:ready` — a RETRY-ONLY trigger. It re-attempts the mount fetch
- *     when that attempt failed or resolved with `loaded=false` (the backend
- *     answers RPCs with a zeroed config until Startup finishes — the same race
- *     App.tsx guards against). Once the gate has latched it is a no-op.
+ *   - `backend:ready` — a REFRESH trigger, including after a successful mount
+ *     fetch, so profile identity cannot remain a pre-startup snapshot.
  *   - `config:updated` — a REFRESH trigger, emitted by the backend after every
  *     persisted config mutation (see specs/contracts/event-catalog.md). It
  *     IGNORES the latch and overwrites the store with the freshly resolved
@@ -48,7 +46,7 @@ export function useModelProfilesGate(): boolean {
   useEffect(() => {
     let cancelled = false
     let inFlight = false
-    // A refresh (config:updated) or a retry (mount/backend:ready) that arrives
+    // A refresh (config:updated/backend:ready) or a mount retry that arrives
     // while a fetch is in flight is remembered and replayed once the current
     // attempt settles, otherwise a one-shot event is consumed with no effect.
     // A pending refresh always wins: it re-fetches unconditionally, while a
@@ -68,7 +66,7 @@ export function useModelProfilesGate(): boolean {
       inFlight = true
 
       getConfig()
-        .then((cfg) => {
+        .then(async (cfg) => {
           if (cancelled) return
           // Startup race: before the backend's Startup finishes, GetConfig
           // SUCCEEDS with loaded=false (config not yet initialized) and a
@@ -86,6 +84,19 @@ export function useModelProfilesGate(): boolean {
             .getState()
             .setEssentialToolsEnabled(cfg.model_profiles?.essential_tools_enabled ?? false)
           useModelProfilesGateStore.getState().setLoaded(true)
+          // Metadata is advisory: a catalog fetch failure must never weaken
+          // the resolved goal gate above, or discard a previously good identity.
+          try {
+            const profiles = await getModelProfiles()
+            if (!cancelled) {
+              useModelProfilesGateStore.getState().setProfileIds(
+                profiles.active_id,
+                profiles.suggested_profile_id,
+              )
+            }
+          } catch (err) {
+            if (!cancelled) logger.error('useModelProfilesGate: failed to load profile metadata:', err)
+          }
         })
         .catch((err) => {
           // Fail-safe: keep the store as it was (not blocking on the initial
@@ -110,7 +121,7 @@ export function useModelProfilesGate(): boolean {
 
     fetchGate(false)
     const unsubscribes = [
-      onGlobalEvent('backend:ready', () => fetchGate(false)),
+      onGlobalEvent('backend:ready', () => fetchGate(true)),
       onGlobalEvent('config:updated', () => fetchGate(true)),
     ]
 

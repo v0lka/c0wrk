@@ -21,7 +21,7 @@ func TestAgentMetrics_ExecutorDiagnosticsToPayload(t *testing.T) {
 
 	emitter.SetModelProfile(ModelProfilesMetaInfo{
 		Enabled:     true,
-		Profile:     "qwen3.8-27b",
+		Profile:     "bonsai-2-27b",
 		ProfileKind: "predefined",
 		Variants:    []string{"essential_tools", "system_prompt_lite"},
 	})
@@ -57,7 +57,7 @@ func TestAgentMetrics_ExecutorDiagnosticsToPayload(t *testing.T) {
 		OutputTokens: 1200,
 		ModelProfiles: ModelProfilesMetaInfo{
 			Enabled:     true,
-			Profile:     "qwen3.8-27b",
+			Profile:     "bonsai-2-27b",
 			ProfileKind: "predefined",
 			Variants:    []string{"essential_tools", "system_prompt_lite"},
 		},
@@ -90,7 +90,7 @@ func TestAgentMetrics_ExecutorDiagnosticsToPayload(t *testing.T) {
 		OutputTokens: 1200,
 		ModelProfiles: ModelProfilesMetaInfo{
 			Enabled:     true,
-			Profile:     "qwen3.8-27b",
+			Profile:     "bonsai-2-27b",
 			ProfileKind: "predefined",
 			Variants:    []string{"essential_tools", "system_prompt_lite"},
 		},
@@ -137,7 +137,7 @@ func TestModelProfileFromConfig(t *testing.T) {
 		SystemPrompt:   config.SystemPromptConfig{Lite: true, FewShot: true},
 		Sampling:       config.ModelProfilesSamplingConfig{Enabled: true},
 	}
-	entry := config.ModelProfile{ID: "qwen3.8-27b", Kind: config.ModelProfileKindPredefined}
+	entry := config.ModelProfile{ID: "bonsai-2-27b", Kind: config.ModelProfileKindPredefined}
 
 	// Master toggle off → whole profile reported as disabled, no variants,
 	// but the active profile identity is still reported.
@@ -145,7 +145,7 @@ func TestModelProfileFromConfig(t *testing.T) {
 	off.Enabled = false
 	if info := modelProfileFromConfig(off, entry); info.Enabled || len(info.Variants) != 0 {
 		t.Fatalf("master toggle off must disable the whole profile: %+v", info)
-	} else if info.Profile != "qwen3.8-27b" || info.ProfileKind != "predefined" {
+	} else if info.Profile != "bonsai-2-27b" || info.ProfileKind != "predefined" {
 		t.Fatalf("profile identity must be reported even when disabled: %+v", info)
 	}
 

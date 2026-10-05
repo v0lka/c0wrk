@@ -1231,16 +1231,18 @@ func normalizeModelProfilesModelToken(s string) string {
 
 // modelProfilesSuggestAliasIDs maps a model whose shipping name shares no token
 // with the architecture it is derived from to the predefined profile slug that
-// fits it. The embedded local model ("Bonsai 2 27B") is derived from
-// Qwen/Qwen3.8-27B, but its normalized name ("bonsai227b") contains no
-// predefined slug, so the containment match below can never reach
-// "qwen3.8-27b" — hence the explicit entry. Keys are produced by
-// normalizeModelProfilesModelToken, so the bare name and the composite
-// "embedded/Bonsai 2 27B" id both resolve to the same key. An alias stays a
-// HINT: nothing here flips model_profiles.enabled or changes active_profile
-// (ADR-066 D8).
+// fits it. The embedded local model ("Bonsai 2 27B") is a rebrand of
+// Qwen/Qwen3.8-27B; it suggests its own dedicated "bonsai-2-27b" profile.
+// Normalizing the rebrand yields "bonsai227b" — the same token the dedicated
+// slug normalizes to — so containment would reach it too, but the identity
+// entry stays: it states the derivation once, keyed off the
+// config.EmbeddedLLMModelName constant (so a model rename moves the key with
+// it), and it outranks containment for the exact name. The bare name and the
+// composite "embedded/Bonsai 2 27B" id both resolve to the same key. An alias
+// stays a HINT: nothing here flips model_profiles.enabled or changes
+// active_profile (ADR-066 D8).
 var modelProfilesSuggestAliasIDs = map[string]string{
-	normalizeModelProfilesModelToken(config.EmbeddedLLMModelName): "qwen3.8-27b",
+	normalizeModelProfilesModelToken(config.EmbeddedLLMModelName): "bonsai-2-27b",
 }
 
 // suggestModelProfileID returns the predefined profile whose slug best matches

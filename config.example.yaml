@@ -514,6 +514,21 @@ llm:
 #     # — a legitimate choice, so it is passed through verbatim rather than read
 #     # as "unset".
 #     cache_ram_mib: 0
+#     # The per-slot context-checkpoint count (`--ctx-checkpoints`) — how many
+#     # saved KV prefixes the runtime may snapshot per slot. Default: unset =
+#     # 32, the runtime's own figure, rendered EXPLICITLY on every launch: the
+#     # runtime also reads the LLAMA_ARG_CTX_CHECKPOINTS environment variable,
+#     # and an omitted flag would let an inherited env value (or a pin bump's
+#     # default drift) decide a memory-bearing setting no c0wrk layer chose.
+#     # Valid 0-1048576, and an explicit 0 DISABLES the snapshots — a
+#     # legitimate choice, passed through verbatim rather than read as "unset".
+#     ctx_checkpoints: 32
+#     # Whether idle slots are saved to the prompt cache on a new task
+#     # (`--cache-idle-slots` / `--no-cache-idle-slots`), rendered explicitly
+#     # on every launch for the same env-drift reason. Default: unset = true,
+#     # the runtime's own. Requires the prompt cache — `cache_ram_mib: 0` makes
+#     # the flag moot, so disable both together.
+#     cache_idle_slots: true
 #     # System RAM kept OUT of the host budget, in GiB. Default: unset = the
 #     # topology's own derivation (the larger of a 4 GiB floor and 1/8 of RAM).
 #     # Must be a FINITE number within 0-1048576: NaN and ±Inf are rejected, not
@@ -1587,8 +1602,9 @@ orchestration:
 # resolved at runtime:
 #
 #   - predefined profiles are compiled into the app: qwen3.8-27b,
-#     qwen3.6-35b-a3b, gemma-4-26b-a4b-it, gemma-4-31b-it, and the
-#     model-agnostic "generic" (read-only in the UI);
+#     qwen3.6-35b-a3b, gemma-4-26b-a4b-it, gemma-4-31b-it, bonsai-2-27b
+#     (the embedded local model), and the model-agnostic "generic"
+#     (read-only in the UI);
 #   - custom profiles are created/edited in the Settings UI and persisted to
 #     ~/.c0wrk/model-profiles.yaml (create-from-base, edit values and name,
 #     delete; predefined profiles are read-only).

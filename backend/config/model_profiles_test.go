@@ -29,9 +29,10 @@ var goldenModelProfilesTools = []string{
 	"finish",
 }
 
-// goldenModelProfiles fixes the exact catalog: 5 profiles, fixed ids, names,
-// kinds, and all 25 knob values each. Sources: four-model study (2026-09-11)
-// and the docs/development/model-profiles-defaults-research.md addendum (generic).
+// goldenModelProfiles fixes the exact catalog: 6 profiles, fixed ids, names,
+// kinds, and all 25 knob values each. Sources: four-model study (2026-09-11),
+// the embedded-local-model prefill/token cost measurements (bonsai-2-27b), and
+// the docs/development/model-profiles-defaults-research.md addendum (generic).
 func goldenModelProfiles() []ModelProfile {
 	return []ModelProfile{
 		{
@@ -211,6 +212,50 @@ func goldenModelProfiles() []ModelProfile {
 			},
 		},
 		{
+			ID:   "bonsai-2-27b",
+			Name: "Bonsai 2 27B (embedded)",
+			Kind: ModelProfileKindPredefined,
+			Config: ModelProfileConfig{
+				EssentialTools: EssentialToolsConfig{
+					Enabled:             true,
+					AlwaysPresent:       goldenModelProfilesTools,
+					CompactDescriptions: true,
+				},
+				SystemPrompt: SystemPromptConfig{
+					Lite:              true,
+					FewShot:           false,
+					ReasoningScaffold: false,
+				},
+				Sampling: ModelProfilesSamplingConfig{
+					Enabled:           true,
+					Temperature:       0,
+					TopP:              0,
+					TopK:              0,
+					RepetitionPenalty: 0,
+					PresencePenalty:   0,
+					ReasoningEffort:   "medium",
+				},
+				LoopHardening: LoopHardeningConfig{
+					Enabled:                      true,
+					RepeatNudgeThreshold:         2,
+					ParseErrorAbortThreshold:     3,
+					FruitlessNudgeThreshold:      3,
+					FruitlessAbortThreshold:      5,
+					SameToolRepeatNudgeThreshold: 4,
+				},
+				Context: ModelProfilesContextConfig{
+					Enabled: true,
+					Compaction: ModelProfilesCompactionConfig{
+						KeepLast:       6,
+						BlockSize:      5,
+						TriggerPercent: 80,
+					},
+					ToolOutputKeepLastN: 2,
+					OutputTokenReserve:  16384,
+				},
+			},
+		},
+		{
 			ID:   ModelProfilesGenericProfileID,
 			Name: "Generic (model-agnostic)",
 			Kind: ModelProfileKindPredefined,
@@ -293,7 +338,7 @@ func TestPredefinedModelProfilesGolden(t *testing.T) {
 }
 
 func TestPredefinedModelProfilesCatalog(t *testing.T) {
-	wantIDs := []string{"qwen3.8-27b", "qwen3.6-35b-a3b", "gemma-4-26b-a4b-it", "gemma-4-31b-it", "generic"}
+	wantIDs := []string{"qwen3.8-27b", "qwen3.6-35b-a3b", "gemma-4-26b-a4b-it", "gemma-4-31b-it", "bonsai-2-27b", "generic"}
 	profiles := PredefinedModelProfiles()
 	if len(profiles) != len(wantIDs) {
 		t.Fatalf("catalog has %d profiles, want exactly %d", len(profiles), len(wantIDs))

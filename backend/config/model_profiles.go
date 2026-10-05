@@ -18,8 +18,10 @@ import (
 // verdict #1 and the 2026-09-13 addendum).
 //
 // The predefined catalog values come from the completed four-model study
-// (Qwen3.8-27B, Qwen3.6-35B-A3B, Gemma-4-26B-A4B-it, Gemma-4-31B-it) and
-// the model-agnostic research addendum; see the per-entry comments below.
+// (Qwen3.8-27B, Qwen3.6-35B-A3B, Gemma-4-26B-A4B-it, Gemma-4-31B-it), the
+// embedded-local-model prefill/token cost measurements (the "bonsai-2-27b"
+// entry; docs/development/embedded-llm-perf-diagnosis.md), and the
+// model-agnostic research addendum; see the per-entry comments below.
 
 // ModelProfileKind distinguishes the hard-coded predefined profiles from
 // operator-authored custom ones. The kind is metadata: it drives UI
@@ -219,16 +221,17 @@ func ValidateModelProfilesUnique(profiles []ModelProfile) error {
 	return nil
 }
 
-// predefinedModelProfiles is the fixed five-entry catalog. It is built
+// predefinedModelProfiles is the fixed six-entry catalog. It is built
 // through NewModelProfile + ValidateModelProfilesUnique at package init, so an
 // invalid entry fails loudly at startup (programmer error) instead of
 // shipping a half-valid preset.
 var predefinedModelProfiles = mustBuildPredefinedModelProfiles()
 
-// PredefinedModelProfiles returns the hard-coded predefined catalog: four
-// model-specific profiles (values from the four-model study) plus the
-// model-agnostic "generic" maximum-support preset (values from the
-// research addendum). The returned slice is a defensive copy.
+// PredefinedModelProfiles returns the hard-coded predefined catalog: five
+// model-specific profiles (four from the four-model study plus the
+// embedded-local-model bonsai-2-27b) and the model-agnostic "generic"
+// maximum-support preset (values from the research addendum). The returned
+// slice is a defensive copy.
 func PredefinedModelProfiles() []ModelProfile {
 	out := make([]ModelProfile, len(predefinedModelProfiles))
 	for i, p := range predefinedModelProfiles {
@@ -371,6 +374,28 @@ func buildPredefinedModelProfiles() ([]ModelProfile, error) {
 					ToolOutputKeepLastN: 3,
 					OutputTokenReserve:  16384,
 				},
+			},
+		},
+		{
+			// Embedded: the backend-owned local model (Bonsai 2 27B, a
+			// rebrand of Qwen3.8-27B served by the supervised llama-server).
+			// Every knob targets the measured prefill/token cost of local
+			// inference (docs/development/embedded-llm-perf-diagnosis.md):
+			// tool narrowing with compact descriptions and the Lite prompt
+			// cut prefill, reasoning_effort medium cuts thinking tokens,
+			// the shared loop hardening stops token-burning spins early,
+			// and the tight context window bounds the per-turn prefill.
+			id:   "bonsai-2-27b",
+			name: "Bonsai 2 27B (embedded)",
+			cfg: ModelProfileConfig{
+				EssentialTools: tools(true, true),
+				SystemPrompt:   SystemPromptConfig{Lite: true},
+				Sampling: ModelProfilesSamplingConfig{
+					Enabled:         true,
+					ReasoningEffort: "medium",
+				},
+				LoopHardening: loopHardening,
+				Context:       contextTight,
 			},
 		},
 		{
