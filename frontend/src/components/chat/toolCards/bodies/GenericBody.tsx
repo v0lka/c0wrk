@@ -50,6 +50,7 @@ export const GenericBody = React.memo(function GenericBody({ args, parsedArgs, r
         <button
           onClick={(e) => { e.stopPropagation(); setShowFull(!showFull) }}
           className="text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 rounded px-1 py-0.5 mt-1 transition-colors"
+          title={showFull ? 'Collapse the tool call details' : 'Expand the full tool call and result'}
         >
           {showFull ? 'Show less' : 'Show more'}
         </button>

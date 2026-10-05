@@ -88,7 +88,11 @@ describe('SessionList', () => {
     ]
     const { container } = render(<SessionList />)
 
-    const rows = container.querySelectorAll('button[aria-current], button:not([title])')
+    // Flat rows are div[role="button"] elements (SessionItem variant="flat").
+    // The rows used to be matched as untitled <button>s; every button now
+    // carries a native title (button-title guard), so the selector keys off
+    // the row role instead.
+    const rows = container.querySelectorAll('[role="button"]')
     const names = Array.from(container.querySelectorAll('span'))
       .map((s) => s.textContent ?? '')
       .filter((t) => t === 'Alpha' || t === 'Beta')

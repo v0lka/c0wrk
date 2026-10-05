@@ -187,6 +187,7 @@ export function GitPanelFooter() {
                   size="xs"
                   disabled={busy}
                   className="rounded-l-none border-r border-border/50 px-1"
+                  title={`${OP_LABEL[op]} options`}
                   aria-label={`${OP_LABEL[op]} options`}
                 >
                   <ChevronDown className="size-3" />

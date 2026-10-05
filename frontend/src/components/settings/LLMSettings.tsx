@@ -259,6 +259,7 @@ export function LLMSettings({
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7"
+                title="Cancel"
                 onClick={resetAddForm}
               >
                 <X className="h-4 w-4" />
@@ -324,6 +325,7 @@ export function LLMSettings({
               <div className="flex items-center gap-2 pt-1">
                 <Button
                   size="sm"
+                  title="Add Provider"
                   onClick={handleAddProvider}
                   disabled={addFormSubmitting}
                 >

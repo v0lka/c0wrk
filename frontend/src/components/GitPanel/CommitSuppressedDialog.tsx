@@ -152,7 +152,13 @@ export function CommitSuppressedDialog({
               panels: buttons that do not fit wrap onto a right-aligned row
               instead of spilling past the dialog edge. */}
           <div className="flex flex-col-reverse flex-wrap gap-2 sm:flex-row sm:justify-end">
-            <Button variant="outline" size="sm" onClick={onCancel} disabled={isSubmitting}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onCancel}
+              disabled={isSubmitting}
+              title="Close without committing"
+            >
               Cancel
             </Button>
             <Button

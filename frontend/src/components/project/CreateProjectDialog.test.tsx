@@ -63,7 +63,9 @@ describe('CreateProjectDialog', () => {
 
     expect((nameInput() as HTMLInputElement | null)?.value).toBe('imap_chrome_extension')
     // The full path stays visible (ellipsized) and is exposed via the title.
-    expect(dialogEl()?.querySelector('[title]')?.getAttribute('title')).toBe(
+    // The directory button also carries a title, so target the path display
+    // paragraph explicitly rather than the first [title] in the dialog.
+    expect(dialogEl()?.querySelector('p[title]')?.getAttribute('title')).toBe(
       'C:\\Users\\tomsk\\Downloads\\imap_chrome_extension',
     )
   })

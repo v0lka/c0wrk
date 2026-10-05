@@ -2,7 +2,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { TooltipProvider } from '@/components/ui/tooltip'
 
 // --- Drive the row's status directly so tests don't depend on the chat store ---
 const { statusMock } = vi.hoisted(() => ({ statusMock: { value: 'idle' as string } }))
@@ -29,7 +28,7 @@ function render(ui: React.ReactNode): { root: Root; container: HTMLElement } {
   document.body.appendChild(container)
   const root = createRoot(container)
   act(() => {
-    root.render(<TooltipProvider>{ui}</TooltipProvider>)
+    root.render(ui)
   })
   return { root, container }
 }

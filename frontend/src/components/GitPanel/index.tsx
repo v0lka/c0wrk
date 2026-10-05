@@ -1,6 +1,5 @@
 import { useCallback } from 'react'
-import { GitBranch, AlertCircle } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { GitBranch, AlertCircle, FolderTree, FileDiff, History } from 'lucide-react'
 import { logger } from '@/lib/logger'
 import { useGitPanelStore, selectGitPanelTab } from '@/stores/gitPanelStore'
 import { useProjectStore } from '@/stores/projectStore'
@@ -17,6 +16,7 @@ import { BranchPicker } from './BranchPicker'
 import { GitHistoryTab } from './GitHistoryTab'
 import { GitPanelFooter } from './GitPanelFooter'
 import { FileTreePanel } from '@/components/layout/FileTreePanel'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -109,25 +109,25 @@ export function GitPanel() {
       {/* Files | Changes | History tab switcher. "files" hosts the workspace
           file explorer (filter bar + tree) as the FIRST section — the
           workspace-level Explorer tab does not exist for git projects, so
-          this is where the explorer lives. Graph was merged into History. */}
-      <div className="flex shrink-0 border-b border-border bg-secondary/20">
-        {(['files', 'changes', 'history'] as const).map((tab) => (
-          <button
-            key={tab}
-            type="button"
-            onClick={() => {
-              if (activeProjectId !== null) setActiveTab(activeProjectId, tab)
-            }}
-            className={cn(
-              'px-3 py-1 text-xs capitalize transition-colors',
-              activeTab === tab
-                ? 'text-primary border-b border-primary -mb-px'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
-          >
-            {tab}
-          </button>
-        ))}
+          this is where the explorer lives. Graph was merged into History.
+          The shared app-wide segmented control (ARIA tabs). */}
+      <div className="@container flex shrink-0 border-b border-border bg-secondary/20 px-1.5 py-1">
+        <SegmentedControl
+          items={[
+            { value: 'files', label: 'Files', icon: <FolderTree className="size-4" /> },
+            { value: 'changes', label: 'Changes', icon: <FileDiff className="size-4" /> },
+            { value: 'history', label: 'History', icon: <History className="size-4" /> },
+          ]}
+          value={activeTab}
+          onValueChange={(tab) => {
+            if (activeProjectId !== null) setActiveTab(activeProjectId, tab)
+          }}
+          fullWidth
+          size="md"
+          ariaLabel="Git panel view"
+          labelClassName="hidden @min-[272px]:inline"
+          className="p-0"
+        />
       </div>
       {error && (
         <div className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-destructive bg-destructive/10 border-b border-destructive/20">

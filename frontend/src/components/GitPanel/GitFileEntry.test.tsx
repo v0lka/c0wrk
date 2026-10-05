@@ -98,6 +98,64 @@ describe('GitFileEntry', () => {
   })
 })
 
+// ─────────────────────────── Path display order ──────────────────────────────
+
+describe('GitFileEntry — path display', () => {
+  it('renders the name first, then the muted directory without a trailing slash', () => {
+    const container = render(
+      <GitFileEntry
+        entry={makeEntry()}
+        side="worktree"
+        workspaceRoot="/repo"
+        onToggle={noop}
+        onOpenDiff={noop}
+      />,
+    )
+    const span = nameSpan(container)
+    // Name-first: the basename leads, the directory trails (muted) — the
+    // ellipsis under overflow consumes the directory tail, never the name.
+    expect(span.textContent).toBe(
+      'with-a-very-long-file-name.ts src/deeply/nested/directory/structure',
+    )
+    const dirSpan = span.querySelector('span.text-muted-foreground\\/60')
+    expect(dirSpan).not.toBeNull()
+    expect(dirSpan!.textContent!.endsWith('/')).toBe(false)
+  })
+
+  it('renders no directory span for a root-level file', () => {
+    const container = render(
+      <GitFileEntry
+        entry={makeEntry({ path: '/repo/README.md' })}
+        side="worktree"
+        workspaceRoot="/repo"
+        onToggle={noop}
+        onOpenDiff={noop}
+      />,
+    )
+    expect(nameSpan(container).textContent).toBe('README.md')
+    expect(nameSpan(container).querySelector('span.text-muted-foreground\\/60')).toBeNull()
+  })
+
+  it('renders only the basename in name-only mode with the full path kept in the tooltip', () => {
+    const container = render(
+      <GitFileEntry
+        entry={makeEntry()}
+        side="worktree"
+        workspaceRoot="/repo"
+        pathDisplay="name-only"
+        onToggle={noop}
+        onOpenDiff={noop}
+      />,
+    )
+    const span = nameSpan(container)
+    expect(span.textContent).toBe('with-a-very-long-file-name.ts')
+    expect(span.querySelector('span.text-muted-foreground\\/60')).toBeNull()
+    expect(span.getAttribute('title')).toBe(
+      'src/deeply/nested/directory/structure/with-a-very-long-file-name.ts',
+    )
+  })
+})
+
 // ─────────────────────────── Axis-aware row state ────────────────────────────
 
 describe('GitFileEntry — staging axis', () => {

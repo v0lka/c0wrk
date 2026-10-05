@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Bell, BellRing } from 'lucide-react'
+import { Bell, BellRing, Send } from 'lucide-react'
 import { useSystemNotificationStore } from '@/stores/systemNotificationStore'
 import { Toggle } from './ModelProfilesControls'
-import { Button } from '@/components/ui/button'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import {
   checkNotificationAuthorization,
   initSystemNotifications,
@@ -146,23 +146,19 @@ export function SystemNotificationSettings() {
           <span className="text-xs text-muted-foreground">
             How long a banner stays on screen
           </span>
-          <div className="flex gap-1 p-1 bg-muted rounded-lg">
-            {bannerTimeoutOptions.map((option) => (
-              <Button
-                key={option.value}
-                variant={bannerTimeout === option.value ? 'secondary' : 'ghost'}
-                size="sm"
-                className={`flex-1 justify-center transition-all duration-200 ${
-                  bannerTimeout === option.value
-                    ? 'bg-background shadow-sm text-foreground'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-                onClick={() => void handleBannerTimeoutChange(option.value)}
-              >
-                <span className="text-xs">{option.label}</span>
-              </Button>
-            ))}
-          </div>
+          {/* An option picker (not view tabs — there is no associated
+              tabpanel), matching SecuritySettings/MCPServerForm pickers. */}
+          <SegmentedControl
+            ariaLabel="Banner timeout"
+            semantic="radio"
+            fullWidth
+            items={bannerTimeoutOptions.map((option) => ({
+              value: option.value,
+              label: option.label,
+            }))}
+            value={bannerTimeout}
+            onValueChange={(value) => void handleBannerTimeoutChange(value)}
+          />
           <p className="text-xs text-muted-foreground">
             “Never” keeps the banner until you click or dismiss it — useful because some desktops
             drop an expired banner silently, without keeping it in the notification history.
@@ -182,8 +178,9 @@ export function SystemNotificationSettings() {
             type="button"
             data-testid="send-test-notification"
             onClick={handleTest}
-            className="self-start rounded border border-input px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/50 active:bg-muted/30 focus-visible:outline-none"
+            className="self-start flex items-center gap-1.5 rounded border border-input px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/50 active:bg-muted/30 focus-visible:outline-none"
           >
+            <Send className="size-3 shrink-0" />
             Send test notification
           </button>
         )

@@ -105,6 +105,21 @@ describe('RemoteBranchRow', () => {
     expect(buttons(container)[0]!.disabled).toBe(true)
   })
 
+  it('explains the blocked delete-remote action while another operation runs', () => {
+    const { container } = render(
+      <RemoteBranchRow branch={makeBranch()} inFlight={null} disabled={true} {...defaultCallbacks} />,
+    )
+    const del = buttons(container)[0]!
+    expect(del.disabled).toBe(true)
+    // The reason must be reachable: on the button title (mirrored for
+    // assistive tech) and on the focusable wrapper span.
+    expect(del.title).toBe('A git operation is in progress')
+    expect(del.parentElement?.title).toBe('A git operation is in progress')
+    expect(del.parentElement?.getAttribute('aria-label')).toBe(
+      'Delete origin/feature/x on remote: A git operation is in progress',
+    )
+  })
+
   it('shows a spinner while the remote checkout is in flight', () => {
     const { container } = render(
       <RemoteBranchRow branch={makeBranch()} inFlight="checkoutRemote" disabled={false} {...defaultCallbacks} />,

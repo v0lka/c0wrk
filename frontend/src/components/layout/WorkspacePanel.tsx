@@ -1,6 +1,6 @@
 import { useEffect } from "react";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { SegmentedControl, type SegmentedControlItem } from "@/components/ui/segmented-control";
 import { FileTreePanel } from "./FileTreePanel";
 import { VectorStorePanel } from "./VectorStorePanel";
 import { GitPanel } from "@/components/GitPanel";
@@ -87,71 +87,84 @@ export function WorkspacePanel() {
 
   return (
     <TooltipProvider>
-      <Tabs
-        value={effectiveTab}
-        onValueChange={(v) => {
-          if (activeProjectId !== null) {
-            setWorkspaceTab(activeProjectId, v as WorkspaceTab);
-          }
-        }}
-        className="flex h-full flex-col gap-0"
-      >
-        <TabsList className="mx-1 h-8 shrink-0" variant="line">
-          {isGitRepo ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <TabsTrigger value="git" className="px-2">
-                  <GitBranch className="size-4" />
-                </TabsTrigger>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">Git</TooltipContent>
-            </Tooltip>
-          ) : (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <TabsTrigger value="explorer" className="px-2">
-                  <FolderTree className="size-4" />
-                </TabsTrigger>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">Explorer</TooltipContent>
-            </Tooltip>
-          )}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <TabsTrigger value="semantics" className="px-2">
-                <Search className="size-4" />
-              </TabsTrigger>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">Search</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <TabsTrigger value="research" className="px-2">
-                <FlaskConical className="size-4" />
-              </TabsTrigger>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">Research</TooltipContent>
-          </Tooltip>
-        </TabsList>
+      <div className="flex h-full flex-col gap-0">
+        <div className="@container shrink-0 pb-1 border-b border-border bg-secondary/20">
+        <SegmentedControl
+          items={(isGitRepo
+            ? [
+                {
+                  value: 'git',
+                  icon: <GitBranch className="size-4" />,
+                  label: 'Git',
+                },
+                {
+                  value: 'semantics',
+                  icon: <Search className="size-4" />,
+                  label: 'Search',
+                },
+                {
+                  value: 'research',
+                  icon: <FlaskConical className="size-4" />,
+                  label: 'Research',
+                },
+              ]
+            : [
+                {
+                  value: 'explorer',
+                  icon: <FolderTree className="size-4" />,
+                  label: 'Explorer',
+                },
+                {
+                  value: 'semantics',
+                  icon: <Search className="size-4" />,
+                  label: 'Search',
+                },
+                {
+                  value: 'research',
+                  icon: <FlaskConical className="size-4" />,
+                  label: 'Research',
+                },
+              ]) as ReadonlyArray<SegmentedControlItem<WorkspaceTab>>}
+          value={effectiveTab}
+          onValueChange={(v) => {
+            if (activeProjectId !== null) {
+              setWorkspaceTab(activeProjectId, v as WorkspaceTab);
+            }
+          }}
+          fullWidth
+          size="md"
+          ariaLabel="Workspace view"
+          labelClassName="hidden @min-[280px]:inline"
+          className="mx-1"
+        />
+        </div>
 
         {isGitRepo ? (
-          <TabsContent value="git" className="flex-1 overflow-hidden">
-            <GitPanel />
-          </TabsContent>
+          effectiveTab === 'git' && (
+            <div className="flex-1 min-h-0 overflow-hidden">
+              <GitPanel />
+            </div>
+          )
         ) : (
-          <TabsContent value="explorer" className="flex flex-col overflow-hidden">
-            <FileTreePanel />
-          </TabsContent>
+          effectiveTab === 'explorer' && (
+            <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+              <FileTreePanel />
+            </div>
+          )
         )}
 
-        <TabsContent value="semantics" className="flex flex-col overflow-hidden">
-          <VectorStorePanel />
-        </TabsContent>
+        {effectiveTab === 'semantics' && (
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+            <VectorStorePanel />
+          </div>
+        )}
 
-        <TabsContent value="research" className="flex-1 overflow-hidden">
-          <ResearchPanel />
-        </TabsContent>
-      </Tabs>
+        {effectiveTab === 'research' && (
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <ResearchPanel />
+          </div>
+        )}
+      </div>
     </TooltipProvider>
   );
 }

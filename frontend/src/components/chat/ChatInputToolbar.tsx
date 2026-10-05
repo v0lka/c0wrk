@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { Button } from '@/components/ui/button'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Play, Pause, Square, MessageSquare, Terminal, Sparkles, Loader2, FolderPlus, Paperclip } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { GOAL_BLOCKED_BY_MODEL_PROFILES_REASON } from '@/lib/goalGate'
@@ -136,34 +137,26 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
         <FolderPlus className="size-3.5" />
       </Button>
       <div className="w-px h-4 bg-border mx-1" />
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        className={cn(
-          'text-muted-foreground hover:text-foreground',
-          mode === 'chat' && 'text-primary bg-muted/50',
-        )}
-        onClick={() => setMode('chat')}
+      <SegmentedControl
+        items={[
+          {
+            value: 'chat',
+            icon: <MessageSquare className="size-3.5" />,
+            title: 'Chat mode',
+            testId: 'input-mode-chat',
+          },
+          {
+            value: 'terminal',
+            icon: <Terminal className="size-3.5" />,
+            title: 'Terminal mode',
+            testId: 'input-mode-terminal',
+          },
+        ]}
+        value={mode}
+        onValueChange={setMode}
         disabled={compacting}
-        title="Chat mode"
-        aria-label="Switch to chat mode"
-      >
-        <MessageSquare className="size-3.5" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        className={cn(
-          'text-muted-foreground hover:text-foreground',
-          mode === 'terminal' && 'text-primary bg-muted/50',
-        )}
-        onClick={() => setMode('terminal')}
-        disabled={compacting}
-        title="Terminal mode"
-        aria-label="Switch to terminal mode"
-      >
-        <Terminal className="size-3.5" />
-      </Button>
+        ariaLabel="Input mode"
+      />
       {blockingMessage && mode === 'chat' && (
         <span className="text-xs italic text-muted-foreground">{blockingMessage}</span>
       )}

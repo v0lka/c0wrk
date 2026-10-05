@@ -134,8 +134,8 @@ describe('ChatInput resilience to a pane crash', () => {
     expect(outerBoundaryTripped).toBe(false)
     expect(container.textContent).not.toContain('INPUT GONE')
     // …the toolbar (mode toggles) is still there…
-    expect(container.querySelector('[aria-label="Switch to chat mode"]')).not.toBeNull()
-    expect(container.querySelector('[aria-label="Switch to terminal mode"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="input-mode-chat"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="input-mode-terminal"]')).not.toBeNull()
     // …and the terminal pane shows its own inline fallback.
     expect(container.textContent).toContain('The terminal failed to start.')
 

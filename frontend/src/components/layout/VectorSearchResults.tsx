@@ -122,6 +122,7 @@ function VectorStoreEntryItem({ entry, showScore }: { entry: VectorStoreEntry; s
   return (
     <button
       type="button"
+      title={preview}
       onClick={handleClick}
       className="w-full text-left px-1.5 py-1.5 rounded hover:bg-muted/50 transition-colors cursor-pointer"
     >

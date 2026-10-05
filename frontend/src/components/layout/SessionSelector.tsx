@@ -124,7 +124,7 @@ export function SessionSelector() {
           }}
         >
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="h-7 flex-1 min-w-0 justify-between gap-1 px-2 text-sm">
+            <Button variant="ghost" title="Switch session" className="h-7 flex-1 min-w-0 justify-between gap-1 px-2 text-sm">
               <span className="truncate text-muted-foreground">{activeSession?.name ?? "Select session"}</span>
               <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
             </Button>
@@ -152,6 +152,7 @@ export function SessionSelector() {
                 <DropdownMenuSeparator />
                 <button
                   type="button"
+                  title={archivedCollapsed ? 'Show archived' : 'Hide archived'}
                   className="flex w-full items-center gap-1 rounded-sm px-2 py-1 text-xs text-muted-foreground hover:bg-muted/50"
                   onClick={() => setArchivedCollapsed((c) => !c)}
                 >
@@ -173,7 +174,7 @@ export function SessionSelector() {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        <button type="button" className="rounded p-0.5 hover:bg-muted/50 active:bg-muted/30" onClick={handleNewSession}>
+        <button type="button" title="New Session..." className="rounded p-0.5 hover:bg-muted/50 active:bg-muted/30" onClick={handleNewSession}>
           <Plus className="size-3.5" />
         </button>
       </div>

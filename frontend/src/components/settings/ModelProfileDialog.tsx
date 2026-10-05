@@ -133,7 +133,7 @@ export function ModelProfileDialog({
                 Cancel
               </Button>
               <Button onClick={confirm} disabled={busy || trimmed === ''} aria-label={`Confirm ${kind} profile`}>
-                {busy ? 'Saving…' : NAME_LABELS[kind].action}
+                {busy ? 'Saving…' : kind === 'duplicate' ? 'Duplicate' : 'Rename'}
               </Button>
             </DialogFooter>
           </>

@@ -32,6 +32,7 @@ export function SectionHeader({ title, count, expanded, onToggle }: SectionHeade
     <button
       type="button"
       onClick={onToggle}
+      title={expanded ? `Collapse ${title}` : `Expand ${title}`}
       className="flex w-full items-center gap-1.5 px-2 py-1 text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors select-none"
     >
       <span className="inline-flex">

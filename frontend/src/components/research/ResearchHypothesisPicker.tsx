@@ -3,6 +3,7 @@ import { Check, ChevronDown, Loader2, Pin, PinOff, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useResearchStore, selectActiveProject, selectActiveHypothesisId } from '@/stores/researchStore'
 import { Button } from '@/components/ui/button'
+import { Combobox } from '@/components/ui/combobox'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -157,22 +158,19 @@ export function ResearchHypothesisPicker() {
         </DropdownMenu>
 
         {currentNode && (
-          <select
+          <Combobox
             value={currentNode.status}
             disabled={saving}
-            aria-label={`Status for ${currentNode.id}`}
-            onChange={(e) =>
-              void changeStatus(currentNode, e.target.value as HypothesisStatus)
+            ariaLabel={`Status for ${currentNode.id}`}
+            onChange={(v) =>
+              void changeStatus(currentNode, v as HypothesisStatus)
             }
-            title="Change the current hypothesis's status (legal transitions only)"
-            className="h-6 w-28 shrink-0 rounded border border-input bg-background px-1 text-[11px] outline-none focus:border-primary disabled:opacity-50"
-          >
-            {statusOptions(currentNode.status).map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+            options={statusOptions(currentNode.status).map((s) => ({
+              value: s,
+              label: s,
+            }))}
+            className="h-6 w-28 shrink-0 rounded border border-input px-1 text-[11px] text-foreground"
+          />
         )}
 
         {saving && (

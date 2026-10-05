@@ -104,6 +104,7 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
               <button
                 key={path}
                 data-file-path={path}
+                title={name}
                 className={cn(
                   "group flex items-center gap-1 px-2 py-1 h-full text-xs whitespace-nowrap select-none",
                   "border-r border-border transition-colors shrink-0",
@@ -151,6 +152,7 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
                 <button
                   className="flex items-center justify-center w-6 h-full text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors shrink-0"
                   aria-label="View all open files"
+                  title="View all open files"
                 >
                   <ChevronDown className="h-3.5 w-3.5" />
                 </button>

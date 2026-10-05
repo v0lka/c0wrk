@@ -179,6 +179,7 @@ export function ProviderAccordion({
     <div className="rounded-lg border">
       <button
         type="button"
+        title={label}
         className="flex w-full items-center justify-between px-4 py-3 text-sm font-medium hover:bg-muted/50"
         onClick={onToggle}
       >

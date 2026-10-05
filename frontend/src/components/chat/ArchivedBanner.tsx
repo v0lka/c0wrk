@@ -43,6 +43,7 @@ export function ArchivedBanner({ sessionId }: { sessionId: string }): React.JSX.
         onClick={handleUnarchive}
         disabled={restoring}
         className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-warning border border-warning/40 hover:bg-warning/10 active:bg-warning/20 disabled:opacity-50 shrink-0"
+        title="Restore this session from the archive"
       >
         {restoring ? (
           <Loader2 className="size-3 animate-spin" />

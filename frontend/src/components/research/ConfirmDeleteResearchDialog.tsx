@@ -64,10 +64,10 @@ export function ConfirmDeleteResearchDialog({
         )}
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={deleting} autoFocus>
+          <Button variant="outline" title="Cancel deletion" onClick={onClose} disabled={deleting} autoFocus>
             Cancel
           </Button>
-          <Button variant="destructive" onClick={onConfirm} disabled={deleting}>
+          <Button variant="destructive" title="Delete research" onClick={onConfirm} disabled={deleting}>
             {deleting && <Loader2 className="size-3.5 animate-spin" />}
             Delete
           </Button>

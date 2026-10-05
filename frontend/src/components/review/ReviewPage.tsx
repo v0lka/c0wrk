@@ -226,7 +226,7 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-2">
         <p className="text-sm text-destructive">{error}</p>
-        <Button size="xs" onClick={() => void fetchDiff()}>
+        <Button size="xs" title="Retry loading the diff" onClick={() => void fetchDiff()}>
           <RefreshCw className="h-3 w-3 mr-1" />Retry
         </Button>
       </div>
@@ -242,7 +242,7 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
           <p className="text-sm">
             {readOnly ? 'No changes to display' : 'No uncommitted changes to review'}
           </p>
-          <Button size="xs" variant="ghost" onClick={() => void fetchDiff()}>
+          <Button size="xs" variant="ghost" title="Refresh diff" onClick={() => void fetchDiff()}>
             <RefreshCw className="h-3 w-3 mr-1" />Refresh
           </Button>
         </div>

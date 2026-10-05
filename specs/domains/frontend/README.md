@@ -206,8 +206,10 @@ Frontend configuration is derived from backend (no separate frontend config file
 
 - [ui-scale.md](ui-scale.md) — UI scale feature and the zoom-safety invariant
 - [system-font.md](system-font.md) — opt-in follow-system-font feature (GNOME UI font via gsettings → the inline `--default-font-family` override over Tailwind v4 preflight)
+- [button-tooltips.md](button-tooltips.md) — the button tooltip convention: a `title=`, a Radix `TooltipTrigger` wrapper, or a statically visible label on every button — exactly one, the channels never combine (both AST guards flag a `title` under a `TooltipTrigger`); buttons that may hide their label always carry a `title`, always-labeled buttons never carry an echo, picker triggers follow the heading rule
 - [stores.md](stores.md) — Zustand store catalog
 - [git-operation-console.md](git-operation-console.md) — the footer log of the last git mutation result (button tint, anchored popover, per-project scope, acknowledge semantics)
+- [git-changes-list.md](git-changes-list.md) — the Changes tab file list: porcelain-axis sections, flat name-first rows, tree basename rows, full-path tooltips
 - [events.md](events.md) — event handling architecture
 - [rendering.md](rendering.md) — message display pipeline
 - [../../contracts/desktop-frontend.md](../../contracts/desktop-frontend.md) — RPC surface

@@ -313,6 +313,7 @@ function App() {
                 <p className="text-xs opacity-75 mt-1 font-mono">{startupError.error}</p>
               </div>
               <button
+                title="Dismiss"
                 onClick={dismissStartupError}
                 className="p-1 hover:bg-destructive-foreground/10 active:bg-destructive-foreground/20 rounded transition-colors"
                 aria-label="Dismiss"
@@ -328,6 +329,7 @@ function App() {
               <AlertCircle className="h-5 w-5 flex-shrink-0" />
               <p className="flex-1 text-sm font-medium">{runtimeError.message}</p>
               <button
+                title="Dismiss"
                 onClick={dismissRuntimeError}
                 className="p-1 hover:bg-destructive-foreground/10 active:bg-destructive-foreground/20 rounded transition-colors"
                 aria-label="Dismiss"

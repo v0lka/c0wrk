@@ -94,6 +94,7 @@ export function ExecutionPanels() {
           <button
             onClick={() => setPlanOpen(!planOpen)}
             className="flex items-center gap-2 w-full px-3 py-2 text-left text-foreground hover:bg-muted transition-colors rounded-sm"
+            title={planOpen ? 'Collapse execution plan panel' : 'Expand execution plan panel'}
           >
             <span className="opacity-0 group-hover:opacity-100 transition-opacity inline-flex">
               {planOpen
