@@ -35,8 +35,9 @@ interface SystemFontActions {
  * unavailable (e.g. during tests). Safe to call repeatedly.
  *
  * Only the family is carried — never a size or weight: c0wrk owns its type
- * scale (14px base + the UI Scale setting), and the mono stacks (`font-mono`,
- * the embedded SauceCodePro NF) stay untouched.
+ * scale (14px base + the UI Scale setting), and the mono stack (`font-mono`,
+ * the `--font-mono` token) and the icon font (`--font-icon`, SauceCodePro NF)
+ * stay untouched.
  */
 export function applySystemFontToDocument(follow: boolean, family: string | null): void {
   if (typeof document === 'undefined') return

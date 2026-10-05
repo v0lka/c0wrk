@@ -9,10 +9,19 @@
 /* ==========================================================================
    Design Tokens — @theme
    All color values are defined here and ONLY here. Component styles
-   reference var(--color-*) exclusively.
+   reference var(--color-*) exclusively. Typography font families are
+   tokenized here too (--font-*, mirrored in frontend/src/lib/fonts.ts).
    ========================================================================== */
 
 @theme {
+    /* Typography — font families (single source of truth for the TS mirror
+       in frontend/src/lib/fonts.ts; keep both in sync) */
+    --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    /* Icon font ONLY — Nerd Font glyphs for file/tree/completion icons.
+       Never use for text; text mono is --font-mono. */
+    --font-icon: "SauceCodePro NF", monospace;
+
     /* Core palette */
     --color-background: #282c34;
     --color-foreground: #abb2bf;
@@ -210,7 +219,7 @@ body {
 }
 
 .nerd-font-icon {
-    font-family: "SauceCodePro NF", monospace;
+    font-family: var(--font-icon);
 }
 
 /* ==========================================================================
@@ -659,7 +668,7 @@ body {
 }
 
 .cm-viewer-container .cm-scroller {
-    font-family: "SauceCodePro NF", Menlo, Monaco, "Courier New", monospace;
+    font-family: var(--font-mono);
     overflow: auto;
 }
 
@@ -835,12 +844,7 @@ body {
 
 .cm-chat-container .cm-scroller {
     overflow: auto;
-    font-family:
-        ui-sans-serif,
-        system-ui,
-        -apple-system,
-        BlinkMacSystemFont,
-        sans-serif;
+    font-family: var(--font-sans);
     font-size: 0.875rem;
     line-height: 1.5;
 }
@@ -909,7 +913,7 @@ body {
 
 .cm-tooltip-autocomplete ul {
     max-height: 240px;
-    font-family: "SauceCodePro NF", Menlo, Monaco, "Courier New", monospace;
+    font-family: var(--font-mono);
     font-size: 0.75rem;
 }
 
@@ -948,7 +952,7 @@ body {
 
 /* File items: nerd font icon */
 .cm-completion-nerd-icon {
-    font-family: "SauceCodePro NF", monospace;
+    font-family: var(--font-icon);
     display: inline-block;
     width: 1em;
     text-align: center;

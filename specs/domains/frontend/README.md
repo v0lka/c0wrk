@@ -145,6 +145,13 @@ Invariants:
 - Inline TS/TSX font sizes are relative too: a bare number or a number/px string (`fontSize: 10`, `fontSize: '13px'`) is forbidden; rem strings (CodeMirror themes) stay legal (enforced by the same guard).
 - Deliberate exceptions, bound to an external API or canvas geometry: the xterm constructor option in `Terminal.tsx` (a px number by API) and the SVG labels on the research DAG canvas (`ResearchDagCanvas.tsx`, fontSize 9/11).
 
+Font families are tokenized the same way: `--font-sans`, `--font-mono` and `--font-icon` live in the `@theme` block of `frontend/src/index.css`, with a TS mirror in `frontend/src/lib/fonts.ts` for the non-CSS consumers (CodeMirror themes and the xterm constructor need a literal stack string, not a `var()` reference; CSS is the source of truth — keep both in sync).
+
+- Every text surface rides one of the two text stacks: proportional UI text is `--font-sans` (the `html` base via Tailwind preflight; the opt-in "follow desktop UI font" setting overrides exactly this chain through the `--default-font-family` inline property), monospaced text is `--font-mono`. The same mono stack applies everywhere — file viewer, autocomplete tooltips, terminal, SHAs, IDs — no per-surface variants.
+- The icon font `--font-icon` (SauceCodePro NF, embedded via `@font-face`) carries Nerd Font glyphs ONLY — file-tree icons (`.nerd-font-icon`) and completion icons (`.cm-completion-nerd-icon`). Never for text: a text surface that needs a monospaced look uses `--font-mono`.
+- The terminal runs on the plain `--font-mono` stack with no icon font — no Nerd Font glyphs in terminal output.
+- Hardcoded font-family stacks are forbidden: CSS may only reference `var(--font-*)` (plus the `@font-face` declaration itself); TS may only use the `FONT_*_STACK` constants from `lib/fonts.ts` (or a `var(--font-…)` string) — enforced by `frontend/src/test/typeScaleInvariant.test.ts`.
+
 Dark color-scheme. Focus outlines globally suppressed. Custom scrollbar (8px, semi-transparent thumb).
 
 ## Communication Pattern

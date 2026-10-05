@@ -24,8 +24,15 @@
 // 3. CSS carries exactly one absolute font size: the `html` root rule in
 //    `index.css`. Every other `font-size` declaration is rem (relative).
 //
-// (Font-FAMILY stacks are deliberately out of scope here: they are plain
-// CSS/TS literals on this branch, not tokenized.)
+// 4. Font-family stacks are tokenized: `--font-sans`/`--font-mono`/
+//    `--font-icon` in `@theme`, with a TS mirror in `lib/fonts.ts` for the
+//    non-CSS consumers (CodeMirror 6 themes and the xterm constructor need a
+//    literal stack string, not a `var()` reference). CSS may only reference
+//    `var(--font-*)` (plus the `@font-face` declaration itself); TS may only
+//    use the `FONT_*_STACK` constants (or a `var(--font-…)` string). The
+//    icon font (`--font-icon`, SauceCodePro NF) carries Nerd Font glyphs
+//    ONLY — text mono is `--font-mono`, so the terminal rides the plain
+//    mono stack with no icon font.
 
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
@@ -132,6 +139,15 @@ const TS_ABSOLUTE_FONT_SIZE =
 /** Every absolute (`px`) `font-size:` declaration in CSS. */
 const CSS_PX_FONT_SIZE = /font-size\s*:\s*[\d.]+px/g;
 
+/** A hardcoded font-family stack in TS: `fontFamily: 'ui-monospace, …'`.
+ * Token constants (`fontFamily: FONT_MONO_STACK`) and `var()` references do
+ * not match — the value must be a quoted string literal. */
+const TS_RAW_FONT_FAMILY = /fontFamily\s*[:=]\s*(['"`])((?!\1).+)\1/;
+
+/** A `font-family:` declaration value in CSS, captured to the terminator.
+ * Global: `matchAll` requires it. */
+const CSS_FONT_FAMILY = /font-family\s*:\s*([^;]+);/g;
+
 /** Files whose inline font sizes are bound to an external API or a geometry
  * contract and are therefore legitimately absolute (each is named in the
  * frontend spec). */
@@ -159,6 +175,23 @@ function htmlRootRange(css: string): readonly [number, number] | undefined {
   return undefined;
 }
 
+/** Spans of every `@font-face { … }` block, whose own `font-family:` names
+ * the face being declared and is therefore legitimate. */
+function fontFaceRanges(css: string): Array<readonly [number, number]> {
+  const ranges: Array<readonly [number, number]> = [];
+  for (const m of css.matchAll(/@font-face\s*\{[^}]*\}/g)) {
+    ranges.push([m.index ?? 0, (m.index ?? 0) + m[0].length]);
+  }
+  return ranges;
+}
+
+/** Is this CSS `font-family` value legal? Only `var(--font-*)` references are;
+ * inside `@font-face` the literal face name is the declaration itself. */
+function isLegalCssFontFamily(value: string, inFontFace: boolean): boolean {
+  if (inFontFace) return true;
+  return value.trim().startsWith("var(--font-");
+}
+
 describe("type-scale guard (relative typography invariant)", () => {
   const sources = collectSources(SRC_DIR);
   const stylesheets = collectStylesheets(SRC_DIR);
@@ -171,6 +204,47 @@ describe("type-scale guard (relative typography invariant)", () => {
   it("anchors the relative scale at the html root font size", () => {
     const css = readFileSync(join(SRC_DIR, "index.css"), "utf8");
     expect(htmlRootRange(css)).toBeDefined();
+  });
+
+  it("defines the font-family tokens in @theme", () => {
+    const css = readFileSync(join(SRC_DIR, "index.css"), "utf8");
+    expect(css).toMatch(/--font-sans:/);
+    expect(css).toMatch(/--font-mono:/);
+    expect(css).toMatch(/--font-icon:/);
+  });
+
+  it("never hardcodes a font-family stack in TS outside lib/fonts.ts", () => {
+    const offenders: string[] = [];
+    for (const file of sources) {
+      if (file.endsWith(join("lib", "fonts.ts"))) continue; // the TS mirror itself
+      const lines = stripComments(readFileSync(file, "utf8"), file).split("\n");
+      lines.forEach((line, i) => {
+        const m = TS_RAW_FONT_FAMILY.exec(line);
+        const stack = m?.[2];
+        if (stack !== undefined && !stack.trim().startsWith("var(--font-")) {
+          offenders.push(`${relative(SRC_DIR, file)}:${i + 1}: ${line.trim()}`);
+        }
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("never hardcodes a font-family stack in CSS outside @font-face", () => {
+    const offenders: string[] = [];
+    for (const file of stylesheets) {
+      const css = readFileSync(file, "utf8");
+      const faceRanges = fontFaceRanges(css);
+      const inFace = (pos: number): boolean =>
+        faceRanges.some(([s, e]) => pos >= s && pos < e);
+      for (const m of css.matchAll(CSS_FONT_FAMILY)) {
+        const value = m[1];
+        if (value !== undefined && !isLegalCssFontFamily(value, inFace(m.index ?? 0))) {
+          const line = css.slice(0, m.index ?? 0).split("\n").length;
+          offenders.push(`${relative(SRC_DIR, file)}:${line}: ${m[0].trim()}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 
   it("never sizes text with an arbitrary px/rem utility", () => {
@@ -245,6 +319,49 @@ describe("type-scale guard (relative typography invariant)", () => {
     expect(TS_ABSOLUTE_FONT_SIZE.test("fontSize: FONT_SIZE_VAR")).toBe(false);
     // Only the fontSize property is scanned.
     expect(TS_ABSOLUTE_FONT_SIZE.test("lineHeight: 1.5,")).toBe(false);
+  });
+
+  it("the TS stack pattern catches literals but not token constants", () => {
+    expect(TS_RAW_FONT_FAMILY.exec("fontFamily: 'Menlo, monospace'")?.[2]).toBe(
+      "Menlo, monospace",
+    );
+    expect(TS_RAW_FONT_FAMILY.exec('fontFamily: "Menlo, monospace"')?.[2]).toBe(
+      "Menlo, monospace",
+    );
+    expect(TS_RAW_FONT_FAMILY.exec("fontFamily: `Menlo, monospace`")?.[2]).toBe(
+      "Menlo, monospace",
+    );
+    // Token constants and var() references are not hardcoded stacks.
+    expect(TS_RAW_FONT_FAMILY.test("fontFamily: FONT_MONO_STACK")).toBe(false);
+    expect(TS_RAW_FONT_FAMILY.test("fontFamily: buildStack(mono)")).toBe(false);
+    // Only the fontFamily property is scanned.
+    expect(TS_RAW_FONT_FAMILY.test("fontStyle: 'italic'")).toBe(false);
+  });
+
+  it("the CSS stack pattern accepts only var() references outside @font-face", () => {
+    expect(isLegalCssFontFamily("var(--font-mono);", false)).toBe(true);
+    expect(isLegalCssFontFamily("  var(--font-sans);", false)).toBe(true);
+    expect(isLegalCssFontFamily('"SauceCodePro NF", monospace;', false)).toBe(
+      false,
+    );
+    expect(isLegalCssFontFamily("ui-monospace, Menlo, monospace;", false)).toBe(
+      false,
+    );
+    // Inside @font-face the literal name is the declaration itself.
+    expect(isLegalCssFontFamily('"SauceCodePro NF";', true)).toBe(true);
+  });
+
+  it("the @font-face range finder brackets the declaration blocks", () => {
+    const css =
+      "p { font-family: Menlo; }\n@font-face {\n  font-family: \"SauceCodePro NF\";\n  src: url(x.ttf);\n}\nq { font-family: var(--font-mono); }";
+    const ranges = fontFaceRanges(css);
+    expect(ranges).toHaveLength(1);
+    const inFace = (pos: number): boolean =>
+      ranges.some(([s, e]) => pos >= s && pos < e);
+    const faceDecl = css.indexOf('@font-face {\n  font-family:');
+    expect(inFace(faceDecl)).toBe(true);
+    expect(inFace(css.indexOf("p { font-family:"))).toBe(false);
+    expect(inFace(css.indexOf("q { font-family:"))).toBe(false);
   });
 
   it("the CSS pattern locates the html root rule by brace matching", () => {
