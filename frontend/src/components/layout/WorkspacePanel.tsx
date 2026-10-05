@@ -88,7 +88,7 @@ export function WorkspacePanel() {
   return (
     <TooltipProvider>
       <div className="flex h-full flex-col gap-0">
-        <div className="@container shrink-0 pb-1">
+        <div className="@container shrink-0 pb-1 border-b border-border bg-secondary/20">
         <SegmentedControl
           items={(isGitRepo
             ? [
