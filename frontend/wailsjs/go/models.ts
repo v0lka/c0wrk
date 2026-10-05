@@ -1153,11 +1153,11 @@ export namespace backend {
 	export class MCPMentionableServer {
 	    name: string;
 	    mode: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MCPMentionableServer(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -1174,11 +1174,11 @@ export namespace backend {
 	    tools: string[];
 	    error?: string;
 	    mode: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MCPServerStatusInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];

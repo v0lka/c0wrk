@@ -138,6 +138,20 @@ describe('Combobox trigger', () => {
 })
 
 describe('Combobox portaled menu', () => {
+  it('keeps the default menu width', async () => {
+    render()
+    await openDropdown()
+    expect(menu().classList.contains('min-w-72')).toBe(true)
+  })
+
+  it('allows halving the menu width without changing the trigger', async () => {
+    render({ contentClassName: 'min-w-36' })
+    await openDropdown()
+    expect(menu().classList.contains('min-w-36')).toBe(true)
+    expect(menu().classList.contains('min-w-72')).toBe(false)
+    expect(trigger().classList.contains('w-full')).toBe(true)
+    expect(trigger().classList.contains('min-w-36')).toBe(false)
+  })
   it('renders into document.body (never clipped by dialog scroll containers)', async () => {
     render()
     await openDropdown()

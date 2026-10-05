@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MCPServerCard } from './MCPServerCard'
@@ -8,7 +8,7 @@ import type { MCPServerStatus } from '@/types/models'
 let container: HTMLDivElement
 let root: Root
 
-function setup(server: MCPServerStatus, expanded = false) {
+function setup(server: MCPServerStatus, expanded = false, props: Partial<Parameters<typeof MCPServerCard>[0]> = {}) {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -21,6 +21,10 @@ function setup(server: MCPServerStatus, expanded = false) {
         onToggleExpand={() => {}}
         onEdit={() => {}}
         onDelete={() => {}}
+        mode={server.mode ?? 'auto'}
+        isSaving={false}
+        onModeChange={() => {}}
+        {...props}
       />,
     )
   })
@@ -102,6 +106,39 @@ describe('MCPServerCard', () => {
     // The status icon is the neutral CircleOff, not the destructive alert.
     const alertIcons = container.querySelectorAll('.text-destructive')
     expect(alertIcons).toHaveLength(0)
+    teardown()
+  })
+
+  it.each([
+    ['auto', 'tools are always available'],
+    ['manual', 'only after a /server-name or /mcp: server-name mention'],
+    ['disabled', 'Never connects or starts a process'],
+  ] as const)('shows %s and its explanation beside Edit/Delete', (mode, explanation) => {
+    setup({ name: 'srv', transport: 'http', connected: false, starting: false, tool_count: 0, tools: [], mode }, true)
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="srv activation mode"]')!
+    expect(trigger.textContent).toContain(mode)
+    expect(trigger.classList.contains('w-max')).toBe(true)
+    expect(trigger.classList.contains('shrink-0')).toBe(true)
+    expect(trigger.className).not.toContain('min-w-')
+    expect(Array.from(trigger.querySelectorAll('[aria-hidden="true"].invisible')).map((label) => label.textContent))
+      .toEqual(['auto', 'manual', 'disabled'])
+    expect(trigger.querySelector('span.grid')?.classList.contains('text-left')).toBe(true)
+    expect(trigger.parentElement?.textContent).toContain('Edit')
+    expect(trigger.parentElement?.textContent).toContain('Delete')
+    expect(trigger.parentElement?.textContent).toContain(explanation)
+    if (mode === 'manual') expect(trigger.parentElement?.textContent).toContain('Connects at startup')
+    teardown()
+  })
+
+  it('disables the mode selector and edit/delete while saving', () => {
+    const onModeChange = vi.fn()
+    setup({ name: 'srv', transport: 'http', connected: true, starting: false, tool_count: 0, tools: [] }, true, { isSaving: true, onModeChange })
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="srv activation mode"]')!
+    expect(trigger.disabled).toBe(true)
+    act(() => { trigger.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })) })
+    expect(document.querySelector('[role="menu"]')).toBeNull()
+    expect(onModeChange).not.toHaveBeenCalled()
+    expect(Array.from(trigger.parentElement!.querySelectorAll('button')).every((button) => button.disabled)).toBe(true)
     teardown()
   })
 

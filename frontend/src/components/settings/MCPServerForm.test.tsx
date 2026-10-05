@@ -140,109 +140,30 @@ describe('MCPServerForm timeout fields', () => {
   })
 })
 
-// The per-server activation mode (auto / manual / disabled): a three-way
-// segmented control that always round-trips an explicit value into the saved
-// MCPServerConfig (auto included — the backend treats an absent key as auto,
-// but persisting it explicitly keeps the config self-describing).
-describe('MCPServerForm activation mode', () => {
-  function modeButtons(): HTMLButtonElement[] {
-    return (['auto', 'manual', 'disabled'] as const)
-      .map((m) => Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((b) => b.textContent?.trim() === m))
-      .filter((b): b is HTMLButtonElement => b !== undefined)
-  }
-
-  function clickMode(mode: 'auto' | 'manual' | 'disabled') {
-    const btn = modeButtons().find((b) => b.textContent?.trim() === mode)
-    if (!btn) throw new Error(`mode button ${mode} not found`)
-    act(() => {
-      btn.click()
-    })
-  }
-
-  it('renders the three-way control with auto preselected for a new server', () => {
-    render()
-    const buttons = modeButtons()
-    expect(buttons).toHaveLength(3)
-    expect(document.body.textContent).toContain('Activation Mode')
-    // The help text explains the mention syntax for manual mode.
-    expect(document.body.textContent).toContain('/mcp: server-name')
-    teardownForm()
-  })
-
-  it('persists the selected mode into the saved config', async () => {
-    const onSave = vi.fn<(config: Record<string, MCPServerConfig>, editName: string | null) => Promise<string | null>>(async () => null)
+// Activation is managed on the card; editing transport details must preserve it.
+describe('MCPServerForm activation mode preservation', () => {
+  it('has no activation controls and creates new servers in auto mode', async () => {
+    const onSave = vi.fn(async () => null)
     render({ onSave })
-
-    typeInto(nameInput()!, 'my-server')
-    clickMode('manual')
-
-    await act(async () => {
-      saveButton()!.click()
-    })
-
-    const saved = onSave.mock.calls[0]![0] as Record<string, MCPServerConfig>
-    expect(saved['my-server']!.mode).toBe('manual')
-    teardownForm()
+    expect(document.body.textContent).not.toContain('Activation Mode')
+    expect(document.querySelector('[aria-label*="activation"]')).toBeNull()
+    typeInto(nameInput()!, 'new-server')
+    await act(async () => { saveButton()!.click() })
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      'new-server': expect.objectContaining({ mode: 'auto' }),
+    }), null)
   })
 
-  it('round-trips disabled as well', async () => {
-    const onSave = vi.fn<(config: Record<string, MCPServerConfig>, editName: string | null) => Promise<string | null>>(async () => null)
-    render({ onSave })
-
-    typeInto(nameInput()!, 'my-server')
-    clickMode('disabled')
-
-    await act(async () => {
-      saveButton()!.click()
-    })
-
-    const saved = onSave.mock.calls[0]![0] as Record<string, MCPServerConfig>
-    expect(saved['my-server']!.mode).toBe('disabled')
-    teardownForm()
-  })
-
-  it('prefills auto when the stored config has no mode key (omitempty wire shape)', async () => {
+  it.each(['auto', 'manual', 'disabled', undefined] as const)('preserves stored mode %s when saving an existing server', async (mode) => {
     const cfg: MCPServerConfig = {
       transport: 'stdio', command: 'cmd', args: [], env: {}, url: '', headers: {},
-      timeout: '', call_timeout: '', // no mode key — the omitempty wire shape
+      timeout: '30s', call_timeout: '2m', mode,
     }
-    const onSave = vi.fn<(config: Record<string, MCPServerConfig>, editName: string | null) => Promise<string | null>>(async () => null)
+    const onSave = vi.fn(async () => null)
     render({ editingName: 'srv', serverConfigs: { srv: cfg }, editServer: { name: 'srv', transport: 'stdio' }, onSave })
-
-    // Saving without touching the control persists the effective default.
-    await act(async () => {
-      saveButton()!.click()
-    })
-
-    const saved = onSave.mock.calls[0]![0] as Record<string, MCPServerConfig>
-    expect(saved['srv']!.mode).toBe('auto')
-    teardownForm()
-  })
-
-  it('prefills manual from the stored config when editing', async () => {
-    const cfg: MCPServerConfig = {
-      transport: 'http', command: '', args: [], env: {}, url: 'http://x', headers: {},
-      timeout: '', call_timeout: '', mode: 'manual',
-    }
-    const onSave = vi.fn<(config: Record<string, MCPServerConfig>, editName: string | null) => Promise<string | null>>(async () => null)
-    render({ editingName: 'srv', serverConfigs: { srv: cfg }, editServer: { name: 'srv', transport: 'http' }, onSave })
-
-    // Saving without touching the control keeps the stored mode.
-    await act(async () => {
-      saveButton()!.click()
-    })
-
-    const saved = onSave.mock.calls[0]![0] as Record<string, MCPServerConfig>
-    expect(saved['srv']!.mode).toBe('manual')
-    teardownForm()
+    expect(document.body.textContent).not.toContain('Activation Mode')
+    typeInto(timeoutInputs()[0]!, '45s')
+    await act(async () => { saveButton()!.click() })
+    expect(onSave).toHaveBeenCalledWith({ srv: { ...cfg, timeout: '45s', mode: mode ?? 'auto' } }, 'srv')
   })
 })
-
-/** Unmount the form rendered by the mode describe (its own root). */
-function teardownForm() {
-  act(() => {
-    root.unmount()
-  })
-  container.remove()
-  document.body.innerHTML = ''
-}

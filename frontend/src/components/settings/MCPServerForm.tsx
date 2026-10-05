@@ -139,17 +139,6 @@ export function MCPServerForm({ open, onOpenChange, editingName, serverConfigs, 
             />
           </Field>
 
-          <Field label="Activation Mode">
-            <div className="flex gap-2 p-1 bg-muted rounded-lg">
-              {(['auto', 'manual', 'disabled'] as const).map((m) => (
-                <Button key={m} title={`Set activation mode to ${m}`} variant={formData.mode === m ? 'secondary' : 'ghost'} size="sm" className="flex-1" onClick={() => setFormData({ ...formData, mode: m })}>{m}</Button>
-              ))}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              auto connects the server whenever the MCP gateway starts. manual keeps the configuration but connects only when you mention it in the chat with <code>/server-name</code> or <code>/mcp: server-name</code>. disabled never dials it — the configuration is kept, nothing runs.
-            </p>
-          </Field>
-
           {formData.transport === 'stdio' ? (
             <>
               <Field label="Command"><Input placeholder="/usr/local/bin/mcp-server" value={formData.command} onChange={(e) => setFormData({ ...formData, command: e.target.value })} className="h-9 font-mono text-sm" /></Field>

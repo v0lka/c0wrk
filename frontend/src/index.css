@@ -921,6 +921,13 @@ body {
     color: var(--color-popover-foreground);
 }
 
+/* Separate slash capability groups without adding fake selectable rows. */
+.cm-tooltip-autocomplete completion-section:not(:first-child) {
+    margin-top: 0.5rem;
+    border-top: 1px solid var(--color-border);
+    padding-top: 0.5rem;
+}
+
 .cm-tooltip-autocomplete li[aria-selected] {
     background: var(--color-muted);
     color: var(--color-foreground);

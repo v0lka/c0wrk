@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EditorView } from '@codemirror/view'
 import { EditorState } from '@codemirror/state'
@@ -529,6 +530,24 @@ describe('cmChatAutocomplete unified /-source', () => {
     // Subagents are offered ahead of MCP servers, which lead skills.
     expect(completions.indexOf(agent)).toBeLessThan(completions.indexOf(mcp))
     expect(completions.indexOf(mcp)).toBeLessThan(completions.indexOf(skill))
+
+    // Headers are real, non-selectable section elements; spacing stays in CSS.
+    await until(() => document.querySelectorAll('completion-section').length === 3, 'section headers to render')
+    const headers = Array.from(document.querySelectorAll<HTMLElement>('completion-section'))
+    expect(headers.map((el) => el.textContent)).toEqual(['Subagents', 'MCP Servers', 'Skills'])
+    const css = readFileSync('src/index.css', 'utf8')
+    const spacingRule = css.match(/\.cm-tooltip-autocomplete completion-section:not\(:first-child\)\s*\{[^}]+\}/)?.[0]
+    expect(spacingRule).toBeDefined()
+    const style = document.createElement('style')
+    style.textContent = spacingRule!
+    document.head.appendChild(style)
+    try {
+      expect(getComputedStyle(headers[0]!).marginTop).not.toBe('0.5rem')
+      expect(getComputedStyle(headers[1]!).marginTop).toBe('0.5rem')
+      expect(getComputedStyle(headers[2]!).marginTop).toBe('0.5rem')
+    } finally {
+      style.remove()
+    }
 
     // A non-colliding pick inserts the plain name after the typed '/'.
     await vi.advanceTimersByTimeAsync(100)
