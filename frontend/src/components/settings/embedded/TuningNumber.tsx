@@ -65,6 +65,7 @@ export function TuningNumber({
           className="h-6 px-2 text-xs text-muted-foreground"
           disabled={disabled}
           aria-label={`${label} back to auto`}
+          title={`${label} back to auto`}
           onClick={() => onSet({ reset: [knob] })}
         >
           Auto

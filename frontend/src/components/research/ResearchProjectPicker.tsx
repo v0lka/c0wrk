@@ -90,7 +90,7 @@ export function ResearchProjectPicker() {
                 ? 'Switch the active research project'
                 : 'No research projects yet — start one with +'
             }
-            className="h-6 min-w-0 flex-1 justify-between gap-1 px-1.5 text-xs"
+            className="h-7 flex-1 min-w-0 justify-between gap-1 px-2 text-xs"
           >
             <span className="truncate text-muted-foreground">
               {activeProject?.brief.title ?? 'Select research'}

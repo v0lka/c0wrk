@@ -46,15 +46,20 @@ export function SortGroupControls() {
 
   return (
     <div className="flex items-center gap-1 px-2 py-1 shrink-0 border-b border-border bg-secondary/20 text-xs">
-      {/* Sort selector */}
+      {/* Sort selector — trigger + dropdown both on the xs type scale */}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button type="button" className={triggerClass} aria-label="Sort by">
+          <button
+            type="button"
+            className={triggerClass}
+            aria-label="Sort by"
+            title="Sort files by"
+          >
             <ArrowDownUp className="size-3" />
             <span>Sort: {sortLabel}</span>
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-36">
+        <DropdownMenuContent align="start" className="w-36 text-xs">
           <DropdownMenuRadioGroup
             value={sortBy}
             onValueChange={(v) => setSortBy(v as SortBy)}
@@ -71,12 +76,17 @@ export function SortGroupControls() {
       {/* Group selector */}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button type="button" className={triggerClass} aria-label="Group by">
+          <button
+            type="button"
+            className={triggerClass}
+            aria-label="Group by"
+            title="Group files by"
+          >
             <Group className="size-3" />
             <span>Group: {groupLabel}</span>
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-40">
+        <DropdownMenuContent align="start" className="w-40 text-xs">
           <DropdownMenuRadioGroup
             value={groupBy}
             onValueChange={(v) => setGroupBy(v as GroupBy)}

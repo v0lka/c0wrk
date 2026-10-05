@@ -79,7 +79,7 @@ export function MCPSettings() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2"><Server className="h-4 w-4 text-muted-foreground" /><span className="text-sm font-medium">MCP Servers</span></div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={loadData} disabled={isLoading}><RefreshCw className="h-3 w-3" /></Button>
+          <Button variant="outline" size="sm" title="Reload servers" onClick={loadData} disabled={isLoading}><RefreshCw className="h-3 w-3" /></Button>
           <Button variant="default" size="sm" onClick={openAdd}><Plus className="h-3 w-3 mr-1" />Add Server</Button>
         </div>
       </div>

@@ -26,6 +26,18 @@ vi.mock('@/api/research', () => ({
   createHypothesis: vi.fn(),
 }))
 
+// The card's status/decision Comboboxes (Radix popper menus) observe the
+// trigger with ResizeObserver, which jsdom does not provide (same stub as
+// the picker tests).
+vi.stubGlobal(
+  'ResizeObserver',
+  class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  },
+)
+
 // No data-sync hooks are mocked or mounted here: ResearchWorkspace is a pure
 // view over researchStore (sync lives in the App-root ResearchEventBridge),
 // so the tests below seed the store directly and exercise the workspace's
@@ -210,17 +222,40 @@ function setInputValue(container: HTMLElement, label: string, value: string) {
   field.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
-/** Choose a <select> option by aria-label using the native value setter
- *  (so React's controlled-select value tracker observes the change). */
-function setSelectValue(container: HTMLElement, label: string, value: string) {
-  const field = container.querySelector<HTMLSelectElement>(
-    `select[aria-label="${label}"]`,
+/** Open a card combobox (status/decision) by aria-label and pick the option
+ *  with `optionLabel` (the trigger is the Combobox button in the container;
+ *  the menu is portaled to document.body and Radix toggles the trigger on
+ *  pointerdown — same pattern as the study-mode combobox tests). */
+async function pickCombobox(
+  container: HTMLElement,
+  ariaLabel: string,
+  optionLabel: string,
+): Promise<void> {
+  const trigger = container.querySelector<HTMLButtonElement>(
+    `button[aria-label="${ariaLabel}"]`,
   )!
-  const proto = Object.getPrototypeOf(field) as {
-    value: PropertyDescriptor & { set?: (v: string) => void }
-  }
-  Object.getOwnPropertyDescriptor(proto, 'value')?.set?.call(field, value)
-  field.dispatchEvent(new Event('change', { bubbles: true }))
+  await act(async () => {
+    trigger.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+  })
+  await vi.waitFor(() => {
+    if (document.body.querySelectorAll('[role="menuitem"]').length === 0) {
+      throw new Error(`${ariaLabel} menu did not open`)
+    }
+  })
+  const option = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(
+    (o) => o.textContent?.trim() === optionLabel,
+  )
+  if (!option) throw new Error(`Option "${optionLabel}" not found in the ${ariaLabel} menu`)
+  await act(async () => {
+    option.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+}
+
+/** The status/decision combobox trigger of the open card. */
+function cardComboboxTrigger(container: HTMLElement, ariaLabel: string): HTMLButtonElement {
+  return container.querySelector<HTMLButtonElement>(
+    `button[aria-label="${ariaLabel}"]`,
+  )!
 }
 
 /** The full-draft expectation for a node's own snapshot. */
@@ -275,15 +310,9 @@ describe('ResearchWorkspace — edit persistence', () => {
     })
 
     // Change the status to 'in-progress' — a legal open → in-progress move;
-    // the select only offers the current status and its legal targets (the
+    // the combobox only offers the current status and its legal targets (the
     // backend state machine rejects every other jump).
-    const select = container.querySelector<HTMLSelectElement>(
-      'select[aria-label="Hypothesis status"]',
-    )!
-    await act(async () => {
-      select.value = 'in-progress'
-      select.dispatchEvent(new Event('change', { bubbles: true }))
-    })
+    await pickCombobox(container, 'Hypothesis status', 'in-progress')
 
     // Save — the button becomes enabled once a field differs.
     const save = container.querySelector<HTMLButtonElement>(
@@ -354,7 +383,7 @@ describe('ResearchWorkspace — edit persistence', () => {
     await act(async () => {
       setInputValue(container, 'Hypothesis title', 'Renamed hypothesis')
       setInputValue(container, 'Hypothesis parents', 'H-002')
-      setSelectValue(container, 'Hypothesis decision', 'continue')
+      await pickCombobox(container, 'Hypothesis decision', 'continue')
       setSectionText(container, 'statement', 'New statement.')
       setSectionText(container, 'verification criterion', 'New criterion.')
       setSectionText(container, 'experiment notes', 'New notes.')
@@ -379,40 +408,49 @@ describe('ResearchWorkspace — edit persistence', () => {
     })
   })
 
-  it('offers only the legal status transitions in the card select', async () => {
+  it('offers only the legal status transitions in the card combobox', async () => {
     const { container } = await renderWorkspace()
     await selectNode(container, 'H-001')
 
-    // H-001 is 'open': the select must offer open → in-progress/cancelled
+    // H-001 is 'open': the combobox must offer open → in-progress/cancelled
     // and hide illegal jumps (e.g. open → confirmed) the backend rejects.
-    const select = container.querySelector<HTMLSelectElement>(
-      'select[aria-label="Hypothesis status"]',
-    )!
-    expect(Array.from(select.options).map((o) => o.value)).toEqual([
-      'open',
-      'in-progress',
-      'cancelled',
-    ])
+    await act(async () => {
+      cardComboboxTrigger(container, 'Hypothesis status').dispatchEvent(
+        new MouseEvent('pointerdown', { bubbles: true }),
+      )
+    })
+    await vi.waitFor(() => {
+      if (document.body.querySelectorAll('[role="menuitem"]').length === 0) {
+        throw new Error('Hypothesis status menu did not open')
+      }
+    })
+    const options = Array.from(
+      document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+    ).map((o) => o.textContent?.trim())
+    expect(options).toEqual(['open', 'in-progress', 'cancelled'])
   })
 
-  it('offers the fixed decision vocabulary in the card select', async () => {
+  it('offers the fixed decision vocabulary in the card combobox', async () => {
     const { container } = await renderWorkspace()
     await selectNode(container, 'H-001')
 
-    // The decision is a combobox, not free text: undecided ('') plus the
-    // methodology's four canonical decisions (research-decision skill).
-    const select = container.querySelector<HTMLSelectElement>(
-      'select[aria-label="Hypothesis decision"]',
-    )!
-    expect(Array.from(select.options).map((o) => o.value)).toEqual([
-      '',
-      'continue',
-      'pivot',
-      'kill',
-      'fork',
-    ])
-    // The undecided option carries a human label; canonical values as-is.
-    expect(Array.from(select.options).map((o) => o.textContent)).toEqual([
+    // The decision is a combobox, not free text: undecided ('undecided'
+    // label for the '' value) plus the methodology's four canonical
+    // decisions (research-decision skill).
+    await act(async () => {
+      cardComboboxTrigger(container, 'Hypothesis decision').dispatchEvent(
+        new MouseEvent('pointerdown', { bubbles: true }),
+      )
+    })
+    await vi.waitFor(() => {
+      if (document.body.querySelectorAll('[role="menuitem"]').length === 0) {
+        throw new Error('Hypothesis decision menu did not open')
+      }
+    })
+    const options = Array.from(
+      document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+    )
+    expect(options.map((o) => o.textContent?.trim())).toEqual([
       'undecided',
       'continue',
       'pivot',
@@ -423,30 +461,41 @@ describe('ResearchWorkspace — edit persistence', () => {
 
   it('keeps a legacy free-text decision visible and replaceable', async () => {
     // An older card may carry a non-canonical Decision (the backend stores
-    // the field verbatim): the select must still render a matching option —
-    // and the user can replace it with a canonical one.
+    // the field verbatim): the combobox must still render a matching option
+    // — and the user can replace it with a canonical one.
     const status = makeStatus()
     status.root!.projects[0]!.graph.nodes[0]!.decision = 'investigate deeper'
     useResearchStore.getState().loadStatus(status, 'p1')
     const { container } = await renderWorkspace()
     await selectNode(container, 'H-001')
 
-    const select = container.querySelector<HTMLSelectElement>(
-      'select[aria-label="Hypothesis decision"]',
-    )!
-    expect(Array.from(select.options).map((o) => o.value)).toEqual([
+    await act(async () => {
+      cardComboboxTrigger(container, 'Hypothesis decision').dispatchEvent(
+        new MouseEvent('pointerdown', { bubbles: true }),
+      )
+    })
+    await vi.waitFor(() => {
+      if (document.body.querySelectorAll('[role="menuitem"]').length === 0) {
+        throw new Error('Hypothesis decision menu did not open')
+      }
+    })
+    const options = Array.from(
+      document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+    )
+    expect(options.map((o) => o.textContent?.trim())).toEqual([
       'investigate deeper',
-      '',
+      'undecided',
       'continue',
       'pivot',
       'kill',
       'fork',
     ])
 
-    // Replacing it with a canonical decision marks the draft dirty and
-    // persists exactly the decision field.
+    // The menu is still open: replacing the legacy value with a canonical
+    // decision marks the draft dirty and persists exactly the decision field.
+    const kill = options.find((o) => o.textContent?.trim() === 'kill')!
     await act(async () => {
-      setSelectValue(container, 'Hypothesis decision', 'kill')
+      kill.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     const save = container.querySelector<HTMLButtonElement>(
       '[data-testid="hypothesis-save"]',

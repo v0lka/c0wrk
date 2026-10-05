@@ -153,6 +153,7 @@ export function SessionList() {
           <div className="mt-1">
             <button
               type="button"
+              title={archivedCollapsed ? 'Show archived' : 'Hide archived'}
               className={cn(
                 "flex w-full items-center gap-1 rounded-sm px-2 py-1 text-xs text-muted-foreground hover:bg-muted/50",
               )}

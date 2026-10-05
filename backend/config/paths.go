@@ -148,6 +148,18 @@ func UpdateStatePath(agentDir string) string {
 	return filepath.Join(agentDir, "update_state.json")
 }
 
+// SingleInstanceLockPath returns the path to the app-level single-instance
+// lock file inside the agent directory. The file is held with an exclusive
+// non-blocking OS lock (flock on darwin/linux, LockFileEx on Windows) for the
+// process lifetime by main before any shared state is touched; a process that
+// finds it already held knows a first instance is alive and must not mutate
+// crash-capture liveness markers (see ADR-075). Like window_state.json this is
+// runtime state, deliberately NOT part of config.yaml — there is no
+// single-instance toggle to misconfigure.
+func SingleInstanceLockPath(agentDir string) string {
+	return filepath.Join(agentDir, "app.lock")
+}
+
 // WindowStatePath returns the path to window_state.json inside the agent
 // directory. This file holds the persisted OS-level window geometry (width,
 // height, maximized flag) so the application window reopens at the size the

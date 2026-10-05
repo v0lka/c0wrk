@@ -222,7 +222,7 @@ export function ProviderConfigForm({
               </>
             ) : (
               apiKeyDirty && hasRequiredCredentials && (
-                <Button size="sm" onClick={onApply} disabled={modelsLoading}>
+                <Button size="sm" title="Fetch models" onClick={onApply} disabled={modelsLoading}>
                   {modelsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Fetch models'}
                 </Button>
               )

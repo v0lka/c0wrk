@@ -67,7 +67,7 @@ describe('GitPanel — internal tab routing', () => {
     renderPanel()
 
     const labels = Array.from(container!.querySelectorAll('button[type="button"]'))
-      .map((b) => b.textContent?.trim())
+      .map((b) => b.textContent?.trim().toLowerCase())
       .filter((t): t is string => t === 'files' || t === 'changes' || t === 'history')
     expect(labels).toEqual(['files', 'changes', 'history'])
 
@@ -81,7 +81,7 @@ describe('GitPanel — internal tab routing', () => {
     renderPanel()
 
     const changesBtn = Array.from(container!.querySelectorAll<HTMLButtonElement>('button[type="button"]'))
-      .find((b) => b.textContent?.trim() === 'changes')!
+      .find((b) => b.textContent?.trim().toLowerCase() === 'changes')!
     act(() => {
       changesBtn.click()
     })
@@ -96,7 +96,7 @@ describe('GitPanel — internal tab routing', () => {
     renderPanel()
 
     const historyBtn = Array.from(container!.querySelectorAll<HTMLButtonElement>('button[type="button"]'))
-      .find((b) => b.textContent?.trim() === 'history')!
+      .find((b) => b.textContent?.trim().toLowerCase() === 'history')!
     act(() => {
       historyBtn.click()
     })

@@ -45,15 +45,23 @@ import { ActiveSessionsBadge } from './ActiveSessionsBadge'
 
 /**
  * Layout-space guard. The sidebar clamps to 180px (uiStore.SIDEBAR_MIN) and
- * the CHAT/CODE toggle already fills nearly all of that row — a permanently
- * visible extra icon button would push Settings out of the header at the
- * minimum width. SidebarHeader marks its row as a size container
- * (`@container`): the button leaves layout below 228px and renders
- * inline-flex from 228px (native Tailwind v4 container queries), leaving
- * slack over the worst-case row (≈214px). Below 228px the header renders
- * exactly as it did before this component existed.
+ * the header row is dense: collapse + settings buttons (icon-sm, 32px each),
+ * the compact CHAT/CODE toggle (text-[11px] pills) and this button must all
+ * fit. The row
+ * marks itself a size container (`@container`): below 264px of header width
+ * the button leaves layout (`hidden`); from 264px it renders inline-flex.
+ * Container queries measure the header's CONTENT box (padding + border are
+ * excluded): `px-2` (16px) + 1px border ⇒ query width = sidebar width − 17px.
+ * The default sidebar width is screenWidth/5 (288px on a 1440px screen ⇒ 271px
+ * of content box), so the threshold MUST stay ≤264px or the Radar silently
+ * disappears at default widths (280px hid it on any screen ≤~1480px). The
+ * worst-case row compresses to ≈271px at the default width (≈277px was
+ * measured in headless Chromium before accounting for the content box), so
+ * 264px keeps ~7px of headroom: the Radar stays visible from a ~281px sidebar
+ * up, and only hides where the row genuinely cannot fit it (the guard keeps
+ * the header intact at the 180px sidebar minimum ⇒ 163px content box).
  */
-const LAYOUT_FIT_CLASSES = 'hidden @min-[228px]:inline-flex'
+const LAYOUT_FIT_CLASSES = 'hidden @min-[264px]:inline-flex'
 
 /** Global live-sessions indicator: Radar icon button + badge, store-wired.
  *  Click opens the live-sessions dropdown. */
@@ -142,7 +150,7 @@ export function ActiveSessionsIndicator() {
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
-          size="icon-xs"
+          size="icon-sm"
           disabled={!flags.anyLive}
           aria-label="Active sessions"
           title="Active sessions"

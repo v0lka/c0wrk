@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback } from "react";
-import { Loader2, Sparkles } from "lucide-react";
+import { GitCommitHorizontal, Loader2, Sparkles } from "lucide-react";
 import { useGitPanelStore, EMPTY_COMMIT_DRAFT, selectSkipCommitSuppress } from "@/stores/gitPanelStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { commit, generateCommitMessage, type CommitResult } from "@/api/git";
@@ -234,7 +234,7 @@ export function CommitSection() {
                 : "bg-primary text-primary-foreground hover:bg-foreground/80",
             )}
           >
-            {isCommitting && <Loader2 className="h-3 w-3 animate-spin" />}
+            {isCommitting ? <Loader2 className="h-3 w-3 animate-spin" /> : <GitCommitHorizontal className="h-3 w-3" />}
             Commit
           </button>
         </div>

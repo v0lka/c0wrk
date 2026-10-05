@@ -219,6 +219,7 @@ export function PaperWorkspace({ slug }: { slug: string }) {
             data-testid={`paper-section-${s.id}`}
             data-active={section === s.id}
             aria-current={section === s.id ? 'true' : undefined}
+            title={s.label}
             onClick={() => setSection(s.id)}
             className={cn(
               'shrink-0 rounded px-1.5 py-0.5 text-xs transition-colors',

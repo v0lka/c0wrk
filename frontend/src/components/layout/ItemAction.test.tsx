@@ -5,17 +5,18 @@
 // research/bookmarks row overlay (see ItemAction.tsx header). The row overlay
 // reveals it on hover, and the row itself already shows a pointer cursor — so
 // the button MUST carry its own hover/active feedback to look alive. These
-// tests pin that contract (background tint + active press state) plus the
-// click and disabled behavior.
+// tests pin that contract (background tint + active press state), the click
+// and disabled behavior, and the tooltip contract: the native `title` is the
+// ONLY tooltip — a disabled action carries its reason as the wrapper span's
+// title (the button itself never receives pointer events, so its own title
+// would never show).
 //
-// Rendering follows the project convention (ModelCombobox.test.tsx): Radix
-// Tooltips need a provider ancestor (the app mounts one at the root), and
+// Rendering follows the project convention (ModelCombobox.test.tsx):
 // createRoot + act avoids the legacy react-dom/test-utils warning.
 
 import { describe, it, expect, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { TooltipProvider } from '@/components/ui/tooltip'
 import { ItemAction } from './ItemAction'
 
 function render(ui: React.ReactNode): HTMLElement {
@@ -23,7 +24,7 @@ function render(ui: React.ReactNode): HTMLElement {
   document.body.replaceChildren(container)
   const root = createRoot(container)
   act(() => {
-    root.render(<TooltipProvider>{ui}</TooltipProvider>)
+    root.render(ui)
   })
   return container
 }
@@ -48,6 +49,15 @@ describe('ItemAction', () => {
     expect(button.className).toContain('transition-colors')
     expect(button.className).toContain('enabled:hover:bg-accent/20')
     expect(button.className).toContain('enabled:active:bg-accent/30')
+  })
+
+  it('carries the label as the native title (no Radix tooltip)', () => {
+    const container = render(
+      <ItemAction label="Delete" onClick={() => {}}>
+        <span>icon</span>
+      </ItemAction>,
+    )
+    expect(findButton(container).title).toBe('Delete')
   })
 
   it('invokes onClick on click', () => {
@@ -78,5 +88,44 @@ describe('ItemAction', () => {
     const wrapper = container.querySelector('button')?.parentElement
     expect(wrapper?.tagName).toBe('SPAN')
     expect(wrapper?.className).toContain('cursor-not-allowed')
+  })
+
+  it('exposes the disabledReason as the wrapper span title for a disabled action', () => {
+    const container = render(
+      <ItemAction label="Fork session" onClick={() => {}} disabled disabledReason="busy">
+        <span>icon</span>
+      </ItemAction>,
+    )
+    // The button itself never receives pointer events when disabled, so the
+    // reason must live on the focusable wrapper span (it is mirrored on the
+    // button's own title for assistive tech).
+    const button = findButton(container)
+    expect(button.parentElement?.title).toBe('busy')
+    expect(button.title).toBe('busy')
+  })
+
+  it('carries "label: reason" as the wrapper span accessible name while disabled', () => {
+    const container = render(
+      <ItemAction label="Fork session" onClick={() => {}} disabled disabledReason="busy">
+        <span>icon</span>
+      </ItemAction>,
+    )
+    // The wrapper span is the tab stop while disabled and its disabled
+    // button contents are excluded from accessible-name computation, so the
+    // action name would otherwise vanish from the a11y tree.
+    const wrapper = findButton(container).parentElement
+    expect(wrapper?.getAttribute('aria-label')).toBe('Fork session: busy')
+  })
+
+  it('ignores disabledReason for an enabled action (title stays the label)', () => {
+    const container = render(
+      <ItemAction label="Fork session" onClick={() => {}} disabledReason="busy">
+        <span>icon</span>
+      </ItemAction>,
+    )
+    const button = findButton(container)
+    expect(button.title).toBe('Fork session')
+    expect(button.parentElement?.title).toBe('')
+    expect(button.parentElement?.getAttribute('aria-label')).toBeNull()
   })
 })

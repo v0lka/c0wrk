@@ -81,7 +81,7 @@ export function GitHistoryRow({
               {node.refs.map((ref) => (
                 <span
                   key={ref}
-                  className={`shrink-0 rounded bg-muted/40 px-1 py-px text-xs font-medium ${refColor(ref)}`}
+                  className={`shrink-0 rounded bg-muted/40 px-1 py-px text-xs font-medium leading-none ${refColor(ref)}`}
                 >
                   {ref.replace(/^tag:\s*/, '')}
                 </span>

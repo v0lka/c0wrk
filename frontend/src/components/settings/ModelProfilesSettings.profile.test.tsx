@@ -211,8 +211,15 @@ const suggestionBanner = () =>
 describe('ModelProfilesSettings — profile selector', () => {
   it('renders grouped options: Predefined profiles, then Custom, with the active one marked', async () => {
     await render()
-    // The trigger shows the active profile name.
-    expect(selectorTrigger()?.textContent).toContain('Test Tuned')
+    // The profile block carries a visible header naming the picker row.
+    const block = selectorTrigger()?.closest('.bg-card\\/50')
+    expect(block?.querySelector('h3')?.textContent).toBe('Active profile')
+    // The trigger shows the active profile name, both visibly and as a hover
+    // tooltip: the label is truncate-clamped, so the native title is the only
+    // way to read a long operator-chosen profile name.
+    const trigger = selectorTrigger()
+    expect(trigger?.textContent).toContain('Test Tuned')
+    expect(trigger?.title).toBe('Test Tuned')
 
     await openSelector()
     const labels = menuLabels()

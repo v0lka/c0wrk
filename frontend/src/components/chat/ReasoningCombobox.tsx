@@ -71,6 +71,7 @@ export function ReasoningCombobox({ disabled = false }: { disabled?: boolean }) 
             type="button"
             className={`flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted ${!selectedReasoning ? 'bg-primary/10 font-medium' : ''}`}
             onClick={() => { setSelectedReasoning(null); setIsOpen(false) }}
+            title={`Use the model family default (${familyDefault})`}
           >
             <span className="flex-1 text-left">
               Default ({familyDefault})
@@ -89,6 +90,7 @@ export function ReasoningCombobox({ disabled = false }: { disabled?: boolean }) 
                 type="button"
                 className={`flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted ${isSelected ? 'bg-primary/10 font-medium' : ''}`}
                 onClick={() => { setSelectedReasoning(opt); setIsOpen(false) }}
+                title={`Set reasoning effort to ${opt}`}
               >
                 <span className="flex-1 text-left">{opt}</span>
                 {isSelected && (

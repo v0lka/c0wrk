@@ -209,6 +209,7 @@ export function BudgetCombobox({ disabled = false }: { disabled?: boolean }) {
                   isSelected && 'bg-primary/10 font-medium',
                 )}
                 onClick={() => { setGoalBudget(preset.value); setIsOpen(false) }}
+                title={`Set the goal budget to ${preset.label}`}
               >
                 <span className="flex-1 text-left">{preset.label}</span>
                 {isSelected && (
@@ -244,6 +245,7 @@ export function BudgetCombobox({ disabled = false }: { disabled?: boolean }) {
                 type="button"
                 className="ml-auto px-1.5 py-0.5 text-xs rounded border border-input bg-background hover:bg-muted text-foreground transition-colors"
                 onClick={applyCustom}
+                title="Apply the custom turn count"
               >
                 Apply
               </button>

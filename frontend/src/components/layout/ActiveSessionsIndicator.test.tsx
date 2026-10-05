@@ -322,10 +322,15 @@ describe('SidebarHeader placement', () => {
 
     const radar = radarButton(container)
     expect(radar.className).toContain('relative')
-    // Width guard: below 228px of header width the button leaves layout so
-    // the header stays intact at the 180px sidebar minimum.
+    // Width guard: below 264px of header CONTENT-box width the button leaves
+    // layout so the header stays intact at the 180px sidebar minimum. The
+    // threshold is deliberately ≤264px (not 280px): the @container measures
+    // the content box (px-2 + border excluded ⇒ sidebar width − 17px), and at
+    // the 288px default sidebar width only 271px of content box is queryable —
+    // a 280px threshold hid the Radar at default widths (see
+    // ActiveSessionsIndicator.tsx).
     expect(radar.className).toContain('hidden')
-    expect(radar.className).toContain('@min-[228px]:inline-flex')
+    expect(radar.className).toContain('@min-[264px]:inline-flex')
 
     const toggle = radar.nextElementSibling as HTMLElement
     expect(toggle.classList.contains('bg-muted/60')).toBe(true)

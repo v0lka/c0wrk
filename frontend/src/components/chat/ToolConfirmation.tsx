@@ -198,13 +198,13 @@ export function ToolConfirmation({ item }: ToolConfirmationProps) {
         )}
       </div>
       <div className="pt-3 flex flex-wrap gap-2">
-        <Button size="sm" onClick={handleResponseAllowOnce} className="text-xs">Allow Once</Button>
+        <Button size="sm" onClick={handleResponseAllowOnce} className="text-xs" title="Allow this tool call once">Allow Once</Button>
         {!disableJudge && (
-          <Button size="sm" variant="secondary" onClick={handleAskAgent} disabled={judgeLoading || judgeReasoning !== null} className="text-xs">
+          <Button size="sm" variant="secondary" onClick={handleAskAgent} disabled={judgeLoading || judgeReasoning !== null} className="text-xs" title="Ask the judge agent to evaluate this tool call">
             {judgeLoading ? <><Loader2 className="h-3 w-3 animate-spin mr-1" />Evaluating...</> : judgeReasoning !== null ? 'Evaluated' : 'Ask Agent'}
           </Button>
         )}
-        <Button size="sm" variant="outline" onClick={handleResponseDeny} className="text-xs">Deny</Button>
+        <Button size="sm" variant="outline" onClick={handleResponseDeny} className="text-xs" title="Deny this tool call">Deny</Button>
       </div>
     </div>
   )

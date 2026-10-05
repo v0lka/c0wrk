@@ -123,6 +123,7 @@ export function TrustedReposDialog({ open, onOpenChange }: TrustedReposDialogPro
                   variant="ghost"
                   size="icon-xs"
                   aria-label={`Remove ${path}`}
+                  title={`Remove ${path}`}
                   onClick={() => void handleRemove(path)}
                   disabled={removing !== null}
                   data-testid={`trusted-repo-remove-${repos.indexOf(path)}`}

@@ -357,7 +357,9 @@ describe('SettingsModal layout: vertical left nav and fixed height', () => {
     expect(list!.className).toContain('flex-col')
     expect(list!.className).not.toContain('justify-between')
     // Fixed-width column pinned to the left of the scrolling content.
-    expect(list!.className).toContain('w-40')
+    // w-44: sized for the caps labels at text-sm (14px) so the longest
+    // entry ("Model Profiles") fits without wrapping or clipping.
+    expect(list!.className).toContain('w-44')
     expect(list!.className).toContain('shrink-0')
 
     // Section labels stay visible in the sidebar (no sm-gated hiding).

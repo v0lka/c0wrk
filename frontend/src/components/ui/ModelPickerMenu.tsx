@@ -194,6 +194,9 @@ export function ModelPickerMenu({
       ? `Default: ${bareModel(defaultModel)}`
       : 'Select model…'
 
+  // The trigger label shows the bare model name; the title adds the provider
+  // ("Provider: Model") — an information add, not a label repeat, so it is the
+  // sanctioned enrich case of the selector-trigger tooltip rule.
   const effectiveEntry = allModels.find((e) => e.id === (selected ?? ''))
 
   // Group models by provider for the dropdown.

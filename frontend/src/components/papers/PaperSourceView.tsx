@@ -18,6 +18,7 @@
 
 import type { PaperAnchor, PaperRecord } from '@/api/papers'
 import { cn } from '@/lib/utils'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { PaperAnchorList } from './PaperAnchorList'
 import { PaperHtmlView, type PendingHtmlAnchor } from './PaperHtmlView'
 import { PaperSourceActions } from './PaperSourceActions'
@@ -56,13 +57,6 @@ interface PaperSourceViewProps {
   onAnchorSelect: (anchor: PaperAnchor, index: number) => void
 }
 
-function subViewButtonClass(active: boolean): string {
-  return cn(
-    'rounded px-1.5 py-0.5 text-xs transition-colors',
-    active ? 'bg-background text-foreground' : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground',
-  )
-}
-
 export function PaperSourceView({
   paper,
   artifact,
@@ -87,47 +81,24 @@ export function PaperSourceView({
   const viewCount = (htmlReady ? 1 : 0) + (sourceReady ? 2 : 0)
 
   const subViewToggle = viewCount > 1 && (
-    <div
+    <SegmentedControl
       data-testid="paper-source-subviews"
-      className={cn('flex shrink-0 items-center gap-0.5 rounded border border-border p-0.5', anchors.length > 0 && 'ml-auto')}
-    >
-      {htmlReady && (
-        <button
-          type="button"
-          data-testid="paper-source-subview-html"
-          data-active={showHtml}
-          aria-pressed={showHtml}
-          onClick={() => onModeChange('html')}
-          className={subViewButtonClass(showHtml)}
-        >
-          Original HTML
-        </button>
-      )}
-      {sourceReady && (
-        <>
-          <button
-            type="button"
-            data-testid="paper-source-subview-text"
-            data-active={effectiveMode === 'text'}
-            aria-pressed={effectiveMode === 'text'}
-            onClick={() => onModeChange('text')}
-            className={subViewButtonClass(effectiveMode === 'text')}
-          >
-            Extracted
-          </button>
-          <button
-            type="button"
-            data-testid="paper-source-subview-raw"
-            data-active={showRaw}
-            aria-pressed={showRaw}
-            onClick={() => onModeChange('raw')}
-            className={subViewButtonClass(showRaw)}
-          >
-            Raw
-          </button>
-        </>
-      )}
-    </div>
+      items={[
+        ...(htmlReady
+          ? [{ value: 'html' as const, label: 'Original HTML', testId: 'paper-source-subview-html' }]
+          : []),
+        ...(sourceReady
+          ? [
+              { value: 'text' as const, label: 'Extracted', testId: 'paper-source-subview-text' },
+              { value: 'raw' as const, label: 'Raw', testId: 'paper-source-subview-raw' },
+            ]
+          : []),
+      ]}
+      value={effectiveMode}
+      onValueChange={onModeChange}
+      ariaLabel="Paper source sub-view"
+      className={cn('shrink-0', anchors.length > 0 && 'ml-auto')}
+    />
   )
 
   return (

@@ -134,13 +134,18 @@ describe('FileViewerContextMenu', () => {
     expect(onClose).toHaveBeenCalled()
   })
 
-  it('Find similar is disabled with an index-state hint while the index is not ready', async () => {
+  it('Find similar is disabled WITH a state title hint while the index is not ready', async () => {
     vectorMock.status = { state: 'indexing' }
     renderMenu('@foo.go#L1', 'func foo() {}')
     const item = menuItem('Find similar')
     expect(item.getAttribute('aria-disabled')).toBe('true')
-    // The hint title explains the current index state.
-    expect(item.title).toContain('indexing')
+    // The disabled state carries an informational title naming the blocker —
+    // the live vector-index state (per specs/domains/frontend/
+    // button-tooltips.md, an info title on a menuitem is the blessed pattern;
+    // it is not an echo of the visible label).
+    expect(item.getAttribute('title')).toBe(
+      'Find similar is unavailable — the vector index is indexing',
+    )
     await act(async () => {
       item.click()
       await Promise.resolve()
@@ -151,10 +156,10 @@ describe('FileViewerContextMenu', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
-  it('Find similar carries no aria-disabled and no hint when the index is ready', () => {
+  it('Find similar carries no aria-disabled and no title when the index is ready', () => {
     renderMenu('@foo.go#L1', 'code')
     const item = menuItem('Find similar')
     expect(item.hasAttribute('aria-disabled')).toBe(false)
-    expect(item.title).toBe('')
+    expect(item.hasAttribute('title')).toBe(false)
   })
 })

@@ -117,6 +117,7 @@ export function ThemeSelector() {
             <button
               type="button"
               aria-label="Theme"
+              title="Switch theme"
               className={cn(
                 'flex h-9 flex-1 items-center gap-2 rounded-md border border-input bg-background px-3',
                 'text-sm text-foreground hover:bg-muted/50 transition-colors truncate',

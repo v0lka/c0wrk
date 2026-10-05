@@ -1,10 +1,11 @@
 import { useCallback, type ReactNode } from 'react'
-import { FlaskConical, FolderOpen, ChevronDown, AlertCircle } from 'lucide-react'
+import { FlaskConical, FolderOpen, ChevronDown, AlertCircle, LayoutDashboard, BookOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useResearchStore, selectActiveProject } from '@/stores/researchStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore, selectIsNoProject } from '@/stores/projectStore'
 import { useUIStore, selectResearchSegment, type ResearchSegment } from '@/stores/uiStore'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -25,9 +26,13 @@ import { PapersView } from '@/components/papers/PapersView'
 /** The Research panel's two segments: the research control Dashboard vs the
  *  literature (Papers) library. The paper library lives independently of the
  *  hypothesis tracking, so the segment is always reachable. */
-const RESEARCH_SEGMENTS: ReadonlyArray<{ value: ResearchSegment; label: string }> = [
-  { value: 'dashboard', label: 'Dashboard' },
-  { value: 'papers', label: 'Papers' },
+const RESEARCH_SEGMENTS: ReadonlyArray<{
+  value: ResearchSegment
+  label: string
+  icon: ReactNode
+}> = [
+  { value: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard className="size-4" /> },
+  { value: 'papers', label: 'Papers', icon: <BookOpen className="size-4" /> },
 ]
 
 /** Stable ids wiring each tab to its panel (ARIA tabs pattern). */
@@ -39,9 +44,11 @@ function segmentPanelId(value: ResearchSegment): string {
 }
 
 /** Segmented control [Dashboard | Papers], persisted per project in uiStore.
- *  Implements the ARIA tabs pattern: `role="tab"` carries `aria-controls` to the
- *  `role="tabpanel"` rendered by {@link SegmentPanel}, and the tablist provides
- *  roving tabindex + Left/Right/Home/End navigation. */
+ *  A thin wrapper over the shared app-wide `SegmentedControl` (ARIA tabs,
+ *  roving tabindex + Left/Right/Home/End), keeping the panel's stable testids
+ *  and its `aria-controls` wiring to {@link SegmentPanel}: the shared control
+ *  cannot know panel ids, so each item passes `itemProps` (`id` +
+ *  `aria-controls`) that lands on the rendered tab button. */
 function ResearchSegmentControl({
   active,
   onSelect,
@@ -49,75 +56,34 @@ function ResearchSegmentControl({
   active: ResearchSegment
   onSelect: (segment: ResearchSegment) => void
 }) {
-  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const values = RESEARCH_SEGMENTS.map((segment) => segment.value)
-    const currentIndex = values.indexOf(active)
-    let nextIndex: number
-    switch (e.key) {
-      case 'ArrowRight':
-        nextIndex = (currentIndex + 1) % values.length
-        break
-      case 'ArrowLeft':
-        nextIndex = (currentIndex - 1 + values.length) % values.length
-        break
-      case 'Home':
-        nextIndex = 0
-        break
-      case 'End':
-        nextIndex = values.length - 1
-        break
-      default:
-        return
-    }
-    e.preventDefault()
-    const next = values[nextIndex]
-    if (next === undefined) return
-    onSelect(next)
-    // Move focus with the roving tabindex so the newly selected tab receives it.
-    e.currentTarget
-      .querySelector<HTMLElement>(`[data-testid="research-segment-${next}"]`)
-      ?.focus()
-  }
-
   return (
-    <div
-      role="tablist"
-      aria-label="Research view"
-      aria-orientation="horizontal"
-      data-testid="research-segment"
-      onKeyDown={onKeyDown}
-      className="flex shrink-0 items-center gap-0.5 border-b border-border bg-secondary/20 px-1.5 py-1"
-    >
-      {RESEARCH_SEGMENTS.map((segment) => {
-        const selected = active === segment.value
-        return (
-          <button
-            key={segment.value}
-            type="button"
-            role="tab"
-            id={segmentTabId(segment.value)}
-            aria-selected={selected}
-            aria-controls={segmentPanelId(segment.value)}
-            tabIndex={selected ? 0 : -1}
-            data-testid={`research-segment-${segment.value}`}
-            onClick={() => onSelect(segment.value)}
-            className={cn(
-              'flex-1 rounded px-2 py-0.5 text-xs transition-colors',
-              selected
-                ? 'bg-background text-foreground shadow-sm'
-                : 'text-muted-foreground hover:bg-muted/50',
-            )}
-          >
-            {segment.label}
-          </button>
-        )
-      })}
+    <div className="shrink-0 border-b border-border bg-secondary/20 px-1.5 py-1">
+      <SegmentedControl
+        items={RESEARCH_SEGMENTS.map((segment) => ({
+          value: segment.value,
+          label: segment.label,
+          icon: segment.icon,
+          testId: `research-segment-${segment.value}`,
+          itemProps: {
+            id: segmentTabId(segment.value),
+            'aria-controls': segmentPanelId(segment.value),
+          },
+        }))}
+        value={active}
+        onValueChange={onSelect}
+        fullWidth
+        size="md"
+        ariaLabel="Research view"
+        data-testid="research-segment"
+      />
     </div>
   )
 }
 
 /** The `role="tabpanel"` for one segment, associated with its tab through
- *  `aria-labelledby`/`aria-controls` (the ARIA tabs pattern). */
+ *  `aria-labelledby`/`aria-controls` (the ARIA tabs pattern). Only the active
+ *  segment's panel is rendered (exclusive render), but the association stays
+ *  explicit so assistive tech announces the tab's owning region. */
 function SegmentPanel({
   segment,
   className,

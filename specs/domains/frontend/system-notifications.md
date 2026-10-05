@@ -42,6 +42,7 @@ Key points:
 ## Key Files
 
 - `desktop/notifications.go` — the Go bridge: `InitNotifications` (memoized, single `OnNotificationResponse` callback, macOS authorization prompt), `SendSystemNotification` (the transport; unique `c0wrk-notification-*` ids; routes through the platform hook below on Linux), `CheckNotificationAuthorization` (non-prompting permission read for the Settings hint), `ShowTestNotification` (Settings preview, no routing data), `cleanupNotifications` (Shutdown; closes c0wrk's own Linux D-Bus connection AND the Wails notification service).
+- `desktop/singleinstance.go` — the Wails `SingleInstanceLock` option + `App.handleSecondInstanceLaunch`: the second-instance relay that a LaunchServices-resolved banner click can spawn (focus-only; see [Second-instance launches](#second-instance-launches-macos-launchservices) and ADR-075), plus the app-level advisory lock (`~/.c0wrk/app.lock`) that keeps such a transient process away from crash-capture state.
 - `desktop/notifications_linux.go` / `desktop/notifications_notlinux.go` — the platform send hook: on Linux c0wrk's own icon-augmented `org.freedesktop.Notifications` transport (see [Notification icon](#notification-icon)); on other platforms a stub straight to the Wails runtime.
 - `desktop/notifications_icon.go` + `desktop/icon/appicon.png` — the embedded application icon (byte-identical copy of `build/appicon.png`, guarded by a drift test — `go:embed` cannot reference files above the package dir).
 - `frontend/src/api/notifications.ts` — the single import path for the Go transport: `initSystemNotifications`, `sendSystemNotification`, `showTestNotification`, `checkNotificationAuthorization`, `onNotificationClicked` (payload-validated `notification_clicked` subscription with drop reporting).
@@ -113,6 +114,17 @@ The Linux transport dispatches `App.notificationCallback` on its own goroutine, 
 The callback travels with the pump (a `pumpSignals` parameter threaded into the handlers) instead of living on the shared transport state. A redial — teardown after a failed `Notify`, then the next send — would otherwise rewrite that state while the previous pump, signalled by `cancel()` but not yet stopped, is still reading it to route a signal.
 
 Known Linux quirk: both the Wails transport and c0wrk's own map reason-2 `NotificationClosed` (the banner's X) to the same `DEFAULT_ACTION` identifier, so an explicit dismiss can navigate too — indistinguishable at the identifier level. Timeout/programmatic closes never fire the callback.
+
+## Second-instance launches (macOS LaunchServices)
+
+A banner click routes through macOS LaunchServices to the process registered for the app bundle — normally the running instance, whose delegate receives the click (the path above). But when the running process is **not** the one LaunchServices resolves — a rebuilt/replaced `.app` with stale banners still delivered (dev builds), an updater-swapped install tree, a stale LaunchServices registration — macOS spawns a **second process** instead of activating the running one. Before the single-instance lock this booted a full second app over the same SQLite DB and killed the first instance's in-flight tasks (issue #98).
+
+The defense is the Wails v2 `SingleInstanceLock` option (`desktop/singleinstance.go`, [ADR-075](../../decisions/075-single-instance-lock.md)):
+
+- The second process detects the first instance's platform lock, forwards its launch data, and exits at the very start of the Wails frontend run — before a window is created, before `OnStartup` opens the database, before any watcher or PTY exists. Active tasks of the first instance survive untouched.
+- The first instance receives the data in `App.handleSecondInstanceLaunch` and focuses its window through the same `showWindow` funnel the click path uses. **No session navigation happens on this path**: the notification's routing context is delivered to whichever process macOS attributes the click to, and on this path that was the second process, which never initializes a notification center. Focus-only is the designed contract; a relay arriving before the first instance's own `Startup` binds the context is a logged no-op (the startup phases reveal the window anyway).
+- The second process also skips the crash-capture install (it holds no app-level lock — see [crash-logging.md](../crash-logging.md) and ADR-075), so its transient life cannot touch the liveness marker or `stderr.log` of the running instance.
+- The same relay covers every other second-open trigger (Finder double-click while running, `open -a`) on all platforms — a second full c0wrk instance over one `~/.c0wrk` is never a supported state.
 
 ## Notification icon
 
@@ -204,6 +216,7 @@ Two more lines bound the transport's health, once per run each: `system notifica
 - The resolved banner lifetime falls back to the daemon default (`-1`) whenever the config is unreachable, never to "never expires" (`0`), and every value reaching the D-Bus call is within `[-1, 86400]` seconds however the config was edited.
 - Each signal pump routes to the callback it was started with, so the transport holds no dispatch state a redial could overwrite.
 - The cached activation target is used only while it is still a managed window carrying this process's pid; otherwise it is discarded and rediscovered.
+- A second-instance launch never boots a second app: the Wails `SingleInstanceLock` relay exits the spawned process before `OnStartup` (focus relay only — see [Second-instance launches](#second-instance-launches-macos-launchservices)), so a stale-bundle banner click can neither kill the running instance's tasks nor open a second window.
 
 ## Known Limitations
 

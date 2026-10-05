@@ -107,6 +107,21 @@ export function handlePlanStepStart(
     description: resolvedInfo.description, status: 'running', children: [], ...(count > 1 ? { isRetry: true } : {}),
   }
   openSteps.set(stepId, stepItem)
+  // A delegated subagent's OWN plan steps carry the DELEGATION id as
+  // plan_step_id (the delegate's emitter is a WithPlanStepID copy of the
+  // Conductor's root emitter, scoped to the delegation step id), so they
+  // nest under the delegation's subagent block — "Executing plan" + its
+  // steps form ONE hierarchy inside the block. Root-plan steps carry no
+  // plan_step_id and keep the root placement. Guards: the parent must be an
+  // OPEN block (openSteps), and never the block itself (a re-launch on
+  // resume re-emits subagent_launch/plan_step_start with the block's OWN id
+  // as plan_step_id — nesting a block under itself would drop it entirely).
+  const parent = meta?.plan_step_id ? openSteps.get(meta.plan_step_id as string) : undefined
+  if (parent && parent !== stepItem) {
+    resumePausedStep(parent)
+    parent.children.push(stepItem)
+    return
+  }
   items.push(stepItem)
 }
 
@@ -122,6 +137,18 @@ export function handlePlanStepComplete(meta: Record<string, unknown> | undefined
   if (!meta?.success && meta?.error) step.error = meta.error as string
   openSteps.delete(stepId)
 }
+
+/**
+ * Block-parent registry: maps a block's step id to the block itself so a
+ * DELEGATED step/subagent launch (whose events carry the delegation id as
+ * plan_step_id) can nest under its parent block's children. groupMessages
+ * registers every plan_step/subagent block created at ANY level; the parent
+ * maps are dropped as soon as the parent settles (complete/paused removes it
+ * from openSteps — and a closed block's stale parent entry must not capture
+ * a later launch), so `parents` mirrors openSteps: keyed by step id, holding
+ * only OPEN (running/paused) blocks. Read-only for the handlers.
+ */
+export type BlockParents = ReadonlyMap<string, StepLikeItem>
 
 /**
  * plan_step_paused: the step stopped at a cooperative pause checkpoint — a
@@ -170,6 +197,18 @@ export function handleSubAgentLaunch(
     status: 'running', children: [],
   }
   openSteps.set(stepId, subItem)
+  // A nested delegation (a subagent launching its own subagent) carries the
+  // parent delegation id as plan_step_id — nest under that OPEN parent block,
+  // mirroring handlePlanStepStart. Guards mirror it too: only an open block
+  // can capture, and never the block itself (a resume re-launch re-emits the
+  // launch with the block's own id). Root-level delegations keep the root
+  // placement.
+  const parent = meta?.plan_step_id ? openSteps.get(meta.plan_step_id as string) : undefined
+  if (parent && parent !== subItem) {
+    resumePausedStep(parent)
+    parent.children.push(subItem)
+    return
+  }
   items.push(subItem)
 }
 

@@ -11,7 +11,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 import { ResearchHypothesisPicker } from './ResearchHypothesisPicker'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { useResearchProjectActions } from './useResearchProjectActions'
 import {
   applyGraphOrRefresh,
   refreshNextStep,
@@ -20,6 +20,7 @@ import { updateHypothesis, setHypothesisPinned, getResearchNextStep, getResearch
 import { useResearchStore, selectActiveProject } from '@/stores/researchStore'
 import { useProjectStore } from '@/stores/projectStore'
 import type {
+  HypothesisNode,
   ResearchStatus,
   ResearchGraphResponse,
   ResearchNextStep as ResearchNextStepDTO,
@@ -79,9 +80,7 @@ async function render(el: React.ReactNode): Promise<HTMLElement> {
   const root = createRoot(container)
   activeRoot = root
   await act(async () => {
-    // ItemActions rows embed a Tooltip, which requires a provider ancestor
-    // (the app mounts one at the root — tests mirror that here).
-    root.render(<TooltipProvider>{el}</TooltipProvider>)
+    root.render(el)
   })
   return container
 }
@@ -162,22 +161,66 @@ function trigger(container: HTMLElement): HTMLButtonElement {
   )!
 }
 
-function statusSelect(container: HTMLElement, id: string): HTMLSelectElement {
-  return container.querySelector<HTMLSelectElement>(
-    `select[aria-label="Status for ${id}"]`,
+function statusTrigger(container: HTMLElement, id: string): HTMLButtonElement {
+  return container.querySelector<HTMLButtonElement>(
+    `button[aria-label="Status for ${id}"]`,
   )!
 }
 
-function changeSelect(el: HTMLSelectElement, value: string): void {
-  el.value = value
-  el.dispatchEvent(new Event('change', { bubbles: true }))
+/** Open the current card's status combobox menu (portaled to document.body;
+ *  Radix toggles the trigger on pointerdown — same pattern as the study-mode
+ *  combobox tests). */
+async function openStatusMenu(container: HTMLElement, id: string): Promise<void> {
+  const triggerBtn = statusTrigger(container, id)
+  await act(async () => {
+    triggerBtn.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+  })
+  await vi.waitFor(() => {
+    if (document.body.querySelectorAll('[role="menuitem"]').length === 0) {
+      throw new Error(`Status menu for ${id} did not open`)
+    }
+  })
+}
+
+/** Open the current card's status combobox and pick `value` by label. */
+async function pickStatus(container: HTMLElement, id: string, value: string): Promise<void> {
+  await openStatusMenu(container, id)
+  const option = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(
+    (o) => o.textContent?.trim() === value,
+  )
+  if (!option) throw new Error(`Status option "${value}" not found for ${id}`)
+  await act(async () => {
+    option.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+}
+
+/**
+ * Probe for the [71]a generation-guard test: the status combobox now
+ * serializes flips (its trigger disables while a save is in flight), so the
+ * overlapping-flip scenario the guard defends against — a second mutation
+ * starting before React commits the disabled re-render — is exercised by
+ * driving the hook's changeStatus through two buttons inside one act.
+ */
+function ChangeStatusProbe({ node }: { node: HypothesisNode }) {
+  const { changeStatus, saving, error } = useResearchProjectActions()
+  return (
+    <div aria-busy={saving}>
+      <button aria-label="flip-a" onClick={() => void changeStatus(node, 'in-progress')} />
+      <button aria-label="flip-b" onClick={() => void changeStatus(node, 'cancelled')} />
+      {error && <p role="alert">{error}</p>}
+    </div>
+  )
 }
 
 async function openMenu(container: HTMLElement): Promise<HTMLElement> {
   const btn = trigger(container)
   await act(async () => {
     btn.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
-    await new Promise((r) => setTimeout(r, 10))
+  })
+  await vi.waitFor(() => {
+    if (document.body.querySelector('[role="menu"]') === null) {
+      throw new Error('Menu did not open')
+    }
   })
   const menu = document.body.querySelector('[role="menu"]')
   expect(menu).not.toBeNull()
@@ -213,7 +256,8 @@ describe('ResearchHypothesisPicker — trigger + listing', () => {
     const container = await render(<ResearchHypothesisPicker />)
     expect(trigger(container).textContent).toContain('H-001')
     expect(trigger(container).textContent).toContain('Leading hypothesis')
-    expect(statusSelect(container, 'H-001').value).toBe('open')
+    // The current status shows in the combobox trigger.
+    expect(statusTrigger(container, 'H-001').textContent).toContain('open')
   })
 
   it('lists every hypothesis: active front first, then the rest, each by H-NNN', async () => {
@@ -313,9 +357,9 @@ describe('ResearchHypothesisPicker — selection', () => {
     expect(getResearchNextStep).toHaveBeenCalledWith('p1', 'H-003')
     expect(refreshNextStep).toHaveBeenCalledWith('p1')
     expect(s.nextStep?.target).toBe('H-003')
-    // The trigger + status select now follow the picked card.
+    // The trigger + status combobox now follow the picked card.
     expect(trigger(container).textContent).toContain('H-003')
-    expect(statusSelect(container, 'H-003').value).toBe('confirmed')
+    expect(statusTrigger(container, 'H-003').textContent).toContain('confirmed')
   })
 
   it('re-picking the current card is a no-op', async () => {
@@ -339,9 +383,7 @@ describe('ResearchHypothesisPicker — status flip (former QuickMutate)', () => 
     vi.mocked(updateHypothesis).mockResolvedValue(res)
 
     const container = await render(<ResearchHypothesisPicker />)
-    await act(async () => {
-      changeSelect(statusSelect(container, 'H-001'), 'in-progress')
-    })
+    await pickStatus(container, 'H-001', 'in-progress')
     await flush()
 
     expect(updateHypothesis).toHaveBeenCalledWith('p1', 'R-001', 'H-001', {
@@ -357,17 +399,20 @@ describe('ResearchHypothesisPicker — status flip (former QuickMutate)', () => 
 
   it('does not offer illegal status transitions', async () => {
     const container = await render(<ResearchHypothesisPicker />)
-    const options = Array.from(statusSelect(container, 'H-001').options).map((o) => o.value)
     // open → in-progress | cancelled are the only legal transitions; the
-    // current value is kept so the controlled select always has a match.
+    // current value is kept so the combobox always has a match.
+    await openStatusMenu(container, 'H-001')
+    const options = Array.from(
+      document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+    ).map((o) => o.textContent?.trim())
     expect(options).toEqual(['open', 'in-progress', 'cancelled'])
   })
 
   it('does not call updateHypothesis when the status is unchanged', async () => {
     const container = await render(<ResearchHypothesisPicker />)
-    await act(async () => {
-      changeSelect(statusSelect(container, 'H-001'), 'open')
-    })
+    // Re-picking the already-selected value is suppressed by the combobox
+    // (mirroring the native select's no-change-event behavior).
+    await pickStatus(container, 'H-001', 'open')
     await flush()
 
     expect(updateHypothesis).not.toHaveBeenCalled()
@@ -380,9 +425,7 @@ describe('ResearchHypothesisPicker — status flip (former QuickMutate)', () => 
     // across projects, so the flip must never be sent.
     useProjectStore.setState({ activeProjectId: 'p2' })
 
-    await act(async () => {
-      changeSelect(statusSelect(container, 'H-001'), 'in-progress')
-    })
+    await pickStatus(container, 'H-001', 'in-progress')
     await flush()
 
     expect(updateHypothesis).not.toHaveBeenCalled()
@@ -392,7 +435,7 @@ describe('ResearchHypothesisPicker — status flip (former QuickMutate)', () => 
       'different project',
     )
     // …and no disabled state is left stuck.
-    expect(statusSelect(container, 'H-001').disabled).toBe(false)
+    expect(statusTrigger(container, 'H-001').disabled).toBe(false)
   })
 
   it('disables the select while a save is in flight', async () => {
@@ -402,26 +445,26 @@ describe('ResearchHypothesisPicker — status flip (former QuickMutate)', () => 
     )
 
     const container = await render(<ResearchHypothesisPicker />)
-    await act(async () => {
-      changeSelect(statusSelect(container, 'H-001'), 'in-progress')
-    })
+    await pickStatus(container, 'H-001', 'in-progress')
     await flush()
 
-    expect(statusSelect(container, 'H-001').disabled).toBe(true)
+    expect(statusTrigger(container, 'H-001').disabled).toBe(true)
 
     await act(async () => {
       resolveRpc(makeGraphResponse('in-progress'))
     })
     await flush()
 
-    expect(statusSelect(container, 'H-001').disabled).toBe(false)
+    expect(statusTrigger(container, 'H-001').disabled).toBe(false)
   })
 
   it("a superseded flip's late failure does not annotate the newer flip's state ([71]a)", async () => {
-    // Same-path re-entry: two flips overlap (the disabled select cannot
-    // rule out programmatic re-entry before React commits the re-render).
+    // Same-path re-entry: two flips overlap — the disabled trigger cannot
+    // rule out programmatic re-entry before React commits the re-render.
     // The OLDER flip's generation is superseded; its late rejection must
     // neither surface an error nor clobber the newer flip's cleared state.
+    // Exercised through the ChangeStatusProbe (see its doc comment): the UI
+    // path now serializes flips via the disabled combobox trigger.
     const deferreds: {
       resolve: (v: ResearchGraphResponse) => void
       reject: (e: Error) => void
@@ -433,22 +476,26 @@ describe('ResearchHypothesisPicker — status flip (former QuickMutate)', () => 
         }),
     )
 
-    const container = await render(<ResearchHypothesisPicker />)
-    // Both change events dispatch inside one act — React has not committed
-    // the disabled re-render yet, so both flips start (gen 1, then gen 2).
+    const node = selectActiveProject(useResearchStore.getState())!.graph.nodes[0]!
+    const container = await render(<ChangeStatusProbe node={node} />)
+    // Both flips start inside one act — React has not committed the
+    // re-render in between, so both actions run (gen 1, then gen 2).
     await act(async () => {
-      changeSelect(statusSelect(container, 'H-001'), 'in-progress')
-      changeSelect(statusSelect(container, 'H-001'), 'cancelled')
+      container.querySelector<HTMLButtonElement>('button[aria-label="flip-a"]')!.click()
+      container.querySelector<HTMLButtonElement>('button[aria-label="flip-b"]')!.click()
     })
 
     expect(updateHypothesis).toHaveBeenCalledTimes(2)
+    expect(
+      vi.mocked(updateHypothesis).mock.calls.map((c) => (c[3] as { status: string }).status),
+    ).toEqual(['in-progress', 'cancelled'])
 
     // The NEWER flip (gen 2) completes successfully…
     await act(async () => {
       deferreds[1]!.resolve(makeGraphResponse('cancelled'))
     })
     await flush()
-    expect(statusSelect(container, 'H-001').disabled).toBe(false)
+    expect(container.querySelector('[aria-busy]')!.getAttribute('aria-busy')).toBe('false')
 
     // …and the OLDER flip's late rejection is swallowed: no error, no stuck
     // saving state.
@@ -458,7 +505,7 @@ describe('ResearchHypothesisPicker — status flip (former QuickMutate)', () => 
     await flush()
 
     expect(container.querySelector('[role="alert"]')).toBeNull()
-    expect(statusSelect(container, 'H-001').disabled).toBe(false)
+    expect(container.querySelector('[aria-busy]')!.getAttribute('aria-busy')).toBe('false')
   })
 })
 

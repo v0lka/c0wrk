@@ -84,6 +84,7 @@ export function HunkReviewBlock({ sessionId, filePath, hunk, hunkIndex, readOnly
           <Button
             variant="ghost"
             size="xs"
+            title={comment ? 'Edit comment' : 'Add comment'}
             onClick={() => (showComment ? setShowComment(false) : openComment())}
             className="text-xs"
           >

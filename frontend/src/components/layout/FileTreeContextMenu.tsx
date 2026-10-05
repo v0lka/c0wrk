@@ -254,7 +254,7 @@ export function FileTreeContextMenu({
   const menuItemClass = cn(
     'relative flex w-full select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
     'hover:bg-muted/50 focus:bg-muted/50 disabled:opacity-50',
-    '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg]:text-muted-foreground',
+    '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-3.5 [&_svg]:text-muted-foreground',
   )
 
   return (
@@ -289,7 +289,7 @@ export function FileTreeContextMenu({
                   onClick={() => handleStudy(option.value)}
                   className={menuItemClass}
                 >
-                  <Microscope className="size-4" />
+                  <Microscope className="size-3.5" />
                   {option.label}
                 </button>
               ))}
@@ -300,7 +300,7 @@ export function FileTreeContextMenu({
                 onClick={() => setStudyOpen(false)}
                 className={menuItemClass}
               >
-                <ChevronLeft className="size-4" />
+                <ChevronLeft className="size-3.5" />
                 Back
               </button>
             </>
@@ -312,7 +312,7 @@ export function FileTreeContextMenu({
                   onClick={handleOpenInViewer}
                   className={menuItemClass}
                 >
-                  <Eye className="size-4" />
+                  <Eye className="size-3.5" />
                   Open in Viewer
                 </button>
               )}
@@ -325,7 +325,7 @@ export function FileTreeContextMenu({
                     onClick={() => setStudyOpen(true)}
                     className={menuItemClass}
                   >
-                    <Microscope className="size-4" />
+                    <Microscope className="size-3.5" />
                     Study this paper…
                   </button>
                   <MenuSeparator />
@@ -337,7 +337,7 @@ export function FileTreeContextMenu({
                   onClick={handleOpenInTerminal}
                   className={menuItemClass}
                 >
-                  <Terminal className="size-4" />
+                  <Terminal className="size-3.5" />
                   Open in Terminal
                 </button>
               )}
@@ -347,7 +347,7 @@ export function FileTreeContextMenu({
                 onClick={handleCopyPath}
                 className={menuItemClass}
               >
-                <Copy className="size-4" />
+                <Copy className="size-3.5" />
                 Copy Path
               </button>
               <button
@@ -355,7 +355,7 @@ export function FileTreeContextMenu({
                 onClick={handleCopyRelativePath}
                 className={menuItemClass}
               >
-                <Copy className="size-4" />
+                <Copy className="size-3.5" />
                 Copy Relative Path
               </button>
               {isGitRepo && (
@@ -367,7 +367,7 @@ export function FileTreeContextMenu({
                     onClick={() => void handleAddToGitignore()}
                     className={menuItemClass}
                   >
-                    {isIgnoring ? <Loader2 className="size-4 animate-spin" /> : <EyeOff className="size-4" />}
+                    {isIgnoring ? <Loader2 className="size-3.5 animate-spin" /> : <EyeOff className="size-3.5" />}
                     Add to .gitignore
                   </button>
                   <button
@@ -375,7 +375,7 @@ export function FileTreeContextMenu({
                     onClick={handleViewHistory}
                     className={menuItemClass}
                   >
-                    <History className="size-4" />
+                    <History className="size-3.5" />
                     View History
                   </button>
                 </>

@@ -65,6 +65,7 @@ function NoPythonAffordance({ onRetry, running }: { onRetry: () => void; running
       <Button
         variant="secondary"
         size="sm"
+        title="Retry literature setup check"
         className="ml-auto h-6 shrink-0 gap-1 px-2 text-xs"
         onClick={onRetry}
         disabled={running}

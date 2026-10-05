@@ -69,13 +69,41 @@ func mainImpl() int {
 	agentDir := config.AgentDir()
 	logDir := config.LogsDir(agentDir)
 
+	// Single-instance gate (issue #98, ADR-075): take the app-level lock
+	// BEFORE any shared state is touched. A second process (on macOS,
+	// LaunchServices activating the app from a delivered notification banner
+	// whose bundle registration no longer matches the running process — a
+	// rebuilt .app or an updater-swapped install tree) must stay read-only
+	// toward ~/.c0wrk from here on: most importantly it must not install the
+	// crash capture below, whose liveness-marker stash would overwrite the
+	// running instance's forensics and leave an orphaned marker that the next
+	// start misreports as an unclean shutdown. The lock is advisory only —
+	// actual enforcement (relay to the first instance + early exit) is the
+	// Wails SingleInstanceLock option wired into wails.Run below. Setup
+	// failures fail open to "first instance": a wedged lock file must never
+	// brick startup, and the Wails lock still enforces single instance.
+	instanceLock, firstInstance, lockErr := desktop.AcquireSingleInstanceLock(config.SingleInstanceLockPath(agentDir))
+	if lockErr != nil {
+		slog.Warn("single-instance lock file unavailable; crash-capture forensics ungated for this run",
+			"error", lockErr)
+	}
+	// Held for the process lifetime: closing it would release the lock (and
+	// an unreachable os.File is closed by its finalizer under GC), so the
+	// defer both pins it and releases it on the one clean-return path. The
+	// second instance never returns from wails.Run (it exits inside the
+	// Wails single-instance relay), where the OS drops the lock anyway.
+	defer func() { _ = instanceLock.Close() }()
+
 	// Arm crash capture before anything else can fail: fd 1/2 are redirected
 	// into <logDir>/stderr.log so Go runtime panic dumps, native-library
 	// errors and termination signals are persisted even when launched from
 	// Finder. C0WRK_DISABLE_CRASH_CAPTURE=1 opts out (useful under `wails
 	// dev` to keep live console output). The exact value is compared so a
-	// stray "0"/"false" cannot silently disable capture.
-	if os.Getenv("C0WRK_DISABLE_CRASH_CAPTURE") != "1" {
+	// stray "0"/"false" cannot silently disable capture. A second instance
+	// skips installation entirely: it lives only long enough to relay its
+	// launch data and exit, and its marker writes would poison the first
+	// instance's crash forensics (see the gate above and ADR-075).
+	if os.Getenv("C0WRK_DISABLE_CRASH_CAPTURE") != "1" && firstInstance {
 		capture, err := crashlog.Install(logDir)
 		if err != nil {
 			slog.Warn("crash capture unavailable; panics may leave no trace", "error", err)
@@ -135,10 +163,20 @@ func mainImpl() int {
 		// C0WRK_WEBVIEW_GPU_POLICY (always | on-demand | never; default
 		// never — the workaround Wails itself applies for wails#2977).
 		// Returns nil on macOS/Windows, leaving those platforms untouched.
-		Linux:      desktop.WebviewGpuPolicyOptions(slog.Default()),
-		OnStartup:  app.Startup,
-		OnDomReady: app.DomReady,
-		OnShutdown: app.Shutdown,
+		Linux: desktop.WebviewGpuPolicyOptions(slog.Default()),
+		// Single instance (issue #98, ADR-075): a LaunchServices-triggered
+		// second open (macOS notification-banner click against a stale or
+		// rebuilt bundle registration, a Finder re-open while the app runs)
+		// must relay to THIS instance and exit, never boot a full second app
+		// over the same SQLite DB, embedded-LLM supervisor and watchers —
+		// the in-flight tasks of the first instance used to die with it.
+		// The relay focuses the existing window; the notification's session
+		// routing is not recoverable on this path (only the process macOS
+		// attributes the click to receives it).
+		SingleInstanceLock: desktop.SingleInstanceOptions(app),
+		OnStartup:          app.Startup,
+		OnDomReady:         app.DomReady,
+		OnShutdown:         app.Shutdown,
 		// Close guard: every quit path (window close button, Cmd+Q / the OS
 		// quit menu, runtime.Quit — including the updater's quit) funnels
 		// through this hook on all platforms. While sessions have live work

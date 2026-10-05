@@ -132,7 +132,7 @@ function ResumeBanner({ item, content }: { item: ResumeItem; content: string }) 
         <p className="mt-1 text-xs text-muted-foreground">Auto-retry in {secondsLeft}s</p>
       )}
       <div className="mt-2 flex flex-wrap gap-2">
-        <Button size="sm" onClick={handleResume} disabled={autoResending} className="text-xs">
+        <Button size="sm" onClick={handleResume} disabled={autoResending} className="text-xs" title="Resend the failed task message">
           {autoResending ? (
             <><Loader2 className="h-3 w-3 mr-1.5 animate-spin" />Auto-resend…</>
           ) : (
@@ -145,7 +145,7 @@ function ResumeBanner({ item, content }: { item: ResumeItem; content: string }) 
             cancelled while the resumed task starts running, or cancel the
             just-resumed task). The window is seconds at most — until the
             task_resumed event resolves the banner. */}
-        <Button size="sm" variant="outline" onClick={handleCancel} disabled={autoResending} className="text-xs">
+        <Button size="sm" variant="outline" onClick={handleCancel} disabled={autoResending} className="text-xs" title="Dismiss the failure banner without resending">
           <X className="h-3 w-3 mr-1.5" />Cancel
         </Button>
       </div>

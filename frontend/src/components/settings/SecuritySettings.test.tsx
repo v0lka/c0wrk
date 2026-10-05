@@ -128,16 +128,16 @@ async function pickOption(ariaLabel: string, optionLabel: string): Promise<void>
   })
 }
 
-/** The segmented control's radio input for one autonomy mode. */
-const autonomyRadio = (mode: string) =>
-  container.querySelector<HTMLInputElement>(`input[name="autonomy-mode"][value="${mode}"]`)
+/** The segmented control's button for one autonomy mode. */
+const autonomyButton = (mode: string) =>
+  container.querySelector<HTMLButtonElement>(`button[data-testid="autonomy-mode-${mode}"]`)
 
 /** Switch the autonomy mode through the segmented control (a save fires). */
 async function switchMode(mode: string): Promise<void> {
-  const radio = autonomyRadio(mode)
-  if (!radio) throw new Error(`autonomy mode radio "${mode}" not found`)
+  const button = autonomyButton(mode)
+  if (!button) throw new Error(`autonomy mode segment "${mode}" not found`)
   await act(async () => {
-    radio.click()
+    button.click()
   })
 }
 
@@ -297,11 +297,11 @@ describe('SecuritySettings — autonomy mode', () => {
   it('renders the segmented control with the three modes, standard checked by default', async () => {
     await render()
 
-    expect(autonomyRadio('standard')).not.toBeNull()
-    expect(autonomyRadio('assisted')).not.toBeNull()
-    expect(autonomyRadio('silent')).not.toBeNull()
-    expect(autonomyRadio('standard')?.checked).toBe(true)
-    expect(autonomyRadio('assisted')?.checked).toBe(false)
+    expect(autonomyButton('standard')).not.toBeNull()
+    expect(autonomyButton('assisted')).not.toBeNull()
+    expect(autonomyButton('silent')).not.toBeNull()
+    expect(autonomyButton('standard')?.getAttribute('aria-checked')).toBe('true')
+    expect(autonomyButton('assisted')?.getAttribute('aria-checked')).toBe('false')
 
     // The selected mode's description is shown and states the terminal
     // difference honestly.
@@ -321,7 +321,7 @@ describe('SecuritySettings — autonomy mode', () => {
 
     await switchMode('assisted')
     expect(lastPayload().autonomy_mode).toBe('assisted')
-    expect(autonomyRadio('assisted')?.checked).toBe(true)
+    expect(autonomyButton('assisted')?.getAttribute('aria-checked')).toBe('true')
 
     await switchMode('silent')
     expect(lastPayload().autonomy_mode).toBe('silent')
@@ -344,7 +344,7 @@ describe('SecuritySettings — autonomy mode', () => {
     )
     await render()
 
-    expect(autonomyRadio('silent')?.checked).toBe(true)
+    expect(autonomyButton('silent')?.getAttribute('aria-checked')).toBe('true')
     // The silent policy card is visible and carries the enforced sub-policy.
     expect(container.querySelector('[data-testid="silent-mode-card"]')).not.toBeNull()
     expect(findSelect('Ask user mode')?.textContent).toContain('Enable')
@@ -427,8 +427,8 @@ describe('SecuritySettings — autonomy mode', () => {
     expect(warning?.textContent).toContain('Judge unavailable')
     expect(warning?.textContent).toContain('degrades to a confirmation card')
     // Non-blocking: every mode stays selectable.
-    expect(autonomyRadio('silent')?.disabled).toBe(false)
-    expect(autonomyRadio('standard')?.disabled).toBe(false)
+    expect(autonomyButton('silent')?.disabled).toBe(false)
+    expect(autonomyButton('standard')?.disabled).toBe(false)
   })
 
   it('assisted with a configured judge shows no warning', async () => {
@@ -437,7 +437,7 @@ describe('SecuritySettings — autonomy mode', () => {
     )
     await render()
 
-    expect(autonomyRadio('assisted')?.checked).toBe(true)
+    expect(autonomyButton('assisted')?.getAttribute('aria-checked')).toBe('true')
     expect(container.querySelector('[data-testid="autonomy-judge-warning"]')).toBeNull()
   })
 })

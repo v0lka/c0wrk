@@ -39,6 +39,7 @@ export const ListDirBody = React.memo(function ListDirBody({ result, status }: T
         <button
           onClick={(e) => { e.stopPropagation(); setShowAll(true) }}
           className="text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 rounded px-1 py-0.5 mt-1 transition-colors"
+          title={`Show all ${entries.length} entries`}
         >
           Show all ({entries.length} entries)
         </button>

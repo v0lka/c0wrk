@@ -116,6 +116,7 @@ function HunkComboBox({ entries, currentIndex, onSelect }: HunkComboBoxProps) {
         <button
           type="button"
           aria-label="Jump to hunk"
+          title="Jump to hunk"
           className={cn(
             'group inline-flex h-6 items-center gap-1 rounded-md border border-border/60 bg-background/40 pl-2 pr-1 text-xs',
             'hover:bg-muted/50 focus-visible:outline-none data-[state=open]:bg-muted/50',
