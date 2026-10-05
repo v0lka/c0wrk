@@ -239,6 +239,11 @@ func (f *FrontendAPI) PinSession(id string) error {
 
 // SendMessage sends a user message to a session (async - results come via events).
 // activeSkills contains skill names explicitly referenced by the user via /skill-name syntax.
+// activeAgents contains subagent profile names explicitly referenced via /-mentions.
+// activeMCPServers contains MCP server names explicitly referenced via /-mentions
+// (plain or /mcp:-qualified): a mention enables that server's tools for the
+// whole task when the server is configured in "manual" mode, and threads the
+// soft "Requested MCP Servers" prompt directive.
 // goal, when true, enables goal mode for the first message of a task (OR-ed with
 // any /goal command prefix the message text may carry). goalBudget is an optional
 // JSON budget override ({"max_turns":N}) tightening the goal's turn cap;
@@ -249,7 +254,7 @@ func (f *FrontendAPI) PinSession(id string) error {
 // reviewMode, when true, marks the message as carrying code review feedback the
 // agent must address (review status == "submitted"); the system prompt gains a
 // Code Review section directing the agent to edit code.
-func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents []string, modelOverride, reasoningEffort string, goal /* goal */ bool, goalBudget string, e2s /* e2s */, reviewMode /* reviewMode */ bool) error {
+func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, activeMCPServers []string, modelOverride, reasoningEffort string, goal /* goal */ bool, goalBudget string, e2s /* e2s */, reviewMode /* reviewMode */ bool) error {
 	// E2S and goal are alternative task modes with incompatible loop
 	// semantics; the frontend store enforces exclusivity, this is the
 	// server-side defense so a hand-crafted call cannot arm both. Checked
@@ -258,13 +263,14 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents []
 		return errors.New("E2S mode and goal mode are mutually exclusive — disable one of the toggles before sending")
 	}
 	// Detect the leading "/goal" command prefix once, on the POST-preprocessing
-	// text: PreprocessMessageText strips leading /skill and #agent refs, which
-	// can expose a /goal prefix hidden behind them ("/myskill /goal …"), and
+	// text: PreprocessMessageText strips leading /-mention refs (skills,
+	// agents, and MCP servers), which can expose a /goal prefix hidden behind
+	// them ("/myskill /goal …"), and
 	// the manager arms goal mode from the processed text — the raw-text check
 	// alone misses that form. Preprocessing is pure, so both guards below still
 	// reject before any side effect; the workspace path is irrelevant to prefix
 	// stripping.
-	processed := core.PreprocessMessageText(text, activeSkills, activeAgents, "")
+	processed := core.PreprocessMessageText(text, activeSkills, activeAgents, activeMCPServers, "")
 	_, isGoalPrefix := core.DetectAndStripGoalMode(processed)
 	goalEnabled := goal || isGoalPrefix
 	// A leading "/goal" command arms goal mode in the manager even when the
@@ -321,7 +327,7 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents []
 	// write (the race between this check and the authoritative queue is
 	// harmless — a message that passes but finds the task finished
 	// afterwards simply starts a normal task).
-	if err := f.app.Manager().ValidateLiveSend(id, goal, e2s, text, activeSkills, activeAgents); err != nil {
+	if err := f.app.Manager().ValidateLiveSend(id, goal, e2s, text, activeSkills, activeAgents, activeMCPServers); err != nil {
 		return err
 	}
 
@@ -361,13 +367,13 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents []
 	if wp, ok := f.app.Manager().GetSessionWorkspacePath(id); ok {
 		workspacePath = wp
 	}
-	processedText := core.PreprocessMessageText(text, activeSkills, activeAgents, workspacePath)
+	processedText := core.PreprocessMessageText(text, activeSkills, activeAgents, activeMCPServers, workspacePath)
 
 	// Auto-discover local directories mentioned in the prompt and add them as
 	// session-scoped auxiliary working directories (best-effort: never blocks).
 	f.autoAddPromptWorkDirs(id, text)
 
-	classification, err := f.app.Manager().SendMessageClassified(f.ctx(), id, processedText, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, e2s, reviewMode)
+	classification, err := f.app.Manager().SendMessageClassified(f.ctx(), id, processedText, activeSkills, activeAgents, activeMCPServers, modelOverride, reasoningEffort, goal, goalBudget, e2s, reviewMode)
 	if err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
 	}

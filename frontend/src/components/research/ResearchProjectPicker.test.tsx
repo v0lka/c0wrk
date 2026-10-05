@@ -482,6 +482,7 @@ describe('ResearchProjectPicker — research-init plus button', () => {
       ['research-init'],
       undefined,
       undefined,
+      undefined,
       { newSession: true },
     )
   })

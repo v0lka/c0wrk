@@ -154,6 +154,11 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 	}
 
 	// Convert MCP servers.
+	// Mode is carried verbatim: the load pipeline (normalizeMCPModes) has
+	// already canonicalized every mode, and the frontend rebuild paths start
+	// from that validated config — so the adapter needs no normalization of
+	// its own (mirroring the timeout contract, where the adapter does not
+	// log or fix anything the load path owns).
 	mcpServers := make(map[string]core.BuilderMCPServer, len(cfg.MCP.Servers))
 	for name, srv := range cfg.MCP.Servers {
 		mcpServers[name] = core.BuilderMCPServer{
@@ -163,6 +168,7 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			Env:         srv.Env,
 			URL:         srv.URL,
 			Headers:     srv.Headers,
+			Mode:        srv.Mode,
 			Timeout:     parseMCPDuration(srv.Timeout),
 			CallTimeout: parseMCPDuration(srv.CallTimeout),
 		}

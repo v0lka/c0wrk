@@ -27,53 +27,35 @@ var lineAnchorSuffixRe = regexp.MustCompile(`#L?\d+(?:-L?\d+)?$`)
 var multiSpaceRe = regexp.MustCompile(`  +`)
 
 // PreprocessMessageText transforms a user message for the orchestrator:
-//  1. Strips /skill-name references for each skill in activeSkills.
-//  2. Strips #agent-name references for each agent in activeAgents.
-//  3. Converts @file-path references to fileref:// URIs, resolving each
+//  1. Strips /-mention references for skills, subagent profiles, and MCP
+//     servers (ADR-076): the plain form "/name" — stripped when the name
+//     appears in activeSkills, activeAgents, OR activeMCPServers (the three
+//     catalogs sharing one trigger) — and the collision-qualified forms
+//     "/agent: id", "/skill: id", and "/mcp: id", with or without a space
+//     after the colon (the spaced form is what the dropdown inserts
+//     canonically).
+//  2. Converts @file-path references to fileref:// URIs, resolving each
 //     relative path against workspacePath so the LLM receives unambiguous
 //     absolute paths. Both the quoted (@'my file.go') and the legacy
 //     backslash-escaped (@my\ file.go) forms are recognized. Absolute and
 //     home-relative (~/...) paths, and refs when workspacePath is empty, are
 //     left unchanged.
 //
-// Only known agent names (from activeAgents) are stripped — exactly mirroring
-// /skill stripping — so a GitHub-style line anchor like @file#L20 is never
-// touched (the "#" there is glued to the path with no preceding whitespace,
-// and "L20" is not a known agent name regardless).
-func PreprocessMessageText(text string, activeSkills, activeAgents []string, workspacePath string) string {
-	// regexp.MustCompile per name is acceptable here: activeSkills/Agents are
-	// typically 0-3 items, and word-boundary matching requires per-name patterns.
-	result := text
-
-	// Strip skill references.
-	for _, name := range activeSkills {
-		pattern := regexp.MustCompile(`(?:^|\s)/` + regexp.QuoteMeta(name) + `(?:\s|$)`)
-		result = pattern.ReplaceAllStringFunc(result, func(match string) string {
-			// Preserve surrounding whitespace boundaries: if the match had leading/trailing space,
-			// collapse to a single space; if it was at start/end, remove entirely.
-			leading := match != "" && match[0] == ' '
-			trailing := match != "" && match[len(match)-1] == ' '
-			if leading || trailing {
-				return " "
-			}
-			return ""
-		})
-	}
-
-	// Strip agent references (#agent-name). Mirrors /skill stripping: only
-	// explicitly mentioned agent names are removed, preserving surrounding
-	// whitespace boundaries.
-	for _, name := range activeAgents {
-		pattern := regexp.MustCompile(`(?:^|\s)#` + regexp.QuoteMeta(name) + `(?:\s|$)`)
-		result = pattern.ReplaceAllStringFunc(result, func(match string) string {
-			leading := match != "" && match[0] == ' '
-			trailing := match != "" && match[len(match)-1] == ' '
-			if leading || trailing {
-				return " "
-			}
-			return ""
-		})
-	}
+// Stripping is catalog-gated and fail-closed: only names the caller threaded
+// (the send path extracted them from the text and partitioned them against
+// the catalogs) are removed; any other /-token is preserved verbatim.
+// "#" is no longer a mention trigger — "#foo" is always plain text now, and
+// the "#" in a GitHub-style line anchor like @file#L20 belongs to the file
+// ref either way.
+//
+// The leading "/goal" command is not special-cased here: "goal" is a command
+// name, not a catalog name, so a "/goal …" prefix survives preprocessing and
+// DetectAndStripGoalMode — which runs on the processed text — still sees it,
+// including the case where a stripped ref ahead of it ("/explore /goal …")
+// exposes the command at the start of the processed text.
+func PreprocessMessageText(text string, activeSkills, activeAgents, activeMCPServers []string, workspacePath string) string {
+	// Strip /-mention references (plain + qualified, skills ∪ agents ∪ MCP servers).
+	result := stripMentionRefs(text, activeSkills, activeAgents, activeMCPServers)
 
 	// Convert @file references to fileref:// URIs.
 	result = fileRefPattern.ReplaceAllStringFunc(result, func(match string) string {
@@ -99,6 +81,149 @@ func PreprocessMessageText(text string, activeSkills, activeAgents []string, wor
 	// Collapse multiple spaces into one.
 	result = multiSpaceRe.ReplaceAllString(result, " ")
 	return strings.TrimSpace(result)
+}
+
+// Qualified-mention markers (ADR-076): "/agent:", "/skill:", and "/mcp:"
+// prefix a collision-qualified mention whose id follows the colon, with or
+// without a space ("/agent: code-reviewer", "/agent:code-reviewer"). The
+// markers are case-sensitive, like every name lookup here — a collision is an
+// exact, case-sensitive name match (issue #110).
+const (
+	qualifiedAgentMarker = "agent"
+	qualifiedSkillMarker = "skill"
+	qualifiedMCPMarker   = "mcp"
+)
+
+// isMentionNameByte reports whether c can appear in a mention token. Skill
+// and agent names are lowercase alphanumeric with hyphens (agentskills.io
+// spec, agentNamePattern); the wider scan set (uppercase, underscore) merely
+// tolerates hand-typed tokens, which then fail the exact catalog lookup.
+func isMentionNameByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-'
+}
+
+// isRefBoundarySpace matches the ASCII whitespace class used by mention
+// extraction and display (REF_BOUNDARY_SPACE_SOURCE in parseReferences.ts):
+// tab, newline, form feed, carriage return, space. This is RE2's \s set,
+// not JavaScript's wider Unicode-aware \s set.
+func isRefBoundarySpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'
+}
+
+// stripMentionRefs removes every /-mention reference from text in a single
+// left-to-right pass: plain "/name" for names in activeSkills ∪ activeAgents
+// ∪ activeMCPServers and qualified "/agent: id" / "/skill: id" / "/mcp: id"
+// (spaced or unspaced colon) for ids in the respective catalog. Surrounding
+// whitespace is left in place — PreprocessMessageText's multi-space collapse
+// and final trim reduce it — so stripping preserves the prose exactly like
+// the former per-name regexes. With all three catalogs empty the text is
+// returned unchanged (fail-closed: an unknown or unthreaded mention is never
+// stripped).
+func stripMentionRefs(text string, activeSkills, activeAgents, activeMCPServers []string) string {
+	if len(activeSkills) == 0 && len(activeAgents) == 0 && len(activeMCPServers) == 0 {
+		return text
+	}
+	skills := make(map[string]struct{}, len(activeSkills))
+	for _, name := range activeSkills {
+		skills[name] = struct{}{}
+	}
+	agents := make(map[string]struct{}, len(activeAgents))
+	for _, name := range activeAgents {
+		agents[name] = struct{}{}
+	}
+	mcpServers := make(map[string]struct{}, len(activeMCPServers))
+	for _, name := range activeMCPServers {
+		mcpServers[name] = struct{}{}
+	}
+
+	var b strings.Builder
+	b.Grow(len(text))
+	for i := 0; i < len(text); {
+		if text[i] == '/' && (i == 0 || isRefBoundarySpace(text[i-1])) {
+			if end, ok := mentionRefEnd(text, i, skills, agents, mcpServers); ok {
+				i = end
+				continue
+			}
+		}
+		b.WriteByte(text[i])
+		i++
+	}
+	return b.String()
+}
+
+// mentionRefEnd reports whether a strippable /-mention starts at text[i]
+// (which the caller has already verified is a '/' at a token boundary) and
+// returns the index just past it. It parses exactly one candidate:
+//
+//   - Qualified: "/agent: id", "/skill: id", or "/mcp: id" — an optional
+//     single space or tab after the colon (the canonical dropdown emission
+//     uses the space), then the id, which must end at whitespace or
+//     end-of-text. The id is looked up in the marker's own catalog; a
+//     mismatched catalog or an unknown id is preserved verbatim.
+//   - Plain: "/name" — the name must end at whitespace or end-of-text and
+//     match any catalog (skills ∪ agents ∪ mcp servers; the kind distinction
+//     is the send path's partitioning job, the text strip is kind-agnostic).
+//
+// A "/" that starts no strippable mention — including "/agent:" with a
+// missing, non-boundary, or unknown id — returns ok=false and the caller
+// emits the byte verbatim. The ":" of a qualified attempt also breaks the
+// plain form's trailing boundary, so no partial "/agent" fragment of
+// "/agent: id" can ever be stripped by the plain path.
+func mentionRefEnd(text string, i int, skills, agents, mcpServers map[string]struct{}) (int, bool) {
+	j := i + 1
+	for j < len(text) && isMentionNameByte(text[j]) {
+		j++
+	}
+	if j == i+1 {
+		return i, false // "/" with no token
+	}
+	token := text[i+1 : j]
+
+	// Collision-qualified form: the marker must be followed directly by ":".
+	if token == qualifiedAgentMarker || token == qualifiedSkillMarker || token == qualifiedMCPMarker {
+		if j < len(text) && text[j] == ':' {
+			k := j + 1
+			if k < len(text) && (text[k] == ' ' || text[k] == '\t') {
+				k++
+			}
+			m := k
+			for m < len(text) && isMentionNameByte(text[m]) {
+				m++
+			}
+			if m > k && (m == len(text) || isRefBoundarySpace(text[m])) {
+				id := text[k:m]
+				catalog := agents
+				switch token {
+				case qualifiedSkillMarker:
+					catalog = skills
+				case qualifiedMCPMarker:
+					catalog = mcpServers
+				}
+				if _, ok := catalog[id]; ok {
+					return m, true
+				}
+			}
+			return i, false
+		}
+		// No colon: fall through to the plain path (a profile, skill, or MCP
+		// server literally named "agent"/"skill"/"mcp" strips as a plain
+		// mention).
+	}
+
+	// Plain form: exact, case-sensitive membership in any catalog, with
+	// the token ending at a whitespace boundary or end-of-text.
+	if j == len(text) || isRefBoundarySpace(text[j]) {
+		if _, ok := skills[token]; ok {
+			return j, true
+		}
+		if _, ok := agents[token]; ok {
+			return j, true
+		}
+		if _, ok := mcpServers[token]; ok {
+			return j, true
+		}
+	}
+	return i, false
 }
 
 // normalizeFileRefPath normalizes the path portion of an @file reference to
@@ -178,11 +303,12 @@ var goalModePrefixRe = regexp.MustCompile(`^/goal(?:\s+|$)`)
 // HandleMessage dispatches to the multi-turn goal loop. When absent, the
 // message is returned unchanged and isGoal=false.
 //
-// The detection runs on the already-preprocessed text (after /skill stripping
-// and @file conversion) so a "/goal /skill-name …" invocation still works:
-// the /skill ref is stripped first, then /goal is detected. An empty remainder
-// after stripping (e.g. a bare "/goal") is returned empty with isGoal=true —
-// the orchestrator's deriveGoal will ground the goal from the (empty) message.
+// The detection runs on the already-preprocessed text (after /-mention
+// stripping and @file conversion) so a "/goal /skill-name …" invocation still
+// works: the mention ref is stripped first, then /goal is detected. An empty
+// remainder after stripping (e.g. a bare "/goal") is returned empty with
+// isGoal=true — the orchestrator's deriveGoal will ground the goal from the
+// (empty) message.
 func DetectAndStripGoalMode(text string) (cleaned string, isGoal bool) {
 	if !goalModePrefixRe.MatchString(text) {
 		return text, false

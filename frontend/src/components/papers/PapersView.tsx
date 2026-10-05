@@ -305,7 +305,7 @@ export function PapersView() {
     (prompt: string, skill: string, newSession: boolean): Promise<boolean> => {
       const projectIdBefore = usePaperStore.getState().projectId
       return Promise.resolve(
-        send(prompt, [skill], undefined, undefined, { newSession }),
+        send(prompt, [skill], undefined, undefined, undefined, { newSession }),
       ).then(
         () => true,
         (err) => {

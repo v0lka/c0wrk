@@ -162,8 +162,9 @@ type Config struct {
 	// Conductor.
 	InjectionDefense bool
 	// AgentSections carries pre-rendered "## Available Subagents" /
-	// "## Requested Subagents" prompt sections (the host renders them from
-	// the discovered profile catalog and any explicit #agent mentions).
+	// "## Requested Subagents" / "## Requested MCP Servers" prompt sections
+	// (the host renders them from the discovered profile catalog, any explicit
+	// /-mentions, and the user's MCP-server mentions).
 	// Appended after the delegation directive so explicit user requests keep
 	// their mandatory-delegation force in E2S mode.
 	AgentSections string

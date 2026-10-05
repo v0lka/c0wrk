@@ -359,6 +359,33 @@ func formatRequestedAgents(ctx context.Context) string {
 	return sb.String()
 }
 
+// formatRequestedMCPServers returns the "## Requested MCP Servers" prompt
+// section — a SOFT directive pointing the agent at the MCP servers the user
+// explicitly mentioned via /-mentions — or an empty string when none were
+// mentioned.
+//
+// Unlike formatRequestedAgents (a MUST-delegate directive), this is a
+// preference hint, not an obligation: a mentioned manual-mode server has just
+// been enabled task-wide (its tools joined the toolset — see
+// core/orchestrator_mcp.go), so the section tells the agent the user wants
+// those servers' tools used for the relevant work without mandating any
+// particular call. Emitted only for the main Conductor (like the other roster
+// sections) and only when a mention exists.
+func formatRequestedMCPServers(ctx context.Context) string {
+	mentioned := UserMCPServersFromContext(ctx)
+	if len(mentioned) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n\n## Requested MCP Servers\n")
+	sb.WriteString("The user explicitly mentioned the following MCP servers for this task; their tools are available in your toolset. Prefer them for work that fits their capabilities. This is a preference, not an obligation — use them where they help and skip them where they do not.\n\n")
+	for _, name := range mentioned {
+		sb.WriteString("- " + name + "\n")
+	}
+	return sb.String()
+}
+
 // renderGoalModeSection builds the goal-mode prompt section from an active
 // GoalState. It substitutes the condition, verify clause, and a budget line
 // into the goal_mode.md template. Returns an empty string if the goal has no
@@ -751,6 +778,7 @@ func buildSystemPromptWith(ctx context.Context, userMessage string, modelMeta ll
 	if !spec.specialized {
 		b.Core(formatAvailableAgents(ctx))
 		b.Core(formatRequestedAgents(ctx))
+		b.Core(formatRequestedMCPServers(ctx))
 	}
 
 	// CacheBreak: the volatile per-turn goal budget line and vector hints

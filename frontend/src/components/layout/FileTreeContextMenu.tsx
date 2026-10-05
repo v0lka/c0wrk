@@ -117,7 +117,7 @@ export function FileTreeContextMenu({
       // auto-created session fails (the documented splash race). The file tree
       // has no panel-level error banner, so surface that as a runtime error.
       Promise.resolve(
-        send(buildStudyPrompt(entry.path, mode), [STUDY_PAPER_SKILL], undefined, undefined, {
+        send(buildStudyPrompt(entry.path, mode), [STUDY_PAPER_SKILL], undefined, undefined, undefined, {
           newSession: false,
         }),
       ).catch((err) => {

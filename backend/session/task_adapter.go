@@ -50,6 +50,16 @@ func (a *TaskStoreAdapter) PersistNewTask(taskID, sessionID, originalRequest str
 	})
 }
 
+// PersistMCPMentions preserves the request context for authorization-state writes.
+func (a *TaskStoreAdapter) PersistMCPMentions(ctx context.Context, taskID string, names []string) error {
+	return a.store.SaveMCPMentions(ctx, taskID, names)
+}
+
+// LoadMCPMentions restores durable task intent without a cache fallback.
+func (a *TaskStoreAdapter) LoadMCPMentions(ctx context.Context, taskID string) ([]string, error) {
+	return a.store.LoadMCPMentions(ctx, taskID)
+}
+
 // PersistPlan JSON-marshals the plan and updates the task record.
 func (a *TaskStoreAdapter) PersistPlan(taskID string, plan *orchestration.Plan) error {
 	data, err := json.Marshal(plan)

@@ -246,48 +246,123 @@ func TestGetMCPStatus_NoApp(t *testing.T) {
 // TestMergeConfiguredMCPServers verifies the pure core of the
 // "configured servers are always visible" contract: every configured name
 // missing from the live gateway status is appended as a disconnected entry
-// with a defaulted transport, and the result stays sorted by name.
+// with a defaulted transport, every entry is enriched with its configured
+// mode (gateway-only names default to "auto"), and the result stays sorted
+// by name.
 func TestMergeConfiguredMCPServers(t *testing.T) {
 	status := []mcp.ServerStatus{
 		{Name: "live", Transport: "stdio", Connected: true, Tools: []string{}},
 		{Name: "dead", Transport: "http", Connected: false, Tools: []string{}, Error: "conn refused"},
+		{Name: "ghost", Transport: "stdio", Connected: true, Tools: []string{}}, // gateway-only name
 	}
 	configured := map[string]config.MCPServerConfig{
-		"live":    {Transport: "stdio", Command: "cmd"},
-		"dead":    {Transport: "http", URL: "http://x"},
-		"unknown": {Command: "cmd"}, // transport empty → defaults to stdio
+		"live":    {Transport: "stdio", Command: "cmd", Mode: config.MCPServerModeAuto},
+		"dead":    {Transport: "http", URL: "http://x", Mode: config.MCPServerModeManual},
+		"unknown": {Command: "cmd"}, // transport empty → defaults to stdio; mode empty → auto
 		"remote":  {Transport: "http", URL: "http://y"},
 	}
 
 	got := mergeConfiguredMCPServers(status, configured)
 
-	if len(got) != 4 {
-		t.Fatalf("expected 4 entries, got %d: %+v", len(got), got)
+	if len(got) != 5 {
+		t.Fatalf("expected 5 entries, got %d: %+v", len(got), got)
 	}
-	// Sorted by name: dead, live, remote, unknown.
-	wantOrder := []string{"dead", "live", "remote", "unknown"}
+	// Sorted by name: dead, ghost, live, remote, unknown.
+	wantOrder := []string{"dead", "ghost", "live", "remote", "unknown"}
 	for i, want := range wantOrder {
 		if got[i].Name != want {
 			t.Errorf("got[%d].Name = %q, want %q", i, got[i].Name, want)
 		}
 	}
 	// Existing entries must pass through untouched.
-	if !got[1].Connected || got[1].Name != "live" {
-		t.Errorf("live server status mutated: %+v", got[1])
+	if !got[2].Connected || got[2].Name != "live" {
+		t.Errorf("live server status mutated: %+v", got[2])
 	}
 	// Missing configured servers are synthesized as disconnected.
-	unknown := got[3]
+	unknown := got[4]
 	if unknown.Connected || unknown.Error != "unavailable" || unknown.Transport != "stdio" {
 		t.Errorf("unknown = %+v, want disconnected stdio entry with error", unknown)
 	}
-	remote := got[2]
+	remote := got[3]
 	if remote.Connected || remote.Transport != "http" {
 		t.Errorf("remote = %+v, want disconnected http entry", remote)
+	}
+	// Mode exposure: configured modes are normalized onto every entry, and a
+	// gateway-only name (not in the config) defaults to "auto".
+	wantModes := map[string]string{
+		"dead":    config.MCPServerModeManual,
+		"ghost":   config.MCPServerModeAuto,
+		"live":    config.MCPServerModeAuto,
+		"remote":  config.MCPServerModeAuto,
+		"unknown": config.MCPServerModeAuto,
+	}
+	for _, entry := range got {
+		if got, want := entry.Mode, wantModes[entry.Name]; got != want {
+			t.Errorf("%s.Mode = %q, want %q", entry.Name, got, want)
+		}
+	}
+}
+
+// TestMergeConfiguredMCPServers_DisabledNeutral pins the neutral rendering
+// contract for disabled servers in BOTH shapes it can take:
+//   - configured-but-absent (the normal case — the gateway config never
+//     includes it, so the synthesized entry must carry NO "unavailable"
+//     error: absence is what "never dialed" produces);
+//   - still reported by a stale gateway (a reconfigure that failed
+//     mid-flight can leave the old connection behind) — the config mode is
+//     authoritative, so connected/tools/error are cleared.
+func TestMergeConfiguredMCPServers_DisabledNeutral(t *testing.T) {
+	status := []mcp.ServerStatus{
+		{
+			Name:      "stale-disabled",
+			Transport: "stdio",
+			Connected: true,
+			Unhealthy: true,
+			ToolCount: 3,
+			Tools:     []string{"t1", "t2", "t3"},
+			Error:     "old error",
+		},
+	}
+	configured := map[string]config.MCPServerConfig{
+		"stale-disabled": {Transport: "stdio", Command: "cmd", Mode: config.MCPServerModeDisabled},
+		"fresh-disabled": {Transport: "http", URL: "http://x", Mode: config.MCPServerModeDisabled},
+		"normal":         {Transport: "stdio", Command: "cmd"},
+	}
+
+	got := mergeConfiguredMCPServers(status, configured)
+
+	if len(got) != 3 {
+		t.Fatalf("expected 3 entries, got %d: %+v", len(got), got)
+	}
+	byName := make(map[string]MCPServerStatusInfo, len(got))
+	for _, entry := range got {
+		byName[entry.Name] = entry
+	}
+	for _, name := range []string{"stale-disabled", "fresh-disabled"} {
+		entry := byName[name]
+		if entry.Mode != config.MCPServerModeDisabled {
+			t.Errorf("%s.Mode = %q, want %q", name, entry.Mode, config.MCPServerModeDisabled)
+		}
+		if entry.Connected || entry.Unhealthy || entry.Starting {
+			t.Errorf("%s = %+v, want every activity flag cleared (inert, not live)", name, entry.ServerStatus)
+		}
+		if entry.ToolCount != 0 || len(entry.Tools) != 0 {
+			t.Errorf("%s = %+v, want tools cleared", name, entry.ServerStatus)
+		}
+		if entry.Error != "" {
+			t.Errorf("%s.Error = %q, want empty (neutral — disabled is not a failure state)", name, entry.Error)
+		}
+	}
+	// A non-disabled configured-but-absent server keeps the classic
+	// "unavailable" synthesis — only disabled renders neutrally.
+	if normal := byName["normal"]; normal.Error != "unavailable" {
+		t.Errorf("normal.Error = %q, want %q (disabled-only neutralization)", normal.Error, "unavailable")
 	}
 }
 
 // TestMergeConfiguredMCPServers_EmptyConfig verifies that an empty (or nil)
-// configuration leaves the gateway status untouched.
+// configuration leaves the gateway status entries as-is (mode defaulting to
+// "auto" on each).
 func TestMergeConfiguredMCPServers_EmptyConfig(t *testing.T) {
 	status := []mcp.ServerStatus{{Name: "live", Connected: true}}
 	if got := mergeConfiguredMCPServers(status, nil); len(got) != 1 {
@@ -295,6 +370,57 @@ func TestMergeConfiguredMCPServers_EmptyConfig(t *testing.T) {
 	}
 	if got := mergeConfiguredMCPServers(status, map[string]config.MCPServerConfig{}); len(got) != 1 {
 		t.Errorf("expected untouched status for empty config, got %+v", got)
+	}
+}
+
+// --- GetMCPMentionableServers ---
+
+// TestGetMCPMentionableServers verifies the secret-free mentionable listing:
+// every configured server as {name, mode}, sorted by name, with modes
+// normalized (empty resolves to "auto"). The wire shape carries nothing
+// beyond name+mode — the struct itself is the guarantee that command args,
+// env and headers (which can embed secrets) never reach the completion path.
+func TestGetMCPMentionableServers(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	f.config.MCP = config.MCPConfig{
+		Servers: map[string]config.MCPServerConfig{
+			"zeta":   {Transport: "stdio", Command: "cmd", Mode: config.MCPServerModeManual},
+			"alpha":  {Transport: "http", URL: "http://x", Mode: config.MCPServerModeDisabled},
+			"mid":    {Transport: "stdio", Command: "cmd", Mode: config.MCPServerModeAuto},
+			"empty":  {Transport: "stdio", Command: "cmd"},
+			"bearer": {Transport: "stdio", Command: "cmd", Env: map[string]string{"TOKEN": "secret"}},
+		},
+	}
+
+	got := f.GetMCPMentionableServers()
+
+	want := []MCPMentionableServer{
+		{Name: "alpha", Mode: config.MCPServerModeDisabled},
+		{Name: "bearer", Mode: config.MCPServerModeAuto},
+		{Name: "empty", Mode: config.MCPServerModeAuto},
+		{Name: "mid", Mode: config.MCPServerModeAuto},
+		{Name: "zeta", Mode: config.MCPServerModeManual},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d mentionable servers, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("got[%d] = %+v, want %+v", i, got[i], w)
+		}
+	}
+}
+
+// TestGetMCPMentionableServers_NoConfig verifies the uninitialized-config
+// early return: an empty (never nil) slice, not a null payload.
+func TestGetMCPMentionableServers_NoConfig(t *testing.T) {
+	f := &FrontendAPI{} // f.config == nil
+	got := f.GetMCPMentionableServers()
+	if got == nil {
+		t.Fatal("expected non-nil empty slice")
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty slice, got %d entries", len(got))
 	}
 }
 
@@ -404,6 +530,15 @@ func TestValidateMCPServerConfig(t *testing.T) {
 		{name: "negative timeout", cfg: config.MCPServerConfig{Command: "cmd", Timeout: "-5s"}, wantErr: true},
 		{name: "invalid call_timeout", cfg: config.MCPServerConfig{Command: "cmd", CallTimeout: "abc"}, wantErr: true},
 		{name: "zero call_timeout", cfg: config.MCPServerConfig{Command: "cmd", CallTimeout: "0s"}, wantErr: true},
+		// Mode: empty is the accepted default; the three canonical enum
+		// members pass; anything else is rejected up front (the load path is
+		// the fail-soft counterpart — normalizeMCPModes).
+		{name: "empty mode ok (default auto)", cfg: config.MCPServerConfig{Command: "cmd"}, wantErr: false},
+		{name: "mode auto ok", cfg: config.MCPServerConfig{Command: "cmd", Mode: config.MCPServerModeAuto}, wantErr: false},
+		{name: "mode manual ok", cfg: config.MCPServerConfig{Command: "cmd", Mode: config.MCPServerModeManual}, wantErr: false},
+		{name: "mode disabled ok", cfg: config.MCPServerConfig{Command: "cmd", Mode: config.MCPServerModeDisabled}, wantErr: false},
+		{name: "mode bogus rejected", cfg: config.MCPServerConfig{Command: "cmd", Mode: "bogus"}, wantErr: true},
+		{name: "mode case-sensitive", cfg: config.MCPServerConfig{Command: "cmd", Mode: "Auto"}, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

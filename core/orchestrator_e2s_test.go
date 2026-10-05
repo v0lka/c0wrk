@@ -873,3 +873,77 @@ func TestRunE2SLoop_ModelProfilesNudgeOverrideCannotBypassOrdering(t *testing.T)
 		t.Error("run did not abort with spin_stop")
 	}
 }
+
+// TestHandleMessage_E2S_MCPModeGating drives the E2S branch end-to-end over
+// the per-server MCP mode gate: without a mention the manual server's tool is
+// absent from the prompt catalog (and no directive renders); with a mention it
+// joins the catalog and the soft "Requested MCP Servers" section renders. The
+// disabled server never surfaces in either case.
+func TestHandleMessage_E2S_MCPModeGating(t *testing.T) {
+	build := func() (*sdktools.ToolRegistry, *Orchestrator, *mockLLMCaller) {
+		reg := sdktools.NewToolRegistry()
+		_ = reg.RegisterWithSourceCategory(&mockSubagentTool{name: "auto_query", group: sdktools.GroupRemoteMCP}, "auto-srv", sdktools.SourceCategoryMCP)
+		_ = reg.RegisterWithSourceCategory(&mockSubagentTool{name: "manual_query", group: sdktools.GroupRemoteMCP}, "manual-srv", sdktools.SourceCategoryMCP)
+		_ = reg.RegisterWithSourceCategory(&mockSubagentTool{name: "stale_query", group: sdktools.GroupRemoteMCP}, "disabled-srv", sdktools.SourceCategoryMCP)
+		mockLLM := &mockLLMCaller{callFn: func(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+			return e2sFinishResponse("mcp-e2s", "done"), nil
+		}}
+		deps := OrchestratorDeps{
+			Router:         newCoreRouter(mockLLM, 5),
+			LLM:            mockLLM,
+			ToolExec:       reg,
+			ToolRegistry:   reg,
+			TokenCounter:   llm.NewSimpleTokenCounter(),
+			ContextFactory: testContextFactory,
+			CircuitBreaker: defaultCircuitBreakerConfig,
+		}
+		o := NewOrchestrator(OrchestratorConfig{
+			E2S: E2SSettings{Enabled: true},
+			MCPServerModes: map[string]string{
+				"auto-srv":     "auto",
+				"manual-srv":   "manual",
+				"disabled-srv": "disabled",
+			},
+		}, deps)
+		return reg, o, mockLLM
+	}
+
+	firstPrompt := func(m *mockLLMCaller) string {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if len(m.calls) == 0 {
+			t.Fatal("E2S loop made no LLM call")
+		}
+		return fmt.Sprintf("%v", m.calls[0])
+	}
+
+	_, o, mockLLM := build()
+	if _, err := o.HandleMessage(context.Background(), "query things", "sess-mcp-1", HandleOptions{E2S: true}); err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
+	prompt := firstPrompt(mockLLM)
+	if !strings.Contains(prompt, "auto_query") {
+		t.Fatal("auto server's tool must be in the E2S catalog")
+	}
+	if strings.Contains(prompt, "manual_query") || strings.Contains(prompt, "stale_query") {
+		t.Fatal("unmentioned manual / disabled server tools must be gated out of the E2S catalog")
+	}
+	if strings.Contains(prompt, "Requested MCP Servers") {
+		t.Fatal("no mention must render no Requested MCP Servers section")
+	}
+
+	_, o, mockLLM = build()
+	if _, err := o.HandleMessage(context.Background(), "query things", "sess-mcp-2", HandleOptions{E2S: true, UserMCPServers: []string{"manual-srv"}}); err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
+	prompt = firstPrompt(mockLLM)
+	if !strings.Contains(prompt, "manual_query") {
+		t.Fatal("a mentioned manual server's tool must join the E2S catalog")
+	}
+	if !strings.Contains(prompt, "## Requested MCP Servers") || !strings.Contains(prompt, "manual-srv") {
+		t.Fatal("a mention must render the Requested MCP Servers section naming the server")
+	}
+	if strings.Contains(prompt, "stale_query") {
+		t.Fatal("disabled server tools must never surface, mention or not")
+	}
+}

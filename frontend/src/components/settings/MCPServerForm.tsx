@@ -13,10 +13,12 @@ import {
 import type { MCPServerConfig } from '@/types/models'
 
 type TransportType = 'stdio' | 'http'
+type ServerMode = 'auto' | 'manual' | 'disabled'
 
 interface ServerFormData {
   name: string
   transport: TransportType
+  mode: ServerMode
   command: string
   args: string
   env: Record<string, string>
@@ -33,7 +35,7 @@ function makeEntry(key = '', value = ''): KeyValueEntry {
 }
 
 const emptyForm: ServerFormData = {
-  name: '', transport: 'stdio', command: '', args: '', env: {}, url: '', headers: {}, timeout: '', callTimeout: '',
+  name: '', transport: 'stdio', mode: 'auto', command: '', args: '', env: {}, url: '', headers: {}, timeout: '', callTimeout: '',
 }
 
 interface MCPServerFormProps {
@@ -51,7 +53,7 @@ export function MCPServerForm({ open, onOpenChange, editingName, serverConfigs, 
     if (editingName && serverConfigs[editingName]) {
       const cfg = serverConfigs[editingName]
       const isStdio = editServer?.transport === 'stdio'
-      return { name: editingName, transport: isStdio ? 'stdio' : 'http', command: cfg.command || '', args: cfg.args?.join(', ') || '', env: cfg.env || {}, url: cfg.url || '', headers: cfg.headers || {}, timeout: cfg.timeout || '', callTimeout: cfg.call_timeout || '' }
+      return { name: editingName, transport: isStdio ? 'stdio' : 'http', mode: cfg.mode ?? 'auto', command: cfg.command || '', args: cfg.args?.join(', ') || '', env: cfg.env || {}, url: cfg.url || '', headers: cfg.headers || {}, timeout: cfg.timeout || '', callTimeout: cfg.call_timeout || '' }
     }
     return emptyForm
   })
@@ -88,6 +90,7 @@ export function MCPServerForm({ open, onOpenChange, editingName, serverConfigs, 
       headers: isStdio ? {} : headers,
       timeout: formData.timeout.trim(),
       call_timeout: formData.callTimeout.trim(),
+      mode: formData.mode,
     }
 
     const newServers = { ...serverConfigs }
@@ -125,6 +128,17 @@ export function MCPServerForm({ open, onOpenChange, editingName, serverConfigs, 
                 <Button key={t} variant={formData.transport === t ? 'secondary' : 'ghost'} size="sm" className="flex-1" onClick={() => setFormData({ ...formData, transport: t })}>{t}</Button>
               ))}
             </div>
+          </Field>
+
+          <Field label="Activation Mode">
+            <div className="flex gap-2 p-1 bg-muted rounded-lg">
+              {(['auto', 'manual', 'disabled'] as const).map((m) => (
+                <Button key={m} variant={formData.mode === m ? 'secondary' : 'ghost'} size="sm" className="flex-1" onClick={() => setFormData({ ...formData, mode: m })}>{m}</Button>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              auto connects the server whenever the MCP gateway starts. manual keeps the configuration but connects only when you mention it in the chat with <code>/server-name</code> or <code>/mcp: server-name</code>. disabled never dials it — the configuration is kept, nothing runs.
+            </p>
           </Field>
 
           {formData.transport === 'stdio' ? (

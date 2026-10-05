@@ -257,7 +257,7 @@ func TestSendMessage_E2SFailClosedWhenExperimentalDisabled(t *testing.T) {
 
 	// The harness carries no runtime config → experimentalFeaturesEnabled()
 	// reports false (fail-closed).
-	err := api.SendMessage("fork-src", "do the thing", nil, nil, "", "", false, "", true, false)
+	err := api.SendMessage("fork-src", "do the thing", nil, nil, nil, "", "", false, "", true, false)
 	if err == nil {
 		t.Fatal("expected an error sending an E2S message while experimental features are disabled")
 	}
@@ -298,7 +298,7 @@ func TestSendMessage_E2SGatePassesWhenExperimentalEnabled(t *testing.T) {
 	api.config.Experimental.Enabled = true
 	api.configMu.Unlock()
 
-	err := api.SendMessage("fork-src", "do the thing", nil, nil, "", "", false, "", true, false)
+	err := api.SendMessage("fork-src", "do the thing", nil, nil, nil, "", "", false, "", true, false)
 	if err == nil {
 		t.Fatal("expected the send to stop at the manager-initialized guard, not succeed")
 	}
@@ -318,7 +318,7 @@ func TestSendMessage_E2SAndGoalMutuallyExclusive(t *testing.T) {
 
 	// The exclusivity guard runs before the experimental gate, so the test
 	// needs no config: both flags set → exclusivity rejection.
-	err := api.SendMessage("fork-src", "both modes", nil, nil, "", "", true, "", true, false)
+	err := api.SendMessage("fork-src", "both modes", nil, nil, nil, "", "", true, "", true, false)
 	if err == nil {
 		t.Fatal("expected an error when both goal and E2S flags are set")
 	}
@@ -338,7 +338,7 @@ func TestSendMessage_E2SRejectsGoalCommandPrefix(t *testing.T) {
 	ctx := context.Background()
 
 	// No config needed: the prefix guard runs before the experimental gate.
-	err := api.SendMessage("fork-src", "/goal do the thing", nil, nil, "", "", false, "", true, false)
+	err := api.SendMessage("fork-src", "/goal do the thing", nil, nil, nil, "", "", false, "", true, false)
 	if err == nil {
 		t.Fatal("expected an error for an E2S message carrying a /goal command")
 	}
@@ -358,8 +358,8 @@ func TestSendMessage_E2SRejectsGoalCommandPrefix(t *testing.T) {
 }
 
 // TestSendMessage_E2SRejectsGoalPrefixExposedByPreprocessing pins the
-// post-preprocessing guard: PreprocessMessageText strips leading /skill (and
-// #agent) refs, which can EXPOSE a "/goal" prefix hidden behind them — the
+// post-preprocessing guard: PreprocessMessageText strips leading /-mention
+// refs (skills and agents), which can EXPOSE a "/goal" prefix hidden behind them — the
 // manager arms goal mode from the processed text, so the raw-text guard alone
 // misses this form and core would reject the run only after side effects.
 func TestSendMessage_E2SRejectsGoalPrefixExposedByPreprocessing(t *testing.T) {
@@ -368,7 +368,7 @@ func TestSendMessage_E2SRejectsGoalPrefixExposedByPreprocessing(t *testing.T) {
 
 	// "/realskill" is a known active skill, so preprocessing strips it and
 	// leaves "/goal do x" as the leading command.
-	err := api.SendMessage("fork-src", "/realskill /goal refactor the auth module", []string{"realskill"}, nil, "", "", false, "", true, false)
+	err := api.SendMessage("fork-src", "/realskill /goal refactor the auth module", []string{"realskill"}, nil, nil, "", "", false, "", true, false)
 	if err == nil {
 		t.Fatal("expected an error: the stripped /skill ref exposes a /goal prefix on an E2S send")
 	}
@@ -380,7 +380,7 @@ func TestSendMessage_E2SRejectsGoalPrefixExposedByPreprocessing(t *testing.T) {
 	// guard: it proceeds past the exclusivity check (this harness has no
 	// experimental config, so the send stops at the gate — which is exactly
 	// the proof wanted: the rejection names the gate, not exclusivity).
-	if err := api.SendMessage("fork-src", "/realskill please proceed", []string{"realskill"}, nil, "", "", false, "", true, false); err == nil || strings.Contains(err.Error(), "mutually exclusive") {
+	if err := api.SendMessage("fork-src", "/realskill please proceed", []string{"realskill"}, nil, nil, "", "", false, "", true, false); err == nil || strings.Contains(err.Error(), "mutually exclusive") {
 		t.Errorf("a plain skill-ref E2S send must pass the prefix guard, got: %v", err)
 	}
 }
@@ -423,7 +423,7 @@ func TestSendMessage_GoalBlockedByModelProfiles(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := api.SendMessage("fork-src", tc.text, nil, nil, "", "", tc.goal, "", false, false)
+			err := api.SendMessage("fork-src", tc.text, nil, nil, nil, "", "", tc.goal, "", false, false)
 			if err == nil {
 				t.Fatal("expected an error for a goal send under the Model Profiles essential-tools profile")
 			}

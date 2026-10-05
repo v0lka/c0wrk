@@ -861,6 +861,9 @@ func (r *ToolRegistry) RegisterWithSource(tool sdktools.Tool, source string) {
 //     keys, JSON types, unknown keys, recursively into nested objects and
 //     array items),
 //  2. disabled tools (No Project mode) — applies to every tool, system included,
+//     2b. per-server MCP mode gating — a tool whose MCP server is gated off for
+//     the task ("manual" without a user mention, or "disabled") is rejected
+//     from the ctx-carried gated set (see WithGatedMCPServers),
 //  3. system group → execute directly (internal orchestration tools),
 //  4. pre-execute hook,
 //  5. group policy deny → block,
@@ -920,6 +923,34 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 			Content: fmt.Sprintf("tool %q is not available in No Project mode", name),
 			IsError: true,
 		}, nil
+	}
+
+	// Gate 2b: per-server MCP mode gating (defense-in-depth). The task-level
+	// descriptor filters already hide gated-off servers' tools from every
+	// LLM-facing catalog (Conductor, subagents, verifier, E2S), but a
+	// hallucinated call naming such a tool — or a stale registration left by
+	// a reconfigure race — must still fail closed at dispatch. The gated set
+	// is threaded through ctx once per task (WithGatedMCPServers); an absent
+	// set (no manual/disabled servers configured, or a caller that never
+	// gated) disables the check. SourceCategoryMCP identifies external tools;
+	// the source tag identifies their server, whose name may itself be "core".
+	// Use the same category/source metadata as the descriptor filters so true
+	// built-ins remain exempt even when their source label is gated. MUST
+	// precede the system-group bypass like Gate 2.
+	if gated := GatedMCPServersFromContext(ctx); len(gated) > 0 {
+		for _, descriptor := range r.List() {
+			if descriptor.Name != name {
+				continue
+			}
+			if descriptor.SourceCategory == sdktools.SourceCategoryMCP && gated[descriptor.Source] {
+				r.log().Warn("security: tool blocked by MCP server mode gating", "tool", name, "server", descriptor.Source)
+				return sdktools.ToolResult{
+					Content: fmt.Sprintf("tool %q is unavailable: MCP server %q is not enabled for this task (manual mode without a mention, or disabled)", name, descriptor.Source),
+					IsError: true,
+				}, nil
+			}
+			break
+		}
 	}
 
 	// Gate 3: system group — internal orchestration/state tools bypass the

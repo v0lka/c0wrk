@@ -11,6 +11,7 @@ import type {
     FileEntry,
     ConfigResponse,
     MCPServerStatus,
+    MCPMentionableServer,
     AutonomyMode,
     SecuritySettingsResponse,
     ShellExecSettingsResponse,
@@ -87,6 +88,16 @@ export function isConfigResponse(v: unknown): v is ConfigResponse {
 
 export function isMCPServerStatus(v: unknown): v is MCPServerStatus {
     return isObj(v) && has(v, 'name', 'connected')
+}
+
+/** Validates one GetMCPMentionableServers entry: a name plus a normalized
+ *  mode. An unrecognized mode string (older/hand-edited backend payload)
+ *  rejects the entry so the caller degrades to "no mentionable servers"
+ *  instead of threading an unknown mode into completion filtering. */
+export function isMCPMentionableServer(v: unknown): v is MCPMentionableServer {
+    return isObj(v)
+        && typeof v.name === 'string'
+        && (v.mode === 'auto' || v.mode === 'manual' || v.mode === 'disabled')
 }
 
 /** Whether v is one of the three autonomy-mode enum values (config.AutonomyMode*). */

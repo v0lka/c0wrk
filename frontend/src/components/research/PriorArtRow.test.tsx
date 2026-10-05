@@ -79,6 +79,7 @@ describe('PriorArtRow — Deep read', () => {
       [STUDY_PAPER_SKILL],
       undefined,
       undefined,
+      undefined,
       { newSession: false },
     )
     // The forced depth is the deep appraisal pass, not the inferred default.
@@ -101,6 +102,7 @@ describe('PriorArtRow — Deep read', () => {
     expect(sendMock).toHaveBeenCalledWith(
       buildDeepReadPriorArtPrompt(PATH),
       [STUDY_PAPER_SKILL],
+      undefined,
       undefined,
       undefined,
       { newSession: true },

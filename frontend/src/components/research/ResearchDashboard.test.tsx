@@ -189,6 +189,7 @@ describe('ResearchNextStep — dispatch', () => {
       ['research-experiment'],
       undefined,
       undefined,
+      undefined,
       { newSession: false },
     )
   })
@@ -219,6 +220,7 @@ describe('ResearchNextStep — dispatch', () => {
     expect(sendSpy).toHaveBeenCalledWith(
       buildNextStepPrompt(nextStep),
       ['research-init'],
+      undefined,
       undefined,
       undefined,
       { newSession: false },
@@ -258,7 +260,7 @@ describe('ResearchQuickActions — dispatch', () => {
     })
 
     expect(sendSpy).toHaveBeenCalledTimes(1)
-    const [prompt, skills, , , options] = sendSpy.mock.calls[0]!
+    const [prompt, skills, , , , options] = sendSpy.mock.calls[0]!
     expect(skills).toEqual(['research-synthesis'])
     expect(typeof prompt).toBe('string')
     expect(prompt.length).toBeGreaterThan(0)
@@ -279,7 +281,7 @@ describe('ResearchQuickActions — dispatch', () => {
     })
 
     expect(sendSpy).toHaveBeenCalledTimes(1)
-    const [prompt, skills, , , options] = sendSpy.mock.calls[0]!
+    const [prompt, skills, , , , options] = sendSpy.mock.calls[0]!
     expect(skills).toEqual(['research-decision'])
     expect(prompt.length).toBeGreaterThan(0)
     expect(options).toEqual({ newSession: true })
@@ -325,7 +327,7 @@ describe('ResearchQuickActions — Run experiment button (current-card gating)',
     })
 
     expect(sendSpy).toHaveBeenCalledTimes(1)
-    const [prompt, skills, , , options] = sendSpy.mock.calls[0]!
+    const [prompt, skills, , , , options] = sendSpy.mock.calls[0]!
     expect(skills).toEqual(['research-experiment'])
     expect(prompt).toBe(buildExperimentPrompt({ id: 'H-001', title: 'Leading hypothesis' }))
     expect(prompt).toContain('H-001')
@@ -651,6 +653,7 @@ describe('ResearchPanel — prior-art Deep read', () => {
     expect(sendSpy).toHaveBeenCalledWith(
       buildDeepReadPriorArtPrompt(expectedPriorArt),
       [STUDY_PAPER_SKILL],
+      undefined,
       undefined,
       undefined,
       { newSession: false },

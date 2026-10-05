@@ -284,7 +284,7 @@ func TestShutdown_MidPlan_RestartResumeCompletesAllStepsTerminal(t *testing.T) {
 	// (CreateSession itself does not persist the session row).
 	seedSession(t, sessions, info.ID, testProjectID, "mid-plan shutdown", false)
 
-	if err := mgr1.SendMessage(context.Background(), info.ID, "build the widget in two planned steps", nil, nil, "", "", false, "", false, false); err != nil {
+	if err := mgr1.SendMessage(context.Background(), info.ID, "build the widget in two planned steps", nil, nil, nil, "", "", false, "", false, false); err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
 

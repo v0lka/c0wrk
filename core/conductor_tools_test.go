@@ -101,7 +101,7 @@ func assertAbsent(t *testing.T, names map[string]struct{}, unwanted []string) {
 // full toolset minus Conductor-only tools.
 func TestResolveTaskTools_DefaultGrantsAll(t *testing.T) {
 	l := &conductorLauncher{deps: conductorDeps{toolRegistry: newSubagentTestRegistry(subagentToolSet())}}
-	got, err := l.resolveTaskTools(tools.DelegationTask{Tools: nil})
+	got, err := l.resolveTaskTools(context.Background(), tools.DelegationTask{Tools: nil})
 	if err != nil {
 		t.Fatalf("resolveTaskTools: unexpected error: %v", err)
 	}
@@ -114,12 +114,12 @@ func TestResolveTaskTools_DefaultGrantsAll(t *testing.T) {
 // (and "") strings behave identically to nil.
 func TestResolveTaskTools_AllStringMatchesDefault(t *testing.T) {
 	l := &conductorLauncher{deps: conductorDeps{toolRegistry: newSubagentTestRegistry(subagentToolSet())}}
-	def, err := l.resolveTaskTools(tools.DelegationTask{Tools: nil})
+	def, err := l.resolveTaskTools(context.Background(), tools.DelegationTask{Tools: nil})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, v := range []string{"all", ""} {
-		got, err := l.resolveTaskTools(tools.DelegationTask{Tools: v})
+		got, err := l.resolveTaskTools(context.Background(), tools.DelegationTask{Tools: v})
 		if err != nil {
 			t.Fatalf("tools=%q: unexpected error: %v", v, err)
 		}
@@ -136,7 +136,7 @@ func TestResolveTaskTools_AllStringMatchesDefault(t *testing.T) {
 func TestResolveTaskTools_EmptyArrayRejected(t *testing.T) {
 	l := &conductorLauncher{deps: conductorDeps{toolRegistry: newSubagentTestRegistry(subagentToolSet())}}
 	for _, v := range []any{[]any{}, []string{}} {
-		_, err := l.resolveTaskTools(tools.DelegationTask{Tools: v})
+		_, err := l.resolveTaskTools(context.Background(), tools.DelegationTask{Tools: v})
 		if err == nil {
 			t.Errorf("resolveTaskTools(%#v) = nil error, want empty-array rejection", v)
 			continue
@@ -153,7 +153,7 @@ func TestResolveTaskTools_EmptyArrayRejected(t *testing.T) {
 // untagged tools) and the conductor-only system tools stay stripped.
 func TestResolveTaskTools_ExplicitGroupsExactGrant(t *testing.T) {
 	l := &conductorLauncher{deps: conductorDeps{toolRegistry: newSubagentTestRegistry(subagentToolSet())}}
-	got, err := l.resolveTaskTools(tools.DelegationTask{Tools: []any{"local-read", "execute"}})
+	got, err := l.resolveTaskTools(context.Background(), tools.DelegationTask{Tools: []any{"local-read", "execute"}})
 	if err != nil {
 		t.Fatalf("resolveTaskTools: unexpected error: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestResolveTaskTools_ProfileLocalReadExecute(t *testing.T) {
 	}
 
 	l := &conductorLauncher{deps: conductorDeps{toolRegistry: newSubagentTestRegistry(subagentToolSet())}}
-	got, err := l.resolveTaskTools(tools.DelegationTask{Tools: asAny})
+	got, err := l.resolveTaskTools(context.Background(), tools.DelegationTask{Tools: asAny})
 	if err != nil {
 		t.Fatalf("resolveTaskTools: unexpected error: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestResolveTaskTools_ProfileLocalReadExecute(t *testing.T) {
 // and NOTHING else — MCP tools must not sneak in via SourceCategory.
 func TestResolveTaskTools_ReadOnlyExcludesMCP(t *testing.T) {
 	l := &conductorLauncher{deps: conductorDeps{toolRegistry: newSubagentTestRegistry(subagentToolSet())}}
-	got, err := l.resolveTaskTools(tools.DelegationTask{Tools: "read-only"})
+	got, err := l.resolveTaskTools(context.Background(), tools.DelegationTask{Tools: "read-only"})
 	if err != nil {
 		t.Fatalf("resolveTaskTools: unexpected error: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestResolveTaskTools_ReadOnlyExcludesMCP(t *testing.T) {
 // canonicalized, mirroring agents.NormalizeToolGroupToken.
 func TestResolveTaskTools_UnderscoreTokensAccepted(t *testing.T) {
 	l := &conductorLauncher{deps: conductorDeps{toolRegistry: newSubagentTestRegistry(subagentToolSet())}}
-	got, err := l.resolveTaskTools(tools.DelegationTask{Tools: []any{"local_read", "execute"}})
+	got, err := l.resolveTaskTools(context.Background(), tools.DelegationTask{Tools: []any{"local_read", "execute"}})
 	if err != nil {
 		t.Fatalf("resolveTaskTools: unexpected error: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestResolveTaskTools_UnknownInputsFailClosed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := l.resolveTaskTools(tools.DelegationTask{Tools: tt.tools})
+			_, err := l.resolveTaskTools(context.Background(), tools.DelegationTask{Tools: tt.tools})
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -300,7 +300,7 @@ func TestResolveTaskTools_ChatModeDisabledDropped(t *testing.T) {
 		toolRegistry:  newSubagentTestRegistry(subagentToolSet()),
 		disabledTools: map[string]bool{ToolGlob: true, ToolRipgrep: true, ToolSemanticSearch: true},
 	}}
-	got, err := l.resolveTaskTools(tools.DelegationTask{Tools: []any{"local-read"}})
+	got, err := l.resolveTaskTools(context.Background(), tools.DelegationTask{Tools: []any{"local-read"}})
 	if err != nil {
 		t.Fatalf("resolveTaskTools: unexpected error: %v", err)
 	}
@@ -386,7 +386,7 @@ func TestResolveTaskTools_GoalToolsNeverGranted(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			l := &conductorLauncher{deps: conductorDeps{toolRegistry: newSubagentTestRegistry(subagentToolSet())}}
-			got, err := l.resolveTaskTools(tools.DelegationTask{Tools: tc.tools})
+			got, err := l.resolveTaskTools(context.Background(), tools.DelegationTask{Tools: tc.tools})
 			if err != nil {
 				t.Fatalf("resolveTaskTools: unexpected error: %v", err)
 			}
@@ -412,5 +412,41 @@ func TestSubagentCtxClearsGoalSinks(t *testing.T) {
 	}
 	if tools.VerificationSinkFrom(ctx) != nil {
 		t.Error("verification sink must be cleared in subagent contexts")
+	}
+}
+
+// TestResolveTaskTools_GatedMCPServersExcluded pins the launcher-side source
+// filter: subagent toolsets are built from the RAW registry list, so the
+// task's gated-off MCP servers (manual without a mention / disabled) must be
+// re-filtered here via the ctx-carried gated set — otherwise they would ride
+// the default full grant straight back into every subagent.
+func TestResolveTaskTools_GatedMCPServersExcluded(t *testing.T) {
+	r := sdktools.NewToolRegistry()
+	_ = r.RegisterWithSourceCategory(&mockSubagentTool{name: "auto_tool", group: sdktools.GroupRemoteMCP}, "auto-srv", sdktools.SourceCategoryMCP)
+	_ = r.RegisterWithSourceCategory(&mockSubagentTool{name: "manual_tool", group: sdktools.GroupRemoteMCP}, "manual-srv", sdktools.SourceCategoryMCP)
+	l := &conductorLauncher{deps: conductorDeps{toolRegistry: r}}
+
+	// Without a gated set (default config) both MCP tools are granted.
+	got, err := l.resolveTaskTools(context.Background(), tools.DelegationTask{Tools: nil})
+	if err != nil {
+		t.Fatalf("resolveTaskTools: unexpected error: %v", err)
+	}
+	names := descriptorNames(got)
+	assertPresent(t, names, []string{"auto_tool", "manual_tool"})
+
+	// With manual-srv gated off, its tool disappears from every grant branch.
+	ctx := tools.WithGatedMCPServers(context.Background(), map[string]bool{"manual-srv": true})
+	for _, grant := range []any{nil, "all", "read-only", []any{"remote-mcp"}} {
+		got, err := l.resolveTaskTools(ctx, tools.DelegationTask{Tools: grant})
+		if err != nil {
+			t.Fatalf("resolveTaskTools(%v): unexpected error: %v", grant, err)
+		}
+		names := descriptorNames(got)
+		if _, ok := names["manual_tool"]; ok {
+			t.Errorf("grant %v: gated-off manual_tool must not reach subagents, got %v", grant, names)
+		}
+		if _, ok := names["auto_tool"]; grant != "read-only" && !ok {
+			t.Errorf("grant %v: auto MCP tool must stay available, got %v", grant, names)
+		}
 	}
 }

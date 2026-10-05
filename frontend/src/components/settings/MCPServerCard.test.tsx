@@ -87,4 +87,28 @@ describe('MCPServerCard', () => {
     expect(container.textContent).toContain('connection refused')
     teardown()
   })
+
+  it('renders a manual mode badge next to the transport badge', () => {
+    setup({ name: 'context7', transport: 'http', connected: false, starting: false, tool_count: 0, tools: [], error: 'unavailable', mode: 'manual' })
+    expect(container.textContent).toContain('manual')
+    teardown()
+  })
+
+  it('renders a disabled server neutrally: mode badge, no error, no red icon', () => {
+    setup({ name: 'off-srv', transport: 'stdio', connected: false, starting: false, tool_count: 0, tools: [], mode: 'disabled' })
+    expect(container.textContent).toContain('disabled')
+    // Intentionally not dialed, never broken: no failure text anywhere.
+    expect(container.textContent).not.toContain('unavailable')
+    // The status icon is the neutral CircleOff, not the destructive alert.
+    const alertIcons = container.querySelectorAll('.text-destructive')
+    expect(alertIcons).toHaveLength(0)
+    teardown()
+  })
+
+  it('renders no mode badge for the implicit auto default', () => {
+    setup({ name: 'auto-srv', transport: 'http', connected: true, starting: false, tool_count: 1, tools: ['a'], mode: 'auto' })
+    expect(container.textContent).not.toContain('manual')
+    expect(container.textContent).not.toContain('disabled')
+    teardown()
+  })
 })

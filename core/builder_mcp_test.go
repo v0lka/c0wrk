@@ -44,6 +44,35 @@ func TestConfigToGatewayConfig_MCPTimeouts(t *testing.T) {
 	}
 }
 
+// TestConfigToGatewayConfig_DisabledServerSkipped pins the never-dialed
+// contract: a "disabled" server is omitted from the gateway config entirely
+// (so no process spawns and no connection opens, at startup and on
+// reconfigure alike), while "auto", "manual" and empty (the default) all
+// stay — manual's on-demand behavior is layered above the gateway, not by
+// skipping it here.
+func TestConfigToGatewayConfig_DisabledServerSkipped(t *testing.T) {
+	cfg := &BuilderConfig{
+		MCP: BuilderMCPConfig{
+			Servers: map[string]BuilderMCPServer{
+				"auto":     {Transport: "stdio", Command: "cmd-a", Mode: "auto"},
+				"manual":   {Transport: "stdio", Command: "cmd-m", Mode: "manual"},
+				"empty":    {Transport: "stdio", Command: "cmd-e"},
+				"disabled": {Transport: "stdio", Command: "cmd-d", Mode: "disabled"},
+			},
+		},
+	}
+
+	gw := configToGatewayConfig(cfg)
+	if _, ok := gw.Servers["disabled"]; ok {
+		t.Error(`"disabled" server must NOT be present in the gateway config — it is never dialed`)
+	}
+	for _, name := range []string{"auto", "manual", "empty"} {
+		if _, ok := gw.Servers[name]; !ok {
+			t.Errorf("server %q missing from gateway config: only disabled is skipped", name)
+		}
+	}
+}
+
 // newFailingGateway returns a non-nil *mcp.Gateway backed by a stdio server
 // whose command does not exist. StartGateway returns the gateway even when the
 // underlying server fails to connect, so the returned gateway is usable for
