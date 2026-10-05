@@ -261,6 +261,7 @@ body {
    Everything clickable shows the pointer cursor; disabled controls show
    not-allowed. Native browser defaults (default arrow on buttons, text
    caret on selects) are replaced by explicit rules so the whole app has a
+   caret on selects) are replaced by explicit rules so the whole app has a
    consistent, obvious "this is clickable" affordance.
    Lives in @layer base: any utility class (cursor-wait, cursor-grab, …)
    still overrides it where a component needs an intentional exception.
@@ -467,8 +468,10 @@ body {
 
 /* Code blocks */
 .prose pre {
+    font-family: var(--font-mono);
     background-color: var(--tw-prose-pre-bg);
     border: 1px solid var(--color-border);
+    line-height: 1.2;
 }
 
 .prose pre code {
@@ -540,8 +543,9 @@ body {
 }
 
 /* Compact prose variant for tooltips and tight spaces */
-.prose-xs {
+.prose.prose-xs {
     font-size: var(--text-xs);
+    line-height: var(--text-xs--line-height);
 }
 
 /* Markdown rendered inside a hover tooltip (e.g. the Model Profiles essential-tools
