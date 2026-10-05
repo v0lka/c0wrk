@@ -40,7 +40,7 @@ export function PaperSourceRaw({ artifact, pending }: PaperSourceRawProps) {
     <div
       ref={containerRef}
       data-testid="paper-source-raw"
-      className="min-h-0 flex-1 overflow-auto custom-scrollbar py-1 font-mono text-[11px] leading-5"
+      className="min-h-0 flex-1 overflow-auto custom-scrollbar py-1 font-mono text-xs leading-5"
     >
       {artifact.loading ? (
         <p className="px-2 py-3 text-center text-muted-foreground">Loading…</p>

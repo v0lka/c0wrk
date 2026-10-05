@@ -136,7 +136,7 @@ export function CompactContextButton() {
               <Icon className="size-3.5 shrink-0 text-muted-foreground" />
               <span className="flex min-w-0 flex-col">
                 <span className="text-xs font-medium">{name}</span>
-                <span className="text-[10px] text-muted-foreground">{hint}</span>
+                <span className="text-xs text-muted-foreground">{hint}</span>
               </span>
             </DropdownMenuItem>
           )

@@ -188,7 +188,7 @@ export function ProjectSelector() {
                       {project.name}
                     </span>
                   </div>
-                  <span className="ml-auto text-[10px] text-muted-foreground">
+                  <span className="ml-auto text-xs text-muted-foreground">
                     {formatRelativeTime(project.last_active_at)}
                   </span>
                   <ItemActions>

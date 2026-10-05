@@ -76,7 +76,7 @@ export function ReasoningCombobox({ disabled = false }: { disabled?: boolean }) 
               Default ({familyDefault})
             </span>
             {!selectedReasoning && (
-              <span className="text-[10px] text-primary">active</span>
+              <span className="text-xs text-primary">active</span>
             )}
           </button>
 
@@ -92,7 +92,7 @@ export function ReasoningCombobox({ disabled = false }: { disabled?: boolean }) 
               >
                 <span className="flex-1 text-left">{opt}</span>
                 {isSelected && (
-                  <span className="text-[10px] text-primary">selected</span>
+                  <span className="text-xs text-primary">selected</span>
                 )}
               </button>
             )

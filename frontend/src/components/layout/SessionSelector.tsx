@@ -112,7 +112,7 @@ export function SessionSelector() {
   return (
     <div className="border-b border-border px-2 py-1">
       {createError && (
-        <div className="mb-1 rounded px-2 py-1 text-[11px] text-destructive bg-destructive/10">{createError}</div>
+        <div className="mb-1 rounded px-2 py-1 text-xs text-destructive bg-destructive/10">{createError}</div>
       )}
       <div className="flex items-center gap-1">
         <DropdownMenu

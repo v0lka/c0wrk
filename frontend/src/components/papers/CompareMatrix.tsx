@@ -20,11 +20,11 @@ interface CompareMatrixProps {
   content: string
 }
 
-const CELL_CLASS = 'border border-border px-1.5 py-1 align-top text-[10px] text-foreground'
+const CELL_CLASS = 'border border-border px-1.5 py-1 align-top text-xs text-foreground'
 
 function SectionHeading({ children }: { children: React.ReactNode }) {
   return (
-    <h4 className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+    <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
       {children}
     </h4>
   )
@@ -38,7 +38,7 @@ function PapersTable({ papers }: { papers: ParsedComparison['papers'] }) {
       <div className="overflow-x-auto custom-scrollbar">
         <table className="w-full border-collapse">
           <thead>
-            <tr className="text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+            <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground">
               <th className={CELL_CLASS}>ID</th>
               <th className={CELL_CLASS}>Short name</th>
               <th className={CELL_CLASS}>Citation</th>
@@ -75,7 +75,7 @@ function MatrixTable({
       <div className="overflow-x-auto custom-scrollbar">
         <table data-testid="comparison-grid" className="w-full border-collapse">
           <thead>
-            <tr className="text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+            <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground">
               <th className={CELL_CLASS}>Dimension</th>
               {columns.map((column, i) => (
                 <th key={i} className={CELL_CLASS}>
@@ -122,7 +122,7 @@ function BulletSection({
       <SectionHeading>{title}</SectionHeading>
       <ul className="flex flex-col gap-0.5">
         {items.map((item, i) => (
-          <li key={i} data-testid={`${testId}-item`} className="text-[11px] text-foreground">
+          <li key={i} data-testid={`${testId}-item`} className="text-xs text-foreground">
             {item}
           </li>
         ))}
@@ -149,7 +149,7 @@ function SimpleTable({
       <div className="overflow-x-auto custom-scrollbar">
         <table className="w-full border-collapse">
           <thead>
-            <tr className="text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+            <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground">
               {header.map((h, i) => (
                 <th key={i} className={CELL_CLASS}>
                   {h}
@@ -193,7 +193,7 @@ export function CompareMatrix({ slug, content }: CompareMatrixProps) {
     return (
       <p
         data-testid="comparison-empty"
-        className="px-3 py-4 text-center text-[11px] text-muted-foreground"
+        className="px-3 py-4 text-center text-xs text-muted-foreground"
       >
         No comparison matrix found in this artifact.
       </p>
@@ -209,7 +209,7 @@ export function CompareMatrix({ slug, content }: CompareMatrixProps) {
       {parsed.topic !== '' && (
         <h3
           data-testid="comparison-topic"
-          className="flex items-center gap-1 text-[12px] font-semibold text-foreground"
+          className="flex items-center gap-1 text-sm font-semibold text-foreground"
         >
           <GitCompare className="size-3.5 shrink-0 text-info" />
           <span className="truncate">{parsed.topic}</span>

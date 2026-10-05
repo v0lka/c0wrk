@@ -66,7 +66,7 @@ export function ResearchHypothesisPicker() {
       aria-busy={saving}
       className="flex shrink-0 flex-col gap-1"
     >
-      <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
         Hypothesis
       </span>
 
@@ -91,7 +91,7 @@ export function ResearchHypothesisPicker() {
                     style={{ backgroundColor: statusColorVar(currentNode.status) }}
                     aria-hidden
                   />
-                  <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                  <span className="shrink-0 font-mono text-xs text-muted-foreground">
                     {currentNode.id}
                   </span>
                   <span
@@ -125,7 +125,7 @@ export function ResearchHypothesisPicker() {
                       style={{ backgroundColor: statusColorVar(n.status) }}
                       aria-hidden
                     />
-                    <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                    <span className="shrink-0 font-mono text-xs text-muted-foreground">
                       {n.id}
                     </span>
                     <span
@@ -165,7 +165,7 @@ export function ResearchHypothesisPicker() {
               void changeStatus(currentNode, e.target.value as HypothesisStatus)
             }
             title="Change the current hypothesis's status (legal transitions only)"
-            className="h-6 w-28 shrink-0 rounded border border-input bg-background px-1 text-[11px] outline-none focus:border-primary disabled:opacity-50"
+            className="h-6 w-28 shrink-0 rounded border border-input bg-background px-1 text-xs outline-none focus:border-primary disabled:opacity-50"
           >
             {statusOptions(currentNode.status).map((s) => (
               <option key={s} value={s}>

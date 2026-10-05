@@ -55,7 +55,7 @@ export function SecurityGroupCard({
             <div key={tool.name} className="flex items-baseline gap-2 min-w-0">
               <span className="text-xs font-medium font-mono shrink-0">{tool.name}</span>
               {tool.source && tool.source !== 'core' && (
-                <span className="text-[10px] text-muted-foreground/70 shrink-0">{tool.source}</span>
+                <span className="text-xs text-muted-foreground/70 shrink-0">{tool.source}</span>
               )}
               <span className="text-xs text-muted-foreground truncate">{tool.description}</span>
             </div>

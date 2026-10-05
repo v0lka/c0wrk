@@ -50,7 +50,7 @@ export function ChatGPTAuthSection({ authMode, onAuthModeChange }: ChatGPTAuthSe
             onChange={(v) => onAuthModeChange(v === 'oauth' ? 'oauth' : 'api_key')}
           />
         </div>
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {authMode === 'oauth'
             ? 'Requests authenticate with your ChatGPT subscription — sign in below; the API key is not used.'
             : 'Requests authenticate with the static API key below.'}
@@ -115,7 +115,7 @@ export function ChatGPTAuthSection({ authMode, onAuthModeChange }: ChatGPTAuthSe
           </div>
 
           {signInBusy && (
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               Complete the sign-in in your browser, then return here.
             </span>
           )}

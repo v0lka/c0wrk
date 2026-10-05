@@ -58,7 +58,7 @@ interface PaperSourceViewProps {
 
 function subViewButtonClass(active: boolean): string {
   return cn(
-    'rounded px-1.5 py-0.5 text-[10px] transition-colors',
+    'rounded px-1.5 py-0.5 text-xs transition-colors',
     active ? 'bg-background text-foreground' : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground',
   )
 }

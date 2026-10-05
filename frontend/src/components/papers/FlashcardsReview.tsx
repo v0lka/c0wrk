@@ -135,7 +135,7 @@ export function FlashcardsReview({
         data-testid={`${testId}-done`}
         className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto custom-scrollbar px-3 py-3"
       >
-        <p className="text-[12px] font-medium text-foreground">
+        <p className="text-sm font-medium text-foreground">
           Review complete — {cards.length} {cards.length === 1 ? 'card' : 'cards'}.
         </p>
         <ul className="flex flex-col gap-1">
@@ -145,9 +145,9 @@ export function FlashcardsReview({
               <li
                 key={i}
                 data-testid={`${testId}-result`}
-                className="flex items-center gap-2 text-[11px] text-muted-foreground"
+                className="flex items-center gap-2 text-xs text-muted-foreground"
               >
-                <span className="shrink-0 font-mono text-[10px] text-foreground/70">{c.id || `#${i + 1}`}</span>
+                <span className="shrink-0 font-mono text-xs text-foreground/70">{c.id || `#${i + 1}`}</span>
                 <span className="truncate">{c.front}</span>
                 {result && (
                   <span className="ml-auto shrink-0">
@@ -167,7 +167,7 @@ export function FlashcardsReview({
             setResults({})
             setFinished(false)
           }}
-          className="self-start rounded border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+          className="self-start rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground"
         >
           Restart
         </button>
@@ -177,7 +177,7 @@ export function FlashcardsReview({
 
   return (
     <div data-testid={testId} className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto custom-scrollbar px-3 py-3">
-      <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <span data-testid={`${testId}-progress`}>
           Card {index + 1} / {cards.length}
         </span>
@@ -192,7 +192,7 @@ export function FlashcardsReview({
       </div>
 
       <div className="rounded border border-border bg-secondary/20 px-3 py-2">
-        <p data-testid={`${testId}-front`} className="whitespace-pre-wrap break-words text-[12px] text-foreground">
+        <p data-testid={`${testId}-front`} className="whitespace-pre-wrap break-words text-sm text-foreground">
           {card.front}
         </p>
       </div>
@@ -202,18 +202,18 @@ export function FlashcardsReview({
           type="button"
           data-testid={`${testId}-reveal`}
           onClick={() => setFlipped(true)}
-          className="self-start rounded border border-border px-2 py-1 text-[11px] text-foreground hover:bg-muted/40"
+          className="self-start rounded border border-border px-2 py-1 text-xs text-foreground hover:bg-muted/40"
         >
           Show answer
         </button>
       ) : (
         <>
           <div className="rounded border border-border bg-background px-3 py-2">
-            <p data-testid={`${testId}-back`} className="whitespace-pre-wrap break-words text-[12px] text-foreground">
+            <p data-testid={`${testId}-back`} className="whitespace-pre-wrap break-words text-sm text-foreground">
               {card.back}
             </p>
             {card.anchor !== '' && (
-              <p data-testid={`${testId}-anchor`} className="mt-1 text-[10px] text-muted-foreground">
+              <p data-testid={`${testId}-anchor`} className="mt-1 text-xs text-muted-foreground">
                 {card.anchor}
               </p>
             )}
@@ -227,7 +227,7 @@ export function FlashcardsReview({
                   type="button"
                   data-testid={`${testId}-rate-${grade}`}
                   onClick={() => rate(grade, state, index)}
-                  className={cn('rounded border px-2 py-1 text-[11px] transition-colors', className)}
+                  className={cn('rounded border px-2 py-1 text-xs transition-colors', className)}
                 >
                   {label} · {days}d
                 </button>

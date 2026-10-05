@@ -134,7 +134,18 @@ One Dark theme. All colors as Tailwind v4 `@theme` custom properties:
 | `--color-info`        | #61afef | Information    |
 | `--color-highlight`   | #e5c07b | Highlights     |
 
-Base font: 14px. Dark color-scheme. Focus outlines globally suppressed. Custom scrollbar (8px, semi-transparent thumb).
+### Typography
+
+Font sizes are relative: text is sized with the named Tailwind scale (`text-xs`, `text-sm`, `text-base`, `text-lg`, …), whose rem values resolve against the single absolute anchor — `html { font-size: 14px }` in `frontend/src/index.css` (deliberately not 16px — rem-based spacing and radii are tuned for it). Absolute (px) font sizes are forbidden everywhere else.
+
+Invariants:
+
+- Text sizes come from the named scale only; arbitrary `text-[Npx]`/`text-[Nrem]` font sizes are forbidden — only color arbitrary values are legal in the `text-[…]` slot (enforced by `frontend/src/test/typeScaleInvariant.test.ts`).
+- CSS carries no `font-size: Npx` outside the `html` root rule — every other CSS font size is rem (enforced by the same guard via brace-matched location of the root rule).
+- Inline TS/TSX font sizes are relative too: a bare number or a number/px string (`fontSize: 10`, `fontSize: '13px'`) is forbidden; rem strings (CodeMirror themes) stay legal (enforced by the same guard).
+- Deliberate exceptions, bound to an external API or canvas geometry: the xterm constructor option in `Terminal.tsx` (a px number by API) and the SVG labels on the research DAG canvas (`ResearchDagCanvas.tsx`, fontSize 9/11).
+
+Dark color-scheme. Focus outlines globally suppressed. Custom scrollbar (8px, semi-transparent thumb).
 
 ## Communication Pattern
 
@@ -173,6 +184,7 @@ Project switching is orchestrated by `useProjectSwitchState`: it saves source-pr
 - Persisted desktop window dimensions are accepted only at or above the minimum usable size; invalid state falls back to defaults
 - The frontend is **zoom-safe** under the app-wide UI Scale (`zoom` on `<html>`, see [ui-scale.md](ui-scale.md)): the shell and full-height containers size with percentages, viewport-derived sizes use the `--ui-vh` primitive, and pointer-anchored floating panels open at the cursor and fully inside the visible window at any scale — enforced by `frontend/src/test/zoomViewportInvariant.test.ts` plus the per-primitive guards
 - Every enabled interactive element shows the pointer cursor and every disabled one shows `not-allowed` — a base-layer cursor policy in `frontend/src/index.css` covers native `button`/`input[type=…]`/`select`/`label`/`summary` and ARIA widget roles (`button`, `menuitem*`, `option`, `tab`, `checkbox`, `radio`, `switch`, `combobox`, `link`, `treeitem`); utility classes (e.g. `cursor-grab` on drag canvases) still override it for intentional exceptions, and `cursor-default` on clickable elements is forbidden outside the allowlist in `frontend/src/test/clickableCursorInvariant.test.ts` (Radix disabled menu items keep `pointer-events-none`, so their cursor stays the UA default)
+- Typography is relative-scale-governed: text sizes come from the named Tailwind scale anchored at the 14px `html` root (see Design System); arbitrary `text-[Npx]`/`text-[Nrem]` utilities, px CSS font sizes outside the root rule, and absolute inline `fontSize` values fail the source-scan guard in `frontend/src/test/typeScaleInvariant.test.ts` (API-bound exceptions: the xterm constructor in `Terminal.tsx` and the research DAG canvas SVG labels)
 
 ## Configuration
 

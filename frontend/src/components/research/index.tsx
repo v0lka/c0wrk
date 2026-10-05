@@ -102,7 +102,7 @@ function ResearchSegmentControl({
             data-testid={`research-segment-${segment.value}`}
             onClick={() => onSelect(segment.value)}
             className={cn(
-              'flex-1 rounded px-2 py-0.5 text-[11px] transition-colors',
+              'flex-1 rounded px-2 py-0.5 text-xs transition-colors',
               selected
                 ? 'bg-background text-foreground shadow-sm'
                 : 'text-muted-foreground hover:bg-muted/50',
@@ -288,7 +288,7 @@ export function ResearchPanel() {
                     : 'Open a research artifact'
                 }
                 className={cn(
-                  'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors',
+                  'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors',
                   'text-muted-foreground',
                   artifactItems.length > 0
                     ? 'cursor-pointer hover:bg-muted'

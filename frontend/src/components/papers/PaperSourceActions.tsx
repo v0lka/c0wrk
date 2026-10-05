@@ -126,7 +126,7 @@ export function PaperSourceActions({ paper, hasHtml, onFetched }: PaperSourceAct
         <Button
           variant="ghost"
           size="sm"
-          className="h-6 shrink-0 gap-1 px-2 text-[11px]"
+          className="h-6 shrink-0 gap-1 px-2 text-xs"
           onClick={onFetch}
           data-testid="paper-source-fetch"
         >
@@ -140,7 +140,7 @@ export function PaperSourceActions({ paper, hasHtml, onFetched }: PaperSourceAct
           data-status={statusValue}
           title={detail !== '' ? detail : undefined}
           className={cn(
-            'inline-flex min-w-0 flex-1 items-center gap-1 truncate text-[10px]',
+            'inline-flex min-w-0 flex-1 items-center gap-1 truncate text-xs',
             statusValue === 'ok'
               ? 'text-success'
               : statusValue === 'running'
@@ -158,7 +158,7 @@ export function PaperSourceActions({ paper, hasHtml, onFetched }: PaperSourceAct
         <Button
           variant="ghost"
           size="sm"
-          className="ml-auto h-6 shrink-0 gap-1 px-2 text-[11px]"
+          className="ml-auto h-6 shrink-0 gap-1 px-2 text-xs"
           onClick={() => openExternalURL(absUrl)}
           data-testid="paper-source-open"
         >

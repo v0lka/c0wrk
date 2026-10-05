@@ -77,7 +77,7 @@ export function BaseSelector({
             if (!items || items.length === 0) return null
             return (
               <div key={type}>
-                <div className="sticky top-0 bg-background px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                <div className="sticky top-0 bg-background px-2 py-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                   {groupLabel[type]}
                 </div>
                 {items.map((b) => (

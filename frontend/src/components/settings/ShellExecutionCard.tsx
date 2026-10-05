@@ -199,7 +199,7 @@ function ToolEditor({ testIdPrefix, toolName, appliesTo, state, onChange }: Tool
     <div className="flex flex-col gap-2 p-3 rounded-md border border-border/60" data-testid={`${testIdPrefix}-editor`}>
       <div className="flex items-baseline gap-2">
         <span className="text-xs font-medium font-mono">{toolName}</span>
-        <span className="text-[10px] text-muted-foreground">{appliesTo}</span>
+        <span className="text-xs text-muted-foreground">{appliesTo}</span>
       </div>
 
       <div className="flex items-center gap-2">

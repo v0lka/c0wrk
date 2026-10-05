@@ -223,7 +223,7 @@ export function GitFileEntry({ entry, side, workspaceRoot, onToggle, onOpenDiff 
 
       {/* Diff stat — added/deleted line counts (rendered before the badge) */}
       {entry.diffStat && (
-        <span className="shrink-0 flex items-center gap-1 text-[11px] leading-none font-mono">
+        <span className="shrink-0 flex items-center gap-1 text-xs leading-none font-mono">
           {entry.diffStat.added > 0 && (
             <span className="text-success">+{entry.diffStat.added}</span>
           )}
@@ -236,7 +236,7 @@ export function GitFileEntry({ entry, side, workspaceRoot, onToggle, onOpenDiff 
       {/* Status badge — change-type letter (M/A/D/R/…) */}
       <span
         className={cn(
-          'shrink-0 rounded px-1.5 py-px text-[11px] font-semibold leading-none',
+          'shrink-0 rounded px-1.5 py-px text-xs font-semibold leading-none',
           statusCls,
           'bg-muted/60',
         )}

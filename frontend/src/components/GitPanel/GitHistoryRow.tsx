@@ -81,7 +81,7 @@ export function GitHistoryRow({
               {node.refs.map((ref) => (
                 <span
                   key={ref}
-                  className={`shrink-0 rounded bg-muted/40 px-1 py-px text-[10px] font-medium ${refColor(ref)}`}
+                  className={`shrink-0 rounded bg-muted/40 px-1 py-px text-xs font-medium ${refColor(ref)}`}
                 >
                   {ref.replace(/^tag:\s*/, '')}
                 </span>
@@ -93,15 +93,15 @@ export function GitHistoryRow({
                   onClick={handleShaClick}
                   onKeyDown={handleShaKeyDown}
                   title="View commit changes"
-                  className="shrink-0 font-mono text-[10px] text-info cursor-pointer rounded px-0.5 hover:bg-info/15 hover:text-info hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-info/40"
+                  className="shrink-0 font-mono text-xs text-info cursor-pointer rounded px-0.5 hover:bg-info/15 hover:text-info hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-info/40"
                 >
                   {shortSha(node.sha)}
                 </span>
               ) : (
-                <span className="shrink-0 font-mono text-[10px] text-info select-text">{shortSha(node.sha)}</span>
+                <span className="shrink-0 font-mono text-xs text-info select-text">{shortSha(node.sha)}</span>
               )}
             </div>
-            <div className="flex items-center pl-7 text-[10px] leading-none text-muted-foreground">
+            <div className="flex items-center pl-7 text-xs leading-none text-muted-foreground">
               <span className="min-w-0 truncate select-text">
                 {author} · {formatRelativeTime(date)}
               </span>
@@ -118,14 +118,14 @@ export function GitHistoryRow({
       {expanded && (
         <div className="px-2 pt-1 pb-1.5 pl-7">
           {loadingFiles ? (
-            <div className="flex items-center gap-1.5 py-1 text-[11px] leading-none text-muted-foreground">
+            <div className="flex items-center gap-1.5 py-1 text-xs leading-none text-muted-foreground">
               <Loader2 className="size-3 animate-spin" /> Loading files…
             </div>
           ) : files && files.length > 0 ? (
             files.map((f) => (
               <div
                 key={f.path}
-                className="flex items-center gap-1.5 py-0.5 text-[11px] leading-none"
+                className="flex items-center gap-1.5 py-0.5 text-xs leading-none"
               >
                 <span className={cn('shrink-0 font-mono font-semibold', fileStatusColor(f.status))}>
                   {f.status}
@@ -134,7 +134,7 @@ export function GitHistoryRow({
               </div>
             ))
           ) : (
-            <div className="py-1 text-[11px] leading-none text-muted-foreground">No files</div>
+            <div className="py-1 text-xs leading-none text-muted-foreground">No files</div>
           )}
         </div>
       )}

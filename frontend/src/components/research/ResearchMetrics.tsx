@@ -60,7 +60,7 @@ export function ResearchMetricsRow({ metrics }: ResearchMetricsRowProps) {
           className="flex flex-col gap-0.5 bg-background px-3 py-2"
           title={`${label}: ${value}`}
         >
-          <span className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+          <span className="flex items-center gap-1 text-xs uppercase tracking-wide text-muted-foreground">
             <Icon className={`size-3 ${tone}`} />
             {label}
           </span>

@@ -105,12 +105,12 @@ export function SessionList() {
     <div className="flex h-full flex-col overflow-hidden">
       {/* Header */}
       <div className="flex shrink-0 items-center justify-between gap-1 border-b border-border px-2 py-1">
-        <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           Sessions
         </span>
         <button
           type="button"
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-foreground/70 hover:bg-muted/50 hover:text-foreground"
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-foreground/70 hover:bg-muted/50 hover:text-foreground"
           onClick={handleNewSession}
           title="New session"
         >
@@ -120,7 +120,7 @@ export function SessionList() {
       </div>
 
       {createError && (
-        <div className="shrink-0 mx-2 mt-1 rounded px-2 py-1 text-[11px] text-destructive bg-destructive/10">
+        <div className="shrink-0 mx-2 mt-1 rounded px-2 py-1 text-xs text-destructive bg-destructive/10">
           {createError}
         </div>
       )}

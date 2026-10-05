@@ -72,7 +72,7 @@ export function GoalVerdictBody({ goal }: { goal: ActiveGoal }) {
   return (
     <div className="mt-1.5 space-y-1.5">
       <span
-        className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${verdictBadgeClass(verdict)}`}
+        className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs font-medium uppercase tracking-wide ${verdictBadgeClass(verdict)}`}
       >
         {verdict}
         {verified ? <CheckCircle2 className="h-3 w-3" aria-label="verified" /> : null}

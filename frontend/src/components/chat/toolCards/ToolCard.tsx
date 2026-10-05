@@ -77,7 +77,7 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
     if (!item.source || item.source === 'core') return null
     const server = item.source.startsWith('mcp:') ? item.source.slice('mcp:'.length) : item.source
     return (
-      <span className="text-[10px] font-medium bg-muted-foreground/15 text-foreground px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap">
+      <span className="text-xs font-medium bg-muted-foreground/15 text-foreground px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap">
         {server ? `MCP: ${server}` : 'MCP'}
       </span>
     )
@@ -86,14 +86,14 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
   // Cached badge
   const cachedBadge = useMemo(() =>
     isCached
-      ? <span className="text-[10px] font-medium bg-info/15 text-info px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap">cached</span>
+      ? <span className="text-xs font-medium bg-info/15 text-info px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap">cached</span>
       : null
   , [isCached])
 
   // Batched badge
   const batchedBadge = useMemo(() =>
     isBatched
-      ? <span className="text-[10px] font-medium bg-info/15 text-info px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap">batched</span>
+      ? <span className="text-xs font-medium bg-info/15 text-info px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap">batched</span>
       : null
   , [isBatched])
 

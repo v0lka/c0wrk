@@ -21,21 +21,21 @@ export function PaperMarkdownSection({
 }: PaperMarkdownSectionProps) {
   if (artifact.loading) {
     return (
-      <p data-testid={`${testId}-loading`} className="px-3 py-4 text-center text-[11px] text-muted-foreground">
+      <p data-testid={`${testId}-loading`} className="px-3 py-4 text-center text-xs text-muted-foreground">
         Loading…
       </p>
     )
   }
   if (artifact.error !== null) {
     return (
-      <p data-testid={`${testId}-error`} className="px-3 py-4 text-center text-[11px] text-destructive">
+      <p data-testid={`${testId}-error`} className="px-3 py-4 text-center text-xs text-destructive">
         {artifact.error}
       </p>
     )
   }
   if (artifact.content === '') {
     return (
-      <p data-testid={`${testId}-empty`} className="px-3 py-4 text-center text-[11px] text-muted-foreground">
+      <p data-testid={`${testId}-empty`} className="px-3 py-4 text-center text-xs text-muted-foreground">
         {emptyText}
       </p>
     )

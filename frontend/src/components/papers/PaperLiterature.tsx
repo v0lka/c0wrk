@@ -59,13 +59,13 @@ function NoPythonAffordance({ onRetry, running }: { onRetry: () => void; running
   return (
     <div
       data-testid="literature-no-python"
-      className="flex shrink-0 items-center gap-2 border-b border-border bg-secondary/20 px-2 py-1.5 text-[11px]"
+      className="flex shrink-0 items-center gap-2 border-b border-border bg-secondary/20 px-2 py-1.5 text-xs"
     >
       <p className="text-muted-foreground">{NO_PYTHON_HINT}</p>
       <Button
         variant="secondary"
         size="sm"
-        className="ml-auto h-6 shrink-0 gap-1 px-2 text-[11px]"
+        className="ml-auto h-6 shrink-0 gap-1 px-2 text-xs"
         onClick={onRetry}
         disabled={running}
         data-testid="literature-no-python-retry"
@@ -90,7 +90,7 @@ function StateMessage({
     <div data-testid={testId} className="flex h-full min-h-0 items-center justify-center px-4">
       <p
         className={cn(
-          'max-w-[42ch] text-center text-[11px]',
+          'max-w-[42ch] text-center text-xs',
           tone === 'error' ? 'text-destructive' : 'text-muted-foreground',
         )}
       >
@@ -116,29 +116,29 @@ function NodeDetail({
     <div
       data-testid="literature-detail"
       data-kind={kind}
-      className="shrink-0 border-t border-border bg-secondary/20 px-2 py-1.5 text-[11px]"
+      className="shrink-0 border-t border-border bg-secondary/20 px-2 py-1.5 text-xs"
     >
       <div className="flex items-center gap-2">
-        <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+        <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-xs uppercase tracking-wide text-muted-foreground">
           {literatureKindLabel(kind)}
         </span>
         <span className="truncate font-medium" title={workDisplayTitle(work)}>
           {workDisplayTitle(work)}
         </span>
         {work.year !== null && (
-          <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground">
+          <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
             {work.year}
           </span>
         )}
       </div>
       {work.doi.trim() !== '' && (
-        <p className="mt-0.5 truncate text-[10px] text-muted-foreground">DOI: {work.doi}</p>
+        <p className="mt-0.5 truncate text-xs text-muted-foreground">DOI: {work.doi}</p>
       )}
       {work.authors.length > 0 && (
-        <p className="truncate text-[10px] text-muted-foreground">{work.authors.join(', ')}</p>
+        <p className="truncate text-xs text-muted-foreground">{work.authors.join(', ')}</p>
       )}
       {work.reasons.length > 0 && (
-        <p className="mt-0.5 text-[10px] text-destructive">
+        <p className="mt-0.5 text-xs text-destructive">
           Contradiction markers: {work.reasons.join(', ')}
         </p>
       )}
@@ -220,7 +220,7 @@ export function PaperLiterature({ paper, markdownArtifact, baseFilePath }: Paper
     <div data-testid="paper-literature" className="flex h-full min-h-0 flex-col">
       <header className="flex shrink-0 items-center gap-2 border-b border-border bg-secondary/20 px-2 py-1">
         <Network className="size-3.5 shrink-0 text-info" />
-        <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
           {parsed.record !== null
             ? `${parsed.record.predecessors.length} predecessors · ${parsed.record.citing.length} citing · ${parsed.record.contradictions.length} contradictions`
             : 'Literature neighbourhood'}
@@ -229,7 +229,7 @@ export function PaperLiterature({ paper, markdownArtifact, baseFilePath }: Paper
           <span
             data-testid="literature-generated"
             title={parsed.record?.generatedAt ?? ''}
-            className="shrink-0 text-[10px] tabular-nums text-muted-foreground/70"
+            className="shrink-0 text-xs tabular-nums text-muted-foreground/70"
           >
             {generatedLabel}
           </span>
@@ -237,7 +237,7 @@ export function PaperLiterature({ paper, markdownArtifact, baseFilePath }: Paper
         <Button
           variant="ghost"
           size="sm"
-          className="h-6 shrink-0 gap-1 px-2 text-[11px]"
+          className="h-6 shrink-0 gap-1 px-2 text-xs"
           onClick={onRun}
           disabled={running}
           data-testid="literature-run"
@@ -253,7 +253,7 @@ export function PaperLiterature({ paper, markdownArtifact, baseFilePath }: Paper
             data-testid="literature-run-status"
             data-status={run.status}
             className={cn(
-              'shrink-0 border-b border-border px-2 py-1 text-[11px]',
+              'shrink-0 border-b border-border px-2 py-1 text-xs',
               degraded ? 'text-destructive' : 'text-success',
             )}
           >

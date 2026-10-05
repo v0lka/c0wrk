@@ -212,7 +212,7 @@ export function BudgetCombobox({ disabled = false }: { disabled?: boolean }) {
               >
                 <span className="flex-1 text-left">{preset.label}</span>
                 {isSelected && (
-                  <span className="text-[10px] text-primary">selected</span>
+                  <span className="text-xs text-primary">selected</span>
                 )}
               </button>
             )

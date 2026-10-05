@@ -34,10 +34,10 @@ export function ResearchNextStep() {
     >
       <div className="flex items-center gap-1.5">
         <Sparkles className="size-3.5 shrink-0 text-highlight" />
-        <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           Next step
         </span>
-        <span className="ml-auto shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-foreground">
+        <span className="ml-auto shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
           {nextStep.skill}
         </span>
       </div>
@@ -45,9 +45,9 @@ export function ResearchNextStep() {
       <p className="text-xs leading-relaxed text-foreground/90">{nextStep.reason}</p>
 
       {nextStep.target && (
-        <div className="text-[11px] text-muted-foreground">
+        <div className="text-xs text-muted-foreground">
           Target hypothesis:{' '}
-          <span className="font-mono text-[10px] text-foreground">
+          <span className="font-mono text-xs text-foreground">
             {nextStep.target}
           </span>
         </div>

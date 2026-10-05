@@ -44,7 +44,7 @@ function FieldList({ label, items }: { label: string; items: readonly string[] }
   if (items.length === 0) return null
   return (
     <div>
-      <span className="block text-[10px] uppercase tracking-wide text-muted-foreground/70">{label}</span>
+      <span className="block text-xs uppercase tracking-wide text-muted-foreground/70">{label}</span>
       <ul className="mt-0.5 space-y-0.5">
         {items.map((item, i) => (
           <li key={`${label}-${i}`} className="text-xs text-foreground/90 break-words">{item}</li>
@@ -85,14 +85,14 @@ export function ExecutionStateBody({ snapshot }: { snapshot: E2SSnapshot }) {
     <div className="max-h-48 space-y-2 overflow-y-auto px-3 pb-2 custom-scrollbar">
       {sigma.objective ? (
         <div>
-          <span className="block text-[10px] uppercase tracking-wide text-muted-foreground/70">Objective</span>
+          <span className="block text-xs uppercase tracking-wide text-muted-foreground/70">Objective</span>
           <p className="mt-0.5 text-xs text-foreground break-words">{sigma.objective}</p>
         </div>
       ) : null}
       <Checklist items={sigma.checklist ?? []} />
       {sigma.status ? (
         <div>
-          <span className="block text-[10px] uppercase tracking-wide text-muted-foreground/70">Status</span>
+          <span className="block text-xs uppercase tracking-wide text-muted-foreground/70">Status</span>
           <p className="mt-0.5 text-xs text-foreground/90 break-words">{sigma.status}</p>
         </div>
       ) : null}
@@ -138,7 +138,7 @@ export function ExecutionStatePanel({ sessionId }: { sessionId: string }) {
           {snapshot.maxSteps > 0 ? `turn ${snapshot.turn}/${snapshot.maxSteps}` : `turn ${snapshot.turn}`}
         </span>
         <span
-          className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${statusBadgeClass(badgeStatus)}`}
+          className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs font-medium uppercase tracking-wide ${statusBadgeClass(badgeStatus)}`}
           data-status={badgeStatus}
         >
           {badgeStatus}

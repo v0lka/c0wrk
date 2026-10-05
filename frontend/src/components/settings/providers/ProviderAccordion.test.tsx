@@ -93,7 +93,7 @@ function rowBadges(): Array<{ name: string; badges: string[] }> {
   return Array.from(container.querySelectorAll('input[type="checkbox"]')).map((input) => {
     const label = input.closest('label')
     const span = label?.querySelector('span.flex-1')
-    const badges = Array.from(label?.querySelectorAll('span[class*="text-[10px]"]') ?? []).map(
+    const badges = Array.from(label?.querySelectorAll('span[class*="text-xs"]') ?? []).map(
       (b) => b.textContent ?? '',
     )
     return { name: span?.textContent ?? '', badges }

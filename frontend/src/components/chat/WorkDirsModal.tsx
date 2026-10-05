@@ -138,7 +138,7 @@ function WorkDirRow({
         </Button>
       </div>
       {emptyHint && (
-        <span className="text-[10px] text-warning pl-1" role="status">
+        <span className="text-xs text-warning pl-1" role="status">
           Description cannot be empty — reverted to previous value.
         </span>
       )}

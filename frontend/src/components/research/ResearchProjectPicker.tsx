@@ -109,7 +109,7 @@ export function ResearchProjectPicker() {
               >
                 <div className="flex min-w-0 flex-1 items-center gap-1.5">
                   {p.id === activeId && <Check className="size-3.5 shrink-0" />}
-                  <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                  <span className="shrink-0 font-mono text-xs text-muted-foreground">
                     {p.id}
                   </span>
                   <span

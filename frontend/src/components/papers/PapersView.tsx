@@ -54,13 +54,13 @@ const INPUT_CLASS =
   // The placeholder mirrors the shared `.c0-input::placeholder` tone used by
   // the file filter fields (e.g. the git panel's Files section) — foreground at
   // 50% opacity — instead of the brighter muted-foreground token.
-  'min-w-0 flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-[11px] text-foreground placeholder:text-[color-mix(in_srgb,var(--color-foreground)_50%,transparent)] focus:outline-none'
+  'min-w-0 flex-1 rounded border border-border bg-background px-1.5 py-0.5 text-xs text-foreground placeholder:text-[color-mix(in_srgb,var(--color-foreground)_50%,transparent)] focus:outline-none'
 
 const ACTION_BUTTON_CLASS =
-  'inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50'
+  'inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50'
 
 const BADGE_CLASS =
-  'inline-flex items-center rounded px-1 py-0 text-[10px] font-medium uppercase tracking-wide'
+  'inline-flex items-center rounded px-1 py-0 text-xs font-medium uppercase tracking-wide'
 
 /** Background/foreground token pairs per semantic tone (design tokens only). */
 const TONE_CLASS: Record<string, string> = {
@@ -169,11 +169,11 @@ function PaperRow({
           title={`Open ${paper.title}`}
           className="flex min-w-0 flex-1 flex-col items-start gap-0.5 text-left transition-colors hover:bg-muted/50"
         >
-          <span className="flex w-full items-center gap-1 text-[12px] font-medium text-foreground">
+          <span className="flex w-full items-center gap-1 text-sm font-medium text-foreground">
             {paper.pinned && <Pin data-testid="paper-pinned" className="size-3 shrink-0 text-highlight" />}
             <span className="truncate">{paper.title}</span>
           </span>
-          <span className="text-[10px] text-muted-foreground">{metaLine(paper)}</span>
+          <span className="text-xs text-muted-foreground">{metaLine(paper)}</span>
         </button>
       </div>
 
@@ -233,7 +233,7 @@ function PaperRow({
 
 function Hint({ children, testId }: { children: ReactNode; testId?: string }) {
   return (
-    <div data-testid={testId} className="px-1 py-6 text-center text-[11px] text-muted-foreground">
+    <div data-testid={testId} className="px-1 py-6 text-center text-xs text-muted-foreground">
       {children}
     </div>
   )
@@ -466,19 +466,19 @@ export function PapersView() {
             disabled={reference.trim() === ''}
             title="Study this paper in a new session"
             onClick={() => void study()}
-            className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-[11px] text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+            className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-xs text-foreground transition-colors hover:bg-muted disabled:opacity-50"
           >
             Study
           </button>
         </div>
-        <label className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+        <label className="flex items-center gap-1 text-xs uppercase tracking-wide text-muted-foreground">
           Mode
           <select
             data-testid="papers-mode-select"
             aria-label="Study mode"
             value={mode}
             onChange={(e) => setMode(e.target.value as StudyMode)}
-            className="rounded border border-border bg-background px-1 py-0.5 text-[11px] normal-case tracking-normal text-foreground focus:outline-none"
+            className="rounded border border-border bg-background px-1 py-0.5 text-xs normal-case tracking-normal text-foreground focus:outline-none"
           >
             {STUDY_MODE_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -492,7 +492,7 @@ export function PapersView() {
       {error !== null && (
         <div
           data-testid="papers-error"
-          className="shrink-0 border-b border-destructive/20 bg-destructive/10 px-2 py-1 text-[11px] text-destructive"
+          className="shrink-0 border-b border-destructive/20 bg-destructive/10 px-2 py-1 text-xs text-destructive"
         >
           {error}
         </div>
@@ -501,7 +501,7 @@ export function PapersView() {
       {libraryReady && papers.length > 0 && (
         <div
           data-testid="papers-selection"
-          className="flex shrink-0 items-center gap-1 border-b border-border px-1.5 py-1 text-[10px] text-muted-foreground"
+          className="flex shrink-0 items-center gap-1 border-b border-border px-1.5 py-1 text-xs text-muted-foreground"
         >
           <span data-testid="papers-selection-count">
             {selectedIds.length} selected
@@ -512,7 +512,7 @@ export function PapersView() {
                 type="button"
                 data-testid="papers-selection-clear"
                 onClick={clearSelection}
-                className="rounded px-1 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                className="rounded px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               >
                 Clear
               </button>
@@ -527,7 +527,7 @@ export function PapersView() {
                   : 'Select at least 2 papers to compare'
               }
               onClick={(e) => void compareSelected(e.shiftKey)}
-              className="inline-flex items-center gap-0.5 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+              className="inline-flex items-center gap-0.5 rounded border border-border bg-background px-1.5 py-0.5 text-xs text-foreground transition-colors hover:bg-muted disabled:opacity-50"
             >
               <GitCompare className="size-3" />
               Compare selected

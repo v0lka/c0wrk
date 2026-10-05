@@ -42,7 +42,7 @@ export function SectionHeader({ title, count, expanded, onToggle }: SectionHeade
         )}
       </span>
       <span>{title}</span>
-      <span className="ml-auto rounded-full bg-muted px-1.5 py-px text-[10px] tabular-nums">
+      <span className="ml-auto rounded-full bg-muted px-1.5 py-px text-xs tabular-nums">
         {count}
       </span>
     </button>

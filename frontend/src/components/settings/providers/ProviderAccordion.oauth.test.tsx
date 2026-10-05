@@ -94,7 +94,7 @@ function modelRows(): Array<{ name: string; checked: boolean; badges: string[] }
   return Array.from(container.querySelectorAll('input[type="checkbox"]')).map((input) => {
     const label = input.closest('label')
     const name = label?.querySelector('span.flex-1')?.textContent ?? ''
-    const badges = Array.from(label?.querySelectorAll('span[class*="text-[10px]"]') ?? []).map(
+    const badges = Array.from(label?.querySelectorAll('span[class*="text-xs"]') ?? []).map(
       (b) => b.textContent ?? '',
     )
     return { name, checked: (input as HTMLInputElement).checked, badges }
