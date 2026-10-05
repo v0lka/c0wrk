@@ -12,6 +12,7 @@
 // vertical overflow, so the header, field table, sections, and Save all
 // scroll together — nothing is pinned outside the scroll region.
 import { Loader2, Save, ExternalLink } from 'lucide-react'
+import { Combobox } from '@/components/ui/combobox'
 import { MiniCodeMirrorField } from '@/components/fileViewer/MiniCodeMirrorField'
 import { InformingPapers } from './InformingPapers'
 import { statusOptions } from './hypothesisStatus'
@@ -155,40 +156,37 @@ export function HypothesisCard({
           {/* Only the current status and its legal transition targets are
               offered — the backend state machine (writer.go) rejects every
               other jump, so a wider list would only produce failed saves. */}
-          <select
+          <Combobox
             value={draft.status}
-            onChange={(e) => onChange({ ...draft, status: e.target.value })}
-            aria-label="Hypothesis status"
-            className={`${inputCls} h-8`}
-          >
-            {statusOptions(draft.status).map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+            onChange={(status) => onChange({ ...draft, status })}
+            ariaLabel="Hypothesis status"
+            options={statusOptions(draft.status).map((s) => ({
+              value: s,
+              label: s,
+            }))}
+            className="h-8 w-full px-2 text-xs text-foreground"
+          />
         </label>
         <label className="flex flex-col gap-1">
           <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
             Decision
           </span>
           {/* The methodology's fixed vocabulary (continue / pivot / kill /
-              fork — research-decision skill), so a select, not free text.
-              The undecided option ('') clears the field; a legacy free-text
-              value from an older card stays visible (first option) so it
-              remains re-savable and can be replaced. */}
-          <select
+              fork — research-decision skill), so a fixed-vocabulary
+              combobox, not free text. The undecided option ('') clears the
+              field; a legacy free-text value from an older card stays
+              visible (first option) so it remains re-savable and can be
+              replaced. */}
+          <Combobox
             value={draft.decision}
-            onChange={(e) => onChange({ ...draft, decision: e.target.value })}
-            aria-label="Hypothesis decision"
-            className={`${inputCls} h-8`}
-          >
-            {decisionOptions(draft.decision).map((d) => (
-              <option key={d} value={d}>
-                {decisionLabel(d)}
-              </option>
-            ))}
-          </select>
+            onChange={(decision) => onChange({ ...draft, decision })}
+            ariaLabel="Hypothesis decision"
+            options={decisionOptions(draft.decision).map((d) => ({
+              value: d,
+              label: decisionLabel(d),
+            }))}
+            className="h-8 w-full px-2 text-xs text-foreground"
+          />
         </label>
         <label className="flex flex-col gap-1">
           <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
@@ -254,6 +252,7 @@ export function HypothesisCard({
         onClick={onSave}
         disabled={saving || !dirty}
         data-testid="hypothesis-save"
+        title="Save hypothesis"
         className="inline-flex items-center justify-center gap-1.5 rounded-md bg-primary px-2 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
       >
         {saving ? (
