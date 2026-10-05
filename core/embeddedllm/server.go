@@ -432,6 +432,20 @@ type LaunchSpec struct {
 	// "no ceiling" and 0 to disable the prompt cache, because disabling it is a
 	// legitimate choice.
 	CacheRAMMiB *int
+	// CtxCheckpoints is `--ctx-checkpoints`, and like Fit and Parallel it is
+	// ALWAYS rendered. The fork's own default is 32 and it also reads the
+	// LLAMA_ARG_CTX_CHECKPOINTS environment variable, so an omitted flag would
+	// let an inherited env value — or a pin bump's default drift — decide a
+	// memory-bearing setting (each checkpoint can hold a saved KV prefix) that
+	// no c0wrk layer chose. Validate bounds it to 0..MaxTuningCtxCheckpoints;
+	// 0 is the verbatim "disable the snapshots" choice. See
+	// DefaultCtxCheckpoints.
+	CtxCheckpoints int
+	// CacheIdleSlots is `--cache-idle-slots`/`--no-cache-idle-slots`, rendered
+	// unconditionally for the same env-drift reason as CtxCheckpoints. True
+	// (the runtime's own default) saves idle slots to the prompt cache on a new
+	// task; false passes the --no- spelling.
+	CacheIdleSlots bool
 	// Devices is `-dev`, the comma-separated offload target list. Empty omits
 	// the flag. Any entry pins the offload, so a non-empty list is incompatible
 	// with Fit. Each name is validated as a single separator-free, dash-free
@@ -505,6 +519,10 @@ func (spec LaunchSpec) Validate() error {
 	if spec.CacheRAMMiB != nil && *spec.CacheRAMMiB > MaxTuningMiB {
 		return fmt.Errorf("%w: --cache-ram %d MiB exceeds the %d MiB ceiling",
 			ErrLaunchSpecInvalid, *spec.CacheRAMMiB, MaxTuningMiB)
+	}
+	if spec.CtxCheckpoints < 0 || spec.CtxCheckpoints > MaxTuningCtxCheckpoints {
+		return fmt.Errorf("%w: --ctx-checkpoints %d is outside 0..%d (0 disables the per-slot snapshots; the runtime's own default is %d)",
+			ErrLaunchSpecInvalid, spec.CtxCheckpoints, MaxTuningCtxCheckpoints, DefaultCtxCheckpoints)
 	}
 	if !splitModeIsKnown(spec.SplitMode) {
 		return fmt.Errorf("%w: -sm %q is not one of the runtime's split modes (%s)",
@@ -691,6 +709,16 @@ func (spec LaunchSpec) Args() []string {
 	if spec.CacheRAMMiB != nil {
 		args = append(args, "--cache-ram", strconv.Itoa(*spec.CacheRAMMiB))
 	}
+	// The two checkpoint knobs are ALWAYS explicit — see their fields. The
+	// spellings are the pinned fork's own (`--ctx-checkpoints` aliasing
+	// `-ctxcp`, `--cache-idle-slots`/`--no-cache-idle-slots`), verified against
+	// the tagged arg.cpp.
+	args = append(args, "--ctx-checkpoints", strconv.Itoa(spec.CtxCheckpoints))
+	if spec.CacheIdleSlots {
+		args = append(args, "--cache-idle-slots")
+	} else {
+		args = append(args, "--no-cache-idle-slots")
+	}
 	args = append(args,
 		"--temp", samplingTemp,
 		"--top-p", samplingTopP,
@@ -759,6 +787,8 @@ func (spec LaunchSpec) ApplyMemoryPlan(plan MemoryPlan) LaunchSpec {
 		cacheRAM := *plan.CacheRAMMiB
 		spec.CacheRAMMiB = &cacheRAM
 	}
+	spec.CtxCheckpoints = plan.CtxCheckpoints
+	spec.CacheIdleSlots = plan.CacheIdleSlots
 	spec.Devices = slices.Clone(plan.Devices)
 	spec.SplitMode = plan.SplitMode
 	return spec
@@ -1649,6 +1679,12 @@ func (s *Server) launchSpec(ctx context.Context, manifest Manifest, port int) (r
 		// issues one request at a time per server. The fork's auto default
 		// would split the context across slots — see DefaultParallel.
 		spec.Parallel = DefaultParallel
+		// The two checkpoint knobs are rendered unconditionally, and this
+		// policy path has no plan to take them from: the defaults ARE the
+		// policy — the runtime's own figures, pinned here so an inherited
+		// LLAMA_ARG_* env value cannot decide them (see DefaultCtxCheckpoints).
+		spec.CtxCheckpoints = DefaultCtxCheckpoints
+		spec.CacheIdleSlots = true
 	}
 
 	if err := spec.Validate(); err != nil {

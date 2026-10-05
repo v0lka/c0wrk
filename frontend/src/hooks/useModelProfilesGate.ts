@@ -15,10 +15,8 @@ import { useModelProfilesGateStore } from '@/stores/modelProfilesGateStore'
  * events are the only way a runtime config change reaches it.
  *
  * The fetch runs on mount and on two global events:
- *   - `backend:ready` — a RETRY-ONLY trigger. It re-attempts the mount fetch
- *     when that attempt failed or resolved with `loaded=false` (the backend
- *     answers RPCs with a zeroed config until Startup finishes — the same race
- *     App.tsx guards against). Once the gate has latched it is a no-op.
+ *   - `backend:ready` — a REFRESH trigger, including after a successful mount
+ *     fetch, so profile identity cannot remain a pre-startup snapshot.
  *   - `config:updated` — a REFRESH trigger, emitted by the backend after every
  *     persisted config mutation (see specs/contracts/event-catalog.md). It
  *     IGNORES the latch and overwrites the store with the freshly resolved
@@ -27,6 +25,17 @@ import { useModelProfilesGateStore } from '@/stores/modelProfilesGateStore'
  *     effect without an app restart. When the response still reports
  *     `loaded=false` (mid-startup) it leaves the store untouched rather than
  *     downgrading an existing good latch.
+ *
+ * Profile identity (active/suggested ids) rides the SAME GetConfig response —
+ * the backend fills `model_profiles.active_profile` (verbatim),
+ * `resolved_profile_id` (the catalog-resolved counterpart) and
+ * `suggested_profile_id` as pure reads — so this hook NEVER calls
+ * GetModelProfiles: that RPC is a consuming read which drains the one-shot
+ * profile notices (e.g. the active-profile-deletion fallback explanation)
+ * that Settings is the intended audience for. A background refresh here must
+ * not compete for them. The identity fields are optional on the wire (older
+ * payloads); a missing block or missing fields read as "unknown" (null)
+ * rather than a definite profile.
  *
  * Fail-safe: on a fetch error the store is left as it was — `loaded=false` on
  * the initial load, so consumers see "unknown" rather than "definitively off",
@@ -48,7 +57,7 @@ export function useModelProfilesGate(): boolean {
   useEffect(() => {
     let cancelled = false
     let inFlight = false
-    // A refresh (config:updated) or a retry (mount/backend:ready) that arrives
+    // A refresh (config:updated/backend:ready) or a mount retry that arrives
     // while a fetch is in flight is remembered and replayed once the current
     // attempt settles, otherwise a one-shot event is consumed with no effect.
     // A pending refresh always wins: it re-fetches unconditionally, while a
@@ -81,10 +90,16 @@ export function useModelProfilesGate(): boolean {
           if (cfg.loaded === false) return
           // The `model_profiles` block is optional on the wire (older payloads): a missing
           // block means "ModelProfiles off", which never blocks.
-          useModelProfilesGateStore.getState().setEnabled(cfg.model_profiles?.enabled ?? false)
+          const block = cfg.model_profiles
+          useModelProfilesGateStore.getState().setEnabled(block?.enabled ?? false)
           useModelProfilesGateStore
             .getState()
-            .setEssentialToolsEnabled(cfg.model_profiles?.essential_tools_enabled ?? false)
+            .setEssentialToolsEnabled(block?.essential_tools_enabled ?? false)
+          useModelProfilesGateStore.getState().setProfileIds(
+            block?.active_profile || null,
+            block?.resolved_profile_id || null,
+            block?.suggested_profile_id ?? null,
+          )
           useModelProfilesGateStore.getState().setLoaded(true)
         })
         .catch((err) => {
@@ -110,7 +125,7 @@ export function useModelProfilesGate(): boolean {
 
     fetchGate(false)
     const unsubscribes = [
-      onGlobalEvent('backend:ready', () => fetchGate(false)),
+      onGlobalEvent('backend:ready', () => fetchGate(true)),
       onGlobalEvent('config:updated', () => fetchGate(true)),
     ]
 

@@ -57,6 +57,8 @@ func fullySpecifiedTuning() TuningConfig {
 		Packing:        embeddedStrPtr(string(embeddedllm.PackingPTQ1_0)),
 		Parallel:       embeddedIntPtr(2),
 		CacheRAMMiB:    embeddedIntPtr(512),
+		CtxCheckpoints: embeddedIntPtr(0),
+		CacheIdleSlots: embeddedBoolPtr(false),
 		HostReserveGiB: embeddedFloatPtr(6.5),
 	}
 }
@@ -87,7 +89,7 @@ func TestEmbeddedLLMTuningYAMLRoundTrip(t *testing.T) {
 		"tuning:", "context:", "mode:", "tokens:", "kv_cache_type:", "offload:",
 		"layers:", "fit:", "fit_target_mib:", "fit_min_context:", "kv_offload:",
 		"mmproj_offload:", "packing:", "parallel:", "cache_ram_mib:",
-		"host_reserve_gib:",
+		"ctx_checkpoints:", "cache_idle_slots:", "host_reserve_gib:",
 	} {
 		if !strings.Contains(string(data), key) {
 			t.Errorf("marshalled tuning section is missing key %q:\n%s", key, data)
@@ -338,6 +340,10 @@ func TestEmbeddedLLMTuningValidateRejected(t *testing.T) {
 			mutate:  func(c *TuningConfig) { c.CacheRAMMiB = embeddedIntPtr(-1) },
 			wantMsg: "embedded_llm.tuning.cache_ram_mib -1 is not valid",
 		},
+		"negative ctx_checkpoints": {
+			mutate:  func(c *TuningConfig) { c.CtxCheckpoints = embeddedIntPtr(-1) },
+			wantMsg: "embedded_llm.tuning.ctx_checkpoints -1 is not valid",
+		},
 		"negative host_reserve_gib": {
 			mutate:  func(c *TuningConfig) { c.HostReserveGiB = embeddedFloatPtr(-0.5) },
 			wantMsg: "embedded_llm.tuning.host_reserve_gib -0.5 is not valid",
@@ -360,6 +366,13 @@ func TestEmbeddedLLMTuningValidateRejected(t *testing.T) {
 		"cache_ram_mib above the ceiling": {
 			mutate:  func(c *TuningConfig) { c.CacheRAMMiB = embeddedIntPtr(embeddedllm.MaxTuningMiB + 1) },
 			wantMsg: fmt.Sprintf("embedded_llm.tuning.cache_ram_mib %d is not valid", embeddedllm.MaxTuningMiB+1),
+		},
+		"ctx_checkpoints above the ceiling": {
+			mutate: func(c *TuningConfig) {
+				c.CtxCheckpoints = embeddedIntPtr(embeddedllm.MaxTuningCtxCheckpoints + 1)
+			},
+			wantMsg: fmt.Sprintf("embedded_llm.tuning.ctx_checkpoints %d is not valid",
+				embeddedllm.MaxTuningCtxCheckpoints+1),
 		},
 		"parallel above the ceiling": {
 			mutate:  func(c *TuningConfig) { c.Parallel = embeddedIntPtr(embeddedllm.MaxTuningParallel + 1) },
@@ -444,12 +457,14 @@ func TestEmbeddedLLMTuningValidateAccepted(t *testing.T) {
 			c.Packing = embeddedStrPtr("  ")
 		},
 		"every knob specified": func(c *TuningConfig) { *c = fullySpecifiedTuning() },
-		// 0 is a legitimate choice for these three, NOT a stand-in for unset:
+		// 0 is a legitimate choice for these four, NOT a stand-in for unset:
 		// fit_target_mib 0 keeps the runtime's own target, cache_ram_mib 0
-		// disables the prompt cache, offload.layers 0 is `-ngl 0`.
+		// disables the prompt cache, ctx_checkpoints 0 disables the per-slot
+		// snapshots, offload.layers 0 is `-ngl 0`.
 		"explicit zeros": func(c *TuningConfig) {
 			c.FitTargetMiB = embeddedIntPtr(0)
 			c.CacheRAMMiB = embeddedIntPtr(0)
+			c.CtxCheckpoints = embeddedIntPtr(0)
 			c.Offload.Mode = embeddedStrPtr(EmbeddedLLMOffloadLayers)
 			c.Offload.Layers = embeddedIntPtr(0)
 			c.HostReserveGiB = embeddedFloatPtr(0)
@@ -581,6 +596,12 @@ func TestEmbeddedLLMTuningToTuning(t *testing.T) {
 	if got.CacheRAMMiB == nil || *got.CacheRAMMiB != 512 {
 		t.Errorf("cache_ram_mib = %v, want 512", got.CacheRAMMiB)
 	}
+	if got.CtxCheckpoints == nil || *got.CtxCheckpoints != 0 {
+		t.Errorf("ctx_checkpoints = %v, want the verbatim 0 (disable)", got.CtxCheckpoints)
+	}
+	if got.CacheIdleSlots == nil || *got.CacheIdleSlots {
+		t.Errorf("cache_idle_slots = %v, want an explicit false", got.CacheIdleSlots)
+	}
 	if got.HostReserveGiB == nil || *got.HostReserveGiB != 6.5 {
 		t.Errorf("host_reserve_gib = %v, want 6.5", got.HostReserveGiB)
 	}
@@ -615,6 +636,8 @@ func TestEmbeddedLLMTuningToTuningClonesPointers(t *testing.T) {
 		MMProjOffload:  embeddedBoolPtr(true),
 		Parallel:       embeddedIntPtr(1),
 		CacheRAMMiB:    embeddedIntPtr(256),
+		CtxCheckpoints: embeddedIntPtr(8),
+		CacheIdleSlots: embeddedBoolPtr(false),
 		HostReserveGiB: embeddedFloatPtr(4),
 	}
 	got, err := src.ToTuning()
@@ -629,6 +652,8 @@ func TestEmbeddedLLMTuningToTuningClonesPointers(t *testing.T) {
 	*got.MMProjOffload = false
 	*got.Parallel = 99
 	*got.CacheRAMMiB = 1
+	*got.CtxCheckpoints = 99
+	*got.CacheIdleSlots = true
 	*got.HostReserveGiB = 1
 
 	if !reflect.DeepEqual(src, TuningConfig{
@@ -639,6 +664,8 @@ func TestEmbeddedLLMTuningToTuningClonesPointers(t *testing.T) {
 		MMProjOffload:  embeddedBoolPtr(true),
 		Parallel:       embeddedIntPtr(1),
 		CacheRAMMiB:    embeddedIntPtr(256),
+		CtxCheckpoints: embeddedIntPtr(8),
+		CacheIdleSlots: embeddedBoolPtr(false),
 		HostReserveGiB: embeddedFloatPtr(4),
 	}) {
 		t.Errorf("mutating the translated Tuning reached back into the config: %+v", src)
@@ -853,6 +880,9 @@ func TestEmbeddedLLMTuningCeilingsAcceptTheirBoundary(t *testing.T) {
 		}},
 		{"cache_ram_mib at the ceiling", func(c *TuningConfig) {
 			c.CacheRAMMiB = embeddedIntPtr(embeddedllm.MaxTuningMiB)
+		}},
+		{"ctx_checkpoints at the ceiling", func(c *TuningConfig) {
+			c.CtxCheckpoints = embeddedIntPtr(embeddedllm.MaxTuningCtxCheckpoints)
 		}},
 		{"parallel at the ceiling", func(c *TuningConfig) {
 			c.Parallel = embeddedIntPtr(embeddedllm.MaxTuningParallel)

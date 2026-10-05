@@ -506,20 +506,30 @@ func ramOnlyPlan(in ResolveInput, effective Backend, gpu GPUFamily, tuning Tunin
 	if tuning.FitMinContext != nil && *tuning.FitMinContext > 0 {
 		fitMinContext = *tuning.FitMinContext
 	}
+	// The two checkpoint knobs resolve exactly as planShape resolves them, so
+	// the RAM-tiered fallback and a measured plan render the same flags from
+	// the same overrides. An unusable figure is refused, not defaulted — the
+	// caller's Validate would otherwise catch what this path quietly changed.
+	ctxCheckpoints, err := planCtxCheckpoints(tuning)
+	if err != nil {
+		return MemoryPlan{}, err
+	}
 
 	plan := MemoryPlan{
-		Fit:           false,
-		FitMinContext: fitMinContext,
-		Layers:        ptrInt(layers),
-		ContextSize:   contextSize,
-		KVType:        kv,
-		Packing:       packing,
-		KVOffload:     tuning.KVOffload == nil || *tuning.KVOffload,
-		MMProjOffload: tuning.MMProjOffload == nil || *tuning.MMProjOffload,
-		Parallel:      parallel,
-		Devices:       slices.Clone(tuning.Devices),
-		SplitMode:     tuning.SplitMode,
-		GPUFamily:     gpu,
+		Fit:            false,
+		FitMinContext:  fitMinContext,
+		Layers:         ptrInt(layers),
+		ContextSize:    contextSize,
+		KVType:         kv,
+		Packing:        packing,
+		KVOffload:      tuning.KVOffload == nil || *tuning.KVOffload,
+		MMProjOffload:  tuning.MMProjOffload == nil || *tuning.MMProjOffload,
+		Parallel:       parallel,
+		CtxCheckpoints: ctxCheckpoints,
+		CacheIdleSlots: tuning.CacheIdleSlots == nil || *tuning.CacheIdleSlots,
+		Devices:        slices.Clone(tuning.Devices),
+		SplitMode:      tuning.SplitMode,
+		GPUFamily:      gpu,
 
 		// The gate's budgets, so the plan reports the capacity it was actually
 		// weighed against rather than two zeroes. They are DERIVED here, not

@@ -18,8 +18,10 @@ import (
 // verdict #1 and the 2026-09-13 addendum).
 //
 // The predefined catalog values come from the completed four-model study
-// (Qwen3.8-27B, Qwen3.6-35B-A3B, Gemma-4-26B-A4B-it, Gemma-4-31B-it) and
-// the model-agnostic research addendum; see the per-entry comments below.
+// (Qwen3.8-27B, Qwen3.6-35B-A3B, Gemma-4-26B-A4B-it, Gemma-4-31B-it), the
+// embedded-local-model prefill/token cost measurements (the "bonsai.2-27b"
+// entry; docs/development/embedded-llm-perf-diagnosis.md), and the
+// model-agnostic research addendum; see the per-entry comments below.
 
 // ModelProfileKind distinguishes the hard-coded predefined profiles from
 // operator-authored custom ones. The kind is metadata: it drives UI
@@ -219,16 +221,17 @@ func ValidateModelProfilesUnique(profiles []ModelProfile) error {
 	return nil
 }
 
-// predefinedModelProfiles is the fixed five-entry catalog. It is built
+// predefinedModelProfiles is the fixed six-entry catalog. It is built
 // through NewModelProfile + ValidateModelProfilesUnique at package init, so an
 // invalid entry fails loudly at startup (programmer error) instead of
 // shipping a half-valid preset.
 var predefinedModelProfiles = mustBuildPredefinedModelProfiles()
 
-// PredefinedModelProfiles returns the hard-coded predefined catalog: four
-// model-specific profiles (values from the four-model study) plus the
-// model-agnostic "generic" maximum-support preset (values from the
-// research addendum). The returned slice is a defensive copy.
+// PredefinedModelProfiles returns the hard-coded predefined catalog: five
+// model-specific profiles (four from the four-model study plus the
+// embedded-local-model bonsai.2-27b) and the model-agnostic "generic"
+// maximum-support preset (values from the research addendum). The returned
+// slice is a defensive copy.
 func PredefinedModelProfiles() []ModelProfile {
 	out := make([]ModelProfile, len(predefinedModelProfiles))
 	for i, p := range predefinedModelProfiles {
@@ -246,6 +249,39 @@ func FindPredefinedModelProfile(id string) (ModelProfile, bool) {
 		}
 	}
 	return ModelProfile{}, false
+}
+
+// legacyPredefinedModelProfileAliases maps predefined profile ids retired by
+// a rename to their replacements. It exists for one rename so far: the
+// embedded profile was compiled in as "bonsai-2-27b" by the intermediate
+// development builds of the cycle that introduced it and ships as the dotted
+// "bonsai.2-27b" (see the catalog entry for why the dot is load-bearing). A
+// config.yaml whose model_profiles.active_profile was selected against the
+// retired spelling would otherwise dangle and soft-fall back to "generic";
+// resolution consults this table instead — and only AFTER a direct catalog
+// lookup fails, so a custom profile that owns the retired id (the pre-bonsai
+// "Bonsai 2 27B" case the dot protects) keeps winning and can never be
+// hijacked by the alias.
+var legacyPredefinedModelProfileAliases = map[string]string{
+	"bonsai-2-27b": "bonsai.2-27b",
+}
+
+// FindModelProfileResolvingLegacy resolves a stored profile id against a
+// catalog, applying legacyPredefinedModelProfileAliases when — and only when —
+// no catalog entry owns the id directly. The second return value is the id
+// the lookup actually resolved to (the given id on a direct hit, its
+// replacement on a legacy-alias hit), so callers can distinguish and surface
+// the remap; found is false when neither spelling is in the catalog.
+func FindModelProfileResolvingLegacy(catalog []ModelProfile, id string) (profile ModelProfile, resolvedID string, found bool) {
+	if p, ok := FindModelProfile(catalog, id); ok {
+		return p, id, true
+	}
+	replacement, aliased := legacyPredefinedModelProfileAliases[id]
+	if !aliased {
+		return ModelProfile{}, "", false
+	}
+	p, ok := FindModelProfile(catalog, replacement)
+	return p, replacement, ok
 }
 
 func mustBuildPredefinedModelProfiles() []ModelProfile {
@@ -371,6 +407,43 @@ func buildPredefinedModelProfiles() ([]ModelProfile, error) {
 					ToolOutputKeepLastN: 3,
 					OutputTokenReserve:  16384,
 				},
+			},
+		},
+		{
+			// Embedded: the backend-owned local model (Bonsai 2 27B, a
+			// rebrand of Qwen3.8-27B served by the supervised llama-server).
+			// Every knob targets the measured prefill/token cost of local
+			// inference (docs/development/embedded-llm-perf-diagnosis.md):
+			// tool narrowing with compact descriptions and the Lite prompt
+			// cut prefill, reasoning_effort medium cuts thinking tokens,
+			// the shared loop hardening stops token-burning spins early,
+			// and the tight context window bounds the per-turn prefill.
+			//
+			// The '.' is load-bearing, not cosmetic: generateCustomModelProfileID
+			// collapses every non-[a-z0-9] run of a display name to '-', so it
+			// can never emit an id containing a dot — the same property the
+			// dotted qwen ids above carry. A custom profile named "Bonsai 2
+			// 27B" created against the pre-bonsai catalog derives exactly
+			// "bonsai-2-27b", and a dash-only predefined id would collide
+			// with it on upgrade: the load would drop the operator's stored
+			// profile and ensureStoreWritable would then refuse every custom
+			// write. The dotted spelling keeps that legacy id — and an
+			// active_profile reference to it — resolving to the operator's
+			// own profile (TestPredefinedBonsaiIDCannotCollideWithLegacyCustom);
+			// a reference with no custom owner resolves through
+			// legacyPredefinedModelProfileAliases to this entry instead of
+			// dangling.
+			id:   "bonsai.2-27b",
+			name: "Bonsai 2 27B (embedded)",
+			cfg: ModelProfileConfig{
+				EssentialTools: tools(true, true),
+				SystemPrompt:   SystemPromptConfig{Lite: true},
+				Sampling: ModelProfilesSamplingConfig{
+					Enabled:         true,
+					ReasoningEffort: "medium",
+				},
+				LoopHardening: loopHardening,
+				Context:       contextTight,
 			},
 		},
 		{

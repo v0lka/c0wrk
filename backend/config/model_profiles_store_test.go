@@ -522,3 +522,78 @@ func TestCustomModelProfileNameLimitCountsRunes(t *testing.T) {
 		t.Fatal("a name one rune over the limit must be rejected")
 	}
 }
+
+// TestPredefinedBonsaiIDCannotCollideWithLegacyCustom pins the upgrade
+// compatibility the dotted embedded preset id exists for. Against the
+// pre-bonsai catalog a custom profile named "Bonsai 2 27B" was creatable and
+// derives exactly the id "bonsai-2-27b" (generateCustomModelProfileID collapses
+// every non-[a-z0-9] run to '-'), so a dash-only predefined id would have
+// claimed it on upgrade: the load would drop the operator's stored profile and
+// ensureStoreWritable would then refuse every later custom write. The dotted
+// "bonsai.2-27b" spelling cannot be produced by the custom generator, so the
+// legacy entry keeps loading, stays resolvable as the active profile with its
+// own tuning, and ordinary custom CRUD survives the catalog growth.
+func TestPredefinedBonsaiIDCannotCollideWithLegacyCustom(t *testing.T) {
+	dir := t.TempDir()
+	path := ModelProfilesPath(dir)
+
+	// The pre-upgrade state: a custom profile under the id a dash-only
+	// embedded preset would later claim.
+	legacy, err := CreateCustomModelProfile("Bonsai 2 27B", storeTestConfigB(), nil)
+	if err != nil {
+		t.Fatalf("create legacy custom profile: %v", err)
+	}
+	if legacy.ID != "bonsai-2-27b" {
+		t.Fatalf("legacy id = %q, want the slug the custom generator derives for the name (bonsai-2-27b)", legacy.ID)
+	}
+	if err := SaveCustomModelProfiles(path, []ModelProfile{legacy}); err != nil {
+		t.Fatalf("save legacy store: %v", err)
+	}
+
+	// The post-upgrade load through the production catalog path: the enlarged
+	// predefined catalog must not reject the formerly valid entry.
+	catalog, warnings := LoadModelProfilesCatalog(dir)
+	if len(warnings) != 0 {
+		t.Fatalf("catalog load produced warnings: %v", warnings)
+	}
+	pre, ok := FindModelProfile(catalog, "bonsai.2-27b")
+	if !ok || pre.Kind != ModelProfileKindPredefined {
+		t.Fatalf("predefined bonsai.2-27b missing from the catalog: %+v (ok=%v)", pre, ok)
+	}
+	got, ok := FindModelProfile(catalog, legacy.ID)
+	if !ok || got.Kind != ModelProfileKindCustom {
+		t.Fatalf("legacy custom profile %q missing from the catalog (ok=%v)", legacy.ID, ok)
+	}
+	if !reflect.DeepEqual(got, legacy) {
+		t.Fatalf("legacy custom profile changed across the catalog load:\n got=%+v\nwant=%+v", got, legacy)
+	}
+
+	// Identity resolution: the persisted active-profile reference keeps
+	// resolving to the OPERATOR'S custom tuning, not to the predefined preset
+	// that now sits beside it in the catalog.
+	resolved, resolveWarnings := ResolveModelProfilesConfig(
+		ModelProfilesPersistConfig{Enabled: true, ActiveProfile: legacy.ID}, catalog)
+	if len(resolveWarnings) != 0 {
+		t.Fatalf("resolution produced warnings: %v", resolveWarnings)
+	}
+	if !reflect.DeepEqual(resolved.EssentialTools, legacy.Config.EssentialTools) ||
+		!reflect.DeepEqual(resolved.SystemPrompt, legacy.Config.SystemPrompt) ||
+		!reflect.DeepEqual(resolved.Sampling, legacy.Config.Sampling) ||
+		!reflect.DeepEqual(resolved.LoopHardening, legacy.Config.LoopHardening) ||
+		!reflect.DeepEqual(resolved.Context, legacy.Config.Context) {
+		t.Fatalf("resolved values drifted from the legacy custom tuning:\n got=%+v\nwant=%+v", resolved, legacy.Config)
+	}
+	if reflect.DeepEqual(resolved.Sampling, pre.Config.Sampling) {
+		t.Fatalf("resolved sampling equals the predefined preset's (%+v): the identity was substituted", resolved.Sampling)
+	}
+
+	// Store writability: the fail-closed writer still accepts the store, so
+	// creating and saving another custom profile keeps working after upgrade.
+	next, err := CreateCustomModelProfile("Another Tuning", storeTestConfigA(), []ModelProfile{legacy})
+	if err != nil {
+		t.Fatalf("create another custom profile after upgrade: %v", err)
+	}
+	if err := SaveCustomModelProfiles(path, []ModelProfile{legacy, next}); err != nil {
+		t.Fatalf("save after upgrade: %v", err)
+	}
+}

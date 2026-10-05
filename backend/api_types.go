@@ -38,9 +38,36 @@ type ExperimentalSettingsResponse struct {
 // experimental-features switch does not affect it); EssentialToolsEnabled
 // mirrors the resolved essential-tools variant sub-toggle. Both are false when
 // the config is not loaded.
+//
+// ActiveProfileID and SuggestedProfileID are the advisory identity half,
+// filled FRESH by GetConfig from pure in-memory reads (the stored active id
+// and the default-model suggestion). They exist so a background consumer —
+// the toolbar gate hook — can read profile identity WITHOUT calling
+// GetModelProfiles: that RPC is a CONSUMING read which drains the one-shot
+// profile notices (e.g. the active-profile-deletion fallback explanation)
+// that Settings is the intended audience for. GetModelProfiles remains the
+// full catalog surface for Settings.
 type ModelProfilesSettingsResponse struct {
 	Enabled               bool `json:"enabled"`
 	EssentialToolsEnabled bool `json:"essential_tools_enabled"`
+	// ActiveProfileID is the STORED active profile id, verbatim — "" when the
+	// config is not loaded. A dangling id stays visible; the resolver warning
+	// that explains the generic fallback surfaces through GetModelProfiles.
+	ActiveProfileID string `json:"active_profile,omitempty"`
+	// ResolvedProfileID is the id the resolver actually resolved the stored
+	// active id to: identical to ActiveProfileID on a direct catalog hit, the
+	// replacement id when the stored id is a retired predefined spelling
+	// (config.FindModelProfileResolvingLegacy), and "generic" on the soft
+	// fallback. It is served from the cached gate rather than filled fresh —
+	// resolution needs the profile catalog, a disk read
+	// refreshModelProfilesGateLocked already performs on every Model Profiles
+	// mutation — so GetConfig stays a pure in-memory read. Value-wise
+	// decisions ("is the effective profile already X?") must compare against
+	// this id, never the verbatim one. "" when the config is not loaded.
+	ResolvedProfileID string `json:"resolved_profile_id,omitempty"`
+	// SuggestedProfileID is the predefined profile the DEFAULT model suggests,
+	// nil when nothing matches. Advisory only; never auto-applied.
+	SuggestedProfileID *string `json:"suggested_profile_id,omitempty"`
 }
 
 // ReasoningInfo holds native reasoning options for a model family.

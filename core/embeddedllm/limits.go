@@ -47,6 +47,15 @@ const (
 	// gate in a test harness).
 	MaxTuningParallel = 64
 
+	// MaxTuningCtxCheckpoints bounds `embedded_llm.tuning.ctx_checkpoints`,
+	// the `--ctx-checkpoints` per-slot KV snapshot count. Each checkpoint can
+	// hold a saved prefix of the slot's KV cache, so the count is a memory
+	// multiplier the memory gate does not model; the ceiling keeps any
+	// downstream multiplication total, exactly like the layer count it
+	// mirrors. It is an absurdity guard, not a tuning opinion: the runtime's
+	// own default is 32, and the memory gate owns what actually fits.
+	MaxTuningCtxCheckpoints = 1 << 20
+
 	// MaxTuningHostReserveGiB bounds `embedded_llm.tuning.host_reserve_gib`.
 	// The knob is a float64 that the planner converts to an integer MiB count,
 	// and a float→int conversion whose value the result type cannot represent

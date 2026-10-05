@@ -475,7 +475,12 @@ type EmbeddedLLMOffloadTuningDTO struct {
 }
 
 // EmbeddedLLMTuningDTO is the payload of GetEmbeddedLLMTuning: the operator's
-// persisted memory-plan overrides (embedded_llm.tuning), field for field.
+// persisted memory-plan overrides (embedded_llm.tuning), field for field for
+// the twelve UI-exposed knobs. The two YAML-only checkpoint-policy knobs
+// (`ctx_checkpoints`, `cache_idle_slots`) are deliberately absent here, from
+// EmbeddedLLMTuningRequest and from the reset vocabulary — they are editable
+// only through config.yaml and observable only through the launch command
+// line (see specs/domains/embedded-llm.md).
 //
 // EVERY field is nullable and nil means "unset — the planner decides", which is
 // a different value from an explicit "auto": the planner treats them the same,
@@ -679,7 +684,9 @@ func embeddedPlanDTO(plan *embeddedllm.MemoryPlan) EmbeddedLLMPlan {
 	return dto
 }
 
-// embeddedTuningDTO mirrors the persisted override surface field for field. The
+// embeddedTuningDTO mirrors the persisted override surface field for field
+// across the twelve UI-exposed knobs; the two YAML-only checkpoint-policy
+// knobs have no DTO representation by design (see EmbeddedLLMTuningDTO). The
 // pointers are copied rather than shared, so the returned DTO never aliases the
 // live config — a caller may hold it across a config reload without watching
 // its contents change underneath.
