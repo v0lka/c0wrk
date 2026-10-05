@@ -47,19 +47,22 @@ func effectiveModelProfilesConfig(cfg *config.Config, modelProfilesCatalog []con
 }
 
 // activeModelProfile returns the catalog entry the persisted `model_profiles:` section
-// resolves to, applying the same soft fallback config.ResolveModelProfilesConfig uses
-// for the effective values: an empty or dangling active_profile id falls
-// back to the model-agnostic "generic" profile. The entry identifies the
-// active profile (id + kind) for agent_metrics annotation — reported even
-// when the master toggle is off. The zero entry is returned only when even
-// "generic" is missing from the catalog (never the case with the shipped
-// predefined catalog); the metrics meta then carries no profile fields.
+// resolves to, applying the same soft fallback and retired-predefined-id
+// aliasing config.ResolveModelProfilesConfig uses for the effective values:
+// an empty or dangling active_profile id falls back to the model-agnostic
+// "generic" profile, and a retired predefined id resolves to its replacement
+// — so the reported identity always matches the effective values. The entry
+// identifies the active profile (id + kind) for agent_metrics annotation —
+// reported even when the master toggle is off. The zero entry is returned
+// only when even "generic" is missing from the catalog (never the case with
+// the shipped predefined catalog); the metrics meta then carries no profile
+// fields.
 func activeModelProfile(persist config.ModelProfilesPersistConfig, catalog []config.ModelProfile) config.ModelProfile {
 	id := persist.ActiveProfile
 	if id == "" {
 		id = config.ModelProfilesGenericProfileID
 	}
-	if p, ok := config.FindModelProfile(catalog, id); ok {
+	if p, _, ok := config.FindModelProfileResolvingLegacy(catalog, id); ok {
 		return p
 	}
 	generic, _ := config.FindModelProfile(catalog, config.ModelProfilesGenericProfileID)

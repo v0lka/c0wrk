@@ -1720,6 +1720,8 @@ func TestLaunchSpecArgsGoldenShapes(t *testing.T) {
 				KVOffload:      boolPtr(true),
 				MMProjOffload:  boolPtr(true),
 				Parallel:       DefaultParallel,
+				CtxCheckpoints: DefaultCtxCheckpoints,
+				CacheIdleSlots: true,
 				ImageMaxTokens: ImageMaxTokensUncapped,
 			},
 			want: []string{
@@ -1732,6 +1734,10 @@ func TestLaunchSpecArgsGoldenShapes(t *testing.T) {
 				"-c", "0",
 				"-ctk", "f16", "-ctv", "f16",
 				"-np", "1",
+				// The two checkpoint knobs render for EVERY shape, at the
+				// pinned defaults — see LaunchSpec.CtxCheckpoints.
+				"--ctx-checkpoints", "32",
+				"--cache-idle-slots",
 				"--temp", "1.0",
 				"--top-p", "0.95",
 				"--top-k", "20",
@@ -1754,6 +1760,8 @@ func TestLaunchSpecArgsGoldenShapes(t *testing.T) {
 				Layers:         LayerCount(nglAllGPU),
 				ContextSize:    32768,
 				Parallel:       DefaultParallel,
+				CtxCheckpoints: DefaultCtxCheckpoints,
+				CacheIdleSlots: true,
 				ImageMaxTokens: imageMaxTokensCapped,
 			},
 			want: []string{
@@ -1765,6 +1773,8 @@ func TestLaunchSpecArgsGoldenShapes(t *testing.T) {
 				"-fa", "on",
 				"-c", "32768",
 				"-np", "1",
+				"--ctx-checkpoints", "32",
+				"--cache-idle-slots",
 				"--temp", "1.0",
 				"--top-p", "0.95",
 				"--top-k", "20",
@@ -1777,21 +1787,23 @@ func TestLaunchSpecArgsGoldenShapes(t *testing.T) {
 		{
 			name: "fit-with-target",
 			spec: LaunchSpec{
-				ServerBinary:  binary,
-				ModelFile:     model,
-				MMProjFile:    mmproj,
-				Host:          LoopbackHost,
-				Port:          port,
-				Fit:           true,
-				FitTargetMiB:  2048,
-				FitMinContext: DefaultFitMinContext,
-				Layers:        LayerAuto(),
-				ContextSize:   0,
-				KVType:        KVTypeQ8_0,
-				KVOffload:     boolPtr(true),
-				MMProjOffload: boolPtr(true),
-				Parallel:      DefaultParallel,
-				CacheRAMMiB:   intPtr(4096),
+				ServerBinary:   binary,
+				ModelFile:      model,
+				MMProjFile:     mmproj,
+				Host:           LoopbackHost,
+				Port:           port,
+				Fit:            true,
+				FitTargetMiB:   2048,
+				FitMinContext:  DefaultFitMinContext,
+				Layers:         LayerAuto(),
+				ContextSize:    0,
+				KVType:         KVTypeQ8_0,
+				KVOffload:      boolPtr(true),
+				MMProjOffload:  boolPtr(true),
+				Parallel:       DefaultParallel,
+				CacheRAMMiB:    intPtr(4096),
+				CtxCheckpoints: DefaultCtxCheckpoints,
+				CacheIdleSlots: true,
 			},
 			want: []string{
 				"-m", model,
@@ -1805,6 +1817,8 @@ func TestLaunchSpecArgsGoldenShapes(t *testing.T) {
 				"-ctk", "q8_0", "-ctv", "q8_0",
 				"-np", "1",
 				"--cache-ram", "4096",
+				"--ctx-checkpoints", "32",
+				"--cache-idle-slots",
 				"--temp", "1.0",
 				"--top-p", "0.95",
 				"--top-k", "20",
@@ -1830,6 +1844,8 @@ func TestLaunchSpecArgsGoldenShapes(t *testing.T) {
 				KVOffload:      boolPtr(false),
 				MMProjOffload:  boolPtr(true),
 				Parallel:       DefaultParallel,
+				CtxCheckpoints: DefaultCtxCheckpoints,
+				CacheIdleSlots: true,
 				ImageMaxTokens: imageMaxTokensCapped,
 			},
 			want: []string{
@@ -1843,6 +1859,8 @@ func TestLaunchSpecArgsGoldenShapes(t *testing.T) {
 				"-ctk", "q4_0", "-ctv", "q4_0",
 				"-nkvo",
 				"-np", "1",
+				"--ctx-checkpoints", "32",
+				"--cache-idle-slots",
 				"--temp", "1.0",
 				"--top-p", "0.95",
 				"--top-k", "20",
@@ -1854,7 +1872,10 @@ func TestLaunchSpecArgsGoldenShapes(t *testing.T) {
 		},
 		{
 			// A CPU-only launch: nothing on the accelerator, the projector's
-			// reserve in host RAM, the prompt cache disabled, and one slot.
+			// reserve in host RAM, the prompt cache disabled, and one slot. The
+			// checkpoint knobs carry their non-default spellings — the snapshots
+			// disabled verbatim (0) and idle-slot saving off, which the fork
+			// documents as "requires cache-ram" and this shape disables.
 			name: "cpu-with-prompt-cache-off",
 			spec: LaunchSpec{
 				ServerBinary:   binary,
@@ -1870,6 +1891,8 @@ func TestLaunchSpecArgsGoldenShapes(t *testing.T) {
 				MMProjOffload:  boolPtr(false),
 				Parallel:       1,
 				CacheRAMMiB:    intPtr(0),
+				CtxCheckpoints: 0,
+				CacheIdleSlots: false,
 				ImageMaxTokens: imageMaxTokensCapped,
 			},
 			want: []string{
@@ -1883,6 +1906,8 @@ func TestLaunchSpecArgsGoldenShapes(t *testing.T) {
 				"-ctk", "f16", "-ctv", "f16",
 				"-np", "1",
 				"--cache-ram", "0",
+				"--ctx-checkpoints", "0",
+				"--no-cache-idle-slots",
 				"--temp", "1.0",
 				"--top-p", "0.95",
 				"--top-k", "20",
@@ -1911,6 +1936,8 @@ func TestLaunchSpecArgsGoldenShapes(t *testing.T) {
 				MMProjOffload:  boolPtr(true),
 				Parallel:       DefaultParallel,
 				CacheRAMMiB:    intPtr(cacheRAMNoLimit),
+				CtxCheckpoints: DefaultCtxCheckpoints,
+				CacheIdleSlots: true,
 				Devices:        []string{"CUDA0", "CUDA1"},
 				SplitMode:      SplitModeRow,
 				ImageMaxTokens: ImageMaxTokensUncapped,
@@ -1928,6 +1955,8 @@ func TestLaunchSpecArgsGoldenShapes(t *testing.T) {
 				"-ctk", "f16", "-ctv", "f16",
 				"-np", "1",
 				"--cache-ram", "-1",
+				"--ctx-checkpoints", "32",
+				"--cache-idle-slots",
 				"--temp", "1.0",
 				"--top-p", "0.95",
 				"--top-k", "20",
@@ -2165,6 +2194,8 @@ func TestLaunchSpecArgsRenderTypedValuesOnly(t *testing.T) {
 		"MMProjOffload":  "a bool that selects a fixed switch",
 		"Parallel":       "an integer, at least 1 by Validate",
 		"CacheRAMMiB":    "an integer, at least the runtime's no-limit spelling",
+		"CtxCheckpoints": "an integer, bounded 0..MaxTuningCtxCheckpoints by Validate",
+		"CacheIdleSlots": "a bool that selects a fixed switch",
 		"Devices":        "validated token by token by validateDeviceName",
 		"SplitMode":      "a closed enum, allow-listed by Validate",
 		"Layers":         "a LayerMode, whose four values are the only ones constructible",
@@ -2609,6 +2640,10 @@ func TestLaunchSpecRejectsUnusableBudgets(t *testing.T) {
 		"--cache-ram above the ceiling": func(s *LaunchSpec) { s.CacheRAMMiB = intPtr(MaxTuningMiB + 1) },
 		"-fitt above the ceiling":       func(s *LaunchSpec) { s.FitTargetMiB = MaxTuningMiB + 1 },
 		"-ngl above the ceiling":        func(s *LaunchSpec) { s.Layers = LayerCount(MaxTuningLayers + 1) },
+		"--ctx-checkpoints above the ceiling": func(s *LaunchSpec) {
+			s.CtxCheckpoints = MaxTuningCtxCheckpoints + 1
+		},
+		"--ctx-checkpoints negative": func(s *LaunchSpec) { s.CtxCheckpoints = -1 },
 		// The image-token cap is bounded by the model's own training context, the
 		// same figure -c and -fitc are: Args renders it verbatim, so an
 		// unbounded value would reach argv unchecked.
@@ -2639,6 +2674,12 @@ func TestLaunchSpecRejectsUnusableBudgets(t *testing.T) {
 		"--cache-ram at the ceiling": func(s *LaunchSpec) { s.CacheRAMMiB = intPtr(MaxTuningMiB) },
 		"-fitt at the ceiling":       func(s *LaunchSpec) { s.FitTargetMiB = MaxTuningMiB },
 		"-ngl at the ceiling":        func(s *LaunchSpec) { s.Layers = LayerCount(MaxTuningLayers) },
+		// The checkpoint count accepts its default, its disable and its ceiling
+		// — 0 is a verbatim operator choice, not an "unset" sentinel, because
+		// the flag is ALWAYS rendered.
+		"--ctx-checkpoints at the ceiling": func(s *LaunchSpec) { s.CtxCheckpoints = MaxTuningCtxCheckpoints },
+		"--ctx-checkpoints disabled":       func(s *LaunchSpec) { s.CtxCheckpoints = 0 },
+		"--ctx-checkpoints default":        func(s *LaunchSpec) { s.CtxCheckpoints = DefaultCtxCheckpoints },
 		// The value AT the ceiling is accepted, and so is the uncapped zero that
 		// omits the flag.
 		"--image-max-tokens at the ceiling": func(s *LaunchSpec) { s.ImageMaxTokens = maxTrainingContext },
@@ -2705,18 +2746,20 @@ func TestApplyMemoryPlanRendersEveryFlagBearingField(t *testing.T) {
 	// One non-default value per field, chosen so it is visible in argv under at
 	// least one of the two baselines below.
 	variations := map[string]func(*MemoryPlan){
-		"Fit":           func(p *MemoryPlan) { p.Fit = !p.Fit },
-		"FitTargetMiB":  func(p *MemoryPlan) { p.FitTargetMiB = 2048 },
-		"FitMinContext": func(p *MemoryPlan) { p.FitMinContext = contextTierTop },
-		"Layers":        func(p *MemoryPlan) { p.Layers = intPtr(nglCPUOnly) },
-		"ContextSize":   func(p *MemoryPlan) { p.ContextSize = 8192 },
-		"KVType":        func(p *MemoryPlan) { p.KVType = KVTypeQ4_0 },
-		"KVOffload":     func(p *MemoryPlan) { p.KVOffload = !p.KVOffload },
-		"MMProjOffload": func(p *MemoryPlan) { p.MMProjOffload = !p.MMProjOffload },
-		"Parallel":      func(p *MemoryPlan) { p.Parallel = 2 },
-		"CacheRAMMiB":   func(p *MemoryPlan) { p.CacheRAMMiB = intPtr(4096) },
-		"Devices":       func(p *MemoryPlan) { p.Devices = []string{"CUDA0"} },
-		"SplitMode":     func(p *MemoryPlan) { p.SplitMode = SplitModeRow },
+		"Fit":            func(p *MemoryPlan) { p.Fit = !p.Fit },
+		"FitTargetMiB":   func(p *MemoryPlan) { p.FitTargetMiB = 2048 },
+		"FitMinContext":  func(p *MemoryPlan) { p.FitMinContext = contextTierTop },
+		"Layers":         func(p *MemoryPlan) { p.Layers = intPtr(nglCPUOnly) },
+		"ContextSize":    func(p *MemoryPlan) { p.ContextSize = 8192 },
+		"KVType":         func(p *MemoryPlan) { p.KVType = KVTypeQ4_0 },
+		"KVOffload":      func(p *MemoryPlan) { p.KVOffload = !p.KVOffload },
+		"MMProjOffload":  func(p *MemoryPlan) { p.MMProjOffload = !p.MMProjOffload },
+		"Parallel":       func(p *MemoryPlan) { p.Parallel = 2 },
+		"CacheRAMMiB":    func(p *MemoryPlan) { p.CacheRAMMiB = intPtr(4096) },
+		"CtxCheckpoints": func(p *MemoryPlan) { p.CtxCheckpoints = DefaultCtxCheckpoints + 8 },
+		"CacheIdleSlots": func(p *MemoryPlan) { p.CacheIdleSlots = !p.CacheIdleSlots },
+		"Devices":        func(p *MemoryPlan) { p.Devices = []string{"CUDA0"} },
+		"SplitMode":      func(p *MemoryPlan) { p.SplitMode = SplitModeRow },
 	}
 
 	baselines := map[string]MemoryPlan{
@@ -2875,13 +2918,14 @@ var (
 		"-fit": true, "-fitt": true, "-fitc": true,
 		"-ngl": true, "-sm": true, "-dev": true,
 		"-fa": true, "-c": true, "-ctk": true, "-ctv": true,
-		"-np": true, "--cache-ram": true,
+		"-np": true, "--cache-ram": true, "--ctx-checkpoints": true,
 		"--temp": true, "--top-p": true, "--top-k": true,
 		"--mmproj": true, "--image-max-tokens": true,
 	}
 	argvSwitches = map[string]bool{
 		"--jinja": true, "--no-ui": true,
 		"-nkvo": true, "--no-mmproj-offload": true,
+		"--cache-idle-slots": true, "--no-cache-idle-slots": true,
 	}
 )
 
@@ -4452,6 +4496,8 @@ func stagedPlan() MemoryPlan {
 		KVOffload:         false,
 		MMProjOffload:     false,
 		Parallel:          DefaultParallel,
+		CtxCheckpoints:    DefaultCtxCheckpoints,
+		CacheIdleSlots:    false,
 		CacheRAMMiB:       &cacheRAM,
 		GPUFamily:         GPUFamilyAppleSilicon,
 		DeviceBudgetMiB:   24576,
@@ -4519,6 +4565,10 @@ func TestLoadLaunchesTheRecordedPlan(t *testing.T) {
 	requireFlag(t, args, "-nkvo")
 	requireFlag(t, args, "--no-mmproj-offload")
 	requireArgs(t, args, "--cache-ram", "0")
+	// The two checkpoint knobs render from the RECORDED plan: the count
+	// verbatim, and the disabled idle-slot saving through the --no- spelling.
+	requireArgs(t, args, "--ctx-checkpoints", strconv.Itoa(DefaultCtxCheckpoints))
+	requireFlag(t, args, "--no-cache-idle-slots")
 
 	// The identity half still comes from the install record.
 	requireArgs(t, args, "-m", fx.manifest.ModelFile)
@@ -5068,6 +5118,11 @@ func TestLaunchSpecFallsBackToThePurePolicyForAPlanLessManifest(t *testing.T) {
 	requireArgs(t, args, "-fit", "off")
 	requireArgs(t, args, "-c", "16384")
 	requireArgs(t, args, "-np", strconv.Itoa(DefaultParallel))
+	// The policy path has no plan to take the checkpoint knobs from, so the
+	// pinned defaults ARE the policy — rendered explicitly, not inherited from
+	// the runtime's env-sensitive defaults (see DefaultCtxCheckpoints).
+	requireArgs(t, args, "--ctx-checkpoints", strconv.Itoa(DefaultCtxCheckpoints))
+	requireFlag(t, args, "--cache-idle-slots")
 }
 
 // ── the context readback is a merge, not a whole-file rewrite ──

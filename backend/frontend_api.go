@@ -37,7 +37,10 @@ type FrontendAPI struct {
 	// read from disk, so caching keeps GetConfig a pure in-memory read (it runs
 	// on every settings open — see the GUARANTEE on collectAllModels). Seeded at
 	// construction and refreshed by refreshModelProfilesGateLocked at every Model Profiles
-	// mutation. Guarded by configMu.
+	// mutation. Only the two gate toggles and the resolved active id (which shares
+	// the cache's inputs exactly) are served from this cache; the block's fresh
+	// identity half (verbatim active/suggested ids) is filled FRESH by GetConfig from
+	// pure reads, so a default-model change needs no cache refresh. Guarded by configMu.
 	modelProfilesGateResp ModelProfilesSettingsResponse
 	// modelProfilesNotices carries one-shot Model Profiles profile notices (e.g. "the
 	// active profile was deleted; switched to generic") for the NEXT
@@ -84,6 +87,12 @@ type FrontendAPI struct {
 	// in production, where readProcessRSS from processmem.go runs), mirroring
 	// gitStatusFn.
 	readProcessRSSFn func() (uint64, error)
+	// readSystemFontFn, when non-nil, overrides the desktop-environment UI
+	// font read behind GetSystemUIFont (frontend_api_system.go). Test-only
+	// seam (nil in production, where readSystemFontName from
+	// systemfont_linux.go / systemfont_other.go runs), mirroring
+	// readProcessRSSFn.
+	readSystemFontFn func() (string, error)
 	// fetchPaperOriginalFn, when non-nil, replaces the
 	// papers.FetchOriginalHTML call behind FetchPaperOriginal
 	// (frontend_api_papers_source.go). Test-only seam (nil in production),

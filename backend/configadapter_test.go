@@ -549,3 +549,30 @@ func TestToBuilderConfig_ShellExecOverride(t *testing.T) {
 		t.Errorf("an invalid override must degrade to nil, got %+v", bc.ShellExec.BashExec)
 	}
 }
+
+// TestActiveModelProfile_RetiredPredefinedID verifies the metrics-identity
+// path tracks the value path: the retired dashed bonsai id (selected against
+// intermediate development builds before the dotted rename) resolves to the
+// renamed predefined entry — not to the generic fallback — while a custom
+// profile that owns the retired id keeps it (see
+// TestResolveModelProfilesConfig_RetiredPredefinedID for the value path).
+func TestActiveModelProfile_RetiredPredefinedID(t *testing.T) {
+	catalog := config.PredefinedModelProfiles()
+
+	p := activeModelProfile(config.ModelProfilesPersistConfig{ActiveProfile: "bonsai-2-27b"}, catalog)
+	if p.ID != "bonsai.2-27b" || p.Kind != config.ModelProfileKindPredefined {
+		t.Errorf("retired id resolved to %q (%s), want the predefined bonsai.2-27b entry", p.ID, p.Kind)
+	}
+
+	customCfg := config.ModelProfileConfig{}
+	custom, err := config.NewModelProfile("bonsai-2-27b", "Bonsai 2 27B", config.ModelProfileKindCustom, customCfg)
+	if err != nil {
+		t.Fatalf("NewModelProfile: %v", err)
+	}
+	p = activeModelProfile(
+		config.ModelProfilesPersistConfig{ActiveProfile: "bonsai-2-27b"},
+		append(config.PredefinedModelProfiles(), custom))
+	if p.ID != "bonsai-2-27b" || p.Kind != config.ModelProfileKindCustom {
+		t.Errorf("retired id resolved to %q (%s), want the custom profile that owns the id", p.ID, p.Kind)
+	}
+}

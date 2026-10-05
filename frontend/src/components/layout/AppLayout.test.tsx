@@ -47,7 +47,8 @@ vi.mock('@/hooks/useResize', () => ({
 }))
 vi.mock('@/components/ResizeHandle', () => ({ ResizeHandle: () => null }))
 vi.mock('./Sidebar', () => ({ Sidebar: () => null }))
-vi.mock('@/components/chat/ChatArea', () => ({ ChatArea: () => null }))
+vi.mock('@/components/chat/ChatArea', () => ({ ChatArea: () => <div data-testid="chat-area" /> }))
+vi.mock('@/components/chat/BonsaiProfileBanner', () => ({ BonsaiProfileBanner: () => <div data-testid="bonsai-banner" /> }))
 vi.mock('@/components/layout/StatusBar', () => ({ StatusBar: () => null }))
 vi.mock('@/components/fileViewer/FileViewerPanel', () => ({ FileViewerPanel: () => null }))
 vi.mock('./floatingViewerOutside', () => ({
@@ -86,6 +87,12 @@ function renderShell(): HTMLElement {
 }
 
 describe('AppLayout shell sizing', () => {
+  it('places the Bonsai profile banner directly above the chat area', () => {
+    const shell = renderShell()
+    const chat = shell.querySelector('[data-testid="chat-area"]')
+    expect(chat?.previousElementSibling?.getAttribute('data-testid')).toBe('bonsai-banner')
+  })
+
   it('fills the viewport with percentages, never viewport units', () => {
     const classes = renderShell().className.split(/\s+/)
 

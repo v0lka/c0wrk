@@ -93,8 +93,17 @@ func TestUpdateHypothesis_UnreadableLogFailsClosed(t *testing.T) {
 		t.Errorf("error does not mention the log: %v", err)
 	}
 
-	cardAfter, _ := os.ReadFile(cardPath)
-	graphAfter, _ := os.ReadFile(graphPath)
+	// The re-reads below report their errors instead of ignoring them: a
+	// failed read returns nil content, which would masquerade as "modified"
+	// and hide the actual I/O problem.
+	cardAfter, cardErr := os.ReadFile(cardPath)
+	if cardErr != nil {
+		t.Fatalf("re-reading card: %v", cardErr)
+	}
+	graphAfter, graphErr := os.ReadFile(graphPath)
+	if graphErr != nil {
+		t.Fatalf("re-reading graph: %v", graphErr)
+	}
 	if !bytes.Equal(cardAfter, cardBefore) {
 		t.Error("card was modified despite the log-read abort")
 	}
@@ -106,15 +115,21 @@ func TestUpdateHypothesis_UnreadableLogFailsClosed(t *testing.T) {
 // TestSetActiveResearch_UnreadableIndexFailsClosed pins the same guard on the
 // root index: an unreadable index.md must abort activation instead of being
 // rewritten as a minimal single-row skeleton (which would drop every other
-// project's row).
+// project's row). R-001's row deliberately sits FIRST: activation must need a
+// real index rewrite, so the guard fires on both platform dialects of
+// "unreadable" — where the read fails (Unix permission bits), and where only
+// the rename onto the locked file fails (a Windows handle with no sharing can
+// be read through by some runner/file-system combinations, but replacing the
+// file it holds is still denied). With R-001 already last, the no-op early
+// return would mask the guard on such platforms.
 func TestSetActiveResearch_UnreadableIndexFailsClosed(t *testing.T) {
 	requireNonRoot(t)
 	root, dir := setupProjectDir(t)
 	indexPath := filepath.Join(root, "index.md")
 	original := "# Research Index\n\n" +
 		indexTableHeader + "\n" + indexTableSeparator + "\n" +
-		"| [R-002](R-002-other/brief.md) | Other | | | | | [brief](R-002-other/brief.md) |\n" +
-		"| [R-001](R-001-test/brief.md) | Test | | | | | [brief](R-001-test/brief.md) |\n"
+		"| [R-001](R-001-test/brief.md) | Test | | | | | [brief](R-001-test/brief.md) |\n" +
+		"| [R-002](R-002-other/brief.md) | Other | | | | | [brief](R-002-other/brief.md) |\n"
 	if err := os.WriteFile(indexPath, []byte(original), 0o644); err != nil {
 		t.Fatalf("writing index: %v", err)
 	}

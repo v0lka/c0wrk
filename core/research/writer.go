@@ -15,8 +15,11 @@
 package research
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1565,9 +1568,20 @@ func graphSkeleton() string {
 // staged as a temp file in its own directory (0600 → chmod 0644), and only
 // after all files are fully staged are they renamed into place. Staging before
 // the first rename means a staging failure (disk full, permissions) leaves
-// every target untouched; only the rename phase — near-instant and per-file
-// atomic — can produce a partial state, which no two-file scheme can avoid
-// without a filesystem transaction.
+// every target untouched. The rename phase is guarded against a partial
+// outcome: every existing target is first moved aside to a same-directory
+// backup, and a failure while moving aside or committing any rename rolls the
+// whole set back to the byte-for-byte original state (backups renamed back,
+// newly created targets removed). Only a hard process kill mid-phase can
+// strand the set — and even then every original byte survives in the adjacent
+// backup file. Successful commits drop their backups again, so a clean write
+// leaves only the final files behind.
+//
+// Existing targets must be regular files: a directory, FIFO, or symlinked
+// target is rejected before anything is moved. os.Rename would silently
+// replace a symlinked target instead of writing through it, and cannot
+// replace a directory atomically at all — failing closed up front keeps the
+// no-partial-outcome guarantee meaningful.
 //
 // researchRoot is the containment root (SECURITY.md: RESEARCH artifacts stay
 // strictly inside the project workspace). Every target is symlink-resolved
@@ -1580,13 +1594,24 @@ func graphSkeleton() string {
 // so the location that was validated is exactly the location written and a
 // directory swap between check and write cannot re-introduce a different
 // symlink chain.
+// stagedFile tracks one file of a writeFilesAtomic set through its phases:
+// the resolved target, the staged temp holding the new contents, and — once
+// the original has been moved aside — the backup it is parked at (backup ""
+// while the target is untouched, or for a brand-new file that has no
+// original). existed records whether the target was present before the write.
+type stagedFile struct {
+	target  string
+	tmp     string
+	backup  string
+	existed bool
+}
+
 func writeFilesAtomic(researchRoot string, files map[string][]byte) error {
-	type stagedFile struct {
-		target string
-		tmp    string
-	}
 	staged := make([]stagedFile, 0, len(files))
 	defer func() {
+		// Best-effort cleanup of anything still parked at a temp name: the
+		// committed temps no longer exist there, so this only touches staging
+		// leftovers and the new contents rolled back out of a target.
 		for _, s := range staged {
 			_ = os.Remove(s.tmp)
 		}
@@ -1631,12 +1656,114 @@ func writeFilesAtomic(researchRoot string, files map[string][]byte) error {
 		staged = append(staged, stagedFile{target: rp, tmp: tmpName})
 	}
 
-	for _, s := range staged {
-		if err := os.Rename(s.tmp, s.target); err != nil {
-			return err
+	// Pre-flight: every existing target must be a regular file (see the doc
+	// comment). Lstat on the resolved target — a symlinked final component is
+	// itself the hazard, so it must not be followed here.
+	for i := range staged {
+		info, err := os.Lstat(staged[i].target)
+		switch {
+		case err == nil && info.Mode().IsRegular():
+			staged[i].existed = true
+		case err == nil:
+			return fmt.Errorf("research write target %q is not a regular file", staged[i].target)
+		case errors.Is(err, fs.ErrNotExist):
+			// New file: nothing to move aside, nothing to roll back.
+		default:
+			return fmt.Errorf("research write target %q not statable: %w", staged[i].target, err)
+		}
+	}
+
+	// Phase 1 — move every existing original aside to a same-directory backup.
+	// A failure here leaves the temps staged but every target untouched after
+	// the rollback below renames the already-moved originals back.
+	for i := range staged {
+		if !staged[i].existed {
+			continue
+		}
+		backup, err := backupTargetPath(staged[i].target)
+		if err == nil {
+			err = os.Rename(staged[i].target, backup)
+		}
+		if err != nil {
+			return fmt.Errorf("moving %q aside for an atomic write: %w", staged[i].target,
+				errors.Join(err, rollbackStaged(staged[:i])))
+		}
+		staged[i].backup = backup
+	}
+
+	// Phase 2 — commit: rename every staged temp onto its now-free target. A
+	// failure rolls the whole set back (see rollbackStaged) and surfaces both
+	// the commit error and any rollback error.
+	for i := range staged {
+		if err := os.Rename(staged[i].tmp, staged[i].target); err != nil {
+			return fmt.Errorf("committing %q: %w", staged[i].target, errors.Join(err, rollbackStaged(staged[:i+1])))
+		}
+	}
+
+	// Success — drop the backups (best-effort: the mutation is committed, a
+	// stuck backup must not fail it; a leftover keeps the original bytes).
+	for i := range staged {
+		if staged[i].backup != "" {
+			_ = os.Remove(staged[i].backup)
 		}
 	}
 	return nil
+}
+
+// rollbackStaged restores every entry of a partially committed write set to
+// its pre-write state: an entry whose temp was already renamed onto the target
+// gets the new contents moved back to the temp name (the deferred cleanup
+// removes them) and its original — parked at the backup — renamed back into
+// place; an entry that was never committed just needs its original (if any)
+// renamed back. Entries for brand-new files lose their partial creations. It
+// returns nil on full success, or the joined errors of every failed restore —
+// a non-nil result means some file may be left missing or replaced, which the
+// caller MUST surface alongside the original failure.
+func rollbackStaged(staged []stagedFile) error {
+	var restoreErrs []error
+	for i := range staged {
+		s := &staged[i]
+		switch s.backup {
+		case "":
+			// Brand-new file: if the temp got as far as the target, remove it.
+			if err := os.Remove(s.target); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				restoreErrs = append(restoreErrs, fmt.Errorf("removing rolled-back new file %q: %w", s.target, err))
+			}
+		default:
+			// Original parked at the backup. Whatever now sits at the target
+			// (the committed temp, or nothing) makes way for it; the displaced
+			// bytes are moved to the temp name for the deferred cleanup instead
+			// of being removed, so a later failure still leaves them inspectable.
+			if err := os.Rename(s.target, s.tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				restoreErrs = append(restoreErrs, fmt.Errorf("displacing rolled-back contents of %q: %w", s.target, err))
+				continue
+			}
+			if err := os.Rename(s.backup, s.target); err != nil {
+				restoreErrs = append(restoreErrs, fmt.Errorf("restoring original %q from backup: %w", s.target, err))
+			}
+		}
+	}
+	return errors.Join(restoreErrs...)
+}
+
+// backupTargetPath returns a fresh, currently-unused same-directory path to
+// park a target's original at while its replacement is committed
+// (.<base>.bak-<random>). The dot prefix keeps the parked original invisible
+// to the card/graph/index listing and globbing paths, which match on the
+// original names, and the .bak suffix keeps it out of every *.md match.
+func backupTargetPath(target string) (string, error) {
+	dir, base := filepath.Dir(target), filepath.Base(target)
+	var randBytes [4]byte
+	for range 3 {
+		if _, err := rand.Read(randBytes[:]); err != nil {
+			return "", fmt.Errorf("generating backup name for %q: %w", target, err)
+		}
+		candidate := filepath.Join(dir, fmt.Sprintf(".%s.bak-%s", base, hex.EncodeToString(randBytes[:])))
+		if _, err := os.Lstat(candidate); errors.Is(err, fs.ErrNotExist) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("finding a free backup name for %q", target)
 }
 
 // resolveTargetWithinRoot symlink-resolves the containment root and the
