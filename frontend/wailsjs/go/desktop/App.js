@@ -406,6 +406,10 @@ export function GetStepOutput(arg1, arg2) {
   return window['go']['desktop']['App']['GetStepOutput'](arg1, arg2);
 }
 
+export function GetSystemUIFont() {
+  return window['go']['desktop']['App']['GetSystemUIFont']();
+}
+
 export function GetTerminalHistory(arg1) {
   return window['go']['desktop']['App']['GetTerminalHistory'](arg1);
 }
