@@ -109,16 +109,28 @@ describe('ChatMessageRenderer render isolation', () => {
 
   it('still isolates unchanged messages through the sticky-turn + bookmark-gutter path', () => {
     // Mirrors ChatArea's render (sticky turns + bookmark rows), where each
-    // block sits under an extra BookmarkableRow wrapper.
+    // block sits under an extra BookmarkableRow wrapper. Realistic turn
+    // shape: each answer is its own turn's TAIL row (tail answers stay
+    // mounted; intermediate texts would live inside the collapsed work
+    // block instead).
+    const u1 = { kind: 'user', message: { id: 'u1', sessionId: 's1', type: 'user', content: 'q one', metadata: {}, timestamp: 0 } } as const
     const a1 = assistantItem('a1', 'one')
+    const u2 = { kind: 'user', message: { id: 'u2', sessionId: 's1', type: 'user', content: 'q two', metadata: {}, timestamp: 0 } } as const
     const a2 = assistantItem('a2', 'two')
-    render(<ChatMessageRenderer items={[a1, a2]} stickyUserMessages />)
+    render(<ChatMessageRenderer items={[u1, a1, u2, a2]} stickyUserMessages />)
     expect(mdRenders.get('one')).toBe(1)
     expect(mdRenders.get('two')).toBe(1)
 
     rerender(
       <ChatMessageRenderer
-        items={[wrap(a1.message), wrap(a2.message), assistantItem('a3', 'three')]}
+        items={[
+          { kind: 'user', message: u1.message },
+          wrap(a1.message),
+          { kind: 'user', message: u2.message },
+          wrap(a2.message),
+          { kind: 'user', message: { id: 'u3', sessionId: 's1', type: 'user', content: 'q three', metadata: {}, timestamp: 0 } },
+          assistantItem('a3', 'three'),
+        ]}
         stickyUserMessages
       />,
     )

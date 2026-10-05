@@ -301,6 +301,55 @@ export function groupMessages(messages: ChatMessageUI[], workUnitStatus?: Record
     }
   }
 
+  for (const item of items) {
+    if (item.kind === 'plan_step' || item.kind === 'subagent') {
+      item.children = collapseThoughts(dedupThoughtVsAnswer(item.children))
+    }
+  }
+  // Apply the durable work-unit overlay after the replay and BEFORE the
+  // bottom-sinking pass below (see the doc comment above): a crash-recovered
+  // block whose snapshot settled it must take its true status first, so only
+  // genuinely open blocks get sunk to the bottom.
+  // Subagent / plan-step blocks are always root-level items, so a single pass
+  // over `items` covers them.
+  if (workUnitStatus) {
+    for (const item of items) {
+      if (item.kind !== 'plan_step' && item.kind !== 'subagent') continue
+      const snapshotStatus = workUnitStatus[item.stepId]
+      if (!snapshotStatus) continue
+      // A message-derived terminal status (completed/failed) AND a live
+      // cooperative pause are authoritative: the overlay only FILLS IN what the
+      // replayed history lacks, so it must never move a block back out of a
+      // state the actual run put it in. Without the 'paused' guard a paused
+      // (fully resumable) block whose snapshot entry reads running/interrupted
+      // would keep a spinner / show a wrong status for the rest of the view.
+      if (item.status === 'completed' || item.status === 'failed' || item.status === 'paused') continue
+      if (item.status !== snapshotStatus) item.status = snapshotStatus
+    }
+  }
+
+  // Active-step sinking: OPEN (running/paused) root-level plan_step/subagent
+  // blocks move to the END of the root list, so an active step always renders
+  // at the bottom of the chat — below the nudge that resumed the run, below
+  // its checklist — while its delegated work streams INTO it (its own events
+  // carry its step id as plan_step_id, so children still nest inside). When
+  // the step settles (complete/pause->resume), the sink stops holding it: it
+  // returns to its stream position and subsequent items render below it
+  // again. An open step launched after the last user message already sits at
+  // the bottom; the sink is a no-op for it. Settled blocks are never moved —
+  // settled history renders in stream order. (Delegated hierarchies move WITH
+  // their block: children live inside it.) Runs after the overlay so only
+  // blocks that are open AFTER reconciliation sink, and before the action
+  // sinking so unresolved panels keep their "very bottom" spot below it.
+  const sunkSteps: DisplayItem[] = []
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]!
+    if (item.kind !== 'plan_step' && item.kind !== 'subagent') continue
+    if (item.status !== 'running' && item.status !== 'paused') continue
+    sunkSteps.unshift(items.splice(i, 1)[0]!)
+  }
+  items.push(...sunkSteps)
+
   // Keep only the last unresolved plan_review — earlier unresolved ones are
   // superseded by a replan cycle (plan → reject → replan → new plan). Showing
   // all of them would stack stale approval panels at the bottom of the chat.
@@ -322,37 +371,13 @@ export function groupMessages(messages: ChatMessageUI[], workUnitStatus?: Record
 
   // Action sinking: move unresolved pending actions to the very end of the
   // root items so they stay visible at the bottom of the chat (below any sunk
-  // checklists) while new content streams in above them. Resolved actions are
-  // not tracked here and remain at their stream position.
+  // checklists and active steps) while new content streams in above them.
+  // Resolved actions are not tracked here and remain at their stream position.
   for (const action of activeActions) {
     const idx = items.indexOf(action)
     if (idx !== -1) {
       items.splice(idx, 1)
       items.push(action)
-    }
-  }
-
-  for (const item of items) {
-    if (item.kind === 'plan_step' || item.kind === 'subagent') {
-      item.children = collapseThoughts(dedupThoughtVsAnswer(item.children))
-    }
-  }
-  // Apply the durable work-unit overlay last (see the doc comment above).
-  // Subagent / plan-step blocks are always root-level items, so a single pass
-  // over `items` covers them.
-  if (workUnitStatus) {
-    for (const item of items) {
-      if (item.kind !== 'plan_step' && item.kind !== 'subagent') continue
-      const snapshotStatus = workUnitStatus[item.stepId]
-      if (!snapshotStatus) continue
-      // A message-derived terminal status (completed/failed) AND a live
-      // cooperative pause are authoritative: the overlay only FILLS IN what the
-      // replayed history lacks, so it must never move a block back out of a
-      // state the actual run put it in. Without the 'paused' guard a paused
-      // (fully resumable) block whose snapshot entry reads running/interrupted
-      // would keep a spinner / show a wrong status for the rest of the view.
-      if (item.status === 'completed' || item.status === 'failed' || item.status === 'paused') continue
-      if (item.status !== snapshotStatus) item.status = snapshotStatus
     }
   }
   return { items: collapseThoughts(dedupThoughtVsAnswer(items)) }
