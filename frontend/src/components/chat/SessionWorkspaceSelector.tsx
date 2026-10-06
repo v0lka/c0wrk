@@ -151,13 +151,13 @@ export function SessionWorkspaceSelector({ disabled = false }: { disabled?: bool
         >
           <FolderTree className="size-3.5" />
           <span className="flex-1">local</span>
-          <span className="text-[10px] text-muted-foreground">project working tree</span>
+          <span className="text-xs text-muted-foreground">project working tree</span>
         </DropdownMenuItem>
         {isGitRepo && (
           <DropdownMenuItem data-testid="workspace-option-branch" onSelect={openDraftBranchPicker}>
             <GitBranch className="size-3.5" />
             <span className="flex-1">branch…</span>
-            <span className="text-[10px] text-muted-foreground">managed worktree</span>
+            <span className="text-xs text-muted-foreground">managed worktree</span>
           </DropdownMenuItem>
         )}
       </DropdownMenuContent>

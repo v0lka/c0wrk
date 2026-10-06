@@ -311,7 +311,7 @@ export function BranchPicker() {
             session's worktree; focus switching is a different intent. */}
         {!isDraftMode && worktrees.length > 0 && (
           <div className="shrink-0 border-t border-border px-2 pb-2 pt-1">
-            <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <div className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               Worktrees
             </div>
             <WorktreesSection

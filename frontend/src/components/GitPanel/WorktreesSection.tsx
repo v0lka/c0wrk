@@ -39,11 +39,11 @@ export function WorktreesSection({
               <span className="truncate font-medium">
                 {w.kind === 'main' ? 'Local checkout' : w.name}
               </span>
-              <span className="ml-1.5 truncate font-mono text-[10px] text-muted-foreground">
+              <span className="ml-1.5 truncate font-mono text-xs text-muted-foreground">
                 {w.branch || 'detached'}
               </span>
               {w.managed && w.session_name && (
-                <span className="ml-1.5 truncate text-[10px] text-muted-foreground/80">
+                <span className="ml-1.5 truncate text-xs text-muted-foreground/80">
                   · {w.session_name}
                 </span>
               )}

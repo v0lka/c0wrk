@@ -200,7 +200,7 @@ export function BranchDropdown() {
           {worktrees.length > 0 && (
             <>
               <DropdownMenuSeparator />
-              <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <div className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 Worktrees
               </div>
               <WorktreesSection

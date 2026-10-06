@@ -124,6 +124,25 @@ export function createChatEditorTheme(isDark: boolean = true): Extension {
     '.cm-tooltip.cm-tooltip-autocomplete > ul > li.mcp-item': {
       color: 'color-mix(in srgb, var(--color-popover-foreground) 30%, transparent)',
     },
+    // Section headers (Subagents / MCP Servers / Skills) mirror the model
+    // picker's provider-group labels (ModelPickerMenu): small, semibold
+    // UPPERCASE muted-foreground text on a muted/30 band. This is contested
+    // with the CM base theme — which paints the header as a dim `list-item`
+    // with a silver bottom rule (`opacity: 0.7; border-bottom: 1px solid
+    // silver`) — so it must live in THIS theme to win the cascade; the same
+    // selector in index.css is dead code. Item labels stay upright (index.css
+    // pins their colors; no font-weight), so the header alone carries the
+    // emphasis.
+    '.cm-tooltip.cm-tooltip-autocomplete > ul > completion-section': {
+      backgroundColor: 'color-mix(in srgb, var(--color-muted) 30%, transparent)',
+      color: 'var(--color-muted-foreground)',
+      fontWeight: '600',
+      textTransform: 'uppercase',
+      letterSpacing: '0.05em',
+      padding: '0.25rem 0.5rem',
+      borderBottom: 'none',
+      opacity: '1',
+    },
     '.cm-completionMatchedText': {
       textDecoration: 'none',
       backgroundColor: 'color-mix(in srgb, var(--color-foreground) 25%, transparent)',

@@ -81,4 +81,21 @@ describe('createChatEditorTheme — scroller font follows the CSS var', () => {
 
     view.destroy()
   })
+
+  it('mounts the section headers with the model-picker header look', () => {
+    const view = mountView([createChatEditorTheme(true)])
+    const css = mountedStylesCSS()
+
+    // Bold-caps muted-foreground text on a muted/30 band — the same shape as
+    // ModelPickerMenu's provider-group labels. Contested with the CM base
+    // theme, so it must compile from THIS theme.
+    expect(css).toMatch(
+      /completion-section[^{}]*\{[^{}]*text-transform:\s*uppercase/,
+    )
+    expect(css).toMatch(
+      /completion-section[^{}]*\{[^{}]*background-color:\s*color-mix\(in srgb, var\(--color-muted\) 30%, transparent\)/,
+    )
+
+    view.destroy()
+  })
 })
