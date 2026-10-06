@@ -1,7 +1,10 @@
 package session
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
@@ -414,5 +417,59 @@ func TestShutdown_MidPlan_RestartResumeCompletesAllStepsTerminal(t *testing.T) {
 		finalState.Plan.Steps[0].ID != "s1" || finalState.Plan.Steps[1].ID != "s2" ||
 		finalState.Plan.Steps[0].Summary != "Do the groundwork" {
 		t.Errorf("plan after the restart resume = %+v, want the originally declared two-step plan (append-only)", finalState.Plan)
+	}
+}
+
+// TestManager_Shutdown_TaskGoroutineWaitsShareOneBudget pins the shared-budget
+// contract of Shutdown's goroutine joins, mirroring
+// TestManager_StopBackground_SharesOneBudgetAcrossBlackboards for the task and
+// compaction waits: N never-settling goroutine waits must add up to at most
+// one stopTimeout in total, not N × stopTimeout. Four stuck channels (two
+// sessions × done + compactDone) would cost 4×stopTimeout under the old
+// per-entry budget — the margins below separate the two behaviors comfortably.
+func TestManager_Shutdown_TaskGoroutineWaitsShareOneBudget(t *testing.T) {
+	const budget = 400 * time.Millisecond
+	m := NewManager(nil, func(Event) {}, runtimeTempDir(t))
+	m.stopTimeout = budget
+
+	// Intercept the shutdown records at the source: the join path is the
+	// behavior under test, so its WARN/INFO output is asserted below instead
+	// of leaking into the test log.
+	var logBuf bytes.Buffer
+	m.SetLogger(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
+	// Never closed on purpose: the joins must be bounded by the budget, not
+	// by the goroutines. Nothing blocks on these after Shutdown returns.
+	stuck := make(chan struct{})
+
+	for _, id := range []string{"s-stuck-1", "s-stuck-2"} {
+		sess := &Session{ID: id}
+		sess.done = stuck
+		sess.compactDone = stuck
+		m.mu.Lock()
+		m.sessions[id] = sess
+		m.mu.Unlock()
+	}
+
+	start := time.Now()
+	m.Shutdown()
+	elapsed := time.Since(start)
+
+	if limit := 2 * budget; elapsed >= limit {
+		t.Fatalf("Shutdown took %v with four stuck goroutine waits; want < %v (one shared budget)", elapsed, limit)
+	}
+
+	logs := logBuf.String()
+	if got := strings.Count(logs, "slow task goroutine wait"); got != 1 {
+		t.Errorf("slow task goroutine wait records = %d; want exactly 1 (the first wait burned the budget)", got)
+	}
+	if got := strings.Count(logs, "wait budget exhausted"); got != 1 {
+		t.Errorf("budget-exhausted records = %d; want exactly 1 (one WARN for all skipped waits)", got)
+	}
+	if strings.Contains(logs, "slow compaction goroutine wait") {
+		t.Errorf("unexpected slow compaction goroutine wait record; the remaining waits must be skipped once the budget is gone:\n%s", logs)
+	}
+	if !strings.Contains(logs, "slow_waits=4") {
+		t.Errorf("final wait summary should account for all 4 waits (1 burned + 3 skipped):\n%s", logs)
 	}
 }

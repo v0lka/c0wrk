@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
@@ -540,5 +542,168 @@ func TestStressReconfigureMCPProxyClient(t *testing.T) {
 	}
 	if got := writes.Load(); got != rounds {
 		t.Errorf("ProxyClient writer rounds = %d, want %d", got, rounds)
+	}
+}
+
+// recordCapture is a slog handler that records every record for assertions on
+// the shutdown-path diagnostics (severity, message, call count).
+type recordCapture struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (c *recordCapture) Handle(_ context.Context, r slog.Record) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.records = append(c.records, r)
+	return nil
+}
+
+func (c *recordCapture) Enabled(context.Context, slog.Level) bool { return true }
+
+func (c *recordCapture) WithAttrs(attrs []slog.Attr) slog.Handler { return c }
+
+func (c *recordCapture) WithGroup(name string) slog.Handler { return c }
+
+func (c *recordCapture) snapshot() []slog.Record {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]slog.Record(nil), c.records...)
+}
+
+// nonNilTestGateway returns a real *mcp.Gateway with one unconnectable stdio
+// server: StartGateway reports the connection failure as non-fatal and still
+// returns the gateway, so tests get a concrete gateway whose Stop is cheap.
+func nonNilTestGateway(t *testing.T) *mcp.Gateway {
+	t.Helper()
+	gw, err := mcp.StartGateway(context.Background(), mcp.GatewayConfig{
+		Servers: map[string]mcp.ServerEntry{
+			"bogus": {Transport: "stdio", Command: "/nonexistent/c0wrk-test-command"},
+		},
+	}, sdktools.NewToolRegistry(), func(s string) string { return s }, nil)
+	if err != nil {
+		t.Fatalf("StartGateway (expected a non-fatal failure with a non-nil gateway): %v", err)
+	}
+	if gw == nil {
+		t.Fatal("StartGateway returned nil gateway")
+	}
+	return gw
+}
+
+// TestStopGateway_DoesNotWaitOutInFlightStartup pins the shutdown contract
+// behind the observed multi-second quit freeze: a quit arriving while MCP
+// startup is still building the gateway must not wait out the multi-second
+// server-spawn sequence on the app-shutdown thread. Past the grace,
+// StopGateway flags the startup goroutine (mcpStopping) and returns
+// immediately; the startup goroutine owns stopping what it built
+// (publishMCPGateway).
+//
+// mcpDone is deliberately never closed: the discarded builder has no
+// goroutine, so nothing leaks and no join is needed.
+func TestStopGateway_DoesNotWaitOutInFlightStartup(t *testing.T) {
+	capture := &recordCapture{}
+	b := &OrchestratorBuilder{initDone: make(chan struct{}), mcpDone: make(chan struct{}), logger: slog.New(capture)}
+
+	start := time.Now()
+	err := b.StopGateway()
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("StopGateway during in-flight startup: %v", err)
+	}
+	if elapsed >= mcpStopStartupGrace+2*time.Second {
+		t.Errorf("StopGateway waited %v; want about the %v grace, not the full startup", elapsed, mcpStopStartupGrace)
+	}
+
+	b.mu.RLock()
+	stopping := b.mcpStopping
+	published := b.gateway
+	b.mu.RUnlock()
+	if !stopping {
+		t.Error("StopGateway must set mcpStopping when startup is still in flight")
+	}
+	if published != nil {
+		t.Error("no gateway must be published while startup is still in flight")
+	}
+
+	// The early return is diagnostic-bearing behavior: intercept the record at
+	// its source and assert severity, payload and call count.
+	records := capture.snapshot()
+	if len(records) != 1 {
+		t.Fatalf("expected exactly one log record for the early return, got %d", len(records))
+	}
+	if records[0].Level != slog.LevelInfo {
+		t.Errorf("log level = %v, want INFO", records[0].Level)
+	}
+	if want := "MCP gateway startup still in flight during shutdown; startup goroutine owns stopping the not-yet-published gateway"; records[0].Message != want {
+		t.Errorf("log message = %q, want %q", records[0].Message, want)
+	}
+}
+
+// TestPublishMCPGateway_SuppressedWhenStopping verifies the ownership handoff:
+// a gateway whose build finished after StopGateway gave up waiting is stopped
+// by the startup goroutine and NOT published — the shutdown decision wins even
+// though the build itself succeeded.
+func TestPublishMCPGateway_SuppressedWhenStopping(t *testing.T) {
+	b := &OrchestratorBuilder{initDone: make(chan struct{}), mcpDone: make(chan struct{})}
+	b.mu.Lock()
+	b.mcpStopping = true
+	b.mu.Unlock()
+
+	gw := nonNilTestGateway(t)
+	b.publishMCPGateway(gw, nil)
+
+	b.mu.RLock()
+	published := b.gateway
+	b.mu.RUnlock()
+	if published != nil {
+		t.Fatal("gateway must not be published after StopGateway gave up on startup")
+	}
+	// The publisher stopped the fresh gateway: a second Stop is a cheap no-op
+	// over the already-cleared maps.
+	if err := gw.Stop(); err != nil {
+		t.Fatalf("second stop of a gateway the publisher already stopped: %v", err)
+	}
+}
+
+// TestStopGateway_StopsCompletedGateway keeps the non-degenerate path honest:
+// when startup already finished, StopGateway stops the published gateway
+// normally and does not set mcpStopping.
+func TestStopGateway_StopsCompletedGateway(t *testing.T) {
+	b := &OrchestratorBuilder{initDone: make(chan struct{}), mcpDone: make(chan struct{})}
+	close(b.mcpDone)
+	gw := nonNilTestGateway(t)
+	b.mu.Lock()
+	b.gateway = gw
+	b.mu.Unlock()
+
+	start := time.Now()
+	if err := b.StopGateway(); err != nil {
+		t.Fatalf("StopGateway of a completed gateway: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed >= mcpStopStartupGrace+2*time.Second {
+		t.Errorf("StopGateway took %v for an already-finished startup", elapsed)
+	}
+
+	b.mu.RLock()
+	stopping := b.mcpStopping
+	b.mu.RUnlock()
+	if stopping {
+		t.Error("mcpStopping must stay false when startup was already complete")
+	}
+}
+
+// TestReconfigureMCP_RejectedWhenStopping pins the guard that keeps a
+// reconfigure from rebuilding a gateway after the shutdown path already
+// declined to wait for the previous build.
+func TestReconfigureMCP_RejectedWhenStopping(t *testing.T) {
+	b := &OrchestratorBuilder{initDone: make(chan struct{}), mcpDone: make(chan struct{})}
+	b.mu.Lock()
+	b.mcpStopping = true
+	b.mu.Unlock()
+
+	err := b.ReconfigureMCP(context.Background(), &BuilderConfig{})
+	if err == nil {
+		t.Fatal("ReconfigureMCP must be rejected while the builder is shutting down")
 	}
 }

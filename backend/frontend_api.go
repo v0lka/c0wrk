@@ -622,8 +622,22 @@ func (f *FrontendAPI) isNoProject() bool {
 // Cleanup releases resources owned by FrontendAPI.
 // Called from desktop.Shutdown.
 // Moved to FrontendAPILifecycle to avoid exposure on the Wails RPC surface.
+//
+// Every step logs its duration as it completes: this runs on the main
+// goroutine during app shutdown, so a slow step is a frozen app, and the
+// per-step records make the slow one attributable from the session log.
+// NOTE: f.sessionLogger is deliberately NOT closed here — it is the same
+// *logger.SessionLogger the desktop App owns and closes at the very end of
+// App.Shutdown; closing it here silenced every later shutdown record
+// (applicationShutdown timings, db.Close errors, the "complete" bracket).
 func (l *FrontendAPILifecycle) Cleanup() {
 	f := l.f
+	cleanupStart := time.Now()
+	cleanupStep := func(name string) {
+		f.log().Info("cleanup step complete",
+			"step", name,
+			"step_ms", time.Since(cleanupStart).Milliseconds())
+	}
 	// Cancel an in-flight ChatGPT browser sign-in FIRST: its loopback
 	// listener and its goroutine must not outlive the teardown. The stop is
 	// marked REQUESTED — a quit is a deliberate stop of the flow, not a
@@ -643,12 +657,15 @@ func (l *FrontendAPILifecycle) Cleanup() {
 	// in-flight fetch is already bounded by remoteGitCmdTimeout and
 	// cancelled through f.ctx() (see frontend_api_git_autofetch.go).
 	f.stopAutoFetchLoop()
+	cleanupStep("stopAutoFetchLoop")
 	if f.terminalManager != nil {
 		f.terminalManager.StopAll()
 	}
+	cleanupStep("terminalStopAll")
 	if vm := f.getVectorManager(); vm != nil {
 		vm.Shutdown()
 	}
+	cleanupStep("vectorShutdown")
 	f.watcherMu.Lock()
 	if f.watcher != nil {
 		if err := f.watcher.Close(); err != nil {
@@ -657,8 +674,10 @@ func (l *FrontendAPILifecycle) Cleanup() {
 		f.watcher = nil
 	}
 	f.watcherMu.Unlock()
+	cleanupStep("workspaceWatcherClose")
 	f.closeSkillsWatchers()
 	f.closeAgentsWatchers()
+	cleanupStep("skillAgentWatchersClose")
 	if f.store != nil {
 		if err := f.store.Close(); err != nil {
 			f.log().Error("failed to close session store", "error", err)
@@ -674,11 +693,7 @@ func (l *FrontendAPILifecycle) Cleanup() {
 			f.log().Error("failed to close review store", "error", err)
 		}
 	}
-	if f.sessionLogger != nil {
-		if err := f.sessionLogger.Close(); err != nil {
-			f.log().Error("failed to close session logger", "error", err)
-		}
-	}
+	cleanupStep("storeClose")
 }
 
 // log returns the instance logger, falling back to slog.Default() when nil.

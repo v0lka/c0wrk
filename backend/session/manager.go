@@ -301,6 +301,12 @@ func (m *Manager) log() *slog.Logger {
 	return slog.Default()
 }
 
+// slowShutdownWaitThreshold marks a shutdown wait worth its own log record.
+// The session manager runs on the main goroutine during app shutdown, so any
+// wait this long is a visible app freeze; the record names the wait that
+// burned it.
+const slowShutdownWaitThreshold = 250 * time.Millisecond
+
 // NewManager creates a new session Manager.
 func NewManager(factory OrchestratorFactory, emitFunc func(Event), agentDir string) *Manager {
 	m := &Manager{
@@ -325,8 +331,18 @@ func NewManager(factory OrchestratorFactory, emitFunc func(Event), agentDir stri
 // Shutdown waits for it before returning. It reports false (running nothing)
 // once Shutdown has closed the tracker, letting the caller fall back to a
 // synchronous path.
+//
+// Deprecated shell kept for existing tests; production call sites should use
+// spawnBackgroundNamed so a shutdown join timeout can attribute the straggler.
 func (m *Manager) spawnBackground(fn func()) bool {
-	return m.bg.spawn(fn)
+	return m.spawnBackgroundNamed("", fn)
+}
+
+// spawnBackgroundNamed is spawnBackground with an attribution name: on a join
+// timeout, stopBackground logs the names still in flight, and the straggler
+// goroutine dump identifies the exact blocked call path.
+func (m *Manager) spawnBackgroundNamed(name string, fn func()) bool {
+	return m.bg.spawn(name, fn)
 }
 
 // trackBlackboard registers a PersistentBlackboard built or restored by the
@@ -385,8 +401,21 @@ func (m *Manager) restoreBlackboardTracked(taskID, sessionID string, store core.
 // It is called once, from Shutdown.
 func (m *Manager) stopBackground() {
 	deadline := time.Now().Add(m.stopTimeout)
+	bgStart := time.Now()
 	if !m.bg.closeAndWait(m.stopTimeout) {
-		m.log().Warn("timed out waiting for background goroutines to stop")
+		// Every tracked goroutine is cancellation-driven, so reaching here
+		// means a cancellation path is broken. Name the survivors (spawn
+		// attribution) and dump their stacks so the next occurrence lands
+		// as a precise bug report instead of an anonymous 10 s freeze.
+		alive := m.bg.aliveNames()
+		m.log().Warn("timed out waiting for background goroutines to stop",
+			"ms", time.Since(bgStart).Milliseconds(), "alive", alive)
+		if dump := stragglerGoroutineDump(); dump != "" {
+			m.log().Warn("shutdown: straggler goroutine stacks (github.com/v0lka/* frames)", "dump", dump)
+		}
+	}
+	if elapsed := time.Since(bgStart); elapsed >= slowShutdownWaitThreshold {
+		m.log().Warn("shutdown: slow background goroutine join", "ms", elapsed.Milliseconds())
 	}
 
 	for {
@@ -397,9 +426,16 @@ func (m *Manager) stopBackground() {
 		if len(blackboards) == 0 {
 			return
 		}
+		bbStart := time.Now()
 		for _, pb := range blackboards {
+			pbStart := time.Now()
 			pb.Shutdown(time.Until(deadline))
+			if elapsed := time.Since(pbStart); elapsed >= slowShutdownWaitThreshold {
+				m.log().Warn("shutdown: slow blackboard persistence worker stop", "ms", elapsed.Milliseconds())
+			}
 		}
+		m.log().Info("shutdown: blackboard persistence workers stopped",
+			"blackboards", len(blackboards), "ms", time.Since(bbStart).Milliseconds())
 	}
 }
 
@@ -472,7 +508,7 @@ func (m *Manager) StartEnvInfoCollection() {
 			defer close(m.envInfoDone)
 			m.SetEnvInfo(sdktools.CollectEnvInfo())
 		}
-		if !m.spawnBackground(collect) {
+		if !m.spawnBackgroundNamed("env-info-collection", collect) {
 			// Shutdown already closed the tracker: never leave WaitEnvInfo
 			// blocked on envInfoDone — publish "no info" and return.
 			close(m.envInfoDone)
@@ -1660,7 +1696,7 @@ func (m *Manager) ArchiveSession(id string) error {
 				// it actually finishes so archiving never destroys a still-running
 				// task's scratch files.
 				m.log().Warn("timed out waiting for task goroutine to stop before archiving; deferring temp cleanup", "session_id", id)
-				if !m.spawnBackground(func() {
+				if !m.spawnBackgroundNamed("deferred-temp-dir-removal session="+id, func() {
 					<-doneCh
 					removeTempDir()
 				}) {
@@ -1871,20 +1907,48 @@ func (m *Manager) Shutdown() {
 	// cancelled compactCancel, skips its shutdown-gated tail phases (marker
 	// persistence, auto-resume) and exits; waiting bounds it by the same
 	// stopTimeout as tasks.
-	for _, p := range pendingList {
-		if p.doneCh != nil {
-			select {
-			case <-p.doneCh:
-			case <-time.After(m.stopTimeout):
-			}
+	taskWaitStart := time.Now()
+	slowWaits := 0
+	// All waits share ONE stopTimeout budget, mirroring stopBackground below:
+	// each wait gets the deadline remainder instead of a fresh stopTimeout, so
+	// N sessions with stuck goroutines cost at most one stopTimeout of frozen
+	// quit, not N × stopTimeout. Once the budget is gone the remaining waits
+	// are skipped — every waited goroutine is cancellation-driven, and a
+	// straggler that ignored its cancellation for the whole budget is exactly
+	// what this bound exists to cap.
+	budgetDeadline := time.Now().Add(m.stopTimeout)
+	budgetExhaustedWarned := false
+	waitShutdownGoroutine := func(kind string, doneCh chan struct{}) {
+		if doneCh == nil {
+			return
 		}
-		if p.compactDoneCh != nil {
-			select {
-			case <-p.compactDoneCh:
-			case <-time.After(m.stopTimeout):
+		remaining := time.Until(budgetDeadline)
+		if remaining <= 0 {
+			slowWaits++
+			if !budgetExhaustedWarned {
+				budgetExhaustedWarned = true
+				m.log().Warn("shutdown: task goroutine wait budget exhausted; skipping remaining goroutine waits",
+					"ms", time.Since(taskWaitStart).Milliseconds())
 			}
+			return
+		}
+		waitStart := time.Now()
+		select {
+		case <-doneCh:
+		case <-time.After(remaining):
+		}
+		if time.Since(waitStart) >= slowShutdownWaitThreshold {
+			slowWaits++
+			m.log().Warn("shutdown: slow "+kind+" goroutine wait", "ms", time.Since(waitStart).Milliseconds())
 		}
 	}
+	for _, p := range pendingList {
+		waitShutdownGoroutine("task", p.doneCh)
+		waitShutdownGoroutine("compaction", p.compactDoneCh)
+	}
+	m.log().Info("shutdown: task goroutine wait complete",
+		"sessions", len(pendingList), "slow_waits", slowWaits,
+		"ms", time.Since(taskWaitStart).Milliseconds())
 
 	// Join manager-owned background goroutines BEFORE closing session file
 	// handles: the title-generation goroutine writes through a session dump

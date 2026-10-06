@@ -499,25 +499,37 @@ func (app *Application) GroupPolicies() map[sdktools.ToolGroup]sdktools.ToolPoli
 }
 
 // Shutdown stops all managed resources (manager, persistence pipeline, MCP
-// gateway).
+// gateway). Each step logs its duration as it completes — this runs on the
+// main goroutine during app shutdown, and the per-step records keep a slow
+// teardown attributable from the session log.
 func (app *Application) Shutdown() {
+	shutdownStart := time.Now()
+	shutdownStep := func(name string) {
+		app.log().Info("application teardown step complete",
+			"step", name,
+			"step_ms", time.Since(shutdownStart).Milliseconds())
+	}
 	if app.manager != nil {
 		app.manager.Shutdown()
 	}
+	shutdownStep("managerShutdown")
 	// Drain the persistence pipeline AFTER the manager has stopped every task
 	// goroutine (so nothing new is enqueued): flush the coalesced token updates,
 	// then drain the event-write queue so no pending write is lost on exit.
 	if app.tokenPersist != nil {
 		app.tokenPersist.Close()
 	}
+	shutdownStep("tokenPersistClose")
 	if app.persister != nil {
 		app.persister.Close()
 	}
+	shutdownStep("eventPersisterClose")
 	if app.builder != nil {
 		if err := app.builder.StopGateway(); err != nil {
 			app.log().Error("failed to stop MCP gateway", "error", err)
 		}
 	}
+	shutdownStep("stopMCPGateway")
 }
 
 // terminalPersistTypes lists the task-terminal event types after which the async

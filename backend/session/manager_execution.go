@@ -478,9 +478,13 @@ func (m *Manager) detectCaseInsensitive(path string) bool {
 // The goroutine is tracked by the manager (see background.go) so Shutdown
 // joins it: a walk that is still running when the process tears sessions down
 // would otherwise keep touching the workspace after its temp dir was removed.
-// The walk has no cancellation hook (ignore.NewResolver takes no context), so
-// Shutdown bounds its wait by stopTimeout and proceeds; the walk only reads,
-// so a straggler cannot add an entry to a directory being removed.
+// The walk derives from the manager's shutdown context: on a huge root (a Go
+// module cache or vendor tree work directory — hundreds of thousands of
+// entries) it runs for minutes and has no other cancellation, so Shutdown's
+// shutdownCancel aborts it BEFORE stopBackground joins, and the join returns
+// at the next walk entry instead of burning the whole stopTimeout on the
+// quiescing main thread. The walk only reads, so a straggler cannot add an
+// entry to a directory being removed.
 func (m *Manager) startIgnoreBuild(root string) {
 	// Deduplicate via a sentinel "building" marker stored in the cache map.
 	// sync.Map.LoadOrStore guarantees exactly one goroutine wins the race.
@@ -491,10 +495,14 @@ func (m *Manager) startIgnoreBuild(root string) {
 		return
 	}
 
-	if !m.spawnBackground(func() {
-		r, err := ignore.NewResolver(root)
+	if !m.spawnBackgroundNamed("ignore-resolver-walk root="+root, func() {
+		r, err := ignore.NewResolverContext(m.shutdownCtx, root)
 		if err != nil {
-			m.log().Debug("ignore checker: background resolver build failed", "root", root, "error", err)
+			if errors.Is(err, context.Canceled) && m.shutdownCtx.Err() != nil {
+				m.log().Debug("ignore checker: background resolver build aborted by shutdown", "root", root)
+			} else {
+				m.log().Debug("ignore checker: background resolver build failed", "root", root, "error", err)
+			}
 			// Remove the sentinel so a future call can retry.
 			m.ignoreCache.Delete(root)
 			return
@@ -3008,7 +3016,7 @@ func (m *Manager) maybeSpawnTitleGeneration(session *Session, id, text string, p
 	// Tracked by the manager and derived from its shutdown context: the
 	// goroutine writes through the session dump file, so Shutdown must be
 	// able to abort it and wait for it before closing that handle.
-	titleSpawned := m.spawnBackground(func() {
+	titleSpawned := m.spawnBackgroundNamed("session-title-generation session="+id, func() {
 		if dumpFile != nil {
 			defer func() { _ = dumpFile.Close() }()
 		}

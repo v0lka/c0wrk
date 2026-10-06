@@ -168,6 +168,13 @@ type OrchestratorBuilder struct {
 	mcpDone    chan struct{}
 	initErr    error
 	gatewayErr error // non-nil if MCP gateway startup failed
+	// mcpStopping is set by StopGateway when shutdown cannot wait for the
+	// still-in-flight MCP startup. runMCPInit checks it before publishing the
+	// gateway it just built: instead of assigning it, it stops the fresh
+	// gateway itself — the shutdown path never waits out a multi-second
+	// server-spawn sequence only to immediately tear the result down, and no
+	// gateway is published after the stop decision. Guarded by mu.
+	mcpStopping bool
 }
 
 func (b *OrchestratorBuilder) log() *slog.Logger {
@@ -312,7 +319,30 @@ func (b *OrchestratorBuilder) runMCPInit(cfg *BuilderConfig) {
 		// but the orchestrator can still operate with built-in tools.
 		b.log().Warn("MCP gateway startup failed", "error", err)
 	}
+	b.publishMCPGateway(gw, err)
+}
+
+// publishMCPGateway assigns the freshly built gateway (or its startup error)
+// to the builder and applies any work directory recorded by SetMCPWorkDir
+// during the startup window (record-and-apply, so a SetMCPWorkDir that
+// arrived before the gateway existed is not lost).
+//
+// When StopGateway has already given up waiting for this startup
+// (mcpStopping), nothing is published: this goroutine keeps ownership of the
+// fresh gateway and stops it here — off the app-shutdown path. Freshly
+// spawned stdio children exit the moment their stdin closes (bounded by the
+// server close grace in tools/mcp), so this cannot stall app exit materially.
+func (b *OrchestratorBuilder) publishMCPGateway(gw *mcp.Gateway, err error) {
 	b.mu.Lock()
+	if b.mcpStopping {
+		b.mu.Unlock()
+		if gw != nil {
+			if stopErr := gw.Stop(); stopErr != nil {
+				b.log().Warn("MCP gateway built during shutdown was stopped before publication", "error", stopErr)
+			}
+		}
+		return
+	}
 	b.gateway = gw
 	b.gatewayErr = err
 	// Apply a work dir recorded by SetMCPWorkDir before the gateway was

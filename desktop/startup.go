@@ -570,6 +570,18 @@ func (a *App) Startup(ctx context.Context) {
 
 // Shutdown is called when the Wails app is shutting down.
 func (a *App) Shutdown(ctx context.Context) {
+	// This hook runs on the main goroutine after the Wails main loop stops,
+	// so every slow step here is a frozen, beach-balling app for the user.
+	// Each phase therefore logs its duration as it completes (INFO, elapsed
+	// since the shutdown started), so a slow teardown is attributable from
+	// the session log alone.
+	shutdownStart := time.Now()
+	shutdownStep := func(name string) {
+		a.log().Info("shutdown step complete",
+			"step", name,
+			"step_ms", time.Since(shutdownStart).Milliseconds())
+	}
+
 	// Make every quit visible in the session log: a Wails quit (window close
 	// button, Cmd+Q, updater-triggered quit) runs this hook, and without an
 	// explicit record the log just ends mid-activity — indistinguishable
@@ -580,18 +592,21 @@ func (a *App) Shutdown(ctx context.Context) {
 	// teardown, so a quit never drops the last batch of a run. Events emitted
 	// after this point are delivered synchronously.
 	a.stopEventBatcher()
+	shutdownStep("stopEventBatcher")
 
 	// Release the notification service resources — on Linux this closes the
 	// D-Bus session-bus connection held by InitializeNotifications; on
 	// macOS/Windows the Wails cleanup is a stub. Safe when notifications were
 	// never initialized. See notifications.go cleanupNotifications.
 	a.cleanupNotifications(ctx)
+	shutdownStep("cleanupNotifications")
 
 	// Persist the final window geometry so a normal quit preserves the size
 	// even if no resize fired this session. Best-effort: a torn-down context
 	// makes this a no-op, and the debounced frontend saves already captured
 	// any prior resize.
 	a.saveWindowBounds(a.log())
+	shutdownStep("saveWindowBounds")
 
 	// Stop the embedded local-model server (llama-server) if one is running.
 	// It runs BEFORE the judge drain and the store closes: the loaded weights
@@ -599,6 +614,7 @@ func (a *App) Shutdown(ctx context.Context) {
 	// teardown is still working rather than after it. Idempotent, bounded, and
 	// a failure is logged rather than fatal (see stopEmbeddedLLM).
 	a.stopEmbeddedLLM(ctx)
+	shutdownStep("stopEmbeddedLLM")
 
 	// Drain all pending confirmation/ask-user/step-limit channels so that
 	// blocked goroutines can exit cleanly instead of leaking.
@@ -652,6 +668,7 @@ func (a *App) Shutdown(ctx context.Context) {
 		a.pendingGoalProposals.Delete(key)
 		return true
 	})
+	shutdownStep("pendingActionDrains")
 
 	// Ensure vector manager set by background init is visible to Cleanup (W3).
 	// The background init goroutine calls vectorMgrPtr.Store then SetVectorManager
@@ -666,21 +683,25 @@ func (a *App) Shutdown(ctx context.Context) {
 	if a.FrontendAPI != nil {
 		a.Lifecycle().Cleanup()
 	}
+	shutdownStep("frontendAPICleanup")
 
 	// Wait for in-flight judge goroutines before tearing down the backend (W2).
 	a.judgeWG.Wait()
+	shutdownStep("judgeWGWait")
 
 	if a.app != nil {
 		a.app.Shutdown()
 	}
+	shutdownStep("applicationShutdown")
 
 	if a.db != nil {
 		if err := a.db.Close(); err != nil {
 			a.log().Error("failed to close database", "error", err)
 		}
 	}
+	shutdownStep("dbClose")
 
-	a.log().Info("application shutdown: complete")
+	a.log().Info("application shutdown: complete", "total_ms", time.Since(shutdownStart).Milliseconds())
 
 	// The session log is the sink of a.logger; it closes only after the last
 	// record is written so the "complete" bracket (and the db.Close error

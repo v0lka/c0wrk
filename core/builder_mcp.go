@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"time"
 
@@ -32,7 +33,15 @@ func (b *OrchestratorBuilder) ReconfigureMCP(ctx context.Context, cfg *BuilderCo
 	// Accepted policy is authoritative even when readiness or network reconciliation fails.
 	b.mu.Lock()
 	b.mcpModes = mcpServerModesFromConfig(cfg)
+	stopping := b.mcpStopping
 	b.mu.Unlock()
+	if stopping {
+		// StopGateway has already given up on this builder; rebuilding the
+		// gateway now would race the shutdown that just declined to wait for
+		// the previous build. Callers log this as a warning — a reconfigure
+		// racing app exit is degenerate by definition.
+		return fmt.Errorf("mcp reconfigure rejected: builder is shutting down")
+	}
 	if err := b.waitMCPReady(ctx); err != nil {
 		return err
 	}
@@ -83,22 +92,48 @@ func (b *OrchestratorBuilder) currentMCPServerModes() map[string]string {
 	return maps.Clone(b.mcpModes)
 }
 
+// mcpStopStartupGrace bounds how long StopGateway waits for the still-running
+// MCP startup goroutine. Full server discovery takes seconds — spawning every
+// configured stdio server is process-start work — and StopGateway runs on the
+// app-shutdown path, so a quit during the first seconds of startup must not
+// beach-ball the main thread for the whole build just to tear the result down
+// immediately afterwards. Past the grace, the startup goroutine keeps
+// ownership of the not-yet-published gateway (see publishMCPGateway) and
+// stops it off the shutdown path.
+const mcpStopStartupGrace = time.Second
+
 // StopGateway stops the MCP gateway. Called during app shutdown.
-// Waits for the MCP startup goroutine to finish so that a Stop arriving while
-// startup is still in flight does not race with the initial gateway assignment
-// (MCP startup is decoupled from initDone). If the startup goroutine failed to
-// create a gateway, there is nothing to stop.
+// Waits — for at most mcpStopStartupGrace — for the MCP startup goroutine to
+// finish so that a Stop arriving while startup is still in flight does not
+// race with the initial gateway assignment (MCP startup is decoupled from
+// initDone). If the startup goroutine failed to create a gateway, there is
+// nothing to stop. If startup is still running past the grace, the pending
+// publication is suppressed instead of awaited.
 func (b *OrchestratorBuilder) StopGateway() error {
-	waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	waitCtx, cancel := context.WithTimeout(context.Background(), mcpStopStartupGrace)
 	defer cancel()
-	_ = b.waitMCPReady(waitCtx)
+	waitErr := b.waitMCPReady(waitCtx)
 
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.gateway != nil {
-		return b.gateway.Stop()
+	gw := b.gateway
+	if waitErr != nil {
+		// Startup is still in flight. A non-nil gateway here can only be a
+		// just-published one (runMCPInit assigns under mu right before
+		// closing mcpDone), so stopping it is correct. Otherwise suppress the
+		// pending publication and let the startup goroutine stop its own
+		// product.
+		b.mcpStopping = true
+		if gw == nil {
+			b.mu.Unlock()
+			b.log().Info("MCP gateway startup still in flight during shutdown; startup goroutine owns stopping the not-yet-published gateway")
+			return nil
+		}
 	}
-	return nil
+	b.mu.Unlock()
+	if gw == nil {
+		return nil
+	}
+	return gw.Stop()
 }
 
 // SetMCPWorkDir updates the default working directory for MCP stdio server processes.

@@ -2,6 +2,7 @@ package session
 
 import (
 	"io"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,7 +18,7 @@ func TestBackgroundTracker_CloseAndWaitJoinsTrackedGoroutines(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var finished atomic.Bool
-	if !tr.spawn(func() {
+	if !tr.spawn("", func() {
 		close(started)
 		<-release
 		finished.Store(true)
@@ -45,7 +46,7 @@ func TestBackgroundTracker_CloseAndWaitJoinsTrackedGoroutines(t *testing.T) {
 	}
 
 	// Once closed, the tracker refuses new work instead of leaking it.
-	if tr.spawn(func() {}) {
+	if tr.spawn("", func() {}) {
 		t.Fatal("spawn() after close = true; want false")
 	}
 	// A second close on a drained tracker is a no-op that returns immediately.
@@ -68,7 +69,7 @@ func TestBackgroundTracker_EarlyDrainDoesNotCloseZero(t *testing.T) {
 	// Phase 1: a short-lived goroutine drains the counter to zero while the
 	// tracker is still open.
 	shortDone := make(chan struct{})
-	if !tr.spawn(func() { close(shortDone) }) {
+	if !tr.spawn("", func() { close(shortDone) }) {
 		t.Fatal("spawn() = false before close; want true")
 	}
 	<-shortDone
@@ -78,7 +79,7 @@ func TestBackgroundTracker_EarlyDrainDoesNotCloseZero(t *testing.T) {
 	// phase 1 must not satisfy the wait.
 	blocked := make(chan struct{})
 	release := make(chan struct{})
-	if !tr.spawn(func() {
+	if !tr.spawn("", func() {
 		close(blocked)
 		<-release
 	}) {
@@ -106,7 +107,7 @@ func TestBackgroundTracker_JoinsAllConcurrentGoroutines(t *testing.T) {
 	const n = 50
 	var completed atomic.Int64
 	for i := 0; i < n; i++ {
-		if !tr.spawn(func() { completed.Add(1) }) {
+		if !tr.spawn("", func() { completed.Add(1) }) {
 			t.Fatalf("spawn() #%d = false before close; want true", i)
 		}
 	}
@@ -321,4 +322,73 @@ func TestManager_StopBackground_SharesOneBudgetAcrossBlackboards(t *testing.T) {
 	if limit := 2 * budget; elapsed >= limit {
 		t.Fatalf("stopBackground took %v with two stuck workers; want < %v (one shared budget)", elapsed, limit)
 	}
+}
+
+// A named spawn must surface through aliveNames exactly while its goroutine
+// is in flight: after a failed join, the timeout WARN can attribute the
+// straggler to its spawn site instead of reporting an anonymous count.
+func TestBackgroundTracker_AliveNamesTracksNamedGoroutines(t *testing.T) {
+	tr := newBackgroundTracker()
+	release := make(chan struct{})
+	started := make(chan struct{})
+
+	if !tr.spawn("ignore-resolver-walk root=/tmp/x", func() {
+		close(started)
+		<-release
+	}) {
+		t.Fatal("spawn() = false on an open tracker")
+	}
+	<-started
+
+	if tr.closeAndWait(20 * time.Millisecond) {
+		t.Fatal("closeAndWait() = true while the named goroutine was still running; want false")
+	}
+	got := tr.aliveNames()
+	if len(got) != 1 || got[0] != "ignore-resolver-walk root=/tmp/x" {
+		t.Fatalf("aliveNames() = %v; want [ignore-resolver-walk root=/tmp/x]", got)
+	}
+
+	close(release)
+	if !tr.closeAndWait(5 * time.Second) {
+		t.Fatal("closeAndWait() = false after the named goroutine finished; want true")
+	}
+	if got := tr.aliveNames(); len(got) != 0 {
+		t.Fatalf("aliveNames() = %v after every goroutine finished; want empty", got)
+	}
+}
+
+// The straggler dump must keep goroutines carrying module frames — that is
+// where a shutdown straggler lives — and the kept block must name the exact
+// blocked function, so the next join timeout lands as a precise bug report.
+func TestStragglerGoroutineDump_KeepsModuleFrames(t *testing.T) {
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		stragglerDumpBlockpoint(parked, release)
+	}()
+	<-parked
+
+	dump := stragglerGoroutineDump()
+	if dump == "" {
+		t.Fatal("stragglerGoroutineDump() is empty; want the blocked goroutine's stack")
+	}
+	if !strings.Contains(dump, "stragglerDumpBlockpoint") {
+		t.Fatal("dump does not contain the blocked helper's frame; filtering is too aggressive")
+	}
+	if !strings.Contains(dump, "v0lka/") {
+		t.Fatal("dump blocks should carry github.com/v0lka/* frames")
+	}
+}
+
+// stragglerDumpBlockpoint gives TestStragglerGoroutineDump_KeepsModuleFrames
+// a named frame to look for in the dump: it parks on release after closing
+// parked, so the test only snapshots the dump once the helper is truly
+// blocked on a channel receive.
+func stragglerDumpBlockpoint(parked chan<- struct{}, release <-chan struct{}) {
+	close(parked)
+	<-release
 }
