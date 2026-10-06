@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import { Crosshair } from 'lucide-react'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useExperimentalStore } from '@/stores/experimentalStore'
 import { focusSessionWorkspace } from '@/lib/gitFocus'
 
 /**
@@ -10,11 +11,20 @@ import { focusSessionWorkspace } from '@/lib/gitFocus'
  * explicit switch to another tree. It is highlighted (aria-pressed) while
  * the focus has diverged from the session's worktree; the title always
  * names the current focus target so the divergence is discoverable.
+ *
+ * The button is an EXPERIMENTAL surface behind the master experimental switch
+ * (`experimental.enabled`): it renders nothing while that switch is off. This
+ * is a VISIBILITY gate only — the focus functionality itself is untouched.
  */
 export function GitFocusButton() {
   const focus = useGitPanelStore((s) => s.focus)
   const focusSessionPath = useGitPanelStore((s) => s.focusSessionPath)
   const [busy, setBusy] = useState(false)
+  // The master experimental switch — the crosshair is an experimental
+  // surface, so it stays invisible in default installs (read reactively, so
+  // flipping the switch in Settings reveals it without a reload). Read from
+  // the store directly (no config fetch side effect here).
+  const experimentalEnabled = useExperimentalStore((s) => s.enabled)
 
   const diverged =
     focus !== null && focusSessionPath !== null && focus.path !== focusSessionPath
@@ -23,6 +33,10 @@ export function GitFocusButton() {
     setBusy(true)
     focusSessionWorkspace().finally(() => setBusy(false))
   }, [])
+
+  // Experimental gate (visibility only): hide the crosshair while the master
+  // switch is off. Placed after the hooks above.
+  if (!experimentalEnabled) return null
 
   const title = focus
     ? `Git focus: ${focus.name}${focus.branch ? ` (${focus.branch})` : ''}${

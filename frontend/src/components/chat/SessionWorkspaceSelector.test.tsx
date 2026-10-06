@@ -1,7 +1,8 @@
 // Tests for SessionWorkspaceSelector — the chat toolbar's draft/pinned
 // workspace selector (ADR-080 draft UX).
 //
-// Covers: hidden in CHAT mode / no project; interactive draft state (`local`
+// Covers: hidden in CHAT mode / no project; hidden while the experimental
+// gate is off; interactive draft state (`local`
 // default, branch display, `branch…` opens the picker in draft mode and arms
 // the draft when missing, non-git projects hide `branch…`, choosing local
 // resets a branch draft); read-only pinned display for existing managed and
@@ -17,6 +18,7 @@ import { useSessionDraftStore } from '@/stores/sessionDraftStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useExperimentalStore } from '@/stores/experimentalStore'
 import type { ProjectInfo, SessionInfo } from '@/types/models'
 
 let container: HTMLDivElement | null = null
@@ -99,6 +101,9 @@ async function openMenu() {
 }
 
 function resetStores(opts: { noProject?: boolean; gitRepo?: boolean } = {}) {
+  // Default the experimental gate ON so the existing cases exercise the
+  // selector itself; the gate-off case flips it off explicitly.
+  useExperimentalStore.setState({ enabled: true })
   useSessionDraftStore.getState().clearDraft()
   useSessionDraftStore.getState().setCommitting(false)
   useSessionStore.setState({ sessions: null, activeSessionId: null })
@@ -142,6 +147,37 @@ describe('SessionWorkspaceSelector', () => {
   it('renders nothing while no project is active', () => {
     useProjectStore.setState({ activeProjectId: null, projects: [] })
     renderSelector()
+    expect(trigger()).toBeNull()
+  })
+
+  it('renders nothing while the experimental gate is off (visibility-only gate)', () => {
+    // The picker/display is an experimental surface: with the master switch
+    // off it must render nothing, though the underlying functionality and the
+    // hooks (draft retirement) stay intact.
+    useExperimentalStore.setState({ enabled: false })
+    useGitPanelStore.getState().setGitRepo(true, 'proj-1')
+    renderSelector()
+    expect(trigger()).toBeNull()
+    expect(readOnly()).toBeNull()
+
+    // The pinned read-only display for an existing session is gated the same way.
+    act(() => {
+      useSessionStore.setState({
+        activeSessionId: 's-m',
+        sessions: [
+          makeSession({
+            id: 's-m',
+            workspace_binding: {
+              kind: 'managed_worktree',
+              workspace_path: '/w/proj/.worktrees/s-abcd1234',
+              worktree_name: 's-abcd1234',
+              branch: 'feat/pinned',
+            },
+          }),
+        ],
+      })
+    })
+    expect(readOnly()).toBeNull()
     expect(trigger()).toBeNull()
   })
 
