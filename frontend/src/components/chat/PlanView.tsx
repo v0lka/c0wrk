@@ -55,7 +55,7 @@ function PlanStepItem({ item, onClick }: PlanStepItemProps) {
           <span className="text-xs text-muted-foreground truncate min-w-0">{item.title}</span>
         </StepTooltip>
         {item.duration !== undefined && (item.status === 'completed' || item.status === 'failed') && (
-          <span className="flex items-center gap-0.5 text-[10px] text-muted-foreground/60 ml-auto shrink-0">
+          <span className="flex items-center gap-0.5 text-xs text-muted-foreground/60 ml-auto shrink-0">
             <Clock className="h-2.5 w-2.5" />
             {formatDuration(item.duration)}
           </span>

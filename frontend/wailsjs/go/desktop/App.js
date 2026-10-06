@@ -410,8 +410,8 @@ export function GetStepOutput(arg1, arg2) {
   return window['go']['desktop']['App']['GetStepOutput'](arg1, arg2);
 }
 
-export function GetSystemUIFont() {
-  return window['go']['desktop']['App']['GetSystemUIFont']();
+export function GetSystemFonts() {
+  return window['go']['desktop']['App']['GetSystemFonts']();
 }
 
 export function GetTerminalHistory(arg1) {
@@ -468,6 +468,10 @@ export function ListBookmarks(arg1) {
 
 export function ListDirectory(arg1, arg2) {
   return window['go']['desktop']['App']['ListDirectory'](arg1, arg2);
+}
+
+export function ListFontFamilies(arg1) {
+  return window['go']['desktop']['App']['ListFontFamilies'](arg1);
 }
 
 export function ListProjectWorkDirectories(arg1) {

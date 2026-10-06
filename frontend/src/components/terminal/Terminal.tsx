@@ -8,6 +8,8 @@ import { useInputModeStore } from '@/stores/inputModeStore'
 import { useThemeStore, selectActiveThemeId, selectActiveThemeType } from '@/stores/themeStore'
 import { useUiScaleStore } from '@/stores/uiScaleStore'
 import { logger } from '@/lib/logger'
+import { FONT_MONO_STACK, composeFontFamily } from '@/lib/fonts'
+import { useFontStore } from '@/stores/fontStore'
 
 interface TerminalProps {
     sessionId: string
@@ -48,6 +50,20 @@ export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProp
     // theme switch). A separate effect below applies palette changes live.
     const paletteRef = useRef(palette)
     paletteRef.current = palette
+
+    // The session's monospaced family from the font store (`null` = c0wrk's
+    // default stack), composed exactly like the CSS `--font-mono` override:
+    // the chosen family as one double-quoted token prepended to the stock
+    // stack, so a missing user font degrades to the stock fallbacks. The
+    // primitive selector keeps the subscription referentially stable.
+    const monoFontFamily = useFontStore((s) => s.monoFontFamily)
+    const termFontFamily = composeFontFamily(monoFontFamily, FONT_MONO_STACK)
+    // Latest family kept in a ref, same as the palette above: the
+    // terminal-creation effect reads it at construction time without listing
+    // it in its dependency array — a font switch must re-style the live
+    // terminal, never tear down and restart the session.
+    const termFontFamilyRef = useRef(termFontFamily)
+    termFontFamilyRef.current = termFontFamily
 
     // Dead-shell tracking: set on terminal_exited, cleared when a restart
     // succeeded. restarting guards against concurrent restart attempts.
@@ -102,7 +118,7 @@ export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProp
         const term = new XTerm({
             cursorBlink: true,
             fontSize: 10,
-            fontFamily: 'SauceCodePro NF, Menlo, Monaco, "Courier New", monospace',
+            fontFamily: termFontFamilyRef.current,
             theme: paletteRef.current,
             scrollback: 10000,
         })
@@ -219,6 +235,20 @@ export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProp
         }
     }, [palette])
 
+    // Apply mono-font changes to the live terminal without restarting the
+    // session — the same assign-only-the-changed-key contract as the palette
+    // effect above (a spread would drag the constructor-only cols/rows
+    // through xterm 6's options setter and throw). Because the session
+    // terminals stay mounted for the app lifetime, a font chosen in Settings
+    // reaches every already-open terminal through this effect — it is not
+    // deferred to the next mount.
+    useEffect(() => {
+        const term = termRef.current
+        if (term) {
+            term.options.fontFamily = termFontFamily
+        }
+    }, [termFontFamily])
+
     // Re-fit when the app-wide UI scale (CSS zoom on <html>) changes: zoom
     // resizes the container's layout box, which the container's own
     // ResizeObserver already reports — but the renderer's char measurement
@@ -227,6 +257,11 @@ export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProp
     // fallback for environments without rAF, e.g. tests) lets the zoomed
     // layout settle first, preventing a stale rows/cols fit and the
     // "terminal larger than its box" overflow the stale fit causes.
+    // The same scheduling serves a mono-font switch: the new family changes
+    // the renderer's cell metrics (xterm re-measures when the option is
+    // reassigned by the effect above), and here the container's box does not
+    // change at all — without a scheduled fit the cols/rows would stay
+    // computed for the previous font's metrics.
     const uiScale = useUiScaleStore((s) => s.scale)
     const fitScheduledRef = useRef(false)
     useEffect(() => {
@@ -260,7 +295,7 @@ export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProp
         return () => {
             fitScheduledRef.current = false
         }
-    }, [uiScale, sessionId])
+    }, [uiScale, termFontFamily, sessionId])
 
     // Watch for "Open in Terminal" requests from the file-tree context menu
     // that arrive after the terminal is already running. The initial mount

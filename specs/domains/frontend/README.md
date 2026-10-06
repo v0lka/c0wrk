@@ -134,7 +134,36 @@ One Dark theme. All colors as Tailwind v4 `@theme` custom properties:
 | `--color-info`        | #61afef | Information    |
 | `--color-highlight`   | #e5c07b | Highlights     |
 
-Base font: 14px. Dark color-scheme. Focus outlines globally suppressed. Custom scrollbar (8px, semi-transparent thumb).
+### Typography
+
+Font sizes are relative: text is sized with the named Tailwind scale (`text-xs`, `text-sm`, `text-base`, `text-lg`, …), whose rem values resolve against the single absolute anchor — `html { font-size: 14px }` in `frontend/src/index.css` (deliberately not 16px — rem-based spacing and radii are tuned for it). Absolute (px) font sizes are forbidden everywhere else.
+
+The scale is tokenized in the `@theme` block of `frontend/src/index.css` — values mirror the Tailwind defaults exactly (rem, like every other rem length behind the 14px root), so the `text-*` utilities render unchanged; component CSS sizes text through `var(--text-*)` instead of raw rem, so retuning the scale never means touching component rules.
+
+| Token            | Value      | Line-height        | Utility      |
+| ---------------- | ---------- | ------------------ | ------------ |
+| `--text-xs`      | `0.75rem`  | `calc(1 / 0.75)`   | `text-xs`    |
+| `--text-sm`      | `0.875rem` | `calc(1.25 / 0.875)` | `text-sm`  |
+| `--text-base`    | `1rem`     | `calc(1.5 / 1)`    | `text-base`  |
+| `--text-lg`      | `1.125rem` | `calc(1.75 / 1.125)` | `text-lg`  |
+
+The guard pins these values to the Tailwind defaults; a deliberate scale retune is a two-place edit (`@theme` values + this table) that re-renders utilities and component CSS together.
+
+Invariants:
+
+- Text sizes come from the named scale only; arbitrary `text-[Npx]`/`text-[Nrem]` font sizes are forbidden — only color arbitrary values are legal in the `text-[…]` slot (enforced by `frontend/src/test/typeScaleInvariant.test.ts`).
+- CSS carries no `font-size: Npx` outside the `html` root rule — every other CSS font size is rem (enforced by the same guard via brace-matched location of the root rule). Component CSS references the `--text-*` tokens instead of raw rem; the one non-token rem size left is `.cm-completion-nerd-icon`'s `0.8125rem` (icon optical sizing with no slot on the xs..lg scale).
+- Inline TS/TSX font sizes are relative too: a bare number or a number/px string (`fontSize: 10`, `fontSize: '13px'`) is forbidden; rem strings (CodeMirror themes) stay legal (enforced by the same guard).
+- Deliberate exceptions, bound to an external API or canvas geometry: the xterm constructor option in `Terminal.tsx` (a px number by API) and the SVG labels on the research DAG canvas (`ResearchDagCanvas.tsx`, fontSize 9/11).
+
+Font families are tokenized the same way: `--font-sans`, `--font-mono` and `--font-icon` live in the `@theme` block of `frontend/src/index.css`, with a TS mirror in `frontend/src/lib/fonts.ts` for the non-CSS consumers (CodeMirror themes and the xterm constructor need a literal stack string, not a `var()` reference; CSS is the source of truth — keep both in sync).
+
+- Every text surface rides one of the two text stacks: proportional UI text is `--font-sans` (the `html` base via Tailwind preflight; the Settings → Appearance font pickers override exactly this chain through inline `--font-sans`/`--font-mono` properties on `<html>`, see ADR-078), monospaced text is `--font-mono`. The same mono stack applies everywhere — file viewer, terminal, SHAs, IDs — no per-surface variants. The chat input's autocomplete tooltip is UI text (sans), not mono, despite being CodeMirror-rendered (see `specs/domains/frontend/fonts.md`).
+- The icon font `--font-icon` (SauceCodePro NF, embedded via `@font-face`) carries Nerd Font glyphs ONLY — file-tree icons (`.nerd-font-icon`) and completion icons (`.cm-completion-nerd-icon`). Never for text: a text surface that needs a monospaced look uses `--font-mono`.
+- The terminal runs on the plain `--font-mono` stack with no icon font — no Nerd Font glyphs in terminal output.
+- Hardcoded font-family stacks are forbidden: CSS may only reference `var(--font-*)` (plus the `@font-face` declaration itself); TS may only use the `FONT_*_STACK` constants from `lib/fonts.ts` (or a `var(--font-…)` string) — enforced by `frontend/src/test/typeScaleInvariant.test.ts`.
+
+Dark color-scheme. Focus outlines globally suppressed. Custom scrollbar (8px, semi-transparent thumb).
 
 ## Communication Pattern
 
@@ -173,6 +202,7 @@ Project switching is orchestrated by `useProjectSwitchState`: it saves source-pr
 - Persisted desktop window dimensions are accepted only at or above the minimum usable size; invalid state falls back to defaults
 - The frontend is **zoom-safe** under the app-wide UI Scale (`zoom` on `<html>`, see [ui-scale.md](ui-scale.md)): the shell and full-height containers size with percentages, viewport-derived sizes use the `--ui-vh` primitive, and pointer-anchored floating panels open at the cursor and fully inside the visible window at any scale — enforced by `frontend/src/test/zoomViewportInvariant.test.ts` plus the per-primitive guards
 - Every enabled interactive element shows the pointer cursor and every disabled one shows `not-allowed` — a base-layer cursor policy in `frontend/src/index.css` covers native `button`/`input[type=…]`/`select`/`label`/`summary` and ARIA widget roles (`button`, `menuitem*`, `option`, `tab`, `checkbox`, `radio`, `switch`, `combobox`, `link`, `treeitem`); utility classes (e.g. `cursor-grab` on drag canvases) still override it for intentional exceptions, and `cursor-default` on clickable elements is forbidden outside the allowlist in `frontend/src/test/clickableCursorInvariant.test.ts` (Radix disabled menu items keep `pointer-events-none`, so their cursor stays the UA default)
+- Typography is relative-scale-governed: text sizes come from the named Tailwind scale anchored at the 14px `html` root (see Design System); arbitrary `text-[Npx]`/`text-[Nrem]` utilities, px CSS font sizes outside the root rule, and absolute inline `fontSize` values fail the source-scan guard in `frontend/src/test/typeScaleInvariant.test.ts` (API-bound exceptions: the xterm constructor in `Terminal.tsx` and the research DAG canvas SVG labels)
 
 ## Configuration
 
@@ -205,7 +235,7 @@ Frontend configuration is derived from backend (no separate frontend config file
 ## Related Specs
 
 - [ui-scale.md](ui-scale.md) — UI scale feature and the zoom-safety invariant
-- [system-font.md](system-font.md) — opt-in follow-system-font feature (GNOME UI font via gsettings → the inline `--default-font-family` override over Tailwind v4 preflight)
+- [fonts.md](fonts.md) — user font selection: UI/mono family pickers (free text + detected + installed options) plus per-scope select-only smoothing pickers over the persisted `fontStore`, once-per-launch dual system-font detection, and the inline `--font-sans`/`--font-mono` `@theme`-token + `--font-smoothing-*` delivery on `<html>` ([ADR-078](../../decisions/078-user-font-selection.md), [ADR-079](../../decisions/079-font-smoothing-selection.md))
 - [button-tooltips.md](button-tooltips.md) — the button tooltip convention: a `title=`, a Radix `TooltipTrigger` wrapper, or a statically visible label on every button — exactly one, the channels never combine (both AST guards flag a `title` under a `TooltipTrigger`); buttons that may hide their label always carry a `title`, always-labeled buttons never carry an echo, picker triggers follow the heading rule
 - [stores.md](stores.md) — Zustand store catalog
 - [git-operation-console.md](git-operation-console.md) — the footer log of the last git mutation result (button tint, anchored popover, per-project scope, acknowledge semantics)

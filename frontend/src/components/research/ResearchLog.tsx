@@ -47,7 +47,7 @@ export function ResearchLog() {
       data-testid="research-log"
       className="flex min-h-0 flex-1 flex-col gap-1 border-t border-border pt-2"
     >
-      <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+      <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">
         Research log
       </span>
 
@@ -67,7 +67,7 @@ export function ResearchLog() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-1.5">
                     {entry.hypothesis_id && (
-                      <span className="shrink-0 font-mono text-[10px] text-info">
+                      <span className="shrink-0 font-mono text-xs text-info">
                         {entry.hypothesis_id}
                       </span>
                     )}
@@ -75,7 +75,7 @@ export function ResearchLog() {
                       {entry.message}
                     </span>
                   </div>
-                  <span className="font-mono text-[10px] text-muted-foreground/60">
+                  <span className="font-mono text-xs text-muted-foreground/60">
                     {formatLogTime(entry.created_at)}
                   </span>
                 </div>
@@ -91,7 +91,7 @@ export function ResearchLog() {
           data-testid="research-log-show-all"
           onClick={() => setShowAll(true)}
           title="Render every log entry for this project"
-          className="inline-flex shrink-0 items-center gap-1 self-start rounded px-1 py-0.5 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+          className="inline-flex shrink-0 items-center gap-1 self-start rounded px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
         >
           <ChevronDown className="size-3" />
           Show all {total} entries

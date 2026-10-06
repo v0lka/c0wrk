@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   getLogLevel: vi.fn(),
   hasDefaultModel: vi.fn(),
   listVectorIndexGPUs: vi.fn(),
+  listFontFamilies: vi.fn(),
 }))
 
 vi.mock('@/api/config', () => ({
@@ -24,6 +25,11 @@ vi.mock('@/api/config', () => ({
 // VectorIndexSettings (General tab) probes the GPU list on mount.
 vi.mock('@/api/vector', () => ({
   listVectorIndexGPUs: mocks.listVectorIndexGPUs,
+}))
+
+// FontSettings (Appearance tab) enumerates the installed families on mount.
+vi.mock('@/api/fonts', () => ({
+  listFontFamilies: mocks.listFontFamilies,
 }))
 
 import { SettingsModal } from './SettingsModal'
@@ -61,6 +67,7 @@ beforeEach(() => {
   mocks.getLogLevel.mockResolvedValue('info')
   mocks.hasDefaultModel.mockResolvedValue(true)
   mocks.listVectorIndexGPUs.mockResolvedValue([])
+  mocks.listFontFamilies.mockResolvedValue([])
   useSettingsStore.setState({ open: false, activeTab: 'general' })
   container = document.createElement('div')
   document.body.appendChild(container)

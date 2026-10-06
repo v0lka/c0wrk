@@ -75,7 +75,12 @@ export function createOneDarkCMTheme(
       // Editable fields must show a caret — an invisible one makes the field
       // read as readonly even though typing works.
       caretColor: editable ? fg : 'transparent',
-      fontFamily: "'SauceCodePro NF', Menlo, Monaco, 'Courier New', monospace",
+      // The font follows the `--font-mono` custom property (the @theme token
+      // that fontStore's inline override on <html> repoints), so a monospace
+      // change needs no theme rebuild — the cascade re-resolves the var.
+      // A reconfigure on font change (see the viewer/field effects) exists
+      // only to force CodeMirror's lazy height re-measurement.
+      fontFamily: 'var(--font-mono)',
       lineHeight: '1.25rem',
     },
     ...(editable

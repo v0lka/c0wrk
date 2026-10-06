@@ -174,7 +174,7 @@ function HunkComboRow({ entry, className }: HunkComboRowProps) {
         )}
       </span>
       {entry.staged && (
-        <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wide text-warning">
+        <span className="ml-auto shrink-0 text-xs uppercase tracking-wide text-warning">
           staged
         </span>
       )}

@@ -254,7 +254,7 @@ export function ResearchPanel() {
                     : 'Open a research artifact'
                 }
                 className={cn(
-                  'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors',
+                  'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors',
                   'text-muted-foreground',
                   artifactItems.length > 0
                     ? 'cursor-pointer hover:bg-muted'

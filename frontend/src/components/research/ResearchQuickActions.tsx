@@ -28,7 +28,7 @@ const ACTION_ICONS: Record<string, LucideIcon> = {
 }
 
 const ACTION_BUTTON_CLASS =
-  'inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-[11px] text-foreground transition-colors hover:bg-muted'
+  'inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted'
 
 /** A quick action's derived runtime state: whether the button is enabled,
  *  why it is not (the disabled tooltip), and the prompt a click dispatches

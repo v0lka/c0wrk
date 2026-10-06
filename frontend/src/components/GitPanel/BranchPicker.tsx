@@ -209,7 +209,7 @@ export function BranchPicker() {
           ) : (
             <ul className="flex flex-col gap-0.5">
               {visibleLocal.length > 0 && (
-                <li className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                <li className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   Local
                 </li>
               )}
@@ -229,7 +229,7 @@ export function BranchPicker() {
                 </li>
               ))}
               {visibleRemote.length > 0 && (
-                <li className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                <li className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   Remote
                 </li>
               )}

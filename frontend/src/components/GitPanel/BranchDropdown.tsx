@@ -112,7 +112,7 @@ export function BranchDropdown() {
               {branch.name || <span className="italic opacity-50">no branch</span>}
             </span>
             {(branch.ahead > 0 || branch.behind > 0) && (
-              <span className="shrink-0 font-mono text-[10px] opacity-70">
+              <span className="shrink-0 font-mono text-xs opacity-70">
                 ↑{branch.ahead} ↓{branch.behind}
               </span>
             )}
@@ -137,7 +137,7 @@ export function BranchDropdown() {
 
           {visibleLocal.length > 0 && (
             <>
-              <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <div className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 Local
               </div>
               {visibleLocal.map((b) => (
@@ -166,7 +166,7 @@ export function BranchDropdown() {
           {visibleRemote.length > 0 && (
             <>
               <DropdownMenuSeparator />
-              <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <div className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 Remote
               </div>
               {visibleRemote.map((b) => (

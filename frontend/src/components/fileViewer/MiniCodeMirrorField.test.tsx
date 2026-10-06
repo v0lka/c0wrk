@@ -18,6 +18,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { EditorView } from '@codemirror/view'
 
 import { MiniCodeMirrorField } from './MiniCodeMirrorField'
+import { useFontStore } from '@/stores/fontStore'
 
 let activeRoot: Root | null = null
 
@@ -107,5 +108,38 @@ describe('MiniCodeMirrorField — external value sync', () => {
     })
 
     expect(viewOf(container).state.doc.toString()).toBe('replaced')
+  })
+})
+
+describe('MiniCodeMirrorField — font-driven theme reconfigure', () => {
+  it('reconfigures the view when the mono font changes', async () => {
+    const container = await renderField({ value: 'x', onChange: vi.fn() })
+    expect(viewOf(container)).toBeDefined()
+
+    // The theme's font rides the --font-mono var, but CodeMirror measures
+    // line heights lazily: the component must dispatch a compartment
+    // reconfigure when the choice changes, or the new font renders on
+    // stale measurements. Nothing else dispatches after mount here, so the
+    // store flip must cause exactly one dispatch. NB: spy on the INSTANCE —
+    // the constructor binds dispatch as an own property, so a prototype spy
+    // never sees the call.
+    const dispatchSpy = vi.spyOn(viewOf(container), 'dispatch')
+    try {
+      await act(async () => {
+        useFontStore.getState().setMonoFontFamily('JetBrains Mono')
+      })
+
+      expect(dispatchSpy).toHaveBeenCalledTimes(1)
+      const spec = dispatchSpy.mock.calls[0]?.[0]
+      expect(spec !== undefined && 'effects' in spec && spec.effects !== undefined).toBe(true)
+    } finally {
+      dispatchSpy.mockRestore()
+      // Restore the store and the inline var the action wrote to <html>,
+      // so neither leaks into other tests in this file.
+      await act(async () => {
+        useFontStore.setState({ monoFontFamily: null })
+        document.documentElement.style.removeProperty('--font-mono')
+      })
+    }
   })
 })

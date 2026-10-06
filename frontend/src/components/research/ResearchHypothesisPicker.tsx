@@ -67,7 +67,7 @@ export function ResearchHypothesisPicker() {
       aria-busy={saving}
       className="flex shrink-0 flex-col gap-1"
     >
-      <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
         Hypothesis
       </span>
 
@@ -92,7 +92,7 @@ export function ResearchHypothesisPicker() {
                     style={{ backgroundColor: statusColorVar(currentNode.status) }}
                     aria-hidden
                   />
-                  <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                  <span className="shrink-0 font-mono text-xs text-muted-foreground">
                     {currentNode.id}
                   </span>
                   <span
@@ -126,7 +126,7 @@ export function ResearchHypothesisPicker() {
                       style={{ backgroundColor: statusColorVar(n.status) }}
                       aria-hidden
                     />
-                    <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                    <span className="shrink-0 font-mono text-xs text-muted-foreground">
                       {n.id}
                     </span>
                     <span
@@ -169,7 +169,7 @@ export function ResearchHypothesisPicker() {
               value: s,
               label: s,
             }))}
-            className="h-6 w-28 shrink-0 rounded border border-input px-1 text-[11px] text-foreground"
+            className="h-6 w-28 shrink-0 rounded border border-input px-1 text-xs text-foreground"
           />
         )}
 

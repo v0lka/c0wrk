@@ -23,6 +23,7 @@ func TestParseGnomeFontName(t *testing.T) {
 		{name: "surrounding whitespace", raw: "   'Noto Sans 11'   ", want: "Noto Sans", ok: true},
 		{name: "unquoted value", raw: "Inter 12", want: "Inter", ok: true},
 		{name: "three-word family", raw: "'IBM Plex Sans 11'", want: "IBM Plex Sans", ok: true},
+		{name: "monospace family with style", raw: "'DejaVu Sans Mono Bold 10'", want: "DejaVu Sans Mono", ok: true},
 		{name: "empty quoted value", raw: "''", want: "", ok: false},
 		{name: "empty input", raw: "", want: "", ok: false},
 		{name: "whitespace only", raw: "   ", want: "", ok: false},
@@ -43,65 +44,82 @@ func TestParseGnomeFontName(t *testing.T) {
 	}
 }
 
-func TestGetSystemUIFont_StubbedSeam(t *testing.T) {
-	t.Run("available with parsed family", func(t *testing.T) {
-		f := &FrontendAPI{readSystemFontFn: func() (string, error) {
-			return "'Noto Sans 11'\n", nil
+func TestGetSystemFonts_StubbedSeam(t *testing.T) {
+	t.Run("both families parsed", func(t *testing.T) {
+		f := &FrontendAPI{readSystemFontsFn: func() (systemFontPair, error) {
+			return systemFontPair{
+				UI:   "'Noto Sans 11'\n",
+				Mono: "'DejaVu Sans Mono Bold 10'",
+			}, nil
 		}}
-		resp := f.GetSystemUIFont()
-		if !resp.Available {
-			t.Fatal("GetSystemUIFont() Available = false, want true")
+		resp := f.GetSystemFonts()
+		if resp.UIFamily != "Noto Sans" {
+			t.Errorf("GetSystemFonts() UIFamily = %q, want %q", resp.UIFamily, "Noto Sans")
 		}
-		if resp.FontFamily != "Noto Sans" {
-			t.Errorf("GetSystemUIFont() FontFamily = %q, want %q", resp.FontFamily, "Noto Sans")
+		if resp.MonoFamily != "DejaVu Sans Mono" {
+			t.Errorf("GetSystemFonts() MonoFamily = %q, want %q", resp.MonoFamily, "DejaVu Sans Mono")
 		}
 	})
 
-	t.Run("reader error means unavailable, not RPC failure", func(t *testing.T) {
-		f := &FrontendAPI{readSystemFontFn: func() (string, error) {
-			return "", errors.New("gsettings not found in PATH: exec: not found")
+	t.Run("reader error means zero response, not RPC failure", func(t *testing.T) {
+		f := &FrontendAPI{readSystemFontsFn: func() (systemFontPair, error) {
+			return systemFontPair{}, errors.New("gsettings not found in PATH: exec: not found")
 		}}
-		resp := f.GetSystemUIFont()
-		if resp.Available {
-			t.Fatal("GetSystemUIFont() Available = true, want false on reader error")
-		}
-		if resp.FontFamily != "" {
-			t.Errorf("GetSystemUIFont() FontFamily = %q, want empty", resp.FontFamily)
+		resp := f.GetSystemFonts()
+		if resp.UIFamily != "" || resp.MonoFamily != "" {
+			t.Errorf("GetSystemFonts() = %+v, want the zero response on a reader error", resp)
 		}
 	})
 
-	t.Run("unparsable value means unavailable", func(t *testing.T) {
-		f := &FrontendAPI{readSystemFontFn: func() (string, error) {
-			return "''", nil
+	t.Run("unparsable UI value empties only the UI family", func(t *testing.T) {
+		f := &FrontendAPI{readSystemFontsFn: func() (systemFontPair, error) {
+			return systemFontPair{UI: "''", Mono: "'DejaVu Sans Mono 10'"}, nil
 		}}
-		resp := f.GetSystemUIFont()
-		if resp.Available {
-			t.Fatal("GetSystemUIFont() Available = true, want false for an empty font value")
+		resp := f.GetSystemFonts()
+		if resp.UIFamily != "" {
+			t.Errorf("GetSystemFonts() UIFamily = %q, want empty for an unparsable UI value", resp.UIFamily)
+		}
+		if resp.MonoFamily != "DejaVu Sans Mono" {
+			t.Errorf("GetSystemFonts() MonoFamily = %q, want %q", resp.MonoFamily, "DejaVu Sans Mono")
+		}
+	})
+
+	t.Run("unparsable mono value empties only the mono family", func(t *testing.T) {
+		f := &FrontendAPI{readSystemFontsFn: func() (systemFontPair, error) {
+			return systemFontPair{UI: "'Noto Sans 11'\n", Mono: "'11'"}, nil
+		}}
+		resp := f.GetSystemFonts()
+		if resp.UIFamily != "Noto Sans" {
+			t.Errorf("GetSystemFonts() UIFamily = %q, want %q", resp.UIFamily, "Noto Sans")
+		}
+		if resp.MonoFamily != "" {
+			t.Errorf("GetSystemFonts() MonoFamily = %q, want empty for an unparsable mono value", resp.MonoFamily)
 		}
 	})
 }
 
-// TestGetSystemUIFont_NilSeamUsesRealRead exercises the production read path
-// (readSystemFontName): on Linux with a GNOME session it must report a real
-// family; anywhere else (non-Linux build, no gsettings, non-GNOME desktop)
-// the read errors and the RPC reports unavailable. Both outcomes are correct,
-// so the test only skips when the environment read itself fails.
-func TestGetSystemUIFont_NilSeamUsesRealRead(t *testing.T) {
-	raw, err := readSystemFontName()
+// TestGetSystemFonts_NilSeamUsesRealRead exercises the production read path
+// (readSystemFonts): on Linux with a GNOME session it must report real
+// families; anywhere else (non-Linux build, no gsettings, non-GNOME desktop)
+// the read errors and the RPC reports the zero response. Both outcomes are
+// correct, so the test only skips when the environment read itself fails.
+func TestGetSystemFonts_NilSeamUsesRealRead(t *testing.T) {
+	pair, err := readSystemFonts()
 	if err != nil {
-		t.Skipf("readSystemFontName() unavailable in this environment: %v", err)
+		t.Skipf("readSystemFonts() unavailable in this environment: %v", err)
 	}
-	if strings.TrimSpace(raw) == "" {
-		t.Skipf("readSystemFontName() returned an empty value: %q", raw)
+	if strings.TrimSpace(pair.UI) == "" && strings.TrimSpace(pair.Mono) == "" {
+		t.Skipf("readSystemFonts() returned empty values: %+v", pair)
 	}
 
 	f := &FrontendAPI{}
-	resp := f.GetSystemUIFont()
-	wantFamily, wantOK := parseGnomeFontName(raw)
-	if resp.Available != wantOK {
-		t.Fatalf("GetSystemUIFont() Available = %v, want %v (parsed from %q)", resp.Available, wantOK, raw)
+	resp := f.GetSystemFonts()
+	wantUI, uiOK := parseGnomeFontName(pair.UI)
+	wantMono, monoOK := parseGnomeFontName(pair.Mono)
+	if resp.UIFamily != wantUI {
+		t.Errorf("GetSystemFonts() UIFamily = %q, want %q (ok=%v, parsed from %q)", resp.UIFamily, wantUI, uiOK, pair.UI)
 	}
-	if resp.FontFamily != wantFamily {
-		t.Errorf("GetSystemUIFont() FontFamily = %q, want %q", resp.FontFamily, wantFamily)
+	if resp.MonoFamily != wantMono {
+		t.Errorf("GetSystemFonts() MonoFamily = %q, want %q (ok=%v, parsed from %q)", resp.MonoFamily, wantMono, monoOK, pair.Mono)
 	}
 }

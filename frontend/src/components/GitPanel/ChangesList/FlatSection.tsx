@@ -38,7 +38,7 @@ function displayDirLabel(label: string, workspaceRoot: string): string {
 /** Compact sub-group header rendered above each group of files. */
 function SubGroupHeader({ label }: { label: string }) {
   return (
-    <div className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/70 select-none">
+    <div className="px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground/70 select-none">
       {label}
     </div>
   )

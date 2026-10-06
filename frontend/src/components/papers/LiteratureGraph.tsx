@@ -33,7 +33,7 @@ function Legend() {
       className="pointer-events-none absolute bottom-2 left-2 z-10 flex flex-col gap-0.5 rounded-md border border-border bg-background/85 px-1.5 py-1 shadow-sm backdrop-blur"
     >
       {LITERATURE_KIND_ORDER.map((kind) => (
-        <span key={kind} className="flex items-center gap-1 text-[10px] text-muted-foreground">
+        <span key={kind} className="flex items-center gap-1 text-xs text-muted-foreground">
           <span
             className="inline-block size-2 shrink-0 rounded-full"
             style={{ background: statusColorVar(literatureKindStatus(kind)) }}

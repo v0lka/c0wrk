@@ -92,7 +92,7 @@ function SessionRowContent({ session, isActive, status, onPin, onFork, onRename,
         {session.pinned && <Pin className="size-3 shrink-0 text-primary" />}
         <span className={cn('min-w-0 flex-1 truncate', isActive && 'font-medium')}>{session.name}</span>
       </div>
-      <span className="text-[10px] text-muted-foreground">{formatRelativeTime(session.last_active_at)}</span>
+      <span className="text-xs text-muted-foreground">{formatRelativeTime(session.last_active_at)}</span>
 
       {/* Action overlay — absolutely positioned over the right portion of the
           item. Appears on hover/focus, with a gradient background so the

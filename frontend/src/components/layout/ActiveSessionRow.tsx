@@ -72,7 +72,7 @@ export function ActiveSessionRow({ session, status, isActive, isChat, projectNam
           {session.name}
         </EllipsisHint>
       </div>
-      <span className="shrink-0 text-[10px] text-muted-foreground">{formatRelativeTime(session.last_active_at)}</span>
+      <span className="shrink-0 text-xs text-muted-foreground">{formatRelativeTime(session.last_active_at)}</span>
     </>
   )
 }

@@ -43,14 +43,14 @@ export function StatusBar() {
             {tokens.model && (
               <Badge
                 variant="outline"
-                className="h-5 min-w-0 shrink max-w-full px-1.5 text-[10px] truncate"
+                className="h-5 min-w-0 shrink max-w-full px-1.5 text-xs truncate"
                 title={tokens.model}
               >
                 {tokens.model}
               </Badge>
             )}
             {tokens.family && (
-              <span className="min-w-0 truncate text-[10px] text-muted-foreground/70" title={tokens.family}>
+              <span className="min-w-0 truncate text-xs text-muted-foreground/70" title={tokens.family}>
                 {tokens.family}
               </span>
             )}

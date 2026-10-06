@@ -235,7 +235,7 @@ export function ModelPickerMenu({
           <>
             {menuHeading && (
               <DropdownMenuLabel
-                className="px-3 pt-2 pb-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider"
+                className="px-3 pt-2 pb-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider"
               >
                 {menuHeading}
               </DropdownMenuLabel>
@@ -259,7 +259,7 @@ export function ModelPickerMenu({
                   Default{effectiveDefaultId ? ` (${bareModel(defaultModel)})` : ''}
                 </span>
                 {!selected && (
-                  <span className="text-[10px] text-primary">active</span>
+                  <span className="text-xs text-primary">active</span>
                 )}
               </DropdownMenuItem>
             )}
@@ -269,7 +269,7 @@ export function ModelPickerMenu({
             {Array.from(grouped.entries()).map(([provider, modelsInGroup]) => (
               <DropdownMenuGroup key={provider} aria-label={providerLabel(provider)}>
                 <DropdownMenuLabel
-                  className="px-3 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider bg-muted/30"
+                  className="px-3 py-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider bg-muted/30"
                 >
                   {providerLabel(provider)}
                 </DropdownMenuLabel>
@@ -294,10 +294,10 @@ export function ModelPickerMenu({
                     >
                       <span className="flex-1 text-left truncate">{entry.model}</span>
                       {isSelected && (
-                        <span className="text-[10px] text-primary">selected</span>
+                        <span className="text-xs text-primary">selected</span>
                       )}
                       {isDefault && (
-                        <span className="text-[10px] text-muted-foreground">default</span>
+                        <span className="text-xs text-muted-foreground">default</span>
                       )}
                     </DropdownMenuItem>
                   )

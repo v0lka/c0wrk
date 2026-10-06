@@ -59,7 +59,7 @@ export function BaseSelectorRow({
     >
       <span
         className={cn(
-          'shrink-0 text-[10px] uppercase tracking-wide',
+          'shrink-0 text-xs uppercase tracking-wide',
           typeMeta[base.type]?.badge ?? 'text-muted-foreground',
         )}
       >

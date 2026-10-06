@@ -10,7 +10,7 @@ import type { CriticalLayer, EvidenceStrength } from '@/lib/paperWidgets'
 import { cn } from '@/lib/utils'
 
 const BADGE_CLASS =
-  'inline-flex items-center rounded px-1 py-0 text-[10px] font-medium uppercase tracking-wide'
+  'inline-flex items-center rounded px-1 py-0 text-xs font-medium uppercase tracking-wide'
 
 /** Colour tokens per evidence strength (design tokens only). */
 const STRENGTH_META: Record<EvidenceStrength, { label: string; tone: string }> = {
@@ -31,7 +31,7 @@ function severityTone(severity: string): string {
 
 function SectionHeading({ children }: { children: React.ReactNode }) {
   return (
-    <h4 className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+    <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
       {children}
     </h4>
   )
@@ -58,11 +58,11 @@ function EvidenceMatrix({ rows }: { rows: CriticalLayer['evidence'] }) {
               {STRENGTH_META[row.strength].label}
             </span>
             <div className="min-w-0 flex-1">
-              <p className="text-[11px] text-foreground">{row.claim !== '' ? row.claim : '—'}</p>
+              <p className="text-xs text-foreground">{row.claim !== '' ? row.claim : '—'}</p>
               {row.evidence !== '' && (
-                <p className="text-[10px] text-muted-foreground">{row.evidence}</p>
+                <p className="text-xs text-muted-foreground">{row.evidence}</p>
               )}
-              {row.anchor !== '' && <p className="text-[10px] text-info">{row.anchor}</p>}
+              {row.anchor !== '' && <p className="text-xs text-info">{row.anchor}</p>}
             </div>
           </li>
         ))}
@@ -122,7 +122,7 @@ export function CriticalLayerWidgets({ layer }: { layer: CriticalLayer }) {
   const { evidence, redFlags, uncertainties } = layer
   if (evidence.length === 0 && redFlags.length === 0 && uncertainties.length === 0) {
     return (
-      <p data-testid="paper-critical-empty" className="text-[11px] text-muted-foreground">
+      <p data-testid="paper-critical-empty" className="text-xs text-muted-foreground">
         No critical layer recorded yet.
       </p>
     )

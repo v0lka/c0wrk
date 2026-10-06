@@ -212,7 +212,7 @@ export function GetShellExecSettings():Promise<backend.ShellExecSettingsResponse
 
 export function GetStepOutput(arg1:string,arg2:string):Promise<string>;
 
-export function GetSystemUIFont():Promise<backend.SystemUIFontResponse>;
+export function GetSystemFonts():Promise<backend.SystemFontsResponse>;
 
 export function GetTerminalHistory(arg1:string):Promise<Array<session.TerminalCommand>>;
 
@@ -241,6 +241,8 @@ export function ListAllSessions():Promise<Array<session.SessionInfo>>;
 export function ListBookmarks(arg1:string):Promise<Array<session.SessionBookmark>>;
 
 export function ListDirectory(arg1:string,arg2:boolean):Promise<Array<workspace.FileNode>>;
+
+export function ListFontFamilies(arg1:boolean):Promise<backend.FontFamiliesResponse>;
 
 export function ListProjectWorkDirectories(arg1:string):Promise<Array<project.WorkDirectoryRecord>>;
 

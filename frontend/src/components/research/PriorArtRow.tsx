@@ -17,7 +17,7 @@ import {
 } from '@/components/papers/paperActions'
 
 const ACTION_BUTTON_CLASS =
-  'inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground'
+  'inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground'
 
 interface PriorArtRowProps {
   /** Absolute path of the prior-art catalog (`<research-root>/R-NNN/prior-art.md`). */
@@ -71,8 +71,8 @@ export function PriorArtRow({ path, count }: PriorArtRowProps) {
       className="flex items-center gap-1 rounded-md border border-border bg-background/40 px-2 py-1"
     >
       <FileText className="size-3 shrink-0 text-muted-foreground" />
-      <span className="text-[11px] font-medium text-foreground">Prior art</span>
-      <span data-testid="research-prior-art-count" className="text-[10px] text-muted-foreground">
+      <span className="text-xs font-medium text-foreground">Prior art</span>
+      <span data-testid="research-prior-art-count" className="text-xs text-muted-foreground">
         {count}
       </span>
       <div className="ml-auto flex shrink-0 items-center gap-0.5">

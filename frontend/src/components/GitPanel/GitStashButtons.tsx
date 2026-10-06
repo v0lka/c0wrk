@@ -174,7 +174,7 @@ export function GitStashButtons() {
       {isListOpen && (
         <div className="absolute left-0 top-full z-50 mt-1 w-72 rounded-md border border-border bg-popover p-1 shadow-md">
           {listError && (
-            <div className="px-2 py-1.5 text-[10px] text-destructive">{listError}</div>
+            <div className="px-2 py-1.5 text-xs text-destructive">{listError}</div>
           )}
           <GitStashList
             entries={stashEntries}
@@ -182,7 +182,7 @@ export function GitStashButtons() {
             busyIndex={busyIndex}
             onAction={handleEntryAction}
           />
-          <div className="flex items-center gap-1.5 px-2 py-1.5 text-[10px] text-muted-foreground">
+          <div className="flex items-center gap-1.5 px-2 py-1.5 text-xs text-muted-foreground">
             <AlertCircle className="size-3 shrink-0" />
             Pop applies &amp; removes; Drop discards.
           </div>

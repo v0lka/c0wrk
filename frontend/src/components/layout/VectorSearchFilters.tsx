@@ -137,7 +137,7 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
               key={tok}
               type="button"
               onClick={() => removeMustMatch(tok)}
-              className="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px] hover:bg-destructive hover:text-destructive-foreground"
+              className="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs hover:bg-destructive hover:text-destructive-foreground"
               title="Click to remove"
             >
               <span>+{tok}</span>

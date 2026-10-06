@@ -278,7 +278,7 @@ export function FileTreeContextMenu({
         >
           {studyOpen ? (
             <>
-              <div className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <div className="px-2 py-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Reading depth
               </div>
               {STUDY_MODE_OPTIONS.map((option) => (

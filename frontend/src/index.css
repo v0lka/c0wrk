@@ -9,10 +9,44 @@
 /* ==========================================================================
    Design Tokens — @theme
    All color values are defined here and ONLY here. Component styles
-   reference var(--color-*) exclusively.
+   reference var(--color-*) exclusively. Typography font families and the
+   type scale are tokenized here too (--font-* mirrored in
+   frontend/src/lib/fonts.ts; --text-* in rem).
    ========================================================================== */
 
 @theme {
+    /* Typography — font families (single source of truth for the TS mirror
+       in frontend/src/lib/fonts.ts; keep both in sync) */
+    --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    /* Text mono leads with the bundled Nerd Font family (the same webfont
+       --font-icon serves): every monospace surface — the terminal, code
+       blocks, the CodeMirror viewer — resolves Nerd Font glyphs (icons,
+       decorations) by default, keeping one uniform mono stack app-wide. A
+       user-picked family is prepended BEFORE this stack, so it still renders
+       the text and the leading NF entry only catches the glyphs it lacks
+       (per-glyph fallback). Mirrored in lib/fonts.ts FONT_MONO_STACK. */
+    --font-mono: "SauceCodePro NF", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    /* Icon-scope token — Nerd Font glyphs for file/tree/completion icons.
+       The SAME family leads --font-mono (see above); elements address it as
+       --font-icon for icons, text addresses --font-mono. */
+    --font-icon: "SauceCodePro NF", monospace;
+
+    /* Typography — type scale (xs..lg). Values mirror the Tailwind defaults
+       in tailwindcss/theme.css exactly, so the text-* utilities render
+       unchanged; component CSS references var(--text-*) instead of raw rem,
+       so retuning the scale never means touching component rules. Sizes stay
+       rem so they resolve against the 14px html root below, like every other
+       rem length; line-heights are unitless multipliers mirroring the default
+       Tailwind ratios. */
+    --text-xs: 0.75rem;
+    --text-xs--line-height: calc(1 / 0.75);
+    --text-sm: 0.875rem;
+    --text-sm--line-height: calc(1.25 / 0.875);
+    --text-base: 1rem;
+    --text-base--line-height: calc(1.5 / 1);
+    --text-lg: 1.125rem;
+    --text-lg--line-height: calc(1.75 / 1.125);
+
     /* Core palette */
     --color-background: #282c34;
     --color-foreground: #abb2bf;
@@ -72,6 +106,34 @@
     --radius-md: 0.375rem;
     --radius-lg: 0.5rem;
     --radius-xl: 0.75rem;
+}
+
+/* ==========================================================================
+   Font Smoothing Overrides (fontStore)
+   The store writes --font-smoothing-sans / --font-smoothing-mono on <html>;
+   an absent property falls back to `auto` — the webview default, which is
+   the "Not set" option. Sans scopes from the root to the whole document;
+   mono overrides only the monospace surfaces — code and pre blocks
+   (preflight/prose mono), the CodeMirror viewer/mini-field container, and
+   the terminal's DOM-rendered text.
+   The property is the non-standard -webkit-font-smoothing (the only CSS-level
+   AA lever a webview exposes); a webview that ignores it renders the knob as
+   a no-op, never a breakage.
+   ========================================================================== */
+
+/* A `:root` selector deliberately: the type-scale guard brace-matches the
+   FIRST top-level `html {` rule to exempt the root font-size, and an earlier
+   `html {` here would swallow that exemption. :root is the same element with
+   higher specificity. */
+:root {
+    -webkit-font-smoothing: var(--font-smoothing-sans, auto);
+}
+
+code,
+pre,
+.xterm,
+.cm-viewer-container {
+    -webkit-font-smoothing: var(--font-smoothing-mono, auto);
 }
 
 /* ==========================================================================
@@ -210,7 +272,7 @@ body {
 }
 
 .nerd-font-icon {
-    font-family: "SauceCodePro NF", monospace;
+    font-family: var(--font-icon);
 }
 
 /* ==========================================================================
@@ -441,8 +503,11 @@ body {
 
 /* Code blocks */
 .prose pre {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
     background-color: var(--tw-prose-pre-bg);
     border: 1px solid var(--color-border);
+    line-height: 1.2;
 }
 
 .prose pre code {
@@ -514,8 +579,9 @@ body {
 }
 
 /* Compact prose variant for tooltips and tight spaces */
-.prose-xs {
-    font-size: 0.75rem;
+.prose.prose-xs {
+    font-size: var(--text-xs);
+    line-height: var(--text-xs--line-height);
 }
 
 /* Markdown rendered inside a hover tooltip (e.g. the Model Profiles essential-tools
@@ -523,12 +589,12 @@ body {
    generous paragraph/list spacing so a multi-section, list-bearing description
    stays compact. Doubled class raises specificity above `.prose :where(...)`. */
 .prose.prose-tooltip {
-    font-size: 0.75rem;
-    line-height: 1.4;
+    font-size: var(--text-xs);
+    line-height: var(--text-xs--line-height);
 }
 
 .prose.prose-tooltip :where(p, ul, ol, li) {
-    line-height: 1.4;
+    line-height: var(--text-xs--line-height);
 }
 
 .prose.prose-tooltip :where(p, ul, ol) {
@@ -654,12 +720,12 @@ body {
 
 .cm-viewer-container .cm-editor {
     background: transparent;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     height: 100%;
 }
 
 .cm-viewer-container .cm-scroller {
-    font-family: "SauceCodePro NF", Menlo, Monaco, "Courier New", monospace;
+    font-family: var(--font-mono);
     overflow: auto;
 }
 
@@ -751,7 +817,7 @@ body {
     min-height: 1.25rem;
     background-color: rgba(var(--color-destructive-rgb), 0.15);
     color: var(--color-destructive);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1.25rem;
     white-space: pre;
 }
@@ -835,13 +901,8 @@ body {
 
 .cm-chat-container .cm-scroller {
     overflow: auto;
-    font-family:
-        ui-sans-serif,
-        system-ui,
-        -apple-system,
-        BlinkMacSystemFont,
-        sans-serif;
-    font-size: 0.875rem;
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
     line-height: 1.5;
 }
 
@@ -892,56 +953,28 @@ body {
     pointer-events: none;
 }
 
-/* Autocomplete tooltip.
-   These selectors are intentionally NOT scoped under `.cm-chat-container`:
-   the tooltip renders in a body-level container (see `tooltips({ parent })`
-   in cmChatExtensions.ts) so it can overflow the input shell's
-   `overflow-hidden` box instead of being clipped by it. `.cm-tooltip-autocomplete`
-   exists only for the chat input's autocompletion (the file viewer editor
-   enables none), so the global scope is unambiguous. */
-.cm-tooltip-autocomplete {
-    background: var(--color-popover);
-    border: 1px solid var(--color-border);
-    border-radius: 0.375rem;
-    box-shadow: 0 4px 12px var(--color-shadow);
-    overflow: hidden;
-}
-
-.cm-tooltip-autocomplete ul {
-    max-height: 240px;
-    font-family: "SauceCodePro NF", Menlo, Monaco, "Courier New", monospace;
-    font-size: 0.75rem;
-}
-
-.cm-tooltip-autocomplete li {
-    padding: calc(0.25rem + 2px) calc(0.5rem + 2px);
-    /* Explicit color so suggestion text never blends into the popover
-       background. Without this CodeMirror falls back to its dark/light base
-       theme text color, which can collide with --color-popover. */
-    color: var(--color-popover-foreground);
-}
+/* Autocomplete tooltip — accents only.
+   The contested surface rules (container background/border/radius/shadow,
+   the list's font/size/max-height, item padding/colors, the selected row,
+   matched-text and detail) live in cmChatTheme.ts, NOT here:
+   @codemirror/autocomplete's baseTheme styles the same elements with
+   editor-scoped selectors (specificity (0,3,1)+) that beat ANY global rule
+   in this file, so those declarations were dead code and the hints rendered
+   in CM's own literal `monospace` family, ignoring the chosen fonts. The
+   theme channel (scoped with the chat editor's class, mirrored onto the
+   body-level tooltip wrapper by CodeMirror) ties baseTheme and wins on
+   mount order — see the comment block in cmChatTheme.ts and the live
+   cascade guard in test/cmTooltipCascade.test.ts.
+   The rules below have no CodeMirror competitor, so global scope is safe;
+   they are intentionally NOT scoped under `.cm-chat-container` because the
+   tooltip renders in a body-level container (tooltips({parent}) in
+   cmChatExtensions.ts). */
 
 /* Separate slash capability groups without adding fake selectable rows. */
 .cm-tooltip-autocomplete completion-section:not(:first-child) {
     margin-top: 0.5rem;
     border-top: 1px solid var(--color-border);
     padding-top: 0.5rem;
-}
-
-.cm-tooltip-autocomplete li[aria-selected] {
-    background: var(--color-muted);
-    color: var(--color-foreground);
-}
-
-.cm-completionMatchedText {
-    text-decoration: none;
-    background: color-mix(in srgb, var(--color-foreground) 25%, transparent);
-    border-radius: 2px;
-}
-
-.cm-completionDetail {
-    font-style: normal;
-    margin-left: 0.5rem;
 }
 
 /* Skill items: no icon, bold label, description at 30% opacity */
@@ -977,7 +1010,7 @@ body {
 
 /* File items: nerd font icon */
 .cm-completion-nerd-icon {
-    font-family: "SauceCodePro NF", monospace;
+    font-family: var(--font-icon);
     display: inline-block;
     width: 1em;
     text-align: center;

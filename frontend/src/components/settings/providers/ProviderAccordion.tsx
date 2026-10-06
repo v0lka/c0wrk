@@ -250,7 +250,7 @@ export function ProviderAccordion({
           <div className="flex flex-col gap-2">
             <label className="text-sm font-medium">Enabled Models</label>
             {isOAuth && (
-              <span className="text-[11px] text-muted-foreground">
+              <span className="text-xs text-muted-foreground">
                 {presetSource === 'subscription'
                   ? 'Live from your ChatGPT subscription — press Fetch models to refresh the list.'
                   : 'ChatGPT fallback preset (offline) — sign in and press Fetch models to load the models your subscription actually serves.'}
@@ -311,26 +311,26 @@ export function ProviderAccordion({
                     />
                     <span className="flex-1">{model}</span>
                     {preset?.reasoning && (
-                      <span className="rounded bg-info/10 px-1.5 py-0.5 text-[10px] font-medium text-info">
+                      <span className="rounded bg-info/10 px-1.5 py-0.5 text-xs font-medium text-info">
                         reasoning
                       </span>
                     )}
                     {preset && presetCtx > 0 && (
                       <span
-                        className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                        className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
                         title={`Context window: ${presetCtx.toLocaleString('en')} tokens${presetOut > 0 ? ` · output limit: ${presetOut.toLocaleString('en')}` : ''}`}
                       >
                         {formatContextWindow(presetCtx)}
                       </span>
                     )}
                     {isDefault && (
-                      <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                      <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">
                         default
                       </span>
                     )}
                     {notReported && (
                       <span
-                        className="rounded bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
+                        className="rounded bg-warning/10 px-1.5 py-0.5 text-xs font-medium text-warning"
                         title="Enabled in the config, but the last successful fetch did not report this model. It may have been removed from the endpoint."
                       >
                         not reported by endpoint

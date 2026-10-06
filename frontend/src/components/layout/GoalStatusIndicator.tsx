@@ -46,7 +46,7 @@ export function GoalStatusIndicator() {
   return (
     <Badge
       variant="outline"
-      className="h-5 shrink-0 items-center gap-1 px-1.5 text-[10px]"
+      className="h-5 shrink-0 items-center gap-1 px-1.5 text-xs"
       title={title}
     >
       <Target className="size-3 shrink-0" />

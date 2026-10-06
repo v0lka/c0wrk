@@ -3,7 +3,7 @@ package backend
 import "strings"
 
 // pangoStyleKeywords are the Pango font-description style/weight tokens that
-// may sit between the family name and the point size in a gsettings font-name
+// may sit between the family name and the point size in a gsettings font
 // value (e.g. 'DejaVu Sans Bold Italic 10'). They describe the style, not the
 // family: c0wrk applies weight/slant through CSS, so a trailing one is
 // stripped instead of being glued into the family name (a "DejaVu Sans Bold"
@@ -20,12 +20,25 @@ var pangoStyleKeywords = map[string]struct{}{
 	"Thin":    {},
 }
 
+// systemFontPair carries the two raw GVariant font descriptions read from
+// the org.gnome.desktop.interface schema: the interface (UI) font and the
+// monospace font. Both are Pango font descriptions ('Noto Sans 11',
+// 'DejaVu Sans Mono Bold 10') and both go through parseGnomeFontName; the
+// two are parsed independently, so an unparsable value empties only its own
+// family.
+type systemFontPair struct {
+	UI   string // org.gnome.desktop.interface font-name
+	Mono string // org.gnome.desktop.interface monospace-font-name
+}
+
 // parseGnomeFontName extracts the font FAMILY from the raw value printed by
-// `gsettings get org.gnome.desktop.interface font-name` — a Pango font
+// `gsettings get org.gnome.desktop.interface <key>` — a Pango font
 // description such as `'Noto Sans 11'`, `'DejaVu Sans Bold 10'` or
-// `'Cantarell 10.5'`. It strips the GVariant quoting (single or double), the
-// trailing point size (integer or decimal) and any trailing style keywords
-// (see pangoStyleKeywords), returning what remains as the family name.
+// `'Cantarell 10.5'`. It is used for both the UI font (font-name) and the
+// monospace font (monospace-font-name), which share the same serialization.
+// It strips the GVariant quoting (single or double), the trailing point size
+// (integer or decimal) and any trailing style keywords (see
+// pangoStyleKeywords), returning what remains as the family name.
 //
 // ok is false when no family survives — an empty value, a lone size token
 // ("'11'") or whitespace-only garbage. The point size is deliberately NOT

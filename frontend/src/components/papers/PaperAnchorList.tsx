@@ -22,7 +22,7 @@ function anchorLabel(anchor: PaperAnchor): string {
 export function PaperAnchorList({ anchors, missedIndex, onSelect }: PaperAnchorListProps) {
   if (anchors.length === 0) {
     return (
-      <p data-testid="paper-anchors-empty" className="text-[11px] text-muted-foreground">
+      <p data-testid="paper-anchors-empty" className="text-xs text-muted-foreground">
         No anchors recorded.
       </p>
     )
@@ -39,7 +39,7 @@ export function PaperAnchorList({ anchors, missedIndex, onSelect }: PaperAnchorL
             onClick={() => onSelect(anchor, index)}
             className={cn(
               'inline-flex max-w-56 items-center gap-1 rounded border border-border bg-background px-1 py-0.5',
-              'text-[10px] text-foreground transition-colors hover:bg-muted',
+              'text-xs text-foreground transition-colors hover:bg-muted',
             )}
           >
             <span className="truncate font-medium">{anchorLabel(anchor)}</span>
@@ -48,7 +48,7 @@ export function PaperAnchorList({ anchors, missedIndex, onSelect }: PaperAnchorL
             )}
           </button>
           {missedIndex === index && (
-            <span data-testid="paper-anchor-miss" className="shrink-0 text-[10px] text-destructive">
+            <span data-testid="paper-anchor-miss" className="shrink-0 text-xs text-destructive">
               not found
             </span>
           )}

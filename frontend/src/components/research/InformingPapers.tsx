@@ -45,7 +45,7 @@ export function InformingPapers({ hypothesisId }: { hypothesisId: string }) {
 
   return (
     <section data-testid="informing-papers" className="flex flex-col gap-1">
-      <h4 className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+      <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         Informing papers ({papers.length})
       </h4>
       <ul className="flex flex-col gap-0.5">
@@ -57,10 +57,10 @@ export function InformingPapers({ hypothesisId }: { hypothesisId: string }) {
               onClick={() => openPaper(paper)}
               title={`Open ${paperLabel(paper)}`}
               aria-label={`Open paper ${paperLabel(paper)}`}
-              className="flex w-full items-baseline gap-1.5 rounded px-1 py-0.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              className="flex w-full items-baseline gap-1.5 rounded px-1 py-0.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             >
               <FileText className="size-3 shrink-0 self-center" />
-              <span className="shrink-0 font-mono text-[10px]">{paper.id}</span>
+              <span className="shrink-0 font-mono text-xs">{paper.id}</span>
               <span className="min-w-0 truncate">{paperLabel(paper)}</span>
             </button>
           </li>
@@ -91,7 +91,7 @@ export function DanglingPaperLinks() {
       data-testid="dangling-paper-links"
       className="flex flex-col gap-1 rounded-md border border-warning/30 bg-warning/10 px-2 py-1"
     >
-      <div className="flex items-center gap-1.5 text-[11px] text-warning">
+      <div className="flex items-center gap-1.5 text-xs text-warning">
         <AlertTriangle className="size-3 shrink-0" />
         <span>
           {rows.length} paper link{rows.length === 1 ? '' : 's'} reference an unknown
@@ -100,18 +100,18 @@ export function DanglingPaperLinks() {
       </div>
       <ul className="flex flex-col gap-0.5">
         {rows.map(({ id, paper }) => (
-          <li key={`${id}:${paper.id}`} className="flex items-baseline gap-1.5 text-[11px]">
+          <li key={`${id}:${paper.id}`} className="flex items-baseline gap-1.5 text-xs">
             <button
               type="button"
               data-testid={`dangling-paper-${paper.id}-${id}`}
               onClick={() => openPaper(paper)}
               title={`Open ${paperLabel(paper)}`}
               aria-label={`Open paper ${paperLabel(paper)}`}
-              className="shrink-0 font-mono text-[10px] text-warning underline-offset-2 hover:underline"
+              className="shrink-0 font-mono text-xs text-warning underline-offset-2 hover:underline"
             >
               {paper.id}
             </button>
-            <span className="font-mono text-[10px] text-muted-foreground">{id}</span>
+            <span className="font-mono text-xs text-muted-foreground">{id}</span>
             <span className="min-w-0 truncate text-muted-foreground">{paperLabel(paper)}</span>
           </li>
         ))}

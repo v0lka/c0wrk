@@ -137,14 +137,14 @@ function VectorStoreEntryItem({ entry, showScore }: { entry: VectorStoreEntry; s
           </span>
         )}
         {entry.language && (
-          <Badge variant="outline" className="h-4 px-1 text-[10px] leading-none">
+          <Badge variant="outline" className="h-4 px-1 text-xs leading-none">
             {entry.language}
           </Badge>
         )}
         {showScore && entry.vector_rank !== undefined && entry.vector_rank > 0 && (
           <Badge
             variant="outline"
-            className="h-4 px-1 text-[10px] leading-none text-info"
+            className="h-4 px-1 text-xs leading-none text-info"
             title={`Vector rank ${entry.vector_rank}`}
           >
             V#{entry.vector_rank}
@@ -153,7 +153,7 @@ function VectorStoreEntryItem({ entry, showScore }: { entry: VectorStoreEntry; s
         {showScore && entry.lexical_rank !== undefined && entry.lexical_rank > 0 && (
           <Badge
             variant="outline"
-            className="h-4 px-1 text-[10px] leading-none text-warning"
+            className="h-4 px-1 text-xs leading-none text-warning"
             title={`Lexical rank ${entry.lexical_rank}`}
           >
             L#{entry.lexical_rank}
@@ -165,10 +165,10 @@ function VectorStoreEntryItem({ entry, showScore }: { entry: VectorStoreEntry; s
       </div>
 
       {/* Directory path */}
-      {dirPath && <div className="truncate text-[10px] text-muted-foreground mt-0.5 pl-4.5 select-text">{dirPath}</div>}
+      {dirPath && <div className="truncate text-xs text-muted-foreground mt-0.5 pl-4.5 select-text">{dirPath}</div>}
 
       {/* Content preview */}
-      <pre className="mt-1 pl-4.5 text-[10px] leading-4 text-muted-foreground whitespace-pre-wrap break-all line-clamp-4 select-text">
+      <pre className="mt-1 pl-4.5 text-xs leading-4 text-muted-foreground whitespace-pre-wrap break-all line-clamp-4 select-text">
         {preview}
       </pre>
     </button>

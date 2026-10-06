@@ -58,7 +58,7 @@ function SectionField({
 }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">
+      <span className="shrink-0 text-xs uppercase tracking-wide text-muted-foreground">
         {label}
       </span>
       <MiniCodeMirrorField
@@ -96,7 +96,7 @@ export function HypothesisCard({
             onClick={() => onOpenCard(node.id)}
             title={`Open ${node.id} markdown card`}
             aria-label={`Open ${node.id} markdown card`}
-            className="flex shrink-0 items-center gap-1 rounded-sm font-mono text-[10px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            className="flex shrink-0 items-center gap-1 rounded-sm font-mono text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
           >
             {node.id}
             <ExternalLink className="size-3 text-muted-foreground/60" />
@@ -114,7 +114,7 @@ export function HypothesisCard({
         {/* Parents: comma-separated hypothesis ids (canonicalized on save;
             unknown parents are rejected server-side). */}
         <label className="mt-2 flex flex-col gap-1">
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          <span className="text-xs uppercase tracking-wide text-muted-foreground">
             Parents
           </span>
           <input
@@ -126,7 +126,7 @@ export function HypothesisCard({
             className={inputCls}
           />
           {parentIds.length > 0 && (
-            <p className="flex flex-wrap items-baseline gap-1 text-[11px] text-muted-foreground/70">
+            <p className="flex flex-wrap items-baseline gap-1 text-xs text-muted-foreground/70">
               <span>resolves:</span>
               {parentIds.map((p, i) => (
                 <span key={p} className="flex items-baseline">
@@ -135,7 +135,7 @@ export function HypothesisCard({
                     type="button"
                     onClick={() => onOpenCard(p)}
                     title={`Open ${p} markdown card`}
-                    className="rounded-sm font-mono text-[10px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                    className="rounded-sm font-mono text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
                   >
                     {p}
                   </button>
@@ -150,7 +150,7 @@ export function HypothesisCard({
           vocabulary), timebox. */}
       <div className="grid grid-cols-3 gap-2">
         <label className="flex flex-col gap-1">
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          <span className="text-xs uppercase tracking-wide text-muted-foreground">
             Status
           </span>
           {/* Only the current status and its legal transition targets are
@@ -168,7 +168,7 @@ export function HypothesisCard({
           />
         </label>
         <label className="flex flex-col gap-1">
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          <span className="text-xs uppercase tracking-wide text-muted-foreground">
             Decision
           </span>
           {/* The methodology's fixed vocabulary (continue / pivot / kill /
@@ -189,7 +189,7 @@ export function HypothesisCard({
           />
         </label>
         <label className="flex flex-col gap-1">
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          <span className="text-xs uppercase tracking-wide text-muted-foreground">
             Timebox
           </span>
           <input

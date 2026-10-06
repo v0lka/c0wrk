@@ -168,7 +168,7 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
                     >
                       <TabFileIcon path={path} />
                       <span className="truncate text-xs">{name}</span>
-                      {path === activeFile && <span className="ml-auto text-[10px] text-muted-foreground">active</span>}
+                      {path === activeFile && <span className="ml-auto text-xs text-muted-foreground">active</span>}
                     </DropdownMenuItem>
                   );
                 })}

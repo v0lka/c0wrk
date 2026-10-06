@@ -13,7 +13,7 @@ import { GitConfigRiskToast } from '@/components/GitConfigRiskToast'
 import { ExitConfirmDialog } from '@/components/ExitConfirmDialog'
 import { useUpdateChecker } from '@/hooks/useUpdateChecker'
 import { useExitGuard } from '@/hooks/useExitGuard'
-import { useSystemFont } from '@/hooks/useSystemFont'
+import { useSystemFonts } from '@/hooks/useSystemFonts'
 import { useGitFocusRefresh } from '@/hooks/useGitFocusRefresh'
 import { useVectorIndexStatus } from '@/hooks/useVectorIndexStatus'
 import { useAutonomyLoader } from '@/hooks/useAutonomyLoader'
@@ -120,11 +120,11 @@ function App() {
   // transitions never create an event gap; ExitConfirmDialog (rendered in
   // every phase branch) is a pure view over the store this hook writes.
   useExitGuard()
-  // System UI font discovery (gsettings → systemFontStore): feeds the
-  // "follow system font" switch with this session's family. Mounted
-  // unconditionally — it retries on backend:ready, and the store applies
-  // the family to <html> only while the user's opt-in flag is on.
-  useSystemFont()
+  // System font discovery (gsettings → fontStore.setDetectedFonts): feeds the
+  // session's font candidates. Mounted unconditionally — it retries on
+  // backend:ready, and detection never touches <html>; only the persisted
+  // chosen families are ever applied.
+  useSystemFonts()
 
   // ── Tool manager lifecycle ────────────────────────────────────────────
 

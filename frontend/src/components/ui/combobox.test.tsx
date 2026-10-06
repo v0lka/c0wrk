@@ -243,14 +243,39 @@ describe('Combobox selection', () => {
       await openDropdown()
       expect(calls.length).toBeGreaterThan(0)
       const selectedCalls = calls.filter((c) => c.el.getAttribute('data-selected') === 'true')
-      // Radix's Presence can remount the portaled content a few times in
-      // jsdom (animation settle cycles), so the ref callback may fire more
-      // than once — each call is idempotent. What matters: the selected
-      // option is scrolled with block:'nearest'.
+      // The open-scoped latch scrolls once per open; `>=1` tolerates Radix's
+      // Presence remount cycles in jsdom. What matters: the selected option
+      // is scrolled with block:'nearest'.
       expect(selectedCalls.length).toBeGreaterThanOrEqual(1)
       for (const c of selectedCalls) {
         expect(c.args[0]).toEqual({ block: 'nearest' })
       }
+    } finally {
+      delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView
+    }
+  })
+
+  it('does not re-scroll the selected option on unrelated re-renders while open', async () => {
+    // Regression for the self-scrolling dropdown: Radix's useComposedRefs
+    // re-creates the composed content ref on EVERY re-render of the open
+    // menu, so React re-invokes the content ref callback after any
+    // unrelated update; scroll-under-cursor hover events re-render the open
+    // list, and a scroll on every re-attach made it snap back to the
+    // selected option in a self-sustaining loop. The open-scoped latch in
+    // `useSelectedOptionScroll` must keep the selected-scroll to the opening
+    // one, no matter how often the menu re-renders while it stays open.
+    let selectedScrolls = 0
+    HTMLElement.prototype.scrollIntoView = function scrollIntoViewSpy(this: HTMLElement) {
+      if (this.getAttribute('data-selected') === 'true') selectedScrolls += 1
+    }
+    try {
+      render()
+      await openDropdown()
+      const afterOpen = selectedScrolls
+      expect(afterOpen).toBeGreaterThanOrEqual(1)
+      // An external re-render while the menu stays open must not scroll again.
+      render()
+      expect(selectedScrolls).toBe(afterOpen)
     } finally {
       delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView
     }

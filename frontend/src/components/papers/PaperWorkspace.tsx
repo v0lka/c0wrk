@@ -93,8 +93,8 @@ function NotFound({ slug }: { slug: string }) {
       className="flex h-full min-h-0 flex-col items-center justify-center gap-1 px-4 text-center"
     >
       <FileText className="size-5 text-muted-foreground" />
-      <p className="text-[12px] text-foreground">Paper not found in the loaded library</p>
-      <p className="text-[10px] text-muted-foreground">{slug}</p>
+      <p className="text-sm text-foreground">Paper not found in the loaded library</p>
+      <p className="text-xs text-muted-foreground">{slug}</p>
     </div>
   )
 }
@@ -202,7 +202,7 @@ export function PaperWorkspace({ slug }: { slug: string }) {
       {error !== null && (
         <div
           data-testid="paper-workspace-error"
-          className="shrink-0 border-b border-destructive/20 bg-destructive/10 px-2 py-1 text-[11px] text-destructive"
+          className="shrink-0 border-b border-destructive/20 bg-destructive/10 px-2 py-1 text-xs text-destructive"
         >
           {error}
         </div>
@@ -222,7 +222,7 @@ export function PaperWorkspace({ slug }: { slug: string }) {
             title={s.label}
             onClick={() => setSection(s.id)}
             className={cn(
-              'shrink-0 rounded px-1.5 py-0.5 text-[11px] transition-colors',
+              'shrink-0 rounded px-1.5 py-0.5 text-xs transition-colors',
               section === s.id
                 ? 'bg-background text-foreground'
                 : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground',
@@ -262,7 +262,7 @@ export function PaperWorkspace({ slug }: { slug: string }) {
           (comparisons.loading ? (
             <p
               data-testid="paper-compare-loading"
-              className="px-3 py-4 text-center text-[11px] text-muted-foreground"
+              className="px-3 py-4 text-center text-xs text-muted-foreground"
             >
               Loading…
             </p>
@@ -271,7 +271,7 @@ export function PaperWorkspace({ slug }: { slug: string }) {
               {erroredComparisons.length > 0 && (
                 <div
                   data-testid="paper-compare-error"
-                  className="shrink-0 border-b border-destructive/20 bg-destructive/10 px-2 py-1 text-[11px] text-destructive"
+                  className="shrink-0 border-b border-destructive/20 bg-destructive/10 px-2 py-1 text-xs text-destructive"
                 >
                   {erroredComparisons.map((comparison) => (
                     <p key={comparison.slug}>could not read {comparison.slug}.md</p>

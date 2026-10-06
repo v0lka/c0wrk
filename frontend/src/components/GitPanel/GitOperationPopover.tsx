@@ -179,7 +179,7 @@ export function GitOperationPopover({
         )}
         <span className={cn('truncate text-xs font-medium', tone)}>{headline(record)}</span>
       </div>
-      <pre className="custom-scrollbar min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-2 font-mono text-[10px] leading-tight text-muted-foreground">
+      <pre className="custom-scrollbar min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-2 font-mono text-xs leading-tight text-muted-foreground">
         {capturedText(record)}
       </pre>
     </div>,

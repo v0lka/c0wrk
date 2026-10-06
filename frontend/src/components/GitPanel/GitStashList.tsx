@@ -39,7 +39,7 @@ export function GitStashList({ entries, isLoading, busyIndex, onAction }: GitSta
             <span className="block truncate text-xs text-foreground">
               {entry.message || 'WIP'}
             </span>
-            <span className="block font-mono text-[10px] text-muted-foreground">
+            <span className="block font-mono text-xs text-muted-foreground">
               {'stash@{' + entry.index + '}'}
             </span>
           </span>
