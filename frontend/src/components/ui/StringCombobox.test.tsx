@@ -420,3 +420,42 @@ describe('StringCombobox option and input styling hooks', () => {
     expect(input().style.fontFamily).toBe('"Current Font", monospace')
   })
 })
+
+describe('StringCombobox select-only mode (editable=false)', () => {
+  it('renders a read-only field with the select-only affordance', () => {
+    render({ editable: false })
+    expect(input().readOnly).toBe(true)
+  })
+
+  it('typing never fires onChange and never changes the value', () => {
+    // A real browser fires no `input` on a readOnly field; the synthetic
+    // event here proves the component ignores one anyway (autofill guard).
+    render({ editable: false })
+    type('garbage')
+    press('Enter')
+    expect(onChange).not.toHaveBeenCalled()
+    expect(input().value).toBe('beta')
+  })
+
+  it('blur does not commit anything', async () => {
+    render({ editable: false })
+    await blur()
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('the dropdown still opens and picking an option commits', async () => {
+    render({ editable: false })
+    await openDropdown()
+    act(() => {
+      menuItem('gamma').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(onChange).toHaveBeenCalledWith('gamma')
+    expect(input().value).toBe('gamma')
+  })
+
+  it('ArrowDown from the input still opens the menu (keyboard access)', () => {
+    render({ editable: false })
+    press('ArrowDown')
+    expect(document.body.querySelector('[role="menu"]')).not.toBeNull()
+  })
+})

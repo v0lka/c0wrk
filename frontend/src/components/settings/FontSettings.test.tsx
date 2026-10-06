@@ -39,7 +39,7 @@ vi.stubGlobal(
 )
 
 import { FontSettings } from './FontSettings'
-import { useFontStore, FONT_SANS_CSS_VAR, FONT_MONO_CSS_VAR } from '@/stores/fontStore'
+import { useFontStore, FONT_SANS_CSS_VAR, FONT_MONO_CSS_VAR, FONT_SMOOTHING_SANS_CSS_VAR, FONT_SMOOTHING_MONO_CSS_VAR } from '@/stores/fontStore'
 import { FONT_SANS_STACK, FONT_MONO_STACK } from '@/lib/fonts'
 
 let container: HTMLDivElement
@@ -51,11 +51,15 @@ beforeEach(() => {
   useFontStore.setState({
     uiFontFamily: null,
     monoFontFamily: null,
+    uiFontSmoothing: '',
+    monoFontSmoothing: '',
     detectedUIFamily: null,
     detectedMonoFamily: null,
   })
   document.documentElement.style.removeProperty(FONT_SANS_CSS_VAR)
   document.documentElement.style.removeProperty(FONT_MONO_CSS_VAR)
+  document.documentElement.style.removeProperty(FONT_SMOOTHING_SANS_CSS_VAR)
+  document.documentElement.style.removeProperty(FONT_SMOOTHING_MONO_CSS_VAR)
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -87,6 +91,18 @@ function uiInput(): HTMLInputElement {
 
 function monoInput(): HTMLInputElement {
   const el = container.querySelector<HTMLInputElement>('input[aria-label="Monospace font"]')
+  expect(el).not.toBeNull()
+  return el!
+}
+
+function uiSmoothingInput(): HTMLInputElement {
+  const el = container.querySelector<HTMLInputElement>('input[aria-label="Interface font smoothing"]')
+  expect(el).not.toBeNull()
+  return el!
+}
+
+function monoSmoothingInput(): HTMLInputElement {
+  const el = container.querySelector<HTMLInputElement>('input[aria-label="Monospace font smoothing"]')
   expect(el).not.toBeNull()
   return el!
 }
@@ -170,13 +186,29 @@ function monoVar(): string {
   return document.documentElement.style.getPropertyValue(FONT_MONO_CSS_VAR)
 }
 
+function sansSmoothingVar(): string {
+  return document.documentElement.style.getPropertyValue(FONT_SMOOTHING_SANS_CSS_VAR)
+}
+
+function monoSmoothingVar(): string {
+  return document.documentElement.style.getPropertyValue(FONT_SMOOTHING_MONO_CSS_VAR)
+}
+
 describe('FontSettings structure', () => {
-  it('renders exactly two combobox fields and one action button', async () => {
+  it('renders four combobox fields in a 2×2 grid and one action button', async () => {
     await render()
     expect(container.textContent).toContain('Fonts')
     expect(uiInput()).not.toBeNull()
     expect(monoInput()).not.toBeNull()
-    // The two chevron triggers are part of the comboboxes; exactly one
+    expect(uiSmoothingInput()).not.toBeNull()
+    expect(monoSmoothingInput()).not.toBeNull()
+    // The font pickers share the first row; each smoothing knob sits
+    // directly under its font (two rows of two columns).
+    const grid = container.querySelector('[data-testid="font-settings-grid"]')
+    expect(grid).not.toBeNull()
+    expect(grid!.className).toContain('grid-cols-2')
+    expect(grid!.children).toHaveLength(4)
+    // The chevron triggers are part of the comboboxes; exactly one
     // standalone action button remains (asserted inside actionButton()).
     expect(actionButton().textContent).toBe('Use system')
   })
@@ -361,5 +393,84 @@ describe('FontSettings font preview', () => {
     expect(monoInput().style.fontFamily).toBe(`"JetBrains Mono", ${FONT_MONO_STACK}`)
     // null family → the stock sans stack, not an empty/serif fallback.
     expect(uiInput().style.fontFamily).toBe(FONT_SANS_STACK)
+  })
+})
+
+describe('FontSettings smoothing', () => {
+  it('defaults both smoothing knobs to "Not set" (nothing written to <html>)', async () => {
+    await render()
+    expect(uiSmoothingInput().value).toBe('Not set')
+    expect(monoSmoothingInput().value).toBe('Not set')
+    expect(sansSmoothingVar()).toBe('')
+    expect(monoSmoothingVar()).toBe('')
+  })
+
+  it('smoothing fields are select-only: free text cannot reach the store', async () => {
+    await render()
+    expect(uiSmoothingInput().readOnly).toBe(true)
+    expect(monoSmoothingInput().readOnly).toBe(true)
+    // Even a synthetic input event (what autofill would send) must not slip
+    // a value past the select-only field.
+    type('Interface font smoothing', 'url(evil)')
+    press('Interface font smoothing', 'Enter')
+    expect(useFontStore.getState().uiFontSmoothing).toBe('')
+    expect(uiSmoothingInput().value).toBe('Not set')
+  })
+
+  it('offers exactly the four smoothing modes, in order, in both menus', async () => {
+    await render()
+    await openMenu('Interface font smoothing')
+    expect(menuItems()).toEqual(['Not set', 'None (aliased)', 'Grayscale', 'Subpixel (LCD)'])
+    closeMenu()
+    await openMenu('Monospace font smoothing')
+    expect(menuItems()).toEqual(['Not set', 'None (aliased)', 'Grayscale', 'Subpixel (LCD)'])
+  })
+
+  it('picking a mode commits it to the store and maps it onto <html>', async () => {
+    await render()
+    await openMenu('Interface font smoothing')
+    pick('Grayscale')
+    expect(useFontStore.getState().uiFontSmoothing).toBe('grayscale')
+    expect(sansSmoothingVar()).toBe('antialiased')
+    expect(monoSmoothingVar()).toBe('')
+
+    await openMenu('Monospace font smoothing')
+    pick('None (aliased)')
+    expect(useFontStore.getState().monoFontSmoothing).toBe('none')
+    expect(monoSmoothingVar()).toBe('none')
+    // Independence: the mono knob leaves the interface knob untouched.
+    expect(sansSmoothingVar()).toBe('antialiased')
+    expect(uiSmoothingInput().value).toBe('Grayscale')
+    expect(monoSmoothingInput().value).toBe('None (aliased)')
+  })
+
+  it('reverting to "Not set" removes the property (webview default returns)', async () => {
+    useFontStore.getState().setUIFontSmoothing('subpixel')
+    await render()
+    expect(sansSmoothingVar()).toBe('subpixel-antialiased')
+
+    await openMenu('Interface font smoothing')
+    pick('Not set')
+    expect(useFontStore.getState().uiFontSmoothing).toBe('')
+    expect(sansSmoothingVar()).toBe('')
+    expect(uiSmoothingInput().value).toBe('Not set')
+  })
+
+  it('previews each mode on its option label; "Not set" carries no style', async () => {
+    await render()
+    await openMenu('Interface font smoothing')
+    // React sets the vendor property as `WebkitFontSmoothing`; jsdom's CSSOM
+    // has no such property (the style attribute stays empty), so read the
+    // assigned value back through an index signature — the same value a
+    // WebKit view consumes.
+    const styleOf = (label: string): string => {
+      const span = menuItem(label).querySelector<HTMLElement>('span')!
+      const style = span.style as unknown as Record<string, string | undefined>
+      return style.WebkitFontSmoothing ?? ''
+    }
+    expect(styleOf('None (aliased)')).toBe('none')
+    expect(styleOf('Grayscale')).toBe('antialiased')
+    expect(styleOf('Subpixel (LCD)')).toBe('subpixel-antialiased')
+    expect(styleOf('Not set')).toBe('')
   })
 })

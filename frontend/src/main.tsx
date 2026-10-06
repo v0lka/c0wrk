@@ -40,10 +40,12 @@ applyScaleToDocument(useUiScaleStore.getState().scale)
 // the chosen-family model, so it must not linger (and its store no longer
 // exists to rewrite it).
 removeOrphanSystemFontKey()
-applyFontsToDocument(
-  useFontStore.getState().uiFontFamily,
-  useFontStore.getState().monoFontFamily,
-)
+applyFontsToDocument({
+  uiFontFamily: useFontStore.getState().uiFontFamily,
+  monoFontFamily: useFontStore.getState().monoFontFamily,
+  uiSmoothing: useFontStore.getState().uiFontSmoothing,
+  monoSmoothing: useFontStore.getState().monoFontSmoothing,
+})
 
 // Patch @floating-ui/dom's shared platform so popovers/tooltips/menus
 // position correctly under the zoom: floating-ui measures references in

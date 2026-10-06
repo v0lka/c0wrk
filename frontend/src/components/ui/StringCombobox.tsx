@@ -35,6 +35,10 @@ interface StringComboboxProps {
   normalize?: (raw: string) => string
   /** Accessible name for the text input and the chevron button. */
   ariaLabel: string
+  /** When false the field is select-only: the input is read-only and the
+   *  dropdown is the sole input — for enum-valued settings where free text
+   *  is meaningless (font smoothing, …). Default true (free text). */
+  editable?: boolean
   disabled?: boolean
   className?: string
 }
@@ -51,8 +55,10 @@ const MAX_HEIGHT_CLASS = 'max-h-64'
  * same reasons as `Combobox`).
  *
  * The text field is the primary input and accepts ARBITRARY values — the
- * dropdown only offers presets. Local text state mirrors `value` until the
- * user types; commits happen on Enter, blur or preset pick. A commit runs the
+ * dropdown only offers presets — unless `editable` is false: then the field
+ * is select-only (read-only input, the dropdown is the sole input) for
+ * enum-valued settings. Local text state mirrors `value` until the user
+ * types; commits happen on Enter, blur or preset pick. A commit runs the
  * optional `normalize` and is rejected when the result is empty, restoring
  * the last valid value (no onChange). Escape reverts the pending edit without
  * committing.
@@ -68,6 +74,7 @@ export function StringCombobox({
   onChange,
   normalize,
   ariaLabel,
+  editable = true,
   disabled = false,
   className,
   inputStyle,
@@ -138,8 +145,14 @@ export function StringCombobox({
         type="text"
         aria-label={ariaLabel}
         disabled={disabled}
+        readOnly={!editable}
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          // Select-only fields ignore programmatic input events too — a real
+          // browser never fires `input` on a readOnly field, but autofill or
+          // synthetic events could; the dropdown remains the sole input.
+          if (editable) setText(e.target.value)
+        }}
         onKeyDown={handleKeyDown}
         onBlur={() => commit(text)}
         style={inputStyle}

@@ -101,6 +101,35 @@
 }
 
 /* ==========================================================================
+   Font Smoothing Overrides (fontStore)
+   The store writes --font-smoothing-sans / --font-smoothing-mono on <html>;
+   an absent property falls back to `auto` — the webview default, which is
+   the "Not set" option. Sans scopes from the root to the whole document;
+   mono overrides only the monospace surfaces — code and pre blocks
+   (preflight/prose mono), the CodeMirror viewer/mini-field container, the
+   terminal's DOM-rendered text, and the body-level CM autocomplete tooltip.
+   The property is the non-standard -webkit-font-smoothing (the only CSS-level
+   AA lever a webview exposes); a webview that ignores it renders the knob as
+   a no-op, never a breakage.
+   ========================================================================== */
+
+/* A `:root` selector deliberately: the type-scale guard brace-matches the
+   FIRST top-level `html {` rule to exempt the root font-size, and an earlier
+   `html {` here would swallow that exemption. :root is the same element with
+   higher specificity. */
+:root {
+    -webkit-font-smoothing: var(--font-smoothing-sans, auto);
+}
+
+code,
+pre,
+.xterm,
+.cm-viewer-container,
+.cm-tooltip-autocomplete {
+    -webkit-font-smoothing: var(--font-smoothing-mono, auto);
+}
+
+/* ==========================================================================
    Light Theme Override — One Light (OneLite)
    Activated by <html data-theme="light">. Overrides only the color tokens
    declared in @theme above; every utility and component style cascades

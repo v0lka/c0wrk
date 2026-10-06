@@ -11,6 +11,8 @@ import {
   removeOrphanSystemFontKey,
   FONT_SANS_CSS_VAR,
   FONT_MONO_CSS_VAR,
+  FONT_SMOOTHING_SANS_CSS_VAR,
+  FONT_SMOOTHING_MONO_CSS_VAR,
 } from '@/stores/fontStore'
 import { FONT_SANS_STACK, FONT_MONO_STACK } from '@/lib/fonts'
 
@@ -25,31 +27,45 @@ function monoVar(): string {
   return document.documentElement.style.getPropertyValue(FONT_MONO_CSS_VAR)
 }
 
+function sansSmoothingVar(): string {
+  return document.documentElement.style.getPropertyValue(FONT_SMOOTHING_SANS_CSS_VAR)
+}
+
+function monoSmoothingVar(): string {
+  return document.documentElement.style.getPropertyValue(FONT_SMOOTHING_MONO_CSS_VAR)
+}
+
 describe('fontStore', () => {
   beforeEach(() => {
     // Reset to defaults and clear any persisted state between tests.
     useFontStore.setState({
       uiFontFamily: null,
       monoFontFamily: null,
+      uiFontSmoothing: '',
+      monoFontSmoothing: '',
       detectedUIFamily: null,
       detectedMonoFamily: null,
     })
     localStorage.clear()
     document.documentElement.style.removeProperty(FONT_SANS_CSS_VAR)
     document.documentElement.style.removeProperty(FONT_MONO_CSS_VAR)
+    document.documentElement.style.removeProperty(FONT_SMOOTHING_SANS_CSS_VAR)
+    document.documentElement.style.removeProperty(FONT_SMOOTHING_MONO_CSS_VAR)
   })
 
-  it('defaults to null everywhere (default index.css stacks, nothing detected)', () => {
+  it('defaults to null families and empty smoothing everywhere', () => {
     const s = useFontStore.getState()
     expect(s.uiFontFamily).toBeNull()
     expect(s.monoFontFamily).toBeNull()
+    expect(s.uiFontSmoothing).toBe('')
+    expect(s.monoFontSmoothing).toBe('')
     expect(s.detectedUIFamily).toBeNull()
     expect(s.detectedMonoFamily).toBeNull()
   })
 
   describe('applyFontsToDocument', () => {
     it('writes the sans family quoted and prepended to the default stack', () => {
-      applyFontsToDocument('Noto Sans', null)
+      applyFontsToDocument({ uiFontFamily: 'Noto Sans', monoFontFamily: null, uiSmoothing: '', monoSmoothing: '' })
       // Double quotes keep a multi-word family name one CSS token; the stock
       // stack rides along so a missing font degrades to the default, not to
       // a bare serif fallback.
@@ -58,29 +74,73 @@ describe('fontStore', () => {
     })
 
     it('writes the mono family independently of the sans one', () => {
-      applyFontsToDocument('Noto Sans', 'JetBrains Mono')
+      applyFontsToDocument({ uiFontFamily: 'Noto Sans', monoFontFamily: 'JetBrains Mono', uiSmoothing: '', monoSmoothing: '' })
       expect(sansVar()).toBe(`"Noto Sans", ${FONT_SANS_STACK}`)
       expect(monoVar()).toBe(`"JetBrains Mono", ${FONT_MONO_STACK}`)
     })
 
     it('removes the property when the family is null (default stack applies)', () => {
-      applyFontsToDocument('Noto Sans', 'JetBrains Mono')
-      applyFontsToDocument(null, 'JetBrains Mono')
+      applyFontsToDocument({ uiFontFamily: 'Noto Sans', monoFontFamily: 'JetBrains Mono', uiSmoothing: '', monoSmoothing: '' })
+      applyFontsToDocument({ uiFontFamily: null, monoFontFamily: 'JetBrains Mono', uiSmoothing: '', monoSmoothing: '' })
       expect(sansVar()).toBe('')
       expect(monoVar()).toBe(`"JetBrains Mono", ${FONT_MONO_STACK}`)
-      applyFontsToDocument(null, null)
+      applyFontsToDocument({ uiFontFamily: null, monoFontFamily: null, uiSmoothing: '', monoSmoothing: '' })
       expect(monoVar()).toBe('')
+    })
+
+    it('maps the smoothing modes onto -webkit-font-smoothing values', () => {
+      applyFontsToDocument({ uiFontFamily: null, monoFontFamily: null, uiSmoothing: 'grayscale', monoSmoothing: 'subpixel' })
+      expect(sansSmoothingVar()).toBe('antialiased')
+      expect(monoSmoothingVar()).toBe('subpixel-antialiased')
+
+      applyFontsToDocument({ uiFontFamily: null, monoFontFamily: null, uiSmoothing: 'none', monoSmoothing: 'grayscale' })
+      expect(sansSmoothingVar()).toBe('none')
+      expect(monoSmoothingVar()).toBe('antialiased')
+    })
+
+    it('removes the smoothing property for the "Not set" default', () => {
+      applyFontsToDocument({ uiFontFamily: null, monoFontFamily: null, uiSmoothing: 'grayscale', monoSmoothing: 'none' })
+      expect(sansSmoothingVar()).toBe('antialiased')
+      applyFontsToDocument({ uiFontFamily: null, monoFontFamily: null, uiSmoothing: '', monoSmoothing: '' })
+      expect(sansSmoothingVar()).toBe('')
+      expect(monoSmoothingVar()).toBe('')
+    })
+
+    it('collapses an unrecognized persisted smoothing to "Not set" on apply', () => {
+      // A hand-edited localStorage must not inject an arbitrary CSS value:
+      // the unknown mode degrades to the default (property removed).
+      applyFontsToDocument({
+        uiFontFamily: null,
+        monoFontFamily: null,
+        uiSmoothing: 'url(evil)' as never,
+        monoSmoothing: '' ,
+      })
+      expect(sansSmoothingVar()).toBe('')
+      expect(monoSmoothingVar()).toBe('')
+    })
+
+    it('writes/removes all four properties together (full-set contract)', () => {
+      applyFontsToDocument({ uiFontFamily: 'Noto Sans', monoFontFamily: null, uiSmoothing: 'none', monoSmoothing: '' })
+      expect(sansVar()).toBe(`"Noto Sans", ${FONT_SANS_STACK}`)
+      expect(sansSmoothingVar()).toBe('none')
+
+      // A later call with defaults must not leave stale properties behind.
+      applyFontsToDocument({ uiFontFamily: null, monoFontFamily: null, uiSmoothing: '', monoSmoothing: '' })
+      expect(sansVar()).toBe('')
+      expect(sansSmoothingVar()).toBe('')
     })
 
     it('is idempotent (safe to call repeatedly)', () => {
       expect(() => {
-        applyFontsToDocument('Cantarell', 'JetBrains Mono')
-        applyFontsToDocument('Cantarell', 'JetBrains Mono')
-        applyFontsToDocument(null, null)
-        applyFontsToDocument(null, null)
+        applyFontsToDocument({ uiFontFamily: 'Cantarell', monoFontFamily: 'JetBrains Mono', uiSmoothing: 'grayscale', monoSmoothing: 'none' })
+        applyFontsToDocument({ uiFontFamily: 'Cantarell', monoFontFamily: 'JetBrains Mono', uiSmoothing: 'grayscale', monoSmoothing: 'none' })
+        applyFontsToDocument({ uiFontFamily: null, monoFontFamily: null, uiSmoothing: '', monoSmoothing: '' })
+        applyFontsToDocument({ uiFontFamily: null, monoFontFamily: null, uiSmoothing: '', monoSmoothing: '' })
       }).not.toThrow()
       expect(sansVar()).toBe('')
       expect(monoVar()).toBe('')
+      expect(sansSmoothingVar()).toBe('')
+      expect(monoSmoothingVar()).toBe('')
     })
 
     it('is a no-op without document', () => {
@@ -88,8 +148,10 @@ describe('fontStore', () => {
       const originalDocument = g.document
       try {
         delete g.document
-        expect(() => applyFontsToDocument('Noto Sans', 'JetBrains Mono')).not.toThrow()
-        expect(() => applyFontsToDocument(null, null)).not.toThrow()
+        expect(() =>
+          applyFontsToDocument({ uiFontFamily: 'Noto Sans', monoFontFamily: 'JetBrains Mono', uiSmoothing: 'none', monoSmoothing: '' }),
+        ).not.toThrow()
+        expect(() => applyFontsToDocument({ uiFontFamily: null, monoFontFamily: null, uiSmoothing: '', monoSmoothing: '' })).not.toThrow()
       } finally {
         g.document = originalDocument
       }
@@ -122,6 +184,15 @@ describe('fontStore', () => {
       expect(sansVar()).toBe(`"Noto Sans", ${FONT_SANS_STACK}`)
     })
 
+    it('a family change preserves the already-applied smoothing', () => {
+      useFontStore.getState().setUIFontSmoothing('grayscale')
+      useFontStore.getState().setMonoFontSmoothing('none')
+      useFontStore.getState().setUIFontFamily('Cantarell')
+      useFontStore.getState().setMonoFontFamily('JetBrains Mono')
+      expect(sansSmoothingVar()).toBe('antialiased')
+      expect(monoSmoothingVar()).toBe('none')
+    })
+
     it('setDetectedFonts records the candidates but never touches <html>', () => {
       useFontStore.getState().setDetectedFonts('Noto Sans', 'JetBrains Mono')
       expect(useFontStore.getState().detectedUIFamily).toBe('Noto Sans')
@@ -138,16 +209,56 @@ describe('fontStore', () => {
     })
   })
 
+  describe('smoothing actions', () => {
+    it('setUIFontSmoothing applies before set and is independent of mono', () => {
+      useFontStore.getState().setUIFontSmoothing('grayscale')
+      expect(sansSmoothingVar()).toBe('antialiased')
+      expect(monoSmoothingVar()).toBe('')
+      expect(useFontStore.getState().uiFontSmoothing).toBe('grayscale')
+
+      useFontStore.getState().setMonoFontSmoothing('none')
+      expect(monoSmoothingVar()).toBe('none')
+      expect(sansSmoothingVar()).toBe('antialiased')
+      expect(useFontStore.getState().monoFontSmoothing).toBe('none')
+    })
+
+    it('every mode maps to its -webkit-font-smoothing value', () => {
+      const sans = useFontStore.getState()
+      sans.setUIFontSmoothing('none')
+      expect(sansSmoothingVar()).toBe('none')
+      useFontStore.getState().setUIFontSmoothing('subpixel')
+      expect(sansSmoothingVar()).toBe('subpixel-antialiased')
+      useFontStore.getState().setUIFontSmoothing('grayscale')
+      expect(sansSmoothingVar()).toBe('antialiased')
+    })
+
+    it('reverting to the default removes the property', () => {
+      useFontStore.getState().setUIFontSmoothing('subpixel')
+      expect(sansSmoothingVar()).toBe('subpixel-antialiased')
+      useFontStore.getState().setUIFontSmoothing('')
+      expect(sansSmoothingVar()).toBe('')
+      expect(useFontStore.getState().uiFontSmoothing).toBe('')
+    })
+
+    it('collapses an unrecognized value to the default', () => {
+      useFontStore.getState().setUIFontSmoothing('url(x)' as never)
+      expect(useFontStore.getState().uiFontSmoothing).toBe('')
+      expect(sansSmoothingVar()).toBe('')
+    })
+  })
+
   describe('persistence', () => {
-    it('persists exactly {uiFontFamily, monoFontFamily} under c0wrk-fonts v1', () => {
+    it('persists exactly the families and smoothing modes under c0wrk-fonts v2', () => {
       useFontStore.getState().setUIFontFamily('Noto Sans')
       useFontStore.getState().setMonoFontFamily('JetBrains Mono')
+      useFontStore.getState().setUIFontSmoothing('grayscale')
+      useFontStore.getState().setMonoFontSmoothing('none')
       useFontStore.getState().setDetectedFonts('DejaVu Sans', 'Cascadia Code')
 
       const raw = localStorage.getItem(STORE_KEY)
       expect(raw).not.toBeNull()
       // zustand's persist middleware wraps the payload as {state, version};
-      // partialize must keep `state` limited to the two chosen families (the
+      // partialize must keep `state` limited to the four chosen values (the
       // session detections and the actions never hit storage).
       const parsed = JSON.parse(raw as string) as {
         state: Record<string, unknown>
@@ -156,15 +267,58 @@ describe('fontStore', () => {
       expect(parsed.state).toEqual({
         uiFontFamily: 'Noto Sans',
         monoFontFamily: 'JetBrains Mono',
+        uiFontSmoothing: 'grayscale',
+        monoFontSmoothing: 'none',
       })
-      expect(parsed.version).toBe(1)
+      expect(parsed.version).toBe(2)
     })
 
-    it('rehydrates the persisted families synchronously on first access (startup contract)', async () => {
+    it('rehydrates the persisted values synchronously on first access (startup contract)', async () => {
       // Seed the payload a previous run persisted, then re-import the store
       // module fresh — this is what main.tsx relies on: getState() at module
-      // top level already carries the persisted families, so the startup
+      // top level already carries the persisted values, so the startup
       // apply lands before React's first render.
+      localStorage.setItem(
+        STORE_KEY,
+        JSON.stringify({
+          state: {
+            uiFontFamily: 'Cantarell',
+            monoFontFamily: 'JetBrains Mono',
+            uiFontSmoothing: 'none',
+            monoFontSmoothing: 'subpixel',
+          },
+          version: 2,
+        }),
+      )
+      vi.resetModules()
+      const fresh = await import('@/stores/fontStore')
+
+      const s = fresh.useFontStore.getState()
+      expect(s.uiFontFamily).toBe('Cantarell')
+      expect(s.monoFontFamily).toBe('JetBrains Mono')
+      expect(s.uiFontSmoothing).toBe('none')
+      expect(s.monoFontSmoothing).toBe('subpixel')
+      // Session detections never persist: a fresh launch starts undetected.
+      expect(s.detectedUIFamily).toBeNull()
+      expect(s.detectedMonoFamily).toBeNull()
+
+      // The startup-apply pattern from main.tsx paints all four overrides.
+      fresh.applyFontsToDocument({
+        uiFontFamily: s.uiFontFamily,
+        monoFontFamily: s.monoFontFamily,
+        uiSmoothing: s.uiFontSmoothing,
+        monoSmoothing: s.monoFontSmoothing,
+      })
+      expect(sansVar()).toBe(`"Cantarell", ${FONT_SANS_STACK}`)
+      expect(monoVar()).toBe(`"JetBrains Mono", ${FONT_MONO_STACK}`)
+      expect(sansSmoothingVar()).toBe('none')
+      expect(monoSmoothingVar()).toBe('subpixel-antialiased')
+    })
+
+    it('a v1 payload (pre-smoothing) rehydrates with the smoothing defaults', async () => {
+      // Additive-field migration: v2 only appended keys, so a v1 payload
+      // shallow-merges over the initial state and the new fields fall back
+      // to their '' defaults.
       localStorage.setItem(
         STORE_KEY,
         JSON.stringify({
@@ -178,14 +332,8 @@ describe('fontStore', () => {
       const s = fresh.useFontStore.getState()
       expect(s.uiFontFamily).toBe('Cantarell')
       expect(s.monoFontFamily).toBe('JetBrains Mono')
-      // Session detections never persist: a fresh launch starts undetected.
-      expect(s.detectedUIFamily).toBeNull()
-      expect(s.detectedMonoFamily).toBeNull()
-
-      // The startup-apply pattern from main.tsx paints both overrides.
-      fresh.applyFontsToDocument(s.uiFontFamily, s.monoFontFamily)
-      expect(sansVar()).toBe(`"Cantarell", ${FONT_SANS_STACK}`)
-      expect(monoVar()).toBe(`"JetBrains Mono", ${FONT_MONO_STACK}`)
+      expect(s.uiFontSmoothing).toBe('')
+      expect(s.monoFontSmoothing).toBe('')
     })
   })
 

@@ -16,6 +16,52 @@ import { FONT_SANS_STACK, FONT_MONO_STACK, composeFontFamily } from '@/lib/fonts
 export const FONT_SANS_CSS_VAR = '--font-sans'
 export const FONT_MONO_CSS_VAR = '--font-mono'
 
+/**
+ * CSS custom properties carrying the smoothing overrides consumed by the
+ * font-smoothing rules in index.css (`html` for sans, the monospace-surface
+ * rule list for mono) through `var(..., auto)`: an absent property resolves
+ * to the `auto` fallback — the webview default, which is exactly the "Not
+ * set" behavior — so the store removes the property instead of ever writing
+ * a sentinel value.
+ */
+export const FONT_SMOOTHING_SANS_CSS_VAR = '--font-smoothing-sans'
+export const FONT_SMOOTHING_MONO_CSS_VAR = '--font-smoothing-mono'
+
+/**
+ * A font smoothing (anti-aliasing) preference. The empty string is the "Not
+ * set" default — the webview's own text rendering is left untouched. The
+ * three modes map onto the non-standard `-webkit-font-smoothing` property,
+ * the only CSS-level AA lever a webview exposes; where the webview ignores
+ * the property the knob renders as a harmless no-op (see {@link smoothingToCss}).
+ */
+export type FontSmoothingSetting = '' | 'none' | 'grayscale' | 'subpixel'
+
+const SMOOTHING_SETTINGS: readonly FontSmoothingSetting[] = ['', 'none', 'grayscale', 'subpixel']
+
+/** Collapses anything unrecognized (a hand-edited localStorage) to "Not set". */
+function normalizeSmoothing(smoothing: string | null): FontSmoothingSetting {
+  return SMOOTHING_SETTINGS.includes(smoothing as FontSmoothingSetting)
+    ? (smoothing as FontSmoothingSetting)
+    : ''
+}
+
+/**
+ * The `-webkit-font-smoothing` value for a setting; `null` = write nothing
+ * (the "Not set" default — the index.css `var(..., auto)` fallback applies).
+ */
+export function smoothingToCss(smoothing: FontSmoothingSetting): string | null {
+  switch (smoothing) {
+    case 'none':
+      return 'none'
+    case 'grayscale':
+      return 'antialiased'
+    case 'subpixel':
+      return 'subpixel-antialiased'
+    default:
+      return null
+  }
+}
+
 /** Storage key mirrors the persisted-store convention (c0wrk-*). */
 const STORAGE_KEY = 'c0wrk-fonts'
 
@@ -29,11 +75,16 @@ const LEGACY_STORAGE_KEY = 'c0wrk-follow-system-font'
 
 interface FontState {
   /** The user's UI (sans) font family. `null` = c0wrk's default — the
-   *  `--font-sans` stack from index.css, left untouched on <html>. The ONLY
-   *  persisted fields of this store are this and {@link monoFontFamily}. */
+   *  `--font-sans` stack from index.css, left untouched on <html>. */
   uiFontFamily: string | null
   /** The user's monospaced font family. `null` = default index.css stack. */
   monoFontFamily: string | null
+  /** The user's smoothing preference for the UI (sans) font. `''` = "Not
+   *  set" — the webview's default anti-aliasing applies. Persisted. */
+  uiFontSmoothing: FontSmoothingSetting
+  /** The user's smoothing preference for the monospaced surfaces. `''` =
+   *  "Not set". Persisted. */
+  monoFontSmoothing: FontSmoothingSetting
   /** The desktop environment's UI font family detected this session (null
    *  until a successful fetch or when the desktop reports none).
    *  Session-scoped by design — a stale persisted detection would survive a
@@ -49,6 +100,8 @@ interface FontState {
 interface FontActions {
   setUIFontFamily: (family: string | null) => void
   setMonoFontFamily: (family: string | null) => void
+  setUIFontSmoothing: (smoothing: FontSmoothingSetting) => void
+  setMonoFontSmoothing: (smoothing: FontSmoothingSetting) => void
   setDetectedFonts: (ui: string | null, mono: string | null) => void
 }
 
@@ -67,29 +120,55 @@ function normalizeFamily(family: string | null): string | null {
 }
 
 /**
- * Writes the font overrides onto <html> as inline {@link FONT_SANS_CSS_VAR} /
- * {@link FONT_MONO_CSS_VAR} custom properties — each the double-quoted
- * family prepended to the stock stack from `lib/fonts.ts` — or removes the
- * property when the family is `null` (the default stack from index.css then
- * applies untouched). A no-op when the document is unavailable (e.g. during
- * tests). Safe to call repeatedly.
- *
- * Only the family is carried — never a size or weight: c0wrk owns its type
- * scale (14px base + the UI Scale setting), and the icon font (`--font-icon`,
- * SauceCodePro NF) stays untouched.
+ * The full override set painted onto <html>. A `null` family or an `''`
+ * smoothing means "leave the webview/index.css default untouched" — the
+ * property is removed, never overwritten with a sentinel.
  */
-export function applyFontsToDocument(uiFontFamily: string | null, monoFontFamily: string | null): void {
+export interface FontOverrides {
+  uiFontFamily: string | null
+  monoFontFamily: string | null
+  uiSmoothing: FontSmoothingSetting
+  monoSmoothing: FontSmoothingSetting
+}
+
+/**
+ * Writes the font overrides onto <html> as inline custom properties — the
+ * double-quoted family prepended to the stock stack from `lib/fonts.ts`,
+ * and the `-webkit-font-smoothing` modes — or removes a property when its
+ * value is the default (`null` family / `''` smoothing), so index.css's
+ * untouched rules apply. A no-op when the document is unavailable (e.g.
+ * during tests). Safe to call repeatedly. Every caller passes the FULL
+ * override set: the four properties are written or removed together, so a
+ * partial apply would reset the untouched knobs to their defaults.
+ *
+ * Only families and smoothing are carried — never a size or weight: c0wrk
+ * owns its type scale (14px base + the UI Scale setting), and the icon font
+ * (`--font-icon`, SauceCodePro NF) stays untouched.
+ */
+export function applyFontsToDocument(overrides: FontOverrides): void {
   if (typeof document === 'undefined') return
   const root = document.documentElement
-  if (uiFontFamily !== null) {
-    root.style.setProperty(FONT_SANS_CSS_VAR, composeFontFamily(uiFontFamily, FONT_SANS_STACK))
+  if (overrides.uiFontFamily !== null) {
+    root.style.setProperty(FONT_SANS_CSS_VAR, composeFontFamily(overrides.uiFontFamily, FONT_SANS_STACK))
   } else {
     root.style.removeProperty(FONT_SANS_CSS_VAR)
   }
-  if (monoFontFamily !== null) {
-    root.style.setProperty(FONT_MONO_CSS_VAR, composeFontFamily(monoFontFamily, FONT_MONO_STACK))
+  if (overrides.monoFontFamily !== null) {
+    root.style.setProperty(FONT_MONO_CSS_VAR, composeFontFamily(overrides.monoFontFamily, FONT_MONO_STACK))
   } else {
     root.style.removeProperty(FONT_MONO_CSS_VAR)
+  }
+  const sansSmoothing = smoothingToCss(normalizeSmoothing(overrides.uiSmoothing))
+  if (sansSmoothing !== null) {
+    root.style.setProperty(FONT_SMOOTHING_SANS_CSS_VAR, sansSmoothing)
+  } else {
+    root.style.removeProperty(FONT_SMOOTHING_SANS_CSS_VAR)
+  }
+  const monoSmoothing = smoothingToCss(normalizeSmoothing(overrides.monoSmoothing))
+  if (monoSmoothing !== null) {
+    root.style.setProperty(FONT_SMOOTHING_MONO_CSS_VAR, monoSmoothing)
+  } else {
+    root.style.removeProperty(FONT_SMOOTHING_MONO_CSS_VAR)
   }
 }
 
@@ -115,21 +194,54 @@ export const useFontStore = create<FontState & FontActions>()(
     (set, get) => ({
       uiFontFamily: null,
       monoFontFamily: null,
+      uiFontSmoothing: '',
+      monoFontSmoothing: '',
       detectedUIFamily: null,
       detectedMonoFamily: null,
 
       setUIFontFamily: (family) => {
         const normalized = normalizeFamily(family)
         // Apply before persisting so the effect on <html> is immediate —
-        // there is no apply/save step anywhere in the UI.
-        applyFontsToDocument(normalized, get().monoFontFamily)
+        // there is no apply/save step anywhere in the UI. The full override
+        // set is always passed (see applyFontsToDocument).
+        applyFontsToDocument({
+          uiFontFamily: normalized,
+          monoFontFamily: get().monoFontFamily,
+          uiSmoothing: get().uiFontSmoothing,
+          monoSmoothing: get().monoFontSmoothing,
+        })
         set({ uiFontFamily: normalized })
       },
 
       setMonoFontFamily: (family) => {
         const normalized = normalizeFamily(family)
-        applyFontsToDocument(get().uiFontFamily, normalized)
+        applyFontsToDocument({
+          uiFontFamily: get().uiFontFamily,
+          monoFontFamily: normalized,
+          uiSmoothing: get().uiFontSmoothing,
+          monoSmoothing: get().monoFontSmoothing,
+        })
         set({ monoFontFamily: normalized })
+      },
+
+      setUIFontSmoothing: (smoothing) => {
+        applyFontsToDocument({
+          uiFontFamily: get().uiFontFamily,
+          monoFontFamily: get().monoFontFamily,
+          uiSmoothing: normalizeSmoothing(smoothing),
+          monoSmoothing: get().monoFontSmoothing,
+        })
+        set({ uiFontSmoothing: normalizeSmoothing(smoothing) })
+      },
+
+      setMonoFontSmoothing: (smoothing) => {
+        applyFontsToDocument({
+          uiFontFamily: get().uiFontFamily,
+          monoFontFamily: get().monoFontFamily,
+          uiSmoothing: get().uiFontSmoothing,
+          monoSmoothing: normalizeSmoothing(smoothing),
+        })
+        set({ monoFontSmoothing: normalizeSmoothing(smoothing) })
       },
 
       // Detection only records the session candidates — it deliberately never
@@ -143,12 +255,19 @@ export const useFontStore = create<FontState & FontActions>()(
     }),
     {
       name: STORAGE_KEY,
-      version: 1,
-      // Bump version and implement migration when adding/removing/renaming persisted fields.
+      // v2 added the two smoothing fields — additive: a v1 payload without
+      // them shallow-merges over the '' defaults, so there is no value
+      // migration to run.
+      version: 2,
       migrate: (persistedState, _version) => persistedState,
-      // Persist the chosen families only: the session detections and the
-      // actions never hit storage.
-      partialize: (state) => ({ uiFontFamily: state.uiFontFamily, monoFontFamily: state.monoFontFamily }),
+      // Persist the chosen families and smoothing modes only: the session
+      // detections and the actions never hit storage.
+      partialize: (state) => ({
+        uiFontFamily: state.uiFontFamily,
+        monoFontFamily: state.monoFontFamily,
+        uiFontSmoothing: state.uiFontSmoothing,
+        monoFontSmoothing: state.monoFontSmoothing,
+      }),
     },
   ),
 )

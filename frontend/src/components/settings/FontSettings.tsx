@@ -3,7 +3,11 @@ import { Button } from '@/components/ui/button'
 import { StringCombobox } from '@/components/ui/StringCombobox'
 import { listFontFamilies } from '@/api/fonts'
 import { composeFontFamily, FONT_MONO_STACK, FONT_SANS_STACK } from '@/lib/fonts'
-import { useFontStore } from '@/stores/fontStore'
+import {
+  useFontStore,
+  smoothingToCss,
+  type FontSmoothingSetting,
+} from '@/stores/fontStore'
 
 /**
  * Sentinel option standing for "c0wrk's default stack" — the store's `null`.
@@ -11,6 +15,28 @@ import { useFontStore } from '@/stores/fontStore'
  * component (it is mapped back to `null` before it reaches the store).
  */
 const DEFAULT_OPTION = 'Default'
+
+/**
+ * Font smoothing (anti-aliasing) choices, offered in this order. The labels
+ * are the committed combobox strings (`StringCombobox` options are bare
+ * strings); they map onto the store's `FontSmoothingSetting` here and never
+ * leak outward. "Not set" is the `''` default — the webview's own rendering
+ * stands, nothing is written to CSS. The select-only combobox (editable=
+ * false) drives these: free text is meaningless for an enum.
+ */
+const SMOOTHING_CHOICES: ReadonlyArray<{ label: string; value: FontSmoothingSetting }> = [
+  { label: 'Not set', value: '' },
+  { label: 'None (aliased)', value: 'none' },
+  { label: 'Grayscale', value: 'grayscale' },
+  { label: 'Subpixel (LCD)', value: 'subpixel' },
+]
+
+const SMOOTHING_LABELS: readonly string[] = SMOOTHING_CHOICES.map((c) => c.label)
+
+/** Store value → dropdown label; an unrecognized value reads as "Not set". */
+function smoothingLabel(value: FontSmoothingSetting): string {
+  return SMOOTHING_CHOICES.find((c) => c.value === value)?.label ?? 'Not set'
+}
 
 /**
  * Typed-text normalization mirroring `fontStore`'s `normalizeFamily` (quotes
@@ -42,14 +68,15 @@ function buildOptions(current: string | null, detected: string | null, families:
 
 /**
  * Appearance-tab "Fonts" block: a StringCombobox for each of the UI and
- * monospaced families plus a "Use system" shortcut, over the persisted
- * fontStore. Like UIScaleSelector there is no apply/save step — the store
- * applies the family to <html> the moment a value commits. Every option —
- * and the current value in the closed field — renders in its own typeface
- * (composeFontFamily preview); the interface picker enumerates every
- * installed family while the monospace picker lists only the families
- * fontconfig tags as monospace (`fc-list :mono`, the ListFontFamilies
- * monospace flag).
+ * monospaced families, a select-only smoothing (anti-aliasing) combobox for
+ * each, and a "Use system" shortcut, over the persisted fontStore. Like
+ * UIScaleSelector there is no apply/save step — the store applies the value
+ * to <html> the moment a commit lands. The four pickers sit in a 2×2 grid:
+ * the font names render in their own typeface (composeFontFamily preview),
+ * each smoothing knob sits directly under its font and previews its own
+ * mode; the interface picker enumerates every installed family while the
+ * monospace picker lists only the families fontconfig tags as monospace
+ * (`fc-list :mono`, the ListFontFamilies monospace flag).
  *
  * The block ALWAYS renders: the comboboxes are free-text fields, so choosing
  * a family works on every OS — where detection/enumeration come up empty the
@@ -60,10 +87,14 @@ function buildOptions(current: string | null, detected: string | null, families:
 export function FontSettings() {
   const uiFontFamily = useFontStore((s) => s.uiFontFamily)
   const monoFontFamily = useFontStore((s) => s.monoFontFamily)
+  const uiFontSmoothing = useFontStore((s) => s.uiFontSmoothing)
+  const monoFontSmoothing = useFontStore((s) => s.monoFontSmoothing)
   const detectedUIFamily = useFontStore((s) => s.detectedUIFamily)
   const detectedMonoFamily = useFontStore((s) => s.detectedMonoFamily)
   const setUIFontFamily = useFontStore((s) => s.setUIFontFamily)
   const setMonoFontFamily = useFontStore((s) => s.setMonoFontFamily)
+  const setUIFontSmoothing = useFontStore((s) => s.setUIFontSmoothing)
+  const setMonoFontSmoothing = useFontStore((s) => s.setMonoFontSmoothing)
 
   // Installed families load once per mount: every family for the interface
   // picker, only the fontconfig-mono families for the monospace picker.
@@ -120,6 +151,20 @@ export function FontSettings() {
     [setMonoFontFamily],
   )
 
+  const handleUISmoothingChange = useCallback(
+    (label: string) => {
+      setUIFontSmoothing(SMOOTHING_CHOICES.find((c) => c.label === label)?.value ?? '')
+    },
+    [setUIFontSmoothing],
+  )
+
+  const handleMonoSmoothingChange = useCallback(
+    (label: string) => {
+      setMonoFontSmoothing(SMOOTHING_CHOICES.find((c) => c.label === label)?.value ?? '')
+    },
+    [setMonoFontSmoothing],
+  )
+
   // Enabled once ANY family was detected; clicking applies what was found —
   // both families when the desktop reported both, the one it did otherwise.
   const handleUseSystem = useCallback(() => {
@@ -161,6 +206,14 @@ export function FontSettings() {
     () => ({ fontFamily: composeFontFamily(monoFontFamily, FONT_MONO_STACK) }),
     [monoFontFamily],
   )
+  // Each smoothing option previews its own mode through the very property
+  // the knob drives (`-webkit-font-smoothing`) — subtle at this size, but
+  // the same previews-itself contract as the font pickers above. "Not set"
+  // carries no style: it stands for "nothing written to CSS".
+  const smoothingItemStyle = useCallback((label: string): CSSProperties => {
+    const css = smoothingToCss(SMOOTHING_CHOICES.find((c) => c.label === label)?.value ?? '')
+    return css === null ? {} : { WebkitFontSmoothing: css }
+  }, [])
 
   return (
     <div className="flex flex-col gap-3" data-testid="font-settings">
@@ -176,8 +229,12 @@ export function FontSettings() {
           Use system
         </Button>
       </div>
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-1">
+      {/* 2×2 grid: the font pickers share the first row, and each smoothing
+          knob sits directly under its font. The StringComboboxes default to
+          min-w-72 for standalone use — min-w-0 here lets them shrink to the
+          half-column. */}
+      <div className="grid grid-cols-2 gap-3" data-testid="font-settings-grid">
+        <div className="flex min-w-0 flex-col gap-1">
           <span className="text-xs text-muted-foreground">Interface font</span>
           <StringCombobox
             value={uiFontFamily ?? DEFAULT_OPTION}
@@ -187,9 +244,10 @@ export function FontSettings() {
             ariaLabel="Interface font"
             inputStyle={uiInputStyle}
             itemStyle={uiItemStyle}
+            className="min-w-0"
           />
         </div>
-        <div className="flex flex-col gap-1">
+        <div className="flex min-w-0 flex-col gap-1">
           <span className="text-xs text-muted-foreground">Monospace font</span>
           <StringCombobox
             value={monoFontFamily ?? DEFAULT_OPTION}
@@ -199,6 +257,31 @@ export function FontSettings() {
             ariaLabel="Monospace font"
             inputStyle={monoInputStyle}
             itemStyle={monoItemStyle}
+            className="min-w-0"
+          />
+        </div>
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="text-xs text-muted-foreground">Interface smoothing</span>
+          <StringCombobox
+            value={smoothingLabel(uiFontSmoothing)}
+            options={SMOOTHING_LABELS}
+            onChange={handleUISmoothingChange}
+            ariaLabel="Interface font smoothing"
+            editable={false}
+            itemStyle={smoothingItemStyle}
+            className="min-w-0"
+          />
+        </div>
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="text-xs text-muted-foreground">Monospace smoothing</span>
+          <StringCombobox
+            value={smoothingLabel(monoFontSmoothing)}
+            options={SMOOTHING_LABELS}
+            onChange={handleMonoSmoothingChange}
+            ariaLabel="Monospace font smoothing"
+            editable={false}
+            itemStyle={smoothingItemStyle}
+            className="min-w-0"
           />
         </div>
       </div>
