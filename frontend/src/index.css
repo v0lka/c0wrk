@@ -504,6 +504,7 @@ body {
 /* Code blocks */
 .prose pre {
     font-family: var(--font-mono);
+    font-size: var(--text-sm);
     background-color: var(--tw-prose-pre-bg);
     border: 1px solid var(--color-border);
     line-height: 1.2;
