@@ -1,5 +1,4 @@
 import { Check } from 'lucide-react'
-import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import type { BranchBase } from '@/types/models'
 
@@ -10,24 +9,30 @@ interface BaseSelectorRowProps {
   onSelect: (ref: string) => void
 }
 
-const typeBadgeClass: Record<string, string> = {
-  local: 'text-primary',
-  remote: 'text-info',
-  tag: 'text-warning',
-  commit: 'text-muted-foreground',
-}
-
-const typeLabel: Record<string, string> = {
-  local: 'branch',
-  remote: 'remote',
-  tag: 'tag',
-  commit: 'commit',
+/**
+ * Per-type presentation, single-sourced so a new `BranchBase['type']` variant
+ * cannot half-land in parallel records: the badge class, the lowercase badge
+ * word and the title-case word for the row title. Unknown types fail soft to
+ * the raw type string / muted badge.
+ */
+const typeMeta: Record<string, { badge: string; label: string; title: string }> = {
+  local: { badge: 'text-primary', label: 'branch', title: 'Branch' },
+  remote: { badge: 'text-info', label: 'remote', title: 'Remote' },
+  tag: { badge: 'text-warning', label: 'tag', title: 'Tag' },
+  commit: { badge: 'text-muted-foreground', label: 'commit', title: 'Commit' },
 }
 
 /**
  * A single selectable row in BaseSelector. Shows the ref label, an
  * optional commit subject (Detail), a type badge, and a check mark
  * when selected. The current branch is annotated "(current)".
+ *
+ * Tooltips are native-only (`title` attributes): the row button carries the
+ * commit subject when one exists, else a type-prefixed ref name ("Branch
+ * main"); the detail span mirrors its own subject. Two native titles never
+ * stack — hovering the detail shows the innermost (the detail's own title) —
+ * unlike the former Radix-tooltip-inside-titled-button shape, which raised
+ * both popups at once.
  */
 export function BaseSelectorRow({
   base,
@@ -35,11 +40,15 @@ export function BaseSelectorRow({
   isCurrent,
   onSelect,
 }: BaseSelectorRowProps) {
+  // `detail` is an empty string (not null) when a base has no subject — the
+  // detail span's own render gate is truthiness, so the title must match it
+  // (?? would keep the empty string and produce an empty tooltip).
+  const rowTitle = base.detail || `${typeMeta[base.type]?.title ?? base.type} ${base.label}`
   return (
     <button
       type="button"
       onClick={() => onSelect(base.ref)}
-      title={base.label}
+      title={rowTitle}
       className={cn(
         'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors',
         'focus:outline-none focus:ring-1 focus:ring-ring',
@@ -51,10 +60,10 @@ export function BaseSelectorRow({
       <span
         className={cn(
           'shrink-0 text-xs uppercase tracking-wide',
-          typeBadgeClass[base.type] ?? 'text-muted-foreground',
+          typeMeta[base.type]?.badge ?? 'text-muted-foreground',
         )}
       >
-        {typeLabel[base.type] ?? base.type}
+        {typeMeta[base.type]?.label ?? base.type}
       </span>
       <span className="flex min-w-0 flex-1 items-center gap-1">
         <span
@@ -71,22 +80,12 @@ export function BaseSelectorRow({
           )}
         </span>
         {base.detail && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                {base.detail}
-              </span>
-            </TooltipTrigger>
-            <TooltipContent
-              side="top"
-              align="start"
-              sideOffset={4}
-              collisionPadding={16}
-              className="max-w-sm"
-            >
-              {base.detail}
-            </TooltipContent>
-          </Tooltip>
+          <span
+            className="min-w-0 flex-1 truncate text-muted-foreground"
+            title={base.detail}
+          >
+            {base.detail}
+          </span>
         )}
       </span>
       {selected && <Check className="size-4 shrink-0" />}
