@@ -3,12 +3,15 @@ import { create } from 'zustand'
 /**
  * Experimental-features switch, loaded once from GetConfig and updated in place
  * when the user toggles it in Settings. Its gated features are the E2S
- * execution mode and the embedded local model's frontend surfaces (the
+ * execution mode, the embedded local model's frontend surfaces (the
  * Settings → LLM block plus the model's entries in BOTH model pickers — the
  * default-model picker and the chat toolbar's ModelCombobox; backend RPCs stay
- * ungated). They read availability reactively so hiding/revealing happens
- * within the same session without a reload. Model Profiles is a first-class
- * feature and is NOT gated by this switch.
+ * ungated), and two worktree/focus controls hidden for VISIBILITY only (their
+ * functionality is untouched): the chat toolbar's branch/workspace picker
+ * (`SessionWorkspaceSelector`) and the Git panel's focus crosshair
+ * (`GitFocusButton`). They read availability reactively so hiding/revealing
+ * happens within the same session without a reload. Model Profiles is a
+ * first-class feature and is NOT gated by this switch.
  *
  * This switch is the SOLE availability gate for E2S — there is no
  * per-feature config toggle. E2S availability is exactly `enabled`, which is

@@ -11,6 +11,7 @@ import { useProjectStore, selectIsNoProject } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useSessionDraftStore } from '@/stores/sessionDraftStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useExperimentalStore } from '@/stores/experimentalStore'
 
 /**
  * The chat toolbar's session-workspace selector (ADR-080 draft UX).
@@ -26,6 +27,12 @@ import { useGitPanelStore } from '@/stores/gitPanelStore'
  *   workspace read-only — the branch/workspace is immutable for an existing
  *   session (chosen only at creation).
  *
+ * The whole picker/display is an EXPERIMENTAL surface behind the master
+ * experimental switch (`experimental.enabled`): it renders nothing while that
+ * switch is off. This is a VISIBILITY gate only — the underlying
+ * draft/pinned-workspace functionality is untouched, and the hooks run before
+ * the early return so draft retirement still works while hidden.
+ *
  * Hidden entirely in CHAT (No Project) mode and while no project is active.
  */
 export function SessionWorkspaceSelector({ disabled = false }: { disabled?: boolean }) {
@@ -40,6 +47,11 @@ export function SessionWorkspaceSelector({ disabled = false }: { disabled?: bool
   const isGitRepo = useGitPanelStore(
     (s) => s.isGitRepo && s.gitRepoProjectId === activeProjectId,
   )
+  // The master experimental switch — this picker/display is an experimental
+  // surface, so it stays invisible in default installs (read reactively, so
+  // flipping the switch in Settings reveals it without a reload). Read from
+  // the store directly (no config fetch side effect here).
+  const experimentalEnabled = useExperimentalStore((s) => s.enabled)
 
   // Draft retirement: selecting an existing session (or landing in another
   // project) abandons the pending draft — the workspace is a
@@ -54,6 +66,11 @@ export function SessionWorkspaceSelector({ disabled = false }: { disabled?: bool
       clearDraft()
     }
   }, [activeSessionId, activeProjectId])
+
+  // Experimental gate (visibility only): hide the picker/display while the
+  // master switch is off. Placed after the hooks above so draft retirement
+  // keeps running even when the control is hidden.
+  if (!experimentalEnabled) return null
 
   if (activeProjectId === null || isNoProject) return null
 
