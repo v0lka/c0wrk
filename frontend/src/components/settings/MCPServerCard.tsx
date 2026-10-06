@@ -1,8 +1,17 @@
-import { ChevronDown, ChevronRight, CheckCircle2, AlertCircle, TriangleAlert, Loader2, Pencil, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, CheckCircle2, AlertCircle, TriangleAlert, CircleOff, Loader2, Pencil, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import type { MCPServerStatus, ToolInfo } from '@/types/models'
+import { Combobox } from '@/components/ui/combobox'
+import type { MCPServerConfig, MCPServerStatus, ToolInfo } from '@/types/models'
+
+type ServerMode = NonNullable<MCPServerConfig['mode']>
+const MODE_OPTIONS = ['auto', 'manual', 'disabled'].map((value) => ({ value, label: value }))
+const MODE_EXPLANATIONS: Record<ServerMode, string> = {
+  auto: 'Connects at startup; tools are always available.',
+  manual: 'Connects at startup; tools are available for a task only after a /server-name or /mcp: server-name mention.',
+  disabled: 'Never connects or starts a process; configuration is kept.',
+}
 
 interface MCPServerCardProps {
   server: MCPServerStatus
@@ -11,9 +20,12 @@ interface MCPServerCardProps {
   onToggleExpand: () => void
   onEdit: () => void
   onDelete: () => void
+  mode: ServerMode
+  isSaving: boolean
+  onModeChange: (mode: ServerMode) => void
 }
 
-export function MCPServerCard({ server, tools, expanded, onToggleExpand, onEdit, onDelete }: MCPServerCardProps) {
+export function MCPServerCard({ server, tools, expanded, onToggleExpand, onEdit, onDelete, mode, isSaving, onModeChange }: MCPServerCardProps) {
   // The "_gateway" sentinel is a synthetic gateway-wide entry produced by
   // GetMCPStatus — NOT a real, user-configured server. It surfaces two
   // transient states and must never reach the editable/deletable Collapsible:
@@ -58,13 +70,29 @@ export function MCPServerCard({ server, tools, expanded, onToggleExpand, onEdit,
               ? <ChevronDown className="h-4 w-4 text-muted-foreground" />
               : <ChevronRight className="h-4 w-4 text-muted-foreground" />
             }
-            {server.connected
-              ? (server.unhealthy
-                  ? <TriangleAlert className="h-4 w-4 text-warning" />
-                  : <CheckCircle2 className="h-4 w-4 text-success" />)
-              : <AlertCircle className="h-4 w-4 text-destructive" />
+            {server.mode === 'disabled'
+              ? <CircleOff className="h-4 w-4 text-muted-foreground" />
+              : server.connected
+                ? (server.unhealthy
+                    ? <TriangleAlert className="h-4 w-4 text-warning" />
+                    : <CheckCircle2 className="h-4 w-4 text-success" />)
+                : <AlertCircle className="h-4 w-4 text-destructive" />
             }
             <span className="font-medium text-sm flex-1">{server.name}</span>
+            {/* Mode badge: only the non-default modes carry one — "auto" is
+                the implicit default and would be noise on every card. Manual
+                is the mention-driven mode, disabled is inert-by-design (and
+                renders neutrally: no red state, see the icon above). */}
+            {server.mode === 'manual' && (
+              <Badge variant="outline" className="text-xs text-info border-info/50 gap-1">
+                manual
+              </Badge>
+            )}
+            {server.mode === 'disabled' && (
+              <Badge variant="outline" className="text-xs text-muted-foreground gap-1">
+                disabled
+              </Badge>
+            )}
             {server.unhealthy && (
               <Badge variant="outline" className="text-xs border-warning text-warning gap-1">
                 <TriangleAlert className="h-3 w-3" />
@@ -105,8 +133,8 @@ export function MCPServerCard({ server, tools, expanded, onToggleExpand, onEdit,
               </div>
             )}
 
-            <div className="flex gap-2 pt-2">
-              <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); onEdit() }}>
+            <div className="flex flex-wrap items-center gap-2 pt-2">
+              <Button variant="outline" size="sm" disabled={isSaving} onClick={(e) => { e.stopPropagation(); onEdit() }}>
                 <Pencil className="h-3 w-3 mr-1" />
                 Edit
               </Button>
@@ -114,11 +142,23 @@ export function MCPServerCard({ server, tools, expanded, onToggleExpand, onEdit,
                 variant="outline"
                 size="sm"
                 className="text-destructive hover:bg-destructive/10"
+                disabled={isSaving}
                 onClick={(e) => { e.stopPropagation(); onDelete() }}
               >
                 <Trash2 className="h-3 w-3 mr-1" />
                 Delete
               </Button>
+              <Combobox
+                ariaLabel={`${server.name} activation mode`}
+                value={mode}
+                options={MODE_OPTIONS}
+                disabled={isSaving}
+                onChange={(value) => onModeChange(value as ServerMode)}
+                fitToOptions
+                contentClassName="min-w-36"
+                className="h-8 px-2 text-xs"
+              />
+              <span className="text-xs text-muted-foreground flex-1 min-w-[180px]">{MODE_EXPLANATIONS[mode]}</span>
             </div>
           </div>
         </CollapsibleContent>

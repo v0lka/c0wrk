@@ -2,7 +2,7 @@
 
 ## Role
 
-Defines the Appearance-tab **Fonts** settings: the user picks the app's UI (sans) and monospaced font families — typed freely, chosen from the session's system-font detection, or picked from the families installed on the host — plus a font-smoothing (anti-aliasing) mode for each scope, and the exact mechanism that carries the choices into the WebKitGTK webview as `@theme` token overrides and `-webkit-font-smoothing` variables ([ADR-076](../../decisions/076-user-font-selection.md), [ADR-077](../../decisions/077-font-smoothing-selection.md)); the desktop's own configuration survives as *candidate discovery* feeding a `Use system` shortcut, not as a mode.
+Defines the Appearance-tab **Fonts** settings: the user picks the app's UI (sans) and monospaced font families — typed freely, chosen from the session's system-font detection, or picked from the families installed on the host — plus a font-smoothing (anti-aliasing) mode for each scope, and the exact mechanism that carries the choices into the WebKitGTK webview as `@theme` token overrides and `-webkit-font-smoothing` variables ([ADR-078](../../decisions/078-user-font-selection.md), [ADR-079](../../decisions/079-font-smoothing-selection.md)); the desktop's own configuration survives as *candidate discovery* feeding a `Use system` shortcut, not as a mode.
 
 ## Key Files
 
@@ -110,7 +110,7 @@ The xterm terminal stays the one literal-stack consumer: it measures glyphs on c
 - **Smoothing is best-effort by nature.** `-webkit-font-smoothing` is the only in-app lever; a webview that defers to the OS/fontconfig rendering configuration renders the knob as a no-op. c0wrk never writes fontconfig, gsettings, or webview configuration.
 - **Detection/enumeration are Linux probes; the feature is not.** GNOME/gsettings and fontconfig are the only readers implemented; every other platform reports "not detected / unavailable" while the settings remain fully usable (typed + Default).
 - **Restart to pick up desktop changes.** Detection is read once per launch; the UI says so.
-- **Legacy key retired, not migrated.** A `c0wrk-follow-system-font` user returns to the default typeface — a boolean maps to no family ([ADR-076](../../decisions/076-user-font-selection.md)).
+- **Legacy key retired, not migrated.** A `c0wrk-follow-system-font` user returns to the default typeface — a boolean maps to no family ([ADR-078](../../decisions/078-user-font-selection.md)).
 - **No live repaint from detection.** Detections are stored candidates only; `<html>` moves exclusively through the chosen-family actions.
 
 ## Error Handling
@@ -146,8 +146,8 @@ The xterm terminal stays the one literal-stack consumer: it measures glyphs on c
 
 ## Related Specs
 
-- [../../decisions/077-font-smoothing-selection.md](../../decisions/077-font-smoothing-selection.md) — the smoothing decision: the CSS lever, per-surface scoping, and the best-effort stance
-- [../../decisions/076-user-font-selection.md](../../decisions/076-user-font-selection.md) — the five decisions this feature implements
+- [../../decisions/079-font-smoothing-selection.md](../../decisions/079-font-smoothing-selection.md) — the smoothing decision: the CSS lever, per-surface scoping, and the best-effort stance
+- [../../decisions/078-user-font-selection.md](../../decisions/078-user-font-selection.md) — the five decisions this feature implements
 - [../../domains/fonts.md](../../domains/fonts.md) — the installed-family enumeration pipeline behind `ListFontFamilies` (what is installed — different question from what the desktop configured)
 - [stores.md](stores.md) — `fontStore` in the store catalog
 - [ui-scale.md](ui-scale.md) — owns the type scale this feature deliberately does not touch (14px base + zoom)

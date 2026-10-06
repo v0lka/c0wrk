@@ -57,6 +57,7 @@ type failureCall struct {
 }
 
 type mockTaskPersistence struct {
+	mockMCPMentions
 	mu sync.Mutex
 
 	newTaskCalls    []newTaskCall

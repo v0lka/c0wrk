@@ -961,12 +961,41 @@ body {
    tooltip renders in a body-level container (tooltips({parent}) in
    cmChatExtensions.ts). */
 
+/* Separate slash capability groups without adding fake selectable rows. */
+.cm-tooltip-autocomplete completion-section:not(:first-child) {
+    margin-top: 0.5rem;
+    border-top: 1px solid var(--color-border);
+    padding-top: 0.5rem;
+}
+
 /* Skill items: no icon, bold label, description at 30% opacity */
 .cm-tooltip-autocomplete li.skill-item .cm-completionLabel {
     font-weight: 600;
 }
 
 .cm-tooltip-autocomplete li.skill-item .cm-completionDetail {
+    opacity: 0.3;
+}
+
+/* Subagent items (unified /-list, issue #110): same shape as skill items,
+   label tinted with the agent highlight color used by /agent chips */
+.cm-tooltip-autocomplete li.agent-item .cm-completionLabel {
+    font-weight: 600;
+    color: var(--color-highlight);
+}
+
+.cm-tooltip-autocomplete li.agent-item .cm-completionDetail {
+    opacity: 0.3;
+}
+
+/* MCP server items (unified /-list): label tinted with the info color used
+   by /mcp chips — a third visual kind alongside agents and skills */
+.cm-tooltip-autocomplete li.mcp-item .cm-completionLabel {
+    font-weight: 600;
+    color: var(--color-info);
+}
+
+.cm-tooltip-autocomplete li.mcp-item .cm-completionDetail {
     opacity: 0.3;
 }
 

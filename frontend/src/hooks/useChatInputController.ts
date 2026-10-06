@@ -8,12 +8,14 @@ import { useAttachmentsStore, useHasActiveUploads } from '@/stores/attachmentsSt
 import { useMessageSender } from '@/hooks/useMessageSender'
 import { useChatEditor, type ChatEditorAPI } from '@/hooks/useChatEditor'
 import { usePasteHandler } from '@/hooks/usePasteHandler'
-import { extractSkillRefs, extractAgentRefs, filterKnownAgentRefs } from '@/lib/parseReferences'
+import { extractRefs, partitionRefs } from '@/lib/parseReferences'
 import { optimizePrompt } from '@/api/prompt'
 import { pauseSession, resumeSession } from '@/api/chat'
 import { computeChatInputDisabled, computeChatPlaceholder } from '@/lib/chatInputLock'
 import { createSession } from '@/api/sessions'
 import { listAgents } from '@/api/agents'
+import { listSkills } from '@/api/skills'
+import { getMCPMentionableServers, mentionableMCPNames } from '@/api/mcp'
 import { logger } from '@/lib/logger'
 
 // useChatInputController owns the editor lifecycle, send/optimize state and
@@ -269,37 +271,73 @@ export function useChatInputController(): ChatInputController {
         .setSendError(originSessionId, 'Processing attachments — send unlocks when they finish')
       return
     }
-    const skills = extractSkillRefs(messageText)
-    const rawAgentRefs = extractAgentRefs(messageText)
-    // Clear the editor SYNCHRONOUSLY before any async work. An #mention
-    // message awaits listAgents() below; clearing first means a second Enter
-    // press during that fetch reads an empty editor and returns early instead
-    // of duplicating the message/task (the catch restores text on failure).
+    // Unified /-refs (issue #110 + the MCP mention flow): extract every slash
+    // ref (plain and collision-qualified), then partition them against the
+    // three catalogs.
+    const refs = extractRefs(messageText)
+    // Clear the editor SYNCHRONOUSLY before any async work. A message with
+    // plain /-refs awaits the catalogs below; clearing first means a second
+    // Enter press during that fetch reads an empty editor and returns early
+    // instead of duplicating the message/task (the catch — and the ambiguity
+    // no-op — restore text on failure).
     editor.clear()
     useChatInputStore.getState().setSendError(originSessionId ?? NULL_SESSION_KEY, null)
-    // Only #mentions of real Subagent Profiles are threaded/stripped, so
-    // extraction stays consistent with the (catalog-filtered) #-autocomplete.
-    // Without this, common coding-domain prose like "#42" (issue/PR numbers)
-    // would be stripped from the message text (data loss) and injected as a
-    // delegation directive for a nonexistent agent (prompt noise). The fetch
-    // is gated on a non-empty candidate list so the common no-mention send
-    // adds no round-trip; listAgents() is backed by a server-side cache.
-    let agents = rawAgentRefs
-    if (rawAgentRefs.length > 0) {
-      let knownNames: string[] = []
-      try {
-        knownNames = (await listAgents()).map((a) => a.name)
-      } catch (err) {
-        logger.warn('Could not load agent catalog for ref validation; no agents threaded:', err)
-      }
-      agents = filterKnownAgentRefs(rawAgentRefs, knownNames)
+    // Partitioning plain refs needs ALL THREE catalogs (kind resolution +
+    // collision detection across agents, skills and MCP servers). Qualified
+    // refs carry an explicit kind and skip the fetch. The fetch is gated on a
+    // non-empty plain-ref list so the common no-mention send adds no
+    // round-trip; all three RPCs are cheap (two server-cached, one
+    // secret-free name+mode listing).
+    let agentNames: string[] = []
+    let skillNames: string[] = []
+    let mcpNames: string[] = []
+    if (refs.some((r) => !r.qualified)) {
+      const [agentCatalog, skillCatalog, mcpCatalog] = await Promise.all([
+        listAgents()
+          .then((l) => l.map((a) => a.name))
+          .catch((err) => {
+            logger.warn('Could not load agent catalog for ref partitioning; treating plain refs as skills:', err)
+            return []
+          }),
+        listSkills()
+          .then((l) => l.map((s) => s.name))
+          .catch((err) => {
+            logger.warn('Could not load skill catalog for ref partitioning; treating plain refs as skills:', err)
+            return []
+          }),
+        getMCPMentionableServers()
+          .then(mentionableMCPNames)
+          .catch((err) => {
+            logger.warn('Could not load MCP servers for ref partitioning; treating plain refs as skills:', err)
+            return []
+          }),
+      ])
+      agentNames = agentCatalog
+      skillNames = skillCatalog
+      mcpNames = mcpCatalog
+    }
+    const { agents, skills, mcpServers, ambiguous } = partitionRefs(refs, agentNames, skillNames, mcpNames)
+    // A plain /name present in MORE THAN ONE catalog cannot be partitioned
+    // without guessing. The send is a no-op: nothing is activated or
+    // requested, the text is preserved verbatim, and a hint points at the
+    // qualified form (the user re-sends after qualifying). Mirrors the
+    // attachment-lock no-op: surface WHY via the dismissible send-error
+    // hint, restore text.
+    if (ambiguous.length > 0) {
+      const list = ambiguous.map((name) => `/${name}`).join(', ')
+      useChatInputStore.getState().setSendError(
+        originSessionId ?? NULL_SESSION_KEY,
+        `Ambiguous mention: ${list} matches more than one catalog — use /agent: ${ambiguous[0]}, /skill: ${ambiguous[0]} or /mcp: ${ambiguous[0]}`,
+      )
+      writeTextToSession(originSessionId, messageText)
+      return
     }
     try {
-      // Pin the send to the ORIGIN session: the #agent catalog await above
-      // means the user may have switched sessions since pressing Enter —
-      // sending into the now-active session would misroute the message
-      // (and bypass the origin's in-flight-uploads guard checked above).
-      await send(messageText, skills, agents, originSessionId)
+      // Pin the send to the ORIGIN session: the catalog await above means
+      // the user may have switched sessions since pressing Enter — sending
+      // into the now-active session would misroute the message (and bypass
+      // the origin's in-flight-uploads guard checked above).
+      await send(messageText, skills, agents, mcpServers, originSessionId)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       // Both the error and the restored text are keyed to the session the

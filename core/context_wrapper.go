@@ -107,6 +107,32 @@ func UserAgentsFromContext(ctx context.Context) []string {
 	return nil
 }
 
+// userMCPServersKey is the context key for MCP server names the user
+// explicitly mentioned for this task via /-mentions (the plain form
+// "/server-name" or the collision-qualified form "/mcp: server-name"). It
+// carries []string and drives the soft "## Requested MCP Servers" prompt
+// section. A mentioned manual-mode server is enabled for the WHOLE task: the
+// allowed set is auto ∪ (manual ∩ mentioned), enforced by the descriptor
+// filter and the registry's dispatch gate (see core/orchestrator_mcp.go and
+// core/tools/mcp_gate.go). Populated from HandleOptions.UserMCPServers by
+// enrichAgentContext.
+type userMCPServersKey struct{}
+
+// WithUserMCPServers returns a new context with the explicitly-mentioned MCP
+// server names attached.
+func WithUserMCPServers(ctx context.Context, servers []string) context.Context {
+	return context.WithValue(ctx, userMCPServersKey{}, servers)
+}
+
+// UserMCPServersFromContext extracts the explicitly-mentioned MCP server
+// names from the context. Returns nil if not found.
+func UserMCPServersFromContext(ctx context.Context) []string {
+	if v, ok := ctx.Value(userMCPServersKey{}).([]string); ok {
+		return v
+	}
+	return nil
+}
+
 // CoreContextManager wraps github.com/v0lka/sp4rk/memory.ContextWindow to implement the core-level
 // ContextManager interface which adds SetTask and SetPlan(*Plan).
 type CoreContextManager struct {

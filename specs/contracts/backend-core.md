@@ -12,8 +12,9 @@
 | `Orchestrator`        | core           | core → backend | Per-session orchestration engine      |
 | `BuilderConfig`       | core           | backend → core | Configuration transfer object         |
 | `HandleResult`        | core           | core → backend | Orchestration output                  |
-| `HandleOptions`       | core           | backend → core | Model override, reasoning effort, user skill overrides, user agent refs (`#agent`), session plans dir, pending attachments (docs), pending images, review-mode flag, goal flag + budget override, E2S flag, task ID (continuation) |
+| `HandleOptions`       | core           | backend → core | Model override, reasoning effort, user skill overrides, user agent refs (`/agent`), user MCP server refs (`/server`, ADR-077), session plans dir, pending attachments (docs), pending images, review-mode flag, goal flag + budget override, E2S flag, task ID (continuation) |
 | `Emitter`             | core           | backend → core | Event emission interface              |
+| `TaskPersistence`     | core           | backend → core | Durable task state, including context-aware `PersistMCPMentions` / `LoadMCPMentions` |
 | `Blackboard`          | github.com/v0lka/sp4rk/orchestration (direct) | core → backend | Task state (for persistence)          |
 | `RoutingDecision`     | github.com/v0lka/sp4rk/agent/router | core → backend | Routing classification                |
 | `Plan`, `PlanStep`    | github.com/v0lka/sp4rk/orchestration (direct) | core → backend | Plan structure                        |
@@ -83,6 +84,17 @@ type OrchestratorFactory func(
 
 The factory captures `*OrchestratorBuilder` and calls `Build()` per session. The `stepDumpTracker` is created by the session manager from the session's dump directory (`~/.c0wrk/projects/<pid>/<sid>/dumps/steps/`) when DEBUG-level logging is enabled. If nil, per-step dumps are a no-op.
 
+`Build()` wires `OrchestratorConfig.MCPServerModesResolver` to the builder's
+current MCP policy snapshot. `NewOrchestratorBuilder` initializes that snapshot
+from the accepted config; `ReconfigureMCP` publishes an independent replacement
+under the builder lock before waiting for gateway startup or reconciling network
+connections, so accepted policy applies even when reconciliation fails. Existing
+session orchestrators read the provider once at each new-task, continuation, or
+resume entry. Catalog filtering and dispatch inherit that entry's context
+snapshot throughout execution; subsequent settings changes apply at the next
+entry without pushing overrides into session orchestrators. Direct constructors
+with a nil resolver use `OrchestratorConfig.MCPServerModes` as a static fallback.
+
 ## Session Manager Ownership
 
 ```
@@ -93,6 +105,31 @@ backend.Application
        ├─ Manages session lifecycle (create/delete/rename)
        └─ Owns event persistence (SQLite)
 ```
+
+`TaskPersistence.PersistMCPMentions(ctx, taskID, names)` atomically unions selected
+server names; `LoadMCPMentions(ctx, taskID)` returns ordered durable intent and
+propagates read failures. `TaskStoreAdapter` forwards the context and errors to
+`TaskStore.SaveMCPMentions` / `LoadMCPMentions`. SQLite owns the additive
+`task_mcp_mentions` table (task/server primary key, task FK cascade); forks copy
+its rows under remapped task IDs in the fork transaction, independently of the
+source. Deleting a task, including via session deletion, cascades its mention
+rows. Names survive pause, continuation and restart; legacy tasks with no rows
+load successfully as an empty set. Only names are persisted, not tool catalogs
+or effective permissions; an in-memory cache is not authorization authority.
+
+`prepareTaskMCP` uses the blackboard's actual task ID on both `HandleMessage`
+and `Resume`: load intent, transactionally union accepted additions, reload the
+committed union, then replace both mention and gate context values even when
+empty. Persistence is synchronous and error-returning rather than queued
+best-effort blackboard persistence. A persistent task always completes this
+preparation before routing, any resumed plan/delegate wave, or an LLM turn;
+explicitly nonpersistent orchestrators alone retain ephemeral task-local intent.
+
+Each send/resume samples the builder's copied current mode snapshot once after
+durable task-intent preparation. The wave and main loop share the resulting
+context, including delegated subagents, E2S catalogs and independent verifiers;
+accepted settings changes take effect at the next entry. The provider wiring
+and direct-constructor fallback are defined in [Factory Pattern](#factory-pattern).
 
 The session manager never touches core internals — it treats the Orchestrator as a black box with `HandleMessage()` and `Resume()` as its entry points.
 
@@ -112,7 +149,8 @@ The emitter implementation lives in `backend/session/` (not in core).
 | ---------------------- | -------------- | ---------------------------------------- |
 | User message           | backend → core | `string` via `HandleMessage()`           |
 | User-specified skills  | backend → core | `HandleOptions.UserSkills`               |
-| User-specified agents  | backend → core | `HandleOptions.UserAgents` (`#agent` refs) |
+| User-specified agents  | backend → core | `HandleOptions.UserAgents` (`/agent` refs) |
+| User-mentioned MCP servers | backend → core | `HandleOptions.UserMCPServers` (`/server` refs; task-wide per-server mode gating + the soft "Requested MCP Servers" directive, ADR-077) |
 | Model override         | backend → core | `HandleOptions.ModelOverride`            |
 | Reasoning effort       | backend → core | `HandleOptions.ReasoningEffort`          |
 | Session plans dir      | backend → core | `HandleOptions.SessionPlansDir`          |
@@ -138,11 +176,14 @@ The emitter implementation lives in `backend/session/` (not in core).
 - Core returns `error` from `HandleMessage()` / `Resume()`
 - Backend wraps with descriptive context (no `session %s:` prefix idiom — uses general `fmt.Errorf("failed to <action>: %w", err)`)
 - Backend decides whether to emit error to frontend or retry
+- `ErrMCPAuthorizationState` preserves the task for retry: durable load/write failures stop execution before any wave or LLM turn and are excluded from continuation-to-fresh fallback
 
 ## Breaking Change Checklist
 
 - Adding a field to `BuilderConfig` → update `backend/configadapter.go`
 - Adding a new per-tool truncation entry → update `backend/configadapter.go` `convertTruncationMap()` (maps to `BuilderConfig.ToolLimits.PerToolTruncation`, not `BuiltinToolsConfig`)
+- Changing `TaskPersistence.PersistMCPMentions` / `LoadMCPMentions` → update `TaskStore.SaveMCPMentions` / `LoadMCPMentions`, `TaskStoreAdapter`, store implementations and test doubles; preserve synchronous errors, monotonic union, fork remapping and deletion cascades
+- Changing MCP task preparation or mode-snapshot wiring → update [../domains/tool-system/mcp-gateway.md](../domains/tool-system/mcp-gateway.md) and [../domains/session-lifecycle.md](../domains/session-lifecycle.md); retain the shared gate before resumed execution and `ErrMCPAuthorizationState` exclusion from fresh fallback
 - Changing `OrchestratorFactory` signature → update factory closure in `backend/application.go` and all test factory mocks
 - Changing `HandleResult` fields → update session event emission in backend
 - Changing `Emitter` interface → update backend emitter implementation

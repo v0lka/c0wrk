@@ -7,6 +7,7 @@ The orchestration domain coordinates the full lifecycle of a user request: class
 ## Key Files
 
 - `core/orchestrator.go` — top-level Orchestrator (HandleMessage, Resume, `ResolveVisionOptions` — per-call markitdown vision params for the currently active model, consumed by the backend attachment flow)
+- `core/orchestrator_mcp_prepare.go` — durable task-name preparation and one current mode snapshot before new-task, continuation or resume execution; see [../tool-system/mcp-gateway.md](../tool-system/mcp-gateway.md)
 - `core/orchestrator_handle.go` — HandleMessage body: router → Conductor launch, `prepareRequestContext` (task-context enrichment incl. the markitdown vision resolver, attached on HandleMessage and Resume; flows through to subagent delegations)
 - `core/orchestrator_goal.go` — goal mode: deriveGoal, runGoalLoop, resumeGoalLoop, runGoalTurns, budgets, anti-spin (see [../goal-mode.md](../goal-mode.md))
 - `core/orchestrator_e2s.go` — E2S mode entry: runE2SLoop (context/launcher wiring, Σ persistence via `task_e2s_state`, resume checkpoints), hooks the `e2s_state` snapshots
@@ -98,7 +99,8 @@ type RoutingDecision struct {
 type HandleOptions struct {
     TaskID             string                     // non-empty = continuation of existing task
     UserSkills         []string                   // explicitly requested by user via /skill refs (bypass router)
-    UserAgents         []string                   // explicitly requested by user via #agent-name mentions (drives the "Requested Subagents" prompt directive)
+    UserAgents         []string                   // explicitly requested by user via /-mentions (plain or /agent:-qualified; drives the "Requested Subagents" prompt directive)
+    UserMCPServers     []string                   // MCP servers explicitly mentioned by user via /-mentions (plain or /mcp:-qualified); enables manual-mode servers task-wide and drives the soft "Requested MCP Servers" prompt directive
     ModelOverride      string                     // non-empty → use this model for all LLM calls; empty → router default
     ReasoningEffort    string                     // non-empty → native reasoning value for all LLM calls; empty → use family default
     SessionPlansDir    string                     // directory for session-scoped plan files (used by declare_plan tool)
@@ -133,8 +135,14 @@ HandleMessage(ctx, message, sessionID, opts)
 │     ├─ opts.TaskID == "": create new BB via bbFactory
 │     └─ opts.TaskID != "": restore BB from persistence
 │
+├─ 1a. prepareTaskMCP using the actual BB task ID:
+│     load durable server names → union accepted additions → reload union →
+│     one current-mode snapshot → replace mention/gate context (empty included)
+│     Failure returns ErrMCPAuthorizationState before execution; no memory fallback.
+│
 ├─ 2. Load available tools from registry (filtered via ListFiltered
-│     to exclude disabled tools in No Project mode)
+│     to exclude disabled tools in No Project mode, then stripGatedMCPTools
+│     using the prepared context for MCP source filtering)
 │
 ├─ E2S MODE (checked BEFORE goal mode): when opts.E2S, dispatch to
 │     runE2SLoop instead of the route→Conductor flow below. The run
@@ -242,6 +250,7 @@ There is no `executionMode` toggle. The Conductor chooses its own granularity ba
 - The Conductor always has `ask_user`, `declare_plan`, `execute_plan`, `reflect`, `delegate`, `cancel_delegation`, `finish` available (they are `system`-group tools — bypass policy; ADR-024).
 - `finish` with pending async delegations is rejected: the executor's finish guard (`Executor.SetFinishGuard`, set by the sp4rk Conductor) returns an error while async delegations are pending, and the executor injects a nudge and retries rather than accepting finish. Finish is accepted only once every pending delegation completes or is cancelled via `cancel_delegation` — there is no implicit join, nothing waits.
 - `ExecutionResult.Status` is the typed success contract: success | partial | failed | aborted | cancelled | paused. Callers consult it instead of parsing Output.
+- MCP selections are durable, monotonic task-owned server names; both HandleMessage and Resume prepare names and one current mode snapshot before execution (Resume before its plan/delegate wave), sharing the gate with E2S, subagents, verifier and registry dispatch. Persistence failures preserve the task for retry, without fresh fallback. See [../tool-system/mcp-gateway.md](../tool-system/mcp-gateway.md#mention-gating-manual-mode).
 - Blackboard is created once per first message and restored for continuations.
 - Vector search hints are non-blocking (2s timeout, failure is acceptable).
 - Skills are activated task-wide and rendered verbatim in the Conductor system prompt (no truncation).

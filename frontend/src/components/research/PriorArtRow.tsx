@@ -51,6 +51,7 @@ export function PriorArtRow({ path, count }: PriorArtRowProps) {
         [STUDY_PAPER_SKILL],
         undefined,
         undefined,
+        undefined,
         { newSession },
       ),
     ).catch((err) => {

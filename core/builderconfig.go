@@ -636,6 +636,14 @@ type BuilderMCPServer struct {
 	Headers   map[string]string
 	WorkDir   string
 
+	// Mode is the per-server activation mode, carried verbatim from
+	// config.MCPServerConfig.Mode: "auto" | "manual" | "disabled", with empty
+	// behaving as "auto". A disabled server is skipped by
+	// configToGatewayConfig and never dialed; auto and manual both stay in
+	// the gateway config. core never imports backend/config, so the enum
+	// values mirror the config constants by string value.
+	Mode string
+
 	// Timeout bounds this server's initialization handshake (initialize +
 	// tools/list). Zero or negative selects the mcp package default (60s).
 	Timeout time.Duration

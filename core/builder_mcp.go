@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"maps"
 	"time"
 
 	"github.com/v0lka/sp4rk/tools/mcp"
@@ -28,6 +29,10 @@ import (
 // serializes concurrent Reconfigure calls on its own mutex, and reconfigureMu
 // below serializes this method.
 func (b *OrchestratorBuilder) ReconfigureMCP(ctx context.Context, cfg *BuilderConfig) error {
+	// Accepted policy is authoritative even when readiness or network reconciliation fails.
+	b.mu.Lock()
+	b.mcpModes = mcpServerModesFromConfig(cfg)
+	b.mu.Unlock()
 	if err := b.waitMCPReady(ctx); err != nil {
 		return err
 	}
@@ -71,6 +76,13 @@ func (b *OrchestratorBuilder) ReconfigureMCP(ctx context.Context, cfg *BuilderCo
 	return nil
 }
 
+// currentMCPServerModes returns an independent current policy snapshot.
+func (b *OrchestratorBuilder) currentMCPServerModes() map[string]string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return maps.Clone(b.mcpModes)
+}
+
 // StopGateway stops the MCP gateway. Called during app shutdown.
 // Waits for the MCP startup goroutine to finish so that a Stop arriving while
 // startup is still in flight does not race with the initial gateway assignment
@@ -112,10 +124,49 @@ func (b *OrchestratorBuilder) SetMCPWorkDir(path string) {
 	}
 }
 
+// mcpModeDisabled mirrors config.MCPServerModeDisabled ("disabled"). core
+// never imports backend/config, so the enum value is duplicated here; the
+// adapter carries the config value verbatim into BuilderMCPServer.Mode.
+// mcpModeAuto / mcpModeManual (the gating-relevant siblings) live in
+// orchestrator_mcp.go next to their consumer.
+const mcpModeDisabled = "disabled"
+
+// mcpServerModesFromConfig projects the per-server MCP modes into the
+// orchestrator's runtime map (name → mode). Empty/absent modes are omitted:
+// gatedMCPServerSet treats a missing entry as auto (always available), and
+// the config load path has already normalized every configured server to a
+// canonical mode value (backend/config normalizeMCPModes), so this map only
+// carries canonical values — including "disabled", whose servers the gateway
+// never dials but whose stale registrations the orchestrator-side gating
+// must still hide.
+func mcpServerModesFromConfig(cfg *BuilderConfig) map[string]string {
+	if len(cfg.MCP.Servers) == 0 {
+		return nil
+	}
+	modes := make(map[string]string, len(cfg.MCP.Servers))
+	for name, srv := range cfg.MCP.Servers {
+		if srv.Mode != "" {
+			modes[name] = srv.Mode
+		}
+	}
+	if len(modes) == 0 {
+		return nil
+	}
+	return modes
+}
+
 // configToGatewayConfig converts BuilderConfig to MCP GatewayConfig.
 func configToGatewayConfig(cfg *BuilderConfig) mcp.GatewayConfig {
 	entries := make(map[string]mcp.ServerEntry, len(cfg.MCP.Servers))
 	for name, srv := range cfg.MCP.Servers {
+		// A disabled server is never dialed: it is omitted from the gateway
+		// config entirely, so no process is spawned and no connection is
+		// opened — neither at startup nor on reconfigure. auto and manual
+		// both stay; manual's on-demand behavior is layered above the
+		// gateway, not by skipping it here.
+		if srv.Mode == mcpModeDisabled {
+			continue
+		}
 		entries[name] = mcp.ServerEntry{
 			Transport:   srv.Transport,
 			Command:     srv.Command,

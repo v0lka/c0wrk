@@ -286,9 +286,11 @@ func (o *Orchestrator) runE2SLoop(
 // run. Skills requested at send time are likewise not re-resolved here — the
 // E2S session's Σ is the continuation point, and (unlike the plan/goal resume
 // paths) there is no restored message to re-parse skill refs from, and the
-// fresh send's HandleOptions.UserAgents ("#agent" → "## Requested Subagents")
+// fresh send's HandleOptions.UserAgents ("/agent" → "## Requested Subagents")
 // is not persisted, so only the Available Subagents roster rebuilt from the
-// live agent catalog carries over.
+// live agent catalog carries over. MCP-server mentions are the exception:
+// they are recovered by the common durable task preparation before the wave,
+// so the requested-server directive and catalog use the same current policy.
 //
 // A user follow-up (nudge), when present, is delivered as the turn-1
 // observation (e2sResumeNote) so the resumed run reacts to it rather than
@@ -325,6 +327,7 @@ func (o *Orchestrator) resumeE2SLoop(
 	// image-only list the provider prepends Content as the text block, so both
 	// the images and Σ reach the model.
 	resumeOpts := HandleOptions{}
+	resumeOpts.UserMCPServers = UserMCPServersFromContext(ctx)
 	if origReq := bb.GetOriginalRequest(); origReq != "" {
 		if imageBlocks := imageBlocksForRequest(o.historySnapshot(), origReq); len(imageBlocks) > 0 {
 			resumeOpts.PendingImages = imageBlocks
@@ -414,7 +417,7 @@ func (o *Orchestrator) runE2SWithState(
 	//   - the task context so the strict judge sees the actual task rather
 	//     than an empty string on user-confirm escalations.
 	ctx = tools.WithAgentResolver(ctx, deps.agentResolver)
-	ctx = o.enrichAgentContext(ctx, opts.UserAgents)
+	ctx = o.enrichAgentContext(ctx, opts.UserAgents, opts.UserMCPServers)
 	ctx = WithDomain(ctx, "general")
 	ctx = WithComplexity(ctx, defaultResumeComplexity)
 	ctx = agent.WithStepOutputStore(ctx, orchestration.NewStepOutputStore(bb))
@@ -564,12 +567,13 @@ func (o *Orchestrator) runE2SWithState(
 		// Conductor-parity knobs (review fix cycle): the resolved reasoning
 		// effort (per-message override / Model Profiles sampling), the
 		// config-gated injection-defense directive, the subagent prompt
-		// sections (roster + explicit #mentions), the Model Profiles Lite prompt
-		// swap, the verify-on-edit hook, and the finish-join guard over
-		// pending async delegations.
+		// sections (roster + explicit /-mentions) plus the soft
+		// "Requested MCP Servers" section for mentioned manual-mode servers,
+		// the Model Profiles Lite prompt swap, the verify-on-edit hook, and
+		// the finish-join guard over pending async delegations.
 		ReasoningEffort:    deps.reasoningEffort,
 		InjectionDefense:   o.config.InjectionDefenseEnabled,
-		AgentSections:      formatAvailableAgents(ctx) + formatRequestedAgents(ctx),
+		AgentSections:      formatAvailableAgents(ctx) + formatRequestedAgents(ctx) + formatRequestedMCPServers(ctx),
 		SystemPrompt:       e2sCoreDirective(ctx),
 		EditVerify:         deps.verifyOnEdit,
 		EditVerifyMaxChars: deps.verifyOnEditMaxOutputChars,

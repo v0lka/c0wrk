@@ -237,6 +237,12 @@ func (s *SQLiteSessionStore) createTables() error {
 		PRIMARY KEY (task_id, step_id)
 	);
 
+	CREATE TABLE IF NOT EXISTS task_mcp_mentions (
+		task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+		server_name TEXT NOT NULL,
+		PRIMARY KEY (task_id, server_name)
+	);
+
 	CREATE TABLE IF NOT EXISTS task_facts (
 		task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
 		facts TEXT DEFAULT '[]',
@@ -1350,6 +1356,10 @@ type TaskUnitRecord struct {
 
 // TaskStore provides persistent storage for orchestration tasks and step results.
 type TaskStore interface {
+	// SaveMCPMentions atomically unions server names into the task's durable intent.
+	SaveMCPMentions(ctx context.Context, taskID string, names []string) error
+	// LoadMCPMentions returns names ordered by server name, including empty legacy state.
+	LoadMCPMentions(ctx context.Context, taskID string) ([]string, error)
 	SaveTask(ctx context.Context, task TaskRecord) error
 	UpdateTaskPlan(ctx context.Context, taskID string, plan json.RawMessage) error
 	UpdateTaskRouting(ctx context.Context, taskID string, routing json.RawMessage) error

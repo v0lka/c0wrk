@@ -89,7 +89,7 @@ export function ResearchQuickActions() {
     // Promise.resolve: tolerate a sender that returns void (defensive — the
     // real send is async, but mocks/type skew must not crash the click).
     Promise.resolve(
-      send(prompt, [skill], undefined, undefined, { newSession }),
+      send(prompt, [skill], undefined, undefined, undefined, { newSession }),
     ).catch((err) => {
       useResearchStore
         .getState()

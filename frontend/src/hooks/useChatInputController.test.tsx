@@ -31,6 +31,11 @@ const { apiMocks, sendMock } = vi.hoisted(() => ({
     agents: { listAgents: vi.fn().mockResolvedValue([]) },
     workspace: { listDirectory: vi.fn().mockResolvedValue([]) },
     skills: { listSkills: vi.fn().mockResolvedValue([]) },
+    mcp: {
+      getMCPMentionableServers: vi.fn().mockResolvedValue([]),
+      mentionableMCPNames: (servers: Array<{ name: string; mode: string }>) =>
+        servers.filter((s) => s.mode === 'auto' || s.mode === 'manual').map((s) => s.name),
+    },
     runtime: {
       subscribe: vi.fn(() => () => {}),
       emit: vi.fn(),
@@ -49,6 +54,7 @@ vi.mock('@/api/sessions', () => apiMocks.sessions)
 vi.mock('@/api/agents', () => apiMocks.agents)
 vi.mock('@/api/workspace', () => apiMocks.workspace)
 vi.mock('@/api/skills', () => apiMocks.skills)
+vi.mock('@/api/mcp', () => apiMocks.mcp)
 vi.mock('@/api/runtime', () => apiMocks.runtime)
 vi.mock('@/api/attachments', () => apiMocks.attachments)
 // The send RPC flow is useMessageSender's own tested concern; here we need a
@@ -521,7 +527,7 @@ describe('handleResume nudge-resume', () => {
     // SendMessage routes a send into a paused session to a nudge-resume
     // (persisting it with is_nudge, exactly like pressing Enter)…
     expect(sendMock).toHaveBeenCalledOnce()
-    expect(sendMock).toHaveBeenCalledWith('nudge text', [], [], 'sess-a')
+    expect(sendMock).toHaveBeenCalledWith('nudge text', [], [], [], 'sess-a')
     // …the editor was cleared (the text lives on as the sent message)…
     expect(editorText()).toBe('')
     expect(slice('sess-a')?.draft).toBe('')
@@ -637,5 +643,250 @@ describe('handleResume nudge-resume', () => {
       await controllerRef.current!.handleResume()
     })
     expect(apiMocks.chat.resumeSession).toHaveBeenCalledTimes(2)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unified /-refs on the send path (issue #110): partition plain refs against
+// both catalogs, thread qualified refs verbatim without a fetch, and turn a
+// colliding plain ref into a no-op + hint.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('handleSend /-ref partitioning', () => {
+  beforeEach(() => {
+    apiMocks.agents.listAgents.mockResolvedValue([])
+    apiMocks.skills.listSkills.mockResolvedValue([])
+    apiMocks.mcp.getMCPMentionableServers.mockResolvedValue([])
+    sendMock.mockResolvedValue(undefined)
+  })
+
+  it('partitions plain refs by catalog: agents → activeAgents, skills → activeSkills', async () => {
+    render()
+    apiMocks.agents.listAgents.mockResolvedValue([{ name: 'code-reviewer', description: 'Reviews code' }])
+    apiMocks.skills.listSkills.mockResolvedValue([{ name: 'commit', description: 'Commit helper' }])
+    await type('/code-reviewer please /commit it')
+
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+
+    expect(sendMock).toHaveBeenCalledOnce()
+    expect(sendMock).toHaveBeenCalledWith(
+      '/code-reviewer please /commit it',
+      ['commit'],
+      ['code-reviewer'],
+      [],
+      'sess-a',
+    )
+  })
+
+  it('passes a plain ref unknown to both catalogs through as a skill (permissive)', async () => {
+    render()
+    await type('use /mystery-ref now')
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+    expect(sendMock).toHaveBeenCalledWith('use /mystery-ref now', ['mystery-ref'], [], [], 'sess-a')
+  })
+
+  it('threads qualified refs verbatim without fetching the catalogs', async () => {
+    render()
+    await type('/agent: reviewer and /skill: study-paper plus /skill:glued')
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+    expect(sendMock).toHaveBeenCalledWith(
+      '/agent: reviewer and /skill: study-paper plus /skill:glued',
+      ['study-paper', 'glued'],
+      ['reviewer'],
+      [],
+      'sess-a',
+    )
+    // Qualified refs carry an explicit kind — no catalog round-trip needed.
+    expect(apiMocks.agents.listAgents).not.toHaveBeenCalled()
+    expect(apiMocks.skills.listSkills).not.toHaveBeenCalled()
+    expect(apiMocks.mcp.getMCPMentionableServers).not.toHaveBeenCalled()
+  })
+
+  it('blocks the send for a colliding plain ref: no-op, text preserved, hint shown', async () => {
+    render()
+    apiMocks.agents.listAgents.mockResolvedValue([{ name: 'review', description: 'Agent review' }])
+    apiMocks.skills.listSkills.mockResolvedValue([{ name: 'review', description: 'Skill review' }])
+    await type('run /review please')
+
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+
+    // Nothing was activated or requested — the message never left the client.
+    expect(sendMock).not.toHaveBeenCalled()
+    // The text is preserved verbatim in the editor (and the draft).
+    expect(editorText()).toBe('run /review please')
+    expect(slice('sess-a')?.draft).toBe('run /review please')
+    // A user-visible hint points at the qualified syntax.
+    const hint = slice('sess-a')?.sendError
+    expect(hint).toContain('Ambiguous')
+    expect(hint).toContain('/review')
+    expect(hint).toContain('/agent: review')
+    expect(hint).toContain('/skill: review')
+  })
+
+  it('sends the non-ambiguous refs alongside a colliding one only after it is qualified', async () => {
+    // Regression shape: after the collision no-op, qualifying the ref and
+    // re-sending goes through with BOTH refs partitioned.
+    render()
+    apiMocks.agents.listAgents.mockResolvedValue([
+      { name: 'review', description: 'Agent review' },
+      { name: 'reviewer', description: 'Reviews code' },
+    ])
+    apiMocks.skills.listSkills.mockResolvedValue([{ name: 'review', description: 'Skill review' }])
+    await type('run /review please')
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+    expect(sendMock).not.toHaveBeenCalled()
+
+    await type('run /agent: review please')
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+    // The qualified colliding ref threads as an agent; the message is sent.
+    expect(sendMock).toHaveBeenCalledOnce()
+    expect(sendMock).toHaveBeenCalledWith(
+      'run /agent: review please',
+      [],
+      ['review'],
+      [],
+      'sess-a',
+    )
+  })
+
+  it('degrades to permissive skill threading when the catalog fetch fails', async () => {
+    render()
+    apiMocks.agents.listAgents.mockRejectedValue(new Error('rpc down'))
+    apiMocks.skills.listSkills.mockRejectedValue(new Error('rpc down'))
+    apiMocks.mcp.getMCPMentionableServers.mockRejectedValue(new Error('rpc down'))
+    await type('use /commit now')
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+    // Catalog failure must not drop the user's text: unknown plain refs pass
+    // through as skills (server-side resolution), exactly like the historical
+    // extractSkillRefs behavior.
+    expect(sendMock).toHaveBeenCalledWith('use /commit now', ['commit'], [], [], 'sess-a')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MCP server mentions on the send path: plain /server refs partition into
+// activeMCPServers against the mentionable catalog (auto + manual only — a
+// disabled server is inert), /mcp: qualified refs thread verbatim, and an
+// mcp-catalog collision is the same no-op + hint as an agent/skill one.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('handleSend MCP server mentions', () => {
+  beforeEach(() => {
+    apiMocks.agents.listAgents.mockResolvedValue([])
+    apiMocks.skills.listSkills.mockResolvedValue([])
+    apiMocks.mcp.getMCPMentionableServers.mockResolvedValue([])
+    sendMock.mockResolvedValue(undefined)
+  })
+
+  it('partitions a plain /server ref into activeMCPServers (position 4 of send)', async () => {
+    render()
+    apiMocks.mcp.getMCPMentionableServers.mockResolvedValue([
+      { name: 'context7', mode: 'manual' },
+      { name: 'github', mode: 'auto' },
+    ])
+    await type('/context7 look up /github repos')
+
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+
+    expect(sendMock).toHaveBeenCalledOnce()
+    expect(sendMock).toHaveBeenCalledWith(
+      '/context7 look up /github repos',
+      [],
+      [],
+      ['context7', 'github'],
+      'sess-a',
+    )
+  })
+
+  it('never threads a disabled server as a mention', async () => {
+    render()
+    apiMocks.mcp.getMCPMentionableServers.mockResolvedValue([
+      { name: 'off-srv', mode: 'disabled' },
+    ])
+    await type('use /off-srv now')
+
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+
+    // A disabled server is filtered out of the mentionable catalog, so the
+    // plain ref falls through to the permissive skill path — never threaded
+    // as an MCP mention.
+    expect(sendMock).toHaveBeenCalledWith('use /off-srv now', ['off-srv'], [], [], 'sess-a')
+  })
+
+  it('threads /mcp: qualified refs verbatim without fetching the catalogs', async () => {
+    render()
+    await type('/mcp: context7 and /mcp:glued')
+
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+
+    expect(sendMock).toHaveBeenCalledWith(
+      '/mcp: context7 and /mcp:glued',
+      [],
+      [],
+      ['context7', 'glued'],
+      'sess-a',
+    )
+    expect(apiMocks.mcp.getMCPMentionableServers).not.toHaveBeenCalled()
+    expect(apiMocks.agents.listAgents).not.toHaveBeenCalled()
+    expect(apiMocks.skills.listSkills).not.toHaveBeenCalled()
+  })
+
+  it('blocks the send for a plain ref colliding with the mcp catalog', async () => {
+    render()
+    apiMocks.skills.listSkills.mockResolvedValue([{ name: 'deploy', description: 'Deploy skill' }])
+    apiMocks.mcp.getMCPMentionableServers.mockResolvedValue([{ name: 'deploy', mode: 'manual' }])
+    await type('run /deploy please')
+
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+
+    expect(sendMock).not.toHaveBeenCalled()
+    expect(editorText()).toBe('run /deploy please')
+    const hint = slice('sess-a')?.sendError
+    expect(hint).toContain('Ambiguous')
+    expect(hint).toContain('/mcp: deploy')
+  })
+
+  it('sends after the mcp collision is qualified', async () => {
+    render()
+    apiMocks.skills.listSkills.mockResolvedValue([{ name: 'deploy', description: 'Deploy skill' }])
+    apiMocks.mcp.getMCPMentionableServers.mockResolvedValue([{ name: 'deploy', mode: 'manual' }])
+    await type('run /deploy please')
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+    expect(sendMock).not.toHaveBeenCalled()
+
+    await type('run /mcp: deploy please')
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+    expect(sendMock).toHaveBeenCalledOnce()
+    expect(sendMock).toHaveBeenCalledWith(
+      'run /mcp: deploy please',
+      [],
+      [],
+      ['deploy'],
+      'sess-a',
+    )
   })
 })

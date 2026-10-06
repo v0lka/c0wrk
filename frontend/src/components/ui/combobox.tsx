@@ -61,6 +61,10 @@ interface ComboboxProps {
    * `h-8 w-auto text-xs` narrows the default `h-9 w-full text-sm` form.
    */
   className?: string
+  /** Size the trigger to the widest option label, including padding and chevron. */
+  fitToOptions?: boolean
+  /** Overrides for the portaled menu, independent of the trigger sizing. */
+  contentClassName?: string
 }
 
 /**
@@ -94,6 +98,8 @@ export function Combobox({
   placeholder,
   disabled = false,
   className,
+  fitToOptions = false,
+  contentClassName,
 }: ComboboxProps) {
   const [open, setOpen] = useState(false)
 
@@ -132,9 +138,19 @@ export function Combobox({
             'text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors truncate',
             'disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none',
             className,
+            fitToOptions && 'w-max shrink-0',
           )}
         >
-          <span className="truncate">{displayLabel}</span>
+          {fitToOptions ? (
+            <span className="grid text-left">
+              {options.map((option) => (
+                <span key={option.value} aria-hidden="true" className="invisible col-start-1 row-start-1 whitespace-nowrap">{option.label}</span>
+              ))}
+              <span className="col-start-1 row-start-1 whitespace-nowrap">{displayLabel}</span>
+            </span>
+          ) : (
+            <span className="truncate">{displayLabel}</span>
+          )}
           <ChevronDownIcon className="size-4 shrink-0" />
         </button>
       </DropdownMenuTrigger>
@@ -142,7 +158,7 @@ export function Combobox({
         ref={handleContentRef}
         aria-label={ariaLabel}
         align="start"
-        className={cn(MIN_WIDTH_CLASS, MAX_HEIGHT_CLASS)}
+        className={cn(MIN_WIDTH_CLASS, MAX_HEIGHT_CLASS, contentClassName)}
       >
         {options.length === 0 && (
           <div className="px-3 py-2 text-xs text-muted-foreground italic">No options available.</div>

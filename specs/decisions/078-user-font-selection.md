@@ -1,4 +1,4 @@
-# ADR-076: User Font Selection (chosen UI/mono families replace follow-system-font)
+# ADR-078: User Font Selection (chosen UI/mono families replace follow-system-font)
 
 ## Status
 

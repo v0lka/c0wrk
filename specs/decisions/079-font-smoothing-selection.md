@@ -1,4 +1,4 @@
-# ADR-077: Per-scope font smoothing (anti-aliasing) selection
+# ADR-079: Per-scope font smoothing (anti-aliasing) selection
 
 ## Status
 
@@ -6,9 +6,9 @@ Accepted
 
 ## Context
 
-[ADR-076](./076-user-font-selection.md) let the user pick the UI and monospaced font families, but the *rendering* of that text — its anti-aliasing — remained entirely under webview/OS control. Displays, webviews, and personal preference legitimately differ (subpixel AA is tuned for LCD geometry, grayscale suits hi-dpi and screenshots, aliased rendering matters for pixel-font aesthetics and debugging). A webview exposes exactly one CSS-level lever for this: the non-standard `-webkit-font-smoothing` property. Its support varies by engine and platform — WebKit and Blink honor it to differing degrees, some ports defer to OS/fontconfig rendering configuration, and canvas rendering ignores it entirely. Any in-app knob built on it is therefore best-effort by nature.
+[ADR-078](./078-user-font-selection.md) let the user pick the UI and monospaced font families, but the *rendering* of that text — its anti-aliasing — remained entirely under webview/OS control. Displays, webviews, and personal preference legitimately differ (subpixel AA is tuned for LCD geometry, grayscale suits hi-dpi and screenshots, aliased rendering matters for pixel-font aesthetics and debugging). A webview exposes exactly one CSS-level lever for this: the non-standard `-webkit-font-smoothing` property. Its support varies by engine and platform — WebKit and Blink honor it to differing degrees, some ports defer to OS/fontconfig rendering configuration, and canvas rendering ignores it entirely. Any in-app knob built on it is therefore best-effort by nature.
 
-The two font scopes of ADR-076 are independently meaningful for smoothing too: monospace surfaces (terminal, code viewer, code blocks) have different optimal anti-aliasing than UI text, and mono text is exactly where users look closest.
+The two font scopes of ADR-078 are independently meaningful for smoothing too: monospace surfaces (terminal, code viewer, code blocks) have different optimal anti-aliasing than UI text, and mono text is exactly where users look closest.
 
 ## Decision
 
@@ -29,5 +29,5 @@ The two font scopes of ADR-076 are independently meaningful for smoothing too: m
 
 - **`text-rendering` / `font-smooth`** — different or obsolete properties: `text-rendering` trades metrics/kerning behavior, not AA; `font-smooth` is a legacy Safari alias. Rejected.
 - **OS-level configuration** (fontconfig properties, gsettings `font-antialiasing`) — machine-global, affects every application, requires writing user config files from an app; rejected in favor of an app-scoped, user-reversible knob.
-- **A single app-wide smoothing knob** — loses the mono/sans distinction ADR-076's two-scope model already established; mono surfaces are where smoothing differences are most visible. Rejected.
+- **A single app-wide smoothing knob** — loses the mono/sans distinction ADR-078's two-scope model already established; mono surfaces are where smoothing differences are most visible. Rejected.
 - **A second dropdown primitive** (e.g. Radix Select) for the enum — introduces a visually different widget into the same form for no functional gain; the select-only mode of the existing combobox keeps one idiom. Rejected.

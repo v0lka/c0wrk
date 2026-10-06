@@ -14,7 +14,9 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `github.com/v0lka/sp4rk/orchestration/step_dump_tracker.go` — StepDumpTracker (per-step LLM dump file management)
 - `backend/session/file_coherence.go` — FileCoherenceTracker (cross-session conflict detection)
 - `backend/session/persistence.go` — SessionStore (SQLite persistence including plan review state); session list queries compute effective activity (newest persisted chat message / terminal command) — see § Session Activity Semantics
-- `backend/session/persistence_fork.go` — `(*SQLiteSessionStore).ForkSession` deep-copy (messages, tasks+steps/facts/attachments/trajectory, terminal commands, work directories) with regenerated identifiers in a single atomic transaction
+- `core/orchestrator_mcp_prepare.go` — `prepareTaskMCP`: synchronous durable mention preparation and one current-mode snapshot before any task execution or resume wave
+- `backend/session/persistence_mcp.go` — atomic task-scoped mention union and ordered load; authorization-state errors propagate for retry
+- `backend/session/persistence_fork.go` — `(*SQLiteSessionStore).ForkSession` deep-copy (messages, tasks+steps/facts/attachments/trajectory/MCP mentions, terminal commands, work directories) with regenerated identifiers in a single atomic transaction
 - `backend/session/events.go` — event data structs (session lifecycle + plan review)
 - `backend/session/emitter.go` — EventEmitter (fans out to the Wails UI and persistence through the combined emitFunc built at Application init)
 - `backend/session/event_persister.go` — EventPersister (persists events to SQLite)
@@ -211,15 +213,15 @@ ONLY through this persisted restore — never by the fallback.
 
 ```
 User sends message
-  → Frontend: SendMessage(sessionId, text, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, e2s, reviewMode)
+  → Frontend: SendMessage(sessionId, text, activeSkills, activeAgents, activeMCPServers, modelOverride, reasoningEffort, goal, goalBudget, e2s, reviewMode)
   → Backend: FrontendAPI.SendMessage()
-      ├─ Live-send gate: validate pause window / goal / E2S / skill-agent refs
+      ├─ Live-send gate: validate pause window / goal / E2S / skill-agent-MCP refs
       │   BEFORE persisting (a rejected send never reaches the store)
       ├─ E2S checks (before any side effect): e2s+goal rejected as mutually
       │   exclusive (incl. a leading /goal command); e2s rejected fail-closed
       │   while experimental.enabled is false
       ├─ Preprocess text for orchestrator:
-      │   ├─ Strip /skill references from text
+      │   ├─ Strip resolved /skill, /agent and /server references (plain or qualified), catalog-gated and fail-closed
       │   └─ Convert @file references to fileref:// URIs (relative paths resolved to absolute against the session workspace)
       ├─ Get or create Orchestrator for session (via factory)
       ├─ Create emitter (EventEmitter over the combined emitFunc: UI + EventPersister)
@@ -227,7 +229,7 @@ User sends message
       │   ├─ WithWorkspacePath (project workspace)
       │   ├─ WithTempDir (session-specific temp directory)
       │   └─ WithCoherence (FileCoherenceTracker for cross-session conflict detection)
-      ├─ Determine opts: {TaskID, UserSkills, UserAgents, ModelOverride, ReasoningEffort, Goal, GoalBudgetOverride, E2S, ReviewMode}
+      ├─ Determine opts: {TaskID, UserSkills, UserAgents, UserMCPServers, ModelOverride, ReasoningEffort, Goal, GoalBudgetOverride, E2S, ReviewMode}
       │   ├─ First message: TaskID=""
       │   └─ Continuation: TaskID=lastCompletedTaskID
       ├─ Call orchestrator.HandleMessage(ctx, preprocessedText, sessionId, opts)
@@ -251,8 +253,13 @@ User sends message
 > applied to the continuation pass and override whatever the prior task used.
 > `TaskID`, `UserSkills`, `SessionPlansDir`, `goalBudget`, and `reviewMode`
 > behave the same way (per-message). Only the restored blackboard state (facts,
-> plan/trajectory, conversation history, routing decision) is *inherited* from
-> the prior task; the per-message parameters above are applied on top of it.
+> plan/trajectory, conversation history, routing decision) and durable MCP server
+> selections are *inherited* from the prior task; the per-message parameters
+> above are applied on top of them. `UserMCPServers` carries additions from the
+> current send: accepted additions are unioned monotonically into task-owned
+> durable intent before execution, never replacing earlier selections. A fresh
+> task has its own empty initial set; permission is derived anew from current
+> modes at each entry (see [Task-scoped MCP authorization](#task-scoped-mcp-authorization)).
 
 > If the session has an **unfinished (interrupted) task** *and the message is
 > not a goal request*, the execution goroutine takes the
@@ -392,6 +399,13 @@ User clicks "Resume" (after task_failed_resumable)
       ├─ Resolve routing decision (OPTIONAL — may be nil; defaults to "general")
       ├─ Emit task_resumed (resolves the resumable banner; sets UI active)
       └─ Call orchestrator.Resume(ctx, bb, routing, plansDir, resumeSteps, goalState)
+          ├─ prepareTaskMCP: load durable server names, snapshot current modes once,
+          │   and overwrite mention/gate context (empty values included);
+          │   any load/write failure stops here with ErrMCPAuthorizationState
+          ├─ resumePausedWork → resumeUnits: settle plan/delegate auto-resume wave
+          │   using that prepared gate (before any main-loop branch or LLM turn)
+          ├─ IF a resumable E2S checkpoint exists:
+          │   └─ resumeE2SLoop — consume prepared names outside model-controlled Σ
           ├─ IF goalState != nil && !goalState.Status.IsTerminal():
           │   └─ resumeGoalLoop — re-activates a paused goal to `active`, seeds
           │       resumeSteps into the first resumed turn, and continues the
@@ -404,6 +418,37 @@ User clicks "Resume" (after task_failed_resumable)
           │   syncs to the TrajectoryStore (persisted on every Sync)
           └─ Conductor continues toward completion (no plan required)
 ```
+
+#### Task-scoped MCP authorization
+
+`prepareTaskMCP` (`core/orchestrator_mcp_prepare.go`) is shared by
+`HandleMessage` and `Resume`. After blackboard creation/restore it uses the
+blackboard's actual task ID to load server names, atomically union accepted
+`UserMCPServers` additions, and reload the committed union before any routing
+or task execution. A legacy task with no mention rows loads successfully as
+empty. Names survive pause, continuation and restart; a fresh task inherits
+none of another task's selections.
+
+The builder publishes a copied current mode map on accepted reconfiguration
+before fallible gateway readiness/network reconciliation. Preparation reads
+that map exactly once (direct constructors without a resolver use the static
+mode map), derives the gated complement of `auto ∪ (manual ∩ mentioned)`, and
+replaces both mention and gate context values even when empty. Resume prepares
+before `resumePausedWork` and `resumeUnits`; the wave, delegated subagents
+(including `all` and MCP-group grants), E2S catalog, Conductor, verifier and
+registry dispatch inherit one entry's gate. In-flight contexts stay unchanged;
+settings changes take effect at the next entry, and a persisted name does not
+override a current `disabled` mode.
+
+Durable load, union-write or reload failures return `ErrMCPAuthorizationState`
+before task work. The backend preserves the same task for retry and excludes
+this error from continuation-to-fresh fallback; persistence failures never
+fall back to an in-memory cache or to an empty authorization set. Only
+explicitly nonpersistent orchestrators use ephemeral task-local intent.
+Paused nudge-resume threads text, not new MCP selections (mirroring
+`UserAgents`); live sends with MCP refs are rejected. See
+[tool-system/mcp-gateway.md](tool-system/mcp-gateway.md#mention-gating-manual-mode)
+and [../contracts/backend-core.md](../contracts/backend-core.md).
 
 #### Goal resume
 
@@ -661,7 +706,7 @@ Invariants and edge cases:
 - **Pause/resumable outcome**: leftovers stay queued; the resumed request drains them at its first step boundary.
 - **Race-freedom**: queueing happens under `session.mu` while `active=true`; the epilogue's take happens under the same mutex as the `active=false` flip — a send racing the completion either joins the follow-up (queued before the flip) or starts a normal task (observed `active=false`), never both.
 - **Scope**: live delivery applies to the session's main Conductor run only (normal path, resume, every goal-loop turn). Subagent executors never receive live messages.
-- **Text-only**: attachments, `/goal` requests, and `/skill`/`#agent` references are rejected on the live path (they are task-start concerns); the user is asked to wait for pause/completion.
+- **Text-only**: attachments, `/goal` requests, and `/skill`/`/agent`/`/server` references are rejected on the live path (they are task-start concerns); the user is asked to wait for pause/completion.
 
 **Input-lock matrix (frontend)**: `computeChatInputDisabled` (pure helper, `lib/chatInputLock.ts`): input is disabled iff `compacting || pausing || isNoProject`. A running (`taskActive`) or paused session keeps the input open — running sends interject live; paused sends nudge-resume. While compacting the whole input area (editor, toolbar buttons, selector cluster, send/pause/resume) locks — with one exception: **Stop stays available** (CancelTask carries no compacting guard, and terminating the in-flight request is the one user action that helps the flow's pause-wait land; the Pause/Resume flank is hidden for the window because the flow owns the pause signal). The placeholder advertises the affordance ("your message joins the next request to the model").
 
@@ -738,6 +783,8 @@ User clicks Fork (GitFork icon) in SessionSelector on a session item
           ├─ For each task: new task id, copy tasks (NULL completed_at preserved)
           │   + task_steps + task_facts + task_attachments + task_trajectory
           │   + task_goal_state (preserves the task's goal history)
+          │   + task_mcp_mentions (server names copied under the new task ID;
+          │     subsequent additions and deletion are independent of the source)
           ├─ cloneReview(src, new) on the same tx (review_state + review_comments)
           └─ Commit (any error rolls back the whole fork; source untouched)
   → Frontend: sessionStore.addSession(forked) + selectSession(forked.id, forked.project_id)
@@ -770,6 +817,7 @@ Persisted in SQLite (`~/.c0wrk/database.db`) — schema defined in `backend/sess
 - `task_facts` — task_id, facts (JSON), updated_at
 - `task_attachments` — task_id, attachments (JSON-marshaled `[]orchestration.Attachment`), updated_at
 - `task_trajectory` — task_id, steps (JSON), updated_at (persisted ReAct trajectory for resume)
+- `task_mcp_mentions` — task_id, server_name (PRIMARY KEY (task_id, server_name), task FK ON DELETE CASCADE); additive migration, monotonic name union, ordered load, independent fork copies; task/session deletion cascades rows
 - `task_goal_state` — task_id, goal_state (JSON), updated_at (goal-mode state for resume; see [goal-mode.md](goal-mode.md))
 - `terminal_commands` — id, session_id, command, created_at
 - `session_work_directories` — id, session_id, path, description, created_at (session-scoped additional work dirs; UNIQUE(session_id, path))
@@ -920,7 +968,8 @@ type SessionInfo struct {
 type HandleOptions struct {
     TaskID             string                     // non-empty = continuation of existing task
     UserSkills         []string                   // explicitly requested by user via /skill refs (bypass router)
-    UserAgents         []string                   // explicitly requested by user via #agent-name mentions (drives the "Requested Subagents" prompt directive)
+    UserAgents         []string                   // explicitly requested by user via /-mentions (plain or /agent:-qualified; drives the "Requested Subagents" prompt directive)
+    UserMCPServers     []string                   // MCP servers explicitly mentioned by user via /-mentions (plain or /mcp:-qualified); enables manual-mode servers task-wide and drives the soft "Requested MCP Servers" prompt directive
     ModelOverride      string                     // non-empty → use this model for all LLM calls; empty → router default
     ReasoningEffort    string                     // non-empty → native reasoning value for all LLM calls; empty → use family default
     SessionPlansDir    string                     // directory for session-scoped plan files (used by declare_plan tool)
@@ -957,6 +1006,8 @@ type HandleResult struct {
 - `DeleteSession` cancels any running task, removes the in-memory session and cleans up the entire per-session
   directory (`~/.c0wrk/projects/__no_project__/<id>/`) for No Project
   sessions. The session temp directory is always cleaned up regardless.
+- Task-owned MCP server names accumulate monotonically in durable state and survive restart; legacy state is empty, fork copies are independent and task/session deletion cascades mention rows
+- Every send/resume prepares durable MCP intent and one current mode snapshot before task work, including the plan/delegate auto-resume wave; `ErrMCPAuthorizationState` preserves the task for retry without memory or fresh-task fallback
 - Session state survives app restart (SQLite persistence)
 - Project switch session restore order is deterministic: valid (non-archived) saved session for destination project, otherwise latest non-archived destination session, otherwise new destination session. Archived sessions are never auto-selected — a saved selection pointing at one resolves to empty and falls through to the latest-live fallback
 - Destination project switch state always persists the resolved `saved_session_id` in `project_ui_state` when project persistence is wired
@@ -1024,6 +1075,9 @@ type HandleResult struct {
   BEFORE that point (blackboard restore, routing error) leaves the anchor's
   prior terminal status intact, so the manager's fresh-workflow fallback
   (`Manager.shouldRetryContinuationFresh`) cannot orphan a reactivated row.
+  `ErrMCPAuthorizationState` is always excluded from this fallback: durable
+  authorization preparation failures preserve the anchor for retry, regardless
+  of whether it was completed, paused or failed before the send.
   The guard classifies the failed attempt via a pre-send snapshot of the
   anchor's status: a terminal anchor that turns up unfinished after the
   attempt was reactivated by this send's own execution and failed mid-flight
@@ -1053,7 +1107,7 @@ type HandleResult struct {
   behind the just-completed task's own unfinished row stays for the next
   successful completion to cancel.
 - Session forking deep-copies all dependent rows (messages, tasks and their
-  steps/facts/attachments/trajectory/goal state, terminal commands, work directories,
+  steps/facts/attachments/trajectory/goal state/MCP mentions, terminal commands, work directories,
   and review data — `task_goal_state` preserves the forked task's goal history)
   with freshly generated identifiers in a single atomic
   transaction, so the fork shares no rows with the original. A fork with any
@@ -1140,6 +1194,9 @@ type HandleResult struct {
 
 ## Related Specs
 
+- [tool-system/mcp-gateway.md](tool-system/mcp-gateway.md) — durable task selections and current-mode authorization before resume waves
+- [../decisions/077-explicit-mcp-server-mentions.md](../decisions/077-explicit-mcp-server-mentions.md) — task-wide MCP mentions
+- [../contracts/backend-core.md](../contracts/backend-core.md) — synchronous task-intent persistence contract and retry-preserving errors
 - [orchestration/README.md](orchestration/README.md) — orchestration cycle
 - [memory/blackboard.md](memory/blackboard.md) — blackboard persistence
 - [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) — session RPC methods

@@ -64,7 +64,7 @@ export function ResearchNextStep() {
           // — the real send is async, but mocks/type skew must not crash
           // the click).
           Promise.resolve(
-            send(prompt, [nextStep.skill], undefined, undefined, {
+            send(prompt, [nextStep.skill], undefined, undefined, undefined, {
               newSession: e.shiftKey,
             }),
           ).catch((err) => {
