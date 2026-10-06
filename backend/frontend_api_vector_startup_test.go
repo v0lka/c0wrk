@@ -145,14 +145,17 @@ func TestSwitchProjectSetupVector_FactoryReadyClearsDeferred(t *testing.T) {
 	ws := t.TempDir()
 
 	f := newStartupVectorAPI(t)
-	if _, err := f.projectManager.CreateProject("proj-a", ws); err != nil {
+	created, err := f.projectManager.CreateProject("proj-a", ws)
+	if err != nil {
 		t.Fatalf("register project: %v", err)
 	}
 	wireFactory(t, f)
 
 	f.deferredVectorProject = &project.ProjectInfo{ID: "proj-a"}
 
-	p := &project.ProjectInfo{ID: "proj-a", WorkspacePath: ws}
+	// Use the REGISTERED path (the project manager symlink-resolves it), not
+	// the raw temp dir: vector routing matches the root git itself reports.
+	p := &project.ProjectInfo{ID: "proj-a", WorkspacePath: created.WorkspacePath}
 	if err := f.switchProjectSetupVector(p); err != nil {
 		t.Fatalf("switchProjectSetupVector (ready factory): %v", err)
 	}
@@ -178,11 +181,13 @@ func TestInitVectorIndexForActiveProject_AppliesDeferredSetup(t *testing.T) {
 	}
 
 	f := newStartupVectorAPI(t)
-	if _, err := f.projectManager.CreateProject("proj-a", ws); err != nil {
+	created, err := f.projectManager.CreateProject("proj-a", ws)
+	if err != nil {
 		t.Fatalf("register project: %v", err)
 	}
 
-	p := &project.ProjectInfo{ID: "proj-a", WorkspacePath: ws}
+	// Use the REGISTERED path (symlink-resolved by the project manager).
+	p := &project.ProjectInfo{ID: "proj-a", WorkspacePath: created.WorkspacePath}
 
 	// Startup race: the switch runs while the factory is still being built.
 	seedDeferred(t, f, p)

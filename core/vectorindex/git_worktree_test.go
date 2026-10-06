@@ -57,8 +57,10 @@ func TestResolveGitDir(t *testing.T) {
 	repo := gittest.InitRepo(t, root, "hello\n")
 	wt := addWorktree(t, repo, filepath.Join(t.TempDir(), "wt"), "topic")
 
-	// Normal checkout: .git is a directory.
-	got, err := resolveGitDir(root)
+	// Normal checkout: .git is a directory. resolveGitDir joins the given
+	// root lexically, so pass the canonical repo.Root (the fixture root is
+	// symlink-resolved) to match repo.GitDir().
+	got, err := resolveGitDir(repo.Root)
 	if err != nil {
 		t.Fatalf("resolveGitDir(checkout): %v", err)
 	}
@@ -230,7 +232,7 @@ func TestGitMonitor_CheckoutUnaffectedByWorktreeEvents(t *testing.T) {
 	wt := addWorktree(t, repo, filepath.Join(t.TempDir(), "wt"), "topic")
 
 	checkoutCh := make(chan string, 4)
-	mon, err := NewGitMonitor(root, func(newBranch string) { checkoutCh <- newBranch }, nil)
+	mon, err := NewGitMonitor(repo.Root, func(newBranch string) { checkoutCh <- newBranch }, nil)
 	if err != nil {
 		t.Fatalf("NewGitMonitor(checkout): %v", err)
 	}

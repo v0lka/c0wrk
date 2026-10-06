@@ -87,7 +87,7 @@ func TestOwner_ListAndInspectClassification(t *testing.T) {
 	owner, repo := setupOwnerRepo(t)
 	ctx := context.Background()
 	repo.Git(t, "branch", "feature")
-	ext := filepath.Join(t.TempDir(), "ext")
+	ext := filepath.Join(gittest.TempDir(t), "ext")
 	repo.Git(t, "worktree", "add", ext, "feature")
 	if _, err := owner.ProvisionNewBranch(ctx, repo.Root, "s1", "wt-s1", ""); err != nil {
 		t.Fatalf("ProvisionNewBranch: %v", err)

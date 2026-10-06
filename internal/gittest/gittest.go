@@ -202,7 +202,18 @@ func InitRepo(t *testing.T, root, initialContent string) *Repo {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("gittest: creating repo dir: %v", err)
 	}
-	r := &Repo{Root: root}
+	// Canonicalize the fixture root (symlink-resolved), mirroring how the
+	// production project manager registers an external workspace
+	// (filepath.EvalSymlinks). git reports canonical paths — macOS resolves
+	// /var -> /private/var, Windows resolves 8.3 short names (RUNNER~1) to
+	// long names — so a fixture root that is only lexically clean makes every
+	// path comparison against git's own output (worktree listings, resolved
+	// .git dirs, project-checkout identity) diverge on those platforms.
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("gittest: resolving repo dir %s: %v", root, err)
+	}
+	r := &Repo{Root: resolved}
 	r.Git(t, "init", "-b", "main")
 	r.Git(t, "config", "user.email", "c0wrk-fixture@example.invalid")
 	r.Git(t, "config", "user.name", "c0wrk fixture")
@@ -216,6 +227,22 @@ func InitRepo(t *testing.T, root, initialContent string) *Repo {
 	r.Git(t, "add", ".")
 	r.Git(t, "commit", "-m", "initial")
 	return r
+}
+
+// TempDir returns the symlink-resolved form of t.TempDir(). Fixtures that
+// compare a temp path against git's own output, or feed it to the worktree
+// primitives (which reject symlinked ancestors and compare against git's
+// canonical listings), must use this resolved form: on macOS /var is a
+// symlink to /private/var and on Windows the short 8.3 name in %TEMP% differs
+// from the long name git reports.
+func TempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("gittest: resolving temp dir %s: %v", dir, err)
+	}
+	return resolved
 }
 
 // GitDir returns the repository's .git directory path.

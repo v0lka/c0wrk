@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/v0lka/c0wrk/core/workspace"
+	"github.com/v0lka/c0wrk/internal/gittest"
 )
 
 // focusTestTree provisions one managed session and returns its tree path
@@ -140,7 +141,7 @@ func TestListProjectWorktrees_MetadataAndFocus(t *testing.T) {
 	tree, pinned := focusTestTree(t, h)
 
 	// An external linked tree outside the managed container.
-	ext := filepath.Join(t.TempDir(), "ext-tree")
+	ext := filepath.Join(gittest.TempDir(t), "ext-tree")
 	wtGit(t, h.repoRoot, "worktree", "add", "-b", "ext-branch", ext)
 
 	if err := h.api.SetGitPanelFocus(tree); err != nil {
@@ -266,7 +267,7 @@ func TestCheckoutBranch_PinnedRefusalOnManagedWorktree(t *testing.T) {
 	}
 
 	// An external linked tree keeps normal checkout too.
-	ext := filepath.Join(t.TempDir(), "ext-tree")
+	ext := filepath.Join(gittest.TempDir(t), "ext-tree")
 	wtGit(t, h.repoRoot, "worktree", "add", ext)
 	if err := h.api.SetGitPanelFocus(ext); err != nil {
 		t.Fatalf("SetGitPanelFocus(ext): %v", err)
@@ -281,7 +282,7 @@ func TestGetGitStatus_FollowsFocusForExternalTree(t *testing.T) {
 
 	// An external linked tree with a dirty file: outside the project
 	// workspace, so containment must accept the focus root.
-	ext := filepath.Join(t.TempDir(), "ext-tree")
+	ext := filepath.Join(gittest.TempDir(t), "ext-tree")
 	wtGit(t, h.repoRoot, "worktree", "add", ext)
 	if err := os.WriteFile(filepath.Join(ext, "ext-dirty.txt"), []byte("dirty"), 0o644); err != nil {
 		t.Fatal(err)

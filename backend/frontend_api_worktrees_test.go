@@ -198,6 +198,11 @@ func newWTHarness(t *testing.T, factory session.OrchestratorFactory) *wtHarness 
 	h.api.activeProjectID = proj.ID
 	h.api.activeProjectPath = proj.WorkspacePath
 	h.api.activeProjectMu.Unlock()
+	// Shut the manager down on cleanup: sessions hold open LLM dump file
+	// handles (DEBUG log level), and an unclosed handle makes t.TempDir()'s
+	// RemoveAll fail on Windows. Cleanups are LIFO, so this runs before the
+	// DB is closed.
+	t.Cleanup(h.manager.Shutdown)
 	return h
 }
 
@@ -216,6 +221,7 @@ func (h *wtHarness) restart(t *testing.T) (*FrontendAPI, *session.Manager, *wtRe
 	mgr.SetLogger(slog.New(slog.DiscardHandler))
 	mgr.SetSessionStore(h.store)
 	mgr.SetProjectResolver(func(string) (string, error) { return h.project.WorkspacePath, nil })
+	t.Cleanup(mgr.Shutdown)
 	api := &FrontendAPI{
 		app:             &Application{manager: mgr},
 		logger:          slog.New(slog.DiscardHandler),

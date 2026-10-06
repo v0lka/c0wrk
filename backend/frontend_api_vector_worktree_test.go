@@ -83,7 +83,7 @@ func newVectorWorktreeHarness(t *testing.T) *vectorWorktreeHarness {
 	})
 	manager := session.NewManager(factory, func(session.Event) {}, agentDir)
 	manager.SetSessionStore(sessionStore)
-	manager.SetProjectResolver(func(string) (string, error) { return repoRoot, nil })
+	manager.SetProjectResolver(func(string) (string, error) { return created.WorkspacePath, nil })
 	manager.SetWorkspaceEnsurer(func(context.Context, string, *session.WorkspaceBinding) (bool, error) {
 		return false, nil // trees exist in the fixture; no recreation
 	})

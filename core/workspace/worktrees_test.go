@@ -51,7 +51,7 @@ func rawGitOut(t *testing.T, dir string, args ...string) string {
 func TestListWorktrees_Classification(t *testing.T) {
 	repo := setupWorktreeRepo(t)
 	repo.Git(t, "branch", "feature")
-	ext := filepath.Join(t.TempDir(), "ext")
+	ext := filepath.Join(gittest.TempDir(t), "ext")
 	repo.Git(t, "worktree", "add", ext, "feature")
 	managed := managedPath(repo.Root, "s1")
 	info, err := AddWorktree(context.Background(), repo.Root, managed, AddWorktreeOptions{
@@ -312,7 +312,7 @@ func TestAddWorktree_BranchOccupancyFailures(t *testing.T) {
 
 func TestAddWorktree_PathValidation(t *testing.T) {
 	repo := setupWorktreeRepo(t)
-	linkTarget := t.TempDir()
+	linkTarget := gittest.TempDir(t)
 	link := filepath.Join(repo.Root, "link")
 	if err := os.Symlink(linkTarget, link); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
@@ -383,7 +383,7 @@ func TestAddWorktree_RefusesTargetInsideLinkedWorktree(t *testing.T) {
 func TestAddWorktree_ExternalTargetSkipsExcludeInstall(t *testing.T) {
 	repo := setupWorktreeRepo(t)
 	repo.Git(t, "branch", "feature")
-	ext := filepath.Join(t.TempDir(), "ext-tree")
+	ext := filepath.Join(gittest.TempDir(t), "ext-tree")
 	if _, err := AddWorktree(context.Background(), repo.Root, ext, AddWorktreeOptions{Branch: "feature"}); err != nil {
 		t.Fatalf("external AddWorktree: %v", err)
 	}
@@ -568,7 +568,7 @@ func TestRemoveWorktree_RefusesMainAndForeignPaths(t *testing.T) {
 	if err := RemoveWorktree(context.Background(), repo.Root, repo.Root, RemoveWorktreeOptions{Force: true}); !errors.Is(err, ErrWorktreeMain) {
 		t.Fatalf("main err = %v, want ErrWorktreeMain", err)
 	}
-	foreign := filepath.Join(t.TempDir(), "foreign")
+	foreign := filepath.Join(gittest.TempDir(t), "foreign")
 	if err := os.MkdirAll(foreign, 0o755); err != nil {
 		t.Fatalf("mkdir foreign: %v", err)
 	}
