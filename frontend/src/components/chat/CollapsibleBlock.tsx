@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import {
   Collapsible,
@@ -6,7 +6,9 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
 import { cn } from '@/lib/utils'
+import { scrollBlockStartIntoView } from '@/lib/chatScroll'
 import { collapsibleRegistry } from './collapsibleRegistry'
+import { useChatScrollViewport } from './ScrollContext'
 import { useChatHoverChevron } from './chatHoverStore'
 
 interface CollapsibleBlockProps {
@@ -99,8 +101,55 @@ export function CollapsibleBlock({
     }
   }, [chevronId])
 
+  // Collapse repositioning. Radix unmounts closed CollapsibleContent, so a
+  // collapse can remove the very content the viewport is sitting in — the
+  // block the user was reading collapses to its one-line header somewhere
+  // ABOVE the scrollport and the viewport stays parked on whatever followed
+  // (often nothing): the collapsed block has "scrolled away" and the chat
+  // looks empty until the user manually scrolls. Every collapse path funnels
+  // through this component — the block-overflow toolbar's collapse (via
+  // `collapsibleRegistry`), the auto-settle of a live TurnWorkBlock, and a
+  // direct header click — so the anchor fix lives HERE, once.
+  //
+  // On an open→closed transition: when the block's header (the root's top —
+  // invariant under the collapse itself, since only content BELOW the header
+  // shrinks) ends up above the viewport top, scroll its start back into view
+  // (sticky-bar-aware, zoom-aware — `scrollBlockStartIntoView`). When the
+  // header is still visible — the direct-click case, where the user pressed
+  // exactly that header — no scroll: realignment would be a gratuitous jump.
+  //
+  // This is the SINGLE scroll writer for collapses: the oversized-block
+  // toolbar's collapse only reports navigation intent (at-bottom=false +
+  // auto-scroll suppression in `useOversizedBlockNav`); it never scrolls.
+  // Effect ordering also settles the at-bottom auto-settle case without
+  // coordination: this child layout effect runs BEFORE ChatScrollManager's
+  // parent stick-to-bottom write, whose instant scrollTop write supersedes
+  // this smooth scroll — a settling turn the user was following still lands
+  // on its committed answer, not on the header.
+  const rootRef = useRef<HTMLDivElement>(null)
+  // `null` = no previous state yet (first run after mount): record only,
+  // never scroll — a freshly mounted block must not navigate anywhere.
+  const wasOpenRef = useRef<boolean | null>(null)
+  const getScrollViewport = useChatScrollViewport()
+  useLayoutEffect(() => {
+    const wasOpen = wasOpenRef.current
+    wasOpenRef.current = isOpen
+    if (wasOpen !== true || isOpen) return
+    const root = rootRef.current
+    if (!root) return
+    const viewport = getScrollViewport()
+    if (!viewport) return
+    // rect-vs-rect: both getBoundingClientRect values are VISUAL px in the
+    // same coordinate space (the ui-scale geometry contract — see
+    // useOversizedBlockNav), so no zoom conversion for the comparison; the
+    // scroll itself is handled zoom-aware inside scrollBlockStartIntoView.
+    if (root.getBoundingClientRect().top >= viewport.getBoundingClientRect().top) return
+    scrollBlockStartIntoView(viewport, root)
+  }, [isOpen, getScrollViewport])
+
   return (
     <Collapsible
+      ref={rootRef}
       open={isOpen}
       onOpenChange={setOpen}
       data-chevron-reveal-id={chevronId}

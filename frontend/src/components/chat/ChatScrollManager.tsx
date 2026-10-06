@@ -43,7 +43,7 @@ export function ChatScrollManager({
   scrollRef,
   children,
 }: ChatScrollManagerProps) {
-  const { setScrollToStep, setScrollToBookmark } = useScrollContext()
+  const { setScrollToStep, setScrollToBookmark, setScrollViewport } = useScrollContext()
   const isAtBottomRef = useRef(true)
   const viewportRef = useRef<HTMLElement | null>(null)
   // The component remounts per session (key={activeSessionId} in ChatArea), so a
@@ -123,6 +123,17 @@ export function ChatScrollManager({
       clientHeight: vp.clientHeight,
     }
   }, [scrollRef])
+
+  // Publish the viewport resolver to the ScrollContext: CollapsibleBlock's
+  // collapse-reposition effect resolves the scroll container through it. The
+  // component remounts per session (key= in ChatArea), so the cleanup always
+  // unregisters — a stale resolver can never outlive its manager. The getter
+  // indirection (not the element itself) keeps a session switch from handing
+  // out the detached node between the swap and this cleanup.
+  useEffect(() => {
+    setScrollViewport(() => viewportRef.current)
+    return () => setScrollViewport(null)
+  }, [setScrollViewport])
 
   // Track scroll position for "new activity" pill dismissal
   useEffect(() => {

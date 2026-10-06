@@ -73,9 +73,15 @@ export interface OversizedBlockNavApi {
   readonly hasNext: boolean
   /**
    * Collapse the current oversized block via {@link collapsibleRegistry}.
-   * Only ever collapses — this hook never expands a target. The shrink is
-   * picked up by the content ResizeObserver, which rescans and moves
-   * `activeRevealId` to the next oversized block (or null).
+   * Only ever collapses — this hook never expands a target. The hook does
+   * NOT scroll: the collapse reposition (anchor the viewport on the collapsed
+   * block's start when its header ended up above the fold) is owned by
+   * {@link CollapsibleBlock}'s open→closed transition effect — the single
+   * scroll writer for collapses. This callback only reports navigation
+   * intent (at-bottom=false + auto-scroll suppression) so stick-to-bottom
+   * logic holds off while that smooth scroll settles; the content
+   * ResizeObserver still rescans and moves `activeRevealId` to the next
+   * oversized block (or null).
    */
   collapse: () => void
   /**
@@ -318,6 +324,15 @@ export function useOversizedBlockNav(
   const collapse = useCallback(() => {
     const id = activeRevealIdRef.current
     if (!id) return
+    // Navigation intent first: the collapse (and CollapsibleBlock's smooth
+    // reposition to the collapsed block's start) must not be fought by
+    // stick-to-bottom while the scroll settles — the same bookkeeping every
+    // other navigation reports through these shared refs.
+    const opts = optionsRef.current
+    if (opts?.isAtBottomRef) opts.isAtBottomRef.current = false
+    if (opts?.suppressAutoScrollUntilRef) {
+      opts.suppressAutoScrollUntilRef.current = Date.now() + NAVIGATION_SUPPRESS_MS
+    }
     // Collapse-only by contract: the hook NEVER expands a target.
     collapsibleRegistry.get(id)?.(false)
   }, [])
