@@ -354,7 +354,9 @@ func (f *FrontendAPI) prepareManagedTreeDeletion(ctx context.Context, id string,
 	// The tree is gone: drop its worktree-scoped vector-index storage too
 	// (best-effort — leftover data would only be disk garbage on a tree no
 	// session can be bound to again, since worktree names are per-session).
-	f.deleteWorktreeVectorIndex(info.ProjectID, binding.WorktreeName)
+	// The registry release first shuts the root's live manager (closing its
+	// open chromem handles so the removal works on Windows too).
+	f.deleteWorktreeVectorIndex(repoRoot, info.ProjectID, binding.WorktreeName)
 	return nil
 }
 

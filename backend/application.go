@@ -62,10 +62,13 @@ type ApplicationConfig struct {
 	VectorSearchWaitDisabled bool
 
 	// FileChangeNotifyFunc is called after a file-mutating tool (write_file,
-	// edit_file, bash_exec) completes successfully. It triggers debounced
-	// incremental re-indexing so that subsequent searches reflect the change
-	// without waiting for the filesystem watcher. Nil disables the hook.
-	FileChangeNotifyFunc func()
+	// edit_file, bash_exec) completes successfully. The executor context
+	// carries the session's workspace root, so the implementation can route
+	// the debounced re-indexing to THAT root's vector manager (ADR-080).
+	// It triggers incremental re-indexing so that subsequent searches
+	// reflect the change without waiting for the filesystem watcher. Nil
+	// disables the hook.
+	FileChangeNotifyFunc func(ctx context.Context)
 
 	// FileChangedWorkspaceEmitter is called alongside FileChangeNotifyFunc to
 	// emit the workspace:tree_changed event so the frontend (research panel,
@@ -113,6 +116,13 @@ type Application struct {
 	// (reading the live config maps from the resolver would race Settings
 	// saves, which replace them under configMu).
 	autoRetryIntervals atomic.Pointer[map[string]int]
+
+	// vectorRootsPtr late-binds the per-root vector-index registry (ADR-080).
+	// The registry lives on FrontendAPI (it emits UI events and resolves the
+	// Git-panel focus), which desktop constructs after the Application; the
+	// registered search closures resolve it at call time and surface the
+	// still-loading error until SetVectorRoots lands. Nil before wiring.
+	vectorRootsPtr atomic.Pointer[VectorRoots]
 }
 
 func (app *Application) log() *slog.Logger {
@@ -178,9 +188,19 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	}
 	app.builder = builder
 
-	// 3a. Vector search (optional — registered after builder creation)
+	// 3a. Vector search (per-root router, ADR-080). The router late-binds the
+	// FrontendAPI-owned registry (SetVectorRoots) and resolves the workspace
+	// root from the executor context — the session's own tree for agent-side
+	// calls (semantic_search tool + RAG hints), the Git-panel focus when the
+	// context carries no root. Registered unconditionally, matching the
+	// singleton era where desktop always supplied closures: the pre-wiring
+	// window surfaces the still-loading error instead. An injected
+	// cfg.VectorSearchFunc (tests) still takes precedence.
 	if cfg.VectorSearchFunc != nil {
 		builder.RegisterVectorSearch(cfg.VectorSearchFunc, cfg.VectorSearchWaitFunc, cfg.VectorSearchWaitTimeout, cfg.VectorSearchWaitDisabled)
+	} else {
+		searchFunc, waitFunc := app.buildVectorRouter(cfg.VectorSearchWaitTimeout)
+		builder.RegisterVectorSearch(searchFunc, waitFunc, cfg.VectorSearchWaitTimeout, cfg.VectorSearchWaitDisabled)
 	}
 
 	// 3b. Skill discovery directories. The builder creates a per-session
@@ -219,7 +239,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	if cfg.FileChangeNotifyFunc != nil {
 		notifyFn := cfg.FileChangeNotifyFunc
 		emitFn := cfg.FileChangedWorkspaceEmitter
-		builder.ToolRegistry().SetPostExecuteHook(func(_ context.Context, toolName string, res sdktools.ToolResult, execErr error) {
+		builder.ToolRegistry().SetPostExecuteHook(func(ctx context.Context, toolName string, res sdktools.ToolResult, execErr error) {
 			// Only notify on a genuine successful file mutation. Skip error
 			// results (policy deny, tool error) and non-nil execution errors
 			// (confirmation denied, context cancellation, confirm-func failure)
@@ -230,7 +250,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 			if !core.FileMutatingTools[toolName] {
 				return
 			}
-			notifyFn()
+			notifyFn(ctx)
 			if emitFn != nil {
 				emitFn()
 			}

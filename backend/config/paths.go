@@ -145,6 +145,34 @@ func WorktreeVectorIndexPath(agentDir, projectID, name string) (string, error) {
 	return filepath.Join(ProjectVectorIndexPath(agentDir, projectID), "worktrees", name), nil
 }
 
+// WorktreeEmbeddingCachePath returns the content-addressed embedding cache
+// directory for a managed worktree of a project: a SIBLING of the project's
+// own cache dir — <project vector index>/embedding_cache-worktrees/<name> —
+// never a subtree of it. The cache accounting (scanCacheTree) walks its root
+// recursively, so one live cache root must never contain another: with
+// per-root vector managers (ADR-080) a checkout manager and a managed-tree
+// manager of the same project run concurrently, and a shared or nested cache
+// root would corrupt both managers' size accounting. Per-tree caches keep
+// the trees isolated at the cost of cross-tree dedup, which a shared root
+// could no longer guarantee safely anyway. The dir still lives under the
+// project's vector index (outside its branches/ layout, which the legacy
+// migration never scans), so project deletion removes it together with the
+// rest of the project's index data. Checkout keeps ProjectEmbeddingCachePath
+// unchanged — no migration.
+func WorktreeEmbeddingCachePath(agentDir, projectID, name string) (string, error) {
+	if projectID == "" {
+		return "", errors.New("project id is required for a worktree embedding cache path")
+	}
+	if err := validateManagedWorktreeName(name); err != nil {
+		return "", err
+	}
+	return filepath.Join(
+		filepath.Dir(ProjectEmbeddingCachePath(agentDir, projectID)),
+		filepath.Base(ProjectEmbeddingCachePath(agentDir, projectID))+"-worktrees",
+		name,
+	), nil
+}
+
 // WorkspaceSegment is the directory name for workspace directories.
 // Regular projects use "Workspace" under the project dir; No Project sessions
 // use "workspace" under the per-session directory.

@@ -10,14 +10,17 @@ import (
 	"github.com/v0lka/c0wrk/core/vectorindex"
 )
 
-func TestSearchVectorStore_NilManager(t *testing.T) {
+// TestSearchVectorStore_NoFocusRootErrors verifies the pre-focus surface: no
+// project switch has pointed the Git panel anywhere yet, so the focus-routed
+// search fails with the legacy "not available" message.
+func TestSearchVectorStore_NoFocusRootErrors(t *testing.T) {
 	f := &FrontendAPI{
 		appCtx: context.Background,
 	}
 
 	_, err := f.SearchVectorStore(SearchRequest{Query: "query", TopK: 10})
 	if err == nil {
-		t.Fatal("expected error when vectorManager is nil")
+		t.Fatal("expected error when no focus root is set")
 	}
 	if err.Error() != "vector search not available" {
 		t.Errorf("unexpected error message: %v", err)
@@ -26,7 +29,7 @@ func TestSearchVectorStore_NilManager(t *testing.T) {
 
 // TestSearchVectorStore_NoProjectReturnsEmpty verifies that vector search is
 // disabled for the No Project pseudo-project: it returns empty results (not an
-// error) without touching the vector manager.
+// error) without touching the vector registry.
 func TestSearchVectorStore_NoProjectReturnsEmpty(t *testing.T) {
 	f := &FrontendAPI{
 		appCtx:          context.Background,
@@ -140,10 +143,13 @@ func TestGetVectorIndexStatus_NoEmbedderInfoKeepsFieldsEmpty(t *testing.T) {
 	}
 }
 
-// newStuckVectorAPI returns a FrontendAPI whose vector manager has a
-// never-ready service (no SetProject/SetReady), simulating a stuck full
-// index, with the given search wait timeout knob.
-func newStuckVectorAPI(t *testing.T, waitTimeout time.Duration) *FrontendAPI {
+// newFocusedStuckVectorAPI returns a FrontendAPI whose per-root registry
+// already holds a manager with a never-ready service (no SetProject/SetReady,
+// simulating a stuck full index) for a synthetic focus root, with that root
+// focused — the minimal wiring for the user-facing RPC paths, which route
+// through the registry's focus (ADR-080). Injecting the entry directly keeps
+// the test off resolveRootPlan (no project manager, no real worktrees).
+func newFocusedStuckVectorAPI(t *testing.T, waitTimeout time.Duration) (*FrontendAPI, *vectorindex.Manager) {
 	t.Helper()
 	mgr, err := vectorindex.NewManager(vectorindex.ManagerConfig{
 		EmbeddingFunc: func(ctx context.Context, text string) ([]float32, error) {
@@ -156,10 +162,14 @@ func newStuckVectorAPI(t *testing.T, waitTimeout time.Duration) *FrontendAPI {
 	}
 	t.Cleanup(func() { mgr.Shutdown() })
 
-	return &FrontendAPI{
-		appCtx:        context.Background,
-		vectorManager: mgr,
-	}
+	f := &FrontendAPI{appCtx: context.Background}
+	root := canonicalRoot(t.TempDir())
+	vr := f.vectorRootsRegistry()
+	vr.mu.Lock()
+	vr.roots[root] = &vectorRootEntry{mgr: mgr, projectID: "p-test", lastUsed: time.Now()}
+	vr.focus = root
+	vr.mu.Unlock()
+	return f, mgr
 }
 
 // TestSearchVectorStore_BoundedWhenIndexStuck pins the defense-in-depth RPC
@@ -167,7 +177,7 @@ func newStuckVectorAPI(t *testing.T, waitTimeout time.Duration) *FrontendAPI {
 // search_wait_timeout, so a stuck full index surfaces an actionable error
 // within the bound instead of blocking the RPC indefinitely.
 func TestSearchVectorStore_BoundedWhenIndexStuck(t *testing.T) {
-	f := newStuckVectorAPI(t, 60*time.Millisecond)
+	f, _ := newFocusedStuckVectorAPI(t, 60*time.Millisecond)
 
 	start := time.Now()
 	_, err := f.SearchVectorStore(SearchRequest{Query: "query", TopK: 10})
@@ -188,7 +198,7 @@ func TestSearchVectorStore_BoundedWhenIndexStuck(t *testing.T) {
 // path: zero waiting — a not-ready index errors immediately with the
 // actionable message.
 func TestSearchVectorStore_FailFastZeroTimeout(t *testing.T) {
-	f := newStuckVectorAPI(t, 0)
+	f, _ := newFocusedStuckVectorAPI(t, 0)
 
 	start := time.Now()
 	_, err := f.SearchVectorStore(SearchRequest{Query: "query", TopK: 10})
@@ -211,8 +221,8 @@ func TestSearchVectorStore_FailFastZeroTimeout(t *testing.T) {
 // surfaces the ordinary downstream error (no collection on this manager) —
 // not a not-ready error.
 func TestSearchVectorStore_FailFastReadyIndexProceeds(t *testing.T) {
-	f := newStuckVectorAPI(t, 0)
-	f.vectorManager.Service().SetReady(true)
+	f, mgr := newFocusedStuckVectorAPI(t, 0)
+	mgr.Service().SetReady(true)
 
 	start := time.Now()
 	_, err := f.SearchVectorStore(SearchRequest{Query: "query", TopK: 10})
@@ -246,16 +256,17 @@ func TestReindexVectorIndex_NoProject(t *testing.T) {
 	}
 }
 
-// TestReindexVectorIndex_NilManager verifies that a forced reindex fails
-// cleanly before the vector manager is wired (background init not done yet).
-func TestReindexVectorIndex_NilManager(t *testing.T) {
+// TestReindexVectorIndex_NoFocusRoot verifies that a forced reindex fails
+// cleanly before any focus root has been established (no project switch has
+// pointed the Git panel anywhere yet).
+func TestReindexVectorIndex_NoFocusRoot(t *testing.T) {
 	f := &FrontendAPI{
 		appCtx: context.Background,
 	}
 
 	err := f.ReindexVectorIndex()
 	if err == nil {
-		t.Fatal("expected error when vectorManager is nil")
+		t.Fatal("expected error when no focus root is set")
 	}
 	if err.Error() != "vector index not available" {
 		t.Errorf("unexpected error message: %v", err)
@@ -266,7 +277,7 @@ func TestReindexVectorIndex_NilManager(t *testing.T) {
 // surfaces the manager's "no indexer configured" error when no project has
 // been activated yet (the manager is wired but idle).
 func TestReindexVectorIndex_NoActiveIndexer(t *testing.T) {
-	f := newStuckVectorAPI(t, 0)
+	f, _ := newFocusedStuckVectorAPI(t, 0)
 
 	err := f.ReindexVectorIndex()
 	if err == nil {

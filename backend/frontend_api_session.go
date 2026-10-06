@@ -407,13 +407,9 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 	}
 	processedText := core.PreprocessMessageText(text, activeSkills, activeAgents, activeMCPServers, workspacePath)
 
-	// Session-aware vector-index routing (ADR-080): a send is the
-	// authoritative "this session is being driven" signal, so the vector
-	// index follows the send target's execution workspace before its RAG
-	// hint injection runs. No-op unless the target is a managed-worktree
-	// session of the active project whose tree differs from the current
-	// index target (local sessions keep the checkout flow untouched).
-	f.maybeReScopeVectorIndexToSession(id)
+	// ADR-080: no send-time vector re-scoping — the per-root registry routes
+	// each session's semantic_search and RAG hints through its own task
+	// context (WorkspacePathFrom), so a send never mutates shared index state.
 
 	// Auto-discover local directories mentioned in the prompt and add them as
 	// session-scoped auxiliary working directories (best-effort: never blocks).

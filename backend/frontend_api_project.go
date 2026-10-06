@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,7 +14,6 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
-	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/c0wrk/core/workspace"
 )
 
@@ -73,18 +71,22 @@ func (f *FrontendAPI) DeleteProject(id string) error {
 	}
 	f.activeProjectMu.Unlock()
 
-	// Clean up vector index data for the deleted project. Managed-session
-	// worktree indexes live under <projectVI>/worktrees/<name>: drop each
-	// explicitly first (DeleteProjectData discards parked service slots per
-	// exact storage path), then the project root removes everything left.
-	if vm := f.getVectorManager(); vm != nil {
-		viRoot := config.ProjectVectorIndexPath(f.agentDir, id)
-		if entries, readErr := os.ReadDir(filepath.Join(viRoot, "worktrees")); readErr == nil {
-			for _, e := range entries {
-				_ = vm.DeleteProjectData(filepath.Join(viRoot, "worktrees", e.Name())) // Best-effort.
-			}
+	// Clean up vector index data for the deleted project. Per-root managers
+	// (ADR-080) are released FIRST — shutdown drops their open chromem
+	// handles so the directory removal works on Windows too. Managed-session
+	// worktree indexes live under <projectVI>/worktrees/<name> with per-tree
+	// embedding caches under <projectVI>/embedding_cache-worktrees/<name>:
+	// drop each worktree storage explicitly, then the project root removes
+	// everything left (caches included). Any live manager can run the
+	// deletion (it is a plain fs + park-slot operation); without one there is
+	// nothing this app run can be holding open, so the best-effort pass is
+	// skipped exactly like the nil-manager case before it.
+	viRoot := config.ProjectVectorIndexPath(f.agentDir, id)
+	if released := f.vectorRootsRegistry().ReleaseProject(id); len(released) > 0 {
+		for _, e := range worktreeStorageNames(viRoot) {
+			_ = released[0].DeleteProjectData(e) // Best-effort.
 		}
-		_ = vm.DeleteProjectData(viRoot) // Best-effort; error is non-critical.
+		_ = released[0].DeleteProjectData(viRoot) // Best-effort; error is non-critical.
 	}
 
 	// Stop watcher if this was the active project
@@ -482,10 +484,13 @@ func (f *FrontendAPI) switchProjectTeardown(newID string) {
 		f.persistCurrentProjectSwitchState(previousProjectID)
 	}
 
-	// Cancel any in-flight indexing from a previous project.
-	if vm := f.getVectorManager(); vm != nil {
-		vm.CancelIndexing()
-	}
+	// Per-root managers (ADR-080): no indexing is cancelled here. Every live
+	// manager serves its own tree — a background session on the outgoing
+	// project keeps searching its own index — and the focus move below
+	// (switchProjectSetupVector → ApplyFocus) does not kill the outgoing
+	// tree's in-flight build either. Manager teardown happens only on
+	// release/deletion (Release/ReleaseProject/ShutdownAll).
+	_ = previousProjectID
 }
 
 // switchProjectActivate sets the new project as active and updates related state.
@@ -647,9 +652,10 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 		// indexer — it would run a full ValidateCollection pass (including a
 		// wasted ONNX inference) only to find "no changes detected". The
 		// indexer's cached .gitignore patterns are reused so the watcher does
-		// not re-read .gitignore on every debounce flush.
-		vm := f.getVectorManager()
-		if vm != nil && vm.IsAnyIndexablePath(changedPaths) {
+		// not re-read .gitignore on every debounce flush. The watcher root is
+		// the project checkout, so the notification targets that root's
+		// manager only (ADR-080): other trees' managers are untouched.
+		if vm := f.vectorRootsRegistry().LiveManager(p.WorkspacePath); vm != nil && vm.IsAnyIndexablePath(changedPaths) {
 			vm.NotifyFileChange()
 		}
 	})
@@ -781,22 +787,28 @@ func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
 	return nil
 }
 
-// switchProjectSetupVector configures vector indexing for the new project.
-// For No Project (CHAT mode), vector indexing is fully disabled: the manager
-// is reset to an empty state (clearing any stale CODE-project collection) and
-// a disabled status is emitted, but no index is built and no embedder is loaded.
+// switchProjectSetupVector aligns the vector index with the switched-to
+// project (ADR-080). The registry owns one manager per workspace root;
+// switching a project moves the Git-panel FOCUS to the project's effective
+// target — the saved session's managed tree when one exists, the checkout
+// otherwise (resolveVectorIndexTarget) — creating that root's manager on
+// demand. No live manager is torn down: background sessions keep searching
+// their own trees regardless of the focus. For No Project (CHAT mode) vector
+// indexing is fully disabled: the focus is cleared and an unavailable status
+// is emitted; no index is built.
 func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
-	// Handshake with the background ONNX init. The vector manager is created
-	// asynchronously (its own goroutine, after EventBackendReady) and is usually
-	// NOT ready when the frontend fires its first SwitchProject on
+	// Handshake with the background ONNX init: the manager factory is built
+	// asynchronously (its own goroutine, after EventBackendReady) and is
+	// usually NOT ready when the frontend fires its first SwitchProject on
 	// backend:ready. Rather than silently dropping the setup (which left the
-	// startup project unindexed until the user manually switched projects), record
-	// the project so InitVectorIndexForActiveProject applies it once the manager
-	// is wired in. The read-and-record is atomic under vectorSetupMu so it cannot
-	// race that drain.
+	// startup project unindexed until the user manually switched projects),
+	// record the project so InitVectorIndexForActiveProject applies it once
+	// the factory is wired in. The read-and-record is atomic under
+	// vectorSetupMu so it cannot race that drain. Lock order:
+	// vectorSetupMu → the registry's internal lock (FactoryReady).
+	vr := f.vectorRootsRegistry()
 	f.vectorSetupMu.Lock()
-	vm := f.getVectorManager()
-	if vm == nil {
+	if !vr.FactoryReady() {
 		if p.IsNoProject {
 			// CHAT mode never indexes: drop any pending setup.
 			f.deferredVectorProject = nil
@@ -806,40 +818,28 @@ func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
 		f.vectorSetupMu.Unlock()
 		return nil
 	}
-	// Manager is ready: this switch supersedes any deferred setup.
+	// Factory is ready: this switch supersedes any deferred setup.
 	f.deferredVectorProject = nil
 	f.vectorSetupMu.Unlock()
 
-	// No Project (CHAT mode): vector indexing is disabled. Delegate to the
-	// manager, which short-circuits without running git branch detection,
-	// loading the embedder, creating a persistent index, or starting a
-	// background indexing goroutine. Emit a disabled status so the frontend
-	// reflects the dormant state rather than the previous project's status.
+	// No Project (CHAT mode): clear the focus and reflect the dormant
+	// subsystem in the status stream.
 	if p.IsNoProject {
-		if switchErr := vm.SwitchProject(p.ID, p.WorkspacePath, config.ProjectVectorIndexPath(f.agentDir, p.ID), vectorindex.ProjectCallbacks{}, config.ProjectEmbeddingCachePath(f.agentDir, p.ID)); switchErr != nil {
-			return fmt.Errorf("switching vector index project: %w", switchErr)
-		}
+		vr.LeaveFocus()
 		st := VectorIndexStatus{State: "unavailable", Indices: []string{}}
 		f.applyEmbedderInfo(&st)
 		f.emitEvent(EventVectorIndexStatus, st)
 		return nil
 	}
 
-	// Session-aware routing (ADR-080): when the project's saved session is
-	// bound to a managed worktree, the index targets THAT tree root with a
-	// worktree-scoped storage dir — branch detection keys off the tree, and
-	// concurrent sessions on different trees keep disjoint index state. For
-	// local sessions (and every unresolvable case) the target is the project
-	// checkout with the project storage dir, byte-for-byte the historical
-	// local-project flow.
+	// Fail-soft: a focus that cannot be indexed (unresolvable root, factory
+	// failure) must not fail the project switch — the vector_index:status
+	// stream carries the actionable state instead.
 	target := f.resolveVectorIndexTarget(p)
-	f.vectorSetupMu.Lock()
-	f.vectorTargetWorkspace = target.workspacePath
-	f.vectorSetupMu.Unlock()
-	if err := f.switchVectorIndexToTarget(p, target, vm); err != nil {
-		return fmt.Errorf("switching vector index project: %w", err)
+	if err := vr.ApplyFocus(canonicalRoot(target.workspacePath)); err != nil {
+		f.log().Warn("vector focus unavailable for project target",
+			"project", p.ID, "root", target.workspacePath, "error", err)
 	}
-
 	return nil
 }
 

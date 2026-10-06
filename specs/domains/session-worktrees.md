@@ -28,7 +28,8 @@ git RPC, the worktree listing RPC, and the pinned-branch refusal).
 - `backend/session/manager.go` — `CreateSessionFromDraft` (commit a prepared workspace), `SetWorkspaceEnsurer` + the restore-time ensure inside `getOrRestoreSession`'s single-flight, `HasSession` (non-restoring existence), binding-aware lazy restore and `WorkspacePathFor`
 - `backend/config/paths.go` — `ManagedWorktreesDir`, `ManagedWorktreePath` (the only place `.worktrees` paths are constructed or validated)
 - `backend/frontend_api_git_focus.go` — the Git-panel focus model: `SetGitPanelFocus`/`GetGitPanelFocus`/`ListProjectWorktrees` RPCs, `resolveGitFocusRoot` (the focus resolution behind `resolveGitRepoRoot`), owning-session metadata, and the pinned-branch guard (`ErrPinnedWorktreeBranch`, `refusePinnedBranchSwitch`)
-- `backend/frontend_api_vector.go` — vector-index session routing: `resolveVectorIndexTarget` (project switch resolves the saved session's tree), `maybeReScopeVectorIndexToSession` (send-driven re-scope; restores the session first so the tree exists), worktree-scoped storage (`config.WorktreeVectorIndexPath`) and release cleanup (`deleteWorktreeVectorIndex`)
+- `backend/frontend_api_vector.go` — vector-index RPC surface (`SearchVectorStore`/`GetVectorIndexStatus`/`ReindexVectorIndex`, all routed to the Git-panel FOCUS root), focus-target resolution (`resolveVectorIndexTarget` — the project switch resolves the saved session's tree), worktree-scoped storage (`config.WorktreeVectorIndexPath`) and release cleanup (`deleteWorktreeVectorIndex`: registry release → storage → per-tree cache)
+- `backend/vector_roots.go` — the per-root registry (ADR-081): one `vectorindex.Manager` per workspace root (single-flight creation, LRU-bounded live set with the focus pinned), agent-side routing by the executor context's workspace root, `ApplyFocus`/`LeaveFocus`, `Release`/`ReleaseProject`/`ShutdownAll`, and `Application.buildVectorRouter` (the shared search closures)
 - `core/vectorindex/git.go` — `resolveGitDir` follows a linked worktree's `.git` pointer file to the private git directory that owns HEAD, so the vector index's branch monitoring works inside managed trees; `backend/config/paths.go` `ManagedWorktreeNameFromPath`/`WorktreeVectorIndexPath` derive the per-tree index storage
 - `frontend/src/lib/gitFocus.ts` + `frontend/src/hooks/useGitFocusSync.ts` — the frontend side: serialized/supersede-guarded focus applies and the follow-the-session effect (project/session switches move the focus to the active session's execution workspace)
 - `frontend/src/stores/sessionDraftStore.ts` + `frontend/src/lib/sessionDraft.ts` — the chat-side draft UX: the pending New-Session draft (project + drafted workspace) and `createSessionFromDraft()`, the single commit path that routes a branch draft to `CreateManagedSession` and everything else to `CreateSession`
@@ -106,10 +107,12 @@ discriminator, so the warning renders as a chat row and persists across
 reloads) stating that uncommitted changes that existed only in the missing
 tree could not be recovered. Identity lookup
 never invents a path, and a managed restore never falls back to the project
-checkout (no ensurer configured ⇒ fail closed). Once restored, the first
-`SendMessage` to the session re-scopes the vector index to its tree (see
-[Vector Index routing](workspace.md#vector-index) — the re-scope restores the
-session first, so it never targets a tree the restore just recreated).
+checkout (no ensurer configured ⇒ fail closed). Once restored, the session's
+search tools route through the executor context to its own tree's manager —
+created on demand by the per-root registry
+([Vector Index routing](workspace.md#vector-index), [ADR-081](../decisions/081-vector-per-root-registry.md)) — so a
+missing tree is materialized by the restore ensurer before the first search
+ever targets it.
 
 ### Release (deletion)
 
@@ -221,15 +224,20 @@ frontend (useGitFocusSync)                  backend
 - Deletion never resurrects: `Manager.DeleteSession` refuses sessions not
   live in memory (the RPC gates on `HasSession`), so a deletion flow can
   never re-provision a tree it just released through the restore ensurer.
-- Vector-index routing always follows the execution workspace: a managed
-  session's index/search target its own tree root with worktree-scoped
-  storage under `<project vector_index>/worktrees/<name>` (branch resolved
-  from that root; disjoint state per tree), while local sessions keep the
-  project checkout target. Membership is decided by containment in the
-  project's `.worktrees` container, never by comparing paths to the checkout,
-  and a foreign-project session never re-scopes the active project's index.
-- Releasing a managed tree removes its vector-index storage root; project
-  deletion removes every worktree root together with the project root.
+- Vector-index routing is per workspace root (ADR-081): every routed root
+  owns a `vectorindex.Manager` with worktree-scoped storage under
+  `<project vector_index>/worktrees/<name>` (branch resolved from that root;
+  disjoint, simultaneously live state per tree). Agent-side search resolves
+  the root from the executor context — a session always searches its own
+  tree, regardless of which session is active or focused — while the
+  user-facing RPCs follow the Git-panel focus. Membership is decided by
+  containment in the project's `.worktrees` container, never by comparing
+  paths to the checkout, and an unknown root is rejected rather than
+  silently indexed. No send ever re-points shared index state.
+- Releasing a managed tree releases its registry manager first (open chromem
+  handles dropped so removal is Windows-safe), then removes its vector-index
+  storage root and per-tree embedding cache; project deletion removes every
+  worktree root together with the project root.
 
 ## Configuration
 

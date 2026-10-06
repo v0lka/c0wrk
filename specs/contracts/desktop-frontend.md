@@ -188,9 +188,9 @@ The ChatGPT subscription sign-in (browser OAuth via `backend/providerauth`; the 
 
 | Method                | Parameters                                                    | Returns                       | Description                                         |
 | --------------------- | ------------------------------------------------------------- | ----------------------------- | --------------------------------------------------- |
-| `SearchVectorStore`   | `SearchRequest{query, top_k, file_pattern, must_match, mode}` | ([]VectorStoreEntry, error)   | Hybrid search/browse; mode= hybrid\|vector\|lexical |
-| `GetVectorIndexStatus`| —                                                             | VectorIndexStatus             | Get vector index state/progress (getter, no error)  |
-| `ReindexVectorIndex`  | —                                                             | error                         | Force a full reindex of the active project's index: reconciles changed/new/deleted files, falling back to a full build when no index exists yet. Rejected for No Project (CHAT) mode |
+| `SearchVectorStore`   | `SearchRequest{query, top_k, file_pattern, must_match, mode}` | ([]VectorStoreEntry, error)   | Hybrid search/browse over the **Git-panel focus tree** (ADR-081); mode= hybrid\|vector\|lexical. Session tools route separately, by their own workspace context |
+| `GetVectorIndexStatus`| —                                                             | VectorIndexStatus             | Vector index state/progress of the **focus tree** (getter, no error); status events also stream only from the focused root's manager |
+| `ReindexVectorIndex`  | —                                                             | error                         | Force a full reindex of the **focus tree's** index: reconciles changed/new/deleted files, falling back to a full build when no index exists yet. Rejected for No Project (CHAT) mode |
 
 ### Git (`backend/frontend_api_git.go`)
 
