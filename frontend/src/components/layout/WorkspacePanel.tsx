@@ -4,6 +4,7 @@ import { SegmentedControl, type SegmentedControlItem } from "@/components/ui/seg
 import { FileTreePanel } from "./FileTreePanel";
 import { VectorStorePanel } from "./VectorStorePanel";
 import { GitPanel } from "@/components/GitPanel";
+import { BranchPicker } from "@/components/GitPanel/BranchPicker";
 import { ResearchPanel } from "@/components/research";
 import { useProjectStore, selectIsNoProject } from "@/stores/projectStore";
 import { useGitPanelStore } from "@/stores/gitPanelStore";
@@ -209,6 +210,13 @@ export function WorkspacePanel() {
             <ResearchPanel />
           </div>
         )}
+
+        {/* The branch picker dialog is mounted at this level — not inside
+            GitPanel — so the chat toolbar's session-draft `branch…` entry can
+            open it regardless of which workspace tab is active. It renders
+            nothing while closed (gitPanelStore.isBranchPickerOpen gates the
+            Dialog). */}
+        <BranchPicker />
       </div>
     </TooltipProvider>
   );

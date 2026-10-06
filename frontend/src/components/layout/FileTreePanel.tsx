@@ -279,14 +279,17 @@ export function FileTreePanel() {
     ? projects.find((p) => p.id === activeProjectId)?.workspace_path ?? null
     : null
 
-  // For No Project, each session has its own isolated workspace that differs
-  // from the project workspace. Fetch it via GetSessionWorkspace RPC.
-  // Never fall back to projectWorkspacePath for No Project — the project-level
-  // directory (~/.c0wrk/projects/__no_project__/) contains all sessions'
-  // scaffolding and must not be exposed as the file tree root.
+  // The workspace root follows the ACTIVE SESSION, not just the project:
+  // GetSessionWorkspace resolves the session's own execution workspace —
+  // the project checkout for a local session, its managed worktree for a
+  // worktree session, and the per-session isolated directory for No Project
+  // (CHAT). Keyed by the session so a delayed response can never install
+  // another session's root (cancelled flag below); falls back to the
+  // project-level path when no session is active, the backend has no
+  // answer yet, or the RPC fails — for local sessions both values coincide.
   const [sessionWorkspacePath, setSessionWorkspacePath] = useState<string | null>(null)
   useEffect(() => {
-    if (!isNoProject || !activeSessionId) {
+    if (!activeSessionId) {
       setSessionWorkspacePath(null)
       return
     }
@@ -317,11 +320,16 @@ export function FileTreePanel() {
       cancelled = true
       if (retryTimer !== null) clearTimeout(retryTimer)
     }
-  }, [isNoProject, activeSessionId])
+  }, [activeSessionId])
 
-  // For No Project, the workspace is per-session — use the RPC-fetched path
-  // exclusively. Never expose the project-level __no_project__/ directory.
-  const workspacePath = isNoProject ? sessionWorkspacePath : projectWorkspacePath
+  // Session-first resolution: the backend-authoritative session root wins
+  // whenever it resolved; otherwise degrade to the project-level path. No
+  // Project keeps the strict old contract — the project-level
+  // __no_project__/ directory (all sessions' scaffolding) is NEVER exposed:
+  // a CHAT session whose root has not resolved yet simply shows no tree.
+  const workspacePath = isNoProject
+    ? sessionWorkspacePath
+    : sessionWorkspacePath ?? projectWorkspacePath
 
   // Load root on project or session change
   useEffect(() => {

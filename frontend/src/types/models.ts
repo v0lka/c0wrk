@@ -25,6 +25,22 @@ export interface ProjectSwitchStatePayload {
   active_file?: string
 }
 
+/**
+ * Mirrors the backend `session.WorkspaceBinding` — the execution workspace a
+ * CODE session is pinned to at creation (ADR-080). Absent on CHAT sessions
+ * (nil pointer, omitted by `omitempty`). Immutable for an existing session.
+ */
+export interface WorkspaceBinding {
+  /** "local" = the project checkout; "managed_worktree" = a session-owned tree. */
+  readonly kind: 'local' | 'managed_worktree'
+  /** Derived at validation; the stored copy is advisory (re-derived on load). */
+  readonly workspace_path: string
+  /** Managed only: the single portable tree-name component. */
+  readonly worktree_name?: string
+  /** Managed only: the pinned branch (chosen at creation, not live HEAD). */
+  readonly branch?: string
+}
+
 export interface SessionInfo {
   readonly id: string
   readonly project_id: string
@@ -46,7 +62,12 @@ export interface SessionInfo {
    *  it; payloads from older backends may omit the field entirely (the field
    *  is therefore optional — isSessionInfo admits its absence). */
   readonly unfinished_task_status?: string
+  /** The immutable execution-workspace binding (ADR-080). Absent for CHAT
+   *  sessions and payloads from older backends — isSessionInfo admits the
+   *  field's absence. */
+  readonly workspace_binding?: WorkspaceBinding
 }
+
 
 /** Per-strategy manual-compaction prediction (mirrors the backend's
  *  core.CompactionAvailability): is this strategy currently available (would
@@ -1274,4 +1295,45 @@ export interface NewHypothesisCard {
   verification_criterion?: string
   timebox?: string
   parents?: string[]
+}
+
+/** One worktree of the active project's repository, enriched with the
+ *  ownership metadata the Git panel's focus switcher renders: managed trees
+ *  carry their owning session, and every entry knows whether it is the
+ *  current focus target. */
+export interface GitWorktree {
+  path: string
+  name: string
+  /** "main" = the local checkout; "managed" = an app-managed session tree
+   *  under <repo>/.worktrees; "external" = a user/tooling-created linked
+   *  worktree outside the container. */
+  kind: 'main' | 'managed' | 'external'
+  branch?: string
+  head: string
+  detached?: boolean
+  bare?: boolean
+  locked?: boolean
+  prunable?: boolean
+  /** True for app-managed session trees. */
+  managed: boolean
+  /** True when branch checkout is refused (managed trees pin their branch
+   *  to their owning session, ADR-080). */
+  pinned: boolean
+  /** Owning session of a managed tree (absent when no live session claims it). */
+  session_id?: string
+  session_name?: string
+  /** True for the worktree the Git panel is currently focused on. */
+  is_focus: boolean
+}
+
+/** The resolved Git-panel focus target — the worktree every git RPC
+ *  currently operates on. */
+export interface GitPanelFocus {
+  path: string
+  name: string
+  kind: 'main' | 'managed' | 'external'
+  branch?: string
+  managed: boolean
+  pinned: boolean
+  session_id?: string
 }

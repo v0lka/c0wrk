@@ -18,6 +18,133 @@ import (
 // graph lean — config is a low-level package consumed by most backend packages).
 const noProjectID = "__no_project__"
 
+// ManagedWorktreesDir returns the app-managed worktree container in a CODE repository.
+// The segment literal is the shared core.WorktreesRelativePath constant.
+func ManagedWorktreesDir(repoRoot string) string {
+	return filepath.Join(repoRoot, core.WorktreesRelativePath)
+}
+
+// ManagedWorktreePath validates a portable single-component identity and derives
+// its path. Existing symlinks cannot redirect the container or tree.
+func ManagedWorktreePath(repoRoot, name string) (string, error) {
+	if !filepath.IsAbs(repoRoot) || filepath.Clean(repoRoot) != repoRoot {
+		return "", errors.New("worktree repository root must be an absolute clean path")
+	}
+	if name == "" || len(name) > 120 || name[0] == '.' || name[0] == '-' || strings.HasSuffix(name, ".") {
+		return "", errors.New("invalid managed worktree name")
+	}
+	for _, c := range name {
+		isAlnum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		if !isAlnum && c != '-' && c != '_' && c != '.' {
+			return "", errors.New("invalid managed worktree name")
+		}
+	}
+	// Windows device names are invalid even on a Unix creator: persisted
+	// identities must remain portable across supported desktop platforms.
+	stem := strings.ToUpper(strings.SplitN(name, ".", 2)[0])
+	if stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" ||
+		(len(stem) == 4 && (strings.HasPrefix(stem, "COM") || strings.HasPrefix(stem, "LPT")) && stem[3] >= '1' && stem[3] <= '9') {
+		return "", errors.New("reserved managed worktree name")
+	}
+	container := ManagedWorktreesDir(repoRoot)
+	path := filepath.Join(container, name)
+	for _, candidate := range []string{container, path} {
+		fi, err := os.Lstat(candidate)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("inspect managed worktree path: %w", err)
+		}
+		if err == nil && (fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir()) {
+			return "", errors.New("managed worktree path must be a directory, not a symlink")
+		}
+		within, err := IsWithinPath(repoRoot, candidate)
+		if err != nil {
+			return "", fmt.Errorf("validate managed worktree containment: %w", err)
+		}
+		if !within {
+			return "", errors.New("managed worktree escapes repository")
+		}
+	}
+	return path, nil
+}
+
+// validateManagedWorktreeName enforces the portable single-component identity
+// rules shared by every place a worktree name is derived from or joined into
+// a path.
+func validateManagedWorktreeName(name string) error {
+	if name == "" || len(name) > 120 || name[0] == '.' || name[0] == '-' || strings.HasSuffix(name, ".") {
+		return errors.New("invalid managed worktree name")
+	}
+	for _, c := range name {
+		isAlnum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		if !isAlnum && c != '-' && c != '_' && c != '.' {
+			return errors.New("invalid managed worktree name")
+		}
+	}
+	// Windows device names are invalid even on a Unix creator: persisted
+	// identities must remain portable across supported desktop platforms.
+	stem := strings.ToUpper(strings.SplitN(name, ".", 2)[0])
+	if stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" ||
+		(len(stem) == 4 && (strings.HasPrefix(stem, "COM") || strings.HasPrefix(stem, "LPT")) && stem[3] >= '1' && stem[3] <= '9') {
+		return errors.New("reserved managed worktree name")
+	}
+	return nil
+}
+
+// ManagedWorktreeNameFromPath validates that ws is a managed worktree of
+// repoRoot — exactly <repoRoot>/.worktrees/<name>, one component inside the
+// container — and returns the name. Containment goes through IsWithinPath and
+// the name re-derives through ManagedWorktreePath, so a returned identity
+// always round-trips; the tree itself is NOT required to exist on disk (the
+// restore path may not have recreated it yet).
+func ManagedWorktreeNameFromPath(repoRoot, ws string) (string, error) {
+	if !filepath.IsAbs(repoRoot) || filepath.Clean(repoRoot) != repoRoot {
+		return "", errors.New("worktree repository root must be an absolute clean path")
+	}
+	if !filepath.IsAbs(ws) {
+		return "", errors.New("worktree path must be absolute")
+	}
+	ws = filepath.Clean(ws)
+	container := ManagedWorktreesDir(repoRoot)
+	within, err := IsWithinPath(container, ws)
+	if err != nil {
+		return "", fmt.Errorf("validate managed worktree containment: %w", err)
+	}
+	if !within {
+		return "", errors.New("path is not inside the managed worktrees container")
+	}
+	rel, err := filepath.Rel(container, ws)
+	if err != nil {
+		return "", fmt.Errorf("derive managed worktree name: %w", err)
+	}
+	if rel == "." || rel != filepath.Base(rel) {
+		return "", errors.New("path is not a single managed worktree directory")
+	}
+	if _, err := ManagedWorktreePath(repoRoot, rel); err != nil {
+		return "", err
+	}
+	return rel, nil
+}
+
+// WorktreeVectorIndexPath returns the vector-index storage root for a managed
+// worktree of a project: <project vector index>/worktrees/<name>. A managed
+// session indexes its OWN tree root, so its index state (branch-scoped
+// collections, lexical index, file-hash sidecars) lives under a
+// worktree-scoped root — concurrent sessions on different trees never share
+// or clobber each other's persisted index state — while staying inside the
+// project's vector dir so project deletion removes it together with the
+// project's own index. The layout under the root (branches/, lexical/,
+// sidecars) is owned by core/vectorindex; the worktrees/ container segment is
+// opaque to it.
+func WorktreeVectorIndexPath(agentDir, projectID, name string) (string, error) {
+	if projectID == "" {
+		return "", errors.New("project id is required for a worktree vector index path")
+	}
+	if err := validateManagedWorktreeName(name); err != nil {
+		return "", err
+	}
+	return filepath.Join(ProjectVectorIndexPath(agentDir, projectID), "worktrees", name), nil
+}
+
 // WorkspaceSegment is the directory name for workspace directories.
 // Regular projects use "Workspace" under the project dir; No Project sessions
 // use "workspace" under the per-session directory.

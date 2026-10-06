@@ -12,9 +12,11 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useBranchActions } from "@/hooks/useBranchActions";
 import type { BranchActionKind } from "@/hooks/useBranchActions";
+import { focusWorktree } from "@/lib/gitFocus";
 import { LocalBranchRow } from "./LocalBranchRow";
 import { RemoteBranchRow } from "./RemoteBranchRow";
 import { BranchDeleteConfirmDialog } from "./BranchDeleteConfirmDialog";
+import { WorktreesSection } from "./WorktreesSection";
 
 /**
  * Inline branch dropdown — the git panel's branch field.
@@ -24,7 +26,10 @@ import { BranchDeleteConfirmDialog } from "./BranchDeleteConfirmDialog";
  * once there are >= 5 branches. Branches are grouped into **Local** (rows
  * expose hover mini-icons for push/merge/rebase/rename/delete) and **Remote**
  * (click checks the branch out as a new local tracking branch; hover exposes
- * delete-remote). The footer offers **New branch…** and **Manage branches…**,
+ * delete-remote). A **Worktrees** section switches the panel's FOCUS between
+ * every worktree of the project (local checkout, managed session trees,
+ * external trees) — a focus switch, never a checkout. The footer offers
+ * **New branch…** and **Manage branches…**,
  * both of which open the existing `BranchPicker` modal (the full switch/create
  * surface). Branch data comes from `gitPanelStore.branches`.
  */
@@ -32,6 +37,7 @@ export function BranchDropdown() {
   const branches = useGitPanelStore((s) => s.branches);
   const branch = useGitPanelStore((s) => s.branch);
   const openBranchPicker = useGitPanelStore((s) => s.openBranchPicker);
+  const worktrees = useGitPanelStore((s) => s.worktrees);
 
   const actions = useBranchActions();
 
@@ -185,10 +191,27 @@ export function BranchDropdown() {
             </>
           )}
 
-          {visibleLocal.length === 0 && visibleRemote.length === 0 && (
+          {visibleLocal.length === 0 && visibleRemote.length === 0 && worktrees.length === 0 && (
             <div className="px-2 py-3 text-center text-xs text-muted-foreground">
               {branches.length === 0 ? "No branches" : "No matching branches"}
             </div>
+          )}
+
+          {worktrees.length > 0 && (
+            <>
+              <DropdownMenuSeparator />
+              <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Worktrees
+              </div>
+              <WorktreesSection
+                variant="menu"
+                worktrees={worktrees}
+                onSelect={(w) => {
+                  void focusWorktree(w.path);
+                  close();
+                }}
+              />
+            </>
           )}
 
           <DropdownMenuSeparator />

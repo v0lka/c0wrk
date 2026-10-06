@@ -19,6 +19,33 @@ export async function createSession(): Promise<SessionInfo> {
   }
 }
 
+/**
+ * Create a CODE session bound to its own managed worktree provisioned on
+ * `branch` (ADR-080). When `createBranch` is true the branch is CREATED at
+ * `startPoint` (empty = repository HEAD) by the provisioning path instead of
+ * being required to already exist. The backend validates the whole binding
+ * before any git runs and compensates (releases the fresh tree) when the
+ * runtime or persistence step fails; the created branch is always kept.
+ */
+export async function createManagedSession(
+  branch: string,
+  createBranch: boolean,
+  startPoint: string,
+): Promise<SessionInfo> {
+  try {
+    const app = getApp()
+    const result = await app.CreateManagedSession(branch, createBranch, startPoint)
+    if (!isSessionInfo(result)) {
+      throw new Error('createManagedSession: backend returned invalid data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to create managed session:', err)
+    throw err
+  }
+}
+
+
 export async function deleteSession(id: string): Promise<void> {
   try {
     const app = getApp()

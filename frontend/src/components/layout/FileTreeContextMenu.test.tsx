@@ -181,9 +181,11 @@ describe('FileTreeContextMenu — View History', () => {
   const dirEntry: FileEntry = { name: 'components', path: '/ws/src/components', is_dir: true }
   const fileEntry: FileEntry = { name: 'foo.ts', path: '/ws/src/foo.ts', is_dir: false }
 
-  // Mirror the component's platform-aware separator so the assertion stays
-  // correct regardless of the jsdom platform string.
-  const PATH_SEP = navigator.platform.includes('Win') ? '\\' : '/'
+  // Mirror the component's platform-aware separator. The vitest environment
+  // is node (no `navigator`), where the component's lazy pathSep() resolves
+  // to the POSIX separator — assert against that directly instead of reading
+  // a `navigator` that does not exist here.
+  const PATH_SEP = '/'
 
   beforeEach(() => {
     // The menu's clipboard/error paths need the native Wails runtime present,

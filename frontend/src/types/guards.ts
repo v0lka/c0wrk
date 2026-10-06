@@ -53,9 +53,16 @@ export function isSessionInfo(v: unknown): v is SessionInfo {
     // unfinished_task_status is optional for backward compatibility: payloads
     // from older backends (and non-list readers) omit it entirely; when
     // present it must be a string status ("failed"|"in_progress"|"paused"|"").
+    // workspace_binding follows the same pattern (CHAT sessions and older
+    // backends omit it); when present it must carry a typed kind string.
     return isObj(v)
         && has(v, 'id', 'project_id', 'name')
         && (!('unfinished_task_status' in v) || typeof v.unfinished_task_status === 'string')
+        && (!('workspace_binding' in v)
+            || v.workspace_binding === null
+            || (isObj(v.workspace_binding)
+                && (v.workspace_binding as { kind?: unknown }).kind === 'local'
+                || (v.workspace_binding as { kind?: unknown }).kind === 'managed_worktree'))
 }
 
 export function isProjectInfo(v: unknown): v is ProjectInfo {

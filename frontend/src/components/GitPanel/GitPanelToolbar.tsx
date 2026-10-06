@@ -21,7 +21,7 @@ export function GitPanelToolbar() {
       </div>
       <button
         type="button"
-        onClick={openBranchPicker}
+        onClick={() => openBranchPicker()}
         title="Manage branches"
         aria-label="Manage branches"
         className="mr-1 flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"

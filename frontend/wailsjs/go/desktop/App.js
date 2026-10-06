@@ -110,6 +110,10 @@ export function CreateHypothesis(arg1, arg2) {
   return window['go']['desktop']['App']['CreateHypothesis'](arg1, arg2);
 }
 
+export function CreateManagedSession(arg1, arg2, arg3) {
+  return window['go']['desktop']['App']['CreateManagedSession'](arg1, arg2, arg3);
+}
+
 export function CreateModelProfile(arg1, arg2) {
   return window['go']['desktop']['App']['CreateModelProfile'](arg1, arg2);
 }
@@ -160,6 +164,10 @@ export function DeleteReviewComment(arg1) {
 
 export function DeleteSession(arg1) {
   return window['go']['desktop']['App']['DeleteSession'](arg1);
+}
+
+export function DeleteSessionWithOptions(arg1, arg2) {
+  return window['go']['desktop']['App']['DeleteSessionWithOptions'](arg1, arg2);
 }
 
 export function DeleteTag(arg1) {
@@ -284,6 +292,10 @@ export function GetFileIcon(arg1) {
 
 export function GetGitHistory(arg1, arg2) {
   return window['go']['desktop']['App']['GetGitHistory'](arg1, arg2);
+}
+
+export function GetGitPanelFocus() {
+  return window['go']['desktop']['App']['GetGitPanelFocus']();
 }
 
 export function GetGitStatus(arg1) {
@@ -476,6 +488,10 @@ export function ListFontFamilies(arg1) {
 
 export function ListProjectWorkDirectories(arg1) {
   return window['go']['desktop']['App']['ListProjectWorkDirectories'](arg1);
+}
+
+export function ListProjectWorktrees() {
+  return window['go']['desktop']['App']['ListProjectWorktrees']();
 }
 
 export function ListProjects() {
@@ -712,6 +728,10 @@ export function SetEmbeddedLLMAutoUnload(arg1, arg2) {
 
 export function SetEmbeddedLLMTuning(arg1) {
   return window['go']['desktop']['App']['SetEmbeddedLLMTuning'](arg1);
+}
+
+export function SetGitPanelFocus(arg1) {
+  return window['go']['desktop']['App']['SetGitPanelFocus'](arg1);
 }
 
 export function SetHypothesisPinned(arg1, arg2, arg3, arg4) {

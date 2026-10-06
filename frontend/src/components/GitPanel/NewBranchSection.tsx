@@ -30,6 +30,14 @@ interface NewBranchSectionProps {
    * immediately, and the matching base (or the raw SHA) is selected.
    */
   pendingBase?: string | null
+  /**
+   * Session-draft mode (ADR-080): when set, submitting records the drafted
+   * new-branch choice instead of running CreateBranch. No git operation runs
+   * at pick time — the branch is created and checked out in the new session's
+   * managed worktree at draft commit (CreateManagedSession), so the working
+   * tree is never touched here.
+   */
+  onDraftCreate?: (name: string, startPoint: string) => void
 }
 
 /**
@@ -47,6 +55,7 @@ export function NewBranchSection({
   onError,
   onCreated,
   pendingBase,
+  onDraftCreate,
 }: NewBranchSectionProps) {
   const [name, setName] = useState('')
   const [creating, setCreating] = useState(false)
@@ -88,6 +97,14 @@ export function NewBranchSection({
   const handleCreate = useCallback(async () => {
     const trimmed = name.trim()
     if (!trimmed || creating || disabled) return
+    if (onDraftCreate) {
+      // Draft mode: record the choice — the branch itself is created at
+      // draft commit inside the session's managed worktree provisioning.
+      onDraftCreate(trimmed, chooseBase ? selectedBase : '')
+      setName('')
+      onCreated()
+      return
+    }
     setCreating(true)
     try {
       await createBranch(trimmed, chooseBase ? selectedBase : '')
@@ -102,7 +119,7 @@ export function NewBranchSection({
     } finally {
       setCreating(false)
     }
-  }, [name, creating, disabled, chooseBase, selectedBase, onCreated, onError])
+  }, [name, creating, disabled, chooseBase, selectedBase, onCreated, onError, onDraftCreate])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && name.trim()) {
@@ -132,7 +149,7 @@ export function NewBranchSection({
           size="sm"
           onClick={handleCreate}
           disabled={!name.trim() || creating || disabled}
-          title="Create and switch to new branch"
+          title={onDraftCreate ? 'Create the branch in the new session\'s worktree on first send' : 'Create and switch to new branch'}
         >
           {creating ? (
             <Loader2 className="size-3.5 animate-spin" />

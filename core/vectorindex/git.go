@@ -119,23 +119,83 @@ func NewGitMonitor(repoPath string, onChange func(newBranch string), logger *slo
 	}, nil
 }
 
-// Start begins watching for branch changes. It watches the .git/ directory
-// for changes to the HEAD file.
+// gitDirPointerPrefix is the prefix of a linked-worktree `.git` file. In a
+// linked worktree (git worktree add) `<root>/.git` is a regular file whose
+// single line is `gitdir: <path>` pointing at the worktree's private git
+// directory (typically `<main-repo>/.git/worktrees/<name>`), where HEAD,
+// the index and per-worktree refs live.
+const gitDirPointerPrefix = "gitdir: "
+
+// resolveGitDir resolves the directory that owns HEAD for the repository at
+// repoPath. For a normal checkout that is `<repoPath>/.git` (a directory);
+// for a linked worktree it is the private git directory the `.git` pointer
+// file names. Any consumer that watches or reads HEAD-level state must go
+// through this resolution — watching `<root>/.git` itself in a linked
+// worktree watches a pointer FILE that never changes while branches are
+// switched in that tree. Returns an empty string (with a nil error) when
+// repoPath is not inside a git repository at all.
+func resolveGitDir(repoPath string) (string, error) {
+	dotGit := filepath.Join(repoPath, ".git")
+	info, err := os.Stat(dotGit)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("stat .git: %w", err)
+	}
+	if info.IsDir() {
+		return dotGit, nil
+	}
+
+	// Linked worktree: `.git` is a regular file carrying a gitdir pointer.
+	data, err := os.ReadFile(dotGit)
+	if err != nil {
+		return "", fmt.Errorf("reading .git pointer file: %w", err)
+	}
+	line := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(line, gitDirPointerPrefix) {
+		return "", fmt.Errorf(".git at %s is a file without a %q pointer", dotGit, gitDirPointerPrefix)
+	}
+	target := strings.TrimSpace(strings.TrimPrefix(line, gitDirPointerPrefix))
+	if target == "" {
+		return "", fmt.Errorf(".git pointer at %s names an empty gitdir", dotGit)
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(repoPath, target)
+	}
+	target = filepath.Clean(target)
+	gdInfo, err := os.Stat(target)
+	if err != nil {
+		return "", fmt.Errorf("resolving gitdir pointer target %s: %w", target, err)
+	}
+	if !gdInfo.IsDir() {
+		return "", fmt.Errorf("gitdir pointer target %s is not a directory", target)
+	}
+	return target, nil
+}
+
+// Start begins watching for branch changes. It watches the git directory
+// that owns HEAD — `.git` itself for a normal checkout, or the private git
+// directory a linked worktree's `.git` pointer file names — for changes to
+// the HEAD file.
 func (m *GitMonitor) Start() error {
-	gitDir := filepath.Join(m.repoPath, ".git")
-	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+	gitDir, err := resolveGitDir(m.repoPath)
+	if err != nil {
+		return fmt.Errorf("resolving git directory: %w", err)
+	}
+	if gitDir == "" {
 		m.logger.Info("no .git directory found, git monitor not started", "path", m.repoPath)
 		return nil
 	}
 
-	// Watch the .git directory (fsnotify can't watch individual files reliably
+	// Watch the git directory (fsnotify can't watch individual files reliably
 	// on all platforms, but watching the directory catches HEAD changes).
 	if err := m.watcher.Add(gitDir); err != nil {
-		return fmt.Errorf("watching .git directory: %w", err)
+		return fmt.Errorf("watching git directory %s: %w", gitDir, err)
 	}
 
 	go m.eventLoop()
-	m.logger.Info("git monitor started", "path", m.repoPath, "branch", m.currentBranch)
+	m.logger.Info("git monitor started", "path", m.repoPath, "gitdir", gitDir, "branch", m.currentBranch)
 	return nil
 }
 

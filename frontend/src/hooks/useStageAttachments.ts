@@ -29,8 +29,7 @@ import {
   completeAttachmentUploads,
   failAttachmentUploads,
 } from '@/lib/attachmentUploads'
-import { createSession } from '@/api/sessions'
-import { useSessionStore } from '@/stores/sessionStore'
+import { createSessionFromDraft } from '@/lib/sessionDraft'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
 import { NULL_SESSION_KEY } from '@/stores/chatInputStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
@@ -88,14 +87,15 @@ export function useStageAttachments(): {
         }
 
         // Ensure a session exists — terminal mode does the same on demand.
-        // From here on every write is keyed to this id, captured BEFORE the
-        // awaits below: if the user switches sessions while attachFiles is in
-        // flight, the result still lands in this (origin) session's key.
+        // Staging is a draft-committing action: an armed branch draft
+        // provisions the managed worktree here, a local draft (or no draft)
+        // creates the plain session. From here on every write is keyed to
+        // this id, captured BEFORE the awaits below: if the user switches
+        // sessions while attachFiles is in flight, the result still lands in
+        // this (origin) session's key.
         let sessionId = activeSessionId
         if (!sessionId) {
-          const newSession = await createSession()
-          useSessionStore.getState().addSession(newSession)
-          useSessionStore.getState().selectSession(newSession.id, newSession.project_id)
+          const newSession = await createSessionFromDraft()
           sessionId = newSession.id
         }
 

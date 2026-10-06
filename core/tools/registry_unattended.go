@@ -98,12 +98,16 @@ func (r *ToolRegistry) ExecuteUnattended(ctx context.Context, name string, input
 	// execution: see the method doc for the verify-on-edit rationale.
 	judgeOutcome := judgeToolCall(ctx, tool, input)
 	symlinkReason, symlinkCode := r.symlinkHardReason(ctx, name, tool, input)
+	worktreeReason, worktreeCode := worktreeTraversalHardReason(ctx, input)
 	blockHard := ""
-	if !judgeOutcome.Allow && judgeOutcome.Reason != "" &&
-		judgeOutcome.Severity == sdktools.JudgeSeverityHard && isCanonicalHardReason(judgeOutcome.ReasonCode) {
+	switch {
+	case !judgeOutcome.Allow && judgeOutcome.Reason != "" &&
+		judgeOutcome.Severity == sdktools.JudgeSeverityHard && isCanonicalHardReason(judgeOutcome.ReasonCode):
 		blockHard = judgeOutcome.Reason
-	} else if symlinkReason != "" && isCanonicalHardReason(symlinkCode) {
+	case symlinkReason != "" && isCanonicalHardReason(symlinkCode):
 		blockHard = symlinkReason
+	case worktreeReason != "" && isCanonicalHardReason(worktreeCode):
+		blockHard = worktreeReason
 	}
 	if blockHard != "" {
 		r.log().Warn("security: unattended tool blocked by hard safety reason",

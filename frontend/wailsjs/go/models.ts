@@ -1040,6 +1040,68 @@ export namespace backend {
 	        this.base_url = source["base_url"];
 	    }
 	}
+	export class GitPanelFocusInfo {
+	    path: string;
+	    name: string;
+	    kind: string;
+	    branch?: string;
+	    managed: boolean;
+	    pinned: boolean;
+	    session_id?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new GitPanelFocusInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.name = source["name"];
+	        this.kind = source["kind"];
+	        this.branch = source["branch"];
+	        this.managed = source["managed"];
+	        this.pinned = source["pinned"];
+	        this.session_id = source["session_id"];
+	    }
+	}
+	export class GitWorktree {
+	    path: string;
+	    name: string;
+	    kind: string;
+	    branch?: string;
+	    head: string;
+	    detached?: boolean;
+	    bare?: boolean;
+	    locked?: boolean;
+	    prunable?: boolean;
+	    managed: boolean;
+	    pinned: boolean;
+	    session_id?: string;
+	    session_name?: string;
+	    is_focus: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new GitWorktree(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.name = source["name"];
+	        this.kind = source["kind"];
+	        this.branch = source["branch"];
+	        this.head = source["head"];
+	        this.detached = source["detached"];
+	        this.bare = source["bare"];
+	        this.locked = source["locked"];
+	        this.prunable = source["prunable"];
+	        this.managed = source["managed"];
+	        this.pinned = source["pinned"];
+	        this.session_id = source["session_id"];
+	        this.session_name = source["session_name"];
+	        this.is_focus = source["is_focus"];
+	    }
+	}
 	export class GroupPolicyResponse {
 	    policy: string;
 	    blocklist: string[];
@@ -2144,6 +2206,20 @@ export namespace backend {
 		    }
 		    return a;
 		}
+	}
+	export class SessionDeleteOptions {
+	    confirm_uncommitted_loss: boolean;
+	    unlock_locked_tree: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionDeleteOptions(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.confirm_uncommitted_loss = source["confirm_uncommitted_loss"];
+	        this.unlock_locked_tree = source["unlock_locked_tree"];
+	    }
 	}
 	export class SessionTokensResponse {
 	    total_input_tokens: number;
@@ -3288,9 +3364,28 @@ export namespace session {
 	        this.created_at = source["created_at"];
 	    }
 	}
+	export class WorkspaceBinding {
+	    kind: string;
+	    workspace_path: string;
+	    worktree_name?: string;
+	    branch?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceBinding(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.workspace_path = source["workspace_path"];
+	        this.worktree_name = source["worktree_name"];
+	        this.branch = source["branch"];
+	    }
+	}
 	export class SessionInfo {
 	    id: string;
 	    project_id: string;
+	    workspace_binding?: WorkspaceBinding;
 	    name: string;
 	    created_at: string;
 	    last_active_at: string;
@@ -3313,6 +3408,7 @@ export namespace session {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.project_id = source["project_id"];
+	        this.workspace_binding = this.convertValues(source["workspace_binding"], WorkspaceBinding);
 	        this.name = source["name"];
 	        this.created_at = source["created_at"];
 	        this.last_active_at = source["last_active_at"];
@@ -3327,6 +3423,24 @@ export namespace session {
 	        this.has_unfinished_task = source["has_unfinished_task"];
 	        this.unfinished_task_status = source["unfinished_task_status"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class WorkUnitStatus {
 	    step_id: string;
@@ -3412,6 +3526,7 @@ export namespace session {
 	        this.created_at = source["created_at"];
 	    }
 	}
+	
 
 }
 

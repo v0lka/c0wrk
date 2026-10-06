@@ -8,6 +8,7 @@ import type { ChatInputController } from '@/hooks/useChatInputController'
 import { useModelProfilesGate } from '@/hooks/useModelProfilesGate'
 import { ModelCombobox } from './ModelCombobox'
 import { ReasoningCombobox } from './ReasoningCombobox'
+import { SessionWorkspaceSelector } from './SessionWorkspaceSelector'
 import { GoalToggle } from './GoalToggle'
 import { E2SToggle } from './E2SToggle'
 import { BudgetCombobox } from './BudgetCombobox'
@@ -183,6 +184,10 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
               the separators too; the controls' native disabled state carries
               the a11y/keyboard semantics. */}
           <div className={cn('flex items-center gap-1', selectorsLocked && 'pointer-events-none opacity-60')}>
+            {/* Draft/pinned workspace selector: interactive only while a
+                session draft is pending (no session yet); read-only once a
+                session exists. Renders nothing in CHAT mode. */}
+            <SessionWorkspaceSelector disabled={selectorsLocked} />
             <ModelCombobox disabled={selectorsLocked} />
             <ReasoningCombobox disabled={selectorsLocked} />
             <div className="w-px h-4 bg-border mx-1" />

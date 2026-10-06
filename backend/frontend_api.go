@@ -150,6 +150,16 @@ type FrontendAPI struct {
 	activeProjectPath string
 	activeProjectMu   sync.RWMutex
 
+	// Git-panel focus target (ADR-080's GitPanelTarget consumption): the
+	// worktree every git RPC operates on, as the project checkout or one of
+	// its worktrees. Empty = the project checkout (the default). Set only
+	// through SetGitPanelFocus, which validates membership in the active
+	// project's worktree list. Guarded by gitFocusMu, separately from
+	// activeProjectMu: the two change on different cadences (project switches
+	// vs. explicit panel focus switches) and neither write ever holds both.
+	gitFocusMu   sync.RWMutex
+	gitFocusPath string
+
 	// switchMu serializes the whole SwitchProject body (teardown → vector →
 	// watcher → activate → event). Wails runs each binding call in its own
 	// goroutine, so two rapid CHAT↔CODE toggles used to interleave inside the
@@ -260,6 +270,12 @@ type FrontendAPI struct {
 	// in flight). Drained once by InitVectorIndexForActiveProject when the
 	// manager becomes available. Nil when no setup is pending.
 	deferredVectorProject *project.ProjectInfo
+	// vectorTargetWorkspace is the workspace root the vector index is currently
+	// pointed at (project checkout or a managed session worktree). Written at
+	// every switch — switchProjectSetupVector and the session-driven
+	// re-scope — so the re-scope no-ops when the target has not moved.
+	// Guarded by vectorSetupMu, alongside deferredVectorProject.
+	vectorTargetWorkspace string
 
 	// vectorEmbedderInfo records the embedder's execution-provider facts for
 	// vector-index status payloads (effective/requested provider, CUDA
@@ -290,6 +306,13 @@ type FrontendAPI struct {
 
 	// Terminal
 	terminalManager TerminalManager
+
+	// managedForkCommit, when non-nil, replaces the store fork call used by
+	// ForkSession's managed branch. Test-only seam (nil in production, where
+	// store.ForkSessionWithBinding runs) letting rollback tests fail the
+	// persistence step after the fork tree was provisioned, mirroring
+	// gitStatusFn and friends.
+	managedForkCommit func(ctx context.Context, srcID, dstID string, binding *session.WorkspaceBinding, cloner session.ForkReviewCloner) (*session.SessionInfo, error)
 
 	// Injected Wails callbacks (set by desktop during construction).
 	emitEvent func(string, ...any)
@@ -448,6 +471,11 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 	// Route the session manager's one-shot service LLM requests (session title
 	// generation) through the embedded readiness gate.
 	f.installServiceLLMGate()
+
+	// Wire the managed-worktree lifecycle owner into the session manager's
+	// lazy restore: managed sessions fail closed (never fall back to the
+	// project checkout) until this ensurer guarantees their tree exists.
+	f.installWorkspaceEnsurer()
 
 	return f
 }

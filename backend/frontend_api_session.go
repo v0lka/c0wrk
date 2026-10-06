@@ -77,6 +77,20 @@ func (f *FrontendAPI) ForkSession(sessionID string) (*session.SessionInfo, error
 		reviewCloner = f.reviewStore.CloneReviewTx
 	}
 
+	// Managed sources fork into their OWN tree on a derived branch created at
+	// the source's committed HEAD (see forkManagedSession); local and CHAT
+	// sources keep the plain deep-copy path with the binding they have.
+	src, err := f.store.LoadSession(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load source session: %w", err)
+	}
+	if src == nil {
+		return nil, fmt.Errorf("source session %q not found", sessionID)
+	}
+	if src.WorkspaceBinding != nil && src.WorkspaceBinding.Kind == session.WorkspaceManagedWorktree {
+		return f.forkManagedSession(ctx, src, reviewCloner)
+	}
+
 	info, err := f.store.ForkSession(ctx, sessionID, reviewCloner)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fork session: %w", err)
@@ -89,9 +103,33 @@ func (f *FrontendAPI) ForkSession(sessionID string) (*session.SessionInfo, error
 // session (logs, dumps, temp, plans, and the No-Project workspace) are removed
 // from ~/.c0wrk. Archiving a session (ArchiveSession) does NOT remove files so
 // an archived session can be restored.
+//
+// A session that owns a managed worktree additionally has its tree released
+// (never its branch); when the tree is dirty or locked this first call fails
+// with *SessionDeleteBlockedError and nothing is deleted — re-issue via
+// DeleteSessionWithOptions with the user's explicit confirmation.
 func (f *FrontendAPI) DeleteSession(id string) error {
+	return f.DeleteSessionWithOptions(id, SessionDeleteOptions{})
+}
+
+// DeleteSessionWithOptions removes a session carrying the user's explicit
+// deletion decisions for its managed worktree. Managed pre-flight (in order):
+// join the running task, stop the session terminal, then release the tree —
+// the removal primitives recheck dirtiness/lock state at removal time, so a
+// blocked deletion leaves the session, tree, and branch fully intact and
+// retryable. Only after the tree is released (or was never managed) does the
+// session itself get deleted: in-memory resources via the manager, rows via
+// the store, internal files under ~/.c0wrk.
+func (f *FrontendAPI) DeleteSessionWithOptions(id string, opts SessionDeleteOptions) error {
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
+	}
+	// Managed sessions: stop task/terminal and release the session-owned tree
+	// BEFORE any session state is removed, so a blocked or failed release
+	// keeps the session retryable. Store-only sessions (restored never this
+	// run) are handled too — the binding is read from the store.
+	if err := f.prepareManagedTreeDeletion(context.Background(), id, opts); err != nil {
+		return err
 	}
 	manager := f.app.Manager()
 
@@ -99,10 +137,12 @@ func (f *FrontendAPI) DeleteSession(id string) error {
 	// closing file handles and removing the entire per-session directory. When
 	// the session cannot be restored (e.g. its project can no longer be
 	// resolved), capture the project ID from the store so its on-disk files can
-	// still be cleaned up below.
+	// still be cleaned up below. HasSession (NOT GetSession) decides the
+	// branch: restoring a managed session here would re-provision the tree the
+	// pre-flight just released.
 	var unrestorableProjectID string
-	// Only delete from manager if session exists in memory
-	if _, exists := manager.GetSession(id); exists {
+	// Only delete from manager if session is live in memory.
+	if manager.HasSession(id) {
 		if err := manager.DeleteSession(id); err != nil {
 			return fmt.Errorf("failed to delete session: %w", err)
 		}
@@ -118,12 +158,10 @@ func (f *FrontendAPI) DeleteSession(id string) error {
 			f.log().Error("failed to delete session from store", "error", err)
 		}
 	}
-	// Stop any active terminal for this session.
-	if f.terminalManager != nil && f.terminalManager.IsActive(id) {
-		if err := f.terminalManager.Stop(id); err != nil {
-			f.log().Warn("failed to stop terminal for deleted session", "session_id", id, "error", err)
-		}
-	}
+	// Stop any active terminal for this session (idempotent — the managed
+	// pre-flight already stopped it for managed sessions; local and CHAT
+	// sessions are handled here).
+	f.stopSessionTerminal(id)
 	// Fallback: remove internal files for sessions the manager could not
 	// restore. Restored/in-memory sessions are already cleaned up above.
 	if unrestorableProjectID != "" {
@@ -368,6 +406,14 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 		workspacePath = wp
 	}
 	processedText := core.PreprocessMessageText(text, activeSkills, activeAgents, activeMCPServers, workspacePath)
+
+	// Session-aware vector-index routing (ADR-080): a send is the
+	// authoritative "this session is being driven" signal, so the vector
+	// index follows the send target's execution workspace before its RAG
+	// hint injection runs. No-op unless the target is a managed-worktree
+	// session of the active project whose tree differs from the current
+	// index target (local sessions keep the checkout flow untouched).
+	f.maybeReScopeVectorIndexToSession(id)
 
 	// Auto-discover local directories mentioned in the prompt and add them as
 	// session-scoped auxiliary working directories (best-effort: never blocks).

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -72,9 +73,18 @@ func (f *FrontendAPI) DeleteProject(id string) error {
 	}
 	f.activeProjectMu.Unlock()
 
-	// Clean up vector index data for the deleted project.
+	// Clean up vector index data for the deleted project. Managed-session
+	// worktree indexes live under <projectVI>/worktrees/<name>: drop each
+	// explicitly first (DeleteProjectData discards parked service slots per
+	// exact storage path), then the project root removes everything left.
 	if vm := f.getVectorManager(); vm != nil {
-		_ = vm.DeleteProjectData(config.ProjectVectorIndexPath(f.agentDir, id)) // Best-effort; error is non-critical.
+		viRoot := config.ProjectVectorIndexPath(f.agentDir, id)
+		if entries, readErr := os.ReadDir(filepath.Join(viRoot, "worktrees")); readErr == nil {
+			for _, e := range entries {
+				_ = vm.DeleteProjectData(filepath.Join(viRoot, "worktrees", e.Name())) // Best-effort.
+			}
+		}
+		_ = vm.DeleteProjectData(viRoot) // Best-effort; error is non-critical.
 	}
 
 	// Stop watcher if this was the active project
@@ -815,46 +825,19 @@ func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
 		return nil
 	}
 
-	// Vector init (chromem DB open, branch detect, branch-collection switch,
-	// background indexing, git monitor) runs asynchronously inside the
-	// manager's initProject goroutine, so SwitchProject returns at once. The
-	// branch for the progress callback's display field is detected by
-	// initProject and surfaced via vm.GetIndexStatus().Branch — no duplicate
-	// synchronous CurrentBranch call here (it would block the RPC path the
-	// async refactor unblocks and run git twice per switch).
-	//
-	// OnFailure covers the init-fatal paths (DB open / branch detect / branch
-	// switch): init has already returned soft-nil, so without this the UI
-	// would keep showing a stale prior state. Emit "unavailable" so the
-	// frontend's deriveDotStatus renders the dormant pill the No-Project path
-	// already uses.
-	if switchErr := vm.SwitchProject(p.ID, p.WorkspacePath, config.ProjectVectorIndexPath(f.agentDir, p.ID), vectorindex.ProjectCallbacks{
-		OnProgress: func(phase vectorindex.IndexPhase, state vectorindex.IndexState, indexed, total int, file string) {
-			st := VectorIndexStatus{
-				State:        string(state),
-				Phase:        string(phase),
-				Indices:      []string{"vector", "lexical"},
-				Progress:     progressFraction(indexed, total),
-				FilesIndexed: indexed,
-				TotalFiles:   total,
-				CurrentFile:  file,
-				Branch:       vm.GetIndexStatus().Branch,
-			}
-			f.applyEmbedderInfo(&st)
-			f.emitEvent(EventVectorIndexStatus, st)
-		},
-		OnFailure: func(err error) {
-			f.log().Warn("vector index init failed for project; search unavailable",
-				"project", p.ID, "error", err)
-			st := VectorIndexStatus{
-				State:   string(vectorindex.IndexStateUnavailable),
-				Indices: []string{},
-			}
-			f.applyEmbedderInfo(&st)
-			f.emitEvent(EventVectorIndexStatus, st)
-		},
-	}, config.ProjectEmbeddingCachePath(f.agentDir, p.ID)); switchErr != nil {
-		return fmt.Errorf("switching vector index project: %w", switchErr)
+	// Session-aware routing (ADR-080): when the project's saved session is
+	// bound to a managed worktree, the index targets THAT tree root with a
+	// worktree-scoped storage dir — branch detection keys off the tree, and
+	// concurrent sessions on different trees keep disjoint index state. For
+	// local sessions (and every unresolvable case) the target is the project
+	// checkout with the project storage dir, byte-for-byte the historical
+	// local-project flow.
+	target := f.resolveVectorIndexTarget(p)
+	f.vectorSetupMu.Lock()
+	f.vectorTargetWorkspace = target.workspacePath
+	f.vectorSetupMu.Unlock()
+	if err := f.switchVectorIndexToTarget(p, target, vm); err != nil {
+		return fmt.Errorf("switching vector index project: %w", err)
 	}
 
 	return nil
