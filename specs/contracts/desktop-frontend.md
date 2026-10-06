@@ -282,6 +282,15 @@ User-theme lifecycle for the theme selector: installed themes live as CSS files 
 *(No renderer-facing import RPCs: the import functions are unexported package-level functions in `backend/frontend_api_themes.go` precisely so the binding generator never publishes a path-taking method. `PickAndImportThemes` (on `desktop.App`, native picker) is the sole import entry point.)* |
 | `DeleteTheme`          | id         | error           | Remove an installed user theme by id; fails when the theme does not exist. Reserved built-in ids (`default-dark`, `default-light`) are never valid import slugs and cannot be deleted |
 
+### System (`backend/frontend_api_system.go`)
+
+System-introspection RPCs that share one house rule: "the probe does not exist here" (non-Linux build, missing binary, schema/probe failure) is a NORMAL outcome returned as a zero/empty response plus a Debug log — these RPCs never reject the Promise to the renderer. `GetProcessMemory` returns the process RSS as `int64`; `GetSystemFonts` returns the detected desktop-environment UI/mono families (`{ui_family, mono_family}` — see [domains/frontend/fonts.md](../domains/frontend/fonts.md)); `ListFontFamilies` enumerates installed font families, optionally narrowed to the fontconfig-mono ones (see [domains/fonts.md](../domains/fonts.md)).
+
+| Method              | Parameters | Returns              | Description |
+| ------------------- | ---------- | -------------------- | ----------- |
+| `GetSystemFonts`    | —          | SystemFontsResponse  | The desktop environment's configured UI + monospace font families (`{ui_family, mono_family}`): Linux reads `org.gnome.desktop.interface` `font-name`/`monospace-font-name` via `gsettings` (3 s per key, compile-time argv), each Pango description parsed independently (`parseGnomeFontName` — family only; size and style tokens stay behind). No availability flag: the empty string is "not detected", so every undetectable-desktop outcome (non-Linux stub, no gsettings/schema, reader error, unparsable value) is the zero response `{ui_family: "", mono_family: ""}` + Debug — an unparsable value empties only its own family. Read once per launch; a desktop-side font change applies on the next launch |
+| `ListFontFamilies`  | `monospace bool` | FontFamiliesResponse | Installed font family names for a family picker: `fc-list [:mono] --format '%{family}\n'` (Linux-only, 5 s timeout; `monospace=true` selects the `:mono` pattern — only the families fontconfig tags as monospace, always a subset of the full listing), comma-separated aliases split, trimmed, deduplicated case-insensitively keeping the first spelling, sorted case-insensitively. `available` describes the mechanism (a successful empty listing on a fontless system is still `available: true`); any reader error → `{available: false, families: []}`; `families` is never `null` |
+
 ### Prompt (`backend/frontend_api_prompt.go`)
 
 | Method           | Parameters | Returns                             | Description          |

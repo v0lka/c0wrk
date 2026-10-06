@@ -235,7 +235,7 @@ Frontend configuration is derived from backend (no separate frontend config file
 ## Related Specs
 
 - [ui-scale.md](ui-scale.md) — UI scale feature and the zoom-safety invariant
-- [system-font.md](system-font.md) — opt-in follow-system-font feature (GNOME UI font via gsettings → the inline `--default-font-family` override over Tailwind v4 preflight)
+- [fonts.md](fonts.md) — user font selection: UI/mono family pickers (free text + detected + installed options) over the persisted `fontStore`, once-per-launch dual system-font detection, and the inline `--font-sans`/`--font-mono` `@theme`-token delivery on `<html>` ([ADR-076](../../decisions/076-user-font-selection.md))
 - [button-tooltips.md](button-tooltips.md) — the button tooltip convention: a `title=`, a Radix `TooltipTrigger` wrapper, or a statically visible label on every button — exactly one, the channels never combine (both AST guards flag a `title` under a `TooltipTrigger`); buttons that may hide their label always carry a `title`, always-labeled buttons never carry an echo, picker triggers follow the heading rule
 - [stores.md](stores.md) — Zustand store catalog
 - [git-operation-console.md](git-operation-console.md) — the footer log of the last git mutation result (button tint, anchored popover, per-project scope, acknowledge semantics)

@@ -21,6 +21,7 @@ import { conflictMarkerPlugin } from '@/lib/cmConflictMarkers'
 import { loadLanguageByName } from '@/lib/cmLanguages'
 import { createOneDarkCMTheme } from '@/lib/cmTheme'
 import { useThemeStore, selectActiveThemeType, selectActiveThemeId } from '@/stores/themeStore'
+import { useFontStore } from '@/stores/fontStore'
 
 interface CodeMirrorViewerProps {
   content: string
@@ -99,6 +100,10 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
   // Theme IDENTITY: a same-type custom-theme switch keeps `theme` unchanged
   // but still swaps the palette CSS variables the baked theme resolves from.
   const themeId = useThemeStore(selectActiveThemeId)
+  // The mono choice: the theme's font itself rides the `--font-mono` var and
+  // re-resolves on its own — this value exists to TRIGGER the reconfigure
+  // below so CodeMirror re-measures line heights for the new metrics.
+  const monoFontFamily = useFontStore((s) => s.monoFontFamily)
 
   // Create EditorView on mount, destroy on unmount
   useEffect(() => {
@@ -144,13 +149,16 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
   // { dark } flag that drives CM's built-in defaults) without recreating the view.
   // Keyed on BOTH the type (drives the { dark } flag) and the identity (a
   // same-type custom-theme swap changes the palette while `theme` stays).
+  // The mono choice is in the deps only to force the same reconfigure when
+  // the user switches fonts — CM measures heights lazily, and without the
+  // redraw the new font's metrics would be applied on stale measurements.
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
     view.dispatch({
       effects: themeCompartment.current.reconfigure(createOneDarkCMTheme(theme === 'dark')),
     })
-  }, [theme, themeId])
+  }, [theme, themeId, monoFontFamily])
 
   // Update document content when it changes
   useEffect(() => {

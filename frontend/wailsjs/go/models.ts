@@ -986,6 +986,20 @@ export namespace backend {
 	        this.icon_color = source["icon_color"];
 	    }
 	}
+	export class FontFamiliesResponse {
+	    available: boolean;
+	    families: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new FontFamiliesResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.available = source["available"];
+	        this.families = source["families"];
+	    }
+	}
 	export class FrontendAPILifecycle {
 	
 	
@@ -2176,18 +2190,18 @@ export namespace backend {
 	        this.description = source["description"];
 	    }
 	}
-	export class SystemUIFontResponse {
-	    available: boolean;
-	    font_family: string;
+	export class SystemFontsResponse {
+	    ui_family: string;
+	    mono_family: string;
 	
 	    static createFrom(source: any = {}) {
-	        return new SystemUIFontResponse(source);
+	        return new SystemFontsResponse(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.available = source["available"];
-	        this.font_family = source["font_family"];
+	        this.ui_family = source["ui_family"];
+	        this.mono_family = source["mono_family"];
 	    }
 	}
 	export class TLSCertificateResponse {

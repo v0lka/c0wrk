@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { CheckIcon, ChevronDownIcon } from 'lucide-react'
 
 import {
@@ -8,6 +8,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useSelectedOptionScroll } from '@/components/ui/useSelectedOptionScroll'
 import { cn } from '@/lib/utils'
 
 export interface ComboboxOption {
@@ -111,19 +112,12 @@ export function Combobox({
   // Long option lists (e.g. every enabled model) can push the selected option
   // below the `max-h-64` fold. Radix focuses the first item on keyboard open,
   // so without this the selected one would only be visible by scrolling.
-  // A stable ref callback (not a state/effect pair) is required for two
-  // reasons: Radix mounts the portaled content one commit AFTER `open`
-  // flips — so an effect keyed on `open` runs too early — and a new function
-  // identity per render would make React detach/reattach the ref on every
-  // re-render, re-scrolling on unrelated updates. useCallback keeps it
-  // attach-once-per-mount. jsdom has no scrollIntoView; guard the call.
-  const handleContentRef = useCallback((node: HTMLDivElement | null) => {
-    if (!node) return
-    const selectedEl = node.querySelector<HTMLElement>('[data-selected="true"]')
-    if (selectedEl && typeof selectedEl.scrollIntoView === 'function') {
-      selectedEl.scrollIntoView({ block: 'nearest' })
-    }
-  }, [])
+  // Scrolls ONCE per menu-open cycle: the open-scoped latch in
+  // `useSelectedOptionScroll` is required because Radix re-creates its
+  // composed content ref on every re-render of the open menu — a plain
+  // attach-time scroll re-fired on every unrelated update and snapped the
+  // list back to the selected option while the user scrolled it.
+  const handleContentRef = useSelectedOptionScroll(open)
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>

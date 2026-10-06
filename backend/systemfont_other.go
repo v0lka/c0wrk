@@ -4,15 +4,15 @@ package backend
 
 import "errors"
 
-// errSystemFontUnavailable is the non-Linux answer from readSystemFontName:
-// there is no gsettings-equivalent probe for the desktop UI font that c0wrk
-// implements today (macOS and Windows resolve their "system font" through
+// errSystemFontUnavailable is the non-Linux answer from readSystemFonts:
+// there is no gsettings-equivalent probe for the desktop fonts that c0wrk
+// implements today (macOS and Windows resolve their "system fonts" through
 // platform-native stacks the webview already follows). The RPC surfaces this
-// as Available=false and the frontend hides the setting entirely.
-var errSystemFontUnavailable = errors.New("system UI font detection is only supported on Linux (GNOME/gsettings)")
+// as the zero response and the frontend hides the settings entirely.
+var errSystemFontUnavailable = errors.New("system font detection is only supported on Linux (GNOME/gsettings)")
 
-// readSystemFontName is the non-Linux stub backing GetSystemUIFont; see
+// readSystemFonts is the non-Linux stub backing GetSystemFonts; see
 // systemfont_linux.go for the real implementation.
-func readSystemFontName() (string, error) {
-	return "", errSystemFontUnavailable
+func readSystemFonts() (systemFontPair, error) {
+	return systemFontPair{}, errSystemFontUnavailable
 }

@@ -2,7 +2,6 @@ import { EditorView } from '@codemirror/view'
 import { syntaxHighlighting } from '@codemirror/language'
 import type { Extension } from '@codemirror/state'
 import { getCSSVar, createOneDarkHighlightStyle } from './cmTheme'
-import { FONT_SANS_STACK } from './fonts'
 
 /**
  * Editable One Dark theme for the chat input editor.
@@ -44,7 +43,12 @@ export function createChatEditorTheme(isDark: boolean = true): Extension {
     },
     '.cm-scroller': {
       overflow: 'auto',
-      fontFamily: FONT_SANS_STACK,
+      // The UI font follows the `--font-sans` custom property (the @theme
+      // token that fontStore's inline override on <html> repoints), so a
+      // font change needs no theme rebuild — the cascade re-resolves the
+      // var. The useChatEditor reconfigure on font change exists only to
+      // force CodeMirror's lazy height re-measurement.
+      fontFamily: 'var(--font-sans)',
     },
     '&.cm-focused': {
       outline: 'none',

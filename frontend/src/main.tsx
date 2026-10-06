@@ -7,6 +7,11 @@ import '@xterm/xterm/css/xterm.css'
 import './index.css'
 import { useThemeStore, applyThemeToDocument, selectActiveThemeType } from './stores/themeStore'
 import { useUiScaleStore, applyScaleToDocument } from './stores/uiScaleStore'
+import {
+  useFontStore,
+  applyFontsToDocument,
+  removeOrphanSystemFontKey,
+} from './stores/fontStore'
 import { installFloatingUiZoomCompensation } from './lib/floatingUiZoom'
 
 // Apply the persisted theme before first paint to avoid a flash of the
@@ -26,6 +31,19 @@ applyThemeToDocument(
 // (<html style="zoom">) before React renders, so the layout never flashes at
 // 100% for users who changed the zoom level.
 applyScaleToDocument(useUiScaleStore.getState().scale)
+
+// Same first-paint contract as theme and scale: the persisted font choices
+// land as inline --font-sans/--font-mono overrides on <html> before React
+// renders, so text never flashes with the default stacks. getState()
+// rehydrates from localStorage synchronously. The replaced follow-system-font
+// store's key is retired here too — its boolean payload has no successor in
+// the chosen-family model, so it must not linger (and its store no longer
+// exists to rewrite it).
+removeOrphanSystemFontKey()
+applyFontsToDocument(
+  useFontStore.getState().uiFontFamily,
+  useFontStore.getState().monoFontFamily,
+)
 
 // Patch @floating-ui/dom's shared platform so popovers/tooltips/menus
 // position correctly under the zoom: floating-ui measures references in

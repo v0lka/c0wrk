@@ -98,6 +98,8 @@ import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { useThemeStore } from '@/stores/themeStore'
 import { useUiScaleStore } from '@/stores/uiScaleStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
+import { useFontStore } from '@/stores/fontStore'
+import { FONT_MONO_STACK } from '@/lib/fonts'
 
 beforeAll(() => {
   class RO {
@@ -158,5 +160,59 @@ describe('Terminal theme effect', () => {
     })
     expect(boundaryTripped).toBe(false)
     expect(term._options.theme).toBeDefined()
+  })
+})
+
+describe('Terminal mono-font wiring (fontStore)', () => {
+  // Isolate from persisted font choices of other tests (the store rehydrates
+  // `c0wrk-fonts` from localStorage at module init).
+  beforeEach(() => {
+    useFontStore.setState({ uiFontFamily: null, monoFontFamily: null })
+  })
+
+  it('renders the default mono stack when no family is chosen', () => {
+    renderTerminal()
+    expect(boundaryTripped).toBe(false)
+    // monoFontFamily null → the bare stock stack, exactly as before the
+    // font-store wiring (the xterm constructor is px/px by API and needs a
+    // literal stack, not the CSS var).
+    expect(terminalInstances[0]!._options.fontFamily).toBe(FONT_MONO_STACK)
+  })
+
+  it('renders a chosen mono family composed with the default stack', () => {
+    act(() => {
+      useFontStore.getState().setMonoFontFamily('JetBrains Mono')
+    })
+    renderTerminal()
+    expect(boundaryTripped).toBe(false)
+    // The chosen family as ONE double-quoted token (multi-word names must
+    // not split), prepended to the stock stack so its fallbacks survive.
+    expect(terminalInstances[0]!._options.fontFamily).toBe(`"JetBrains Mono", ${FONT_MONO_STACK}`)
+  })
+
+  it('applies a Settings font change to the LIVE terminal without remounting', () => {
+    renderTerminal()
+    expect(terminalInstances).toHaveLength(1)
+    expect(terminalInstances[0]!._options.fontFamily).toBe(FONT_MONO_STACK)
+
+    // Session terminals stay mounted for the app lifetime, so a font picked
+    // in Settings MUST reach the already-mounted instance through the
+    // live-apply effect — deferring it to the next mount would leave every
+    // open terminal on the old font (this asserts exactly that contract).
+    act(() => {
+      useFontStore.getState().setMonoFontFamily('Fira Code')
+    })
+    expect(boundaryTripped).toBe(false)
+    expect(terminalInstances).toHaveLength(1)
+    expect(terminalInstances[0]!._options.fontFamily).toBe(`"Fira Code", ${FONT_MONO_STACK}`)
+
+    // Switching back to the default (null) restores the stock stack on the
+    // same instance.
+    act(() => {
+      useFontStore.getState().setMonoFontFamily(null)
+    })
+    expect(boundaryTripped).toBe(false)
+    expect(terminalInstances).toHaveLength(1)
+    expect(terminalInstances[0]!._options.fontFamily).toBe(FONT_MONO_STACK)
   })
 })
