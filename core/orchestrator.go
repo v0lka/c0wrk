@@ -31,6 +31,7 @@ import (
 	"github.com/v0lka/sp4rk/llm"
 	sdkmemory "github.com/v0lka/sp4rk/memory"
 	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/safeio"
 	"github.com/v0lka/sp4rk/skills"
 	"github.com/v0lka/sp4rk/strutil"
 	sdktools "github.com/v0lka/sp4rk/tools"
@@ -2496,7 +2497,7 @@ func (o *Orchestrator) readAgentsMD(path string) (string, error) {
 		return cached.content, nil
 	}
 
-	content, readErr := os.ReadFile(path)
+	content, readErr := safeio.ReadFile(path)
 	if readErr != nil {
 		o.agentsMDCache[path] = agentsMDCacheEntry{err: readErr, modTime: info.ModTime()}
 		return "", readErr

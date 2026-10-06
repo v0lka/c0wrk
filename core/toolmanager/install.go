@@ -16,6 +16,8 @@ import (
 
 	"github.com/v0lka/c0wrk/internal/sysproc"
 	"github.com/v0lka/sp4rk/pathutil"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // InstallResult reports the outcome of a tool installation step.
@@ -315,7 +317,7 @@ func pathExists(path string) bool {
 
 // extractTarGz extracts a .tar.gz archive to destDir.
 func extractTarGz(archivePath, destDir string) error {
-	f, err := os.Open(archivePath)
+	f, err := safeio.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("opening archive: %w", err)
 	}
@@ -430,7 +432,7 @@ func extractZip(archivePath, destDir string) error {
 
 // copyFile copies src to dst with the given mode.
 func copyFile(src, dst string, mode os.FileMode) (err error) {
-	in, err := os.Open(src)
+	in, err := safeio.Open(src)
 	if err != nil {
 		return err
 	}

@@ -34,7 +34,7 @@ func TestCategoryContract(t *testing.T) {
 		}
 		if entry.IsDir() {
 			switch entry.Name() {
-			case ".git", "node_modules", ".cache", "build", "dist":
+			case ".git", ".worktrees", "node_modules", ".cache", "build", "dist":
 				return filepath.SkipDir
 			}
 			return nil

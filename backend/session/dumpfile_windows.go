@@ -2,7 +2,11 @@
 
 package session
 
-import "os"
+import (
+	"os"
+
+	"github.com/v0lka/sp4rk/safeio"
+)
 
 // dupFile returns an independent handle to the given *os.File.
 //
@@ -15,5 +19,5 @@ import "os"
 // Offset semantics are irrelevant for an append-only log. The caller owns the
 // returned handle and must close it.
 func dupFile(f *os.File) (*os.File, error) {
-	return os.OpenFile(f.Name(), os.O_WRONLY|os.O_APPEND, 0)
+	return safeio.OpenFile(f.Name(), os.O_WRONLY|os.O_APPEND, 0)
 }

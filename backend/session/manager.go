@@ -24,6 +24,7 @@ import (
 	"github.com/v0lka/sp4rk/ignore"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/safeio"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
@@ -942,7 +943,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		if mkErr := os.MkdirAll(filepath.Dir(dumpPath), 0o755); mkErr != nil {
 			m.log().Warn("failed to create dumps directory", "session_id", id, "error", mkErr)
 		} else {
-			dumpFile, err = os.OpenFile(dumpPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+			dumpFile, err = safeio.OpenFile(dumpPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 			if err != nil {
 				m.log().Warn("failed to create LLM dump file", "session_id", id, "error", err)
 				dumpFile = nil
@@ -1337,7 +1338,7 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 		if mkErr := os.MkdirAll(filepath.Dir(dumpPath), 0o755); mkErr != nil {
 			m.log().Warn("failed to create dumps directory", "session_id", id, "error", mkErr)
 		} else {
-			dumpFile, err = os.OpenFile(dumpPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+			dumpFile, err = safeio.OpenFile(dumpPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 			if err != nil {
 				m.log().Warn("failed to create LLM dump file", "session_id", id, "error", err)
 				dumpFile = nil // non-fatal, continue without dump
@@ -1471,7 +1472,7 @@ func (m *Manager) createSessionLogger(projectID, sessionID string) (*slog.Logger
 
 	// Create log file for this session
 	logFile := config.SessionLogPath(m.agentDir, projectID, sessionID)
-	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	file, err := safeio.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open log file: %w", err)
 	}
@@ -2222,7 +2223,7 @@ func reconstructImageBlocks(metadata json.RawMessage, log *slog.Logger) []llm.Co
 	}
 	blocks := make([]llm.ContentBlock, 0, len(md.Images))
 	for _, img := range md.Images {
-		raw, err := os.ReadFile(img.Path)
+		raw, err := safeio.ReadFile(img.Path)
 		if err != nil {
 			log.Warn("reconstructImageBlocks: failed to read image file; skipping", "path", img.Path, "error", err)
 			continue

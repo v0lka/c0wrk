@@ -712,6 +712,15 @@ func TestRunProbeCommandDoesNotRetryANonTransientFailure(t *testing.T) {
 	counter := filepath.Join(t.TempDir(), "runs.txt")
 	script := stageFakeRuntime(t, fmt.Sprintf("echo run >> %s\nexit 7\n", counter))
 
+	// Warm the script's first exec outside the probe budget (see
+	// warmStagedRuntime), then clear the run counter the warm-up just wrote so
+	// the assertion below still proves the MEASURED call ran the child exactly
+	// once — not that the warm-up did.
+	warmStagedRuntime(t, script)
+	if err := os.WriteFile(counter, nil, 0o644); err != nil {
+		t.Fatalf("resetting the run counter after the warm-up: %v", err)
+	}
+
 	_, err := runProbeCommand(t.Context(), script)
 	if err == nil {
 		t.Fatal("runProbeCommand error = nil, want the child's nonzero exit to surface")

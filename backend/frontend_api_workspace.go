@@ -16,6 +16,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/workspace"
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // lineAnchorRe matches a trailing line-anchor fragment appended to a file
@@ -254,13 +255,18 @@ func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, e
 // active project workspace — the viewer may surface any file path surfaced by
 // the agent (e.g. SDK files, system files referenced in chat). Only the
 // line-anchor fragment is stripped and the path is made absolute.
+//
+// The read goes through safeio, which refuses a non-regular file (a FIFO,
+// socket, device, or directory) instead of blocking the open forever: a
+// leftover named pipe at a path the viewer opens would otherwise hang this
+// synchronous RPC — and the UI waiting on it — indefinitely.
 func (f *FrontendAPI) ReadFile(filePath string) (string, error) {
 	absPath, err := f.resolveReadablePath(filePath)
 	if err != nil {
 		return "", err
 	}
 
-	content, err := os.ReadFile(absPath)
+	content, err := safeio.ReadFile(absPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}
@@ -319,7 +325,7 @@ func readFileAsDataURL(absPath string, maxSize int64) (string, error) {
 		return "", fmt.Errorf("file too large (%d bytes, max %d)", info.Size(), maxSize)
 	}
 
-	data, err := os.ReadFile(absPath)
+	data, err := safeio.ReadFile(absPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}

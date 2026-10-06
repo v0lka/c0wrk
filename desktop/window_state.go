@@ -8,6 +8,8 @@ import (
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/v0lka/c0wrk/backend/config"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // WindowBounds is the persisted OS-level window geometry. It is written on
@@ -38,7 +40,7 @@ const (
 func LoadWindowBounds(agentDir string) WindowBounds {
 	b := defaultWindowBounds()
 
-	data, err := os.ReadFile(config.WindowStatePath(agentDir))
+	data, err := safeio.ReadFile(config.WindowStatePath(agentDir))
 	if err != nil {
 		// Missing file on first run is expected — return defaults silently.
 		return b

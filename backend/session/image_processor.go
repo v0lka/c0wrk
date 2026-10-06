@@ -8,10 +8,11 @@ import (
 	_ "image/gif" // register gif decoder for image.Decode
 	"image/jpeg"
 	_ "image/png" // register png decoder for image.Decode
-	"os"
 
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp" // register webp decoder for image.Decode
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // Image processing constraints. Images that exceed maxImageBytes or
@@ -36,8 +37,11 @@ const (
 // The thumbnail is always a 64px JPEG (quality 70) data URI suitable for UI
 // display. The returned sizeBytes reflects the encoded payload size (original
 // file size when unchanged, re-encoded JPEG size when resized).
+//
+// The read goes through safeio so a non-regular attachment path (a FIFO or
+// device) is refused instead of blocking the attach RPC's read-open forever.
 func processImage(path string) (base64Data, mediaType, thumbnailDataURI string, sizeBytes int64, err error) {
-	raw, err := os.ReadFile(path)
+	raw, err := safeio.ReadFile(path)
 	if err != nil {
 		return "", "", "", 0, fmt.Errorf("read image: %w", err)
 	}

@@ -24,6 +24,7 @@ import (
 
 	"github.com/v0lka/c0wrk/core/vectorindex/lexical"
 	"github.com/v0lka/sp4rk/ignore"
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // IndexState represents the current state of the indexer.
@@ -470,6 +471,16 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 	if statErr != nil {
 		return nil, nil, fmt.Errorf("stat file %s: %w", filePath, statErr)
 	}
+	// Only regular files are read. walkProjectFiles and ValidateCollection
+	// already filter non-regular entries, but processFile may be reached via a
+	// watcher event that bypasses the walk: a FIFO/socket/device planted at a
+	// workspace path would otherwise block the read-open — and hang the
+	// indexing pass, plus any shutdown join waiting on it — indefinitely.
+	// os.Stat never blocks, so the skip costs nothing and no open is attempted.
+	if !info.Mode().IsRegular() {
+		idx.logger.Debug("skipping non-regular file", "path", filePath)
+		return nil, nil, nil
+	}
 	if tooLargeForIndex(info.Size(), idx.maxFileSize) {
 		idx.logger.Debug("skipping oversized file", "path", filePath, "size", info.Size(),
 			"limit", idx.maxFileSize)
@@ -487,7 +498,7 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 		return nil, nil, nil
 	}
 
-	content, err := os.ReadFile(filePath)
+	content, err := safeio.ReadFile(filePath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading file %s: %w", filePath, err)
 	}
@@ -1604,7 +1615,7 @@ func containsNullByte(b []byte) bool {
 // so it can decide whether to skip or fail; short reads (fewer bytes than
 // requested) are normal and are scanned over whatever was read.
 func isBinaryHeader(filePath string) (bool, error) {
-	f, err := os.Open(filePath)
+	f, err := safeio.Open(filePath)
 	if err != nil {
 		return false, err
 	}

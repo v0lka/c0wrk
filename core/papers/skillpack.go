@@ -51,6 +51,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // skillPackFS embeds the paper-study skill directories (each containing a
@@ -228,7 +230,7 @@ func writeEmbedTree(name, dest string) error {
 // so, the version string it records. A missing directory or marker is reported
 // as (false, "").
 func readSeedVersion(target string) (hasMarker bool, version string) {
-	data, err := os.ReadFile(filepath.Join(target, seedVersionFile))
+	data, err := safeio.ReadFile(filepath.Join(target, seedVersionFile))
 	if err != nil {
 		return false, ""
 	}

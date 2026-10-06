@@ -20,6 +20,8 @@ import (
 	"github.com/v0lka/sp4rk/llm"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // DefaultAgentDir is the default directory for agent files (data, tools, config).
@@ -2846,7 +2848,7 @@ func Load(path string) (*Config, error) {
 // they are resolved at runtime via ExpandEnvVars() when actually needed.
 func LoadWithResult(path string) (*LoadResult, error) {
 	// Read file
-	data, err := os.ReadFile(path)
+	data, err := safeio.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}

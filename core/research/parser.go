@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // This file implements the content parsing layer of the research package.
@@ -1178,7 +1180,7 @@ func PickActiveProject(root *ResearchRoot) *ResearchProject {
 // tolerant form; mutation (writer) paths must use readFileStrict instead so
 // an unreadable-but-present file is never mistaken for a missing one.
 func readFile(path string) (string, bool) {
-	data, err := os.ReadFile(path)
+	data, err := safeio.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", false
@@ -1199,7 +1201,7 @@ func readFile(path string) (string, bool) {
 // artifacts are persisted agent memory (SECURITY.md, ASI06); treating
 // "cannot read" as "does not exist" is a data-loss path, so it fails closed.
 func readFileStrict(path string) (string, error) {
-	data, err := os.ReadFile(path)
+	data, err := safeio.ReadFile(path)
 	switch {
 	case err == nil:
 		return string(data), nil

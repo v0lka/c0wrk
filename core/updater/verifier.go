@@ -7,7 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // ErrChecksumMismatch is returned when an archive's computed SHA256 digest does
@@ -36,7 +37,7 @@ var _ Verifier = SHA256Verifier{}
 
 // Verify implements Verifier.
 func (SHA256Verifier) Verify(archivePath, assetName, sumsPath string) error {
-	sumsData, err := os.ReadFile(sumsPath)
+	sumsData, err := safeio.ReadFile(sumsPath)
 	if err != nil {
 		return fmt.Errorf("reading checksums %q: %w", sumsPath, err)
 	}
@@ -46,7 +47,7 @@ func (SHA256Verifier) Verify(archivePath, assetName, sumsPath string) error {
 		return err
 	}
 
-	archive, err := os.Open(archivePath)
+	archive, err := safeio.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("opening archive %q: %w", archivePath, err)
 	}

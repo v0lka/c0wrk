@@ -5,11 +5,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // copyFile copies the regular file at src to dst, applying the given mode.
 func copyFile(src, dst string, mode os.FileMode) error {
-	in, err := os.Open(src)
+	in, err := safeio.Open(src)
 	if err != nil {
 		return err
 	}
@@ -17,7 +19,7 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	out, err := safeio.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}

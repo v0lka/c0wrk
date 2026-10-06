@@ -27,6 +27,8 @@ import (
 	"unicode"
 
 	yaml "gopkg.in/yaml.v3"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // ---------------------------------------------------------------------------
@@ -1099,7 +1101,7 @@ func isCanonicalVerdict(v Verdict) bool {
 // into "artifact absent". Parsing is rendering-only; mutation lives in the
 // writer, which uses its own strict reads.
 func readFile(path string) (body string, ok bool, err error) {
-	data, err := os.ReadFile(path)
+	data, err := safeio.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return "", false, nil

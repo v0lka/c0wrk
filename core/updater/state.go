@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // State is the persisted self-update runtime state, stored as update_state.json
@@ -39,7 +41,7 @@ type State struct {
 // from re-checking. Genuine I/O errors (e.g. permission denied) are returned so
 // the caller can decide; the background check treats any error as a zero state.
 func LoadState(path string) (State, error) {
-	data, err := os.ReadFile(path)
+	data, err := safeio.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return State{}, nil

@@ -20,6 +20,8 @@ import (
 
 	"github.com/v0lka/c0wrk/core/vectorindex/lexical"
 	"github.com/v0lka/sp4rk/ignore"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // sanitizeRe matches characters that are not alphanumeric, hyphens, or underscores.
@@ -139,11 +141,13 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 	return nil
 }
 
-// readFileFn is an os.ReadFile indirection used by ValidateCollection's slow
-// path. It exists purely as a test seam: tests swap it for a counting wrapper
-// to assert that the stat-based fast path skips content reads entirely for
-// unchanged files. Production code must not reassign it.
-var readFileFn = os.ReadFile
+// readFileFn is a safeio.ReadFile indirection used by ValidateCollection's
+// slow path. It exists purely as a test seam: tests swap it for a counting
+// wrapper to assert that the stat-based fast path skips content reads entirely
+// for unchanged files. Production code must not reassign it. The safeio
+// default (regular-file-only, non-blocking) means the seam's production value
+// cannot hang on a FIFO planted at a candidate path.
+var readFileFn = safeio.ReadFile
 
 // fileHashEntrySep separates the components of a file-hash sidecar value.
 const fileHashEntrySep = "|"
@@ -823,7 +827,7 @@ func (s *Service) loadFileHashes() {
 	// flight, or a backfill that failed and left no entries — so the backfill
 	// below re-settles it (see fileHashMigrationFailed).
 	if path := ps.fileHashesPath(); path != "" {
-		if data, err := os.ReadFile(path); err == nil {
+		if data, err := safeio.ReadFile(path); err == nil {
 			var m map[string]string
 			if jsonErr := json.Unmarshal(data, &m); jsonErr == nil {
 				if len(m) > 0 || contentlessMarkerExists(ps) {

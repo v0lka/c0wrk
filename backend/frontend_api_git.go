@@ -17,6 +17,7 @@ import (
 
 	"github.com/v0lka/c0wrk/core/workspace"
 	"github.com/v0lka/sp4rk/pathutil"
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 const gitCmdTimeout = 30 * time.Second
@@ -1893,8 +1894,11 @@ func (f *FrontendAPI) AppendToGitignore(pattern string) error {
 	gitignorePath := filepath.Join(repoPath, ".gitignore")
 
 	// Read existing content to detect duplicates; a missing file is
-	// expected and treated as empty.
-	data, err := os.ReadFile(gitignorePath)
+	// expected and treated as empty. The read goes through safeio so a
+	// non-regular .gitignore (a planted FIFO would block both this read and
+	// the append's write-open forever) fails closed with an error instead of
+	// hanging the synchronous RPC.
+	data, err := safeio.ReadFile(gitignorePath)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("read .gitignore: %w", err)
 	}

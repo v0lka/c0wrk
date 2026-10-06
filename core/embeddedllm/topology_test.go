@@ -3,8 +3,10 @@ package embeddedllm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -950,6 +952,35 @@ func stageFakeRuntime(t *testing.T, body string) string {
 	return path
 }
 
+// warmStagedRuntime pays the one-time cost of the FIRST execution of a freshly
+// written script, OUTSIDE the probe budget.
+//
+// macOS charges the first exec of a brand-new file up to ~2.3 s (the kernel's
+// executable scan of the new inode — the same reason a freshly downloaded
+// binary is momentarily slow); every later exec of the same file is ~3 ms.
+// stageFakeRuntime writes a brand-new script per test and the probe execs it
+// immediately, so without this warm-up that first-exec cost lands inside
+// probeCommandTimeout and the probe is SIGKILLed — a TEST artifact, not a
+// production problem: production probes exec a binary that was installed long
+// ago and is already warm. This runs the script once with the test's own
+// (deadline-free) context and deliberately NOT through runProbeCommand, whose
+// probeCommandTimeout is exactly the budget being protected. The script's own
+// side effects are the caller's to account for (see the run-counter reset in
+// hardware_test.go).
+func warmStagedRuntime(t *testing.T, script string) {
+	t.Helper()
+
+	if err := exec.CommandContext(t.Context(), script).Run(); err != nil {
+		// The warm-up is about the kernel's first-exec cost, not the script's
+		// exit status: a script that deliberately exits nonzero still warms the
+		// inode, so its own ExitError is expected and fine.
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("warming the staged runtime %s: %v", script, err)
+		}
+	}
+}
+
 // TestProbeDevicesSpawnsTheListDevicesProbe is the end-to-end happy path: the
 // flag the probe uses, the inventory it returns, and the stamp it applies.
 func TestProbeDevicesSpawnsTheListDevicesProbe(t *testing.T) {
@@ -959,6 +990,11 @@ func TestProbeDevicesSpawnsTheListDevicesProbe(t *testing.T) {
 	argsFile := filepath.Join(dir, "args.txt")
 	script := stageFakeRuntime(t, fmt.Sprintf(
 		"printf '%%s\\n' \"$@\" > %s\ncat <<'EOF'\n%sEOF\n", argsFile, fixtureListDevicesDarwinMetal))
+
+	// Absorb the kernel's first-exec cost of this brand-new script before the
+	// timed probe, so probeCommandTimeout bounds the probe and not the OS's
+	// one-time inode scan (see warmStagedRuntime).
+	warmStagedRuntime(t, script)
 
 	logs := &logCapture{}
 	start := time.Now()
@@ -1021,6 +1057,10 @@ func TestProbeDevicesUnrecognizedOutputIsNotAnEmptyInventory(t *testing.T) {
 	t.Parallel()
 
 	script := stageFakeRuntime(t, "echo 'error: unknown option --list-devices'\n")
+
+	// Warm the script's first exec so the probe is judged on the runtime's
+	// output, not on the OS's one-time inode scan (see warmStagedRuntime).
+	warmStagedRuntime(t, script)
 
 	logs := &logCapture{}
 	topology, ok := ProbeDevices(t.Context(), script, logs.logger())

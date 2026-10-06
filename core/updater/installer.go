@@ -33,6 +33,8 @@ import (
 	"time"
 
 	"github.com/v0lka/sp4rk/pathutil"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // ErrNonStandardLocation is returned by DiscoverInstallRoot when the running
@@ -542,7 +544,7 @@ func extractZip(src, dest string) error {
 }
 
 func copyZipFile(target string, f *zip.File) error {
-	out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	out, err := safeio.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}
@@ -615,7 +617,7 @@ func safeCreateSymlink(dest, target, linkTarget string) error {
 // extractTarGz extracts a gzip-compressed tar archive, defending against
 // path traversal.
 func extractTarGz(src, dest string) error {
-	f, err := os.Open(src)
+	f, err := safeio.Open(src)
 	if err != nil {
 		return err
 	}
@@ -647,7 +649,7 @@ func extractTarGz(src, dest string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 				return err
 			}
-			out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0o777|0o600)
+			out, err := safeio.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0o777|0o600)
 			if err != nil {
 				return err
 			}
@@ -735,12 +737,12 @@ func copyDirTree(src, dst string, info os.FileInfo) error {
 
 func copyFileTree(src, dst string, info os.FileInfo) error {
 	mode := info.Mode().Perm()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	out, err := safeio.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = out.Close() }()
-	in, err := os.Open(src)
+	in, err := safeio.Open(src)
 	if err != nil {
 		return err
 	}

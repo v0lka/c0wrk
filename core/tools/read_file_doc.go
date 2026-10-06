@@ -16,6 +16,8 @@ import (
 	"github.com/v0lka/c0wrk/core/markitdown"
 	sdktools "github.com/v0lka/sp4rk/tools"
 	"github.com/v0lka/sp4rk/tools/builtins"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // docConvertTimeout is the per-file budget for a single markitdown conversion.
@@ -272,7 +274,7 @@ func (t *ReadFileDocTool) getOrConvert(ctx context.Context, absPath string) (str
 	tempDir := sdktools.TempDirFrom(ctx)
 	if tempDir != "" {
 		cacheFile := filepath.Join(tempDir, docConversionSubdir, cacheKey+".md")
-		if cached, rErr := os.ReadFile(cacheFile); rErr == nil {
+		if cached, rErr := safeio.ReadFile(cacheFile); rErr == nil {
 			return string(cached), nil
 		}
 	}

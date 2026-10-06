@@ -130,7 +130,12 @@ func scan(root string) (inventory, error) {
 			return err
 		}
 		if entry.IsDir() {
-			if entry.Name() == ".git" || entry.Name() == "node_modules" || entry.Name() == ".cache" || entry.Name() == "build" || entry.Name() == "dist" {
+			// Skip non-source trees. `.worktrees` holds linked git worktrees
+			// (other branches of THIS repo): its files duplicate this tree's
+			// sources, so walking it would report the baseline's own debt under
+			// a second path. Go's own tooling skips dot-directories, and this
+			// guard must agree.
+			if entry.Name() == ".git" || entry.Name() == ".worktrees" || entry.Name() == "node_modules" || entry.Name() == ".cache" || entry.Name() == "build" || entry.Name() == "dist" {
 				return filepath.SkipDir
 			}
 			return nil

@@ -15,6 +15,8 @@ import (
 	"github.com/v0lka/c0wrk/core/proxy"
 	"github.com/v0lka/c0wrk/core/updater"
 	"github.com/v0lka/c0wrk/core/version"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // Self-update DTOs exposed to the frontend via Wails bindings.
@@ -517,7 +519,7 @@ func (f *FrontendAPI) RunBackgroundUpdateCheck() {
 // copyFileForUpdate copies src to dst preserving the source file mode. Used to
 // place the downloaded archive beside the staging updater binary.
 func copyFileForUpdate(src, dst string) (retErr error) {
-	in, err := os.Open(src)
+	in, err := safeio.Open(src)
 	if err != nil {
 		return fmt.Errorf("open source archive: %w", err)
 	}
@@ -528,7 +530,7 @@ func copyFileForUpdate(src, dst string) (retErr error) {
 		return fmt.Errorf("stat source archive: %w", err)
 	}
 
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	out, err := safeio.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
 	if err != nil {
 		return fmt.Errorf("create destination archive: %w", err)
 	}

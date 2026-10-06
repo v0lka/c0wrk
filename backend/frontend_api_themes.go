@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // ListThemes returns descriptors for all user themes installed in the global
@@ -41,12 +42,20 @@ func (f *FrontendAPI) ListThemes() []ThemeDTO {
 			f.log().Warn("failed to stat theme file", "file", entry.Name(), "error", err)
 			continue
 		}
+		// A hand-dropped non-regular entry (FIFO/socket/device) named *.css
+		// must be skipped: reading it would block the synchronous ListThemes
+		// RPC forever. entry.Info() is a non-blocking stat, so the skip is
+		// decided without ever opening the file.
+		if !info.Mode().IsRegular() {
+			f.log().Warn("skipping non-regular theme entry", "file", entry.Name())
+			continue
+		}
 		if info.Size() > maxThemeCSSSize {
 			f.log().Warn("skipping theme larger than the size cap",
 				"file", entry.Name(), "size", info.Size(), "limit", maxThemeCSSSize)
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(themesDir, entry.Name()))
+		raw, err := safeio.ReadFile(filepath.Join(themesDir, entry.Name()))
 		if err != nil {
 			f.log().Warn("failed to read theme file", "file", entry.Name(), "error", err)
 			continue
@@ -91,7 +100,10 @@ func (f *FrontendAPI) importThemeFromPath(path string) (ThemeDTO, error) {
 	if strings.TrimSpace(path) == "" {
 		return ThemeDTO{}, errors.New("theme path is empty")
 	}
-	raw, err := os.ReadFile(path)
+	// safeio refuses a non-regular file (the native picker cannot select a
+	// FIFO, but a path passed programmatically could point at one) instead of
+	// blocking the import RPC on an open that waits for a writer forever.
+	raw, err := safeio.ReadFile(path)
 	if err != nil {
 		return ThemeDTO{}, fmt.Errorf("failed to read theme file: %w", err)
 	}

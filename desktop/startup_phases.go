@@ -28,6 +28,7 @@ import (
 	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/embedding"
+	"github.com/v0lka/sp4rk/safeio"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
@@ -579,7 +580,7 @@ func (a *App) buildPlanApprovalCallback(uiEmit func(session.Event)) coretools.Ap
 		}
 
 		if planMarkdown == "" && planPath != "" {
-			content, err := os.ReadFile(planPath)
+			content, err := safeio.ReadFile(planPath)
 			if err != nil {
 				return "", "", fmt.Errorf("plan approval: failed to read plan file: %w", err)
 			}

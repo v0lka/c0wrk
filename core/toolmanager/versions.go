@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // versionsFileName is the name of the JSON file that tracks installed tool
@@ -19,7 +21,7 @@ type ToolVersions map[string]string
 // not exist, it returns an empty ToolVersions map without error.
 func ReadVersions(toolsDir string) (ToolVersions, error) {
 	path := filepath.Join(toolsDir, versionsFileName)
-	data, err := os.ReadFile(path)
+	data, err := safeio.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return ToolVersions{}, nil
