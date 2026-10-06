@@ -9,7 +9,6 @@ import { TurnWorkBlock } from './TurnWorkBlock'
 import { turnWorkOwners } from './turnWorkOwners'
 import { bookmarkKey } from '@/lib/bookmarks'
 import { BookmarkableContext } from './BookmarkableContext'
-import { TooltipProvider } from '@/components/ui/tooltip'
 import type { ChatMessageUI, DisplayItem } from '@/types/messages'
 
 let seq = 0
