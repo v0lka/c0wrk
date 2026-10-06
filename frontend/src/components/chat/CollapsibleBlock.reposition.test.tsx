@@ -4,8 +4,10 @@
 // viewport is parked in and leave the collapsed header above the fold; the
 // open→closed transition effect must anchor the chat viewport back onto the
 // block's start (the single scroll writer for collapses) — and must NOT
-// scroll when the header is still visible (the direct-click case) or when
-// there is no transition at all (mounts, expand, idempotent re-renders).
+// scroll when the header is still visible (the direct-click case), when the
+// viewport is pinned to the bottom (the auto-settle of a followed turn —
+// stick-to-bottom owns that landing), or when there is no transition at all
+// (mounts, expand, idempotent re-renders).
 //
 // - requestAnimationFrame is stubbed synchronous (Radix Presence needs rAF
 //   in jsdom, per the ChatMessageRenderer.test.tsx note).
@@ -49,13 +51,20 @@ function rectOf(top: number): DOMRect {
  * viewport element (id `chat-viewport`) into the ScrollContext exactly the
  * way the manager does (getter indirection, unregisters on cleanup).
  */
+/** Live at-bottom state the stand-in publishes; tests flip it between phases. */
+let atBottom = false
+
 function FakeViewport({ children }: { children: ReactNode }) {
-  const { setScrollViewport } = useScrollContext()
+  const { setScrollViewport, setIsAtBottom } = useScrollContext()
   useEffect(() => {
     const resolve = (): HTMLElement | null => document.getElementById('chat-viewport')
     setScrollViewport(resolve)
-    return () => setScrollViewport(null)
-  }, [setScrollViewport])
+    setIsAtBottom(() => atBottom)
+    return () => {
+      setScrollViewport(null)
+      setIsAtBottom(null)
+    }
+  }, [setScrollViewport, setIsAtBottom])
   return <div id="chat-viewport">{children}</div>
 }
 
@@ -113,6 +122,7 @@ beforeEach(() => {
   vi.stubGlobal('cancelAnimationFrame', () => {})
   geom.rootTop = 0
   geom.viewportTop = 0
+  atBottom = false
   document.body.replaceChildren()
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -140,6 +150,23 @@ describe('CollapsibleBlock collapse repositioning', () => {
 
     expect(scrollBlockStartIntoView).toHaveBeenCalledTimes(1)
     expect(scrollBlockStartIntoView).toHaveBeenCalledWith(viewportEl, blockEl)
+  })
+
+  it('stays glued to the bottom while the viewport is pinned there (auto-settle of a followed turn)', () => {
+    // The user was following a settling turn's live tail: stick-to-bottom is
+    // engaged even though the open block's header sits far above the fold.
+    geom.rootTop = -900
+    geom.viewportTop = 0
+    atBottom = true
+    mountBlock(true)
+    vi.mocked(scrollBlockStartIntoView).mockClear()
+
+    renderWith(false)
+
+    // Skipping the reposition lets the collapse's scrollTop clamp keep the
+    // viewport on the committed answer; the smooth header anchor must not
+    // yank a following user up to the header.
+    expect(scrollBlockStartIntoView).not.toHaveBeenCalled()
   })
 
   it('does not scroll when the header is still visible (direct header click)', () => {

@@ -43,7 +43,7 @@ export function ChatScrollManager({
   scrollRef,
   children,
 }: ChatScrollManagerProps) {
-  const { setScrollToStep, setScrollToBookmark, setScrollViewport } = useScrollContext()
+  const { setScrollToStep, setScrollToBookmark, setScrollViewport, setIsAtBottom } = useScrollContext()
   const isAtBottomRef = useRef(true)
   const viewportRef = useRef<HTMLElement | null>(null)
   // The component remounts per session (key={activeSessionId} in ChatArea), so a
@@ -125,15 +125,22 @@ export function ChatScrollManager({
   }, [scrollRef])
 
   // Publish the viewport resolver to the ScrollContext: CollapsibleBlock's
-  // collapse-reposition effect resolves the scroll container through it. The
-  // component remounts per session (key= in ChatArea), so the cleanup always
-  // unregisters — a stale resolver can never outlive its manager. The getter
-  // indirection (not the element itself) keeps a session switch from handing
-  // out the detached node between the swap and this cleanup.
+  // collapse-reposition effect resolves the scroll container through it — and
+  // the live at-bottom state beside it, the second input of that effect's
+  // reposition gate. The component remounts per session (key= in ChatArea), so
+  // the cleanup always unregisters — a stale resolver can never outlive its
+  // manager. The getter indirection (not the element / boolean itself) keeps a
+  // session switch from handing out the detached node and has consumers read
+  // the CURRENT bottom state at their transition moment, not a stale
+  // render-time snapshot.
   useEffect(() => {
     setScrollViewport(() => viewportRef.current)
-    return () => setScrollViewport(null)
-  }, [setScrollViewport])
+    setIsAtBottom(() => isAtBottomRef.current)
+    return () => {
+      setScrollViewport(null)
+      setIsAtBottom(null)
+    }
+  }, [setScrollViewport, setIsAtBottom])
 
   // Track scroll position for "new activity" pill dismissal
   useEffect(() => {

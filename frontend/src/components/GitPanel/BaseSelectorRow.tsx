@@ -9,26 +9,17 @@ interface BaseSelectorRowProps {
   onSelect: (ref: string) => void
 }
 
-const typeBadgeClass: Record<string, string> = {
-  local: 'text-primary',
-  remote: 'text-info',
-  tag: 'text-warning',
-  commit: 'text-muted-foreground',
-}
-
-const typeLabel: Record<string, string> = {
-  local: 'branch',
-  remote: 'remote',
-  tag: 'tag',
-  commit: 'commit',
-}
-
-/** Title-case type word for the row title when no commit detail exists. */
-const typeTitle: Record<string, string> = {
-  local: 'Branch',
-  remote: 'Remote',
-  tag: 'Tag',
-  commit: 'Commit',
+/**
+ * Per-type presentation, single-sourced so a new `BranchBase['type']` variant
+ * cannot half-land in parallel records: the badge class, the lowercase badge
+ * word and the title-case word for the row title. Unknown types fail soft to
+ * the raw type string / muted badge.
+ */
+const typeMeta: Record<string, { badge: string; label: string; title: string }> = {
+  local: { badge: 'text-primary', label: 'branch', title: 'Branch' },
+  remote: { badge: 'text-info', label: 'remote', title: 'Remote' },
+  tag: { badge: 'text-warning', label: 'tag', title: 'Tag' },
+  commit: { badge: 'text-muted-foreground', label: 'commit', title: 'Commit' },
 }
 
 /**
@@ -52,7 +43,7 @@ export function BaseSelectorRow({
   // `detail` is an empty string (not null) when a base has no subject — the
   // detail span's own render gate is truthiness, so the title must match it
   // (?? would keep the empty string and produce an empty tooltip).
-  const rowTitle = base.detail || `${typeTitle[base.type] ?? base.type} ${base.label}`
+  const rowTitle = base.detail || `${typeMeta[base.type]?.title ?? base.type} ${base.label}`
   return (
     <button
       type="button"
@@ -69,10 +60,10 @@ export function BaseSelectorRow({
       <span
         className={cn(
           'shrink-0 text-[10px] uppercase tracking-wide',
-          typeBadgeClass[base.type] ?? 'text-muted-foreground',
+          typeMeta[base.type]?.badge ?? 'text-muted-foreground',
         )}
       >
-        {typeLabel[base.type] ?? base.type}
+        {typeMeta[base.type]?.label ?? base.type}
       </span>
       <span className="flex min-w-0 flex-1 items-center gap-1">
         <span
