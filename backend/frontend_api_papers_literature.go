@@ -16,6 +16,8 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core/papers"
 	"github.com/v0lka/c0wrk/core/toolmanager"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // ---------------------------------------------------------------------------
@@ -274,7 +276,7 @@ func runLiteratureHelper(pythonPath, scriptPath, seed, paperDir string) *PaperLi
 		return &PaperLiteratureDTO{Status: status, Message: message}
 	}
 
-	content, readErr := os.ReadFile(outPath)
+	content, readErr := safeio.ReadFile(outPath)
 	if readErr != nil {
 		return &PaperLiteratureDTO{
 			Status:  litStatusError,

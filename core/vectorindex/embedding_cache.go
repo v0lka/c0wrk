@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 const (
@@ -66,7 +68,7 @@ func EmbeddingFingerprint(modelPath, tokenizerPath string, params EmbeddingFinge
 		_, _ = io.WriteString(h, value)
 	}
 	for _, path := range []string{modelPath, tokenizerPath} {
-		f, err := os.Open(path)
+		f, err := safeio.Open(path)
 		if err != nil {
 			return "", fmt.Errorf("opening embedding artifact for fingerprint: %w", err)
 		}
@@ -172,7 +174,7 @@ func (c *embeddingCache) get(text string) ([]float32, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	data, err := os.ReadFile(path)
+	data, err := safeio.ReadFile(path)
 	if err != nil {
 		return nil, false
 	}

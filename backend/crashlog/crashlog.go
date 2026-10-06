@@ -39,6 +39,8 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core/version"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 const (
@@ -118,7 +120,7 @@ func install(logDir string, redirect bool) (*Capture, error) {
 		slog.Warn("crashlog: failed to rotate oversized stderr log", "error", err)
 	}
 
-	file, err := os.OpenFile(filepath.Join(logDir, stderrLogName),
+	file, err := safeio.OpenFile(filepath.Join(logDir, stderrLogName),
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
 		return nil, fmt.Errorf("crashlog: opening stderr log: %w", err)
@@ -160,7 +162,7 @@ func (c *Capture) RemoveMarker() {
 	if c == nil {
 		return
 	}
-	if data, err := os.ReadFile(c.markerPath); err == nil {
+	if data, err := safeio.ReadFile(c.markerPath); err == nil {
 		var rec runRecord
 		if uerr := json.Unmarshal(data, &rec); uerr == nil && rec.PID != 0 && rec.PID != os.Getpid() {
 			return
@@ -285,7 +287,7 @@ func rotateOversizedLog(logDir string) error {
 // removed after reporting.
 func ReportUncleanShutdown(logger *slog.Logger, logDir string) {
 	prev := filepath.Join(logDir, prevMarkerName)
-	data, err := os.ReadFile(prev)
+	data, err := safeio.ReadFile(prev)
 	if errors.Is(err, os.ErrNotExist) {
 		return // previous run exited cleanly
 	}

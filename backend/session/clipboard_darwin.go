@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // osa runs a JavaScript-for-Automation (JXA) program via osascript, passing the
@@ -71,7 +73,7 @@ func clipboardImage(ctx context.Context) (data []byte, mediaType string, ok bool
 	if res == "" {
 		return nil, "", false, nil
 	}
-	b, readErr := os.ReadFile(tmpPath)
+	b, readErr := safeio.ReadFile(tmpPath)
 	if readErr != nil {
 		return nil, "", false, fmt.Errorf("read clipboard image: %w", readErr)
 	}

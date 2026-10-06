@@ -38,6 +38,8 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core/gittrust"
 	"github.com/v0lka/c0wrk/core/workspace"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // Source values carried in a project:git_config_risk payload — what was
@@ -167,7 +169,7 @@ func (f *FrontendAPI) readGitConfigSnapshot(fingerprint string) ([]byte, error) 
 	if f.agentDir == "" {
 		return nil, errors.New("agent dir not set")
 	}
-	return os.ReadFile(filepath.Join(config.GitConfigSnapshotsDir(f.agentDir), fingerprint))
+	return safeio.ReadFile(filepath.Join(config.GitConfigSnapshotsDir(f.agentDir), fingerprint))
 }
 
 // syncGitTrustRegistry mirrors security.trusted_git_repos into the

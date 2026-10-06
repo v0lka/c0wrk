@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // This file implements a safe, exec-free reader for a repository's .git/config
@@ -875,7 +877,7 @@ func SemanticFingerprintFromSnapshot(raw []byte, loggers ...*slog.Logger) (finge
 //
 // Bounds and failure handling: recursion is depth-limited (maxIncludeDepth),
 // the total file count is limited (maxIncludeFiles), and each file is size-
-// capped (maxGitConfigBytes) and must be a regular file (openRegularFile
+// capped (maxGitConfigBytes) and must be a regular file (safeio.Open
 // refuses FIFOs/devices without blocking). A missing target contributes an
 // empty source so its later appearance changes the fingerprint; an unreadable,
 // oversized, or non-regular target contributes a fixed marker source. None of
@@ -2007,14 +2009,14 @@ func ResolveWorkTreeRoot(path string) string {
 }
 
 // readCapped reads a regular file, refusing input beyond limit bytes.
-// Regularity is enforced by openRegularFile with NO Stat→Open window
-// (review [14]): a FIFO swapped in between a stat and an open by a racing
-// local adversary would otherwise defeat the guard and block the open
-// forever, hanging the synchronous intake scan on the SwitchProject RPC
-// path. Anything that is not a regular file (FIFO, device, socket,
-// directory) is refused by the fstat on the already-open descriptor.
+// Regularity is enforced by safeio.Open with NO Stat→Open window (review
+// [14]): a FIFO swapped in between a stat and an open by a racing local
+// adversary would otherwise defeat the guard and block the open forever,
+// hanging the synchronous intake scan on the SwitchProject RPC path.
+// Anything that is not a regular file (FIFO, device, socket, directory) is
+// refused by the fstat on the already-open descriptor.
 func readCapped(path string, limit int64) ([]byte, error) {
-	f, err := openRegularFile(path)
+	f, err := safeio.Open(path)
 	if err != nil {
 		return nil, err
 	}

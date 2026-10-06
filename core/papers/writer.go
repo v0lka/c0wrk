@@ -20,6 +20,7 @@ import (
 	yaml "gopkg.in/yaml.v3"
 
 	"github.com/v0lka/sp4rk/pathutil"
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // paperFrontOut is the serialized shape of paper.md's front matter. It mirrors
@@ -191,8 +192,10 @@ func RecordCardReview(libraryRoot, slug, cardID string, grade Grade, date string
 		return fmt.Errorf("flashcard review rejected: unsafe slug %q", slug)
 	}
 	target := artifactPath(libraryRoot, slug, FlashcardFileName)
-	// Read (and thereby validate the deck's existence) before creating anything.
-	content, err := os.ReadFile(target)
+	// Read (and thereby validate the deck's existence) before creating
+	// anything. The read goes through safeio so a non-regular deck path is
+	// refused (fail closed) instead of blocking the review RPC forever.
+	content, err := safeio.ReadFile(target)
 	if err != nil {
 		return fmt.Errorf("flashcard review rejected: no deck to review: %w", err)
 	}

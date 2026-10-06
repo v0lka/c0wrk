@@ -3,8 +3,9 @@ package vectorindex
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // contentUnavailablePrefix marks the head of the placeholder string (see
@@ -194,9 +195,11 @@ func (cr *contentResolver) fileLines(filePath string) ([]string, bool) {
 
 // readBounded reads at most limit bytes of filePath. A non-positive limit
 // reads the whole file (matching the historic os.ReadFile behavior used by
-// every caller that predates the bound).
+// every caller that predates the bound). The open goes through safeio so a
+// non-regular source (a FIFO/socket/device left in the workspace) is refused
+// instead of blocking the open — and the search pass — forever.
 func readBounded(filePath string, limit int64) ([]byte, error) {
-	f, err := os.Open(filePath)
+	f, err := safeio.Open(filePath)
 	if err != nil {
 		return nil, err
 	}

@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -32,6 +31,8 @@ import (
 	"time"
 
 	"github.com/v0lka/sp4rk/sysproc"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // Backend is the accelerator the runtime archive was built for, and the one
@@ -579,7 +580,7 @@ func cuda12UserlandCandidates(lib string, ldcache map[string][]string, globFn fu
 // section table and .dynamic/.dynstr pages instead of reading a potentially
 // very large library into memory.
 func elfSONAME(path string) (string, bool) {
-	f, err := os.Open(path)
+	f, err := safeio.Open(path)
 	if err != nil {
 		return "", false
 	}

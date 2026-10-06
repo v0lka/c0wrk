@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	chromem "github.com/philippgille/chromem-go"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // Layout (ADR-064). A project's vector-index storage root
@@ -103,7 +105,7 @@ func isLegacyCollectionDirName(name string) bool {
 // unreadable. Caller must NOT hold s.mu longer than necessary; the read is a
 // single small-file decode.
 func readLegacyCollectionName(dir string) string {
-	f, err := os.Open(filepath.Join(dir, chromemMetadataFileName))
+	f, err := safeio.Open(filepath.Join(dir, chromemMetadataFileName))
 	if err != nil {
 		return ""
 	}

@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/shirou/gopsutil/v4/disk"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // Range support — experimentally confirmed against both pinned hosts.
@@ -549,7 +551,7 @@ func (d *Downloader) transfer(ctx context.Context, asset Asset, dstPath, partial
 
 	// The response is good, so now — and only now — create or open the partial
 	// for writing and position it at the resume offset (0 after a fallback).
-	f, err := os.OpenFile(partial, os.O_RDWR|os.O_CREATE, 0o644)
+	f, err := safeio.OpenFile(partial, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("embeddedllm: opening partial %q: %w", partial, err)
 	}
@@ -648,7 +650,7 @@ func (d *Downloader) transfer(ctx context.Context, asset Asset, dstPath, partial
 // package wrote — a symlink above all — so the resumable open below cannot be
 // redirected through it.
 //
-// `os.OpenFile(partial, O_RDWR|O_CREATE, …)` follows a pre-planted symlink: the
+// `safeio.OpenFile(partial, O_RDWR|O_CREATE, …)` follows a pre-planted symlink: the
 // truncate and every appended byte would land on the link's TARGET, with pinned
 // (non-attacker-controlled) artifact bytes written at an attacker-chosen offset.
 // The digest gate still fires and deletes the symlink rather than promoting
@@ -790,7 +792,7 @@ func VerifyFile(path string, asset Asset) error {
 // resumed transfer ends up with a digest over the whole artifact. The file is
 // opened read-only: nothing is created or modified here.
 func hashPrefix(hasher io.Writer, partial string, n int64) error {
-	f, err := os.Open(partial)
+	f, err := safeio.Open(partial)
 	if err != nil {
 		return fmt.Errorf("embeddedllm: opening partial %q to resume: %w", partial, err)
 	}
@@ -803,7 +805,7 @@ func hashPrefix(hasher io.Writer, partial string, n int64) error {
 
 // hashFile returns the lowercase hex SHA256 of a file's contents.
 func hashFile(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := safeio.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("embeddedllm: opening %q for verification: %w", path, err)
 	}

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // SessionLogger wraps a slog.Logger with a session file.
@@ -31,7 +33,7 @@ func Init(level, logDir string) (*SessionLogger, error) {
 	sessionFile := filepath.Join(logDir, fmt.Sprintf("session-%s.log", timestamp))
 
 	// Open log file
-	file, err := os.OpenFile(sessionFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+	file, err := safeio.OpenFile(sessionFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open log file: %w", err)
 	}

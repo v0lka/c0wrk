@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/v0lka/sp4rk/safeio"
 	"github.com/wailsapp/wails/v2/pkg/options"
 )
 
@@ -110,7 +111,7 @@ func AcquireSingleInstanceLock(path string) (*InstanceLock, bool, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, true, fmt.Errorf("single-instance lock: creating lock directory: %w", err)
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o640)
+	file, err := safeio.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o640)
 	if err != nil {
 		return nil, true, fmt.Errorf("single-instance lock: opening lock file: %w", err)
 	}

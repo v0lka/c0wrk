@@ -5,8 +5,9 @@ package embeddedllm
 import (
 	"context"
 	"fmt"
-	"os"
 	"runtime"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // platformTotalRAMBytes reads total physical RAM in bytes.
@@ -44,7 +45,7 @@ func darwinTotalRAMBytes(ctx context.Context) (uint64, error) {
 func linuxTotalRAMBytes() (uint64, error) {
 	const meminfoPath = "/proc/meminfo"
 
-	content, err := os.ReadFile(meminfoPath)
+	content, err := safeio.ReadFile(meminfoPath)
 	if err != nil {
 		return 0, fmt.Errorf("reading %s: %w", meminfoPath, err)
 	}

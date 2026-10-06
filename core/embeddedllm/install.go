@@ -23,6 +23,8 @@ import (
 
 	"github.com/v0lka/sp4rk/pathutil"
 	"github.com/v0lka/sp4rk/sysproc"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // Progress stages reported through InstallProgressFunc. One component walks
@@ -165,7 +167,7 @@ var ErrSmokeTestFailed = errors.New("the provisioned llama-server did not run")
 // ErrNotInstalled rather than a generic OS error, because "not installed" is
 // the state it encodes.
 func ReadManifest(path string) (Manifest, error) {
-	data, err := os.ReadFile(path)
+	data, err := safeio.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Manifest{}, fmt.Errorf("%w (no manifest at %s)", ErrNotInstalled, path)
@@ -1917,7 +1919,7 @@ func (q *extractQuota) add(n int64) error {
 }
 
 func extractTarGz(archivePath, destDir string) error {
-	f, err := os.Open(archivePath)
+	f, err := safeio.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("opening archive: %w", err)
 	}

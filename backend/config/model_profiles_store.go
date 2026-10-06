@@ -12,6 +12,8 @@ import (
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // Persistence layer for custom ModelProfiles profiles: a versioned YAML file at
@@ -71,7 +73,7 @@ type modelProfilesFile struct {
 // caller surfaces warnings in the UI; the returned profiles are validated
 // clones safe to hand out.
 func LoadCustomModelProfiles(path string) (profiles []ModelProfile, warnings []string) {
-	data, err := os.ReadFile(path)
+	data, err := safeio.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			// Pristine state: no file means no custom profiles, no warning.
@@ -123,7 +125,7 @@ func LoadCustomModelProfiles(path string) (profiles []ModelProfile, warnings []s
 // A missing file is the pristine "nothing to preserve" state and passes. The
 // check reads only the on-disk file; it never inspects the set being saved.
 func ensureStoreWritable(path string) error {
-	data, err := os.ReadFile(path)
+	data, err := safeio.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil

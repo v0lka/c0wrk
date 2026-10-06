@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // Config holds HTTP/HTTPS proxy settings.
@@ -309,7 +311,7 @@ func loadCertPool(certDir string, logger *slog.Logger) (*x509.CertPool, error) {
 		}
 
 		certPath := filepath.Join(certDir, entry.Name())
-		data, err := os.ReadFile(certPath)
+		data, err := safeio.ReadFile(certPath)
 		if err != nil {
 			if logger != nil {
 				logger.Warn("skipping unreadable cert file", "path", certPath, "error", err)

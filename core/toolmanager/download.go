@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // DownloadResult reports the outcome of a tool archive download.
@@ -195,7 +197,7 @@ func (d *HTTPDownloader) verifyChecksum(path string, tool ToolSpec, platform str
 		return false
 	}
 
-	f, err := os.Open(path)
+	f, err := safeio.Open(path)
 	if err != nil {
 		return false
 	}

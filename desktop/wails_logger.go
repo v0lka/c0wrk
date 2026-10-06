@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/v0lka/sp4rk/safeio"
 	wailsLogger "github.com/wailsapp/wails/v2/pkg/logger"
 )
 
@@ -34,7 +35,7 @@ func NewWailsLogger(logDir string) (*wailsLogAdapter, error) {
 		return nil, fmt.Errorf("creating wails log directory: %w", err)
 	}
 	logPath := filepath.Join(logDir, "wails.log")
-	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+	file, err := safeio.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
 		return nil, fmt.Errorf("opening wails log file: %w", err)
 	}

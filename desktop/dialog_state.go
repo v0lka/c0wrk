@@ -6,6 +6,8 @@ import (
 	"os"
 
 	"github.com/v0lka/c0wrk/backend/config"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // DialogState is the persisted native-dialog runtime state. It currently holds
@@ -24,7 +26,7 @@ type DialogState struct {
 // it does not exist, so a stale path (deleted checkout, unmounted volume)
 // must be dropped here rather than surfaced to the user.
 func LoadDialogState(agentDir string) DialogState {
-	data, err := os.ReadFile(config.DialogStatePath(agentDir))
+	data, err := safeio.ReadFile(config.DialogStatePath(agentDir))
 	if err != nil {
 		// Missing file on first run is expected — return zero value silently.
 		return DialogState{}
